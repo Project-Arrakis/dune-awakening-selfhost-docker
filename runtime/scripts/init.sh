@@ -452,7 +452,7 @@ docker compose up -d --build orchestrator
 
 run_timed_step "Downloading/loading assets and running database setup/update" runtime/scripts/update.sh install
 
-run_timed_step "Starting Dune stack" runtime/scripts/start-all.sh
+DUNE_START_SKIP_POSTGRES_START=1 DUNE_START_SKIP_DB_UPDATE=1 run_timed_step "Starting Dune stack" runtime/scripts/start-all.sh
 
 echo
 echo "Init complete."
