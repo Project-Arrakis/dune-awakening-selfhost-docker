@@ -1412,7 +1412,7 @@ function memoryForMap(rows: LiveMapMemoryRow[], map: string, row?: Record<string
   const containerMap = normalized.replace(/_/g, "-");
   const partitionMatch = partitionId ? rows.find((memoryRow) => {
     const container = memoryRow.container.toLowerCase();
-    return new RegExp(`-${escapeRegExp(partitionId)}$`).test(container);
+    return container.endsWith(`-${partitionId.toLowerCase()}`);
   }) || null : null;
   if (partitionMatch) return partitionMatch;
   if (partitionId && normalized === "survival_1") return null;

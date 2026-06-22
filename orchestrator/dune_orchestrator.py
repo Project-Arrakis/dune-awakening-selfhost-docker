@@ -38,21 +38,26 @@ def resolve_server_ip():
     if value and value.lower() != "auto":
         return value
 
-    urls = [
-        "https://api.ipify.org",
-        "https://ifconfig.me/ip",
-    ]
-
-    for url in urls:
-        try:
-            with urllib.request.urlopen(url, timeout=10) as r:
-                ip = r.read().decode("utf-8").strip()
-                if ip:
-                    return ip
-        except Exception:
-            pass
+    for resolver in [resolve_ipify_public_ip, resolve_ifconfig_public_ip]:
+        ip = resolver()
+        if ip:
+            return ip
 
     return "UNKNOWN"
+
+def resolve_ipify_public_ip():
+    try:
+        with urllib.request.urlopen("https://api.ipify.org", timeout=10) as r:
+            return r.read().decode("utf-8").strip()
+    except Exception:
+        return ""
+
+def resolve_ifconfig_public_ip():
+    try:
+        with urllib.request.urlopen("https://ifconfig.me/ip", timeout=10) as r:
+            return r.read().decode("utf-8").strip()
+    except Exception:
+        return ""
 
 def ensure_dirs():
     for p in [DUNE_ROOT, SERVER_DIR, STEAM_DIR, GENERATED_DIR, DUNE_ROOT / "cache"]:

@@ -1602,13 +1602,12 @@ function formatHomePopulation(value: string) {
 }
 
 function findLineValue(text: string, keys: string[]) {
+  const normalizedKeys = new Set(keys.map((key) => String(key).trim().toLowerCase()));
   for (const rawLine of stripAnsi(text).split(/\r?\n/)) {
     const line = stripAnsi(rawLine).trim();
-    for (const key of keys) {
-      const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      const match = line.match(new RegExp(`^\\s*${escaped}\\s*[:=]\\s*(.+)$`, "i"));
-      if (match) return match[1].trim();
-    }
+    const match = line.match(/^\s*([^:=]+)\s*[:=]\s*(.+)$/);
+    if (!match) continue;
+    if (normalizedKeys.has(match[1].trim().toLowerCase())) return match[2].trim();
   }
   return "";
 }
