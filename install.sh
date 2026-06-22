@@ -319,7 +319,18 @@ start_console() {
   export DUNE_HOST_GID="${DUNE_HOST_GID:-$(id -g)}"
   export COMPOSE_PROJECT_NAME="${DUNE_COMPOSE_PROJECT_NAME:-dune-awakening-selfhost-docker}"
   prepare_docker_socket_gid
-  "${DOCKER[@]}" compose -f "$WEB_COMPOSE" up -d --build "$WEB_SERVICE"
+  if [ "${DOCKER[0]}" = "sudo" ]; then
+    need_sudo env \
+      "ADMIN_BIND_PORT=$ADMIN_BIND_PORT" \
+      "DUNE_HOST_REPO_ROOT=$DUNE_HOST_REPO_ROOT" \
+      "DUNE_HOST_UID=$DUNE_HOST_UID" \
+      "DUNE_HOST_GID=$DUNE_HOST_GID" \
+      "DOCKER_SOCKET_GID=$DOCKER_SOCKET_GID" \
+      "COMPOSE_PROJECT_NAME=$COMPOSE_PROJECT_NAME" \
+      docker compose -f "$WEB_COMPOSE" up -d --build "$WEB_SERVICE"
+  else
+    "${DOCKER[@]}" compose -f "$WEB_COMPOSE" up -d --build "$WEB_SERVICE"
+  fi
 }
 
 read_admin_password() {
