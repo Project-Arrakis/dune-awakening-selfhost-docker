@@ -651,6 +651,7 @@ echo
 echo "=== Refresh generated map catalogs ==="
 runtime/scripts/extract-partition-catalog.sh
 runtime/scripts/extract-server-catalog.sh
+echo "Generated map catalogs refreshed."
 
 echo
 if [ "$cmd" = "install" ]; then

@@ -29,6 +29,22 @@ require_docker_prereqs() {
   fi
 }
 
+run_timed_step() {
+  local label="$1"
+  shift
+  local start
+  local end
+  local elapsed
+
+  start="$(date +%s)"
+  echo
+  echo "=== $label ==="
+  "$@"
+  end="$(date +%s)"
+  elapsed=$((end - start))
+  echo "Finished: $label (${elapsed}s)"
+}
+
 prompt_default() {
   local prompt="$1"
   local default="$2"
@@ -434,13 +450,9 @@ echo
 echo "Starting orchestrator container..."
 docker compose up -d --build orchestrator
 
-echo
-echo "Downloading/loading assets and running database setup/update..."
-runtime/scripts/update.sh install
+run_timed_step "Downloading/loading assets and running database setup/update" runtime/scripts/update.sh install
 
-echo
-echo "Starting Dune stack..."
-runtime/scripts/start-all.sh
+run_timed_step "Starting Dune stack" runtime/scripts/start-all.sh
 
 echo
 echo "Init complete."
