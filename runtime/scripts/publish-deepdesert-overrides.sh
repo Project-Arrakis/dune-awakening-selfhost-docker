@@ -7,6 +7,7 @@ PID_FILE="runtime/generated/deepdesert-overrides.pid"
 LOG_FILE="runtime/generated/deepdesert-overrides.log"
 LOG_POINTER_FILE="runtime/generated/deepdesert-overrides-current.log"
 TEXT_ROUTER_LOG="runtime/text-router/director-current.log"
+RMQ_TIMEOUT_SECONDS="${DUNE_DEEPDESERT_OVERRIDE_RMQ_TIMEOUT_SECONDS:-8}"
 
 SOURCE_EXCHANGE="completions"
 SOURCE_ROUTING_KEY="server_state.DeepDesert_1"
@@ -97,7 +98,7 @@ rmq_admin() {
   [ "${#rmq_creds[@]}" -ge 2 ] || return 1
   rmq_user="${rmq_creds[0]}"
   rmq_password="${rmq_creds[1]}"
-  docker exec dune-rmq-admin rabbitmqadmin -q -u "$rmq_user" -p "$rmq_password" "$@"
+  timeout --kill-after=2s "${RMQ_TIMEOUT_SECONDS}s" docker exec dune-rmq-admin rabbitmqadmin -q -u "$rmq_user" -p "$rmq_password" "$@"
 }
 
 ensure_route() {
