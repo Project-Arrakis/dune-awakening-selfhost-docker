@@ -17,6 +17,7 @@ export function loadConfig() {
   const adminPasswordEnvManaged = Boolean(process.env.ADMIN_PASSWORD);
   return {
     appName: APP_NAME,
+    version: readConsoleVersion(repoRoot),
     repoRoot,
     duneScript: resolve(repoRoot, "runtime/scripts/dune"),
     host: resolveAdminBindHost(process.env.ADMIN_BIND_HOST),
@@ -38,6 +39,14 @@ export function loadConfig() {
     commandTimeoutMs: Number(process.env.ADMIN_COMMAND_TIMEOUT_MS || 120000),
     staticDir: process.env.ADMIN_STATIC_DIR || resolve(repoRoot, "console/web/dist")
   };
+}
+
+function readConsoleVersion(repoRoot) {
+  try {
+    return readFileSync(resolve(repoRoot, "VERSION"), "utf8").trim() || "dev";
+  } catch {
+    return "dev";
+  }
 }
 
 function resolveAdminBindHost(value) {
@@ -90,6 +99,7 @@ function getOrCreateSecret(path, bytes) {
 export function publicConfig(config) {
   return {
     appName: config.appName,
+    version: config.version,
     repoRoot: config.repoRoot,
     host: config.host,
     port: config.port,
