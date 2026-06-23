@@ -256,7 +256,9 @@ PARTITION_ENGINE_FIELDS = {
     "server_login_password": ENGINE_FIELDS["server_login_password"],
 }
 
-PROTECTED_ENGINE_FIELDS = {"port", "igw_port", "server_display_name", "server_login_password"}
+PROTECTED_ENGINE_FIELDS = {"server_display_name", "server_login_password"}
+RESET_PRESERVED_ENGINE_FIELDS = {"port", "igw_port", "server_display_name", "server_login_password"}
+REDACTED_ENGINE_FIELDS = {"server_login_password"}
 REDACTED_PLACEHOLDERS = {"<redacted>", '"<redacted>"', "'<redacted>'"}
 PROFILE_HEADER_ORDER = {"Engine": 0, "Global": 1, "Map": 2, "Partition": 3}
 
@@ -526,7 +528,7 @@ def profile_remove_key(profile: dict, scope: str, section: str, key: str, map_na
 
 
 def preserve_redacted_engine_fields(incoming: dict, existing: dict) -> None:
-    for field_id in PROTECTED_ENGINE_FIELDS:
+    for field_id in REDACTED_ENGINE_FIELDS:
         spec = ENGINE_FIELDS.get(field_id)
         if not spec:
             continue
@@ -770,6 +772,24 @@ def validate_port_ranges(config: dict, field_id: str, value: str) -> None:
         )
 
 
+def validate_profile_port_ranges(profile: dict) -> None:
+    engine = profile_engine_values(profile)
+    try:
+        client_start = int(engine.get("port") or ENGINE_FIELDS["port"][2])
+        igw_start = int(engine.get("igw_port") or ENGINE_FIELDS["igw_port"][2])
+    except ValueError as exc:
+        raise SystemExit("Port and IGWPort must be positive integers.") from exc
+    if client_start <= 0 or igw_start <= 0:
+        raise SystemExit("Port and IGWPort must be positive integers.")
+    end_offset = max_survival_dimensions()
+    client_end = client_start + end_offset
+    igw_end = igw_start + end_offset
+    if not (client_end < igw_start or igw_end < client_start):
+        raise SystemExit(
+            f"Configured Port range {client_start}-{client_end} intersects with IGWPort range {igw_start}-{igw_end}."
+        )
+
+
 def set_profile_field(profile: dict, scope: str, map_name: str, partition_id: str, field_id: str, value: str) -> None:
     if scope == "engine":
         if field_id not in ENGINE_FIELDS:
@@ -987,6 +1007,7 @@ def set_field(scope: str, name: str | None, field_id: str, value: str) -> int:
         if field_id in {"port", "igw_port"}:
             validate_port_ranges(config, field_id, value)
         set_profile_field(profile, "engine", "", "", field_id, value)
+        validate_profile_port_ranges(profile)
     else:
         if field_id not in MAP_FIELDS:
             raise SystemExit(f"Unknown map field: {field_id}")
@@ -1026,7 +1047,7 @@ def reset_all() -> int:
 def reset_engine_gameplay() -> int:
     profile = read_profile()
     for key, spec in ENGINE_FIELDS.items():
-        if key in PROTECTED_ENGINE_FIELDS:
+        if key in RESET_PRESERVED_ENGINE_FIELDS:
             continue
         if spec[0] and spec[1]:
             profile_remove_key(profile, "engine", spec[0], spec[1])
@@ -1387,6 +1408,8 @@ def bulk_save(scope: str, map_name: str, partition_id: str, encoded_values: str)
             set_profile_field(profile, "map", target_map, "", field_id, serialized)
         else:
             raise SystemExit("Unknown settings scope.")
+    if scope == "engine":
+        validate_profile_port_ranges(profile)
     write_profile(profile)
     return 0
 
@@ -1483,6 +1506,7 @@ def profile_engine_write_encoded(encoded_content: str) -> int:
     profile = read_profile()
     incoming = {"preamble": [], "sections": engine_sections}
     preserve_redacted_engine_fields(incoming, profile)
+    validate_profile_port_ranges(incoming)
     profile["sections"] = [block for block in profile.get("sections", []) if block.get("scope") != "Engine"] + incoming.get("sections", [])
     write_profile(profile)
     return 0
