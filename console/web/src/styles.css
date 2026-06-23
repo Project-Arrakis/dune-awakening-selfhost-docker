@@ -673,7 +673,10 @@ main { padding: 22px; min-width: 0; }
 .result-running { border-color: #6b5b39; }
 .transient-result { animation: backupResultFadeOut .4s ease 4.6s forwards; }
 .home-task-result { margin-top: 12px; display: grid; gap: 8px; }
+.maps-modifier-status-slot { display: grid; gap: 10px; margin: 16px 0 18px; }
+.maps-modifier-status-slot .dirty-note { margin: 0; }
 .maps-result-slot { display: block; margin: 0 0 18px; }
+.maps-modifier-status-slot .maps-result-slot { margin: 0; }
 .maps-result-slot .home-task-result { margin-top: 0; }
 .home-task-result.result-ok, .home-task-result.result-fail { animation: homeResultFadeOut .4s ease 10s forwards; }
 .game-update-progress, .stack-update-progress { margin-top: 12px; display: grid; gap: 10px; }
