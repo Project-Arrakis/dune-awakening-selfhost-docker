@@ -44,6 +44,11 @@ let playerAnnouncementsAutoRunning = false;
 let playerAnnouncementsAutoLastRun = 0;
 const journeyTagsData = loadJourneyTagsData();
 const memoryBalancer = createMemoryBalancer(config);
+const POSTGRES_UNAVAILABLE_MESSAGE = "Postgres is not running or is restarting. Wait for the database service to come back online, then refresh.";
+
+process.on("unhandledRejection", (error) => {
+  console.error(`Unhandled background rejection: ${redact(error?.message || error)}`);
+});
 
 createServer(async (req, res) => {
   try {
@@ -53,7 +58,8 @@ createServer(async (req, res) => {
     }
     serveStatic(config, req, res);
   } catch (error) {
-    json(res, error.statusCode || 500, { error: redact(error.message || error) });
+    const payload = apiErrorPayload(error);
+    json(res, payload.status, payload.body);
   }
 }).listen(config.port, config.host, () => {
   console.log(`${config.appName} API listening on http://${config.host}:${config.port}`);
@@ -64,15 +70,25 @@ createServer(async (req, res) => {
 });
 
 setInterval(() => {
-  void carePackageAutoTick();
-  void messageOfTheDayAutoTick();
-  void playerAnnouncementsAutoTick();
+  runBackgroundTick("Care Package auto-grant", carePackageAutoTick);
+  runBackgroundTick("Message of the Day", messageOfTheDayAutoTick);
+  runBackgroundTick("Player announcements", playerAnnouncementsAutoTick);
 }, 10000).unref?.();
 
 setInterval(() => {
   if (!memoryBalancer.publicState().enabled) return;
-  void memoryBalancer.tick();
+  runBackgroundTick("Memory balancer", () => memoryBalancer.tick());
 }, memoryBalancer.intervalMs).unref?.();
+
+function runBackgroundTick(label, fn) {
+  Promise.resolve()
+    .then(fn)
+    .catch((error) => {
+      const message = String(error?.message || error);
+      if (/connect|database|relation|container|rabbitmq|docker|ECONNREFUSED|ECONNRESET|Connection terminated/i.test(message)) return;
+      console.error(`${label} background task failed: ${redact(message)}`);
+    });
+}
 
 function scheduleBootAutoStart() {
   if (config.mockMode || process.env.ADMIN_AUTO_START_STACK_ON_BOOT === "0") return;
@@ -247,6 +263,13 @@ async function handleApi(req, res) {
   if (path === "/api/server/title" && req.method === "POST") {
     const body = await readJson(req);
     return task(req, res, "server", "serverTitle", { title: body.title });
+  }
+  if (path === "/api/server/config" && req.method === "POST") {
+    const body = await readJson(req);
+    const payload = {};
+    if (body.title !== undefined) payload.title = body.title;
+    if (body.mode !== undefined) payload.mode = body.mode;
+    return task(req, res, "server", "serverConfig", payload);
   }
   if (path === "/api/server/restart-schedule" && req.method === "POST") return restartScheduleRoute(req, res);
   if (path === "/api/server/restart-schedule") return safeCommandJson(res, "restartScheduleStatus");
@@ -514,15 +537,17 @@ function addonContentRoute(req, res, path) {
 }
 
 async function liveMapMarkersRoute(res, url) {
-  const configPayload = duneDb.liveMapConfigPayload(url.searchParams.get("map") || "");
-  const [markers, partitions] = await Promise.all([
-    duneDb.liveMapMarkers(db, configPayload.map.actorMap || configPayload.map.key),
-    duneDb.liveMapPartitions(db).catch(() => ({ rows: [] }))
-  ]);
-  return json(res, 200, {
-    ...markers,
-    ...configPayload,
-    partitions: partitions.rows || []
+  return dbJson(res, async () => {
+    const configPayload = duneDb.liveMapConfigPayload(url.searchParams.get("map") || "");
+    const [markers, partitions] = await Promise.all([
+      duneDb.liveMapMarkers(db, configPayload.map.actorMap || configPayload.map.key),
+      duneDb.liveMapPartitions(db).catch(() => ({ rows: [] }))
+    ]);
+    return {
+      ...markers,
+      ...configPayload,
+      partitions: partitions.rows || []
+    };
   });
 }
 
@@ -555,7 +580,8 @@ async function liveMapTeleportPlayerRoute(req, res) {
     return json(res, 200, { path: "offline", ...result });
   } catch (error) {
     audit(config, req, "live-map.teleport.offline", { playerId, supported: false, error: redact(error.message || error) });
-    return json(res, 400, { error: redact(error.message || error) });
+    const payload = apiErrorPayload(error, 400);
+    return json(res, payload.status, payload.body);
   }
 }
 
@@ -907,14 +933,37 @@ async function dbJson(res, fn) {
   try {
     return json(res, 200, await fn());
   } catch (error) {
-    const rawMessage = String(error.message || error);
-    if (error.code === "ECONNREFUSED" || /ECONNREFUSED.*127\.0\.0\.1:15432/i.test(rawMessage)) {
-      const message = "Postgres is not running or is restarting. Wait for the database service to come back online, then refresh.";
-      return json(res, 503, { supported: false, error: message, reason: message });
-    }
-    const status = error.unsupported ? 501 : 500;
-    return json(res, status, { supported: false, error: redact(rawMessage), reason: redact(rawMessage), details: error.details || undefined });
+    const payload = apiErrorPayload(error, error.unsupported ? 501 : 500);
+    return json(res, payload.status, { supported: false, ...payload.body });
   }
+}
+
+function apiErrorPayload(error, fallbackStatus = 500) {
+  const rawMessage = String(error?.message || error || "");
+  if (isPostgresUnavailableError(error, rawMessage)) {
+    return {
+      status: 503,
+      body: { error: POSTGRES_UNAVAILABLE_MESSAGE, reason: POSTGRES_UNAVAILABLE_MESSAGE }
+    };
+  }
+  const message = redact(friendlyJsonError(rawMessage));
+  return {
+    status: error?.statusCode || fallbackStatus,
+    body: { error: message, reason: message, details: error?.details || undefined }
+  };
+}
+
+function isPostgresUnavailableError(error, rawMessage = "") {
+  return error?.code === "ECONNREFUSED"
+    || /ECONNREFUSED.*127\.0\.0\.1:15432/i.test(rawMessage)
+    || /connect\s+ECONNREFUSED/i.test(rawMessage);
+}
+
+function friendlyJsonError(rawMessage) {
+  if (/Unexpected token|Unexpected end of JSON|is not valid JSON|invalid json/i.test(rawMessage)) {
+    return "The console found invalid saved data for this page. Refresh the page and try again.";
+  }
+  return rawMessage || "Request failed.";
 }
 
 async function exportJson(res, filename, fn) {
@@ -1090,7 +1139,7 @@ async function userSettingsRawRoute(res, url) {
   const partitionId = url.searchParams.get("partitionId") || "";
   const operation = kind === "profile" ? "userSettingsProfileRaw" : kind === "engine" ? "userSettingsRawEngine" : "userSettingsRawGame";
   try {
-    const result = await runDune(config, buildDuneArgs(operation, { map, partitionId }), { timeoutMs: 8000 });
+    const result = await runDune(config, buildDuneArgs(operation, { map, partitionId }), { timeoutMs: 8000, redactOutput: false });
     return json(res, 200, { content: result.stdout || "" });
   } catch (error) {
     return json(res, 500, { error: redact(error.message || error) });
@@ -1264,7 +1313,8 @@ async function carePackageGrantRoute(req, res, path) {
     return json(res, result.ok ? 200 : 207, result);
   } catch (error) {
     audit(config, req, "care-package.grant", { supported: false, playerId, error: redact(error.message || error) });
-    return json(res, 400, { error: redact(error.message || error) });
+    const payload = apiErrorPayload(error, 400);
+    return json(res, payload.status, payload.body);
   }
 }
 
@@ -1278,7 +1328,8 @@ async function carePackageEligibleRoute(req, res) {
       onlyEligible: params.get("onlyEligible") === "1"
     }));
   } catch (error) {
-    return json(res, 500, { supported: false, error: redact(error.message || error), reason: redact(error.message || error) });
+    const payload = apiErrorPayload(error);
+    return json(res, payload.status, { supported: false, ...payload.body });
   }
 }
 
@@ -1291,7 +1342,8 @@ async function carePackageGrantEligibleRoute(req, res) {
     return json(res, result.failed ? 207 : 200, result);
   } catch (error) {
     audit(config, req, "care-package.grant-eligible", { supported: false, error: redact(error.message || error) });
-    return json(res, 400, { error: redact(error.message || error), reason: redact(error.message || error) });
+    const payload = apiErrorPayload(error, 400);
+    return json(res, payload.status, payload.body);
   }
 }
 
@@ -1306,7 +1358,8 @@ async function carePackageRunRoute(req, res) {
     return json(res, result.failed ? 207 : 200, result);
   } catch (error) {
     audit(config, req, "care-package.run", { supported: false, error: redact(error.message || error) });
-    return json(res, 400, { error: redact(error.message || error), reason: redact(error.message || error) });
+    const payload = apiErrorPayload(error, 400);
+    return json(res, payload.status, payload.body);
   }
 }
 
@@ -1318,7 +1371,8 @@ async function carePackageRetryRoute(req, res, path) {
     return json(res, result.ok ? 200 : 207, result);
   } catch (error) {
     audit(config, req, "care-package.retry", { supported: false, grantId, error: redact(error.message || error) });
-    return json(res, 400, { error: redact(error.message || error) });
+    const payload = apiErrorPayload(error, 400);
+    return json(res, payload.status, payload.body);
   }
 }
 

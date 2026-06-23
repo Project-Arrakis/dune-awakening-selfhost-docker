@@ -14,6 +14,7 @@ type MapsTaskOptions = {
   resultScope?: MapsResultScope;
   resultTarget?: string;
   restartAcceptedMessage?: string;
+  onRestartAccepted?: () => void;
 };
 type MapsTaskSequenceOptions = {
   saveAcceptedMessage?: string;
@@ -270,6 +271,7 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
       if (options.restartAcceptedMessage && isSettingsRestartHandoffTask(task)) {
         if (!restartAcceptedShown) {
           restartAcceptedShown = true;
+          options.onRestartAccepted?.();
           mapsDisplayedTerminalTaskRef.current.add(task.id);
           setMapsResultScope(resultScope);
           setMapsResultTarget(resultTarget);
@@ -633,8 +635,8 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
     const passwordTouched = Boolean(sietchPasswordTouched[sietch.partitionId]);
     return draft.displayName !== sietch.displayName || sietchPasswordDraftChanged(sietch, draft, passwordTouched);
   });
-  const rawEngineDirty = rawEngine !== rawEngineOriginal;
-  const rawGameDirty = rawGame !== rawGameOriginal;
+  const rawEngineDirty = normalizeRawIniContent(rawEngine) !== normalizeRawIniContent(rawEngineOriginal);
+  const rawGameDirty = normalizeRawIniContent(rawGame) !== normalizeRawIniContent(rawGameOriginal);
   const modifierDirtySummary = [
     engineDirty.length ? `${engineDirty.length} UserEngine value${engineDirty.length === 1 ? "" : "s"}` : "",
     gameDirty.length ? `${gameDirty.length} UserGame value${gameDirty.length === 1 ? "" : "s"}` : "",
@@ -990,16 +992,26 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
         () => mapsApi.saveRawUserSettings({ scope: "engine", content: rawEngine }),
         "Saving UserEngine changes",
         "UserEngine Saved",
-        { resultScope: "modifiers", restartAcceptedMessage: "Changes saved successfully. The maps are restarting and should be back up soon." }
+        {
+          resultScope: "modifiers",
+          restartAcceptedMessage: "Changes saved successfully. The maps are restarting and should be back up soon.",
+          onRestartAccepted: () => setRawEngineOriginal(rawEngine)
+        }
       );
+      setRawEngineOriginal(rawEngine);
       await loadUserEngine();
     } else {
       await runTaskAndRefresh(
         () => mapsApi.saveRawUserSettings({ scope: "global", map: userGameName || "Survival_1", partitionId: effectiveUserGamePartitionId || undefined, content: rawGame }),
         "Saving UserGame changes",
         "UserGame Saved",
-        { resultScope: "modifiers", restartAcceptedMessage: "Changes saved successfully. The maps are restarting and should be back up soon." }
+        {
+          resultScope: "modifiers",
+          restartAcceptedMessage: "Changes saved successfully. The maps are restarting and should be back up soon.",
+          onRestartAccepted: () => setRawGameOriginal(rawGame)
+        }
       );
+      setRawGameOriginal(rawGame);
       if (userGameName) await loadSelectedSettings(userGameName, effectiveUserGamePartitionId || undefined);
     }
   }
@@ -1013,7 +1025,11 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
         () => mapsApi.resetUserSettings({ scope, map, partitionId, confirmation: "RESTORE MAP DEFAULTS" }),
         "Restoring UserGame defaults",
         "UserGame Defaults Restored",
-        { resultScope: "modifiers", restartAcceptedMessage: "Defaults restored successfully. The maps are restarting and should be back up soon." }
+        {
+          resultScope: "modifiers",
+          restartAcceptedMessage: "Defaults restored successfully. The maps are restarting and should be back up soon.",
+          onRestartAccepted: () => setRawGameOriginal(rawGame)
+        }
       );
       await loadSelectedSettings(userGameName, partitionId);
       return;
@@ -1029,7 +1045,11 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
       () => mapsApi.saveRawUserSettings({ scope: "global", map: "Survival_1", content: defaultGameProfile }),
       "Restoring all UserGame defaults",
       "UserGame Defaults Restored",
-      { resultScope: "modifiers", restartAcceptedMessage: "Defaults restored successfully. The maps are restarting and should be back up soon." }
+      {
+        resultScope: "modifiers",
+        restartAcceptedMessage: "Defaults restored successfully. The maps are restarting and should be back up soon.",
+        onRestartAccepted: () => setRawGameOriginal(defaultGameProfile)
+      }
     );
     setRawGame(defaultGameProfile);
     setRawGameOriginal(defaultGameProfile);
@@ -1229,7 +1249,7 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
     <div className={`playerAdmin_toggle maps-advanced-toggle ${advancedOpen && advancedAvailable ? "open" : ""}`}>
       <button className="playerAdmin_toggleHeader" disabled={!advancedAvailable} onClick={() => run(toggleAdvanced)}>{advancedOpen && advancedAvailable ? <ChevronUp size={18} /> : <ChevronDown size={18} />}<span>Advanced</span></button>
       {advancedOpen && advancedAvailable && <div className="playerAdmin_toggleBody"><div className="advanced-grid">
-        <article className="raw-editor-card"><div className="panel-title"><h4>UserEngine.ini</h4><div className="action-row"><button onClick={() => downloadIni("engine")}>Download</button><label className="button-link">Import<input className="hidden-file-input" type="file" accept=".ini,text/plain" onChange={(event) => run(async () => { await importIni("engine", event.target.files?.[0] || null); })} /></label></div></div><textarea value={rawEngine} onChange={(event) => setRawEngine(event.target.value)} rows={14} /><div className="action-row"><button disabled={!rawEngineDirty} onClick={() => run(() => saveRaw("engine"))}>Save</button><button disabled={!rawEngineDirty} onClick={() => setRawEngine(rawEngineOriginal)}>Discard Changes</button><button className="danger" onClick={() => run(async () => { if (await confirmAction("Restore UserEngine gameplay defaults? Server name, password, Port, and IGWPort will be preserved.")) await runTaskAndRefresh(() => mapsApi.resetUserSettings({ scope: "engine", confirmation: "RESTORE MAP DEFAULTS" }), "Restoring UserEngine defaults", "UserEngine Defaults Restored", { resultScope: "modifiers", restartAcceptedMessage: "Defaults restored successfully. The maps are restarting and should be back up soon." }); await loadUserEngine(); })}>Restore Defaults</button></div></article>
+        <article className="raw-editor-card"><div className="panel-title"><h4>UserEngine.ini</h4><div className="action-row"><button onClick={() => downloadIni("engine")}>Download</button><label className="button-link">Import<input className="hidden-file-input" type="file" accept=".ini,text/plain" onChange={(event) => run(async () => { await importIni("engine", event.target.files?.[0] || null); })} /></label></div></div><textarea value={rawEngine} onChange={(event) => setRawEngine(event.target.value)} rows={14} /><div className="action-row"><button disabled={!rawEngineDirty} onClick={() => run(() => saveRaw("engine"))}>Save</button><button disabled={!rawEngineDirty} onClick={() => setRawEngine(rawEngineOriginal)}>Discard Changes</button><button className="danger" onClick={() => run(async () => { if (await confirmAction("Restore UserEngine gameplay defaults? Server name, password, Port, and IGWPort will be preserved.")) await runTaskAndRefresh(() => mapsApi.resetUserSettings({ scope: "engine", confirmation: "RESTORE MAP DEFAULTS" }), "Restoring UserEngine defaults", "UserEngine Defaults Restored", { resultScope: "modifiers", restartAcceptedMessage: "Defaults restored successfully. The maps are restarting and should be back up soon.", onRestartAccepted: () => setRawEngineOriginal(rawEngine) }); await loadUserEngine(); })}>Restore Defaults</button></div></article>
         <article className="raw-editor-card"><div className="panel-title"><h4>UserGame.ini</h4><div className="action-row"><button onClick={() => downloadIni("game")}>Download</button><label className="button-link">Import<input className="hidden-file-input" type="file" accept=".ini,text/plain" onChange={(event) => run(async () => { await importIni("game", event.target.files?.[0] || null); })} /></label></div></div><textarea value={rawGame} onChange={(event) => setRawGame(event.target.value)} rows={14} /><div className="action-row"><button disabled={!rawGameDirty} onClick={() => run(() => saveRaw("game"))}>Save</button><button disabled={!rawGameDirty} onClick={() => setRawGame(rawGameOriginal)}>Discard Changes</button><button className="danger" onClick={() => run(restoreRawGameDefaults)}>{userGameName ? "Restore Defaults" : "Restore All UserGame Defaults"}</button></div></article>
       </div></div>}
     </div>
@@ -1782,6 +1802,10 @@ function memoryValueToBytes(value: string) {
   const unit = (match[2] || "GB").toLowerCase();
   const multiplier = unit.startsWith("m") ? 1024 ** 2 : 1024 ** 3;
   return amount * multiplier;
+}
+
+function normalizeRawIniContent(value: string) {
+  return String(value || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n").replace(/\s+$/g, "");
 }
 
 function formatMemoryValue(value: string) {

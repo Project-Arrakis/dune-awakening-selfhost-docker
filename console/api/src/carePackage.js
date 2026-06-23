@@ -80,15 +80,27 @@ export function carePackageHistory(config, limit = 100) {
   const safeLimit = Math.max(1, Math.min(Number(limit) || 100, 500));
   const file = grantsPath(config);
   if (!existsSync(file)) return { rows: [] };
-  const rows = readFileSync(file, "utf8")
-    .split(/\r?\n/)
-    .filter(Boolean)
-    .map((line) => JSON.parse(line))
+  const rows = readCarePackageGrantRows(file)
     .map(normalizeHistoryRow)
     .filter((row) => String(row.status || "").toLowerCase() !== "skipped")
     .slice(-safeLimit)
     .reverse();
   return { rows };
+}
+
+function readCarePackageGrantRows(file) {
+  return readFileSync(file, "utf8")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !line.includes("\u0000"))
+    .map((line) => {
+      try {
+        return JSON.parse(line);
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean);
 }
 
 export function clearCarePackageHistory(config) {

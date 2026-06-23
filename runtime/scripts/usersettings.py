@@ -258,8 +258,6 @@ PARTITION_ENGINE_FIELDS = {
 
 PROTECTED_ENGINE_FIELDS = {"server_display_name", "server_login_password"}
 RESET_PRESERVED_ENGINE_FIELDS = {"port", "igw_port", "server_display_name", "server_login_password"}
-REDACTED_ENGINE_FIELDS = {"server_login_password"}
-REDACTED_PLACEHOLDERS = {"<redacted>", '"<redacted>"', "'<redacted>'"}
 PROFILE_HEADER_ORDER = {"Engine": 0, "Global": 1, "Map": 2, "Partition": 3}
 
 
@@ -525,25 +523,6 @@ def profile_remove_key(profile: dict, scope: str, section: str, key: str, map_na
                 continue
         out.append(raw)
     block["lines"] = out
-
-
-def preserve_redacted_engine_fields(incoming: dict, existing: dict) -> None:
-    for field_id in REDACTED_ENGINE_FIELDS:
-        spec = ENGINE_FIELDS.get(field_id)
-        if not spec:
-            continue
-        section, key, _ = spec
-        if not section or not key:
-            continue
-
-        incoming_value = profile_get_key(incoming, "engine", section, key)
-        if incoming_value is None or incoming_value.strip() not in REDACTED_PLACEHOLDERS:
-            continue
-
-        profile_remove_key(incoming, "engine", section, key)
-        existing_value = profile_get_key(existing, "engine", section, key)
-        if existing_value is not None and existing_value.strip() not in REDACTED_PLACEHOLDERS:
-            profile_set_key(incoming, "engine", section, key, existing_value)
 
 
 def seed_profile_from_legacy_config() -> dict:
@@ -1095,8 +1074,11 @@ def truthy(value: str) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
-def write_userengine_ini(path: Path, values: dict[str, str]) -> None:
+def userengine_ini_text(values: dict[str, str]) -> str:
     lines = [
+        "; UserEngine.ini managed by Docker.",
+        "; Values here apply to all maps unless overridden by UserEngine.ini.",
+        "",
         "; Settings in these config files will be applied to every server in the battlegroup",
         "; If you need to override different settings for different servers, use the battlegroup editor instead",
         "",
@@ -1166,7 +1148,11 @@ def write_userengine_ini(path: Path, values: dict[str, str]) -> None:
         f"Ai.BloodDoors.Enabled={values.get('blood_doors_enabled', ENGINE_FIELDS['blood_doors_enabled'][2])}",
         f"Ai.BloodDoors.DisableBlightEcolab={values.get('blood_doors_disable_blight_ecolab', ENGINE_FIELDS['blood_doors_disable_blight_ecolab'][2])}",
     ])
-    atomic_write_text(path, "\n".join(lines) + "\n")
+    return "\n".join(lines) + "\n"
+
+
+def write_userengine_ini(path: Path, values: dict[str, str]) -> None:
+    atomic_write_text(path, userengine_ini_text(values))
 
 
 def write_usergame_ini(path: Path, values: dict[str, str], partition_id: str | None = None) -> None:
@@ -1445,14 +1431,7 @@ def profile_game_text() -> str:
 
 
 def profile_engine_text() -> str:
-    profile = read_profile()
-    lines: list[str] = []
-    for block in sorted_profile_sections([section for section in profile.get("sections", []) if section.get("scope") == "Engine"]):
-      if lines and lines[-1].strip():
-          lines.append("")
-      lines.append(f"[{block.get('ini_section', '')}]")
-      lines.extend(block.get("lines", []))
-    return "\n".join(lines).rstrip() + "\n" if lines else compiled_userengine_ini(profile)
+    return userengine_ini_text(profile_engine_values(read_profile()))
 
 
 def profile_game_write_encoded(encoded_content: str) -> int:
@@ -1505,7 +1484,6 @@ def profile_engine_write_encoded(encoded_content: str) -> int:
         })
     profile = read_profile()
     incoming = {"preamble": [], "sections": engine_sections}
-    preserve_redacted_engine_fields(incoming, profile)
     validate_profile_port_ranges(incoming)
     profile["sections"] = [block for block in profile.get("sections", []) if block.get("scope") != "Engine"] + incoming.get("sections", [])
     write_profile(profile)

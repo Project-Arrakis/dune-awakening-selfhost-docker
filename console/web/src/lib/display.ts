@@ -53,6 +53,7 @@ export function friendlyColumnName(value: string) {
     character_name: "Character Name",
     account_id: "Account ID",
     action_player_id: "Admin Action ID",
+    last_seen: "Last Online",
     online_status: "Status",
     fls_id: "FLS ID",
     display_name: "Name",

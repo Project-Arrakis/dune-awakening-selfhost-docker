@@ -417,6 +417,13 @@ game_external_address_override_env_args() {
 usersettings_engine_value() {
   local key="$1"
   local fallback="$2"
+  local value
+
+  value="$(python3 runtime/scripts/usersettings.py engine-values 2>/dev/null | awk -F '\t' -v key="$key" '$1 == key { print $2; exit }' || true)"
+  if value_is_known "$value"; then
+    printf '%s' "$value"
+    return 0
+  fi
 
   python3 - "$key" "$fallback" <<'PY2'
 import json
