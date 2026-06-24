@@ -403,19 +403,12 @@ game_external_address_override_env_args() {
   local mode bind_ip advertised_ip
 
   [ "${DUNE_DISABLE_GAME_EXTERNAL_ADDRESS_OVERRIDE:-0}" = "1" ] && return 0
+  [ "${DUNE_ALLOW_GAME_EXTERNAL_ADDRESS_OVERRIDE:-0}" = "1" ] || return 0
 
   mode="$(resolve_server_ip_mode 2>/dev/null || true)"
   bind_ip="$(resolve_game_listen_ip)"
   advertised_ip="$(resolve_advertised_ip)"
 
-  if [ "$mode" = "public" ]; then
-    if is_ipv4 "$advertised_ip" && [ "$advertised_ip" != "auto" ]; then
-      printf '%s\n' -e "EXTERNAL_ADDRESS_OVERRIDE=$advertised_ip"
-    fi
-    return 0
-  fi
-
-  [ "${DUNE_ALLOW_GAME_EXTERNAL_ADDRESS_OVERRIDE:-0}" = "1" ] || return 0
   if [ "$bind_ip" != "$advertised_ip" ]; then
     echo "Skipping EXTERNAL_ADDRESS_OVERRIDE: bind IP $bind_ip differs from advertised IP $advertised_ip." >&2
     return 0

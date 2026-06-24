@@ -375,12 +375,30 @@ label_rows_raw = subprocess.check_output([
     "-U", "postgres", "-d", "dune", "-At", "-F", "\t",
     "-c", "select partition_id, coalesce(label, '') from dune.world_partition where lower(map)=lower('Survival_1');"
 ], text=True)
+endpoint_rows_raw = subprocess.check_output([
+    "docker", "exec", "dune-postgres", "psql",
+    "-U", "postgres", "-d", "dune", "-At", "-F", "\t",
+    "-c", """
+      select wp.partition_id,
+             coalesce(host(fs.game_addr), ''),
+             coalesce(fs.game_port, 0)
+      from dune.world_partition wp
+      left join dune.farm_state fs on fs.server_id = wp.server_id
+      where lower(wp.map)=lower('Survival_1');
+    """
+], text=True)
 label_by_partition = {}
 for line in label_rows_raw.splitlines():
     if not line.strip():
         continue
     partition_id, label = line.split("\t", 1)
     label_by_partition[partition_id] = label
+endpoint_by_partition = {}
+for line in endpoint_rows_raw.splitlines():
+    if not line.strip():
+        continue
+    partition_id, game_addr, game_port = line.split("\t", 2)
+    endpoint_by_partition[partition_id] = (game_addr, game_port)
 
 for message in messages:
     payload = json.loads(message["payload"])
@@ -394,6 +412,11 @@ for message in messages:
         if label:
             display_name = label if label.lower().startswith("sietch ") else f"Sietch {label}"
     password = cfg.get("password", "")
+    game_addr, game_port = endpoint_by_partition.get(partition_id, ("", "0"))
+    if game_addr:
+        payload["ip"] = game_addr
+    if game_port and game_port != "0":
+        payload["port"] = int(game_port)
     payload["displayName"] = display_name
     payload["loginPassword"] = password if password else ""
     payload["isStartingMap"] = True
