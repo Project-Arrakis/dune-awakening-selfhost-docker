@@ -19,11 +19,41 @@ APP_ID="${STEAM_APP_ID:-4754530}"
 cmd="${1:-run}"
 
 AUTO_STATE_FILE="runtime/generated/update-auto.env"
+MANUAL_STOP_FILE="runtime/generated/manual-stop.env"
 AUTO_SERVICE_NAME="dune-awakening-auto-update.service"
 AUTO_TIMER_NAME="dune-awakening-auto-update.timer"
 AUTO_SERVICE_FILE="/etc/systemd/system/$AUTO_SERVICE_NAME"
 AUTO_TIMER_FILE="/etc/systemd/system/$AUTO_TIMER_NAME"
 AUTO_DEFAULT_TIME="${DUNE_AUTO_UPDATE_TIME:-05:00}"
+
+container_running() {
+  local name="$1"
+  docker inspect -f '{{.State.Running}}' "$name" 2>/dev/null | grep -qx true
+}
+
+dune_stack_has_running_services() {
+  docker ps --format '{{.Names}}' 2>/dev/null \
+    | grep -Eq '^dune-(postgres|rmq-admin|rmq-game|text-router|director|server-gateway|server-|autoscaler)$'
+}
+
+stop_temporary_postgres() {
+  if [ "${update_started_postgres:-0}" = "1" ] && [ "${postgres_was_running:-0}" != "1" ]; then
+    echo
+    echo "=== Stop temporary Postgres ==="
+    docker rm -f dune-postgres >/dev/null 2>&1 || true
+    echo "Postgres was started only for the update and has been stopped again."
+  fi
+}
+
+cleanup_update_state() {
+  local rc=$?
+  if [ "$rc" -ne 0 ] && [ "${stack_was_stopped:-0}" = "1" ]; then
+    stop_temporary_postgres
+  fi
+  exit "$rc"
+}
+
+trap cleanup_update_state EXIT
 
 write_auto_state() {
   local enabled="$1"
@@ -511,6 +541,18 @@ if [ "$assume_yes" != "1" ]; then
   esac
 fi
 
+postgres_was_running=0
+update_started_postgres=0
+stack_was_stopped=0
+
+if container_running dune-postgres; then
+  postgres_was_running=1
+fi
+
+if [ -f "$MANUAL_STOP_FILE" ] || ! dune_stack_has_running_services; then
+  stack_was_stopped=1
+fi
+
 echo
 echo "=== Check Docker volume free space ==="
 docker compose exec -T \
@@ -519,6 +561,13 @@ docker compose exec -T \
   orchestrator dune preflight
 
 if [ "$cmd" != "install" ]; then
+  if [ "$postgres_was_running" != "1" ]; then
+    echo
+    echo "=== Start Postgres for update backup ==="
+    runtime/scripts/start-postgres.sh
+    update_started_postgres=1
+  fi
+
   echo
   echo "=== Create pre-update database backup ==="
   DB_BACKUP_ORIGIN=pre-update runtime/scripts/db.sh backup
@@ -691,6 +740,11 @@ echo
 if [ "$cmd" = "install" ]; then
   echo "Install/bootstrap step finished."
   echo "The caller can now start the Dune stack."
+elif [ "$stack_was_stopped" = "1" ]; then
+  echo "Update finished."
+  echo
+  echo "The battlegroup was stopped before the update, so it will remain stopped."
+  stop_temporary_postgres
 else
   echo "Update finished."
   echo
