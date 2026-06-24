@@ -812,7 +812,7 @@ normalize_faction_name() {
 
 specialization_apply_sql() {
   local actor_id="$1" account_id="$2" level="$3" xp="$4" tracks_csv="$5" grant_keystones="$6" unlock_faction="$7"
-  local track_array keystone_sql faction_sql unlock_faction_sql
+  local track_array keystone_sql faction_sql unlock_faction_sql journey_id_column journey_id_value
 
   track_array="$(specialization_track_sql_array "$tracks_csv")"
   unlock_faction_sql="${unlock_faction//\'/\'\'}"
@@ -827,6 +827,32 @@ specialization_apply_sql() {
   fi
   faction_sql=""
   if [ -n "$unlock_faction" ]; then
+    journey_id_column="$(psql_admin -At -v ON_ERROR_STOP=1 -c "
+      select case
+        when exists (
+          select 1 from information_schema.columns
+          where table_schema = 'dune' and table_name = 'journey_story_node' and column_name = 'character_id'
+        ) then 'character_id'
+        when exists (
+          select 1 from information_schema.columns
+          where table_schema = 'dune' and table_name = 'journey_story_node' and column_name = 'account_id'
+        ) then 'account_id'
+        else ''
+      end;
+    " | tr -d '\r[:space:]')"
+    if [ -z "$journey_id_column" ]; then
+      echo "Cannot unlock faction journey because dune.journey_story_node has no supported player identity column." >&2
+      exit 1
+    fi
+    if [ "$journey_id_column" = "character_id" ]; then
+      journey_id_value="$(psql_admin -At -v ON_ERROR_STOP=1 -c "select id from dune.player_state where account_id = $account_id::bigint limit 1;" | tr -d '\r[:space:]')"
+      if [ -z "$journey_id_value" ]; then
+        echo "Cannot unlock faction journey because no player_state row was found for account_id $account_id." >&2
+        exit 1
+      fi
+    else
+      journey_id_value="$account_id"
+    fi
     faction_sql="
       insert into dune.player_faction (actor_id, faction_id, utc_time_faction_change)
       select $actor_id::bigint, f.id, now()
@@ -847,7 +873,7 @@ specialization_apply_sql() {
           reveal_condition_state = 'true'::jsonb,
           has_pending_reward = false,
           fail_condition_state = '{}'::jsonb
-      where account_id = $account_id::bigint
+      where $journey_id_column = $journey_id_value::bigint
         and story_node_id like 'DA_FQ_ClimbTheRanks.JoinAHouse%';
     "
   fi

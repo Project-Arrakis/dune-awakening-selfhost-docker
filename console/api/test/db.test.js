@@ -128,6 +128,15 @@ test("database currency writes emit Solaris live refresh hook", async () => {
       calls.push({ text, values });
       if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
       if (text.includes("to_regprocedure")) return { rows: [{ exists: true }] };
+      if (text.includes("information_schema.columns")) {
+        const table = values[1];
+        const names = table === "journey_story_node"
+          ? ["account_id", "story_node_id", "override_reward_block", "has_pending_reward", "complete_condition_state", "reveal_condition_state", "fail_condition_state", "metadata_state", "reset_group"]
+          : table === "player_tags"
+            ? ["account_id", "tag"]
+            : [];
+        return { rows: names.map((column_name) => ({ column_name })) };
+      }
       if (text.includes("from dune.player_virtual_currency_balances") && text.includes("dune.get_solaris_id()")) {
         solarisSnapshot += 1;
         return { rows: [{ player_controller_id: "719", balance: solarisSnapshot === 1 ? "101" : "5000" }] };
@@ -229,6 +238,15 @@ test("database writes replay known tutorial journey tag and item functions", asy
       calls.push({ text, values });
       if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
       if (text.includes("to_regprocedure")) return { rows: [{ exists: true }] };
+      if (text.includes("information_schema.columns")) {
+        const table = values[1];
+        const names = table === "journey_story_node"
+          ? ["account_id", "story_node_id", "override_reward_block", "has_pending_reward", "complete_condition_state", "reveal_condition_state", "fail_condition_state", "metadata_state", "reset_group"]
+          : table === "player_tags"
+            ? ["account_id", "tag"]
+            : [];
+        return { rows: names.map((column_name) => ({ column_name })) };
+      }
       if (/^\s*select/i.test(text) && text.includes("from dune.tutorial_per_player")) {
         tutorialSnapshot += 1;
         return { rows: [{ player_id: "719", tutorial_id: "3", tutorial_state: tutorialSnapshot === 1 ? "1" : "2" }] };
@@ -682,6 +700,19 @@ test("journey listing includes faction contract aliases from game data", async (
   assert.equal(result.rows.contract[0].status, "Complete");
 });
 
+test("journey listing supports current character_id schema", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    journeyIdentityColumn: "character_id",
+    journeyStateRows: [
+      { story_node_id: "DA_Story.Root", is_complete: true, is_revealed: true, has_pending_reward: false }
+    ]
+  });
+  const result = await playerJourney(db, 123, { journey_node_tags: { "DA_Story.Root": ["Story.Tag"] } });
+  assert.equal(result.rows.story[0].status, "Complete");
+  assert.ok(calls.some((call) => call.text.includes('where "character_id" = $1') && call.values[0] === 5));
+});
+
 test("faction quest journey nodes stay under story instead of contracts", async () => {
   const calls = [];
   const db = fakeMutationDb(calls);
@@ -759,7 +790,11 @@ function fakeMutationDb(calls, fixtures = {}) {
           ? ["id", "actor_id", "max_item_count", "max_item_volume", "inventory_type"]
           : table === "actors"
             ? ["id", "class", "owner_account_id", "properties"]
-            : ["inventory_id", "template_id", "stack_size", "quality_level", "position_index", "stats"];
+            : table === "journey_story_node"
+              ? [fixtures.journeyIdentityColumn || "account_id", "story_node_id", "has_pending_reward", "complete_condition_state", "reveal_condition_state", "fail_condition_state", "metadata_state", "reset_group"]
+              : table === "player_tags"
+                ? [fixtures.journeyIdentityColumn || "account_id", "tag"]
+                : ["inventory_id", "template_id", "stack_size", "quality_level", "position_index", "stats"];
         return { rows: names.map((column_name) => ({ column_name })) };
       }
       if (text.includes("TechKnowledgePlayerComponent") && text.includes("all_research")) return { rows: fixtures.researchListRows || [] };
@@ -771,7 +806,7 @@ function fakeMutationDb(calls, fixtures = {}) {
       if (text.includes("CraftingRecipesLibraryActorComponent") && text.includes("for update")) return { rows: fixtures.currentCraftingRecipes === null ? [] : [{ recipes: fixtures.currentCraftingRecipes || [] }] };
       if (text.includes("CraftingRecipesLibraryActorComponent,m_KnownItemRecipes") && text.includes("update dune.actors")) return { rows: [{ ok: true }] };
       if (text.includes("story_node_id like 'DA_Dunipedia_%'")) return { rows: fixtures.codexRows || [] };
-      if (text.includes("from dune.journey_story_node") && text.includes("where account_id = $1")) return { rows: fixtures.journeyStateRows || [] };
+      if (text.includes("from dune.journey_story_node") && (text.includes("where account_id = $1") || text.includes('where "account_id" = $1') || text.includes("where character_id = $1") || text.includes('where "character_id" = $1'))) return { rows: fixtures.journeyStateRows || [] };
       if (text.includes("select tag from dune.player_tags")) return { rows: fixtures.playerTagRows || [] };
       if (text.includes("update dune.journey_story_node")) return { rows: [], rowCount: fixtures.journeyUpdateRows ?? 0 };
       if (text.includes("insert into dune.journey_story_node")) return { rows: [{ ok: true }], rowCount: 1 };
@@ -780,7 +815,7 @@ function fakeMutationDb(calls, fixtures = {}) {
       if (text.includes("create_or_update_tutorial_entry")) return { rows: [{ ok: true }] };
       if (text.includes("delete from dune.tutorial_per_player")) return { rows: [], rowCount: fixtures.tutorialDeleteRows ?? 0 };
       if (text.includes("dune.update_player_tags")) return { rows: [{ ok: true }] };
-      if (text.includes("from dune.actors a")) return { rows: fixtures.playerRows || [{ actor_id: 123, account_id: 44, controller_id: 55, online_status: "Offline" }] };
+      if (text.includes("from dune.actors a")) return { rows: fixtures.playerRows || [{ actor_id: 123, account_id: 44, controller_id: 55, player_state_id: 5, online_status: "Offline" }] };
       if (text.includes("dune.get_solaris_id")) return { rows: [{ currency_id: 0 }] };
       if (text.includes("adjust_player_virtual_currency_balance")) return { rows: [{ ok: true }] };
       if (text.includes("player_virtual_currency_balances")) return { rows: fixtures.balanceRows || [] };

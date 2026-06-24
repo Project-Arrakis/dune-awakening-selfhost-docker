@@ -1541,9 +1541,34 @@ PY
             and class = '/Game/Dune/Characters/Player/BP_DunePlayerController.BP_DunePlayerController_C'
         );
 
-        delete from dune.player_respawn_locations
-        where account_id = $account_id
-          and map = 'HaggaBasin';
+        do \$\$
+        declare
+          respawn_identity_column text;
+          respawn_identity_id bigint;
+        begin
+          select column_name into respawn_identity_column
+          from information_schema.columns
+          where table_schema = 'dune'
+            and table_name = 'player_respawn_locations'
+            and column_name in ('character_id', 'account_id')
+          order by case column_name when 'character_id' then 0 else 1 end
+          limit 1;
+
+          if respawn_identity_column = 'character_id' then
+            select id into respawn_identity_id
+            from dune.player_state
+            where account_id = $account_id
+            limit 1;
+          elsif respawn_identity_column = 'account_id' then
+            respawn_identity_id := $account_id;
+          end if;
+
+          if respawn_identity_column is not null and respawn_identity_id is not null then
+            execute format('delete from dune.player_respawn_locations where %I = \$1 and map = ''HaggaBasin''', respawn_identity_column)
+            using respawn_identity_id;
+          end if;
+        end
+        \$\$;
       " >/dev/null
 
       replay_hagga_travel_handoff "$flow_id" "$source_map" "$destination_name"
