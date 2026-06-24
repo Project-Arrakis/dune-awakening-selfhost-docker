@@ -27,7 +27,7 @@ const redeploySteps: { id: StepId; label: string }[] = [
 const regions = ["Europe", "North America", "South America", "Asia", "Oceania", "Africa"];
 type SetupConfig = { SERVER_TITLE: string; SERVER_REGION: string; SERVER_IP: string; SERVER_IP_MODE: string; SERVER_PROVIDER: string; STEAM_APP_ID: string };
 const terminalStatuses = new Set(["succeeded", "failed", "cancelled"]);
-const completionRedirectSeconds = 5;
+const completionRedirectSeconds = 10;
 
 export function SetupWizard({ initialStep = 0, jumpNonce = 0, mode = "redeploy", onSetupComplete }: { initialStep?: number; jumpNonce?: number; mode?: "first-run" | "redeploy"; onSetupComplete?: () => void }) {
   const steps = mode === "first-run" ? firstRunSteps : redeploySteps;
