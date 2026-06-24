@@ -833,6 +833,13 @@ export async function listPlayers(db, { online = false, q = "" } = {}) {
     return unsupported("players", ["dune.actors", "dune.player_state"]);
   }
   const lastSeenSelect = await playerLastSeenSelect(db);
+  const lastSeenWithOnlineFallback = `
+    case
+      when coalesce(ps.online_status::text, '') = 'Online'
+        then coalesce(nullif(${lastSeenSelect}, ''), (current_timestamp at time zone 'UTC')::text)
+      else ${lastSeenSelect}
+    end
+  `;
   const values = [];
   let where = "a.class ilike '%PlayerCharacter%'";
   where += " and coalesce(ac.\"user\", '') <> 'A5C0DE5E12A00001'";
@@ -862,7 +869,7 @@ export async function listPlayers(db, { online = false, q = "" } = {}) {
            a.class,
            coalesce(a.map, '') as map,
            coalesce(ps.online_status::text, 'Offline') as online_status,
-           ${lastSeenSelect} as last_seen
+           ${lastSeenWithOnlineFallback} as last_seen
     from dune.actors a
     left join dune.player_state ps on ps.account_id = a.owner_account_id
     left join dune.accounts ac on ac.id = a.owner_account_id
