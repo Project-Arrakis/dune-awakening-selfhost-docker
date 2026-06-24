@@ -9,7 +9,7 @@ import { createLoginRateLimiter } from "./rateLimit.js";
 import { TaskManager, publicTask } from "./tasks.js";
 import { preflight } from "./preflight.js";
 import { buildDuneArgs, isDynamicServerService, isReadOnlySql, parseVehicleList, runDockerLogs, runDune, validateServiceName } from "./runner.js";
-import { createDb } from "./db.js";
+import { createDb, quoteIdentifier } from "./db.js";
 import * as duneDb from "./duneDb.js";
 import { audit, recordAdminHistory } from "./audit.js";
 import { redact } from "./redact.js";
@@ -1603,16 +1603,33 @@ async function mapChatRoute(req, res) {
 }
 
 async function mapChatRecipients(mapName, dimension) {
+  if (!await duneDb.tableExists(db, "player_state") || !await duneDb.tableExists(db, "accounts") || !await duneDb.tableExists(db, "world_partition")) return [];
+  const playerStateColumns = await duneDb.columnsFor(db, "player_state");
+  const accountColumns = await duneDb.columnsFor(db, "accounts");
+  let playerStateIdentityColumn = "";
+  let accountIdentityColumn = "";
+  if (playerStateColumns.has("account_id") && accountColumns.has("id")) {
+    playerStateIdentityColumn = "account_id";
+    accountIdentityColumn = "id";
+  } else if (playerStateColumns.has("character_id") && accountColumns.has("character_id")) {
+    playerStateIdentityColumn = "character_id";
+    accountIdentityColumn = "character_id";
+  } else if (playerStateColumns.has("character_id") && accountColumns.has("id")) {
+    playerStateIdentityColumn = "character_id";
+    accountIdentityColumn = "id";
+  }
+  if (!playerStateIdentityColumn || !accountIdentityColumn || !accountColumns.has("user") || !playerStateColumns.has("server_id")) return [];
   const maps = mapChatServerMaps(mapName);
   const dim = Number(dimension || 0);
   const values = [...maps, dim];
   const mapPlaceholders = maps.map((_, index) => `$${index + 1}`).join(",");
+  const onlineCondition = playerStateColumns.has("online_status") ? "coalesce(ps.online_status::text, 'Offline') <> 'Offline'" : "true";
   const result = await db.query(`
     select distinct concat(ac."user", '_queue') as queue
     from dune.player_state ps
-    join dune.accounts ac on ac.id = ps.account_id
+    join dune.accounts ac on ac.${quoteIdentifier(accountIdentityColumn)} = ps.${quoteIdentifier(playerStateIdentityColumn)}
     join dune.world_partition wp on wp.server_id = ps.server_id
-    where ps.online_status <> 'Offline'
+    where ${onlineCondition}
       and coalesce(ac."user", '') <> ''
       and wp.map in (${mapPlaceholders})
       and coalesce(wp.dimension_index, 0) = $${maps.length + 1}

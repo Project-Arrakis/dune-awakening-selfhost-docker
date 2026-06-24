@@ -88,6 +88,18 @@ test("player announcements report leave events even when nobody remains online",
   assert.equal(left.results[0].reason, "no_online_recipients");
 });
 
+test("player announcements ignore offline rows", async () => {
+  const cfg = config();
+  savePlayerAnnouncements(cfg, { joinEnabled: true, joinMessage: "{playerName} joined", leaveEnabled: true, leaveMessage: "{playerName} left" });
+
+  const offline = player("John");
+  offline.online_status = "Offline";
+  const result = await runPlayerAnnouncementScan(cfg, [offline], { mockMode: true });
+  assert.equal(result.joined, 0);
+  assert.equal(result.left, 0);
+  assert.equal(result.sent, 0);
+});
+
 test("player announcements can prime current online players after save", async () => {
   const cfg = config();
   savePlayerAnnouncements(cfg, { joinEnabled: true, joinMessage: "{playerName} joined", leaveEnabled: false, leaveMessage: "{playerName} left" });

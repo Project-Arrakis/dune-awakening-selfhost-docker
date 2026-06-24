@@ -137,7 +137,7 @@ function readState(config) {
 
 function onlineMap(players = []) {
   const online = {};
-  for (const player of players.map(normalizePlayer).filter((entry) => entry.key && entry.characterName)) {
+  for (const player of players.map(normalizePlayer).filter((entry) => entry.key && entry.characterName && entry.online)) {
     online[player.key] = player;
   }
   return online;
@@ -147,7 +147,8 @@ function normalizePlayer(player = {}) {
   const key = String(player.action_player_id || player.actor_id || player.player_pawn_id || player.fls_id || player.flsId || player.funcom_id || player.funcomId || "").trim();
   const characterName = String(player.character_name || player.characterName || player.funcom_id || player.funcomId || key).trim();
   const flsId = String(player.fls_id || player.flsId || "").trim();
-  return { key, characterName, flsId, queue: flsId ? `${flsId}_queue` : "" };
+  const onlineStatus = String(player.online_status || player.onlineStatus || "").trim().toLowerCase();
+  return { key, characterName, flsId, online: onlineStatus === "online", queue: flsId ? `${flsId}_queue` : "" };
 }
 
 function renderPlayerMessage(template, player) {

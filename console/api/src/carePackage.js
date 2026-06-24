@@ -843,10 +843,32 @@ async function upsertDuneRow(db, table, entries, conflictColumn, rawSqlValues = 
   const updates = columns
     .filter((column) => column !== conflictColumn)
     .map((column) => `${quoteIdentifier(column)} = excluded.${quoteIdentifier(column)}`);
-  await db.query(
-    `insert into dune.${quoteIdentifier(table)} (${columns.map(quoteIdentifier).join(", ")}) values (${placeholders.join(", ")}) on conflict (${quoteIdentifier(conflictColumn)}) do update set ${updates.join(", ")}`,
-    values
-  );
+  const tableName = quoteIdentifier(table);
+  const conflictName = quoteIdentifier(conflictColumn);
+  try {
+    await db.query(
+      `insert into dune.${tableName} (${columns.map(quoteIdentifier).join(", ")}) values (${placeholders.join(", ")}) on conflict (${conflictName}) do update set ${updates.join(", ")}`,
+      values
+    );
+  } catch (error) {
+    if (!/no unique or exclusion constraint matching the ON CONFLICT specification/i.test(String(error.message || error))) throw error;
+    const conflictIndex = columns.indexOf(conflictColumn);
+    if (conflictIndex < 0) throw error;
+    const assignments = entries
+      .map(([name], index) => ({ name, placeholder: placeholders[index] }))
+      .filter((entry) => entry.name !== conflictColumn)
+      .map((entry) => `${quoteIdentifier(entry.name)} = ${entry.placeholder}`);
+    if (assignments.length) {
+      await db.query(
+        `update dune.${tableName} set ${assignments.join(", ")} where ${conflictName} = ${placeholders[conflictIndex]}`,
+        values
+      );
+    }
+    await db.query(
+      `insert into dune.${tableName} (${columns.map(quoteIdentifier).join(", ")}) select ${placeholders.join(", ")} where not exists (select 1 from dune.${tableName} where ${conflictName} = ${placeholders[conflictIndex]})`,
+      values
+    );
+  }
 }
 
 function quoteIdentifier(value) {
