@@ -246,7 +246,9 @@ select wp.partition_id,
        wp.map,
        coalesce(wp.server_id, ''),
        coalesce(fs.ready, false),
-       coalesce(wp.label, '')
+       coalesce(wp.label, ''),
+       coalesce(host(fs.game_addr), ''),
+       coalesce(fs.game_port, 0)
 from dune.world_partition wp
 left join dune.farm_state fs on fs.server_id = wp.server_id
 where coalesce(wp.server_id, '') <> ''
@@ -306,7 +308,7 @@ defaults = {
 for line in result.stdout.splitlines():
     if not line.strip():
         continue
-    partition_id, map_name, server_id, ready, label = line.split("\t")
+    partition_id, map_name, server_id, ready, label, game_addr, game_port = line.split("\t")
     effective_ready = ready.lower() in ("t", "true", "1")
     if partition_id == "1" and survival_log_ready:
         effective_ready = True
@@ -327,7 +329,11 @@ for line in result.stdout.splitlines():
         "players": [],
         "serverGameplaySettings": json.loads(json.dumps(defaults)),
     }
-    payload["loginPassword"] = password if password else None
+    if game_addr:
+        payload["ip"] = game_addr
+    if game_port and game_port != "0":
+        payload["port"] = int(game_port)
+    payload["loginPassword"] = password if password else ""
     payload["serverGameplaySettings"]["CoreSettings"]["serverDisplayName"] = display_name
     print(json.dumps(payload, separators=(",", ":")))
 PY
@@ -389,7 +395,7 @@ for message in messages:
             display_name = label if label.lower().startswith("sietch ") else f"Sietch {label}"
     password = cfg.get("password", "")
     payload["displayName"] = display_name
-    payload["loginPassword"] = password if password else None
+    payload["loginPassword"] = password if password else ""
     payload["isStartingMap"] = True
     gameplay = payload.setdefault("serverGameplaySettings", {})
     core = gameplay.setdefault("CoreSettings", {})

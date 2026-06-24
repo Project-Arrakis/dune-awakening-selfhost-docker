@@ -1276,9 +1276,16 @@ export async function playerPosition(db, id) {
   const actorId = intParam(id, "player id", 1);
   try {
     const result = await db.query(`
-      select id as actor_id, map, (transform).location::text as location, (transform).rotation::text as rotation
+      select id as actor_id,
+             map,
+             ((transform).location).x as x,
+             ((transform).location).y as y,
+             ((transform).location).z as z,
+             0::float8 as yaw,
+             (transform).location::text as location,
+             (transform).rotation::text as rotation
       from dune.actors
-      where id = $1`, [actorId]);
+      where id = $1 and transform is not null`, [actorId]);
     return { capabilities: { position: true }, position: result.rows[0] || null };
   } catch (error) {
     return { capabilities: { position: false }, reason: "dune.actors transform composite columns were not available", error: error.message };

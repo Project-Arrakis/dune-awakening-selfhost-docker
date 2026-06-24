@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { assertIdentifier, discoverDbConfig, isReadOnlySql, quoteQualified, redactDbError, rowsResult } from "../src/db.js";
-import { addCurrency, addFactionReputation, addIntel, addonLeadershipPlayers, completeJourneyNode, completeTutorial, deleteInventoryItem, giveItemToPlayer, giveItemToStorage, listPlayers, listTables, liveMapPlayers, liveMapServices, playerCraftingRecipes, playerJourney, playerResearchItems, resetJourneyNode, resetTutorial, runSql, tablePreview, unlockCraftingRecipe, unlockResearchItem, updateTableRow, UnsupportedCapabilityError } from "../src/duneDb.js";
+import { addCurrency, addFactionReputation, addIntel, addonLeadershipPlayers, completeJourneyNode, completeTutorial, deleteInventoryItem, giveItemToPlayer, giveItemToStorage, listPlayers, listTables, liveMapPlayers, liveMapServices, playerCraftingRecipes, playerJourney, playerPosition, playerResearchItems, resetJourneyNode, resetTutorial, runSql, tablePreview, unlockCraftingRecipe, unlockResearchItem, updateTableRow, UnsupportedCapabilityError } from "../src/duneDb.js";
 
 test("discovers RedBlink Postgres defaults and env overrides", () => {
   assert.deepEqual(discoverDbConfig({}), {
@@ -408,6 +408,22 @@ test("live map player markers validate map filter and use parameterized transfor
   assert.match(markerQuery.text, /a\.map = \$1/);
   assert.deepEqual(markerQuery.values, ["Survival_1"]);
   await assert.rejects(() => liveMapPlayers(db, "bad;map"), /Invalid map name/);
+});
+
+test("player position exposes numeric coordinates for Use Current Position", async () => {
+  const calls = [];
+  const db = {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      return { rows: [{ actor_id: 123, map: "Survival_1", x: "101.5", y: "202.25", z: "303.75", yaw: "0", location: "(101.5,202.25,303.75)", rotation: "(0,0,0)" }] };
+    }
+  };
+  const result = await playerPosition(db, 123);
+  assert.equal(result.capabilities.position, true);
+  assert.deepEqual(result.position, { actor_id: 123, map: "Survival_1", x: "101.5", y: "202.25", z: "303.75", yaw: "0", location: "(101.5,202.25,303.75)", rotation: "(0,0,0)" });
+  assert.match(calls[0].text, /\(\(transform\)\.location\)\.x as x/);
+  assert.match(calls[0].text, /where id = \$1 and transform is not null/);
+  assert.deepEqual(calls[0].values, [123]);
 });
 
 test("live map services returns capability response when world partitions are missing", async () => {
