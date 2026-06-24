@@ -366,14 +366,6 @@ resolve_game_addr_ip() {
 }
 
 resolve_igw_addr_ip() {
-  local mode
-
-  mode="$(resolve_server_ip_mode 2>/dev/null || true)"
-  if [ "$mode" = "public" ]; then
-    resolve_advertised_ip
-    return 0
-  fi
-
   resolve_game_listen_ip
 }
 

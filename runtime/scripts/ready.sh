@@ -334,6 +334,16 @@ partition_mismatch_hint_needed() {
   grep -Eq 'Invalid PartitionId|has no partition definition|thinks farm size is|waiting for persistence to finish initial load' <<< "$logs"
 }
 
+heal_core_readiness_if_possible() {
+  is_running dune-postgres || return 0
+
+  if ! is_running dune-server-survival-1 && ! is_running dune-server-overmap; then
+    return 0
+  fi
+
+  bash runtime/scripts/heal-core-ready.sh all >/dev/null 2>&1 || true
+}
+
 echo "=== Container checks ==="
 for c in \
   dune-postgres \
@@ -382,6 +392,8 @@ else
   mark_fail "world_partition check"
   echo "     dune-postgres is not running."
 fi
+
+heal_core_readiness_if_possible
 
 echo
 echo "=== Readiness log checks ==="

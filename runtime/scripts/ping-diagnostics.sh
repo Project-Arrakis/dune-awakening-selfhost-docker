@@ -165,8 +165,8 @@ echo
 echo "=== Expected endpoints ==="
 print_row "Overmap game" "${overmap_game_port}/udp" "advertised as ${server_ip}:${overmap_game_port}"
 print_row "Survival_1 game" "${survival_game_port}/udp" "advertised as ${server_ip}:${survival_game_port}"
-print_row "Survival_1 IGW" "${survival_igw_port}/udp" "advertised as ${igw_advertised_ip}:${survival_igw_port}"
-print_row "Overmap IGW" "${overmap_igw_port}/udp" "advertised as ${igw_advertised_ip}:${overmap_igw_port}"
+print_row "Survival_1 IGW" "${survival_igw_port}/udp" "server-to-server on ${igw_advertised_ip}:${survival_igw_port}"
+print_row "Overmap IGW" "${overmap_igw_port}/udp" "server-to-server on ${igw_advertised_ip}:${overmap_igw_port}"
 print_row "RabbitMQ game" "31982/tcp" "advertised to services as ${server_ip}:31982"
 print_row "RabbitMQ game HTTP" "31983/tcp" "advertised to services as ${server_ip}:31983"
 
@@ -334,9 +334,9 @@ if [ "$mode" = "public" ]; then
   echo "For non-blank ping, external clients must be able to reach:"
   echo "  ${server_ip}:${overmap_game_port}/udp"
   echo "  ${server_ip}:${survival_game_port}/udp"
-  echo "Also forward the IGW UDP ports for server-to-server traffic:"
-  echo "  ${server_ip}:${survival_igw_port}/udp"
-  echo "  ${server_ip}:${overmap_igw_port}/udp"
+  echo "IGW/server-to-server traffic stays on the local bind IP:"
+  echo "  ${igw_advertised_ip}:${survival_igw_port}/udp"
+  echo "  ${igw_advertised_ip}:${overmap_igw_port}/udp"
 else
   echo "Local/LAN mode advertises a private IP. Clients outside the LAN should not be expected to ping or join it."
 fi
