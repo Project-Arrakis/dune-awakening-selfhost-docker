@@ -316,6 +316,23 @@ fi
   exit $?
 fi
 
+if [ "$cmd" = "fix-install-dir" ]; then
+  docker compose exec -T -u root orchestrator sh -lc '
+set -eu
+mkdir -p /srv/dune/server /srv/dune/steam /srv/dune/cache /srv/dune/generated /home/dune/.steam
+chown -R dune:dune /srv/dune /home/dune
+runuser -u dune -- sh -lc "
+  touch /srv/dune/server/.dune-write-test &&
+  rm -f /srv/dune/server/.dune-write-test &&
+  touch /srv/dune/steam/.dune-write-test &&
+  rm -f /srv/dune/steam/.dune-write-test
+"
+df -h /srv/dune/server /srv/dune/steam /srv/dune/cache
+echo "Dune install directories are writable."
+'
+  exit $?
+fi
+
 fix_steamcmd_manifest() {
   docker compose exec -T -e APP_ID="$APP_ID" orchestrator bash -lc '
 set -euo pipefail
@@ -444,6 +461,7 @@ if [ "$cmd" != "run" ] && [ "$cmd" != "apply" ] && [ "$cmd" != "install" ]; then
   echo "  dune update --yes"
   echo "  dune update install"
   echo "  dune update fix-steamcmd"
+  echo "  dune update fix-install-dir"
   echo "  dune update auto enable"
   echo "  dune update auto disable"
   echo "  dune update auto status"
@@ -518,6 +536,7 @@ steam_max_attempts="${DUNE_STEAMCMD_MAX_ATTEMPTS:-3}"
 steam_retry_sleep="${DUNE_STEAMCMD_RETRY_SLEEP:-20}"
 steam_ok=0
 steam_manifest_fix_applied=0
+steam_install_dir_hint=0
 
 while [ "$steam_attempt" -le "$steam_max_attempts" ]; do
   echo
@@ -536,6 +555,10 @@ while [ "$steam_attempt" -le "$steam_max_attempts" ]; do
   fi
 
   echo
+  if grep -Eiq "force_install_dir|install[[:space:]_-]*dir|install folder|permission denied|disk write failure|not enough disk|no space left" "$steam_log"; then
+    steam_install_dir_hint=1
+  fi
+
   if [ "$steam_manifest_fix_applied" = "0" ] && grep -Eiq "App '[^']+' state is 0x6|appmanifest_${APP_ID}\.acf|SteamCMD cache/metadata is stale" "$steam_log"; then
     echo "Detected a common SteamCMD cache error while downloading the server files."
     echo "Applying the automatic SteamCMD fix now, then retrying the update."
@@ -566,9 +589,20 @@ done
 if [ "$steam_ok" != "1" ]; then
   echo
   echo "SteamCMD failed after $steam_max_attempts attempts."
+  if [ "$steam_install_dir_hint" = "1" ]; then
+    echo
+    echo "The SteamCMD output points to an install directory, permission, or disk-space problem."
+    echo "The Dune server files are installed inside the orchestrator at:"
+    echo "  /srv/dune/server"
+    echo
+    echo "Recommended repair:"
+    echo "  docker exec -u root dune-orchestrator sh -lc 'chown -R dune:dune /srv/dune /home/dune'"
+    echo "  docker exec dune-orchestrator df -h /srv/dune/server /srv/dune/steam /srv/dune/cache"
+  fi
   echo
   echo "Most common fresh-install causes:"
   echo "  - Docker volume storage has too little free disk space."
+  echo "  - Docker volumes were restored or created with the wrong owner."
   echo "  - Steam temporarily rejected the anonymous depot request."
   echo "  - SteamCMD cache/metadata is stale after a Steam-side app change."
   echo

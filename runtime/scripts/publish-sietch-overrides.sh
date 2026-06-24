@@ -70,21 +70,37 @@ import subprocess
 import sys
 
 log_path = Path("runtime/text-router/director-current.log")
-pattern = re.compile(r'(bgd\.[^/\s]+\.admin)/([A-Za-z0-9+/=]+) => allow administrator')
+patterns = [
+    re.compile(r'Generated new admin credentials:\s*(bgd\.[^/\s]+\.admin)\s*/\s*([A-Za-z0-9+/=]+)'),
+    re.compile(r'(bgd\.[^/\s]+\.admin)/([A-Za-z0-9+/=]+) => allow administrator'),
+]
 text = ""
 if log_path.exists():
     text = log_path.read_text(errors="ignore")
-matches = pattern.findall(text)
+matches = []
+for pattern in patterns:
+    matches = pattern.findall(text)
+    if matches:
+        break
 if not matches:
     try:
-        text = subprocess.check_output(
-            ["docker", "logs", "dune-text-router"],
-            text=True,
-            stderr=subprocess.STDOUT,
-        )
+        logs = []
+        for container in ("dune-director", "dune-text-router"):
+            try:
+                logs.append(subprocess.check_output(
+                    ["docker", "logs", container],
+                    text=True,
+                    stderr=subprocess.STDOUT,
+                ))
+            except Exception:
+                pass
+        text = "\n".join(logs)
     except Exception:
         text = ""
-    matches = pattern.findall(text)
+    for pattern in patterns:
+        matches = pattern.findall(text)
+        if matches:
+            break
 if not matches:
     sys.exit(1)
 
