@@ -50,7 +50,10 @@ prepare_runtime_generated_files() {
   : >"$current_log"
 
   LOG_FILE="$current_log"
-  echo "$LOG_FILE" >"$LOG_POINTER_FILE"
+  if [ -e "$LOG_POINTER_FILE" ] && [ ! -w "$LOG_POINTER_FILE" ]; then
+    rm -f "$LOG_POINTER_FILE" 2>/dev/null || true
+  fi
+  printf '%s\n' "$LOG_FILE" >"$LOG_POINTER_FILE" 2>/dev/null || true
 }
 
 ensure_text_router_log() {
