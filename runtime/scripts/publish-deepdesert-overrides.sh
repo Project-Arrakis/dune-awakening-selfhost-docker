@@ -150,22 +150,45 @@ publish_payload() {
 }
 
 forward_batch_once() {
-  local messages
+  local messages endpoint_rows
   messages="$(rmq_admin --format=raw_json get queue="$SOURCE_FILTER_QUEUE" count=20 ackmode=ack_requeue_false)"
   [ "$messages" != "[]" ] || return 1
 
-  FILTER_MESSAGES="$messages" python3 - <<'PY'
+  endpoint_rows="$(docker exec dune-postgres psql -U postgres -d dune -At -F $'\t' -c "
+    select wp.partition_id,
+           coalesce(host(fs.game_addr), ''),
+           coalesce(fs.game_port, 0)
+    from dune.world_partition wp
+    left join dune.farm_state fs on fs.server_id = wp.server_id
+    where wp.map = 'DeepDesert_1';
+  ")"
+
+  FILTER_MESSAGES="$messages" ENDPOINT_ROWS="$endpoint_rows" python3 - <<'PY'
 import json
 import os
 import time
 
 messages = json.loads(os.environ["FILTER_MESSAGES"])
+endpoints = {}
+for line in os.environ.get("ENDPOINT_ROWS", "").splitlines():
+    if not line.strip():
+        continue
+    partition_id, game_addr, game_port = line.split("\t", 2)
+    endpoints[str(partition_id)] = (game_addr, game_port)
 
 for message in messages:
     payload = json.loads(message["payload"])
+    partition_id = str(payload.get("partitionId", ""))
+    game_addr, game_port = endpoints.get(partition_id, ("", "0"))
+    if game_addr:
+        payload["ip"] = game_addr
+    if game_port and game_port != "0":
+        payload["port"] = int(game_port)
     if not payload.get("ready", False):
         payload["isStartingMap"] = True
         payload["reportTimestamp"] = max(int(time.time()), int(payload.get("reportTimestamp", 0)) + 1)
+    else:
+        payload["reportTimestamp"] = max(int(time.time()), int(payload.get("reportTimestamp", 0)))
     print(json.dumps(payload, separators=(",", ":")))
 PY
 }

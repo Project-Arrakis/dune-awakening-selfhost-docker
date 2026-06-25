@@ -271,6 +271,8 @@ EOF
       overmap)
         set -a; [ -f .env ] && . ./.env; set +a
         runtime/scripts/start-server-overmap.sh
+        runtime/scripts/publish-network-server-state-overrides.sh restart || true
+        runtime/scripts/publish-network-server-state-overrides.sh once || true
         ;;
       gateway|sgw)
         set -a; [ -f .env ] && . ./.env; set +a
@@ -280,6 +282,9 @@ EOF
       director|bgd)
         set -a; [ -f .env ] && . ./.env; set +a
         runtime/scripts/start-director.sh
+        runtime/scripts/publish-sietch-overrides.sh restart || true
+        runtime/scripts/publish-deepdesert-overrides.sh restart || true
+        runtime/scripts/publish-network-server-state-overrides.sh restart || true
         ;;
       text-router|tr)
         set -a; [ -f .env ] && . ./.env; set +a

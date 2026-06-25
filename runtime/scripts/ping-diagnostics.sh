@@ -336,6 +336,67 @@ else
 fi
 
 echo
+echo "=== Director server-state advertisements ==="
+if [ "$mode" = "public" ] && container_running dune-director; then
+  director_log_file="$(mktemp)"
+  docker logs --since 5m dune-director > "$director_log_file" 2>&1 || true
+  director_state_check="$(
+    python3 - "$server_ip" "$director_log_file" <<'PY'
+import json
+import re
+import sys
+
+server_ip = sys.argv[1]
+log_file = sys.argv[2]
+private_re = re.compile(r"^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)")
+seen = {}
+bad = []
+with open(log_file, encoding="utf-8", errors="replace") as handle:
+    for line in handle:
+        if "[ServerState] Received server state:" not in line:
+            continue
+        raw = line.split("[ServerState] Received server state:", 1)[1].strip()
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        partition = payload.get("partitionId")
+        ip = payload.get("ip") or ""
+        port = payload.get("port")
+        key = (partition, ip, port)
+        if key in seen:
+            continue
+        seen[key] = True
+        if ip and ip != server_ip and private_re.match(ip):
+            bad.append((partition, ip, port))
+
+if not seen:
+    print("NONE")
+elif bad:
+    for partition, ip, port in bad:
+        print(f"BAD\t{partition}\t{ip}\t{port}")
+else:
+    print("OK")
+PY
+  )"
+  rm -f "$director_log_file"
+  if [ "$director_state_check" = "OK" ]; then
+    ok "Director recent server-state messages advertise public game IPs"
+  elif [ "$director_state_check" = "NONE" ]; then
+    warn_msg "No recent Director ServerState messages found in the last 5 minutes."
+  else
+    while IFS=$'\t' read -r state partition ip port; do
+      [ "$state" = "BAD" ] || continue
+      fail_msg "Director received private server-state endpoint partition=$partition ${ip}:${port}; expected public ${server_ip} for client travel."
+    done <<< "$director_state_check"
+  fi
+elif [ "$mode" = "public" ]; then
+  warn_msg "dune-director is not running; skipped recent Director server-state checks."
+else
+  echo "Local/LAN mode permits private Director server-state addresses."
+fi
+
+echo
 echo "=== External reachability note ==="
 if [ "$mode" = "public" ]; then
   echo "Repo-side checks cannot prove that the public internet can reach your router/firewall UDP forwards."

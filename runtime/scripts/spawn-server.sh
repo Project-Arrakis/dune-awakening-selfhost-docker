@@ -692,6 +692,11 @@ fi
 
 if [ "$MAP_NAME" = "DeepDesert_1" ] && [ -x runtime/scripts/publish-deepdesert-state.sh ]; then
   runtime/scripts/publish-deepdesert-state.sh once >/dev/null 2>&1 || true
+  runtime/scripts/publish-deepdesert-overrides.sh once >/dev/null 2>&1 || true
+fi
+
+if [ "$MAP_NAME" != "Survival_1" ] && [ "$MAP_NAME" != "DeepDesert_1" ]; then
+  runtime/scripts/publish-network-server-state-overrides.sh once >/dev/null 2>&1 || true
 fi
 
 SPAWN_SUCCESS=1
