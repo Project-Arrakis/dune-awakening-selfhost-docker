@@ -4,6 +4,16 @@ import { friendlyCatalogName } from "../../components/common/ItemCatalog";
 import { stripAnsi } from "../../lib/display";
 
 export const VEHICLE_SPAWN_OFFSET_UNITS = 1000; // 10 meters in Unreal units.
+export const FLYING_VEHICLE_SPAWN_OFFSET_UNITS = 3000; // 30 meters in Unreal units.
+
+export function vehicleSpawnOffsetUnits(vehicleId: string) {
+  return /ornithopter/i.test(String(vehicleId || "")) ? FLYING_VEHICLE_SPAWN_OFFSET_UNITS : VEHICLE_SPAWN_OFFSET_UNITS;
+}
+
+export function vehicleSpawnDistanceLabel(offsetUnits: number) {
+  const meters = offsetUnits / 100;
+  return `${Number.isInteger(meters) ? meters : meters.toFixed(1)} meters`;
+}
 
 export function friendlyInlineError(error: unknown) {
   const text = friendlyApiError(error || "Action failed.");

@@ -1210,10 +1210,10 @@ player_position_for_fls() {
 }
 
 compute_spawn_in_front() {
-  local x="$1" y="$2" z="$3" qx="$4" qy="$5" qz="$6" qw="$7" offset="$8"
-  python3 - "$x" "$y" "$z" "$qx" "$qy" "$qz" "$qw" "$offset" <<'PY'
+  local x="$1" y="$2" z="$3" qx="$4" qy="$5" qz="$6" qw="$7" offset="$8" z_offset="${9:-0}"
+  python3 - "$x" "$y" "$z" "$qx" "$qy" "$qz" "$qw" "$offset" "$z_offset" <<'PY'
 import json, math, sys
-x, y, z, qx, qy, qz, qw, offset = map(float, sys.argv[1:])
+x, y, z, qx, qy, qz, qw, offset, z_offset = map(float, sys.argv[1:])
 # Unreal uses X/Y as horizontal axes and Z as up. Use the pawn's +X forward vector,
 # projected onto the ground plane, so pitch/roll do not skew the spawn point.
 fx = 1.0 - 2.0 * (qy * qy + qz * qz)
@@ -1232,11 +1232,19 @@ sy = y + fy * offset
 print(json.dumps({
     "x": sx,
     "y": sy,
-    "z": z,
+    "z": z + z_offset,
     "rotation": math.degrees(yaw),
     "yawRadians": yaw,
 }, separators=(",", ":")))
 PY
+}
+
+is_flying_vehicle() {
+  local vehicle_id="$1" actor_class="$2"
+  case "$vehicle_id:$actor_class" in
+    *Ornithopter*|*ornithopter*|*FlyingVehicles*) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 kick_command() {
@@ -1601,6 +1609,20 @@ publish_player_command() {
     AwardXP|UpdateAllWaterFillables) require_online=1 ;;
   esac
 
+  if [ "${DUNE_ADMIN_DRY_RUN:-0}" = "1" ]; then
+    echo "Payload shape:"
+    python3 - "$inner_json" <<'PY'
+import json, sys
+payload = json.loads(sys.argv[1])
+if payload.get("PlayerId") != "*":
+    payload["PlayerId"] = "<redacted>"
+print(json.dumps(payload, separators=(",", ":")))
+PY
+    echo "Dry run: not publishing."
+    audit_admin_action "$command_id" "$audit_target" "$command_id" "$inner_json" "$ADMIN_COMMAND_PATH" "dry-run"
+    return 0
+  fi
+
   if [ "$resolved_player" != "*" ]; then
     set +e
     status_row="$(player_status_for_fls "$resolved_player")"
@@ -1639,12 +1661,6 @@ if payload.get("PlayerId") != "*":
     payload["PlayerId"] = "<redacted>"
 print(json.dumps(payload, separators=(",", ":")))
 PY
-
-  if [ "${DUNE_ADMIN_DRY_RUN:-0}" = "1" ]; then
-    echo "Dry run: not publishing."
-    audit_admin_action "$command_id" "$audit_target" "$command_id" "$inner_json" "$ADMIN_COMMAND_PATH" "dry-run"
-    return 0
-  fi
 
   set +e
   output="$(publish_inner_json "$inner_json" "$command_id" 2>&1)"
@@ -1773,12 +1789,28 @@ spawn_vehicle_at_command() {
 spawn_vehicle_command() {
   local player="${1:-}" class_name="${2:-}" template="${3:-}" offset="${4:-1000}"
   local resolved_player row status map partition server x y z qx qy qz qw dimension actor_class spawn_json sx sy sz rotation
+  local vehicle_json vehicle_id vehicle_actor_class z_offset=0 original_offset
   [ -n "$player" ] && [ -n "$class_name" ] && [ -n "$template" ] || {
     echo "Usage: dune admin spawn-vehicle <player-id> <vehicle-id> <template-name> [offset-units]" >&2
     echo "Use spawn-vehicle-at for advanced manual coordinates." >&2
     exit 2
   }
   validate_float "$offset" "Offset"
+  original_offset="$offset"
+  vehicle_json="$(resolve_vehicle "$class_name" "$template")"
+  vehicle_id="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["id"])' "$vehicle_json")"
+  vehicle_actor_class="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["actor_class"])' "$vehicle_json")"
+  template="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["template"])' "$vehicle_json")"
+  if is_flying_vehicle "$vehicle_id" "$vehicle_actor_class"; then
+    z_offset="${DUNE_ADMIN_FLYING_VEHICLE_Z_OFFSET:-700}"
+    offset="$(python3 - "$offset" "${DUNE_ADMIN_FLYING_VEHICLE_MIN_OFFSET:-3000}" <<'PY'
+import sys
+offset = float(sys.argv[1])
+minimum = float(sys.argv[2])
+print(max(offset, minimum))
+PY
+)"
+  fi
   resolved_player="$(resolve_player_id "$player")"
   [ "$resolved_player" != "*" ] || { echo "Vehicle spawn requires a specific player." >&2; exit 2; }
   row="$(player_position_for_fls "$resolved_player" || true)"
@@ -1791,14 +1823,17 @@ spawn_vehicle_command() {
   for value in "$x" "$y" "$z" "$qx" "$qy" "$qz" "$qw"; do
     [ -n "$value" ] || { echo "Live location/facing is incomplete for $(redact_fls "$resolved_player")." >&2; exit 1; }
   done
-  spawn_json="$(compute_spawn_in_front "$x" "$y" "$z" "$qx" "$qy" "$qz" "$qw" "$offset")"
+  spawn_json="$(compute_spawn_in_front "$x" "$y" "$z" "$qx" "$qy" "$qz" "$qw" "$offset" "$z_offset")"
   sx="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["x"])' "$spawn_json")"
   sy="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["y"])' "$spawn_json")"
   sz="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["z"])' "$spawn_json")"
   rotation="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["rotation"])' "$spawn_json")"
   echo "Player location: map=${map:-unknown} partition=${partition:-unknown} X=$x Y=$y Z=$z"
+  if [ "$z_offset" != "0" ] || [ "$offset" != "$original_offset" ]; then
+    echo "Flying vehicle adjustment: offset=$offset units, Z lift=$z_offset units"
+  fi
   echo "Computed spawn point $offset units in front: X=$sx Y=$sy Z=$sz Rotation=$rotation"
-  spawn_vehicle_at_command "$resolved_player" "$class_name" "$template" "$sx" "$sy" "$sz" "$rotation"
+  spawn_vehicle_at_command "$resolved_player" "$vehicle_id" "$template" "$sx" "$sy" "$sz" "$rotation"
 }
 
 broadcast_restart_warning_command() {
