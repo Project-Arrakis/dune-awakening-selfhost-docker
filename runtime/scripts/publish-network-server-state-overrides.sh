@@ -128,10 +128,17 @@ io:format(\"~p~n\", [rabbit_db_binding:delete(Binding, DeleteCallback)]).
 server_state_maps() {
   docker exec dune-postgres psql -U postgres -d dune -Atc "
     select distinct map
-    from dune.world_partition
-    where coalesce(map, '') <> ''
-      and coalesce(server_id, '') <> ''
-      and map !~ '${EXCLUDED_MAPS_RE}'
+    from (
+      select map
+      from dune.farm_state
+      where coalesce(map, '') <> ''
+      union
+      select map
+      from dune.world_partition
+      where coalesce(map, '') <> ''
+        and coalesce(server_id, '') <> ''
+    ) active_maps
+    where map !~ '${EXCLUDED_MAPS_RE}'
     order by map;
   " 2>/dev/null || true
 }
@@ -209,12 +216,13 @@ forward_batch_for_map() {
   [ "$messages" != "[]" ] || return 1
 
   endpoint_rows="$(docker exec dune-postgres psql -U postgres -d dune -At -F $'\t' -c "
-    select wp.partition_id,
+    select coalesce(wp.partition_id::text, ''),
+           fs.server_id,
            coalesce(host(fs.game_addr), ''),
            coalesce(fs.game_port, 0)
-    from dune.world_partition wp
-    left join dune.farm_state fs on fs.server_id = wp.server_id
-    where wp.map = '${map_name//\'/\'\'}';
+    from dune.farm_state fs
+    left join dune.world_partition wp on wp.server_id = fs.server_id
+    where fs.map = '${map_name//\'/\'\'}';
   ")"
 
   FILTER_MESSAGES="$messages" ENDPOINT_ROWS="$endpoint_rows" MAP_NAME="$map_name" python3 - <<'PY'
@@ -224,17 +232,25 @@ import time
 
 messages = json.loads(os.environ["FILTER_MESSAGES"])
 map_name = os.environ.get("MAP_NAME", "")
-endpoints = {}
+endpoints_by_partition = {}
+endpoints_by_server = {}
 for line in os.environ.get("ENDPOINT_ROWS", "").splitlines():
     if not line.strip():
         continue
-    partition_id, game_addr, game_port = line.split("\t", 2)
-    endpoints[str(partition_id)] = (game_addr, game_port)
+    partition_id, server_id, game_addr, game_port = line.split("\t", 3)
+    if partition_id:
+        endpoints_by_partition[str(partition_id)] = (game_addr, game_port)
+    if server_id:
+        endpoints_by_server[server_id] = (game_addr, game_port)
 
 for message in messages:
     payload = json.loads(message["payload"])
     partition_id = str(payload.get("partitionId", ""))
-    game_addr, game_port = endpoints.get(partition_id, ("", "0"))
+    server_id = str(payload.get("serverId", ""))
+    game_addr, game_port = endpoints_by_server.get(
+        server_id,
+        endpoints_by_partition.get(partition_id, ("", "0")),
+    )
     if game_addr:
         payload["ip"] = game_addr
     if game_port and game_port != "0":
@@ -284,6 +300,7 @@ case "${1:-start}" in
   start)
     clear_stale_pidfile
     if loop_running; then
+      "$0" once || true
       exit 0
     fi
     pkill -f "publish-network-server-state-overrides.sh loop" 2>/dev/null || true
@@ -291,6 +308,7 @@ case "${1:-start}" in
     prepare_runtime_generated_files
     setsid "$0" loop >>"$LOG_FILE" 2>&1 </dev/null &
     echo $! >"$PID_FILE"
+    "$0" once || true
     ;;
   loop)
     prepare_runtime_generated_files

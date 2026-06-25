@@ -349,8 +349,7 @@ import sys
 server_ip = sys.argv[1]
 log_file = sys.argv[2]
 private_re = re.compile(r"^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)")
-seen = {}
-bad = []
+latest = {}
 with open(log_file, encoding="utf-8", errors="replace") as handle:
     for line in handle:
         if "[ServerState] Received server state:" not in line:
@@ -363,14 +362,16 @@ with open(log_file, encoding="utf-8", errors="replace") as handle:
         partition = payload.get("partitionId")
         ip = payload.get("ip") or ""
         port = payload.get("port")
-        key = (partition, ip, port)
-        if key in seen:
+        if partition is None:
             continue
-        seen[key] = True
-        if ip and ip != server_ip and private_re.match(ip):
-            bad.append((partition, ip, port))
+        latest[partition] = (ip, port)
 
-if not seen:
+bad = []
+for partition, (ip, port) in latest.items():
+    if ip and ip != server_ip and private_re.match(ip):
+        bad.append((partition, ip, port))
+
+if not latest:
     print("NONE")
 elif bad:
     for partition, ip, port in bad:
