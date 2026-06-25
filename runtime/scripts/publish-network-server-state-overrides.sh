@@ -8,6 +8,10 @@ LOG_FILE="runtime/generated/network-server-state-overrides.log"
 LOG_POINTER_FILE="runtime/generated/network-server-state-overrides-current.log"
 TEXT_ROUTER_LOG="runtime/text-router/director-current.log"
 RMQ_TIMEOUT_SECONDS="${DUNE_NETWORK_STATE_OVERRIDE_RMQ_TIMEOUT_SECONDS:-8}"
+RMQ_BINDING_CLEANUP_TIMEOUT_SECONDS="${DUNE_NETWORK_STATE_OVERRIDE_BINDING_CLEANUP_TIMEOUT_SECONDS:-2}"
+STOP_RESTORE_TIMEOUT_SECONDS="${DUNE_NETWORK_STATE_OVERRIDE_STOP_RESTORE_TIMEOUT_SECONDS:-20}"
+PRIORITY_MAP_TIMEOUT_SECONDS="${DUNE_NETWORK_STATE_OVERRIDE_PRIORITY_MAP_TIMEOUT_SECONDS:-8}"
+PRIORITY_MAPS="${DUNE_NETWORK_STATE_OVERRIDE_PRIORITY_MAPS:-Overmap DeepDesert_1}"
 RMQ_USER=""
 RMQ_PASSWORD=""
 
@@ -120,7 +124,7 @@ rmq_admin() {
 
 rmq_delete_binding_exact() {
   local source="$1" destination="$2" routing_key="$3"
-  timeout --kill-after=2s "${RMQ_TIMEOUT_SECONDS}s" docker exec dune-rmq-admin rabbitmqctl eval "
+  timeout --kill-after=1s "${RMQ_BINDING_CLEANUP_TIMEOUT_SECONDS}s" docker exec dune-rmq-admin rabbitmqctl eval "
 Binding = {binding,
   {resource, <<\"/\">>, exchange, <<\"${source}\">>},
   <<\"${routing_key}\">>,
@@ -147,6 +151,21 @@ server_state_maps() {
     where map !~ '${EXCLUDED_MAPS_RE}'
     order by map;
   " 2>/dev/null || true
+}
+
+server_state_maps_ordered() {
+  local maps map_name priority_map
+  maps="$(server_state_maps)"
+  for priority_map in $PRIORITY_MAPS; do
+    printf '%s\n' "$maps" | grep -Fx "$priority_map" || true
+  done
+  while IFS= read -r map_name; do
+    [ -n "$map_name" ] || continue
+    case " $PRIORITY_MAPS " in
+      *" $map_name "*) continue ;;
+    esac
+    printf '%s\n' "$map_name"
+  done <<< "$maps"
 }
 
 ensure_route_for_map() {
@@ -189,8 +208,8 @@ ensure_routes() {
   local map_name
   while IFS= read -r map_name; do
     [ -n "$map_name" ] || continue
-    ensure_route_for_map "$map_name"
-  done < <(server_state_maps)
+    ensure_route_for_map "$map_name" || true
+  done < <(server_state_maps_ordered)
 }
 
 restore_routes() {
@@ -198,7 +217,7 @@ restore_routes() {
   while IFS= read -r map_name; do
     [ -n "$map_name" ] || continue
     restore_route_for_map "$map_name"
-  done < <(server_state_maps)
+  done < <(server_state_maps_ordered)
 }
 
 publish_payload() {
@@ -279,7 +298,7 @@ forward_once() {
         publish_payload "$map_name" "$payload"
       done <<< "$rows"
     fi
-  done < <(server_state_maps)
+  done < <(server_state_maps_ordered)
   return "$any"
 }
 
@@ -296,12 +315,20 @@ forward_map_once() {
   fi
 }
 
+kick_priority_maps_once() {
+  local map_name
+  for map_name in $PRIORITY_MAPS; do
+    timeout --kill-after=2s "${PRIORITY_MAP_TIMEOUT_SECONDS}s" "$0" map "$map_name" || true
+  done
+}
+
 start_loop() {
   mkdir -p runtime/generated
   write_live_pidfile
   trap 'rm -f "$PID_FILE"' EXIT
   local route_refresh_at=0
-  ensure_routes
+  ensure_route_for_map Overmap >>"$LOG_FILE" 2>&1 || true
+  ensure_route_for_map DeepDesert_1 >>"$LOG_FILE" 2>&1 || true
   while true; do
     if [ "$(date +%s)" -ge "$route_refresh_at" ]; then
       ensure_routes >>"$LOG_FILE" 2>&1 || true
@@ -328,7 +355,7 @@ case "${1:-start}" in
   start)
     clear_stale_pidfile
     if loop_running; then
-      "$0" once || true
+      kick_priority_maps_once
       exit 0
     fi
     pkill -f "publish-network-server-state-overrides.sh loop" 2>/dev/null || true
@@ -336,7 +363,7 @@ case "${1:-start}" in
     prepare_runtime_generated_files
     setsid "$0" loop >>"$LOG_FILE" 2>&1 </dev/null &
     echo $! >"$PID_FILE"
-    "$0" once || true
+    kick_priority_maps_once
     ;;
   loop)
     prepare_runtime_generated_files
@@ -349,10 +376,18 @@ case "${1:-start}" in
     fi
     pkill -f "publish-network-server-state-overrides.sh loop" 2>/dev/null || true
     rm -f "$PID_FILE"
+    timeout --kill-after=2s "${STOP_RESTORE_TIMEOUT_SECONDS}s" "$0" restore-routes || true
+    ;;
+  restore-routes)
     restore_routes || true
     ;;
   restart)
-    "$0" stop
+    clear_stale_pidfile
+    if [ -f "$PID_FILE" ]; then
+      kill "$(cat "$PID_FILE")" 2>/dev/null || true
+    fi
+    pkill -f "publish-network-server-state-overrides.sh loop" 2>/dev/null || true
+    rm -f "$PID_FILE"
     "$0" start
     ;;
   *)
