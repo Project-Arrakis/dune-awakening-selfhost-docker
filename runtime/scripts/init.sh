@@ -205,6 +205,21 @@ fresh_reset_runtime() {
   fi
 }
 
+preserve_env_extras() {
+  local source_file="$1"
+  [ -f "$source_file" ] || return 0
+  awk -F= '
+    /^[[:space:]]*($|#)/ { next }
+    $1 == "SERVER_IP" { next }
+    $1 == "SERVER_IP_MODE" { next }
+    $1 == "SERVER_TITLE" { next }
+    $1 == "SERVER_REGION" { next }
+    $1 == "STEAM_APP_ID" { next }
+    $1 == "BATTLEGROUP_ID" { next }
+    { print }
+  ' "$source_file"
+}
+
 
 derive_battlegroup_id() {
   TOKEN="$1" python3 - <<'PY'
@@ -415,6 +430,9 @@ else
   esac
 fi
 
+preserved_env="$(mktemp)"
+preserve_env_extras .env > "$preserved_env" || true
+
 fresh_reset_runtime
 
 cat > .env <<EOF
@@ -424,6 +442,13 @@ SERVER_TITLE="$SERVER_TITLE"
 SERVER_REGION="$SERVER_REGION"
 STEAM_APP_ID=$STEAM_APP_ID
 EOF
+if [ -s "$preserved_env" ]; then
+  {
+    echo
+    cat "$preserved_env"
+  } >> .env
+fi
+rm -f "$preserved_env"
 
 cat > runtime/generated/battlegroup.env <<EOF
 BATTLEGROUP_ID=$BATTLEGROUP_ID

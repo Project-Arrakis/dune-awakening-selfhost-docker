@@ -1740,6 +1740,7 @@ async function setupState() {
   const initialized = await isInitializedStackPresent();
   return {
     config: publicConfig(config),
+    serverConfig: readSetupConfigValues(),
     files: {
       env,
       token,
@@ -1749,6 +1750,33 @@ async function setupState() {
       duneScript: existsSync(config.duneScript)
     }
   };
+}
+
+function readSetupConfigValues() {
+  const allowed = ["SERVER_IP", "SERVER_IP_MODE", "SERVER_TITLE", "SERVER_REGION", "SERVER_PROVIDER", "STEAM_APP_ID", "BATTLEGROUP_ID"];
+  const values = {};
+  for (const file of [resolve(config.repoRoot, ".env"), resolve(config.generatedDir, "battlegroup.env")]) {
+    if (!existsSync(file)) continue;
+    for (const rawLine of readFileSync(file, "utf8").split(/\r?\n/)) {
+      const parsed = parseEnvLine(rawLine);
+      if (!parsed || !allowed.includes(parsed.key) || values[parsed.key] !== undefined) continue;
+      values[parsed.key] = parsed.value;
+    }
+  }
+  return values;
+}
+
+function parseEnvLine(line) {
+  const text = String(line || "").trim();
+  if (!text || text.startsWith("#")) return null;
+  const index = text.indexOf("=");
+  if (index <= 0) return null;
+  const key = text.slice(0, index).trim();
+  let value = text.slice(index + 1).trim();
+  if ((value.startsWith("\"") && value.endsWith("\"")) || (value.startsWith("'") && value.endsWith("'"))) {
+    value = value.slice(1, -1);
+  }
+  return { key, value };
 }
 
 async function carePackageAutoTick() {

@@ -1,4 +1,6 @@
 import { spawn } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import { buildDuneArgs, runDune } from "../runner.js";
 import { parseMemoryStatusRows } from "../statusParsers.js";
 import { redact } from "../redact.js";
@@ -12,11 +14,12 @@ const MEMORY_BALANCER_CHUNK_BYTES = 1024 ** 3;
 const MEMORY_BALANCER_MIN_HEADROOM_BYTES = 1024 ** 3;
 
 export function createMemoryBalancer(config) {
+  const persisted = readMemoryBalancerSettings(config);
   const state = {
-    enabled: false,
+    enabled: persisted.enabled,
     running: false,
     baselineLimits: new Map(),
-    lastMessage: "Memory Balancer is off.",
+    lastMessage: persisted.enabled ? "Memory Balancer is monitoring running maps" : "Memory Balancer is off.",
     lastAction: "",
     lastError: "",
     updatedAt: null
@@ -100,6 +103,7 @@ export function createMemoryBalancer(config) {
     state.enabled = enabled;
     state.lastError = "";
     state.updatedAt = new Date().toISOString();
+    writeMemoryBalancerSettings(config, { enabled });
 
     if (enabled) {
       state.baselineLimits.clear();
@@ -134,6 +138,28 @@ export function createMemoryBalancer(config) {
     setEnabled,
     tick
   };
+}
+
+function memoryBalancerSettingsPath(config) {
+  return resolve(config.generatedDir || resolve(config.repoRoot, "runtime/generated"), "memory-balancer.json");
+}
+
+function readMemoryBalancerSettings(config) {
+  const path = memoryBalancerSettingsPath(config);
+  try {
+    if (!existsSync(path)) return { enabled: false };
+    const parsed = JSON.parse(readFileSync(path, "utf8"));
+    return { enabled: parsed?.enabled === true };
+  } catch {
+    return { enabled: false };
+  }
+}
+
+function writeMemoryBalancerSettings(config, settings) {
+  const path = memoryBalancerSettingsPath(config);
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, `${JSON.stringify({ enabled: settings.enabled === true }, null, 2)}\n`, { mode: 0o664 });
+  try { chmodSync(path, 0o664); } catch {}
 }
 
 async function configuredMemoryLimitsByContainer(config, readLiveRows) {

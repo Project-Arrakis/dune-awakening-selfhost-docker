@@ -1427,9 +1427,9 @@ function parseSietchRows(text: string, idsText = ""): SietchRow[] {
 }
 
 function memoryForMap(rows: LiveMapMemoryRow[], map: string, row?: Record<string, unknown>) {
-  const normalized = map.toLowerCase();
+  const normalized = normalizeMapKey(map);
   const partitionId = String(row?.partitionId || row?.partition || "").trim();
-  const containerMap = normalized.replace(/_/g, "-");
+  const containerMap = normalizeContainerMapKey(map);
   const partitionMatch = partitionId ? rows.find((memoryRow) => {
     const container = memoryRow.container.toLowerCase();
     return container.endsWith(`-${partitionId.toLowerCase()}`);
@@ -1437,10 +1437,13 @@ function memoryForMap(rows: LiveMapMemoryRow[], map: string, row?: Record<string
   if (partitionMatch) return partitionMatch;
   if (partitionId && normalized === "survival_1") return null;
   return rows.find((memoryRow) => {
-    const memoryMap = memoryRow.map.toLowerCase();
+    const memoryMap = normalizeMapKey(memoryRow.map);
+    const memoryContainerMap = normalizeContainerMapKey(memoryRow.map);
     const container = memoryRow.container.toLowerCase();
     if (memoryMap === normalized) return true;
+    if (memoryContainerMap === containerMap) return true;
     if (container === `dune-server-${containerMap}`) return true;
+    if (container.startsWith(`dune-server-${containerMap}-`)) return true;
     return false;
   }) || null;
 }
@@ -1523,9 +1526,19 @@ function buildUserGameTargets(
 }
 
 function liveMemoryFallback(row: Record<string, unknown>) {
+  const configured = String(row.memory || "").trim();
+  if (configured && !/^Not Available$/i.test(configured) && liveMemoryIsReadyMode(row.mode)) return configured;
   const status = String(row.status || "");
   if (/^(Ready|Running|Starting|Warming)$/i.test(status)) return "Unavailable";
   return "Unallocated";
+}
+
+function normalizeMapKey(value: unknown) {
+  return String(value || "").trim().toLowerCase().replace(/[\s-]+/g, "_");
+}
+
+function normalizeContainerMapKey(value: unknown) {
+  return normalizeMapKey(value).replace(/_/g, "-");
 }
 
 function downloadText(filename: string, text: string) {

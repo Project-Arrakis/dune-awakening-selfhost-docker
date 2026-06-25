@@ -28,6 +28,7 @@ const regions = ["Europe", "North America", "South America", "Asia", "Oceania", 
 type SetupConfig = { SERVER_TITLE: string; SERVER_REGION: string; SERVER_IP: string; SERVER_IP_MODE: string; SERVER_PROVIDER: string; STEAM_APP_ID: string };
 const terminalStatuses = new Set(["succeeded", "failed", "cancelled"]);
 const completionRedirectSeconds = 10;
+const defaultSetupConfig: SetupConfig = { SERVER_TITLE: "My Dune Server", SERVER_REGION: "Europe", SERVER_IP: "auto", SERVER_IP_MODE: "public", SERVER_PROVIDER: "dune-docker", STEAM_APP_ID: "4754530" };
 
 export function SetupWizard({ initialStep = 0, jumpNonce = 0, mode = "redeploy", onSetupComplete }: { initialStep?: number; jumpNonce?: number; mode?: "first-run" | "redeploy"; onSetupComplete?: () => void }) {
   const steps = mode === "first-run" ? firstRunSteps : redeploySteps;
@@ -38,7 +39,7 @@ export function SetupWizard({ initialStep = 0, jumpNonce = 0, mode = "redeploy",
   const [redirectCountdown, setRedirectCountdown] = useState<number | null>(null);
   const [token, setToken] = useState("");
   const [existingToken, setExistingToken] = useState(false);
-  const [config, setConfig] = useState<SetupConfig>({ SERVER_TITLE: "My Dune Server", SERVER_REGION: "Europe", SERVER_IP: "auto", SERVER_IP_MODE: "public", SERVER_PROVIDER: "dune-docker", STEAM_APP_ID: "4754530" });
+  const [config, setConfig] = useState<SetupConfig>(defaultSetupConfig);
   const onSetupCompleteRef = useRef(onSetupComplete);
 
   useEffect(() => {
@@ -54,7 +55,9 @@ export function SetupWizard({ initialStep = 0, jumpNonce = 0, mode = "redeploy",
   useEffect(() => {
     let cancelled = false;
     setupApi.state().then((state) => {
-      if (!cancelled) setExistingToken(Boolean(state.files?.token));
+      if (cancelled) return;
+      setExistingToken(Boolean(state.files?.token));
+      setConfig(configFromSetupState(state.serverConfig));
     }).catch(() => undefined);
     return () => { cancelled = true; };
   }, []);
@@ -301,6 +304,15 @@ export function SetupWizard({ initialStep = 0, jumpNonce = 0, mode = "redeploy",
       </div>
     </section>
   );
+}
+
+function configFromSetupState(values: Record<string, unknown> | undefined): SetupConfig {
+  const next = { ...defaultSetupConfig };
+  for (const key of Object.keys(next) as Array<keyof SetupConfig>) {
+    const value = values?.[key];
+    if (value !== undefined && String(value).trim()) next[key] = String(value);
+  }
+  return next;
 }
 
 function ReviewGrid({ items }: { items: [string, string][] }) {
