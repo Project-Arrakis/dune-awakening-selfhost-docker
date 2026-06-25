@@ -44,11 +44,37 @@ print_url() {
   echo "  http://$(detect_web_console_ip):$(web_console_port)"
 }
 
+persist_env_value() {
+  local key="$1"
+  local value="$2"
+  local env_file=".env"
+  local tmp_file
+
+  touch "$env_file"
+  tmp_file="$(mktemp)"
+  awk -v key="$key" -v value="$value" '
+    BEGIN { found = 0 }
+    $0 ~ "^" key "=" {
+      print key "=" value
+      found = 1
+      next
+    }
+    { print }
+    END {
+      if (!found) {
+        print key "=" value
+      }
+    }
+  ' "$env_file" >"$tmp_file"
+  mv "$tmp_file" "$env_file"
+}
+
 prepare_docker_socket_gid() {
   if [ -z "${DOCKER_SOCKET_GID:-}" ] && [ -S /var/run/docker.sock ] && command -v stat >/dev/null 2>&1; then
     DOCKER_SOCKET_GID="$(stat -c '%g' /var/run/docker.sock 2>/dev/null || true)"
   fi
   export DOCKER_SOCKET_GID="${DOCKER_SOCKET_GID:-0}"
+  persist_env_value DOCKER_SOCKET_GID "$DOCKER_SOCKET_GID"
 }
 
 prepare_host_user_ids() {

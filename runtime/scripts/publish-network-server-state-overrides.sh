@@ -231,6 +231,96 @@ publish_payload() {
     payload="$payload" >/dev/null
 }
 
+snapshot_payloads_for_map() {
+  local map_name="$1"
+  local rows
+
+  rows="$(docker exec dune-postgres psql -U postgres -d dune -At -F $'\t' -c "
+    select wp.partition_id,
+           fs.server_id,
+           coalesce(host(fs.game_addr), ''),
+           coalesce(fs.game_port, 0),
+           coalesce(fs.ready, false),
+           coalesce(fs.alive, false),
+           coalesce(wp.label, '')
+    from dune.world_partition wp
+    join dune.farm_state fs on fs.server_id = wp.server_id
+    where wp.map = '${map_name//\'/\'\'}'
+      and coalesce(wp.server_id, '') <> ''
+      and coalesce(fs.server_id, '') <> ''
+    order by wp.dimension_index, wp.partition_id;
+  ")"
+
+  MAP_NAME="$map_name" SNAPSHOT_ROWS="$rows" python3 - <<'PY'
+import json
+import os
+import time
+
+defaults = {
+    "Difficulty": "Custom",
+    "CoreSettings": {
+        "serverDisplayName": "",
+        "doubleDifficultyLoot": False,
+    },
+    "SurvivalSettings": {
+        "hydrationEnabled": True,
+        "sandstormEnabled": 1,
+        "sandStormAutoSpawn": True,
+        "sandStormCoriolisAutoSpawnEnabled": True,
+        "sandStormTreasureEnabled": 1,
+        "sandwormEnabled": 1,
+        "sandwormSpawnType": None,
+        "sandwormDangerZonesEnabled": True,
+        "vehicleSandwormCollisionInteraction": False,
+        "vehicleSandwormInvulnerabilitySecondsOnExit": 900,
+        "vehicleSandwormInvulnerabilitySecondsOnServerRestart": 7200,
+    },
+    "CombatSettings": {
+        "securityZonesForceEnablePvp": False,
+        "areSecurityZonesEnabled": True,
+        "shouldForceEnablePvpOnAllPartitions": False,
+        "itemDeteriorationUpdateRate": 1,
+        "vehicleDurabilityDamageMultiplier": 1,
+        "inventoryDecayedMaxDurabilityThreshold": 0.2,
+    },
+    "HarvestingSettings": {
+        "miningOutputMultiplier": 1,
+        "vehicleMiningOutputMultiplier": 1,
+        "securityZonesPvpResourceMultiplier": 2.5,
+    },
+    "PersistenceSettings": {
+        "buildingBlueprintMaxExtensions": 4,
+        "baseBackupMaxExtensions": 8,
+    },
+}
+
+now = int(time.time())
+for line in os.environ.get("SNAPSHOT_ROWS", "").splitlines():
+    if not line.strip():
+        continue
+    partition_id, server_id, game_addr, game_port, ready, alive, label = line.split("\t", 6)
+    if alive.lower() not in ("t", "true", "1"):
+        continue
+    is_ready = ready.lower() in ("t", "true", "1")
+    payload = {
+        "reportTimestamp": now,
+        "partitionId": int(partition_id),
+        "serverId": server_id,
+        "ready": is_ready,
+        "ip": game_addr,
+        "port": int(game_port or "0"),
+        "loginPassword": "",
+        "displayName": "",
+        "isStartingMap": not is_ready,
+        "playerHardCapOverride": -1,
+        "wauCapCurve": -1,
+        "players": [],
+        "serverGameplaySettings": json.loads(json.dumps(defaults)),
+    }
+    print(json.dumps(payload, separators=(",", ":")))
+PY
+}
+
 forward_batch_for_map() {
   local map_name="$1"
   local source_queue="${SOURCE_FILTER_PREFIX}${map_name}"
@@ -269,6 +359,8 @@ for line in os.environ.get("ENDPOINT_ROWS", "").splitlines():
     if server_id:
         endpoints_by_server[server_id] = (server_id, game_addr, game_port)
 
+latest_by_partition = {}
+
 for message in messages:
     payload = json.loads(message["payload"])
     partition_id = str(payload.get("partitionId", ""))
@@ -283,9 +375,13 @@ for message in messages:
         payload["ip"] = game_addr
     if game_port and game_port != "0":
         payload["port"] = int(game_port)
-    if map_name == "DeepDesert_1" and not payload.get("ready", False):
-        payload["isStartingMap"] = True
+    payload["isStartingMap"] = not bool(payload.get("ready", False))
     payload["reportTimestamp"] = max(int(time.time()), int(payload.get("reportTimestamp", 0)))
+
+    key = partition_id or server_id or json.dumps(payload, sort_keys=True)
+    latest_by_partition[key] = payload
+
+for payload in latest_by_partition.values():
     print(json.dumps(payload, separators=(",", ":")))
 PY
 }
@@ -321,7 +417,11 @@ forward_map_once() {
   local rows
 
   [ -n "$map_name" ] || return 1
-  if rows="$(forward_batch_for_map "$map_name")"; then
+  rows="$(forward_batch_for_map "$map_name" || true)"
+  if [ -z "$rows" ]; then
+    rows="$(snapshot_payloads_for_map "$map_name" || true)"
+  fi
+  if [ -n "$rows" ]; then
     while IFS= read -r payload; do
       [ -n "$payload" ] || continue
       publish_payload "$map_name" "$payload"
@@ -329,10 +429,24 @@ forward_map_once() {
   fi
 }
 
+publish_snapshot_for_map() {
+  local map_name="$1"
+  local rows
+
+  [ -n "$map_name" ] || return 1
+  rows="$(snapshot_payloads_for_map "$map_name" || true)"
+  [ -n "$rows" ] || return 1
+
+  while IFS= read -r payload; do
+    [ -n "$payload" ] || continue
+    publish_payload "$map_name" "$payload"
+  done <<< "$rows"
+}
+
 kick_priority_maps_once() {
   local map_name
   for map_name in $PRIORITY_MAPS; do
-    timeout --kill-after=2s "${PRIORITY_MAP_TIMEOUT_SECONDS}s" "$0" map "$map_name" || true
+    publish_snapshot_for_map "$map_name" || true
   done
 }
 
