@@ -5,6 +5,7 @@ cd "$(dirname "$0")/../.."
 
 TEXT_ROUTER_LOG="runtime/text-router/director-current.log"
 CONFIG_FILE="runtime/generated/sietch-config.json"
+RMQ_TIMEOUT_SECONDS="${DUNE_DEEPDESERT_STATE_RMQ_TIMEOUT_SECONDS:-8}"
 
 ensure_text_router_log() {
   local container_log
@@ -53,7 +54,7 @@ rmq_admin() {
   [ "${#rmq_creds[@]}" -ge 2 ] || return 1
   rmq_user="${rmq_creds[0]}"
   rmq_password="${rmq_creds[1]}"
-  docker exec dune-rmq-admin rabbitmqadmin -q -u "$rmq_user" -p "$rmq_password" "$@"
+  timeout --kill-after=2s "${RMQ_TIMEOUT_SECONDS}s" docker exec dune-rmq-admin rabbitmqadmin -q -u "$rmq_user" -p "$rmq_password" "$@"
 }
 
 publish_payload() {

@@ -179,6 +179,11 @@ ensure_route_for_map() {
   rmq_admin declare queue name="$source_queue" durable=true >/dev/null
   rmq_admin declare binding \
     source="$SOURCE_EXCHANGE" \
+    destination="$sink_queue" \
+    destination_type=queue \
+    routing_key="$routing_key" >/dev/null
+  rmq_admin declare binding \
+    source="$SOURCE_EXCHANGE" \
     destination="$source_queue" \
     destination_type=queue \
     routing_key="$routing_key" >/dev/null
@@ -187,7 +192,6 @@ ensure_route_for_map() {
     destination="$sink_queue" \
     destination_type=queue \
     routing_key="$routing_key" >/dev/null
-  rmq_delete_binding_exact "$SOURCE_EXCHANGE" "$sink_queue" "$routing_key" >/dev/null 2>&1 || true
 }
 
 restore_route_for_map() {
@@ -265,18 +269,20 @@ for line in os.environ.get("ENDPOINT_ROWS", "").splitlines():
         continue
     partition_id, server_id, game_addr, game_port = line.split("\t", 3)
     if partition_id:
-        endpoints_by_partition[str(partition_id)] = (game_addr, game_port)
+        endpoints_by_partition[str(partition_id)] = (server_id, game_addr, game_port)
     if server_id:
-        endpoints_by_server[server_id] = (game_addr, game_port)
+        endpoints_by_server[server_id] = (server_id, game_addr, game_port)
 
 for message in messages:
     payload = json.loads(message["payload"])
     partition_id = str(payload.get("partitionId", ""))
     server_id = str(payload.get("serverId", ""))
-    game_addr, game_port = endpoints_by_server.get(
+    next_server_id, game_addr, game_port = endpoints_by_server.get(
         server_id,
-        endpoints_by_partition.get(partition_id, ("", "0")),
+        endpoints_by_partition.get(partition_id, ("", "", "0")),
     )
+    if next_server_id:
+        payload["serverId"] = next_server_id
     if game_addr:
         payload["ip"] = game_addr
     if game_port and game_port != "0":

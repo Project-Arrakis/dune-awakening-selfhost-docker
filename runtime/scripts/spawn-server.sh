@@ -695,7 +695,7 @@ if [ "$MAP_NAME" = "DeepDesert_1" ] && [ -x runtime/scripts/publish-deepdesert-s
   runtime/scripts/publish-deepdesert-overrides.sh once >/dev/null 2>&1 || true
 fi
 
-if [ "$MAP_NAME" != "Survival_1" ] && [ "$MAP_NAME" != "DeepDesert_1" ]; then
+if [ "$MAP_NAME" != "Survival_1" ]; then
   if [ "${DUNE_SYNC_NETWORK_STATE_AFTER_SPAWN:-0}" = "1" ]; then
     runtime/scripts/publish-network-server-state-overrides.sh map "$MAP_NAME" >/dev/null 2>&1 || true
   else
