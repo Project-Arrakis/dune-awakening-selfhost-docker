@@ -766,7 +766,8 @@ test("journey complete updates subtree and applies tags", async () => {
   assert.equal(result.updatedRows, 2);
   assert.equal(result.tagsApplied, 3);
   assert.ok(calls.some((call) => call.text.includes("story_node_id = $2 or story_node_id like $2 || '.%'") && call.values[1] === "DA_Story.Root"));
-  assert.ok(calls.some((call) => call.text.includes("dune.update_player_tags") && call.values[1].includes("Child.Tag")));
+  assert.ok(calls.some((call) => call.text.includes("insert into dune.player_tags") && call.values[0] === 44 && call.values[1].includes("Child.Tag")));
+  assert.ok(!calls.some((call) => call.text.includes("dune.update_player_tags")));
   assert.ok(calls.some((call) => call.text.includes("set_player_faction_reputation") && call.values[2] === 100));
 });
 
@@ -777,7 +778,43 @@ test("journey reset clears subtree completion and removes tags", async () => {
   assert.equal(result.updatedRows, 1);
   assert.equal(result.tagsRemoved, 2);
   assert.ok(calls.some((call) => call.text.includes("complete_condition_state = 'false'::jsonb")));
-  assert.ok(calls.some((call) => call.text.includes("dune.update_player_tags") && call.values[1].includes("Child.Tag")));
+  assert.ok(calls.some((call) => call.text.includes("delete from dune.player_tags") && call.values[0] === 44 && call.values[1].includes("Child.Tag")));
+  assert.ok(!calls.some((call) => call.text.includes("dune.update_player_tags")));
+});
+
+test("journey complete writes tags through current character_id schema", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, { journeyIdentityColumn: "character_id", journeyUpdateRows: 1 });
+  const result = await completeJourneyNode(db, 123, { nodeId: "DA_Story.Root" }, {
+    journey_node_tags: { "DA_Story.Root": ["Story.Tag"] }
+  });
+  assert.equal(result.tagsApplied, 1);
+  assert.ok(calls.some((call) => call.text.includes("insert into dune.player_tags") && call.text.includes('"character_id"') && call.values[0] === 5 && call.values[1].includes("Story.Tag")));
+  assert.ok(!calls.some((call) => call.text.includes("dune.update_player_tags")));
+});
+
+test("contract complete writes player tags directly", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, { reputationRows: [{ reputation_amount: 0 }] });
+  const result = await completeJourneyNode(db, 123, { nodeId: "DA_CT_Trainer_Trooper1_01" }, {
+    contract_tags: { DA_CT_Trainer_Trooper1_01: ["Contract.Trainer.Trooper1.Completed"] }
+  });
+  assert.equal(result.contract, true);
+  assert.equal(result.tagsApplied, 1);
+  assert.ok(calls.some((call) => call.text.includes("insert into dune.player_tags") && call.values[0] === 44 && call.values[1].includes("Contract.Trainer.Trooper1.Completed")));
+  assert.ok(!calls.some((call) => call.text.includes("dune.update_player_tags")));
+});
+
+test("contract reset removes player tags directly", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls);
+  const result = await resetJourneyNode(db, 123, { nodeId: "DA_CT_Trainer_Trooper1_01" }, {
+    contract_tags: { DA_CT_Trainer_Trooper1_01: ["Contract.Trainer.Trooper1.Completed"] }
+  });
+  assert.equal(result.contract, true);
+  assert.equal(result.tagsRemoved, 1);
+  assert.ok(calls.some((call) => call.text.includes("delete from dune.player_tags") && call.values[0] === 44 && call.values[1].includes("Contract.Trainer.Trooper1.Completed")));
+  assert.ok(!calls.some((call) => call.text.includes("dune.update_player_tags")));
 });
 
 test("tutorial complete and reset use player controller tutorial records", async () => {

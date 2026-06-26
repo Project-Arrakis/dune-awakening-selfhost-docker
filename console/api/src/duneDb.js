@@ -1947,7 +1947,7 @@ export async function completeJourneyNode(db, id, { nodeId }, journeyTagsData = 
     const tagIdentityId = playerJourneyIdentity(player, schema.tagIdColumn);
     if (isContractNode(safeNodeId, journeyTagsData)) {
       const tags = contractTagsForNode(safeNodeId, journeyTagsData);
-      const tagResult = await applyJourneyTags(tx, player, tags, "add", tagIdentityId);
+      const tagResult = await applyDirectJourneyTags(tx, player, tags, "add", schema.tagIdColumn, tagIdentityId);
       return { ok: true, player, nodeId: safeNodeId, updatedRows: 0, tagsApplied: tags.length, factionBumps: tagResult.factionBumps, contract: true };
     }
     const updated = await tx.query(`
@@ -1965,7 +1965,7 @@ export async function completeJourneyNode(db, id, { nodeId }, journeyTagsData = 
       updatedRows = 1;
     }
     const tags = tagsForJourneyNodeSubtree(safeNodeId, journeyTagsData);
-    const tagResult = await applyJourneyTags(tx, player, tags, "add", tagIdentityId);
+    const tagResult = await applyDirectJourneyTags(tx, player, tags, "add", schema.tagIdColumn, tagIdentityId);
     return { ok: true, player, nodeId: safeNodeId, updatedRows, tagsApplied: tags.length, factionBumps: tagResult.factionBumps };
   });
 }
@@ -1981,7 +1981,7 @@ export async function resetJourneyNode(db, id, { nodeId }, journeyTagsData = {})
     const tagIdentityId = playerJourneyIdentity(player, schema.tagIdColumn);
     if (isContractNode(safeNodeId, journeyTagsData)) {
       const tags = contractTagsForNode(safeNodeId, journeyTagsData);
-      await applyJourneyTags(tx, player, tags, "remove", tagIdentityId);
+      await applyDirectJourneyTags(tx, player, tags, "remove", schema.tagIdColumn, tagIdentityId);
       return { ok: true, player, nodeId: safeNodeId, updatedRows: 0, tagsRemoved: tags.length, contract: true };
     }
     const updated = await tx.query(`
@@ -1991,7 +1991,7 @@ export async function resetJourneyNode(db, id, { nodeId }, journeyTagsData = {})
       where ${journeyIdColumn} = $1
         and (story_node_id = $2 or story_node_id like $2 || '.%')`, [journeyIdentityId, safeNodeId]);
     const tags = tagsForJourneyNodeSubtree(safeNodeId, journeyTagsData);
-    await applyJourneyTags(tx, player, tags, "remove", tagIdentityId);
+    await applyDirectJourneyTags(tx, player, tags, "remove", schema.tagIdColumn, tagIdentityId);
     return { ok: true, player, nodeId: safeNodeId, updatedRows: Number(updated.rowCount || 0), tagsRemoved: tags.length };
   });
 }
@@ -2230,8 +2230,7 @@ async function supportsJourney(db) {
 async function supportsJourneySchema(db, schema) {
   return Boolean(schema) &&
     await tableExists(db, "player_tags") &&
-    await supportsTutorials(db) &&
-    await functionExists(db, "dune.update_player_tags(bigint,text[],text[])");
+    await supportsTutorials(db);
 }
 
 async function supportsTutorials(db) {
@@ -2302,13 +2301,27 @@ function contractTagsForNode(nodeId, journeyTagsData = {}) {
   return tags.map((tag) => String(tag || "").trim()).filter(Boolean);
 }
 
-async function applyJourneyTags(db, player, tags, mode, identityId = player.accountId) {
+async function applyDirectJourneyTags(db, player, tags, mode, tagColumnName, identityId) {
   if (!tags.length) return { factionBumps: 0 };
+  const tagColumn = quoteIdentifier(tagColumnName);
   if (mode === "remove") {
-    await db.query("select dune.update_player_tags($1, '{}'::text[], $2::text[])", [identityId, tags]);
+    await db.query(`delete from dune.player_tags where ${tagColumn} = $1 and tag = any($2::text[])`, [identityId, tags]);
     return { factionBumps: 0 };
   }
-  await db.query("select dune.update_player_tags($1, $2::text[], '{}'::text[])", [identityId, tags]);
+  await db.query(`
+    insert into dune.player_tags (${tagColumn}, tag)
+    select $1, incoming.tag
+    from unnest($2::text[]) as incoming(tag)
+    where not exists (
+      select 1
+      from dune.player_tags existing
+      where existing.${tagColumn} = $1
+        and existing.tag = incoming.tag
+    )`, [identityId, tags]);
+  return applyJourneyFactionBumps(db, player, tags);
+}
+
+async function applyJourneyFactionBumps(db, player, tags) {
   const bumps = factionTierBumps(tags);
   let factionBumps = 0;
   for (const [name, rep] of bumps.entries()) {
