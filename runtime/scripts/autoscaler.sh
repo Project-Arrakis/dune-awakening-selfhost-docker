@@ -1119,6 +1119,12 @@ map_is_disabled() {
   runtime/scripts/map-modes.sh is-disabled "$map" >/dev/null 2>&1
 }
 
+map_is_dynamic() {
+  local map="$1" mode
+  mode="$(runtime/scripts/map-modes.sh mode "$map" 2>/dev/null | awk '{ print $2 }' || true)"
+  [ "$mode" = "dynamic" ]
+}
+
 overmap_active_maps() {
   runtime/scripts/map-modes.sh list 2>/dev/null | awk '
     /^[[:alnum:]_:-]+[[:space:]]/ && /Current:[[:space:]]+overmap-active/ {
@@ -1680,6 +1686,10 @@ scan_reconnect_demand() {
       else
         if map_is_disabled "$target_map"; then
           echo "SKIP reconnect partition=$target_partition_id map=$target_map account=$account_id mode=disabled"
+          continue
+        fi
+        if map_is_dynamic "$target_map"; then
+          echo "SKIP reconnect partition=$target_partition_id map=$target_map account=$account_id mode=dynamic"
           continue
         fi
         running="$(container_count_for_map "$target_map")"

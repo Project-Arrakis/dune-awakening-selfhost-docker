@@ -22,6 +22,8 @@ Usage:
   runtime/scripts/dune admin players [--online] [--show-full-ids]
   runtime/scripts/dune admin kick <player-fls-id> [--dry-run] [--yes] [--force] [--label <name>]
   runtime/scripts/dune admin kick --all-online [--dry-run] [--yes]
+  runtime/scripts/dune admin login-queues [--all]
+  runtime/scripts/dune admin repair-login-queue <player-fls-id|queue-name> [--yes] [--force]
   runtime/scripts/dune admin item-search <query>
   runtime/scripts/dune admin item-list [category]
   runtime/scripts/dune admin grant-item <player-id|*> <item-name-or-id> [quantity] [durability] [grade]
@@ -1115,6 +1117,140 @@ players_command() {
   [ "$count" -gt 0 ] || echo "No known players found."
 }
 
+normalize_login_queue_name() {
+  local target="$1"
+
+  target="${target%$'\r'}"
+  target="${target%$'\n'}"
+  [ -n "$target" ] || { echo "Player FLS id or queue name is required." >&2; exit 2; }
+  case "$target" in
+    *_queue) ;;
+    *) target="${target}_queue" ;;
+  esac
+  if ! printf '%s' "$target" | grep -Eq '^[A-Za-z0-9_+.-]+_queue$'; then
+    echo "Invalid login queue name: $target" >&2
+    exit 2
+  fi
+  printf '%s' "$target"
+}
+
+login_queue_player_id() {
+  local queue="$1"
+  printf '%s' "${queue%_queue}"
+}
+
+rmq_login_queues() {
+  require_rmq_game_running
+  docker exec "$RMQ_CONTAINER" rabbitmqctl -q list_queues name consumers messages state 2>/dev/null \
+    | awk -F '\t' '$1 ~ /_queue$/ { print }'
+}
+
+rmq_login_queue_row() {
+  local queue="$1"
+  rmq_login_queues | awk -F '\t' -v queue="$queue" '$1 == queue { print; found = 1 } END { exit found ? 0 : 1 }'
+}
+
+login_queues_command() {
+  local show_all=0 rows row queue consumers messages state player status_row online_status map shown=0
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --all) show_all=1 ;;
+      *) echo "Unknown login-queues option: $1" >&2; exit 2 ;;
+    esac
+    shift
+  done
+
+  rows="$(rmq_login_queues || true)"
+  if [ -z "$(printf '%s\n' "$rows" | sed '/^$/d')" ]; then
+    echo "No per-player login queues found."
+    return 0
+  fi
+
+  printf '%-24s %-9s %-9s %-10s %-12s %s\n' "Player" "Consumers" "Messages" "State" "DB Status" "Map"
+  while IFS=$'\t' read -r queue consumers messages state; do
+    [ -n "${queue:-}" ] || continue
+    player="$(login_queue_player_id "$queue")"
+    status_row="$(player_status_for_fls "$player" || true)"
+    IFS='|' read -r online_status map <<< "$status_row"
+    online_status="${online_status:-Unknown}"
+    map="${map:-}"
+
+    if [ "$show_all" != "1" ] && printf '%s' "$online_status" | grep -Eiq '^online$'; then
+      continue
+    fi
+
+    printf '%-24s %-9s %-9s %-10s %-12s %s\n' "$(redact_fls "$player")" "${consumers:-0}" "${messages:-0}" "${state:-unknown}" "$online_status" "$map"
+    shown=$((shown + 1))
+  done <<< "$rows"
+
+  if [ "$shown" -eq 0 ]; then
+    echo "No offline/unknown per-player login queues found. Use --all to include online players."
+  fi
+}
+
+repair_login_queue_command() {
+  local target="${1:-}" yes=0 force=0 queue player row consumers messages state status_row online_status map answer payload output rc
+  [ -n "$target" ] || { echo "Usage: dune admin repair-login-queue <player-fls-id|queue-name> [--yes] [--force]" >&2; exit 2; }
+  shift || true
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --yes|-y) yes=1 ;;
+      --force) force=1 ;;
+      *) echo "Unknown repair-login-queue option: $1" >&2; exit 2 ;;
+    esac
+    shift
+  done
+
+  queue="$(normalize_login_queue_name "$target")"
+  player="$(login_queue_player_id "$queue")"
+  row="$(rmq_login_queue_row "$queue" || true)"
+  if [ -z "$row" ]; then
+    echo "No RabbitMQ login queue exists for $(redact_fls "$player")."
+    return 0
+  fi
+
+  IFS=$'\t' read -r queue consumers messages state <<< "$row"
+  status_row="$(player_status_for_fls "$player" || true)"
+  IFS='|' read -r online_status map <<< "$status_row"
+  online_status="${online_status:-Unknown}"
+  map="${map:-}"
+
+  echo "Target queue: $queue"
+  echo "Player:       $(redact_fls "$player")"
+  echo "Queue state:  consumers=${consumers:-0} messages=${messages:-0} state=${state:-unknown}"
+  echo "DB status:    $online_status${map:+ on $map}"
+
+  if printf '%s' "$online_status" | grep -Eiq '^online$' && [ "$force" != "1" ]; then
+    echo "Refusing to delete the login queue because the player still appears Online." >&2
+    echo "If the player is confirmed stuck/offline from the client side, rerun with --force --yes." >&2
+    exit 1
+  fi
+
+  if [ "$yes" != "1" ]; then
+    printf 'Delete this login queue so the next login can recreate it? [y/N]: '
+    read -r answer
+    case "$answer" in
+      y|Y|yes|YES) ;;
+      *) echo "Cancelled."; return 0 ;;
+    esac
+  fi
+
+  payload="{\"Queue\":\"$queue\",\"PlayerId\":\"$player\",\"Consumers\":\"${consumers:-0}\",\"Messages\":\"${messages:-0}\",\"State\":\"${state:-unknown}\",\"DbStatus\":\"$online_status\"}"
+  set +e
+  output="$(docker exec "$RMQ_CONTAINER" rabbitmqctl -q delete_queue "$queue" 2>&1)"
+  rc=$?
+  set -e
+  if [ "$rc" -ne 0 ]; then
+    printf '%s\n' "$output" >&2
+    audit_admin_action "RepairLoginQueue" "$(redact_fls "$player")" "$queue" "$payload" "rabbitmq-game" "failed" "$output"
+    exit "$rc"
+  fi
+
+  audit_admin_action "RepairLoginQueue" "$(redact_fls "$player")" "$queue" "$payload" "rabbitmq-game" "deleted"
+  echo "Deleted stale login queue for $(redact_fls "$player")."
+  echo "Ask the player to connect again; the game client should recreate a clean queue."
+}
+
 player_status_for_fls() {
   local fls="$1"
   if ! docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$POSTGRES_CONTAINER"; then
@@ -1875,6 +2011,14 @@ case "$cmd" in
   players)
     shift || true
     players_command "$@"
+    ;;
+  login-queues)
+    shift || true
+    login_queues_command "$@"
+    ;;
+  repair-login-queue)
+    shift || true
+    repair_login_queue_command "$@"
     ;;
   kick)
     shift || true

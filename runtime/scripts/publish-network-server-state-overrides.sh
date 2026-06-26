@@ -335,7 +335,9 @@ forward_batch_for_map() {
     select coalesce(wp.partition_id::text, ''),
            fs.server_id,
            coalesce(host(fs.game_addr), ''),
-           coalesce(fs.game_port, 0)
+           coalesce(fs.game_port, 0),
+           coalesce(fs.ready, false),
+           coalesce(fs.alive, false)
     from dune.farm_state fs
     left join dune.world_partition wp on wp.server_id = fs.server_id
     where fs.map = '${map_name//\'/\'\'}';
@@ -353,11 +355,18 @@ endpoints_by_server = {}
 for line in os.environ.get("ENDPOINT_ROWS", "").splitlines():
     if not line.strip():
         continue
-    partition_id, server_id, game_addr, game_port = line.split("\t", 3)
+    partition_id, server_id, game_addr, game_port, ready, alive = line.split("\t", 5)
+    endpoint = (
+        server_id,
+        game_addr,
+        game_port,
+        ready.lower() in ("t", "true", "1"),
+        alive.lower() in ("t", "true", "1"),
+    )
     if partition_id:
-        endpoints_by_partition[str(partition_id)] = (server_id, game_addr, game_port)
+        endpoints_by_partition[str(partition_id)] = endpoint
     if server_id:
-        endpoints_by_server[server_id] = (server_id, game_addr, game_port)
+        endpoints_by_server[server_id] = endpoint
 
 latest_by_partition = {}
 
@@ -365,17 +374,20 @@ for message in messages:
     payload = json.loads(message["payload"])
     partition_id = str(payload.get("partitionId", ""))
     server_id = str(payload.get("serverId", ""))
-    next_server_id, game_addr, game_port = endpoints_by_server.get(
+    next_server_id, game_addr, game_port, db_ready, db_alive = endpoints_by_server.get(
         server_id,
-        endpoints_by_partition.get(partition_id, ("", "", "0")),
+        endpoints_by_partition.get(partition_id, ("", "", "0", False, False)),
     )
+    if not db_alive:
+        continue
     if next_server_id:
         payload["serverId"] = next_server_id
     if game_addr:
         payload["ip"] = game_addr
     if game_port and game_port != "0":
         payload["port"] = int(game_port)
-    payload["isStartingMap"] = not bool(payload.get("ready", False))
+    payload["ready"] = db_ready
+    payload["isStartingMap"] = not db_ready
     payload["reportTimestamp"] = max(int(time.time()), int(payload.get("reportTimestamp", 0)))
 
     key = partition_id or server_id or json.dumps(payload, sort_keys=True)

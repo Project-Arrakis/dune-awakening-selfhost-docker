@@ -140,6 +140,8 @@ export function buildDuneArgs(operation, payload = {}) {
       return ["admin", "kick", validatePlayerId(payload.playerId), "--yes", "--force"];
     case "adminKickAllOnline":
       return ["admin", "kick", "--all-online", "--yes"];
+    case "adminRepairLoginQueue":
+      return ["admin", "repair-login-queue", validatePlayerId(payload.playerId), "--yes", "--force"];
     case "adminTeleport":
       return [
         "admin",

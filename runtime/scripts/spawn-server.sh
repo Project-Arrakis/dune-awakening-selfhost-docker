@@ -701,7 +701,33 @@ if [ "$MAP_NAME" != "Survival_1" ]; then
   else
     (
       trap - EXIT
-      runtime/scripts/publish-network-server-state-overrides.sh map "$MAP_NAME"
+      attempts="${DUNE_DYNAMIC_MAP_STATE_PUBLISH_ATTEMPTS:-12}"
+      interval="${DUNE_DYNAMIC_MAP_STATE_PUBLISH_INTERVAL_SECONDS:-10}"
+      ready_seen=0
+
+      for attempt in $(seq 1 "$attempts"); do
+        timeout 20 runtime/scripts/publish-network-server-state-overrides.sh map "$MAP_NAME" >/dev/null 2>&1 || true
+
+        if [ "$ready_seen" = "1" ]; then
+          break
+        fi
+
+        if docker exec dune-postgres psql -U postgres -d dune -Atc "
+          select exists (
+            select 1
+            from dune.world_partition wp
+            join dune.farm_state fs on fs.server_id = wp.server_id
+            where wp.map = '${MAP_NAME//\'/\'\'}'
+              and coalesce(wp.server_id, '') <> ''
+              and fs.ready = true
+              and fs.alive = true
+          );
+        " 2>/dev/null | grep -qx t; then
+          ready_seen=1
+        fi
+
+        sleep "$interval"
+      done
     ) >/dev/null 2>&1 &
   fi
 fi

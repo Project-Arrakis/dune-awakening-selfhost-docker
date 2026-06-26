@@ -80,6 +80,8 @@ partitions = config.get("partitions", {})
 query = """
 select wp.partition_id,
        coalesce(wp.server_id, ''),
+       coalesce(host(fs.game_addr), ''),
+       coalesce(fs.game_port, 0),
        coalesce(fs.ready, false),
        coalesce(fs.alive, false),
        coalesce(wp.label, '')
@@ -117,8 +119,10 @@ defaults = {
 for line in result.stdout.splitlines():
     if not line.strip():
         continue
-    partition_id, server_id, ready, alive, label = line.split("\t")
+    partition_id, server_id, game_addr, game_port, ready, alive, label = line.split("\t")
     if alive.lower() not in ("t", "true", "1"):
+        continue
+    if not game_addr or str(game_port) == "0":
         continue
     display_name = partitions.get(partition_id, {}).get("display_name", "")
     if not display_name:
@@ -128,6 +132,9 @@ for line in result.stdout.splitlines():
         "partitionId": int(partition_id),
         "serverId": server_id,
         "ready": ready.lower() in ("t", "true", "1"),
+        "ip": game_addr,
+        "port": int(game_port or "0"),
+        "loginPassword": "",
         "displayName": display_name,
         "isStartingMap": ready.lower() not in ("t", "true", "1"),
         "playerHardCapOverride": -1,

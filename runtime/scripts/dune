@@ -456,6 +456,8 @@ Usage:
   dune maps set <map> <dynamic|always-on|overmap-active|disabled>
   dune maps reconcile
   dune deepdesert dual [status|enable|disable|bootstrap|repair]
+  dune admin login-queues [--all]
+  dune admin repair-login-queue <player-fls-id|queue-name> [--yes] [--force]
   dune config title ["New Server Name"]
   dune memory status
   dune memory list-maps

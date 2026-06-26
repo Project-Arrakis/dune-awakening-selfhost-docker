@@ -741,7 +741,7 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
     const activeSietchesDecreased = activeChanged && Number.isFinite(requestedActiveSietches) && requestedActiveSietches < currentActiveCount;
     const primaryChanged = rowName === "Survival_1" && primarySietchDirty;
     if (!modeChanged && !memoryChanged && !activeChanged && !primaryChanged) return;
-    const running = /^(Ready|Running|Starting|Assigned|Warming)$/i.test(String(row.status || ""));
+    const running = mapRuntimeNeedsLiveApply(row.status);
     const actions: Array<{ label: string; run: () => Promise<{ task: Task }> }> = [];
     if (modeChanged || memoryChanged) {
       actions.push({
@@ -856,7 +856,7 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
     const draft = sietchDrafts[sietch.partitionId] || { displayName: sietch.displayName, password: sietch.password };
     const originalMemory = memoryInputValue(partitionMemoryValue(memoryText, sietch.partitionId, String(parent.memory || "")));
     const memoryChanged = memory !== originalMemory;
-    const running = /^(Ready|Running|Starting|Assigned|Warming)$/i.test(String(parent.status || ""));
+    const running = mapRuntimeNeedsLiveApply(parent.status);
     const actions: Array<{ label: string; run: () => Promise<{ task: Task }> }> = [];
     if (memoryChanged) {
       actions.push({
@@ -927,7 +927,7 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
     const originalMemory = memoryInputValue(partitionMemoryValue(memoryText, partitionId, String(parent.memory || ""), "DeepDesert_1"));
     const memoryChanged = memory !== originalMemory;
     if (!memoryChanged || !partitionId) return;
-    const running = /^(Ready|Running|Starting|Assigned|Warming)$/i.test(String(row.status || parent.status || ""));
+    const running = mapRuntimeNeedsLiveApply(row.status || parent.status);
     if (!(await confirmAction(`Save memory settings for ${deepDesertPartitionName(row)}?`))) return;
     await runTaskAndRefresh(
       () => mapsApi.saveMapSettings({
@@ -1115,7 +1115,7 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
         const rowResultActive = mapsResultTarget === mapResultTarget(rowName);
         const rowMapSettingsResultActive = Boolean(rowResultActive && mapsResult && mapsResultScope === "maps" && isMapSettingsResult(mapsResult));
         const rowForceDespawnResultActive = Boolean(rowResultActive && mapsResult && mapsResultScope === "maps" && isForceDespawnResult(mapsResult) && !isDeepDesertDualResult(mapsResult));
-        return <Fragment key={rowName}><tr><td>{isSurvivalRow ? <SietchMapName name={rowName} sietch={primarySurvivalSietch} draft={primaryDraft} /> : rowName}</td><td>{displayStatus}</td><td>{String(row.mode || "Not Available")}</td><td><MemoryUsageBar row={memoryRow} fallback={liveMemoryFallback(row)} configuredLimit={row.memory} /></td><td className="actions-column"><button className="stable-action-button" onClick={() => selectMap(row)}>{isSelected ? "Close" : "Edit"}</button></td></tr>
+        return <Fragment key={rowName}><tr><td>{isSurvivalRow ? <SietchMapName name={rowName} sietch={primarySurvivalSietch} draft={primaryDraft} /> : rowName}</td><td><MapRuntimeStatus value={displayStatus} /></td><td>{String(row.mode || "Not Available")}</td><td><MemoryUsageBar row={memoryRow} fallback={liveMemoryFallback(row)} configuredLimit={row.memory} /></td><td className="actions-column"><button className="stable-action-button" onClick={() => selectMap(row)}>{isSelected ? "Close" : "Edit"}</button></td></tr>
           {isSelected && <tr className="inline-edit-row" key={`${rowName}-edit`}><td colSpan={5}>
             <section className="inline-edit-panel">
               <div className="panel-title"><h4>Edit {rowName}</h4></div>
@@ -1161,7 +1161,7 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
             const childResultActive = mapsResultTarget === mapResultTarget("DeepDesert_1", String(deepRow.partitionId || ""));
             const childMapSettingsResultActive = Boolean(childResultActive && mapsResult && mapsResultScope === "maps" && isMapSettingsResult(mapsResult));
             const childForceDespawnResultActive = Boolean(childResultActive && mapsResult && mapsResultScope === "maps" && isForceDespawnResult(mapsResult) && !isDeepDesertDualResult(mapsResult));
-            return <Fragment key={`deepdesert-${String(deepRow.partitionId || deepRow.dimension || "")}`}><tr className="sietch-child-row"><td><span className="sietch-child-name">{deepDesertPartitionName(deepRow)}</span><span className="sietch-child-meta">Partition {String(deepRow.partitionId || "Unknown")} / Dimension {String(deepRow.dimension || "Unknown")}</span></td><td>{childStatus}</td><td>Dual</td><td><MemoryUsageBar row={childMemoryRow} fallback={liveMemoryFallback({ ...row, status: childStatus })} configuredLimit={deepMemory} /></td><td className="actions-column"><button className="stable-action-button" onClick={() => selectDeepDesertPartition(deepRow)}>{childSelected ? "Close" : "Edit"}</button></td></tr>
+            return <Fragment key={`deepdesert-${String(deepRow.partitionId || deepRow.dimension || "")}`}><tr className="sietch-child-row"><td><span className="sietch-child-name">{deepDesertPartitionName(deepRow)}</span><span className="sietch-child-meta">Partition {String(deepRow.partitionId || "Unknown")} / Dimension {String(deepRow.dimension || "Unknown")}</span></td><td><MapRuntimeStatus value={childStatus} /></td><td>Dual</td><td><MemoryUsageBar row={childMemoryRow} fallback={liveMemoryFallback({ ...row, status: childStatus })} configuredLimit={deepMemory} /></td><td className="actions-column"><button className="stable-action-button" onClick={() => selectDeepDesertPartition(deepRow)}>{childSelected ? "Close" : "Edit"}</button></td></tr>
               {childSelected && <tr className="inline-edit-row"><td colSpan={5}><section className="inline-edit-panel">
                 <div className="panel-title"><h4>Edit {deepDesertPartitionName(deepRow)}</h4></div>
                 <KeyValueGrid items={[["Partition", deepRow.partitionId], ["Dimension", deepRow.dimension], ["Status", childStatus], ["Memory", deepMemory]]} />
@@ -1193,7 +1193,7 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
             const childStatus = statusWithLiveMemory(readinessStatusByPartitionId.get(sietch.partitionId) || partitionStatusById.get(sietch.partitionId) || (sietch.active ? String(row.status || "Not Available") : "Not Running"), childMemoryRow, row.mode);
             const childResultActive = mapsResultTarget === mapResultTarget("Survival_1", sietch.partitionId);
             const childMapSettingsResultActive = Boolean(childResultActive && mapsResult && mapsResultScope === "maps" && isMapSettingsResult(mapsResult));
-            return <Fragment key={`sietch-${sietch.partitionId}`}><tr className="sietch-child-row"><td><span className="sietch-child-name"><SietchName sietch={sietch} draft={draft} /></span><span className="sietch-child-meta">Partition {sietch.partitionId} / Dimension {sietch.dimension}</span></td><td>{childStatus}</td><td>Sietch</td><td>{sietch.active ? <MemoryUsageBar row={childMemoryRow} fallback={liveMemoryFallback(row)} configuredLimit={sietchMemory} /> : <span className="muted">Unallocated</span>}</td><td className="actions-column"><button className="stable-action-button" onClick={() => selectSietch(sietch)}>{childSelected ? "Close" : "Edit"}</button></td></tr>
+            return <Fragment key={`sietch-${sietch.partitionId}`}><tr className="sietch-child-row"><td><span className="sietch-child-name"><SietchName sietch={sietch} draft={draft} /></span><span className="sietch-child-meta">Partition {sietch.partitionId} / Dimension {sietch.dimension}</span></td><td><MapRuntimeStatus value={childStatus} /></td><td>Sietch</td><td>{sietch.active ? <MemoryUsageBar row={childMemoryRow} fallback={liveMemoryFallback(row)} configuredLimit={sietchMemory} /> : <span className="muted">Unallocated</span>}</td><td className="actions-column"><button className="stable-action-button" onClick={() => selectSietch(sietch)}>{childSelected ? "Close" : "Edit"}</button></td></tr>
               {childSelected && <tr className="inline-edit-row"><td colSpan={5}><section className="inline-edit-panel">
                 <div className="panel-title"><h4>Edit {sietch.displayName}</h4></div>
                 <KeyValueGrid items={[["Partition", sietch.partitionId], ["Dimension", sietch.dimension], ["Status", childStatus], ["Memory", sietchMemory], ["Password", sietch.passwordSet ? "Set" : "Not Set"]]} />
@@ -1346,6 +1346,22 @@ function SietchName({ sietch, draft }: { sietch: SietchRow; draft?: { password: 
   return <span className="map-name-with-lock sietch-name-with-lock">{sietchHasPassword(sietch, draft) && <Lock size={15} aria-label="Password set" />}<span>{sietch.displayName}</span></span>;
 }
 
+function MapRuntimeStatus({ value }: { value: unknown }) {
+  const label = String(value || "Not Available");
+  return <span className="map-runtime-status" title={mapRuntimeStatusDetail(label)}>
+    <StatusPill value={label} />
+  </span>;
+}
+
+function mapRuntimeStatusDetail(value: string) {
+  if (/^Ready$/i.test(value)) return "Travel-ready: the map has a server ID, endpoint, and farm readiness.";
+  if (/^Loading$/i.test(value)) return "The container/server is up, but travel should wait until farm readiness is true.";
+  if (/^Starting$/i.test(value)) return "A server is assigned, but it has not reported alive yet.";
+  if (/^Not Running$/i.test(value)) return "No active server is assigned for this map.";
+  if (/^Configuring$/i.test(value)) return "Map configuration is being updated.";
+  return "Runtime state from map registration and readiness checks.";
+}
+
 function passwordPlaceholder(passwordSet: boolean) {
   return "Empty for none";
 }
@@ -1452,7 +1468,7 @@ function statusWithLiveMemory(status: string, memoryRow: LiveMapMemoryRow | null
   const normalized = String(status || "Not Available");
   if (!memoryRow) return normalized;
   if (/^(Not Running|Not Available|Unallocated|Assigned|Idle)$/i.test(normalized)) {
-    return liveMemoryIsReadyMode(mode) ? "Running" : "Warming";
+    return "Loading";
   }
   return normalized;
 }
@@ -1529,7 +1545,7 @@ function liveMemoryFallback(row: Record<string, unknown>) {
   const configured = String(row.memory || "").trim();
   if (configured && !/^Not Available$/i.test(configured) && liveMemoryIsReadyMode(row.mode)) return configured;
   const status = String(row.status || "");
-  if (/^(Ready|Running|Starting|Warming)$/i.test(status)) return "Unavailable";
+  if (/^(Ready|Running|Starting|Loading|Warming)$/i.test(status)) return "Unavailable";
   return "Unallocated";
 }
 
@@ -1615,7 +1631,7 @@ function parseMapRows(text: string): Record<string, unknown>[] {
     const partitions = line.match(/\bPartitions:\s*(\d+)/i)?.[1] || "";
     return {
       map,
-      status: assigned && Number(assigned) > 0 ? "Assigned" : "Not Running",
+      status: assigned && Number(assigned) > 0 ? "Starting" : "Not Running",
       mode: friendlyMapMode(line.match(/\bCurrent:\s*(dynamic|always-on|overmap-active|disabled)\b/i)?.[1] || line.match(/\b(dynamic|always-on|overmap-active|disabled)\b/i)?.[1] || ""),
       partitions: partitions || "Unknown",
       assigned: assigned || "Unknown",
@@ -1695,16 +1711,16 @@ function parseReadinessPartitionStatuses(text: string) {
     const baseSurvivalMatch = line.match(/^(OK|WAIT|FAIL)\s+Survival_1\s+(.+)$/i);
     if (baseSurvivalMatch) {
       const [, state, detail] = baseSurvivalMatch;
-      if (/^OK$/i.test(state) && /\bready\b/i.test(detail)) statuses.set("1", "Running");
-      else if (/^WAIT$/i.test(state) && /\bwarming\b/i.test(detail)) statuses.set("1", "Warming");
+      if (/^OK$/i.test(state) && /\bready\b/i.test(detail)) statuses.set("1", "Ready");
+      else if (/^WAIT$/i.test(state) && /\bwarming\b/i.test(detail)) statuses.set("1", "Loading");
       else if (/^FAIL$/i.test(state)) statuses.set("1", "Not Running");
       continue;
     }
     const match = line.match(/^(OK|WAIT|FAIL)\s+dune-server-survival-1-(\d+)\s+(.+)$/i);
     if (!match) continue;
     const [, state, partitionId, detail] = match;
-    if (/^OK$/i.test(state) && /\bready\b/i.test(detail)) statuses.set(partitionId, "Running");
-    else if (/^WAIT$/i.test(state) && /\bwarming\b/i.test(detail)) statuses.set(partitionId, "Warming");
+    if (/^OK$/i.test(state) && /\bready\b/i.test(detail)) statuses.set(partitionId, "Ready");
+    else if (/^WAIT$/i.test(state) && /\bwarming\b/i.test(detail)) statuses.set(partitionId, "Loading");
     else if (/^FAIL$/i.test(state)) statuses.set(partitionId, "Not Running");
   }
   return statuses;
@@ -1765,8 +1781,9 @@ function mapRuntimeStatus(row: { assignedServer?: unknown; ready?: unknown; aliv
   const assigned = Boolean(String(row.assignedServer || "").trim());
   const ready = isTruthyDbValue(row.ready);
   const alive = isTruthyDbValue(row.alive);
-  if (ready) return "Running";
-  if (assigned || alive) return "Warming";
+  if (ready) return "Ready";
+  if (alive) return "Loading";
+  if (assigned) return "Starting";
   return "Not Running";
 }
 
@@ -1775,11 +1792,15 @@ function isTruthyDbValue(value: unknown) {
 }
 
 function mapCanForceDespawn(row: Record<string, unknown>) {
-  return /^(Warming|Running)$/i.test(String(row.status || "").trim());
+  return /^(Ready|Loading|Starting|Warming|Running)$/i.test(String(row.status || "").trim());
+}
+
+function mapRuntimeNeedsLiveApply(status: unknown) {
+  return /^(Ready|Loading|Starting|Assigned|Warming|Running)$/i.test(String(status || "").trim());
 }
 
 function strongestMapStatus(a: string, b: string) {
-  const order = ["Not Available", "Not Running", "Warming", "Running"];
+  const order = ["Not Available", "Not Running", "Starting", "Loading", "Warming", "Running", "Ready"];
   return order.indexOf(b) > order.indexOf(a) ? b : a || b;
 }
 

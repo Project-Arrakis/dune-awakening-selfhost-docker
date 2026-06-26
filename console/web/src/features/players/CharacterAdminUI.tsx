@@ -1034,7 +1034,18 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
               : `No gear needed repair (${scanned} item${scanned === 1 ? "" : "s"} scanned).`
           };
         }, `${playerName}'s gear was repaired. Relog required.`, { actionType: "Repair Gear", target: playerName, amount: "1" });
-      }}>Repair Gear</button><div className="playerAdmin_quickButtonResult">{playerAdmin_actionResultOrNote("repairGear", playerAdmin_isOnline ? "The player must be offline." : "Repairs equipped and carried gear durability. Relog required.")}</div></div></div><div className="playerAdmin_section"><h5>Danger Zone</h5><div className="playerAdmin_buttonRow"><button className="danger" disabled={!playerAdmin_canRunLiveAction || playerAdmin_actionResult?.pending} onClick={async () => {
+      }}>Repair Gear</button><div className="playerAdmin_quickButtonResult">{playerAdmin_actionResultOrNote("repairGear", playerAdmin_isOnline ? "The player must be offline." : "Repairs equipped and carried gear durability. Relog required.")}</div></div></div><div className="playerAdmin_section"><h5>Danger Zone</h5><div className="playerAdmin_buttonRow"><button className="danger" disabled={!actionPlayerId || playerAdmin_actionResult?.pending} onClick={async () => {
+        if (!(await confirmAction(`Repair ${playerName}'s login queue? Use this only when the player is stuck on connection errors and is not actually in-game.`, {
+          title: "Repair Login Queue",
+          confirmLabel: "Repair Queue",
+          danger: true,
+          details: [
+            { label: "Player", value: playerName, tone: "accent" },
+            { label: "Queue", value: `${actionPlayerId}_queue`, tone: "danger" }
+          ]
+        }))) return;
+        void playerAdmin_runAction("repairLoginQueue", `Repairing ${playerName}'s login queue`, () => playerAdmin_runTask(() => playersApi.repairLoginQueue(actionPlayerId, "REPAIR LOGIN QUEUE")), `${playerName}'s login queue was repaired. Ask the player to connect again.`, { actionType: "Repair Login Queue", target: playerName, amount: "1" }, "danger");
+      }}>Repair Login Queue</button><button className="danger" disabled={!playerAdmin_canRunLiveAction || playerAdmin_actionResult?.pending} onClick={async () => {
         if (!(await confirmAction(`Kick ${playerName} from the server?`))) return;
         void playerAdmin_runAction("adminKick", `Kicking ${playerName}`, () => playerAdmin_runTask(() => playersApi.kick(actionPlayerId)), `${playerName} was kicked from the server.`, { actionType: "Kick Player", target: playerName, amount: "1" }, "danger");
       }}>Kick Player</button><button className="danger" disabled={!playerAdmin_canRunLiveAction || playerAdmin_actionResult?.pending} onClick={async () => {

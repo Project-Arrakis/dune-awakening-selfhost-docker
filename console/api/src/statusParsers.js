@@ -276,7 +276,7 @@ function mapRuntimeStatus(row) {
   const ready = isTruthyDbValue(row.ready);
   const alive = isTruthyDbValue(row.alive);
   if (ready) return "Ready";
-  if (alive) return "Running";
+  if (alive) return "Loading";
   if (assigned) return "Starting";
   return "Not Running";
 }

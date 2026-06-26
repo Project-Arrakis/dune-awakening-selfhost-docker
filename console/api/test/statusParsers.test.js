@@ -271,7 +271,7 @@ test("server partition parser derives status from real ready/alive fields", () =
 test("server partition parser accepts Postgres t/f boolean output", () => {
   const rows = parseServerPartitionRows(postgresBooleanServersOutput);
   assert.equal(rows.find((row) => row.map === "SH_Arrakeen").status, "Ready");
-  assert.equal(rows.find((row) => row.map === "SH_HarkoVillage").status, "Running");
+  assert.equal(rows.find((row) => row.map === "SH_HarkoVillage").status, "Loading");
   assert.equal(rows.find((row) => row.map === "CB_Story_Hephaestus").status, "Not Running");
 });
 
