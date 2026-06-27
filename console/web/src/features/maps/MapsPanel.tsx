@@ -1359,6 +1359,7 @@ function mapRuntimeStatusDetail(value: string) {
   if (/^Ready$/i.test(value)) return "Travel-ready: the map has a server ID, endpoint, and farm readiness.";
   if (/^Loading$/i.test(value)) return "The container/server is up, but travel should wait until farm readiness is true.";
   if (/^Starting$/i.test(value)) return "A server is assigned, but it has not reported alive yet.";
+  if (/^Queued$/i.test(value)) return "This map is configured Always On and is waiting for the autoscaler to start it.";
   if (/^Not Running$/i.test(value)) return "No active server is assigned for this map.";
   if (/^Configuring$/i.test(value)) return "Map configuration is being updated.";
   return "Runtime state from map registration and readiness checks.";
@@ -1631,10 +1632,11 @@ function parseMapRows(text: string): Record<string, unknown>[] {
     const map = line.split(/\s+/)[0];
     const assigned = line.match(/\bAssigned:\s*(\d+)/i)?.[1] || "";
     const partitions = line.match(/\bPartitions:\s*(\d+)/i)?.[1] || "";
+    const mode = friendlyMapMode(line.match(/\bCurrent:\s*(dynamic|always-on|overmap-active|disabled)\b/i)?.[1] || line.match(/\b(dynamic|always-on|overmap-active|disabled)\b/i)?.[1] || "");
     return {
       map,
-      status: assigned && Number(assigned) > 0 ? "Starting" : "Not Running",
-      mode: friendlyMapMode(line.match(/\bCurrent:\s*(dynamic|always-on|overmap-active|disabled)\b/i)?.[1] || line.match(/\b(dynamic|always-on|overmap-active|disabled)\b/i)?.[1] || ""),
+      status: assigned && Number(assigned) > 0 ? "Starting" : /^Always On$/i.test(mode) ? "Queued" : "Not Running",
+      mode,
       partitions: partitions || "Unknown",
       assigned: assigned || "Unknown",
       memory: line.match(/\b\d+\s*[gGmM][bB]?\b/)?.[0] || "",
@@ -1656,6 +1658,21 @@ function parseMemoryRows(text: string): Record<string, unknown>[] {
     if (!match) return null;
     return { map: match[1].trim(), memory: formatMemoryValue(match[2].trim()) };
   }).filter(Boolean) as Record<string, unknown>[];
+}
+
+function defaultMemoryFromStatus(text: string) {
+  const line = stripAnsi(text).split(/\r?\n/).find((candidate) => /^Default memory:/i.test(candidate.trim())) || "";
+  const value = line.replace(/^Default memory:\s*/i, "").trim();
+  if (!value || /built-in per-map defaults/i.test(value)) return "";
+  return formatMemoryValue(value);
+}
+
+function fallbackMemoryForMap(map: string, memoryText: string) {
+  const globalDefault = defaultMemoryFromStatus(memoryText);
+  if (globalDefault) return globalDefault;
+  if (map === "Survival_1" || map === "DeepDesert_1") return "16 GB (Default)";
+  if (map === "Overmap") return "3 GB (Default)";
+  return "3 GB (Default)";
 }
 
 function updateMemoryStatusText(text: string, updates: Array<{ map: string; partitionId?: string; memory: string }>) {
@@ -1771,7 +1788,7 @@ function mergeMapAndMemoryRows(mapsText: string, memoryText: string, serversText
       ...row,
       status: server?.status || row.status || rows.get(map)?.status || "Not Available",
       mode: row.mode || rows.get(map)?.mode || "Not Available",
-      memory: row.memory ? formatMemoryValue(String(row.memory)) : rows.get(map)?.memory || "Not Available",
+      memory: row.memory ? formatMemoryValue(String(row.memory)) : rows.get(map)?.memory || fallbackMemoryForMap(map, memoryText),
       partitionId: row.partitionId || row.partition || server?.partitionId || rows.get(map)?.partitionId || "",
       dimensions: row.dimensions || server?.dimensions || rows.get(map)?.dimensions || "Not Available"
     });

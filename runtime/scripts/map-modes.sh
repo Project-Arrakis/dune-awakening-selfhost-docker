@@ -5,6 +5,12 @@ cd "$(dirname "$0")/../.."
 
 STATE_FILE="${DUNE_MAP_MODES_FILE:-runtime/generated/map-runtime-modes.json}"
 GRACE_SECONDS="${DUNE_AUTOSCALER_DESPAWN_GRACE_SECONDS:-${DUNE_AUTOSCALER_IDLE_SECONDS:-300}}"
+RECONCILE_LOCK_FILE="${DUNE_ALWAYS_ON_RECONCILE_LOCK_FILE:-runtime/generated/map-modes-reconcile.lock}"
+RECONCILE_STATE_FILE="${DUNE_ALWAYS_ON_RECONCILE_STATE_FILE:-runtime/generated/map-modes-reconcile.tsv}"
+MAX_SPAWNS_PER_RECONCILE="${DUNE_ALWAYS_ON_RECONCILE_MAX_SPAWNS:-1}"
+MAX_WARMING_SERVERS="${DUNE_ALWAYS_ON_RECONCILE_MAX_WARMING:-1}"
+MIN_SPAWN_INTERVAL_SECONDS="${DUNE_ALWAYS_ON_RECONCILE_MIN_SPAWN_INTERVAL_SECONDS:-30}"
+SPAWN_TIMEOUT_SECONDS="${DUNE_ALWAYS_ON_SPAWN_TIMEOUT_SECONDS:-240}"
 
 usage() {
   cat <<'EOF'
@@ -230,6 +236,79 @@ except Exception:
 PY
 }
 
+reconcile_state_get() {
+  local key="$1"
+  [ -f "$RECONCILE_STATE_FILE" ] || return 1
+  awk -F '\t' -v key="$key" '$1 == key { print $2; found=1; exit } END { if (!found) exit 1 }' "$RECONCILE_STATE_FILE"
+}
+
+reconcile_state_set() {
+  local key="$1"
+  local value="$2"
+  local dir tmp
+
+  dir="$(dirname "$RECONCILE_STATE_FILE")"
+  mkdir -p "$dir"
+  tmp="$(mktemp "$dir/.reconcile-state.XXXXXX")"
+  if [ -f "$RECONCILE_STATE_FILE" ]; then
+    awk -F '\t' -v key="$key" '$1 != key { print }' "$RECONCILE_STATE_FILE" >"$tmp"
+  fi
+  printf '%s\t%s\n' "$key" "$value" >>"$tmp"
+  mv "$tmp" "$RECONCILE_STATE_FILE"
+}
+
+recent_spawn_blocking() {
+  local now last elapsed
+
+  [ "${MIN_SPAWN_INTERVAL_SECONDS:-0}" -gt 0 ] 2>/dev/null || return 1
+  now="$(date +%s)"
+  last="$(reconcile_state_get last_spawn_at 2>/dev/null || true)"
+  [ -n "$last" ] || return 1
+  elapsed=$((now - last))
+  [ "$elapsed" -lt "$MIN_SPAWN_INTERVAL_SECONDS" ]
+}
+
+warming_always_on_count() {
+  docker exec dune-postgres psql -U postgres -d dune -At -c "
+    select count(*)
+    from dune.world_partition wp
+    left join dune.farm_state fs on fs.server_id = wp.server_id
+    where coalesce(wp.server_id, '') <> ''
+      and coalesce(fs.alive, false) = true
+      and coalesce(fs.ready, false) = false;
+  " 2>/dev/null | tr -d '[:space:]' || echo 0
+}
+
+run_spawn_server() {
+  local partition_id="$1"
+  shift || true
+
+  if [ "${SPAWN_TIMEOUT_SECONDS:-0}" -gt 0 ] 2>/dev/null; then
+    timeout --kill-after=10s "${SPAWN_TIMEOUT_SECONDS}s" runtime/scripts/spawn-server.sh "$partition_id" "$@"
+  else
+    runtime/scripts/spawn-server.sh "$partition_id" "$@"
+  fi
+}
+
+spawn_gate_allows() {
+  local map="$1"
+  local partition_id="$2"
+  local warming
+
+  if recent_spawn_blocking; then
+    echo "WAIT always-on map=$map partition=$partition_id spawn-throttle=${MIN_SPAWN_INTERVAL_SECONDS}s"
+    return 1
+  fi
+
+  warming="$(warming_always_on_count)"
+  if [ "${warming:-0}" -ge "${MAX_WARMING_SERVERS:-1}" ] 2>/dev/null; then
+    echo "WAIT always-on map=$map partition=$partition_id warming=${warming} max=${MAX_WARMING_SERVERS}"
+    return 1
+  fi
+
+  return 0
+}
+
 adopt_live_unassigned_server() {
   local map="$1"
   local partition_id="$2"
@@ -284,7 +363,7 @@ assigned_server_for_partition() {
 
 reconcile_map() {
   local map="$1"
-  local rows assigned running container age adopted
+  local rows assigned running container age adopted spawned=0
 
   require_postgres
   rows="$(docker exec dune-postgres psql -U postgres -d dune -At -F '|' -c "
@@ -321,11 +400,25 @@ reconcile_map() {
         continue
       fi
       echo "REPAIR always-on map=$map partition=$partition_id restarting unassigned container=$container"
-      runtime/scripts/spawn-server.sh "$partition_id" --force
+      spawn_gate_allows "$map" "$partition_id" || continue
+      if run_spawn_server "$partition_id" --force; then
+        reconcile_state_set last_spawn_at "$(date +%s)"
+        spawned=$((spawned + 1))
+      else
+        echo "WARN always-on map=$map partition=$partition_id spawn failed or timed out"
+      fi
+      [ "$spawned" -lt "$MAX_SPAWNS_PER_RECONCILE" ] || break
       continue
     fi
+    spawn_gate_allows "$map" "$partition_id" || continue
     echo "SPAWN always-on map=$map partition=$partition_id"
-    runtime/scripts/spawn-server.sh "$partition_id"
+    if run_spawn_server "$partition_id"; then
+      reconcile_state_set last_spawn_at "$(date +%s)"
+      spawned=$((spawned + 1))
+    else
+      echo "WARN always-on map=$map partition=$partition_id spawn failed or timed out"
+    fi
+    [ "$spawned" -lt "$MAX_SPAWNS_PER_RECONCILE" ] || break
   done <<< "$rows"
 }
 
@@ -374,6 +467,38 @@ PY
   done
 }
 
+reconcile_selected() {
+  local map
+
+  if [ "$#" -eq 0 ]; then
+    reconcile_all
+    return
+  fi
+
+  require_postgres
+  ensure_state_file
+  for map in "$@"; do
+    [ -n "$map" ] || continue
+    map="$(canonical_map "$map")"
+    protected_map "$map" && continue
+    if [ "$(mode_for_map "$map")" != "always-on" ]; then
+      echo "SKIP always-on reconcile map=$map mode=$(mode_for_map "$map")"
+      continue
+    fi
+    reconcile_map "$map"
+  done
+}
+
+with_reconcile_lock() {
+  mkdir -p "$(dirname "$RECONCILE_LOCK_FILE")"
+  exec 8>"$RECONCILE_LOCK_FILE"
+  if ! flock -n 8; then
+    echo "WAIT always-on reconcile already running"
+    return 0
+  fi
+  reconcile_selected "$@"
+}
+
 dynamic_grace_remaining() {
   local map="$1"
   local changed now elapsed
@@ -396,7 +521,7 @@ case "$cmd" in
     if [ $# -ne 3 ]; then usage; exit 2; fi
     set_mode "$2" "$3"
     ;;
-  reconcile) reconcile_all ;;
+  reconcile) shift || true; with_reconcile_lock "$@" ;;
   is-always-on)
     map="$(canonical_map "${2:-}")"
     [ "$(mode_for_map "$map")" = "always-on" ]

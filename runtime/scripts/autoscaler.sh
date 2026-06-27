@@ -24,6 +24,8 @@ DYNAMIC_READY_HEAL_SCAN_SECONDS="${DUNE_AUTOSCALER_DYNAMIC_READY_HEAL_SCAN_SECON
 CHAT_EXCHANGE_REPAIR_SECONDS="${DUNE_AUTOSCALER_CHAT_EXCHANGE_REPAIR_SECONDS:-15}"
 IGWO_UNAVAILABLE_SCAN_SECONDS="${DUNE_AUTOSCALER_IGWO_UNAVAILABLE_SCAN_SECONDS:-10}"
 IGWO_UNAVAILABLE_COOLDOWN_SECONDS="${DUNE_AUTOSCALER_IGWO_UNAVAILABLE_COOLDOWN_SECONDS:-60}"
+STALE_SERVER_STATE_SCAN_SECONDS="${DUNE_AUTOSCALER_STALE_SERVER_STATE_SCAN_SECONDS:-15}"
+STALE_SERVER_STATE_COOLDOWN_SECONDS="${DUNE_AUTOSCALER_STALE_SERVER_STATE_COOLDOWN_SECONDS:-45}"
 
 mkdir -p "$(dirname "$STATE_FILE")"
 touch "$STATE_FILE"
@@ -45,6 +47,7 @@ echo "Travel grace: ${TRAVEL_GRACE_SECONDS}s"
 echo "Director browser heal scan: ${DIRECTOR_BROWSER_SCAN_SECONDS}s"
 echo "Dynamic ready heal scan: ${DYNAMIC_READY_HEAL_SCAN_SECONDS}s"
 echo "IGWO unavailable heal scan: ${IGWO_UNAVAILABLE_SCAN_SECONDS}s"
+echo "Stale server-state heal scan: ${STALE_SERVER_STATE_SCAN_SECONDS}s"
 echo "State file: ${STATE_FILE}"
 echo
 
@@ -1166,6 +1169,12 @@ reconcile_always_on_maps() {
   runtime/scripts/map-modes.sh reconcile || true
 }
 
+reconcile_always_on_map() {
+  local map="$1"
+  [ -n "$map" ] || return 0
+  runtime/scripts/map-modes.sh reconcile "$map" || true
+}
+
 remember_server_id_map() {
   local map="$1"
   local server_id="$2"
@@ -1210,6 +1219,16 @@ partition_target_info() {
       coalesce(server_id, '')
     from dune.world_partition
     where partition_id = $partition_id
+    limit 1;
+  "
+}
+
+map_for_partition() {
+  local partition_id="$1"
+  psql_value "
+    select coalesce(map, '')
+    from dune.world_partition
+    where partition_id = ${partition_id}
     limit 1;
   "
 }
@@ -1904,7 +1923,7 @@ for line in sys.stdin:
 
     if map_is_always_on "$map"; then
       echo "HEAL igwo-unavailable map=$map mode=always-on"
-      runtime/scripts/map-modes.sh reconcile || true
+      reconcile_always_on_map "$map"
     else
       echo "HEAL igwo-unavailable map=$map mode=dynamic-demand"
       handle_demand "$map" 1 "igwo:${event_id}"
@@ -1913,6 +1932,75 @@ for line in sys.stdin:
     timeout 20 runtime/scripts/publish-network-server-state-overrides.sh map "$map" >/dev/null 2>&1 || true
     director_heal_set "igwo:${map}" "$now"
     remember_demand_event "igwo:${event_id}" "$map" "$now"
+  done <<< "$rows"
+}
+
+publish_state_for_map() {
+  local map="$1"
+
+  [ -n "$map" ] || return 0
+  case "$map" in
+    Survival_1)
+      timeout 20 runtime/scripts/publish-sietch-overrides.sh once >/dev/null 2>&1 || true
+      ;;
+    DeepDesert_1)
+      timeout 20 runtime/scripts/publish-deepdesert-overrides.sh once >/dev/null 2>&1 || true
+      timeout 20 runtime/scripts/publish-network-server-state-overrides.sh map "$map" >/dev/null 2>&1 || true
+      ;;
+    *)
+      timeout 20 runtime/scripts/publish-network-server-state-overrides.sh map "$map" >/dev/null 2>&1 || true
+      ;;
+  esac
+}
+
+scan_stale_server_state() {
+  local rows now event_id partition_id map last_seen
+
+  director_heal_due stale_server_state "$STALE_SERVER_STATE_SCAN_SECONDS" || return 0
+  now="$(date +%s)"
+
+  rows="$(
+    docker logs --since "$SINCE" dune-director 2>&1 | python3 -c '
+import hashlib
+import re
+import sys
+
+partition_pattern = re.compile(r"Failed to process travel queue for partition ([0-9]+)")
+stale_pattern = re.compile(r"The last server state.s reportTimestamp is older than 60 seconds!")
+pending_partition = None
+seen = set()
+
+for line in sys.stdin:
+    partition_match = partition_pattern.search(line)
+    if partition_match:
+        pending_partition = partition_match.group(1)
+        continue
+    if pending_partition and stale_pattern.search(line):
+        event_id = hashlib.sha1(f"{pending_partition}:{line}".encode("utf-8", errors="replace")).hexdigest()
+        key = (pending_partition, event_id)
+        if key not in seen:
+            seen.add(key)
+            print(f"{event_id}|{pending_partition}")
+        pending_partition = None
+'
+  )"
+
+  while IFS='|' read -r event_id partition_id; do
+    [ -n "${partition_id:-}" ] || continue
+    demand_event_seen "stale-state:${event_id}" && continue
+
+    last_seen="$(director_heal_get "stale-state:${partition_id}" 2>/dev/null || true)"
+    if [ -n "$last_seen" ] && [ $((now - last_seen)) -lt "$STALE_SERVER_STATE_COOLDOWN_SECONDS" ]; then
+      remember_demand_event "stale-state:${event_id}" "$partition_id" "$now"
+      continue
+    fi
+
+    map="$(map_for_partition "$partition_id" | tr -d '\r[:space:]')"
+    [ -n "$map" ] || continue
+    echo "HEAL stale-server-state partition=${partition_id} map=${map}"
+    publish_state_for_map "$map"
+    director_heal_set "stale-state:${partition_id}" "$now"
+    remember_demand_event "stale-state:${event_id}" "$map" "$now"
   done <<< "$rows"
 }
 
@@ -2028,6 +2116,7 @@ while true; do
   ensure_overmap_travel_maps_prewarmed
   scan_travel_demand
   scan_igwo_unavailable_maps
+  scan_stale_server_state
   progress_deepdesert_travel_handoffs
   scan_proactive_hagga_handoffs
   scan_named_destination_failures

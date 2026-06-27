@@ -76,6 +76,7 @@ PORT_RESERVATION_FILE="runtime/generated/spawn-port-reservations.tsv"
 PORT_LOCK_FILE="runtime/generated/spawn-port-reservations.lock"
 SPAWN_SUCCESS=0
 PORTS_RESERVED=0
+PORT_RESERVATIONS_CLEANED=0
 
 if ! docker ps --format '{{.Names}}' | grep -qx dune-postgres; then
   echo "dune-postgres is not running."
@@ -171,20 +172,22 @@ release_port_reservation() {
 }
 
 cleanup_port_reservations() {
-  local tmp line container_name
+  local tmp line container_name containers
 
   mkdir -p runtime/generated
   [ -f "$PORT_RESERVATION_FILE" ] || return 0
 
+  containers="$(docker ps -a --format '{{.Names}}')"
   tmp="$(mktemp)"
   while IFS= read -r line; do
     [ -n "$line" ] || continue
     container_name="$(printf '%s' "$line" | cut -f1)"
-    if docker ps -a --format '{{.Names}}' | grep -qx "$container_name"; then
+    if printf '%s\n' "$containers" | grep -Fxq "$container_name"; then
       printf '%s\n' "$line" >>"$tmp"
     fi
   done <"$PORT_RESERVATION_FILE"
   mv "$tmp" "$PORT_RESERVATION_FILE"
+  PORT_RESERVATIONS_CLEANED=1
 }
 
 reservation_has_port() {
@@ -352,6 +355,14 @@ fi
 
 IFS='|' read -r PARTITION_ID MAP_NAME DIMENSION_INDEX LABEL ASSIGNED_SERVER <<< "$ROW"
 
+mkdir -p runtime/generated
+PARTITION_SPAWN_LOCK_FILE="runtime/generated/spawn-partition-${PARTITION_ID}.lock"
+exec 7>"$PARTITION_SPAWN_LOCK_FILE"
+if ! flock -n 7; then
+  echo "Spawn already in progress for partition $PARTITION_ID ($MAP_NAME / $LABEL)."
+  exit 0
+fi
+
 if [ "$FORCE" != "1" ] && runtime/scripts/map-modes.sh is-disabled "$MAP_NAME" >/dev/null 2>&1; then
   echo "Refusing to spawn disabled map: $MAP_NAME"
   echo "Set the map mode to Dynamic, Overmap Active, or Always On first."
@@ -376,7 +387,6 @@ else
   FAKE_K8S_SERVICEACCOUNT_DIR="$PWD/runtime/generated/dune-fake-k8s-serviceaccount-${safe_name}-$$"
 fi
 
-mkdir -p runtime/generated
 ensure_runtime_state_file "$PORT_LOCK_FILE" "spawn port reservation lock"
 exec 9>"$PORT_LOCK_FILE"
 flock 9
@@ -468,7 +478,9 @@ port_is_free() {
   local port="$1"
   local db_in_use
 
-  cleanup_port_reservations
+  if [ "$PORT_RESERVATIONS_CLEANED" -eq 0 ]; then
+    cleanup_port_reservations
+  fi
 
   db_in_use="$(psql_value "
     select count(*)
