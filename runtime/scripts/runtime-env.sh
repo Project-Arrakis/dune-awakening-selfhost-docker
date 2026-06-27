@@ -322,7 +322,7 @@ resolve_server_ip() {
       ;;
   esac
 
-  first_known_value     "$detected"     "$(config_value .env SERVER_IP 2>/dev/null || true)"     "${SERVER_IP:-}"     "$(container_env_value_any_state dune-director HOST_DATACENTER_IP_ADDRESS 2>/dev/null || true)"     "$(container_env_value_any_state dune-server-gateway HOST_DATACENTER_IP_ADDRESS 2>/dev/null || true)"     "$(detect_bind_ip 2>/dev/null || true)"     "auto"
+  first_known_value     "$detected"     "$(config_value .env SERVER_IP 2>/dev/null || true)"     "${SERVER_IP:-}"     "${DUNE_SERVER_IP_FALLBACK:-}"     "$(container_env_value_any_state dune-director HOST_DATACENTER_IP_ADDRESS 2>/dev/null || true)"     "$(container_env_value_any_state dune-server-gateway HOST_DATACENTER_IP_ADDRESS 2>/dev/null || true)"     "$(detect_bind_ip 2>/dev/null || true)"     "auto"
 }
 
 resolve_bind_ip() {
