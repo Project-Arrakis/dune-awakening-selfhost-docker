@@ -1929,7 +1929,7 @@ for line in sys.stdin:
       handle_demand "$map" 1 "igwo:${event_id}"
     fi
 
-    timeout 20 runtime/scripts/publish-network-server-state-overrides.sh map "$map" >/dev/null 2>&1 || true
+    publish_state_for_map "$map"
     director_heal_set "igwo:${map}" "$now"
     remember_demand_event "igwo:${event_id}" "$map" "$now"
   done <<< "$rows"
@@ -1941,13 +1941,22 @@ publish_state_for_map() {
   [ -n "$map" ] || return 0
   case "$map" in
     Survival_1)
+      timeout 20 runtime/scripts/network-addresses.sh reconcile >/dev/null 2>&1 || true
       timeout 20 runtime/scripts/publish-sietch-overrides.sh once >/dev/null 2>&1 || true
       ;;
+    Overmap)
+      timeout 20 runtime/scripts/network-addresses.sh reconcile >/dev/null 2>&1 || true
+      timeout 20 runtime/scripts/publish-network-server-state-overrides.sh restart >/dev/null 2>&1 || true
+      timeout 20 runtime/scripts/publish-network-server-state-overrides.sh map "$map" >/dev/null 2>&1 || true
+      ;;
     DeepDesert_1)
+      timeout 20 runtime/scripts/network-addresses.sh reconcile >/dev/null 2>&1 || true
       timeout 20 runtime/scripts/publish-deepdesert-overrides.sh once >/dev/null 2>&1 || true
+      timeout 20 runtime/scripts/publish-network-server-state-overrides.sh restart >/dev/null 2>&1 || true
       timeout 20 runtime/scripts/publish-network-server-state-overrides.sh map "$map" >/dev/null 2>&1 || true
       ;;
     *)
+      timeout 20 runtime/scripts/network-addresses.sh reconcile >/dev/null 2>&1 || true
       timeout 20 runtime/scripts/publish-network-server-state-overrides.sh map "$map" >/dev/null 2>&1 || true
       ;;
   esac

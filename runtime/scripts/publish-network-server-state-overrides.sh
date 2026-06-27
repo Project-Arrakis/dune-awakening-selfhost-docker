@@ -208,6 +208,7 @@ ensure_route_for_map() {
 
   rmq_admin declare exchange name="$FILTER_EXCHANGE" type=direct durable=true >/dev/null
   rmq_admin declare queue name="$source_queue" durable=true >/dev/null
+  rmq_admin purge queue name="$source_queue" >/dev/null || true
   rmq_admin declare binding \
     source="$SOURCE_EXCHANGE" \
     destination="$source_queue" \
