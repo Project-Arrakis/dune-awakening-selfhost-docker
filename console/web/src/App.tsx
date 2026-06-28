@@ -481,9 +481,6 @@ export function App() {
             waitForTask={waitForTaskSilently}
             parseKeyValueText={parseKeyValueText}
             formatTimerStatus={formatTimerStatus}
-            toHourMinuteTime={toHourMinuteTime}
-            sanitizeTimeInput={sanitizeTimeInput}
-            isValidHourMinuteTime={isValidHourMinuteTime}
             commandStatusSummary={commandStatusSummary}
             taskTechnicalDetails={taskTechnicalDetails}
             formatResultTitle={formatResultTitle}

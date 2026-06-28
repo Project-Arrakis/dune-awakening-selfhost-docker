@@ -113,7 +113,17 @@ export function buildDuneArgs(operation, payload = {}) {
     case "backupAutoRetention":
       return ["db", "auto", "retention", String(validateInteger(payload.retentionDays, 0, 3650))];
     case "updateAutoEnable":
-      return ["update", "auto", "enable", validateUpdateTime(payload.time || "05:00")];
+      return [
+        "update",
+        "auto",
+        "enable",
+        String(validateInteger(payload.intervalMinutes ?? 60, 5, 1440)),
+        payload.applyEnabled === false ? "0" : "1",
+        payload.notifyEnabled === false ? "0" : "1",
+        String(validateInteger(payload.notifyMinutes ?? 15, 1, 1440)),
+        payload.waitUntilEmpty ? "1" : "0",
+        String(validateInteger(payload.maxWaitMinutes ?? 360, 0, 10080))
+      ];
     case "databaseTables":
       return ["database", "tables", payload.schema || "dune"];
     case "databasePreview":

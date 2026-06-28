@@ -532,17 +532,64 @@ main { padding: 22px; min-width: 0; }
 .funcom-token-action-line .funcom-token-field { flex: 1 1 560px; max-width: 760px; }
 .schedule-action-line { gap: 8px; align-items: flex-end; }
 .schedule-action-line .checkbox-row { flex: 0 0 auto; min-height: 40px; }
-.auto-game-action-line { align-items: center; }
-.auto-game-action-line label.compact-select {
-  display: inline-flex;
-  flex: 0 0 280px;
-  flex-direction: row;
+.auto-game-action-line { align-items: center; margin-top: 12px; }
+.auto-update-policy-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr));
+  gap: 12px;
+  max-width: 1040px;
+  margin-top: 12px;
+}
+.auto-update-policy-group {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+}
+.auto-update-policy-group h5 {
+  margin: 0 0 4px;
+  color: #ffd08a;
+  font-size: 12px;
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+.auto-update-settings-row {
+  display: grid;
+  grid-template-columns: minmax(170px, 1fr) minmax(120px, 210px) 32px;
+  align-items: center;
+  gap: 12px;
+  min-height: 46px;
+  border: 1px solid rgba(214, 185, 140, .13);
+  background: rgba(255,255,255,.03);
+  border-radius: 8px;
+  padding: 9px 12px;
+  color: #ceb894;
+}
+.auto-update-policy-group:has(.auto-update-settings-row:only-of-type) .auto-update-settings-row { min-height: 70px; }
+.auto-update-settings-row > span:first-child { color: #ead8b8; font-weight: 400; }
+.auto-update-settings-row strong { color: #fff1d4; font-weight: 400; text-align: right; }
+.auto-update-settings-row input[type="checkbox"] { width: 20px; height: 20px; justify-self: end; accent-color: var(--success); }
+.auto-update-settings-row input:not([type="checkbox"]) { width: 100%; }
+.auto-update-settings-row input:disabled { opacity: .55; cursor: not-allowed; }
+.auto-update-settings-row.is-disabled { opacity: .55; }
+.auto-update-settings-spacer { width: 20px; height: 20px; }
+.number-unit-field {
+  display: grid;
+  grid-template-columns: minmax(80px, 1fr) auto;
   align-items: center;
   gap: 8px;
-  max-width: none;
-  white-space: nowrap;
 }
-.auto-game-action-line label.compact-select input { width: 170px; }
+.number-unit-field em {
+  color: #a99577;
+  font-style: normal;
+  font-size: 12px;
+}
+.auto-update-settings-divider {
+  width: 100%;
+  max-width: 1040px;
+  border-top: 1px solid rgba(214, 185, 140, .18);
+  margin-top: 14px;
+}
 .schedule-action-line .memory-number-field { flex-basis: 86px; max-width: 86px; }
 .restore-stack-line { align-items: center; }
 .broadcast-line { align-items: end; }
