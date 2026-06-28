@@ -495,6 +495,9 @@ default_memory_for_map() {
     survival|survival-1|survival_1) printf '%s' "16g" ;;
     overmap) printf '%s' "3g" ;;
     deepdesert|deepdesert-1|deepdesert_1) printf '%s' "16g" ;;
+    dlc_story_lostharvest_ecolaba|dlc-story-lostharvest-ecolaba) printf '%s' "2g" ;;
+    dlc_story_lostharvest_ecolabb|dlc-story-lostharvest-ecolabb) printf '%s' "2g" ;;
+    dlc_story_lostharvest_forgottenlab|dlc-story-lostharvest-forgottenlab) printf '%s' "2g" ;;
     *) printf '%s' "3g" ;;
   esac
 }

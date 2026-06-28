@@ -433,6 +433,10 @@ memory_for_map() {
       return 0
       ;;
   esac
+  if [ "$recommended" != "3g" ]; then
+    echo "$recommended"
+    return 0
+  fi
 
   python3 - "$map" <<'PY'
 import json

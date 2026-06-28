@@ -1732,9 +1732,9 @@ function parseMapRows(text: string): Record<string, unknown>[] {
 
 function parseMemoryRows(text: string): Record<string, unknown>[] {
   return stripAnsi(text).split(/\r?\n/).map((line) => line.trim()).filter((line) => line && !/^===|^Default memory|^MAP\s+MEMORY/i.test(line)).map((line) => {
-    const match = line.match(/^(.+?)\s{2,}(.+)$/);
-    if (!match) return null;
-    return { map: match[1].trim(), memory: formatMemoryValue(match[2].trim()) };
+    const parsed = parseMemoryStatusLine(line);
+    if (!parsed) return null;
+    return { map: parsed.map, memory: formatMemoryValue(parsed.memory) };
   }).filter(Boolean) as Record<string, unknown>[];
 }
 
@@ -1762,9 +1762,9 @@ function updateMemoryStatusText(text: string, updates: Array<{ map: string; part
   const pending = new globalThis.Map(normalizedUpdates.map((update) => [update.key, update.memory]));
   const lines = String(text || "").split(/\r?\n/);
   const nextLines = lines.map((line) => {
-    const match = line.trim().match(/^(.+?)\s{2,}(.+)$/);
-    if (!match) return line;
-    const key = match[1].trim();
+    const parsed = parseMemoryStatusLine(line.trim());
+    if (!parsed) return line;
+    const key = parsed.map;
     const memory = pending.get(key);
     if (!memory) return line;
     pending.delete(key);
@@ -1775,6 +1775,12 @@ function updateMemoryStatusText(text: string, updates: Array<{ map: string; part
   const hasBody = nextLines.some((line) => line.trim());
   const base = hasBody ? nextLines : ["=== Memory configuration ===", "Default memory: built-in per-map defaults, or server catalog for other dynamic maps", "", "MAP                          MEMORY"];
   return [...base, ...insertLines].join("\n");
+}
+
+function parseMemoryStatusLine(line: string) {
+  const match = String(line || "").trim().match(/^(.+?)\s+((?:\d+(?:\.\d+)?)\s*(?:[KMGT](?:i?B?|B)?)(?:\s+\(?default\)?)?)$/i);
+  if (!match) return null;
+  return { map: match[1].trim(), memory: match[2].trim() };
 }
 
 function parseServerPartitionRows(text: string): Record<string, unknown>[] {

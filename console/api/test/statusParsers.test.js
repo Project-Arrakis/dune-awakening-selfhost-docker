@@ -268,6 +268,19 @@ test("memory status parser formats Gi defaults as friendly GB labels", () => {
   assert.deepEqual(rows.find((row) => row.map === "CB_Dungeon_ThePit"), { map: "CB_Dungeon_ThePit", memory: "13 GB" });
 });
 
+test("memory status parser accepts long map names without fixed-width spacing", () => {
+  const rows = parseMemoryStatusRows(`=== Memory configuration ===
+Default memory: built-in per-map defaults, or server catalog for other dynamic maps
+
+MAP                          MEMORY
+DLC_Story_LostHarvest_EcolabA 6g
+DLC_Story_LostHarvest_EcolabB 2Gi default
+DLC_Story_LostHarvest_ForgottenLab 10g`);
+  assert.deepEqual(rows.find((row) => row.map === "DLC_Story_LostHarvest_EcolabA"), { map: "DLC_Story_LostHarvest_EcolabA", memory: "6 GB" });
+  assert.deepEqual(rows.find((row) => row.map === "DLC_Story_LostHarvest_EcolabB"), { map: "DLC_Story_LostHarvest_EcolabB", memory: "2 GB (Default)" });
+  assert.deepEqual(rows.find((row) => row.map === "DLC_Story_LostHarvest_ForgottenLab"), { map: "DLC_Story_LostHarvest_ForgottenLab", memory: "10 GB" });
+});
+
 test("server partition parser derives status from real ready/alive fields", () => {
   const rows = parseServerPartitionRows(serversOutput);
   assert.equal(rows.find((row) => row.map === "Survival_1").status, "Starting");

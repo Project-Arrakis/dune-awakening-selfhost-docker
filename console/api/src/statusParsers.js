@@ -104,7 +104,7 @@ export function parseMapListRows(text) {
 
 export function parseMemoryStatusRows(text) {
   return text.split(/\r?\n/).map((line) => line.trim()).filter((line) => line && !/^===|^Default memory|^MAP\s+MEMORY/i.test(line)).map((line) => {
-    const match = line.match(/^(.+?)\s{2,}(.+)$/);
+    const match = line.match(/^(.+?)\s+((?:\d+(?:\.\d+)?)\s*(?:[KMGT](?:i?B?|B)?)(?:\s+\(?default\)?)?)$/i);
     if (!match) return null;
     return { map: match[1].trim(), memory: formatMemoryValue(match[2].trim()) };
   }).filter(Boolean);
