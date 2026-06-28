@@ -71,34 +71,6 @@ is_wsl_host() {
   grep -qiE 'microsoft|wsl' /proc/sys/kernel/osrelease 2>/dev/null
 }
 
-sysctl_value() {
-  local key="$1"
-  local path="/proc/sys/${key//./\/}"
-  cat "$path" 2>/dev/null || true
-}
-
-check_host_latency_tuning() {
-  local rmem_max
-  local backlog
-  local disabled="${DUNE_HOST_LATENCY_TUNE:-1}"
-
-  rmem_max="$(sysctl_value net.core.rmem_max)"
-  backlog="$(sysctl_value net.core.netdev_max_backlog)"
-
-  if [ "$disabled" = "0" ]; then
-    warn_msg "Host latency tuning is disabled by DUNE_HOST_LATENCY_TUNE=0"
-    return 0
-  fi
-
-  if [ "${rmem_max:-0}" -ge 67108864 ] 2>/dev/null && [ "${backlog:-0}" -ge 250000 ] 2>/dev/null; then
-    ok "Host latency sysctls are applied"
-  else
-    warn_msg "Host latency sysctls are not at the recommended values"
-    echo "     They are applied automatically before game server startup; manual run: runtime/scripts/host-latency-tune.sh"
-    echo "     Current net.core.rmem_max=${rmem_max:-unknown}, net.core.netdev_max_backlog=${backlog:-unknown}"
-  fi
-}
-
 check_game_container_pinning() {
   local container
   local cpuset
@@ -224,7 +196,6 @@ if is_wsl_host; then
 else
   ok "Host is not detected as WSL2"
 fi
-check_host_latency_tuning
 check_game_container_pinning
 check_deepdesert_mode
 

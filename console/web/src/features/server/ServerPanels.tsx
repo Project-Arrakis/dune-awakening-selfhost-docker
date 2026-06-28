@@ -1241,12 +1241,6 @@ function doctorAdvice(issue: string) {
     nextStep: "Review Setup -> Server Identity and Network/Ports for Local vs Public mode.",
     status: "WARN"
   };
-  if (/Host latency sysctls are not at the recommended values/i.test(issue)) return {
-    title: "Host Network Tuning",
-    message: "The host UDP/network buffer sysctls are below the recommended values for smoother high-traffic game server networking.",
-    nextStep: "They are normally applied before game server startup. If this persists after a restart, run runtime/scripts/host-latency-tune.sh on the host and check whether the OS allows those sysctl values.",
-    status: "WARN"
-  };
   return {
     title: "Diagnostic Warning",
     message: clean,
