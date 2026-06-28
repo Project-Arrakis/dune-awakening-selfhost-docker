@@ -92,7 +92,7 @@ export async function runPlayerAnnouncementScan(config, players, context = {}) {
   const events = [];
   if (settings.joinEnabled) {
     for (const [key, player] of Object.entries(currentOnline)) {
-      if (!previousOnline[key]) events.push({ type: "join", player, message: renderPlayerMessage(settings.joinMessage, player) });
+      if (!previousOnline[key] || !sameSession(previousOnline[key], player)) events.push({ type: "join", player, message: renderPlayerMessage(settings.joinMessage, player) });
     }
   }
   if (settings.leaveEnabled) {
@@ -198,6 +198,7 @@ function normalizePlayer(player = {}) {
   const onlineStatus = String(player.online_status || player.onlineStatus || "").trim().toLowerCase();
   const map = String(player.map || player.map_name || player.mapName || "").trim();
   const dimension = normalizeDimension(player.dimension_index ?? player.dimensionIndex ?? player.dimension);
+  const sessionKey = String(player.login_session || player.loginSession || player.last_login_time || player.lastLoginTime || "").trim();
   return {
     key,
     characterName,
@@ -207,8 +208,15 @@ function normalizePlayer(player = {}) {
     map,
     mapName: friendlyMapName(map),
     chatMapName: chatMapName(map),
-    dimension
+    dimension,
+    sessionKey
   };
+}
+
+function sameSession(previous = {}, current = {}) {
+  const sessionKey = String(current.sessionKey || "").trim();
+  if (!sessionKey) return true;
+  return String(previous.sessionKey || "").trim() === sessionKey;
 }
 
 function renderPlayerMessage(template, player) {

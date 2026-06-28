@@ -37,6 +37,7 @@ export function primeMessageOfTheDayOnlineState(config, players) {
     delivered[player.key] = {
       deliveredAt: new Date().toISOString(),
       characterName: player.characterName,
+      sessionKey: player.sessionKey,
       primed: true
     };
   }
@@ -50,11 +51,11 @@ export async function runMessageOfTheDayScan(config, players, context = {}) {
   if (!settings.message.trim()) return { ok: true, skipped: true, reason: "empty", sent: 0, failed: 0 };
 
   const onlinePlayers = (players || []).map(normalizePlayer).filter((player) => player.key && player.funcomId && player.characterName);
-  const onlineKeys = new Set(onlinePlayers.map((player) => player.key));
   const state = readState(config);
   const delivered = {};
   for (const [key, entry] of Object.entries(state.delivered || {})) {
-    if (onlineKeys.has(key)) delivered[key] = entry;
+    const player = onlinePlayers.find((player) => player.key === key);
+    if (player && sameSession(entry, player)) delivered[key] = entry;
   }
 
   const pendingPlayers = onlinePlayers.filter((player) => !delivered[player.key]);
@@ -85,7 +86,8 @@ export async function runMessageOfTheDayScan(config, players, context = {}) {
       sent += 1;
       delivered[player.key] = {
         deliveredAt: new Date().toISOString(),
-        characterName: player.characterName
+        characterName: player.characterName,
+        sessionKey: player.sessionKey
       };
     } catch (error) {
       failed += 1;
@@ -108,10 +110,10 @@ export function normalizeSettings(input = {}) {
 export function messageOfTheDayDeliveryPlan(settings, players, state = EMPTY_STATE) {
   const normalizedSettings = normalizeSettings(settings);
   const onlinePlayers = (players || []).map(normalizePlayer).filter((player) => player.key && player.funcomId && player.characterName);
-  const onlineKeys = new Set(onlinePlayers.map((player) => player.key));
   const delivered = {};
   for (const [key, entry] of Object.entries(state.delivered || {})) {
-    if (onlineKeys.has(key)) delivered[key] = entry;
+    const player = onlinePlayers.find((player) => player.key === key);
+    if (player && sameSession(entry, player)) delivered[key] = entry;
   }
   const pending = normalizedSettings.enabled && normalizedSettings.message
     ? onlinePlayers.filter((player) => !delivered[player.key])
@@ -141,13 +143,21 @@ function normalizePlayer(player = {}) {
   const funcomId = String(player.funcom_id || player.funcomId || player.recipientFuncomId || "").trim();
   const characterName = String(player.character_name || player.characterName || player.recipientCharacterName || "").trim();
   const key = String(player.action_player_id || player.actor_id || player.player_pawn_id || flsId || funcomId || "").trim();
+  const sessionKey = String(player.login_session || player.loginSession || player.last_login_time || player.lastLoginTime || "").trim();
   return {
     key,
     flsId,
     funcomId,
     characterName,
+    sessionKey,
     queue: flsId ? `${flsId}_queue` : ""
   };
+}
+
+function sameSession(entry = {}, player = {}) {
+  const current = String(player.sessionKey || "").trim();
+  if (!current) return true;
+  return String(entry.sessionKey || "").trim() === current;
 }
 
 function normalizeBoolean(value, field) {
