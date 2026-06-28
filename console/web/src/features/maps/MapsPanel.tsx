@@ -1528,8 +1528,11 @@ function memoryForMap(rows: LiveMapMemoryRow[], map: string, row?: Record<string
 
 function statusWithLiveMemory(status: string, memoryRow: LiveMapMemoryRow | null, mode?: unknown) {
   const normalized = String(status || "Not Available");
+  if (/^Always On$/i.test(String(mode || "").trim()) && /^(Not Running|Not Available|Unallocated|Assigned|Idle|Starting|Queued)$/i.test(normalized)) {
+    return memoryRow ? "Loading" : "Queued";
+  }
   if (!memoryRow) return normalized;
-  if (/^(Not Running|Not Available|Unallocated|Assigned|Idle)$/i.test(normalized)) {
+  if (/^(Not Running|Not Available|Unallocated|Assigned|Idle|Starting)$/i.test(normalized)) {
     return "Loading";
   }
   return normalized;
@@ -1861,7 +1864,7 @@ function mapRuntimeStatus(row: { assignedServer?: unknown; ready?: unknown; aliv
   const alive = isTruthyDbValue(row.alive);
   if (ready && alive) return "Ready";
   if (alive) return "Loading";
-  if (assigned) return "Starting";
+  if (assigned) return "Loading";
   return "Not Running";
 }
 
@@ -1874,11 +1877,11 @@ function mapCanForceDespawn(row: Record<string, unknown>) {
 }
 
 function mapRuntimeNeedsLiveApply(status: unknown) {
-  return /^(Ready|Loading|Starting|Assigned|Warming|Running)$/i.test(String(status || "").trim());
+  return /^(Ready|Loading|Starting|Assigned|Warming|Running|Queued)$/i.test(String(status || "").trim());
 }
 
 function strongestMapStatus(a: string, b: string) {
-  const order = ["Not Available", "Not Running", "Starting", "Loading", "Warming", "Running", "Ready"];
+  const order = ["Not Available", "Not Running", "Queued", "Starting", "Loading", "Warming", "Running", "Ready"];
   return order.indexOf(b) > order.indexOf(a) ? b : a || b;
 }
 

@@ -19,6 +19,7 @@ import {
   isSettingsRestartHandoffTask,
   isHomeActionComplete,
   isHomeStopComplete,
+  stackActionPendingResult,
   type HomeLoadResult,
   type HomeTaskResult
 } from "./features/server/ServerPanels";
@@ -156,6 +157,7 @@ export function App() {
   const [homeRunningAction, setHomeRunningAction] = useState<"start" | "stop" | "restart" | "">("");
   const [stackVersionStatus, setStackVersionStatus] = useState<Record<string, string>>({ status: "Checking", current: "", latest: "" });
   const stackActionStartedAt = useRef(0);
+  const stackActionReadyPolls = useRef(0);
   const stackStatusLoadRef = useRef<Promise<HomeLoadResult> | null>(null);
   const [setupState, setSetupState] = useState<SetupState | null>(null);
   const [setupStateLoaded, setSetupStateLoaded] = useState(false);
@@ -290,6 +292,7 @@ export function App() {
   useEffect(() => {
     if (!homeRunningAction) return;
     stackActionStartedAt.current = Date.now();
+    stackActionReadyPolls.current = 0;
     let active = true;
     async function refreshRunningAction() {
       const result = await loadStackStatus().catch(() => null);
@@ -301,8 +304,15 @@ export function App() {
         setHomeTaskResult({ status: "stopped", title: "Server Stopped" });
         setHomeRunningAction("");
       } else if ((homeRunningAction === "start" || homeRunningAction === "restart") && elapsedMs >= 8000 && isHomeActionComplete(statusText, readinessText)) {
-        setHomeTaskResult({ status: "succeeded", title: homeRunningAction === "start" ? "Server Started Successfully" : "Battlegroup Restarted Successfully" });
-        setHomeRunningAction("");
+        stackActionReadyPolls.current += 1;
+        if (stackActionReadyPolls.current >= 2) {
+          setHomeTaskResult({ status: "succeeded", title: homeRunningAction === "start" ? "Server Started Successfully" : "Battlegroup Restarted Successfully" });
+          setHomeRunningAction("");
+        } else {
+          setHomeTaskResult(stackActionPendingResult(homeRunningAction, "confirming"));
+        }
+      } else if (homeRunningAction === "start" || homeRunningAction === "restart") {
+        stackActionReadyPolls.current = 0;
       }
     }
     const id = window.setInterval(refreshRunningAction, 3000);

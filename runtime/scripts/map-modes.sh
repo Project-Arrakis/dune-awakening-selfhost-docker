@@ -3,12 +3,17 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 
+set -a
+[ -f .env ] && . ./.env
+set +a
+
 STATE_FILE="${DUNE_MAP_MODES_FILE:-runtime/generated/map-runtime-modes.json}"
 GRACE_SECONDS="${DUNE_AUTOSCALER_DESPAWN_GRACE_SECONDS:-${DUNE_AUTOSCALER_IDLE_SECONDS:-300}}"
 RECONCILE_LOCK_FILE="${DUNE_ALWAYS_ON_RECONCILE_LOCK_FILE:-runtime/generated/map-modes-reconcile.lock}"
 RECONCILE_STATE_FILE="${DUNE_ALWAYS_ON_RECONCILE_STATE_FILE:-runtime/generated/map-modes-reconcile.tsv}"
 RECONCILE_STATE_LOCK_FILE="${DUNE_ALWAYS_ON_RECONCILE_STATE_LOCK_FILE:-runtime/generated/map-modes-reconcile-state.lock}"
 SPAWN_TIMEOUT_SECONDS="${DUNE_ALWAYS_ON_SPAWN_TIMEOUT_SECONDS:-240}"
+STARTUP_PRIORITY="${DUNE_ALWAYS_ON_STARTUP_PRIORITY:-SH_Arrakeen,SH_HarkoVillage,DeepDesert_1}"
 
 positive_int_or_default() {
   local value="$1"
@@ -553,7 +558,7 @@ reconcile_all() {
     [ -n "$map" ] || continue
     protected_map "$map" && continue
     maps+=("$map")
-  done < <(python3 - "$STATE_FILE" <<'PY'
+  done < <(python3 - "$STATE_FILE" "$STARTUP_PRIORITY" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -562,9 +567,15 @@ try:
     data = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
 except Exception:
     data = {}
-for map_name, cfg in sorted(data.get("maps", {}).items()):
-    if cfg.get("mode") == "always-on":
-        print(map_name)
+priority = [item.strip() for item in sys.argv[2].split(",") if item.strip()]
+priority_index = {name: index for index, name in enumerate(priority)}
+always_on = [
+    map_name
+    for map_name, cfg in data.get("maps", {}).items()
+    if cfg.get("mode") == "always-on"
+]
+for map_name in sorted(always_on, key=lambda name: (priority_index.get(name, len(priority)), name)):
+    print(map_name)
 PY
   )
 
