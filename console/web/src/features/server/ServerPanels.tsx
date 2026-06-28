@@ -1518,10 +1518,10 @@ function isHomeBootStarting(status: string, readiness: string) {
 }
 
 function homeOverallBadge(value: string) {
-  if (/^restarting$/i.test(value)) return "WARN";
-  if (/^stopping$/i.test(value)) return "WARN";
+  if (/^restarting\b/i.test(value)) return "WARN";
+  if (/^stopping\b/i.test(value)) return "WARN";
   if (/^stopped$/i.test(value)) return "WARN";
-  if (/^starting$/i.test(value)) return "Starting";
+  if (/^starting\b/i.test(value)) return "WARN";
   if (/^issue(?: detected)?$/i.test(value)) return "WARN";
   if (/warming/i.test(value)) return "Info";
   if (/stopped|not running|offline/i.test(value)) return "WARN";
