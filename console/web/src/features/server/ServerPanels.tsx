@@ -13,6 +13,7 @@ import { conciseTaskError, funcomTokenMismatchDetected } from "../../lib/taskDis
 
 export type HomeLoadResult = { statusLoaded: boolean; readinessLoaded: boolean; statusError: string; readinessError: string; statusText: string; readinessText: string };
 export type HomeTaskResult = { status: "running" | "succeeded" | "failed" | "stopped"; title: string; message?: string; details?: string };
+export type RestartLifecycleState = { stopObserved: boolean; startObserved: boolean };
 type ConfirmAction = (message: string, options?: { title?: string; confirmLabel?: string; cancelLabel?: string; danger?: boolean }) => Promise<boolean>;
 type ServerMode = "public" | "local";
 
@@ -49,6 +50,27 @@ export function stackActionPendingResult(action: "start" | "stop" | "restart", p
   return { status: "running", title: "Restarting Battlegroup", message: "Stopping services, then starting them again." };
 }
 
+export function createRestartLifecycleState(): RestartLifecycleState {
+  return { stopObserved: false, startObserved: false };
+}
+
+export function advanceRestartLifecycle(state: RestartLifecycleState, status: string, readiness: string): RestartLifecycleState {
+  const stopObserved = state.stopObserved || isHomeStopComplete(status, readiness) || hasRestartStopSignal(status, readiness);
+  const startObserved = state.startObserved || (stopObserved && hasRestartStartSignal(status, readiness));
+  return { stopObserved, startObserved };
+}
+
+function advanceRestartLifecycleFromTaskDetails(state: RestartLifecycleState, details: string): RestartLifecycleState {
+  const text = stripAnsi(details || "");
+  const stopObserved = state.stopObserved || /\b(stopping|stopped|stop-all|stop all|docker compose down)\b/i.test(text);
+  const startObserved = state.startObserved || (stopObserved && /\b(starting|started|start-all|start all|docker compose up)\b/i.test(text));
+  return { stopObserved, startObserved };
+}
+
+export function isRestartLifecycleReady(action: "start" | "stop" | "restart" | "", state: RestartLifecycleState) {
+  return action !== "restart" || state.startObserved;
+}
+
 export function HomePanel({ status, readiness, taskResult, setTaskResult, funcomTokenResult, setFuncomTokenResult, runningAction, setRunningAction, onLoad, confirmAction }: {
   status: string;
   readiness: string;
@@ -70,12 +92,14 @@ export function HomePanel({ status, readiness, taskResult, setTaskResult, funcom
   const homeActionRunId = useRef(0);
   const homeActionStartedAt = useRef(0);
   const homeActionReadyPolls = useRef(0);
+  const homeRestartLifecycle = useRef<RestartLifecycleState>(createRestartLifecycleState());
   const refreshRunId = useRef(0);
   const activeHomeAction = useRef<"start" | "stop" | "restart" | "">(runningAction);
 
   function setHomeAction(action: "start" | "stop" | "restart" | "") {
     activeHomeAction.current = action;
     homeActionReadyPolls.current = 0;
+    if (action === "restart" || !action) homeRestartLifecycle.current = createRestartLifecycleState();
     setRunningAction(action);
   }
 
@@ -101,8 +125,12 @@ export function HomePanel({ status, readiness, taskResult, setTaskResult, funcom
       if (!isActive() || refreshRunId.current !== runId) return;
       if (result.statusLoaded || result.readinessLoaded) {
         applyHomeLoadResult(result);
-        const loadedState = getHomeServerState(result.statusText || status, result.readinessText || readiness);
-        if ((runningAction === "start" || runningAction === "restart") && isHomeActionComplete(result.statusText || status, result.readinessText || readiness)) {
+        const statusText = result.statusText || status;
+        const readinessText = result.readinessText || readiness;
+        const loadedState = getHomeServerState(statusText, readinessText);
+        if (runningAction === "restart") homeRestartLifecycle.current = advanceRestartLifecycle(homeRestartLifecycle.current, statusText, readinessText);
+        const restartReady = isRestartLifecycleReady(runningAction, homeRestartLifecycle.current);
+        if ((runningAction === "start" || runningAction === "restart") && restartReady && isHomeActionComplete(statusText, readinessText)) {
           homeActionReadyPolls.current += 1;
           if (homeActionReadyPolls.current >= 2) {
             setTaskResult({ status: "succeeded", title: runningAction === "start" ? "Server Started Successfully" : "Battlegroup Restarted Successfully" });
@@ -116,7 +144,7 @@ export function HomePanel({ status, readiness, taskResult, setTaskResult, funcom
         } else if (runningAction === "start" || runningAction === "restart") {
           homeActionReadyPolls.current = 0;
         }
-        if (taskResult?.status === "failed" && isHomeActionComplete(result.statusText || status, result.readinessText || readiness)) {
+        if (taskResult?.status === "failed" && (!/restart/i.test(taskResult.title) || restartReady) && isHomeActionComplete(statusText, readinessText)) {
           setTaskResult({ status: "succeeded", title: /restart/i.test(taskResult.title) ? "Battlegroup Restarted Successfully" : "Server Started Successfully" });
         } else if (taskResult?.status === "failed" && loadedState.stopped && /stop/i.test(taskResult.title)) {
           setTaskResult({ status: "stopped", title: "Server Stopped" });
@@ -151,7 +179,10 @@ export function HomePanel({ status, readiness, taskResult, setTaskResult, funcom
       if (preLoad) {
         applyHomeLoadResult(preLoad);
         const preState = getHomeServerState(preLoad.statusText || status, preLoad.readinessText || readiness);
-        if (preState.stopped) commandAction = "start";
+        if (preState.stopped) {
+          homeRestartLifecycle.current = { ...homeRestartLifecycle.current, stopObserved: true };
+          commandAction = "start";
+        }
       }
     }
     let keepPolling = false;
@@ -160,15 +191,20 @@ export function HomePanel({ status, readiness, taskResult, setTaskResult, funcom
       const final = await waitForTaskSilently(response.task);
       if (homeActionRunId.current !== actionRunId) return;
       const details = taskTechnicalDetails(final);
+      if (action === "restart") homeRestartLifecycle.current = advanceRestartLifecycleFromTaskDetails(homeRestartLifecycle.current, details);
       const postLoad = await onLoad().catch(() => null);
       if (homeActionRunId.current !== actionRunId) return;
       if (postLoad) applyHomeLoadResult(postLoad);
       const postState = getHomeServerState(postLoad?.statusText || status, postLoad?.readinessText || readiness);
       const postReady = isHomeActionComplete(postLoad?.statusText || status, postLoad?.readinessText || readiness);
+      if (action === "restart") {
+        homeRestartLifecycle.current = advanceRestartLifecycle(homeRestartLifecycle.current, postLoad?.statusText || status, postLoad?.readinessText || readiness);
+      }
+      const restartReady = isRestartLifecycleReady(action, homeRestartLifecycle.current);
       const elapsedMs = Date.now() - homeActionStartedAt.current;
       if (action === "stop" && isHomeStopComplete(postLoad?.statusText || status, postLoad?.readinessText || readiness)) {
         setTaskResult({ status: "stopped", title: copy.success, details });
-      } else if ((action === "start" || action === "restart") && elapsedMs >= 8000 && postReady) {
+      } else if ((action === "start" || action === "restart") && restartReady && elapsedMs >= 8000 && postReady) {
         keepPolling = true;
         setTaskResult({ ...stackActionPendingResult(action, "confirming"), details });
       } else if (final.status !== "succeeded") {
@@ -233,11 +269,15 @@ export function HomePanel({ status, readiness, taskResult, setTaskResult, funcom
       if (!active || !result) return;
       applyHomeLoadResult(result);
       const currentAction = activeHomeAction.current;
+      const statusText = result.statusText || status;
+      const readinessText = result.readinessText || readiness;
+      if (currentAction === "restart") homeRestartLifecycle.current = advanceRestartLifecycle(homeRestartLifecycle.current, statusText, readinessText);
+      const restartReady = isRestartLifecycleReady(currentAction, homeRestartLifecycle.current);
       const elapsedMs = Date.now() - homeActionStartedAt.current;
-      if (currentAction === "stop" && isHomeStopComplete(result.statusText || status, result.readinessText || readiness)) {
+      if (currentAction === "stop" && isHomeStopComplete(statusText, readinessText)) {
         setTaskResult({ status: "stopped", title: "Server Stopped" });
         setHomeAction("");
-      } else if ((currentAction === "start" || currentAction === "restart") && elapsedMs >= 8000 && isHomeActionComplete(result.statusText || status, result.readinessText || readiness)) {
+      } else if ((currentAction === "start" || currentAction === "restart") && restartReady && elapsedMs >= 8000 && isHomeActionComplete(statusText, readinessText)) {
         homeActionReadyPolls.current += 1;
         if (homeActionReadyPolls.current >= 2) {
           setTaskResult({ status: "succeeded", title: currentAction === "start" ? "Server Started Successfully" : "Battlegroup Restarted Successfully" });
@@ -471,6 +511,7 @@ export function ServerPanel(props: {
   const controlActionRunId = useRef(0);
   const controlActionStartedAt = useRef(0);
   const controlActionReadyPolls = useRef(0);
+  const controlRestartLifecycle = useRef<RestartLifecycleState>(createRestartLifecycleState());
   const serviceRestartRunId = useRef(0);
   const { taskResult, setTaskResult, funcomTokenResult, setFuncomTokenResult, runningAction, setRunningAction, confirmAction } = props;
   const activeControlAction = useRef<"start" | "stop" | "restart" | "">(runningAction);
@@ -497,6 +538,7 @@ export function ServerPanel(props: {
   function setControlAction(action: "start" | "stop" | "restart" | "") {
     activeControlAction.current = action;
     controlActionReadyPolls.current = 0;
+    if (action === "restart" || !action) controlRestartLifecycle.current = createRestartLifecycleState();
     setRunningAction(action);
   }
   async function loadControlStatus(includeDiagnostics = false): Promise<HomeLoadResult> {
@@ -626,14 +668,17 @@ export function ServerPanel(props: {
       const final = await waitForTaskSilently(response.task);
       if (controlActionRunId.current !== actionRunId) return;
       const details = taskTechnicalDetails(final);
+      if (action === "restart") controlRestartLifecycle.current = advanceRestartLifecycleFromTaskDetails(controlRestartLifecycle.current, details);
       const postLoad = await loadControlStatus(false).catch(() => null);
       if (controlActionRunId.current !== actionRunId) return;
       const statusText = postLoad?.statusText || props.status;
       const readinessText = postLoad?.readinessText || props.readiness;
+      if (action === "restart") controlRestartLifecycle.current = advanceRestartLifecycle(controlRestartLifecycle.current, statusText, readinessText);
+      const restartReady = isRestartLifecycleReady(action, controlRestartLifecycle.current);
       const elapsedMs = Date.now() - controlActionStartedAt.current;
       if (action === "stop" && isHomeStopComplete(statusText, readinessText)) {
         setTaskResult({ status: "stopped", title: copy.success, details });
-      } else if ((action === "start" || action === "restart") && elapsedMs >= 8000 && isHomeActionComplete(statusText, readinessText)) {
+      } else if ((action === "start" || action === "restart") && restartReady && elapsedMs >= 8000 && isHomeActionComplete(statusText, readinessText)) {
         keepPolling = true;
         setTaskResult({ ...stackActionPendingResult(action, "confirming"), details });
       } else if (final.status !== "succeeded") {
@@ -755,11 +800,13 @@ export function ServerPanel(props: {
       const currentAction = activeControlAction.current;
       const statusText = result.statusText || props.status;
       const readinessText = result.readinessText || props.readiness;
+      if (currentAction === "restart") controlRestartLifecycle.current = advanceRestartLifecycle(controlRestartLifecycle.current, statusText, readinessText);
+      const restartReady = isRestartLifecycleReady(currentAction, controlRestartLifecycle.current);
       const elapsedMs = Date.now() - controlActionStartedAt.current;
       if (currentAction === "stop" && isHomeStopComplete(statusText, readinessText)) {
         setTaskResult({ status: "stopped", title: "Server Stopped" });
         setControlAction("");
-      } else if ((currentAction === "start" || currentAction === "restart") && elapsedMs >= 8000 && isHomeActionComplete(statusText, readinessText)) {
+      } else if ((currentAction === "start" || currentAction === "restart") && restartReady && elapsedMs >= 8000 && isHomeActionComplete(statusText, readinessText)) {
         controlActionReadyPolls.current += 1;
         if (controlActionReadyPolls.current >= 2) {
           setTaskResult({ status: "succeeded", title: currentAction === "start" ? "Server Started Successfully" : "Battlegroup Restarted Successfully" });
@@ -1400,6 +1447,44 @@ export function isHomeStopComplete(status: string, readiness: string) {
   return readinessContainersStopped || (allListenersMissing && gameServersStopped);
 }
 
+function hasRestartStopSignal(status: string, readiness: string) {
+  const text = `${status}\n${readiness}`;
+  const requiredContainers = [
+    "dune-postgres",
+    "dune-rmq-admin",
+    "dune-rmq-game",
+    "dune-text-router",
+    "dune-director",
+    "dune-server-gateway",
+    "dune-server-survival-1",
+    "dune-server-overmap"
+  ];
+  const containerLines = sectionLines(status, "Containers").filter((line) => !/^SERVICE\s+STATUS/i.test(line));
+  return requiredContainers.some((name) =>
+    containerLines.some((line) => new RegExp(`^${name}\\s+\\b(missing|stopped|exited|dead|not running)\\b`, "i").test(line)) ||
+    new RegExp(`\\bFAIL\\s+container\\s+${name}\\b`, "i").test(text)
+  );
+}
+
+function hasRestartStartSignal(status: string, readiness: string) {
+  const text = `${status}\n${readiness}`;
+  const requiredContainers = [
+    "dune-postgres",
+    "dune-rmq-admin",
+    "dune-rmq-game",
+    "dune-text-router",
+    "dune-director",
+    "dune-server-gateway",
+    "dune-server-survival-1",
+    "dune-server-overmap"
+  ];
+  const containerLines = sectionLines(status, "Containers").filter((line) => !/^SERVICE\s+STATUS/i.test(line));
+  return requiredContainers.some((name) =>
+    containerLines.some((line) => new RegExp(`^${name}\\s+.*\\bUp\\b`, "i").test(line)) ||
+    new RegExp(`\\bOK\\s+container\\s+${name}\\b`, "i").test(text)
+  );
+}
+
 function isHomeStartComplete(status: string, readiness: string) {
   const serverState = getHomeServerState(status, readiness);
   if (serverState.stopped) return false;
@@ -1519,10 +1604,8 @@ function isHomeBootStarting(status: string, readiness: string) {
 
 function homeOverallBadge(value: string) {
   const normalized = String(value || "").trim().toLowerCase();
-  if (normalized.startsWith("restarting")) return "WARN";
-  if (normalized.startsWith("stopping")) return "WARN";
+  if (/\b(restarting|restart|stopping|starting)\b/.test(normalized)) return "WARN";
   if (/^stopped$/i.test(value)) return "WARN";
-  if (normalized.startsWith("starting")) return "WARN";
   if (/^issue(?: detected)?$/i.test(value)) return "WARN";
   if (/warming/i.test(value)) return "Info";
   if (/stopped|not running|offline/i.test(value)) return "WARN";

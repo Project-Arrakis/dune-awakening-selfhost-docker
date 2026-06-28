@@ -19,9 +19,13 @@ import {
   isSettingsRestartHandoffTask,
   isHomeActionComplete,
   isHomeStopComplete,
+  advanceRestartLifecycle,
+  createRestartLifecycleState,
+  isRestartLifecycleReady,
   stackActionPendingResult,
   type HomeLoadResult,
-  type HomeTaskResult
+  type HomeTaskResult,
+  type RestartLifecycleState
 } from "./features/server/ServerPanels";
 import { parseUpdateTask, stackVersionButtonLabel, stackVersionButtonTitle } from "./features/updates/updateUtils";
 import { formatUiSentence, stripAnsi, summarizeCommandText, titleCase } from "./lib/display";
@@ -158,6 +162,7 @@ export function App() {
   const [stackVersionStatus, setStackVersionStatus] = useState<Record<string, string>>({ status: "Checking", current: "", latest: "" });
   const stackActionStartedAt = useRef(0);
   const stackActionReadyPolls = useRef(0);
+  const stackRestartLifecycle = useRef<RestartLifecycleState>(createRestartLifecycleState());
   const stackStatusLoadRef = useRef<Promise<HomeLoadResult> | null>(null);
   const [setupState, setSetupState] = useState<SetupState | null>(null);
   const [setupStateLoaded, setSetupStateLoaded] = useState(false);
@@ -293,6 +298,7 @@ export function App() {
     if (!homeRunningAction) return;
     stackActionStartedAt.current = Date.now();
     stackActionReadyPolls.current = 0;
+    stackRestartLifecycle.current = createRestartLifecycleState();
     let active = true;
     async function refreshRunningAction() {
       const result = await loadStackStatus().catch(() => null);
@@ -300,10 +306,14 @@ export function App() {
       const statusText = result.statusText;
       const readinessText = result.readinessText;
       const elapsedMs = Date.now() - stackActionStartedAt.current;
+      if (homeRunningAction === "restart") {
+        stackRestartLifecycle.current = advanceRestartLifecycle(stackRestartLifecycle.current, statusText, readinessText);
+      }
+      const restartReady = isRestartLifecycleReady(homeRunningAction, stackRestartLifecycle.current);
       if (homeRunningAction === "stop" && isHomeStopComplete(statusText, readinessText)) {
         setHomeTaskResult({ status: "stopped", title: "Server Stopped" });
         setHomeRunningAction("");
-      } else if ((homeRunningAction === "start" || homeRunningAction === "restart") && elapsedMs >= 8000 && isHomeActionComplete(statusText, readinessText)) {
+      } else if ((homeRunningAction === "start" || homeRunningAction === "restart") && restartReady && elapsedMs >= 8000 && isHomeActionComplete(statusText, readinessText)) {
         stackActionReadyPolls.current += 1;
         if (stackActionReadyPolls.current >= 2) {
           setHomeTaskResult({ status: "succeeded", title: homeRunningAction === "start" ? "Server Started Successfully" : "Battlegroup Restarted Successfully" });
