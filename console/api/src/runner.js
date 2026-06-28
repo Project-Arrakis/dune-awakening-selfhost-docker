@@ -107,7 +107,9 @@ export function buildDuneArgs(operation, payload = {}) {
       {
         const args = ["db", "auto", "enable", validateUpdateTime(payload.time || "05:00")];
         const retentionDays = validateInteger(payload.retentionDays ?? 0, 0, 3650);
-        if (retentionDays > 0) args.push(String(retentionDays));
+        const intervalHours = validateInteger(payload.intervalHours ?? 24, 1, 168);
+        if (retentionDays > 0 || intervalHours !== 24) args.push(String(retentionDays));
+        if (intervalHours !== 24) args.push(String(intervalHours));
         return args;
       }
     case "backupAutoRetention":

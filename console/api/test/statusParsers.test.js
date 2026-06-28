@@ -304,6 +304,7 @@ test("auto backup status parser handles retention, timer, and permission failure
     stdout: `=== Automatic database backups ===
 Enabled:          true
 Backup time:      05:30
+Interval hours:   12
 Retention:        3 days
 Backup directory: runtime/backups/db
 
@@ -311,6 +312,7 @@ Systemd timer:   enabled`
   });
   assert.equal(status.enabled, true);
   assert.equal(status.backupTime, "05:30");
+  assert.equal(status.intervalHours, "12");
   assert.equal(status.retentionDays, "3");
   assert.equal(status.retentionLabel, "3 Days");
   assert.equal(status.timer, "enabled");

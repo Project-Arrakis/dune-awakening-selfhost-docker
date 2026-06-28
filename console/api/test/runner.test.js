@@ -41,6 +41,7 @@ test("builds allowlisted command arguments without shell interpolation", () => {
   assert.deepEqual(buildDuneArgs("backupAutoStatus"), ["db", "auto", "status"]);
   assert.deepEqual(buildDuneArgs("backupAutoEnable", { time: "05:30", retentionDays: 14 }), ["db", "auto", "enable", "05:30", "14"]);
   assert.deepEqual(buildDuneArgs("backupAutoEnable", { time: "05:30", retentionDays: 0 }), ["db", "auto", "enable", "05:30"]);
+  assert.deepEqual(buildDuneArgs("backupAutoEnable", { time: "05:30", retentionDays: 0, intervalHours: 12 }), ["db", "auto", "enable", "05:30", "0", "12"]);
   assert.deepEqual(buildDuneArgs("backupAutoDisable"), ["db", "auto", "disable"]);
   assert.deepEqual(buildDuneArgs("restartScheduleStatus"), ["restart-schedule", "status"]);
   assert.deepEqual(buildDuneArgs("restartScheduleEnable", { time: "04:30" }), ["restart-schedule", "enable", "04:30", "15"]);
@@ -101,6 +102,7 @@ test("builds allowlisted command arguments without shell interpolation", () => {
   assert.throws(() => buildDuneArgs("ipChangeRestartEnable", { intervalMinutes: 0, notifyMinutes: 1 }));
   assert.throws(() => buildDuneArgs("ipChangeRestartEnable", { intervalMinutes: 10, notifyMinutes: 61 }));
   assert.throws(() => buildDuneArgs("backupAutoEnable", { time: "99:00" }));
+  assert.throws(() => buildDuneArgs("backupAutoEnable", { time: "05:00", intervalHours: 0 }));
   assert.throws(() => buildDuneArgs("backupAutoRetention", { retentionDays: -1 }));
   assert.throws(() => buildDuneArgs("updateAutoEnable", { intervalMinutes: 4 }));
   assert.throws(() => buildDuneArgs("updateAutoEnable", { notifyMinutes: 0 }));
