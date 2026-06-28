@@ -426,17 +426,22 @@ game_external_address_override_env_args() {
   local mode bind_ip advertised_ip
 
   [ "${DUNE_DISABLE_GAME_EXTERNAL_ADDRESS_OVERRIDE:-0}" = "1" ] && return 0
-  [ "${DUNE_ALLOW_GAME_EXTERNAL_ADDRESS_OVERRIDE:-0}" = "1" ] || return 0
 
   mode="$(resolve_server_ip_mode 2>/dev/null || true)"
   bind_ip="$(resolve_game_listen_ip)"
   advertised_ip="$(resolve_advertised_ip)"
 
-  if [ "$bind_ip" != "$advertised_ip" ]; then
-    echo "Skipping EXTERNAL_ADDRESS_OVERRIDE: bind IP $bind_ip differs from advertised IP $advertised_ip." >&2
+  if [ "$mode" != "public" ] && [ "${DUNE_ALLOW_GAME_EXTERNAL_ADDRESS_OVERRIDE:-0}" != "1" ]; then
     return 0
   fi
 
+  if ! is_ipv4 "$advertised_ip" || [ "$advertised_ip" = "auto" ]; then
+    return 0
+  fi
+
+  # run-server.sh turns this into -ExternalAddress while preserving -MultiHome
+  # as the local bind IP. NAT/public hosts need both: bind locally, advertise
+  # publicly in server-state messages consumed by the in-game browser.
   printf '%s\n' -e "EXTERNAL_ADDRESS_OVERRIDE=$advertised_ip"
 }
 
