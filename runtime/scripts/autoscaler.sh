@@ -2013,6 +2013,36 @@ for line in sys.stdin:
   done <<< "$rows"
 }
 
+scan_unscoped_stale_server_state() {
+  local count now last_seen map
+
+  director_heal_due unscoped_stale_server_state "$STALE_SERVER_STATE_SCAN_SECONDS" || return 0
+  now="$(date +%s)"
+
+  count="$(
+    docker logs --since "$SINCE" dune-director 2>&1 | python3 -c '
+import re
+import sys
+
+stale_pattern = re.compile(r"The last server state.s reportTimestamp is older than 60 seconds!")
+print(sum(1 for line in sys.stdin if stale_pattern.search(line)))
+'
+  )"
+
+  [ "${count:-0}" -gt 0 ] || return 0
+
+  last_seen="$(director_heal_get unscoped_stale_state 2>/dev/null || true)"
+  if [ -n "$last_seen" ] && [ $((now - last_seen)) -lt "$STALE_SERVER_STATE_COOLDOWN_SECONDS" ]; then
+    return 0
+  fi
+
+  echo "HEAL unscoped-stale-server-state occurrences=${count} maps=Survival_1,Overmap,DeepDesert_1"
+  for map in Survival_1 Overmap DeepDesert_1; do
+    publish_state_for_map "$map"
+  done
+  director_heal_set unscoped_stale_state "$now"
+}
+
 director_live_server_rows() {
   docker exec dune-postgres psql -U postgres -d dune -At -F '|' -c "
     select map, server_id
@@ -2126,6 +2156,7 @@ while true; do
   scan_travel_demand
   scan_igwo_unavailable_maps
   scan_stale_server_state
+  scan_unscoped_stale_server_state
   progress_deepdesert_travel_handoffs
   scan_proactive_hagga_handoffs
   scan_named_destination_failures
