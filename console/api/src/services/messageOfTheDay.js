@@ -1,7 +1,7 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { publishCarePackageWhisper, validateBroadcastMessage } from "../rmq.js";
-import { ensureMessageOfTheDayPersona } from "../carePackage.js";
+import { ensureMessageOfTheDayPersona, MESSAGE_OF_THE_DAY_PERSONA } from "../carePackage.js";
 
 const DEFAULT_MESSAGE_OF_THE_DAY = {
   enabled: false,
@@ -64,24 +64,25 @@ export async function runMessageOfTheDayScan(config, players, context = {}) {
     return { ok: true, skipped: false, sent: 0, failed: 0 };
   }
 
-  const persona = context.persona || await ensureMessageOfTheDayPersona(context.db);
   const results = [];
   let sent = 0;
   let failed = 0;
+  const persona = (context.mockMode || config.mockMode)
+    ? (context.persona || MESSAGE_OF_THE_DAY_PERSONA)
+    : await ensureMessageOfTheDayPersona(context.db);
   for (const player of pendingPlayers) {
     try {
       if (context.mockMode || config.mockMode) {
-        results.push({ player: player.characterName, ok: true, mock: true });
+        results.push({ player: player.characterName, ok: true, mock: true, senderName: persona.displayName });
       } else {
         const result = await publishCarePackageWhisper(config, {
           message: settings.message,
           senderFuncomId: persona.funcomId,
           senderHexFlsId: persona.hexFlsId,
           recipientFuncomId: player.funcomId,
-          recipientCharacterName: player.characterName,
-          recipientQueue: player.queue
+          recipientCharacterName: player.characterName
         });
-        results.push({ player: player.characterName, ok: true, stdout: result.stdout });
+        results.push({ player: player.characterName, ok: true, senderName: persona.displayName, stdout: result.stdout });
       }
       sent += 1;
       delivered[player.key] = {
@@ -142,7 +143,7 @@ function normalizePlayer(player = {}) {
   const flsId = String(player.fls_id || player.flsId || player.recipientFlsId || "").trim();
   const funcomId = String(player.funcom_id || player.funcomId || player.recipientFuncomId || "").trim();
   const characterName = String(player.character_name || player.characterName || player.recipientCharacterName || "").trim();
-  const key = String(player.action_player_id || player.actor_id || player.player_pawn_id || flsId || funcomId || "").trim();
+  const key = String(player.action_player_id || flsId || funcomId || player.actor_id || player.player_pawn_id || "").trim();
   const sessionKey = String(player.login_session || player.loginSession || player.last_login_time || player.lastLoginTime || "").trim();
   return {
     key,

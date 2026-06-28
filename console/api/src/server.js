@@ -1589,26 +1589,22 @@ async function mapChatRoute(req, res) {
   const mapName = body.mapName || body.region || "HaggaBasin";
   const dimension = body.dimension ?? 0;
   try {
-    const persona = await ensureCarePackageServerPersona(db);
     const recipients = config.mockMode ? [{ queue: "mock-player_queue" }] : await mapChatRecipients(mapName, dimension);
     if (!recipients.length) throw new Error("No online players are currently subscribed to that map.");
-    const results = [];
-    for (const recipient of recipients) {
-      results.push(config.mockMode
-        ? { code: 0, stdout: "mock map chat\n", stderr: "", args: [] }
-        : await publishMapChat(config, {
-            mapName,
-            dimension,
-            message,
-            senderFuncomId: persona.funcomId,
-            senderHexFlsId: persona.hexFlsId,
-            recipientQueue: recipient.queue
-          }));
-    }
+    const sender = config.mockMode ? { funcomId: "Server#4242", hexFlsId: "5E121CE000000001" } : await ensureCarePackageServerPersona(db);
+    const result = config.mockMode
+      ? { code: 0, stdout: "mock map chat\n", stderr: "", args: [] }
+      : await publishMapChat(config, {
+          mapName,
+          dimension,
+          message,
+          senderFuncomId: sender.funcomId,
+          senderHexFlsId: sender.hexFlsId
+        });
     const target = `${mapName}.${dimension}`;
     audit(config, req, "admin.map-chat", { supported: true, target, recipients: recipients.length });
-    recordAdminHistory(config, { command: "web-map-chat", target, friendly: "Map Chat", path: "rmq:chat.map/direct", result: "published", message });
-    return json(res, 200, { supported: true, ok: true, stdout: results.map((result) => result.stdout).join("\n"), stderr: results.map((result) => result.stderr).filter(Boolean).join("\n"), note: `Map chat message was sent to ${recipients.length} online player${recipients.length === 1 ? "" : "s"}.`, recipients: recipients.length });
+    recordAdminHistory(config, { command: "web-map-chat", target, friendly: "Map Chat", path: "rmq:chat.map", result: "published", message });
+    return json(res, 200, { supported: true, ok: true, stdout: result.stdout, stderr: result.stderr || "", note: `Map chat message was sent to ${recipients.length} online player${recipients.length === 1 ? "" : "s"}.`, recipients: recipients.length });
   } catch (error) {
     const reason = redact(String(error.message || error).replaceAll("Care Package message whisper", "Map chat"));
     audit(config, req, "admin.map-chat", { supported: false, error: reason });
@@ -1640,7 +1636,9 @@ async function mapChatRecipients(mapName, dimension) {
   const mapPlaceholders = maps.map((_, index) => `$${index + 1}`).join(",");
   const onlineCondition = playerStateColumns.has("online_status") ? "coalesce(ps.online_status::text, 'Offline') <> 'Offline'" : "true";
   const result = await db.query(`
-    select distinct concat(ac."user", '_queue') as queue
+    select distinct concat(ac."user", '_queue') as queue,
+           coalesce(ac."user", '') as fls_id,
+           coalesce(ac.funcom_id, '') as funcom_id
     from dune.player_state ps
     join dune.accounts ac on ac.${quoteIdentifier(accountIdentityColumn)} = ps.${quoteIdentifier(playerStateIdentityColumn)}
     join dune.world_partition wp on wp.server_id = ps.server_id
@@ -1649,7 +1647,11 @@ async function mapChatRecipients(mapName, dimension) {
       and wp.map in (${mapPlaceholders})
       and coalesce(wp.dimension_index, 0) = $${maps.length + 1}
     order by queue`, values);
-  return (result.rows || []).map((row) => ({ queue: String(row.queue || "").trim() })).filter((row) => row.queue);
+  return (result.rows || []).map((row) => ({
+    queue: String(row.queue || "").trim(),
+    flsId: String(row.fls_id || "").trim(),
+    funcomId: String(row.funcom_id || "").trim()
+  })).filter((row) => row.queue);
 }
 
 function mapChatServerMaps(mapName) {
