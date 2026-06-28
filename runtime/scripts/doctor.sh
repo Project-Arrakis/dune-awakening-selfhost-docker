@@ -63,6 +63,74 @@ check_udp() {
   fi
 }
 
+is_wsl_host() {
+  grep -qiE 'microsoft|wsl' /proc/sys/kernel/osrelease 2>/dev/null
+}
+
+sysctl_value() {
+  local key="$1"
+  local path="/proc/sys/${key//./\/}"
+  cat "$path" 2>/dev/null || true
+}
+
+check_host_latency_tuning() {
+  local rmem_max
+  local backlog
+  local disabled="${DUNE_HOST_LATENCY_TUNE:-1}"
+
+  rmem_max="$(sysctl_value net.core.rmem_max)"
+  backlog="$(sysctl_value net.core.netdev_max_backlog)"
+
+  if [ "$disabled" = "0" ]; then
+    warn_msg "Host latency tuning is disabled by DUNE_HOST_LATENCY_TUNE=0"
+    return 0
+  fi
+
+  if [ "${rmem_max:-0}" -ge 67108864 ] 2>/dev/null && [ "${backlog:-0}" -ge 250000 ] 2>/dev/null; then
+    ok "Host latency sysctls are applied"
+  else
+    warn_msg "Host latency sysctls are not at the recommended values"
+    echo "     They are applied automatically before game server startup; manual run: runtime/scripts/host-latency-tune.sh"
+    echo "     Current net.core.rmem_max=${rmem_max:-unknown}, net.core.netdev_max_backlog=${backlog:-unknown}"
+  fi
+}
+
+check_game_container_pinning() {
+  local container
+  local cpuset
+  local found=0
+
+  command -v docker >/dev/null 2>&1 || return 0
+
+  while IFS= read -r container; do
+    [ -n "$container" ] || continue
+    [ "$container" = "dune-server-gateway" ] && continue
+    cpuset="$(docker inspect -f '{{.HostConfig.CpusetCpus}}' "$container" 2>/dev/null || true)"
+    if [ -n "$cpuset" ] && [ "$cpuset" != "<no value>" ]; then
+      warn_msg "Game container CPU pinning detected: $container cpuset=$cpuset"
+      found=1
+    fi
+  done < <(docker ps --format '{{.Names}}' 2>/dev/null | grep -E '^dune-server-' || true)
+
+  if [ "$found" -eq 0 ]; then
+    ok "No active game container CPU pinning detected"
+  fi
+}
+
+check_deepdesert_mode() {
+  local mode
+
+  [ -x runtime/scripts/map-modes.sh ] || return 0
+  mode="$(runtime/scripts/map-modes.sh mode DeepDesert_1 2>/dev/null | awk 'NF { print $NF; exit }' || true)"
+
+  if [ "$mode" = "always-on" ]; then
+    warn_msg "DeepDesert_1 is always-on; this can worsen vehicle timing on WSL2/dense bases"
+    echo "     Prefer dynamic unless you have enough dedicated host headroom."
+  elif [ -n "$mode" ]; then
+    ok "DeepDesert_1 map mode: $mode"
+  fi
+}
+
 config_value() {
   local file="$1"
   local key="$2"
@@ -144,6 +212,18 @@ check_udp "$client_port_base" "Overmap clients"
 check_udp "$((client_port_base + 1))" "Survival_1 clients"
 check_udp "$igw_port_base" "Survival_1 server-to-server"
 check_udp "$((igw_port_base + 1))" "Overmap server-to-server"
+
+echo
+echo "=== Host latency and vehicle timing ==="
+if is_wsl_host; then
+  warn_msg "WSL2 host detected"
+  echo "     Fast vehicle movement can be more sensitive to WSL2 scheduling/network jitter; a full Linux VM or native Linux is preferred for busy servers."
+else
+  ok "Host is not detected as WSL2"
+fi
+check_host_latency_tuning
+check_game_container_pinning
+check_deepdesert_mode
 
 echo
 echo "=== Steam server files ==="

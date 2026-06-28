@@ -601,6 +601,7 @@ EOF
 chmod -R 755 "$FAKE_K8S_SERVICEACCOUNT_DIR"
 
 docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
+ensure_host_latency_tuned
 
 docker run -d \
   --name "$CONTAINER_NAME" \

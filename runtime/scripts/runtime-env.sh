@@ -399,6 +399,29 @@ resolve_rmq_admin_host() {
   resolve_rmq_game_host
 }
 
+ensure_host_latency_tuned() {
+  local stamp="runtime/generated/host-latency-tune.stamp"
+  local interval="${DUNE_HOST_LATENCY_TUNE_INTERVAL_SECONDS:-300}"
+  local now last elapsed
+
+  [ "${DUNE_HOST_LATENCY_TUNE:-1}" = "1" ] || return 0
+  [ -x runtime/scripts/host-latency-tune.sh ] || return 0
+  mkdir -p runtime/generated
+
+  now="$(date +%s)"
+  last="$(cat "$stamp" 2>/dev/null || true)"
+  if [ -n "$last" ] && [ "$last" -gt 0 ] 2>/dev/null; then
+    elapsed=$((now - last))
+    [ "$elapsed" -lt "$interval" ] && return 0
+  fi
+
+  if timeout --kill-after=2s "${DUNE_HOST_LATENCY_TUNE_TIMEOUT_SECONDS:-30}s" runtime/scripts/host-latency-tune.sh >/tmp/dune-host-latency-tune.log 2>&1; then
+    printf '%s\n' "$now" >"$stamp"
+  else
+    echo "WARN host latency tuning did not complete; continuing startup. See /tmp/dune-host-latency-tune.log" >&2
+  fi
+}
+
 game_external_address_override_env_args() {
   local mode bind_ip advertised_ip
 
