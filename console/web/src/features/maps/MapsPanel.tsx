@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useRef, useState } from "react";
 import { ChevronDown, ChevronUp, Grid2X2, List, Lock } from "lucide-react";
-import { mapsApi, type LiveMapMemoryRow, type MemoryBalancerState, type UserSettingField, type UserSettingsSchema } from "../../api/maps";
+import { mapsApi, type LiveMapMemoryRow, type MapRuntimeSettings, type MemoryBalancerState, type UserSettingField, type UserSettingsSchema } from "../../api/maps";
 import { setupApi, type Task } from "../../api/setup";
 import { SecretInput } from "../../components/SecretInput";
 import { KeyValueGrid, StatusPill, TechnicalDetails } from "../../components/common/DisplayPrimitives";
@@ -222,6 +222,10 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
   const [memoryError, setMemoryError] = useState("");
   const [memoryBalancer, setMemoryBalancer] = useState<MemoryBalancerState | null>(null);
   const [memoryBalancerSaving, setMemoryBalancerSaving] = useState(false);
+  const [runtimeSettings, setRuntimeSettings] = useState<MapRuntimeSettings | null>(null);
+  const [startupParallelism, setStartupParallelism] = useState("1");
+  const [runtimeSettingsSaving, setRuntimeSettingsSaving] = useState(false);
+  const [runtimeSettingsResult, setRuntimeSettingsResult] = useState<HomeTaskResult | null>(null);
   const [sietchesText, setSietchesText] = useState("");
   const [sietchDimensionsText, setSietchDimensionsText] = useState("");
   const [sietchDimensionIdsText, setSietchDimensionIdsText] = useState("");
@@ -238,6 +242,7 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
   const [settingsTab, setSettingsTab] = useState<"engine" | "game">("engine");
   const [modifiersOpen, setModifiersOpen] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [startupSettingsOpen, setStartupSettingsOpen] = useState(false);
   const [memory, setMemory] = useState("8");
   const [modeDraft, setModeDraft] = useState("dynamic");
   const [loading, setLoading] = useState(false);
@@ -478,6 +483,11 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
   async function loadMemoryBalancer() {
     setMemoryBalancer(await mapsApi.memoryBalancer());
   }
+  async function loadRuntimeSettings() {
+    const settings = await mapsApi.runtimeSettings();
+    setRuntimeSettings(settings);
+    setStartupParallelism(String(settings.alwaysOnStartupParallelism));
+  }
   async function toggleMemoryBalancer() {
     setMemoryBalancerSaving(true);
     try {
@@ -487,12 +497,33 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
       setMemoryBalancerSaving(false);
     }
   }
+  async function saveRuntimeSettings() {
+    const max = runtimeSettings?.maxAlwaysOnStartupParallelism || 16;
+    const value = Number(startupParallelism);
+    if (!Number.isInteger(value) || value < 1 || value > max) {
+      setRuntimeSettingsResult({ status: "failed", title: "Startup Setting Not Saved", message: `Use a whole number from 1 to ${max}.` });
+      return;
+    }
+    setRuntimeSettingsSaving(true);
+    setRuntimeSettingsResult(null);
+    try {
+      const next = await mapsApi.saveRuntimeSettings({ alwaysOnStartupParallelism: value });
+      setRuntimeSettings(next);
+      setStartupParallelism(String(next.alwaysOnStartupParallelism));
+      setRuntimeSettingsResult({ status: "succeeded", title: "Startup Setting Saved", message: "Applies to the next always-on reconcile." });
+    } catch (error) {
+      setRuntimeSettingsResult({ status: "failed", title: "Startup Setting Failed", message: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setRuntimeSettingsSaving(false);
+    }
+  }
   useEffect(() => {
     run(loadMaps);
     run(loadSchema);
     run(loadUserEngine);
     run(loadLiveMemory);
     run(loadMemoryBalancer);
+    run(loadRuntimeSettings);
     run(loadSietches);
   }, []);
   useEffect(() => {
@@ -552,6 +583,13 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
     }, clearDelayMs);
     return () => window.clearTimeout(id);
   }, [mapsResult, mapsResultScope]);
+  useEffect(() => {
+    if (!runtimeSettingsResult || runtimeSettingsResult.status === "running") return;
+    const id = window.setTimeout(() => {
+      setRuntimeSettingsResult(null);
+    }, 5000);
+    return () => window.clearTimeout(id);
+  }, [runtimeSettingsResult]);
   useEffect(() => {
     const id = window.setInterval(() => { void loadLiveMemory().catch(() => {}); }, 5000);
     return () => window.clearInterval(id);
@@ -1088,12 +1126,32 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
   }
   const modifiersAvailable = mapsLoaded;
   const advancedAvailable = mapsLoaded;
+  const runtimeParallelismValue = runtimeSettings?.alwaysOnStartupParallelism ?? 1;
+  const runtimeParallelismMax = runtimeSettings?.maxAlwaysOnStartupParallelism ?? 16;
+  const startupParallelismDirty = Number(startupParallelism) !== runtimeParallelismValue;
   return <section className="panel maps-panel">
     <div className="panel-title"><h2>Maps & Sietches</h2><div className="maps-title-actions">{memoryBalancer?.enabled && <span className={`maps-memory-balancer-status ${memoryBalancer.lastError ? "danger" : ""}`}>{memoryBalancer.lastError ? `Memory Balancer error: ${memoryBalancer.lastError}` : memoryBalancer.lastMessage || "Memory Balancer is monitoring running maps"}</span>}<button className={`switch-toggle maps-memory-balancer-toggle ${memoryBalancer?.enabled ? "enabled" : "disabled"}`} disabled={memoryBalancerSaving} onClick={() => run(toggleMemoryBalancer)}><span className="switch-label">Memory Balancer</span><strong className="switch-state">{memoryBalancer?.enabled ? "ON" : "OFF"}</strong></button><button disabled={loading} onClick={() => run(loadMaps)}>{loading ? "Refreshing..." : "Refresh Maps"}</button></div></div>
     {mapsResult && mapsResultScope === "maps" && !isDeepDesertDualResult(mapsResult) && !isForceDespawnResult(mapsResult) && !isMapSettingsResult(mapsResult) ? <div className="maps-result-slot"><HomeTaskResultCard result={mapsResult} /></div> : null}
     <section className="action-section">
       <h4>Maps Overview</h4>
       <MapModeGuide />
+      <div className={`playerAdmin_toggle maps-startup-toggle ${startupSettingsOpen ? "open" : ""}`}>
+        <button className="playerAdmin_toggleHeader" aria-label={startupSettingsOpen ? "Collapse Always-On Startup" : "Expand Always-On Startup"} onClick={() => setStartupSettingsOpen(!startupSettingsOpen)}>{startupSettingsOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}<span>Always-On Startup</span></button>
+        {startupSettingsOpen && <div className="playerAdmin_toggleBody maps-startup-settings">
+        <div className="maps-startup-settings-copy">
+          <strong>Parallel Map Warmup</strong>
+          <p>Starts multiple always-on maps at once on stronger hosts. Higher values warm faster but spike CPU, RAM, and disk I/O.</p>
+        </div>
+        <div className="action-line maps-startup-settings-line">
+          <label className="memory-number-field">Parallel Starts<input type="number" min="1" max={runtimeParallelismMax} step="1" value={startupParallelism} onChange={(event) => setStartupParallelism(event.target.value)} /></label>
+          <button disabled={!startupParallelismDirty || runtimeSettingsSaving} onClick={() => run(saveRuntimeSettings)}>{runtimeSettingsSaving ? "Saving..." : "Save Setting"}</button>
+          {runtimeSettingsResult ? <span className={`inline-task-result map-action-result maps-startup-result result-${inlineTaskResultClass(runtimeSettingsResult)}`}>
+            <strong>{runtimeSettingsResult.title}</strong>
+            {runtimeSettingsResult.message && <span className="inline-task-message">{runtimeSettingsResult.message}</span>}
+          </span> : null}
+        </div>
+        </div>}
+      </div>
       {loading && !mapRows.length && <div className="empty"><span className="loading-dots">Loading Maps</span></div>}
       {!loading && loadError && !mapRows.length && <div className="result-panel"><strong>Map list could not be loaded.</strong><p>{loadError}</p><button onClick={() => run(loadMaps)}>Retry</button></div>}
       {mapRows.length ? <div className="table-wrap maps-overview-table-wrap"><table className="maps-overview-table"><thead><tr><th>Map</th><th>Status</th><th>Mode</th><th>Memory</th><th className="actions-column">Action</th></tr></thead><tbody>{mapRows.map((row) => {

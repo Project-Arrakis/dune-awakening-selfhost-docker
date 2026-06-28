@@ -7,10 +7,42 @@ STATE_FILE="${DUNE_MAP_MODES_FILE:-runtime/generated/map-runtime-modes.json}"
 GRACE_SECONDS="${DUNE_AUTOSCALER_DESPAWN_GRACE_SECONDS:-${DUNE_AUTOSCALER_IDLE_SECONDS:-300}}"
 RECONCILE_LOCK_FILE="${DUNE_ALWAYS_ON_RECONCILE_LOCK_FILE:-runtime/generated/map-modes-reconcile.lock}"
 RECONCILE_STATE_FILE="${DUNE_ALWAYS_ON_RECONCILE_STATE_FILE:-runtime/generated/map-modes-reconcile.tsv}"
-MAX_SPAWNS_PER_RECONCILE="${DUNE_ALWAYS_ON_RECONCILE_MAX_SPAWNS:-1}"
-MAX_WARMING_SERVERS="${DUNE_ALWAYS_ON_RECONCILE_MAX_WARMING:-1}"
-MIN_SPAWN_INTERVAL_SECONDS="${DUNE_ALWAYS_ON_RECONCILE_MIN_SPAWN_INTERVAL_SECONDS:-30}"
+RECONCILE_STATE_LOCK_FILE="${DUNE_ALWAYS_ON_RECONCILE_STATE_LOCK_FILE:-runtime/generated/map-modes-reconcile-state.lock}"
 SPAWN_TIMEOUT_SECONDS="${DUNE_ALWAYS_ON_SPAWN_TIMEOUT_SECONDS:-240}"
+
+positive_int_or_default() {
+  local value="$1"
+  local fallback="$2"
+
+  if printf '%s' "$value" | grep -Eq '^[1-9][0-9]*$'; then
+    printf '%s\n' "$value"
+  else
+    printf '%s\n' "$fallback"
+  fi
+}
+
+nonnegative_int_or_default() {
+  local value="$1"
+  local fallback="$2"
+
+  if printf '%s' "$value" | grep -Eq '^[0-9]+$'; then
+    printf '%s\n' "$value"
+  else
+    printf '%s\n' "$fallback"
+  fi
+}
+
+STARTUP_PARALLELISM="$(positive_int_or_default "${DUNE_ALWAYS_ON_STARTUP_PARALLELISM:-1}" 1)"
+RECONCILE_PARALLELISM="$(positive_int_or_default "${DUNE_ALWAYS_ON_RECONCILE_PARALLELISM:-$STARTUP_PARALLELISM}" "$STARTUP_PARALLELISM")"
+MAX_SPAWNS_PER_RECONCILE="$(positive_int_or_default "${DUNE_ALWAYS_ON_RECONCILE_MAX_SPAWNS:-1}" 1)"
+MAX_WARMING_SERVERS="$(positive_int_or_default "${DUNE_ALWAYS_ON_RECONCILE_MAX_WARMING:-$STARTUP_PARALLELISM}" "$STARTUP_PARALLELISM")"
+if [ -n "${DUNE_ALWAYS_ON_RECONCILE_MIN_SPAWN_INTERVAL_SECONDS+x}" ]; then
+  MIN_SPAWN_INTERVAL_SECONDS="$(nonnegative_int_or_default "$DUNE_ALWAYS_ON_RECONCILE_MIN_SPAWN_INTERVAL_SECONDS" 30)"
+elif [ "$STARTUP_PARALLELISM" -gt 1 ]; then
+  MIN_SPAWN_INTERVAL_SECONDS=0
+else
+  MIN_SPAWN_INTERVAL_SECONDS=30
+fi
 
 usage() {
   cat <<'EOF'
@@ -260,16 +292,19 @@ reconcile_state_get() {
 reconcile_state_set() {
   local key="$1"
   local value="$2"
-  local dir tmp
+  local dir tmp lock_fd
 
   dir="$(dirname "$RECONCILE_STATE_FILE")"
   mkdir -p "$dir"
+  exec {lock_fd}>"$RECONCILE_STATE_LOCK_FILE"
+  flock "$lock_fd"
   tmp="$(mktemp "$dir/.reconcile-state.XXXXXX")"
   if [ -f "$RECONCILE_STATE_FILE" ]; then
     awk -F '\t' -v key="$key" '$1 != key { print }' "$RECONCILE_STATE_FILE" >"$tmp"
   fi
   printf '%s\t%s\n' "$key" "$value" >>"$tmp"
   mv "$tmp" "$RECONCILE_STATE_FILE"
+  exec {lock_fd}>&-
 }
 
 recent_spawn_blocking() {
@@ -437,6 +472,55 @@ reconcile_map() {
   done <<< "$rows"
 }
 
+reconcile_job_pids=()
+
+wait_for_reconcile_slot() {
+  local first_pid
+
+  while [ "${#reconcile_job_pids[@]}" -ge "$RECONCILE_PARALLELISM" ]; do
+    first_pid="${reconcile_job_pids[0]}"
+    wait "$first_pid" || true
+    reconcile_job_pids=("${reconcile_job_pids[@]:1}")
+  done
+}
+
+wait_for_reconcile_jobs() {
+  local pid
+
+  for pid in "${reconcile_job_pids[@]}"; do
+    wait "$pid" || true
+  done
+  reconcile_job_pids=()
+}
+
+reconcile_maps() {
+  local map
+
+  if [ "$#" -eq 0 ]; then
+    return 0
+  fi
+
+  if [ "$RECONCILE_PARALLELISM" -le 1 ]; then
+    for map in "$@"; do
+      [ -n "$map" ] || continue
+      reconcile_map "$map"
+    done
+    return 0
+  fi
+
+  echo "Reconciling always-on maps with parallelism=${RECONCILE_PARALLELISM}, max-warming=${MAX_WARMING_SERVERS}, min-spawn-interval=${MIN_SPAWN_INTERVAL_SECONDS}s"
+  reconcile_job_pids=()
+  for map in "$@"; do
+    [ -n "$map" ] || continue
+    wait_for_reconcile_slot
+    (
+      reconcile_map "$map"
+    ) &
+    reconcile_job_pids+=("$!")
+  done
+  wait_for_reconcile_jobs
+}
+
 despawn_map() {
   local map="$1"
   local rows partition_id assigned running
@@ -461,9 +545,15 @@ despawn_map() {
 }
 
 reconcile_all() {
+  local maps=() map
+
   require_postgres
   ensure_state_file
-  python3 - "$STATE_FILE" <<'PY' | while read -r map; do
+  while read -r map; do
+    [ -n "$map" ] || continue
+    protected_map "$map" && continue
+    maps+=("$map")
+  done < <(python3 - "$STATE_FILE" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -476,14 +566,13 @@ for map_name, cfg in sorted(data.get("maps", {}).items()):
     if cfg.get("mode") == "always-on":
         print(map_name)
 PY
-    [ -n "$map" ] || continue
-    protected_map "$map" && continue
-    reconcile_map "$map"
-  done
+  )
+
+  reconcile_maps "${maps[@]}"
 }
 
 reconcile_selected() {
-  local map
+  local maps=() map
 
   if [ "$#" -eq 0 ]; then
     reconcile_all
@@ -500,8 +589,10 @@ reconcile_selected() {
       echo "SKIP always-on reconcile map=$map mode=$(mode_for_map "$map")"
       continue
     fi
-    reconcile_map "$map"
+    maps+=("$map")
   done
+
+  reconcile_maps "${maps[@]}"
 }
 
 with_reconcile_lock() {

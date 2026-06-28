@@ -45,6 +45,8 @@ let playerAnnouncementsAutoLastRun = 0;
 const journeyTagsData = loadJourneyTagsData();
 const memoryBalancer = createMemoryBalancer(config);
 const POSTGRES_UNAVAILABLE_MESSAGE = "Postgres is not running or is restarting. Wait for the database service to come back online, then refresh.";
+const DEFAULT_ALWAYS_ON_STARTUP_PARALLELISM = 1;
+const MAX_ALWAYS_ON_STARTUP_PARALLELISM = 16;
 
 process.on("unhandledRejection", (error) => {
   console.error(`Unhandled background rejection: ${redact(error?.message || error)}`);
@@ -449,6 +451,8 @@ async function handleApi(req, res) {
   if (path === "/api/map/overlays") return dbJson(res, () => duneDb.liveMapMarkers(db, url.searchParams.get("map") || ""));
   if (path === "/api/maps/mode" && req.method === "POST") return confirmedTask(req, res, "maps", "mapsSetMode", {}, "SET MAP MODE");
   if (path === "/api/maps/settings" && req.method === "POST") return mapSettingsRoute(req, res);
+  if (path === "/api/maps/runtime-settings" && req.method === "POST") return mapsRuntimeSettingsRoute(req, res);
+  if (path === "/api/maps/runtime-settings") return json(res, 200, readMapsRuntimeSettings());
   if (path === "/api/maps") return commandJson(res, "mapsList");
   if (path === "/api/maps/mode") return commandJson(res, "mapsMode", { map: url.searchParams.get("map") || "" });
   if (path === "/api/maps/reconcile" && req.method === "POST") return confirmedTask(req, res, "maps", "mapsReconcile", {}, "RECONCILE MAPS");
@@ -1765,6 +1769,42 @@ function readSetupConfigValues() {
     }
   }
   return values;
+}
+
+function readEnvFileValue(key) {
+  const file = resolve(config.repoRoot, ".env");
+  if (!existsSync(file)) return "";
+  for (const rawLine of readFileSync(file, "utf8").split(/\r?\n/)) {
+    const parsed = parseEnvLine(rawLine);
+    if (parsed?.key === key) return parsed.value;
+  }
+  return "";
+}
+
+function readMapsRuntimeSettings() {
+  const raw = readEnvFileValue("DUNE_ALWAYS_ON_STARTUP_PARALLELISM") || process.env.DUNE_ALWAYS_ON_STARTUP_PARALLELISM || "";
+  const parsed = Number(raw);
+  const value = Number.isInteger(parsed) && parsed >= 1
+    ? Math.min(parsed, MAX_ALWAYS_ON_STARTUP_PARALLELISM)
+    : DEFAULT_ALWAYS_ON_STARTUP_PARALLELISM;
+  return {
+    alwaysOnStartupParallelism: value,
+    defaultAlwaysOnStartupParallelism: DEFAULT_ALWAYS_ON_STARTUP_PARALLELISM,
+    maxAlwaysOnStartupParallelism: MAX_ALWAYS_ON_STARTUP_PARALLELISM,
+    configured: Boolean(raw)
+  };
+}
+
+async function mapsRuntimeSettingsRoute(req, res) {
+  const body = await readJson(req);
+  const value = Number(body.alwaysOnStartupParallelism);
+  if (!Number.isInteger(value) || value < 1 || value > MAX_ALWAYS_ON_STARTUP_PARALLELISM) {
+    return json(res, 400, { error: `Always-on startup parallelism must be a whole number from 1 to ${MAX_ALWAYS_ON_STARTUP_PARALLELISM}.` });
+  }
+  updateEnvFileValue("DUNE_ALWAYS_ON_STARTUP_PARALLELISM", String(value));
+  process.env.DUNE_ALWAYS_ON_STARTUP_PARALLELISM = String(value);
+  audit(config, req, "maps.runtime-settings", { DUNE_ALWAYS_ON_STARTUP_PARALLELISM: value });
+  return json(res, 200, readMapsRuntimeSettings());
 }
 
 function parseEnvLine(line) {

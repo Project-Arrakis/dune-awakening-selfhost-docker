@@ -1053,6 +1053,18 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
 .map-mode-guide-card.mode-core, .map-mode-guide-card.mode-always-on { border-color: rgba(122, 177, 97, .65); }
 .map-mode-guide-card.mode-dynamic, .map-mode-guide-card.mode-overmap-active { border-color: rgba(216, 177, 95, .55); }
 .map-mode-guide-card.mode-disabled { border-color: rgba(197, 85, 85, .55); }
+.maps-startup-toggle { margin: 0 0 14px; }
+.maps-startup-settings { display: grid; gap: 12px; }
+.maps-startup-settings-copy { display: grid; gap: 4px; }
+.maps-startup-settings-copy strong { color: #ffd08a; }
+.maps-startup-settings-line { align-items: end; }
+.maps-startup-result {
+  flex-wrap: nowrap;
+  max-width: none;
+  white-space: nowrap;
+  animation: fade-result 5s ease forwards;
+}
+.maps-startup-result .inline-task-message { flex: 0 1 auto; white-space: nowrap; }
 .maps-overview-table { table-layout: fixed; width: 100%; min-width: 920px; }
 .maps-overview-table th:nth-child(1), .maps-overview-table td:nth-child(1) { width: 28%; }
 .maps-overview-table th:nth-child(2), .maps-overview-table td:nth-child(2) { width: 16%; }
