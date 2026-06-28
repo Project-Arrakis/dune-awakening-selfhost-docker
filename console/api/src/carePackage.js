@@ -5,6 +5,7 @@ import { buildDuneArgs, runDune } from "./runner.js";
 import { itemRequiresDatabaseGrant, resolveCatalogItem } from "./adminCatalog.js";
 import { publishCarePackageWhisper } from "./rmq.js";
 import { giveItemToPlayer } from "./duneDb.js";
+import { liveItemGrantOk, liveItemGrantWarning } from "./grantResults.js";
 
 const DEFAULT_KIT_ID = "care-package-v1";
 const CARE_PACKAGE_SERVER_PERSONA = {
@@ -313,7 +314,19 @@ export async function grantCarePackage(config, playerId, body = {}, context = {}
       } else {
         const command = buildDuneArgs(operation, payload);
         const result = config.mockMode ? { code: 0, stdout: "mock package item grant\n", stderr: "" } : await runDune(config, command);
-        results.push({ ok: true, operation, item: payload, stdout: result.stdout, stderr: result.stderr, exitCode: result.code, warning: item.quality ? "Grade could not be persisted because the player actor ID was unavailable." : undefined });
+        const warnings = [
+          item.quality ? "Grade could not be persisted because the player actor ID was unavailable." : "",
+          liveItemGrantWarning(result)
+        ].filter(Boolean);
+        results.push({
+          ok: liveItemGrantOk(result),
+          operation,
+          item: payload,
+          stdout: result.stdout,
+          stderr: result.stderr,
+          exitCode: result.code,
+          warning: warnings.join(" ") || undefined
+        });
       }
     } catch (error) {
       results.push({ ok: false, item, error: error.message || String(error) });

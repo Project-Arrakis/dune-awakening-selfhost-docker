@@ -28,6 +28,7 @@ import { updateEnvFileValue as updateEnvValue } from "./services/envFile.js";
 import { funcomAuthMismatchDetected, matchingFuncomAuthLines, saveFuncomTokenValue as writeFuncomToken, validDockerSince } from "./services/funcomAuth.js";
 import { readCharacterTransferSettings, saveCharacterTransferSettings } from "./services/characterTransferSettings.js";
 import { handleDiscordAdapterRoute, isDiscordAdapterRoute } from "./services/discordAdapter.js";
+import { liveItemGrantOk, liveItemGrantWarning } from "./grantResults.js";
 import { primeMessageOfTheDayOnlineState, readMessageOfTheDay, restoreMessageOfTheDay, runMessageOfTheDayScan, saveMessageOfTheDay } from "./services/messageOfTheDay.js";
 import { primePlayerAnnouncementOnlineState, readPlayerAnnouncements, restorePlayerAnnouncements, runPlayerAnnouncementScan, savePlayerAnnouncements } from "./services/playerAnnouncements.js";
 
@@ -1548,7 +1549,16 @@ async function grantPlayerItem(playerId, item, target) {
   const command = buildDuneArgs(operation, payload);
   if (config.mockMode) return { ok: true, operation, command };
   const result = await runDune(config, command);
-  return { ok: true, operation, item: payload, stdout: result.stdout, stderr: result.stderr, exitCode: result.code };
+  const warning = liveItemGrantWarning(result);
+  return {
+    ok: liveItemGrantOk(result),
+    operation,
+    item: payload,
+    stdout: result.stdout,
+    stderr: result.stderr,
+    exitCode: result.code,
+    warning: warning || undefined
+  };
 }
 
 function validateGrantGrade(value) {
