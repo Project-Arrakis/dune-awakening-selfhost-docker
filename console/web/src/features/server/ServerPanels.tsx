@@ -1518,10 +1518,11 @@ function isHomeBootStarting(status: string, readiness: string) {
 }
 
 function homeOverallBadge(value: string) {
-  if (/^restarting\b/i.test(value)) return "WARN";
-  if (/^stopping\b/i.test(value)) return "WARN";
+  const normalized = String(value || "").trim().toLowerCase();
+  if (normalized.startsWith("restarting")) return "WARN";
+  if (normalized.startsWith("stopping")) return "WARN";
   if (/^stopped$/i.test(value)) return "WARN";
-  if (/^starting\b/i.test(value)) return "WARN";
+  if (normalized.startsWith("starting")) return "WARN";
   if (/^issue(?: detected)?$/i.test(value)) return "WARN";
   if (/warming/i.test(value)) return "Info";
   if (/stopped|not running|offline/i.test(value)) return "WARN";

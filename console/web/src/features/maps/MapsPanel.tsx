@@ -621,10 +621,26 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
       document.removeEventListener("visibilitychange", refreshVisibleMaps);
     };
   }, []);
-  const mapRows = mergeMapAndMemoryRows(mapsText, memoryText, serversText);
+  const mapRows = mergeMapAndMemoryRows(mapsText, memoryText, serversText, readinessText);
   const serverPartitionRows = parseServerPartitionRows(serversText);
   const readinessStatusByPartitionId = parseReadinessPartitionStatuses(readinessText);
   const partitionStatusById = new globalThis.Map(serverPartitionRows.map((row) => [String(row.partitionId || ""), String(row.status || "")]));
+  const mapWarmupActive = mapRows.some((row) => {
+    const mode = String(row.mode || "").trim();
+    const status = String(row.status || "").trim();
+    return /^(Always On|Core Map)$/i.test(mode) && /^(Queued|Starting|Loading|Warming)$/i.test(status);
+  });
+  useEffect(() => {
+    if (!mapWarmupActive) return;
+    const refreshWarmup = () => {
+      if (document.visibilityState !== "visible") return;
+      void refreshMapRuntime().catch(() => {});
+      void loadLiveMemory().catch(() => {});
+    };
+    refreshWarmup();
+    const id = window.setInterval(refreshWarmup, 1500);
+    return () => window.clearInterval(id);
+  }, [mapWarmupActive]);
   const selectedMap = mapRows.find((row) => String(row.map) === selectedMapName) || null;
   const selectedName = String(selectedMap?.map || "");
   const userGameMap = mapRows.find((row) => String(row.map) === userGameMapName) || null;
@@ -1166,8 +1182,8 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
         const baseStatus = isDeepDesertRow && deepDesertDualConfiguring
           ? "Configuring"
           : isDeepDesertRow && primaryDeepDesertPartition ? partitionStatusById.get(String(primaryDeepDesertPartition.partitionId || "")) || String(primaryDeepDesertPartition.status || row.status || "Not Available")
-          : isSurvivalRow && primarySurvivalSietch ? partitionStatusById.get(primarySurvivalSietch.partitionId) || readinessStatusByPartitionId.get(primarySurvivalSietch.partitionId) || String(row.status || "Not Available") : String(row.status || "Not Available");
-        const displayStatus = statusWithLiveMemory(baseStatus, memoryRow, row.mode);
+          : isSurvivalRow && primarySurvivalSietch ? readinessStatusByPartitionId.get(primarySurvivalSietch.partitionId) || partitionStatusById.get(primarySurvivalSietch.partitionId) || String(row.status || "Not Available") : String(row.status || "Not Available");
+        const displayStatus = isSurvivalRow && /^Ready$/i.test(baseStatus) ? "Ready" : statusWithLiveMemory(baseStatus, memoryRow, row.mode);
         const canForceDespawn = isDeepDesertRow && deepDesertDualEnabled
           ? [displayStatus, ...dynamicDeepDesertRows.map((deepRow) => partitionStatusById.get(String(deepRow.partitionId || "")) || String(deepRow.status || ""))].some((status) => mapCanForceDespawn({ status }))
           : mapCanForceDespawn({ ...row, status: displayStatus });
@@ -1797,6 +1813,14 @@ function parseReadinessPartitionStatuses(text: string) {
       else if (/^FAIL$/i.test(state)) statuses.set("1", "Not Running");
       continue;
     }
+    const baseOvermapMatch = line.match(/^(OK|WAIT|FAIL)\s+Overmap\s+(.+)$/i);
+    if (baseOvermapMatch) {
+      const [, state, detail] = baseOvermapMatch;
+      if (/^OK$/i.test(state) && /\bready\b/i.test(detail)) statuses.set("2", "Ready");
+      else if (/^WAIT$/i.test(state) && /\bwarming\b/i.test(detail)) statuses.set("2", "Loading");
+      else if (/^FAIL$/i.test(state)) statuses.set("2", "Not Running");
+      continue;
+    }
     const match = line.match(/^(OK|WAIT|FAIL)\s+dune-server-survival-1-(\d+)\s+(.+)$/i);
     if (!match) continue;
     const [, state, partitionId, detail] = match;
@@ -1807,24 +1831,30 @@ function parseReadinessPartitionStatuses(text: string) {
   return statuses;
 }
 
-function mergeMapAndMemoryRows(mapsText: string, memoryText: string, serversText = ""): Record<string, unknown>[] {
+function mergeMapAndMemoryRows(mapsText: string, memoryText: string, serversText = "", readinessText = ""): Record<string, unknown>[] {
   const rows = new globalThis.Map<string, Record<string, unknown>>();
   const serverRows = new globalThis.Map<string, Record<string, unknown>>();
+  const readinessStatuses = parseReadinessPartitionStatuses(readinessText);
   for (const row of parseServerPartitionRows(serversText)) {
     const map = String(row.map || "");
     if (!map) continue;
+    const partitionId = String(row.partitionId || "").trim();
+    const readinessStatus = partitionId ? readinessStatuses.get(partitionId) : "";
+    const coreReadinessAuthoritative = /^(Survival_1|Overmap)$/i.test(map);
+    const mergedStatus = readinessStatus && coreReadinessAuthoritative ? readinessStatus : readinessStatus ? strongestMapStatus(String(row.status || ""), readinessStatus) : "";
+    const rowWithReadiness = mergedStatus ? { ...row, status: mergedStatus } : row;
     const existing = serverRows.get(map);
     const existingDimension = Number(existing?.dimension ?? Number.POSITIVE_INFINITY);
-    const rowDimension = Number(row.dimension ?? Number.POSITIVE_INFINITY);
+    const rowDimension = Number(rowWithReadiness.dimension ?? Number.POSITIVE_INFINITY);
     const existingPartitionId = Number(existing?.partitionId ?? Number.POSITIVE_INFINITY);
-    const rowPartitionId = Number(row.partitionId ?? Number.POSITIVE_INFINITY);
+    const rowPartitionId = Number(rowWithReadiness.partitionId ?? Number.POSITIVE_INFINITY);
     const useRowAsBase = !existing || rowDimension < existingDimension || (rowDimension === existingDimension && rowPartitionId < existingPartitionId);
-    const base = useRowAsBase ? row : existing;
-    const status = map === "DeepDesert_1" ? String(base?.status || "") : strongestMapStatus(String(existing?.status || ""), String(row.status || ""));
+    const base = useRowAsBase ? rowWithReadiness : existing;
+    const status = map === "DeepDesert_1" ? String(base?.status || "") : strongestMapStatus(String(existing?.status || ""), String(rowWithReadiness.status || ""));
     serverRows.set(map, {
       ...base,
       status,
-      dimensions: existing?.dimensions ? `${String(existing.dimensions)}, ${String(row.label || row.partitionId)}` : String(row.label || row.partitionId || "")
+      dimensions: existing?.dimensions ? `${String(existing.dimensions)}, ${String(rowWithReadiness.label || rowWithReadiness.partitionId)}` : String(rowWithReadiness.label || rowWithReadiness.partitionId || "")
     });
   }
   for (const row of parseMemoryRows(memoryText)) {

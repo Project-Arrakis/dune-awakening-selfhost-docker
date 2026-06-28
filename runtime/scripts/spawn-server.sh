@@ -570,6 +570,8 @@ else
 fi
 
 reserve_port_pair "$CONTAINER_NAME" "$GAME_PORT" "$IGW_PORT"
+flock -u 9 || true
+exec 9>&- || true
 
 echo "Spawning dedicated server:"
 echo "  map:        $MAP_NAME"
