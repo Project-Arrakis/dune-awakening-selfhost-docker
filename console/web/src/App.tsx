@@ -159,10 +159,12 @@ export function App() {
   const [homeTaskResult, setHomeTaskResult] = useState<HomeTaskResult | null>(null);
   const [funcomTokenResult, setFuncomTokenResult] = useState<HomeTaskResult | null>(() => loadPersistedFuncomTokenResult());
   const [homeRunningAction, setHomeRunningAction] = useState<"start" | "stop" | "restart" | "">("");
+  const [homeRestartStarted, setHomeRestartStarted] = useState(false);
   const [stackVersionStatus, setStackVersionStatus] = useState<Record<string, string>>({ status: "Checking", current: "", latest: "" });
   const stackActionStartedAt = useRef(0);
   const stackActionReadyPolls = useRef(0);
   const stackRestartLifecycle = useRef<RestartLifecycleState>(createRestartLifecycleState());
+  const stackRestartSuccessAnnounced = useRef(false);
   const stackStatusLoadRef = useRef<Promise<HomeLoadResult> | null>(null);
   const [setupState, setSetupState] = useState<SetupState | null>(null);
   const [setupStateLoaded, setSetupStateLoaded] = useState(false);
@@ -299,6 +301,8 @@ export function App() {
     stackActionStartedAt.current = Date.now();
     stackActionReadyPolls.current = 0;
     stackRestartLifecycle.current = createRestartLifecycleState();
+    stackRestartSuccessAnnounced.current = false;
+    setHomeRestartStarted(false);
     let active = true;
     async function refreshRunningAction() {
       const result = await loadStackStatus().catch(() => null);
@@ -313,10 +317,17 @@ export function App() {
       if (homeRunningAction === "stop" && isHomeStopComplete(statusText, readinessText)) {
         setHomeTaskResult({ status: "stopped", title: "Server Stopped" });
         setHomeRunningAction("");
-      } else if ((homeRunningAction === "start" || homeRunningAction === "restart") && restartReady && elapsedMs >= 8000 && isHomeActionComplete(statusText, readinessText)) {
+      } else if (homeRunningAction === "restart" && restartReady) {
+        setHomeRestartStarted(true);
+        if (!stackRestartSuccessAnnounced.current) {
+          stackRestartSuccessAnnounced.current = true;
+          setHomeTaskResult({ status: "succeeded", title: "Battlegroup Restarted Successfully" });
+        }
+        if (isHomeActionComplete(statusText, readinessText)) setHomeRunningAction("");
+      } else if (homeRunningAction === "start" && elapsedMs >= 8000 && isHomeActionComplete(statusText, readinessText)) {
         stackActionReadyPolls.current += 1;
         if (stackActionReadyPolls.current >= 2) {
-          setHomeTaskResult({ status: "succeeded", title: homeRunningAction === "start" ? "Server Started Successfully" : "Battlegroup Restarted Successfully" });
+          setHomeTaskResult({ status: "succeeded", title: "Server Started Successfully" });
           setHomeRunningAction("");
         } else {
           setHomeTaskResult(stackActionPendingResult(homeRunningAction, "confirming"));
@@ -332,6 +343,22 @@ export function App() {
       window.clearInterval(id);
     };
   }, [homeRunningAction, loadStackStatus]);
+
+  useEffect(() => {
+    if (homeRunningAction !== "restart") setHomeRestartStarted(false);
+  }, [homeRunningAction]);
+
+  useEffect(() => {
+    if (!homeTaskResult || homeTaskResult.status === "running") return;
+    const id = window.setTimeout(() => setHomeTaskResult(null), 10400);
+    return () => window.clearTimeout(id);
+  }, [homeTaskResult?.status, homeTaskResult?.title]);
+
+  useEffect(() => {
+    if (homeTaskResult?.status === "succeeded" && /restart/i.test(homeTaskResult.title || "")) {
+      stackRestartSuccessAnnounced.current = true;
+    }
+  }, [homeTaskResult?.status, homeTaskResult?.title]);
 
   useEffect(() => {
     if (!auth || !setupComplete) return;
@@ -465,8 +492,8 @@ export function App() {
         </header>
         {error && <div className="error-banner">{error}</div>}
         {redeploySetupOpen && <SetupWizard initialStep={setupJump.step} jumpNonce={setupJump.nonce} mode="redeploy" onSetupComplete={async () => setSetupState(await setupApi.state())} />}
-        {!redeploySetupOpen && tab === "Home" && <HomePanel status={status} readiness={readiness} taskResult={homeTaskResult} setTaskResult={setHomeTaskResult} funcomTokenResult={funcomTokenResult} setFuncomTokenResult={setFuncomTokenResult} runningAction={homeRunningAction} setRunningAction={setHomeRunningAction} onLoad={loadStackStatus} confirmAction={confirmDialog} />}
-        {!redeploySetupOpen && tab === "Server Control" && <ServerPanel setTask={setTask} setStatus={setStatus} status={status} setReadiness={setReadiness} setPorts={setPorts} setDoctor={setDoctor} ports={ports} readiness={readiness} doctor={doctor} taskResult={homeTaskResult} setTaskResult={setHomeTaskResult} funcomTokenResult={funcomTokenResult} setFuncomTokenResult={setFuncomTokenResult} runningAction={homeRunningAction} setRunningAction={setHomeRunningAction} onError={setError} confirmAction={confirmDialog} onRedeploy={() => {
+        {!redeploySetupOpen && tab === "Home" && <HomePanel status={status} readiness={readiness} taskResult={homeTaskResult} setTaskResult={setHomeTaskResult} funcomTokenResult={funcomTokenResult} setFuncomTokenResult={setFuncomTokenResult} runningAction={homeRunningAction} restartStartObserved={homeRestartStarted} setRunningAction={setHomeRunningAction} onLoad={loadStackStatus} confirmAction={confirmDialog} />}
+        {!redeploySetupOpen && tab === "Server Control" && <ServerPanel setTask={setTask} setStatus={setStatus} status={status} setReadiness={setReadiness} setPorts={setPorts} setDoctor={setDoctor} ports={ports} readiness={readiness} doctor={doctor} taskResult={homeTaskResult} setTaskResult={setHomeTaskResult} funcomTokenResult={funcomTokenResult} setFuncomTokenResult={setFuncomTokenResult} runningAction={homeRunningAction} restartStartObserved={homeRestartStarted} setRunningAction={setHomeRunningAction} onError={setError} confirmAction={confirmDialog} onRedeploy={() => {
           setSetupJump((current) => ({ step: 0, nonce: current.nonce + 1 }));
           setSelectedPinnedAddonId("");
           setRedeploySetupOpen(true);
