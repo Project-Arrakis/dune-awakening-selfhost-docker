@@ -10,7 +10,8 @@ const DEFAULT_MESSAGE_OF_THE_DAY = {
 };
 
 const EMPTY_STATE = { delivered: {} };
-const MIN_MOTD_SESSION_AGE_MS = 30_000;
+const MIN_MOTD_SESSION_AGE_MS = 5_000;
+const DELIVERED_SESSION_RETENTION_MS = 24 * 60 * 60 * 1000;
 
 export function readMessageOfTheDay(config) {
   return {
@@ -57,7 +58,11 @@ export async function runMessageOfTheDayScan(config, players, context = {}) {
   const delivered = {};
   for (const [key, entry] of Object.entries(state.delivered || {})) {
     const player = onlinePlayers.find((player) => player.key === key);
-    if (player && sameSession(entry, player)) delivered[key] = entry;
+    if (player) {
+      if (sameSession(entry, player)) delivered[key] = entry;
+    } else if (shouldRetainDeliveredSession(entry, now)) {
+      delivered[key] = entry;
+    }
   }
 
   const pendingPlayers = onlinePlayers.filter((player) => !delivered[player.key] && isSessionMature(player, now));
@@ -146,7 +151,7 @@ function normalizePlayer(player = {}) {
   const flsId = String(player.fls_id || player.flsId || player.recipientFlsId || "").trim();
   const funcomId = String(player.funcom_id || player.funcomId || player.recipientFuncomId || "").trim();
   const characterName = String(player.character_name || player.characterName || player.recipientCharacterName || "").trim();
-  const key = String(player.action_player_id || flsId || funcomId || player.actor_id || player.player_pawn_id || "").trim();
+  const key = String(flsId || funcomId || player.action_player_id || player.actor_id || player.player_pawn_id || "").trim();
   const sessionKey = String(player.login_session || player.loginSession || player.last_login_time || player.lastLoginTime || "").trim();
   const onlineStatus = String(player.online_status || player.onlineStatus || "").trim().toLowerCase();
   return {
@@ -173,6 +178,13 @@ function sameSession(entry = {}, player = {}) {
   const current = String(player.sessionKey || "").trim();
   if (!current) return true;
   return String(entry.sessionKey || "").trim() === current;
+}
+
+function shouldRetainDeliveredSession(entry = {}, now = new Date()) {
+  if (!String(entry.sessionKey || "").trim()) return false;
+  const deliveredAt = parseSessionTime(entry.deliveredAt);
+  if (!deliveredAt) return true;
+  return now.getTime() - deliveredAt.getTime() < DELIVERED_SESSION_RETENTION_MS;
 }
 
 function isSessionMature(player = {}, now = new Date()) {

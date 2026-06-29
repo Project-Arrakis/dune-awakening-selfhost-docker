@@ -16,7 +16,7 @@ const DEFAULT_PLAYER_ANNOUNCEMENTS = {
 };
 
 const EMPTY_STATE = { online: {} };
-const MIN_JOIN_ANNOUNCEMENT_SESSION_AGE_MS = 30_000;
+const MIN_JOIN_ANNOUNCEMENT_SESSION_AGE_MS = 5_000;
 const DEFAULT_CHAT_MAP = "HaggaBasin";
 const MAP_CHAT_REGIONS = {
   Survival_1: "HaggaBasin",
@@ -208,7 +208,7 @@ function onlineMap(players = []) {
 function normalizePlayer(player = {}) {
   const flsId = String(player.fls_id || player.flsId || "").trim();
   const funcomId = String(player.funcom_id || player.funcomId || "").trim();
-  const key = String(player.action_player_id || flsId || funcomId || player.actor_id || player.player_pawn_id || "").trim();
+  const key = String(flsId || funcomId || player.action_player_id || player.actor_id || player.player_pawn_id || "").trim();
   const characterName = String(player.character_name || player.characterName || funcomId || key).trim();
   const onlineStatus = String(player.online_status || player.onlineStatus || "").trim().toLowerCase();
   const map = String(player.map || player.map_name || player.mapName || "").trim();

@@ -115,20 +115,20 @@ mapfile -t SIETCH_RUNTIME_ARGS < <(runtime/scripts/sietches.sh runtime-args Surv
 mapfile -t LOG_RUNTIME_ARGS < <(full_stdout_log_args)
 runtime/scripts/network-addresses.sh reconcile >/dev/null 2>&1 || true
 
+docker rm -f dune-server-survival-1 2>/dev/null || true
+
 docker exec dune-postgres psql -U postgres -d dune -v ON_ERROR_STOP=1 -c "
 begin;
+update dune.world_partition
+set server_id = null
+where partition_id = $PARTITION_ID;
 delete from dune.farm_state
 where map = 'Survival_1'
-  and coalesce(alive, false) = false
-  and server_id not in (
-    select server_id
-    from dune.world_partition
-    where coalesce(server_id, '') <> ''
-  );
+  and game_port = $GAME_PORT
+  and igw_port = $IGW_PORT;
 commit;
 " >/dev/null
 
-docker rm -f dune-server-survival-1 2>/dev/null || true
 ensure_host_latency_tuned
 
 docker run -d \

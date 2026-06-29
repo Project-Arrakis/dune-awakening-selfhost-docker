@@ -101,11 +101,11 @@ test("player announcements wait for a fresh login session before sending", async
   savePlayerAnnouncements(cfg, { joinEnabled: true, joinMessage: "{playerName} joined", leaveEnabled: false, leaveMessage: "{playerName} left" });
   const freshLogin = player("John", "ABCDEF1234567890", { login_session: "2026-06-30T00:00:00.000Z" });
 
-  const tooEarly = await runPlayerAnnouncementScan(cfg, [freshLogin], { mockMode: true, now: new Date("2026-06-30T00:00:10.000Z") });
+  const tooEarly = await runPlayerAnnouncementScan(cfg, [freshLogin], { mockMode: true, now: new Date("2026-06-30T00:00:04.000Z") });
   assert.equal(tooEarly.joined, 0);
   assert.equal(tooEarly.sent, 0);
 
-  const mature = await runPlayerAnnouncementScan(cfg, [freshLogin], { mockMode: true, now: new Date("2026-06-30T00:00:31.000Z") });
+  const mature = await runPlayerAnnouncementScan(cfg, [freshLogin], { mockMode: true, now: new Date("2026-06-30T00:00:06.000Z") });
   assert.equal(mature.joined, 1);
   assert.equal(mature.sent, 1);
 });
@@ -115,11 +115,11 @@ test("player announcements wait when Postgres session timestamp uses short UTC o
   savePlayerAnnouncements(cfg, { joinEnabled: true, joinMessage: "{playerName} joined", leaveEnabled: false, leaveMessage: "{playerName} left" });
   const freshLogin = player("John", "ABCDEF1234567890", { login_session: "2026-06-30 00:00:00.000000+00" });
 
-  const tooEarly = await runPlayerAnnouncementScan(cfg, [freshLogin], { mockMode: true, now: new Date("2026-06-30T00:00:10.000Z") });
+  const tooEarly = await runPlayerAnnouncementScan(cfg, [freshLogin], { mockMode: true, now: new Date("2026-06-30T00:00:04.000Z") });
   assert.equal(tooEarly.joined, 0);
   assert.equal(tooEarly.sent, 0);
 
-  const mature = await runPlayerAnnouncementScan(cfg, [freshLogin], { mockMode: true, now: new Date("2026-06-30T00:00:31.000Z") });
+  const mature = await runPlayerAnnouncementScan(cfg, [freshLogin], { mockMode: true, now: new Date("2026-06-30T00:00:06.000Z") });
   assert.equal(mature.joined, 1);
   assert.equal(mature.sent, 1);
 });
@@ -132,11 +132,11 @@ test("player announcements defer a changed login session without suppressing the
   assert.equal(first.sent, 1);
 
   const relog = player("John", "ABCDEF1234567890", { login_session: "2026-06-30T00:05:00.000Z" });
-  const tooEarly = await runPlayerAnnouncementScan(cfg, [relog], { mockMode: true, now: new Date("2026-06-30T00:05:10.000Z") });
+  const tooEarly = await runPlayerAnnouncementScan(cfg, [relog], { mockMode: true, now: new Date("2026-06-30T00:05:04.000Z") });
   assert.equal(tooEarly.joined, 0);
   assert.equal(tooEarly.sent, 0);
 
-  const mature = await runPlayerAnnouncementScan(cfg, [relog], { mockMode: true, now: new Date("2026-06-30T00:05:31.000Z") });
+  const mature = await runPlayerAnnouncementScan(cfg, [relog], { mockMode: true, now: new Date("2026-06-30T00:05:06.000Z") });
   assert.equal(mature.joined, 1);
   assert.equal(mature.sent, 1);
 });
@@ -155,7 +155,7 @@ test("player announcements publish leave and join events for map changes within 
   assert.equal(first.left, 0);
 
   const mapTravel = await runPlayerAnnouncementScan(cfg, [
-    player("John", "ABCDEF1234567890", { actor_id: 99, map: "Overmap", login_session: stableSession }),
+    player("John", "ABCDEF1234567890", { action_player_id: "NEW-ACTION-ID", actor_id: 99, map: "Overmap", login_session: stableSession }),
     player("Jane", "1234567890ABCDEF", { actor_id: 100, map: "Survival_1", login_session: stableSession }),
     player("Paul", "A1234567890BCDEF", { actor_id: 101, map: "Overmap", login_session: stableSession })
   ], { mockMode: true });
