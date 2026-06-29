@@ -79,6 +79,50 @@ begin;
 update dune.world_partition
 set server_id = '$live_server_id'
 where partition_id = $partition_id;
+create temporary table dune_rebound_stale_accounts(account_id bigint primary key) on commit drop;
+insert into dune_rebound_stale_accounts(account_id)
+select distinct ps.account_id
+from dune.player_state ps
+left join dune.farm_state fs on fs.server_id = ps.server_id
+where ps.previous_server_partition_id = $partition_id
+  and ps.account_id is not null
+  and coalesce(ps.character_state::text, '') <> 'Deleted'
+  and coalesce(ps.server_id, '') <> '$live_server_id'
+  and (
+    coalesce(ps.server_id, '') = ''
+    or fs.server_id is null
+    or (
+      fs.map = '${map_name//\'/\'\'}'
+      and fs.game_port = $game_port
+      and fs.igw_port = $igw_port
+      and fs.server_id <> '$live_server_id'
+    )
+  );
+with target as (
+  select partition_id, coalesce(dimension_index, 0) as dimension_index
+  from dune.world_partition
+  where partition_id = $partition_id
+)
+update dune.player_state ps
+set
+  server_id = '$live_server_id',
+  previous_server_partition_id = target.partition_id,
+  home_dimension_index = target.dimension_index,
+  return_dimension_index = target.dimension_index
+from target
+where ps.account_id in (select account_id from dune_rebound_stale_accounts);
+with target as (
+  select partition_id, coalesce(dimension_index, 0) as dimension_index
+  from dune.world_partition
+  where partition_id = $partition_id
+)
+update dune.encrypted_player_state eps
+set
+  server_id = '$live_server_id',
+  previous_server_partition_id = target.partition_id,
+  return_dimension_index = target.dimension_index
+from target
+where eps.account_id in (select account_id from dune_rebound_stale_accounts);
 delete from dune.farm_state
 where map = '${map_name//\'/\'\'}'
   and server_id <> '$live_server_id'
