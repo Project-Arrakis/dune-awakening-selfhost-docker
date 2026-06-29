@@ -112,10 +112,8 @@ runtime/scripts/publish-deepdesert-overrides.sh restart || {
 }
 '
 
-run_timed_step "Starting Network Server-State Publisher" bash -c '
-runtime/scripts/publish-network-server-state-overrides.sh restart || {
-  echo "Network server-state publisher did not start. Non-Survival maps may advertise the local bind IP until the next restart."
-}
+run_timed_step "Stopping Legacy Network Server-State Rewriter" bash -c '
+runtime/scripts/publish-network-server-state-overrides.sh stop || true
 '
 
 if [ -f runtime/generated/director-deepdesert-dual.ini ]; then
@@ -141,12 +139,6 @@ runtime/scripts/publish-sietch-overrides.sh once || {
 run_timed_step "Publishing Deep Desert Warm-Up State" bash -c '
 runtime/scripts/publish-deepdesert-overrides.sh once || {
   echo "Could not publish the latest Deep Desert warm-up snapshot."
-}
-'
-
-run_timed_step "Publishing Network Server-State Snapshot" bash -c '
-runtime/scripts/publish-network-server-state-overrides.sh once || {
-  echo "Could not publish the latest non-Survival network server-state snapshot."
 }
 '
 

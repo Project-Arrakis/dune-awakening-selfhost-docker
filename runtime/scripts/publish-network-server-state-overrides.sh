@@ -25,6 +25,24 @@ SOURCE_FILTER_PREFIX="networkStateOverrideSource_"
 SINK_QUEUE_PREFIX="serverStateSink_"
 EXCLUDED_MAPS_RE="^$"
 
+stop_loop_processes() {
+  clear_stale_pidfile
+  if [ -f "$PID_FILE" ]; then
+    kill "$(cat "$PID_FILE")" 2>/dev/null || true
+  fi
+  pkill -f "publish-network-server-state-overrides.sh loop" 2>/dev/null || true
+  rm -f "$PID_FILE"
+}
+
+stop_loop_and_restore_routes() {
+  stop_loop_processes
+  timeout --kill-after=2s "${STOP_RESTORE_TIMEOUT_SECONDS}s" "$0" restore-routes || true
+}
+
+disabled_notice() {
+  echo "Network server-state rewriter is retired; using game container EXTERNAL_ADDRESS_OVERRIDE instead."
+}
+
 loop_pids() {
   pgrep -f "publish-network-server-state-overrides.sh loop" 2>/dev/null || true
 }
@@ -538,8 +556,7 @@ start_loop() {
 
 case "${1:-start}" in
   once)
-    ensure_routes
-    forward_once || true
+    disabled_notice
     ;;
   map)
     map_name="${2:-}"
@@ -547,46 +564,24 @@ case "${1:-start}" in
       echo "Usage: $0 map <map-name>"
       exit 2
     fi
-    ensure_route_for_map "$map_name"
-    forward_map_once "$map_name" || true
+    exit 0
     ;;
   start)
-    clear_stale_pidfile
-    if loop_running; then
-      kick_priority_maps_once
-      exit 0
-    fi
-    pkill -f "publish-network-server-state-overrides.sh loop" 2>/dev/null || true
-    rm -f "$PID_FILE"
-    prepare_runtime_generated_files
-    setsid "$0" loop >>"$LOG_FILE" 2>&1 </dev/null &
-    echo $! >"$PID_FILE"
-    kick_priority_maps_once
+    stop_loop_and_restore_routes
+    disabled_notice
     ;;
   loop)
-    prepare_runtime_generated_files
-    start_loop
+    disabled_notice
     ;;
   stop)
-    clear_stale_pidfile
-    if [ -f "$PID_FILE" ]; then
-      kill "$(cat "$PID_FILE")" 2>/dev/null || true
-    fi
-    pkill -f "publish-network-server-state-overrides.sh loop" 2>/dev/null || true
-    rm -f "$PID_FILE"
-    timeout --kill-after=2s "${STOP_RESTORE_TIMEOUT_SECONDS}s" "$0" restore-routes || true
+    stop_loop_and_restore_routes
     ;;
   restore-routes)
     restore_routes || true
     ;;
   restart)
-    clear_stale_pidfile
-    if [ -f "$PID_FILE" ]; then
-      kill "$(cat "$PID_FILE")" 2>/dev/null || true
-    fi
-    pkill -f "publish-network-server-state-overrides.sh loop" 2>/dev/null || true
-    rm -f "$PID_FILE"
-    "$0" start
+    stop_loop_and_restore_routes
+    disabled_notice
     ;;
   *)
     echo "Usage: $0 [once|map <map-name>|start|stop|restart]"
