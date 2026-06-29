@@ -1053,7 +1053,7 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
 .stable-action-button { min-width: 72px; }
 .map-action-buttons { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; }
 .map-action-buttons .stable-action-button { min-width: 72px; width: auto; }
-.map-mode-guide { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 210px), 1fr)); gap: 10px; margin: 8px 0 14px; }
+.map-mode-guide { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 210px), 1fr)); gap: 10px; margin: 8px 0; }
 .map-mode-guide-card { min-width: 0; display: grid; gap: 5px; align-content: start; border: 1px solid #302b25; border-radius: 8px; background: #111922; padding: 12px; }
 .map-mode-guide-card strong { color: #ffd08a; font-size: 14px; }
 .map-mode-guide-card span { color: #e9dcc8; font-size: 13px; font-weight: 700; line-height: 1.25; }
@@ -1061,7 +1061,8 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
 .map-mode-guide-card.mode-core, .map-mode-guide-card.mode-always-on { border-color: rgba(122, 177, 97, .65); }
 .map-mode-guide-card.mode-dynamic, .map-mode-guide-card.mode-overmap-active { border-color: rgba(216, 177, 95, .55); }
 .map-mode-guide-card.mode-disabled { border-color: rgba(197, 85, 85, .55); }
-.maps-startup-toggle { margin: 0 0 14px; }
+.maps-startup-toggle { margin: 0 0 8px; }
+.maps-startup-toggle + .maps-overview-table-wrap { margin-top: 0; }
 .maps-startup-settings { display: grid; gap: 12px; }
 .maps-startup-settings-copy { display: grid; gap: 4px; }
 .maps-startup-settings-copy strong { color: #ffd08a; }
@@ -1474,6 +1475,13 @@ td .inline-action-result-wrap { flex: 1 0 100%; justify-content: flex-start; min
 .settings-list-table td strong, .settings-list-table td small { display: block; }
 .settings-list-table td small { color: #a99577; margin-top: 3px; }
 .settings-list-table input, .settings-list-table select, .settings-list-table textarea { width: 100%; }
+.spicefields-table { min-width: 980px; }
+.spicefields-table th:nth-child(n), .spicefields-table td:nth-child(n) { width: auto; }
+.spicefields-table th:nth-child(1), .spicefields-table td:nth-child(1) { width: 18%; }
+.spicefields-table th:nth-child(4), .spicefields-table td:nth-child(4) { width: 12%; }
+.spicefields-table th:nth-child(9), .spicefields-table td:nth-child(9) { width: 16%; }
+.spicefield-row-actions { gap: 6px; margin: 0; }
+.spicefield-row-actions button { min-width: 72px; }
 .memory-usage-cell { min-width: 180px; display: grid; grid-template-columns: 1fr auto; gap: 4px 8px; align-items: center; }
 .memory-usage-bar { grid-column: 1 / -1; height: 8px; overflow: hidden; border-radius: 999px; background: rgba(255,255,255,.11); }
 .memory-usage-bar span { display: block; height: 100%; background: linear-gradient(90deg, #6f8f5f, #c68b4a); }

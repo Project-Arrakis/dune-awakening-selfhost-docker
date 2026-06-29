@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { assertIdentifier, discoverDbConfig, isReadOnlySql, quoteQualified, redactDbError, rowsResult } from "../src/db.js";
-import { addCurrency, addFactionReputation, addIntel, addonLeadershipPlayers, completeJourneyNode, completeTutorial, deleteInventoryItem, giveItemToPlayer, giveItemToStorage, listPlayers, listTables, liveMapPlayers, liveMapServices, playerCraftingRecipes, playerJourney, playerPosition, playerResearchItems, resetJourneyNode, resetTutorial, runSql, tablePreview, unlockCraftingRecipe, unlockResearchItem, updateTableRow, UnsupportedCapabilityError } from "../src/duneDb.js";
+import { addCurrency, addFactionReputation, addIntel, addonLeadershipPlayers, completeJourneyNode, completeTutorial, deleteInventoryItem, giveItemToPlayer, giveItemToStorage, listPlayers, listSpicefieldTypes, listTables, liveMapPlayers, liveMapServices, playerCraftingRecipes, playerJourney, playerPosition, playerResearchItems, resetJourneyNode, resetTutorial, runSql, tablePreview, unlockCraftingRecipe, unlockResearchItem, updateSpicefieldType, updateTableRow, UnsupportedCapabilityError } from "../src/duneDb.js";
 
 test("discovers RedBlink Postgres defaults and env overrides", () => {
   assert.deepEqual(discoverDbConfig({}), {
@@ -160,6 +160,49 @@ test("manual row edit accepts JSON array text for Postgres array columns", async
   const updateCall = calls.find((call) => String(call.text).startsWith("update"));
   assert.ok(updateCall);
   assert.deepEqual(updateCall.values, [[123.45, 678.9, 11], 72]);
+});
+
+test("spicefield controls list live DB rows", async () => {
+  const calls = [];
+  const db = {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      return { rows: [{ spicefield_type_id: 25, map_name: "DeepDesert", field_type: "Large", max_globally_active: 1 }] };
+    }
+  };
+  const result = await listSpicefieldTypes(db);
+  assert.equal(result.capabilities.spicefields, true);
+  assert.equal(result.rows[0].field_type, "Large");
+  assert.ok(calls.some((call) => String(call.text).includes("from dune.spicefield_types")));
+});
+
+test("spicefield controls update only editable tuning columns", async () => {
+  const calls = [];
+  const db = {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      return { rows: [{ spicefield_type_id: 25, map_name: "DeepDesert", field_type: "Large", max_globally_active: 2 }], rowCount: 1 };
+    }
+  };
+  const result = await updateSpicefieldType(db, 25, {
+    max_globally_active: 2,
+    max_globally_primed: 3,
+    is_spawning_active: false,
+    global_spawn_weight: 1.5,
+    current_globally_active: 999
+  });
+  assert.equal(result.updatedRows, 1);
+  const updateCall = calls.find((call) => String(call.text).includes("update dune.spicefield_types"));
+  assert.ok(updateCall);
+  assert.match(updateCall.text, /max_globally_active/);
+  assert.match(updateCall.text, /max_globally_primed/);
+  assert.match(updateCall.text, /is_spawning_active/);
+  assert.match(updateCall.text, /global_spawn_weight/);
+  assert.doesNotMatch(updateCall.text, /current_globally_active\s*=/);
+  assert.deepEqual(updateCall.values, [2, 3, false, 1.5, 25]);
+  await assert.rejects(() => updateSpicefieldType(db, 25, { max_globally_active: -1 }), /Invalid max active/);
 });
 
 test("database table list returns exact row counts", async () => {

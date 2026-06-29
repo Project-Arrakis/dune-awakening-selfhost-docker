@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useRef, useState } from "react";
 import { ChevronDown, ChevronUp, Grid2X2, List, Lock } from "lucide-react";
-import { mapsApi, type LiveMapMemoryRow, type MapRuntimeSettings, type MemoryBalancerState, type UserSettingField, type UserSettingsSchema } from "../../api/maps";
+import { mapsApi, type LiveMapMemoryRow, type MapRuntimeSettings, type MemoryBalancerState, type SpicefieldTypeRow, type UserSettingField, type UserSettingsSchema } from "../../api/maps";
 import { setupApi, type Task } from "../../api/setup";
 import { SecretInput } from "../../components/SecretInput";
 import { KeyValueGrid, StatusPill, TechnicalDetails } from "../../components/common/DisplayPrimitives";
@@ -23,6 +23,7 @@ type MapsTaskSequenceOptions = {
   resultTarget?: string;
 };
 type PersistedMapsTask = { taskId?: string; result: HomeTaskResult | null; runningTitle?: string; successTitle?: string; resultScope?: MapsResultScope };
+type SpicefieldDraft = { maxActive: string; maxPrimed: string; spawningActive: boolean; spawnWeight: string };
 type ConfirmAction = (message: string, options?: { title?: string; confirmLabel?: string; cancelLabel?: string; danger?: boolean; details?: { label: string; value: string; tone?: "danger" | "success" | "accent" }[] }) => Promise<boolean>;
 type MapsPanelProps = {
   onError: (text: string) => void;
@@ -239,7 +240,12 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
   const [selectedGameCategory, setSelectedGameCategory] = useState("");
   const [modifierFilter, setModifierFilter] = useState("");
   const [modifierViewMode, setModifierViewMode] = useState<"grid" | "list">("grid");
-  const [settingsTab, setSettingsTab] = useState<"engine" | "game">("engine");
+  const [settingsTab, setSettingsTab] = useState<"engine" | "game" | "spicefields">("engine");
+  const [spicefieldRows, setSpicefieldRows] = useState<SpicefieldTypeRow[]>([]);
+  const [spicefieldDrafts, setSpicefieldDrafts] = useState<Record<string, SpicefieldDraft>>({});
+  const [spicefieldResult, setSpicefieldResult] = useState<HomeTaskResult | null>(null);
+  const [spicefieldSavingId, setSpicefieldSavingId] = useState("");
+  const [spicefieldFilter, setSpicefieldFilter] = useState("DeepDesert");
   const [modifiersOpen, setModifiersOpen] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [startupSettingsOpen, setStartupSettingsOpen] = useState(false);
@@ -488,6 +494,44 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
     setRuntimeSettings(settings);
     setStartupParallelism(String(settings.alwaysOnStartupParallelism));
   }
+  async function loadSpicefields(options: { preserveDrafts?: boolean } = {}) {
+    const result = await mapsApi.spicefields();
+    const rows = result.rows || [];
+    setSpicefieldRows(rows);
+    const drafts = Object.fromEntries(rows.map((row) => [String(row.spicefield_type_id), spicefieldDraftFromRow(row)]));
+    setSpicefieldDrafts((current) => options.preserveDrafts ? { ...drafts, ...current } : drafts);
+    if (result.reason && !rows.length) {
+      setSpicefieldResult({ status: "failed", title: "Spice Fields Unavailable", message: result.reason });
+    }
+  }
+  async function saveSpicefield(row: SpicefieldTypeRow) {
+    const id = String(row.spicefield_type_id);
+    const draft = spicefieldDrafts[id] || spicefieldDraftFromRow(row);
+    const maxActive = parseWholeNumber(draft.maxActive);
+    const maxPrimed = parseWholeNumber(draft.maxPrimed);
+    const spawnWeight = Number(draft.spawnWeight);
+    if (maxActive === null || maxActive < 0 || maxPrimed === null || maxPrimed < 0 || !Number.isFinite(spawnWeight) || spawnWeight < 0) {
+      setSpicefieldResult({ status: "failed", title: "Spice Field Not Saved", message: "Use non-negative numbers for max active, max primed, and spawn weight." });
+      return;
+    }
+    setSpicefieldSavingId(id);
+    setSpicefieldResult({ status: "running", title: "Saving Spice Field..." });
+    try {
+      const result = await mapsApi.updateSpicefield(id, {
+        max_globally_active: maxActive,
+        max_globally_primed: maxPrimed,
+        is_spawning_active: draft.spawningActive,
+        global_spawn_weight: spawnWeight
+      });
+      setSpicefieldRows((current) => current.map((item) => String(item.spicefield_type_id) === id ? result.row : item));
+      setSpicefieldDrafts((current) => ({ ...current, [id]: spicefieldDraftFromRow(result.row) }));
+      setSpicefieldResult({ status: "succeeded", title: "Spice Field Saved", message: "Live database controls were updated. Existing active fields may remain until the game updates them." });
+    } catch (error) {
+      setSpicefieldResult({ status: "failed", title: "Spice Field Save Failed", message: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setSpicefieldSavingId("");
+    }
+  }
   async function toggleMemoryBalancer() {
     setMemoryBalancerSaving(true);
     try {
@@ -525,6 +569,7 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
     run(loadMemoryBalancer);
     run(loadRuntimeSettings);
     run(loadSietches);
+    run(loadSpicefields);
   }, []);
   useEffect(() => {
     const persisted = loadPersistedMapsTask();
@@ -591,6 +636,13 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
     return () => window.clearTimeout(id);
   }, [runtimeSettingsResult]);
   useEffect(() => {
+    if (!spicefieldResult || spicefieldResult.status === "running") return;
+    const id = window.setTimeout(() => {
+      setSpicefieldResult(null);
+    }, 5000);
+    return () => window.clearTimeout(id);
+  }, [spicefieldResult]);
+  useEffect(() => {
     const id = window.setInterval(() => { void loadLiveMemory().catch(() => {}); }, 5000);
     return () => window.clearInterval(id);
   }, []);
@@ -598,6 +650,11 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
     const id = window.setInterval(() => { void loadMemoryBalancer().catch(() => {}); }, 5000);
     return () => window.clearInterval(id);
   }, []);
+  useEffect(() => {
+    if (!modifiersOpen || settingsTab !== "spicefields") return undefined;
+    const id = window.setInterval(() => { void loadSpicefields({ preserveDrafts: true }).catch(() => {}); }, 5000);
+    return () => window.clearInterval(id);
+  }, [modifiersOpen, settingsTab]);
   useEffect(() => {
     const id = window.setInterval(() => {
       if (document.visibilityState !== "visible") return;
@@ -677,6 +734,7 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
   const activeGameCategory = gameGroups.some(([category]) => category === selectedGameCategory) ? selectedGameCategory : gameGroups[0]?.[0] || "";
   const activeGameFields = activeGameCategory === "All" ? userGameFields : gameGroups.find(([category]) => category === activeGameCategory)?.[1] || [];
   const filteredGameFields = filterSettingsFields(activeGameFields, modifierFilter);
+  const filteredSpicefieldRows = filterSpicefieldRows(spicefieldRows, spicefieldFilter);
   const engineFields = (schema?.engine || []).filter((field) => !["server_display_name", "server_login_password", "port", "igw_port"].includes(field.id));
   const engineDirty = changedKeys(engineValues, engineDraft, engineFields.map((field) => field.id));
   const gameDirty = changedKeys(gameValues, gameDraft, userGameFields.map((field) => field.id));
@@ -1300,14 +1358,15 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
     <div className={`playerAdmin_toggle maps-modifiers-toggle ${modifiersOpen && modifiersAvailable ? "open" : ""}`}>
       <button className="playerAdmin_toggleHeader" disabled={!modifiersAvailable} aria-label={modifiersOpen && modifiersAvailable ? "Collapse Interactive Modifiers" : "Expand Interactive Modifiers"} onClick={toggleModifiers}>{modifiersOpen && modifiersAvailable ? <ChevronUp size={18} /> : <ChevronDown size={18} />}<span>Interactive Modifiers</span></button>
       {modifiersOpen && modifiersAvailable && <div className="playerAdmin_toggleBody">
-      <div className="settings-tabs" role="tablist" aria-label="INI modifier editor">
+      <div className="settings-tabs" role="tablist" aria-label="Interactive modifier editor">
         <button className={settingsTab === "engine" ? "active" : ""} role="tab" aria-selected={settingsTab === "engine"} onClick={() => setSettingsTab("engine")}>UserEngine</button>
         <button className={settingsTab === "game" ? "active" : ""} role="tab" aria-selected={settingsTab === "game"} onClick={() => setSettingsTab("game")}>UserGame</button>
+        <button className={settingsTab === "spicefields" ? "active" : ""} role="tab" aria-selected={settingsTab === "spicefields"} onClick={() => { setSettingsTab("spicefields"); void loadSpicefields({ preserveDrafts: true }).catch(() => undefined); }}>Spice Fields</button>
       </div>
       {settingsTab === "engine" ? <>
         <SettingsEditor fields={engineFields} values={engineDraft} onChange={(id, value) => setEngineDraft({ ...engineDraft, [id]: value })} />
         <div className="action-row"><button disabled={!engineDirty.length} onClick={() => run(saveEngine)}>Save</button><button disabled={!engineDirty.length} onClick={() => setEngineDraft(engineValues)}>Discard Changes</button></div>
-      </> : <>
+      </> : settingsTab === "game" ? <>
         <div className="settings-selector-row">
           <label className="compact-select">Target<select value={userGameTargetKey} onChange={(event) => selectUserGameTarget(event.target.value)}><option value="">Select Map Or Partition</option>{userGameTargets.map((target) => <option key={target.key} value={target.key}>{target.label}</option>)}</select></label>
           <label className="compact-select">Modifier Category<select disabled={!userGameName} value={activeGameCategory} onChange={(event) => setSelectedGameCategory(event.target.value)}>{gameGroups.map(([category, fields]) => <option key={category} value={category}>{category} ({fields.length})</option>)}</select></label>
@@ -1321,6 +1380,20 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
         </div>
         {userGameName && <SettingsCardGrid fields={filteredGameFields} values={gameDraft} onChange={(id, value) => setGameDraft({ ...gameDraft, [id]: value })} viewMode={modifierViewMode} emptyMessage={modifierFilter.trim() ? "No modifiers match your filter." : "Select a modifier category."} />}
         <div className="action-row"><button disabled={!gameDirty.length || !userGameName} onClick={() => run(saveGame)}>Save</button><button disabled={!gameDirty.length} onClick={() => setGameDraft(gameValues)}>Discard Changes</button></div>
+      </> : <>
+        <SpicefieldsEditor
+          rows={filteredSpicefieldRows}
+          allRows={spicefieldRows}
+          drafts={spicefieldDrafts}
+          filter={spicefieldFilter}
+          savingId={spicefieldSavingId}
+          result={spicefieldResult}
+          onFilterChange={setSpicefieldFilter}
+          onRefresh={() => run(() => loadSpicefields({ preserveDrafts: true }))}
+          onDraftChange={(id, draft) => setSpicefieldDrafts({ ...spicefieldDrafts, [id]: draft })}
+          onDiscard={(row) => setSpicefieldDrafts({ ...spicefieldDrafts, [String(row.spicefield_type_id)]: spicefieldDraftFromRow(row) })}
+          onSave={(row) => run(() => saveSpicefield(row))}
+        />
       </>}</div>}
     </div>
     <div className={`playerAdmin_toggle maps-advanced-toggle ${advancedOpen && advancedAvailable ? "open" : ""}`}>
@@ -1330,6 +1403,72 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
         <article className="raw-editor-card"><div className="panel-title"><h4>UserGame.ini</h4><div className="action-row"><button onClick={() => downloadIni("game")}>Download</button><label className="button-link">Import<input className="hidden-file-input" type="file" accept=".ini,text/plain" onChange={(event) => run(async () => { await importIni("game", event.target.files?.[0] || null); })} /></label></div></div><textarea value={rawGame} onChange={(event) => setRawGame(event.target.value)} rows={14} /><div className="action-row"><button disabled={!rawGameDirty} onClick={() => run(() => saveRaw("game"))}>Save</button><button disabled={!rawGameDirty} onClick={() => setRawGame(rawGameOriginal)}>Discard Changes</button><button className="danger" onClick={() => run(restoreRawGameDefaults)}>{userGameName ? "Restore Defaults" : "Restore All UserGame Defaults"}</button></div></article>
       </div></div>}
     </div>
+  </section>;
+}
+
+function SpicefieldsEditor({
+  rows,
+  allRows,
+  drafts,
+  filter,
+  savingId,
+  result,
+  onFilterChange,
+  onRefresh,
+  onDraftChange,
+  onDiscard,
+  onSave
+}: {
+  rows: SpicefieldTypeRow[];
+  allRows: SpicefieldTypeRow[];
+  drafts: Record<string, SpicefieldDraft>;
+  filter: string;
+  savingId: string;
+  result: HomeTaskResult | null;
+  onFilterChange: (value: string) => void;
+  onRefresh: () => void;
+  onDraftChange: (id: string, draft: SpicefieldDraft) => void;
+  onDiscard: (row: SpicefieldTypeRow) => void;
+  onSave: (row: SpicefieldTypeRow) => void;
+}) {
+  return <section className="spicefields-editor">
+    <div className="settings-selector-row">
+      <label className="wide-field">Filter<input value={filter} onChange={(event) => onFilterChange(event.target.value)} placeholder="Filter by map, type, or dimension" /></label>
+      <div className="action-row"><button onClick={onRefresh}>Refresh</button></div>
+    </div>
+    {result && <div className="maps-result-slot"><HomeTaskResultCard result={result} /></div>}
+    {!allRows.length ? <div className="empty">Spice field controls are unavailable for this database schema.</div> : null}
+    {allRows.length && !rows.length ? <div className="empty">No spice fields match this filter.</div> : null}
+    {rows.length ? <div className="settings-list-wrap spicefields-table-wrap"><table className="settings-list-table spicefields-table">
+      <thead><tr>
+        <th>Map</th>
+        <th>Type</th>
+        <th>Dimension</th>
+        <th>Live</th>
+        <th>Max Active</th>
+        <th>Max Primed</th>
+        <th>Spawning</th>
+        <th>Weight</th>
+        <th>Actions</th>
+      </tr></thead>
+      <tbody>{rows.map((row) => {
+        const id = String(row.spicefield_type_id);
+        const draft = drafts[id] || spicefieldDraftFromRow(row);
+        const dirty = spicefieldDraftDirty(row, draft);
+        const saving = savingId === id;
+        return <tr key={id}>
+          <td><strong>{row.map_name}</strong><small>ID {row.spicefield_type_id}</small></td>
+          <td>{row.field_type}</td>
+          <td>{row.dimension_index}</td>
+          <td><span>{row.current_globally_active ?? 0} active</span><small>{row.current_globally_primed ?? 0} primed</small></td>
+          <td><input type="number" min="0" step="1" value={draft.maxActive} onChange={(event) => onDraftChange(id, { ...draft, maxActive: event.target.value })} /></td>
+          <td><input type="number" min="0" step="1" value={draft.maxPrimed} onChange={(event) => onDraftChange(id, { ...draft, maxPrimed: event.target.value })} /></td>
+          <td><select value={draft.spawningActive ? "true" : "false"} onChange={(event) => onDraftChange(id, { ...draft, spawningActive: event.target.value === "true" })}><option value="true">Enabled</option><option value="false">Disabled</option></select></td>
+          <td><input type="number" min="0" step="any" value={draft.spawnWeight} onChange={(event) => onDraftChange(id, { ...draft, spawnWeight: event.target.value })} /></td>
+          <td><div className="action-row spicefield-row-actions"><button disabled={!dirty || saving} onClick={() => onSave(row)}>{saving ? "Saving..." : "Save"}</button><button disabled={!dirty || saving} onClick={() => onDiscard(row)}>Discard</button></div></td>
+        </tr>;
+      })}</tbody>
+    </table></div> : null}
   </section>;
 }
 
@@ -1463,6 +1602,34 @@ function filterSettingsFields(fields: UserSettingField[], query: string) {
     const haystack = `${label} ${field.id} ${field.key || ""} ${field.section || ""} ${category}`.toLowerCase();
     return haystack.includes(needle);
   });
+}
+
+function filterSpicefieldRows(rows: SpicefieldTypeRow[], query: string) {
+  const needle = String(query || "").trim().toLowerCase();
+  if (!needle) return rows;
+  return rows.filter((row) => `${row.map_name} ${row.field_type} dimension ${row.dimension_index} ${row.spicefield_type_id}`.toLowerCase().includes(needle));
+}
+
+function spicefieldDraftFromRow(row: SpicefieldTypeRow): SpicefieldDraft {
+  return {
+    maxActive: String(row.max_globally_active ?? 0),
+    maxPrimed: String(row.max_globally_primed ?? 0),
+    spawningActive: row.is_spawning_active !== false,
+    spawnWeight: String(row.global_spawn_weight ?? 0)
+  };
+}
+
+function spicefieldDraftDirty(row: SpicefieldTypeRow, draft: SpicefieldDraft) {
+  return String(row.max_globally_active ?? 0) !== String(parseWholeNumber(draft.maxActive) ?? draft.maxActive)
+    || String(row.max_globally_primed ?? 0) !== String(parseWholeNumber(draft.maxPrimed) ?? draft.maxPrimed)
+    || (row.is_spawning_active !== false) !== draft.spawningActive
+    || Number(row.global_spawn_weight ?? 0) !== Number(draft.spawnWeight);
+}
+
+function parseWholeNumber(value: string) {
+  const n = Number(value);
+  if (!Number.isInteger(n)) return null;
+  return n;
 }
 
 function settingsCategory(value: string) {

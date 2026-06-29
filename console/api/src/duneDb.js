@@ -145,6 +145,69 @@ export async function updateTableRow(db, schema, table, rowId, values = {}) {
   return { ok: true, updatedRows: result.rowCount || 0, schema, table, message: result.rowCount ? itemEditMessage : undefined };
 }
 
+export async function listSpicefieldTypes(db) {
+  if (!(await tableExists(db, "spicefield_types"))) return unsupported("spicefields", ["dune.spicefield_types"]);
+  const result = await db.query(`
+    select spicefield_type_id,
+           map_name,
+           field_type,
+           dimension_index,
+           max_globally_active,
+           max_globally_primed,
+           current_globally_active,
+           current_globally_primed,
+           is_spawning_active,
+           global_spawn_weight
+    from dune.spicefield_types
+    order by map_name, dimension_index, field_type, spicefield_type_id`);
+  return { capabilities: { spicefields: true }, rows: result.rows };
+}
+
+export async function updateSpicefieldType(db, typeId, values = {}) {
+  if (!(await tableExists(db, "spicefield_types"))) return unsupported("spicefields", ["dune.spicefield_types"]);
+  const id = intParam(typeId, "spicefield type id", 1);
+  const entries = [];
+  if (Object.prototype.hasOwnProperty.call(values, "max_globally_active")) {
+    entries.push(["max_globally_active", intParam(values.max_globally_active, "max active", 0, 10000)]);
+  }
+  if (Object.prototype.hasOwnProperty.call(values, "max_globally_primed")) {
+    entries.push(["max_globally_primed", intParam(values.max_globally_primed, "max primed", 0, 10000)]);
+  }
+  if (Object.prototype.hasOwnProperty.call(values, "is_spawning_active")) {
+    entries.push(["is_spawning_active", normalizeBooleanInput(values.is_spawning_active, "spawning active")]);
+  }
+  if (Object.prototype.hasOwnProperty.call(values, "global_spawn_weight")) {
+    entries.push(["global_spawn_weight", numberParam(values.global_spawn_weight, "spawn weight", 0, 100000)]);
+  }
+  if (!entries.length) {
+    const error = new Error("No spice field values were provided.");
+    error.statusCode = 400;
+    throw error;
+  }
+  const assignments = entries.map(([key], index) => `${quoteIdentifier(key)} = $${index + 1}`);
+  const params = entries.map(([, value]) => value);
+  const result = await db.query(`
+    update dune.spicefield_types
+       set ${assignments.join(", ")}
+     where spicefield_type_id = $${params.length + 1}
+     returning spicefield_type_id,
+               map_name,
+               field_type,
+               dimension_index,
+               max_globally_active,
+               max_globally_primed,
+               current_globally_active,
+               current_globally_primed,
+               is_spawning_active,
+               global_spawn_weight`, [...params, id]);
+  if (!result.rowCount) {
+    const error = new Error(`Spice field type ${id} was not found.`);
+    error.statusCode = 404;
+    throw error;
+  }
+  return { ok: true, updatedRows: result.rowCount || 0, row: result.rows[0] };
+}
+
 async function rowReference(db, schema, table, rowId) {
   const raw = String(rowId || "").trim();
   if (/^\(\d+,\d+\)$/.test(raw)) return { type: "ctid", params: [raw] };
@@ -239,6 +302,21 @@ function normalizeEditableValue(value, column = {}) {
   }
   if (typeof value === "object" && value !== null) return JSON.stringify(value);
   return value;
+}
+
+function normalizeBooleanInput(value, label) {
+  if (typeof value === "boolean") return value;
+  if (/^(true|1|yes|on)$/i.test(String(value))) return true;
+  if (/^(false|0|no|off)$/i.test(String(value))) return false;
+  const error = new Error(`Invalid ${label}`);
+  error.statusCode = 400;
+  throw error;
+}
+
+function numberParam(value, label, min = -Number.MAX_VALUE, max = Number.MAX_VALUE) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < min || n > max) throw new Error(`Invalid ${label}`);
+  return n;
 }
 
 export async function searchDatabase(db, q) {
