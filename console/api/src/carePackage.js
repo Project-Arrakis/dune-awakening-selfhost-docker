@@ -48,6 +48,16 @@ const DEFAULT_CONFIG = {
   grantWhen: "first_online",
   autoGrantRules: [{ id: "auto-rule-1", enabled: false, kitId: DEFAULT_KIT_ID, grantWhen: "first_online", lastSeenDays: 30 }]
 };
+const firstOnlineClaimLocks = new Map();
+
+class FirstOnlineAlreadyClaimedError extends Error {
+  constructor(message, claim) {
+    super(message);
+    this.name = "FirstOnlineAlreadyClaimedError";
+    this.statusCode = 409;
+    this.claim = claim;
+  }
+}
 
 export function carePackageCapabilities() {
   return {
@@ -110,7 +120,7 @@ export function clearCarePackageHistory(config) {
   mkdirSync(dirname(file), { recursive: true });
   writeFileSync(file, "", { mode: 0o600 });
   try { chmodSync(file, 0o600); } catch {}
-  return { ok: true, removed, rows: [] };
+  return { ok: true, removed, rows: [], firstOnlineClaimsPreserved: true };
 }
 
 function normalizeHistoryRow(row = {}) {
@@ -147,7 +157,8 @@ export function carePackageEligiblePlayers(config, players = [], options = {}) {
   const rule = options.ruleId ? kitConfig.autoGrantRules.find((entry) => entry.id === options.ruleId) : null;
   const kit = rule ? selectedKit(kitConfig, rule.kitId, rule.grantWhen, rule.lastSeenDays) : selectedKit(kitConfig, kitConfig.autoGrantKitId);
   const history = carePackageHistory(config, 500).rows;
-  const rows = players.map((player) => eligibilityForPlayer(kit, history, normalizePlayer(player)));
+  const claims = readFirstOnlineClaims(config);
+  const rows = players.map((player) => eligibilityForPlayer(kit, history, normalizePlayer(player), { claims }));
   return {
     config: kitConfig,
     kit,
@@ -205,9 +216,10 @@ export async function runCarePackageAutoScan(config, players = [], source = "aut
       continue;
     }
     const history = carePackageHistory(config, 500).rows;
+    const claims = readFirstOnlineClaims(config);
     const rows = players.map((player) => {
       const normalized = normalizePlayer(player);
-      if (kit.grantWhen !== "last_seen") return eligibilityForPlayer(kit, history, normalized, { requireOnline: true });
+      if (kit.grantWhen !== "last_seen") return eligibilityForPlayer(kit, history, normalized, { requireOnline: true, claims });
       return lastSeenReturnEligibility(config, pendingReturns, kit, rule, history, normalized);
     });
     for (const player of rows) {
@@ -248,16 +260,41 @@ export async function grantCarePackage(config, playerId, body = {}, context = {}
   const kit = selectedKit(kitConfig, body.kitId || (source === "manual" ? kitConfig.activeKitId : kitConfig.autoGrantKitId));
   validatePlayerTarget(playerId);
   if (!kit.items.length && !kit.xp) throw new Error("Care Package has no configured items or XP");
-  if (source !== "manual" && body.grantWhen === "first_online" && hasSuccessfulFirstOnlineGrant(carePackageHistory(config, 500).rows, {
+  const grantIdentity = {
     action_player_id: playerId,
-    actor_id: body.actorId || "",
+    actor_id: body.actorId || body.actor_id || "",
     account_id: body.accountId || body.account_id || "",
     funcom_id: body.funcomId || body.funcom_id || "",
-    fls_id: body.flsId || body.fls_id || ""
+    fls_id: body.flsId || body.fls_id || "",
+    character_name: body.characterName || body.character_name || ""
+  };
+  const useFirstOnlineClaim = firstOnlineClaimApplies(config, kit, source, body);
+  const firstOnlineReservation = useFirstOnlineClaim
+    ? await withFirstOnlineClaimLock(firstOnlineClaimKey(grantIdentity), () => reserveFirstOnlineClaim(config, kit, source, playerId, body))
+    : null;
+  if (firstOnlineReservation?.existing) {
+    return skippedGrant(config, kit, {
+      action_player_id: playerId,
+      actor_id: grantIdentity.actor_id,
+      account_id: grantIdentity.account_id,
+      funcom_id: grantIdentity.funcom_id,
+      fls_id: grantIdentity.fls_id,
+      character_name: grantIdentity.character_name,
+      online_status: body.onlineStatus || body.online_status || ""
+    }, "Already received first-online Care Package", source);
+  }
+  if (source !== "manual" && useFirstOnlineClaim && hasSuccessfulFirstOnlineGrant(carePackageHistory(config, 500).rows, {
+    action_player_id: playerId,
+    actor_id: grantIdentity.actor_id,
+    account_id: grantIdentity.account_id,
+    funcom_id: grantIdentity.funcom_id,
+    fls_id: grantIdentity.fls_id
   })) {
+    releaseFirstOnlineClaim(config, firstOnlineReservation);
     throw new Error(`A first-online Care Package was already granted to ${playerId}`);
   }
   if (source !== "manual" && hasSuccessfulGrant(config, playerId, kit.id, body.actorId, body)) {
+    releaseFirstOnlineClaim(config, firstOnlineReservation);
     throw new Error(`Care Package ${kit.name} was already granted to ${playerId}`);
   }
 
@@ -345,12 +382,12 @@ export async function grantCarePackage(config, playerId, body = {}, context = {}
     id: grantId,
     playerId,
     action_player_id: playerId,
-    actor_id: body.actorId || "",
-    account_id: body.accountId || "",
-    funcom_id: body.funcomId || "",
-    fls_id: body.flsId || "",
-    character_name: body.characterName || "",
-    online_status: body.onlineStatus || "",
+    actor_id: body.actorId || body.actor_id || "",
+    account_id: body.accountId || body.account_id || "",
+    funcom_id: body.funcomId || body.funcom_id || "",
+    fls_id: body.flsId || body.fls_id || "",
+    character_name: body.characterName || body.character_name || "",
+    online_status: body.onlineStatus || body.online_status || "",
     source,
     version: kit.id,
     kitId: kit.id,
@@ -364,6 +401,9 @@ export async function grantCarePackage(config, playerId, body = {}, context = {}
     results
   };
   appendGrant(config, row);
+  if (firstOnlineReservation?.claimed && !hasDeliveredCarePackageContent(row)) {
+    releaseFirstOnlineClaim(config, firstOnlineReservation);
+  }
   return row;
 }
 
@@ -404,6 +444,9 @@ function eligibilityForPlayer(kit, history, player, options = {}) {
   if (!player.action_player_id) return { ...player, eligible: false, reason: "Missing admin action ID" };
   if (kit.grantWhen === "first_online" && String(player.online_status || "").toLowerCase() !== "online") {
     return { ...player, eligible: false, reason: "Not currently online" };
+  }
+  if (kit.grantWhen === "first_online" && firstOnlineClaimForPlayer(options.claims || options.firstOnlineClaims, player)) {
+    return { ...player, eligible: false, reason: "Already received first-online Care Package" };
   }
   if (kit.grantWhen === "first_online" && hasSuccessfulFirstOnlineGrant(history, player)) {
     return { ...player, eligible: false, reason: "Already received first-online Care Package" };
@@ -507,6 +550,113 @@ function stableIdentityValues(entity = {}) {
     entity.account_id,
     entity.accountId
   ].map((value) => String(value || "").trim()).filter(Boolean));
+}
+
+function firstOnlineClaimKey(entity = {}) {
+  return firstOnlineIdentityKeys(entity)[0] || "";
+}
+
+function firstOnlineClaimForPlayer(claims, player) {
+  if (!claims || typeof claims !== "object") return null;
+  const players = claims.players || {};
+  const aliases = claims.aliases || {};
+  for (const key of firstOnlineIdentityKeys(player)) {
+    const primary = aliases[key] || key;
+    if (players[primary]) return players[primary];
+  }
+  return null;
+}
+
+function firstOnlineClaimIdentity(entity = {}) {
+  return {
+    account_id: String(entity.account_id || entity.accountId || "").trim(),
+    funcom_id: String(entity.funcom_id || entity.funcomId || "").trim(),
+    fls_id: String(entity.fls_id || entity.flsId || "").trim(),
+    action_player_id: String(entity.action_player_id || entity.playerId || "").trim(),
+    actor_id: String(entity.actor_id || entity.actorId || entity.player_pawn_id || "").trim()
+  };
+}
+
+async function withFirstOnlineClaimLock(key, fn) {
+  if (!key) return await fn();
+  const previous = firstOnlineClaimLocks.get(key) || Promise.resolve();
+  let release;
+  const current = new Promise((resolveRelease) => { release = resolveRelease; });
+  const chain = previous.then(() => current, () => current);
+  firstOnlineClaimLocks.set(key, chain);
+  await previous.catch(() => {});
+  try {
+    return await fn();
+  } finally {
+    release();
+    if (firstOnlineClaimLocks.get(key) === chain) firstOnlineClaimLocks.delete(key);
+  }
+}
+
+function firstOnlineClaimApplies(config, kit, source, body = {}) {
+  const kitConfig = readConfig(config);
+  const grantWhen = body.grantWhen || kit.grantWhen || kitConfig.grantWhen;
+  if (source !== "manual") return grantWhen === "first_online";
+  if (body.grantWhen === "first_online") return true;
+  return kitConfig.autoGrantRules.some((rule) => rule.enabled && rule.grantWhen === "first_online" && rule.kitId === kit.id);
+}
+
+function reserveFirstOnlineClaim(config, kit, source, playerId, body = {}) {
+  const identity = firstOnlineClaimIdentity({
+    ...body,
+    action_player_id: playerId,
+    actor_id: body.actorId || body.actor_id || "",
+    account_id: body.accountId || body.account_id || "",
+    funcom_id: body.funcomId || body.funcom_id || "",
+    fls_id: body.flsId || body.fls_id || ""
+  });
+  const keys = firstOnlineIdentityKeys(identity);
+  const key = keys[0] || "";
+  if (!key) return null;
+  const claims = readFirstOnlineClaims(config);
+  const existing = firstOnlineClaimForPlayer(claims, identity);
+  if (existing) {
+    if (source === "manual") return { key, claimed: false, existing };
+    throw new FirstOnlineAlreadyClaimedError(`A first-online Care Package was already granted to ${playerId}`, existing);
+  }
+  const claim = {
+    claimedAt: new Date().toISOString(),
+    source,
+    kitId: kit.id,
+    kitName: kit.name,
+    characterName: String(body.characterName || body.character_name || "").trim(),
+    identities: identity
+  };
+  claims.players[key] = claim;
+  claims.aliases ||= {};
+  for (const alias of keys) claims.aliases[alias] = key;
+  writeFirstOnlineClaims(config, claims);
+  return { key, claimed: true, claim };
+}
+
+function releaseFirstOnlineClaim(config, reservation) {
+  if (!reservation?.claimed || !reservation.key) return;
+  const claims = readFirstOnlineClaims(config);
+  if (!claims.players[reservation.key]) return;
+  delete claims.players[reservation.key];
+  for (const [alias, primary] of Object.entries(claims.aliases || {})) {
+    if (primary === reservation.key) delete claims.aliases[alias];
+  }
+  writeFirstOnlineClaims(config, claims);
+}
+
+function firstOnlineIdentityKeys(entity = {}) {
+  const identities = firstOnlineClaimIdentity(entity);
+  return [
+    ["account_id", identities.account_id],
+    ["funcom_id", identities.funcom_id],
+    ["fls_id", identities.fls_id],
+    ["action_player_id", identities.action_player_id],
+    ["actor_id", identities.actor_id]
+  ]
+    .map(([kind, value]) => [kind, String(value || "").trim().toLowerCase()])
+    .filter(([, value]) => value)
+    .map(([kind, value]) => `${kind}:${value}`);
 }
 
 function normalizePlayer(player = {}) {
@@ -938,6 +1088,10 @@ function pendingReturnsPath(config) {
   return resolve(config.generatedDir, "care-package-pending-returns.json");
 }
 
+function firstOnlineClaimsPath(config) {
+  return resolve(config.generatedDir, "care-package-first-online-claims.json");
+}
+
 function readConfig(config) {
   const file = configPath(config);
   if (!existsSync(file)) return DEFAULT_CONFIG;
@@ -973,5 +1127,25 @@ function writePendingReturns(config, value) {
   const file = pendingReturnsPath(config);
   mkdirSync(dirname(file), { recursive: true });
   writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
+  try { chmodSync(file, 0o600); } catch {}
+}
+
+function readFirstOnlineClaims(config) {
+  const file = firstOnlineClaimsPath(config);
+  if (!existsSync(file)) return { version: 1, players: {}, aliases: {} };
+  try {
+    const parsed = JSON.parse(readFileSync(file, "utf8"));
+    const players = parsed?.players && typeof parsed.players === "object" && !Array.isArray(parsed.players) ? parsed.players : {};
+    const aliases = parsed?.aliases && typeof parsed.aliases === "object" && !Array.isArray(parsed.aliases) ? parsed.aliases : {};
+    return { version: 1, players, aliases };
+  } catch {
+    return { version: 1, players: {}, aliases: {} };
+  }
+}
+
+function writeFirstOnlineClaims(config, value) {
+  const file = firstOnlineClaimsPath(config);
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, `${JSON.stringify({ version: 1, players: value.players || {}, aliases: value.aliases || {} }, null, 2)}\n`, { mode: 0o600 });
   try { chmodSync(file, 0o600); } catch {}
 }

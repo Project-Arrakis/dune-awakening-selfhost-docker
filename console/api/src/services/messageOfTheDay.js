@@ -10,6 +10,7 @@ const DEFAULT_MESSAGE_OF_THE_DAY = {
 };
 
 const EMPTY_STATE = { delivered: {} };
+const MIN_MOTD_SESSION_AGE_MS = 90_000;
 
 export function readMessageOfTheDay(config) {
   return {
@@ -50,7 +51,8 @@ export async function runMessageOfTheDayScan(config, players, context = {}) {
   if (!settings.enabled) return { ok: true, skipped: true, reason: "disabled", sent: 0, failed: 0 };
   if (!settings.message.trim()) return { ok: true, skipped: true, reason: "empty", sent: 0, failed: 0 };
 
-  const onlinePlayers = (players || []).map(normalizePlayer).filter((player) => player.key && player.funcomId && player.characterName);
+  const onlinePlayers = onlinePlayerList(players);
+  const now = context.now instanceof Date ? context.now : new Date();
   const state = readState(config);
   const delivered = {};
   for (const [key, entry] of Object.entries(state.delivered || {})) {
@@ -58,7 +60,7 @@ export async function runMessageOfTheDayScan(config, players, context = {}) {
     if (player && sameSession(entry, player)) delivered[key] = entry;
   }
 
-  const pendingPlayers = onlinePlayers.filter((player) => !delivered[player.key]);
+  const pendingPlayers = onlinePlayers.filter((player) => !delivered[player.key] && isSessionMature(player, now));
   if (!pendingPlayers.length) {
     writeJson(statePath(config), { delivered }, 0o600);
     return { ok: true, skipped: false, sent: 0, failed: 0 };
@@ -80,7 +82,8 @@ export async function runMessageOfTheDayScan(config, players, context = {}) {
           senderFuncomId: persona.funcomId,
           senderHexFlsId: persona.hexFlsId,
           recipientFuncomId: player.funcomId,
-          recipientCharacterName: player.characterName
+          recipientCharacterName: player.characterName,
+          recipientQueue: player.queue
         });
         results.push({ player: player.characterName, ok: true, senderName: persona.displayName, stdout: result.stdout });
       }
@@ -110,7 +113,7 @@ export function normalizeSettings(input = {}) {
 
 export function messageOfTheDayDeliveryPlan(settings, players, state = EMPTY_STATE) {
   const normalizedSettings = normalizeSettings(settings);
-  const onlinePlayers = (players || []).map(normalizePlayer).filter((player) => player.key && player.funcomId && player.characterName);
+  const onlinePlayers = onlinePlayerList(players);
   const delivered = {};
   for (const [key, entry] of Object.entries(state.delivered || {})) {
     const player = onlinePlayers.find((player) => player.key === key);
@@ -145,20 +148,49 @@ function normalizePlayer(player = {}) {
   const characterName = String(player.character_name || player.characterName || player.recipientCharacterName || "").trim();
   const key = String(player.action_player_id || flsId || funcomId || player.actor_id || player.player_pawn_id || "").trim();
   const sessionKey = String(player.login_session || player.loginSession || player.last_login_time || player.lastLoginTime || "").trim();
+  const onlineStatus = String(player.online_status || player.onlineStatus || "").trim().toLowerCase();
   return {
     key,
     flsId,
     funcomId,
     characterName,
+    online: onlineStatus === "online",
     sessionKey,
     queue: flsId ? `${flsId}_queue` : ""
   };
+}
+
+function onlinePlayerList(players = []) {
+  const unique = new Map();
+  for (const player of players.map(normalizePlayer).filter((entry) => entry.key && entry.funcomId && entry.characterName && entry.online)) {
+    const current = unique.get(player.key);
+    if (!current || sessionTime(player.sessionKey) >= sessionTime(current.sessionKey)) unique.set(player.key, player);
+  }
+  return [...unique.values()];
 }
 
 function sameSession(entry = {}, player = {}) {
   const current = String(player.sessionKey || "").trim();
   if (!current) return true;
   return String(entry.sessionKey || "").trim() === current;
+}
+
+function isSessionMature(player = {}, now = new Date()) {
+  const startedAt = parseSessionTime(player.sessionKey);
+  if (!startedAt) return true;
+  return now.getTime() - startedAt.getTime() >= MIN_MOTD_SESSION_AGE_MS;
+}
+
+function parseSessionTime(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+  const normalized = raw.includes(" ") && !raw.includes("T") ? raw.replace(" ", "T") : raw;
+  const millis = Date.parse(normalized);
+  return Number.isFinite(millis) ? new Date(millis) : null;
+}
+
+function sessionTime(value) {
+  return parseSessionTime(value)?.getTime() ?? 0;
 }
 
 function normalizeBoolean(value, field) {

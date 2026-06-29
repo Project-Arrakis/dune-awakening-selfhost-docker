@@ -16,6 +16,7 @@ const DEFAULT_PLAYER_ANNOUNCEMENTS = {
 };
 
 const EMPTY_STATE = { online: {} };
+const MIN_JOIN_ANNOUNCEMENT_SESSION_AGE_MS = 90_000;
 const DEFAULT_CHAT_MAP = "HaggaBasin";
 const MAP_CHAT_REGIONS = {
   Survival_1: "HaggaBasin",
@@ -87,12 +88,23 @@ export async function runPlayerAnnouncementScan(config, players, context = {}) {
   const settings = readSettings(config);
   const currentOnline = onlineMap(players);
   const previousOnline = readState(config).online || {};
+  const now = context.now instanceof Date ? context.now : new Date();
   if (!settings.joinEnabled && !settings.leaveEnabled) return { ok: true, skipped: true, joined: 0, left: 0, sent: 0, failed: 0 };
 
   const events = [];
-  if (settings.joinEnabled) {
-    for (const [key, player] of Object.entries(currentOnline)) {
-      if (!previousOnline[key] || !sameSession(previousOnline[key], player)) events.push({ type: "join", player, message: renderPlayerMessage(settings.joinMessage, player) });
+  const deferredJoinKeys = new Set();
+  for (const [key, player] of Object.entries(currentOnline)) {
+    const previous = previousOnline[key];
+    if (!previous || !sameSession(previous, player)) {
+      if (settings.joinEnabled) {
+        if (isSessionMature(player, now)) events.push({ type: "join", player, message: renderPlayerMessage(settings.joinMessage, player) });
+        else deferredJoinKeys.add(key);
+      }
+      continue;
+    }
+    if (!sameMapAndDimension(previous, player)) {
+      if (settings.leaveEnabled) events.push({ type: "leave", player: previous, message: renderPlayerMessage(settings.leaveMessage, previous) });
+      if (settings.joinEnabled) events.push({ type: "join", player, message: renderPlayerMessage(settings.joinMessage, player) });
     }
   }
   if (settings.leaveEnabled) {
@@ -136,7 +148,12 @@ export async function runPlayerAnnouncementScan(config, players, context = {}) {
     }
   }
 
-  writeJson(statePath(config), { online: currentOnline }, 0o600);
+  const nextOnline = { ...currentOnline };
+  for (const key of deferredJoinKeys) {
+    if (previousOnline[key]) nextOnline[key] = previousOnline[key];
+    else delete nextOnline[key];
+  }
+  writeJson(statePath(config), { online: nextOnline }, 0o600);
   return {
     ok: failed === 0,
     skipped: false,
@@ -216,6 +233,20 @@ function sameSession(previous = {}, current = {}) {
   const sessionKey = String(current.sessionKey || "").trim();
   if (!sessionKey) return true;
   return String(previous.sessionKey || "").trim() === sessionKey;
+}
+
+function isSessionMature(player = {}, now = new Date()) {
+  const startedAt = parseSessionTime(player.sessionKey);
+  if (!startedAt) return true;
+  return now.getTime() - startedAt.getTime() >= MIN_JOIN_ANNOUNCEMENT_SESSION_AGE_MS;
+}
+
+function parseSessionTime(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+  const normalized = raw.includes(" ") && !raw.includes("T") ? raw.replace(" ", "T") : raw;
+  const millis = Date.parse(normalized);
+  return Number.isFinite(millis) ? new Date(millis) : null;
 }
 
 function renderPlayerMessage(template, player) {

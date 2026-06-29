@@ -925,6 +925,9 @@ export async function listPlayers(db, { online = false, q = "" } = {}) {
   const loginSessionSelect = playerStateColumns.has("last_login_time")
     ? "coalesce(ps.last_login_time::text, '')"
     : "''";
+  const currentPawnFilter = playerStateColumns.has("player_pawn_id")
+    ? " and (ps.player_pawn_id is null or ps.player_pawn_id = 0 or ps.player_pawn_id = a.id)"
+    : "";
   const lastSeenWithOnlineFallback = `
     case
       when coalesce(ps.online_status::text, '') = 'Online'
@@ -940,6 +943,7 @@ export async function listPlayers(db, { online = false, q = "" } = {}) {
   where += " and coalesce(ac.funcom_id, '') <> 'MessageOfTheDay#0001'";
   where += " and coalesce(ps.character_name, '') <> 'Server'";
   where += " and coalesce(ps.character_name, '') <> 'Message of the Day'";
+  where += currentPawnFilter;
   if (online) where += " and coalesce(ps.online_status::text, '') = 'Online'";
   if (q) {
     values.push(`%${q}%`);

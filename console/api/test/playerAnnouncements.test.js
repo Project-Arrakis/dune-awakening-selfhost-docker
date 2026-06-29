@@ -96,19 +96,59 @@ test("player announcements treat changed login session as a fresh join", async (
   assert.equal(quickRelog.sent, 1);
 });
 
-test("player announcements do not join again on map or actor changes within the same login", async () => {
+test("player announcements wait for a fresh login session before sending", async () => {
+  const cfg = config();
+  savePlayerAnnouncements(cfg, { joinEnabled: true, joinMessage: "{playerName} joined", leaveEnabled: false, leaveMessage: "{playerName} left" });
+  const freshLogin = player("John", "ABCDEF1234567890", { login_session: "2026-06-30T00:00:00.000Z" });
+
+  const tooEarly = await runPlayerAnnouncementScan(cfg, [freshLogin], { mockMode: true, now: new Date("2026-06-30T00:00:30.000Z") });
+  assert.equal(tooEarly.joined, 0);
+  assert.equal(tooEarly.sent, 0);
+
+  const mature = await runPlayerAnnouncementScan(cfg, [freshLogin], { mockMode: true, now: new Date("2026-06-30T00:01:31.000Z") });
+  assert.equal(mature.joined, 1);
+  assert.equal(mature.sent, 1);
+});
+
+test("player announcements defer a changed login session without suppressing the later join", async () => {
+  const cfg = config();
+  savePlayerAnnouncements(cfg, { joinEnabled: true, joinMessage: "{playerName} joined", leaveEnabled: false, leaveMessage: "{playerName} left" });
+
+  const first = await runPlayerAnnouncementScan(cfg, [player("John", "ABCDEF1234567890", { login_session: "2026-06-30T00:00:00.000Z" })], { mockMode: true, now: new Date("2026-06-30T00:02:00.000Z") });
+  assert.equal(first.sent, 1);
+
+  const relog = player("John", "ABCDEF1234567890", { login_session: "2026-06-30T00:05:00.000Z" });
+  const tooEarly = await runPlayerAnnouncementScan(cfg, [relog], { mockMode: true, now: new Date("2026-06-30T00:05:30.000Z") });
+  assert.equal(tooEarly.joined, 0);
+  assert.equal(tooEarly.sent, 0);
+
+  const mature = await runPlayerAnnouncementScan(cfg, [relog], { mockMode: true, now: new Date("2026-06-30T00:06:31.000Z") });
+  assert.equal(mature.joined, 1);
+  assert.equal(mature.sent, 1);
+});
+
+test("player announcements publish leave and join events for map changes within the same login", async () => {
   const cfg = config();
   savePlayerAnnouncements(cfg, { joinEnabled: true, joinMessage: "{playerName} joined", leaveEnabled: true, leaveMessage: "{playerName} left" });
 
-  const first = await runPlayerAnnouncementScan(cfg, [player("John", "ABCDEF1234567890", { actor_id: 6, map: "Survival_1", login_session: "2026-06-28 10:00:00+00" })], { mockMode: true });
-  assert.equal(first.joined, 1);
+  const stableSession = "2026-06-28 10:00:00+00";
+  const first = await runPlayerAnnouncementScan(cfg, [
+    player("John", "ABCDEF1234567890", { actor_id: 6, map: "Survival_1", login_session: stableSession }),
+    player("Jane", "1234567890ABCDEF", { actor_id: 100, map: "Survival_1", login_session: stableSession }),
+    player("Paul", "A1234567890BCDEF", { actor_id: 101, map: "Overmap", login_session: stableSession })
+  ], { mockMode: true });
+  assert.equal(first.joined, 3);
   assert.equal(first.left, 0);
-  assert.equal(first.sent, 1);
 
-  const mapTravel = await runPlayerAnnouncementScan(cfg, [player("John", "ABCDEF1234567890", { actor_id: 99, map: "Overmap", login_session: "2026-06-28 10:00:00+00" })], { mockMode: true });
-  assert.equal(mapTravel.joined, 0);
-  assert.equal(mapTravel.left, 0);
-  assert.equal(mapTravel.sent, 0);
+  const mapTravel = await runPlayerAnnouncementScan(cfg, [
+    player("John", "ABCDEF1234567890", { actor_id: 99, map: "Overmap", login_session: stableSession }),
+    player("Jane", "1234567890ABCDEF", { actor_id: 100, map: "Survival_1", login_session: stableSession }),
+    player("Paul", "A1234567890BCDEF", { actor_id: 101, map: "Overmap", login_session: stableSession })
+  ], { mockMode: true });
+  assert.equal(mapTravel.joined, 1);
+  assert.equal(mapTravel.left, 1);
+  assert.equal(mapTravel.sent, 3);
+  assert.deepEqual(mapTravel.results.map((result) => result.type), ["leave", "join"]);
 });
 
 test("player announcements report leave events even when nobody remains online", async () => {

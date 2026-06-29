@@ -394,6 +394,7 @@ test("players query uses parameterized search input", async () => {
     query: async (text, values) => {
       calls.push({ text, values });
       if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("information_schema.columns")) return { rows: [] };
       return { rows: [{ actor_id: 82, player_pawn_id: 82, account_id: 276, funcom_id: "RedBlink#75570", fls_id: "RedBlink#75570", action_player_id: "RedBlink#75570" }] };
     }
   };
@@ -413,6 +414,25 @@ test("players query uses parameterized search input", async () => {
   assert.equal(result.rows[0].funcom_id, "RedBlink#75570");
   assert.equal(result.rows[0].fls_id, "RedBlink#75570");
   assert.equal(result.rows[0].action_player_id, "RedBlink#75570");
+});
+
+test("players query filters stale actor rows when player_state has current pawn id", async () => {
+  const calls = [];
+  const db = {
+    query: async (text, values) => {
+      calls.push({ text, values });
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("information_schema.columns")) return { rows: ["player_pawn_id", "last_login_time", "online_status"].map((column_name) => ({ column_name })) };
+      return { rows: [{ actor_id: 78, player_pawn_id: 78, account_id: 2, character_name: "RedBlink", map: "HaggaBasin", online_status: "Online" }] };
+    }
+  };
+
+  const result = await listPlayers(db, { online: true });
+  const playerQuery = calls.find((call) => call.text.includes("from dune.actors"));
+  assert.ok(playerQuery);
+  assert.match(playerQuery.text, /ps\.player_pawn_id = a\.id/);
+  assert.equal(result.rows.length, 1);
+  assert.equal(result.rows[0].actor_id, 78);
 });
 
 test("addon leadership players include level and faction summaries", async () => {
