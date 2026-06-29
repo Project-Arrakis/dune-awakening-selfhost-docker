@@ -116,10 +116,22 @@ test("message of the day waits for a fresh login session before sending", async 
   saveMessageOfTheDay(cfg, { enabled: true, title: "Daily", message: "Welcome back" });
   const freshLogin = onlinePlayer({ login_session: "2026-06-30T00:00:00.000Z" });
 
-  const tooEarly = await runMessageOfTheDayScan(cfg, [freshLogin], { mockMode: true, persona: { funcomId: "Server#0001", hexFlsId: "A5C0DE5E12A00001" }, now: new Date("2026-06-30T00:00:30.000Z") });
+  const tooEarly = await runMessageOfTheDayScan(cfg, [freshLogin], { mockMode: true, persona: { funcomId: "Server#0001", hexFlsId: "A5C0DE5E12A00001" }, now: new Date("2026-06-30T00:00:10.000Z") });
   assert.equal(tooEarly.sent, 0);
 
-  const mature = await runMessageOfTheDayScan(cfg, [freshLogin], { mockMode: true, persona: { funcomId: "Server#0001", hexFlsId: "A5C0DE5E12A00001" }, now: new Date("2026-06-30T00:01:31.000Z") });
+  const mature = await runMessageOfTheDayScan(cfg, [freshLogin], { mockMode: true, persona: { funcomId: "Server#0001", hexFlsId: "A5C0DE5E12A00001" }, now: new Date("2026-06-30T00:00:31.000Z") });
+  assert.equal(mature.sent, 1);
+});
+
+test("message of the day waits when Postgres session timestamp uses short UTC offset", async () => {
+  const cfg = config();
+  saveMessageOfTheDay(cfg, { enabled: true, title: "Daily", message: "Welcome back" });
+  const freshLogin = onlinePlayer({ login_session: "2026-06-30 00:00:00.000000+00" });
+
+  const tooEarly = await runMessageOfTheDayScan(cfg, [freshLogin], { mockMode: true, persona: { funcomId: "Server#0001", hexFlsId: "A5C0DE5E12A00001" }, now: new Date("2026-06-30T00:00:10.000Z") });
+  assert.equal(tooEarly.sent, 0);
+
+  const mature = await runMessageOfTheDayScan(cfg, [freshLogin], { mockMode: true, persona: { funcomId: "Server#0001", hexFlsId: "A5C0DE5E12A00001" }, now: new Date("2026-06-30T00:00:31.000Z") });
   assert.equal(mature.sent, 1);
 });
 
@@ -128,11 +140,11 @@ test("message of the day does not mark fresh sessions delivered before the delay
   saveMessageOfTheDay(cfg, { enabled: true, title: "Daily", message: "Welcome back" });
   const freshLogin = onlinePlayer({ login_session: "2026-06-30T00:00:00.000Z" });
 
-  await runMessageOfTheDayScan(cfg, [freshLogin], { mockMode: true, persona: { funcomId: "Server#0001", hexFlsId: "A5C0DE5E12A00001" }, now: new Date("2026-06-30T00:00:30.000Z") });
+  await runMessageOfTheDayScan(cfg, [freshLogin], { mockMode: true, persona: { funcomId: "Server#0001", hexFlsId: "A5C0DE5E12A00001" }, now: new Date("2026-06-30T00:00:10.000Z") });
   const delivered = JSON.parse(readFileSync(join(cfg.generatedDir, "message-of-the-day-state.json"), "utf8")).delivered;
   assert.deepEqual(delivered, {});
 
-  const mature = await runMessageOfTheDayScan(cfg, [freshLogin], { mockMode: true, persona: { funcomId: "Server#0001", hexFlsId: "A5C0DE5E12A00001" }, now: new Date("2026-06-30T00:01:31.000Z") });
+  const mature = await runMessageOfTheDayScan(cfg, [freshLogin], { mockMode: true, persona: { funcomId: "Server#0001", hexFlsId: "A5C0DE5E12A00001" }, now: new Date("2026-06-30T00:00:31.000Z") });
   assert.equal(mature.sent, 1);
 });
 

@@ -10,7 +10,7 @@ const DEFAULT_MESSAGE_OF_THE_DAY = {
 };
 
 const EMPTY_STATE = { delivered: {} };
-const MIN_MOTD_SESSION_AGE_MS = 90_000;
+const MIN_MOTD_SESSION_AGE_MS = 30_000;
 
 export function readMessageOfTheDay(config) {
   return {
@@ -184,9 +184,14 @@ function isSessionMature(player = {}, now = new Date()) {
 function parseSessionTime(value) {
   const raw = String(value || "").trim();
   if (!raw) return null;
-  const normalized = raw.includes(" ") && !raw.includes("T") ? raw.replace(" ", "T") : raw;
+  const normalized = normalizeSessionTimestamp(raw);
   const millis = Date.parse(normalized);
   return Number.isFinite(millis) ? new Date(millis) : null;
+}
+
+function normalizeSessionTimestamp(value) {
+  const withDateSeparator = value.includes(" ") && !value.includes("T") ? value.replace(" ", "T") : value;
+  return withDateSeparator.replace(/([+-]\d{2})$/, "$1:00");
 }
 
 function sessionTime(value) {

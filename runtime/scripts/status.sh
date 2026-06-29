@@ -361,6 +361,18 @@ if is_running dune-postgres; then
         left join dune.accounts ac on ac.id = ps.account_id
         where a.class ilike '%PlayerCharacter%'
           and coalesce(ps.online_status::text, '') = 'Online'
+          and (
+            not exists (
+              select 1
+              from information_schema.columns
+              where table_schema = 'dune'
+                and table_name = 'player_state'
+                and column_name = 'player_pawn_id'
+            )
+            or ps.player_pawn_id is null
+            or ps.player_pawn_id = 0
+            or ps.player_pawn_id = a.id
+          )
           and coalesce(ac.\"user\", '') <> 'A5C0DE5E12A00001'
           and coalesce(ac.\"user\", '') <> 'A5C0DE5E12A00002'
           and coalesce(ac.funcom_id, '') <> 'Server#0001'

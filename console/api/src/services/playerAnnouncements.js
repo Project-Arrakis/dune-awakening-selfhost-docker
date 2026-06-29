@@ -16,7 +16,7 @@ const DEFAULT_PLAYER_ANNOUNCEMENTS = {
 };
 
 const EMPTY_STATE = { online: {} };
-const MIN_JOIN_ANNOUNCEMENT_SESSION_AGE_MS = 90_000;
+const MIN_JOIN_ANNOUNCEMENT_SESSION_AGE_MS = 30_000;
 const DEFAULT_CHAT_MAP = "HaggaBasin";
 const MAP_CHAT_REGIONS = {
   Survival_1: "HaggaBasin",
@@ -244,9 +244,14 @@ function isSessionMature(player = {}, now = new Date()) {
 function parseSessionTime(value) {
   const raw = String(value || "").trim();
   if (!raw) return null;
-  const normalized = raw.includes(" ") && !raw.includes("T") ? raw.replace(" ", "T") : raw;
+  const normalized = normalizeSessionTimestamp(raw);
   const millis = Date.parse(normalized);
   return Number.isFinite(millis) ? new Date(millis) : null;
+}
+
+function normalizeSessionTimestamp(value) {
+  const withDateSeparator = value.includes(" ") && !value.includes("T") ? value.replace(" ", "T") : value;
+  return withDateSeparator.replace(/([+-]\d{2})$/, "$1:00");
 }
 
 function renderPlayerMessage(template, player) {
