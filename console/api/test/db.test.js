@@ -103,6 +103,65 @@ test("manual row edit uses stable primary key row identifiers when available", a
   assert.deepEqual(updateCall.values, ["1", "70001", 1]);
 });
 
+test("manual row edit preserves Postgres arrays instead of JSON stringifying them", async () => {
+  const calls = [];
+  const rowId = JSON.stringify({ pk: { id: 42 } });
+  const db = {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes("pg_index")) return { rows: [{ name: "id" }] };
+      if (text.includes("information_schema.columns")) {
+        return { rows: [
+          { name: "id" },
+          { name: "authorized_fls_ids", data_type: "ARRAY" },
+          { name: "metadata", data_type: "jsonb" },
+          { name: "json_array", data_type: "jsonb" }
+        ] };
+      }
+      return { fields: [], rows: [], rowCount: 1, command: "UPDATE" };
+    }
+  };
+  const result = await updateTableRow(db, "dune", "totems", rowId, {
+    authorized_fls_ids: ["A5C0DE5E12A00001", "B5C0DE5E12A00002"],
+    metadata: { name: "Totem" },
+    json_array: ["kept", "as json"]
+  });
+  assert.equal(result.updatedRows, 1);
+  const updateCall = calls.find((call) => String(call.text).startsWith("update"));
+  assert.ok(updateCall);
+  assert.deepEqual(updateCall.values, [
+    ["A5C0DE5E12A00001", "B5C0DE5E12A00002"],
+    JSON.stringify({ name: "Totem" }),
+    JSON.stringify(["kept", "as json"]),
+    42
+  ]);
+});
+
+test("manual row edit accepts JSON array text for Postgres array columns", async () => {
+  const calls = [];
+  const rowId = JSON.stringify({ pk: { id: 72 } });
+  const db = {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes("pg_index")) return { rows: [{ name: "id" }] };
+      if (text.includes("information_schema.columns")) {
+        return { rows: [
+          { name: "id" },
+          { name: "landclaim_original_global_location", data_type: "ARRAY" }
+        ] };
+      }
+      return { fields: [], rows: [], rowCount: 1, command: "UPDATE" };
+    }
+  };
+  const result = await updateTableRow(db, "dune", "totems", rowId, {
+    landclaim_original_global_location: "[123.45,678.9,11]"
+  });
+  assert.equal(result.updatedRows, 1);
+  const updateCall = calls.find((call) => String(call.text).startsWith("update"));
+  assert.ok(updateCall);
+  assert.deepEqual(updateCall.values, [[123.45, 678.9, 11], 72]);
+});
+
 test("database table list returns exact row counts", async () => {
   const calls = [];
   const db = {

@@ -137,7 +137,7 @@ export async function updateTableRow(db, schema, table, rowId, values = {}) {
 
   const itemEditMessage = schema === "dune" && table === "items" ? await manualItemEditMessage(db, safe, rowRef) : undefined;
   const assignments = entries.map(([key], index) => `${quoteIdentifier(key)} = $${index + 1}`);
-  const params = entries.map(([, value]) => normalizeEditableValue(value));
+  const params = entries.map(([key, value]) => normalizeEditableValue(value, editable.get(key)));
   const whereParams = rowRef.params.map((value) => normalizeEditableValue(value));
   const result = await withKnownLiveRefresh(db, () => db.query(`update ${safe} set ${assignments.join(", ")} where ${rowWhereSql(rowRef, params.length)}`, [...params, ...whereParams]), {
     features: liveRefreshFeaturesForTable(schema, table, entries.map(([key]) => key))
@@ -225,8 +225,18 @@ async function manualItemEditMessage(db, safeTable, rowRef) {
   return `${row.template_id || "Item"} was saved in the database and will be loaded when the player next joins.`;
 }
 
-function normalizeEditableValue(value) {
+function normalizeEditableValue(value, column = {}) {
   if (value === undefined) return null;
+  if (Array.isArray(value) && column?.data_type === "ARRAY") return value;
+  if (typeof value === "string" && column?.data_type === "ARRAY") {
+    const trimmed = value.trim();
+    if (/^\[.*\]$/s.test(trimmed)) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (Array.isArray(parsed)) return parsed;
+      } catch {}
+    }
+  }
   if (typeof value === "object" && value !== null) return JSON.stringify(value);
   return value;
 }
