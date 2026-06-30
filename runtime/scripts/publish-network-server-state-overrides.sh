@@ -26,11 +26,26 @@ SINK_QUEUE_PREFIX="serverStateSink_"
 EXCLUDED_MAPS_RE="^$"
 
 stop_loop_processes() {
+  local pid
   clear_stale_pidfile
   if [ -f "$PID_FILE" ]; then
-    kill "$(cat "$PID_FILE")" 2>/dev/null || true
+    pid="$(cat "$PID_FILE" 2>/dev/null || true)"
+    if [ -n "$pid" ]; then
+      kill -- "-$pid" 2>/dev/null || true
+      kill "$pid" 2>/dev/null || true
+    fi
   fi
-  pkill -f "publish-network-server-state-overrides.sh loop" 2>/dev/null || true
+  while IFS= read -r pid; do
+    [ -n "$pid" ] || continue
+    kill -- "-$pid" 2>/dev/null || true
+    kill "$pid" 2>/dev/null || true
+  done < <(loop_pids)
+  sleep 1
+  while IFS= read -r pid; do
+    [ -n "$pid" ] || continue
+    kill -9 -- "-$pid" 2>/dev/null || true
+    kill -9 "$pid" 2>/dev/null || true
+  done < <(loop_pids)
   rm -f "$PID_FILE"
 }
 
@@ -44,7 +59,9 @@ disabled_notice() {
 }
 
 loop_pids() {
-  pgrep -f "publish-network-server-state-overrides.sh loop" 2>/dev/null || true
+  ps -eo pid=,args= 2>/dev/null \
+    | awk -v self="$$" '$1 != self && $0 ~ /(^|[[:space:]])bash[[:space:]].*publish-network-server-state-overrides[.]sh[[:space:]]+loop([[:space:]]|$)/ { print $1 }' \
+    || true
 }
 
 loop_running() {
@@ -69,6 +86,8 @@ print_status() {
   clear_stale_pidfile
   if [ -f "$PID_FILE" ]; then
     printf 'legacy-running pid=%s log=%s\n' "$(cat "$PID_FILE" 2>/dev/null || true)" "$(cat "$LOG_POINTER_FILE" 2>/dev/null || printf '%s' "$LOG_FILE")"
+  elif loop_running; then
+    printf 'legacy-orphan-running pid=%s log=%s\n' "$(loop_pids | tr '\n' ',' | sed 's/,$//')" "$(cat "$LOG_POINTER_FILE" 2>/dev/null || printf '%s' "$LOG_FILE")"
   else
     printf 'retired stopped\n'
   fi

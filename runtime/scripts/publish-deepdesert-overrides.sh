@@ -22,11 +22,37 @@ SINK_QUEUE="serverStateSink_DeepDesert_1"
 FILTER_EXCHANGE="deepdesertOverrideFilteredState"
 
 loop_pids() {
-  pgrep -f "publish-deepdesert-overrides.sh loop" 2>/dev/null || true
+  ps -eo pid=,args= 2>/dev/null \
+    | awk -v self="$$" '$1 != self && $0 ~ /(^|[[:space:]])bash[[:space:]].*publish-deepdesert-overrides[.]sh[[:space:]]+loop([[:space:]]|$)/ { print $1 }' \
+    || true
 }
 
 loop_running() {
   [ -n "$(loop_pids)" ]
+}
+
+stop_loop_processes() {
+  local pid
+  clear_stale_pidfile
+  if [ -f "$PID_FILE" ]; then
+    pid="$(cat "$PID_FILE" 2>/dev/null || true)"
+    if [ -n "$pid" ]; then
+      kill -- "-$pid" 2>/dev/null || true
+      kill "$pid" 2>/dev/null || true
+    fi
+  fi
+  while IFS= read -r pid; do
+    [ -n "$pid" ] || continue
+    kill -- "-$pid" 2>/dev/null || true
+    kill "$pid" 2>/dev/null || true
+  done < <(loop_pids)
+  sleep 1
+  while IFS= read -r pid; do
+    [ -n "$pid" ] || continue
+    kill -9 -- "-$pid" 2>/dev/null || true
+    kill -9 "$pid" 2>/dev/null || true
+  done < <(loop_pids)
+  rm -f "$PID_FILE"
 }
 
 write_live_pidfile() {
@@ -47,6 +73,8 @@ print_status() {
   clear_stale_pidfile
   if [ -f "$PID_FILE" ]; then
     printf 'running pid=%s log=%s\n' "$(cat "$PID_FILE" 2>/dev/null || true)" "$(cat "$LOG_POINTER_FILE" 2>/dev/null || printf '%s' "$LOG_FILE")"
+  elif loop_running; then
+    printf 'orphan-running pid=%s log=%s\n' "$(loop_pids | tr '\n' ',' | sed 's/,$//')" "$(cat "$LOG_POINTER_FILE" 2>/dev/null || printf '%s' "$LOG_FILE")"
   else
     printf 'stopped\n'
   fi
@@ -335,10 +363,10 @@ case "${1:-start}" in
   start)
     clear_stale_pidfile
     if loop_running; then
+      loop_pids | head -n 1 >"$PID_FILE"
       exit 0
     fi
-    pkill -f "publish-deepdesert-overrides.sh loop" 2>/dev/null || true
-    rm -f "$PID_FILE"
+    stop_loop_processes
     prepare_runtime_generated_files
     setsid "$0" loop >>"$LOG_FILE" 2>&1 </dev/null &
     echo $! >"$PID_FILE"
@@ -348,12 +376,7 @@ case "${1:-start}" in
     start_loop
     ;;
   stop)
-    clear_stale_pidfile
-    if [ -f "$PID_FILE" ]; then
-      kill "$(cat "$PID_FILE")" 2>/dev/null || true
-    fi
-    pkill -f "publish-deepdesert-overrides.sh loop" 2>/dev/null || true
-    rm -f "$PID_FILE"
+    stop_loop_processes
     timeout --kill-after=2s "${STOP_RESTORE_TIMEOUT_SECONDS}s" "$0" restore-route || true
     ;;
   restore-route)

@@ -1528,7 +1528,7 @@ export async function teleportOfflinePlayerToCoords(db, playerId, { x, y, z, par
 }
 
 export async function liveMapVehicles(db, map = "") {
-  if (!(await tableExists(db, "actors")) || !(await tableExists(db, "vehicles"))) return unsupportedMap("vehicles", ["dune.actors", "dune.vehicles"]);
+  if (!(await tableExists(db, "actors")) || !(await tableExists(db, "vehicles")) || !(await tableExists(db, "actor_state"))) return unsupportedMap("vehicles", ["dune.actors", "dune.vehicles", "dune.actor_state"]);
   const hasWorldPartition = await tableExists(db, "world_partition");
   const values = [];
   const where = mapFilterClause(map, values, "a");
@@ -1546,6 +1546,7 @@ export async function liveMapVehicles(db, map = "") {
              ((a.transform).location).z as z
       from dune.vehicles v
       join dune.actors a on a.id = v.id
+      join dune.actor_state s on s.actor_id = v.id
       where a.transform is not null ${partitionWhere} ${where}
       order by a.map, a.partition_id, a.id`, values);
     return { capabilities: { vehicles: true }, rows: result.rows.map(normalizeMarker) };

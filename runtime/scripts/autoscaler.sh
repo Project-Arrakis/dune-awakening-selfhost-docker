@@ -15,13 +15,16 @@ DEMAND_FILE="${DUNE_AUTOSCALER_DEMAND_FILE:-runtime/generated/autoscaler-demand.
 DEMAND_EVENT_FILE="${DUNE_AUTOSCALER_DEMAND_EVENT_FILE:-runtime/generated/autoscaler-demand-events.tsv}"
 HUB_TRAVEL_FILE="${DUNE_AUTOSCALER_HUB_TRAVEL_FILE:-runtime/generated/autoscaler-hub-travel.tsv}"
 DEEPDESERT_TRAVEL_FILE="${DUNE_AUTOSCALER_DEEPDESERT_TRAVEL_FILE:-runtime/generated/autoscaler-deepdesert-travel.tsv}"
+DEEPDESERT_VEHICLE_REPAIR_FILE="${DUNE_AUTOSCALER_DEEPDESERT_VEHICLE_REPAIR_FILE:-runtime/generated/autoscaler-deepdesert-vehicle-repair.tsv}"
 DIRECTOR_HEAL_FILE="${DUNE_AUTOSCALER_DIRECTOR_HEAL_FILE:-runtime/generated/autoscaler-director-heal.tsv}"
 DIRECTOR_HEAL_STALE_SECONDS="${DUNE_AUTOSCALER_DIRECTOR_HEAL_STALE_SECONDS:-15}"
 DIRECTOR_HEAL_COOLDOWN_SECONDS="${DUNE_AUTOSCALER_DIRECTOR_HEAL_COOLDOWN_SECONDS:-300}"
 DYNAMIC_READY_HEAL_STALE_SECONDS="${DUNE_AUTOSCALER_DYNAMIC_READY_HEAL_STALE_SECONDS:-20}"
 DIRECTOR_BROWSER_SCAN_SECONDS="${DUNE_AUTOSCALER_DIRECTOR_BROWSER_SCAN_SECONDS:-30}"
 DYNAMIC_READY_HEAL_SCAN_SECONDS="${DUNE_AUTOSCALER_DYNAMIC_READY_HEAL_SCAN_SECONDS:-30}"
-CHAT_EXCHANGE_REPAIR_SECONDS="${DUNE_AUTOSCALER_CHAT_EXCHANGE_REPAIR_SECONDS:-15}"
+CHAT_EXCHANGE_REPAIR_SECONDS="${DUNE_AUTOSCALER_CHAT_EXCHANGE_REPAIR_SECONDS:-300}"
+CHAT_EXCHANGE_REPAIR_TIMEOUT_SECONDS="${DUNE_AUTOSCALER_CHAT_EXCHANGE_REPAIR_TIMEOUT_SECONDS:-60}"
+CHAT_EXCHANGE_REPAIR_PID_FILE="${DUNE_AUTOSCALER_CHAT_EXCHANGE_REPAIR_PID_FILE:-runtime/generated/autoscaler-chat-repair.pid}"
 IGWO_UNAVAILABLE_SCAN_SECONDS="${DUNE_AUTOSCALER_IGWO_UNAVAILABLE_SCAN_SECONDS:-10}"
 IGWO_UNAVAILABLE_COOLDOWN_SECONDS="${DUNE_AUTOSCALER_IGWO_UNAVAILABLE_COOLDOWN_SECONDS:-60}"
 STALE_SERVER_STATE_SCAN_SECONDS="${DUNE_AUTOSCALER_STALE_SERVER_STATE_SCAN_SECONDS:-15}"
@@ -34,6 +37,7 @@ touch "$DEMAND_FILE"
 touch "$DEMAND_EVENT_FILE"
 touch "$HUB_TRAVEL_FILE"
 touch "$DEEPDESERT_TRAVEL_FILE"
+touch "$DEEPDESERT_VEHICLE_REPAIR_FILE"
 touch "$DIRECTOR_HEAL_FILE"
 
 echo "=== Dune Docker autoscaler ==="
@@ -46,6 +50,7 @@ echo "Dynamic mode-change grace: ${DESPAWN_GRACE_SECONDS}s"
 echo "Travel grace: ${TRAVEL_GRACE_SECONDS}s"
 echo "Director browser heal scan: ${DIRECTOR_BROWSER_SCAN_SECONDS}s"
 echo "Dynamic ready heal scan: ${DYNAMIC_READY_HEAL_SCAN_SECONDS}s"
+echo "Chat exchange repair scan: ${CHAT_EXCHANGE_REPAIR_SECONDS}s"
 echo "IGWO unavailable heal scan: ${IGWO_UNAVAILABLE_SCAN_SECONDS}s"
 echo "Stale server-state heal scan: ${STALE_SERVER_STATE_SCAN_SECONDS}s"
 echo "State file: ${STATE_FILE}"
@@ -63,6 +68,21 @@ fi
 
 psql_value() {
   docker exec dune-postgres psql -U postgres -d dune -Atc "$1"
+}
+
+repair_fgl_cleanup_function() {
+  psql_value "
+    create or replace function dune.cleanup_orphaned_entities()
+    returns trigger
+    language plpgsql
+    as \$\$
+    begin
+      delete from dune.fgl_entities
+      where dune.fgl_entities.entity_id = old.entity_id;
+      return null;
+    end
+    \$\$;
+  " >/dev/null 2>&1 || true
 }
 
 hub_origin_id_for_map() {
@@ -390,10 +410,24 @@ director_heal_due() {
 }
 
 repair_chat_exchanges_due() {
+  local pid
+
   director_heal_due chat_exchanges "$CHAT_EXCHANGE_REPAIR_SECONDS" || return 0
-  runtime/scripts/repair-chat-exchanges.sh >/dev/null 2>&1 || {
-    echo "WARN chat exchange repair failed"
-  }
+
+  if [ -f "$CHAT_EXCHANGE_REPAIR_PID_FILE" ]; then
+    pid="$(cat "$CHAT_EXCHANGE_REPAIR_PID_FILE" 2>/dev/null || true)"
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+      return 0
+    fi
+  fi
+
+  (
+    timeout --kill-after=5s "${CHAT_EXCHANGE_REPAIR_TIMEOUT_SECONDS}s" runtime/scripts/repair-chat-exchanges.sh >/dev/null 2>&1 || {
+      echo "WARN chat exchange repair failed"
+    }
+    rm -f "$CHAT_EXCHANGE_REPAIR_PID_FILE"
+  ) &
+  printf '%s\n' "$!" >"$CHAT_EXCHANGE_REPAIR_PID_FILE"
 }
 
 dynamic_container_name_for_partition() {
@@ -580,6 +614,22 @@ forget_deepdesert_travel() {
   tmp="$(mktemp)"
   awk -F '\t' -v flow="$flow_id" '$1 != flow { print }' "$DEEPDESERT_TRAVEL_FILE" > "$tmp"
   mv "$tmp" "$DEEPDESERT_TRAVEL_FILE"
+}
+
+deepdesert_vehicle_repair_seen() {
+  local key="$1"
+  awk -F '\t' -v key="$key" '$1 == key { found=1; exit } END { exit(found ? 0 : 1) }' "$DEEPDESERT_VEHICLE_REPAIR_FILE"
+}
+
+remember_deepdesert_vehicle_repair() {
+  local key="$1"
+  local ts="$2"
+  local tmp
+
+  tmp="$(mktemp)"
+  awk -F '\t' -v key="$key" -v now="$ts" '$1 != key && $2 && now - $2 < 86400 { print }' "$DEEPDESERT_VEHICLE_REPAIR_FILE" > "$tmp"
+  printf '%s\t%s\n' "$key" "$ts" >> "$tmp"
+  mv "$tmp" "$DEEPDESERT_VEHICLE_REPAIR_FILE"
 }
 
 deepdesert_target_json() {
@@ -1064,6 +1114,191 @@ PY
       fi
     fi
   done < "$DEEPDESERT_TRAVEL_FILE"
+}
+
+scan_deepdesert_vehicle_spawn_failures() {
+  local container log_file rows now
+
+  container="$(map_container_for_assigned DeepDesert_1 2>/dev/null || true)"
+  [ -n "$container" ] || container="dune-server-deepdesert-1-8"
+  docker ps --format '{{.Names}}' | grep -qx "$container" || return 0
+
+  log_file="$(mktemp)"
+  docker logs --since "$NAMED_DESTINATION_SINCE" "$container" > "$log_file" 2>&1 || true
+  rows="$(LOG_FILE="$log_file" python3 - <<'PY'
+import os
+import re
+
+log_file = os.environ["LOG_FILE"]
+flow_by_thread = {}
+failure_re = re.compile(r'\[(\d+)\].*Failed to find vehicle \'(\d+)\' for player \'(\d+)\'')
+travel_re = re.compile(r'\[(\d+)\].*\[([0-9A-F]{32})\].*TravelingActorsPersistenceIdsChanged.*\(pawn=(\d+), vehicle=(\d+)')
+
+with open(log_file, encoding="utf-8", errors="replace") as f:
+    for line in f:
+        travel = travel_re.search(line)
+        if travel:
+            thread, flow, pawn_id, vehicle_id = travel.groups()
+            flow_by_thread[(thread, vehicle_id)] = (flow, pawn_id)
+            continue
+        failure = failure_re.search(line)
+        if not failure:
+            continue
+        thread, vehicle_id, controller_id = failure.groups()
+        flow, pawn_id = flow_by_thread.get((thread, vehicle_id), ("", ""))
+        print("|".join([flow, pawn_id, vehicle_id, controller_id]))
+PY
+  )"
+  rm -f "$log_file"
+
+  now="$(date +%s)"
+  while IFS='|' read -r flow_id pawn_id vehicle_id controller_id; do
+    [ -n "${vehicle_id:-}" ] || continue
+    [ -n "${controller_id:-}" ] || continue
+
+    local key repair_json repair_fields account_id fls_id current_pawn class_name vehicle_alias template x y z spawn_z deleted_count
+    key="${flow_id:-unknown}:${controller_id}:${vehicle_id}"
+    deepdesert_vehicle_repair_seen "$key" && continue
+
+    repair_json="$(psql_value "
+      with candidate as (
+        select
+          ps.account_id,
+          coalesce(nullif(ac.\"user\", ''), nullif(ac.funcom_id, '')) as fls_id,
+          ps.player_pawn_id,
+          v.id as vehicle_id,
+          coalesce(va.class, '') as vehicle_class,
+          ((pa.transform).location).x::float8 as x,
+          ((pa.transform).location).y::float8 as y,
+          ((pa.transform).location).z::float8 as z
+        from dune.player_state ps
+        left join dune.accounts ac on ac.id = ps.account_id
+        join dune.actors pa on pa.id = ps.player_pawn_id
+        join dune.actors va on va.id = ${vehicle_id}
+        join dune.vehicles v on v.id = va.id
+        left join dune.actor_state vs on vs.actor_id = va.id
+        where ps.player_controller_id = ${controller_id}
+          and ps.online_status::text = 'Online'
+          and va.owner_account_id = ps.account_id
+          and va.map = 'DeepDesert'
+          and va.partition_id = 8
+          and vs.actor_id is null
+        limit 1
+      )
+      select json_build_object(
+        'account_id', account_id,
+        'fls_id', fls_id,
+        'player_pawn_id', player_pawn_id,
+        'vehicle_id', vehicle_id,
+        'vehicle_class', vehicle_class,
+        'x', x,
+        'y', y,
+        'z', z
+      )::text
+      from candidate;
+    " | tr -d '\r' || true)"
+    [ -n "$repair_json" ] || {
+      remember_deepdesert_vehicle_repair "$key" "$now"
+      continue
+    }
+
+    if ! repair_fields="$(python3 - "$repair_json" <<'PY'
+import json
+import sys
+
+row = json.loads(sys.argv[1])
+klass = row.get("vehicle_class") or ""
+vehicle_alias = ""
+template = ""
+z_lift = 300.0
+if "BP_LightOrnithopter" in klass:
+    vehicle_alias, template, z_lift = "OrnithopterLight", "T5_Boost", 900.0
+elif "BP_MediumOrnithopter" in klass:
+    vehicle_alias, template, z_lift = "OrnithopterMedium", "T5_Inventory", 900.0
+elif "BP_TransportOrnithopter" in klass:
+    vehicle_alias, template, z_lift = "OrnithopterTransport", "T6_Boost", 900.0
+elif "BP_Sandbike" in klass:
+    vehicle_alias, template = "Sandbike", "T6"
+elif "BP_Buggy" in klass:
+    vehicle_alias, template = "Buggy", "T6_Combat"
+elif "BP_Tank" in klass:
+    vehicle_alias, template = "Tank", "T6_CombatDart"
+elif "BP_TreadWheel" in klass:
+    vehicle_alias, template = "TreadWheel", "T6_Boost"
+elif "BP_SandCrawler" in klass:
+    vehicle_alias, template = "Sandcrawler", "T6_Harvesting"
+
+if not vehicle_alias:
+    raise SystemExit(1)
+
+x = float(row.get("x") or 0) + 1800.0
+y = float(row.get("y") or 0)
+z = float(row.get("z") or 0)
+spawn_z = z + z_lift
+print("|".join([
+    str(row.get("account_id") or ""),
+    str(row.get("fls_id") or ""),
+    str(row.get("player_pawn_id") or ""),
+    klass,
+    f"{x:.6f}",
+    f"{y:.6f}",
+    f"{z:.6f}",
+    vehicle_alias,
+    template,
+    f"{spawn_z:.6f}",
+]))
+PY
+    )"; then
+      echo "SKIP deepdesert vehicle repair vehicle=$vehicle_id reason=unsupported-class"
+      remember_deepdesert_vehicle_repair "$key" "$now"
+      continue
+    fi
+    IFS='|' read -r account_id fls_id current_pawn class_name x y z vehicle_alias template spawn_z <<< "$repair_fields"
+
+    [ -n "$fls_id" ] || {
+      echo "SKIP deepdesert vehicle repair vehicle=$vehicle_id reason=missing-player-id"
+      remember_deepdesert_vehicle_repair "$key" "$now"
+      continue
+    }
+
+    repair_fgl_cleanup_function
+    if ! deleted_count="$(psql_value "
+      with stale_vehicle as (
+        select va.id
+        from dune.actors va
+        join dune.vehicles v on v.id = va.id
+        left join dune.actor_state vs on vs.actor_id = va.id
+        where va.id = ${vehicle_id}
+          and va.owner_account_id = ${account_id}
+          and va.map = 'DeepDesert'
+          and va.partition_id = 8
+          and vs.actor_id is null
+      ), removed_overmap as (
+        delete from dune.overmap_players op
+        using stale_vehicle sv
+        where op.player_id = ${current_pawn}
+          and op.vehicle_id = sv.id
+        returning 1
+      ), removed_actor as (
+        delete from dune.actors a
+        using stale_vehicle sv
+        where a.id = sv.id
+        returning 1
+      )
+      select (select count(*) from removed_overmap) || '|' || (select count(*) from removed_actor);
+    " | tr -d '\r')"; then
+      echo "ERROR failed to remove stale DeepDesert vehicle actor=$vehicle_id"
+      continue
+    fi
+
+    echo "HEAL deepdesert vehicle handoff player=${fls_id:0:4}... vehicle=$vehicle_id class=$vehicle_alias removed=$deleted_count"
+    if DUNE_ADMIN_ASSUME_YES=1 runtime/scripts/dune admin spawn-vehicle-at "$fls_id" "$vehicle_alias" "$template" "$x" "$y" "$spawn_z" 0 >/dev/null 2>&1; then
+      echo "HEAL deepdesert vehicle replacement spawned player=${fls_id:0:4}... vehicle=$vehicle_alias template=$template"
+      remember_deepdesert_vehicle_repair "$key" "$now"
+    else
+      echo "ERROR failed to spawn DeepDesert replacement vehicle for player=${fls_id:0:4}... vehicle=$vehicle_alias"
+    fi
+  done <<< "$rows"
 }
 
 named_destination_target_map() {
@@ -1877,7 +2112,7 @@ for line in sys.stdin:
 }
 
 scan_igwo_unavailable_maps() {
-  local rows now map event_id last_seen
+  local rows now map event_id last_seen assigned running
 
   director_heal_due igwo_unavailable "$IGWO_UNAVAILABLE_SCAN_SECONDS" || return 0
   now="$(date +%s)"
@@ -1924,6 +2159,10 @@ for line in sys.stdin:
     if map_is_always_on "$map"; then
       echo "HEAL igwo-unavailable map=$map mode=always-on"
       reconcile_always_on_map "$map"
+    elif map_is_dynamic "$map"; then
+      assigned="$(map_assigned_count "$map")"
+      running="$(container_count_for_map "$map")"
+      echo "SKIP igwo-unavailable map=$map mode=dynamic assigned=$assigned containers=$running"
     else
       echo "HEAL igwo-unavailable map=$map mode=dynamic-demand"
       handle_demand "$map" 1 "igwo:${event_id}"
@@ -2146,18 +2385,20 @@ scan_director_browser_state() {
 
 follow_director_hagga_handoffs &
 reconcile_always_on_maps
+scan_travel_demand
 repair_chat_exchanges_due
 
 while true; do
   reconcile_always_on_maps
-  repair_chat_exchanges_due
   scan_deepdesert_loading_responses
   ensure_overmap_travel_maps_prewarmed
   scan_travel_demand
+  repair_chat_exchanges_due
   scan_igwo_unavailable_maps
   scan_stale_server_state
   scan_unscoped_stale_server_state
   progress_deepdesert_travel_handoffs
+  scan_deepdesert_vehicle_spawn_failures
   scan_proactive_hagga_handoffs
   scan_named_destination_failures
   scan_idle_servers

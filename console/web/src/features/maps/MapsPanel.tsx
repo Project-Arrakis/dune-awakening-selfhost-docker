@@ -32,6 +32,10 @@ type MapsPanelProps = {
   waitForTaskWithUpdates: (task: Task, onUpdate: (task: Task) => void) => Promise<Task>;
   taskTechnicalDetails: (task: Task) => string;
 };
+const LIVE_MEMORY_STALE_GRACE_MS = 20000;
+const LIVE_MEMORY_REFRESH_MS = 5000;
+const MAP_RUNTIME_REFRESH_MS = 15000;
+type CachedLiveMemoryRow = { row: LiveMapMemoryRow; sampledAt: number };
 
 function formatResultTitle(value: unknown, pending = false) {
   return formatUiSentence(value, pending);
@@ -260,6 +264,7 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
   const mapsLoadRef = useRef<Promise<void> | null>(null);
   const mapsRuntimeRefreshRef = useRef<Promise<void> | null>(null);
   const mapsDisplayedTerminalTaskRef = useRef<Set<string>>(new Set());
+  const liveMemoryCacheRef = useRef<Map<string, CachedLiveMemoryRow>>(new globalThis.Map());
   async function run(action: () => Promise<unknown>) {
     onError("");
     try { await action(); } catch (error) { onError(error instanceof Error ? error.message : String(error)); }
@@ -483,7 +488,17 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
   }
   async function loadLiveMemory() {
     const result = await mapsApi.liveMemory();
-    setLiveMemory(result.rows || []);
+    const now = Date.now();
+    const cache = new globalThis.Map(liveMemoryCacheRef.current);
+    for (const row of result.rows || []) {
+      if (!row.container) continue;
+      cache.set(row.container, { row, sampledAt: now });
+    }
+    for (const [container, cached] of cache.entries()) {
+      if (now - cached.sampledAt > LIVE_MEMORY_STALE_GRACE_MS) cache.delete(container);
+    }
+    liveMemoryCacheRef.current = cache;
+    setLiveMemory(Array.from(cache.values()).map((cached) => cached.row));
     setMemoryError(result.error || "");
   }
   async function loadMemoryBalancer() {
@@ -643,7 +658,7 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
     return () => window.clearTimeout(id);
   }, [spicefieldResult]);
   useEffect(() => {
-    const id = window.setInterval(() => { void loadLiveMemory().catch(() => {}); }, 5000);
+    const id = window.setInterval(() => { void loadLiveMemory().catch(() => {}); }, LIVE_MEMORY_REFRESH_MS);
     return () => window.clearInterval(id);
   }, []);
   useEffect(() => {
@@ -659,9 +674,8 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
     const id = window.setInterval(() => {
       if (document.visibilityState !== "visible") return;
       void refreshMapRuntime().catch(() => {});
-      void loadLiveMemory().catch(() => {});
       void loadSietches({ preserveDrafts: true }).catch(() => {});
-    }, 5000);
+    }, MAP_RUNTIME_REFRESH_MS);
     return () => window.clearInterval(id);
   }, []);
   useEffect(() => {
