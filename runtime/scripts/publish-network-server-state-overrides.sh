@@ -65,6 +65,15 @@ clear_stale_pidfile() {
   fi
 }
 
+print_status() {
+  clear_stale_pidfile
+  if [ -f "$PID_FILE" ]; then
+    printf 'legacy-running pid=%s log=%s\n' "$(cat "$PID_FILE" 2>/dev/null || true)" "$(cat "$LOG_POINTER_FILE" 2>/dev/null || printf '%s' "$LOG_FILE")"
+  else
+    printf 'retired stopped\n'
+  fi
+}
+
 prepare_runtime_generated_files() {
   local current_log
   mkdir -p runtime/generated
@@ -583,8 +592,11 @@ case "${1:-start}" in
     stop_loop_and_restore_routes
     disabled_notice
     ;;
+  status)
+    print_status
+    ;;
   *)
-    echo "Usage: $0 [once|map <map-name>|start|stop|restart]"
+    echo "Usage: $0 [once|map <map-name>|start|stop|restart|status]"
     exit 2
     ;;
 esac

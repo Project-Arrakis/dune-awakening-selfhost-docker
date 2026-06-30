@@ -7,9 +7,14 @@ PID_FILE="runtime/generated/deepdesert-overrides.pid"
 LOG_FILE="runtime/generated/deepdesert-overrides.log"
 LOG_POINTER_FILE="runtime/generated/deepdesert-overrides-current.log"
 TEXT_ROUTER_LOG="runtime/text-router/director-current.log"
+RMQ_CREDS_FILE="runtime/generated/deepdesert-rmq-admin-creds"
 RMQ_TIMEOUT_SECONDS="${DUNE_DEEPDESERT_OVERRIDE_RMQ_TIMEOUT_SECONDS:-8}"
+RMQ_CREDS_TTL_SECONDS="${DUNE_DEEPDESERT_OVERRIDE_RMQ_CREDS_TTL_SECONDS:-300}"
 RMQ_BINDING_CLEANUP_TIMEOUT_SECONDS="${DUNE_DEEPDESERT_OVERRIDE_BINDING_CLEANUP_TIMEOUT_SECONDS:-2}"
 STOP_RESTORE_TIMEOUT_SECONDS="${DUNE_DEEPDESERT_OVERRIDE_STOP_RESTORE_TIMEOUT_SECONDS:-20}"
+ROUTE_REFRESH_SECONDS="${DUNE_DEEPDESERT_OVERRIDE_ROUTE_REFRESH_SECONDS:-300}"
+SNAPSHOT_REFRESH_SECONDS="${DUNE_DEEPDESERT_OVERRIDE_SNAPSHOT_REFRESH_SECONDS:-10}"
+POLL_SECONDS="${DUNE_DEEPDESERT_OVERRIDE_POLL_SECONDS:-1}"
 
 SOURCE_EXCHANGE="completions"
 SOURCE_ROUTING_KEY="server_state.DeepDesert_1"
@@ -35,6 +40,15 @@ clear_stale_pidfile() {
   pid="$(cat "$PID_FILE" 2>/dev/null || true)"
   if [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null; then
     rm -f "$PID_FILE"
+  fi
+}
+
+print_status() {
+  clear_stale_pidfile
+  if [ -f "$PID_FILE" ]; then
+    printf 'running pid=%s log=%s\n' "$(cat "$PID_FILE" 2>/dev/null || true)" "$(cat "$LOG_POINTER_FILE" 2>/dev/null || printf '%s' "$LOG_FILE")"
+  else
+    printf 'stopped\n'
   fi
 }
 
@@ -64,8 +78,18 @@ ensure_text_router_log() {
 }
 
 load_rmq_admin_creds() {
+  local now mtime creds
+  if [ -f "$RMQ_CREDS_FILE" ]; then
+    now="$(date +%s)"
+    mtime="$(stat -c %Y "$RMQ_CREDS_FILE" 2>/dev/null || echo 0)"
+    if [ $((now - mtime)) -lt "$RMQ_CREDS_TTL_SECONDS" ] && [ "$(wc -l < "$RMQ_CREDS_FILE" | tr -d '[:space:]')" -ge 2 ]; then
+      cat "$RMQ_CREDS_FILE"
+      return 0
+    fi
+  fi
+
   ensure_text_router_log
-  python3 - <<'PY'
+  creds="$(python3 - <<'PY'
 from pathlib import Path
 import re
 import subprocess
@@ -105,15 +129,27 @@ username, password = matches[-1]
 print(username)
 print(password)
 PY
+)"
+  [ -n "$creds" ] || return 1
+  printf '%s\n' "$creds" >"$RMQ_CREDS_FILE"
+  chmod 600 "$RMQ_CREDS_FILE" 2>/dev/null || true
+  printf '%s\n' "$creds"
 }
 
 rmq_admin() {
-  local rmq_user rmq_password
-  mapfile -t rmq_creds < <(load_rmq_admin_creds)
-  [ "${#rmq_creds[@]}" -ge 2 ] || return 1
-  rmq_user="${rmq_creds[0]}"
-  rmq_password="${rmq_creds[1]}"
-  timeout --kill-after=2s "${RMQ_TIMEOUT_SECONDS}s" docker exec dune-rmq-admin rabbitmqadmin -q -u "$rmq_user" -p "$rmq_password" "$@"
+  local rmq_user rmq_password attempt rc
+  for attempt in 1 2; do
+    mapfile -t rmq_creds < <(load_rmq_admin_creds)
+    [ "${#rmq_creds[@]}" -ge 2 ] || return 1
+    rmq_user="${rmq_creds[0]}"
+    rmq_password="${rmq_creds[1]}"
+    if timeout --kill-after=2s "${RMQ_TIMEOUT_SECONDS}s" docker exec dune-rmq-admin rabbitmqadmin -q -u "$rmq_user" -p "$rmq_password" "$@"; then
+      return 0
+    fi
+    rc=$?
+    rm -f "$RMQ_CREDS_FILE"
+  done
+  return "$rc"
 }
 
 rmq_delete_binding_exact() {
@@ -267,19 +303,23 @@ start_loop() {
   write_live_pidfile
   trap 'rm -f "$PID_FILE"' EXIT
   local route_refresh_at=0
+  local snapshot_refresh_at=0
   local rows payload
   ensure_route
   while true; do
     if [ "$(date +%s)" -ge "$route_refresh_at" ]; then
       ensure_route >>"$LOG_FILE" 2>&1 || true
+      route_refresh_at=$(( $(date +%s) + ROUTE_REFRESH_SECONDS ))
+    fi
+    if [ "$(date +%s)" -ge "$snapshot_refresh_at" ]; then
       rows="$(publish_snapshot_once 2>>"$LOG_FILE" || true)"
       while IFS= read -r payload; do
         [ -n "$payload" ] || continue
         publish_payload "$payload" >>"$LOG_FILE" 2>&1 || true
       done <<< "$rows"
-      route_refresh_at=$(( $(date +%s) + 10 ))
+      snapshot_refresh_at=$(( $(date +%s) + SNAPSHOT_REFRESH_SECONDS ))
     fi
-    sleep 1
+    sleep "$POLL_SECONDS"
   done
 }
 
@@ -323,8 +363,11 @@ case "${1:-start}" in
     "$0" stop
     "$0" start
     ;;
+  status)
+    print_status
+    ;;
   *)
-    echo "Usage: $0 [once|start|stop|restart]"
+    echo "Usage: $0 [once|start|stop|restart|status]"
     exit 2
     ;;
 esac
