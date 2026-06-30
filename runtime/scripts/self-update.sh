@@ -705,6 +705,9 @@ restore_local_state_ownership() {
     runtime/generated/care-package-grants.jsonl \
     runtime/generated/care-package-pending-returns.json \
     runtime/addons \
+    runtime/addons/downloads \
+    runtime/addons/installed \
+    runtime/addons/staging \
     runtime/addons/state.json \
     runtime/secrets/funcom-token.txt \
     2>/dev/null || true

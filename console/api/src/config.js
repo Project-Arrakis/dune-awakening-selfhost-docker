@@ -84,6 +84,9 @@ function repairRootOwnedHostState(repoRoot) {
     resolve(repoRoot, "runtime/generated/care-package-grants.jsonl"),
     resolve(repoRoot, "runtime/generated/care-package-pending-returns.json"),
     resolve(repoRoot, "runtime/addons"),
+    resolve(repoRoot, "runtime/addons/downloads"),
+    resolve(repoRoot, "runtime/addons/installed"),
+    resolve(repoRoot, "runtime/addons/staging"),
     resolve(repoRoot, "runtime/addons/state.json"),
     resolve(repoRoot, "runtime/secrets/funcom-token.txt")
   ]) {

@@ -1837,28 +1837,38 @@ vehicle_max_id() {
   " 2>/dev/null | tr -d '\r[:space:]' || true
 }
 
-repair_spawned_vehicle_owner() {
+repair_spawned_vehicle_permissions() {
   local player="$1" actor_class="$2" x="$3" y="$4" z="$5" before_id="$6"
-  local account_id actor_class_sql updated_id
+  local actor_class_sql updated_id
 
   [ -n "$actor_class" ] || return 0
   [ -n "$before_id" ] || before_id=0
-  account_id="$(account_id_for_player_id "$player")"
-  if [ -z "$account_id" ]; then
-    echo "WARNING: could not resolve $(redact_fls "$player") to a local account id; spawned vehicle ownership was not repaired." >&2
-    return 0
-  fi
 
   actor_class_sql="${actor_class//\'/\'\'}"
   for _ in 1 2 3 4 5 6 7 8 9 10; do
     updated_id="$(psql_admin -qAt -v ON_ERROR_STOP=1 -c "
-      with candidate as (
-        select a.id
+      with player_ref as (
+        select ps.player_controller_id
+        from dune.player_state ps
+        left join dune.accounts ac on ac.id = ps.account_id
+        left join dune.encrypted_accounts ea on ea.id = ps.account_id
+        where ps.character_state::text = 'Active'
+          and (
+            ac.\"user\" = '${player//\'/\'\'}'
+            or ac.funcom_id = '${player//\'/\'\'}'
+            or convert_from(ea.encrypted_funcom_id, 'UTF8') = '${player//\'/\'\'}'
+            or coalesce(ea.\"user\"::text, '') = '${player//\'/\'\'}'
+          )
+        order by ps.online_status::text = 'Online' desc, ps.last_login_time desc nulls last
+        limit 1
+      ),
+      candidate as (
+        select a.id, pr.player_controller_id
         from dune.vehicles v
         join dune.actors a on a.id = v.id
+        cross join player_ref pr
         where v.id > ${before_id}
           and a.class = '${actor_class_sql}'
-          and coalesce(a.owner_account_id, 0) = 0
           and a.transform is not null
           and abs(((a.transform).location).x::float8 - (${x})::float8) <= 5000
           and abs(((a.transform).location).y::float8 - (${y})::float8) <= 5000
@@ -1869,21 +1879,35 @@ repair_spawned_vehicle_owner() {
           power(((a.transform).location).z::float8 - (${z})::float8, 2),
           a.id desc
         limit 1
+      ),
+      permission_row as (
+        insert into dune.permission_actor(actor_id, actor_name, actor_type, access_level, is_child)
+        select c.id, '##' || regexp_replace(split_part(split_part(a.class, '.', 2), '_C', 1), '^BP_', ''), 2, 3, false
+        from candidate c
+        join dune.actors a on a.id = c.id
+        on conflict (actor_id) do nothing
+        returning actor_id
       )
-      update dune.actors a
-      set owner_account_id = ${account_id}
+      insert into dune.permission_actor_rank(permission_actor_id, player_id, rank)
+      select c.id, c.player_controller_id, 1
       from candidate c
-      where a.id = c.id
-      returning a.id;
+      where c.player_controller_id is not null
+        and not exists (
+          select 1
+          from dune.permission_actor_rank existing
+          where existing.permission_actor_id = c.id
+            and existing.player_id = c.player_controller_id
+        )
+      returning permission_actor_id;
     " 2>/dev/null | tr -d '\r' | awk '/^[0-9]+$/ { print; exit }' || true)"
     if [ -n "$updated_id" ]; then
-      echo "Vehicle ownership repaired: actor_id=$updated_id owner_account_id=$account_id"
+      echo "Vehicle permissions repaired: actor_id=$updated_id"
       return 0
     fi
     sleep 1
   done
 
-  echo "WARNING: no newly spawned matching vehicle was found for ownership repair. Check dune.actors.owner_account_id manually if the vehicle appears ownerless." >&2
+  echo "WARNING: no newly spawned matching vehicle was found for permission repair. Check dune.permission_actor_rank manually if the vehicle appears ownerless." >&2
 }
 
 player_location_command() {
@@ -1999,7 +2023,7 @@ spawn_vehicle_at_command() {
     "ClassName=$vehicle_id=string" "TemplateName=$template=string" \
     "X=$x=float" "Y=$y=float" "Z=$z=float" "Rotation=$rotation=float" "Persistent=1.0=float"
   if [ "${DUNE_ADMIN_DRY_RUN:-0}" != "1" ]; then
-    repair_spawned_vehicle_owner "$resolved_player" "$actor_class" "$x" "$y" "$z" "$before_vehicle_id"
+    repair_spawned_vehicle_permissions "$resolved_player" "$actor_class" "$x" "$y" "$z" "$before_vehicle_id"
   fi
 }
 
