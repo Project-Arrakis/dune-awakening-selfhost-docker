@@ -1739,6 +1739,10 @@ function liveMemoryIsReadyMode(mode: unknown) {
   return /^(Always On|Core Map)$/i.test(String(mode || "").trim());
 }
 
+function liveMemoryIsPendingStatus(status: unknown) {
+  return /^(Ready|Running|Starting|Loading|Warming|Assigned|Queued|Idle)$/i.test(String(status || "").trim());
+}
+
 function partitionMemoryValue(memoryText: string, partitionId: string, fallback: string, mapName = "Survival_1") {
   const target = `${mapName}:${partitionId}`;
   const row = parseMemoryRows(memoryText).find((item) => String(item.map || "") === target);
@@ -1806,8 +1810,7 @@ function buildUserGameTargets(
 function liveMemoryFallback(row: Record<string, unknown>) {
   const configured = String(row.memory || "").trim();
   if (configured && !/^Not Available$/i.test(configured) && liveMemoryIsReadyMode(row.mode)) return configured;
-  const status = String(row.status || "");
-  if (/^(Ready|Running|Starting|Loading|Warming)$/i.test(status)) return "Unavailable";
+  if (liveMemoryIsPendingStatus(row.status)) return "Waiting for sample";
   return "Unallocated";
 }
 
