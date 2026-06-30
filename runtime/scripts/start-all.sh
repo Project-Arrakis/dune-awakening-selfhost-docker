@@ -92,6 +92,12 @@ run_timed_step "Starting Survival_1" runtime/scripts/start-server-survival-1.sh
 
 run_timed_step "Starting Overmap" runtime/scripts/start-server-overmap.sh
 
+run_timed_step "Reconciling Survival Sietches" bash -c '
+runtime/scripts/sietches.sh reconcile Survival_1 || {
+  echo "Survival_1 Sietch reconcile could not complete yet. Deferred reconcile will retry after core maps are ready."
+}
+'
+
 run_timed_step "Repairing Chat Exchanges" bash -c '
 runtime/scripts/repair-chat-exchanges.sh || {
   echo "Guild chat exchange repair could not complete. Guild chat may be unavailable until the next repair pass."

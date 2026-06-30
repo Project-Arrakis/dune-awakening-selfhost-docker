@@ -836,7 +836,11 @@ if key == "active_dimensions":
     if raw.get("dedicatedScaling") and name != "DeepDesert_1":
         print(f"{name} has dedicated scaling enabled; active dimensions are managed at runtime.", file=sys.stderr)
         raise SystemExit(1)
-if value > catalog_max and not (key == "active_dimensions" and name in {"Survival_1", "DeepDesert_1"} and value <= max_dimensions):
+can_create_dimensions = name in {"Survival_1", "DeepDesert_1"}
+if value > catalog_max and not (
+    (key == "max_dimensions" and can_create_dimensions)
+    or (key == "active_dimensions" and can_create_dimensions and value <= max_dimensions)
+):
     print(f"{name} currently has {catalog_max} available partition(s).", file=sys.stderr)
     print("Increasing beyond that requires regenerating and applying world partitions, which this command will not do automatically.", file=sys.stderr)
     raise SystemExit(1)
@@ -1750,8 +1754,13 @@ case "$cmd" in
     [ "$#" -eq 3 ] || { usage; exit 2; }
     count="$(sanitize_positive_integer_arg "$3")"
     validate_positive_integer "$count" || { echo "Max dimensions must be a positive integer."; exit 1; }
-    ensure_map_partitions "$2" "$count"
     set_map_value "$2" max_dimensions "$count"
+    if docker_postgres_running; then
+      ensure_map_partitions "$2" "$count"
+      set_map_value "$2" max_dimensions "$count"
+    else
+      echo "dune-postgres is not running; saved max dimensions and will create missing rows on next start/reconcile."
+    fi
     echo "Max dimensions for $2 set to $count."
     ;;
   set-active)
@@ -1759,8 +1768,12 @@ case "$cmd" in
     count="$(sanitize_positive_integer_arg "$3")"
     validate_positive_integer "$count" || { echo "Active dimensions must be a positive integer."; exit 1; }
     set_map_value "$2" active_dimensions "$count"
-    reconcile_map_dimensions "$2"
-    set_map_value "$2" active_dimensions "$count"
+    if docker_postgres_running; then
+      reconcile_map_dimensions "$2"
+      set_map_value "$2" active_dimensions "$count"
+    else
+      echo "dune-postgres is not running; saved active dimensions and will apply them on next start/reconcile."
+    fi
     echo "Active dimensions for $2 set to $count."
     ;;
   set-display)
