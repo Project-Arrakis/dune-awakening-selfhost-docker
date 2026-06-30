@@ -2167,8 +2167,7 @@ function isMapRuntimeHandoffTask(task: Task) {
     /\bwarming\b/i.test(text) ||
     /\bRestarting\b.+\b(Survival_1|sietch|map|server)\b/i.test(text) ||
     /\bStarting\b.+\b(Survival_1|sietch|map|server)\b/i.test(text) ||
-    /\bSpawned\b.+\bdune-server-/i.test(text) ||
-    /\bActive dimensions for\b.+\bset to\b/i.test(text);
+    /\bSpawned\b.+\bdune-server-/i.test(text);
 }
 
 function isSettingsRestartHandoffTask(task: Task) {
