@@ -504,6 +504,16 @@ remember_map_demand() {
   mv "$tmp" "$DEMAND_FILE"
 }
 
+forget_map_demand() {
+  local map="$1"
+  local tmp
+
+  [ -n "$map" ] || return 0
+  tmp="$(mktemp)"
+  awk -F '\t' -v map="$map" '$1 != map { print }' "$DEMAND_FILE" > "$tmp"
+  mv "$tmp" "$DEMAND_FILE"
+}
+
 recent_map_demand_age() {
   local map="$1"
   local now ts
@@ -2005,6 +2015,11 @@ for line in sys.stdin:
     if map_is_always_on "$map"; then
       echo "HEAL igwo-unavailable map=$map mode=always-on"
       reconcile_always_on_map "$map"
+    elif map_is_overmap_active "$map" && ! map_has_active_presence "Overmap"; then
+      assigned="$(map_assigned_count "$map")"
+      running="$(container_count_for_map "$map")"
+      echo "SKIP igwo-unavailable map=$map mode=overmap-active overmap=idle assigned=$assigned containers=$running"
+      forget_map_demand "$map"
     elif map_is_dynamic "$map"; then
       assigned="$(map_assigned_count "$map")"
       running="$(container_count_for_map "$map")"
