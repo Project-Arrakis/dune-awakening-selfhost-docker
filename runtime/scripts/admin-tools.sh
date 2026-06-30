@@ -204,11 +204,27 @@ account_id_for_player_id() {
   local player_id="$1"
 
   [ "$player_id" != "*" ] || return 0
+  if printf '%s' "$player_id" | grep -Eq '^[0-9]+$'; then
+    docker exec "$POSTGRES_CONTAINER" psql -U dune -d dune -At -c "
+      select id
+      from dune.accounts
+      where id = ${player_id}
+      limit 1;
+    " 2>/dev/null | tr -d '[:space:]' || true
+    return 0
+  fi
   docker exec "$POSTGRES_CONTAINER" psql -U dune -d dune -At -c "
-    select id
-    from dune.accounts
-    where \"user\" = '${player_id//\'/\'\'}'
-       or funcom_id = '${player_id//\'/\'\'}'
+    select id from (
+      select id
+      from dune.accounts
+      where \"user\" = '${player_id//\'/\'\'}'
+         or funcom_id = '${player_id//\'/\'\'}'
+      union
+      select id
+      from dune.encrypted_accounts
+      where convert_from(encrypted_funcom_id, 'UTF8') = '${player_id//\'/\'\'}'
+         or coalesce(\"user\"::text, '') = '${player_id//\'/\'\'}'
+    ) matches
     limit 1;
   " 2>/dev/null | tr -d '[:space:]' || true
 }
@@ -1742,7 +1758,7 @@ publish_player_command() {
 
   inner_json="$(build_passthrough_json "$command_id" "PlayerId=$resolved_player=string" "$@")"
   case "$command_id" in
-    AwardXP|UpdateAllWaterFillables) require_online=1 ;;
+    AwardXP|UpdateAllWaterFillables|SpawnVehicleAt) require_online=1 ;;
   esac
 
   if [ "${DUNE_ADMIN_DRY_RUN:-0}" = "1" ]; then
@@ -1812,6 +1828,62 @@ PY
   result="published"
   audit_admin_action "$command_id" "$audit_target" "$command_id" "$inner_json" "$ADMIN_COMMAND_PATH" "$result"
   echo "$command_id command accepted by $ADMIN_COMMAND_PATH."
+}
+
+vehicle_max_id() {
+  psql_admin -At -v ON_ERROR_STOP=1 -c "
+    select coalesce(max(v.id), 0)
+    from dune.vehicles v;
+  " 2>/dev/null | tr -d '\r[:space:]' || true
+}
+
+repair_spawned_vehicle_owner() {
+  local player="$1" actor_class="$2" x="$3" y="$4" z="$5" before_id="$6"
+  local account_id actor_class_sql updated_id
+
+  [ -n "$actor_class" ] || return 0
+  [ -n "$before_id" ] || before_id=0
+  account_id="$(account_id_for_player_id "$player")"
+  if [ -z "$account_id" ]; then
+    echo "WARNING: could not resolve $(redact_fls "$player") to a local account id; spawned vehicle ownership was not repaired." >&2
+    return 0
+  fi
+
+  actor_class_sql="${actor_class//\'/\'\'}"
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    updated_id="$(psql_admin -qAt -v ON_ERROR_STOP=1 -c "
+      with candidate as (
+        select a.id
+        from dune.vehicles v
+        join dune.actors a on a.id = v.id
+        where v.id > ${before_id}
+          and a.class = '${actor_class_sql}'
+          and coalesce(a.owner_account_id, 0) = 0
+          and a.transform is not null
+          and abs(((a.transform).location).x::float8 - (${x})::float8) <= 5000
+          and abs(((a.transform).location).y::float8 - (${y})::float8) <= 5000
+          and abs(((a.transform).location).z::float8 - (${z})::float8) <= 5000
+        order by
+          power(((a.transform).location).x::float8 - (${x})::float8, 2) +
+          power(((a.transform).location).y::float8 - (${y})::float8, 2) +
+          power(((a.transform).location).z::float8 - (${z})::float8, 2),
+          a.id desc
+        limit 1
+      )
+      update dune.actors a
+      set owner_account_id = ${account_id}
+      from candidate c
+      where a.id = c.id
+      returning a.id;
+    " 2>/dev/null | tr -d '\r' | awk '/^[0-9]+$/ { print; exit }' || true)"
+    if [ -n "$updated_id" ]; then
+      echo "Vehicle ownership repaired: actor_id=$updated_id owner_account_id=$account_id"
+      return 0
+    fi
+    sleep 1
+  done
+
+  echo "WARNING: no newly spawned matching vehicle was found for ownership repair. Check dune.actors.owner_account_id manually if the vehicle appears ownerless." >&2
 }
 
 player_location_command() {
@@ -1904,11 +1976,13 @@ teleport_command() {
 
 spawn_vehicle_at_command() {
   local player="${1:-}" class_name="${2:-}" template="${3:-}" x="${4:-}" y="${5:-}" z="${6:-}" rotation="${7:-0}"
-  local vehicle_json vehicle_id actor_class
+  local resolved_player vehicle_json vehicle_id actor_class before_vehicle_id
   [ -n "$player" ] && [ -n "$class_name" ] && [ -n "$template" ] && [ -n "$x" ] && [ -n "$y" ] && [ -n "$z" ] || {
     echo "Usage: dune admin spawn-vehicle-at <player-id> <vehicle-id> <template-name> <x> <y> <z> [rotation]" >&2
     exit 2
   }
+  resolved_player="$(resolve_player_id "$player")"
+  [ "$resolved_player" != "*" ] || { echo "Vehicle spawn requires a specific player." >&2; exit 2; }
   validate_float "$x" "X"; validate_float "$y" "Y"; validate_float "$z" "Z"; validate_float "$rotation" "Rotation"
   vehicle_json="$(resolve_vehicle "$class_name" "$template")"
   vehicle_id="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["id"])' "$vehicle_json")"
@@ -1917,9 +1991,16 @@ spawn_vehicle_at_command() {
   echo "Vehicle: $vehicle_id"
   echo "Actor class: $actor_class"
   echo "Template: $template"
-  publish_player_command "SpawnVehicleAt" "$player" 0 \
+  before_vehicle_id=0
+  if [ "${DUNE_ADMIN_DRY_RUN:-0}" != "1" ]; then
+    before_vehicle_id="$(vehicle_max_id)"
+  fi
+  publish_player_command "SpawnVehicleAt" "$resolved_player" 0 \
     "ClassName=$vehicle_id=string" "TemplateName=$template=string" \
     "X=$x=float" "Y=$y=float" "Z=$z=float" "Rotation=$rotation=float" "Persistent=1.0=float"
+  if [ "${DUNE_ADMIN_DRY_RUN:-0}" != "1" ]; then
+    repair_spawned_vehicle_owner "$resolved_player" "$actor_class" "$x" "$y" "$z" "$before_vehicle_id"
+  fi
 }
 
 spawn_vehicle_command() {
@@ -1956,6 +2037,10 @@ PY
     exit 1
   fi
   IFS='|' read -r status map partition server x y z qx qy qz qw dimension actor_class <<< "$row"
+  if ! printf '%s' "${status:-Offline}" | grep -Eiq '^online$'; then
+    echo "Player is ${status:-Offline}. Vehicle spawn requires the player to be online." >&2
+    exit 1
+  fi
   for value in "$x" "$y" "$z" "$qx" "$qy" "$qz" "$qw"; do
     [ -n "$value" ] || { echo "Live location/facing is incomplete for $(redact_fls "$resolved_player")." >&2; exit 1; }
   done
