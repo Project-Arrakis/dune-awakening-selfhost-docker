@@ -777,15 +777,19 @@ test("research unlock appends missing verified key without duplicating existing 
   const db = fakeMutationDb(calls, {
     researchExists: true,
     currentResearchItems: [{ ItemKey: "DA_GRP_SandbikePack", bIsNewEntry: true, UnlockedState: "NotPurchased" }],
-    recipeExists: false
+    currentCraftingRecipes: []
   });
-  const result = await unlockResearchItem(db, 123, { itemKey: "BLD_Windtrap_Patent" });
-  assert.equal(result.recipeId, "");
+  const result = await unlockResearchItem(db, 123, { itemKey: "BLD_WaterCistern_Patent" });
+  assert.equal(result.recipeId, "WaterCistern_Patent");
+  assert.equal(result.recipeMaterialized, true);
   const researchUpdate = calls.find((call) => call.text.includes("TechKnowledgePlayerComponent,m_TechKnowledge,m_TechKnowledgeData") && call.text.includes("update dune.actors"));
   assert.ok(researchUpdate);
   const items = JSON.parse(researchUpdate.values[1]);
   assert.equal(items.length, 2);
-  assert.deepEqual(items[1], { ItemKey: "BLD_Windtrap_Patent", bIsNewEntry: false, UnlockedState: "Purchased" });
+  assert.deepEqual(items[1], { ItemKey: "BLD_WaterCistern_Patent", bIsNewEntry: false, UnlockedState: "Purchased" });
+  const recipeUpdate = calls.find((call) => call.text.includes("CraftingRecipesLibraryActorComponent,m_KnownItemRecipes") && call.text.includes("update dune.actors"));
+  assert.ok(recipeUpdate);
+  assert.equal(JSON.parse(recipeUpdate.values[1])[0].BaseRecipeId.Name, "WaterCistern_Patent");
 });
 
 test("research unlock requires offline player to avoid live state overwrite", async () => {

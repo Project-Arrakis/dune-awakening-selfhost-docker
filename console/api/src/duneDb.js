@@ -2438,14 +2438,17 @@ async function applyJourneyFactionBumps(db, player, tags) {
 
 async function materializeCraftingRecipeIfKnown(db, actorId, recipeId) {
   if (!recipeId) return false;
-  const known = await db.query(`
-    select exists (
-      select 1
-      from dune.actors a
-      cross join lateral jsonb_array_elements(coalesce(a.properties->'CraftingRecipesLibraryActorComponent'->'m_KnownItemRecipes', '[]'::jsonb)) recipe
-      where recipe->'BaseRecipeId'->>'Name' = $1
-    ) as exists`, [recipeId]);
-  if (!known.rows[0]?.exists) return false;
+  const catalogHasRecipe = craftingRecipeCatalog().some((row) => row.recipeId === recipeId);
+  if (!catalogHasRecipe) {
+    const known = await db.query(`
+      select exists (
+        select 1
+        from dune.actors a
+        cross join lateral jsonb_array_elements(coalesce(a.properties->'CraftingRecipesLibraryActorComponent'->'m_KnownItemRecipes', '[]'::jsonb)) recipe
+        where recipe->'BaseRecipeId'->>'Name' = $1
+      ) as exists`, [recipeId]);
+    if (!known.rows[0]?.exists) return false;
+  }
   const current = await db.query(`
     select properties->'CraftingRecipesLibraryActorComponent'->'m_KnownItemRecipes' as recipes
     from dune.actors

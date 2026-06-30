@@ -157,15 +157,20 @@ export function schematicRecipeId(itemId) {
 
 export function craftingRecipeCatalogRows(items = []) {
   return items
-    .filter((item) => String(item?.category || "").toLowerCase() === "schematics")
+    .filter((item) => {
+      const category = String(item?.category || "").toLowerCase();
+      const itemId = String(item?.id || "");
+      return category === "schematics" || (category === "buildings" && itemId.endsWith("_Patent"));
+    })
     .map((item) => {
-      const recipeId = schematicRecipeId(item.id);
+      const category = String(item?.category || "").toLowerCase();
+      const recipeId = category === "buildings" ? String(item.id || "") : schematicRecipeId(item.id);
       if (!recipeId) return null;
       return {
         recipeId,
         displayName: String(item.name || "").trim() || recipeDisplayName(recipeId),
         category: recipeCategory(recipeId),
-        source: "Schematics",
+        source: category === "buildings" ? "Building Patents" : "Schematics",
         qualityLevel: 0
       };
     })
@@ -181,7 +186,12 @@ export function validateResearchKey(value) {
 
 export function researchRecipeId(itemKey) {
   const value = String(itemKey || "");
-  return value.startsWith("RCP_") ? value.slice(4) : "";
+  if (value.startsWith("RCP_")) return value.slice(4);
+  if (value.startsWith("BLD_")) {
+    const recipeId = value.slice(4);
+    return recipeId.endsWith("_Patent") ? recipeId : `${recipeId}_Patent`;
+  }
+  return "";
 }
 
 export function researchDisplayName(itemKey) {

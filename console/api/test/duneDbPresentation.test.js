@@ -59,6 +59,8 @@ test("category helpers classify common recipe and research identifiers", () => {
   assert.equal(recipeCategory("Stillsuit_Recipe"), "Water Discipline");
   assert.equal(researchType("RCP_Sandbike"), "Recipe");
   assert.equal(researchRecipeId("RCP_Sandbike"), "Sandbike");
+  assert.equal(researchRecipeId("BLD_WaterCistern_Patent"), "WaterCistern_Patent");
+  assert.equal(researchRecipeId("BLD_Windtrap"), "Windtrap_Patent");
   assert.equal(researchCategory("BLD_Turbine"), "Construction");
   assert.equal(researchProductGroup("T5_DuraluminumThing"), "Duraluminum Products");
 });
@@ -71,13 +73,22 @@ test("schematic catalog helpers map item schematics to crafting recipes", () => 
   assert.deepEqual(craftingRecipeCatalogRows([
     { id: "HealthPackSchematic", name: "Healkit", category: "schematics" },
     { id: "WaterCistern_Patent", name: "Water Cistern Patent", category: "buildings" }
-  ]), [{
-    recipeId: "HealthPackRecipe",
-    displayName: "Healkit",
-    category: "Essentials",
-    source: "Schematics",
-    qualityLevel: 0
-  }]);
+  ]), [
+    {
+      recipeId: "HealthPackRecipe",
+      displayName: "Healkit",
+      category: "Essentials",
+      source: "Schematics",
+      qualityLevel: 0
+    },
+    {
+      recipeId: "WaterCistern_Patent",
+      displayName: "Water Cistern Patent",
+      category: "Water Discipline",
+      source: "Building Patents",
+      qualityLevel: 0
+    }
+  ]);
 });
 
 test("validation helpers reject unsafe identifiers", () => {
