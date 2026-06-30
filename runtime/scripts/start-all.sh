@@ -61,6 +61,8 @@ else
   run_timed_step "Ensuring Database Is Up To Date" runtime/scripts/update-db.sh
 fi
 
+run_timed_step "Applying Spice Field Overrides" runtime/scripts/spicefield-overrides.sh apply
+
 run_timed_step "Synchronizing Public IP" runtime/scripts/ensure-public-ip.sh sync
 
 run_timed_step "Reconciling Network Advertisement Addresses" bash -c '

@@ -540,7 +540,7 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
       });
       setSpicefieldRows((current) => current.map((item) => String(item.spicefield_type_id) === id ? result.row : item));
       setSpicefieldDrafts((current) => ({ ...current, [id]: spicefieldDraftFromRow(result.row) }));
-      setSpicefieldResult({ status: "succeeded", title: "Spice Field Saved", message: "Live database controls were updated. Existing active fields may remain until the game updates them." });
+      setSpicefieldResult({ status: "succeeded", title: "Spice Field Saved", message: "Live database controls were updated and will be reapplied after battlegroup restarts. Existing active fields may remain until the game updates them." });
     } catch (error) {
       setSpicefieldResult({ status: "failed", title: "Spice Field Save Failed", message: error instanceof Error ? error.message : String(error) });
     } finally {

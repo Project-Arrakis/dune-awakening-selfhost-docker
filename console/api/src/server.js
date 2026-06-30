@@ -31,6 +31,7 @@ import { handleDiscordAdapterRoute, isDiscordAdapterRoute } from "./services/dis
 import { liveItemGrantOk, liveItemGrantWarning } from "./grantResults.js";
 import { primeMessageOfTheDayOnlineState, readMessageOfTheDay, restoreMessageOfTheDay, runMessageOfTheDayScan, saveMessageOfTheDay } from "./services/messageOfTheDay.js";
 import { primePlayerAnnouncementOnlineState, readPlayerAnnouncements, restorePlayerAnnouncements, runPlayerAnnouncementScan, savePlayerAnnouncements } from "./services/playerAnnouncements.js";
+import { persistSpicefieldOverride } from "./services/spicefieldOverrides.js";
 
 const config = loadConfig();
 const auth = createAuth(config);
@@ -722,7 +723,11 @@ async function mapsSpicefieldUpdateRoute(req, res, path) {
   const typeId = decodeURIComponent(path.split("/").pop());
   const body = await readJson(req);
   audit(config, req, "maps.spicefields.update", { typeId, columns: Object.keys(body || {}) });
-  return dbJson(res, () => duneDb.updateSpicefieldType(db, typeId, body));
+  return dbJson(res, async () => {
+    const result = await duneDb.updateSpicefieldType(db, typeId, body);
+    if (result.row) result.persistence = persistSpicefieldOverride(config, result.row);
+    return result;
+  });
 }
 
 async function safeCommand(operation, payload = {}) {
