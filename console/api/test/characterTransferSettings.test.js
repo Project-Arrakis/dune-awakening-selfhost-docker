@@ -72,6 +72,10 @@ test("rejects invalid incoming transfer enum values", () => {
     ...characterTransferDefaults,
     IncomingCharacterTransfers: 15
   }), /IncomingCharacterTransfers must be one of/);
+  assert.throws(() => validateCharacterTransferSettings({
+    ...characterTransferDefaults,
+    IncomingCharacterTransfers: 0
+  }), /IncomingCharacterTransfers must be one of/);
 });
 
 test("rejects invalid timeout values", () => {
@@ -118,10 +122,25 @@ PlayerHardCap=40
 `);
     saveCharacterTransferSettings(config, {}, { defaults: true });
     const text = readFileSync(path, "utf8");
-    assert.match(text, /IncomingCharacterTransfers=0/);
+    assert.match(text, /IncomingCharacterTransfers=40/);
     assert.match(text, /FreeToTransferCharactersTo=false/);
     assert.match(text, /AuthorizationPreset=BattlegroupInternal/);
     assert.match(text, /\[Server\]\nPlayerHardCap=40/);
+  } finally {
+    rmSync(config.repoRoot, { recursive: true, force: true });
+  }
+});
+
+test("legacy default incoming transfer value reads back as explicit accept all", () => {
+  const config = tempConfig();
+  try {
+    const path = characterTransferSettingsPath(config);
+    mkdirSync(resolve(config.repoRoot, "runtime/generated"), { recursive: true });
+    writeFileSync(path, `[Battlegroup]
+IncomingCharacterTransfers=0
+`);
+    const readBack = readCharacterTransferSettings(config);
+    assert.equal(readBack.settings.IncomingCharacterTransfers, 40);
   } finally {
     rmSync(config.repoRoot, { recursive: true, force: true });
   }
