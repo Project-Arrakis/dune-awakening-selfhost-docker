@@ -12,7 +12,8 @@ type HomeTaskResult = { status: "running" | "succeeded" | "failed" | "stopped"; 
 type DatabasePasswordState = { taskId?: string; result: HomeTaskResult | null };
 
 const DATABASE_PASSWORD_STATE_KEY = "arrakis.databasePasswordState";
-const DATABASE_PREVIEW_MAX_ROWS = 10000;
+const DATABASE_PREVIEW_PAGE_SIZES = [100, 200, 500] as const;
+const DATABASE_PREVIEW_DEFAULT_PAGE_SIZE = 100;
 
 function formatResultTitle(value: unknown, pending = false) {
   return formatUiSentence(value, pending);
@@ -104,6 +105,8 @@ export function DatabasePanel() {
   const [preview, setPreview] = useState<{ columns?: { name: string }[]; rows?: Record<string, unknown>[] } | null>(null);
   const [columns, setColumns] = useState<Record<string, unknown>[]>([]);
   const [count, setCount] = useState("");
+  const [previewPage, setPreviewPage] = useState(0);
+  const [previewPageSize, setPreviewPageSize] = useState(DATABASE_PREVIEW_DEFAULT_PAGE_SIZE);
   const [previewError, setPreviewError] = useState("");
   const [previewLoading, setPreviewLoading] = useState(false);
   const [sql, setSql] = useState("select * from dune.player_state limit 25");
@@ -178,13 +181,14 @@ export function DatabasePanel() {
     setPreview(null);
     setColumns([]);
     setCount("");
+    setPreviewPage(0);
     setPreviewError("");
     columnsSort.reset();
     previewSort.reset();
-    await refreshTablePreview(table);
+    await refreshTablePreview(table, 0, previewPageSize);
     window.setTimeout(() => previewRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
   }
-  async function refreshTablePreview(table: string) {
+  async function refreshTablePreview(table: string, page = previewPage, pageSize = previewPageSize) {
     setPreviewLoading(true);
     setPreviewError("");
     try {
@@ -193,11 +197,15 @@ export function DatabasePanel() {
         databaseApi.count(schema, table)
       ]);
       const rowCount = Math.max(0, Number(nextCount.count) || 0);
-      const previewLimit = Math.max(1, Math.min(rowCount || DATABASE_PREVIEW_MAX_ROWS, DATABASE_PREVIEW_MAX_ROWS));
-      const nextPreview = rowCount > 0 ? await databaseApi.preview(schema, table, previewLimit, 0) : { columns: [], rows: [] };
+      const safePageSize = normalizeDatabasePreviewPageSize(pageSize);
+      const totalPages = Math.max(1, Math.ceil(rowCount / safePageSize));
+      const safePage = Math.max(0, Math.min(page, totalPages - 1));
+      const nextPreview = rowCount > 0 ? await databaseApi.preview(schema, table, safePageSize, safePage * safePageSize) : { columns: [], rows: [] };
       setPreview(nextPreview);
       setColumns(nextColumns);
       setCount(String(nextCount.count));
+      setPreviewPage(safePage);
+      setPreviewPageSize(safePageSize);
     } catch (error) {
       setPreview(null);
       setColumns([]);
@@ -205,6 +213,18 @@ export function DatabasePanel() {
     } finally {
       setPreviewLoading(false);
     }
+  }
+  async function goToPreviewPage(page: number) {
+    if (!selected || previewLoading) return;
+    previewSort.reset();
+    await refreshTablePreview(selected, page, previewPageSize);
+  }
+  async function changePreviewPageSize(value: string) {
+    const nextPageSize = normalizeDatabasePreviewPageSize(Number(value));
+    setPreviewPageSize(nextPageSize);
+    setPreviewPage(0);
+    previewSort.reset();
+    if (selected) await refreshTablePreview(selected, 0, nextPageSize);
   }
   async function loadDatabaseStatus() {
     setDatabaseStatusLoading(true);
@@ -253,7 +273,7 @@ export function DatabasePanel() {
       const originalValues = Object.fromEntries(databasePreviewColumns(preview).map((column) => [column, editRow[column]]));
       const nextValues = Object.fromEntries(Object.entries(editValues).map(([key, value]) => [key, parseEditableDbValue(value, originalValues[key])]));
       const result = await databaseApi.updateRow(schema, selected, rowId, nextValues);
-      await refreshTablePreview(selected);
+      await refreshTablePreview(selected, previewPage, previewPageSize);
       setEditRow(null);
       setEditResult(result.updatedRows > 0
         ? { status: "succeeded", title: "Row Saved Successfully", message: result.message }
@@ -294,7 +314,11 @@ export function DatabasePanel() {
   const previewColumns = databasePreviewColumns(preview);
   const previewRows = preview?.rows || [];
   const previewRowCount = Number(count || 0);
-  const previewIsTruncated = previewRowCount > previewRows.length;
+  const previewTotalPages = Math.max(1, Math.ceil(previewRowCount / previewPageSize));
+  const previewStartRow = previewRowCount > 0 ? previewPage * previewPageSize + 1 : 0;
+  const previewEndRow = previewRowCount > 0 ? Math.min(previewStartRow + previewRows.length - 1, previewRowCount) : 0;
+  const previewHasPreviousPage = previewPage > 0;
+  const previewHasNextPage = previewPage + 1 < previewTotalPages;
   const queryColumns = queryResult?.columns?.map((column) => column.name).filter((name) => name !== "__rowid");
   const queryRows = (queryResult?.rows || []).map((row) => omitInternalRowFields(row));
   const queryAffectedRows = Number(queryResult?.rowCount ?? queryRows.length);
@@ -349,12 +373,23 @@ export function DatabasePanel() {
     <h3 ref={previewRef}>{selected ? `${schema}.${selected} (${count} rows)` : "Table Preview"}</h3>
     {!selected && <div className="empty database-empty">No table selected. Select a table to preview and edit rows.</div>}
     {selected && <section className="database-table-panel">
-      {previewLoading && <div className="empty database-empty">Loading full table preview...</div>}
+      {previewLoading && <div className="empty database-empty">Loading table page...</div>}
       {previewError && <div className="empty database-empty danger-note">Preview failed: {formatResultMessage(previewError)}</div>}
-      {!previewLoading && !previewError && <p className="muted database-preview-count">
-        Showing {previewRows.length.toLocaleString()} of {previewRowCount.toLocaleString()} rows.
-        {previewIsTruncated ? ` Full preview is capped at ${DATABASE_PREVIEW_MAX_ROWS.toLocaleString()} rows to keep the browser responsive.` : ""}
-      </p>}
+      {!previewLoading && !previewError && <div className="database-preview-toolbar">
+        <p className="muted database-preview-count">
+          Showing {previewStartRow.toLocaleString()}-{previewEndRow.toLocaleString()} of {previewRowCount.toLocaleString()} rows.
+        </p>
+        <div className="database-pagination-controls">
+          <label className="compact-select">Rows<select value={String(previewPageSize)} onChange={(event) => { void changePreviewPageSize(event.target.value); }}>
+            {DATABASE_PREVIEW_PAGE_SIZES.map((size) => <option key={size} value={size}>{size}</option>)}
+          </select></label>
+          <button disabled={!previewHasPreviousPage || previewLoading} onClick={() => void goToPreviewPage(0)}>First</button>
+          <button disabled={!previewHasPreviousPage || previewLoading} onClick={() => void goToPreviewPage(previewPage - 1)}>Previous</button>
+          <span className="muted database-page-indicator">Page {(previewPage + 1).toLocaleString()} of {previewTotalPages.toLocaleString()}</span>
+          <button disabled={!previewHasNextPage || previewLoading} onClick={() => void goToPreviewPage(previewPage + 1)}>Next</button>
+          <button disabled={!previewHasNextPage || previewLoading} onClick={() => void goToPreviewPage(previewTotalPages - 1)}>Last</button>
+        </div>
+      </div>}
       <details className="technical-details">
         <summary>Columns</summary>
         <DataTable rows={columnsSort.sortedRows} sortColumn={columnsSort.sortColumn} sortDirection={columnsSort.sortDirection} onSort={columnsSort.onSort} />
@@ -402,6 +437,13 @@ function compareTableValues(a: unknown, b: unknown, direction: "asc" | "desc") {
   const bothNumeric = a !== null && a !== undefined && a !== "" && b !== null && b !== undefined && b !== "" && !Number.isNaN(aNum) && !Number.isNaN(bNum);
   const result = bothNumeric ? aNum - bNum : String(a ?? "").localeCompare(String(b ?? ""), undefined, { sensitivity: "base" });
   return direction === "asc" ? result : -result;
+}
+
+function normalizeDatabasePreviewPageSize(value: unknown) {
+  const numeric = Number(value);
+  return DATABASE_PREVIEW_PAGE_SIZES.includes(numeric as typeof DATABASE_PREVIEW_PAGE_SIZES[number])
+    ? numeric
+    : DATABASE_PREVIEW_DEFAULT_PAGE_SIZE;
 }
 
 function databasePreviewColumns(preview: { columns?: { name: string }[] } | null) {

@@ -775,6 +775,12 @@ main { padding: 22px; min-width: 0; }
 .database-password-panel + .result-panel { margin-top: 12px; }
 .database-empty { margin: 10px 0 16px; color: #fff1d4; }
 .database-table-panel { display: grid; gap: 12px; }
+.database-preview-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 14px; }
+.database-preview-toolbar .database-preview-count { margin: 0; }
+.database-pagination-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.database-pagination-controls .compact-select { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; margin: 0; }
+.database-pagination-controls select { width: 94px; min-width: 94px; }
+.database-page-indicator { min-width: 110px; text-align: center; }
 .database-edit-panel { display: grid; gap: 12px; }
 .database-edit-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px; }
 .database-edit-grid textarea { min-height: 72px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; }
