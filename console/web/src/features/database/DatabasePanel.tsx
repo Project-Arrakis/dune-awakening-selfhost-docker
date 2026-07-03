@@ -3,7 +3,7 @@ import { ChevronDown, ChevronUp } from "lucide-react";
 import { databaseApi, type ColumnFilterTerm, type ColumnFilterTree } from "../../api/database";
 import { setupApi, type Task } from "../../api/setup";
 import { SecretInput } from "../../components/SecretInput";
-import { DataTable } from "../../components/common/DataTable";
+import { DataTable, useSortableRows } from "../../components/common/DataTable";
 import { KeyValueGrid, StatusPill, TechnicalDetails } from "../../components/common/DisplayPrimitives";
 import { formatUiSentence } from "../../lib/display";
 import { conciseTaskError } from "../../lib/taskDisplay";
@@ -35,17 +35,6 @@ function downloadText(filename: string, text: string) {
 
 function isTerminalTask(status: string) {
   return ["succeeded", "failed", "cancelled"].includes(status);
-}
-
-type SortState = { column: string; direction: "asc" | "desc" };
-
-function useSortableRows<T extends Record<string, unknown>>(rows: T[]) {
-  const [sort, setSort] = useState<SortState | null>(null);
-  const sortedRows = sort ? [...rows].sort((a, b) => compareTableValues(a[sort.column], b[sort.column], sort.direction)) : rows;
-  function onSort(column: string) {
-    setSort((current) => (current?.column === column ? { column, direction: current.direction === "asc" ? "desc" : "asc" } : { column, direction: "asc" }));
-  }
-  return { sortedRows, sortColumn: sort?.column, sortDirection: sort?.direction, onSort, reset: () => setSort(null) };
 }
 
 function parseColumnEqualityFilter(term: string): { column: string; value: string } | null {
@@ -522,14 +511,6 @@ export function DatabasePanel() {
       </div>}
     </div>
   </section>;
-}
-
-function compareTableValues(a: unknown, b: unknown, direction: "asc" | "desc") {
-  const aNum = Number(a);
-  const bNum = Number(b);
-  const bothNumeric = a !== null && a !== undefined && a !== "" && b !== null && b !== undefined && b !== "" && !Number.isNaN(aNum) && !Number.isNaN(bNum);
-  const result = bothNumeric ? aNum - bNum : String(a ?? "").localeCompare(String(b ?? ""), undefined, { sensitivity: "base" });
-  return direction === "asc" ? result : -result;
 }
 
 function normalizeDatabasePreviewPageSize(value: unknown) {

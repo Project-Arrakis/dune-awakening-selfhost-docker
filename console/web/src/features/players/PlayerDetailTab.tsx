@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { X } from "lucide-react";
 import { playersApi } from "../../api/players";
-import { DataTable } from "../../components/common/DataTable";
+import { DataTable, useSortableRows } from "../../components/common/DataTable";
 import { TechnicalDetails } from "../../components/common/DisplayPrimitives";
 import { formatUiSentence } from "../../lib/display";
 
@@ -94,16 +94,22 @@ export function PlayerDetailTab({
   }
 
   const rows = Array.isArray(data?.rows) ? data.rows as Record<string, unknown>[] : data?.position ? [data.position as Record<string, unknown>] : [];
+  const inventorySort = useSortableRows(rows);
+  const isInventory = tab === "inventory";
 
   return <div>
     {data?.reason ? <p className="danger-note">{formatUiSentence(data.reason)}</p> : null}
-    {tab === "inventory" && <p className="action-help-note">A relog is required to see the change.</p>}
+    {isInventory && <p className="action-help-note">A relog is required to see the change.</p>}
     {message && <div className="result-panel transient-result"><strong>Mutation Result.</strong><p>{formatUiSentence(message)}</p>{messageDetails && <TechnicalDetails text={messageDetails} />}</div>}
     <DataTable
-      rows={rows}
-      emptyMessage={tab === "inventory" ? "No inventory items were found." : "No rows."}
-      actionClassName={tab === "inventory" ? "actions-column" : ""}
-      action={tab === "inventory" ? (row) => <button className="icon-toggle-button danger" title="Delete item" aria-label="Delete item" onClick={(event) => { event.stopPropagation(); void deleteItem(row); }}><X size={16} /></button> : undefined}
+      rows={isInventory ? inventorySort.sortedRows : rows}
+      emptyMessage={isInventory ? "No inventory items were found." : "No rows."}
+      actionClassName={isInventory ? "actions-column" : ""}
+      action={isInventory ? (row) => <button className="icon-toggle-button danger" title="Delete item" aria-label="Delete item" onClick={(event) => { event.stopPropagation(); void deleteItem(row); }}><X size={16} /></button> : undefined}
+      sortColumn={isInventory ? inventorySort.sortColumn : undefined}
+      sortDirection={isInventory ? inventorySort.sortDirection : undefined}
+      onSort={isInventory ? inventorySort.onSort : undefined}
+      resizableColumns={isInventory}
     />
   </div>;
 }

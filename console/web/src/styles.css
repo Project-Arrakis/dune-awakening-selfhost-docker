@@ -1074,6 +1074,9 @@ th { color: #ffd08a; background: #171a1d; position: sticky; top: 0; z-index: 1; 
 th.sortable { cursor: pointer; user-select: none; }
 th.sortable:hover { color: #ffe0a8; }
 .sort-indicator { color: #cbbd9f; }
+.col-resize-handle { position: absolute; top: 0; right: 0; width: 6px; height: 100%; cursor: col-resize; user-select: none; }
+.col-resize-handle:hover, body.col-resizing .col-resize-handle { background: rgba(255, 208, 138, .35); }
+body.col-resizing, body.col-resizing * { cursor: col-resize !important; user-select: none !important; }
 tr.clickable { cursor: pointer; }
 tr.clickable:hover { background: rgba(198, 139, 74, .12); }
 .actions-column { text-align: center; }
