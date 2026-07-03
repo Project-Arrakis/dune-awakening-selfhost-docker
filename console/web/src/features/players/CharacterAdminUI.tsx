@@ -3,10 +3,10 @@ import { ChevronDown, ChevronUp } from "lucide-react";
 import { adminApi } from "../../api/admin";
 import { playersApi } from "../../api/players";
 import type { Task } from "../../api/setup";
-import { DataTable } from "../../components/common/DataTable";
+import { DataTable, useSortableRows } from "../../components/common/DataTable";
 import { InlineActionResult } from "../../components/common/InlineActionResult";
 import { ItemCatalogSelector, ItemGradeSelect, PackageItemPreview, catalogItemId, catalogItemName, grantItemDurability, itemGrade, normalizeItemGrade, type CatalogItem } from "../../components/common/ItemCatalog";
-import { firstDefined } from "../../lib/display";
+import { firstDefined, formatCell } from "../../lib/display";
 import { PlayerCategoryIconRail } from "./PlayerCategoryIconRail";
 import { PlayerDetailTab } from "./PlayerDetailTab";
 import { PlayerSummary } from "./PlayerSummary";
@@ -830,45 +830,43 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
       playerAdmin_addLog("Restore Starter Skills", playerAdmin_skillSchool, String(playerAdmin_starterSkillPreset.modules.length), `Failed: ${message}`);
     }
   }
+  const playerAdmin_craftingDisplayRows = playerAdmin_filteredCraftingRows.map((row) => ({ ...row, recipeName: row.displayName }));
+  const playerAdmin_craftingSort = useSortableRows(playerAdmin_craftingDisplayRows);
   const playerAdmin_craftingTable = (
-    <div className="playerAdmin_tableWrap">
-      <table className="playerAdmin_table playerAdmin_compactTable playerAdmin_fullResultTable playerAdmin_schematicTable">
-        <thead><tr><th>Recipe</th><th>Recipe ID</th><th>Source</th><th>Grade</th><th>Result</th><th>Action</th></tr></thead>
-        <tbody>
-          {playerAdmin_filteredCraftingRows.map((row) => (
-            <tr key={row.recipeId}>
-              <td>{row.displayName}</td>
-              <td><code>{row.recipeId}</code></td>
-              <td>{friendlyCraftingSource(row.source)}</td>
-              <td>{row.qualityLevel}</td>
-              <td className="playerAdmin_resultCell"><InlineActionResult result={playerAdmin_actionResult} resultKey={`crafting:${row.recipeId}`} /></td>
-              <td className="playerAdmin_actionCell"><button className="playerAdmin_stateActionButton" disabled={!dbPlayerId || row.unlocked || Boolean(playerAdmin_busyActionKey)} onClick={() => playerAdmin_unlockCraftingRecipe(row)}>{playerAdmin_busyActionKey === `crafting:${row.recipeId}` ? "Unlocking..." : row.unlocked ? "Unlocked" : "Unlock"}</button></td>
-            </tr>
-          ))}
-          {!playerAdmin_filteredCraftingRows.length && <tr><td colSpan={6}>{playerAdmin_craftingLoading ? "Loading recipes..." : "No crafting recipes found for this category."}</td></tr>}
-        </tbody>
-      </table>
-    </div>
+    <DataTable
+      rows={playerAdmin_craftingSort.sortedRows}
+      columns={["recipeName", "recipeId", "source", "qualityLevel"]}
+      emptyMessage={playerAdmin_craftingLoading ? "Loading recipes..." : "No crafting recipes found for this category."}
+      sortColumn={playerAdmin_craftingSort.sortColumn}
+      sortDirection={playerAdmin_craftingSort.sortDirection}
+      onSort={playerAdmin_craftingSort.onSort}
+      resizableColumns
+      renderCell={(row, col) =>
+        col === "recipeId" ? <code>{String(row.recipeId)}</code> :
+        col === "source" ? friendlyCraftingSource(String(row.source)) :
+        formatCell(row[col])
+      }
+      secondaryAction={(row) => <InlineActionResult result={playerAdmin_actionResult} resultKey={`crafting:${row.recipeId}`} />}
+      secondaryActionLabel="Result"
+      action={(row) => <button className="playerAdmin_stateActionButton" disabled={!dbPlayerId || Boolean(row.unlocked) || Boolean(playerAdmin_busyActionKey)} onClick={() => playerAdmin_unlockCraftingRecipe(row as unknown as CraftingRecipeRow)}>{playerAdmin_busyActionKey === `crafting:${row.recipeId}` ? "Unlocking..." : row.unlocked ? "Unlocked" : "Unlock"}</button>}
+    />
   );
+  const playerAdmin_researchDisplayRows = playerAdmin_filteredResearchRows.map((row) => ({ ...row, researchName: row.displayName }));
+  const playerAdmin_researchSort = useSortableRows(playerAdmin_researchDisplayRows);
   const playerAdmin_researchTable = (
-    <div className="playerAdmin_tableWrap">
-      <table className="playerAdmin_table playerAdmin_compactTable playerAdmin_fullResultTable playerAdmin_schematicTable">
-        <thead><tr><th>Research</th><th>Item Key</th><th>Type</th><th>Product Group</th><th>Result</th><th>Action</th></tr></thead>
-        <tbody>
-          {playerAdmin_filteredResearchRows.map((row) => (
-            <tr key={row.itemKey}>
-              <td>{row.displayName}</td>
-              <td><code>{row.itemKey}</code></td>
-              <td>{row.type}</td>
-              <td>{row.productGroup}</td>
-              <td className="playerAdmin_resultCell"><InlineActionResult result={playerAdmin_actionResult} resultKey={`research:${row.itemKey}`} /></td>
-              <td className="playerAdmin_actionCell"><button className="playerAdmin_stateActionButton" disabled={!dbPlayerId || row.unlocked || Boolean(playerAdmin_busyActionKey)} onClick={() => playerAdmin_unlockResearchItem(row)}>{playerAdmin_busyActionKey === `research:${row.itemKey}` ? "Researching..." : row.unlocked ? "Researched" : "Research"}</button></td>
-            </tr>
-          ))}
-          {!playerAdmin_filteredResearchRows.length && <tr><td colSpan={6}>{playerAdmin_researchLoading ? "Loading research..." : "No research entries found for this filter."}</td></tr>}
-        </tbody>
-      </table>
-    </div>
+    <DataTable
+      rows={playerAdmin_researchSort.sortedRows}
+      columns={["researchName", "itemKey", "type", "productGroup"]}
+      emptyMessage={playerAdmin_researchLoading ? "Loading research..." : "No research entries found for this filter."}
+      sortColumn={playerAdmin_researchSort.sortColumn}
+      sortDirection={playerAdmin_researchSort.sortDirection}
+      onSort={playerAdmin_researchSort.onSort}
+      resizableColumns
+      renderCell={(row, col) => col === "itemKey" ? <code>{String(row.itemKey)}</code> : formatCell(row[col])}
+      secondaryAction={(row) => <InlineActionResult result={playerAdmin_actionResult} resultKey={`research:${row.itemKey}`} />}
+      secondaryActionLabel="Result"
+      action={(row) => <button className="playerAdmin_stateActionButton" disabled={!dbPlayerId || Boolean(row.unlocked) || Boolean(playerAdmin_busyActionKey)} onClick={() => playerAdmin_unlockResearchItem(row as unknown as ResearchItemRow)}>{playerAdmin_busyActionKey === `research:${row.itemKey}` ? "Researching..." : row.unlocked ? "Researched" : "Research"}</button>}
+    />
   );
   const playerAdmin_journeyTable = (rows: JourneyRow[], emptyText: string) => {
     const childrenByParent = new Map<string, JourneyRow[]>();

@@ -88,7 +88,13 @@ export function friendlyColumnName(value: string) {
     action: "Action",
     target: "Player",
     status: "Status",
-    summary: "Summary"
+    summary: "Summary",
+    recipeName: "Recipe",
+    researchName: "Research",
+    recipeId: "Recipe ID",
+    qualityLevel: "Grade",
+    itemKey: "Item Key",
+    productGroup: "Product Group"
   };
   return labels[value] || value.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
