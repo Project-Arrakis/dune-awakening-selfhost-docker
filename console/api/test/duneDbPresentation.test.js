@@ -6,6 +6,7 @@ import {
   factionTierBumps,
   craftingRecipeCatalogRows,
   journeyDepth,
+  journeyCompletionNodeIds,
   journeyDisplayName,
   journeyParentId,
   recipeCategory,
@@ -52,6 +53,12 @@ test("journey tree helpers resolve parents, depth, and subtree tags", () => {
       Other: ["Tag.C"]
     }
   }), ["Tag.A", "Tag.B"]);
+  assert.deepEqual(journeyCompletionNodeIds("Root.Branch.Leaf", {
+    journey_node_tags: {
+      "Root.Branch.Leaf.Child": ["Tag.C"],
+      Other: ["Tag.D"]
+    }
+  }), ["Root.Branch", "Root.Branch.Leaf", "Root.Branch.Leaf.Child"]);
 });
 
 test("category helpers classify common recipe and research identifiers", () => {

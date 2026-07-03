@@ -33,7 +33,7 @@ export function parseStatusListenerRows(text) {
     const match = line.match(/^(.+?)\s+(\d{2,5})\/(tcp|udp)\s+(\S+)/i);
     if (!match) return null;
     const [, name, port, protocol, state] = match;
-    const key = `${port}/${protocol.toUpperCase()}`;
+    const key = `${name.trim()}:${port}/${protocol.toUpperCase()}`;
     if (seen.has(key)) return null;
     seen.add(key);
     return { name: name.trim(), port, protocol: protocol.toUpperCase(), state };

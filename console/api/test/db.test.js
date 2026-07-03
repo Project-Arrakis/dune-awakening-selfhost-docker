@@ -914,6 +914,16 @@ test("journey listing includes faction contract aliases from game data", async (
   assert.equal(result.rows.contract[0].status, "Complete");
 });
 
+test("journey listing includes story nodes discovered from the database", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    discoveredJourneyRows: [{ story_node_id: "DA_MQ_FindTheFremen.SixthTest.SixthQuestion.CompleteSixthTest" }]
+  });
+  const result = await playerJourney(db, 123, { journey_node_tags: {} });
+  assert.equal(result.rows.story.length, 1);
+  assert.equal(result.rows.story[0].rawName, "DA_MQ_FindTheFremen.SixthTest.SixthQuestion.CompleteSixthTest");
+});
+
 test("journey listing supports current character_id schema", async () => {
   const calls = [];
   const db = fakeMutationDb(calls, {
@@ -961,12 +971,26 @@ test("journey complete updates subtree and applies tags", async () => {
     factionRows: [{ faction_id: 1, reputation_amount: 100 }]
   });
   const result = await completeJourneyNode(db, 123, { nodeId: "DA_Story.Root" }, { journey_node_tags: { "DA_Story.Root": ["Story.Tag", "Faction.Atreides.Tier1"], "DA_Story.Root.Child": ["Child.Tag"] } });
-  assert.equal(result.updatedRows, 2);
+  assert.equal(result.updatedRows, 3);
   assert.equal(result.tagsApplied, 3);
-  assert.ok(calls.some((call) => call.text.includes("story_node_id = $2 or story_node_id like $2 || '.%'") && call.values[1] === "DA_Story.Root"));
+  assert.ok(calls.some((call) => call.text.includes("story_node_id = any($2::text[])") && call.values[2] === "DA_Story.Root"));
   assert.ok(calls.some((call) => call.text.includes("insert into dune.player_tags") && call.values[0] === 44 && call.values[1].includes("Child.Tag")));
   assert.ok(!calls.some((call) => call.text.includes("dune.update_player_tags")));
   assert.ok(calls.some((call) => call.text.includes("set_player_faction_reputation") && call.values[2] === 100));
+});
+
+test("journey complete materializes parent path for leaf quest steps", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls);
+  const result = await completeJourneyNode(db, 123, { nodeId: "DA_MQ_FindTheFremen.FifthTest.FifthQuestion.CompleteFifthTest" }, { journey_node_tags: {} });
+  assert.equal(result.updatedRows, 1);
+  const insert = calls.find((call) => call.text.includes("with wanted(story_node_id)"));
+  assert.ok(insert);
+  assert.deepEqual(insert.values[1], [
+    "DA_MQ_FindTheFremen.FifthTest",
+    "DA_MQ_FindTheFremen.FifthTest.FifthQuestion",
+    "DA_MQ_FindTheFremen.FifthTest.FifthQuestion.CompleteFifthTest"
+  ]);
 });
 
 test("journey reset clears subtree completion and removes tags", async () => {
@@ -1056,6 +1080,7 @@ function fakeMutationDb(calls, fixtures = {}) {
       if (text.includes("CraftingRecipesLibraryActorComponent") && text.includes("select exists")) return { rows: [{ exists: Boolean(fixtures.recipeExists) }] };
       if (text.includes("CraftingRecipesLibraryActorComponent") && text.includes("for update")) return { rows: fixtures.currentCraftingRecipes === null ? [] : [{ recipes: fixtures.currentCraftingRecipes || [] }] };
       if (text.includes("CraftingRecipesLibraryActorComponent,m_KnownItemRecipes") && text.includes("update dune.actors")) return { rows: [{ ok: true }] };
+      if (text.includes("story_node_id not like 'DA_Dunipedia_%'")) return { rows: fixtures.discoveredJourneyRows || [] };
       if (text.includes("story_node_id like 'DA_Dunipedia_%'")) return { rows: fixtures.codexRows || [] };
       if (text.includes("from dune.journey_story_node") && (text.includes("where account_id = $1") || text.includes('where "account_id" = $1') || text.includes("where character_id = $1") || text.includes('where "character_id" = $1'))) return { rows: fixtures.journeyStateRows || [] };
       if (text.includes("select tag from dune.player_tags")) return { rows: fixtures.playerTagRows || [] };

@@ -90,6 +90,8 @@ Overmap clients          7777/udp OK
 Survival_1 clients       7778/udp OK
 Survival_1 S2S           7888/udp OK
 Overmap S2S              7889/udp OK
+DeepDesert_1 clients     7786/udp OK
+DeepDesert_1 S2S         7897/udp OK
 
 === Game servers ===
 MAP          STATE        UPTIME
@@ -197,9 +199,19 @@ test("status fixture exposes exact logical listeners and game servers", () => {
     "Overmap clients:7777/UDP",
     "Survival_1 clients:7778/UDP",
     "Survival_1 S2S:7888/UDP",
-    "Overmap S2S:7889/UDP"
+    "Overmap S2S:7889/UDP",
+    "DeepDesert_1 clients:7786/UDP",
+    "DeepDesert_1 S2S:7897/UDP"
   ]);
   assert.deepEqual(parseStatusGameServers(healthyStatusWithSections).map((row) => row.map), ["Survival_1", "Overmap"]);
+});
+
+test("status listener parser keeps separate map rows even when ports match", () => {
+  const listeners = parseStatusListenerRows(`=== Listeners ===
+CHECK                    PORT     STATUS
+Survival_1 S2S           7888/udp OK
+SH_HarkoVillage S2S      7888/udp OK`);
+  assert.deepEqual(listeners.map((row) => row.name), ["Survival_1 S2S", "SH_HarkoVillage S2S"]);
 });
 
 test("RabbitMQ TextRouter zero and FLS OK values are not failures", () => {

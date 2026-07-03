@@ -68,6 +68,7 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
   const [playerAdmin_journeyRows, playerAdmin_setJourneyRows] = useState<Record<string, JourneyRow[]>>({ story: [], contract: [], codex: [], tutorial: [] });
   const [playerAdmin_journeyLoading, playerAdmin_setJourneyLoading] = useState(false);
   const [playerAdmin_journeyError, playerAdmin_setJourneyError] = useState("");
+  const [playerAdmin_journeyFilter, playerAdmin_setJourneyFilter] = useState("");
   const [playerAdmin_expandedJourney, playerAdmin_setExpandedJourney] = useState<Record<string, boolean>>({});
   const [playerAdmin_coords, playerAdmin_setCoords] = useState({ x: "", y: "", z: "", yaw: "0" });
   const [playerAdmin_vehicleId, playerAdmin_setVehicleId] = useState("");
@@ -694,6 +695,53 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
   const playerAdmin_craftingCategoryCount = (category: string) => playerAdmin_craftingRows.filter((row) => !category || row.category === category).length;
   const playerAdmin_researchCategoryCount = (category: string) => playerAdmin_researchRows.filter((row) => !category || row.category === category).length;
   const playerAdmin_journeyEntryCount = playerAdmin_journeyRows.story.length + playerAdmin_journeyRows.contract.length + playerAdmin_journeyRows.codex.length + playerAdmin_journeyRows.tutorial.length;
+  const playerAdmin_journeyFilterTerms = playerAdmin_journeyFilter.toLowerCase().split(/\s+/).map((term) => term.trim()).filter(Boolean);
+  const playerAdmin_filterJourneyRows = (rows: JourneyRow[]) => {
+    if (!playerAdmin_journeyFilterTerms.length) return rows;
+    const byKey = new Map<string, JourneyRow>();
+    const childrenByParent = new Map<string, JourneyRow[]>();
+    for (const row of rows) {
+      for (const key of [row.id, row.rawName].filter(Boolean)) byKey.set(key, row);
+    }
+    for (const row of rows) {
+      const parentKey = row.parentId || row.dependency || "";
+      if (!parentKey || !byKey.has(parentKey)) continue;
+      childrenByParent.set(parentKey, [...(childrenByParent.get(parentKey) || []), row]);
+    }
+    const keep = new Set<string>();
+    const addRow = (row: JourneyRow) => {
+      keep.add(row.id);
+      let parentKey = row.parentId || row.dependency || "";
+      while (parentKey && byKey.has(parentKey)) {
+        const parent = byKey.get(parentKey);
+        if (!parent || keep.has(parent.id)) break;
+        keep.add(parent.id);
+        parentKey = parent.parentId || parent.dependency || "";
+      }
+    };
+    const addDescendants = (row: JourneyRow) => {
+      const rowKey = row.id || row.rawName;
+      for (const child of childrenByParent.get(rowKey) || []) {
+        if (keep.has(child.id)) continue;
+        keep.add(child.id);
+        addDescendants(child);
+      }
+    };
+    for (const row of rows) {
+      const haystack = [row.name, row.rawName, row.id, row.category, row.status, row.dependency || "", row.pendingReward ? "pending reward" : ""].join(" ").toLowerCase();
+      if (!playerAdmin_journeyFilterTerms.every((term) => haystack.includes(term))) continue;
+      addRow(row);
+      addDescendants(row);
+    }
+    return rows.filter((row) => keep.has(row.id));
+  };
+  const playerAdmin_filteredJourneyRows = {
+    story: playerAdmin_filterJourneyRows(playerAdmin_journeyRows.story),
+    contract: playerAdmin_filterJourneyRows(playerAdmin_journeyRows.contract),
+    codex: playerAdmin_filterJourneyRows(playerAdmin_journeyRows.codex),
+    tutorial: playerAdmin_filterJourneyRows(playerAdmin_journeyRows.tutorial)
+  };
+  const playerAdmin_filteredJourneyEntryCount = playerAdmin_filteredJourneyRows.story.length + playerAdmin_filteredJourneyRows.contract.length + playerAdmin_filteredJourneyRows.codex.length + playerAdmin_filteredJourneyRows.tutorial.length;
   const playerAdmin_vehicleIds = Object.keys(playerAdmin_vehicleCatalog).sort((a, b) => friendlyVehicleName(a).localeCompare(friendlyVehicleName(b)));
   const playerAdmin_selectedTemplates = [...(playerAdmin_vehicleCatalog[playerAdmin_vehicleId] || [])].sort((a, b) => friendlyVehicleTemplateName(a).localeCompare(friendlyVehicleTemplateName(b)));
   const playerAdmin_starterSkillPresets: Record<string, StarterSkillPreset> = {
@@ -814,7 +862,7 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
     const pushVisible = (row: JourneyRow, output: JourneyRow[]) => {
       output.push(row);
       const rowKey = row.id || row.rawName;
-      if (!playerAdmin_expandedJourney[`${row.category}:${rowKey}`]) return;
+      if (!playerAdmin_journeyFilterTerms.length && !playerAdmin_expandedJourney[`${row.category}:${rowKey}`]) return;
       for (const child of childrenByParent.get(rowKey) || []) pushVisible(child, output);
     };
     const childIds = new Set(Array.from(childrenByParent.values()).flat().flatMap((row) => [row.id, row.rawName]).filter(Boolean));
@@ -831,7 +879,7 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
             const key = `journey:${row.category}:${row.id}`;
             const rowKey = row.id || row.rawName;
             const hasChildren = Boolean(childrenByParent.get(rowKey)?.length);
-            const expanded = Boolean(playerAdmin_expandedJourney[`${row.category}:${rowKey}`]);
+            const expanded = playerAdmin_journeyFilterTerms.length ? hasChildren : Boolean(playerAdmin_expandedJourney[`${row.category}:${rowKey}`]);
             return <tr key={`${row.category}-${row.id}`}>
               <td className="playerAdmin_journeyName" style={{ paddingLeft: `${10 + row.depth * 18}px` }}>{hasChildren ? <button className="playerAdmin_expanderButton" type="button" onClick={() => playerAdmin_toggleJourney(`${row.category}:${rowKey}`)}>{expanded ? "-" : "+"}</button> : <span className="playerAdmin_expanderSpacer" />}{row.name}</td>
               <td>{row.category}</td>
@@ -1020,7 +1068,7 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
           </div>)}
         </div>
       )}
-      {playerAdmin_activeTab === "Journey" && <div className="playerAdmin_content"><section className="playerAdmin_box"><h4>Journey Browser</h4><div className="playerAdmin_boxHeaderLine"><p>A relog is required to see the change.</p><div className="playerAdmin_filterRow playerAdmin_filterRowRight playerAdmin_journeyReloadRow"><span className="playerAdmin_note">{playerAdmin_journeyEntryCount} Journey Entr{playerAdmin_journeyEntryCount === 1 ? "y" : "ies"} Detected</span></div></div>{playerAdmin_journeyError && <p className="playerAdmin_note danger">{playerAdmin_journeyError}</p>}{playerAdmin_toggleBox("journey_story", `Story (${playerAdmin_journeyRows.story.length})`, playerAdmin_journeyTable(playerAdmin_journeyRows.story, "No story entries were found."))}{playerAdmin_toggleBox("journey_contract", `Contracts (${playerAdmin_journeyRows.contract.length})`, playerAdmin_journeyTable(playerAdmin_journeyRows.contract, "No contract entries were found."))}{playerAdmin_toggleBox("journey_codex", `Codex (${playerAdmin_journeyRows.codex.length})`, playerAdmin_journeyTable(playerAdmin_journeyRows.codex, "No codex entries were found."))}{playerAdmin_toggleBox("journey_tutorial", `Tutorial (${playerAdmin_journeyRows.tutorial.length})`, playerAdmin_journeyTable(playerAdmin_journeyRows.tutorial, "No tutorial entries were found."))}</section></div>}
+      {playerAdmin_activeTab === "Journey" && <div className="playerAdmin_content"><section className="playerAdmin_box"><h4>Journey Browser</h4><div className="playerAdmin_boxHeaderLine playerAdmin_journeyHeaderLine"><p>A relog is required to see the change.</p><div className="playerAdmin_journeyHeaderTools"><input className="playerAdmin_journeyFilterInput" value={playerAdmin_journeyFilter} onChange={(event) => playerAdmin_setJourneyFilter(event.target.value)} placeholder="Filter by name, ID, status, or dependency" aria-label="Filter Journey Browser" />{playerAdmin_journeyFilter && <button type="button" onClick={() => playerAdmin_setJourneyFilter("")}>Clear</button>}<span className="playerAdmin_note">{playerAdmin_journeyFilterTerms.length ? `${playerAdmin_filteredJourneyEntryCount} of ${playerAdmin_journeyEntryCount}` : playerAdmin_journeyEntryCount} Journey Entr{(playerAdmin_journeyFilterTerms.length ? playerAdmin_filteredJourneyEntryCount : playerAdmin_journeyEntryCount) === 1 ? "y" : "ies"} Detected</span></div></div>{playerAdmin_journeyError && <p className="playerAdmin_note danger">{playerAdmin_journeyError}</p>}{playerAdmin_toggleBox("journey_story", `Story (${playerAdmin_filteredJourneyRows.story.length}${playerAdmin_journeyFilterTerms.length ? `/${playerAdmin_journeyRows.story.length}` : ""})`, playerAdmin_journeyTable(playerAdmin_filteredJourneyRows.story, playerAdmin_journeyFilterTerms.length ? "No story entries match this filter." : "No story entries were found."))}{playerAdmin_toggleBox("journey_contract", `Contracts (${playerAdmin_filteredJourneyRows.contract.length}${playerAdmin_journeyFilterTerms.length ? `/${playerAdmin_journeyRows.contract.length}` : ""})`, playerAdmin_journeyTable(playerAdmin_filteredJourneyRows.contract, playerAdmin_journeyFilterTerms.length ? "No contract entries match this filter." : "No contract entries were found."))}{playerAdmin_toggleBox("journey_codex", `Codex (${playerAdmin_filteredJourneyRows.codex.length}${playerAdmin_journeyFilterTerms.length ? `/${playerAdmin_journeyRows.codex.length}` : ""})`, playerAdmin_journeyTable(playerAdmin_filteredJourneyRows.codex, playerAdmin_journeyFilterTerms.length ? "No codex entries match this filter." : "No codex entries were found."))}{playerAdmin_toggleBox("journey_tutorial", `Tutorial (${playerAdmin_filteredJourneyRows.tutorial.length}${playerAdmin_journeyFilterTerms.length ? `/${playerAdmin_journeyRows.tutorial.length}` : ""})`, playerAdmin_journeyTable(playerAdmin_filteredJourneyRows.tutorial, playerAdmin_journeyFilterTerms.length ? "No tutorial entries match this filter." : "No tutorial entries were found."))}</section></div>}
       {playerAdmin_activeTab === "Admin" && <div className="playerAdmin_content"><section className="playerAdmin_box"><h4>Player Admin Actions</h4><p>Use this area for player maintenance and high-impact admin actions. Some actions require the player to be online, while database repairs require the player to be offline.</p><div className="playerAdmin_section"><h5>Repair</h5><div className="playerAdmin_quickButtonRow"><button disabled={!dbPlayerId || playerAdmin_isOnline || playerAdmin_actionResult?.pending} onClick={async () => {
         if (!(await confirmAction(`Repair gear for ${playerName}? The player must be offline and should relog after this.`))) return;
         void playerAdmin_runAction("repairGear", `Repairing ${playerName}'s gear`, async () => {

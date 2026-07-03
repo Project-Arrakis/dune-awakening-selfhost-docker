@@ -6,6 +6,7 @@ import {
   factionDisplayName,
   factionIdByName,
   factionTierBumps,
+  journeyCompletionNodeIds,
   journeyDepth,
   journeyDisplayName,
   journeyParentId,
@@ -2240,7 +2241,14 @@ export async function playerJourney(db, id, journeyTagsData = {}) {
   const contractTags = journeyTagsData?.contract_tags || {};
   const contractAliases = journeyTagsData?.contract_aliases || {};
   const taggedNodeIds = Object.keys(tagMap).sort((a, b) => a.localeCompare(b));
-  const knownNodeIds = taggedNodeIds.length ? taggedNodeIds : [];
+  const discovered = await db.query(`
+    select story_node_id
+    from dune.journey_story_node
+    where story_node_id not like 'DA_Dunipedia_%'
+    group by story_node_id
+    order by story_node_id`);
+  const discoveredNodeIds = discovered.rows.map((row) => String(row.story_node_id || "")).filter(Boolean);
+  const knownNodeIds = [...new Set([...taggedNodeIds, ...discoveredNodeIds])].sort((a, b) => a.localeCompare(b));
   const contractNodeIds = Object.values(contractAliases).filter(Boolean).sort((a, b) => String(a).localeCompare(String(b)));
   const codex = await db.query(`
     select story_node_id
@@ -2307,19 +2315,35 @@ export async function completeJourneyNode(db, id, { nodeId }, journeyTagsData = 
       const tagResult = await applyDirectJourneyTags(tx, player, tags, "add", schema.tagIdColumn, tagIdentityId);
       return { ok: true, player, nodeId: safeNodeId, updatedRows: 0, tagsApplied: tags.length, factionBumps: tagResult.factionBumps, contract: true };
     }
+    const completionNodeIds = journeyCompletionNodeIds(safeNodeId, journeyTagsData);
     const updated = await tx.query(`
       update dune.journey_story_node
       set complete_condition_state = 'true'::jsonb,
           reveal_condition_state = 'true'::jsonb
       where ${journeyIdColumn} = $1
-        and (story_node_id = $2 or story_node_id like $2 || '.%')`, [journeyIdentityId, safeNodeId]);
+        and (story_node_id = any($2::text[]) or story_node_id = $3 or story_node_id like $3 || '.%')`, [journeyIdentityId, completionNodeIds, safeNodeId]);
     let updatedRows = Number(updated.rowCount || 0);
+    const inserted = await tx.query(`
+      with wanted(story_node_id) as (
+        select unnest($2::text[])
+      )
+      insert into dune.journey_story_node
+        (${journeyIdColumn}, story_node_id, has_pending_reward, complete_condition_state, reveal_condition_state, fail_condition_state, metadata_state, reset_group)
+      select $1, wanted.story_node_id, false, 'true'::jsonb, 'true'::jsonb, '{}'::jsonb, '{}'::jsonb, 'Default'::dune.JourneyStoryResetGroup
+      from wanted
+      where not exists (
+        select 1
+        from dune.journey_story_node existing
+        where existing.${journeyIdColumn} = $1
+          and existing.story_node_id = wanted.story_node_id
+      )`, [journeyIdentityId, completionNodeIds]);
+    updatedRows += Number(inserted.rowCount || 0);
     if (updatedRows === 0) {
-      await tx.query(`
+      const fallback = await tx.query(`
         insert into dune.journey_story_node
           (${journeyIdColumn}, story_node_id, has_pending_reward, complete_condition_state, reveal_condition_state, fail_condition_state, metadata_state, reset_group)
         values ($1, $2, false, 'true'::jsonb, 'true'::jsonb, '{}'::jsonb, '{}'::jsonb, 'Default'::dune.JourneyStoryResetGroup)`, [journeyIdentityId, safeNodeId]);
-      updatedRows = 1;
+      updatedRows = Number(fallback.rowCount || 1);
     }
     const tags = tagsForJourneyNodeSubtree(safeNodeId, journeyTagsData);
     const tagResult = await applyDirectJourneyTags(tx, player, tags, "add", schema.tagIdColumn, tagIdentityId);

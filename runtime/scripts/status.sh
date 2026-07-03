@@ -107,6 +107,58 @@ check_udp() {
   echo "MISSING"
 }
 
+dynamic_listener_rows() {
+  local containers container partition_id row map_name game_port igw_port fallback
+
+  containers="$(docker ps --filter 'name=^dune-server-' --format '{{.Names}}' 2>/dev/null \
+    | grep -Ev '^dune-server-(gateway|survival-1|overmap)$' || true)"
+  [ -n "$containers" ] || return 0
+
+  while IFS= read -r container; do
+    [ -n "$container" ] || continue
+    [[ "$container" =~ -([0-9]+)$ ]] || continue
+    partition_id="${BASH_REMATCH[1]}"
+    map_name=""
+    game_port=""
+    igw_port=""
+
+    if is_running dune-postgres; then
+      row="$(
+        docker exec dune-postgres psql -U dune -d dune -At -F '|' -c "
+          select
+            coalesce(nullif(fs.map, ''), nullif(wp.map, ''), 'Partition ${partition_id}'),
+            coalesce(fs.game_port::text, ''),
+            coalesce(fs.igw_port::text, '')
+          from dune.world_partition wp
+          left join dune.farm_state fs on fs.server_id = wp.server_id
+          where wp.partition_id = ${partition_id}
+          limit 1;
+        " 2>/dev/null || true
+      )"
+      IFS='|' read -r map_name game_port igw_port <<< "$row"
+    fi
+
+    if { [ -z "${game_port:-}" ] || [ -z "${igw_port:-}" ]; } && [ -f runtime/generated/spawn-port-reservations.tsv ]; then
+      fallback="$(awk -F '\t' -v container="$container" '$1 == container { print $2 "|" $3; exit }' runtime/generated/spawn-port-reservations.tsv)"
+      if [ -n "$fallback" ]; then
+        IFS='|' read -r game_port igw_port <<< "$fallback"
+      fi
+    fi
+
+    if [ -z "${map_name:-}" ]; then
+      map_name="${container#dune-server-}"
+      map_name="${map_name%-${partition_id}}"
+    fi
+
+    if [ -n "${game_port:-}" ]; then
+      printf "%-24s %-8s %s\n" "${map_name} clients" "${game_port}/udp" "$(check_udp "$game_port" "$container")"
+    fi
+    if [ -n "${igw_port:-}" ]; then
+      printf "%-24s %-8s %s\n" "${map_name} S2S" "${igw_port}/udp" "$(check_udp "$igw_port" "$container")"
+    fi
+  done <<< "$containers"
+}
+
 map_state() {
   local container="$1"
   local pattern="$2"
@@ -340,6 +392,10 @@ overmap_udp="$(check_udp "$overmap_client_port" "dune-server-overmap")"
 survival_udp="$(check_udp "$survival_client_port" "dune-server-survival-1")"
 survival_s2s_udp="$(check_udp "$survival_s2s_port" "dune-server-survival-1")"
 overmap_s2s_udp="$(check_udp "$overmap_s2s_port" "dune-server-overmap")"
+dynamic_listeners="$(dynamic_listener_rows)"
+if grep -q ' MISSING$' <<< "$dynamic_listeners"; then
+  issue=1
+fi
 
 partition_count="unknown"
 if is_running dune-postgres; then
@@ -565,6 +621,7 @@ printf "%-24s %-8s %s\n" "Overmap clients" "${overmap_client_port}/udp" "$overma
 printf "%-24s %-8s %s\n" "Survival_1 clients" "${survival_client_port}/udp" "$survival_udp"
 printf "%-24s %-8s %s\n" "Survival_1 S2S" "${survival_s2s_port}/udp" "$survival_s2s_udp"
 printf "%-24s %-8s %s\n" "Overmap S2S" "${overmap_s2s_port}/udp" "$overmap_s2s_udp"
+printf "%s" "$dynamic_listeners"
 
 echo
 echo "=== Database ==="

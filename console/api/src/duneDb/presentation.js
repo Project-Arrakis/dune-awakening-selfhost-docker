@@ -98,6 +98,24 @@ export function tagsForJourneyNodeSubtree(nodeId, journeyTagsData = {}) {
   return tags;
 }
 
+export function journeyCompletionNodeIds(nodeId, journeyTagsData = {}) {
+  const safeNodeId = String(nodeId || "").trim();
+  if (!safeNodeId) return [];
+  const ids = new Set();
+  const parts = safeNodeId.split(".");
+
+  for (let i = 2; i <= parts.length; i += 1) {
+    ids.add(parts.slice(0, i).join("."));
+  }
+
+  const prefix = `${safeNodeId}.`;
+  for (const id of Object.keys(journeyTagsData?.journey_node_tags || {})) {
+    if (String(id).startsWith(prefix)) ids.add(String(id));
+  }
+
+  return [...ids];
+}
+
 export function factionTierBumps(tags) {
   const out = new Map();
   for (const tag of tags) {
