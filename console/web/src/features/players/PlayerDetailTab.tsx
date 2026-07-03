@@ -19,6 +19,8 @@ type ConfirmAction = (
 export function PlayerDetailTab({
   playerId,
   data,
+  rows,
+  emptyMessage,
   onReload,
   onError,
   onActionLog,
@@ -27,6 +29,8 @@ export function PlayerDetailTab({
 }: {
   playerId: string;
   data: Record<string, unknown> | null;
+  rows: Record<string, unknown>[];
+  emptyMessage: string;
   onReload: () => void;
   onError: (text: string) => void;
   onActionLog?: (actionType: string, target: string, amount: string, notes: string) => void;
@@ -73,16 +77,14 @@ export function PlayerDetailTab({
     }
   }
 
-  const rows = Array.isArray(data?.rows) ? data.rows as Record<string, unknown>[] : [];
   const inventorySort = useSortableRows(rows);
 
   return <div>
     {data?.reason ? <p className="danger-note">{formatUiSentence(data.reason)}</p> : null}
-    <p className="action-help-note">A relog is required to see the change.</p>
     {message && <div className="result-panel transient-result"><strong>Mutation Result.</strong><p>{formatUiSentence(message)}</p>{messageDetails && <TechnicalDetails text={messageDetails} />}</div>}
     <DataTable
       rows={inventorySort.sortedRows}
-      emptyMessage="No inventory items were found."
+      emptyMessage={emptyMessage}
       actionClassName="actions-column"
       action={(row) => <button className="icon-toggle-button danger" title="Delete item" aria-label="Delete item" onClick={(event) => { event.stopPropagation(); void deleteItem(row); }}><X size={16} /></button>}
       sortColumn={inventorySort.sortColumn}

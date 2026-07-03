@@ -28,6 +28,7 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
   const [playerAdmin_activeTab, playerAdmin_setActiveTab] = useState("Character");
   const [playerAdmin_openToggles, playerAdmin_setOpenToggles] = useState<Record<string, boolean>>({});
   const [playerAdmin_inventoryData, playerAdmin_setInventoryData] = useState<Record<string, unknown> | null>(null);
+  const [playerAdmin_inventoryFilter, playerAdmin_setInventoryFilter] = useState("");
   const [playerAdmin_craftingCategory, playerAdmin_setCraftingCategory] = useState("");
   const [playerAdmin_researchCategory, playerAdmin_setResearchCategory] = useState("");
   const [playerAdmin_productGroup, playerAdmin_setProductGroup] = useState("");
@@ -760,7 +761,14 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
     tutorial: playerAdmin_filterJourneyRows(playerAdmin_journeyRows.tutorial)
   };
   const playerAdmin_filteredJourneyEntryCount = playerAdmin_filteredJourneyRows.story.length + playerAdmin_filteredJourneyRows.contract.length + playerAdmin_filteredJourneyRows.codex.length + playerAdmin_filteredJourneyRows.tutorial.length;
-  const playerAdmin_inventoryRowCount = Array.isArray(playerAdmin_inventoryData?.rows) ? (playerAdmin_inventoryData.rows as unknown[]).length : 0;
+  const playerAdmin_inventoryAllRows = Array.isArray(playerAdmin_inventoryData?.rows) ? playerAdmin_inventoryData.rows as Record<string, unknown>[] : [];
+  const playerAdmin_inventoryFilterTerms = playerAdmin_inventoryFilter.toLowerCase().split(/\s+/).map((term) => term.trim()).filter(Boolean);
+  const playerAdmin_filteredInventoryRows = playerAdmin_inventoryFilterTerms.length
+    ? playerAdmin_inventoryAllRows.filter((row) => {
+        const haystack = [row.template_id, row.id, row.inventory_id, row.position_index].map((value) => String(value ?? "")).join(" ").toLowerCase();
+        return playerAdmin_inventoryFilterTerms.every((term) => haystack.includes(term));
+      })
+    : playerAdmin_inventoryAllRows;
   const playerAdmin_vehicleIds = Object.keys(playerAdmin_vehicleCatalog).sort((a, b) => friendlyVehicleName(a).localeCompare(friendlyVehicleName(b)));
   const playerAdmin_selectedTemplates = [...(playerAdmin_vehicleCatalog[playerAdmin_vehicleId] || [])].sort((a, b) => friendlyVehicleTemplateName(a).localeCompare(friendlyVehicleTemplateName(b)));
   const playerAdmin_starterSkillPresets: Record<string, StarterSkillPreset> = {
@@ -1016,7 +1024,7 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
             return <tr key={`${item.itemName || item.itemId}-${index}`}><td><PackageItemPreview item={item} /></td><td>{catalogItemName(item)}</td><td>{catalogItemId(item)}</td><td>{editing ? <input className="package-item-quantity-input" type="number" min="1" value={playerAdmin_itemEditDraft.quantity} onChange={(event) => playerAdmin_setItemEditDraft({ ...playerAdmin_itemEditDraft, quantity: event.target.value })} /> : item.quantity}</td><td>{editing ? <ItemGradeSelect value={playerAdmin_itemEditDraft.grade} onChange={(grade) => playerAdmin_setItemEditDraft({ ...playerAdmin_itemEditDraft, grade })} /> : itemGrade(item)}</td><td className="package-actions-cell"><div className="service-actions">{editing ? <><button onClick={() => playerAdmin_saveQueuedItem(index)}>Save</button><button onClick={() => playerAdmin_setItemEditIndex(null)}>Cancel</button></> : <button onClick={() => playerAdmin_editQueuedItem(index)}>Edit</button>}<button className="danger" onClick={() => playerAdmin_setMultiList(playerAdmin_multiList.filter((_, itemIndex) => itemIndex !== index))}>Remove</button></div></td></tr>;
           })}</tbody></table></div> : null}
         </div></div>}</div>
-        {playerAdmin_toggleBox("character_inventory", `Inventory (${playerAdmin_inventoryRowCount})`, <PlayerDetailTab playerId={dbPlayerId} data={playerAdmin_inventoryData} onReload={() => void playerAdmin_loadInventoryRows()} onError={onError} confirmAction={confirmAction} formatMutationResult={formatMutationResult} onActionLog={(actionType, target, amount, notes) => playerAdmin_addLog(actionType, target, amount, notes)} />)}
+        {playerAdmin_toggleBox("character_inventory", `Inventory (${playerAdmin_filteredInventoryRows.length}${playerAdmin_inventoryFilterTerms.length ? `/${playerAdmin_inventoryAllRows.length}` : ""})`, <><div className="playerAdmin_boxHeaderLine playerAdmin_journeyHeaderLine"><p>A relog is required to see the change.</p><div className="playerAdmin_journeyHeaderTools"><input className="playerAdmin_journeyFilterInput" value={playerAdmin_inventoryFilter} onChange={(event) => playerAdmin_setInventoryFilter(event.target.value)} placeholder="Filter by item ID or template" aria-label="Filter Inventory" />{playerAdmin_inventoryFilter && <button type="button" onClick={() => playerAdmin_setInventoryFilter("")}>Clear</button>}</div></div><PlayerDetailTab playerId={dbPlayerId} data={playerAdmin_inventoryData} rows={playerAdmin_filteredInventoryRows} emptyMessage={playerAdmin_inventoryFilterTerms.length ? "No inventory items match this filter." : "No inventory items were found."} onReload={() => void playerAdmin_loadInventoryRows()} onError={onError} confirmAction={confirmAction} formatMutationResult={formatMutationResult} onActionLog={(actionType, target, amount, notes) => playerAdmin_addLog(actionType, target, amount, notes)} /></>)}
         {playerAdmin_toggleBox("character_log", "Character Action Log", <div className="playerAdmin_logSection">{playerAdmin_characterLog.length > 0 && <div className="action-row admin-history-actions"><button onClick={() => playerAdmin_setCharacterLog([])}>Clear</button></div>}{playerAdmin_characterLog.length ? playerAdmin_table(["Date / Time", "Admin", "Action Type", "Target", "Amount", "Notes"], playerAdmin_characterLog) : <p>No character actions have been recorded in this layout yet.</p>}</div>)}
       </div>}
       {playerAdmin_activeTab === "Crafting" && (
