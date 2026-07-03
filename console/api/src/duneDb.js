@@ -1504,7 +1504,17 @@ export async function playerProfile(db, id) {
     left join dune.accounts ac on ac.id = a.owner_account_id
     where a.id = $1`, [actorId]);
   if (!result.rows[0]) throw new Error("Player not found");
-  return { capabilities: await playerCapabilities(db), player: result.rows[0] };
+  const row = result.rows[0];
+  const [factions, guilds] = await Promise.all([
+    leadershipFactions(db).catch(() => new Map()),
+    leadershipGuilds(db).catch(() => new Map())
+  ]);
+  const controllerId = String(row.player_controller_id || "");
+  const actorIdKey = String(row.actor_id || "");
+  const accountIdKey = String(row.account_id || "");
+  row.faction = factions.get(controllerId) || factions.get(actorIdKey) || "Unassigned";
+  row.guild = guilds.get(controllerId) || guilds.get(actorIdKey) || guilds.get(accountIdKey) || "Unavailable";
+  return { capabilities: await playerCapabilities(db), player: row };
 }
 
 export async function playerInventory(db, id) {
