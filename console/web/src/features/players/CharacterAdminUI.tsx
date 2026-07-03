@@ -925,8 +925,8 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
             return <tr key={`${row.category}-${row.id}`}>
               <td className="playerAdmin_journeyName" style={{ ...resize.columnStyle("name"), paddingLeft: `${10 + row.depth * 18}px` }}>{hasChildren ? <button className="playerAdmin_expanderButton" type="button" onClick={() => playerAdmin_toggleJourney(`${row.category}:${rowKey}`)}>{expanded ? "-" : "+"}</button> : <span className="playerAdmin_expanderSpacer" />}{row.name}</td>
               <td style={resize.columnStyle("category")}>{row.category}</td>
-              <td className="playerAdmin_shortCode" style={resize.columnStyle("id")}><code title={row.rawName || row.id}>{row.rawName || row.id}</code></td>
-              <td className="playerAdmin_shortCode" style={resize.columnStyle("dependency")}>{row.dependency ? <code title={row.dependency}>{row.dependency}</code> : "Unknown"}</td>
+              <td className="playerAdmin_shortCode" style={resize.columnStyle("id")}><code title={row.rawName || row.id} style={resize.columnStyle("id") ? { maxWidth: "100%" } : undefined}>{row.rawName || row.id}</code></td>
+              <td className="playerAdmin_shortCode" style={resize.columnStyle("dependency")}>{row.dependency ? <code title={row.dependency} style={resize.columnStyle("dependency") ? { maxWidth: "100%" } : undefined}>{row.dependency}</code> : "Unknown"}</td>
               <td style={resize.columnStyle("status")}>{row.status}{row.pendingReward ? " / Pending Reward" : ""}</td>
               <td style={resize.columnStyle("tags")}>{row.category === "Tutorial" ? "-" : row.tags || 0}</td>
               <td className="playerAdmin_resultCell"><InlineActionResult result={playerAdmin_actionResult} resultKey={key} /></td>
