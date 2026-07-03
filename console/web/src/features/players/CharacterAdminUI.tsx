@@ -3,7 +3,7 @@ import { ChevronDown, ChevronUp } from "lucide-react";
 import { adminApi } from "../../api/admin";
 import { playersApi } from "../../api/players";
 import type { Task } from "../../api/setup";
-import { DataTable, useSortableRows } from "../../components/common/DataTable";
+import { compareTableValues, DataTable, useResizableColumns, useSortableRows, useSortState } from "../../components/common/DataTable";
 import { InlineActionResult } from "../../components/common/InlineActionResult";
 import { ItemCatalogSelector, ItemGradeSelect, PackageItemPreview, catalogItemId, catalogItemName, grantItemDurability, itemGrade, normalizeItemGrade, type CatalogItem } from "../../components/common/ItemCatalog";
 import { firstDefined, formatCell } from "../../lib/display";
@@ -868,7 +868,32 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
       action={(row) => <button className="playerAdmin_stateActionButton" disabled={!dbPlayerId || Boolean(row.unlocked) || Boolean(playerAdmin_busyActionKey)} onClick={() => playerAdmin_unlockResearchItem(row as unknown as ResearchItemRow)}>{playerAdmin_busyActionKey === `research:${row.itemKey}` ? "Researching..." : row.unlocked ? "Researched" : "Research"}</button>}
     />
   );
-  const playerAdmin_journeyTable = (rows: JourneyRow[], emptyText: string) => {
+  const playerAdmin_journeySortStory = useSortState();
+  const playerAdmin_journeySortContract = useSortState();
+  const playerAdmin_journeySortCodex = useSortState();
+  const playerAdmin_journeySortTutorial = useSortState();
+  const playerAdmin_journeyResizeStory = useResizableColumns();
+  const playerAdmin_journeyResizeContract = useResizableColumns();
+  const playerAdmin_journeyResizeCodex = useResizableColumns();
+  const playerAdmin_journeyResizeTutorial = useResizableColumns();
+  const playerAdmin_journeyColumnValue: Record<string, (row: JourneyRow) => unknown> = {
+    name: (row) => row.name,
+    category: (row) => row.category,
+    id: (row) => row.rawName || row.id,
+    dependency: (row) => row.dependency || "",
+    status: (row) => row.status,
+    tags: (row) => row.tags || 0
+  };
+  const playerAdmin_journeyColumns: { key: string; label: string }[] = [
+    { key: "name", label: "Name" },
+    { key: "category", label: "Type" },
+    { key: "id", label: "ID" },
+    { key: "dependency", label: "Depends On" },
+    { key: "status", label: "Status" },
+    { key: "tags", label: "Tags" }
+  ];
+  const playerAdmin_journeyTable = (rows: JourneyRow[], emptyText: string, sort: ReturnType<typeof useSortState>, resize: ReturnType<typeof useResizableColumns>) => {
+    const sortGroup = (group: JourneyRow[]) => sort.sortColumn ? [...group].sort((a, b) => compareTableValues(playerAdmin_journeyColumnValue[sort.sortColumn!](a), playerAdmin_journeyColumnValue[sort.sortColumn!](b), sort.sortDirection!)) : group;
     const childrenByParent = new Map<string, JourneyRow[]>();
     const rowKeys = new Set(rows.flatMap((row) => [row.id, row.rawName]).filter(Boolean));
     for (const row of rows) {
@@ -880,17 +905,17 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
       output.push(row);
       const rowKey = row.id || row.rawName;
       if (!playerAdmin_journeyFilterTerms.length && !playerAdmin_expandedJourney[`${row.category}:${rowKey}`]) return;
-      for (const child of childrenByParent.get(rowKey) || []) pushVisible(child, output);
+      for (const child of sortGroup(childrenByParent.get(rowKey) || [])) pushVisible(child, output);
     };
     const childIds = new Set(Array.from(childrenByParent.values()).flat().flatMap((row) => [row.id, row.rawName]).filter(Boolean));
     const visibleRows: JourneyRow[] = [];
-    for (const row of rows) {
-      if (!childIds.has(row.id) && !childIds.has(row.rawName)) pushVisible(row, visibleRows);
+    for (const row of sortGroup(rows.filter((row) => !childIds.has(row.id) && !childIds.has(row.rawName)))) {
+      pushVisible(row, visibleRows);
     }
     return (
     <div className="playerAdmin_tableWrap">
       <table className="playerAdmin_table playerAdmin_compactTable playerAdmin_fullResultTable playerAdmin_journeyTable">
-        <thead><tr><th>Name</th><th>Type</th><th>ID</th><th>Depends On</th><th>Status</th><th>Tags</th><th>Result</th><th>Action</th></tr></thead>
+        <thead><tr>{playerAdmin_journeyColumns.map((col) => <th key={col.key} className="sortable" style={resize.columnStyle(col.key)} onClick={() => sort.onSort(col.key)}>{col.label}{sort.sortColumn === col.key && <span className="sort-indicator">{sort.sortDirection === "desc" ? " ↓" : " ↑"}</span>}{resize.resizeHandle(col.key)}</th>)}<th>Result</th><th>Action</th></tr></thead>
         <tbody>
           {visibleRows.map((row) => {
             const key = `journey:${row.category}:${row.id}`;
@@ -898,12 +923,12 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
             const hasChildren = Boolean(childrenByParent.get(rowKey)?.length);
             const expanded = playerAdmin_journeyFilterTerms.length ? hasChildren : Boolean(playerAdmin_expandedJourney[`${row.category}:${rowKey}`]);
             return <tr key={`${row.category}-${row.id}`}>
-              <td className="playerAdmin_journeyName" style={{ paddingLeft: `${10 + row.depth * 18}px` }}>{hasChildren ? <button className="playerAdmin_expanderButton" type="button" onClick={() => playerAdmin_toggleJourney(`${row.category}:${rowKey}`)}>{expanded ? "-" : "+"}</button> : <span className="playerAdmin_expanderSpacer" />}{row.name}</td>
-              <td>{row.category}</td>
-              <td className="playerAdmin_shortCode"><code title={row.rawName || row.id}>{row.rawName || row.id}</code></td>
-              <td className="playerAdmin_shortCode">{row.dependency ? <code title={row.dependency}>{row.dependency}</code> : "Unknown"}</td>
-              <td>{row.status}{row.pendingReward ? " / Pending Reward" : ""}</td>
-              <td>{row.category === "Tutorial" ? "-" : row.tags || 0}</td>
+              <td className="playerAdmin_journeyName" style={{ ...resize.columnStyle("name"), paddingLeft: `${10 + row.depth * 18}px` }}>{hasChildren ? <button className="playerAdmin_expanderButton" type="button" onClick={() => playerAdmin_toggleJourney(`${row.category}:${rowKey}`)}>{expanded ? "-" : "+"}</button> : <span className="playerAdmin_expanderSpacer" />}{row.name}</td>
+              <td style={resize.columnStyle("category")}>{row.category}</td>
+              <td className="playerAdmin_shortCode" style={resize.columnStyle("id")}><code title={row.rawName || row.id}>{row.rawName || row.id}</code></td>
+              <td className="playerAdmin_shortCode" style={resize.columnStyle("dependency")}>{row.dependency ? <code title={row.dependency}>{row.dependency}</code> : "Unknown"}</td>
+              <td style={resize.columnStyle("status")}>{row.status}{row.pendingReward ? " / Pending Reward" : ""}</td>
+              <td style={resize.columnStyle("tags")}>{row.category === "Tutorial" ? "-" : row.tags || 0}</td>
               <td className="playerAdmin_resultCell"><InlineActionResult result={playerAdmin_actionResult} resultKey={key} /></td>
               <td className="playerAdmin_actionCell">
                 <button disabled={!dbPlayerId || row.complete || playerAdmin_actionResult?.pending} onClick={() => playerAdmin_completeJourney(row)}>{row.complete ? "Complete" : "Complete"}</button>
@@ -1085,7 +1110,7 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
           </div>)}
         </div>
       )}
-      {playerAdmin_activeTab === "Journey" && <div className="playerAdmin_content"><section className="playerAdmin_box"><h4>Journey Browser</h4><div className="playerAdmin_boxHeaderLine playerAdmin_journeyHeaderLine"><p>A relog is required to see the change.</p><div className="playerAdmin_journeyHeaderTools"><input className="playerAdmin_journeyFilterInput" value={playerAdmin_journeyFilter} onChange={(event) => playerAdmin_setJourneyFilter(event.target.value)} placeholder="Filter by name, ID, status, or dependency" aria-label="Filter Journey Browser" />{playerAdmin_journeyFilter && <button type="button" onClick={() => playerAdmin_setJourneyFilter("")}>Clear</button>}<span className="playerAdmin_note">{playerAdmin_journeyFilterTerms.length ? `${playerAdmin_filteredJourneyEntryCount} of ${playerAdmin_journeyEntryCount}` : playerAdmin_journeyEntryCount} Journey Entr{(playerAdmin_journeyFilterTerms.length ? playerAdmin_filteredJourneyEntryCount : playerAdmin_journeyEntryCount) === 1 ? "y" : "ies"} Detected</span></div></div>{playerAdmin_journeyError && <p className="playerAdmin_note danger">{playerAdmin_journeyError}</p>}{playerAdmin_toggleBox("journey_story", `Story (${playerAdmin_filteredJourneyRows.story.length}${playerAdmin_journeyFilterTerms.length ? `/${playerAdmin_journeyRows.story.length}` : ""})`, playerAdmin_journeyTable(playerAdmin_filteredJourneyRows.story, playerAdmin_journeyFilterTerms.length ? "No story entries match this filter." : "No story entries were found."))}{playerAdmin_toggleBox("journey_contract", `Contracts (${playerAdmin_filteredJourneyRows.contract.length}${playerAdmin_journeyFilterTerms.length ? `/${playerAdmin_journeyRows.contract.length}` : ""})`, playerAdmin_journeyTable(playerAdmin_filteredJourneyRows.contract, playerAdmin_journeyFilterTerms.length ? "No contract entries match this filter." : "No contract entries were found."))}{playerAdmin_toggleBox("journey_codex", `Codex (${playerAdmin_filteredJourneyRows.codex.length}${playerAdmin_journeyFilterTerms.length ? `/${playerAdmin_journeyRows.codex.length}` : ""})`, playerAdmin_journeyTable(playerAdmin_filteredJourneyRows.codex, playerAdmin_journeyFilterTerms.length ? "No codex entries match this filter." : "No codex entries were found."))}{playerAdmin_toggleBox("journey_tutorial", `Tutorial (${playerAdmin_filteredJourneyRows.tutorial.length}${playerAdmin_journeyFilterTerms.length ? `/${playerAdmin_journeyRows.tutorial.length}` : ""})`, playerAdmin_journeyTable(playerAdmin_filteredJourneyRows.tutorial, playerAdmin_journeyFilterTerms.length ? "No tutorial entries match this filter." : "No tutorial entries were found."))}</section></div>}
+      {playerAdmin_activeTab === "Journey" && <div className="playerAdmin_content"><section className="playerAdmin_box"><h4>Journey Browser</h4><div className="playerAdmin_boxHeaderLine playerAdmin_journeyHeaderLine"><p>A relog is required to see the change.</p><div className="playerAdmin_journeyHeaderTools"><input className="playerAdmin_journeyFilterInput" value={playerAdmin_journeyFilter} onChange={(event) => playerAdmin_setJourneyFilter(event.target.value)} placeholder="Filter by name, ID, status, or dependency" aria-label="Filter Journey Browser" />{playerAdmin_journeyFilter && <button type="button" onClick={() => playerAdmin_setJourneyFilter("")}>Clear</button>}<span className="playerAdmin_note">{playerAdmin_journeyFilterTerms.length ? `${playerAdmin_filteredJourneyEntryCount} of ${playerAdmin_journeyEntryCount}` : playerAdmin_journeyEntryCount} Journey Entr{(playerAdmin_journeyFilterTerms.length ? playerAdmin_filteredJourneyEntryCount : playerAdmin_journeyEntryCount) === 1 ? "y" : "ies"} Detected</span></div></div>{playerAdmin_journeyError && <p className="playerAdmin_note danger">{playerAdmin_journeyError}</p>}{playerAdmin_toggleBox("journey_story", `Story (${playerAdmin_filteredJourneyRows.story.length}${playerAdmin_journeyFilterTerms.length ? `/${playerAdmin_journeyRows.story.length}` : ""})`, playerAdmin_journeyTable(playerAdmin_filteredJourneyRows.story, playerAdmin_journeyFilterTerms.length ? "No story entries match this filter." : "No story entries were found.", playerAdmin_journeySortStory, playerAdmin_journeyResizeStory))}{playerAdmin_toggleBox("journey_contract", `Contracts (${playerAdmin_filteredJourneyRows.contract.length}${playerAdmin_journeyFilterTerms.length ? `/${playerAdmin_journeyRows.contract.length}` : ""})`, playerAdmin_journeyTable(playerAdmin_filteredJourneyRows.contract, playerAdmin_journeyFilterTerms.length ? "No contract entries match this filter." : "No contract entries were found.", playerAdmin_journeySortContract, playerAdmin_journeyResizeContract))}{playerAdmin_toggleBox("journey_codex", `Codex (${playerAdmin_filteredJourneyRows.codex.length}${playerAdmin_journeyFilterTerms.length ? `/${playerAdmin_journeyRows.codex.length}` : ""})`, playerAdmin_journeyTable(playerAdmin_filteredJourneyRows.codex, playerAdmin_journeyFilterTerms.length ? "No codex entries match this filter." : "No codex entries were found.", playerAdmin_journeySortCodex, playerAdmin_journeyResizeCodex))}{playerAdmin_toggleBox("journey_tutorial", `Tutorial (${playerAdmin_filteredJourneyRows.tutorial.length}${playerAdmin_journeyFilterTerms.length ? `/${playerAdmin_journeyRows.tutorial.length}` : ""})`, playerAdmin_journeyTable(playerAdmin_filteredJourneyRows.tutorial, playerAdmin_journeyFilterTerms.length ? "No tutorial entries match this filter." : "No tutorial entries were found.", playerAdmin_journeySortTutorial, playerAdmin_journeyResizeTutorial))}</section></div>}
       {playerAdmin_activeTab === "Admin" && <div className="playerAdmin_content"><section className="playerAdmin_box"><h4>Player Admin Actions</h4><p>Use this area for player maintenance and high-impact admin actions. Some actions require the player to be online, while database repairs require the player to be offline.</p><div className="playerAdmin_section playerAdmin_repairSection"><h5>Repair</h5><div className="playerAdmin_repairRow"><span className="playerAdmin_repairLabel"><span>Repair Gear</span><em>{playerAdmin_isOnline ? "The player must be offline." : "Equipped and carried gear durability. Relog required."}</em></span><button disabled={!dbPlayerId || playerAdmin_isOnline || playerAdmin_actionResult?.pending} onClick={async () => {
         if (!(await confirmAction(`Repair gear for ${playerName}? The player must be offline and should relog after this.`))) return;
         void playerAdmin_runAction("repairGear", `Repairing ${playerName}'s gear`, async () => {
