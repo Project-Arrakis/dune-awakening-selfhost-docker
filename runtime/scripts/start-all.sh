@@ -92,6 +92,8 @@ run_timed_step "Starting Survival_1" runtime/scripts/start-server-survival-1.sh
 
 run_timed_step "Starting Overmap" runtime/scripts/start-server-overmap.sh
 
+run_timed_step "Reapplying Spice Field Overrides After Core Startup" runtime/scripts/spicefield-overrides.sh apply
+
 run_timed_step "Reconciling Survival Sietches" bash -c '
 runtime/scripts/sietches.sh reconcile Survival_1 || {
   echo "Survival_1 Sietch reconcile could not complete yet. Deferred reconcile will retry after core maps are ready."

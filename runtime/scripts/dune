@@ -288,6 +288,7 @@ EOF
       survival|survival-1)
         set -a; [ -f .env ] && . ./.env; set +a
         runtime/scripts/start-server-survival-1.sh
+        runtime/scripts/spicefield-overrides.sh apply || true
         runtime/scripts/publish-sietch-overrides.sh restart || true
         runtime/scripts/publish-sietch-overrides.sh once || true
         (
@@ -297,6 +298,7 @@ EOF
       overmap)
         set -a; [ -f .env ] && . ./.env; set +a
         runtime/scripts/start-server-overmap.sh
+        runtime/scripts/spicefield-overrides.sh apply || true
         runtime/scripts/publish-network-server-state-overrides.sh restart || true
         runtime/scripts/publish-network-server-state-overrides.sh once || true
         ;;
@@ -308,6 +310,7 @@ EOF
       director|bgd)
         set -a; [ -f .env ] && . ./.env; set +a
         runtime/scripts/start-director.sh
+        runtime/scripts/spicefield-overrides.sh apply || true
         runtime/scripts/publish-sietch-overrides.sh restart || true
         runtime/scripts/publish-deepdesert-overrides.sh restart || true
         runtime/scripts/publish-network-server-state-overrides.sh restart || true
