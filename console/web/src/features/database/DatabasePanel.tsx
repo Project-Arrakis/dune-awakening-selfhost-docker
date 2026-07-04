@@ -7,6 +7,7 @@ import { DataTable, useSortableRows } from "../../components/common/DataTable";
 import { KeyValueGrid, StatusPill, TechnicalDetails } from "../../components/common/DisplayPrimitives";
 import { formatUiSentence } from "../../lib/display";
 import { conciseTaskError } from "../../lib/taskDisplay";
+import { serializeEditableDbValue, parseEditableDbValue } from "../../lib/dbValues";
 
 type HomeTaskResult = { status: "running" | "succeeded" | "failed" | "stopped"; title: string; message?: string; details?: string };
 type DatabasePasswordState = { taskId?: string; result: HomeTaskResult | null };
@@ -528,19 +529,4 @@ function omitInternalRowFields(row: Record<string, unknown>) {
   const { __rowid, ...visible } = row;
   void __rowid;
   return visible;
-}
-
-function serializeEditableDbValue(value: unknown) {
-  if (value === null || value === undefined) return "NULL";
-  if (typeof value === "object") return JSON.stringify(value, null, 2);
-  return String(value);
-}
-
-function parseEditableDbValue(value: string, original: unknown) {
-  const text = String(value);
-  if (/^NULL$/i.test(text.trim())) return null;
-  if (typeof original === "object" && original !== null) {
-    try { return JSON.parse(text); } catch { return text; }
-  }
-  return text;
 }

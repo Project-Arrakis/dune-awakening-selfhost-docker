@@ -1081,6 +1081,9 @@ tr.clickable { cursor: pointer; }
 tr.clickable:hover { background: rgba(198, 139, 74, .12); }
 .actions-column { text-align: center; }
 .actions-column button { margin-inline: auto; }
+.actions-column .icon-toggle-group { display: inline-flex; gap: 6px; margin-inline: auto; }
+.actions-column .icon-toggle-group button { margin-inline: 0; }
+.expanded-row-cell { padding: 12px; background: #101316; }
 .stable-action-button { min-width: 72px; }
 .map-action-buttons { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; }
 .map-action-buttons .stable-action-button { min-width: 72px; width: auto; }
