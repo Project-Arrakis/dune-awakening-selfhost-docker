@@ -9,7 +9,6 @@ SKILL_MODULES_FILE="runtime/data/admin-skill-modules.json"
 XP_EVENT_TAGS_FILE="runtime/data/admin-xp-event-tags.json"
 TOKEN_FILE="runtime/secrets/funcom-token.txt"
 COMMAND_TOKEN_FILE="runtime/secrets/command-auth-token.txt"
-BUILTIN_COMMAND_AUTH_TOKEN="Nu6VmPWUMvdPMeB7qErr"
 RMQ_CONTAINER="dune-rmq-game"
 POSTGRES_CONTAINER="dune-postgres"
 ADMIN_HISTORY_TSV="runtime/generated/admin-command-history.tsv"
@@ -133,6 +132,12 @@ display_category() {
   printf '%s' "${value^}"
 }
 
+generate_command_auth_token() {
+  mkdir -p "$(dirname "$COMMAND_TOKEN_FILE")"
+  openssl rand -hex 32 > "$COMMAND_TOKEN_FILE"
+  chmod 600 "$COMMAND_TOKEN_FILE"
+}
+
 command_auth_token() {
   local raw
 
@@ -149,8 +154,8 @@ command_auth_token() {
     fi
   fi
 
-  # Matches the working upstream manager's command-auth fallback.
-  printf '%s' "$BUILTIN_COMMAND_AUTH_TOKEN"
+  generate_command_auth_token
+  tr -d '\r\n' < "$COMMAND_TOKEN_FILE"
 }
 
 require_rmq_game_running() {

@@ -1,10 +1,10 @@
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
-import { randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { resolve, dirname } from "node:path";
+import { randomBytes, randomUUID } from "node:crypto";
 import { redact } from "./redact.js";
 
-const BUILTIN_COMMAND_AUTH_TOKEN = "Nu6VmPWUMvdPMeB7qErr";
+const COMMAND_AUTH_TOKEN_BYTES = 32;
 const RMQ_CONTAINER = "dune-rmq-game";
 
 export function validateBroadcastMessage(message) {
@@ -236,7 +236,10 @@ function commandAuthToken(repoRoot) {
     const raw = readFileSync(file, "utf8").trim();
     if (raw) return raw;
   }
-  return BUILTIN_COMMAND_AUTH_TOKEN;
+  const token = randomBytes(COMMAND_AUTH_TOKEN_BYTES).toString("base64url");
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, token, { mode: 0o600 });
+  return token;
 }
 
 function dockerExec(args, timeoutMs = 30000) {
