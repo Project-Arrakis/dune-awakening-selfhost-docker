@@ -30,6 +30,7 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
   const [playerAdmin_inventoryData, playerAdmin_setInventoryData] = useState<Record<string, unknown> | null>(null);
   const [playerAdmin_inventoryFilter, playerAdmin_setInventoryFilter] = useState("");
   const [playerAdmin_craftingCategory, playerAdmin_setCraftingCategory] = useState("");
+  const [playerAdmin_craftingFilter, playerAdmin_setCraftingFilter] = useState("");
   const [playerAdmin_researchCategory, playerAdmin_setResearchCategory] = useState("");
   const [playerAdmin_productGroup, playerAdmin_setProductGroup] = useState("");
   const [playerAdmin_researchFilter, playerAdmin_setResearchFilter] = useState("");
@@ -707,7 +708,12 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
       </div>
     </div>
   );
-  const playerAdmin_filteredCraftingRows = playerAdmin_craftingRows.filter((row) => !playerAdmin_craftingCategory || row.category === playerAdmin_craftingCategory);
+  const playerAdmin_craftingCategoryFilteredRows = playerAdmin_craftingRows.filter((row) => !playerAdmin_craftingCategory || row.category === playerAdmin_craftingCategory);
+  const playerAdmin_craftingFilterTerms = playerAdmin_craftingFilter.toLowerCase().split(/\s+/).map((term) => term.trim()).filter(Boolean);
+  const playerAdmin_filteredCraftingRows = playerAdmin_craftingFilterTerms.length
+    ? playerAdmin_craftingCategoryFilteredRows.filter((row) =>
+        playerAdmin_craftingFilterTerms.every((term) => [row.displayName, row.recipeId, row.source, row.category].join(" ").toLowerCase().includes(term)))
+    : playerAdmin_craftingCategoryFilteredRows;
   const playerAdmin_researchCategoryFilteredRows = playerAdmin_researchRows.filter((row) =>
     (!playerAdmin_researchCategory || row.category === playerAdmin_researchCategory) &&
     (!playerAdmin_productGroup || row.productGroup === playerAdmin_productGroup)
@@ -1037,12 +1043,16 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
         <div className="playerAdmin_content">
           <section className="playerAdmin_box">
             <h4>Crafting Schematics</h4>
-            <div className="playerAdmin_boxHeaderLine">
+            <div className="playerAdmin_boxHeaderLine playerAdmin_filterHeaderLine">
               <p>Recipe unlocks require the player to be offline. The Grade shown is the recipe grade found in the game database.</p>
-              <div className="playerAdmin_filterRow playerAdmin_filterRowRight">
-                <span className="playerAdmin_note">{playerAdmin_filteredCraftingRows.length} Schematic{playerAdmin_filteredCraftingRows.length === 1 ? "" : "s"} Detected</span>
-                <button disabled={!dbPlayerId || playerAdmin_craftingLoading} onClick={() => playerAdmin_loadCraftingRecipes()}>{playerAdmin_craftingLoading ? "Loading..." : "Reload"}</button>
+              <div className="playerAdmin_filterToolsRow">
+                <input className="playerAdmin_filterTextInput" value={playerAdmin_craftingFilter} onChange={(event) => playerAdmin_setCraftingFilter(event.target.value)} placeholder="Filter by name, recipe ID, source, or category" aria-label="Filter Crafting Schematics" />
+                {playerAdmin_craftingFilter && <button type="button" onClick={() => playerAdmin_setCraftingFilter("")}>Clear</button>}
+                <span className="playerAdmin_note">{playerAdmin_craftingFilterTerms.length ? `${playerAdmin_filteredCraftingRows.length} of ${playerAdmin_craftingCategoryFilteredRows.length}` : playerAdmin_craftingCategoryFilteredRows.length} Schematic{(playerAdmin_craftingFilterTerms.length ? playerAdmin_filteredCraftingRows.length : playerAdmin_craftingCategoryFilteredRows.length) === 1 ? "" : "s"} Detected</span>
               </div>
+            </div>
+            <div className="playerAdmin_filterRow playerAdmin_filterRowRight">
+              <button disabled={!dbPlayerId || playerAdmin_craftingLoading} onClick={() => playerAdmin_loadCraftingRecipes()}>{playerAdmin_craftingLoading ? "Loading..." : "Reload"}</button>
             </div>
             <PlayerCategoryIconRail
               options={playerAdmin_craftingCategories}
