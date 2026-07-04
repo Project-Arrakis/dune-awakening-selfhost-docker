@@ -20,6 +20,7 @@ test("allows dynamic map containers as log targets", () => {
 test("builds allowlisted command arguments without shell interpolation", () => {
   assert.deepEqual(buildDuneArgs("status"), ["status"]);
   assert.deepEqual(buildDuneArgs("doctor"), ["doctor"]);
+  assert.deepEqual(buildDuneArgs("networkBindFix"), ["network", "fix"]);
   assert.deepEqual(buildDuneArgs("restartService", { service: "director" }), ["restart", "director"]);
   assert.deepEqual(buildDuneArgs("logs", { service: "gateway" }), ["logs", "gateway"]);
   assert.deepEqual(buildDuneArgs("backupDelete", { backup: "dune-db-test.backup" }), ["db", "delete", "dune-db-test.backup"]);

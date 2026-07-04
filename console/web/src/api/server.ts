@@ -17,6 +17,7 @@ export const serverApi = {
   ports: () => api<{ stdout: string }>("/api/server/ports"),
   services: () => api<{ stdout: string }>("/api/server/services"),
   doctor: () => api<{ stdout: string; stderr?: string; exitCode?: number }>("/api/server/doctor"),
+  fixNetworkBinding: () => post<{ task: Task }>("/api/server/network-bind/fix"),
   start: () => post<{ task: Task }>("/api/server/start"),
   stop: () => post<{ task: Task }>("/api/server/stop"),
   restart: () => post<{ task: Task }>("/api/server/restart"),

@@ -25,6 +25,7 @@ const simpleOperations = {
   services: ["ps"],
   ports: ["ports"],
   doctor: ["doctor"],
+  networkBindFix: ["network", "fix"],
   start: ["start"],
   stop: ["stop"],
   updateCheck: ["update", "check"],

@@ -93,6 +93,10 @@ check_udp_listener_bind() {
   if [ "$server_ip" != "$bind_ip" ] && printf '%s\n' "$addresses" | grep -Eq "(^|[[:space:]])${server_ip//./\\.}([[:space:]]|$)"; then
     fail_msg "NAT address mismatch. $label UDP $port is bound to $server_ip, but SERVER_BIND_IP resolves to $bind_ip."
     echo "     Game sockets must bind to SERVER_BIND_IP while farm_state.game_addr advertises SERVER_IP."
+    if [ "$(read_ipv4_ip_nonlocal_bind 2>/dev/null || true)" = "1" ]; then
+      echo "     net.ipv4.ip_nonlocal_bind=1 allows binding to non-local public IPs and can cause this."
+      echo "     Fix: sudo sysctl -w net.ipv4.ip_nonlocal_bind=0, then restart the stack."
+    fi
     return 0
   fi
 

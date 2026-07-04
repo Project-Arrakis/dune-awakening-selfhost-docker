@@ -15,6 +15,11 @@ is_private_ipv4() {
   printf '%s' "$ip" | grep -Eq '^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)'
 }
 
+read_ipv4_ip_nonlocal_bind() {
+  [ -r /proc/sys/net/ipv4/ip_nonlocal_bind ] || return 1
+  tr -d '[:space:]' </proc/sys/net/ipv4/ip_nonlocal_bind
+}
+
 config_value() {
   local file="$1"
   local key="$2"
@@ -466,7 +471,7 @@ game_external_address_override_env_args() {
 }
 
 validate_game_external_address_override_env_args() {
-  local mode advertised_ip arg found=0
+  local mode advertised_ip bind_ip nonlocal_bind arg found=0
 
   [ "${DUNE_DISABLE_GAME_EXTERNAL_ADDRESS_OVERRIDE:-0}" = "1" ] && return 0
 
@@ -477,6 +482,21 @@ validate_game_external_address_override_env_args() {
   if ! is_ipv4 "$advertised_ip" || [ "$advertised_ip" = "auto" ]; then
     echo "Public mode requires a valid SERVER_IP before starting game containers." >&2
     echo "Set SERVER_IP to your public IPv4, or switch SERVER_IP_MODE=local for LAN-only hosting." >&2
+    return 1
+  fi
+
+  bind_ip="$(resolve_bind_ip)"
+  nonlocal_bind="$(read_ipv4_ip_nonlocal_bind 2>/dev/null || true)"
+  if [ "${DUNE_ALLOW_PUBLIC_IP_NONLOCAL_BIND:-0}" != "1" ] \
+    && [ "$nonlocal_bind" = "1" ] \
+    && is_ipv4 "$bind_ip" \
+    && is_private_ipv4 "$bind_ip" \
+    && [ "$advertised_ip" != "$bind_ip" ]; then
+    echo "Public NAT mode detected, but net.ipv4.ip_nonlocal_bind=1 on this host." >&2
+    echo "This can make game client UDP sockets bind to SERVER_IP=$advertised_ip instead of SERVER_BIND_IP=$bind_ip." >&2
+    echo "For NAT/double NAT, forwarded UDP packets land on $bind_ip, so the game sockets must bind there." >&2
+    echo "Run: sudo sysctl -w net.ipv4.ip_nonlocal_bind=0" >&2
+    echo "Then restart the stack. To bypass this guard intentionally, set DUNE_ALLOW_PUBLIC_IP_NONLOCAL_BIND=1." >&2
     return 1
   fi
 

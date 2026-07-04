@@ -259,6 +259,7 @@ async function handleApi(req, res) {
   if (path === "/api/server/ports") return commandJson(res, "ports");
   if (path === "/api/server/services") return commandJson(res, "services");
   if (path === "/api/server/doctor") return safeCommandJson(res, "doctor");
+  if (path === "/api/server/network-bind/fix" && req.method === "POST") return task(req, res, "server", "networkBindFix", {});
   if (path === "/api/server/start" && req.method === "POST") return task(req, res, "server", "start", {});
   if (path === "/api/server/stop" && req.method === "POST") return task(req, res, "server", "stop", {});
   if (path === "/api/server/restart" && req.method === "POST") return task(req, res, "server", "restartAll", {});

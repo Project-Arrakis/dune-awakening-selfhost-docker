@@ -309,6 +309,20 @@ case "$mode" in
     ;;
 esac
 
+advertised_ip="$(resolve_advertised_ip)"
+bind_ip="$(resolve_bind_ip)"
+nonlocal_bind="$(read_ipv4_ip_nonlocal_bind 2>/dev/null || true)"
+if [ "$mode" = "public" ] \
+  && is_ipv4 "$advertised_ip" \
+  && is_ipv4 "$bind_ip" \
+  && is_private_ipv4 "$bind_ip" \
+  && [ "$advertised_ip" != "$bind_ip" ] \
+  && [ "$nonlocal_bind" = "1" ]; then
+  warn_msg "Public IP bind risk detected: net.ipv4.ip_nonlocal_bind=1 with SERVER_IP=$advertised_ip and SERVER_BIND_IP=$bind_ip"
+  echo "     In NAT/double NAT, game sockets must bind to SERVER_BIND_IP while advertising SERVER_IP."
+  echo "     Run: dune network fix"
+fi
+
 echo
 if [ "$fail" -eq 0 ] && [ "$warn" -eq 0 ]; then
   echo "DOCTOR: no obvious issues found."

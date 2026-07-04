@@ -461,6 +461,8 @@ main { padding: 22px; min-width: 0; }
 .wide { grid-column: 1 / -1; }
 .panel-title, .action-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .action-row { justify-content: flex-start; margin: 12px 0; }
+.compact-action-row { margin: 8px 0 0; }
+.compact-action-row button { padding: 7px 10px; }
 .two-col { display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: end; max-width: 760px; }
 .action-panel { margin-top: 16px; border-top: 1px solid #302b25; padding-top: 14px; }
 .action-sections { display: grid; gap: 14px; }

@@ -527,6 +527,7 @@ export function ServerPanel(props: {
   const [funcomToken, setFuncomToken] = useState("");
   const [serviceRestartResult, setServiceRestartResult] = useState<HomeTaskResult | null>(null);
   const [serviceRestartingService, setServiceRestartingService] = useState("");
+  const [networkBindResult, setNetworkBindResult] = useState<HomeTaskResult | null>(null);
   const [doctorLoading, setDoctorLoading] = useState(!props.doctor);
   const [doctorError, setDoctorError] = useState("");
   const controlActionRunId = useRef(0);
@@ -661,6 +662,21 @@ export function ServerPanel(props: {
       setFuncomTokenResult(validation);
     } catch (error) {
       setFuncomTokenResult({ status: "failed", title: "Funcom Token Change Failed", message: "Double-check the token and try again.", details: error instanceof Error ? error.message : String(error) });
+    }
+  }
+  async function fixNetworkBinding() {
+    if (!(await confirmAction("Set net.ipv4.ip_nonlocal_bind=0 on this host? This fixes public NAT socket binding, but existing game servers must be restarted to rebind their UDP sockets.", { confirmLabel: "Fix Binding" }))) return;
+    setNetworkBindResult({ status: "running", title: "Fixing Binding" });
+    props.onError("");
+    try {
+      const final = await waitForTaskSilently((await serverApi.fixNetworkBinding()).task);
+      const details = taskTechnicalDetails(final);
+      await loadControlStatus(true).catch(() => null);
+      setNetworkBindResult(final.status === "succeeded"
+        ? { status: "succeeded", title: "Binding Fixed", message: "Restart the battlegroup so game sockets bind to the local IP.", details }
+        : { status: "failed", title: "Fix Failed", message: "Run the command shown in Doctor manually, then restart the battlegroup.", details });
+    } catch (error) {
+      setNetworkBindResult({ status: "failed", title: "Fix Failed", details: error instanceof Error ? error.message : String(error) });
     }
   }
   async function loadControlVisibleSections() {
@@ -950,6 +966,11 @@ export function ServerPanel(props: {
     const id = window.setTimeout(() => setScheduleResult(null), 10400);
     return () => window.clearTimeout(id);
   }, [scheduleResult?.status, scheduleResult?.title]);
+  useEffect(() => {
+    if (!networkBindResult || networkBindResult.status === "running") return;
+    const id = window.setTimeout(() => setNetworkBindResult(null), 14000);
+    return () => window.clearTimeout(id);
+  }, [networkBindResult?.status, networkBindResult?.title]);
   return (
     <section className="panel server-control-panel">
       <h2>Server Controls</h2>
@@ -996,7 +1017,16 @@ export function ServerPanel(props: {
           </span>}
         </div>
       </section>
-      <DoctorSummary text={props.doctor} readiness={props.readiness} loading={doctorLoading} error={doctorError} />
+      <DoctorSummary
+        text={props.doctor}
+        readiness={props.readiness}
+        loading={doctorLoading}
+        error={doctorError}
+        onFixBinding={fixNetworkBinding}
+        fixingBinding={networkBindResult?.status === "running"}
+        fixDisabled={actionRunning || serviceRestartRunning || titleSaving || funcomTokenSaving || scheduleSaving}
+      />
+      {networkBindResult && <HomeTaskResultCard result={networkBindResult} />}
     </section>
   );
 }
@@ -1200,7 +1230,15 @@ function HomeHealthCards({ status, readiness, readinessWarning, loading, running
   </div>;
 }
 
-function DoctorSummary({ text, readiness, loading, error }: { text: string; readiness: string; loading: boolean; error: string }) {
+function DoctorSummary({ text, readiness, loading, error, onFixBinding, fixingBinding, fixDisabled }: {
+  text: string;
+  readiness: string;
+  loading: boolean;
+  error: string;
+  onFixBinding: () => void;
+  fixingBinding: boolean;
+  fixDisabled: boolean;
+}) {
   const readinessHealthy = /^READY:/m.test(readiness);
   const issues = text.split(/\r?\n/).map((line) => line.trim()).filter((line) => /^WARN\s+/i.test(line)).filter((line) => {
     if (!readinessHealthy) return true;
@@ -1212,7 +1250,18 @@ function DoctorSummary({ text, readiness, loading, error }: { text: string; read
     {loading ? <p className="loading-dots">Checking diagnostics</p> : error ? <p className="error">{error}</p> : text ? <p>{issues.length ? `${issues.length} diagnostic item${issues.length === 1 ? "" : "s"} need attention.` : "Doctor diagnostics look healthy."}</p> : <p>Doctor diagnostics have not loaded yet.</p>}
     {issues.length > 0 && <div className="check-grid">{issues.map((issue, index) => {
       const advice = doctorAdvice(issue);
-      return <article className="check-card" key={`${issue}-${index}`}><div><strong>{advice.title}</strong><p>{advice.message}</p>{advice.nextStep && <span className="muted">{advice.nextStep}</span>}</div><StatusPill value="WARN" /></article>;
+      const canFixBinding = isPublicIpBindIssue(issue);
+      return <article className="check-card" key={`${issue}-${index}`}>
+        <div>
+          <strong>{advice.title}</strong>
+          <p>{advice.message}</p>
+          {advice.nextStep && <span className="muted">{advice.nextStep}</span>}
+          {canFixBinding && <div className="action-row compact-action-row">
+            <button disabled={fixingBinding || fixDisabled} onClick={onFixBinding}>{fixingBinding ? "Fixing..." : "Fix Binding"}</button>
+          </div>}
+        </div>
+        <StatusPill value="WARN" />
+      </article>;
     })}</div>}
     {!issues.length && info.length > 0 && <div className="check-grid">{info.map((line, index) => {
       const clean = friendlyIssueLine(line);
@@ -1223,6 +1272,12 @@ function DoctorSummary({ text, readiness, loading, error }: { text: string; read
 
 function doctorAdvice(issue: string) {
   const clean = friendlyIssueLine(issue);
+  if (isPublicIpBindIssue(issue)) return {
+    title: "Public IP bind detected",
+    message: clean,
+    nextStep: "Use Fix Binding, then restart the battlegroup so game sockets bind to the local IP.",
+    status: "WARN"
+  };
   if (/director.*heartbeat/i.test(issue)) return {
     title: "Director heartbeat not recently observed",
     message: "Check Director logs if readiness is unhealthy.",
@@ -1247,6 +1302,10 @@ function doctorAdvice(issue: string) {
     nextStep: "Open the relevant service logs for recent context.",
     status: inferStatus(issue)
   };
+}
+
+function isPublicIpBindIssue(issue: string) {
+  return /public ip bind risk|ip_nonlocal_bind=1/i.test(issue);
 }
 
 function parseKeyValueText(text: string) {
