@@ -40,15 +40,19 @@ const tasks = new TaskManager(config);
 let db = createDb(config);
 let carePackageAutoRunning = false;
 let carePackageAutoLastRun = 0;
+let carePackageAutoNextAllowedRun = 0;
 let messageOfTheDayAutoRunning = false;
 let messageOfTheDayAutoLastRun = 0;
+let messageOfTheDayAutoNextAllowedRun = 0;
 let playerAnnouncementsAutoRunning = false;
 let playerAnnouncementsAutoLastRun = 0;
+let playerAnnouncementsAutoNextAllowedRun = 0;
 const journeyTagsData = loadJourneyTagsData();
 const memoryBalancer = createMemoryBalancer(config);
 const POSTGRES_UNAVAILABLE_MESSAGE = "Postgres is not running or is restarting. Wait for the database service to come back online, then refresh.";
 const DEFAULT_ALWAYS_ON_STARTUP_PARALLELISM = 1;
 const MAX_ALWAYS_ON_STARTUP_PARALLELISM = 16;
+const BACKGROUND_SCAN_FAILURE_BACKOFF_MS = Math.max(30, Number(process.env.ADMIN_BACKGROUND_SCAN_FAILURE_BACKOFF_SECONDS || 60)) * 1000;
 
 process.on("unhandledRejection", (error) => {
   console.error(`Unhandled background rejection: ${redact(error?.message || error)}`);
@@ -1914,6 +1918,7 @@ function parseEnvLine(line) {
 
 async function carePackageAutoTick() {
   if (carePackageAutoRunning) return;
+  if (Date.now() < carePackageAutoNextAllowedRun) return;
   let kit;
   try {
     kit = carePackageConfig(config);
@@ -1937,7 +1942,9 @@ async function carePackageAutoTick() {
     if (result.granted || result.skipped || result.failed) {
       audit(config, null, "care-package.auto-scan", { supported: true, granted: result.granted || 0, skipped: result.skipped || 0, failed: result.failed || 0 });
     }
+    carePackageAutoNextAllowedRun = 0;
   } catch (error) {
+    carePackageAutoNextAllowedRun = Date.now() + BACKGROUND_SCAN_FAILURE_BACKOFF_MS;
     console.error(`Care Package auto-grant scan failed: ${redact(error.message || error)}`);
   } finally {
     carePackageAutoRunning = false;
@@ -1946,9 +1953,19 @@ async function carePackageAutoTick() {
 
 async function messageOfTheDayAutoTick() {
   if (messageOfTheDayAutoRunning) return;
-  if (Date.now() - messageOfTheDayAutoLastRun < 10000) return;
+  const now = Date.now();
+  if (now < messageOfTheDayAutoNextAllowedRun || now - messageOfTheDayAutoLastRun < 10000) return;
+  let settings;
+  try {
+    settings = readMessageOfTheDay(config).settings;
+  } catch (error) {
+    messageOfTheDayAutoNextAllowedRun = Date.now() + BACKGROUND_SCAN_FAILURE_BACKOFF_MS;
+    console.error(`Message of the Day config read failed: ${redact(error.message || error)}`);
+    return;
+  }
+  if (!settings.enabled || !String(settings.message || "").trim()) return;
   messageOfTheDayAutoRunning = true;
-  messageOfTheDayAutoLastRun = Date.now();
+  messageOfTheDayAutoLastRun = now;
   try {
     const players = await duneDb.listPlayers(db, { online: true });
     if (players.capabilities?.players === false) return;
@@ -1957,7 +1974,9 @@ async function messageOfTheDayAutoTick() {
       console.log(`Message of the Day scan: sent=${result.sent || 0} failed=${result.failed || 0}`);
       audit(config, null, "message-of-the-day.auto-scan", { supported: true, sent: result.sent || 0, failed: result.failed || 0 });
     }
+    messageOfTheDayAutoNextAllowedRun = 0;
   } catch (error) {
+    messageOfTheDayAutoNextAllowedRun = Date.now() + BACKGROUND_SCAN_FAILURE_BACKOFF_MS;
     const message = String(error.message || error);
     if (/connect|database|relation|container|rabbitmq|docker|ECONNREFUSED/i.test(message)) return;
     console.error(`Message of the Day scan failed: ${redact(message)}`);
@@ -1968,9 +1987,19 @@ async function messageOfTheDayAutoTick() {
 
 async function playerAnnouncementsAutoTick() {
   if (playerAnnouncementsAutoRunning) return;
-  if (Date.now() - playerAnnouncementsAutoLastRun < 10000) return;
+  const now = Date.now();
+  if (now < playerAnnouncementsAutoNextAllowedRun || now - playerAnnouncementsAutoLastRun < 10000) return;
+  let settings;
+  try {
+    settings = readPlayerAnnouncements(config).settings;
+  } catch (error) {
+    playerAnnouncementsAutoNextAllowedRun = Date.now() + BACKGROUND_SCAN_FAILURE_BACKOFF_MS;
+    console.error(`Player announcement config read failed: ${redact(error.message || error)}`);
+    return;
+  }
+  if (!settings.joinEnabled && !settings.leaveEnabled) return;
   playerAnnouncementsAutoRunning = true;
-  playerAnnouncementsAutoLastRun = Date.now();
+  playerAnnouncementsAutoLastRun = now;
   try {
     const players = await duneDb.listPlayers(db, { online: true });
     if (players.capabilities?.players === false) return;
@@ -1979,7 +2008,9 @@ async function playerAnnouncementsAutoTick() {
       console.log(`Player announcement scan: joined=${result.joined || 0} left=${result.left || 0} sent=${result.sent || 0} failed=${result.failed || 0} skipped_no_recipients=${result.skippedNoRecipients || 0}`);
       audit(config, null, "player-announcements.auto-scan", { supported: true, joined: result.joined || 0, left: result.left || 0, sent: result.sent || 0, failed: result.failed || 0, skippedNoRecipients: result.skippedNoRecipients || 0 });
     }
+    playerAnnouncementsAutoNextAllowedRun = 0;
   } catch (error) {
+    playerAnnouncementsAutoNextAllowedRun = Date.now() + BACKGROUND_SCAN_FAILURE_BACKOFF_MS;
     const message = String(error.message || error);
     if (/connect|database|relation|container|rabbitmq|docker|ECONNREFUSED/i.test(message)) return;
     console.error(`Player announcement scan failed: ${redact(message)}`);
