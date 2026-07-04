@@ -438,6 +438,7 @@ async function handleApi(req, res) {
   if (path.match(/^\/api\/players\/[^/]+\/repair-vehicle-decay$/) && req.method === "POST") return playerDbMutation(req, res, path, "players.repair-vehicle-decay", "REPAIR VEHICLE DECAY", (playerId, body) => duneDb.repairVehicleDecay(db, playerId, body));
   if (path.match(/^\/api\/players\/[^/]+\/refuel-vehicle$/) && req.method === "POST") return playerDbMutation(req, res, path, "players.refuel-vehicle", "REFUEL VEHICLE", (playerId, body) => duneDb.refuelVehicle(db, playerId, body));
   if (path.match(/^\/api\/players\/[^/]+\/inventory\/[^/]+$/) && req.method === "DELETE") return inventoryDeleteRoute(req, res, path);
+  if (path.match(/^\/api\/players\/[^/]+\/inventory\/[^/]+$/) && req.method === "PATCH") return inventoryUpdateRoute(req, res, path);
   if (path.match(/^\/api\/players\/[^/]+\/crafting-recipes$/)) return dbPlayerRoute(res, path, duneDb.playerCraftingRecipes);
   if (path.match(/^\/api\/players\/[^/]+\/research-items$/)) return dbPlayerRoute(res, path, duneDb.playerResearchItems);
   if (path.match(/^\/api\/players\/[^/]+\/journey$/)) return dbPlayerRoute(res, path, (database, playerId) => duneDb.playerJourney(database, playerId, journeyTagsData));
@@ -1558,6 +1559,13 @@ async function inventoryDeleteRoute(req, res, path) {
   const playerId = decodeURIComponent(parts[3]);
   const itemId = decodeURIComponent(parts[5]);
   return directDbMutation(req, res, "players.inventory-delete", "DELETE ITEM", () => duneDb.deleteInventoryItem(db, playerId, itemId), { playerId, itemId });
+}
+
+async function inventoryUpdateRoute(req, res, path) {
+  const parts = path.split("/");
+  const playerId = decodeURIComponent(parts[3]);
+  const itemId = decodeURIComponent(parts[5]);
+  return directDbMutation(req, res, "players.inventory-update", "SAVE ITEM", (body) => duneDb.updateInventoryItem(db, playerId, itemId, body.values), { playerId, itemId });
 }
 
 async function storageGiveItemRoute(req, res, path) {

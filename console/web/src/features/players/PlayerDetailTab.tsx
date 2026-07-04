@@ -1,13 +1,12 @@
 import { useEffect, useState } from "react";
 import { Circle, X } from "lucide-react";
 import { playersApi } from "../../api/players";
-import { databaseApi } from "../../api/database";
 import { DataTable, useSortableRows } from "../../components/common/DataTable";
 import { TechnicalDetails } from "../../components/common/DisplayPrimitives";
-import { formatUiSentence } from "../../lib/display";
+import { formatUiSentence, friendlyColumnName } from "../../lib/display";
 import { serializeEditableDbValue, parseEditableDbValue } from "../../lib/dbValues";
 
-const EDITABLE_INVENTORY_COLUMNS = ["template_id", "stack_size", "quality_level", "position_index", "inventory_id", "stats"];
+const EDITABLE_INVENTORY_COLUMNS = ["stack_size", "quality_level", "position_index", "inventory_id", "current_durability", "max_durability"];
 
 type ConfirmAction = (
   message: string,
@@ -86,20 +85,54 @@ export function PlayerDetailTab({
 
   function startEditItem(row: Record<string, unknown>) {
     setEditRow(row);
-    setEditValues(Object.fromEntries(EDITABLE_INVENTORY_COLUMNS.map((column) => [column, serializeEditableDbValue(row[column])])));
+    setEditValues(Object.fromEntries(EDITABLE_INVENTORY_COLUMNS.map((column) => {
+      const isDurability = column === "current_durability" || column === "max_durability";
+      if (isDurability && row[column] == null) return [column, ""];
+      return [column, serializeEditableDbValue(row[column])];
+    })));
   }
 
   async function saveEditItem() {
     if (!editRow) return;
+    const itemId = String(editRow.id || "");
     const templateId = String(editRow.template_id || "Unknown item");
+
+    const hasMax = editRow.max_durability != null;
+    const hasCurrent = editRow.current_durability != null;
+    const maxDurability = hasMax ? Number(editValues.max_durability) : undefined;
+    if (hasMax && (!Number.isFinite(maxDurability) || maxDurability! < 0 || maxDurability! > 100)) {
+      setMessage("Max Durability must be a number between 0 and 100.");
+      setMessageDetails("");
+      return;
+    }
+    if (hasCurrent) {
+      const currentDurability = Number(editValues.current_durability);
+      const upperBound = hasMax ? maxDurability! : Number.POSITIVE_INFINITY;
+      if (!Number.isFinite(currentDurability) || currentDurability < 0 || currentDurability > upperBound) {
+        setMessage("Current Durability must be a number between 0 and Max Durability.");
+        setMessageDetails("");
+        return;
+      }
+    }
+
+    if (!(await confirmAction("Save changes to this inventory item?", {
+      title: "Edit Inventory Item",
+      confirmLabel: "Save",
+      details: [
+        { label: "Item ID", value: itemId, tone: "accent" },
+        { label: "Template", value: templateId, tone: "accent" }
+      ]
+    }))) return;
+
     setEditSaving(true);
     try {
-      const values = Object.fromEntries(EDITABLE_INVENTORY_COLUMNS.map((column) => [column, parseEditableDbValue(editValues[column] ?? "", editRow[column])]));
-      const rowId = JSON.stringify({ pk: { id: editRow.id } });
-      const response = await databaseApi.updateRow("dune", "items", rowId, values);
+      const values = Object.fromEntries(EDITABLE_INVENTORY_COLUMNS
+        .filter((column) => !((column === "current_durability" && !hasCurrent) || (column === "max_durability" && !hasMax)))
+        .map((column) => [column, parseEditableDbValue(editValues[column] ?? "", editRow[column])]));
+      const response = await playersApi.updateInventoryItem(playerId, itemId, values, "SAVE ITEM");
       setMessage(formatMutationResult(response));
       setMessageDetails(JSON.stringify(response, null, 2));
-      onActionLog?.("Edit Inventory Item", templateId, "1", response.updatedRows ? "Succeeded" : "No rows updated");
+      onActionLog?.("Edit Inventory Item", templateId, "1", "Succeeded");
       setEditRow(null);
       onReload();
     } catch (error) {
@@ -118,7 +151,15 @@ export function PlayerDetailTab({
       <div className="panel-title"><strong>Edit Inventory Item</strong></div>
       <p className="playerAdmin_note">Item ID: {String(row.id)} · {String(row.template_id)}</p>
       <div className="database-edit-grid">
-        {EDITABLE_INVENTORY_COLUMNS.map((column) => <label key={column}>{column}<textarea rows={2} value={editValues[column] || ""} onChange={(event) => setEditValues({ ...editValues, [column]: event.target.value })} /></label>)}
+        {EDITABLE_INVENTORY_COLUMNS.map((column) => {
+          const isDurability = column === "current_durability" || column === "max_durability";
+          const isNullDurability = isDurability && row[column] == null;
+          return <label key={column}>{friendlyColumnName(column)}
+            {isDurability
+              ? <input type="number" step="any" min={0} max={column === "max_durability" ? 100 : undefined} value={editValues[column] || ""} disabled={isNullDurability} placeholder={isNullDurability ? "N/A" : undefined} onChange={(event) => setEditValues({ ...editValues, [column]: event.target.value })} />
+              : <textarea rows={2} value={editValues[column] || ""} onChange={(event) => setEditValues({ ...editValues, [column]: event.target.value })} />}
+          </label>;
+        })}
       </div>
       <div className="action-line">
         <button disabled={editSaving} onClick={() => void saveEditItem()}>{editSaving ? "Saving..." : "Save Item"}</button>

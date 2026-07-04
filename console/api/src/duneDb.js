@@ -2540,6 +2540,41 @@ export async function deleteInventoryItem(db, playerId, itemId) {
   });
 }
 
+export async function updateInventoryItem(db, playerId, itemId, values) {
+  await requireCapability(await supportsInventoryEdit(db), "Inventory edit requires dune.items and dune.inventories.");
+  const safeItemId = intParam(itemId, "item id", 1);
+  const nextValues = { ...values };
+  delete nextValues.template_id;
+  return db.transaction(async (tx) => {
+    const player = await resolvePlayerMutationTarget(tx, playerId);
+    const owned = await tx.query(`
+      select i.id, i.stats
+      from dune.items i
+      join dune.inventories inv on inv.id = i.inventory_id
+      where i.id = $1 and inv.actor_id = $2
+      for update`, [safeItemId, player.actorId]);
+    if (!owned.rows[0]) throw new Error("Inventory item was not found in the selected player's directly-owned inventory");
+
+    const hasMax = Object.prototype.hasOwnProperty.call(nextValues, "max_durability") && nextValues.max_durability !== null && nextValues.max_durability !== "";
+    const hasCurrent = Object.prototype.hasOwnProperty.call(nextValues, "current_durability") && nextValues.current_durability !== null && nextValues.current_durability !== "";
+    if (hasMax || hasCurrent) {
+      const stats = owned.rows[0].stats || {};
+      const durability = { ...(stats.FItemStackAndDurabilityStats?.[1] || {}) };
+      const maxKey = Object.prototype.hasOwnProperty.call(durability, "MaxDurability") ? "MaxDurability" : "DecayedMaxDurability";
+      const nextMax = numberParam(hasMax ? nextValues.max_durability : durability[maxKey], "max durability", 0, 100);
+      const nextCurrent = numberParam(hasCurrent ? nextValues.current_durability : durability.CurrentDurability, "current durability", 0, nextMax);
+      durability.CurrentDurability = nextCurrent;
+      durability[maxKey] = nextMax;
+      nextValues.stats = { ...stats, FItemStackAndDurabilityStats: [stats.FItemStackAndDurabilityStats?.[0] || [], durability] };
+    }
+    delete nextValues.current_durability;
+    delete nextValues.max_durability;
+
+    const rowId = JSON.stringify({ pk: { id: safeItemId } });
+    return updateTableRow(tx, "dune", "items", rowId, nextValues);
+  });
+}
+
 export async function giveItemToStorage(db, storageId, { itemName = "", itemId = "", templateId = "", quantity = 1, quality = 0 }) {
   await requireCapability(await supportsStorageGiveItem(db), "Storage give-item requires compatible dune.inventories and dune.items insert columns.");
   const target = intParam(storageId, "storage id", 1);
@@ -2754,6 +2789,7 @@ async function playerCapabilities(db) {
     craftingRecipes: await supportsCraftingRecipes(db),
     researchItems: await supportsResearchItems(db),
     inventoryDelete: await supportsInventoryDelete(db),
+    inventoryEdit: await supportsInventoryEdit(db),
     repairGear: await supportsRepairGear(db),
     repairVehicleDecay: await supportsRepairVehicleDecay(db),
     refuelVehicle: await supportsRefuelVehicle(db),
@@ -2950,6 +2986,10 @@ async function supportsInventoryDelete(db) {
   return await tableExists(db, "items") &&
     await tableExists(db, "inventories") &&
     await functionExists(db, "dune.delete_item(bigint)");
+}
+
+async function supportsInventoryEdit(db) {
+  return await tableExists(db, "items") && await tableExists(db, "inventories");
 }
 
 async function supportsStorageGiveItem(db) {
