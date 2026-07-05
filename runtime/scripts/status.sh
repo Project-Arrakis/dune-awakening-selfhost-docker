@@ -190,7 +190,7 @@ map_state() {
         limit 1;
       " 2>/dev/null | tr -d '[:space:]'
     )"
-    if [ "$farm_ready" = "t" ]; then
+    if [[ "${farm_ready,,}" =~ ^(t|true|1|yes|y)$ ]]; then
       echo "READY"
       return
     fi

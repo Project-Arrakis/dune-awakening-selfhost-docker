@@ -453,8 +453,8 @@ dynamic_ready_desync_heal() {
 
   while IFS='|' read -r partition_id map_name server_id ready alive; do
     [ -n "${partition_id:-}" ] || continue
-    [ "$ready" = "f" ] || continue
-    [ "$alive" = "t" ] || continue
+    [[ "${ready,,}" =~ ^(f|false|0|no|n)$ ]] || continue
+    [[ "${alive,,}" =~ ^(t|true|1|yes|y)$ ]] || continue
 
     container="$(dynamic_container_name_for_partition "$partition_id" 2>/dev/null || true)"
     [ -n "$container" ] || continue
@@ -486,7 +486,7 @@ dynamic_ready_desync_heal() {
 
   while IFS='|' read -r partition_id map_name server_id ready alive; do
     [ -n "${partition_id:-}" ] || continue
-    if [ "$ready" = "t" ] || [ "$alive" != "t" ]; then
+    if [[ "${ready,,}" =~ ^(t|true|1|yes|y)$ ]] || ! [[ "${alive,,}" =~ ^(t|true|1|yes|y)$ ]]; then
       director_heal_clear "dynamic_ready:${partition_id}"
     fi
   done <<< "$rows"
@@ -1480,7 +1480,7 @@ handle_idle_row() {
   local key
   key="$(state_key "$map" "$server_id")"
 
-  if [ "$connected_players" != "0" ] || [ "$effective_players" != "0" ] || [ "$ready" != "t" ] || [ "$alive" != "t" ]; then
+  if [ "$connected_players" != "0" ] || [ "$effective_players" != "0" ] || ! [[ "${ready,,}" =~ ^(t|true|1|yes|y)$ ]] || ! [[ "${alive,,}" =~ ^(t|true|1|yes|y)$ ]]; then
     clear_idle_since "$key"
     return 0
   fi

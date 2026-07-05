@@ -12,6 +12,10 @@ is_running() {
   docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$name"
 }
 
+db_bool_true() {
+  [[ "${1,,}" =~ ^(t|true|1|yes|y)$ ]]
+}
+
 partition_ready() {
   local partition_id="$1"
   docker exec dune-postgres psql -U dune -d dune -Atc "
@@ -30,7 +34,7 @@ wait_for_core_ready() {
       continue
     fi
 
-    if [ "$(partition_ready 1)" = "t" ] && [ "$(partition_ready 2)" = "t" ]; then
+    if db_bool_true "$(partition_ready 1)" && db_bool_true "$(partition_ready 2)"; then
       return 0
     fi
 

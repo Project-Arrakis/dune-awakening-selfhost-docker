@@ -327,7 +327,7 @@ if container_running dune-postgres; then
       [ "$igw_addr" = "$igw_advertised_ip" ] && ok "$map farm_state igw_addr=$igw_addr" || fail_msg "$map farm_state igw_addr=$igw_addr expected $igw_advertised_ip"
       [ "$game_port" = "$expected_game" ] && ok "$map farm_state game_port=$game_port" || fail_msg "$map farm_state game_port=$game_port expected $expected_game"
       [ "$igw_port" = "$expected_igw" ] && ok "$map farm_state igw_port=$igw_port" || fail_msg "$map farm_state igw_port=$igw_port expected $expected_igw"
-      [ "$ready" = "t" ] && [ "$alive" = "t" ] && ok "$map farm_state ready/alive" || warn_msg "$map farm_state ready=$ready alive=$alive"
+      [[ "${ready,,}" =~ ^(t|true|1|yes|y)$ ]] && [[ "${alive,,}" =~ ^(t|true|1|yes|y)$ ]] && ok "$map farm_state ready/alive" || warn_msg "$map farm_state ready=$ready alive=$alive"
     done <<< "$rows"
   fi
 else

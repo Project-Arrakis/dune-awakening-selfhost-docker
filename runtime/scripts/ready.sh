@@ -21,6 +21,10 @@ docker_timeout() {
   timeout --kill-after=2s "${docker_timeout_seconds}s" "$@"
 }
 
+db_bool_true() {
+  [[ "${1,,}" =~ ^(t|true|1|yes|y)$ ]]
+}
+
 is_running() {
   local name="$1"
   docker_timeout docker inspect -f '{{.State.Running}}' "$name" 2>/dev/null | grep -qx true
@@ -273,7 +277,7 @@ check_game_server_ready() {
         limit 1;
       " 2>/dev/null | tr -d '[:space:]'
     )"
-    if [ "$farm_ready" = "t" ]; then
+    if db_bool_true "$farm_ready"; then
       mark_ok "$label ready"
       return
     fi
@@ -460,7 +464,7 @@ while IFS= read -r c; do
     farm_ready="${farm_ready:-f}"
   fi
 
-  if [ "$farm_ready" = "t" ]; then
+  if db_bool_true "$farm_ready"; then
     check_game_server_ready "$c" "$c"
     continue
   fi
