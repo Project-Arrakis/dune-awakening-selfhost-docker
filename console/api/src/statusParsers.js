@@ -269,7 +269,9 @@ function formatMemoryValue(value) {
   const match = text.match(/(\d+(?:\.\d+)?)\s*(GiB?|GB|MiB?|MB|[gGmM])?/i);
   if (!match) return text || "Not Available";
   const unit = (match[2] || "GB").toLowerCase();
-  return `${match[1]} ${unit.startsWith("m") ? "MB" : "GB"}${isDefault ? " (Default)" : ""}`;
+  const displayUnit = unit.startsWith("m") ? "MB" : "GB";
+  const displayValue = (Number(match[1]) || 0).toFixed(2);
+  return `${displayValue} ${displayUnit}${isDefault ? " (Default)" : ""}`;
 }
 
 function mapRuntimeStatus(row) {

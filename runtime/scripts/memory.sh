@@ -52,7 +52,7 @@ Usage:
   dune memory set default <memory>
   dune memory unset default
 
-Memory values use Docker formats such as 512m, 4096m, 4g, 8g, 12g, or 16g.
+Memory values use Docker formats such as 512m, 4096m, 2.50g, 4g, 8g, 12g, or 16g.
 Map names come from the generated world partition catalog.
 EOF
 }
@@ -68,7 +68,7 @@ normalize_key() {
 }
 
 validate_memory() {
-  printf '%s' "$1" | grep -Eq '^[1-9][0-9]*[mMgG]$'
+  printf '%s' "$1" | grep -Eq '^([1-9][0-9]*([.][0-9]+)?|0[.][0-9]*[1-9][0-9]*)[mMgG]$'
 }
 
 env_key_for() {

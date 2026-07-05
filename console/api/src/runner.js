@@ -559,7 +559,7 @@ function memoryTarget(payload = {}) {
 
 function validateMemoryValue(value) {
   const raw = String(value || "").trim();
-  if (/^[1-9][0-9]*[mMgG]$/.test(raw)) return raw;
+  if (/^(?:[1-9][0-9]*(?:\.[0-9]+)?|0\.[0-9]*[1-9][0-9]*)[mMgG]$/.test(raw)) return raw;
   throw new Error("Invalid memory value");
 }
 

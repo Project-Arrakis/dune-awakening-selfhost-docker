@@ -100,7 +100,7 @@ function formatBytes(value: number) {
     amount /= 1024;
     index += 1;
   }
-  return `${amount >= 10 || index === 0 ? amount.toFixed(0) : amount.toFixed(1)} ${units[index]}`;
+  return `${index === 0 ? amount.toFixed(0) : amount.toFixed(1)} ${units[index]}`;
 }
 
 function escapeRegExp(value: string) {
@@ -876,7 +876,7 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
           map: rowName,
           partitionId: partitionId || undefined,
           mode: modeDraft,
-          memory: `${memory}g`,
+          memory: memoryCliValue(memory),
           modeChanged,
           memoryChanged,
           running,
@@ -909,7 +909,7 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
         activeChanged ? "Sietch Changes Saved" : "Map Settings Saved",
         {
           saveAcceptedMessage: successMessage,
-          memoryUpdates: memoryChanged ? [{ map: rowName, memory: `${memory}g` }] : [],
+          memoryUpdates: memoryChanged ? [{ map: rowName, memory: memoryCliValue(memory) }] : [],
           resultTarget: mapResultTarget(rowName)
         }
       );
@@ -990,7 +990,7 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
         run: () => mapsApi.saveMapSettings({
           map: "Survival_1",
           partitionId: sietch.partitionId,
-          memory: `${memory}g`,
+          memory: memoryCliValue(memory),
           modeChanged: false,
           memoryChanged,
           running,
@@ -1018,7 +1018,7 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
         : "Memory settings saved successfully.";
       await runTaskSequenceAndRefresh(actions, `Saving ${sietchTargetDisplayName(sietch, draft.displayName)} Settings`, "Sietch Saved", {
         saveAcceptedMessage: successMessage,
-        memoryUpdates: memoryChanged ? [{ map: "Survival_1", partitionId: sietch.partitionId, memory: `${memory}g` }] : [],
+        memoryUpdates: memoryChanged ? [{ map: "Survival_1", partitionId: sietch.partitionId, memory: memoryCliValue(memory) }] : [],
         resultTarget: mapResultTarget("Survival_1", sietch.partitionId)
       });
     }
@@ -1059,7 +1059,7 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
       () => mapsApi.saveMapSettings({
         map: "DeepDesert_1",
         partitionId,
-        memory: `${memory}g`,
+        memory: memoryCliValue(memory),
         modeChanged: false,
         memoryChanged,
         running,
@@ -1067,7 +1067,7 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
       }),
       `Saving ${deepDesertPartitionName(row)} Settings`,
       "Deep Desert Saved",
-      { memoryUpdates: [{ map: "DeepDesert_1", partitionId, memory: `${memory}g` }], resultTarget: mapResultTarget("DeepDesert_1", partitionId) }
+      { memoryUpdates: [{ map: "DeepDesert_1", partitionId, memory: memoryCliValue(memory) }], resultTarget: mapResultTarget("DeepDesert_1", partitionId) }
     );
   }
   async function forceDespawnMap(row: Record<string, unknown>) {
@@ -1271,7 +1271,7 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
               {isVehicleDeployMap(rowName) && <p className="muted">Vehicle-deploy Overland maps use Overmap Active instead of Always On by default to avoid vehicle ownership restore races during startup.</p>}
               <div className="action-line">
                 <label className="compact-select">Mode<select value={modeDraft} disabled={String(row.mode) === "Core Map"} onChange={(event) => setModeDraft(event.target.value)}><option value="dynamic">Dynamic</option><option value="always-on">Always On</option><option value="overmap-active">Overmap Active</option><option value="disabled">Disabled</option></select></label>
-                <label className="memory-number-field">Memory<input type="number" min="1" step="1" value={memory} onChange={(event) => setMemory(event.target.value)} placeholder="8" /></label>
+                <label className="memory-number-field">Memory<input type="number" min="0.01" step="0.01" inputMode="decimal" value={memory} onChange={(event) => setMemory(event.target.value)} placeholder="8" /></label>
                 <span className="unit-label">GB</span>
                 {isSurvivalRow && <label className="memory-number-field">Active Sietches<input type="number" min="1" max="64" step="1" value={activeSietches} onChange={(event) => setActiveSietches(event.target.value)} /></label>}
                 {isSurvivalRow && primarySurvivalSietch && primarySietchDraft && <label>Name<input value={primarySietchDraft.displayName} placeholder="Default name" onChange={(event) => setSietchDrafts({ ...sietchDrafts, [primarySurvivalSietch.partitionId]: { ...primarySietchDraft, displayName: event.target.value } })} /></label>}
@@ -1315,7 +1315,7 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
                 <div className="panel-title"><h4>Edit {deepDesertPartitionName(deepRow)}</h4></div>
                 <KeyValueGrid items={[["Partition", deepRow.partitionId], ["Dimension", deepRow.dimension], ["Status", childStatus], ["Memory", deepMemory]]} />
                 <div className="action-line">
-                  <label className="memory-number-field">Memory<input type="number" min="1" step="1" value={memory} onChange={(event) => setMemory(event.target.value)} placeholder="8" /></label>
+                  <label className="memory-number-field">Memory<input type="number" min="0.01" step="0.01" inputMode="decimal" value={memory} onChange={(event) => setMemory(event.target.value)} placeholder="8" /></label>
                   <span className="unit-label">GB</span>
                   <button disabled={!childMemoryDirty} onClick={() => run(() => saveDeepDesertPartitionSettings(deepRow))}>Save</button>
                   <button className="danger" disabled={!childCanForceDespawn} title={childCanForceDespawn ? "Force despawn this Deep Desert instance" : "Deep Desert instance is not running"} onClick={() => run(() => forceDespawnDeepDesertPartition(deepRow))}>Force Despawn</button>
@@ -1347,7 +1347,7 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
                 <div className="panel-title"><h4>Edit {sietch.displayName}</h4></div>
                 <KeyValueGrid items={[["Partition", sietch.partitionId], ["Dimension", sietch.dimension], ["Status", childStatus], ["Memory", sietchMemory], ["Password", sietch.passwordSet ? "Set" : "Not Set"]]} />
                 <div className="action-line">
-                  <label className="memory-number-field">Memory<input type="number" min="1" step="1" value={memory} onChange={(event) => setMemory(event.target.value)} placeholder="8" /></label>
+                  <label className="memory-number-field">Memory<input type="number" min="0.01" step="0.01" inputMode="decimal" value={memory} onChange={(event) => setMemory(event.target.value)} placeholder="8" /></label>
                   <span className="unit-label">GB</span>
                   <label>Name<input value={draft.displayName} placeholder="Default name" onChange={(event) => setSietchDrafts({ ...sietchDrafts, [sietch.partitionId]: { ...draft, displayName: event.target.value } })} /></label>
                   <label>Password<SecretInput value={sietchPasswordInputValue(sietch, draft, Boolean(sietchPasswordTouched[sietch.partitionId]))} placeholder={passwordPlaceholder(sietchHasPassword(sietch, draft))} onFocus={(event) => { if (!sietchPasswordTouched[sietch.partitionId] && sietch.passwordSet) event.currentTarget.select(); }} onChange={(event) => { setSietchPasswordTouched({ ...sietchPasswordTouched, [sietch.partitionId]: true }); setSietchDrafts({ ...sietchDrafts, [sietch.partitionId]: { ...draft, password: event.target.value } }); }} /></label>
@@ -1932,9 +1932,9 @@ function defaultMemoryFromStatus(text: string) {
 function fallbackMemoryForMap(map: string, memoryText: string) {
   const globalDefault = defaultMemoryFromStatus(memoryText);
   if (globalDefault) return globalDefault;
-  if (map === "Survival_1" || map === "DeepDesert_1") return "16 GB (Default)";
-  if (map === "Overmap") return "3 GB (Default)";
-  return "3 GB (Default)";
+  if (map === "Survival_1" || map === "DeepDesert_1") return "16.00 GB (Default)";
+  if (map === "Overmap") return "3.00 GB (Default)";
+  return "3.00 GB (Default)";
 }
 
 function updateMemoryStatusText(text: string, updates: Array<{ map: string; partitionId?: string; memory: string }>) {
@@ -2129,9 +2129,16 @@ function modeInputValue(value: string) {
 }
 
 function memoryInputValue(value: string) {
-  const match = String(value || "").match(/(\d+(?:\.\d+)?)\s*(GB|GiB?|MB|MiB?|[gGmM])?/);
+  const match = String(value || "").match(/(\d+(?:\.\d+)?)\s*(GB|GiB?|MB|MiB?|[gGmM])?/i);
   if (!match) return "8";
-  return match[1];
+  const amount = Number(match[1]) || 0;
+  const unit = (match[2] || "GB").toLowerCase();
+  const amountInGb = unit.startsWith("m") ? amount / 1024 : amount;
+  return amountInGb.toFixed(2);
+}
+
+function memoryCliValue(value: string) {
+  return `${String(value || "").trim()}g`;
 }
 
 function memoryValueToBytes(value: string) {
@@ -2155,7 +2162,8 @@ function formatMemoryValue(value: string) {
   if (!match) return text;
   const unit = (match[2] || "GB").toLowerCase();
   const displayUnit = unit.startsWith("m") ? "MB" : "GB";
-  return `${match[1]} ${displayUnit}${isDefault ? " (Default)" : ""}`;
+  const displayValue = (Number(match[1]) || 0).toFixed(2);
+  return `${displayValue} ${displayUnit}${isDefault ? " (Default)" : ""}`;
 }
 
 function isMapRuntimeHandoffTask(task: Task) {

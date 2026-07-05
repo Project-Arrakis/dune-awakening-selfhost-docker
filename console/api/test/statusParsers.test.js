@@ -275,8 +275,8 @@ test("map list parser keeps every dynamic map row and formats mode", () => {
 
 test("memory status parser formats Gi defaults as friendly GB labels", () => {
   const rows = parseMemoryStatusRows(memoryStatusOutput);
-  assert.deepEqual(rows.find((row) => row.map === "Survival_1"), { map: "Survival_1", memory: "12 GB (Default)" });
-  assert.deepEqual(rows.find((row) => row.map === "CB_Dungeon_ThePit"), { map: "CB_Dungeon_ThePit", memory: "13 GB" });
+  assert.deepEqual(rows.find((row) => row.map === "Survival_1"), { map: "Survival_1", memory: "12.00 GB (Default)" });
+  assert.deepEqual(rows.find((row) => row.map === "CB_Dungeon_ThePit"), { map: "CB_Dungeon_ThePit", memory: "13.00 GB" });
 });
 
 test("memory status parser accepts long map names without fixed-width spacing", () => {
@@ -287,9 +287,9 @@ MAP                          MEMORY
 DLC_Story_LostHarvest_EcolabA 6g
 DLC_Story_LostHarvest_EcolabB 2Gi default
 DLC_Story_LostHarvest_ForgottenLab 10g`);
-  assert.deepEqual(rows.find((row) => row.map === "DLC_Story_LostHarvest_EcolabA"), { map: "DLC_Story_LostHarvest_EcolabA", memory: "6 GB" });
-  assert.deepEqual(rows.find((row) => row.map === "DLC_Story_LostHarvest_EcolabB"), { map: "DLC_Story_LostHarvest_EcolabB", memory: "2 GB (Default)" });
-  assert.deepEqual(rows.find((row) => row.map === "DLC_Story_LostHarvest_ForgottenLab"), { map: "DLC_Story_LostHarvest_ForgottenLab", memory: "10 GB" });
+  assert.deepEqual(rows.find((row) => row.map === "DLC_Story_LostHarvest_EcolabA"), { map: "DLC_Story_LostHarvest_EcolabA", memory: "6.00 GB" });
+  assert.deepEqual(rows.find((row) => row.map === "DLC_Story_LostHarvest_EcolabB"), { map: "DLC_Story_LostHarvest_EcolabB", memory: "2.00 GB (Default)" });
+  assert.deepEqual(rows.find((row) => row.map === "DLC_Story_LostHarvest_ForgottenLab"), { map: "DLC_Story_LostHarvest_ForgottenLab", memory: "10.00 GB" });
 });
 
 test("server partition parser derives status from real ready/alive fields", () => {

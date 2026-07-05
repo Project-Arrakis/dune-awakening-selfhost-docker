@@ -72,7 +72,9 @@ test("builds allowlisted command arguments without shell interpolation", () => {
   assert.deepEqual(buildDuneArgs("mapsDespawn", { target: "DeepDesert_1" }), ["despawn", "DeepDesert_1", "--force"]);
   assert.deepEqual(buildDuneArgs("autoscalerAction", { action: "restart" }), ["autoscaler", "restart"]);
   assert.deepEqual(buildDuneArgs("memorySet", { map: "DeepDesert_1", memory: "8g" }), ["memory", "set", "DeepDesert_1", "8g"]);
+  assert.deepEqual(buildDuneArgs("memorySet", { map: "DeepDesert_1", memory: "2.50g" }), ["memory", "set", "DeepDesert_1", "2.50g"]);
   assert.deepEqual(buildDuneArgs("memorySetNoRestart", { map: "DeepDesert_1", partitionId: "8", memory: "10g" }), ["memory", "set-no-restart", "partition:8", "10g"]);
+  assert.deepEqual(buildDuneArgs("memorySetNoRestart", { map: "DeepDesert_1", partitionId: "8", memory: "0.50g" }), ["memory", "set-no-restart", "partition:8", "0.50g"]);
   assert.deepEqual(buildDuneArgs("sietchesSetActive", { map: "Survival_1", count: 2 }), ["sietches", "set-active", "Survival_1", "2"]);
   assert.deepEqual(buildDuneArgs("sietchesSetDisplay", { partitionId: 38, displayName: "Sietch Alpha" }), ["sietches", "set-display", "38", "Sietch Alpha"]);
   assert.deepEqual(buildDuneArgs("sietchesSetDisplay", { partitionId: 38, displayName: "" }), ["sietches", "set-display", "38", ""]);
@@ -96,6 +98,8 @@ test("builds allowlisted command arguments without shell interpolation", () => {
   assert.throws(() => buildDuneArgs("mapsSpawn", { target: "../bad" }));
   assert.throws(() => buildDuneArgs("autoscalerAction", { action: "run" }));
   assert.throws(() => buildDuneArgs("memorySet", { map: "DeepDesert_1", memory: "8gb" }));
+  assert.throws(() => buildDuneArgs("memorySet", { map: "DeepDesert_1", memory: "2.g" }));
+  assert.throws(() => buildDuneArgs("memorySet", { map: "DeepDesert_1", memory: "0g" }));
   assert.throws(() => buildDuneArgs("sietchesSetPassword", { partitionId: 1, password: "bad\npw" }));
   assert.throws(() => buildDuneArgs("deepdesertAction", { action: "reset" }));
   assert.throws(() => buildDuneArgs("restartScheduleEnable", { time: "24:00" }));
