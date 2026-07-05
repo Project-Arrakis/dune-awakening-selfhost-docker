@@ -168,10 +168,14 @@ runtime/scripts/start-autoscaler.sh || {
 '
 
 echo
-echo "=== Scheduling Deferred Dimension Reconcile ==="
-(
-  exec runtime/scripts/deferred-reconcile.sh
-) >/tmp/dune-deferred-reconcile.log 2>&1 &
+if [ "${DUNE_START_FOREGROUND_DEFERRED_RECONCILE:-0}" = "1" ]; then
+  run_timed_step "Running Deferred Dimension Reconcile" runtime/scripts/deferred-reconcile.sh
+else
+  echo "=== Scheduling Deferred Dimension Reconcile ==="
+  (
+    exec runtime/scripts/deferred-reconcile.sh
+  ) >/tmp/dune-deferred-reconcile.log 2>&1 &
+fi
 
 
 echo

@@ -117,6 +117,7 @@ After=network-online.target docker.service
 [Service]
 Type=oneshot
 WorkingDirectory=$exec_root
+TimeoutStartSec=0
 ExecStart=$exec_root/runtime/scripts/restart-schedule.sh run-now
 EOF
 
@@ -203,6 +204,7 @@ After=network-online.target docker.service
 [Service]
 Type=oneshot
 WorkingDirectory=${DUNE_HOST_REPO_ROOT}
+TimeoutStartSec=0
 ExecStart=${DUNE_HOST_REPO_ROOT}/runtime/scripts/restart-schedule.sh run-now
 EOF
       cat > "$systemd_dir/dune-awakening-scheduled-restart-warning.service" <<EOF
@@ -430,7 +432,7 @@ run_now() {
   runtime/scripts/stop-all.sh
   echo
   echo "Starting battlegroup..."
-  runtime/scripts/start-all.sh
+  DUNE_START_FOREGROUND_DEFERRED_RECONCILE=1 runtime/scripts/start-all.sh
 }
 
 notify_now() {

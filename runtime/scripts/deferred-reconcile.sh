@@ -49,6 +49,7 @@ wait_for_core_ready || {
   exit 0
 }
 
+runtime/scripts/spicefield-overrides.sh apply || true
 runtime/scripts/sietches.sh reconcile Survival_1 || true
 runtime/scripts/sietches.sh reconcile DeepDesert_1 || true
 runtime/scripts/publish-sietch-overrides.sh once || true
