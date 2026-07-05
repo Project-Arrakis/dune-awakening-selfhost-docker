@@ -19,6 +19,8 @@ CURL="curl -fsS --connect-timeout 3 --max-time 8"
 TIMEOUT=15
 SESSION_COOKIE=""
 CSRF_TOKEN=""
+LOGIN_HEADERS="/tmp/dune-api-security-login-headers.$$"
+trap 'rm -f "$LOGIN_HEADERS"' EXIT
 
 echo "=== Dune Console API Security Test ==="
 echo "Target: $BASE_URL"
@@ -60,13 +62,13 @@ ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
 [ -z "$ADMIN_PASSWORD" ] && [ -s runtime/secrets/admin-web-password.txt ] && ADMIN_PASSWORD="$(tr -d '\r\n' < runtime/secrets/admin-web-password.txt)"
 
 if [ -n "$ADMIN_PASSWORD" ] && ! $AUTH_DISABLED; then
-  LOGIN_RESP="$($CURL -sS -X POST "$BASE_URL/api/login" \
+  LOGIN_RESP="$($CURL -sS -D "$LOGIN_HEADERS" -X POST "$BASE_URL/api/auth/login" \
     -H "Content-Type: application/json" \
     -d "{\"password\":\"$ADMIN_PASSWORD\"}" 2>/dev/null)" || true
-  if echo "$LOGIN_RESP" | grep -q '"ok":true'; then
+  if echo "$LOGIN_RESP" | grep -q '"authenticated":true'; then
     pass "login succeeds"
-    SESSION_COOKIE="$(echo "$LOGIN_RESP" | grep -o 'asc_session=[^";]*' | head -1 || true)"
-    CSRF_TOKEN="$(echo "$LOGIN_RESP" | grep -o '"csrf":"[^"]*"' | head -1 | sed 's/"csrf":"//;s/"//' || true)"
+    SESSION_COOKIE="$(grep -io 'set-cookie: asc_session=[^;]*' "$LOGIN_HEADERS" 2>/dev/null | head -1 | sed 's/^[Ss]et-[Cc]ookie: //' || true)"
+    CSRF_TOKEN="$(echo "$LOGIN_RESP" | grep -o '"csrfToken":"[^"]*"' | head -1 | sed 's/"csrfToken":"//;s/"//' || true)"
   else
     warn "login failed (password may have changed). Some auth tests will skip."
   fi
@@ -74,17 +76,22 @@ fi
 
 # ─── 5. CSRF ENFORCEMENT ───
 echo "--- CSRF ---"
-# POST without CSRF token should be rejected on mutating endpoints
-CSRF_FAIL="$($CURL -o /dev/null -w '%{http_code}' \
-  -X POST "$BASE_URL/api/login" \
-  -H "Content-Type: application/json" \
-  -d '{"password":"x"}' 2>/dev/null)" || true
-if [ "$CSRF_FAIL" = "403" ]; then
-  pass "POST without CSRF token returns 403"
-elif $AUTH_DISABLED && [ "$CSRF_FAIL" = "200" ]; then
-  pass "POST without CSRF returns 200 (auth disabled, expected)"
+# POST with a valid session but without CSRF should be rejected on protected mutating endpoints.
+if [ -n "$SESSION_COOKIE" ]; then
+  CSRF_FAIL="$($CURL -o /dev/null -w '%{http_code}' \
+    -X POST "$BASE_URL/api/auth/logout" \
+    -H "Cookie: $SESSION_COOKIE" \
+    -H "Content-Type: application/json" \
+    -d '{}' 2>/dev/null)" || true
+  if [ "$CSRF_FAIL" = "403" ]; then
+    pass "protected POST without CSRF token returns 403"
+  else
+    fail "protected POST without CSRF returned $CSRF_FAIL (expected 403)"
+  fi
+elif $AUTH_DISABLED; then
+  warn "CSRF protected-route check skipped because auth is disabled"
 else
-  warn "POST without CSRF returned $CSRF_FAIL (expected 403 or 200 with auth disabled)"
+  warn "CSRF protected-route check skipped because login session was unavailable"
 fi
 
 # GET should never require CSRF
@@ -114,7 +121,7 @@ XSS="$($CURL -o /dev/null -w '%{http_code}' -X POST "$BASE_URL/api/addons/instal
 
 # oversized payload (20KB JSON)
 BIG_PAYLOAD="{\"x\":\"$(python3 -c "print('A'*20000)" 2>/dev/null || printf 'A%.0s' {1..20000})\"}"
-SIZE="$($CURL -o /dev/null -w '%{http_code}' -X POST "$BASE_URL/api/login" \
+SIZE="$($CURL -o /dev/null -w '%{http_code}' -X POST "$BASE_URL/api/auth/login" \
   -H "Content-Type: application/json" -d "$BIG_PAYLOAD" 2>/dev/null)" || true
 [ "$SIZE" = "400" ] || [ "$SIZE" = "413" ] && pass "oversized payload returns $SIZE" || warn "oversized payload returned $SIZE (expected 400/413)"
 
@@ -135,7 +142,7 @@ UNSP="$($CURL -o /dev/null -w '%{http_code}' -X POST "$BASE_URL/api/addons/insta
 echo "--- Rate Limiting ---"
 RATE_BLOCK=0
 for i in $(seq 1 15); do
-  STATUS="$($CURL -o /dev/null -w '%{http_code}' -X POST "$BASE_URL/api/login" \
+  STATUS="$($CURL -o /dev/null -w '%{http_code}' -X POST "$BASE_URL/api/auth/login" \
     -H "Content-Type: application/json" -d '{"password":"wrong-'$RANDOM'"}' 2>/dev/null)" || true
   [ "$STATUS" = "429" ] && { RATE_BLOCK=1; break; }
 done
@@ -143,7 +150,7 @@ done
 
 # ─── 9. INFORMATION LEAKAGE ───
 echo "--- Information Leakage ---"
-ERROR_RESP="$($CURL -sS -X POST "$BASE_URL/api/login" -H "Content-Type: application/json" -d '{"password":""}' 2>/dev/null)" || true
+ERROR_RESP="$($CURL -sS -X POST "$BASE_URL/api/auth/login" -H "Content-Type: application/json" -d '{"password":""}' 2>/dev/null)" || true
 if echo "$ERROR_RESP" | grep -qvE '(\.js:|\.ts:|at |node_modules|stacktrace)'; then
   pass "errors do not leak stack traces"
 else
