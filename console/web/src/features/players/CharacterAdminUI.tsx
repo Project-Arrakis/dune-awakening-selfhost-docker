@@ -861,6 +861,7 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
       sortDirection={playerAdmin_craftingSort.sortDirection}
       onSort={playerAdmin_craftingSort.onSort}
       resizableColumns
+      rowKey={(row) => String(row.recipeId)}
       renderCell={(row, col) =>
         col === "recipeId" ? <code>{String(row.recipeId)}</code> :
         col === "source" ? friendlyCraftingSource(String(row.source)) :
@@ -882,6 +883,7 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
       sortDirection={playerAdmin_researchSort.sortDirection}
       onSort={playerAdmin_researchSort.onSort}
       resizableColumns
+      rowKey={(row) => String(row.itemKey)}
       renderCell={(row, col) => col === "itemKey" ? <code>{String(row.itemKey)}</code> : formatCell(row[col])}
       secondaryAction={(row) => <InlineActionResult result={playerAdmin_actionResult} resultKey={`research:${row.itemKey}`} />}
       secondaryActionLabel="Result"

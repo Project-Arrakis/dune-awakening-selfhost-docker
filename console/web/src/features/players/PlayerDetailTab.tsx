@@ -186,6 +186,7 @@ export function PlayerDetailTab({
       sortDirection={inventorySort.sortDirection}
       onSort={inventorySort.onSort}
       resizableColumns
+      rowKey={(row) => String(row.id)}
       isRowExpanded={(row) => editRow !== null && String(row.id) === String(editRow.id)}
       renderExpandedRow={(row) => renderEditPanel(row)}
     />
