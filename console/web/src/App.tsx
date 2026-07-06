@@ -123,7 +123,7 @@ const navGroups: { title: string; items: { tab: Tab; icon: React.ReactNode }[] }
   }
 ];
 
-const REDBLINK_REPO_URL = "https://github.com/Red-Blink/dune-awakening-selfhost-docker";
+const COMMUNITY_CONTRIBUTORS_URL = "https://github.com/Red-Blink/dune-awakening-selfhost-docker/graphs/contributors";
 const REDBLINK_DISCORD_URL = "https://discord.gg/9pQqytu6BU";
 const REDBLINK_KOFI_URL = "https://ko-fi.com/redblink";
 
@@ -137,6 +137,18 @@ function KofiLogo({ size = 18 }: { size?: number }) {
   return <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true" focusable="false">
     <path fill="currentColor" d="M4.2 6.1h12.5c1.7 0 3 1.3 3 3v.3h.5a3.3 3.3 0 0 1 0 6.6h-.8a6.6 6.6 0 0 1-6 3.9H7.7A6.7 6.7 0 0 1 1 13.2V9.3c0-1.8 1.4-3.2 3.2-3.2Zm15.5 7.5h.5a1 1 0 0 0 0-2h-.5v2ZM8.6 9.4c-.8 0-1.5.6-1.5 1.5 0 2 3.5 4 3.8 4.1.3-.1 3.8-2.1 3.8-4.1 0-.9-.7-1.5-1.5-1.5-.8 0-1.5.5-2.3 1.4-.8-.9-1.5-1.4-2.3-1.4Z" />
   </svg>;
+}
+
+function AppFooter() {
+  return (
+    <footer className="app-footer">
+      <Heart size={16} fill="currentColor" />
+      <span>
+        Created with love by RedBlink ·{" "}
+        <a href={COMMUNITY_CONTRIBUTORS_URL} target="_blank" rel="noreferrer">Community Contributors</a>
+      </span>
+    </footer>
+  );
 }
 
 function LazyTabBoundary({ children, label = "Loading Section" }: { children: React.ReactNode; label?: string }) {
@@ -450,7 +462,7 @@ export function App() {
               if (state.files?.complete ?? (state.files?.env && state.files?.token && state.files?.battlegroup)) setTab("Home");
             }}
           />
-          <footer className="app-footer"><Heart size={16} fill="currentColor" /><span>Created with love by <a href={REDBLINK_REPO_URL} target="_blank" rel="noreferrer">RedBlink</a></span></footer>
+          <AppFooter />
         </main>
       </div>
     );
@@ -563,7 +575,7 @@ export function App() {
           /></LazyTabBoundary>}
         {!redeploySetupOpen && tab === "Settings" && <LazyTabBoundary label="Loading Settings"><SettingsPanel onPasswordChanged={logoutAfterPasswordChange} /></LazyTabBoundary>}
         {!redeploySetupOpen && tab !== "Maps" && <TaskProgress task={task} onDismiss={() => setTask(null)} />}
-        <footer className="app-footer"><Heart size={16} fill="currentColor" /><span>Created with love by <a href={REDBLINK_REPO_URL} target="_blank" rel="noreferrer">RedBlink</a></span></footer>
+        <AppFooter />
       </main>
       <ConfirmDialog request={confirmRequest} onClose={closeConfirmDialog} />
     </div>
