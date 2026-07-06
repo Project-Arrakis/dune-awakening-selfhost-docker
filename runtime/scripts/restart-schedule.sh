@@ -10,6 +10,7 @@ HOST_ROOT_DIR="${DUNE_HOST_REPO_ROOT:-$ROOT_DIR}"
 source runtime/scripts/runtime-env.sh
 
 STATE_FILE="runtime/generated/restart-schedule.env"
+LAST_RUN_FILE="runtime/generated/restart-schedule-last-run"
 SERVICE_NAME="dune-awakening-scheduled-restart.service"
 TIMER_NAME="dune-awakening-scheduled-restart.timer"
 WARNING_SERVICE_NAME="dune-awakening-scheduled-restart-warning.service"
@@ -422,6 +423,10 @@ run_now() {
   local public_ip_fallback
 
   echo "=== Scheduled battlegroup restart ==="
+  if ! claim_scheduled_restart_window; then
+    return 0
+  fi
+
   public_ip_fallback="$(scheduled_restart_public_ip_fallback 2>/dev/null || true)"
   if [ -n "$public_ip_fallback" ]; then
     export DUNE_SERVER_IP_FALLBACK="$public_ip_fallback"
@@ -433,6 +438,7 @@ run_now() {
   echo
   echo "Starting battlegroup..."
   DUNE_START_FOREGROUND_DEFERRED_RECONCILE=1 runtime/scripts/start-all.sh
+  replay_spicefield_overrides_after_scheduled_restart
 }
 
 notify_now() {
@@ -440,6 +446,57 @@ notify_now() {
   require_notify_minutes "$notify_minutes"
   echo "=== Scheduled restart warning ==="
   runtime/scripts/dune admin broadcast-restart-warning "$notify_minutes"
+}
+
+replay_spicefield_overrides_after_scheduled_restart() {
+  local delays="${DUNE_SCHEDULED_RESTART_SPICEFIELD_REPLAY_DELAYS:-0 30 90}"
+  local delay
+
+  for delay in $delays; do
+    if ! printf '%s' "$delay" | grep -Eq '^[0-9]+$'; then
+      echo "Skipping invalid Spice Field replay delay: $delay"
+      continue
+    fi
+
+    if [ "$delay" -gt 0 ]; then
+      echo
+      echo "Waiting ${delay}s before reapplying Spice Field overrides..."
+      sleep "$delay"
+    fi
+
+    echo
+    echo "Reapplying Spice Field overrides after scheduled restart..."
+    runtime/scripts/spicefield-overrides.sh apply || true
+  done
+}
+
+claim_scheduled_restart_window() {
+  local cooldown="${DUNE_SCHEDULED_RESTART_COOLDOWN_SECONDS:-900}"
+  local now last age
+
+  [ "${DUNE_SCHEDULED_RESTART_ALLOW_BACK_TO_BACK:-0}" = "1" ] && return 0
+  if ! printf '%s' "$cooldown" | grep -Eq '^[0-9]+$'; then
+    cooldown=900
+  fi
+  [ "$cooldown" -gt 0 ] || return 0
+
+  mkdir -p "$(dirname "$LAST_RUN_FILE")"
+  now="$(date +%s)"
+  if [ -f "$LAST_RUN_FILE" ]; then
+    last="$(tr -d '[:space:]' < "$LAST_RUN_FILE" 2>/dev/null || true)"
+    if printf '%s' "$last" | grep -Eq '^[0-9]+$'; then
+      age=$((now - last))
+      if [ "$age" -ge 0 ] && [ "$age" -lt "$cooldown" ]; then
+        echo "Skipping scheduled restart: a restart began ${age}s ago (cooldown ${cooldown}s)."
+        echo "Set DUNE_SCHEDULED_RESTART_ALLOW_BACK_TO_BACK=1 to force another immediate run."
+        return 1
+      fi
+    fi
+  fi
+
+  printf '%s\n' "$now" > "$LAST_RUN_FILE"
+  chmod 644 "$LAST_RUN_FILE" 2>/dev/null || true
+  return 0
 }
 
 scheduled_restart_public_ip_fallback() {
