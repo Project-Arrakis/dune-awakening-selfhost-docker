@@ -8,27 +8,41 @@ import {
 import { policyError } from "./policy.js";
 import { discordStatusProvider } from "./statusProvider.js";
 import { discordReadinessProvider, discordServicesProvider } from "./readOnlyProviders.js";
-import { buildDuneArgs, runDune } from "../../runner.js";
 
 async function defaultPopulationProvider(config) {
   try {
-    const result = await runDune(config, buildDuneArgs("population"), {
-      timeoutMs: 15000,
-      allowedExitCodes: [0]
-    });
-    const raw = result?.stdout || "";
-    const parsed = parsePopulationOutput(raw);
-    return parsed;
+    const status = await discordStatusProvider(config);
+    const population = status?.population;
+    if (population !== undefined) return parsePopulationValue(population);
+    
+    // Fallback: scan raw status for population-like fields
+    if (status && typeof status === "object") {
+      for (const [key, val] of Object.entries(status)) {
+        if (/pop/i.test(key) && typeof val === "string") {
+          return parsePopulationValue(val);
+        }
+        if (typeof val === "object" && val !== null) {
+          for (const [k2, v2] of Object.entries(val)) {
+            if (/pop/i.test(k2) && typeof v2 === "string") {
+              return parsePopulationValue(v2);
+            }
+          }
+        }
+      }
+    }
+    return { onlinePlayers: "unknown", totalPlayers: "unknown", aggregate: true, detailsSuppressed: true };
   } catch {
-    return { onlinePlayers: 0, totalPlayers: 0, aggregate: true, detailsSuppressed: true };
+    return { onlinePlayers: "unknown", totalPlayers: "unknown", aggregate: true, detailsSuppressed: true };
   }
 }
 
-function parsePopulationOutput(stdout = "") {
-  const text = String(stdout || "").trim();
-  const match = text.match(/(\d+)\s*\/\s*(\d+)/);
-  if (match) return { onlinePlayers: Number(match[1]), totalPlayers: Number(match[2]), aggregate: true, detailsSuppressed: true };
-  return { onlinePlayers: 0, totalPlayers: 0, aggregate: true, detailsSuppressed: true };
+function parsePopulationValue(value = "") {
+  const text = String(value).trim();
+  const match = text.match(/(\d+)\s*\/?\s*(\d+)/);
+  if (match) return { onlinePlayers: Number(match[1]), totalPlayers: match[2] ? Number(match[2]) : 0, aggregate: true, detailsSuppressed: true };
+  const num = Number(text);
+  if (Number.isFinite(num)) return { onlinePlayers: num, totalPlayers: 0, aggregate: true, detailsSuppressed: true };
+  return { onlinePlayers: "unknown", totalPlayers: "unknown", aggregate: true, detailsSuppressed: true };
 }
 
 export function isDiscordAdapterRoute(path) {
