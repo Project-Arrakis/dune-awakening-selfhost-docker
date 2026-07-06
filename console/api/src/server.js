@@ -5,7 +5,7 @@ import { existsSync, writeFileSync, chmodSync, mkdirSync, createReadStream, read
 import { basename, join, resolve } from "node:path";
 import { loadConfig, publicConfig, parseAllowedIps } from "./config.js";
 import { createAuth, setSessionCookie, clearSessionCookie, json, withSecurityHeaders } from "./auth.js";
-import { createLoginRateLimiter } from "./rateLimit.js";
+import { createLoginRateLimiter, createMutationRateLimiter } from "./rateLimit.js";
 import { createBridgeRateLimiter } from "./bridgeRateLimit.js";
 import { TaskManager, publicTask } from "./tasks.js";
 import { preflight } from "./preflight.js";
@@ -37,6 +37,7 @@ import { persistSpicefieldOverride } from "./services/spicefieldOverrides.js";
 const config = loadConfig();
 const auth = createAuth(config);
 const loginRateLimiter = createLoginRateLimiter();
+const mutationRateLimiter = createMutationRateLimiter();
 const bridgeRateLimiter = createBridgeRateLimiter();
 const tasks = new TaskManager(config);
 let db = createDb(config);
@@ -258,6 +259,7 @@ async function handleApi(req, res) {
 
   const session = auth.requireAuth(req, res);
   if (!session) return;
+  req.authSession = session;
 
   if (path === "/api/setup/state") return json(res, 200, await setupState());
   if (path === "/api/setup/preflight" && req.method === "POST") return json(res, 200, await preflight(config));
@@ -553,6 +555,7 @@ async function addonBridgeRoute(req, res, path) {
     const requiredPermission = readOnly ? "database:read" : "database:write";
     if (action === "database.query" && !readOnly) return json(res, 400, { error: "database.query accepts read-only SQL only. Use database.execute with database:write permission for write SQL." });
     const addon = assertInstalledAddonPermission(config, id, requiredPermission);
+    if (!readOnly && !applyMutationRateLimit(req, res, `addon:${id}:database.execute`)) return;
     if (!readOnly && !config.mockMode) {
       await runDune(config, buildDuneArgs("backupCreate"), { env: { DB_BACKUP_ORIGIN: `addon-${addon.id}` } });
     }
@@ -625,10 +628,12 @@ async function liveMapTeleportPlayerRoute(req, res) {
     } catch (error) {
       return json(res, 400, { error: redact(error.message || error) });
     }
+    if (!applyMutationRateLimit(req, res, "live-map.teleport.live")) return;
     audit(config, req, "live-map.teleport.live", { playerId, x: payload.x, y: payload.y, z: payload.z, partitionId: payload.partitionId });
     return json(res, 202, { path: "live", task: tasks.create("admin", "adminTeleport", payload) });
   }
   try {
+    if (!applyMutationRateLimit(req, res, "live-map.teleport.offline")) return;
     const result = await duneDb.teleportOfflinePlayerToCoords(db, playerId, payload);
     audit(config, req, "live-map.teleport.offline", { playerId, supported: result.supported, x: payload.x, y: payload.y, z: payload.z, partitionId: payload.partitionId });
     return json(res, 200, { path: "offline", ...result });
@@ -789,6 +794,7 @@ async function databaseQuery(req, res) {
   const body = await readJson(req);
   const query = String(body.query || "");
   const readOnly = isReadOnlySql(query);
+  if (!readOnly && !applyMutationRateLimit(req, res, "database.query.write")) return;
   if (!config.mockMode && !readOnly) {
     await runDune(config, buildDuneArgs("backupCreate"), { env: { DB_BACKUP_ORIGIN: "destructive-sql" } });
   }
@@ -816,6 +822,7 @@ async function databaseRowUpdate(req, res, path) {
   const schema = decodeURIComponent(parts[4]);
   const table = decodeURIComponent(parts[5]);
   const body = await readJson(req);
+  if (!applyMutationRateLimit(req, res, `database.row-update:${schema}.${table}`)) return;
   audit(config, req, "database.row-update", { schema, table, columns: Object.keys(body.values || {}) });
   return dbJson(res, () => duneDb.updateTableRow(db, schema, table, body.rowId, body.values));
 }
@@ -1387,6 +1394,7 @@ async function playerTask(req, res, path, operation, phrase = "") {
   if (phrase && body.confirmation !== phrase) {
     return json(res, 400, { error: `Confirmation phrase required: ${phrase}` });
   }
+  if (!applyMutationRateLimit(req, res, `players.${operation}`)) return;
   const playerId = decodeURIComponent(path.split("/")[3]);
   return task(req, res, "admin", operation, { ...body, playerId });
 }
@@ -1565,6 +1573,7 @@ async function directDbMutation(req, res, action, phrase, fn, meta = {}) {
   if (phrase && body.confirmation !== phrase) {
     return json(res, 400, { error: `Confirmation phrase required: ${phrase}` });
   }
+  if (!applyMutationRateLimit(req, res, action)) return;
   try {
     const result = config.mockMode ? { ok: true, mock: true } : await fn(body);
     audit(config, req, action, { ...meta, supported: true, result });
@@ -1580,9 +1589,11 @@ async function giveItemsRoute(req, res, path) {
   const body = await readJson(req);
   const playerId = decodeURIComponent(path.split("/")[3]);
   if (!Array.isArray(body.items)) {
+    if (!applyMutationRateLimit(req, res, "players.give-items")) return;
     return task(req, res, "admin", "adminGiveItems", { ...body, playerId });
   }
   if (body.items.length < 1 || body.items.length > 25) return json(res, 400, { error: "Give Multiple Items requires 1-25 items" });
+  if (!applyMutationRateLimit(req, res, "players.give-items")) return;
 
   const results = [];
   const target = await resolvePlayerGrantTarget(playerId);
@@ -1605,6 +1616,7 @@ async function giveItemsRoute(req, res, path) {
 async function giveSingleItemRoute(req, res, path, operation) {
   const body = await readJson(req);
   const playerId = decodeURIComponent(path.split("/")[3]);
+  if (!applyMutationRateLimit(req, res, operation === "adminGiveItemId" ? "players.give-item-id" : "players.give-item")) return;
   if (body.quality === undefined && body.grade === undefined) {
     const resolved = operation === "adminGiveItemId"
       ? resolveCatalogItem(config.repoRoot, { itemId: body.itemId })
@@ -2093,4 +2105,17 @@ function mockCommand(operation) {
 
 function loginRateLimitKey(req) {
   return req.socket?.remoteAddress || "unknown";
+}
+
+function applyMutationRateLimit(req, res, scope) {
+  const sessionId = req.authSession?.id || "anonymous";
+  const remoteIp = (req.socket?.remoteAddress || "unknown").replace(/^::ffff:/, "");
+  const key = `${scope}:${sessionId}:${remoteIp}`;
+  const limit = mutationRateLimiter.check(key);
+  if (!limit.allowed) {
+    json(res, 429, { error: `Too many admin changes. Wait ${limit.retryAfterSeconds}s, then try again.` }, { "retry-after": String(limit.retryAfterSeconds) });
+    return false;
+  }
+  mutationRateLimiter.record(key);
+  return true;
 }

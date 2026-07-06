@@ -47,8 +47,8 @@ export async function dbStatus(db) {
 }
 
 export async function changeDunePassword(db, password) {
-  const escaped = String(password).replaceAll("'", "''");
-  await db.query(`alter role dune with password '${escaped}'`);
+  const quoted = await db.query("select quote_literal($1::text) as password", [String(password)]);
+  await db.query(`alter role dune with password ${quoted.rows[0].password}`);
   return { ok: true, user: "dune" };
 }
 
@@ -1853,6 +1853,12 @@ export async function liveMapPlayers(db, map = "") {
 
 export async function teleportOfflinePlayerToCoords(db, playerId, { x, y, z, partitionId = 0 } = {}) {
   const flsId = validatePlayerIdForDb(playerId);
+  const playerExists = await offlineTeleportPlayerExists(db, flsId);
+  if (!playerExists) {
+    const error = new Error("Player was not found in the game database.");
+    error.statusCode = 404;
+    throw error;
+  }
   const resolvedPartition = await resolveTeleportPartition(db, flsId, partitionId);
   if (!resolvedPartition) {
     return { supported: false, reason: "Could not resolve a valid map partition for this offline player." };
@@ -3078,6 +3084,19 @@ async function resolveTeleportPartition(db, playerId, partitionId) {
     order by partition_id
     limit 1`).catch(() => ({ rows: [] }));
   return Number(fallback.rows[0]?.partition_id || 0);
+}
+
+async function offlineTeleportPlayerExists(db, playerId) {
+  const result = await db.query(`
+    select exists (
+      select 1
+      from dune.accounts ac
+      join dune.player_state ps on ps.account_id = ac.id
+      join dune.actors a on a.id = ps.player_pawn_id
+      where ac."user" = $1
+      limit 1
+    ) as exists`, [playerId]);
+  return Boolean(result.rows[0]?.exists);
 }
 
 function normalizeMarker(row) {

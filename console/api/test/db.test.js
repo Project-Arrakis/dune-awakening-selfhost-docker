@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { assertIdentifier, discoverDbConfig, isReadOnlySql, quoteQualified, redactDbError, rowsResult } from "../src/db.js";
-import { addCurrency, addFactionReputation, addIntel, addonLeadershipPlayers, addonOpsHealthFarms, addonOpsHealthPlayers, addonOpsHealthSummary, addonOpsHealthSummaryV2, completeJourneyNode, completeTutorial, deleteInventoryItem, giveItemToPlayer, giveItemToStorage, guildMembers, landsraadOverview, listGuilds, listPlayers, listSpicefieldTypes, listTables, liveMapPlayers, liveMapServices, playerCraftingRecipes, playerJourney, playerPosition, playerResearchItems, repairVehicleDecay, resetJourneyNode, resetTutorial, runSql, setLandsraadPlayerContribution, tablePreview, unlockCraftingRecipe, unlockResearchItem, updateLandsraadRewardTier, updateLandsraadTaskGoal, updateLandsraadTermTaskGoals, updateSpicefieldType, updateTableRow, UnsupportedCapabilityError } from "../src/duneDb.js";
+import { addCurrency, addFactionReputation, addIntel, addonLeadershipPlayers, addonOpsHealthFarms, addonOpsHealthPlayers, addonOpsHealthSummary, addonOpsHealthSummaryV2, changeDunePassword, completeJourneyNode, completeTutorial, deleteInventoryItem, giveItemToPlayer, giveItemToStorage, guildMembers, landsraadOverview, listGuilds, listPlayers, listSpicefieldTypes, listTables, liveMapPlayers, liveMapServices, playerCraftingRecipes, playerJourney, playerPosition, playerResearchItems, repairVehicleDecay, resetJourneyNode, resetTutorial, runSql, setLandsraadPlayerContribution, tablePreview, teleportOfflinePlayerToCoords, unlockCraftingRecipe, unlockResearchItem, updateLandsraadRewardTier, updateLandsraadTaskGoal, updateLandsraadTermTaskGoals, updateSpicefieldType, updateTableRow, UnsupportedCapabilityError } from "../src/duneDb.js";
 
 test("discovers RedBlink Postgres defaults and env overrides", () => {
   assert.deepEqual(discoverDbConfig({}), {
@@ -21,6 +21,25 @@ test("validates and quotes SQL identifiers", () => {
   assert.equal(quoteQualified("dune", "player_state"), '"dune"."player_state"');
   assert.throws(() => assertIdentifier("player_state;drop"));
   assert.throws(() => quoteQualified("dune", "../accounts"));
+});
+
+test("database password change uses server-side literal quoting", async () => {
+  const calls = [];
+  const db = {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes("quote_literal")) {
+        assert.deepEqual(values, ["new'pass; alter role postgres superuser; --"]);
+        return { rows: [{ password: "'new''pass; alter role postgres superuser; --'" }] };
+      }
+      return { rows: [] };
+    }
+  };
+
+  const result = await changeDunePassword(db, "new'pass; alter role postgres superuser; --");
+  assert.deepEqual(result, { ok: true, user: "dune" });
+  assert.equal(calls[0].text, "select quote_literal($1::text) as password");
+  assert.equal(calls[1].text, "alter role dune with password 'new''pass; alter role postgres superuser; --'");
 });
 
 test("detects destructive SQL and redacts connection strings", () => {
@@ -1443,6 +1462,42 @@ test("OPS health summary v2 combines player and farm aggregate health", async ()
   const result = await addonOpsHealthSummaryV2(db);
   assert.equal(result.players.total, 1);
   assert.equal(result.farms.total, 1);
+});
+
+test("offline teleport rejects unknown players before moving them", async () => {
+  const calls = [];
+  const db = {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes("select exists")) return { rows: [{ exists: false }] };
+      throw new Error("unexpected query after missing player check");
+    }
+  };
+
+  await assert.rejects(
+    () => teleportOfflinePlayerToCoords(db, "FLS_MISSING", { x: 1, y: 2, z: 3, partitionId: 1 }),
+    (error) => error.statusCode === 404 && /not found/i.test(error.message)
+  );
+  assert.equal(calls.length, 1);
+  assert.doesNotMatch(calls.map((call) => call.text).join("\n"), /admin_move_offline_player_to_partition/);
+});
+
+test("offline teleport moves existing players through the supported function", async () => {
+  const calls = [];
+  const db = {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes("select exists")) return { rows: [{ exists: true }] };
+      if (text.includes("to_regprocedure")) return { rows: [{ proc: "dune.admin_move_offline_player_to_partition(text,bigint,dune.vector)" }] };
+      if (text.includes("admin_move_offline_player_to_partition")) return { rows: [{ ok: true }] };
+      return { rows: [] };
+    }
+  };
+
+  const result = await teleportOfflinePlayerToCoords(db, "FLS_OK", { x: 1.5, y: 2.5, z: 3.5, partitionId: 8 });
+  const moveCall = calls.find((call) => call.text.includes("select dune.admin_move_offline_player_to_partition"));
+  assert.equal(result.supported, true);
+  assert.deepEqual(moveCall.values, ["FLS_OK", 8, 1.5, 2.5, 3.5]);
 });
 
 function fakeMutationDb(calls, fixtures = {}) {

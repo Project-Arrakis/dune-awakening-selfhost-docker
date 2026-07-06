@@ -51,3 +51,59 @@ export function createLoginRateLimiter(options = {}) {
 
   return { check, recordFailure, recordSuccess };
 }
+
+export function createMutationRateLimiter(options = {}) {
+  const {
+    maxRequests = 20,
+    globalMaxRequests = 200,
+    windowMs = 60 * 1000,
+    now = () => Date.now()
+  } = options;
+  const requests = new Map();
+  const globalKey = "__global_mutations__";
+
+  function check(key) {
+    const timestamp = now();
+    const current = activeRequest(key, timestamp);
+    const global = activeRequest(globalKey, timestamp);
+    const retryAfterSeconds = Math.ceil(windowMs / 1000);
+    if (current && current.count >= maxRequests) {
+      return { allowed: false, retryAfterSeconds: retryAfter(current, timestamp, retryAfterSeconds) };
+    }
+    if (global && global.count >= globalMaxRequests) {
+      return { allowed: false, retryAfterSeconds: retryAfter(global, timestamp, retryAfterSeconds) };
+    }
+    return { allowed: true, retryAfterSeconds: 0 };
+  }
+
+  function record(key) {
+    const timestamp = now();
+    increment(key, timestamp);
+    increment(globalKey, timestamp);
+    return check(key);
+  }
+
+  function activeRequest(key, timestamp) {
+    const current = requests.get(key);
+    if (!current) return null;
+    if (current.firstRequestAt + windowMs <= timestamp) {
+      requests.delete(key);
+      return null;
+    }
+    return current;
+  }
+
+  function increment(key, timestamp) {
+    const current = activeRequest(key, timestamp);
+    const next = current
+      ? { ...current, count: current.count + 1 }
+      : { count: 1, firstRequestAt: timestamp };
+    requests.set(key, next);
+  }
+
+  function retryAfter(current, timestamp, fallback) {
+    return Math.max(1, Math.ceil((current.firstRequestAt + windowMs - timestamp) / 1000) || fallback);
+  }
+
+  return { check, record };
+}
