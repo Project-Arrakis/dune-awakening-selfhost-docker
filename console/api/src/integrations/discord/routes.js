@@ -6,16 +6,40 @@ import {
   discordAdapterStatus, DISCORD_ADAPTER_ROUTES, DISCORD_PLANNED_ADAPTER_ROUTES
 } from "./adapter.js";
 import { policyError } from "./policy.js";
+import { discordStatusProvider } from "./statusProvider.js";
+import { discordReadinessProvider, discordServicesProvider } from "./readOnlyProviders.js";
+import { buildDuneArgs, runDune } from "../../runner.js";
+
+async function defaultPopulationProvider(config) {
+  try {
+    const result = await runDune(config, buildDuneArgs("population"), {
+      timeoutMs: 15000,
+      allowedExitCodes: [0]
+    });
+    const raw = result?.stdout || "";
+    const parsed = parsePopulationOutput(raw);
+    return parsed;
+  } catch {
+    return { onlinePlayers: 0, totalPlayers: 0, aggregate: true, detailsSuppressed: true };
+  }
+}
+
+function parsePopulationOutput(stdout = "") {
+  const text = String(stdout || "").trim();
+  const match = text.match(/(\d+)\s*\/\s*(\d+)/);
+  if (match) return { onlinePlayers: Number(match[1]), totalPlayers: Number(match[2]), aggregate: true, detailsSuppressed: true };
+  return { onlinePlayers: 0, totalPlayers: 0, aggregate: true, detailsSuppressed: true };
+}
 
 export function isDiscordAdapterRoute(path) {
   return Object.values(DISCORD_ADAPTER_ROUTES).includes(path);
 }
 
 export async function handleDiscordAdapterRoute({ req, res, path, config, readJson, json, statusProvider, readinessProvider, servicesProvider, populationProvider }) {
-  const safeStatusProvider = typeof statusProvider === "function" ? statusProvider : async () => ({});
-  const safeReadinessProvider = typeof readinessProvider === "function" ? readinessProvider : async () => ({ ready: true });
-  const safeServicesProvider = typeof servicesProvider === "function" ? servicesProvider : async () => ({ services: [] });
-  const safePopulationProvider = typeof populationProvider === "function" ? populationProvider : async () => ({ onlinePlayers: 0 });
+  const safeStatusProvider = typeof statusProvider === "function" ? statusProvider : () => discordStatusProvider(config);
+  const safeReadinessProvider = typeof readinessProvider === "function" ? readinessProvider : () => discordReadinessProvider(config);
+  const safeServicesProvider = typeof servicesProvider === "function" ? servicesProvider : () => discordServicesProvider(config);
+  const safePopulationProvider = typeof populationProvider === "function" ? populationProvider : () => defaultPopulationProvider(config);
   try {
     if (!discordAdapterEnabled(config)) throw policyError("adapter_disabled", "Discord adapter is disabled.", 404);
     requireDiscordBotToken(req, config);

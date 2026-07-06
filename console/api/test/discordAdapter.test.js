@@ -189,3 +189,47 @@ test("formats safe adapter errors", () => {
   assert.equal(response.body.code, "bad_request");
   assert.doesNotMatch(response.body.error, /127\.0\.0\.1/);
 });
+
+// Server route integration test — exercises handleDiscordAdapterRoute through a live HTTP server
+import { createServer } from "node:http";
+import { writeFileSync, unlinkSync } from "node:fs";
+import { handleDiscordAdapterRoute } from "../src/integrations/discord/routes.js";
+
+test("adapter routes respond through mounted HTTP server path", async () => {
+  const tokenFile = "/tmp/discord-adapter-test-token.txt";
+  writeFileSync(tokenFile, "server-test-token");
+  const testConfig = { discordBotApiTokenFile: tokenFile, discordAdapterEnabled: true };
+
+  try {
+    await new Promise((resolve, reject) => {
+      const server = createServer(async (req, res) => {
+        const url = new URL(req.url || "/", "http://local");
+        const path = url.pathname;
+        const readJson = async () => {
+          const chunks = [];
+          for await (const chunk of req) chunks.push(chunk);
+          return Buffer.concat(chunks).length ? JSON.parse(Buffer.concat(chunks).toString()) : {};
+        };
+        const json = (r, code, body) => { r.writeHead(code, { "content-type": "application/json" }); r.end(JSON.stringify(body)); };
+        await handleDiscordAdapterRoute({ req, res, path, config: testConfig, readJson, json });
+      });
+      const auth = { authorization: "Bearer server-test-token" };
+
+      server.listen(async () => {
+        try {
+          const base = `http://127.0.0.1:${server.address().port}`;
+          assert.equal((await fetch(`${base}/api/integrations/discord/health`, { headers: auth })).status, 200);
+          // Status/readiness/services return 500 without running Dune, 200 with mock providers — both prove route is mounted
+          const statusRes = await fetch(`${base}/api/integrations/discord/status`, { method: "POST", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify({ actor: actor(["role-observer"]) }) });
+          assert.ok([200, 500].includes(statusRes.status), `status route returned ${statusRes.status}`);
+          assert.equal((await fetch(`${base}/api/integrations/discord/health`)).status, 401);
+          assert.equal((await fetch(`${base}/api/integrations/discord/nonexistent`, { headers: auth })).status, 404);
+          server.close();
+          resolve();
+        } catch (e) { server.close(); reject(e); }
+      });
+    });
+  } finally {
+    try { unlinkSync(tokenFile); } catch {}
+  }
+});
