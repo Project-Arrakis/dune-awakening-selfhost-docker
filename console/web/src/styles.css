@@ -1515,6 +1515,9 @@ td .inline-action-result-wrap { flex: 1 0 100%; justify-content: flex-start; min
 .settings-category .settings-grid-roomy { padding: 14px; }
 .settings-selector-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; margin-bottom: 12px; }
 .settings-selector-row .compact-select { min-width: min(100%, 280px); }
+.spicefields-toolbar { align-items: end; }
+.spicefields-toolbar .wide-field { flex: 1 1 420px; }
+.spicefields-refresh-button { flex: 0 0 auto; margin-bottom: 0; min-height: 42px; }
 .modifier-search-tools { display: grid; grid-template-columns: minmax(220px, 1fr) auto; gap: 8px; align-items: end; flex: 1 1 420px; min-width: min(100%, 320px); }
 .modifier-filter-input { width: 100%; min-height: 42px; }
 .settings-field { display: grid; gap: 9px; align-content: start; min-width: 0; border: 1px solid rgba(214, 185, 140, .13); background: rgba(255,255,255,.03); border-radius: 8px; padding: 14px; }

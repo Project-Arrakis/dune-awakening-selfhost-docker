@@ -249,7 +249,7 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
   const [spicefieldDrafts, setSpicefieldDrafts] = useState<Record<string, SpicefieldDraft>>({});
   const [spicefieldResult, setSpicefieldResult] = useState<HomeTaskResult | null>(null);
   const [spicefieldSavingId, setSpicefieldSavingId] = useState("");
-  const [spicefieldFilter, setSpicefieldFilter] = useState("DeepDesert");
+  const [spicefieldFilter, setSpicefieldFilter] = useState("");
   const [modifiersOpen, setModifiersOpen] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [startupSettingsOpen, setStartupSettingsOpen] = useState(false);
@@ -1446,9 +1446,9 @@ function SpicefieldsEditor({
   onSave: (row: SpicefieldTypeRow) => void;
 }) {
   return <section className="spicefields-editor">
-    <div className="settings-selector-row">
+    <div className="settings-selector-row spicefields-toolbar">
       <label className="wide-field">Filter<input value={filter} onChange={(event) => onFilterChange(event.target.value)} placeholder="Filter by map, type, or dimension" /></label>
-      <div className="action-row"><button onClick={onRefresh}>Refresh</button></div>
+      <button className="spicefields-refresh-button" onClick={onRefresh}>Refresh</button>
     </div>
     {result && <div className="maps-result-slot"><HomeTaskResultCard result={result} /></div>}
     {!allRows.length ? <div className="empty">Spice field controls are unavailable for this database schema.</div> : null}
