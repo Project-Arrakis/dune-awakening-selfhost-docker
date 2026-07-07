@@ -55,10 +55,11 @@ async function ensureTable(db) {
 
 function detectTransitions(previous, current) {
   const deaths = [];
+  if (!previous.size) return deaths;
   for (const [id, newState] of current) {
     if (!newState.startsWith("Dead")) continue;
     const oldState = previous.get(id);
-    if (oldState === "Alive" || oldState === undefined || oldState === null) {
+    if (oldState === "Alive") {
       deaths.push({ player_controller_id: id, death_cause: newState });
     }
   }
@@ -116,3 +117,5 @@ export function createDeathPoller(config) {
     get initSQL() { return INIT_SQL; }
   };
 }
+
+export { detectTransitions };

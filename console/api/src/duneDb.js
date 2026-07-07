@@ -3403,56 +3403,80 @@ export async function addonOpsActivitySummary(db) {
   let guildActivity = [];
   try {
     const guildsExist = await tableExists(db, "guilds");
-    const guildMembersExist = await tableExists(db, "guild_members");
-    if (guildsExist && guildMembersExist && columns.has("online_status")) {
-      const guildResult = await db.query(`
-        select coalesce(g.name, 'Unknown') as guild,
-               count(gm.*)::int as members,
-               count(ps.*) filter (where ps.online_status = 'Online')::int as online
-        from dune.guilds g
-        left join dune.guild_members gm on gm.guild_id = g.id
-        left join dune.player_state ps on ps.account_id = gm.account_id
-        group by g.name
-        order by members desc
-        limit 20`);
-      guildActivity = guildResult.rows || [];
+    const membersExist = await tableExists(db, "guild_members");
+    if (guildsExist && membersExist) {
+      const memberCols = await columnsFor(db, "guild_members");
+      const guildCols = await columnsFor(db, "guilds");
+      const playerCol = firstExistingColumn(memberCols, ["player_id", "player_controller_id", "account_id"]);
+      const memberGuildCol = firstExistingColumn(memberCols, ["guild_id", "id"]);
+      const guildIdCol = firstExistingColumn(guildCols, ["guild_id", "id"]);
+      const guildNameCol = firstExistingColumn(guildCols, ["guild_name", "name", "display_name"]);
+      if (playerCol && memberGuildCol && guildIdCol && guildNameCol) {
+        const guildResult = await db.query(`
+          select coalesce(g.${quoteIdentifier(guildNameCol)}, 'Unknown') as guild,
+                 count(gm.*)::int as members,
+                 count(ps.*) filter (where ps.online_status = 'Online')::int as online
+          from dune.guilds g
+          left join dune.guild_members gm on gm.${quoteIdentifier(memberGuildCol)} = g.${quoteIdentifier(guildIdCol)}
+          left join dune.player_state ps on ps.player_controller_id::text = gm.${quoteIdentifier(playerCol)}::text
+          group by g.${quoteIdentifier(guildNameCol)}
+          order by members desc
+          limit 20`);
+        guildActivity = guildResult.rows || [];
+      }
     }
-  } catch { /* guild tables may not exist */ }
+  } catch { }
 
   let factionActivity = [];
   try {
     const factionExists = await tableExists(db, "player_faction");
-    if (factionExists && columns.has("online_status")) {
-      const factionResult = await db.query(`
-        select coalesce(pf.faction, 'Unknown') as faction,
-               count(*)::int as members,
-               count(*) filter (where ps.online_status = 'Online')::int as online
-        from dune.player_faction pf
-        join dune.player_state ps on ps.account_id = pf.player_id
-        group by pf.faction
-        order by members desc
-        limit 20`);
-      factionActivity = factionResult.rows || [];
+    if (factionExists) {
+      const factionCols = await columnsFor(db, "player_faction");
+      const factionsExist = await tableExists(db, "factions");
+      const actorCol = firstExistingColumn(factionCols, ["actor_id", "player_id", "player_controller_id"]);
+      const factionIdCol = firstExistingColumn(factionCols, ["faction_id", "faction"]);
+      if (actorCol && factionIdCol) {
+        const factionResult = await db.query(`
+          select coalesce(f.name, pf.${quoteIdentifier(factionIdCol)}::text, 'Unknown') as faction,
+                 count(*)::int as members,
+                 count(*) filter (where ps.online_status = 'Online')::int as online
+          from dune.player_faction pf
+          join dune.player_state ps on ps.player_pawn_id::text = pf.${quoteIdentifier(actorCol)}::text
+          ${factionsExist ? "left join dune.factions f on f.id::text = pf." + quoteIdentifier(factionIdCol) + "::text" : ""}
+          group by f.name, pf.${quoteIdentifier(factionIdCol)}
+          order by members desc
+          limit 20`);
+        factionActivity = factionResult.rows || [];
+      }
     }
-  } catch { /* faction table may not exist */ }
+  } catch { }
 
   let mapActivity = [];
   try {
     const mapsExist = await tableExists(db, "map_names");
+    const playerMapTable = await tableExists(db, "overmap_players");
     if (mapsExist) {
-      const mapResult = await db.query(`
-        select coalesce(mn.name, 'Unknown') as map,
-               count(*)::int as actors,
-               count(*) filter (where ps.online_status = 'Online')::int as online
-        from dune.map_names mn
-        left join dune.markers m on m.map_name_id = mn.id
-        left join dune.player_state ps on ps.account_id = m.player_id
-        group by mn.name
-        order by actors desc
-        limit 20`);
-      mapActivity = mapResult.rows || [];
+      const mapCols = await columnsFor(db, "map_names");
+      const mapIdCol = firstExistingColumn(mapCols, ["map_name_id", "id"]);
+      const mapNameCol = firstExistingColumn(mapCols, ["map_name", "name"]);
+      if (mapIdCol && mapNameCol) {
+        const mapResult = await db.query(`
+          select coalesce(mn.${quoteIdentifier(mapNameCol)}, 'Unknown') as map,
+                 ${playerMapTable
+                    ? `count(op.*)::int as actors,
+                       count(op.*) filter (where op.is_online)::int as online
+                       from dune.map_names mn
+                       left join dune.overmap_players op on op.map_name_id = mn.${quoteIdentifier(mapIdCol)}
+                       group by mn.${quoteIdentifier(mapNameCol)}`
+                    : `0::int as actors, 0::int as online
+                       from dune.map_names mn
+                       group by mn.${quoteIdentifier(mapNameCol)}`}
+          order by actors desc
+          limit 20`);
+        mapActivity = mapResult.rows || [];
+      }
     }
-  } catch { /* map tables may not exist */ }
+  } catch { }
 
   return {
     totalPlayers: Number(r.total_players || 0),
