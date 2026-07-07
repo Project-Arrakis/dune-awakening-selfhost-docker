@@ -23,6 +23,11 @@ runtime/scripts/publish-sietch-overrides.sh stop || true
 pkill -f "publish-sietch-overrides.sh loop" 2>/dev/null || true
 
 echo
+echo "=== Stopping Spice Field override reconciler ==="
+runtime/scripts/spicefield-overrides.sh stop || true
+pkill -f "spicefield-overrides.sh loop" 2>/dev/null || true
+
+echo
 echo "=== Stopping Deep Desert warm-up publisher ==="
 runtime/scripts/publish-deepdesert-overrides.sh stop || true
 pkill -f "publish-deepdesert-overrides.sh loop" 2>/dev/null || true

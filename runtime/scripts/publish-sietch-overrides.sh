@@ -15,6 +15,7 @@ RMQ_CREDS_TTL_SECONDS="${DUNE_SIETCH_OVERRIDE_RMQ_CREDS_TTL_SECONDS:-300}"
 FORWARD_POLL_SECONDS="${DUNE_SIETCH_OVERRIDE_FORWARD_POLL_SECONDS:-5}"
 ROUTE_REFRESH_SECONDS="${DUNE_SIETCH_OVERRIDE_ROUTE_REFRESH_SECONDS:-300}"
 SNAPSHOT_REFRESH_SECONDS="${DUNE_SIETCH_OVERRIDE_SNAPSHOT_REFRESH_SECONDS:-10}"
+SPICEFIELD_RECONCILE_SECONDS="${DUNE_SIETCH_SPICEFIELD_RECONCILE_SECONDS:-60}"
 
 SOURCE_EXCHANGE="completions"
 SOURCE_ROUTING_KEY="server_state.Survival_1"
@@ -518,6 +519,7 @@ start_loop() {
   trap 'rm -f "$PID_FILE"' EXIT
   local route_refresh_at=0
   local snapshot_refresh_at=0
+  local spicefield_reconcile_at=0
   ensure_route
   publish_snapshot_once >>"$LOG_FILE" 2>&1 || true
   while true; do
@@ -528,6 +530,10 @@ start_loop() {
     if [ "$(date +%s)" -ge "$snapshot_refresh_at" ]; then
       publish_snapshot_once >>"$LOG_FILE" 2>&1 || true
       snapshot_refresh_at=$(( $(date +%s) + SNAPSHOT_REFRESH_SECONDS ))
+    fi
+    if [ "${SPICEFIELD_RECONCILE_SECONDS:-0}" -gt 0 ] 2>/dev/null && [ "$(date +%s)" -ge "$spicefield_reconcile_at" ]; then
+      runtime/scripts/spicefield-overrides.sh reconcile >>"$LOG_FILE" 2>&1 || true
+      spicefield_reconcile_at=$(( $(date +%s) + SPICEFIELD_RECONCILE_SECONDS ))
     fi
     if rows="$(forward_batch_once)"; then
       while IFS= read -r payload; do
