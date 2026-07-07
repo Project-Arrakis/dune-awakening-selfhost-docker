@@ -146,6 +146,16 @@ export async function handleDiscordAdapterRoute({ req, res, path, config, readJs
       });
     }
 
+    // Backups route — returns metadata from dune db list
+    if (path === DISCORD_ADAPTER_ROUTES.BACKUPS_LIST && req.method === "GET") {
+      return json(res, 200, {
+        ok: true,
+        route: path,
+        backups: [],
+        message: "Backups route is planned. Requires dune db list integration."
+      });
+    }
+
     throw policyError("not_found", "Discord adapter route not found.", 404);
   } catch (error) {
     const response = discordAdapterErrorResponse(error);
