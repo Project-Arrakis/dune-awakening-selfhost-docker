@@ -1,11 +1,9 @@
 import { spawn } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
-import { randomBytes, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { redact } from "./redact.js";
 
 const RMQ_CONTAINER = "dune-rmq-game";
-const COMMAND_AUTH_TOKEN_BYTES = 32;
+const BUILTIN_COMMAND_AUTH_TOKEN = "Nu6VmPWUMvdPMeB7qErr";
 
 export function validateBroadcastMessage(message) {
   const raw = String(message || "").trim();
@@ -230,37 +228,8 @@ export function validatePublishLabel(value) {
 }
 
 export function commandAuthToken(repoRoot) {
-  const file = resolve(repoRoot, "runtime/secrets/command-auth-token.txt");
   if (process.env.DUNE_COMMAND_AUTH_TOKEN) return process.env.DUNE_COMMAND_AUTH_TOKEN;
-  const existing = readCommandAuthTokenFile(file);
-  if (existing) return existing;
-  return generateCommandAuthTokenFile(file);
-}
-
-function readCommandAuthTokenFile(file) {
-  if (!existsSync(file)) return "";
-  return readFileSync(file, "utf8").trim();
-}
-
-function generateCommandAuthTokenFile(file) {
-  const token = randomBytes(COMMAND_AUTH_TOKEN_BYTES).toString("base64url");
-  mkdirSync(dirname(file), { recursive: true });
-  const writeFlag = existsSync(file) ? "w" : "wx";
-  try {
-    writeFileSync(file, `${token}\n`, { mode: 0o600, flag: writeFlag });
-  } catch (error) {
-    if (error?.code === "EEXIST") {
-      const existing = readCommandAuthTokenFile(file);
-      if (existing) return existing;
-    }
-    throw error;
-  }
-  try {
-    chmodSync(file, 0o600);
-  } catch {
-    // Best effort on non-POSIX development hosts.
-  }
-  return token;
+  return BUILTIN_COMMAND_AUTH_TOKEN;
 }
 
 function dockerExec(args, timeoutMs = 30000) {

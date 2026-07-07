@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { buildBroadcastCommand, buildCarePackageWhisperPayload, buildMapChatPayload, buildShutdownBroadcastCommand, commandAuthToken, publishCarePackageWhisper, publishMapChat, validateBroadcastMessage, validateLocalizedTexts, validatePublishLabel } from "../src/rmq.js";
@@ -110,18 +110,14 @@ test("validates RabbitMQ publish labels before eval construction", () => {
   assert.throws(() => validatePublishLabel("bad\"), halt(). %"));
 });
 
-test("command auth token generates and reuses a local secret file", () => {
+test("command auth token uses the upstream built-in fallback by default", () => {
   const repoRoot = mkdtempSync(join(tmpdir(), "arrakis-rmq-token-"));
   const previous = process.env.DUNE_COMMAND_AUTH_TOKEN;
   delete process.env.DUNE_COMMAND_AUTH_TOKEN;
   try {
     const tokenFile = resolve(repoRoot, "runtime/secrets/command-auth-token.txt");
-    const token = commandAuthToken(repoRoot);
-    assert.match(token, /^[A-Za-z0-9_-]{40,}$/);
-    assert.equal(existsSync(tokenFile), true);
-    assert.equal(readFileSync(tokenFile, "utf8").trim(), token);
-    assert.equal(statSync(tokenFile).mode & 0o777, 0o600);
-    assert.equal(commandAuthToken(repoRoot), token);
+    assert.equal(commandAuthToken(repoRoot), "Nu6VmPWUMvdPMeB7qErr");
+    assert.equal(existsSync(tokenFile), false);
   } finally {
     if (previous === undefined) {
       delete process.env.DUNE_COMMAND_AUTH_TOKEN;
@@ -140,26 +136,6 @@ test("command auth token honors explicit environment override", () => {
     const tokenFile = resolve(repoRoot, "runtime/secrets/command-auth-token.txt");
     assert.equal(commandAuthToken(repoRoot), "explicit-token");
     assert.equal(existsSync(tokenFile), false);
-  } finally {
-    if (previous === undefined) {
-      delete process.env.DUNE_COMMAND_AUTH_TOKEN;
-    } else {
-      process.env.DUNE_COMMAND_AUTH_TOKEN = previous;
-    }
-    rmSync(repoRoot, { recursive: true, force: true });
-  }
-});
-
-test("command auth token reuses an existing local secret file", () => {
-  const repoRoot = mkdtempSync(join(tmpdir(), "arrakis-rmq-token-existing-"));
-  const previous = process.env.DUNE_COMMAND_AUTH_TOKEN;
-  delete process.env.DUNE_COMMAND_AUTH_TOKEN;
-  try {
-    const tokenFile = resolve(repoRoot, "runtime/secrets/command-auth-token.txt");
-    mkdirSync(resolve(repoRoot, "runtime/secrets"), { recursive: true });
-    writeFileSync(tokenFile, "existing-local-token\n", { mode: 0o600 });
-    assert.equal(commandAuthToken(repoRoot), "existing-local-token");
-    assert.equal(readFileSync(tokenFile, "utf8"), "existing-local-token\n");
   } finally {
     if (previous === undefined) {
       delete process.env.DUNE_COMMAND_AUTH_TOKEN;

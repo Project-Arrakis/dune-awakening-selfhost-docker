@@ -27,10 +27,10 @@ assert_not_contains_anywhere() {
   rm -f "$output"
 }
 
-assert_not_contains_anywhere 'BUILTIN_COMMAND_AUTH_TOKEN' console/api/src runtime/scripts
-assert_contains runtime/scripts/admin-tools.sh 'generate_command_auth_token'
-assert_contains runtime/scripts/admin-tools.sh 'openssl rand -hex 32'
-assert_contains console/api/src/rmq.js 'randomBytes(COMMAND_AUTH_TOKEN_BYTES).toString("base64url")'
-assert_contains .env.example 'creates runtime/secrets/command-auth-token.txt'
+assert_contains runtime/scripts/admin-tools.sh 'BUILTIN_COMMAND_AUTH_TOKEN="Nu6VmPWUMvdPMeB7qErr"'
+assert_contains runtime/scripts/admin-tools.sh 'DUNE_COMMAND_AUTH_TOKEN'
+assert_contains console/api/src/rmq.js 'const BUILTIN_COMMAND_AUTH_TOKEN = "Nu6VmPWUMvdPMeB7qErr"'
+assert_contains console/api/src/rmq.js 'process.env.DUNE_COMMAND_AUTH_TOKEN'
+assert_contains .env.example 'upstream command-auth token expected by the game server'
 
-echo "PASS: command auth token is generated instead of built in"
+echo "PASS: command auth token uses upstream fallback with explicit env override"
