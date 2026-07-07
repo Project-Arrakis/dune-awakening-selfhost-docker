@@ -66,6 +66,7 @@ test("exposes only experimental read-only route names", () => {
     "/api/integrations/discord/announcements",
     "/api/integrations/discord/backups/list",
     "/api/integrations/discord/broadcast",
+    "/api/integrations/discord/db",
     "/api/integrations/discord/health",
     "/api/integrations/discord/logs",
     "/api/integrations/discord/map-state",
@@ -79,9 +80,12 @@ test("exposes only experimental read-only route names", () => {
     "/api/integrations/discord/ops/resources",
     "/api/integrations/discord/ops/soc",
     "/api/integrations/discord/population",
+    "/api/integrations/discord/ports",
     "/api/integrations/discord/readiness",
+    "/api/integrations/discord/servers",
     "/api/integrations/discord/services",
-    "/api/integrations/discord/status"
+    "/api/integrations/discord/status",
+    "/api/integrations/discord/version"
   ].sort());
   for (const route of routes) {
     assert.doesNotMatch(route, /write|execute|delete|restore|kick|grant|teleport|reset|admin/i);

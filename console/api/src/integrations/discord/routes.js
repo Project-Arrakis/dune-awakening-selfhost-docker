@@ -13,6 +13,31 @@ import {
   opsEconomyProvider, opsInventoryProvider, opsLocationProvider,
   opsSocProvider, opsPrometheusProvider, opsDashboardProvider
 } from "./opsProvider.js";
+import { buildDuneArgs, runDune } from "../../runner.js";
+
+// Secure infra operation whitelist — maps route keys to known-safe dune operations.
+// Never passes user input directly to the dune CLI.
+const INFRA_OPERATIONS = Object.freeze({
+  SERVERS: { operation: "servers", timeoutMs: 15000, capability: "services:read" },
+  PORTS: { operation: "ports", timeoutMs: 15000, capability: "services:read" },
+  DB: { operation: "dbStatus", timeoutMs: 15000, capability: "services:read" },
+});
+
+async function handleSecureInfraRoute({ key, config, json, res }) {
+  const op = INFRA_OPERATIONS[key];
+  if (!op) throw policyError("not_found", "Unsupported infrastructure operation.", 404);
+
+  const result = await runDune(config, buildDuneArgs(op.operation), {
+    timeoutMs: op.timeoutMs,
+    allowedExitCodes: [0]
+  });
+
+  return json(res, 200, {
+    ok: true,
+    operation: op.operation,
+    result: { output: (result.stdout || "").slice(0, 4000) }
+  });
+}
 
 async function defaultPopulationProvider(config) {
   try {
@@ -169,6 +194,24 @@ export async function handleDiscordAdapterRoute({ req, res, path, config, readJs
         backups: [],
         message: "Backups route is planned. Requires dune db list integration."
       });
+    }
+
+    // Secure infra routes — read-only, whitelisted operations only
+    if (path === DISCORD_ADAPTER_ROUTES.SERVERS && req.method === "POST") {
+      const body = await readJson(req);
+      return handleSecureInfraRoute({ key: "SERVERS", config, json, res });
+    }
+    if (path === DISCORD_ADAPTER_ROUTES.PORTS && req.method === "POST") {
+      const body = await readJson(req);
+      return handleSecureInfraRoute({ key: "PORTS", config, json, res });
+    }
+    if (path === DISCORD_ADAPTER_ROUTES.DB && req.method === "POST") {
+      const body = await readJson(req);
+      return handleSecureInfraRoute({ key: "DB", config, json, res });
+    }
+
+    if (path === DISCORD_ADAPTER_ROUTES.VERSION && req.method === "GET") {
+      return json(res, 200, { ok: true, version: readFileSync("/repo/VERSION", "utf8").trim() });
     }
 
     throw policyError("not_found", "Discord adapter route not found.", 404);
