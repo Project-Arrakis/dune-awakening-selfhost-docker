@@ -3352,3 +3352,222 @@ export async function addonOpsHealthSummaryV2(db) {
 export async function addonOpsHealthSummary(db) {
   return addonOpsHealthSummaryV2(db);
 }
+
+export async function addonOpsActivitySummary(db) {
+  const exists = await tableExists(db, "player_state");
+  if (!exists) return emptyActivitySummary();
+
+  const columns = await columnsFor(db, "player_state");
+  const hasLoginTime = columns.has("last_login_time");
+  const hasActivity = columns.has("last_avatar_activity");
+  const hasReturning = columns.has("last_returning_player_event_time");
+  const hasTransfer = columns.has("transfer_count");
+
+  const now = "now()";
+  const constraints = [];
+
+  if (hasActivity) {
+    constraints.push(
+      `count(*) filter (where last_avatar_activity > ${now} - interval '1 hour')::int as active_last_1h`,
+      `count(*) filter (where last_avatar_activity > ${now} - interval '24 hours')::int as active_last_24h`,
+      `count(*) filter (where last_avatar_activity > ${now} - interval '7 days')::int as active_last_7d`,
+      `count(*) filter (where last_avatar_activity < ${now} - interval '30 days')::int as inactive_players`
+    );
+  } else {
+    constraints.push("0::int as active_last_1h", "0::int as active_last_24h", "0::int as active_last_7d", "0::int as inactive_players");
+  }
+
+  if (hasReturning) {
+    constraints.push(`count(*) filter (where last_returning_player_event_time > ${now} - interval '7 days')::int as returning_players`);
+  } else {
+    constraints.push("0::int as returning_players");
+  }
+
+  if (hasTransfer) {
+    constraints.push("count(*) filter (where transfer_count = 0)::int as new_players");
+  } else if (hasLoginTime) {
+    constraints.push(`count(*) filter (where last_login_time > ${now} - interval '7 days')::int as new_players`);
+  } else {
+    constraints.push("0::int as new_players");
+  }
+
+  const result = await db.query(`
+    select count(*)::int as total_players,
+           count(*) filter (where online_status = 'Online')::int as online_players,
+           count(*) filter (where life_state::text <> 'Alive')::int as players_dead,
+           ${constraints.join(",\n           ")}
+    from dune.player_state`);
+
+  const r = result.rows?.[0] || {};
+
+  let guildActivity = [];
+  try {
+    const guildsExist = await tableExists(db, "guilds");
+    const guildMembersExist = await tableExists(db, "guild_members");
+    if (guildsExist && guildMembersExist && columns.has("online_status")) {
+      const guildResult = await db.query(`
+        select coalesce(g.name, 'Unknown') as guild,
+               count(gm.*)::int as members,
+               count(ps.*) filter (where ps.online_status = 'Online')::int as online
+        from dune.guilds g
+        left join dune.guild_members gm on gm.guild_id = g.id
+        left join dune.player_state ps on ps.account_id = gm.account_id
+        group by g.name
+        order by members desc
+        limit 20`);
+      guildActivity = guildResult.rows || [];
+    }
+  } catch { /* guild tables may not exist */ }
+
+  let factionActivity = [];
+  try {
+    const factionExists = await tableExists(db, "player_faction");
+    if (factionExists && columns.has("online_status")) {
+      const factionResult = await db.query(`
+        select coalesce(pf.faction, 'Unknown') as faction,
+               count(*)::int as members,
+               count(*) filter (where ps.online_status = 'Online')::int as online
+        from dune.player_faction pf
+        join dune.player_state ps on ps.account_id = pf.player_id
+        group by pf.faction
+        order by members desc
+        limit 20`);
+      factionActivity = factionResult.rows || [];
+    }
+  } catch { /* faction table may not exist */ }
+
+  let mapActivity = [];
+  try {
+    const mapsExist = await tableExists(db, "map_names");
+    if (mapsExist) {
+      const mapResult = await db.query(`
+        select coalesce(mn.name, 'Unknown') as map,
+               count(*)::int as actors,
+               count(*) filter (where ps.online_status = 'Online')::int as online
+        from dune.map_names mn
+        left join dune.markers m on m.map_name_id = mn.id
+        left join dune.player_state ps on ps.account_id = m.player_id
+        group by mn.name
+        order by actors desc
+        limit 20`);
+      mapActivity = mapResult.rows || [];
+    }
+  } catch { /* map tables may not exist */ }
+
+  return {
+    totalPlayers: Number(r.total_players || 0),
+    onlinePlayers: Number(r.online_players || 0),
+    activeLast1h: r.active_last_1h != null ? Number(r.active_last_1h) : null,
+    activeLast24h: r.active_last_24h != null ? Number(r.active_last_24h) : null,
+    activeLast7d: r.active_last_7d != null ? Number(r.active_last_7d) : null,
+    inactivePlayers: r.inactive_players != null ? Number(r.inactive_players) : null,
+    returningPlayers: r.returning_players != null ? Number(r.returning_players) : null,
+    newPlayers: r.new_players != null ? Number(r.new_players) : null,
+    playersDead: Number(r.players_dead || 0),
+    guildActivity,
+    factionActivity,
+    mapActivity
+  };
+}
+
+function emptyActivitySummary() {
+  return {
+    totalPlayers: 0, onlinePlayers: 0,
+    activeLast1h: null, activeLast24h: null, activeLast7d: null,
+    inactivePlayers: null, returningPlayers: null, newPlayers: null,
+    playersDead: 0,
+    guildActivity: [], factionActivity: [], mapActivity: []
+  };
+}
+
+export async function addonOpsResourcesSummary(db) {
+  if (!(await tableExists(db, "resourcefield_state"))) return emptyResourcesSummary();
+
+  const result = await db.query(`
+    select count(*)::int as total_fields,
+           coalesce(sum(value_remaining), 0)::bigint as total_value
+    from dune.resourcefield_state
+    where field_kind_id = 1`);
+
+  const r = result.rows?.[0] || {};
+
+  let resourcesByMap = [];
+  try {
+      const mapResult = await db.query(`
+        select map,
+               count(*)::int as fields,
+               coalesce(sum(value_remaining), 0)::bigint as total_value
+        from dune.resourcefield_state
+        where field_kind_id = 1
+        group by map
+        order by fields desc`);
+    resourcesByMap = mapResult.rows || [];
+  } catch { }
+
+  let spiceFieldsBySize = [];
+  try {
+    const spiceExists = await tableExists(db, "spicefield_types");
+    if (spiceExists) {
+      const spiceResult = await db.query(`
+        select sft.field_type as size,
+               sft.map_name as map,
+               coalesce(sum(sft.current_globally_active), 0)::int as currently_active,
+               coalesce(sum(sft.max_globally_active), 0)::int as max_active,
+               (select coalesce(sum(value_remaining), 0)::bigint
+                from dune.resourcefield_state rfs
+                where rfs.map = sft.map_name and rfs.field_kind_id = 1) as total_value,
+               (select count(*)::int
+                from dune.resourcefield_state rfs
+                where rfs.map = sft.map_name and rfs.field_kind_id = 1) as active_fields
+        from dune.spicefield_types sft
+        where sft.is_spawning_active = true
+        group by sft.field_type, sft.map_name
+        order by sft.map_name, sft.field_type`);
+      spiceFieldsBySize = spiceResult.rows || [];
+    }
+  } catch { }
+
+  return {
+    totalFields: Number(r.total_fields || 0),
+    totalValueRemaining: Number(r.total_value || 0),
+    resourcesByMap,
+    spiceFieldsBySize
+  };
+}
+
+function emptyResourcesSummary() {
+  return { totalFields: 0, totalValueRemaining: 0, resourcesByMap: [], spiceFieldsBySize: [] };
+}
+
+export async function addonOpsCombatDeaths(db) {
+  const exists = await tableExists(db, "player_death_log");
+  if (!exists) return emptyCombatDeaths();
+
+  const result = await db.query(`
+    select count(*)::int as total_deaths,
+           count(*) filter (where death_cause = 'Dead')::int as unknown_deaths,
+           count(*) filter (where death_cause = 'DeadByCoriolis')::int as coriolis_deaths,
+           count(*) filter (where death_cause = 'DeadBySandworm')::int as sandworm_deaths
+    from dune.player_death_log`);
+
+  const r = result.rows?.[0] || {};
+  const causes = [
+    { cause: "Sandworm", count: Number(r.sandworm_deaths || 0) },
+    { cause: "Coriolis", count: Number(r.coriolis_deaths || 0) },
+    { cause: "Unknown", count: Number(r.unknown_deaths || 0) }
+  ].filter(d => d.count > 0);
+
+  return {
+    totalDeaths: Number(r.total_deaths || 0),
+    pvpDeaths: 0,
+    pveDeaths: Number(r.total_deaths || 0),
+    deathsByCause: causes,
+    deathsByMap: [],
+    topHostileNpcs: [],
+    kdRatio: null
+  };
+}
+
+function emptyCombatDeaths() {
+  return { totalDeaths: 0, pvpDeaths: 0, pveDeaths: 0, deathsByCause: [], deathsByMap: [], topHostileNpcs: [], kdRatio: null };
+}
