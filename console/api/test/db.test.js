@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { assertIdentifier, discoverDbConfig, isReadOnlySql, quoteQualified, redactDbError, rowsResult } from "../src/db.js";
-import { addCurrency, addFactionReputation, addIntel, addonLeadershipPlayers, addonOpsHealthFarms, addonOpsHealthPlayers, addonOpsHealthSummary, addonOpsHealthSummaryV2, changeDunePassword, completeJourneyNode, completeTutorial, deleteInventoryItem, giveItemToPlayer, giveItemToStorage, guildMembers, landsraadOverview, listGuilds, listPlayers, listSpicefieldTypes, listTables, liveMapPlayers, liveMapServices, playerCraftingRecipes, playerJourney, playerPosition, playerResearchItems, repairVehicleDecay, resetJourneyNode, resetTutorial, runSql, setLandsraadPlayerContribution, tablePreview, teleportOfflinePlayerToCoords, unlockCraftingRecipe, unlockResearchItem, updateLandsraadRewardTier, updateLandsraadTaskGoal, updateLandsraadTermTaskGoals, updateSpicefieldType, updateTableRow, UnsupportedCapabilityError } from "../src/duneDb.js";
+import { addCurrency, addFactionReputation, addIntel, addonLeadershipPlayers, addonOpsHealthFarms, addonOpsHealthPlayers, addonOpsHealthSummary, addonOpsHealthSummaryV2, changeDunePassword, completeJourneyNode, completeTutorial, deleteInventoryItem, giveItemToPlayer, giveItemToStorage, guildMembers, landsraadOverview, listGuilds, listPlayers, listSpicefieldTypes, listTables, liveMapPlayers, liveMapServices, playerCraftingRecipes, playerInventory, playerJourney, playerPosition, playerProfile, playerResearchItems, repairVehicleDecay, resetJourneyNode, resetTutorial, runSql, setLandsraadPlayerContribution, tablePreview, teleportOfflinePlayerToCoords, unlockCraftingRecipe, unlockResearchItem, updateInventoryItem, updateLandsraadRewardTier, updateLandsraadTaskGoal, updateLandsraadTermTaskGoals, updateSpicefieldType, updateTableRow, UnsupportedCapabilityError } from "../src/duneDb.js";
 
 test("discovers RedBlink Postgres defaults and env overrides", () => {
   assert.deepEqual(discoverDbConfig({}), {
@@ -793,6 +793,55 @@ test("guild members falls back to a direct account-id join when dune.actors is u
   assert.match(memberQuery.text, /left join dune\.player_state ps_by_account on ps_by_account\.account_id = coalesce\(null, gm\."player_id"\)/);
 });
 
+test("player profile includes faction and guild when addon tables are present", async () => {
+  const db = {
+    query: async (text, values = []) => {
+      if (text.includes("to_regclass")) {
+        const name = String(values[0] || "");
+        return { rows: [{ exists: ["dune.actors", "dune.player_state", "dune.accounts", "dune.player_faction", "dune.factions", "dune.guild_members", "dune.guilds"].includes(name) }] };
+      }
+      if (text.includes("information_schema.columns")) {
+        const table = String(values[1] || "");
+        if (table === "guild_members") return { rows: ["player_id", "guild_id", "role_id"].map((column_name) => ({ column_name })) };
+        if (table === "guilds") return { rows: ["guild_id", "guild_name", "guild_description"].map((column_name) => ({ column_name })) };
+        return { rows: [] };
+      }
+      if (text.includes("as fls_id") && text.includes("where a.id = $1")) {
+        return { rows: [{ actor_id: 101, player_pawn_id: 101, account_id: 201, character_name: "Test One", player_controller_id: 301, funcom_id: "FN1", fls_id: "user1", action_player_id: "user1", class: "Foo", map: "Survival_1", online_status: "Online" }] };
+      }
+      if (text.includes("from dune.player_faction pf")) {
+        return { rows: [{ actor_id: "301", faction_id: "1", faction_name: "Atreides" }] };
+      }
+      if (text.includes("from dune.guild_members gm")) {
+        return { rows: [{ player_id: "301", guild_name: "Water Sellers" }] };
+      }
+      return { rows: [] };
+    }
+  };
+  const result = await playerProfile(db, "101");
+  assert.equal(result.player.faction, "Atreides");
+  assert.equal(result.player.guild, "Water Sellers");
+});
+
+test("player profile falls back to placeholder faction/guild when addon tables are absent", async () => {
+  const db = {
+    query: async (text, values = []) => {
+      if (text.includes("to_regclass")) {
+        const name = String(values[0] || "");
+        return { rows: [{ exists: ["dune.actors", "dune.player_state", "dune.accounts"].includes(name) }] };
+      }
+      if (text.includes("information_schema.columns")) return { rows: [] };
+      if (text.includes("as fls_id") && text.includes("where a.id = $1")) {
+        return { rows: [{ actor_id: 101, player_pawn_id: 101, account_id: 201, character_name: "Test One", player_controller_id: 301, funcom_id: "FN1", fls_id: "user1", action_player_id: "user1", class: "Foo", map: "Survival_1", online_status: "Online" }] };
+      }
+      return { rows: [] };
+    }
+  };
+  const result = await playerProfile(db, "101");
+  assert.equal(result.player.faction, "Unassigned");
+  assert.equal(result.player.guild, "Unavailable");
+});
+
 test("addon leadership players derive character level from level component XP", async () => {
   const db = {
     query: async (text, values = []) => {
@@ -866,6 +915,16 @@ test("live map services returns capability response when world partitions are mi
   assert.match(result.reason, /dune\.world_partition/);
 });
 
+test("player inventory selects DecayedMaxDurability as a max_durability fallback and hides a stored zero", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls);
+  await playerInventory(db, 123);
+  const select = calls.find((call) => call.text.includes("order by i.template_id"));
+  assert.ok(select);
+  assert.match(select.text, /nullif\(\(i\.stats->'FItemStackAndDurabilityStats'->1->>'MaxDurability'\)::numeric, 0\)/);
+  assert.match(select.text, /nullif\(\(i\.stats->'FItemStackAndDurabilityStats'->1->>'DecayedMaxDurability'\)::numeric, 0\)/);
+});
+
 test("inventory delete verifies ownership before calling dune.delete_item", async () => {
   const calls = [];
   const db = fakeMutationDb(calls, {
@@ -882,6 +941,142 @@ test("inventory delete rejects rows not owned by the selected player", async () 
   const db = fakeMutationDb(calls, { itemRows: [] });
   await assert.rejects(() => deleteInventoryItem(db, 123, 99), /selected player's directly-owned inventory/);
   assert.equal(calls.some((call) => call.text.includes("dune.delete_item")), false);
+});
+
+test("inventory update rejects rows not owned by the selected player", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, { itemRows: [] });
+  await assert.rejects(() => updateInventoryItem(db, 123, 99, { quality_level: "5" }), /selected player's directly-owned inventory/);
+  assert.equal(calls.some((call) => String(call.text).startsWith("update dune.items")), false);
+});
+
+test("inventory update verifies ownership then applies the validated column changes", async () => {
+  const calls = [];
+  const db = {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("from dune.actors a")) return { rows: [{ actor_id: 123, account_id: 44, controller_id: 55, player_state_id: 5, online_status: "Offline" }] };
+      if (text.includes("where i.id = $1 and inv.actor_id = $2")) return { rows: [{ id: 99 }] };
+      if (text.includes("pg_index")) return { rows: [{ name: "id" }] };
+      if (text.includes("information_schema.columns")) return { rows: [{ name: "id" }, { name: "quality_level" }] };
+      return { rows: [], rowCount: 1 };
+    },
+    transaction: async (fn) => fn(db)
+  };
+  const result = await updateInventoryItem(db, 123, 99, { quality_level: "5" });
+  assert.equal(result.updatedRows, 1);
+  assert.ok(calls.some((call) => call.text.includes("where i.id = $1 and inv.actor_id = $2") && call.values[0] === 99 && call.values[1] === 123));
+  const updateCall = calls.find((call) => String(call.text).startsWith("update"));
+  assert.ok(updateCall);
+  assert.match(updateCall.text, /"dune"\."items"/);
+});
+
+test("inventory update strips template_id even if explicitly submitted", async () => {
+  const calls = [];
+  const db = {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("from dune.actors a")) return { rows: [{ actor_id: 123, account_id: 44, controller_id: 55, player_state_id: 5, online_status: "Offline" }] };
+      if (text.includes("where i.id = $1 and inv.actor_id = $2")) return { rows: [{ id: 99, stats: { FCustomizationStats: [[], {}], FItemStackAndDurabilityStats: [[], {}] } }] };
+      if (text.includes("pg_index")) return { rows: [{ name: "id" }] };
+      if (text.includes("information_schema.columns")) return { rows: [{ name: "id" }, { name: "template_id" }, { name: "quality_level" }] };
+      return { rows: [], rowCount: 1 };
+    },
+    transaction: async (fn) => fn(db)
+  };
+  await updateInventoryItem(db, 123, 99, { template_id: "Hacked_Item", quality_level: "5" });
+  const updateCall = calls.find((call) => String(call.text).startsWith("update"));
+  assert.ok(updateCall);
+  assert.doesNotMatch(updateCall.text, /"template_id"/);
+});
+
+test("inventory update whitelists editable columns and rejects id, inventory_id, template_id, and raw stats", async () => {
+  const calls = [];
+  const db = {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("from dune.actors a")) return { rows: [{ actor_id: 123, account_id: 44, controller_id: 55, player_state_id: 5, online_status: "Offline" }] };
+      if (text.includes("where i.id = $1 and inv.actor_id = $2")) return { rows: [{ id: 99, stats: { FCustomizationStats: [[], {}], FItemStackAndDurabilityStats: [[], {}] } }] };
+      if (text.includes("pg_index")) return { rows: [{ name: "id" }] };
+      if (text.includes("information_schema.columns")) return { rows: [{ name: "id" }, { name: "inventory_id" }, { name: "template_id" }, { name: "stats" }, { name: "quality_level" }] };
+      return { rows: [], rowCount: 1 };
+    },
+    transaction: async (fn) => fn(db)
+  };
+  await updateInventoryItem(db, 123, 99, { id: 99, inventory_id: 7, template_id: "Hacked_Item", stats: { FCustomizationStats: [[], { color: "hacked" }] }, quality_level: "5" });
+  const updateCall = calls.find((call) => String(call.text).startsWith("update"));
+  assert.ok(updateCall);
+  const setClause = updateCall.text.split(" where ")[0];
+  assert.match(setClause, /"quality_level"/);
+  assert.doesNotMatch(setClause, /"id"\s*=/);
+  assert.doesNotMatch(setClause, /"inventory_id"/);
+  assert.doesNotMatch(setClause, /"template_id"/);
+  assert.doesNotMatch(setClause, /"stats"/);
+});
+
+test("inventory update rejects max_durability outside the 0-100 range", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    itemRows: [{ id: 99, template_id: "WaterBottle_1", stack_size: 1, quality_level: 0, position_index: 0, inventory_id: 7, actor_id: 123, stats: { FItemStackAndDurabilityStats: [[], { CurrentDurability: 50, DecayedMaxDurability: 80 }] } }]
+  });
+  await assert.rejects(() => updateInventoryItem(db, 123, 99, { max_durability: "150" }), /Invalid max durability/);
+  assert.equal(calls.some((call) => String(call.text).startsWith("update dune.items")), false);
+});
+
+test("inventory update rejects current_durability greater than max_durability", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    itemRows: [{ id: 99, template_id: "WaterBottle_1", stack_size: 1, quality_level: 0, position_index: 0, inventory_id: 7, actor_id: 123, stats: { FItemStackAndDurabilityStats: [[], { CurrentDurability: 50, DecayedMaxDurability: 80 }] } }]
+  });
+  await assert.rejects(() => updateInventoryItem(db, 123, 99, { current_durability: "95", max_durability: "80" }), /Invalid current durability/);
+  assert.equal(calls.some((call) => String(call.text).startsWith("update dune.items")), false);
+});
+
+test("inventory update merges durability into the existing DecayedMaxDurability key", async () => {
+  const calls = [];
+  const db = {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("from dune.actors a")) return { rows: [{ actor_id: 123, account_id: 44, controller_id: 55, player_state_id: 5, online_status: "Offline" }] };
+      if (text.includes("where i.id = $1 and inv.actor_id = $2")) return { rows: [{ id: 99, stats: { FCustomizationStats: [[], { color: "sand" }], FItemStackAndDurabilityStats: [[], { CurrentDurability: 50, DecayedMaxDurability: 80 }] } }] };
+      if (text.includes("pg_index")) return { rows: [{ name: "id" }] };
+      if (text.includes("information_schema.columns")) return { rows: [{ name: "id" }, { name: "stats", data_type: "jsonb" }] };
+      return { rows: [], rowCount: 1 };
+    },
+    transaction: async (fn) => fn(db)
+  };
+  const result = await updateInventoryItem(db, 123, 99, { current_durability: "60", max_durability: "90" });
+  assert.equal(result.updatedRows, 1);
+  const updateCall = calls.find((call) => String(call.text).startsWith("update"));
+  assert.ok(updateCall);
+  const statsValue = JSON.parse(updateCall.values[0]);
+  assert.deepEqual(statsValue.FCustomizationStats, [[], { color: "sand" }]);
+  assert.deepEqual(statsValue.FItemStackAndDurabilityStats[1], { CurrentDurability: 60, DecayedMaxDurability: 90 });
+});
+
+test("inventory update treats explicit null durability values as not provided", async () => {
+  const calls = [];
+  const db = {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("from dune.actors a")) return { rows: [{ actor_id: 123, account_id: 44, controller_id: 55, player_state_id: 5, online_status: "Offline" }] };
+      if (text.includes("where i.id = $1 and inv.actor_id = $2")) return { rows: [{ id: 99, stats: { FCustomizationStats: [[], {}], FItemStackAndDurabilityStats: [[], {}] } }] };
+      if (text.includes("pg_index")) return { rows: [{ name: "id" }] };
+      if (text.includes("information_schema.columns")) return { rows: [{ name: "id" }, { name: "quality_level" }] };
+      return { rows: [], rowCount: 1 };
+    },
+    transaction: async (fn) => fn(db)
+  };
+  const result = await updateInventoryItem(db, 123, 99, { current_durability: null, max_durability: null, quality_level: "3" });
+  assert.equal(result.updatedRows, 1);
+  const updateCall = calls.find((call) => String(call.text).startsWith("update"));
+  assert.ok(updateCall);
+  assert.doesNotMatch(updateCall.text, /"stats"/);
 });
 
 test("storage give-item validates capacity and inserts parameterized item rows", async () => {

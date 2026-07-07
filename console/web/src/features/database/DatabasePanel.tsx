@@ -3,10 +3,11 @@ import { ChevronDown, ChevronUp } from "lucide-react";
 import { databaseApi, type ColumnFilterTerm, type ColumnFilterTree } from "../../api/database";
 import { setupApi, type Task } from "../../api/setup";
 import { SecretInput } from "../../components/SecretInput";
-import { DataTable } from "../../components/common/DataTable";
+import { DataTable, useSortableRows } from "../../components/common/DataTable";
 import { KeyValueGrid, StatusPill, TechnicalDetails } from "../../components/common/DisplayPrimitives";
 import { formatUiSentence } from "../../lib/display";
 import { conciseTaskError } from "../../lib/taskDisplay";
+import { serializeEditableDbValue, parseEditableDbValue } from "../../lib/dbValues";
 
 type HomeTaskResult = { status: "running" | "succeeded" | "failed" | "stopped"; title: string; message?: string; details?: string };
 type DatabasePasswordState = { taskId?: string; result: HomeTaskResult | null };
@@ -35,17 +36,6 @@ function downloadText(filename: string, text: string) {
 
 function isTerminalTask(status: string) {
   return ["succeeded", "failed", "cancelled"].includes(status);
-}
-
-type SortState = { column: string; direction: "asc" | "desc" };
-
-function useSortableRows<T extends Record<string, unknown>>(rows: T[]) {
-  const [sort, setSort] = useState<SortState | null>(null);
-  const sortedRows = sort ? [...rows].sort((a, b) => compareTableValues(a[sort.column], b[sort.column], sort.direction)) : rows;
-  function onSort(column: string) {
-    setSort((current) => (current?.column === column ? { column, direction: current.direction === "asc" ? "desc" : "asc" } : { column, direction: "asc" }));
-  }
-  return { sortedRows, sortColumn: sort?.column, sortDirection: sort?.direction, onSort, reset: () => setSort(null) };
 }
 
 function parseColumnEqualityFilter(term: string): { column: string; value: string } | null {
@@ -454,7 +444,7 @@ export function DatabasePanel() {
       {tableSearch && <button onClick={() => setTableSearch("")}>Clear</button>}
     </div>
     {filteredTables.length
-      ? <DataTable rows={tablesSort.sortedRows} columns={["schema", "name", "row_count"]} onRowClick={(row) => open(String(row.name))} sortColumn={tablesSort.sortColumn} sortDirection={tablesSort.sortDirection} onSort={tablesSort.onSort} />
+      ? <DataTable rows={tablesSort.sortedRows} columns={["schema", "name", "row_count"]} onRowClick={(row) => open(String(row.name))} sortColumn={tablesSort.sortColumn} sortDirection={tablesSort.sortDirection} onSort={tablesSort.onSort} rowKey={(row) => `${String(row.schema)}.${String(row.name)}`} />
       : <div className="empty database-empty">No matching tables found.</div>}
     <h3 ref={previewRef}>{selected ? `${schema}.${selected} (${tableTotalCount} rows)` : "Table Preview"}</h3>
     {!selected && <div className="empty database-empty">No table selected. Select a table to preview and edit rows.</div>}
@@ -486,7 +476,7 @@ export function DatabasePanel() {
         <DataTable rows={columnsSort.sortedRows} emptyMessage={columnSearchTerm ? "No matching columns found." : "No columns found."} sortColumn={columnsSort.sortColumn} sortDirection={columnsSort.sortDirection} onSort={columnsSort.onSort} />
       </details>
       {!previewLoading && !previewError && (previewRows.length
-        ? <DataTable rows={previewSort.sortedRows} columns={previewColumns} action={(row) => <button onClick={(event) => { event.stopPropagation(); startEdit(row); }}>Edit</button>} actionClassName="backup-table-actions" tableClassName="backup-table" sortColumn={previewSort.sortColumn} sortDirection={previewSort.sortDirection} onSort={previewSort.onSort} />
+        ? <DataTable rows={previewSort.sortedRows} columns={previewColumns} action={(row) => <button onClick={(event) => { event.stopPropagation(); startEdit(row); }}>Edit</button>} actionClassName="backup-table-actions" tableClassName="backup-table" sortColumn={previewSort.sortColumn} sortDirection={previewSort.sortDirection} onSort={previewSort.onSort} rowKey={(row) => String(row.__rowid)} />
         : <div className="empty database-empty">{previewFilter ? "No matching rows found." : "This table has no rows to preview."}</div>)}
       {!editRow && editResult && <section className={`result-panel ${editResult.status === "running" ? "" : "transient-result"} ${editResult.status === "succeeded" ? "result-ok" : editResult.status === "failed" ? "result-fail" : "result-running"}`}>
         <div className="panel-title"><strong>{formatResultTitle(editResult.title, editResult.status === "running")}</strong><StatusPill value={editResult.status === "succeeded" ? "Saved" : editResult.status === "failed" ? "Failed" : "Saving"} /></div>
@@ -524,14 +514,6 @@ export function DatabasePanel() {
   </section>;
 }
 
-function compareTableValues(a: unknown, b: unknown, direction: "asc" | "desc") {
-  const aNum = Number(a);
-  const bNum = Number(b);
-  const bothNumeric = a !== null && a !== undefined && a !== "" && b !== null && b !== undefined && b !== "" && !Number.isNaN(aNum) && !Number.isNaN(bNum);
-  const result = bothNumeric ? aNum - bNum : String(a ?? "").localeCompare(String(b ?? ""), undefined, { sensitivity: "base" });
-  return direction === "asc" ? result : -result;
-}
-
 function normalizeDatabasePreviewPageSize(value: unknown) {
   const numeric = Number(value);
   return DATABASE_PREVIEW_PAGE_SIZES.includes(numeric as typeof DATABASE_PREVIEW_PAGE_SIZES[number])
@@ -547,19 +529,4 @@ function omitInternalRowFields(row: Record<string, unknown>) {
   const { __rowid, ...visible } = row;
   void __rowid;
   return visible;
-}
-
-function serializeEditableDbValue(value: unknown) {
-  if (value === null || value === undefined) return "NULL";
-  if (typeof value === "object") return JSON.stringify(value, null, 2);
-  return String(value);
-}
-
-function parseEditableDbValue(value: string, original: unknown) {
-  const text = String(value);
-  if (/^NULL$/i.test(text.trim())) return null;
-  if (typeof original === "object" && original !== null) {
-    try { return JSON.parse(text); } catch { return text; }
-  }
-  return text;
 }

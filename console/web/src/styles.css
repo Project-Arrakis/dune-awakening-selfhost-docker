@@ -928,7 +928,7 @@ body.debug .technical-details { display: block; }
 .playerAdmin_actionRow, .playerAdmin_filterRow, .playerAdmin_buttonRow { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .playerAdmin_filterRowRight { justify-content: flex-end; }
 .playerAdmin_boxHeaderLine { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
-.playerAdmin_boxHeaderLine > p { margin: 0; font-style: italic; color: #ad9f89; }
+.playerAdmin_boxHeaderLine > p { margin: 0; font-style: italic; color: #ad9f89; flex: 1 1 260px; min-width: 0; }
 .playerAdmin_boxHeaderLine .playerAdmin_filterRow { margin-left: auto; }
 .playerAdmin_box .playerAdmin_section > .playerAdmin_actionGroup .playerAdmin_actionRow { display: grid; grid-template-columns: 210px minmax(220px, 360px) auto minmax(220px, 1fr); align-items: center; }
 .playerAdmin_actionRow .playerAdmin_actionLabel { min-width: 180px; color: #e9dcc8; font-weight: 700; display: grid; gap: 3px; }
@@ -992,11 +992,11 @@ body.debug .technical-details { display: block; }
 .playerAdmin_shortCode code { display: inline-block; max-width: 130px; overflow: hidden; text-overflow: ellipsis; vertical-align: bottom; }
 .playerAdmin_expanderButton { width: 24px; height: 24px; min-height: 24px; padding: 0; margin-right: 8px; justify-content: center; font-weight: 800; }
 .playerAdmin_expanderSpacer { display: inline-block; width: 32px; }
-.playerAdmin_journeyHeaderLine { align-items: center; gap: 12px; }
-.playerAdmin_journeyHeaderTools { display: flex; align-items: center; justify-content: flex-end; gap: 10px; flex: 1 1 520px; flex-wrap: wrap; min-width: min(100%, 320px); }
-.playerAdmin_journeyFilterInput { flex: 1 1 320px; width: min(100%, 420px); max-width: 420px; min-height: 40px; }
-.playerAdmin_journeyHeaderTools button { width: auto; }
-.playerAdmin_journeyHeaderTools .playerAdmin_note { display: inline-flex; align-items: center; min-height: 40px; color: #e9dcc8; font-weight: 700; white-space: nowrap; }
+.playerAdmin_filterHeaderLine { align-items: center; gap: 12px; }
+.playerAdmin_filterToolsRow { display: flex; align-items: center; justify-content: flex-end; gap: 10px; flex: 1 1 520px; flex-wrap: wrap; min-width: min(100%, 320px); }
+.playerAdmin_filterTextInput { flex: 1 1 320px; width: min(100%, 420px); max-width: 420px; min-height: 40px; }
+.playerAdmin_filterToolsRow button { width: auto; }
+.playerAdmin_filterToolsRow .playerAdmin_note { display: inline-flex; align-items: center; min-height: 40px; color: #e9dcc8; font-weight: 700; white-space: nowrap; }
 .playerAdmin_journeyReloadRow { align-items: center; }
 .playerAdmin_journeyReloadRow .playerAdmin_note { display: inline-flex; align-items: center; min-height: 40px; color: #e9dcc8; font-weight: 700; }
 .playerAdmin_filterRow .playerAdmin_note { color: #e9dcc8; font-weight: 700; font-size: 15px; }
@@ -1074,10 +1074,16 @@ th { color: #ffd08a; background: #171a1d; position: sticky; top: 0; z-index: 1; 
 th.sortable { cursor: pointer; user-select: none; }
 th.sortable:hover { color: #ffe0a8; }
 .sort-indicator { color: #cbbd9f; }
+.col-resize-handle { position: absolute; top: 0; right: 0; width: 6px; height: 100%; cursor: col-resize; user-select: none; }
+.col-resize-handle:hover, body.col-resizing .col-resize-handle { background: rgba(255, 208, 138, .35); }
+body.col-resizing, body.col-resizing * { cursor: col-resize !important; user-select: none !important; }
 tr.clickable { cursor: pointer; }
 tr.clickable:hover { background: rgba(198, 139, 74, .12); }
 .actions-column { text-align: center; }
 .actions-column button { margin-inline: auto; }
+.actions-column .icon-toggle-group { display: inline-flex; gap: 6px; margin-inline: auto; }
+.actions-column .icon-toggle-group button { margin-inline: 0; }
+.expanded-row-cell { padding: 12px; background: #101316; }
 .stable-action-button { min-width: 72px; }
 .map-action-buttons { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; }
 .map-action-buttons .stable-action-button { min-width: 72px; width: auto; }

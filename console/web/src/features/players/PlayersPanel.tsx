@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { playersApi } from "../../api/players";
-import { DataTable } from "../../components/common/DataTable";
+import { DataTable, useSortableRows } from "../../components/common/DataTable";
 import { PlayerStatusCell } from "../../components/common/DisplayPrimitives";
 import { formatCell } from "../../lib/display";
 
@@ -99,11 +99,13 @@ export function PlayersPanel({ onError, renderCharacterAdmin }: PlayersPanelProp
       ? "No offline players were found."
       : "No players have been found yet.";
 
+  const playersSort = useSortableRows(rows);
+
   return (
     <section className="panel">
       <div className="panel-title"><h2>Players</h2><div className="action-row players-filter-row"><label className="inline-filter-label players-filter-label">Filter <select className="players-filter-select" value={playerFilter} onChange={(event) => { const nextFilter = event.target.value as "all" | "online" | "offline"; setPlayerFilter(nextFilter); void load(nextFilter); }}><option value="all">All Players</option><option value="online">Online</option><option value="offline">Offline</option></select></label><button onClick={() => void load(playerFilter)}>Refresh</button></div></div>
       <div className="action-row"><input value={q} onChange={(event) => setQ(event.target.value)} placeholder="Search character, FLS ID, account id, or actor id" /><button onClick={() => void load(playerFilter)}>Search</button></div>
-      <DataTable rows={rows} columns={["actor_id", "character_name", "account_id", "last_seen", "online_status", "map", "fls_id"]} tableClassName="players-table" onRowClick={open} emptyMessage={playersEmptyMessage} renderCell={(row, col) => {
+      <DataTable rows={playersSort.sortedRows} columns={["actor_id", "character_name", "account_id", "last_seen", "online_status", "map", "fls_id"]} tableClassName="players-table" onRowClick={open} emptyMessage={playersEmptyMessage} sortColumn={playersSort.sortColumn} sortDirection={playersSort.sortDirection} onSort={playersSort.onSort} resizableColumns rowKey={(row) => String(row.actor_id)} renderCell={(row, col) => {
         if (col === "online_status") return <PlayerStatusCell value={row[col]} />;
         if (col === "last_seen") return formatLastOnline(row);
         return formatCell(row[col]);
