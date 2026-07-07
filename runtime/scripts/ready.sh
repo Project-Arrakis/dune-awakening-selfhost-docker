@@ -44,6 +44,20 @@ mark_fail() {
   fail=1
 }
 
+tcp_socket_listening() {
+  local port="$1"
+  local sockets
+  sockets="$(ss -lntp 2>/dev/null || true)"
+  grep -q ":$port " <<<"$sockets"
+}
+
+udp_socket_listening() {
+  local port="$1"
+  local sockets
+  sockets="$(ss -lnup 2>/dev/null || true)"
+  grep -q ":$port " <<<"$sockets"
+}
+
 check_container() {
   local name="$1"
 
@@ -59,7 +73,7 @@ check_tcp() {
   local label="$2"
   local container="${3:-}"
 
-  if ss -lntp | grep -q ":$port "; then
+  if tcp_socket_listening "$port"; then
     mark_ok "TCP $port $label"
   elif [ -n "$container" ] && is_running "$container"; then
     mark_wait "TCP $port $label"
@@ -85,7 +99,7 @@ check_udp() {
   local label="$2"
   local container="${3:-}"
 
-  if ss -lnup | grep -q ":$port "; then
+  if udp_socket_listening "$port"; then
     mark_ok "UDP $port $label"
   elif container_logs_have_udp_listener "$container" "$port"; then
     mark_ok "UDP $port $label"

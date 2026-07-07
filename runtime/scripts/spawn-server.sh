@@ -509,7 +509,9 @@ port_is_free() {
     return 1
   fi
 
-  ! ss -lnup 2>/dev/null | grep -q ":$port "
+  local sockets
+  sockets="$(ss -lnup 2>/dev/null || true)"
+  ! grep -q ":$port " <<<"$sockets"
 }
 
 pick_port() {

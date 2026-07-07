@@ -61,7 +61,9 @@ container_status() {
 
 check_tcp() {
   local port="$1"
-  if ss -lntp 2>/dev/null | grep -q ":$port "; then
+  local sockets
+  sockets="$(ss -lntp 2>/dev/null || true)"
+  if grep -q ":$port " <<<"$sockets"; then
     echo "OK"
   else
     issue=1
@@ -82,7 +84,9 @@ container_logs_have_udp_listener() {
 
 udp_socket_listening() {
   local port="$1"
-  ss -lnup 2>/dev/null | grep -q ":$port "
+  local sockets
+  sockets="$(ss -lnup 2>/dev/null || true)"
+  grep -q ":$port " <<<"$sockets"
 }
 
 check_udp() {

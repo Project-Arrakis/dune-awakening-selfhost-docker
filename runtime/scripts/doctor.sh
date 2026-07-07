@@ -27,6 +27,20 @@ fail_msg() {
   fail=1
 }
 
+tcp_socket_listening() {
+  local port="$1"
+  local sockets
+  sockets="$(ss -lntp 2>/dev/null || true)"
+  grep -q ":$port " <<<"$sockets"
+}
+
+udp_socket_listening() {
+  local port="$1"
+  local sockets
+  sockets="$(ss -lnup 2>/dev/null || true)"
+  grep -q ":$port " <<<"$sockets"
+}
+
 is_running() {
   local name="$1"
   docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$name"
@@ -49,7 +63,7 @@ check_tcp() {
   local port="$1"
   local label="$2"
 
-  if ss -lntp 2>/dev/null | grep -q ":$port "; then
+  if tcp_socket_listening "$port"; then
     ok "$label listening on TCP $port"
   else
     fail_msg "$label not listening on TCP $port"
@@ -60,7 +74,7 @@ check_udp() {
   local port="$1"
   local label="$2"
 
-  if ss -lnup 2>/dev/null | grep -q ":$port "; then
+  if udp_socket_listening "$port"; then
     ok "$label listening on UDP $port"
   else
     fail_msg "$label not listening on UDP $port"
