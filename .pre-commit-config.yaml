@@ -17,6 +17,14 @@ repos:
 
   - repo: local
     hooks:
+      - id: ggshield
+        name: ggshield
+        entry: ggshield secret scan pre-commit
+        language: system
+        pass_filenames: false
+        always_run: true
+        verbose: false
+
       - id: trivy
         name: trivy
         entry: trivy fs --scanners secret --severity HIGH,CRITICAL --ignorefile .trivyignore .

@@ -1,0 +1,25 @@
+# GitGuardian Shield configuration
+# See: https://docs.gitguardian.com/ggshield-docs/reference/config
+
+# Ignore known test files and development artifacts
+paths-ignore:
+  - "**/test/**"
+  - "**/tests/**"
+  - "**/dist/**"
+  - "**/node_modules/**"
+  - "**/.cache_ggshield/**"
+  - "**/.security-reports/**"
+  - "**/runtime/secrets/**"
+  - "**/secrets/**"
+  - "**/ops-observability/evidence/**"
+
+# Ignore known patterns in documentation examples
+matches-ignore:
+  - name: "Nu6VmPWUMvdPMeB7qErr"
+    match: "Nu6VmPWUMvdPMeB7qErr"
+  - name: "test JWT fixture"
+    match: "eyJaaaaaaaaaaaaaaaaaaaaaaaa"
+  - name: "sample admin password"
+    match: "Arrakeen\\*Fremen\\d{4}"
+  - name: "Discord webhook URL in dev-notify script"
+    match: "https://discord.com/api/webhooks/"

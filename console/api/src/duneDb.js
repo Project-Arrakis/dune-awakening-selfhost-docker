@@ -2575,12 +2575,54 @@ export async function updateInventoryItem(db, playerId, itemId, values) {
   });
 }
 
-export async function giveItemToStorage(db, storageId, { itemName = "", itemId = "", templateId = "", quantity = 1, quality = 0 }) {
+function validateAugmentIds(augments) {
+  if (!Array.isArray(augments)) return [];
+  const ids = augments.filter(Boolean).slice(0, 20).map((id) => validateTemplateId(id));
+  return ids;
+}
+
+function buildItemStats({ augments = [], durability = {} } = {}) {
+  const customizationEntries = augments.length > 0 ? [augments] : [[]];
+  const durabilityObj = durability.max !== undefined
+    ? { CurrentDurability: Number(durability.current ?? durability.max), MaxDurability: Number(durability.max), DecayedMaxDurability: Number(durability.max), DecayedDurability: Number(durability.current ?? durability.max) }
+    : {};
+  return {
+    FCustomizationStats: [customizationEntries[0], {}],
+    FItemStackAndDurabilityStats: [[], durabilityObj]
+  };
+}
+
+export async function augmentInventoryItem(db, playerId, itemId, { augments = [] } = {}) {
+  await requireCapability(await supportsInventoryEdit(db), "Augment inventory item requires dune.items and dune.inventories.");
+  const safeItemId = intParam(itemId, "item id", 1);
+  const augmentIds = validateAugmentIds(augments);
+  if (augmentIds.length === 0) throw new Error("At least one augment ID is required");
+  return db.transaction(async (tx) => {
+    const player = await resolvePlayerMutationTarget(tx, playerId);
+    const owned = await tx.query(`
+      select i.id, i.stats, i.template_id
+      from dune.items i
+      join dune.inventories inv on inv.id = i.inventory_id
+      where i.id = $1 and inv.actor_id = $2
+      for update`, [safeItemId, player.actorId]);
+    if (!owned.rows[0]) throw new Error("Inventory item was not found in the selected player's directly-owned inventory");
+    const existing = owned.rows[0].stats || {};
+    const existingCustomization = Array.isArray(existing.FCustomizationStats) ? existing.FCustomizationStats : [[], {}];
+    const existingAugments = Array.isArray(existingCustomization[0]) ? existingCustomization[0] : [];
+    const merged = [...new Set([...existingAugments, ...augmentIds])].slice(0, 20);
+    const nextStats = { ...existing, FCustomizationStats: [merged, existingCustomization[1] || {}] };
+    await tx.query("update dune.items set stats = $1::jsonb where id = $2", [JSON.stringify(nextStats), safeItemId]);
+    return { ok: true, itemId: safeItemId, templateId: owned.rows[0].template_id, augments: merged, previous: existingAugments };
+  });
+}
+
+export async function giveItemToStorage(db, storageId, { itemName = "", itemId = "", templateId = "", quantity = 1, quality = 0, augments = [] }) {
   await requireCapability(await supportsStorageGiveItem(db), "Storage give-item requires compatible dune.inventories and dune.items insert columns.");
   const target = intParam(storageId, "storage id", 1);
   const resolvedTemplate = validateTemplateId(templateId || itemId || itemName);
   const stackSize = intParam(quantity, "quantity", 1, 1000000);
   const qualityLevel = intParam(quality, "quality", 0, 1000000);
+  const augmentIds = validateAugmentIds(augments);
   return db.transaction(async (tx) => {
     const storage = await tx.query(`
       select id, actor_id, coalesce(max_item_count, 0)::int as max_item_count, coalesce(max_item_volume, 0)::int as max_item_volume
@@ -2595,10 +2637,7 @@ export async function giveItemToStorage(db, storageId, { itemName = "", itemId =
     const currentCount = Number(count.rows[0]?.count || 0);
     if (inventory.max_item_count > 0 && currentCount >= inventory.max_item_count) throw new Error("Storage is full by item slot count");
     const position = await tx.query("select coalesce(max(position_index), -1)::int + 1 as position_index from dune.items where inventory_id = $1", [inventory.id]);
-    const stats = {
-      FCustomizationStats: [[], {}],
-      FItemStackAndDurabilityStats: [[], {}]
-    };
+    const stats = buildItemStats({ augments: augmentIds });
     const inserted = await tx.query(`
       insert into dune.items (inventory_id, template_id, stack_size, quality_level, position_index, stats)
       values ($1, $2, $3, $4, $5, $6::jsonb)
@@ -2610,16 +2649,17 @@ export async function giveItemToStorage(db, storageId, { itemName = "", itemId =
       Number(position.rows[0]?.position_index || 0),
       JSON.stringify(stats)
     ]);
-    return { ok: true, storage: inventory, inserted: inserted.rows[0] };
+    return { ok: true, storage: inventory, inserted: inserted.rows[0], augments: augmentIds.length > 0 ? augmentIds : undefined };
   });
 }
 
-export async function giveItemToPlayer(db, playerId, { itemName = "", itemId = "", templateId = "", quantity = 1, quality = 1 }) {
+export async function giveItemToPlayer(db, playerId, { itemName = "", itemId = "", templateId = "", quantity = 1, quality = 1, augments = [] }) {
   await requireCapability(await supportsPlayerGiveItem(db), "Player give-item requires compatible dune.inventories and dune.items insert columns.");
   const target = intParam(playerId, "player id", 1);
   const resolvedTemplate = validateTemplateId(templateId || itemId || itemName);
   const stackSize = intParam(quantity, "quantity", 1, 1000000);
   const qualityLevel = intParam(quality, "grade", 0, 5);
+  const augmentIds = validateAugmentIds(augments);
   return db.transaction(async (tx) => {
     const inventory = await tx.query(`
       select id, actor_id, coalesce(max_item_count, 0)::int as max_item_count, coalesce(max_item_volume, 0)::int as max_item_volume
@@ -2641,10 +2681,7 @@ export async function giveItemToPlayer(db, playerId, { itemName = "", itemId = "
     const currentCount = Number(count.rows[0]?.count || 0);
     if (inv.max_item_count > 0 && currentCount >= inv.max_item_count) throw new Error("Player inventory is full by item slot count");
     const position = await tx.query("select coalesce(max(position_index), -1)::int + 1 as position_index from dune.items where inventory_id = $1", [inv.id]);
-    const stats = {
-      FCustomizationStats: [[], {}],
-      FItemStackAndDurabilityStats: [[], {}]
-    };
+    const stats = buildItemStats({ augments: augmentIds, durability: { current: 100, max: 100 } });
     const inserted = await tx.query(`
       insert into dune.items (inventory_id, template_id, stack_size, quality_level, position_index, stats)
       values ($1, $2, $3, $4, $5, $6::jsonb)
@@ -2656,7 +2693,8 @@ export async function giveItemToPlayer(db, playerId, { itemName = "", itemId = "
       Number(position.rows[0]?.position_index || 0),
       JSON.stringify(stats)
     ]);
-    return { ok: true, playerId: target, inserted: inserted.rows[0], message: `${resolvedTemplate} was added at Grade ${qualityLevel}. The player may need to relog or refresh inventory before it appears in-game.` };
+    const augmentNote = augmentIds.length > 0 ? ` with ${augmentIds.length} augment(s) pre-applied` : "";
+    return { ok: true, playerId: target, inserted: inserted.rows[0], augments: augmentIds.length > 0 ? augmentIds : undefined, message: `${resolvedTemplate} was added at Grade ${qualityLevel}${augmentNote}. The player may need to relog or refresh inventory before it appears in-game.` };
   });
 }
 
