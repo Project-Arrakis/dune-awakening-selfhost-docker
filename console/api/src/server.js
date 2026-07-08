@@ -1600,12 +1600,9 @@ async function blueprintExportRoute(req, res, path) {
 }
 
 async function blueprintImportRoute(req, res) {
-  if (!config.mockMode) {
-    return json(res, 501, { error: "Blueprint import is not available in mockMode=false. Import writes directly to the game database and requires a fully connected server." });
-  }
   try {
     const { fields, files } = await readMultipartForm(req, 32 << 20);
-    const playerIdStr = fields.player_id;
+    const playerIdStr = String(fields.player_id || "");
     const playerPawnId = Number(playerIdStr);
     if (!Number.isFinite(playerPawnId) || playerPawnId < 1) return json(res, 400, { error: "Invalid player_id" });
     const fileEntry = Array.isArray(files.file) ? files.file[0] : files.file;
@@ -1617,8 +1614,11 @@ async function blueprintImportRoute(req, res) {
     } catch {
       return json(res, 400, { error: "Invalid blueprint JSON" });
     }
-    if (!blueprintFile.instances?.length && !blueprintFile.placeables?.length) {
-      return json(res, 400, { error: "Blueprint has no instances or placeables" });
+    const hasInstances = Array.isArray(blueprintFile.instances) && blueprintFile.instances.length > 0;
+    const hasPlaceables = Array.isArray(blueprintFile.placeables) && blueprintFile.placeables.length > 0;
+    const hasPentashields = Array.isArray(blueprintFile.pentashields) && blueprintFile.pentashields.length > 0;
+    if (!hasInstances && !hasPlaceables && !hasPentashields) {
+      return json(res, 400, { error: "Blueprint has no instances, placeables, or pentashields" });
     }
     const result = await importBlueprint(db, playerPawnId, blueprintFile);
     audit(config, req, "blueprints.import", { playerPawnId, result });
