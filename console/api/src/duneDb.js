@@ -1190,6 +1190,9 @@ export async function listPlayers(db, { online = false, q = "" } = {}) {
   const currentPawnFilter = playerStateColumns.has("player_pawn_id")
     ? " and (ps.player_pawn_id is null or ps.player_pawn_id = 0 or ps.player_pawn_id = a.id)"
     : "";
+  const currentPawnPriority = playerStateColumns.has("player_pawn_id")
+    ? "when ps.player_pawn_id = a.id then 0"
+    : "when false then 0";
   const lastSeenWithOnlineFallback = `
     case
       when coalesce(ps.online_status::text, '') = 'Online'
@@ -1205,6 +1208,7 @@ export async function listPlayers(db, { online = false, q = "" } = {}) {
   where += " and coalesce(ac.funcom_id, '') <> 'MessageOfTheDay#0001'";
   where += " and coalesce(ps.character_name, '') <> 'Server'";
   where += " and coalesce(ps.character_name, '') <> 'Message of the Day'";
+  where += " and not (nullif(trim(coalesce(ps.character_name, '')), '') is null and coalesce(ps.online_status::text, '') <> 'Online')";
   where += currentPawnFilter;
   if (online) where += " and coalesce(ps.online_status::text, '') = 'Online'";
   if (q) {
@@ -1212,28 +1216,57 @@ export async function listPlayers(db, { online = false, q = "" } = {}) {
     where += ` and (ps.character_name ilike $${values.length} or ac."user" ilike $${values.length} or a.id::text = $${values.length} or a.owner_account_id::text = $${values.length})`;
   }
   const result = await db.query(`
-    select a.id as actor_id,
-           a.id as player_pawn_id,
-           coalesce(a.owner_account_id, 0) as account_id,
-           coalesce(ps.character_name, '') as character_name,
-           coalesce(ps.player_controller_id, 0) as player_controller_id,
-           coalesce(ac.funcom_id, '') as funcom_id,
-           coalesce(ac."user", '') as fls_id,
-           case
-             when nullif(ac."user", '') is not null then ac."user"
-             when a.owner_account_id is not null and a.owner_account_id <> 0 then a.owner_account_id::text
-             else ''
-           end as action_player_id,
-           a.class,
-           coalesce(a.map, '') as map,
-           coalesce(ps.online_status::text, 'Offline') as online_status,
-           ${loginSessionSelect} as login_session,
-           ${lastSeenWithOnlineFallback} as last_seen
-    from dune.actors a
-    left join dune.player_state ps on ps.account_id = a.owner_account_id
-    left join dune.accounts ac on ac.id = a.owner_account_id
-    where ${where}
-    order by lower(coalesce(ps.character_name, '')), a.id
+    with player_rows as (
+      select a.id as actor_id,
+             a.id as player_pawn_id,
+             coalesce(a.owner_account_id, 0) as account_id,
+             coalesce(ps.character_name, '') as character_name,
+             coalesce(ps.player_controller_id, 0) as player_controller_id,
+             coalesce(ac.funcom_id, '') as funcom_id,
+             coalesce(ac."user", '') as fls_id,
+             case
+               when nullif(ac."user", '') is not null then ac."user"
+               when a.owner_account_id is not null and a.owner_account_id <> 0 then a.owner_account_id::text
+               else ''
+             end as action_player_id,
+             a.class,
+             coalesce(a.map, '') as map,
+             coalesce(ps.online_status::text, 'Offline') as online_status,
+             ${loginSessionSelect} as login_session,
+             ${lastSeenWithOnlineFallback} as last_seen,
+             coalesce(nullif(ps.player_controller_id, 0), nullif(a.owner_account_id, 0), a.id) as dedupe_key,
+             case
+               ${currentPawnPriority}
+               when coalesce(ps.character_name, '') <> '' then 1
+               else 2
+             end as row_priority,
+             case when coalesce(ps.online_status::text, '') = 'Online' then 0 else 1 end as online_priority
+      from dune.actors a
+      left join dune.player_state ps on ps.account_id = a.owner_account_id
+      left join dune.accounts ac on ac.id = a.owner_account_id
+      where ${where}
+    ),
+    deduped_players as (
+      select distinct on (dedupe_key)
+             actor_id,
+             player_pawn_id,
+             account_id,
+             character_name,
+             player_controller_id,
+             funcom_id,
+             fls_id,
+             action_player_id,
+             class,
+             map,
+             online_status,
+             login_session,
+             last_seen
+      from player_rows
+      order by dedupe_key, row_priority, online_priority, actor_id desc
+    )
+    select *
+    from deduped_players
+    order by lower(coalesce(character_name, '')), actor_id
     limit 500`, values);
   return { capabilities: { players: true, online }, rows: result.rows };
 }

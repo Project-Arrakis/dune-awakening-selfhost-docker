@@ -526,6 +526,29 @@ test("players query filters stale actor rows when player_state has current pawn 
   assert.equal(result.rows[0].actor_id, 78);
 });
 
+test("players query filters offline transferred character placeholder actor rows", async () => {
+  const calls = [];
+  const db = {
+    query: async (text, values) => {
+      calls.push({ text, values });
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("information_schema.columns")) return { rows: ["player_pawn_id", "player_controller_id", "online_status"].map((column_name) => ({ column_name })) };
+      return { rows: [] };
+    }
+  };
+
+  const result = await listPlayers(db, {});
+  const playerQuery = calls.find((call) => call.text.includes("from dune.actors"));
+  assert.ok(playerQuery);
+  assert.match(playerQuery.text, /distinct on \(dedupe_key\)/);
+  assert.match(playerQuery.text, /coalesce\(nullif\(ps\.player_controller_id, 0\), nullif\(a\.owner_account_id, 0\), a\.id\) as dedupe_key/);
+  assert.match(playerQuery.text, /nullif\(trim\(coalesce\(ps\.character_name, ''\)\), ''\) is null/);
+  assert.match(playerQuery.text, /coalesce\(ps\.online_status::text, ''\) <> 'Online'/);
+  assert.match(playerQuery.text, /when ps\.player_pawn_id = a\.id then 0/);
+  assert.match(playerQuery.text, /order by dedupe_key, row_priority, online_priority, actor_id desc/);
+  assert.equal(result.rows.length, 0);
+});
+
 test("addon leadership players include level and faction summaries", async () => {
   const db = {
     query: async (text, values = []) => {
