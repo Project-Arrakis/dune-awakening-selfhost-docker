@@ -23,6 +23,20 @@ type JourneyRow = { id: string; name: string; rawName: string; category: string;
 
 type ConfirmAction = (message: string, options?: { title?: string; confirmLabel?: string; cancelLabel?: string; danger?: boolean; details?: { label: string; value: string; tone?: "accent" | "success" | "danger" }[] }) => Promise<boolean>;
 
+function playerAdmin_itemUsesDatabaseGrant(item: { itemId?: string; id?: string; category?: string; source?: string; quality?: unknown; grade?: unknown; durability?: unknown }) {
+  const id = String(item.itemId || item.id || "").trim();
+  const category = String(item.category || "").toLowerCase();
+  const source = String(item.source || "").toLowerCase();
+  return itemGrade(item) > 0 ||
+    category === "schematics" ||
+    source === "schematics" ||
+    category.includes("augment") ||
+    source.includes("augment") ||
+    /^schematic(pattern|_)/i.test(id) ||
+    /_schematic$/i.test(id) ||
+    /schematic$/i.test(id);
+}
+
 export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId, playerName, onError, onRefresh, onClose, confirmAction, waitForTask, formatMutationResult }: { detail: Record<string, unknown> | null; fallback: Record<string, unknown>; dbPlayerId: string; actionPlayerId: string; playerName: string; onError: (text: string) => void; onRefresh: () => void; onClose: () => void; confirmAction: ConfirmAction; waitForTask: (task: Task) => Promise<Task>; formatMutationResult: (result: unknown) => string }) {
   const playerAdmin_tabs = ["Character", "Crafting", "Research", "Skills", "Journey", "Admin"];
   const [playerAdmin_activeTab, playerAdmin_setActiveTab] = useState("Character");
@@ -46,7 +60,7 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
   const [playerAdmin_itemId, playerAdmin_setItemId] = useState("");
   const [playerAdmin_quantity, playerAdmin_setQuantity] = useState("1");
   const [playerAdmin_grade, playerAdmin_setGrade] = useState("0");
-  const [playerAdmin_multiList, playerAdmin_setMultiList] = useState<{ itemName?: string; itemId?: string; image?: string; quantity: number; durability?: number; quality?: number; grade?: number }[]>([]);
+  const [playerAdmin_multiList, playerAdmin_setMultiList] = useState<{ itemName?: string; itemId?: string; image?: string; category?: string; source?: string; quantity: number; durability?: number; quality?: number; grade?: number }[]>([]);
   const [playerAdmin_itemEditIndex, playerAdmin_setItemEditIndex] = useState<number | null>(null);
   const [playerAdmin_itemEditDraft, playerAdmin_setItemEditDraft] = useState({ quantity: "1", grade: "0" });
   const [playerAdmin_actionResult, playerAdmin_setActionResult] = useState<{ key: string; tone: "success" | "danger" | "neutral"; text: string; pending?: boolean } | null>(null);
@@ -84,6 +98,21 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
   const playerAdmin_craftingCategories = ["Essentials", "Water Discipline", "Combat", "Construction", "Exploration", "Vehicles"];
   const playerAdmin_isOnline = String(firstDefined(detail?.online_status, fallback.online_status) || "").toLowerCase() === "online";
   const playerAdmin_canRunLiveAction = Boolean(actionPlayerId) && playerAdmin_isOnline;
+  const playerAdmin_selectedGrantItems = playerAdmin_multiList.length ? playerAdmin_multiList : playerAdmin_selectedItem ? [{
+    itemName: playerAdmin_itemName,
+    itemId: playerAdmin_itemId,
+    image: playerAdmin_selectedItem.image,
+    category: playerAdmin_selectedItem.category,
+    source: playerAdmin_selectedItem.source,
+    quantity: Number(playerAdmin_quantity) || 1,
+    quality: normalizeItemGrade(playerAdmin_grade)
+  }] : [];
+  const playerAdmin_hasGrantItems = playerAdmin_selectedGrantItems.length > 0;
+  const playerAdmin_allGrantItemsUseDb = playerAdmin_hasGrantItems && playerAdmin_selectedGrantItems.every(playerAdmin_itemUsesDatabaseGrant);
+  const playerAdmin_canGiveSelectedItems = playerAdmin_hasGrantItems && (
+    playerAdmin_canRunLiveAction ||
+    (Boolean(dbPlayerId) && playerAdmin_allGrantItemsUseDb)
+  );
   const playerAdmin_skillChangeCount = Object.keys(playerAdmin_skillChanges).length;
   const playerAdmin_toggle = (playerAdmin_key: string) => playerAdmin_setOpenToggles((playerAdmin_current) => ({ ...playerAdmin_current, [playerAdmin_key]: !playerAdmin_current[playerAdmin_key] }));
   const playerAdmin_toggleJourney = (key: string) => playerAdmin_setExpandedJourney((current) => ({ ...current, [key]: !current[key] }));
@@ -135,6 +164,8 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
       itemName: playerAdmin_itemName,
       itemId: playerAdmin_itemId,
       image: playerAdmin_selectedItem.image,
+      category: playerAdmin_selectedItem.category,
+      source: playerAdmin_selectedItem.source,
       quantity: Number(playerAdmin_quantity) || 1,
       quality: normalizeItemGrade(playerAdmin_grade)
     }]);
@@ -150,15 +181,19 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
     playerAdmin_setItemEditIndex(null);
   }
   async function playerAdmin_giveMultipleItems() {
-    const items = playerAdmin_multiList.length ? playerAdmin_multiList : playerAdmin_selectedItem ? [{
-      itemName: playerAdmin_itemName,
-      itemId: playerAdmin_itemId,
-      image: playerAdmin_selectedItem.image,
-      quantity: Number(playerAdmin_quantity) || 1,
-      quality: normalizeItemGrade(playerAdmin_grade)
-    }] : [];
+    const items = playerAdmin_selectedGrantItems;
     if (!items.length) {
       playerAdmin_showResult("giveMultiple", "Select at least one item before granting.", "danger");
+      return;
+    }
+    const allItemsUseDb = items.every(playerAdmin_itemUsesDatabaseGrant);
+    if (!playerAdmin_canRunLiveAction && !allItemsUseDb) {
+      playerAdmin_showResult("giveMultiple", "Normal Grade 0 item grants require the player to be online. Use Grade 1-5, schematics, or augments for offline database grants.", "danger");
+      return;
+    }
+    const grantTargetId = allItemsUseDb && dbPlayerId ? dbPlayerId : actionPlayerId;
+    if (!grantTargetId) {
+      playerAdmin_showResult("giveMultiple", "This player is missing the required grant target ID.", "danger");
       return;
     }
     const isSingleSelectedItemGrant = !playerAdmin_multiList.length && items.length === 1;
@@ -167,7 +202,7 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
       "giveMultiple",
       `Granting ${items.length} item entr${items.length === 1 ? "y" : "ies"} to ${playerName}`,
       async () => {
-        const result = await playersApi.giveItems(actionPlayerId, items.map((item) => ({ itemName: item.itemName, itemId: item.itemId, quantity: item.quantity, quality: itemGrade(item), durability: grantItemDurability() })));
+        const result = await playersApi.giveItems(grantTargetId, items.map((item) => ({ itemName: item.itemName, itemId: item.itemId, quantity: item.quantity, quality: itemGrade(item), durability: grantItemDurability() })));
         if (!result.ok) throw new Error(playerAdmin_bulkItemFailure(result.results));
       },
       `${items.length} item entr${items.length === 1 ? "y was" : "ies were"} granted to ${playerName}.`,
@@ -1034,7 +1069,7 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
           {playerAdmin_actionRow("intel", "Give Intel", <input type="number" min="1" value={playerAdmin_intelAmount} onChange={(event) => playerAdmin_setIntelAmount(event.target.value)} />, "Give", () => playerAdmin_runAction("intel", `Giving ${Number(playerAdmin_intelAmount) || 0} Intel to ${playerName}`, () => playersApi.addIntel(dbPlayerId, { amount: Number(playerAdmin_intelAmount) || 0, confirmation: "ADD INTEL" }), `${playerName}'s Intel was updated and will load on next join.`, { actionType: "Give Intel", target: playerName, amount: String(Number(playerAdmin_intelAmount) || 0) }), !dbPlayerId || playerAdmin_isOnline, playerAdmin_isOnline ? "The player must be offline." : "The player must be offline for this database edit.")}
           {playerAdmin_actionRow("faction", "Give Faction Reputation", <><select value={playerAdmin_factionName} onChange={(event) => playerAdmin_setFactionName(event.target.value)}><option>Atreides</option><option>Harkonnen</option><option>Smuggler</option></select><input type="number" min="1" max="12474" value={playerAdmin_factionAmount} onChange={(event) => playerAdmin_setFactionAmount(event.target.value)} /></>, "Give", () => playerAdmin_runAction("faction", `Giving ${Number(playerAdmin_factionAmount) || 0} ${playerAdmin_factionName} reputation to ${playerName}`, () => playersApi.addFactionReputation(dbPlayerId, { factionId: playerAdmin_factionIds[playerAdmin_factionName] || 1, amount: Number(playerAdmin_factionAmount) || 0, confirmation: "ADD FACTION REPUTATION" }), `${playerName}'s faction reputation was updated. Relog required.`, { actionType: "Give Faction Reputation", target: playerAdmin_factionName, amount: String(Number(playerAdmin_factionAmount) || 0) }), !dbPlayerId, "A relog is required to see the change.")}
         </div>)}
-        <div className={`playerAdmin_toggle ${playerAdmin_openToggles.give_items ? "open" : ""}`}><button className="playerAdmin_toggleHeader" onClick={() => playerAdmin_toggle("give_items")}>{playerAdmin_openToggles.give_items ? <ChevronUp size={18} /> : <ChevronDown size={18} />}<span>Give Items</span></button>{playerAdmin_openToggles.give_items && <div className="playerAdmin_toggleBody"><div className="playerAdmin_section"><p className="action-help-note">The player must be online for instant normal item grants. Schematics, augments, and Grades 1-5 are saved to the player inventory and may require a relog before they appear correctly.</p><ItemCatalogSelector selected={playerAdmin_selectedItem} onSelect={playerAdmin_chooseItem} /><div className="playerAdmin_itemActionStack"><div className="playerAdmin_itemInputLine"><span className="playerAdmin_actionLabel playerAdmin_itemSelectedLabel">Selected Item</span><label className="playerAdmin_itemNumberField">Quantity<input className="package-item-quantity-input" type="number" min="1" value={playerAdmin_quantity} onChange={(event) => playerAdmin_setQuantity(event.target.value)} /></label><label className="playerAdmin_itemNumberField">Grade<ItemGradeSelect value={playerAdmin_grade} onChange={playerAdmin_setGrade} /></label><div className="playerAdmin_actionRow playerAdmin_itemActionRow"><button disabled={!playerAdmin_canRunLiveAction || (!playerAdmin_multiList.length && !playerAdmin_selectedItem) || playerAdmin_actionResult?.pending} onClick={() => void playerAdmin_giveMultipleItems()}>{playerAdmin_multiList.length ? "Give Package" : "Give Item"}</button><button disabled={!playerAdmin_selectedItem} onClick={playerAdmin_addSelectedItem}>Add Item</button><InlineActionResult result={playerAdmin_actionResult} resultKey="giveMultiple" /></div></div></div>
+        <div className={`playerAdmin_toggle ${playerAdmin_openToggles.give_items ? "open" : ""}`}><button className="playerAdmin_toggleHeader" onClick={() => playerAdmin_toggle("give_items")}>{playerAdmin_openToggles.give_items ? <ChevronUp size={18} /> : <ChevronDown size={18} />}<span>Give Items</span></button>{playerAdmin_openToggles.give_items && <div className="playerAdmin_toggleBody"><div className="playerAdmin_section"><p className="action-help-note">The player must be online for instant normal item grants. Schematics, augments, and Grades 1-5 are saved to the player inventory and may require a relog before they appear correctly.</p><ItemCatalogSelector selected={playerAdmin_selectedItem} onSelect={playerAdmin_chooseItem} /><div className="playerAdmin_itemActionStack"><div className="playerAdmin_itemInputLine"><span className="playerAdmin_actionLabel playerAdmin_itemSelectedLabel">Selected Item</span><label className="playerAdmin_itemNumberField">Quantity<input className="package-item-quantity-input" type="number" min="1" value={playerAdmin_quantity} onChange={(event) => playerAdmin_setQuantity(event.target.value)} /></label><label className="playerAdmin_itemNumberField">Grade<ItemGradeSelect value={playerAdmin_grade} onChange={playerAdmin_setGrade} /></label><div className="playerAdmin_actionRow playerAdmin_itemActionRow"><button disabled={!playerAdmin_canGiveSelectedItems || playerAdmin_actionResult?.pending} onClick={() => void playerAdmin_giveMultipleItems()}>{playerAdmin_multiList.length ? "Give Package" : "Give Item"}</button><button disabled={!playerAdmin_selectedItem} onClick={playerAdmin_addSelectedItem}>Add Item</button><InlineActionResult result={playerAdmin_actionResult} resultKey="giveMultiple" /></div></div></div>
           {playerAdmin_multiList.length ? <div className="table-wrap package-items-table playerAdmin_itemsTable"><table><thead><tr><th>Preview</th><th>Item Name</th><th>Item ID</th><th>Quantity</th><th>Grade</th><th>Actions</th></tr></thead><tbody>{playerAdmin_multiList.map((item, index) => {
             const editing = playerAdmin_itemEditIndex === index;
             return <tr key={`${item.itemName || item.itemId}-${index}`}><td><PackageItemPreview item={item} /></td><td>{catalogItemName(item)}</td><td>{catalogItemId(item)}</td><td>{editing ? <input className="package-item-quantity-input" type="number" min="1" value={playerAdmin_itemEditDraft.quantity} onChange={(event) => playerAdmin_setItemEditDraft({ ...playerAdmin_itemEditDraft, quantity: event.target.value })} /> : item.quantity}</td><td>{editing ? <ItemGradeSelect value={playerAdmin_itemEditDraft.grade} onChange={(grade) => playerAdmin_setItemEditDraft({ ...playerAdmin_itemEditDraft, grade })} /> : itemGrade(item)}</td><td className="package-actions-cell"><div className="service-actions">{editing ? <><button onClick={() => playerAdmin_saveQueuedItem(index)}>Save</button><button onClick={() => playerAdmin_setItemEditIndex(null)}>Cancel</button></> : <button onClick={() => playerAdmin_editQueuedItem(index)}>Edit</button>}<button className="danger" onClick={() => playerAdmin_setMultiList(playerAdmin_multiList.filter((_, itemIndex) => itemIndex !== index))}>Remove</button></div></td></tr>;
