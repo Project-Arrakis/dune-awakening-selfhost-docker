@@ -50,6 +50,7 @@ export function BackupsPanel({ backupRestoreTask, setBackupRestoreTask, onError,
   const importBackupInputRef = useRef<HTMLInputElement | null>(null);
   const importMetadataInputRef = useRef<HTMLInputElement | null>(null);
   const backupsRefreshRef = useRef<Promise<void> | null>(null);
+  const completedRestoreTaskIdsRef = useRef(new Set<string>());
   const [busyAction, setBusyAction] = useState("");
   const autoStatus = (autoBackup as { status?: Record<string, unknown> } | null)?.status || {};
   const autoTimerValue = String(autoStatus.timer || "");
@@ -93,15 +94,31 @@ export function BackupsPanel({ backupRestoreTask, setBackupRestoreTask, onError,
     setBusyAction(action);
     const setter = action === "auto" ? setAutoResult : setBackupResult;
     setter({ status: "running", title: action === "restore" ? "Restoring Backup..." : action === "delete" || action === "deleteAll" ? "Deleting Backup..." : action === "auto" ? "Saving Automatic Backup Settings..." : "Creating Backup..." });
+    let restoreImportCompleted = false;
     try {
       const response = await taskFactory();
-      const final = action === "restore" ? await waitForTaskWithUpdates(response.task, setBackupRestoreTask) : await waitForTask(response.task);
+      const final = action === "restore" ? await waitForTaskWithUpdates(response.task, (task) => {
+        if (restoreImportCompleted) return;
+        if (backupRestoreHasCompletedImport(task)) {
+          restoreImportCompleted = true;
+          setBackupRestoreTask(null);
+          if (!completedRestoreTaskIdsRef.current.has(task.id)) {
+            completedRestoreTaskIdsRef.current.add(task.id);
+            setter(backupRestoreCompletedResult(task));
+          }
+          return;
+        }
+        setBackupRestoreTask(task);
+      }) : await waitForTask(response.task);
       const result = action === "restore" ? backupRestoreTaskResult(final) : summarizeBackupTask(final, successTitle, failureTitle);
       if (action === "restore" && isTerminalTask(final.status)) setBackupRestoreTask(null);
-      setter((final.status === "succeeded" && (action === "delete" || action === "deleteAll")) ? { ...result, tone: "danger" } : result);
+      if (!(action === "restore" && restoreImportCompleted)) {
+        setter((final.status === "succeeded" && (action === "delete" || action === "deleteAll")) ? { ...result, tone: "danger" } : result);
+      }
       if (final.status === "succeeded") await refresh();
       return final;
     } catch (error) {
+      if (action === "restore" && restoreImportCompleted) return null;
       const reason = error instanceof Error ? error.message : String(error);
       setter({ status: "failed", title: failureTitle, message: reason });
       onError(reason);
@@ -175,6 +192,13 @@ export function BackupsPanel({ backupRestoreTask, setBackupRestoreTask, onError,
       });
     });
   }, []);
+  useEffect(() => {
+    if (!backupRestoreTask || !backupRestoreHasCompletedImport(backupRestoreTask)) return;
+    if (completedRestoreTaskIdsRef.current.has(backupRestoreTask.id)) return;
+    completedRestoreTaskIdsRef.current.add(backupRestoreTask.id);
+    setBackupResult(backupRestoreCompletedResult(backupRestoreTask));
+    setBackupRestoreTask(null);
+  }, [backupRestoreTask?.id, backupRestoreTask?.logLines.length]);
   useEffect(() => {
     if (!backupResult || backupResult.status === "running" || backupResult.tone === "attention") return;
     const id = window.setTimeout(() => setBackupResult(null), 5400);
@@ -287,13 +311,35 @@ function backupRestoreTaskResult(task: Task): BackupResult {
   if (task.status === "failed") {
     return { status: "failed", title: "Backup Restore Failed", message: task.errorMessage || conciseTaskError(task), details };
   }
-  return { status: "running", title: "Restoring Backup...", message: backupRestoreStageMessage(task), details };
+  if (backupRestoreHasCompletedImport(task)) return backupRestoreCompletedResult(task);
+  return { status: "running", title: backupRestoreStageTitle(task), message: backupRestoreStageMessage(task), details };
+}
+
+function backupRestoreCompletedResult(task: Task): BackupResult {
+  const details = task.logLines.map((line) => line.line).join("\n");
+  return {
+    status: "succeeded",
+    title: "Restore Successful",
+    message: "Database restore completed successfully. Dune services are restarting.",
+    details
+  };
+}
+
+function backupRestoreHasCompletedImport(task: Task) {
+  const lines = task.logLines.map((row) => row.line).join("\n");
+  return /Database import finished|Starting Dune stack|Restarting Dune stack|Starting services/i.test(lines);
+}
+
+function backupRestoreStageTitle(task: Task) {
+  const lines = task.logLines.map((row) => row.line).join("\n");
+  if (/Database import finished|Starting Dune stack|Restarting Dune stack|Starting services/i.test(lines)) return "Restarting Dune Services";
+  return "Restoring Backup...";
 }
 
 function backupRestoreStageMessage(task: Task) {
   const lines = task.logLines.map((row) => row.line).join("\n");
-  if (/Starting Dune stack|Restarting Dune stack|Starting services/i.test(lines)) return "Restarting Dune services and waiting for the console to come back up.";
-  if (/Database import finished/i.test(lines)) return "Database restore finished. Restarting services.";
+  if (/Starting Dune stack|Restarting Dune stack|Starting services/i.test(lines)) return "Database restore completed successfully. Dune services are restarting.";
+  if (/Database import finished/i.test(lines)) return "Database restore completed successfully. Restarting Dune services.";
   if (/Automatic account relink/i.test(lines)) return "Relinking restored characters to current Docker player identities.";
   if (/Adopt backup battlegroup:/i.test(lines)) return "Changing Docker to use the backup battlegroup ID.";
   if (/Battlegroup remap:/i.test(lines)) return "Adapting imported backup to this Docker battlegroup.";

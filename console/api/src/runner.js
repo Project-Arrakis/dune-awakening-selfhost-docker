@@ -100,7 +100,7 @@ export function buildDuneArgs(operation, payload = {}) {
       return ["logs", validateServiceName(payload.service)];
     case "backupRestore":
       {
-        return ["db", "restore", validateBackupName(payload.backup)];
+        return ["db", "restore", validateBackupName(payload.backup), "--no-safety-backup"];
       }
     case "backupDelete":
       return ["db", "delete", validateBackupName(payload.backup)];

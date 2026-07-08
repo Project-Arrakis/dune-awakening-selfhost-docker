@@ -94,6 +94,7 @@ function taskTitle(task: Task) {
   if (task.operation === "backupRestore") {
     if (task.status === "succeeded") return "Restore Completed";
     if (task.status === "failed") return "Backup Restore Failed";
+    if (backupRestoreHasCompletedImport(task)) return "Restarting Dune Services";
     return "Restoring Backup";
   }
   return task.operation;
@@ -106,8 +107,8 @@ function taskMessage(task: Task) {
   if (task.status === "failed") return task.errorMessage || "Database restore failed.";
 
   const lines = task.logLines.map((row) => row.line).join("\n");
-  if (/Starting Dune stack|Restarting Dune stack|Starting services/i.test(lines)) return "Restarting Dune services and waiting for the console to come back up.";
-  if (/Database import finished/i.test(lines)) return "Database restore finished. Restarting services.";
+  if (/Starting Dune stack|Restarting Dune stack|Starting services/i.test(lines)) return "Database restore completed successfully. Dune services are restarting.";
+  if (/Database import finished/i.test(lines)) return "Database restore completed successfully. Restarting Dune services.";
   if (/Automatic account relink/i.test(lines)) return "Relinking restored characters to current Docker player identities.";
   if (/Battlegroup remap:/i.test(lines)) return "Adapting imported backup to this Docker battlegroup.";
   if (/Restoring database/i.test(lines)) return "Restoring database contents from the selected backup.";
@@ -115,6 +116,11 @@ function taskMessage(task: Task) {
   if (/Stopping services that depend on the database/i.test(lines)) return "Stopping Dune services before the database restore.";
   if (/Creating database backup/i.test(lines)) return "Creating a pre-restore safety backup.";
   return task.progressMessage || "Preparing database restore.";
+}
+
+function backupRestoreHasCompletedImport(task: Task) {
+  const lines = task.logLines.map((row) => row.line).join("\n");
+  return /Database import finished|Starting Dune stack|Restarting Dune stack|Starting services/i.test(lines);
 }
 
 function initTaskMessage(task: Task) {

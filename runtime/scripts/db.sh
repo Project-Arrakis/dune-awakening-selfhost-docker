@@ -22,6 +22,7 @@ Usage:
   dune db health
   dune db import <backup-file>
   dune db restore <backup-file>
+  dune db restore <backup-file> --no-safety-backup
   dune db restore <backup-file> --transfer OLD=NEW
   dune db restore <backup-file> --transfer-file <plan.tsv>
   dune db transfer OLD_FLS_ID NEW_FLS_ID
@@ -41,7 +42,7 @@ Usage:
 
 Backups are written as official-style .backup files with a .backup.yaml sidecar.
 Import accepts official .backup files and older dune-db-*.dump or .sql backups.
-Import requires confirmation and creates a pre-import backup first.
+Import requires confirmation and creates a pre-import backup first unless --no-safety-backup is used.
 EOF
 }
 
@@ -1007,6 +1008,7 @@ import_db() {
   local identity_snapshot=""
   local tmp_file
   local ext
+  local create_safety_backup=1
   shift || true
   local transfer_args=()
   local transfer_plan=""
@@ -1028,6 +1030,10 @@ import_db() {
         ;;
       --adopt-backup-battlegroup)
         echo "--adopt-backup-battlegroup is no longer needed. External backup restores adopt the backup battlegroup automatically when needed."
+        shift
+        ;;
+      --no-safety-backup)
+        create_safety_backup=0
         shift
         ;;
       *)
@@ -1067,7 +1073,11 @@ import_db() {
   identity_snapshot="$(capture_current_account_identities)"
 
   echo "WARNING: importing a database backup replaces current battlegroup database state."
-  echo "A pre-import backup will be created first."
+  if [ "$create_safety_backup" = "1" ]; then
+    echo "A pre-import backup will be created first."
+  else
+    echo "No pre-import safety backup will be created."
+  fi
   echo "Do not create new characters after restore/import until character data is verified."
   echo "Character transfer is only for players whose FLS/Funcom account changed."
   if [ "${DUNE_DB_ASSUME_YES:-0}" != "1" ]; then
@@ -1078,7 +1088,9 @@ import_db() {
     esac
   fi
 
-  DB_BACKUP_ORIGIN=restore-safety backup_db "$BACKUP_DIR_DEFAULT"
+  if [ "$create_safety_backup" = "1" ]; then
+    DB_BACKUP_ORIGIN=restore-safety backup_db "$BACKUP_DIR_DEFAULT"
+  fi
   if backup_is_external "$backup_file"; then
     adopt_backup_battlegroup_id "$backup_file"
   fi
