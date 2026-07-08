@@ -437,6 +437,7 @@ async function handleApi(req, res) {
   if (path.match(/^\/api\/players\/[^/]+\/repair-gear$/) && req.method === "POST") return playerDbMutation(req, res, path, "players.repair-gear", "REPAIR GEAR", (playerId) => duneDb.repairGear(db, playerId));
   if (path.match(/^\/api\/players\/[^/]+\/repair-vehicle-decay$/) && req.method === "POST") return playerDbMutation(req, res, path, "players.repair-vehicle-decay", "REPAIR VEHICLE DECAY", (playerId, body) => duneDb.repairVehicleDecay(db, playerId, body));
   if (path.match(/^\/api\/players\/[^/]+\/refuel-vehicle$/) && req.method === "POST") return playerDbMutation(req, res, path, "players.refuel-vehicle", "REFUEL VEHICLE", (playerId, body) => duneDb.refuelVehicle(db, playerId, body));
+  if (path.match(/^\/api\/players\/[^/]+\/augment-item$/) && req.method === "POST") return playerDbMutation(req, res, path, "players.augment-item", "APPLY AUGMENTS", (playerId, body) => duneDb.augmentInventoryItem(db, playerId, body.itemId, { augments: body.augments }));
   if (path.match(/^\/api\/players\/[^/]+\/inventory\/[^/]+$/) && req.method === "DELETE") return inventoryDeleteRoute(req, res, path);
   if (path.match(/^\/api\/players\/[^/]+\/inventory\/[^/]+$/) && req.method === "PATCH") return inventoryUpdateRoute(req, res, path);
   if (path.match(/^\/api\/players\/[^/]+\/crafting-recipes$/)) return dbPlayerRoute(res, path, duneDb.playerCraftingRecipes);
@@ -1629,13 +1630,13 @@ async function giveSingleItemRoute(req, res, path, operation) {
     const resolved = operation === "adminGiveItemId"
       ? resolveCatalogItem(config.repoRoot, { itemId: body.itemId })
       : resolveCatalogItem(config.repoRoot, { itemName: body.itemName });
-    if (!itemRequiresDatabaseGrant(resolved)) {
+    if (!itemRequiresDatabaseGrant(resolved) && !(body.augments && body.augments.length > 0)) {
       return task(req, res, "admin", operation, { ...body, playerId });
     }
   }
   const item = operation === "adminGiveItemId"
-    ? { itemId: body.itemId, quantity: body.quantity, quality: body.quality, grade: body.grade, durability: body.durability }
-    : { itemName: body.itemName, quantity: body.quantity, quality: body.quality, grade: body.grade, durability: body.durability };
+    ? { itemId: body.itemId, quantity: body.quantity, quality: body.quality, grade: body.grade, durability: body.durability, augments: body.augments }
+    : { itemName: body.itemName, quantity: body.quantity, quality: body.quality, grade: body.grade, durability: body.durability, augments: body.augments };
   try {
     const target = await resolvePlayerGrantTarget(playerId);
     const result = await grantPlayerItem(playerId, item, target);
@@ -1652,7 +1653,7 @@ async function grantPlayerItem(playerId, item, target) {
   const operation = resolved.itemId ? "adminGiveItemId" : "adminGiveItem";
   const hasExplicitGrade = item.quality !== undefined || item.grade !== undefined;
   const selectedGrade = hasExplicitGrade ? validateGrantGrade(item.quality ?? item.grade) : undefined;
-  const usesDatabaseGrant = (selectedGrade !== undefined && selectedGrade > 0) || itemRequiresDatabaseGrant(resolved);
+  const usesDatabaseGrant = (selectedGrade !== undefined && selectedGrade > 0) || itemRequiresDatabaseGrant(resolved) || (item.augments && item.augments.length > 0);
   const databaseGrade = hasExplicitGrade ? selectedGrade : 0;
   const payload = {
     playerId: target.actionId || playerId,
@@ -1660,7 +1661,8 @@ async function grantPlayerItem(playerId, item, target) {
     itemName: item.itemName,
     quantity: item.quantity ?? 1,
     quality: hasExplicitGrade ? selectedGrade : undefined,
-    durability: 1
+    durability: 1,
+    augments: item.augments || []
   };
   if (usesDatabaseGrant) {
     if (!config.mockMode && !target.actorId) throw new Error("A database actor ID is required to grant graded items, schematics, and augments");
@@ -1670,7 +1672,8 @@ async function grantPlayerItem(playerId, item, target) {
           templateId: resolved.itemId || "",
           itemName: payload.itemName,
           quantity: payload.quantity,
-          quality: databaseGrade
+          quality: databaseGrade,
+          augments: payload.augments
         });
     return { ok: true, operation: "dbGiveItemToPlayer", item: { ...payload, quality: databaseGrade }, result };
   }

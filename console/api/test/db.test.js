@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { assertIdentifier, discoverDbConfig, isReadOnlySql, quoteQualified, redactDbError, rowsResult } from "../src/db.js";
-import { addCurrency, addFactionReputation, addIntel, addonLeadershipPlayers, addonOpsHealthFarms, addonOpsHealthPlayers, addonOpsHealthSummary, addonOpsHealthSummaryV2, changeDunePassword, completeJourneyNode, completeTutorial, deleteInventoryItem, giveItemToPlayer, giveItemToStorage, guildMembers, landsraadOverview, listGuilds, listPlayers, listSpicefieldTypes, listTables, liveMapPlayers, liveMapServices, playerCraftingRecipes, playerInventory, playerJourney, playerPosition, playerProfile, playerResearchItems, repairVehicleDecay, resetJourneyNode, resetTutorial, runSql, setLandsraadPlayerContribution, tablePreview, teleportOfflinePlayerToCoords, unlockCraftingRecipe, unlockResearchItem, updateInventoryItem, updateLandsraadRewardTier, updateLandsraadTaskGoal, updateLandsraadTermTaskGoals, updateSpicefieldType, updateTableRow, UnsupportedCapabilityError } from "../src/duneDb.js";
+import { addCurrency, addFactionReputation, addIntel, addonLeadershipPlayers, addonOpsHealthFarms, addonOpsHealthPlayers, addonOpsHealthSummary, addonOpsHealthSummaryV2, augmentInventoryItem, changeDunePassword, completeJourneyNode, completeTutorial, deleteInventoryItem, giveItemToPlayer, giveItemToStorage, guildMembers, landsraadOverview, listGuilds, listPlayers, listSpicefieldTypes, listTables, liveMapPlayers, liveMapServices, playerCraftingRecipes, playerInventory, playerJourney, playerPosition, playerProfile, playerResearchItems, repairVehicleDecay, resetJourneyNode, resetTutorial, runSql, setLandsraadPlayerContribution, tablePreview, teleportOfflinePlayerToCoords, unlockCraftingRecipe, unlockResearchItem, updateInventoryItem, updateLandsraadRewardTier, updateLandsraadTaskGoal, updateLandsraadTermTaskGoals, updateSpicefieldType, updateTableRow, UnsupportedCapabilityError } from "../src/duneDb.js";
 
 test("discovers RedBlink Postgres defaults and env overrides", () => {
   assert.deepEqual(discoverDbConfig({}), {
@@ -1105,10 +1105,99 @@ test("player give-item persists selected item grade", async () => {
   const insert = calls.find((call) => call.text.includes("insert into dune.items"));
   assert.ok(insert);
   assert.deepEqual(insert.values.slice(0, 5), [7, "WaterBottle_1", 3, 5, 2]);
-  assert.deepEqual(JSON.parse(insert.values[5]), {
-    FCustomizationStats: [[], {}],
-    FItemStackAndDurabilityStats: [[], {}]
+  const stats = JSON.parse(insert.values[5]);
+  assert.deepEqual(stats.FCustomizationStats, [[], {}]);
+  assert.equal(stats.FItemStackAndDurabilityStats[1].CurrentDurability, 100);
+  assert.equal(stats.FItemStackAndDurabilityStats[1].MaxDurability, 100);
+});
+
+test("player give-item with augments populates FCustomizationStats", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    storageRows: [{ id: 7, actor_id: 123, max_item_count: 30, max_item_volume: 0 }],
+    countRows: [{ count: 1 }],
+    insertedRows: [{ id: 502, template_id: "UniqueSword", stack_size: 1, quality_level: 0, position_index: 3, inventory_id: 7 }]
   });
+  const result = await giveItemToPlayer(db, 123, { templateId: "UniqueSword", quantity: 1, quality: 0, augments: ["T6_Augment_Melee1", "T6_Augment_Melee4"] });
+  assert.deepEqual(result.augments, ["T6_Augment_Melee1", "T6_Augment_Melee4"]);
+  const insert = calls.find((call) => call.text.includes("insert into dune.items"));
+  assert.ok(insert);
+  const stats = JSON.parse(insert.values[5]);
+  assert.deepEqual(stats.FCustomizationStats, [["T6_Augment_Melee1", "T6_Augment_Melee4"], {}]);
+});
+
+test("player give-item with augments forces DB path with durability on grade 0 items", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    storageRows: [{ id: 7, actor_id: 123, max_item_count: 30, max_item_volume: 0 }],
+    countRows: [{ count: 1 }],
+    insertedRows: [{ id: 503, template_id: "UniqueSword", stack_size: 1, quality_level: 0, position_index: 4, inventory_id: 7 }]
+  });
+  const result = await giveItemToPlayer(db, 123, { templateId: "UniqueSword", quantity: 1, quality: 0, augments: ["T6_Augment_Melee1"] });
+  assert.equal(result.inserted.quality_level, 0);
+  const insert = calls.find((call) => call.text.includes("insert into dune.items"));
+  assert.ok(insert);
+  const stats = JSON.parse(insert.values[5]);
+  assert.ok(stats.FItemStackAndDurabilityStats[1].CurrentDurability > 0);
+});
+
+test("storage give-item with augments populates FCustomizationStats", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    storageRows: [{ id: 7, actor_id: 222, max_item_count: 30, max_item_volume: 0 }],
+    countRows: [{ count: 1 }],
+    insertedRows: [{ id: 504, template_id: "UniqueSword", stack_size: 1, quality_level: 0, position_index: 5, inventory_id: 7 }]
+  });
+  const result = await giveItemToStorage(db, 222, { templateId: "UniqueSword", quantity: 1, quality: 0, augments: ["T6_Augment_Melee1"] });
+  assert.deepEqual(result.augments, ["T6_Augment_Melee1"]);
+  const insert = calls.find((call) => call.text.includes("insert into dune.items"));
+  assert.ok(insert);
+  const stats = JSON.parse(insert.values[5]);
+  assert.deepEqual(stats.FCustomizationStats, [["T6_Augment_Melee1"], {}]);
+});
+
+test("augment inventory item applies augment IDs to existing item FCustomizationStats", async () => {
+  const calls = [];
+  const existingStats = { FCustomizationStats: [[], {}], FItemStackAndDurabilityStats: [[], { CurrentDurability: 80 }] };
+  const db = fakeMutationDb(calls, {
+    itemRows: [{ id: 501, stats: existingStats, template_id: "UniqueSword" }]
+  });
+  const result = await augmentInventoryItem(db, 123, 501, { augments: ["T6_Augment_Melee1", "T6_Augment_Melee4"] });
+  assert.deepEqual(result.augments, ["T6_Augment_Melee1", "T6_Augment_Melee4"]);
+  const update = calls.find((call) => call.text.includes("update dune.items set stats"));
+  assert.ok(update);
+  const stats = JSON.parse(update.values[0]);
+  assert.deepEqual(stats.FCustomizationStats, [["T6_Augment_Melee1", "T6_Augment_Melee4"], {}]);
+  assert.equal(stats.FItemStackAndDurabilityStats[1].CurrentDurability, 80);
+});
+
+test("augment inventory item merges with existing augments", async () => {
+  const calls = [];
+  const existingStats = { FCustomizationStats: [["T6_Augment_Damage1"], {}], FItemStackAndDurabilityStats: [[], {}] };
+  const db = fakeMutationDb(calls, {
+    itemRows: [{ id: 501, stats: existingStats, template_id: "UniqueSword" }]
+  });
+  const result = await augmentInventoryItem(db, 123, 501, { augments: ["T6_Augment_Melee1", "T6_Augment_Damage1"] });
+  assert.deepEqual(result.augments, ["T6_Augment_Damage1", "T6_Augment_Melee1"]);
+});
+
+test("augment inventory item deduplicates augment IDs", async () => {
+  const calls = [];
+  const existingStats = { FCustomizationStats: [["T6_Augment_Melee1"], {}], FItemStackAndDurabilityStats: [[], {}] };
+  const db = fakeMutationDb(calls, {
+    itemRows: [{ id: 501, stats: existingStats, template_id: "UniqueSword" }]
+  });
+  const result = await augmentInventoryItem(db, 123, 501, { augments: ["T6_Augment_Melee1", "T6_Augment_Melee4", "T6_Augment_Melee1"] });
+  assert.deepEqual(result.augments, ["T6_Augment_Melee1", "T6_Augment_Melee4"]);
+});
+
+test("augment inventory item requires valid augment IDs", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    itemRows: [{ id: 501, stats: { FCustomizationStats: [[], {}] }, template_id: "UniqueSword" }]
+  });
+  await assert.rejects(() => augmentInventoryItem(db, 123, 501, { augments: [] }), /At least one augment ID is required/);
+  await assert.rejects(() => augmentInventoryItem(db, 123, 501, { augments: ["bad;id"] }), /Invalid item template/);
 });
 
 test("vehicle decay repair is scoped to the selected player's owned vehicles", async () => {
