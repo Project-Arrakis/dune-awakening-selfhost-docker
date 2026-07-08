@@ -29,7 +29,7 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
   const [playerAdmin_openToggles, playerAdmin_setOpenToggles] = useState<Record<string, boolean>>({});
   const [playerAdmin_inventoryData, playerAdmin_setInventoryData] = useState<Record<string, unknown> | null>(null);
   const [playerAdmin_inventoryFilter, playerAdmin_setInventoryFilter] = useState("");
-  const [playerAdmin_craftingCategory, playerAdmin_setCraftingCategory] = useState("");
+  const [playerAdmin_craftingCategory, playerAdmin_setCraftingCategory] = useState("Essentials");
   const [playerAdmin_craftingFilter, playerAdmin_setCraftingFilter] = useState("");
   const [playerAdmin_researchCategory, playerAdmin_setResearchCategory] = useState("");
   const [playerAdmin_productGroup, playerAdmin_setProductGroup] = useState("");
@@ -861,6 +861,7 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
       sortDirection={playerAdmin_craftingSort.sortDirection}
       onSort={playerAdmin_craftingSort.onSort}
       resizableColumns
+      tableClassName="playerAdmin_schematicTable"
       rowKey={(row) => String(row.recipeId)}
       renderCell={(row, col) =>
         col === "recipeId" ? <code>{String(row.recipeId)}</code> :
@@ -883,6 +884,7 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
       sortDirection={playerAdmin_researchSort.sortDirection}
       onSort={playerAdmin_researchSort.onSort}
       resizableColumns
+      tableClassName="playerAdmin_schematicTable"
       rowKey={(row) => String(row.itemKey)}
       renderCell={(row, col) => col === "itemKey" ? <code>{String(row.itemKey)}</code> : formatCell(row[col])}
       secondaryAction={(row) => <InlineActionResult result={playerAdmin_actionResult} resultKey={`research:${row.itemKey}`} />}
@@ -1047,20 +1049,22 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
             <h4>Crafting Schematics</h4>
             <div className="playerAdmin_boxHeaderLine playerAdmin_filterHeaderLine">
               <p>Recipe unlocks require the player to be offline. The Grade shown is the recipe grade found in the game database.</p>
+            </div>
+            <div className="playerAdmin_filterRow playerAdmin_filterActionLine">
               <div className="playerAdmin_filterToolsRow">
                 <input className="playerAdmin_filterTextInput" value={playerAdmin_craftingFilter} onChange={(event) => playerAdmin_setCraftingFilter(event.target.value)} placeholder="Filter by name, recipe ID, source, or category" aria-label="Filter Crafting Schematics" />
                 {playerAdmin_craftingFilter && <button type="button" onClick={() => playerAdmin_setCraftingFilter("")}>Clear</button>}
                 <span className="playerAdmin_note">{playerAdmin_craftingFilterTerms.length ? `${playerAdmin_filteredCraftingRows.length} of ${playerAdmin_craftingCategoryFilteredRows.length}` : playerAdmin_craftingCategoryFilteredRows.length} Schematic{(playerAdmin_craftingFilterTerms.length ? playerAdmin_filteredCraftingRows.length : playerAdmin_craftingCategoryFilteredRows.length) === 1 ? "" : "s"} Detected</span>
               </div>
-            </div>
-            <div className="playerAdmin_filterRow playerAdmin_filterRowRight">
-              <button disabled={!dbPlayerId || playerAdmin_craftingLoading} onClick={() => playerAdmin_loadCraftingRecipes()}>{playerAdmin_craftingLoading ? "Loading..." : "Reload"}</button>
+              <div className="playerAdmin_filterActionsRight">
+                <button disabled={!dbPlayerId || playerAdmin_craftingLoading} onClick={() => playerAdmin_loadCraftingRecipes()}>{playerAdmin_craftingLoading ? "Loading..." : "Reload"}</button>
+              </div>
             </div>
             <PlayerCategoryIconRail
               options={playerAdmin_craftingCategories}
               value={playerAdmin_craftingCategory}
               onChange={playerAdmin_setCraftingCategory}
-              allLabel="All Categories"
+              includeAll={false}
             />
             {playerAdmin_craftingError ? <p className="playerAdmin_note danger">{playerAdmin_craftingError}</p> : playerAdmin_craftingTable}
           </section>
@@ -1072,15 +1076,17 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
             <h4>Research Schematics</h4>
             <div className="playerAdmin_boxHeaderLine playerAdmin_filterHeaderLine">
               <p>Research unlocks require the player to be offline. Unlocking research may also materialize its linked crafting recipe when the game database exposes one.</p>
+            </div>
+            <div className="playerAdmin_filterRow playerAdmin_filterActionLine">
               <div className="playerAdmin_filterToolsRow">
                 <input className="playerAdmin_filterTextInput" value={playerAdmin_researchFilter} onChange={(event) => playerAdmin_setResearchFilter(event.target.value)} placeholder="Filter by name, item key, type, or product group" aria-label="Filter Research Schematics" />
                 {playerAdmin_researchFilter && <button type="button" onClick={() => playerAdmin_setResearchFilter("")}>Clear</button>}
                 <span className="playerAdmin_note">{playerAdmin_researchFilterTerms.length ? `${playerAdmin_filteredResearchRows.length} of ${playerAdmin_researchCategoryFilteredRows.length}` : playerAdmin_researchCategoryFilteredRows.length} Research Entr{(playerAdmin_researchFilterTerms.length ? playerAdmin_filteredResearchRows.length : playerAdmin_researchCategoryFilteredRows.length) === 1 ? "y" : "ies"} Detected</span>
               </div>
-            </div>
-            <div className="playerAdmin_filterRow playerAdmin_filterRowRight">
-              {playerAdmin_researchCategory && <select value={playerAdmin_productGroup} onChange={(playerAdmin_event) => playerAdmin_setProductGroup(playerAdmin_event.target.value)}><option value="">All Product Groups</option>{playerAdmin_researchGroups[playerAdmin_researchCategory].map((playerAdmin_option) => <option key={playerAdmin_option}>{playerAdmin_option}</option>)}</select>}
-              <button disabled={!dbPlayerId || playerAdmin_researchLoading} onClick={() => playerAdmin_loadResearchItems()}>{playerAdmin_researchLoading ? "Loading..." : "Reload"}</button>
+              <div className="playerAdmin_filterActionsRight">
+                {playerAdmin_researchCategory && <select value={playerAdmin_productGroup} onChange={(playerAdmin_event) => playerAdmin_setProductGroup(playerAdmin_event.target.value)}><option value="">All Product Groups</option>{playerAdmin_researchGroups[playerAdmin_researchCategory].map((playerAdmin_option) => <option key={playerAdmin_option}>{playerAdmin_option}</option>)}</select>}
+                <button disabled={!dbPlayerId || playerAdmin_researchLoading} onClick={() => playerAdmin_loadResearchItems()}>{playerAdmin_researchLoading ? "Loading..." : "Reload"}</button>
+              </div>
             </div>
             <PlayerCategoryIconRail
               options={Object.keys(playerAdmin_researchGroups)}

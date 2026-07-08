@@ -72,6 +72,7 @@ export function PlayerCategoryIconRail({
         <div className="playerAdmin_iconRailIconGroup">
           {items.map((item) => {
             const selected = item.value === value;
+            const categoryKey = duneCategoryAssetKey(item.label);
             return (
               <button
                 key={item.label}
@@ -79,6 +80,7 @@ export function PlayerCategoryIconRail({
                 className={`playerAdmin_iconRailButton ${selected ? "active" : ""}`}
                 aria-pressed={selected}
                 title={item.label}
+                data-category={categoryKey}
                 onClick={() => onChange(item.value)}
               >
                 <img src={duneCategoryIconPath(item.label, selected)} alt="" loading="eager" decoding="async" fetchPriority="high" />
