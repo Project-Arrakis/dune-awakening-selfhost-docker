@@ -24,7 +24,7 @@ test("parses Battlegroup character transfer settings", () => {
 AuthorizationPreset=BattlegroupInternal
 ShouldDeleteOriginCharactersDuringTransfers=false
 AcceptOutgoingCharacterTransfers=true
-IncomingCharacterTransfers=40
+IncomingCharacterTransfers=0
 ExportCharacterTimeout=1200
 ImportCharacterTimeout=1300
 FreeToTransferCharactersFrom=true
@@ -38,7 +38,7 @@ IncomingCharacterTransfers=10
 `);
 
   assert.equal(parsed.settings.ShouldDeleteOriginCharactersDuringTransfers, false);
-  assert.equal(parsed.settings.IncomingCharacterTransfers, 40);
+  assert.equal(parsed.settings.IncomingCharacterTransfers, 0);
   assert.equal(parsed.settings.ExportCharacterTimeout, 1200);
   assert.equal(parsed.settings.ForceIsWorldClosingSoon, true);
 });
@@ -63,6 +63,8 @@ PlayerHardCap=40
   assert.match(next, /; keep this comment/);
   assert.match(next, /AcceptOutgoingCharacterTransfers=true/);
   assert.match(next, /IncomingCharacterTransfers=20/);
+  assert.doesNotMatch(next, /IncomingCharacterTransferRuleset=/);
+  assert.doesNotMatch(next, /TransferOriginRuleset=/);
   assert.match(next, /FreeToTransferCharactersTo=true/);
   assert.match(next, /\[Server\]\nPlayerHardCap=40/);
 });
@@ -74,7 +76,7 @@ test("rejects invalid incoming transfer enum values", () => {
   }), /IncomingCharacterTransfers must be one of/);
   assert.throws(() => validateCharacterTransferSettings({
     ...characterTransferDefaults,
-    IncomingCharacterTransfers: 0
+    IncomingCharacterTransfers: 40
   }), /IncomingCharacterTransfers must be one of/);
 });
 
@@ -114,7 +116,7 @@ test("restore defaults only resets character transfer settings", () => {
     mkdirSync(resolve(config.repoRoot, "runtime/generated"), { recursive: true });
     writeFileSync(path, `[Battlegroup]
 AuthorizationPreset=BattlegroupInternal
-IncomingCharacterTransfers=40
+IncomingCharacterTransfers=30
 FreeToTransferCharactersTo=true
 
 [Server]
@@ -122,8 +124,10 @@ PlayerHardCap=40
 `);
     saveCharacterTransferSettings(config, {}, { defaults: true });
     const text = readFileSync(path, "utf8");
-    assert.match(text, /IncomingCharacterTransfers=40/);
-    assert.match(text, /FreeToTransferCharactersTo=false/);
+    assert.match(text, /IncomingCharacterTransfers=0/);
+    assert.doesNotMatch(text, /IncomingCharacterTransferRuleset=/);
+    assert.doesNotMatch(text, /TransferOriginRuleset=/);
+    assert.match(text, /FreeToTransferCharactersTo=true/);
     assert.match(text, /AuthorizationPreset=BattlegroupInternal/);
     assert.match(text, /\[Server\]\nPlayerHardCap=40/);
   } finally {
@@ -131,7 +135,7 @@ PlayerHardCap=40
   }
 });
 
-test("legacy default incoming transfer value reads back as explicit accept all", () => {
+test("accept-all incoming transfer value reads back without rewriting", () => {
   const config = tempConfig();
   try {
     const path = characterTransferSettingsPath(config);
@@ -140,7 +144,7 @@ test("legacy default incoming transfer value reads back as explicit accept all",
 IncomingCharacterTransfers=0
 `);
     const readBack = readCharacterTransferSettings(config);
-    assert.equal(readBack.settings.IncomingCharacterTransfers, 40);
+    assert.equal(readBack.settings.IncomingCharacterTransfers, 0);
   } finally {
     rmSync(config.repoRoot, { recursive: true, force: true });
   }
@@ -151,7 +155,7 @@ test("generated settings can be injected into Director Battlegroup config", () =
   try {
     saveCharacterTransferSettings(config, {
       ...characterTransferDefaults,
-      IncomingCharacterTransfers: 30,
+      IncomingCharacterTransfers: 0,
       ExportCharacterTimeout: 1000
     });
     const generated = readFileSync(resolve(config.repoRoot, "runtime/generated/director-character-transfer.ini"), "utf8");
@@ -162,7 +166,9 @@ ${generated}
 [InstancingModes]
 Overmap=SingleServer
 `;
-    assert.match(directorConfig, /\[Battlegroup\][\s\S]*IncomingCharacterTransfers=30[\s\S]*ExportCharacterTimeout=1000/);
+    assert.match(directorConfig, /\[Battlegroup\][\s\S]*IncomingCharacterTransfers=0[\s\S]*ExportCharacterTimeout=1000/);
+    assert.doesNotMatch(directorConfig, /IncomingCharacterTransferRuleset=/);
+    assert.doesNotMatch(directorConfig, /TransferOriginRuleset=/);
     assert.match(directorConfig, /\[InstancingModes\]/);
   } finally {
     rmSync(config.repoRoot, { recursive: true, force: true });

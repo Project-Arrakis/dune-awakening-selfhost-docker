@@ -2,20 +2,20 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 
 export const incomingCharacterTransferPolicies = [
+  { value: 0, label: "Accept All Incoming" },
   { value: 10, label: "Deny All Incoming" },
   { value: 20, label: "Accept Incoming From Private" },
-  { value: 30, label: "Accept Incoming From Official" },
-  { value: 40, label: "Accept All Incoming (Default)" }
+  { value: 30, label: "Accept Incoming From Official" }
 ];
 
 export const characterTransferDefaults = Object.freeze({
   ShouldDeleteOriginCharactersDuringTransfers: true,
   AcceptOutgoingCharacterTransfers: true,
-  IncomingCharacterTransfers: 40,
+  IncomingCharacterTransfers: 0,
   ExportCharacterTimeout: 900,
   ImportCharacterTimeout: 900,
-  FreeToTransferCharactersFrom: false,
-  FreeToTransferCharactersTo: false,
+  FreeToTransferCharactersFrom: true,
+  FreeToTransferCharactersTo: true,
   ValidateBeforeImportCharacterTimeout: 180,
   ForceIsWorldClosed: false,
   ForceIsWorldClosingSoon: false
@@ -50,9 +50,6 @@ export function readCharacterTransferSettings(config) {
   const source = existsSync(path) ? readFileSync(path, "utf8") : "";
   const parsed = parseCharacterTransferSettings(source);
   const settings = { ...characterTransferDefaults, ...parsed.settings };
-  if (settings.IncomingCharacterTransfers === 0) {
-    settings.IncomingCharacterTransfers = characterTransferDefaults.IncomingCharacterTransfers;
-  }
   return {
     settings,
     defaults: characterTransferDefaults,
@@ -90,7 +87,7 @@ export function validateCharacterTransferSettings(payload) {
     }
   }
   if (!incomingPolicyValues.has(out.IncomingCharacterTransfers)) {
-    throw badRequest("IncomingCharacterTransfers must be one of 10, 20, 30, or 40.");
+    throw badRequest("IncomingCharacterTransfers must be one of 0, 10, 20, or 30.");
   }
   return out;
 }
