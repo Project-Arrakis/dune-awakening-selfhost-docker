@@ -332,19 +332,21 @@ export async function grantCarePackage(config, playerId, body = {}, context = {}
     try {
       const resolved = resolveCatalogItem(config.repoRoot, item.itemId ? { itemId: item.itemId } : { itemName: item.itemName });
       const operation = item.itemId ? "adminGiveItemId" : "adminGiveItem";
+      const augments = Array.isArray(item.augments) ? item.augments.filter(Boolean).slice(0, 20) : [];
       const payload = {
         playerId,
         itemId: resolved.itemId,
         itemName: resolved.name,
         quantity: item.quantity,
         quality: item.quality,
-        durability: 1
+        durability: 1,
+        augments
       };
-      const needsDatabaseGrant = Number(item.quality || 0) > 0 || itemRequiresDatabaseGrant(resolved);
+      const needsDatabaseGrant = Number(item.quality || 0) > 0 || itemRequiresDatabaseGrant(resolved) || augments.length > 0;
       if (needsDatabaseGrant && context.db && body.actorId) {
         const result = config.mockMode
           ? { ok: true, inserted: { template_id: resolved.itemId, stack_size: item.quantity, quality_level: item.quality } }
-          : await (context.dbGiveItemToPlayer || ((actorId, itemPayload) => giveItemToPlayer(context.db, actorId, itemPayload)))(body.actorId, { templateId: resolved.itemId, quantity: item.quantity, quality: item.quality });
+          : await (context.dbGiveItemToPlayer || ((actorId, itemPayload) => giveItemToPlayer(context.db, actorId, itemPayload)))(body.actorId, { templateId: resolved.itemId, quantity: item.quantity, quality: item.quality, augments });
         results.push({ ok: true, operation: "dbGiveItemToPlayer", item: payload, result });
       } else {
         const command = buildDuneArgs(operation, payload);
@@ -827,12 +829,16 @@ function validateCarePackageItem(item = {}) {
   if (!itemName && !itemId) throw new Error("Care Package item requires itemName or itemId");
   if (itemName && (itemName.length > 240 || /[\r\n]/.test(itemName))) throw new Error("Invalid Care Package item name");
   if (itemId && !/^[A-Za-z0-9_./:-]{1,240}$/.test(itemId)) throw new Error("Invalid Care Package item id");
+  const augments = Array.isArray(item.augments)
+    ? item.augments.filter((id) => String(id || "").trim() && /^[A-Za-z0-9_./:-]{1,240}$/.test(String(id || "").trim())).slice(0, 20)
+    : [];
   return {
     itemName,
     itemId,
     quantity: validateInteger(item.quantity ?? 1, "quantity", 1, 1000000),
     quality: validateItemQuality(item.quality ?? item.grade ?? item.durability ?? 0),
-    durability: 1
+    durability: 1,
+    augments
   };
 }
 

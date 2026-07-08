@@ -26,10 +26,10 @@ test("care package config validation rejects unsafe items and bounds", () => {
     version: "care-package-v1",
     items: [{ itemName: "Water", quantity: 2, durability: 1 }],
     xp: 100
-  }).items[0], { itemName: "Water", itemId: "", quantity: 2, quality: 1, durability: 1 });
+  }).items[0], { itemName: "Water", itemId: "", quantity: 2, quality: 1, durability: 1, augments: [] });
   assert.deepEqual(validateCarePackageConfig({
     items: [{ itemName: "Water", quantity: 2, grade: 5, durability: 0 }]
-  }).items[0], { itemName: "Water", itemId: "", quantity: 2, quality: 5, durability: 1 });
+  }).items[0], { itemName: "Water", itemId: "", quantity: 2, quality: 5, durability: 1, augments: [] });
   assert.equal(validateCarePackageConfig({ autoGrantEnabled: true, autoGrantIntervalSeconds: 60, grantWhen: "first_online" }).grantWhen, "first_online");
   assert.equal(validateCarePackageConfig({ version: "bad version with spaces" }).version, "care-package-v1");
   assert.throws(() => validateCarePackageConfig({ items: [{ itemName: "Bad\nName" }] }), /Invalid Care Package item name/);
