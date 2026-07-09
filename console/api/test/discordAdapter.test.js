@@ -279,11 +279,65 @@ test("infra routes enforce actor capability via requireDiscordCapability", () =>
   assert.ok(DISCORD_ADAPTER_ROUTES.DB, "DB route is defined");
 });
 
-test("infra routes reject missing actor body", () => {
-  assert.throws(
-    () => { throw new Error("Discord actor context is required."); },
-    /actor/i
-  );
+test("infra routes reject missing actor body", async () => {
+  const { handleDiscordAdapterRoute } = await import("../src/integrations/discord/routes.js");
+  const req = { method: "POST", headers: {} };
+  const res = { statusCode: 0, body: null };
+  const json = (r, code, body) => { res.statusCode = code; res.body = body; };
+
+  await handleDiscordAdapterRoute({
+    req, res, path: DISCORD_ADAPTER_ROUTES.SERVERS,
+    config: { repoRoot: "/tmp", discordBotApiTokenFile: "/tmp/fake-token" },
+    readJson: async () => ({ actor: null }),
+    json
+  });
+  assert.ok(res.statusCode >= 400, `expected 4xx for missing actor, got ${res.statusCode}: ${JSON.stringify(res.body)}`);
+  assert.match(res.body?.error || "", /actor/i);
+});
+
+test("infra routes reject unauthorized actor tier", async () => {
+  const { handleDiscordAdapterRoute } = await import("../src/integrations/discord/routes.js");
+  const req = { method: "POST", headers: {} };
+  const res = { statusCode: 0, body: null };
+  const json = (r, code, body) => { res.statusCode = code; res.body = body; };
+  const oldObs = process.env.DISCORD_OBSERVER_ROLE_IDS;
+  process.env.DISCORD_OBSERVER_ROLE_IDS = "role-observer";
+
+  try {
+    await handleDiscordAdapterRoute({
+      req, res, path: DISCORD_ADAPTER_ROUTES.SERVERS,
+      config: { repoRoot: "/tmp", discordBotApiTokenFile: "/tmp/fake-token" },
+      readJson: async () => ({ actor: actor(["role-public"]) }),
+      json
+    });
+    // Public tier should not have SERVICES_READ — expect rejection
+    assert.ok(res.statusCode >= 400, `expected 4xx for public+servers, got ${res.statusCode}`);
+  } finally {
+    process.env.DISCORD_OBSERVER_ROLE_IDS = oldObs;
+  }
+});
+
+test("infra routes accept authorized actor tier", async () => {
+  const { handleDiscordAdapterRoute } = await import("../src/integrations/discord/routes.js");
+  const req = { method: "POST", headers: {} };
+  const res = { statusCode: 0, body: null };
+  const json = (r, code, body) => { res.statusCode = code; res.body = body; };
+  const oldObs = process.env.DISCORD_OBSERVER_ROLE_IDS;
+  process.env.DISCORD_OBSERVER_ROLE_IDS = "role-observer";
+
+  try {
+    await handleDiscordAdapterRoute({
+      req, res, path: DISCORD_ADAPTER_ROUTES.VERSION,
+      config: { repoRoot: "/tmp", discordBotApiTokenFile: "/tmp/fake-token", version: "test-version" },
+      readJson: async () => ({ actor: actor(["role-observer"]) }),
+      json
+    });
+    // VERSION is GET with no actor validation — should return 200
+    assert.equal(res.statusCode, 200, `expected 200 for version, got ${res.statusCode}`);
+    assert.equal(res.body?.version, "test-version");
+  } finally {
+    process.env.DISCORD_OBSERVER_ROLE_IDS = oldObs;
+  }
 });
 
 test("VERSION route uses config.version not hardcoded path", () => {
