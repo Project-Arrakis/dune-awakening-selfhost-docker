@@ -7,6 +7,7 @@ import type { CarePackageAutoGrantRule } from "../../api/carePackage";
 import { friendlyApiError } from "../../api/client";
 import { DataTable } from "../../components/common/DataTable";
 import { TechnicalDetails } from "../../components/common/DisplayPrimitives";
+import { AugmentDropdown } from "../../components/common/AugmentDropdown";
 import {
   ItemCatalogSelector,
   ItemGradeSelect,
@@ -31,6 +32,10 @@ function formatResultTitle(value: unknown, pending = false) {
 
 function formatResultMessage(value: unknown) {
   return formatUiSentence(value, false);
+}
+
+function carePkgAugmentLimit(itemName: string) {
+  return /chest|armor|guard|garment/i.test(itemName) ? 2 : 3;
 }
 
 export function CarePackagePanel({ onError, confirmAction }: { onError: (text: string) => void; confirmAction: ConfirmAction }) {
@@ -86,10 +91,10 @@ export function CarePackagePanel({ onError, confirmAction }: { onError: (text: s
     const name = (itemId + " " + itemName).toLowerCase();
     const cat = (itemCategory || "").toLowerCase();
     if (cat === "schematics" || /_schematic$/i.test(name)) return [];
-    if ((!name || all.length === 0) && cat !== "weapons" && cat !== "clothing") return all;
     const isArmor = /chest|armor|guard|garment|helmet|boots|gloves|suit/i.test(name) || cat === "clothing";
     const isMelee = /melee|sword|blade|knife|fremen/i.test(name);
     const isWeapon = cat === "weapons" || isMelee || /lasgun|spitdart|jabal|disruptor|smg|karpov|rifle|drillshot|shotgun|grda|scattergun|vulcan|lmg|pyrocket|fireball|flamethrower|rocket|missile|pistol|snubnose|rafiq|maula/i.test(name);
+    if (all.length === 0 || (!isArmor && !isWeapon)) return [];
     const rangedGeneric = new Set(["Damage","Acuracy","Shielddamage","Range","Recoil","ReloadSpeed","Rateoffire","Magazinecapacity","Headshotdamage"]); const commonGeneric = new Set(["DeathDurability","Ch5"]);
     const wp = (id: string) => { const m = id.match(/^T6_Augment_(.+?)\d+$/); return m ? m[1] : ""; };
     const weaponMap: [RegExp, Set<string>][] = [
@@ -109,7 +114,7 @@ export function CarePackagePanel({ onError, confirmAction }: { onError: (text: s
         for (const [rx, set] of weaponMap) { if (rx.test(name) && set.has(p)) return true; }
         return false;
       }
-      return true;
+      return false;
     });
   }
   async function run(action: () => Promise<unknown>) {
@@ -334,7 +339,9 @@ export function CarePackagePanel({ onError, confirmAction }: { onError: (text: s
   function addPackageItem() {
     const item = packageDraft.itemId ? { itemId: packageDraft.itemId, itemName: packageDraft.itemName, image: selectedPackageItem?.image } : { itemName: packageDraft.itemName, image: selectedPackageItem?.image };
     if (!packageDraft.itemName && !packageDraft.itemId) return;
-    const nextItems = [...(activeKit.items || []), { ...item, quantity: Number(packageDraft.quantity), quality: normalizeItemGrade(packageDraft.grade), durability: grantItemDurability(), augments: packageDraft.augments.length > 0 ? [...packageDraft.augments] : undefined }];
+    const allowedAugmentIds = new Set(carePkgFilterAugments(packageDraft.itemName, packageDraft.itemId, selectedPackageItem?.category || "", augmentCatalog).map((augment) => augment.id));
+    const augments = packageDraft.augments.filter((augmentId) => allowedAugmentIds.has(augmentId));
+    const nextItems = [...(activeKit.items || []), { ...item, quantity: Number(packageDraft.quantity), quality: normalizeItemGrade(packageDraft.grade), durability: grantItemDurability(), augments: augments.length > 0 ? augments : undefined }];
     updateActiveKit({ items: nextItems });
     setItemsText(nextItems.map(packageItemTextLine).join("\n"));
     setPackageDraft({ ...packageDraft, augments: [] });
@@ -346,7 +353,12 @@ export function CarePackagePanel({ onError, confirmAction }: { onError: (text: s
     setPackageEditDraft({ quantity: String(item.quantity ?? 1), grade: String(itemGrade(item)), augments: item.augments ? [...item.augments] : [] });
   }
   function savePackageItemEdit(index: number) {
-    const nextItems = (activeKit.items || []).map((item, itemIndex) => itemIndex === index ? { ...item, quantity: Number(packageEditDraft.quantity), quality: normalizeItemGrade(packageEditDraft.grade), durability: grantItemDurability(), augments: packageEditDraft.augments.length > 0 ? [...packageEditDraft.augments] : undefined } : item);
+    const nextItems = (activeKit.items || []).map((item, itemIndex) => {
+      if (itemIndex !== index) return item;
+      const allowedAugmentIds = new Set(carePkgFilterAugments(item.itemName || "", item.itemId || "", "", augmentCatalog).map((augment) => augment.id));
+      const augments = packageEditDraft.augments.filter((augmentId) => allowedAugmentIds.has(augmentId));
+      return { ...item, quantity: Number(packageEditDraft.quantity), quality: normalizeItemGrade(packageEditDraft.grade), durability: grantItemDurability(), augments: augments.length > 0 ? augments : undefined };
+    });
     updateActiveKit({ items: nextItems });
     setItemsText(nextItems.map(packageItemTextLine).join("\n"));
     setEditingPackageIndex(null);
@@ -397,21 +409,21 @@ export function CarePackagePanel({ onError, confirmAction }: { onError: (text: s
           <button className="playerAdmin_toggleHeader" aria-label={packageItemsOpen ? "Collapse Select Items" : "Expand Select Items"} onClick={() => setPackageItemsOpen(!packageItemsOpen)}>{packageItemsOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}<span>Select Items</span></button>
           {packageItemsOpen && <div className="playerAdmin_toggleBody"><div className="package-items-picker-panel">
             <ItemCatalogSelector selected={selectedPackageItem} onSelect={choosePackageItem} />
-            <div className="action-line">
-              <label>Quantity<input type="number" min="1" value={packageDraft.quantity} onChange={(event) => setPackageDraft({ ...packageDraft, quantity: event.target.value })} /></label>
-              <label>Grade<ItemGradeSelect value={packageDraft.grade} onChange={(grade) => setPackageDraft({ ...packageDraft, grade })} /></label>
+            <div className="playerAdmin_itemInputLine package-item-input-line">
+              <label className="playerAdmin_itemNumberField">Quantity<input className="package-item-quantity-input" type="number" min="1" value={packageDraft.quantity} onChange={(event) => setPackageDraft({ ...packageDraft, quantity: event.target.value })} /></label>
+              <label className="playerAdmin_itemNumberField">Grade<ItemGradeSelect value={packageDraft.grade} onChange={(grade) => setPackageDraft({ ...packageDraft, grade })} /></label>
               {(() => {
                 const filteredAugs = carePkgFilterAugments(packageDraft.itemName, packageDraft.itemId, selectedPackageItem?.category || "", augmentCatalog);
-                return filteredAugs.length === 0 ? null : <label>Augments<select className="augment-picker" multiple value={packageDraft.augments} onChange={(event) => { const selected = Array.from(event.target.selectedOptions, (opt) => opt.value).slice(0, /chest|armor|guard|garment/i.test(packageDraft.itemName) ? 2 : 3); setPackageDraft({ ...packageDraft, augments: selected }); }} style={{ minWidth: 320, maxWidth: 420, height: 60 }}>{filteredAugs.map((aug) => <option key={aug.id} value={aug.id}>{aug.name}</option>)}</select></label>;
+                return filteredAugs.length === 0 ? null : <div className="playerAdmin_itemNumberField"><span>Augments</span><AugmentDropdown options={filteredAugs} value={packageDraft.augments} maxSelected={carePkgAugmentLimit(packageDraft.itemName)} onChange={(selected) => setPackageDraft({ ...packageDraft, augments: selected.slice(0, carePkgAugmentLimit(packageDraft.itemName)) })} /></div>;
               })()}
-              <button disabled={!selectedPackageItem} onClick={addPackageItem}>Add Item</button>
+              <button className="package-add-item-button" disabled={!selectedPackageItem} onClick={addPackageItem}>Add Item</button>
             </div>
             <p className="action-help-note">Normal Grade 0 items are instant for online players. Schematics, augments, and Grades 1-5 are saved to the player inventory and may require a relog before they appear correctly.</p>
           </div></div>}
         </div>
         {activeKit.items?.length ? <div className="table-wrap package-items-table"><table><thead><tr><th>Preview</th><th>Item Name</th><th>Item ID</th><th>Quantity</th><th>Grade</th><th>Augments</th><th>Actions</th></tr></thead><tbody>{activeKit.items.map((item, index) => {
           const editing = editingPackageIndex === index;
-          return <tr key={`${item.itemName || item.itemId}-${index}`}><td><PackageItemPreview item={item} /></td><td>{catalogItemName(item)}</td><td>{catalogItemId(item)}</td><td>{editing ? <input className="package-item-quantity-input" type="number" min="1" value={packageEditDraft.quantity} onChange={(event) => setPackageEditDraft({ ...packageEditDraft, quantity: event.target.value })} /> : item.quantity}</td><td>{editing ? <ItemGradeSelect value={packageEditDraft.grade} onChange={(grade) => setPackageEditDraft({ ...packageEditDraft, grade })} /> : itemGrade(item)}</td><td style={{ fontSize: "11px", maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis" }}>{editing ? (() => { const filteredAugs = carePkgFilterAugments(item.itemName || "", item.itemId || "", "", augmentCatalog); return filteredAugs.length === 0 ? <span>No matching augments</span> : <select className="augment-picker" multiple value={packageEditDraft.augments} onChange={(event) => { const selected = Array.from(event.target.selectedOptions, (opt) => opt.value); setPackageEditDraft({ ...packageEditDraft, augments: selected }); }} style={{ minWidth: 260, height: 50 }}>{filteredAugs.map((aug) => <option key={aug.id} value={aug.id}>{aug.name}</option>)}</select>; })() : (item.augments && item.augments.length > 0) ? item.augments.map((augId: string) => { const found = augmentCatalog.find((a) => a.id === augId); return found ? found.name : augId; }).join(", ") : "—"}</td><td className="package-actions-cell"><div className="service-actions">{editing ? <><button onClick={() => savePackageItemEdit(index)}>Save</button><button onClick={() => setEditingPackageIndex(null)}>Cancel</button></> : <button onClick={() => editPackageItem(index)}>Edit</button>}<button className="danger" onClick={() => {
+          return <tr key={`${item.itemName || item.itemId}-${index}`}><td><PackageItemPreview item={item} /></td><td>{catalogItemName(item)}</td><td>{catalogItemId(item)}</td><td>{editing ? <input className="package-item-quantity-input" type="number" min="1" value={packageEditDraft.quantity} onChange={(event) => setPackageEditDraft({ ...packageEditDraft, quantity: event.target.value })} /> : item.quantity}</td><td>{editing ? <ItemGradeSelect value={packageEditDraft.grade} onChange={(grade) => setPackageEditDraft({ ...packageEditDraft, grade })} /> : itemGrade(item)}</td><td className={editing ? "package-augment-edit-cell" : ""} style={{ fontSize: "11px" }}>{editing ? (() => { const filteredAugs = carePkgFilterAugments(item.itemName || "", item.itemId || "", "", augmentCatalog); const itemName = item.itemName || item.itemId || ""; return filteredAugs.length === 0 ? <span>No matching augments</span> : <AugmentDropdown options={filteredAugs} value={packageEditDraft.augments} maxSelected={carePkgAugmentLimit(itemName)} onChange={(selected) => setPackageEditDraft({ ...packageEditDraft, augments: selected.slice(0, carePkgAugmentLimit(itemName)) })} />; })() : <span className="package-augment-summary">{(item.augments && item.augments.length > 0) ? item.augments.map((augId: string) => { const found = augmentCatalog.find((a) => a.id === augId); return found ? found.name : augId; }).join(", ") : "—"}</span>}</td><td className="package-actions-cell"><div className="service-actions">{editing ? <><button onClick={() => savePackageItemEdit(index)}>Save</button><button onClick={() => setEditingPackageIndex(null)}>Cancel</button></> : <button onClick={() => editPackageItem(index)}>Edit</button>}<button className="danger" onClick={() => {
           const nextItems = activeKit.items.filter((_, itemIndex) => itemIndex !== index);
           updateActiveKit({ items: nextItems });
           setItemsText(nextItems.map(packageItemTextLine).join("\n"));

@@ -5,7 +5,7 @@ export const playersApi = {
   list: (q = "") => api<{ rows: Record<string, unknown>[]; capabilities: Record<string, unknown> }>(`/api/players${q ? `?q=${encodeURIComponent(q)}` : ""}`),
   online: () => api<{ rows: Record<string, unknown>[]; capabilities: Record<string, unknown> }>("/api/players/online"),
   profile: (playerId: string) => api<Record<string, unknown>>(`/api/players/${encodeURIComponent(playerId)}`),
-  inventory: (playerId: string) => api<{ rows: Record<string, unknown>[]; capabilities: Record<string, unknown>; reason?: string }>(`/api/players/${encodeURIComponent(playerId)}/inventory`),
+  inventory: (playerId: string) => api<{ rows: Record<string, unknown>[]; capabilities: Record<string, unknown>; reason?: string }>(`/api/players/${encodeURIComponent(playerId)}/inventory`, { cache: "no-store" }),
   currency: (playerId: string) => api<{ rows: Record<string, unknown>[]; capabilities: Record<string, unknown>; reason?: string }>(`/api/players/${encodeURIComponent(playerId)}/currency`),
   factions: (playerId: string) => api<{ rows: Record<string, unknown>[]; capabilities: Record<string, unknown>; reason?: string }>(`/api/players/${encodeURIComponent(playerId)}/factions`),
   specs: (playerId: string) => api<{ rows: Record<string, unknown>[]; skillModules?: Record<string, unknown>[]; capabilities: Record<string, unknown>; reason?: string }>(`/api/players/${encodeURIComponent(playerId)}/specs`),

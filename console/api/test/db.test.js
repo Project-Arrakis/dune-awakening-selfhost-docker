@@ -1194,14 +1194,15 @@ test("augment inventory item applies augment IDs to existing item FCustomization
   assert.equal(stats.FItemStackAndDurabilityStats[1].CurrentDurability, 80);
 });
 
-test("augment inventory item merges with existing augments", async () => {
+test("augment inventory item replaces existing augments", async () => {
   const calls = [];
   const existingStats = { FCustomizationStats: [["T6_Augment_Damage1"], {}], FItemStackAndDurabilityStats: [[], {}] };
   const db = fakeMutationDb(calls, {
     itemRows: [{ id: 501, stats: existingStats, template_id: "UniqueSword" }]
   });
   const result = await augmentInventoryItem(db, 123, 501, { augments: ["T6_Augment_Melee1", "T6_Augment_Damage1"] });
-  assert.deepEqual(result.augments, ["T6_Augment_Damage1", "T6_Augment_Melee1"]);
+  assert.deepEqual(result.previous, ["T6_Augment_Damage1"]);
+  assert.deepEqual(result.augments, ["T6_Augment_Melee1", "T6_Augment_Damage1"]);
 });
 
 test("augment inventory item deduplicates augment IDs", async () => {

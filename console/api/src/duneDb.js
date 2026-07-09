@@ -1571,7 +1571,8 @@ export async function playerInventory(db, id) {
     join dune.inventories inv on i.inventory_id = inv.id
     where inv.actor_id = $1
     order by i.template_id`, [intParam(id, "player id", 1)]);
-  return { capabilities: { inventory: true }, rows: result.rows };
+  const rows = result.rows.map(({ stats, ...row }) => ({ ...row, augments: extractAugmentIdsFromStats(stats) }));
+  return { capabilities: { inventory: true }, rows };
 }
 
 export async function playerCurrency(db, id) {
@@ -2625,6 +2626,24 @@ function buildItemStats({ augments = [], durability = {} } = {}) {
   };
 }
 
+function extractAugmentIdsFromStats(stats) {
+  const found = [];
+  const visit = (value) => {
+    if (!value) return;
+    if (typeof value === "string") {
+      if (/^T\d+_Augment_/i.test(value)) found.push(value);
+      return;
+    }
+    if (Array.isArray(value)) {
+      value.forEach(visit);
+      return;
+    }
+    if (typeof value === "object") Object.values(value).forEach(visit);
+  };
+  visit(stats?.FCustomizationStats);
+  return [...new Set(found)];
+}
+
 export async function augmentInventoryItem(db, playerId, itemId, { augments = [] } = {}) {
   await requireCapability(await supportsInventoryEdit(db), "Augment inventory item requires dune.items and dune.inventories.");
   const safeItemId = intParam(itemId, "item id", 1);
@@ -2642,10 +2661,10 @@ export async function augmentInventoryItem(db, playerId, itemId, { augments = []
     const existing = owned.rows[0].stats || {};
     const existingCustomization = Array.isArray(existing.FCustomizationStats) ? existing.FCustomizationStats : [[], {}];
     const existingAugments = Array.isArray(existingCustomization[0]) ? existingCustomization[0] : [];
-    const merged = [...new Set([...existingAugments, ...augmentIds])].slice(0, 20);
-    const nextStats = { ...existing, FCustomizationStats: [merged, existingCustomization[1] || {}] };
+    const nextAugments = [...new Set(augmentIds)].slice(0, 20);
+    const nextStats = { ...existing, FCustomizationStats: [nextAugments, existingCustomization[1] || {}] };
     await tx.query("update dune.items set stats = $1::jsonb where id = $2", [JSON.stringify(nextStats), safeItemId]);
-    return { ok: true, itemId: safeItemId, templateId: owned.rows[0].template_id, augments: merged, previous: existingAugments };
+    return { ok: true, itemId: safeItemId, templateId: owned.rows[0].template_id, augments: nextAugments, previous: existingAugments };
   });
 }
 

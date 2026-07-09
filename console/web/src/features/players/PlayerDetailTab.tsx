@@ -8,6 +8,56 @@ import { formatUiSentence, friendlyColumnName } from "../../lib/display";
 import { serializeEditableDbValue, parseEditableDbValue } from "../../lib/dbValues";
 
 const EDITABLE_INVENTORY_COLUMNS = ["stack_size", "quality_level", "position_index", "current_durability", "max_durability"];
+const INVENTORY_COLUMNS = ["id", "inventory_id", "template_id", "stack_size", "quality_level", "position_index", "current_durability", "max_durability", "augments"];
+
+function inventoryTemplateIsClothing(templateId: string) {
+  return /social|castoffs|garment|helmet|boots|gloves|suit|top|bottom|shirt|pants|robe|cloak|hood/i.test(templateId);
+}
+
+function inventoryTemplateIsArmor(templateId: string) {
+  return /chest|armor|guard/i.test(templateId);
+}
+
+function inventoryTemplateIsWeapon(templateId: string) {
+  return /lasgun|spitdart|jabal|disruptor|smg|karpov|rifle|drillshot|shotgun|grda|scattergun|vulcan|lmg|pyrocket|fireball|flamethrower|rocket|missile|pistol|snubnose|rafiq|maula|melee|sword|blade|knife|fremen/i.test(templateId);
+}
+
+function inventoryAugmentLimit(templateId: string) {
+  if (inventoryTemplateIsArmor(templateId)) return 3;
+  if (inventoryTemplateIsClothing(templateId)) return 2;
+  return 3;
+}
+
+function inventoryItemCanUseAugments(row: Record<string, unknown>) {
+  const templateId = String(row.template_id || "");
+  if (!templateId || /_schematic$/i.test(templateId)) return false;
+  return inventoryTemplateIsClothing(templateId) || inventoryTemplateIsWeapon(templateId);
+}
+
+function inventoryAugments(row: Record<string, unknown>) {
+  const raw = row.augments;
+  if (Array.isArray(raw)) return raw.map(String).filter(Boolean);
+  if (typeof raw !== "string" || !raw.trim()) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.map(String).filter(Boolean) : [];
+  } catch {
+    return raw.split(",").map((item) => item.trim()).filter(Boolean);
+  }
+}
+
+function appliedAugmentMessage(response: unknown, fallbackTemplateId: string, fallbackAugments: string[]) {
+  const result = response && typeof response === "object" && "result" in response
+    ? (response as { result?: Record<string, unknown> }).result || {}
+    : response && typeof response === "object"
+      ? response as Record<string, unknown>
+      : {};
+  const templateId = String(result.templateId || fallbackTemplateId || "item");
+  const augments = Array.isArray(result.augments) ? result.augments : fallbackAugments;
+  const totalCount = augments.length || fallbackAugments.length;
+  const totalText = `${totalCount} augment${totalCount === 1 ? "" : "s"}`;
+  return `Set ${totalText} on ${templateId}.`;
+}
 
 type ConfirmAction = (
   message: string,
@@ -35,7 +85,7 @@ export function PlayerDetailTab({
   data: Record<string, unknown> | null;
   rows: Record<string, unknown>[];
   emptyMessage: string;
-  onReload: () => void;
+  onReload: () => void | Promise<void>;
   onError: (text: string) => void;
   onActionLog?: (actionType: string, target: string, amount: string, notes: string) => void;
   confirmAction: ConfirmAction;
@@ -43,6 +93,7 @@ export function PlayerDetailTab({
 }) {
   const [message, setMessage] = useState("");
   const [messageDetails, setMessageDetails] = useState("");
+  const [messageTone, setMessageTone] = useState<"default" | "success">("default");
   const [editRow, setEditRow] = useState<Record<string, unknown> | null>(null);
   const [editValues, setEditValues] = useState<Record<string, string>>({});
   const [editSaving, setEditSaving] = useState(false);
@@ -66,6 +117,7 @@ export function PlayerDetailTab({
     const timer = window.setTimeout(() => {
       setMessage("");
       setMessageDetails("");
+      setMessageTone("default");
     }, 5000);
     return () => window.clearTimeout(timer);
   }, [message]);
@@ -85,12 +137,14 @@ export function PlayerDetailTab({
 
     try {
       const response = await playersApi.deleteInventoryItem(playerId, itemId, "DELETE ITEM");
+      setMessageTone("default");
       setMessage(formatMutationResult(response));
       setMessageDetails(JSON.stringify(response, null, 2));
       onActionLog?.("Delete Inventory Item", templateId, "1", "Succeeded");
       onReload();
     } catch (error) {
       const text = error instanceof Error ? error.message : String(error);
+      setMessageTone("default");
       setMessage(text);
       setMessageDetails("");
       onActionLog?.("Delete Inventory Item", templateId, "1", `Failed: ${text}`);
@@ -99,6 +153,12 @@ export function PlayerDetailTab({
   }
 
   function startEditItem(row: Record<string, unknown>) {
+    if (editRow && String(editRow.id) === String(row.id)) {
+      closeEditItem();
+      return;
+    }
+    setAugmentTargetRow(null);
+    setAugmentSelected([]);
     setEditRow(row);
     const hasCurrentAtLoad = row.current_durability != null;
     setEditValues(Object.fromEntries(EDITABLE_INVENTORY_COLUMNS.map((column) => {
@@ -106,6 +166,25 @@ export function PlayerDetailTab({
       if (column === "current_durability" && row.current_durability == null) return [column, ""];
       return [column, serializeEditableDbValue(row[column])];
     })));
+  }
+
+  function closeEditItem() {
+    setEditRow(null);
+  }
+
+  function startApplyAugments(row: Record<string, unknown>) {
+    if (augmentTargetRow && String(augmentTargetRow.id) === String(row.id)) {
+      closeApplyAugments();
+      return;
+    }
+    setEditRow(null);
+    setAugmentTargetRow(row);
+    setAugmentSelected([]);
+  }
+
+  function closeApplyAugments() {
+    setAugmentTargetRow(null);
+    setAugmentSelected([]);
   }
 
   async function saveEditItem() {
@@ -118,6 +197,7 @@ export function PlayerDetailTab({
     const maxDurability = hasMax ? Number(editValues.max_durability) : undefined;
     if (hasMax && (!Number.isFinite(maxDurability) || maxDurability! < 0 || maxDurability! > 100)) {
       setMessage("Max Durability must be a number between 0 and 100.");
+      setMessageTone("default");
       setMessageDetails("");
       return;
     }
@@ -126,6 +206,7 @@ export function PlayerDetailTab({
       const upperBound = hasMax ? maxDurability! : Number.POSITIVE_INFINITY;
       if (!Number.isFinite(currentDurability) || currentDurability < 0 || currentDurability > upperBound) {
         setMessage("Current Durability must be a number between 0 and Max Durability.");
+        setMessageTone("default");
         setMessageDetails("");
         return;
       }
@@ -146,13 +227,15 @@ export function PlayerDetailTab({
         .filter((column) => !((column === "current_durability" && !hasCurrent) || (column === "max_durability" && !hasMax)))
         .map((column) => [column, parseEditableDbValue(editValues[column] ?? "", editRow[column])]));
       const response = await playersApi.updateInventoryItem(playerId, itemId, values, "SAVE ITEM");
+      setMessageTone("default");
       setMessage(formatMutationResult(response));
       setMessageDetails(JSON.stringify(response, null, 2));
       onActionLog?.("Edit Inventory Item", templateId, "1", "Succeeded");
-      setEditRow(null);
+      closeEditItem();
       onReload();
     } catch (error) {
       const text = error instanceof Error ? error.message : String(error);
+      setMessageTone("default");
       setMessage(text);
       setMessageDetails("");
       onActionLog?.("Edit Inventory Item", templateId, "1", `Failed: ${text}`);
@@ -166,30 +249,33 @@ export function PlayerDetailTab({
     if (!augmentTargetRow || augmentSelected.length === 0) return;
     const itemId = String(augmentTargetRow.id || "");
     const templateId = String(augmentTargetRow.template_id || "Unknown item");
-    if (!(await confirmAction(`Apply ${augmentSelected.length} augment(s) to this item?`, {
+    const allowedAugments = augmentSelected.slice(0, inventoryAugmentLimit(templateId));
+    if (allowedAugments.length === 0) return;
+    if (!(await confirmAction(`Apply ${allowedAugments.length} augment(s) to this item?`, {
       title: "Apply Augments",
       confirmLabel: "Apply",
       details: [
         { label: "Item ID", value: itemId, tone: "accent" },
         { label: "Template", value: templateId, tone: "accent" },
-        { label: "Augments", value: augmentSelected.map((augId) => { const found = augmentCatalog.find((a) => a.id === augId); return found ? found.name : augId; }).join(", "), tone: "success" }
+        { label: "Augments", value: allowedAugments.map((augId) => { const found = augmentCatalog.find((a) => a.id === augId); return found ? found.name : augId; }).join(", "), tone: "success" }
       ]
     }))) return;
 
     setAugmentApplying(true);
     try {
-      const response = await playersApi.augmentInventoryItem(playerId, itemId, augmentSelected, "APPLY AUGMENTS");
-      setMessage(formatMutationResult(response));
+      const response = await playersApi.augmentInventoryItem(playerId, itemId, allowedAugments, "APPLY AUGMENTS");
+      setMessageTone("success");
+      setMessage(appliedAugmentMessage(response, templateId, allowedAugments));
       setMessageDetails(JSON.stringify(response, null, 2));
-      onActionLog?.("Apply Augments", templateId, String(augmentSelected.length), "Succeeded");
-      setAugmentTargetRow(null);
-      setAugmentSelected([]);
-      onReload();
+      onActionLog?.("Apply Augments", templateId, String(allowedAugments.length), "Succeeded");
+      closeApplyAugments();
+      await onReload();
     } catch (error) {
       const text = error instanceof Error ? error.message : String(error);
+      setMessageTone("default");
       setMessage(text);
       setMessageDetails("");
-      onActionLog?.("Apply Augments", templateId, String(augmentSelected.length), `Failed: ${text}`);
+      onActionLog?.("Apply Augments", templateId, String(allowedAugments.length), `Failed: ${text}`);
       onError(text);
     } finally {
       setAugmentApplying(false);
@@ -213,25 +299,47 @@ export function PlayerDetailTab({
       </div>
       <div className="action-line">
         <button disabled={editSaving} onClick={() => void saveEditItem()}>{editSaving ? "Saving..." : "Save Item"}</button>
-        <button onClick={() => setEditRow(null)}>Cancel</button>
+        <button onClick={closeEditItem}>Cancel</button>
       </div>
     </div>;
   }
 
   const inventorySort = useSortableRows(rows);
+  const augmentNameById = new Map(augmentCatalog.map((augment) => [augment.id, augment.name]));
+
+  function renderInventoryCell(row: Record<string, unknown>, column: string) {
+    if (column !== "augments") {
+      const value = row[column];
+      if (column === "template_id") {
+        const text = value == null || value === "" ? "—" : String(value);
+        return <span className="inventory-template-id" title={text}>{text}</span>;
+      }
+      if (Array.isArray(value)) return value.join(", ");
+      return value == null || value === "" ? "—" : String(value);
+    }
+    const augments = inventoryAugments(row);
+    if (!augments.length) return <span className="muted">—</span>;
+    return <span className="inventory-augment-list">{augments.map((id) => <span key={id}>{augmentNameById.get(id) || id}</span>)}</span>;
+  }
 
   return <div>
     {data?.reason ? <p className="danger-note">{formatUiSentence(data.reason)}</p> : null}
-    {message && <div className="result-panel transient-result"><strong>Mutation Result.</strong><p>{formatUiSentence(message)}</p>{messageDetails && <TechnicalDetails text={messageDetails} />}</div>}
+    {message && <div className={`result-panel transient-result ${messageTone === "success" ? "success-result" : ""}`}><strong>{messageTone === "success" ? "Applied Successfully" : "Mutation Result."}</strong><p>{formatUiSentence(message)}</p>{messageDetails && <TechnicalDetails text={messageDetails} />}</div>}
     <DataTable
       rows={inventorySort.sortedRows}
+      columns={INVENTORY_COLUMNS}
       emptyMessage={emptyMessage}
+      renderCell={renderInventoryCell}
+      tableClassName="player-inventory-table"
       actionClassName="actions-column"
-      action={(row) => <span className="icon-toggle-group">
-        <button className="icon-toggle-button success" title="Edit item" aria-label="Edit item" onClick={(event) => { event.stopPropagation(); startEditItem(row); }}><Circle size={16} /></button>
-        <button className="icon-toggle-button accent" title="Apply Augments" aria-label="Apply Augments" onClick={(event) => { event.stopPropagation(); setAugmentTargetRow(row); setAugmentSelected([]); }}>+A</button>
-        <button className="icon-toggle-button danger" title="Delete item" aria-label="Delete item" onClick={(event) => { event.stopPropagation(); void deleteItem(row); }}><X size={16} /></button>
-      </span>}
+      action={(row) => {
+        const canUseAugments = inventoryItemCanUseAugments(row);
+        return <span className="icon-toggle-group">
+          <button className="icon-toggle-button success" title="Edit item" aria-label="Edit item" onClick={(event) => { event.stopPropagation(); startEditItem(row); }}><Circle size={16} /></button>
+          {canUseAugments && <button className="icon-toggle-button accent" title="Apply Augments" aria-label="Apply Augments" onClick={(event) => { event.stopPropagation(); startApplyAugments(row); }}>+A</button>}
+          <button className="icon-toggle-button danger" title="Delete item" aria-label="Delete item" onClick={(event) => { event.stopPropagation(); void deleteItem(row); }}><X size={16} /></button>
+        </span>;
+      }}
       sortColumn={inventorySort.sortColumn}
       sortDirection={inventorySort.sortDirection}
       onSort={inventorySort.onSort}
@@ -247,8 +355,9 @@ export function PlayerDetailTab({
             const all = augmentCatalog;
             const name = itemTemplate.toLowerCase();
             if (/_schematic$/i.test(name)) return <p>Schematics cannot be augmented.</p>;
-            const isWeapon = /lasgun|spitdart|jabal|disruptor|smg|karpov|rifle|drillshot|shotgun|grda|scattergun|vulcan|lmg|pyrocket|fireball|flamethrower|rocket|missile|pistol|snubnose|rafiq|maula|melee|sword|blade|knife|fremen/i.test(name);
-            const isArmor = /chest|armor|guard|garment|helmet|boots|gloves|suit/i.test(name);
+            const isWeapon = inventoryTemplateIsWeapon(name);
+            const isArmor = inventoryTemplateIsClothing(name);
+            if (!isArmor && !isWeapon) return <p>Only weapons and clothing can be augmented.</p>;
             const isMelee = /melee|sword|blade|knife|fremen/i.test(name);
             const rangedGeneric = new Set(["Damage","Acuracy","Shielddamage","Range","Recoil","ReloadSpeed","Rateoffire","Magazinecapacity","Headshotdamage"]); const commonGeneric = new Set(["DeathDurability","Ch5"]);
             const wp = (id: string) => { const m = id.match(/^T6_Augment_(.+?)\d+$/); return m ? m[1] : ""; };
@@ -269,18 +378,18 @@ export function PlayerDetailTab({
                 for (const [rx, set] of weaponMap) { if (rx.test(name) && set.has(p)) return true; }
                 return false;
               }
-              return true;
+              return false;
             });
             return filtered.length === 0 ? <p>No matching augments for this item type.</p> : <>
-            <select className="augment-picker" multiple value={augmentSelected} size={Math.min(filtered.length, 12)} onChange={(event) => { const selected = Array.from(event.target.selectedOptions, (opt) => opt.value).slice(0, /chest|armor|guard|garment/i.test(String(row.template_id)) ? 2 : 3); setAugmentSelected(selected); }} style={{ width: "100%", maxHeight: 280, fontSize: "12px" }}>
+            <select className="augment-picker" multiple value={augmentSelected} size={Math.min(filtered.length, 12)} onChange={(event) => { const limit = inventoryAugmentLimit(String(row.template_id)); const selected = Array.from(event.target.selectedOptions, (opt) => opt.value).slice(0, limit); setAugmentSelected(selected); }} style={{ width: "100%", maxHeight: 280, fontSize: "12px" }}>
               {filtered.map((aug) => <option key={aug.id} value={aug.id}>{aug.id} — {aug.name}</option>)}
             </select>
-            <p className="playerAdmin_note" style={{ marginTop: 8 }}>Selected {augmentSelected.length} of {filtered.length} augment(s). Use Ctrl+Click to select multiple.</p>
+            <p className="playerAdmin_note" style={{ marginTop: 8 }}>Selected {augmentSelected.length} of {inventoryAugmentLimit(itemTemplate)} allowed augment(s). Use Ctrl+Click to select multiple.</p>
           </>;
           })()}
           <div className="action-line">
             <button disabled={augmentSelected.length === 0 || augmentApplying} onClick={() => void applyAugments()}>{augmentApplying ? "Applying..." : `Apply ${augmentSelected.length} Augment(s)`}</button>
-            <button onClick={() => { setAugmentTargetRow(null); setAugmentSelected([]); }}>Cancel</button>
+            <button onClick={closeApplyAugments}>Cancel</button>
           </div>
         </div>
       ) : renderEditPanel(row)}
