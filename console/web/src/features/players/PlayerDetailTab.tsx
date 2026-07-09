@@ -261,9 +261,9 @@ export function PlayerDetailTab({
             ];
             const filtered = all.filter((aug) => {
               const p = wp(aug.id);
-              if (isArmor && /^Armor/i.test(p)) return true;
-              if (isWeapon || isMelee) {
-                if (isMelee && (p === "Melee" || commonGeneric.has(p))) return true;
+              if (isArmor) return /^Armor/i.test(p);
+              if (isMelee) return p === "Melee" || commonGeneric.has(p);
+              if (isWeapon) {
                 if (rangedGeneric.has(p) || commonGeneric.has(p)) return true;
                 for (const [rx, set] of weaponMap) { if (rx.test(name) && set.has(p)) return true; }
                 return false;
@@ -271,7 +271,7 @@ export function PlayerDetailTab({
               return true;
             });
             return filtered.length === 0 ? <p>No matching augments for this item type.</p> : <>
-            <select className="augment-picker" multiple value={augmentSelected} size={Math.min(filtered.length, 12)} onChange={(event) => { const selected = Array.from(event.target.selectedOptions, (opt) => opt.value); setAugmentSelected(selected); }} style={{ width: "100%", maxHeight: 240 }}>
+            <select className="augment-picker" multiple value={augmentSelected} size={Math.min(filtered.length, 12)} onChange={(event) => { const selected = Array.from(event.target.selectedOptions, (opt) => opt.value).slice(0, /chest|armor|guard|garment/i.test(String(row.template_id)) ? 2 : 3); setAugmentSelected(selected); }} style={{ width: "100%", maxHeight: 280, fontSize: "12px" }}>
               {filtered.map((aug) => <option key={aug.id} value={aug.id}>{aug.id} — {aug.name}</option>)}
             </select>
             <p className="playerAdmin_note" style={{ marginTop: 8 }}>Selected {augmentSelected.length} of {filtered.length} augment(s). Use Ctrl+Click to select multiple.</p>
