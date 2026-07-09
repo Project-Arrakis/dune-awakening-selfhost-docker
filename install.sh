@@ -274,6 +274,41 @@ persist_console_runtime_env() {
   persist_env_value "DOCKER_SOCKET_GID" "$DOCKER_SOCKET_GID"
 }
 
+migrate_existing_ownership() {
+  local repo_root="${DUNE_HOST_REPO_ROOT:-$(pwd -P)}"
+  local target_uid="${DUNE_HOST_UID:-0}"
+  local target_gid="${DUNE_HOST_GID:-0}"
+  local env_file="${repo_root}/.env"
+
+  if [ "$target_uid" = "0" ]; then
+    return
+  fi
+
+  if [ ! -d "$repo_root" ]; then
+    return
+  fi
+
+  if ! command -v find >/dev/null 2>&1; then
+    return
+  fi
+
+  if ! find "$repo_root" -maxdepth 1 -user root -print -quit 2>/dev/null | grep -q .; then
+    return
+  fi
+
+  if [ -f "$env_file" ]; then
+    echo "[install] Existing install detected with root-owned files."
+    echo "[install] Changing ownership to match current user (${target_uid}:${target_gid})..."
+  else
+    echo "[install] Root-owned files found in repo. Changing ownership to match current user..."
+  fi
+
+  need_sudo chown -R "${target_uid}:${target_gid}" "$repo_root" 2>/dev/null || {
+    echo "[install] WARNING: Could not chown all files in ${repo_root}."
+    echo "[install] The web container may not be able to write repo files."
+  }
+}
+
 choose_web_port() {
   local chosen prompt default_port
   default_port="${ADMIN_BIND_PORT:-$(existing_web_port)}"
@@ -346,6 +381,7 @@ start_console() {
   export COMPOSE_PROJECT_NAME="${DUNE_COMPOSE_PROJECT_NAME:-dune-awakening-selfhost-docker}"
   prepare_docker_socket_gid
   persist_console_runtime_env
+  migrate_existing_ownership
   if [ "${DOCKER[0]}" = "sudo" ]; then
     need_sudo env \
       "ADMIN_BIND_PORT=$ADMIN_BIND_PORT" \
