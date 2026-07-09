@@ -121,10 +121,8 @@ export function grantItemDurability() {
   return 1;
 }
 
-export function packageItemTextLine(item: { itemName?: string; itemId?: string; quantity?: unknown; quality?: unknown; grade?: unknown; durability?: unknown; augments?: string[] }) {
-  const line = `${item.itemId || item.itemName || ""},${Number(item.quantity) || 1},${itemGrade(item)}`;
-  if (item.augments && item.augments.length > 0) return `${line},${item.augments.join("|")}`;
-  return line;
+export function packageItemTextLine(item: { itemName?: string; itemId?: string; quantity?: unknown; quality?: unknown; grade?: unknown; durability?: unknown }) {
+  return `${item.itemId || item.itemName || ""},${Number(item.quantity) || 1},${itemGrade(item)}`;
 }
 
 export function ItemGradeSelect({ value, onChange }: { value: string; onChange: (value: string) => void }) {

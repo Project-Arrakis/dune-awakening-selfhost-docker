@@ -82,6 +82,35 @@ export function CarePackagePanel({ onError, confirmAction }: { onError: (text: s
       setAugmentCatalog(augs);
     }).catch(() => setAugmentCatalog([]));
   }, []);
+  function carePkgFilterAugments(itemName: string, itemId: string, itemCategory: string, all: { id: string; name: string }[]) {
+    const name = (itemName || itemId || "").toLowerCase();
+    const cat = (itemCategory || "").toLowerCase();
+    if ((!name || all.length === 0) && cat !== "weapons" && cat !== "clothing") return all;
+    const isArmor = /chest|armor|guard|garment|helmet|boots|gloves|suit/i.test(name) || cat === "clothing";
+    const isMelee = /melee|sword|blade|knife|fremen/i.test(name);
+    const isWeapon = cat === "weapons" || isMelee || /lasgun|spitdart|jabal|disruptor|smg|karpov|rifle|drillshot|shotgun|grda|scattergun|vulcan|lmg|pyrocket|fireball|flamethrower|rocket|missile|pistol|snubnose|rafiq|maula/i.test(name);
+    const rangedGeneric = new Set(["Damage","Acuracy","Shielddamage","Range","Recoil","ReloadSpeed","Rateoffire","Magazinecapacity","Headshotdamage"]); const commonGeneric = new Set(["DeathDurability","Ch5"]);
+    const wp = (id: string) => { const m = id.match(/^T6_Augment_(.+?)\d+$/); return m ? m[1] : ""; };
+    const weaponMap: [RegExp, Set<string>][] = [
+      [/lasgun/i, new Set(["Lasgun"])], [/spitdart|jabal/i, new Set(["Spitdartrifle","SpitdartRifle"])],
+      [/disruptor| smg/i, new Set(["smg","Smg"])], [/karpov|battle.?rifle/i, new Set(["BR"])],
+      [/drillshot|shotgun/i, new Set(["Shotgun"])], [/grda|scattergun/i, new Set(["Scattergun"])],
+      [/vulcan|lmg/i, new Set(["Lmg"])], [/pyrocket|fireball/i, new Set(["Fireballer"])],
+      [/flamethrower/i, new Set(["Flamethrower"])], [/rocket|missile/i, new Set(["RocketLauncher"])],
+      [/maula|pistol|snubnose|rafiq/i, new Set(["HeavyPistol","MaulaPistol"])],
+    ];
+    return all.filter((aug) => {
+      const p = wp(aug.id);
+      if (isArmor && /^Armor/i.test(p)) return true;
+      if (isWeapon || isMelee) {
+        if (isMelee && (p === "Melee" || commonGeneric.has(p))) return true;
+        if (rangedGeneric.has(p) || commonGeneric.has(p)) return true;
+        for (const [rx, set] of weaponMap) { if (rx.test(name) && set.has(p)) return true; }
+        return false;
+      }
+      return true;
+    });
+  }
   async function run(action: () => Promise<unknown>) {
     onError("");
     setOutput("");
@@ -370,7 +399,10 @@ export function CarePackagePanel({ onError, confirmAction }: { onError: (text: s
             <div className="action-line">
               <label>Quantity<input type="number" min="1" value={packageDraft.quantity} onChange={(event) => setPackageDraft({ ...packageDraft, quantity: event.target.value })} /></label>
               <label>Grade<ItemGradeSelect value={packageDraft.grade} onChange={(grade) => setPackageDraft({ ...packageDraft, grade })} /></label>
-              {augmentCatalog.length > 0 && <label className="playerAdmin_itemNumberField">Augments<select className="augment-picker" multiple value={packageDraft.augments} onChange={(event) => { const selected = Array.from(event.target.selectedOptions, (opt) => opt.value); setPackageDraft({ ...packageDraft, augments: selected }); }} style={{ minWidth: 180, maxWidth: 280, height: 60 }}>{augmentCatalog.map((aug) => <option key={aug.id} value={aug.id}>{aug.name}</option>)}</select></label>}
+              {(() => {
+                const filteredAugs = carePkgFilterAugments(packageDraft.itemName, packageDraft.itemId, selectedPackageItem?.category || "", augmentCatalog);
+                return filteredAugs.length === 0 ? null : <label className="playerAdmin_itemNumberField">Augments<select className="augment-picker" multiple value={packageDraft.augments} onChange={(event) => { const selected = Array.from(event.target.selectedOptions, (opt) => opt.value); setPackageDraft({ ...packageDraft, augments: selected }); }} style={{ minWidth: 180, maxWidth: 280, height: 60 }}>{filteredAugs.map((aug) => <option key={aug.id} value={aug.id}>{aug.name}</option>)}</select></label>;
+              })()}
               <button disabled={!selectedPackageItem} onClick={addPackageItem}>Add Item</button>
             </div>
             <p className="action-help-note">Normal Grade 0 items are instant for online players. Schematics, augments, and Grades 1-5 are saved to the player inventory and may require a relog before they appear correctly.</p>
@@ -378,7 +410,7 @@ export function CarePackagePanel({ onError, confirmAction }: { onError: (text: s
         </div>
         {activeKit.items?.length ? <div className="table-wrap package-items-table"><table><thead><tr><th>Preview</th><th>Item Name</th><th>Item ID</th><th>Quantity</th><th>Grade</th><th>Augments</th><th>Actions</th></tr></thead><tbody>{activeKit.items.map((item, index) => {
           const editing = editingPackageIndex === index;
-          return <tr key={`${item.itemName || item.itemId}-${index}`}><td><PackageItemPreview item={item} /></td><td>{catalogItemName(item)}</td><td>{catalogItemId(item)}</td><td>{editing ? <input className="package-item-quantity-input" type="number" min="1" value={packageEditDraft.quantity} onChange={(event) => setPackageEditDraft({ ...packageEditDraft, quantity: event.target.value })} /> : item.quantity}</td><td>{editing ? <ItemGradeSelect value={packageEditDraft.grade} onChange={(grade) => setPackageEditDraft({ ...packageEditDraft, grade })} /> : itemGrade(item)}</td><td style={{ fontSize: "11px", maxWidth: 120, overflow: "hidden", textOverflow: "ellipsis" }}>{editing && augmentCatalog.length > 0 ? <select className="augment-picker" multiple value={packageEditDraft.augments} onChange={(event) => { const selected = Array.from(event.target.selectedOptions, (opt) => opt.value); setPackageEditDraft({ ...packageEditDraft, augments: selected }); }} style={{ maxWidth: 180, height: 50 }}>{augmentCatalog.map((aug) => <option key={aug.id} value={aug.id}>{aug.name}</option>)}</select> : (item.augments && item.augments.length > 0) ? item.augments.map((augId: string) => { const found = augmentCatalog.find((a) => a.id === augId); return found ? found.name : augId; }).join(", ") : "—"}</td><td className="package-actions-cell"><div className="service-actions">{editing ? <><button onClick={() => savePackageItemEdit(index)}>Save</button><button onClick={() => setEditingPackageIndex(null)}>Cancel</button></> : <button onClick={() => editPackageItem(index)}>Edit</button>}<button className="danger" onClick={() => {
+          return <tr key={`${item.itemName || item.itemId}-${index}`}><td><PackageItemPreview item={item} /></td><td>{catalogItemName(item)}</td><td>{catalogItemId(item)}</td><td>{editing ? <input className="package-item-quantity-input" type="number" min="1" value={packageEditDraft.quantity} onChange={(event) => setPackageEditDraft({ ...packageEditDraft, quantity: event.target.value })} /> : item.quantity}</td><td>{editing ? <ItemGradeSelect value={packageEditDraft.grade} onChange={(grade) => setPackageEditDraft({ ...packageEditDraft, grade })} /> : itemGrade(item)}</td><td style={{ fontSize: "11px", maxWidth: 120, overflow: "hidden", textOverflow: "ellipsis" }}>{editing ? (() => { const filteredAugs = carePkgFilterAugments(item.itemName || "", item.itemId || "", "", augmentCatalog); return filteredAugs.length === 0 ? <span>No matching augments</span> : <select className="augment-picker" multiple value={packageEditDraft.augments} onChange={(event) => { const selected = Array.from(event.target.selectedOptions, (opt) => opt.value); setPackageEditDraft({ ...packageEditDraft, augments: selected }); }} style={{ maxWidth: 180, height: 50 }}>{filteredAugs.map((aug) => <option key={aug.id} value={aug.id}>{aug.name}</option>)}</select>; })() : (item.augments && item.augments.length > 0) ? item.augments.map((augId: string) => { const found = augmentCatalog.find((a) => a.id === augId); return found ? found.name : augId; }).join(", ") : "—"}</td><td className="package-actions-cell"><div className="service-actions">{editing ? <><button onClick={() => savePackageItemEdit(index)}>Save</button><button onClick={() => setEditingPackageIndex(null)}>Cancel</button></> : <button onClick={() => editPackageItem(index)}>Edit</button>}<button className="danger" onClick={() => {
           const nextItems = activeKit.items.filter((_, itemIndex) => itemIndex !== index);
           updateActiveKit({ items: nextItems });
           setItemsText(nextItems.map(packageItemTextLine).join("\n"));

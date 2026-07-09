@@ -242,12 +242,41 @@ export function PlayerDetailTab({
         <div className="result-panel database-edit-panel">
           <div className="panel-title"><strong>Apply Augments</strong></div>
           <p className="playerAdmin_note">Item ID: {String(row.id)} · {String(row.template_id)}</p>
-          {augmentCatalog.length === 0 ? <p>Loading augment catalog...</p> : <>
-            <select className="augment-picker" multiple value={augmentSelected} size={Math.min(augmentCatalog.length, 12)} onChange={(event) => { const selected = Array.from(event.target.selectedOptions, (opt) => opt.value); setAugmentSelected(selected); }} style={{ width: "100%", maxHeight: 240 }}>
-              {augmentCatalog.map((aug) => <option key={aug.id} value={aug.id}>{aug.id} — {aug.name}</option>)}
+          {(() => {
+            const itemTemplate = String(row.template_id || "");
+            const all = augmentCatalog;
+            const name = itemTemplate.toLowerCase();
+            const isWeapon = /lasgun|spitdart|jabal|disruptor|smg|karpov|rifle|drillshot|shotgun|grda|scattergun|vulcan|lmg|pyrocket|fireball|flamethrower|rocket|missile|pistol|snubnose|rafiq|maula|melee|sword|blade|knife|fremen/i.test(name);
+            const isArmor = /chest|armor|guard|garment|helmet|boots|gloves|suit/i.test(name);
+            const isMelee = /melee|sword|blade|knife|fremen/i.test(name);
+            const rangedGeneric = new Set(["Damage","Acuracy","Shielddamage","Range","Recoil","ReloadSpeed","Rateoffire","Magazinecapacity","Headshotdamage"]); const commonGeneric = new Set(["DeathDurability","Ch5"]);
+            const wp = (id: string) => { const m = id.match(/^T6_Augment_(.+?)\d+$/); return m ? m[1] : ""; };
+            const weaponMap: [RegExp, Set<string>][] = [
+              [/lasgun/i, new Set(["Lasgun"])], [/spitdart|jabal/i, new Set(["Spitdartrifle","SpitdartRifle"])],
+              [/disruptor| smg/i, new Set(["smg","Smg"])], [/karpov|battle.?rifle/i, new Set(["BR"])],
+              [/drillshot|shotgun/i, new Set(["Shotgun"])], [/grda|scattergun/i, new Set(["Scattergun"])],
+              [/vulcan|lmg/i, new Set(["Lmg"])], [/pyrocket|fireball/i, new Set(["Fireballer"])],
+              [/flamethrower/i, new Set(["Flamethrower"])], [/rocket|missile/i, new Set(["RocketLauncher"])],
+              [/maula|pistol|snubnose|rafiq/i, new Set(["HeavyPistol","MaulaPistol"])],
+            ];
+            const filtered = all.filter((aug) => {
+              const p = wp(aug.id);
+              if (isArmor && /^Armor/i.test(p)) return true;
+              if (isWeapon || isMelee) {
+                if (isMelee && (p === "Melee" || commonGeneric.has(p))) return true;
+                if (rangedGeneric.has(p) || commonGeneric.has(p)) return true;
+                for (const [rx, set] of weaponMap) { if (rx.test(name) && set.has(p)) return true; }
+                return false;
+              }
+              return true;
+            });
+            return filtered.length === 0 ? <p>No matching augments for this item type.</p> : <>
+            <select className="augment-picker" multiple value={augmentSelected} size={Math.min(filtered.length, 12)} onChange={(event) => { const selected = Array.from(event.target.selectedOptions, (opt) => opt.value); setAugmentSelected(selected); }} style={{ width: "100%", maxHeight: 240 }}>
+              {filtered.map((aug) => <option key={aug.id} value={aug.id}>{aug.id} — {aug.name}</option>)}
             </select>
-            <p className="playerAdmin_note" style={{ marginTop: 8 }}>Selected {augmentSelected.length} of {augmentCatalog.length} augment(s). Use Ctrl+Click to select multiple.</p>
-          </>}
+            <p className="playerAdmin_note" style={{ marginTop: 8 }}>Selected {augmentSelected.length} of {filtered.length} augment(s). Use Ctrl+Click to select multiple.</p>
+          </>;
+          })()}
           <div className="action-line">
             <button disabled={augmentSelected.length === 0 || augmentApplying} onClick={() => void applyAugments()}>{augmentApplying ? "Applying..." : `Apply ${augmentSelected.length} Augment(s)`}</button>
             <button onClick={() => { setAugmentTargetRow(null); setAugmentSelected([]); }}>Cancel</button>
