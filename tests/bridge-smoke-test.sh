@@ -106,6 +106,10 @@ bridge_call "ops.health.summary.v2" "ops.health.summary.v2" "ok result"
 # leadership.players.list (must always work)
 bridge_call "leadership.players.list" "leadership.players.list" "ok result capabilities"
 
+echo "--- v0.5.0 bridge actions ---"
+
+bridge_call "ops.economy.summary" "ops.economy.summary" "ok result totalCurrencyHolders totalSupply activeOrders"
+
 echo "--- v0.4.0 bridge actions ---"
 
 # ops.activity.summary (new in PR #68)

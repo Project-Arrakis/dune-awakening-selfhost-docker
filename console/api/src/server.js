@@ -107,10 +107,10 @@ setInterval(() => {
 }, memoryBalancer.intervalMs).unref?.();
 
 setInterval(() => {
-  if (deathPoller.tick) runBackgroundTick("Death poller", () => deathPoller.tick());
+  if (deathPoller.enabled && deathPoller.tick) runBackgroundTick("Death poller", () => deathPoller.tick());
 }, deathPoller.intervalMs).unref?.();
 
-deathPoller.init(db, config.repoRoot).catch(() => {});
+if (deathPoller.enabled) deathPoller.init(db, config.repoRoot).catch(() => {});
 
 function runBackgroundTick(label, fn) {
   Promise.resolve()
