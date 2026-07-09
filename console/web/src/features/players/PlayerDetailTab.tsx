@@ -246,6 +246,7 @@ export function PlayerDetailTab({
             const itemTemplate = String(row.template_id || "");
             const all = augmentCatalog;
             const name = itemTemplate.toLowerCase();
+            if (/_schematic$/i.test(name)) return <p>Schematics cannot be augmented.</p>;
             const isWeapon = /lasgun|spitdart|jabal|disruptor|smg|karpov|rifle|drillshot|shotgun|grda|scattergun|vulcan|lmg|pyrocket|fireball|flamethrower|rocket|missile|pistol|snubnose|rafiq|maula|melee|sword|blade|knife|fremen/i.test(name);
             const isArmor = /chest|armor|guard|garment|helmet|boots|gloves|suit/i.test(name);
             const isMelee = /melee|sword|blade|knife|fremen/i.test(name);

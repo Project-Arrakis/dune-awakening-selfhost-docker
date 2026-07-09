@@ -83,8 +83,9 @@ export function CarePackagePanel({ onError, confirmAction }: { onError: (text: s
     }).catch(() => setAugmentCatalog([]));
   }, []);
   function carePkgFilterAugments(itemName: string, itemId: string, itemCategory: string, all: { id: string; name: string }[]) {
-    const name = (itemName || itemId || "").toLowerCase();
+    const name = (itemId + " " + itemName).toLowerCase();
     const cat = (itemCategory || "").toLowerCase();
+    if (cat === "schematics" || /_schematic$/i.test(name)) return [];
     if ((!name || all.length === 0) && cat !== "weapons" && cat !== "clothing") return all;
     const isArmor = /chest|armor|guard|garment|helmet|boots|gloves|suit/i.test(name) || cat === "clothing";
     const isMelee = /melee|sword|blade|knife|fremen/i.test(name);

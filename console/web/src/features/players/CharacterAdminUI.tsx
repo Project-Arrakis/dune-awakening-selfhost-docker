@@ -98,9 +98,14 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
   const [playerAdmin_vehicleDecayThreshold, playerAdmin_setVehicleDecayThreshold] = useState("50");
   const playerAdmin_resultTimer = useRef<number | null>(null);
   useEffect(() => {
-    const name = (playerAdmin_itemName || playerAdmin_itemId || "").toLowerCase();
+    const name = (playerAdmin_itemId + " " + playerAdmin_itemName).toLowerCase();
     const cat = (playerAdmin_selectedItem?.category || "").toLowerCase();
+    const src = (playerAdmin_selectedItem?.source || "").toLowerCase();
     const all = playerAdmin_augmentCatalog;
+    if (cat === "schematics" || src === "schematics" || /_schematic$/i.test(name)) {
+      playerAdmin_setFilteredAugments([]);
+      return;
+    }
     if ((!name || all.length === 0) && cat !== "weapons" && cat !== "clothing") {
       playerAdmin_setFilteredAugments(all);
       return;
@@ -109,7 +114,7 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
     const rangedGeneric = new Set(["Damage","Acuracy","Shielddamage","Range","Recoil","ReloadSpeed","Rateoffire","Magazinecapacity","Headshotdamage"]); const commonGeneric = new Set(["DeathDurability","Ch5"]);
     const wp = (id: string) => { const m = id.match(/^T6_Augment_(.+?)\d+$/); return m ? m[1] : ""; };
     const weaponMap: [RegExp, Set<string>][] = [
-      [/lasgun|ChoamLg/i, new Set(["Lasgun"])], [/spitdart|jabal|LongRifle|LogRifle/i, new Set(["Spitdartrifle","SpitdartRifle"])],
+      [/lasgun|ChoamLg/i, new Set(["Lasgun"])], [/spitdart|jabal|LongRifle|LogRifle|SmugDmr|Rifle_Long/i, new Set(["Spitdartrifle","SpitdartRifle"])],
       [/disruptor| smg|SMG|AtreSmg|UniqueSmg/i, new Set(["smg","Smg"])], [/karpov|battle.?rifle|\bBR\b|HarkAr|UniqueAr|AtreBR/i, new Set(["BR"])],
       [/drillshot|shotgun|Shotgun/i, new Set(["Shotgun"])], [/grda|scattergun|Scattergun|UniqueScattergun/i, new Set(["Scattergun"])],
       [/vulcan|lmg|LMG|AtreLMG/i, new Set(["Lmg"])], [/pyrocket|fireball|Fireballer/i, new Set(["Fireballer"])],
