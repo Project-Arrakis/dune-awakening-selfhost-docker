@@ -1,8 +1,8 @@
-// Broadcast Provider — sends in-game messages via dune CLI.
-// Uses dune admin broadcast for in-game server messages.
-// Gate: requires DUNE_DISCORD_WRITES_ENABLED and admin capability.
+// Broadcast Provider — sends in-game messages via the console's existing RabbitMQ broadcast path.
+// Uses buildBroadcastCommand + publishServerCommand from rmq.js (same path as web console broadcast).
+// Gate: requires DUNE_DISCORD_WRITES_ENABLED and admin/owner BROADCAST_SEND capability.
 
-import { buildDuneArgs, runDune } from "../../runner.js";
+import { buildBroadcastCommand, publishServerCommand } from "../../rmq.js";
 import { sanitizeDiscordValue } from "./sanitize.js";
 
 export async function broadcastProvider(config, { message } = {}) {
@@ -11,11 +11,15 @@ export async function broadcastProvider(config, { message } = {}) {
   }
 
   try {
-    const args = ["admin", "broadcast", String(message).slice(0, 200)];
-    const result = await runDune(config, args, {
-      timeoutMs: 30000,
-      allowedExitCodes: [0]
+    const command = buildBroadcastCommand({
+      message: String(message).slice(0, 200),
+      title: "Discord Broadcast",
+      durationSec: 30
     });
+
+    const result = config.mockMode
+      ? { code: 0, stdout: "mock broadcast\n", stderr: "", args: [] }
+      : await publishServerCommand(config, command, "discord-broadcast");
 
     return {
       ok: Number(result.code || 0) === 0,

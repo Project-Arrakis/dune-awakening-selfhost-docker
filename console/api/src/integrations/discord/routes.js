@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import {
   discordAdapterEnabled, discordAdapterErrorResponse, discordAdapterHealth,
   discordAdapterPopulation, discordAdapterReadiness, discordAdapterServices,
-  discordAdapterStatus, DISCORD_ADAPTER_ROUTES, DISCORD_PLANNED_ADAPTER_ROUTES,
+  discordAdapterStatus, discordWritesEnabled, DISCORD_ADAPTER_ROUTES, DISCORD_PLANNED_ADAPTER_ROUTES,
   validateDiscordActor, discordRoleMappingFromEnv
 } from "./adapter.js";
 import { policyError, requireDiscordCapability, DISCORD_CAPABILITIES } from "./policy.js";
@@ -140,12 +140,13 @@ export async function handleDiscordAdapterRoute({ req, res, path, config, readJs
       return json(res, 200, { ok: false, error: `OPS provider not found for: ${path}` });
     }
 
-    // Broadcast route — gated behind write enablement, actor identity, and admin capability.
+    // Broadcast route — gated behind write enablement, actor identity, and admin/owner capability.
     if (path === DISCORD_ADAPTER_ROUTES.BROADCAST && req.method === "POST") {
+      if (!discordWritesEnabled(config)) throw policyError("writes_disabled", "Write operations are not enabled.", 403);
       const body = await readJson(req);
       const actor = validateDiscordActor(body.actor);
       const mapping = discordRoleMappingFromEnv();
-      requireDiscordCapability(actor, mapping, DISCORD_CAPABILITIES.STATUS_READ);
+      requireDiscordCapability(actor, mapping, DISCORD_CAPABILITIES.BROADCAST_SEND);
       const result = await broadcastProvider(config, { message: body.message });
       return json(res, 200, result);
     }
