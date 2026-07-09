@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Circle, X } from "lucide-react";
 import { playersApi } from "../../api/players";
+import { adminApi } from "../../api/admin";
 import { DataTable, useSortableRows } from "../../components/common/DataTable";
 import { TechnicalDetails } from "../../components/common/DisplayPrimitives";
 import { formatUiSentence, friendlyColumnName } from "../../lib/display";
@@ -45,6 +46,20 @@ export function PlayerDetailTab({
   const [editRow, setEditRow] = useState<Record<string, unknown> | null>(null);
   const [editValues, setEditValues] = useState<Record<string, string>>({});
   const [editSaving, setEditSaving] = useState(false);
+  const [augmentTargetRow, setAugmentTargetRow] = useState<Record<string, unknown> | null>(null);
+  const [augmentSelected, setAugmentSelected] = useState<string[]>([]);
+  const [augmentCatalog, setAugmentCatalog] = useState<{ id: string; name: string }[]>([]);
+  const [augmentApplying, setAugmentApplying] = useState(false);
+
+  useEffect(() => {
+    adminApi.itemCatalog("", 10000).then((result) => {
+      const augs = (result.rows || []).filter((item) =>
+        (item.category || "").toLowerCase().includes("augment") ||
+        (item.source || "").toLowerCase() === "augments"
+      ).map((item) => ({ id: item.itemId || item.id, name: item.name }));
+      setAugmentCatalog(augs);
+    }).catch(() => setAugmentCatalog([]));
+  }, []);
 
   useEffect(() => {
     if (!message) return undefined;
@@ -147,6 +162,40 @@ export function PlayerDetailTab({
     }
   }
 
+  async function applyAugments() {
+    if (!augmentTargetRow || augmentSelected.length === 0) return;
+    const itemId = String(augmentTargetRow.id || "");
+    const templateId = String(augmentTargetRow.template_id || "Unknown item");
+    if (!(await confirmAction(`Apply ${augmentSelected.length} augment(s) to this item?`, {
+      title: "Apply Augments",
+      confirmLabel: "Apply",
+      details: [
+        { label: "Item ID", value: itemId, tone: "accent" },
+        { label: "Template", value: templateId, tone: "accent" },
+        { label: "Augments", value: augmentSelected.map((augId) => { const found = augmentCatalog.find((a) => a.id === augId); return found ? found.name : augId; }).join(", "), tone: "success" }
+      ]
+    }))) return;
+
+    setAugmentApplying(true);
+    try {
+      const response = await playersApi.augmentInventoryItem(playerId, itemId, augmentSelected, "APPLY AUGMENTS");
+      setMessage(formatMutationResult(response));
+      setMessageDetails(JSON.stringify(response, null, 2));
+      onActionLog?.("Apply Augments", templateId, String(augmentSelected.length), "Succeeded");
+      setAugmentTargetRow(null);
+      setAugmentSelected([]);
+      onReload();
+    } catch (error) {
+      const text = error instanceof Error ? error.message : String(error);
+      setMessage(text);
+      setMessageDetails("");
+      onActionLog?.("Apply Augments", templateId, String(augmentSelected.length), `Failed: ${text}`);
+      onError(text);
+    } finally {
+      setAugmentApplying(false);
+    }
+  }
+
   function renderEditPanel(row: Record<string, unknown>) {
     const hasCurrentAtLoad = row.current_durability != null;
     const hasMaxAtLoad = row.max_durability != null || hasCurrentAtLoad;
@@ -180,6 +229,7 @@ export function PlayerDetailTab({
       actionClassName="actions-column"
       action={(row) => <span className="icon-toggle-group">
         <button className="icon-toggle-button success" title="Edit item" aria-label="Edit item" onClick={(event) => { event.stopPropagation(); startEditItem(row); }}><Circle size={16} /></button>
+        <button className="icon-toggle-button accent" title="Apply Augments" aria-label="Apply Augments" onClick={(event) => { event.stopPropagation(); setAugmentTargetRow(row); setAugmentSelected([]); }}>+A</button>
         <button className="icon-toggle-button danger" title="Delete item" aria-label="Delete item" onClick={(event) => { event.stopPropagation(); void deleteItem(row); }}><X size={16} /></button>
       </span>}
       sortColumn={inventorySort.sortColumn}
@@ -187,8 +237,53 @@ export function PlayerDetailTab({
       onSort={inventorySort.onSort}
       resizableColumns
       rowKey={(row) => String(row.id)}
-      isRowExpanded={(row) => editRow !== null && String(row.id) === String(editRow.id)}
-      renderExpandedRow={(row) => renderEditPanel(row)}
+      isRowExpanded={(row) => (editRow !== null && String(row.id) === String(editRow.id)) || (augmentTargetRow !== null && String(row.id) === String(augmentTargetRow.id))}
+      renderExpandedRow={(row) => augmentTargetRow !== null && String(row.id) === String(augmentTargetRow.id) ? (
+        <div className="result-panel database-edit-panel">
+          <div className="panel-title"><strong>Apply Augments</strong></div>
+          <p className="playerAdmin_note">Item ID: {String(row.id)} · {String(row.template_id)}</p>
+          {(() => {
+            const itemTemplate = String(row.template_id || "");
+            const all = augmentCatalog;
+            const name = itemTemplate.toLowerCase();
+            if (/_schematic$/i.test(name)) return <p>Schematics cannot be augmented.</p>;
+            const isWeapon = /lasgun|spitdart|jabal|disruptor|smg|karpov|rifle|drillshot|shotgun|grda|scattergun|vulcan|lmg|pyrocket|fireball|flamethrower|rocket|missile|pistol|snubnose|rafiq|maula|melee|sword|blade|knife|fremen/i.test(name);
+            const isArmor = /chest|armor|guard|garment|helmet|boots|gloves|suit/i.test(name);
+            const isMelee = /melee|sword|blade|knife|fremen/i.test(name);
+            const rangedGeneric = new Set(["Damage","Acuracy","Shielddamage","Range","Recoil","ReloadSpeed","Rateoffire","Magazinecapacity","Headshotdamage"]); const commonGeneric = new Set(["DeathDurability","Ch5"]);
+            const wp = (id: string) => { const m = id.match(/^T6_Augment_(.+?)\d+$/); return m ? m[1] : ""; };
+            const weaponMap: [RegExp, Set<string>][] = [
+              [/lasgun/i, new Set(["Lasgun"])], [/spitdart|jabal/i, new Set(["Spitdartrifle","SpitdartRifle"])],
+              [/disruptor| smg/i, new Set(["smg","Smg"])], [/karpov|battle.?rifle/i, new Set(["BR"])],
+              [/drillshot|shotgun/i, new Set(["Shotgun"])], [/grda|scattergun/i, new Set(["Scattergun"])],
+              [/vulcan|lmg/i, new Set(["Lmg"])], [/pyrocket|fireball/i, new Set(["Fireballer"])],
+              [/flamethrower/i, new Set(["Flamethrower"])], [/rocket|missile/i, new Set(["RocketLauncher"])],
+              [/maula|pistol|snubnose|rafiq/i, new Set(["HeavyPistol","MaulaPistol"])],
+            ];
+            const filtered = all.filter((aug) => {
+              const p = wp(aug.id);
+              if (isArmor) return /^Armor/i.test(p);
+              if (isMelee) return p === "Melee" || commonGeneric.has(p);
+              if (isWeapon) {
+                if (rangedGeneric.has(p) || commonGeneric.has(p)) return true;
+                for (const [rx, set] of weaponMap) { if (rx.test(name) && set.has(p)) return true; }
+                return false;
+              }
+              return true;
+            });
+            return filtered.length === 0 ? <p>No matching augments for this item type.</p> : <>
+            <select className="augment-picker" multiple value={augmentSelected} size={Math.min(filtered.length, 12)} onChange={(event) => { const selected = Array.from(event.target.selectedOptions, (opt) => opt.value).slice(0, /chest|armor|guard|garment/i.test(String(row.template_id)) ? 2 : 3); setAugmentSelected(selected); }} style={{ width: "100%", maxHeight: 280, fontSize: "12px" }}>
+              {filtered.map((aug) => <option key={aug.id} value={aug.id}>{aug.id} — {aug.name}</option>)}
+            </select>
+            <p className="playerAdmin_note" style={{ marginTop: 8 }}>Selected {augmentSelected.length} of {filtered.length} augment(s). Use Ctrl+Click to select multiple.</p>
+          </>;
+          })()}
+          <div className="action-line">
+            <button disabled={augmentSelected.length === 0 || augmentApplying} onClick={() => void applyAugments()}>{augmentApplying ? "Applying..." : `Apply ${augmentSelected.length} Augment(s)`}</button>
+            <button onClick={() => { setAugmentTargetRow(null); setAugmentSelected([]); }}>Cancel</button>
+          </div>
+        </div>
+      ) : renderEditPanel(row)}
     />
   </div>;
 }
