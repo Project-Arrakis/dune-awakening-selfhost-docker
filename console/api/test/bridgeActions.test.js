@@ -57,3 +57,34 @@ test("death poller detectTransitions returns empty array when previous is empty"
     assert.equal(deaths.length, 0, "empty snapshot produces zero deaths — first run safety");
   }
 });
+
+test("death poller enabled=false by default, respects DUNE_DEATH_POLLER_ENABLED", async () => {
+  let createDeathPoller;
+  try { ({ createDeathPoller } = await import("../src/deathPoller.js")); } catch { }
+
+  if (createDeathPoller) {
+    const old = process.env.DUNE_DEATH_POLLER_ENABLED;
+
+    // Default: disabled
+    delete process.env.DUNE_DEATH_POLLER_ENABLED;
+    const poller = createDeathPoller({});
+    assert.equal(poller.enabled, false, "death poller disabled by default");
+
+    // Enabled via env
+    process.env.DUNE_DEATH_POLLER_ENABLED = "true";
+    const poller2 = createDeathPoller({});
+    assert.equal(poller2.enabled, true, "death poller enabled when DUNE_DEATH_POLLER_ENABLED=true");
+
+    // Disabled explicitly
+    process.env.DUNE_DEATH_POLLER_ENABLED = "false";
+    const poller3 = createDeathPoller({});
+    assert.equal(poller3.enabled, false, "death poller disabled when DUNE_DEATH_POLLER_ENABLED=false");
+
+    // init and tick exist regardless
+    assert.equal(typeof poller.init, "function", "poller has init method");
+    assert.equal(typeof poller.tick, "function", "poller has tick method");
+
+    if (old !== undefined) process.env.DUNE_DEATH_POLLER_ENABLED = old;
+    else delete process.env.DUNE_DEATH_POLLER_ENABLED;
+  }
+});

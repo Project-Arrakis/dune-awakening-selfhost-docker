@@ -113,6 +113,7 @@ export function createDeathPoller(config) {
   return {
     init,
     tick,
+    get enabled() { return process.env.DUNE_DEATH_POLLER_ENABLED === "true"; },
     get intervalMs() { return Number(process.env.ADMIN_DEATH_POLL_INTERVAL_MS || DEFAULT_INTERVAL_MS); },
     get initSQL() { return INIT_SQL; }
   };
