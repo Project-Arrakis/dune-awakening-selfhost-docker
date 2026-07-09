@@ -28,12 +28,16 @@ RUN useradd -m -s /bin/bash dune \
     /srv/dune/steam \
     /srv/dune/generated \
     /srv/dune/cache \
- && chown -R dune:dune /home/dune /srv/dune
+ && chown -R dune:dune /home/dune /srv/dune \
+ && usermod -aG docker dune
 
 COPY dune_orchestrator.py /usr/local/bin/dune
 RUN chmod +x /usr/local/bin/dune
 
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
 USER dune
 
-ENTRYPOINT ["/usr/local/bin/dune"]
-CMD ["help"]
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+CMD ["dune", "daemon"]

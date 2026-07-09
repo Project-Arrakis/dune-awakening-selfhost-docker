@@ -473,6 +473,10 @@ echo "  $BATTLEGROUP_ID"
 
 echo
 echo "Starting orchestrator container..."
+if [ -z "${DOCKER_SOCKET_GID:-}" ] && [ -S /var/run/docker.sock ] && command -v stat >/dev/null 2>&1; then
+  export DOCKER_SOCKET_GID="$(stat -c '%g' /var/run/docker.sock 2>/dev/null || true)"
+fi
+export DOCKER_SOCKET_GID="${DOCKER_SOCKET_GID:-0}"
 docker compose up -d --build orchestrator
 
 run_timed_step "Downloading/loading assets and running database setup/update" runtime/scripts/update.sh install
