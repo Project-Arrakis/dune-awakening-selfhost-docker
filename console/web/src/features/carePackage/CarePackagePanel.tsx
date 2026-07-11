@@ -145,7 +145,7 @@ export function CarePackagePanel({ onError, confirmAction }: { onError: (text: s
       setOutput("");
       setTechnicalOutput("");
       setOutputScope("");
-    }, 5000);
+    }, 10000);
     return () => window.clearTimeout(timer);
   }, [output, outputScope]);
   function nextConfig(source = config): CarePackageConfig {
@@ -351,8 +351,8 @@ export function CarePackagePanel({ onError, confirmAction }: { onError: (text: s
   const manualKit = config.kits.find((kit) => kit.id === manualKitId) || activeKit;
   const packageItemCount = activeKit.items?.length || 0;
   const selected = players.find((player) => String(player.actor_id || player.player_pawn_id || "") === selectedPlayer) || null;
+  const onlinePlayers = players.filter((player) => String(player.online_status || "").toLowerCase() === "online");
   const grantPlayerId = manualPlayerId.trim() || String(selected?.action_player_id || "");
-  const selectedLabel = selected ? `${selected.character_name || "Unknown"} (${selected.online_status || "unknown"}) - actor ${selected.actor_id || "-"} - admin ${selected.action_player_id || "-"}` : "";
   const manualGrantTargetName = String(selected?.character_name || grantPlayerId || "selected player");
   const historyRows = carePackageHistoryRows(history).filter((row) => String(row.status || "").toLowerCase() !== "skipped").slice(0, 10);
   return <section className="panel">
@@ -391,21 +391,26 @@ export function CarePackagePanel({ onError, confirmAction }: { onError: (text: s
         <label className="package-message-field">Send Message<textarea value={activeKit.sendMessage || ""} onChange={(event) => updateActiveKit({ sendMessage: event.target.value })} placeholder="Optional private whisper after this package is granted" /></label>
         <div className={`playerAdmin_toggle ${packageItemsOpen ? "open" : ""}`}>
           <button className="playerAdmin_toggleHeader" aria-label={packageItemsOpen ? "Collapse Select Items" : "Expand Select Items"} onClick={() => setPackageItemsOpen(!packageItemsOpen)}>{packageItemsOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}<span>Select Items</span></button>
-          {packageItemsOpen && <div className="playerAdmin_toggleBody"><div className="package-items-picker-panel">
+          {packageItemsOpen && <div className="playerAdmin_toggleBody"><div className="playerAdmin_section">
             <ItemCatalogSelector selected={selectedPackageItem} onSelect={choosePackageItem} />
-            <div className="playerAdmin_itemInputLine package-item-input-line">
-              <label className="playerAdmin_itemNumberField">Quantity<input className="package-item-quantity-input" type="number" min="1" value={packageDraft.quantity} onChange={(event) => setPackageDraft({ ...packageDraft, quantity: event.target.value })} /></label>
-              <label className="playerAdmin_itemNumberField">Grade<ItemGradeSelect value={packageDraft.grade} minGrade={catalogItemMinimumGrade(selectedPackageItem)} onChange={(grade) => setPackageDraft({ ...packageDraft, grade })} /></label>
-              {(() => {
-                const filteredAugs = carePkgFilterAugments(packageDraft.itemName, packageDraft.itemId, selectedPackageItem?.category || "", augmentCatalog);
-                return filteredAugs.length === 0 ? null : <><div className="playerAdmin_itemNumberField"><span>Augments</span><AugmentDropdown options={formatAugmentOptions(filteredAugs, packageDraft.augmentGrade)} value={packageDraft.augments} maxSelected={carePkgAugmentLimit(packageDraft.itemName, packageDraft.itemId, selectedPackageItem?.category)} onChange={(selected) => setPackageDraft({ ...packageDraft, augments: selected.slice(0, carePkgAugmentLimit(packageDraft.itemName, packageDraft.itemId, selectedPackageItem?.category)) })} /></div><label className="playerAdmin_itemNumberField">Aug. Grade<ItemGradeSelect value={packageDraft.augmentGrade} minGrade={1} disabled={packageDraft.augments.length === 0} emptyWhenDisabled onChange={(augmentGrade) => setPackageDraft({ ...packageDraft, augmentGrade })} /></label></>;
-              })()}
-              <button className="package-add-item-button" disabled={!selectedPackageItem} onClick={addPackageItem}>Add Item</button>
+            <div className="playerAdmin_itemActionStack">
+              <div className="playerAdmin_itemInputLine">
+                <span className="playerAdmin_actionLabel playerAdmin_itemSelectedLabel">Selected Item</span>
+                <label className="playerAdmin_itemNumberField">Quantity<input className="package-item-quantity-input" type="number" min="1" value={packageDraft.quantity} onChange={(event) => setPackageDraft({ ...packageDraft, quantity: event.target.value })} /></label>
+                <label className="playerAdmin_itemNumberField">Grade<ItemGradeSelect value={packageDraft.grade} minGrade={catalogItemMinimumGrade(selectedPackageItem)} onChange={(grade) => setPackageDraft({ ...packageDraft, grade })} /></label>
+                {(() => {
+                  const filteredAugs = carePkgFilterAugments(packageDraft.itemName, packageDraft.itemId, selectedPackageItem?.category || "", augmentCatalog);
+                  return filteredAugs.length === 0 ? null : <><div className="playerAdmin_itemNumberField"><span>Augments</span><AugmentDropdown options={formatAugmentOptions(filteredAugs, packageDraft.augmentGrade)} value={packageDraft.augments} maxSelected={carePkgAugmentLimit(packageDraft.itemName, packageDraft.itemId, selectedPackageItem?.category)} onChange={(selected) => setPackageDraft({ ...packageDraft, augments: selected.slice(0, carePkgAugmentLimit(packageDraft.itemName, packageDraft.itemId, selectedPackageItem?.category)) })} /></div><label className="playerAdmin_itemNumberField">Aug. Grade<ItemGradeSelect value={packageDraft.augmentGrade} minGrade={1} disabled={packageDraft.augments.length === 0} emptyWhenDisabled onChange={(augmentGrade) => setPackageDraft({ ...packageDraft, augmentGrade })} /></label></>;
+                })()}
+                <div className="playerAdmin_actionRow playerAdmin_itemActionRow">
+                  <button disabled={!selectedPackageItem} onClick={addPackageItem}>Add Item</button>
+                </div>
+              </div>
+              <p className="action-help-note">Manual package grants can be sent while the player is online. Database-granted items, grades, or augments may require a relog before they appear correctly in-game.</p>
             </div>
-            <p className="action-help-note">Grade 0 items with no augments can be granted while the player is online. Item Grades 1-5 or Augment Grades 1-5 require the player to be offline.</p>
           </div></div>}
         </div>
-        {activeKit.items?.length ? <div className="table-wrap package-items-table"><table><thead><tr><th>Preview</th><th>Item Name</th><th>Item ID</th><th>Quantity</th><th>Grade</th><th>Augments</th><th>Aug. Grade</th><th>Actions</th></tr></thead><tbody>{activeKit.items.map((item, index) => {
+        {activeKit.items?.length ? <div className="table-wrap package-items-table playerAdmin_itemsTable"><table><thead><tr><th>Preview</th><th>Item Name</th><th>Item ID</th><th>Quantity</th><th>Grade</th><th>Augments</th><th>Aug. Grade</th><th>Actions</th></tr></thead><tbody>{activeKit.items.map((item, index) => {
           const editing = editingPackageIndex === index;
           return <tr key={`${item.itemName || item.itemId}-${index}`}><td><PackageItemPreview item={item} /></td><td>{catalogItemName(item)}</td><td>{catalogItemId(item)}</td><td>{editing ? <input className="package-item-quantity-input" type="number" min="1" value={packageEditDraft.quantity} onChange={(event) => setPackageEditDraft({ ...packageEditDraft, quantity: event.target.value })} /> : item.quantity}</td><td>{editing ? <ItemGradeSelect value={packageEditDraft.grade} minGrade={catalogItemMinimumGrade(item)} onChange={(grade) => setPackageEditDraft({ ...packageEditDraft, grade })} /> : itemGrade(item)}</td><td className={editing ? "package-augment-edit-cell" : ""} style={{ fontSize: "11px" }}>{editing ? (() => { const filteredAugs = carePkgFilterAugments(item.itemName || "", item.itemId || "", item.category || "", augmentCatalog); const itemName = item.itemName || item.itemId || ""; return filteredAugs.length === 0 ? <span>No matching augments</span> : <AugmentDropdown options={formatAugmentOptions(filteredAugs, packageEditDraft.augmentGrade)} value={packageEditDraft.augments} maxSelected={carePkgAugmentLimit(itemName, item.itemId || "", item.category || "")} onChange={(selected) => setPackageEditDraft({ ...packageEditDraft, augments: selected.slice(0, carePkgAugmentLimit(itemName, item.itemId || "", item.category || "")) })} />; })() : <span className="package-augment-summary">{(item.augments && item.augments.length > 0) ? item.augments.map((augId: string) => { const found = augmentCatalog.find((a) => a.id === augId); return found ? found.name : augId; }).join(", ") : "—"}</span>}</td><td>{item.augments?.length || editing ? (editing ? <ItemGradeSelect value={packageEditDraft.augmentGrade} minGrade={1} disabled={packageEditDraft.augments.length === 0} emptyWhenDisabled onChange={(augmentGrade) => setPackageEditDraft({ ...packageEditDraft, augmentGrade })} /> : (item.augmentQuality ?? 1)) : "—"}</td><td className="package-actions-cell"><div className="service-actions">{editing ? <><button onClick={() => savePackageItemEdit(index)}>Save</button><button onClick={() => setEditingPackageIndex(null)}>Cancel</button></> : <button onClick={() => editPackageItem(index)}>Edit</button>}<button className="danger" onClick={() => {
           const nextItems = activeKit.items.filter((_, itemIndex) => itemIndex !== index);
@@ -414,7 +419,7 @@ export function CarePackagePanel({ onError, confirmAction }: { onError: (text: s
           if (editingPackageIndex === index) setEditingPackageIndex(null);
         }}>Remove</button></div></td></tr>;
         })}</tbody></table></div> : null}
-        <details className="technical-details"><summary>Developer raw package item textarea</summary><p>One item per line: item name or raw item ID, quantity, item grade, augment IDs separated by |, augment grade. Normal Grade 0 items can grant instantly; schematics and augments are saved through the database.</p><label>Package Items<textarea value={itemsText} onChange={(event) => setItemsText(event.target.value)} placeholder="Plant Fiber,10,0&#10;cup of water,1,0&#10;UniqueSword_05,1,5,T6_Augment_Melee1|T6_Augment_Melee4" /></label></details>
+        <details className="technical-details"><summary>Developer raw package item textarea</summary><p>One item per line: item name or raw item ID, quantity, item grade, augment IDs separated by |, augment grade. Normal Grade 0 items can grant instantly; schematics, grades, and augments are saved through the database and may need a relog.</p><label>Package Items<textarea value={itemsText} onChange={(event) => setItemsText(event.target.value)} placeholder="Plant Fiber,10,0&#10;cup of water,1,0&#10;UniqueSword_05,1,5,T6_Augment_Melee1|T6_Augment_Melee4" /></label></details>
         <div className="action-line">
           <button onClick={() => run(async () => {
             if (!(await confirmAction("These settings will be saved.", {
@@ -481,11 +486,13 @@ export function CarePackagePanel({ onError, confirmAction }: { onError: (text: s
         </> : <>
           <div className="action-line">
             <label className="compact-select">Package<select value={manualKit.id} onChange={(event) => setManualKitId(event.target.value)}>{config.kits.map((kit) => <option key={kit.id} value={kit.id}>{kit.name || "Name Required"}</option>)}</select></label>
-            <label className="wide-field">Player<select value={selectedPlayer} onChange={(event) => setSelectedPlayer(event.target.value)}>
-              <option value="">Select player</option>
-              {players.map((player) => <option key={String(player.actor_id || player.player_pawn_id || player.action_player_id)} value={String(player.actor_id || player.player_pawn_id || "")}>
-                {String(player.character_name || "Unknown")} - {String(player.online_status || "unknown")} - actor {String(player.actor_id || "-")} - admin {String(player.action_player_id || "missing")}
-              </option>)}
+            <label className="package-player-select">Player<select className={selectedPlayer ? "package-player-selected-online" : ""} value={selectedPlayer} onChange={(event) => setSelectedPlayer(event.target.value)}>
+              <option value="">{onlinePlayers.length ? "Select player" : "No players are online"}</option>
+              {onlinePlayers.map((player) => {
+                return <option className="package-player-option-online" key={String(player.actor_id || player.player_pawn_id || player.action_player_id)} value={String(player.actor_id || player.player_pawn_id || "")}>
+                  {String(player.character_name || "Unknown")} (Online)
+                </option>;
+              })}
             </select></label>
             <button disabled={!grantPlayerId || !manualKit.id || manualGrantResult?.status === "running"} onClick={() => run(async () => {
               if (!(await confirmAction("This package will be sent to the selected player.", {
@@ -687,11 +694,20 @@ function CarePackageResult({ output, technicalOutput }: { output: string; techni
     <ul className="result-list">
       {rows.map((line, index) => {
         const status = /^OK:/i.test(line) ? "ok" : /^FAIL:/i.test(line) || /failed/i.test(line) ? "fail" : "info";
-        return <li className={`result-row result-${status}`} key={`${line}-${index}`}>{formatResultMessage(friendlyCarePackageResultLine(line))}</li>;
+        return <li className={`result-row result-${status} ${/relog required/i.test(line) ? "result-has-warning" : ""}`} key={`${line}-${index}`}>{formatCarePackageResultMessage(friendlyCarePackageResultLine(line))}</li>;
       })}
     </ul>
     {technicalOutput && <TechnicalDetails text={technicalOutput} />}
   </div>;
+}
+
+function formatCarePackageResultMessage(line: string) {
+  const match = line.match(/^(.*?)(\s*Relog required for item or augments to appear correctly\.?)$/i);
+  if (!match) return formatResultMessage(line);
+  return <>
+    {formatResultMessage(match[1].trim())}
+    <span className="care-package-relog-warning">{formatResultMessage(match[2].trim())}</span>
+  </>;
 }
 
 function friendlyCarePackageResultLine(line: string) {
@@ -720,9 +736,17 @@ function formatCarePackageGrantResult(result: Record<string, unknown>) {
   const lines: string[] = [];
   if (Array.isArray(result.results)) {
     for (const action of result.results as Record<string, unknown>[]) {
-      if (action.ok) lines.push(`OK: ${describeCarePackageAction(action)}`);
-      else if (action.operation === "adminAddXp" || action.item) lines.push(`FAIL: ${describeCarePackageAction(action)} could not be granted. The player must be online for package grants.`);
-      else lines.push(`FAIL: to grant ${describeCarePackageAction(action)}`);
+      if (action.ok) {
+        const warning = carePackageActionError(action);
+        lines.push(`OK: ${describeCarePackageAction(action)}${warning ? `. ${warning}` : ""}`);
+      }
+      else if (action.operation === "adminAddXp" || action.item) {
+        const reason = carePackageActionError(action);
+        lines.push(`FAIL: ${describeCarePackageAction(action)} could not be granted.${reason ? ` ${reason}` : ""}`);
+      } else {
+        const reason = carePackageActionError(action);
+        lines.push(`FAIL: to grant ${describeCarePackageAction(action)}${reason ? `: ${reason}` : ""}`);
+      }
     }
   }
   if (!lines.length) {
@@ -732,9 +756,15 @@ function formatCarePackageGrantResult(result: Record<string, unknown>) {
   return lines.join("\n");
 }
 
+function carePackageActionError(action: Record<string, unknown>) {
+  const error = action.error || action.warning || action.stderr || action.reason;
+  return typeof error === "string" && error.trim() ? formatUiSentence(error.trim(), false) : "";
+}
+
 function describeCarePackageAction(action: Record<string, unknown>) {
   const item = action.item as Record<string, unknown> | undefined;
   if (item) return `${item.itemName || item.itemId || "Item"} x${item.quantity || 1} Grade ${itemGrade(item)}`;
   if (action.operation === "adminAddXp") return `${action.amount || 0} XP`;
+  if (action.operation === "carePackageWelcomeWhisper") return "Whisper Message";
   return String(action.operation || "Care Package action");
 }

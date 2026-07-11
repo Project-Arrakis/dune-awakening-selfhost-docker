@@ -726,6 +726,13 @@ main { padding: 22px; min-width: 0; }
 .result-list { display: grid; gap: 8px; margin: 10px 0 0; padding: 0; list-style: none; }
 .result-row { border: 1px solid #302b25; border-radius: 6px; padding: 9px 10px; background: #14171a; color: #d9c8aa; }
 .result-ok { border-color: #3d8b62; color: #9be6bd; }
+.result-ok.result-has-warning { border-color: #3d8b62; }
+.care-package-relog-warning {
+  display: inline-block;
+  margin-left: 6px;
+  color: #ffd08a;
+  font-weight: 700;
+}
 .result-fail { border-color: var(--danger); color: var(--danger-text); }
 .result-running { border-color: #6b5b39; }
 .transient-result { animation: backupResultFadeOut .4s ease 4.6s forwards; }
@@ -775,7 +782,23 @@ main { padding: 22px; min-width: 0; }
   0%, 100% { transform: translateY(8px) rotate(0deg); opacity: .55; }
   45% { transform: translateY(-8px) rotate(8deg); opacity: 1; }
 }
-.care-package-result { margin-top: 12px; animation: backupResultFadeOut .4s ease 5s forwards; }
+.care-package-result { margin-top: 12px; }
+.package-player-select {
+  position: relative;
+  display: grid;
+  gap: 6px;
+  flex: 0 1 260px;
+  min-width: min(260px, 100%);
+}
+.package-player-selected-online {
+  color: #9be6bd;
+}
+.package-player-selected-online option {
+  color: #d9c8aa;
+}
+.package-player-option-online {
+  color: #9be6bd;
+}
 .key-value-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; }
 .key-value-item { display: grid; gap: 5px; }
 .database-browser-note { margin: -4px 0 12px; max-width: 860px; color: #d8c8aa; line-height: 1.45; }
@@ -1382,8 +1405,6 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
 .package-items-toggle-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; }
 .package-items-toggle-panel.open .package-items-toggle-row { border-bottom: 1px solid #302b25; }
 .package-items-toggle-row h4 { margin: 0; }
-.package-items-picker-panel { display: grid; gap: 10px; padding: 12px; }
-.package-item-input-line .package-add-item-button { align-self: end; width: auto; min-height: 40px; }
 .package-items-table table { table-layout: fixed; width: 100%; min-width: 1120px; }
 .table-wrap.package-items-table { overflow-x: auto; max-height: none; }
 .package-items-table th:nth-child(1), .package-items-table td:nth-child(1) { width: 7%; text-align: center; }

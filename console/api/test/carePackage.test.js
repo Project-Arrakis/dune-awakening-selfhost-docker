@@ -601,6 +601,57 @@ test("care package grant all successes records granted status and summary", asyn
   }
 });
 
+test("manual care package grants pre-augmented database items with a relog warning", async () => {
+  const config = tempConfig();
+  config.mockMode = false;
+  try {
+    writeCatalog(config);
+    saveCarePackageConfig(config, {
+      enabled: true,
+      activeKitId: "welcome-kit",
+      kits: [{
+        id: "welcome-kit",
+        name: "Welcome",
+        xp: 0,
+        sendMessage: "",
+        items: [{
+          itemId: "SMG_Unique_LargeMag_06",
+          itemName: "A Dart for Every Man",
+          quantity: 1,
+          quality: 5,
+          augments: ["T6_Augment_Acuracy1"],
+          augmentQuality: 5
+        }]
+      }]
+    });
+    let receivedPayload;
+    const result = await grantCarePackage(config, "Dagnir#1", {
+      confirmation: "GRANT CARE PACKAGE",
+      source: "manual",
+      kitId: "welcome-kit",
+      actorId: 42,
+      characterName: "Dagnir",
+      onlineStatus: "Online"
+    }, {
+      db: {},
+      dbGiveItemToPlayer: async (_actorId, payload) => {
+        receivedPayload = payload;
+        return {
+          ok: true,
+          requiresRelog: true,
+          inserted: { template_id: payload.templateId, stack_size: payload.quantity, quality_level: payload.quality },
+          message: `${payload.templateId} was added. Relog required for item or augments to appear correctly.`
+        };
+      }
+    });
+    assert.equal(result.status, "granted");
+    assert.equal(receivedPayload.allowOnlinePreAugmented, true);
+    assert.match(result.summary, /Relog required/);
+  } finally {
+    rmSync(config.repoRoot, { recursive: true, force: true });
+  }
+});
+
 test("care package send message is sent as a grant action", async () => {
   const config = tempConfig();
   try {

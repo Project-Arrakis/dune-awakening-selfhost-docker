@@ -347,8 +347,15 @@ export async function grantCarePackage(config, playerId, body = {}, context = {}
       if (needsDatabaseGrant && context.db && body.actorId) {
         const result = config.mockMode
           ? { ok: true, inserted: { template_id: resolved.itemId, stack_size: item.quantity, quality_level: item.quality } }
-          : await (context.dbGiveItemToPlayer || ((actorId, itemPayload) => giveItemToPlayer(context.db, actorId, itemPayload)))(body.actorId, { templateId: resolved.itemId, quantity: item.quantity, quality: item.quality, augments, augmentQuality: payload.augmentQuality });
-        results.push({ ok: true, operation: "dbGiveItemToPlayer", item: payload, result });
+          : await (context.dbGiveItemToPlayer || ((actorId, itemPayload) => giveItemToPlayer(context.db, actorId, itemPayload)))(body.actorId, {
+              templateId: resolved.itemId,
+              quantity: item.quantity,
+              quality: item.quality,
+              augments,
+              augmentQuality: payload.augmentQuality,
+              allowOnlinePreAugmented: source === "manual"
+            });
+        results.push({ ok: true, operation: "dbGiveItemToPlayer", item: payload, result, warning: result?.requiresRelog ? "Relog required for item or augments to appear correctly." : undefined });
       } else {
         const command = buildDuneArgs(operation, payload);
         const result = config.mockMode ? { code: 0, stdout: "mock package item grant\n", stderr: "" } : await runDune(config, command);

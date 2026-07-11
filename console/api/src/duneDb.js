@@ -3163,7 +3163,7 @@ export async function giveItemToStorage(db, storageId, { itemName = "", itemId =
   });
 }
 
-export async function giveItemToPlayer(db, playerId, { itemName = "", itemId = "", templateId = "", quantity = 1, quality = 1, augments = [], augmentQuality = 1 }) {
+export async function giveItemToPlayer(db, playerId, { itemName = "", itemId = "", templateId = "", quantity = 1, quality = 1, augments = [], augmentQuality = 1, allowOnlinePreAugmented = false }) {
   await requireCapability(await supportsPlayerGiveItem(db), "Player give-item requires compatible dune.inventories and dune.items insert columns.");
   const target = intParam(playerId, "player id", 1);
   const resolvedTemplate = validateTemplateId(templateId || itemId || itemName);
@@ -3175,7 +3175,8 @@ export async function giveItemToPlayer(db, playerId, { itemName = "", itemId = "
   return db.transaction(async (tx) => {
     const itemColumns = await columnsFor(tx, "items");
     const player = await resolvePlayerMutationTarget(tx, target);
-    if (augmentIds.length > 0) requireOfflinePlayer(player, "Pre-augmented item grants");
+    const playerOnline = String(player.onlineStatus || "").toLowerCase() === "online";
+    if (augmentIds.length > 0 && !allowOnlinePreAugmented) requireOfflinePlayer(player, "Pre-augmented item grants");
     const inventory = await tx.query(`
       select id, actor_id, coalesce(max_item_count, 0)::int as max_item_count, coalesce(max_item_volume, 0)::int as max_item_volume
       from dune.inventories
@@ -3209,7 +3210,16 @@ export async function giveItemToPlayer(db, playerId, { itemName = "", itemId = "
       values (${insert.values.map((_, index) => index === 5 ? `$${index + 1}::jsonb` : `$${index + 1}`).join(", ")})
       returning id, template_id, stack_size, quality_level, position_index, inventory_id`, insert.values);
     const augmentNote = augmentIds.length > 0 ? ` with ${augmentIds.length} augment(s) pre-applied` : "";
-    return { ok: true, playerId: player.actorId, inserted: inserted.rows[0], augments: augmentIds.length > 0 ? augmentIds : undefined, augmentQuality: augmentIds.length > 0 ? augmentQualityLevel : undefined, slotUnlocks, message: `${resolvedTemplate} was added at Grade ${qualityLevel}${augmentNote}. The player will see the database edit on next login.` };
+    return {
+      ok: true,
+      playerId: player.actorId,
+      inserted: inserted.rows[0],
+      augments: augmentIds.length > 0 ? augmentIds : undefined,
+      augmentQuality: augmentIds.length > 0 ? augmentQualityLevel : undefined,
+      slotUnlocks,
+      requiresRelog: playerOnline,
+      message: `${resolvedTemplate} was added at Grade ${qualityLevel}${augmentNote}.${playerOnline ? " Relog required for item or augments to appear correctly." : " The player will see the database edit on next login."}`
+    };
   });
 }
 
