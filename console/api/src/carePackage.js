@@ -340,13 +340,14 @@ export async function grantCarePackage(config, playerId, body = {}, context = {}
         quantity: item.quantity,
         quality: item.quality,
         durability: 1,
-        augments
+        augments,
+        augmentQuality: item.augmentQuality ?? 1
       };
       const needsDatabaseGrant = Number(item.quality || 0) > 0 || itemRequiresDatabaseGrant(resolved) || augments.length > 0;
       if (needsDatabaseGrant && context.db && body.actorId) {
         const result = config.mockMode
           ? { ok: true, inserted: { template_id: resolved.itemId, stack_size: item.quantity, quality_level: item.quality } }
-          : await (context.dbGiveItemToPlayer || ((actorId, itemPayload) => giveItemToPlayer(context.db, actorId, itemPayload)))(body.actorId, { templateId: resolved.itemId, quantity: item.quantity, quality: item.quality, augments });
+          : await (context.dbGiveItemToPlayer || ((actorId, itemPayload) => giveItemToPlayer(context.db, actorId, itemPayload)))(body.actorId, { templateId: resolved.itemId, quantity: item.quantity, quality: item.quality, augments, augmentQuality: payload.augmentQuality });
         results.push({ ok: true, operation: "dbGiveItemToPlayer", item: payload, result });
       } else {
         const command = buildDuneArgs(operation, payload);
@@ -726,10 +727,14 @@ function summarizeActionResults(results) {
     .filter((result) => !result.ok)
     .map((result) => `${describeAction(result)} failed: ${result.error || "unknown error"}`)
     .slice(0, 3);
+  const warnings = results
+    .filter((result) => result.ok && result.warning)
+    .map((result) => `${describeAction(result)}: ${result.warning}`)
+    .slice(0, 3);
   return {
     ok: failureCount === 0,
     status,
-    summary: `${successCount} succeeded, ${failureCount} failed${failed.length ? `; ${failed.join("; ")}` : ""}`
+    summary: `${successCount} succeeded, ${failureCount} failed${failed.length ? `; ${failed.join("; ")}` : ""}${warnings.length ? `; ${warnings.join("; ")}` : ""}`
   };
 }
 
@@ -832,7 +837,7 @@ function validateCarePackageItem(item = {}) {
   const augments = Array.isArray(item.augments)
     ? item.augments.filter((id) => String(id || "").trim() && /^[A-Za-z0-9_./:-]{1,240}$/.test(String(id || "").trim())).slice(0, 20)
     : [];
-  return {
+  const normalized = {
     itemName,
     itemId,
     quantity: validateInteger(item.quantity ?? 1, "quantity", 1, 1000000),
@@ -840,12 +845,20 @@ function validateCarePackageItem(item = {}) {
     durability: 1,
     augments
   };
+  if (augments.length > 0) normalized.augmentQuality = validateAugmentQuality(item.augmentQuality);
+  return normalized;
 }
 
 function validateItemQuality(value) {
   const number = Number(value);
   if (!Number.isFinite(number)) return 0;
   return Math.max(0, Math.min(5, Math.trunc(number)));
+}
+
+function validateAugmentQuality(value) {
+  const number = Number(value ?? 1);
+  if (!Number.isFinite(number)) return 1;
+  return Math.max(1, Math.min(5, Math.trunc(number)));
 }
 
 function validateSendMessage(value) {

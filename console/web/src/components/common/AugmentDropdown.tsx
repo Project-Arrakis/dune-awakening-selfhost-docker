@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { ChevronDown, X } from "lucide-react";
 
-export type AugmentOption = { id: string; name: string };
+export type AugmentEffect = { label: string; value: string; tone: "positive" | "negative" | "neutral"; text: string };
+export type AugmentOption = { id: string; name: string; displayName?: string; effects?: AugmentEffect[] };
 
 export function AugmentDropdown({
   options,
@@ -19,10 +20,20 @@ export function AugmentDropdown({
   const [open, setOpen] = useState(false);
   const [menuStyle, setMenuStyle] = useState<CSSProperties>({});
   const rootRef = useRef<HTMLDivElement | null>(null);
-  const selectedNames = useMemo(() => value.map((id) => options.find((option) => option.id === id)?.name || id), [options, value]);
+  const optionIds = useMemo(() => new Set(options.map((option) => option.id)), [options]);
+  const effectiveValue = useMemo(() => value.filter((id) => optionIds.has(id)), [optionIds, value]);
+  const selectedNames = useMemo(() => effectiveValue.map((id) => {
+    const option = options.find((entry) => entry.id === id);
+    return option?.displayName || option?.name || id;
+  }), [effectiveValue, options]);
   const summary = selectedNames.length ? selectedNames.join(", ") : placeholder;
   const limit = Number(maxSelected) > 0 ? Number(maxSelected) : options.length;
-  const atLimit = value.length >= limit;
+  const atLimit = effectiveValue.length >= limit;
+
+  useEffect(() => {
+    if (effectiveValue.length === value.length) return;
+    onChange(effectiveValue);
+  }, [effectiveValue, onChange, value.length]);
 
   const updateMenuPosition = useCallback(() => {
     const root = rootRef.current;
@@ -76,12 +87,12 @@ export function AugmentDropdown({
   }, [open, updateMenuPosition]);
 
   function toggle(id: string) {
-    if (value.includes(id)) {
-      onChange(value.filter((item) => item !== id));
+    if (effectiveValue.includes(id)) {
+      onChange(effectiveValue.filter((item) => item !== id));
       return;
     }
     if (atLimit) return;
-    onChange([...value, id].slice(0, limit));
+    onChange([...effectiveValue, id].slice(0, limit));
   }
 
   return (
@@ -93,17 +104,24 @@ export function AugmentDropdown({
       {open && (
         <div className="augment-dropdown-menu" style={menuStyle}>
           <div className="augment-dropdown-header">
-            <span>{value.length}/{limit} selected</span>
-            {value.length > 0 && <button type="button" onClick={() => onChange([])} aria-label="Clear augments"><X size={14} /></button>}
+            <span>{effectiveValue.length}/{limit} selected</span>
+            {effectiveValue.length > 0 && <button type="button" onClick={() => onChange([])} aria-label="Clear augments"><X size={14} /></button>}
           </div>
           <div className="augment-dropdown-options">
             {options.map((option) => {
-              const checked = value.includes(option.id);
+              const checked = effectiveValue.includes(option.id);
               const disabled = !checked && atLimit;
               return (
                 <label className={`augment-dropdown-option ${disabled ? "disabled" : ""}`} key={option.id}>
                   <input type="checkbox" checked={checked} disabled={disabled} onChange={() => toggle(option.id)} />
-                  <span>{option.name}</span>
+                  <span className="augment-dropdown-option-content">
+                    <span className="augment-dropdown-option-name">{option.name}</span>
+                    {option.effects?.length ? (
+                      <span className="augment-dropdown-effects">
+                        {option.effects.map((effect) => <span className={`augment-dropdown-effect ${effect.tone}`} key={`${option.id}-${effect.text}`}>{effect.text}</span>)}
+                      </span>
+                    ) : null}
+                  </span>
                 </label>
               );
             })}

@@ -13,6 +13,7 @@ import {
   ItemGradeSelect,
   PackageItemPreview,
   catalogItemId,
+  catalogItemMinimumGrade,
   catalogItemName,
   grantItemDurability,
   itemGrade,
@@ -21,6 +22,7 @@ import {
   type CatalogItem
 } from "../../components/common/ItemCatalog";
 import { formatUiSentence } from "../../lib/display";
+import { augmentLimitForItem, filterAugmentsForItem, formatAugmentOptions } from "../../lib/augmentEligibility";
 import { titleCaseWords } from "../players/playerAdminUtils";
 
 type HomeTaskResult = { status: "running" | "succeeded" | "failed" | "stopped"; title: string; message?: string; details?: string };
@@ -34,8 +36,17 @@ function formatResultMessage(value: unknown) {
   return formatUiSentence(value, false);
 }
 
-function carePkgAugmentLimit(itemName: string) {
-  return /chest|armor|guard|garment/i.test(itemName) ? 2 : 3;
+function carePkgAugmentLimit(itemName: string, itemId = "", category = "") {
+  return augmentLimitForItem({ name: itemName, itemId, category });
+}
+
+function carePkgEffectiveGrade(value: unknown, item?: { itemId?: string; id?: string; source?: string; category?: string }) {
+  return Math.max(catalogItemMinimumGrade(item), normalizeItemGrade(value));
+}
+
+function carePkgAugmentGrade(value: unknown) {
+  const grade = normalizeItemGrade(value);
+  return Math.max(1, Math.min(5, grade || 1));
 }
 
 export function CarePackagePanel({ onError, confirmAction }: { onError: (text: string) => void; confirmAction: ConfirmAction }) {
@@ -55,9 +66,9 @@ export function CarePackagePanel({ onError, confirmAction }: { onError: (text: s
   });
   const [itemsText, setItemsText] = useState("");
   const [selectedPackageItem, setSelectedPackageItem] = useState<CatalogItem | null>(null);
-  const [packageDraft, setPackageDraft] = useState({ itemName: "", itemId: "", quantity: "1", grade: "0", augments: [] as string[] });
+  const [packageDraft, setPackageDraft] = useState({ itemName: "", itemId: "", quantity: "1", grade: "0", augments: [] as string[], augmentGrade: "1" });
   const [editingPackageIndex, setEditingPackageIndex] = useState<number | null>(null);
-  const [packageEditDraft, setPackageEditDraft] = useState({ quantity: "1", grade: "0", augments: [] as string[] });
+  const [packageEditDraft, setPackageEditDraft] = useState({ quantity: "1", grade: "0", augments: [] as string[], augmentGrade: "1" });
   const [augmentCatalog, setAugmentCatalog] = useState<{ id: string; name: string }[]>([]);
   const [players, setPlayers] = useState<Record<string, unknown>[]>([]);
   const [selectedPlayer, setSelectedPlayer] = useState("");
@@ -88,34 +99,7 @@ export function CarePackagePanel({ onError, confirmAction }: { onError: (text: s
     }).catch(() => setAugmentCatalog([]));
   }, []);
   function carePkgFilterAugments(itemName: string, itemId: string, itemCategory: string, all: { id: string; name: string }[]) {
-    const name = (itemId + " " + itemName).toLowerCase();
-    const cat = (itemCategory || "").toLowerCase();
-    if (cat === "schematics" || /_schematic$/i.test(name)) return [];
-    const isArmor = /chest|armor|guard|garment|helmet|boots|gloves|suit/i.test(name) || cat === "clothing";
-    const isMelee = /melee|sword|blade|knife|fremen/i.test(name);
-    const isWeapon = cat === "weapons" || isMelee || /lasgun|spitdart|jabal|disruptor|smg|karpov|rifle|drillshot|shotgun|grda|scattergun|vulcan|lmg|pyrocket|fireball|flamethrower|rocket|missile|pistol|snubnose|rafiq|maula/i.test(name);
-    if (all.length === 0 || (!isArmor && !isWeapon)) return [];
-    const rangedGeneric = new Set(["Damage","Acuracy","Shielddamage","Range","Recoil","ReloadSpeed","Rateoffire","Magazinecapacity","Headshotdamage"]); const commonGeneric = new Set(["DeathDurability","Ch5"]);
-    const wp = (id: string) => { const m = id.match(/^T6_Augment_(.+?)\d+$/); return m ? m[1] : ""; };
-    const weaponMap: [RegExp, Set<string>][] = [
-      [/lasgun/i, new Set(["Lasgun"])], [/spitdart|jabal/i, new Set(["Spitdartrifle","SpitdartRifle"])],
-      [/disruptor| smg/i, new Set(["smg","Smg"])], [/karpov|battle.?rifle/i, new Set(["BR"])],
-      [/drillshot|shotgun/i, new Set(["Shotgun"])], [/grda|scattergun/i, new Set(["Scattergun"])],
-      [/vulcan|lmg/i, new Set(["Lmg"])], [/pyrocket|fireball/i, new Set(["Fireballer"])],
-      [/flamethrower/i, new Set(["Flamethrower"])], [/rocket|missile/i, new Set(["RocketLauncher"])],
-      [/maula|pistol|snubnose|rafiq/i, new Set(["HeavyPistol","MaulaPistol"])],
-    ];
-    return all.filter((aug) => {
-      const p = wp(aug.id);
-      if (isArmor) return /^Armor/i.test(p);
-      if (isMelee) return p === "Melee" || commonGeneric.has(p);
-      if (isWeapon) {
-        if (rangedGeneric.has(p) || commonGeneric.has(p)) return true;
-        for (const [rx, set] of weaponMap) { if (rx.test(name) && set.has(p)) return true; }
-        return false;
-      }
-      return false;
-    });
+    return filterAugmentsForItem({ itemId, name: itemName, category: itemCategory }, all);
   }
   async function run(action: () => Promise<unknown>) {
     onError("");
@@ -171,10 +155,10 @@ export function CarePackagePanel({ onError, confirmAction }: { onError: (text: s
       allowRepeatGrants: false,
       grantWhen: source.grantWhen,
       items: source.kits.length === 0 ? [] : sourceActiveKit.items?.length ? sourceActiveKit.items : itemsText.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).map((line) => {
-        const [nameOrId, qty = "1", gradeValue = "0", augsPart] = line.split(",").map((part) => part.trim());
+        const [nameOrId, qty = "1", gradeValue = "0", augsPart, augmentGradePart = "1"] = line.split(",").map((part) => part.trim());
         const item = /^[A-Za-z0-9_./:-]{16,}$/.test(nameOrId) ? { itemId: nameOrId } : { itemName: nameOrId };
         const augments = augsPart ? augsPart.split("|").map((id) => id.trim()).filter(Boolean).slice(0, 20) : [];
-        return { ...item, quantity: Number(qty), quality: normalizeItemGrade(gradeValue), durability: grantItemDurability(), augments: augments.length > 0 ? augments : undefined };
+        return { ...item, quantity: Number(qty), quality: carePkgEffectiveGrade(gradeValue, item), durability: grantItemDurability(), augments: augments.length > 0 ? augments : undefined, augmentQuality: augments.length > 0 ? carePkgAugmentGrade(augmentGradePart) : undefined };
       }),
       xp: sourceActiveKit.xp,
       kits: source.kits
@@ -231,7 +215,7 @@ export function CarePackagePanel({ onError, confirmAction }: { onError: (text: s
       setCarePackageTab("configure");
       setEditingPackageIndex(null);
       setSelectedPackageItem(null);
-      setPackageDraft({ itemName: "", itemId: "", quantity: "1", grade: "0", augments: [] });
+      setPackageDraft({ itemName: "", itemId: "", quantity: "1", grade: "0", augments: [], augmentGrade: "1" });
     });
   }
   async function deleteActiveKit() {
@@ -334,30 +318,30 @@ export function CarePackagePanel({ onError, confirmAction }: { onError: (text: s
   }
   function choosePackageItem(item: CatalogItem | null) {
     setSelectedPackageItem(item);
-    setPackageDraft({ ...packageDraft, itemName: item?.name || "", itemId: item?.id || "", augments: [] });
+    setPackageDraft({ ...packageDraft, itemName: item?.name || "", itemId: item?.id || "", augments: [], augmentGrade: "1" });
   }
   function addPackageItem() {
     const item = packageDraft.itemId ? { itemId: packageDraft.itemId, itemName: packageDraft.itemName, image: selectedPackageItem?.image } : { itemName: packageDraft.itemName, image: selectedPackageItem?.image };
     if (!packageDraft.itemName && !packageDraft.itemId) return;
     const allowedAugmentIds = new Set(carePkgFilterAugments(packageDraft.itemName, packageDraft.itemId, selectedPackageItem?.category || "", augmentCatalog).map((augment) => augment.id));
     const augments = packageDraft.augments.filter((augmentId) => allowedAugmentIds.has(augmentId));
-    const nextItems = [...(activeKit.items || []), { ...item, quantity: Number(packageDraft.quantity), quality: normalizeItemGrade(packageDraft.grade), durability: grantItemDurability(), augments: augments.length > 0 ? augments : undefined }];
+    const nextItems = [...(activeKit.items || []), { ...item, quantity: Number(packageDraft.quantity), quality: carePkgEffectiveGrade(packageDraft.grade, item), durability: grantItemDurability(), augments: augments.length > 0 ? augments : undefined, augmentQuality: augments.length > 0 ? carePkgAugmentGrade(packageDraft.augmentGrade) : undefined }];
     updateActiveKit({ items: nextItems });
     setItemsText(nextItems.map(packageItemTextLine).join("\n"));
-    setPackageDraft({ ...packageDraft, augments: [] });
+    setPackageDraft({ ...packageDraft, augments: [], augmentGrade: "1" });
   }
   function editPackageItem(index: number) {
     const item = activeKit.items?.[index];
     if (!item) return;
     setEditingPackageIndex(index);
-    setPackageEditDraft({ quantity: String(item.quantity ?? 1), grade: String(itemGrade(item)), augments: item.augments ? [...item.augments] : [] });
+    setPackageEditDraft({ quantity: String(item.quantity ?? 1), grade: String(itemGrade(item)), augments: item.augments ? [...item.augments] : [], augmentGrade: String(item.augmentQuality ?? 1) });
   }
   function savePackageItemEdit(index: number) {
     const nextItems = (activeKit.items || []).map((item, itemIndex) => {
       if (itemIndex !== index) return item;
       const allowedAugmentIds = new Set(carePkgFilterAugments(item.itemName || "", item.itemId || "", "", augmentCatalog).map((augment) => augment.id));
       const augments = packageEditDraft.augments.filter((augmentId) => allowedAugmentIds.has(augmentId));
-      return { ...item, quantity: Number(packageEditDraft.quantity), quality: normalizeItemGrade(packageEditDraft.grade), durability: grantItemDurability(), augments: augments.length > 0 ? augments : undefined };
+      return { ...item, quantity: Number(packageEditDraft.quantity), quality: carePkgEffectiveGrade(packageEditDraft.grade, item), durability: grantItemDurability(), augments: augments.length > 0 ? augments : undefined, augmentQuality: augments.length > 0 ? carePkgAugmentGrade(packageEditDraft.augmentGrade) : undefined };
     });
     updateActiveKit({ items: nextItems });
     setItemsText(nextItems.map(packageItemTextLine).join("\n"));
@@ -411,26 +395,26 @@ export function CarePackagePanel({ onError, confirmAction }: { onError: (text: s
             <ItemCatalogSelector selected={selectedPackageItem} onSelect={choosePackageItem} />
             <div className="playerAdmin_itemInputLine package-item-input-line">
               <label className="playerAdmin_itemNumberField">Quantity<input className="package-item-quantity-input" type="number" min="1" value={packageDraft.quantity} onChange={(event) => setPackageDraft({ ...packageDraft, quantity: event.target.value })} /></label>
-              <label className="playerAdmin_itemNumberField">Grade<ItemGradeSelect value={packageDraft.grade} onChange={(grade) => setPackageDraft({ ...packageDraft, grade })} /></label>
+              <label className="playerAdmin_itemNumberField">Grade<ItemGradeSelect value={packageDraft.grade} minGrade={catalogItemMinimumGrade(selectedPackageItem)} onChange={(grade) => setPackageDraft({ ...packageDraft, grade })} /></label>
               {(() => {
                 const filteredAugs = carePkgFilterAugments(packageDraft.itemName, packageDraft.itemId, selectedPackageItem?.category || "", augmentCatalog);
-                return filteredAugs.length === 0 ? null : <div className="playerAdmin_itemNumberField"><span>Augments</span><AugmentDropdown options={filteredAugs} value={packageDraft.augments} maxSelected={carePkgAugmentLimit(packageDraft.itemName)} onChange={(selected) => setPackageDraft({ ...packageDraft, augments: selected.slice(0, carePkgAugmentLimit(packageDraft.itemName)) })} /></div>;
+                return filteredAugs.length === 0 ? null : <><div className="playerAdmin_itemNumberField"><span>Augments</span><AugmentDropdown options={formatAugmentOptions(filteredAugs, packageDraft.augmentGrade)} value={packageDraft.augments} maxSelected={carePkgAugmentLimit(packageDraft.itemName, packageDraft.itemId, selectedPackageItem?.category)} onChange={(selected) => setPackageDraft({ ...packageDraft, augments: selected.slice(0, carePkgAugmentLimit(packageDraft.itemName, packageDraft.itemId, selectedPackageItem?.category)) })} /></div><label className="playerAdmin_itemNumberField">Aug. Grade<ItemGradeSelect value={packageDraft.augmentGrade} minGrade={1} disabled={packageDraft.augments.length === 0} emptyWhenDisabled onChange={(augmentGrade) => setPackageDraft({ ...packageDraft, augmentGrade })} /></label></>;
               })()}
               <button className="package-add-item-button" disabled={!selectedPackageItem} onClick={addPackageItem}>Add Item</button>
             </div>
-            <p className="action-help-note">Normal Grade 0 items are instant for online players. Schematics, augments, and Grades 1-5 are saved to the player inventory and may require a relog before they appear correctly.</p>
+            <p className="action-help-note">Grade 0 items with no augments can be granted while the player is online. Item Grades 1-5 or Augment Grades 1-5 require the player to be offline.</p>
           </div></div>}
         </div>
-        {activeKit.items?.length ? <div className="table-wrap package-items-table"><table><thead><tr><th>Preview</th><th>Item Name</th><th>Item ID</th><th>Quantity</th><th>Grade</th><th>Augments</th><th>Actions</th></tr></thead><tbody>{activeKit.items.map((item, index) => {
+        {activeKit.items?.length ? <div className="table-wrap package-items-table"><table><thead><tr><th>Preview</th><th>Item Name</th><th>Item ID</th><th>Quantity</th><th>Grade</th><th>Augments</th><th>Aug. Grade</th><th>Actions</th></tr></thead><tbody>{activeKit.items.map((item, index) => {
           const editing = editingPackageIndex === index;
-          return <tr key={`${item.itemName || item.itemId}-${index}`}><td><PackageItemPreview item={item} /></td><td>{catalogItemName(item)}</td><td>{catalogItemId(item)}</td><td>{editing ? <input className="package-item-quantity-input" type="number" min="1" value={packageEditDraft.quantity} onChange={(event) => setPackageEditDraft({ ...packageEditDraft, quantity: event.target.value })} /> : item.quantity}</td><td>{editing ? <ItemGradeSelect value={packageEditDraft.grade} onChange={(grade) => setPackageEditDraft({ ...packageEditDraft, grade })} /> : itemGrade(item)}</td><td className={editing ? "package-augment-edit-cell" : ""} style={{ fontSize: "11px" }}>{editing ? (() => { const filteredAugs = carePkgFilterAugments(item.itemName || "", item.itemId || "", "", augmentCatalog); const itemName = item.itemName || item.itemId || ""; return filteredAugs.length === 0 ? <span>No matching augments</span> : <AugmentDropdown options={filteredAugs} value={packageEditDraft.augments} maxSelected={carePkgAugmentLimit(itemName)} onChange={(selected) => setPackageEditDraft({ ...packageEditDraft, augments: selected.slice(0, carePkgAugmentLimit(itemName)) })} />; })() : <span className="package-augment-summary">{(item.augments && item.augments.length > 0) ? item.augments.map((augId: string) => { const found = augmentCatalog.find((a) => a.id === augId); return found ? found.name : augId; }).join(", ") : "—"}</span>}</td><td className="package-actions-cell"><div className="service-actions">{editing ? <><button onClick={() => savePackageItemEdit(index)}>Save</button><button onClick={() => setEditingPackageIndex(null)}>Cancel</button></> : <button onClick={() => editPackageItem(index)}>Edit</button>}<button className="danger" onClick={() => {
+          return <tr key={`${item.itemName || item.itemId}-${index}`}><td><PackageItemPreview item={item} /></td><td>{catalogItemName(item)}</td><td>{catalogItemId(item)}</td><td>{editing ? <input className="package-item-quantity-input" type="number" min="1" value={packageEditDraft.quantity} onChange={(event) => setPackageEditDraft({ ...packageEditDraft, quantity: event.target.value })} /> : item.quantity}</td><td>{editing ? <ItemGradeSelect value={packageEditDraft.grade} minGrade={catalogItemMinimumGrade(item)} onChange={(grade) => setPackageEditDraft({ ...packageEditDraft, grade })} /> : itemGrade(item)}</td><td className={editing ? "package-augment-edit-cell" : ""} style={{ fontSize: "11px" }}>{editing ? (() => { const filteredAugs = carePkgFilterAugments(item.itemName || "", item.itemId || "", item.category || "", augmentCatalog); const itemName = item.itemName || item.itemId || ""; return filteredAugs.length === 0 ? <span>No matching augments</span> : <AugmentDropdown options={formatAugmentOptions(filteredAugs, packageEditDraft.augmentGrade)} value={packageEditDraft.augments} maxSelected={carePkgAugmentLimit(itemName, item.itemId || "", item.category || "")} onChange={(selected) => setPackageEditDraft({ ...packageEditDraft, augments: selected.slice(0, carePkgAugmentLimit(itemName, item.itemId || "", item.category || "")) })} />; })() : <span className="package-augment-summary">{(item.augments && item.augments.length > 0) ? item.augments.map((augId: string) => { const found = augmentCatalog.find((a) => a.id === augId); return found ? found.name : augId; }).join(", ") : "—"}</span>}</td><td>{item.augments?.length || editing ? (editing ? <ItemGradeSelect value={packageEditDraft.augmentGrade} minGrade={1} disabled={packageEditDraft.augments.length === 0} emptyWhenDisabled onChange={(augmentGrade) => setPackageEditDraft({ ...packageEditDraft, augmentGrade })} /> : (item.augmentQuality ?? 1)) : "—"}</td><td className="package-actions-cell"><div className="service-actions">{editing ? <><button onClick={() => savePackageItemEdit(index)}>Save</button><button onClick={() => setEditingPackageIndex(null)}>Cancel</button></> : <button onClick={() => editPackageItem(index)}>Edit</button>}<button className="danger" onClick={() => {
           const nextItems = activeKit.items.filter((_, itemIndex) => itemIndex !== index);
           updateActiveKit({ items: nextItems });
           setItemsText(nextItems.map(packageItemTextLine).join("\n"));
           if (editingPackageIndex === index) setEditingPackageIndex(null);
         }}>Remove</button></div></td></tr>;
         })}</tbody></table></div> : null}
-        <details className="technical-details"><summary>Developer raw package item textarea</summary><p>One item per line: item name or raw item ID, quantity, grade, augment IDs separated by |. Normal Grade 0 items can grant instantly; schematics and augments are saved through the database.</p><label>Package Items<textarea value={itemsText} onChange={(event) => setItemsText(event.target.value)} placeholder="Plant Fiber,10,0&#10;cup of water,1,0&#10;UniqueSword_05,1,5,T6_Augment_Melee1|T6_Augment_Melee4" /></label></details>
+        <details className="technical-details"><summary>Developer raw package item textarea</summary><p>One item per line: item name or raw item ID, quantity, item grade, augment IDs separated by |, augment grade. Normal Grade 0 items can grant instantly; schematics and augments are saved through the database.</p><label>Package Items<textarea value={itemsText} onChange={(event) => setItemsText(event.target.value)} placeholder="Plant Fiber,10,0&#10;cup of water,1,0&#10;UniqueSword_05,1,5,T6_Augment_Melee1|T6_Augment_Melee4" /></label></details>
         <div className="action-line">
           <button onClick={() => run(async () => {
             if (!(await confirmAction("These settings will be saved.", {
