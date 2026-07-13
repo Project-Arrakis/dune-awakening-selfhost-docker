@@ -2,12 +2,14 @@
 
 ### Overview
 
-This PR hardens the console and orchestrator containers to run as non-root
-users, following Docker security best practices. The console container runs
-entirely as a non-privileged user. The orchestrator runs as root briefly for
-volume permission repair and Docker socket access, then drops to the `dune` user.
+This PR hardens the console and orchestrator containers to run with reduced
+privileges where the host installation permits it. The console maps its runtime
+UID/GID to the repository owner; this is non-root for normal user-owned installs,
+while intentionally root-owned installs remain UID 0 for compatibility. The
+orchestrator runs as root briefly for volume permission repair and Docker socket
+access, then drops to the `dune` user.
 
-### Files Changed (9 files, +261/-12 lines)
+### Files Changed (10 files, +415/-12 lines)
 
 | File | Change | Purpose |
 |------|--------|---------|
@@ -25,11 +27,19 @@ volume permission repair and Docker socket access, then drops to the `dune` user
 
 ### Design Decisions & Rationale
 
-#### 1. Console runs as `USER dune` — zero root code in entrypoint
+#### 1. Console uses the host repository owner's UID/GID
 
-**What**: Dockerfile creates a `dune` user at build time, sets `USER dune`.
-The entrypoint runs as `dune`, only checks `/repo` writability. No `chown`,
-no `useradd`, no `groupadd` — zero privileged operations.
+**What**: The Dockerfile creates a `dune` user and sets `USER dune` as the image
+default. Compose overrides the runtime UID/GID with the detected owner of the
+host repository. The entrypoint only checks `/repo` writability; it performs no
+`chown`, `useradd`, or `groupadd` operations.
+
+For normal user-owned installs this runs the console as a non-root numeric UID.
+If the installation is intentionally owned and operated by root, the detected
+UID/GID is `0:0` and Compose keeps the console running as root so existing
+installations continue to work. Because the console mounts the Docker socket,
+administrators must treat it as a trusted, root-equivalent management service
+regardless of its process UID.
 
 **Why**: Docker's own best practices state: *"Avoid running applications as
 root. Even if the container is designed to be run as root, consider adding
@@ -58,15 +68,17 @@ a host user called `dune`.
 - [Docker run reference — user](https://docs.docker.com/reference/cli/docker/container/run/#user): "The user can be specified by UID or username"
 - [Linux namespaces man page](https://man7.org/linux/man-pages/man7/user_namespaces.7.html): UID mapping is numeric, not name-based
 
-#### 3. Upgrade path — root-owned volumes gracefully rejected
+#### 3. Upgrade path and repository writability
 
-**What**: Entrypoint checks `/repo` writability via `touch` test. If the host
-directory is owned by root (previous install), the container cannot write
-and exits with a clear error message telling the admin to `chown`.
+**What**: The entrypoint checks `/repo` writability via a `touch` test. If the
+configured runtime UID/GID cannot write to the host directory, the container
+exits with a clear error message telling the administrator how to correct the
+ownership or UID/GID configuration.
 
-**What we DON'T do**: Automatically `chown` root-owned volumes. This would
-mean the container runs as root (even briefly) — defeating the purpose of
-non-root hardening. The admin decides ownership, not the container.
+The console container does not automatically `chown` the repository. The
+installer can migrate repository ownership on the host when moving an existing
+installation to a non-root owner. Intentionally root-owned installations retain
+UID/GID `0:0` and are not rejected solely because they are owned by root.
 
 **Sources**:
 - [CIS Docker Benchmark 5.1](https://www.cisecurity.org/benchmark/docker): "Ensure that, if applicable, an AppArmor or SELinux profile is enabled"
@@ -99,7 +111,7 @@ preserves them via proper shell argument forwarding.
 
 ---
 
-### Test Results (10 scenarios, 10 pass)
+### Test Results (10 scenarios, 11 pass)
 
 ```
 $ bash tests/container-lifecycle-test.sh
@@ -139,7 +151,7 @@ $ bash tests/container-lifecycle-test.sh
   ✓ orchestrator Dockerfile builds
 
 =============================================
-  RESULTS: 10 pass, 0 fail
+  RESULTS: 11 pass, 0 fail
 =============================================
 ```
 
