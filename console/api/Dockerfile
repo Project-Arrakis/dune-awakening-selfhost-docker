@@ -49,9 +49,10 @@ COPY console/api/src ./src
 COPY --from=web-build /app/web/dist /app/web-dist
 COPY console/api/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh \
-    && useradd -u 1000 -m -s /bin/bash dune \
+    && useradd -m -s /bin/bash dune \
     && mkdir -p /repo /app \
-    && chown -R dune:dune /repo /app
+    && chown -R dune:dune /app \
+    && chmod 755 /app /repo
 USER dune
 WORKDIR /repo
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
