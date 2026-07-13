@@ -150,7 +150,7 @@ export function BlueprintsPanel({ onError, confirmAction, dbPlayerId = "", playe
       return;
     }
 
-    const confirmMsg = `Import ${importFiles.length} blueprint(s) for ${playerName || "this player"}? Player must be offline.`;
+    const confirmMsg = `Import ${importFiles.length} blueprint(s) for ${playerName || "this player"}? A relog is required to see the change.`;
     if (!(await confirmAction(confirmMsg, {}))) { setImporting(false); return; }
     let ok = 0;
     let failed: string[] = [];
@@ -209,7 +209,7 @@ export function BlueprintsPanel({ onError, confirmAction, dbPlayerId = "", playe
       </button>
     </div>
     <p className="action-help-note" style={{ marginBottom: 10 }}>
-      {playerName || "Player"} must be offline to import. Blueprints are added as Solido Replicator items to their backpack.
+      Blueprints are added as Solido Replicator items to {playerName || "the player"}'s backpack. A relog is required to see the change.
     </p>
 
     {rows.length > 0 && (
