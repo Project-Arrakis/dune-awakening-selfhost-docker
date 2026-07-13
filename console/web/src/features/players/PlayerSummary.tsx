@@ -27,10 +27,8 @@ export function PlayerSummary({
       ["Map", firstDefined(player.map, player.world, fallback.map)],
       ["Faction", firstDefined(player.faction, fallback.faction)],
       ["Guild", firstDefined(player.guild, fallback.guild)],
-      ["DB actor/player ID", dbPlayerId || "missing"],
-      ["FLS ID", firstDefined(player.fls_id, fallback.fls_id, actionPlayerId) || "missing"],
-      ["Account ID", firstDefined(player.account_id, fallback.account_id)],
-      ["Controller ID", firstDefined(player.player_controller_id, fallback.player_controller_id)]
+      ["DB Player ID", dbPlayerId || "missing"],
+      ["FLS ID", firstDefined(player.fls_id, fallback.fls_id, actionPlayerId) || "missing"]
     ]} />
     {actions}
   </section>;

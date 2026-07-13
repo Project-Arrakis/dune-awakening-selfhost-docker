@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ChevronDown, ChevronUp } from "lucide-react";
+import { Brain, ChevronDown, ChevronUp, Hammer, Map as MapIcon, Microscope, ScrollText, ShieldCheck, UserRound } from "lucide-react";
 import { adminApi } from "../../api/admin";
 import { playersApi } from "../../api/players";
 import type { Task } from "../../api/setup";
@@ -55,9 +55,17 @@ function playerAdmin_effectiveGrade(value: unknown, item?: { itemId?: string; id
 }
 
 export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId, playerName, onError, onRefresh, onClose, confirmAction, waitForTask, formatMutationResult }: { detail: Record<string, unknown> | null; fallback: Record<string, unknown>; dbPlayerId: string; actionPlayerId: string; playerName: string; onError: (text: string) => void; onRefresh: () => void; onClose: () => void; confirmAction: ConfirmAction; waitForTask: (task: Task) => Promise<Task>; formatMutationResult: (result: unknown) => string }) {
-  const playerAdmin_tabs = ["Character", "Crafting", "Research", "Skills", "Journey", "Blueprints", "Admin"];
+  const playerAdmin_tabs = [
+    { label: "Character", icon: UserRound },
+    { label: "Crafting", icon: Hammer },
+    { label: "Research", icon: Microscope },
+    { label: "Skills", icon: Brain },
+    { label: "Journey", icon: MapIcon },
+    { label: "Blueprints", icon: ScrollText },
+    { label: "Admin", icon: ShieldCheck }
+  ];
   const [playerAdmin_activeTab, playerAdmin_setActiveTab] = useState("Character");
-  const [playerAdmin_openToggles, playerAdmin_setOpenToggles] = useState<Record<string, boolean>>({});
+  const [playerAdmin_openToggles, playerAdmin_setOpenToggles] = useState<Record<string, boolean>>({ quick_rewards: true });
   const [playerAdmin_inventoryData, playerAdmin_setInventoryData] = useState<Record<string, unknown> | null>(null);
   const [playerAdmin_inventoryFilter, playerAdmin_setInventoryFilter] = useState("");
   const [playerAdmin_craftingCategory, playerAdmin_setCraftingCategory] = useState("Essentials");
@@ -1113,7 +1121,10 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
     <section className="playerAdmin_container" aria-label="Player admin layout">
       <div className="playerAdmin_header"><p className="playerAdmin_experimentalNotice">Some features in this section are experimental. Please report anything that isn't working correctly or appears out of place.</p><button onClick={onClose}>Close</button></div>
       <PlayerSummary detail={detail} fallback={fallback} dbPlayerId={dbPlayerId} actionPlayerId={actionPlayerId} />
-      <div className="playerAdmin_tabs" role="tablist" aria-label="Player admin tabs">{playerAdmin_tabs.map((playerAdmin_tab) => <button key={playerAdmin_tab} className={playerAdmin_activeTab === playerAdmin_tab ? "active" : ""} onClick={() => playerAdmin_setActiveTab(playerAdmin_tab)}>{playerAdmin_tab}</button>)}</div>
+      <div className="playerAdmin_tabs" role="tablist" aria-label="Player admin tabs">{playerAdmin_tabs.map((playerAdmin_tab) => {
+        const TabIcon = playerAdmin_tab.icon;
+        return <button key={playerAdmin_tab.label} className={playerAdmin_activeTab === playerAdmin_tab.label ? "active" : ""} onClick={() => playerAdmin_setActiveTab(playerAdmin_tab.label)}><TabIcon size={17} aria-hidden="true" /><span>{playerAdmin_tab.label}</span></button>;
+      })}</div>
       {playerAdmin_activeTab === "Character" && <div className="playerAdmin_content">
         {playerAdmin_toggleBox("quick_rewards", "Quick Rewards", <div className="playerAdmin_section playerAdmin_quickRewardsSection">
           <div className="playerAdmin_quickButtonRow">
