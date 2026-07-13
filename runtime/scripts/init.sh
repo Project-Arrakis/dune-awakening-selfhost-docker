@@ -477,6 +477,12 @@ if [ -z "${DOCKER_SOCKET_GID:-}" ] && [ -S /var/run/docker.sock ] && command -v 
   export DOCKER_SOCKET_GID="$(stat -c '%g' /var/run/docker.sock 2>/dev/null || true)"
 fi
 export DOCKER_SOCKET_GID="${DOCKER_SOCKET_GID:-0}"
+if [ -z "${DUNE_HOST_UID:-}" ]; then
+  export DUNE_HOST_UID="$(id -u)"
+fi
+if [ -z "${DUNE_HOST_GID:-}" ]; then
+  export DUNE_HOST_GID="$(id -g)"
+fi
 docker compose up -d --build orchestrator
 
 run_timed_step "Downloading/loading assets and running database setup/update" runtime/scripts/update.sh install
