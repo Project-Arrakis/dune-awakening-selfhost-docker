@@ -9,7 +9,10 @@
 The admin console supports augmenting weapons and armor through two endpoints:
 
 1. **Apply to existing item** — `POST /api/players/:id/augment-item`
-2. **Pre-augmented grant** — `POST /api/players/:id/give-item` with `augments`
+2. **Pre-augmented grant by template ID** — `POST /api/players/:id/give-item-id` with `augments`
+
+The friendly-name route, `POST /api/players/:id/give-item`, also supports
+pre-augmented grants when its body supplies `itemName` instead of `itemId`.
 
 Both write to `dune.items.stats` under `FAugmentedItemStats`. The player must be
 **offline**; the API rejects online players. A relog is required after grant.
@@ -37,7 +40,7 @@ Both flows auto-purchase missing Crafting specialization keystones via
       "AppliedAugmentQualities": [5, 3],
       "AppliedAugmentRollData": [
         { "StatRolls": [1.0], "AppliedEffectIndices": [] },
-        { "StatRolls": [0.85, 0.92], "AppliedEffectIndices": [0] }
+        { "StatRolls": [1.0, 1.0], "AppliedEffectIndices": [0] }
       ]
     }
   ]
@@ -84,22 +87,22 @@ Body: { itemId: 123, augments: ["T6_Augment_Damage1"], augmentQuality: 5 }
 4. Extracts existing augments, deduplicates (internal cap: 20)
 5. `validateAugmentsForTemplate()` — tag-based compatibility
 6. `ensureAugmentSlotKeystones()` — auto-purchases Crafting spec keystones
-7. `loadAugmentRollPayloads()` — inherits roll data from existing items
+7. `loadAugmentRollPayloads()` — determines the payload shape and normalizes rolls to perfect values
 8. `buildAugmentedItemStats()` — generates `FAugmentedItemStats`
 9. Updates `dune.items.stats`, resets `is_new` flag
 
 ### Pre-augmented grant
 
 ```
-POST /api/players/:id/give-item
-Body: { templateId: "AtreLMG5", quality: 5, augments: ["T6_Augment_Lmg1"], augmentQuality: 1 }
+POST /api/players/:id/give-item-id
+Body: { itemId: "AtreLMG5", quality: 5, augments: ["T6_Augment_Lmg1"], augmentQuality: 1 }
 ```
 
 **Flow:**
-1. `itemRequiresDatabaseGrant()` — true when augments present
+1. `grantPlayerItem()` selects the database path when `augments` is non-empty
 2. Creates new item via `giveItemToPlayer()`
 3. `ensureAugmentSlotKeystones()` — auto-purchases Crafting spec keystones
-4. `loadAugmentRollPayloads()` — loads roll data from existing items, falls back to `perfectAugmentRollPayload()`
+4. `loadAugmentRollPayloads()` — determines roll count/effect indices and produces perfect rolls
 5. `buildItemStats()` — generates full stats JSON including `FAugmentedItemStats`
 6. Writes to `dune.items` directly (offline path)
 
@@ -127,14 +130,18 @@ if no data available. Not hardcoded.
 ### `perfectAugmentRollPayload(payload, augmentId)`
 
 Generates `{ StatRolls, AppliedEffectIndices }` with all `StatRolls` set
-to `1.0` (perfect rolls). Used as fallback when no existing roll data found.
+to `1.0` (perfect rolls). It normalizes stored payload candidates and also
+creates fallback payloads when no stored roll data is available.
 
 ### `loadAugmentRollPayloads(tx, augmentIds, qualityOverride, opts)`
 
-Searches existing inventory items for matching augments and inherits their
-`StatRolls`/`AppliedEffectIndices`. Prefers standalone augment items, then
-items with matching source template, then any item with the augment applied.
-Falls back to `perfectAugmentRollPayload()` if nothing found.
+Searches standalone augment items and existing augmented gear for payload
+shape information. Every candidate is passed through
+`perfectAugmentRollPayload()`, which preserves its roll count and
+`AppliedEffectIndices` but replaces all `StatRolls` values with `1.0`.
+Payloads from the same source template receive the highest score, followed by
+payloads with multiple rolls. If no stored payload exists, the
+function creates a perfect payload using the catalog-derived roll count.
 
 ### `ensureAugmentSlotKeystones(tx, player, templateId, augmentIds)`
 
@@ -169,20 +176,23 @@ the `T6_Augment_` prefix:
 ```json
 {
   "augments": {
-    "T6_Augment_Damage1": { "tags": ["RangedWeapons", "MeleeWeapons"] },
-    "T6_Augment_Armor1":  { "tags": ["Clothing"] }
+    "T6_Augment_Damage1": { "tags": ["Items.Holsters.RangedWeapons"] },
+    "T6_Augment_Armor1":  { "tags": ["Items.Clothes.Utility", "Items.Clothes.Stillsuit", "Items.Clothes.ScoutArmor", "Items.Clothes.HeavyArmor"] }
   }
 }
 ```
 
-Item tags inferred via `inferredAugmentItemTags()`:
-- **MeleeWeapons** — knife, sword, axe, mace, hammer, spear, kindjal
-- **RangedWeapons** — pistol, rifle, shotgun, bow, crossbow, sniper
-- **Clothing** — armor, stillsuit, combat gear
+The API does not derive compatibility tags from generic words such as
+`rifle`, `knife`, or `armor`. `inferredAugmentItemTags()` resolves the item's
+catalog metadata name and performs a normalized exact-name lookup in the
+catalog's `methodItems` mapping. Items without a catalog mapping cannot use
+augments through the API. The frontend also checks `itemAliases` when matching
+known template IDs.
 
 Matching: `augmentTagsMatch()` uses `.some()` — ANY matching tag pair is
-sufficient. Augment `tags: ["RangedWeapons"]` matches an item with
-`["RangedWeapons", "MeleeWeapons"]` because at least one tag overlaps.
+sufficient. An augment tagged `Items.Holsters.RangedWeapons` matches an item
+tagged `Items.Holsters.RangedWeapons.Light.SMG` because the item tag starts
+with the augment tag followed by a dot.
 
 ---
 
@@ -190,10 +200,10 @@ sufficient. Augment `tags: ["RangedWeapons"]` matches an item with
 
 | | Apply to existing | Pre-augmented grant |
 |---|-------------------|---------------------|
-| Endpoint | `POST /augment-item` | `POST /give-item` |
+| Endpoint | `POST /augment-item` | `POST /give-item-id` by ID or `POST /give-item` by name |
 | Player state | Offline required | Offline required (DB path) |
 | Keystones | Auto-purchased | Auto-purchased |
-| Roll data | Inherited from inventory | Inherited from inventory, falls back to perfect |
+| Roll data | Stored payload shape normalized to perfect rolls | Stored payload shape normalized to perfect rolls, with a catalog-derived fallback |
 | Item | Existing (must own) | New item created |
 | Stats built via | `buildAugmentedItemStats()` | `buildItemStats()` |
 
@@ -210,8 +220,8 @@ Both flows call `ensureAugmentSlotKeystones()` and `loadAugmentRollPayloads()`.
 | **Weapons** | Up to 3 augments (Crafting keystones 44-49) |
 | **Clothing** | Up to 2 augments (Crafting keystones 42-43) |
 | **Internal cap** | 20 augments per call (`.slice(0, 20)`) |
-| **Ownership** | Item must be in player's directly-owned inventory |
-| **Compatibility** | ANY matching tag (`.some()`) from `augment-compatibility.json` |
+| **Ownership** | An existing item being augmented must be in the player's directly-owned inventory |
+| **Compatibility** | Exact catalog item mapping plus ANY matching tag (`.some()`) from `augment-compatibility.json` |
 | **Roll count** | Dynamic from compatibility catalog, not hardcoded |
 
 ---
