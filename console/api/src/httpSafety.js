@@ -31,6 +31,7 @@ export async function readMultipartForm(req, maxBytes) {
   }
   const body = await readRawBody(req, maxBytes);
   const boundaryBuffer = Buffer.from(`--${boundary}`);
+  const fields = {};
   const files = [];
   let cursor = body.indexOf(boundaryBuffer);
   while (cursor >= 0) {
@@ -48,10 +49,11 @@ export async function readMultipartForm(req, maxBytes) {
       const fieldName = disposition.match(/\bname="([^"]*)"/i)?.[1] || "";
       const fileName = disposition.match(/\bfilename="([^"]*)"/i)?.[1] || "";
       if (fieldName && fileName) files.push({ fieldName, fileName, content: part.slice(headerEnd + 4) });
+      else if (fieldName && !fileName) fields[fieldName] = part.slice(headerEnd + 4).toString("utf8").trim();
     }
     cursor = next;
   }
-  return { files };
+  return { fields, files };
 }
 
 export async function readRawBody(req, maxBytes) {

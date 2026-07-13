@@ -34,7 +34,7 @@ import { liveItemGrantOk, liveItemGrantWarning } from "./grantResults.js";
 import { primeMessageOfTheDayOnlineState, readMessageOfTheDay, restoreMessageOfTheDay, runMessageOfTheDayScan, saveMessageOfTheDay } from "./services/messageOfTheDay.js";
 import { primePlayerAnnouncementOnlineState, readPlayerAnnouncements, restorePlayerAnnouncements, runPlayerAnnouncementScan, savePlayerAnnouncements } from "./services/playerAnnouncements.js";
 import { persistSpicefieldOverride } from "./services/spicefieldOverrides.js";
-import { exportBlueprint, importBlueprint, listBlueprints } from "./blueprints.js";
+import { exportBlueprint, importBlueprint, listBlueprints, deleteBlueprint } from "./blueprints.js";
 
 const config = loadConfig();
 const auth = createAuth(config);
@@ -471,6 +471,7 @@ async function handleApi(req, res) {
   if (path === "/api/blueprints" && req.method === "GET") return dbJson(res, () => listBlueprints(db));
   if (path.match(/^\/api\/blueprints\/([^/]+)\/export$/) && req.method === "GET") return blueprintExportRoute(req, res, path);
   if (path === "/api/blueprints/import" && req.method === "POST") return blueprintImportRoute(req, res);
+  if (path.match(/^\/api\/blueprints\/([^/]+)$/) && req.method === "DELETE") return blueprintsDeleteRoute(req, res, path);
   if (path === "/api/care-package/capabilities") return json(res, 200, carePackageCapabilities());
   if (path === "/api/care-package/config" && req.method === "POST") return carePackageConfigRoute(req, res);
   if (path === "/api/care-package/config") return json(res, 200, carePackageConfig(config));
@@ -1643,9 +1644,9 @@ async function blueprintImportRoute(req, res) {
     const playerIdStr = String(fields.player_id || "");
     const playerPawnId = Number(playerIdStr);
     if (!Number.isFinite(playerPawnId) || playerPawnId < 1) return json(res, 400, { error: "Invalid player_id" });
-    const fileEntry = Array.isArray(files.file) ? files.file[0] : files.file;
+    const fileEntry = Array.isArray(files) ? files.find((f) => f.fieldName === "file" && f.fileName) : files;
     if (!fileEntry) return json(res, 400, { error: "Blueprint file required" });
-    const fileContent = typeof fileEntry === "string" ? fileEntry : fileEntry.toString("utf-8");
+    const fileContent = typeof fileEntry.content !== "undefined" ? fileEntry.content : (typeof fileEntry === "string" ? fileEntry : fileEntry.toString("utf-8"));
     let blueprintFile;
     try {
       blueprintFile = JSON.parse(fileContent);
@@ -1658,7 +1659,7 @@ async function blueprintImportRoute(req, res) {
     if (!hasInstances && !hasPlaceables && !hasPentashields) {
       return json(res, 400, { error: "Blueprint has no instances, placeables, or pentashields" });
     }
-    const result = await importBlueprint(db, playerPawnId, blueprintFile);
+    const result = await importBlueprint(db, playerPawnId, blueprintFile, fileEntry.fileName || "");
     audit(config, req, "blueprints.import", { playerPawnId, result });
     return json(res, 200, result);
   } catch (error) {
@@ -1669,6 +1670,20 @@ async function blueprintImportRoute(req, res) {
 
 function sanitizeBlueprintFilename(s) {
   return String(s).replace(/[\x00-\x1f\x7f<>:"/\\|?*]/g, "_").trim() || "blueprint";
+}
+
+async function blueprintsDeleteRoute(req, res, path) {
+  const match = path.match(/^\/api\/blueprints\/([^/]+)$/);
+  const id = Number(match[1]);
+  if (!Number.isFinite(id) || id < 1) return json(res, 400, { ok: false, error: "Invalid blueprint ID" });
+  try {
+    const result = await deleteBlueprint(db, id);
+    audit(config, req, "blueprints.delete", { blueprintId: id, result });
+    return json(res, result.ok ? 200 : 404, result);
+  } catch (error) {
+    if (error.unsupported) return json(res, 501, { supported: false, error: redact(error.message || error) });
+    return json(res, 500, { ok: false, error: redact(error.message || error) });
+  }
 }
 
 async function directDbMutation(req, res, action, phrase, fn, meta = {}) {
@@ -1748,7 +1763,7 @@ async function grantPlayerItem(playerId, item, target) {
   const hasExplicitGrade = item.quality !== undefined || item.grade !== undefined;
   const selectedGrade = hasExplicitGrade ? validateGrantGrade(item.quality ?? item.grade) : undefined;
   const selectedAugmentGrade = item.augmentQuality === undefined ? 1 : validateAugmentGrantGrade(item.augmentQuality);
-  const usesDatabaseGrant = (selectedGrade !== undefined && selectedGrade > 0) || itemRequiresDatabaseGrant(resolved) || (item.augments && item.augments.length > 0);
+  const usesDatabaseGrant = !target.online || (selectedGrade !== undefined && selectedGrade > 0) || itemRequiresDatabaseGrant(resolved) || (item.augments && item.augments.length > 0);
   const databaseGrade = hasExplicitGrade ? selectedGrade : 0;
   const payload = {
     playerId: target.actionId || playerId,
