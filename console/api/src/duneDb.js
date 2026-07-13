@@ -1555,6 +1555,17 @@ export async function playerProfile(db, id) {
 
 export async function playerInventory(db, id) {
   if (!(await tableExists(db, "items")) || !(await tableExists(db, "inventories"))) return unsupported("inventory", ["dune.items", "dune.inventories"]);
+
+  const inv = await db.query(`
+    select id, max_item_count, max_item_volume
+    from dune.inventories
+    where actor_id = $1 and inventory_type = 0
+    order by id limit 1`, [intParam(id, "player id", 1)]);
+
+  const invId = inv.rows[0]?.id;
+  const maxSlots = Number(inv.rows[0]?.max_item_count) || 40;
+  const maxVolume = Number(inv.rows[0]?.max_item_volume) || 225;
+
   const result = await db.query(`
     select i.id,
            i.template_id,
@@ -1570,8 +1581,8 @@ export async function playerInventory(db, id) {
            ) as max_durability,
            i.stats
     from dune.items i
-    join dune.inventories inv on i.inventory_id = inv.id
-    where inv.actor_id = $1
+    join dune.inventories inv2 on i.inventory_id = inv2.id
+    where inv2.actor_id = $1 and inv2.inventory_type = 0
     order by i.template_id`, [intParam(id, "player id", 1)]);
   const itemMetadata = adminItemMetadata();
   const rows = result.rows.map(({ stats, ...row }) => {
@@ -1583,7 +1594,7 @@ export async function playerInventory(db, id) {
       augments: extractAugmentIdsFromStats(stats)
     };
   });
-  return { capabilities: { inventory: true }, rows };
+  return { capabilities: { inventory: true }, maxSlots, maxVolume, rows };
 }
 
 export async function playerCurrency(db, id) {

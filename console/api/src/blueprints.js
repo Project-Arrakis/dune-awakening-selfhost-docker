@@ -50,7 +50,7 @@ function isStructuralBuilding(buildingType) {
 
 function blueprintItemStatsJSON(blueprintId, name) {
   const nameJson = name ? `,"BuildingBlueprintName":${JSON.stringify(name)}` : "";
-  return `{"FCustomizationStats":[[],{}],"FBuildingBlueprintItemStats":[[],{"PlayerBlueprintId":"!!bbp#${blueprintId}"${nameJson}}],"FItemStackAndDurabilityStats":[[],{"DecayedMaxDurability":0.0}]}`;
+  return `{"FCustomizationStats":[[],{}],"FBuildingBlueprintItemStats":[[],{"PlayerBlueprintId":"!!bbp#${blueprintId}"${nameJson},"PlayerBaseBackupId":{}}],"FItemStackAndDurabilityStats":[[],{"DecayedMaxDurability":0.0}]}`;
 }
 
 export async function blueprintCapabilities(db) {
@@ -84,8 +84,9 @@ async function ensureOfflinePlayer(db, playerPawnId) {
     limit 1`, [playerPawnId]);
   if (!row.rows[0]) throw new Error(`Player pawn ${playerPawnId} not found`);
   if (String(row.rows[0].status).toLowerCase() === "online") {
-    throw new Error("Blueprint import requires the player to be offline so live state cannot overwrite the DB change");
+    return { online: true, warning: "Player is online — a relog is required to see the imported blueprint." };
   }
+  return { online: false, warning: "" };
 }
 
 function resolveImportInstance(inst) {
@@ -146,13 +147,17 @@ async function insertBuildingPentashields(tx, blueprintId, pentashields) {
   }
 }
 
-export async function importBlueprint(db, playerPawnId, blueprintFile) {
+export async function importBlueprint(db, playerPawnId, blueprintFile, fallbackName = "") {
   const capable = await blueprintCapabilities(db);
   requireBlueprintCapability(capable);
 
-  await ensureOfflinePlayer(db, playerPawnId);
+  const { online, warning } = await ensureOfflinePlayer(db, playerPawnId);
 
   const bf = blueprintFile;
+  const bfName = fallbackName.replace(/\.json$/i, "").replace(/[_\.]/g, " ").trim().replace(/\s+/g, " ") || null;
+  const rawName = bf.name || bf.Name || bf.blueprint_name || bfName || (bf.instances && bf.instances[0]?.building_type) || "Imported Blueprint";
+  let blueprintName = String(rawName).replace(/[_\.\\]/g, " ").trim().replace(/\s+/g, " ");
+
   if (!Array.isArray(bf.instances) && !Array.isArray(bf.placeables) && !Array.isArray(bf.pentashields)) {
     throw new Error("Blueprint must be an object with instances, placeables, or pentashields array");
   }
@@ -164,14 +169,41 @@ export async function importBlueprint(db, playerPawnId, blueprintFile) {
   }
 
   return db.transaction(async (tx) => {
+    const baseName = blueprintName.replace(/\s*\(\d+\)\s*$/, " ").trim();
+    let candidate = baseName;
+    let dedupeIdx = 1;
+    while (true) {
+      const existing = await tx.query(
+        `select 1 from dune.items i
+         join dune.building_blueprints bb on bb.item_id = i.id
+         where bb.player_id = $1
+           and i.stats->'FBuildingBlueprintItemStats'->1->>'BuildingBlueprintName' = $2
+         limit 1`,
+        [playerPawnId, candidate]
+      );
+      if (!existing.rows[0]) break;
+      dedupeIdx++;
+      candidate = `${baseName} (${dedupeIdx})`;
+    }
+    blueprintName = candidate;
+
     const invRow = await tx.query(`
-      select id from dune.inventories
+      select id, max_item_count, max_item_volume from dune.inventories
       where actor_id = $1 and inventory_type = 0
       order by id limit 1
       for update`, [playerPawnId]);
     if (!invRow.rows[0]) throw new Error(`Inventory not found for player pawn ${playerPawnId}`);
 
     const invId = invRow.rows[0].id;
+    const maxSlots = Number(invRow.rows[0].max_item_count) || 40;
+
+    const usageRow = await tx.query(`
+      select count(*)::int as cnt from dune.items where inventory_id = $1`, [invId]);
+    const usedSlots = usageRow.rows[0]?.cnt ?? 0;
+
+    if (usedSlots >= maxSlots) {
+      throw new Error(`Inventory full (${usedSlots}/${maxSlots} slots). Cannot import blueprint.`);
+    }
 
     const posRow = await tx.query(`
       select coalesce(max(position_index), -1) + 1 as next_pos
@@ -183,18 +215,18 @@ export async function importBlueprint(db, playerPawnId, blueprintFile) {
         (inventory_id, stack_size, position_index, template_id, quality_level, stats)
       values ($1, 1, $2, 'BuildingBlueprint_CopyDevice', 0, $3::jsonb)
       returning id`,
-      [invId, nextPos, blueprintItemStatsJSON(0, bf.name)]
+      [invId, nextPos, blueprintItemStatsJSON(0, blueprintName)]
     );
     const itemId = itemRow.rows[0].id;
 
     const bpRow = await tx.query(`
       insert into dune.building_blueprints (item_id, player_id, building_blueprint_map)
-      values ($1, null, '')
-      returning id`, [itemId]);
+      values ($1, $2, '')
+      returning id`, [itemId, playerPawnId]);
     const blueprintId = bpRow.rows[0].id;
 
     await tx.query("update dune.items set stats = $1::jsonb where id = $2",
-      [blueprintItemStatsJSON(blueprintId, bf.name), itemId]);
+      [blueprintItemStatsJSON(blueprintId, blueprintName), itemId]);
 
     if (bf.instances && bf.instances.length > 0) {
       await insertBuildingInstances(tx, blueprintId, bf.instances);
@@ -208,7 +240,10 @@ export async function importBlueprint(db, playerPawnId, blueprintFile) {
 
     return {
       ok: true,
-      message: `Imported ${bf.instances?.length || 0} pieces + ${bf.placeables?.length || 0} placeables + ${bf.pentashields?.length || 0} pentashields -> blueprint #${blueprintId} (item ${itemId}) in player inventory`,
+      online,
+      warning: online ? warning : undefined,
+      message: `Imported ${bf.instances?.length || 0} pieces + ${bf.placeables?.length || 0} placeables + ${bf.pentashields?.length || 0} pentashields -> ${blueprintName} (#${blueprintId}, item ${itemId}) in player inventory${online ? " " + warning : ""}`,
+      blueprintName,
       blueprintId,
       itemId,
       pieces: bf.instances?.length || 0,
@@ -296,6 +331,7 @@ export async function listBlueprints(db) {
 
   const rows = await db.query(`
     select bb.id,
+           coalesce(bb.player_id::text, '') as owner_id,
            coalesce(ps.character_name, '') as owner_name,
            coalesce(bb.item_id, 0) as item_id,
            coalesce(inst.cnt, 0) as pieces,
@@ -314,4 +350,27 @@ export async function listBlueprints(db) {
     left join dune.player_state ps on ps.player_pawn_id = bb.player_id
     order by bb.id desc`, []);
   return rows.rows;
+}
+
+export async function deleteBlueprint(db, blueprintId) {
+  const capable = await blueprintCapabilities(db);
+  requireBlueprintCapability(capable);
+
+  return db.transaction(async (tx) => {
+    const bpRow = await tx.query("select item_id from dune.building_blueprints where id = $1 for update", [blueprintId]);
+    if (!bpRow.rows[0]) return { ok: false, error: "Blueprint not found" };
+
+    const itemId = bpRow.rows[0].item_id;
+
+    await tx.query("delete from dune.building_blueprint_pentashields where building_blueprint_id = $1", [blueprintId]);
+    await tx.query("delete from dune.building_blueprint_placeables where building_blueprint_id = $1", [blueprintId]);
+    await tx.query("delete from dune.building_blueprint_instances where building_blueprint_id = $1", [blueprintId]);
+    await tx.query("delete from dune.building_blueprints where id = $1", [blueprintId]);
+
+    if (itemId) {
+      await tx.query("delete from dune.items where id = $1", [itemId]);
+    }
+
+    return { ok: true };
+  });
 }
