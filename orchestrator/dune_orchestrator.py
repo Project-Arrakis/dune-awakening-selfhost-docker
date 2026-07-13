@@ -25,12 +25,23 @@ def run(cmd, check=True, user=None):
     printable = " ".join(str(x) for x in cmd)
     print(f"[dune] $ {printable}", flush=True)
 
-    if user:
-        cmd = ["runuser", "-u", user, "--"] + [str(x) for x in cmd]
-    else:
-        cmd = [str(x) for x in cmd]
+    cmd = [str(x) for x in cmd]
+    if user and not _is_current_user(user):
+        cmd = ["runuser", "-u", user, "--"] + cmd
 
     return subprocess.run(cmd, check=check)
+
+
+def _is_current_user(name):
+    import pwd
+    try:
+        return pwd.getpwuid(os.getuid()).pw_name == name
+    except (KeyError, ImportError):
+        return False
+
+
+def _running_as_root():
+    return os.geteuid() == 0
 
 def resolve_server_ip():
     value = os.environ.get("SERVER_IP", "auto").strip()
@@ -65,8 +76,9 @@ def ensure_dirs():
 
     (DUNE_HOME / ".steam").mkdir(parents=True, exist_ok=True)
 
-    run(["chown", "-R", "dune:dune", str(DUNE_ROOT)], check=False)
-    run(["chown", "-R", "dune:dune", str(DUNE_HOME)], check=False)
+    if _running_as_root():
+        run(["chown", "-R", "dune:dune", str(DUNE_ROOT)], check=False)
+        run(["chown", "-R", "dune:dune", str(DUNE_HOME)], check=False)
 
 def verify_install_dirs_writable():
     ensure_dirs()
@@ -177,7 +189,8 @@ def ensure_steamcmd():
     run(["tar", "-xzf", str(tmp), "-C", str(STEAM_DIR)])
     tmp.unlink(missing_ok=True)
 
-    run(["chown", "-R", "dune:dune", str(STEAM_DIR), str(DUNE_HOME / ".steam")])
+    if _running_as_root():
+        run(["chown", "-R", "dune:dune", str(STEAM_DIR), str(DUNE_HOME / ".steam")])
     run(["ln", "-sfn", str(STEAM_DIR), str(DUNE_HOME / ".steam" / "root")], user="dune")
     run(["ln", "-sfn", str(STEAM_DIR), str(DUNE_HOME / ".steam" / "steam")], user="dune")
 
