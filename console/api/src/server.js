@@ -35,6 +35,7 @@ import { primeMessageOfTheDayOnlineState, readMessageOfTheDay, restoreMessageOfT
 import { primePlayerAnnouncementOnlineState, readPlayerAnnouncements, restorePlayerAnnouncements, runPlayerAnnouncementScan, savePlayerAnnouncements } from "./services/playerAnnouncements.js";
 import { persistSpicefieldOverride } from "./services/spicefieldOverrides.js";
 import { exportBlueprint, importBlueprint, listBlueprints, deleteBlueprint } from "./blueprints.js";
+import { createZipArchive } from "./services/zipArchive.js";
 
 const config = loadConfig();
 const auth = createAuth(config);
@@ -469,6 +470,7 @@ async function handleApi(req, res) {
   if (path.match(/^\/api\/storage\/[^/]+\/give-item$/) && req.method === "POST") return storageGiveItemRoute(req, res, path);
   if (path.match(/^\/api\/storage\/[^/]+\/export$/)) return exportJson(res, `storage-${decodeURIComponent(path.split("/")[3])}.json`, () => duneDb.storageItems(db, decodeURIComponent(path.split("/")[3])));
   if (path === "/api/blueprints" && req.method === "GET") return dbJson(res, () => listBlueprints(db));
+  if (path === "/api/blueprints/export" && req.method === "POST") return blueprintBulkExportRoute(req, res);
   if (path.match(/^\/api\/blueprints\/([^/]+)\/export$/) && req.method === "GET") return blueprintExportRoute(req, res, path);
   if (path === "/api/blueprints/import" && req.method === "POST") return blueprintImportRoute(req, res);
   if (path.match(/^\/api\/blueprints\/([^/]+)$/) && req.method === "DELETE") return blueprintsDeleteRoute(req, res, path);
@@ -1632,6 +1634,39 @@ async function blueprintExportRoute(req, res, path) {
       "content-disposition": `attachment; filename="${filename}"`
     });
     res.end(JSON.stringify(data));
+  } catch (error) {
+    const status = error.unsupported ? 501 : 500;
+    return json(res, status, { ok: false, error: redact(error.message || error) });
+  }
+}
+
+async function blueprintBulkExportRoute(req, res) {
+  try {
+    const body = await readJson(req);
+    const ids = [...new Set((Array.isArray(body.ids) ? body.ids : []).map(Number))];
+    if (!ids.length || ids.some((id) => !Number.isSafeInteger(id) || id < 1)) return json(res, 400, { error: "Select at least one valid blueprint to export." });
+    if (ids.length > 500) return json(res, 400, { error: "A maximum of 500 blueprints can be exported at once." });
+
+    const usedNames = new Set();
+    const entries = [];
+    for (const id of ids) {
+      const data = await exportBlueprint(db, id);
+      const baseName = sanitizeBlueprintFilename(data.name || `blueprint_${id}`).replace(/\.json$/i, "") || `blueprint_${id}`;
+      let filename = `${baseName}.json`;
+      let suffix = 2;
+      while (usedNames.has(filename.toLowerCase())) filename = `${baseName}_${suffix++}.json`;
+      usedNames.add(filename.toLowerCase());
+      entries.push({ name: filename, content: Buffer.from(`${JSON.stringify(data, null, 2)}\n`, "utf8") });
+    }
+
+    const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/T/, "-").slice(0, 15);
+    const archive = createZipArchive(entries);
+    res.writeHead(200, withSecurityHeaders({
+      "content-type": "application/zip",
+      "content-length": String(archive.length),
+      "content-disposition": `attachment; filename="blueprints-${stamp}.zip"`
+    }));
+    res.end(archive);
   } catch (error) {
     const status = error.unsupported ? 501 : 500;
     return json(res, status, { ok: false, error: redact(error.message || error) });

@@ -12,6 +12,24 @@ export async function api<T>(path: string, options: RequestInit = {}): ApiResult
   return apiRequest<T>(path, options, false);
 }
 
+export async function apiDownload(path: string, options: RequestInit = {}, csrfRetried = false): Promise<Response> {
+  const headers = new Headers(options.headers);
+  if (options.body && !(options.body instanceof FormData) && !headers.has("content-type")) headers.set("content-type", "application/json");
+  if (csrfToken && !["GET", "HEAD"].includes(options.method || "GET")) headers.set("x-csrf-token", csrfToken);
+  const response = await fetch(path, { ...options, headers, credentials: "include" });
+  if ((response.status === 401 || response.status === 403) && !csrfRetried && await refreshCsrfToken()) return apiDownload(path, options, true);
+  if (!response.ok) {
+    const text = await response.text();
+    let message = text || `Request failed: ${response.status}`;
+    try {
+      const data = JSON.parse(text) as { error?: string };
+      message = data.error || message;
+    } catch {}
+    throw new Error(friendlyApiError(message));
+  }
+  return response;
+}
+
 async function apiRequest<T>(path: string, options: RequestInit = {}, csrfRetried = false): ApiResult<T> {
   const headers = new Headers(options.headers);
   if (options.body && !(options.body instanceof FormData) && !headers.has("content-type")) headers.set("content-type", "application/json");
