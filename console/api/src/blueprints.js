@@ -91,58 +91,91 @@ async function ensureOfflinePlayer(db, playerPawnId) {
 
 function resolveImportInstance(inst) {
   const transform = `{${inst.x},${inst.y},${inst.z},${inst.rotation}}`;
-  const instanceId = inst.instance_id != null ? inst.instance_id : 0;
   const stability = inst.provides_stability != null ? inst.provides_stability : isStructuralBuilding(inst.building_type);
-  return { instanceId, transform, stability };
+  return { transform, stability };
 }
 
 function resolveImportPlaceable(pl) {
   const transform = `{${pl.x},${pl.y},${pl.z},${pl.rx ?? 0},${pl.ry ?? 0},${pl.rz ?? 0}}`;
-  const placeableId = pl.placeable_id != null ? pl.placeable_id : 0;
-  return { placeableId, transform };
+  return { transform };
+}
+
+function resolveImportIds(rows, key, label) {
+  const sourceIds = rows.map((row) => {
+    if (row[key] == null || row[key] === "") return null;
+    const value = Number(row[key]);
+    return Number.isInteger(value) && value >= 0 ? value : null;
+  });
+  const offset = sourceIds.includes(0) ? 1 : 0;
+  const reserved = new Set();
+  const sourceToId = new Map();
+
+  for (const sourceId of sourceIds) {
+    if (sourceId == null) continue;
+    const resolvedId = sourceId + offset;
+    if (reserved.has(resolvedId)) throw new Error(`Blueprint contains duplicate ${label} ID ${sourceId}`);
+    reserved.add(resolvedId);
+    sourceToId.set(sourceId, resolvedId);
+  }
+
+  let nextId = 1;
+  const ids = sourceIds.map((sourceId) => {
+    if (sourceId != null) return sourceId + offset;
+    while (reserved.has(nextId)) nextId++;
+    const resolvedId = nextId++;
+    reserved.add(resolvedId);
+    return resolvedId;
+  });
+
+  return { ids, sourceToId };
 }
 
 async function insertBuildingInstances(tx, blueprintId, instances) {
+  const { ids } = resolveImportIds(instances, "instance_id", "instance");
   for (let start = 0; start < instances.length; start += BLUEPRINT_IMPORT_BATCH_SIZE) {
     const batch = instances.slice(start, start + BLUEPRINT_IMPORT_BATCH_SIZE);
     for (let i = 0; i < batch.length; i++) {
       const inst = batch[i];
-      const { instanceId, transform, stability } = resolveImportInstance(inst);
+      const { transform, stability } = resolveImportInstance(inst);
       await tx.query(`
         insert into dune.building_blueprint_instances
           (building_blueprint_id, instance_id, building_type, transform, hologram, provides_stability, health)
         values ($1, $2, $3, $4::real[], true, $5, 0)`,
-        [blueprintId, instanceId > 0 ? instanceId : start + i + 1, inst.building_type, transform, stability]
+        [blueprintId, ids[start + i], inst.building_type, transform, stability]
       );
     }
   }
 }
 
 async function insertBuildingPlaceables(tx, blueprintId, placeables) {
+  const { ids, sourceToId } = resolveImportIds(placeables, "placeable_id", "placeable");
   for (let start = 0; start < placeables.length; start += BLUEPRINT_IMPORT_BATCH_SIZE) {
     const batch = placeables.slice(start, start + BLUEPRINT_IMPORT_BATCH_SIZE);
     for (let i = 0; i < batch.length; i++) {
       const pl = batch[i];
-      const { placeableId, transform } = resolveImportPlaceable(pl);
+      const { transform } = resolveImportPlaceable(pl);
       await tx.query(`
         insert into dune.building_blueprint_placeables
           (building_blueprint_id, placeable_id, building_type, transform, hologram)
         values ($1, $2, $3, $4::real[], true)`,
-        [blueprintId, placeableId > 0 ? placeableId : start + i + 1, pl.building_type, transform]
+        [blueprintId, ids[start + i], pl.building_type, transform]
       );
     }
   }
+  return sourceToId;
 }
 
-async function insertBuildingPentashields(tx, blueprintId, pentashields) {
+async function insertBuildingPentashields(tx, blueprintId, pentashields, placeableIdMap = new Map()) {
   for (const ps of pentashields) {
     const s = ps.scale;
     if (!Array.isArray(s) || s.length < 3) continue;
+    const sourcePlaceableId = Number(ps.placeable_id);
+    const placeableId = placeableIdMap.get(sourcePlaceableId) ?? (Number.isInteger(sourcePlaceableId) ? sourcePlaceableId : 0);
     await tx.query(`
       insert into dune.building_blueprint_pentashields
         (building_blueprint_id, placeable_id, scale)
       values ($1, $2, ARRAY[$3,$4,$5]::smallint[])`,
-      [blueprintId, ps.placeable_id ?? 0, s[0], s[1], s[2]]
+      [blueprintId, placeableId, s[0], s[1], s[2]]
     );
   }
 }
@@ -231,11 +264,12 @@ export async function importBlueprint(db, playerPawnId, blueprintFile, fallbackN
     if (bf.instances && bf.instances.length > 0) {
       await insertBuildingInstances(tx, blueprintId, bf.instances);
     }
+    let placeableIdMap = new Map();
     if (bf.placeables && bf.placeables.length > 0) {
-      await insertBuildingPlaceables(tx, blueprintId, bf.placeables);
+      placeableIdMap = await insertBuildingPlaceables(tx, blueprintId, bf.placeables);
     }
     if (bf.pentashields && bf.pentashields.length > 0) {
-      await insertBuildingPentashields(tx, blueprintId, bf.pentashields);
+      await insertBuildingPentashields(tx, blueprintId, bf.pentashields, placeableIdMap);
     }
 
     return {

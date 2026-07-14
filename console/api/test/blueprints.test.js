@@ -262,6 +262,25 @@ test("import blueprint inserts pentashields with scale", async () => {
   assert.deepEqual(pentashields[0].scale, [10, 2, 10]);
 });
 
+test("import blueprint shifts zero-based IDs and preserves pentashield references", async () => {
+  const { db, instances, placeables, pentashields } = fakeBlueprintDb([]);
+  await importBlueprint(db, 123, {
+    instances: [
+      { ...SAMPLE_INSTANCE, instance_id: 0 },
+      { ...SAMPLE_INSTANCE_WALL, instance_id: 1 }
+    ],
+    placeables: [
+      { ...SAMPLE_PLACEABLE, placeable_id: 0 },
+      { ...SAMPLE_PLACEABLE, placeable_id: 1 }
+    ],
+    pentashields: [{ placeable_id: 0, scale: [10, 2, 10] }]
+  });
+
+  assert.deepEqual(instances.map((row) => row.instance_id), [1, 2]);
+  assert.deepEqual(placeables.map((row) => row.placeable_id), [1, 2]);
+  assert.equal(pentashields[0].placeable_id, 1);
+});
+
 test("import blueprint throws on missing tables", async () => {
   const db = {
     query: async (text) => ({ rows: [{ exists: false }] }),
