@@ -14,6 +14,28 @@ CONFIG_PATH = Path(os.environ.get("DUNE_USERSETTINGS_CONFIG", str(ROOT / "runtim
 PROFILE_PATH = Path(os.environ.get("DUNE_GAMEPLAY_PROFILE", str(ROOT / "runtime" / "generated" / "gameplay-profile.ini")))
 SIETCH_CONFIG_PATH = ROOT / "runtime" / "generated" / "sietch-config.json"
 
+BUILDING_SETTINGS_SECTION = "/Script/DuneSandbox.BuildingSettings"
+STAKING_EXTENSION_DEFAULT_TIMES = (
+    "60.000000",
+    "120.000000",
+    "240.000000",
+    "480.000000",
+    "960.000000",
+    "1920.000000",
+    "3840.000000",
+    "7680.000000",
+    "15360.000000",
+    "30720.000000",
+)
+STAKING_EXTENSION_FIELDS = {
+    "staking_unit_vertical_extension_default_times": "m_StakingUnitVerticalExtensionDefaultTimes",
+    "staking_unit_extension_default_times": "m_StakingUnitExtensionDefaultTimes",
+}
+FIELD_TYPE_OVERRIDES = {
+    "staking_unit_vertical_extension_default_times": "integer",
+    "staking_unit_extension_default_times": "integer",
+}
+
 ENGINE_FIELDS = {
     "port": ("URL", "Port", "7777"),
     "igw_port": ("URL", "IGWPort", "7888"),
@@ -92,27 +114,33 @@ MAP_FIELDS = {
     "forced_coriolis_world_seed": ("/Script/DuneSandbox.CoriolisSubsystem", "m_ForcedCoriolisWorldSeed", "-1"),
     "restart_server_on_coriolis_cycle_end": ("/Script/DuneSandbox.CoriolisSubsystem", "m_bShouldRestartServerOnCycleEnd", "True"),
     "coriolis_db_wipe_enabled": ("/Script/DuneSandbox.CoriolisSubsystem", "m_bIsDbWipeEnabled", "True"),
-    "max_landclaim_segments": ("/Script/DuneSandbox.BuildingSettings", "m_MaxNumLandclaimSegments", "6"),
-    "building_blueprint_max_extensions": ("/Script/DuneSandbox.BuildingSettings", "m_BuildingBlueprintMaxExtensions", "4"),
-    "base_backup_max_extensions": ("/Script/DuneSandbox.BuildingSettings", "m_BaseBackupMaxExtensions", "8"),
-    "base_backup_tool_time_restriction_seconds": ("/Script/DuneSandbox.BuildingSettings", "m_BaseBackupToolTimeRestrictionInSeconds", "60"),
-    "building_restriction_limits_enabled": ("/Script/DuneSandbox.BuildingSettings", "m_bBuildingRestrictionLimitsEnabled", "True"),
-    "mitigate_all_sandstorm_damage": ("/Script/DuneSandbox.BuildingSettings", "m_bMitigateAllSandstormDamage", "False"),
-    "fallback_default_building_health": ("/Script/DuneSandbox.BuildingSettings", "m_FallbackDefaultBuildingHealth", "2500.000000"),
-    "fallback_default_placeable_health": ("/Script/DuneSandbox.BuildingSettings", "m_FallbackDefaultPlaceableHealth", "400.000000"),
-    "pickup_total_durability_reduction": ("/Script/DuneSandbox.BuildingSettings", "m_PickupTotalDurabilityPercentageReduction", "0.050000"),
-    "building_stabilization_system_enabled": ("/Script/DuneSandbox.BuildingSettings", "m_bEnableStabilizationSystem", "True"),
-    "building_destabilization_system_enabled": ("/Script/DuneSandbox.BuildingSettings", "m_bEnableDestabilizationSystem", "False"),
-    "building_destruction_effects_enabled": ("/Script/DuneSandbox.BuildingSettings", "m_bEnableBuildingDestructionEffects", "True"),
-    "building_height_limit_m": ("/Script/DuneSandbox.BuildingSettings", "m_BuildingHeightLimitInM", "980.000000"),
-    "building_blueprint_range_multiplier": ("/Script/DuneSandbox.BuildingSettings", "m_BuildingBlueprintRangeMultiplier", "0.660000"),
-    "build_range": ("/Script/DuneSandbox.BuildingSettings", "m_BuildRange", "2000.000000"),
-    "building_near_server_borders_enabled": ("/Script/DuneSandbox.BuildingSettings", "m_bEnableBuildingNearServerBorders", "False"),
-    "min_buildable_distance_from_server_border": ("/Script/DuneSandbox.BuildingSettings", "m_bMinBuildableDistanceFromServerBorder", "1000.000000"),
-    "can_remove_buildables_with_no_owner": ("/Script/DuneSandbox.BuildingSettings", "m_bCanRemoveBuildablesWithNoOwner", "True"),
-    "door_auto_close_time": ("/Script/DuneSandbox.BuildingSettings", "m_TimeToAutomaticallyCloseDoor", "10"),
-    "default_building_system_modifiers": ("/Script/DuneSandbox.BuildingSettings", "m_DefaultBuildingSystemModifiers", "(m_RefundPercentage=1.000000,m_PlacementCostMultiplier=1.000000)"),
-    "default_repair_cost_multiplier": ("/Script/DuneSandbox.BuildingSettings", "m_DefaultRepairCostMultiplier", "0.500000"),
+    "max_landclaim_segments": (BUILDING_SETTINGS_SECTION, "m_MaxNumLandclaimSegments", "24"),
+    "building_blueprint_max_extensions": (BUILDING_SETTINGS_SECTION, "m_BuildingBlueprintMaxExtensions", "16"),
+    "base_backup_max_extensions": (BUILDING_SETTINGS_SECTION, "m_BaseBackupMaxExtensions", "40"),
+    "base_backup_tool_time_restriction_seconds": (BUILDING_SETTINGS_SECTION, "m_BaseBackupToolTimeRestrictionInSeconds", "10"),
+    "building_restriction_limits_enabled": (BUILDING_SETTINGS_SECTION, "m_bBuildingRestrictionLimitsEnabled", "False"),
+    "mitigate_all_sandstorm_damage": (BUILDING_SETTINGS_SECTION, "m_bMitigateAllSandstormDamage", "False"),
+    "fallback_default_building_health": (BUILDING_SETTINGS_SECTION, "m_FallbackDefaultBuildingHealth", "5000.000000"),
+    "fallback_default_placeable_health": (BUILDING_SETTINGS_SECTION, "m_FallbackDefaultPlaceableHealth", "1000.000000"),
+    "pickup_total_durability_reduction": (BUILDING_SETTINGS_SECTION, "m_PickupTotalDurabilityPercentageReduction", "0.0"),
+    "building_stabilization_system_enabled": (BUILDING_SETTINGS_SECTION, "m_bEnableStabilizationSystem", "True"),
+    "building_destabilization_system_enabled": (BUILDING_SETTINGS_SECTION, "m_bEnableDestabilizationSystem", "True"),
+    "building_destruction_effects_enabled": (BUILDING_SETTINGS_SECTION, "m_bEnableBuildingDestructionEffects", "True"),
+    "building_height_limit_m": (BUILDING_SETTINGS_SECTION, "m_BuildingHeightLimitInM", "1500.000000"),
+    "building_blueprint_range_multiplier": (BUILDING_SETTINGS_SECTION, "m_BuildingBlueprintRangeMultiplier", "0.660000"),
+    "build_range": (BUILDING_SETTINGS_SECTION, "m_BuildRange", "3000.000000"),
+    "free_translate_max": (BUILDING_SETTINGS_SECTION, "m_FreeTranslateMax", "200.000000"),
+    "free_rotate_max": (BUILDING_SETTINGS_SECTION, "m_FreeRotateMax", "90.000000"),
+    "sand_buildup_placeables_sheltered_target_value": (BUILDING_SETTINGS_SECTION, "m_SandBuildUpPlaceablesShelteredTargetValue", "0.1"),
+    "sand_buildup_placeables_unsheltered_target_value": (BUILDING_SETTINGS_SECTION, "m_SandBuildUpPlaceablesUnShelteredTargetValue", "0.3"),
+    "staking_unit_vertical_extension_default_times": (BUILDING_SETTINGS_SECTION, "m_StakingUnitVerticalExtensionDefaultTimes", "1"),
+    "staking_unit_extension_default_times": (BUILDING_SETTINGS_SECTION, "m_StakingUnitExtensionDefaultTimes", "1"),
+    "building_near_server_borders_enabled": (BUILDING_SETTINGS_SECTION, "m_bEnableBuildingNearServerBorders", "False"),
+    "min_buildable_distance_from_server_border": (BUILDING_SETTINGS_SECTION, "m_bMinBuildableDistanceFromServerBorder", "1000.000000"),
+    "can_remove_buildables_with_no_owner": (BUILDING_SETTINGS_SECTION, "m_bCanRemoveBuildablesWithNoOwner", "True"),
+    "door_auto_close_time": (BUILDING_SETTINGS_SECTION, "m_TimeToAutomaticallyCloseDoor", "10"),
+    "default_building_system_modifiers": (BUILDING_SETTINGS_SECTION, "m_DefaultBuildingSystemModifiers", "(m_RefundPercentage=1.000000,m_PlacementCostMultiplier=1.000000)"),
+    "default_repair_cost_multiplier": (BUILDING_SETTINGS_SECTION, "m_DefaultRepairCostMultiplier", "0.25"),
     "broken_vehicle_module_armor_deduction": ("/Script/DuneSandbox.DuneSandboxGameModeBase", "m_BrokenVehicleModuleArmorDeduction", "2"),
     "players_drop_loot_on_death": ("/Script/DuneSandbox.DuneSandboxGameModeBase", "m_bShouldPlayersDropLootOnDeath", "False"),
     "players_drop_loot_on_defeat": ("/Script/DuneSandbox.DuneSandboxGameModeBase", "m_bShouldPlayersDropLootOnDefeat", "True"),
@@ -500,8 +528,8 @@ def profile_set_key(profile: dict, scope: str, section: str, key: str, value: st
         current_prefix, current_key, current_value = parsed
         if current_key != key:
             continue
-        if prefix == "+":
-            if current_prefix == "+" and current_value == value:
+        if prefix:
+            if current_prefix == prefix and current_value == value:
                 target_index = index
                 break
             continue
@@ -528,6 +556,51 @@ def profile_remove_key(profile: dict, scope: str, section: str, key: str, map_na
                 continue
         out.append(raw)
     block["lines"] = out
+
+
+def sync_staking_extension_removals(profile: dict, scope: str, map_name: str, partition_id: str, field_id: str) -> None:
+    key = STAKING_EXTENSION_FIELDS.get(field_id)
+    if not key:
+        return
+    profile_remove_key(profile, scope, BUILDING_SETTINGS_SECTION, key, map_name, partition_id, {"-"})
+    for default_time in STAKING_EXTENSION_DEFAULT_TIMES:
+        profile_set_key(
+            profile,
+            scope,
+            BUILDING_SETTINGS_SECTION,
+            key,
+            default_time,
+            map_name,
+            partition_id,
+            "-",
+        )
+
+
+def normalize_staking_extension_removals(lines: list[str], add_defaults: bool = False) -> list[str]:
+    staking_keys = set(STAKING_EXTENSION_FIELDS.values())
+    seen: set[tuple[str, str]] = set()
+    normalized: list[str] = []
+    for raw in lines:
+        parsed = split_ini_assignment(raw)
+        if not parsed:
+            normalized.append(raw)
+            continue
+        prefix, key, value = parsed
+        if prefix != "-" or key not in staking_keys:
+            normalized.append(raw)
+            continue
+        identity = (key, value)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        normalized.append(raw)
+    if add_defaults:
+        for key in STAKING_EXTENSION_FIELDS.values():
+            if any(existing_key == key for existing_key, _ in seen):
+                continue
+            for default_time in STAKING_EXTENSION_DEFAULT_TIMES:
+                normalized.append(f"-{key}={default_time}")
+    return normalized
 
 
 def mirror_legacy_guild_profile_field(profile: dict, scope: str, map_name: str, partition_id: str, field_id: str, value: str) -> None:
@@ -819,6 +892,7 @@ def set_profile_field(profile: dict, scope: str, map_name: str, partition_id: st
         spec = MAP_FIELDS[field_id]
         if spec[0] and spec[1]:
             profile_set_key(profile, "global", spec[0], spec[1], value)
+            sync_staking_extension_removals(profile, "global", "", "", field_id)
             mirror_legacy_guild_profile_field(profile, "global", "", "", field_id, value)
         return
 
@@ -828,6 +902,7 @@ def set_profile_field(profile: dict, scope: str, map_name: str, partition_id: st
         spec = MAP_FIELDS[field_id]
         if spec[0] and spec[1]:
             profile_set_key(profile, "map", spec[0], spec[1], value, map_name=map_name)
+            sync_staking_extension_removals(profile, "map", map_name, "", field_id)
             mirror_legacy_guild_profile_field(profile, "map", map_name, "", field_id, value)
         return
 
@@ -859,6 +934,7 @@ def set_profile_field(profile: dict, scope: str, map_name: str, partition_id: st
         spec = MAP_FIELDS.get(field_id)
         if spec and spec[0] and spec[1]:
             profile_set_key(profile, "partition", spec[0], spec[1], value, target_map, target_partition)
+            sync_staking_extension_removals(profile, "partition", target_map, target_partition, field_id)
             mirror_legacy_guild_profile_field(profile, "partition", target_map, target_partition, field_id, value)
         return
 
@@ -1000,7 +1076,7 @@ def metadata() -> int:
             "section": section or "",
             "key": key or "",
             "default": "" if default is None else str(default),
-            "type": infer_field_type(default),
+            "type": FIELD_TYPE_OVERRIDES.get(field_id, infer_field_type(default)),
         }
 
     payload = {
@@ -1306,6 +1382,10 @@ def compiled_usergame_ini(profile: dict, map_name: str, partition_id: str | None
     known = known_keys_by_section(MAP_FIELDS)
     known.setdefault("/Script/DuneSandbox.PvpPveSettings", set()).update({"m_PvpEnabledPartitions", "m_PveEnabledPartitions"})
     append_profile_unknown_lines(section_lines, profile, scopes, known)
+    section_lines[BUILDING_SETTINGS_SECTION] = normalize_staking_extension_removals(
+        section_lines.get(BUILDING_SETTINGS_SECTION, []),
+        add_defaults=True,
+    )
     return render_ini_sections(section_lines, [
         "; UserGame.ini managed by Docker.",
         "; Edit this single file for all map and partition UserGame settings.",
@@ -1354,6 +1434,9 @@ def client_game_ini(profile: dict, map_name: str, partition_id: str | None = Non
                 entries.append(raw)
             else:
                 entries[previous_index] = raw
+
+    if BUILDING_SETTINGS_SECTION in section_lines:
+        section_lines[BUILDING_SETTINGS_SECTION] = normalize_staking_extension_removals(section_lines[BUILDING_SETTINGS_SECTION])
 
     target_label = "global UserGame" if not target_map else target_map if not target_partition else f"{target_map} partition {target_partition}"
     return render_ini_sections(section_lines, [
@@ -1638,6 +1721,78 @@ Dune.GlobalVehicleMiningOutputMultiplier=10
         raise SystemExit("Base backup tool time restriction did not feed interactive map values.")
     if "m_BaseBackupToolTimeRestrictionInSeconds=60" not in compiled_usergame_ini(reparsed, "Survival_1", "3"):
         raise SystemExit("Base backup tool time restriction did not compile from interactive profile update.")
+    building_defaults = profile_map_values(parse_profile_text(""), "Survival_1")
+    expected_building_defaults = {
+        "build_range": "3000.000000",
+        "building_height_limit_m": "1500.000000",
+        "free_translate_max": "200.000000",
+        "free_rotate_max": "90.000000",
+        "default_repair_cost_multiplier": "0.25",
+        "pickup_total_durability_reduction": "0.0",
+        "base_backup_tool_time_restriction_seconds": "10",
+        "fallback_default_building_health": "5000.000000",
+        "fallback_default_placeable_health": "1000.000000",
+        "building_destabilization_system_enabled": "True",
+        "sand_buildup_placeables_sheltered_target_value": "0.1",
+        "sand_buildup_placeables_unsheltered_target_value": "0.3",
+        "max_landclaim_segments": "24",
+        "building_blueprint_max_extensions": "16",
+        "base_backup_max_extensions": "40",
+        "building_restriction_limits_enabled": "False",
+        "staking_unit_vertical_extension_default_times": "1",
+        "staking_unit_extension_default_times": "1",
+    }
+    for field_id, expected in expected_building_defaults.items():
+        if building_defaults.get(field_id) != expected:
+            raise SystemExit(f"Building modifier default is incorrect for {field_id}.")
+    for field_id in STAKING_EXTENSION_FIELDS:
+        if FIELD_TYPE_OVERRIDES.get(field_id) != "integer":
+            raise SystemExit(f"Staking modifier is not exposed as an integer input: {field_id}")
+
+    staking_profile = parse_profile_text("")
+    set_profile_field(staking_profile, "global", "", "", "staking_unit_vertical_extension_default_times", "1")
+    set_profile_field(staking_profile, "map", "Survival_1", "", "staking_unit_extension_default_times", "1")
+    set_profile_field(staking_profile, "partition", "Survival_1", "3", "staking_unit_vertical_extension_default_times", "2")
+    staking_serialized = serialize_profile(staking_profile)
+    for key in STAKING_EXTENSION_FIELDS.values():
+        for default_time in STAKING_EXTENSION_DEFAULT_TIMES:
+            expected_line = f"-{key}={default_time}"
+            if staking_serialized.count(expected_line) < 1:
+                raise SystemExit(f"Advanced profile dropped staking array directive: {expected_line}")
+    if profile_map_values(staking_profile, "Survival_1")["staking_unit_extension_default_times"] != "1":
+        raise SystemExit("Advanced staking value did not feed Interactive Modifiers.")
+    compiled_staking = compiled_usergame_ini(staking_profile, "Survival_1", "3")
+    if "m_StakingUnitVerticalExtensionDefaultTimes=2" not in compiled_staking:
+        raise SystemExit("Partition staking override did not compile.")
+    for default_time in STAKING_EXTENSION_DEFAULT_TIMES:
+        if compiled_staking.count(f"-m_StakingUnitVerticalExtensionDefaultTimes={default_time}") != 1:
+            raise SystemExit("Compiled UserGame dropped a vertical staking array directive.")
+        if compiled_staking.count(f"-m_StakingUnitExtensionDefaultTimes={default_time}") != 1:
+            raise SystemExit("Compiled UserGame dropped a staking array directive.")
+    if compiled_staking.count(f"[{BUILDING_SETTINGS_SECTION}]") != 1:
+        raise SystemExit("Compiled UserGame duplicated the BuildingSettings section.")
+
+    advanced_staking = parse_profile_text(
+        f"[Global:{BUILDING_SETTINGS_SECTION}]\n"
+        "m_StakingUnitExtensionDefaultTimes=1\n"
+        + "\n".join(f"-m_StakingUnitExtensionDefaultTimes={value}" for value in STAKING_EXTENSION_DEFAULT_TIMES)
+        + "\n"
+    )
+    advanced_staking_serialized = serialize_profile(advanced_staking)
+    for default_time in STAKING_EXTENSION_DEFAULT_TIMES:
+        expected_line = f"-m_StakingUnitExtensionDefaultTimes={default_time}"
+        if advanced_staking_serialized.count(expected_line) != 1:
+            raise SystemExit(f"Advanced round trip changed staking array directive: {expected_line}")
+    default_compiled_staking = compiled_usergame_ini(parse_profile_text(""), "Survival_1")
+    for key in STAKING_EXTENSION_FIELDS.values():
+        for default_time in STAKING_EXTENSION_DEFAULT_TIMES:
+            if default_compiled_staking.count(f"-{key}={default_time}") != 1:
+                raise SystemExit("Fresh UserGame compilation did not preserve the default staking directives.")
+    client_staking = client_game_ini(staking_profile, "Survival_1", "3")
+    for key in STAKING_EXTENSION_FIELDS.values():
+        for default_time in STAKING_EXTENSION_DEFAULT_TIMES:
+            if client_staking.count(f"-{key}={default_time}") != 1:
+                raise SystemExit("Client Game.ini export duplicated or dropped a staking directive.")
     if infer_runtime_target(Path("/tmp/runtime/game/survival-1-34/Saved")) != ("Survival_1", "34"):
         raise SystemExit("Dynamic Survival runtime folder was not inferred.")
     if infer_runtime_target(Path("/tmp/runtime/game/deepdesert-1-58/Saved")) != ("DeepDesert_1", "58"):
