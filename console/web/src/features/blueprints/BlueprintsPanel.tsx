@@ -317,7 +317,7 @@ export function BlueprintsPanel({ onError, confirmAction, dbPlayerId = "", playe
     </div>
 
     <p className="action-help-note blueprint-help-note">
-      Imported blueprints are added as Solido Replicator items to {playerName || "the player"}'s backpack. The player must relog before they appear in-game.
+      Imported blueprints are added to {playerName || "the player"}'s backpack as Solido Replicator items. The player must relog to see them in-game, and must unlock every building piece and placeable included in a blueprint before it can be placed.
     </p>
 
     <DataTable
