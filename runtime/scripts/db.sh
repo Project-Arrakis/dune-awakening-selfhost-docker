@@ -1609,7 +1609,7 @@ install_auto_units_via_docker_host() {
   image="$(docker_helper_image)"
 
   can_manage_host_systemd_with_docker || return 1
-  docker run --rm --privileged --pid=host --network=host \
+  docker run --rm --user 0:0 --privileged --pid=host --network=host \
     -e DB_AUTO_BACKUP_TIME="$backup_time" \
     -e DB_AUTO_BACKUP_INTERVAL_HOURS="$interval_hours" \
     -e DUNE_HOST_REPO_ROOT="$HOST_ROOT_DIR" \
@@ -1662,7 +1662,7 @@ disable_auto_units_via_docker_host() {
   image="$(docker_helper_image)"
 
   can_manage_host_systemd_with_docker || return 1
-  docker run --rm --privileged --pid=host --network=host \
+  docker run --rm --user 0:0 --privileged --pid=host --network=host \
     -v /:/host \
     --entrypoint bash \
     "$image" -lc '
@@ -1678,7 +1678,7 @@ show_auto_timer_status_via_docker_host() {
   image="$(docker_helper_image)"
 
   can_manage_host_systemd_with_docker || return 1
-  docker run --rm --privileged --pid=host --network=host \
+  docker run --rm --user 0:0 --privileged --pid=host --network=host \
     -v /:/host \
     --entrypoint bash \
     "$image" -lc '

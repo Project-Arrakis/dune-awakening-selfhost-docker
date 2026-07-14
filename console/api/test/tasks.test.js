@@ -62,12 +62,22 @@ test("web self-update helper mounts the host repo path", () => {
     hostRepoRoot: "/home/ubuntu/dune-awakening-selfhost-docker",
     composeProjectName: "dune-awakening-selfhost-docker",
     helperImage: "redblink-dune-docker-console:dev",
+    hostUid: "1000",
+    hostGid: "1000",
+    dockerSocketGid: "988",
+    extraEnv: ["ADMIN_BIND_PORT=8089"],
     command: "runtime/scripts/dune self-update install latest"
   });
 
   assert(args.includes("-v"));
   assert(args.includes("/home/ubuntu/dune-awakening-selfhost-docker:/repo"));
   assert(args.includes("DUNE_HOST_REPO_ROOT=/home/ubuntu/dune-awakening-selfhost-docker"));
+  assert(args.includes("1000:1000"));
+  assert(args.includes("988"));
+  assert(args.includes("DUNE_HOST_UID=1000"));
+  assert(args.includes("DUNE_HOST_GID=1000"));
+  assert(args.includes("DOCKER_SOCKET_GID=988"));
+  assert(args.includes("ADMIN_BIND_PORT=8089"));
   assert(!args.includes("/repo:/repo"));
 });
 

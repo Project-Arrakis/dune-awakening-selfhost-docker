@@ -7,7 +7,7 @@ import { loadConfig, publicConfig, parseAllowedIps } from "./config.js";
 import { createAuth, setSessionCookie, clearSessionCookie, json, withSecurityHeaders } from "./auth.js";
 import { createLoginRateLimiter, createMutationRateLimiter } from "./rateLimit.js";
 import { createBridgeRateLimiter } from "./bridgeRateLimit.js";
-import { TaskManager, publicTask } from "./tasks.js";
+import { buildSelfUpdateHelperDockerArgs, detectDockerSocketGid, TaskManager, publicTask } from "./tasks.js";
 import { preflight } from "./preflight.js";
 import { buildDuneArgs, isDynamicServerService, isReadOnlySql, parseVehicleList, runDockerLogs, runDune, validateServiceName } from "./runner.js";
 import { createDb, quoteIdentifier } from "./db.js";
@@ -962,6 +962,9 @@ function scheduleConsoleRestart(port) {
     const helperName = `redblink-dune-console-restart-${Date.now()}`;
     const hostRepoRoot = process.env.DUNE_HOST_REPO_ROOT || config.repoRoot;
     const composeProjectName = process.env.DUNE_COMPOSE_PROJECT_NAME || process.env.COMPOSE_PROJECT_NAME || "dune-awakening-selfhost-docker";
+    const hostUid = process.env.DUNE_HOST_UID || String(process.getuid?.() ?? 0);
+    const hostGid = process.env.DUNE_HOST_GID || String(process.getgid?.() ?? 0);
+    const dockerSocketGid = process.env.DOCKER_SOCKET_GID || detectDockerSocketGid();
     const script = [
       "set -eu",
       "mkdir -p runtime/generated",
@@ -972,23 +975,17 @@ function scheduleConsoleRestart(port) {
       "docker compose -f docker-compose.web.yml up -d redblink-dune-docker-console >> runtime/generated/console-restart.log 2>&1",
       `echo "[$(date -Is)] Dune Docker Console restart command finished" >> runtime/generated/console-restart.log`
     ].join("\n");
-    const child = spawn("docker", [
-      "run",
-      "--rm",
-      "-d",
-      "--name", helperName,
-      "--network", "host",
-      "-v", `${hostRepoRoot}:/repo`,
-      "-v", "/var/run/docker.sock:/var/run/docker.sock",
-      "-e", `ADMIN_BIND_PORT=${port}`,
-      "-e", `DUNE_HOST_REPO_ROOT=${hostRepoRoot}`,
-      "-e", `COMPOSE_PROJECT_NAME=${composeProjectName}`,
-      "-e", `DUNE_COMPOSE_PROJECT_NAME=${composeProjectName}`,
-      "-e", `DOCKER_SOCKET_GID=${process.env.DOCKER_SOCKET_GID || ""}`,
-      "-w", "/repo",
-      "redblink-dune-docker-console:dev",
-      "sh", "-lc", script
-    ], {
+    const child = spawn("docker", buildSelfUpdateHelperDockerArgs({
+      helperName,
+      hostRepoRoot,
+      composeProjectName,
+      helperImage: "redblink-dune-docker-console:dev",
+      hostUid,
+      hostGid,
+      dockerSocketGid,
+      extraEnv: [`ADMIN_BIND_PORT=${port}`],
+      command: script
+    }), {
       cwd: config.repoRoot,
       detached: true,
       stdio: "ignore",

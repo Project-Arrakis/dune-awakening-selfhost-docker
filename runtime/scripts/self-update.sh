@@ -826,12 +826,16 @@ rebuild_web_console_with_helper() {
 
   docker run --rm -d \
     --name "$helper_name" \
+    --user "${DUNE_HOST_UID:-0}:${DUNE_HOST_GID:-0}" \
+    --group-add "${DOCKER_SOCKET_GID:-0}" \
     --network host \
     -v "$HOST_ROOT_DIR:/repo" \
     -v /var/run/docker.sock:/var/run/docker.sock \
     -e "DUNE_HOST_REPO_ROOT=$HOST_ROOT_DIR" \
     -e "COMPOSE_PROJECT_NAME=$compose_project" \
     -e "DUNE_COMPOSE_PROJECT_NAME=$compose_project" \
+    -e "DUNE_HOST_UID=${DUNE_HOST_UID:-0}" \
+    -e "DUNE_HOST_GID=${DUNE_HOST_GID:-0}" \
     -e "DOCKER_SOCKET_GID=${DOCKER_SOCKET_GID:-0}" \
     -w /repo \
     "$helper_image" \

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
+import { statSync } from "node:fs";
 import { runDune, buildDuneArgs } from "./runner.js";
 import { liveItemGrantWarning } from "./grantResults.js";
 
@@ -93,6 +94,9 @@ export class TaskManager {
     const composeProjectName = process.env.DUNE_COMPOSE_PROJECT_NAME || process.env.COMPOSE_PROJECT_NAME || "dune-awakening-selfhost-docker";
     const helperImage = process.env.DUNE_SYSTEMD_HELPER_IMAGE || "redblink-dune-docker-console:dev";
     const hostRepoRoot = process.env.DUNE_HOST_REPO_ROOT || this.config.hostRepoRoot || this.config.repoRoot;
+    const hostUid = process.env.DUNE_HOST_UID || String(process.getuid?.() ?? 0);
+    const hostGid = process.env.DUNE_HOST_GID || String(process.getgid?.() ?? 0);
+    const dockerSocketGid = process.env.DOCKER_SOCKET_GID || detectDockerSocketGid();
     const logFile = "runtime/generated/web-self-update.log";
     const command = [
       "set -eu",
@@ -109,6 +113,9 @@ export class TaskManager {
       hostRepoRoot,
       composeProjectName,
       helperImage,
+      hostUid,
+      hostGid,
+      dockerSocketGid,
       command
     }), this.config.repoRoot);
 
@@ -145,18 +152,34 @@ function itemGrantTaskWarning(operation, result) {
   return liveItemGrantWarning(result);
 }
 
-export function buildSelfUpdateHelperDockerArgs({ helperName, hostRepoRoot, composeProjectName, helperImage, command }) {
+export function buildSelfUpdateHelperDockerArgs({
+  helperName,
+  hostRepoRoot,
+  composeProjectName,
+  helperImage,
+  hostUid = "0",
+  hostGid = "0",
+  dockerSocketGid = "0",
+  extraEnv = [],
+  command
+}) {
   return [
       "run",
       "--rm",
       "-d",
       "--name", helperName,
+      "--user", `${hostUid}:${hostGid}`,
+      "--group-add", dockerSocketGid,
       "--network", "host",
       "-v", `${hostRepoRoot}:/repo`,
       "-v", "/var/run/docker.sock:/var/run/docker.sock",
       "-e", `DUNE_HOST_REPO_ROOT=${hostRepoRoot}`,
       "-e", `COMPOSE_PROJECT_NAME=${composeProjectName}`,
       "-e", `DUNE_COMPOSE_PROJECT_NAME=${composeProjectName}`,
+      "-e", `DUNE_HOST_UID=${hostUid}`,
+      "-e", `DUNE_HOST_GID=${hostGid}`,
+      "-e", `DOCKER_SOCKET_GID=${dockerSocketGid}`,
+      ...extraEnv.flatMap((value) => ["-e", value]),
       "-w", "/repo",
       helperImage,
       "sh", "-lc", command
@@ -165,6 +188,14 @@ export function buildSelfUpdateHelperDockerArgs({ helperName, hostRepoRoot, comp
 
 function isSelfUpdateApplyOperation(operation) {
   return operation === "selfUpdateApply";
+}
+
+export function detectDockerSocketGid() {
+  try {
+    return String(statSync("/var/run/docker.sock").gid);
+  } catch {
+    return "0";
+  }
 }
 
 function runDockerCommand(args, cwd) {

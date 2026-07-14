@@ -185,7 +185,7 @@ install_units_via_docker_host() {
   image="$(docker_helper_image)"
 
   can_manage_host_systemd_with_docker || return 1
-  docker run --rm --privileged --pid=host --network=host \
+  docker run --rm --user 0:0 --privileged --pid=host --network=host \
     -e DUNE_IP_CHANGE_RESTART_INTERVAL_MINUTES="$interval_minutes" \
     -e DUNE_HOST_REPO_ROOT="$HOST_ROOT_DIR" \
     -v /:/host \
@@ -231,7 +231,7 @@ disable_units_via_docker_host() {
   image="$(docker_helper_image)"
 
   can_manage_host_systemd_with_docker || return 1
-  docker run --rm --privileged --pid=host --network=host \
+  docker run --rm --user 0:0 --privileged --pid=host --network=host \
     -v /:/host \
     --entrypoint bash \
     "$image" -lc '
@@ -260,7 +260,7 @@ show_host_timer_status_via_docker() {
   image="$(docker_helper_image)"
 
   can_manage_host_systemd_with_docker || return 1
-  docker run --rm --privileged --pid=host --network=host \
+  docker run --rm --user 0:0 --privileged --pid=host --network=host \
     -v /:/host \
     --entrypoint bash \
     "$image" -lc '

@@ -108,7 +108,7 @@ install_unit_via_docker_host() {
   image="$(docker_helper_image)"
 
   can_manage_host_systemd_with_docker || return 1
-  docker run --rm --privileged --pid=host --network=host \
+  docker run --rm --user 0:0 --privileged --pid=host --network=host \
     -e DUNE_HOST_REPO_ROOT="$HOST_ROOT_DIR" \
     -v /:/host \
     --entrypoint bash \
@@ -146,7 +146,7 @@ disable_unit_via_docker_host() {
   image="$(docker_helper_image)"
 
   can_manage_host_systemd_with_docker || return 1
-  docker run --rm --privileged --pid=host --network=host \
+  docker run --rm --user 0:0 --privileged --pid=host --network=host \
     -v /:/host \
     --entrypoint bash \
     "$image" -lc '
@@ -161,7 +161,7 @@ remove_unit_via_docker_host() {
   image="$(docker_helper_image)"
 
   can_manage_host_systemd_with_docker || return 1
-  docker run --rm --privileged --pid=host --network=host \
+  docker run --rm --user 0:0 --privileged --pid=host --network=host \
     -v /:/host \
     --entrypoint bash \
     "$image" -lc '
@@ -177,7 +177,7 @@ show_host_status_via_docker() {
   image="$(docker_helper_image)"
 
   can_manage_host_systemd_with_docker || return 1
-  docker run --rm --privileged --pid=host --network=host \
+  docker run --rm --user 0:0 --privileged --pid=host --network=host \
     -v /:/host \
     --entrypoint bash \
     "$image" -lc '
