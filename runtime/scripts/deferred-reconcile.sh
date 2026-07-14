@@ -51,5 +51,9 @@ wait_for_core_ready || {
 
 runtime/scripts/spicefield-overrides.sh apply || true
 runtime/scripts/sietches.sh reconcile Survival_1 || true
-runtime/scripts/sietches.sh reconcile DeepDesert_1 || true
+if runtime/scripts/map-modes.sh is-always-on DeepDesert_1 >/dev/null 2>&1; then
+  runtime/scripts/sietches.sh reconcile DeepDesert_1 || true
+else
+  echo "Deferred reconcile skipped DeepDesert_1 because its map mode is not always-on."
+fi
 runtime/scripts/publish-sietch-overrides.sh once || true
