@@ -47,9 +47,20 @@ else
   fail "user is $CURRENT_USER (expected dune)"
 fi
 
-# ── Test 4: Root-owned host directory blocks write (upgrade scenario) ──
+# ── Test 4: Root-owned application files remain readable ──
 echo ""
-echo "4. Root-owned /repo blocks writes (upgrade simulation)"
+echo "4. Root-owned application files remain readable"
+OUTPUT=$(docker run --rm -v /tmp:/repo "$IMAGE_NAME" sh -lc 'test -r /app/src/server.js && test -r /app/web-dist/index.html && echo OK' 2>&1) || true
+if echo "$OUTPUT" | grep -q "OK"; then
+  pass "non-root runtime can read API and frontend files"
+else
+  fail "non-root runtime cannot read application files"
+  echo "    output: $OUTPUT"
+fi
+
+# ── Test 5: Root-owned host directory blocks write (upgrade scenario) ──
+echo ""
+echo "5. Root-owned /repo blocks writes (upgrade simulation)"
 ROOT_REPO="$TEST_DIR/root-repo"
 mkdir -p "$ROOT_REPO"
 sudo chown root:root "$ROOT_REPO" 2>/dev/null || true
@@ -63,9 +74,9 @@ else
   echo "    output: $OUTPUT"
 fi
 
-# ── Test 5: Host-owned directory allows writes ──
+# ── Test 6: Host-owned directory allows writes ──
 echo ""
-echo "5. Host-owned /repo allows writes"
+echo "6. Host-owned /repo allows writes"
 USER_REPO="$TEST_DIR/user-repo"
 mkdir -p "$USER_REPO"
 sudo chown "$(id -u):$(id -g)" "$USER_REPO" 2>/dev/null || chown "$(id -u):$(id -g)" "$USER_REPO" 2>/dev/null || true
@@ -78,20 +89,20 @@ else
   echo "    output: $OUTPUT"
 fi
 
-# ── Test 6: Custom UID via compose user: ──
+# ── Test 7: Custom UID via compose user: ──
 echo ""
-echo "6. Custom UID via --user flag"
+echo "7. Custom UID via --user flag"
 CUSTOM_UID=5678
-OUTPUT=$(docker run --rm --user "$CUSTOM_UID:$CUSTOM_UID" "$IMAGE_NAME" id -u 2>&1) || true
-if echo "$OUTPUT" | grep -q "$CUSTOM_UID"; then
-  pass "runs as UID $CUSTOM_UID with --user"
+OUTPUT=$(docker run --rm --user "$CUSTOM_UID:$CUSTOM_UID" -v /tmp:/repo "$IMAGE_NAME" sh -lc 'test "$(id -u)" = 5678; test -r /app/src/server.js; test -r /app/web-dist/index.html; echo OK' 2>&1) || true
+if echo "$OUTPUT" | grep -q "OK"; then
+  pass "runs as UID $CUSTOM_UID with readable application files"
 else
-  fail "should run as UID $CUSTOM_UID, got: $OUTPUT"
+  fail "custom UID should run with readable application files, got: $OUTPUT"
 fi
 
-# ── Test 7: Entrypoint passes arguments correctly ──
+# ── Test 8: Entrypoint passes arguments correctly ──
 echo ""
-echo "7. Entrypoint preserves command arguments"
+echo "8. Entrypoint preserves command arguments"
 OUTPUT=$(docker run --rm -v /tmp:/repo "$IMAGE_NAME" node -e "console.log('hello')" 2>&1) || true
 if echo "$OUTPUT" | grep -q "hello"; then
   pass "entrypoint runs CMD correctly"
@@ -100,18 +111,18 @@ else
   echo "    output: $OUTPUT"
 fi
 
-# ── Test 8: Compose validation ──
+# ── Test 9: Compose validation ──
 echo ""
-echo "8. Compose config validates"
+echo "9. Compose config validates"
 if docker compose -f "$REPO_ROOT/docker-compose.web.yml" config --quiet 2>&1 > /dev/null; then
   pass "compose config valid"
 else
   fail "compose config invalid"
 fi
 
-# ── Test 9: Entrypoint shell syntax ──
+# ── Test 10: Entrypoint shell syntax ──
 echo ""
-echo "9. Entrypoint shell syntax"
+echo "10. Entrypoint shell syntax"
 for f in "$REPO_ROOT/console/api/entrypoint.sh" "$REPO_ROOT/orchestrator/entrypoint.sh"; do
   if bash -n "$f" 2>/dev/null; then
     pass "syntax OK: $(basename $f)"
@@ -120,9 +131,9 @@ for f in "$REPO_ROOT/console/api/entrypoint.sh" "$REPO_ROOT/orchestrator/entrypo
   fi
 done
 
-# ── Test 10: Orchestrator Dockerfile builds ──
+# ── Test 11: Orchestrator Dockerfile builds ──
 echo ""
-echo "10. Orchestrator Dockerfile builds"
+echo "11. Orchestrator Dockerfile builds"
 if docker build --quiet -t "dune-orch-test:lifecycle" "$REPO_ROOT/orchestrator" 2>&1 > /dev/null; then
   pass "orchestrator Dockerfile builds"
 else
