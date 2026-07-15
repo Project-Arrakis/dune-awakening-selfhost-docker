@@ -52,6 +52,7 @@ docker rm -f dune-server-gateway 2>/dev/null || true
 ensure_host_latency_tuned
 
 docker run -d \
+  "${DUNE_DOCKER_LOG_ARGS[@]}" \
   --name dune-server-gateway \
   --network dune-net \
   --restart unless-stopped \

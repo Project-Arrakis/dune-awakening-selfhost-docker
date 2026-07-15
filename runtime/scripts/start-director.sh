@@ -270,6 +270,7 @@ docker network create dune-net 2>/dev/null || true
 docker rm -f dune-director 2>/dev/null || true
 
 docker run -d \
+  "${DUNE_DOCKER_LOG_ARGS[@]}" \
   --name dune-director \
   --network dune-net \
   --restart unless-stopped \

@@ -65,6 +65,7 @@ if [ -n "$DOCKER_SOCK_GID" ]; then
 fi
 
 docker run -d \
+  "${DUNE_DOCKER_LOG_ARGS[@]}" \
   --name "$CONTAINER_NAME" \
   --network host \
   --restart unless-stopped \

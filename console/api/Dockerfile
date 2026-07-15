@@ -8,6 +8,7 @@ COPY console/web ./
 RUN npm run build
 
 FROM node:20-bookworm
+LABEL io.github.red-blink.dune-selfhost.component="console"
 WORKDIR /app
 ENV NODE_ENV=production
 

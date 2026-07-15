@@ -180,6 +180,7 @@ commit;
 ensure_host_latency_tuned
 
 docker run -d \
+  "${DUNE_DOCKER_LOG_ARGS[@]}" \
   --name dune-server-overmap \
   --network host \
   --restart unless-stopped \

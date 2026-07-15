@@ -944,6 +944,16 @@ runtime/scripts/extract-partition-catalog.sh
 runtime/scripts/extract-server-catalog.sh
 echo "Generated map catalogs refreshed."
 
+if [ "${DUNE_STORAGE_AUTO_CLEANUP:-1}" = "1" ]; then
+  echo
+  echo "=== Remove obsolete Dune game images ==="
+  storage_args=(cleanup)
+  if [ "${DUNE_STORAGE_PRUNE_BUILD_CACHE:-0}" = "1" ]; then
+    storage_args+=(--build-cache)
+  fi
+  runtime/scripts/storage.sh "${storage_args[@]}" || echo "WARN Obsolete image cleanup did not complete; the update itself remains valid."
+fi
+
 echo
 if [ "$cmd" = "install" ]; then
   echo "Install/bootstrap step finished."

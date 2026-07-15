@@ -5,6 +5,7 @@ cd "$(dirname "$0")/../.."
 
 [ -r runtime/generated/image-tags.env ] && . runtime/generated/image-tags.env
 source runtime/scripts/image-tags.sh
+source runtime/scripts/runtime-env.sh
 WORLD_IMAGE_TAG="$(resolve_world_image_tag)"
 
 IMAGE="registry.funcom.com/funcom/self-hosting/seabass-server-db-utils:${WORLD_IMAGE_TAG}"
@@ -109,6 +110,7 @@ prepare_project_role_for_update
 docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
 
 docker run -d \
+  "${DUNE_DOCKER_LOG_ARGS[@]}" \
   --name "$CONTAINER_NAME" \
   --network dune-net \
   --entrypoint sh \

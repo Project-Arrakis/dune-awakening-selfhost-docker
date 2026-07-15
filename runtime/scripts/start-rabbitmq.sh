@@ -89,6 +89,7 @@ docker network create dune-net 2>/dev/null || true
 docker rm -f dune-rmq-admin dune-rmq-game 2>/dev/null || true
 
 docker run -d \
+  "${DUNE_DOCKER_LOG_ARGS[@]}" \
   --name dune-rmq-admin \
   --network dune-net \
   --restart unless-stopped \
@@ -98,6 +99,7 @@ docker run -d \
   "$IMAGE"
 
 docker run -d \
+  "${DUNE_DOCKER_LOG_ARGS[@]}" \
   --name dune-rmq-game \
   --network dune-net \
   --restart unless-stopped \

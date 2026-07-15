@@ -260,6 +260,29 @@ else
 fi
 
 # ── Cleanup ──
+echo ""
+echo "17. Docker storage growth controls"
+log_arg_scripts=(
+  start-postgres.sh start-rabbitmq.sh start-text-router.sh start-director.sh
+  start-server-gateway.sh start-server-overmap.sh start-server-survival-1.sh
+  spawn-server.sh start-autoscaler.sh update-db.sh
+)
+missing_log_args=""
+for script in "${log_arg_scripts[@]}"; do
+  if ! grep -q 'DUNE_DOCKER_LOG_ARGS' "$REPO_ROOT/runtime/scripts/$script"; then
+    missing_log_args="${missing_log_args}${missing_log_args:+, }$script"
+  fi
+done
+WEB_COMPOSE_CONFIG=$(docker compose -f "$REPO_ROOT/docker-compose.web.yml" config 2>&1) || true
+if [ -z "$missing_log_args" ] \
+  && grep -q 'max-size: 50m' <<<"$COMPOSE_CONFIG" \
+  && grep -q 'max-size: 50m' <<<"$WEB_COMPOSE_CONFIG" \
+  && bash "$REPO_ROOT/tests/storage-cleanup-test.sh" >/dev/null; then
+  pass "all project containers rotate logs and cleanup protects active/current images"
+else
+  fail "Docker storage controls are incomplete: ${missing_log_args:-storage cleanup test failed}"
+fi
+
 docker rmi "$IMAGE_NAME" 2>/dev/null || true
 docker rmi "dune-orch-test:lifecycle" 2>/dev/null || true
 

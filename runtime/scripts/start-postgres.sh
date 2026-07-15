@@ -42,6 +42,7 @@ docker rm -f dune-postgres 2>/dev/null || true
 docker volume create dune-postgres-data >/dev/null
 
 docker run -d \
+  "${DUNE_DOCKER_LOG_ARGS[@]}" \
   --name dune-postgres \
   --network dune-net \
   --restart unless-stopped \

@@ -181,6 +181,7 @@ commit;
 ensure_host_latency_tuned
 
 docker run -d \
+  "${DUNE_DOCKER_LOG_ARGS[@]}" \
   --name dune-server-survival-1 \
   --network host \
   --restart unless-stopped \

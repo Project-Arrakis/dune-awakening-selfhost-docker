@@ -27,6 +27,11 @@ services:
     stdin_open: true
     tty: true
     command: ["dune", "daemon"]
+    logging:
+      driver: json-file
+      options:
+        max-size: "${DUNE_DOCKER_LOG_MAX_SIZE:-50m}"
+        max-file: "${DUNE_DOCKER_LOG_MAX_FILES:-3}"
 
 volumes:
   dune-server:

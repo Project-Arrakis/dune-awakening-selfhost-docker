@@ -1,4 +1,5 @@
 FROM ubuntu:24.04
+LABEL io.github.red-blink.dune-selfhost.component="orchestrator"
 
 ENV DEBIAN_FRONTEND=noninteractive
 

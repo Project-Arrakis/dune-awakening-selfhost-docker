@@ -1,6 +1,25 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Keep Docker's json-file logs bounded. These arguments are shared by every
+# container created directly by the runtime scripts.
+DUNE_DOCKER_LOG_MAX_SIZE="${DUNE_DOCKER_LOG_MAX_SIZE:-50m}"
+DUNE_DOCKER_LOG_MAX_FILES="${DUNE_DOCKER_LOG_MAX_FILES:-3}"
+if ! printf '%s' "$DUNE_DOCKER_LOG_MAX_SIZE" | grep -Eq '^[1-9][0-9]*[kKmMgG]$'; then
+  echo "Invalid DUNE_DOCKER_LOG_MAX_SIZE=$DUNE_DOCKER_LOG_MAX_SIZE; expected a value such as 50m." >&2
+  return 1
+fi
+if ! printf '%s' "$DUNE_DOCKER_LOG_MAX_FILES" | grep -Eq '^[1-9][0-9]*$'; then
+  echo "Invalid DUNE_DOCKER_LOG_MAX_FILES=$DUNE_DOCKER_LOG_MAX_FILES; expected a positive integer." >&2
+  return 1
+fi
+# shellcheck disable=SC2034 # Consumed by scripts that source this file.
+DUNE_DOCKER_LOG_ARGS=(
+  --log-driver json-file
+  --log-opt "max-size=$DUNE_DOCKER_LOG_MAX_SIZE"
+  --log-opt "max-file=$DUNE_DOCKER_LOG_MAX_FILES"
+)
+
 value_is_known() {
   local value="${1:-}"
   [ -n "$value" ] && [ "$value" != "unknown" ]

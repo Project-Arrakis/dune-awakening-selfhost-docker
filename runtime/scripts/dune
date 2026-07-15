@@ -386,6 +386,11 @@ EOF
     runtime/scripts/doctor.sh
     ;;
 
+  storage)
+    shift || true
+    runtime/scripts/storage.sh "$@"
+    ;;
+
   network)
     shift || true
     runtime/scripts/network-bind.sh "$@"
@@ -441,6 +446,7 @@ Usage:
   dune status
   dune version
   dune doctor
+  dune storage [status|cleanup [--dry-run] [--build-cache]]
   dune ps
   dune servers
   dune spawn <map-name|partition-id>

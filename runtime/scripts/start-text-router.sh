@@ -79,6 +79,7 @@ if [ "$rmq_tls_ready" != "1" ]; then
 fi
 
 docker run -d \
+  "${DUNE_DOCKER_LOG_ARGS[@]}" \
   --name dune-text-router \
   --network dune-net \
   --restart unless-stopped \

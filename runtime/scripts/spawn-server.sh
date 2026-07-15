@@ -617,6 +617,7 @@ docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
 ensure_host_latency_tuned
 
 docker run -d \
+  "${DUNE_DOCKER_LOG_ARGS[@]}" \
   --name "$CONTAINER_NAME" \
   --network host \
   --restart unless-stopped \

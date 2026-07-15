@@ -94,16 +94,22 @@ require_compose() {
 }
 
 restart_console() {
+  local previous_image_id current_image_id
   require_compose
   prepare_docker_socket_gid
   prepare_host_user_ids
   export ADMIN_BIND_PORT="${ADMIN_WEB_PORT:-${ADMIN_BIND_PORT:-}}"
   mkdir -p runtime/generated
+  previous_image_id="$(docker image inspect --format '{{.Id}}' redblink-dune-docker-console:dev 2>/dev/null || true)"
   echo "Rebuilding Dune Docker Console..."
   COMPOSE_PROJECT_NAME="$PROJECT_NAME" DUNE_HOST_REPO_ROOT="$HOST_ROOT" docker compose -f "$WEB_COMPOSE" build "$WEB_SERVICE"
   echo "Replacing Dune Docker Console container..."
   docker rm -f "$WEB_SERVICE" >/dev/null 2>&1 || true
   COMPOSE_PROJECT_NAME="$PROJECT_NAME" DUNE_HOST_REPO_ROOT="$HOST_ROOT" docker compose -f "$WEB_COMPOSE" up -d "$WEB_SERVICE"
+  current_image_id="$(docker image inspect --format '{{.Id}}' redblink-dune-docker-console:dev 2>/dev/null || true)"
+  if [ -n "$previous_image_id" ] && [ "$previous_image_id" != "$current_image_id" ]; then
+    docker image rm "$previous_image_id" >/dev/null 2>&1 || true
+  fi
   echo "Dune Docker Console restarted."
   print_url
 }
