@@ -32,8 +32,6 @@ if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
   exit 1
 fi
 
-mkdir -p runtime/generated runtime/logs runtime/text-router
-
 HOST_ROOT="${DUNE_RUNTIME_HOST_REPO_ROOT:-$(host_path "$ROOT_DIR")}"
 CONTROL_PATHS=(
   .env
@@ -64,6 +62,7 @@ docker run --rm \
   -w /repo \
   "$IMAGE" -lc '
     set -euo pipefail
+    mkdir -p runtime/generated runtime/logs runtime/text-router
     while IFS= read -r path; do
       [ -n "$path" ] || continue
       [ -e "$path" ] || continue
