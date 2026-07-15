@@ -19,8 +19,8 @@ function assertExecutable(path) {
 }
 
 function assertDuneRoute(command, script) {
-  assert.match(duneSource, new RegExp(`(?:^|\\n)  ${command.replace(/[.*+?^${}()|[\\]\\]/g, "\\$&")}\\)`));
-  assert.match(duneSource, new RegExp(script.replace(/[.*+?^${}()|[\\]\\]/g, "\\$&")));
+  assert.ok(duneSource.split("\n").includes(`  ${command})`), `missing dune route: ${command}`);
+  assert.ok(duneSource.includes(script), `dune route ${command} does not invoke ${script}`);
   assertExecutable(script);
 }
 
@@ -47,7 +47,8 @@ async function assertWebWrite(operation, payload, expectedArgs) {
   const created = manager.create("matrix", operation, payload);
   const completed = await waitForTask(manager, created.id);
   assert.equal(completed.status, "succeeded", completed.errorMessage || "task failed");
-  assert.match(completed.logLines.map((line) => line.line).join("\n"), new RegExp(`web-write:${escapeRegex(expectedArgs.join(" "))}`));
+  const expectedOutput = `web-write:${expectedArgs.join(" ")}`;
+  assert.ok(completed.logLines.some((line) => line.line.includes(expectedOutput)), `missing task output: ${expectedOutput}`);
 }
 
 function waitForTask(manager, id) {
@@ -64,10 +65,6 @@ function waitForTask(manager, id) {
       }
     }, 10);
   });
-}
-
-function escapeRegex(value) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 // Critical operations (1-10)
@@ -252,7 +249,9 @@ test("40 Web UI: sietch write executes through the task runner", async () => {
 // Upgrade and ownership migration (41-43)
 test("41 Upgrade: host runtime migration repairs only the controlled writable paths", () => {
   const script = source("runtime/scripts/repair-host-runtime-permissions.sh");
-  for (const path of ["runtime/generated", "runtime/logs", "runtime/backups", "runtime/secrets", "runtime/text-router"]) assert.match(script, new RegExp(path));
+  for (const path of ["runtime/generated", "runtime/logs", "runtime/backups", "runtime/secrets", "runtime/text-router"]) {
+    assert.ok(script.includes(path), `permission repair does not cover ${path}`);
+  }
   assert.match(script, /--user 0:0/);
   assert.match(script, /find "\$path" -xdev/);
   assert.match(script, /runtime\/game\/\*\/Saved\/UserSettings/);
@@ -271,7 +270,7 @@ test("42 Upgrade: stale root host IDs normalize to the non-root repository owner
 test("43 Upgrade: orchestrator repairs every writable volume before dropping privileges", () => {
   const entrypoint = source("orchestrator/entrypoint.sh");
   for (const path of ["/srv/dune/server", "/srv/dune/steam", "/srv/dune/generated", "/srv/dune/cache", "/home/dune/.steam", "/work"]) {
-    assert.match(entrypoint, new RegExp(escapeRegex(path)));
+    assert.ok(entrypoint.includes(path), `orchestrator entrypoint does not repair ${path}`);
   }
   assert.match(entrypoint, /chown -R dune:dune/);
   assert.match(entrypoint, /exec gosu dune/);
