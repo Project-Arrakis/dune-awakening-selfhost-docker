@@ -5,7 +5,7 @@ SCRIPT_ROOT="$(cd "$(dirname "$0")/../.." && pwd -P)"
 ROOT_DIR="${DUNE_RUNTIME_REPO_ROOT:-$SCRIPT_ROOT}"
 cd "$ROOT_DIR"
 
-[ -f .env ] && . ./.env
+[ -r .env ] && . ./.env
 source "$SCRIPT_ROOT/runtime/scripts/host-paths.sh"
 
 OWNER_UID="$(stat -c '%u' .)"
@@ -63,25 +63,37 @@ docker run --rm \
   "$IMAGE" -lc '
     set -euo pipefail
     mkdir -p runtime/generated runtime/logs runtime/text-router
+    chown "$TARGET_UID:$TARGET_GID" runtime
+    chmod u+rwx runtime
     while IFS= read -r path; do
       [ -n "$path" ] || continue
       [ -e "$path" ] || continue
       find "$path" -xdev \( ! -uid "$TARGET_UID" -o ! -gid "$TARGET_GID" \) \
         -exec chown "$TARGET_UID:$TARGET_GID" {} +
+      if [ -d "$path" ]; then
+        find "$path" -xdev -type d ! -perm -u+rwx -exec chmod u+rwx {} +
+        find "$path" -xdev -type f ! -perm -u+rw -exec chmod u+rw {} +
+      elif [ -f "$path" ]; then
+        chmod u+rw "$path"
+      fi
     done <<< "$CONTROL_PATHS"
 
     # Game processes own most Saved content. Repair only the host-managed
     # directory chain and generated UserSettings files needed by launch scripts.
     if [ -d runtime/game ]; then
       chown "$TARGET_UID:$TARGET_GID" runtime/game
+      chmod u+rwx runtime/game
       for path in runtime/game/artifacts runtime/game/* runtime/game/*/Saved; do
         [ -e "$path" ] || continue
         chown "$TARGET_UID:$TARGET_GID" "$path"
+        [ ! -d "$path" ] || chmod u+rwx "$path"
       done
       for path in runtime/game/*/Saved/UserSettings; do
         [ -e "$path" ] || continue
         find "$path" -xdev \( ! -uid "$TARGET_UID" -o ! -gid "$TARGET_GID" \) \
           -exec chown "$TARGET_UID:$TARGET_GID" {} +
+        find "$path" -xdev -type d ! -perm -u+rwx -exec chmod u+rwx {} +
+        find "$path" -xdev -type f ! -perm -u+rw -exec chmod u+rw {} +
       done
     fi
   '

@@ -3,6 +3,11 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 
+if [ "${DUNE_RUNTIME_PERMISSIONS_REPAIRED:-0}" != "1" ]; then
+  runtime/scripts/repair-host-runtime-permissions.sh
+  export DUNE_RUNTIME_PERMISSIONS_REPAIRED=1
+fi
+
 [ -f .env ] && . ./.env
 source runtime/scripts/host-paths.sh
 
@@ -51,13 +56,6 @@ if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
   echo "Start or build the orchestrator first:"
   echo "  docker compose up -d --build orchestrator"
   exit 1
-fi
-
-if [ "${DUNE_RUNTIME_PERMISSIONS_REPAIRED:-0}" != "1" ]; then
-  DUNE_HOST_UID="$HOST_UID" \
-    DUNE_HOST_GID="$HOST_GID" \
-    DUNE_RUNTIME_PERMISSION_HELPER_IMAGE="$IMAGE" \
-    runtime/scripts/repair-host-runtime-permissions.sh
 fi
 
 echo "Starting autoscaler container..."

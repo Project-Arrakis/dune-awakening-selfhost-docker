@@ -3,6 +3,9 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 
+runtime/scripts/repair-host-runtime-permissions.sh
+export DUNE_RUNTIME_PERMISSIONS_REPAIRED=1
+
 [ -f .env ] && . ./.env
 [ -r runtime/generated/battlegroup.env ] && . runtime/generated/battlegroup.env
 
@@ -13,9 +16,6 @@ if [ -f .env ]; then
   . ./.env
 fi
 set +a
-
-runtime/scripts/repair-host-runtime-permissions.sh
-export DUNE_RUNTIME_PERMISSIONS_REPAIRED=1
 
 run_timed_step() {
   local label="$1"

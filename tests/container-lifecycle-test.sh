@@ -16,6 +16,23 @@ cleanup() {
 }
 trap cleanup EXIT
 
+set_fixture_ownership() {
+  local path="$1"
+  local uid="$2"
+  local gid="$3"
+  local mode="$4"
+
+  docker run --rm \
+    --user 0:0 \
+    --entrypoint sh \
+    -e "FIXTURE_UID=$uid" \
+    -e "FIXTURE_GID=$gid" \
+    -e "FIXTURE_MODE=$mode" \
+    -v "$path:/fixture" \
+    "$IMAGE_NAME" \
+    -c 'chown -R "$FIXTURE_UID:$FIXTURE_GID" /fixture && chmod -R "$FIXTURE_MODE" /fixture'
+}
+
 echo "============================================="
 echo "  Container Lifecycle Tests"
 echo "============================================="
@@ -66,8 +83,7 @@ echo ""
 echo "5. Root-owned /repo blocks writes (upgrade simulation)"
 ROOT_REPO="$TEST_DIR/root-repo"
 mkdir -p "$ROOT_REPO"
-sudo chown root:root "$ROOT_REPO" 2>/dev/null || true
-sudo chmod 755 "$ROOT_REPO" 2>/dev/null || true
+set_fixture_ownership "$ROOT_REPO" 0 0 755
 
 OUTPUT=$(docker run --rm -v "$ROOT_REPO:/repo" "$IMAGE_NAME" 2>&1) || true
 if echo "$OUTPUT" | grep -q "not writable"; then
@@ -82,7 +98,7 @@ echo ""
 echo "6. Host-owned /repo allows writes"
 USER_REPO="$TEST_DIR/user-repo"
 mkdir -p "$USER_REPO"
-sudo chown "$(id -u):$(id -g)" "$USER_REPO" 2>/dev/null || chown "$(id -u):$(id -g)" "$USER_REPO" 2>/dev/null || true
+set_fixture_ownership "$USER_REPO" "$(id -u)" "$(id -g)" 755
 
 OUTPUT=$(docker run --rm --user "$(id -u):$(id -g)" -v "$USER_REPO:/repo" "$IMAGE_NAME" touch /repo/.test-write 2>&1 && echo "OK") || true
 if echo "$OUTPUT" | grep -q "OK"; then
@@ -149,8 +165,7 @@ echo "12. Orchestrator repairs root-owned writable mounts"
 ORCH_TEST_ROOT="$TEST_DIR/orchestrator-upgrade"
 mkdir -p "$ORCH_TEST_ROOT"/{server,steam,generated,cache,home-steam,work}
 printf 'old catalog\n' > "$ORCH_TEST_ROOT/work/server-catalog.json"
-sudo chown -R root:root "$ORCH_TEST_ROOT" 2>/dev/null || true
-sudo chmod -R u+rwX,go-rwx "$ORCH_TEST_ROOT" 2>/dev/null || true
+set_fixture_ownership "$ORCH_TEST_ROOT" 0 0 700
 
 OUTPUT=$(docker run --rm \
   -v "$ORCH_TEST_ROOT/server:/srv/dune/server" \
@@ -202,10 +217,11 @@ echo "15. Host runtime state ownership migration"
 HOST_RUNTIME_ROOT="$TEST_DIR/host-runtime"
 mkdir -p "$HOST_RUNTIME_ROOT/runtime"/{generated,logs,backups,secrets,addons,text-router}
 mkdir -p "$HOST_RUNTIME_ROOT/runtime/game/test-map/Saved/UserSettings"
+printf 'DUNE_HOST_UID=%s\nDUNE_HOST_GID=%s\n' "$(id -u)" "$(id -g)" > "$HOST_RUNTIME_ROOT/.env"
 printf 'old state\n' > "$HOST_RUNTIME_ROOT/runtime/generated/autoscaler-idle.tsv"
 printf 'old setting\n' > "$HOST_RUNTIME_ROOT/runtime/game/test-map/Saved/UserSettings/UserGame.ini"
-sudo chown -R root:root "$HOST_RUNTIME_ROOT/runtime" 2>/dev/null || true
-sudo chmod -R u+rwX,go-rwx "$HOST_RUNTIME_ROOT/runtime" 2>/dev/null || true
+set_fixture_ownership "$HOST_RUNTIME_ROOT/.env" 0 0 600
+set_fixture_ownership "$HOST_RUNTIME_ROOT/runtime" 0 0 700
 
 OUTPUT=$(DUNE_RUNTIME_REPO_ROOT="$HOST_RUNTIME_ROOT" \
   DUNE_RUNTIME_HOST_REPO_ROOT="$HOST_RUNTIME_ROOT" \
@@ -213,7 +229,9 @@ OUTPUT=$(DUNE_RUNTIME_REPO_ROOT="$HOST_RUNTIME_ROOT" \
   DUNE_HOST_UID="$(id -u)" \
   DUNE_HOST_GID="$(id -g)" \
   "$REPO_ROOT/runtime/scripts/repair-host-runtime-permissions.sh" 2>&1) || true
-if [ -w "$HOST_RUNTIME_ROOT/runtime/generated/autoscaler-idle.tsv" ] \
+if [ -r "$HOST_RUNTIME_ROOT/.env" ] \
+  && [ -w "$HOST_RUNTIME_ROOT/.env" ] \
+  && [ -w "$HOST_RUNTIME_ROOT/runtime/generated/autoscaler-idle.tsv" ] \
   && printf 'new state\n' > "$HOST_RUNTIME_ROOT/runtime/generated/autoscaler-idle.tsv" \
   && printf 'router state\n' > "$HOST_RUNTIME_ROOT/runtime/text-router/state.json" \
   && printf 'new setting\n' > "$HOST_RUNTIME_ROOT/runtime/game/test-map/Saved/UserSettings/UserGame.ini"; then
@@ -226,11 +244,19 @@ fi
 # ── Test 16: Startup paths invoke host runtime migration ──
 echo ""
 echo "16. Startup paths invoke host runtime migration"
-if grep -q 'repair-host-runtime-permissions.sh' "$REPO_ROOT/runtime/scripts/start-all.sh" \
-  && grep -q 'repair-host-runtime-permissions.sh' "$REPO_ROOT/runtime/scripts/start-autoscaler.sh"; then
-  pass "full and standalone autoscaler startup both repair legacy ownership"
+start_all_repair_line="$(grep -n -m1 'repair-host-runtime-permissions.sh' "$REPO_ROOT/runtime/scripts/start-all.sh" | cut -d: -f1 || true)"
+start_all_env_line="$(grep -n -m1 '\. \.\/.env' "$REPO_ROOT/runtime/scripts/start-all.sh" | cut -d: -f1 || true)"
+autoscaler_repair_line="$(grep -n -m1 'repair-host-runtime-permissions.sh' "$REPO_ROOT/runtime/scripts/start-autoscaler.sh" | cut -d: -f1 || true)"
+autoscaler_env_line="$(grep -n -m1 '\. \.\/.env' "$REPO_ROOT/runtime/scripts/start-autoscaler.sh" | cut -d: -f1 || true)"
+if [ -n "$start_all_repair_line" ] \
+  && [ -n "$start_all_env_line" ] \
+  && [ "$start_all_repair_line" -lt "$start_all_env_line" ] \
+  && [ -n "$autoscaler_repair_line" ] \
+  && [ -n "$autoscaler_env_line" ] \
+  && [ "$autoscaler_repair_line" -lt "$autoscaler_env_line" ]; then
+  pass "full and standalone autoscaler startup repair permissions before loading .env"
 else
-  fail "startup paths must invoke host runtime permission migration"
+  fail "startup paths must repair host runtime permissions before loading .env"
 fi
 
 # ── Cleanup ──
