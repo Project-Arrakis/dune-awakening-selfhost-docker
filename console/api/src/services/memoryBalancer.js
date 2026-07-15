@@ -12,9 +12,46 @@ const MEMORY_BALANCER_EMERGENCY_DONOR_MAX_PERCENT = 70;
 const MEMORY_BALANCER_DONOR_POST_TRANSFER_MAX_PERCENT = 80;
 const MEMORY_BALANCER_CHUNK_BYTES = 1024 ** 3;
 const MEMORY_BALANCER_MIN_HEADROOM_BYTES = 1024 ** 3;
+const LIVE_MEMORY_CACHE_MS = 10000;
+
+export function createDockerStatsSampler(config, options = {}) {
+  const collect = options.collect || (async () => {
+    const stdout = await runProcessText(config, "docker", ["stats", "--no-stream", "--format", "{{json .}}"], 10000);
+    return stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).map(parseDockerStatsRow).filter(Boolean);
+  });
+  const now = options.now || Date.now;
+  const cacheMs = Math.max(0, Number(options.cacheMs ?? LIVE_MEMORY_CACHE_MS));
+  let cached = null;
+  let inFlight = null;
+
+  async function read(readOptions = {}) {
+    const currentTime = now();
+    if (!readOptions.fresh && cached && currentTime - cached.sampledAtMs < cacheMs) return cached;
+    if (inFlight) return inFlight;
+
+    inFlight = Promise.resolve()
+      .then(collect)
+      .then((rows) => {
+        const sampledAtMs = now();
+        cached = {
+          rows,
+          sampledAt: new Date(sampledAtMs).toISOString(),
+          sampledAtMs
+        };
+        return cached;
+      })
+      .finally(() => {
+        inFlight = null;
+      });
+    return inFlight;
+  }
+
+  return { read };
+}
 
 export function createMemoryBalancer(config) {
   const persisted = readMemoryBalancerSettings(config);
+  const liveMemorySampler = createDockerStatsSampler(config);
   const state = {
     enabled: persisted.enabled,
     running: false,
@@ -25,9 +62,12 @@ export function createMemoryBalancer(config) {
     updatedAt: null
   };
 
-  async function readLiveRows() {
-    const stdout = await runProcessText(config, "docker", ["stats", "--no-stream", "--format", "{{json .}}"], 10000);
-    return stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).map(parseDockerStatsRow).filter(Boolean);
+  async function readLiveSnapshot(options = {}) {
+    return liveMemorySampler.read(options);
+  }
+
+  async function readLiveRows(options = {}) {
+    return (await readLiveSnapshot(options)).rows;
   }
 
   async function captureBaseline() {
@@ -59,7 +99,7 @@ export function createMemoryBalancer(config) {
     if (!state.enabled || state.running) return;
     state.running = true;
     try {
-      const rows = (await readLiveRows()).filter((row) => row.usedBytes > 0 && row.limitBytes > 0);
+      const rows = (await readLiveRows({ fresh: true })).filter((row) => row.usedBytes > 0 && row.limitBytes > 0);
       for (const row of rows) {
         if (!state.baselineLimits.has(row.container)) state.baselineLimits.set(row.container, row.limitBytes);
       }
@@ -134,6 +174,7 @@ export function createMemoryBalancer(config) {
   return {
     intervalMs: MEMORY_BALANCER_INTERVAL_MS,
     publicState,
+    readLiveSnapshot,
     readLiveRows,
     setEnabled,
     tick

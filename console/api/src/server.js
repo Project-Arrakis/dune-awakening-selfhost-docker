@@ -1392,8 +1392,8 @@ function restartPayload(scope, map, partitionId) {
 
 async function liveMapMemoryRoute(res) {
   try {
-    const rows = await memoryBalancer.readLiveRows();
-    return json(res, 200, { rows, sampledAt: new Date().toISOString() });
+    const snapshot = await memoryBalancer.readLiveSnapshot();
+    return json(res, 200, { rows: snapshot.rows, sampledAt: snapshot.sampledAt });
   } catch (error) {
     return json(res, 200, { rows: [], sampledAt: new Date().toISOString(), error: redact(error.message || error) });
   }

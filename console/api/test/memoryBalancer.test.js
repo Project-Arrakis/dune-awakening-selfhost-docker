@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createMemoryBalancer, dockerMemoryUpdateArgs, parseDockerStatsRow } from "../src/services/memoryBalancer.js";
+import { createDockerStatsSampler, createMemoryBalancer, dockerMemoryUpdateArgs, parseDockerStatsRow } from "../src/services/memoryBalancer.js";
 
 test("memory balancer updates Docker swap limit with memory limit", () => {
   assert.deepEqual(dockerMemoryUpdateArgs("dune-server-overmap", 2 * 1024 ** 3), [
@@ -37,6 +37,51 @@ test("memory balancer canonicalizes DeepDesert containers", () => {
   }));
   assert.equal(row.container, "dune-server-deepdesert-1-8");
   assert.equal(row.map, "DeepDesert_1");
+});
+
+test("live memory sampler caches completed Docker stats collections", async () => {
+  let currentTime = 1000;
+  let collections = 0;
+  const sampler = createDockerStatsSampler({}, {
+    cacheMs: 10000,
+    now: () => currentTime,
+    collect: async () => [{ container: `sample-${++collections}` }]
+  });
+
+  const first = await sampler.read();
+  currentTime += 5000;
+  const cached = await sampler.read();
+  assert.equal(collections, 1);
+  assert.strictEqual(cached, first);
+
+  currentTime += 5001;
+  const refreshed = await sampler.read();
+  assert.equal(collections, 2);
+  assert.notStrictEqual(refreshed, first);
+});
+
+test("live memory sampler coalesces overlapping and forced collections", async () => {
+  let release;
+  let collections = 0;
+  const sampler = createDockerStatsSampler({}, {
+    collect: () => {
+      collections += 1;
+      return new Promise((resolve) => { release = resolve; });
+    }
+  });
+
+  const first = sampler.read();
+  const overlapping = sampler.read({ fresh: true });
+  await Promise.resolve();
+  assert.equal(collections, 1);
+  release([{ container: "dune-server-overmap" }]);
+  assert.strictEqual(await overlapping, await first);
+
+  const forced = sampler.read({ fresh: true });
+  await Promise.resolve();
+  assert.equal(collections, 2);
+  release([{ container: "dune-server-survival-1" }]);
+  await forced;
 });
 
 test("memory balancer persists enabled state across restarts", async () => {

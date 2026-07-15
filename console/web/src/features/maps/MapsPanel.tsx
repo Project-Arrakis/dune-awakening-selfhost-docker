@@ -33,7 +33,7 @@ type MapsPanelProps = {
   taskTechnicalDetails: (task: Task) => string;
 };
 const LIVE_MEMORY_STALE_GRACE_MS = 20000;
-const LIVE_MEMORY_REFRESH_MS = 5000;
+const LIVE_MEMORY_REFRESH_MS = 15000;
 const MAP_RUNTIME_REFRESH_MS = 15000;
 type CachedLiveMemoryRow = { row: LiveMapMemoryRow; sampledAt: number };
 
@@ -658,11 +658,18 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
     return () => window.clearTimeout(id);
   }, [spicefieldResult]);
   useEffect(() => {
-    const id = window.setInterval(() => { void loadLiveMemory().catch(() => {}); }, LIVE_MEMORY_REFRESH_MS);
+    const refreshLiveMemory = () => {
+      if (document.visibilityState !== "visible") return;
+      void loadLiveMemory().catch(() => {});
+    };
+    const id = window.setInterval(refreshLiveMemory, LIVE_MEMORY_REFRESH_MS);
     return () => window.clearInterval(id);
   }, []);
   useEffect(() => {
-    const id = window.setInterval(() => { void loadMemoryBalancer().catch(() => {}); }, 5000);
+    const id = window.setInterval(() => {
+      if (document.visibilityState !== "visible") return;
+      void loadMemoryBalancer().catch(() => {});
+    }, LIVE_MEMORY_REFRESH_MS);
     return () => window.clearInterval(id);
   }, []);
   useEffect(() => {
