@@ -9,6 +9,10 @@ on:
       - "release/**"
   workflow_dispatch:
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
@@ -77,3 +81,63 @@ jobs:
       - name: npm audit
         run: npm audit --audit-level=high
         working-directory: console/api
+
+  release-validation:
+    name: Release validation (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-22.04
+          - ubuntu-24.04
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+        with:
+          fetch-depth: 0
+      - name: Validate release package and fresh extraction
+        run: bash tests/release-gate-test.sh
+
+  release-gate:
+    name: Release gate
+    if: ${{ always() }}
+    needs:
+      - api-tests
+      - metrics-unit
+      - runtime-script-unit
+      - container-lifecycle
+      - security-checks
+      - api-dependency-audit
+      - release-validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every release check to pass
+        env:
+          API_TESTS: ${{ needs.api-tests.result }}
+          METRICS_UNIT: ${{ needs.metrics-unit.result }}
+          RUNTIME_SCRIPT_UNIT: ${{ needs.runtime-script-unit.result }}
+          CONTAINER_LIFECYCLE: ${{ needs.container-lifecycle.result }}
+          SECURITY_CHECKS: ${{ needs.security-checks.result }}
+          API_DEPENDENCY_AUDIT: ${{ needs.api-dependency-audit.result }}
+          RELEASE_VALIDATION: ${{ needs.release-validation.result }}
+        run: |
+          set -euo pipefail
+          failed=0
+          for result in \
+            "$API_TESTS" \
+            "$METRICS_UNIT" \
+            "$RUNTIME_SCRIPT_UNIT" \
+            "$CONTAINER_LIFECYCLE" \
+            "$SECURITY_CHECKS" \
+            "$API_DEPENDENCY_AUDIT" \
+            "$RELEASE_VALIDATION"
+          do
+            if [ "$result" != "success" ]; then
+              failed=1
+            fi
+          done
+          if [ "$failed" -ne 0 ]; then
+            echo "One or more required release checks did not pass."
+            exit 1
+          fi
+          echo "All required release checks passed."
