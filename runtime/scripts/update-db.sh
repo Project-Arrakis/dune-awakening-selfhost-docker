@@ -15,6 +15,56 @@ FAILURE_MARKER_REGEX='Traceback \(most recent call last\)|ERROR|CRITICAL|FATAL'
 QUIESCENT_SUCCESS_AFTER_SECONDS="${DUNE_DB_UPDATE_QUIESCENT_SUCCESS_AFTER_SECONDS:-20}"
 ORPHAN_AUDIT_DIR="runtime/generated/db-orphan-audits"
 ORPHAN_BACKUP_ON_DETECT="${DUNE_DB_BACKUP_ON_ORPHAN_DETECT:-1}"
+PROJECT_DB_ROLE="dune"
+PROJECT_ROLE_WAS_SUPERUSER=""
+ROLE_ELEVATION_MARKER="${DUNE_DB_UPDATE_ROLE_MARKER:-runtime/generated/db-update-role-elevated}"
+
+restore_project_role_privileges() {
+  local status=$?
+
+  trap - EXIT
+  if [ "$PROJECT_ROLE_WAS_SUPERUSER" = "false" ]; then
+    if ! docker exec dune-postgres psql -U postgres -d postgres -v ON_ERROR_STOP=1 \
+      -c "ALTER ROLE ${PROJECT_DB_ROLE} NOSUPERUSER;" >/dev/null; then
+      echo "Failed to restore the ${PROJECT_DB_ROLE} database role to NOSUPERUSER." >&2
+      [ "$status" -ne 0 ] || status=1
+    else
+      rm -f "$ROLE_ELEVATION_MARKER"
+    fi
+  fi
+
+  exit "$status"
+}
+
+prepare_project_role_for_update() {
+  local is_superuser
+
+  if [ -f "$ROLE_ELEVATION_MARKER" ]; then
+    echo "Recovering database role privileges from an interrupted update."
+    docker exec dune-postgres psql -U postgres -d postgres -v ON_ERROR_STOP=1 \
+      -c "ALTER ROLE ${PROJECT_DB_ROLE} NOSUPERUSER;" >/dev/null
+    rm -f "$ROLE_ELEVATION_MARKER"
+  fi
+
+  is_superuser="$(docker exec dune-postgres psql -U postgres -d postgres -Atc \
+    "SELECT rolsuper FROM pg_roles WHERE rolname = '${PROJECT_DB_ROLE}';" | tr -d '[:space:]')"
+  case "$is_superuser" in
+    t)
+      PROJECT_ROLE_WAS_SUPERUSER="true"
+      ;;
+    f)
+      PROJECT_ROLE_WAS_SUPERUSER="false"
+      mkdir -p "$(dirname "$ROLE_ELEVATION_MARKER")"
+      : > "$ROLE_ELEVATION_MARKER"
+      docker exec dune-postgres psql -U postgres -d postgres -v ON_ERROR_STOP=1 \
+        -c "ALTER ROLE ${PROJECT_DB_ROLE} SUPERUSER;" >/dev/null
+      ;;
+    *)
+      echo "Cannot determine database privileges for role ${PROJECT_DB_ROLE}." >&2
+      return 1
+      ;;
+  esac
+}
 
 audit_db_orphans() {
   local summary detailed ts report_file total
@@ -47,6 +97,14 @@ echo "=== Running Dune DB update/migration ==="
 echo "Image: $IMAGE"
 
 audit_db_orphans
+
+# Funcom's updater restores a schema dump as the project role. PostgreSQL checks
+# superuser privileges for CREATE EXTENSION even when IF NOT EXISTS is used, so
+# temporarily elevate that role and always restore its original state.
+trap restore_project_role_privileges EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+prepare_project_role_for_update
 
 docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
 
