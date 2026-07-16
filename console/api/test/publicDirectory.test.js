@@ -19,6 +19,8 @@ import {
   isBattlegroupRunning,
   normalizeDiscordInvite,
   readConfiguredCapacity,
+  readDirectoryInstallationKey,
+  readPreviousDirectoryInstallationKey,
   readDirectorySettings,
   readGameBuild,
   reconcilePublicProbe
@@ -55,6 +57,7 @@ function fixture() {
     'SERVER_TITLE="Test Sietch"',
     "SERVER_REGION=Europe Test",
     "SERVER_IP_MODE=public",
+    "BATTLEGROUP_ID=sh-testbattlegroup-directory",
     "DUNE_PUBLIC_DIRECTORY_DISCORD_INVITE=https://discord.com/invite/Test_Code"
   ].join("\n"));
   writeFileSync(join(generatedDir, "image-tags.env"), "DUNE_WORLD_IMAGE_TAG=2036754-0-shipping\n");
@@ -152,6 +155,8 @@ test("directory snapshot uses compact database aggregates and local metadata", a
       playersOnline: 4,
       capacity: 60,
       version: "2036754",
+      installationKey: readDirectoryInstallationKey(files.repoRoot),
+      previousInstallationKey: "",
       sietches: 2,
       discordInvite: "https://discord.gg/Test_Code"
     });
@@ -264,6 +269,7 @@ test("reporter sends only the public directory contract and persists its identit
     assert.deepEqual(Object.keys(payload).sort(), [
       "capacity",
       "discordInvite",
+      "installationKey",
       "name",
       "personalizedPingEnabled",
       "playersOnline",
@@ -282,6 +288,8 @@ test("reporter sends only the public directory contract and persists its identit
     assert.equal(payload.playersOnline, 4);
     assert.equal(payload.personalizedPingEnabled, true);
     assert.equal(payload.discordInvite, "https://discord.gg/Test_Code");
+    assert.match(payload.installationKey, /^[0-9a-f]{64}$/);
+    assert.doesNotMatch(JSON.stringify(payload), /sh-testbattlegroup-directory/);
     assert.equal(delays.at(-1), 75000);
 
     const identity = JSON.parse(readFileSync(join(files.secretsDir, "public-directory.json"), "utf8"));
@@ -289,6 +297,51 @@ test("reporter sends only the public directory contract and persists its identit
     assert.equal(identity.secret, payload.secret);
     assert.equal(statSync(join(files.secretsDir, "public-directory.json")).mode & 0o777, 0o600);
     assert.equal(reporter.publicState().remoteListed, true);
+  } finally {
+    files.cleanup();
+  }
+});
+
+test("directory installation keys are stable without exposing battlegroup IDs", () => {
+  const files = fixture();
+  try {
+    const first = readDirectoryInstallationKey(files.repoRoot);
+    const second = readDirectoryInstallationKey(files.repoRoot);
+    assert.match(first, /^[0-9a-f]{64}$/);
+    assert.equal(second, first);
+    assert.notEqual(first, "sh-testbattlegroup-directory");
+
+    writeFileSync(join(files.repoRoot, "runtime", "generated", "battlegroup.env"), "BATTLEGROUP_ID=sh-restored-battlegroup\n");
+    assert.notEqual(readDirectoryInstallationKey(files.repoRoot), first);
+  } finally {
+    files.cleanup();
+  }
+});
+
+test("external restores report the previous opaque installation key only for the adopted battlegroup", () => {
+  const files = fixture();
+  try {
+    const previousKey = readDirectoryInstallationKey(files.repoRoot);
+    writeFileSync(join(files.generatedDir, "battlegroup.env"), "BATTLEGROUP_ID=sh-adopted-battlegroup\n");
+    writeFileSync(join(files.generatedDir, "battlegroup-restore-point.env"), [
+      "PREVIOUS_BATTLEGROUP_ID=sh-testbattlegroup-directory",
+      "ADOPTED_BATTLEGROUP_ID=sh-adopted-battlegroup"
+    ].join("\n"));
+
+    const currentKey = readDirectoryInstallationKey(files.repoRoot);
+    assert.notEqual(currentKey, previousKey);
+    assert.equal(readPreviousDirectoryInstallationKey(files.repoRoot, currentKey), previousKey);
+    assert.equal(readPreviousDirectoryInstallationKey(files.repoRoot, previousKey), "");
+
+    const payload = buildHeartbeatPayload(
+      { serverId: "server-id", secret: "secret" },
+      { name: "Test", region: "Europe", running: true, ready: true, playersOnline: 0, capacity: 60,
+        version: "2036754", sietches: 1, installationKey: currentKey,
+        previousInstallationKey: previousKey, discordInvite: "" }
+    );
+    assert.equal(payload.installationKey, currentKey);
+    assert.equal(payload.previousInstallationKey, previousKey);
+    assert.doesNotMatch(JSON.stringify(payload), /sh-(test|adopted)-battlegroup/);
   } finally {
     files.cleanup();
   }

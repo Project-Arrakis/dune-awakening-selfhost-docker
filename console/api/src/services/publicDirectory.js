@@ -7,7 +7,7 @@ import {
   writeFileSync
 } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import * as duneDb from "../duneDb.js";
 
@@ -243,6 +243,8 @@ export async function collectDirectorySnapshot(
   options = {}
 ) {
   const version = readGameBuild(config.repoRoot);
+  const installationKey = readDirectoryInstallationKey(config.repoRoot);
+  const previousInstallationKey = readPreviousDirectoryInstallationKey(config.repoRoot, installationKey);
   if (!settings.title) throw new Error("Public directory reporting requires SERVER_TITLE.");
   if (!SUPPORTED_REGIONS.has(settings.region)) {
     throw new Error(`Public directory reporting does not support region: ${settings.region || "unknown"}.`);
@@ -313,6 +315,8 @@ export async function collectDirectorySnapshot(
     playersOnline: Math.min(Math.max(0, playersOnline), capacity),
     capacity,
     version,
+    installationKey,
+    previousInstallationKey,
     sietches: clampInteger(sietches, 0, 1000, 0),
     discordInvite: settings.discordInvite || ""
   };
@@ -334,6 +338,8 @@ export function buildHeartbeatPayload(identity, snapshot) {
     discordInvite: snapshot.discordInvite || "",
     personalizedPingEnabled: true
   };
+  if (snapshot.installationKey) payload.installationKey = snapshot.installationKey;
+  if (snapshot.previousInstallationKey) payload.previousInstallationKey = snapshot.previousInstallationKey;
   return payload;
 }
 
@@ -451,6 +457,28 @@ export function readGameBuild(repoRoot) {
   const tag = String(env.DUNE_WORLD_IMAGE_TAG || "").trim();
   const match = tag.match(/^([A-Za-z0-9._+]+?)(?:-\d+-shipping)?$/i);
   return match?.[1] || "";
+}
+
+export function readDirectoryInstallationKey(repoRoot) {
+  const generated = readEnvFile(resolve(repoRoot, "runtime/generated/battlegroup.env"));
+  const configured = readEnvFile(resolve(repoRoot, ".env"));
+  const battlegroupId = String(firstValue(generated.BATTLEGROUP_ID, configured.BATTLEGROUP_ID, "")).trim();
+  return directoryKeyForBattlegroup(battlegroupId);
+}
+
+export function readPreviousDirectoryInstallationKey(repoRoot, currentKey = readDirectoryInstallationKey(repoRoot)) {
+  const restorePoint = readEnvFile(resolve(repoRoot, "runtime/generated/battlegroup-restore-point.env"));
+  const previousKey = directoryKeyForBattlegroup(restorePoint.PREVIOUS_BATTLEGROUP_ID);
+  const adoptedKey = directoryKeyForBattlegroup(restorePoint.ADOPTED_BATTLEGROUP_ID);
+  return previousKey && adoptedKey === currentKey && previousKey !== currentKey ? previousKey : "";
+}
+
+function directoryKeyForBattlegroup(value) {
+  const battlegroupId = String(value || "").trim();
+  if (!/^[A-Za-z0-9_-]{8,160}$/.test(battlegroupId) || /^(unknown|dune-docker)$/i.test(battlegroupId)) return "";
+  return createHash("sha256")
+    .update(`dunedocker-directory-installation-v1\0${battlegroupId}`)
+    .digest("hex");
 }
 
 function readConfiguredSietches(repoRoot) {
