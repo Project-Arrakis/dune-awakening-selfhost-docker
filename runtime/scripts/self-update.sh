@@ -338,6 +338,7 @@ check_dirty_git_tree() {
 }
 
 self_update_repair_command() {
+  # shellcheck disable=SC2016
   printf 'sudo chown -R "$USER:$USER" %q\n' "$HOST_ROOT_DIR"
 }
 
@@ -479,6 +480,7 @@ backup_local_state() {
     runtime/generated/player-announcements.json \
     runtime/generated/player-announcements-state.json \
     runtime/generated/public-directory-status.json \
+    runtime/generated/public-probe.env \
     runtime/generated/restart-schedule.env \
     runtime/generated/shutdown-protection.env \
     runtime/generated/sietch-config.json \
@@ -613,6 +615,7 @@ restore_local_state_after_install() {
   restore_local_state_file_if_needed "$backup_dir" runtime/generated/player-announcements.json
   restore_local_state_file_if_needed "$backup_dir" runtime/generated/player-announcements-state.json
   restore_local_state_file_if_needed "$backup_dir" runtime/generated/public-directory-status.json
+  restore_local_state_file_if_needed "$backup_dir" runtime/generated/public-probe.env
   restore_local_state_file_if_needed "$backup_dir" runtime/generated/restart-schedule.env
   restore_local_state_file_if_needed "$backup_dir" runtime/generated/shutdown-protection.env
   restore_local_state_file_if_needed "$backup_dir" runtime/generated/sietch-config.json
@@ -758,6 +761,7 @@ restore_local_state_ownership() {
     runtime/generated/player-announcements.json \
     runtime/generated/player-announcements-state.json \
     runtime/generated/public-directory-status.json \
+    runtime/generated/public-probe.env \
     runtime/generated/restart-schedule.env \
     runtime/generated/shutdown-protection.env \
     runtime/generated/sietch-config.json \
@@ -824,7 +828,8 @@ rebuild_web_console_now() {
 
 rebuild_web_console_with_helper() {
   local service="$1"
-  local helper_name="dune-console-self-update-$(date +%s)"
+  local helper_name
+  helper_name="dune-console-self-update-$(date +%s)"
   local compose_project="${DUNE_COMPOSE_PROJECT_NAME:-dune-awakening-selfhost-docker}"
   local helper_image="${DUNE_SYSTEMD_HELPER_IMAGE:-redblink-dune-docker-console:dev}"
 

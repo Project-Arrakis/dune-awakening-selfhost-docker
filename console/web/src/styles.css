@@ -113,6 +113,12 @@ button.refresh-status-button.refreshing:disabled {
 .settings-title-actions { justify-content: flex-end; }
 .settings-server-listing-toggle .switch-state { min-width: 72px; }
 .settings-server-listing-error { margin: 0 0 12px; text-align: right; }
+.settings-discord-field { max-width: 720px; }
+.settings-discord-label, .settings-discord-open, .settings-discord-remove { display: inline-flex; align-items: center; gap: 7px; }
+.settings-discord-label { color: var(--title); }
+.settings-discord-open { color: #aebcf7; font-size: 12px; font-weight: 700; text-decoration: none; }
+.settings-discord-open:hover { color: #cad3ff; text-decoration: underline; }
+.settings-discord-remove { color: var(--danger-text); }
 input, select, textarea {
   width: 100%;
   border: 1px solid var(--border-strong);

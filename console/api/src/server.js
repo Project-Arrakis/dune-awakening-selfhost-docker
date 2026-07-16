@@ -37,7 +37,7 @@ import { persistSpicefieldOverride } from "./services/spicefieldOverrides.js";
 import { exportBlueprint, importBlueprint, listBlueprints, deleteBlueprint } from "./blueprints.js";
 import { createZipArchive } from "./services/zipArchive.js";
 import { grantAddonItem } from "./addonItemGrants.js";
-import { createPublicDirectoryReporter, readDirectorySettings } from "./services/publicDirectory.js";
+import { createPublicDirectoryReporter, normalizeDiscordInvite, readDirectorySettings } from "./services/publicDirectory.js";
 
 const config = loadConfig();
 const auth = createAuth(config);
@@ -2120,10 +2120,14 @@ function publicDirectorySettings() {
   return {
     available: settings.mode === "public",
     enabled: settings.mode === "public" && settings.enabled,
+    discordInvite: settings.discordInvite,
     mode: settings.mode,
     state: reporter.state || (settings.mode === "public" ? "pending" : "local-only"),
     lastSuccessAt: reporter.lastSuccessAt || null,
-    error: reporter.error || null
+    error: reporter.error || null,
+    probeEndpoint: reporter.probeEndpoint || null,
+    probeState: reporter.probeState || (settings.enabled ? "pending" : "disabled"),
+    probeError: reporter.probeError || null
   };
 }
 
@@ -2305,15 +2309,33 @@ async function writeConfig(req, res) {
 
 async function publicDirectorySettingsRoute(req, res) {
   const body = await readJson(req);
-  if (typeof body.enabled !== "boolean") {
+  const hasEnabled = Object.hasOwn(body, "enabled");
+  const hasDiscordInvite = Object.hasOwn(body, "discordInvite");
+  if (!hasEnabled && !hasDiscordInvite) {
+    return json(res, 400, { error: "No public listing setting was provided." });
+  }
+  if (hasEnabled && typeof body.enabled !== "boolean") {
     return json(res, 400, { error: "Server listing enabled must be true or false." });
   }
   const current = readDirectorySettings(config.repoRoot);
   if (current.mode !== "public") {
     return json(res, 409, { error: "Server listing is available only when the server is running in public mode." });
   }
-  updateEnvFileValue("DUNE_PUBLIC_DIRECTORY_ENABLED", body.enabled ? "true" : "false");
-  audit(config, req, "settings.public-directory", { enabled: body.enabled });
+  let discordInvite = current.discordInvite;
+  if (hasDiscordInvite) {
+    discordInvite = normalizeDiscordInvite(body.discordInvite);
+    if (discordInvite === null) {
+      return json(res, 400, { error: "Enter a valid discord.gg or discord.com/invite link." });
+    }
+    updateEnvFileValue("DUNE_PUBLIC_DIRECTORY_DISCORD_INVITE", discordInvite);
+  }
+  if (hasEnabled) {
+    updateEnvFileValue("DUNE_PUBLIC_DIRECTORY_ENABLED", body.enabled ? "true" : "false");
+  }
+  audit(config, req, "settings.public-directory", {
+    enabled: hasEnabled ? body.enabled : current.enabled,
+    discordInviteConfigured: Boolean(discordInvite)
+  });
   await publicDirectory.tick();
   return json(res, 200, { ok: true, publicDirectory: publicDirectorySettings() });
 }

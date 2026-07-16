@@ -12,15 +12,36 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  buildHeartbeatPayload,
   collectDirectorySnapshot,
   createPublicDirectoryReporter,
   getOrCreateIdentity,
   isBattlegroupRunning,
+  normalizeDiscordInvite,
   readConfiguredCapacity,
   readDirectorySettings,
-  readGameBuild,
-  readPublicProbePort
+  readGameBuild
 } from "../src/services/publicDirectory.js";
+
+test("heartbeat includes an empty Discord invite so stale directory links are removed", () => {
+  const payload = buildHeartbeatPayload(
+    { serverId: "server-id", secret: "secret" },
+    {
+      name: "Test Sietch",
+      region: "Europe",
+      running: true,
+      ready: true,
+      playersOnline: 0,
+      capacity: 60,
+      version: "2036754",
+      sietches: 1,
+      discordInvite: ""
+    }
+  );
+
+  assert.equal(Object.hasOwn(payload, "discordInvite"), true);
+  assert.equal(payload.discordInvite, "");
+});
 
 function fixture() {
   const repoRoot = mkdtempSync(join(tmpdir(), "dune-directory-"));
@@ -32,7 +53,8 @@ function fixture() {
   writeFileSync(join(repoRoot, ".env"), [
     'SERVER_TITLE="Test Sietch"',
     "SERVER_REGION=Europe Test",
-    "SERVER_IP_MODE=public"
+    "SERVER_IP_MODE=public",
+    "DUNE_PUBLIC_DIRECTORY_DISCORD_INVITE=https://discord.com/invite/Test_Code"
   ].join("\n"));
   writeFileSync(join(generatedDir, "image-tags.env"), "DUNE_WORLD_IMAGE_TAG=2036754-0-shipping\n");
   writeFileSync(join(generatedDir, "sietch-config.json"), JSON.stringify({
@@ -88,7 +110,8 @@ test("directory settings default public servers on and normalize test regions", 
       enabled: true,
       mode: "public",
       title: "Test Sietch",
-      region: "Europe"
+      region: "Europe",
+      discordInvite: "https://discord.gg/Test_Code"
     });
     writeFileSync(join(files.repoRoot, ".env"), "SERVER_IP_MODE=public\nDUNE_PUBLIC_DIRECTORY_ENABLED=false\n");
     assert.equal(readDirectorySettings(files.repoRoot, {}).enabled, false);
@@ -112,19 +135,6 @@ test("saved directory opt-out overrides a stale container environment value", ()
   }
 });
 
-test("directory probe port follows the public RabbitMQ HTTP port", () => {
-  const files = fixture();
-  try {
-    assert.equal(readPublicProbePort(files.repoRoot), 31983);
-    writeFileSync(join(files.repoRoot, ".env"), "RMQ_GAME_HTTP_PORT=32983\n");
-    assert.equal(readPublicProbePort(files.repoRoot), 32983);
-    writeFileSync(join(files.repoRoot, ".env"), "RMQ_GAME_HTTP_PORT=invalid\n");
-    assert.equal(readPublicProbePort(files.repoRoot), 31983);
-  } finally {
-    files.cleanup();
-  }
-});
-
 test("directory snapshot uses compact database aggregates and local metadata", async () => {
   const files = fixture();
   try {
@@ -142,7 +152,7 @@ test("directory snapshot uses compact database aggregates and local metadata", a
       capacity: 60,
       version: "2036754",
       sietches: 2,
-      probePort: 31983
+      discordInvite: "https://discord.gg/Test_Code"
     });
     assert.equal(readGameBuild(files.repoRoot), "2036754");
     assert.equal(readConfiguredCapacity(files.repoRoot), 60);
@@ -223,9 +233,10 @@ test("reporter sends only the public directory contract and persists its identit
     const payload = JSON.parse(requests[0].options.body);
     assert.deepEqual(Object.keys(payload).sort(), [
       "capacity",
+      "discordInvite",
       "name",
+      "personalizedPingEnabled",
       "playersOnline",
-      "probePort",
       "publicMode",
       "ready",
       "region",
@@ -239,7 +250,8 @@ test("reporter sends only the public directory contract and persists its identit
     assert.equal(Object.hasOwn(payload, "serverIp"), false);
     assert.equal(payload.name, "Test Sietch");
     assert.equal(payload.playersOnline, 4);
-    assert.equal(payload.probePort, 31983);
+    assert.equal(payload.personalizedPingEnabled, true);
+    assert.equal(payload.discordInvite, "https://discord.gg/Test_Code");
     assert.equal(delays.at(-1), 75000);
 
     const identity = JSON.parse(readFileSync(join(files.secretsDir, "public-directory.json"), "utf8"));
@@ -247,6 +259,117 @@ test("reporter sends only the public directory contract and persists its identit
     assert.equal(identity.secret, payload.secret);
     assert.equal(statSync(join(files.secretsDir, "public-directory.json")).mode & 0o777, 0o600);
     assert.equal(reporter.publicState().remoteListed, true);
+  } finally {
+    files.cleanup();
+  }
+});
+
+test("Discord invite normalization accepts only official invite URLs", () => {
+  assert.equal(normalizeDiscordInvite("https://discord.gg/Test_Code"), "https://discord.gg/Test_Code");
+  assert.equal(normalizeDiscordInvite("https://discord.com/invite/Test-Code/"), "https://discord.gg/Test-Code");
+  assert.equal(normalizeDiscordInvite("https://www.discord.com/invite/TestCode"), "https://discord.gg/TestCode");
+  assert.equal(normalizeDiscordInvite(""), "");
+  assert.equal(normalizeDiscordInvite("https://example.com/invite/TestCode"), null);
+  assert.equal(normalizeDiscordInvite("https://discord.gg/TestCode?tracking=1"), null);
+  assert.equal(normalizeDiscordInvite("javascript:alert(1)"), null);
+});
+
+test("directory receipt configures the authenticated outbound WebRTC probe", async () => {
+  const files = fixture();
+  const reconciles = [];
+  try {
+    const reporter = createPublicDirectoryReporter({
+      repoRoot: files.repoRoot,
+      generatedDir: files.generatedDir,
+      secretsDir: files.secretsDir
+    }, {
+      db: fakeDb(),
+      getBattlegroupRunning: () => true,
+      fetchImpl: async () => response({
+        ok: true,
+        nextHeartbeatSeconds: 60,
+        probe: {
+          mode: "webrtc",
+          signalingUrl: "https://dunedocker.app/api/v1/probes"
+        }
+      }),
+      reconcileProbe: async (probe) => reconciles.push(probe),
+      setTimeoutFn: () => ({ unref() {} })
+    });
+
+    await reporter.tick();
+
+    assert.equal(reconciles.length, 1);
+    assert.equal(reconciles[0].enabled, true);
+    assert.equal(reconciles[0].signalingUrl, "https://dunedocker.app/api/v1/probes");
+    assert.match(reconciles[0].serverId, /^[0-9a-f-]{36}$/i);
+    assert.match(reconciles[0].secret, /^[A-Za-z0-9_-]{32,128}$/);
+    assert.equal(reporter.publicState().probeEndpoint, "https://dunedocker.app/api/v1/probes");
+    assert.equal(reporter.publicState().probeState, "started");
+    assert.equal(reporter.publicState().probeError, null);
+  } finally {
+    files.cleanup();
+  }
+});
+
+test("invalid personalized ping signaling URLs are ignored", async () => {
+  const files = fixture();
+  const reconciles = [];
+  try {
+    const reporter = createPublicDirectoryReporter({
+      repoRoot: files.repoRoot,
+      generatedDir: files.generatedDir,
+      secretsDir: files.secretsDir
+    }, {
+      db: fakeDb(),
+      getBattlegroupRunning: () => true,
+      fetchImpl: async () => response({
+        ok: true,
+        probe: {
+          mode: "webrtc",
+          signalingUrl: "https://attacker.example/api/v1/probes"
+        }
+      }),
+      reconcileProbe: async (probe) => reconciles.push(probe),
+      setTimeoutFn: () => ({ unref() {} })
+    });
+
+    await reporter.tick();
+
+    assert.deepEqual(reconciles, []);
+    assert.equal(reporter.publicState().probeEndpoint, null);
+    assert.equal(reporter.publicState().probeState, "unavailable");
+  } finally {
+    files.cleanup();
+  }
+});
+
+test("unsupported personalized ping modes are ignored", async () => {
+  const files = fixture();
+  const reconciles = [];
+  try {
+    const reporter = createPublicDirectoryReporter({
+      repoRoot: files.repoRoot,
+      generatedDir: files.generatedDir,
+      secretsDir: files.secretsDir
+    }, {
+      db: fakeDb(),
+      getBattlegroupRunning: () => true,
+      fetchImpl: async () => response({
+        ok: true,
+        probe: {
+          mode: "https",
+          signalingUrl: "https://dunedocker.app/api/v1/probes"
+        }
+      }),
+      reconcileProbe: async (probe) => reconciles.push(probe),
+      setTimeoutFn: () => ({ unref() {} })
+    });
+
+    await reporter.tick();
+
+    assert.deepEqual(reconciles, []);
+    assert.equal(reporter.publicState().probeEndpoint, null);
   } finally {
     files.cleanup();
   }

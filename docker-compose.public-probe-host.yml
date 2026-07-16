@@ -1,0 +1,3 @@
+services:
+  dune-public-probe:
+    network_mode: host

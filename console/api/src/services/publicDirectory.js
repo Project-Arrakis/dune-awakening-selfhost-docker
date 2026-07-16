@@ -35,6 +35,7 @@ export function createPublicDirectoryReporter(config, options = {}) {
   const setTimeoutFn = options.setTimeoutFn || setTimeout;
   const clearTimeoutFn = options.clearTimeoutFn || clearTimeout;
   const getBattlegroupRunning = options.getBattlegroupRunning || isBattlegroupRunning;
+  const reconcileProbe = options.reconcileProbe || ((probe) => reconcilePublicProbe(config.repoRoot, probe));
   const now = options.now || (() => Date.now());
   const random = options.random || Math.random;
   const identityPath = options.identityPath || resolve(config.secretsDir, "public-directory.json");
@@ -105,6 +106,25 @@ export function createPublicDirectoryReporter(config, options = {}) {
         15 * 60,
         DEFAULT_HEARTBEAT_SECONDS
       );
+      const probe = normalizeProbeReceipt(receipt.probe);
+      let probeState = probe?.signalingUrl ? "starting" : "unavailable";
+      let probeError = null;
+      try {
+        if (probe?.signalingUrl) {
+          await reconcileProbe({
+            enabled: true,
+            signalingUrl: probe.signalingUrl,
+            serverId: identity.serverId,
+            secret: identity.secret
+          });
+        } else if (state.probeEndpoint) {
+          await reconcileProbe({ enabled: false });
+        }
+        probeState = probe?.signalingUrl ? "started" : "unavailable";
+      } catch (error) {
+        probeState = "error";
+        probeError = safeError(error);
+      }
       failureCount = 0;
       writeState({
         enabled: true,
@@ -115,7 +135,10 @@ export function createPublicDirectoryReporter(config, options = {}) {
         lastAttemptAt: attemptedAt,
         lastSuccessAt: new Date(now()).toISOString(),
         nextHeartbeatAt: new Date(now() + heartbeatSeconds * 1000).toISOString(),
-        error: null
+        error: null,
+        probeEndpoint: probe?.signalingUrl || null,
+        probeState,
+        probeError
       });
       schedule(heartbeatSeconds * 1000);
     } catch (error) {
@@ -147,6 +170,13 @@ export function createPublicDirectoryReporter(config, options = {}) {
         headers: { authorization: `Bearer ${identity.secret}` }
       });
     }
+    if (state.probeEndpoint) {
+      try {
+        await reconcileProbe({ enabled: false, endpoint: null });
+      } catch {
+        // Listing removal must not fail because local probe cleanup encountered an issue.
+      }
+    }
     writeState({
       enabled: settings.enabled,
       mode: settings.mode,
@@ -156,7 +186,10 @@ export function createPublicDirectoryReporter(config, options = {}) {
       lastAttemptAt: shouldDelete ? new Date(now()).toISOString() : state.lastAttemptAt || null,
       lastSuccessAt: state.lastSuccessAt || null,
       nextHeartbeatAt: null,
-      error: null
+      error: null,
+      probeEndpoint: null,
+      probeState: "disabled",
+      probeError: null
     });
   }
 
@@ -189,11 +222,17 @@ export function readDirectorySettings(repoRoot, env = process.env) {
   const fileEnv = readEnvFile(resolve(repoRoot, ".env"));
   const rawEnabled = firstValue(fileEnv.DUNE_PUBLIC_DIRECTORY_ENABLED, env.DUNE_PUBLIC_DIRECTORY_ENABLED);
   const mode = String(firstValue(fileEnv.SERVER_IP_MODE, env.SERVER_IP_MODE, "local")).trim().toLowerCase();
+  const discordInvite = normalizeDiscordInvite(firstValue(
+    fileEnv.DUNE_PUBLIC_DIRECTORY_DISCORD_INVITE,
+    env.DUNE_PUBLIC_DIRECTORY_DISCORD_INVITE,
+    ""
+  ));
   return {
     enabled: rawEnabled === undefined ? true : !/^(0|false|no|off|disabled)$/i.test(String(rawEnabled).trim()),
     mode,
     title: cleanText(firstValue(fileEnv.SERVER_TITLE, env.SERVER_TITLE, ""), 120),
-    region: normalizeRegion(firstValue(fileEnv.SERVER_REGION, env.SERVER_REGION, ""))
+    region: normalizeRegion(firstValue(fileEnv.SERVER_REGION, env.SERVER_REGION, "")),
+    discordInvite: discordInvite || ""
   };
 }
 
@@ -211,7 +250,6 @@ export async function collectDirectorySnapshot(
   if (!version) throw new Error("Public directory reporting is waiting for a detected game build.");
 
   const capacity = readConfiguredCapacity(config.repoRoot);
-  const probePort = readPublicProbePort(config.repoRoot);
   const running = options.running !== false;
   let playersOnline = 0;
   let ready = false;
@@ -276,12 +314,12 @@ export async function collectDirectorySnapshot(
     capacity,
     version,
     sietches: clampInteger(sietches, 0, 1000, 0),
-    probePort
+    discordInvite: settings.discordInvite || ""
   };
 }
 
 export function buildHeartbeatPayload(identity, snapshot) {
-  return {
+  const payload = {
     serverId: identity.serverId,
     secret: identity.secret,
     publicMode: true,
@@ -293,8 +331,45 @@ export function buildHeartbeatPayload(identity, snapshot) {
     capacity: snapshot.capacity,
     version: snapshot.version,
     sietches: snapshot.sietches,
-    probePort: snapshot.probePort
+    discordInvite: snapshot.discordInvite || "",
+    personalizedPingEnabled: true
   };
+  return payload;
+}
+
+export function normalizeDiscordInvite(value) {
+  const raw = String(value ?? "").trim();
+  if (!raw) return "";
+  if (raw.length > 160) return null;
+  try {
+    const invite = new URL(raw);
+    const hostname = invite.hostname.toLowerCase();
+    if (
+      invite.protocol !== "https:" ||
+      invite.port ||
+      invite.username ||
+      invite.password ||
+      invite.search ||
+      invite.hash
+    ) return null;
+    const parts = invite.pathname.split("/").filter(Boolean);
+    let code = "";
+    if (hostname === "discord.gg" && parts.length === 1) {
+      [code] = parts;
+    } else if (
+      (hostname === "discord.com" || hostname === "www.discord.com") &&
+      parts.length === 2 &&
+      parts[0].toLowerCase() === "invite"
+    ) {
+      code = parts[1];
+    } else {
+      return null;
+    }
+    if (!/^[A-Za-z0-9_-]{2,100}$/.test(code)) return null;
+    return `https://discord.gg/${code}`;
+  } catch {
+    return null;
+  }
 }
 
 export function isBattlegroupRunning(getRunningContainers = runningContainerNames) {
@@ -378,11 +453,6 @@ export function readGameBuild(repoRoot) {
   return match?.[1] || "";
 }
 
-export function readPublicProbePort(repoRoot) {
-  const env = readEnvFile(resolve(repoRoot, ".env"));
-  return clampInteger(env.RMQ_GAME_HTTP_PORT, 1, 65535, 31983);
-}
-
 function readConfiguredSietches(repoRoot) {
   try {
     const value = JSON.parse(readFileSync(resolve(repoRoot, "runtime/generated/sietch-config.json"), "utf8"));
@@ -444,11 +514,87 @@ function readStatus(path) {
       lastAttemptAt: safeStatusText(value.lastAttemptAt, 40),
       lastSuccessAt: safeStatusText(value.lastSuccessAt, 40),
       nextHeartbeatAt: safeStatusText(value.nextHeartbeatAt, 40),
-      error: safeStatusText(value.error, 240)
+      error: safeStatusText(value.error, 240),
+      probeEndpoint: normalizeSignalingUrl(value.probeEndpoint),
+      probeState: safeStatusText(value.probeState, 30),
+      probeError: safeStatusText(value.probeError, 240)
     };
   } catch {
     return {};
   }
+}
+
+function normalizeProbeReceipt(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  if (value.mode !== "webrtc") return null;
+  const signalingUrl = normalizeSignalingUrl(value.signalingUrl);
+  return signalingUrl ? { mode: "webrtc", signalingUrl } : null;
+}
+
+function normalizeSignalingUrl(value) {
+  try {
+    const endpoint = new URL(String(value || "").trim());
+    if (
+      endpoint.protocol !== "https:" ||
+      endpoint.hostname !== "dunedocker.app" ||
+      endpoint.port ||
+      endpoint.username ||
+      endpoint.password ||
+      endpoint.pathname !== "/api/v1/probes" ||
+      endpoint.search ||
+      endpoint.hash
+    ) return null;
+    return endpoint.href.replace(/\/$/, "");
+  } catch {
+    return null;
+  }
+}
+
+function reconcilePublicProbe(repoRoot, probe) {
+  const script = resolve(repoRoot, "runtime", "scripts", "public-probe.sh");
+  if (!probe?.enabled) {
+    execFileSync(script, ["stop"], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      timeout: 120000,
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    return;
+  }
+  const signalingUrl = normalizeSignalingUrl(probe.signalingUrl);
+  if (!signalingUrl) throw new Error("Public probe signaling URL is invalid.");
+  if (!/^[0-9a-f-]{36}$/i.test(String(probe.serverId || ""))) {
+    throw new Error("Public probe server identity is invalid.");
+  }
+  if (!/^[A-Za-z0-9_-]{32,128}$/.test(String(probe.secret || ""))) {
+    throw new Error("Public probe credential is invalid.");
+  }
+  writeProbeEnv(repoRoot, {
+    signalingUrl,
+    serverId: probe.serverId,
+    secret: probe.secret
+  });
+  execFileSync(script, ["reconcile"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    timeout: 120000,
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+}
+
+function writeProbeEnv(repoRoot, probe) {
+  const path = resolve(repoRoot, "runtime", "generated", "public-probe.env");
+  const tmp = `${path}.tmp-${process.pid}-${Date.now()}`;
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(tmp, [
+    "DUNE_PUBLIC_PROBE_ENABLED=true",
+    `DUNE_PUBLIC_PROBE_SERVER_ID=${probe.serverId}`,
+    `DUNE_PUBLIC_PROBE_SECRET=${probe.secret}`,
+    `DUNE_PUBLIC_PROBE_SIGNAL_URL=${probe.signalingUrl}`,
+    ""
+  ].join("\n"), { mode: 0o600 });
+  renameSync(tmp, path);
+  try { chmodSync(path, 0o600); } catch {}
 }
 
 async function requestJson(fetchImpl, url, options) {

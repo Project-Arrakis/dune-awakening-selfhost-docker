@@ -1,0 +1,25 @@
+name: dune-public-probe
+
+services:
+  dune-public-probe:
+    build:
+      context: ./runtime/public-probe
+    image: dune-public-probe:dev
+    container_name: dune-public-probe
+    restart: unless-stopped
+    environment:
+      DUNE_PUBLIC_PROBE_SERVER_ID: "${DUNE_PUBLIC_PROBE_SERVER_ID:?Probe server ID is required}"
+      DUNE_PUBLIC_PROBE_SECRET: "${DUNE_PUBLIC_PROBE_SECRET:?Probe secret is required}"
+      DUNE_PUBLIC_PROBE_SIGNAL_URL: "${DUNE_PUBLIC_PROBE_SIGNAL_URL:?Probe signaling URL is required}"
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging:
+      driver: json-file
+      options:
+        max-size: "${DUNE_DOCKER_LOG_MAX_SIZE:-20m}"
+        max-file: "${DUNE_DOCKER_LOG_MAX_FILES:-3}"

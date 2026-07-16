@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ChevronDown, ChevronUp } from "lucide-react";
+import { ChevronDown, ChevronUp, ExternalLink, Trash2 } from "lucide-react";
 import { api, post } from "../../api/client";
 import { SecretInput } from "../../components/SecretInput";
 import { KeyValueGrid, StatusPill } from "../../components/common/DisplayPrimitives";
@@ -13,6 +13,8 @@ type PublicDirectorySettings = {
   state?: string;
   lastSuccessAt?: string | null;
   error?: string | null;
+  discordInvite?: string;
+  probeError?: string | null;
 };
 
 type SettingsPanelProps = {
@@ -30,6 +32,11 @@ export function SettingsPanel({ onPasswordChanged }: SettingsPanelProps) {
   const [webPortSaving, setWebPortSaving] = useState(false);
   const [serverListingSaving, setServerListingSaving] = useState(false);
   const [serverListingError, setServerListingError] = useState("");
+  const [publicProfileOpen, setPublicProfileOpen] = useState(false);
+  const [publicProfileSaving, setPublicProfileSaving] = useState(false);
+  const [publicProfileResult, setPublicProfileResult] = useState<SettingsTaskResult | null>(null);
+  const [discordInvite, setDiscordInvite] = useState("");
+  const [savedDiscordInvite, setSavedDiscordInvite] = useState("");
   const [loginPasswordOpen, setLoginPasswordOpen] = useState(false);
   const [webPortOpen, setWebPortOpen] = useState(false);
   const [webPort, setWebPort] = useState("");
@@ -39,7 +46,10 @@ export function SettingsPanel({ onPasswordChanged }: SettingsPanelProps) {
     const nextSettings = await api<Record<string, unknown>>("/api/settings");
     setSettings(nextSettings);
     const config = (nextSettings.config as Record<string, unknown> | undefined) || {};
+    const directory = (nextSettings.publicDirectory as PublicDirectorySettings | undefined) || {};
     setWebPort(String(config.port || "8088"));
+    setDiscordInvite(directory.discordInvite || "");
+    setSavedDiscordInvite(directory.discordInvite || "");
   }
   useEffect(() => {
     refresh().catch(() => undefined);
@@ -54,6 +64,11 @@ export function SettingsPanel({ onPasswordChanged }: SettingsPanelProps) {
     const id = window.setTimeout(() => setWebPortResult(null), 9000);
     return () => window.clearTimeout(id);
   }, [webPortRedirectUrl, webPortResult]);
+  useEffect(() => {
+    if (!publicProfileResult || publicProfileResult.status === "running") return;
+    const id = window.setTimeout(() => setPublicProfileResult(null), 7000);
+    return () => window.clearTimeout(id);
+  }, [publicProfileResult]);
   useEffect(() => {
     if (!webPortRedirectUrl || webPortRedirectCountdown === null) return;
     if (webPortRedirectCountdown <= 0) {
@@ -136,6 +151,32 @@ export function SettingsPanel({ onPasswordChanged }: SettingsPanelProps) {
       setServerListingSaving(false);
     }
   }
+  async function saveDiscordInvite(nextInvite: string) {
+    setPublicProfileSaving(true);
+    setPublicProfileResult({ status: "running", title: nextInvite ? "Saving Discord Invite..." : "Removing Discord Invite..." });
+    try {
+      const result = await post<{ ok: boolean; publicDirectory: PublicDirectorySettings }>("/api/settings/public-directory", {
+        discordInvite: nextInvite
+      });
+      const saved = result.publicDirectory.discordInvite || "";
+      setDiscordInvite(saved);
+      setSavedDiscordInvite(saved);
+      setSettings((current) => current ? { ...current, publicDirectory: result.publicDirectory } : current);
+      setPublicProfileResult({
+        status: "succeeded",
+        title: saved ? "Discord Invite Saved" : "Discord Invite Removed",
+        message: saved ? "The invite will appear with this server's public listing." : "The Discord link was removed from the public listing."
+      });
+    } catch (error) {
+      setPublicProfileResult({
+        status: "failed",
+        title: nextInvite ? "Discord Invite Not Saved" : "Discord Invite Not Removed",
+        message: error instanceof Error ? error.message : String(error)
+      });
+    } finally {
+      setPublicProfileSaving(false);
+    }
+  }
   const config = (settings?.config as Record<string, unknown> | undefined) || {};
   const publicDirectory = (settings?.publicDirectory as PublicDirectorySettings | undefined) || {};
   const serverListingVisible = settings !== null && publicDirectory.available === true;
@@ -157,7 +198,44 @@ export function SettingsPanel({ onPasswordChanged }: SettingsPanelProps) {
       <button onClick={refresh}>Refresh</button>
     </div></div>
     {serverListingError && <p className="error settings-server-listing-error">{serverListingError}</p>}
+    {serverListingVisible && serverListingEnabled && publicDirectory.probeError &&
+      <p className="error settings-server-listing-error">Server listing issue: {publicDirectory.probeError}</p>}
     <div className="settings-section-stack">
+      {serverListingVisible && <div className={`playerAdmin_toggle settings-public-profile-toggle ${publicProfileOpen ? "open" : ""}`}>
+        <button className="playerAdmin_toggleHeader" aria-label={publicProfileOpen ? "Collapse Public Listing Profile" : "Expand Public Listing Profile"} onClick={() => setPublicProfileOpen(!publicProfileOpen)}>
+          {publicProfileOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
+          <span>Public Listing Profile</span>
+        </button>
+        {publicProfileOpen && <div className="playerAdmin_toggleBody">
+          <p className="muted">Optional community details shown with this server on DuneDocker.app.</p>
+          <label className="settings-discord-field">
+            <span className="field-label-row">
+              <span className="settings-discord-label"><DiscordLogo size={17} />Discord Invite</span>
+              {savedDiscordInvite && <a className="settings-discord-open" href={savedDiscordInvite} target="_blank" rel="noreferrer">Open Invite<ExternalLink size={14} /></a>}
+            </span>
+            <input
+              disabled={publicProfileSaving}
+              type="url"
+              value={discordInvite}
+              onChange={(event) => setDiscordInvite(event.target.value)}
+              placeholder="https://discord.gg/your-invite"
+              autoComplete="url"
+            />
+          </label>
+          <div className="action-row">
+            <button disabled={publicProfileSaving || !discordInvite.trim() || discordInvite.trim() === savedDiscordInvite} onClick={() => { void saveDiscordInvite(discordInvite.trim()); }}>
+              {publicProfileSaving ? "Saving..." : "Save Discord Invite"}
+            </button>
+            {savedDiscordInvite && <button className="settings-discord-remove" disabled={publicProfileSaving} onClick={() => { void saveDiscordInvite(""); }} title="Remove Discord Invite">
+              <Trash2 size={16} />Remove
+            </button>}
+            {publicProfileResult && <span className={`inline-task-result result-${publicProfileResult.status === "succeeded" ? "ok" : publicProfileResult.status === "failed" ? "fail" : "running"}`}>
+              <strong className={publicProfileResult.status === "running" ? "loading-dots" : ""}>{formatResultTitle(publicProfileResult.title, publicProfileResult.status === "running")}</strong>
+              {publicProfileResult.message && <span className="inline-task-message">{formatResultMessage(publicProfileResult.message)}</span>}
+            </span>}
+          </div>
+        </div>}
+      </div>}
       <RuntimeSettingsSummary settings={settings} />
       <div className={`playerAdmin_toggle settings-web-port-toggle ${webPortOpen ? "open" : ""}`}>
         <button className="playerAdmin_toggleHeader" aria-label={webPortOpen ? "Collapse Web Console Port" : "Expand Web Console Port"} onClick={() => setWebPortOpen(!webPortOpen)}>{webPortOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}<span>Web Console Port</span></button>
@@ -203,6 +281,12 @@ export function SettingsPanel({ onPasswordChanged }: SettingsPanelProps) {
       </div>
     </div>
   </section>;
+}
+
+function DiscordLogo({ size = 18 }: { size?: number }) {
+  return <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+    <path fill="currentColor" d="M20.3 4.4A18.4 18.4 0 0 0 15.8 3l-.2.4a13.1 13.1 0 0 1 4 2 14.2 14.2 0 0 0-5-1.5 14.8 14.8 0 0 0-5.2 0 14.2 14.2 0 0 0-5 1.5 13.1 13.1 0 0 1 4-2L8.2 3a18.4 18.4 0 0 0-4.5 1.4C.9 8.5.1 12.5.5 16.5A18.7 18.7 0 0 0 6 19.2l.7-.9a11.6 11.6 0 0 1-1.8-.9l.4-.3a13.2 13.2 0 0 0 13.4 0l.4.3a11.6 11.6 0 0 1-1.8.9l.7.9a18.7 18.7 0 0 0 5.5-2.7c.5-4.6-.8-8.5-3.2-12.1ZM8.4 14.2c-1 0-1.8-.9-1.8-2s.8-2 1.8-2 1.8.9 1.8 2-.8 2-1.8 2Zm7.2 0c-1 0-1.8-.9-1.8-2s.8-2 1.8-2 1.8.9 1.8 2-.8 2-1.8 2Z" />
+  </svg>;
 }
 
 function formatResultTitle(value: unknown, pending = false) {
