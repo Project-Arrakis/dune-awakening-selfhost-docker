@@ -543,7 +543,7 @@ test("reporter records errors and backs off without exposing its secret", async 
     assert.equal(state.state, "error");
     assert.match(state.error, /HTTP 503/);
     assert.equal(Object.hasOwn(state, "secret"), false);
-    assert.equal(delays.at(-1), 60000);
+    assert.equal(delays.at(-1), 30000);
     assert.equal(Object.hasOwn(JSON.parse(readFileSync(
       join(files.generatedDir, "public-directory-status.json"),
       "utf8"

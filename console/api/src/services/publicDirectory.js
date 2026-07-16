@@ -12,7 +12,7 @@ import { execFile } from "node:child_process";
 import * as duneDb from "../duneDb.js";
 
 const DEFAULT_BASE_URL = "https://dunedocker.app/api/v1/servers";
-const DEFAULT_HEARTBEAT_SECONDS = 60;
+const DEFAULT_HEARTBEAT_SECONDS = 30;
 const MAX_BACKOFF_SECONDS = 15 * 60;
 const REQUEST_TIMEOUT_MS = 10000;
 const BATTLEGROUP_CORE_CONTAINERS = new Set([
