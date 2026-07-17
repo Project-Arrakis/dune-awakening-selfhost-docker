@@ -153,7 +153,7 @@ test("directory snapshot uses compact database aggregates and local metadata", a
       running: true,
       ready: true,
       playersOnline: 4,
-      capacity: 60,
+      capacity: 120,
       version: "2036754",
       installationKey: readDirectoryInstallationKey(files.repoRoot),
       previousInstallationKey: "",
@@ -161,7 +161,28 @@ test("directory snapshot uses compact database aggregates and local metadata", a
       discordInvite: "https://discord.gg/Test_Code"
     });
     assert.equal(readGameBuild(files.repoRoot), "2036754");
-    assert.equal(readConfiguredCapacity(files.repoRoot), 60);
+    assert.equal(readConfiguredCapacity(files.repoRoot), 120);
+    assert.equal(readConfiguredCapacity(files.repoRoot, 1), 60);
+  } finally {
+    files.cleanup();
+  }
+});
+
+test("configured Sietch capacity respects custom caps and active dimensions", () => {
+  const files = fixture();
+  try {
+    writeFileSync(join(files.repoRoot, "runtime", "director", "config", "director_config.ini"), [
+      "[Server]",
+      "PlayerHardCap=40",
+      "ShouldUpdatePlayerCountOnFls=false",
+      "[Survival_1]",
+      "PlayerHardCap=45",
+      "ShouldUpdatePlayerCountOnFls=true",
+      "[Overmap]",
+      "PlayerHardCap=80",
+      "ShouldUpdatePlayerCountOnFls=false"
+    ].join("\n"));
+    assert.equal(readConfiguredCapacity(files.repoRoot, 3), 135);
   } finally {
     files.cleanup();
   }

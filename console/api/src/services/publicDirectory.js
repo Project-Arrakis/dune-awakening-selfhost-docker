@@ -251,7 +251,6 @@ export async function collectDirectorySnapshot(
   }
   if (!version) throw new Error("Public directory reporting is waiting for a detected game build.");
 
-  const capacity = readConfiguredCapacity(config.repoRoot);
   const running = options.running !== false;
   let playersOnline = 0;
   let ready = false;
@@ -307,6 +306,7 @@ export async function collectDirectorySnapshot(
     }
   }
 
+  const capacity = readConfiguredCapacity(config.repoRoot, sietches);
   return {
     name: settings.title,
     region: settings.region,
@@ -407,7 +407,7 @@ async function runningContainerNames() {
   return output.split(/\r?\n/).map((value) => value.trim()).filter(Boolean);
 }
 
-export function readConfiguredCapacity(repoRoot) {
+export function readConfiguredCapacity(repoRoot, configuredSietches = readConfiguredSietches(repoRoot)) {
   const path = resolve(repoRoot, "runtime/director/config/director_config.ini");
   if (!existsSync(path)) return 60;
   const lines = readFileSync(path, "utf8").split(/\r?\n/);
@@ -422,7 +422,12 @@ export function readConfiguredCapacity(repoRoot) {
     if (!section || ["Server", "Battlegroup", "InstancingModes"].includes(section)) return;
     const updates = sectionUpdates ?? defaultUpdates;
     const cap = sectionCap ?? defaultCap;
-    if (updates && Number.isInteger(cap) && cap > 0) total += cap;
+    if (updates && Number.isInteger(cap) && cap > 0) {
+      const dimensions = section.toLowerCase() === "survival_1"
+        ? clampInteger(configuredSietches, 1, 1000, 1)
+        : 1;
+      total += cap * dimensions;
+    }
   };
 
   for (const rawLine of lines) {
