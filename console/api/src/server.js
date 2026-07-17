@@ -2063,14 +2063,24 @@ async function logsRoute(req, res, path) {
   }
   if (parts[4] === "stream") {
     res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
+    const controller = new AbortController();
+    const disconnected = () => controller.abort();
+    res.once("close", disconnected);
     try {
       await readLogs(service, {
         follow: true,
         timeoutMs: 30 * 60 * 1000,
-        onLine: (line) => res.write(`data: ${JSON.stringify({ line })}\n\n`)
+        captureOutput: false,
+        signal: controller.signal,
+        onLine: (line) => {
+          if (!res.destroyed) res.write(`data: ${JSON.stringify({ line })}\n\n`);
+        }
       });
     } catch (error) {
-      res.write(`event: error\ndata: ${JSON.stringify({ error: redact(error.message) })}\n\n`);
+      if (!res.destroyed) res.write(`event: error\ndata: ${JSON.stringify({ error: redact(error.message) })}\n\n`);
+    } finally {
+      res.off("close", disconnected);
+      if (!res.destroyed && !res.writableEnded) res.end();
     }
     return;
   }

@@ -859,6 +859,29 @@ test("care package history hides skipped rows and can be cleared", async () => {
   }
 });
 
+test("care package history reads only the newest visible rows from a large skipped history", () => {
+  const config = tempConfig();
+  try {
+    const grantsFile = resolve(config.generatedDir, "care-package-grants.jsonl");
+    const lines = [];
+    for (let index = 0; index < 1500; index += 1) {
+      lines.push(JSON.stringify({ id: `skip-${index}`, status: "skipped", summary: "x".repeat(80) }));
+    }
+    lines.push(JSON.stringify({ id: "large-skip", status: "skipped", summary: "x".repeat(70 * 1024) }));
+    lines.push("{malformed history row");
+    lines.push(JSON.stringify({ id: "older", status: "granted", character_name: "Chani" }));
+    lines.push(JSON.stringify({ id: "newer", status: "failed", character_name: "Liet-Kynes \u2728" }));
+    mkdirSync(config.generatedDir, { recursive: true });
+    writeFileSync(grantsFile, `${lines.join("\n")}\n`, { mode: 0o600 });
+
+    assert.deepEqual(carePackageHistory(config, 2).rows.map((row) => row.id), ["newer", "older"]);
+    assert.equal(carePackageHistory(config, 2).rows[0].character_name, "Liet-Kynes \u2728");
+    assert.equal(clearCarePackageHistory(config).removed, lines.length);
+  } finally {
+    rmSync(config.repoRoot, { recursive: true, force: true });
+  }
+});
+
 test("care package auto scan only grants when enabled and players have action ids", async () => {
   const config = tempConfig();
   try {

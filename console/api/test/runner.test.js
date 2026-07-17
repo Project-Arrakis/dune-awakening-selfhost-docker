@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildDuneArgs, dockerContainerForLogService, isReadOnlySql, parseVehicleList, validateServiceName } from "../src/runner.js";
+import { EventEmitter } from "node:events";
+import { appendBoundedOutput, buildDuneArgs, dockerContainerForLogService, isReadOnlySql, parseVehicleList, runDockerLogs, validateServiceName } from "../src/runner.js";
 import { redact } from "../src/redact.js";
 import { taskOperations } from "../src/tasks.js";
 
@@ -9,6 +10,43 @@ test("validates known service names and aliases", () => {
   assert.equal(validateServiceName("sgw"), "gateway");
   assert.equal(validateServiceName("dune-server-survival-1-43"), "dune-server-survival-1-43");
   assert.throws(() => validateServiceName("gateway; rm -rf /"));
+});
+
+test("bounds captured child-process output while retaining its newest tail", () => {
+  assert.equal(appendBoundedOutput("abc", "def", 10), "abcdef");
+  const output = appendBoundedOutput("old-".repeat(30), "new-output", 48);
+  assert.ok(output.length <= 48);
+  assert.match(output, /earlier output truncated/);
+  assert.ok(output.endsWith("new-output"));
+});
+
+test("live Docker logs do not buffer output and stop when the client aborts", async () => {
+  const child = new EventEmitter();
+  child.stdout = new EventEmitter();
+  child.stderr = new EventEmitter();
+  child.kill = (signal) => {
+    child.killedWith = signal;
+    queueMicrotask(() => child.emit("close", null, signal));
+  };
+  const controller = new AbortController();
+  const lines = [];
+  const resultPromise = runDockerLogs("gateway", {
+    follow: true,
+    captureOutput: false,
+    signal: controller.signal,
+    timeoutMs: 1000,
+    spawnImpl: () => child,
+    onLine: (line) => lines.push(line)
+  });
+
+  child.stdout.emit("data", Buffer.from("large live log line\n"));
+  controller.abort();
+  const result = await resultPromise;
+
+  assert.equal(child.killedWith, "SIGTERM");
+  assert.deepEqual(lines, ["large live log line\n"]);
+  assert.equal(result.stdout, "");
+  assert.equal(result.stderr, "");
 });
 
 test("allows dynamic map containers as log targets", () => {

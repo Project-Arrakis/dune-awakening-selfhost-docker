@@ -2,6 +2,9 @@ import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { redact } from "./redact.js";
 
+const MAX_CAPTURED_OUTPUT_CHARS = 4 * 1024 * 1024;
+const OUTPUT_TRUNCATED_MARKER = "\n[... earlier output truncated ...]\n";
+
 export const serviceAliases = new Map([
   ["postgres", "postgres"],
   ["rmq-admin", "rmq-admin"],
@@ -328,12 +331,12 @@ export function runDune(config, args, options = {}) {
     let stderr = "";
     child.stdout.on("data", (chunk) => {
       const text = options.redactOutput === false ? chunk.toString() : redact(chunk.toString());
-      stdout += text;
+      stdout = appendBoundedOutput(stdout, text);
       options.onLine?.(text, "stdout");
     });
     child.stderr.on("data", (chunk) => {
       const text = options.redactOutput === false ? chunk.toString() : redact(chunk.toString());
-      stderr += text;
+      stderr = appendBoundedOutput(stderr, text);
       options.onLine?.(text, "stderr");
     });
     child.on("error", reject);
@@ -368,31 +371,44 @@ export function runDockerLogs(service, options = {}) {
   args.push(container);
 
   return new Promise((resolve, reject) => {
-    const child = spawn("docker", args, {
+    const spawnImpl = options.spawnImpl || spawn;
+    const child = spawnImpl("docker", args, {
       shell: false,
       env: { ...process.env }
     });
-    const timeout = setTimeout(() => child.kill("SIGTERM"), options.timeoutMs || 30000);
+    const stop = () => child.kill("SIGTERM");
+    const timeout = setTimeout(stop, options.timeoutMs || 30000);
+    const captureOutput = options.captureOutput !== false;
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (chunk) => {
       const text = redact(chunk.toString());
-      stdout += text;
+      if (captureOutput) stdout = appendBoundedOutput(stdout, text);
       options.onLine?.(text, "stdout");
     });
     child.stderr.on("data", (chunk) => {
       const text = redact(chunk.toString());
-      stderr += text;
+      if (captureOutput) stderr = appendBoundedOutput(stderr, text);
       options.onLine?.(text, "stderr");
     });
     child.on("error", reject);
     child.on("close", (code, signal) => {
       clearTimeout(timeout);
+      options.signal?.removeEventListener("abort", stop);
       const result = { code, signal, stdout, stderr, args: ["docker", ...args] };
       if (code === 0 || signal === "SIGTERM") resolve(result);
       else reject(Object.assign(new Error(`docker ${args.join(" ")} failed with exit ${code}`), result));
     });
+    if (options.signal?.aborted) stop();
+    else options.signal?.addEventListener("abort", stop, { once: true });
   });
+}
+
+export function appendBoundedOutput(current, chunk, maxChars = MAX_CAPTURED_OUTPUT_CHARS) {
+  const next = `${current || ""}${chunk || ""}`;
+  if (next.length <= maxChars) return next;
+  const available = Math.max(0, maxChars - OUTPUT_TRUNCATED_MARKER.length);
+  return `${OUTPUT_TRUNCATED_MARKER}${next.slice(-available)}`;
 }
 
 export function parseVehicleList(stdout = "") {

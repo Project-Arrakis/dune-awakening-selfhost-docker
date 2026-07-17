@@ -1,4 +1,4 @@
-import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { buildDuneArgs, runDune } from "./runner.js";
@@ -49,6 +49,7 @@ const DEFAULT_CONFIG = {
   autoGrantRules: []
 };
 const firstOnlineClaimLocks = new Map();
+const HISTORY_READ_CHUNK_BYTES = 64 * 1024;
 
 class FirstOnlineAlreadyClaimedError extends Error {
   constructor(message, claim) {
@@ -91,36 +92,92 @@ export function carePackageHistory(config, limit = 100) {
   const safeLimit = Math.max(1, Math.min(Number(limit) || 100, 500));
   const file = grantsPath(config);
   if (!existsSync(file)) return { rows: [] };
-  const rows = readCarePackageGrantRows(file)
-    .map(normalizeHistoryRow)
-    .filter((row) => String(row.status || "").toLowerCase() !== "skipped")
-    .slice(-safeLimit)
-    .reverse();
-  return { rows };
+  return { rows: readCarePackageGrantRows(file, safeLimit) };
 }
 
-function readCarePackageGrantRows(file) {
-  return readFileSync(file, "utf8")
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => line && !line.includes("\u0000"))
-    .map((line) => {
-      try {
-        return JSON.parse(line);
-      } catch {
-        return null;
+function readCarePackageGrantRows(file, limit) {
+  const rows = [];
+  const fd = openSync(file, "r");
+  try {
+    let position = fstatSync(fd).size;
+    let newerPartialLine = Buffer.alloc(0);
+    while (position > 0 && rows.length < limit) {
+      const length = Math.min(HISTORY_READ_CHUNK_BYTES, position);
+      position -= length;
+      const block = Buffer.allocUnsafe(length);
+      readSync(fd, block, 0, length, position);
+      const combined = newerPartialLine.length ? Buffer.concat([block, newerPartialLine]) : block;
+      if (position > 0) {
+        const firstNewline = combined.indexOf(0x0a);
+        if (firstNewline < 0) {
+          newerPartialLine = combined;
+          continue;
+        }
+        newerPartialLine = combined.subarray(0, firstNewline);
+        collectHistoryRows(combined, firstNewline + 1, rows, limit);
+      } else {
+        collectHistoryRows(combined, 0, rows, limit);
       }
-    })
-    .filter(Boolean);
+    }
+    return rows;
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function collectHistoryRows(buffer, start, rows, limit) {
+  let end = buffer.length;
+  while (end > start && rows.length < limit) {
+    let lineStart = buffer.lastIndexOf(0x0a, end - 1);
+    if (lineStart < start) lineStart = start - 1;
+    const line = buffer.subarray(lineStart + 1, end).toString("utf8").trim();
+    end = lineStart;
+    if (!line || line.includes("\u0000")) continue;
+    try {
+      const parsed = JSON.parse(line);
+      if (String(parsed?.status || "").toLowerCase() === "skipped") continue;
+      rows.push(normalizeHistoryRow(parsed));
+    } catch {
+      // A corrupt history row must not prevent older valid grants from loading.
+    }
+  }
 }
 
 export function clearCarePackageHistory(config) {
   const file = grantsPath(config);
-  const removed = existsSync(file) ? readFileSync(file, "utf8").split(/\r?\n/).filter(Boolean).length : 0;
+  const removed = existsSync(file) ? countNonEmptyLines(file) : 0;
   mkdirSync(dirname(file), { recursive: true });
   writeFileSync(file, "", { mode: 0o600 });
   try { chmodSync(file, 0o600); } catch {}
   return { ok: true, removed, rows: [], firstOnlineClaimsPreserved: true };
+}
+
+function countNonEmptyLines(file) {
+  const fd = openSync(file, "r");
+  try {
+    const buffer = Buffer.allocUnsafe(HISTORY_READ_CHUNK_BYTES);
+    let count = 0;
+    let hasContent = false;
+    let bytesRead;
+    do {
+      bytesRead = readSync(fd, buffer, 0, buffer.length, null);
+      for (let index = 0; index < bytesRead; index += 1) {
+        if (buffer[index] === 0x0a) {
+          if (hasContent) count += 1;
+          hasContent = false;
+        } else if (buffer[index] !== 0x0d && !isAsciiWhitespace(buffer[index])) {
+          hasContent = true;
+        }
+      }
+    } while (bytesRead > 0);
+    return count + (hasContent ? 1 : 0);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function isAsciiWhitespace(byte) {
+  return byte === 0x09 || byte === 0x0b || byte === 0x0c || byte === 0x20;
 }
 
 function normalizeHistoryRow(row = {}) {
