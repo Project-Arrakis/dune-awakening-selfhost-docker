@@ -2100,6 +2100,108 @@ export async function unsupportedPlayerFeature(db, id, feature) {
   return { capabilities: { [feature]: false }, rows: [], reason: `${feature} schema has not been detected in this database yet` };
 }
 
+export async function listBases(db, { q = "" } = {}) {
+  const requiredTables = ["buildings", "building_instances", "actor_fgl_entities", "actors"];
+  for (const table of requiredTables) {
+    if (!(await tableExists(db, table))) return unsupported("bases", requiredTables.map((t) => `dune.${t}`));
+  }
+  const values = [];
+  let having = "";
+  if (q) {
+    values.push(`%${q}%`);
+    having = `having coalesce(pa.actor_name, '') ilike $${values.length} or coalesce(max(ps.character_name), '') ilike $${values.length}`;
+  }
+  try {
+    const result = await db.query(`
+      select b.id::text as base_id,
+             coalesce(pa.actor_name, 'Base ' || b.id::text) as name,
+             coalesce(max(ps.character_name), '') as owner_name,
+             coalesce(a.map, '') as map,
+             ((a.transform).location).x as x,
+             ((a.transform).location).y as y,
+             ((a.transform).location).z as z,
+             count(distinct bi.ctid)::int as piece_count,
+             count(distinct p.id)::int as placeable_count
+      from dune.buildings b
+      join dune.building_instances bi on bi.building_id = b.id
+      join dune.actor_fgl_entities afe on afe.entity_id = bi.owner_entity_id
+      join dune.actors a on a.id = afe.actor_id
+      left join dune.permission_actor pa on pa.actor_id = a.id
+      left join dune.permission_actor_rank par on par.permission_actor_id = a.id
+      left join dune.actors player_a on player_a.id = par.player_id
+      left join dune.player_state ps on ps.account_id = player_a.owner_account_id
+      left join dune.placeables p on p.owner_entity_id = bi.owner_entity_id
+      where a.transform is not null
+      group by b.id, pa.actor_name, a.map, a.transform
+      ${having}
+      order by lower(coalesce(pa.actor_name, '')), b.id
+      limit 500`, values);
+    return {
+      capabilities: { bases: true },
+      rows: result.rows.map((row) => ({
+        ...row,
+        x: Number(row.x),
+        y: Number(row.y),
+        z: Number(row.z),
+        piece_count: Number(row.piece_count),
+        placeable_count: Number(row.placeable_count)
+      }))
+    };
+  } catch (error) {
+    return { capabilities: { bases: false }, rows: [], reason: `Base list query is unsupported by this schema: ${error.message}` };
+  }
+}
+
+export async function exportBase(db, id) {
+  const baseId = intParam(id, "base id", 1);
+  const requiredTables = ["buildings", "building_instances", "actor_fgl_entities", "actors"];
+  for (const table of requiredTables) {
+    await requireCapability(await tableExists(db, table), `Base export requires dune.${requiredTables.join(", dune.")}.`);
+  }
+  const baseRow = await db.query(`
+    select b.id::text as base_id,
+           coalesce(pa.actor_name, 'Base ' || b.id::text) as name,
+           coalesce(max(ps.character_name), '') as owner_name,
+           coalesce(a.map, '') as map,
+           ((a.transform).location).x as x,
+           ((a.transform).location).y as y,
+           ((a.transform).location).z as z
+    from dune.buildings b
+    join dune.building_instances bi on bi.building_id = b.id
+    join dune.actor_fgl_entities afe on afe.entity_id = bi.owner_entity_id
+    join dune.actors a on a.id = afe.actor_id
+    left join dune.permission_actor pa on pa.actor_id = a.id
+    left join dune.permission_actor_rank par on par.permission_actor_id = a.id
+    left join dune.actors player_a on player_a.id = par.player_id
+    left join dune.player_state ps on ps.account_id = player_a.owner_account_id
+    where b.id = $1
+    group by b.id, pa.actor_name, a.map, a.transform`, [baseId]);
+  if (!baseRow.rows.length) throw new UnsupportedCapabilityError(`Base ${baseId} was not found.`);
+  const base = baseRow.rows[0];
+
+  const pieceRows = await db.query("select * from dune.building_instances where building_id = $1", [baseId]);
+  const placeableRows = (await tableExists(db, "placeables"))
+    ? await db.query(`
+        select * from dune.placeables
+        where owner_entity_id = (select bi.owner_entity_id from dune.building_instances bi where bi.building_id = $1 limit 1)
+        order by id`, [baseId])
+    : { rows: [] };
+
+  return {
+    base_id: base.base_id,
+    name: base.name,
+    owner_name: base.owner_name,
+    map: base.map,
+    x: Number(base.x),
+    y: Number(base.y),
+    z: Number(base.z),
+    piece_count: pieceRows.rows.length,
+    placeable_count: placeableRows.rows.length,
+    pieces: pieceRows.rows,
+    placeables: placeableRows.rows
+  };
+}
+
 export async function listStorage(db) {
   if (!(await tableExists(db, "placeables"))) return unsupported("storage", ["dune.placeables"]);
   const result = await db.query(`

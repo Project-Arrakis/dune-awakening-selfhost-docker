@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { assertIdentifier, discoverDbConfig, isReadOnlySql, quoteQualified, redactDbError, rowsResult } from "../src/db.js";
-import { addCurrency, addFactionReputation, addIntel, addonLeadershipPlayers, addonOpsHealthFarms, addonOpsHealthPlayers, addonOpsHealthSummary, addonOpsHealthSummaryV2, augmentInventoryItem, augmentNewestPlayerItem, changeDunePassword, completeJourneyNode, completeTutorial, deleteInventoryItem, giveItemToPlayer, giveItemToStorage, guildMembers, landsraadOverview, listGuilds, listPlayers, listSpicefieldTypes, listTables, liveMapPlayers, liveMapServices, playerCraftingRecipes, playerInventory, playerJourney, playerPosition, playerProfile, playerResearchItems, repairVehicleDecay, resetJourneyNode, resetTutorial, runSql, setLandsraadPlayerContribution, tablePreview, teleportOfflinePlayerToCoords, unlockCraftingRecipe, unlockResearchItem, updateInventoryItem, updateLandsraadRewardTier, updateLandsraadTaskGoal, updateLandsraadTermTaskGoals, updateSpicefieldType, updateTableRow, UnsupportedCapabilityError } from "../src/duneDb.js";
+import { addCurrency, addFactionReputation, addIntel, addonLeadershipPlayers, addonOpsHealthFarms, addonOpsHealthPlayers, addonOpsHealthSummary, addonOpsHealthSummaryV2, augmentInventoryItem, augmentNewestPlayerItem, changeDunePassword, completeJourneyNode, completeTutorial, deleteInventoryItem, exportBase, giveItemToPlayer, giveItemToStorage, guildMembers, landsraadOverview, listBases, listGuilds, listPlayers, listSpicefieldTypes, listTables, liveMapPlayers, liveMapServices, playerCraftingRecipes, playerInventory, playerJourney, playerPosition, playerProfile, playerResearchItems, repairVehicleDecay, resetJourneyNode, resetTutorial, runSql, setLandsraadPlayerContribution, tablePreview, teleportOfflinePlayerToCoords, unlockCraftingRecipe, unlockResearchItem, updateInventoryItem, updateLandsraadRewardTier, updateLandsraadTaskGoal, updateLandsraadTermTaskGoals, updateSpicefieldType, updateTableRow, UnsupportedCapabilityError } from "../src/duneDb.js";
 
 test("discovers RedBlink Postgres defaults and env overrides", () => {
   assert.deepEqual(discoverDbConfig({}), {
@@ -814,6 +814,98 @@ test("guild members falls back to a direct account-id join when dune.actors is u
   assert.ok(memberQuery);
   assert.doesNotMatch(memberQuery.text, /dune\.actors/);
   assert.match(memberQuery.text, /left join dune\.player_state ps_by_account on ps_by_account\.account_id = coalesce\(null, gm\."player_id"\)/);
+});
+
+const BASE_REQUIRED_TABLES = ["dune.buildings", "dune.building_instances", "dune.actor_fgl_entities", "dune.actors"];
+
+test("list bases returns capability response when required tables are missing", async () => {
+  const db = {
+    query: async () => ({ rows: [{ exists: false }] })
+  };
+  const result = await listBases(db, {});
+  assert.equal(result.capabilities.bases, false);
+  assert.match(result.reason, /dune\.buildings/);
+});
+
+test("list bases returns rows with piece and placeable counts", async () => {
+  const db = {
+    query: async (text, values = []) => {
+      if (text.includes("to_regclass")) {
+        const name = String(values[0] || "");
+        return { rows: [{ exists: BASE_REQUIRED_TABLES.includes(name) }] };
+      }
+      if (text.includes("count(distinct bi.ctid)")) {
+        return { rows: [
+          { base_id: "1006", name: "Sietch One", owner_name: "Leader One", map: "TheDeepDesert", x: "100", y: "200", z: "30", piece_count: "589", placeable_count: "126" }
+        ] };
+      }
+      return { rows: [] };
+    }
+  };
+  const result = await listBases(db, {});
+  assert.equal(result.capabilities.bases, true);
+  assert.deepEqual(result.rows, [
+    { base_id: "1006", name: "Sietch One", owner_name: "Leader One", map: "TheDeepDesert", x: 100, y: 200, z: 30, piece_count: 589, placeable_count: 126 }
+  ]);
+});
+
+test("list bases filters by name or owner name via a having clause", async () => {
+  const calls = [];
+  const db = {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes("to_regclass")) {
+        const name = String(values[0] || "");
+        return { rows: [{ exists: BASE_REQUIRED_TABLES.includes(name) }] };
+      }
+      return { rows: [] };
+    }
+  };
+  await listBases(db, { q: "Sietch" });
+  const baseQuery = calls.find((call) => call.text.includes("from dune.buildings b"));
+  assert.ok(baseQuery);
+  assert.match(baseQuery.text, /having coalesce\(pa\.actor_name, ''\) ilike \$1 or coalesce\(max\(ps\.character_name\), ''\) ilike \$1/);
+  assert.deepEqual(baseQuery.values, ["%Sietch%"]);
+});
+
+test("export base throws an unsupported error when required tables are missing", async () => {
+  const db = {
+    query: async () => ({ rows: [{ exists: false }] })
+  };
+  await assert.rejects(() => exportBase(db, 1006), UnsupportedCapabilityError);
+});
+
+test("export base returns base identity plus its piece and placeable rows", async () => {
+  const db = {
+    query: async (text, values = []) => {
+      if (text.includes("to_regclass")) {
+        const name = String(values[0] || "");
+        return { rows: [{ exists: [...BASE_REQUIRED_TABLES, "dune.placeables"].includes(name) }] };
+      }
+      if (text.includes("from dune.buildings b")) {
+        return { rows: [
+          { base_id: "1006", name: "Sietch One", owner_name: "Leader One", map: "TheDeepDesert", x: "100", y: "200", z: "30" }
+        ] };
+      }
+      if (text.includes("from dune.building_instances where building_id")) {
+        return { rows: [{ building_id: 1006, owner_entity_id: "5198320676376814286" }, { building_id: 1006, owner_entity_id: "5198320676376814286" }] };
+      }
+      if (text.includes("from dune.placeables")) {
+        return { rows: [{ id: 1, owner_entity_id: "5198320676376814286" }] };
+      }
+      return { rows: [] };
+    }
+  };
+  const result = await exportBase(db, 1006);
+  assert.equal(result.base_id, "1006");
+  assert.equal(result.name, "Sietch One");
+  assert.equal(result.owner_name, "Leader One");
+  assert.equal(result.map, "TheDeepDesert");
+  assert.equal(result.x, 100);
+  assert.equal(result.piece_count, 2);
+  assert.equal(result.placeable_count, 1);
+  assert.equal(result.pieces.length, 2);
+  assert.equal(result.placeables.length, 1);
 });
 
 test("player profile includes faction and guild when addon tables are present", async () => {
