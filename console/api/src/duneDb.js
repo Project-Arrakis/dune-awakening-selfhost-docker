@@ -2152,6 +2152,10 @@ export async function listBases(db, { q = "" } = {}) {
   }
 }
 
+function quaternionYawDegrees(qz, qw) {
+  return (2 * Math.atan2(Number(qz) || 0, Number(qw) || 0)) * (180 / Math.PI);
+}
+
 export async function exportBase(db, id) {
   const baseId = intParam(id, "base id", 1);
   const requiredTables = ["buildings", "building_instances", "actor_fgl_entities", "actors"];
@@ -2178,27 +2182,68 @@ export async function exportBase(db, id) {
     group by b.id, pa.actor_name, a.map, a.transform`, [baseId]);
   if (!baseRow.rows.length) throw new UnsupportedCapabilityError(`Base ${baseId} was not found.`);
   const base = baseRow.rows[0];
+  const anchor = { x: Number(base.x), y: Number(base.y), z: Number(base.z) };
 
-  const pieceRows = await db.query("select * from dune.building_instances where building_id = $1", [baseId]);
+  // Blueprint import (blueprints.js) expects positions relative to a capture origin and a single
+  // yaw-degree rotation for instances, not the live tables' absolute world coords + quaternion.
+  // The anchor point is arbitrary (the base's own actor position) but consistent, so the exported
+  // pieces stay correctly positioned relative to each other when re-placed anywhere in-game.
+  // Rotation is captured yaw-only (Z axis) since every sampled live piece has qx=qy=0; pitch/roll
+  // on tilted geometry, if any exists, is lost.
+  const pieceRows = await db.query(`
+    select instance_id, building_type, transform
+    from dune.building_instances
+    where building_id = $1
+    order by instance_id`, [baseId]);
+  const instances = pieceRows.rows.map((row) => {
+    const t = row.transform || [];
+    return {
+      instance_id: row.instance_id,
+      building_type: row.building_type,
+      x: (Number(t[0]) || 0) - anchor.x,
+      y: (Number(t[1]) || 0) - anchor.y,
+      z: (Number(t[2]) || 0) - anchor.z,
+      rotation: quaternionYawDegrees(t[5], t[6])
+    };
+  });
+
   const placeableRows = (await tableExists(db, "placeables"))
     ? await db.query(`
-        select * from dune.placeables
-        where owner_entity_id = (select bi.owner_entity_id from dune.building_instances bi where bi.building_id = $1 limit 1)
-        order by id`, [baseId])
+        select p.id as placeable_id, p.building_type,
+               ((a.transform).location).x as x,
+               ((a.transform).location).y as y,
+               ((a.transform).location).z as z,
+               ((a.transform).rotation).z as qz,
+               ((a.transform).rotation).w as qw
+        from dune.placeables p
+        join dune.actors a on a.id = p.id
+        where p.owner_entity_id = (select bi.owner_entity_id from dune.building_instances bi where bi.building_id = $1 limit 1)
+          and a.transform is not null
+        order by p.id`, [baseId])
     : { rows: [] };
+  const placeables = placeableRows.rows.map((row) => ({
+    placeable_id: row.placeable_id,
+    building_type: row.building_type,
+    x: Number(row.x) - anchor.x,
+    y: Number(row.y) - anchor.y,
+    z: Number(row.z) - anchor.z,
+    rx: 0,
+    ry: 0,
+    rz: quaternionYawDegrees(row.qz, row.qw)
+  }));
 
   return {
     base_id: base.base_id,
     name: base.name,
     owner_name: base.owner_name,
     map: base.map,
-    x: Number(base.x),
-    y: Number(base.y),
-    z: Number(base.z),
-    piece_count: pieceRows.rows.length,
-    placeable_count: placeableRows.rows.length,
-    pieces: pieceRows.rows,
-    placeables: placeableRows.rows
+    x: anchor.x,
+    y: anchor.y,
+    z: anchor.z,
+    piece_count: instances.length,
+    placeable_count: placeables.length,
+    instances,
+    placeables
   };
 }
 

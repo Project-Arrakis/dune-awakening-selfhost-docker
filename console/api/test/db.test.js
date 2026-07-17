@@ -875,7 +875,10 @@ test("export base throws an unsupported error when required tables are missing",
   await assert.rejects(() => exportBase(db, 1006), UnsupportedCapabilityError);
 });
 
-test("export base returns base identity plus its piece and placeable rows", async () => {
+test("export base returns instances and placeables in blueprint-importable relative coordinates", async () => {
+  const anchor = { x: -165708.2808275, y: -220414.81625525, z: 23473.653477859374 };
+  const pieceTransform = [-167075.33, -217459.17, 22768.473, 0, 0, 0.81915206, 0.57357645];
+  const placeablePos = { x: -168670.68727685622, y: -218687.5419278533, z: 23154.388368606567, qz: 0.17364818, qw: 0.9848077 };
   const db = {
     query: async (text, values = []) => {
       if (text.includes("to_regclass")) {
@@ -884,14 +887,14 @@ test("export base returns base identity plus its piece and placeable rows", asyn
       }
       if (text.includes("from dune.buildings b")) {
         return { rows: [
-          { base_id: "1006", name: "Sietch One", owner_name: "Leader One", map: "TheDeepDesert", x: "100", y: "200", z: "30" }
+          { base_id: "1006", name: "Sietch One", owner_name: "Leader One", map: "HaggaBasin", x: String(anchor.x), y: String(anchor.y), z: String(anchor.z) }
         ] };
       }
-      if (text.includes("from dune.building_instances where building_id")) {
-        return { rows: [{ building_id: 1006, owner_entity_id: "5198320676376814286" }, { building_id: 1006, owner_entity_id: "5198320676376814286" }] };
+      if (text.includes("select instance_id, building_type, transform")) {
+        return { rows: [{ instance_id: 2486, building_type: "Harkonnen_Outpost_Foundation", transform: pieceTransform }] };
       }
-      if (text.includes("from dune.placeables")) {
-        return { rows: [{ id: 1, owner_entity_id: "5198320676376814286" }] };
+      if (text.includes("select p.id as placeable_id")) {
+        return { rows: [{ placeable_id: 2582, building_type: "Hark_Deco_Plate_02_Placeable", x: placeablePos.x, y: placeablePos.y, z: placeablePos.z, qz: placeablePos.qz, qw: placeablePos.qw }] };
       }
       return { rows: [] };
     }
@@ -900,12 +903,31 @@ test("export base returns base identity plus its piece and placeable rows", asyn
   assert.equal(result.base_id, "1006");
   assert.equal(result.name, "Sietch One");
   assert.equal(result.owner_name, "Leader One");
-  assert.equal(result.map, "TheDeepDesert");
-  assert.equal(result.x, 100);
-  assert.equal(result.piece_count, 2);
+  assert.equal(result.map, "HaggaBasin");
+  assert.equal(result.piece_count, 1);
   assert.equal(result.placeable_count, 1);
-  assert.equal(result.pieces.length, 2);
-  assert.equal(result.placeables.length, 1);
+  assert.equal(result.pentashields, undefined);
+
+  const instance = result.instances[0];
+  assert.equal(instance.instance_id, 2486);
+  assert.equal(instance.building_type, "Harkonnen_Outpost_Foundation");
+  assert.equal(instance.provides_stability, undefined);
+  assert.ok(Math.abs(instance.x - (pieceTransform[0] - anchor.x)) < 1e-6);
+  assert.ok(Math.abs(instance.y - (pieceTransform[1] - anchor.y)) < 1e-6);
+  assert.ok(Math.abs(instance.z - (pieceTransform[2] - anchor.z)) < 1e-6);
+  const expectedInstanceRotation = 2 * Math.atan2(pieceTransform[5], pieceTransform[6]) * (180 / Math.PI);
+  assert.equal(instance.rotation, expectedInstanceRotation);
+  assert.ok(Math.abs(instance.rotation - 110) < 1);
+
+  const placeable = result.placeables[0];
+  assert.equal(placeable.placeable_id, 2582);
+  assert.equal(placeable.building_type, "Hark_Deco_Plate_02_Placeable");
+  assert.equal(placeable.rx, 0);
+  assert.equal(placeable.ry, 0);
+  assert.ok(Math.abs(placeable.x - (placeablePos.x - anchor.x)) < 1e-6);
+  const expectedPlaceableRotation = 2 * Math.atan2(placeablePos.qz, placeablePos.qw) * (180 / Math.PI);
+  assert.equal(placeable.rz, expectedPlaceableRotation);
+  assert.ok(Math.abs(placeable.rz - 20) < 1);
 });
 
 test("player profile includes faction and guild when addon tables are present", async () => {
