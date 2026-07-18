@@ -8,6 +8,8 @@ type BasesPanelProps = {
   onError: (text: string) => void;
 };
 
+type SharedWithEntry = { name: string; rank: number; label: string };
+
 type BaseRow = Record<string, unknown> & {
   base_id: string;
   name: string;
@@ -19,6 +21,7 @@ type BaseRow = Record<string, unknown> & {
   coordinates: string;
   piece_count: number;
   placeable_count: number;
+  shared_with: SharedWithEntry[];
 };
 
 const BASES_AUTO_REFRESH_MS = 10_000;
@@ -32,6 +35,23 @@ function withCoordinates(row: Record<string, unknown>): BaseRow {
   const y = Math.round(Number(row.y) || 0);
   const z = Math.round(Number(row.z) || 0);
   return { ...row, x, y, z, coordinates: `${x}, ${y}, ${z}` } as BaseRow;
+}
+
+function renderBaseCell(row: Record<string, unknown>, column: string) {
+  if (column !== "shared_with") {
+    const value = row[column];
+    if (Array.isArray(value)) return value.join(", ");
+    return value == null || value === "" ? "—" : String(value);
+  }
+  const sharedWith = Array.isArray(row.shared_with) ? (row.shared_with as SharedWithEntry[]) : [];
+  if (!sharedWith.length) return <span className="muted">—</span>;
+  return (
+    <span className="bases-shared-list">
+      {sharedWith.map((entry) => (
+        <span key={`${entry.name}-${entry.rank}`}>{entry.name} <em>({entry.label})</em></span>
+      ))}
+    </span>
+  );
 }
 
 export function BasesPanel({ onError }: BasesPanelProps) {
@@ -126,9 +146,10 @@ export function BasesPanel({ onError }: BasesPanelProps) {
       <div className="action-row bases-search-row"><input value={q} onChange={(event) => setQ(event.target.value)} placeholder="Search base or owner name" /><button onClick={() => void load()}>Search</button></div>
       <DataTable
         rows={sort.sortedRows}
-        columns={["base_id", "name", "owner_name", "map", "coordinates", "piece_count", "placeable_count"]}
+        columns={["base_id", "name", "owner_name", "shared_with", "map", "coordinates", "piece_count", "placeable_count"]}
         tableClassName="bases-table"
         actionClassName="actions-column"
+        renderCell={renderBaseCell}
         action={(row) => {
           const base = row as BaseRow;
           const id = String(base.base_id);

@@ -836,7 +836,7 @@ test("list bases returns rows with piece and placeable counts", async () => {
       }
       if (text.includes("count(distinct bi.ctid)")) {
         return { rows: [
-          { base_id: "1006", name: "Sietch One", owner_name: "Leader One", map: "TheDeepDesert", x: "100", y: "200", z: "30", piece_count: "589", placeable_count: "126" }
+          { base_id: "1006", name: "Sietch One", owner_name: "Leader One", map: "TheDeepDesert", x: "100", y: "200", z: "30", piece_count: "589", placeable_count: "126", shared_with: [{ name: "Ally Two", rank: 2 }] }
         ] };
       }
       return { rows: [] };
@@ -845,8 +845,33 @@ test("list bases returns rows with piece and placeable counts", async () => {
   const result = await listBases(db, {});
   assert.equal(result.capabilities.bases, true);
   assert.deepEqual(result.rows, [
-    { base_id: "1006", name: "Sietch One", owner_name: "Leader One", map: "TheDeepDesert", x: 100, y: 200, z: 30, piece_count: 589, placeable_count: 126 }
+    { base_id: "1006", name: "Sietch One", owner_name: "Leader One", map: "TheDeepDesert", x: 100, y: 200, z: 30, piece_count: 589, placeable_count: 126, shared_with: [{ name: "Ally Two", rank: 2, label: "Co-Owner" }] }
   ]);
+});
+
+test("list bases excludes the owner from shared_with, coalesces missing entries, and labels unmapped ranks", async () => {
+  const db = {
+    query: async (text, values = []) => {
+      if (text.includes("to_regclass")) {
+        const name = String(values[0] || "");
+        return { rows: [{ exists: BASE_REQUIRED_TABLES.includes(name) }] };
+      }
+      if (text.includes("count(distinct bi.ctid)")) {
+        return { rows: [
+          { base_id: "1006", name: "Sietch One", owner_name: "Leader One", map: "TheDeepDesert", x: "100", y: "200", z: "30", piece_count: "589", placeable_count: "126", shared_with: [{ name: "Ally Two", rank: 2 }, { name: "Ally Three", rank: 7 }] },
+          { base_id: "1007", name: "Sietch Two", owner_name: "Leader Two", map: "TheDeepDesert", x: "10", y: "20", z: "3", piece_count: "12", placeable_count: "0", shared_with: null }
+        ] };
+      }
+      return { rows: [] };
+    }
+  };
+  const result = await listBases(db, {});
+  assert.deepEqual(result.rows[0].shared_with, [
+    { name: "Ally Two", rank: 2, label: "Co-Owner" },
+    { name: "Ally Three", rank: 7, label: "Rank 7" }
+  ]);
+  assert.ok(!result.rows[0].shared_with.some((entry) => entry.name === "Leader One"), "owner_name must not appear in shared_with");
+  assert.deepEqual(result.rows[1].shared_with, [], "null shared_with from the mock must coalesce to an empty array");
 });
 
 test("list bases filters by name or owner name via a having clause", async () => {

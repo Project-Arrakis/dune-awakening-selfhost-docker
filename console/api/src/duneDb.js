@@ -2100,6 +2100,16 @@ export async function unsupportedPlayerFeature(db, id, feature) {
   return { capabilities: { [feature]: false }, rows: [], reason: `${feature} schema has not been detected in this database yet` };
 }
 
+const PERMISSION_RANK_LABELS = {
+  1: "Owner",
+  2: "Co-Owner",
+  3: "Associate"
+};
+
+function permissionRankLabel(rank) {
+  return PERMISSION_RANK_LABELS[rank] || `Rank ${rank}`;
+}
+
 export async function listBases(db, { q = "" } = {}) {
   const requiredTables = ["buildings", "building_instances", "actor_fgl_entities", "actors"];
   for (const table of requiredTables) {
@@ -2121,7 +2131,8 @@ export async function listBases(db, { q = "" } = {}) {
              ((a.transform).location).y as y,
              ((a.transform).location).z as z,
              count(distinct bi.ctid)::int as piece_count,
-             count(distinct p.id)::int as placeable_count
+             count(distinct p.id)::int as placeable_count,
+             coalesce(shared.entries, '[]'::jsonb) as shared_with
       from dune.buildings b
       join dune.building_instances bi on bi.building_id = b.id
       join dune.actor_fgl_entities afe on afe.entity_id = bi.owner_entity_id
@@ -2136,9 +2147,18 @@ export async function listBases(db, { q = "" } = {}) {
         order by par.rank asc, ps.character_name asc
         limit 1
       ) owner on true
+      left join lateral (
+        select jsonb_agg(jsonb_build_object('name', ps.character_name, 'rank', par.rank) order by par.rank asc, ps.character_name asc) as entries
+        from dune.permission_actor_rank par
+        join dune.actors player_a on player_a.id = par.player_id
+        join dune.player_state ps on ps.account_id = player_a.owner_account_id
+        where par.permission_actor_id = a.id
+          and par.rank <> 1
+          and ps.character_name is distinct from owner.character_name
+      ) shared on true
       left join dune.placeables p on p.owner_entity_id = bi.owner_entity_id
       where a.transform is not null
-      group by b.id, pa.actor_name, owner.character_name, a.map, a.transform
+      group by b.id, pa.actor_name, owner.character_name, a.map, a.transform, shared.entries
       ${having}
       order by lower(coalesce(pa.actor_name, '')), b.id
       limit 500`, values);
@@ -2150,7 +2170,12 @@ export async function listBases(db, { q = "" } = {}) {
         y: Number(row.y),
         z: Number(row.z),
         piece_count: Number(row.piece_count),
-        placeable_count: Number(row.placeable_count)
+        placeable_count: Number(row.placeable_count),
+        shared_with: (Array.isArray(row.shared_with) ? row.shared_with : []).map((entry) => ({
+          name: entry.name,
+          rank: entry.rank,
+          label: permissionRankLabel(entry.rank)
+        }))
       }))
     };
   } catch (error) {
