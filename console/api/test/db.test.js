@@ -837,7 +837,7 @@ test("list bases returns rows with piece and placeable counts and a total count"
       if (text.includes("total_bases")) {
         return { rows: [{ total_bases: "5", total_pieces: "700", total_placeables: "140" }] };
       }
-      if (text.includes("count(distinct bi.ctid)")) {
+      if (text.includes("from paged p")) {
         return { rows: [
           { base_id: "1006", name: "Sietch One", owner_name: "Leader One", map: "TheDeepDesert", x: "100", y: "200", z: "30", total_count: "1", piece_count: "589", placeable_count: "126", shared_with: [{ name: "Ally Two", rank: 2 }] }
         ] };
@@ -866,7 +866,7 @@ test("list bases excludes the owner from shared_with, coalesces missing entries,
       if (text.includes("total_bases")) {
         return { rows: [{ total_bases: "2", total_pieces: "601", total_placeables: "126" }] };
       }
-      if (text.includes("count(distinct bi.ctid)")) {
+      if (text.includes("from paged p")) {
         return { rows: [
           { base_id: "1006", name: "Sietch One", owner_name: "Leader One", map: "TheDeepDesert", x: "100", y: "200", z: "30", total_count: "2", piece_count: "589", placeable_count: "126", shared_with: [{ name: "Ally Two", rank: 2 }, { name: "Ally Three", rank: 7 }] },
           { base_id: "1007", name: "Sietch Two", owner_name: "Leader Two", map: "TheDeepDesert", x: "10", y: "20", z: "3", total_count: "2", piece_count: "12", placeable_count: "0", shared_with: null }
@@ -934,7 +934,7 @@ test("list bases resolves shared_with via the base's actor id, not its building 
   assert.ok(!baseQuery.text.includes("par.permission_actor_id = p.id"), "shared LATERAL must not regress to the building id");
 });
 
-test("list bases resolves the owner via the base's actor id, not its building id", async () => {
+test("list bases resolves the owner via the base's actor id, not its building id (no search)", async () => {
   const calls = [];
   const db = {
     query: async (text, values = []) => {
@@ -949,13 +949,45 @@ test("list bases resolves the owner via the base's actor id, not its building id
       return { rows: [] };
     }
   };
+  // Without a search term, owner resolution is deferred to the final SELECT (only run for
+  // the displayed page) instead of the matched CTE (run for every base) — see the fan-out/
+  // scaling fix in listBases. The final SELECT's owner LATERAL references p.actor_id, since
+  // `a` isn't in scope there.
   await listBases(db, {});
+  const baseQuery = calls.find((call) => call.text.includes("from dune.buildings b"));
+  assert.ok(baseQuery);
+  assert.match(baseQuery.text, /\) owner on true/);
+  const ownerLateral = baseQuery.text.slice(baseQuery.text.indexOf("left join lateral"), baseQuery.text.indexOf(") owner on true"));
+  assert.ok(ownerLateral.includes("where par.permission_actor_id = p.actor_id"), "owner LATERAL must resolve via the base's actor id");
+  assert.ok(ownerLateral.includes("order by par.rank asc"), "owner must be the lowest-rank (rank 1) member, not an arbitrary one");
+  assert.ok(!ownerLateral.includes("par.permission_actor_id = p.id"), "owner LATERAL must not regress to the building id");
+});
+
+test("list bases resolves the owner via the base's actor id, not its building id (searching)", async () => {
+  const calls = [];
+  const db = {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes("to_regclass")) {
+        const name = String(values[0] || "");
+        return { rows: [{ exists: BASE_REQUIRED_TABLES.includes(name) }] };
+      }
+      if (text.includes("total_bases")) {
+        return { rows: [{ total_bases: "1", total_pieces: "1", total_placeables: "0" }] };
+      }
+      return { rows: [] };
+    }
+  };
+  // With a search term, the `having` clause needs the resolved owner name, so the owner
+  // LATERAL must still run inside the matched CTE (before pagination), referencing a.id.
+  await listBases(db, { q: "Sietch" });
   const baseQuery = calls.find((call) => call.text.includes("from dune.buildings b"));
   assert.ok(baseQuery);
   assert.match(baseQuery.text, /\) owner on true/);
   const ownerLateral = baseQuery.text.slice(baseQuery.text.indexOf("left join lateral"), baseQuery.text.indexOf(") owner on true"));
   assert.ok(ownerLateral.includes("where par.permission_actor_id = a.id"), "owner LATERAL must resolve via the base's actor id");
   assert.ok(ownerLateral.includes("order by par.rank asc"), "owner must be the lowest-rank (rank 1) member, not an arbitrary one");
+  assert.ok(!ownerLateral.includes("par.permission_actor_id = b.id"), "owner LATERAL must not regress to the building id");
 });
 
 test("list bases totals query uses the same base-inclusion criterion and placeable join as the main query", async () => {
@@ -974,7 +1006,10 @@ test("list bases totals query uses the same base-inclusion criterion and placeab
   const totalsQuery = calls.find((call) => call.text.includes("total_bases"));
   assert.ok(totalsQuery);
   assert.ok(totalsQuery.text.includes("where a.transform is not null"), "totals must use the same base-inclusion criterion as the paginated query");
-  assert.ok(totalsQuery.text.includes("left join dune.placeables pl on pl.owner_entity_id = bi.owner_entity_id"), "totals placeable join must match the main query's join key");
+  assert.ok(totalsQuery.text.includes("with valid_bases as"), "totals must dedup base/owner pairs before counting to avoid fan-out");
+  assert.ok(!totalsQuery.text.includes("left join dune.placeables pl on pl.owner_entity_id = bi.owner_entity_id"), "totals must not directly cross-join building_instances to placeables (causes fan-out)");
+  assert.ok(totalsQuery.text.includes("join valid_bases vb on vb.owner_entity_id = pl.owner_entity_id"), "placeable totals must count via the dedup'd owner_entity_id join, not a direct bi-to-pl join");
+  assert.ok(totalsQuery.text.includes("count(distinct pl.id)"), "placeable totals must stay deduped in case two bases ever share an owner entity");
 });
 
 test("list bases rejects invalid page or pageSize values", async () => {
