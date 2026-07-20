@@ -35,12 +35,14 @@ test.after(() => {
   process.env = OLD_ENV;
 });
 
-test("reports adapter health as experimental read-only", async () => {
+test("reports adapter health with isolated link-state writes", async () => {
   const result = await discordAdapterHealth({});
   assert.equal(result.ok, true);
   assert.equal(result.enabled, true);
   assert.equal(result.experimental, true);
-  assert.equal(result.readOnly, true);
+  assert.equal(result.readOnly, false);
+  assert.equal(result.gameDataWritesEnabled, false);
+  assert.deepEqual(result.adapterDataWrites, ["player-link"]);
   assert.equal(result.writesEnabled, false);
   assert.deepEqual([...result.liveRoutes].sort(), [
     "/api/integrations/discord/announcements",
@@ -74,7 +76,7 @@ test("forces writes disabled even if environment attempts to enable them", () =>
   assert.equal(discordWritesEnabled({ discordWritesEnabled: true }), false);
 });
 
-test("exposes only experimental read-only route names", () => {
+test("exposes only allowlisted adapter route names", () => {
   const routes = Object.values(DISCORD_ADAPTER_ROUTES);
   assert.deepEqual(routes.sort(), [
     "/api/integrations/discord/announcements",
@@ -281,6 +283,11 @@ test("adapter routes respond through mounted HTTP server path", async () => {
           // Population
           const pop = await (await fetch(`${base}/api/integrations/discord/population`, { method: "POST", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify({ actor: actor(["role-moderator"]) }) })).json();
           assert.equal(pop.ok, true);
+
+          // Existing version route remains live after adding player routes
+          const version = await (await fetch(`${base}/api/integrations/discord/version`, { headers: auth })).json();
+          assert.equal(version.ok, true);
+          assert.equal(version.version, "dev");
 
           // Auth: 401 without token
           assert.equal((await fetch(`${base}/api/integrations/discord/health`)).status, 401);

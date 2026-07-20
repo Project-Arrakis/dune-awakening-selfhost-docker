@@ -4203,29 +4203,78 @@ export async function addonOpsEconomySummary(db) {
 function emptyEconomySummary() {
   return { totalCurrencyHolders: 0, totalSupply: 0, activeOrders: 0, fulfilledOrders: 0, taxCollected: 0, currencyBreakdown: [], topTradedItems: [] };
 }
-export async function discordPlayerLinksTableCreate(db) {
-  await db.query(`
-    create table if not exists dune.discord_player_links (
-      discord_user_id text primary key,
-      player_controller_id text not null,
-      linked_at timestamp with time zone default now()
-    )`);
+export async function migrateDiscordAdapterSchema(db) {
+  const migrate = async (tx) => {
+    await tx.query(`
+      create table if not exists dune.discord_player_links (
+        discord_user_id text primary key,
+        player_controller_id text not null,
+        linked_at timestamp with time zone not null default now()
+      )`);
+    await tx.query("alter table dune.discord_player_links alter column linked_at set default now()");
+    await tx.query("update dune.discord_player_links set linked_at = now() where linked_at is null");
+    await tx.query("alter table dune.discord_player_links alter column linked_at set not null");
+    await tx.query(`
+      delete from dune.discord_player_links older
+      using dune.discord_player_links newer
+      where older.player_controller_id = newer.player_controller_id
+        and (older.linked_at, older.discord_user_id) < (newer.linked_at, newer.discord_user_id)`);
+    await tx.query(`
+      create unique index if not exists discord_player_links_player_controller_id_uidx
+      on dune.discord_player_links (player_controller_id)`);
+    await tx.query(`
+      create table if not exists dune.discord_pending_links (
+        code text primary key,
+        discord_user_id text not null,
+        player_controller_id text not null,
+        character_name text not null,
+        created_at timestamp with time zone not null default now(),
+        expires_at timestamp with time zone not null
+      )`);
+    await tx.query("alter table dune.discord_pending_links alter column created_at set default now()");
+    await tx.query("update dune.discord_pending_links set created_at = now() where created_at is null");
+    await tx.query("alter table dune.discord_pending_links alter column created_at set not null");
+    await tx.query("delete from dune.discord_pending_links where expires_at <= now()");
+    await tx.query(`
+      delete from dune.discord_pending_links older
+      using dune.discord_pending_links newer
+      where older.discord_user_id = newer.discord_user_id
+        and (older.created_at, older.code) < (newer.created_at, newer.code)`);
+    await tx.query(`
+      delete from dune.discord_pending_links older
+      using dune.discord_pending_links newer
+      where older.player_controller_id = newer.player_controller_id
+        and (older.created_at, older.code) < (newer.created_at, newer.code)`);
+    await tx.query(`
+      create unique index if not exists discord_pending_links_discord_user_id_uidx
+      on dune.discord_pending_links (discord_user_id)`);
+    await tx.query(`
+      create unique index if not exists discord_pending_links_player_controller_id_uidx
+      on dune.discord_pending_links (player_controller_id)`);
+  };
+  if (typeof db.transaction === "function") return db.transaction(migrate);
+  return migrate(db);
 }
 
 export async function resolvePlayerByName(db, characterName) {
   const result = await db.query(`
-    select player_controller_id::text as player_controller_id,
-           character_name,
-           player_pawn_id::text as player_pawn_id,
-           coalesce(online_status::text, 'Offline') as online_status
-    from dune.player_state
-    where lower(character_name) = lower($1)
-    order by player_controller_id`, [String(characterName).trim()]);
+    select distinct on (ps.player_controller_id)
+           ps.player_controller_id::text as player_controller_id,
+           ps.character_name,
+           ps.player_pawn_id::text as player_pawn_id,
+           coalesce(ps.online_status::text, 'Offline') as online_status,
+           coalesce(ac.funcom_id, '') as funcom_id,
+           coalesce(ac."user", '') as fls_id
+    from dune.player_state ps
+    left join dune.accounts ac on ac.id = ps.account_id
+    where lower(ps.character_name) = lower($1)
+    order by ps.player_controller_id,
+             case when coalesce(ps.online_status::text, '') = 'Online' then 0 else 1 end,
+             ps.player_pawn_id desc`, [String(characterName).trim()]);
   return result.rows;
 }
 
 export async function getLinkedPlayer(db, discordUserId) {
-  await discordPlayerLinksTableCreate(db);
   const result = await db.query(`
     select dpl.discord_user_id,
            dpl.player_controller_id,
@@ -4240,19 +4289,35 @@ export async function getLinkedPlayer(db, discordUserId) {
 }
 
 export async function discordPlayerLink(db, discordUserId, playerControllerId) {
-  await discordPlayerLinksTableCreate(db);
-  await db.query("delete from dune.discord_player_links where player_controller_id = $1", [playerControllerId]);
-  await db.query(`
-    insert into dune.discord_player_links (discord_user_id, player_controller_id)
-    values ($1, $2)
-    on conflict (discord_user_id) do update
-      set player_controller_id = excluded.player_controller_id,
-          linked_at = now()`, [String(discordUserId), playerControllerId]);
-  return await getLinkedPlayer(db, discordUserId);
+  const link = async (tx) => {
+    const conflict = await tx.query(`
+      select discord_user_id
+      from dune.discord_player_links
+      where player_controller_id = $1
+        and discord_user_id <> $2
+      for update`, [playerControllerId, String(discordUserId)]);
+    if (conflict.rowCount) {
+      return { conflict: true };
+    }
+    await tx.query(`
+      insert into dune.discord_player_links (discord_user_id, player_controller_id)
+      values ($1, $2)
+      on conflict (discord_user_id) do update
+        set player_controller_id = excluded.player_controller_id,
+            linked_at = now()`, [String(discordUserId), playerControllerId]);
+    return { conflict: false, player: await getLinkedPlayer(tx, discordUserId) };
+  };
+  const result = typeof db.transaction === "function" ? await db.transaction(link) : await link(db);
+  if (result.conflict) {
+    const error = new Error("This character is already linked to another Discord account.");
+    error.code = "character_already_linked";
+    error.statusCode = 409;
+    throw error;
+  }
+  return result.player;
 }
 
 export async function discordPlayerUnlink(db, discordUserId) {
-  await discordPlayerLinksTableCreate(db);
   const player = await getLinkedPlayer(db, discordUserId);
   await db.query("delete from dune.discord_player_links where discord_user_id = $1", [String(discordUserId)]);
   return Boolean(player);
@@ -4401,46 +4466,39 @@ export async function searchItemsInPlayerInventory(db, playerPawnId, query) {
   return { rows: result.rows };
 }
 
-export async function discordPendingLinksTableCreate(db) {
-  await db.query(`
-    create table if not exists dune.discord_pending_links (
-      code text primary key,
-      discord_user_id text not null,
-      player_controller_id text not null,
-      character_name text not null,
-      funcom_id text,
-      fls_id text,
-      created_at timestamp with time zone default now(),
-      expires_at timestamp with time zone not null
-    )`);
+export async function createPendingLink(db, discordUserId, playerControllerId, characterName, code, expiresAt) {
+  const create = async (tx) => {
+    await tx.query(`
+      delete from dune.discord_pending_links
+      where discord_user_id = $1`, [String(discordUserId)]);
+    const result = await tx.query(`
+      insert into dune.discord_pending_links (code, discord_user_id, player_controller_id, character_name, expires_at)
+      values ($1, $2, $3, $4, $5)
+      on conflict (code) do nothing`, [code, String(discordUserId), playerControllerId, characterName, expiresAt]);
+    return result.rowCount === 1;
+  };
+  if (typeof db.transaction === "function") return db.transaction(create);
+  return create(db);
 }
 
-export async function createPendingLink(db, discordUserId, playerControllerId, characterName, funcomId, flsId, code, expiresAt) {
-  await discordPendingLinksTableCreate(db);
-  await db.query(`
-    insert into dune.discord_pending_links (code, discord_user_id, player_controller_id, character_name, funcom_id, fls_id, expires_at)
-    values ($1, $2, $3, $4, $5, $6, $7)
-    on conflict (code) do update
-      set discord_user_id = excluded.discord_user_id,
-          player_controller_id = excluded.player_controller_id,
-          character_name = excluded.character_name,
-          funcom_id = excluded.funcom_id,
-          fls_id = excluded.fls_id,
-          expires_at = excluded.expires_at,
-          created_at = now()`, [code, discordUserId, playerControllerId, characterName, funcomId || "", flsId || "", expiresAt]);
-}
-
-export async function consumePendingLink(db, code) {
-  await discordPendingLinksTableCreate(db);
+export async function deletePendingLink(db, discordUserId, code) {
   const result = await db.query(`
     delete from dune.discord_pending_links
-    where code = $1 and expires_at > now()
-    returning discord_user_id, player_controller_id, character_name`, [code]);
+    where discord_user_id = $1 and code = $2`, [String(discordUserId), code]);
+  return result.rowCount || 0;
+}
+
+export async function consumePendingLink(db, discordUserId, code) {
+  const result = await db.query(`
+    delete from dune.discord_pending_links
+    where code = $1
+      and discord_user_id = $2
+      and expires_at > now()
+    returning discord_user_id, player_controller_id, character_name`, [code, String(discordUserId)]);
   return result.rows[0] || null;
 }
 
 export async function cleanupExpiredPendingLinks(db) {
-  await discordPendingLinksTableCreate(db);
   const result = await db.query("delete from dune.discord_pending_links where expires_at <= now()");
   return result.rowCount;
 }

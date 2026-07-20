@@ -1,16 +1,16 @@
 import { randomInt } from "node:crypto";
 import {
-  discordPlayerLinksTableCreate,
-  discordPendingLinksTableCreate,
   getLinkedPlayer,
   discordPlayerLink,
   discordPlayerUnlink,
   resolvePlayerByName,
   createPendingLink,
+  deletePendingLink,
   consumePendingLink
 } from "../../duneDb.js";
 import { policyError } from "./policy.js";
 import { publishCarePackageWhisper } from "../../rmq.js";
+import { ensureCarePackageServerPersona } from "../../carePackage.js";
 
 const CODE_LENGTH = 6;
 const CODE_EXPIRY_MINUTES = 5;
@@ -28,10 +28,7 @@ function expiresAtMinutes(minutes) {
   return new Date(Date.now() + minutes * 60 * 1000).toISOString();
 }
 
-export async function linkPlayerProvider(db, config, { discordUserId, characterName }) {
-  await discordPlayerLinksTableCreate(db);
-  await discordPendingLinksTableCreate(db);
-
+export async function linkPlayerProvider(db, config, { discordUserId, characterName }, dependencies = {}) {
   if (!characterName || !String(characterName).trim()) {
     throw policyError("invalid_request", "characterName is required.");
   }
@@ -48,59 +45,61 @@ export async function linkPlayerProvider(db, config, { discordUserId, characterN
   }
 
   const player = matches[0];
-  const code = generateVerificationCode();
+  if (player.online_status !== "Online") {
+    return { ok: false, error: `${player.character_name} must be online to receive the private verification code.` };
+  }
+  if (!player.funcom_id) {
+    return { ok: false, error: `No active Funcom identity was found for ${player.character_name}. Reconnect in game and try again.` };
+  }
+
+  let code = "";
   const expires = expiresAtMinutes(CODE_EXPIRY_MINUTES);
-
-  await createPendingLink(
-    db,
-    discordUserId,
-    player.player_controller_id,
-    player.character_name,
-    "",
-    "",
-    code,
-    expires
-  );
-
-  if (player.funcom_id && player.fls_id) {
-    try {
-      await publishCarePackageWhisper(config, {
-        recipientFuncomId: player.funcom_id,
-        recipientCharacterName: player.character_name,
-        senderFuncomId: "ACP#0001",
-        senderDisplayName: "ACP",
-        message: `Your ACP verification code is: ${code}. Use /dune data verify ${code} to link your character.`
-      });
-    } catch (err) {
-      console.error("Failed to send verification whisper:", err.message);
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const candidate = generateVerificationCode();
+    if (await createPendingLink(db, discordUserId, player.player_controller_id, player.character_name, candidate, expires)) {
+      code = candidate;
+      break;
     }
+  }
+  if (!code) {
+    return { ok: false, error: `A verification request is already pending for ${player.character_name}. Wait five minutes and try again.` };
+  }
+
+  const publishWhisper = dependencies.publishWhisper || publishCarePackageWhisper;
+  const ensurePersona = dependencies.ensurePersona || ensureCarePackageServerPersona;
+  try {
+    const persona = await ensurePersona(db);
+    await publishWhisper(config, {
+      recipientFuncomId: player.funcom_id,
+      recipientCharacterName: player.character_name,
+      senderFuncomId: persona.funcomId,
+      senderHexFlsId: persona.hexFlsId,
+      senderDisplayName: "Dune Docker Console",
+      message: `Your Discord verification code is: ${code}. Use /dune data verify followed by this code to link your character.`
+    });
+  } catch (error) {
+    await deletePendingLink(db, discordUserId, code);
+    throw policyError("verification_delivery_failed", "The in-game verification whisper could not be delivered. Try again while the character is online.", 503);
   }
 
   return {
     ok: true,
     pending: true,
-    code,
     characterName: player.character_name,
-    message: `Verification code generated. Check in-game whispers for your code, then use /dune data verify ${code} to complete linking.`
+    expiresInSeconds: CODE_EXPIRY_MINUTES * 60,
+    message: "A private verification code was sent in game. Use /dune data verify followed by that code within five minutes."
   };
 }
 
 export async function verifyPlayerLinkProvider(db, { discordUserId, code }) {
-  await discordPlayerLinksTableCreate(db);
-  await discordPendingLinksTableCreate(db);
-
   if (!code || !String(code).trim()) {
     throw policyError("invalid_request", "code is required.");
   }
 
-  const pending = await consumePendingLink(db, String(code).trim().toUpperCase());
+  const pending = await consumePendingLink(db, discordUserId, String(code).trim().toUpperCase());
 
   if (!pending) {
     return { ok: false, error: "Invalid or expired verification code. Use /dune data link <character> to generate a new one." };
-  }
-
-  if (pending.discord_user_id !== discordUserId) {
-    return { ok: false, error: "This verification code belongs to a different Discord user." };
   }
 
   await discordPlayerLink(db, discordUserId, pending.player_controller_id);
@@ -117,13 +116,11 @@ export async function verifyPlayerLinkProvider(db, { discordUserId, code }) {
 }
 
 export async function unlinkProvider(db, { discordUserId }) {
-  await discordPlayerLinksTableCreate(db);
   await discordPlayerUnlink(db, discordUserId);
   return { ok: true, message: "Unlinked." };
 }
 
 export async function whoamiProvider(db, { discordUserId }) {
-  await discordPlayerLinksTableCreate(db);
   const linked = await getLinkedPlayer(db, discordUserId);
   if (!linked) {
     return { ok: true, linked: false, message: "Not linked. Use /dune data link <character-name>" };
@@ -139,7 +136,6 @@ export async function whoamiProvider(db, { discordUserId }) {
 }
 
 export async function requireLinkedPlayer(db, discordUserId) {
-  await discordPlayerLinksTableCreate(db);
   const linked = await getLinkedPlayer(db, discordUserId);
   if (!linked) {
     throw policyError("not_linked", "Not linked to a game character. Use /dune data link <name> first.", 403);

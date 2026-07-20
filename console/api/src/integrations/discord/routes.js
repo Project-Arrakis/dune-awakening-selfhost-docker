@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import {
   discordAdapterEnabled, discordAdapterErrorResponse, discordAdapterHealth,
   discordAdapterPopulation, discordAdapterReadiness, discordAdapterServices,
-  discordAdapterStatus, DISCORD_ADAPTER_ROUTES, DISCORD_PLANNED_ADAPTER_ROUTES,
+  discordAdapterStatus, discordWritesEnabled, DISCORD_ADAPTER_ROUTES, DISCORD_PLANNED_ADAPTER_ROUTES,
   validateDiscordActor, discordRoleMappingFromEnv
 } from "./adapter.js";
 import { policyError, requireDiscordCapability, DISCORD_CAPABILITIES } from "./policy.js";
@@ -27,6 +27,31 @@ import {
   itemSearchProvider,
   inventorySearchProvider
 } from "./inventoryProvider.js";
+import { broadcastProvider } from "./broadcastProvider.js";
+import { buildDuneArgs, runDune } from "../../runner.js";
+import { initializeDiscordAdapterSchema } from "./schema.js";
+
+const INFRA_OPERATIONS = Object.freeze({
+  SERVERS: { operation: "servers", timeoutMs: 15000, capability: DISCORD_CAPABILITIES.SERVICES_READ },
+  PORTS: { operation: "ports", timeoutMs: 15000, capability: DISCORD_CAPABILITIES.SERVICES_READ },
+  DB: { operation: "dbStatus", timeoutMs: 15000, capability: DISCORD_CAPABILITIES.SERVICES_READ }
+});
+
+async function handleSecureInfraRoute({ key, config, json, res, actor }) {
+  const op = INFRA_OPERATIONS[key];
+  if (!op) throw policyError("not_found", "Unsupported infrastructure operation.", 404);
+  const mapping = discordRoleMappingFromEnv();
+  requireDiscordCapability(actor, mapping, op.capability);
+  const result = await runDune(config, buildDuneArgs(op.operation), {
+    timeoutMs: op.timeoutMs,
+    allowedExitCodes: [0]
+  });
+  return json(res, 200, {
+    ok: true,
+    operation: op.operation,
+    result: { output: (result.stdout || "").slice(0, 4000) }
+  });
+}
 
 async function defaultPopulationProvider(config) {
   try {
@@ -76,6 +101,11 @@ export async function handleDiscordAdapterRoute({ req, res, path, config, readJs
   try {
     if (!discordAdapterEnabled(config)) throw policyError("adapter_disabled", "Discord adapter is disabled.", 404);
     requireDiscordBotToken(req, config);
+
+    if (path.startsWith("/api/integrations/discord/players/") || path.startsWith("/api/integrations/discord/guilds/")) {
+      if (!db) throw policyError("database_unavailable", "Discord player data is unavailable.", 503);
+      await initializeDiscordAdapterSchema(db);
+    }
 
     if (path === DISCORD_ADAPTER_ROUTES.HEALTH && req.method === "GET") {
       return json(res, 200, await discordAdapterHealth(config));
@@ -152,15 +182,15 @@ export async function handleDiscordAdapterRoute({ req, res, path, config, readJs
       return json(res, 200, { ok: false, error: `OPS provider not found for: ${path}` });
     }
 
-    // Broadcast route
+    // Broadcast route — gated behind write enablement, actor identity, and admin/owner capability.
     if (path === DISCORD_ADAPTER_ROUTES.BROADCAST && req.method === "POST") {
+      if (!discordWritesEnabled(config)) throw policyError("writes_disabled", "Write operations are not enabled.", 403);
       const body = await readJson(req);
-      return json(res, 200, {
-        ok: true,
-        status: "planned",
-        route: path,
-        message: "Broadcast route is planned. Requires game server RabbitMQ integration."
-      });
+      const actor = validateDiscordActor(body.actor);
+      const mapping = discordRoleMappingFromEnv();
+      requireDiscordCapability(actor, mapping, DISCORD_CAPABILITIES.BROADCAST_SEND);
+      const result = await broadcastProvider(config, { message: body.message });
+      return json(res, 200, result);
     }
 
     // Announcements route
@@ -191,7 +221,7 @@ export async function handleDiscordAdapterRoute({ req, res, path, config, readJs
     if (path === DISCORD_ADAPTER_ROUTES.PLAYERS_LINK && req.method === "POST") {
       const body = await readJson(req);
       const actor = validateDiscordActor(body.actor);
-      requireDiscordCapability(actor, mapping, DISCORD_CAPABILITIES.INVENTORY_READ);
+      requireDiscordCapability(actor, mapping, DISCORD_CAPABILITIES.PLAYER_LINK_WRITE);
       return json(res, 200, await linkPlayerProvider(db, config, {
         discordUserId: actor.userId,
         characterName: body.characterName
@@ -202,7 +232,7 @@ export async function handleDiscordAdapterRoute({ req, res, path, config, readJs
     if (path === DISCORD_ADAPTER_ROUTES.PLAYERS_LINK_VERIFY && req.method === "POST") {
       const body = await readJson(req);
       const actor = validateDiscordActor(body.actor);
-      requireDiscordCapability(actor, mapping, DISCORD_CAPABILITIES.INVENTORY_READ);
+      requireDiscordCapability(actor, mapping, DISCORD_CAPABILITIES.PLAYER_LINK_WRITE);
       return json(res, 200, await verifyPlayerLinkProvider(db, {
         discordUserId: actor.userId,
         code: body.code
@@ -213,7 +243,7 @@ export async function handleDiscordAdapterRoute({ req, res, path, config, readJs
     if (path === DISCORD_ADAPTER_ROUTES.PLAYERS_UNLINK && req.method === "POST") {
       const body = await readJson(req);
       const actor = validateDiscordActor(body.actor);
-      requireDiscordCapability(actor, mapping, DISCORD_CAPABILITIES.INVENTORY_READ);
+      requireDiscordCapability(actor, mapping, DISCORD_CAPABILITIES.PLAYER_LINK_WRITE);
       return json(res, 200, await unlinkProvider(db, {
         discordUserId: actor.userId
       }));
@@ -311,61 +341,24 @@ export async function handleDiscordAdapterRoute({ req, res, path, config, readJs
       }));
     }
 
-    // Logs route — read-only, returns recent log entries
-    if (path === DISCORD_ADAPTER_ROUTES.LOGS && req.method === "POST") {
+    if (path === DISCORD_ADAPTER_ROUTES.SERVERS && req.method === "POST") {
       const body = await readJson(req);
       const actor = validateDiscordActor(body.actor);
-      const mapping = discordRoleMappingFromEnv();
-      requireDiscordCapability(actor, mapping, DISCORD_CAPABILITIES.LOGS_READ);
-
-      const result = await runDune(config, buildDuneArgs("logs"), {
-        timeoutMs: 15000,
-        allowedExitCodes: [0]
-      });
-
-      return json(res, 200, {
-        ok: true,
-        route: path,
-        logs: (result.stdout || "").slice(0, 4000).split("\n").slice(-50)
-      });
+      return handleSecureInfraRoute({ key: "SERVERS", config, json, res, actor });
+    }
+    if (path === DISCORD_ADAPTER_ROUTES.PORTS && req.method === "POST") {
+      const body = await readJson(req);
+      const actor = validateDiscordActor(body.actor);
+      return handleSecureInfraRoute({ key: "PORTS", config, json, res, actor });
+    }
+    if (path === DISCORD_ADAPTER_ROUTES.DB && req.method === "POST") {
+      const body = await readJson(req);
+      const actor = validateDiscordActor(body.actor);
+      return handleSecureInfraRoute({ key: "DB", config, json, res, actor });
     }
 
-    // Map state route — read-only, returns map runtime state
-    if (path === DISCORD_ADAPTER_ROUTES.MAP_STATE && req.method === "POST") {
-      const body = await readJson(req);
-      const actor = validateDiscordActor(body.actor);
-      const mapping = discordRoleMappingFromEnv();
-      requireDiscordCapability(actor, mapping, DISCORD_CAPABILITIES.STATUS_READ);
-
-      const result = await runDune(config, buildDuneArgs("maps"), {
-        timeoutMs: 15000,
-        allowedExitCodes: [0]
-      });
-
-      return json(res, 200, {
-        ok: true,
-        route: path,
-        mapState: (result.stdout || "").slice(0, 4000)
-      });
-    }
-
-    // Maintenance route — read-only, returns maintenance window metadata
-    if (path === DISCORD_ADAPTER_ROUTES.MAINTENANCE && req.method === "POST") {
-      const body = await readJson(req);
-      const actor = validateDiscordActor(body.actor);
-      const mapping = discordRoleMappingFromEnv();
-      requireDiscordCapability(actor, mapping, DISCORD_CAPABILITIES.STATUS_READ);
-
-      const result = await runDune(config, buildDuneArgs("maintenance"), {
-        timeoutMs: 15000,
-        allowedExitCodes: [0]
-      });
-
-      return json(res, 200, {
-        ok: true,
-        route: path,
-        maintenance: (result.stdout || "").slice(0, 4000)
-      });
+    if (path === DISCORD_ADAPTER_ROUTES.VERSION && req.method === "GET") {
+      return json(res, 200, { ok: true, version: config.version || "dev" });
     }
 
     throw policyError("not_found", "Discord adapter route not found.", 404);
@@ -385,7 +378,9 @@ export function requireDiscordBotToken(req, config) {
 }
 
 export function readDiscordBotApiToken(config) {
-  const tokenFile = process.env.DUNE_BOT_API_TOKEN_FILE || config?.discordBotApiTokenFile || "";
+  const directToken = process.env.DUNE_DISCORD_ADAPTER_TOKEN || config?.discordAdapterToken || "";
+  if (directToken) return String(directToken).trim();
+  const tokenFile = process.env.DUNE_DISCORD_ADAPTER_TOKEN_FILE || process.env.DUNE_BOT_API_TOKEN_FILE || config?.discordAdapterTokenFile || config?.discordBotApiTokenFile || "";
   if (!tokenFile) return "";
   try {
     return readFileSync(tokenFile, "utf8").trim();
