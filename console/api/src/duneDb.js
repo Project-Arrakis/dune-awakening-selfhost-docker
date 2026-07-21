@@ -1422,8 +1422,18 @@ async function leadershipLevels(db) {
 
 async function leadershipFactions(db) {
   const current = await leadershipCurrentFactions(db);
-  if (current.size) return current;
-  return leadershipReputationFactions(db);
+  const [guild, reputation] = await Promise.all([
+    leadershipGuildFactions(db),
+    leadershipReputationFactions(db)
+  ]);
+  const factions = new Map(current);
+  for (const [actorId, faction] of guild) {
+    if (!factions.has(actorId)) factions.set(actorId, faction);
+  }
+  for (const [actorId, faction] of reputation) {
+    if (!factions.has(actorId)) factions.set(actorId, faction);
+  }
+  return factions;
 }
 
 async function leadershipCurrentFactions(db) {
@@ -1455,6 +1465,32 @@ async function leadershipReputationFactions(db) {
     where coalesce(pfr.reputation_amount, 0) > 0
     order by pfr.actor_id, coalesce(pfr.reputation_amount, 0) desc, pfr.faction_id`);
   for (const row of result.rows) factions.set(String(row.actor_id), factionDisplayName(row));
+  return factions;
+}
+
+async function leadershipGuildFactions(db) {
+  const factions = new Map();
+  if (!(await tableExists(db, "guild_members")) || !(await tableExists(db, "guilds"))) return factions;
+  const memberColumns = await columnsFor(db, "guild_members");
+  const guildColumns = await columnsFor(db, "guilds");
+  const memberPlayerColumn = firstExistingColumn(memberColumns, ["player_id", "player_controller_id", "actor_id", "account_id", "player_pawn_id"]);
+  const memberGuildColumn = firstExistingColumn(memberColumns, ["guild_id", "id"]);
+  const guildIdColumn = firstExistingColumn(guildColumns, ["guild_id", "id"]);
+  const guildFactionColumn = firstExistingColumn(guildColumns, ["guild_faction", "faction_id", "faction"]);
+  if (!memberPlayerColumn || !memberGuildColumn || !guildIdColumn || !guildFactionColumn) return factions;
+  const hasFactions = await tableExists(db, "factions");
+  const result = await db.query(`
+    select gm.${quoteIdentifier(memberPlayerColumn)}::text as player_id,
+           g.${quoteIdentifier(guildFactionColumn)}::text as faction_id,
+           ${hasFactions ? "coalesce(f.name, '')" : "''"} as faction_name
+    from dune.guild_members gm
+    join dune.guilds g on g.${quoteIdentifier(guildIdColumn)} = gm.${quoteIdentifier(memberGuildColumn)}
+    ${hasFactions ? `left join dune.factions f on f.id = g.${quoteIdentifier(guildFactionColumn)}` : ""}
+    where g.${quoteIdentifier(guildFactionColumn)} is not null
+      and g.${quoteIdentifier(guildFactionColumn)} <> ${NEUTRAL_GUILD_FACTION_ID}`);
+  for (const row of result.rows) {
+    if (row.player_id) factions.set(String(row.player_id), factionDisplayName(row));
+  }
   return factions;
 }
 
@@ -1674,14 +1710,19 @@ export async function playerProfile(db, id) {
     where a.id = $1`, [actorId]);
   if (!result.rows[0]) throw new Error("Player not found");
   const row = result.rows[0];
-  const [factions, guilds] = await Promise.all([
-    leadershipFactions(db).catch(() => new Map()),
+  const [currentFactions, guildFactions, reputationFactions, guilds] = await Promise.all([
+    leadershipCurrentFactions(db).catch(() => new Map()),
+    leadershipGuildFactions(db).catch(() => new Map()),
+    leadershipReputationFactions(db).catch(() => new Map()),
     leadershipGuilds(db).catch(() => new Map())
   ]);
   const controllerId = String(row.player_controller_id || "");
   const actorIdKey = String(row.actor_id || "");
   const accountIdKey = String(row.account_id || "");
-  row.faction = factions.get(controllerId) || factions.get(actorIdKey) || "Unassigned";
+  const assignedFaction = currentFactions.get(controllerId) || currentFactions.get(actorIdKey) ||
+    guildFactions.get(controllerId) || guildFactions.get(actorIdKey) || "";
+  row.faction = assignedFaction || reputationFactions.get(controllerId) || reputationFactions.get(actorIdKey) || "Unassigned";
+  row.faction_assigned = Boolean(assignedFaction);
   row.guild = guilds.get(controllerId) || guilds.get(actorIdKey) || guilds.get(accountIdKey) || "Unavailable";
   return { capabilities: await playerCapabilities(db), player: row };
 }

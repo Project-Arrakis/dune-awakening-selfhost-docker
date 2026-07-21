@@ -1136,7 +1136,7 @@ body.debug .technical-details { display: block; }
 .playerAdmin_boxHeaderLine .playerAdmin_filterRow { margin-left: auto; }
 .playerAdmin_box .playerAdmin_section > .playerAdmin_actionGroup .playerAdmin_actionRow { display: grid; grid-template-columns: 210px 360px 78px minmax(220px, 1fr); align-items: start; }
 .playerAdmin_quickRewardsSection {
-  grid-template-columns: 260px 360px 78px minmax(220px, 1fr);
+  grid-template-columns: 300px 360px 78px minmax(220px, 1fr);
   column-gap: 12px;
   row-gap: 10px;
   align-items: start;
@@ -1152,6 +1152,7 @@ body.debug .technical-details { display: block; }
 .playerAdmin_box .playerAdmin_section > .playerAdmin_actionGroup .playerAdmin_actionRow > * { min-width: 0; }
 .playerAdmin_box .playerAdmin_section > .playerAdmin_actionGroup .playerAdmin_actionRow .playerAdmin_actionLabel { width: 100%; min-width: 0; overflow-wrap: anywhere; }
 .playerAdmin_quickRewardsSection .playerAdmin_actionLabel { grid-column: 1; }
+.playerAdmin_quickRewardsSection .playerAdmin_actionLabel em { white-space: nowrap; }
 .playerAdmin_quickRewardsSection .playerAdmin_fieldGroup { grid-column: 2; }
 .playerAdmin_quickRewardsSection .playerAdmin_actionGroup button { grid-column: 3; }
 .playerAdmin_quickRewardsSection .inline-action-result-wrap { grid-column: 4; }

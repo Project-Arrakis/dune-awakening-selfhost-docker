@@ -1257,7 +1257,43 @@ test("player profile includes faction and guild when addon tables are present", 
   };
   const result = await playerProfile(db, "101");
   assert.equal(result.player.faction, "Atreides");
+  assert.equal(result.player.faction_assigned, true);
   assert.equal(result.player.guild, "Water Sellers");
+});
+
+test("player profile uses guild allegiance when personal faction is unassigned", async () => {
+  const db = {
+    query: async (text, values = []) => {
+      if (text.includes("to_regclass")) {
+        const name = String(values[0] || "");
+        return { rows: [{ exists: ["dune.actors", "dune.player_state", "dune.accounts", "dune.player_faction", "dune.player_faction_reputation", "dune.factions", "dune.guild_members", "dune.guilds"].includes(name) }] };
+      }
+      if (text.includes("information_schema.columns")) {
+        const table = String(values[1] || "");
+        if (table === "guild_members") return { rows: ["player_id", "guild_id", "role_id"].map((column_name) => ({ column_name })) };
+        if (table === "guilds") return { rows: ["guild_id", "guild_name", "guild_faction"].map((column_name) => ({ column_name })) };
+        return { rows: [] };
+      }
+      if (text.includes("as fls_id") && text.includes("where a.id = $1")) {
+        return { rows: [{ actor_id: 131, player_pawn_id: 131, account_id: 427, character_name: "Player4", player_controller_id: 129, funcom_id: "FN4", fls_id: "user4", action_player_id: "user4", class: "Foo", map: "SH_Arrakeen", online_status: "Offline" }] };
+      }
+      if (text.includes("from dune.player_faction pf")) return { rows: [] };
+      if (text.includes("from dune.player_faction_reputation pfr")) {
+        return { rows: [{ actor_id: "129", faction_id: "2", faction_name: "Harkonnen", reputation_amount: 100 }] };
+      }
+      if (text.includes("as faction_id") && text.includes("join dune.guilds g") && text.includes("left join dune.factions f")) {
+        return { rows: [{ player_id: "129", faction_id: "1", faction_name: "Atreides" }] };
+      }
+      if (text.includes("from dune.guild_members gm")) {
+        return { rows: [{ player_id: "129", guild_name: "Codex Atreides Test Guild" }] };
+      }
+      return { rows: [] };
+    }
+  };
+  const result = await playerProfile(db, "131");
+  assert.equal(result.player.faction, "Atreides");
+  assert.equal(result.player.faction_assigned, true);
+  assert.equal(result.player.guild, "Codex Atreides Test Guild");
 });
 
 test("player profile falls back to placeholder faction/guild when addon tables are absent", async () => {
@@ -1276,7 +1312,30 @@ test("player profile falls back to placeholder faction/guild when addon tables a
   };
   const result = await playerProfile(db, "101");
   assert.equal(result.player.faction, "Unassigned");
+  assert.equal(result.player.faction_assigned, false);
   assert.equal(result.player.guild, "Unavailable");
+});
+
+test("player profile does not treat existing reputation as a faction assignment", async () => {
+  const db = {
+    query: async (text, values = []) => {
+      if (text.includes("to_regclass")) {
+        const name = String(values[0] || "");
+        return { rows: [{ exists: ["dune.actors", "dune.player_state", "dune.accounts", "dune.player_faction_reputation", "dune.factions"].includes(name) }] };
+      }
+      if (text.includes("information_schema.columns")) return { rows: [] };
+      if (text.includes("as fls_id") && text.includes("where a.id = $1")) {
+        return { rows: [{ actor_id: 101, player_pawn_id: 101, account_id: 201, character_name: "Test One", player_controller_id: 301, funcom_id: "FN1", fls_id: "user1", action_player_id: "user1", class: "Foo", map: "Survival_1", online_status: "Offline" }] };
+      }
+      if (text.includes("from dune.player_faction_reputation pfr")) {
+        return { rows: [{ actor_id: "301", faction_id: "2", faction_name: "Harkonnen", reputation_amount: 100 }] };
+      }
+      return { rows: [] };
+    }
+  };
+  const result = await playerProfile(db, "101");
+  assert.equal(result.player.faction, "Harkonnen");
+  assert.equal(result.player.faction_assigned, false);
 });
 
 test("addon leadership players derive character level from level component XP", async () => {
