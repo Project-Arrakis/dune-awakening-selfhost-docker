@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { KeyRound, RotateCcw, Shield, Trophy, Zap } from "lucide-react";
+import { KeyRound, RotateCcw, Trophy, Zap } from "lucide-react";
 import { playersApi } from "../../api/players";
 import { InlineActionResult } from "../../components/common/InlineActionResult";
 
@@ -245,7 +245,6 @@ export function SpecializationTab({
           <InlineActionResult result={actionResult} resultKey="specKeystones" />
         </div>
         <p className="specialization-offline-notice">
-          <Shield size={14} />
           The player must be offline for all specialization changes. A relog is required to see changes in-game.
         </p>
       </div>
