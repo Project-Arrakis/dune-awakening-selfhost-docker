@@ -43,6 +43,7 @@ export function PlayersPanel({ onError, renderCharacterAdmin }: PlayersPanelProp
   const [rows, setRows] = useState<Record<string, unknown>[]>([]);
   const [totalCount, setTotalCount] = useState(0);
   const [totalPlayers, setTotalPlayers] = useState(0);
+  const [statusFilterSupported, setStatusFilterSupported] = useState(true);
   const [selected, setSelected] = useState<Record<string, unknown> | null>(null);
   const [detail, setDetail] = useState<Record<string, unknown> | null>(null);
   const requestIdRef = useRef(0);
@@ -72,9 +73,21 @@ export function PlayersPanel({ onError, renderCharacterAdmin }: PlayersPanelProp
       const result = await playersApi.list(params);
       if (requestIdRef.current !== requestId) return;
       const nextRows = result.rows || [];
-      setRows(nextRows);
-      setTotalCount(result.totalCount || 0);
+      const nextTotalCount = result.totalCount || 0;
+      const lastPage = Math.max(0, Math.ceil(nextTotalCount / params.pageSize) - 1);
+      const nextStatusFilterSupported = result.capabilities?.statusFilterApplied !== false;
+      setStatusFilterSupported(nextStatusFilterSupported);
+      setTotalCount(nextTotalCount);
       setTotalPlayers(result.totalPlayers || 0);
+      if (!nextStatusFilterSupported && params.status !== "all") {
+        setPlayerFilter("all");
+        return;
+      }
+      if (params.page > lastPage) {
+        setPage(lastPage);
+        return;
+      }
+      setRows(nextRows);
       setSelected((current) => {
         if (!current) return current;
         const currentId = String(current.actor_id || current.player_pawn_id || current.id || "");
@@ -157,7 +170,7 @@ export function PlayersPanel({ onError, renderCharacterAdmin }: PlayersPanelProp
         <div className="action-row players-filter-row">
           <label className="inline-filter-label players-filter-label">
             Filter
-            <select className="players-filter-select" value={playerFilter} onChange={(event) => setPlayerFilter(event.target.value as PlayerStatusFilter)}>
+            <select className="players-filter-select" value={playerFilter} disabled={!statusFilterSupported} onChange={(event) => setPlayerFilter(event.target.value as PlayerStatusFilter)}>
               <option value="all">All Players</option>
               <option value="online">Online</option>
               <option value="offline">Offline</option>

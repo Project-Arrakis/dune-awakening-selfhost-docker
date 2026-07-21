@@ -57,9 +57,15 @@ export function GuildsPanel({ onError }: GuildsPanelProps) {
       const result = await guildsApi.list(params);
       if (requestIdRef.current !== requestId) return;
       const nextRows = result.rows || [];
-      setRows(nextRows);
-      setTotalCount(result.totalCount || 0);
+      const nextTotalCount = result.totalCount || 0;
+      const lastPage = Math.max(0, Math.ceil(nextTotalCount / params.pageSize) - 1);
+      setTotalCount(nextTotalCount);
       setTotalGuilds(result.totalGuilds || 0);
+      if (params.page > lastPage) {
+        setPage(lastPage);
+        return;
+      }
+      setRows(nextRows);
       setSelectedGuild((current) => {
         if (!current) return current;
         const currentId = String(current.guild_id || "");

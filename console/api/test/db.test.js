@@ -545,6 +545,22 @@ test("listPlayers with includeTotals false skips the unfiltered totals query and
   assert.equal(result.totalCount, 1);
 });
 
+test("listPlayers preserves the filtered total when the requested page is empty", async () => {
+  const db = {
+    query: async (text) => {
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("information_schema.columns")) return { rows: [{ column_name: "online_status" }] };
+      if (text.includes("count(distinct dedupe_key)")) return { rows: [{ total_players: 12 }] };
+      return { rows: [{ actor_id: null, total_count: 12 }] };
+    }
+  };
+
+  const result = await listPlayers(db, { page: 3, pageSize: 5 });
+  assert.equal(result.totalCount, 12);
+  assert.equal(result.totalPlayers, 12);
+  assert.deepEqual(result.rows, []);
+});
+
 test("listPlayers reports statusFilterApplied based on online_status column presence", async () => {
   const mockDb = (columns) => ({
     query: async (text) => {
@@ -665,6 +681,26 @@ test("list guilds returns rows with description and member count", async () => {
   assert.equal(result.rows[0].guild_name, "Water Sellers");
   assert.equal(result.rows[0].guild_description, "Trade guild");
   assert.equal(result.rows[0].member_count, 4);
+});
+
+test("listGuilds preserves the filtered total when the requested page is empty", async () => {
+  const db = {
+    query: async (text, values = []) => {
+      if (text.includes("to_regclass")) {
+        return { rows: [{ exists: String(values[0] || "") === "dune.guilds" }] };
+      }
+      if (text.includes("information_schema.columns")) {
+        return { rows: ["guild_id", "guild_name"].map((column_name) => ({ column_name })) };
+      }
+      if (text.includes("total_guilds")) return { rows: [{ total_guilds: 12 }] };
+      return { rows: [{ guild_id: null, total_count: 12 }] };
+    }
+  };
+
+  const result = await listGuilds(db, { page: 3, pageSize: 5 });
+  assert.equal(result.totalCount, 12);
+  assert.equal(result.totalGuilds, 12);
+  assert.deepEqual(result.rows, []);
 });
 
 test("list guilds resolves faction id to a name when dune.factions has a match", async () => {

@@ -1305,14 +1305,18 @@ export async function listPlayers(db, { status = "all", q = "", page = 0, pageSi
       from player_rows
       order by dedupe_key, row_priority, online_priority, actor_id desc
     ),
-    paged as (
-      select *, count(*) over() as total_count
+    totals as (
+      select count(*)::int as total_count
+      from deduped_players
+    )
+    select paged.*, totals.total_count
+    from totals
+    left join lateral (
+      select *
       from deduped_players
       order by ${pagedOrder}
       limit $${limitParamIndex} offset $${offsetParamIndex}
-    )
-    select *
-    from paged
+    ) paged on true
     order by ${pagedOrder}`, values);
 
   const totalsResult = includeTotals ? await db.query(`
@@ -1330,7 +1334,9 @@ export async function listPlayers(db, { status = "all", q = "", page = 0, pageSi
     capabilities: { players: true, status, statusFilterApplied: hasOnlineStatus },
     totalCount: result.rows[0] ? Number(result.rows[0].total_count) : 0,
     totalPlayers: totalsResult ? (totalsResult.rows[0] ? Number(totalsResult.rows[0].total_players) : 0) : undefined,
-    rows: result.rows.map(({ total_count, ...row }) => row)
+    rows: result.rows
+      .filter((row) => row.actor_id !== null && row.actor_id !== undefined)
+      .map(({ total_count, ...row }) => row)
   };
 }
 
@@ -1543,15 +1549,26 @@ export async function listGuilds(db, { q = "", page = 0, pageSize = 50, sortColu
       from dune.guilds g
       ${hasFactions ? `left join dune.factions f on f.id = g.${quoteIdentifier(guildFactionColumn)}` : ""}
       where ${where}
+    ),
+    totals as (
+      select count(*)::int as total_count
+      from matched
     )
-    select *, count(*) over() as total_count
-    from matched
-    order by ${pagedOrder}
-    limit $${limitParamIndex} offset $${offsetParamIndex}`, values);
+    select paged.*, totals.total_count
+    from totals
+    left join lateral (
+      select *
+      from matched
+      order by ${pagedOrder}
+      limit $${limitParamIndex} offset $${offsetParamIndex}
+    ) paged on true
+    order by ${pagedOrder}`, values);
 
   const totalsResult = await db.query("select count(*)::int as total_guilds from dune.guilds");
 
-  const rows = result.rows.map(({ total_count, ...row }) => ({ ...row, guild_faction: guildFactionDisplayName(row) }));
+  const rows = result.rows
+    .filter((row) => row.guild_id !== null && row.guild_id !== undefined)
+    .map(({ total_count, ...row }) => ({ ...row, guild_faction: guildFactionDisplayName(row) }));
   return {
     capabilities: { guilds: true, guildMembers: hasMembers },
     totalCount: result.rows[0] ? Number(result.rows[0].total_count) : 0,
