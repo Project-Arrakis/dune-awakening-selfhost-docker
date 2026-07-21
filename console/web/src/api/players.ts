@@ -9,8 +9,8 @@ export const playersApi = {
   list: (params: { q?: string; page?: number; pageSize?: number; status?: "all" | "online" | "offline"; sortColumn?: string; sortDirection?: "asc" | "desc" } = {}) => {
     const search = new URLSearchParams();
     if (params.q) search.set("q", params.q);
-    if (params.page) search.set("page", String(params.page));
-    if (params.pageSize) search.set("pageSize", String(params.pageSize));
+    if (params.page !== undefined) search.set("page", String(params.page));
+    if (params.pageSize !== undefined) search.set("pageSize", String(params.pageSize));
     if (params.status) search.set("status", params.status);
     if (params.sortColumn) search.set("sortColumn", params.sortColumn);
     if (params.sortDirection) search.set("sortDirection", params.sortDirection);
@@ -27,7 +27,8 @@ export const playersApi = {
       const result = await playersApi.list({ ...params, page, pageSize: PLAYERS_ALL_PAGE_SIZE });
       rows = rows.concat(result.rows || []);
       totalCount = result.totalCount;
-      if ((result.rows || []).length < PLAYERS_ALL_PAGE_SIZE || rows.length >= totalCount) break;
+      // If this page returned fewer rows than requested, we've reached the last page
+      if ((result.rows || []).length < PLAYERS_ALL_PAGE_SIZE) break;
       page += 1;
     }
     return { rows, totalCount };

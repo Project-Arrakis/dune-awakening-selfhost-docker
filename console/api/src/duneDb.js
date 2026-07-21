@@ -1222,9 +1222,10 @@ export async function listPlayers(db, { status = "all", q = "", page = 0, pageSi
   const currentPawnPriority = playerStateColumns.has("player_pawn_id")
     ? "when ps.player_pawn_id = a.id then 0"
     : "when false then 0";
+  const hasOnlineStatus = playerStateColumns.has("online_status");
   const lastSeenWithOnlineFallback = `
     case
-      when coalesce(ps.online_status::text, '') = 'Online'
+      when ${hasOnlineStatus ? "coalesce(ps.online_status::text, '') = 'Online'" : "false"}
         then coalesce(nullif(${lastSeenSelect}, ''), (current_timestamp at time zone 'UTC')::text)
       else ${lastSeenSelect}
     end
@@ -1236,13 +1237,17 @@ export async function listPlayers(db, { status = "all", q = "", page = 0, pageSi
   baseWhere += " and coalesce(ac.funcom_id, '') <> 'MessageOfTheDay#0001'";
   baseWhere += " and coalesce(ps.character_name, '') <> 'Server'";
   baseWhere += " and coalesce(ps.character_name, '') <> 'Message of the Day'";
-  baseWhere += " and not (nullif(trim(coalesce(ps.character_name, '')), '') is null and coalesce(ps.online_status::text, '') <> 'Online')";
+  if (hasOnlineStatus) {
+    baseWhere += " and not (nullif(trim(coalesce(ps.character_name, '')), '') is null and coalesce(ps.online_status::text, '') <> 'Online')";
+  }
   baseWhere += currentPawnFilter;
 
   const values = [];
   let where = baseWhere;
-  if (status === "online") where += " and coalesce(ps.online_status::text, '') = 'Online'";
-  if (status === "offline") where += " and coalesce(ps.online_status::text, '') <> 'Online'";
+  if (hasOnlineStatus) {
+    if (status === "online") where += " and coalesce(ps.online_status::text, '') = 'Online'";
+    if (status === "offline") where += " and coalesce(ps.online_status::text, '') <> 'Online'";
+  }
   if (q) {
     values.push(`%${q}%`);
     where += ` and (ps.character_name ilike $${values.length} or ac."user" ilike $${values.length} or a.id::text = $${values.length} or a.owner_account_id::text = $${values.length})`;
@@ -1267,7 +1272,7 @@ export async function listPlayers(db, { status = "all", q = "", page = 0, pageSi
              end as action_player_id,
              a.class,
              coalesce(a.map, '') as map,
-             coalesce(ps.online_status::text, 'Offline') as online_status,
+             ${hasOnlineStatus ? "coalesce(ps.online_status::text, 'Offline')" : "'Offline'"} as online_status,
              ${loginSessionSelect} as login_session,
              ${lastSeenWithOnlineFallback} as last_seen,
              coalesce(nullif(ps.player_controller_id, 0), nullif(a.owner_account_id, 0), a.id) as dedupe_key,
@@ -1276,7 +1281,7 @@ export async function listPlayers(db, { status = "all", q = "", page = 0, pageSi
                when coalesce(ps.character_name, '') <> '' then 1
                else 2
              end as row_priority,
-             case when coalesce(ps.online_status::text, '') = 'Online' then 0 else 1 end as online_priority
+             case when ${hasOnlineStatus ? "coalesce(ps.online_status::text, '') = 'Online'" : "false"} then 0 else 1 end as online_priority
       from dune.actors a
       left join dune.player_state ps on ps.account_id = a.owner_account_id
       left join dune.accounts ac on ac.id = a.owner_account_id
@@ -1343,7 +1348,8 @@ export async function listAllPlayers(db, { status = "all", q = "" } = {}) {
     if (!first) first = result;
     if (!result?.capabilities?.players) return result;
     rows = rows.concat(result.rows || []);
-    if ((result.rows || []).length < LIST_ALL_PLAYERS_PAGE_SIZE || rows.length >= result.totalCount) break;
+    // If this page returned fewer rows than requested, we've reached the last page
+    if ((result.rows || []).length < LIST_ALL_PLAYERS_PAGE_SIZE) break;
     page += 1;
   }
   return { ...first, rows };
