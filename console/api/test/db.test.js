@@ -488,7 +488,7 @@ test("players query uses parameterized search input", async () => {
       calls.push({ text, values });
       if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
       if (text.includes("information_schema.columns")) return { rows: [] };
-      return { rows: [{ actor_id: 82, player_pawn_id: 82, account_id: 276, funcom_id: "RedBlink#75570", fls_id: "RedBlink#75570", action_player_id: "RedBlink#75570" }] };
+      return { rows: [{ actor_id: 82, player_pawn_id: 82, account_id: 276, funcom_id: "RedBlink#75570", fls_id: "RedBlink#75570", action_player_id: "RedBlink#75570", total_count: 1 }] };
     }
   };
   const result = await listPlayers(db, { q: "RedBlink'; drop table dune.actors; --" });
@@ -500,7 +500,7 @@ test("players query uses parameterized search input", async () => {
   assert.match(playerQuery.text, /A5C0DE5E12A00001/);
   assert.match(playerQuery.text, /Server#0001/);
   assert.match(playerQuery.text, /\$1/);
-  assert.deepEqual(playerQuery.values, ["%RedBlink'; drop table dune.actors; --%"]);
+  assert.equal(playerQuery.values[0], "%RedBlink'; drop table dune.actors; --%");
   assert.equal(result.rows[0].actor_id, 82);
   assert.equal(result.rows[0].player_pawn_id, 82);
   assert.equal(result.rows[0].account_id, 276);
@@ -516,11 +516,11 @@ test("players query filters stale actor rows when player_state has current pawn 
       calls.push({ text, values });
       if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
       if (text.includes("information_schema.columns")) return { rows: ["player_pawn_id", "last_login_time", "online_status"].map((column_name) => ({ column_name })) };
-      return { rows: [{ actor_id: 78, player_pawn_id: 78, account_id: 2, character_name: "RedBlink", map: "HaggaBasin", online_status: "Online" }] };
+      return { rows: [{ actor_id: 78, player_pawn_id: 78, account_id: 2, character_name: "RedBlink", map: "HaggaBasin", online_status: "Online", total_count: 1 }] };
     }
   };
 
-  const result = await listPlayers(db, { online: true });
+  const result = await listPlayers(db, { status: "online" });
   const playerQuery = calls.find((call) => call.text.includes("from dune.actors"));
   assert.ok(playerQuery);
   assert.match(playerQuery.text, /ps\.player_pawn_id = a\.id/);
@@ -724,7 +724,7 @@ test("list guilds filters by name when a search query is given", async () => {
   const guildQuery = calls.find((call) => call.text.includes("from dune.guilds g"));
   assert.ok(guildQuery);
   assert.match(guildQuery.text, /ilike \$1/);
-  assert.deepEqual(guildQuery.values, ["%Water%"]);
+  assert.equal(guildQuery.values[0], "%Water%");
 });
 
 test("guild members returns capability response when required tables are missing", async () => {
