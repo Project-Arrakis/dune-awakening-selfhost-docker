@@ -1288,7 +1288,7 @@ body.debug .technical-details { display: block; }
 .specialization-xp-control button { flex: 0 0 104px; width: 104px; min-width: 104px; justify-content: center; padding-inline: 8px; }
 .playerAdmin_specializationTable .playerAdmin_actionCell { display: flex; align-items: center; justify-content: center; flex-wrap: nowrap; gap: 8px; width: 100%; min-width: 0; }
 .playerAdmin_specializationTable .playerAdmin_actionCell button { flex: 0 0 104px; width: 104px; min-width: 104px; padding-inline: 8px; justify-content: center; white-space: nowrap; }
-.playerAdmin_specXpInput { flex: 0 0 104px; width: 104px; min-width: 104px; max-width: 104px; }
+.playerAdmin_specXpInput { flex: 0 0 132px; width: 132px; min-width: 132px; max-width: 132px; }
 .playerAdmin_note.danger { color: #ff9c8f; }
 .playerAdmin_cardGrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; }
 .playerAdmin_card { border: 1px solid #302b25; background: #101316; border-radius: 8px; padding: 12px; display: grid; gap: 6px; min-height: 96px; }
