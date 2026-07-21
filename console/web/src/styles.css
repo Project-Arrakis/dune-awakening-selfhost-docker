@@ -1114,7 +1114,7 @@ body.debug .technical-details { display: block; }
 .playerAdmin_summaryActions button { width: auto; }
 .playerAdmin_summaryActions .playerAdmin_actionNote { flex: 1 0 100%; padding-left: 0; }
 .playerAdmin_tabs { display: flex; flex-wrap: wrap; gap: 8px; }
-.playerAdmin_tabs button { flex: 1 1 0; min-width: 112px; min-height: 54px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; border-radius: 6px; border-color: #3b3329; background: #171a1d; color: #e9dcc8; font-size: 14px; font-weight: 700; white-space: nowrap; padding: 8px 12px; }
+.playerAdmin_tabs button { min-width: 112px; min-height: 54px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; border-radius: 6px; border-color: #3b3329; background: #171a1d; color: #e9dcc8; font-size: 14px; font-weight: 700; white-space: nowrap; padding: 8px 16px; }
 .playerAdmin_tabs button svg { flex: 0 0 auto; }
 .playerAdmin_tabs button.active { border-color: #c68b4a; background: rgba(198, 139, 74, .16); color: #ffd08a; }
 .playerAdmin_content { display: grid; gap: 12px; }
