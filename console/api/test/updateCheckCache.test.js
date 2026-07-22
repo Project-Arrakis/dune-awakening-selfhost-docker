@@ -90,3 +90,66 @@ test("invalidate clears the cached result and forces the next read to recollect"
   assert.equal(collections, 2);
   assert.equal(second.stdout, "build-2");
 });
+
+test("peek returns null before anything has been cached", () => {
+  let collections = 0;
+  const cache = createUpdateCheckCache({}, {
+    collect: async () => ({ code: 0, stdout: `build-${++collections}` })
+  });
+
+  const result = cache.peek();
+  assert.equal(result, null);
+  assert.equal(collections, 0);
+});
+
+test("peek returns the cached entry within the TTL without invoking collect", async () => {
+  let currentTime = 1000;
+  let collections = 0;
+  const cache = createUpdateCheckCache({}, {
+    cacheMs: 10000,
+    now: () => currentTime,
+    collect: async () => ({ code: 0, stdout: `build-${++collections}` })
+  });
+
+  const first = await cache.read();
+  assert.equal(collections, 1);
+
+  currentTime += 5000;
+  const peeked = cache.peek();
+  assert.notEqual(peeked, null);
+  assert.equal(peeked.fromCache, true);
+  assert.equal(peeked.stdout, "build-1");
+  assert.equal(collections, 1);
+});
+
+test("peek returns null once the cached entry is past its TTL", async () => {
+  let currentTime = 1000;
+  let collections = 0;
+  const cache = createUpdateCheckCache({}, {
+    cacheMs: 10000,
+    now: () => currentTime,
+    collect: async () => ({ code: 0, stdout: `build-${++collections}` })
+  });
+
+  await cache.read();
+  assert.equal(collections, 1);
+
+  currentTime += 10001;
+  const result = cache.peek();
+  assert.equal(result, null);
+});
+
+test("peek returns null immediately after invalidate", async () => {
+  let collections = 0;
+  const cache = createUpdateCheckCache({}, {
+    cacheMs: 10000,
+    collect: async () => ({ code: 0, stdout: `build-${++collections}` })
+  });
+
+  const first = await cache.read();
+  assert.notEqual(cache.peek(), null);
+
+  cache.invalidate();
+
+  assert.equal(cache.peek(), null);
+});

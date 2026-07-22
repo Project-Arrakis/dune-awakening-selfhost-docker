@@ -41,9 +41,24 @@ export class TaskManager {
       errorMessage: null,
       subscribers: new Set()
     };
+
+    let cachedHit = null;
+    if (operation === "updateCheck" && payload.fresh !== true) {
+      cachedHit = this.updateCheckCache.peek();
+    }
+
+    if (cachedHit) {
+      task.currentStep = "Running";
+      this.recordUpdateCheckResult(task, cachedHit);
+      this.completeTaskSucceeded(task, cachedHit.code);
+    }
+
     this.tasks.set(id, task);
     this.trim();
-    queueMicrotask(() => this.run(task, payload));
+
+    if (!cachedHit) {
+      queueMicrotask(() => this.run(task, payload));
+    }
     return publicTask(task);
   }
 
@@ -90,11 +105,7 @@ export class TaskManager {
       if (["updateApply", "updateFixSteamcmd"].includes(task.operation)) {
         this.updateCheckCache.invalidate();
       }
-      task.status = "succeeded";
-      task.exitCode = lastCode;
-      task.currentStep = "Finished";
-      task.finishedAt = new Date().toISOString();
-      this.emit(task, "Task succeeded");
+      this.completeTaskSucceeded(task, lastCode);
     } catch (error) {
       task.status = "failed";
       task.exitCode = Number.isInteger(error.code) ? error.code : null;
@@ -160,13 +171,25 @@ export class TaskManager {
 
   async readUpdateCheck(task, payload) {
     const result = await this.updateCheckCache.read({ fresh: payload.fresh === true });
+    this.recordUpdateCheckResult(task, result);
+    return result;
+  }
+
+  recordUpdateCheckResult(task, result) {
     const ageSeconds = Math.max(0, Math.round((Date.now() - result.sampledAtMs) / 1000));
     this.append(task, result.fromCache
       ? `Reusing update check result from ${ageSeconds}s ago (cached).`
       : "Ran a live Steam update check.", "stdout");
     if (result.stdout) this.append(task, result.stdout, "stdout");
     if (result.stderr) this.append(task, result.stderr, "stderr");
-    return result;
+  }
+
+  completeTaskSucceeded(task, exitCode) {
+    task.status = "succeeded";
+    task.exitCode = exitCode;
+    task.currentStep = "Finished";
+    task.finishedAt = new Date().toISOString();
+    this.emit(task, "Task succeeded");
   }
 
   trim() {

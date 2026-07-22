@@ -19,6 +19,14 @@ export function createUpdateCheckCache(config, options = {}) {
     return inFlight.then((entry) => ({ ...entry, fromCache: false }));
   }
 
+  function peek() {
+    const currentTime = now();
+    if (cached && currentTime - cached.sampledAtMs < cacheMs) {
+      return { ...cached, fromCache: true };
+    }
+    return null;
+  }
+
   function invalidate() { cached = null; }
-  return { read, invalidate };
+  return { read, peek, invalidate };
 }

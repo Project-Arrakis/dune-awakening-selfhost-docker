@@ -89,6 +89,7 @@ test("repeated updateCheck tasks within the cache window reuse one SteamCMD invo
   const dir = mkdtempSync(join(tmpdir(), "arrakis-task-cache-"));
   let collectCount = 0;
   const fakeCache = {
+    peek: () => null,
     read: async (opts) => {
       if (!opts.fresh) {
         if (collectCount > 0) {
@@ -139,6 +140,7 @@ test("updateCheck with fresh:true bypasses the cache", async () => {
   const dir = mkdtempSync(join(tmpdir(), "arrakis-task-fresh-"));
   let collectCount = 0;
   const fakeCache = {
+    peek: () => null,
     read: async (opts) => {
       collectCount++;
       return {
@@ -177,6 +179,7 @@ test("a successful updateApply invalidates the update check cache", async () => 
   let collectCount = 0;
   let cacheValid = false;
   const fakeCache = {
+    peek: () => null,
     read: async (opts) => {
       if (!opts.fresh && cacheValid) {
         return {
@@ -232,6 +235,7 @@ test("TaskManager threads payload.fresh into the injected update check cache's r
   const dir = mkdtempSync(join(tmpdir(), "arrakis-task-thread-"));
   const calls = [];
   const fakeCache = {
+    peek: () => null,
     read: async (opts) => {
       calls.push(opts);
       return {
@@ -261,6 +265,55 @@ test("TaskManager threads payload.fresh into the injected update check cache's r
   assert.equal(task2.status, "succeeded");
 
   assert.deepEqual(calls, [{ fresh: false }, { fresh: true }]);
+});
+
+test("create() returns an already-succeeded task synchronously on a peek cache hit", () => {
+  const dir = mkdtempSync(join(tmpdir(), "arrakis-task-peek-"));
+  const fakeCache = {
+    peek: () => ({ code: 0, stdout: "Local build: 1\nRemote build: 1\nNo update available.", stderr: "", fromCache: true, sampledAtMs: Date.now() - 1000 }),
+    read: async () => { throw new Error("read() should not be called on a peek hit"); },
+    invalidate: () => {}
+  };
+  const manager = new TaskManager({
+    duneScript: join(dir, "dune"), repoRoot: dir, taskRetention: 20, commandTimeoutMs: 5000
+  }, { updateCheckCache: fakeCache });
+
+  const created = manager.create("updates", "updateCheck", {});
+  assert.equal(created.status, "succeeded");
+  assert.equal(created.exitCode, 0);
+  assert.equal(created.currentStep, "Finished");
+  assert.match(created.logLines.map((l) => l.line).join("\n"), /Reusing update check result/);
+});
+
+test("create() with fresh:true skips peek and stays on the queued/async path", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "arrakis-task-peek-fresh-"));
+  let peekCalls = 0;
+  const fakeCache = {
+    peek: () => { peekCalls += 1; return { code: 0, stdout: "x", stderr: "", sampledAtMs: Date.now() }; },
+    read: async () => ({ code: 0, stdout: "Ran a live Steam update check.\nLocal build: 1\nRemote build: 1\nNo update available.", stderr: "", fromCache: false, sampledAtMs: Date.now() }),
+    invalidate: () => {}
+  };
+  const manager = new TaskManager({ duneScript: join(dir, "dune"), repoRoot: dir, taskRetention: 20, commandTimeoutMs: 5000 }, { updateCheckCache: fakeCache });
+  const created = manager.create("updates", "updateCheck", { fresh: true });
+  assert.equal(created.status, "queued");
+  assert.equal(peekCalls, 0);
+  const task = await waitForTask(manager, created.id);
+  assert.equal(task.status, "succeeded");
+});
+
+test("create() falls through to the queued/async path when peek returns null", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "arrakis-task-peek-miss-"));
+  const fakeCache = {
+    peek: () => null,
+    read: async () => ({ code: 0, stdout: "Ran a live Steam update check.\nLocal build: 1\nRemote build: 1\nNo update available.", stderr: "", fromCache: false, sampledAtMs: Date.now() }),
+    invalidate: () => {}
+  };
+  const manager = new TaskManager({ duneScript: join(dir, "dune"), repoRoot: dir, taskRetention: 20, commandTimeoutMs: 5000 }, { updateCheckCache: fakeCache });
+  const created = manager.create("updates", "updateCheck", {});
+  assert.equal(created.status, "queued");
+  const task = await waitForTask(manager, created.id);
+  assert.equal(task.status, "succeeded");
+  assert.match(task.logLines.map((l) => l.line).join("\n"), /Ran a live Steam update check/);
 });
 
 function waitForTask(manager, id) {
