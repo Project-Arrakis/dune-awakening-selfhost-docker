@@ -91,6 +91,35 @@ test("invalidate clears the cached result and forces the next read to recollect"
   assert.equal(second.stdout, "build-2");
 });
 
+test("invalidate prevents an older in-flight collection from repopulating the cache", async () => {
+  const releases = [];
+  let collections = 0;
+  const cache = createUpdateCheckCache({}, {
+    cacheMs: 10000,
+    collect: () => {
+      collections += 1;
+      return new Promise((resolve) => releases.push(resolve));
+    }
+  });
+
+  const staleRead = cache.read();
+  await Promise.resolve();
+  assert.equal(collections, 1);
+
+  cache.invalidate();
+  const currentRead = cache.read();
+  await Promise.resolve();
+  assert.equal(collections, 2, "a post-invalidation read must not join stale in-flight work");
+
+  releases[1]({ code: 0, stdout: "current-build" });
+  await currentRead;
+  assert.equal(cache.peek()?.stdout, "current-build");
+
+  releases[0]({ code: 0, stdout: "stale-build" });
+  await staleRead;
+  assert.equal(cache.peek()?.stdout, "current-build", "stale work must not overwrite the current cache");
+});
+
 test("peek returns null before anything has been cached", () => {
   let collections = 0;
   const cache = createUpdateCheckCache({}, {

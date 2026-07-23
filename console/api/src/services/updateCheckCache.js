@@ -4,19 +4,27 @@ export function createUpdateCheckCache(config, options = {}) {
   const cacheMs = Math.max(0, Number(options.cacheMs ?? config.updateCheckCacheMs ?? 5 * 60 * 1000));
   let cached = null;
   let inFlight = null;
+  let generation = 0;
 
   async function read(readOptions = {}) {
     const currentTime = now();
     if (!readOptions.fresh && cached && currentTime - cached.sampledAtMs < cacheMs) {
       return { ...cached, fromCache: true };
     }
-    if (inFlight) return inFlight.then((entry) => ({ ...entry, fromCache: false }));
-    inFlight = Promise.resolve().then(collect).then((result) => {
+    if (inFlight?.generation === generation) {
+      return inFlight.promise.then((entry) => ({ ...entry, fromCache: false }));
+    }
+    const collectionGeneration = generation;
+    const pending = Promise.resolve().then(collect).then((result) => {
       const sampledAtMs = now();
-      cached = { ...result, sampledAtMs, sampledAt: new Date(sampledAtMs).toISOString() };
-      return cached;
-    }).finally(() => { inFlight = null; });
-    return inFlight.then((entry) => ({ ...entry, fromCache: false }));
+      const entry = { ...result, sampledAtMs, sampledAt: new Date(sampledAtMs).toISOString() };
+      if (collectionGeneration === generation) cached = entry;
+      return entry;
+    }).finally(() => {
+      if (inFlight?.promise === pending) inFlight = null;
+    });
+    inFlight = { generation: collectionGeneration, promise: pending };
+    return pending.then((entry) => ({ ...entry, fromCache: false }));
   }
 
   function peek() {
@@ -27,6 +35,9 @@ export function createUpdateCheckCache(config, options = {}) {
     return null;
   }
 
-  function invalidate() { cached = null; }
+  function invalidate() {
+    generation += 1;
+    cached = null;
+  }
   return { read, peek, invalidate };
 }
