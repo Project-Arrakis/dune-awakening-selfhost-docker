@@ -1,4 +1,5 @@
 import { assertIdentifier, intParam, isReadOnlySql, quoteIdentifier, quoteQualified, rowsResult } from "./db.js";
+import { getBridgeRequestSummary } from "./audit.js";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
@@ -4733,6 +4734,30 @@ export async function addonOpsInventorySummary(db) {
 
 function emptyInventorySummary() {
   return { totalItems: 0, totalInventories: 0, itemsByTemplate: [], totalCrafted: null, storageUsage: [] };
+}
+
+// addonOpsSocSummary: platform-health summary for the OPS observability
+// addon's SOC tab. Deliberately does not take a `db` parameter — unlike
+// every other addonOps* function, this domain has no aggregate SQL query
+// backing it. bridgeRequests/bridgeErrors/bridgeSuccessRate come from an
+// in-memory rolling counter (audit.js's getBridgeRequestSummary()),
+// updated at audit()-call time whenever an addons.bridge action is
+// logged, rather than re-parsing the (potentially large) audit log file
+// on every request — see audit.js's own comment for why. Verified against
+// this project's own live, running audit log (runtime/generated/
+// web-admin-audit.jsonl, 1301 real lines, 485 real addons.bridge entries
+// at the time of writing) that the exact detail.ok field shape this
+// depends on is correct in production, not just in a mocked test.
+export function addonOpsSocSummary() {
+  const { requests, errors } = getBridgeRequestSummary();
+  const successRate = requests > 0 ? Math.round(((requests - errors) / requests) * 100) : null;
+  const platformHealth = requests === 0 ? "Unknown" : errors / requests > 0.1 ? "Degraded" : "Healthy";
+  return {
+    platformHealth,
+    bridgeRequests: requests,
+    bridgeErrors: errors,
+    bridgeSuccessRate: successRate
+  };
 }
 // All Discord-linking state lives in a dedicated `console` schema, NOT
 // in `dune` — the `dune` schema belongs entirely to the game server

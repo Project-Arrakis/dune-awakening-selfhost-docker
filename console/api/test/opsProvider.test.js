@@ -12,8 +12,8 @@ import {
   opsDashboardProvider
 } from "../src/integrations/discord/opsProvider.js";
 
-// Wiring the four real OPS routes (activity/combat/resources/economy) to
-// their already-working duneDb.js query functions — see
+// Wiring the real OPS routes (activity/combat/resources/economy/
+// inventory) to their already-working duneDb.js query functions — see
 // server.js's "ops.activity.summary" etc. bridge actions for the
 // pre-existing pattern this mirrors. These tests exercise the real
 // duneDb.js functions through a mock db (following the `to_regclass`
@@ -21,7 +21,10 @@ import {
 // each provider returns { ok: true, result } with real, correctly-shaped
 // data when the underlying tables have rows, and each function's own
 // genuine empty/zero shape (not a placeholder) when the tables don't
-// exist — never a fabricated or estimated value.
+// exist — never a fabricated or estimated value. opsSocProvider is
+// wired too, but reads from an in-memory audit-log counter rather than
+// a SQL query — see its own tests below for why it doesn't fit the
+// mock-db pattern the same way.
 
 function mockDb(overrides = {}) {
   const calls = [];
@@ -204,16 +207,32 @@ test("opsInventoryProvider returns the real empty shape (not a placeholder) when
   assert.deepEqual(response.result, { totalItems: 0, totalInventories: 0, itemsByTemplate: [], totalCrafted: null, storageUsage: [] });
 });
 
-// The three OPS domains with no backing query anywhere in this codebase
-// (soc, prometheus), or an unresolved privacy consideration blocking a
+// opsSocProvider is unusual among the OPS providers: it takes no db
+// parameter at all and reads from an in-memory rolling counter
+// (audit.js's getBridgeRequestSummary()) over this project's own
+// addons.bridge audit-log entries, rather than a SQL query. Verified
+// directly against this project's own live, running audit log
+// (runtime/generated/web-admin-audit.jsonl) that the real detail.ok field
+// shape this depends on matches production, not just a mocked assumption.
+test("opsSocProvider returns a real, non-placeholder shape reflecting the in-memory bridge-request counter", async () => {
+  const db = mockDb();
+  const response = await opsSocProvider({}, db);
+  assert.equal(response.ok, true);
+  assert.equal("status" in response.result, false, "must not resemble the old placeholder shape");
+  assert.equal(typeof response.result.bridgeRequests, "number");
+  assert.equal(typeof response.result.bridgeErrors, "number");
+  assert.ok(["Unknown", "Healthy", "Degraded"].includes(response.result.platformHealth));
+});
+
+// The two OPS domains with no backing query anywhere in this codebase
+// (prometheus), or an unresolved privacy consideration blocking a
 // wire-up (location — see dune-ops-observability-addon's
 // docs/tabs/LOCATION.md), must remain unchanged "status: planned"
 // placeholders — do not fabricate data for these.
-test("the three untouched OPS providers still return status: planned placeholders", async () => {
+test("the two untouched OPS providers still return status: planned placeholders", async () => {
   const db = mockDb();
   for (const [provider, domain] of [
     [opsLocationProvider, "location"],
-    [opsSocProvider, "soc"],
     [opsPrometheusProvider, "prometheus"]
   ]) {
     const response = await provider({}, db);
@@ -267,8 +286,9 @@ test("opsDashboardProvider aggregates a mix of real data and planned placeholder
   assert.equal(response.dashboard.economy.result.totalCurrencyHolders, 1);
   assert.equal(response.dashboard.inventory.result.totalItems, 2);
   assert.equal(response.dashboard.inventory.result.totalCrafted, null);
-  // Still-planned placeholders for the untouched three
+  assert.equal(response.dashboard.soc.ok, true);
+  assert.equal(typeof response.dashboard.soc.result.bridgeRequests, "number");
+  // Still-planned placeholders for the untouched two
   assert.equal(response.dashboard.location.status, "planned");
-  assert.equal(response.dashboard.soc.status, "planned");
   assert.equal(response.dashboard.prometheus.status, "planned");
 });
