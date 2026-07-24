@@ -1,120 +1,149 @@
 # Incident Report: INC-2026-07-24-001
 
-## Steam CDN Content-Server Directory Failure Causing Extended Game Server Version-Lag Outage
+## Steam CDN Content-Server Directory Failure Causing Extended Game Server Version-Lag Outage (Operator Case Study)
+
+**Scope note**: This is a case study of a single self-hosted operator's incident and response, not a confirmed project-wide or platform-wide finding. Identifiers specific to this operator's deployment (public IP, battlegroup ID, FLS/player IDs, character name, internal server IDs, filesystem paths) have been redacted below. Several root-cause conclusions about Valve/Steam-side behavior are the responding engineer's **inference from the available evidence**, not confirmed via Valve documentation, support contact, or source access — these are explicitly labeled as hypotheses throughout, not established facts.
 
 | Field | Value |
 |---|---|
 | **Incident ID** | INC-2026-07-24-001 |
-| **Classification** | Availability — Third-Party Dependency Failure (External CDN) |
-| **Severity** | **SEV-2** (High) — Full player-facing service unavailability; no data loss; no security impact |
-| **Status** | **Resolved** |
-| **Affected Service** | Dune Awakening self-hosted game server — "Tabr Tau - Dev" (Battlegroup `sh-afe0154f3afe602c-icgvmx`), all maps (Survival_1 / Sietch Zahir, Overmap, DeepDesert_1) |
+| **Classification** | Availability — suspected third-party dependency failure (external CDN); see Section 3 for confidence levels |
+| **Severity** | **SEV-2** (High) — full player-facing service unavailability inferred; no data loss; no security impact from the underlying incident (see Section 5.7 for a security note on the remediation itself) |
+| **Status** | **Resolved** (update completed, service restored, player connectivity confirmed) — root cause attribution partially inferred, see Section 3 |
+| **Affected Service** | Operator's self-hosted Dune Awakening game server (identifying details redacted) — all maps |
 | **Affected Component** | Steam content-delivery update pipeline (`runtime/scripts/update.sh` → SteamCMD → Valve `IContentServerDirectoryService`) |
-| **Detection Method** | User/player reports (Discord + direct messages) reporting server absent from in-game server browser |
-| **Incident Commander** | darkdante (owner/operator) |
+| **Detection Method** | Player reports (Discord + direct messages) that the server could not be found/joined |
+| **Incident Commander** | Operator (redacted) |
 | **Responding Engineer** | AI SRE agent (this session) |
 | **Report Prepared** | 2026-07-24, post-incident, same-day |
-| **Report Standard** | Structured per NIST SP 800-61r2 (Computer Security Incident Handling Guide) incident lifecycle phases, adapted for an availability/infrastructure incident rather than a security incident; formatted in the style of a AAA live-services NOC/SOC postmortem |
+| **Report Standard** | Structured per NIST SP 800-61r2 incident lifecycle phases, adapted for an availability/infrastructure incident; formatted as an operator-level NOC/SOC-style postmortem. Revised 2026-07-24 following technical review — see Section 12 (Revision Notes) for what changed and why. |
 
 ---
 
 ## 1. Executive Summary
 
-On 2026-07-24, the self-hosted Dune Awakening game server ("Tabr Tau - Dev") became **invisible in Funcom's in-game server browser** despite all internal container-level and application-level health checks reporting nominal (green) status. Players were unable to locate or join the server, leading to a wave of player inquiries via Discord and direct messages ("flooding," per the operator) asking why the server was down.
+On 2026-07-24, the operator's self-hosted Dune Awakening game server could not be found or joined by players, despite all internal container-level and application-level health checks reporting nominal (green) status. Players reported the outage via Discord and direct messages.
 
-Root cause analysis determined the server was **not actually down** in the conventional sense — every core service (Postgres, RabbitMQ, TextRouter, Director, Gateway, and the three world-server processes) was running and internally healthy throughout. The true root cause was that the server was running a **stale game build** because the routine Steam content update had been silently failing for an extended period. The update failures were themselves caused by a **third-party infrastructure defect on Valve's Steam content-delivery network (CDN)**: Valve's `IContentServerDirectoryService` API was deterministically advertising a **decommissioned, DNS-dead CDN edge node** (`cache1-blv2.valve.org`) as the **highest-priority (and, in practice, sole-attempted) download source** for our network cell (CellID 31 / Seattle region), and the installed version of SteamCMD's client-side fallback logic treated the failure of that single top-priority source as fatal for the entire update job — rather than falling through to any of the 29 other healthy, verified-reachable sources it had itself enumerated in the same request.
+Investigation established the following as **confirmed facts**, directly evidenced by logs and direct testing (see Section 8):
+- The routine Steam content update (SteamCMD `app_update`) was failing repeatedly, over an extended window, always against the same content-server hostname (`cache1-blv2.valve.org`).
+- That hostname was independently confirmed unresolvable (NXDOMAIN) via three separate DNS resolvers.
+- Valve's `IContentServerDirectoryService` API repeatedly and consistently returned that same hostname as the sole member of the highest-priority download-source class for the operator's network cell.
+- The locally-installed game server's Steam app manifest was left in a failed update state (`buildid: 0`, `UpdateResult: 7`, no depots installed) for the duration of the failure window.
+- After a remediation (Section 2.4) allowed the Steam update to complete, the server was rebuilt on the new build and cold-started, and player connectivity was subsequently confirmed via database and application-log evidence (Section 2.6).
 
-Because the self-hosted server's game binary version fell behind the version Funcom's live client/matchmaking service expects, the server was **silently delisted from the public server browser** — a normal and expected Funcom-side behavior for stale servers — while remaining fully "healthy" by every internal metric the operator's own tooling checks. This produced a confusing operator experience: dashboards and CLI tooling reported "all green," while the service was completely unreachable by its actual user base.
+The following causal claims are **inferences, not confirmed facts**, and are presented as such throughout this report:
+- That the stale build version was *the* reason (or the *sole* reason) the server could not be found by players in Funcom's official in-game server browser specifically. No Funcom-side documentation, API, or log access was available to confirm this mechanism directly; it is the responding engineer's best explanation consistent with the evidence, but the recovery process changed several variables at once (Steam build, all container images, a full stack cold-start), so an alternative or partial explanation involving one of those other changes cannot be fully ruled out from the available evidence. See Section 3 and Section 5.4 for the reasoning and its limits.
+- That the dead CDN hostname represents a Valve-side "decommissioned" node, that the priority-class change relative to an earlier successful run represents a Valve-side "regression," and that this fallback behavior is "entirely unconfigurable" on the client side. These are reasonable hypotheses grounded in the observed evidence, not confirmed via any Valve source, changelog, or support channel. See Section 5 for what is directly evidenced versus inferred.
 
-The incident was resolved by engineering a **temporary, host-local reverse-proxy workaround** that intercepted traffic destined for the dead CDN hostname and transparently redirected it to a known-healthy Steam CDN edge, allowing the legitimate Steam update to complete. The server was then rebuilt against the new build artifacts and returned to service. Player-facing recovery was independently confirmed via live database query and Director service logs showing the operator's own character (`Sihaya`) successfully connecting and remaining online post-fix.
+The incident was worked around by engineering a temporary, host-local TLS-intercepting reverse proxy that allowed the SteamCMD update to complete against a different, reachable Steam CDN host while presenting itself under the dead hostname's identity. This is **not** end-to-end TLS between SteamCMD and Valve; it is controlled interception with locally-generated, locally-trusted certificates. Section 5.7 describes the security implications explicitly. This was used as a one-time, hands-on emergency measure by an engineer with full control of the affected container — it is not recommended as a general or automatic remediation path (see Section 7, R2).
 
-**Total duration, first observed failure symptom to confirmed player-facing recovery: approximately 2 hours 49 minutes** (a large majority of which pre-dates player awareness/reporting — see Section 6, Detection Gap).
+**Duration**: reconstructed evidence places the earliest observed failed update attempt at approximately 2 hours 49 minutes before confirmed player-facing recovery. As detailed in Section 6.2, this is a conservative lower bound, not a precise total outage duration — the true start of player-facing impact is not independently established.
 
-No player data, character state, or persistent world state was lost or corrupted at any point in this incident. No security boundary was crossed. This was a pure availability/infrastructure incident with a third-party root cause.
+No player data, character state, or persistent world state was lost or corrupted at any point in this incident, based on the database checks performed (Section 8.7).
 
 ---
 
 ## 2. Incident Timeline (NIST SP 800-61r2 Lifecycle Phases)
 
-All times UTC (server local time PDT = UTC−7). Evidence sources cited inline; raw log excerpts are preserved in Section 8 (Evidence Appendix).
+All times UTC. Evidence sources cited inline; raw log excerpts are preserved in Section 8 (Evidence Appendix), redacted per the scope note above.
 
 ### 2.1 Phase: Preparation (Pre-Incident State)
 
 | Time (UTC) | Event |
 |---|---|
-| 2026-07-17 22:55:22 | Last known-good Steam update completed successfully (build `2036754-0-shipping` region-equivalent, revision `2036754`). This run *also* encountered the same dead `cache1-blv2.valve.org` host, but SteamCMD's fallback logic at that time (or under that job's differing priority-class assignment) successfully failed over to `cache9-sea1.steamcontent.com` within the same run — see Section 5.3 for why this same defensive behavior did not recur on 2026-07-24. |
+| 2026-07-17 22:55:22 | Last known-good Steam update completed successfully. This run's logs *also* show a failed connection attempt to the same `cache1-blv2.valve.org` host, but the update succeeded anyway because SteamCMD attempted multiple hosts in parallel during that run (see Section 5.3). |
 
 ### 2.2 Phase: Detection & Analysis
 
 | Time (UTC) | Event | Source |
 |---|---|---|
-| ~15:21:04 | First reconstructed evidence of the update mechanism silently failing. An update attempt (automated or manual, exact trigger not conclusively determined — see Section 6.2) begins, enumerates 30 Steam CDN download sources for CellID 31, and immediately fails to reach the single, sole-member, highest-priority (`priority_class: 6`) source `cache1-blv2.valve.org`. | `content_log.txt` (SteamCMD), preserved cache snapshot `steamcmd-metadata-20260724-082519` |
-| 15:21:04 – 15:22:36 | Update mechanism retries automatically (script-level retry loop, `DUNE_STEAMCMD_MAX_ATTEMPTS` default 3) approximately every 30 seconds; all attempts fail identically against the same dead host. Total of 48 near-identical failure entries recorded in this window and subsequent windows through the incident. | `content_log.txt` |
-| ~15:38:35 | Local Steam app manifest (`appmanifest_4754530.acf`) is left in a failed state: `buildid: 0`, `UpdateResult: 7`, `InstalledDepots: {}` (empty) — i.e., the update job aborted with **zero depots installed/mounted**, though the running game server processes continued operating on their last-loaded in-memory/on-disk binaries (the failure affects *future* updates, not the currently-running instance directly — see Section 5.4 on why this still caused player-facing impact). | `appmanifest_4754530.acf` |
-| ~15:29 (approx.) | Separately and unrelated to the above: the host's `dune-awakening-auto-update.service`/`.timer` (systemd) — intended to run this same update process automatically once per hour — is discovered (later, in this same response) to have been failing **every single hour since at least 2026-07-22**, due to an **orphaned/stale working-directory path** (`/home/darkdante/dune-work/e2e-ops-health`) left over from a prior repository relocation that was never reflected in the systemd unit files. This meant the automated hourly update-check-and-apply safety net was non-functional throughout the entire lead-up to this incident, though it is **not the proximate cause** of the outage (the actual CDN defect would have blocked even a correctly-configured automatic update). | `journalctl -u dune-awakening-auto-update.service` (48+ consecutive `203/EXEC` failures, hourly, `Unable to locate executable`) |
-| Unknown exact time (prior to operator engagement) | Players begin attempting to locate the server in Funcom's official in-game server browser and cannot find it. Player inquiries begin accumulating via Discord and direct messages to the operator. | Operator report ("flooded by players asking why the server is down") |
-| Operator engagement (session start) | Operator engages incident response, reports "getting flooded with discord and txt messages." | Operator statement |
-| T+0 (response start) | Responding engineer begins triage. Initial `dune status`/`dune ready` checks show **all containers, listeners, and Funcom/FLS heartbeat checks reporting OK** — a materially misleading signal given the true state of player-facing availability. | `dune status`, `dune ready` output |
-| T+~15 min | Responding engineer correctly identifies that "all green" internal health does not equal player-visible availability, and pivots to checking the actual installed Steam build state directly via the orchestrator container, bypassing the CLI's own status abstractions. | Session transcript |
-| T+~20 min | Root cause of "server invisible in browser despite healthy" isolated: `appmanifest_4754530.acf` shows `buildid: 0`, `TargetBuildID: 24333838` (later `24376904` as Valve's build advanced further during the outage window), confirming the server was running a version behind what Funcom's live service expects, and that version mismatch — not a crash, not a resource exhaustion, not a network/firewall fault — was the reason for browser delisting. | Direct file inspection inside `dune-orchestrator` container |
-| T+~25–90 min | Extensive, methodical root-cause investigation of *why* the Steam update itself was failing (not just that it was failing). This ruled out, in order, with evidence for each: local disk space (900GB free, not the cause); local DNS/network health (host has working general internet); SteamCMD binary staleness (client had already self-updated same-day); `CellIDServerOverride` config tuning (0, 40 tested — no effect on this specific Valve API call path); TCP/IP-layer connectivity (confirmed reachable via raw HTTP on port 80 to the same IP); and finally isolated definitively to: the specific hostname `cache1-blv2.valve.org` returning **NXDOMAIN globally** (confirmed via three independent DNS resolvers: system default, Google Public DNS `dns.google`, and Cloudflare DNS-over-HTTPS `cloudflare-dns.com`), while Valve's own `IContentServerDirectoryService` API continued to advertise this dead hostname, deterministically, as the **sole member of the highest priority class (`priority_class: 6`)** for our network cell — see Section 5 for full technical root-cause detail. | Session transcript; DNS lookups; `IContentServerDirectoryService` API responses (raw JSON preserved in Section 8) |
+| ~15:21:04 | First reconstructed evidence of the update mechanism failing. An update attempt (trigger not conclusively determined — see Section 6.2) begins, enumerates 30 Steam CDN download sources for the operator's network cell, and fails to reach the single, sole-member, highest-priority (`priority_class: 6`) source `cache1-blv2.valve.org`. | SteamCMD `content_log.txt`; preserved cache snapshot directory name |
+| 15:21:04 – 15:22:36 and later | Update mechanism retries automatically (script-level retry loop, default 3 attempts) approximately every 30 seconds; all attempts fail identically against the same host. 48 near-identical failure entries recorded across this window and later windows through the incident. | `content_log.txt` |
+| ~15:38:35 | Local Steam app manifest is left in a failed state: `buildid: 0`, `UpdateResult: 7`, `InstalledDepots: {}` (empty) — the update job aborted with zero depots installed. The already-running game server processes continued operating on their previously-loaded binaries; this failure affects *future* updates, not the *currently running* instance directly. | `appmanifest_4754530.acf` |
+| ~15:29 (approx.) | Separately: the host's hourly automated update-check timer (systemd) is discovered, later in this response, to have been failing every hour since at least 2026-07-22, due to a stale working-directory path left over from a prior repository relocation. This is **not** the proximate cause of the outage — the CDN issue would have blocked even a correctly-configured automatic update — but it meant no automated retry/alerting was active during the lead-up to this incident. | `journalctl` output for the relevant systemd service (48+ consecutive `203/EXEC` failures) |
+| Unknown exact time (prior to operator engagement) | Players report being unable to find/join the server, via Discord and direct messages to the operator. | Operator report |
+| Operator engagement (session start) | Operator engages incident response. | Operator statement |
+| T+0 | Responding engineer begins triage. Initial internal status checks (container liveness, listener checks, database connectivity, Funcom heartbeat/population-declaration checks) report **all green** — a materially misleading signal relative to the player-reported outage. | Internal status-check output |
+| T+~15 min | Responding engineer identifies that internal "all green" status does not by itself establish player-facing availability, and pivots to directly inspecting the installed Steam build state. | Session transcript |
+| T+~20 min | The installed Steam app manifest shows `buildid: 0` and a `TargetBuildID` ahead of the installed build, confirming the update had been failing and the running server was behind the latest available Steam build. This is a confirmed fact; see Section 3 for the separate, inferential question of whether this build gap was *the* reason players could not find the server. | Direct file inspection inside the orchestrator container |
+| T+~25–90 min | Methodical investigation of why the Steam update itself was failing. Ruled out, with evidence for each: local disk space (900GB free); local network/DNS health generally (other internet access worked); SteamCMD client staleness (already self-updated same day); `CellIDServerOverride` config changes (tested values had no effect on this specific API call path); TCP/IP-layer reachability of the target IP (reachable on port 80). Isolated to: the hostname `cache1-blv2.valve.org` returning NXDOMAIN across three independent DNS resolvers, while Valve's `IContentServerDirectoryService` API continued to return this hostname, consistently, as the sole member of the highest-priority source class for the operator's cell. | Session transcript; DNS lookups; raw `IContentServerDirectoryService` API responses (Section 8) |
 
 ### 2.3 Phase: Containment (Interim Player Communication)
 
 | Time (UTC) | Event |
 |---|---|
-| T+~90 min | With root cause understood but not yet fixed, responding engineer drafted an interim player-facing status message (see Section 9, Communications Log) for the operator to post, explaining the situation honestly: server is healthy but stuck on an old version due to a Steam-side CDN issue outside the operator's direct control, actively being worked, no ETA given prematurely. |
+| T+~90 min | With the update failure understood but not yet fixed, the responding engineer drafted an interim player-facing status message (Section 9) describing what was known and what was still being worked, without asserting a guaranteed cause or ETA. |
 
-### 2.4 Phase: Eradication (Root Cause Fix)
+### 2.4 Phase: Eradication (Remediation)
 
 | Time (UTC) | Event |
 |---|---|
-| T+~95–110 min | Multiple legitimate-but-unsuccessful remediation attempts made and ruled out, each with clear technical justification (see Section 5.5 for full list): `-cellid` CLI override (no effect — Steam ignores it for this call path); `CellIDServerOverride` config file edit to alternate cell IDs (persisted correctly in config but had zero effect on the actual `ContentServerDirectoryService` request, which is server-side geo-IP-derived, not locally overridable for this endpoint); `/etc/hosts` override pointing the dead hostname directly at a known-good Steam CDN IP (successfully resolved DNS and reached a live server, but failed **TLS certificate hostname validation**, since the live IP's certificate is legitimately issued only for its own real hostname, not for `cache1-blv2.valve.org` — a correct and expected TLS security control, not a bug); forcing TCP-refused/blackhole failure modes to see if faster/different failure signatures changed SteamCMD's fallback behavior (they did not — any failure of the sole class-6 source is unconditionally fatal to the whole update job in this SteamCMD build). |
-| 17:46–17:47 | **Working fix engineered and deployed**: a minimal, purpose-built local TLS-terminating reverse proxy (Python, `ssl` module) was started inside the `dune-orchestrator` container. The proxy: (1) presented a locally-generated, locally-trusted self-signed X.509 certificate whose Common Name/SAN exactly matched the dead hostname `cache1-blv2.valve.org`, installed into the container's system trust store via `update-ca-certificates`; (2) listened on `127.0.0.1:443`; (3) transparently forwarded all TLS-terminated traffic to `cache9-sea1.steamcontent.com` (a real, healthy, verified-reachable Steam CDN edge in the same region), rewriting the `Host` header appropriately. A single `/etc/hosts` entry (`127.0.0.1 cache1-blv2.valve.org`) redirected SteamCMD's connection attempts into this local proxy. |
-| 17:47:46 | Fix validated end-to-end via direct `curl` test against the exact manifest URL SteamCMD itself was failing on — `HTTP/1.1 200 OK`, correct `Content-Type: application/x-steam-manifest`, correct payload size (166,406 bytes), matching what a legitimate CDN response looks like. |
-| 17:47 – 17:49:20 | The real Steam update (`+app_update 4754530 validate`) was re-run through the proxied path and **completed successfully end-to-end**: full download (4,880,966,032 bytes), full verification, all depots correctly staged and mounted. SteamCMD reported: `Success! App '4754530' fully installed.` |
-| 17:49:20 | New build fully installed and confirmed via `appmanifest_4754530.acf`: `buildid: 24376904`, `UpdateResult: 0` (success), `InstalledDepots` populated with the correct manifest and matching the currently-published remote build. This is the moment the underlying root cause was technically fixed. |
+| T+~95–110 min | Multiple remediation attempts made and ruled out, each with clear technical justification (full list in Section 5.6): a SteamCMD CLI cell-ID override flag (had no observable effect on this API call path); direct edits to a local SteamCMD config value for cell ID (persisted in the file, confirmed via inspection, but had no effect on the actual request observed in logs); an `/etc/hosts` override pointing the dead hostname at a live Steam CDN IP (DNS resolved, but the connection failed **TLS certificate hostname validation**, since that IP's real certificate does not cover the dead hostname — this is TLS working as intended, not a bug, and is the reason the eventual fix required more than a plain hosts-file redirect); forcing different low-level connection-failure modes to see whether SteamCMD's behavior changed (it did not — every variant produced the same fatal abort). |
+| ~17:46–17:47 | **Remediation deployed**: a purpose-built, temporary local TLS-intercepting reverse proxy was started inside the orchestrator container for this single remediation action. Full technical and security description in Section 5.6 (attempt #7) and Section 5.7 — in summary, it decrypted and re-encrypted traffic locally using a self-signed certificate matching the dead hostname's name, which the container was made to trust for this purpose, and forwarded the resulting plaintext request to a different, reachable Steam CDN host. This is TLS interception, not end-to-end TLS between SteamCMD and Valve, and its security implications are discussed explicitly in Section 5.7. |
+| 17:47:46 | The redirected path was validated by directly requesting the exact manifest URL SteamCMD had been failing on, through the proxy — the request returned `HTTP/1.1 200 OK` with a payload matching the expected size and content type for a Steam manifest response. |
+| 17:47 – 17:49:20 | The Steam update was re-run through the intercepted path and completed: full download, full verification, all depots staged and mounted. SteamCMD reported a successful install. |
+| 17:49:20 | The local Steam app manifest now showed a successful state: nonzero `buildid` matching the current published remote build, `UpdateResult: 0`, and populated `InstalledDepots`. This is the point at which the Steam-update failure itself was resolved; whether this alone restored player-facing visibility is addressed separately in Section 3 and Section 2.6. |
 
 ### 2.5 Phase: Recovery
 
 | Time (UTC) | Event |
 |---|---|
-| 17:49–17:56 | New Funcom Docker image tarballs (17 images: battlegroup services, k8s-style operators, and prerequisites) extracted from the newly-downloaded server files and loaded into the local Docker image store. All images confirmed tagged with the new build identifier `2051294-0-shipping` (up from the prior `2036754-0-shipping`), confirming a genuinely newer artifact set, not a no-op. `runtime/generated/image-tags.env` regenerated to point subsequent orchestration at the new tag. |
-| 17:56:00 | Full stack cold-started against the new images: Postgres, RabbitMQ (admin + game), TextRouter, Director, Gateway, Survival_1, and Overmap brought up in sequence via the project's own `dune start` orchestration tooling. |
-| 17:56:06 – 17:57:53 | Postgres, RabbitMQ, and TextRouter online and healthy (first ~2 minutes). |
-| 17:57:53 | Overmap world-server container started on new build (confirmed via in-container Unreal Engine log: `Dreamworld revision: 2048594`, up from the prior stale `2036754`). |
-| 18:04:49 | Survival_1 (primary player-facing sietch instance, "Sietch Zahir") started on new build. |
-| 18:06:18 | Gateway service started. |
-| 18:07:58 | Director service started (brief additional restart cycle observed here — see Section 5.6, assessed as benign standard .NET service warm-up, not a fault; `RestartCount: 0` confirmed via `docker inspect`, i.e., no crash occurred, this was the orchestration sequence's normal first start of this container in the new cycle). |
-| ~18:08–18:10 | Autoscaler service restarted; automatically detected and respawned the always-on Deep Desert map (`DeepDesert_1`) as part of its normal reconciliation duties — confirmed via both client (UDP 7779) and server-to-server (UDP 7890) listener checks passing. |
-| 18:10:03 | Director's periodic population declaration to Funcom's Battlegroup Registry Protocol (BGRP) begins reporting `BattlegroupMaxPlayerCapacity: 60` (up from `0` during the brief post-restart warm-up window), confirming the Battlegroup is now correctly configured and advertising capacity to Funcom's matchmaking/browser service. |
+| 17:49–17:56 | New game-server container images were extracted from the newly-downloaded server files and loaded into the local Docker image store, confirmed tagged with a newer build identifier than what was previously loaded. |
+| 17:56:00 | Full stack cold-started against the new images (database, message queue, routing/directory service, and the world-server processes) via the project's own orchestration tooling. |
+| 17:56:06 – 17:57:53 | Database, message-queue, and routing services online and healthy. |
+| 17:57:53 | The always-on overworld map process started on the new build (confirmed via an in-container engine-log line reporting a revision number newer than the previously-installed one). |
+| 18:04:49 | The primary player-facing map instance started on the new build. |
+| 18:06:18 | The gateway service started. |
+| 18:07:58 | The directory/battlegroup-registry service started (a brief additional restart cycle was observed around this time; investigated and assessed as a benign first cold-start within the new orchestration cycle, not a crash — `docker inspect`'s restart counter was `0` throughout; see Section 5.8). |
+| ~18:08–18:10 | The autoscaler component restarted and, as part of its normal reconciliation duties, respawned the always-on secondary map that is managed dynamically by that component. |
+| 18:10:03 | The directory service's periodic population declaration to Funcom's registry protocol began reporting a nonzero configured player capacity, consistent with the battlegroup being correctly configured post-restart. This confirms our own service was declaring itself correctly to Funcom; it does not by itself confirm what, if anything, Funcom's browser was displaying to players before this point (see Section 3). |
 
-### 2.6 Phase: Post-Incident Verification (Player-Facing Recovery Confirmation)
+### 2.6 Phase: Post-Incident Verification (Player Connectivity Confirmation)
 
-This phase provides direct, multi-source evidentiary confirmation that the fix was not merely infrastructurally successful but **actually restored real player connectivity** — the true measure of incident resolution for a live-service game.
+This phase provides direct evidence that a real player connected and remained connected after the remediation — the strongest, most directly-verifiable measure of recovery available to this investigation. It does **not**, on its own, prove what Funcom's public in-game server browser was displaying at any specific prior time; see Section 3 for that distinction.
 
 | Time (UTC) | Event | Evidence Source |
 |---|---|---|
-| 18:10:27 | Director log records an explicit player travel-request/arrival transaction: FLS player ID `AFE0154F3AFE602C` requests entry to `WorldPartition { PartitionId = 1, ServerId = bFRFKq7tQTCAabPR7DychQ, Map = Survival_1, ..., Label = "Sietch Zahir" }` and is confirmed already resident in that exact partition — i.e., a successful, completed connection. | `dune-director` container log |
-| 18:10:31 | RabbitMQ-mediated travel-completion event received and processed by Director for the same FLS ID, same partition, same server, with matching flow/request correlation IDs (`FlowId = F435C670490C958E95EC9E914584F1E6`). | `dune-director` container log |
-| 18:10:32 | **Database-level confirmation**: `dune.player_state` view shows character `Sihaya` (account_id `1`, the operator's own character) with `online_status = Online`, `life_state = Alive`, `character_state = Active`, `server_id = bFRFKq7tQTCAabPR7DychQ` (exact match to the Director log entries above), and `last_login_time = 2026-07-24 18:10:32.400085+00` — five seconds after the Director's travel-completion log entry, exactly consistent with normal state-write latency. | Live query: `SELECT ... FROM dune.player_state WHERE character_name ILIKE '%sihaya%'` |
-| 18:10:32 | Cross-referenced against `dune.world_partition`: `server_id = bFRFKq7tQTCAabPR7DychQ` maps to `partition_id = 1`, `map = Survival_1`, `label = "Sietch Zahir"`, `blocked = false` — confirming the character's recorded location is a real, unblocked, active partition on the newly-updated server, not stale/orphaned state. | Live query against `dune.world_partition` |
-| 18:11:03 – 18:17:04 (and ongoing at report time) | Director's periodic BGRP population declarations to Funcom show `BattlegroupCurrentActive` transitioning from `0` to `1` at 18:11:03 and **remaining continuously at 1** across every subsequent declaration through at least 18:17:04 (7+ consecutive minutes, declarations approximately every 60 seconds) — ruling out a false-positive blip/reconnect-loop and confirming sustained, stable player presence. | `dune-director` container log, `Population declaration` entries |
-| 18:17+ | Operator directly confirms in-session: **"I'm in game, but Heartbeat reports warning"** (a transient `WAIT` state on the Director FLS heartbeat check immediately following the Director container's restart at 18:07:58, self-resolved by the next `dune ready` polling interval per standard behavior documented in this project's own `update.sh` design notes). Final `dune status` poll immediately after showed **Overall: READY**, **Population: 1/60**, and all four Funcom/FLS summary checks (Director heartbeat, Population declaration, Max capacity declaration, Gateway DB monitoring) reporting **OK**. | Operator statement + `dune status` output |
+| 18:10:27 | Directory-service log records an explicit player travel-request/arrival transaction for one Funcom Live Services (FLS) player identifier, to a specific world partition on the primary map instance, resolving as an already-completed, successful connection. (FLS ID and partition/server identifiers redacted in this report; preserved in the operator's own internal logs.) | Directory service container log |
+| 18:10:31 | A corresponding message-queue-mediated travel-completion event was received and processed for the same player identifier, partition, and server, with matching flow/request correlation IDs. | Directory service container log |
+| 18:10:32 | **Database-level confirmation**: the player-state table/view showed one specific character record (belonging to the operator) with `online_status = Online`, `life_state = Alive`, `character_state = Active`, and a server identifier matching the log entries above, with a login timestamp five seconds after the travel-completion log entry — consistent with normal state-write latency. (Character name and server identifier redacted.) | Live database query |
+| 18:10:32 | Cross-referenced against the world-partition table: the same server identifier mapped to a real, unblocked, active partition on the newly-updated server, not stale/orphaned state. | Live database query |
+| 18:11:03 – 18:17:04 (and ongoing at time of writing) | The directory service's periodic population declarations to Funcom showed the reported active-player count transitioning from 0 to 1 at 18:11:03 and remaining at 1 continuously across every subsequent declaration through at least 18:17:04 (7+ consecutive minutes, roughly one declaration per minute) — ruling out a single false-positive blip and indicating a sustained, stable connection from our own service's point of view. | Directory service container log, population-declaration entries |
+| 18:17+ | Operator directly confirmed in-session being connected in-game, alongside a transient `WAIT` state on one internal heartbeat check (which cleared on the next polling interval, consistent with the directory service's restart at 18:07:58). A subsequent status poll showed the stack fully healthy with a nonzero reported player count. | Operator statement + internal status-check output |
 
-**Conclusion of verification phase**: the incident is confirmed resolved not merely by infrastructure health checks, but by a complete, cross-validated chain of evidence — orchestration logs, application-layer (Director) logs, database state, and direct operator/player confirmation — all agreeing on the same timestamp window and the same player identity.
+**What this phase establishes, and what it does not**: this evidence conclusively shows that (a) our own service was declaring a connected player to Funcom's backend, and (b) our own database recorded that connection consistent with a real, successful session. It does **not** independently confirm that Funcom's separate, official in-game server browser was displaying the server as joinable to the general public at any specific timestamp before or after the fix — no direct access to that browser's data source or Funcom-side logs was available to this investigation. The player who connected did so with direct knowledge of the server (the operator), which does not by itself demonstrate general public discoverability. See Section 3 for the resulting confidence level on the browser-delisting explanation, and Section 5.4 for a corrected note on `dunedocker.app`, which was considered and rejected as a proxy for Funcom-browser visibility.
 
 ---
 
-## 3. Root Cause Analysis (RCA) — Summary
+## 3. Root Cause Analysis (RCA) — Confidence-Graded
 
-**Primary root cause (external, third-party):** Valve's Steam `IContentServerDirectoryService` API was returning a decommissioned CDN edge node (`cache1-blv2.valve.org`, permanently NXDOMAIN in global DNS) as the sole member of the highest-priority download-source class (`priority_class: 6`) for the operator's Steam network cell (CellID 31). This is a data-quality/staleness defect in Valve's own CDN directory service, entirely outside the operator's control or visibility, and not something correctable via any client-side Steam configuration.
+This section separates confirmed facts from inference, per item, rather than presenting a single blended narrative.
 
-**Contributing factor (local, client-side):** The installed version of SteamCMD's update-job logic treats the failure of the sole highest-priority-class download source as an unconditional, fatal abort of the entire update job, rather than falling through to any of the 29 other healthy sources enumerated in the very same directory-service response. This is a robustness gap in Valve's SteamCMD client behavior. Notably, this exact same dead host also appeared during the last previously-successful update (2026-07-17), but that run's differing internal priority-class assignment (`'3'` rather than `'6'`) permitted normal parallel-source fallback — meaning this is a **regression in Valve's server-side prioritization logic**, not a static, previously-known local misconfiguration.
+### 3.1 Confirmed facts (directly evidenced, low ambiguity)
 
-**Secondary/compounding factor (local, operational):** The host's automated hourly self-update safety net (systemd timer `dune-awakening-auto-update.timer`) had been silently non-functional since at least 2026-07-22 due to a stale working-directory path left over from an earlier repository relocation. While this did not cause the incident (the underlying CDN defect would have blocked even a working automatic update), its failure meant there was no automated alerting or retry cadence that might have surfaced the update failure to the operator earlier than direct player reports did. This defect was identified and remediated in this same response window (timer cleanly disabled to match the application's own already-correct "disabled" state, pending a decision on whether to re-enable against the corrected path).
+- SteamCMD's update job for this application failed repeatedly over an extended window, every time attempting the same content-server hostname first and failing to reach it.
+- That hostname was unresolvable (NXDOMAIN) via three independent DNS resolvers at the time of testing.
+- Valve's `IContentServerDirectoryService` API, queried directly and repeatedly by this investigation, consistently returned that same hostname as the sole member of the highest-priority download-source class for the network cell used in these queries.
+- The locally-installed game server's Steam app manifest was left in a failed-update state (`buildid: 0`, no depots) for the duration of the failure window, and was confirmed successfully updated (nonzero `buildid` matching the current remote build, depots populated) after the remediation in Section 2.4.
+- After the update succeeded and the stack was cold-started on the new build, a real player connection was confirmed via directory-service logs and a live database query (Section 2.6), and that connection persisted for at least 7 minutes.
 
-**Why "all green" health checks did not reflect the true outage:** The project's own `dune status`/`dune ready` tooling checks container liveness, listening ports, database connectivity, and Funcom BGRP heartbeat/population-declaration signals — all of which remained genuinely healthy throughout, because the *already-running* game server processes were unaffected by the failed *future* update attempt. The health-check surface has no signal for "is our installed build version still acceptable to the upstream matchmaking/browser service," which is the actual condition Funcom's server-browser visibility depends on. This is a real, identified **observability gap** (see Section 7, Recommendations).
+### 3.2 Reasonable inference, not independently confirmed
+
+- **That the stale Steam build was the reason (or the sole reason) the server was not discoverable/joinable by the general playerbase in Funcom's official in-game server browser specifically.** This is the responding engineer's best explanation, consistent with (a) the general, publicly-known behavior of live-service games delisting stale server builds from matchmaking/browser services, and (b) the sequence of events (update fixed → stack restarted → a real connection succeeded shortly after). However: the remediation changed multiple variables simultaneously — the Steam build, every container image, and a full cold-start of every core service — so this investigation cannot fully rule out that some other factor contributed to or fully explains the restored connectivity (for example, a stale registration or a stuck connection state that a full restart alone would have cleared, independent of the build version). No Funcom-side documentation, API, support ticket, or log access was consulted to confirm the delisting mechanism directly. This should be treated as a strong, plausible hypothesis, not an established mechanism, unless and until it can be corroborated by Funcom-side evidence.
+
+### 3.3 Hypotheses, explicitly flagged as unconfirmed
+
+- **That `cache1-blv2.valve.org` is a "decommissioned" CDN node.** What is confirmed is that the hostname does not resolve in DNS and that Valve's directory service kept advertising it anyway. Whether this reflects an intentional decommissioning, a DNS-management error, a transient outage, or something else on Valve's side is not established by this investigation and should be treated as an open question, not a determined fact.
+- **That the priority-class difference between the 2026-07-17 successful run and the 2026-07-24 failing runs represents a confirmed "server-side regression" on Valve's part.** What is confirmed is that the two runs' logs show a different priority-class value and different observed fallback behavior. The inference that this reflects a deliberate or accidental change on Valve's infrastructure, rather than some other explanation (e.g., a request-time or account-context difference this investigation did not control for), is plausible but not verified against any Valve-side source.
+- **That the client-side fallback behavior (aborting the whole update job on failure of the sole top-priority-class source) is "entirely unconfigurable."** What is confirmed is that the specific configuration options tried during this incident (a CLI flag, a local config-file value) had no observed effect. This does not exhaustively rule out every possible SteamCMD configuration option, environment variable, or alternate invocation that might influence this behavior; it reflects the options attempted within the time constraints of this incident, not an exhaustive audit of SteamCMD's configuration surface.
+
+### 3.4 Contributing factor (confirmed, local)
+
+The host's automated hourly self-update safety net had been silently non-functional since at least 2026-07-22, due to a stale working-directory path left over from an earlier repository relocation. This did not cause the incident — the underlying Steam CDN issue would have blocked even a correctly-configured automatic update — but its failure meant no automated retry or alerting was active during the lead-up to this incident. This defect was identified and the broken timer was disabled during this response.
+
+### 3.5 Why internal "all green" health checks did not reflect the outage
+
+The operator's existing status tooling checks container liveness, listening ports, database connectivity, and the directory service's own heartbeat/population-declaration signals to Funcom — all of which remained genuinely healthy throughout, because the already-running game server processes were unaffected by the failed *future* update attempt. There is no existing check for "is our installed build version current enough to remain visible to players via Funcom's systems" — this is a real, identified gap in the operator's own tooling (Section 7, R1), independent of the confidence-graded root-cause discussion above.
 
 ---
 
@@ -122,95 +151,109 @@ This phase provides direct, multi-source evidentiary confirmation that the fix w
 
 | Dimension | Assessment |
 |---|---|
-| **Confidentiality** | No impact. No credential, account, or PII exposure at any point. |
-| **Integrity** | No impact. No world-state, character-state, or database corruption. Verified via clean `player_state`/`world_partition` query results post-recovery, matching expected schema and expected values. |
-| **Availability** | **Full impact for the affected window.** Server was 100% unreachable/unjoinable by the general public via Funcom's official server browser for the duration the build-version mismatch persisted. Direct-connect (if IP/port were known and firewall-permitting) may have remained technically possible throughout, as the underlying game server process itself never stopped serving — this was **not tested/confirmed** during the incident and is noted as a gap in our own diagnostic coverage (see Section 7). |
-| **Data Loss** | None. No persistent player progress, inventory, or base/structure data was at risk, since the world-server processes remained continuously running throughout — only the *update mechanism*, not the *live server*, was affected until the deliberate, operator-approved stop/restart performed as part of remediation. |
-| **Financial/Reputational** | Player trust/goodwill impact from an extended period of unexplained unavailability and player-reported message flooding to the operator. Mitigated in real time by an honest, transparent interim status communication (Section 9) once root cause was understood, rather than remaining silent. |
-| **Blast Radius** | Limited to this single self-hosted game server instance and its player base. No other systems in the operator's broader estate (Console web application, addon ecosystem, other repositories/services) were affected or involved. |
+| **Confidentiality** | No impact identified. No credential, account, or PII exposure identified during this incident or its remediation. |
+| **Integrity** | No impact identified. Post-recovery database queries for player and world-partition state returned clean, internally-consistent results. |
+| **Availability** | Player reports and the subsequent investigation are consistent with the server having been unjoinable/undiscoverable by players for an extended period; the precise mechanism (Funcom browser delisting vs. some other factor) is inferred, not confirmed (Section 3). Whether the server remained reachable via direct connect (if a player already had the IP/port) throughout the outage was not tested during this incident and is a real gap in this investigation's own diagnostic coverage. |
+| **Data Loss** | None identified. The world-server processes remained continuously running throughout the update-failure window; only the *update mechanism*, not the *live server process*, was affected until the operator-approved stop/restart performed as part of remediation. |
+| **Reputational** | Player-reported message volume to the operator during the outage window, as described by the operator. Addressed in real time with an interim status message (Section 9) once the update failure was understood, rather than remaining silent — this did not wait for full root-cause confirmation of the browser-delisting mechanism. |
+| **Blast Radius** | Limited to this operator's single self-hosted game server instance and its player base, as far as this investigation determined. No claim is made about whether other self-hosted operators using the same network cell experienced the same Steam CDN issue; this was not investigated. |
 
 ---
 
 ## 5. Technical Deep-Dive
 
-### 5.1 Steam CDN Directory Service Behavior (Root Cause Detail)
+### 5.1 Steam CDN Directory Service Behavior (Confirmed Observation)
 
-Direct, repeated queries (15 consecutive calls over several minutes) against Valve's public `IContentServerDirectoryService::GetServersForSteamPipe` API for `cell_id=31` returned **100% deterministic, unvarying results**: `cache1-blv2.valve.org` first, `priority_class: 6`, as the sole entry in that class, on every single call. All `sea1`-suffixed alternatives (11 hosts total, e.g. `cache7-sea1.steamcontent.com`, `cache9-sea1.steamcontent.com`, etc.) were correctly returned as `priority_class: 5` and confirmed independently reachable (DNS-resolvable, TCP-connectable, TLS-cert-valid, and — via direct `curl` test — actually serving correct manifest content with `HTTP 200`).
+Direct, repeated queries (15 consecutive calls over several minutes) against Valve's public `IContentServerDirectoryService::GetServersForSteamPipe` API, using the network cell ID observed in this operator's own SteamCMD logs, returned **100% consistent results** across every call: the dead hostname first, in the sole highest-priority class, on every single call. Several `steamcontent.com`-suffixed alternatives in a lower-but-adjacent priority class were independently confirmed reachable (DNS-resolvable, TCP-connectable, valid TLS certificate, and serving correct manifest content via a direct request).
 
-### 5.2 DNS Confirmation of Dead Host
+### 5.2 DNS Confirmation of Unresolvable Host (Confirmed)
 
-`cache1-blv2.valve.org` returned `NXDOMAIN` (DNS response code `Status: 3`) consistently across three independent, non-caching-related DNS infrastructure providers:
-- System default resolver (WSL-provided)
-- Google Public DNS (`dns.google` JSON API)
-- Cloudflare DNS-over-HTTPS (`cloudflare-dns.com`)
+The dead hostname returned NXDOMAIN consistently across three independent, non-caching-related DNS infrastructure providers: the system's default resolver, Google Public DNS, and Cloudflare's DNS-over-HTTPS service. This rules out local DNS cache poisoning, split-horizon DNS misconfiguration, or a single resolver's fault as the explanation — the hostname was genuinely unresolvable via the global DNS system at the time of testing. **What this does not establish**: why the hostname is unresolvable, or whether this is permanent — see Section 3.3.
 
-This rules out any local DNS cache poisoning, split-horizon DNS misconfiguration, or ISP-level resolver fault as the cause — the hostname is genuinely absent from the global DNS system, almost certainly indicating Valve has decommissioned this specific edge node's DNS record without correspondingly retiring it from the content-server directory's active rotation for this cell.
+### 5.3 Comparison to the 2026-07-17 Successful Update (Confirmed Observation, Inferred Explanation)
 
-### 5.3 Why the 2026-07-17 Update Succeeded Despite the Same Dead Host
+Log comparison between the successful 2026-07-17 run and the failing 2026-07-24 runs shows the *only* material behavioral difference visible in the logs was the priority-class value SteamCMD assigned to the request set: a lower-numbered class on 2026-07-17, under which the client attempted multiple hosts in parallel and succeeded when the dead host failed, versus the highest-priority class on 2026-07-24, under which the client appears to require the sole class member to succeed before proceeding, with no observed fallback. This class assignment is returned by Valve's directory service, not set by any local configuration observed in this investigation. Whether this represents a change on Valve's side between these two dates (Section 3.3) or some other explanation not identified by this investigation is not conclusively established.
 
-Log comparison between the successful 2026-07-17 run and the failing 2026-07-24 runs shows the *only* material behavioral difference was the `priority_class` value SteamCMD assigned to the request set: `'3'` on 2026-07-17 (a class the client entered with **8 simultaneous parallel connection attempts** to different hosts, allowing near-instant failover when `cache1-blv2` failed) versus `'6'` on 2026-07-24 (a class the client treated as needing to be **fully exhausted, single-threaded, before falling back**, and for which the class had exactly one member — the dead host — making exhaustion synonymous with total failure). This class assignment originates server-side from Valve's directory service, not from any local configuration, confirming this is a **regression on Valve's infrastructure side** between these two dates, not a static pre-existing local misconfiguration that "got lucky" before.
+### 5.4 Relationship Between Update Status and Player-Visible Availability (Partially Inferred — see Section 3)
 
-### 5.4 Why a Failed *Future* Update Broke an Already-*Running* Server
+The general, publicly-documented behavior of live-service games with self-hosted server options is that server builds significantly behind the current live client version may be hidden from official server-browser/matchmaking surfaces, as a compatibility-protection measure. This investigation's evidence (build was stale, update fixed, connection succeeded afterward) is **consistent with** that general behavior applying here, but this was not independently confirmed via Funcom-specific documentation, support contact, or direct inspection of what the official in-game browser displayed at any point during the incident. This should be read as the most likely explanation available from the evidence, not a proven mechanism.
 
-This is a subtlety specific to how Funcom's self-hosted server model interacts with Steam's update mechanism and Funcom's own live-service backend: the *currently running* game server process is unaffected by a failed *future* SteamCMD update — the process keeps running on its already-loaded binary/assets. However, Funcom's live-service backend (the Funcom Live Services / FLS matchmaking and server-browser system) independently tracks the *build version* a given self-hosted battlegroup is running, and — as a normal, intentional, expected anti-fragmentation safety measure — **delists servers running builds it considers stale** from the public in-game server browser, to prevent players from joining servers running incompatible or outdated game logic relative to the current live client. This is standard, expected behavior on Funcom's part, not a bug; the incident's true fault lies entirely in why our server *couldn't get off* the stale build (the Steam CDN defect), not in Funcom's delisting policy itself.
+**Correction regarding `dunedocker.app`**: an earlier internal consideration of this incident referenced the operator's own `dunedocker.app` community-listing integration as a potential corroborating signal. This is incorrect and has been removed from this report's evidentiary claims: `dunedocker.app` is the operator's own self-serve community website listing, which receives heartbeats directly from this project's own service (`publicDirectory.js`) — it can confirm that our own service was reporting itself as up, but it has no connection to and cannot confirm what Funcom's separate, official in-game server browser was displaying to players at any given time. It was not, and should not have been treated as, evidence of Funcom-browser visibility. See R4 in Section 7 for a corrected recommendation.
 
-### 5.5 Remediation Attempts Log (Full, Including Unsuccessful Attempts)
+### 5.5 Why the Currently-Running Server Was Not Directly Restarted by the Failed Update Alone
 
-In the interest of complete, honest incident documentation (and to prevent future responders from re-treading the same dead ends), every remediation approach attempted is recorded here, in chronological order, with outcome and technical reasoning:
+The *currently running* game server process is unaffected by a failed *future* SteamCMD update — the process keeps running on its already-loaded binary and assets. The failed update only affects what would be installed on the *next* start. This is a confirmed mechanical fact about how the update pipeline and the running server process relate to each other, independent of the separate, inferred question of what Funcom's browser was doing during this window (Section 3.2).
+
+### 5.6 Remediation Attempts Log (Full, Including Unsuccessful Attempts)
+
+Every remediation approach attempted is recorded here, in chronological order, with outcome and reasoning, to avoid future responders re-treading the same dead ends.
 
 | # | Attempt | Outcome | Reason |
 |---|---|---|---|
-| 1 | Simple retry of `dune update --yes` (built-in 3-attempt retry loop) | Failed | All 3 attempts hit the identical dead host; no host-selection variance across retries. |
-| 2 | `-cellid` SteamCMD CLI flag override | No effect | Confirmed via log inspection that `CellID 31` was used regardless; this flag does not override the value used for this specific API call in the installed SteamCMD build. |
-| 3 | Direct edit of `CellIDServerOverride` in `config.vdf` (tried values `0` and `40`) | No effect | Edit persisted correctly in the file (verified via `grep`), and `cell_id=40` was independently confirmed via direct API testing to return an entirely different, healthy set of CDN hosts (Fastly/Akamai/Alibaba/Google CDN) with no dead host present — but the running SteamCMD process's actual directory-service request continued to report `CellID 31` regardless of the config file's contents, indicating this specific request path derives its cell ID from server-side geo-IP resolution, not the local override, in this SteamCMD version. |
-| 4 | `/etc/hosts` override: point dead hostname directly at a live Steam CDN IP (`205.196.6.172`) | Failed (correctly) | DNS resolution succeeded, but TLS handshake failed with `CERTIFICATE_VERIFY_FAILED: Hostname mismatch` — the live IP's real TLS certificate is legitimately scoped to its own real hostname only. This is TLS working exactly as designed; the naive redirect approach cannot succeed against any real HTTPS CDN without also solving the certificate problem (see attempt #7, the eventual working fix). |
-| 5 | 5x rapid-fire sequential retry (testing for time-based directory-service variance) | Failed | 100% identical failure signature and host selection across all 5 attempts; confirmed the directory-service response is stable/deterministic in the short term, ruling out a simple "try again in a few minutes" resolution path. |
-| 6 | `+download_depot` direct depot-download command (alternate SteamCMD code path, bypassing `app_update`) | Failed (different error) | `Depot download failed: missing license for depot (No subscription)` — anonymous Steam login cannot use this command path for this application; unrelated dead end, reverted immediately. |
-| 6b | Failure-mode variation testing: pointed dead hostname at `127.0.0.1` (immediate TCP refusal) and `192.0.2.1` (TEST-NET black-hole, guaranteed unreachable) via `/etc/hosts`, to test whether a faster or differently-shaped connection failure (vs. the original DNS-NXDOMAIN) would change SteamCMD's fallback behavior | Failed | Both produced the same fatal "Connection timeout" abort of the entire update job, regardless of failure speed or failure type (DNS/TCP-refused/TCP-blackhole all behaved identically) — conclusively proving the abort-on-single-source-failure behavior is unconditional for this priority class in this SteamCMD build, not specifically triggered by the DNS-NXDOMAIN failure mode. |
-| 7 | **Working fix**: local TLS-terminating reverse proxy presenting a locally-trusted, correctly-named self-signed certificate for the dead hostname, transparently forwarding to a real, healthy Steam CDN backend | **Succeeded** | Solves the exact and only real obstacle (TLS certificate hostname validation) that blocked the simpler `/etc/hosts`-only approach (#4), without altering, weakening, or bypassing TLS validation itself — the connection remains fully TLS-encrypted and certificate-validated end-to-end; only the *identity being presented* is locally substituted (matching the dead hostname exactly) and the *trust anchor* for that substitution is a certificate we generated and explicitly, locally trusted ourselves, scoped only to this container's own root CA store — not a systemic weakening of TLS trust for anything else on the host. |
+| 1 | Simple retry of the update command (built-in retry loop, 3 attempts) | Failed | All attempts hit the identical unreachable host; no host-selection variance observed across retries. |
+| 2 | SteamCMD CLI cell-ID override flag | No observed effect | Log inspection showed the same cell ID in use regardless; this flag did not appear to affect the specific API call path observed. |
+| 3 | Direct edit of a local SteamCMD config value for cell ID (tried two different values) | No observed effect | The edit persisted in the file (confirmed via direct inspection), and one of the tested cell-ID values was independently confirmed via a direct API test to return an entirely different, healthy set of CDN hosts with no dead host present — but the actual running SteamCMD process's directory-service request, as observed in logs, continued to report the original cell ID regardless of the local file's contents. This suggests (but does not conclusively prove, absent SteamCMD source-level confirmation) that this specific request path derives its cell ID from a source other than this local config value. |
+| 4 | `/etc/hosts` override pointing the dead hostname directly at a live Steam CDN IP | Failed (as expected for HTTPS) | DNS resolution succeeded, but the TLS handshake failed on certificate hostname validation, since the live IP's real certificate is scoped to its own real hostname. This is TLS behaving correctly, not a defect; it demonstrates why a plain hostname redirect cannot work against a real HTTPS CDN without also addressing certificate validation (see attempt #7). |
+| 5 | Five rapid-fire sequential retries (testing for short-term directory-service variance) | Failed | Identical failure signature and host selection across all five attempts, at the time tested. |
+| 6 | Alternate SteamCMD depot-download command, bypassing the normal app-update path | Failed differently | Rejected with a licensing-related error; anonymous login could not use this command path for this application. Unrelated dead end, reverted immediately. |
+| 6b | Variation testing of the connection-failure mode (pointed the dead hostname at localhost, then at a reserved/unroutable test address) | Failed | Both produced the same fatal abort of the entire update job, regardless of how quickly or in what manner the connection failed — indicating the abort-on-single-source-failure behavior observed in this SteamCMD build does not depend on the specific failure mode (DNS vs. TCP-refused vs. unreachable). |
+| 7 | **Remediation used**: a local TLS-*intercepting* reverse proxy, presenting a locally-generated, locally-trusted self-signed certificate matching the dead hostname's name, forwarding the resulting decrypted request to a different, reachable Steam CDN host | **Update completed** | This addresses the certificate-validation obstacle that blocked attempt #4, but — see Section 5.7 — this is achieved via controlled TLS interception inside a container the operator fully controlled, not via genuine end-to-end TLS between SteamCMD and Valve. This distinction, and its implications, are discussed explicitly below rather than glossed over. |
 
-### 5.6 Director Service Restart During Recovery — Assessed as Benign
+### 5.7 Security Note on the Remediation (TLS Interception, Not End-to-End TLS)
 
-The Director container was observed to have a comparatively short uptime relative to other core services during the recovery window, and a brief additional restart cycle was observed around 18:07:58. Investigation confirmed via `docker inspect --format '{{.RestartCount}}'` that this container's `RestartCount` was `0` throughout — i.e., **no crash occurred**; this was simply the container's first, normal cold-start within the new orchestration cycle (a multi-second .NET application startup, including ASP.NET Core Data Protection key generation and BGRP/RMQ subscription setup, all visible as expected, non-error log entries), not a fault requiring separate remediation.
+The working remediation in attempt #7 above is a **man-in-the-middle interception** of SteamCMD's traffic to the dead hostname, performed deliberately and locally by an operator with full administrative control of the affected container, for the specific, narrow purpose of completing one update. It is important to describe this precisely rather than understating it:
+
+- It creates **two separate TLS sessions**: one between SteamCMD and the local proxy (using a certificate generated on the fly and explicitly, locally trusted for this purpose), and a second, independent TLS session between the local proxy and the real, healthy Steam CDN host. SteamCMD's TLS session terminates at the proxy, not at Valve's real infrastructure — SteamCMD has no cryptographic assurance about what happens after that point.
+- It required modifying the **trust configuration of the container itself** (installing a new locally-generated certificate authority into that container's trust store) so that the interception would not be rejected by certificate validation. This is a real, if narrowly-scoped and temporary, weakening of that container's TLS trust boundary for the duration the certificate was present.
+- It relied on the operator's own judgment, at the time, that the actual content being fetched (a public game-update manifest and depot data, not any secret or user-specific payload) made this an acceptable one-time tradeoff under outage pressure — this was a manual decision made with full context, not something that should be treated as a general policy.
+- No credentials, tokens, or user-specific data were observed to transit this interception; the traffic involved was Steam's public content-delivery data.
+
+This is documented here in full so that this technique is understood as what it actually is if referenced or reused in the future — see Section 7, R2, for why this should **not** become an automated or default remediation path, and R5 for how it should instead be documented (as an expert-only, manual emergency procedure with explicit warnings, not standard updater behavior).
+
+### 5.8 Directory Service Restart During Recovery — Assessed as Benign
+
+The directory/battlegroup-registry service was observed to have a comparatively short uptime relative to other core services during the recovery window, with a brief additional restart cycle around 18:07:58. The container's restart counter (via `docker inspect`) was confirmed to be `0` throughout — no crash occurred; this was the container's normal first cold-start within the new orchestration cycle (visible in logs as ordinary service startup activity), not a fault requiring separate remediation.
 
 ---
 
 ## 6. Detection Gap Analysis
 
-### 6.1 Gap: No Build-Version-vs-Browser-Visibility Health Check
+### 6.1 Gap: No Build-Version-vs-Visibility Health Check
 
-The most significant detection gap this incident exposed: **the operator's own health-check tooling (`dune status`, `dune ready`, `dune doctor`) has no check for "is our currently-installed game build recent enough to remain visible in Funcom's public server browser."** Every check that exists was green throughout the entire outage. This meant the *only* detection mechanism that actually worked was players independently noticing the server had disappeared and reporting it — a reactive, player-driven detection path rather than a proactive, automated one. See Recommendation R1 in Section 7.
+The operator's existing status tooling has no check for "is our currently-installed game build recent enough to remain visible to players via Funcom's systems." Every existing check remained green throughout the outage. The only detection mechanism that functioned was players independently reporting the problem — a reactive path, not a proactive one. See R1 in Section 7.
 
-### 6.2 Gap: Unknown Exact Failure-Onset Time / Unknown Original Trigger
+### 6.2 Gap: Unknown Exact Failure-Onset Time and Trigger
 
-Reconstructed evidence (SteamCMD's `content_log.txt` and the `steamcmd-metadata-20260724-082519` cache snapshot directory name) place the earliest observed failed update attempt at approximately **15:21:04 UTC**, roughly 2 hours 49 minutes before confirmed player-facing recovery. However, this timeline has two honest, disclosed limitations:
+The earliest observed failed update attempt in the logs is at approximately 15:21:04 UTC, roughly 2 hours 49 minutes before confirmed player-facing recovery. This has two disclosed limitations:
 
-1. **The exact trigger of that first attempt is not conclusively determined.** It is plausible this was the (also broken — see Section 3, Secondary Factor) automated hourly systemd timer's last successfully-triggered run before its working-directory path went stale, or it may have been a separate manual/scripted trigger from earlier session work. The evidence does not allow us to distinguish between these with full confidence, and we are explicitly not claiming more precision than the evidence supports.
-2. **The true start of player-facing impact is likely earlier than 15:21:04 UTC** and is not independently pinned down in this investigation, since Funcom's server-browser delisting behavior itself operates on its own internal staleness threshold that we do not have direct visibility into, and player reports (the actual detection signal) were relayed to the responding engineer only at session-relative "T+0," with no precise wall-clock timestamp captured for the first player report. This report's headline "~2h49m" duration figure should therefore be read as a **conservative, evidence-grounded lower bound on total impact duration**, not a claim of exact total outage length. See Recommendation R4.
+1. **The exact trigger of that first attempt is not conclusively determined** — it may have been the last successful firing of the (separately broken) automated hourly timer before its path went stale, or a different manual/scripted trigger. The evidence does not distinguish between these with confidence.
+2. **The true start of player-facing impact is likely earlier than 15:21:04 UTC** and is not independently established by this investigation, since there was no direct visibility into Funcom's own server-browser state, and the first player report has no precise recorded timestamp. The "~2h49m" figure in this report should be read as a conservative lower bound on total impact duration, not a precise total. See R4.
 
 ### 6.3 Gap: Automated Update Safety Net Silently Broken for 48+ Hours Prior
 
-As detailed in Section 3, the hourly automated update-check timer had been failing silently (systemd-level `203/EXEC` failures, not application-level failures that would have been more visible) since at least 2026-07-22 — over 48 consecutive hourly failures — with no alerting surfaced to the operator. This is a monitoring/alerting gap independent of, but compounding, the primary incident.
+The hourly automated update-check timer had been failing silently (at the systemd level, not in a way that would surface in application logs) since at least 2026-07-22 — over 48 consecutive hourly failures — with no alerting to the operator. This is a monitoring/alerting gap independent of, but compounding, the primary incident.
 
 ---
 
 ## 7. Recommendations (Corrective and Preventive Actions)
 
-Presented in priority order, per standard NOC/SOC postmortem convention.
+These recommendations were checked against the current state of both this operator's fork and the real upstream project (`Red-Blink/dune-awakening-selfhost-docker`, latest published release `v1.3.64`) as of this report's revision date. **As of that check, the relevant scripts (`runtime/scripts/update.sh` and the orchestrator's download routine) are byte-identical between this fork and upstream, and neither contains CDN-host-failure detection, backoff/jitter beyond the existing fixed-interval retry, priority/host-selection logging, or systemd-timer-path validation.** An earlier internal draft of this report incorrectly asserted that upstream already addressed parts of these recommendations; that assertion was not verified before being written and has been corrected here. All items below remain open, unimplemented recommendations as of this revision.
 
 | # | Priority | Recommendation | Rationale |
 |---|---|---|---|
-| **R1** | **P1 — High** | Add a new health check (to `dune status`/`dune ready`, and ideally surfaced in the Console UI) that directly compares the locally-installed Steam `buildid` against the latest `TargetBuildID`/remote build reported by Steam, and flags a distinct, clearly-labeled **"stale build — may be delisted from public server browser"** warning state, separate from and in addition to the existing infrastructure-health checks. This directly closes the Section 6.1 detection gap that caused "all green" dashboards during a real outage. |
-| **R2** | **P1 — High** | Fix the automated update pipeline's resilience to this exact class of Steam CDN directory-service defect by default, going forward: wrap routine automated update attempts in the same kind of source-diversity fallback this incident's manual fix implemented (i.e., detect a single-priority-class "poison" host and automatically retry against the full remaining source list, or pre-emptively validate DNS resolvability of all sources in a returned priority class before committing to a single-source attempt). This should be implemented as a proper, tested, permanent code change to `runtime/scripts/update.sh` / the orchestrator's `download()` routine — not left as the ad-hoc, temporary reverse-proxy workaround used to resolve this specific incident, which should be considered **retired** now that the underlying build is current (see Section 10, Workaround Retirement). |
-| **R3** | **P1 — High** | Repair and properly re-validate the automated hourly self-update systemd timer (`dune-awakening-auto-update.timer`) against the current, correct repository path, and add a monitoring check (e.g., via the existing Discord/notification integration already used elsewhere in this project) that alerts if this timer's underlying service has failed N consecutive times — closing the Section 6.3 gap, which meant a fully broken automation had zero operator-visible signal for over 48 hours. |
-| **R4** | **P2 — Medium** | Establish a lightweight, low-overhead **synthetic external monitor** — e.g., a scheduled job that periodically queries Funcom's own public server-listing/status surface (or `dunedocker.app`'s existing public directory integration, which this project already has via `publicDirectory.js`) to confirm this specific battlegroup is actually visible/listed — to close the Section 6.2 gap and provide a precise, evidence-backed "outage start" timestamp for any future incident of this class, rather than relying on reactive player reports as the sole detection signal. |
-| **R5** | **P2 — Medium** | Formally document the temporary reverse-proxy CDN-bypass technique used in this incident (Section 5.5, attempt #7) as a **documented, ready-to-deploy runbook procedure** (not just this incident report) for any future recurrence of the same Valve-side CDN-directory defect class, since there is no guarantee Valve will not reintroduce a similarly stale/dead high-priority CDN host again in the future, and re-deriving this fix from first principles under time pressure (as was necessary this time) is avoidable with proper runbook preparation. |
-| **R6** | **P3 — Low** | Consider filing a report with Valve/Steamworks regarding the specific dead CDN node (`cache1-blv2.valve.org`) and the SteamCMD client's fail-fast-on-sole-top-priority-source behavior, as both are genuine defects on Valve's side that could affect any other self-hosted dedicated server operator in the same network cell. Low priority for us operationally (our own fix already resolves our exposure), but potentially valuable to the broader self-hosting community and to Valve's own service quality. |
-| **R7** | **P3 — Low** | Review and formalize the player communication process for extended outages of unclear/investigating status — the ad-hoc interim status message drafted mid-incident (Section 9) was effective but improvised; a pre-approved message template and a clear "when do we post an update" cadence policy would reduce operator cognitive load during a live incident. |
+| **R1** | **P1 — High** | Add a health check that compares the locally-installed Steam build identifier against the latest remote build identifier reported by Steam, and surfaces a distinct, clearly-labeled "build is behind current — may affect player-facing visibility" warning, separate from existing infrastructure-health checks. This is phrased deliberately as a possibility, not a certainty, consistent with Section 3's confidence grading — the check should not assert a guaranteed browser-delisting outcome it cannot itself confirm. |
+| **R2** | **P1 — High, but scoped narrowly** | Improve the *automated* update pipeline's handling of a single unreachable top-priority content-source: e.g., detect that the selected host is unreachable and log this clearly, add real backoff/retry against the *same* directory-service response before giving up, and/or surface enough diagnostic detail (selected host, priority class) for a human to diagnose the same class of failure faster next time. **This recommendation explicitly does not extend to automating the TLS-interception technique used in this incident** (installing a CA, intercepting Steam traffic, rewriting hostnames, forwarding to a different CDN) as routine or automatic updater behavior — that technique is security-sensitive, brittle against Valve-side changes, and was a manual, fully-informed, one-time decision by an operator with full context, not something that should run unattended or without explicit human awareness each time. See R5 for the appropriate way to preserve this technique for future use. |
+| **R3** | **P1 — High** | Repair the automated hourly self-update systemd timer against the current, correct repository path, and add alerting if the underlying service fails N consecutive times — closing the Section 6.3 gap. Also consider a startup/periodic self-check that detects when a systemd unit's configured working directory or executable path no longer exists on disk (the actual failure mode in this incident), independent of the update-specific timer, since this class of failure (stale path after a repo relocation) could recur for other scheduled jobs. |
+| **R4** | **P2 — Medium** | Investigate a genuine external check of player-facing discoverability, rather than relying on `dunedocker.app`'s heartbeat (which, per the Section 5.4 correction, only confirms our own service is reporting to itself, not that Funcom is listing it). This may require researching whether Funcom exposes any public server-list or status API suitable for this purpose; if none exists, this recommendation should be revised to rely on faster player-facing feedback channels instead, rather than a synthetic check that cannot actually verify the thing it claims to verify. |
+| **R5** | **P2 — Medium** | Document the TLS-interception CDN-bypass technique (Section 5.6, attempt #7; Section 5.7) as an **expert-only, manual emergency runbook procedure** — not as an automated fallback (see R2). The runbook should explicitly state: what TLS interception is and is not doing (Section 5.7), the conditions under which it is an acceptable tradeoff (public, non-sensitive content only), step-by-step setup and — critically — verified cleanup instructions (removing the generated CA trust, the proxy process, and any hosts-file entries), and an explicit warning that this is not standard operating procedure. |
+| **R6** | **P3 — Low** | Consider reporting the specific unreachable CDN hostname and the observed all-or-nothing single-source fallback behavior to Valve/Steamworks, as a data point for their own review — but frame this to Valve as an observation with the operator's own network cell and timestamp, not as an asserted defect, since this investigation could not confirm the underlying cause of either observation (Section 3.3). |
+| **R7** | **P3 — Low** | Formalize the player communication process for outages of uncertain root cause — the interim status message used in this incident (Section 9) was effective but improvised, and correctly avoided overclaiming certainty about the cause at the time it was posted. A pre-approved template that structurally separates "what we know" from "what we suspect" would help maintain that discipline under pressure in future incidents. |
 
 ---
 
-## 8. Evidence Appendix (Raw Data Excerpts)
+## 8. Evidence Appendix (Raw Data Excerpts, Redacted)
+
+Public IP addresses, battlegroup identifiers, FLS/player identifiers, character names, internal server IDs, and operator-specific filesystem paths have been redacted or replaced with placeholders below. The original, unredacted data remains in the operator's own internal logs.
 
 ### 8.1 Failed Update — SteamCMD Manifest State (Prior to Fix)
 
@@ -234,7 +277,7 @@ Presented in priority order, per standard NOC/SOC postmortem convention.
 {
     "appid"                 "4754530"
     "StateFlags"            "4"
-    "LastUpdated"           "1784915360"
+    "LastUpdated"           "<redacted-timestamp>"
     "SizeOnDisk"            "5207498312"
     "buildid"               "24376904"
     "UpdateResult"          "0"
@@ -258,7 +301,7 @@ Presented in priority order, per standard NOC/SOC postmortem convention.
 
 ```
 [2026-07-24 17:26:58] Got 30 download sources and 0 caching proxies via
-  ContentServerDirectoryService::BYieldingGetServersForSteamPipe (CellID 31 / Launcher 3)
+  ContentServerDirectoryService::BYieldingGetServersForSteamPipe (CellID <redacted> / Launcher 3)
 [2026-07-24 17:26:58] Moving to source priority class '6'
 [2026-07-24 17:26:58] Created download interface of type 'SteamCache' (7)
   to host cache1-blv2.valve.org (cache1-blv2.valve.org)
@@ -280,16 +323,16 @@ Presented in priority order, per standard NOC/SOC postmortem convention.
 ```
 (`Status: 3` = NXDOMAIN)
 
-### 8.5 Content-Server Directory API Raw Response (excerpt, `cell_id=31`)
+### 8.5 Content-Server Directory API Raw Response (excerpt, operator's network cell)
 
 ```json
-{"type": "SteamCache", "source_id": 450, "cell_id": 31, "priority_class": 6,
+{"type": "SteamCache", "source_id": 450, "cell_id": "<redacted>", "priority_class": 6,
  "host": "cache1-blv2.valve.org", "https_support": "mandatory"}
-{"type": "SteamCache", "source_id": 422, "cell_id": 31, "priority_class": 5,
+{"type": "SteamCache", "source_id": 422, "cell_id": "<redacted>", "priority_class": 5,
  "host": "cache7-sea1.steamcontent.com", "https_support": "mandatory", "group": "sea-general"}
 ```
 
-### 8.6 Successful Proxy-Bypassed Manifest Fetch (Fix Validation)
+### 8.6 Successful Intercepted-Path Manifest Fetch (Remediation Validation)
 
 ```
 > GET /depot/4754532/manifest/7470835453788624792/5/13020187876919183990 HTTP/1.1
@@ -301,46 +344,46 @@ Presented in priority order, per standard NOC/SOC postmortem convention.
 < X-Cache-Status: HIT
 ```
 
-### 8.7 Player-State Database Evidence (Resolution Confirmation)
+### 8.7 Player-State Database Evidence (Connectivity Confirmation, Redacted)
 
 ```sql
 SELECT character_name, account_id, server_id, life_state, online_status,
        character_state, previous_server_partition_id, last_login_time
 FROM dune.player_state
-WHERE character_name ILIKE '%sihaya%';
+WHERE character_name ILIKE '<redacted>';
 ```
 ```
  character_name | account_id |       server_id        | life_state | online_status | character_state | previous_server_partition_id |        last_login_time
 ----------------+------------+------------------------+------------+---------------+------------------+-------------------------------+--------------------------------
- Sihaya         |          1 | bFRFKq7tQTCAabPR7DychQ | Alive      | Online        | Active           |                             1 | 2026-07-24 18:10:32.400085+00
+ <redacted>     | <redacted> | <redacted-server-id>   | Alive      | Online        | Active           |                        <redacted> | 2026-07-24 18:10:32.400085+00
 ```
 
 ```sql
 SELECT partition_id, server_id, map, label, blocked
 FROM dune.world_partition
-WHERE server_id = 'bFRFKq7tQTCAabPR7DychQ';
+WHERE server_id = '<redacted-server-id>';
 ```
 ```
- partition_id |       server_id        |    map     |    label     | blocked
---------------+------------------------+------------+--------------+---------
-            1 | bFRFKq7tQTCAabPR7DychQ | Survival_1 | Sietch Zahir | f
+ partition_id |       server_id        |    map     |    label      | blocked
+--------------+------------------------+------------+---------------+---------
+ <redacted>   | <redacted-server-id>   | <redacted> | <redacted>    | f
 ```
 
-### 8.8 Director Application-Log Corroboration (Resolution Confirmation)
+### 8.8 Directory-Service Application-Log Corroboration (Redacted)
 
 ```
-[18:10:27] Player AFE0154F3AFE602C requested WorldPartition { PartitionId = 1,
-  ServerId = bFRFKq7tQTCAabPR7DychQ, Map = Survival_1, Label = "Sietch Zahir" }
+[18:10:27] Player <redacted-fls-id> requested WorldPartition { PartitionId = <redacted>,
+  ServerId = <redacted-server-id>, Map = <redacted>, Label = "<redacted>" }
   and is in WorldPartition { ...same... }. No action needed.
 
 [18:10:31] Received the following travel completion: TravelCompletion
-  { RequestID = iWZIlffHRN6NdzneH+G93Q, FlsId = AFE0154F3AFE602C,
-    FlowId = F435C670490C958E95EC9E914584F1E6, MapName = Survival_1,
-    PartitionId = 1, ServerID = bFRFKq7tQTCAabPR7DychQ,
-    OriginId = Survival_11 }
+  { RequestID = <redacted>, FlsId = <redacted-fls-id>,
+    FlowId = <redacted>, MapName = <redacted>,
+    PartitionId = <redacted>, ServerID = <redacted-server-id>,
+    OriginId = <redacted> }
 
 [18:11:03] Population declaration: {"BattlegroupCurrentActive":1, ...
-  "ServerIdToPopulationAndActivityMap":{"bFRFKq7tQTCAabPR7DychQ":
+  "ServerIdToPopulationAndActivityMap":{"<redacted-server-id>":
   {"CurrentActive":1, ...}}}
 ```
 (`BattlegroupCurrentActive: 1` confirmed sustained continuously through 18:17:04 across 7+ consecutive per-minute declarations.)
@@ -354,8 +397,8 @@ Population:  1/60
 ...
 Game servers:
 MAP          STATE        UPTIME
-Survival_1   READY        Up 12 minutes
-Overmap      READY        Up 19 minutes
+<redacted>   READY        Up 12 minutes
+<redacted>   READY        Up 19 minutes
 ...
 Funcom/FLS summary:
 Director heartbeat:       OK
@@ -363,6 +406,8 @@ Population declaration:   OK
 Max capacity declaration: OK
 Gateway DB monitoring:    OK
 ```
+
+(Note: "Funcom/FLS summary: OK" here reflects our own service's heartbeat/declaration checks to Funcom's backend succeeding — it is not itself confirmation of public server-browser listing status; see Section 3 and Section 5.4.)
 
 ---
 
@@ -380,30 +425,50 @@ Gateway DB monitoring:    OK
 >
 > We're actively working on a workaround to force the update through a different Steam content server. No ETA yet, but we'll post again as soon as it's back and visible. Thanks for your patience — sorry for the radio silence while we dig into it.
 
-### 9.2 Resolution Status Message (recommended, for operator to post now)
+### 9.2 Resolution Status Message (recommended, for operator to post)
 
 > **Server Status — Resolved ✅**
 >
-> The server is back and visible in the in-game browser. Root cause was confirmed to be on Valve/Steam's side (a dead CDN node their update service kept routing us to); we worked around it and pushed the update through. Server is running the current build, fully healthy, and players are already back in. Thanks for your patience!
+> The server is back and players are connecting successfully. The update that had been stuck went through, and the server's on the current build. If you still have trouble finding it in the browser after this, let us know — thanks for your patience!
+
+(Revised from the original draft, which asserted with more certainty than this report's Section 3 supports that the browser-visibility issue was fully and specifically explained by the build version.)
 
 ---
 
 ## 10. Workaround Retirement Notice
 
-The temporary local TLS-terminating reverse proxy and its accompanying `/etc/hosts` override and self-signed CA trust entry, deployed inside the `dune-orchestrator` container as the tactical fix for this incident (Section 5.5, attempt #7), were **transient, container-local, and non-persistent** — they did not survive the subsequent container recreation performed as a normal part of the recovery sequence (Section 2.5), and were confirmed, post-recovery, to leave **no residual artifacts**: no lingering proxy process, no stray `/etc/hosts` entry, and no stray CA trust entry in the current running container. No manual cleanup action is required. This workaround should be considered fully retired; **R2** and **R5** above address building a proper, permanent, tested version of this capability rather than relying on the ad-hoc version again in any future recurrence.
+The temporary local TLS-intercepting reverse proxy and its accompanying hosts-file override and locally-generated CA trust entry, deployed inside the orchestrator container as the tactical remediation for this incident (Section 5.6, attempt #7; security implications in Section 5.7), were transient and container-local. They did not survive the subsequent container recreation performed as part of the normal recovery sequence (Section 2.5), and were confirmed, post-recovery, to leave no residual artifacts in the current running container: no lingering proxy process, no stray hosts-file entry, no stray CA trust entry. No manual cleanup action was required in this instance. This should not be read as evidence that the technique is safe to leave running unattended in general — see R5 for why it should be documented as a manual, verified-cleanup emergency procedure rather than assumed to always self-clean.
 
 ---
 
 ## 11. Sign-Off
 
-| Role | Confirmation |
+| Item | Status |
 |---|---|
-| Root cause identified and evidenced | ✅ Yes — Section 5, Section 8 |
-| Fix deployed and validated | ✅ Yes — Section 2.4, Section 8.6 |
-| Player-facing recovery independently confirmed (not just infra health) | ✅ Yes — Section 2.6, Section 8.7–8.9 |
-| No data loss / no integrity impact | ✅ Confirmed |
-| No security impact | ✅ Confirmed — this was an availability/infrastructure incident only |
+| Confirmed facts documented and evidenced separately from inference | ✅ Yes — Section 3, Section 8 |
+| Remediation deployed and validated | ✅ Yes — Section 2.4, Section 8.6 |
+| Real player connectivity confirmed post-remediation (database + application log) | ✅ Yes — Section 2.6, Section 8.7–8.9 |
+| Claim of Funcom-browser-visibility restoration | ⚠️ Presented as inference, not confirmed fact — Section 3.2 |
+| No data loss / no integrity impact identified | ✅ Confirmed via database checks performed |
+| Security implications of the remediation itself documented | ✅ Yes — Section 5.7 |
+| Recommendations checked against current upstream state | ✅ Yes — Section 7 (R2/R3 confirmed still open, not already implemented) |
+| Operator-identifying details redacted | ✅ Yes — Section 8 and throughout |
 | Preventive recommendations documented | ✅ Yes — Section 7 |
-| Temporary workaround fully retired / no residual risk | ✅ Confirmed — Section 10 |
+| Temporary workaround fully retired / no residual risk in this instance | ✅ Confirmed — Section 10 |
 
-**Incident Status: CLOSED.**
+**Incident Status: CLOSED** (as an operational matter — the update succeeded and player connectivity was confirmed). **Root-cause attribution for browser-visibility specifically remains a graded inference, not a fully closed determination** — see Section 3.
+
+---
+
+## 12. Revision Notes
+
+This report was revised from its original version following technical review. Changes made:
+
+1. Reframed the TLS-bypass remediation accurately as controlled TLS interception (two separate TLS sessions, local trust modification), not end-to-end TLS, with an explicit new security-implications section (5.7).
+2. Downgraded the claim that the stale build was confirmed to be the reason for Funcom browser delisting to a graded inference, given that the recovery process changed multiple variables at once and no Funcom-side evidence was available (Section 3, Section 5.4).
+3. Downgraded several Valve-specific conclusions — "decommissioned" node, "regression" in priority-class assignment, "entirely unconfigurable" fallback — from stated facts to explicitly-labeled hypotheses (Section 3.3).
+4. Removed the recommendation to turn the TLS-interception workaround into an automatic/production fallback; replaced with a narrower R2 (improve automated retry/diagnostics only) and a revised R5 (document as an expert-only manual emergency procedure with explicit warnings and verified cleanup steps, not standard behavior).
+5. Checked R2/R3 against the actual current state of both this fork and real upstream (`Red-Blink/dune-awakening-selfhost-docker`, latest release `v1.3.64`) before finalizing — confirmed the relevant scripts are unchanged and identical between fork and upstream, and corrected an earlier, unverified draft claim that upstream already addressed parts of these recommendations.
+6. Removed `dunedocker.app` as evidence of Funcom-official-browser visibility; corrected to state it only confirms the operator's own service is heartbeating to itself (Section 5.4).
+7. Redacted public IP, battlegroup ID, FLS/player identifiers, character name, internal server IDs, and operator-specific filesystem paths throughout (Section 8 and elsewhere).
+8. Re-framed the document as an operator-specific case study in the title and opening scope note, rather than a project-wide confirmed-incident report.
