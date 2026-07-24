@@ -1,4 +1,4 @@
-name: Dune WAN Probe
+name: Dune Sustained WAN Probe
 
 on:
   workflow_dispatch:
@@ -12,57 +12,72 @@ jobs:
     timeout-minutes: 5
 
     steps:
-      - name: Test Dune public ports
+      - name: Test TCP and repeatedly send UDP
         shell: python
         run: |
           import socket
           import time
           import urllib.request
 
-          HOST = "50.123.64.61"
-          TCP_PORT = 31982
-          UDP_PORTS = [7777, 7778, 7779]
+          host = "50.123.64.61"
+          tcp_port = 31982
+          udp_ports = [7777, 7778, 7779]
 
-          try:
-              external_ip = urllib.request.urlopen(
-                  "https://api.ipify.org",
-                  timeout=10,
-              ).read().decode().strip()
-              print(f"GitHub runner public IP: {external_ip}")
-          except Exception as exc:
-              print(f"Could not determine runner IP: {exc}")
+          runner_ip = urllib.request.urlopen(
+              "https://api.ipify.org",
+              timeout=10,
+          ).read().decode().strip()
 
-          print(f"\nTesting TCP {HOST}:{TCP_PORT}")
+          print(f"RUNNER_IP={runner_ip}", flush=True)
 
-          tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-          tcp.settimeout(15)
-
-          started = time.monotonic()
-
-          try:
-              tcp.connect((HOST, TCP_PORT))
-              elapsed = time.monotonic() - started
-              print(f"TCP_SUCCESS port={TCP_PORT} elapsed={elapsed:.3f}s")
-          except Exception as exc:
-              elapsed = time.monotonic() - started
-              print(f"TCP_FAILURE port={TCP_PORT} elapsed={elapsed:.3f}s error={exc}")
-              raise
-          finally:
-              tcp.close()
-
-          print("\nSending identifiable UDP probes")
-
-          for port in UDP_PORTS:
-              udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-              payload = (
-                  f"DUNE_GITHUB_WAN_PROBE port={port} "
-                  f"timestamp={time.time()}"
-              ).encode()
+          for attempt in range(1, 11):
+              sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+              sock.settimeout(5)
 
               try:
-                  sent = udp.sendto(payload, (HOST, port))
-                  print(f"UDP_SENT port={port} bytes={sent}")
+                  started = time.monotonic()
+                  sock.connect((host, tcp_port))
+                  elapsed = time.monotonic() - started
+                  print(
+                      f"TCP_SUCCESS attempt={attempt} "
+                      f"elapsed={elapsed:.3f}",
+                      flush=True,
+                  )
+              except Exception as exc:
+                  print(
+                      f"TCP_FAILURE attempt={attempt} error={exc}",
+                      flush=True,
+                  )
               finally:
-                  udp.close()
+                  sock.close()
 
-          print("\nProbe complete")
+              time.sleep(1)
+
+          print("Starting 60-second UDP transmission", flush=True)
+
+          for sequence in range(1, 61):
+              for port in udp_ports:
+                  sock = socket.socket(
+                      socket.AF_INET,
+                      socket.SOCK_DGRAM,
+                  )
+
+                  payload = (
+                      f"DUNE_GITHUB_PROBE "
+                      f"runner={runner_ip} "
+                      f"sequence={sequence} "
+                      f"port={port}"
+                  ).encode()
+
+                  try:
+                      sock.sendto(payload, (host, port))
+                  finally:
+                      sock.close()
+
+              print(
+                  f"UDP_SEQUENCE_SENT={sequence}",
+                  flush=True,
+              )
+              time.sleep(1)
+
+          print("Probe complete", flush=True)
