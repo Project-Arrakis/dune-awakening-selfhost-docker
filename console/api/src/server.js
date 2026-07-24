@@ -36,10 +36,12 @@ import { liveItemGrantOk, liveItemGrantWarning } from "./grantResults.js";
 import { primeMessageOfTheDayOnlineState, readMessageOfTheDay, restoreMessageOfTheDay, runMessageOfTheDayScan, saveMessageOfTheDay } from "./services/messageOfTheDay.js";
 import { primePlayerAnnouncementOnlineState, readPlayerAnnouncements, restorePlayerAnnouncements, runPlayerAnnouncementScan, savePlayerAnnouncements } from "./services/playerAnnouncements.js";
 import { persistSpicefieldOverride } from "./services/spicefieldOverrides.js";
+import { applySavedLandsraadMilestonePreset, createLandsraadMilestoneReconciler, readLandsraadMilestonePreset, saveLandsraadMilestonePreset } from "./services/landsraadMilestones.js";
 import { exportBlueprint, importBlueprint, listBlueprints, deleteBlueprint } from "./blueprints.js";
 import { createZipArchive } from "./services/zipArchive.js";
 import { resolveMapCombatState } from "./services/mapCombatState.js";
 import { grantAddonItem } from "./addonItemGrants.js";
+import { EDA_EXCHANGE_BOT_ADDON_ID, ADDON_SCHEDULER_PERMISSION, createAddonJobScheduler, probeBuybackEligibility, readBuybackSchedule, saveBuybackSchedule } from "./addonJobs.js";
 import { createPublicDirectoryReporter, normalizeDiscordInvite, readDirectorySettings } from "./services/publicDirectory.js";
 import { choamTerminalOverview, installChoamTerminals, removeChoamTerminals } from "./services/choamTerminals.js";
 
@@ -67,6 +69,12 @@ const POSTGRES_UNAVAILABLE_MESSAGE = "Postgres is not running or is restarting. 
 const DEFAULT_ALWAYS_ON_STARTUP_PARALLELISM = 1;
 const MAX_ALWAYS_ON_STARTUP_PARALLELISM = 16;
 const BACKGROUND_SCAN_FAILURE_BACKOFF_MS = Math.max(30, Number(process.env.ADMIN_BACKGROUND_SCAN_FAILURE_BACKOFF_SECONDS || 60)) * 1000;
+const addonJobScheduler = createAddonJobScheduler(config, {
+  getDb: () => db,
+  mutationLimiter: mutationRateLimiter,
+  failureBackoffMs: BACKGROUND_SCAN_FAILURE_BACKOFF_MS
+});
+const landsraadMilestoneReconciler = createLandsraadMilestoneReconciler(config, { getDb: () => db });
 
 process.on("unhandledRejection", (error) => {
   console.error(`Unhandled background rejection: ${redact(error?.message || error)}`);
@@ -113,6 +121,8 @@ setInterval(() => {
   runBackgroundTick("Care Package auto-grant", carePackageAutoTick);
   runBackgroundTick("Message of the Day", messageOfTheDayAutoTick);
   runBackgroundTick("Player announcements", playerAnnouncementsAutoTick);
+  runBackgroundTick("Addon scheduled jobs", () => addonJobScheduler.tick());
+  runBackgroundTick("Landsraad milestone preset", () => landsraadMilestoneReconciler.tick());
 }, 10000).unref?.();
 
 setInterval(() => {
@@ -338,7 +348,10 @@ async function handleApi(req, res) {
   if (path === "/api/logs/services") return json(res, 200, { services: await discoverServices(config) });
   if (path.startsWith("/api/logs/")) return logsRoute(req, res, path);
 
-  if (path === "/api/updates/check-game" && req.method === "POST") return task(req, res, "updates", "updateCheck", {});
+  if (path === "/api/updates/check-game" && req.method === "POST") {
+    const body = await readJson(req);
+    return task(req, res, "updates", "updateCheck", { fresh: body.fresh === true });
+  }
   if (path === "/api/updates/apply-game" && req.method === "POST") return task(req, res, "updates", "updateApply", {});
   if (path === "/api/updates/fix-steamcmd" && req.method === "POST") return task(req, res, "updates", "updateFixSteamcmd", {});
   if (path === "/api/updates/check-stack" && req.method === "POST") return task(req, res, "updates", "selfUpdateCheck", {});
@@ -427,6 +440,7 @@ async function handleApi(req, res) {
   if (path === "/api/admin/landsraad") return landsraadRoute(req, res, "overview");
   if (path === "/api/admin/landsraad/task-goal") return landsraadRoute(req, res, "task-goal");
   if (path === "/api/admin/landsraad/term-task-goals") return landsraadRoute(req, res, "term-task-goals");
+  if (path === "/api/admin/landsraad/milestone-preset") return landsraadRoute(req, res, "milestone-preset");
   if (path === "/api/admin/landsraad/reward-tier") return landsraadRoute(req, res, "reward-tier");
   if (path === "/api/admin/landsraad/player-contribution") return landsraadRoute(req, res, "player-contribution");
   if (path === "/api/admin/broadcast" && req.method === "POST") return broadcastRoute(req, res);
@@ -583,6 +597,7 @@ async function handleApi(req, res) {
   if (path === "/api/deepdesert") return commandJson(res, "deepdesertStatus");
   if (path === "/api/deepdesert/update" && req.method === "POST") return deepDesertUpdateRoute(req, res);
   if (path === "/api/settings/public-directory" && req.method === "POST") return publicDirectorySettingsRoute(req, res);
+  if (path === "/api/settings/public-directory/claim" && req.method === "POST") return publicDirectoryClaimRoute(req, res);
   if (path === "/api/settings" && req.method === "POST") return writeConfig(req, res);
   if (path === "/api/settings") return json(res, 200, await setupState());
 
@@ -681,6 +696,7 @@ async function addonBridgeRoute(req, res, path) {
       return json(res, 400, { ok: false, error: redact(error.message || error) });
     }
   }
+  if (action.startsWith("scheduler.")) return addonSchedulerBridgeAction(req, res, id, action, body);
   if (action === "database.query" || action === "database.execute") {
     const query = String(body.query || "");
     const readOnly = isReadOnlySql(query);
@@ -697,6 +713,66 @@ async function addonBridgeRoute(req, res, path) {
   }
   audit(config, req, "addons.bridge", { id, action, ok: false, reason: "Unsupported addon action" });
   return json(res, 400, { error: `Unsupported addon action: ${action || "unknown"}` });
+}
+
+// Typed scheduler actions: the addon UI manages a server-side schedule with
+// validated parameters only. No SQL from the iframe is persisted or replayed;
+// the scheduled sweep SQL is built server-side in addonJobs.js.
+async function addonSchedulerBridgeAction(req, res, id, action, body) {
+  if (id !== EDA_EXCHANGE_BOT_ADDON_ID) {
+    audit(config, req, "addons.bridge", { id, action, ok: false, reason: "Scheduled jobs are not supported for this addon" });
+    return json(res, 400, { error: "Scheduled jobs are not supported for this addon yet." });
+  }
+  if (action === "scheduler.schedule.get") {
+    const addon = assertInstalledAddonPermission(config, id, "database:read");
+    const result = readBuybackSchedule(config);
+    audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, ok: true });
+    return json(res, 200, { ok: true, result });
+  }
+  if (action === "scheduler.schedule.set") {
+    const payload = body.schedule && typeof body.schedule === "object" ? body.schedule : body;
+    const addon = assertInstalledAddonPermission(config, id, "database:write");
+    // Unattended background writes need an explicit extra approval from the
+    // server owner, so any save that leaves the schedule enabled requires
+    // scheduler:server too — including field updates that omit `enabled` on an
+    // already-enabled schedule. Explicitly disabling only needs database:write.
+    const leavesEnabled = payload.enabled === undefined ? readBuybackSchedule(config).enabled : payload.enabled === true;
+    if (leavesEnabled) assertInstalledAddonPermission(config, id, ADDON_SCHEDULER_PERMISSION);
+    if (!applyMutationRateLimit(req, res, `addon:${id}:scheduler.schedule.set`)) return;
+    try {
+      const result = saveBuybackSchedule(config, payload);
+      audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, enabled: result.enabled, intervalMinutes: result.intervalMinutes, exchangeId: result.exchangeId, buybackPercent: result.buybackPercent, maxBuys: result.maxBuys, ok: true });
+      return json(res, 200, { ok: true, result });
+    } catch (error) {
+      audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, ok: false, error: redact(error.message || error) });
+      return json(res, 400, { ok: false, error: redact(error.message || error) });
+    }
+  }
+  if (action === "scheduler.probe") {
+    const addon = assertInstalledAddonPermission(config, id, "database:read");
+    try {
+      const result = await probeBuybackEligibility(config, db, body.schedule && typeof body.schedule === "object" ? body.schedule : body);
+      audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, eligible: result.eligible, exchangeId: result.exchangeId, ok: true });
+      return json(res, 200, { ok: true, result });
+    } catch (error) {
+      audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, ok: false, error: redact(error.message || error) });
+      return json(res, 400, { ok: false, error: redact(error.message || error) });
+    }
+  }
+  if (action === "scheduler.run") {
+    const addon = assertInstalledAddonPermission(config, id, "database:write");
+    if (!applyMutationRateLimit(req, res, `addon:${id}:scheduler.run`)) return;
+    try {
+      const result = await addonJobScheduler.runNow({ trigger: "manual" });
+      audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, status: result.status, eligible: result.eligible, purchased: result.purchased, ok: true });
+      return json(res, 200, { ok: true, result });
+    } catch (error) {
+      audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, ok: false, error: redact(error.message || error) });
+      return json(res, 400, { ok: false, error: redact(error.message || error) });
+    }
+  }
+  audit(config, req, "addons.bridge", { id, action, ok: false, reason: "Unsupported addon action" });
+  return json(res, 400, { error: `Unsupported addon action: ${action}` });
 }
 
 async function installedAddonsRoute() {
@@ -1302,12 +1378,17 @@ async function playerAnnouncementsRoute(req, res) {
 
 async function landsraadRoute(req, res, action) {
   if (req.method === "GET" && action === "overview") return dbJson(res, () => duneDb.landsraadOverview(db));
+  if (req.method === "GET" && action === "milestone-preset") return json(res, 200, { preset: readLandsraadMilestonePreset(config) });
   if (req.method !== "POST") return json(res, 405, { error: "Method not allowed" });
   const body = await readJson(req);
   try {
     let result;
     if (action === "task-goal") result = await duneDb.updateLandsraadTaskGoal(db, body.taskId, body.goalAmount);
     else if (action === "term-task-goals") result = await duneDb.updateLandsraadTermTaskGoals(db, body.termId, body.goalAmount);
+    else if (action === "milestone-preset") {
+      saveLandsraadMilestonePreset(config, body);
+      result = await applySavedLandsraadMilestonePreset(config, db);
+    }
     else if (action === "reward-tier") result = await duneDb.updateLandsraadRewardTier(db, body);
     else if (action === "player-contribution") result = await duneDb.setLandsraadPlayerContribution(db, body);
     else return json(res, 404, { error: "Not found" });
@@ -2467,6 +2548,23 @@ async function publicDirectorySettingsRoute(req, res) {
   });
   await publicDirectory.tick();
   return json(res, 200, { ok: true, publicDirectory: publicDirectorySettings() });
+}
+
+async function publicDirectoryClaimRoute(req, res) {
+  const body = await readJson(req);
+  const code = String(body.code || "").trim();
+  if (!code) return json(res, 400, { error: "Enter the claim code from DuneDocker.app." });
+  try {
+    const result = await publicDirectory.verifyClaim(code);
+    audit(config, req, "settings.public-directory.claim", { claimed: true, roleAssigned: result.roleAssigned === true });
+    return json(res, 200, {
+      ok: true,
+      claimed: true,
+      message: "Listing Claimed Successfully"
+    });
+  } catch (error) {
+    return json(res, 400, { error: error instanceof Error ? error.message : String(error) });
+  }
 }
 
 async function saveToken(req, res) {

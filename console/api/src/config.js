@@ -35,10 +35,12 @@ export function loadConfig() {
     secretsDir,
     auditLog: resolve(generatedDir, "web-admin-audit.jsonl"),
     spicefieldOverridesFile: resolve(generatedDir, "spicefield-overrides.json"),
+    landsraadMilestonePresetFile: resolve(generatedDir, "landsraad-milestones.json"),
     taskRetention: Number(process.env.ADMIN_TASK_RETENTION || 200),
     maxJsonBytes: Number(process.env.ADMIN_MAX_JSON_BYTES || 2 * 1024 * 1024),
     maxUploadBytes: Number(process.env.ADMIN_MAX_UPLOAD_BYTES || 1024 * 1024 * 1024),
     commandTimeoutMs: Number(process.env.ADMIN_COMMAND_TIMEOUT_MS || 120000),
+    updateCheckCacheMs: Number(process.env.ADMIN_UPDATE_CHECK_CACHE_MS || 5 * 60 * 1000),
     staticDir: process.env.ADMIN_STATIC_DIR || resolve(repoRoot, "console/web/dist"),
     allowedIps: parseAllowedIps(process.env.ADMIN_ALLOWED_IPS)
   };
@@ -79,6 +81,7 @@ function repairRootOwnedHostState(repoRoot) {
     resolve(repoRoot, "runtime/generated/director-character-transfer.ini"),
     resolve(repoRoot, "runtime/generated/director-deepdesert-dual.ini"),
     resolve(repoRoot, "runtime/generated/ip-change-restart.env"),
+    resolve(repoRoot, "runtime/generated/landsraad-milestones.json"),
     resolve(repoRoot, "runtime/generated/map-runtime-modes.json"),
     resolve(repoRoot, "runtime/generated/memory-balancer.json"),
     resolve(repoRoot, "runtime/generated/message-of-the-day.json"),

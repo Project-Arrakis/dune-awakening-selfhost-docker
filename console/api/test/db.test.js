@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { assertIdentifier, discoverDbConfig, isReadOnlySql, quoteQualified, redactDbError, rowsResult } from "../src/db.js";
-import { addCurrency, addFactionReputation, addIntel, addonLeadershipPlayers, addonOpsHealthFarms, addonOpsHealthPlayers, addonOpsHealthSummary, addonOpsHealthSummaryV2, augmentInventoryItem, augmentNewestPlayerItem, changeDunePassword, completeJourneyNode, completeTutorial, deleteInventoryItem, exportBaseAsBlueprint, giveItemToPlayer, giveItemToStorage, guildMembers, landsraadOverview, listBases, listGuilds, listPlayers, listSpicefieldTypes, listTables, liveMapPlayers, liveMapServices, playerCraftingRecipes, playerInventory, playerJourney, playerPosition, playerProfile, playerResearchItems, repairVehicleDecay, resetJourneyNode, resetTutorial, runSql, setLandsraadPlayerContribution, tablePreview, teleportOfflinePlayerToCoords, unlockCraftingRecipe, unlockResearchItem, updateInventoryItem, updateLandsraadRewardTier, updateLandsraadTaskGoal, updateLandsraadTermTaskGoals, updateSpicefieldType, updateTableRow, UnsupportedCapabilityError } from "../src/duneDb.js";
+import { addCurrency, addFactionReputation, addIntel, addSpecializationXp, addonLeadershipPlayers, addonOpsHealthFarms, addonOpsHealthPlayers, addonOpsHealthSummary, addonOpsHealthSummaryV2, applyLandsraadMilestonePreset, augmentInventoryItem, augmentNewestPlayerItem, changeDunePassword, completeJourneyNode, completeTutorial, deleteInventoryItem, exportBaseAsBlueprint, giveItemToPlayer, giveItemToStorage, guildMembers, landsraadOverview, listBases, listGuilds, listPlayers, listSpicefieldTypes, listTables, liveMapPlayers, liveMapServices, playerCraftingRecipes, playerInventory, playerJourney, playerPosition, playerProfile, playerResearchItems, portalGeneratorFuel, portalVehicles, repairVehicleDecay, resetJourneyNode, resetTutorial, runSql, setLandsraadPlayerContribution, tablePreview, teleportOfflinePlayerToCoords, unlockCraftingRecipe, unlockResearchItem, updateInventoryItem, updateLandsraadRewardTier, updateLandsraadTaskGoal, updateLandsraadTermTaskGoals, updateSpicefieldType, updateTableRow, UnsupportedCapabilityError } from "../src/duneDb.js";
 
 test("discovers RedBlink Postgres defaults and env overrides", () => {
   assert.deepEqual(discoverDbConfig({}), {
@@ -80,6 +80,70 @@ test("formats multi-statement database query results using the final row result"
     rowCount: 1,
     command: "SELECT"
   });
+});
+
+test("player portal calculates normal and spice generator fuel with their game durations", async () => {
+  const calls = [];
+  const db = {
+    query: async (text, values) => {
+      calls.push({ text, values });
+      return {
+        rows: [
+          { base_id: "133", generator_type: "fuel", generator_count: 1, fuel_cells: 49, runtime_seconds: 359051 },
+          { base_id: "133", generator_type: "spice", generator_count: 1, fuel_cells: 2, runtime_seconds: 13500 }
+        ]
+      };
+    }
+  };
+
+  const result = await portalGeneratorFuel(db, [133, 200]);
+
+  assert.deepEqual(calls[0].values, [[133, 200], 7200, 5400]);
+  assert.match(calls[0].text, /SpicedFuelCell/);
+  assert.match(calls[0].text, /m_FuelBurningInitialTime/);
+  assert.deepEqual(result.get("133"), {
+    fuelCells: 51,
+    generatorCount: 2,
+    runtimeSeconds: 13500,
+    generators: [
+      {
+        type: "fuel",
+        name: "Fuel-Powered Generator",
+        fuelName: "Fuel Cell",
+        fuelCells: 49,
+        generatorCount: 1,
+        runtimeSeconds: 359051
+      },
+      {
+        type: "spice",
+        name: "Spice-Powered Generator",
+        fuelName: "Spice-infused Fuel Cell",
+        fuelCells: 2,
+        generatorCount: 1,
+        runtimeSeconds: 13500
+      }
+    ]
+  });
+});
+
+test("player portal skips the generator query when there are no bases", async () => {
+  const db = { query: async () => assert.fail("generator query should not run") };
+  assert.deepEqual(await portalGeneratorFuel(db, []), new Map());
+});
+
+test("player portal prefers custom vehicle names and ignores internal labels", async () => {
+  const db = {
+    query: async () => ({ rows: [
+      { id: "183", type: "BP_LightOrnithopter_Choam_C", custom_name: " Scout Ornithopter 2 ", modules: [] },
+      { id: "140", type: "BP_LightOrnithopter_Choam_C", custom_name: "##LightOrnithopterChoam", modules: [] }
+    ] })
+  };
+
+  const result = await portalVehicles(db, [129]);
+
+  assert.equal(result.rows[0].name, "Scout Ornithopter 2");
+  assert.equal(result.rows[1].name, "Scout Ornithopter");
+  assert.equal(Object.hasOwn(result.rows[0], "custom_name"), false);
 });
 
 test("builds table preview query with quoted identifiers and parameters", async () => {
@@ -280,6 +344,50 @@ test("landsraad goal and reward mutations validate and target explicit rows", as
   assert.ok(calls.some((call) => String(call.text).includes("ctid = $4::tid") && call.values.join(",") === "2000,Template,3,(8,1),42,1000"));
   await assert.rejects(() => updateLandsraadRewardTier(db, { rowLocator: "(8,1)", taskId: 42, threshold: 1000, newThreshold: 1000, templateId: "", amount: 1 }), /Reward template id/);
   await assert.rejects(() => updateLandsraadRewardTier(db, { rowLocator: "invalid", taskId: 42, threshold: 1000, newThreshold: 1000, templateId: "Template", amount: 1 }), /valid Landsraad reward row locator/);
+});
+
+test("landsraad milestone preset updates every current task and ordered reward tier transactionally", async () => {
+  const calls = [];
+  const query = async (text, values = []) => {
+    calls.push({ text, values });
+    if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+    if (text.includes("from dune.landsraad_decree_term")) return { rows: [{ term_id: "7" }] };
+    if (text.includes("from (") && text.includes("current_tasks")) return { rows: [{ task_count: 2, minimum_tiers: 3, maximum_tiers: 3 }] };
+    if (text.includes("max(r.threshold)")) return { rows: [{ maximum: "3000" }] };
+    if (text.includes("update dune.landsraad_tasks")) return { rows: [], rowCount: 2 };
+    if (text.includes("with ranked as")) return { rows: [], rowCount: 6 };
+    if (text.includes("update dune.landsraad_task_rewards")) return { rows: [], rowCount: 2 };
+    return { rows: [] };
+  };
+  const db = {
+    query,
+    transaction: async (fn) => fn({ query })
+  };
+
+  const result = await applyLandsraadMilestonePreset(db, { goalAmount: 9000, thresholds: [1500, 3000, 6000] });
+  assert.equal(result.applied, true);
+  assert.equal(result.tasksUpdated, 2);
+  assert.equal(result.rewardsUpdated, 6);
+  assert.ok(calls.some((call) => String(call.text).includes("set goal_amount = $1") && call.values.join(",") === "9000,7"));
+  assert.ok(calls.some((call) => String(call.text).includes("row_number() over (partition by r.task_id order by r.threshold")));
+  assert.deepEqual(calls.filter((call) => String(call.text).includes("and r.threshold = $3")).map((call) => call.values[0]), [1500, 3000, 6000]);
+  assert.ok(calls.every((call) => !String(call.text).includes("set template_id") && !String(call.text).includes("set amount")));
+});
+
+test("landsraad milestone preset waits for matching generated tiers and rejects unordered thresholds", async () => {
+  const db = {
+    query: async (text) => {
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("from dune.landsraad_decree_term")) return { rows: [{ term_id: "8" }] };
+      if (text.includes("current_tasks")) return { rows: [{ task_count: 4, minimum_tiers: 0, maximum_tiers: 2 }] };
+      return { rows: [] };
+    },
+    transaction: async () => assert.fail("transaction should not start before the term is ready")
+  };
+  const waiting = await applyLandsraadMilestonePreset(db, { goalAmount: 5000, thresholds: [1000, 2500, 4000] });
+  assert.equal(waiting.applied, false);
+  assert.match(waiting.reason, /0-2 reward tiers/);
+  await assert.rejects(() => applyLandsraadMilestonePreset(db, { goalAmount: 5000, thresholds: [2500, 1000] }), /must increase/);
 });
 
 test("landsraad player contribution recalculates faction and guild totals in one transaction", async () => {
@@ -908,7 +1016,7 @@ test("list bases returns rows with piece and placeable counts and a total count"
       }
       if (text.includes("from paged p")) {
         return { rows: [
-          { base_id: "1006", name: "Sietch One", base_type: "Sub-Fief", owner_name: "Leader One", map: "TheDeepDesert", x: "100", y: "200", z: "30", total_count: "1", piece_count: "589", placeable_count: "126", shared_with: [{ name: "Ally Two", rank: 2 }] }
+          { base_id: "1006", name: "Sietch One", base_type: "Sub-Fief", owner_name: "Leader One", map: "TheDeepDesert", partition_id: "8", x: "100", y: "200", z: "30", total_count: "1", piece_count: "589", placeable_count: "126", shared_with: [{ name: "Ally Two", rank: 2 }] }
         ] };
       }
       return { rows: [] };
@@ -921,7 +1029,7 @@ test("list bases returns rows with piece and placeable counts and a total count"
   assert.equal(result.totalPieces, 700);
   assert.equal(result.totalPlaceables, 140);
   assert.deepEqual(result.rows, [
-    { base_id: "1006", name: "Sietch One", base_type: "Sub-Fief", owner_name: "Leader One", map: "TheDeepDesert", x: 100, y: 200, z: 30, piece_count: 589, placeable_count: 126, shared_with: [{ name: "Ally Two", rank: 2, label: "Co-Owner" }] }
+    { base_id: "1006", name: "Sietch One", base_type: "Sub-Fief", owner_name: "Leader One", map: "TheDeepDesert", partition_id: 8, x: 100, y: 200, z: 30, piece_count: 589, placeable_count: 126, shared_with: [{ name: "Ally Two", rank: 2, label: "Co-Owner" }] }
   ]);
 });
 
@@ -1257,7 +1365,43 @@ test("player profile includes faction and guild when addon tables are present", 
   };
   const result = await playerProfile(db, "101");
   assert.equal(result.player.faction, "Atreides");
+  assert.equal(result.player.faction_assigned, true);
   assert.equal(result.player.guild, "Water Sellers");
+});
+
+test("player profile uses guild allegiance when personal faction is unassigned", async () => {
+  const db = {
+    query: async (text, values = []) => {
+      if (text.includes("to_regclass")) {
+        const name = String(values[0] || "");
+        return { rows: [{ exists: ["dune.actors", "dune.player_state", "dune.accounts", "dune.player_faction", "dune.player_faction_reputation", "dune.factions", "dune.guild_members", "dune.guilds"].includes(name) }] };
+      }
+      if (text.includes("information_schema.columns")) {
+        const table = String(values[1] || "");
+        if (table === "guild_members") return { rows: ["player_id", "guild_id", "role_id"].map((column_name) => ({ column_name })) };
+        if (table === "guilds") return { rows: ["guild_id", "guild_name", "guild_faction"].map((column_name) => ({ column_name })) };
+        return { rows: [] };
+      }
+      if (text.includes("as fls_id") && text.includes("where a.id = $1")) {
+        return { rows: [{ actor_id: 131, player_pawn_id: 131, account_id: 427, character_name: "Player4", player_controller_id: 129, funcom_id: "FN4", fls_id: "user4", action_player_id: "user4", class: "Foo", map: "SH_Arrakeen", online_status: "Offline" }] };
+      }
+      if (text.includes("from dune.player_faction pf")) return { rows: [] };
+      if (text.includes("from dune.player_faction_reputation pfr")) {
+        return { rows: [{ actor_id: "129", faction_id: "2", faction_name: "Harkonnen", reputation_amount: 100 }] };
+      }
+      if (text.includes("as faction_id") && text.includes("join dune.guilds g") && text.includes("left join dune.factions f")) {
+        return { rows: [{ player_id: "129", faction_id: "1", faction_name: "Atreides" }] };
+      }
+      if (text.includes("from dune.guild_members gm")) {
+        return { rows: [{ player_id: "129", guild_name: "Codex Atreides Test Guild" }] };
+      }
+      return { rows: [] };
+    }
+  };
+  const result = await playerProfile(db, "131");
+  assert.equal(result.player.faction, "Atreides");
+  assert.equal(result.player.faction_assigned, true);
+  assert.equal(result.player.guild, "Codex Atreides Test Guild");
 });
 
 test("player profile falls back to placeholder faction/guild when addon tables are absent", async () => {
@@ -1276,7 +1420,30 @@ test("player profile falls back to placeholder faction/guild when addon tables a
   };
   const result = await playerProfile(db, "101");
   assert.equal(result.player.faction, "Unassigned");
+  assert.equal(result.player.faction_assigned, false);
   assert.equal(result.player.guild, "Unavailable");
+});
+
+test("player profile does not treat existing reputation as a faction assignment", async () => {
+  const db = {
+    query: async (text, values = []) => {
+      if (text.includes("to_regclass")) {
+        const name = String(values[0] || "");
+        return { rows: [{ exists: ["dune.actors", "dune.player_state", "dune.accounts", "dune.player_faction_reputation", "dune.factions"].includes(name) }] };
+      }
+      if (text.includes("information_schema.columns")) return { rows: [] };
+      if (text.includes("as fls_id") && text.includes("where a.id = $1")) {
+        return { rows: [{ actor_id: 101, player_pawn_id: 101, account_id: 201, character_name: "Test One", player_controller_id: 301, funcom_id: "FN1", fls_id: "user1", action_player_id: "user1", class: "Foo", map: "Survival_1", online_status: "Offline" }] };
+      }
+      if (text.includes("from dune.player_faction_reputation pfr")) {
+        return { rows: [{ actor_id: "301", faction_id: "2", faction_name: "Harkonnen", reputation_amount: 100 }] };
+      }
+      return { rows: [] };
+    }
+  };
+  const result = await playerProfile(db, "101");
+  assert.equal(result.player.faction, "Harkonnen");
+  assert.equal(result.player.faction_assigned, false);
 });
 
 test("addon leadership players derive character level from level component XP", async () => {
@@ -2042,6 +2209,47 @@ test("faction mutation clamps reputation and syncs actor component JSON", async 
   assert.equal(result.newValue, 12474);
   assert.ok(calls.some((call) => call.text.includes("set_player_faction_reputation") && call.values[2] === 12474));
   assert.ok(calls.some((call) => call.text.includes("FactionPlayerComponent,m_FactionDataArray")));
+});
+
+test("specialization XP mutation updates fractional level from the XP curve", async () => {
+  const calls = [];
+  let specialization = { player_id: "55", track_type: "Combat", xp_amount: "1599", level: "12" };
+  const db = {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("to_regprocedure")) return { rows: [{ exists: true }] };
+      if (text.includes("enum_range")) return { rows: [{ track_type: "Combat" }] };
+      if (text.includes("from dune.actors a")) {
+        return { rows: [{ actor_id: 123, account_id: 44, controller_id: 55, player_state_id: 5, online_status: "Offline" }] };
+      }
+      if (text.includes("where player_id = $1 and track_type::text = $2") && text.includes("for update")) {
+        return { rows: [{ xp_amount: specialization.xp_amount, level: specialization.level }] };
+      }
+      if (text.includes("player_id::text as player_id") && text.includes("from dune.specialization_tracks")) {
+        return { rows: [{ ...specialization }] };
+      }
+      if (text.includes("dune.set_specialization_xp_and_level")) {
+        specialization = {
+          player_id: String(values[0]),
+          track_type: String(values[1]),
+          xp_amount: String(values[2]),
+          level: String(values[3])
+        };
+        return { rows: [], rowCount: 1 };
+      }
+      return { rows: [] };
+    },
+    transaction: async (fn) => fn(db)
+  };
+
+  const result = await addSpecializationXp(db, 123, { trackType: "Combat", amount: 26 });
+
+  assert.equal(result.xp, 1625);
+  assert.ok(Math.abs(result.level - 12.146067415730338) < 1e-12);
+  const update = calls.find((call) => call.text.includes("dune.set_specialization_xp_and_level"));
+  assert.deepEqual(update.values.slice(0, 3), [55, "Combat", 1625]);
+  assert.ok(Math.abs(update.values[3] - 12.146067415730338) < 1e-12);
 });
 
 test("intel mutation updates TechKnowledge points on the player actor", async () => {
