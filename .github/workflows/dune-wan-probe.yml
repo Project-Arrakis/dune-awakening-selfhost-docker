@@ -1,0 +1,68 @@
+name: Dune WAN Probe
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Test Dune public ports
+        shell: python
+        run: |
+          import socket
+          import time
+          import urllib.request
+
+          HOST = "50.123.64.61"
+          TCP_PORT = 31982
+          UDP_PORTS = [7777, 7778, 7779]
+
+          try:
+              external_ip = urllib.request.urlopen(
+                  "https://api.ipify.org",
+                  timeout=10,
+              ).read().decode().strip()
+              print(f"GitHub runner public IP: {external_ip}")
+          except Exception as exc:
+              print(f"Could not determine runner IP: {exc}")
+
+          print(f"\nTesting TCP {HOST}:{TCP_PORT}")
+
+          tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+          tcp.settimeout(15)
+
+          started = time.monotonic()
+
+          try:
+              tcp.connect((HOST, TCP_PORT))
+              elapsed = time.monotonic() - started
+              print(f"TCP_SUCCESS port={TCP_PORT} elapsed={elapsed:.3f}s")
+          except Exception as exc:
+              elapsed = time.monotonic() - started
+              print(f"TCP_FAILURE port={TCP_PORT} elapsed={elapsed:.3f}s error={exc}")
+              raise
+          finally:
+              tcp.close()
+
+          print("\nSending identifiable UDP probes")
+
+          for port in UDP_PORTS:
+              udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+              payload = (
+                  f"DUNE_GITHUB_WAN_PROBE port={port} "
+                  f"timestamp={time.time()}"
+              ).encode()
+
+              try:
+                  sent = udp.sendto(payload, (HOST, port))
+                  print(f"UDP_SENT port={port} bytes={sent}")
+              finally:
+                  udp.close()
+
+          print("\nProbe complete")
