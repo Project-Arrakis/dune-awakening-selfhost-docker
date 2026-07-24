@@ -13,8 +13,35 @@ ROOT = Path(__file__).resolve().parents[2]
 CONFIG_PATH = Path(os.environ.get("DUNE_USERSETTINGS_CONFIG", str(ROOT / "runtime" / "generated" / "usersettings.json")))
 PROFILE_PATH = Path(os.environ.get("DUNE_GAMEPLAY_PROFILE", str(ROOT / "runtime" / "generated" / "gameplay-profile.ini")))
 SIETCH_CONFIG_PATH = ROOT / "runtime" / "generated" / "sietch-config.json"
+LANDSRAAD_RESTART_MARKER_PATH = Path(os.environ.get("DUNE_LANDSRAAD_RESTART_MARKER", str(ROOT / "runtime" / "generated" / "landsraad-restart-required")))
 
 BUILDING_SETTINGS_SECTION = "/Script/DuneSandbox.BuildingSettings"
+LANDSRAAD_SETTINGS_SECTION = "/Script/DuneSandbox.LandsraadSettings"
+LANDSRAAD_DATA_KEY = "Data"
+LANDSRAAD_DATA_TEMPLATE = '(m_NumberOfWeeksTermRetention=4,m_NumberOfDecreesToNominate=3,m_NumberOfGuildsInHighscoreList=5,m_TermStartedMessage=(Name="LandsraadTermStarted"),m_VotingStartedMessage=(Name="LandsraadVotingStarted"),m_TaskProgressedMessage=(Name="LandsraadProgressNotification"),m_DecreeActivatedMessage=(Name="LandsraadDecreeActivated"),m_bIsPlayerVotingEnabled=True,m_bIsTerritoryControlEnabled=True,m_BoardLayouts=(/Script/DuneSandbox.BoardLayoutDataAsset\'"/Game/Dune/Systems/Landsraad/BoardLayouts/DefaultLandsraadBoardLayout.DefaultLandsraadBoardLayout"\'),m_LandsraadVotingPeriodDurationInSec=118500,m_LandsraadCycleDurationInSeconds=604800,m_LandsraadSuspendedPeriodDurationInSeconds=300,m_FirstTaskRevealDelayFromCompetitionStartInSeconds=0.000000,m_LandsraadRevealedTaskTimestampMinuteDifference=1,m_LandsraadTaskProgressUpdateFrequency=15.000000,m_LandsraadTaskDailyRevealFrequency=25.000000,m_LandsraadProgressFactionBalanceCurve=/Script/Engine.CurveFloat\'"/Game/Dune/Systems/Landsraad/Curve_LandsraadProgressFactionBalanceCurve.Curve_LandsraadProgressFactionBalanceCurve"\',m_LandsraadContractsPerVotingBlock=3,m_LandsraadContractsRepeatCooldownSeconds=14400,m_LandsraadContractsMaxActiveAmount=3,m_LandsraadContractsAbandonCooldownSeconds=2,m_LandsraadContractsDailyBonusPerDay=35,m_LandsraadContractsDailyBonusMax=35,m_LandsraadContractsDailyBonusReferenceTimestamp=1760572800,m_LandsraadContractsDailyBonusRefreshCycleLength=7200,m_LandsraadContractsTimeToShowRewardInteractiveNotification=30.000000,m_LandsraadContractsTimeToShowErrorNotification=70.000000,m_LandsraadContractsTimeToShowPendingClaimRewardTutorial=300,m_LandsraadTaskRewardsData="/Game/Dune/Systems/Landsraad/DA_TaskRewardsDataAsset.DA_TaskRewardsDataAsset",m_LandsraadHouseSelectContractDialogContentWidget="/Game/Dune/GUI/Widgets/Menus/Gameplay/PlayerMenu/Landsraad/W_LandsraadHouseSelectContractDialog.W_LandsraadHouseSelectContractDialog_C",m_LandsraadContractReportDialogContentWidget="/Game/Dune/GUI/Widgets/Menus/Gameplay/PlayerMenu/Landsraad/W_LandsraadContractReportDialog.W_LandsraadContractReportDialog_C",m_LandsraadClaimHouseRewardDialogWidget="/Game/Dune/GUI/Widgets/Menus/Gameplay/PlayerMenu/Landsraad/W_LandsraadHouseRewardClaimDialog.W_LandsraadHouseRewardClaimDialog_C",m_TaskGoalAmount=56000,m_ControlPointsPerCycle=2,m_LandsraadContractsUnlockGameplayTag=(TagName="Journey.LandsraadContractsUnlocked"),m_LandsraadContractsNewMarkerGameplayTags=(GameplayTags=((TagName="DialogueFlags.Factions.LandsraadOnboardingActive"))),m_ControlPointAreaMaterial="/Game/Dune/Systems/Landsraad/Materials/M_LandsRaadControlPointCapsule.M_LandsRaadControlPointCapsule")'
+LANDSRAAD_DATA_FIELDS = {
+    "landsraad_term_retention_weeks": ("m_NumberOfWeeksTermRetention", "4", "integer", 1, 52),
+    "landsraad_decrees_to_nominate": ("m_NumberOfDecreesToNominate", "3", "integer", 1, 20),
+    "landsraad_highscore_guilds": ("m_NumberOfGuildsInHighscoreList", "5", "integer", 1, 100),
+    "landsraad_player_voting_enabled": ("m_bIsPlayerVotingEnabled", "True", "boolean", None, None),
+    "landsraad_territory_control_enabled": ("m_bIsTerritoryControlEnabled", "True", "boolean", None, None),
+    "landsraad_voting_period_seconds": ("m_LandsraadVotingPeriodDurationInSec", "118500", "integer", 60, 6048000),
+    "landsraad_cycle_duration_seconds": ("m_LandsraadCycleDurationInSeconds", "604800", "integer", 3600, 31536000),
+    "landsraad_suspended_period_seconds": ("m_LandsraadSuspendedPeriodDurationInSeconds", "300", "integer", 0, 604800),
+    "landsraad_first_task_reveal_delay_seconds": ("m_FirstTaskRevealDelayFromCompetitionStartInSeconds", "0", "number", 0, 604800),
+    "landsraad_task_reveal_minute_difference": ("m_LandsraadRevealedTaskTimestampMinuteDifference", "1", "integer", 0, 10080),
+    "landsraad_task_progress_update_seconds": ("m_LandsraadTaskProgressUpdateFrequency", "15", "number", 1, 3600),
+    "landsraad_task_daily_reveal_frequency": ("m_LandsraadTaskDailyRevealFrequency", "25", "number", 1, 10080),
+    "landsraad_contracts_per_voting_block": ("m_LandsraadContractsPerVotingBlock", "3", "integer", 1, 100),
+    "landsraad_contract_repeat_cooldown_seconds": ("m_LandsraadContractsRepeatCooldownSeconds", "14400", "integer", 0, 2592000),
+    "landsraad_max_active_contracts": ("m_LandsraadContractsMaxActiveAmount", "3", "integer", 1, 100),
+    "landsraad_contract_abandon_cooldown_seconds": ("m_LandsraadContractsAbandonCooldownSeconds", "2", "integer", 0, 604800),
+    "landsraad_daily_contract_bonus": ("m_LandsraadContractsDailyBonusPerDay", "35", "integer", 0, 1000000),
+    "landsraad_max_daily_contract_bonus": ("m_LandsraadContractsDailyBonusMax", "35", "integer", 0, 1000000),
+    "landsraad_daily_bonus_refresh_seconds": ("m_LandsraadContractsDailyBonusRefreshCycleLength", "7200", "integer", 60, 2592000),
+    "landsraad_task_goal_amount": ("m_TaskGoalAmount", "56000", "integer", 1, 2147483647),
+    "landsraad_control_points_per_cycle": ("m_ControlPointsPerCycle", "2", "integer", 0, 1000000),
+}
 STAKING_EXTENSION_DEFAULT_TIMES = (
     "60.000000",
     "120.000000",
@@ -279,14 +306,28 @@ PARTITION_FIELDS = {
     **MAP_FIELDS,
 }
 
+SCOPED_ENGINE_FIELDS = {
+    key: spec for key, spec in ENGINE_FIELDS.items()
+    if key not in {"port", "igw_port", "server_display_name", "server_login_password"}
+}
+MAP_ENGINE_FIELDS = dict(SCOPED_ENGINE_FIELDS)
 PARTITION_ENGINE_FIELDS = {
     "server_display_name": ENGINE_FIELDS["server_display_name"],
     "server_login_password": ENGINE_FIELDS["server_login_password"],
+    **SCOPED_ENGINE_FIELDS,
 }
 
 PROTECTED_ENGINE_FIELDS = {"server_display_name", "server_login_password"}
 RESET_PRESERVED_ENGINE_FIELDS = {"port", "igw_port", "server_display_name", "server_login_password"}
-PROFILE_HEADER_ORDER = {"Engine": 0, "Global": 1, "Map": 2, "Partition": 3}
+PROFILE_HEADER_ORDER = {
+    "Engine": 0,
+    "Global": 1,
+    "MapEngine": 2,
+    "Map": 3,
+    "PartitionEngine": 4,
+    "Partition": 5,
+}
+ENGINE_PROFILE_SCOPES = {"Engine", "MapEngine", "PartitionEngine"}
 LEGACY_GUILD_FIELD_ALIASES = {
     "guild_creation_cost": "guild_settings_creation_cost",
     "max_guilds_allowed": "guild_settings_max_guilds_allowed",
@@ -417,8 +458,12 @@ def parse_profile_header(header: str) -> dict:
         return {"scope": "Global", "map": "", "partition": "", "ini_section": ":".join(parts[1:])}
     if len(parts) >= 3 and parts[0] == "Map":
         return {"scope": "Map", "map": canonical_map(parts[1]), "partition": "", "ini_section": ":".join(parts[2:])}
+    if len(parts) >= 3 and parts[0] == "MapEngine":
+        return {"scope": "MapEngine", "map": canonical_map(parts[1]), "partition": "", "ini_section": ":".join(parts[2:])}
     if len(parts) >= 4 and parts[0] == "Partition":
         return {"scope": "Partition", "map": canonical_map(parts[1]), "partition": parts[2], "ini_section": ":".join(parts[3:])}
+    if len(parts) >= 4 and parts[0] == "PartitionEngine":
+        return {"scope": "PartitionEngine", "map": canonical_map(parts[1]), "partition": parts[2], "ini_section": ":".join(parts[3:])}
     if len(parts) >= 2 and parts[0] == "Engine":
         return {"scope": "Engine", "map": "", "partition": "", "ini_section": ":".join(parts[1:])}
     return {"scope": "Raw", "map": "", "partition": "", "ini_section": header}
@@ -431,21 +476,32 @@ def profile_header(scope: str, section: str, map_name: str = "", partition_id: s
         return f"Global:{section}"
     if scope == "map":
         return f"Map:{canonical_map(map_name)}:{section}"
+    if scope == "map_engine":
+        return f"MapEngine:{canonical_map(map_name)}:{section}"
     if scope == "partition":
         return f"Partition:{canonical_map(map_name)}:{partition_id}:{section}"
+    if scope == "partition_engine":
+        return f"PartitionEngine:{canonical_map(map_name)}:{partition_id}:{section}"
     raise SystemExit(f"Unknown profile scope: {scope}")
 
 
 def find_profile_section(profile: dict, scope: str, section: str, map_name: str = "", partition_id: str = "", create: bool = False) -> dict | None:
-    target_scope = {"engine": "Engine", "global": "Global", "map": "Map", "partition": "Partition"}[scope]
+    target_scope = {
+        "engine": "Engine",
+        "global": "Global",
+        "map": "Map",
+        "map_engine": "MapEngine",
+        "partition": "Partition",
+        "partition_engine": "PartitionEngine",
+    }[scope]
     target_map = canonical_map(map_name) if map_name else ""
     target_partition = str(partition_id or "")
     for block in profile.get("sections", []):
         if block.get("scope") != target_scope or block.get("ini_section") != section:
             continue
-        if target_scope == "Map" and block.get("map") != target_map:
+        if target_scope in {"Map", "MapEngine"} and block.get("map") != target_map:
             continue
-        if target_scope == "Partition" and (block.get("map") != target_map or str(block.get("partition", "")) != target_partition):
+        if target_scope in {"Partition", "PartitionEngine"} and (block.get("map") != target_map or str(block.get("partition", "")) != target_partition):
             continue
         return block
     if not create:
@@ -473,6 +529,110 @@ def split_ini_assignment(line: str) -> tuple[str, str, str] | None:
         prefix = left[0]
         left = left[1:]
     return prefix, left.strip(), right.strip()
+
+
+def split_unreal_struct(value: str) -> list[str]:
+    raw = value.strip()
+    if raw.startswith("(") and raw.endswith(")"):
+        raw = raw[1:-1]
+    parts: list[str] = []
+    start = 0
+    depth = 0
+    quote = ""
+    escaped = False
+    for index, char in enumerate(raw):
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\" and quote:
+            escaped = True
+            continue
+        if quote:
+            if char == quote:
+                quote = ""
+            continue
+        if char in {'"', "'"}:
+            quote = char
+        elif char == "(":
+            depth += 1
+        elif char == ")":
+            depth = max(0, depth - 1)
+        elif char == "," and depth == 0:
+            parts.append(raw[start:index].strip())
+            start = index + 1
+    tail = raw[start:].strip()
+    if tail:
+        parts.append(tail)
+    return parts
+
+
+def unreal_struct_values(value: str) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for part in split_unreal_struct(value):
+        if "=" not in part:
+            continue
+        key, member_value = part.split("=", 1)
+        values[key.strip()] = member_value.strip()
+    return values
+
+
+def update_unreal_struct(value: str, member: str, member_value: str) -> str:
+    parts = split_unreal_struct(value)
+    updated = False
+    for index, part in enumerate(parts):
+        if "=" not in part:
+            continue
+        key, _ = part.split("=", 1)
+        if key.strip() == member:
+            parts[index] = f"{member}={member_value}"
+            updated = True
+            break
+    if not updated:
+        parts.append(f"{member}={member_value}")
+    return f"({','.join(parts)})"
+
+
+def normalize_landsraad_data_value(field_id: str, value: str) -> str:
+    _, _, field_type, minimum, maximum = LANDSRAAD_DATA_FIELDS[field_id]
+    raw = str(value).strip()
+    if field_type == "boolean":
+        if raw.lower() not in {"true", "false", "1", "0", "yes", "no", "on", "off"}:
+            raise SystemExit(f"{field_id} must be True or False.")
+        return "True" if truthy(raw) else "False"
+    try:
+        number = int(raw) if field_type == "integer" else float(raw)
+    except ValueError as exc:
+        raise SystemExit(f"{field_id} must be a valid number.") from exc
+    if minimum is not None and number < minimum:
+        raise SystemExit(f"{field_id} must be at least {minimum}.")
+    if maximum is not None and number > maximum:
+        raise SystemExit(f"{field_id} must be at most {maximum}.")
+    if field_type == "integer":
+        return str(number)
+    return format(number, ".6f").rstrip("0").rstrip(".") or "0"
+
+
+def landsraad_data_for_scope(profile: dict, scope: str, map_name: str = "", partition_id: str = "") -> str:
+    value = profile_get_key(profile, scope, LANDSRAAD_SETTINGS_SECTION, LANDSRAAD_DATA_KEY, map_name, partition_id)
+    if not value:
+        return LANDSRAAD_DATA_TEMPLATE
+    current_parts = split_unreal_struct(value)
+    current_members = unreal_struct_values(value)
+    for part in split_unreal_struct(LANDSRAAD_DATA_TEMPLATE):
+        if "=" not in part:
+            continue
+        member = part.split("=", 1)[0].strip()
+        if member not in current_members:
+            current_parts.append(part)
+    return f"({','.join(current_parts)})"
+
+
+def landsraad_virtual_values(data: str) -> dict[str, str]:
+    members = unreal_struct_values(data)
+    return {
+        field_id: members.get(member, default)
+        for field_id, (member, default, _field_type, _minimum, _maximum) in LANDSRAAD_DATA_FIELDS.items()
+    }
 
 
 def profile_get_key(profile: dict, scope: str, section: str, key: str, map_name: str = "", partition_id: str = "") -> str | None:
@@ -654,7 +814,7 @@ def seed_profile_from_legacy_config() -> dict:
         map_name = canonical_map(str(entry.get("map") or "Survival_1"))
         for field_id, value in entry.get("userengine", {}).items():
             if field_id in PARTITION_ENGINE_FIELDS:
-                set_profile_field(profile, "partition", map_name, str(partition_id), field_id, str(value))
+                set_profile_field(profile, "partition_engine", map_name, str(partition_id), field_id, str(value))
         for field_id, value in entry.get("usergame", {}).items():
             set_profile_field(profile, "partition", map_name, str(partition_id), field_id, str(value))
     return profile
@@ -876,6 +1036,20 @@ def validate_profile_port_ranges(profile: dict) -> None:
 
 
 def set_profile_field(profile: dict, scope: str, map_name: str, partition_id: str, field_id: str, value: str) -> None:
+    if field_id in LANDSRAAD_DATA_FIELDS:
+        if scope != "global":
+            raise SystemExit("Landsraad schedule and contract modifiers must use global scope.")
+        member = LANDSRAAD_DATA_FIELDS[field_id][0]
+        normalized = normalize_landsraad_data_value(field_id, value)
+        current = landsraad_data_for_scope(profile, "global")
+        profile_set_key(
+            profile,
+            "global",
+            LANDSRAAD_SETTINGS_SECTION,
+            LANDSRAAD_DATA_KEY,
+            update_unreal_struct(current, member, normalized),
+        )
+        return
     if scope == "engine":
         if field_id not in ENGINE_FIELDS:
             raise SystemExit(f"Unknown engine field: {field_id}")
@@ -884,6 +1058,34 @@ def set_profile_field(profile: dict, scope: str, map_name: str, partition_id: st
         spec = ENGINE_FIELDS[field_id]
         if spec[0] and spec[1]:
             profile_set_key(profile, "engine", spec[0], spec[1], value)
+        return
+
+    if scope == "map_engine":
+        if field_id not in MAP_ENGINE_FIELDS:
+            raise SystemExit(f"Unknown map engine field: {field_id}")
+        spec = MAP_ENGINE_FIELDS[field_id]
+        if spec[0] and spec[1]:
+            if value == "":
+                profile_remove_key(profile, "map_engine", spec[0], spec[1], map_name)
+            else:
+                profile_set_key(profile, "map_engine", spec[0], spec[1], value, map_name)
+        return
+
+    if scope == "partition_engine":
+        if field_id not in PARTITION_ENGINE_FIELDS:
+            raise SystemExit(f"Unknown partition engine field: {field_id}")
+        target_map = canonical_map(map_name or "Survival_1")
+        target_partition = str(partition_id or "").strip()
+        if not target_partition:
+            raise SystemExit("Partition engine save requires a partition id.")
+        spec = PARTITION_ENGINE_FIELDS[field_id]
+        if spec[0] and spec[1]:
+            if field_id in {"server_display_name", "server_login_password"}:
+                profile_remove_key(profile, "partition", spec[0], spec[1], target_map, target_partition)
+            if value == "":
+                profile_remove_key(profile, "partition_engine", spec[0], spec[1], target_map, target_partition)
+            else:
+                profile_set_key(profile, "partition_engine", spec[0], spec[1], value, target_map, target_partition)
         return
 
     if scope == "global":
@@ -907,20 +1109,12 @@ def set_profile_field(profile: dict, scope: str, map_name: str, partition_id: st
         return
 
     if scope == "partition":
-        if field_id not in PARTITION_FIELDS and field_id not in PARTITION_ENGINE_FIELDS:
+        if field_id not in PARTITION_FIELDS:
             raise SystemExit(f"Unknown partition field: {field_id}")
         target_map = canonical_map(map_name or "Survival_1")
         target_partition = str(partition_id or "").strip()
         if not target_partition:
             raise SystemExit("Partition save requires a partition id.")
-        if field_id in PARTITION_ENGINE_FIELDS:
-            spec = PARTITION_ENGINE_FIELDS[field_id]
-            if spec[0] and spec[1]:
-                if value == "":
-                    profile_remove_key(profile, "partition", spec[0], spec[1], target_map, target_partition)
-                else:
-                    profile_set_key(profile, "partition", spec[0], spec[1], value, target_map, target_partition)
-            return
         if field_id == "partition_pvp_enabled":
             profile_remove_key(profile, "partition", "/Script/DuneSandbox.PvpPveSettings", "m_PvpEnabledPartitions", target_map, target_partition, {"+"})
             if truthy(value):
@@ -968,6 +1162,8 @@ def profile_map_values(profile: dict, map_name: str) -> dict[str, str]:
         map_value = profile_get_key(profile, "map", section, ini_key, target_map)
         if map_value is not None:
             values[key] = map_value
+    global_data = profile_get_key(profile, "global", LANDSRAAD_SETTINGS_SECTION, LANDSRAAD_DATA_KEY)
+    values.update(landsraad_virtual_values(global_data or LANDSRAAD_DATA_TEMPLATE))
     return sync_legacy_guild_values(values)
 
 
@@ -980,6 +1176,8 @@ def profile_global_values(profile: dict) -> dict[str, str]:
         global_value = profile_get_key(profile, "global", section, ini_key)
         if global_value is not None:
             values[key] = global_value
+    global_data = profile_get_key(profile, "global", LANDSRAAD_SETTINGS_SECTION, LANDSRAAD_DATA_KEY)
+    values.update(landsraad_virtual_values(global_data or LANDSRAAD_DATA_TEMPLATE))
     return sync_legacy_guild_values(values)
 
 
@@ -1025,26 +1223,53 @@ def merged_partition_values(config: dict, map_name: str, partition_id: str) -> d
     return profile_partition_values(read_profile(), map_name, partition_id)
 
 
+def profile_map_engine_values(profile: dict, map_name: str) -> dict[str, str]:
+    target_map = canonical_map(map_name)
+    values = profile_engine_values(profile)
+    for key, spec in MAP_ENGINE_FIELDS.items():
+        section, ini_key, _ = spec
+        if not section or not ini_key:
+            continue
+        map_value = profile_get_key(profile, "map_engine", section, ini_key, target_map)
+        if map_value is not None:
+            values[key] = map_value
+    return values
+
+
 def profile_partition_engine_values(profile: dict, map_name: str, partition_id: str) -> dict[str, str]:
     target_map = canonical_map(map_name)
     target_partition = str(partition_id)
-    values = profile_engine_values(profile)
+    values = profile_map_engine_values(profile, target_map)
     for key, spec in PARTITION_ENGINE_FIELDS.items():
         section, ini_key, _ = spec
         if not section or not ini_key:
             continue
-        partition_value = profile_get_key(profile, "partition", section, ini_key, target_map, target_partition)
+        partition_value = profile_get_key(profile, "partition_engine", section, ini_key, target_map, target_partition)
+        # Preserve existing per-Sietch names and passwords written before scoped engine profiles existed.
+        if partition_value is None and key in {"server_display_name", "server_login_password"}:
+            partition_value = profile_get_key(profile, "partition", section, ini_key, target_map, target_partition)
         if partition_value is not None:
             values[key] = partition_value
     return values
+
+
+def merged_map_engine_values(config: dict, map_name: str) -> dict[str, str]:
+    return profile_map_engine_values(read_profile(), map_name)
 
 
 def merged_partition_engine_values(config: dict, map_name: str, partition_id: str) -> dict[str, str]:
     return profile_partition_engine_values(read_profile(), map_name, partition_id)
 
 
-def print_rows(rows: dict[str, str], order: dict[str, tuple[str | None, str | None, str]]) -> int:
+def print_rows(rows: dict[str, str], order: dict) -> int:
     for key in order:
+        print(f"{key}\t{rows.get(key, '')}")
+    return 0
+
+
+def print_usergame_rows(rows: dict[str, str], order: dict) -> int:
+    print_rows(rows, order)
+    for key in LANDSRAAD_DATA_FIELDS:
         print(f"{key}\t{rows.get(key, '')}")
     return 0
 
@@ -1081,6 +1306,7 @@ def metadata() -> int:
 
     payload = {
         "engine": [row("engine", key, spec) for key, spec in ENGINE_FIELDS.items()],
+        "mapEngine": [row("mapEngine", key, spec) for key, spec in MAP_ENGINE_FIELDS.items()],
         "game": [row("game", key, spec) for key, spec in MAP_FIELDS.items()],
         "partition": [row("partition", key, spec) for key, spec in PARTITION_FIELDS.items()],
         "partitionEngine": [row("partitionEngine", key, spec) for key, spec in PARTITION_ENGINE_FIELDS.items()],
@@ -1122,7 +1348,7 @@ def set_partition_engine_field(map_name: str, partition_id: str, field_id: str, 
     if field_id not in PARTITION_ENGINE_FIELDS:
         raise SystemExit(f"Unknown partition engine field: {field_id}")
     profile = read_profile()
-    set_profile_field(profile, "partition", map_name, str(partition_id), field_id, value)
+    set_profile_field(profile, "partition_engine", map_name, str(partition_id), field_id, value)
     write_profile(profile)
     return 0
 
@@ -1142,6 +1368,19 @@ def reset_engine_gameplay() -> int:
             continue
         if spec[0] and spec[1]:
             profile_remove_key(profile, "engine", spec[0], spec[1])
+    write_profile(profile)
+    return 0
+
+
+def reset_scoped_engine(map_name: str, partition_id: str | None = None) -> int:
+    profile = read_profile()
+    target_map = canonical_map(map_name)
+    scope = "partition_engine" if partition_id else "map_engine"
+    fields = PARTITION_ENGINE_FIELDS if partition_id else MAP_ENGINE_FIELDS
+    target_partition = str(partition_id or "")
+    for spec in fields.values():
+        if spec[0] and spec[1]:
+            profile_remove_key(profile, scope, spec[0], spec[1], target_map, target_partition)
     write_profile(profile)
     return 0
 
@@ -1311,13 +1550,24 @@ def known_keys_by_section(fields: dict[str, tuple[str | None, str | None, str | 
 
 
 def append_profile_unknown_lines(target: dict[str, list[str]], profile: dict, scopes: list[tuple[str, str, str]], known: dict[str, set[str]]) -> None:
+    scope_names = {
+        "engine": "Engine",
+        "global": "Global",
+        "map": "Map",
+        "map_engine": "MapEngine",
+        "partition": "Partition",
+        "partition_engine": "PartitionEngine",
+    }
     for scope, map_name, partition_id in scopes:
         for block in profile.get("sections", []):
-            if block.get("scope") != {"engine": "Engine", "global": "Global", "map": "Map", "partition": "Partition"}[scope]:
+            if block.get("scope") != scope_names[scope]:
                 continue
-            if scope == "map" and block.get("map") != canonical_map(map_name):
+            if scope in {"map", "map_engine"} and block.get("map") != canonical_map(map_name):
                 continue
-            if scope == "partition" and (block.get("map") != canonical_map(map_name) or str(block.get("partition", "")) != str(partition_id)):
+            if scope in {"partition", "partition_engine"} and (
+                block.get("map") != canonical_map(map_name)
+                or str(block.get("partition", "")) != str(partition_id)
+            ):
                 continue
             section = str(block.get("ini_section", ""))
             for raw in block.get("lines", []):
@@ -1342,7 +1592,12 @@ def render_ini_sections(section_lines: dict[str, list[str]], leading_comments: l
 
 
 def compiled_userengine_ini(profile: dict, map_name: str = "", partition_id: str | None = None) -> str:
-    values = profile_partition_engine_values(profile, map_name, str(partition_id)) if map_name and partition_id else profile_engine_values(profile)
+    if map_name and partition_id:
+        values = profile_partition_engine_values(profile, map_name, str(partition_id))
+    elif map_name:
+        values = profile_map_engine_values(profile, map_name)
+    else:
+        values = profile_engine_values(profile)
     section_lines: dict[str, list[str]] = {}
     for field_id, spec in ENGINE_FIELDS.items():
         section, key, default = spec
@@ -1354,10 +1609,15 @@ def compiled_userengine_ini(profile: dict, map_name: str = "", partition_id: str
         if field_id in {"server_display_name", "server_login_password"} and value:
             value = quote_ini_string(value)
         section_lines.setdefault(section, []).append(f"{key}={value}")
-    append_profile_unknown_lines(section_lines, profile, [("engine", "", "")], known_keys_by_section(ENGINE_FIELDS))
+    scopes = [("engine", "", "")]
+    if map_name:
+        scopes.append(("map_engine", canonical_map(map_name), ""))
+    if map_name and partition_id:
+        scopes.append(("partition_engine", canonical_map(map_name), str(partition_id)))
+    append_profile_unknown_lines(section_lines, profile, scopes, known_keys_by_section(ENGINE_FIELDS))
     return render_ini_sections(section_lines, [
         "; UserEngine.ini managed by Docker.",
-        "; Values here apply to all maps unless overridden by UserEngine.ini.",
+        "; Global values are resolved with map and partition overrides for this server.",
     ])
 
 
@@ -1547,14 +1807,20 @@ def bulk_save(scope: str, map_name: str, partition_id: str, encoded_values: str)
     target_map = canonical_map(map_name or "Survival_1")
     target_partition = str(partition_id or "").strip()
     profile = read_profile()
+    landsraad_changed = False
     for field_id, value in values.items():
         if not isinstance(field_id, str):
             raise SystemExit("Settings field names must be strings.")
         serialized = str(value)
         if "\x00" in serialized:
             raise SystemExit(f"{field_id} contains an invalid NUL character.")
+        landsraad_changed = landsraad_changed or field_id == "landsraad_enabled" or field_id in LANDSRAAD_DATA_FIELDS
         if scope == "engine":
             set_profile_field(profile, "engine", "", "", field_id, serialized)
+        elif scope == "mapEngine":
+            set_profile_field(profile, "map_engine", target_map, "", field_id, serialized)
+        elif scope == "partitionEngine":
+            set_profile_field(profile, "partition_engine", target_map, target_partition, field_id, serialized)
         elif scope == "global":
             set_profile_field(profile, "global", "", "", field_id, serialized)
         elif scope == "partition":
@@ -1566,6 +1832,8 @@ def bulk_save(scope: str, map_name: str, partition_id: str, encoded_values: str)
     if scope == "engine":
         validate_profile_port_ranges(profile)
     write_profile(profile)
+    if landsraad_changed:
+        atomic_write_text(LANDSRAAD_RESTART_MARKER_PATH, "Landsraad UserGame settings changed.\n", 0o664)
     return 0
 
 
@@ -1594,7 +1862,7 @@ def profile_game_text() -> str:
             "; Edit this single file for all map and partition UserGame settings.",
             "; Docker applies the correct values to each server when maps start or restart.",
         ],
-        "sections": [block for block in profile.get("sections", []) if block.get("scope") != "Engine"],
+        "sections": [block for block in profile.get("sections", []) if block.get("scope") not in ENGINE_PROFILE_SCOPES],
     }
     return serialize_profile(game_profile)
 
@@ -1603,13 +1871,28 @@ def profile_engine_text() -> str:
     return userengine_ini_text(profile_engine_values(read_profile()))
 
 
+def replace_profile_game_sections(profile: dict, incoming: dict) -> None:
+    profile["preamble"] = incoming.get("preamble", [])
+    profile["sections"] = [
+        block for block in profile.get("sections", [])
+        if block.get("scope") in ENGINE_PROFILE_SCOPES
+    ] + incoming.get("sections", [])
+
+
+def replace_profile_engine_sections(profile: dict, engine_sections: list[dict]) -> None:
+    profile["sections"] = [
+        block for block in profile.get("sections", [])
+        if block.get("scope") != "Engine"
+    ] + engine_sections
+
+
 def profile_game_write_encoded(encoded_content: str) -> int:
     try:
         content = b64decode(encoded_content.encode("ascii")).decode("utf-8")
     except ValueError as exc:
         raise SystemExit("Invalid UserGame profile payload.") from exc
     incoming = parse_profile_text(content)
-    if any(block.get("scope") == "Engine" for block in incoming.get("sections", [])):
+    if any(block.get("scope") in ENGINE_PROFILE_SCOPES for block in incoming.get("sections", [])):
         raise SystemExit("UserGame.ini cannot contain Engine scoped sections.")
     for block in incoming.get("sections", []):
         if block.get("scope") == "Raw":
@@ -1622,8 +1905,7 @@ def profile_game_write_encoded(encoded_content: str) -> int:
                 "ini_section": section,
             })
     profile = read_profile()
-    profile["preamble"] = incoming.get("preamble", [])
-    profile["sections"] = [block for block in profile.get("sections", []) if block.get("scope") == "Engine"] + incoming.get("sections", [])
+    replace_profile_game_sections(profile, incoming)
     write_profile(profile)
     return 0
 
@@ -1654,7 +1936,7 @@ def profile_engine_write_encoded(encoded_content: str) -> int:
     profile = read_profile()
     incoming = {"preamble": [], "sections": engine_sections}
     validate_profile_port_ranges(incoming)
-    profile["sections"] = [block for block in profile.get("sections", []) if block.get("scope") != "Engine"] + incoming.get("sections", [])
+    replace_profile_engine_sections(profile, incoming.get("sections", []))
     write_profile(profile)
     return 0
 
@@ -1669,9 +1951,20 @@ UnknownGlobal=abc
 [Map:Survival_1:/Script/DuneSandbox.DuneGameMode]
 m_GlobalXPMultiplier=2.0
 
+[MapEngine:Survival_1:ConsoleVariables]
+Sandstorm.Enabled=0
+CustomMapEngineValue=keep-map
+
 [Partition:Survival_1:3:/Script/DuneSandbox.PvpPveSettings]
 +m_PvpEnabledPartitions=3
 CustomPartitionKey=True
+
+[Partition:Survival_1:3:ConsoleVariables]
+Bgd.ServerLoginPassword="legacy-password"
+
+[PartitionEngine:Survival_1:3:ConsoleVariables]
+sandworm.dune.Enabled=0
+CustomPartitionEngineValue=keep-partition
 
 [Engine:ConsoleVariables]
 Dune.GlobalMiningOutputMultiplier=1.0
@@ -1687,8 +1980,16 @@ Dune.GlobalVehicleMiningOutputMultiplier=10
         raise SystemExit("Profile round trip dropped unknown keys.")
     if profile_map_values(reparsed, "Survival_1")["global_xp_multiplier"] != "2.0":
         raise SystemExit("Map override did not win over global profile value.")
+    if profile_partition_engine_values(reparsed, "Survival_1", "3").get("server_login_password") != "legacy-password":
+        raise SystemExit("Legacy partition password did not feed scoped UserEngine values.")
+    identity_profile = parse_profile_text(serialized)
+    set_profile_field(identity_profile, "partition_engine", "Survival_1", "3", "server_login_password", "")
+    if "Bgd.ServerLoginPassword=" in serialize_profile(identity_profile):
+        raise SystemExit("Clearing a partition password left a legacy value behind.")
     compiled_game = compiled_usergame_ini(reparsed, "Survival_1", "3")
     compiled_engine = compiled_userengine_ini(reparsed)
+    compiled_map_engine = compiled_userengine_ini(reparsed, "Survival_1")
+    compiled_partition_engine = compiled_userengine_ini(reparsed, "Survival_1", "3")
     if "[Global:" in compiled_game or "[Map:" in compiled_game or "[Partition:" in compiled_game or "[Engine:" in compiled_engine:
         raise SystemExit("Compiled runtime INI contains scoped profile headers.")
     if "+m_PvpEnabledPartitions=3" not in compiled_game:
@@ -1699,6 +2000,16 @@ Dune.GlobalVehicleMiningOutputMultiplier=10
         raise SystemExit("Compiled UserGame dropped unknown profile lines.")
     if "UnknownEngine=xyz" not in compiled_engine:
         raise SystemExit("Compiled UserEngine dropped unknown profile lines.")
+    if "Sandstorm.Enabled=1" not in compiled_engine or "Sandstorm.Enabled=0" not in compiled_map_engine:
+        raise SystemExit("Map UserEngine override did not win over the global value.")
+    if "sandworm.dune.Enabled=0" not in compiled_partition_engine:
+        raise SystemExit("Partition UserEngine override was not compiled.")
+    if "CustomMapEngineValue=keep-map" not in compiled_map_engine:
+        raise SystemExit("Advanced map UserEngine value was not compiled.")
+    if "CustomPartitionEngineValue=keep-partition" not in compiled_partition_engine:
+        raise SystemExit("Advanced partition UserEngine value was not compiled.")
+    if "Sandstorm.Enabled=" in compiled_game or "sandworm.dune.Enabled=" in compiled_game:
+        raise SystemExit("Scoped UserEngine values leaked into UserGame.ini.")
     client_game = client_game_ini(reparsed, "Survival_1", "3")
     if "[Global:" in client_game or "[Map:" in client_game or "[Partition:" in client_game:
         raise SystemExit("Client Game.ini export contains scoped Docker profile headers.")
@@ -1721,6 +2032,43 @@ Dune.GlobalVehicleMiningOutputMultiplier=10
         raise SystemExit("Base backup tool time restriction did not feed interactive map values.")
     if "m_BaseBackupToolTimeRestrictionInSeconds=60" not in compiled_usergame_ini(reparsed, "Survival_1", "3"):
         raise SystemExit("Base backup tool time restriction did not compile from interactive profile update.")
+    set_profile_field(reparsed, "global", "", "", "landsraad_cycle_duration_seconds", "1209600")
+    set_profile_field(reparsed, "global", "", "", "landsraad_player_voting_enabled", "False")
+    landsraad_data = profile_get_key(reparsed, "global", LANDSRAAD_SETTINGS_SECTION, LANDSRAAD_DATA_KEY) or ""
+    landsraad_members = unreal_struct_values(landsraad_data)
+    if landsraad_members.get("m_LandsraadCycleDurationInSeconds") != "1209600":
+        raise SystemExit("Landsraad cycle duration did not update the managed Data structure.")
+    if landsraad_members.get("m_bIsPlayerVotingEnabled") != "False":
+        raise SystemExit("Landsraad voting toggle did not update the managed Data structure.")
+    if "m_LandsraadTaskRewardsData" not in landsraad_members or "m_ControlPointAreaMaterial" not in landsraad_members:
+        raise SystemExit("Landsraad modifier update dropped required internal Data members.")
+    if profile_global_values(reparsed)["landsraad_cycle_duration_seconds"] != "1209600":
+        raise SystemExit("Managed Landsraad Data did not feed global modifier values.")
+
+    advanced_game = parse_profile_text(serialize_profile({
+        "preamble": ["; Advanced UserGame round trip"],
+        "sections": [
+            block for block in reparsed.get("sections", [])
+            if block.get("scope") not in ENGINE_PROFILE_SCOPES
+        ],
+    }))
+    replace_profile_game_sections(reparsed, advanced_game)
+    advanced_engine = parse_profile_text("[Engine:ConsoleVariables]\nUnknownEngine=still-here\n")
+    replace_profile_engine_sections(reparsed, advanced_engine.get("sections", []))
+    advanced_round_trip = serialize_profile(reparsed)
+    if "UnknownGlobal=abc" not in advanced_round_trip or "CustomPartitionKey=True" not in advanced_round_trip:
+        raise SystemExit("Advanced INI round trip dropped existing UserGame values.")
+    if "CustomMapEngineValue=keep-map" not in advanced_round_trip or "CustomPartitionEngineValue=keep-partition" not in advanced_round_trip:
+        raise SystemExit("Advanced INI round trip dropped scoped UserEngine values.")
+    preserved_landsraad = profile_get_key(reparsed, "global", LANDSRAAD_SETTINGS_SECTION, LANDSRAAD_DATA_KEY) or ""
+    if unreal_struct_values(preserved_landsraad).get("m_LandsraadCycleDurationInSeconds") != "1209600":
+        raise SystemExit("Advanced INI round trip dropped the Landsraad Data structure.")
+    try:
+        set_profile_field(reparsed, "global", "", "", "landsraad_cycle_duration_seconds", "59")
+        raise SystemExit("Invalid Landsraad cycle duration was accepted.")
+    except SystemExit as exc:
+        if str(exc) == "Invalid Landsraad cycle duration was accepted.":
+            raise
     building_defaults = profile_map_values(parse_profile_text(""), "Survival_1")
     expected_building_defaults = {
         "build_range": "3000.000000",
@@ -1867,7 +2215,7 @@ def materialize_current_runtime_files() -> int:
     for engine_path in game_root.glob("*/Saved/UserSettings/UserEngine.ini"):
         if engine_path.resolve() in expected_engine_paths:
             continue
-        for key in PARTITION_ENGINE_FIELDS:
+        for key in ("server_display_name", "server_login_password"):
             spec = ENGINE_FIELDS[key]
             remove_ini_key(engine_path, spec[0], spec[1])
     return 0
@@ -2186,12 +2534,14 @@ def main(argv: list[str]) -> int:
         return profile_selftest()
     if command == "engine-values":
         return print_rows(merged_engine_values(config), ENGINE_FIELDS)
+    if command == "map-engine-values" and len(argv) == 3:
+        return print_rows(merged_map_engine_values(config, canonical_map(argv[2])), MAP_ENGINE_FIELDS)
     if command == "global-values":
-        return print_rows(merged_global_values(config), MAP_FIELDS)
+        return print_usergame_rows(merged_global_values(config), MAP_FIELDS)
     if command == "map-values" and len(argv) == 3:
-        return print_rows(merged_map_values(config, canonical_map(argv[2])), MAP_FIELDS)
+        return print_usergame_rows(merged_map_values(config, canonical_map(argv[2])), MAP_FIELDS)
     if command == "partition-values" and len(argv) == 4:
-        return print_rows(merged_partition_values(config, canonical_map(argv[2]), argv[3]), PARTITION_FIELDS)
+        return print_usergame_rows(merged_partition_values(config, canonical_map(argv[2]), argv[3]), PARTITION_FIELDS)
     if command == "partition-combat-state" and len(argv) == 4:
         return partition_combat_state_command(argv[2], argv[3])
     if command == "partition-engine-values" and len(argv) == 4:
@@ -2208,6 +2558,10 @@ def main(argv: list[str]) -> int:
         return reset_all()
     if command == "reset-engine-gameplay":
         return reset_engine_gameplay()
+    if command == "reset-map-engine" and len(argv) == 3:
+        return reset_scoped_engine(argv[2])
+    if command == "reset-partition-engine" and len(argv) == 4:
+        return reset_scoped_engine(argv[2], argv[3])
     if command == "reset-global-game":
         return reset_global_game()
     if command == "reset-game" and len(argv) == 3:
