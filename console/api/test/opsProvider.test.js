@@ -224,23 +224,34 @@ test("opsSocProvider returns a real, non-placeholder shape reflecting the in-mem
   assert.ok(["Unknown", "Healthy", "Degraded"].includes(response.result.platformHealth));
 });
 
-// The two OPS domains with no backing query anywhere in this codebase
-// (prometheus), or an unresolved privacy consideration blocking a
-// wire-up (location — see dune-ops-observability-addon's
-// docs/tabs/LOCATION.md), must remain unchanged "status: planned"
-// placeholders — do not fabricate data for these.
-test("the two untouched OPS providers still return status: planned placeholders", async () => {
+// The one remaining OPS domain with an unresolved privacy consideration
+// blocking a wire-up (location — see dune-ops-observability-addon's
+// docs/tabs/LOCATION.md) must remain unchanged "status: planned" — do
+// not fabricate data for it.
+test("the one untouched OPS provider still returns a status: planned placeholder", async () => {
   const db = mockDb();
-  for (const [provider, domain] of [
-    [opsLocationProvider, "location"],
-    [opsPrometheusProvider, "prometheus"]
-  ]) {
-    const response = await provider({}, db);
-    assert.equal(response.ok, true);
-    assert.equal(response.status, "planned");
-    assert.equal(response.domain, domain);
-    assert.deepEqual(response.summary, {});
-  }
+  const response = await opsLocationProvider({}, db);
+  assert.equal(response.ok, true);
+  assert.equal(response.status, "planned");
+  assert.equal(response.domain, "location");
+  assert.deepEqual(response.summary, {});
+});
+
+// opsPrometheusProvider is real (an HTTP integration against an optional,
+// opt-in metrics stack), but this test environment does not have that
+// stack running, so it correctly exercises the "not running" precondition
+// path — a real, specific reason, distinct from a generically
+// unimplemented route. Directly verified against a live, running instance
+// of this exact metrics stack (both the "not running" and the real-data
+// paths) before this test was written — see duneDb.js's
+// addonOpsPrometheusHealth() for that verification.
+test("opsPrometheusProvider reports the real 'metrics stack not running' state, not a placeholder, when the optional stack isn't running", async () => {
+  const db = mockDb();
+  const response = await opsPrometheusProvider({}, db);
+  assert.equal(response.ok, true);
+  assert.equal(response.result.status, "planned");
+  assert.equal(response.result.domain, "prometheus");
+  assert.equal(response.result.reason, "metrics_stack_not_running");
 });
 
 test("opsDashboardProvider aggregates a mix of real data and planned placeholders", async () => {
@@ -288,7 +299,15 @@ test("opsDashboardProvider aggregates a mix of real data and planned placeholder
   assert.equal(response.dashboard.inventory.result.totalCrafted, null);
   assert.equal(response.dashboard.soc.ok, true);
   assert.equal(typeof response.dashboard.soc.result.bridgeRequests, "number");
-  // Still-planned placeholders for the untouched two
+  // Still-planned placeholder for the one untouched domain. Note
+  // opsLocationProvider returns opsPlaceholder() directly (unwrapped),
+  // while opsPrometheusProvider wraps addonOpsPrometheusHealth()'s own
+  // "not running" shape in { ok: true, result } like every other real
+  // provider — dashboard[domain] stores each provider's full return
+  // value verbatim, so the two "still not fully available" domains
+  // legitimately have different shapes here, both honest, neither a bug.
   assert.equal(response.dashboard.location.status, "planned");
-  assert.equal(response.dashboard.prometheus.status, "planned");
+  assert.equal(response.dashboard.prometheus.ok, true);
+  assert.equal(response.dashboard.prometheus.result.status, "planned");
+  assert.equal(response.dashboard.prometheus.result.reason, "metrics_stack_not_running");
 });
