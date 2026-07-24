@@ -795,9 +795,19 @@ function addonContentRoute(req, res, path) {
   const contentPath = decodeURIComponent(parts.slice(6).join("/"));
   const target = installedAddonContentPath(config, id, contentPath);
   if (!existsSync(target)) return json(res, 404, { error: "Addon content file not found." });
+  // No Cache-Control was previously sent here at all, which leaves browsers
+  // free to apply their own heuristic caching (RFC 7234) -- observed in
+  // practice to cause an addon's iframe to keep serving a stale addon.js
+  // well after the underlying file was updated and the file's own byte
+  // content confirmed correct via direct authenticated fetch, surviving
+  // even a full page hard-refresh and iframe close/reopen. Addon files are
+  // small, locally-served, and change on every addon update/manual
+  // install, so there is no real benefit to caching them here -- always
+  // revalidate instead of guessing.
   res.writeHead(200, withSecurityHeaders({
     "content-type": contentTypeForPath(target),
-    "x-frame-options": "SAMEORIGIN"
+    "x-frame-options": "SAMEORIGIN",
+    "cache-control": "no-cache, no-store, must-revalidate"
   }));
   createReadStream(target).pipe(res);
 }

@@ -50,12 +50,18 @@ function writeProfile(config, lines) {
 // Builds a mock `db` covering exactly the queries addonOpsResourcesSummary
 // issues: to_regclass (table existence), dune.world_partition (via
 // mapCombatPartitionRows), dune.resourcefield_state (per-dimension
-// totals), dune.spicefield_types (per-dimension, per-size counts).
+// totals, AND separately the per-dimension/per-value_remaining groupings
+// used only as input to resolvePerSizePotentialSpice's rank-match --
+// disambiguated below by the more specific "group by dimension_index,
+// value_remaining" substring, checked before the totals query's plainer
+// "group by dimension_index"), dune.spicefield_types (per-dimension,
+// per-size counts).
 function mockDb({
   tables = new Set(["resourcefield_state", "world_partition", "farm_state", "spicefield_types"]),
   worldPartitionRows = {},
   resourceTotalsRows = {},
-  spicefieldTypeRows = {}
+  spicefieldTypeRows = {},
+  resourceValueGroupRows = {}
 } = {}) {
   return {
     async query(text, values = []) {
@@ -66,6 +72,10 @@ function mockDb({
       if (text.includes("from dune.world_partition")) {
         const map = values[0];
         return { rows: worldPartitionRows[map] || [] };
+      }
+      if (text.includes("from dune.resourcefield_state") && text.includes("group by dimension_index, value_remaining")) {
+        const map = values[0];
+        return { rows: resourceValueGroupRows[map] || [] };
       }
       if (text.includes("from dune.resourcefield_state") && text.includes("group by dimension_index")) {
         const map = values[0];
@@ -386,3 +396,183 @@ test("Deep Desert instances are sorted naturally by dimensionIndex, not alphabet
 // (Alphabetical sorting of Hagga Basin sietches by name, and responsive
 // narrow-layout rendering, are addon-side (frontend) presentation
 // concerns — covered in the addon repository's own test suite, not here.)
+
+// ── 19-24. resolvePerSizePotentialSpice via addonOpsResourcesSummary ──
+//
+// Real behavior verified live 2026-07-24 against a Deep Desert spawn:
+// every field of a given size shares one exact value_remaining (rank-
+// matched against the map's known, ordered size list Small < Medium <
+// Large), but ONLY when the number of distinct value_remaining groups
+// exactly equals the number of supported sizes for that map -- any other
+// count is genuinely ambiguous (a size hasn't spawned any fields yet, or
+// harvesting has caused two same-size fields to diverge in value) and
+// must fall back to null rather than guess.
+
+test("per-size Potential Spice resolves correctly when distinct value groups exactly match the map's known size count", async () => {
+  const { config } = buildSandbox();
+  const db = mockDb({
+    worldPartitionRows: { DeepDesert_1: [{ partition_id: "8", map: "DeepDesert_1", dimension_index: 0, database_label: "DeepDesert_0", server_id: "s1", blocked: false, alive: true, ready: true }] },
+    resourceTotalsRows: { DeepDesert: [{ dimension_index: 0, active_fields: 25, remaining_spice: 4360000 }] },
+    spicefieldTypeRows: {
+      DeepDesert: [
+        { dimension_index: 0, field_type: "Small", active_fields: 12 },
+        { dimension_index: 0, field_type: "Medium", active_fields: 12 },
+        { dimension_index: 0, field_type: "Large", active_fields: 1 }
+      ]
+    },
+    // Three distinct value_remaining groups for Deep Desert's three
+    // supported sizes: rank-matched ascending by value against
+    // Small < Medium < Large.
+    resourceValueGroupRows: {
+      DeepDesert: [
+        { dimension_index: 0, value_remaining: 5000, field_count: 12 },
+        { dimension_index: 0, value_remaining: 150000, field_count: 12 },
+        { dimension_index: 0, value_remaining: 2500000, field_count: 1 }
+      ]
+    }
+  });
+
+  const result = await addonOpsResourcesSummary(db, config);
+  const sizes = result.deepDesert.instances[0].sizes;
+  assert.equal(sizes.find((s) => s.size === "Small").remainingSpice, 60000, "12 fields x 5000 = 60000");
+  assert.equal(sizes.find((s) => s.size === "Medium").remainingSpice, 1800000, "12 fields x 150000 = 1800000");
+  assert.equal(sizes.find((s) => s.size === "Large").remainingSpice, 2500000, "1 field x 2500000 = 2500000");
+
+  // Section-level bySize must sum the real per-size values across
+  // instances (only one instance here, so it equals the per-instance
+  // value), never re-derive or approximate them independently.
+  const bySize = result.deepDesert.summary.bySize;
+  assert.equal(bySize.find((s) => s.size === "Small").remainingSpice, 60000);
+  assert.equal(bySize.find((s) => s.size === "Medium").remainingSpice, 1800000);
+  assert.equal(bySize.find((s) => s.size === "Large").remainingSpice, 2500000);
+});
+
+test("per-size Potential Spice for Hagga Basin (single supported size) resolves from its one value group", async () => {
+  const { config } = buildSandbox();
+  const db = mockDb({
+    worldPartitionRows: { Survival_1: [{ partition_id: "1", map: "Survival_1", dimension_index: 0, database_label: "Sietch Abbir", server_id: "s1", blocked: false, alive: true, ready: true }] },
+    resourceTotalsRows: { HaggaBasin: [{ dimension_index: 0, active_fields: 4, remaining_spice: 20000 }] },
+    spicefieldTypeRows: { HaggaBasin: [{ dimension_index: 0, field_type: "Small", active_fields: 4 }] },
+    resourceValueGroupRows: { HaggaBasin: [{ dimension_index: 0, value_remaining: 5000, field_count: 4 }] }
+  });
+
+  const result = await addonOpsResourcesSummary(db, config);
+  const small = result.haggaBasin.instances[0].sizes.find((s) => s.size === "Small");
+  assert.equal(small.remainingSpice, 20000, "4 fields x 5000 = 20000");
+});
+
+test("per-size Potential Spice falls back to null when a size has zero active fields (fewer distinct value groups than supported sizes)", async () => {
+  const { config } = buildSandbox();
+  const db = mockDb({
+    worldPartitionRows: { DeepDesert_1: [{ partition_id: "8", map: "DeepDesert_1", dimension_index: 0, database_label: "DeepDesert_0", server_id: "s1", blocked: false, alive: true, ready: true }] },
+    resourceTotalsRows: { DeepDesert: [{ dimension_index: 0, active_fields: 12, remaining_spice: 60000 }] },
+    spicefieldTypeRows: { DeepDesert: [{ dimension_index: 0, field_type: "Small", active_fields: 12 }] },
+    // Only 1 distinct value group, but Deep Desert supports 3 sizes
+    // (Medium and Large currently have zero active fields, so their
+    // value never appears) -- genuinely ambiguous, must not guess.
+    resourceValueGroupRows: { DeepDesert: [{ dimension_index: 0, value_remaining: 5000, field_count: 12 }] }
+  });
+
+  const result = await addonOpsResourcesSummary(db, config);
+  const sizes = result.deepDesert.instances[0].sizes;
+  assert.equal(sizes.find((s) => s.size === "Small").remainingSpice, null);
+  assert.equal(sizes.find((s) => s.size === "Medium").remainingSpice, null);
+  assert.equal(sizes.find((s) => s.size === "Large").remainingSpice, null);
+});
+
+test("per-size Potential Spice falls back to null when harvesting has produced more distinct value groups than supported sizes", async () => {
+  const { config } = buildSandbox();
+  const db = mockDb({
+    worldPartitionRows: { DeepDesert_1: [{ partition_id: "8", map: "DeepDesert_1", dimension_index: 0, database_label: "DeepDesert_0", server_id: "s1", blocked: false, alive: true, ready: true }] },
+    resourceTotalsRows: { DeepDesert: [{ dimension_index: 0, active_fields: 25, remaining_spice: 4355000 }] },
+    spicefieldTypeRows: {
+      DeepDesert: [
+        { dimension_index: 0, field_type: "Small", active_fields: 12 },
+        { dimension_index: 0, field_type: "Medium", active_fields: 12 },
+        { dimension_index: 0, field_type: "Large", active_fields: 1 }
+      ]
+    },
+    // 4 distinct value groups (a Small field was partially harvested,
+    // diverging from the other 11 Small fields' value) against only 3
+    // supported sizes -- ambiguous which group(s) are "really" Small.
+    resourceValueGroupRows: {
+      DeepDesert: [
+        { dimension_index: 0, value_remaining: 3000, field_count: 1 },
+        { dimension_index: 0, value_remaining: 5000, field_count: 11 },
+        { dimension_index: 0, value_remaining: 150000, field_count: 12 },
+        { dimension_index: 0, value_remaining: 2500000, field_count: 1 }
+      ]
+    }
+  });
+
+  const result = await addonOpsResourcesSummary(db, config);
+  const sizes = result.deepDesert.instances[0].sizes;
+  for (const s of sizes) assert.equal(s.remainingSpice, null, `${s.size} must be null, not a guessed value, when the value-group count is ambiguous`);
+});
+
+test("per-size Potential Spice falls back to null when resourcefield_state has no rows for this map (no active fields at all)", async () => {
+  const { config } = buildSandbox();
+  const db = mockDb({
+    worldPartitionRows: { DeepDesert_1: [{ partition_id: "8", map: "DeepDesert_1", dimension_index: 0, database_label: "DeepDesert_0", server_id: "s1", blocked: false, alive: true, ready: true }] },
+    resourceTotalsRows: { DeepDesert: [{ dimension_index: 0, active_fields: 0, remaining_spice: 0 }] }
+    // resourceValueGroupRows intentionally omitted -- defaults to [].
+  });
+
+  const result = await addonOpsResourcesSummary(db, config);
+  const sizes = result.deepDesert.instances[0].sizes;
+  for (const s of sizes) assert.equal(s.remainingSpice, null);
+});
+
+test("section-level bySize.remainingSpice is null for a size if ANY contributing instance's per-size value is null, never a silently-partial sum", async () => {
+  const { config } = buildSandbox();
+  const db = mockDb({
+    worldPartitionRows: {
+      DeepDesert_1: [
+        { partition_id: "8", map: "DeepDesert_1", dimension_index: 0, database_label: "DeepDesert_0", server_id: "s1", blocked: false, alive: true, ready: true },
+        { partition_id: "9", map: "DeepDesert_1", dimension_index: 1, database_label: "DeepDesert_1_label", server_id: "s2", blocked: false, alive: true, ready: true }
+      ]
+    },
+    resourceTotalsRows: {
+      DeepDesert: [
+        { dimension_index: 0, active_fields: 25, remaining_spice: 4360000 },
+        { dimension_index: 1, active_fields: 5, remaining_spice: 25000 }
+      ]
+    },
+    spicefieldTypeRows: {
+      DeepDesert: [
+        { dimension_index: 0, field_type: "Small", active_fields: 12 },
+        { dimension_index: 0, field_type: "Medium", active_fields: 12 },
+        { dimension_index: 0, field_type: "Large", active_fields: 1 },
+        { dimension_index: 1, field_type: "Small", active_fields: 5 }
+      ]
+    },
+    resourceValueGroupRows: {
+      DeepDesert: [
+        // Dimension 0: safe rank-match (3 groups, 3 supported sizes).
+        { dimension_index: 0, value_remaining: 5000, field_count: 12 },
+        { dimension_index: 0, value_remaining: 150000, field_count: 12 },
+        { dimension_index: 0, value_remaining: 2500000, field_count: 1 },
+        // Dimension 1: only Small has spawned (1 group vs. 3 supported
+        // sizes) -- unsafe, falls back to null for this instance.
+        { dimension_index: 1, value_remaining: 5000, field_count: 5 }
+      ]
+    }
+  });
+
+  const result = await addonOpsResourcesSummary(db, config);
+  const bySize = result.deepDesert.summary.bySize;
+  // Deep Desert's supportedSizes list (Small/Medium/Large) is applied to
+  // EVERY instance regardless of what that instance's own
+  // spicefield_types rows report -- so dimension 1 (which only reports a
+  // Small row) still gets Small/Medium/Large entries in its `sizes`
+  // array, and since its rank-match is unsafe (1 value group vs. 3
+  // supported sizes), ALL THREE of its sizes fall back to null, not just
+  // Small. That null must poison the section-level total for every size
+  // dimension 1 contributes to -- i.e. all three, since dimension 1
+  // contributes to all three via the shared supportedSizes list, even
+  // though dimension 0's own per-size values (60000 / 1800000 /
+  // 2500000) are individually real.
+  assert.equal(bySize.find((s) => s.size === "Small").remainingSpice, null, "dimension 1's null Small must poison the section total, not be silently summed as if it were 0");
+  assert.equal(bySize.find((s) => s.size === "Medium").remainingSpice, null, "dimension 1 contributes a null Medium too (Deep Desert's supportedSizes list applies to every instance, not just the sizes that instance's own data reports)");
+  assert.equal(bySize.find((s) => s.size === "Large").remainingSpice, null, "dimension 1 contributes a null Large for the same reason");
+});
