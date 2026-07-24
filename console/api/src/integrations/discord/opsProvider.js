@@ -5,31 +5,42 @@
 // replace each function body with the corresponding bridge action call.
 // The addon's bridge actions are defined in yacketrj/dune-ops-observability-addon.
 //
-// Five of the nine providers below (activity, combat, resources, economy,
-// inventory) are wired to real, already-working duneDb.js query functions —
-// the same ones the addon-bridge handler in server.js already calls
+// Six of the nine providers below (activity, combat, resources, economy,
+// inventory, soc) are wired to real, working data sources. Four of those
+// six (activity, combat, resources, economy) use the same duneDb.js query
+// functions the addon-bridge handler in server.js already calls
 // successfully for installed third-party addons (see
 // addonOpsActivitySummary() et al., called from server.js's
-// "ops.activity.summary" etc. bridge actions). This is the Discord adapter
-// calling the identical underlying queries through a different,
+// "ops.activity.summary" etc. bridge actions) — this is the Discord
+// adapter calling the identical underlying queries through a different,
 // already-existing auth path (requireDiscordBotToken in routes.js, not
-// assertInstalledAddonPermission) — not a new capability, permission
-// system, or write path. The remaining three (location, soc, prometheus,
-// and dashboard's references to those three) have no backing query
-// anywhere in this codebase and remain placeholders — see
-// dune-ops-observability-addon's docs/tabs/LOCATION.md for why location
-// specifically is not a simple "wire it up" case (real live-map data
-// exists, but most of it is individually-identifying, real-time-coordinate
-// data with a materially different privacy posture than every aggregate-
-// only OPS source implemented so far — that needs an explicit maintainer
-// decision, not a unilateral wire-up).
+// assertInstalledAddonPermission), not a new capability, permission
+// system, or write path. Inventory is a new duneDb.js query following the
+// same pattern. SOC uses a different, non-SQL data source (an in-memory
+// rolling counter over this project's own addons.bridge audit log entries
+// — see audit.js's getBridgeRequestSummary()), since no aggregate query
+// backs it.
+//
+// The remaining two (location, prometheus, and dashboard's references to
+// them) have no backing query anywhere in this codebase and remain
+// placeholders — see dune-ops-observability-addon's docs/tabs/LOCATION.md
+// for why location specifically is not a simple "wire it up" case (real
+// live-map data exists, but most of it is individually-identifying,
+// real-time-coordinate data with a materially different privacy posture
+// than every aggregate-only OPS source implemented so far — that needs an
+// explicit maintainer decision, not a unilateral wire-up), and
+// docs/tabs/SOC.md for prometheus (a real, deployable, currently-unused
+// Prometheus stack exists, opt-in via `dune metrics start` — this needs
+// precondition-aware HTTP integration, not a SQL query, and has not been
+// implemented yet).
 
 import {
   addonOpsActivitySummary,
   addonOpsCombatDeaths,
   addonOpsResourcesSummary,
   addonOpsEconomySummary,
-  addonOpsInventorySummary
+  addonOpsInventorySummary,
+  addonOpsSocSummary
 } from "../../duneDb.js";
 
 const OPS_BRIDGE_ACTIONS = Object.freeze({
@@ -83,23 +94,20 @@ export async function opsInventoryProvider(config, db) {
 }
 
 // Signature kept as (config, db) for consistency with the real providers
-// above, even though these three placeholders don't use db yet — no
-// backing query exists anywhere in this codebase for these domains (soc,
-// prometheus), or the real backing data that does exist (location) has an
-// unresolved privacy consideration requiring an explicit maintainer
-// decision before it can be wired — see dune-ops-observability-addon's
-// docs/tabs/LOCATION.md. Do not implement these from Core without that
-// decision; they require either the OPS observability addon's own bridge
-// design work, or explicit sign-off on which of Location's two
-// implementation options to build.
+// above, even though this placeholder doesn't use db yet — the real
+// backing data that exists for location (duneDb.liveMapMarkers and
+// siblings) has an unresolved privacy consideration requiring an explicit
+// maintainer decision before it can be wired — see
+// dune-ops-observability-addon's docs/tabs/LOCATION.md. Do not implement
+// this from Core without that decision.
 export async function opsLocationProvider(config, db) {
   // TODO: return await opsBridgeRequest(config, "ops.location.activity");
   return opsPlaceholder("location");
 }
 
 export async function opsSocProvider(config, db) {
-  // TODO: return await opsBridgeRequest(config, "ops.soc.summary");
-  return opsPlaceholder("soc");
+  const result = addonOpsSocSummary();
+  return { ok: true, result };
 }
 
 export async function opsPrometheusProvider(config, db) {
@@ -108,9 +116,9 @@ export async function opsPrometheusProvider(config, db) {
 }
 
 export async function opsDashboardProvider(config, db) {
-  // Aggregate from all other providers. Five of these (activity, combat,
-  // resources, economy, inventory) now return real data; the other three
-  // (location, soc, prometheus) remain "status: planned" placeholders.
+  // Aggregate from all other providers. Six of these (activity, combat,
+  // resources, economy, inventory, soc) now return real data; the other
+  // two (location, prometheus) remain "status: planned" placeholders.
   // This intentionally produces a mixed shape — that is the correct,
   // honest reflection of Core's actual current state, not something to
   // hide or special-case.

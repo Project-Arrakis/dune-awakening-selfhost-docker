@@ -56,6 +56,7 @@ test("reports adapter health with isolated link-state writes", async () => {
     "/api/integrations/discord/ops/economy",
     "/api/integrations/discord/ops/inventory",
     "/api/integrations/discord/ops/resources",
+    "/api/integrations/discord/ops/soc",
     "/api/integrations/discord/players/accounts/link",
     "/api/integrations/discord/players/accounts/link/verify",
     "/api/integrations/discord/players/accounts/list",
@@ -78,17 +79,18 @@ test("reports adapter health with isolated link-state writes", async () => {
     "/api/integrations/discord/version"
   ].sort());
   assert.ok(result.plannedRoutes.includes("/api/integrations/discord/logs"));
-  // ops/activity, ops/combat, ops/resources, ops/economy, ops/inventory
-  // are now wired to real duneDb.js queries and moved to liveRoutes (see
-  // the five assertions above); the remaining three OPS routes have no
-  // backing query (soc, prometheus) or an unresolved privacy
-  // consideration blocking a wire-up (location — see
-  // dune-ops-observability-addon's docs/tabs/LOCATION.md) and are still
-  // correctly reported as planned.
+  // ops/activity, ops/combat, ops/resources, ops/economy, ops/inventory,
+  // ops/soc are now wired to real data sources and moved to liveRoutes
+  // (see the six assertions above — soc via an in-memory rolling counter
+  // over the audit log, not a SQL query, unlike the other five). The
+  // remaining two OPS routes have no backing query at all (prometheus) or
+  // an unresolved privacy consideration blocking a wire-up (location —
+  // see dune-ops-observability-addon's docs/tabs/LOCATION.md) and are
+  // still correctly reported as planned.
   assert.ok(result.plannedRoutes.includes("/api/integrations/discord/ops/location"));
-  assert.ok(result.plannedRoutes.includes("/api/integrations/discord/ops/soc"));
   assert.ok(result.plannedRoutes.includes("/api/integrations/discord/ops/prometheus"));
   assert.ok(!result.liveRoutes.includes("/api/integrations/discord/ops/location"));
+  assert.ok(result.liveRoutes.includes("/api/integrations/discord/ops/soc"));
   assert.ok(result.liveRoutes.includes("/api/integrations/discord/ops/inventory"));
 });
 
@@ -822,13 +824,13 @@ test("account-link verify route rate limits independently from the single-link v
 
 // OPS observability routes — real data wiring (Phase 1/2 of the cross-repo
 // stats/live-data remediation effort). ops/activity, ops/combat,
-// ops/resources, ops/economy, ops/inventory are now backed by real
-// duneDb.js queries via opsProvider.js; the other three OPS routes
-// (location, soc, prometheus) remain unimplemented placeholders. Exercises
+// ops/resources, ops/economy, ops/inventory, ops/soc are now backed by
+// real data sources via opsProvider.js; the other two OPS routes
+// (location, prometheus) remain unimplemented placeholders. Exercises
 // the actual HTTP route path (not just the provider function directly) to
 // prove db reaches the provider correctly through
 // handleDiscordAdapterRoute()'s routing.
-test("ops/activity and ops/inventory routes return real data through the HTTP route path, ops/location remains a planned placeholder", async () => {
+test("ops/activity, ops/inventory, and ops/soc routes return real data through the HTTP route path, ops/location remains a planned placeholder", async () => {
   const tokenFile = "/tmp/discord-adapter-ops-live-test-token.txt";
   writeFileSync(tokenFile, "server-test-token");
   const testConfig = { discordBotApiTokenFile: tokenFile, discordAdapterEnabled: true, auditLog: "/tmp/discord-adapter-ops-live-test-audit.jsonl", generatedDir: "/tmp/discord-adapter-ops-live-test-generated" };
@@ -898,6 +900,27 @@ test("ops/activity and ops/inventory routes return real data through the HTTP ro
           assert.equal(inventoryBody.result.totalInventories, 1);
           assert.equal(inventoryBody.result.totalCrafted, null, "totalCrafted has no real source and must stay null, never a guessed number");
           assert.equal("status" in inventoryBody, false, "must not look like the old placeholder shape");
+
+          const socResponse = await fetch(`${base}/api/integrations/discord/ops/soc`, {
+            method: "POST",
+            headers: { ...auth, "content-type": "application/json" },
+            body: JSON.stringify({ actor: observerActor })
+          });
+          assert.equal(socResponse.status, 200);
+          const socBody = await socResponse.json();
+          assert.equal(socBody.ok, true);
+          // The Discord adapter path (handleDiscordAdapterRoute, tested
+          // here) never itself calls audit(config, req, "addons.bridge",
+          // ...) — only the separate addon-bridge path in server.js does,
+          // for installed third-party addons, which is a different
+          // consumer than the Discord bot. So the in-memory rolling
+          // counter this route reads from is correctly, legitimately
+          // empty in this test's process — asserting a real 0, not a
+          // placeholder, is exactly the right check here.
+          assert.equal(socBody.result.bridgeRequests, 0);
+          assert.equal(socBody.result.bridgeErrors, 0);
+          assert.equal(socBody.result.platformHealth, "Unknown");
+          assert.equal("status" in socBody, false, "must not look like the old placeholder shape");
 
           // A route with no backing query (or an unresolved privacy
           // consideration, for location) is untouched and still returns
