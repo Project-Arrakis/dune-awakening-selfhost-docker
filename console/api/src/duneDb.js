@@ -5198,9 +5198,13 @@ async function resourcesSectionForDisplayMap(db, config, displayMap) {
     group by dimension_index`, [displayMap]);
   const totalsByDimension = new Map(totalsResult.rows.map((r) => [Number(r.dimension_index), { activeFields: Number(r.active_fields || 0), remainingSpice: Number(r.remaining_spice || 0) }]));
 
-  // Real per-dimension, per-size active-field counts -- the only size-tier
-  // data this schema has (see the function-level comment above for why
-  // remaining spice cannot be broken down by size).
+  // Real per-dimension, per-size active-field counts, from
+  // dune.spicefield_types -- the game's own real, authoritative
+  // size-naming and per-size capacity table (field_type names the size
+  // directly: "Small"/"Medium"/"Large"; max_globally_active/
+  // current_globally_active are real, live-configured caps -- e.g. Hagga
+  // Basin's Small-field limit of 5 is spicefield_types.max_globally_active
+  // for its one Small row, verified live 2026-07-24).
   let sizesByDimension = new Map();
   try {
     const sizesExist = await tableExists(db, "spicefield_types");
@@ -5215,6 +5219,27 @@ async function resourcesSectionForDisplayMap(db, config, displayMap) {
         if (!sizesByDimension.has(dim)) sizesByDimension.set(dim, []);
         sizesByDimension.get(dim).push({ size: row.field_type, activeFields: Number(row.active_fields || 0), remainingSpice: null });
       }
+    }
+  } catch { }
+
+  // Real per-dimension groupings of resourcefield_state's raw
+  // value_remaining, used ONLY as input to resolvePerSizePotentialSpice's
+  // rank-match attempt below -- resourcefield_state itself still has no
+  // size-tier column (verified 2026-07-24: schema is field_id, map,
+  // dimension_index, spawn_time, value_remaining, field_kind_id only; no
+  // foreign key to spicefield_types).
+  let valueGroupsByDimension = new Map();
+  try {
+    const valuesResult = await db.query(`
+      select dimension_index, value_remaining, count(*)::int as field_count
+      from dune.resourcefield_state
+      where map = $1 and field_kind_id = 1
+      group by dimension_index, value_remaining
+      order by dimension_index, value_remaining`, [displayMap]);
+    for (const row of valuesResult.rows) {
+      const dim = Number(row.dimension_index);
+      if (!valueGroupsByDimension.has(dim)) valueGroupsByDimension.set(dim, []);
+      valueGroupsByDimension.get(dim).push({ valueRemaining: Number(row.value_remaining), fieldCount: Number(row.field_count) });
     }
   } catch { }
 
@@ -5236,7 +5261,15 @@ async function resourcesSectionForDisplayMap(db, config, displayMap) {
       const supportedSizes = SUPPORTED_SIZES_BY_DISPLAY_MAP[displayMap] || allKnownSizesForDisplayMap(sizesByDimension);
       const sizesForThisDimension = sizesByDimension.get(dim) || [];
       const sizesByName = new Map(sizesForThisDimension.map((s) => [s.size, s]));
-      const sizes = supportedSizes.map((size) => sizesByName.get(size) || { size, activeFields: 0, remainingSpice: null });
+      // Real per-size Potential Spice, when it can be determined safely --
+      // see resolvePerSizePotentialSpice's own comment for the exact
+      // rank-match condition and why it refuses to guess when that
+      // condition doesn't hold.
+      const perSizeSpice = resolvePerSizePotentialSpice(supportedSizes, valueGroupsByDimension.get(dim) || []);
+      const sizes = supportedSizes.map((size) => {
+        const base = sizesByName.get(size) || { size, activeFields: 0, remainingSpice: null };
+        return { ...base, remainingSpice: perSizeSpice.has(size) ? perSizeSpice.get(size) : null };
+      });
 
       return {
         partitionId: row.partitionId,
@@ -5275,6 +5308,60 @@ async function resourcesSectionForDisplayMap(db, config, displayMap) {
   return { summary, instances };
 }
 
+// Attempts to determine real, per-size Potential Spice for one map
+// dimension by rank-matching resourcefield_state's distinct
+// value_remaining groups against the map's known, ordered size list
+// (Small < Medium < Large, dune.spicefield_types.field_type is the real,
+// authoritative size name -- see SUPPORTED_SIZES_BY_DISPLAY_MAP).
+//
+// Verified live 2026-07-24 against a real Deep Desert spawn: every field
+// of a given size shared one exact value_remaining (10 Small fields all
+// at 5000, 10 Medium at 150000, 1 Large at 2500000 -- confirmed by
+// grouping, not a single-sample coincidence), and Hagga Basin's Small
+// fields independently matched the same 5000 value -- consistent with
+// value_remaining being a fixed per-size starting capacity, not a
+// randomly-varying harvested-down amount (spawn_time varied across
+// fields within the same value group, yet the value never did).
+//
+// resourcefield_state has no size-tier column and no foreign key to
+// spicefield_types (verified: schema is field_id, map, dimension_index,
+// spawn_time, value_remaining, field_kind_id only) -- so there is no
+// robust way to join a specific field row to a specific size. Matching
+// by live active-field COUNT is not safe either: this map's own real
+// data has produced a genuine tie (Small and Medium both showing
+// current_globally_active = 10 simultaneously), which would make a
+// count-based join ambiguous or silently wrong.
+//
+// Rank-matching by value is used instead: sort the map's supported
+// sizes in their real, natural order (Small < Medium < Large) and sort
+// the distinct observed values ascending, then pair position-by-
+// position. This is only applied when the number of distinct
+// value_remaining groups exactly equals the number of supported sizes
+// for that map -- if it doesn't (e.g. a size hasn't spawned any fields
+// yet, so its value never appears; or harvesting has ever caused two
+// fields of the same size to diverge in value, producing more distinct
+// groups than sizes), the mapping is ambiguous and this function
+// deliberately returns nothing rather than guess. This is an inference
+// grounded in real, live-verified data, not a guaranteed formula --
+// documented as such in docs/tabs/SPICE-MELANGE.md.
+function resolvePerSizePotentialSpice(supportedSizes, valueGroups) {
+  const result = new Map();
+  if (!Array.isArray(valueGroups) || valueGroups.length !== supportedSizes.length || valueGroups.length === 0) {
+    return result;
+  }
+  const orderedSizes = [...supportedSizes].sort((a, b) => {
+    const order = ["Small", "Medium", "Large"];
+    const ai = order.indexOf(a);
+    const bi = order.indexOf(b);
+    return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
+  });
+  const orderedGroups = [...valueGroups].sort((a, b) => a.valueRemaining - b.valueRemaining);
+  for (let i = 0; i < orderedSizes.length; i++) {
+    result.set(orderedSizes[i], orderedGroups[i].valueRemaining * orderedGroups[i].fieldCount);
+  }
+  return result;
+}
+
 function allKnownSizesForDisplayMap(sizesByDimension) {
   const sizes = new Set();
   for (const rows of sizesByDimension.values()) {
@@ -5288,15 +5375,41 @@ function allKnownSizesForDisplayMap(sizesByDimension) {
 }
 
 function aggregateSizesAcrossInstances(instances) {
-  const bySize = new Map();
+  // sumBySize/hasNullBySize are tracked separately (rather than folding
+  // null-handling into a single running total) so a null from any one
+  // instance can correctly poison only that size's final total, without
+  // the running-sum math itself needing to branch on null every
+  // iteration.
+  const sumBySize = new Map();
+  const hasNullBySize = new Map();
+  const activeFieldsBySize = new Map();
+  const order = [];
   for (const instance of instances) {
     for (const s of instance.sizes) {
-      const entry = bySize.get(s.size) || { size: s.size, activeFields: 0 };
-      entry.activeFields += s.activeFields;
-      bySize.set(s.size, entry);
+      if (!sumBySize.has(s.size)) {
+        sumBySize.set(s.size, 0);
+        hasNullBySize.set(s.size, false);
+        activeFieldsBySize.set(s.size, 0);
+        order.push(s.size);
+      }
+      activeFieldsBySize.set(s.size, activeFieldsBySize.get(s.size) + s.activeFields);
+      if (s.remainingSpice === null) {
+        hasNullBySize.set(s.size, true);
+      } else {
+        sumBySize.set(s.size, sumBySize.get(s.size) + s.remainingSpice);
+      }
     }
   }
-  return [...bySize.values()];
+  // Only sum a real number into a real number -- if any contributing
+  // instance's per-size remainingSpice is null (rank-match wasn't safe
+  // for that instance/dimension), the section-level per-size total for
+  // that size is null too, rather than silently summing partial data as
+  // if it were the complete real total.
+  return order.map((size) => ({
+    size,
+    activeFields: activeFieldsBySize.get(size),
+    remainingSpice: hasNullBySize.get(size) ? null : sumBySize.get(size)
+  }));
 }
 
 function emptyResourcesSectionSummary() {
