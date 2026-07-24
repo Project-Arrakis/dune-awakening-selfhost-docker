@@ -55,6 +55,7 @@ test("reports adapter health with isolated link-state writes", async () => {
     "/api/integrations/discord/ops/combat",
     "/api/integrations/discord/ops/economy",
     "/api/integrations/discord/ops/inventory",
+    "/api/integrations/discord/ops/prometheus",
     "/api/integrations/discord/ops/resources",
     "/api/integrations/discord/ops/soc",
     "/api/integrations/discord/players/accounts/link",
@@ -80,18 +81,19 @@ test("reports adapter health with isolated link-state writes", async () => {
   ].sort());
   assert.ok(result.plannedRoutes.includes("/api/integrations/discord/logs"));
   // ops/activity, ops/combat, ops/resources, ops/economy, ops/inventory,
-  // ops/soc are now wired to real data sources and moved to liveRoutes
-  // (see the six assertions above — soc via an in-memory rolling counter
-  // over the audit log, not a SQL query, unlike the other five). The
-  // remaining two OPS routes have no backing query at all (prometheus) or
-  // an unresolved privacy consideration blocking a wire-up (location —
-  // see dune-ops-observability-addon's docs/tabs/LOCATION.md) and are
-  // still correctly reported as planned.
+  // ops/soc, ops/prometheus are now wired to real data sources and moved
+  // to liveRoutes (see the seven assertions above — soc via an in-memory
+  // rolling counter over the audit log, prometheus via a real HTTP
+  // integration against an optional metrics stack that may itself report
+  // "not running", neither a SQL query like the other five). The
+  // remaining OPS route (location) has an unresolved privacy
+  // consideration blocking a wire-up — see dune-ops-observability-addon's
+  // docs/tabs/LOCATION.md — and is still correctly reported as planned.
   assert.ok(result.plannedRoutes.includes("/api/integrations/discord/ops/location"));
-  assert.ok(result.plannedRoutes.includes("/api/integrations/discord/ops/prometheus"));
   assert.ok(!result.liveRoutes.includes("/api/integrations/discord/ops/location"));
   assert.ok(result.liveRoutes.includes("/api/integrations/discord/ops/soc"));
   assert.ok(result.liveRoutes.includes("/api/integrations/discord/ops/inventory"));
+  assert.ok(result.liveRoutes.includes("/api/integrations/discord/ops/prometheus"));
 });
 
 test("forces writes disabled even if environment attempts to enable them", () => {
@@ -824,13 +826,13 @@ test("account-link verify route rate limits independently from the single-link v
 
 // OPS observability routes — real data wiring (Phase 1/2 of the cross-repo
 // stats/live-data remediation effort). ops/activity, ops/combat,
-// ops/resources, ops/economy, ops/inventory, ops/soc are now backed by
-// real data sources via opsProvider.js; the other two OPS routes
-// (location, prometheus) remain unimplemented placeholders. Exercises
-// the actual HTTP route path (not just the provider function directly) to
-// prove db reaches the provider correctly through
-// handleDiscordAdapterRoute()'s routing.
-test("ops/activity, ops/inventory, and ops/soc routes return real data through the HTTP route path, ops/location remains a planned placeholder", async () => {
+// ops/resources, ops/economy, ops/inventory, ops/soc, ops/prometheus are
+// now backed by real data sources via opsProvider.js; the remaining OPS
+// route (location) remains an unimplemented placeholder pending a
+// privacy-consideration decision. Exercises the actual HTTP route path
+// (not just the provider function directly) to prove db reaches the
+// provider correctly through handleDiscordAdapterRoute()'s routing.
+test("ops/activity, ops/inventory, ops/soc, and ops/prometheus routes return real data (or a real, specific 'unavailable' reason) through the HTTP route path, ops/location remains a planned placeholder", async () => {
   const tokenFile = "/tmp/discord-adapter-ops-live-test-token.txt";
   writeFileSync(tokenFile, "server-test-token");
   const testConfig = { discordBotApiTokenFile: tokenFile, discordAdapterEnabled: true, auditLog: "/tmp/discord-adapter-ops-live-test-audit.jsonl", generatedDir: "/tmp/discord-adapter-ops-live-test-generated" };
@@ -921,6 +923,25 @@ test("ops/activity, ops/inventory, and ops/soc routes return real data through t
           assert.equal(socBody.result.bridgeErrors, 0);
           assert.equal(socBody.result.platformHealth, "Unknown");
           assert.equal("status" in socBody, false, "must not look like the old placeholder shape");
+
+          // ops/prometheus is real, but conditionally available: this
+          // test environment does not have the optional metrics stack
+          // running (dune metrics start), so this correctly exercises
+          // addonOpsPrometheusHealth()'s "not running" precondition path
+          // — the same, real, distinct-from-generic-"planned" shape that
+          // was directly verified against a live deployment before this
+          // was written (see duneDb.js's own comment on
+          // addonOpsPrometheusHealth for that verification).
+          const prometheusResponse = await fetch(`${base}/api/integrations/discord/ops/prometheus`, {
+            method: "POST",
+            headers: { ...auth, "content-type": "application/json" },
+            body: JSON.stringify({ actor: observerActor })
+          });
+          assert.equal(prometheusResponse.status, 200);
+          const prometheusBody = await prometheusResponse.json();
+          assert.equal(prometheusBody.ok, true);
+          assert.equal(prometheusBody.result.status, "planned");
+          assert.equal(prometheusBody.result.reason, "metrics_stack_not_running", "must report the specific reason, distinct from a generically unimplemented route");
 
           // A route with no backing query (or an unresolved privacy
           // consideration, for location) is untouched and still returns

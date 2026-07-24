@@ -5,34 +5,39 @@
 // replace each function body with the corresponding bridge action call.
 // The addon's bridge actions are defined in yacketrj/dune-ops-observability-addon.
 //
-// Six of the nine providers below (activity, combat, resources, economy,
-// inventory, soc) are wired to real, working data sources. Four of those
-// six (activity, combat, resources, economy) use the same duneDb.js query
-// functions the addon-bridge handler in server.js already calls
-// successfully for installed third-party addons (see
+// Seven of the nine providers below (activity, combat, resources, economy,
+// inventory, soc, prometheus) are wired to real, working data sources.
+// Five of those seven (activity, combat, resources, economy, inventory)
+// use duneDb.js query functions the addon-bridge handler in server.js
+// already calls successfully for installed third-party addons (see
 // addonOpsActivitySummary() et al., called from server.js's
 // "ops.activity.summary" etc. bridge actions) — this is the Discord
 // adapter calling the identical underlying queries through a different,
 // already-existing auth path (requireDiscordBotToken in routes.js, not
 // assertInstalledAddonPermission), not a new capability, permission
-// system, or write path. Inventory is a new duneDb.js query following the
-// same pattern. SOC uses a different, non-SQL data source (an in-memory
-// rolling counter over this project's own addons.bridge audit log entries
-// — see audit.js's getBridgeRequestSummary()), since no aggregate query
-// backs it.
+// system, or write path. SOC uses a different, non-SQL data source (an
+// in-memory rolling counter over this project's own addons.bridge audit
+// log entries — see audit.js's getBridgeRequestSummary()), since no
+// aggregate query backs it. Prometheus is a real HTTP integration against
+// this project's optional, opt-in metrics stack (`dune metrics start`) —
+// it honestly reports its own "not running" state
+// (reason: "metrics_stack_not_running") when that stack isn't started,
+// which is the common/default case, rather than either failing or
+// fabricating data; see duneDb.js's addonOpsPrometheusHealth() for the
+// full verified detail, including a real, live-confirmed limitation in
+// this project's current cAdvisor configuration that prevents
+// per-container restart counts from ever being real — that field is
+// always null, deliberately, not estimated.
 //
-// The remaining two (location, prometheus, and dashboard's references to
-// them) have no backing query anywhere in this codebase and remain
-// placeholders — see dune-ops-observability-addon's docs/tabs/LOCATION.md
-// for why location specifically is not a simple "wire it up" case (real
-// live-map data exists, but most of it is individually-identifying,
-// real-time-coordinate data with a materially different privacy posture
-// than every aggregate-only OPS source implemented so far — that needs an
-// explicit maintainer decision, not a unilateral wire-up), and
-// docs/tabs/SOC.md for prometheus (a real, deployable, currently-unused
-// Prometheus stack exists, opt-in via `dune metrics start` — this needs
-// precondition-aware HTTP integration, not a SQL query, and has not been
-// implemented yet).
+// The remaining one (location, and dashboard's reference to it) has no
+// backing query anywhere in this codebase that doesn't carry an
+// unresolved privacy consideration — see dune-ops-observability-addon's
+// docs/tabs/LOCATION.md for why location specifically is not a simple
+// "wire it up" case (real live-map data exists, but most of it is
+// individually-identifying, real-time-coordinate data with a materially
+// different privacy posture than every aggregate-only OPS source
+// implemented so far — that needs an explicit maintainer decision, not a
+// unilateral wire-up).
 
 import {
   addonOpsActivitySummary,
@@ -40,7 +45,8 @@ import {
   addonOpsResourcesSummary,
   addonOpsEconomySummary,
   addonOpsInventorySummary,
-  addonOpsSocSummary
+  addonOpsSocSummary,
+  addonOpsPrometheusHealth
 } from "../../duneDb.js";
 
 const OPS_BRIDGE_ACTIONS = Object.freeze({
@@ -110,18 +116,30 @@ export async function opsSocProvider(config, db) {
   return { ok: true, result };
 }
 
+// Unlike every other real provider, addonOpsPrometheusHealth()'s return
+// value is already either a real data object OR a
+// {status: "planned", reason: "metrics_stack_not_running", ...} shape —
+// it decides for itself whether the (optional, opt-in) metrics stack is
+// reachable. Wrap it in { ok: true, result } exactly like every other
+// provider regardless of which shape it returned; do not special-case
+// the "not running" branch here — the consumer (Discord bot or addon)
+// is responsible for reading `result.status` to tell real data from
+// "not currently available", same as opsPlaceholder()'s shape already
+// requires for opsLocationProvider.
 export async function opsPrometheusProvider(config, db) {
-  // TODO: return await opsBridgeRequest(config, "ops.health.prometheus");
-  return opsPlaceholder("prometheus");
+  const result = await addonOpsPrometheusHealth();
+  return { ok: true, result };
 }
 
 export async function opsDashboardProvider(config, db) {
-  // Aggregate from all other providers. Six of these (activity, combat,
-  // resources, economy, inventory, soc) now return real data; the other
-  // two (location, prometheus) remain "status: planned" placeholders.
-  // This intentionally produces a mixed shape — that is the correct,
-  // honest reflection of Core's actual current state, not something to
-  // hide or special-case.
+  // Aggregate from all other providers. Seven of these (activity, combat,
+  // resources, economy, inventory, soc, prometheus) now return real data
+  // (prometheus conditionally — see addonOpsPrometheusHealth's own
+  // comment for why it may itself report "not running"); the remaining
+  // one (location) remains a "status: planned" placeholder. This
+  // intentionally produces a mixed shape — that is the correct, honest
+  // reflection of Core's actual current state, not something to hide or
+  // special-case.
   const results = await Promise.allSettled([
     opsActivityProvider(config, db), opsCombatProvider(config, db),
     opsResourcesProvider(config, db), opsEconomyProvider(config, db),

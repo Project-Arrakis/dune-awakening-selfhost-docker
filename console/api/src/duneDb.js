@@ -4759,6 +4759,127 @@ export function addonOpsSocSummary() {
     bridgeSuccessRate: successRate
   };
 }
+
+// addonOpsPrometheusHealth: reports the health of this project's optional,
+// opt-in metrics stack (docker-compose.metrics.yml, started via
+// `dune metrics start` — NOT running by default). Deliberately takes no
+// `db` parameter — this is an HTTP integration against a local Prometheus
+// instance, not a SQL query.
+//
+// Mandatory precondition check, verified live on a real deployment before
+// writing this: attempts a short-timeout /-/healthy request first. If
+// Prometheus is not reachable (the default, common state — this stack is
+// opt-in), returns { status: "planned", domain: "prometheus", reason:
+// "metrics_stack_not_running", message, summary: {} } — deliberately
+// reusing the exact same { status: "planned", ... } shape
+// opsPrometheusProvider's own placeholder already returns (opsProvider.js's
+// opsPlaceholder()), which is the shape the addon's own
+// fetchLiveOrUnavailable() (web/data-providers.js) already knows how to
+// recognize as "unavailable" without requiring any change on the addon
+// side. The added `reason: "metrics_stack_not_running"` field distinguishes
+// this specific case from a route that's genuinely not implemented at all
+// (location, still a bare opsPlaceholder with no reason field) for any
+// caller that inspects the raw bridge response directly — e.g. the
+// Discord bot, or a future addon version — even though the current addon
+// version's fetchLiveOrUnavailable() collapses both into the same
+// "not_implemented" SourceResult reason today. This is intentional: Core
+// reports the most specific truth it can; it is not Core's job to decide
+// how precisely a particular consumer chooses to surface that truth.
+//
+// avgCpuPercent/avgMemoryMb come from node-exporter host-level metrics
+// (100 - idle-cpu-percent; MemTotal - MemAvailable), which were directly
+// verified to work correctly against a real, running instance of this
+// exact metrics stack. totalRestarts and any per-container breakdown are
+// NOT computed here: verified live, on this same real deployment, that
+// this stack's cAdvisor (docker-compose.metrics.yml's current
+// --docker_only=true / --store_container_labels=false configuration) only
+// exposes root-cgroup-aggregate metrics (id="/", no per-container `name`
+// label) on this system's Docker/OverlayFS configuration — confirmed via
+// cAdvisor's own container logs ("failed to identify the read-write layer
+// ID for container ..." for every single running container). This is a
+// pre-existing cAdvisor configuration/compatibility issue in
+// docker-compose.metrics.yml itself, out of scope for this change to fix,
+// and NOT something to work around by fabricating or guessing a
+// totalRestarts value — it is returned as null, honestly reflecting that
+// per-container metrics are not currently obtainable from this stack as
+// configured, distinct from the target simply being reachable (which
+// `targets.active`/`targets.total` below correctly reports based on
+// Prometheus's own /api/v1/targets `health` field, which does NOT depend
+// on cAdvisor's per-container metric quality — a target can be "up"
+// (reachable, scraping successfully) while still only exposing an
+// incomplete/aggregate metric set).
+export async function addonOpsPrometheusHealth(promBaseUrl = process.env.METRICS_PROMETHEUS_URL || `http://127.0.0.1:${process.env.METRICS_PROMETHEUS_PORT || 9090}`) {
+  try {
+    const healthRes = await fetch(`${promBaseUrl}/-/healthy`, { signal: AbortSignal.timeout(2000) });
+    if (!healthRes.ok) return metricsStackNotRunning();
+  } catch {
+    return metricsStackNotRunning();
+  }
+
+  let active = 0;
+  let total = 0;
+  const services = {};
+  try {
+    const targetsRes = await fetch(`${promBaseUrl}/api/v1/targets`, { signal: AbortSignal.timeout(3000) });
+    const targetsBody = await targetsRes.json();
+    const activeTargets = targetsBody?.data?.activeTargets || [];
+    total = activeTargets.length;
+    for (const t of activeTargets) {
+      const job = t.labels?.job || t.labels?.service || "unknown";
+      const isUp = t.health === "up";
+      if (isUp) active += 1;
+      services[job] = isUp ? "up" : "down";
+    }
+  } catch { }
+
+  const avgCpuPercent = await promScalar(promBaseUrl, `100 - (avg(rate(node_cpu_seconds_total{mode="idle"}[1m])) * 100)`);
+  const memUsedBytes = await promScalar(promBaseUrl, `node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes`);
+
+  // Flat shape (not nested under an extra `data` key) — this return value
+  // becomes the addon-bridge response's `result` field directly (see
+  // server.js's addonBridgeRoute), which becomes exactly what the addon's
+  // web/data-providers.js receives as its raw bridge response and wraps
+  // in its own SourceResult envelope as `.data`. Matches the shape
+  // web/addon.js's renderPrometheus() already expects to read
+  // (result.data.healthy / .targets / .summary).
+  return {
+    healthy: true,
+    targets: { active, inactive: total - active, pending: 0, total },
+    services,
+    summary: {
+      avgCpuPercent: avgCpuPercent === null ? null : Math.round(avgCpuPercent * 10) / 10,
+      avgMemoryMb: memUsedBytes === null ? null : Math.round(memUsedBytes / (1024 * 1024)),
+      // Not computed — see the function-level comment above for the
+      // real, verified reason (cAdvisor per-container metrics are not
+      // currently obtainable from this stack's configuration on this
+      // system). Never estimated from the root-cgroup aggregate or any
+      // other proxy.
+      totalRestarts: null
+    }
+  };
+}
+
+function metricsStackNotRunning() {
+  return {
+    status: "planned",
+    domain: "prometheus",
+    reason: "metrics_stack_not_running",
+    message: "The optional Prometheus metrics stack is not running on this deployment. Run `dune metrics start` to enable it.",
+    summary: {}
+  };
+}
+
+async function promScalar(promBaseUrl, query) {
+  try {
+    const res = await fetch(`${promBaseUrl}/api/v1/query?${new URLSearchParams({ query })}`, { signal: AbortSignal.timeout(3000) });
+    const body = await res.json();
+    const value = body?.data?.result?.[0]?.value?.[1];
+    const num = Number(value);
+    return Number.isFinite(num) ? num : null;
+  } catch {
+    return null;
+  }
+}
 // All Discord-linking state lives in a dedicated `console` schema, NOT
 // in `dune` — the `dune` schema belongs entirely to the game server
 // itself (Funcom's igw-postgres image owns and manages it; every table
