@@ -106,32 +106,31 @@ test("opsCombatProvider returns the real empty shape when player_death_log doesn
   assert.deepEqual(response.result, { totalDeaths: 0, pvpDeaths: 0, pveDeaths: 0, deathsByCause: [], deathsByMap: [], topHostileNpcs: [], kdRatio: null });
 });
 
-test("opsResourcesProvider returns real resource-field data wrapped in { ok, result }", async () => {
-  const db = mockDb({
-    tables: new Set(["resourcefield_state"]),
-    query: (text) => {
-      if (text.includes("from dune.resourcefield_state") && text.includes("count(*)::int as total_fields")) {
-        return { rows: [{ total_fields: 15, total_value: 90000 }] };
-      }
-      if (text.includes("group by map")) {
-        return { rows: [{ map: "DeepDesert", fields: 15, total_value: 90000 }] };
-      }
-      return null;
-    }
-  });
-
-  const response = await opsResourcesProvider({}, db);
+// addonOpsResourcesSummary()'s own full behavior (Deep Desert/Hagga Basin
+// separation, per-instance PvP/PvE resolution, size-tier rows, sorting,
+// empty states) is covered exhaustively in its own dedicated test file
+// (test/addonOpsResourcesSummary.test.js), which uses a real
+// mapCombatState.js resolver sandbox rather than a mock -- that level of
+// detail doesn't belong duplicated here. These two tests only verify
+// opsResourcesProvider's own job: wrap the result in { ok, result} and
+// pass `config` through (needed for the real PvP/PvE resolver's
+// subprocess calls) -- a wiring concern, not a data-correctness one.
+test("opsResourcesProvider wraps addonOpsResourcesSummary's result in { ok, result } and forwards config", async () => {
+  const db = mockDb({ tables: new Set() }); // no world_partition/resourcefield_state -> both sections empty
+  const response = await opsResourcesProvider({ repoRoot: "/tmp", duneScript: "/tmp/dune" }, db);
   assert.equal(response.ok, true);
-  assert.equal(response.result.totalFields, 15);
-  assert.equal(response.result.totalValueRemaining, 90000);
-  assert.ok(Array.isArray(response.result.resourcesByMap));
+  assert.ok("deepDesert" in response.result);
+  assert.ok("haggaBasin" in response.result);
 });
 
-test("opsResourcesProvider returns the real empty shape when resourcefield_state doesn't exist", async () => {
+test("opsResourcesProvider returns the real empty shape (both sections, not a placeholder) when resourcefield_state doesn't exist", async () => {
   const db = mockDb({ tables: new Set() });
   const response = await opsResourcesProvider({}, db);
   assert.equal(response.ok, true);
-  assert.deepEqual(response.result, { totalFields: 0, totalValueRemaining: 0, resourcesByMap: [], spiceFieldsBySize: [] });
+  assert.deepEqual(response.result, {
+    deepDesert: { summary: { totalActiveFields: 0, totalRemainingSpice: 0, pvpInstances: 0, pveInstances: 0, bySize: [] }, instances: [] },
+    haggaBasin: { summary: { totalActiveFields: 0, totalRemainingSpice: 0, pvpInstances: 0, pveInstances: 0, bySize: [] }, instances: [] }
+  });
 });
 
 test("opsEconomyProvider returns real economy data wrapped in { ok, result }", async () => {
@@ -293,7 +292,15 @@ test("opsDashboardProvider aggregates a mix of real data and planned placeholder
   assert.equal(response.dashboard.activity.ok, true);
   assert.equal(response.dashboard.activity.result.totalPlayers, 5);
   assert.equal(response.dashboard.combat.result.totalDeaths, 1);
-  assert.equal(response.dashboard.resources.result.totalFields, 3);
+  // resources is real too, but this mock db has no world_partition table,
+  // so both Deep Desert and Hagga Basin sections legitimately come back
+  // in their own genuine empty shape (no instances currently provisioned
+  // for either map in this mock) -- addonOpsResourcesSummary's own
+  // dedicated test file covers the full instance/PvP-PvE/size-tier
+  // behavior with a real mapCombatState.js resolver sandbox.
+  assert.equal(response.dashboard.resources.ok, true);
+  assert.deepEqual(response.dashboard.resources.result.deepDesert.instances, []);
+  assert.deepEqual(response.dashboard.resources.result.haggaBasin.instances, []);
   assert.equal(response.dashboard.economy.result.totalCurrencyHolders, 1);
   assert.equal(response.dashboard.inventory.result.totalItems, 2);
   assert.equal(response.dashboard.inventory.result.totalCrafted, null);

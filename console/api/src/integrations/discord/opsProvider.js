@@ -85,7 +85,7 @@ export async function opsCombatProvider(config, db) {
 }
 
 export async function opsResourcesProvider(config, db) {
-  const result = await addonOpsResourcesSummary(db);
+  const result = await addonOpsResourcesSummary(db, config);
   return { ok: true, result };
 }
 

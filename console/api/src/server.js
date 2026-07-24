@@ -624,7 +624,7 @@ async function addonBridgeRoute(req, res, path) {
   }
   if (action === "ops.resources.summary") {
     const addon = assertInstalledAddonPermission(config, id, "ops:read");
-    const result = await duneDb.addonOpsResourcesSummary(db);
+    const result = await duneDb.addonOpsResourcesSummary(db, config);
     audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, ok: true });
     return json(res, 200, { ok: true, result });
   }

@@ -1,5 +1,6 @@
 import { assertIdentifier, intParam, isReadOnlySql, quoteIdentifier, quoteQualified, rowsResult } from "./db.js";
 import { getBridgeRequestSummary } from "./audit.js";
+import { resolveMapCombatState } from "./services/mapCombatState.js";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
@@ -4488,63 +4489,235 @@ function emptyActivitySummary() {
   };
 }
 
-export async function addonOpsResourcesSummary(db) {
+// Display-map-name -> server-partition-map-name alias, for joining spice
+// data (dune.resourcefield_state/spicefield_types, keyed by the in-game
+// display map name e.g. "HaggaBasin"/"DeepDesert") to partition/combat-state
+// data (dune.world_partition, keyed by the server-instance map name e.g.
+// "Survival_1"/"DeepDesert_1"). This is the SAME real, already-used
+// alias table server.js's mapChatServerMaps() defines — duplicated here
+// (not imported) only because server.js imports duneDb.js, not the
+// reverse, and importing server.js from here would be circular. Keep
+// these two lists in sync if either display map ever gets a different
+// underlying partition map name.
+const SPICE_MAP_PARTITION_ALIAS = {
+  HaggaBasin: "Survival_1",
+  DeepDesert: "DeepDesert_1"
+};
+
+// Which spice field sizes each map supports by design, independent of
+// which sizes happen to have a live spicefield_types row on any given
+// server (a size can be a real, supported category for a map even if
+// zero fields of that size are currently spawned anywhere). Hagga Basin
+// currently only spawns Small fields in this game version — verified
+// directly against a live, populated deployment (no Medium/Large
+// spicefield_types rows exist for HaggaBasin on any known real server).
+// Deep Desert supports all three sizes. If a future game update adds
+// Medium/Large to Hagga Basin, or a new size to either map, this table
+// must be updated to match — it is intentionally not auto-derived from
+// whatever a single server's spicefield_types rows happen to contain,
+// so a quiet/freshly-reset server doesn't misreport its own map as
+// supporting fewer sizes than it actually does.
+const SUPPORTED_SIZES_BY_DISPLAY_MAP = {
+  DeepDesert: ["Small", "Medium", "Large"],
+  HaggaBasin: ["Small"]
+};
+
+// addonOpsResourcesSummary: Deep Desert / Hagga Basin spice-field summary
+// for the OPS observability addon's Spice Melange tab, separated by map
+// and by instance/sietch (dune.world_partition row, keyed by
+// dimension_index), each annotated with its real, config-resolved PvP/PvE
+// state (services/mapCombatState.js — never inferred from dimension_index,
+// labels, or lifecycle mode).
+//
+// Verified live against a real deployment before writing this: confirmed
+// resourcefield_state has real per-field value_remaining but NO size-tier
+// label; spicefield_types has real per-size active-field counts but NO
+// remaining-spice column; there is no shared join key between them (no
+// common field-instance id) and no evidence of a fixed value-per-size
+// relationship (all live fields observed had identical value_remaining
+// regardless of size, and no static per-size capacity/value config exists
+// anywhere in the schema). Given that, per-size "active fields" is real
+// and reported; per-size "remaining spice" has no real source and is
+// reported as null, never estimated or apportioned from the map-level
+// total by ratio -- that would be exactly the fabrication anti-pattern
+// this whole effort exists to eliminate. The map/dimension-level total
+// remaining spice IS real (summed directly from resourcefield_state) and
+// is reported at the instance and summary level.
+export async function addonOpsResourcesSummary(db, config) {
   if (!(await tableExists(db, "resourcefield_state"))) return emptyResourcesSummary();
 
-  const result = await db.query(`
-    select count(*)::int as total_fields,
-           coalesce(sum(value_remaining), 0)::bigint as total_value
+  const deepDesert = await resourcesSectionForDisplayMap(db, config, "DeepDesert");
+  const haggaBasin = await resourcesSectionForDisplayMap(db, config, "HaggaBasin");
+
+  return { deepDesert, haggaBasin };
+}
+
+// Builds one map's (Deep Desert's or Hagga Basin's) full section: real
+// per-instance/sietch rows (each with real PvP/PvE state, real per-size
+// active-field counts, and real total remaining spice), plus a summary
+// aggregated ONLY from the instances actually returned -- never from
+// hidden, filtered, or historical records, per the addon's own
+// requirements.
+async function resourcesSectionForDisplayMap(db, config, displayMap) {
+  const partitionMap = SPICE_MAP_PARTITION_ALIAS[displayMap];
+  const emptySection = {
+    summary: emptyResourcesSectionSummary(),
+    instances: []
+  };
+  if (!partitionMap) return emptySection;
+
+  // Real per-instance/dimension identity + runtime status, from the same
+  // query the Console's own map-combat-state route already uses
+  // (server.js's mapCombatStateRoute -> mapCombatPartitionRows). A
+  // successful, empty result here (no world_partition rows for this map)
+  // is a normal, valid "no instances currently provisioned" state --
+  // e.g. Deep Desert with nothing spawned -- never treated as an error.
+  const partitionResult = await mapCombatPartitionRows(db, partitionMap);
+  if (partitionResult.capabilities?.combatState === false || !partitionResult.rows.length) {
+    return emptySection;
+  }
+
+  const partitionRows = partitionResult.rows.map((row) => ({
+    partitionId: row.partition_id,
+    dimensionIndex: row.dimension_index,
+    databaseLabel: row.database_label || null,
+    serverId: row.server_id || "",
+    ready: Boolean(row.ready),
+    alive: Boolean(row.alive),
+    blocked: Boolean(row.blocked)
+  }));
+
+  // Real, config-resolved PvP/PvE per instance -- never inferred from
+  // dimension_index, label, or lifecycle. Resolver failures degrade to
+  // "UNKNOWN" per-partition (see mapCombatState.js's own error handling)
+  // rather than throwing and losing the whole section.
+  let combatState;
+  try {
+    combatState = await resolveMapCombatState(config, partitionMap, partitionRows);
+  } catch {
+    combatState = { map: partitionMap, mapState: "UNKNOWN", partitions: partitionRows.map((p) => ({ ...p, configuredState: "UNKNOWN" })) };
+  }
+  const combatStateByDimension = new Map(combatState.partitions.map((p) => [Number(p.dimensionIndex), p]));
+
+  // Real per-dimension field totals (count + summed remaining spice) --
+  // ground truth, counted directly from live field rows, not a
+  // separately-maintained counter.
+  const totalsResult = await db.query(`
+    select dimension_index,
+           count(*)::int as active_fields,
+           coalesce(sum(value_remaining), 0)::bigint as remaining_spice
     from dune.resourcefield_state
-    where field_kind_id = 1`);
+    where map = $1 and field_kind_id = 1
+    group by dimension_index`, [displayMap]);
+  const totalsByDimension = new Map(totalsResult.rows.map((r) => [Number(r.dimension_index), { activeFields: Number(r.active_fields || 0), remainingSpice: Number(r.remaining_spice || 0) }]));
 
-  const r = result.rows?.[0] || {};
-
-  let resourcesByMap = [];
+  // Real per-dimension, per-size active-field counts -- the only size-tier
+  // data this schema has (see the function-level comment above for why
+  // remaining spice cannot be broken down by size).
+  let sizesByDimension = new Map();
   try {
-      const mapResult = await db.query(`
-        select map,
-               count(*)::int as fields,
-               coalesce(sum(value_remaining), 0)::bigint as total_value
-        from dune.resourcefield_state
-        where field_kind_id = 1
-        group by map
-        order by fields desc`);
-    resourcesByMap = mapResult.rows || [];
-  } catch { }
-
-  let spiceFieldsBySize = [];
-  try {
-    const spiceExists = await tableExists(db, "spicefield_types");
-    if (spiceExists) {
-      const spiceResult = await db.query(`
-        select sft.field_type as size,
-               sft.map_name as map,
-               coalesce(sum(sft.current_globally_active), 0)::int as currently_active,
-               coalesce(sum(sft.max_globally_active), 0)::int as max_active,
-               (select coalesce(sum(value_remaining), 0)::bigint
-                from dune.resourcefield_state rfs
-                where rfs.map = sft.map_name and rfs.field_kind_id = 1) as total_value,
-               (select count(*)::int
-                from dune.resourcefield_state rfs
-                where rfs.map = sft.map_name and rfs.field_kind_id = 1) as active_fields
-        from dune.spicefield_types sft
-        where sft.is_spawning_active = true
-        group by sft.field_type, sft.map_name
-        order by sft.map_name, sft.field_type`);
-      spiceFieldsBySize = spiceResult.rows || [];
+    const sizesExist = await tableExists(db, "spicefield_types");
+    if (sizesExist) {
+      const sizesResult = await db.query(`
+        select dimension_index, field_type, coalesce(current_globally_active, 0)::int as active_fields
+        from dune.spicefield_types
+        where map_name = $1
+        order by dimension_index, field_type`, [displayMap]);
+      for (const row of sizesResult.rows) {
+        const dim = Number(row.dimension_index);
+        if (!sizesByDimension.has(dim)) sizesByDimension.set(dim, []);
+        sizesByDimension.get(dim).push({ size: row.field_type, activeFields: Number(row.active_fields || 0), remainingSpice: null });
+      }
     }
   } catch { }
 
-  return {
-    totalFields: Number(r.total_fields || 0),
-    totalValueRemaining: Number(r.total_value || 0),
-    resourcesByMap,
-    spiceFieldsBySize
+  const instances = partitionRows
+    .map((row) => {
+      const dim = Number(row.dimensionIndex);
+      const combat = combatStateByDimension.get(dim);
+      const totals = totalsByDimension.get(dim) || { activeFields: 0, remainingSpice: 0 };
+      // Every size tier this map supports BY DESIGN must appear as a row,
+      // even at 0 active fields for this specific instance -- a reporting
+      // instance with no active Small fields shows Small: 0, never an
+      // omitted row (0 is a valid, real value; omission would look like
+      // missing data). Deliberately keyed off the fixed
+      // SUPPORTED_SIZES_BY_DISPLAY_MAP table, not off whatever sizes
+      // happen to have a live spicefield_types row today -- a size that
+      // is real for this map but has zero fields spawned anywhere right
+      // now must still show as a real 0, not be silently dropped from
+      // the row list entirely.
+      const supportedSizes = SUPPORTED_SIZES_BY_DISPLAY_MAP[displayMap] || allKnownSizesForDisplayMap(sizesByDimension);
+      const sizesForThisDimension = sizesByDimension.get(dim) || [];
+      const sizesByName = new Map(sizesForThisDimension.map((s) => [s.size, s]));
+      const sizes = supportedSizes.map((size) => sizesByName.get(size) || { size, activeFields: 0, remainingSpice: null });
+
+      return {
+        partitionId: row.partitionId,
+        dimensionIndex: dim,
+        // A real, human display name: prefer world_partition.label (e.g.
+        // "Sietch Abbir"); fall back to a stable, non-fabricated
+        // "<Map> <dimension>" identifier if no label was ever set --
+        // never invent a name.
+        name: row.databaseLabel || `${displayMap} ${dim}`,
+        runtimeStatus: combat?.runtimeStatus || "UNKNOWN",
+        // PVP/PVE/CONFLICT/UNKNOWN, normalized uppercase per
+        // mapCombatState.js's own contract -- never re-derived here.
+        combatState: combat?.configuredState || "UNKNOWN",
+        activeFields: totals.activeFields,
+        remainingSpice: totals.remainingSpice,
+        sizes
+      };
+    })
+    // Natural sort by dimensionIndex (Deep Desert's real numbering) with
+    // a stable fallback to name for maps where dimensionIndex ties (not
+    // expected today, but a defensible, deterministic order if it ever
+    // happens) -- NOT alphabetical by name for Deep Desert (its identity
+    // is numeric), matching the addon's own natural-sort requirement for
+    // Deep Desert vs. alphabetical-by-name for Hagga Basin, which the
+    // addon's own rendering layer applies per section.
+    .sort((a, b) => a.dimensionIndex - b.dimensionIndex);
+
+  const summary = {
+    totalActiveFields: instances.reduce((sum, i) => sum + i.activeFields, 0),
+    totalRemainingSpice: instances.reduce((sum, i) => sum + i.remainingSpice, 0),
+    pvpInstances: instances.filter((i) => i.combatState === "PVP").length,
+    pveInstances: instances.filter((i) => i.combatState === "PVE").length,
+    bySize: aggregateSizesAcrossInstances(instances)
   };
+
+  return { summary, instances };
+}
+
+function allKnownSizesForDisplayMap(sizesByDimension) {
+  const sizes = new Set();
+  for (const rows of sizesByDimension.values()) {
+    for (const row of rows) sizes.add(row.size);
+  }
+  // Stable, canonical ordering when multiple sizes exist; falls back to
+  // whatever was actually found (never fabricates a size that doesn't
+  // appear anywhere in the real data).
+  const order = ["Small", "Medium", "Large"];
+  return [...sizes].sort((a, b) => (order.indexOf(a) === -1 ? 99 : order.indexOf(a)) - (order.indexOf(b) === -1 ? 99 : order.indexOf(b)));
+}
+
+function aggregateSizesAcrossInstances(instances) {
+  const bySize = new Map();
+  for (const instance of instances) {
+    for (const s of instance.sizes) {
+      const entry = bySize.get(s.size) || { size: s.size, activeFields: 0 };
+      entry.activeFields += s.activeFields;
+      bySize.set(s.size, entry);
+    }
+  }
+  return [...bySize.values()];
+}
+
+function emptyResourcesSectionSummary() {
+  return { totalActiveFields: 0, totalRemainingSpice: 0, pvpInstances: 0, pveInstances: 0, bySize: [] };
 }
 
 function emptyResourcesSummary() {
-  return { totalFields: 0, totalValueRemaining: 0, resourcesByMap: [], spiceFieldsBySize: [] };
+  return { deepDesert: { summary: emptyResourcesSectionSummary(), instances: [] }, haggaBasin: { summary: emptyResourcesSectionSummary(), instances: [] } };
 }
 
 export async function addonOpsCombatDeaths(db) {
