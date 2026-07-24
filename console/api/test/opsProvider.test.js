@@ -223,10 +223,11 @@ test("opsSocProvider returns a real, non-placeholder shape reflecting the in-mem
   assert.ok(["Unknown", "Healthy", "Degraded"].includes(response.result.platformHealth));
 });
 
-// The one remaining OPS domain with an unresolved privacy consideration
-// blocking a wire-up (location — see dune-ops-observability-addon's
-// docs/tabs/LOCATION.md) must remain unchanged "status: planned" — do
-// not fabricate data for it.
+// Location is intentionally, permanently out of scope for this addon
+// (per-player real-time location tracking already belongs to the
+// Console's own map UI, not an OPS-metrics addon — decided 2026-07-24)
+// and must remain a permanent "status: planned" placeholder — do not
+// wire real data for it.
 test("the one untouched OPS provider still returns a status: planned placeholder", async () => {
   const db = mockDb();
   const response = await opsLocationProvider({}, db);

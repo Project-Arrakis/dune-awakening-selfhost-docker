@@ -86,9 +86,10 @@ test("reports adapter health with isolated link-state writes", async () => {
   // rolling counter over the audit log, prometheus via a real HTTP
   // integration against an optional metrics stack that may itself report
   // "not running", neither a SQL query like the other five). The
-  // remaining OPS route (location) has an unresolved privacy
-  // consideration blocking a wire-up — see dune-ops-observability-addon's
-  // docs/tabs/LOCATION.md — and is still correctly reported as planned.
+  // remaining OPS route (location) is intentionally, permanently out of
+  // scope for this addon (per-player location tracking already belongs
+  // to the Console's own map UI — decided 2026-07-24) and is correctly,
+  // permanently reported as planned.
   assert.ok(result.plannedRoutes.includes("/api/integrations/discord/ops/location"));
   assert.ok(!result.liveRoutes.includes("/api/integrations/discord/ops/location"));
   assert.ok(result.liveRoutes.includes("/api/integrations/discord/ops/soc"));
@@ -944,8 +945,10 @@ test("ops/activity, ops/inventory, ops/soc, and ops/prometheus routes return rea
           assert.equal(prometheusBody.result.reason, "metrics_stack_not_running", "must report the specific reason, distinct from a generically unimplemented route");
 
           // A route with no backing query (or an unresolved privacy
-          // consideration, for location) is untouched and still returns
-          // its placeholder shape through the same dispatch path.
+          // consideration, for location — which is intentionally,
+          // permanently out of scope for this addon) is untouched and
+          // still returns its placeholder shape through the same
+          // dispatch path.
           const locationResponse = await fetch(`${base}/api/integrations/discord/ops/location`, {
             method: "POST",
             headers: { ...auth, "content-type": "application/json" },

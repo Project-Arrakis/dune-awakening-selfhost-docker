@@ -29,15 +29,15 @@
 // per-container restart counts from ever being real — that field is
 // always null, deliberately, not estimated.
 //
-// The remaining one (location, and dashboard's reference to it) has no
-// backing query anywhere in this codebase that doesn't carry an
-// unresolved privacy consideration — see dune-ops-observability-addon's
-// docs/tabs/LOCATION.md for why location specifically is not a simple
-// "wire it up" case (real live-map data exists, but most of it is
-// individually-identifying, real-time-coordinate data with a materially
-// different privacy posture than every aggregate-only OPS source
-// implemented so far — that needs an explicit maintainer decision, not a
-// unilateral wire-up).
+// The remaining one (location, and dashboard's reference to it) is
+// intentionally, permanently out of scope for this addon (decided
+// 2026-07-24) — per-player real-time location tracking already belongs
+// to, and is already surfaced by, the Console's own map UI
+// (duneDb.liveMapMarkers/liveMapPlayers and siblings); this addon's scope
+// is aggregate operational/observability metrics (AAA-style NOC/SOC KPIs),
+// not per-player tracking. This is a design decision, not a gap awaiting
+// a maintainer call — do not wire opsLocationProvider to real per-player
+// data.
 
 import {
   addonOpsActivitySummary,
@@ -99,13 +99,15 @@ export async function opsInventoryProvider(config, db) {
   return { ok: true, result };
 }
 
-// Signature kept as (config, db) for consistency with the real providers
-// above, even though this placeholder doesn't use db yet — the real
-// backing data that exists for location (duneDb.liveMapMarkers and
-// siblings) has an unresolved privacy consideration requiring an explicit
-// maintainer decision before it can be wired — see
-// dune-ops-observability-addon's docs/tabs/LOCATION.md. Do not implement
-// this from Core without that decision.
+// Decided (2026-07-24), not a pending TODO: per-player real-time location
+// tracking (duneDb.liveMapMarkers/liveMapPlayers and siblings) stays out
+// of this addon by design — that data already belongs to, and is already
+// surfaced by, the Console's own map UI (session-authed, admin-only). This
+// addon's scope is aggregate operational/observability metrics (AAA-style
+// NOC/SOC KPIs — population, combat, economy, inventory, platform health),
+// not per-player tracking. Signature kept as (config, db) for consistency
+// with the real providers above, even though this placeholder doesn't use
+// db — there is no plan to wire this from Core.
 export async function opsLocationProvider(config, db) {
   // TODO: return await opsBridgeRequest(config, "ops.location.activity");
   return opsPlaceholder("location");
@@ -125,7 +127,8 @@ export async function opsSocProvider(config, db) {
 // the "not running" branch here — the consumer (Discord bot or addon)
 // is responsible for reading `result.status` to tell real data from
 // "not currently available", same as opsPlaceholder()'s shape already
-// requires for opsLocationProvider.
+// requires for opsLocationProvider (which, unlike this one, has no real
+// data source planned at all — see that provider's own comment).
 export async function opsPrometheusProvider(config, db) {
   const result = await addonOpsPrometheusHealth();
   return { ok: true, result };
@@ -136,10 +139,12 @@ export async function opsDashboardProvider(config, db) {
   // resources, economy, inventory, soc, prometheus) now return real data
   // (prometheus conditionally — see addonOpsPrometheusHealth's own
   // comment for why it may itself report "not running"); the remaining
-  // one (location) remains a "status: planned" placeholder. This
-  // intentionally produces a mixed shape — that is the correct, honest
-  // reflection of Core's actual current state, not something to hide or
-  // special-case.
+  // one (location) is a permanent "status: planned" placeholder by
+  // design — per-player location tracking is intentionally out of scope
+  // for this addon (see opsLocationProvider's own comment), not a gap
+  // waiting to be filled. This intentionally produces a mixed shape —
+  // that is the correct, honest reflection of Core's actual current
+  // state, not something to hide or special-case.
   const results = await Promise.allSettled([
     opsActivityProvider(config, db), opsCombatProvider(config, db),
     opsResourcesProvider(config, db), opsEconomyProvider(config, db),
