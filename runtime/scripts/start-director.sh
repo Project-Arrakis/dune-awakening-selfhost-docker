@@ -10,6 +10,7 @@ cd "$(dirname "$0")/../.."
 source runtime/scripts/host-paths.sh
 source runtime/scripts/runtime-env.sh
 source runtime/scripts/image-tags.sh
+source runtime/scripts/generated-file-paths.sh
 WORLD_IMAGE_TAG="$(resolve_world_image_tag)"
 IMAGE="registry.funcom.com/funcom/self-hosting/seabass-server-bg-director:${WORLD_IMAGE_TAG}"
 DIRECTOR_PORT="$(resolve_director_port)"
@@ -57,10 +58,7 @@ mkdir -p runtime/director/config
 mkdir -p runtime/generated/director-bundle
 mkdir -p "$FAKE_K8S_SERVICEACCOUNT_DIR"
 
-if [ -d runtime/director/config/director_config.ini ]; then
-  echo "Repairing generated director config path..."
-  rm -rf runtime/director/config/director_config.ini
-fi
+repair_generated_file_path runtime/director/config/director_config.ini
 
 cat > runtime/director/config/director_config.ini <<'EOF'
 [Battlegroup]
