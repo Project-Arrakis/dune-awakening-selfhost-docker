@@ -270,9 +270,8 @@ describe("PlayerSummary", () => {
         />
       );
       await waitFor(() => {
-        expect(screen.getByText("Alignment")).toBeInTheDocument();
+        expect(screen.getByText("Reputation")).toBeInTheDocument();
       });
-      expect(screen.getByText("Reputation")).toBeInTheDocument();
     });
 
     it("hides the Reputation sub-heading when the factions capability is unsupported", async () => {
@@ -329,7 +328,7 @@ describe("PlayerSummary", () => {
   });
 
   describe("Database Identity", () => {
-    it("renders Actor / Player, Account, Player Controller, and Player State in one table", async () => {
+    it("renders DB Player, Account, Player Controller, and Player State in one table", async () => {
       render(
         <PlayerSummary
           {...baseProps}
@@ -350,15 +349,15 @@ describe("PlayerSummary", () => {
 
       const block = screen.getByText("Database Identity").closest(".summary-block");
       expect(block).not.toBeNull();
-      expect(screen.getByText("Actor / Player").closest(".summary-block")).toBe(block);
+      expect(screen.getByText("DB Player").closest(".summary-block")).toBe(block);
       expect(screen.getByText("Player State").closest(".summary-block")).toBe(block);
 
       const table = screen.getByText("Account").closest("table");
       expect(table).not.toBeNull();
       expect(table!.querySelectorAll("tr")).toHaveLength(4);
 
-      const actorRow = screen.getByText("Actor / Player").closest("tr");
-      expect(actorRow?.textContent).toContain("91");
+      const dbPlayerRow = screen.getByText("DB Player").closest("tr");
+      expect(dbPlayerRow?.textContent).toContain("91");
     });
 
     it("shows zero-sentinel IDs as em dashes", async () => {
@@ -465,7 +464,7 @@ describe("PlayerSummary", () => {
 
   describe("Vitals", () => {
     it("renders Health, Hydration, and Spice Addiction when vitals are supported", async () => {
-      vi.mocked(playersApi.vitals).mockResolvedValue({ capabilities: { vitals: true }, currentHealth: 175, maxHealth: 205, hydration: 84, maxHydration: 100, spiceAddictionLevel: 8, maxSpiceAddictionLevel: 10 });
+      vi.mocked(playersApi.vitals).mockResolvedValue({ capabilities: { vitals: true }, currentHealth: 175, maxHealth: 205, maxHealthEstimated: true, hydration: 84, maxHydration: 100, spiceAddictionLevel: 8, maxSpiceAddictionLevel: 10 });
       render(
         <PlayerSummary
           {...baseProps}
@@ -475,7 +474,7 @@ describe("PlayerSummary", () => {
       );
       await waitFor(() => {
         expect(screen.getByText("Health")).toBeInTheDocument();
-        expect(screen.getByText("175 / 205")).toBeInTheDocument();
+        expect(screen.getByText("175 / 205 (estimated max)")).toBeInTheDocument();
         expect(screen.getByText("Hydration")).toBeInTheDocument();
         expect(screen.getByText("84 / 100")).toBeInTheDocument();
         expect(screen.getByText("Spice Addiction")).toBeInTheDocument();
