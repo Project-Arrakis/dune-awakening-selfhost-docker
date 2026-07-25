@@ -4172,6 +4172,11 @@ function buildItemStats({ templateId = "", augments = [], durability = {}, rollP
     FCustomizationStats: [[], {}],
     FItemStackAndDurabilityStats: [[], durabilityObj]
   }, durability);
+  if (isStandaloneAugmentTemplate(templateId)) {
+    const payload = rollPayloads.get(templateId)?.rollData;
+    if (!payload) throw new Error(`Cannot build standalone augment payload for: ${templateId}.`);
+    stats.FAugmentItemStats = [[], payload];
+  }
   if (augments.length > 0) stats.FAugmentedItemStats = buildAugmentedItemStats(augments, rollPayloads);
   return stats;
 }
@@ -4396,7 +4401,13 @@ export async function giveItemToStorage(db, storageId, { itemName = "", itemId =
     const currentCount = Number(count.rows[0]?.count || 0);
     if (inventory.max_item_count > 0 && currentCount >= inventory.max_item_count) throw new Error("Storage is full by item slot count");
     const position = await tx.query("select coalesce(max(position_index), -1)::int + 1 as position_index from dune.items where inventory_id = $1", [inventory.id]);
-    const rollPayloads = await loadAugmentRollPayloads(tx, augmentIds, augmentQualityLevel, { sourceTemplateId: resolvedTemplate });
+    const standaloneAugment = isStandaloneAugmentTemplate(resolvedTemplate);
+    const rollPayloads = await loadAugmentRollPayloads(
+      tx,
+      standaloneAugment ? [resolvedTemplate] : augmentIds,
+      standaloneAugment ? qualityLevel : augmentQualityLevel,
+      { sourceTemplateId: resolvedTemplate }
+    );
     const stats = buildItemStats({ templateId: resolvedTemplate, augments: augmentIds, rollPayloads });
     const insert = itemInsertShape(
       ["inventory_id", "template_id", "stack_size", "quality_level", "position_index", "stats"],
@@ -4446,7 +4457,13 @@ export async function giveItemToPlayer(db, playerId, { itemName = "", itemId = "
     if (inv.max_item_count > 0 && currentCount >= inv.max_item_count) throw new Error("Player inventory is full by item slot count");
     const position = await tx.query("select coalesce(max(position_index), -1)::int + 1 as position_index from dune.items where inventory_id = $1", [inv.id]);
     const slotUnlocks = await ensureAugmentSlotKeystones(tx, player, resolvedTemplate, augmentIds);
-    const rollPayloads = await loadAugmentRollPayloads(tx, augmentIds, augmentQualityLevel, { sourceTemplateId: resolvedTemplate });
+    const standaloneAugment = isStandaloneAugmentTemplate(resolvedTemplate);
+    const rollPayloads = await loadAugmentRollPayloads(
+      tx,
+      standaloneAugment ? [resolvedTemplate] : augmentIds,
+      standaloneAugment ? qualityLevel : augmentQualityLevel,
+      { sourceTemplateId: resolvedTemplate }
+    );
     const stats = buildItemStats({ templateId: resolvedTemplate, augments: augmentIds, durability: { current: 100, max: 100 }, rollPayloads });
     const insert = itemInsertShape(
       ["inventory_id", "template_id", "stack_size", "quality_level", "position_index", "stats"],
