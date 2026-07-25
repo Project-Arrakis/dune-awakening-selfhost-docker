@@ -304,8 +304,12 @@ publish_snapshot_once() {
 import json
 import os
 import subprocess
+import sys
 import time
 from pathlib import Path
+
+sys.path.insert(0, "runtime/scripts")
+import usersettings  # noqa: E402
 
 config_path = Path("runtime/generated/sietch-config.json")
 config = json.loads(config_path.read_text()) if config_path.exists() else {"partitions": {}}
@@ -339,43 +343,65 @@ result = subprocess.run(
     capture_output=True,
 )
 
-defaults = {
-    "Difficulty": "Custom",
-    "CoreSettings": {
-        "serverDisplayName": "",
-        "doubleDifficultyLoot": "False",
-    },
-    "SurvivalSettings": {
-        "hydrationEnabled": "True",
-        "sandstormEnabled": "0",
-        "sandStormAutoSpawn": "True",
-        "sandStormCoriolisAutoSpawnEnabled": "True",
-        "sandStormTreasureEnabled": "1",
-        "sandwormEnabled": "1",
-        "sandwormSpawningType": "0",
-        "sandwormDangerZonesEnabled": "True",
-        "vehicleSandwormCollisionInteraction": "False",
-        "vehicleSandwormInvulnerabilitySecondsOnExit": "900.0",
-        "vehicleSandwormInvulnerabilitySecondsOnServerRestart": "7200.0",
-    },
-    "CombatSettings": {
-        "securityZonesForceEnablePvp": "False",
-        "areSecurityZonesEnabled": "True",
-        "shouldForceEnablePvpOnAllPartitions": "False",
+usersettings_config = usersettings.load_config()
+
+
+def combat_settings_for_partition(partition_id: str) -> dict:
+    """Resolve this partition's PvP/PvE combat state via the canonical
+    resolver (the same merged UserGame.ini logic used by
+    `usersettings.py partition-values`) instead of publishing a single
+    hard-coded CombatSettings block for every Survival_1 partition/Sietch.
+
+    PvP/PvE-affecting fields are omitted entirely when the partition's
+    combat state cannot be determined (UNKNOWN/CONFLICT), rather than
+    publishing a guessed value.
+    """
+    values = usersettings.merged_partition_values(
+        usersettings_config, "Survival_1", str(partition_id)
+    )
+    publication = usersettings.combat_settings_for_publication(values, string_values=True)
+
+    settings = {
         "itemDeteriorationUpdateRate": "1.0",
         "vehicleDurabilityDamageMultiplier": "1.0",
         "inventoryDecayedMaxDurabilityThreshold": "0.2",
-    },
-    "HarvestingSettings": {
-        "miningOutputMultiplier": "1.0",
-        "vehicleMiningOutputMultiplier": "1.0",
-        "securityZonesPvpResourceMultiplier": "2.5",
-    },
-    "PersistenceSettings": {
-        "buildingBlueprintMaxExtensions": "4",
-        "baseBackupMaxExtensions": "8",
-    },
-}
+    }
+    settings.update(publication["settings"])
+    return settings
+
+
+def gameplay_settings_for_partition(partition_id: str) -> dict:
+    return {
+        "Difficulty": "Custom",
+        "CoreSettings": {
+            "serverDisplayName": "",
+            "doubleDifficultyLoot": "False",
+        },
+        "SurvivalSettings": {
+            "hydrationEnabled": "True",
+            "sandstormEnabled": "0",
+            "sandStormAutoSpawn": "True",
+            "sandStormCoriolisAutoSpawnEnabled": "True",
+            "sandStormTreasureEnabled": "1",
+            "sandwormEnabled": "1",
+            "sandwormSpawningType": "0",
+            "sandwormDangerZonesEnabled": "True",
+            "vehicleSandwormCollisionInteraction": "False",
+            "vehicleSandwormInvulnerabilitySecondsOnExit": "900.0",
+            "vehicleSandwormInvulnerabilitySecondsOnServerRestart": "7200.0",
+        },
+        "CombatSettings": combat_settings_for_partition(partition_id),
+        "HarvestingSettings": {
+            "miningOutputMultiplier": "1.0",
+            "vehicleMiningOutputMultiplier": "1.0",
+            "securityZonesPvpResourceMultiplier": "2.5",
+        },
+        "PersistenceSettings": {
+            "buildingBlueprintMaxExtensions": "4",
+            "baseBackupMaxExtensions": "8",
+        },
+    }
+
 
 for line in result.stdout.splitlines():
     if not line.strip():
@@ -399,7 +425,7 @@ for line in result.stdout.splitlines():
         "playerHardCapOverride": -1,
         "wauCapCurve": -1,
         "players": [],
-        "serverGameplaySettings": json.loads(json.dumps(defaults)),
+        "serverGameplaySettings": gameplay_settings_for_partition(partition_id),
     }
     if game_addr:
         payload["ip"] = game_addr
@@ -434,8 +460,12 @@ forward_batch_once() {
 import json
 import os
 import subprocess
+import sys
 import time
 from pathlib import Path
+
+sys.path.insert(0, "runtime/scripts")
+import usersettings  # noqa: E402
 
 messages = json.loads(os.environ["FILTER_MESSAGES"])
 config_path = Path(os.environ["FILTER_CONFIG_PATH"])
@@ -472,6 +502,21 @@ for line in endpoint_rows_raw.splitlines():
     partition_id, game_addr, game_port = line.split("\t", 2)
     endpoint_by_partition[partition_id] = (game_addr, game_port)
 
+usersettings_config = usersettings.load_config()
+
+
+def resolved_force_all_pvp_flag(partition_id: str):
+    """Resolve shouldForceEnablePvpOnAllPartitions from the canonical
+    resolver rather than silently defaulting a missing field to False.
+    Returns None when the partition's combat state cannot be determined,
+    so the caller can omit the field entirely instead of guessing."""
+    values = usersettings.merged_partition_values(
+        usersettings_config, "Survival_1", str(partition_id)
+    )
+    publication = usersettings.combat_settings_for_publication(values)
+    return publication["settings"].get("shouldForceEnablePvpOnAllPartitions")
+
+
 latest_by_partition = {}
 for message in messages:
     payload = json.loads(message["payload"])
@@ -507,7 +552,11 @@ for offset, partition_id in enumerate(sorted(latest_by_partition, key=lambda val
     core["serverDisplayName"] = display_name
     combat = gameplay.setdefault("CombatSettings", {})
     if combat.get("shouldForceEnablePvpOnAllPartitions") in ("", None):
-        combat["shouldForceEnablePvpOnAllPartitions"] = False
+        resolved_flag = resolved_force_all_pvp_flag(partition_id)
+        if resolved_flag is not None:
+            combat["shouldForceEnablePvpOnAllPartitions"] = resolved_flag
+        else:
+            combat.pop("shouldForceEnablePvpOnAllPartitions", None)
     payload["reportTimestamp"] = max(base_timestamp + offset, int(payload.get("reportTimestamp", 0) or 0) + 1)
     print(json.dumps(payload, separators=(",", ":")))
 PY
