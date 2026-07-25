@@ -1,3 +1,4 @@
+name: dune-awakening-selfhost-docker
 services:
   dune-prometheus:
     image: ${METRICS_PROMETHEUS_IMAGE:-quay.io/prometheus/prometheus:v3.5.0}

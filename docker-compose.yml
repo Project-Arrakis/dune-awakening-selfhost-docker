@@ -1,3 +1,4 @@
+name: dune-awakening-selfhost-docker
 services:
   orchestrator:
     build:
