@@ -2447,7 +2447,7 @@ const BASE_NAME_SQL = `case
   else 'Unnamed Base'
 end`;
 
-export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColumn = "name", sortDirection = "asc" } = {}) {
+export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColumn = "name", sortDirection = "asc", includeGenerators = true } = {}) {
   const requiredTables = ["buildings", "building_instances", "actor_fgl_entities", "actors"];
   for (const table of requiredTables) {
     if (!(await tableExists(db, table))) {
@@ -2583,6 +2583,15 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
              (select count(*) from dune.building_instances bi join valid_bases vb on vb.building_id = bi.building_id)::int as total_pieces,
              (select count(distinct pl.id) from dune.placeables pl join valid_bases vb on vb.owner_entity_id = pl.owner_entity_id)::int as total_placeables`);
 
+    // Callers that already resolve generator fuel themselves (the Discord
+    // player portal) opt out so the CTE does not run twice per request.
+    const fuelByBase = includeGenerators
+      ? await portalGeneratorFuel(db, result.rows.map((row) => row.base_id)).catch((error) => {
+        console.warn(`Base generator data unavailable: ${error?.message || error}`);
+        return new Map();
+      })
+      : new Map();
+
     return {
       capabilities: { bases: true },
       totalCount: result.rows[0] ? Number(result.rows[0].total_count) : 0,
@@ -2601,7 +2610,11 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
           name: entry.name,
           rank: entry.rank,
           label: permissionRankLabel(entry.rank)
-        }))
+        })),
+        generatorCount: fuelByBase.get(String(row.base_id))?.generatorCount || 0,
+        fuelCells: fuelByBase.get(String(row.base_id))?.fuelCells || 0,
+        generatorRuntimeSeconds: fuelByBase.get(String(row.base_id))?.runtimeSeconds || 0,
+        generators: fuelByBase.get(String(row.base_id))?.generators || []
       }))
     };
   } catch (error) {
@@ -3171,7 +3184,10 @@ export async function playerPortalSnapshots(db, requestedAccountHashes, journeyT
       playerCraftingRecipes(db, actorId).catch(() => ({ rows: [] })),
       playerResearchItems(db, actorId).catch(() => ({ rows: [] })),
       playerJourney(db, actorId, journeyTagsData).catch(() => ({ rows: {} })),
-      listBases(db, { pageSize: 200 }).catch(() => ({ rows: [] })),
+      // includeGenerators: false — portalGeneratorFuel is called below for just
+      // this player's bases, so letting listBases resolve it for all 200 would
+      // run the same CTE twice per identity.
+      listBases(db, { pageSize: 200, includeGenerators: false }).catch(() => ({ rows: [] })),
       db.query(`select coalesce((properties->'TechKnowledgePlayerComponent'->>'m_TechKnowledgePoints')::bigint,0)::text intel from dune.actors where id=$1`, [actorId]).catch(() => ({ rows: [] })),
       db.query(`select keystone_id::text from dune.purchased_specialization_keystones where player_id=$1 order by keystone_id`, [controllerId]).catch(() => ({ rows: [] })),
       db.query(`select id::text,item_id::text,building_blueprint_map from dune.building_blueprints where player_id=$1 order by id`, [controllerId]).catch(() => ({ rows: [] })),
