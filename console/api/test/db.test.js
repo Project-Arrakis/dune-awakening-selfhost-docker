@@ -105,6 +105,8 @@ test("player portal calculates normal and spice generator fuel with their game d
   assert.deepEqual(calls[0].values, [[133, 200], 7200, 5400]);
   assert.match(calls[0].text, /SpicedFuelCell/);
   assert.match(calls[0].text, /m_FuelBurningInitialTime/);
+  assert.match(calls[0].text, /requested_claims as/);
+  assert.match(calls[0].text, /claim_afe\.actor_id = rc\.actor_id/);
   assert.deepEqual(result.get("133"), {
     fuelCells: 51,
     generatorCount: 2,
@@ -1440,6 +1442,47 @@ test("list bases returns rows with piece and placeable counts and a total count"
   ]);
 });
 
+test("list bases groups multiple internal building records under one claim actor", async () => {
+  const calls = [];
+  const db = {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes("to_regclass")) {
+        const name = String(values[0] || "");
+        return { rows: [{ exists: BASE_REQUIRED_TABLES.includes(name) }] };
+      }
+      if (text.includes("total_bases")) {
+        return { rows: [{ total_bases: "1", total_pieces: "1265", total_placeables: "133" }] };
+      }
+      if (text.includes("from paged p")) {
+        return { rows: [{
+          base_id: "75", name: "Khatovar", base_type: "Advanced Sub-Fief", owner_name: "Drew",
+          map: "HaggaBasin", partition_id: "0", x: "-383258", y: "-350339", z: "27278",
+          total_count: "1", piece_count: "1265", placeable_count: "133", shared_with: null
+        }] };
+      }
+      return { rows: [] };
+    }
+  };
+
+  const result = await listBases(db, { includeGenerators: false });
+  const listQuery = calls.find((call) => call.text.includes("with matched as"));
+  const totalsQuery = calls.find((call) => call.text.includes("with valid_claims as"));
+  assert.ok(listQuery.text.includes("select min(b.id) as id"), "the oldest member building id remains the stable public base id");
+  assert.match(listQuery.text, /group by a\.id,/);
+  assert.doesNotMatch(listQuery.text, /group by b\.id,/);
+  assert.match(listQuery.text, /piece_afe\.actor_id = p\.actor_id/);
+  assert.match(listQuery.text, /placeable_afe\.actor_id = p\.actor_id/);
+  assert.match(totalsQuery.text, /select distinct a\.id as actor_id/);
+  assert.equal(result.totalBases, 1);
+  assert.equal(result.totalPieces, 1265);
+  assert.equal(result.totalPlaceables, 133);
+  assert.equal(result.rows.length, 1);
+  assert.equal(result.rows[0].base_id, "75");
+  assert.equal(result.rows[0].piece_count, 1265);
+  assert.equal(result.rows[0].placeable_count, 133);
+});
+
 test("list bases enriches rows with generator fuel and runtime data", async () => {
   const db = {
     query: async (text, values = []) => {
@@ -1649,9 +1692,12 @@ test("list bases resolves shared_with via the base's actor id, not its building 
   await listBases(db, {});
   const baseQuery = calls.find((call) => call.text.includes("from dune.buildings b"));
   assert.ok(baseQuery);
-  // matched CTE must carry the actor id through (a.id, distinct from the building id b.id)...
+  // matched CTE must carry the actor id through and collapse every internal building row
+  // for that claim to the oldest stable building id.
   assert.ok(baseQuery.text.includes("a.id as actor_id"), "matched CTE must select the actor id");
-  assert.ok(baseQuery.text.includes("group by b.id, a.id, a.class, pa.actor_name"), "actor id and stable base class must be in matched's GROUP BY");
+  assert.ok(baseQuery.text.includes("select min(b.id) as id"), "matched CTE must expose one stable id for the logical claim");
+  assert.ok(baseQuery.text.includes("group by a.id, a.class, pa.actor_name"), "actor id and stable base class must be in matched's GROUP BY");
+  assert.ok(!baseQuery.text.includes("group by b.id"), "internal building ids must not split one logical claim into multiple bases");
   // ...and the shared-with LATERAL must filter on that actor id, never the building id.
   assert.ok(baseQuery.text.includes("par.permission_actor_id = p.actor_id"), "shared LATERAL must join on the actor id");
   assert.ok(!baseQuery.text.includes("par.permission_actor_id = p.id"), "shared LATERAL must not regress to the building id");
@@ -1729,9 +1775,9 @@ test("list bases totals query uses the same base-inclusion criterion and placeab
   const totalsQuery = calls.find((call) => call.text.includes("total_bases"));
   assert.ok(totalsQuery);
   assert.ok(totalsQuery.text.includes("where a.transform is not null"), "totals must use the same base-inclusion criterion as the paginated query");
-  assert.ok(totalsQuery.text.includes("with valid_bases as"), "totals must dedup base/owner pairs before counting to avoid fan-out");
+  assert.ok(totalsQuery.text.includes("with valid_claims as"), "totals must dedup logical claim actors before counting to avoid fan-out");
   assert.ok(!totalsQuery.text.includes("left join dune.placeables pl on pl.owner_entity_id = bi.owner_entity_id"), "totals must not directly cross-join building_instances to placeables (causes fan-out)");
-  assert.ok(totalsQuery.text.includes("join valid_bases vb on vb.owner_entity_id = pl.owner_entity_id"), "placeable totals must count via the dedup'd owner_entity_id join, not a direct bi-to-pl join");
+  assert.ok(totalsQuery.text.includes("join valid_claims vc on vc.actor_id = afe.actor_id"), "placeable totals must count via the dedup'd claim actor join, not a direct bi-to-pl join");
   assert.ok(totalsQuery.text.includes("count(distinct pl.id)"), "placeable totals must stay deduped in case two bases ever share an owner entity");
 });
 
@@ -1794,11 +1840,11 @@ test("export base returns instances and placeables in blueprint-importable relat
       }
       if (text.includes("from dune.buildings b")) {
         return { rows: [
-          { base_id: "1006", name: "Sietch One", base_type: "Sub-Fief", owner_name: "Leader One", map: "HaggaBasin", x: String(anchor.x), y: String(anchor.y), z: String(anchor.z), owner_entity_id: ownerEntityId }
+          { base_id: "1006", name: "Sietch One", base_type: "Sub-Fief", owner_name: "Leader One", map: "HaggaBasin", x: String(anchor.x), y: String(anchor.y), z: String(anchor.z), owner_entity_id: ownerEntityId, actor_id: "7001" }
         ] };
       }
-      if (text.includes("select instance_id, building_type, transform")) {
-        return { rows: [{ instance_id: 2486, building_type: "Harkonnen_Outpost_Foundation", transform: pieceTransform }] };
+      if (text.includes("select bi.building_id, bi.instance_id")) {
+        return { rows: [{ building_id: 1006, instance_id: 2486, building_type: "Harkonnen_Outpost_Foundation", transform: pieceTransform }] };
       }
       if (text.includes("select p.id as placeable_id")) {
         return { rows: [{ placeable_id: 2582, building_type: "Hark_Deco_Plate_02_Placeable", x: placeablePos.x, y: placeablePos.y, z: placeablePos.z, qz: placeablePos.qz, qw: placeablePos.qw }] };
@@ -1808,7 +1854,7 @@ test("export base returns instances and placeables in blueprint-importable relat
   };
   const result = await exportBaseAsBlueprint(db, 1006);
   const placeableQuery = calls.find((call) => call.text.includes("select p.id as placeable_id"));
-  assert.deepEqual(placeableQuery.values, [ownerEntityId]);
+  assert.deepEqual(placeableQuery.values, ["7001"]);
   assert.ok(placeableQuery.text.includes("join dune.actors a on a.id = p.id"), "placeables share the actors id space directly, not via owner_entity_id");
   assert.equal(result.base_id, "1006");
   assert.equal(result.name, "Sietch One");
@@ -1839,6 +1885,51 @@ test("export base returns instances and placeables in blueprint-importable relat
   const expectedPlaceableRotation = 2 * Math.atan2(placeablePos.qz, placeablePos.qw) * (180 / Math.PI);
   assert.equal(placeable.rz, expectedPlaceableRotation);
   assert.ok(Math.abs(placeable.rz - 20) < 1);
+});
+
+test("export base combines claim partitions, deduplicates shared placeables, and remaps colliding instance IDs", async () => {
+  const calls = [];
+  const db = {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes("to_regclass")) {
+        const name = String(values[0] || "");
+        return { rows: [{ exists: [...BASE_REQUIRED_TABLES, "dune.placeables"].includes(name) }] };
+      }
+      if (text.includes("from dune.buildings b")) {
+        assert.deepEqual(values, [77], "any member building id must resolve the full logical claim");
+        return { rows: [{
+          base_id: "75", name: "Khatovar", base_type: "Advanced Sub-Fief", owner_name: "Drew",
+          map: "HaggaBasin", x: "1000", y: "2000", z: "3000", owner_entity_id: "9001", actor_id: "7001"
+        }] };
+      }
+      if (text.includes("select bi.building_id, bi.instance_id")) {
+        assert.deepEqual(values, ["7001"]);
+        return { rows: [
+          { building_id: 75, instance_id: 0, building_type: "Atreides_Outpost_Foundation", transform: [1000, 2000, 3000, 0, 0, 0, 1] },
+          { building_id: 76, instance_id: 0, building_type: "Atreides_Outpost_Wall_01", transform: [1500, 2000, 3000, 0, 0, 0, 1] },
+          { building_id: 77, instance_id: 4, building_type: "Atreides_Outpost_Floor", transform: [2000, 2000, 3000, 0, 0, 0, 1] }
+        ] };
+      }
+      if (text.includes("select p.id as placeable_id")) {
+        assert.deepEqual(values, ["7001"]);
+        return { rows: [{ placeable_id: 146, building_type: "Totem_Placeable", x: 1000, y: 2000, z: 3000, qz: 0, qw: 1 }] };
+      }
+      return { rows: [] };
+    }
+  };
+
+  const result = await exportBaseAsBlueprint(db, 77);
+  assert.equal(result.base_id, "75");
+  assert.equal(result.piece_count, 3);
+  assert.equal(result.placeable_count, 1);
+  assert.deepEqual(result.instances.map((instance) => instance.instance_id), [0, 1, 2]);
+  assert.deepEqual(result.instances.map((instance) => instance.x), [0, 500, 1000]);
+  assert.equal(result.placeables[0].building_type, "Totem_Placeable");
+  const pieceQuery = calls.find((call) => call.text.includes("select bi.building_id, bi.instance_id"));
+  assert.match(pieceQuery.text, /where afe\.actor_id = \$1/);
+  const placeableQuery = calls.find((call) => call.text.includes("select p.id as placeable_id"));
+  assert.match(placeableQuery.text, /join dune\.actor_fgl_entities afe on afe\.entity_id = p\.owner_entity_id/);
 });
 
 test("player profile includes faction and guild when addon tables are present", async () => {
