@@ -2401,6 +2401,32 @@ def resolve_partition_combat_state(values: dict) -> dict:
     }
 
 
+def combat_settings_for_publication(values: dict, string_values: bool = False) -> dict:
+    """Return only combat fields supported by the Funcom state payload.
+
+    Partition selector membership is intentionally not folded into
+    shouldForceEnablePvpOnAllPartitions: that field describes the global
+    force-all switch, not whether this particular partition resolved to PvP.
+    The resolved state is returned alongside the supported settings for UI,
+    diagnostics, and tests that need the full distinction.
+    """
+    resolved = resolve_partition_combat_state(values)
+
+    def output_bool(value: bool):
+        if string_values:
+            return "True" if value else "False"
+        return value
+
+    settings = {
+        "areSecurityZonesEnabled": output_bool(resolved["securityZonesEnabled"]),
+    }
+    if resolved["state"] in ("PVP", "PVE"):
+        settings["shouldForceEnablePvpOnAllPartitions"] = output_bool(
+            resolved["source"] == "force-pvp-all-partitions"
+        )
+    return {"resolved": resolved, "settings": settings}
+
+
 def aggregate_map_combat_state(partition_states: list) -> str:
     """Aggregate independently-resolved partition states into a map state.
 
@@ -2461,26 +2487,23 @@ def materialized_partition_combat_values(map_name: str, partition_id: str) -> di
     }
 
 
-def partition_combat_state_command(map_name: str, partition_id: str) -> int:
-    """Print a structured JSON combat-state result for one partition,
-    comparing the persisted/configured settings against the materialized
-    runtime UserGame.ini (when present)."""
-    config = load_config()
+def partition_combat_state_payload(map_name: str, partition_id: str, profile: dict | None = None) -> dict:
+    """Build one structured combat-state result without reloading config."""
     target_map = canonical_map(map_name)
     target_partition = str(partition_id)
 
-    configured_values = merged_partition_values(config, target_map, target_partition)
+    configured_values = profile_partition_values(profile if profile is not None else read_profile(), target_map, target_partition)
     configured_result = resolve_partition_combat_state(configured_values)
 
     materialized_values = materialized_partition_combat_values(target_map, target_partition)
     materialized_result = resolve_partition_combat_state(materialized_values) if materialized_values is not None else None
 
     configuration_drift = materialized_values is not None and any(
-        str(materialized_values.get(field, "")) != str(configured_values.get(field, ""))
+        bool_or_none(materialized_values.get(field)) != bool_or_none(configured_values.get(field))
         for field in COMBAT_STATE_FIELDS
     )
 
-    payload = {
+    return {
         "map": target_map,
         "partitionId": target_partition,
         "configuredState": configured_result["state"],
@@ -2492,6 +2515,30 @@ def partition_combat_state_command(map_name: str, partition_id: str) -> int:
         "configurationDrift": configuration_drift,
         "warnings": configured_result["warnings"],
         "unresolvedFields": configured_result["unresolvedFields"],
+    }
+
+
+def partition_combat_state_command(map_name: str, partition_id: str) -> int:
+    """Print a structured combat-state result for one partition."""
+    payload = partition_combat_state_payload(map_name, partition_id, read_profile())
+    print(json.dumps(payload, separators=(",", ":")))
+    return 0
+
+
+def partition_combat_states_command(map_name: str, partition_ids: list[str]) -> int:
+    """Resolve several partitions in one process and one profile read path."""
+    profile = read_profile()
+    target_map = canonical_map(map_name)
+    partitions = [
+        partition_combat_state_payload(target_map, partition_id, profile)
+        for partition_id in partition_ids
+    ]
+    payload = {
+        "map": target_map,
+        "mapState": aggregate_map_combat_state(
+            [partition["configuredState"] for partition in partitions]
+        ),
+        "partitions": partitions,
     }
     print(json.dumps(payload, separators=(",", ":")))
     return 0
@@ -2544,6 +2591,8 @@ def main(argv: list[str]) -> int:
         return print_usergame_rows(merged_partition_values(config, canonical_map(argv[2]), argv[3]), PARTITION_FIELDS)
     if command == "partition-combat-state" and len(argv) == 4:
         return partition_combat_state_command(argv[2], argv[3])
+    if command == "partition-combat-states" and len(argv) >= 4:
+        return partition_combat_states_command(argv[2], argv[3:])
     if command == "partition-engine-values" and len(argv) == 4:
         return print_rows(merged_partition_engine_values(config, canonical_map(argv[2]), argv[3]), PARTITION_ENGINE_FIELDS)
     if command == "engine-set" and len(argv) == 4:

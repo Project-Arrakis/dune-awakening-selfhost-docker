@@ -81,6 +81,18 @@ jobs:
         run: bash tests/ready-configured-ports-test.sh
       - name: Test database updater role restoration
         run: bash tests/update-db-role-privilege-test.sh
+      - name: Test installer shell portability
+        run: |
+          dash -n install.sh
+          docker run --rm -v "$PWD/install.sh:/install.sh:ro" alpine:3.22 /bin/ash -n /install.sh
+      - name: Test partition combat-state resolver
+        run: python3 runtime/scripts/test_partition_combat_state.py
+      - name: Test combat-state publishers
+        run: |
+          runtime/tests/test-deepdesert-combat-state-publication.sh
+          runtime/tests/test-deepdesert-overrides-combat-state-publication.sh
+          runtime/tests/test-deepdesert-startup-publisher-consistency.sh
+          runtime/tests/test-sietch-combat-state-publication.sh
 
   container-lifecycle:
     runs-on: ubuntu-latest

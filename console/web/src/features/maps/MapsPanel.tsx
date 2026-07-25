@@ -2031,8 +2031,6 @@ function partitionMemoryValue(memoryText: string, partitionId: string, fallback:
 // index is positional metadata only and does not determine combat state
 // (see the "Dual Deep Desert" resolver contract).
 export function deepDesertPartitionName(row: Record<string, unknown>, combatRow?: PartitionCombatStateRow | null) {
-  const label = String(row.label || "").trim();
-  if (label && !/^[-\d\s]+$/.test(label)) return label;
   const dimension = Number(row.dimension);
   const suffix = Number.isFinite(dimension) ? ` ${dimension + 1}` : "";
   if (combatRow) {
@@ -2040,6 +2038,8 @@ export function deepDesertPartitionName(row: Record<string, unknown>, combatRow?
     if (combatRow.configuredState === "PVE") return `Deep Desert${suffix} (PvE)`;
     if (combatRow.configuredState === "CONFLICT") return `Deep Desert${suffix} (Conflicting PvP/PvE config)`;
   }
+  const label = String(row.label || "").trim();
+  if (!combatRow && label && !/^[-\d\s]+$/.test(label)) return label;
   return `Deep Desert${suffix || " Instance"}`;
 }
 
