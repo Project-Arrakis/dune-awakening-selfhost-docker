@@ -1637,13 +1637,13 @@ export function isHomeStopComplete(status: string, readiness: string) {
   ];
   const containerLines = sectionLines(status, "Containers").filter((line) => !/^SERVICE\s+STATUS/i.test(line));
   const statusContainersStopped = containerLines.length >= requiredContainers.length && requiredContainers.every((name) =>
-    containerLines.some((line) => new RegExp(`^${name}\\s+\\b(missing|stopped|exited|dead|not running)\\b`, "i").test(line))
+    containerLines.some((line) => containerStatusLineHas(name, line, /\b(missing|stopped|exited|dead|not running)\b/i))
   );
   if (statusContainersStopped) return true;
 
   const text = `${status}\n${readiness}`;
   const readinessContainersStopped = requiredContainers.every((name) =>
-    new RegExp(`FAIL\\s+container\\s+${name}\\b`, "i").test(text)
+    textHasContainerReadiness(text, "FAIL", name)
   );
   const allListenersMissing = sectionLines(status, "Listeners").filter((line) => !/^CHECK\s+PORT\s+STATUS/i.test(line)).length >= 6 &&
     sectionLines(status, "Listeners").filter((line) => !/^CHECK\s+PORT\s+STATUS/i.test(line)).every((line) => /\bMISSING\b/i.test(line));
@@ -1665,8 +1665,8 @@ function hasRestartStopSignal(status: string, readiness: string) {
   ];
   const containerLines = sectionLines(status, "Containers").filter((line) => !/^SERVICE\s+STATUS/i.test(line));
   return requiredContainers.some((name) =>
-    containerLines.some((line) => new RegExp(`^${name}\\s+\\b(missing|stopped|exited|dead|not running)\\b`, "i").test(line)) ||
-    new RegExp(`\\bFAIL\\s+container\\s+${name}\\b`, "i").test(text)
+    containerLines.some((line) => containerStatusLineHas(name, line, /\b(missing|stopped|exited|dead|not running)\b/i)) ||
+    textHasContainerReadiness(text, "FAIL", name)
   );
 }
 
@@ -1684,8 +1684,8 @@ function hasRestartStartSignal(status: string, readiness: string) {
   ];
   const containerLines = sectionLines(status, "Containers").filter((line) => !/^SERVICE\s+STATUS/i.test(line));
   return requiredContainers.some((name) =>
-    containerLines.some((line) => new RegExp(`^${name}\\s+.*\\bUp\\b`, "i").test(line)) ||
-    new RegExp(`\\bOK\\s+container\\s+${name}\\b`, "i").test(text)
+    containerLines.some((line) => containerStatusLineHas(name, line, /\bUp\b/i)) ||
+    textHasContainerReadiness(text, "OK", name)
   );
 }
 
@@ -1705,7 +1705,7 @@ function isHomeStartComplete(status: string, readiness: string) {
     "dune-server-overmap"
   ];
   const containersReady = requiredContainers.every((name) =>
-    containerLines.some((line) => new RegExp(`^${name}\\s+Up\\b`, "i").test(line))
+    containerLines.some((line) => containerStatusLineHas(name, line, /^Up\b/i))
   );
 
   const listenerLines = sectionLines(status, "Listeners").filter((line) => !/^CHECK\s+PORT\s+STATUS/i.test(line));
@@ -1721,6 +1721,24 @@ function isHomeStartComplete(status: string, readiness: string) {
   const rabbitReady = /^OK$/i.test(rabbit.label) && /^Ready$/i.test(rabbit.status);
 
   return containersReady && listenersReady && databaseReady && flsReady && rabbitReady;
+}
+
+export function containerStatusLineHas(containerName: string, line: string, statusPattern: RegExp) {
+  const trimmed = line.trim();
+  const firstSpace = trimmed.search(/\s/);
+  if (firstSpace < 0) return false;
+  const name = trimmed.slice(0, firstSpace);
+  if (name.toLowerCase() !== containerName.toLowerCase()) return false;
+  // Status output may pad columns with multiple spaces or tabs. Normalize
+  // the remainder before applying either anchored or unanchored patterns.
+  return statusPattern.test(trimmed.slice(firstSpace + 1).trimStart());
+}
+
+function textHasContainerReadiness(text: string, state: "OK" | "FAIL", containerName: string) {
+  return text.split(/\r?\n/).some((line) => {
+    const match = line.trim().match(/^(OK|FAIL)\s+container\s+(\S+)\b/i);
+    return Boolean(match && match[1].toUpperCase() === state && match[2].toLowerCase() === containerName.toLowerCase());
+  });
 }
 
 function attentionHomeHealthCards() {
