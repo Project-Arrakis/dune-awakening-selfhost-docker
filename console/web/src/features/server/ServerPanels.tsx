@@ -1729,13 +1729,8 @@ export function containerStatusLineHas(containerName: string, line: string, stat
   if (firstSpace < 0) return false;
   const name = trimmed.slice(0, firstSpace);
   if (name.toLowerCase() !== containerName.toLowerCase()) return false;
-  // BUG FIX: slice(firstSpace + 1) only skips a single whitespace
-  // character, but status output commonly pads with multiple
-  // spaces/tabs between the container name and its status (e.g.
-  // "dune-postgres   Up 5 minutes"). Anchored patterns like /^Up\b/
-  // would silently fail to match the remaining leading whitespace.
-  // trimStart() restores the same "whitespace-agnostic" behavior the
-  // original per-callsite `\s+` regex had.
+  // Status output may pad columns with multiple spaces or tabs. Normalize
+  // the remainder before applying either anchored or unanchored patterns.
   return statusPattern.test(trimmed.slice(firstSpace + 1).trimStart());
 }
 
