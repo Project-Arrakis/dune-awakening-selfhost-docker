@@ -32,6 +32,7 @@ type BaseRow = Record<string, unknown> & {
   piece_count: number;
   placeable_count: number;
   shared_with: SharedWithEntry[];
+  generatorDataAvailable: boolean;
   generatorCount: number;
   fuelCells: number;
   generatorRuntimeSeconds: number;
@@ -92,6 +93,7 @@ function renderBaseCell(row: Record<string, unknown>, column: string) {
     return name ? <span className="bases-name" title={name}>{name}</span> : "—";
   }
   if (column === "generators") {
+    if (row.generatorDataAvailable === false) return <span className="muted" title="Generator data is unavailable">Unavailable</span>;
     const generatorCount = Number(row.generatorCount) || 0;
     if (!generatorCount) return <span className="muted">—</span>;
     return <span>{generatorCount} ({formatRuntime(Number(row.generatorRuntimeSeconds) || 0)} left)</span>;
@@ -325,6 +327,7 @@ export function BasesPanel({ onError }: BasesPanelProps) {
           const base = row as BaseRow;
           const id = String(base.base_id);
           const isExpanded = expandedBaseId === id;
+          if (!base.generatorDataAvailable || !base.generatorCount) return null;
           const label = `${isExpanded ? "Collapse" : "Show"} generator details for ${base.name || `base ${id}`}`;
           return <button
             className="bases-expand-button"
@@ -343,6 +346,7 @@ export function BasesPanel({ onError }: BasesPanelProps) {
         isRowExpanded={(row) => expandedBaseId === String(row.base_id)}
         renderExpandedRow={(row) => {
           const base = row as BaseRow;
+          if (!base.generatorDataAvailable) return <p className="muted">Generator data is currently unavailable.</p>;
           const generators = base.generators ?? [];
           if (!generators.length) return <p className="muted">No generators built at this base.</p>;
           return (

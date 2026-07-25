@@ -2585,12 +2585,18 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
 
     // Callers that already resolve generator fuel themselves (the Discord
     // player portal) opt out so the CTE does not run twice per request.
-    const fuelByBase = includeGenerators
-      ? await portalGeneratorFuel(db, result.rows.map((row) => row.base_id)).catch((error) => {
+    let generatorDataAvailable = false;
+    let fuelByBase = new Map();
+    if (includeGenerators) {
+      try {
+        fuelByBase = await portalGeneratorFuel(db, result.rows.map((row) => row.base_id));
+        generatorDataAvailable = true;
+      } catch (error) {
+        // Keep the base list usable, but do not misrepresent a failed query as
+        // proof that every base has no generators.
         console.warn(`Base generator data unavailable: ${error?.message || error}`);
-        return new Map();
-      })
-      : new Map();
+      }
+    }
 
     return {
       capabilities: { bases: true },
@@ -2611,6 +2617,7 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
           rank: entry.rank,
           label: permissionRankLabel(entry.rank)
         })),
+        generatorDataAvailable,
         generatorCount: fuelByBase.get(String(row.base_id))?.generatorCount || 0,
         fuelCells: fuelByBase.get(String(row.base_id))?.fuelCells || 0,
         generatorRuntimeSeconds: fuelByBase.get(String(row.base_id))?.runtimeSeconds || 0,
