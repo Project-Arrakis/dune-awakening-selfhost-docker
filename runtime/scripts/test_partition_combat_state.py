@@ -183,6 +183,34 @@ class MapAggregationTests(unittest.TestCase):
         self.assertEqual(usersettings.aggregate_map_combat_state(["PVP", "UNKNOWN"]), "PVP")
 
 
+class PublicationCombatSettingsTests(unittest.TestCase):
+    def test_selector_states_do_not_misuse_force_all_field(self):
+        pvp = usersettings.combat_settings_for_publication(
+            values(partition_pvp_enabled="True"), string_values=True
+        )
+        pve = usersettings.combat_settings_for_publication(
+            values(partition_pve_enabled="True"), string_values=True
+        )
+        self.assertEqual(pvp["resolved"]["state"], "PVP")
+        self.assertEqual(pve["resolved"]["state"], "PVE")
+        self.assertEqual(pvp["settings"], pve["settings"])
+        self.assertEqual(pvp["settings"]["shouldForceEnablePvpOnAllPartitions"], "False")
+
+    def test_force_all_pvp_is_published_as_true(self):
+        publication = usersettings.combat_settings_for_publication(
+            values(force_pvp_all_partitions="True")
+        )
+        self.assertEqual(publication["resolved"]["state"], "PVP")
+        self.assertIs(publication["settings"]["shouldForceEnablePvpOnAllPartitions"], True)
+
+    def test_unknown_state_omits_force_all_field(self):
+        publication = usersettings.combat_settings_for_publication(
+            values(legacy_pvp_enabled="maybe", server_pve="unset")
+        )
+        self.assertEqual(publication["resolved"]["state"], "UNKNOWN")
+        self.assertNotIn("shouldForceEnablePvpOnAllPartitions", publication["settings"])
+
+
 class MetadataIndependenceTests(unittest.TestCase):
     """Confirm the resolver never reads dimension index, labels, display
     names, service/container names, or lifecycle mode — only the six

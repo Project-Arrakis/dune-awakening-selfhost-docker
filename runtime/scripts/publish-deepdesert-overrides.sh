@@ -301,31 +301,18 @@ def combat_settings_for_partition(partition_id: str) -> dict:
     values = usersettings.merged_partition_values(
         usersettings_config, "DeepDesert_1", str(partition_id)
     )
-    resolved = usersettings.resolve_partition_combat_state(values)
+    publication = usersettings.combat_settings_for_publication(values, string_values=True)
 
     # Field values are serialized as strings ("True"/"False"), matching
     # publish-deepdesert-state.sh's and publish-sietch-overrides.sh's
-    # snapshot-publish convention for this exact field set (see #106 for
-    # the pre-existing, deliberately-not-fixed-here string/bool
-    # inconsistency between the snapshot-publish and forward-relay code
-    # paths in the Sietch script -- this function only needs to match its
-    # own snapshot-publish sibling, not resolve that separate finding).
+    # snapshot-publish convention for this exact field set. Forwarded live
+    # payloads retain their existing native boolean convention.
     settings = {
-        "areSecurityZonesEnabled": "True" if resolved["securityZonesEnabled"] else "False",
         "itemDeteriorationUpdateRate": "1.0",
         "vehicleDurabilityDamageMultiplier": "1.0",
         "inventoryDecayedMaxDurabilityThreshold": "0.2",
     }
-    if resolved["state"] in ("PVP", "PVE"):
-        # shouldForceEnablePvpOnAllPartitions reflects the actual resolved
-        # force-all flag only when it is what determined this partition's
-        # state; otherwise it is omitted rather than defaulted to False,
-        # since a wrong False would misrepresent a force-all-PvP server.
-        settings["shouldForceEnablePvpOnAllPartitions"] = (
-            "True" if resolved["source"] == "force-pvp-all-partitions" else "False"
-        )
-    # When state is CONFLICT or UNKNOWN, PvP/PvE-affecting fields are
-    # intentionally omitted rather than publishing a guessed value.
+    settings.update(publication["settings"])
     return settings
 
 

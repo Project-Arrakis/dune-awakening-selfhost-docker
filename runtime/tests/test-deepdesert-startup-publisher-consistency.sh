@@ -106,15 +106,8 @@ config = usersettings.load_config()
 
 def resolve(partition_id):
     values = usersettings.merged_partition_values(config, "DeepDesert_1", str(partition_id))
-    resolved = usersettings.resolve_partition_combat_state(values)
-    settings = {
-        "areSecurityZonesEnabled": "True" if resolved["securityZonesEnabled"] else "False",
-    }
-    if resolved["state"] in ("PVP", "PVE"):
-        settings["shouldForceEnablePvpOnAllPartitions"] = (
-            "True" if resolved["source"] == "force-pvp-all-partitions" else "False"
-        )
-    return resolved["state"], settings
+    publication = usersettings.combat_settings_for_publication(values, string_values=True)
+    return publication["resolved"]["state"], publication["settings"]
 
 
 # Simulates BOTH scripts calling the identical underlying resolver chain

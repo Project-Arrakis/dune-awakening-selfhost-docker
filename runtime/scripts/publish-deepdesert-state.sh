@@ -129,7 +129,7 @@ def combat_settings_for_partition(partition_id: str) -> dict:
     values = usersettings.merged_partition_values(
         usersettings_config, "DeepDesert_1", str(partition_id)
     )
-    resolved = usersettings.resolve_partition_combat_state(values)
+    publication = usersettings.combat_settings_for_publication(values, string_values=True)
 
     settings = {
         "Difficulty": "Custom",
@@ -137,21 +137,8 @@ def combat_settings_for_partition(partition_id: str) -> dict:
             "serverDisplayName": "",
             "doubleDifficultyLoot": "False",
         },
-        "CombatSettings": {
-            "areSecurityZonesEnabled": "True" if resolved["securityZonesEnabled"] else "False",
-        },
+        "CombatSettings": publication["settings"],
     }
-
-    if resolved["state"] in ("PVP", "PVE"):
-        # shouldForceEnablePvpOnAllPartitions reflects the actual resolved
-        # force-all flag only when it is what determined this partition's
-        # state; otherwise it is left unset rather than defaulted to False,
-        # since a wrong "False" would misrepresent a force-all-PvP server.
-        settings["CombatSettings"]["shouldForceEnablePvpOnAllPartitions"] = (
-            "True" if resolved["source"] == "force-pvp-all-partitions" else "False"
-        )
-    # When state is CONFLICT or UNKNOWN, PvP/PvE-affecting fields are
-    # intentionally omitted — see docstring above.
 
     return settings
 

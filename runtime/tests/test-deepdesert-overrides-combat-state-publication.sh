@@ -5,10 +5,8 @@
 #   and publish-sietch-overrides.sh) still publishing one hard-coded,
 #   identical CombatSettings block for every Deep Desert partition,
 #   regardless of that partition's actual configured PvP/PvE state. This
-#   test proves the script's combat-settings resolution now diverges
-#   correctly between a PvP-configured partition and a PvE-configured
-#   partition, and that it uses the canonical `usersettings.py` resolver
-#   rather than a fixed defaults dict.
+#   test proves it now uses the canonical resolver while keeping the
+#   supported force-all field truthful for selector-based states.
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
@@ -37,7 +35,7 @@ SCRIPT="runtime/scripts/publish-deepdesert-overrides.sh"
 # ─── Static checks: the script must call the canonical resolver ───────────
 
 assert_contains "$SCRIPT" "import usersettings"
-assert_contains "$SCRIPT" "usersettings.resolve_partition_combat_state"
+assert_contains "$SCRIPT" "usersettings.combat_settings_for_publication"
 assert_contains "$SCRIPT" "usersettings.merged_partition_values"
 assert_contains "$SCRIPT" "def combat_settings_for_partition"
 
@@ -73,15 +71,8 @@ config = usersettings.load_config()
 
 def combat_settings_for_partition(partition_id):
     values = usersettings.merged_partition_values(config, "DeepDesert_1", str(partition_id))
-    resolved = usersettings.resolve_partition_combat_state(values)
-    settings = {
-        "areSecurityZonesEnabled": "True" if resolved["securityZonesEnabled"] else "False",
-    }
-    if resolved["state"] in ("PVP", "PVE"):
-        settings["shouldForceEnablePvpOnAllPartitions"] = (
-            "True" if resolved["source"] == "force-pvp-all-partitions" else "False"
-        )
-    return resolved["state"], settings
+    publication = usersettings.combat_settings_for_publication(values, string_values=True)
+    return publication["resolved"]["state"], publication["settings"]
 
 
 state_eight, settings_eight = combat_settings_for_partition("8")
@@ -90,6 +81,7 @@ state_nine, settings_nine = combat_settings_for_partition("9")
 print(f"partition_8_state={state_eight}")
 print(f"partition_9_state={state_nine}")
 print(f"partitions_diverge={'yes' if state_eight != state_nine else 'no'}")
+print(f"supported_settings_equal={'yes' if settings_eight == settings_nine else 'no'}")
 PY
 )"
 
@@ -98,5 +90,6 @@ echo "$RESULT"
 echo "$RESULT" | grep -Fxq "partition_8_state=PVP" || fail "expected partition 8 to resolve to PVP"
 echo "$RESULT" | grep -Fxq "partition_9_state=PVE" || fail "expected partition 9 to resolve to PVE"
 echo "$RESULT" | grep -Fxq "partitions_diverge=yes" || fail "expected partitions 8 and 9 to resolve to different combat states"
+echo "$RESULT" | grep -Fxq "supported_settings_equal=yes" || fail "selector-only state must not be misreported through the force-all field"
 
-echo "PASS: publish-deepdesert-overrides.sh resolves per-partition combat state instead of publishing one fixed block"
+echo "PASS: publish-deepdesert-overrides.sh resolves partition state without misusing supported Funcom combat fields"
