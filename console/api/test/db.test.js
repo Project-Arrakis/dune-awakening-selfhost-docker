@@ -2256,6 +2256,24 @@ test("player give-item bumps standalone augment grade zero to grade one", async 
   const insert = calls.find((call) => call.text.includes("insert into dune.items"));
   assert.ok(insert);
   assert.deepEqual(insert.values.slice(0, 5), [7, "T6_Augment_Melee4", 1, 1, 2]);
+  const stats = JSON.parse(insert.values[5]);
+  assert.deepEqual(stats.FAugmentItemStats, [[], { StatRolls: [1, 1], AppliedEffectIndices: [] }]);
+});
+
+test("player give-item materializes standalone augment rolls at the selected grade", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    augmentRollRows: [{ template_id: "T6_Augment_Melee4", quality_level: 1, stats: { FAugmentItemStats: [[], { StatRolls: [0.42], AppliedEffectIndices: [3] }] } }],
+    storageRows: [{ id: 7, actor_id: 123, max_item_count: 30, max_item_volume: 0 }],
+    countRows: [{ count: 1 }],
+    insertedRows: [{ id: 501, template_id: "T6_Augment_Melee4", stack_size: 1, quality_level: 5, position_index: 2, inventory_id: 7 }]
+  });
+  await giveItemToPlayer(db, 123, { templateId: "T6_Augment_Melee4", quantity: 1, quality: 5 });
+  const insert = calls.find((call) => call.text.includes("insert into dune.items"));
+  const stats = JSON.parse(insert.values[5]);
+  assert.deepEqual(stats.FAugmentItemStats, [[], { StatRolls: [1], AppliedEffectIndices: [3] }]);
+  const rollLookup = calls.find((call) => call.text.includes("stats ? 'FAugmentItemStats'"));
+  assert.deepEqual(rollLookup.values, [["T6_Augment_Melee4"]]);
 });
 
 test("player give-item keeps normal weapon grade zero", async () => {
