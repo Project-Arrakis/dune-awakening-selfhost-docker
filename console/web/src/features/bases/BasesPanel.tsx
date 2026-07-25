@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Download } from "lucide-react";
+import { ChevronDown, ChevronUp, Download } from "lucide-react";
 import { basesApi } from "../../api/bases";
 import { apiDownload } from "../../api/client";
 import { DataTable, type SortDirection } from "../../components/common/DataTable";
@@ -9,6 +9,15 @@ type BasesPanelProps = {
 };
 
 type SharedWithEntry = { name: string; rank: number; label: string };
+
+type GeneratorEntry = {
+  type: "fuel" | "spice";
+  name: string;
+  fuelName: string;
+  fuelCells: number;
+  generatorCount: number;
+  runtimeSeconds: number;
+};
 
 type BaseRow = Record<string, unknown> & {
   base_id: string;
@@ -23,7 +32,21 @@ type BaseRow = Record<string, unknown> & {
   piece_count: number;
   placeable_count: number;
   shared_with: SharedWithEntry[];
+  generatorCount: number;
+  fuelCells: number;
+  generatorRuntimeSeconds: number;
+  generators: GeneratorEntry[];
 };
+
+function formatRuntime(seconds: number) {
+  const total = Math.max(0, Math.floor(seconds));
+  const days = Math.floor(total / 86400);
+  const hours = Math.floor((total % 86400) / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  if (days > 0) return `${days}d ${hours}h`;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  return `${minutes}m`;
+}
 
 const BASES_AUTO_REFRESH_MS = 15 * 60_000; // 15 minutes — listBases is expensive
 const BASES_PAGE_SIZES = [25, 50, 100, 200] as const;
@@ -60,10 +83,23 @@ function withCoordinates(row: Record<string, unknown>): BaseRow {
   return { ...row, x, y, z, coordinates: `${x}, ${y}, ${z}` } as BaseRow;
 }
 
+// Columns narrow enough to ellipsize; a title keeps the full value readable.
+const TOOLTIP_COLUMNS = new Set(["base_type", "owner_name", "coordinates"]);
+
 function renderBaseCell(row: Record<string, unknown>, column: string) {
   if (column === "name") {
     const name = String(row.name || "");
     return name ? <span className="bases-name" title={name}>{name}</span> : "—";
+  }
+  if (column === "generators") {
+    const generatorCount = Number(row.generatorCount) || 0;
+    if (!generatorCount) return <span className="muted">—</span>;
+    return <span>{generatorCount} ({formatRuntime(Number(row.generatorRuntimeSeconds) || 0)} left)</span>;
+  }
+  if (TOOLTIP_COLUMNS.has(column)) {
+    const value = row[column];
+    const text = value == null || value === "" ? "" : String(value);
+    return text ? <span className="bases-ellipsis-cell" title={text}>{text}</span> : "—";
   }
   if (column !== "shared_with") {
     const value = row[column];
@@ -95,6 +131,7 @@ export function BasesPanel({ onError }: BasesPanelProps) {
   const [totalPlaceables, setTotalPlaceables] = useState(() => basesCache?.totalPlaceables ?? 0);
   const [loading, setLoading] = useState(() => basesCache === null);
   const [downloadingId, setDownloadingId] = useState("");
+  const [expandedBaseId, setExpandedBaseId] = useState<string | null>(null);
   const requestIdRef = useRef(0);
   const skipNextSearchReset = useRef(true);
 
@@ -233,6 +270,10 @@ export function BasesPanel({ onError }: BasesPanelProps) {
     setPage(0);
   }
 
+  function toggleExpanded(id: string) {
+    setExpandedBaseId((current) => current === id ? null : id);
+  }
+
   function handleSort(column: string) {
     setPage(0);
     if (column === sortColumn) {
@@ -266,7 +307,7 @@ export function BasesPanel({ onError }: BasesPanelProps) {
       </div>
       <DataTable
         rows={rows}
-        columns={["base_id", "name", "base_type", "owner_name", "shared_with", "map", "coordinates", "piece_count", "placeable_count"]}
+        columns={["base_id", "name", "base_type", "owner_name", "shared_with", "map", "generators", "piece_count", "placeable_count", "coordinates"]}
         tableClassName="bases-table"
         actionClassName="actions-column bases-actions-column"
         renderCell={renderBaseCell}
@@ -277,10 +318,51 @@ export function BasesPanel({ onError }: BasesPanelProps) {
             <button className="icon-toggle-button" title="Download Base as Blueprint" aria-label="Download Base as Blueprint" disabled={downloadingId === id} onClick={(event) => { event.stopPropagation(); void handleDownloadBlueprint(base); }}><Download size={16} /></button>
           </span>;
         }}
+        secondaryActionPosition="start"
+        secondaryActionLabel=""
+        secondaryActionClassName="bases-expand-column"
+        secondaryAction={(row) => {
+          const base = row as BaseRow;
+          const id = String(base.base_id);
+          const isExpanded = expandedBaseId === id;
+          const label = `${isExpanded ? "Collapse" : "Show"} generator details for ${base.name || `base ${id}`}`;
+          return <button
+            className="bases-expand-button"
+            title={label}
+            aria-label={label}
+            aria-expanded={isExpanded}
+            onClick={(event) => { event.stopPropagation(); toggleExpanded(id); }}
+          >{isExpanded ? <ChevronUp size={14} className="bases-expand-chevron" /> : <ChevronDown size={14} className="bases-expand-chevron" />}</button>;
+        }}
         sortColumn={sortColumn}
         sortDirection={sortDirection}
         onSort={handleSort}
+        nonSortableColumns={["generators"]}
         rowKey={(row) => String(row.base_id)}
+        onRowClick={(row) => toggleExpanded(String(row.base_id))}
+        isRowExpanded={(row) => expandedBaseId === String(row.base_id)}
+        renderExpandedRow={(row) => {
+          const base = row as BaseRow;
+          const generators = base.generators ?? [];
+          if (!generators.length) return <p className="muted">No generators built at this base.</p>;
+          return (
+            <div className="bases-generator-breakdown">
+              {generators.map((generator, index) => (
+                <div className="bases-generator-group" key={`${generator.type}-${index}`}>
+                  <div className="bases-generator-group-title">{generator.name}</div>
+                  <dl className="bases-generator-stats">
+                    <dt>Generators</dt>
+                    <dd>{generator.generatorCount}</dd>
+                    <dt>Fuel cells queued</dt>
+                    <dd>{generator.fuelCells} {generator.fuelName}{generator.fuelCells === 1 ? "" : "s"}</dd>
+                    <dt>Runtime remaining</dt>
+                    <dd>{formatRuntime(generator.runtimeSeconds)}</dd>
+                  </dl>
+                </div>
+              ))}
+            </div>
+          );
+        }}
         emptyMessage="No bases have been found yet."
       />
       <div className="panel-title bases-pagination-footer">
