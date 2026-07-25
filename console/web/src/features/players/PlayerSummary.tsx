@@ -93,7 +93,6 @@ export function PlayerSummary({
   const guild = text(firstDefined(player.guild, fallback.guild)) || "—";
   const faction = text(firstDefined(player.faction, fallback.faction)) || "Neutral";
   const flsId = text(firstDefined(player.fls_id, fallback.fls_id, actionPlayerId)) || "missing";
-  const actorId = idText(firstDefined(player.actor_id, fallback.actor_id, dbPlayerId));
   const accountId = idText(firstDefined(player.account_id, fallback.account_id));
   const controllerId = idText(firstDefined(player.player_controller_id, fallback.player_controller_id));
   const playerStateId = idText(player.player_state_id);
@@ -110,8 +109,7 @@ export function PlayerSummary({
   ];
   const databaseIdRows: { label: string; value: string }[] = [
     { label: "Account", value: accountId || "—" },
-    { label: "Actor", value: actorId || "—" },
-    { label: "DB Player", value: dbPlayerId || "—" },
+    { label: "Actor / Player", value: dbPlayerId || "—" },
     { label: "Player Controller", value: controllerId || "—" },
     { label: "Player State", value: playerStateId || "—" }
   ];
