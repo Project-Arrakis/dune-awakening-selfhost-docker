@@ -352,14 +352,15 @@ test("live base export can be imported without losing relative transforms", asyn
           x: "1000",
           y: "2000",
           z: "3000",
-          owner_entity_id: "9001"
+          owner_entity_id: "9001",
+          actor_id: "7001"
         }] };
       }
-      if (text.includes("select instance_id, building_type, transform")) {
-        return { rows: [{ instance_id: 7, building_type: "MTX_Smug_Foundation", transform: [1125, 2250, 3375, 0, 0, 0, 1] }] };
+      if (text.includes("select bi.building_id, bi.instance_id")) {
+        return { rows: [{ building_id: 42, instance_id: 7, building_type: "MTX_Smug_Foundation", transform: [1125, 2250, 3375, 0, 0, 0, 1] }] };
       }
       if (text.includes("select p.id as placeable_id")) {
-        assert.deepEqual(values, ["9001"]);
+        assert.deepEqual(values, ["7001"]);
         return { rows: [{ placeable_id: 9, building_type: "Generator_Placeable", x: 950, y: 2100, z: 3025, qz: 0, qw: 1 }] };
       }
       return { rows: [] };
