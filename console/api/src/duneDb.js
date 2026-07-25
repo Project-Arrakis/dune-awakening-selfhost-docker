@@ -4523,37 +4523,116 @@ export async function repairVehicleDecay(db, id, { thresholdPercent = 50 } = {})
   return db.transaction(async (tx) => {
     const player = await resolvePlayerMutationTarget(tx, id);
     if (String(player.onlineStatus).toLowerCase() === "online") throw new Error("Repair vehicle decay requires the player to be offline so live state cannot overwrite the DB change");
+    const hasPermissionOwnership = await tableExists(tx, "permission_actor_rank");
+    const permissionOwnershipClause = hasPermissionOwnership
+      ? `or exists (
+              select 1 from dune.permission_actor_rank par
+              where par.permission_actor_id = vm.vehicle_id
+                and par.player_id = $2
+                and par.rank = 1
+            )`
+      : "";
+    const ownerValues = hasPermissionOwnership ? [player.accountId, player.controllerId] : [player.accountId];
+    const thresholdParam = ownerValues.length + 1;
     const scanned = await tx.query(`
-      select count(*)::int as scanned,
-             count(distinct vm.vehicle_id)::int as vehicles
-      from dune.vehicle_modules vm
-      join dune.actors a on a.id = vm.vehicle_id
-      where a.owner_account_id = $1
-        and vm.stats is not null
-        and jsonb_typeof(vm.stats->'FVehicleModuleDurabilityStats') = 'array'
-        and jsonb_array_length(vm.stats->'FVehicleModuleDurabilityStats') >= 2
-        and (vm.stats->'FVehicleModuleDurabilityStats'->1) ? 'MaxDurability'
-        and (vm.stats->'FVehicleModuleDurabilityStats'->1) ? 'DecayedMaxDurability'`, [player.accountId]);
-    const repaired = await tx.query(`
-      with eligible as (
-        select vm.id,
-               vm.vehicle_id,
-               (durability->>'MaxDurability')::numeric as max_durability
+      with template_maxima as (
+        select vm.template_id,
+               max((durability->>'MaxDurability')::numeric) as max_durability
+        from dune.vehicle_modules vm
+        cross join lateral (select vm.stats->'FVehicleModuleDurabilityStats'->1 as durability) d
+        where jsonb_typeof(vm.stats->'FVehicleModuleDurabilityStats') = 'array'
+          and jsonb_array_length(vm.stats->'FVehicleModuleDurabilityStats') >= 2
+          and durability ? 'MaxDurability'
+          and (durability->>'MaxDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
+          and (durability->>'MaxDurability')::numeric > 0
+        group by vm.template_id
+      ), owned_modules as (
+        select vm.vehicle_id,
+               vm.stats->'FVehicleModuleDurabilityStats'->1 as durability,
+               coalesce(
+                 case
+                   when (vm.stats->'FVehicleModuleDurabilityStats'->1->>'MaxDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
+                     then (vm.stats->'FVehicleModuleDurabilityStats'->1->>'MaxDurability')::numeric
+                 end,
+                 tm.max_durability
+               ) as effective_max
         from dune.vehicle_modules vm
         join dune.actors a on a.id = vm.vehicle_id
-        cross join lateral (
-          select vm.stats->'FVehicleModuleDurabilityStats'->1 as durability
-        ) d
-        where a.owner_account_id = $1
+        left join template_maxima tm on tm.template_id = vm.template_id
+        where (
+            a.owner_account_id = $1
+            ${permissionOwnershipClause}
+          )
           and vm.stats is not null
           and jsonb_typeof(vm.stats->'FVehicleModuleDurabilityStats') = 'array'
           and jsonb_array_length(vm.stats->'FVehicleModuleDurabilityStats') >= 2
+          and jsonb_typeof(vm.stats->'FVehicleModuleDurabilityStats'->1) = 'object'
+      )
+      select count(*)::int as scanned,
+             count(distinct vehicle_id)::int as vehicles,
+             count(*) filter (
+               where durability ? 'DecayedMaxDurability'
+                 and (durability->>'DecayedMaxDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
+                 and effective_max > 0
+             )::int as comparable,
+             count(*) filter (
+               where durability ? 'DecayedMaxDurability'
+                 and (durability->>'DecayedMaxDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
+                 and effective_max is null
+             )::int as missing_maximum
+      from owned_modules`, ownerValues);
+    const repaired = await tx.query(`
+      with template_maxima as (
+        select vm.template_id,
+               max((durability->>'MaxDurability')::numeric) as max_durability
+        from dune.vehicle_modules vm
+        cross join lateral (select vm.stats->'FVehicleModuleDurabilityStats'->1 as durability) d
+        where jsonb_typeof(vm.stats->'FVehicleModuleDurabilityStats') = 'array'
+          and jsonb_array_length(vm.stats->'FVehicleModuleDurabilityStats') >= 2
           and durability ? 'MaxDurability'
-          and durability ? 'DecayedMaxDurability'
-          and (durability->>'MaxDurability') ~ '^-?[0-9]+(\\.[0-9]+)?$'
-          and (durability->>'DecayedMaxDurability') ~ '^-?[0-9]+(\\.[0-9]+)?$'
+          and (durability->>'MaxDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
           and (durability->>'MaxDurability')::numeric > 0
-          and (durability->>'DecayedMaxDurability')::numeric < ((durability->>'MaxDurability')::numeric * $2)
+        group by vm.template_id
+      ), eligible as (
+        select vm.id,
+               vm.vehicle_id,
+               coalesce(
+                 case
+                   when (durability->>'MaxDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
+                     then (durability->>'MaxDurability')::numeric
+                 end,
+                 tm.max_durability
+               ) as max_durability
+        from dune.vehicle_modules vm
+        join dune.actors a on a.id = vm.vehicle_id
+        left join template_maxima tm on tm.template_id = vm.template_id
+        cross join lateral (
+          select vm.stats->'FVehicleModuleDurabilityStats'->1 as durability
+        ) d
+        where (
+            a.owner_account_id = $1
+            ${permissionOwnershipClause}
+          )
+          and vm.stats is not null
+          and jsonb_typeof(vm.stats->'FVehicleModuleDurabilityStats') = 'array'
+          and jsonb_array_length(vm.stats->'FVehicleModuleDurabilityStats') >= 2
+          and jsonb_typeof(durability) = 'object'
+          and durability ? 'DecayedMaxDurability'
+          and (durability->>'DecayedMaxDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
+          and coalesce(
+                case
+                  when (durability->>'MaxDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
+                    then (durability->>'MaxDurability')::numeric
+                end,
+                tm.max_durability
+              ) > 0
+          and (durability->>'DecayedMaxDurability')::numeric < (coalesce(
+                case
+                  when (durability->>'MaxDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
+                    then (durability->>'MaxDurability')::numeric
+                end,
+                tm.max_durability
+              ) * $${thresholdParam})
       )
       update dune.vehicle_modules vm
       set stats = jsonb_set(
@@ -4567,7 +4646,7 @@ export async function repairVehicleDecay(db, id, { thresholdPercent = 50 } = {})
       )
       from eligible
       where vm.id = eligible.id
-      returning vm.id, vm.vehicle_id`, [player.accountId, thresholdRatio]);
+      returning vm.id, vm.vehicle_id`, [...ownerValues, thresholdRatio]);
     const repairedVehicles = new Set(repaired.rows.map((row) => String(row.vehicle_id))).size;
     return {
       ok: true,
@@ -4575,6 +4654,8 @@ export async function repairVehicleDecay(db, id, { thresholdPercent = 50 } = {})
       thresholdPercent: threshold,
       scanned: Number(scanned.rows[0]?.scanned || 0),
       vehicles: Number(scanned.rows[0]?.vehicles || 0),
+      comparable: Number(scanned.rows[0]?.comparable || 0),
+      missingMaximum: Number(scanned.rows[0]?.missing_maximum || 0),
       repaired: repaired.rows.length,
       repairedVehicles
     };

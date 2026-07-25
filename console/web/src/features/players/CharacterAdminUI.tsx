@@ -1171,11 +1171,14 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
           const repaired = Number(result.repaired || 0);
           const scanned = Number(result.scanned || 0);
           const vehicles = Number(result.vehicles || 0);
+          const comparable = Number(result.comparable || 0);
+          const missingMaximum = Number(result.missingMaximum || 0);
           const repairedVehicles = Number(result.repairedVehicles || 0);
+          const skippedNote = missingMaximum > 0 ? ` ${missingMaximum} decayed module${missingMaximum === 1 ? " was" : "s were"} skipped because no trustworthy maximum durability was available.` : "";
           return {
             message: repaired > 0
-              ? `Repaired ${repaired} vehicle module${repaired === 1 ? "" : "s"} across ${repairedVehicles} vehicle${repairedVehicles === 1 ? "" : "s"}. Relog required.`
-              : `No vehicle modules were below ${threshold}% red-bar threshold (${scanned} module${scanned === 1 ? "" : "s"} across ${vehicles} vehicle${vehicles === 1 ? "" : "s"} scanned).`
+              ? `Repaired ${repaired} vehicle module${repaired === 1 ? "" : "s"} across ${repairedVehicles} vehicle${repairedVehicles === 1 ? "" : "s"}. Relog required.${skippedNote}`
+              : `No comparable vehicle modules were below ${threshold}% red-bar threshold (${scanned} module${scanned === 1 ? "" : "s"} across ${vehicles} vehicle${vehicles === 1 ? "" : "s"} scanned; ${comparable} had a trustworthy maximum).${skippedNote}`
           };
         }, `${playerName}'s vehicle decay was repaired. Relog required.`, { actionType: "Repair Vehicle Decay", target: playerName, amount: `${threshold}%` });
       }}>Repair Vehicles</button><InlineActionResult result={playerAdmin_actionResult} resultKey="repairVehicleDecay" /></div></div><div className="playerAdmin_section playerAdmin_dangerSection"><h5>Danger Zone</h5><div className="playerAdmin_buttonRow"><button className="danger" disabled={!actionPlayerId || playerAdmin_actionResult?.pending} onClick={async () => {
