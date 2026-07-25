@@ -2,6 +2,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "n
 import { dirname, resolve } from "node:path";
 import { publishCarePackageWhisper, validateBroadcastMessage } from "../rmq.js";
 import { ensureMessageOfTheDayPersona, MESSAGE_OF_THE_DAY_PERSONA } from "../carePackage.js";
+import { redact } from "../redact.js";
 
 const DEFAULT_MESSAGE_OF_THE_DAY = {
   enabled: false,
@@ -9,14 +10,17 @@ const DEFAULT_MESSAGE_OF_THE_DAY = {
   message: ""
 };
 
-const EMPTY_STATE = { delivered: {} };
+const EMPTY_STATUS = { lastAttemptAt: "", lastSent: 0, lastFailed: 0, lastError: "" };
+const EMPTY_STATE = { delivered: {}, status: EMPTY_STATUS };
 const MIN_MOTD_SESSION_AGE_MS = 5_000;
 const DELIVERED_SESSION_RETENTION_MS = 24 * 60 * 60 * 1000;
 
 export function readMessageOfTheDay(config) {
+  const state = readState(config);
   return {
     settings: readSettings(config),
-    defaults: { ...DEFAULT_MESSAGE_OF_THE_DAY }
+    defaults: { ...DEFAULT_MESSAGE_OF_THE_DAY },
+    status: normalizeStatus(state.status)
   };
 }
 
@@ -34,6 +38,7 @@ export function restoreMessageOfTheDay(config) {
 }
 
 export function primeMessageOfTheDayOnlineState(config, players) {
+  const current = readState(config);
   const delivered = {};
   for (const player of (players || []).map(normalizePlayer).filter((entry) => entry.key && entry.characterName)) {
     delivered[player.key] = {
@@ -43,7 +48,7 @@ export function primeMessageOfTheDayOnlineState(config, players) {
       primed: true
     };
   }
-  writeJson(statePath(config), { delivered }, 0o600);
+  writeJson(statePath(config), { delivered, status: normalizeStatus(current.status) }, 0o600);
   return { delivered: Object.keys(delivered).length };
 }
 
@@ -67,7 +72,7 @@ export async function runMessageOfTheDayScan(config, players, context = {}) {
 
   const pendingPlayers = onlinePlayers.filter((player) => !delivered[player.key] && isSessionMature(player, now));
   if (!pendingPlayers.length) {
-    writeJson(statePath(config), { delivered }, 0o600);
+    writeJson(statePath(config), { delivered, status: normalizeStatus(state.status) }, 0o600);
     return { ok: true, skipped: false, sent: 0, failed: 0 };
   }
 
@@ -104,8 +109,27 @@ export async function runMessageOfTheDayScan(config, players, context = {}) {
     }
   }
 
-  writeJson(statePath(config), { delivered }, 0o600);
+  const firstFailure = results.find((result) => !result.ok)?.error || "";
+  const status = {
+    lastAttemptAt: now.toISOString(),
+    lastSent: sent,
+    lastFailed: failed,
+    lastError: firstFailure ? redact(firstFailure) : ""
+  };
+  writeJson(statePath(config), { delivered, status }, 0o600);
   return { ok: failed === 0, skipped: false, sent, failed, results };
+}
+
+export function recordMessageOfTheDayFailure(config, error, now = new Date()) {
+  const state = readState(config);
+  const status = {
+    lastAttemptAt: now.toISOString(),
+    lastSent: 0,
+    lastFailed: 1,
+    lastError: redact(String(error?.message || error || "Unknown delivery failure"))
+  };
+  writeJson(statePath(config), { delivered: state.delivered || {}, status }, 0o600);
+  return status;
 }
 
 export function normalizeSettings(input = {}) {
@@ -141,10 +165,21 @@ function readSettings(config) {
 function readState(config) {
   try {
     const state = JSON.parse(readFileSync(statePath(config), "utf8"));
-    return state && typeof state === "object" && state.delivered && typeof state.delivered === "object" ? state : EMPTY_STATE;
+    return state && typeof state === "object" && state.delivered && typeof state.delivered === "object"
+      ? { delivered: state.delivered, status: normalizeStatus(state.status) }
+      : EMPTY_STATE;
   } catch {
     return EMPTY_STATE;
   }
+}
+
+function normalizeStatus(status = {}) {
+  return {
+    lastAttemptAt: String(status?.lastAttemptAt || ""),
+    lastSent: Math.max(0, Number(status?.lastSent) || 0),
+    lastFailed: Math.max(0, Number(status?.lastFailed) || 0),
+    lastError: String(status?.lastError || "")
+  };
 }
 
 function normalizePlayer(player = {}) {

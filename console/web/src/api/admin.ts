@@ -41,6 +41,13 @@ export type MessageOfTheDaySettings = {
   message: string;
 };
 
+export type MessageOfTheDayStatus = {
+  lastAttemptAt: string;
+  lastSent: number;
+  lastFailed: number;
+  lastError: string;
+};
+
 export type PlayerAnnouncementSettings = {
   joinEnabled: boolean;
   joinMessage: string;
@@ -108,9 +115,9 @@ export const adminApi = {
   characterTransferSettings: () => api<{ settings: CharacterTransferSettings; defaults: CharacterTransferSettings; policies: IncomingCharacterTransferPolicy[]; customized: boolean; path: string }>("/api/admin/character-transfer-settings"),
   saveCharacterTransferSettings: (settings: CharacterTransferSettings) => post<{ ok: boolean; settings: CharacterTransferSettings; task: Task }>("/api/admin/character-transfer-settings", { settings }),
   restoreCharacterTransferSettings: () => post<{ ok: boolean; settings: CharacterTransferSettings; task: Task }>("/api/admin/character-transfer-settings", { restoreDefaults: true }),
-  messageOfTheDay: () => api<{ settings: MessageOfTheDaySettings; defaults: MessageOfTheDaySettings }>("/api/admin/message-of-the-day"),
-  saveMessageOfTheDay: (settings: MessageOfTheDaySettings) => post<{ ok: boolean; settings: MessageOfTheDaySettings; defaults: MessageOfTheDaySettings }>("/api/admin/message-of-the-day", { settings }),
-  restoreMessageOfTheDay: () => post<{ ok: boolean; settings: MessageOfTheDaySettings; defaults: MessageOfTheDaySettings }>("/api/admin/message-of-the-day", { restoreDefaults: true }),
+  messageOfTheDay: () => api<{ settings: MessageOfTheDaySettings; defaults: MessageOfTheDaySettings; status: MessageOfTheDayStatus }>("/api/admin/message-of-the-day"),
+  saveMessageOfTheDay: (settings: MessageOfTheDaySettings) => post<{ ok: boolean; settings: MessageOfTheDaySettings; defaults: MessageOfTheDaySettings; status: MessageOfTheDayStatus; delivery: { primedOnlinePlayers: number; note: string } }>("/api/admin/message-of-the-day", { settings }),
+  restoreMessageOfTheDay: () => post<{ ok: boolean; settings: MessageOfTheDaySettings; defaults: MessageOfTheDaySettings; status: MessageOfTheDayStatus; delivery: { primedOnlinePlayers: number; note: string } }>("/api/admin/message-of-the-day", { restoreDefaults: true }),
   playerAnnouncements: () => api<{ settings: PlayerAnnouncementSettings; defaults: PlayerAnnouncementSettings }>("/api/admin/player-announcements"),
   savePlayerAnnouncements: (settings: PlayerAnnouncementSettings) => post<{ ok: boolean; settings: PlayerAnnouncementSettings; defaults: PlayerAnnouncementSettings }>("/api/admin/player-announcements", { settings }),
   restorePlayerAnnouncements: () => post<{ ok: boolean; settings: PlayerAnnouncementSettings; defaults: PlayerAnnouncementSettings }>("/api/admin/player-announcements", { restoreDefaults: true }),
