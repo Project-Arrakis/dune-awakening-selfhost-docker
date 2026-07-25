@@ -1,5 +1,5 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/bin/sh
+set -eu
 
 cd "$(dirname "$0")"
 
@@ -7,7 +7,8 @@ APP_NAME="Dune Docker Console"
 WEB_COMPOSE="docker-compose.web.yml"
 WEB_SERVICE="redblink-dune-docker-console"
 WEB_PORT="${ADMIN_BIND_PORT:-8088}"
-DOCKER=(docker)
+DOCKER_CMD="docker"
+DOCKER_NEEDS_SUDO=0
 DOCKER_GROUP_UPDATED=0
 
 say() {
@@ -38,18 +39,56 @@ has_systemd() {
   command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]
 }
 
+has_openrc() {
+  command -v rc-update >/dev/null 2>&1 && command -v rc-service >/dev/null 2>&1
+}
+
 install_basic_tools() {
   if command -v apt-get >/dev/null 2>&1; then
     need_sudo apt-get update
-    need_sudo apt-get install -y ca-certificates curl
+    need_sudo apt-get install -y ca-certificates curl bash tar openssl python3
   elif command -v dnf >/dev/null 2>&1; then
-    need_sudo dnf install -y ca-certificates curl
+    need_sudo dnf install -y ca-certificates curl bash tar openssl python3
   elif command -v yum >/dev/null 2>&1; then
-    need_sudo yum install -y ca-certificates curl
+    need_sudo yum install -y ca-certificates curl bash tar openssl python3
   elif command -v zypper >/dev/null 2>&1; then
-    need_sudo zypper --non-interactive install ca-certificates curl
+    need_sudo zypper --non-interactive install ca-certificates curl bash tar openssl python3
   elif command -v pacman >/dev/null 2>&1; then
-    need_sudo pacman -Sy --noconfirm ca-certificates curl
+    need_sudo pacman -Sy --noconfirm ca-certificates curl bash tar openssl python
+  elif command -v apk >/dev/null 2>&1; then
+    need_sudo apk add --no-cache ca-certificates curl bash tar openssl python3
+  elif command -v xbps-install >/dev/null 2>&1; then
+    need_sudo xbps-install -Sy ca-certificates curl bash tar openssl python3
+  else
+    echo "This installer could not detect a supported package manager." >&2
+    echo "Install curl, bash, tar, openssl, and python3, then run it again." >&2
+    exit 1
+  fi
+}
+
+ensure_basic_tools() {
+  if command -v curl >/dev/null 2>&1 \
+    && command -v bash >/dev/null 2>&1 \
+    && command -v tar >/dev/null 2>&1 \
+    && command -v openssl >/dev/null 2>&1 \
+    && { command -v python3 >/dev/null 2>&1 || command -v python >/dev/null 2>&1; }; then
+    return
+  fi
+  install_basic_tools
+
+  missing_tools=""
+  for required_tool in curl bash tar openssl; do
+    if ! command -v "$required_tool" >/dev/null 2>&1; then
+      missing_tools="${missing_tools}${missing_tools:+, }${required_tool}"
+    fi
+  done
+  if ! command -v python3 >/dev/null 2>&1 && ! command -v python >/dev/null 2>&1; then
+    missing_tools="${missing_tools}${missing_tools:+, }python3"
+  fi
+  if [ -n "$missing_tools" ]; then
+    echo "Required tools are still missing after package installation: $missing_tools" >&2
+    echo "Install them manually, then run this installer again." >&2
+    exit 1
   fi
 }
 
@@ -58,8 +97,13 @@ install_docker() {
     return
   fi
 
-  step "Docker is missing. Installing Docker now."
-  install_basic_tools
+  step "Docker is missing. Installing Pre-requisites for Docker now."
+
+  if command -v apk >/dev/null 2>&1; then
+    step "Installing Docker from the Alpine community repository."
+    install_docker_alpine
+    return
+  fi
 
   if ! command -v curl >/dev/null 2>&1; then
     echo "Docker is missing and curl is not available, so the installer cannot continue automatically."
@@ -67,20 +111,77 @@ install_docker() {
     exit 1
   fi
 
-  curl -fsSL https://get.docker.com | need_sudo sh
+  step "Installing Docker now."
+
+  get_docker_script="${TMPDIR:-/tmp}/dune-get-docker-$$.sh"
+  trap 'rm -f "$get_docker_script"' 0
+
+  if ! curl -fsSL https://get.docker.com -o "$get_docker_script"; then
+    echo "Could not download the Docker install script from get.docker.com." >&2
+    exit 1
+  fi
+
+  if ! error=$(need_sudo sh "$get_docker_script" 2>&1); then
+    echo "$error" >&2
+    exit 1
+  fi
+}
+
+install_docker_alpine() {
+  alpine_repos_file="/etc/apk/repositories"
+  alpine_community_repository=""
+
+  if grep -qE '^[[:space:]]*#.*\/community([[:space:]]*)$' "$alpine_repos_file"; then
+    echo "The Alpine community repository is currently disabled in $alpine_repos_file."
+    printf "Allow this installer to enable it for Docker installation? [y/N] "
+    response=""
+    read -r response || true
+    if echo "$response" | grep -qi "^y"; then
+      need_sudo sed -i 's|^[[:space:]]*#[[:space:]]*\(.*\/community\)[[:space:]]*$|\1|' "$alpine_repos_file"
+    else
+      echo "Cannot install Docker without the community repository. Aborting."
+      exit 1
+    fi
+  elif ! grep -qE '^[[:space:]]*[^#].*\/community([[:space:]]*)$' "$alpine_repos_file"; then
+    alpine_community_repository="$(awk '/^[[:space:]]*[^#].*\/main[[:space:]]*$/ { sub(/\/main[[:space:]]*$/, "/community"); print; exit }' "$alpine_repos_file")"
+    if [ -z "$alpine_community_repository" ]; then
+      echo "Could not derive an Alpine community repository from $alpine_repos_file." >&2
+      echo "Enable the community repository manually, then run this installer again." >&2
+      exit 1
+    fi
+    echo "The Alpine community repository is missing from $alpine_repos_file."
+    printf "Allow this installer to add %s for Docker installation? [y/N] " "$alpine_community_repository"
+    response=""
+    read -r response || true
+    if echo "$response" | grep -qi "^y"; then
+      printf '%s\n' "$alpine_community_repository" | need_sudo tee -a "$alpine_repos_file" >/dev/null
+    else
+      echo "Cannot install Docker without the community repository. Aborting."
+      exit 1
+    fi
+  fi
+
+  need_sudo apk add --no-cache docker
+  if ! command -v docker >/dev/null 2>&1; then
+    echo "Docker was not available after Alpine package installation." >&2
+    exit 1
+  fi
 }
 
 select_docker_command() {
   if docker info >/dev/null 2>&1; then
-    DOCKER=(docker)
+    DOCKER_CMD="docker"
+    DOCKER_NEEDS_SUDO=0
     return 0
   fi
   if [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null 2>&1 && sudo docker info >/dev/null 2>&1; then
-    DOCKER=(sudo docker)
+    DOCKER_CMD="sudo docker"
+    DOCKER_NEEDS_SUDO=1
     return 0
   fi
   if [ "$(id -u)" -eq 0 ] && docker info >/dev/null 2>&1; then
-    DOCKER=(docker)
+    DOCKER_CMD="docker"
+    DOCKER_NEEDS_SUDO=0
     return 0
   fi
   return 1
@@ -95,6 +196,9 @@ start_docker() {
 
   if has_systemd; then
     need_sudo systemctl enable --now docker || true
+  elif has_openrc; then
+    need_sudo rc-update add docker default || true
+    need_sudo rc-service docker start || true
   elif command -v service >/dev/null 2>&1; then
     need_sudo service docker start || true
   fi
@@ -118,26 +222,48 @@ start_docker() {
   exit 1
 }
 
-ensure_docker_group_access() {
-  local target_user
-  target_user="${SUDO_USER:-${USER:-}}"
-  if [ -z "$target_user" ] || [ "$target_user" = "root" ]; then
-    return
-  fi
+set_docker_group_access() {
+  docker_group_target_user="$1"
+
   if ! getent group docker >/dev/null 2>&1; then
-    return
-  fi
-  if id -nG "$target_user" 2>/dev/null | tr ' ' '\n' | grep -qx docker; then
+    echo "Docker group does not exist yet — Is Docker installed?"
     return
   fi
 
-  step "Allowing your user to run Docker commands later."
-  need_sudo usermod -aG docker "$target_user" || true
+  if command -v usermod >/dev/null 2>&1; then
+    need_sudo usermod -aG docker "$docker_group_target_user"
+  elif command -v addgroup >/dev/null 2>&1; then
+    need_sudo addgroup "$docker_group_target_user" docker
+  else
+    echo "Cannot add user $docker_group_target_user to the docker group automatically."
+    echo "Please manually add your user to the docker group and log out and back in."
+  fi
+}
+
+ensure_docker_group_access() {
+  docker_group_user="${SUDO_USER:-${USER:-}}"
+  step "Checking if User: $docker_group_user is in the docker group."
+  if [ -z "$docker_group_user" ] || [ "$docker_group_user" = "root" ]; then
+    return
+  fi
+  if ! getent group docker >/dev/null 2>&1; then
+    echo "Docker group does not exist yet — Is Docker installed?"
+    return
+  fi
+  if id -nG "$docker_group_user" 2>/dev/null | tr ' ' '\n' | grep -qx docker; then
+    echo "User $docker_group_user is already in the docker group."
+    return
+  fi
+
+  echo "$docker_group_user is not in the docker group."
+  set_docker_group_access "$docker_group_user"
+  echo "User $docker_group_user has been added to the docker group. Log out and back in for this change to take effect."
+
   DOCKER_GROUP_UPDATED=1
 }
 
 ensure_compose() {
-  if "${DOCKER[@]}" compose version >/dev/null 2>&1; then
+  if $DOCKER_CMD compose version >/dev/null 2>&1; then
     return
   fi
 
@@ -150,13 +276,15 @@ ensure_compose() {
     need_sudo dnf install -y docker-compose-plugin
   elif command -v yum >/dev/null 2>&1; then
     need_sudo yum install -y docker-compose-plugin
+  elif command -v apk >/dev/null 2>&1; then
+    need_sudo apk add --no-cache docker-compose
   else
     echo "Docker Compose is missing and this operating system is not supported for automatic Compose installation."
     echo "Install the Docker Compose v2 plugin or use Docker Desktop, then run this installer again."
     exit 1
   fi
 
-  if ! "${DOCKER[@]}" compose version >/dev/null 2>&1; then
+  if ! $DOCKER_CMD compose version >/dev/null 2>&1; then
     echo "Docker Compose is still not available after installation."
     echo "Restart your shell or Docker Desktop, then run this installer again."
     exit 1
@@ -173,22 +301,22 @@ install_cli_command() {
 }
 
 host_ip() {
-  local ip=""
+  host_address=""
   if command -v ip >/dev/null 2>&1; then
-    ip="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{ for (i=1; i<=NF; i++) if ($i == "src") { print $(i + 1); exit } }' || true)"
+    host_address="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{ for (i=1; i<=NF; i++) if ($i == "src") { print $(i + 1); exit } }' || true)"
   fi
-  if [ -z "$ip" ] && command -v hostname >/dev/null 2>&1; then
-    ip="$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -Ev '^(127\.|169\.254\.|172\.17\.|172\.18\.|172\.19\.|172\.2[0-9]\.|172\.3[0-1]\.)' | head -n1 || true)"
+  if [ -z "$host_address" ] && command -v hostname >/dev/null 2>&1; then
+    host_address="$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -Ev '^(127\.|169\.254\.|172\.17\.|172\.18\.|172\.19\.|172\.2[0-9]\.|172\.3[0-1]\.)' | head -n1 || true)"
   fi
-  printf '%s' "${ip:-127.0.0.1}"
+  printf '%s' "${host_address:-127.0.0.1}"
 }
 
 public_ip() {
-  local ip=""
+  public_address=""
   if command -v curl >/dev/null 2>&1; then
-    ip="$(curl -fsS4 --max-time 5 https://api.ipify.org 2>/dev/null | tr -d '[:space:]' || true)"
-    if printf '%s' "$ip" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
-      printf '%s' "$ip"
+    public_address="$(curl -fsS4 --max-time 5 https://api.ipify.org 2>/dev/null | tr -d '[:space:]' || true)"
+    if printf '%s' "$public_address" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
+      printf '%s' "$public_address"
       return
     fi
   fi
@@ -202,26 +330,26 @@ is_valid_port() {
 }
 
 port_in_use() {
-  local port="$1"
+  checked_port="$1"
   if command -v ss >/dev/null 2>&1; then
-    ss -ltn "sport = :$port" 2>/dev/null | tail -n +2 | grep -q .
+    ss -ltn "sport = :$checked_port" 2>/dev/null | tail -n +2 | grep -q .
     return
   fi
   if command -v netstat >/dev/null 2>&1; then
-    netstat -ltn 2>/dev/null | awk '{print $4}' | grep -Eq "(^|:)${port}$"
+    netstat -ltn 2>/dev/null | awk '{print $4}' | grep -Eq "(^|:)${checked_port}$"
     return
   fi
   return 1
 }
 
 next_available_port() {
-  local port="${1:-8088}"
-  while [ "$port" -le 65535 ]; do
-    if ! port_in_use "$port"; then
-      printf '%s' "$port"
+  candidate_port="${1:-8088}"
+  while [ "$candidate_port" -le 65535 ]; do
+    if ! port_in_use "$candidate_port"; then
+      printf '%s' "$candidate_port"
       return
     fi
-    port=$((port + 1))
+    candidate_port=$((candidate_port + 1))
   done
   return 1
 }
@@ -241,18 +369,17 @@ default_host_gid() {
 }
 
 persist_env_value() {
-  local key="$1"
-  local value="$2"
-  local env_file="${3:-.env}"
-  local escaped_value
+  env_key="$1"
+  env_value="$2"
+  env_target_file="${3:-.env}"
 
-  touch "$env_file"
-  escaped_value="$(printf '%s' "$value" | sed 's/[&|]/\\&/g')"
+  touch "$env_target_file"
+  env_escaped_value="$(printf '%s' "$env_value" | sed 's/[&|]/\\&/g')"
 
-  if grep -q "^${key}=" "$env_file"; then
-    sed -i "s|^${key}=.*|${key}=${escaped_value}|" "$env_file"
+  if grep -q "^${env_key}=" "$env_target_file"; then
+    sed -i "s|^${env_key}=.*|${env_key}=${env_escaped_value}|" "$env_target_file"
   else
-    printf '%s=%s\n' "$key" "$value" >> "$env_file"
+    printf '%s=%s\n' "$env_key" "$env_value" >> "$env_target_file"
   fi
 }
 
@@ -275,16 +402,16 @@ persist_console_runtime_env() {
 }
 
 migrate_existing_ownership() {
-  local repo_root="${DUNE_HOST_REPO_ROOT:-$(pwd -P)}"
-  local target_uid="${DUNE_HOST_UID:-0}"
-  local target_gid="${DUNE_HOST_GID:-0}"
-  local env_file="${repo_root}/.env"
+  ownership_repo_root="${DUNE_HOST_REPO_ROOT:-$(pwd -P)}"
+  ownership_target_uid="${DUNE_HOST_UID:-0}"
+  ownership_target_gid="${DUNE_HOST_GID:-0}"
+  ownership_env_file="${ownership_repo_root}/.env"
 
-  if [ "$target_uid" = "0" ]; then
+  if [ "$ownership_target_uid" = "0" ]; then
     return
   fi
 
-  if [ ! -d "$repo_root" ]; then
+  if [ ! -d "$ownership_repo_root" ]; then
     return
   fi
 
@@ -292,29 +419,30 @@ migrate_existing_ownership() {
     return
   fi
 
-  if ! find "$repo_root" -maxdepth 1 -user root -print -quit 2>/dev/null | grep -q .; then
+  if ! find "$ownership_repo_root" -maxdepth 1 -user root -print -quit 2>/dev/null | grep -q .; then
     return
   fi
 
-  if [ -f "$env_file" ]; then
+  if [ -f "$ownership_env_file" ]; then
     echo "[install] Existing install detected with root-owned files."
-    echo "[install] Changing ownership to match current user (${target_uid}:${target_gid})..."
+    echo "[install] Changing ownership to match current user (${ownership_target_uid}:${ownership_target_gid})..."
   else
     echo "[install] Root-owned files found in repo. Changing ownership to match current user..."
   fi
 
-  need_sudo chown -R "${target_uid}:${target_gid}" "$repo_root" 2>/dev/null || {
-    echo "[install] WARNING: Could not chown all files in ${repo_root}."
+  need_sudo chown -R "${ownership_target_uid}:${ownership_target_gid}" "$ownership_repo_root" 2>/dev/null || {
+    echo "[install] WARNING: Could not chown all files in ${ownership_repo_root}."
     echo "[install] The web container may not be able to write repo files."
   }
 }
 
 choose_web_port() {
-  local chosen prompt default_port
-  default_port="${ADMIN_BIND_PORT:-$(existing_web_port)}"
-  default_port="${default_port:-8088}"
-  if ! is_valid_port "$default_port"; then
-    default_port="8088"
+  chosen_port=""
+  port_prompt=""
+  default_web_port="${ADMIN_BIND_PORT:-$(existing_web_port)}"
+  default_web_port="${default_web_port:-8088}"
+  if ! is_valid_port "$default_web_port"; then
+    default_web_port="8088"
   fi
 
   if [ -n "${ADMIN_BIND_PORT:-}" ]; then
@@ -328,38 +456,38 @@ choose_web_port() {
   fi
 
   step "Choosing the Web UI port."
-  if port_in_use "$default_port"; then
-    echo "Port $default_port is already in use."
-    prompt="Enter another port for the Web UI: "
+  if port_in_use "$default_web_port"; then
+    echo "Port $default_web_port is already in use."
+    port_prompt="Enter another port for the Web UI: "
   else
-    prompt="Enter the Web UI port, or press Enter to use $default_port: "
+    port_prompt="Enter the Web UI port, or press Enter to use $default_web_port: "
   fi
 
   while true; do
     if [ -t 0 ]; then
-      printf '%s' "$prompt"
-      read -r chosen
+      printf '%s' "$port_prompt"
+      read -r chosen_port
     else
-      chosen="$(next_available_port "$default_port" || true)"
-      if [ -z "$chosen" ]; then
+      chosen_port="$(next_available_port "$default_web_port" || true)"
+      if [ -z "$chosen_port" ]; then
         echo "No available Web UI port was found."
         exit 1
       fi
-      if [ "$chosen" != "$default_port" ]; then
-        echo "Port $default_port is already in use. Using available port $chosen."
+      if [ "$chosen_port" != "$default_web_port" ]; then
+        echo "Port $default_web_port is already in use. Using available port $chosen_port."
       fi
     fi
-    chosen="${chosen:-$default_port}"
-    if ! is_valid_port "$chosen"; then
+    chosen_port="${chosen_port:-$default_web_port}"
+    if ! is_valid_port "$chosen_port"; then
       echo "Enter a number between 1 and 65535."
       continue
     fi
-    if port_in_use "$chosen"; then
-      echo "Port $chosen is already in use. Choose another port."
-      prompt="Enter another port for the Web UI: "
+    if port_in_use "$chosen_port"; then
+      echo "Port $chosen_port is already in use. Choose another port."
+      port_prompt="Enter another port for the Web UI: "
       continue
     fi
-    WEB_PORT="$chosen"
+    WEB_PORT="$chosen_port"
     persist_web_port
     echo "Web UI port set to $WEB_PORT."
     return
@@ -382,7 +510,7 @@ start_console() {
   prepare_docker_socket_gid
   persist_console_runtime_env
   migrate_existing_ownership
-  if [ "${DOCKER[0]}" = "sudo" ]; then
+  if [ "$DOCKER_NEEDS_SUDO" = "1" ]; then
     need_sudo env \
       "ADMIN_BIND_PORT=$ADMIN_BIND_PORT" \
       "DUNE_HOST_REPO_ROOT=$DUNE_HOST_REPO_ROOT" \
@@ -392,41 +520,41 @@ start_console() {
       "COMPOSE_PROJECT_NAME=$COMPOSE_PROJECT_NAME" \
       docker compose -f "$WEB_COMPOSE" up -d --build "$WEB_SERVICE"
   else
-    "${DOCKER[@]}" compose -f "$WEB_COMPOSE" up -d --build "$WEB_SERVICE"
+    $DOCKER_CMD compose -f "$WEB_COMPOSE" up -d --build "$WEB_SERVICE"
   fi
 }
 
 read_admin_password() {
-  local password_file="$1"
-  local attempt
-  for attempt in $(seq 1 20); do
-    if [ -r "$password_file" ] && [ -s "$password_file" ]; then
-      tr -d '\r\n' < "$password_file"
+  admin_password_file="$1"
+  password_attempt=1
+  while [ "$password_attempt" -le 20 ]; do
+    if [ -r "$admin_password_file" ] && [ -s "$admin_password_file" ]; then
+      tr -d '\r\n' < "$admin_password_file"
       return
     fi
-    if command -v sudo >/dev/null 2>&1 && sudo test -s "$password_file" 2>/dev/null; then
-      sudo cat "$password_file" | tr -d '\r\n'
+    if command -v sudo >/dev/null 2>&1 && sudo test -s "$admin_password_file" 2>/dev/null; then
+      sudo cat "$admin_password_file" | tr -d '\r\n'
       return
     fi
     sleep 1
+    password_attempt=$((password_attempt + 1))
   done
 }
 
 show_finish() {
-  local ip public password_file admin_password
-  ip="$(host_ip)"
-  public="$(public_ip)"
-  password_file="$(pwd)/runtime/secrets/admin-web-password.txt"
-  admin_password="$(read_admin_password "$password_file")"
+  finish_host_ip="$(host_ip)"
+  finish_public_ip="$(public_ip)"
+  finish_password_file="$(pwd)/runtime/secrets/admin-web-password.txt"
+  finish_admin_password="$(read_admin_password "$finish_password_file")"
 
   say "$APP_NAME is ready."
   echo
   echo "Open the Web UI in your browser:"
-  if [ -n "$public" ] && [ "$public" != "$ip" ]; then
-    echo "  Remote / public access: http://$public:$WEB_PORT"
-    echo "  Same network access:    http://$ip:$WEB_PORT"
+  if [ -n "$finish_public_ip" ] && [ "$finish_public_ip" != "$finish_host_ip" ]; then
+    echo "  Remote / public access: http://$finish_public_ip:$WEB_PORT"
+    echo "  Same network access:    http://$finish_host_ip:$WEB_PORT"
   else
-    echo "  http://$ip:$WEB_PORT"
+    echo "  http://$finish_host_ip:$WEB_PORT"
   fi
   echo
   echo "If you are on the same local network as this server, use the same-network address."
@@ -437,9 +565,9 @@ show_finish() {
   fi
   echo
   echo "Your first admin password was generated automatically."
-  if [ -n "$admin_password" ]; then
+  if [ -n "$finish_admin_password" ]; then
     echo "Use this password to sign in:"
-    echo "  $admin_password"
+    echo "  $finish_admin_password"
   else
     echo "The password was not ready yet. Wait a few seconds and run ./install.sh again to show it."
   fi
@@ -456,6 +584,7 @@ if ! is_linux; then
   exit 1
 fi
 
+ensure_basic_tools
 install_docker
 start_docker
 ensure_docker_group_access

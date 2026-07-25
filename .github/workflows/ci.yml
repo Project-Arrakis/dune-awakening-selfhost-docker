@@ -81,6 +81,10 @@ jobs:
         run: bash tests/ready-configured-ports-test.sh
       - name: Test database updater role restoration
         run: bash tests/update-db-role-privilege-test.sh
+      - name: Test installer shell portability
+        run: |
+          dash -n install.sh
+          docker run --rm -v "$PWD/install.sh:/install.sh:ro" alpine:3.22 /bin/ash -n /install.sh
 
   container-lifecycle:
     runs-on: ubuntu-latest
