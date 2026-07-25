@@ -1775,7 +1775,7 @@ test("player profile includes faction and guild when addon tables are present", 
   assert.equal(result.player.platform_name, "Steam");
 });
 
-test("player profile uses guild allegiance when personal faction is unassigned", async () => {
+test("player profile ignores guild allegiance and stays Neutral when personal faction is unassigned", async () => {
   const db = {
     query: async (text, values = []) => {
       if (text.includes("to_regclass")) {
@@ -1793,7 +1793,7 @@ test("player profile uses guild allegiance when personal faction is unassigned",
       }
       if (text.includes("from dune.player_faction pf")) return { rows: [] };
       if (text.includes("from dune.player_faction_reputation pfr")) {
-        return { rows: [{ actor_id: "129", faction_id: "2", faction_name: "Harkonnen", reputation_amount: 100 }] };
+        return { rows: [{ actor_id: "131", faction_id: "2", faction_name: "Harkonnen", reputation_amount: 100 }] };
       }
       if (text.includes("as faction_id") && text.includes("join dune.guilds g") && text.includes("left join dune.factions f")) {
         return { rows: [{ player_id: "129", faction_id: "1", faction_name: "Atreides" }] };
@@ -1805,8 +1805,8 @@ test("player profile uses guild allegiance when personal faction is unassigned",
     }
   };
   const result = await playerProfile(db, "131");
-  assert.equal(result.player.faction, "Atreides");
-  assert.equal(result.player.faction_assigned, true);
+  assert.equal(result.player.faction, "Neutral");
+  assert.equal(result.player.faction_assigned, false);
   assert.equal(result.player.guild, "Codex Atreides Test Guild");
 });
 
@@ -1830,7 +1830,7 @@ test("player profile falls back to placeholder faction/guild when addon tables a
   assert.equal(result.player.guild, "—");
 });
 
-test("player profile does not treat existing reputation as a faction assignment", async () => {
+test("player profile ignores reputation entirely and stays Neutral when only reputation data exists", async () => {
   const db = {
     query: async (text, values = []) => {
       if (text.includes("to_regclass")) {
@@ -1842,13 +1842,13 @@ test("player profile does not treat existing reputation as a faction assignment"
         return { rows: [{ actor_id: 101, player_pawn_id: 101, account_id: 201, character_name: "Test One", player_controller_id: 301, funcom_id: "FN1", fls_id: "user1", action_player_id: "user1", class: "Foo", map: "Survival_1", online_status: "Offline" }] };
       }
       if (text.includes("from dune.player_faction_reputation pfr")) {
-        return { rows: [{ actor_id: "301", faction_id: "2", faction_name: "Harkonnen", reputation_amount: 100 }] };
+        return { rows: [{ actor_id: "101", faction_id: "2", faction_name: "Harkonnen", reputation_amount: 100 }] };
       }
       return { rows: [] };
     }
   };
   const result = await playerProfile(db, "101");
-  assert.equal(result.player.faction, "Harkonnen");
+  assert.equal(result.player.faction, "Neutral");
   assert.equal(result.player.faction_assigned, false);
 });
 

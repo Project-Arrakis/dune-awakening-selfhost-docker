@@ -1858,18 +1858,15 @@ export async function playerProfile(db, id) {
     where a.id = $1`, [actorId]);
   if (!result.rows[0]) throw new Error("Player not found");
   const row = result.rows[0];
-  const [currentFactions, guildFactions, reputationFactions, guilds] = await Promise.all([
+  const [currentFactions, guilds] = await Promise.all([
     leadershipCurrentFactions(db).catch(() => new Map()),
-    leadershipGuildFactions(db).catch(() => new Map()),
-    leadershipReputationFactions(db).catch(() => new Map()),
     leadershipGuilds(db).catch(() => new Map())
   ]);
   const controllerId = String(row.player_controller_id || "");
   const actorIdKey = String(row.actor_id || "");
   const accountIdKey = String(row.account_id || "");
-  const assignedFaction = currentFactions.get(controllerId) || currentFactions.get(actorIdKey) ||
-    guildFactions.get(controllerId) || guildFactions.get(actorIdKey) || "";
-  row.faction = assignedFaction || reputationFactions.get(controllerId) || reputationFactions.get(actorIdKey) || "Neutral";
+  const assignedFaction = currentFactions.get(controllerId) || "";
+  row.faction = assignedFaction || "Neutral";
   row.faction_assigned = Boolean(assignedFaction);
   row.guild = guilds.get(controllerId) || guilds.get(actorIdKey) || guilds.get(accountIdKey) || "—";
   return { capabilities: await playerCapabilities(db), player: row };
