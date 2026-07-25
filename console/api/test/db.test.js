@@ -2685,21 +2685,27 @@ test("augment inventory item requires valid augment IDs", async () => {
 test("vehicle decay repair is scoped to the selected player's owned vehicles", async () => {
   const calls = [];
   const db = fakeMutationDb(calls, {
-    vehicleModuleScanRows: [{ scanned: 3, vehicles: 2 }],
+    vehicleModuleScanRows: [{ scanned: 4, vehicles: 2, comparable: 3, missing_maximum: 1 }],
     repairedVehicleModuleRows: [{ id: 10, vehicle_id: 900 }, { id: 11, vehicle_id: 900 }, { id: 12, vehicle_id: 901 }]
   });
   const result = await repairVehicleDecay(db, 123, { thresholdPercent: 50 });
-  assert.equal(result.scanned, 3);
+  assert.equal(result.scanned, 4);
   assert.equal(result.vehicles, 2);
+  assert.equal(result.comparable, 3);
+  assert.equal(result.missingMaximum, 1);
   assert.equal(result.repaired, 3);
   assert.equal(result.repairedVehicles, 2);
   const update = calls.find((call) => call.text.includes("update dune.vehicle_modules vm"));
   assert.ok(update);
   assert.match(update.text, /join dune\.actors a on a\.id = vm\.vehicle_id/);
   assert.match(update.text, /a\.owner_account_id = \$1/);
+  assert.match(update.text, /permission_actor_rank par/);
+  assert.match(update.text, /par\.player_id = \$2/);
+  assert.match(update.text, /par\.rank = 1/);
+  assert.match(update.text, /template_maxima/);
   assert.match(update.text, /DecayedMaxDurability/);
   assert.match(update.text, /CurrentDurability/);
-  assert.deepEqual(update.values, [44, 0.5]);
+  assert.deepEqual(update.values, [44, 55, 0.5]);
 });
 
 test("storage give-item reports unsupported capability when schema functions are absent", async () => {
