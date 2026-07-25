@@ -4,6 +4,7 @@ set -euo pipefail
 BASE_REF="${BASE_REF:-upstream/main}"
 REPORT_DIR="${REPORT_DIR:-.security-reports}"
 PR_FILES_DIR="$REPORT_DIR/pr-files"
+REPO_ROOT_FOR_GITLEAKS_CONFIG="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 
 printf 'Security check base ref: %s\n' "$BASE_REF"
 printf 'Report directory: %s\n' "$REPORT_DIR"
@@ -61,10 +62,24 @@ fi
 
 printf '\n== Gitleaks changed-file scan ==\n'
 if command -v gitleaks >/dev/null 2>&1; then
+  # BUG FIX: this scan runs against a copied staging directory
+  # ($PR_FILES_DIR), not the real git working tree, so gitleaks' default
+  # config discovery (which looks for .gitleaks.toml relative to
+  # --source) never found this repo's real .gitleaks.toml -- meaning the
+  # project's own allowlist (e.g. the intentionally-hardcoded, documented
+  # RabbitMQ command-auth fallback constant) was silently ignored here,
+  # even though the same string is correctly allowlisted by every other
+  # gitleaks invocation in this project (pre-commit hook, pre-push gate).
+  # This caused false-positive blocks on legitimate, already-allowlisted
+  # content purely because of which scan path happened to touch it.
+  GITLEAKS_CONFIG_ARGS=()
+  if [ -f "$REPO_ROOT_FOR_GITLEAKS_CONFIG/.gitleaks.toml" ]; then
+    GITLEAKS_CONFIG_ARGS=(--config "$REPO_ROOT_FOR_GITLEAKS_CONFIG/.gitleaks.toml")
+  fi
   if gitleaks detect --help 2>/dev/null | grep -q -- '--no-git'; then
-    GITLEAKS_CMD=(gitleaks detect --source "$PR_FILES_DIR" --no-git --redact --report-format json --report-path "$REPORT_DIR/gitleaks-pr-files.json")
+    GITLEAKS_CMD=(gitleaks detect --source "$PR_FILES_DIR" --no-git "${GITLEAKS_CONFIG_ARGS[@]}" --redact --report-format json --report-path "$REPORT_DIR/gitleaks-pr-files.json")
   else
-    GITLEAKS_CMD=(gitleaks detect --source "$PR_FILES_DIR" --redact --report-format json --report-path "$REPORT_DIR/gitleaks-pr-files.json")
+    GITLEAKS_CMD=(gitleaks detect --source "$PR_FILES_DIR" "${GITLEAKS_CONFIG_ARGS[@]}" --redact --report-format json --report-path "$REPORT_DIR/gitleaks-pr-files.json")
   fi
 
   if "${GITLEAKS_CMD[@]}"; then
