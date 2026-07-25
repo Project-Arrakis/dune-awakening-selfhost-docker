@@ -33,7 +33,7 @@ import { handleDiscordAdapterRoute, isDiscordAdapterRoute } from "./integrations
 import { discordAdapterEnabled } from "./integrations/discord/adapter.js";
 import { initializeDiscordAdapterSchema } from "./integrations/discord/schema.js";
 import { liveItemGrantOk, liveItemGrantWarning } from "./grantResults.js";
-import { primeMessageOfTheDayOnlineState, readMessageOfTheDay, restoreMessageOfTheDay, runMessageOfTheDayScan, saveMessageOfTheDay } from "./services/messageOfTheDay.js";
+import { primeMessageOfTheDayOnlineState, readMessageOfTheDay, recordMessageOfTheDayFailure, restoreMessageOfTheDay, runMessageOfTheDayScan, saveMessageOfTheDay } from "./services/messageOfTheDay.js";
 import { primePlayerAnnouncementOnlineState, readPlayerAnnouncements, restorePlayerAnnouncements, runPlayerAnnouncementScan, savePlayerAnnouncements } from "./services/playerAnnouncements.js";
 import { persistSpicefieldOverride } from "./services/spicefieldOverrides.js";
 import { applySavedLandsraadMilestonePreset, createLandsraadMilestoneReconciler, readLandsraadMilestonePreset, saveLandsraadMilestonePreset } from "./services/landsraadMilestones.js";
@@ -1316,9 +1316,10 @@ async function messageOfTheDayRoute(req, res) {
   const body = await readJson(req);
   try {
     const result = body.restoreDefaults ? restoreMessageOfTheDay(config) : saveMessageOfTheDay(config, body.settings || body);
+    let primedOnlinePlayers = 0;
     if (result.settings.enabled) {
       const players = await duneDb.listAllPlayers(db, { status: "online" }).catch(() => ({ rows: [] }));
-      primeMessageOfTheDayOnlineState(config, players.rows || []);
+      primedOnlinePlayers = primeMessageOfTheDayOnlineState(config, players.rows || []).delivered;
     }
     audit(config, req, "admin.message-of-the-day.save", { restoreDefaults: Boolean(body.restoreDefaults), enabled: result.settings.enabled });
     recordAdminHistory(config, {
@@ -1329,7 +1330,17 @@ async function messageOfTheDayRoute(req, res) {
       result: "saved",
       message: result.settings.enabled ? result.settings.message : "disabled"
     });
-    return json(res, 200, { ok: true, ...result });
+    return json(res, 200, {
+      ok: true,
+      ...result,
+      status: readMessageOfTheDay(config).status,
+      delivery: {
+        primedOnlinePlayers,
+        note: result.settings.enabled
+          ? "Players who are online while this is saved will receive the message after their next login."
+          : "Message of the Day delivery is disabled."
+      }
+    });
   } catch (error) {
     audit(config, req, "admin.message-of-the-day.save", { supported: false, error: redact(error.message || error) });
     return json(res, error.statusCode || 400, { error: redact(error.message || error) });
@@ -2462,8 +2473,12 @@ async function messageOfTheDayAutoTick() {
   } catch (error) {
     messageOfTheDayAutoNextAllowedRun = Date.now() + BACKGROUND_SCAN_FAILURE_BACKOFF_MS;
     const message = String(error.message || error);
-    if (/connect|database|relation|container|rabbitmq|docker|ECONNREFUSED/i.test(message)) return;
-    console.error(`Message of the Day scan failed: ${redact(message)}`);
+    try {
+      recordMessageOfTheDayFailure(config, error);
+    } catch (statusError) {
+      console.error(`Message of the Day failure status could not be saved: ${redact(statusError.message || statusError)}`);
+    }
+    console.error(`Message of the Day scan failed; retrying after backoff: ${redact(message)}`);
   } finally {
     messageOfTheDayAutoRunning = false;
   }
