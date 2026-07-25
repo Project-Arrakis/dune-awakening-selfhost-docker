@@ -5,20 +5,31 @@ SCRIPT_ROOT="$(cd "$(dirname "$0")/../.." && pwd -P)"
 ROOT_DIR="${DUNE_RUNTIME_REPO_ROOT:-$SCRIPT_ROOT}"
 cd "$ROOT_DIR"
 
+# Preserve invocation-time overrides before .env is loaded. A stale .env value
+# must not replace an explicit DUNE_HOST_UID/GID supplied for a repair run.
+REQUESTED_HOST_UID="${DUNE_HOST_UID:-}"
+REQUESTED_HOST_GID="${DUNE_HOST_GID:-}"
+CALLER_UID="$(id -u)"
+CALLER_GID="$(id -g)"
+
 [ -r .env ] && . ./.env
 source "$SCRIPT_ROOT/runtime/scripts/host-paths.sh"
 
 OWNER_UID="$(stat -c '%u' .)"
 OWNER_GID="$(stat -c '%g' .)"
-TARGET_UID="${DUNE_HOST_UID:-$OWNER_UID}"
-TARGET_GID="${DUNE_HOST_GID:-$OWNER_GID}"
+TARGET_UID="${REQUESTED_HOST_UID:-${DUNE_HOST_UID:-$OWNER_UID}}"
+TARGET_GID="${REQUESTED_HOST_GID:-${DUNE_HOST_GID:-$OWNER_GID}}"
 IMAGE="${DUNE_RUNTIME_PERMISSION_HELPER_IMAGE:-dune-orchestrator:dev}"
 
 if [ "$TARGET_UID" = "0" ] && [ "$OWNER_UID" != "0" ]; then
   TARGET_UID="$OWNER_UID"
+elif [ "$TARGET_UID" = "0" ] && [ "$CALLER_UID" != "0" ]; then
+  TARGET_UID="$CALLER_UID"
 fi
 if [ "$TARGET_GID" = "0" ] && [ "$OWNER_GID" != "0" ]; then
   TARGET_GID="$OWNER_GID"
+elif [ "$TARGET_GID" = "0" ] && [ "$CALLER_GID" != "0" ]; then
+  TARGET_GID="$CALLER_GID"
 fi
 
 if ! [[ "$TARGET_UID" =~ ^[0-9]+$ && "$TARGET_GID" =~ ^[0-9]+$ ]]; then
@@ -97,6 +108,35 @@ docker run --rm \
       done
     fi
   '
+
+# Verify on the host path as well as through the helper container. This catches
+# rootless-Docker chown limitations and stale DUNE_RUNTIME_HOST_REPO_ROOT values
+# that would otherwise make the repair appear to succeed against the wrong tree.
+ownership_mismatch=""
+if [ "$(stat -c '%u:%g' runtime)" != "${TARGET_UID}:${TARGET_GID}" ]; then
+  ownership_mismatch="runtime"
+fi
+for path in "${CONTROL_PATHS[@]}"; do
+  [ -z "$ownership_mismatch" ] || break
+  [ -e "$path" ] || continue
+  if ! mismatch="$(find "$path" -xdev \( ! -uid "$TARGET_UID" -o ! -gid "$TARGET_GID" \) -print -quit)"; then
+    echo "Could not verify host runtime ownership: $path" >&2
+    exit 1
+  fi
+  if [ -n "$mismatch" ]; then
+    ownership_mismatch="$mismatch"
+    break
+  fi
+done
+
+if [ -n "$ownership_mismatch" ]; then
+  echo "Host runtime ownership repair did not apply to: $ownership_mismatch" >&2
+  echo "Expected UID:GID ${TARGET_UID}:${TARGET_GID}." >&2
+  echo "Docker may be rootless, or DUNE_RUNTIME_HOST_REPO_ROOT may point at a different checkout." >&2
+  echo "Repair the host paths with sudo, then rerun this command. For example:" >&2
+  echo "  sudo chown -R ${TARGET_UID}:${TARGET_GID} runtime/backups runtime/generated" >&2
+  exit 1
+fi
 
 docker run --rm \
   --user "$TARGET_UID:$TARGET_GID" \
