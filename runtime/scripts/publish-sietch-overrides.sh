@@ -359,18 +359,14 @@ def combat_settings_for_partition(partition_id: str) -> dict:
     values = usersettings.merged_partition_values(
         usersettings_config, "Survival_1", str(partition_id)
     )
-    resolved = usersettings.resolve_partition_combat_state(values)
+    publication = usersettings.combat_settings_for_publication(values, string_values=True)
 
     settings = {
-        "areSecurityZonesEnabled": "True" if resolved["securityZonesEnabled"] else "False",
         "itemDeteriorationUpdateRate": "1.0",
         "vehicleDurabilityDamageMultiplier": "1.0",
         "inventoryDecayedMaxDurabilityThreshold": "0.2",
     }
-    if resolved["state"] in ("PVP", "PVE"):
-        settings["shouldForceEnablePvpOnAllPartitions"] = (
-            "True" if resolved["source"] == "force-pvp-all-partitions" else "False"
-        )
+    settings.update(publication["settings"])
     return settings
 
 
@@ -517,10 +513,8 @@ def resolved_force_all_pvp_flag(partition_id: str):
     values = usersettings.merged_partition_values(
         usersettings_config, "Survival_1", str(partition_id)
     )
-    resolved = usersettings.resolve_partition_combat_state(values)
-    if resolved["state"] not in ("PVP", "PVE"):
-        return None
-    return resolved["source"] == "force-pvp-all-partitions"
+    publication = usersettings.combat_settings_for_publication(values)
+    return publication["settings"].get("shouldForceEnablePvpOnAllPartitions")
 
 
 latest_by_partition = {}
