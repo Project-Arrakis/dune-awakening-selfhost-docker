@@ -81,6 +81,8 @@ sh -c 'set -eu; echo "==> Setting up Dune Docker Console..."; if command -v curl
 
 The installer downloads the latest release, prepares the server, starts the Web UI, and tells you what address to open in your browser. If you are on the same network as the server, use the same-network address. If you are connecting over the internet, use the public address and allow TCP `8088` in your firewall.
 
+On Alpine Linux, the installer uses the distribution's Docker and Docker Compose packages and starts Docker through OpenRC. If the Alpine community repository is disabled or missing, the installer asks before changing the repository configuration.
+
 ## Public Server Directory
 
 [dunedocker.app](https://dunedocker.app/) provides a live directory of public servers running Dune Docker Console, including server status, players, region, Sietches, personalized latency, and optional community Discord links.
