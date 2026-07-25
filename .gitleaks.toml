@@ -3,6 +3,11 @@
 # to match the game server's expected default.
 # See: console/api/src/rmq.js BUILTIN_COMMAND_AUTH_TOKEN
 
+# Keep Gitleaks' maintained detection rules when this repository config is
+# selected explicitly (for example, by tests/security-pr-checks.sh).
+[extend]
+  useDefault = true
+
 [allowlist]
   description = "Known command-auth fallback shared by game server"
   regexes = [
