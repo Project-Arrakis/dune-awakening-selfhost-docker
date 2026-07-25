@@ -329,14 +329,13 @@ describe("PlayerSummary", () => {
   });
 
   describe("Database Identity", () => {
-    it("renders DB Player, Actor ID, Account, Player Controller, and Player State in one table", async () => {
+    it("renders Actor / Player, Account, Player Controller, and Player State in one table", async () => {
       render(
         <PlayerSummary
           {...baseProps}
           detail={{
             player: {
               character_name: "Benny Jesserette",
-              actor_id: 91,
               account_id: 201,
               player_controller_id: 301,
               player_state_id: 102
@@ -351,36 +350,14 @@ describe("PlayerSummary", () => {
 
       const block = screen.getByText("Database Identity").closest(".summary-block");
       expect(block).not.toBeNull();
-      expect(screen.getByText("DB Player").closest(".summary-block")).toBe(block);
-      expect(screen.getByText("Actor").closest(".summary-block")).toBe(block);
+      expect(screen.getByText("Actor / Player").closest(".summary-block")).toBe(block);
       expect(screen.getByText("Player State").closest(".summary-block")).toBe(block);
 
       const table = screen.getByText("Account").closest("table");
       expect(table).not.toBeNull();
-      expect(table!.querySelectorAll("tr")).toHaveLength(5);
+      expect(table!.querySelectorAll("tr")).toHaveLength(4);
 
-      const actorRow = screen.getByText("Actor").closest("tr");
-      expect(actorRow?.textContent).toContain("91");
-      expect(screen.getAllByText("91").length).toBeGreaterThan(0);
-    });
-
-    it("falls back to dbPlayerId for Actor when the player record has no actor_id", async () => {
-      render(
-        <PlayerSummary
-          {...baseProps}
-          detail={{
-            player: {
-              character_name: "Benny Jesserette",
-              account_id: 201
-            }
-          }}
-          fallback={{}}
-        />
-      );
-      await waitFor(() => {
-        expect(screen.getByText("Account")).toBeInTheDocument();
-      });
-      const actorRow = screen.getByText("Actor").closest("tr");
+      const actorRow = screen.getByText("Actor / Player").closest("tr");
       expect(actorRow?.textContent).toContain("91");
     });
 
