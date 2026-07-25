@@ -205,7 +205,7 @@ check_project_systemd_timers() {
         [ -n "$warning" ] && warn_msg "${warning#WARN }"
       done <<<"$warnings"
     else
-      info_msg "Host systemd timer paths could not be inspected directly"
+      info_msg "Host systemd timer paths cannot be inspected from the Console container; run 'dune doctor' in the host checkout for the complete timer check"
     fi
     return
   fi
