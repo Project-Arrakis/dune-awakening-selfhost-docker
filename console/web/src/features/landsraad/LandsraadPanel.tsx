@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { adminApi, type LandsraadOverview, type LandsraadReward, type LandsraadTask } from "../../api/admin";
+import { adminApi, type LandsraadMilestonePreset, type LandsraadOverview, type LandsraadReward, type LandsraadTask } from "../../api/admin";
 import { mapsApi } from "../../api/maps";
 import { playersApi } from "../../api/players";
+import { serverApi } from "../../api/server";
 import { setupApi, type Task } from "../../api/setup";
 import { DataTable } from "../../components/common/DataTable";
 import { InlineActionResult, type InlineActionResultState } from "../../components/common/InlineActionResult";
@@ -15,6 +16,43 @@ type LandsraadAdminSectionProps = {
   onError: (text: string) => void;
 };
 
+type PersistentField = {
+  id: string;
+  label: string;
+  group: "Cycle" | "Contracts" | "Tasks And Control" | "Voting";
+  type?: "boolean";
+  scale?: number;
+  suffix?: string;
+  min?: number;
+  max?: number;
+  step?: number;
+};
+
+const PERSISTENT_FIELDS: PersistentField[] = [
+  { id: "landsraad_enabled", label: "Landsraad System", group: "Cycle", type: "boolean" },
+  { id: "landsraad_cycle_duration_seconds", label: "Cycle Duration", group: "Cycle", scale: 86400, suffix: "Days", min: 1, max: 365, step: 0.25 },
+  { id: "landsraad_voting_period_seconds", label: "Voting Period", group: "Cycle", scale: 3600, suffix: "Hours", min: 1 / 60, max: 1680, step: 0.25 },
+  { id: "landsraad_suspended_period_seconds", label: "Suspended Period", group: "Cycle", scale: 60, suffix: "Minutes", min: 0, max: 10080, step: 1 },
+  { id: "landsraad_term_retention_weeks", label: "Term History Retention", group: "Cycle", suffix: "Weeks", min: 1, max: 52, step: 1 },
+  { id: "landsraad_contracts_per_voting_block", label: "Contracts Per Voting Block", group: "Contracts", min: 1, max: 100, step: 1 },
+  { id: "landsraad_max_active_contracts", label: "Maximum Active Contracts", group: "Contracts", min: 1, max: 100, step: 1 },
+  { id: "landsraad_contract_repeat_cooldown_seconds", label: "Contract Repeat Cooldown", group: "Contracts", scale: 3600, suffix: "Hours", min: 0, max: 720, step: 0.25 },
+  { id: "landsraad_contract_abandon_cooldown_seconds", label: "Contract Abandon Cooldown", group: "Contracts", suffix: "Seconds", min: 0, max: 604800, step: 1 },
+  { id: "landsraad_daily_contract_bonus", label: "Daily Contract Bonus", group: "Contracts", min: 0, max: 1000000, step: 1 },
+  { id: "landsraad_max_daily_contract_bonus", label: "Maximum Daily Bonus", group: "Contracts", min: 0, max: 1000000, step: 1 },
+  { id: "landsraad_daily_bonus_refresh_seconds", label: "Daily Bonus Refresh", group: "Contracts", scale: 3600, suffix: "Hours", min: 1 / 60, max: 720, step: 0.25 },
+  { id: "landsraad_task_goal_amount", label: "Default Task Goal", group: "Tasks And Control", min: 1, max: 2147483647, step: 1 },
+  { id: "landsraad_first_task_reveal_delay_seconds", label: "First Task Reveal Delay", group: "Tasks And Control", scale: 60, suffix: "Minutes", min: 0, max: 10080, step: 1 },
+  { id: "landsraad_task_reveal_minute_difference", label: "Task Reveal Spacing", group: "Tasks And Control", suffix: "Minutes", min: 0, max: 10080, step: 1 },
+  { id: "landsraad_task_progress_update_seconds", label: "Task Progress Update", group: "Tasks And Control", suffix: "Seconds", min: 1, max: 3600, step: 1 },
+  { id: "landsraad_task_daily_reveal_frequency", label: "Task Reveal Frequency", group: "Tasks And Control", min: 1, max: 10080, step: 1 },
+  { id: "landsraad_control_points_per_cycle", label: "Control Points Per Cycle", group: "Tasks And Control", min: 0, max: 1000000, step: 1 },
+  { id: "landsraad_player_voting_enabled", label: "Player Voting", group: "Voting", type: "boolean" },
+  { id: "landsraad_territory_control_enabled", label: "Territory Control", group: "Voting", type: "boolean" },
+  { id: "landsraad_decrees_to_nominate", label: "Decrees To Nominate", group: "Voting", min: 1, max: 20, step: 1 },
+  { id: "landsraad_highscore_guilds", label: "Guilds In Highscore List", group: "Voting", min: 1, max: 100, step: 1 }
+];
+
 export function LandsraadPanel({ confirmAction, onError }: LandsraadAdminSectionProps) {
   const [loading, setLoading] = useState(false);
   const [overview, setOverview] = useState<LandsraadOverview | null>(null);
@@ -22,12 +60,15 @@ export function LandsraadPanel({ confirmAction, onError }: LandsraadAdminSection
   const [goalDrafts, setGoalDrafts] = useState<Record<string, string>>({});
   const [rewardDrafts, setRewardDrafts] = useState<Record<string, { threshold: string; templateId: string; amount: string }>>({});
   const [bulkGoal, setBulkGoal] = useState("");
+  const [milestonePreset, setMilestonePreset] = useState<LandsraadMilestonePreset | null>(null);
+  const [milestoneDraft, setMilestoneDraft] = useState({ enabled: false, goalAmount: "", thresholds: [] as string[] });
   const [contributionPlayer, setContributionPlayer] = useState("");
   const [contributionTask, setContributionTask] = useState("");
   const [contributionAmount, setContributionAmount] = useState("");
   const [persistentRules, setPersistentRules] = useState<Record<string, string>>({});
   const [persistentDraft, setPersistentDraft] = useState<Record<string, string>>({});
   const [persistentLoading, setPersistentLoading] = useState(false);
+  const [persistentRestartPending, setPersistentRestartPending] = useState(false);
   const [result, setResult] = useState<InlineActionResultState | null>(null);
   const resultTimer = useRef<number | null>(null);
 
@@ -37,6 +78,8 @@ export function LandsraadPanel({ confirmAction, onError }: LandsraadAdminSection
     ...reward,
     task: taskNameById.get(reward.task_id) || `Task ${reward.task_id}`
   })), [overview, taskNameById]);
+  const currentTermThresholds = useMemo(() => overview ? detectedMilestoneThresholds(overview) : [], [overview]);
+  const milestoneTierMismatch = currentTermThresholds.length > 0 && currentTermThresholds.length !== milestoneDraft.thresholds.length;
 
   useEffect(() => {
     void load();
@@ -54,9 +97,10 @@ export function LandsraadPanel({ confirmAction, onError }: LandsraadAdminSection
     setResult(null);
     onError("");
     try {
-      const [nextOverview, nextPlayers] = await Promise.all([
+      const [nextOverview, nextPlayers, presetResponse] = await Promise.all([
         adminApi.landsraad(),
-        playersApi.listAll().catch(() => ({ rows: [] }))
+        playersApi.listAll().catch(() => ({ rows: [] })),
+        adminApi.landsraadMilestonePreset()
       ]);
       setOverview(nextOverview);
       setPlayers(nextPlayers.rows || []);
@@ -66,6 +110,14 @@ export function LandsraadPanel({ confirmAction, onError }: LandsraadAdminSection
         templateId: String(reward.template_id || ""),
         amount: String(reward.amount ?? 0)
       }])));
+      const preset = presetResponse.preset;
+      const detectedThresholds = detectedMilestoneThresholds(nextOverview);
+      setMilestonePreset(preset);
+      setMilestoneDraft({
+        enabled: preset.enabled,
+        goalAmount: String(preset.thresholds.length ? preset.goalAmount : nextOverview.tasks?.[0]?.goal_amount ?? 0),
+        thresholds: (preset.thresholds.length ? preset.thresholds : detectedThresholds).map(String)
+      });
       if (!contributionTask && nextOverview.tasks?.[0]) setContributionTask(nextOverview.tasks[0].task_id);
       if (!contributionPlayer && nextPlayers.rows?.[0]) setContributionPlayer(playerActorId(nextPlayers.rows[0]));
     } catch (error) {
@@ -78,9 +130,14 @@ export function LandsraadPanel({ confirmAction, onError }: LandsraadAdminSection
   async function loadPersistentRules() {
     setPersistentLoading(true);
     try {
-      const values = parseUserSettingsMap((await mapsApi.userSettingsValues("global")).stdout || "");
+      const [valuesResponse, restartStatus] = await Promise.all([
+        mapsApi.userSettingsValues("global"),
+        mapsApi.userSettingsRestartPending().catch(() => ({ pending: false }))
+      ]);
+      const values = parseUserSettingsMap(valuesResponse.stdout || "");
       setPersistentRules(values);
-      setPersistentDraft(values);
+      setPersistentDraft(persistentDisplayValues(values));
+      setPersistentRestartPending(restartStatus.pending);
     } catch (error) {
       onError(friendlyInlineError(error));
     } finally {
@@ -89,19 +146,45 @@ export function LandsraadPanel({ confirmAction, onError }: LandsraadAdminSection
   }
 
   async function savePersistentRules() {
-    if (persistentDraft.landsraad_enabled === persistentRules.landsraad_enabled) return;
-    if (!(await confirmAction("Save persistent Landsraad rules and restart game services so the config is applied?", { title: "Save Landsraad Rules", confirmLabel: "Save And Restart" }))) return;
+    const displayRules = persistentDisplayValues(persistentRules);
+    const changedFields = PERSISTENT_FIELDS.filter((field) => persistentDraft[field.id] !== displayRules[field.id]);
+    if (!changedFields.length) return;
+    const validationError = validatePersistentDraft(persistentDraft, changedFields);
+    if (validationError) {
+      setResult({ key: "persistent-rules", text: validationError, tone: "danger" });
+      return;
+    }
+    if (!(await confirmAction("Save these global Landsraad modifiers? A battlegroup restart is required before they take effect.", { title: "Save Landsraad Modifiers", confirmLabel: "Save Changes" }))) return;
     if (resultTimer.current) window.clearTimeout(resultTimer.current);
-    setResult({ key: "persistent-rules", text: "Services Restarting", tone: "neutral", pending: true });
+    setResult({ key: "persistent-rules", text: "Saving Landsraad Modifiers", tone: "neutral", pending: true });
     resultTimer.current = window.setTimeout(() => setResult(null), 6500);
     onError("");
     try {
-      const response = await mapsApi.saveUserSettings({ scope: "global", values: { landsraad_enabled: persistentDraft.landsraad_enabled || "True" } });
+      const values = Object.fromEntries(changedFields.map((field) => [field.id, persistentStoredValue(field, persistentDraft[field.id])]));
+      const response = await mapsApi.saveUserSettings({ scope: "global", values, restart: false });
       const final = await waitForTask(response.task);
       if (final.status !== "succeeded") throw new Error(conciseTaskError(final));
       await loadPersistentRules();
+      setPersistentRestartPending(true);
+      setResult({ key: "persistent-rules", text: "Saved - Pending Restart", tone: "success" });
     } catch (error) {
       if (resultTimer.current) window.clearTimeout(resultTimer.current);
+      setResult({ key: "persistent-rules", text: friendlyInlineError(error), tone: "danger" });
+      resultTimer.current = window.setTimeout(() => setResult(null), 6500);
+    }
+  }
+
+  async function restartForPersistentRules() {
+    if (!(await confirmAction("Restart the battlegroup now to apply the saved Landsraad modifiers?", { title: "Apply Landsraad Modifiers", confirmLabel: "Restart Battlegroup" }))) return;
+    if (resultTimer.current) window.clearTimeout(resultTimer.current);
+    setResult({ key: "persistent-rules", text: "Restarting Battlegroup", tone: "neutral", pending: true });
+    try {
+      const final = await waitForTask((await serverApi.restart()).task);
+      if (final.status !== "succeeded") throw new Error(conciseTaskError(final));
+      setPersistentRestartPending(false);
+      setResult({ key: "persistent-rules", text: "Modifiers Applied", tone: "success" });
+      resultTimer.current = window.setTimeout(() => setResult(null), 4500);
+    } catch (error) {
       setResult({ key: "persistent-rules", text: friendlyInlineError(error), tone: "danger" });
       resultTimer.current = window.setTimeout(() => setResult(null), 6500);
     }
@@ -141,6 +224,35 @@ export function LandsraadPanel({ confirmAction, onError }: LandsraadAdminSection
     }
     if (!(await confirmAction(`Set every current Landsraad task goal to ${value}?`, { title: "Update Landsraad Goals", confirmLabel: "Update Goals" }))) return;
     await run("bulk-goal", "Saving all goals", () => adminApi.setLandsraadTermTaskGoals(termId, value), "All Current-Term Task Goals Saved");
+  }
+
+  async function saveMilestonePreset() {
+    const goalAmount = Number(milestoneDraft.goalAmount);
+    const thresholds = milestoneDraft.thresholds.map(Number);
+    if (!Number.isInteger(goalAmount) || goalAmount < 0 || !thresholds.length || thresholds.some((value) => !Number.isInteger(value) || value < 1)) {
+      setResult({ key: "milestone-preset", text: "Enter a whole goal at or above zero and reward thresholds greater than zero.", tone: "danger" });
+      return;
+    }
+    if (thresholds.some((value, index) => index > 0 && value <= thresholds[index - 1])) {
+      setResult({ key: "milestone-preset", text: "Reward thresholds must increase from one level to the next.", tone: "danger" });
+      return;
+    }
+    if (!(await confirmAction(
+      `Apply the ${thresholds.length}-level milestone preset to every house in the current Landsraad term?`,
+      { title: "Apply Landsraad Milestones", confirmLabel: "Save And Apply" }
+    ))) return;
+
+    const responseRef: { current: Awaited<ReturnType<typeof adminApi.saveLandsraadMilestonePreset>> | null } = { current: null };
+    await run(
+      "milestone-preset",
+      "Applying milestones",
+      async () => { responseRef.current = await adminApi.saveLandsraadMilestonePreset({ enabled: milestoneDraft.enabled, goalAmount, thresholds }); },
+      "Milestone Preset Saved"
+    );
+    if (responseRef.current && !responseRef.current.result.applied) {
+      setResult({ key: "milestone-preset", text: responseRef.current.result.reason || "Preset saved and waiting for the current term.", tone: "neutral" });
+      resultTimer.current = window.setTimeout(() => setResult(null), 6500);
+    }
   }
 
   async function saveReward(reward: LandsraadReward) {
@@ -217,20 +329,61 @@ export function LandsraadPanel({ confirmAction, onError }: LandsraadAdminSection
       {overview && !overview.term && <p className="empty">No Landsraad term found in the database.</p>}
 
       <section className="landsraad-persistent-settings">
-        <div className="landsraad-persistent-copy">
-          <h4>Persistent Rules</h4>
-          <p className="muted">Saved to gameplay config and applied on restart. Current-term tables below edit live database state.</p>
+        <div className="landsraad-persistent-heading">
+          <div className="landsraad-persistent-copy">
+            <h4>Landsraad Modifiers</h4>
+            <p className="muted">Global cycle, contract, task, and voting settings stored in UserGame.ini. Current-term tables below edit live database state.</p>
+          </div>
+          <div className="landsraad-persistent-status">
+            {persistentRestartPending && <span className="badge badge-warn">Pending Restart</span>}
+            <InlineActionResult result={result} resultKey="persistent-rules" format={false} />
+          </div>
         </div>
-        <div className="landsraad-persistent-status">
-          <InlineActionResult result={result} resultKey="persistent-rules" format={false} />
+        <div className="landsraad-modifier-groups">
+          {(["Cycle", "Contracts", "Tasks And Control", "Voting"] as const).map((group) => <fieldset key={group} className="landsraad-modifier-group">
+            <legend>{group}</legend>
+            <div className="landsraad-modifier-grid">{PERSISTENT_FIELDS.filter((field) => field.group === group).map((field) => <PersistentSettingControl
+              key={field.id}
+              field={field}
+              disabled={persistentLoading}
+              value={persistentDraft[field.id] ?? ""}
+              onChange={(value) => setPersistentDraft((current) => ({ ...current, [field.id]: value }))}
+            />)}</div>
+          </fieldset>)}
         </div>
-        <div className="landsraad-persistent-controls">
-          <label>Landsraad System<select disabled={persistentLoading} value={persistentDraft.landsraad_enabled || "True"} onChange={(event) => setPersistentDraft((current) => ({ ...current, landsraad_enabled: event.target.value }))}>
-            <option value="True">Enabled</option>
-            <option value="False">Disabled</option>
-          </select></label>
-          <button disabled={persistentLoading || persistentDraft.landsraad_enabled === persistentRules.landsraad_enabled || (result?.key === "persistent-rules" && Boolean(result.pending))} onClick={() => void savePersistentRules()}>{persistentLoading ? "Loading..." : "Save Rules"}</button>
+        <div className="landsraad-persistent-actions">
+          <span className="muted">Changes apply to every map after a battlegroup restart.</span>
+          <div>
+            {persistentRestartPending && <button className="secondary" disabled={Boolean(result?.pending)} onClick={() => void restartForPersistentRules()}>Restart Battlegroup</button>}
+            <button disabled={persistentLoading || !persistentDraftChanged(persistentRules, persistentDraft) || (result?.key === "persistent-rules" && Boolean(result.pending))} onClick={() => void savePersistentRules()}>{persistentLoading ? "Loading..." : "Save Changes"}</button>
+          </div>
         </div>
+      </section>
+
+      <div className="section-divider landsraad-section-divider" />
+
+      <section className="landsraad-milestone-preset">
+        <div className="landsraad-milestone-heading">
+          <div>
+            <h4>Milestone Preset</h4>
+            <p className="muted">Set the goal and reward thresholds for every house. Reward items and quantities are preserved.</p>
+          </div>
+          <div className="landsraad-milestone-heading-actions">
+            {milestonePreset?.lastAppliedTermId && <span className="landsraad-preset-status">Applied To Term {milestonePreset.lastAppliedTermId}</span>}
+            {milestoneTierMismatch && <button className="secondary" onClick={() => setMilestoneDraft((current) => ({ ...current, thresholds: currentTermThresholds.map(String) }))}>Use Current Term Levels</button>}
+          </div>
+        </div>
+        {milestoneDraft.thresholds.length ? <>
+          <div className="landsraad-milestone-fields">
+            <label>Overall Goal<input type="number" min="0" step="1" value={milestoneDraft.goalAmount} onChange={(event) => setMilestoneDraft((current) => ({ ...current, goalAmount: event.target.value }))} /></label>
+            {milestoneDraft.thresholds.map((threshold, index) => <label key={index}>Level {index + 1} Reward Threshold<input type="number" min="1" step="1" value={threshold} onChange={(event) => setMilestoneDraft((current) => ({ ...current, thresholds: current.thresholds.map((value, thresholdIndex) => thresholdIndex === index ? event.target.value : value) }))} /></label>)}
+          </div>
+          <div className="landsraad-milestone-actions">
+            <label className={`switch-checkbox landsraad-cycle-toggle ${milestoneDraft.enabled ? "enabled" : "disabled"}`}><input type="checkbox" checked={milestoneDraft.enabled} onChange={(event) => setMilestoneDraft((current) => ({ ...current, enabled: event.target.checked }))} /><span className="switch-label">Apply Automatically Each Cycle</span><strong className="switch-state">{milestoneDraft.enabled ? "ON" : "OFF"}</strong></label>
+            <div className="landsraad-milestone-result"><InlineActionResult result={result} resultKey="milestone-preset" format={false} /></div>
+            <button onClick={() => void saveMilestonePreset()}>Save And Apply</button>
+          </div>
+        </> : <p className="empty">Reward levels will appear after the current Landsraad term generates its milestones.</p>}
       </section>
 
       <div className="section-divider landsraad-section-divider" />
@@ -288,8 +441,70 @@ export function LandsraadPanel({ confirmAction, onError }: LandsraadAdminSection
   </section>;
 }
 
+function PersistentSettingControl({ field, value, disabled, onChange }: { field: PersistentField; value: string; disabled: boolean; onChange: (value: string) => void }) {
+  const inputId = `landsraad-modifier-${field.id}`;
+  return <label className="landsraad-modifier-field" htmlFor={inputId}>
+    <span>{field.label}{field.suffix ? <small>{field.suffix}</small> : null}</span>
+    {field.type === "boolean"
+      ? <select id={inputId} disabled={disabled} value={value || "True"} onChange={(event) => onChange(event.target.value)}>
+          <option value="True">Enabled</option>
+          <option value="False">Disabled</option>
+        </select>
+      : <input id={inputId} disabled={disabled} type="number" min={field.min} max={field.max} step={field.step || 1} value={value} onChange={(event) => onChange(event.target.value)} />}
+  </label>;
+}
+
+function persistentDisplayValues(values: Record<string, string>) {
+  const display = { ...values };
+  for (const field of PERSISTENT_FIELDS) {
+    const raw = values[field.id] ?? "";
+    if (!field.scale || raw === "") continue;
+    const converted = Number(raw) / field.scale;
+    display[field.id] = Number.isFinite(converted) ? formatEditableNumber(converted) : raw;
+  }
+  return display;
+}
+
+function persistentStoredValue(field: PersistentField, value: string) {
+  if (field.type === "boolean") return value === "False" ? "False" : "True";
+  const number = Number(value);
+  const stored = field.scale ? number * field.scale : number;
+  return Number.isInteger(stored) ? String(stored) : formatEditableNumber(stored);
+}
+
+function persistentDraftChanged(rules: Record<string, string>, draft: Record<string, string>) {
+  const displayRules = persistentDisplayValues(rules);
+  return PERSISTENT_FIELDS.some((field) => draft[field.id] !== displayRules[field.id]);
+}
+
+function validatePersistentDraft(draft: Record<string, string>, fields: PersistentField[]) {
+  for (const field of fields) {
+    if (field.type === "boolean") continue;
+    const value = Number(draft[field.id]);
+    if (!Number.isFinite(value)) return `${field.label} must be a valid number.`;
+    if (field.min !== undefined && value < field.min) return `${field.label} must be at least ${formatEditableNumber(field.min)}.`;
+    if (field.max !== undefined && value > field.max) return `${field.label} must be at most ${formatEditableNumber(field.max)}.`;
+    if ((field.step || 1) === 1 && !Number.isInteger(value)) return `${field.label} must be a whole number.`;
+  }
+  return "";
+}
+
+function formatEditableNumber(value: number) {
+  return String(Number(value.toFixed(6)));
+}
+
 function rewardKey(reward: LandsraadReward) {
   return reward.row_locator;
+}
+
+function detectedMilestoneThresholds(overview: LandsraadOverview) {
+  const firstTaskId = overview.tasks?.[0]?.task_id;
+  if (!firstTaskId) return [];
+  return overview.rewards
+    .filter((reward) => reward.task_id === firstTaskId)
+    .map((reward) => Number(reward.threshold))
+    .filter((threshold) => Number.isInteger(threshold) && threshold >= 0)
+    .sort((left, right) => left - right);
 }
 
 function playerActorId(player: Record<string, unknown>) {
