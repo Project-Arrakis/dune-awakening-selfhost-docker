@@ -2064,6 +2064,10 @@ export async function playerVitals(db, id) {
     player,
     currentHealth: toNum(health?.current_health),
     maxHealth: maxHealthForCombatLevel(combatLevel),
+    // The persisted FHealthComponent exposes current health but no maximum.
+    // This value is derived from the known base health and Vitality tiers,
+    // so callers must not present it as a value read directly from the game.
+    maxHealthEstimated: true,
     hydration: toNum(gas?.hydration),
     maxHydration: BASE_MAX_HYDRATION,
     spiceAddictionLevel: toNum(gas?.spice_addiction_level),
