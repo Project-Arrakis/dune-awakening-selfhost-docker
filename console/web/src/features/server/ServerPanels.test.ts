@@ -1,15 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { containerStatusLineHas, isHomeStopComplete } from "./ServerPanels";
 
-// BUG FIX regression test: containerStatusLineHas() used to slice off only
-// a single whitespace character after the container name before testing
-// an anchored status pattern like /^Up\b/. Real status output commonly
-// pads container names with multiple spaces/tabs before their status
-// column (docker ps-style alignment), which left extra leading whitespace
-// that start-anchored patterns failed to match -- e.g.
-// "dune-postgres   Up 5 minutes" would not match /^Up\b/ against the
-// unstripped remainder "  Up 5 minutes". trimStart() before testing
-// restores whitespace-agnostic matching.
+// Keep the shared parser tolerant of docker ps-style column padding while
+// requiring an exact container-name match.
 describe("containerStatusLineHas", () => {
   it("matches a start-anchored status pattern across multiple spaces of padding", () => {
     expect(containerStatusLineHas("dune-postgres", "dune-postgres   Up 5 minutes", /^Up\b/i)).toBe(true);
