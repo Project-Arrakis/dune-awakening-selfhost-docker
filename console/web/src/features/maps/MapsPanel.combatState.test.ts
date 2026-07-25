@@ -32,6 +32,14 @@ describe("deepDesertPartitionName", () => {
     expect(name).toBe("Custom Sietch Name");
   });
 
+  it("prefers resolved combat state over a stale database label", () => {
+    const name = deepDesertPartitionName(
+      { label: "Deep Desert PvP", dimension: 0 },
+      combatRow({ configuredState: "PVE" })
+    );
+    expect(name).toBe("Deep Desert 1 (PvE)");
+  });
+
   it("falls back to a neutral instance name with no combat state supplied", () => {
     const name = deepDesertPartitionName({ label: "", dimension: 0 });
     expect(name).toBe("Deep Desert 1");

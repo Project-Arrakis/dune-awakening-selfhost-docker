@@ -2,11 +2,9 @@
 # Regression test for runtime/scripts/publish-sietch-overrides.sh:
 #
 #   Previously, every Survival_1 partition (Sietch) was published to
-#   RabbitMQ with an identical, hard-coded CombatSettings block, regardless
-#   of that partition's actual configured PvP/PvE state. This test proves
-#   the script's combat-settings resolution now diverges correctly between
-#   a PvP-configured partition and a PvE-configured partition, using the
-#   canonical `usersettings.py` resolver rather than a fixed defaults dict.
+#   RabbitMQ with an identical, hard-coded CombatSettings block. This test
+#   proves each partition now uses the canonical resolver while keeping the
+#   supported force-all field truthful for selector-based states.
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
@@ -35,7 +33,7 @@ SCRIPT="runtime/scripts/publish-sietch-overrides.sh"
 # ─── Static checks: the script must call the canonical resolver ───────────
 
 assert_contains "$SCRIPT" "import usersettings"
-assert_contains "$SCRIPT" "usersettings.resolve_partition_combat_state"
+assert_contains "$SCRIPT" "usersettings.combat_settings_for_publication"
 assert_contains "$SCRIPT" "usersettings.merged_partition_values"
 assert_contains "$SCRIPT" "def combat_settings_for_partition"
 assert_contains "$SCRIPT" "def resolved_force_all_pvp_flag"
@@ -77,23 +75,17 @@ config = usersettings.load_config()
 
 def combat_settings_for_partition(partition_id):
     values = usersettings.merged_partition_values(config, "Survival_1", str(partition_id))
-    resolved = usersettings.resolve_partition_combat_state(values)
-    settings = {
-        "areSecurityZonesEnabled": "True" if resolved["securityZonesEnabled"] else "False",
-    }
-    if resolved["state"] in ("PVP", "PVE"):
-        settings["shouldForceEnablePvpOnAllPartitions"] = (
-            "True" if resolved["source"] == "force-pvp-all-partitions" else "False"
-        )
-    return resolved["state"], settings
+    publication = usersettings.combat_settings_for_publication(values, string_values=True)
+    return publication["resolved"]["state"], publication["settings"]
 
 
-state_one, _ = combat_settings_for_partition("1")
-state_two, _ = combat_settings_for_partition("2")
+state_one, settings_one = combat_settings_for_partition("1")
+state_two, settings_two = combat_settings_for_partition("2")
 
 print(f"partition_1_state={state_one}")
 print(f"partition_2_state={state_two}")
 print(f"partitions_diverge={'yes' if state_one != state_two else 'no'}")
+print(f"supported_settings_equal={'yes' if settings_one == settings_two else 'no'}")
 PY
 )"
 
@@ -102,5 +94,6 @@ echo "$RESULT"
 echo "$RESULT" | grep -Fxq "partition_1_state=PVP" || fail "expected partition 1 (Sietch) to resolve to PVP"
 echo "$RESULT" | grep -Fxq "partition_2_state=PVE" || fail "expected partition 2 (Sietch) to resolve to PVE"
 echo "$RESULT" | grep -Fxq "partitions_diverge=yes" || fail "expected partitions 1 and 2 to resolve to different combat states"
+echo "$RESULT" | grep -Fxq "supported_settings_equal=yes" || fail "selector-only state must not be misreported through the force-all field"
 
-echo "PASS: publish-sietch-overrides.sh resolves per-partition combat state instead of publishing one fixed block"
+echo "PASS: publish-sietch-overrides.sh resolves partition state without misusing supported Funcom combat fields"

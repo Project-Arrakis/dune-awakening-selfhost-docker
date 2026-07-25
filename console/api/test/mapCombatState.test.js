@@ -8,6 +8,7 @@ import {
   aggregateMapCombatState,
   resolveRuntimeStatus,
   resolvePartitionCombatStateFromRuntime,
+  resolvePartitionCombatStatesFromRuntime,
   resolveMapCombatState,
   PARTITION_COMBAT_STATES,
   MAP_COMBAT_STATES
@@ -199,6 +200,51 @@ test("resolver: database labels, dimension index, and display names are not cons
   const partitionNine = await resolvePartitionCombatStateFromRuntime({ ...config, env }, "DeepDesert_1", "9");
   assert.equal(partitionEight.configuredState, "PVP");
   assert.equal(partitionNine.configuredState, "PVP");
+});
+
+test("batch resolver returns multiple partition states from one command", async () => {
+  const { config, env } = buildSandbox();
+  writeProfile(env, [
+    "[Partition:DeepDesert_1:8:/Script/DuneSandbox.PvpPveSettings]",
+    "+m_PvpEnabledPartitions=8",
+    "[Partition:DeepDesert_1:9:/Script/DuneSandbox.PvpPveSettings]",
+    "+m_PveEnabledPartitions=9"
+  ]);
+
+  const result = await resolvePartitionCombatStatesFromRuntime(
+    { ...config, env },
+    "DeepDesert_1",
+    ["8", "9", "8"]
+  );
+  assert.equal(result.size, 2);
+  assert.equal(result.get("8").configuredState, "PVP");
+  assert.equal(result.get("9").configuredState, "PVE");
+});
+
+test("resolver compares materialized boolean spellings semantically", async () => {
+  const { config, env } = buildSandbox();
+  writeProfile(env, []);
+  const settingsDir = join(env.DUNE_USERSETTINGS_GAME_ROOT, "deepdesert-1-8", "Saved", "UserSettings");
+  mkdirSync(settingsDir, { recursive: true });
+  writeFileSync(join(settingsDir, "UserGame.ini"), [
+    "[/Script/DuneSandbox.PvpPveSettings]",
+    "m_bShouldForceEnablePvpOnAllPartitions=false",
+    "[/Script/DuneSandbox.DuneGameMode]",
+    "bPvPEnabled=0",
+    "bServerPVE=yes",
+    "[/Script/DuneSandbox.SecurityZonesSubsystem]",
+    "m_bAreSecurityZonesEnabled=on"
+  ].join("\n"));
+
+  const result = await resolvePartitionCombatStateFromRuntime(
+    { ...config, env },
+    "DeepDesert_1",
+    "8"
+  );
+  assert.equal(result.configuredState, "PVE");
+  assert.equal(result.materializedState, "PVE");
+  assert.equal(result.configurationDrift, false);
+  assert.equal(result.restartRequired, false);
 });
 
 test("resolveMapCombatState aggregates a dual Deep Desert (PVP + PVE) to MIXED", async () => {

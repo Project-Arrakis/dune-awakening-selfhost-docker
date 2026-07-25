@@ -1,10 +1,8 @@
 // Canonical, read-only resolver for map/partition PvP-PvE combat state.
 //
-// This module is the single reusable source of truth consumed by the Web
-// Console, Discord bridge, Prometheus exporter, RabbitMQ publication, and
-// any other read-only integration that needs to report whether a partition
-// (and, in aggregate, a map) is currently PvP, PvE, MIXED, in CONFLICT, or
-// UNKNOWN.
+// This module is the Console/API adapter for the canonical resolver in
+// runtime/scripts/usersettings.py. Runtime publishers call those same Python
+// resolver helpers directly so every path uses the effective configuration.
 //
 // Combat state is resolved exclusively from the effective, merged
 // UserGame.ini configuration for the partition (via
@@ -97,6 +95,29 @@ export async function resolvePartitionCombatStateFromRuntime(config, mapName, pa
   return parsed;
 }
 
+/** Resolve several partitions with one usersettings.py process. */
+export async function resolvePartitionCombatStatesFromRuntime(config, mapName, partitionIds) {
+  const map = validateMapNameForCombatState(mapName);
+  const ids = [...new Set((Array.isArray(partitionIds) ? partitionIds : [])
+    .map((partitionId) => validatePartitionIdForCombatState(partitionId)))];
+  if (!ids.length) return new Map();
+  const result = await runDune(config, ["usersettings", "partition-combat-states", map, ...ids], { timeoutMs: 8000, env: config.env });
+  const parsed = JSON.parse(result.stdout || "{}");
+  if (!Array.isArray(parsed.partitions)) throw new Error("Resolver returned no partition results");
+  const byPartition = new Map();
+  for (const partition of parsed.partitions) {
+    const id = validatePartitionIdForCombatState(partition.partitionId);
+    if (!PARTITION_COMBAT_STATES.includes(partition.configuredState)) {
+      throw new Error(`Resolver returned unrecognized configuredState: ${partition.configuredState}`);
+    }
+    byPartition.set(id, partition);
+  }
+  for (const id of ids) {
+    if (!byPartition.has(id)) throw new Error(`Resolver omitted partition ${id}`);
+  }
+  return byPartition;
+}
+
 /**
  * Aggregate independently-resolved partition combat states into a single
  * map-level combat state. Mirrors the Python `aggregate_map_combat_state`
@@ -121,7 +142,7 @@ export function aggregateMapCombatState(partitionStates) {
  * `dune.world_partition` rows supplied by the caller (already joined with
  * `farm_state` for runtime metadata) — this function does not query the
  * database directly so it stays testable and reusable by non-DB callers
- * (e.g. the Discord bridge, RabbitMQ publisher).
+ * without coupling database access into the resolver.
  *
  * @param {object} config
  * @param {Array<{
@@ -143,8 +164,16 @@ export function aggregateMapCombatState(partitionStates) {
 export async function resolveMapCombatState(config, mapName, partitionRows) {
   const map = validateMapNameForCombatState(mapName);
   const rows = Array.isArray(partitionRows) ? partitionRows : [];
+  const ids = rows.map((row) => String(row.partitionId ?? "").trim()).filter(Boolean);
+  let resolvedByPartition = new Map();
+  let resolverError = null;
+  try {
+    resolvedByPartition = await resolvePartitionCombatStatesFromRuntime(config, map, ids);
+  } catch (error) {
+    resolverError = error;
+  }
 
-  const partitions = await Promise.all(rows.map(async (row) => {
+  const partitions = rows.map((row) => {
     const partitionId = String(row.partitionId ?? "").trim();
     const runtimeStatus = resolveRuntimeStatus(row);
     const base = {
@@ -168,8 +197,8 @@ export async function resolveMapCombatState(config, mapName, partitionRows) {
       };
     }
 
-    try {
-      const resolved = await resolvePartitionCombatStateFromRuntime(config, map, partitionId);
+    const resolved = resolvedByPartition.get(partitionId);
+    if (resolved) {
       return {
         ...base,
         configuredState: resolved.configuredState,
@@ -180,19 +209,18 @@ export async function resolveMapCombatState(config, mapName, partitionRows) {
         configurationDrift: resolved.configurationDrift,
         warnings: resolved.warnings,
       };
-    } catch (error) {
-      return {
-        ...base,
-        configuredState: "UNKNOWN",
-        materializedState: null,
-        source: "resolver-error",
-        securityZonesEnabled: false,
-        restartRequired: false,
-        configurationDrift: false,
-        warnings: [`Combat state could not be resolved: ${error.message || error}`],
-      };
     }
-  }));
+    return {
+      ...base,
+      configuredState: "UNKNOWN",
+      materializedState: null,
+      source: "resolver-error",
+      securityZonesEnabled: false,
+      restartRequired: false,
+      configurationDrift: false,
+      warnings: [`Combat state could not be resolved: ${resolverError?.message || resolverError || "partition result missing"}`],
+    };
+  });
 
   const mapState = aggregateMapCombatState(partitions.map((p) => p.configuredState));
 
