@@ -269,18 +269,20 @@ test("41 Upgrade: host runtime migration repairs only the controlled writable pa
   assert.match(script, /find "\$path" -xdev.*! -uid "\$TARGET_UID".*! -gid "\$TARGET_GID"/s);
 });
 
-test("42 Upgrade: explicit host IDs survive .env and stale root IDs normalize to a non-root owner or caller", () => {
+test("42 Upgrade: explicit host IDs survive .env and real non-root owners or callers override stale persisted IDs", () => {
   const repair = source("runtime/scripts/repair-host-runtime-permissions.sh");
   const autoscaler = source("runtime/scripts/start-autoscaler.sh");
   assert.ok(repair.indexOf('REQUESTED_HOST_UID="${DUNE_HOST_UID:-}"') < repair.indexOf("[ -r .env ] && . ./.env"), "invocation UID must be captured before .env is loaded");
   assert.ok(repair.indexOf('REQUESTED_HOST_GID="${DUNE_HOST_GID:-}"') < repair.indexOf("[ -r .env ] && . ./.env"), "invocation GID must be captured before .env is loaded");
-  assert.match(repair, /TARGET_UID="\$\{REQUESTED_HOST_UID:-\$\{DUNE_HOST_UID:-\$OWNER_UID\}\}"/);
-  assert.match(repair, /TARGET_GID="\$\{REQUESTED_HOST_GID:-\$\{DUNE_HOST_GID:-\$OWNER_GID\}\}"/);
-  assert.match(repair, /"\$TARGET_UID" = "0".*"\$OWNER_UID" != "0"/);
-  assert.match(repair, /TARGET_UID="\$OWNER_UID"/);
-  assert.match(repair, /"\$TARGET_UID" = "0".*"\$CALLER_UID" != "0"/);
+  assert.ok(repair.indexOf('elif [ "$OWNER_UID" != "0" ]') < repair.indexOf('TARGET_UID="${ENV_HOST_UID:-$OWNER_UID}"'), "a non-root repository owner must win over a stale .env UID");
+  assert.ok(repair.indexOf('elif [ "$CALLER_UID" != "0" ]') < repair.indexOf('TARGET_UID="${ENV_HOST_UID:-$OWNER_UID}"'), "a non-root caller must win over a stale .env UID when the repository is root-owned");
+  assert.ok(repair.indexOf('elif [ "$OWNER_GID" != "0" ]') < repair.indexOf('TARGET_GID="${ENV_HOST_GID:-$OWNER_GID}"'), "a non-root repository group must win over a stale .env GID");
+  assert.ok(repair.indexOf('elif [ "$CALLER_GID" != "0" ]') < repair.indexOf('TARGET_GID="${ENV_HOST_GID:-$OWNER_GID}"'), "a non-root caller group must win over a stale .env GID when the repository is root-owned");
   assert.match(repair, /TARGET_UID="\$CALLER_UID"/);
   assert.match(repair, /TARGET_GID="\$CALLER_GID"/);
+  assert.match(repair, /printf "DUNE_HOST_UID=%s\\n" "\$TARGET_UID"/);
+  assert.match(repair, /printf "DUNE_HOST_GID=%s\\n" "\$TARGET_GID"/);
+  assert.match(repair, /chmod --reference=\.env/);
   assert.match(autoscaler, /"\$HOST_UID" = "0".*"\$REPO_UID" != "0"/);
   assert.match(autoscaler, /HOST_UID="\$REPO_UID"/);
 });
