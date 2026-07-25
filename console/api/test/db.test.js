@@ -1436,8 +1436,104 @@ test("list bases returns rows with piece and placeable counts and a total count"
   assert.equal(result.totalPieces, 700);
   assert.equal(result.totalPlaceables, 140);
   assert.deepEqual(result.rows, [
-    { base_id: "1006", name: "Sietch One", base_type: "Sub-Fief", owner_name: "Leader One", map: "TheDeepDesert", partition_id: 8, x: 100, y: 200, z: 30, piece_count: 589, placeable_count: 126, shared_with: [{ name: "Ally Two", rank: 2, label: "Co-Owner" }] }
+    { base_id: "1006", name: "Sietch One", base_type: "Sub-Fief", owner_name: "Leader One", map: "TheDeepDesert", partition_id: 8, x: 100, y: 200, z: 30, piece_count: 589, placeable_count: 126, shared_with: [{ name: "Ally Two", rank: 2, label: "Co-Owner" }], generatorDataAvailable: true, generatorCount: 0, fuelCells: 0, generatorRuntimeSeconds: 0, generators: [] }
   ]);
+});
+
+test("list bases enriches rows with generator fuel and runtime data", async () => {
+  const db = {
+    query: async (text, values = []) => {
+      if (text.includes("to_regclass")) {
+        const name = String(values[0] || "");
+        return { rows: [{ exists: BASE_REQUIRED_TABLES.includes(name) }] };
+      }
+      if (text.includes("total_bases")) {
+        return { rows: [{ total_bases: "1", total_pieces: "589", total_placeables: "126" }] };
+      }
+      if (text.includes("from paged p")) {
+        return { rows: [
+          { base_id: "1006", name: "Sietch One", base_type: "Sub-Fief", owner_name: "Leader One", map: "TheDeepDesert", partition_id: "8", x: "100", y: "200", z: "30", total_count: "1", piece_count: "589", placeable_count: "126", shared_with: null }
+        ] };
+      }
+      if (text.includes("from generator_runtime group by")) {
+        return { rows: [
+          { base_id: "1006", generator_type: "fuel", generator_count: 2, fuel_cells: 10, runtime_seconds: 7500 }
+        ] };
+      }
+      return { rows: [] };
+    }
+  };
+  const result = await listBases(db, {});
+  assert.equal(result.rows.length, 1);
+  assert.equal(result.rows[0].generatorDataAvailable, true);
+  assert.equal(result.rows[0].generatorCount, 2);
+  assert.equal(result.rows[0].fuelCells, 10);
+  assert.equal(result.rows[0].generatorRuntimeSeconds, 7500);
+  assert.deepEqual(result.rows[0].generators, [
+    { type: "fuel", name: "Fuel-Powered Generator", fuelName: "Fuel Cell", fuelCells: 10, generatorCount: 2, runtimeSeconds: 7500 }
+  ]);
+});
+
+test("list bases still returns rows when the generator query fails", async () => {
+  const db = {
+    query: async (text, values = []) => {
+      if (text.includes("to_regclass")) {
+        const name = String(values[0] || "");
+        return { rows: [{ exists: BASE_REQUIRED_TABLES.includes(name) }] };
+      }
+      if (text.includes("total_bases")) {
+        return { rows: [{ total_bases: "1", total_pieces: "589", total_placeables: "126" }] };
+      }
+      if (text.includes("from paged p")) {
+        return { rows: [
+          { base_id: "1006", name: "Sietch One", base_type: "Sub-Fief", owner_name: "Leader One", map: "TheDeepDesert", partition_id: "8", x: "100", y: "200", z: "30", total_count: "1", piece_count: "589", placeable_count: "126", shared_with: null }
+        ] };
+      }
+      // A schema drift or timeout in the generator CTE must preserve the base
+      // list and mark generator data unavailable.
+      if (text.includes("from generator_runtime group by")) throw new Error("relation \"dune.farm_variables\" does not exist");
+      return { rows: [] };
+    }
+  };
+  const result = await listBases(db, {});
+  assert.equal(result.capabilities.bases, true);
+  assert.equal(result.rows.length, 1);
+  assert.equal(result.rows[0].base_id, "1006");
+  assert.equal(result.rows[0].piece_count, 589);
+  assert.equal(result.rows[0].generatorDataAvailable, false);
+  assert.equal(result.rows[0].generatorCount, 0);
+  assert.equal(result.rows[0].fuelCells, 0);
+  assert.equal(result.rows[0].generatorRuntimeSeconds, 0);
+  assert.deepEqual(result.rows[0].generators, []);
+});
+
+test("list bases skips the generator query when includeGenerators is false", async () => {
+  const calls = [];
+  const db = {
+    query: async (text, values = []) => {
+      calls.push(text);
+      if (text.includes("to_regclass")) {
+        const name = String(values[0] || "");
+        return { rows: [{ exists: BASE_REQUIRED_TABLES.includes(name) }] };
+      }
+      if (text.includes("total_bases")) {
+        return { rows: [{ total_bases: "1", total_pieces: "589", total_placeables: "126" }] };
+      }
+      if (text.includes("from paged p")) {
+        return { rows: [
+          { base_id: "1006", name: "Sietch One", base_type: "Sub-Fief", owner_name: "Leader One", map: "TheDeepDesert", partition_id: "8", x: "100", y: "200", z: "30", total_count: "1", piece_count: "589", placeable_count: "126", shared_with: null }
+        ] };
+      }
+      return { rows: [] };
+    }
+  };
+  // The Discord player portal resolves generator fuel itself for just the
+  // player's bases, so listBases must not run the same CTE for all 200.
+  const result = await listBases(db, { includeGenerators: false });
+  assert.ok(!calls.some((text) => text.includes("from generator_runtime group by")), "generator query must not run when opted out");
+  assert.equal(result.rows[0].generatorDataAvailable, false);
+  assert.equal(result.rows[0].generatorCount, 0);
+  assert.deepEqual(result.rows[0].generators, []);
 });
 
 test("list bases excludes the owner from shared_with, coalesces missing entries, and labels unmapped ranks", async () => {
