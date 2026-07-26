@@ -2798,6 +2798,7 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
         fuelCells: fuelByBase.get(String(row.base_id))?.fuelCells || 0,
         generatorRuntimeSeconds: fuelByBase.get(String(row.base_id))?.runtimeSeconds || 0,
         generatorEmptyCount: fuelByBase.get(String(row.base_id))?.emptyCount || 0,
+        generatorAllEmpty: fuelByBase.get(String(row.base_id))?.allGeneratorsEmpty || false,
         generators: fuelByBase.get(String(row.base_id))?.generators || []
       }))
     };
@@ -3729,7 +3730,13 @@ export async function portalGeneratorFuel(db, baseIds) {
       from generator_state
     )
     select base_id, generator_type, count(*)::int generator_count, sum(fuel_cells)::int fuel_cells,
-      min(runtime_seconds)::bigint runtime_seconds, count(*) filter (where is_empty)::int empty_count
+      -- Excludes empty generators: including them dragged the minimum to 0 the
+      -- instant one generator ran dry, reporting a base of otherwise-fuelled
+      -- generators as fully depleted. null here means every generator in the
+      -- group is empty, not "depletes now" — the JS reduction below relies on
+      -- that distinction.
+      min(runtime_seconds) filter (where not is_empty)::bigint runtime_seconds,
+      count(*) filter (where is_empty)::int empty_count
     from generator_runtime group by base_id, generator_type`, [
       baseIds,
       FUEL_TEMPLATE_IDS,
@@ -3741,13 +3748,18 @@ export async function portalGeneratorFuel(db, baseIds) {
   for (const row of result.rows) {
     const baseId = String(row.base_id);
     const type = Object.hasOwn(GENERATOR_TYPES, row.generator_type) ? row.generator_type : "fuel";
+    // row.runtime_seconds is null when every generator of this type is empty
+    // (the `filter (where not is_empty)` aggregate has nothing to average) —
+    // kept null here rather than defaulted to 0, so it can be told apart from
+    // "depletes now" below and left out of the base-wide minimum.
+    const typeRuntimeSeconds = row.runtime_seconds == null ? null : Number(row.runtime_seconds);
     const detail = {
       type,
       name: GENERATOR_TYPES[type].name,
       fuelName: GENERATOR_TYPES[type].fuelName,
       fuelCells: Number(row.fuel_cells) || 0,
       generatorCount: Number(row.generator_count) || 0,
-      runtimeSeconds: Number(row.runtime_seconds) || 0,
+      runtimeSeconds: typeRuntimeSeconds || 0,
       emptyCount: Number(row.empty_count) || 0
     };
     const current = byBase.get(baseId) || {
@@ -3760,15 +3772,20 @@ export async function portalGeneratorFuel(db, baseIds) {
     current.fuelCells += detail.fuelCells;
     current.generatorCount += detail.generatorCount;
     current.emptyCount += detail.emptyCount;
-    current.runtimeSeconds = current.runtimeSeconds == null
-      ? detail.runtimeSeconds
-      : Math.min(current.runtimeSeconds, detail.runtimeSeconds);
+    if (typeRuntimeSeconds != null) {
+      current.runtimeSeconds = current.runtimeSeconds == null
+        ? typeRuntimeSeconds
+        : Math.min(current.runtimeSeconds, typeRuntimeSeconds);
+    }
     current.generators.push(detail);
     current.generators.sort((left, right) =>
       GENERATOR_TYPE_ORDER.indexOf(left.type) - GENERATOR_TYPE_ORDER.indexOf(right.type));
     byBase.set(baseId, current);
   }
-  for (const value of byBase.values()) value.runtimeSeconds ||= 0;
+  for (const value of byBase.values()) {
+    value.allGeneratorsEmpty = value.generatorCount > 0 && value.emptyCount >= value.generatorCount;
+    value.runtimeSeconds ||= 0;
+  }
   return byBase;
 }
 
