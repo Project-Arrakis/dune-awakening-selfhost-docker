@@ -19,6 +19,11 @@ function createLinkDb(playerOverrides = {}) {
       online_status: "Online",
       funcom_id: "Chani#1234",
       fls_id: "A5C0DE5E12A00042",
+      // hasSteam: false by default -- this test file exercises the
+      // whisper-only flow exclusively and never populates a Steam ID for
+      // any fixture character. Set hasSteam: true via playerOverrides to
+      // exercise the Steam-linked short-circuit in linkPlayerProvider().
+      hasSteam: false,
       ...playerOverrides
     }
   };
@@ -28,6 +33,14 @@ function createLinkDb(playerOverrides = {}) {
     async query(text, values = []) {
       if (text.includes("from dune.player_state ps") && text.includes("lower(ps.character_name)")) {
         return { rows: [state.player], rowCount: 1 };
+      }
+      // characterHasSteamId() -- queries dune.accounts joined to
+      // dune.player_state, filtering on platform_name = 'steam' and a
+      // non-empty platform_id.
+      if (text.includes("from dune.accounts ac") && text.includes("platform_name")) {
+        return state.player.hasSteam
+          ? { rows: [{ "?column?": 1 }], rowCount: 1 }
+          : { rows: [], rowCount: 0 };
       }
       if (text.includes("delete from console.discord_pending_links") && text.includes("discord_user_id = $1 and code = $2")) {
         const matches = state.pending?.discordUserId === values[0] && state.pending?.code === values[1];

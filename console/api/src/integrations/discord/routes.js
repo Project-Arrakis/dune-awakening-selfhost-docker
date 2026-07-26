@@ -26,7 +26,8 @@ import {
   verifyAccountLinkProvider,
   unlinkAccountProvider,
   listAccountsProvider,
-  setDefaultAccountProvider
+  setDefaultAccountProvider,
+  linkAccountViaSteamProvider
 } from "./multiAccountLinkProvider.js";
 import { verifyActorSignature } from "./actorSignature.js";
 import {
@@ -325,6 +326,22 @@ export async function handleDiscordAdapterRoute({ req, res, path, config, readJs
       return json(res, 200, await setDefaultAccountProvider(db, {
         discordUserId: actor.userId,
         playerControllerId: body.playerControllerId
+      }));
+    }
+
+    // Multi-account, Steam-OAuth-based: match a character's on-file Steam
+    // ID against the caller's already-completed Discord OAuth connections
+    // list, and link if it matches -- see linkAccountViaSteamProvider()'s
+    // own comment for why the match-check and the link happen together in
+    // one discordUserId-bound call rather than as two separate routes.
+    if (path === DISCORD_ADAPTER_ROUTES.PLAYERS_ACCOUNTS_LINK_STEAM && req.method === "POST") {
+      const body = await readJson(req);
+      const actor = validateDiscordActor(body.actor);
+      requireSelfScopedCapability(actor, mapping, DISCORD_CAPABILITIES.ACCOUNT_LINK_WRITE);
+      return json(res, 200, await linkAccountViaSteamProvider(db, {
+        discordUserId: actor.userId,
+        playerControllerId: body.playerControllerId,
+        steamId64List: body.steamId64List
       }));
     }
 

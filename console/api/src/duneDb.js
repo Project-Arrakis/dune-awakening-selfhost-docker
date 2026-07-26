@@ -6257,6 +6257,77 @@ export async function resolvePlayerByName(db, characterName) {
   return result.rows;
 }
 
+// characterHasSteamId: read-only check used when a player first runs
+// /dune player link <character-name>, BEFORE any OAuth flow starts -- this
+// is what decides whether the bot offers a "Link via Steam" button at all,
+// or falls straight to the existing whisper flow with no mention of Steam.
+// Separate from matchSteamIdForCharacter() below, which runs LATER, after
+// the player has completed OAuth, to check whether their specific
+// connected Steam account(s) actually match.
+//
+// Live-schema verification (2026-07-26, dune-postgres container, re-checked
+// after upstream v1.3.66 sync): dune.accounts is a view over
+// encrypted_accounts exposing platform_id/platform_name (no unique
+// constraint on platform_id); dune.player_state is a view over
+// encrypted_player_state filtered to character_state = 'Active', joined via
+// account_id. Matches the same join shape already used by
+// playerPortalSnapshots() above.
+export async function characterHasSteamId(db, playerControllerId) {
+  if (!playerControllerId) return false;
+  const result = await db.query(`
+    select 1
+    from dune.accounts ac
+    join dune.player_state ps on ps.account_id = ac.id
+    where ps.player_controller_id::text = $1
+      and lower(coalesce(ac.platform_name, '')) = 'steam'
+      and ac.platform_id is not null
+      and ac.platform_id != ''
+    limit 1`, [String(playerControllerId)]);
+  return result.rows.length > 0;
+}
+
+// matchSteamIdForCharacter: read-only check used by the Discord bot's
+// Steam-connections-based linking flow (see
+// yacketrj/arrakis-control-panel:docs/steam-link-architecture.md). Given
+// ONE specific playerControllerId (already resolved and named by the
+// player -- this is never a bulk/candidate-list lookup) and the array of
+// SteamID64 strings Discord's own GET /users/@me/connections returned for
+// the linking Discord user, returns true if that character's on-file
+// platform_id appears anywhere in the array.
+//
+// SECURITY NOTE (added during five-hat pre-implementation review,
+// 2026-07-26): this function itself performs no actor/ownership check --
+// that is the CALLER's responsibility. It is intentionally not exposed as
+// its own adapter route; it is only ever called from inside
+// linkAccountViaSteamProvider() below, which is reached only via the
+// PLAYERS_ACCOUNTS_LINK_STEAM route, itself gated by
+// requireSelfScopedCapability() with discordUserId bound to actor.userId,
+// exactly like every other self-scoped route. An earlier draft of this
+// feature proposed a SEPARATE match-steam route taking a raw
+// playerControllerId with no discordUserId binding at all -- that would
+// have let any actor above "public" tier probe arbitrary characters they
+// don't own (an enumeration oracle), since requireSelfScopedCapability()
+// only checks capability tier, never target ownership (see its own doc
+// comment in policy.js). Folding the match check into the single
+// link-steam call site, which already carries a real discordUserId,
+// closes that gap structurally rather than requiring a second, easier-to-
+// misuse public entry point into this check.
+export async function matchSteamIdForCharacter(db, playerControllerId, steamId64List) {
+  const ids = (Array.isArray(steamId64List) ? steamId64List : [])
+    .map((value) => String(value || "").trim())
+    .filter((value) => /^[0-9]{17}$/.test(value)); // SteamID64 is always 17 digits
+  if (!ids.length || !playerControllerId) return false;
+  const result = await db.query(`
+    select 1
+    from dune.accounts ac
+    join dune.player_state ps on ps.account_id = ac.id
+    where lower(coalesce(ac.platform_name, '')) = 'steam'
+      and ac.platform_id = any($1::text[])
+      and ps.player_controller_id::text = $2
+    limit 1`, [ids, String(playerControllerId)]);
+  return result.rows.length > 0;
+}
+
 export async function getLinkedPlayer(db, discordUserId) {
   const result = await db.query(`
     select dpl.discord_user_id,
