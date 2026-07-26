@@ -86,6 +86,7 @@ for required in \
   orchestrator/Dockerfile \
   orchestrator/dune_orchestrator.py \
   orchestrator/entrypoint.sh \
+  runtime/scripts/compose-project.sh \
   runtime/scripts/dune \
   runtime/scripts/self-update.sh
 do

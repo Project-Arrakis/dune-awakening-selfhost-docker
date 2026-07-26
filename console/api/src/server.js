@@ -1128,7 +1128,11 @@ function scheduleConsoleRestart(port) {
   setTimeout(() => {
     const helperName = `redblink-dune-console-restart-${Date.now()}`;
     const hostRepoRoot = process.env.DUNE_HOST_REPO_ROOT || config.repoRoot;
-    const composeProjectName = process.env.DUNE_COMPOSE_PROJECT_NAME || process.env.COMPOSE_PROJECT_NAME || "dune-awakening-selfhost-docker";
+    const composeProjectName = process.env.DUNE_COMPOSE_PROJECT_NAME || process.env.COMPOSE_PROJECT_NAME;
+    if (!composeProjectName) {
+      console.error("Cannot restart the Console because the main Dune Compose project name is missing.");
+      return;
+    }
     const hostUid = process.env.DUNE_HOST_UID || String(process.getuid?.() ?? 0);
     const hostGid = process.env.DUNE_HOST_GID || String(process.getgid?.() ?? 0);
     const dockerSocketGid = process.env.DOCKER_SOCKET_GID || detectDockerSocketGid();

@@ -102,7 +102,9 @@ jobs:
           tests/storage-cleanup-test.sh
           tests/update-systemd-timer-health-test.sh
       - name: Test Compose project-name portability
-        run: runtime/tests/test-compose-project-name-portability.sh
+        run: |
+          runtime/tests/test-compose-project-name-portability.sh
+          runtime/tests/test-compose-project-resolution.sh
 
   container-lifecycle:
     runs-on: ubuntu-latest
