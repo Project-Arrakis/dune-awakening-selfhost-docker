@@ -59,6 +59,7 @@ test("reports adapter health with isolated link-state writes", async () => {
     "/api/integrations/discord/ops/resources",
     "/api/integrations/discord/ops/soc",
     "/api/integrations/discord/players/accounts/link",
+    "/api/integrations/discord/players/accounts/link-steam",
     "/api/integrations/discord/players/accounts/link/verify",
     "/api/integrations/discord/players/accounts/list",
     "/api/integrations/discord/players/accounts/set-default",
@@ -125,6 +126,7 @@ test("exposes only allowlisted adapter route names", () => {
     "/api/integrations/discord/ops/resources",
     "/api/integrations/discord/ops/soc",
     "/api/integrations/discord/players/accounts/link",
+    "/api/integrations/discord/players/accounts/link-steam",
     "/api/integrations/discord/players/accounts/link/verify",
     "/api/integrations/discord/players/accounts/list",
     "/api/integrations/discord/players/accounts/set-default",
@@ -739,6 +741,110 @@ test("account-link routes reject a public-tier actor and allow an observer-tier 
           const listBody = await listResponse.json();
           assert.equal(listBody.ok, true);
           assert.deepEqual(listBody.accounts, []);
+
+          server.close();
+          resolve();
+        } catch (e) { server.close(); reject(e); }
+      });
+    });
+  } finally {
+    try { unlinkSync(tokenFile); } catch {}
+  }
+});
+
+// End-to-end coverage for the Steam-OAuth-based link route (link-steam) --
+// see linkAccountViaSteamProvider()'s own comment for why match-check and
+// link happen together in one route rather than as two.
+test("link-steam route rejects a public-tier actor, links on a genuine match, and passes through the generic conflict error unchanged (FINDING-STEAM-3)", async () => {
+  const { resetSteamLinkRateLimiterForTests } = await import("../src/integrations/discord/multiAccountLinkProvider.js");
+  const { createLoginRateLimiter } = await import("../src/rateLimit.js");
+  resetSteamLinkRateLimiterForTests(createLoginRateLimiter({ maxAttempts: 99, globalMaxAttempts: 999, windowMs: 60000, blockMs: 60000 }));
+
+  const tokenFile = "/tmp/discord-adapter-link-steam-test-token.txt";
+  writeFileSync(tokenFile, "server-test-token");
+  const testConfig = { discordBotApiTokenFile: tokenFile, discordAdapterEnabled: true, auditLog: "/tmp/discord-adapter-link-steam-test-audit.jsonl", generatedDir: "/tmp/discord-adapter-link-steam-test-generated" };
+
+  const STEAM_ID = "76561198000000042";
+  const player = { player_controller_id: "42", platform_id: STEAM_ID, platform_name: "steam" };
+  const accounts = [];
+  const db = {
+    transaction: (fn) => fn(db),
+    async query(text, values = []) {
+      if (text.includes("from dune.accounts ac") && text.includes("any($1::text[])")) {
+        const matched = values[1] === player.player_controller_id && (values[0] || []).includes(player.platform_id);
+        return matched ? { rows: [{ "?column?": 1 }], rowCount: 1 } : { rows: [], rowCount: 0 };
+      }
+      if (text.includes("from console.discord_account_links") && text.includes("for update")) {
+        const conflict = accounts.find((a) => a.playerControllerId === values[0] && a.discordUserId !== values[1]);
+        return conflict ? { rows: [{ discord_user_id: conflict.discordUserId }], rowCount: 1 } : { rows: [], rowCount: 0 };
+      }
+      if (text.includes("from console.discord_player_links") && text.includes("for update")) {
+        return { rows: [], rowCount: 0 };
+      }
+      if (text.includes("select 1 from console.discord_account_links")) return { rows: [], rowCount: 0 };
+      if (text.includes("insert into console.discord_account_links")) {
+        accounts.push({ discordUserId: values[0], playerControllerId: values[1], isDefault: Boolean(values[2]) });
+        return { rows: [], rowCount: 1 };
+      }
+      return { rows: [], rowCount: 0 };
+    }
+  };
+
+  try {
+    await new Promise((resolve, reject) => {
+      const server = createServer(async (req, res) => {
+        const url = new URL(req.url || "/", "http://local");
+        const path = url.pathname;
+        const readJson = async () => {
+          const chunks = [];
+          for await (const chunk of req) chunks.push(chunk);
+          return Buffer.concat(chunks).length ? JSON.parse(Buffer.concat(chunks).toString()) : {};
+        };
+        const json = (r, code, body) => { r.writeHead(code, { "content-type": "application/json" }); r.end(JSON.stringify(body)); };
+        await handleDiscordAdapterRoute({ req, res, path, config: testConfig, readJson, json, db });
+      });
+      const auth = { authorization: "Bearer server-test-token" };
+
+      server.listen(async () => {
+        try {
+          const base = `http://127.0.0.1:${server.address().port}`;
+
+          // Public tier is rejected, same as every other self-scoped route.
+          const publicActor = { guildId: "guild-1", channelId: "channel-1", userId: "public-user", username: "no-role", roleIds: [] };
+          const publicResponse = await fetch(`${base}/api/integrations/discord/players/accounts/link-steam`, {
+            method: "POST",
+            headers: { ...auth, "content-type": "application/json" },
+            body: JSON.stringify({ actor: publicActor, playerControllerId: "42", steamId64List: [STEAM_ID] })
+          });
+          assert.equal(publicResponse.status, 403);
+
+          // Observer tier, genuine Steam-ID match: links successfully.
+          const observerActor = actor(["role-observer"]);
+          const linkResponse = await fetch(`${base}/api/integrations/discord/players/accounts/link-steam`, {
+            method: "POST",
+            headers: { ...auth, "content-type": "application/json" },
+            body: JSON.stringify({ actor: observerActor, playerControllerId: "42", steamId64List: [STEAM_ID] })
+          });
+          assert.equal(linkResponse.status, 200);
+          const linkBody = await linkResponse.json();
+          assert.equal(linkBody.ok, true);
+          assert.equal(linkBody.matched, true);
+
+          // A different Discord user attempting to link the SAME character
+          // gets the generic conflict error, with no identifying detail
+          // about the first (observer) user. actor() always returns
+          // userId: "user-1", so build this actor object directly rather
+          // than through that helper.
+          const attackerActor = { ...actor(["role-observer"]), userId: "attacker-user" };
+          const conflictResponse = await fetch(`${base}/api/integrations/discord/players/accounts/link-steam`, {
+            method: "POST",
+            headers: { ...auth, "content-type": "application/json" },
+            body: JSON.stringify({ actor: attackerActor, playerControllerId: "42", steamId64List: [STEAM_ID] })
+          });
+          assert.equal(conflictResponse.status, 409);
+          const conflictBody = await conflictResponse.json();
+          assert.equal(conflictBody.code, "character_already_linked");
+          assert.ok(!JSON.stringify(conflictBody).includes(observerActor.userId));
 
           server.close();
           resolve();
