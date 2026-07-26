@@ -2682,18 +2682,20 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
     "((a.transform).location).x as x",
     "((a.transform).location).y as y",
     "((a.transform).location).z as z",
-    sortSpec.pieces ? "(select count(*) from dune.building_instances count_bi where count_bi.building_id = b.id)::int as piece_count" : "",
-    sortSpec.placeables ? "(select count(*) from dune.placeables count_pl where count_pl.owner_entity_id in (select distinct bi2.owner_entity_id from dune.building_instances bi2 where bi2.building_id = b.id))::int as placeable_count" : "",
+    sortSpec.pieces ? "(select count(*) from dune.building_instances count_bi join dune.actor_fgl_entities count_afe on count_afe.entity_id = count_bi.owner_entity_id where count_afe.actor_id = a.id)::int as piece_count" : "",
+    sortSpec.placeables ? "(select count(distinct count_pl.id) from dune.placeables count_pl join dune.actor_fgl_entities count_afe on count_afe.entity_id = count_pl.owner_entity_id where count_afe.actor_id = a.id)::int as placeable_count" : "",
     sortSpec.shared ? "(select count(*) from dune.permission_actor_rank count_par where count_par.permission_actor_id = a.id and count_par.rank <> 1)::int as shared_count" : ""
   ].filter(Boolean).join(",\n               ");
   const pagedOrder = [...sortSpec.order, ...(sortSpec.order.includes("id") ? [] : ["id"])].map((column) => `${column} ${safeSortDirection}`).join(", ");
-  const finalPieceCount = sortSpec.pieces ? "p.piece_count" : "(select count(*) from dune.building_instances bi where bi.building_id = p.id)::int";
-  const finalPlaceableCount = sortSpec.placeables ? "p.placeable_count" : "(select count(*) from dune.placeables pl where pl.owner_entity_id = p.owner_entity_id)::int";
+  const finalPieceCount = sortSpec.pieces ? "p.piece_count" : "(select count(*) from dune.building_instances bi join dune.actor_fgl_entities piece_afe on piece_afe.entity_id = bi.owner_entity_id where piece_afe.actor_id = p.actor_id)::int";
+  const finalPlaceableCount = sortSpec.placeables ? "p.placeable_count" : "(select count(distinct pl.id) from dune.placeables pl join dune.actor_fgl_entities placeable_afe on placeable_afe.entity_id = pl.owner_entity_id where placeable_afe.actor_id = p.actor_id)::int";
 
   try {
     const result = await db.query(`
       with matched as (
-        select b.id,
+        -- Recovery/staking can split one claimed base across several buildings rows.
+        -- The claim actor is the stable logical base; retain the oldest member id for URLs.
+        select min(b.id) as id,
                a.id as actor_id,
                max(bi.owner_entity_id) as owner_entity_id,
                ${BASE_NAME_SQL} as name,
@@ -2709,7 +2711,7 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
         left join dune.permission_actor pa on pa.actor_id = a.id
         ${matchedOwnerJoin}
         where a.transform is not null
-        group by b.id, a.id, a.class, pa.actor_name, ${matchedGroupByOwner}a.map, a.partition_id, a.transform
+        group by a.id, a.class, pa.actor_name, ${matchedGroupByOwner}a.map, a.partition_id, a.transform
         ${having}
       ),
       paged as (
@@ -2747,17 +2749,17 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
       order by p.sort_position`, values);
 
     const totalsResult = await db.query(`
-      with valid_bases as (
-        select distinct b.id as building_id, afe.entity_id as owner_entity_id
+      with valid_claims as (
+        select distinct a.id as actor_id
         from dune.buildings b
         join dune.building_instances bi on bi.building_id = b.id
         join dune.actor_fgl_entities afe on afe.entity_id = bi.owner_entity_id
         join dune.actors a on a.id = afe.actor_id
         where a.transform is not null
       )
-      select (select count(*) from valid_bases)::int as total_bases,
-             (select count(*) from dune.building_instances bi join valid_bases vb on vb.building_id = bi.building_id)::int as total_pieces,
-             (select count(distinct pl.id) from dune.placeables pl join valid_bases vb on vb.owner_entity_id = pl.owner_entity_id)::int as total_placeables`);
+      select (select count(*) from valid_claims)::int as total_bases,
+             (select count(*) from dune.building_instances bi join dune.actor_fgl_entities afe on afe.entity_id = bi.owner_entity_id join valid_claims vc on vc.actor_id = afe.actor_id)::int as total_pieces,
+             (select count(distinct pl.id) from dune.placeables pl join dune.actor_fgl_entities afe on afe.entity_id = pl.owner_entity_id join valid_claims vc on vc.actor_id = afe.actor_id)::int as total_placeables`);
 
     // Callers that already resolve generator fuel themselves (the Discord
     // player portal) opt out so the CTE does not run twice per request.
@@ -2816,7 +2818,15 @@ export async function exportBaseAsBlueprint(db, id) {
     await requireCapability(await tableExists(db, table), `Base export requires dune.${requiredTables.join(", dune.")}.`);
   }
   const baseRow = await db.query(`
-    select b.id::text as base_id,
+    with target_claim as (
+      select distinct a.id as actor_id
+      from dune.buildings b
+      join dune.building_instances requested_bi on requested_bi.building_id = b.id
+      join dune.actor_fgl_entities requested_afe on requested_afe.entity_id = requested_bi.owner_entity_id
+      join dune.actors a on a.id = requested_afe.actor_id
+      where b.id = $1
+    )
+    select min(b.id)::text as base_id,
            ${BASE_NAME_SQL} as name,
            ${BASE_TYPE_SQL} as base_type,
            coalesce(owner.character_name, '') as owner_name,
@@ -2824,11 +2834,13 @@ export async function exportBaseAsBlueprint(db, id) {
            ((a.transform).location).x as x,
            ((a.transform).location).y as y,
            ((a.transform).location).z as z,
-           max(bi.owner_entity_id) as owner_entity_id
-    from dune.buildings b
-    join dune.building_instances bi on bi.building_id = b.id
-    join dune.actor_fgl_entities afe on afe.entity_id = bi.owner_entity_id
-    join dune.actors a on a.id = afe.actor_id
+           max(bi.owner_entity_id) as owner_entity_id,
+           a.id::text as actor_id
+    from target_claim tc
+    join dune.actors a on a.id = tc.actor_id
+    join dune.actor_fgl_entities afe on afe.actor_id = a.id
+    join dune.building_instances bi on bi.owner_entity_id = afe.entity_id
+    join dune.buildings b on b.id = bi.building_id
     left join dune.permission_actor pa on pa.actor_id = a.id
     left join lateral (
       select ps.character_name
@@ -2839,8 +2851,7 @@ export async function exportBaseAsBlueprint(db, id) {
       order by par.rank asc, ps.character_name asc
       limit 1
     ) owner on true
-    where b.id = $1
-    group by b.id, pa.actor_name, owner.character_name, a.class, a.map, a.transform`, [baseId]);
+    group by pa.actor_name, owner.character_name, a.id, a.class, a.map, a.transform`, [baseId]);
   if (!baseRow.rows.length) throw new UnsupportedCapabilityError(`Base ${baseId} was not found.`);
   const base = baseRow.rows[0];
   const anchor = { x: Number(base.x), y: Number(base.y), z: Number(base.z) };
@@ -2852,14 +2863,24 @@ export async function exportBaseAsBlueprint(db, id) {
   // Rotation is captured yaw-only (Z axis) since every sampled live piece has qx=qy=0; pitch/roll
   // on tilted geometry, if any exists, is lost.
   const pieceRows = await db.query(`
-    select instance_id, building_type, transform
-    from dune.building_instances
-    where building_id = $1
-    order by instance_id`, [baseId]);
-  const instances = pieceRows.rows.map((row) => {
+    select bi.building_id, bi.instance_id, bi.building_type, bi.transform
+    from dune.building_instances bi
+    join dune.actor_fgl_entities afe on afe.entity_id = bi.owner_entity_id
+    where afe.actor_id = $1
+    order by bi.building_id, bi.instance_id`, [base.actor_id]);
+  const seenInstanceIds = new Set();
+  // instance_id is scoped to an internal buildings row. Combined claim exports can therefore
+  // contain collisions; only remap when necessary so ordinary single-part exports stay stable.
+  const remapInstanceIds = pieceRows.rows.some((row) => {
+    const instanceId = Number(row.instance_id);
+    if (!Number.isSafeInteger(instanceId) || instanceId < 0 || seenInstanceIds.has(instanceId)) return true;
+    seenInstanceIds.add(instanceId);
+    return false;
+  });
+  const instances = pieceRows.rows.map((row, index) => {
     const t = row.transform || [];
     return {
-      instance_id: row.instance_id,
+      instance_id: remapInstanceIds ? index : row.instance_id,
       building_type: row.building_type,
       x: (Number(t[0]) || 0) - anchor.x,
       y: (Number(t[1]) || 0) - anchor.y,
@@ -2878,9 +2899,10 @@ export async function exportBaseAsBlueprint(db, id) {
                ((a.transform).rotation).w as qw
         from dune.placeables p
         join dune.actors a on a.id = p.id
-        where p.owner_entity_id = $1
+        join dune.actor_fgl_entities afe on afe.entity_id = p.owner_entity_id
+        where afe.actor_id = $1
           and a.transform is not null
-        order by p.id`, [base.owner_entity_id])
+        order by p.id`, [base.actor_id])
     : { rows: [] };
   const placeables = placeableRows.rows.map((row) => ({
     placeable_id: row.placeable_id,
@@ -3608,11 +3630,16 @@ export async function portalGeneratorFuel(db, baseIds) {
         from dune.farm_variables
         limit 1
       ), 0) universe_time
-    ), base_entities as (
-      select distinct b.id, bi.owner_entity_id
+    ), requested_claims as (
+      select distinct b.id, afe.actor_id
       from dune.buildings b
-      join dune.building_instances bi on bi.building_id=b.id
-      where b.id=any($1::bigint[])
+      join dune.building_instances bi on bi.building_id = b.id
+      join dune.actor_fgl_entities afe on afe.entity_id = bi.owner_entity_id
+      where b.id = any($1::bigint[])
+    ), base_entities as (
+      select distinct rc.id, claim_afe.entity_id as owner_entity_id
+      from requested_claims rc
+      join dune.actor_fgl_entities claim_afe on claim_afe.actor_id = rc.actor_id
     ), generator_fuel as (
       select be.id::text base_id, p.id generator_id,
         coalesce(fuel.queued_cells, 0)::int fuel_cells,
@@ -4174,6 +4201,11 @@ function buildItemStats({ templateId = "", augments = [], durability = {}, rollP
     FCustomizationStats: [[], {}],
     FItemStackAndDurabilityStats: [[], durabilityObj]
   }, durability);
+  if (isStandaloneAugmentTemplate(templateId)) {
+    const payload = rollPayloads.get(templateId)?.rollData;
+    if (!payload) throw new Error(`Cannot build standalone augment payload for: ${templateId}.`);
+    stats.FAugmentItemStats = [[], payload];
+  }
   if (augments.length > 0) stats.FAugmentedItemStats = buildAugmentedItemStats(augments, rollPayloads);
   return stats;
 }
@@ -4398,7 +4430,13 @@ export async function giveItemToStorage(db, storageId, { itemName = "", itemId =
     const currentCount = Number(count.rows[0]?.count || 0);
     if (inventory.max_item_count > 0 && currentCount >= inventory.max_item_count) throw new Error("Storage is full by item slot count");
     const position = await tx.query("select coalesce(max(position_index), -1)::int + 1 as position_index from dune.items where inventory_id = $1", [inventory.id]);
-    const rollPayloads = await loadAugmentRollPayloads(tx, augmentIds, augmentQualityLevel, { sourceTemplateId: resolvedTemplate });
+    const standaloneAugment = isStandaloneAugmentTemplate(resolvedTemplate);
+    const rollPayloads = await loadAugmentRollPayloads(
+      tx,
+      standaloneAugment ? [resolvedTemplate] : augmentIds,
+      standaloneAugment ? qualityLevel : augmentQualityLevel,
+      { sourceTemplateId: resolvedTemplate }
+    );
     const stats = buildItemStats({ templateId: resolvedTemplate, augments: augmentIds, rollPayloads });
     const insert = itemInsertShape(
       ["inventory_id", "template_id", "stack_size", "quality_level", "position_index", "stats"],
@@ -4448,7 +4486,13 @@ export async function giveItemToPlayer(db, playerId, { itemName = "", itemId = "
     if (inv.max_item_count > 0 && currentCount >= inv.max_item_count) throw new Error("Player inventory is full by item slot count");
     const position = await tx.query("select coalesce(max(position_index), -1)::int + 1 as position_index from dune.items where inventory_id = $1", [inv.id]);
     const slotUnlocks = await ensureAugmentSlotKeystones(tx, player, resolvedTemplate, augmentIds);
-    const rollPayloads = await loadAugmentRollPayloads(tx, augmentIds, augmentQualityLevel, { sourceTemplateId: resolvedTemplate });
+    const standaloneAugment = isStandaloneAugmentTemplate(resolvedTemplate);
+    const rollPayloads = await loadAugmentRollPayloads(
+      tx,
+      standaloneAugment ? [resolvedTemplate] : augmentIds,
+      standaloneAugment ? qualityLevel : augmentQualityLevel,
+      { sourceTemplateId: resolvedTemplate }
+    );
     const stats = buildItemStats({ templateId: resolvedTemplate, augments: augmentIds, durability: { current: 100, max: 100 }, rollPayloads });
     const insert = itemInsertShape(
       ["inventory_id", "template_id", "stack_size", "quality_level", "position_index", "stats"],
@@ -4508,37 +4552,116 @@ export async function repairVehicleDecay(db, id, { thresholdPercent = 50 } = {})
   return db.transaction(async (tx) => {
     const player = await resolvePlayerMutationTarget(tx, id);
     if (String(player.onlineStatus).toLowerCase() === "online") throw new Error("Repair vehicle decay requires the player to be offline so live state cannot overwrite the DB change");
+    const hasPermissionOwnership = await tableExists(tx, "permission_actor_rank");
+    const permissionOwnershipClause = hasPermissionOwnership
+      ? `or exists (
+              select 1 from dune.permission_actor_rank par
+              where par.permission_actor_id = vm.vehicle_id
+                and par.player_id = $2
+                and par.rank = 1
+            )`
+      : "";
+    const ownerValues = hasPermissionOwnership ? [player.accountId, player.controllerId] : [player.accountId];
+    const thresholdParam = ownerValues.length + 1;
     const scanned = await tx.query(`
-      select count(*)::int as scanned,
-             count(distinct vm.vehicle_id)::int as vehicles
-      from dune.vehicle_modules vm
-      join dune.actors a on a.id = vm.vehicle_id
-      where a.owner_account_id = $1
-        and vm.stats is not null
-        and jsonb_typeof(vm.stats->'FVehicleModuleDurabilityStats') = 'array'
-        and jsonb_array_length(vm.stats->'FVehicleModuleDurabilityStats') >= 2
-        and (vm.stats->'FVehicleModuleDurabilityStats'->1) ? 'MaxDurability'
-        and (vm.stats->'FVehicleModuleDurabilityStats'->1) ? 'DecayedMaxDurability'`, [player.accountId]);
-    const repaired = await tx.query(`
-      with eligible as (
-        select vm.id,
-               vm.vehicle_id,
-               (durability->>'MaxDurability')::numeric as max_durability
+      with template_maxima as (
+        select vm.template_id,
+               max((durability->>'MaxDurability')::numeric) as max_durability
+        from dune.vehicle_modules vm
+        cross join lateral (select vm.stats->'FVehicleModuleDurabilityStats'->1 as durability) d
+        where jsonb_typeof(vm.stats->'FVehicleModuleDurabilityStats') = 'array'
+          and jsonb_array_length(vm.stats->'FVehicleModuleDurabilityStats') >= 2
+          and durability ? 'MaxDurability'
+          and (durability->>'MaxDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
+          and (durability->>'MaxDurability')::numeric > 0
+        group by vm.template_id
+      ), owned_modules as (
+        select vm.vehicle_id,
+               vm.stats->'FVehicleModuleDurabilityStats'->1 as durability,
+               coalesce(
+                 case
+                   when (vm.stats->'FVehicleModuleDurabilityStats'->1->>'MaxDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
+                     then (vm.stats->'FVehicleModuleDurabilityStats'->1->>'MaxDurability')::numeric
+                 end,
+                 tm.max_durability
+               ) as effective_max
         from dune.vehicle_modules vm
         join dune.actors a on a.id = vm.vehicle_id
-        cross join lateral (
-          select vm.stats->'FVehicleModuleDurabilityStats'->1 as durability
-        ) d
-        where a.owner_account_id = $1
+        left join template_maxima tm on tm.template_id = vm.template_id
+        where (
+            a.owner_account_id = $1
+            ${permissionOwnershipClause}
+          )
           and vm.stats is not null
           and jsonb_typeof(vm.stats->'FVehicleModuleDurabilityStats') = 'array'
           and jsonb_array_length(vm.stats->'FVehicleModuleDurabilityStats') >= 2
+          and jsonb_typeof(vm.stats->'FVehicleModuleDurabilityStats'->1) = 'object'
+      )
+      select count(*)::int as scanned,
+             count(distinct vehicle_id)::int as vehicles,
+             count(*) filter (
+               where durability ? 'DecayedMaxDurability'
+                 and (durability->>'DecayedMaxDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
+                 and effective_max > 0
+             )::int as comparable,
+             count(*) filter (
+               where durability ? 'DecayedMaxDurability'
+                 and (durability->>'DecayedMaxDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
+                 and effective_max is null
+             )::int as missing_maximum
+      from owned_modules`, ownerValues);
+    const repaired = await tx.query(`
+      with template_maxima as (
+        select vm.template_id,
+               max((durability->>'MaxDurability')::numeric) as max_durability
+        from dune.vehicle_modules vm
+        cross join lateral (select vm.stats->'FVehicleModuleDurabilityStats'->1 as durability) d
+        where jsonb_typeof(vm.stats->'FVehicleModuleDurabilityStats') = 'array'
+          and jsonb_array_length(vm.stats->'FVehicleModuleDurabilityStats') >= 2
           and durability ? 'MaxDurability'
-          and durability ? 'DecayedMaxDurability'
-          and (durability->>'MaxDurability') ~ '^-?[0-9]+(\\.[0-9]+)?$'
-          and (durability->>'DecayedMaxDurability') ~ '^-?[0-9]+(\\.[0-9]+)?$'
+          and (durability->>'MaxDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
           and (durability->>'MaxDurability')::numeric > 0
-          and (durability->>'DecayedMaxDurability')::numeric < ((durability->>'MaxDurability')::numeric * $2)
+        group by vm.template_id
+      ), eligible as (
+        select vm.id,
+               vm.vehicle_id,
+               coalesce(
+                 case
+                   when (durability->>'MaxDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
+                     then (durability->>'MaxDurability')::numeric
+                 end,
+                 tm.max_durability
+               ) as max_durability
+        from dune.vehicle_modules vm
+        join dune.actors a on a.id = vm.vehicle_id
+        left join template_maxima tm on tm.template_id = vm.template_id
+        cross join lateral (
+          select vm.stats->'FVehicleModuleDurabilityStats'->1 as durability
+        ) d
+        where (
+            a.owner_account_id = $1
+            ${permissionOwnershipClause}
+          )
+          and vm.stats is not null
+          and jsonb_typeof(vm.stats->'FVehicleModuleDurabilityStats') = 'array'
+          and jsonb_array_length(vm.stats->'FVehicleModuleDurabilityStats') >= 2
+          and jsonb_typeof(durability) = 'object'
+          and durability ? 'DecayedMaxDurability'
+          and (durability->>'DecayedMaxDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
+          and coalesce(
+                case
+                  when (durability->>'MaxDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
+                    then (durability->>'MaxDurability')::numeric
+                end,
+                tm.max_durability
+              ) > 0
+          and (durability->>'DecayedMaxDurability')::numeric < (coalesce(
+                case
+                  when (durability->>'MaxDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
+                    then (durability->>'MaxDurability')::numeric
+                end,
+                tm.max_durability
+              ) * $${thresholdParam})
       )
       update dune.vehicle_modules vm
       set stats = jsonb_set(
@@ -4552,7 +4675,7 @@ export async function repairVehicleDecay(db, id, { thresholdPercent = 50 } = {})
       )
       from eligible
       where vm.id = eligible.id
-      returning vm.id, vm.vehicle_id`, [player.accountId, thresholdRatio]);
+      returning vm.id, vm.vehicle_id`, [...ownerValues, thresholdRatio]);
     const repairedVehicles = new Set(repaired.rows.map((row) => String(row.vehicle_id))).size;
     return {
       ok: true,
@@ -4560,6 +4683,8 @@ export async function repairVehicleDecay(db, id, { thresholdPercent = 50 } = {})
       thresholdPercent: threshold,
       scanned: Number(scanned.rows[0]?.scanned || 0),
       vehicles: Number(scanned.rows[0]?.vehicles || 0),
+      comparable: Number(scanned.rows[0]?.comparable || 0),
+      missingMaximum: Number(scanned.rows[0]?.missing_maximum || 0),
       repaired: repaired.rows.length,
       repairedVehicles
     };

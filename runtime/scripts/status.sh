@@ -301,7 +301,7 @@ autoscaler_state() {
 auto_update_state() {
   local state_file="runtime/generated/update-auto.env"
   local DUNE_AUTO_UPDATE_ENABLED=0
-  local DUNE_AUTO_UPDATE_TIME="${DUNE_AUTO_UPDATE_TIME:-05:00:00}"
+  local DUNE_AUTO_UPDATE_INTERVAL_MINUTES="${DUNE_AUTO_UPDATE_INTERVAL_MINUTES:-60}"
 
   if [ -f "$state_file" ]; then
     # shellcheck disable=SC1090
@@ -309,7 +309,7 @@ auto_update_state() {
   fi
 
   if [ "${DUNE_AUTO_UPDATE_ENABLED:-0}" = "1" ]; then
-    echo "ENABLED at ${DUNE_AUTO_UPDATE_TIME:-05:00:00}"
+    echo "ENABLED every ${DUNE_AUTO_UPDATE_INTERVAL_MINUTES:-60} minutes"
   else
     echo "DISABLED"
   fi

@@ -8,6 +8,7 @@ import {
   normalizeSettings,
   primeMessageOfTheDayOnlineState,
   readMessageOfTheDay,
+  recordMessageOfTheDayFailure,
   restoreMessageOfTheDay,
   runMessageOfTheDayScan,
   saveMessageOfTheDay
@@ -64,6 +65,8 @@ test("message of the day sends once per online session", async () => {
 
   const first = await runMessageOfTheDayScan(cfg, [onlinePlayer()], { mockMode: true, persona: { funcomId: "Server#0001", hexFlsId: "A5C0DE5E12A00001" } });
   assert.equal(first.sent, 1);
+  assert.equal(readMessageOfTheDay(cfg).status.lastSent, 1);
+  assert.equal(readMessageOfTheDay(cfg).status.lastFailed, 0);
 
   const second = await runMessageOfTheDayScan(cfg, [onlinePlayer()], { mockMode: true, persona: { funcomId: "Server#0001", hexFlsId: "A5C0DE5E12A00001" } });
   assert.equal(second.sent, 0);
@@ -73,6 +76,15 @@ test("message of the day sends once per online session", async () => {
 
   const loginAgain = await runMessageOfTheDayScan(cfg, [onlinePlayer()], { mockMode: true, persona: { funcomId: "Server#0001", hexFlsId: "A5C0DE5E12A00001" } });
   assert.equal(loginAgain.sent, 1);
+});
+
+test("message of the day records a redacted background delivery failure", () => {
+  const cfg = config();
+  const status = recordMessageOfTheDayFailure(cfg, new Error("RabbitMQ password=super-secret unavailable"), new Date("2026-07-25T12:00:00.000Z"));
+  assert.equal(status.lastAttemptAt, "2026-07-25T12:00:00.000Z");
+  assert.equal(status.lastFailed, 1);
+  assert.doesNotMatch(status.lastError, /super-secret/);
+  assert.deepEqual(readMessageOfTheDay(cfg).status, status);
 });
 
 test("message of the day sends once for duplicate online rows with the same player key", async () => {

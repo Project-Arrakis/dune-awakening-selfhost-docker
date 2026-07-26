@@ -413,10 +413,15 @@ for row in server_catalog:
 rows = []
 seen = set()
 global_default = env.get("DUNE_MEMORY_DEFAULT", "")
-map_default_overrides = {
+project_dynamic_defaults = {
+    "DeepDesert_1": "16g default",
     "DLC_Story_LostHarvest_EcolabA": "2g default",
     "DLC_Story_LostHarvest_EcolabB": "2g default",
     "DLC_Story_LostHarvest_ForgottenLab": "2g default",
+}
+core_defaults = {
+    "Survival_1": "16g default",
+    "Overmap": "3g default",
 }
 partition_rows = []
 for row in catalog:
@@ -434,19 +439,19 @@ for row in catalog:
 
     if override:
         display = override
-    elif name in map_default_overrides:
-        display = map_default_overrides[name]
-    elif catalog_memory:
-        display = f"{catalog_memory} default"
+    elif name in core_defaults:
+        # The always-on launchers use project safety defaults unless the map
+        # has an explicit override. Catalog recommendations are informational
+        # and must not be presented as the effective Docker limit.
+        display = core_defaults[name]
     elif global_default:
         display = global_default
+    elif name in project_dynamic_defaults:
+        display = project_dynamic_defaults[name]
+    elif catalog_memory:
+        display = f"{catalog_memory} default"
     else:
-        fallback_defaults = {
-            "Survival_1": "16g default",
-            "Overmap": "3g default",
-            "DeepDesert_1": "16g default",
-        }
-        display = fallback_defaults.get(name, "3g default")
+        display = "3g default"
 
     rows.append((name, display))
 
@@ -464,7 +469,12 @@ for row in sorted(partition_rows, key=lambda item: (str(item.get("map", "")), in
     parent = env.get("DUNE_MEMORY_SURVIVAL_1", "")
     if name != "Survival_1":
         parent = env.get(env_key(name), "")
-    display = override or parent or global_default or ("16g default" if name in {"Survival_1", "DeepDesert_1"} else "3g default")
+    if name == "Survival_1" and partition_id == "1":
+        # The primary always-on Sietch launcher does not consume the global
+        # dynamic-map default. Match its real partition/map/project order.
+        display = override or parent or "16g default"
+    else:
+        display = override or parent or global_default or ("16g default" if name in {"Survival_1", "DeepDesert_1"} else "3g default")
     print(f"{(name + ':' + partition_id):<28} {display}")
 PY
   else

@@ -217,20 +217,23 @@ echo "15. Host runtime state ownership migration"
 HOST_RUNTIME_ROOT="$TEST_DIR/host-runtime"
 mkdir -p "$HOST_RUNTIME_ROOT/runtime"/{generated,logs,backups,secrets,addons,text-router}
 mkdir -p "$HOST_RUNTIME_ROOT/runtime/game/test-map/Saved/UserSettings"
-printf 'DUNE_HOST_UID=%s\nDUNE_HOST_GID=%s\n' "$(id -u)" "$(id -g)" > "$HOST_RUNTIME_ROOT/.env"
+printf 'DUNE_HOST_UID=1000000\nDUNE_HOST_GID=1000000\nDUNE_DB_PASSWORD="quoted value with spaces"\n' > "$HOST_RUNTIME_ROOT/.env"
 printf 'old state\n' > "$HOST_RUNTIME_ROOT/runtime/generated/autoscaler-idle.tsv"
 printf 'old setting\n' > "$HOST_RUNTIME_ROOT/runtime/game/test-map/Saved/UserSettings/UserGame.ini"
+set_fixture_ownership "$HOST_RUNTIME_ROOT" 0 0 755
 set_fixture_ownership "$HOST_RUNTIME_ROOT/.env" 0 0 600
 set_fixture_ownership "$HOST_RUNTIME_ROOT/runtime" 0 0 700
 
-OUTPUT=$(DUNE_RUNTIME_REPO_ROOT="$HOST_RUNTIME_ROOT" \
+OUTPUT=$(env -u DUNE_HOST_UID -u DUNE_HOST_GID \
+  DUNE_RUNTIME_REPO_ROOT="$HOST_RUNTIME_ROOT" \
   DUNE_RUNTIME_HOST_REPO_ROOT="$HOST_RUNTIME_ROOT" \
   DUNE_RUNTIME_PERMISSION_HELPER_IMAGE="dune-orch-test:lifecycle" \
-  DUNE_HOST_UID="$(id -u)" \
-  DUNE_HOST_GID="$(id -g)" \
   "$REPO_ROOT/runtime/scripts/repair-host-runtime-permissions.sh" 2>&1) || true
 if [ -r "$HOST_RUNTIME_ROOT/.env" ] \
   && [ -w "$HOST_RUNTIME_ROOT/.env" ] \
+  && grep -qx "DUNE_HOST_UID=$(id -u)" "$HOST_RUNTIME_ROOT/.env" \
+  && grep -qx "DUNE_HOST_GID=$(id -g)" "$HOST_RUNTIME_ROOT/.env" \
+  && grep -qx 'DUNE_DB_PASSWORD="quoted value with spaces"' "$HOST_RUNTIME_ROOT/.env" \
   && [ -w "$HOST_RUNTIME_ROOT/runtime/generated/autoscaler-idle.tsv" ] \
   && printf 'new state\n' > "$HOST_RUNTIME_ROOT/runtime/generated/autoscaler-idle.tsv" \
   && printf 'router state\n' > "$HOST_RUNTIME_ROOT/runtime/text-router/state.json" \

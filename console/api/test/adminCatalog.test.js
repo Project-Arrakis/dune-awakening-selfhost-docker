@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { itemIsSchematic, itemRequiresDatabaseGrant, listCatalogItems, resolveCatalogItem } from "../src/adminCatalog.js";
+import { itemIsRankedSchematic, itemIsSchematic, itemRequiresDatabaseGrant, listCatalogItems, resolveCatalogItem } from "../src/adminCatalog.js";
 
 function fixtureRepo() {
   const root = mkdtempSync(join(tmpdir(), "web-admin-catalog-"));
@@ -52,4 +52,13 @@ test("catalog marks schematics and augments for database grants", () => {
   assert.equal(itemRequiresDatabaseGrant(resolveCatalogItem(root, { itemId: "SchematicPattern_Sword" })), true);
   assert.equal(itemIsSchematic(resolveCatalogItem(root, { itemName: "Arhun K-28 Lasgun" })), true);
   assert.equal(itemIsSchematic(resolveCatalogItem(root, { itemName: "Armor Piercing Augment" })), false);
+});
+
+test("ranked physical schematics are distinguished from Grade 0 live grants", () => {
+  const root = fixtureRepo();
+  const schematic = resolveCatalogItem(root, { itemName: "Arhun K-28 Lasgun" });
+  const normalItem = resolveCatalogItem(root, { itemName: "Plant Fiber" });
+  assert.equal(itemIsRankedSchematic(schematic, 0), false);
+  assert.equal(itemIsRankedSchematic(schematic, 5), true);
+  assert.equal(itemIsRankedSchematic(normalItem, 5), false);
 });
