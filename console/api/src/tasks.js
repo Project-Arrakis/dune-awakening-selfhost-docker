@@ -119,7 +119,8 @@ export class TaskManager {
   async runSelfUpdateHelperTask(task, payload) {
     const args = buildDuneArgs(task.operation, payload);
     const helperName = `dune-web-self-update-${Date.now()}`;
-    const composeProjectName = process.env.DUNE_COMPOSE_PROJECT_NAME || process.env.COMPOSE_PROJECT_NAME || "dune-awakening-selfhost-docker";
+    const composeProjectName = process.env.DUNE_COMPOSE_PROJECT_NAME || process.env.COMPOSE_PROJECT_NAME;
+    if (!composeProjectName) throw new Error("Main Dune Compose project name was not provided to the Console.");
     const helperImage = process.env.DUNE_SYSTEMD_HELPER_IMAGE || "redblink-dune-docker-console:dev";
     const hostRepoRoot = process.env.DUNE_HOST_REPO_ROOT || this.config.hostRepoRoot || this.config.repoRoot;
     const hostUid = process.env.DUNE_HOST_UID || String(process.getuid?.() ?? 0);

@@ -3,6 +3,11 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 
+. runtime/scripts/compose-project.sh
+DUNE_COMPOSE_PROJECT_NAME="$(dune_resolve_compose_project_name "$(pwd -P)")"
+export DUNE_COMPOSE_PROJECT_NAME
+export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-$DUNE_COMPOSE_PROJECT_NAME}"
+
 config_value() {
   local file="$1"
   local key="$2"

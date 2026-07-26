@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [ -z "${DUNE_COMPOSE_PROJECT_NAME:-}" ]; then
+  # shellcheck disable=SC1091
+  source runtime/scripts/compose-project.sh
+  DUNE_COMPOSE_PROJECT_NAME="$(dune_resolve_compose_project_name "$(pwd -P)")"
+  export DUNE_COMPOSE_PROJECT_NAME
+fi
+export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-$DUNE_COMPOSE_PROJECT_NAME}"
+
 # Keep Docker's json-file logs bounded. These arguments are shared by every
 # container created directly by the runtime scripts.
 DUNE_DOCKER_LOG_MAX_SIZE="${DUNE_DOCKER_LOG_MAX_SIZE:-50m}"
