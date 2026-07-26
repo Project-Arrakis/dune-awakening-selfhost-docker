@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { act, render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { SpecializationTab } from "../players/SpecializationTab";
 import { playersApi } from "../../api/players";
 
@@ -184,7 +184,9 @@ describe("SpecializationTab", () => {
       });
 
       const addButtons = screen.getAllByRole("button", { name: /Add XP to/i });
-      await fireEvent.click(addButtons[0]);
+      await act(async () => {
+        fireEvent.click(addButtons[0]);
+      });
 
       await waitFor(() => {
         expect(playersApi.addSpecializationXp).toHaveBeenCalledWith("player-123", {
@@ -193,6 +195,7 @@ describe("SpecializationTab", () => {
           confirmation: "ADD SPECIALIZATION XP"
         });
         expect(mockOnActionLog).toHaveBeenCalledWith("Add Specialization XP", "Trooper", "1000", "Succeeded");
+        expect(playersApi.specs).toHaveBeenCalledTimes(2);
       });
     });
 
@@ -230,6 +233,7 @@ describe("SpecializationTab", () => {
 
   describe("Grant Max", () => {
     it("requests confirmation before granting", async () => {
+      mockConfirmAction.mockResolvedValueOnce(false);
       vi.mocked(playersApi.specs).mockResolvedValue(mockSpecsResponse);
       vi.mocked(playersApi.grantMaxSpecialization).mockResolvedValue({ supported: true });
       render(<SpecializationTab {...defaultProps} />);
@@ -240,10 +244,12 @@ describe("SpecializationTab", () => {
       const grantButtons = screen.getAllByText("Grant Max");
       fireEvent.click(grantButtons[0]);
 
-      expect(mockConfirmAction).toHaveBeenCalledWith(
-        expect.stringContaining("Grant max level for Trooper"),
-        expect.objectContaining({ danger: true })
-      );
+      await waitFor(() => {
+        expect(mockConfirmAction).toHaveBeenCalledWith(
+          expect.stringContaining("Grant max level for Trooper"),
+          expect.objectContaining({ danger: true })
+        );
+      });
     });
 
     it("calls grantMaxSpecialization when confirmed", async () => {
@@ -268,6 +274,7 @@ describe("SpecializationTab", () => {
 
   describe("Reset", () => {
     it("requests confirmation before resetting", async () => {
+      mockConfirmAction.mockResolvedValueOnce(false);
       vi.mocked(playersApi.specs).mockResolvedValue(mockSpecsResponse);
       vi.mocked(playersApi.resetSpecialization).mockResolvedValue({ supported: true });
       render(<SpecializationTab {...defaultProps} />);
@@ -278,10 +285,12 @@ describe("SpecializationTab", () => {
       const resetButtons = screen.getAllByText("Reset");
       fireEvent.click(resetButtons[0]);
 
-      expect(mockConfirmAction).toHaveBeenCalledWith(
-        expect.stringContaining("Reset Trooper specialization"),
-        expect.objectContaining({ danger: true })
-      );
+      await waitFor(() => {
+        expect(mockConfirmAction).toHaveBeenCalledWith(
+          expect.stringContaining("Reset Trooper specialization"),
+          expect.objectContaining({ danger: true })
+        );
+      });
     });
 
     it("does not reset when confirmation is cancelled", async () => {
@@ -295,12 +304,16 @@ describe("SpecializationTab", () => {
       const resetButtons = screen.getAllByText("Reset");
       fireEvent.click(resetButtons[0]);
 
+      await waitFor(() => {
+        expect(mockConfirmAction).toHaveBeenCalled();
+      });
       expect(playersApi.resetSpecialization).not.toHaveBeenCalled();
     });
   });
 
   describe("Grant All Keystones", () => {
     it("requests confirmation before granting", async () => {
+      mockConfirmAction.mockResolvedValueOnce(false);
       vi.mocked(playersApi.specs).mockResolvedValue(mockSpecsResponse);
       vi.mocked(playersApi.grantAllSpecializationKeystones).mockResolvedValue({ supported: true });
       render(<SpecializationTab {...defaultProps} />);
@@ -311,10 +324,12 @@ describe("SpecializationTab", () => {
       const keystoneButton = screen.getByText("Grant All Keystones").closest("button");
       fireEvent.click(keystoneButton!);
 
-      expect(mockConfirmAction).toHaveBeenCalledWith(
-        expect.stringContaining("Grant all specialization keystones"),
-        expect.objectContaining({ danger: true })
-      );
+      await waitFor(() => {
+        expect(mockConfirmAction).toHaveBeenCalledWith(
+          expect.stringContaining("Grant all specialization keystones"),
+          expect.objectContaining({ danger: true })
+        );
+      });
     });
 
     it("calls grantAllSpecializationKeystones when confirmed", async () => {
@@ -339,6 +354,7 @@ describe("SpecializationTab", () => {
 
   describe("Reset All Keystones", () => {
     it("requests confirmation before resetting", async () => {
+      mockConfirmAction.mockResolvedValueOnce(false);
       vi.mocked(playersApi.specs).mockResolvedValue(mockSpecsResponse);
       vi.mocked(playersApi.resetAllSpecializationKeystones).mockResolvedValue({ supported: true });
       render(<SpecializationTab {...defaultProps} />);
@@ -349,10 +365,12 @@ describe("SpecializationTab", () => {
       const resetButton = screen.getByText("Reset All Keystones").closest("button");
       fireEvent.click(resetButton!);
 
-      expect(mockConfirmAction).toHaveBeenCalledWith(
-        expect.stringContaining("Reset all specialization keystones"),
-        expect.objectContaining({ danger: true })
-      );
+      await waitFor(() => {
+        expect(mockConfirmAction).toHaveBeenCalledWith(
+          expect.stringContaining("Reset all specialization keystones"),
+          expect.objectContaining({ danger: true })
+        );
+      });
     });
   });
 

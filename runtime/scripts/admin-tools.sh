@@ -3,13 +3,15 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 
+# shellcheck source=command-auth-token.sh
+source runtime/scripts/command-auth-token.sh
+
 ITEMS_FILE="runtime/data/admin-items.json"
 VEHICLES_FILE="runtime/data/admin-vehicles.json"
 SKILL_MODULES_FILE="runtime/data/admin-skill-modules.json"
 XP_EVENT_TAGS_FILE="runtime/data/admin-xp-event-tags.json"
 TOKEN_FILE="runtime/secrets/funcom-token.txt"
 COMMAND_TOKEN_FILE="runtime/secrets/command-auth-token.txt"
-BUILTIN_COMMAND_AUTH_TOKEN="Nu6VmPWUMvdPMeB7qErr"
 RMQ_CONTAINER="dune-rmq-game"
 POSTGRES_CONTAINER="dune-postgres"
 ADMIN_HISTORY_TSV="runtime/generated/admin-command-history.tsv"
@@ -131,16 +133,6 @@ require_token_file() {
 display_category() {
   local value="${1:-}"
   printf '%s' "${value^}"
-}
-
-command_auth_token() {
-  if [ -n "${DUNE_COMMAND_AUTH_TOKEN:-}" ]; then
-    printf '%s' "$DUNE_COMMAND_AUTH_TOKEN"
-    return 0
-  fi
-
-  # Matches the working upstream manager's command-auth fallback.
-  printf '%s' "$BUILTIN_COMMAND_AUTH_TOKEN"
 }
 
 require_rmq_game_running() {
