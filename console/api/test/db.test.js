@@ -1,7 +1,7 @@
 import test, { beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { assertIdentifier, discoverDbConfig, isReadOnlySql, quoteQualified, redactDbError, rowsResult } from "../src/db.js";
-import { addCurrency, addFactionReputation, addIntel, addonLeadershipPlayers, addonOpsHealthFarms, addonOpsHealthPlayers, addonOpsHealthSummary, addonOpsHealthSummaryV2, addSpecializationXp, applyLandsraadMilestonePreset, augmentInventoryItem, augmentNewestPlayerItem, changeDunePassword, completeJourneyNode, completeTutorial, deleteInventoryItem, exportBaseAsBlueprint, giveItemToPlayer, giveItemToStorage, guildMembers, landsraadOverview, listBases, listGuilds, listPlayers, listSpicefieldTypes, listTables, liveMapPlayers, liveMapServices, playerCraftingRecipes, playerCurrency, playerFactions, playerIntel, playerInventory, playerJourney, playerPosition, playerProfile, playerProgression, playerResearchItems, playerSolarisCoinTotal, playerVitals, portalGeneratorFuel, portalVehicles, repairVehicleDecay, resetJourneyNode, resetTutorial, runSql, setLandsraadPlayerContribution, tablePreview, teleportOfflinePlayerToCoords, unlockCraftingRecipe, unlockResearchItem, updateInventoryItem, updateLandsraadRewardTier, updateLandsraadTaskGoal, updateLandsraadTermTaskGoals, updateSpicefieldType, updateTableRow, UnsupportedCapabilityError, _resetPlayerTargetCacheForTests } from "../src/duneDb.js";
+import { addCurrency, addFactionReputation, addIntel, addonLeadershipPlayers, addonOpsHealthFarms, addonOpsHealthPlayers, addonOpsHealthSummary, addonOpsHealthSummaryV2, addSpecializationXp, applyLandsraadMilestonePreset, augmentInventoryItem, augmentNewestPlayerItem, changeDunePassword, completeJourneyNode, completeTutorial, deleteInventoryItem, exportBaseAsBlueprint, giveItemToPlayer, giveItemToStorage, guildMembers, landsraadOverview, listBases, listGuilds, listPlayers, listSpicefieldTypes, listTables, liveMapPlayers, liveMapServices, playerCraftingRecipes, playerCurrency, playerFactions, playerIntel, playerInventory, playerJourney, playerPosition, playerProfile, playerProgression, playerResearchItems, playerSolarisCoinTotal, playerVitals, portalGeneratorFuel, portalVehicles, repairVehicleDecay, resetJourneyNode, resetTutorial, runSql, setLandsraadPlayerContribution, tablePreview, teleportOfflinePlayerToCoords, unlockCraftingRecipe, unlockResearchItem, updateInventoryItem, updateLandsraadRewardTier, updateLandsraadTaskGoal, updateLandsraadTermTaskGoals, updateSpicefieldType, updateTableRow, UnsupportedCapabilityError, _resetPlayerTargetCacheForTests, characterHasSteamId, matchSteamIdForCharacter } from "../src/duneDb.js";
 
 beforeEach(() => {
   _resetPlayerTargetCacheForTests();
@@ -3489,3 +3489,110 @@ function fakeMutationDb(calls, fixtures = {}) {
   };
   return db;
 }
+
+// ─── characterHasSteamId / matchSteamIdForCharacter ────────────────────────
+// See docs/steam-link-implementation-prompt.md Part 1 and duneDb.js's own
+// comments on both functions for the full design rationale.
+
+function createSteamCharacterDb(fixturePlayers = []) {
+  return {
+    async query(text, values = []) {
+      if (text.includes("from dune.accounts ac") && text.includes("ps.player_controller_id::text = $1") && !text.includes("any(")) {
+        // characterHasSteamId(playerControllerId)
+        const player = fixturePlayers.find((p) => p.player_controller_id === values[0]);
+        const has = Boolean(player?.platform_name?.toLowerCase() === "steam" && player.platform_id);
+        return { rows: has ? [{ "?column?": 1 }] : [], rowCount: has ? 1 : 0 };
+      }
+      if (text.includes("from dune.accounts ac") && text.includes("any($1::text[])")) {
+        // matchSteamIdForCharacter(playerControllerId, steamId64List)
+        const player = fixturePlayers.find((p) => p.player_controller_id === values[1]);
+        const matched = Boolean(
+          player?.platform_name?.toLowerCase() === "steam" &&
+          player.platform_id &&
+          (values[0] || []).includes(player.platform_id)
+        );
+        return { rows: matched ? [{ "?column?": 1 }] : [], rowCount: matched ? 1 : 0 };
+      }
+      throw new Error(`Unexpected query: ${text}`);
+    }
+  };
+}
+
+test("characterHasSteamId returns true for a character with a non-empty steam platform_id", async () => {
+  const db = createSteamCharacterDb([
+    { player_controller_id: "42", platform_name: "Steam", platform_id: "76561198000000042" }
+  ]);
+  assert.equal(await characterHasSteamId(db, "42"), true);
+});
+
+test("characterHasSteamId is case-insensitive on platform_name", async () => {
+  const db = createSteamCharacterDb([
+    { player_controller_id: "42", platform_name: "STEAM", platform_id: "76561198000000042" }
+  ]);
+  assert.equal(await characterHasSteamId(db, "42"), true);
+});
+
+test("characterHasSteamId returns false for a non-Steam platform", async () => {
+  const db = createSteamCharacterDb([
+    { player_controller_id: "42", platform_name: "PSN", platform_id: "some-psn-id" }
+  ]);
+  assert.equal(await characterHasSteamId(db, "42"), false);
+});
+
+test("characterHasSteamId returns false for a character with no account row at all", async () => {
+  const db = createSteamCharacterDb([]);
+  assert.equal(await characterHasSteamId(db, "999"), false);
+});
+
+test("characterHasSteamId returns false (not throw) for a missing playerControllerId", async () => {
+  const db = createSteamCharacterDb([]);
+  assert.equal(await characterHasSteamId(db, ""), false);
+  assert.equal(await characterHasSteamId(db, null), false);
+  assert.equal(await characterHasSteamId(db, undefined), false);
+});
+
+test("matchSteamIdForCharacter returns true when the character's Steam ID appears in a multi-element list", async () => {
+  const db = createSteamCharacterDb([
+    { player_controller_id: "42", platform_name: "steam", platform_id: "76561198000000042" }
+  ]);
+  const matched = await matchSteamIdForCharacter(db, "42", [
+    "76561198111111111",
+    "76561198000000042",
+    "76561198222222222"
+  ]);
+  assert.equal(matched, true);
+});
+
+test("matchSteamIdForCharacter returns false for a well-formed but non-matching list", async () => {
+  const db = createSteamCharacterDb([
+    { player_controller_id: "42", platform_name: "steam", platform_id: "76561198000000042" }
+  ]);
+  assert.equal(await matchSteamIdForCharacter(db, "42", ["76561198999999999"]), false);
+});
+
+test("matchSteamIdForCharacter silently ignores malformed SteamID64 entries rather than throwing", async () => {
+  const db = createSteamCharacterDb([
+    { player_controller_id: "42", platform_name: "steam", platform_id: "76561198000000042" }
+  ]);
+  const matched = await matchSteamIdForCharacter(db, "42", [
+    "not-a-steam-id",
+    "12345", // too short
+    "76561198000000042999", // too long
+    "76561198000000042" // the real one, still present
+  ]);
+  assert.equal(matched, true);
+});
+
+test("matchSteamIdForCharacter returns false for an empty or all-malformed list", async () => {
+  const db = createSteamCharacterDb([
+    { player_controller_id: "42", platform_name: "steam", platform_id: "76561198000000042" }
+  ]);
+  assert.equal(await matchSteamIdForCharacter(db, "42", []), false);
+  assert.equal(await matchSteamIdForCharacter(db, "42", ["not-valid", "also-not-valid"]), false);
+});
+
+test("matchSteamIdForCharacter returns false (not throw) for a missing playerControllerId", async () => {
+  const db = createSteamCharacterDb([]);
+  assert.equal(await matchSteamIdForCharacter(db, "", ["76561198000000042"]), false);
+  assert.equal(await matchSteamIdForCharacter(db, null, ["76561198000000042"]), false);
+});

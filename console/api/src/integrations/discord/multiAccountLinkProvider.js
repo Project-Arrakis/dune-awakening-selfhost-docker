@@ -29,7 +29,8 @@ import {
   resolvePlayerByName,
   createPendingAccountLink,
   deletePendingAccountLink,
-  consumePendingAccountLink
+  consumePendingAccountLink,
+  matchSteamIdForCharacter
 } from "../../duneDb.js";
 import { policyError } from "./policy.js";
 import { publishCarePackageWhisper } from "../../rmq.js";
@@ -78,6 +79,36 @@ function createVerifyRateLimiter() {
 }
 
 let verifyRateLimiter = createVerifyRateLimiter();
+
+// Steam-link rate limiting -- added during five-hat pre-implementation
+// review, 2026-07-26 (not part of the original implementation prompt).
+// Same shape/defaults as verifyRateLimiter above, own env var namespace,
+// keyed by discordUserId. This bounds repeated linkAccountViaSteamProvider()
+// calls for a single Discord user regardless of how many different
+// playerControllerId/steamId64List combinations they try -- closing off
+// brute-force probing as a mitigating control alongside the structural fix
+// (folding the match check into this same actor-bound call site, so there
+// is no separate, unbound match-only route to rate-limit in the first
+// place).
+const DEFAULT_STEAM_LINK_MAX_ATTEMPTS = 5;
+const DEFAULT_STEAM_LINK_GLOBAL_MAX_ATTEMPTS = 50;
+const DEFAULT_STEAM_LINK_WINDOW_MS = 5 * 60 * 1000;
+const DEFAULT_STEAM_LINK_BLOCK_MS = 15 * 60 * 1000;
+
+function createSteamLinkRateLimiter() {
+  return createLoginRateLimiter({
+    maxAttempts: envInt("DUNE_DISCORD_STEAM_LINK_MAX_ATTEMPTS", DEFAULT_STEAM_LINK_MAX_ATTEMPTS),
+    globalMaxAttempts: envInt("DUNE_DISCORD_STEAM_LINK_GLOBAL_MAX_ATTEMPTS", DEFAULT_STEAM_LINK_GLOBAL_MAX_ATTEMPTS),
+    windowMs: envInt("DUNE_DISCORD_STEAM_LINK_WINDOW_MS", DEFAULT_STEAM_LINK_WINDOW_MS),
+    blockMs: envInt("DUNE_DISCORD_STEAM_LINK_BLOCK_MS", DEFAULT_STEAM_LINK_BLOCK_MS)
+  });
+}
+
+let steamLinkRateLimiter = createSteamLinkRateLimiter();
+
+export function resetSteamLinkRateLimiterForTests(customLimiter) {
+  steamLinkRateLimiter = customLimiter || createSteamLinkRateLimiter();
+}
 
 export function resetAccountLinkVerifyRateLimiterForTests(customLimiter) {
   verifyRateLimiter = customLimiter || createVerifyRateLimiter();
@@ -178,6 +209,62 @@ export async function verifyAccountLinkProvider(db, { discordUserId, code }) {
     accounts: accounts.map(publicAccountView),
     message: `Successfully linked ${pending.character_name} to your Discord account. Use /dune data accounts to see all linked characters.`
   };
+}
+
+// linkAccountViaSteamProvider: the Steam-OAuth-based counterpart to
+// linkAccountProvider() above. Trusts that the CALLER (the Discord bot)
+// has already completed a genuine Discord OAuth authorization-code grant
+// with the "connections" scope for this exact discordUserId -- there is no
+// whisper/code verification step here, because Discord's own OAuth consent
+// screen IS the identity proof for this path.
+//
+// SECURITY NOTE (five-hat pre-implementation review, 2026-07-26): this
+// function performs BOTH the Steam-ID match check AND the link in one
+// call, rather than exposing matchSteamIdForCharacter() as its own,
+// separately-callable route. An earlier draft of this feature specced a
+// standalone match-steam route taking a raw playerControllerId with no
+// discordUserId binding -- since requireSelfScopedCapability() (this
+// route's capability gate) only checks capability TIER, never target
+// ownership, that design would have let any actor above "public" tier
+// probe arbitrary characters they don't own for a Steam-ID match
+// (an enumeration oracle). Folding the match into this single,
+// discordUserId-bound call site closes that gap structurally: every path
+// through this function is scoped to the SAME actor.userId the route's
+// capability gate already authorized, exactly like every other
+// self-scoped route in this file.
+//
+// Returns { ok: false, matched: false } (not a thrown error) when the
+// Steam ID doesn't match -- this is an expected, common outcome (the
+// caller's own steamLinkServer.js falls back to the whisper flow in this
+// case), not a failure. Only a genuine conflict (character already linked
+// to someone else) or invalid input throws.
+export async function linkAccountViaSteamProvider(db, { discordUserId, playerControllerId, steamId64List }) {
+  if (!discordUserId || !String(discordUserId).trim()) {
+    throw policyError("invalid_request", "discordUserId is required.");
+  }
+  if (!playerControllerId || !String(playerControllerId).trim()) {
+    throw policyError("invalid_request", "playerControllerId is required.");
+  }
+
+  const rateLimitKey = String(discordUserId);
+  const rateLimit = steamLinkRateLimiter.check(rateLimitKey);
+  if (!rateLimit.allowed) {
+    throw policyError(
+      "steam_link_rate_limited",
+      `Too many Steam-link attempts. Wait ${rateLimit.retryAfterSeconds}s, then try /dune player link <character> again.`,
+      429
+    );
+  }
+
+  const matched = await matchSteamIdForCharacter(db, playerControllerId, steamId64List);
+  if (!matched) {
+    steamLinkRateLimiter.recordFailure(rateLimitKey);
+    return { ok: false, matched: false };
+  }
+
+  const accounts = await linkAdditionalAccount(db, discordUserId, String(playerControllerId).trim());
+  steamLinkRateLimiter.recordSuccess(rateLimitKey);
+  return { ok: true, matched: true, accounts };
 }
 
 export async function unlinkAccountProvider(db, { discordUserId, playerControllerId }) {
