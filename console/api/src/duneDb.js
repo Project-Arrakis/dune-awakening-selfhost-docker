@@ -6328,8 +6328,33 @@ export async function matchSteamIdForCharacter(db, playerControllerId, steamId64
   return result.rows.length > 0;
 }
 
+// getLinkedPlayer: returns the ONE character a Discord user should be
+// treated as linked to for every read/write route that isn't explicitly
+// multi-account-aware (players/me, players/inventory, players/storage,
+// players/find, guilds/storage, guilds/find -- all via
+// requireLinkedPlayer() below).
+//
+// FIX (2026-07-26, found via a real live end-to-end test): this
+// previously checked ONLY console.discord_player_links (the legacy
+// single-link table). A user linked exclusively via
+// console.discord_account_links (the multi-account table --
+// FINDING-LINK-6, and every Steam-connections-based link via
+// FINDING-LINK-7, since linkAccountViaSteamProvider() always writes into
+// this table, never the legacy one) was therefore ALWAYS treated as
+// "not linked" by every one of the six routes above, regardless of
+// having a real, successful link. Confirmed live: a real Steam-link
+// success wrote a real row into discord_account_links, and the very
+// next /dune data inventory call failed with 403 not_linked.
+//
+// Fix: check the legacy table first (preserves exact existing behavior
+// for every pre-existing single-link user, zero migration needed), and
+// if nothing is found there, fall back to the multi-account table's
+// DEFAULT account (is_default = true) -- matching this function's own
+// contract of returning exactly ONE character, and matching
+// linkAdditionalAccount()'s own invariant that a user with >=1 linked
+// account always has exactly one default.
 export async function getLinkedPlayer(db, discordUserId) {
-  const result = await db.query(`
+  const singleLinkResult = await db.query(`
     select dpl.discord_user_id,
            dpl.player_controller_id,
            coalesce(ps.character_name, '') as character_name,
@@ -6339,7 +6364,20 @@ export async function getLinkedPlayer(db, discordUserId) {
     join dune.player_state ps on ps.player_controller_id::text = dpl.player_controller_id
     where dpl.discord_user_id = $1
     limit 1`, [String(discordUserId)]);
-  return result.rows[0] || null;
+  if (singleLinkResult.rows[0]) return singleLinkResult.rows[0];
+
+  const multiAccountResult = await db.query(`
+    select dal.discord_user_id,
+           dal.player_controller_id,
+           coalesce(ps.character_name, '') as character_name,
+           coalesce(ps.player_pawn_id::text, '0') as player_pawn_id,
+           coalesce(ps.online_status::text, 'Offline') as online_status
+    from console.discord_account_links dal
+    join dune.player_state ps on ps.player_controller_id::text = dal.player_controller_id
+    where dal.discord_user_id = $1
+      and dal.is_default = true
+    limit 1`, [String(discordUserId)]);
+  return multiAccountResult.rows[0] || null;
 }
 
 // Checks the given discord_*_links table (in the console schema — see
@@ -6403,10 +6441,42 @@ export async function discordPlayerLink(db, discordUserId, playerControllerId) {
   return result.player;
 }
 
+// discordPlayerUnlink: the legacy, no-character-argument /dune player
+// unlink path. FIX (2026-07-26, found alongside the getLinkedPlayer()
+// fix above): this previously deleted ONLY from
+// console.discord_player_links, regardless of which table getLinkedPlayer()
+// actually found the player in. For a multi-account-only user (every
+// Steam-linked user, and anyone using FINDING-LINK-6's multi-account
+// flow), this meant: getLinkedPlayer() correctly reports them as linked,
+// this function's Boolean(player) return correctly reports success, but
+// the delete statement affects zero rows -- a silent no-op that claims
+// success while leaving the real link entirely intact.
+//
+// Fix: delete from whichever table the player was actually found in.
+// Mirrors getLinkedPlayer()'s own single-link-table-first,
+// multi-account-default-fallback order, and reuses
+// unlinkAdditionalAccount() (not a duplicated delete) so the multi-account
+// path also gets that function's own default-promotion behavior for free.
 export async function discordPlayerUnlink(db, discordUserId) {
-  const player = await getLinkedPlayer(db, discordUserId);
-  await db.query("delete from console.discord_player_links where discord_user_id = $1", [String(discordUserId)]);
-  return Boolean(player);
+  const singleLinkResult = await db.query(
+    "select 1 from console.discord_player_links where discord_user_id = $1",
+    [String(discordUserId)]
+  );
+  if (singleLinkResult.rowCount) {
+    await db.query("delete from console.discord_player_links where discord_user_id = $1", [String(discordUserId)]);
+    return true;
+  }
+
+  const defaultAccount = await db.query(
+    "select player_controller_id from console.discord_account_links where discord_user_id = $1 and is_default = true limit 1",
+    [String(discordUserId)]
+  );
+  if (!defaultAccount.rows[0]) return false;
+  // unlinkAdditionalAccount() returns a plain boolean (result.removed),
+  // not { removed: boolean } -- verified directly against its own source
+  // before relying on this, since guessing the wrong shape here would
+  // have silently always evaluated to false.
+  return await unlinkAdditionalAccount(db, discordUserId, defaultAccount.rows[0].player_controller_id);
 }
 
 // ─── Multi-account linking (console.discord_account_links) — FINDING-LINK-6 ──
