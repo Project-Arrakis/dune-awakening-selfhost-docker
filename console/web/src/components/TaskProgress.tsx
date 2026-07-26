@@ -91,6 +91,7 @@ function taskTitle(task: Task) {
   if (task.operation === "init") {
     if (task.status === "succeeded") return "Deployment Complete";
     if (task.status === "failed" && diskSpaceFailure(task)) return "Not Enough Disk Space";
+    if (task.status === "failed" && steamContentHostFailure(task)) return "Steam Download Failed";
     if (task.status === "failed") return "Deployment Failed";
     return "Deploying Dune Server";
   }
@@ -128,7 +129,7 @@ function backupRestoreHasCompletedImport(task: Task) {
 
 function initTaskMessage(task: Task) {
   if (task.status === "succeeded") return "Deployment finished. The game services are starting and may need several minutes before they are ready.";
-  if (task.status === "failed") return diskSpaceFailure(task) || task.errorMessage || "Deployment failed. Open the deployment log to see the last server output.";
+  if (task.status === "failed") return diskSpaceFailure(task) || steamContentHostFailure(task) || task.errorMessage || "Deployment failed. Open the deployment log to see the last server output.";
   const lines = task.logLines.map((row) => row.line).join("\n");
   if (/Starting orchestrator container/i.test(lines)) return "Starting the deployment container.";
   if (/Downloading\/loading assets and running database setup\/update/i.test(lines)) return "Downloading server assets, loading Funcom images, and preparing the database.";
@@ -162,6 +163,7 @@ function taskErrorMessage(task: Task, visibleMessage: string) {
   const error = task.errorMessage.trim();
   if (!error) return "";
   if (task.operation === "init" && diskSpaceFailure(task)) return "";
+  if (task.operation === "init" && steamContentHostFailure(task)) return "";
   if (sameSentence(error, visibleMessage)) return "";
   return error;
 }
@@ -175,11 +177,23 @@ function normalizeSentence(value: string) {
 }
 
 function diskSpaceFailure(task: Task) {
-  const text = [task.errorMessage || "", ...task.logLines.map((row) => row.line)].join("\n");
-  if (!/Free disk space is below the configured safety minimum|Not enough free disk space/i.test(text)) return "";
+  const lines = [task.errorMessage || "", ...task.logLines.map((row) => row.line)].map(stripTerminalFormatting);
+  const confirmed = lines.some((line) => /^(?:\[dune\]\s+)?(?:Free disk space is below the configured safety minimum|Not enough free disk space for a safe Dune server install\/update)\b/i.test(line.trim()));
+  if (!confirmed) return "";
+  const text = lines.join("\n");
   const detail = text.match(/\[dune\]\s+([^:\n]+):\s+([0-9.]+)\s+GiB free,\s+needs at least\s+([0-9.]+)\s+GiB/i);
   if (detail) {
     return `There is not enough free disk space. ${detail[1].trim()} has ${detail[2]} GiB free, but deployment requires at least ${detail[3]} GiB. Free up disk space or move Docker's data-root to a larger disk, then retry.`;
   }
   return "There is not enough free disk space for a safe Dune server deployment. Free up disk space or move Docker's data-root to a larger disk, then retry.";
+}
+
+function steamContentHostFailure(task: Task) {
+  const text = [task.errorMessage || "", ...task.logLines.map((row) => row.line)].map(stripTerminalFormatting).join("\n");
+  if (!/Steam could not download from its selected content host|Steam repeatedly (?:failed to download from|selected an unresolved) (?:this|its assigned)?\s*content host|This is a Steam content-host failure/i.test(text)) return "";
+  return "Steam could not download the Dune server files from its selected content host. This is usually temporary; retry deployment later so Steam can select another host.";
+}
+
+function stripTerminalFormatting(value: string) {
+  return String(value || "").replace(/\u001b\[[0-9;]*m/g, "");
 }
