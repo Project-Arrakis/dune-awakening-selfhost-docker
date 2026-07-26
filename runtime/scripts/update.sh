@@ -125,6 +125,32 @@ EOF
   mv -f "$tmp" "$AUTO_STATE_FILE"
 }
 
+ensure_auto_state_writable() {
+  local state_dir
+  state_dir="$(dirname "$AUTO_STATE_FILE")"
+
+  if mkdir -p "$state_dir" 2>/dev/null \
+    && [ -w "$state_dir" ] \
+    && { [ ! -e "$AUTO_STATE_FILE" ] || [ -w "$AUTO_STATE_FILE" ]; }; then
+    return 0
+  fi
+
+  echo "Host runtime state is not writable; repairing host-managed runtime ownership..."
+  if [ -x runtime/scripts/repair-host-runtime-permissions.sh ] \
+    && runtime/scripts/repair-host-runtime-permissions.sh; then
+    if mkdir -p "$state_dir" 2>/dev/null \
+      && [ -w "$state_dir" ] \
+      && { [ ! -e "$AUTO_STATE_FILE" ] || [ -w "$AUTO_STATE_FILE" ]; }; then
+      echo "Host runtime ownership repaired."
+      return 0
+    fi
+  fi
+
+  echo "Auto-update settings cannot be saved because $state_dir is not writable." >&2
+  echo "Run: runtime/scripts/repair-host-runtime-permissions.sh" >&2
+  return 1
+}
+
 read_auto_state() {
   DUNE_AUTO_UPDATE_ENABLED=0
   DUNE_AUTO_UPDATE_TIME="$AUTO_DEFAULT_TIME"
@@ -292,6 +318,12 @@ show_auto_timer_status_via_docker() {
   can_manage_host_systemd_with_docker || return 1
   docker run --rm --user 0:0 --privileged --pid=host --network=host \
     -e DUNE_AUTO_UPDATE_ENABLED="${DUNE_AUTO_UPDATE_ENABLED:-0}" \
+    -e DUNE_AUTO_UPDATE_INTERVAL_MINUTES="${DUNE_AUTO_UPDATE_INTERVAL_MINUTES:-$AUTO_DEFAULT_INTERVAL_MINUTES}" \
+    -e DUNE_AUTO_UPDATE_APPLY_ENABLED="${DUNE_AUTO_UPDATE_APPLY_ENABLED:-1}" \
+    -e DUNE_AUTO_UPDATE_NOTIFY_ENABLED="${DUNE_AUTO_UPDATE_NOTIFY_ENABLED:-1}" \
+    -e DUNE_AUTO_UPDATE_NOTIFY_MINUTES="${DUNE_AUTO_UPDATE_NOTIFY_MINUTES:-15}" \
+    -e DUNE_AUTO_UPDATE_WAIT_EMPTY="${DUNE_AUTO_UPDATE_WAIT_EMPTY:-0}" \
+    -e DUNE_AUTO_UPDATE_MAX_WAIT_MINUTES="${DUNE_AUTO_UPDATE_MAX_WAIT_MINUTES:-360}" \
     -e DUNE_HOST_REPO_ROOT="$HOST_ROOT_DIR" \
     -v /:/host \
     --entrypoint bash \
@@ -316,8 +348,15 @@ show_auto_timer_status_via_docker() {
           echo "WARN Auto-update service WorkingDirectory does not exist: $working_directory."
         fi
         case "$exec_start" in
-          *"$DUNE_HOST_REPO_ROOT/runtime/scripts/update.sh"*) ;;
-          *) echo "WARN Auto-update service ExecStart does not use the current checkout: $DUNE_HOST_REPO_ROOT." ;;
+          *"$DUNE_HOST_REPO_ROOT/runtime/scripts/update.sh"*"auto run"*) ;;
+          *"$DUNE_HOST_REPO_ROOT/runtime/scripts/dune"*"update --yes"*)
+            echo "WARN Auto-update service uses the legacy update command from the current checkout."
+            echo "     Repair: dune update auto enable $DUNE_AUTO_UPDATE_INTERVAL_MINUTES $DUNE_AUTO_UPDATE_APPLY_ENABLED $DUNE_AUTO_UPDATE_NOTIFY_ENABLED $DUNE_AUTO_UPDATE_NOTIFY_MINUTES $DUNE_AUTO_UPDATE_WAIT_EMPTY $DUNE_AUTO_UPDATE_MAX_WAIT_MINUTES"
+            ;;
+          *"$DUNE_HOST_REPO_ROOT/"*)
+            echo "WARN Auto-update service does not use the current policy runner: $DUNE_HOST_REPO_ROOT/runtime/scripts/update.sh auto run."
+            ;;
+          *) echo "WARN Auto-update service ExecStart points outside the current checkout: $DUNE_HOST_REPO_ROOT." ;;
         esac
         chroot /host /bin/systemctl list-timers --all dune-awakening-auto-update.timer --no-pager || true
       else
@@ -353,8 +392,15 @@ show_auto_timer_status() {
     echo "WARN Auto-update service WorkingDirectory does not exist: $working_directory."
   fi
   case "$exec_start" in
-    *"$HOST_ROOT_DIR/runtime/scripts/update.sh"*) ;;
-    *) echo "WARN Auto-update service ExecStart does not use the current checkout: $HOST_ROOT_DIR." ;;
+    *"$HOST_ROOT_DIR/runtime/scripts/update.sh"*"auto run"*) ;;
+    *"$HOST_ROOT_DIR/runtime/scripts/dune"*"update --yes"*)
+      echo "WARN Auto-update service uses the legacy update command from the current checkout."
+      echo "     Repair: dune update auto enable ${DUNE_AUTO_UPDATE_INTERVAL_MINUTES:-$AUTO_DEFAULT_INTERVAL_MINUTES} ${DUNE_AUTO_UPDATE_APPLY_ENABLED:-1} ${DUNE_AUTO_UPDATE_NOTIFY_ENABLED:-1} ${DUNE_AUTO_UPDATE_NOTIFY_MINUTES:-15} ${DUNE_AUTO_UPDATE_WAIT_EMPTY:-0} ${DUNE_AUTO_UPDATE_MAX_WAIT_MINUTES:-360}"
+      ;;
+    *"$HOST_ROOT_DIR/"*)
+      echo "WARN Auto-update service does not use the current policy runner: $HOST_ROOT_DIR/runtime/scripts/update.sh auto run."
+      ;;
+    *) echo "WARN Auto-update service ExecStart points outside the current checkout: $HOST_ROOT_DIR." ;;
   esac
   systemctl list-timers --all "$AUTO_TIMER_NAME" --no-pager || true
 }
@@ -368,8 +414,6 @@ handle_auto_update() {
   wait_empty="${6:-0}"
   max_wait_minutes="${7:-360}"
 
-  mkdir -p runtime/generated
-
   case "$sub" in
     enable|on)
       if printf '%s' "$interval_minutes" | grep -Eq '^([01][0-9]|2[0-3]):[0-5][0-9]$'; then
@@ -381,6 +425,7 @@ handle_auto_update() {
       require_auto_notify_minutes "$notify_minutes"
       require_bool_flag "$wait_empty" "Wait until empty"
       require_auto_max_wait_minutes "$max_wait_minutes"
+      ensure_auto_state_writable
 
       if ! command -v systemctl >/dev/null 2>&1; then
         if install_auto_units_via_docker_host "$interval_minutes"; then
@@ -428,6 +473,7 @@ handle_auto_update() {
 
     disable|off)
       read_auto_state
+      ensure_auto_state_writable
       if command -v systemctl >/dev/null 2>&1 && can_manage_systemd_units; then
         systemctl disable --now "$AUTO_TIMER_NAME" >/dev/null 2>&1 || true
         systemctl stop "$AUTO_SERVICE_NAME" >/dev/null 2>&1 || true
@@ -450,7 +496,6 @@ handle_auto_update() {
       read_auto_state
 
       echo "Auto updates enabled: $DUNE_AUTO_UPDATE_ENABLED"
-      echo "Auto update time:      $DUNE_AUTO_UPDATE_TIME"
       echo "Check interval minutes: ${DUNE_AUTO_UPDATE_INTERVAL_MINUTES:-$AUTO_DEFAULT_INTERVAL_MINUTES}"
       echo "Apply updates:        ${DUNE_AUTO_UPDATE_APPLY_ENABLED:-1}"
       echo "Notify players:       ${DUNE_AUTO_UPDATE_NOTIFY_ENABLED:-1}"
