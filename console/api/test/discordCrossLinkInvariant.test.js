@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { discordPlayerLink, linkAdditionalAccount } from "../src/duneDb.js";
+import { discordPlayerLink, linkAdditionalAccount, getLinkedPlayer, discordPlayerUnlink } from "../src/duneDb.js";
 
 // FINDING-LINK-6 self-review finding: the single-link flow
 // (console.discord_player_links) and the multi-account flow
@@ -30,12 +30,51 @@ function createCrossTableDb() {
         state.singleLink = { discordUserId: values[0], playerControllerId: values[1] };
         return { rows: [], rowCount: 1 };
       }
+      // getLinkedPlayer()/discordPlayerUnlink(): plain existence check,
+      // no join, no "dpl" alias -- must be checked BEFORE the aliased
+      // "dpl" join query below, since this text is a strict subset of it.
+      if (text.includes("select 1 from console.discord_player_links where discord_user_id = $1")) {
+        const exists = Boolean(state.singleLink && state.singleLink.discordUserId === values[0]);
+        return { rows: exists ? [{}] : [], rowCount: exists ? 1 : 0 };
+      }
+      if (text.includes("delete from console.discord_player_links where discord_user_id = $1")) {
+        if (state.singleLink && state.singleLink.discordUserId === values[0]) state.singleLink = null;
+        return { rows: [], rowCount: 1 };
+      }
       if (text.includes("from console.discord_player_links dpl")) {
         if (!state.singleLink || state.singleLink.discordUserId !== values[0]) return { rows: [], rowCount: 0 };
         return {
           rows: [{
             discord_user_id: state.singleLink.discordUserId,
             player_controller_id: state.singleLink.playerControllerId,
+            character_name: player.character_name,
+            player_pawn_id: player.player_pawn_id,
+            online_status: player.online_status
+          }],
+          rowCount: 1
+        };
+      }
+
+      // getLinkedPlayer()'s multi-account fallback: the DEFAULT account
+      // only, joined to player_state. MUST be checked BEFORE the
+      // listLinkedAccounts matcher below -- both real query strings
+      // contain "from console.discord_account_links dal", so matching on
+      // that substring alone (as the original listLinkedAccounts matcher
+      // did) would silently intercept THIS query too and ignore its
+      // "is_default = true" filter entirely, returning every account
+      // instead of just the default one. Caught by a real failing test
+      // (2026-07-26) before this ordering bug shipped -- confirmed via
+      // direct comparison against duneDb.js's actual getLinkedPlayer()
+      // query text, not assumed.
+      if (text.includes("from console.discord_account_links")
+        && text.includes("join dune.player_state")
+        && text.includes("is_default = true")) {
+        const account = state.accounts.find((a) => a.discordUserId === values[0] && a.isDefault);
+        if (!account) return { rows: [], rowCount: 0 };
+        return {
+          rows: [{
+            discord_user_id: account.discordUserId,
+            player_controller_id: account.playerControllerId,
             character_name: player.character_name,
             player_pawn_id: player.player_pawn_id,
             online_status: player.online_status
@@ -57,6 +96,14 @@ function createCrossTableDb() {
         return { rows, rowCount: rows.length };
       }
 
+      // discordPlayerUnlink()'s default-account lookup (no join, just the
+      // playerControllerId) -- distinct from the joined query above.
+      if (text.includes("select player_controller_id from console.discord_account_links")
+        && text.includes("is_default = true")) {
+        const account = state.accounts.find((a) => a.discordUserId === values[0] && a.isDefault);
+        return account ? { rows: [{ player_controller_id: account.playerControllerId }], rowCount: 1 } : { rows: [], rowCount: 0 };
+      }
+
       // linkAdditionalAccount(): own-table conflict check
       if (text.includes("from console.discord_account_links") && text.includes("for update")) {
         const conflict = state.accounts.find((a) => a.playerControllerId === values[0] && a.discordUserId !== values[1]);
@@ -73,6 +120,23 @@ function createCrossTableDb() {
       if (text.includes("insert into console.discord_account_links")) {
         state.accounts.push({ discordUserId: values[0], playerControllerId: values[1], isDefault: Boolean(values[2]) });
         return { rows: [], rowCount: 1 };
+      }
+      // unlinkAdditionalAccount(): existing-row lookup (is_default check)
+      if (text.includes("select is_default from console.discord_account_links")) {
+        const account = state.accounts.find((a) => a.discordUserId === values[0] && a.playerControllerId === values[1]);
+        return account ? { rows: [{ is_default: account.isDefault }], rowCount: 1 } : { rows: [], rowCount: 0 };
+      }
+      if (text.includes("delete from console.discord_account_links")
+        && text.includes("player_controller_id = $2")
+        && !text.includes("for update")) {
+        const before = state.accounts.length;
+        state.accounts = state.accounts.filter((a) => !(a.discordUserId === values[0] && a.playerControllerId === values[1]));
+        return { rows: [], rowCount: before - state.accounts.length };
+      }
+      if (text.includes("update console.discord_account_links") && text.includes("set is_default = true")) {
+        const remaining = state.accounts.filter((a) => a.discordUserId === values[0]).sort((a, b) => a.linkedAt - b.linkedAt);
+        if (remaining.length) remaining[0].isDefault = true;
+        return { rows: [], rowCount: remaining.length ? 1 : 0 };
       }
 
       throw new Error(`Unexpected query: ${text}`);
@@ -125,4 +189,87 @@ test("a different character (no conflict) can still be linked normally through e
   const accounts = await linkAdditionalAccount(db, "discord-B", "43");
   assert.equal(accounts.length, 1);
   assert.equal(accounts[0].player_controller_id, "43");
+});
+
+// ─── getLinkedPlayer() / discordPlayerUnlink(): cross-table read fix ──────
+//
+// Real bug (found via a live end-to-end test, 2026-07-26): getLinkedPlayer()
+// previously checked ONLY console.discord_player_links. A user linked
+// exclusively via console.discord_account_links (every Steam-link via
+// FINDING-LINK-7, and every FINDING-LINK-6 multi-account link) was
+// therefore ALWAYS reported as "not linked" by whoami/players-me/
+// players-inventory/players-storage/players-find/guilds-storage/
+// guilds-find -- despite a genuinely successful link. Confirmed live: a
+// real Steam-link success wrote a real row into discord_account_links,
+// and the very next /dune data inventory call failed with 403 not_linked.
+
+test("getLinkedPlayer returns the single-link table's row when one exists, even if a multi-account row also exists", async () => {
+  const db = createCrossTableDb();
+  await discordPlayerLink(db, "discord-A", "42");
+  db.state.accounts.push({ discordUserId: "discord-A", playerControllerId: "43", isDefault: true });
+
+  const linked = await getLinkedPlayer(db, "discord-A");
+  assert.equal(linked.player_controller_id, "42", "single-link table takes precedence, matching the fix's documented order");
+});
+
+test("getLinkedPlayer falls back to the multi-account DEFAULT when no single-link row exists (the real bug case)", async () => {
+  const db = createCrossTableDb();
+  await linkAdditionalAccount(db, "discord-A", "42");
+
+  const linked = await getLinkedPlayer(db, "discord-A");
+  assert.ok(linked, "must find the player via the multi-account table's default account");
+  assert.equal(linked.player_controller_id, "42");
+  assert.equal(linked.discord_user_id, "discord-A");
+});
+
+test("getLinkedPlayer returns null for a Discord user with no link in either table", async () => {
+  const db = createCrossTableDb();
+  const linked = await getLinkedPlayer(db, "discord-nobody");
+  assert.equal(linked, null);
+});
+
+test("getLinkedPlayer ignores a NON-default multi-account row -- only the default counts", async () => {
+  const db = createCrossTableDb();
+  db.state.accounts.push({ discordUserId: "discord-A", playerControllerId: "42", isDefault: false });
+
+  const linked = await getLinkedPlayer(db, "discord-A");
+  assert.equal(linked, null, "a non-default account must not be treated as the user's linked player");
+});
+
+test("discordPlayerUnlink deletes from the single-link table when that's where the player is linked", async () => {
+  const db = createCrossTableDb();
+  await discordPlayerLink(db, "discord-A", "42");
+
+  const removed = await discordPlayerUnlink(db, "discord-A");
+  assert.equal(removed, true);
+  assert.equal(db.state.singleLink, null);
+});
+
+test("discordPlayerUnlink deletes the DEFAULT multi-account row when no single-link row exists (the real bug case)", async () => {
+  const db = createCrossTableDb();
+  await linkAdditionalAccount(db, "discord-A", "42");
+  assert.equal(db.state.accounts.length, 1);
+
+  const removed = await discordPlayerUnlink(db, "discord-A");
+  assert.equal(removed, true, "must report success, and must actually remove the row -- not a silent no-op");
+  assert.equal(db.state.accounts.length, 0, "the real multi-account row must actually be deleted, not left intact");
+});
+
+test("discordPlayerUnlink promotes the next-oldest account to default after removing the multi-account default (reuses unlinkAdditionalAccount's own behavior)", async () => {
+  const db = createCrossTableDb();
+  await linkAdditionalAccount(db, "discord-A", "42");
+  db.state.accounts[0].linkedAt = 1;
+  await linkAdditionalAccount(db, "discord-A", "43");
+  db.state.accounts[1].linkedAt = 2;
+
+  await discordPlayerUnlink(db, "discord-A");
+  assert.equal(db.state.accounts.length, 1);
+  assert.equal(db.state.accounts[0].playerControllerId, "43");
+  assert.equal(db.state.accounts[0].isDefault, true, "the remaining account must be promoted to default");
+});
+
+test("discordPlayerUnlink returns false for a Discord user with no link in either table (no silent success)", async () => {
+  const db = createCrossTableDb();
+  const removed = await discordPlayerUnlink(db, "discord-nobody");
+  assert.equal(removed, false);
 });
