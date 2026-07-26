@@ -93,6 +93,15 @@ jobs:
           runtime/tests/test-deepdesert-overrides-combat-state-publication.sh
           runtime/tests/test-deepdesert-startup-publisher-consistency.sh
           runtime/tests/test-sietch-combat-state-publication.sh
+      - name: Test runtime safety regressions
+        run: |
+          runtime/tests/test-command-auth-token.sh
+          tests/fls-signals-test.sh
+          tests/steamcmd-signals-test.sh
+          tests/storage-cleanup-test.sh
+          tests/update-systemd-timer-health-test.sh
+      - name: Test Compose project-name portability
+        run: runtime/tests/test-compose-project-name-portability.sh
 
   container-lifecycle:
     runs-on: ubuntu-latest

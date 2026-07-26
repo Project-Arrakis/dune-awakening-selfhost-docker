@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import { PlayerSummary } from "./PlayerSummary";
 import { playersApi } from "../../api/players";
 
@@ -19,6 +19,12 @@ const baseProps = {
   actionPlayerId: "action-91"
 };
 
+async function settleSummaryLoad() {
+  await act(async () => {
+    await Promise.resolve();
+  });
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(playersApi.currency).mockResolvedValue({ rows: [], capabilities: {} });
@@ -31,7 +37,7 @@ beforeEach(() => {
 
 describe("PlayerSummary", () => {
   describe("Faction fallback", () => {
-    it("shows Neutral when no faction is assigned on player or fallback", () => {
+    it("shows Neutral when no faction is assigned on player or fallback", async () => {
       render(
         <PlayerSummary
           {...baseProps}
@@ -39,10 +45,11 @@ describe("PlayerSummary", () => {
           fallback={{}}
         />
       );
+      await settleSummaryLoad();
       expect(screen.getByText("Neutral")).toBeInTheDocument();
     });
 
-    it("shows the real faction when present on the loaded player", () => {
+    it("shows the real faction when present on the loaded player", async () => {
       render(
         <PlayerSummary
           {...baseProps}
@@ -50,11 +57,12 @@ describe("PlayerSummary", () => {
           fallback={{}}
         />
       );
+      await settleSummaryLoad();
       expect(screen.getByText("Atreides")).toBeInTheDocument();
       expect(screen.queryByText("Neutral")).not.toBeInTheDocument();
     });
 
-    it("uses the fallback faction before detail has loaded", () => {
+    it("uses the fallback faction before detail has loaded", async () => {
       render(
         <PlayerSummary
           {...baseProps}
@@ -62,12 +70,13 @@ describe("PlayerSummary", () => {
           fallback={{ faction: "Harkonnen" }}
         />
       );
+      await settleSummaryLoad();
       expect(screen.getByText("Harkonnen")).toBeInTheDocument();
     });
   });
 
   describe("Guild fallback", () => {
-    it("shows an em dash when no guild is assigned on player or fallback", () => {
+    it("shows an em dash when no guild is assigned on player or fallback", async () => {
       const { container } = render(
         <PlayerSummary
           {...baseProps}
@@ -75,11 +84,12 @@ describe("PlayerSummary", () => {
           fallback={{}}
         />
       );
+      await settleSummaryLoad();
       const guildMeta = container.querySelector(".summary-hero-guild");
       expect(guildMeta?.textContent).toContain("—");
     });
 
-    it("shows the real guild when present on the loaded player", () => {
+    it("shows the real guild when present on the loaded player", async () => {
       const { container } = render(
         <PlayerSummary
           {...baseProps}
@@ -87,13 +97,14 @@ describe("PlayerSummary", () => {
           fallback={{}}
         />
       );
+      await settleSummaryLoad();
       expect(screen.getByText("House Corrino")).toBeInTheDocument();
       const guildMeta = container.querySelector(".summary-hero-guild");
       expect(guildMeta?.textContent).toContain("House Corrino");
       expect(guildMeta?.textContent).not.toContain("—");
     });
 
-    it("uses the fallback guild before detail has loaded", () => {
+    it("uses the fallback guild before detail has loaded", async () => {
       render(
         <PlayerSummary
           {...baseProps}
@@ -101,12 +112,13 @@ describe("PlayerSummary", () => {
           fallback={{ guild: "Spice Runners" }}
         />
       );
+      await settleSummaryLoad();
       expect(screen.getByText("Spice Runners")).toBeInTheDocument();
     });
   });
 
   describe("Map fallback", () => {
-    it("shows an em dash when no map is assigned on player or fallback", () => {
+    it("shows an em dash when no map is assigned on player or fallback", async () => {
       const { container } = render(
         <PlayerSummary
           {...baseProps}
@@ -114,11 +126,12 @@ describe("PlayerSummary", () => {
           fallback={{}}
         />
       );
+      await settleSummaryLoad();
       const mapMeta = container.querySelector(".summary-hero-map");
       expect(mapMeta?.textContent).toContain("—");
     });
 
-    it("shows the real map when present on the loaded player", () => {
+    it("shows the real map when present on the loaded player", async () => {
       const { container } = render(
         <PlayerSummary
           {...baseProps}
@@ -126,6 +139,7 @@ describe("PlayerSummary", () => {
           fallback={{}}
         />
       );
+      await settleSummaryLoad();
       expect(screen.getByText("Arrakis")).toBeInTheDocument();
       const mapMeta = container.querySelector(".summary-hero-map");
       expect(mapMeta?.textContent).toContain("Arrakis");
