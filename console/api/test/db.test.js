@@ -115,6 +115,7 @@ test("player portal calculates normal and spice generator fuel with their game d
     generatorCount: 2,
     runtimeSeconds: 13500,
     emptyCount: 0,
+    allGeneratorsEmpty: false,
     generators: [
       {
         type: "fuel",
@@ -149,7 +150,10 @@ test("player portal reports wind turbines as their own generator types in a stab
           { base_id: "133", generator_type: "windTurbineDirectional", generator_count: 1, fuel_cells: 38, runtime_seconds: 136800, empty_count: 0 },
           { base_id: "133", generator_type: "spice", generator_count: 1, fuel_cells: 2, runtime_seconds: 10800, empty_count: 0 },
           { base_id: "133", generator_type: "windTurbineOmni", generator_count: 3, fuel_cells: 467, runtime_seconds: 1622210, empty_count: 0 },
-          { base_id: "133", generator_type: "fuel", generator_count: 2, fuel_cells: 213, runtime_seconds: 0, empty_count: 1 }
+          // One of the two fuel generators is empty; its stock (213 cells) sits
+          // entirely on the other one, so the SQL's `filter (where not is_empty)`
+          // reports the non-empty generator's own duration, not 0.
+          { base_id: "133", generator_type: "fuel", generator_count: 2, fuel_cells: 213, runtime_seconds: 7200, empty_count: 1 }
         ]
       };
     }
@@ -173,8 +177,27 @@ test("player portal reports wind turbines as their own generator types in a stab
   assert.equal(base.generatorCount, 7);
   assert.equal(base.fuelCells, 720);
   assert.equal(base.emptyCount, 1);
-  // min() across types is intentional: it is the point the first generator dies.
+  assert.equal(base.allGeneratorsEmpty, false);
+  // min() across types excludes empty generators: the base-wide next-depletion
+  // time is the soonest a still-fuelled generator runs dry (fuel's 7200s here),
+  // not dragged to 0 by the one generator that already ran out.
+  assert.equal(base.runtimeSeconds, 7200);
+});
+
+test("player portal reports allGeneratorsEmpty only when every generator at the base is empty", async () => {
+  const db = {
+    query: async () => ({
+      rows: [
+        { base_id: "133", generator_type: "fuel", generator_count: 2, fuel_cells: 0, runtime_seconds: null, empty_count: 2 }
+      ]
+    })
+  };
+
+  const base = (await portalGeneratorFuel(db, [133])).get("133");
+
+  assert.equal(base.allGeneratorsEmpty, true);
   assert.equal(base.runtimeSeconds, 0);
+  assert.equal(base.generators[0].runtimeSeconds, 0);
 });
 
 test("player portal matches fuel stock by generator type, never by the burning marker", async () => {
@@ -264,6 +287,9 @@ test("player portal never decays stocked runtime by elapsed burn time", async ()
   assert.match(calls[0].text, /stocked_seconds::bigint runtime_seconds/);
   // "Out of fuel" is a fact about stock, never an inference from a timestamp.
   assert.match(calls[0].text, /\(fuel_cells = 0\) is_empty/);
+  // The base-wide next-depletion time excludes generators that are already
+  // empty, so one dead generator can never drag a well-stocked base to 0.
+  assert.match(calls[0].text, /min\(runtime_seconds\) filter \(where not is_empty\)/);
 });
 
 test("player portal rates every accepted fuel with a positive measured duration", async () => {
@@ -1616,7 +1642,7 @@ test("list bases returns rows with piece and placeable counts and a total count"
   assert.equal(result.totalPieces, 700);
   assert.equal(result.totalPlaceables, 140);
   assert.deepEqual(result.rows, [
-    { base_id: "1006", name: "Sietch One", base_type: "Sub-Fief", owner_name: "Leader One", map: "TheDeepDesert", partition_id: 8, x: 100, y: 200, z: 30, piece_count: 589, placeable_count: 126, shared_with: [{ name: "Ally Two", rank: 2, label: "Co-Owner" }], generatorDataAvailable: true, generatorCount: 0, fuelCells: 0, generatorRuntimeSeconds: 0, generatorEmptyCount: 0, generators: [] }
+    { base_id: "1006", name: "Sietch One", base_type: "Sub-Fief", owner_name: "Leader One", map: "TheDeepDesert", partition_id: 8, x: 100, y: 200, z: 30, piece_count: 589, placeable_count: 126, shared_with: [{ name: "Ally Two", rank: 2, label: "Co-Owner" }], generatorDataAvailable: true, generatorCount: 0, fuelCells: 0, generatorRuntimeSeconds: 0, generatorEmptyCount: 0, generatorAllEmpty: false, generators: [] }
   ]);
 });
 
@@ -1691,6 +1717,7 @@ test("list bases enriches rows with generator fuel and runtime data", async () =
   assert.equal(result.rows[0].fuelCells, 10);
   assert.equal(result.rows[0].generatorRuntimeSeconds, 7500);
   assert.equal(result.rows[0].generatorEmptyCount, 0);
+  assert.equal(result.rows[0].generatorAllEmpty, false);
   assert.deepEqual(result.rows[0].generators, [
     { type: "fuel", name: "Fuel-Powered Generator", fuelName: "Fuel Cell", fuelCells: 10, generatorCount: 2, runtimeSeconds: 7500, emptyCount: 0 }
   ]);
