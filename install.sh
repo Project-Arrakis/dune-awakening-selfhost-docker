@@ -121,8 +121,10 @@ install_docker() {
     exit 1
   fi
 
-  if ! error=$(need_sudo sh "$get_docker_script" 2>&1); then
-    echo "$error" >&2
+  # Keep the upstream installer's package and service progress visible. Hiding
+  # it makes a normal Docker installation look stalled after the sudo prompt.
+  if ! need_sudo sh "$get_docker_script"; then
+    echo "Docker installation failed. Review the installer output above for the cause." >&2
     exit 1
   fi
 }

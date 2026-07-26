@@ -85,6 +85,7 @@ jobs:
         run: |
           dash -n install.sh
           docker run --rm -v "$PWD/install.sh:/install.sh:ro" alpine:3.22 /bin/ash -n /install.sh
+          tests/install-docker-progress-test.sh
       - name: Test partition combat-state resolver
         run: python3 runtime/scripts/test_partition_combat_state.py
       - name: Test combat-state publishers
