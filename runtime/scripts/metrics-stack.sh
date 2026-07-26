@@ -3,6 +3,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 
+# shellcheck disable=SC1091
 . runtime/scripts/compose-project.sh
 DUNE_COMPOSE_PROJECT_NAME="$(dune_resolve_compose_project_name "$(pwd -P)")"
 export DUNE_COMPOSE_PROJECT_NAME

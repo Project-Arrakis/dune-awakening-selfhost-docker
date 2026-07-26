@@ -8,6 +8,7 @@ trap 'rm -rf "$test_root"' EXIT
 mkdir -p "$test_root/project/runtime/scripts" "$test_root/bin" "$test_root/state"
 cp "$repo_root/runtime/scripts/update.sh" "$test_root/project/runtime/scripts/update.sh"
 cp "$repo_root/runtime/scripts/runtime-env.sh" "$test_root/project/runtime/scripts/runtime-env.sh"
+cp "$repo_root/runtime/scripts/compose-project.sh" "$test_root/project/runtime/scripts/compose-project.sh"
 cp "$repo_root/runtime/scripts/steamcmd-signals.sh" "$test_root/project/runtime/scripts/steamcmd-signals.sh"
 
 cat > "$test_root/bin/systemctl" <<'EOF'
