@@ -3621,7 +3621,8 @@ function portalVehicleDisplayName(type) {
 // ~/.claude/plans/base-generator-classification-and-fuel-tiers.md.
 const FUEL_BURN_SECONDS = {
   oil: 60 * 60,                   // measured across 68 generators
-  spicedfuelcell: 90 * 60,        // UNVERIFIED — no spice generators observed
+  spicedfuelcell: 90 * 60,        // measured — confirmed 2026-07-26 after the
+                                   // generator rolled to a fresh burn cycle
   windturbinelubricant1: 60 * 60, // measured across 6 turbines
   windturbinelubricant2: 90 * 60  // measured on 1 turbine
 };
