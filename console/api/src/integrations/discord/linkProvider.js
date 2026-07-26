@@ -6,7 +6,8 @@ import {
   resolvePlayerByName,
   createPendingLink,
   deletePendingLink,
-  consumePendingLink
+  consumePendingLink,
+  characterHasSteamId
 } from "../../duneDb.js";
 import { policyError } from "./policy.js";
 import { publishCarePackageWhisper } from "../../rmq.js";
@@ -88,6 +89,26 @@ export async function linkPlayerProvider(db, config, { discordUserId, characterN
   }
 
   const player = matches[0];
+
+  // hasSteam: added for the Steam-connections-based linking flow (see
+  // yacketrj/arrakis-control-panel:docs/steam-link-architecture.md).
+  // Checked BEFORE the online/funcom-id gates below, on purpose -- Steam
+  // linking never needs the character in-game (unlike the whisper flow,
+  // which requires an online character to receive an in-game message), so
+  // a character with a Steam ID on file can be offered the instant Steam
+  // path regardless of online status. This field is additive; every other
+  // field/behavior below is UNCHANGED for hasSteam: false characters,
+  // including the online/funcom-id checks and the whisper send itself.
+  const hasSteam = await characterHasSteamId(db, player.player_controller_id);
+  if (hasSteam) {
+    return {
+      ok: true,
+      hasSteam: true,
+      playerControllerId: player.player_controller_id,
+      characterName: player.character_name
+    };
+  }
+
   if (player.online_status !== "Online") {
     return { ok: false, error: `${player.character_name} must be online to receive the private verification code.` };
   }

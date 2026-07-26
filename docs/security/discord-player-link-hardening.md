@@ -107,6 +107,24 @@ this repository, and against `yacketrj/Arrakis-Control-Panel` `main`
   - No data migration path from `discord_player_links` to `discord_account_links` was written; the two tables intentionally coexist with no automatic backfill (see "Minimal Impact").
   - The Steam-connection auto-link documentation claim in the bot repo remains unaddressed (out of scope — no such feature exists in either repo).
 
+### FINDING-LINK-7: Steam-connections-based account linking (design gap, not a vulnerability, until fixed during pre-implementation review) — IMPLEMENTED
+
+- **Location:** `console/api/src/duneDb.js` (`characterHasSteamId`, `matchSteamIdForCharacter`), `console/api/src/integrations/discord/multiAccountLinkProvider.js` (`linkAccountViaSteamProvider`), `console/api/src/integrations/discord/linkProvider.js:91-108` (`linkPlayerProvider`'s `hasSteam` extension), `console/api/src/integrations/discord/adapter.js` (`PLAYERS_ACCOUNTS_LINK_STEAM`), `console/api/src/integrations/discord/routes.js` (route wiring).
+- **Original design gap:** the bot repo (`yacketrj/arrakis-control-panel`) added a full Steam-OAuth-based linking flow (`src/steamLinkServer.js`, `src/steamLinkStore.js`) that lets a player link a character via Discord's own `connections` OAuth scope instead of the existing in-game whisper code — but Core had no matching server-side support at all: no way to check whether a character has a Steam ID on file, no way to verify a candidate SteamID64 list against a specific character, and no route to complete the link. `hasSteam`/`playerControllerId` fields the bot already expected from `playerLinkStart()`'s response (`arrakis-control-panel:src/commands.js:296,308`) did not exist in this console's response shape at all — confirmed by direct code read before implementation, not assumed from the bot repo's own docs.
+- **Pre-implementation five-hat review finding (before any code was written):** an earlier draft of this feature (`yacketrj/arrakis-control-panel:docs/steam-link-implementation-prompt.md` Part 1, as originally written) specced the Steam-ID match check as its **own, separate route** (`match-steam`) taking a raw `playerControllerId` with no `discordUserId` binding at all. Reviewing this against `requireSelfScopedCapability()`'s own documented precondition ("every current self-scoped route already always passes `discordUserId: actor.userId`" — see FINDING-LINK-2's Known Limitations entry) surfaced that this new route would have been the **first** self-scoped route to violate that precondition: since the function checks capability tier only, never target ownership, any actor above `public` tier could have probed an arbitrary `playerControllerId` they don't own against a guessed/enumerated SteamID64 list — a real character-to-Steam-ID enumeration oracle, not a theoretical concern. This was caught and fixed **before** implementation, not found afterward.
+- **Recommendation (from the pre-implementation review):** fold the match check into the link call itself, so there is no standalone, unbound match-only entry point; add rate limiting (none was specced for either shape of this feature); reconcile the missing `hasSteam`/`playerControllerId` fields on the existing whisper-link-start route; add both new arrays entries (`DISCORD_ADAPTER_ROUTES` and `DISCORD_LIVE_ADAPTER_ROUTES` — the original draft only mentioned the first).
+- **Implemented:**
+  1. `characterHasSteamId(db, playerControllerId)` — read-only check, `dune.accounts` joined to `dune.player_state` filtered on `platform_name = 'steam'` and a non-empty `platform_id`. Called by `linkPlayerProvider()` **before** the existing online-status/funcom-id gates (deliberately: Steam linking never needs the character in-game, unlike the whisper flow) and short-circuits with `{ ok: true, hasSteam: true, playerControllerId, characterName }` when true. The existing whisper path for `hasSteam: false` characters is untouched — same online/funcom-id checks, same whisper send, same response shape (no `hasSteam` field is added to that path, preserving byte-for-byte compatibility rather than adding a field that would still be truthy-safe but wasn't strictly required).
+  2. `matchSteamIdForCharacter(db, playerControllerId, steamId64List)` — read-only check, same join shape, filtering `platform_id = any($1::text[])`. Silently ignores malformed SteamID64 entries (anything not exactly 17 digits) rather than throwing.
+  3. `linkAccountViaSteamProvider(db, { discordUserId, playerControllerId, steamId64List })` — **the structural fix for the oracle gap above.** Performs the match check AND the link in one `discordUserId`-bound call, reached only via `PLAYERS_ACCOUNTS_LINK_STEAM`, itself gated by `requireSelfScopedCapability()` exactly like every other self-scoped route (`discordUserId: actor.userId`, never a caller-supplied target). There is no route in this codebase that exposes `matchSteamIdForCharacter()` on its own. Returns `{ ok: false, matched: false }` (not a thrown error) for a genuine non-match — an expected, common outcome the bot's own `steamLinkServer.js` already handles by falling back to the whisper flow — and reuses `linkAdditionalAccount()` **unchanged** for the actual link/conflict logic, inheriting FINDING-LINK-6's existing cross-table ownership check and generic (non-identity-leaking) conflict error for free.
+  4. New rate limiter instance (`multiAccountLinkProvider.js`, `createSteamLinkRateLimiter()`), same shape as FINDING-LINK-3/-6's limiters, own env var namespace (`DUNE_DISCORD_STEAM_LINK_MAX_ATTEMPTS`/`_GLOBAL_MAX_ATTEMPTS`/`_WINDOW_MS`/`_BLOCK_MS`), keyed by `discordUserId`. Neither shape of this feature had a rate limiter specced originally — added during the same pre-implementation review that found the oracle gap, as a defense-in-depth measure alongside the structural single-route fix, not a replacement for it.
+  5. New route `PLAYERS_ACCOUNTS_LINK_STEAM` (`/players/accounts/link-steam`), added to **both** `DISCORD_ADAPTER_ROUTES` and `DISCORD_LIVE_ADAPTER_ROUTES` in `adapter.js` (the original draft prompt only mentioned the first array — corrected during implementation).
+- **Live-schema re-verification (2026-07-26):** the `dune.accounts`/`dune.player_state` view definitions this feature depends on were last verified 2026-07-24, *before* this fork synced `upstream v1.3.66` (merge commit `0b00dac`). Re-ran `\d+ dune.accounts` / `\d+ dune.player_state` directly against the live `dune-postgres` container after the sync, before writing any code: both views are unchanged — `dune.accounts` still exposes `platform_id`/`platform_name` with no unique constraint on `platform_id`, and `dune.player_state` still filters `character_state = 'Active'`, joined via `account_id`. No drift found.
+- **Not implemented (still open):**
+  - No audit/log event is emitted for `linkAccountViaSteamProvider()`, matching the existing, already-documented gap for every other `PLAYERS_ACCOUNTS_*` write route (see STRIDE Notes' Repudiation row and FINDING-LINK-6's own audit gap) — this feature does not introduce a *new* audit gap, but does extend the existing one onto new, OAuth-adjacent attack surface without a dedicated audit event of its own. Tracked as part of the same pre-existing repudiation gap, not a new finding.
+  - No bot-side Cloudflare Tunnel routing exists for the bot's own OAuth callback server (port 3101) — tracked entirely in the bot repo as `yacketrj/arrakis-control-panel#86`, fully independent of this Core-side work (confirmed via direct review: this feature introduces no new outbound calls, no new listener, and rides the adapter API's existing single HTTP server/port).
+  - This feature's operator upgrade-path and rollback story were not stated in the original implementation prompt doc — added here instead: **upgrade path** — no schema migration, no new required env var, no changed default; an existing operator who pulls this update gets one new dormant route and one new optional response field (`hasSteam`), both no-ops unless the bot's own `steamLink.enabled` config is also true. **Rollback** — revert the route/provider/adapter changes; no data cleanup is required, since the only write path (`linkAdditionalAccount()`) is unchanged and writes into the same `console.discord_account_links` table every other multi-account link already uses; rows written via this path are indistinguishable in shape from rows written via the existing whisper-based flow.
+
 ### FINDING-LINK-SCHEMA: Discord-linking tables were created inside the game's own `dune` schema, not a project-owned schema — IMPLEMENTED
 
 - **Location:** `console/api/src/duneDb.js` — `migrateDiscordAdapterSchema()` and every query function touching the four linking tables (`getLinkedPlayer`, `discordPlayerLink`, `discordPlayerUnlink`, `otherTableLinkConflict`, `listLinkedAccounts`, `linkAdditionalAccount`, `unlinkAdditionalAccount`, `setDefaultLinkedAccount`, `createPendingAccountLink`, `deletePendingAccountLink`, `consumePendingAccountLink`, `createPendingLink`, `deletePendingLink`, `consumePendingLink`, `cleanupExpiredPendingLinks`).
@@ -123,9 +141,9 @@ this repository, and against `yacketrj/Arrakis-Control-Panel` `main`
 | --- | --- | --- |
 | Spoofing | Single shared bearer token for the whole adapter | No per-actor authentication; `userId`/`roleIds` are unauthenticated claims (LINK-1) |
 | Tampering | Strict allowlist regex validation on whisper fields (`rmq.js`) | String-templated Erlang eval remains architecturally fragile (LINK-5) |
-| Repudiation | No link/unlink/verify audit event was found in `linkProvider.js` beyond the pending-link/player-link tables themselves | Add structured audit events (actor, action, result, correlation ID) for link/verify/unlink, matching the pattern in the bot's `writes.js::writeAuditEvent()` |
-| Information disclosure | Character-name/online-status resolution requires the character to be online | Combined with LINK-1, this becomes an online-status oracle for arbitrary character names |
-| Denial of service | 5-minute code expiry limits window | No per-actor rate limit on link attempts or verify attempts (LINK-3) |
+| Repudiation | No link/unlink/verify audit event was found in `linkProvider.js` beyond the pending-link/player-link tables themselves | Add structured audit events (actor, action, result, correlation ID) for link/verify/unlink, matching the pattern in the bot's `writes.js::writeAuditEvent()` — LINK-7's new route extends this same pre-existing gap onto OAuth-adjacent surface without its own audit event |
+| Information disclosure | Character-name/online-status resolution requires the character to be online; LINK-7's Steam-ID match check is bound to `discordUserId` via a single combined route, not exposed as a standalone target-unbound query | Combined with LINK-1, the online-status check becomes an oracle for arbitrary character names. An earlier draft of LINK-7 (caught and fixed before implementation) would have added a genuine character-to-Steam-ID enumeration oracle by exposing the match check as its own route with no actor binding |
+| Denial of service | 5-minute code expiry limits window; LINK-7 adds its own rate limiter (own env var namespace, same shape as LINK-3/-6) | No per-actor rate limit on link attempts or verify attempts (LINK-3) |
 | Elevation of privilege | Capability-tier RBAC (`policy.js`) | `moderator` tier is too broad for an identity-binding write (LINK-2); tier itself is only as trustworthy as the unauthenticated `roleIds` claim (LINK-1) |
 
 ## Minimal Impact (Proposed)
@@ -135,6 +153,7 @@ this repository, and against `yacketrj/Arrakis-Control-Panel` `main`
 - FINDING-LINK-2 required no operator action: any actor holding at least one configured Discord role (`observer` and above) can still use `player-link:write` exactly as before — the fix removed the capability from the tier ladder entirely rather than moving it to a stricter tier, so no existing operator role configuration needs to change.
 - FINDING-LINK-6's schema change is additive (new tables) and required no migration of existing single-character links: `discord_player_links`/`discord_pending_links` and their routes/functions are completely untouched by this fix. A Discord user's existing single link keeps working exactly as before, in parallel with the new multi-account tables, with no automatic backfill between them. A migration path (or a decision to formally deprecate the single-link flow in favor of the multi-account one) is left for a future follow-up, not this branch.
 - FINDING-LINK-6 adds a new self-scoped capability (`ACCOUNT_LINK_WRITE`) rather than reusing `PLAYER_LINK_WRITE`, so no existing operator role configuration needs to change to use the new routes — any actor already authorized for `PLAYER_LINK_WRITE` (any non-`public` tier) is authorized for `ACCOUNT_LINK_WRITE` under the same rule, since both are self-scoped by the identical `requireSelfScopedCapability()` mechanism.
+- FINDING-LINK-7 reuses `ACCOUNT_LINK_WRITE` (no new capability), and its extension to `linkPlayerProvider()`'s response shape is purely additive: characters with `hasSteam: false` (the overwhelming majority on any deployment not using the bot's Steam-link feature) see byte-for-byte unchanged behavior — no new field, no new check, same whisper flow. No operator action is required to adopt or ignore this fix; the new route exists but does nothing unless the bot's own `steamLink.enabled` config is separately turned on.
 
 ## Verification (This Branch)
 
@@ -209,6 +228,48 @@ this repository, and against `yacketrj/Arrakis-Control-Panel` `main`
   `multiAccountLinkProvider.js`, and the `routes.js`/`adapter.js`/`policy.js`
   wiring): 0 findings.
 - `ggshield secret scan pre-push`: clean.
+- **FINDING-LINK-7 verification (separate pass, 2026-07-26):** `console/api`
+  750/750 tests pass. Baseline 729 (post-`upstream v1.3.66` sync, merge
+  commit `0b00dac`) + 21: 8 unit tests in `test/db.test.js`
+  (`characterHasSteamId`/`matchSteamIdForCharacter` — case-insensitive
+  platform-name matching, non-Steam-platform rejection, missing-account
+  handling, multi-element list matching including a non-first-position
+  match, malformed-SteamID64 entries silently ignored rather than
+  throwing, missing-`playerControllerId` returns `false` not a throw for
+  both functions) + 10 unit tests in
+  `test/discordMultiAccountLinkProvider.test.js`
+  (`linkAccountViaSteamProvider` — successful match-and-link, multi-element
+  non-first-position match, `matched: false` with no link created for a
+  genuine non-match and for a character with no Steam ID at all, the
+  generic FINDING-STEAM-3-equivalent conflict error with no identifying
+  detail about the existing owner, `invalid_request` for missing
+  `discordUserId`/`playerControllerId`, no verification code is ever
+  generated for this flow, the new rate limiter is a genuinely separate
+  instance from the whisper-verify limiter, and a successful Steam-link
+  clears a prior lockout for that `discordUserId`) + 1 end-to-end
+  integration test in `test/discordAdapter.test.js` (`public`-tier actor
+  rejected from `/players/accounts/link-steam`; an `observer`-tier actor
+  with a genuine Steam-ID match links successfully; a second, different
+  Discord user attempting to link the same already-linked character
+  receives the generic conflict error with no identifying detail about the
+  first user, proven against a real HTTP request/response over the actual
+  route path, not just the provider function directly) + 2 pre-existing
+  test-fixture updates required by this change, not new coverage (the
+  "allowlisted adapter route names" fixtures in `test/discordAdapter.test.js`
+  updated to include the new route; `test/discordLinkProvider.test.js`'s
+  mock db given a `characterHasSteamId` query-shape branch, defaulting to
+  `hasSteam: false` for its existing whisper-only fixtures, so the new
+  check inserted ahead of the online-status gate doesn't alter any
+  existing test's outcome).
+  `npm audit --audit-level=moderate`: 0 vulnerabilities (no new
+  dependencies — reuses `createLoginRateLimiter` exactly as FINDING-LINK-3/-6
+  did). `semgrep scan --config auto` on all 5 changed source files: 0
+  findings. `gitleaks detect` (scoped to the changed files, not the whole
+  working tree — this machine also runs a live game server with real
+  operator secrets under `runtime/secrets/`, correctly git-ignored and
+  irrelevant to this diff): 0 leaks. `trivy fs --scanners secret`: 0
+  findings. `ggshield secret scan path` (same 5 files): "No secrets have
+  been found."
 
 ## Remaining Verification Plan (FINDING-LINK-5 Explicitly Out of Scope)
 
@@ -351,6 +412,24 @@ Status of previously proposed targeted tests:
   the same character from two different Discord users), not a security
   gap, and was judged not worth the added complexity of cross-checking
   the pending tables too.
+- FINDING-LINK-7's rate limiter has the identical unbounded-key-growth
+  characteristic already described above for FINDING-LINK-3/-6's limiters
+  (same `createLoginRateLimiter()` factory) — now duplicated across three
+  limiter instances instead of two. Same shared-follow-up disposition as
+  before: not specific to this finding.
+- FINDING-LINK-7 does not add a bulk "check many characters for a Steam ID
+  at once" query — `characterHasSteamId()`/`matchSteamIdForCharacter()` are
+  both scoped to exactly one `playerControllerId` per call, by design (see
+  the design's "no candidate list" framing) — this is not a limitation to
+  fix, but is noted here since it's the reason no batch/pagination
+  behavior exists to review.
+- FINDING-LINK-7 has the same bot-side-only-partial-integration status as
+  FINDING-LINK-6: the Core-side routes exist and are fully tested, but the
+  bot's own OAuth callback server is not reachable in the current
+  production deployment because the Cloudflare Tunnel serving it has no
+  ingress rule for its port — tracked entirely as
+  `yacketrj/arrakis-control-panel#86`, independent of and not blocked by
+  anything in this repository.
 
 ## Remediation Status
 
@@ -363,6 +442,7 @@ Status of previously proposed targeted tests:
 | FINDING-LINK-5 Whisper transport via docker-exec/rabbitmqctl | Reviewed, confirmed non-exploitable, rewrite explicitly out of scope | Direct injection-breakout test performed (see finding); no code change proposed |
 | FINDING-LINK-6 No multi-character/multi-account linking | Implemented (additive; new capability, new rate limiter, new routes; cross-table ownership check added during review; no bot-side integration yet) | `console/api` 598/598 tests pass; gitleaks/semgrep/trivy clean |
 | FINDING-LINK-SCHEMA Discord-linking tables created in the game's own `dune` schema | Implemented (moved to a new project-owned `console` schema, same database; no automated regression guard yet) | `console/api` 609/609 tests pass; confirmed zero production data existed to migrate |
+| FINDING-LINK-7 Steam-connections-based account linking | Implemented (single combined route closing an enumeration-oracle gap found and fixed before implementation; own rate limiter added; no audit logging, matching the existing pre-audit-gap on this route class; bot-side Cloudflare Tunnel routing tracked separately, not blocking) | `console/api` 750/750 tests pass; live schema re-verified post-`upstream v1.3.66` sync; gitleaks/semgrep/trivy/ggshield clean |
 
 ## Sources
 
@@ -381,4 +461,10 @@ Status of previously proposed targeted tests:
 - `Red-Blink/dune-awakening-selfhost-docker#100` (tracking issue for FINDING-LINK-1, -2, -3, -5, -6)
 - `yacketrj/Arrakis-Control-Panel:docs/security-audit/2026-07-04-comprehensive-security-audit.md`
 - `yacketrj/Arrakis-Control-Panel:src/adapterClient.js` (`UNMERGED_ROUTES`)
+- `yacketrj/arrakis-control-panel:docs/steam-link-implementation-prompt.md`,
+  `-design.md`, `-architecture.md`, `-security-review.md`, `-grc.md`
+  (FINDING-LINK-7's originating design docs)
+- `yacketrj/arrakis-control-panel#86` (bot-side Cloudflare Tunnel routing
+  gap for the Steam-link OAuth callback server, independent of and not
+  blocking FINDING-LINK-7)
 - `yacketrj/Arrakis-Control-Panel:docs/user-guide.md` (unresolved merge conflicts referencing Steam auto-link)
