@@ -2797,6 +2797,7 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
         generatorCount: fuelByBase.get(String(row.base_id))?.generatorCount || 0,
         fuelCells: fuelByBase.get(String(row.base_id))?.fuelCells || 0,
         generatorRuntimeSeconds: fuelByBase.get(String(row.base_id))?.runtimeSeconds || 0,
+        generatorEmptyCount: fuelByBase.get(String(row.base_id))?.emptyCount || 0,
         generators: fuelByBase.get(String(row.base_id))?.generators || []
       }))
     };
@@ -3612,23 +3613,43 @@ function portalVehicleDisplayName(type) {
   return String(type || "Vehicle");
 }
 
-const NORMAL_GENERATOR_FUEL_SECONDS = 2 * 60 * 60;
-const SPICE_GENERATOR_FUEL_SECONDS = 90 * 60;
+// Seconds of runtime per fuel unit, measured from m_FuelBurningDuration on the
+// live server (2026-07-26). Burn duration is a property of the fuel item, not of
+// the generator burning it — every fuel maps to exactly one duration across all
+// generators — so these constants replace reading the component per generator.
+// Re-verify after game updates; the measurement query lives in
+// ~/.claude/plans/base-generator-classification-and-fuel-tiers.md.
+const FUEL_BURN_SECONDS = {
+  oil: 60 * 60,                   // measured across 68 generators
+  spicedfuelcell: 90 * 60,        // UNVERIFIED — no spice generators observed
+  windturbinelubricant1: 60 * 60, // measured across 6 turbines
+  windturbinelubricant2: 90 * 60  // measured on 1 turbine
+};
+
+// Display metadata and accepted fuels per generator type. The SQL below
+// classifies placeables into these keys from building_type; adding a type means
+// adding a branch to that CASE and an entry here. Fuel lists are passed into the
+// query as parameters, so this is the single source of truth for both.
+const GENERATOR_TYPES = {
+  fuel: { name: "Fuel-Powered Generator", fuelName: "Fuel Cell", fuels: ["oil"] },
+  spice: { name: "Spice-Powered Generator", fuelName: "Spice-infused Fuel Cell", fuels: ["spicedfuelcell"] },
+  windTurbineOmni: { name: "Omnidirectional Wind Turbine", fuelName: "Lubricant", fuels: ["windturbinelubricant1", "windturbinelubricant2"] },
+  windTurbineDirectional: { name: "Directional Wind Turbine", fuelName: "Lubricant", fuels: ["windturbinelubricant1", "windturbinelubricant2"] }
+};
+
+const GENERATOR_TYPE_ORDER = ["fuel", "spice", "windTurbineOmni", "windTurbineDirectional"];
+
+// Flattened (generator_type, template_id) pairs and (template_id, seconds) pairs,
+// shaped for unnest() so the query never interpolates a fuel name.
+const GENERATOR_TYPE_FUEL_PAIRS = GENERATOR_TYPE_ORDER.flatMap(
+  (type) => GENERATOR_TYPES[type].fuels.map((template) => [type, template])
+);
+const FUEL_TEMPLATE_IDS = Object.keys(FUEL_BURN_SECONDS);
 
 export async function portalGeneratorFuel(db, baseIds) {
   if (!baseIds.length) return new Map();
   const result = await db.query(`
-    with farm_clock as (
-      select coalesce((
-        select greatest(
-          0,
-          extract(epoch from (universe_lastactive_timestamp - universe_time_timestamp))
-            - coalesce(down_time_accumulation, 0)::numeric / 1000000.0
-        )
-        from dune.farm_variables
-        limit 1
-      ), 0) universe_time
-    ), requested_claims as (
+    with requested_claims as (
       select distinct b.id, afe.actor_id
       from dune.buildings b
       join dune.building_instances bi on bi.building_id = b.id
@@ -3638,95 +3659,112 @@ export async function portalGeneratorFuel(db, baseIds) {
       select distinct rc.id, claim_afe.entity_id as owner_entity_id
       from requested_claims rc
       join dune.actor_fgl_entities claim_afe on claim_afe.actor_id = rc.actor_id
-    ), generator_fuel as (
-      select be.id::text base_id, p.id generator_id,
-        coalesce(fuel.queued_cells, 0)::int fuel_cells,
-        generator.fuel_id,
-        case when lower(generator.fuel_id)='spicedfuelcell' then $3::int else $2::int end cell_seconds,
-        generator.fuel_state,
-        clock.universe_time
-      from base_entities be
-      join dune.placeables p on p.owner_entity_id=be.owner_entity_id
-        and lower(p.building_type) like '%generator%placeable%'
-      cross join farm_clock clock
+    ), fuel_durations as (
+      select * from unnest($2::text[], $3::numeric[]) as t(template_id, seconds)
+    ), type_fuels as (
+      select * from unnest($4::text[], $5::text[]) as t(generator_type, template_id)
+    ), generator_spec as (
+      select base_id, generator_id, generator_type
+      from (
+        select be.id::text base_id, p.id generator_id,
+          -- Classification is also the detection filter: anything this cannot
+          -- name is dropped by the null check below rather than defaulted.
+          -- Defaulting an unrecognized variant to 'fuel' matched it against Oil
+          -- alone, so it reported 0 runtime and "out of fuel" forever with
+          -- nothing signalling the mistake. Spice needs both the generator and
+          -- spice tokens or it would also capture SpiceSilo_Placeable, and the
+          -- turbine arms must precede the generator arms because a turbine name
+          -- carries no 'generator' token.
+          case
+            when lower(p.building_type) not like '%placeable%' then null
+            when lower(p.building_type) like '%windturbineomni%' then 'windTurbineOmni'
+            when lower(p.building_type) like '%windturbinedirectional%' then 'windTurbineDirectional'
+            when lower(p.building_type) like '%generator%'
+              and lower(p.building_type) like '%spice%' then 'spice'
+            when lower(p.building_type) like '%generator%' then 'fuel'
+          end generator_type
+        from base_entities be
+        join dune.placeables p on p.owner_entity_id=be.owner_entity_id
+      ) classified
+      where generator_type is not null
+    ), generator_state as (
+      select gs.base_id, gs.generator_id, gs.generator_type,
+        coalesce(stock.stocked_seconds, 0)::numeric stocked_seconds,
+        coalesce(stock.total_units, 0)::int fuel_cells
+      from generator_spec gs
       left join lateral (
-        select
-          coalesce(
-            nullif(state.fuel_state->'m_FuelBurningId'->>'Name', ''),
-            case when lower(p.building_type) like '%spice%' then 'SpicedFuelCell' else 'Oil' end
-          ) fuel_id,
-          state.fuel_state
-        from lateral (
-          select (
-            select fe.components->'FFuelPoweredPlaceableComponent'->1
-            from dune.actor_fgl_entities afe
-            join dune.fgl_entities fe on fe.entity_id=afe.entity_id
-            where afe.actor_id=p.id
-              and fe.components->'FFuelPoweredPlaceableComponent'->1 is not null
-            limit 1
-          ) fuel_state
-        ) state
-      ) generator on true
-      left join lateral (
-        select coalesce(sum(i.stack_size), 0)::int queued_cells
+        -- Stock is matched against the fuels the generator type accepts, never
+        -- against whatever it reports burning right now. An idle generator
+        -- stores the literal string 'None' in m_FuelBurningId.Name rather than
+        -- SQL null, and reading that as a fuel id matched no inventory rows —
+        -- reporting 0 runtime for generators holding hundreds of cells.
+        --
+        -- Each item row is rated at its own tier, so a turbine holding both
+        -- lubricant grades is summed correctly instead of having one rate
+        -- applied to the combined stack. Joining through type_fuels keeps the
+        -- guarantee that a fuel a type cannot burn contributes nothing.
+        select sum(i.stack_size * fd.seconds)::numeric stocked_seconds,
+               sum(i.stack_size)::int total_units
         from dune.inventories inv
         join dune.items i on i.inventory_id=inv.id
-        where inv.actor_id=p.id
-          and lower(i.template_id)=lower(coalesce(
-            generator.fuel_id,
-            case when lower(p.building_type) like '%spice%' then 'SpicedFuelCell' else 'Oil' end
-          ))
-      ) fuel on true
+        join type_fuels tf on tf.generator_type=gs.generator_type
+          and tf.template_id=lower(i.template_id)
+        join fuel_durations fd on fd.template_id=tf.template_id
+        where inv.actor_id=gs.generator_id
+      ) stock on true
     ), generator_runtime as (
-      select base_id, generator_id,
-        case when lower(fuel_id)='spicedfuelcell' then 'spice' else 'fuel' end generator_type,
-        fuel_cells,
-        fuel_cells * cell_seconds + case
-          when fuel_state->'m_FuelBurningId'->>'Name' is null then 0
-          else greatest(
-            0,
-            cell_seconds - greatest(
-              0,
-              universe_time
-                - coalesce(nullif(fuel_state->>'m_FuelBurningInitialTime', '')::numeric, universe_time)
-                + coalesce(nullif(fuel_state->>'m_FuelBurningPassedTimeSinceStart', '')::numeric, 0)
-            )
-          )
-        end runtime_seconds
-      from generator_fuel
+      -- Runtime is the burn time sitting in the generator, which is the figure a
+      -- player can confirm by opening it.
+      --
+      -- m_FuelBurningInitialTime is deliberately NOT subtracted here. It resets
+      -- on server restart / base load — whole cohorts of unrelated placeables
+      -- share one value — so time elapsed since it says nothing about fuel
+      -- actually consumed. Subtracting it reported well-stocked generators as
+      -- out of fuel, because the check tripped on whichever ones held the least
+      -- fuel rather than on ones that were genuinely dry.
+      select base_id, generator_id, generator_type, fuel_cells,
+        stocked_seconds::bigint runtime_seconds,
+        (fuel_cells = 0) is_empty
+      from generator_state
     )
     select base_id, generator_type, count(*)::int generator_count, sum(fuel_cells)::int fuel_cells,
-      min(runtime_seconds)::int runtime_seconds
+      min(runtime_seconds)::bigint runtime_seconds, count(*) filter (where is_empty)::int empty_count
     from generator_runtime group by base_id, generator_type`, [
       baseIds,
-      NORMAL_GENERATOR_FUEL_SECONDS,
-      SPICE_GENERATOR_FUEL_SECONDS
+      FUEL_TEMPLATE_IDS,
+      FUEL_TEMPLATE_IDS.map((template) => FUEL_BURN_SECONDS[template]),
+      GENERATOR_TYPE_FUEL_PAIRS.map(([type]) => type),
+      GENERATOR_TYPE_FUEL_PAIRS.map(([, template]) => template)
     ]);
   const byBase = new Map();
   for (const row of result.rows) {
     const baseId = String(row.base_id);
-    const type = row.generator_type === "spice" ? "spice" : "fuel";
+    const type = Object.hasOwn(GENERATOR_TYPES, row.generator_type) ? row.generator_type : "fuel";
     const detail = {
       type,
-      name: type === "spice" ? "Spice-Powered Generator" : "Fuel-Powered Generator",
-      fuelName: type === "spice" ? "Spice-infused Fuel Cell" : "Fuel Cell",
+      name: GENERATOR_TYPES[type].name,
+      fuelName: GENERATOR_TYPES[type].fuelName,
       fuelCells: Number(row.fuel_cells) || 0,
       generatorCount: Number(row.generator_count) || 0,
-      runtimeSeconds: Number(row.runtime_seconds) || 0
+      runtimeSeconds: Number(row.runtime_seconds) || 0,
+      emptyCount: Number(row.empty_count) || 0
     };
     const current = byBase.get(baseId) || {
       fuelCells: 0,
       generatorCount: 0,
       runtimeSeconds: null,
+      emptyCount: 0,
       generators: []
     };
     current.fuelCells += detail.fuelCells;
     current.generatorCount += detail.generatorCount;
+    current.emptyCount += detail.emptyCount;
     current.runtimeSeconds = current.runtimeSeconds == null
       ? detail.runtimeSeconds
       : Math.min(current.runtimeSeconds, detail.runtimeSeconds);
     current.generators.push(detail);
-    current.generators.sort((left, right) => left.type === right.type ? 0 : left.type === "fuel" ? -1 : 1);
+    current.generators.sort((left, right) =>
+      GENERATOR_TYPE_ORDER.indexOf(left.type) - GENERATOR_TYPE_ORDER.indexOf(right.type));
     byBase.set(baseId, current);
   }
   for (const value of byBase.values()) value.runtimeSeconds ||= 0;

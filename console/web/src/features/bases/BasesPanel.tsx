@@ -11,12 +11,15 @@ type BasesPanelProps = {
 type SharedWithEntry = { name: string; rank: number; label: string };
 
 type GeneratorEntry = {
-  type: "fuel" | "spice";
+  type: "fuel" | "spice" | "windTurbineOmni" | "windTurbineDirectional";
   name: string;
   fuelName: string;
   fuelCells: number;
   generatorCount: number;
   runtimeSeconds: number;
+  // Generators of this type holding no fuel at all, so they read as "out of
+  // fuel" rather than as a 0m countdown that just expired.
+  emptyCount?: number;
 };
 
 type BaseRow = Record<string, unknown> & {
@@ -36,6 +39,7 @@ type BaseRow = Record<string, unknown> & {
   generatorCount: number;
   fuelCells: number;
   generatorRuntimeSeconds: number;
+  generatorEmptyCount: number;
   generators: GeneratorEntry[];
 };
 
@@ -96,7 +100,14 @@ function renderBaseCell(row: Record<string, unknown>, column: string) {
     if (row.generatorDataAvailable === false) return <span className="muted" title="Generator data is unavailable">Unavailable</span>;
     const generatorCount = Number(row.generatorCount) || 0;
     if (!generatorCount) return <span className="muted">—</span>;
-    return <span>{generatorCount} ({formatRuntime(Number(row.generatorRuntimeSeconds) || 0)} left)</span>;
+    const runtimeSeconds = Number(row.generatorRuntimeSeconds) || 0;
+    // Runtime is the minimum across generators, so 0 means one of them holds no
+    // fuel at all; say that rather than "0m left", which reads like a live
+    // countdown that just expired.
+    if (!runtimeSeconds && (Number(row.generatorEmptyCount) || 0) > 0) {
+      return <span>{generatorCount} <span className="muted">(out of fuel)</span></span>;
+    }
+    return <span>{generatorCount} ({formatRuntime(runtimeSeconds)} left)</span>;
   }
   if (TOOLTIP_COLUMNS.has(column)) {
     const value = row[column];
@@ -360,7 +371,13 @@ export function BasesPanel({ onError }: BasesPanelProps) {
                     <dt>Fuel cells queued</dt>
                     <dd>{generator.fuelCells} {generator.fuelName}{generator.fuelCells === 1 ? "" : "s"}</dd>
                     <dt>Runtime remaining</dt>
-                    <dd>{formatRuntime(generator.runtimeSeconds)}</dd>
+                    <dd>{formatRuntime(Number(generator.runtimeSeconds) || 0)}</dd>
+                    {generator.emptyCount ? (
+                      <>
+                        <dt>Out of fuel</dt>
+                        <dd>{generator.emptyCount} of {generator.generatorCount}</dd>
+                      </>
+                    ) : null}
                   </dl>
                 </div>
               ))}
