@@ -10,7 +10,7 @@ import { KeyValueGrid, TechnicalDetails } from "../../components/common/DisplayP
 import { InlineActionResult } from "../../components/common/InlineActionResult";
 import { adminTaskFailureDetail, friendlyInlineError, titleCaseWords } from "../players/playerAdminUtils";
 import { formatUiSentence, stripAnsi, titleCase } from "../../lib/display";
-import type { CharacterTransferSettings, IncomingCharacterTransferPolicy, MessageOfTheDaySettings, PlayerAnnouncementSettings } from "../../api/admin";
+import type { CharacterTransferSettings, IncomingCharacterTransferPolicy, MessageOfTheDaySettings, MessageOfTheDayStatus, PlayerAnnouncementSettings } from "../../api/admin";
 
 type HomeTaskResult = { status: "running" | "succeeded" | "failed" | "stopped"; title: string; message?: string; details?: string };
 type ConfirmAction = (message: string, options?: { title?: string; confirmLabel?: string; cancelLabel?: string; danger?: boolean }) => Promise<boolean>;
@@ -59,6 +59,7 @@ export function AdminToolsPanel({ onError, confirmAction }: AdminToolsPanelProps
   const [broadcastDuration, setBroadcastDuration] = useState("30");
   const [messageOfTheDay, setMessageOfTheDay] = useState<MessageOfTheDaySettings>({ enabled: false, title: "", message: "" });
   const [messageOfTheDayOriginal, setMessageOfTheDayOriginal] = useState<MessageOfTheDaySettings>({ enabled: false, title: "", message: "" });
+  const [messageOfTheDayStatus, setMessageOfTheDayStatus] = useState<MessageOfTheDayStatus>({ lastAttemptAt: "", lastSent: 0, lastFailed: 0, lastError: "" });
   const [playerAnnouncements, setPlayerAnnouncements] = useState<PlayerAnnouncementSettings>({ joinEnabled: false, joinMessage: DEFAULT_PLAYER_JOIN_MESSAGE, leaveEnabled: false, leaveMessage: DEFAULT_PLAYER_LEAVE_MESSAGE });
   const [playerAnnouncementsOriginal, setPlayerAnnouncementsOriginal] = useState<PlayerAnnouncementSettings>({ joinEnabled: false, joinMessage: DEFAULT_PLAYER_JOIN_MESSAGE, leaveEnabled: false, leaveMessage: DEFAULT_PLAYER_LEAVE_MESSAGE });
   const [mapChatOptions, setMapChatOptions] = useState<MapChatOption[]>(defaultMapChatOptions());
@@ -351,6 +352,7 @@ export function AdminToolsPanel({ onError, confirmAction }: AdminToolsPanelProps
     const result = await adminApi.messageOfTheDay();
     setMessageOfTheDay(result.settings);
     setMessageOfTheDayOriginal(result.settings);
+    setMessageOfTheDayStatus(result.status);
   }
 
   async function loadPlayerAnnouncements() {
@@ -488,8 +490,9 @@ export function AdminToolsPanel({ onError, confirmAction }: AdminToolsPanelProps
       const result = await adminApi.saveMessageOfTheDay(messageOfTheDay);
       setMessageOfTheDay(result.settings);
       setMessageOfTheDayOriginal(result.settings);
+      setMessageOfTheDayStatus(result.status);
       await loadHistory(true);
-    }, "Message of the Day was saved successfully.");
+    }, messageOfTheDay.enabled ? "Message of the Day saved. Players already online will receive it after their next login." : "Message of the Day was saved successfully.");
   }
 
   async function toggleMessageOfTheDay(nextEnabled: boolean) {
@@ -500,8 +503,9 @@ export function AdminToolsPanel({ onError, confirmAction }: AdminToolsPanelProps
       const result = await adminApi.saveMessageOfTheDay(next);
       setMessageOfTheDay(result.settings);
       setMessageOfTheDayOriginal(result.settings);
+      setMessageOfTheDayStatus(result.status);
       await loadHistory(true);
-    }, nextEnabled ? "Message of the Day enabled." : "Message of the Day disabled.", "success", (error) => {
+    }, nextEnabled ? "Message of the Day enabled. Players already online will receive it after their next login." : "Message of the Day disabled.", "success", (error) => {
       setMessageOfTheDay(previous);
       return friendlyInlineError(error);
     });
@@ -513,6 +517,7 @@ export function AdminToolsPanel({ onError, confirmAction }: AdminToolsPanelProps
       const result = await adminApi.restoreMessageOfTheDay();
       setMessageOfTheDay(result.settings);
       setMessageOfTheDayOriginal(result.settings);
+      setMessageOfTheDayStatus(result.status);
       await loadHistory(true);
     }, "Message of the Day defaults were restored.");
   }
@@ -579,7 +584,8 @@ export function AdminToolsPanel({ onError, confirmAction }: AdminToolsPanelProps
             <label className={`switch-checkbox ${messageOfTheDay.enabled ? "enabled" : "disabled"}`}><input type="checkbox" checked={messageOfTheDay.enabled} onChange={(event) => run(() => toggleMessageOfTheDay(event.target.checked))} /><span className="switch-label">Login Message</span><strong className="switch-state">{messageOfTheDay.enabled ? "ON" : "OFF"}</strong></label>
           </div>
           {messageOfTheDayDirty && <p className="dirty-note">Unsaved changes: Message of the Day</p>}
-          <p className="muted">Shown as a private in-game message once per player login session.</p>
+          <p className="muted">Shown as a private in-game message once per player login session. Saving does not send it immediately to players who are already online.</p>
+          {messageOfTheDayStatus.lastAttemptAt && <p className={messageOfTheDayStatus.lastFailed > 0 ? "danger-note" : "muted"}>Last delivery attempt: {new Date(messageOfTheDayStatus.lastAttemptAt).toLocaleString()} — sent {messageOfTheDayStatus.lastSent}, failed {messageOfTheDayStatus.lastFailed}{messageOfTheDayStatus.lastError ? ` (${messageOfTheDayStatus.lastError})` : ""}.</p>}
           <label className="broadcast-message">Message<textarea rows={3} value={messageOfTheDay.message} onChange={(event) => setMessageOfTheDay((current) => ({ ...current, message: event.target.value }))} placeholder="Message shown when a player logs in" /></label>
           <div className="broadcast-controls-row">
             <button disabled={!messageOfTheDayDirty} onClick={() => run(saveMessageOfTheDay)}>Save MOTD</button>

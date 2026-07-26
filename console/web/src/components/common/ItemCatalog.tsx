@@ -128,6 +128,13 @@ export function catalogItemMinimumGrade(item?: { itemId?: string; id?: string; s
   return source.includes("augment") || category.includes("augment") || /^T\d+_Augment_/i.test(id) ? 1 : 0;
 }
 
+export function catalogItemIsSchematic(item?: { itemId?: string; id?: string; source?: string; category?: string } | null) {
+  const id = String(item?.itemId || item?.id || "");
+  const source = String(item?.source || "").toLowerCase();
+  const category = String(item?.category || "").toLowerCase();
+  return category === "schematics" || source === "schematics" || /^schematic(pattern|_)/i.test(id) || /_schematic$/i.test(id) || /schematic$/i.test(id);
+}
+
 export function packageItemTextLine(item: { itemName?: string; itemId?: string; quantity?: unknown; quality?: unknown; grade?: unknown; durability?: unknown; augments?: string[]; augmentQuality?: unknown }) {
   const augments = Array.isArray(item.augments) && item.augments.length ? item.augments.join("|") : "";
   const augmentQuality = augments ? Math.max(1, Math.min(5, normalizeItemGrade(item.augmentQuality ?? 1) || 1)) : "";

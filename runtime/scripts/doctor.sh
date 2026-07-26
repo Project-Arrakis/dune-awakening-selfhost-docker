@@ -194,7 +194,7 @@ config_value() {
 check_project_systemd_timers() {
   local timer service label load_state active_state enabled_state working_directory exec_start
   local installed=0 healthy=0
-  local auto_update_enabled
+  local auto_update_enabled auto_interval auto_apply auto_notify auto_notify_minutes auto_wait_empty auto_max_wait
 
   if ! command -v systemctl >/dev/null 2>&1; then
     local auto_status warnings
@@ -205,12 +205,18 @@ check_project_systemd_timers() {
         [ -n "$warning" ] && warn_msg "${warning#WARN }"
       done <<<"$warnings"
     else
-      info_msg "Host systemd timer paths could not be inspected directly"
+      info_msg "Host systemd timer paths cannot be inspected from the Console container; run 'dune doctor' in the host checkout for the complete timer check"
     fi
     return
   fi
 
   auto_update_enabled="$(config_value runtime/generated/update-auto.env DUNE_AUTO_UPDATE_ENABLED || true)"
+  auto_interval="$(config_value runtime/generated/update-auto.env DUNE_AUTO_UPDATE_INTERVAL_MINUTES || true)"
+  auto_apply="$(config_value runtime/generated/update-auto.env DUNE_AUTO_UPDATE_APPLY_ENABLED || true)"
+  auto_notify="$(config_value runtime/generated/update-auto.env DUNE_AUTO_UPDATE_NOTIFY_ENABLED || true)"
+  auto_notify_minutes="$(config_value runtime/generated/update-auto.env DUNE_AUTO_UPDATE_NOTIFY_MINUTES || true)"
+  auto_wait_empty="$(config_value runtime/generated/update-auto.env DUNE_AUTO_UPDATE_WAIT_EMPTY || true)"
+  auto_max_wait="$(config_value runtime/generated/update-auto.env DUNE_AUTO_UPDATE_MAX_WAIT_MINUTES || true)"
   while IFS='|' read -r timer service label; do
     load_state="$(systemctl show "$timer" --property=LoadState --value 2>/dev/null || true)"
     if [ -z "$load_state" ] || [ "$load_state" = "not-found" ]; then
@@ -238,14 +244,35 @@ check_project_systemd_timers() {
       warn_msg "$label timer points to a missing directory: $working_directory"
       continue
     fi
-    case "$exec_start" in
-      *"$HOST_ROOT_DIR/"*) ;;
-      *)
-        warn_msg "$label timer ExecStart does not use the current checkout"
-        echo "     Expected path below: $HOST_ROOT_DIR"
-        continue
-        ;;
-    esac
+    if [ "$timer" = "dune-awakening-auto-update.timer" ]; then
+      case "$exec_start" in
+        *"$HOST_ROOT_DIR/runtime/scripts/update.sh"*"auto run"*) ;;
+        *"$HOST_ROOT_DIR/runtime/scripts/dune"*"update --yes"*)
+          warn_msg "$label timer uses the legacy update command from the current checkout"
+          echo "     Repair: dune update auto enable ${auto_interval:-60} ${auto_apply:-1} ${auto_notify:-1} ${auto_notify_minutes:-15} ${auto_wait_empty:-0} ${auto_max_wait:-360}"
+          continue
+          ;;
+        *"$HOST_ROOT_DIR/"*)
+          warn_msg "$label timer does not use the current auto-update policy runner"
+          echo "     Expected: $HOST_ROOT_DIR/runtime/scripts/update.sh auto run"
+          continue
+          ;;
+        *)
+          warn_msg "$label timer ExecStart points outside the current checkout"
+          echo "     Expected path below: $HOST_ROOT_DIR"
+          continue
+          ;;
+      esac
+    else
+      case "$exec_start" in
+        *"$HOST_ROOT_DIR/"*) ;;
+        *)
+          warn_msg "$label timer ExecStart points outside the current checkout"
+          echo "     Expected path below: $HOST_ROOT_DIR"
+          continue
+          ;;
+      esac
+    fi
     healthy=$((healthy + 1))
     ok "$label timer uses the current checkout ($active_state/$enabled_state)"
   done <<'EOF'
@@ -424,10 +451,14 @@ else
   echo "     If the stack just started, wait a few minutes and run: dune ready"
 fi
 
-if docker logs --tail 5000 dune-server-gateway 2>&1 | grep -q 'Monitoring for servers going up or down'; then
+gateway_logs="$(docker logs --tail 5000 dune-server-gateway 2>&1 || true)"
+if grep -Eq 'Monitoring for servers going up or down|Starting gateway for battlegroup' <<<"$gateway_logs"; then
   ok "Gateway DB monitoring"
+elif is_running dune-server-gateway; then
+  info_msg "Gateway is running, but its DB-monitoring startup message is no longer present in retained logs"
+  echo "     Use 'dune ready' for the live Gateway readiness check."
 else
-  warn_msg "Gateway DB monitoring not seen in recent logs"
+  warn_msg "Gateway DB monitoring cannot be confirmed because dune-server-gateway is not running"
 fi
 
 echo

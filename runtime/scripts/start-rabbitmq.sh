@@ -10,6 +10,7 @@ cd "$(dirname "$0")/../.."
 source runtime/scripts/host-paths.sh
 source runtime/scripts/runtime-env.sh
 source runtime/scripts/image-tags.sh
+source runtime/scripts/generated-file-paths.sh
 WORLD_IMAGE_TAG="$(resolve_world_image_tag)"
 IMAGE="registry.funcom.com/funcom/self-hosting/seabass-server-rabbitmq:${WORLD_IMAGE_TAG}"
 RMQ_ADMIN_PORT="$(resolve_rmq_admin_port)"
@@ -19,6 +20,18 @@ RMQ_GAME_HTTP_PORT="$(resolve_rmq_game_http_port)"
 mkdir -p runtime/rabbitmq-admin/config
 mkdir -p runtime/rabbitmq-game/config
 mkdir -p runtime/rabbitmq-game/certs
+
+for generated_file in \
+  runtime/rabbitmq-admin/config/rabbitmq.conf \
+  runtime/rabbitmq-admin/config/enabled_plugins \
+  runtime/rabbitmq-game/config/rabbitmq.conf \
+  runtime/rabbitmq-game/config/enabled_plugins \
+  runtime/rabbitmq-game/certs/key.pem \
+  runtime/rabbitmq-game/certs/cert.pem \
+  runtime/rabbitmq-game/certs/cacert.pem
+do
+  repair_generated_file_path "$generated_file"
+done
 
 cat > runtime/rabbitmq-admin/config/rabbitmq.conf <<'EOF'
 listeners.tcp.default = 5672

@@ -108,9 +108,11 @@ const memoryStatusOutput = `=== Memory configuration ===
 Default memory: built-in per-map defaults, or server catalog for other dynamic maps
 
 MAP                          MEMORY
-Survival_1                   12Gi default
-Overmap                      2Gi default
-DeepDesert_1                 15Gi default
+Survival_1                   16g default
+Overmap                      3g default
+DeepDesert_1                 16g default
+Survival_1:1                 16g default
+Survival_1:31                16g default
 CB_Dungeon_ThePit            13Gi`;
 
 const serversOutput = `=== Dune server partitions ===
@@ -275,7 +277,9 @@ test("map list parser keeps every dynamic map row and formats mode", () => {
 
 test("memory status parser formats Gi defaults as friendly GB labels", () => {
   const rows = parseMemoryStatusRows(memoryStatusOutput);
-  assert.deepEqual(rows.find((row) => row.map === "Survival_1"), { map: "Survival_1", memory: "12.00 GB (Default)" });
+  assert.deepEqual(rows.find((row) => row.map === "Survival_1"), { map: "Survival_1", memory: "16.00 GB (Default)" });
+  assert.deepEqual(rows.find((row) => row.map === "Survival_1:1"), { map: "Survival_1:1", memory: "16.00 GB (Default)" });
+  assert.deepEqual(rows.find((row) => row.map === "Survival_1:31"), { map: "Survival_1:31", memory: "16.00 GB (Default)" });
   assert.deepEqual(rows.find((row) => row.map === "CB_Dungeon_ThePit"), { map: "CB_Dungeon_ThePit", memory: "13.00 GB" });
 });
 

@@ -3,9 +3,14 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 
+. runtime/scripts/compose-project.sh
+MAIN_PROJECT_NAME="$(dune_resolve_compose_project_name "$(pwd -P)")"
+export DUNE_COMPOSE_PROJECT_NAME="$MAIN_PROJECT_NAME"
+dune_persist_compose_project_name "$(pwd -P)" "$MAIN_PROJECT_NAME"
+
 WEB_COMPOSE="docker-compose.web.yml"
 WEB_SERVICE="redblink-dune-docker-console"
-PROJECT_NAME="${DUNE_COMPOSE_PROJECT_NAME:-dune-awakening-selfhost-docker}"
+PROJECT_NAME="${DUNE_WEB_COMPOSE_PROJECT_NAME:-dune-awakening-selfhost-docker}"
 HOST_ROOT="${DUNE_HOST_REPO_ROOT:-$(pwd -P)}"
 
 usage() {
@@ -102,10 +107,10 @@ restart_console() {
   mkdir -p runtime/generated
   previous_image_id="$(docker image inspect --format '{{.Id}}' redblink-dune-docker-console:dev 2>/dev/null || true)"
   echo "Rebuilding Dune Docker Console..."
-  COMPOSE_PROJECT_NAME="$PROJECT_NAME" DUNE_HOST_REPO_ROOT="$HOST_ROOT" docker compose -f "$WEB_COMPOSE" build "$WEB_SERVICE"
+  COMPOSE_PROJECT_NAME="$PROJECT_NAME" DUNE_COMPOSE_PROJECT_NAME="$MAIN_PROJECT_NAME" DUNE_HOST_REPO_ROOT="$HOST_ROOT" docker compose -f "$WEB_COMPOSE" build "$WEB_SERVICE"
   echo "Replacing Dune Docker Console container..."
   docker rm -f "$WEB_SERVICE" >/dev/null 2>&1 || true
-  COMPOSE_PROJECT_NAME="$PROJECT_NAME" DUNE_HOST_REPO_ROOT="$HOST_ROOT" docker compose -f "$WEB_COMPOSE" up -d "$WEB_SERVICE"
+  COMPOSE_PROJECT_NAME="$PROJECT_NAME" DUNE_COMPOSE_PROJECT_NAME="$MAIN_PROJECT_NAME" DUNE_HOST_REPO_ROOT="$HOST_ROOT" docker compose -f "$WEB_COMPOSE" up -d "$WEB_SERVICE"
   current_image_id="$(docker image inspect --format '{{.Id}}' redblink-dune-docker-console:dev 2>/dev/null || true)"
   if [ -n "$previous_image_id" ] && [ "$previous_image_id" != "$current_image_id" ]; then
     docker image rm "$previous_image_id" >/dev/null 2>&1 || true

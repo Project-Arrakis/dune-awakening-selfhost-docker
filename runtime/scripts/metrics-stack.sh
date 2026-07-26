@@ -3,9 +3,14 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 
+# shellcheck disable=SC1091
+. runtime/scripts/compose-project.sh
+DUNE_COMPOSE_PROJECT_NAME="$(dune_resolve_compose_project_name "$(pwd -P)")"
+export DUNE_COMPOSE_PROJECT_NAME
+
 command_name="${1:-status}"
 compose_file="docker-compose.metrics.yml"
-metrics_project_name="${DUNE_METRICS_COMPOSE_PROJECT_NAME:-${DUNE_COMPOSE_PROJECT_NAME:-dune-awakening-selfhost-docker}-metrics}"
+metrics_project_name="${DUNE_METRICS_COMPOSE_PROJECT_NAME:-${DUNE_COMPOSE_PROJECT_NAME}-metrics}"
 prometheus_port="${METRICS_PROMETHEUS_PORT:-}"
 
 if [ -z "$prometheus_port" ] && [ -f .env ]; then

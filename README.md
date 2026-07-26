@@ -53,6 +53,8 @@ Memory Guide:
 
 RAM decides how many Dune map servers you can keep running comfortably. Start with the basic layout if you are unsure. Add more RAM when you want more maps online at the same time or expect heavier player activity.
 
+The official Survival server commonly keeps roughly 10-12 GB resident even with no players online; a single idle snapshot is not by itself a memory leak. When reading `docker stats`, CPU is measured in CPU-core units: `100%` is one fully used logical CPU, so `34%` is about one third of one core rather than 34% of the whole host.
+
 | Server Layout | Recommended RAM |
 |---|---:|
 | Basic server for getting started | 20 GB |

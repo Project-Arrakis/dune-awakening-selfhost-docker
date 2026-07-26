@@ -14,7 +14,7 @@ import { createDb, quoteIdentifier } from "./db.js";
 import * as duneDb from "./duneDb.js";
 import { audit, recordAdminHistory } from "./audit.js";
 import { redact } from "./redact.js";
-import { itemIsSchematic, itemRequiresDatabaseGrant, listCatalogItems, resolveCatalogItem } from "./adminCatalog.js";
+import { itemIsRankedSchematic, itemIsSchematic, itemRequiresDatabaseGrant, listCatalogItems, resolveCatalogItem } from "./adminCatalog.js";
 import { buildBroadcastCommand, buildShutdownBroadcastCommand, publishMapChat, publishServerCommand } from "./rmq.js";
 import { clearCarePackageHistory, enableCarePackage, ensureCarePackageServerPersona, grantEligibleCarePackages, grantCarePackage, retryCarePackageGrant, runCarePackageAutoScan, saveCarePackageConfig, carePackageCapabilities, carePackageConfig, carePackageEligiblePlayers, carePackageHistory } from "./carePackage.js";
 import { readJsonBody, readMultipartForm } from "./httpSafety.js";
@@ -33,7 +33,7 @@ import { handleDiscordAdapterRoute, isDiscordAdapterRoute } from "./integrations
 import { discordAdapterEnabled } from "./integrations/discord/adapter.js";
 import { initializeDiscordAdapterSchema } from "./integrations/discord/schema.js";
 import { liveItemGrantOk, liveItemGrantWarning } from "./grantResults.js";
-import { primeMessageOfTheDayOnlineState, readMessageOfTheDay, restoreMessageOfTheDay, runMessageOfTheDayScan, saveMessageOfTheDay } from "./services/messageOfTheDay.js";
+import { primeMessageOfTheDayOnlineState, readMessageOfTheDay, recordMessageOfTheDayFailure, restoreMessageOfTheDay, runMessageOfTheDayScan, saveMessageOfTheDay } from "./services/messageOfTheDay.js";
 import { primePlayerAnnouncementOnlineState, readPlayerAnnouncements, restorePlayerAnnouncements, runPlayerAnnouncementScan, savePlayerAnnouncements } from "./services/playerAnnouncements.js";
 import { persistSpicefieldOverride } from "./services/spicefieldOverrides.js";
 import { applySavedLandsraadMilestonePreset, createLandsraadMilestoneReconciler, readLandsraadMilestonePreset, saveLandsraadMilestonePreset } from "./services/landsraadMilestones.js";
@@ -1156,7 +1156,11 @@ function scheduleConsoleRestart(port) {
   setTimeout(() => {
     const helperName = `redblink-dune-console-restart-${Date.now()}`;
     const hostRepoRoot = process.env.DUNE_HOST_REPO_ROOT || config.repoRoot;
-    const composeProjectName = process.env.DUNE_COMPOSE_PROJECT_NAME || process.env.COMPOSE_PROJECT_NAME || "dune-awakening-selfhost-docker";
+    const composeProjectName = process.env.DUNE_COMPOSE_PROJECT_NAME || process.env.COMPOSE_PROJECT_NAME;
+    if (!composeProjectName) {
+      console.error("Cannot restart the Console because the main Dune Compose project name is missing.");
+      return;
+    }
     const hostUid = process.env.DUNE_HOST_UID || String(process.getuid?.() ?? 0);
     const hostGid = process.env.DUNE_HOST_GID || String(process.getgid?.() ?? 0);
     const dockerSocketGid = process.env.DOCKER_SOCKET_GID || detectDockerSocketGid();
@@ -1344,9 +1348,10 @@ async function messageOfTheDayRoute(req, res) {
   const body = await readJson(req);
   try {
     const result = body.restoreDefaults ? restoreMessageOfTheDay(config) : saveMessageOfTheDay(config, body.settings || body);
+    let primedOnlinePlayers = 0;
     if (result.settings.enabled) {
       const players = await duneDb.listAllPlayers(db, { status: "online" }).catch(() => ({ rows: [] }));
-      primeMessageOfTheDayOnlineState(config, players.rows || []);
+      primedOnlinePlayers = primeMessageOfTheDayOnlineState(config, players.rows || []).delivered;
     }
     audit(config, req, "admin.message-of-the-day.save", { restoreDefaults: Boolean(body.restoreDefaults), enabled: result.settings.enabled });
     recordAdminHistory(config, {
@@ -1357,7 +1362,17 @@ async function messageOfTheDayRoute(req, res) {
       result: "saved",
       message: result.settings.enabled ? result.settings.message : "disabled"
     });
-    return json(res, 200, { ok: true, ...result });
+    return json(res, 200, {
+      ok: true,
+      ...result,
+      status: readMessageOfTheDay(config).status,
+      delivery: {
+        primedOnlinePlayers,
+        note: result.settings.enabled
+          ? "Players who are online while this is saved will receive the message after their next login."
+          : "Message of the Day delivery is disabled."
+      }
+    });
   } catch (error) {
     audit(config, req, "admin.message-of-the-day.save", { supported: false, error: redact(error.message || error) });
     return json(res, error.statusCode || 400, { error: redact(error.message || error) });
@@ -2046,7 +2061,8 @@ async function grantPlayerItem(playerId, item, target) {
   const selectedGrade = hasExplicitGrade ? validateGrantGrade(item.quality ?? item.grade) : undefined;
   const selectedAugmentGrade = item.augmentQuality === undefined ? 1 : validateAugmentGrantGrade(item.augmentQuality);
   const schematic = itemIsSchematic(resolved);
-  const usesDatabaseGrant = !schematic && (!target.online || (selectedGrade !== undefined && selectedGrade > 0) || itemRequiresDatabaseGrant(resolved) || (item.augments && item.augments.length > 0));
+  const rankedSchematic = itemIsRankedSchematic(resolved, selectedGrade);
+  const usesDatabaseGrant = rankedSchematic || (!schematic && (!target.online || (selectedGrade !== undefined && selectedGrade > 0) || itemRequiresDatabaseGrant(resolved) || (item.augments && item.augments.length > 0)));
   const databaseGrade = hasExplicitGrade ? selectedGrade : 0;
   const payload = {
     playerId: target.actionId || playerId,
@@ -2059,8 +2075,8 @@ async function grantPlayerItem(playerId, item, target) {
     augmentQuality: selectedAugmentGrade
   };
   const liveAugmentRefreshWarning = "Augments were written to the database. If the player was online, the weapon may need a relog before the augment slots appear in-game.";
-  if (schematic && !config.mockMode && !target.online) {
-    throw new Error("Physical schematic grants require the player to be online so delivery can be verified by the game server.");
+  if (schematic && !rankedSchematic && !config.mockMode && !target.online) {
+    throw new Error("Grade 0 physical schematic grants require the player to be online so delivery can be verified by the game server. Grades 1-5 use the database grant path.");
   }
   if (usesDatabaseGrant) {
     if (!config.mockMode && !target.actorId) throw new Error("A database actor ID is required to grant graded items, schematics, and augments");
@@ -2082,7 +2098,11 @@ async function grantPlayerItem(playerId, item, target) {
       operation: "dbGiveItemToPlayer",
       item: { ...payload, quality: databaseGrade },
       result,
-      warning: target.online && payload.augments.length > 0 ? liveAugmentRefreshWarning : undefined
+      warning: result?.requiresRelog
+        ? (rankedSchematic
+            ? "The ranked schematic was written to the database. The player must relog before it appears with the selected grade."
+            : (payload.augments.length > 0 ? liveAugmentRefreshWarning : "The item was written to the database. The player must relog before it appears correctly."))
+        : undefined
     };
   }
   const command = buildDuneArgs(operation, payload);
@@ -2485,8 +2505,12 @@ async function messageOfTheDayAutoTick() {
   } catch (error) {
     messageOfTheDayAutoNextAllowedRun = Date.now() + BACKGROUND_SCAN_FAILURE_BACKOFF_MS;
     const message = String(error.message || error);
-    if (/connect|database|relation|container|rabbitmq|docker|ECONNREFUSED/i.test(message)) return;
-    console.error(`Message of the Day scan failed: ${redact(message)}`);
+    try {
+      recordMessageOfTheDayFailure(config, error);
+    } catch (statusError) {
+      console.error(`Message of the Day failure status could not be saved: ${redact(statusError.message || statusError)}`);
+    }
+    console.error(`Message of the Day scan failed; retrying after backoff: ${redact(message)}`);
   } finally {
     messageOfTheDayAutoRunning = false;
   }

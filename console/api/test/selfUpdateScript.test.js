@@ -24,6 +24,7 @@ test("self-update check prefers the official upstream release repo in fork check
   const dir = mkdtempSync(join(tmpdir(), "arrakis-self-update-"));
   mkdirSync(join(dir, "runtime", "scripts"), { recursive: true });
   copyFileSync(join(repoRoot, "runtime", "scripts", "self-update.sh"), join(dir, "runtime", "scripts", "self-update.sh"));
+  copyFileSync(join(repoRoot, "runtime", "scripts", "compose-project.sh"), join(dir, "runtime", "scripts", "compose-project.sh"));
   chmodSync(join(dir, "runtime", "scripts", "self-update.sh"), 0o700);
   writeFileSync(join(dir, "VERSION"), "v1.3.37\n");
 
@@ -77,6 +78,16 @@ test("archive self-update replaces project files and preserves local state", asy
   assert.equal(archiveResult.status, 0, archiveResult.stderr?.toString());
   const extractResult = spawnSync("tar", ["-xzf", archive, "-C", stagingDir]);
   assert.equal(extractResult.status, 0, extractResult.stderr?.toString());
+  copyFileSync(
+    join(repoRoot, "runtime", "scripts", "self-update.sh"),
+    join(stagingDir, "candidate", "runtime", "scripts", "self-update.sh")
+  );
+  copyFileSync(
+    join(repoRoot, "runtime", "scripts", "compose-project.sh"),
+    join(stagingDir, "candidate", "runtime", "scripts", "compose-project.sh")
+  );
+  const repackResult = spawnSync("tar", ["-czf", archive, "-C", stagingDir, "candidate"]);
+  assert.equal(repackResult.status, 0, repackResult.stderr?.toString());
   cpSync(join(stagingDir, "candidate"), installDir, { recursive: true });
   copyFileSync(
     join(repoRoot, "runtime", "scripts", "self-update.sh"),
@@ -151,6 +162,9 @@ exit 0
     const updatedEnv = readFileSync(join(installDir, ".env"), "utf8");
     assert.ok(updatedEnv.includes("SERVER_TITLE=Preserved Server\n"));
     assert.ok(updatedEnv.includes("ADMIN_BIND_PORT=9090\n"));
+    assert.ok(updatedEnv.includes("DUNE_COMPOSE_PROJECT_NAME=install\n"));
+    assert.ok(updatedEnv.includes("COMPOSE_PROJECT_NAME=install\n"));
+    assert.equal(existsSync(join(installDir, "runtime", "scripts", "compose-project.sh")), true);
     assert.equal(readFileSync(join(installDir, "runtime", "generated", "map-runtime-modes.json"), "utf8"), "{\"DeepDesert_1\":\"always-on\"}\n");
     assert.equal(readFileSync(join(installDir, "runtime", "generated", "public-directory-status.json"), "utf8"), "{\"state\":\"online\"}\n");
     assert.equal(readFileSync(join(installDir, "runtime", "generated", "public-probe.env"), "utf8"), "DUNE_PUBLIC_PROBE_ENABLED=true\nDUNE_PUBLIC_PROBE_ADDRESS=203.0.113.42\nDUNE_PUBLIC_PROBE_ENDPOINT=https://203.0.113.42\n");

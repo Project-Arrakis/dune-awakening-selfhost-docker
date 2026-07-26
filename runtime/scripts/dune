@@ -5,6 +5,16 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 
+# Resolve this before dispatching so every child script and raw Docker Compose
+# command targets the same existing persistent volumes.
+. runtime/scripts/compose-project.sh
+DUNE_COMPOSE_PROJECT_NAME="$(dune_resolve_compose_project_name "$(pwd -P)")"
+export DUNE_COMPOSE_PROJECT_NAME
+export COMPOSE_PROJECT_NAME="$DUNE_COMPOSE_PROJECT_NAME"
+if [ -f .env ] && [ -w .env ]; then
+  dune_persist_compose_project_name "$(pwd -P)" "$DUNE_COMPOSE_PROJECT_NAME"
+fi
+
 cmd="${1:-help}"
 target="${2:-}"
 
@@ -141,7 +151,7 @@ ensure_docker_access_or_reexec() {
     exec sudo env \
       "DUNE_SUDO_REEXEC=1" \
       "DUNE_HOST_REPO_ROOT=${DUNE_HOST_REPO_ROOT:-$(pwd -P)}" \
-      "DUNE_COMPOSE_PROJECT_NAME=${DUNE_COMPOSE_PROJECT_NAME:-dune-awakening-selfhost-docker}" \
+      "DUNE_COMPOSE_PROJECT_NAME=$DUNE_COMPOSE_PROJECT_NAME" \
       "$0" "$@"
   fi
 }
@@ -170,7 +180,7 @@ start_compose_service_if_available() {
   case "$env_prefix" in
     web)
       prepare_docker_socket_gid
-      COMPOSE_PROJECT_NAME="${DUNE_COMPOSE_PROJECT_NAME:-dune-awakening-selfhost-docker}" DUNE_HOST_REPO_ROOT="${DUNE_HOST_REPO_ROOT:-$(pwd -P)}" DUNE_HOST_UID="${DUNE_HOST_UID:-$(id -u)}" DUNE_HOST_GID="${DUNE_HOST_GID:-$(id -g)}" docker compose -f "$compose_file" up -d --build "$service"
+      COMPOSE_PROJECT_NAME="${DUNE_WEB_COMPOSE_PROJECT_NAME:-dune-awakening-selfhost-docker}" DUNE_COMPOSE_PROJECT_NAME="$DUNE_COMPOSE_PROJECT_NAME" DUNE_HOST_REPO_ROOT="${DUNE_HOST_REPO_ROOT:-$(pwd -P)}" DUNE_HOST_UID="${DUNE_HOST_UID:-$(id -u)}" DUNE_HOST_GID="${DUNE_HOST_GID:-$(id -g)}" docker compose -f "$compose_file" up -d --build "$service"
       ;;
     *)
       docker compose -f "$compose_file" up -d --build "$service"
@@ -206,7 +216,7 @@ EOF
           print_web_console_url
         else
           echo "Starting Dune Docker Console..."
-          if COMPOSE_PROJECT_NAME="${DUNE_COMPOSE_PROJECT_NAME:-dune-awakening-selfhost-docker}" DUNE_HOST_REPO_ROOT="${DUNE_HOST_REPO_ROOT:-$(pwd -P)}" DUNE_HOST_UID="${DUNE_HOST_UID:-$(id -u)}" DUNE_HOST_GID="${DUNE_HOST_GID:-$(id -g)}" docker compose -f docker-compose.web.yml up -d --build "$service"; then
+          if COMPOSE_PROJECT_NAME="${DUNE_WEB_COMPOSE_PROJECT_NAME:-dune-awakening-selfhost-docker}" DUNE_COMPOSE_PROJECT_NAME="$DUNE_COMPOSE_PROJECT_NAME" DUNE_HOST_REPO_ROOT="${DUNE_HOST_REPO_ROOT:-$(pwd -P)}" DUNE_HOST_UID="${DUNE_HOST_UID:-$(id -u)}" DUNE_HOST_GID="${DUNE_HOST_GID:-$(id -g)}" docker compose -f docker-compose.web.yml up -d --build "$service"; then
             echo "Dune Docker Console is running."
             print_web_console_url
           else

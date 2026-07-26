@@ -4,6 +4,10 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 ROOT_DIR="$(pwd)"
 
+. runtime/scripts/compose-project.sh
+DUNE_COMPOSE_PROJECT_NAME="$(dune_resolve_compose_project_name "$ROOT_DIR")"
+export DUNE_COMPOSE_PROJECT_NAME
+
 CURRENT_VERSION="dev"
 [ -f VERSION ] && CURRENT_VERSION="$(tr -d '[:space:]' < VERSION)"
 DEFAULT_SELF_UPDATE_REPO="Red-Blink/dune-awakening-selfhost-docker"
@@ -853,17 +857,18 @@ prepare_web_console_rebuild_env() {
 
 rebuild_web_console_now() {
   local service="$1"
+  local web_compose_project="${DUNE_WEB_COMPOSE_PROJECT_NAME:-dune-awakening-selfhost-docker}"
   prepare_web_console_rebuild_env
-  COMPOSE_PROJECT_NAME="${DUNE_COMPOSE_PROJECT_NAME:-dune-awakening-selfhost-docker}" DUNE_HOST_REPO_ROOT="$HOST_ROOT_DIR" docker compose -f docker-compose.web.yml build "$service"
+  COMPOSE_PROJECT_NAME="$web_compose_project" DUNE_COMPOSE_PROJECT_NAME="$DUNE_COMPOSE_PROJECT_NAME" DUNE_HOST_REPO_ROOT="$HOST_ROOT_DIR" docker compose -f docker-compose.web.yml build "$service"
   docker rm -f "$service" >/dev/null 2>&1 || true
-  COMPOSE_PROJECT_NAME="${DUNE_COMPOSE_PROJECT_NAME:-dune-awakening-selfhost-docker}" DUNE_HOST_REPO_ROOT="$HOST_ROOT_DIR" docker compose -f docker-compose.web.yml up -d --force-recreate "$service"
+  COMPOSE_PROJECT_NAME="$web_compose_project" DUNE_COMPOSE_PROJECT_NAME="$DUNE_COMPOSE_PROJECT_NAME" DUNE_HOST_REPO_ROOT="$HOST_ROOT_DIR" docker compose -f docker-compose.web.yml up -d --force-recreate "$service"
 }
 
 rebuild_web_console_with_helper() {
   local service="$1"
   local helper_name
   helper_name="dune-console-self-update-$(date +%s)"
-  local compose_project="${DUNE_COMPOSE_PROJECT_NAME:-dune-awakening-selfhost-docker}"
+  local compose_project="$DUNE_COMPOSE_PROJECT_NAME"
   local helper_image="${DUNE_SYSTEMD_HELPER_IMAGE:-redblink-dune-docker-console:dev}"
 
   prepare_web_console_rebuild_env
@@ -1037,6 +1042,7 @@ tag="${2:-}"
 
 case "$cmd" in
   rebuild-web-console)
+    dune_persist_compose_project_name "$ROOT_DIR" "$DUNE_COMPOSE_PROJECT_NAME"
     service="${tag:-}"
     if [ -z "$service" ]; then
       service="$(web_console_service_name 2>/dev/null || true)"
@@ -1085,6 +1091,7 @@ case "$cmd" in
     ;;
 
   install|apply)
+    dune_persist_compose_project_name "$ROOT_DIR" "$DUNE_COMPOSE_PROJECT_NAME"
     if [ -z "$tag" ] || [ "$tag" = "latest" ]; then
       set +e
       tag="$(latest_release_tag)"

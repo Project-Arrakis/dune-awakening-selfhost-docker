@@ -3,6 +3,8 @@ set -eu
 
 cd "$(dirname "$0")"
 
+. runtime/scripts/compose-project.sh
+
 APP_NAME="Dune Docker Console"
 WEB_COMPOSE="docker-compose.web.yml"
 WEB_SERVICE="redblink-dune-docker-console"
@@ -121,8 +123,10 @@ install_docker() {
     exit 1
   fi
 
-  if ! error=$(need_sudo sh "$get_docker_script" 2>&1); then
-    echo "$error" >&2
+  # Keep the upstream installer's package and service progress visible. Hiding
+  # it makes a normal Docker installation look stalled after the sudo prompt.
+  if ! need_sudo sh "$get_docker_script"; then
+    echo "Docker installation failed. Review the installer output above for the cause." >&2
     exit 1
   fi
 }
@@ -506,10 +510,13 @@ start_console() {
   export DUNE_HOST_REPO_ROOT="${DUNE_HOST_REPO_ROOT:-$(pwd -P)}"
   export DUNE_HOST_UID="${DUNE_HOST_UID:-$(default_host_uid)}"
   export DUNE_HOST_GID="${DUNE_HOST_GID:-$(default_host_gid)}"
-  export COMPOSE_PROJECT_NAME="${DUNE_COMPOSE_PROJECT_NAME:-dune-awakening-selfhost-docker}"
+  DUNE_COMPOSE_PROJECT_NAME="$(dune_resolve_compose_project_name "$(pwd -P)")"
+  export DUNE_COMPOSE_PROJECT_NAME
+  export COMPOSE_PROJECT_NAME="${DUNE_WEB_COMPOSE_PROJECT_NAME:-dune-awakening-selfhost-docker}"
   prepare_docker_socket_gid
-  persist_console_runtime_env
   migrate_existing_ownership
+  dune_persist_compose_project_name "$(pwd -P)" "$DUNE_COMPOSE_PROJECT_NAME"
+  persist_console_runtime_env
   if [ "$DOCKER_NEEDS_SUDO" = "1" ]; then
     need_sudo env \
       "ADMIN_BIND_PORT=$ADMIN_BIND_PORT" \
@@ -518,6 +525,7 @@ start_console() {
       "DUNE_HOST_GID=$DUNE_HOST_GID" \
       "DOCKER_SOCKET_GID=$DOCKER_SOCKET_GID" \
       "COMPOSE_PROJECT_NAME=$COMPOSE_PROJECT_NAME" \
+      "DUNE_COMPOSE_PROJECT_NAME=$DUNE_COMPOSE_PROJECT_NAME" \
       docker compose -f "$WEB_COMPOSE" up -d --build "$WEB_SERVICE"
   else
     $DOCKER_CMD compose -f "$WEB_COMPOSE" up -d --build "$WEB_SERVICE"
