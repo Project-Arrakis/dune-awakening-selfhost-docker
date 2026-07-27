@@ -574,7 +574,7 @@ main { padding: 22px; min-width: 0; }
 .action-line label.checkbox-line { flex: 0 0 280px; }
 .action-line button, .action-section > button { width: auto; justify-self: start; }
 .addons-title-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-.addons-title-status { color: #8fffd2; font-size: .72em; font-weight: 700; }
+.addons-title-status { display: inline-flex; align-items: center; min-height: 22px; margin-left: 10px; padding: 2px 8px; border: 1px solid rgba(143, 255, 210, .55); border-radius: 999px; color: #8fffd2; background: rgba(24, 101, 84, .18); box-shadow: 0 0 0 1px rgba(143, 255, 210, .08), 0 0 18px rgba(143, 255, 210, .08); font-size: .72rem; font-weight: 700; letter-spacing: 0; text-transform: uppercase; vertical-align: middle; }
 .addons-owner-copy { display: grid; gap: 6px; min-width: 0; }
 .addon-catalog-status-row { margin-top: 10px; }
 .addon-result-panel { margin-top: 12px; animation: addonNoticeFade 5s ease forwards; }
@@ -1156,7 +1156,6 @@ body.debug .technical-details { display: block; }
 .playerAdmin_header { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px; border-bottom: 1px solid #302b25; padding-bottom: 10px; }
 .playerAdmin_header h3 { margin: 0; color: #ffd08a; }
 .playerAdmin_header span, .playerAdmin_container p, .playerAdmin_note { color: #ad9f89; }
-.playerAdmin_experimentalNotice { margin: 0; color: #8fffd2; font-weight: 400; line-height: 1.35; width: 100%; max-width: none; border: 1px solid rgba(143, 255, 210, .55); background: rgba(24, 101, 84, .18); border-radius: 6px; padding: 9px 12px; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; box-shadow: 0 0 0 1px rgba(143, 255, 210, .08), 0 0 18px rgba(143, 255, 210, .08); }
 .playerAdmin_summaryActions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; border-top: 1px solid rgba(214, 185, 140, .14); padding-top: 12px; }
 .playerAdmin_summaryActions button { width: auto; }
 .playerAdmin_summaryActions .playerAdmin_actionNote { flex: 1 0 100%; padding-left: 0; }
@@ -1238,8 +1237,30 @@ body.debug .technical-details { display: block; }
 .playerAdmin_table th, .playerAdmin_table td { border-bottom: 1px solid #302b25; padding: 9px 10px; text-align: left; vertical-align: middle; white-space: nowrap; }
 .playerAdmin_table th { color: #ffd08a; background: #171a1d; position: sticky; top: 0; }
 .playerAdmin_actionCell { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.playerAdmin_schematicTable th, .playerAdmin_schematicTable td { text-align: center; }
-.playerAdmin_schematicTable .playerAdmin_actionCell { justify-content: center; }
+.playerAdmin_schematicTable { width: 100%; min-width: 1080px; table-layout: fixed; }
+.playerAdmin_schematicTable th, .playerAdmin_schematicTable td { max-width: none; text-align: center; }
+.playerAdmin_schematicTable th:nth-child(1), .playerAdmin_schematicTable td:nth-child(1) { width: 22%; }
+.playerAdmin_schematicTable th:nth-child(2), .playerAdmin_schematicTable td:nth-child(2) { width: 27%; }
+.playerAdmin_craftingTable th:nth-child(3), .playerAdmin_craftingTable td:nth-child(3) { width: 15%; }
+.playerAdmin_craftingTable th:nth-child(4), .playerAdmin_craftingTable td:nth-child(4) { width: 9%; }
+.playerAdmin_researchTable th:nth-child(3), .playerAdmin_researchTable td:nth-child(3) { width: 10%; }
+.playerAdmin_researchTable th:nth-child(4), .playerAdmin_researchTable td:nth-child(4) { width: 14%; }
+.playerAdmin_schematicTable th.playerAdmin_schematicActionCell,
+.playerAdmin_schematicTable td.playerAdmin_schematicActionCell { width: 12%; min-width: 124px; }
+.playerAdmin_schematicTable th.playerAdmin_schematicResultCell,
+.playerAdmin_schematicTable td.playerAdmin_schematicResultCell { width: 15%; min-width: 170px; white-space: normal; overflow: hidden; text-overflow: clip; }
+.playerAdmin_schematicResultCell .inline-action-result-wrap { width: 100%; min-width: 0; min-height: 28px; align-items: center; justify-content: center; }
+.playerAdmin_schematicResultCell .inline-action-result {
+  display: -webkit-box;
+  overflow: hidden;
+  font-size: 11px;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+  white-space: normal;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+}
 .playerAdmin_stateActionButton { min-width: 96px; justify-content: center; }
 .playerAdmin_resultCell { min-width: 280px; max-width: 360px; white-space: normal; }
 .playerAdmin_resultCell .inline-action-result-wrap { min-width: 0; width: 100%; }
@@ -2053,7 +2074,6 @@ td .inline-action-result-wrap { flex: 1 0 100%; justify-content: flex-start; min
 .landsraad-admin-body .panel-title { margin: 0; }
 .landsraad-admin-body .section-divider { margin: 4px 0; }
 .landsraad-admin-body .table-wrap { margin: 0; }
-.landsraad-experimental-badge { display: inline-flex; align-items: center; min-height: 22px; margin-left: 10px; padding: 2px 8px; border: 1px solid rgba(143, 255, 210, .55); border-radius: 999px; color: #8fffd2; background: rgba(24, 101, 84, .18); box-shadow: 0 0 0 1px rgba(143, 255, 210, .08), 0 0 18px rgba(143, 255, 210, .08); font-size: .72rem; font-weight: 700; letter-spacing: 0; text-transform: uppercase; vertical-align: middle; }
 .landsraad-summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr)); gap: 8px; }
 .landsraad-summary-grid span { display: grid; gap: 3px; min-height: 56px; border: 1px solid rgba(214, 185, 140, .13); background: rgba(255,255,255,.03); border-radius: 8px; padding: 10px 12px; color: #fff1d4; overflow-wrap: anywhere; }
 .landsraad-summary-grid strong { color: #ceb894; font-size: .78rem; text-transform: uppercase; }

@@ -853,7 +853,7 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
       sortDirection={playerAdmin_craftingSort.sortDirection}
       onSort={playerAdmin_craftingSort.onSort}
       resizableColumns
-      tableClassName="playerAdmin_schematicTable"
+      tableClassName="playerAdmin_schematicTable playerAdmin_craftingTable"
       rowKey={(row) => String(row.recipeId)}
       renderCell={(row, col) =>
         col === "recipeId" ? <code>{String(row.recipeId)}</code> :
@@ -862,6 +862,8 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
       }
       secondaryAction={(row) => <InlineActionResult result={playerAdmin_actionResult} resultKey={`crafting:${row.recipeId}`} />}
       secondaryActionLabel="Result"
+      secondaryActionClassName="playerAdmin_schematicResultCell"
+      actionClassName="playerAdmin_schematicActionCell"
       action={(row) => <button className="playerAdmin_stateActionButton" disabled={!dbPlayerId || Boolean(row.unlocked) || Boolean(playerAdmin_busyActionKey)} onClick={() => playerAdmin_unlockCraftingRecipe(row as unknown as CraftingRecipeRow)}>{playerAdmin_busyActionKey === `crafting:${row.recipeId}` ? "Unlocking..." : row.unlocked ? "Unlocked" : "Unlock"}</button>}
     />
   );
@@ -876,11 +878,13 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
       sortDirection={playerAdmin_researchSort.sortDirection}
       onSort={playerAdmin_researchSort.onSort}
       resizableColumns
-      tableClassName="playerAdmin_schematicTable"
+      tableClassName="playerAdmin_schematicTable playerAdmin_researchTable"
       rowKey={(row) => String(row.itemKey)}
       renderCell={(row, col) => col === "itemKey" ? <code>{String(row.itemKey)}</code> : formatCell(row[col])}
       secondaryAction={(row) => <InlineActionResult result={playerAdmin_actionResult} resultKey={`research:${row.itemKey}`} />}
       secondaryActionLabel="Result"
+      secondaryActionClassName="playerAdmin_schematicResultCell"
+      actionClassName="playerAdmin_schematicActionCell"
       action={(row) => <button className="playerAdmin_stateActionButton" title={!row.actionable && !row.unlocked ? "Group markers cannot be safely unlocked as one recipe. Unlock the individual Recipe or Building entries." : undefined} disabled={!dbPlayerId || !Boolean(row.actionable) || Boolean(row.unlocked) || Boolean(playerAdmin_busyActionKey)} onClick={() => playerAdmin_unlockResearchItem(row as unknown as ResearchItemRow)}>{playerAdmin_busyActionKey === `research:${row.itemKey}` ? (row.needsRecipeRepair ? "Repairing..." : "Researching...") : row.unlocked ? "Researched" : !row.actionable ? "Group Entry" : row.needsRecipeRepair ? "Repair Unlock" : "Research"}</button>}
     />
   );
@@ -1007,7 +1011,7 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
 
   return (
     <section className="playerAdmin_container" aria-label="Player admin layout">
-      <div className="playerAdmin_header"><p className="playerAdmin_experimentalNotice">Some features in this section are experimental. Please report anything that isn't working correctly or appears out of place.</p><button onClick={onClose}>Close</button></div>
+      <div className="playerAdmin_header"><h3>Player Summary</h3><button onClick={onClose}>Close</button></div>
       <PlayerSummary detail={detail} fallback={fallback} dbPlayerId={dbPlayerId} actionPlayerId={actionPlayerId} />
       <div className="playerAdmin_tabs" role="tablist" aria-label="Player admin tabs">{playerAdmin_tabs.map((playerAdmin_tab) => {
         const TabIcon = playerAdmin_tab.icon;
