@@ -158,11 +158,26 @@ dune_persist_compose_project_name() {
   dune_compose_value="$2"
   dune_compose_env_file="$dune_compose_root/.env"
   dune_compose_tmp_file=""
+  dune_compose_env_existed=0
+  dune_compose_current_dune=""
+  dune_compose_current_compose=""
 
   dune_compose_project_is_valid "$dune_compose_value" || return 1
-  touch "$dune_compose_env_file"
+
+  if [ -f "$dune_compose_env_file" ]; then
+    dune_compose_env_existed=1
+    dune_compose_current_dune="$(dune_compose_env_file_value "$dune_compose_env_file" DUNE_COMPOSE_PROJECT_NAME 2>/dev/null || true)"
+    dune_compose_current_compose="$(dune_compose_env_file_value "$dune_compose_env_file" COMPOSE_PROJECT_NAME 2>/dev/null || true)"
+    if [ "$dune_compose_current_dune" = "$dune_compose_value" ] \
+      && [ "$dune_compose_current_compose" = "$dune_compose_value" ]; then
+      return 0
+    fi
+  else
+    touch "$dune_compose_env_file" || return 1
+  fi
+
   dune_compose_tmp_file="$(mktemp "${dune_compose_env_file}.tmp.XXXXXX")"
-  awk -v value="$dune_compose_value" '
+  if ! awk -v value="$dune_compose_value" '
     BEGIN { dune_found = 0; compose_found = 0 }
     /^DUNE_COMPOSE_PROJECT_NAME=/ {
       print "DUNE_COMPOSE_PROJECT_NAME=" value
@@ -179,7 +194,24 @@ dune_persist_compose_project_name() {
       if (!dune_found) print "DUNE_COMPOSE_PROJECT_NAME=" value
       if (!compose_found) print "COMPOSE_PROJECT_NAME=" value
     }
-  ' "$dune_compose_env_file" > "$dune_compose_tmp_file"
-  chmod --reference="$dune_compose_env_file" "$dune_compose_tmp_file" 2>/dev/null || true
-  mv "$dune_compose_tmp_file" "$dune_compose_env_file"
+  ' "$dune_compose_env_file" > "$dune_compose_tmp_file"; then
+    rm -f "$dune_compose_tmp_file"
+    return 1
+  fi
+
+  if [ "$dune_compose_env_existed" = "1" ]; then
+    # Scheduled systemd helpers can run as root. Preserve both mode and
+    # ownership before the atomic replacement so a root-created temporary file
+    # cannot turn the operator's .env into root-owned state.
+    if ! chmod --reference="$dune_compose_env_file" "$dune_compose_tmp_file" \
+      || ! chown --reference="$dune_compose_env_file" "$dune_compose_tmp_file"; then
+      rm -f "$dune_compose_tmp_file"
+      return 1
+    fi
+  fi
+
+  if ! mv "$dune_compose_tmp_file" "$dune_compose_env_file"; then
+    rm -f "$dune_compose_tmp_file"
+    return 1
+  fi
 }
