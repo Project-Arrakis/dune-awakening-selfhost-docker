@@ -337,17 +337,42 @@ test("linking a second, different character via /dune player link is rejected wh
   assert.equal(db.state.pending, null, "no pending verification code should be created for a rejected link");
 });
 
-test("re-running /dune player link for the SAME already-linked character is allowed to proceed unchanged (idempotent re-link, not a conflict)", async () => {
+// FIX (2026-07-27, found via a real live report): re-running /dune
+// player link for the SAME already-linked character previously fell
+// through all the way to the whisper/Steam-link logic, sending a real
+// in-game whisper (or, for a Steam-linked character, offering a "Link
+// via Steam" button that sends the user through a full external OAuth
+// round-trip) for a link that would just be rejected at the very end
+// anyway. Real operator question that surfaced this: "why send the
+// player a link button when we already can determine that they are
+// already linked?" Now short-circuits immediately with a clean,
+// friendly re-affirmation -- no whisper, no external round-trip, no
+// wasted round-trip through Steam OAuth just to be told no.
+test("re-running /dune player link for the SAME already-linked character short-circuits immediately -- no whisper is sent, no Steam-link round-trip is offered", async () => {
   const db = createLinkDb();
   db.state.link = { discordUserId: "discord-1", playerControllerId: "42" };
-  let whisper = null;
+  let whisperSent = false;
 
   const result = await linkPlayerProvider(db, {}, { discordUserId: "discord-1", characterName: "Chani" }, {
     ensurePersona: async () => persona,
-    publishWhisper: async (_config, fields) => { whisper = fields; }
+    publishWhisper: async () => { whisperSent = true; }
   });
 
   assert.equal(result.ok, true);
-  assert.equal(result.pending, true);
-  assert.ok(whisper, "the whisper should still be sent for a same-character re-link");
+  assert.equal(result.alreadyLinked, true);
+  assert.equal(result.characterName, "Chani");
+  assert.equal("hasSteam" in result, false, "must not offer the Steam-link button for a character the user already has linked");
+  assert.equal(whisperSent, false, "must not send an in-game whisper for a re-link the request will just be a no-op success for");
+  assert.equal(db.state.pending, null, "no pending verification code should be created for an already-linked re-link");
+});
+
+test("re-running /dune player link for the SAME already-linked character short-circuits even when the character is Steam-linked (would otherwise offer a pointless Steam-link button)", async () => {
+  const db = createLinkDb({ hasSteam: true });
+  db.state.link = { discordUserId: "discord-1", playerControllerId: "42" };
+
+  const result = await linkPlayerProvider(db, {}, { discordUserId: "discord-1", characterName: "Chani" });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.alreadyLinked, true);
+  assert.equal("hasSteam" in result, false, "must short-circuit BEFORE the hasSteam check, not offer Steam-link and then reject at the end");
 });

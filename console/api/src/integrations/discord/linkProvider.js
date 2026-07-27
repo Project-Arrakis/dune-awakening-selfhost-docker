@@ -118,6 +118,32 @@ export async function linkPlayerProvider(db, config, { discordUserId, characterN
     };
   }
 
+  // FIX (2026-07-27, found via a real live report): re-requesting a link
+  // to the SAME character you already have was allowed to fall all the
+  // way through to the hasSteam check below, returning
+  // { ok: true, hasSteam: true, ... } for a Steam-linkable character --
+  // telling the bot to send the user through a full external OAuth
+  // round-trip, only to have Core reject the resulting
+  // linkAdditionalAccount() call at the very end with a generic
+  // "already linked to your Discord account" error. Real operator
+  // question that surfaced this: "why send the player a link button when
+  // we already can determine that they are already linked?" -- there is
+  // no good answer; Core already has this information right here, before
+  // any external round-trip, and should say so immediately. Short-circuits
+  // with the SAME in-lore phrasing as the different-character rejection
+  // above (a re-affirmation, not a failure -- ok: true, matching this
+  // function's existing convention that "you're already set up" is a
+  // success, not an error), instead of proceeding to the hasSteam/online/
+  // Funcom-ID checks at all.
+  if (existingLink && existingLink.player_controller_id === player.player_controller_id) {
+    return {
+      ok: true,
+      alreadyLinked: true,
+      characterName: player.character_name,
+      message: `Your voice already answers to ${player.character_name} in the eyes of the Landsraad -- no further binding is required.`
+    };
+  }
+
   // hasSteam: added for the Steam-connections-based linking flow (see
   // yacketrj/arrakis-control-panel:docs/steam-link-architecture.md).
   // Checked BEFORE the online/funcom-id gates below, on purpose -- Steam

@@ -350,19 +350,29 @@ test("verifying a pending additional-account code for a SECOND, different charac
 // twice" test above) and is unrelated to and unaffected by this
 // session's 1:1 gate change. Confirmed directly (a test asserting this
 // path "succeeds" was wrong and is corrected here) rather than assumed.
-test("verifying a pending additional-account code for the SAME character the user already has hits the pre-existing already-linked conflict, not the phase-one gate", async () => {
+// FIX (2026-07-27, found via a real live report): re-requesting a link
+// for the SAME character the user already has previously fell through
+// to linkAccountProvider()'s whisper-send logic, creating a real
+// pending verification code the user would then have to consume just to
+// be told (via the already_linked_to_this_account conflict) that
+// nothing needed to happen at all. linkAccountProvider() now
+// short-circuits immediately, before ever sending a whisper or creating
+// a pending code -- there is nothing left to verify.
+test("requesting a link for the SAME character the user already has short-circuits immediately -- no whisper is sent, no pending code is created", async () => {
   const db = createMultiAccountDb();
   await linkAdditionalAccount(db, "discord-1", "42");
-  await linkAccountProvider(db, {}, { discordUserId: "discord-1", characterName: "Chani" }, {
-    ensurePersona: async () => persona,
-    publishWhisper: async () => {}
-  });
-  const code = db.state.pending[0].code;
+  let whisperSent = false;
 
-  await assert.rejects(
-    () => verifyAccountLinkProvider(db, { discordUserId: "discord-1", code }),
-    (error) => error.code === "already_linked_to_this_account" && error.statusCode === 409
-  );
+  const result = await linkAccountProvider(db, {}, { discordUserId: "discord-1", characterName: "Chani" }, {
+    ensurePersona: async () => persona,
+    publishWhisper: async () => { whisperSent = true; }
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.alreadyLinked, true);
+  assert.equal(result.characterName, "Chani");
+  assert.equal(whisperSent, false, "must not send an in-game whisper for a request that will just be a no-op success");
+  assert.equal(db.state.pending.length, 0, "no pending verification code should be created");
 });
 
 test("a different Discord user cannot consume another user's pending account-link code", async () => {
@@ -513,6 +523,33 @@ test("successfully links via Steam when the character's on-file Steam ID matches
   const accounts = await listAccountsProvider(db, { discordUserId: "discord-1" });
   assert.equal(accounts.count, 1);
   assert.equal(accounts.accounts[0].playerControllerId, "42");
+});
+
+// FIX (2026-07-27, found via a real live report -- this is the exact
+// call path the report described): re-clicking "Link via Steam" for a
+// character already linked previously reached matchSteamIdForCharacter()
+// and then linkAdditionalAccount() before being rejected with a generic
+// conflict, after the user had already completed a full external
+// Discord OAuth round-trip to get here. linkPlayerProvider() now
+// short-circuits before ever offering this button for that exact
+// scenario (see discordLinkProvider.test.js's own short-circuit tests),
+// but this defensive check stays here too, since this route is
+// independently callable and not solely reachable through
+// linkPlayerProvider()'s flow.
+test("re-attempting Steam-link for a character the user already has linked short-circuits immediately -- does not re-check the Steam ID match at all", async () => {
+  const db = createMultiAccountDb();
+  await linkAdditionalAccount(db, "discord-1", "42");
+
+  const result = await linkAccountViaSteamProvider(db, {
+    discordUserId: "discord-1",
+    playerControllerId: "42",
+    steamId64List: ["76561198999999999"] // deliberately WRONG steam ID -- if this short-circuit
+    // works, the mismatched ID is never even checked, since there's nothing left to verify.
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.matched, true);
+  assert.equal(result.alreadyLinked, true);
 });
 
 test("matches even when the character's Steam ID is not the first element of a multi-element list", async () => {

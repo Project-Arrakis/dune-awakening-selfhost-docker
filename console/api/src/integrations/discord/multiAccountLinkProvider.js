@@ -30,7 +30,8 @@ import {
   createPendingAccountLink,
   deletePendingAccountLink,
   consumePendingAccountLink,
-  matchSteamIdForCharacter
+  matchSteamIdForCharacter,
+  getLinkedPlayer
 } from "../../duneDb.js";
 import { policyError } from "./policy.js";
 import { publishCarePackageWhisper } from "../../rmq.js";
@@ -131,6 +132,31 @@ export async function linkAccountProvider(db, config, { discordUserId, character
   }
 
   const player = matches[0];
+
+  // FIX (2026-07-27, found via a real live report against
+  // linkPlayerProvider()'s equivalent Steam-link path -- see that
+  // function's own comment in linkProvider.js for the full context): a
+  // request to link a character the Discord user already has linked
+  // should not proceed to send an in-game whisper at all. Core already
+  // knows this before any whisper is sent; making the player wait for
+  // (and act on) a whisper only to have the resulting verify attempt
+  // rejected at the end is the exact same wasteful, confusing pattern
+  // this session's Steam-link fix closes. Checked here even though this
+  // route is not yet called by any real Discord command (confirmed via
+  // direct review of arrakis-control-panel's adapterClient.js -- only
+  // linkAccountViaSteamProvider() is wired up today), so this route
+  // starts correct rather than needing the same fix retrofitted later
+  // once it is wired up.
+  const existingLink = await getLinkedPlayer(db, discordUserId);
+  if (existingLink && existingLink.player_controller_id === player.player_controller_id) {
+    return {
+      ok: true,
+      alreadyLinked: true,
+      characterName: player.character_name,
+      message: `Your voice already answers to ${player.character_name} in the eyes of the Landsraad -- no further binding is required.`
+    };
+  }
+
   if (player.online_status !== "Online") {
     return { ok: false, error: `${player.character_name} must be online to receive the private verification code.` };
   }
@@ -254,6 +280,34 @@ export async function linkAccountViaSteamProvider(db, { discordUserId, playerCon
       `Too many Steam-link attempts. Wait ${rateLimit.retryAfterSeconds}s, then try /dune player link <character> again.`,
       429
     );
+  }
+
+  // FIX (2026-07-27, found via a real live report): a user re-clicking
+  // "Link via Steam" for a character they already have linked would
+  // reach all the way to linkAdditionalAccount() below before being
+  // rejected with a generic "already linked to your Discord account"
+  // error -- after completing the full external Discord OAuth
+  // round-trip. linkPlayerProvider() (linkProvider.js) now short-circuits
+  // BEFORE ever offering this button in the first place for that exact
+  // scenario, so this specific call path should no longer be reachable
+  // for it in normal use -- but this check stays here too, defensively:
+  // this function is a real, independently-callable route
+  // (PLAYERS_ACCOUNTS_LINK_STEAM), not solely reachable through
+  // linkPlayerProvider()'s own flow, and a race (e.g. two rapid link
+  // attempts) could still reach here before the earlier check's state
+  // was visible. Same in-lore, ok:true response as the other two
+  // short-circuits (linkPlayerProvider(), linkAccountProvider() above)
+  // for consistency -- re-affirming an existing link is a success, not
+  // an error.
+  const existingLink = await getLinkedPlayer(db, discordUserId);
+  if (existingLink && existingLink.player_controller_id === String(playerControllerId).trim()) {
+    steamLinkRateLimiter.recordSuccess(rateLimitKey);
+    return {
+      ok: true,
+      matched: true,
+      alreadyLinked: true,
+      accounts: await listLinkedAccounts(db, discordUserId)
+    };
   }
 
   const matched = await matchSteamIdForCharacter(db, playerControllerId, steamId64List);
