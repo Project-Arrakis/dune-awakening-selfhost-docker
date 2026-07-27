@@ -19,7 +19,7 @@ import { buildBroadcastCommand, buildShutdownBroadcastCommand, publishMapChat, p
 import { clearCarePackageHistory, enableCarePackage, ensureCarePackageServerPersona, grantEligibleCarePackages, grantCarePackage, retryCarePackageGrant, runCarePackageAutoScan, saveCarePackageConfig, carePackageCapabilities, carePackageConfig, carePackageEligiblePlayers, carePackageHistory } from "./carePackage.js";
 import { readJsonBody, readMultipartForm } from "./httpSafety.js";
 import { parseBackupAutoStatus, parseBackupListRows } from "./statusParsers.js";
-import { assertInstalledAddonPermission, fetchCommunityAddons, installCommunityAddon, installedAddonContentPath, listInstalledAddons, removeInstalledAddon, setInstalledAddonEnabled, syncInstalledAddonLifecycle } from "./addons.js";
+import { assertInstalledAddonPermission, fetchCommunityAddons, installCommunityAddon, installedAddonContentPath, listInstalledAddons, removeInstalledAddon, setInstalledAddonEnabled, syncInstalledAddonLifecycle, updateCommunityAddon } from "./addons.js";
 import { performanceSnapshot as collectPerformanceSnapshot } from "./services/performance.js";
 import { serveStatic, contentTypeForPath } from "./http/staticFiles.js";
 import { discoverServices } from "./services/serviceDiscovery.js";
@@ -453,6 +453,12 @@ async function handleApi(req, res) {
     const body = await readJson(req);
     const result = await installCommunityAddon(config, body.id, { approvedPermissions: body.approvedPermissions || [] });
     audit(config, req, "addons.install", { id: result.addon.id, version: result.addon.version, permissions: result.addon.permissions, approvedPermissions: result.addon.approvedPermissions, ok: true });
+    return json(res, 200, result);
+  }
+  if (path === "/api/addons/community/update" && req.method === "POST") {
+    const body = await readJson(req);
+    const result = await updateCommunityAddon(config, body.id, { approvedPermissions: body.approvedPermissions || [] });
+    audit(config, req, "addons.update", { id: result.addon.id, previousVersion: result.previousVersion, version: result.addon.version, permissions: result.addon.permissions, approvedPermissions: result.addon.approvedPermissions, preservedConfiguration: result.preservedConfiguration, ok: true });
     return json(res, 200, result);
   }
   if (path.match(/^\/api\/addons\/installed\/[^/]+\/enable$/) && req.method === "POST") {

@@ -68,6 +68,7 @@ export const addonsApi = {
   community: () => api<CommunityAddonsIndex>("/api/addons/community"),
   installed: () => api<{ addons: InstalledAddon[] }>("/api/addons/installed"),
   installCommunity: (id: string, approvedPermissions: string[]) => post<{ ok: boolean; addon: InstalledAddon; sha256: string }>("/api/addons/community/install", { id, approvedPermissions }),
+  updateCommunity: (id: string, approvedPermissions: string[]) => post<{ ok: boolean; addon: InstalledAddon; sha256: string; previousVersion: string; preservedConfiguration: boolean }>("/api/addons/community/update", { id, approvedPermissions }),
   enable: (id: string) => post<{ ok: boolean; addon: InstalledAddon }>(`/api/addons/installed/${encodeURIComponent(id)}/enable`),
   disable: (id: string) => post<{ ok: boolean; addon: InstalledAddon }>(`/api/addons/installed/${encodeURIComponent(id)}/disable`),
   remove: (id: string) => api<{ ok: boolean; id: string }>(`/api/addons/installed/${encodeURIComponent(id)}`, { method: "DELETE" }),

@@ -1,9 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { assertInstalledAddonPermission, fetchCommunityAddons, installedAddonContentPath, listInstalledAddons, normalizeAddonManifest, normalizeAddonPermissions, normalizeAddonProvenance, normalizeCommunityAddonManifest, normalizeCommunityAddonsIndex, removeInstalledAddon, setInstalledAddonEnabled, syncInstalledAddonLifecycle, validateZipEntries } from "../src/addons.js";
+import { assertInstalledAddonPermission, compareAddonVersions, fetchCommunityAddons, installedAddonContentPath, listInstalledAddons, normalizeAddonManifest, normalizeAddonPermissions, normalizeAddonProvenance, normalizeCommunityAddonManifest, normalizeCommunityAddonsIndex, removeInstalledAddon, setInstalledAddonEnabled, syncInstalledAddonLifecycle, updateCommunityAddon, validateZipEntries } from "../src/addons.js";
 
 test("normalizes community addons index summaries", () => {
   const result = normalizeCommunityAddonsIndex({
@@ -162,6 +163,144 @@ test("rejects unsafe addon manifests and zip entries", () => {
   assert.throws(() => validateZipEntries(["web/index.html"]), /addon.json/);
   assert.equal(validateZipEntries(["addon.json", "web/index.html", "web/addon.js"]), true);
 });
+
+test("compares semantic addon versions including prereleases", () => {
+  assert.equal(compareAddonVersions("0.11.0", "0.9.2"), 1);
+  assert.equal(compareAddonVersions("1.0.0", "1.0.0-rc.2"), 1);
+  assert.equal(compareAddonVersions("1.0.0-rc.10", "1.0.0-rc.2"), 1);
+  assert.equal(compareAddonVersions("v1.2.3+build.5", "1.2.3"), 0);
+  assert.equal(compareAddonVersions("2.0.0-alpha", "2.0.0-beta"), -1);
+  assert.throws(() => compareAddonVersions("release-1", "1.0.0"), /semantic versioning/);
+});
+
+test("updates an installed addon while preserving enabled state, schedules, and custom state", async () => {
+  const repoRoot = mkdtempSync(join(tmpdir(), "dune-addon-update-"));
+  try {
+    const addonId = "demo-addon";
+    const addonDir = join(repoRoot, "runtime/addons/installed", addonId);
+    const statePath = join(repoRoot, "runtime/addons/state.json");
+    const schedulePath = join(repoRoot, "runtime/addons/jobs", addonId, "buyback.json");
+    mkdirSync(join(addonDir, "web"), { recursive: true });
+    mkdirSync(join(repoRoot, "runtime/addons/jobs", addonId), { recursive: true });
+    writeFileSync(join(addonDir, "addon.json"), JSON.stringify(addonManifestFixture(addonId, "0.9.2", ["database:read", "database:write"])));
+    writeFileSync(join(addonDir, "web/index.html"), "old package");
+    writeFileSync(schedulePath, JSON.stringify({ cron: "0 * * * *", custom: true }));
+    mkdirSync(join(repoRoot, "runtime/addons"), { recursive: true });
+    writeFileSync(statePath, JSON.stringify({
+      [addonId]: {
+        enabled: true,
+        approvedPermissions: ["database:read", "database:write"],
+        installedAt: "2026-07-01T00:00:00.000Z",
+        customState: { untouched: true }
+      }
+    }));
+
+    const archive = Buffer.from("verified addon archive");
+    const permissions = ["database:read", "database:write", "scheduler:server"];
+    const fetchImpl = addonReleaseFetch(archive, addonId, "0.11.0", permissions);
+    const runCommandImpl = addonArchiveRunner(addonId, "0.11.0", permissions);
+    const result = await updateCommunityAddon(
+      { repoRoot },
+      addonId,
+      { approvedPermissions: permissions },
+      fetchImpl,
+      runCommandImpl
+    );
+
+    assert.equal(result.previousVersion, "0.9.2");
+    assert.equal(result.addon.version, "0.11.0");
+    assert.equal(result.addon.enabled, true);
+    assert.equal(result.preservedConfiguration, true);
+    assert.equal(readFileSync(join(addonDir, "web/index.html"), "utf8"), "new package");
+    assert.deepEqual(JSON.parse(readFileSync(schedulePath, "utf8")), { cron: "0 * * * *", custom: true });
+    const state = JSON.parse(readFileSync(statePath, "utf8"))[addonId];
+    assert.equal(state.enabled, true);
+    assert.equal(state.installedAt, "2026-07-01T00:00:00.000Z");
+    assert.deepEqual(state.customState, { untouched: true });
+    assert.deepEqual(state.approvedPermissions, permissions);
+    assert.equal(typeof state.updatedAt, "string");
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test("rejects unapproved update permissions without changing the installed addon", async () => {
+  const repoRoot = mkdtempSync(join(tmpdir(), "dune-addon-update-"));
+  try {
+    const addonId = "demo-addon";
+    const addonDir = join(repoRoot, "runtime/addons/installed", addonId);
+    mkdirSync(join(addonDir, "web"), { recursive: true });
+    writeFileSync(join(addonDir, "addon.json"), JSON.stringify(addonManifestFixture(addonId, "0.9.2", ["database:read"])));
+    writeFileSync(join(addonDir, "web/index.html"), "old package");
+    const archive = Buffer.from("verified addon archive");
+    const permissions = ["database:read", "scheduler:server"];
+
+    await assert.rejects(
+      updateCommunityAddon({ repoRoot }, addonId, { approvedPermissions: ["database:read"] }, addonReleaseFetch(archive, addonId, "0.11.0", permissions), addonArchiveRunner(addonId, "0.11.0", permissions)),
+      /must be approved/
+    );
+    assert.equal(readFileSync(join(addonDir, "web/index.html"), "utf8"), "old package");
+    assert.equal(JSON.parse(readFileSync(join(addonDir, "addon.json"), "utf8")).version, "0.9.2");
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+function addonManifestFixture(id, version, permissions) {
+  return {
+    id,
+    name: "Demo Addon",
+    description: "Update test addon.",
+    author: "Red-Blink",
+    version,
+    type: "ui",
+    entry: { navigation: "Demo Addon", path: "web/index.html" },
+    permissions
+  };
+}
+
+function addonReleaseFetch(archive, id, version, permissions) {
+  const sha256 = createHash("sha256").update(archive).digest("hex");
+  const manifest = {
+    ...addonManifestFixture(id, version, permissions),
+    sourceUrl: "https://github.com/Red-Blink/demo-addon",
+    downloadUrl: `https://github.com/Red-Blink/demo-addon/releases/download/v${version}/demo-addon.zip`,
+    sha256
+  };
+  return async (url) => {
+    if (String(url).endsWith(".zip")) return { ok: true, status: 200, arrayBuffer: async () => archive };
+    if (String(url).endsWith("demo-addon.json")) return { ok: true, status: 200, json: async () => manifest };
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        schemaVersion: 1,
+        addons: [{
+          id,
+          name: "Demo Addon",
+          description: "Update test addon.",
+          author: "Red-Blink",
+          version,
+          lifecycle: "active",
+          sourceUrl: manifest.sourceUrl,
+          manifestUrl: "https://example.test/demo-addon.json",
+          permissions
+        }]
+      })
+    };
+  };
+}
+
+function addonArchiveRunner(id, version, permissions) {
+  return async (_command, args) => {
+    if (args[0] === "-Z1") return { stdout: "addon.json\nweb/index.html\n", stderr: "" };
+    const stagingRoot = args.at(-1);
+    mkdirSync(join(stagingRoot, "web"), { recursive: true });
+    writeFileSync(join(stagingRoot, "addon.json"), JSON.stringify(addonManifestFixture(id, version, permissions)));
+    writeFileSync(join(stagingRoot, "web/index.html"), "new package");
+    return { stdout: "", stderr: "" };
+  };
+}
 
 test("tracks installed addon enable disable and removal state", () => {
   const repoRoot = mkdtempSync(join(tmpdir(), "dune-addons-"));

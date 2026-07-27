@@ -93,7 +93,7 @@ Public server owners can manage their listing and Discord invite from the consol
 
 ## Community Addons
 
-Dune Docker Console includes a Community Addons area for extra tools built by the community. Server owners can discover, install, enable, and remove addons from the Web UI without replacing the main console.
+Dune Docker Console includes a Community Addons area for extra tools built by the community. Server owners can discover, install, update, enable, and remove addons from the Web UI without replacing the main console. When the catalog publishes a newer semantic version, the installed addon shows an **Update Available** badge and an **Update** button. Updates are checksum-verified and preserve the addon's enabled state, approved access, saved schedules, server-side state, and browser preferences. Any newly requested permission must be reviewed and approved before the update runs.
 
 Addons are designed to let the community experiment with new panels, reports, helpers, and server-owner workflows while keeping the core console clean. Each addon declares what it needs before it is installed, so server owners can review permissions first.
 
