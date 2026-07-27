@@ -17,7 +17,7 @@ import { adminTaskFailureDetail, friendlyCraftingSource, friendlyInlineError, fr
 import { BlueprintsPanel } from "../blueprints/BlueprintsPanel";
 
 type CraftingRecipeRow = { recipeId: string; displayName: string; category: string; source: string; qualityLevel: number; unlocked: boolean };
-type ResearchItemRow = { itemKey: string; displayName: string; category: string; productGroup: string; type: string; unlockedState: string; unlocked: boolean; isNew: boolean };
+type ResearchItemRow = { itemKey: string; displayName: string; category: string; productGroup: string; type: string; unlockedState: string; unlocked: boolean; isNew: boolean; recipeId: string; recipeUnlocked: boolean; researchPurchased: boolean; actionable: boolean; needsRecipeRepair: boolean };
 type SkillModuleCatalogRow = { skillModule: string; category: string; id: string; maxLevel: number };
 type LearnedSkillModuleRow = { module_id?: unknown; moduleId?: unknown; id?: unknown; level?: unknown; rank?: unknown; skill_points_spent?: unknown; skillPointsSpent?: unknown };
 type SkillCard = { name: string; type: string; rank: string };
@@ -342,7 +342,12 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
         type: String(row.type || "Research"),
         unlockedState: String(row.unlockedState || "Unknown"),
         unlocked: Boolean(row.unlocked),
-        isNew: Boolean(row.isNew)
+        isNew: Boolean(row.isNew),
+        recipeId: String(row.recipeId || ""),
+        recipeUnlocked: Boolean(row.recipeUnlocked),
+        researchPurchased: Boolean(row.researchPurchased),
+        actionable: Boolean(row.actionable),
+        needsRecipeRepair: Boolean(row.needsRecipeRepair)
       })).filter((row) => row.itemKey));
     } catch (error) {
       playerAdmin_setResearchRows([]);
@@ -358,10 +363,11 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
     try {
       const response = await playersApi.unlockResearchItem(dbPlayerId, { itemKey: row.itemKey, confirmation: "UNLOCK RESEARCH ITEM" });
       const alreadyUnlocked = Boolean(response.result?.alreadyUnlocked);
-      playerAdmin_addLog("Unlock Research", row.itemKey, "1", alreadyUnlocked ? "Already Unlocked" : "Succeeded");
+      const repairedRecipe = Boolean(response.result?.repairedRecipe);
+      playerAdmin_addLog("Unlock Research", row.itemKey, "1", repairedRecipe ? "Recipe Repaired" : alreadyUnlocked ? "Already Unlocked" : "Succeeded");
       await playerAdmin_loadResearchItems();
       await playerAdmin_loadCraftingRecipes();
-      playerAdmin_showResult(key, alreadyUnlocked ? "Already researched." : "Researched. Player will see it on next login.", "success");
+      playerAdmin_showResult(key, repairedRecipe ? "Build recipe repaired. Player will see it on next login." : alreadyUnlocked ? "Already researched and buildable." : "Researched and build recipe unlocked. Player will see it on next login.", "success");
     } catch (error) {
       const message = friendlyInlineError(error);
       playerAdmin_showResult(key, message, "danger");
@@ -875,7 +881,7 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
       renderCell={(row, col) => col === "itemKey" ? <code>{String(row.itemKey)}</code> : formatCell(row[col])}
       secondaryAction={(row) => <InlineActionResult result={playerAdmin_actionResult} resultKey={`research:${row.itemKey}`} />}
       secondaryActionLabel="Result"
-      action={(row) => <button className="playerAdmin_stateActionButton" disabled={!dbPlayerId || Boolean(row.unlocked) || Boolean(playerAdmin_busyActionKey)} onClick={() => playerAdmin_unlockResearchItem(row as unknown as ResearchItemRow)}>{playerAdmin_busyActionKey === `research:${row.itemKey}` ? "Researching..." : row.unlocked ? "Researched" : "Research"}</button>}
+      action={(row) => <button className="playerAdmin_stateActionButton" title={!row.actionable && !row.unlocked ? "Group markers cannot be safely unlocked as one recipe. Unlock the individual Recipe or Building entries." : undefined} disabled={!dbPlayerId || !Boolean(row.actionable) || Boolean(row.unlocked) || Boolean(playerAdmin_busyActionKey)} onClick={() => playerAdmin_unlockResearchItem(row as unknown as ResearchItemRow)}>{playerAdmin_busyActionKey === `research:${row.itemKey}` ? (row.needsRecipeRepair ? "Repairing..." : "Researching...") : row.unlocked ? "Researched" : !row.actionable ? "Group Entry" : row.needsRecipeRepair ? "Repair Unlock" : "Research"}</button>}
     />
   );
   const playerAdmin_journeySortStory = useSortState();
@@ -1064,7 +1070,7 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
           <section className="playerAdmin_box">
             <h4>Research Schematics</h4>
             <div className="playerAdmin_boxHeaderLine playerAdmin_filterHeaderLine">
-              <p>Research unlocks require the player to be offline. Unlocking research may also materialize its linked crafting recipe when the game database exposes one.</p>
+              <p>Research unlocks require the player to be offline and add the linked build recipe. Existing incomplete unlocks show Repair Unlock. Group markers are informational; unlock their individual Recipe or Building entries.</p>
             </div>
             <div className="playerAdmin_filterRow playerAdmin_filterActionLine">
               <div className="playerAdmin_filterToolsRow">
