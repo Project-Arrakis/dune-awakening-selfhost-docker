@@ -974,6 +974,7 @@ steam_attempt_limit="$steam_max_attempts"
 steam_retry_sleep="$(positive_integer_or_default "${DUNE_STEAMCMD_RETRY_SLEEP:-20}" 20)"
 steam_ok=0
 steam_manifest_fix_applied=0
+steam_manifest_hint=0
 steam_install_dir_hint=0
 steam_dns_hint=0
 steam_content_host_hint=0
@@ -1001,8 +1002,12 @@ while [ "$steam_attempt" -le "$steam_attempt_limit" ]; do
   append_new_steamcmd_content_log "$steam_content_lines" "$steam_log"
 
   echo
-  if grep -Eiq "force_install_dir|install[[:space:]_-]*dir|install folder|permission denied|disk write failure|not enough disk|no space left" "$steam_log"; then
+  if steamcmd_log_has_install_storage_failure "$steam_log"; then
     steam_install_dir_hint=1
+  fi
+
+  if steamcmd_log_has_manifest_access_denied "$steam_log"; then
+    steam_manifest_hint=1
   fi
 
   if steamcmd_log_has_dns_failure "$steam_log"; then
@@ -1033,13 +1038,15 @@ while [ "$steam_attempt" -le "$steam_attempt_limit" ]; do
     echo "This is a Steam content-host failure, not an install-directory failure."
   fi
 
-  if [ "$steam_attempt_content_host" = "1" ]; then
-    :
-  elif [ "$steam_manifest_fix_applied" = "0" ] && grep -Eiq "App '[^']+' state is 0x6|appmanifest_${APP_ID}\.acf|SteamCMD cache/metadata is stale" "$steam_log"; then
-    echo "Detected a common SteamCMD cache error while downloading the server files."
+  if [ "$steam_manifest_fix_applied" = "0" ] \
+    && steamcmd_log_needs_manifest_repair "$steam_log"; then
+    steam_manifest_hint=1
+    echo "Steam rejected the local app/depot manifest metadata."
     echo "Applying the automatic SteamCMD fix now, then retrying the update."
     fix_steamcmd_manifest
     steam_manifest_fix_applied=1
+  elif [ "$steam_attempt_content_host" = "1" ]; then
+    :
   else
     if [ "$steam_attempt" -eq 1 ]; then
       echo "SteamCMD first-run bootstrap did not complete the app install on this attempt."
@@ -1070,6 +1077,16 @@ done
 if [ "$steam_ok" != "1" ]; then
   echo
   echo "SteamCMD failed after $steam_attempt_limit attempts."
+  if [ "$steam_manifest_hint" = "1" ]; then
+    echo
+    if [ "$steam_manifest_fix_applied" = "1" ]; then
+      echo "Steam rejected stale app/depot manifest metadata, and the updater applied the safe manifest repair automatically."
+      echo "Steam still did not complete the install after regenerating its metadata."
+    else
+      echo "Steam rejected the local app/depot manifest metadata."
+      echo "Repair it safely with: runtime/scripts/dune update fix-steamcmd"
+    fi
+  fi
   if [ "$steam_content_host_hint" = "1" ]; then
     echo
     if [ "$steam_dns_hint" = "1" ] && [ -n "$steam_dns_host" ]; then
@@ -1079,7 +1096,9 @@ if [ "$steam_ok" != "1" ]; then
     else
       echo "Steam repeatedly failed to download from its assigned content hosts."
     fi
-    echo "The updater did not delete the app manifest or modify database/player data for this content-host failure."
+    if [ "$steam_manifest_fix_applied" != "1" ]; then
+      echo "The updater did not delete the app manifest or modify database/player data for this content-host failure."
+    fi
     echo "Retry later; Steam may select a different content host on the next update request."
   fi
   if [ "$steam_install_dir_hint" = "1" ]; then
@@ -1092,12 +1111,12 @@ if [ "$steam_ok" != "1" ]; then
     echo "  docker exec -u root dune-orchestrator sh -lc 'chown -R dune:dune /srv/dune /home/dune'"
     echo "  docker exec dune-orchestrator df -h /srv/dune/server /srv/dune/steam /srv/dune/cache"
   fi
-  echo
-  echo "Most common fresh-install causes:"
-  echo "  - Docker volume storage has too little free disk space."
-  echo "  - Docker volumes were restored or created with the wrong owner."
-  echo "  - Steam temporarily rejected the anonymous depot request."
-  echo "  - SteamCMD cache/metadata is stale after a Steam-side app change."
+  if [ "$steam_manifest_hint" != "1" ] \
+    && [ "$steam_content_host_hint" != "1" ] \
+    && [ "$steam_install_dir_hint" != "1" ]; then
+    echo
+    echo "SteamCMD did not provide a recognized failure reason."
+  fi
   echo
   echo "Useful checks:"
   echo "  docker exec dune-orchestrator df -h /srv/dune/server /srv/dune/steam /srv/dune/cache"

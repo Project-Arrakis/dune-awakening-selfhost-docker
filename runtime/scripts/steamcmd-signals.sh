@@ -8,13 +8,45 @@ steamcmd_log_has_dns_failure() {
     "$log_file"
 }
 
+steamcmd_log_has_manifest_access_denied() {
+  local log_file="$1"
+
+  grep -Eiq \
+    "(depot manifest|manifest request code).*(access denied)|access denied.*(depot manifest|manifest request code)" \
+    "$log_file"
+}
+
 steamcmd_log_has_content_host_failure() {
   local log_file="$1"
+
+  # Steam reports a rejected stale depot manifest as "No connection" later in
+  # the same attempt. Prefer the actionable manifest repair over CDN retries.
+  steamcmd_log_has_manifest_access_denied "$log_file" && return 1
 
   steamcmd_log_has_dns_failure "$log_file" \
     || grep -Eiq \
       'received 0 \(invalid\) http response|failed downloading [0-9]+ manifests? \(no connection\)|openconnection.*(failed|failure)|connection (timed out|timeout)' \
       "$log_file"
+}
+
+steamcmd_log_has_install_storage_failure() {
+  local log_file="$1"
+
+  grep -Eiq \
+    'disk write failure|no space left on device|not enough disk space|force_install_dir.*(failed|failure|error|denied)|install folder.*(failed|failure|error|denied)|permission denied.*(/srv/dune|/home/dune|steamapps|appmanifest)|(/srv/dune|/home/dune|steamapps|appmanifest).*permission denied' \
+    "$log_file"
+}
+
+steamcmd_log_needs_manifest_repair() {
+  local log_file="$1"
+
+  steamcmd_log_has_manifest_access_denied "$log_file" && return 0
+  steamcmd_log_has_content_host_failure "$log_file" && return 1
+  steamcmd_log_has_install_storage_failure "$log_file" && return 1
+
+  grep -Eiq \
+    "App '[^']+' state is 0x6|appmanifest_[0-9]+\.acf|SteamCMD cache/metadata is stale" \
+    "$log_file"
 }
 
 steamcmd_dns_host_from_log() {
