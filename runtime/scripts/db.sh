@@ -415,6 +415,53 @@ iter_valid_backup_names() {
       done
 }
 
+validate_live_dune_database_for_backup() {
+  local partition_count
+
+  if ! partition_count="$(
+    docker exec dune-postgres psql -U postgres -d dune -Atqc \
+      "select count(*) from dune.world_partition;" 2>/dev/null
+  )"; then
+    echo "Backup validation failed: the expected dune.world_partition table is unavailable." >&2
+    return 1
+  fi
+
+  partition_count="$(printf '%s' "$partition_count" | tr -d '[:space:]')"
+  if ! [[ "$partition_count" =~ ^[0-9]+$ ]] || [ "$partition_count" -lt 1 ]; then
+    echo "Backup validation failed: the Dune database has no world partitions." >&2
+    return 1
+  fi
+}
+
+validate_custom_backup_archive_in_container() {
+  local container_file="$1"
+
+  if ! docker exec dune-postgres pg_restore -l "$container_file" 2>/dev/null | awk '
+    /[[:space:]]SCHEMA[[:space:]]+-[[:space:]]+dune([[:space:]]|$)/ { has_schema = 1 }
+    /[[:space:]]TABLE[[:space:]]+dune[[:space:]]+world_partition([[:space:]]|$)/ { has_table = 1 }
+    /[[:space:]]TABLE DATA[[:space:]]+dune[[:space:]]+world_partition([[:space:]]|$)/ { has_data = 1 }
+    END { exit !(has_schema && has_table && has_data) }
+  '; then
+    echo "Backup validation failed: archive does not contain the expected Dune schema and world partition data." >&2
+    return 1
+  fi
+}
+
+validate_custom_backup_file() {
+  local backup_file="$1"
+  local tmp_file="/tmp/dune-db-validate-$$-${RANDOM}.backup"
+  local result=0
+
+  if ! docker cp "$backup_file" "dune-postgres:$tmp_file" >/dev/null; then
+    echo "Backup validation failed: could not copy archive into PostgreSQL for inspection." >&2
+    return 1
+  fi
+
+  validate_custom_backup_archive_in_container "$tmp_file" || result=$?
+  docker exec dune-postgres rm -f "$tmp_file" >/dev/null 2>&1 || true
+  return "$result"
+}
+
 backup_db() {
   local out_dir="${1:-$BACKUP_DIR_DEFAULT}"
   local ts
@@ -423,6 +470,8 @@ backup_db() {
   local artifact_id
   local backup_file
   local sidecar_file
+  local staged_backup_file
+  local staged_sidecar_file
   local tmp_file
 
   require_postgres
@@ -435,14 +484,40 @@ backup_db() {
   artifact_id="dune-db-$scope"
   backup_file="$out_dir/$artifact_id-$ts.backup"
   sidecar_file="$backup_file.yaml"
+  staged_backup_file="$backup_file.partial.$$"
+  staged_sidecar_file="$sidecar_file.partial.$$"
   tmp_file="/tmp/$artifact_id-$ts.backup"
 
   echo "Creating database backup..."
-  docker exec dune-postgres pg_dump -U postgres -d dune -Fc -f "$tmp_file"
-  docker cp "dune-postgres:$tmp_file" "$backup_file"
+  if ! validate_live_dune_database_for_backup; then
+    echo "Backup was not created. Existing backup files were left unchanged." >&2
+    return 1
+  fi
+  if ! docker exec dune-postgres pg_dump -U postgres -d dune -Fc -f "$tmp_file"; then
+    docker exec dune-postgres rm -f "$tmp_file" >/dev/null 2>&1 || true
+    echo "Backup was not created because pg_dump failed." >&2
+    return 1
+  fi
+  if ! validate_custom_backup_archive_in_container "$tmp_file"; then
+    docker exec dune-postgres rm -f "$tmp_file" >/dev/null 2>&1 || true
+    echo "Backup was rejected before publication. Existing backup files were left unchanged." >&2
+    return 1
+  fi
+  if ! docker cp "dune-postgres:$tmp_file" "$staged_backup_file" >/dev/null; then
+    docker exec dune-postgres rm -f "$tmp_file" >/dev/null 2>&1 || true
+    command rm -f -- "$staged_backup_file" "$staged_sidecar_file"
+    echo "Backup was not created because the archive could not be copied from PostgreSQL." >&2
+    return 1
+  fi
   docker exec dune-postgres rm -f "$tmp_file" >/dev/null 2>&1 || true
 
-  {
+  if [ ! -s "$staged_backup_file" ]; then
+    command rm -f -- "$staged_backup_file" "$staged_sidecar_file"
+    echo "Backup validation failed: copied archive is empty." >&2
+    return 1
+  fi
+
+  if ! {
     echo "artifact_id: $artifact_id"
     echo "backup_file: $(basename "$backup_file")"
     echo "created_at: $(date -Iseconds)"
@@ -455,10 +530,27 @@ backup_db() {
     echo "server_region: $(config_value .env SERVER_REGION || echo unknown)"
     echo "server_ip_mode: $(config_value .env SERVER_IP_MODE || echo unknown)"
     echo "battlegroup_id: $(config_value runtime/generated/battlegroup.env BATTLEGROUP_ID || echo unknown)"
-  } > "$sidecar_file"
+  } > "$staged_sidecar_file"; then
+    command rm -f -- "$staged_backup_file" "$staged_sidecar_file"
+    echo "Backup was not created because its metadata could not be written." >&2
+    return 1
+  fi
 
-  chmod 600 "$backup_file"
-  chmod 644 "$sidecar_file"
+  if ! chmod 600 "$staged_backup_file" || ! chmod 644 "$staged_sidecar_file"; then
+    command rm -f -- "$staged_backup_file" "$staged_sidecar_file"
+    echo "Backup was not created because its file permissions could not be secured." >&2
+    return 1
+  fi
+  if ! mv -f -- "$staged_backup_file" "$backup_file"; then
+    command rm -f -- "$staged_backup_file" "$staged_sidecar_file"
+    echo "Backup was not created because the validated archive could not be published." >&2
+    return 1
+  fi
+  if ! mv -f -- "$staged_sidecar_file" "$sidecar_file"; then
+    command rm -f -- "$backup_file" "$staged_sidecar_file"
+    echo "Backup was not created because its metadata could not be published." >&2
+    return 1
+  fi
 
   echo "Backup written:"
   echo "  $backup_file"
@@ -1070,6 +1162,17 @@ import_db() {
   esac
 
   require_postgres
+
+  case "$backup_file" in
+    *.backup|*.dump)
+      echo "Validating database backup before restore..."
+      if ! validate_custom_backup_file "$backup_file"; then
+        echo "Restore aborted before any database changes were made." >&2
+        exit 1
+      fi
+      ;;
+  esac
+
   identity_snapshot="$(capture_current_account_identities)"
 
   echo "WARNING: importing a database backup replaces current battlegroup database state."

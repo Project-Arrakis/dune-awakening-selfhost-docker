@@ -102,6 +102,7 @@ jobs:
           tests/storage-cleanup-test.sh
           tests/update-systemd-timer-health-test.sh
           tests/memory-status-effective-defaults-test.sh
+          tests/db-backup-validation-test.sh
       - name: Test Compose project-name portability
         run: |
           runtime/tests/test-compose-project-name-portability.sh
