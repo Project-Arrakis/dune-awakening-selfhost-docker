@@ -175,6 +175,12 @@ test("player portal reports wind turbines as their own generator types in a stab
     "Omnidirectional Wind Turbine",
     "Directional Wind Turbine"
   ]);
+  assert.deepEqual(base.generators.map((entry) => entry.fuelName), [
+    "Fuel Cell",
+    "Spice-infused Fuel Cell",
+    "Low-grade Lubricant",
+    "Industrial-grade Lubricant"
+  ]);
   assert.equal(base.generatorCount, 7);
   assert.equal(base.fuelCells, 720);
   assert.equal(base.unstockedCount, 1);

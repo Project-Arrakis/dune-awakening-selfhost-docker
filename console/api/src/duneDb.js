@@ -3648,13 +3648,13 @@ const GENERATOR_TYPES = {
   },
   windTurbineOmni: {
     name: "Omnidirectional Wind Turbine",
-    fuelName: "Lubricant",
+    fuelName: "Low-grade Lubricant",
     fuels: ["windturbinelubricant1"],
     buildingTypes: ["windturbineomnidirectional_placeable"]
   },
   windTurbineDirectional: {
     name: "Directional Wind Turbine",
-    fuelName: "Industrial Lubricant",
+    fuelName: "Industrial-grade Lubricant",
     fuels: ["windturbinelubricant2"],
     buildingTypes: ["windturbinedirectional_placeable"]
   }
