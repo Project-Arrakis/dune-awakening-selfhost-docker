@@ -2,7 +2,7 @@ import test, { beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { assertIdentifier, discoverDbConfig, isReadOnlySql, quoteQualified, redactDbError, rowsResult } from "../src/db.js";
-import { addCurrency, addFactionReputation, addIntel, addonLeadershipPlayers, addonOpsHealthFarms, addonOpsHealthPlayers, addonOpsHealthSummary, addonOpsHealthSummaryV2, addSpecializationXp, applyLandsraadMilestonePreset, augmentInventoryItem, augmentNewestPlayerItem, changeDunePassword, completeJourneyNode, completeTutorial, deleteInventoryItem, exportBaseAsBlueprint, giveItemToPlayer, giveItemToStorage, guildMembers, landsraadOverview, listBases, listGuilds, listPlayers, listSpicefieldTypes, listTables, liveMapPlayers, liveMapServices, playerCraftingRecipes, playerCurrency, playerFactions, playerIntel, playerInventory, playerJourney, playerPortalSnapshots, playerPosition, playerProfile, playerProgression, playerResearchItems, playerSolarisCoinTotal, playerVitals, portalGeneratorFuel, portalVehicles, repairVehicleDecay, resetJourneyNode, resetTutorial, runSql, setLandsraadPlayerContribution, tablePreview, teleportOfflinePlayerToCoords, unlockCraftingRecipe, unlockResearchItem, updateInventoryItem, updateLandsraadRewardTier, updateLandsraadTaskGoal, updateLandsraadTermTaskGoals, updateSpicefieldType, updateTableRow, UnsupportedCapabilityError, _resetPlayerTargetCacheForTests } from "../src/duneDb.js";
+import { addCurrency, addFactionReputation, addIntel, addonLeadershipPlayers, addonOpsHealthFarms, addonOpsHealthPlayers, addonOpsHealthSummary, addonOpsHealthSummaryV2, addSpecializationXp, applyLandsraadMilestonePreset, augmentInventoryItem, augmentNewestPlayerItem, changeDunePassword, completeJourneyNode, completeTutorial, deleteInventoryItem, exportBaseAsBlueprint, generatorUptimePolicy, giveItemToPlayer, giveItemToStorage, guildMembers, landsraadOverview, listBases, listGuilds, listPlayers, listSpicefieldTypes, listTables, liveMapPlayers, liveMapServices, playerCraftingRecipes, playerCurrency, playerFactions, playerIntel, playerInventory, playerJourney, playerPortalSnapshots, playerPosition, playerProfile, playerProgression, playerResearchItems, playerSolarisCoinTotal, playerVitals, portalGeneratorFuel, portalVehicles, repairVehicleDecay, resetJourneyNode, resetTutorial, runSql, setLandsraadPlayerContribution, tablePreview, teleportOfflinePlayerToCoords, unlockCraftingRecipe, unlockResearchItem, updateInventoryItem, updateLandsraadRewardTier, updateLandsraadTaskGoal, updateLandsraadTermTaskGoals, updateSpicefieldType, updateTableRow, UnsupportedCapabilityError, _resetPlayerTargetCacheForTests } from "../src/duneDb.js";
 
 beforeEach(() => {
   _resetPlayerTargetCacheForTests();
@@ -101,7 +101,7 @@ test("player portal calculates normal and spice generator fuel with their game d
     }
   };
 
-  const result = await portalGeneratorFuel(db, [133, 200]);
+  const result = await portalGeneratorFuel(db, [133, 200], { now: new Date("2026-06-30T23:59:59.000Z") });
 
   // Burn rates are measured per fuel item, not per generator type: Oil and
   // Lubricant1 burn 3600s, SpicedFuelCell and Lubricant2 burn 5400s.
@@ -117,6 +117,9 @@ test("player portal calculates normal and spice generator fuel with their game d
     runtimeSeconds: 10800,
     unstockedCount: 0,
     allGeneratorsUnstocked: false,
+    uptimeMultiplier: 1,
+    uptimeEventLabel: "",
+    uptimeEventEndsAt: "",
     generators: [
       {
         type: "fuel",
@@ -138,6 +141,25 @@ test("player portal calculates normal and spice generator fuel with their game d
       }
     ]
   });
+});
+
+test("generator uptime event doubles all supported consumables and ends automatically", async () => {
+  assert.deepEqual(generatorUptimePolicy(new Date("2026-06-30T23:59:59.999Z")), {
+    multiplier: 1, label: "", endsAt: ""
+  });
+  assert.deepEqual(generatorUptimePolicy(new Date("2026-07-01T00:00:00.000Z")), {
+    multiplier: 2,
+    label: "Double generator uptime event",
+    endsAt: "2026-09-01T00:00:00.000Z"
+  });
+  assert.deepEqual(generatorUptimePolicy(new Date("2026-09-01T00:00:00.000Z")), {
+    multiplier: 1, label: "", endsAt: ""
+  });
+
+  const calls = [];
+  const db = { query: async (text, values) => { calls.push({ text, values }); return { rows: [] }; } };
+  await portalGeneratorFuel(db, [133], { now: new Date("2026-07-27T00:00:00.000Z") });
+  assert.deepEqual(calls[0].values[2], [7200, 10800, 7200, 10800]);
 });
 
 test("player portal reports wind turbines as their own generator types in a stable order", async () => {
@@ -230,8 +252,6 @@ test("player portal matches fuel stock by generator type, never by the burning m
     "fuel:oil",
     "spice:spicedfuelcell",
     "windTurbineOmni:windturbinelubricant1",
-    "windTurbineOmni:windturbinelubricant2",
-    "windTurbineDirectional:windturbinelubricant1",
     "windTurbineDirectional:windturbinelubricant2"
   ]);
   // Nothing here needs the universe clock any more, so a missing or empty
@@ -1750,7 +1770,7 @@ test("list bases returns rows with piece and placeable counts and a total count"
   assert.equal(result.totalPieces, 700);
   assert.equal(result.totalPlaceables, 140);
   assert.deepEqual(result.rows, [
-    { base_id: "1006", name: "Sietch One", base_type: "Sub-Fief", owner_name: "Leader One", map: "TheDeepDesert", partition_id: 8, x: 100, y: 200, z: 30, piece_count: 589, placeable_count: 126, shared_with: [{ name: "Ally Two", rank: 2, label: "Co-Owner" }], generatorDataAvailable: true, generatorCount: 0, fuelCells: 0, generatorRuntimeSeconds: 0, generatorUnstockedCount: 0, generatorAllUnstocked: false, generators: [] }
+    { base_id: "1006", name: "Sietch One", base_type: "Sub-Fief", owner_name: "Leader One", map: "TheDeepDesert", partition_id: 8, x: 100, y: 200, z: 30, piece_count: 589, placeable_count: 126, shared_with: [{ name: "Ally Two", rank: 2, label: "Co-Owner" }], generatorDataAvailable: true, generatorCount: 0, fuelCells: 0, generatorRuntimeSeconds: 0, generatorUptimeMultiplier: 1, generatorUptimeEventLabel: "", generatorUptimeEventEndsAt: "", generatorUnstockedCount: 0, generatorAllUnstocked: false, generators: [] }
   ]);
 });
 
