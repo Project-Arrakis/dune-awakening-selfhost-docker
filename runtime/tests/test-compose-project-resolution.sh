@@ -137,6 +137,8 @@ grep -q "active containers report Compose project 'dune-awakening-selfhost-docke
 persist_root="$test_root/persist"
 mkdir -p "$persist_root"
 printf 'DUNE_DB_PASSWORD="quoted password"\nDUNE_COMPOSE_PROJECT_NAME=old-name\n' > "$persist_root/.env"
+chmod 640 "$persist_root/.env"
+persist_owner_before="$(stat -c '%u:%g' "$persist_root/.env")"
 sh -c '. "$1/runtime/scripts/compose-project.sh"; dune_persist_compose_project_name "$2" corrected-name' \
   sh "$repo_root" "$persist_root"
 grep -qx 'DUNE_COMPOSE_PROJECT_NAME=corrected-name' "$persist_root/.env" \
@@ -145,6 +147,23 @@ grep -qx 'COMPOSE_PROJECT_NAME=corrected-name' "$persist_root/.env" \
   || fail "standard Compose project name was not persisted for direct Docker Compose commands"
 grep -qx 'DUNE_DB_PASSWORD="quoted password"' "$persist_root/.env" \
   || fail "persisting the project name changed another config value"
+[ "$(stat -c '%u:%g' "$persist_root/.env")" = "$persist_owner_before" ] \
+  || fail "persisting the project name changed .env ownership"
+[ "$(stat -c '%a' "$persist_root/.env")" = "640" ] \
+  || fail "persisting the project name changed .env permissions"
+
+persist_inode_before="$(stat -c '%i' "$persist_root/.env")"
+persist_mtime_before="$(stat -c '%Y' "$persist_root/.env")"
+sh -c '. "$1/runtime/scripts/compose-project.sh"; dune_persist_compose_project_name "$2" corrected-name' \
+  sh "$repo_root" "$persist_root"
+[ "$(stat -c '%i' "$persist_root/.env")" = "$persist_inode_before" ] \
+  || fail "persisting an unchanged project name replaced .env"
+[ "$(stat -c '%Y' "$persist_root/.env")" = "$persist_mtime_before" ] \
+  || fail "persisting an unchanged project name touched .env"
+
+grep -q 'chown --reference="\$dune_compose_env_file" "\$dune_compose_tmp_file"' \
+  "$repo_root/runtime/scripts/compose-project.sh" \
+  || fail "atomic .env replacement does not explicitly preserve ownership"
 
 compose_json="$(cd "$repo_root" && \
   DUNE_COMPOSE_PROJECT_NAME=legacy-main \
