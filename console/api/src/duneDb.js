@@ -3204,10 +3204,26 @@ function splitCamelCase(value) {
 
 let adminVehicleMetadataCache = null;
 
+// FIX (2026-07-27, found during manual review after the initial vehicle
+// resolver was added -- not yet exercised by a live command): admin-items.json
+// (the 2558-entry item catalog) and admin-vehicles.json (this 9-entry
+// vehicle-table catalog) are not disjoint -- ContainerVehicle exists in
+// BOTH, with two different names ("Carrier Ornithopter Cargo Container"
+// in admin-items.json's vehicles category vs. this file's own
+// camelCase-split fallback, "Container Vehicle"). Per explicit operator
+// direction: admin-items.json is the bigger, more actively-maintained
+// catalog, so its real name wins for any ID present in both. This
+// function now checks it FIRST, falling back to
+// VEHICLE_DISPLAY_NAME_OVERRIDES, then splitCamelCase(), only for IDs
+// admin-items.json doesn't know about (the other 8 vehicle-table
+// entries -- Sandbike, Buggy, Tank, Sandcrawler, OrnithopterLight/
+// Medium/Transport, TreadWheel -- are genuinely vehicle-table-only, not
+// items, and are unaffected by this change).
 export function adminVehicleMetadata() {
   if (adminVehicleMetadataCache) return adminVehicleMetadataCache;
   const metadata = new Map();
   try {
+    const itemCatalog = adminItemMetadata();
     const path = [
       resolve(process.cwd(), "runtime/data/admin-vehicles.json"),
       resolve(process.cwd(), "../../runtime/data/admin-vehicles.json")
@@ -3216,7 +3232,9 @@ export function adminVehicleMetadata() {
     for (const vehicle of Array.isArray(vehicles) ? vehicles : []) {
       const id = String(vehicle.id || "").trim();
       if (!id) continue;
-      metadata.set(id, { name: VEHICLE_DISPLAY_NAME_OVERRIDES[id] || splitCamelCase(id) });
+      const itemCatalogName = itemCatalog.get(id)?.name;
+      const name = itemCatalogName || VEHICLE_DISPLAY_NAME_OVERRIDES[id] || splitCamelCase(id);
+      metadata.set(id, { name });
     }
   } catch {
     // No vehicle command depends on this yet -- fail open, same
@@ -6751,6 +6769,19 @@ export async function guildStorageQuery(db, playerControllerId) {
   return { rows: result.rows };
 }
 
+// FIX (2026-07-27, found via a real live user report on /dune player
+// storage showing "No owned storage containers found" despite a real
+// base with real containers): this previously returned only
+// container_id, with no container name or map at all. The Discord
+// bot's formatFindEmbed has always expected each result to carry
+// container_name and map (to answer "search found it, but WHICH
+// container, on WHICH map") -- Core never actually supplied either
+// field, so results were consistently gutted of exactly the context
+// a player needs to go retrieve the item. Added the same
+// name-resolution join (permission_actor / actor_name, falling back to
+// building_type) and map join already used by
+// playerOwnedStorageQuery()/guildStorageQuery() above, so a search
+// result and a storage listing describe a container identically.
 export async function searchItemsInContainers(db, { playerControllerId, query, scope = "owned" }) {
   const searchTerm = `%${String(query).trim()}%`;
 
@@ -6762,23 +6793,28 @@ export async function searchItemsInContainers(db, { playerControllerId, query, s
              i.quality_level,
              i.inventory_id,
              inv.actor_id as container_id,
+             coalesce(max(case when pa.actor_name not like '##%' and pa.actor_name <> 'None' then pa.actor_name end), p.building_type) as container_name,
+             coalesce(a.map, '') as map,
              coalesce(
-               nullif((i.stats->'FItemStackAndDurabilityStats'->1->>'CurrentDurability'), null),
+               nullif((max(i.stats->'FItemStackAndDurabilityStats'->1->>'CurrentDurability')), null),
                null
              ) as current_durability,
              coalesce(
-               nullif((i.stats->'FItemStackAndDurabilityStats'->1->>'MaxDurability')::numeric, 0),
-               nullif((i.stats->'FItemStackAndDurabilityStats'->1->>'DecayedMaxDurability')::numeric, 0),
+               nullif((max(i.stats->'FItemStackAndDurabilityStats'->1->>'MaxDurability'))::numeric, 0),
+               nullif((max(i.stats->'FItemStackAndDurabilityStats'->1->>'DecayedMaxDurability'))::numeric, 0),
                null
              ) as max_durability
       from dune.items i
       join dune.inventories inv on i.inventory_id = inv.id
       join dune.placeables p on p.id = inv.actor_id
+      left join dune.actors a on a.id = p.id
       left join dune.actor_fgl_entities afe on afe.entity_id = p.owner_entity_id
       left join dune.permission_actor_rank par on par.permission_actor_id = afe.actor_id
+      left join dune.permission_actor pa on pa.actor_id = par.permission_actor_id
       where par.player_id = $1
         and par.rank = 1
         and i.template_id ilike $2
+      group by i.id, i.template_id, i.stack_size, i.quality_level, i.inventory_id, inv.actor_id, p.building_type, a.map
       order by i.template_id
       limit 200`, [playerControllerId, searchTerm]);
     return { rows: result.rows };
@@ -6786,30 +6822,35 @@ export async function searchItemsInContainers(db, { playerControllerId, query, s
 
   if (scope === "guild") {
     const result = await db.query(`
-      select distinct i.id,
+      select i.id,
              i.template_id,
              i.stack_size,
              i.quality_level,
              i.inventory_id,
              inv.actor_id as container_id,
+             coalesce(max(case when pa.actor_name not like '##%' and pa.actor_name <> 'None' then pa.actor_name end), p.building_type) as container_name,
+             coalesce(a.map, '') as map,
              coalesce(
-               nullif((i.stats->'FItemStackAndDurabilityStats'->1->>'CurrentDurability'), null),
+               nullif((max(i.stats->'FItemStackAndDurabilityStats'->1->>'CurrentDurability')), null),
                null
              ) as current_durability,
              coalesce(
-               nullif((i.stats->'FItemStackAndDurabilityStats'->1->>'MaxDurability')::numeric, 0),
-               nullif((i.stats->'FItemStackAndDurabilityStats'->1->>'DecayedMaxDurability')::numeric, 0),
+               nullif((max(i.stats->'FItemStackAndDurabilityStats'->1->>'MaxDurability'))::numeric, 0),
+               nullif((max(i.stats->'FItemStackAndDurabilityStats'->1->>'DecayedMaxDurability'))::numeric, 0),
                null
              ) as max_durability
       from dune.items i
       join dune.inventories inv on i.inventory_id = inv.id
       join dune.placeables p on p.id = inv.actor_id
+      left join dune.actors a on a.id = p.id
       left join dune.actor_fgl_entities afe on afe.entity_id = p.owner_entity_id
       left join dune.permission_actor_rank par on par.permission_actor_id = afe.actor_id
       left join dune.guild_members gm on gm.player_id = par.player_id
       left join dune.guild_members self_gm on self_gm.player_id = $1
+      left join dune.permission_actor pa on pa.actor_id = par.permission_actor_id
       where gm.guild_id = self_gm.guild_id
         and i.template_id ilike $2
+      group by i.id, i.template_id, i.stack_size, i.quality_level, i.inventory_id, inv.actor_id, p.building_type, a.map
       order by i.template_id
       limit 200`, [playerControllerId, searchTerm]);
     return { rows: result.rows };
