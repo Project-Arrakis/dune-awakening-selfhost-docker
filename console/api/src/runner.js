@@ -607,8 +607,12 @@ function validatePartitionId(value) {
 
 function validateDisplayName(value) {
   const raw = String(value || "").trim();
-  if (raw.length <= 80 && !/[\r\n]/.test(raw)) return raw;
-  throw new Error("Invalid display name");
+  if (!raw) return "";
+  if (/[\r\n\t'|]/.test(raw)) {
+    throw new Error("Invalid Sietch name: apostrophes, pipes, tabs, and line breaks are not supported");
+  }
+  if (raw.length <= 80) return raw;
+  throw new Error("Invalid Sietch name: the name must be 80 characters or fewer");
 }
 
 function validateSietchPassword(value) {

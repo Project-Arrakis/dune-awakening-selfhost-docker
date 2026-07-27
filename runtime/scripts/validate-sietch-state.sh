@@ -9,10 +9,21 @@ ok() { printf 'OK   %s\n' "$*"; }
 fail() { printf 'FAIL %s\n' "$*" >&2; failures=$((failures + 1)); }
 warn() { printf 'WARN %s\n' "$*" >&2; }
 
-if bash -n runtime/scripts/sietches.sh runtime/scripts/publish-sietch-overrides.sh runtime/scripts/publish-deepdesert-overrides.sh runtime/scripts/publish-network-server-state-overrides.sh runtime/scripts/start-all.sh runtime/scripts/spawn-server.sh runtime/scripts/despawn-server.sh runtime/scripts/manager.sh runtime/scripts/doctor.sh runtime/scripts/dune; then
+if bash -n runtime/scripts/sietch-name.sh runtime/scripts/sietches.sh runtime/scripts/publish-sietch-overrides.sh runtime/scripts/publish-deepdesert-overrides.sh runtime/scripts/publish-network-server-state-overrides.sh runtime/scripts/start-all.sh runtime/scripts/spawn-server.sh runtime/scripts/despawn-server.sh runtime/scripts/manager.sh runtime/scripts/doctor.sh runtime/scripts/dune; then
   ok "shell syntax"
 else
   fail "shell syntax"
+fi
+
+if [ "$(bash runtime/scripts/sietch-name.sh "The Kulon Show")" = "The Kulon Show" ] \
+  && [ "$(bash runtime/scripts/sietch-name.sh "Sietch Abbir v2")" = "Sietch Abbir v2" ] \
+  && [ "$(bash runtime/scripts/sietch-name.sh "sietch   Alraab v2")" = "sietch   Alraab v2" ] \
+  && [ -z "$(bash runtime/scripts/sietch-name.sh "")" ] \
+  && ! bash runtime/scripts/sietch-name.sh "Duke's Sietch" >/dev/null 2>&1 \
+  && ! bash runtime/scripts/sietch-name.sh "Alpha|Beta" >/dev/null 2>&1; then
+  ok "Sietch display-name normalization"
+else
+  fail "Sietch display-name normalization"
 fi
 
 if grep -qF '[Screenshots Gallery](docs/screenshots.md)' README.md \
@@ -31,7 +42,7 @@ else
 fi
 
 if command -v shellcheck >/dev/null 2>&1; then
-  if shellcheck runtime/scripts/sietches.sh runtime/scripts/validate-sietch-state.sh; then
+  if shellcheck -x runtime/scripts/sietch-name.sh runtime/scripts/sietches.sh runtime/scripts/validate-sietch-state.sh; then
     ok "shellcheck"
   else
     fail "shellcheck"
@@ -95,18 +106,19 @@ config = {
     "maps": {"Survival_1": {"active_dimensions": 2, "max_dimensions": 2}},
     "partitions": {
         "1": {"display_name": "Sietch Abbir", "password": "secret"},
-        "41": {"display_name": "Sietch Alraab", "password": "secret2"},
+        "41": {"display_name": "Awesome Map", "password": "secret2"},
     },
 }
 
 config = sync(config, rows_2)
 assert config["maps"]["Survival_1"]["dimensions"]["0"]["display_name"] == "Sietch Abbir"
 assert config["maps"]["Survival_1"]["dimensions"]["1"]["password"] == "secret2"
+assert config["maps"]["Survival_1"]["dimensions"]["1"]["display_name"] == "Awesome Map"
 config = sync(config, rows_1)
 assert "41" not in config["partitions"]
-assert config["maps"]["Survival_1"]["dimensions"]["1"]["display_name"] == "Sietch Alraab"
+assert config["maps"]["Survival_1"]["dimensions"]["1"]["display_name"] == "Awesome Map"
 config = sync(config, rows_2_recreated)
-assert config["partitions"]["55"]["display_name"] == "Sietch Alraab"
+assert config["partitions"]["55"]["display_name"] == "Awesome Map"
 assert config["partitions"]["55"]["password"] == "secret2"
 print("OK   dimension state survives 1 -> 2 -> 1 -> recreated 2")
 PY

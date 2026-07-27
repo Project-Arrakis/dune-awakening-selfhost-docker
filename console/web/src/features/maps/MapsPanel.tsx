@@ -2065,12 +2065,22 @@ function valuesForDirtyFields(original: Record<string, string>, draft: Record<st
 type SietchRow = { partitionId: string; dimension: string; displayName: string; password: string; passwordSet: boolean; active: boolean };
 const SIETCH_PASSWORD_MASK = "********";
 
-function parseSietchRows(text: string, idsText = ""): SietchRow[] {
+export function parseSietchRows(text: string, idsText = ""): SietchRow[] {
   const rows: SietchRow[] = [];
   const ids = idsText.split(/\r?\n/).map((line) => line.trim()).filter((line) => /^\d+$/.test(line));
   let dimensionIndex = 0;
   for (const line of text.split(/\r?\n/)) {
     if (/^\s*DIMENSION\b/i.test(line)) continue;
+    const tableMatch = line.match(/^\s*(\d+)\s+(.+?)\s+(\((?:un)?set\))\s*$/i);
+    if (tableMatch) {
+      const dimension = tableMatch[1];
+      const partitionId = ids[dimensionIndex] || dimension;
+      const displayName = tableMatch[2].trim();
+      const passwordSet = /^\(set\)$/i.test(tableMatch[3]);
+      rows.push({ partitionId, dimension, displayName, password: "", passwordSet, active: true });
+      dimensionIndex += 1;
+      continue;
+    }
     const partitionMatch = line.match(/\b(?:partition|id)\s*[:=]?\s*(\d+)\b/i) || line.match(/^\s*(\d+)\s+/);
     if (!partitionMatch) continue;
     const dimension = partitionMatch[1];
