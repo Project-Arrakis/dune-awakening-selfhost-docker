@@ -18,6 +18,8 @@ REPO_GID="$(stat -c '%g' .)"
 HOST_UID="${DUNE_HOST_UID:-$REPO_UID}"
 HOST_GID="${DUNE_HOST_GID:-$REPO_GID}"
 DOCKER_SOCK_GID="${DOCKER_SOCKET_GID:-}"
+AUTOSCALER_CONTAINER_REPO_ROOT="/repo"
+HOST_REPO_ROOT="$(host_path "$PWD")"
 
 if [ "$HOST_UID" = "0" ] && [ "$REPO_UID" != "0" ]; then
   HOST_UID="$REPO_UID"
@@ -72,11 +74,11 @@ docker run -d \
   --user "${HOST_UID}:${HOST_GID}" \
   "${group_args[@]}" \
   --entrypoint bash \
-  -e "DUNE_CONTAINER_REPO_ROOT=${DUNE_CONTAINER_REPO_ROOT:-$PWD}" \
-  -e "DUNE_HOST_REPO_ROOT=${DUNE_HOST_REPO_ROOT:-$PWD}" \
+  -e "DUNE_CONTAINER_REPO_ROOT=$AUTOSCALER_CONTAINER_REPO_ROOT" \
+  -e "DUNE_HOST_REPO_ROOT=$HOST_REPO_ROOT" \
   -v /var/run/docker.sock:/var/run/docker.sock \
-  -v "$(host_path "$PWD"):$PWD" \
-  -w "$PWD" \
+  -v "$HOST_REPO_ROOT:$AUTOSCALER_CONTAINER_REPO_ROOT" \
+  -w "$AUTOSCALER_CONTAINER_REPO_ROOT" \
   "$IMAGE" \
   runtime/scripts/autoscaler.sh >/dev/null
 

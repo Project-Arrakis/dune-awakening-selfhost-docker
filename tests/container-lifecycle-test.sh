@@ -262,9 +262,20 @@ else
   fail "startup paths must repair host runtime permissions before loading .env"
 fi
 
-# ── Cleanup ──
 echo ""
-echo "17. Docker storage growth controls"
+echo "17. Autoscaler uses a portable in-container checkout path"
+if grep -Fq 'AUTOSCALER_CONTAINER_REPO_ROOT="/repo"' "$REPO_ROOT/runtime/scripts/start-autoscaler.sh" \
+  && grep -Fq -- '-e "DUNE_CONTAINER_REPO_ROOT=$AUTOSCALER_CONTAINER_REPO_ROOT"' "$REPO_ROOT/runtime/scripts/start-autoscaler.sh" \
+  && grep -Fq -- '-e "DUNE_HOST_REPO_ROOT=$HOST_REPO_ROOT"' "$REPO_ROOT/runtime/scripts/start-autoscaler.sh" \
+  && grep -Fq -- '-v "$HOST_REPO_ROOT:$AUTOSCALER_CONTAINER_REPO_ROOT"' "$REPO_ROOT/runtime/scripts/start-autoscaler.sh" \
+  && grep -Fq -- '-w "$AUTOSCALER_CONTAINER_REPO_ROOT"' "$REPO_ROOT/runtime/scripts/start-autoscaler.sh"; then
+  pass "autoscaler checkout mount does not inherit a restricted host home path"
+else
+  fail "autoscaler must separate its container checkout path from the host checkout path"
+fi
+
+echo ""
+echo "18. Docker storage growth controls"
 log_arg_scripts=(
   start-postgres.sh start-rabbitmq.sh start-text-router.sh start-director.sh
   start-server-gateway.sh start-server-overmap.sh start-server-survival-1.sh
