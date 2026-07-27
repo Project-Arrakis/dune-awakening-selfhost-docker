@@ -20,16 +20,21 @@ these constants silently wrong until someone re-measures and updates them.
 This re-run confirms all four `FUEL_BURN_SECONDS` values against the live
 server, including spice: a `SpiceGenerator_Placeable` burning `SpicedFuelCell`
 was observed at 5400s, matching the constant that was previously an
-unverified inheritance rather than a direct measurement. Its building_type
-(`spicegenerator_placeable` lowercased) contains both the `generator` and
-`spice` substrings the classification CASE in `portalGeneratorFuel()`
-requires, so it's still classified correctly. No constant needs updating
-from this pass.
+unverified inheritance rather than a direct measurement. Its building type
+(`spicegenerator_placeable` lowercased) is present in the explicit allowlist
+in `portalGeneratorFuel()`, so it is classified correctly. No constant needs
+updating from this pass.
 
 The one `Generator_Placeable`/`None` row with no duration is an idle
 generator whose fuel-burning component has never been populated (nothing
 has burned in it yet) — it contributes no stock either way and doesn't
 affect `FUEL_BURN_SECONDS`.
+
+The Console uses these durations to convert accepted fuel units currently
+queued in each generator's inventory into a queued reserve. It deliberately
+does not call that value an exact depletion countdown: the active burn marker
+and its timestamps can remain stale after a restart or base load, so they do
+not reliably prove whether a partially consumed unit is still active.
 
 ## Re-verification query
 

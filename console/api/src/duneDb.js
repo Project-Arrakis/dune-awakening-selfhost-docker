@@ -2797,8 +2797,8 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
         generatorCount: fuelByBase.get(String(row.base_id))?.generatorCount || 0,
         fuelCells: fuelByBase.get(String(row.base_id))?.fuelCells || 0,
         generatorRuntimeSeconds: fuelByBase.get(String(row.base_id))?.runtimeSeconds || 0,
-        generatorEmptyCount: fuelByBase.get(String(row.base_id))?.emptyCount || 0,
-        generatorAllEmpty: fuelByBase.get(String(row.base_id))?.allGeneratorsEmpty || false,
+        generatorUnstockedCount: fuelByBase.get(String(row.base_id))?.unstockedCount || 0,
+        generatorAllUnstocked: fuelByBase.get(String(row.base_id))?.allGeneratorsUnstocked || false,
         generators: fuelByBase.get(String(row.base_id))?.generators || []
       }))
     };
@@ -3462,8 +3462,8 @@ export async function playerPortalSnapshots(db, requestedAccountHashes, journeyT
           fuelCells: fuelByBase.get(String(base.base_id))?.fuelCells || 0,
           generatorCount: fuelByBase.get(String(base.base_id))?.generatorCount || 0,
           generatorRuntimeSeconds: fuelByBase.get(String(base.base_id))?.runtimeSeconds || 0,
-          generatorEmptyCount: fuelByBase.get(String(base.base_id))?.emptyCount || 0,
-          generatorAllEmpty: fuelByBase.get(String(base.base_id))?.allGeneratorsEmpty || false,
+          generatorUnstockedCount: fuelByBase.get(String(base.base_id))?.unstockedCount || 0,
+          generatorAllUnstocked: fuelByBase.get(String(base.base_id))?.allGeneratorsUnstocked || false,
           generators: fuelByBase.get(String(base.base_id))?.generators || [],
           map: base.map || "",
           partitionId: Number(base.partition_id) || 0,
@@ -3623,22 +3623,41 @@ function portalVehicleDisplayName(type) {
 // Re-verify after game updates; the measurement query lives in
 // docs/generator-fuel-burn-rates.md.
 const FUEL_BURN_SECONDS = {
-  oil: 60 * 60,                   // measured across 68 generators
+  oil: 60 * 60,                   // measured across 69 populated components
   spicedfuelcell: 90 * 60,        // measured — confirmed 2026-07-26 after the
                                    // generator rolled to a fresh burn cycle
   windturbinelubricant1: 60 * 60, // measured across 6 turbines
-  windturbinelubricant2: 90 * 60  // measured on 1 turbine
+  windturbinelubricant2: 90 * 60  // measured across 2 turbines
 };
 
-// Display metadata and accepted fuels per generator type. The SQL below
-// classifies placeables into these keys from building_type; adding a type means
-// adding a branch to that CASE and an entry here. Fuel lists are passed into the
-// query as parameters, so this is the single source of truth for both.
+// Display metadata, accepted fuels, and explicit placeable allowlists per
+// generator type. Both mappings are passed into SQL as parameters, so adding a
+// supported type or known alias requires changing this object only.
 const GENERATOR_TYPES = {
-  fuel: { name: "Fuel-Powered Generator", fuelName: "Fuel Cell", fuels: ["oil"] },
-  spice: { name: "Spice-Powered Generator", fuelName: "Spice-infused Fuel Cell", fuels: ["spicedfuelcell"] },
-  windTurbineOmni: { name: "Omnidirectional Wind Turbine", fuelName: "Lubricant", fuels: ["windturbinelubricant1", "windturbinelubricant2"] },
-  windTurbineDirectional: { name: "Directional Wind Turbine", fuelName: "Lubricant", fuels: ["windturbinelubricant1", "windturbinelubricant2"] }
+  fuel: {
+    name: "Fuel-Powered Generator",
+    fuelName: "Fuel Cell",
+    fuels: ["oil"],
+    buildingTypes: ["generator_placeable"]
+  },
+  spice: {
+    name: "Spice-Powered Generator",
+    fuelName: "Spice-infused Fuel Cell",
+    fuels: ["spicedfuelcell"],
+    buildingTypes: ["spicegenerator_placeable"]
+  },
+  windTurbineOmni: {
+    name: "Omnidirectional Wind Turbine",
+    fuelName: "Lubricant",
+    fuels: ["windturbinelubricant1", "windturbinelubricant2"],
+    buildingTypes: ["windturbineomnidirectional_placeable", "windturbineomni_placeable"]
+  },
+  windTurbineDirectional: {
+    name: "Directional Wind Turbine",
+    fuelName: "Lubricant",
+    fuels: ["windturbinelubricant1", "windturbinelubricant2"],
+    buildingTypes: ["windturbinedirectional_placeable"]
+  }
 };
 
 const GENERATOR_TYPE_ORDER = ["fuel", "spice", "windTurbineOmni", "windTurbineDirectional"];
@@ -3647,6 +3666,9 @@ const GENERATOR_TYPE_ORDER = ["fuel", "spice", "windTurbineOmni", "windTurbineDi
 // shaped for unnest() so the query never interpolates a fuel name.
 const GENERATOR_TYPE_FUEL_PAIRS = GENERATOR_TYPE_ORDER.flatMap(
   (type) => GENERATOR_TYPES[type].fuels.map((template) => [type, template])
+);
+const GENERATOR_BUILDING_TYPE_PAIRS = GENERATOR_TYPE_ORDER.flatMap(
+  (type) => GENERATOR_TYPES[type].buildingTypes.map((buildingType) => [type, buildingType])
 );
 const FUEL_TEMPLATE_IDS = Object.keys(FUEL_BURN_SECONDS);
 
@@ -3667,31 +3689,16 @@ export async function portalGeneratorFuel(db, baseIds) {
       select * from unnest($2::text[], $3::numeric[]) as t(template_id, seconds)
     ), type_fuels as (
       select * from unnest($4::text[], $5::text[]) as t(generator_type, template_id)
+    ), generator_types as (
+      select * from unnest($6::text[], $7::text[]) as t(generator_type, building_type)
     ), generator_spec as (
-      select base_id, generator_id, generator_type
-      from (
-        select be.id::text base_id, p.id generator_id,
-          -- Classification is also the detection filter: anything this cannot
-          -- name is dropped by the null check below rather than defaulted.
-          -- Defaulting an unrecognized variant to 'fuel' matched it against Oil
-          -- alone, so it reported 0 runtime and "out of fuel" forever with
-          -- nothing signalling the mistake. Spice needs both the generator and
-          -- spice tokens or it would also capture SpiceSilo_Placeable, and the
-          -- turbine arms must precede the generator arms because a turbine name
-          -- carries no 'generator' token.
-          case
-            when lower(p.building_type) not like '%placeable%' then null
-            when lower(p.building_type) like '%windturbineomni%' then 'windTurbineOmni'
-            when lower(p.building_type) like '%windturbinedirectional%' then 'windTurbineDirectional'
-            when lower(p.building_type) like '%generator%'
-              and lower(p.building_type) like '%spice%' then 'spice'
-            when lower(p.building_type) like '%generator%' then 'fuel'
-          end generator_type
-        from base_entities be
-        join dune.placeables p on p.owner_entity_id=be.owner_entity_id
-          and (lower(p.building_type) like '%generator%' or lower(p.building_type) like '%windturbine%')
-      ) classified
-      where generator_type is not null
+      -- Classification is an explicit allowlist. Unknown placeables containing
+      -- "generator" must not silently become oil generators and report an
+      -- invented empty/zero state.
+      select be.id::text base_id, p.id generator_id, gt.generator_type
+      from base_entities be
+      join dune.placeables p on p.owner_entity_id=be.owner_entity_id
+      join generator_types gt on gt.building_type=lower(p.building_type)
     ), generator_state as (
       select gs.base_id, gs.generator_id, gs.generator_type,
         coalesce(stock.stocked_seconds, 0)::numeric stocked_seconds,
@@ -3718,43 +3725,43 @@ export async function portalGeneratorFuel(db, baseIds) {
         where inv.actor_id=gs.generator_id
       ) stock on true
     ), generator_runtime as (
-      -- Runtime is the burn time sitting in the generator, which is the figure a
-      -- player can confirm by opening it.
+      -- This is the verifiable queued fuel reserve shown in the generator's
+      -- inventory. It is not an exact live countdown: the active burn marker
+      -- and its timestamps can remain stale after restart/base load, so they
+      -- cannot safely prove whether a partially consumed unit is still active.
       --
       -- m_FuelBurningInitialTime is deliberately NOT subtracted here. It resets
       -- on server restart / base load — whole cohorts of unrelated placeables
       -- share one value — so time elapsed since it says nothing about fuel
       -- actually consumed. Subtracting it reported well-stocked generators as
-      -- out of fuel, because the check tripped on whichever ones held the least
-      -- fuel rather than on ones that were genuinely dry.
+      -- empty, because the check tripped on whichever ones held the least fuel.
       select base_id, generator_id, generator_type, fuel_cells,
         stocked_seconds::bigint runtime_seconds,
-        (fuel_cells = 0) is_empty
+        (fuel_cells = 0) has_no_queued_fuel
       from generator_state
     )
     select base_id, generator_type, count(*)::int generator_count, sum(fuel_cells)::int fuel_cells,
-      -- Excludes empty generators: including them dragged the minimum to 0 the
-      -- instant one generator ran dry, reporting a base of otherwise-fuelled
-      -- generators as fully depleted. null here means every generator in the
-      -- group is empty, not "depletes now" — the JS reduction below relies on
-      -- that distinction.
-      min(runtime_seconds) filter (where not is_empty)::bigint runtime_seconds,
-      count(*) filter (where is_empty)::int empty_count
+      -- Excludes generators with no queued fuel: including them dragged the
+      -- minimum reserve to 0 even when other generators remained stocked. null
+      -- means every generator in the group has no queued fuel.
+      min(runtime_seconds) filter (where not has_no_queued_fuel)::bigint runtime_seconds,
+      count(*) filter (where has_no_queued_fuel)::int unstocked_count
     from generator_runtime group by base_id, generator_type`, [
       baseIds,
       FUEL_TEMPLATE_IDS,
       FUEL_TEMPLATE_IDS.map((template) => FUEL_BURN_SECONDS[template]),
       GENERATOR_TYPE_FUEL_PAIRS.map(([type]) => type),
-      GENERATOR_TYPE_FUEL_PAIRS.map(([, template]) => template)
+      GENERATOR_TYPE_FUEL_PAIRS.map(([, template]) => template),
+      GENERATOR_BUILDING_TYPE_PAIRS.map(([type]) => type),
+      GENERATOR_BUILDING_TYPE_PAIRS.map(([, buildingType]) => buildingType)
     ]);
   const byBase = new Map();
   for (const row of result.rows) {
     const baseId = String(row.base_id);
     const type = row.generator_type;
-    // row.runtime_seconds is null when every generator of this type is empty
-    // (the `filter (where not is_empty)` aggregate has nothing to average) —
-    // kept null here rather than defaulted to 0, so it can be told apart from
-    // "depletes now" below and left out of the base-wide minimum.
+    // row.runtime_seconds is null when every generator of this type has no
+    // queued fuel. Keep it null long enough to exclude it from the base-wide
+    // minimum reserve.
     const typeRuntimeSeconds = row.runtime_seconds == null ? null : Number(row.runtime_seconds);
     const detail = {
       type,
@@ -3763,18 +3770,18 @@ export async function portalGeneratorFuel(db, baseIds) {
       fuelCells: Number(row.fuel_cells) || 0,
       generatorCount: Number(row.generator_count) || 0,
       runtimeSeconds: typeRuntimeSeconds || 0,
-      emptyCount: Number(row.empty_count) || 0
+      unstockedCount: Number(row.unstocked_count) || 0
     };
     const current = byBase.get(baseId) || {
       fuelCells: 0,
       generatorCount: 0,
       runtimeSeconds: null,
-      emptyCount: 0,
+      unstockedCount: 0,
       generators: []
     };
     current.fuelCells += detail.fuelCells;
     current.generatorCount += detail.generatorCount;
-    current.emptyCount += detail.emptyCount;
+    current.unstockedCount += detail.unstockedCount;
     if (typeRuntimeSeconds != null) {
       current.runtimeSeconds = current.runtimeSeconds == null
         ? typeRuntimeSeconds
@@ -3786,7 +3793,7 @@ export async function portalGeneratorFuel(db, baseIds) {
     byBase.set(baseId, current);
   }
   for (const value of byBase.values()) {
-    value.allGeneratorsEmpty = value.generatorCount > 0 && value.emptyCount >= value.generatorCount;
+    value.allGeneratorsUnstocked = value.generatorCount > 0 && value.unstockedCount >= value.generatorCount;
     value.runtimeSeconds ||= 0;
   }
   return byBase;
