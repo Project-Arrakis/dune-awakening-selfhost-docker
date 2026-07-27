@@ -3214,19 +3214,38 @@ export async function playerResearchItems(db, id) {
     from all_research
     left join player_research on player_research.item_key = all_research.item_key
     order by all_research.item_key`, [player.actorId]);
+  const playerRecipes = await db.query(`
+    with player_recipes as (
+      select distinct recipe->'BaseRecipeId'->>'Name' as recipe_id
+      from dune.actors a
+      cross join lateral jsonb_array_elements(coalesce(a.properties->'CraftingRecipesLibraryActorComponent'->'m_KnownItemRecipes', '[]'::jsonb)) recipe
+      where a.id = $1 and recipe->'BaseRecipeId'->>'Name' is not null
+    )
+    select recipe_id from player_recipes`, [player.actorId]);
+  const unlockedRecipes = new Set(playerRecipes.rows.map((row) => String(row.recipe_id || "")).filter(Boolean));
   return {
     capabilities: { researchItems: true },
     player,
-    rows: result.rows.map((row) => ({
-      itemKey: row.item_key,
-      displayName: researchDisplayName(row.item_key),
-      category: researchCategory(row.item_key),
-      productGroup: researchProductGroup(row.item_key, researchCategory(row.item_key)),
-      type: researchType(row.item_key),
-      unlockedState: row.unlocked_state || "Unknown",
-      isNew: Boolean(row.is_new),
-      unlocked: row.unlocked_state === "Purchased"
-    }))
+    rows: result.rows.map((row) => {
+      const recipeId = linkedResearchRecipeId(row.item_key);
+      const researchPurchased = row.unlocked_state === "Purchased";
+      const recipeUnlocked = !recipeId || unlockedRecipes.has(recipeId);
+      return {
+        itemKey: row.item_key,
+        displayName: researchDisplayName(row.item_key),
+        category: researchCategory(row.item_key),
+        productGroup: researchProductGroup(row.item_key, researchCategory(row.item_key)),
+        type: researchType(row.item_key),
+        unlockedState: row.unlocked_state || "Unknown",
+        isNew: Boolean(row.is_new),
+        recipeId,
+        recipeUnlocked,
+        researchPurchased,
+        actionable: Boolean(recipeId),
+        needsRecipeRepair: Boolean(recipeId && researchPurchased && !recipeUnlocked),
+        unlocked: researchPurchased && recipeUnlocked
+      };
+    })
   };
 }
 
@@ -3262,13 +3281,25 @@ export async function unlockResearchItem(db, id, { itemKey }) {
     if (!found) {
       nextItems.push({ ItemKey: safeItemKey, bIsNewEntry: false, UnlockedState: "Purchased" });
     }
+    const recipeId = linkedResearchRecipeId(safeItemKey);
+    if (!recipeId) {
+      throw new Error(`Research group ${safeItemKey} cannot be unlocked directly because it does not identify one build recipe. Unlock its individual Recipe or Building entries instead.`);
+    }
+    const recipe = await materializeResearchCraftingRecipe(tx, player.actorId, recipeId);
     await tx.query(`
       update dune.actors
       set properties = jsonb_set(properties, '{TechKnowledgePlayerComponent,m_TechKnowledge,m_TechKnowledgeData}', $2::jsonb, true)
       where id = $1 and properties ? 'TechKnowledgePlayerComponent'`, [player.actorId, JSON.stringify(nextItems)]);
-    const recipeId = researchRecipeId(safeItemKey);
-    const recipeMaterialized = recipeId ? await materializeCraftingRecipeIfKnown(tx, player.actorId, recipeId) : false;
-    return { ok: true, player, itemKey: safeItemKey, alreadyUnlocked, recipeId, recipeMaterialized };
+    return {
+      ok: true,
+      player,
+      itemKey: safeItemKey,
+      alreadyUnlocked,
+      recipeId,
+      recipeMaterialized: recipe.recipeUnlocked,
+      recipeAdded: recipe.recipeAdded,
+      repairedRecipe: Boolean(alreadyUnlocked && recipe.recipeAdded)
+    };
   });
 }
 
@@ -4980,27 +5011,29 @@ async function applyJourneyFactionBumps(db, player, tags) {
   return { factionBumps };
 }
 
-async function materializeCraftingRecipeIfKnown(db, actorId, recipeId) {
-  if (!recipeId) return false;
-  const catalogHasRecipe = craftingRecipeCatalog().some((row) => row.recipeId === recipeId);
-  if (!catalogHasRecipe) {
-    const known = await db.query(`
-      select exists (
-        select 1
-        from dune.actors a
-        cross join lateral jsonb_array_elements(coalesce(a.properties->'CraftingRecipesLibraryActorComponent'->'m_KnownItemRecipes', '[]'::jsonb)) recipe
-        where recipe->'BaseRecipeId'->>'Name' = $1
-      ) as exists`, [recipeId]);
-    if (!known.rows[0]?.exists) return false;
+function linkedResearchRecipeId(itemKey) {
+  const value = String(itemKey || "");
+  if (value.startsWith("BLD_") && !value.endsWith("_Patent")) {
+    const buildingId = value.slice(4);
+    const metadata = adminItemMetadata().get(buildingId);
+    if (String(metadata?.category || "").toLowerCase() === "buildings") return buildingId;
   }
+  return researchRecipeId(value);
+}
+
+async function materializeResearchCraftingRecipe(db, actorId, recipeId) {
   const current = await db.query(`
     select properties->'CraftingRecipesLibraryActorComponent'->'m_KnownItemRecipes' as recipes
     from dune.actors
     where id = $1 and properties ? 'CraftingRecipesLibraryActorComponent'
     for update`, [actorId]);
-  if (!current.rows.length) return false;
+  if (!current.rows.length) {
+    throw new UnsupportedCapabilityError(`CraftingRecipesLibraryActorComponent not found for player ${actorId}; research was not changed.`);
+  }
   const recipes = Array.isArray(current.rows[0]?.recipes) ? current.rows[0].recipes : [];
-  if (recipes.some((recipe) => recipe?.BaseRecipeId?.Name === recipeId)) return false;
+  if (recipes.some((recipe) => recipe?.BaseRecipeId?.Name === recipeId)) {
+    return { recipeUnlocked: true, recipeAdded: false };
+  }
   const nextRecipes = [...recipes, {
     m_Source: "SchematicPickup",
     m_bIsNew: true,
@@ -5013,7 +5046,7 @@ async function materializeCraftingRecipeIfKnown(db, actorId, recipeId) {
     update dune.actors
     set properties = jsonb_set(properties, '{CraftingRecipesLibraryActorComponent,m_KnownItemRecipes}', $2::jsonb, true)
     where id = $1 and properties ? 'CraftingRecipesLibraryActorComponent'`, [actorId, JSON.stringify(nextRecipes)]);
-  return true;
+  return { recipeUnlocked: true, recipeAdded: true };
 }
 
 async function supportsCurrencyMutation(db) {

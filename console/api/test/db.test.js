@@ -3304,19 +3304,40 @@ test("research listing uses TechKnowledge item keys and selected player state", 
       { item_key: "DA_GRP_SandbikePack", unlocked_state: "NotPurchased", is_new: true },
       { item_key: "DA_GRP_BuggyPack", unlocked_state: "NotPurchased", is_new: true },
       { item_key: "RCP_RecyclerDUMMY_UniqueBikeBoost", unlocked_state: "NotPurchased", is_new: true }
-    ]
+    ],
+    craftingListRows: [{ recipe_id: "HealthPackRecipe" }]
   });
   const result = await playerResearchItems(db, 123);
   assert.equal(result.rows.length, 4);
   assert.equal(result.rows[0].itemKey, "RCP_HealthPackRecipe");
   assert.equal(result.rows[0].type, "Recipe");
   assert.equal(result.rows[0].unlocked, true);
+  assert.equal(result.rows[0].recipeUnlocked, true);
   assert.equal(result.rows[1].type, "Group");
   assert.equal(result.rows[2].category, "Vehicles");
   assert.equal(result.rows[2].productGroup, "Copper Products");
   assert.equal(result.rows[3].category, "Uniques");
   assert.equal(result.rows[3].productGroup, "Copper Products");
   assert.ok(calls.some((call) => call.text.includes("TechKnowledgePlayerComponent") && call.text.includes("all_research")));
+});
+
+test("research listing exposes purchased entries whose build recipe needs repair", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    researchListRows: [
+      { item_key: "RCP_HealthPackRecipe", unlocked_state: "Purchased", is_new: false },
+      { item_key: "DA_GRP_SandbikePack", unlocked_state: "Purchased", is_new: false }
+    ],
+    craftingListRows: []
+  });
+  const result = await playerResearchItems(db, 123);
+  assert.equal(result.rows[0].unlocked, false);
+  assert.equal(result.rows[0].researchPurchased, true);
+  assert.equal(result.rows[0].recipeId, "HealthPackRecipe");
+  assert.equal(result.rows[0].needsRecipeRepair, true);
+  assert.equal(result.rows[1].unlocked, true);
+  assert.equal(result.rows[1].actionable, false);
+  assert.equal(result.rows[1].needsRecipeRepair, false);
 });
 
 test("research unlock updates TechKnowledge and materializes verified recipe", async () => {
@@ -3358,6 +3379,64 @@ test("research unlock appends missing verified key without duplicating existing 
   const recipeUpdate = calls.find((call) => call.text.includes("CraftingRecipesLibraryActorComponent,m_KnownItemRecipes") && call.text.includes("update dune.actors"));
   assert.ok(recipeUpdate);
   assert.equal(JSON.parse(recipeUpdate.values[1])[0].BaseRecipeId.Name, "WaterCistern_Patent");
+});
+
+test("research unlock repairs an already-purchased entry with a missing recipe", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    researchExists: true,
+    currentResearchItems: [{ ItemKey: "RCP_HealthPackRecipe", bIsNewEntry: false, UnlockedState: "Purchased" }],
+    currentCraftingRecipes: []
+  });
+  const result = await unlockResearchItem(db, 123, { itemKey: "RCP_HealthPackRecipe" });
+  assert.equal(result.alreadyUnlocked, true);
+  assert.equal(result.recipeMaterialized, true);
+  assert.equal(result.recipeAdded, true);
+  assert.equal(result.repairedRecipe, true);
+  const recipeUpdate = calls.find((call) => call.text.includes("CraftingRecipesLibraryActorComponent,m_KnownItemRecipes") && call.text.includes("update dune.actors"));
+  assert.equal(JSON.parse(recipeUpdate.values[1])[0].BaseRecipeId.Name, "HealthPackRecipe");
+});
+
+test("research unlock uses exact catalog building IDs when the research key is not a patent", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    researchExists: true,
+    currentResearchItems: [],
+    currentCraftingRecipes: []
+  });
+  const result = await unlockResearchItem(db, 123, { itemKey: "BLD_SmallSpiceRefinery" });
+  assert.equal(result.recipeId, "SmallSpiceRefinery");
+  assert.equal(result.recipeMaterialized, true);
+  const recipeUpdate = calls.find((call) => call.text.includes("CraftingRecipesLibraryActorComponent,m_KnownItemRecipes") && call.text.includes("update dune.actors"));
+  assert.equal(JSON.parse(recipeUpdate.values[1])[0].BaseRecipeId.Name, "SmallSpiceRefinery");
+});
+
+test("research unlock does not change research when the recipe component is unavailable", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    researchExists: true,
+    currentResearchItems: [{ ItemKey: "RCP_HealthPackRecipe", bIsNewEntry: true, UnlockedState: "NotPurchased" }],
+    currentCraftingRecipes: null
+  });
+  await assert.rejects(
+    () => unlockResearchItem(db, 123, { itemKey: "RCP_HealthPackRecipe" }),
+    /research was not changed/
+  );
+  assert.equal(calls.some((call) => call.text.includes("TechKnowledgePlayerComponent,m_TechKnowledge,m_TechKnowledgeData") && call.text.includes("update dune.actors")), false);
+});
+
+test("research unlock rejects group markers instead of recording a false successful unlock", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    researchExists: true,
+    currentResearchItems: [{ ItemKey: "DA_GRP_SandbikePack", bIsNewEntry: true, UnlockedState: "NotPurchased" }],
+    currentCraftingRecipes: []
+  });
+  await assert.rejects(
+    () => unlockResearchItem(db, 123, { itemKey: "DA_GRP_SandbikePack" }),
+    /cannot be unlocked directly/
+  );
+  assert.equal(calls.some((call) => call.text.includes("TechKnowledgePlayerComponent,m_TechKnowledge,m_TechKnowledgeData") && call.text.includes("update dune.actors")), false);
 });
 
 test("research unlock requires offline player to avoid live state overwrite", async () => {
