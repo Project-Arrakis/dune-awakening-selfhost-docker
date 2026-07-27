@@ -72,6 +72,26 @@ function expiresAtMinutes(minutes) {
   return new Date(Date.now() + minutes * 60 * 1000).toISOString();
 }
 
+// FIX (2026-07-27, per explicit operator direction): the multi-account
+// system (FINDING-LINK-6/7, console.discord_account_links) is a genuine,
+// tested, working feature -- but is deliberately not exposed to real
+// players yet. Phase one is a strict 1:1 relationship: one Discord user
+// may link exactly one character, globally, ever, until they unlink it.
+// A second /dune player link attempt for a DIFFERENT character must be
+// rejected with a clear error, not silently overwrite the existing link
+// (the legacy single-link table's prior behavior -- an
+// "on conflict ... do update", now guarded against reaching that clause
+// at all for a genuinely different character). Re-running /dune player
+// link for the SAME already-linked character is allowed to proceed
+// unchanged (harmless idempotent re-link, not a conflict worth
+// rejecting).
+//
+// This does not touch or disable the multi-account tables/routes/code
+// themselves -- see linkAdditionalAccount()'s own comment in duneDb.js
+// for the matching gate on that side, added in the same change. Phase
+// two (tracked separately) is expected to relax this by actually
+// exposing /dune player enable/disable/default to players once Core's
+// currently-nonexistent guild-character-grants feature is built.
 export async function linkPlayerProvider(db, config, { discordUserId, characterName }, dependencies = {}) {
   if (!characterName || !String(characterName).trim()) {
     throw policyError("invalid_request", "characterName is required.");
@@ -89,6 +109,14 @@ export async function linkPlayerProvider(db, config, { discordUserId, characterN
   }
 
   const player = matches[0];
+
+  const existingLink = await getLinkedPlayer(db, discordUserId);
+  if (existingLink && existingLink.player_controller_id !== player.player_controller_id) {
+    return {
+      ok: false,
+      error: `Your voice already answers to ${existingLink.character_name} in the eyes of the Landsraad. A soul may not walk two paths in the desert -- use /dune player unlink before you may bind yourself to ${player.character_name}.`
+    };
+  }
 
   // hasSteam: added for the Steam-connections-based linking flow (see
   // yacketrj/arrakis-control-panel:docs/steam-link-architecture.md).

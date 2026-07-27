@@ -6677,10 +6677,33 @@ export async function linkAdditionalAccount(db, discordUserId, playerControllerI
     if (existing.rowCount) {
       return { conflict: "already_linked_to_this_account" };
     }
+    // FIX (2026-07-27, per explicit operator direction): phase one is a
+    // strict 1:1 relationship (one Discord user, one character, globally)
+    // -- the multi-account system itself stays intact and tested, but is
+    // gated off from actually letting a user acquire a SECOND, DIFFERENT
+    // character for now. Checks BOTH tables: a user with an existing
+    // legacy single-link (discord_player_links) for a different character
+    // must be rejected here too -- this is the multi-account side of the
+    // exact same gate added to linkPlayerProvider() (linkProvider.js) for
+    // the single-link side. Re-linking the SAME character via the other
+    // table is not reachable in practice (a character with a Steam ID on
+    // file always takes the Steam-link path exclusively, per
+    // characterHasSteamId()'s check in linkPlayerProvider() -- there is no
+    // real flow that links the same character via both tables), so this
+    // does not special-case it.
+    const existingSingleLink = await tx.query(`
+      select player_controller_id from console.discord_player_links
+      where discord_user_id = $1 limit 1`, [String(discordUserId)]);
+    if (existingSingleLink.rowCount && existingSingleLink.rows[0].player_controller_id !== playerControllerId) {
+      return { conflict: "user_already_has_a_character" };
+    }
     const hasAnyExisting = await tx.query(`
-      select 1 from console.discord_account_links where discord_user_id = $1 limit 1`,
+      select player_controller_id from console.discord_account_links where discord_user_id = $1 limit 1`,
       [String(discordUserId)]);
-    const shouldBeDefault = hasAnyExisting.rowCount === 0;
+    if (hasAnyExisting.rowCount && hasAnyExisting.rows[0].player_controller_id !== playerControllerId) {
+      return { conflict: "user_already_has_a_character" };
+    }
+    const shouldBeDefault = true;
     await tx.query(`
       insert into console.discord_account_links (discord_user_id, player_controller_id, is_default)
       values ($1, $2, $3)`, [String(discordUserId), playerControllerId, shouldBeDefault]);
@@ -6696,6 +6719,14 @@ export async function linkAdditionalAccount(db, discordUserId, playerControllerI
   if (result.conflict === "already_linked_to_this_account") {
     const error = new Error("This character is already linked to your Discord account.");
     error.code = "already_linked_to_this_account";
+    error.statusCode = 409;
+    throw error;
+  }
+  if (result.conflict === "user_already_has_a_character") {
+    const existingCharacter = await getLinkedPlayer(db, discordUserId);
+    const existingName = existingCharacter?.character_name || "another character";
+    const error = new Error(`Your voice already answers to ${existingName} in the eyes of the Landsraad. A soul may not walk two paths in the desert -- use /dune player unlink before you may bind yourself to a new name.`);
+    error.code = "user_already_has_a_character";
     error.statusCode = 409;
     throw error;
   }

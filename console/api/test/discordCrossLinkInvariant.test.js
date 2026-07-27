@@ -113,9 +113,21 @@ function createCrossTableDb() {
         const exists = state.accounts.some((a) => a.discordUserId === values[0] && a.playerControllerId === values[1]);
         return { rows: exists ? [{}] : [], rowCount: exists ? 1 : 0 };
       }
-      if (text.includes("select 1 from console.discord_account_links where discord_user_id = $1 limit 1")) {
-        const exists = state.accounts.some((a) => a.discordUserId === values[0]);
-        return { rows: exists ? [{}] : [], rowCount: exists ? 1 : 0 };
+      // FIX (2026-07-27, per explicit operator direction -- phase-one
+      // strict 1:1 gate): linkAdditionalAccount()'s new
+      // "select player_controller_id from console.discord_player_links
+      // where discord_user_id = $1 limit 1" check -- must be checked
+      // BEFORE the discord_account_links branch below, since this text
+      // is a strict subset match candidate against the wrong table
+      // otherwise. Real behavior proven by the
+      // "linking a second, different character is rejected" tests below.
+      if (text.includes("select player_controller_id from console.discord_player_links") && text.includes("limit 1")) {
+        const exists = state.singleLink && state.singleLink.discordUserId === values[0];
+        return { rows: exists ? [{ player_controller_id: state.singleLink.playerControllerId }] : [], rowCount: exists ? 1 : 0 };
+      }
+      if (text.includes("select player_controller_id from console.discord_account_links where discord_user_id = $1 limit 1")) {
+        const existingRow = state.accounts.find((a) => a.discordUserId === values[0]);
+        return { rows: existingRow ? [{ player_controller_id: existingRow.playerControllerId }] : [], rowCount: existingRow ? 1 : 0 };
       }
       if (text.includes("insert into console.discord_account_links")) {
         state.accounts.push({ discordUserId: values[0], playerControllerId: values[1], isDefault: Boolean(values[2]) });
@@ -184,11 +196,45 @@ test("a different character (no conflict) can still be linked normally through e
   const db = createCrossTableDb();
   await discordPlayerLink(db, "discord-A", "42");
 
-  // discord-B links a DIFFERENT character (43) via the multi-account flow —
-  // must succeed, since there is no actual conflict for controller 43.
+  // discord-B (a DIFFERENT Discord user, with no character of their own
+  // linked yet) links character 43 via the multi-account flow — must
+  // succeed, since there is no actual conflict for controller 43, and
+  // discord-B is not blocked by the phase-one 1:1 gate (that gate only
+  // rejects the SAME user acquiring a SECOND character — see the
+  // "linking a second, different character is rejected" test below for
+  // that case).
   const accounts = await linkAdditionalAccount(db, "discord-B", "43");
   assert.equal(accounts.length, 1);
   assert.equal(accounts[0].player_controller_id, "43");
+});
+
+// FIX (2026-07-27, per explicit operator direction): phase one is a
+// strict 1:1 relationship -- one Discord user may link exactly one
+// character, globally, until they unlink it. A user who already has a
+// character linked (via either table) must be rejected when attempting
+// to link a SECOND, DIFFERENT character, rather than silently
+// succeeding as the multi-account system was originally designed to
+// allow.
+test("linking a second, different character to a Discord user who already has one linked is rejected (phase-one 1:1 gate)", async () => {
+  const db = createCrossTableDb();
+  await linkAdditionalAccount(db, "discord-A", "42");
+
+  await assert.rejects(
+    () => linkAdditionalAccount(db, "discord-A", "43"),
+    (error) => error.code === "user_already_has_a_character" && error.statusCode === 409
+  );
+  assert.equal(db.state.accounts.length, 1, "the second character must not be added");
+});
+
+test("linking a second, different character is rejected even when the existing link is via the legacy single-link table, not the multi-account table", async () => {
+  const db = createCrossTableDb();
+  await discordPlayerLink(db, "discord-A", "42");
+
+  await assert.rejects(
+    () => linkAdditionalAccount(db, "discord-A", "43"),
+    (error) => error.code === "user_already_has_a_character" && error.statusCode === 409
+  );
+  assert.equal(db.state.accounts.length, 0, "the multi-account table must not gain a row when the user's existing link is in the other table");
 });
 
 // ─── getLinkedPlayer() / discordPlayerUnlink(): cross-table read fix ──────
@@ -257,10 +303,17 @@ test("discordPlayerUnlink deletes the DEFAULT multi-account row when no single-l
 
 test("discordPlayerUnlink promotes the next-oldest account to default after removing the multi-account default (reuses unlinkAdditionalAccount's own behavior)", async () => {
   const db = createCrossTableDb();
+  // Seeds two multi-account rows for the SAME user directly in mock
+  // state, bypassing linkAdditionalAccount()'s phase-one 1:1 gate (see
+  // 2026-07-27 comment above) -- this test's real subject is
+  // discordPlayerUnlink()'s default-promotion behavior, which remains
+  // real, tested, working code even though the link ENTRY POINT that
+  // would normally create this state is now gated off. Multi-account
+  // capability itself is intentionally kept intact for phase two, not
+  // torn out.
   await linkAdditionalAccount(db, "discord-A", "42");
   db.state.accounts[0].linkedAt = 1;
-  await linkAdditionalAccount(db, "discord-A", "43");
-  db.state.accounts[1].linkedAt = 2;
+  db.state.accounts.push({ discordUserId: "discord-A", playerControllerId: "43", isDefault: false, linkedAt: 2 });
 
   await discordPlayerUnlink(db, "discord-A");
   assert.equal(db.state.accounts.length, 1);
