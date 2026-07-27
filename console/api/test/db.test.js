@@ -175,6 +175,12 @@ test("player portal reports wind turbines as their own generator types in a stab
     "Omnidirectional Wind Turbine",
     "Directional Wind Turbine"
   ]);
+  assert.deepEqual(base.generators.map((entry) => entry.fuelName), [
+    "Fuel Cell",
+    "Spice-infused Fuel Cell",
+    "Low-grade Lubricant",
+    "Industrial-grade Lubricant"
+  ]);
   assert.equal(base.generatorCount, 7);
   assert.equal(base.fuelCells, 720);
   assert.equal(base.unstockedCount, 1);
@@ -230,8 +236,6 @@ test("player portal matches fuel stock by generator type, never by the burning m
     "fuel:oil",
     "spice:spicedfuelcell",
     "windTurbineOmni:windturbinelubricant1",
-    "windTurbineOmni:windturbinelubricant2",
-    "windTurbineDirectional:windturbinelubricant1",
     "windTurbineDirectional:windturbinelubricant2"
   ]);
   // Nothing here needs the universe clock any more, so a missing or empty
@@ -261,7 +265,6 @@ test("player portal only counts generators it can classify, never defaulting to 
     "fuel:generator_placeable",
     "spice:spicegenerator_placeable",
     "windTurbineOmni:windturbineomnidirectional_placeable",
-    "windTurbineOmni:windturbineomni_placeable",
     "windTurbineDirectional:windturbinedirectional_placeable"
   ]);
   assert.ok(!calls[0].values[6].includes("unknownnewgenerator_placeable"));
