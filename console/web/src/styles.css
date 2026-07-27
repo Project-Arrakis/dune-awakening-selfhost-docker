@@ -1392,17 +1392,19 @@ body.debug .technical-details { display: block; }
 .bases-table { width: 100%; min-width: 1320px; table-layout: fixed; }
 .bases-table th:nth-child(1), .bases-table td:nth-child(1) { width: 32px; text-align: center; }
 .bases-table th:nth-child(2), .bases-table td:nth-child(2) { width: 82px; text-align: center; }
-.bases-table th:nth-child(3), .bases-table td:nth-child(3) { width: 180px; }
+.bases-table th:nth-child(3), .bases-table td:nth-child(3) { width: 140px; }
 .bases-table th:nth-child(4), .bases-table td:nth-child(4) { width: 100px; }
 .bases-table th:nth-child(5), .bases-table td:nth-child(5) { width: 110px; }
 .bases-table th:nth-child(6), .bases-table td:nth-child(6) { width: 120px; }
 .bases-table th:nth-child(7), .bases-table td:nth-child(7) { width: 90px; }
-.bases-table th:nth-child(8), .bases-table td:nth-child(8) { width: 120px; }
-.bases-table th:nth-child(9), .bases-table td:nth-child(9) { width: 110px; text-align: center; }
-.bases-table th:nth-child(10), .bases-table td:nth-child(10) { width: 125px; text-align: center; }
+.bases-table th:nth-child(8), .bases-table td:nth-child(8) { width: 190px; }
+.bases-table th:nth-child(9), .bases-table td:nth-child(9) { width: 95px; text-align: center; }
+.bases-table th:nth-child(10), .bases-table td:nth-child(10) { width: 110px; text-align: center; }
 .bases-table th:nth-child(11), .bases-table td:nth-child(11) { width: 150px; }
 .bases-table th.bases-actions-column, .bases-table td.bases-actions-column { width: 92px; overflow: visible; }
 .bases-name, .bases-ellipsis-cell { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bases-generator-summary { display: block; white-space: normal; overflow: visible; text-overflow: clip; line-height: 1.4; }
+.bases-fuel-alert { color: var(--danger-text); }
 .bases-pagination-footer { margin-top: 12px; margin-bottom: 0; align-items: center; }
 .bases-pagination-footer .action-help-note { margin: 0; }
 @media (max-width: 760px) {
