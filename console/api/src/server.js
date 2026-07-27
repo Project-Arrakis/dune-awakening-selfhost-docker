@@ -25,6 +25,7 @@ import { serveStatic, contentTypeForPath } from "./http/staticFiles.js";
 import { discoverServices } from "./services/serviceDiscovery.js";
 import { createBackupDownloadArchive, enrichBackupRows, nextImportedBackupName, normalizeImportedBackupMetadata, validBackupDownloadName } from "./services/backups.js";
 import { createMemoryBalancer } from "./services/memoryBalancer.js";
+import { parseMemorySwapStatus } from "./services/memorySwap.js";
 import { createDeathPoller } from "./deathPoller.js";
 import { updateEnvFileValue as updateEnvValue } from "./services/envFile.js";
 import { funcomAuthMismatchDetected, matchingFuncomAuthLines, saveFuncomTokenValue as writeFuncomToken, validDockerSince } from "./services/funcomAuth.js";
@@ -573,6 +574,8 @@ async function handleApi(req, res) {
   if (path === "/api/maps/memory" && req.method === "POST") return memoryRoute(req, res);
   if (path === "/api/maps/memory/balancer" && req.method === "POST") return memoryBalancerRoute(req, res);
   if (path === "/api/maps/memory/balancer") return json(res, 200, memoryBalancer.publicState());
+  if (path === "/api/maps/memory/swap" && req.method === "POST") return memorySwapRoute(req, res);
+  if (path === "/api/maps/memory/swap") return memorySwapStatusRoute(res);
   if (path === "/api/maps/memory/live") return liveMapMemoryRoute(res);
   if (path === "/api/maps/memory") return commandJson(res, "memoryStatus");
   if (path.match(/^\/api\/maps\/spicefields\/[^/]+$/) && req.method === "PATCH") return mapsSpicefieldUpdateRoute(req, res, path);
@@ -1426,6 +1429,25 @@ async function memoryBalancerRoute(req, res) {
   const state = await memoryBalancer.setEnabled(enabled);
   audit(config, req, "maps.memory.balancer", { enabled });
   return json(res, 200, state);
+}
+
+async function memorySwapStatusRoute(res) {
+  try {
+    const result = await runDune(config, buildDuneArgs("memorySwapStatus"), { timeoutMs: 15000 });
+    return json(res, 200, parseMemorySwapStatus(result.stdout));
+  } catch (error) {
+    return json(res, 500, { error: redact(error.message || error) });
+  }
+}
+
+async function memorySwapRoute(req, res) {
+  const body = await readJson(req);
+  const enabled = body.enabled === true;
+  const phrase = enabled ? "ENABLE MEMORY SWAP" : "DISABLE MEMORY SWAP";
+  if (body.confirmation !== phrase) return json(res, 400, { error: `Confirmation phrase required: ${phrase}` });
+  const operation = enabled ? "memorySwapEnable" : "memorySwapDisable";
+  audit(config, req, "maps.memory.swap", { enabled, perServerGiB: body.perServerGiB, poolGiB: body.poolGiB });
+  return task(req, res, "maps", operation, body);
 }
 
 // Read-only, aggregate-only PvP/PvE combat state for a map's partitions.

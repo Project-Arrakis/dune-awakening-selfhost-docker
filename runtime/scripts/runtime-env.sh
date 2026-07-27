@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# shellcheck disable=SC1091
+source runtime/scripts/memory-swap-common.sh
+
 if [ -z "${DUNE_COMPOSE_PROJECT_NAME:-}" ]; then
   # shellcheck disable=SC1091
   source runtime/scripts/compose-project.sh

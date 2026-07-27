@@ -204,12 +204,18 @@ export function buildDuneArgs(operation, payload = {}) {
       return ["autoscaler", validateAutoscalerAction(payload.action)];
     case "memoryStatus":
       return ["memory", "status"];
+    case "memorySwapStatus":
+      return ["memory-swap", "status"];
     case "memorySet":
       return ["memory", "set", validateMemoryTarget(memoryTarget(payload)), validateMemoryValue(payload.memory)];
     case "memorySetNoRestart":
       return ["memory", "set-no-restart", validateMemoryTarget(memoryTarget(payload)), validateMemoryValue(payload.memory)];
     case "memoryUnset":
       return ["memory", "unset", validateMemoryTarget(memoryTarget(payload))];
+    case "memorySwapEnable":
+      return ["memory-swap", "enable", String(validateInteger(payload.perServerGiB ?? 2, 1, 16)), String(validateInteger(payload.poolGiB, 0, 32))];
+    case "memorySwapDisable":
+      return ["memory-swap", "disable"];
     case "sietchesShow":
       return ["sietches", "show", validateMapName(payload.map)];
     case "sietchesDimensions":
