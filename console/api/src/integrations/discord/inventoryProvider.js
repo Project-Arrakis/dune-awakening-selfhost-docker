@@ -4,7 +4,8 @@ import {
   guildStorageQuery,
   searchItemsInContainers,
   searchItemsInPlayerInventory,
-  adminItemMetadata
+  adminItemMetadata,
+  resolveBuildingDisplayName
 } from "../../duneDb.js";
 
 // enrichWithDisplayName: adds a display_name field to every row using the
@@ -30,12 +31,27 @@ import {
 // item not found in the catalog -- an unrecognized/new item ID should
 // never disappear or show as "Unknown", it should just show its raw ID
 // exactly as it always has.
+//
+// FIX (2026-07-27, found via a real live user report immediately after
+// the storage/find display-name fix shipped): itemSearchProvider's rows
+// (via searchItemsInContainers()) carry a container_name field that is
+// the raw dune.placeables.building_type value (e.g. "SpiceSilo_Placeable"),
+// not a real name -- the same class of bug as the item template_id issue
+// this function already fixes, just for the container a matched item was
+// found in. Resolves container_name through resolveBuildingDisplayName()
+// when present; playerInventoryProvider/inventorySearchProvider's rows
+// have no container_name at all (a player's own inventory has no
+// containers), so this is a no-op for them.
 function enrichWithDisplayName(rows) {
   const metadata = adminItemMetadata();
   return rows.map((row) => {
     const templateId = row.template_id || row.templateId;
     const meta = templateId ? metadata.get(String(templateId)) : null;
-    return { ...row, display_name: meta?.name || templateId || "Unknown Item" };
+    const enriched = { ...row, display_name: meta?.name || templateId || "Unknown Item" };
+    if (row.container_name) {
+      enriched.container_name = resolveBuildingDisplayName(row.container_name);
+    }
+    return enriched;
   });
 }
 
@@ -91,10 +107,19 @@ export function groupByContainer(items, containerField = "container_id") {
 // its real item_count and always producing a group of exactly one. This
 // function instead passes each row through as its own group directly,
 // preserving the container's real item_count as returned by SQL.
+//
+// FIX (2026-07-27, found via a real live user report immediately after
+// the fix above shipped): row.name here is dune.placeables.building_type
+// (e.g. "SpiceSilo_Placeable", "Totem_Small_Placeable") -- the exact
+// same class of raw-internal-ID bug as the original item display-name
+// report, just for buildings. Now resolves through
+// resolveBuildingDisplayName() (duneDb.js, backed by the new
+// runtime/data/admin-buildings.json catalog) instead of showing the raw
+// building_type directly.
 function containersAsGroups(rows) {
   return rows.map((row) => ({
     container_id: String(row.id ?? "unknown"),
-    container_name: row.name || "Unknown Container",
+    container_name: resolveBuildingDisplayName(row.name),
     map: row.map || "",
     item_count: Number(row.item_count) || 0,
     items: [row]
