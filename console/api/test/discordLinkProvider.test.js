@@ -8,6 +8,24 @@ test.beforeEach(() => {
   resetVerifyRateLimiterForTests();
 });
 
+// secondPlayer: a distinct fixture character, added 2026-07-27 alongside
+// the phase-one 1:1 gate, so a test can exercise "Discord user already
+// linked to Chani attempts to link a DIFFERENT character" -- every
+// pre-existing test in this file only ever needs the single default
+// fixture (Chani), so resolvePlayerByName()'s mock below still resolves
+// to state.player by default and only switches to secondPlayer when the
+// search name actually matches it, preserving every existing test's
+// behavior unchanged.
+const secondPlayer = {
+  player_controller_id: "43",
+  player_pawn_id: "85",
+  character_name: "Paul",
+  online_status: "Online",
+  funcom_id: "Paul#5678",
+  fls_id: "A5C0DE5E12A00043",
+  hasSteam: false
+};
+
 function createLinkDb(playerOverrides = {}) {
   const state = {
     pending: null,
@@ -32,6 +50,10 @@ function createLinkDb(playerOverrides = {}) {
     transaction: (fn) => fn(db),
     async query(text, values = []) {
       if (text.includes("from dune.player_state ps") && text.includes("lower(ps.character_name)")) {
+        const searchName = String(values[0] || "").toLowerCase();
+        if (searchName === secondPlayer.character_name.toLowerCase()) {
+          return { rows: [secondPlayer], rowCount: 1 };
+        }
         return { rows: [state.player], rowCount: 1 };
       }
       // characterHasSteamId() -- queries dune.accounts joined to
@@ -98,6 +120,22 @@ function createLinkDb(playerOverrides = {}) {
           }],
           rowCount: 1
         };
+      }
+      // FIX (2026-07-27, per explicit operator direction -- phase-one
+      // strict 1:1 gate): linkPlayerProvider() now calls getLinkedPlayer()
+      // (duneDb.js) at the top of the function to check for an existing
+      // link before proceeding. getLinkedPlayer() checks
+      // discord_player_links FIRST (the "dpl" branch immediately above,
+      // already correct and unchanged), then falls back to this
+      // multi-account query (dal alias, is_default = true) if no
+      // single-link row exists. This test file only exercises the
+      // single-link flow and never populates discord_account_links, so
+      // this always reports no multi-account row -- the phase-one gate's
+      // actual multi-account-side behavior is proven separately in
+      // discordCrossLinkInvariant.test.js and
+      // discordMultiAccountLinkProvider.test.js.
+      if (text.includes("from console.discord_account_links dal") && text.includes("is_default = true")) {
+        return { rows: [], rowCount: 0 };
       }
       throw new Error(`Unexpected query: ${text}`);
     }
@@ -274,4 +312,42 @@ test("linking never removes a character's existing Discord owner", async () => {
     (error) => error.code === "character_already_linked" && error.statusCode === 409
   );
   assert.deepEqual(db.state.link, { discordUserId: "discord-owner", playerControllerId: "42" });
+});
+
+// FIX (2026-07-27, per explicit operator direction): phase one is a
+// strict 1:1 relationship -- one Discord user may link exactly one
+// character, globally, until they unlink it. /dune player link
+// (linkPlayerProvider(), the real whisper-flow entry point every player
+// actually uses) must reject a second, different character with a
+// clear, in-lore error rather than silently overwriting the existing
+// link (the legacy single-link table's prior "on conflict ... do
+// update" behavior).
+test("linking a second, different character via /dune player link is rejected when the Discord user already has one linked (phase-one 1:1 gate)", async () => {
+  const db = createLinkDb();
+  db.state.link = { discordUserId: "discord-1", playerControllerId: "42" };
+
+  const result = await linkPlayerProvider(db, {}, { discordUserId: "discord-1", characterName: "Paul" }, {
+    ensurePersona: async () => persona,
+    publishWhisper: async () => { throw new Error("must not attempt to send a whisper for a rejected link"); }
+  });
+
+  assert.equal(result.ok, false);
+  assert.match(result.error, /Chani/, "the error should name the character the user is already linked to");
+  assert.match(result.error, /Landsraad/i, "the error should use the requested in-lore phrasing");
+  assert.equal(db.state.pending, null, "no pending verification code should be created for a rejected link");
+});
+
+test("re-running /dune player link for the SAME already-linked character is allowed to proceed unchanged (idempotent re-link, not a conflict)", async () => {
+  const db = createLinkDb();
+  db.state.link = { discordUserId: "discord-1", playerControllerId: "42" };
+  let whisper = null;
+
+  const result = await linkPlayerProvider(db, {}, { discordUserId: "discord-1", characterName: "Chani" }, {
+    ensurePersona: async () => persona,
+    publishWhisper: async (_config, fields) => { whisper = fields; }
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.pending, true);
+  assert.ok(whisper, "the whisper should still be sent for a same-character re-link");
 });

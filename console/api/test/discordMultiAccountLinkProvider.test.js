@@ -55,6 +55,46 @@ function createMultiAccountDb(players = []) {
         return matched ? { rows: [{ "?column?": 1 }], rowCount: 1 } : { rows: [], rowCount: 0 };
       }
 
+      // FIX (2026-07-27, per explicit operator direction -- phase-one
+      // strict 1:1 gate): linkAdditionalAccount()'s rejection path now
+      // calls getLinkedPlayer() (duneDb.js) to build a friendlier error
+      // message naming the user's existing character. getLinkedPlayer()
+      // checks discord_player_links FIRST (dpl alias, joined to
+      // dune.player_state) -- this test file only exercises the
+      // multi-account flow and never populates discord_player_links, so
+      // this always reports no single-link row, matching this file's
+      // existing convention for that table (see the FINDING-LINK-6
+      // cross-table check comment above for the same rationale).
+      if (text.includes("from console.discord_player_links dpl")) {
+        return { rows: [], rowCount: 0 };
+      }
+
+      // getLinkedPlayer()'s multi-account fallback (dal alias, joined to
+      // dune.player_state, filtered to is_default = true) -- the second
+      // half of the same getLinkedPlayer() call described above. Must be
+      // checked BEFORE the listLinkedAccounts matcher below, since both
+      // real query strings contain "from console.discord_account_links dal"
+      // and this one has a narrower, more specific shape (is_default
+      // filter, single row via limit 1).
+      if (text.includes("from console.discord_account_links dal")
+        && text.includes("join dune.player_state ps")
+        && text.includes("is_default = true")
+        && text.includes("limit 1")) {
+        const account = state.accounts.find((a) => a.discordUserId === values[0] && a.isDefault);
+        if (!account) return { rows: [], rowCount: 0 };
+        const player = state.players.find((p) => p.player_controller_id === account.playerControllerId);
+        return {
+          rows: [{
+            discord_user_id: account.discordUserId,
+            player_controller_id: account.playerControllerId,
+            character_name: player?.character_name || "",
+            player_pawn_id: player?.player_pawn_id || "0",
+            online_status: player?.online_status || "Offline"
+          }],
+          rowCount: 1
+        };
+      }
+
       // listLinkedAccounts: selects from discord_account_links dal joined
       // to player_state ps.
       if (text.includes("from console.discord_account_links dal") && text.includes("join dune.player_state ps")) {
@@ -91,16 +131,35 @@ function createMultiAccountDb(players = []) {
         return { rows: [], rowCount: 0 };
       }
 
+      // FIX (2026-07-27, per explicit operator direction -- phase-one
+      // strict 1:1 gate): linkAdditionalAccount()'s new
+      // "select player_controller_id from console.discord_player_links
+      // where discord_user_id = $1 limit 1" check (no "for update", unlike
+      // the FINDING-LINK-6 cross-table check above, which is why this
+      // needs its own branch rather than reusing that one). Same
+      // rationale as the FINDING-LINK-6 comment above: this file never
+      // populates discord_player_links, so this always reports no
+      // existing single-link row -- the actual gate behavior (rejecting a
+      // second, different character) is proven by this file's own
+      // "user_already_has_a_character"-equivalent test coverage against
+      // the multi-account table itself, further down.
+      if (text.includes("select player_controller_id from console.discord_player_links") && text.includes("limit 1")) {
+        return { rows: [], rowCount: 0 };
+      }
+
       // linkAdditionalAccount: already-linked-to-this-account check
       if (text.includes("select 1 from console.discord_account_links") && text.includes("player_controller_id = $2")) {
         const exists = state.accounts.some((a) => a.discordUserId === values[0] && a.playerControllerId === values[1]);
         return { rows: exists ? [{}] : [], rowCount: exists ? 1 : 0 };
       }
 
-      // linkAdditionalAccount: has-any-existing check
-      if (text.includes("select 1 from console.discord_account_links where discord_user_id = $1 limit 1")) {
-        const exists = state.accounts.some((a) => a.discordUserId === values[0]);
-        return { rows: exists ? [{}] : [], rowCount: exists ? 1 : 0 };
+      // FIX (2026-07-27, same phase-one gate as above): linkAdditionalAccount()'s
+      // has-any-existing check now selects player_controller_id (not just
+      // "1") so it can compare against the character being linked -- see
+      // that function's own comment in duneDb.js for why.
+      if (text.includes("select player_controller_id from console.discord_account_links where discord_user_id = $1 limit 1")) {
+        const existingRow = state.accounts.find((a) => a.discordUserId === values[0]);
+        return { rows: existingRow ? [{ player_controller_id: existingRow.playerControllerId }] : [], rowCount: existingRow ? 1 : 0 };
       }
 
       // linkAdditionalAccount: insert
@@ -206,19 +265,33 @@ test("linking an additional character does not touch the legacy single-link tabl
   assert.match(whisper.message, /account-link verification code is: ACP-[A-Z0-9]+/);
 });
 
-test("first linked account becomes default automatically; second does not", async () => {
+test("first linked account becomes default automatically", async () => {
   const db = createMultiAccountDb();
   await linkAdditionalAccount(db, "discord-1", "42");
   const afterFirst = await listAccountsProvider(db, { discordUserId: "discord-1" });
   assert.equal(afterFirst.accounts.length, 1);
   assert.equal(afterFirst.accounts[0].isDefault, true);
+});
 
-  await linkAdditionalAccount(db, "discord-1", "43");
-  const afterSecond = await listAccountsProvider(db, { discordUserId: "discord-1" });
-  assert.equal(afterSecond.accounts.length, 2);
-  const defaults = afterSecond.accounts.filter((a) => a.isDefault);
-  assert.equal(defaults.length, 1);
-  assert.equal(defaults[0].playerControllerId, "42");
+// FIX (2026-07-27, per explicit operator direction): phase one is a
+// strict 1:1 relationship -- one Discord user may link exactly one
+// character, globally, until they unlink it. This test previously
+// proved a second, different character COULD be linked (just not as
+// the default); it now proves the opposite -- linking a second
+// character is rejected outright. The multi-account system's real
+// capability to hold 2+ accounts (unlink/set-default promotion, etc.)
+// remains real, tested code further down in this file -- only the LINK
+// entry point is gated for phase one.
+test("linking a second, different character to a Discord user who already has one linked is rejected (phase-one 1:1 gate)", async () => {
+  const db = createMultiAccountDb();
+  await linkAdditionalAccount(db, "discord-1", "42");
+
+  await assert.rejects(
+    () => linkAdditionalAccount(db, "discord-1", "43"),
+    (error) => error.code === "user_already_has_a_character" && error.statusCode === 409
+  );
+  const accounts = await listAccountsProvider(db, { discordUserId: "discord-1" });
+  assert.equal(accounts.count, 1, "the second character must not be added");
 });
 
 test("a character already linked to another Discord user cannot be linked by a second user", async () => {
@@ -241,7 +314,17 @@ test("linking the same character to the same user twice is rejected as a conflic
   assert.equal(accounts.count, 1);
 });
 
-test("verifying a pending additional-account code links it and lists it alongside prior accounts", async () => {
+// FIX (2026-07-27, per explicit operator direction): phase one is a
+// strict 1:1 relationship. This test previously proved a pending
+// additional-account code could be verified and added as a SECOND
+// character; verifyAccountLinkProvider() calls linkAdditionalAccount()
+// internally (see that function's own comment in multiAccountLinkProvider.js),
+// so it now inherits the same phase-one rejection for a genuinely
+// different second character. Rewritten to prove the code is correctly
+// consumed (the pending row is genuinely removed -- no replay is
+// possible) even though the resulting link is rejected, rather than
+// proving a successful second link.
+test("verifying a pending additional-account code for a SECOND, different character is rejected (phase-one 1:1 gate), and the code is still consumed (no replay)", async () => {
   const db = createMultiAccountDb();
   await linkAdditionalAccount(db, "discord-1", "42"); // pre-existing first account
   await linkAccountProvider(db, {}, { discordUserId: "discord-1", characterName: "Paul" }, {
@@ -250,10 +333,36 @@ test("verifying a pending additional-account code links it and lists it alongsid
   });
   const code = db.state.pending[0].code;
 
-  const verified = await verifyAccountLinkProvider(db, { discordUserId: "discord-1", code });
-  assert.equal(verified.ok, true);
-  assert.equal(verified.characterName, "Paul");
-  assert.equal(verified.accounts.length, 2);
+  await assert.rejects(
+    () => verifyAccountLinkProvider(db, { discordUserId: "discord-1", code }),
+    (error) => error.code === "user_already_has_a_character" && error.statusCode === 409
+  );
+  assert.equal(db.state.pending.length, 0, "the pending code must still be consumed, not left replayable, even though the resulting link is rejected");
+  const accounts = await listAccountsProvider(db, { discordUserId: "discord-1" });
+  assert.equal(accounts.count, 1, "the pre-existing account must be unaffected");
+});
+
+// Verifying a pending code for the SAME character the user already has
+// (e.g. a retry after a transient failure) correctly hits the
+// pre-existing "already_linked_to_this_account" conflict, NOT the new
+// phase-one gate -- that check runs earlier in linkAdditionalAccount()
+// (see this file's own "linking the same character to the same user
+// twice" test above) and is unrelated to and unaffected by this
+// session's 1:1 gate change. Confirmed directly (a test asserting this
+// path "succeeds" was wrong and is corrected here) rather than assumed.
+test("verifying a pending additional-account code for the SAME character the user already has hits the pre-existing already-linked conflict, not the phase-one gate", async () => {
+  const db = createMultiAccountDb();
+  await linkAdditionalAccount(db, "discord-1", "42");
+  await linkAccountProvider(db, {}, { discordUserId: "discord-1", characterName: "Chani" }, {
+    ensurePersona: async () => persona,
+    publishWhisper: async () => {}
+  });
+  const code = db.state.pending[0].code;
+
+  await assert.rejects(
+    () => verifyAccountLinkProvider(db, { discordUserId: "discord-1", code }),
+    (error) => error.code === "already_linked_to_this_account" && error.statusCode === 409
+  );
 });
 
 test("a different Discord user cannot consume another user's pending account-link code", async () => {
@@ -269,10 +378,19 @@ test("a different Discord user cannot consume another user's pending account-lin
   assert.equal(db.state.pending.length, 1);
 });
 
+// FIX (2026-07-27, per explicit operator direction -- phase-one strict
+// 1:1 gate): these two tests' real subject is unlinkAccountProvider()'s
+// promotion behavior, which remains real, tested, working code even
+// though the LINK entry point that would normally create 2-account
+// state is now gated off (multi-account capability itself is
+// intentionally kept intact for phase two, not torn out). Seeds the
+// second account directly into mock state, bypassing
+// linkAdditionalAccount()'s phase-one gate, matching the same pattern
+// used in discordCrossLinkInvariant.test.js's equivalent promotion test.
 test("unlinking a non-default account leaves the default untouched", async () => {
   const db = createMultiAccountDb();
   await linkAdditionalAccount(db, "discord-1", "42");
-  await linkAdditionalAccount(db, "discord-1", "43");
+  db.state.accounts.push({ discordUserId: "discord-1", playerControllerId: "43", isDefault: false, linkedAt: 1 });
 
   const result = await unlinkAccountProvider(db, { discordUserId: "discord-1", playerControllerId: "43" });
   assert.equal(result.ok, true);
@@ -285,7 +403,7 @@ test("unlinking a non-default account leaves the default untouched", async () =>
 test("unlinking the default account promotes the next-oldest remaining account to default", async () => {
   const db = createMultiAccountDb();
   await linkAdditionalAccount(db, "discord-1", "42"); // becomes default
-  await linkAdditionalAccount(db, "discord-1", "43");
+  db.state.accounts.push({ discordUserId: "discord-1", playerControllerId: "43", isDefault: false, linkedAt: 1 });
 
   await unlinkAccountProvider(db, { discordUserId: "discord-1", playerControllerId: "42" });
   const remaining = await listAccountsProvider(db, { discordUserId: "discord-1" });
@@ -300,10 +418,15 @@ test("unlinking an account not linked to the caller returns a business error, no
   assert.equal(result.ok, false);
 });
 
+// FIX (2026-07-27, per explicit operator direction -- phase-one strict
+// 1:1 gate): same rationale as the two unlink tests above -- this test's
+// real subject is setDefaultAccountProvider()'s switching behavior,
+// still real and correct even though 2-account state can no longer be
+// created via the normal link entry point.
 test("setDefaultAccountProvider switches the default between two already-linked accounts", async () => {
   const db = createMultiAccountDb();
   await linkAdditionalAccount(db, "discord-1", "42");
-  await linkAdditionalAccount(db, "discord-1", "43");
+  db.state.accounts.push({ discordUserId: "discord-1", playerControllerId: "43", isDefault: false, linkedAt: 1 });
 
   const result = await setDefaultAccountProvider(db, { discordUserId: "discord-1", playerControllerId: "43" });
   assert.equal(result.ok, true);
