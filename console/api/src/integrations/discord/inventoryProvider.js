@@ -3,8 +3,41 @@ import {
   playerOwnedStorageQuery,
   guildStorageQuery,
   searchItemsInContainers,
-  searchItemsInPlayerInventory
+  searchItemsInPlayerInventory,
+  adminItemMetadata
 } from "../../duneDb.js";
+
+// enrichWithDisplayName: adds a display_name field to every row using the
+// same local item catalog (runtime/data/admin-items.json,
+// adminItemMetadata() in duneDb.js) already used by
+// addonOpsInventorySummary() for the server-wide OPS aggregate
+// (/dune ops armory).
+//
+// Real bug (found via a live user report, 2026-07-26/27): every
+// player-facing route in this file (player:inventory, player:storage,
+// player:find) returned only the raw template_id (e.g. "AzuriteOre",
+// "Bloodsack_01") with no lookup against the catalog at all -- a player
+// running /dune player inventory saw a wall of internal game-engine
+// identifiers instead of real item names ("Copper Ore", "Small Blood
+// Sack"), even though the exact lookup table needed to fix this already
+// existed and was already correctly used by the unrelated server-wide
+// OPS command. This function closes that gap for every player-facing
+// route in one place, rather than patching each raw duneDb.js query
+// function separately (which risks missing one, or duplicating the
+// lookup logic four times).
+//
+// Falls back to the raw template_id (current, pre-fix behavior) for any
+// item not found in the catalog -- an unrecognized/new item ID should
+// never disappear or show as "Unknown", it should just show its raw ID
+// exactly as it always has.
+function enrichWithDisplayName(rows) {
+  const metadata = adminItemMetadata();
+  return rows.map((row) => {
+    const templateId = row.template_id || row.templateId;
+    const meta = templateId ? metadata.get(String(templateId)) : null;
+    return { ...row, display_name: meta?.name || templateId || "Unknown Item" };
+  });
+}
 
 export function groupByMap(items) {
   const map = new Map();
@@ -45,7 +78,7 @@ export function groupByContainer(items, containerField = "container_id") {
 
 export async function playerInventoryProvider(db, { playerPawnId, characterName } = {}) {
   const result = await playerInventory(db, playerPawnId);
-  const rows = result.rows || [];
+  const rows = enrichWithDisplayName(result.rows || []);
   return {
     ok: true,
     characterName: characterName || `Player ${playerPawnId}`,
@@ -59,7 +92,7 @@ export async function playerInventoryProvider(db, { playerPawnId, characterName 
 export async function playerStorageProvider(db, { playerControllerId, scope = "owned" }) {
   if (scope === "owned") {
     const result = await playerOwnedStorageQuery(db, playerControllerId);
-    const rows = result.rows || [];
+    const rows = enrichWithDisplayName(result.rows || []);
     return {
       ok: true,
       scope: "owned",
@@ -70,7 +103,7 @@ export async function playerStorageProvider(db, { playerControllerId, scope = "o
   }
   if (scope === "guild") {
     const result = await guildStorageQuery(db, playerControllerId);
-    const rows = result.rows || [];
+    const rows = enrichWithDisplayName(result.rows || []);
     return {
       ok: true,
       scope: "guild",
@@ -91,7 +124,7 @@ export async function itemSearchProvider(db, { playerControllerId, query, scope 
     query: String(query).trim(),
     scope
   });
-  const rows = result.rows || [];
+  const rows = enrichWithDisplayName(result.rows || []);
   return {
     ok: true,
     scope,
@@ -107,7 +140,7 @@ export async function inventorySearchProvider(db, { playerPawnId, query }) {
     throw new Error("Search query is required.");
   }
   const result = await searchItemsInPlayerInventory(db, playerPawnId, String(query).trim());
-  const rows = result.rows || [];
+  const rows = enrichWithDisplayName(result.rows || []);
   return {
     ok: true,
     query,
