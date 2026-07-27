@@ -3,6 +3,9 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 
+# shellcheck source=runtime/scripts/sietch-name.sh
+source runtime/scripts/sietch-name.sh
+
 PARTITION_CATALOG="runtime/generated/partition-catalog.json"
 SERVER_CATALOG="runtime/generated/server-catalog.json"
 CONFIG_FILE="runtime/generated/sietch-config.json"
@@ -1846,7 +1849,7 @@ case "$cmd" in
     [ "$#" -ge 3 ] || { usage; exit 2; }
     partition_id="$2"
     shift 2
-    display_name="$*"
+    display_name="$(validate_sietch_display_name "$*")"
     python3 runtime/scripts/usersettings.py partition-engine-set "$(partition_map_name "$partition_id")" "$partition_id" server_display_name "$display_name" >/dev/null 2>&1 || true
     set_partition_value "$partition_id" display_name "$display_name"
     if [ -n "$display_name" ]; then
@@ -1884,7 +1887,7 @@ case "$cmd" in
   set-settings)
     [ "$#" -eq 4 ] || { usage; exit 2; }
     partition_id="$2"
-    display_name="$3"
+    display_name="$(validate_sietch_display_name "$3")"
     password_value="$4"
     python3 runtime/scripts/usersettings.py partition-engine-set "$(partition_map_name "$partition_id")" "$partition_id" server_display_name "$display_name" >/dev/null 2>&1 || true
     python3 runtime/scripts/usersettings.py partition-engine-set "$(partition_map_name "$partition_id")" "$partition_id" server_login_password "$password_value" >/dev/null 2>&1 || true

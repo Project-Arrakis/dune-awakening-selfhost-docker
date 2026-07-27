@@ -118,7 +118,12 @@ test("builds allowlisted command arguments without shell interpolation", () => {
   assert.deepEqual(buildDuneArgs("memorySetNoRestart", { map: "DeepDesert_1", partitionId: "8", memory: "0.50g" }), ["memory", "set-no-restart", "partition:8", "0.50g"]);
   assert.deepEqual(buildDuneArgs("sietchesSetActive", { map: "Survival_1", count: 2 }), ["sietches", "set-active", "Survival_1", "2"]);
   assert.deepEqual(buildDuneArgs("sietchesSetDisplay", { partitionId: 38, displayName: "Sietch Alpha" }), ["sietches", "set-display", "38", "Sietch Alpha"]);
+  assert.deepEqual(buildDuneArgs("sietchesSetDisplay", { partitionId: 38, displayName: "The Kulon Show" }), ["sietches", "set-display", "38", "The Kulon Show"]);
+  assert.deepEqual(buildDuneArgs("sietchesSetDisplay", { partitionId: 38, displayName: "sietch   Alraab v2" }), ["sietches", "set-display", "38", "sietch   Alraab v2"]);
+  assert.deepEqual(buildDuneArgs("sietchesSetSettings", { partitionId: 38, displayName: "New Home", password: "secret" }), ["sietches", "set-settings", "38", "New Home", "secret"]);
   assert.deepEqual(buildDuneArgs("sietchesSetDisplay", { partitionId: 38, displayName: "" }), ["sietches", "set-display", "38", ""]);
+  assert.throws(() => buildDuneArgs("sietchesSetDisplay", { partitionId: 38, displayName: "Duke's Sietch" }), /not supported/);
+  assert.throws(() => buildDuneArgs("sietchesSetDisplay", { partitionId: 38, displayName: "Alpha|Beta" }), /not supported/);
   assert.deepEqual(buildDuneArgs("deepdesertAction", { action: "disable" }), ["deepdesert", "dual", "disable", "--yes", "--force"]);
   assert.deepEqual(buildDuneArgs("userSettingsEngineValues"), ["usersettings", "engine-values"]);
   assert.deepEqual(buildDuneArgs("userSettingsMapEngineValues", { map: "Survival_1" }), ["usersettings", "map-engine-values", "Survival_1"]);
