@@ -1,7 +1,8 @@
 import test, { beforeEach } from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { assertIdentifier, discoverDbConfig, isReadOnlySql, quoteQualified, redactDbError, rowsResult } from "../src/db.js";
-import { addCurrency, addFactionReputation, addIntel, addonLeadershipPlayers, addonOpsHealthFarms, addonOpsHealthPlayers, addonOpsHealthSummary, addonOpsHealthSummaryV2, addSpecializationXp, applyLandsraadMilestonePreset, augmentInventoryItem, augmentNewestPlayerItem, changeDunePassword, completeJourneyNode, completeTutorial, deleteInventoryItem, exportBaseAsBlueprint, giveItemToPlayer, giveItemToStorage, guildMembers, landsraadOverview, listBases, listGuilds, listPlayers, listSpicefieldTypes, listTables, liveMapPlayers, liveMapServices, playerCraftingRecipes, playerCurrency, playerFactions, playerIntel, playerInventory, playerJourney, playerPosition, playerProfile, playerProgression, playerResearchItems, playerSolarisCoinTotal, playerVitals, portalGeneratorFuel, portalVehicles, repairVehicleDecay, resetJourneyNode, resetTutorial, runSql, setLandsraadPlayerContribution, tablePreview, teleportOfflinePlayerToCoords, unlockCraftingRecipe, unlockResearchItem, updateInventoryItem, updateLandsraadRewardTier, updateLandsraadTaskGoal, updateLandsraadTermTaskGoals, updateSpicefieldType, updateTableRow, UnsupportedCapabilityError, _resetPlayerTargetCacheForTests } from "../src/duneDb.js";
+import { addCurrency, addFactionReputation, addIntel, addonLeadershipPlayers, addonOpsHealthFarms, addonOpsHealthPlayers, addonOpsHealthSummary, addonOpsHealthSummaryV2, addSpecializationXp, applyLandsraadMilestonePreset, augmentInventoryItem, augmentNewestPlayerItem, changeDunePassword, completeJourneyNode, completeTutorial, deleteInventoryItem, exportBaseAsBlueprint, giveItemToPlayer, giveItemToStorage, guildMembers, landsraadOverview, listBases, listGuilds, listPlayers, listSpicefieldTypes, listTables, liveMapPlayers, liveMapServices, playerCraftingRecipes, playerCurrency, playerFactions, playerIntel, playerInventory, playerJourney, playerPortalSnapshots, playerPosition, playerProfile, playerProgression, playerResearchItems, playerSolarisCoinTotal, playerVitals, portalGeneratorFuel, portalVehicles, repairVehicleDecay, resetJourneyNode, resetTutorial, runSql, setLandsraadPlayerContribution, tablePreview, teleportOfflinePlayerToCoords, unlockCraftingRecipe, unlockResearchItem, updateInventoryItem, updateLandsraadRewardTier, updateLandsraadTaskGoal, updateLandsraadTermTaskGoals, updateSpicefieldType, updateTableRow, UnsupportedCapabilityError, _resetPlayerTargetCacheForTests } from "../src/duneDb.js";
 
 beforeEach(() => {
   _resetPlayerTargetCacheForTests();
@@ -339,6 +340,111 @@ test("player portal never reports a fuelled generator type as out of fuel", asyn
 test("player portal skips the generator query when there are no bases", async () => {
   const db = { query: async () => assert.fail("generator query should not run") };
   assert.deepEqual(await portalGeneratorFuel(db, []), new Map());
+});
+
+test("player portal snapshot bases report generatorEmptyCount and generatorAllEmpty", async () => {
+  const platformId = "12345678901234567";
+  const accountHash = createHash("sha256").update(platformId).digest("hex");
+  const db = {
+    query: async (text, values = []) => {
+      // Initial query for identities - get platform/character info
+      if (text.includes("from dune.accounts ac")) {
+        return { rows: [{
+          account_id: "44",
+          platform_id: platformId,
+          character_name: "Test Player",
+          controller_id: "55",
+          actor_id: "123",
+          online_status: "Offline",
+          last_seen: "2026-07-26",
+          player_map: "TheDeepDesert",
+          player_partition_id: "0",
+          player_x: "100",
+          player_y: "200",
+          player_z: "30"
+        }] };
+      }
+      // addonLeadershipPlayers - return empty for leader data
+      if (text.includes("from dune.leadership_players")) {
+        return { rows: [] };
+      }
+      // Table existence checks - required tables return true
+      if (text.includes("to_regclass")) {
+        const tableName = String(values[0] || "");
+        const requiredForBases = ["buildings", "building_instances", "actor_fgl_entities", "actors"];
+        const isRequired = requiredForBases.some(table => tableName.includes(table));
+        return { rows: [{ exists: isRequired }] };
+      }
+      // listBases totals query (with total_bases calculation)
+      if (text.includes("with valid_claims as") || text.includes("total_bases")) {
+        return { rows: [{ total_bases: "1", total_pieces: "100", total_placeables: "50" }] };
+      }
+      // listBases main query (with matched CTE)
+      if (text.includes("with matched as")) {
+        return { rows: [{
+          base_id: "1006",
+          name: "Test Base",
+          base_type: "Sub-Fief",
+          owner_name: "Test Player",
+          map: "TheDeepDesert",
+          partition_id: "0",
+          x: "100",
+          y: "200",
+          z: "30",
+          total_count: "1",
+          piece_count: "100",
+          placeable_count: "50",
+          shared_with: null
+        }] };
+      }
+      // Intel query
+      if (text.includes("TechKnowledgePlayerComponent")) {
+        return { rows: [] };
+      }
+      // Keystones query
+      if (text.includes("purchased_specialization_keystones")) {
+        return { rows: [] };
+      }
+      // Blueprints query
+      if (text.includes("building_blueprints")) {
+        return { rows: [] };
+      }
+      // portalVehicles
+      if (text.includes("from dune.vehicles")) {
+        return { rows: [] };
+      }
+      // portalGuild
+      if (text.includes("from dune.guilds")) {
+        return { rows: [] };
+      }
+      // portalGeneratorFuel - return generator data with one empty generator
+      if (text.includes("from generator_runtime group by")) {
+        return { rows: [{
+          base_id: "1006",
+          generator_type: "fuel",
+          generator_count: 2,
+          fuel_cells: 45,
+          runtime_seconds: 7200,
+          empty_count: 1
+        }] };
+      }
+      return { rows: [] };
+    }
+  };
+
+  const result = await playerPortalSnapshots(db, [accountHash]);
+
+  assert.equal(result.length, 1, "should return one result");
+  assert.equal(result[0].found, true, "account should be found");
+  assert.equal(result[0].accountHash, accountHash, "account hash should match");
+  assert.ok(result[0].data, "result should have data");
+  assert.ok(result[0].data.bases, "data should have bases array");
+  assert.ok(result[0].data.bases.length > 0, "should have at least one base");
+  const base = result[0].data.bases[0];
+  assert.equal(base.id, "1006", "base id should match");
+  assert.equal(base.name, "Test Base", "base name should match");
+  assert.equal(base.generatorEmptyCount, 1, "base should report generatorEmptyCount from fuelByBase.emptyCount");
+  assert.equal(base.generatorAllEmpty, false, "base should report generatorAllEmpty=false since not all generators are empty");
 });
 
 test("player portal prefers custom vehicle names and ignores internal labels", async () => {

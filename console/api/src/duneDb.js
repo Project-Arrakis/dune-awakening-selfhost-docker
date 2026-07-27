@@ -3462,6 +3462,8 @@ export async function playerPortalSnapshots(db, requestedAccountHashes, journeyT
           fuelCells: fuelByBase.get(String(base.base_id))?.fuelCells || 0,
           generatorCount: fuelByBase.get(String(base.base_id))?.generatorCount || 0,
           generatorRuntimeSeconds: fuelByBase.get(String(base.base_id))?.runtimeSeconds || 0,
+          generatorEmptyCount: fuelByBase.get(String(base.base_id))?.emptyCount || 0,
+          generatorAllEmpty: fuelByBase.get(String(base.base_id))?.allGeneratorsEmpty || false,
           generators: fuelByBase.get(String(base.base_id))?.generators || [],
           map: base.map || "",
           partitionId: Number(base.partition_id) || 0,
@@ -3619,7 +3621,7 @@ function portalVehicleDisplayName(type) {
 // the generator burning it — every fuel maps to exactly one duration across all
 // generators — so these constants replace reading the component per generator.
 // Re-verify after game updates; the measurement query lives in
-// ~/.claude/plans/base-generator-classification-and-fuel-tiers.md.
+// docs/generator-fuel-burn-rates.md.
 const FUEL_BURN_SECONDS = {
   oil: 60 * 60,                   // measured across 68 generators
   spicedfuelcell: 90 * 60,        // measured — confirmed 2026-07-26 after the
@@ -3687,6 +3689,7 @@ export async function portalGeneratorFuel(db, baseIds) {
           end generator_type
         from base_entities be
         join dune.placeables p on p.owner_entity_id=be.owner_entity_id
+          and (lower(p.building_type) like '%generator%' or lower(p.building_type) like '%windturbine%')
       ) classified
       where generator_type is not null
     ), generator_state as (
@@ -3747,7 +3750,7 @@ export async function portalGeneratorFuel(db, baseIds) {
   const byBase = new Map();
   for (const row of result.rows) {
     const baseId = String(row.base_id);
-    const type = Object.hasOwn(GENERATOR_TYPES, row.generator_type) ? row.generator_type : "fuel";
+    const type = row.generator_type;
     // row.runtime_seconds is null when every generator of this type is empty
     // (the `filter (where not is_empty)` aggregate has nothing to average) —
     // kept null here rather than defaulted to 0, so it can be told apart from
