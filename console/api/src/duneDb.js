@@ -3147,7 +3147,7 @@ function craftingRecipeCatalog() {
   return craftingRecipeCatalogCache;
 }
 
-function adminItemMetadata() {
+export function adminItemMetadata() {
   if (adminItemMetadataCache) return adminItemMetadataCache;
   const metadata = new Map();
   try {
@@ -3166,6 +3166,64 @@ function adminItemMetadata() {
   }
   adminItemMetadataCache = metadata;
   return adminItemMetadataCache;
+}
+
+// Display-name overrides for runtime/data/admin-vehicles.json's `id`
+// field. Unlike admin-items.json, this catalog has no separate `name`
+// field -- its `id` values (Sandbike, Buggy, Tank, ...) are already
+// reasonably readable, EXCEPT for the three Ornithopter variants, whose
+// bare tier-suffix names (Light/Medium/Transport) don't communicate their
+// actual in-game role. Renamed per explicit operator direction
+// (2026-07-27): OrnithopterLight -> Scout, OrnithopterMedium -> Assault,
+// OrnithopterTransport -> Carrier -- these describe what the vehicle is
+// FOR, not just its size class.
+//
+// Added defensively (2026-07-27): no Discord command currently exposes
+// vehicle data at all (confirmed via direct grep of every route/provider
+// in this integration before adding this) -- this exists so a future
+// vehicle-related command has a correct, ready-to-use lookup rather than
+// needing to invent one at that point, and so the same
+// "OrnithopterLight" ambiguity found in items doesn't quietly recur here
+// too.
+const VEHICLE_DISPLAY_NAME_OVERRIDES = Object.freeze({
+  OrnithopterLight: "Scout",
+  OrnithopterMedium: "Assault",
+  OrnithopterTransport: "Carrier"
+});
+
+// splitCamelCase: "ContainerVehicle" -> "Container Vehicle",
+// "TreadWheel" -> "Tread Wheel". Single-word IDs with no internal
+// capitalization (e.g. "Sandcrawler", "Sandbike", "Buggy", "Tank") are
+// returned unchanged -- there is nothing to split. Added 2026-07-27,
+// same session as the override map above, as the fallback for any
+// vehicle ID not explicitly overridden, so a compressed multi-word ID
+// never displays as a single mashed-together word by default.
+function splitCamelCase(value) {
+  return String(value || "").replace(/([a-z0-9])([A-Z])/g, "$1 $2");
+}
+
+let adminVehicleMetadataCache = null;
+
+export function adminVehicleMetadata() {
+  if (adminVehicleMetadataCache) return adminVehicleMetadataCache;
+  const metadata = new Map();
+  try {
+    const path = [
+      resolve(process.cwd(), "runtime/data/admin-vehicles.json"),
+      resolve(process.cwd(), "../../runtime/data/admin-vehicles.json")
+    ].find((candidate) => existsSync(candidate)) || resolve(process.cwd(), "runtime/data/admin-vehicles.json");
+    const vehicles = JSON.parse(readFileSync(path, "utf8"));
+    for (const vehicle of Array.isArray(vehicles) ? vehicles : []) {
+      const id = String(vehicle.id || "").trim();
+      if (!id) continue;
+      metadata.set(id, { name: VEHICLE_DISPLAY_NAME_OVERRIDES[id] || splitCamelCase(id) });
+    }
+  } catch {
+    // No vehicle command depends on this yet -- fail open, same
+    // convention as adminItemMetadata() above.
+  }
+  adminVehicleMetadataCache = metadata;
+  return adminVehicleMetadataCache;
 }
 
 function augmentCompatibilityCatalog() {
