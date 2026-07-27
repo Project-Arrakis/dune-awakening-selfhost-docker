@@ -66,7 +66,7 @@ const PUBLIC_MODIFIER_SETTINGS = new Map([
   publicModifier("/Script/DuneSandbox.BuildingSettings", "m_MaxNumLandclaimSegments", "Landclaim Segments", "24", "number"),
   publicModifier("/Script/DuneSandbox.BuildingSettings", "m_BuildingBlueprintMaxExtensions", "Blueprint Extensions", "16", "number"),
   publicModifier("/Script/DuneSandbox.BuildingSettings", "m_BaseBackupMaxExtensions", "Base Backup Extensions", "40", "number"),
-  publicModifier("/Script/DuneSandbox.BuildingSettings", "m_bBuildingRestrictionLimitsEnabled", "Building Restriction Limits", "False", "boolean"),
+  publicModifier("/Script/DuneSandbox.BuildingSettings", "m_bBuildingRestrictionLimitsEnabled", "Building Restriction Limits", "True", "boolean"),
   publicModifier("/Script/DuneSandbox.BuildingSettings", "m_bMitigateAllSandstormDamage", "Building Sandstorm Protection", "False", "boolean"),
   publicModifier("/Script/DuneSandbox.BuildingSettings", "m_PickupTotalDurabilityPercentageReduction", "Building Pickup Durability Loss", "0.0", "ratioPercent"),
   publicModifier("/Script/DuneSandbox.BuildingSettings", "m_bEnableStabilizationSystem", "Building Stabilization", "True", "boolean"),
