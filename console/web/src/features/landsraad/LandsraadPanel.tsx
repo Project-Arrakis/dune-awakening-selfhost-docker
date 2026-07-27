@@ -310,7 +310,7 @@ export function LandsraadPanel({ confirmAction, onError }: LandsraadAdminSection
 
   return <section className="panel landsraad-panel">
     <div className="panel-title">
-      <h2>Landsraad <span className="landsraad-experimental-badge">Experimental</span></h2>
+      <h2>Landsraad</h2>
     </div>
     <div className="landsraad-admin-body">
       <div className="panel-title schedule-panel-title">

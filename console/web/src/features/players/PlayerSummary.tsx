@@ -126,8 +126,6 @@ export function PlayerSummary({
   const currencyTiles = currencyItems.map((item) => ({ ...item, Icon: currencyIcon(item.label) }));
 
   return <section className="action-section player-summary">
-    <h4>Player Summary</h4>
-
     <div className="summary-hero">
       <div className="summary-hero-main">
         <span className="summary-hero-name">{characterName}</span>
