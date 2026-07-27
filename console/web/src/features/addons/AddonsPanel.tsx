@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import { addonsApi, type AddonLifecycle, type CommunityAddonSummary, type InstalledAddon } from "../../api/addons";
+import { addonUpdateAvailable, hasAddonUpdates } from "./addonVersions";
 import type { PinnedAddon } from "./pinnedAddons";
 
 type AddonsPanelProps = {
@@ -8,11 +9,11 @@ type AddonsPanelProps = {
   setPinnedAddons: Dispatch<SetStateAction<PinnedAddon[]>>;
   selectedAddonId: string;
   clearSelectedAddon: () => void;
-  setAddonCount: Dispatch<SetStateAction<number>>;
+  setAddonUpdateAvailable: Dispatch<SetStateAction<boolean>>;
   confirmAction: (message: string, options?: { danger?: boolean; confirmLabel?: string }) => Promise<boolean>;
 };
 
-export function AddonsPanel({ pinnedAddons, setPinnedAddons, selectedAddonId, clearSelectedAddon, setAddonCount, confirmAction }: AddonsPanelProps) {
+export function AddonsPanel({ pinnedAddons, setPinnedAddons, selectedAddonId, clearSelectedAddon, setAddonUpdateAvailable, confirmAction }: AddonsPanelProps) {
   const [addons, setAddons] = useState<CommunityAddonSummary[]>([]);
   const [installed, setInstalled] = useState<InstalledAddon[]>([]);
   const [loading, setLoading] = useState(false);
@@ -28,14 +29,16 @@ export function AddonsPanel({ pinnedAddons, setPinnedAddons, selectedAddonId, cl
     setNotice(null);
     try {
       const [result, installedResult] = await Promise.all([addonsApi.community(), addonsApi.installed()]);
-      setAddons(result.addons || []);
-      setAddonCount((result.addons || []).length);
-      setInstalled(installedResult.addons || []);
+      const catalogAddons = result.addons || [];
+      const installedAddons = installedResult.addons || [];
+      setAddons(catalogAddons);
+      setAddonUpdateAvailable(hasAddonUpdates(catalogAddons, installedAddons));
+      setInstalled(installedAddons);
       setInstalledLoaded(true);
     } catch (err) {
       setNotice({ title: "Addons Unavailable", message: formatAddonError(err), tone: "fail" });
       setAddons([]);
-      setAddonCount(0);
+      setAddonUpdateAvailable(false);
       setInstalled([]);
       setInstalledLoaded(false);
     } finally {
@@ -63,6 +66,32 @@ export function AddonsPanel({ pinnedAddons, setPinnedAddons, selectedAddonId, cl
       setNotice({ title: "Install Failed", message: formatAddonError(err), tone: "fail" });
     } finally {
       setInstallingId("");
+    }
+  }
+
+  async function updateAddon(addon: CommunityAddonSummary, installedAddon: InstalledAddon) {
+    if (isInstallBlocked(addon.lifecycle)) {
+      setNotice({ title: "Update Blocked", message: lifecycleInstallMessage(addon), tone: "fail" });
+      return;
+    }
+    const approved = new Set(installedAddon.approvedPermissions || []);
+    const addedPermissions = (addon.permissions || []).filter((permission) => !approved.has(permission));
+    const permissionText = addedPermissions.length
+      ? ` This update requests additional access: ${addedPermissions.map(formatPermissionLabel).join(", ")}. Continuing approves this additional access.`
+      : " Its approved permissions will remain unchanged.";
+    const message = `Update ${addon.name} from ${installedAddon.version} to ${addon.version}? Existing addon settings, schedules, enabled state, and browser preferences will be preserved.${permissionText}`;
+    if (!(await confirmAction(message, { confirmLabel: "Update Addon" }))) return;
+    setBusyAddonId(addon.id);
+    setNotice(null);
+    if (openAddonId === addon.id) setOpenAddonId("");
+    try {
+      const result = await addonsApi.updateCommunity(addon.id, addon.permissions || []);
+      await load();
+      setNotice({ title: "Addon Updated", message: `${addon.name} was updated from ${result.previousVersion} to ${result.addon.version}. Existing configuration was preserved.`, tone: "ok" });
+    } catch (err) {
+      setNotice({ title: "Update Failed", message: formatAddonError(err), tone: "fail" });
+    } finally {
+      setBusyAddonId("");
     }
   }
 
@@ -218,6 +247,7 @@ export function AddonsPanel({ pinnedAddons, setPinnedAddons, selectedAddonId, cl
       expandedDescriptions={expandedDescriptions}
       setExpandedDescriptions={setExpandedDescriptions}
       installAddon={installAddon}
+      updateAddon={updateAddon}
       setAddonEnabled={setAddonEnabled}
       removeAddon={removeAddon}
       setOpenAddonId={setOpenAddonId}
@@ -233,7 +263,7 @@ export function AddonsPanel({ pinnedAddons, setPinnedAddons, selectedAddonId, cl
 type AddonTableRow = CommunityAddonSummary & { status: string; installedOnly: boolean };
 const ADDON_DESCRIPTION_EXPAND_THRESHOLD = 48;
 
-function AddonsTable({ rows, loading, installedById, pinnedAddons, installingId, busyAddonId, openAddonId, expandedDescriptions, setExpandedDescriptions, installAddon, setAddonEnabled, removeAddon, setOpenAddonId, toggleAddonPin }: {
+function AddonsTable({ rows, loading, installedById, pinnedAddons, installingId, busyAddonId, openAddonId, expandedDescriptions, setExpandedDescriptions, installAddon, updateAddon, setAddonEnabled, removeAddon, setOpenAddonId, toggleAddonPin }: {
   rows: AddonTableRow[];
   loading: boolean;
   installedById: Map<string, InstalledAddon>;
@@ -244,36 +274,63 @@ function AddonsTable({ rows, loading, installedById, pinnedAddons, installingId,
   expandedDescriptions: Record<string, boolean>;
   setExpandedDescriptions: Dispatch<SetStateAction<Record<string, boolean>>>;
   installAddon: (addon: CommunityAddonSummary) => void;
+  updateAddon: (addon: CommunityAddonSummary, installedAddon: InstalledAddon) => void;
   setAddonEnabled: (addon: InstalledAddon, enabled: boolean) => void;
   removeAddon: (addon: InstalledAddon) => void;
   setOpenAddonId: Dispatch<SetStateAction<string>>;
   toggleAddonPin: (addon: InstalledAddon, pinned: boolean) => void;
 }) {
   if (!rows.length) return <div className="empty addons-empty-state">{loading ? "Loading community addons..." : "No community addons are listed yet."}</div>;
-  return <div className="table-wrap"><table className="addons-table"><thead><tr><th>Name</th><th>Description</th><th>Author</th><th>Version</th><th>Permissions</th><th>Status</th><th>Catalog</th><th className="backup-table-actions">Actions</th><th className="addon-pin-column">Sub-Menu</th></tr></thead><tbody>{rows.map((row) => {
+  return <div className="table-wrap addons-table-wrap"><table className="addons-table">
+    <colgroup>
+      <col className="addon-col-identity" />
+      <col className="addon-col-author" />
+      <col className="addon-col-version" />
+      <col className="addon-col-permissions" />
+      <col className="addon-col-status" />
+      <col className="addon-col-actions" />
+      <col className="addon-col-submenu" />
+    </colgroup>
+    <thead><tr><th>Addon</th><th>Author</th><th>Version</th><th>Permissions</th><th>Status</th><th className="backup-table-actions">Actions</th><th className="addon-pin-column">Sub-Menu</th></tr></thead><tbody>{rows.map((row) => {
     const installedAddon = installedById.get(row.id);
     const busy = busyAddonId === row.id;
     const pinned = Boolean(installedAddon && pinnedAddons.some((addon) => addon.id === installedAddon.id));
+    const updateAvailable = Boolean(installedAddon && addonUpdateAvailable(installedAddon.version, row.version));
     return <tr key={row.id}>
-      <td><AddonNameCell addon={row} /></td>
-      <td><AddonDescriptionCell addon={row} expanded={Boolean(expandedDescriptions[row.id])} onToggle={() => setExpandedDescriptions((current) => ({ ...current, [row.id]: !current[row.id] }))} /></td>
-      <td>{row.author}</td>
-      <td>{row.version}</td>
-      <td><PermissionList permissions={installedAddon?.permissions || row.permissions || []} approvedPermissions={installedAddon?.approvedPermissions || []} /></td>
-      <td>
+      <td data-label="Addon" className="addon-identity-cell">
+        <div className="addon-identity-content">
+          <div className="addon-name-line"><AddonNameCell addon={row} />{row.lifecycle !== "active" && <LifecyclePill lifecycle={installedAddon?.lifecycle || row.lifecycle} />}</div>
+          <AddonDescriptionCell addon={row} expanded={Boolean(expandedDescriptions[row.id])} onToggle={() => setExpandedDescriptions((current) => ({ ...current, [row.id]: !current[row.id] }))} />
+        </div>
+      </td>
+      <td data-label="Author" className="addon-author-cell">{row.author}</td>
+      <td data-label="Version"><AddonVersionCell catalogVersion={row.version} installedAddon={installedAddon} updateAvailable={updateAvailable} /></td>
+      <td data-label="Permissions"><PermissionList permissions={updateAvailable ? row.permissions || [] : installedAddon?.permissions || row.permissions || []} approvedPermissions={installedAddon?.approvedPermissions || []} /></td>
+      <td data-label="Status">
         {installedAddon ? <div className="addon-status-cell"><label className={`switch-checkbox addon-status-toggle ${installedAddon.enabled ? "enabled" : "disabled"}`}><input type="checkbox" disabled={busy || installedAddon.lifecycle === "blocked"} checked={installedAddon.enabled} onChange={(event) => void setAddonEnabled(installedAddon, event.target.checked)} /><span className="switch-label">{busy ? "Working" : installedAddon.enabled ? "Enabled" : "Disabled"}</span><strong className="switch-state">{installedAddon.enabled ? "ON" : "OFF"}</strong></label></div> : <div className="addon-status-cell"><StatusPill value="Available" /></div>}
       </td>
-      <td><div className="addon-catalog-cell"><LifecyclePill lifecycle={installedAddon?.lifecycle || row.lifecycle} /></div></td>
-      <td className="backup-table-actions"><div className="service-actions">
+      <td data-label="Actions" className="backup-table-actions"><div className="service-actions">
         {!installedAddon && <button disabled={installingId === row.id || isInstallBlocked(row.lifecycle)} title={isInstallBlocked(row.lifecycle) ? lifecycleInstallMessage(row) : undefined} onClick={() => void installAddon(row)}>{installingId === row.id ? "Installing..." : "Install"}</button>}
+        {installedAddon && updateAvailable && <button disabled={busy || isInstallBlocked(row.lifecycle)} title={isInstallBlocked(row.lifecycle) ? lifecycleInstallMessage(row) : `Update ${installedAddon.version} to ${row.version}`} onClick={() => void updateAddon(row, installedAddon)}>{busy ? "Updating..." : "Update"}</button>}
         {installedAddon?.enabled && <button disabled={busy} onClick={() => setOpenAddonId(openAddonId === installedAddon.id ? "" : installedAddon.id)}>{openAddonId === installedAddon.id ? "Close" : "Open"}</button>}
         {installedAddon && <button className="danger" disabled={busy} onClick={() => void removeAddon(installedAddon)}>Uninstall</button>}
       </div></td>
-      <td className="addon-pin-column">{installedAddon?.enabled
+      <td data-label="Sub-Menu" className="addon-pin-column">{installedAddon?.enabled
         ? <label className={`switch-checkbox addon-pin-toggle ${pinned ? "enabled" : "disabled"}`}><input type="checkbox" checked={pinned} onChange={(event) => toggleAddonPin(installedAddon, event.target.checked)} /><strong className="switch-state">{pinned ? "ON" : "OFF"}</strong></label>
         : <span className="muted">-</span>}</td>
     </tr>;
   })}</tbody></table></div>;
+}
+
+function AddonVersionCell({ catalogVersion, installedAddon, updateAvailable }: { catalogVersion: string; installedAddon?: InstalledAddon; updateAvailable: boolean }) {
+  if (!installedAddon) return <span>{catalogVersion}</span>;
+  return <div className="addon-version-cell">
+    {updateAvailable
+      ? <span className="addon-version-upgrade" aria-label={`Update available: ${installedAddon.version} to ${catalogVersion}`} title={`Update available: ${installedAddon.version} to ${catalogVersion}`}>
+        <span>{installedAddon.version}</span><span className="addon-version-arrow" aria-hidden="true">→</span><strong>{catalogVersion}</strong>
+      </span>
+      : <strong>{installedAddon.version}</strong>}
+  </div>;
 }
 
 function AddonNameCell({ addon }: { addon: CommunityAddonSummary }) {
@@ -285,15 +342,38 @@ function AddonNameCell({ addon }: { addon: CommunityAddonSummary }) {
 function PermissionList({ permissions, approvedPermissions }: { permissions: string[]; approvedPermissions: string[] }) {
   if (!permissions.length) return <span className="muted">None</span>;
   const approved = new Set(approvedPermissions);
-  return <div className="addon-permissions-list">{permissions.map((permission) => (
-    <span key={permission} className={`addon-permission-chip ${approved.has(permission) ? "approved" : ""}`}>{formatPermissionLabel(permission)}</span>
+  return <div className="addon-permissions-list">{groupPermissions(permissions).map((group) => (
+    <span key={group.key} className={`addon-permission-chip ${group.permissions.every((permission) => approved.has(permission)) ? "approved" : ""}`}>{group.label}</span>
   ))}</div>;
+}
+
+function groupPermissions(permissions: string[]) {
+  const groups = new Map<string, { scope: string; actions: string[]; permissions: string[] }>();
+  for (const permission of permissions) {
+    const [scope, action] = String(permission || "").split(":");
+    const key = scope && action ? scope : permission;
+    const current = groups.get(key) || { scope: scope && action ? scope : "", actions: [], permissions: [] };
+    if (action && !current.actions.includes(action)) current.actions.push(action);
+    current.permissions.push(permission);
+    groups.set(key, current);
+  }
+  return [...groups.entries()].map(([key, group]) => ({
+    key,
+    permissions: group.permissions,
+    label: group.scope
+      ? `${formatPermissionPart(group.scope)} ${group.actions.map(formatPermissionPart).join(" & ")}`
+      : key
+  }));
+}
+
+function formatPermissionPart(value: string) {
+  return value.replaceAll("-", " ").replace(/\b\w/g, (character) => character.toUpperCase());
 }
 
 function formatPermissionLabel(permission: string) {
   const [scope, action] = String(permission || "").split(":");
   if (!scope || !action) return permission;
-  return `${scope.replaceAll("-", " ")} ${action.replaceAll("-", " ")}`;
+  return `${formatPermissionPart(scope)} ${formatPermissionPart(action)}`;
 }
 
 function StatusPill({ value }: { value: unknown }) {

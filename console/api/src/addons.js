@@ -130,13 +130,120 @@ export function listInstalledAddons(config) {
   return { addons };
 }
 
-export async function installCommunityAddon(config, addonId, options = {}, fetchImpl = globalThis.fetch) {
+export async function installCommunityAddon(config, addonId, options = {}, fetchImpl = globalThis.fetch, runCommandImpl = runCommand) {
   if (typeof options === "function") {
     fetchImpl = options;
     options = {};
   }
   const requestedId = stringField(addonId, "id");
   if (!ADDON_ID_PATTERN.test(requestedId)) throw new Error("Invalid addon id.");
+  const destination = resolve(addonsInstalledRoot(config), requestedId);
+  if (existsSync(destination)) throw new Error(`${requestedId} is already installed. Use Update when a newer catalog version is available.`);
+
+  const prepared = await prepareCommunityAddonRelease(config, requestedId, options, fetchImpl, runCommandImpl);
+  const installedAt = new Date().toISOString();
+  const stateBeforeInstall = readAddonState(config);
+  let packageMoved = false;
+  try {
+    renameSync(prepared.stagingRoot, destination);
+    packageMoved = true;
+    setAddonState(config, prepared.installedManifest.id, {
+      enabled: false,
+      approvedPermissions: prepared.remoteManifest.permissions,
+      installedAt,
+      sha256: prepared.actualSha,
+      provenance: communityAddonProvenance(prepared.index.sourceUrl, prepared.summary, prepared.remoteManifest, {
+        sha256: prepared.actualSha,
+        installedAt
+      }),
+      lifecycle: prepared.summary.lifecycle,
+      lifecycleMessage: prepared.summary.lifecycleMessage,
+      lifecycleUrl: prepared.summary.lifecycleUrl
+    });
+  } catch (error) {
+    rmSync(prepared.stagingRoot, { recursive: true, force: true });
+    if (packageMoved) {
+      rmSync(destination, { recursive: true, force: true });
+      writeAddonState(config, stateBeforeInstall);
+    }
+    throw error;
+  }
+  return communityAddonDeploymentResult(prepared, { enabled: false, installedAt });
+}
+
+export async function updateCommunityAddon(config, addonId, options = {}, fetchImpl = globalThis.fetch, runCommandImpl = runCommand) {
+  if (typeof options === "function") {
+    fetchImpl = options;
+    options = {};
+  }
+  const requestedId = stringField(addonId, "id");
+  if (!ADDON_ID_PATTERN.test(requestedId)) throw new Error("Invalid addon id.");
+  const installedRoot = addonsInstalledRoot(config);
+  const destination = resolve(installedRoot, requestedId);
+  const installedManifestPath = resolve(destination, "addon.json");
+  if (!existsSync(installedManifestPath)) throw new Error(`Installed addon not found: ${requestedId}`);
+  const installedManifestBeforeFetch = normalizeAddonManifest(JSON.parse(readFileSync(installedManifestPath, "utf8")));
+  if (installedManifestBeforeFetch.id !== requestedId) throw new Error("Installed addon package id does not match its directory.");
+
+  const prepared = await prepareCommunityAddonRelease(config, requestedId, options, fetchImpl, runCommandImpl);
+  if (!existsSync(installedManifestPath)) {
+    rmSync(prepared.stagingRoot, { recursive: true, force: true });
+    throw new Error(`Installed addon was removed while its update was being prepared: ${requestedId}`);
+  }
+  const previousManifest = normalizeAddonManifest(JSON.parse(readFileSync(installedManifestPath, "utf8")));
+  if (previousManifest.id !== requestedId) {
+    rmSync(prepared.stagingRoot, { recursive: true, force: true });
+    throw new Error("Installed addon package id changed while its update was being prepared.");
+  }
+  if (compareAddonVersions(prepared.remoteManifest.version, previousManifest.version) <= 0) {
+    rmSync(prepared.stagingRoot, { recursive: true, force: true });
+    throw new Error(`${previousManifest.name} ${previousManifest.version} is already current; catalog version is ${prepared.remoteManifest.version}.`);
+  }
+
+  const stateBeforeUpdate = readAddonState(config);
+  const previousState = stateBeforeUpdate[requestedId] || {};
+  const wasEnabled = Boolean(previousState.enabled);
+  const updatedAt = new Date().toISOString();
+  const rollbackRoot = resolve(addonsRoot(config), "staging", `${requestedId}-rollback-${Date.now()}`);
+  rmSync(rollbackRoot, { recursive: true, force: true });
+  let originalMoved = false;
+  try {
+    renameSync(destination, rollbackRoot);
+    originalMoved = true;
+    renameSync(prepared.stagingRoot, destination);
+    setAddonState(config, requestedId, {
+      ...previousState,
+      enabled: wasEnabled,
+      approvedPermissions: prepared.remoteManifest.permissions,
+      installedAt: previousState.installedAt || previousState.provenance?.installedAt || updatedAt,
+      updatedAt,
+      sha256: prepared.actualSha,
+      provenance: communityAddonProvenance(prepared.index.sourceUrl, prepared.summary, prepared.remoteManifest, {
+        sha256: prepared.actualSha,
+        installedAt: updatedAt
+      }),
+      lifecycle: prepared.summary.lifecycle,
+      lifecycleMessage: prepared.summary.lifecycleMessage,
+      lifecycleUrl: prepared.summary.lifecycleUrl
+    });
+  } catch (error) {
+    rmSync(prepared.stagingRoot, { recursive: true, force: true });
+    if (originalMoved) {
+      rmSync(destination, { recursive: true, force: true });
+      if (existsSync(rollbackRoot)) renameSync(rollbackRoot, destination);
+      writeAddonState(config, stateBeforeUpdate);
+    }
+    throw error;
+  }
+  rmSync(rollbackRoot, { recursive: true, force: true });
+  return {
+    ...communityAddonDeploymentResult(prepared, { enabled: wasEnabled, installedAt: updatedAt }),
+    previousVersion: previousManifest.version,
+    preservedConfiguration: true
+  };
+}
+
+async function prepareCommunityAddonRelease(config, requestedId, options, fetchImpl, runCommandImpl) {
   const index = await fetchCommunityAddons(fetchImpl);
   const summary = index.addons.find((addon) => addon.id === requestedId);
   if (!summary) throw new Error(`Community addon not found: ${requestedId}`);
@@ -162,58 +269,86 @@ export async function installCommunityAddon(config, addonId, options = {}, fetch
   mkdirSync(installedRoot, { recursive: true });
   writeFileSync(archivePath, archive, { mode: 0o600 });
 
-  const entries = (await runCommand("unzip", ["-Z1", archivePath])).stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-  validateZipEntries(entries);
-  rmSync(stagingRoot, { recursive: true, force: true });
-  mkdirSync(stagingRoot, { recursive: true });
-  await runCommand("unzip", ["-q", archivePath, "-d", stagingRoot]);
+  try {
+    const entries = (await runCommandImpl("unzip", ["-Z1", archivePath])).stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    validateZipEntries(entries);
+    rmSync(stagingRoot, { recursive: true, force: true });
+    mkdirSync(stagingRoot, { recursive: true });
+    await runCommandImpl("unzip", ["-q", archivePath, "-d", stagingRoot]);
 
-  const installedManifest = normalizeAddonManifest(JSON.parse(readFileSync(resolve(stagingRoot, "addon.json"), "utf8")));
-  if (installedManifest.id !== remoteManifest.id) throw new Error("Installed addon package id does not match the community manifest.");
-  if (installedManifest.version !== remoteManifest.version) throw new Error("Installed addon package version does not match the community manifest.");
-  const entryPath = safeAddonRelativePath(installedManifest.entry.path, "entry.path");
-  if (!existsSync(resolve(stagingRoot, entryPath))) throw new Error("Installed addon package entry path was not found.");
+    const installedManifest = normalizeAddonManifest(JSON.parse(readFileSync(resolve(stagingRoot, "addon.json"), "utf8")));
+    if (installedManifest.id !== remoteManifest.id) throw new Error("Installed addon package id does not match the community manifest.");
+    if (installedManifest.version !== remoteManifest.version) throw new Error("Installed addon package version does not match the community manifest.");
+    if (JSON.stringify(installedManifest.permissions) !== JSON.stringify(remoteManifest.permissions)) throw new Error("Installed addon package permissions do not match the community manifest.");
+    const entryPath = safeAddonRelativePath(installedManifest.entry.path, "entry.path");
+    if (!existsSync(resolve(stagingRoot, entryPath))) throw new Error("Installed addon package entry path was not found.");
+    return { index, summary, remoteManifest, installedManifest, stagingRoot, actualSha };
+  } catch (error) {
+    rmSync(stagingRoot, { recursive: true, force: true });
+    throw error;
+  }
+}
 
-  const destination = resolve(installedRoot, installedManifest.id);
-  rmSync(destination, { recursive: true, force: true });
-  renameSync(stagingRoot, destination);
-  const installedAt = new Date().toISOString();
-  setAddonState(config, installedManifest.id, {
-    enabled: false,
-    approvedPermissions,
-    installedAt,
-    sha256: actualSha,
-    provenance: communityAddonProvenance(index.sourceUrl, summary, remoteManifest, {
-      sha256: actualSha,
-      installedAt
-    }),
-    lifecycle: summary.lifecycle,
-    lifecycleMessage: summary.lifecycleMessage,
-    lifecycleUrl: summary.lifecycleUrl
-  });
+function communityAddonDeploymentResult(prepared, { enabled, installedAt }) {
   return {
     ok: true,
     addon: {
-      id: installedManifest.id,
-      name: installedManifest.name,
-      description: installedManifest.description,
-      author: installedManifest.author,
-      version: installedManifest.version,
-      type: installedManifest.type,
-      status: "Disabled",
-      enabled: false,
-      lifecycle: summary.lifecycle,
-      lifecycleMessage: summary.lifecycleMessage,
-      lifecycleUrl: summary.lifecycleUrl,
-      entryPath: installedManifest.entry.path,
-      permissions: installedManifest.permissions,
-      approvedPermissions,
-      provenance: communityAddonProvenance(index.sourceUrl, summary, remoteManifest, {
-        sha256: actualSha,
+      id: prepared.installedManifest.id,
+      name: prepared.installedManifest.name,
+      description: prepared.installedManifest.description,
+      author: prepared.installedManifest.author,
+      version: prepared.installedManifest.version,
+      type: prepared.installedManifest.type,
+      status: enabled ? "Enabled" : "Disabled",
+      enabled,
+      lifecycle: prepared.summary.lifecycle,
+      lifecycleMessage: prepared.summary.lifecycleMessage,
+      lifecycleUrl: prepared.summary.lifecycleUrl,
+      entryPath: prepared.installedManifest.entry.path,
+      permissions: prepared.installedManifest.permissions,
+      approvedPermissions: prepared.remoteManifest.permissions,
+      provenance: communityAddonProvenance(prepared.index.sourceUrl, prepared.summary, prepared.remoteManifest, {
+        sha256: prepared.actualSha,
         installedAt
       })
     },
-    sha256: actualSha
+    sha256: prepared.actualSha
+  };
+}
+
+export function compareAddonVersions(leftValue, rightValue) {
+  const left = parseAddonVersion(leftValue);
+  const right = parseAddonVersion(rightValue);
+  for (let index = 0; index < 3; index += 1) {
+    if (left.core[index] > right.core[index]) return 1;
+    if (left.core[index] < right.core[index]) return -1;
+  }
+  if (!left.prerelease.length && !right.prerelease.length) return 0;
+  if (!left.prerelease.length) return 1;
+  if (!right.prerelease.length) return -1;
+  const length = Math.max(left.prerelease.length, right.prerelease.length);
+  for (let index = 0; index < length; index += 1) {
+    const leftPart = left.prerelease[index];
+    const rightPart = right.prerelease[index];
+    if (leftPart === undefined) return -1;
+    if (rightPart === undefined) return 1;
+    if (leftPart === rightPart) continue;
+    const leftNumeric = /^[0-9]+$/.test(leftPart);
+    const rightNumeric = /^[0-9]+$/.test(rightPart);
+    if (leftNumeric && rightNumeric) return BigInt(leftPart) > BigInt(rightPart) ? 1 : -1;
+    if (leftNumeric !== rightNumeric) return leftNumeric ? -1 : 1;
+    return leftPart.localeCompare(rightPart) > 0 ? 1 : -1;
+  }
+  return 0;
+}
+
+function parseAddonVersion(value) {
+  const version = stringField(value, "version");
+  const match = version.match(/^(?:v)?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/);
+  if (!match) throw new Error(`Addon version must use semantic versioning: ${version}`);
+  return {
+    core: [BigInt(match[1]), BigInt(match[2]), BigInt(match[3])],
+    prerelease: match[4] ? match[4].split(".") : []
   };
 }
 
@@ -564,7 +699,13 @@ function readAddonState(config) {
 function writeAddonState(config, state) {
   const file = addonStatePath(config);
   mkdirSync(dirname(file), { recursive: true });
-  writeFileSync(file, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
+  const temporaryFile = `${file}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    writeFileSync(temporaryFile, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
+    renameSync(temporaryFile, file);
+  } finally {
+    rmSync(temporaryFile, { force: true });
+  }
 }
 
 function setAddonEnabled(config, addonId, enabled) {

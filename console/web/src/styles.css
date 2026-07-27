@@ -264,6 +264,7 @@ h1, h2, h3, h4, h5 { color: var(--title); line-height: 1.2; letter-spacing: 0; }
 }
 .sidebar-nav-count { margin-left: auto; min-width: 24px; padding: 2px 7px; border: 1px solid #4d4032; border-radius: 999px; background: #171a1d; color: #ffd08a; font-size: 12px; font-weight: 800; text-align: center; }
 .sidebar-nav-count-online { border-color: #3d8b62; background: rgba(24, 101, 84, .18); color: #8fffd2; box-shadow: 0 0 0 1px rgba(143, 255, 210, .08); }
+.sidebar-nav-update-icon { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; margin-left: auto; border: 0; border-radius: 999px; background: rgba(61, 139, 98, .18); color: #8fffd2; box-shadow: 0 0 12px rgba(61, 139, 98, .2); flex: 0 0 22px; }
 .sidebar-addon-children { display: grid; gap: 6px; padding-left: 16px; }
 .sidebar-addon-children button {
   min-height: 34px;
@@ -579,21 +580,47 @@ main { padding: 22px; min-width: 0; }
 .addon-catalog-status-row { margin-top: 10px; }
 .addon-result-panel { margin-top: 12px; animation: addonNoticeFade 5s ease forwards; }
 .addons-empty-state { margin-top: 8px; padding-top: 6px; }
-.addons-table th:nth-child(6), .addons-table td:nth-child(6), .addons-table th:nth-child(7), .addons-table td:nth-child(7) { text-align: center; }
+.addons-table { width: 100%; min-width: 0; table-layout: fixed; }
+.addons-table col.addon-col-identity { width: 25%; }
+.addons-table col.addon-col-author { width: 15%; }
+.addons-table col.addon-col-version { width: 11%; }
+.addons-table col.addon-col-permissions { width: 12%; }
+.addons-table col.addon-col-status { width: 12%; }
+.addons-table col.addon-col-actions { width: 19%; }
+.addons-table col.addon-col-submenu { width: 6%; }
+.addons-table th, .addons-table td { padding: 11px 10px; white-space: normal; overflow: visible; text-overflow: clip; overflow-wrap: anywhere; font-size: 14px; line-height: 1.35; vertical-align: middle; }
+.addons-table th:nth-child(2), .addons-table td:nth-child(2) { white-space: nowrap; overflow-wrap: normal; }
+.addons-table .service-actions { flex-wrap: nowrap; justify-content: center; gap: 6px; }
+.addons-table .service-actions button { min-width: 0; padding: 7px 9px; font-size: 14px; }
+.addons-table .addon-pin-toggle .switch-state { min-width: 42px; padding-inline: 9px; }
+.addons-table .addon-status-toggle { display: inline-flex; width: auto; min-width: 108px; min-height: 36px; flex-direction: row; justify-content: space-between; padding: 4px 5px 4px 10px; gap: 7px; overflow: visible; }
+.addons-table .addon-status-toggle .switch-label { flex: 0 0 auto; }
+.addons-table .addon-status-toggle .switch-state { flex: 0 0 auto; min-width: 38px; padding-inline: 7px; }
+.addons-table-wrap { overflow-x: hidden; }
+.addons-table th:nth-child(n+3), .addons-table td:nth-child(n+3) { text-align: center; }
+.addon-identity-cell { min-width: 0; }
+.addon-identity-content { display: grid; gap: 5px; align-content: center; min-width: 0; }
+.addon-name-line { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.addon-name-line > :first-child { min-width: 0; }
+.addon-name-line .addon-lifecycle-pill { flex: 0 0 auto; padding: 2px 6px; font-size: 10px; }
+.addon-author-cell { color: #e8e0cd; font-size: 14px; white-space: nowrap !important; overflow: visible !important; text-overflow: clip !important; }
 .addon-status-cell { display: flex; justify-content: center; }
 .addon-status-stack { display: grid; justify-items: center; gap: 6px; }
-.addon-status-toggle { min-width: 124px; }
-.addon-catalog-cell { display: flex; justify-content: center; }
+.addon-status-toggle { min-width: 0; }
+.addon-version-cell { display: flex; justify-content: center; align-items: center; min-width: 0; }
+.addon-version-upgrade { display: inline-flex; align-items: center; justify-content: center; gap: 6px; max-width: 100%; white-space: nowrap; color: var(--muted); font-size: 13px; }
+.addon-version-upgrade strong { color: #ffd08a; }
+.addon-version-arrow { color: #c68b4a; font-size: 14px; }
 .addon-pin-column { text-align: center; }
-.addon-source-link { color: var(--accent); font-weight: 800; text-decoration: none; }
+.addon-source-link { display: block; color: var(--accent); font-weight: 800; text-decoration: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .addon-source-link:hover { color: #f1c96f; text-decoration: underline; }
-.addon-permissions-list { display: flex; flex-wrap: wrap; gap: 6px; max-width: 240px; }
-.addon-permission-chip { border: 1px solid #3a3127; border-radius: 999px; color: #cbbda8; background: rgba(255,255,255,.03); padding: 3px 8px; font-size: 12px; white-space: nowrap; text-transform: capitalize; }
+.addon-permissions-list { display: grid; justify-items: center; gap: 7px; max-width: none; }
+.addon-permission-chip { border: 1px solid #3a3127; border-radius: 999px; color: #cbbda8; background: rgba(255,255,255,.03); padding: 3px 8px; font-size: 13px; white-space: nowrap; text-transform: capitalize; }
 .addon-permission-chip.approved { border-color: rgba(61,139,98,.55); color: var(--success-text); background: rgba(61,139,98,.14); }
 .addon-pin-toggle { min-width: 0; min-height: 0; justify-content: center; border-color: transparent; background: transparent; padding: 0; color: inherit; }
 .addon-pin-toggle.enabled, .addon-pin-toggle.disabled, .addon-pin-toggle:hover { border-color: transparent; background: transparent; box-shadow: none; }
 .addon-pin-toggle .switch-state { min-width: 58px; padding: 9px 13px; font-size: 13px; font-weight: 900; }
-.addon-description-field { display: flex; align-items: flex-start; max-width: min(620px, 100%); min-width: 0; color: #cbbda8; line-height: 1.35; overflow-wrap: anywhere; }
+.addon-description-field { display: flex; align-items: flex-start; max-width: 100%; min-width: 0; color: #ad9f89; font-size: 13px; line-height: 1.3; overflow-wrap: anywhere; }
 .addon-description-field:not(.expanded) { align-items: center; }
 .addon-description-field span:last-child { min-width: 0; flex: 1 1 auto; }
 .addon-description-field:not(.expanded) span:last-child { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -602,8 +629,29 @@ main { padding: 22px; min-width: 0; }
 .addon-lifecycle-description a { color: var(--accent); font-weight: 800; text-decoration: none; }
 .addon-lifecycle-description a:hover { text-decoration: underline; }
 .addon-lifecycle-pill { width: fit-content; }
-.addon-description-toggle { flex: 0 0 24px; }
-.addon-description-spacer { flex: 0 0 32px; }
+.addon-description-field .addon-description-toggle { flex: 0 0 24px; width: 24px; min-width: 24px; height: 24px; min-height: 24px; aspect-ratio: 1; padding: 0; margin: 0 6px 0 0; line-height: 1; }
+.addon-description-spacer { display: none; }
+@media (max-width: 1380px) {
+  .addons-table-wrap { max-height: none; border: 0; border-radius: 0; overflow: visible; }
+  .addons-table, .addons-table tbody { display: block; }
+  .addons-table colgroup { display: none; }
+  .addons-table thead { display: none; }
+  .addons-table tbody { display: grid; gap: 12px; }
+  .addons-table tr { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); border: 1px solid #3a3127; border-radius: 9px; background: #14171a; overflow: hidden; }
+  .addons-table td, .addons-table td:nth-child(n) { width: auto; max-width: none; min-width: 0; display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 10px; align-items: center; padding: 10px 12px; border-bottom: 1px solid rgba(58, 49, 39, .72); text-align: left; }
+  .addons-table td::before { content: attr(data-label); color: #ad9f89; font-size: 11px; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; }
+  .addons-table td:nth-child(1), .addons-table td:nth-child(6) { grid-column: 1 / -1; }
+  .addons-table td:nth-last-child(-n+2) { border-bottom: 0; }
+  .addons-table .addon-status-cell, .addons-table .service-actions { justify-content: flex-start; }
+  .addons-table .service-actions { flex-wrap: nowrap; }
+  .addons-table .addon-pin-column { text-align: left; }
+  .addons-table .addon-permissions-list { max-width: none; }
+}
+@media (max-width: 760px) {
+  .addons-table tr { grid-template-columns: minmax(0, 1fr); }
+  .addons-table td:nth-child(n) { grid-column: 1; border-bottom: 1px solid rgba(58, 49, 39, .72); }
+  .addons-table td:last-child { border-bottom: 0; }
+}
 @keyframes addonNoticeFade {
   0%, 86% { opacity: 1; }
   100% { opacity: 0; }

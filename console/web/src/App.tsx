@@ -1,5 +1,5 @@
 import { Fragment, Suspense, lazy, useCallback, useEffect, useRef, useState } from "react";
-import { Archive, Building2, Database, ExternalLink, FileText, Gift, Heart, Home, Landmark, Map as MapIcon, MessageCircle, PackagePlus, RefreshCw, Server, Settings, Shield, Sparkles, Users } from "lucide-react";
+import { Archive, Building2, CircleArrowUp, Database, ExternalLink, FileText, Gift, Heart, Home, Landmark, Map as MapIcon, MessageCircle, PackagePlus, RefreshCw, Server, Settings, Shield, Sparkles, Users } from "lucide-react";
 import { api, post, setCsrfToken } from "./api/client";
 import { serverApi } from "./api/server";
 import { updatesApi } from "./api/updates";
@@ -10,6 +10,7 @@ import { SetupWizard } from "./components/SetupWizard";
 import { TaskProgress } from "./components/TaskProgress";
 import { ConfirmDialog, type ConfirmDialogDetail, type ConfirmDialogRequest } from "./components/common/ConfirmDialog";
 import { loadPinnedAddons, savePinnedAddons, type PinnedAddon } from "./features/addons/pinnedAddons";
+import { hasAddonUpdates } from "./features/addons/addonVersions";
 import { preloadPlayerAdminIconRailAssets } from "./features/players/PlayerCategoryIconRail";
 import {
   HomePanel,
@@ -182,7 +183,7 @@ export function App() {
   const [tab, setTab] = useState<Tab>("Home");
   const [pinnedAddons, setPinnedAddons] = useState<PinnedAddon[]>(() => loadPinnedAddons());
   const [selectedPinnedAddonId, setSelectedPinnedAddonId] = useState("");
-  const [addonCount, setAddonCount] = useState(0);
+  const [addonUpdatesAvailable, setAddonUpdatesAvailable] = useState(false);
   const [onlinePlayerCount, setOnlinePlayerCount] = useState(0);
   const [status, setStatus] = useState("");
   const [readiness, setReadiness] = useState("");
@@ -236,7 +237,7 @@ export function App() {
     if (!auth) {
       setSetupState(null);
       setSetupStateLoaded(false);
-      setAddonCount(0);
+      setAddonUpdatesAvailable(false);
       setOnlinePlayerCount(0);
       setPublicDirectoryStatus(null);
       return;
@@ -279,14 +280,20 @@ export function App() {
   useEffect(() => {
     if (!auth) return;
     let cancelled = false;
-    addonsApi.community()
-      .then((result) => {
-        if (!cancelled) setAddonCount((result.addons || []).length);
-      })
-      .catch(() => {
-        if (!cancelled) setAddonCount(0);
-      });
-    return () => { cancelled = true; };
+    const refreshAddonUpdates = async () => {
+      try {
+        const [catalog, installed] = await Promise.all([addonsApi.community(), addonsApi.installed()]);
+        if (!cancelled) setAddonUpdatesAvailable(hasAddonUpdates(catalog.addons || [], installed.addons || []));
+      } catch {
+        if (!cancelled) setAddonUpdatesAvailable(false);
+      }
+    };
+    void refreshAddonUpdates();
+    const timer = window.setInterval(refreshAddonUpdates, 5 * 60 * 1000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
   }, [auth]);
 
   useEffect(() => {
@@ -535,7 +542,7 @@ export function App() {
                     setRedeploySetupOpen(false);
                     setSelectedPinnedAddonId("");
                     setTab(item.tab);
-                  }}>{item.icon}<span>{item.tab}</span>{item.tab === "Players" && onlinePlayerCount > 0 && <span className="sidebar-nav-count sidebar-nav-count-online">{onlinePlayerCount}</span>}{item.tab === "Addons" && addonCount > 0 && <span className="sidebar-nav-count">{addonCount}</span>}</button>
+                  }}>{item.icon}<span>{item.tab}</span>{item.tab === "Players" && onlinePlayerCount > 0 && <span className="sidebar-nav-count sidebar-nav-count-online">{onlinePlayerCount}</span>}{item.tab === "Addons" && addonUpdatesAvailable && <span className="sidebar-nav-update-icon" title="Addon update available" aria-label="Addon update available"><CircleArrowUp size={14} aria-hidden="true" /></span>}</button>
                   {item.tab === "Addons" && pinnedAddons.length > 0 && <div className="sidebar-addon-children">
                     {pinnedAddons.map((addon) => (
                       <button key={addon.id} className={tab === "Addons" && selectedPinnedAddonId === addon.id ? "active" : ""} onClick={() => {
@@ -595,7 +602,7 @@ export function App() {
         {!redeploySetupOpen && tab === "Live Map" && <LazyTabBoundary label="Loading Live Map"><LiveMapPanel onError={setError} confirmAction={confirmDialog} waitForTask={waitForTaskSilently} taskTechnicalDetails={taskTechnicalDetails} /></LazyTabBoundary>}
         {!redeploySetupOpen && tab === "Maps" && <LazyTabBoundary label="Loading Maps"><MapsPanel onError={setError} confirmAction={confirmDialog} confirmSettingsRestart={confirmSettingsRestart} waitForTaskWithUpdates={waitForTaskWithUpdates} taskTechnicalDetails={taskTechnicalDetails} /></LazyTabBoundary>}
         {!redeploySetupOpen && tab === "Care Package" && <LazyTabBoundary label="Loading Care Package"><CarePackagePanel onError={setError} confirmAction={confirmDialog} /></LazyTabBoundary>}
-        {!redeploySetupOpen && tab === "Addons" && <LazyTabBoundary label="Loading Addons"><AddonsPanel pinnedAddons={pinnedAddons} setPinnedAddons={setPinnedAddons} selectedAddonId={selectedPinnedAddonId} clearSelectedAddon={() => setSelectedPinnedAddonId("")} setAddonCount={setAddonCount} confirmAction={confirmDialog} /></LazyTabBoundary>}
+        {!redeploySetupOpen && tab === "Addons" && <LazyTabBoundary label="Loading Addons"><AddonsPanel pinnedAddons={pinnedAddons} setPinnedAddons={setPinnedAddons} selectedAddonId={selectedPinnedAddonId} clearSelectedAddon={() => setSelectedPinnedAddonId("")} setAddonUpdateAvailable={setAddonUpdatesAvailable} confirmAction={confirmDialog} /></LazyTabBoundary>}
         {!redeploySetupOpen && tab === "Database" && <LazyTabBoundary label="Loading Database"><DatabasePanel /></LazyTabBoundary>}
         {!redeploySetupOpen && tab === "Storage" && <LazyTabBoundary label="Loading Storage"><StoragePanel onError={setError} confirmAction={confirmDialog} formatMutationResult={formatMutationResult} /></LazyTabBoundary>}
         {!redeploySetupOpen && tab === "Backups" && <LazyTabBoundary label="Loading Backups"><BackupsPanel
