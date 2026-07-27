@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useRef, useState } from "react";
-import { ChevronDown, ChevronUp, Download, Grid2X2, List, Lock } from "lucide-react";
-import { mapsApi, type ChoamTerminalOverview, type ChoamTradeCenter, type LiveMapMemoryRow, type MapCombatStateResult, type MapRuntimeSettings, type MemoryBalancerState, type PartitionCombatStateRow, type SpicefieldTypeRow, type UserSettingField, type UserSettingsSchema } from "../../api/maps";
+import { ChevronDown, ChevronUp, Download, Grid2X2, Info, List, Lock } from "lucide-react";
+import { mapsApi, type ChoamTerminalOverview, type ChoamTradeCenter, type LiveMapMemoryRow, type MapCombatStateResult, type MapRuntimeSettings, type MemoryBalancerState, type MemorySwapState, type PartitionCombatStateRow, type SpicefieldTypeRow, type UserSettingField, type UserSettingsSchema } from "../../api/maps";
 import { setupApi, type Task } from "../../api/setup";
 import { SecretInput } from "../../components/SecretInput";
 import { KeyValueGrid, StatusPill, TechnicalDetails } from "../../components/common/DisplayPrimitives";
@@ -37,6 +37,37 @@ const LIVE_MEMORY_STALE_GRACE_MS = 20000;
 const LIVE_MEMORY_REFRESH_MS = 15000;
 const MAP_RUNTIME_REFRESH_MS = 15000;
 type CachedLiveMemoryRow = { row: LiveMapMemoryRow; sampledAt: number };
+
+export function InfoTooltip({ id, label, children }: { id: string; label: string; children: string }) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLSpanElement>(null);
+  function openTooltip() {
+    window.dispatchEvent(new CustomEvent("memory-info-open", { detail: id }));
+    setOpen(true);
+  }
+  useEffect(() => {
+    const closeOtherTooltip = (event: Event) => {
+      if ((event as CustomEvent<string>).detail !== id) setOpen(false);
+    };
+    window.addEventListener("memory-info-open", closeOtherTooltip);
+    return () => window.removeEventListener("memory-info-open", closeOtherTooltip);
+  }, [id]);
+  useEffect(() => {
+    if (!open) return undefined;
+    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === "Escape") setOpen(false); };
+    const closeOutside = (event: PointerEvent) => { if (!rootRef.current?.contains(event.target as Node)) setOpen(false); };
+    document.addEventListener("keydown", closeOnEscape);
+    document.addEventListener("pointerdown", closeOutside);
+    return () => {
+      document.removeEventListener("keydown", closeOnEscape);
+      document.removeEventListener("pointerdown", closeOutside);
+    };
+  }, [open]);
+  return <span ref={rootRef} className={`memory-info-tooltip ${open ? "open" : ""}`} onMouseEnter={openTooltip} onMouseLeave={() => setOpen(false)}>
+    <button type="button" className="memory-info-button" aria-label={label} aria-expanded={open} aria-describedby={id} onClick={() => open ? setOpen(false) : openTooltip()} onFocus={openTooltip}><Info size={15} aria-hidden="true" /></button>
+    <span id={id} role="tooltip" className="memory-info-box">{children}</span>
+  </span>;
+}
 
 function formatResultTitle(value: unknown, pending = false) {
   return formatUiSentence(value, pending);
@@ -233,6 +264,12 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
   const [memoryError, setMemoryError] = useState("");
   const [memoryBalancer, setMemoryBalancer] = useState<MemoryBalancerState | null>(null);
   const [memoryBalancerSaving, setMemoryBalancerSaving] = useState(false);
+  const [memorySwap, setMemorySwap] = useState<MemorySwapState | null>(null);
+  const [memorySwapSaving, setMemorySwapSaving] = useState(false);
+  const [memorySwapMode, setMemorySwapMode] = useState<"low" | "automatic" | "custom">("automatic");
+  const [memorySwapAllowance, setMemorySwapAllowance] = useState("2");
+  const [memorySwapPool, setMemorySwapPool] = useState("4");
+  const [memorySwapResult, setMemorySwapResult] = useState<HomeTaskResult | null>(null);
   const [runtimeSettings, setRuntimeSettings] = useState<MapRuntimeSettings | null>(null);
   const [startupParallelism, setStartupParallelism] = useState("1");
   const [runtimeSettingsSaving, setRuntimeSettingsSaving] = useState(false);
@@ -581,6 +618,16 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
   async function loadMemoryBalancer() {
     setMemoryBalancer(await mapsApi.memoryBalancer());
   }
+  async function loadMemorySwap(preserveDraft = false) {
+    const status = await mapsApi.memorySwap();
+    setMemorySwap(status);
+    if (!preserveDraft) {
+      const mode = status.perServerGiB === 1 ? "low" : status.perServerGiB === 2 ? "automatic" : "custom";
+      setMemorySwapMode(mode);
+      setMemorySwapAllowance(String(status.perServerGiB || 2));
+      setMemorySwapPool(String(status.poolGiB || status.recommendedPoolGiB || 1));
+    }
+  }
   async function loadRuntimeSettings() {
     const settings = await mapsApi.runtimeSettings();
     setRuntimeSettings(settings);
@@ -682,6 +729,53 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
       setMemoryBalancerSaving(false);
     }
   }
+  function selectedSwapValues() {
+    const allowance = memorySwapMode === "low" ? 1 : memorySwapMode === "automatic" ? 2 : Number(memorySwapAllowance);
+    const automaticPool = Math.max(0, Math.min(32, allowance * (memorySwap?.worldServerCount || 2) - (memorySwap?.existingSwapGiB || 0)));
+    const pool = memorySwapMode === "custom" ? Number(memorySwapPool) : automaticPool;
+    return { allowance, pool };
+  }
+  async function saveMemorySwap(enabled: boolean) {
+    const { allowance, pool } = selectedSwapValues();
+    if (enabled && (!Number.isInteger(allowance) || allowance < 1 || allowance > 16 || !Number.isInteger(pool) || pool < 0 || pool > 32)) {
+      setMemorySwapResult({ status: "failed", title: "Memory Swap Not Saved", message: "Use 1-16 GB per running map and a 0-32 GB managed swap file." });
+      return;
+    }
+    if (enabled && memorySwap && pool > memorySwap.safeAvailableDiskGiB) {
+      setMemorySwapResult({ status: "failed", title: "Memory Swap Not Saved", message: `Only ${memorySwap.safeAvailableDiskGiB} GB is safely available after preserving the host disk reserve.` });
+      return;
+    }
+    const existingSwapIsSufficient = enabled && pool === 0 && (memorySwap?.existingSwapGiB || 0) > 0;
+    const enableMessage = existingSwapIsSufficient
+      ? `Use the existing ${memorySwap?.existingSwapGiB || 0} GB of host swap with up to ${allowance} GB available to each running map? No additional managed swap file will be created.`
+      : `Enable ${pool} GB of managed swap with up to ${allowance} GB available to each running map?`;
+    const confirmed = await confirmAction(enabled ? enableMessage : "Disable and remove the Console-managed Memory Swap file?", {
+      title: enabled ? "Enable Memory Swap" : "Disable Memory Swap",
+      confirmLabel: enabled ? "Enable Memory Swap" : "Disable Memory Swap",
+      danger: !enabled,
+      details: enabled ? [
+        ...(existingSwapIsSufficient ? [{ label: "Existing Host Swap", value: `${memorySwap?.existingSwapGiB || 0} GB` }] : []),
+        { label: "Additional Managed Swap", value: pool === 0 ? "Not needed (0 GB)" : `${pool} GB` },
+        { label: "Per Running Map", value: `${allowance} GB` },
+        { label: "Disk Safety Reserve", value: "At least 25 GB or 10%" }
+      ] : undefined
+    });
+    if (!confirmed) return;
+    setMemorySwapSaving(true);
+    setMemorySwapResult({ status: "running", title: enabled ? "Enabling Memory Swap..." : "Disabling Memory Swap..." });
+    try {
+      const response = await mapsApi.setMemorySwap({ enabled, perServerGiB: allowance, poolGiB: pool, confirmation: enabled ? "ENABLE MEMORY SWAP" : "DISABLE MEMORY SWAP" });
+      const final = await waitForTaskWithUpdates(response.task, (current) => setMemorySwapResult({ status: "running", title: enabled ? "Enabling Memory Swap..." : "Disabling Memory Swap...", details: taskTechnicalDetails(current) }));
+      if (final.status !== "succeeded") throw new Error(taskTechnicalDetails(final) || final.errorMessage || "Memory Swap operation failed.");
+      await loadMemorySwap();
+      await loadLiveMemory();
+      setMemorySwapResult({ status: "succeeded", title: enabled ? "Memory Swap Enabled" : "Memory Swap Disabled", message: enabled ? "Running, newly started, and rebalanced game servers now preserve the configured emergency swap allowance." : "The project-managed swap file was removed. Existing administrator-managed swap was not changed." });
+    } catch (error) {
+      setMemorySwapResult({ status: "failed", title: "Memory Swap Change Failed", message: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setMemorySwapSaving(false);
+    }
+  }
   async function saveRuntimeSettings() {
     const max = runtimeSettings?.maxAlwaysOnStartupParallelism || 16;
     const value = Number(startupParallelism);
@@ -708,6 +802,7 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
     run(loadUserEngine);
     run(loadLiveMemory);
     run(loadMemoryBalancer);
+    run(() => loadMemorySwap());
     run(loadRuntimeSettings);
     run(loadSietches);
     run(loadSpicefields);
@@ -777,6 +872,13 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
     }, 5000);
     return () => window.clearTimeout(id);
   }, [runtimeSettingsResult]);
+  useEffect(() => {
+    if (!memorySwapResult || memorySwapResult.status === "running") return;
+    const id = window.setTimeout(() => {
+      setMemorySwapResult(null);
+    }, 10400);
+    return () => window.clearTimeout(id);
+  }, [memorySwapResult]);
   useEffect(() => {
     if (!spicefieldResult || spicefieldResult.status === "running") return;
     const id = window.setTimeout(() => {
@@ -1406,7 +1508,20 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
   const runtimeParallelismMax = runtimeSettings?.maxAlwaysOnStartupParallelism ?? 16;
   const startupParallelismDirty = Number(startupParallelism) !== runtimeParallelismValue;
   return <section className="panel maps-panel">
-    <div className="panel-title"><h2>Maps & Sietches</h2><div className="maps-title-actions">{memoryBalancer?.enabled && <span className={`maps-memory-balancer-status ${memoryBalancer.lastError ? "danger" : ""}`}>{memoryBalancer.lastError ? `Memory Balancer error: ${memoryBalancer.lastError}` : memoryBalancer.lastMessage || "Memory Balancer is monitoring running maps"}</span>}<button className={`switch-toggle maps-memory-balancer-toggle ${memoryBalancer?.enabled ? "enabled" : "disabled"}`} disabled={memoryBalancerSaving} onClick={() => run(toggleMemoryBalancer)}><span className="switch-label">Memory Balancer</span><strong className="switch-state">{memoryBalancer?.enabled ? "ON" : "OFF"}</strong></button><button disabled={loading} onClick={() => run(loadMaps)}>{loading ? "Refreshing..." : "Refresh Maps"}</button></div></div>
+    <div className="panel-title"><h2>Maps & Sietches</h2><div className="maps-title-actions">{memoryBalancer?.enabled && <span className={`maps-memory-balancer-status ${memoryBalancer.lastError ? "danger" : ""}`}>{memoryBalancer.lastError ? `Memory Balancer error: ${memoryBalancer.lastError}` : memoryBalancer.lastMessage || "Memory Balancer is monitoring running maps"}</span>}<div className="memory-feature-toggle"><InfoTooltip id="memory-balancer-help" label="About Memory Balancer">Memory Balancer redistributes existing physical RAM limits between running map containers. It does not create additional memory.</InfoTooltip><button className={`switch-toggle maps-memory-balancer-toggle ${memoryBalancer?.enabled ? "enabled" : "disabled"}`} disabled={memoryBalancerSaving} onClick={() => run(toggleMemoryBalancer)}><span className="switch-label">Memory Balancer</span><strong className="switch-state">{memoryBalancer?.enabled ? "ON" : "OFF"}</strong></button></div><div className="memory-feature-toggle"><InfoTooltip id="memory-swap-help" label="About Memory Swap">Memory Swap provides limited disk-backed emergency memory after a running map container reaches its RAM limit. It can reduce out-of-memory crashes, but sustained use may cause lag.</InfoTooltip><button className={`switch-toggle maps-memory-swap-toggle ${memorySwap?.enabled ? "enabled" : "disabled"}`} disabled={memorySwapSaving || !memorySwap} onClick={() => run(() => saveMemorySwap(!memorySwap?.enabled))}><span className="switch-label">Memory Swap</span><strong className="switch-state">{memorySwap?.enabled ? "ON" : "OFF"}</strong></button></div><button disabled={loading} onClick={() => run(loadMaps)}>{loading ? "Refreshing..." : "Refresh Maps"}</button></div></div>
+    {memorySwap ? <div className="memory-swap-panel">
+      <div className="memory-swap-copy"><strong>Emergency Swap Settings</strong><span>{memorySwap.enabled ? memorySwap.hostPoolActive ? `${memorySwap.poolGiB} GB managed swap active · ${memorySwap.perServerGiB} GB per running map` : `Existing host swap active · ${memorySwap.perServerGiB} GB per running map` : memorySwap.recommendedPoolGiB > 0 ? `Recommended managed swap: ${memorySwap.recommendedPoolGiB} GB` : "Existing host swap is sufficient; no managed swap file is needed"}</span></div>
+      <label>Mode<select value={memorySwapMode} disabled={memorySwapSaving} onChange={(event) => {
+        const mode = event.target.value as "low" | "automatic" | "custom";
+        setMemorySwapMode(mode);
+        if (mode === "low") setMemorySwapAllowance("1");
+        if (mode === "automatic") setMemorySwapAllowance("2");
+      }}><option value="automatic">Automatic (2 GB/Server)</option><option value="low">Low (1 GB/Server)</option><option value="custom">Custom</option></select></label>
+      {memorySwapMode === "custom" ? <><label><span className="memory-swap-label-with-help">Per Running Map<InfoTooltip id="memory-swap-per-map-help" label="About the per-running-map allowance">Each active map or Sietch runs in its own game-server container. This is the maximum emergency swap each one may use; it is not a limit for the whole physical server.</InfoTooltip></span><input type="number" min="1" max="16" value={memorySwapAllowance} onChange={(event) => setMemorySwapAllowance(event.target.value)} /><span>GB</span></label><label><span className="memory-swap-label-with-help">Managed Swap<InfoTooltip id="memory-swap-pool-help" label="About managed swap">This is the additional host swap file created and managed by the Console. Existing host swap is counted first, so this can be 0 GB when the host already has enough swap.</InfoTooltip></span><input type="number" min="0" max="32" value={memorySwapPool} onChange={(event) => setMemorySwapPool(event.target.value)} /><span>GB</span></label></> : null}
+      <div className="memory-swap-metrics"><span><strong>{memorySwap.physicalMemoryGiB} GB</strong> RAM</span><span><strong>{memorySwap.existingSwapGiB} GB</strong> existing swap</span><span><strong>{memorySwap.safeAvailableDiskGiB} GB</strong> safe disk available</span></div>
+      {memorySwap.enabled ? <button disabled={memorySwapSaving} onClick={() => run(() => saveMemorySwap(true))}>{memorySwapSaving ? "Applying..." : "Apply Swap Settings"}</button> : null}
+    </div> : null}
+    {memorySwapResult ? <div className="maps-result-slot"><HomeTaskResultCard result={memorySwapResult} /></div> : null}
     {mapsResult && mapsResultScope === "maps" && !isDeepDesertDualResult(mapsResult) && !isForceDespawnResult(mapsResult) && !isForceSpawnResult(mapsResult) && !isMapSettingsResult(mapsResult) ? <div className="maps-result-slot"><HomeTaskResultCard result={mapsResult} /></div> : null}
     <section className="action-section">
       <h4>Maps Overview</h4>

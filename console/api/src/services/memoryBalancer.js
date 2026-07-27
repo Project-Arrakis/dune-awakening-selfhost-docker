@@ -270,12 +270,26 @@ function minimumBalancerLimit(row) {
 }
 
 async function dockerUpdateMemoryLimit(config, container, limitBytes) {
-  await runProcessText(config, "docker", dockerMemoryUpdateArgs(container, limitBytes), 15000);
+  const swapAllowanceBytes = readMemorySwapAllowanceBytes(config);
+  await runProcessText(config, "docker", dockerMemoryUpdateArgs(container, limitBytes, swapAllowanceBytes), 15000);
 }
 
-export function dockerMemoryUpdateArgs(container, limitBytes) {
+export function dockerMemoryUpdateArgs(container, limitBytes, swapAllowanceBytes = 0) {
   const memory = dockerMemoryArg(limitBytes);
-  return ["update", "--memory", memory, "--memory-swap", memory, "--memory-reservation", memory, container];
+  const memorySwap = dockerMemoryArg(limitBytes + Math.max(0, swapAllowanceBytes));
+  return ["update", "--memory", memory, "--memory-swap", memorySwap, "--memory-reservation", memory, container];
+}
+
+export function readMemorySwapAllowanceBytes(config) {
+  try {
+    const env = readFileSync(resolve(config.repoRoot, ".env"), "utf8");
+    const values = Object.fromEntries(env.split(/\r?\n/).map((line) => line.split("=", 2)).filter(([key, value]) => key && value !== undefined));
+    if (values.DUNE_MEMORY_SWAP_ENABLED !== "1") return 0;
+    const gib = Number(values.DUNE_MEMORY_SWAP_PER_SERVER_GIB || 0);
+    return Number.isInteger(gib) && gib >= 1 && gib <= 16 ? gib * (1024 ** 3) : 0;
+  } catch {
+    return 0;
+  }
 }
 
 function dockerMemoryArg(bytes) {

@@ -426,6 +426,11 @@ EOF
     runtime/scripts/memory.sh "$@"
     ;;
 
+  memory-swap)
+    shift || true
+    runtime/scripts/memory-swap.sh "$@"
+    ;;
+
   sietches)
     shift || true
     runtime/scripts/sietches.sh "$@"
@@ -501,6 +506,7 @@ Usage:
   dune admin repair-login-queue <player-fls-id|queue-name> [--yes] [--force]
   dune config title ["New Server Name"]
   dune memory status
+  dune memory-swap [status|enable|disable]
   dune memory list-maps
   dune memory set <map-name> <memory>
   dune memory unset <map-name>

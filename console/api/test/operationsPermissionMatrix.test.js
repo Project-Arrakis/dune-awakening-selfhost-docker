@@ -254,6 +254,10 @@ test("39 Web UI: restart schedule write executes through the task runner", async
 test("40 Web UI: sietch write executes through the task runner", async () => {
   await assertWebWrite("sietchesSetActive", { map: "Survival_1", count: 2 }, ["sietches", "set-active", "Survival_1", "2"]);
 });
+test("40b Web UI: memory swap changes execute through validated task arguments", async () => {
+  await assertWebWrite("memorySwapEnable", { perServerGiB: 2, poolGiB: 8 }, ["memory-swap", "enable", "2", "8"]);
+  await assertWebWrite("memorySwapDisable", {}, ["memory-swap", "disable"]);
+});
 
 // Upgrade and ownership migration (41-43)
 test("41 Upgrade: host runtime migration repairs only the controlled writable paths", () => {

@@ -189,6 +189,7 @@ docker run -d \
   --cap-add SYS_ADMIN \
   --security-opt seccomp=unconfined \
   --memory "$MEMORY" \
+  --memory-swap "$(memory_swap_total_for_limit "$MEMORY")" \
   --memory-reservation "$MEMORY" \
   -v "$(host_path "$PWD/runtime/game/survival-1/Saved"):/home/dune/server/DuneSandbox/Saved" \
   -v "$(host_path "$PWD/runtime/game/artifacts"):/home/dune/artifacts" \

@@ -36,6 +36,20 @@ export type MemoryBalancerState = {
   updatedAt: string | null;
 };
 
+export type MemorySwapState = {
+  enabled: boolean;
+  hostPoolActive: boolean;
+  poolGiB: number;
+  perServerGiB: number;
+  recommendedPoolGiB: number;
+  worldServerCount: number;
+  existingSwapGiB: number;
+  physicalMemoryGiB: number;
+  safeAvailableDiskGiB: number;
+  swappiness: string;
+  swapFile: string;
+};
+
 export type MapRuntimeSettings = {
   alwaysOnStartupParallelism: number;
   defaultAlwaysOnStartupParallelism: number;
@@ -119,6 +133,8 @@ export const mapsApi = {
   liveMemory: () => api<{ rows: LiveMapMemoryRow[]; sampledAt: string; error?: string }>("/api/maps/memory/live"),
   memoryBalancer: () => api<MemoryBalancerState>("/api/maps/memory/balancer"),
   setMemoryBalancer: (enabled: boolean) => post<MemoryBalancerState>("/api/maps/memory/balancer", { enabled }),
+  memorySwap: () => api<MemorySwapState>("/api/maps/memory/swap"),
+  setMemorySwap: (body: { enabled: boolean; perServerGiB?: number; poolGiB?: number; confirmation: string }) => post<{ task: Task }>("/api/maps/memory/swap", body),
   setMemory: (body: { map: string; memory: string; confirmation: string }) => post<{ task: Task }>("/api/maps/memory", { ...body, action: "set" }),
   unsetMemory: (body: { map: string; confirmation: string }) => post<{ task: Task }>("/api/maps/memory", { ...body, action: "unset" }),
   spicefields: () => api<{ capabilities?: Record<string, boolean>; rows: SpicefieldTypeRow[]; reason?: string }>("/api/maps/spicefields"),

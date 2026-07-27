@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createDockerStatsSampler, createMemoryBalancer, dockerMemoryUpdateArgs, parseDockerStatsRow } from "../src/services/memoryBalancer.js";
+import { createDockerStatsSampler, createMemoryBalancer, dockerMemoryUpdateArgs, parseDockerStatsRow, readMemorySwapAllowanceBytes } from "../src/services/memoryBalancer.js";
 
 test("memory balancer updates Docker swap limit with memory limit", () => {
   assert.deepEqual(dockerMemoryUpdateArgs("dune-server-overmap", 2 * 1024 ** 3), [
@@ -16,6 +16,21 @@ test("memory balancer updates Docker swap limit with memory limit", () => {
     "2048m",
     "dune-server-overmap"
   ]);
+});
+
+test("memory balancer preserves the configured emergency swap allowance", () => {
+  assert.deepEqual(dockerMemoryUpdateArgs("dune-server-overmap", 2 * 1024 ** 3, 2 * 1024 ** 3), [
+    "update", "--memory", "2048m", "--memory-swap", "4096m", "--memory-reservation", "2048m", "dune-server-overmap"
+  ]);
+});
+
+test("memory balancer reads only validated enabled swap settings", () => {
+  const root = mkdtempSync(join(tmpdir(), "dune-memory-swap-env-"));
+  writeFileSync(join(root, ".env"), "DUNE_MEMORY_SWAP_ENABLED=1\nDUNE_MEMORY_SWAP_PER_SERVER_GIB=2\n");
+  assert.equal(readMemorySwapAllowanceBytes({ repoRoot: root }), 2 * 1024 ** 3);
+  writeFileSync(join(root, ".env"), "DUNE_MEMORY_SWAP_ENABLED=0\nDUNE_MEMORY_SWAP_PER_SERVER_GIB=12\n");
+  assert.equal(readMemorySwapAllowanceBytes({ repoRoot: root }), 0);
+  rmSync(root, { recursive: true, force: true });
 });
 
 test("memory balancer parses docker stats rows", () => {
