@@ -17,9 +17,9 @@ type GeneratorEntry = {
   fuelCells: number;
   generatorCount: number;
   runtimeSeconds: number;
-  // Generators of this type holding no fuel at all, so they read as "out of
-  // fuel" rather than as a 0m countdown that just expired.
-  emptyCount?: number;
+  // Generators of this type with no accepted fuel units queued in inventory.
+  // This deliberately does not claim that a stale burn marker is still active.
+  unstockedCount?: number;
 };
 
 type BaseRow = Record<string, unknown> & {
@@ -39,8 +39,8 @@ type BaseRow = Record<string, unknown> & {
   generatorCount: number;
   fuelCells: number;
   generatorRuntimeSeconds: number;
-  generatorEmptyCount: number;
-  generatorAllEmpty: boolean;
+  generatorUnstockedCount: number;
+  generatorAllUnstocked: boolean;
   generators: GeneratorEntry[];
 };
 
@@ -54,8 +54,8 @@ function formatRuntime(seconds: number) {
   return `${minutes}m`;
 }
 
-function isFullyDepleted(emptyCount: number | undefined, generatorCount: number) {
-  return generatorCount > 0 && (emptyCount || 0) >= generatorCount;
+function hasNoQueuedFuel(unstockedCount: number | undefined, generatorCount: number) {
+  return generatorCount > 0 && (unstockedCount || 0) >= generatorCount;
 }
 
 const BASES_AUTO_REFRESH_MS = 15 * 60_000; // 15 minutes — listBases is expensive
@@ -105,31 +105,29 @@ function renderBaseCell(row: Record<string, unknown>, column: string) {
     if (row.generatorDataAvailable === false) return <span className="muted" title="Generator data is unavailable">Unavailable</span>;
     const generatorCount = Number(row.generatorCount) || 0;
     if (!generatorCount) return <span className="muted">—</span>;
-    if (row.generatorAllEmpty) {
-      const text = `${generatorCount} · All generators out of fuel`;
+    if (row.generatorAllUnstocked) {
+      const text = `${generatorCount} · No generators have queued fuel`;
       return (
         <span className="bases-generator-summary" title={text}>
-          {generatorCount} · <span className="bases-fuel-alert">All generators out of fuel</span>
+          {generatorCount} · <span className="bases-fuel-alert">No generators have queued fuel</span>
         </span>
       );
     }
-    const emptyCount = Number(row.generatorEmptyCount) || 0;
+    const unstockedCount = Number(row.generatorUnstockedCount) || 0;
     const runtimeSeconds = Number(row.generatorRuntimeSeconds) || 0;
-    // "Next depletion" is the soonest any still-fuelled generator runs dry,
-    // not a total or average across the base — say so explicitly rather than
-    // "left", which reads like one countdown for the whole base. The title
-    // repeats the same text as a plain single line, so a hover always shows
-    // it in full even if the column is ever too narrow and clips it.
-    if (emptyCount > 0) {
-      const text = `${generatorCount} · ${emptyCount} out of fuel · next depletion in ${formatRuntime(runtimeSeconds)}`;
+    // The database can verify queued inventory, but active burn timestamps can
+    // be stale after a restart/base load. Describe the value as a reserve rather
+    // than promising an exact live depletion countdown.
+    if (unstockedCount > 0) {
+      const text = `${generatorCount} · ${unstockedCount} with no queued fuel · lowest queued reserve ${formatRuntime(runtimeSeconds)}`;
       return (
         <span className="bases-generator-summary" title={text}>
-          {generatorCount} · <span className="bases-fuel-alert">{emptyCount} out of fuel</span> <br />
-          next depletion in {formatRuntime(runtimeSeconds)}
+          {generatorCount} · <span className="bases-fuel-alert">{unstockedCount} with no queued fuel</span> <br />
+          lowest queued reserve {formatRuntime(runtimeSeconds)}
         </span>
       );
     }
-    const text = `${generatorCount} · next depletion in ${formatRuntime(runtimeSeconds)}`;
+    const text = `${generatorCount} · lowest queued reserve ${formatRuntime(runtimeSeconds)}`;
     return <span className="bases-generator-summary" title={text}>{text}</span>;
   }
   if (TOOLTIP_COLUMNS.has(column)) {
@@ -394,16 +392,16 @@ export function BasesPanel({ onError }: BasesPanelProps) {
                     <dd>{generator.generatorCount}</dd>
                     <dt>Fuel cells queued</dt>
                     <dd>{generator.fuelCells} {generator.fuelName}{generator.fuelCells === 1 ? "" : "s"}</dd>
-                    {!isFullyDepleted(generator.emptyCount, generator.generatorCount) ? (
+                    {!hasNoQueuedFuel(generator.unstockedCount, generator.generatorCount) ? (
                       <>
-                        <dt>Next depletion in</dt>
+                        <dt>Lowest queued reserve</dt>
                         <dd>{formatRuntime(Number(generator.runtimeSeconds) || 0)}</dd>
                       </>
                     ) : null}
-                    {generator.emptyCount ? (
+                    {generator.unstockedCount ? (
                       <>
-                        <dt>Out of fuel</dt>
-                        <dd>{generator.emptyCount} of {generator.generatorCount}</dd>
+                        <dt>No queued fuel</dt>
+                        <dd>{generator.unstockedCount} of {generator.generatorCount}</dd>
                       </>
                     ) : null}
                   </dl>

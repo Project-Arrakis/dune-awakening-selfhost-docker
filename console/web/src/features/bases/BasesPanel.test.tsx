@@ -65,10 +65,10 @@ describe("BasesPanel generator details", () => {
 
     render(<BasesPanel onError={vi.fn()} />);
 
-    await waitFor(() => expect(screen.getByText("2 · next depletion in 1h 0m", { selector: ".bases-generator-summary" })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("2 · lowest queued reserve 1h 0m", { selector: ".bases-generator-summary" })).toBeInTheDocument());
     // A native title tooltip repeats the same text so a hover always shows it
     // in full, even if a narrow column ever clips the visible text.
-    expect(screen.getByText("2 · next depletion in 1h 0m", { selector: ".bases-generator-summary" })).toHaveAttribute("title", "2 · next depletion in 1h 0m");
+    expect(screen.getByText("2 · lowest queued reserve 1h 0m", { selector: ".bases-generator-summary" })).toHaveAttribute("title", "2 · lowest queued reserve 1h 0m");
     expect(screen.getByText("Unavailable")).toHaveAttribute("title", "Generator data is unavailable");
     expect(screen.queryByRole("button", { name: "Show generator details for Sietch Two" })).not.toBeInTheDocument();
     // Column headers get the same tooltip treatment for when their label is
@@ -85,7 +85,7 @@ describe("BasesPanel generator details", () => {
     expect(screen.getByText("1h 30m")).toBeInTheDocument();
   });
 
-  it("renders both wind turbine types as their own cards and reports the empty count alongside the next depletion", async () => {
+  it("renders both wind turbine types and reports generators with no queued fuel", async () => {
     vi.mocked(basesApi.list).mockResolvedValue({
       capabilities: { bases: true },
       totalCount: 1,
@@ -99,16 +99,15 @@ describe("BasesPanel generator details", () => {
           name: "Sietch Three",
           generatorDataAvailable: true,
           generatorCount: 4,
-          // Next depletion excludes the empty fuel generator — it is the
-          // soonest of the three still-fuelled generators (spice, at 10800s).
+          // The lowest queued reserve excludes the unstocked fuel generator.
           generatorRuntimeSeconds: 10800,
-          generatorEmptyCount: 1,
-          generatorAllEmpty: false,
+          generatorUnstockedCount: 1,
+          generatorAllUnstocked: false,
           generators: [
-            { type: "fuel", name: "Fuel-Powered Generator", fuelName: "Fuel Cell", fuelCells: 0, generatorCount: 1, runtimeSeconds: 0, emptyCount: 1 },
-            { type: "spice", name: "Spice-Powered Generator", fuelName: "Spice-infused Fuel Cell", fuelCells: 2, generatorCount: 1, runtimeSeconds: 10800, emptyCount: 0 },
-            { type: "windTurbineOmni", name: "Omnidirectional Wind Turbine", fuelName: "Lubricant", fuelCells: 467, generatorCount: 1, runtimeSeconds: 1622210, emptyCount: 0 },
-            { type: "windTurbineDirectional", name: "Directional Wind Turbine", fuelName: "Lubricant", fuelCells: 38, generatorCount: 1, runtimeSeconds: 136800, emptyCount: 0 }
+            { type: "fuel", name: "Fuel-Powered Generator", fuelName: "Fuel Cell", fuelCells: 0, generatorCount: 1, runtimeSeconds: 0, unstockedCount: 1 },
+            { type: "spice", name: "Spice-Powered Generator", fuelName: "Spice-infused Fuel Cell", fuelCells: 2, generatorCount: 1, runtimeSeconds: 10800, unstockedCount: 0 },
+            { type: "windTurbineOmni", name: "Omnidirectional Wind Turbine", fuelName: "Lubricant", fuelCells: 467, generatorCount: 1, runtimeSeconds: 1681200, unstockedCount: 0 },
+            { type: "windTurbineDirectional", name: "Directional Wind Turbine", fuelName: "Lubricant", fuelCells: 38, generatorCount: 1, runtimeSeconds: 205200, unstockedCount: 0 }
           ]
         }
       ]
@@ -116,21 +115,13 @@ describe("BasesPanel generator details", () => {
 
     render(<BasesPanel onError={vi.fn()} />);
 
-    // One generator is empty and three still hold fuel — the summary must show
-    // both the count out of fuel and when the next one depletes, not collapse
-    // to a bare "out of fuel" that hides the other three. "next depletion in"
-    // is forced onto its own line via <br />, which contributes no text node,
-    // so the DOM's textContent has a single space (not a newline) there.
-    // The "out of fuel" phrase is a nested <span> for its own color, so RTL's
-    // default text matcher (direct child text nodes only) can't see the whole
-    // line as one string — read the container's full textContent instead.
-    await waitFor(() => expect(document.querySelector(".bases-generator-summary")).not.toBeNull());
-    const summary = document.querySelector(".bases-generator-summary");
-    expect(summary?.textContent?.replace(/\s+/g, " ").trim()).toBe("4 · 1 out of fuel next depletion in 3h 0m");
-    expect(summary).toHaveAttribute("title", "4 · 1 out of fuel · next depletion in 3h 0m");
-    // Only the "out of fuel" phrase draws attention with color — the count and
-    // the depletion time stay in the default text color.
-    expect(screen.getByText("1 out of fuel", { selector: ".bases-fuel-alert" })).toBeInTheDocument();
+    // Wait for this test's API response specifically. Waiting for any summary
+    // is flaky because the panel intentionally renders its module-level cache
+    // while the fresh request is in flight.
+    const alert = await screen.findByText("1 with no queued fuel", { selector: ".bases-fuel-alert" });
+    const summary = alert.closest(".bases-generator-summary");
+    expect(summary?.textContent?.replace(/\s+/g, " ").trim()).toBe("4 · 1 with no queued fuel lowest queued reserve 3h 0m");
+    expect(summary).toHaveAttribute("title", "4 · 1 with no queued fuel · lowest queued reserve 3h 0m");
 
     fireEvent.click(screen.getByRole("button", { name: "Show generator details for Sietch Three" }));
 
@@ -141,7 +132,7 @@ describe("BasesPanel generator details", () => {
     expect(screen.getByText("1 of 1")).toBeInTheDocument();
   });
 
-  it("reads as fully out of fuel when every generator at the base is empty", async () => {
+  it("reports when every generator has no queued fuel without claiming active burns stopped", async () => {
     vi.mocked(basesApi.list).mockResolvedValue({
       capabilities: { bases: true },
       totalCount: 1,
@@ -156,10 +147,10 @@ describe("BasesPanel generator details", () => {
           generatorDataAvailable: true,
           generatorCount: 2,
           generatorRuntimeSeconds: 0,
-          generatorEmptyCount: 2,
-          generatorAllEmpty: true,
+          generatorUnstockedCount: 2,
+          generatorAllUnstocked: true,
           generators: [
-            { type: "fuel", name: "Fuel-Powered Generator", fuelName: "Fuel Cell", fuelCells: 0, generatorCount: 2, runtimeSeconds: 0, emptyCount: 2 }
+            { type: "fuel", name: "Fuel-Powered Generator", fuelName: "Fuel Cell", fuelCells: 0, generatorCount: 2, runtimeSeconds: 0, unstockedCount: 2 }
           ]
         }
       ]
@@ -167,16 +158,9 @@ describe("BasesPanel generator details", () => {
 
     render(<BasesPanel onError={vi.fn()} />);
 
-    // No generator holds fuel, so there is no next-depletion time to report —
-    // this must not read the same as "depletes now". "All generators out of
-    // fuel" is a nested <span> for its own color, so read textContent directly
-    // rather than relying on RTL's direct-child-only text matcher.
-    await waitFor(() => expect(document.querySelector(".bases-generator-summary")).not.toBeNull());
-    const summary = document.querySelector(".bases-generator-summary");
-    expect(summary?.textContent?.replace(/\s+/g, " ").trim()).toBe("2 · All generators out of fuel");
-    expect(summary).toHaveAttribute("title", "2 · All generators out of fuel");
-    // Only "All generators out of fuel" gets the attention color — the leading
-    // count ("2 ·") stays in the default text color.
-    expect(screen.getByText("All generators out of fuel", { selector: ".bases-fuel-alert" })).toBeInTheDocument();
+    const alert = await screen.findByText("No generators have queued fuel", { selector: ".bases-fuel-alert" });
+    const summary = alert.closest(".bases-generator-summary");
+    expect(summary?.textContent?.replace(/\s+/g, " ").trim()).toBe("2 · No generators have queued fuel");
+    expect(summary).toHaveAttribute("title", "2 · No generators have queued fuel");
   });
 });
