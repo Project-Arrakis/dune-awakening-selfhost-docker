@@ -74,7 +74,10 @@ describe("BasesPanel generator details", () => {
     expect(screen.getByRole("columnheader", { name: /Placeables/ })).toBeInTheDocument();
     // A native title tooltip repeats the same text so a hover always shows it
     // in full, even if a narrow column ever clips the visible text.
-    expect(screen.getByText("2 · Lowest Queued Reserve 2h 0m", { selector: ".bases-generator-summary" })).toHaveAttribute("title", "2 · Lowest Queued Reserve 2h 0m");
+    expect(screen.getByText("2 · Lowest Queued Reserve 2h 0m", { selector: ".bases-generator-summary" })).toHaveAttribute(
+      "title",
+      "2 · Lowest Queued Reserve 2h 0m. Queued Reserve counts fuel still in inventory. It excludes fuel currently burning, so the in-game Total Uptime may be higher."
+    );
     expect(screen.getByText("Unavailable")).toHaveAttribute("title", "Generator data is unavailable");
     expect(screen.queryByRole("button", { name: "Show generator details for Sietch Two" })).not.toBeInTheDocument();
     // Column headers get the same tooltip treatment for when their label is
@@ -93,6 +96,8 @@ describe("BasesPanel generator details", () => {
     expect(screen.getByText("6h 0m")).toBeInTheDocument();
     expect(screen.getByText("2× Uptime Event")).toHaveClass("bases-uptime-event-badge");
     expect(screen.getByText(/Ends Aug 31, 2026/)).toBeInTheDocument();
+    expect(screen.getByRole("note")).toHaveTextContent("Queued Reserve counts fuel still in inventory");
+    expect(screen.getByRole("note")).toHaveTextContent("excludes fuel currently burning");
   });
 
   it("renders both wind turbine types and reports generators with no queued fuel", async () => {
@@ -131,7 +136,10 @@ describe("BasesPanel generator details", () => {
     const alert = await screen.findByText("1 with no queued fuel", { selector: ".bases-fuel-alert" });
     const summary = alert.closest(".bases-generator-summary");
     expect(summary?.textContent?.replace(/\s+/g, " ").trim()).toBe("4 · 1 with no queued fuel Lowest Queued Reserve 3h 0m");
-    expect(summary).toHaveAttribute("title", "4 · 1 with no queued fuel · Lowest Queued Reserve 3h 0m");
+    expect(summary).toHaveAttribute(
+      "title",
+      "4 · 1 with no queued fuel · Lowest Queued Reserve 3h 0m. Queued Reserve counts fuel still in inventory. It excludes fuel currently burning, so the in-game Total Uptime may be higher."
+    );
 
     fireEvent.click(screen.getByRole("button", { name: "Show generator details for Sietch Three" }));
 
@@ -171,6 +179,9 @@ describe("BasesPanel generator details", () => {
     const alert = await screen.findByText("No generators have queued fuel", { selector: ".bases-fuel-alert" });
     const summary = alert.closest(".bases-generator-summary");
     expect(summary?.textContent?.replace(/\s+/g, " ").trim()).toBe("2 · No generators have queued fuel");
-    expect(summary).toHaveAttribute("title", "2 · No generators have queued fuel");
+    expect(summary).toHaveAttribute(
+      "title",
+      "2 · No generators have queued fuel. Queued Reserve counts fuel still in inventory. It excludes fuel currently burning, so the in-game Total Uptime may be higher."
+    );
   });
 });

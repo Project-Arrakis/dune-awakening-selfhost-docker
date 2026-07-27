@@ -72,6 +72,8 @@ function hasNoQueuedFuel(unstockedCount: number | undefined, generatorCount: num
   return generatorCount > 0 && (unstockedCount || 0) >= generatorCount;
 }
 
+const QUEUED_RESERVE_EXPLANATION = "Queued Reserve counts fuel still in inventory. It excludes fuel currently burning, so the in-game Total Uptime may be higher.";
+
 const BASES_AUTO_REFRESH_MS = 15 * 60_000; // 15 minutes — listBases is expensive
 const BASES_PAGE_SIZES = [25, 50, 100, 200] as const;
 const BASES_DEFAULT_PAGE_SIZE = 50;
@@ -122,7 +124,7 @@ function renderBaseCell(row: Record<string, unknown>, column: string) {
     if (row.generatorAllUnstocked) {
       const text = `${generatorCount} · No generators have queued fuel`;
       return (
-        <span className="bases-generator-summary" title={text}>
+        <span className="bases-generator-summary" title={`${text}. ${QUEUED_RESERVE_EXPLANATION}`}>
           {generatorCount} · <span className="bases-fuel-alert">No generators have queued fuel</span>
         </span>
       );
@@ -135,14 +137,14 @@ function renderBaseCell(row: Record<string, unknown>, column: string) {
     if (unstockedCount > 0) {
       const text = `${generatorCount} · ${unstockedCount} with no queued fuel · Lowest Queued Reserve ${formatRuntime(runtimeSeconds)}`;
       return (
-        <span className="bases-generator-summary" title={text}>
+        <span className="bases-generator-summary" title={`${text}. ${QUEUED_RESERVE_EXPLANATION}`}>
           {generatorCount} · <span className="bases-fuel-alert">{unstockedCount} with no queued fuel</span> <br />
           Lowest Queued Reserve {formatRuntime(runtimeSeconds)}
         </span>
       );
     }
     const text = `${generatorCount} · Lowest Queued Reserve ${formatRuntime(runtimeSeconds)}`;
-    return <span className="bases-generator-summary" title={text}>{text}</span>;
+    return <span className="bases-generator-summary" title={`${text}. ${QUEUED_RESERVE_EXPLANATION}`}>{text}</span>;
   }
   if (TOOLTIP_COLUMNS.has(column)) {
     const value = row[column];
@@ -416,6 +418,9 @@ export function BasesPanel({ onError }: BasesPanelProps) {
                   <small>Ends {formatEventThroughDate(base.generatorUptimeEventEndsAt)}</small>
                 </div>
               ) : null}
+              <p className="bases-generator-reserve-note" role="note">
+                {QUEUED_RESERVE_EXPLANATION}
+              </p>
               {generators.map((generator, index) => (
                 <div className="bases-generator-group" key={`${generator.type}-${index}`}>
                   <div className="bases-generator-group-title">{generator.name}</div>
