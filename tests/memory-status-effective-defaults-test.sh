@@ -7,6 +7,7 @@ trap 'rm -rf "$test_root"' EXIT
 
 mkdir -p "$test_root/project/runtime/scripts" "$test_root/project/runtime/generated"
 cp "$repo_root/runtime/scripts/memory.sh" "$test_root/project/runtime/scripts/memory.sh"
+cp "$repo_root/runtime/scripts/memory-swap-common.sh" "$test_root/project/runtime/scripts/memory-swap-common.sh"
 
 cat > "$test_root/project/runtime/generated/partition-catalog.json" <<'EOF'
 [
