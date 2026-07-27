@@ -61,7 +61,7 @@ function formatEventThroughDate(endsAt: string) {
   const exclusiveEnd = Date.parse(endsAt);
   if (!Number.isFinite(exclusiveEnd)) return "the announced event end";
   return new Intl.DateTimeFormat("en", {
-    month: "long",
+    month: "short",
     day: "numeric",
     year: "numeric",
     timeZone: "UTC"
@@ -133,15 +133,15 @@ function renderBaseCell(row: Record<string, unknown>, column: string) {
     // be stale after a restart/base load. Describe the value as a reserve rather
     // than promising an exact live depletion countdown.
     if (unstockedCount > 0) {
-      const text = `${generatorCount} · ${unstockedCount} with no queued fuel · lowest queued reserve ${formatRuntime(runtimeSeconds)}`;
+      const text = `${generatorCount} · ${unstockedCount} with no queued fuel · Lowest Queued Reserve ${formatRuntime(runtimeSeconds)}`;
       return (
         <span className="bases-generator-summary" title={text}>
           {generatorCount} · <span className="bases-fuel-alert">{unstockedCount} with no queued fuel</span> <br />
-          lowest queued reserve {formatRuntime(runtimeSeconds)}
+          Lowest Queued Reserve {formatRuntime(runtimeSeconds)}
         </span>
       );
     }
-    const text = `${generatorCount} · lowest queued reserve ${formatRuntime(runtimeSeconds)}`;
+    const text = `${generatorCount} · Lowest Queued Reserve ${formatRuntime(runtimeSeconds)}`;
     return <span className="bases-generator-summary" title={text}>{text}</span>;
   }
   if (TOOLTIP_COLUMNS.has(column)) {
@@ -356,6 +356,18 @@ export function BasesPanel({ onError }: BasesPanelProps) {
       <DataTable
         rows={rows}
         columns={["base_id", "name", "base_type", "owner_name", "shared_with", "map", "generators", "piece_count", "placeable_count", "coordinates"]}
+        columnLabels={{
+          base_id: "ID",
+          name: "Base Name",
+          base_type: "Base Type",
+          owner_name: "Owner",
+          shared_with: "Shared With",
+          map: "Map",
+          generators: "Generators",
+          piece_count: "Building Pieces",
+          placeable_count: "Placeables",
+          coordinates: "Coordinates"
+        }}
         tableClassName="bases-table"
         headerTitles
         actionClassName="actions-column bases-actions-column"
@@ -399,9 +411,10 @@ export function BasesPanel({ onError }: BasesPanelProps) {
           return (
             <div className="bases-generator-breakdown">
               {base.generatorUptimeMultiplier > 1 ? (
-                <p className="action-help-note">
-                  Queued reserves include the current {base.generatorUptimeMultiplier}× generator uptime event through {formatEventThroughDate(base.generatorUptimeEventEndsAt)}.
-                </p>
+                <div className="bases-uptime-event" role="status">
+                  <span className="bases-uptime-event-badge">{base.generatorUptimeMultiplier}× Uptime Event</span>
+                  <small>Ends {formatEventThroughDate(base.generatorUptimeEventEndsAt)}</small>
+                </div>
               ) : null}
               {generators.map((generator, index) => (
                 <div className="bases-generator-group" key={`${generator.type}-${index}`}>
@@ -409,11 +422,11 @@ export function BasesPanel({ onError }: BasesPanelProps) {
                   <dl className="bases-generator-stats">
                     <dt>Generators</dt>
                     <dd>{generator.generatorCount}</dd>
-                    <dt>Consumables queued</dt>
+                    <dt>Fuel Cells <br />Queued</dt>
                     <dd>{generator.fuelCells} {generator.fuelName}{generator.fuelCells === 1 ? "" : "s"}</dd>
                     {!hasNoQueuedFuel(generator.unstockedCount, generator.generatorCount) ? (
                       <>
-                        <dt>Lowest queued reserve</dt>
+                        <dt>Lowest Queued <br />Reserve</dt>
                         <dd>{formatRuntime(Number(generator.runtimeSeconds) || 0)}</dd>
                       </>
                     ) : null}

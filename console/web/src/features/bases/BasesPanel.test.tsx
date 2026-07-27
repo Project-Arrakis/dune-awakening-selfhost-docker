@@ -68,25 +68,31 @@ describe("BasesPanel generator details", () => {
 
     render(<BasesPanel onError={vi.fn()} />);
 
-    await waitFor(() => expect(screen.getByText("2 · lowest queued reserve 2h 0m", { selector: ".bases-generator-summary" })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("2 · Lowest Queued Reserve 2h 0m", { selector: ".bases-generator-summary" })).toBeInTheDocument());
+    expect(screen.getByRole("columnheader", { name: /Base Name/ })).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: /Building Pieces/ })).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: /Placeables/ })).toBeInTheDocument();
     // A native title tooltip repeats the same text so a hover always shows it
     // in full, even if a narrow column ever clips the visible text.
-    expect(screen.getByText("2 · lowest queued reserve 2h 0m", { selector: ".bases-generator-summary" })).toHaveAttribute("title", "2 · lowest queued reserve 2h 0m");
+    expect(screen.getByText("2 · Lowest Queued Reserve 2h 0m", { selector: ".bases-generator-summary" })).toHaveAttribute("title", "2 · Lowest Queued Reserve 2h 0m");
     expect(screen.getByText("Unavailable")).toHaveAttribute("title", "Generator data is unavailable");
     expect(screen.queryByRole("button", { name: "Show generator details for Sietch Two" })).not.toBeInTheDocument();
     // Column headers get the same tooltip treatment for when their label is
     // wider than the (user-resizable) column default.
-    expect(screen.getByRole("columnheader", { name: /Piece Count/ })).toHaveAttribute("title", "Piece Count");
+    expect(screen.getByRole("columnheader", { name: /Building Pieces/ })).toHaveAttribute("title", "Building Pieces");
 
     fireEvent.click(screen.getByRole("button", { name: "Show generator details for Sietch One" }));
 
     expect(screen.getByText("Fuel-Powered Generator")).toBeInTheDocument();
     expect(screen.getByText("Spice-Powered Generator")).toBeInTheDocument();
+    expect(document.querySelectorAll(".bases-generator-group")).toHaveLength(2);
+    expect(screen.getAllByText(/Fuel Cells\s+Queued/)).toHaveLength(2);
     expect(screen.getByText("1 Fuel Cell")).toBeInTheDocument();
     expect(screen.getByText("2 Spice-infused Fuel Cells")).toBeInTheDocument();
     expect(screen.getByText("2h 0m")).toBeInTheDocument();
     expect(screen.getByText("6h 0m")).toBeInTheDocument();
-    expect(screen.getByText(/Queued reserves include the current 2× generator uptime event/)).toBeInTheDocument();
+    expect(screen.getByText("2× Uptime Event")).toHaveClass("bases-uptime-event-badge");
+    expect(screen.getByText(/Ends Aug 31, 2026/)).toBeInTheDocument();
   });
 
   it("renders both wind turbine types and reports generators with no queued fuel", async () => {
@@ -124,8 +130,8 @@ describe("BasesPanel generator details", () => {
     // while the fresh request is in flight.
     const alert = await screen.findByText("1 with no queued fuel", { selector: ".bases-fuel-alert" });
     const summary = alert.closest(".bases-generator-summary");
-    expect(summary?.textContent?.replace(/\s+/g, " ").trim()).toBe("4 · 1 with no queued fuel lowest queued reserve 3h 0m");
-    expect(summary).toHaveAttribute("title", "4 · 1 with no queued fuel · lowest queued reserve 3h 0m");
+    expect(summary?.textContent?.replace(/\s+/g, " ").trim()).toBe("4 · 1 with no queued fuel Lowest Queued Reserve 3h 0m");
+    expect(summary).toHaveAttribute("title", "4 · 1 with no queued fuel · Lowest Queued Reserve 3h 0m");
 
     fireEvent.click(screen.getByRole("button", { name: "Show generator details for Sietch Three" }));
 
