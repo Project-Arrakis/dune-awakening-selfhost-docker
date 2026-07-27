@@ -54,6 +54,10 @@ function formatRuntime(seconds: number) {
   return `${minutes}m`;
 }
 
+function isFullyDepleted(emptyCount: number | undefined, generatorCount: number) {
+  return generatorCount > 0 && (emptyCount || 0) >= generatorCount;
+}
+
 const BASES_AUTO_REFRESH_MS = 15 * 60_000; // 15 minutes — listBases is expensive
 const BASES_PAGE_SIZES = [25, 50, 100, 200] as const;
 const BASES_DEFAULT_PAGE_SIZE = 50;
@@ -341,6 +345,7 @@ export function BasesPanel({ onError }: BasesPanelProps) {
         rows={rows}
         columns={["base_id", "name", "base_type", "owner_name", "shared_with", "map", "generators", "piece_count", "placeable_count", "coordinates"]}
         tableClassName="bases-table"
+        headerTitles
         actionClassName="actions-column bases-actions-column"
         renderCell={renderBaseCell}
         action={(row) => {
@@ -389,7 +394,7 @@ export function BasesPanel({ onError }: BasesPanelProps) {
                     <dd>{generator.generatorCount}</dd>
                     <dt>Fuel cells queued</dt>
                     <dd>{generator.fuelCells} {generator.fuelName}{generator.fuelCells === 1 ? "" : "s"}</dd>
-                    {(generator.emptyCount || 0) < generator.generatorCount ? (
+                    {!isFullyDepleted(generator.emptyCount, generator.generatorCount) ? (
                       <>
                         <dt>Next depletion in</dt>
                         <dd>{formatRuntime(Number(generator.runtimeSeconds) || 0)}</dd>
