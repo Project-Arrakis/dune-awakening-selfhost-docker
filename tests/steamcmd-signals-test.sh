@@ -30,6 +30,19 @@ steamcmd_log_has_content_host_failure "$single_source_log"
 [ "$(steamcmd_download_interface_count "$single_source_log")" = "1" ]
 [ "$(steamcmd_dns_host_from_log "$single_source_log")" = "cache1-blv2.valve.org" ]
 
+manifest_denied_log="$tmp_dir/manifest-denied.log"
+cat > "$manifest_denied_log" <<'EOF'
+[2026-07-25 19:42:42] CDepotDownloadMgr::BYldRequestDepotManifest(App: 4754530, Depot: 4754532, Manifest: 9024770243793080621, branch: ): Failed to get manifest request code, 'Access Denied'
+[2026-07-25 19:42:42] AppID 4754530 update canceled : Failed downloading 1 manifests (No connection)
+EOF
+
+steamcmd_log_has_manifest_access_denied "$manifest_denied_log"
+steamcmd_log_needs_manifest_repair "$manifest_denied_log"
+if steamcmd_log_has_content_host_failure "$manifest_denied_log"; then
+  echo "manifest access denial must take precedence over the generic no-connection line" >&2
+  exit 1
+fi
+
 install_log="$tmp_dir/install.log"
 cat > "$install_log" <<'EOF'
 ERROR! App '4754530' state is 0x6 after update job.
@@ -41,6 +54,38 @@ if steamcmd_log_has_dns_failure "$install_log"; then
 fi
 if steamcmd_log_has_content_host_failure "$install_log"; then
   echo "ordinary SteamCMD errors must not be classified as content-host failures" >&2
+  exit 1
+fi
+steamcmd_log_needs_manifest_repair "$install_log"
+
+wrapper_log="$tmp_dir/wrapper.log"
+cat > "$wrapper_log" <<'EOF'
+[dune] Target directory: /srv/dune/server
+[dune] If SteamCMD printed "state is 0x6", common causes are:
+[dune]   - not enough free disk space in Docker's volume storage
+This is a Steam content-host failure, not an install-directory failure.
+EOF
+
+if steamcmd_log_has_install_storage_failure "$wrapper_log"; then
+  echo "updater help text must not be classified as an install/storage failure" >&2
+  exit 1
+fi
+
+storage_log="$tmp_dir/storage.log"
+cat > "$storage_log" <<'EOF'
+Error: failed to write /srv/dune/server/steamapps/appmanifest_4754530.acf: No space left on device
+EOF
+steamcmd_log_has_install_storage_failure "$storage_log"
+if steamcmd_log_needs_manifest_repair "$storage_log"; then
+  echo "a positive storage failure must not trigger manifest repair" >&2
+  exit 1
+fi
+
+cdn_state_log="$tmp_dir/cdn-state.log"
+cat "$single_source_log" > "$cdn_state_log"
+printf "Error! App '4754530' state is 0x6 after update job.\n" >> "$cdn_state_log"
+if steamcmd_log_needs_manifest_repair "$cdn_state_log"; then
+  echo "a positive content-host failure must not trigger manifest repair" >&2
   exit 1
 fi
 
