@@ -9,6 +9,7 @@ mkdir -p "$test_root/project/runtime/scripts" "$test_root/bin" "$test_root/state
 cp "$repo_root/runtime/scripts/update.sh" "$test_root/project/runtime/scripts/update.sh"
 cp "$repo_root/runtime/scripts/doctor.sh" "$test_root/project/runtime/scripts/doctor.sh"
 cp "$repo_root/runtime/scripts/runtime-env.sh" "$test_root/project/runtime/scripts/runtime-env.sh"
+cp "$repo_root/runtime/scripts/memory-swap-common.sh" "$test_root/project/runtime/scripts/memory-swap-common.sh"
 cp "$repo_root/runtime/scripts/compose-project.sh" "$test_root/project/runtime/scripts/compose-project.sh"
 cp "$repo_root/runtime/scripts/steamcmd-signals.sh" "$test_root/project/runtime/scripts/steamcmd-signals.sh"
 cp "$repo_root/runtime/scripts/fls-signals.sh" "$test_root/project/runtime/scripts/fls-signals.sh"
