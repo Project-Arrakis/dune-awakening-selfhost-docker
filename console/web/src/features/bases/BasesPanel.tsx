@@ -39,6 +39,9 @@ type BaseRow = Record<string, unknown> & {
   generatorCount: number;
   fuelCells: number;
   generatorRuntimeSeconds: number;
+  generatorUptimeMultiplier: number;
+  generatorUptimeEventLabel: string;
+  generatorUptimeEventEndsAt: string;
   generatorUnstockedCount: number;
   generatorAllUnstocked: boolean;
   generators: GeneratorEntry[];
@@ -52,6 +55,17 @@ function formatRuntime(seconds: number) {
   if (days > 0) return `${days}d ${hours}h`;
   if (hours > 0) return `${hours}h ${minutes}m`;
   return `${minutes}m`;
+}
+
+function formatEventThroughDate(endsAt: string) {
+  const exclusiveEnd = Date.parse(endsAt);
+  if (!Number.isFinite(exclusiveEnd)) return "the announced event end";
+  return new Intl.DateTimeFormat("en", {
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+    timeZone: "UTC"
+  }).format(new Date(exclusiveEnd - 1));
 }
 
 function hasNoQueuedFuel(unstockedCount: number | undefined, generatorCount: number) {
@@ -384,13 +398,18 @@ export function BasesPanel({ onError }: BasesPanelProps) {
           if (!generators.length) return <p className="muted">No generators built at this base.</p>;
           return (
             <div className="bases-generator-breakdown">
+              {base.generatorUptimeMultiplier > 1 ? (
+                <p className="action-help-note">
+                  Queued reserves include the current {base.generatorUptimeMultiplier}× generator uptime event through {formatEventThroughDate(base.generatorUptimeEventEndsAt)}.
+                </p>
+              ) : null}
               {generators.map((generator, index) => (
                 <div className="bases-generator-group" key={`${generator.type}-${index}`}>
                   <div className="bases-generator-group-title">{generator.name}</div>
                   <dl className="bases-generator-stats">
                     <dt>Generators</dt>
                     <dd>{generator.generatorCount}</dd>
-                    <dt>Fuel cells queued</dt>
+                    <dt>Consumables queued</dt>
                     <dd>{generator.fuelCells} {generator.fuelName}{generator.fuelCells === 1 ? "" : "s"}</dd>
                     {!hasNoQueuedFuel(generator.unstockedCount, generator.generatorCount) ? (
                       <>

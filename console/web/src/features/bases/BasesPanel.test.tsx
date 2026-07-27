@@ -47,10 +47,13 @@ describe("BasesPanel generator details", () => {
           generatorDataAvailable: true,
           generatorCount: 2,
           fuelCells: 3,
-          generatorRuntimeSeconds: 3600,
+          generatorRuntimeSeconds: 7200,
+          generatorUptimeMultiplier: 2,
+          generatorUptimeEventLabel: "Double generator uptime event",
+          generatorUptimeEventEndsAt: "2026-09-01T00:00:00.000Z",
           generators: [
             { type: "fuel", name: "Fuel-Powered Generator", fuelName: "Fuel Cell", fuelCells: 1, generatorCount: 1, runtimeSeconds: 7200 },
-            { type: "spice", name: "Spice-Powered Generator", fuelName: "Spice-infused Fuel Cell", fuelCells: 2, generatorCount: 1, runtimeSeconds: 5400 }
+            { type: "spice", name: "Spice-Powered Generator", fuelName: "Spice-infused Fuel Cell", fuelCells: 2, generatorCount: 1, runtimeSeconds: 21600 }
           ]
         },
         {
@@ -65,10 +68,10 @@ describe("BasesPanel generator details", () => {
 
     render(<BasesPanel onError={vi.fn()} />);
 
-    await waitFor(() => expect(screen.getByText("2 · lowest queued reserve 1h 0m", { selector: ".bases-generator-summary" })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("2 · lowest queued reserve 2h 0m", { selector: ".bases-generator-summary" })).toBeInTheDocument());
     // A native title tooltip repeats the same text so a hover always shows it
     // in full, even if a narrow column ever clips the visible text.
-    expect(screen.getByText("2 · lowest queued reserve 1h 0m", { selector: ".bases-generator-summary" })).toHaveAttribute("title", "2 · lowest queued reserve 1h 0m");
+    expect(screen.getByText("2 · lowest queued reserve 2h 0m", { selector: ".bases-generator-summary" })).toHaveAttribute("title", "2 · lowest queued reserve 2h 0m");
     expect(screen.getByText("Unavailable")).toHaveAttribute("title", "Generator data is unavailable");
     expect(screen.queryByRole("button", { name: "Show generator details for Sietch Two" })).not.toBeInTheDocument();
     // Column headers get the same tooltip treatment for when their label is
@@ -82,7 +85,8 @@ describe("BasesPanel generator details", () => {
     expect(screen.getByText("1 Fuel Cell")).toBeInTheDocument();
     expect(screen.getByText("2 Spice-infused Fuel Cells")).toBeInTheDocument();
     expect(screen.getByText("2h 0m")).toBeInTheDocument();
-    expect(screen.getByText("1h 30m")).toBeInTheDocument();
+    expect(screen.getByText("6h 0m")).toBeInTheDocument();
+    expect(screen.getByText(/Queued reserves include the current 2× generator uptime event/)).toBeInTheDocument();
   });
 
   it("renders both wind turbine types and reports generators with no queued fuel", async () => {

@@ -2797,6 +2797,9 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
         generatorCount: fuelByBase.get(String(row.base_id))?.generatorCount || 0,
         fuelCells: fuelByBase.get(String(row.base_id))?.fuelCells || 0,
         generatorRuntimeSeconds: fuelByBase.get(String(row.base_id))?.runtimeSeconds || 0,
+        generatorUptimeMultiplier: fuelByBase.get(String(row.base_id))?.uptimeMultiplier || 1,
+        generatorUptimeEventLabel: fuelByBase.get(String(row.base_id))?.uptimeEventLabel || "",
+        generatorUptimeEventEndsAt: fuelByBase.get(String(row.base_id))?.uptimeEventEndsAt || "",
         generatorUnstockedCount: fuelByBase.get(String(row.base_id))?.unstockedCount || 0,
         generatorAllUnstocked: fuelByBase.get(String(row.base_id))?.allGeneratorsUnstocked || false,
         generators: fuelByBase.get(String(row.base_id))?.generators || []
@@ -3462,6 +3465,9 @@ export async function playerPortalSnapshots(db, requestedAccountHashes, journeyT
           fuelCells: fuelByBase.get(String(base.base_id))?.fuelCells || 0,
           generatorCount: fuelByBase.get(String(base.base_id))?.generatorCount || 0,
           generatorRuntimeSeconds: fuelByBase.get(String(base.base_id))?.runtimeSeconds || 0,
+          generatorUptimeMultiplier: fuelByBase.get(String(base.base_id))?.uptimeMultiplier || 1,
+          generatorUptimeEventLabel: fuelByBase.get(String(base.base_id))?.uptimeEventLabel || "",
+          generatorUptimeEventEndsAt: fuelByBase.get(String(base.base_id))?.uptimeEventEndsAt || "",
           generatorUnstockedCount: fuelByBase.get(String(base.base_id))?.unstockedCount || 0,
           generatorAllUnstocked: fuelByBase.get(String(base.base_id))?.allGeneratorsUnstocked || false,
           generators: fuelByBase.get(String(base.base_id))?.generators || [],
@@ -3630,6 +3636,29 @@ const FUEL_BURN_SECONDS = {
   windturbinelubricant2: 90 * 60  // measured across 2 turbines
 };
 
+// Funcom's 1.4.10.2 hotfix applies a temporary 2x uptime multiplier to
+// generators, wind turbines, and their consumables from July 1 through
+// August 31, 2026. The persisted m_FuelBurningDuration values above remain at
+// their normal rates during the event, so the effective player-facing reserve
+// must apply the live-event policy separately. Keep the end exclusive so the
+// policy automatically returns to normal at the start of September.
+const GENERATOR_UPTIME_EVENTS = [{
+  startsAt: "2026-07-01T00:00:00.000Z",
+  endsAt: "2026-09-01T00:00:00.000Z",
+  multiplier: 2,
+  label: "Double generator uptime event"
+}];
+
+export function generatorUptimePolicy(now = new Date()) {
+  const timestamp = now instanceof Date ? now.getTime() : new Date(now).getTime();
+  if (!Number.isFinite(timestamp)) return { multiplier: 1, label: "", endsAt: "" };
+  const event = GENERATOR_UPTIME_EVENTS.find((candidate) =>
+    timestamp >= Date.parse(candidate.startsAt) && timestamp < Date.parse(candidate.endsAt));
+  return event
+    ? { multiplier: event.multiplier, label: event.label, endsAt: event.endsAt }
+    : { multiplier: 1, label: "", endsAt: "" };
+}
+
 // Display metadata, accepted fuels, and explicit placeable allowlists per
 // generator type. Both mappings are passed into SQL as parameters, so adding a
 // supported type or known alias requires changing this object only.
@@ -3649,13 +3678,13 @@ const GENERATOR_TYPES = {
   windTurbineOmni: {
     name: "Omnidirectional Wind Turbine",
     fuelName: "Lubricant",
-    fuels: ["windturbinelubricant1", "windturbinelubricant2"],
+    fuels: ["windturbinelubricant1"],
     buildingTypes: ["windturbineomnidirectional_placeable", "windturbineomni_placeable"]
   },
   windTurbineDirectional: {
     name: "Directional Wind Turbine",
     fuelName: "Lubricant",
-    fuels: ["windturbinelubricant1", "windturbinelubricant2"],
+    fuels: ["windturbinelubricant2"],
     buildingTypes: ["windturbinedirectional_placeable"]
   }
 };
@@ -3672,8 +3701,9 @@ const GENERATOR_BUILDING_TYPE_PAIRS = GENERATOR_TYPE_ORDER.flatMap(
 );
 const FUEL_TEMPLATE_IDS = Object.keys(FUEL_BURN_SECONDS);
 
-export async function portalGeneratorFuel(db, baseIds) {
+export async function portalGeneratorFuel(db, baseIds, { now = new Date() } = {}) {
   if (!baseIds.length) return new Map();
+  const uptimePolicy = generatorUptimePolicy(now);
   const result = await db.query(`
     with requested_claims as (
       select distinct b.id, afe.actor_id
@@ -3711,10 +3741,9 @@ export async function portalGeneratorFuel(db, baseIds) {
         -- SQL null, and reading that as a fuel id matched no inventory rows —
         -- reporting 0 runtime for generators holding hundreds of cells.
         --
-        -- Each item row is rated at its own tier, so a turbine holding both
-        -- lubricant grades is summed correctly instead of having one rate
-        -- applied to the combined stack. Joining through type_fuels keeps the
-        -- guarantee that a fuel a type cannot burn contributes nothing.
+        -- Each generator type has one accepted consumable. Joining through
+        -- type_fuels guarantees that an incompatible lubricant placed in a
+        -- turbine's inventory contributes nothing to its queued reserve.
         select sum(i.stack_size * fd.seconds)::numeric stocked_seconds,
                sum(i.stack_size)::int total_units
         from dune.inventories inv
@@ -3749,7 +3778,7 @@ export async function portalGeneratorFuel(db, baseIds) {
     from generator_runtime group by base_id, generator_type`, [
       baseIds,
       FUEL_TEMPLATE_IDS,
-      FUEL_TEMPLATE_IDS.map((template) => FUEL_BURN_SECONDS[template]),
+      FUEL_TEMPLATE_IDS.map((template) => FUEL_BURN_SECONDS[template] * uptimePolicy.multiplier),
       GENERATOR_TYPE_FUEL_PAIRS.map(([type]) => type),
       GENERATOR_TYPE_FUEL_PAIRS.map(([, template]) => template),
       GENERATOR_BUILDING_TYPE_PAIRS.map(([type]) => type),
@@ -3777,6 +3806,9 @@ export async function portalGeneratorFuel(db, baseIds) {
       generatorCount: 0,
       runtimeSeconds: null,
       unstockedCount: 0,
+      uptimeMultiplier: uptimePolicy.multiplier,
+      uptimeEventLabel: uptimePolicy.label,
+      uptimeEventEndsAt: uptimePolicy.endsAt,
       generators: []
     };
     current.fuelCells += detail.fuelCells;
