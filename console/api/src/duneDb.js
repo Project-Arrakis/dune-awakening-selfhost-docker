@@ -6787,6 +6787,25 @@ export async function consumePendingAccountLink(db, discordUserId, code) {
   return result.rows[0] || null;
 }
 
+// FIX (2026-07-27, found via a real live user report immediately after
+// the building display-name fix shipped): a Water Shipper Door and a
+// Blood Purifier both showed up in this player's real storage listing,
+// despite neither one being a storage container in-game at all -- a
+// Blood Purifier's real function is water extraction (confirmed via
+// dune.gaming.tools: "Water Capacity 1000", no "Inventory Slot
+// Capacity" field at all, unlike every genuine storage/fabricator
+// placeable which does have one), and a cosmetic door obviously has no
+// inventory. Root cause: this query LEFT JOINs dune.inventories, so
+// every owned placeable is returned regardless of whether it actually
+// has a dune.inventories row -- confirmed live via direct query showing
+// both the Door and the Blood Purifier have zero rows in
+// dune.inventories (inventory_id is null), while the three genuine
+// containers (Sub-Fief Console, Small Storage Container, Fabricator)
+// each have at least one. Added an EXISTS filter requiring at least one
+// real dune.inventories row for the placeable before it's considered a
+// "container" at all -- this is a correctness fix at the data-selection
+// level, not a display-name issue, and is independent of (but was only
+// discovered because of) the building display-name fix above.
 export async function playerOwnedStorageQuery(db, playerControllerId) {
   const result = await db.query(`
     select p.id,
@@ -6806,6 +6825,7 @@ export async function playerOwnedStorageQuery(db, playerControllerId) {
       and p.is_hologram = false
       and p.owner_entity_id is not null
       and p.owner_entity_id != 0
+      and exists (select 1 from dune.inventories inv2 where inv2.actor_id = p.id)
     group by p.id, p.building_type, a.map
     order by p.id`, [playerControllerId]);
   return { rows: result.rows };
@@ -6831,6 +6851,7 @@ export async function guildStorageQuery(db, playerControllerId) {
       and p.is_hologram = false
       and p.owner_entity_id is not null
       and p.owner_entity_id != 0
+      and exists (select 1 from dune.inventories inv2 where inv2.actor_id = p.id)
     group by p.id, p.building_type, a.map
     order by p.id`, [playerControllerId]);
   return { rows: result.rows };

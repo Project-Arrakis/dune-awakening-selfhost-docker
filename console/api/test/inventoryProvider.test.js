@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { adminItemMetadata, adminVehicleMetadata, adminBuildingMetadata, resolveBuildingDisplayName } from "../src/duneDb.js";
+import { adminItemMetadata, adminVehicleMetadata, adminBuildingMetadata, resolveBuildingDisplayName, playerOwnedStorageQuery, guildStorageQuery } from "../src/duneDb.js";
 import {
   playerInventoryProvider,
   playerStorageProvider,
@@ -125,13 +125,25 @@ test("resolveBuildingDisplayName never crashes or returns garbage for an empty o
 // playerInventory internally) actually reaches the real items query,
 // while the simpler single-query providers (storage/find) can use the
 // same mock and just fall through to the final rows branch.
+//
+// FIX (2026-07-27, found by the very next test run after
+// playerOwnedStorageQuery()/guildStorageQuery() gained a real
+// "exists (select 1 from dune.inventories ...)" EXISTS filter,
+// companion to the door/blood-purifier-are-not-containers fix): the
+// mock's own "from dune.inventories" substring match was too broad --
+// it was written to match ONLY playerInventory()'s max_item_count
+// lookup, but also matched the new EXISTS subquery's text, silently
+// diverting playerStorageProvider's real query into the wrong mocked
+// branch and returning garbage. Narrowed to "max_item_count" specifically,
+// which only appears in the query this mock branch is actually meant
+// to answer.
 function mockDb(rows) {
   return {
     async query(text) {
       if (text.includes("to_regclass")) {
         return { rows: [{ exists: true }], rowCount: 1 };
       }
-      if (text.includes("from dune.inventories")) {
+      if (text.includes("max_item_count") && text.includes("from dune.inventories")) {
         return { rows: [{ id: "inv-1", max_item_count: 40, max_item_volume: 225 }], rowCount: 1 };
       }
       return { rows, rowCount: rows.length };
@@ -241,6 +253,50 @@ test("playerStorageProvider falls back to a readable split name for a building_t
   const db = mockDb([{ id: "99", name: "SomeFutureBuilding_Placeable", class: "SomeFutureBuilding_Placeable", map: "HaggaBasin", item_count: 0 }]);
   const result = await playerStorageProvider(db, { playerControllerId: "1", scope: "owned" });
   assert.equal(result.grouped[0].container_name, "Some Future Building");
+});
+
+// ─── Real bug, found via a live user report (2026-07-27), same session
+// as the building display-name fix ──────────────────────────────────────
+//
+// A Water Shipper Door and a Blood Purifier both showed up in a real
+// player's storage listing, despite neither one being a storage
+// container in-game at all -- a Blood Purifier's real in-game function
+// is water extraction (confirmed via dune.gaming.tools: "Water Capacity
+// 1000", no "Inventory Slot Capacity" field at all, unlike every genuine
+// storage/fabricator placeable), and a cosmetic door obviously has no
+// inventory. Root cause: playerOwnedStorageQuery()/guildStorageQuery()
+// LEFT JOIN dune.inventories, so every owned placeable is returned
+// regardless of whether it actually has a dune.inventories row at all --
+// confirmed live via direct query showing both the Door and the Blood
+// Purifier have zero rows in dune.inventories, while the three genuine
+// containers each have at least one. Fixed with an EXISTS filter
+// requiring a real inventory row before a placeable is considered a
+// "container".
+//
+// This is a correctness fix at the SQL data-selection level, not a
+// display-name issue -- a mock-based provider test (as used everywhere
+// else in this file) cannot actually exercise real SQL logic, since the
+// mock returns whatever rows the test hands it regardless of the query
+// text. These tests instead assert the real SQL text itself contains the
+// EXISTS filter, as a regression guard against this exact class of bug
+// (a placeable with no real inventory being treated as a container)
+// silently reappearing if this query is ever edited again without
+// re-verifying live. The actual live verification (this fix correctly
+// excluding the Door and Blood Purifier from a real base) was performed
+// directly against the production database before this fix was
+// committed, per this project's evidence-first requirement.
+test("playerOwnedStorageQuery's real SQL only includes placeables that have at least one real dune.inventories row", async () => {
+  let capturedQuery = "";
+  const db = { async query(text) { capturedQuery = text; return { rows: [] }; } };
+  await playerOwnedStorageQuery(db, "1");
+  assert.match(capturedQuery, /exists\s*\(\s*select 1 from dune\.inventories/i, "must filter out placeables with no real inventory row (e.g. doors, Blood Purifiers)");
+});
+
+test("guildStorageQuery's real SQL only includes placeables that have at least one real dune.inventories row", async () => {
+  let capturedQuery = "";
+  const db = { async query(text) { capturedQuery = text; return { rows: [] }; } };
+  await guildStorageQuery(db, "1");
+  assert.match(capturedQuery, /exists\s*\(\s*select 1 from dune\.inventories/i, "must filter out placeables with no real inventory row (e.g. doors, Blood Purifiers)");
 });
 
 test("itemSearchProvider adds display_name to every matched row", async () => {
