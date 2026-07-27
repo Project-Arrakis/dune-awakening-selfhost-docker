@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { adminItemMetadata, adminVehicleMetadata } from "../src/duneDb.js";
+import { adminItemMetadata, adminVehicleMetadata, adminBuildingMetadata, resolveBuildingDisplayName } from "../src/duneDb.js";
 import {
   playerInventoryProvider,
   playerStorageProvider,
@@ -68,6 +68,50 @@ test("adminVehicleMetadata leaves single-word IDs with no internal capitalizatio
   assert.equal(metadata.get("Buggy")?.name, "Buggy");
   assert.equal(metadata.get("Tank")?.name, "Tank");
   assert.equal(metadata.get("Sandcrawler")?.name, "Sandcrawler");
+});
+
+// ─── Real bug, found via a live user report (2026-07-27), same session
+// as the storage/find payload-contract fix ────────────────────────────
+//
+// playerOwnedStorageQuery()/guildStorageQuery()'s container rows use
+// dune.placeables.building_type as their display name directly (e.g.
+// "SpiceSilo_Placeable", "Totem_Small_Placeable") -- the exact same
+// class of raw-internal-ID bug as the original item display-name
+// report, just for buildings instead of items. Unlike items/vehicles,
+// there was no existing local catalog for building display names at
+// all. runtime/data/admin-buildings.json is new, seeded only with the 6
+// real building_type values confirmed live in this world's own database
+// (dune.placeables) -- each name verified against the real community
+// database at dune.gaming.tools before being added, not guessed.
+
+test("adminBuildingMetadata resolves the exact building types confirmed live in this world's own database", () => {
+  const metadata = adminBuildingMetadata();
+  const expected = {
+    Totem_Small_Placeable: "Sub-Fief Console",
+    SpiceSilo_Placeable: "Small Storage Container",
+    Fabricator_Placeable: "Fabricator",
+    BloodWaterExtractor_Placeable: "Blood Purifier",
+    SmallOreRefinery_Placeable: "Small Ore Refinery",
+    MTX_Watershippers_Door_Placeable: "Water Shipper Door"
+  };
+  for (const [id, name] of Object.entries(expected)) {
+    assert.equal(metadata.get(id)?.name, name, `${id} should resolve to "${name}"`);
+  }
+});
+
+test("resolveBuildingDisplayName resolves a known building_type to its real name", () => {
+  assert.equal(resolveBuildingDisplayName("SpiceSilo_Placeable"), "Small Storage Container");
+});
+
+test("resolveBuildingDisplayName falls back to a readable split name (stripping MTX_/_Placeable) for an unknown building_type", () => {
+  assert.equal(resolveBuildingDisplayName("SomeFutureBuilding_Placeable"), "Some Future Building");
+  assert.equal(resolveBuildingDisplayName("MTX_SomeNewCosmetic_Placeable"), "Some New Cosmetic");
+});
+
+test("resolveBuildingDisplayName never crashes or returns garbage for an empty or missing building_type", () => {
+  assert.equal(resolveBuildingDisplayName(""), "Unknown Building");
+  assert.equal(resolveBuildingDisplayName(undefined), "Unknown Building");
+  assert.equal(resolveBuildingDisplayName(null), "Unknown Building");
 });
 
 // ─── Provider-level enrichment ──────────────────────────────────────────
@@ -168,11 +212,35 @@ test("playerStorageProvider preserves each container's real, pre-aggregated item
     { id: "6", name: "Totem_Small_Placeable", class: "Totem_Small_Placeable", map: "HaggaBasin", item_count: 0 }
   ]);
   const result = await playerStorageProvider(db, { playerControllerId: "1", scope: "owned" });
-  const silo = result.grouped.find((g) => g.container_name === "SpiceSilo_Placeable");
-  const totem = result.grouped.find((g) => g.container_name === "Totem_Small_Placeable");
+  const silo = result.grouped.find((g) => g.container_name === "Small Storage Container");
+  const totem = result.grouped.find((g) => g.container_name === "Sub-Fief Console");
   assert.equal(silo.item_count, 5, "Spice Silo's real 5-item count must be preserved, not overwritten with a group-of-one count of 1");
   assert.equal(totem.item_count, 0);
   assert.equal(result.grouped.length, 2, "each container must be its own group -- no merging or dropping of containers");
+});
+
+// Third real regression in the same live bug report, found only after
+// fixing the two above and re-testing end-to-end against the live
+// adapter API: containersAsGroups()'s container_name was still the raw
+// dune.placeables.building_type value directly (e.g.
+// "SpiceSilo_Placeable", "Totem_Small_Placeable") -- the exact same
+// class of raw-internal-ID bug as the original item display-name
+// report, just for buildings. Confirmed live via the user's own real
+// base: /dune player storage showed "SpiceSilo_Placeable" instead of
+// "Small Storage Container", the real name confirmed against
+// dune.gaming.tools (the community database) before being added to the
+// new runtime/data/admin-buildings.json catalog.
+test("playerStorageProvider resolves real building display names, not raw building_type IDs", async () => {
+  const db = mockDb([{ id: "13", name: "SpiceSilo_Placeable", class: "SpiceSilo_Placeable", map: "HaggaBasin", item_count: 5 }]);
+  const result = await playerStorageProvider(db, { playerControllerId: "1", scope: "owned" });
+  assert.equal(result.grouped[0].container_name, "Small Storage Container");
+  assert.notEqual(result.grouped[0].container_name, "SpiceSilo_Placeable");
+});
+
+test("playerStorageProvider falls back to a readable split name for a building_type not yet in the catalog", async () => {
+  const db = mockDb([{ id: "99", name: "SomeFutureBuilding_Placeable", class: "SomeFutureBuilding_Placeable", map: "HaggaBasin", item_count: 0 }]);
+  const result = await playerStorageProvider(db, { playerControllerId: "1", scope: "owned" });
+  assert.equal(result.grouped[0].container_name, "Some Future Building");
 });
 
 test("itemSearchProvider adds display_name to every matched row", async () => {
@@ -189,7 +257,7 @@ test("itemSearchProvider adds display_name to every matched row", async () => {
 // was found in, not just what the item is. Verifies the enrichment step
 // here preserves those fields (added directly in the SQL, not by this
 // file) alongside display_name.
-test("itemSearchProvider preserves container_name and map fields alongside display_name", async () => {
+test("itemSearchProvider resolves container_name to a real building display name and preserves map alongside display_name", async () => {
   const db = mockDb([{
     id: "6594",
     template_id: "Stone",
@@ -199,7 +267,7 @@ test("itemSearchProvider preserves container_name and map fields alongside displ
     map: "HaggaBasin"
   }]);
   const result = await itemSearchProvider(db, { playerControllerId: "1", query: "stone", scope: "owned" });
-  assert.equal(result.rows[0].container_name, "SpiceSilo_Placeable");
+  assert.equal(result.rows[0].container_name, "Small Storage Container", "container_name should resolve to the real building name, not the raw building_type");
   assert.equal(result.rows[0].map, "HaggaBasin");
   assert.equal(result.rows[0].display_name, "Granite Stone");
 });

@@ -3244,6 +3244,73 @@ export function adminVehicleMetadata() {
   return adminVehicleMetadataCache;
 }
 
+let adminBuildingMetadataCache = null;
+
+// FIX (2026-07-27, found via a real live user report immediately after
+// the storage/find display-name fix above shipped): playerOwnedStorageQuery()/
+// guildStorageQuery()'s container rows use dune.placeables.building_type
+// as their display name directly (e.g. "SpiceSilo_Placeable",
+// "Totem_Small_Placeable") -- the exact same class of raw-internal-ID
+// bug as the original item display-name report, just for buildings
+// instead of items. There is no existing local catalog for building
+// display names (unlike items/vehicles) -- runtime/data/admin-buildings.json
+// is new, seeded only with the 6 real building_type values confirmed
+// live in this world's own database (dune.placeables), each verified
+// against the real community database at dune.gaming.tools before being
+// added (not guessed or invented):
+//   Totem_Small_Placeable -> Sub-Fief Console
+//   SpiceSilo_Placeable -> Small Storage Container
+//   Fabricator_Placeable -> Fabricator
+//   BloodWaterExtractor_Placeable -> Blood Purifier
+//   SmallOreRefinery_Placeable -> Small Ore Refinery
+//   MTX_Watershippers_Door_Placeable -> Water Shipper Door
+// Falls back to splitCamelCase() (stripping the MTX_/_Placeable
+// affixes first) for any building_type not yet in the catalog, per
+// explicit operator direction: an honest, readable fallback is
+// preferable to blocking on confirming every possible building type
+// before shipping, since new building types can be added to this
+// catalog incrementally as they're confirmed.
+function splitBuildingTypeFallback(buildingType) {
+  const stripped = String(buildingType || "")
+    .replace(/^MTX_/, "")
+    .replace(/_Placeable$/, "");
+  return splitCamelCase(stripped) || String(buildingType || "Unknown Building");
+}
+
+export function adminBuildingMetadata() {
+  if (adminBuildingMetadataCache) return adminBuildingMetadataCache;
+  const metadata = new Map();
+  try {
+    const path = [
+      resolve(process.cwd(), "runtime/data/admin-buildings.json"),
+      resolve(process.cwd(), "../../runtime/data/admin-buildings.json")
+    ].find((candidate) => existsSync(candidate)) || resolve(process.cwd(), "runtime/data/admin-buildings.json");
+    const buildings = JSON.parse(readFileSync(path, "utf8"));
+    for (const building of Array.isArray(buildings) ? buildings : []) {
+      const id = String(building.id || "").trim();
+      if (!id) continue;
+      metadata.set(id, { name: String(building.name || "") || splitBuildingTypeFallback(id) });
+    }
+  } catch {
+    // Storage listings still work (showing the raw building_type,
+    // pre-fix behavior) without the optional local catalog metadata.
+  }
+  adminBuildingMetadataCache = metadata;
+  return adminBuildingMetadataCache;
+}
+
+// resolveBuildingDisplayName: looks up a real building_type against the
+// curated catalog above, falling back to splitBuildingTypeFallback() for
+// anything not yet confirmed and added. Exported separately from
+// adminBuildingMetadata() so callers needing just the name (the common
+// case) don't need to know about the Map-based catalog shape.
+export function resolveBuildingDisplayName(buildingType) {
+  const id = String(buildingType || "").trim();
+  if (!id) return "Unknown Building";
+  const metadata = adminBuildingMetadata();
+  return metadata.get(id)?.name || splitBuildingTypeFallback(id);
+}
+
 function augmentCompatibilityCatalog() {
   if (augmentCompatibilityCache) return augmentCompatibilityCache;
   try {
