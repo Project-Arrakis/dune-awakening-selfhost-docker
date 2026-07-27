@@ -46,6 +46,7 @@ test("public modifier reporting is allowlisted and omits defaults and secrets", 
       "",
       "[Global:/Script/DuneSandbox.BuildingSettings]",
       "m_PickupTotalDurabilityPercentageReduction=0.25",
+      "m_bBuildingRestrictionLimitsEnabled=False",
       "",
       "[Global:/Script/DuneSandbox.ContractsSubsystem]",
       "m_bIsEnabled=invalid"
@@ -56,6 +57,7 @@ test("public modifier reporting is allowlisted and omits defaults and secrets", 
       "XP Multiplier": "3.5x",
       "Water Consumption": "0.5x",
       "Reconnect Grace Period": "10 minutes",
+      "Building Restriction Limits": "Disabled",
       "Building Pickup Durability Loss": "25%"
     });
   } finally {

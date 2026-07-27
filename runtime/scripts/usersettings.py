@@ -145,7 +145,7 @@ MAP_FIELDS = {
     "building_blueprint_max_extensions": (BUILDING_SETTINGS_SECTION, "m_BuildingBlueprintMaxExtensions", "16"),
     "base_backup_max_extensions": (BUILDING_SETTINGS_SECTION, "m_BaseBackupMaxExtensions", "40"),
     "base_backup_tool_time_restriction_seconds": (BUILDING_SETTINGS_SECTION, "m_BaseBackupToolTimeRestrictionInSeconds", "10"),
-    "building_restriction_limits_enabled": (BUILDING_SETTINGS_SECTION, "m_bBuildingRestrictionLimitsEnabled", "False"),
+    "building_restriction_limits_enabled": (BUILDING_SETTINGS_SECTION, "m_bBuildingRestrictionLimitsEnabled", "True"),
     "mitigate_all_sandstorm_damage": (BUILDING_SETTINGS_SECTION, "m_bMitigateAllSandstormDamage", "False"),
     "fallback_default_building_health": (BUILDING_SETTINGS_SECTION, "m_FallbackDefaultBuildingHealth", "5000.000000"),
     "fallback_default_placeable_health": (BUILDING_SETTINGS_SECTION, "m_FallbackDefaultPlaceableHealth", "1000.000000"),
@@ -2032,6 +2032,13 @@ Dune.GlobalVehicleMiningOutputMultiplier=10
         raise SystemExit("Base backup tool time restriction did not feed interactive map values.")
     if "m_BaseBackupToolTimeRestrictionInSeconds=60" not in compiled_usergame_ini(reparsed, "Survival_1", "3"):
         raise SystemExit("Base backup tool time restriction did not compile from interactive profile update.")
+    if profile_map_values(reparsed, "Survival_1")["building_restriction_limits_enabled"] != "True":
+        raise SystemExit("Building restriction limits did not default to enabled when unset.")
+    profile_set_key(reparsed, "global", BUILDING_SETTINGS_SECTION, "m_bBuildingRestrictionLimitsEnabled", "False")
+    if profile_map_values(reparsed, "Survival_1")["building_restriction_limits_enabled"] != "False":
+        raise SystemExit("An explicit disabled building restriction limit was overwritten by the default.")
+    if "m_bBuildingRestrictionLimitsEnabled=False" not in compiled_usergame_ini(reparsed, "Survival_1", "3"):
+        raise SystemExit("An explicit disabled building restriction limit did not compile.")
     set_profile_field(reparsed, "global", "", "", "landsraad_cycle_duration_seconds", "1209600")
     set_profile_field(reparsed, "global", "", "", "landsraad_player_voting_enabled", "False")
     landsraad_data = profile_get_key(reparsed, "global", LANDSRAAD_SETTINGS_SECTION, LANDSRAAD_DATA_KEY) or ""
@@ -2086,7 +2093,7 @@ Dune.GlobalVehicleMiningOutputMultiplier=10
         "max_landclaim_segments": "24",
         "building_blueprint_max_extensions": "16",
         "base_backup_max_extensions": "40",
-        "building_restriction_limits_enabled": "False",
+        "building_restriction_limits_enabled": "True",
         "staking_unit_vertical_extension_default_times": "1",
         "staking_unit_extension_default_times": "1",
     }
