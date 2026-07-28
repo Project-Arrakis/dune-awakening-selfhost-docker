@@ -98,6 +98,13 @@ test("archive self-update replaces project files and preserves local state", asy
   writeFileSync(join(installDir, "VERSION"), "v0.0.1\n");
   writeFileSync(join(installDir, "README.md"), "stale project file\n");
   writeFileSync(join(installDir, "newer-release-only.txt"), "must be removed\n");
+  const blockedProjectDir = join(installDir, "blocked-project-dir");
+  mkdirSync(blockedProjectDir);
+  writeFileSync(join(blockedProjectDir, "managed-file.txt"), "must not be removed during a failed preflight\n");
+  const pythonCacheDir = join(installDir, "runtime", "scripts", "__pycache__");
+  mkdirSync(pythonCacheDir, { recursive: true });
+  writeFileSync(join(pythonCacheDir, "usersettings.cpython-test.pyc"), "disposable cache\n");
+  chmodSync(pythonCacheDir, 0o555);
   writeFileSync(join(installDir, ".env"), "SERVER_TITLE=Preserved Server\nADMIN_BIND_PORT=9090\n");
   mkdirSync(join(installDir, "runtime", "generated"), { recursive: true });
   mkdirSync(join(installDir, "runtime", "secrets"), { recursive: true });
@@ -142,9 +149,34 @@ exit 0
 
   try {
     const address = server.address();
+    if (typeof process.getuid !== "function" || process.getuid() !== 0) {
+      chmodSync(blockedProjectDir, 0o555);
+      const blockedResult = await runProcess("bash", ["runtime/scripts/self-update.sh", "install", version], {
+        cwd: installDir,
+        timeout: 60000,
+        env: {
+          ...process.env,
+          PATH: `${fakeBin}:${process.env.PATH}`,
+          DUNE_SELF_UPDATE_API_BASE: `http://127.0.0.1:${address.port}`,
+          DUNE_SELF_UPDATE_REPO: "Red-Blink/dune-awakening-selfhost-docker",
+          NO_PROXY: "127.0.0.1,localhost",
+          no_proxy: "127.0.0.1,localhost"
+        }
+      });
+
+      assert.equal(blockedResult.status, 13, blockedResult.stderr || blockedResult.stdout);
+      assert.match(blockedResult.stdout, /No project files were removed/);
+      assert.match(blockedResult.stdout, /sudo chown -R "\d+:\d+"/);
+      assert.equal(readFileSync(join(installDir, "VERSION"), "utf8"), "v0.0.1\n");
+      assert.equal(readFileSync(join(installDir, "README.md"), "utf8"), "stale project file\n");
+      assert.equal(readFileSync(join(blockedProjectDir, "managed-file.txt"), "utf8"), "must not be removed during a failed preflight\n");
+      chmodSync(blockedProjectDir, 0o755);
+      requests.length = 0;
+    }
+
     const result = await runProcess("bash", ["runtime/scripts/self-update.sh", "install", version], {
       cwd: installDir,
-      timeout: 30000,
+      timeout: 60000,
       env: {
         ...process.env,
         PATH: `${fakeBin}:${process.env.PATH}`,
@@ -159,6 +191,7 @@ exit 0
     assert.equal(readFileSync(join(installDir, "VERSION"), "utf8").trim(), version);
     assert.notEqual(readFileSync(join(installDir, "README.md"), "utf8"), "stale project file\n");
     assert.equal(existsSync(join(installDir, "newer-release-only.txt")), false);
+    assert.equal(existsSync(join(pythonCacheDir, "usersettings.cpython-test.pyc")), true);
     const updatedEnv = readFileSync(join(installDir, ".env"), "utf8");
     assert.ok(updatedEnv.includes("SERVER_TITLE=Preserved Server\n"));
     assert.ok(updatedEnv.includes("ADMIN_BIND_PORT=9090\n"));
@@ -179,6 +212,8 @@ exit 0
       "/candidate.tar.gz"
     ]);
   } finally {
+    if (existsSync(blockedProjectDir)) chmodSync(blockedProjectDir, 0o755);
+    if (existsSync(pythonCacheDir)) chmodSync(pythonCacheDir, 0o755);
     server.closeAllConnections();
     await new Promise((resolveClose) => server.close(resolveClose));
     rmSync(root, { recursive: true, force: true });

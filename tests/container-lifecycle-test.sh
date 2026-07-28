@@ -219,6 +219,8 @@ mkdir -p "$HOST_RUNTIME_ROOT/runtime"/{generated,logs,backups,secrets,addons,tex
 mkdir -p "$HOST_RUNTIME_ROOT/runtime/game/test-map/Saved/UserSettings"
 printf 'DUNE_HOST_UID=1000000\nDUNE_HOST_GID=1000000\nDUNE_DB_PASSWORD="quoted value with spaces"\n' > "$HOST_RUNTIME_ROOT/.env"
 printf 'old state\n' > "$HOST_RUNTIME_ROOT/runtime/generated/autoscaler-idle.tsv"
+printf 'old spicefield state\n' > "$HOST_RUNTIME_ROOT/runtime/generated/spicefield-overrides.log"
+ln -s spicefield-overrides.log "$HOST_RUNTIME_ROOT/runtime/generated/spicefield-overrides-current.log"
 printf 'old setting\n' > "$HOST_RUNTIME_ROOT/runtime/game/test-map/Saved/UserSettings/UserGame.ini"
 set_fixture_ownership "$HOST_RUNTIME_ROOT" 0 0 755
 set_fixture_ownership "$HOST_RUNTIME_ROOT/.env" 0 0 600
@@ -235,10 +237,11 @@ if [ -r "$HOST_RUNTIME_ROOT/.env" ] \
   && grep -qx "DUNE_HOST_GID=$(id -g)" "$HOST_RUNTIME_ROOT/.env" \
   && grep -qx 'DUNE_DB_PASSWORD="quoted value with spaces"' "$HOST_RUNTIME_ROOT/.env" \
   && [ -w "$HOST_RUNTIME_ROOT/runtime/generated/autoscaler-idle.tsv" ] \
+  && [ "$(stat -c '%u:%g' "$HOST_RUNTIME_ROOT/runtime/generated/spicefield-overrides-current.log")" = "$(id -u):$(id -g)" ] \
   && printf 'new state\n' > "$HOST_RUNTIME_ROOT/runtime/generated/autoscaler-idle.tsv" \
   && printf 'router state\n' > "$HOST_RUNTIME_ROOT/runtime/text-router/state.json" \
   && printf 'new setting\n' > "$HOST_RUNTIME_ROOT/runtime/game/test-map/Saved/UserSettings/UserGame.ini"; then
-  pass "root-owned autoscaler, TextRouter, and map settings state is migrated"
+  pass "root-owned files, generated symlinks, TextRouter, and map settings state are migrated"
 else
   fail "host runtime permission migration failed"
   echo "    output: $OUTPUT"
