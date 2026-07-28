@@ -225,7 +225,7 @@ export function AddonsPanel({ pinnedAddons, setPinnedAddons, selectedAddonId, cl
   }
 
   return <section className="panel">
-    <div className="panel-title"><h2>Addons <span className="addons-title-status">Experimental: Permissioned</span></h2><div className="addons-title-actions"><a className="button-link" href="https://github.com/Red-Blink/dune-docker-addon-template" target="_blank" rel="noreferrer">For Developers</a><button disabled={loading} onClick={() => void load()}>{loading ? "Refreshing..." : "Refresh Addons"}</button></div></div>
+    <div className="panel-title addons-page-header"><h2>Addons <span className="addons-title-status">Experimental: Permissioned</span></h2><div className="addons-title-actions"><a className="button-link" href="https://github.com/Red-Blink/dune-docker-addon-template" target="_blank" rel="noreferrer">For Developers</a><button disabled={loading} onClick={() => void load()}>{loading ? "Refreshing..." : "Refresh Addons"}</button></div></div>
     <section className="action-section info-panel addons-intro-panel">
       <h4>Community Addons</h4>
       <div className="addons-owner-copy">

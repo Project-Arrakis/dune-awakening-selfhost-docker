@@ -318,8 +318,8 @@ export function CarePackagePanel({ onError, confirmAction }: { onError: (text: s
   return <section className="panel">
     <div className="panel-title"><h2>Care Package</h2></div>
     <div className="action-sections">
-      <section className="action-section">
-        <div className="panel-title">
+      <section className="action-section care-package-configuration">
+        <div className="panel-title care-package-configuration-header">
           <h4>Care Package Configuration</h4>
           <button className={`switch-toggle care-package-toggle ${config.enabled ? "enabled" : "disabled"}`} onClick={() => run(async () => {
             const confirmation = config.enabled ? "DISABLE CARE PACKAGE" : "ENABLE CARE PACKAGE";
