@@ -219,9 +219,9 @@ export function buildDuneArgs(operation, payload = {}) {
     case "sietchesShow":
       return ["sietches", "show", validateMapName(payload.map)];
     case "sietchesDimensions":
-      return ["sietches", "dimensions", validateMapName(payload.map)];
+      return ["sietches", "dimensions", validateMapName(payload.map), "--active-only"];
     case "sietchesDimensionIds":
-      return ["sietches", "dimensions", validateMapName(payload.map), "--ids"];
+      return ["sietches", "dimensions", validateMapName(payload.map), "--active-only", "--ids"];
     case "sietchesSetMax":
       return ["sietches", "set-max", validateMapName(payload.map), String(validateInteger(payload.count, 1, 64))];
     case "sietchesSetActive":

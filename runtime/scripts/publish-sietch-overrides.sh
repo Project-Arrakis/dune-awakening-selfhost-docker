@@ -8,6 +8,7 @@ export PYTHONDONTWRITEBYTECODE="${PYTHONDONTWRITEBYTECODE:-1}"
 cd "$(dirname "$0")/../.."
 
 PID_FILE="runtime/generated/sietch-overrides.pid"
+LOOP_TOKEN_FILE="runtime/generated/sietch-overrides.loop-token"
 LOG_FILE="runtime/generated/sietch-overrides.log"
 LOG_POINTER_FILE="runtime/generated/sietch-overrides-current.log"
 TEXT_ROUTER_LOG="runtime/text-router/director-current.log"
@@ -37,8 +38,29 @@ loop_running() {
   [ -n "$(loop_pids)" ]
 }
 
+write_loop_token() {
+  local token="$1"
+  local tmp
+
+  mkdir -p "$(dirname "$LOOP_TOKEN_FILE")"
+  tmp="$(mktemp "$(dirname "$LOOP_TOKEN_FILE")/.sietch-overrides.loop-token.tmp.XXXXXX")"
+  printf '%s\n' "$token" >"$tmp"
+  chmod 664 "$tmp" 2>/dev/null || true
+  mv -f "$tmp" "$LOOP_TOKEN_FILE"
+}
+
+loop_token_is_current() {
+  local token="$1"
+  [ -r "$LOOP_TOKEN_FILE" ] && [ "$(cat "$LOOP_TOKEN_FILE" 2>/dev/null || true)" = "$token" ]
+}
+
+invalidate_loop_token() {
+  write_loop_token "stopped-$(date +%s)-$$"
+}
+
 stop_loop_processes() {
   local pid
+  invalidate_loop_token
   clear_stale_pidfile
   if [ -f "$PID_FILE" ]; then
     pid="$(cat "$PID_FILE" 2>/dev/null || true)"
@@ -567,15 +589,23 @@ PY
 }
 
 start_loop() {
+  local loop_token
+
   mkdir -p runtime/generated
+  loop_token="$(date +%s)-$$-${RANDOM:-0}"
+  write_loop_token "$loop_token"
   write_live_pidfile
-  trap 'rm -f "$PID_FILE"' EXIT
+  trap 'if loop_token_is_current "$loop_token"; then rm -f "$PID_FILE" "$LOOP_TOKEN_FILE"; fi' EXIT
   local route_refresh_at=0
   local snapshot_refresh_at=0
   local spicefield_reconcile_at=0
   ensure_route
   publish_snapshot_once >>"$LOG_FILE" 2>&1 || true
   while true; do
+    if ! loop_token_is_current "$loop_token"; then
+      echo "A newer Sietch publisher generation took ownership; stopping this loop." >>"$LOG_FILE"
+      return 0
+    fi
     if [ "$(date +%s)" -ge "$route_refresh_at" ]; then
       ensure_route >>"$LOG_FILE" 2>&1 || true
       route_refresh_at=$(( $(date +%s) + ROUTE_REFRESH_SECONDS ))

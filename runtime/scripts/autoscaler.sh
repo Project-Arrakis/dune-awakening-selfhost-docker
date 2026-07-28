@@ -16,6 +16,8 @@ DEMAND_EVENT_FILE="${DUNE_AUTOSCALER_DEMAND_EVENT_FILE:-runtime/generated/autosc
 HUB_TRAVEL_FILE="${DUNE_AUTOSCALER_HUB_TRAVEL_FILE:-runtime/generated/autoscaler-hub-travel.tsv}"
 DEEPDESERT_TRAVEL_FILE="${DUNE_AUTOSCALER_DEEPDESERT_TRAVEL_FILE:-runtime/generated/autoscaler-deepdesert-travel.tsv}"
 DIRECTOR_HEAL_FILE="${DUNE_AUTOSCALER_DIRECTOR_HEAL_FILE:-runtime/generated/autoscaler-director-heal.tsv}"
+SIETCH_TOPOLOGY_MAINTENANCE_FILE="${DUNE_SIETCH_TOPOLOGY_MAINTENANCE_FILE:-runtime/generated/sietch-topology-maintenance}"
+SIETCH_TOPOLOGY_HEAL_GRACE_SECONDS="${DUNE_SIETCH_TOPOLOGY_HEAL_GRACE_SECONDS:-600}"
 DIRECTOR_HEAL_STALE_SECONDS="${DUNE_AUTOSCALER_DIRECTOR_HEAL_STALE_SECONDS:-15}"
 DIRECTOR_HEAL_COOLDOWN_SECONDS="${DUNE_AUTOSCALER_DIRECTOR_HEAL_COOLDOWN_SECONDS:-300}"
 DYNAMIC_READY_HEAL_STALE_SECONDS="${DUNE_AUTOSCALER_DYNAMIC_READY_HEAL_STALE_SECONDS:-20}"
@@ -2185,7 +2187,14 @@ director_logs_contain_live_ids() {
   local logs
   local missing=0
 
-  logs="$(docker logs --since 10m dune-director 2>&1 || true)"
+  # Director serializes some server ID characters as JSON Unicode escapes
+  # (for example, "+" becomes "\\u002B"). Normalize those escapes before
+  # comparing log text with the literal IDs stored in farm_state.
+  logs="$(
+    docker logs --since 10m dune-director 2>&1 \
+      | python3 runtime/scripts/decode-log-unicode-escapes.py \
+      || true
+  )"
   while IFS='|' read -r map server_id; do
     [ -n "${server_id:-}" ] || continue
     if [[ "$logs" != *"$server_id"* ]]; then
@@ -2201,6 +2210,19 @@ scan_director_browser_state() {
   local rows ready_count capacity now first_seen last_restart age since_restart
 
   director_heal_due browser_state "$DIRECTOR_BROWSER_SCAN_SECONDS" || return 0
+
+  # Sietch reconciliation temporarily changes the live partition set while
+  # Director/FLS catches up. Do not mistake that controlled publication delay
+  # for stale browser state and launch a disruptive Director restart.
+  if [ -f "$SIETCH_TOPOLOGY_MAINTENANCE_FILE" ]; then
+    marker_mtime="$(stat -c %Y "$SIETCH_TOPOLOGY_MAINTENANCE_FILE" 2>/dev/null || printf '0')"
+    marker_age=$(( $(date +%s) - marker_mtime ))
+    if [ "$marker_age" -ge 0 ] && [ "$marker_age" -lt "$SIETCH_TOPOLOGY_HEAL_GRACE_SECONDS" ]; then
+      director_heal_clear stale_since
+      return 0
+    fi
+    rm -f "$SIETCH_TOPOLOGY_MAINTENANCE_FILE" 2>/dev/null || true
+  fi
 
   rows="$(director_live_server_rows)"
   ready_count="$(printf '%s\n' "$rows" | sed '/^$/d' | wc -l | tr -d '[:space:]')"
