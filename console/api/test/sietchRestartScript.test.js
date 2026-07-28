@@ -7,6 +7,9 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
+const sietchesSource = readFileSync(join(repoRoot, "runtime/scripts/sietches.sh"), "utf8");
+const autoscalerSource = readFileSync(join(repoRoot, "runtime/scripts/autoscaler.sh"), "utf8");
+const reconcileSource = sietchesSource.match(/reconcile_map_dimensions\(\) \{([\s\S]*?)\n\}\n\nset_partition_value\(\)/)?.[1] || "";
 
 function executable(path, body) {
   writeFileSync(path, `#!/usr/bin/env bash\nset -euo pipefail\n${body}\n`);
@@ -76,4 +79,47 @@ test("inactive Sietches cannot be restarted", () => {
   assert.notEqual(result.status, 0);
   assert.equal(result.callLog, "");
   assert.match(result.stderr, /not active/);
+});
+
+test("changing active Sietches does not restart Director or primary Survival", () => {
+  assert.doesNotMatch(reconcileSource, /refresh_survival_control_plane_state/);
+  assert.doesNotMatch(reconcileSource, /refresh_survival_director_state/);
+  assert.doesNotMatch(reconcileSource, /restart-director\.sh/);
+  assert.doesNotMatch(reconcileSource, /start-server-survival-1\.sh/);
+  assert.match(reconcileSource, /sync_survival_sietch_topology_state/);
+  assert.match(reconcileSource, /refresh_survival_browser_state/);
+});
+
+test("new Sietches settle before publishing the updated topology", () => {
+  const settleAt = reconcileSource.indexOf('wait_for_survival_topology_settle "$target" 90');
+  const refreshAt = reconcileSource.indexOf("refresh_survival_browser_state");
+  assert.ok(settleAt >= 0, "missing Survival topology settle wait");
+  assert.ok(refreshAt > settleAt, "topology publication must run after new Sietches settle");
+});
+
+test("autoscaler browser healing pauses during coordinated Sietch topology changes", () => {
+  assert.match(reconcileSource, /sietch-topology-maintenance/);
+  assert.match(reconcileSource, /trap 'touch "\$topology_maintenance_file"' EXIT/);
+  assert.match(autoscalerSource, /SIETCH_TOPOLOGY_MAINTENANCE_FILE=/);
+  assert.match(autoscalerSource, /SIETCH_TOPOLOGY_HEAL_GRACE_SECONDS=/);
+  assert.match(
+    autoscalerSource,
+    /marker_age.*SIETCH_TOPOLOGY_HEAL_GRACE_SECONDS[\s\S]*?director_heal_clear stale_since\s+return 0/,
+  );
+});
+
+test("scaling down removes inactive Sietch rows before publishing topology", () => {
+  const deleteAt = reconcileSource.indexOf("delete from dune.world_partition");
+  const refreshAt = reconcileSource.indexOf("refresh_survival_browser_state");
+  assert.ok(deleteAt >= 0, "missing inactive partition deletion");
+  assert.ok(refreshAt > deleteAt, "topology publication must run after inactive partitions are removed");
+  assert.match(reconcileSource, /ranked\.ord > \$target\s+and ranked\.server_id = ''/);
+});
+
+test("Sietch publisher generations supersede loops across PID namespaces", () => {
+  const publisherSource = readFileSync(join(repoRoot, "runtime/scripts/publish-sietch-overrides.sh"), "utf8");
+  assert.match(publisherSource, /LOOP_TOKEN_FILE=/);
+  assert.match(publisherSource, /stop_loop_processes\(\)[\s\S]*?invalidate_loop_token/);
+  assert.match(publisherSource, /start_loop\(\)[\s\S]*?write_loop_token "\$loop_token"/);
+  assert.match(publisherSource, /while true; do\s+if ! loop_token_is_current "\$loop_token"/);
 });

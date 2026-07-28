@@ -1194,7 +1194,8 @@ refresh_survival_director_state() {
     return 0
   fi
   if docker ps --format '{{.Names}}' | grep -qx dune-director; then
-    runtime/scripts/restart-director.sh >/dev/null 2>&1 || true
+    echo "Refreshing Director and primary Survival_1 for the updated Sietch topology..."
+    runtime/scripts/restart-director.sh
   fi
 }
 
@@ -1578,13 +1579,28 @@ where wp.partition_id = ranked.partition_id;
 
   sync_partition_catalog_from_db
   sync_sietch_config_from_db "reconcile-$map" >/dev/null || true
-  if [ "$map" = "Survival_1" ]; then
-    refresh_survival_control_plane_state
-  fi
   if [ "$map" = "Survival_1" ] && [ "$topology_changed" -eq 1 ] && [ "$target" -gt "$initial_assigned_count" ] 2>/dev/null; then
     wait_for_survival_topology_settle "$target" 90 || true
     sync_sietch_config_from_db "reconcile-$map-settled" >/dev/null || true
     sync_survival_sietch_topology_state
+  fi
+  if [ "$map" = "Survival_1" ] && [ "$topology_changed" -eq 1 ]; then
+    # Running Director and primary Survival_1 receive server-state changes
+    # dynamically. A count change must not replace either one: additions can
+    # register directly, and removals are withdrawn by despawning/deleting the
+    # secondary before publishing the final topology.
+    (
+      topology_maintenance_file="runtime/generated/sietch-topology-maintenance"
+      mkdir -p "$(dirname "$topology_maintenance_file")"
+      : > "$topology_maintenance_file"
+      # Keep a bounded completion timestamp so delayed FLS declarations cannot
+      # be mistaken for stale browser state immediately after reconciliation.
+      trap 'touch "$topology_maintenance_file"' EXIT
+
+      sync_survival_sietch_topology_state
+      refresh_survival_browser_state
+      runtime/scripts/publish-sietch-overrides.sh once >/dev/null 2>&1 || true
+    )
   fi
 }
 

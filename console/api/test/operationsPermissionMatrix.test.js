@@ -225,6 +225,8 @@ test("26 Config: map mode writes validate the mode", () => {
 
 test("27 Config: sietch updates validate map and count", () => {
   assert.deepEqual(buildDuneArgs("sietchesSetActive", { map: "Survival_1", count: 2 }), ["sietches", "set-active", "Survival_1", "2"]);
+  assert.deepEqual(buildDuneArgs("sietchesDimensions", { map: "Survival_1" }), ["sietches", "dimensions", "Survival_1", "--active-only"]);
+  assert.deepEqual(buildDuneArgs("sietchesDimensionIds", { map: "Survival_1" }), ["sietches", "dimensions", "Survival_1", "--active-only", "--ids"]);
   assert.deepEqual(buildDuneArgs("sietchesRestart", { partitionId: 31 }), ["sietches", "restart", "31"]);
   assert.throws(() => buildDuneArgs("sietchesSetActive", { map: "Survival_1", count: 0 }));
   assert.throws(() => buildDuneArgs("sietchesRestart", { partitionId: 0 }));
