@@ -4,12 +4,23 @@ import { basesApi } from "../../api/bases";
 import { BasesPanel } from "./BasesPanel";
 
 vi.mock("../../api/bases", () => ({
-  basesApi: { list: vi.fn() }
+  basesApi: { list: vi.fn(), refillGenerators: vi.fn() }
 }));
 
 vi.mock("../../api/client", () => ({
   apiDownload: vi.fn()
 }));
+
+function renderPanel(overrides: Partial<Parameters<typeof BasesPanel>[0]> = {}) {
+  const props = {
+    onError: vi.fn(),
+    confirmAction: vi.fn().mockResolvedValue(true),
+    formatMutationResult: vi.fn().mockReturnValue("Action completed."),
+    ...overrides
+  };
+  render(<BasesPanel {...props} />);
+  return props;
+}
 
 const commonRow = {
   base_type: "Sub-Fief",
@@ -66,7 +77,7 @@ describe("BasesPanel generator details", () => {
       ]
     });
 
-    render(<BasesPanel onError={vi.fn()} />);
+    renderPanel();
 
     await waitFor(() => expect(screen.getByText("2 · Lowest Queued Reserve 2h 0m", { selector: ".bases-generator-summary" })).toBeInTheDocument());
     expect(screen.getByRole("columnheader", { name: /Base Name/ })).toBeInTheDocument();
@@ -128,7 +139,7 @@ describe("BasesPanel generator details", () => {
       ]
     });
 
-    render(<BasesPanel onError={vi.fn()} />);
+    renderPanel();
 
     // Wait for this test's API response specifically. Waiting for any summary
     // is flaky because the panel intentionally renders its module-level cache
@@ -174,7 +185,7 @@ describe("BasesPanel generator details", () => {
       ]
     });
 
-    render(<BasesPanel onError={vi.fn()} />);
+    renderPanel();
 
     const alert = await screen.findByText("No generators have queued fuel", { selector: ".bases-fuel-alert" });
     const summary = alert.closest(".bases-generator-summary");
@@ -183,5 +194,123 @@ describe("BasesPanel generator details", () => {
       "title",
       "2 · No generators have queued fuel. Queued Reserve counts fuel still in inventory. It excludes fuel currently burning, so the in-game Total Uptime may be higher."
     );
+  });
+});
+
+describe("BasesPanel generator refill", () => {
+  function listResponse(capabilities: Record<string, unknown>, row: Record<string, unknown>) {
+    return {
+      capabilities,
+      totalCount: 1,
+      totalBases: 1,
+      totalPieces: 10,
+      totalPlaceables: 4,
+      rows: [{ ...commonRow, ...row }]
+    };
+  }
+
+  const stockedBase = {
+    base_id: "2001",
+    name: "Sietch Refill",
+    generatorDataAvailable: true,
+    generatorCount: 2,
+    generatorRuntimeSeconds: 7200,
+    generators: [
+      { type: "fuel", name: "Fuel-Powered Generator", fuelName: "Fuel Cell", fuelCells: 1, generatorCount: 1, runtimeSeconds: 7200 }
+    ]
+  };
+
+  // Every test in this file shares the panel's module-level cache, so the
+  // previous test's rows render while this test's request is still in flight.
+  // Each base name is unique; waiting for it proves the fresh rows landed and
+  // that the capability flag alongside them has been applied.
+  async function awaitFreshRows(baseName: string) {
+    await screen.findByText(baseName);
+    return screen.getByRole("button", { name: "Refill Generators" });
+  }
+
+  it("confirms, posts the refill, and reports what each device gained", async () => {
+    vi.mocked(basesApi.list).mockResolvedValue(listResponse({ bases: true, generatorRefill: true }, stockedBase));
+    vi.mocked(basesApi.refillGenerators).mockResolvedValue({
+      supported: true,
+      result: {
+        ok: true,
+        baseId: 2001,
+        totalAdded: 856,
+        devices: [
+          { placeableId: "91204", type: "fuel", label: "Fuel-Powered Generator", fuelName: "Fuel Cell", before: 42, after: 499, added: 457, capped: false },
+          { placeableId: "91318", type: "windTurbineOmni", label: "Omnidirectional Wind Turbine", fuelName: "Low-grade Lubricant", before: 100, after: 499, added: 399, capped: false }
+        ]
+      }
+    });
+
+    const props = renderPanel();
+    const refill = await awaitFreshRows("Sietch Refill");
+    expect(refill).toBeEnabled();
+
+    fireEvent.click(refill);
+
+    await waitFor(() => expect(props.confirmAction).toHaveBeenCalledWith(
+      'Refill 2 power devices at "Sietch Refill" to full fuel?',
+      { title: "Refill Generators", confirmLabel: "Refill" }
+    ));
+    await waitFor(() => expect(basesApi.refillGenerators).toHaveBeenCalledWith("2001"));
+    expect(await screen.findByText(/Added 856 fuel units across 2 devices/)).toBeInTheDocument();
+    expect(screen.getByText(/Fuel-Powered Generator: \+457 Fuel Cells/)).toBeInTheDocument();
+    expect(screen.getByText(/Omnidirectional Wind Turbine: \+399 Low-grade Lubricants/)).toBeInTheDocument();
+    // The list is refetched so the row shows post-refill fuel, not the cache.
+    expect(vi.mocked(basesApi.list).mock.calls.length).toBeGreaterThan(1);
+  });
+
+  it("does not post when the confirm dialog is declined", async () => {
+    vi.mocked(basesApi.list).mockResolvedValue(listResponse({ bases: true, generatorRefill: true }, { ...stockedBase, base_id: "2002", name: "Sietch Declined" }));
+
+    renderPanel({ confirmAction: vi.fn().mockResolvedValue(false) });
+    fireEvent.click(await awaitFreshRows("Sietch Declined"));
+
+    await waitFor(() => expect(basesApi.refillGenerators).not.toHaveBeenCalled());
+  });
+
+  it("reports an already-full base as nothing added rather than a failure", async () => {
+    vi.mocked(basesApi.list).mockResolvedValue(listResponse({ bases: true, generatorRefill: true }, { ...stockedBase, base_id: "2003", name: "Sietch Full" }));
+    vi.mocked(basesApi.refillGenerators).mockResolvedValue({
+      supported: true,
+      result: {
+        ok: true,
+        baseId: 2003,
+        totalAdded: 0,
+        devices: [
+          { placeableId: "91204", type: "fuel", label: "Fuel-Powered Generator", fuelName: "Fuel Cell", before: 499, after: 499, added: 0, capped: false }
+        ]
+      }
+    });
+
+    renderPanel();
+    fireEvent.click(await awaitFreshRows("Sietch Full"));
+
+    expect(await screen.findByText("All 1 device was already full. Nothing added.")).toBeInTheDocument();
+  });
+
+  it("disables refill when the database cannot support it or the base has no generators", async () => {
+    vi.mocked(basesApi.list).mockResolvedValue(listResponse({ bases: true, generatorRefill: false }, { ...stockedBase, base_id: "2004", name: "Sietch Unsupported" }));
+
+    renderPanel();
+
+    const refill = await awaitFreshRows("Sietch Unsupported");
+    expect(refill).toBeDisabled();
+    expect(refill).toHaveAttribute("title", "Refill is unsupported on this database");
+  });
+
+  it("disables refill when generator data could not be read", async () => {
+    vi.mocked(basesApi.list).mockResolvedValue(listResponse(
+      { bases: true, generatorRefill: true },
+      { ...stockedBase, base_id: "2005", name: "Sietch Unknown", generatorDataAvailable: false, generatorCount: 0, generators: [] }
+    ));
+
+    renderPanel();
+
+    const refill = await awaitFreshRows("Sietch Unknown");
+    expect(refill).toBeDisabled();
+    expect(refill).toHaveAttribute("title", "Generator data is unavailable for this base");
   });
 });

@@ -2,7 +2,7 @@ import test, { beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { assertIdentifier, discoverDbConfig, isReadOnlySql, quoteQualified, redactDbError, rowsResult } from "../src/db.js";
-import { addCurrency, addFactionReputation, addIntel, addonLeadershipPlayers, addonOpsHealthFarms, addonOpsHealthPlayers, addonOpsHealthSummary, addonOpsHealthSummaryV2, addSpecializationXp, applyLandsraadMilestonePreset, augmentInventoryItem, augmentNewestPlayerItem, changeDunePassword, completeJourneyNode, completeTutorial, dbStatus, deleteInventoryItem, exportBaseAsBlueprint, generatorUptimePolicy, giveItemToPlayer, giveItemToStorage, guildMembers, landsraadOverview, listBases, listGuilds, listPlayers, listRoutines, listSpicefieldTypes, listTables, liveMapPlayers, liveMapServices, playerCraftingRecipes, playerCurrency, playerFactions, playerIntel, playerInventory, playerJourney, playerPortalSnapshots, playerPosition, playerProfile, playerProgression, playerResearchItems, playerSolarisCoinTotal, playerVitals, portalGeneratorFuel, portalVehicles, repairVehicleDecay, resetJourneyNode, resetTutorial, routineDefinition, runSql, setLandsraadPlayerContribution, tablePreview, teleportOfflinePlayerToCoords, unlockCraftingRecipe, unlockResearchItem, updateInventoryItem, updateLandsraadRewardTier, updateLandsraadTaskGoal, updateLandsraadTermTaskGoals, updateSpicefieldType, updateTableRow, UnsupportedCapabilityError, _resetPlayerTargetCacheForTests } from "../src/duneDb.js";
+import { addCurrency, addFactionReputation, addIntel, addonLeadershipPlayers, addonOpsHealthFarms, addonOpsHealthPlayers, addonOpsHealthSummary, addonOpsHealthSummaryV2, addSpecializationXp, applyLandsraadMilestonePreset, augmentInventoryItem, augmentNewestPlayerItem, baseGenerators, changeDunePassword, completeJourneyNode, completeTutorial, dbStatus, deleteInventoryItem, exportBaseAsBlueprint, generatorUptimePolicy, giveItemToPlayer, giveItemToStorage, guildMembers, landsraadOverview, listBases, listGuilds, listPlayers, listRoutines, listSpicefieldTypes, listTables, liveMapPlayers, liveMapServices, playerCraftingRecipes, playerCurrency, playerFactions, playerIntel, playerInventory, playerJourney, playerPortalSnapshots, playerPosition, playerProfile, playerProgression, playerResearchItems, playerSolarisCoinTotal, playerVitals, portalGeneratorFuel, portalVehicles, refillBaseGenerators, repairVehicleDecay, resetJourneyNode, resetTutorial, routineDefinition, runSql, setLandsraadPlayerContribution, supportsGeneratorRefill, tablePreview, teleportOfflinePlayerToCoords, unlockCraftingRecipe, unlockResearchItem, updateInventoryItem, updateLandsraadRewardTier, updateLandsraadTaskGoal, updateLandsraadTermTaskGoals, updateSpicefieldType, updateTableRow, UnsupportedCapabilityError, _resetPlayerTargetCacheForTests } from "../src/duneDb.js";
 
 beforeEach(() => {
   _resetPlayerTargetCacheForTests();
@@ -4042,3 +4042,179 @@ function fakeMutationDb(calls, fixtures = {}) {
   };
   return db;
 }
+
+// --- Generator refill -------------------------------------------------------
+
+function fakeRefillDb(calls, { devices = [], items = {}, hasPlaceables = true } = {}) {
+  const state = { items: JSON.parse(JSON.stringify(items)), inserts: [], nextId: 9000 };
+  const query = async (text, values = []) => {
+    calls.push({ text, values });
+    if (text.includes("to_regclass")) {
+      return { rows: [{ exists: String(values[0]) === "dune.placeables" ? hasPlaceables : true }] };
+    }
+    if (text.includes("information_schema.columns")) {
+      const columns = {
+        inventories: ["id", "actor_id", "max_item_count", "max_item_volume"],
+        items: ["inventory_id", "template_id", "stack_size", "quality_level", "position_index", "stats"],
+        placeables: ["id", "owner_entity_id", "building_type"]
+      }[values[1]] || [];
+      return { rows: columns.map((column_name) => ({ column_name })) };
+    }
+    if (text.includes("from base_entities be")) return { rows: devices };
+    if (text.includes("lower(template_id) = lower($2)")) {
+      const rows = (state.items[values[0]] || []).filter((row) =>
+        String(row.template_id).toLowerCase() === String(values[1]).toLowerCase());
+      return { rows };
+    }
+    if (text.startsWith("update dune.items set stack_size")) {
+      for (const rows of Object.values(state.items)) {
+        const row = rows.find((entry) => entry.id === values[1]);
+        if (row) row.stack_size += values[0];
+      }
+      return { rows: [], rowCount: 1 };
+    }
+    if (text.includes("count(*)::int as count from dune.items")) {
+      return { rows: [{ count: (state.items[values[0]] || []).length }] };
+    }
+    if (text.includes("max(position_index)")) {
+      const rows = state.items[values[0]] || [];
+      return { rows: [{ position_index: rows.reduce((max, row) => Math.max(max, row.position_index), -1) + 1 }] };
+    }
+    if (text.includes("insert into dune.items")) {
+      const [inventoryId, templateId, stackSize, , positionIndex] = values;
+      state.inserts.push({ inventoryId, templateId, stackSize, positionIndex });
+      (state.items[inventoryId] ||= []).push({ id: ++state.nextId, template_id: templateId, stack_size: stackSize, position_index: positionIndex });
+      return { rows: [], rowCount: 1 };
+    }
+    return { rows: [] };
+  };
+  return { state, db: { query, transaction: async (fn) => fn({ query }) } };
+}
+
+const FUEL_DEVICE = { placeable_id: "5001", generator_type: "fuel", inventory_id: "701", max_item_count: 10 };
+const OMNI_DEVICE = { placeable_id: "5002", generator_type: "windTurbineOmni", inventory_id: "702", max_item_count: 10 };
+
+test("generator refill enumerates only allowlisted placeable building types", async () => {
+  const calls = [];
+  const db = { query: async (text, values) => { calls.push({ text, values }); return { rows: [] }; } };
+
+  await baseGenerators(db, 482);
+
+  const [baseId, types, buildingTypes] = calls[0].values;
+  assert.equal(baseId, 482);
+  assert.deepEqual(types, ["fuel", "spice", "windTurbineOmni", "windTurbineDirectional"]);
+  assert.deepEqual(buildingTypes, [
+    "generator_placeable",
+    "spicegenerator_placeable",
+    "windturbineomnidirectional_placeable",
+    "windturbinedirectional_placeable"
+  ]);
+  // Claim resolution must match portalGeneratorFuel so both agree on which
+  // placeables belong to a base.
+  assert.match(calls[0].text, /requested_claims as/);
+  assert.match(calls[0].text, /claim_afe\.actor_id = rc\.actor_id/);
+});
+
+test("generator refill fills an empty fuel generator with one full stack of Oil", async () => {
+  const calls = [];
+  const { state, db } = fakeRefillDb(calls, { devices: [FUEL_DEVICE] });
+
+  const result = await refillBaseGenerators(db, "", 482);
+
+  assert.deepEqual(state.inserts, [{ inventoryId: "701", templateId: "Oil", stackSize: 499, positionIndex: 0 }]);
+  assert.deepEqual(result.devices, [{
+    placeableId: "5001", type: "fuel", label: "Fuel-Powered Generator", fuelName: "Fuel Cell",
+    before: 0, after: 499, added: 499, capped: false
+  }]);
+  assert.equal(result.totalAdded, 499);
+});
+
+test("generator refill tops up a partial stack instead of adding another row", async () => {
+  const calls = [];
+  const { state, db } = fakeRefillDb(calls, {
+    devices: [FUEL_DEVICE],
+    items: { 701: [{ id: 11, template_id: "Oil", stack_size: 42, position_index: 0 }] }
+  });
+
+  const result = await refillBaseGenerators(db, "", 482);
+
+  assert.deepEqual(state.inserts, []);
+  assert.equal(state.items[701][0].stack_size, 499);
+  assert.equal(result.devices[0].before, 42);
+  assert.equal(result.devices[0].added, 457);
+});
+
+test("generator refill splits an omnidirectional turbine into five lubricant stacks", async () => {
+  const calls = [];
+  const { state, db } = fakeRefillDb(calls, { devices: [OMNI_DEVICE] });
+
+  const result = await refillBaseGenerators(db, "", 482);
+
+  // Five stacks of 100 would be 500; the total cap holds the device at 499.
+  assert.deepEqual(state.inserts.map((entry) => entry.stackSize), [100, 100, 100, 100, 99]);
+  assert.ok(state.inserts.every((entry) => entry.templateId === "WindTurbineLubricant1"));
+  assert.deepEqual(state.inserts.map((entry) => entry.positionIndex), [0, 1, 2, 3, 4]);
+  assert.equal(result.devices[0].after, 499);
+  assert.equal(result.devices[0].capped, false);
+});
+
+test("generator refill leaves an already-full device untouched", async () => {
+  const calls = [];
+  const { state, db } = fakeRefillDb(calls, {
+    devices: [FUEL_DEVICE],
+    items: { 701: [{ id: 11, template_id: "Oil", stack_size: 499, position_index: 0 }] }
+  });
+
+  const result = await refillBaseGenerators(db, "", 482);
+
+  assert.deepEqual(state.inserts, []);
+  assert.equal(calls.some((call) => String(call.text).startsWith("update dune.items")), false);
+  assert.equal(result.devices[0].added, 0);
+  assert.equal(result.totalAdded, 0);
+});
+
+test("generator refill stops at the inventory slot limit and reports it as capped", async () => {
+  const calls = [];
+  const { state, db } = fakeRefillDb(calls, { devices: [{ ...OMNI_DEVICE, max_item_count: 2 }] });
+
+  const result = await refillBaseGenerators(db, "", 482);
+
+  assert.equal(state.inserts.length, 2);
+  assert.equal(result.devices[0].after, 200);
+  assert.equal(result.devices[0].capped, true);
+});
+
+test("generator refill skips a device with no inventory rather than failing the whole base", async () => {
+  const calls = [];
+  const { state, db } = fakeRefillDb(calls, {
+    devices: [{ ...FUEL_DEVICE, inventory_id: null }, OMNI_DEVICE]
+  });
+
+  const result = await refillBaseGenerators(db, "", 482);
+
+  assert.equal(result.devices[0].skipped, "no-inventory");
+  assert.equal(result.devices[0].added, 0);
+  assert.equal(result.devices[1].added, 499);
+  assert.ok(state.inserts.every((entry) => entry.inventoryId === "702"));
+});
+
+test("generator refill reports a base with no power devices instead of silently succeeding", async () => {
+  const calls = [];
+  const { db } = fakeRefillDb(calls, { devices: [] });
+  await assert.rejects(() => refillBaseGenerators(db, "", 482), /No generators or wind turbines were found/);
+});
+
+test("generator refill is unsupported when the schema has no placeables table", async () => {
+  const calls = [];
+  const { db } = fakeRefillDb(calls, { devices: [FUEL_DEVICE], hasPlaceables: false });
+
+  assert.equal(await supportsGeneratorRefill(db), false);
+  await assert.rejects(() => refillBaseGenerators(db, "", 482), UnsupportedCapabilityError);
+});
+
+test("generator refill rejects an invalid base id before writing anything", async () => {
+  const calls = [];
+  const { db } = fakeRefillDb(calls, { devices: [FUEL_DEVICE] });
+  await assert.rejects(() => refillBaseGenerators(db, "", 0), /Invalid base id/);
+  assert.equal(calls.some((call) => String(call.text).includes("insert into dune.items")), false);
+});

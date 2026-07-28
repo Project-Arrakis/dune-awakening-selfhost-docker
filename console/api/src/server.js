@@ -431,6 +431,7 @@ async function handleApi(req, res) {
     sortDirection: url.searchParams.get("sortDirection") || "asc"
   }));
   if (path.match(/^\/api\/bases\/[^/]+\/export$/) && req.method === "GET") return baseBlueprintDownloadRoute(req, res, path);
+  if (path.match(/^\/api\/bases\/[^/]+\/refill-generators$/) && req.method === "POST") return baseRefillGeneratorsRoute(req, res, path);
   if (path === "/api/admin/items/catalog") return json(res, 200, { rows: listCatalogItems(config.repoRoot, { q: url.searchParams.get("q") || "", limit: url.searchParams.get("limit") || 500 }) });
   if (path === "/api/admin/items/search") return commandJson(res, "adminItemSearch", { q: url.searchParams.get("q") || "" });
   if (path === "/api/admin/items") return commandJson(res, url.searchParams.get("category") ? "adminItemListCategory" : "adminItemList", { category: url.searchParams.get("category") || "" });
@@ -1908,6 +1909,15 @@ async function baseBlueprintDownloadRoute(req, res, path) {
     const status = error.unsupported ? 501 : 500;
     return json(res, status, { ok: false, error: redact(error.message || error) });
   }
+}
+
+async function baseRefillGeneratorsRoute(req, res, path) {
+  const baseId = Number(decodeURIComponent(path.split("/")[3]));
+  if (!Number.isFinite(baseId) || baseId < 1) return json(res, 400, { error: "Invalid base ID" });
+  // No confirmation phrase: refilling is additive and reversible, unlike the
+  // deletes and overwrites that phrase-gate. Still rate limited and audited.
+  return directDbMutation(req, res, "bases.refill-generators", null,
+    () => duneDb.refillBaseGenerators(db, config.repoRoot, baseId), { baseId });
 }
 
 async function blueprintBulkExportRoute(req, res) {

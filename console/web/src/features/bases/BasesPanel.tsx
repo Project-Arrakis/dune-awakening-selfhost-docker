@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ChevronDown, ChevronUp, Download } from "lucide-react";
-import { basesApi } from "../../api/bases";
+import { ChevronDown, ChevronUp, Download, Fuel } from "lucide-react";
+import { basesApi, type RefillDeviceResult } from "../../api/bases";
 import { apiDownload } from "../../api/client";
 import { DataTable, type SortDirection } from "../../components/common/DataTable";
 
 type BasesPanelProps = {
   onError: (text: string) => void;
+  confirmAction: (message: string, options?: { title?: string; confirmLabel?: string }) => Promise<boolean>;
+  formatMutationResult: (result: unknown) => string;
 };
 
 type SharedWithEntry = { name: string; rank: number; label: string };
@@ -102,6 +104,20 @@ function errorText(error: unknown) {
   return error instanceof Error ? error.message : String(error);
 }
 
+// Report what actually changed per device rather than a generic "Action
+// completed." — "nothing was added" is a meaningful outcome here, not a failure.
+function summarizeRefill(response: { result?: { totalAdded: number; devices: RefillDeviceResult[] } }) {
+  const result = response.result;
+  if (!result || !Array.isArray(result.devices)) return "";
+  const changed = result.devices.filter((device) => (device.added || 0) > 0);
+  if (!changed.length) return `All ${result.devices.length} device${result.devices.length === 1 ? " was" : "s were"} already full. Nothing added.`;
+  const detail = changed
+    .map((device) => `${device.label}: +${device.added} ${device.fuelName}${device.added === 1 ? "" : "s"}${device.capped ? " (capped by inventory space)" : ""}`)
+    .join(" · ");
+  const skipped = result.devices.filter((device) => device.skipped).length;
+  return `Added ${result.totalAdded} fuel unit${result.totalAdded === 1 ? "" : "s"} across ${changed.length} device${changed.length === 1 ? "" : "s"}. ${detail}${skipped ? ` · ${skipped} skipped (no inventory)` : ""}`;
+}
+
 function withCoordinates(row: Record<string, unknown>): BaseRow {
   const x = Math.round(Number(row.x) || 0);
   const y = Math.round(Number(row.y) || 0);
@@ -167,7 +183,7 @@ function renderBaseCell(row: Record<string, unknown>, column: string) {
   );
 }
 
-export function BasesPanel({ onError }: BasesPanelProps) {
+export function BasesPanel({ onError, confirmAction, formatMutationResult }: BasesPanelProps) {
   const [q, setQ] = useState(() => basesCache?.q ?? "");
   const [submittedQ, setSubmittedQ] = useState(() => basesCache?.q ?? "");
   const [page, setPage] = useState(() => basesCache?.page ?? 0);
@@ -181,6 +197,9 @@ export function BasesPanel({ onError }: BasesPanelProps) {
   const [totalPlaceables, setTotalPlaceables] = useState(() => basesCache?.totalPlaceables ?? 0);
   const [loading, setLoading] = useState(() => basesCache === null);
   const [downloadingId, setDownloadingId] = useState("");
+  const [refillingId, setRefillingId] = useState("");
+  const [refillResult, setRefillResult] = useState("");
+  const [canRefill, setCanRefill] = useState(false);
   const [expandedBaseId, setExpandedBaseId] = useState<string | null>(null);
   const requestIdRef = useRef(0);
   const skipNextSearchReset = useRef(true);
@@ -210,6 +229,7 @@ export function BasesPanel({ onError }: BasesPanelProps) {
       if (requestIdRef.current !== requestId) return;
       const nextRows = (result.rows || []).map(withCoordinates);
       setRows(nextRows);
+      setCanRefill(Boolean(result.capabilities?.generatorRefill));
       setTotalCount(result.totalCount || 0);
       setTotalBases(result.totalBases || 0);
       setTotalPieces(result.totalPieces || 0);
@@ -299,6 +319,31 @@ export function BasesPanel({ onError }: BasesPanelProps) {
     }
   }
 
+  async function handleRefillGenerators(base: BaseRow) {
+    const id = String(base.base_id);
+    const count = Number(base.generatorCount) || 0;
+    const confirmed = await confirmAction(
+      `Refill ${count} power device${count === 1 ? "" : "s"} at "${base.name || `base ${id}`}" to full fuel?`,
+      { title: "Refill Generators", confirmLabel: "Refill" }
+    );
+    if (!confirmed) return;
+    onError("");
+    setRefillingId(id);
+    try {
+      const response = await basesApi.refillGenerators(id);
+      setRefillResult(summarizeRefill(response) || formatMutationResult(response));
+      // The module cache still holds pre-refill fuel counts for this view.
+      basesCache = null;
+      await load({ q: submittedQ, page, pageSize, sortColumn, sortDirection });
+    } catch (error) {
+      const text = errorText(error);
+      setRefillResult(text);
+      onError(text);
+    } finally {
+      setRefillingId("");
+    }
+  }
+
   if (loading) {
     return <section className="panel">
       <div className="panel-title"><h2>Bases</h2></div>
@@ -345,6 +390,10 @@ export function BasesPanel({ onError }: BasesPanelProps) {
       <p className="action-help-note">
         Total Bases: {totalBases.toLocaleString()} · Total Building Pieces: {totalPieces.toLocaleString()} · Total Placeables: {totalPlaceables.toLocaleString()}
       </p>
+      {canRefill && <p className="action-help-note">
+        Refill writes fuel straight to the database. A running game server may not show the new fuel in-game until the base unloads and reloads.
+      </p>}
+      {refillResult && <p className="danger-note">{refillResult}</p>}
       <div className="action-row bases-search-row">
         <input
           value={q}
@@ -377,7 +426,12 @@ export function BasesPanel({ onError }: BasesPanelProps) {
         action={(row) => {
           const base = row as BaseRow;
           const id = String(base.base_id);
+          const refillable = canRefill && base.generatorDataAvailable && (Number(base.generatorCount) || 0) > 0;
+          const refillTitle = !canRefill ? "Refill is unsupported on this database"
+            : !base.generatorDataAvailable ? "Generator data is unavailable for this base"
+            : refillable ? "Refill Generators" : "No generators at this base";
           return <span className="icon-toggle-group">
+            <button className="icon-toggle-button" title={refillTitle} aria-label="Refill Generators" disabled={!refillable || refillingId === id} onClick={(event) => { event.stopPropagation(); void handleRefillGenerators(base); }}><Fuel size={16} /></button>
             <button className="icon-toggle-button" title="Download Base as Blueprint" aria-label="Download Base as Blueprint" disabled={downloadingId === id} onClick={(event) => { event.stopPropagation(); void handleDownloadBlueprint(base); }}><Download size={16} /></button>
           </span>;
         }}
