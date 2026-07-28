@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import { PlayerSummary } from "./PlayerSummary";
 import { playersApi } from "../../api/players";
@@ -33,6 +33,10 @@ beforeEach(() => {
   vi.mocked(playersApi.intel).mockResolvedValue({ capabilities: {} });
   vi.mocked(playersApi.solarisCoin).mockResolvedValue({ capabilities: {} });
   vi.mocked(playersApi.vitals).mockResolvedValue({ capabilities: {} });
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 describe("PlayerSummary", () => {
@@ -511,6 +515,33 @@ describe("PlayerSummary", () => {
       expect(screen.queryByText("Health")).not.toBeInTheDocument();
       expect(screen.queryByText("Hydration")).not.toBeInTheDocument();
       expect(screen.queryByText("Spice Addiction")).not.toBeInTheDocument();
+    });
+
+    it("refreshes player statistics every 30 seconds and stops after closing the summary", async () => {
+      vi.useFakeTimers();
+      vi.mocked(playersApi.vitals)
+        .mockResolvedValueOnce({ capabilities: { vitals: true }, currentHealth: 175, maxHealth: 205, maxHealthEstimated: true, hydration: 84, maxHydration: 100, spiceAddictionLevel: 8, maxSpiceAddictionLevel: 10 })
+        .mockResolvedValueOnce({ capabilities: { vitals: true }, currentHealth: 140, maxHealth: 205, maxHealthEstimated: true, hydration: 61, maxHydration: 100, spiceAddictionLevel: 8, maxSpiceAddictionLevel: 10 });
+
+      const { unmount } = render(
+        <PlayerSummary
+          {...baseProps}
+          detail={{ player: { character_name: "Benny Jesserette" } }}
+          fallback={{}}
+        />
+      );
+      await act(async () => { await Promise.resolve(); });
+      expect(playersApi.vitals).toHaveBeenCalledTimes(1);
+      expect(screen.getByText("175 / 205 (estimated max)")).toBeInTheDocument();
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+      expect(playersApi.vitals).toHaveBeenCalledTimes(2);
+      expect(screen.getByText("140 / 205 (estimated max)")).toBeInTheDocument();
+      expect(screen.getByText("61 / 100")).toBeInTheDocument();
+
+      unmount();
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(playersApi.vitals).toHaveBeenCalledTimes(2);
     });
   });
 
