@@ -2374,3 +2374,292 @@ td .inline-action-result-wrap { flex: 1 0 100%; justify-content: flex-start; min
   .playerAdmin_repairRow button { justify-self: start; }
   .playerAdmin_repairRow .inline-action-result-wrap { width: 100%; min-height: 24px; }
 }
+
+/* Responsive application foundations ------------------------------------- */
+html {
+  min-width: 0;
+  min-height: 100%;
+  overflow-x: clip;
+  text-size-adjust: 100%;
+}
+body {
+  min-width: 0;
+  min-height: 100dvh;
+  overflow-x: clip;
+}
+#root { min-width: 0; min-height: 100dvh; }
+img, svg, canvas, video, iframe { max-width: 100%; }
+img, video { height: auto; }
+pre {
+  max-width: 100%;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+code { overflow-wrap: anywhere; }
+h1 { font-size: clamp(1.35rem, 1.1rem + .75vw, 2rem); }
+h2 { font-size: clamp(1.2rem, 1.05rem + .5vw, 1.65rem); }
+h3 { font-size: clamp(1.05rem, .98rem + .35vw, 1.35rem); }
+:where(button, a, input, select, textarea, summary):focus-visible {
+  outline: 2px solid var(--accent-strong);
+  outline-offset: 2px;
+}
+
+.app-shell { grid-template-columns: minmax(224px, 260px) minmax(0, 1fr); min-height: 100dvh; }
+.app-shell > main {
+  width: 100%;
+  max-width: calc(100vw - 224px);
+  padding: clamp(14px, 1.5vw, 28px);
+}
+.setup-only-shell > main { max-width: 100%; }
+.sidebar {
+  position: sticky;
+  top: 0;
+  align-self: start;
+  height: 100dvh;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+.sidebar-menu-toggle { display: none; }
+
+:where(.panel, .drawer, .action-section, .status-card, .service-card, .check-card, .gauge, .result-panel, .raw-editor-card),
+:where(.grid, .two-col, .action-row, .action-line, .panel-title, .service-actions, .topbar, .topbar-links) > *,
+:where(.live-map-layout, .live-map-main, .live-map-sidebar, .settings-grid, .advanced-grid, .actions-grid, .health-grid, .summary-cols) > * {
+  min-width: 0;
+}
+.panel, .drawer, .action-section { max-width: 100%; }
+.panel-title > :is(h1, h2, h3, h4, h5),
+.topbar > div:first-child,
+.service-card > div,
+.check-card > div {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.panel-title p, .panel-title span, .service-card p, .check-card p { overflow-wrap: anywhere; }
+.badge {
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: center;
+  line-height: 1.25;
+}
+
+.modal-overlay {
+  padding: clamp(10px, 3vw, 24px);
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.confirm-modal {
+  max-height: calc(100dvh - clamp(20px, 6vw, 48px));
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.table-wrap,
+.settings-list-wrap,
+.admin-history-table,
+.playerAdmin_tableWrap,
+.package-items-table {
+  max-width: 100%;
+  overflow: auto;
+  overscroll-behavior-inline: contain;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-gutter: stable;
+}
+.table-wrap:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+th, td { overflow-wrap: normal; }
+td :where(.service-actions, .action-row, .map-action-buttons) { max-width: 100%; }
+
+.action-row > input:not([type="checkbox"]),
+.action-row > select,
+.action-line > input:not([type="checkbox"]),
+.action-line > select {
+  flex: 1 1 220px;
+  min-width: min(100%, 180px);
+}
+.action-row > button,
+.action-line > button,
+.panel-title > button { flex: 0 0 auto; }
+.drawer { overflow: hidden; }
+.addon-frame { min-height: clamp(420px, 70dvh, 760px); }
+
+@media (max-width: 1280px) {
+  .app-shell { grid-template-columns: 224px minmax(0, 1fr); }
+  .sidebar { padding-inline: 16px; }
+  .catalog-filter-row { grid-template-columns: minmax(240px, 340px) minmax(0, 1fr); }
+  .live-map-layout { grid-template-columns: minmax(260px, 290px) minmax(0, 1fr); }
+}
+
+@media (max-width: 1024px) {
+  .topbar { align-items: flex-start; flex-wrap: wrap; }
+  .topbar .topbar-links { width: 100%; justify-content: flex-start; flex-wrap: wrap; }
+  .catalog-filter-row { grid-template-columns: 1fr; }
+  .catalog-search-tools { grid-template-columns: minmax(0, 1fr) auto; }
+  .auto-update-settings-row,
+  .character-transfer-row { grid-template-columns: minmax(180px, 1fr) minmax(120px, 240px) 32px; }
+}
+
+@media (max-width: 900px) {
+  .app-shell { display: block; min-height: 100dvh; }
+  .app-shell > main { max-width: 100%; }
+  .sidebar {
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    width: 100%;
+    height: auto;
+    max-height: 100dvh;
+    padding: 12px clamp(12px, 3vw, 22px);
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+    background: rgba(14, 15, 17, .97);
+    backdrop-filter: blur(12px);
+  }
+  .sidebar-brand {
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    align-items: center;
+    margin: 0;
+  }
+  .sidebar h1 { font-size: clamp(1rem, 3.6vw, 1.25rem); }
+  .sidebar-menu-toggle {
+    display: inline-flex;
+    width: 44px;
+    height: 44px;
+    min-height: 44px;
+    padding: 0;
+  }
+  .stack-version-button { min-height: 40px; max-width: min(118px, 26vw); }
+  .sidebar-nav { display: none; margin-top: 12px; padding: 2px 2px 12px; }
+  .sidebar-nav.mobile-open {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 14px;
+    max-height: calc(100dvh - 76px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+  .sidebar-nav-group {
+    grid-template-columns: 1fr;
+    align-content: start;
+  }
+  .sidebar-nav-heading { grid-column: auto; }
+  .sidebar-nav button, .sidebar-nav a { min-height: 44px; }
+  .sidebar-addon-children { padding-left: 10px; }
+  .sidebar-addon-children button { min-height: 40px; }
+  .live-map-layout { grid-template-columns: 1fr; }
+  .live-map-frame { height: clamp(420px, 62dvh, 700px); min-height: 0; }
+  .deep-desert-dual-section { width: 100%; }
+}
+
+@media (max-width: 760px) {
+  .app-shell > main { padding: clamp(10px, 3vw, 18px); }
+  .sidebar-nav.mobile-open { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .topbar { gap: 12px; margin-bottom: 14px; padding-bottom: 12px; }
+  .topbar .topbar-links { display: grid !important; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .listing-claim-badge { grid-column: 1 / -1; min-height: 40px; }
+  .community-button { width: 100%; min-height: 44px; }
+  .panel, .drawer, .action-section { padding: clamp(11px, 3vw, 16px); }
+  .panel-title, .action-row, .action-line { align-items: stretch; }
+  .panel-title > .action-row,
+  .panel-title > .service-actions,
+  .panel-title > .addons-title-actions,
+  .panel-title > .maps-title-actions { width: 100%; justify-content: flex-start; }
+  .panel-title > .action-row > button,
+  .panel-title > .service-actions > button { flex: 1 1 150px; }
+  .service-card, .check-card { align-items: flex-start; flex-direction: column; }
+  .service-card .service-actions, .check-card .service-actions { width: 100%; justify-content: flex-start; }
+  .settings-tabs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); width: 100%; }
+  .settings-tabs button { width: 100%; min-width: 0; min-height: 44px; white-space: normal; }
+  .wizard-controls { gap: 10px; }
+  .wizard-controls button { min-height: 44px; }
+  .database-preview-toolbar, .players-pagination-footer, .guilds-pagination-footer, .bases-pagination-footer { align-items: stretch; flex-direction: column; }
+  .database-pagination-controls { width: 100%; justify-content: space-between; }
+  .database-page-indicator { flex: 1 1 auto; }
+  .modifier-search-tools { grid-template-columns: minmax(0, 1fr) auto; width: 100%; min-width: 0; }
+  .package-auto-rule { grid-template-columns: 1fr auto; }
+  .package-auto-rule > :nth-child(2) { grid-column: 1 / -1; grid-row: 1; }
+  .playerAdmin_header { grid-template-columns: 1fr; }
+  .playerAdmin_summaryActions { align-items: stretch; }
+  .playerAdmin_filterToolsRow { justify-content: flex-start; width: 100%; flex-basis: 100%; }
+  .playerAdmin_filterTextInput { flex: 1 1 220px; min-width: 0; }
+  .live-map-toolbar label { width: 100%; justify-content: space-between; }
+  .live-map-toolbar input[type="range"].live-map-zoom-range { flex: 1 1 auto; width: auto; min-width: 120px; }
+  .live-map-frame { height: clamp(360px, 58dvh, 600px); }
+  .log-box.large { min-height: clamp(300px, 52dvh, 480px); }
+  .log-box, .concise-output { max-height: min(52dvh, 520px); }
+  .app-footer-credit, .app-footer-directory { align-items: flex-start; }
+}
+
+@media (max-width: 560px) {
+  .sidebar-brand { grid-template-columns: minmax(0, 1fr) auto; }
+  .stack-version-button { grid-column: 1; grid-row: 2; justify-self: start; max-width: 160px; margin-top: 6px; }
+  .sidebar-menu-toggle { grid-column: 2; grid-row: 1 / span 2; }
+  .sidebar-nav.mobile-open { grid-template-columns: 1fr; max-height: calc(100dvh - 104px); }
+  .topbar .topbar-links { grid-template-columns: 1fr; }
+  .community-button, .listing-claim-badge { grid-column: auto; }
+  .confirm-modal-details div { grid-template-columns: 1fr; gap: 3px; }
+  .confirm-modal-actions { display: grid; grid-template-columns: 1fr; }
+  .confirm-modal-actions button { width: 100%; min-height: 44px; }
+  .grid, .two-col, .summary-cols, .actions-grid, .settings-grid, .advanced-grid,
+  .setup-form-grid, .check-grid, .health-grid, .health-grid-compact,
+  .catalog-item-picker, .menu-card-grid, .planned-grid, .playerAdmin_cardGrid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .settings-tabs { grid-template-columns: 1fr; }
+  .action-row > button, .action-line > button { flex: 1 1 140px; min-height: 44px; }
+  .service-actions button, .service-actions .button-link { min-height: 44px; }
+  label.inline-field, label.compact-field, label.compact-select, label.schedule-notify-field {
+    width: 100%;
+    min-width: 0;
+    max-width: none;
+    flex-basis: 100%;
+  }
+  .catalog-search-tools, .modifier-search-tools { grid-template-columns: 1fr; }
+  .catalog-search-tools button, .modifier-search-tools button { width: 100%; }
+  .auto-update-settings-row,
+  .character-transfer-row { grid-template-columns: minmax(0, 1fr) 32px; }
+  .auto-update-settings-row > :nth-child(2),
+  .character-transfer-row > :nth-child(2) { grid-column: 1 / -1; grid-row: 2; text-align: left; }
+  .auto-update-settings-row > :last-child,
+  .character-transfer-row > :last-child { grid-column: 2; grid-row: 1; }
+  .landsraad-modifier-field { grid-template-columns: 1fr; }
+  .landsraad-milestone-heading-actions { align-items: stretch; flex-direction: column; }
+  .memory-swap-panel label { align-items: stretch; flex-direction: column; }
+  .memory-swap-panel label select, .memory-swap-panel label input { width: 100%; }
+  .memory-swap-metrics { display: grid; grid-template-columns: 1fr; }
+  .live-map-map-buttons { grid-template-columns: 1fr; }
+  .live-map-frame { height: max(320px, 52dvh); }
+  .settings-category summary { align-items: flex-start; gap: 8px; }
+  .settings-list-table { min-width: 640px; }
+}
+
+@media (max-width: 420px) {
+  .app-shell > main { padding-inline: 10px; }
+  .sidebar { padding-inline: 10px; }
+  .panel, .drawer, .action-section { border-radius: 7px; padding-inline: 10px; }
+  th, td { padding-inline: 8px; }
+  .database-pagination-controls { align-items: stretch; flex-direction: column; }
+  .database-pagination-controls button,
+  .database-pagination-controls .compact-select { width: 100%; justify-content: center; }
+  .database-pagination-controls select { flex: 1 1 auto; }
+  .wizard-controls { display: grid; grid-template-columns: 1fr; }
+  .wizard-controls button { width: 100%; }
+}
+
+@media (pointer: coarse) {
+  button, .button-link, input, select { min-height: 44px; }
+  input[type="checkbox"], input[type="radio"] { min-height: 22px; min-width: 22px; }
+  .col-resize-handle { display: none; }
+  .memory-info-button, .addon-description-toggle { min-width: 44px; min-height: 44px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    scroll-behavior: auto !important;
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+  }
+}

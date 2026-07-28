@@ -10,7 +10,7 @@ const DEFAULT_MESSAGE_OF_THE_DAY = {
   message: ""
 };
 
-const EMPTY_STATUS = { lastAttemptAt: "", lastSent: 0, lastFailed: 0, lastError: "" };
+const EMPTY_STATUS = { lastAttemptAt: "", lastSent: 0, lastFailed: 0, lastError: "", lastScanAt: "", lastScanError: "" };
 const EMPTY_STATE = { delivered: {}, status: EMPTY_STATUS };
 const MIN_MOTD_SESSION_AGE_MS = 5_000;
 const DELIVERED_SESSION_RETENTION_MS = 24 * 60 * 60 * 1000;
@@ -72,7 +72,7 @@ export async function runMessageOfTheDayScan(config, players, context = {}) {
 
   const pendingPlayers = onlinePlayers.filter((player) => !delivered[player.key] && isSessionMature(player, now));
   if (!pendingPlayers.length) {
-    writeJson(statePath(config), { delivered, status: normalizeStatus(state.status) }, 0o600);
+    writeJson(statePath(config), { delivered, status: healthyScanStatus(state.status, now) }, 0o600);
     return { ok: true, skipped: false, sent: 0, failed: 0 };
   }
 
@@ -114,20 +114,21 @@ export async function runMessageOfTheDayScan(config, players, context = {}) {
     lastAttemptAt: now.toISOString(),
     lastSent: sent,
     lastFailed: failed,
-    lastError: firstFailure ? redact(firstFailure) : ""
+    lastError: firstFailure ? redact(firstFailure) : "",
+    lastScanAt: now.toISOString(),
+    lastScanError: ""
   };
   writeJson(statePath(config), { delivered, status }, 0o600);
   return { ok: failed === 0, skipped: false, sent, failed, results };
 }
 
-export function recordMessageOfTheDayFailure(config, error, now = new Date()) {
+export function recordMessageOfTheDayScanFailure(config, error, now = new Date()) {
   const state = readState(config);
-  const status = {
-    lastAttemptAt: now.toISOString(),
-    lastSent: 0,
-    lastFailed: 1,
-    lastError: redact(String(error?.message || error || "Unknown delivery failure"))
-  };
+  const status = normalizeStatus({
+    ...state.status,
+    lastScanAt: now.toISOString(),
+    lastScanError: redact(String(error?.message || error || "Unknown scan failure"))
+  });
   writeJson(statePath(config), { delivered: state.delivered || {}, status }, 0o600);
   return status;
 }
@@ -174,12 +175,36 @@ function readState(config) {
 }
 
 function normalizeStatus(status = {}) {
+  const legacyError = String(status?.lastError || "");
+  const legacyInfrastructureFailure = !Object.prototype.hasOwnProperty.call(status, "lastScanAt")
+    && Math.max(0, Number(status?.lastFailed) || 0) > 0
+    && /ECONNRESET|ECONNREFUSED|connection|database|postgres|docker|rabbitmq|container|terminated/i.test(legacyError);
+  if (legacyInfrastructureFailure) {
+    return {
+      lastAttemptAt: "",
+      lastSent: 0,
+      lastFailed: 0,
+      lastError: "",
+      lastScanAt: String(status?.lastAttemptAt || ""),
+      lastScanError: legacyError
+    };
+  }
   return {
     lastAttemptAt: String(status?.lastAttemptAt || ""),
     lastSent: Math.max(0, Number(status?.lastSent) || 0),
     lastFailed: Math.max(0, Number(status?.lastFailed) || 0),
-    lastError: String(status?.lastError || "")
+    lastError: legacyError,
+    lastScanAt: String(status?.lastScanAt || ""),
+    lastScanError: String(status?.lastScanError || "")
   };
+}
+
+function healthyScanStatus(status, now) {
+  return normalizeStatus({
+    ...normalizeStatus(status),
+    lastScanAt: now.toISOString(),
+    lastScanError: ""
+  });
 }
 
 function normalizePlayer(player = {}) {
