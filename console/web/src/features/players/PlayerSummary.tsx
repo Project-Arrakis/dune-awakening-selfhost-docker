@@ -16,6 +16,7 @@ type CurrencyRow = { currency_id: number; balance: number; label?: string };
 type FactionRow = { faction_id: number; faction_name?: string; reputation_amount: number };
 type Progression = { level?: number; xp?: number; totalSkillPoints?: number; unspentSkillPoints?: number };
 type Vitals = { currentHealth: number | null; maxHealth: number; maxHealthEstimated: boolean; hydration: number | null; maxHydration: number; spiceAddictionLevel: number | null; maxSpiceAddictionLevel: number };
+const PLAYER_STATS_REFRESH_MS = 30_000;
 
 export function PlayerSummary({
   detail,
@@ -41,7 +42,6 @@ export function PlayerSummary({
   const loadRequest = useRef(0);
 
   useEffect(() => {
-    const request = ++loadRequest.current;
     if (!dbPlayerId) {
       setCurrencyRows([]);
       setFactionRows(null);
@@ -51,36 +51,53 @@ export function PlayerSummary({
       setVitals(null);
       return;
     }
-    void Promise.allSettled([
-      playersApi.currency(dbPlayerId),
-      playersApi.factions(dbPlayerId),
-      playersApi.progression(dbPlayerId),
-      playersApi.intel(dbPlayerId),
-      playersApi.solarisCoin(dbPlayerId),
-      playersApi.vitals(dbPlayerId)
-    ]).then(([currency, factions, progressionResult, intelResult, solarisCoinResult, vitalsResult]) => {
-      if (request !== loadRequest.current) return;
-      setCurrencyRows(currency.status === "fulfilled" ? ((currency.value.rows || []) as CurrencyRow[]) : []);
-      setFactionRows(
-        factions.status === "fulfilled" && factions.value.capabilities?.factions === true
-          ? ((factions.value.rows || []) as FactionRow[])
-          : null
-      );
-      setProgression(progressionResult.status === "fulfilled" && progressionResult.value.capabilities?.progression ? progressionResult.value : null);
-      setIntel(intelResult.status === "fulfilled" && intelResult.value.capabilities?.intel ? (intelResult.value.intel ?? null) : null);
-      setSolarisCoinTotal(solarisCoinResult.status === "fulfilled" && solarisCoinResult.value.capabilities?.solarisCoin ? (solarisCoinResult.value.total ?? null) : null);
-      setVitals(vitalsResult.status === "fulfilled" && vitalsResult.value.capabilities?.vitals
-        ? {
-            currentHealth: vitalsResult.value.currentHealth ?? null,
-            maxHealth: vitalsResult.value.maxHealth ?? 0,
-            maxHealthEstimated: vitalsResult.value.maxHealthEstimated ?? true,
-            hydration: vitalsResult.value.hydration ?? null,
-            maxHydration: vitalsResult.value.maxHydration ?? 0,
-            spiceAddictionLevel: vitalsResult.value.spiceAddictionLevel ?? null,
-            maxSpiceAddictionLevel: vitalsResult.value.maxSpiceAddictionLevel ?? 0
-          }
-        : null);
-    });
+    let active = true;
+    let loading = false;
+    const loadStats = async () => {
+      if (loading) return;
+      loading = true;
+      const request = ++loadRequest.current;
+      try {
+        const [currency, factions, progressionResult, intelResult, solarisCoinResult, vitalsResult] = await Promise.allSettled([
+          playersApi.currency(dbPlayerId),
+          playersApi.factions(dbPlayerId),
+          playersApi.progression(dbPlayerId),
+          playersApi.intel(dbPlayerId),
+          playersApi.solarisCoin(dbPlayerId),
+          playersApi.vitals(dbPlayerId)
+        ]);
+        if (!active || request !== loadRequest.current) return;
+        setCurrencyRows(currency.status === "fulfilled" ? ((currency.value.rows || []) as CurrencyRow[]) : []);
+        setFactionRows(
+          factions.status === "fulfilled" && factions.value.capabilities?.factions === true
+            ? ((factions.value.rows || []) as FactionRow[])
+            : null
+        );
+        setProgression(progressionResult.status === "fulfilled" && progressionResult.value.capabilities?.progression ? progressionResult.value : null);
+        setIntel(intelResult.status === "fulfilled" && intelResult.value.capabilities?.intel ? (intelResult.value.intel ?? null) : null);
+        setSolarisCoinTotal(solarisCoinResult.status === "fulfilled" && solarisCoinResult.value.capabilities?.solarisCoin ? (solarisCoinResult.value.total ?? null) : null);
+        setVitals(vitalsResult.status === "fulfilled" && vitalsResult.value.capabilities?.vitals
+          ? {
+              currentHealth: vitalsResult.value.currentHealth ?? null,
+              maxHealth: vitalsResult.value.maxHealth ?? 0,
+              maxHealthEstimated: vitalsResult.value.maxHealthEstimated ?? true,
+              hydration: vitalsResult.value.hydration ?? null,
+              maxHydration: vitalsResult.value.maxHydration ?? 0,
+              spiceAddictionLevel: vitalsResult.value.spiceAddictionLevel ?? null,
+              maxSpiceAddictionLevel: vitalsResult.value.maxSpiceAddictionLevel ?? 0
+            }
+          : null);
+      } finally {
+        loading = false;
+      }
+    };
+
+    void loadStats();
+    const timer = window.setInterval(() => { void loadStats(); }, PLAYER_STATS_REFRESH_MS);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
   }, [dbPlayerId]);
 
   const text = (value: unknown): string => (value === undefined || value === null ? "" : String(value));
