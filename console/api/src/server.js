@@ -1,5 +1,6 @@
 import { createServer } from "node:http";
 import { createServer as createNetServer } from "node:net";
+import { totalmem } from "node:os";
 import { spawn } from "node:child_process";
 import { existsSync, writeFileSync, chmodSync, mkdirSync, createReadStream, readFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
@@ -45,6 +46,7 @@ import { grantAddonItem } from "./addonItemGrants.js";
 import { EDA_EXCHANGE_BOT_ADDON_ID, ADDON_SCHEDULER_PERMISSION, createAddonJobScheduler, probeBuybackEligibility, readBuybackSchedule, saveBuybackSchedule } from "./addonJobs.js";
 import { createPublicDirectoryReporter, normalizeDiscordInvite, readDirectorySettings } from "./services/publicDirectory.js";
 import { choamTerminalOverview, installChoamTerminals, removeChoamTerminals } from "./services/choamTerminals.js";
+import { calculateAlwaysOnHostMemorySafety } from "./services/hostMemorySafety.js";
 
 const config = loadConfig();
 const auth = createAuth(config);
@@ -2407,22 +2409,36 @@ function readEnvFileValue(key) {
 function readMapsRuntimeSettings() {
   const raw = readEnvFileValue("DUNE_ALWAYS_ON_STARTUP_PARALLELISM") || process.env.DUNE_ALWAYS_ON_STARTUP_PARALLELISM || "";
   const parsed = Number(raw);
+  const protectionEnabled = (readEnvFileValue("DUNE_ALWAYS_ON_HOST_MEMORY_SAFETY") || process.env.DUNE_ALWAYS_ON_HOST_MEMORY_SAFETY || "1") !== "0";
+  const safety = calculateAlwaysOnHostMemorySafety(
+    totalmem(),
+    readEnvFileValue("DUNE_ALWAYS_ON_HOST_MEMORY_RESERVE_GIB") || process.env.DUNE_ALWAYS_ON_HOST_MEMORY_RESERVE_GIB || ""
+  );
+  const safeMaximum = protectionEnabled
+    ? Math.min(MAX_ALWAYS_ON_STARTUP_PARALLELISM, safety.recommendedParallelism)
+    : MAX_ALWAYS_ON_STARTUP_PARALLELISM;
   const value = Number.isInteger(parsed) && parsed >= 1
-    ? Math.min(parsed, MAX_ALWAYS_ON_STARTUP_PARALLELISM)
+    ? Math.min(parsed, safeMaximum)
     : DEFAULT_ALWAYS_ON_STARTUP_PARALLELISM;
   return {
     alwaysOnStartupParallelism: value,
+    configuredAlwaysOnStartupParallelism: Number.isInteger(parsed) && parsed >= 1 ? parsed : value,
     defaultAlwaysOnStartupParallelism: DEFAULT_ALWAYS_ON_STARTUP_PARALLELISM,
-    maxAlwaysOnStartupParallelism: MAX_ALWAYS_ON_STARTUP_PARALLELISM,
-    configured: Boolean(raw)
+    maxAlwaysOnStartupParallelism: safeMaximum,
+    configured: Boolean(raw),
+    hostMemoryProtectionEnabled: protectionEnabled,
+    hostMemorySafetyLimited: protectionEnabled && Number.isInteger(parsed) && parsed > safeMaximum,
+    physicalMemoryGiB: safety.physicalMemoryGiB,
+    hostMemoryReserveGiB: safety.reserveGiB
   };
 }
 
 async function mapsRuntimeSettingsRoute(req, res) {
   const body = await readJson(req);
   const value = Number(body.alwaysOnStartupParallelism);
-  if (!Number.isInteger(value) || value < 1 || value > MAX_ALWAYS_ON_STARTUP_PARALLELISM) {
-    return json(res, 400, { error: `Always-on startup parallelism must be a whole number from 1 to ${MAX_ALWAYS_ON_STARTUP_PARALLELISM}.` });
+  const settings = readMapsRuntimeSettings();
+  if (!Number.isInteger(value) || value < 1 || value > settings.maxAlwaysOnStartupParallelism) {
+    return json(res, 400, { error: `Always-on startup parallelism must be a whole number from 1 to ${settings.maxAlwaysOnStartupParallelism} for this host.` });
   }
   updateEnvFileValue("DUNE_ALWAYS_ON_STARTUP_PARALLELISM", String(value));
   process.env.DUNE_ALWAYS_ON_STARTUP_PARALLELISM = String(value);

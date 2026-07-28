@@ -1532,6 +1532,7 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
         <div className="maps-startup-settings-copy">
           <strong>Parallel Map Warmup</strong>
           <p>Starts multiple always-on maps at once on stronger hosts. Higher values warm faster but spike CPU, RAM, and disk I/O.</p>
+          {runtimeSettings?.hostMemorySafetyLimited ? <p className="warning">This host is limited to {runtimeSettings.maxAlwaysOnStartupParallelism} parallel start{runtimeSettings.maxAlwaysOnStartupParallelism === 1 ? "" : "s"} to preserve {runtimeSettings.hostMemoryReserveGiB} GB of its {runtimeSettings.physicalMemoryGiB} GB RAM.</p> : null}
         </div>
         <div className="action-line maps-startup-settings-line">
           <label className="memory-number-field">Parallel Starts<input type="number" min="1" max={runtimeParallelismMax} step="1" value={startupParallelism} onChange={(event) => setStartupParallelism(event.target.value)} /></label>

@@ -41,6 +41,18 @@ STARTUP_PARALLELISM="$(positive_int_or_default "${DUNE_ALWAYS_ON_STARTUP_PARALLE
 RECONCILE_PARALLELISM="$(positive_int_or_default "${DUNE_ALWAYS_ON_RECONCILE_PARALLELISM:-$STARTUP_PARALLELISM}" "$STARTUP_PARALLELISM")"
 MAX_SPAWNS_PER_RECONCILE="$(positive_int_or_default "${DUNE_ALWAYS_ON_RECONCILE_MAX_SPAWNS:-1}" 1)"
 MAX_WARMING_SERVERS="$(positive_int_or_default "${DUNE_ALWAYS_ON_RECONCILE_MAX_WARMING:-$STARTUP_PARALLELISM}" "$STARTUP_PARALLELISM")"
+HOST_SAFE_PARALLELISM="$(runtime/scripts/host-memory-safety.sh recommended-parallelism 2>/dev/null || echo 1)"
+if [ "${DUNE_ALWAYS_ON_HOST_MEMORY_SAFETY:-1}" != "0" ]; then
+  if [ "$STARTUP_PARALLELISM" -gt "$HOST_SAFE_PARALLELISM" ]; then
+    STARTUP_PARALLELISM="$HOST_SAFE_PARALLELISM"
+  fi
+  if [ "$RECONCILE_PARALLELISM" -gt "$HOST_SAFE_PARALLELISM" ]; then
+    RECONCILE_PARALLELISM="$HOST_SAFE_PARALLELISM"
+  fi
+  if [ "$MAX_WARMING_SERVERS" -gt "$HOST_SAFE_PARALLELISM" ]; then
+    MAX_WARMING_SERVERS="$HOST_SAFE_PARALLELISM"
+  fi
+fi
 if [ -n "${DUNE_ALWAYS_ON_RECONCILE_MIN_SPAWN_INTERVAL_SECONDS+x}" ]; then
   MIN_SPAWN_INTERVAL_SECONDS="$(nonnegative_int_or_default "$DUNE_ALWAYS_ON_RECONCILE_MIN_SPAWN_INTERVAL_SECONDS" 30)"
 elif [ "$STARTUP_PARALLELISM" -gt 1 ]; then
@@ -335,6 +347,10 @@ spawn_gate_allows() {
   local map="$1"
   local partition_id="$2"
   local warming
+
+  if ! runtime/scripts/host-memory-safety.sh check-map "$map" "$partition_id"; then
+    return 1
+  fi
 
   if recent_spawn_blocking; then
     echo "WAIT always-on map=$map partition=$partition_id spawn-throttle=${MIN_SPAWN_INTERVAL_SECONDS}s"

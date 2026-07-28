@@ -399,77 +399,7 @@ ensure_runtime_state_file "$PORT_RESERVATION_FILE" "spawn port reservation state
 cleanup_port_reservations
 release_port_reservation "$CONTAINER_NAME"
 
-memory_for_map() {
-  local map="$1"
-  local partition="${2:-}"
-  local map_key
-  local env_key
-  local partition_env_key
-  local configured
-  local recommended
-
-  if [ -n "$partition" ]; then
-    partition_env_key="DUNE_MEMORY_PARTITION_${partition}"
-    configured="${!partition_env_key:-}"
-    if [ -n "$configured" ]; then
-      echo "$configured"
-      return 0
-    fi
-  fi
-
-  map_key="$(printf '%s' "$map" | tr '[:lower:]' '[:upper:]' | sed 's/[^A-Z0-9]/_/g; s/__*/_/g; s/^_//; s/_$//')"
-  env_key="DUNE_MEMORY_${map_key}"
-  configured="${!env_key:-}"
-
-  if [ -n "$configured" ]; then
-    echo "$configured"
-    return 0
-  fi
-
-  if [ -n "${DUNE_MEMORY_DEFAULT:-}" ]; then
-    echo "$DUNE_MEMORY_DEFAULT"
-    return 0
-  fi
-
-  recommended="$(default_memory_for_map "$map")"
-  case "${map,,}" in
-    survival_1|deepdesert_1|overmap)
-      echo "$recommended"
-      return 0
-      ;;
-  esac
-  if [ "$recommended" != "3g" ]; then
-    echo "$recommended"
-    return 0
-  fi
-
-  python3 - "$map" <<'PY'
-import json
-import sys
-from pathlib import Path
-
-target = sys.argv[1].lower()
-catalog_path = Path("runtime/generated/server-catalog.json")
-
-default = "3g"
-
-if not catalog_path.exists():
-    print(default)
-    raise SystemExit
-
-catalog = json.loads(catalog_path.read_text())
-for item in catalog:
-    if str(item.get("map", "")).lower() == target:
-        mem = item.get("resources", {}).get("limits", {}).get("memory", "")
-        if mem:
-            print(mem.replace("Gi", "g").replace("G", "g"))
-            raise SystemExit
-
-print(default)
-PY
-}
-
-MEMORY="$(memory_for_map "$MAP_NAME" "$PARTITION_ID")"
+MEMORY="$(effective_memory_for_map "$MAP_NAME" "$PARTITION_ID")"
 mapfile -t SIETCH_RUNTIME_ARGS < <(runtime/scripts/sietches.sh runtime-args "$MAP_NAME" "$PARTITION_ID" 2>/dev/null || true)
 mapfile -t LOG_RUNTIME_ARGS < <(full_stdout_log_args)
 if [ "$MAP_NAME" = "Survival_1" ]; then
