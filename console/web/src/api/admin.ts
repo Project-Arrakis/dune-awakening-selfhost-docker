@@ -46,6 +46,8 @@ export type MessageOfTheDayStatus = {
   lastSent: number;
   lastFailed: number;
   lastError: string;
+  lastScanAt: string;
+  lastScanError: string;
 };
 
 export type PlayerAnnouncementSettings = {

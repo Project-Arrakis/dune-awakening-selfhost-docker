@@ -59,7 +59,7 @@ export function AdminToolsPanel({ onError, confirmAction }: AdminToolsPanelProps
   const [broadcastDuration, setBroadcastDuration] = useState("30");
   const [messageOfTheDay, setMessageOfTheDay] = useState<MessageOfTheDaySettings>({ enabled: false, title: "", message: "" });
   const [messageOfTheDayOriginal, setMessageOfTheDayOriginal] = useState<MessageOfTheDaySettings>({ enabled: false, title: "", message: "" });
-  const [messageOfTheDayStatus, setMessageOfTheDayStatus] = useState<MessageOfTheDayStatus>({ lastAttemptAt: "", lastSent: 0, lastFailed: 0, lastError: "" });
+  const [messageOfTheDayStatus, setMessageOfTheDayStatus] = useState<MessageOfTheDayStatus>({ lastAttemptAt: "", lastSent: 0, lastFailed: 0, lastError: "", lastScanAt: "", lastScanError: "" });
   const [playerAnnouncements, setPlayerAnnouncements] = useState<PlayerAnnouncementSettings>({ joinEnabled: false, joinMessage: DEFAULT_PLAYER_JOIN_MESSAGE, leaveEnabled: false, leaveMessage: DEFAULT_PLAYER_LEAVE_MESSAGE });
   const [playerAnnouncementsOriginal, setPlayerAnnouncementsOriginal] = useState<PlayerAnnouncementSettings>({ joinEnabled: false, joinMessage: DEFAULT_PLAYER_JOIN_MESSAGE, leaveEnabled: false, leaveMessage: DEFAULT_PLAYER_LEAVE_MESSAGE });
   const [mapChatOptions, setMapChatOptions] = useState<MapChatOption[]>(defaultMapChatOptions());
@@ -585,6 +585,7 @@ export function AdminToolsPanel({ onError, confirmAction }: AdminToolsPanelProps
           </div>
           {messageOfTheDayDirty && <p className="dirty-note">Unsaved changes: Message of the Day</p>}
           <p className="muted">Shown as a private in-game message once per player login session. Saving does not send it immediately to players who are already online.</p>
+          {messageOfTheDayStatus.lastScanError && <p className="danger-note">Last MOTD scan was interrupted: {messageOfTheDayStatus.lastScanAt ? new Date(messageOfTheDayStatus.lastScanAt).toLocaleString() : "time unavailable"} ({messageOfTheDayStatus.lastScanError}). It will retry automatically.</p>}
           {messageOfTheDayStatus.lastAttemptAt && <p className={messageOfTheDayStatus.lastFailed > 0 ? "danger-note" : "muted"}>Last delivery attempt: {new Date(messageOfTheDayStatus.lastAttemptAt).toLocaleString()} — sent {messageOfTheDayStatus.lastSent}, failed {messageOfTheDayStatus.lastFailed}{messageOfTheDayStatus.lastError ? ` (${messageOfTheDayStatus.lastError})` : ""}.</p>}
           <label className="broadcast-message">Message<textarea rows={3} value={messageOfTheDay.message} onChange={(event) => setMessageOfTheDay((current) => ({ ...current, message: event.target.value }))} placeholder="Message shown when a player logs in" /></label>
           <div className="broadcast-controls-row">

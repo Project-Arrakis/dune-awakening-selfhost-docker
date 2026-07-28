@@ -34,7 +34,7 @@ import { handleDiscordAdapterRoute, isDiscordAdapterRoute } from "./integrations
 import { discordAdapterEnabled } from "./integrations/discord/adapter.js";
 import { initializeDiscordAdapterSchema } from "./integrations/discord/schema.js";
 import { liveItemGrantOk, liveItemGrantWarning } from "./grantResults.js";
-import { primeMessageOfTheDayOnlineState, readMessageOfTheDay, recordMessageOfTheDayFailure, restoreMessageOfTheDay, runMessageOfTheDayScan, saveMessageOfTheDay } from "./services/messageOfTheDay.js";
+import { primeMessageOfTheDayOnlineState, readMessageOfTheDay, recordMessageOfTheDayScanFailure, restoreMessageOfTheDay, runMessageOfTheDayScan, saveMessageOfTheDay } from "./services/messageOfTheDay.js";
 import { primePlayerAnnouncementOnlineState, readPlayerAnnouncements, restorePlayerAnnouncements, runPlayerAnnouncementScan, savePlayerAnnouncements } from "./services/playerAnnouncements.js";
 import { persistSpicefieldOverride } from "./services/spicefieldOverrides.js";
 import { applySavedLandsraadMilestonePreset, createLandsraadMilestoneReconciler, readLandsraadMilestonePreset, saveLandsraadMilestonePreset } from "./services/landsraadMilestones.js";
@@ -2506,7 +2506,7 @@ async function messageOfTheDayAutoTick() {
     messageOfTheDayAutoNextAllowedRun = Date.now() + BACKGROUND_SCAN_FAILURE_BACKOFF_MS;
     const message = String(error.message || error);
     try {
-      recordMessageOfTheDayFailure(config, error);
+      recordMessageOfTheDayScanFailure(config, error);
     } catch (statusError) {
       console.error(`Message of the Day failure status could not be saved: ${redact(statusError.message || statusError)}`);
     }

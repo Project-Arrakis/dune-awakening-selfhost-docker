@@ -1,5 +1,5 @@
 import { Fragment, Suspense, lazy, useCallback, useEffect, useRef, useState } from "react";
-import { Archive, Building2, CircleArrowUp, Database, ExternalLink, FileText, Gift, Heart, Home, Landmark, Map as MapIcon, MessageCircle, PackagePlus, RefreshCw, Server, Settings, Shield, Sparkles, Users } from "lucide-react";
+import { Archive, Building2, CircleArrowUp, Database, ExternalLink, FileText, Gift, Heart, Home, Landmark, Map as MapIcon, Menu, MessageCircle, PackagePlus, RefreshCw, Server, Settings, Shield, Sparkles, Users, X } from "lucide-react";
 import { api, post, setCsrfToken } from "./api/client";
 import { serverApi } from "./api/server";
 import { updatesApi } from "./api/updates";
@@ -181,6 +181,7 @@ export function App() {
   const [auth, setAuth] = useState(false);
   const [password, setPassword] = useState("");
   const [tab, setTab] = useState<Tab>("Home");
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [pinnedAddons, setPinnedAddons] = useState<PinnedAddon[]>(() => loadPinnedAddons());
   const [selectedPinnedAddonId, setSelectedPinnedAddonId] = useState("");
   const [addonUpdatesAvailable, setAddonUpdatesAvailable] = useState(false);
@@ -523,16 +524,26 @@ export function App() {
     ? "Update setup values and redeploy your Dune server."
     : "Run and manage your self-hosted Dune server from the browser.";
 
+  const closeMobileNav = () => setMobileNavOpen(false);
+
   return (
     <div className="app-shell">
       <aside className="sidebar">
         <div className="sidebar-brand">
-          <button className="sidebar-home-button" type="button" onClick={() => { setRedeploySetupOpen(false); setTab("Home"); }} title="Open Home">
+          <button className="sidebar-home-button" type="button" onClick={() => { setRedeploySetupOpen(false); setTab("Home"); closeMobileNav(); }} title="Open Home">
             <h1>Dune Docker Console</h1>
           </button>
-          <button className="stack-version-button" title={stackVersionButtonTitle(stackVersionStatus)} aria-label={stackVersionButtonTitle(stackVersionStatus)} onClick={() => { setRedeploySetupOpen(false); setTab("Updates"); }}>{stackVersionButtonLabel(stackVersionStatus)}</button>
+          <button className="stack-version-button" title={stackVersionButtonTitle(stackVersionStatus)} aria-label={stackVersionButtonTitle(stackVersionStatus)} onClick={() => { setRedeploySetupOpen(false); setTab("Updates"); closeMobileNav(); }}>{stackVersionButtonLabel(stackVersionStatus)}</button>
+          <button
+            className="sidebar-menu-toggle"
+            type="button"
+            aria-controls="console-navigation"
+            aria-expanded={mobileNavOpen}
+            aria-label={mobileNavOpen ? "Close navigation" : "Open navigation"}
+            onClick={() => setMobileNavOpen((open) => !open)}
+          >{mobileNavOpen ? <X size={20} /> : <Menu size={20} />}</button>
         </div>
-        <nav className="sidebar-nav">
+        <nav id="console-navigation" className={`sidebar-nav ${mobileNavOpen ? "mobile-open" : ""}`}>
           {navGroups.map((group) => (
             <section className="sidebar-nav-group" key={group.title} aria-label={group.title}>
               <p className="sidebar-nav-heading">{group.title}</p>
@@ -542,6 +553,7 @@ export function App() {
                     setRedeploySetupOpen(false);
                     setSelectedPinnedAddonId("");
                     setTab(item.tab);
+                    closeMobileNav();
                   }}>{item.icon}<span>{item.tab}</span>{item.tab === "Players" && onlinePlayerCount > 0 && <span className="sidebar-nav-count sidebar-nav-count-online">{onlinePlayerCount}</span>}{item.tab === "Addons" && addonUpdatesAvailable && <span className="sidebar-nav-update-icon" title="Addon update available" aria-label="Addon update available"><CircleArrowUp size={14} aria-hidden="true" /></span>}</button>
                   {item.tab === "Addons" && pinnedAddons.length > 0 && <div className="sidebar-addon-children">
                     {pinnedAddons.map((addon) => (
@@ -549,6 +561,7 @@ export function App() {
                         setRedeploySetupOpen(false);
                         setSelectedPinnedAddonId(addon.id);
                         setTab("Addons");
+                        closeMobileNav();
                       }}>{addon.name}</button>
                     ))}
                   </div>}

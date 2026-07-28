@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -8,7 +8,7 @@ import {
   normalizeSettings,
   primeMessageOfTheDayOnlineState,
   readMessageOfTheDay,
-  recordMessageOfTheDayFailure,
+  recordMessageOfTheDayScanFailure,
   restoreMessageOfTheDay,
   runMessageOfTheDayScan,
   saveMessageOfTheDay
@@ -78,13 +78,44 @@ test("message of the day sends once per online session", async () => {
   assert.equal(loginAgain.sent, 1);
 });
 
-test("message of the day records a redacted background delivery failure", () => {
+test("message of the day records a redacted scan interruption without inventing a failed delivery", () => {
   const cfg = config();
-  const status = recordMessageOfTheDayFailure(cfg, new Error("RabbitMQ password=super-secret unavailable"), new Date("2026-07-25T12:00:00.000Z"));
-  assert.equal(status.lastAttemptAt, "2026-07-25T12:00:00.000Z");
-  assert.equal(status.lastFailed, 1);
-  assert.doesNotMatch(status.lastError, /super-secret/);
+  const status = recordMessageOfTheDayScanFailure(cfg, new Error("Postgres password=super-secret unavailable"), new Date("2026-07-25T12:00:00.000Z"));
+  assert.equal(status.lastAttemptAt, "");
+  assert.equal(status.lastFailed, 0);
+  assert.equal(status.lastScanAt, "2026-07-25T12:00:00.000Z");
+  assert.doesNotMatch(status.lastScanError, /super-secret/);
   assert.deepEqual(readMessageOfTheDay(cfg).status, status);
+});
+
+test("message of the day clears a stale scan interruption after a healthy scan", async () => {
+  const cfg = config();
+  saveMessageOfTheDay(cfg, { enabled: true, title: "Daily", message: "Welcome back" });
+  recordMessageOfTheDayScanFailure(cfg, new Error("read ECONNRESET"), new Date("2026-07-25T12:00:00.000Z"));
+
+  await runMessageOfTheDayScan(cfg, [], { mockMode: true, now: new Date("2026-07-25T12:01:00.000Z") });
+  const status = readMessageOfTheDay(cfg).status;
+  assert.equal(status.lastFailed, 0);
+  assert.equal(status.lastScanAt, "2026-07-25T12:01:00.000Z");
+  assert.equal(status.lastScanError, "");
+});
+
+test("message of the day migrates legacy infrastructure failures to scan status", () => {
+  const cfg = config();
+  saveMessageOfTheDay(cfg, { enabled: true, title: "Daily", message: "Welcome back" });
+  const statePath = join(cfg.generatedDir, "message-of-the-day-state.json");
+  const legacy = {
+    delivered: {},
+    status: { lastAttemptAt: "2026-07-25T12:00:00.000Z", lastSent: 0, lastFailed: 1, lastError: "read ECONNRESET" }
+  };
+  mkdirSync(cfg.generatedDir, { recursive: true });
+  writeFileSync(statePath, `${JSON.stringify(legacy)}\n`);
+
+  const status = readMessageOfTheDay(cfg).status;
+  assert.equal(status.lastAttemptAt, "");
+  assert.equal(status.lastFailed, 0);
+  assert.equal(status.lastScanAt, "2026-07-25T12:00:00.000Z");
+  assert.equal(status.lastScanError, "read ECONNRESET");
 });
 
 test("message of the day sends once for duplicate online rows with the same player key", async () => {
