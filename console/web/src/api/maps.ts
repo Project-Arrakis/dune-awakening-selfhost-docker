@@ -163,6 +163,7 @@ export const mapsApi = {
   sietches: () => api<{ stdout: string }>("/api/sietches"),
   sietchDimensions: (map = "Survival_1", ids = false) => api<{ stdout: string }>(`/api/sietches/dimensions?map=${encodeURIComponent(map)}${ids ? "&ids=1" : ""}`),
   updateSietches: (body: Record<string, unknown>) => post<{ task: Task }>("/api/sietches/update", body),
+  restartSietch: (partitionId: string) => post<{ task: Task }>("/api/sietches/update", { action: "restart", partitionId, confirmation: "RESTART SIETCH" }),
   deepdesert: () => api<{ stdout: string }>("/api/deepdesert"),
   updateDeepdesert: (body: { action: string; confirmation: string }) => post<{ task: Task }>("/api/deepdesert/update", body),
   combatState: (map: string) => api<MapCombatStateResult>(`/api/maps/combat-state?map=${encodeURIComponent(map)}`)
