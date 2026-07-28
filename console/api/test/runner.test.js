@@ -121,6 +121,7 @@ test("builds allowlisted command arguments without shell interpolation", () => {
   assert.deepEqual(buildDuneArgs("sietchesSetDisplay", { partitionId: 38, displayName: "The Kulon Show" }), ["sietches", "set-display", "38", "The Kulon Show"]);
   assert.deepEqual(buildDuneArgs("sietchesSetDisplay", { partitionId: 38, displayName: "sietch   Alraab v2" }), ["sietches", "set-display", "38", "sietch   Alraab v2"]);
   assert.deepEqual(buildDuneArgs("sietchesSetSettings", { partitionId: 38, displayName: "New Home", password: "secret" }), ["sietches", "set-settings", "38", "New Home", "secret"]);
+  assert.deepEqual(buildDuneArgs("sietchesRestart", { partitionId: 38 }), ["sietches", "restart", "38"]);
   assert.deepEqual(buildDuneArgs("sietchesSetDisplay", { partitionId: 38, displayName: "" }), ["sietches", "set-display", "38", ""]);
   assert.throws(() => buildDuneArgs("sietchesSetDisplay", { partitionId: 38, displayName: "Duke's Sietch" }), /not supported/);
   assert.throws(() => buildDuneArgs("sietchesSetDisplay", { partitionId: 38, displayName: "Alpha|Beta" }), /not supported/);
@@ -151,6 +152,7 @@ test("builds allowlisted command arguments without shell interpolation", () => {
   assert.throws(() => buildDuneArgs("memorySet", { map: "DeepDesert_1", memory: "2.g" }));
   assert.throws(() => buildDuneArgs("memorySet", { map: "DeepDesert_1", memory: "0g" }));
   assert.throws(() => buildDuneArgs("sietchesSetPassword", { partitionId: 1, password: "bad\npw" }));
+  assert.throws(() => buildDuneArgs("sietchesRestart", { partitionId: "../38" }));
   assert.throws(() => buildDuneArgs("deepdesertAction", { action: "reset" }));
   assert.throws(() => buildDuneArgs("restartScheduleEnable", { time: "24:00" }));
   assert.throws(() => buildDuneArgs("restartScheduleEnable", { time: "04:30", notifyMinutes: 0 }));

@@ -1664,12 +1664,16 @@ async function sietchesUpdateRoute(req, res) {
     "set-display": "sietchesSetDisplay",
     "set-password": "sietchesSetPassword",
     "set-settings": "sietchesSetSettings",
+    restart: "sietchesRestart",
     sync: "sietchesSync",
     validate: "sietchesValidate",
     reconcile: "sietchesReconcile"
   };
   const operation = operationByAction[String(body.action || "")];
   if (!operation) return json(res, 400, { error: "Unsupported sietch update action" });
+  if (operation === "sietchesRestart" && body.confirmation !== "RESTART SIETCH") {
+    return json(res, 400, { error: "Confirmation phrase required: RESTART SIETCH" });
+  }
   const dangerous = ["sietchesSetActive", "sietchesSetDisplay", "sietchesSetPassword", "sietchesSetSettings", "sietchesReconcile"].includes(operation);
   if (dangerous && body.confirmation !== "UPDATE SIETCHES") return json(res, 400, { error: "Confirmation phrase required: UPDATE SIETCHES" });
   return task(req, res, "maps", operation, body);

@@ -376,6 +376,7 @@ Usage:
   dune sietches set-display <partition-id> <display-name>
   dune sietches set-password <partition-id> [password]
   dune sietches set-settings <partition-id> <display-name> <password>
+  dune sietches restart <partition-id>
   dune sietches sync
   dune sietches validate
   dune sietches reconcile <map-name>
@@ -1189,6 +1190,9 @@ PY
 }
 
 refresh_survival_director_state() {
+  if [ "${DUNE_SKIP_SURVIVAL_DIRECTOR_REFRESH:-0}" = "1" ]; then
+    return 0
+  fi
   if docker ps --format '{{.Names}}' | grep -qx dune-director; then
     runtime/scripts/restart-director.sh >/dev/null 2>&1 || true
   fi
@@ -1243,6 +1247,76 @@ restart_sietch_partition_if_running() {
   echo "Restarting Survival_1 partition ${partition_id} so sietch display/password changes are published by the running server..."
   runtime/scripts/despawn-server.sh "$partition_id" >/dev/null
   runtime/scripts/spawn-server.sh "$partition_id" >/dev/null
+}
+
+restart_sietch_partition() {
+  local partition_id="$1"
+  local row=""
+  local dimension_index=""
+  local blocked=""
+  local ordinal=""
+  local active_target=""
+  local container=""
+
+  validate_positive_integer "$partition_id" || {
+    echo "Partition ID must be a positive integer." >&2
+    return 1
+  }
+  docker_postgres_running || {
+    echo "dune-postgres must be running to restart a Sietch." >&2
+    return 1
+  }
+
+  row="$(psql_value "
+with ranked as (
+  select
+    partition_id,
+    map,
+    dimension_index,
+    blocked,
+    row_number() over (order by dimension_index, partition_id) as ordinal
+  from dune.world_partition
+  where map = 'Survival_1'
+)
+select dimension_index || '|' || blocked || '|' || ordinal
+from ranked
+where partition_id = ${partition_id}
+limit 1;
+" | tr -d '\r')"
+  [ -n "$row" ] || {
+    echo "Partition ${partition_id} is not a Survival_1 Sietch." >&2
+    return 1
+  }
+
+  IFS='|' read -r dimension_index blocked ordinal <<<"$row"
+  active_target="$(survival_active_target)"
+  if [ "$blocked" = "t" ] || [ "$ordinal" -gt "$active_target" ] 2>/dev/null; then
+    echo "Sietch partition ${partition_id} is not active." >&2
+    return 1
+  fi
+
+  if [ "$dimension_index" = "0" ]; then
+    echo "Restarting primary Survival_1 Sietch (partition ${partition_id})..."
+    set -a
+    [ -f .env ] && . ./.env
+    set +a
+    DUNE_SURVIVAL_PARTITION_ID="$partition_id" runtime/scripts/start-server-survival-1.sh
+    runtime/scripts/spicefield-overrides.sh apply || true
+    runtime/scripts/publish-sietch-overrides.sh restart || true
+    runtime/scripts/publish-sietch-overrides.sh once || true
+  else
+    container="dune-server-survival-1-${partition_id}"
+    if ! docker ps -a --format '{{.Names}}' | grep -qx "$container"; then
+      echo "Sietch partition ${partition_id} is active but its container is not available to restart." >&2
+      return 1
+    fi
+    echo "Restarting Survival_1 Sietch partition ${partition_id}..."
+    runtime/scripts/despawn-server.sh "$partition_id" --force
+    runtime/scripts/spawn-server.sh "$partition_id"
+  fi
+
+  log_sietch_lifecycle "restart" "partition=${partition_id} dimension=${dimension_index}"
+  echo "Sietch partition ${partition_id} restart completed."
 }
 
 ensure_map_partitions() {
@@ -1908,6 +1982,11 @@ case "$cmd" in
       refresh_survival_sietch_metadata_state
     fi
     echo "Sietch settings updated."
+    ;;
+  restart)
+    [ "$#" -eq 2 ] || { usage; exit 2; }
+    partition_id="$(sanitize_positive_integer_arg "$2")"
+    restart_sietch_partition "$partition_id"
     ;;
   sync)
     summary="$(sync_sietch_config_from_db "manual-sync")"

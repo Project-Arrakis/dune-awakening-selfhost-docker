@@ -225,7 +225,9 @@ test("26 Config: map mode writes validate the mode", () => {
 
 test("27 Config: sietch updates validate map and count", () => {
   assert.deepEqual(buildDuneArgs("sietchesSetActive", { map: "Survival_1", count: 2 }), ["sietches", "set-active", "Survival_1", "2"]);
+  assert.deepEqual(buildDuneArgs("sietchesRestart", { partitionId: 31 }), ["sietches", "restart", "31"]);
   assert.throws(() => buildDuneArgs("sietchesSetActive", { map: "Survival_1", count: 0 }));
+  assert.throws(() => buildDuneArgs("sietchesRestart", { partitionId: 0 }));
 });
 
 // Read-only operations (28-34)
@@ -258,6 +260,7 @@ test("39 Web UI: restart schedule write executes through the task runner", async
 });
 test("40 Web UI: sietch write executes through the task runner", async () => {
   await assertWebWrite("sietchesSetActive", { map: "Survival_1", count: 2 }, ["sietches", "set-active", "Survival_1", "2"]);
+  await assertWebWrite("sietchesRestart", { partitionId: 31 }, ["sietches", "restart", "31"]);
 });
 test("40b Web UI: memory swap changes execute through validated task arguments", async () => {
   await assertWebWrite("memorySwapEnable", { perServerGiB: 2, poolGiB: 8 }, ["memory-swap", "enable", "2", "8"]);
