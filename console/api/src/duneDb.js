@@ -2868,8 +2868,12 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
       }
     }
 
+    // Probed here rather than per row so the panel can disable Refill outright
+    // instead of failing on click.
+    const generatorRefill = await supportsGeneratorRefill(db).catch(() => false);
+
     return {
-      capabilities: { bases: true },
+      capabilities: { bases: true, generatorRefill },
       totalCount: result.rows[0] ? Number(result.rows[0].total_count) : 0,
       totalBases: totalsResult.rows[0] ? Number(totalsResult.rows[0].total_bases) : 0,
       totalPieces: totalsResult.rows[0] ? Number(totalsResult.rows[0].total_pieces) : 0,
@@ -2900,7 +2904,7 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
       }))
     };
   } catch (error) {
-    return { capabilities: { bases: false }, rows: [], totalCount: 0, totalBases: 0, totalPieces: 0, totalPlaceables: 0, reason: `Base list query is unsupported by this schema: ${error.message}` };
+    return { capabilities: { bases: false, generatorRefill: false }, rows: [], totalCount: 0, totalBases: 0, totalPieces: 0, totalPlaceables: 0, reason: `Base list query is unsupported by this schema: ${error.message}` };
   }
 }
 
@@ -3787,30 +3791,38 @@ export function generatorUptimePolicy(now = new Date()) {
 // Display metadata, accepted fuels, and explicit placeable allowlists per
 // generator type. Both mappings are passed into SQL as parameters, so adding a
 // supported type or known alias requires changing this object only.
+// The `refill` block drives refillBaseGenerators: templateId is the cased id
+// written to dune.items (it must appear lower-cased in `fuels`), stackSize is
+// the per-row stack the game accepts, and totalCap bounds the whole device
+// across at most maxStacks rows.
 const GENERATOR_TYPES = {
   fuel: {
     name: "Fuel-Powered Generator",
     fuelName: "Fuel Cell",
     fuels: ["oil"],
-    buildingTypes: ["generator_placeable"]
+    buildingTypes: ["generator_placeable"],
+    refill: { templateId: "Oil", stackSize: 499, maxStacks: 1, totalCap: 499 }
   },
   spice: {
     name: "Spice-Powered Generator",
     fuelName: "Spice-infused Fuel Cell",
     fuels: ["spicedfuelcell"],
-    buildingTypes: ["spicegenerator_placeable"]
+    buildingTypes: ["spicegenerator_placeable"],
+    refill: { templateId: "SpicedFuelCell", stackSize: 499, maxStacks: 1, totalCap: 499 }
   },
   windTurbineOmni: {
     name: "Omnidirectional Wind Turbine",
     fuelName: "Low-grade Lubricant",
     fuels: ["windturbinelubricant1"],
-    buildingTypes: ["windturbineomnidirectional_placeable"]
+    buildingTypes: ["windturbineomnidirectional_placeable"],
+    refill: { templateId: "WindTurbineLubricant1", stackSize: 100, maxStacks: 5, totalCap: 499 }
   },
   windTurbineDirectional: {
     name: "Directional Wind Turbine",
     fuelName: "Industrial-grade Lubricant",
     fuels: ["windturbinelubricant2"],
-    buildingTypes: ["windturbinedirectional_placeable"]
+    buildingTypes: ["windturbinedirectional_placeable"],
+    refill: { templateId: "WindTurbineLubricant2", stackSize: 100, maxStacks: 5, totalCap: 499 }
   }
 };
 
@@ -3825,6 +3837,38 @@ const GENERATOR_BUILDING_TYPE_PAIRS = GENERATOR_TYPE_ORDER.flatMap(
   (type) => GENERATOR_TYPES[type].buildingTypes.map((buildingType) => [type, buildingType])
 );
 const FUEL_TEMPLATE_IDS = Object.keys(FUEL_BURN_SECONDS);
+
+// Operators can retune refill caps per generator type without a rebuild, the
+// same way runtime/data/admin-items.json is layered over the shipped catalog.
+// Values are clamped so a malformed override cannot request a ten-million-item
+// insert, and templateId is never overridable — fuel identity is fixed by the
+// game, not by configuration.
+function refillCaps(repoRoot) {
+  const overridePath = resolve(repoRoot || "", "runtime/data/generator-refill-caps.json");
+  let overrides = {};
+  try {
+    if (repoRoot && existsSync(overridePath)) overrides = JSON.parse(readFileSync(overridePath, "utf8")) || {};
+  } catch (error) {
+    console.warn(`Ignoring unreadable generator refill cap overrides: ${error?.message || error}`);
+  }
+  const caps = {};
+  for (const type of GENERATOR_TYPE_ORDER) {
+    const defaults = GENERATOR_TYPES[type].refill;
+    const merged = { ...defaults, ...(overrides[type] || {}) };
+    merged.templateId = defaults.templateId;
+    merged.stackSize = clampInt(merged.stackSize, defaults.stackSize, 1, 10000);
+    merged.maxStacks = clampInt(merged.maxStacks, defaults.maxStacks, 1, 50);
+    merged.totalCap = clampInt(merged.totalCap, defaults.totalCap, 1, merged.stackSize * merged.maxStacks);
+    caps[type] = merged;
+  }
+  return caps;
+}
+
+function clampInt(value, fallback, min, max) {
+  const n = Math.floor(Number(value));
+  if (!Number.isFinite(n)) return Math.min(Math.max(fallback, min), max);
+  return Math.min(Math.max(n, min), max);
+}
 
 export async function portalGeneratorFuel(db, baseIds, { now = new Date() } = {}) {
   if (!baseIds.length) return new Map();
@@ -4672,6 +4716,141 @@ export async function giveItemToStorage(db, storageId, { itemName = "", itemId =
   });
 }
 
+// Every power device at a base, with the inventory its fuel lives in. Claim
+// resolution mirrors portalGeneratorFuel so both agree on which placeables
+// belong to a base, and classification is the same explicit allowlist — an
+// unknown placeable is left out entirely rather than assumed to burn oil.
+export async function baseGenerators(db, baseId) {
+  const target = intParam(baseId, "base id", 1);
+  const result = await db.query(`
+    with requested_claims as (
+      select distinct b.id, afe.actor_id
+      from dune.buildings b
+      join dune.building_instances bi on bi.building_id = b.id
+      join dune.actor_fgl_entities afe on afe.entity_id = bi.owner_entity_id
+      where b.id = $1
+    ), base_entities as (
+      select distinct rc.id, claim_afe.entity_id as owner_entity_id
+      from requested_claims rc
+      join dune.actor_fgl_entities claim_afe on claim_afe.actor_id = rc.actor_id
+    ), generator_types as (
+      select * from unnest($2::text[], $3::text[]) as t(generator_type, building_type)
+    )
+    select distinct p.id::text as placeable_id,
+      gt.generator_type,
+      inv.id::text as inventory_id,
+      coalesce(inv.max_item_count, 0)::int as max_item_count
+    from base_entities be
+    join dune.placeables p on p.owner_entity_id = be.owner_entity_id
+    join generator_types gt on gt.building_type = lower(p.building_type)
+    left join lateral (
+      select id, max_item_count from dune.inventories where actor_id = p.id order by id limit 1
+    ) inv on true
+    order by placeable_id`, [
+      target,
+      GENERATOR_BUILDING_TYPE_PAIRS.map(([type]) => type),
+      GENERATOR_BUILDING_TYPE_PAIRS.map(([, buildingType]) => buildingType)
+    ]);
+  return result.rows;
+}
+
+// Tops every power device at a base up to its configured cap in one
+// transaction: partial stacks are filled before new rows are created, so a
+// device never ends up with more rows than the game would have made itself.
+export async function refillBaseGenerators(db, repoRoot, baseId) {
+  await requireCapability(
+    await supportsGeneratorRefill(db),
+    "Generator refill requires dune.placeables plus compatible dune.inventories and dune.items insert columns."
+  );
+  const target = intParam(baseId, "base id", 1);
+  const caps = refillCaps(repoRoot);
+
+  return db.transaction(async (tx) => {
+    const itemColumns = await columnsFor(tx, "items");
+    const devices = await baseGenerators(tx, target);
+    if (!devices.length) throw new Error("No generators or wind turbines were found at this base");
+
+    const refilled = [];
+    for (const device of devices) {
+      const type = GENERATOR_TYPES[device.generator_type];
+      const cap = caps[device.generator_type];
+      if (!type || !cap) continue;
+      const summary = {
+        placeableId: device.placeable_id,
+        type: device.generator_type,
+        label: type.name,
+        fuelName: type.fuelName
+      };
+      if (!device.inventory_id) {
+        refilled.push({ ...summary, before: 0, after: 0, added: 0, skipped: "no-inventory" });
+        continue;
+      }
+
+      // Lock this device's fuel rows so a concurrent refill cannot double-fill it.
+      const existing = await tx.query(`
+        select id, stack_size, position_index
+        from dune.items
+        where inventory_id = $1 and lower(template_id) = lower($2)
+        order by position_index
+        for update`, [device.inventory_id, cap.templateId]);
+
+      const before = existing.rows.reduce((sum, row) => sum + (Number(row.stack_size) || 0), 0);
+      let deficit = Math.max(0, cap.totalCap - before);
+      if (deficit === 0) {
+        refilled.push({ ...summary, before, after: before, added: 0, capped: false });
+        continue;
+      }
+
+      for (const row of existing.rows) {
+        if (deficit === 0) break;
+        const room = cap.stackSize - (Number(row.stack_size) || 0);
+        if (room <= 0) continue;
+        const add = Math.min(room, deficit);
+        await tx.query("update dune.items set stack_size = stack_size + $1 where id = $2", [add, row.id]);
+        deficit -= add;
+      }
+
+      const slotCount = await tx.query(
+        "select count(*)::int as count from dune.items where inventory_id = $1", [device.inventory_id]);
+      let freeSlots = device.max_item_count > 0
+        ? Math.max(0, device.max_item_count - (Number(slotCount.rows[0]?.count) || 0))
+        : Number.MAX_SAFE_INTEGER;
+      let stacksAllowed = Math.max(0, cap.maxStacks - existing.rows.length);
+      const position = await tx.query(
+        "select coalesce(max(position_index), -1)::int + 1 as position_index from dune.items where inventory_id = $1",
+        [device.inventory_id]);
+      let nextPosition = Number(position.rows[0]?.position_index) || 0;
+
+      while (deficit > 0 && stacksAllowed > 0 && freeSlots > 0) {
+        const size = Math.min(cap.stackSize, deficit);
+        const insert = itemInsertShape(
+          ["inventory_id", "template_id", "stack_size", "quality_level", "position_index", "stats"],
+          [device.inventory_id, cap.templateId, size, 0, nextPosition, JSON.stringify({})],
+          itemColumns
+        );
+        await tx.query(`
+          insert into dune.items (${insert.columns.join(", ")})
+          values (${insert.values.map((_, index) => index === 5 ? `$${index + 1}::jsonb` : `$${index + 1}`).join(", ")})`,
+          insert.values);
+        deficit -= size;
+        nextPosition += 1;
+        stacksAllowed -= 1;
+        freeSlots -= 1;
+      }
+
+      const after = cap.totalCap - deficit;
+      refilled.push({ ...summary, before, after, added: after - before, capped: deficit > 0 });
+    }
+
+    return {
+      ok: true,
+      baseId: target,
+      devices: refilled,
+      totalAdded: refilled.reduce((sum, entry) => sum + (entry.added || 0), 0)
+    };
+  });
+}
+
 export async function giveItemToPlayer(db, playerId, { itemName = "", itemId = "", templateId = "", quantity = 1, quality = 1, augments = [], augmentQuality = 1, allowOnlinePreAugmented = false }) {
   await requireCapability(await supportsPlayerGiveItem(db), "Player give-item requires compatible dune.inventories and dune.items insert columns.");
   const target = intParam(playerId, "player id", 1);
@@ -5171,6 +5350,15 @@ async function supportsStorageGiveItem(db) {
   const itemColumns = await columnsFor(db, "items");
   return ["id", "actor_id", "max_item_count", "max_item_volume"].every((column) => inventoryColumns.has(column)) &&
     ["inventory_id", "template_id", "stack_size", "quality_level", "position_index", "stats"].every((column) => itemColumns.has(column));
+}
+
+// Refill writes the same items/inventories shape a storage grant does, plus it
+// has to resolve placeables to classify each device.
+export async function supportsGeneratorRefill(db) {
+  if (!(await tableExists(db, "placeables"))) return false;
+  if (!(await supportsStorageGiveItem(db))) return false;
+  const placeableColumns = await columnsFor(db, "placeables");
+  return ["id", "owner_entity_id", "building_type"].every((column) => placeableColumns.has(column));
 }
 
 async function supportsPlayerGiveItem(db) {
