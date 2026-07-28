@@ -329,7 +329,7 @@ EOF
         ;;
       director|bgd)
         set -a; [ -f .env ] && . ./.env; set +a
-        runtime/scripts/start-director.sh
+        runtime/scripts/restart-director.sh
         runtime/scripts/spicefield-overrides.sh apply || true
         runtime/scripts/publish-sietch-overrides.sh restart || true
         runtime/scripts/publish-deepdesert-overrides.sh restart || true

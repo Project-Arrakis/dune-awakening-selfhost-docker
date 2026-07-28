@@ -1190,7 +1190,7 @@ PY
 
 refresh_survival_director_state() {
   if docker ps --format '{{.Names}}' | grep -qx dune-director; then
-    runtime/scripts/start-director.sh >/dev/null 2>&1 || true
+    runtime/scripts/restart-director.sh >/dev/null 2>&1 || true
   fi
 }
 

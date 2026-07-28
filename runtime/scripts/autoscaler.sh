@@ -475,7 +475,7 @@ dynamic_ready_desync_heal() {
     fi
 
     echo "HEAL dynamic ready desync partition=${partition_id} map=${map_name} server=${server_id}"
-    if runtime/scripts/start-director.sh >/dev/null 2>&1; then
+    if runtime/scripts/restart-director.sh >/dev/null 2>&1; then
       director_heal_set dynamic_ready_desync $((now + DIRECTOR_HEAL_COOLDOWN_SECONDS))
       director_heal_clear "dynamic_ready:${partition_id}"
     else
@@ -2236,7 +2236,7 @@ scan_director_browser_state() {
   fi
 
   echo "HEAL director stale browser state capacity=${capacity:-unknown} ready_maps=$ready_count"
-  runtime/scripts/start-director.sh >/dev/null 2>&1 || {
+  runtime/scripts/restart-director.sh >/dev/null 2>&1 || {
     echo "ERROR failed to restart director during stale browser state heal"
     return 0
   }

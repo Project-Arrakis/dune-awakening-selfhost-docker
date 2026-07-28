@@ -115,7 +115,7 @@ despawn_idle_dynamic_deepdesert_servers() {
 restart_director_if_running() {
   if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx dune-director; then
     echo "Restarting dune-director so DeepDesert_1 config changes take effect..."
-    runtime/scripts/start-director.sh >/dev/null
+    runtime/scripts/restart-director.sh >/dev/null
     echo "dune-director restarted."
   else
     echo "dune-director is not running. The new DeepDesert_1 config will apply on next start."

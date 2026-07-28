@@ -162,12 +162,17 @@ test("17 Service: gateway restart route uses its startup helper", () => {
 
 test("18 Service: director startup helper is executable", () => {
   assertExecutable("runtime/scripts/start-director.sh");
+  assertExecutable("runtime/scripts/restart-director.sh");
   assert.match(source("runtime/scripts/start-all.sh"), /start-director\.sh/);
 });
 
-test("19 Service: director restart route uses its startup helper", () => {
+test("19 Service: director restart coordinates primary map registration", () => {
   assert.deepEqual(buildDuneArgs("restartService", { service: "director" }), ["restart", "director"]);
-  assert.match(duneSource, /director\|bgd\)[\s\S]*?start-director\.sh/);
+  assert.match(duneSource, /director\|bgd\)[\s\S]*?restart-director\.sh/);
+  const restartDirector = source("runtime/scripts/restart-director.sh");
+  assert.match(restartDirector, /container_running dune-server-survival-1/);
+  assert.match(restartDirector, /"\$SURVIVAL_START_SCRIPT"/);
+  assert.doesNotMatch(restartDirector, /restart survival/);
 });
 
 // Database operations (20-22)
