@@ -175,6 +175,39 @@ check_deepdesert_mode() {
   fi
 }
 
+check_always_on_memory_safety() {
+  local configured recommended total available swap_free reserve
+  local status
+
+  if [ ! -x runtime/scripts/host-memory-safety.sh ]; then
+    warn_msg "Always-on host-memory safety helper is missing"
+    return
+  fi
+
+  status="$(runtime/scripts/host-memory-safety.sh status 2>/dev/null || true)"
+  if [ -z "$status" ]; then
+    warn_msg "Host memory could not be inspected for always-on startup safety"
+    return
+  fi
+  total="$(awk -F= '$1 == "total_gib" { print $2 }' <<<"$status")"
+  available="$(awk -F= '$1 == "available_gib" { print $2 }' <<<"$status")"
+  swap_free="$(awk -F= '$1 == "swap_free_gib" { print $2 }' <<<"$status")"
+  reserve="$(awk -F= '$1 == "reserve_gib" { print $2 }' <<<"$status")"
+  recommended="$(awk -F= '$1 == "recommended_parallelism" { print $2 }' <<<"$status")"
+  configured="${DUNE_ALWAYS_ON_STARTUP_PARALLELISM:-1}"
+  [[ "$configured" =~ ^[1-9][0-9]*$ ]] || configured=1
+
+  if [ "${DUNE_ALWAYS_ON_HOST_MEMORY_SAFETY:-1}" = "0" ]; then
+    warn_msg "Always-on host-memory startup protection is disabled"
+    echo "     Remove DUNE_ALWAYS_ON_HOST_MEMORY_SAFETY=0 to restore automatic protection."
+  elif [ "$configured" -gt "${recommended:-1}" ]; then
+    warn_msg "Always-on startup parallelism $configured exceeds this host's safe value ${recommended:-1}"
+    echo "     Runtime startup is automatically limited to ${recommended:-1}. Host: ${total:-?} GiB RAM, ${available:-?} GiB available, ${swap_free:-?} GiB swap free, ${reserve:-?} GiB protected reserve."
+  else
+    ok "Always-on host-memory protection active (parallelism $configured/${recommended:-1}, reserve ${reserve:-?} GiB)"
+  fi
+}
+
 config_value() {
   local file="$1"
   local key="$2"
@@ -384,6 +417,7 @@ else
 fi
 check_game_container_pinning
 check_deepdesert_mode
+check_always_on_memory_safety
 
 echo
 echo "=== Steam server files ==="

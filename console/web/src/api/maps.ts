@@ -52,9 +52,14 @@ export type MemorySwapState = {
 
 export type MapRuntimeSettings = {
   alwaysOnStartupParallelism: number;
+  configuredAlwaysOnStartupParallelism: number;
   defaultAlwaysOnStartupParallelism: number;
   maxAlwaysOnStartupParallelism: number;
   configured: boolean;
+  hostMemoryProtectionEnabled: boolean;
+  hostMemorySafetyLimited: boolean;
+  physicalMemoryGiB: number;
+  hostMemoryReserveGiB: number;
 };
 
 export type SpicefieldTypeRow = {

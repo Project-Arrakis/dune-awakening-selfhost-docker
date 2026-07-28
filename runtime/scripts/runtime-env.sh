@@ -602,6 +602,77 @@ default_memory_for_map() {
   esac
 }
 
+memory_env_key_for_map() {
+  local map="$1"
+  local normalized
+
+  normalized="$(printf '%s' "$map" | tr '[:lower:]' '[:upper:]' | sed 's/[^A-Z0-9]/_/g; s/__*/_/g; s/^_//; s/_$//')"
+  printf 'DUNE_MEMORY_%s\n' "$normalized"
+}
+
+effective_memory_for_map() {
+  local map="$1"
+  local partition="${2:-}"
+  local partition_key map_key configured recommended
+
+  if [ -n "$partition" ]; then
+    partition_key="DUNE_MEMORY_PARTITION_${partition}"
+    configured="${!partition_key:-}"
+    if [ -n "$configured" ]; then
+      printf '%s\n' "$configured"
+      return 0
+    fi
+  fi
+
+  map_key="$(memory_env_key_for_map "$map")"
+  configured="${!map_key:-}"
+  if [ -n "$configured" ]; then
+    printf '%s\n' "$configured"
+    return 0
+  fi
+
+  if [ -n "${DUNE_MEMORY_DEFAULT:-}" ]; then
+    printf '%s\n' "$DUNE_MEMORY_DEFAULT"
+    return 0
+  fi
+
+  recommended="$(default_memory_for_map "$map")"
+  case "${map,,}" in
+    survival_1|deepdesert_1|overmap)
+      printf '%s\n' "$recommended"
+      return 0
+      ;;
+  esac
+  if [ "$recommended" != "3g" ]; then
+    printf '%s\n' "$recommended"
+    return 0
+  fi
+
+  python3 - "$map" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+target = sys.argv[1].lower()
+catalog_path = Path("runtime/generated/server-catalog.json")
+
+if catalog_path.exists():
+    try:
+        catalog = json.loads(catalog_path.read_text())
+    except Exception:
+        catalog = []
+    for item in catalog:
+        if str(item.get("map", "")).lower() != target:
+            continue
+        memory = item.get("resources", {}).get("limits", {}).get("memory", "")
+        if memory:
+            print(str(memory).replace("Gi", "g").replace("G", "g"))
+            raise SystemExit
+
+print("3g")
+PY
+}
+
 full_stdout_log_args() {
   if [ "${DUNE_FULL_STDOUT_LOG_OUTPUT:-0}" = "1" ]; then
     printf '%s\n' -stdout -FullStdOutLogOutput
