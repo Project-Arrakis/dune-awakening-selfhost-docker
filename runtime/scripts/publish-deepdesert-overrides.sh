@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Avoid root-owned Python caches when this publisher is started by systemd.
+export PYTHONDONTWRITEBYTECODE="${PYTHONDONTWRITEBYTECODE:-1}"
+
 cd "$(dirname "$0")/../.."
 
 PID_FILE="runtime/generated/deepdesert-overrides.pid"

@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# These publishers import usersettings.py and may run from root-owned systemd
+# services. Never leave interpreter caches inside the operator's checkout.
+export PYTHONDONTWRITEBYTECODE="${PYTHONDONTWRITEBYTECODE:-1}"
+
 cd "$(dirname "$0")/../.."
 
 PID_FILE="runtime/generated/sietch-overrides.pid"

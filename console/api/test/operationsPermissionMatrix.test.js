@@ -270,6 +270,7 @@ test("41 Upgrade: host runtime migration repairs only the controlled writable pa
   assert.match(script, /runtime\/game\/\*\/Saved\/UserSettings/);
   assert.doesNotMatch(script, /find runtime\/game -xdev/);
   assert.match(script, /Host runtime ownership repair did not apply to:/);
+  assert.match(script, /chown -h "\$TARGET_UID:\$TARGET_GID"/);
   assert.match(script, /find "\$path" -xdev.*! -uid "\$TARGET_UID".*! -gid "\$TARGET_GID"/s);
 });
 
@@ -298,4 +299,14 @@ test("43 Upgrade: orchestrator repairs every writable volume before dropping pri
   }
   assert.match(entrypoint, /chown -R dune:dune/);
   assert.match(entrypoint, /exec gosu dune/);
+});
+
+test("44 Upgrade: root-run publishers do not create Python caches in the checkout", () => {
+  for (const path of [
+    "runtime/scripts/publish-sietch-overrides.sh",
+    "runtime/scripts/publish-deepdesert-state.sh",
+    "runtime/scripts/publish-deepdesert-overrides.sh"
+  ]) {
+    assert.match(source(path), /export PYTHONDONTWRITEBYTECODE=/, `${path} can create a root-owned __pycache__ directory`);
+  }
 });

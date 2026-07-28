@@ -89,7 +89,7 @@ docker run --rm \
       [ -n "$path" ] || continue
       [ -e "$path" ] || continue
       find "$path" -xdev \( ! -uid "$TARGET_UID" -o ! -gid "$TARGET_GID" \) \
-        -exec chown "$TARGET_UID:$TARGET_GID" {} +
+        -exec chown -h "$TARGET_UID:$TARGET_GID" {} +
       if [ -d "$path" ]; then
         find "$path" -xdev -type d ! -perm -u+rwx -exec chmod u+rwx {} +
         find "$path" -xdev -type f ! -perm -u+rw -exec chmod u+rw {} +
@@ -111,7 +111,7 @@ docker run --rm \
       for path in runtime/game/*/Saved/UserSettings; do
         [ -e "$path" ] || continue
         find "$path" -xdev \( ! -uid "$TARGET_UID" -o ! -gid "$TARGET_GID" \) \
-          -exec chown "$TARGET_UID:$TARGET_GID" {} +
+          -exec chown -h "$TARGET_UID:$TARGET_GID" {} +
         find "$path" -xdev -type d ! -perm -u+rwx -exec chmod u+rwx {} +
         find "$path" -xdev -type f ! -perm -u+rw -exec chmod u+rw {} +
       done

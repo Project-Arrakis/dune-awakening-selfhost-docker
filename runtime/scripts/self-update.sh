@@ -342,8 +342,7 @@ check_dirty_git_tree() {
 }
 
 self_update_repair_command() {
-  # shellcheck disable=SC2016
-  printf 'sudo chown -R "$USER:$USER" %q\n' "$HOST_ROOT_DIR"
+  printf 'sudo chown -R "%s:%s" %q\n' "$(id -u)" "$(id -g)" "$HOST_ROOT_DIR"
 }
 
 print_repo_not_writable() {
@@ -449,6 +448,10 @@ backup_current_stack() {
   tar -czf "$backup_dir/project-files.tgz" \
     --exclude='./.git' \
     --exclude='./.env' \
+    --exclude='*/__pycache__' \
+    --exclude='*/__pycache__/*' \
+    --exclude='*.pyc' \
+    --exclude='*.pyo' \
     --exclude='./runtime/generated' \
     --exclude='./runtime/secrets' \
     --exclude='./runtime/backups' \
@@ -469,13 +472,17 @@ backup_current_stack() {
 
 remove_backed_up_project_files() {
   local backup_dir="$1"
-  local manifest path relative target unsafe_path
+  local manifest path relative target parent unsafe_path blocked_path
 
   [ -s "$backup_dir/project-files.tgz" ] || return 0
   unsafe_path=""
+  blocked_path=""
   manifest="$(mktemp)"
   tar -tzf "$backup_dir/project-files.tgz" > "$manifest"
 
+  # Validate the complete removal set before changing the checkout. Deleting a
+  # file requires write and search permission on its parent directory; checking
+  # only the file itself misses root-owned directories such as __pycache__.
   while IFS= read -r path; do
     relative="${path#./}"
     [ -n "$relative" ] || continue
@@ -487,15 +494,40 @@ remove_backed_up_project_files() {
     esac
     target="$ROOT_DIR/$relative"
     if [ -f "$target" ] || [ -L "$target" ]; then
+      parent="$(dirname "$target")"
+      if [ ! -w "$parent" ] || [ ! -x "$parent" ]; then
+        blocked_path="$target"
+        break
+      fi
+    fi
+  done < "$manifest"
+
+  if [ -n "$unsafe_path" ]; then
+    rm -f "$manifest"
+    echo "Refusing unsafe path from project backup: $unsafe_path"
+    return 1
+  fi
+  if [ -n "$blocked_path" ]; then
+    rm -f "$manifest"
+    print_repo_not_writable
+    echo
+    echo "Blocked project file:"
+    echo "  $blocked_path"
+    echo
+    echo "No project files were removed. Repair ownership, then retry the update."
+    return 13
+  fi
+
+  while IFS= read -r path; do
+    relative="${path#./}"
+    [ -n "$relative" ] || continue
+    target="$ROOT_DIR/$relative"
+    if [ -f "$target" ] || [ -L "$target" ]; then
       rm -f "$target"
     fi
   done < "$manifest"
 
   rm -f "$manifest"
-  if [ -n "$unsafe_path" ]; then
-    echo "Refusing unsafe path from project backup: $unsafe_path"
-    return 1
-  fi
 }
 
 backup_local_state() {
