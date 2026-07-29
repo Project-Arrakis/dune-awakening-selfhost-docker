@@ -20,6 +20,7 @@ SIETCH_TOPOLOGY_MAINTENANCE_FILE="${DUNE_SIETCH_TOPOLOGY_MAINTENANCE_FILE:-runti
 SIETCH_TOPOLOGY_HEAL_GRACE_SECONDS="${DUNE_SIETCH_TOPOLOGY_HEAL_GRACE_SECONDS:-600}"
 DIRECTOR_HEAL_STALE_SECONDS="${DUNE_AUTOSCALER_DIRECTOR_HEAL_STALE_SECONDS:-15}"
 DIRECTOR_HEAL_COOLDOWN_SECONDS="${DUNE_AUTOSCALER_DIRECTOR_HEAL_COOLDOWN_SECONDS:-300}"
+DIRECTOR_CORE_READY_GRACE_SECONDS="${DUNE_AUTOSCALER_DIRECTOR_CORE_READY_GRACE_SECONDS:-120}"
 DYNAMIC_READY_HEAL_STALE_SECONDS="${DUNE_AUTOSCALER_DYNAMIC_READY_HEAL_STALE_SECONDS:-20}"
 DIRECTOR_BROWSER_SCAN_SECONDS="${DUNE_AUTOSCALER_DIRECTOR_BROWSER_SCAN_SECONDS:-30}"
 DYNAMIC_READY_HEAL_SCAN_SECONDS="${DUNE_AUTOSCALER_DYNAMIC_READY_HEAL_SCAN_SECONDS:-30}"
@@ -476,13 +477,13 @@ dynamic_ready_desync_heal() {
       continue
     fi
 
-    echo "HEAL dynamic ready desync partition=${partition_id} map=${map_name} server=${server_id}"
-    if runtime/scripts/restart-director.sh >/dev/null 2>&1; then
-      director_heal_set dynamic_ready_desync $((now + DIRECTOR_HEAL_COOLDOWN_SECONDS))
-      director_heal_clear "dynamic_ready:${partition_id}"
-    else
-      echo "ERROR failed to restart director during dynamic ready desync heal"
-    fi
+    echo "HEAL dynamic ready desync partition=${partition_id} map=${map_name} server=${server_id} action=republish"
+    # A live READY signal is authoritative when farm_state.ready is stale.
+    # Republish the map state without restarting Director: restarting Director
+    # also restarts Survival_1 and can create a recovery loop during startup.
+    publish_state_for_map "$map_name"
+    director_heal_set dynamic_ready_desync $((now + DIRECTOR_HEAL_COOLDOWN_SECONDS))
+    director_heal_clear "dynamic_ready:${partition_id}"
     return 0
   done <<< "$rows"
 
@@ -2208,10 +2209,45 @@ director_logs_contain_live_ids() {
   [ "$missing" -eq 0 ]
 }
 
+core_maps_ready_for_browser_heal() {
+  local container partition logs
+
+  while IFS='|' read -r container partition; do
+    docker inspect -f '{{.State.Running}}' "$container" 2>/dev/null | grep -qx true || return 1
+    logs="$(timeout --kill-after=2s 12s docker logs --tail 5000 "$container" 2>&1 || true)"
+    grep -Eq "Server farm is READY .*partition ${partition}([,[:space:]]|$)" <<<"$logs" || return 1
+  done <<'EOF'
+dune-server-survival-1|1
+dune-server-overmap|2
+EOF
+}
+
 scan_director_browser_state() {
-  local rows ready_count capacity now first_seen last_restart age since_restart
+  local rows ready_count capacity now first_seen core_ready_since last_restart age since_restart
 
   director_heal_due browser_state "$DIRECTOR_BROWSER_SCAN_SECONDS" || return 0
+
+  # Capacity can legitimately remain zero while the core maps are still
+  # registering during stack startup or after a controlled Director refresh.
+  # Restarting Director in that window also restarts Survival_1, which can
+  # create a self-sustaining recovery loop on memory-constrained hosts.
+  if ! core_maps_ready_for_browser_heal; then
+    director_heal_clear stale_since
+    director_heal_clear core_ready_since
+    return 0
+  fi
+
+  now="$(date +%s)"
+  if core_ready_since="$(director_heal_get core_ready_since 2>/dev/null)"; then
+    age=$((now - core_ready_since))
+  else
+    director_heal_set core_ready_since "$now"
+    return 0
+  fi
+  if [ "$age" -lt "$DIRECTOR_CORE_READY_GRACE_SECONDS" ]; then
+    director_heal_clear stale_since
+    return 0
+  fi
 
   # Sietch reconciliation temporarily changes the live partition set while
   # Director/FLS catches up. Do not mistake that controlled publication delay
@@ -2234,8 +2270,6 @@ scan_director_browser_state() {
   }
 
   capacity="$(director_latest_capacity 2>/dev/null || true)"
-  now="$(date +%s)"
-
   if [ "${capacity:-}" != "0" ] && director_logs_contain_live_ids "$rows"; then
     director_heal_clear stale_since
     return 0
