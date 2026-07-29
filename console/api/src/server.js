@@ -2414,10 +2414,12 @@ function readMapsRuntimeSettings() {
   const raw = readEnvFileValue("DUNE_ALWAYS_ON_STARTUP_PARALLELISM") || process.env.DUNE_ALWAYS_ON_STARTUP_PARALLELISM || "";
   const parsed = Number(raw);
   const protectionEnabled = (readEnvFileValue("DUNE_ALWAYS_ON_HOST_MEMORY_SAFETY") || process.env.DUNE_ALWAYS_ON_HOST_MEMORY_SAFETY || "1") !== "0";
+  const configuredReserve = readEnvFileValue("DUNE_ALWAYS_ON_HOST_MEMORY_RESERVE_GIB") || process.env.DUNE_ALWAYS_ON_HOST_MEMORY_RESERVE_GIB || "";
   const safety = calculateAlwaysOnHostMemorySafety(
     totalmem(),
-    readEnvFileValue("DUNE_ALWAYS_ON_HOST_MEMORY_RESERVE_GIB") || process.env.DUNE_ALWAYS_ON_HOST_MEMORY_RESERVE_GIB || ""
+    configuredReserve
   );
+  const automaticSafety = calculateAlwaysOnHostMemorySafety(totalmem());
   const safeMaximum = protectionEnabled
     ? Math.min(MAX_ALWAYS_ON_STARTUP_PARALLELISM, safety.recommendedParallelism)
     : MAX_ALWAYS_ON_STARTUP_PARALLELISM;
@@ -2433,20 +2435,44 @@ function readMapsRuntimeSettings() {
     hostMemoryProtectionEnabled: protectionEnabled,
     hostMemorySafetyLimited: protectionEnabled && Number.isInteger(parsed) && parsed > safeMaximum,
     physicalMemoryGiB: safety.physicalMemoryGiB,
-    hostMemoryReserveGiB: safety.reserveGiB
+    hostMemoryReserveGiB: safety.reserveGiB,
+    automaticHostMemoryReserveGiB: automaticSafety.reserveGiB,
+    hostMemoryReserveConfigured: Boolean(configuredReserve)
   };
 }
 
 async function mapsRuntimeSettingsRoute(req, res) {
   const body = await readJson(req);
   const value = Number(body.alwaysOnStartupParallelism);
-  const settings = readMapsRuntimeSettings();
-  if (!Number.isInteger(value) || value < 1 || value > settings.maxAlwaysOnStartupParallelism) {
-    return json(res, 400, { error: `Always-on startup parallelism must be a whole number from 1 to ${settings.maxAlwaysOnStartupParallelism} for this host.` });
+  const protectionEnabled = body.hostMemoryProtectionEnabled;
+  const reserveValue = body.hostMemoryReserveGiB;
+  if (typeof protectionEnabled !== "boolean") {
+    return json(res, 400, { error: "Host memory protection must be enabled or disabled explicitly." });
+  }
+  const automaticReserve = reserveValue === null || reserveValue === "" || reserveValue === undefined;
+  const reserveGiB = automaticReserve ? null : Number(reserveValue);
+  const physicalMemoryGiB = calculateAlwaysOnHostMemorySafety(totalmem()).physicalMemoryGiB;
+  if (!automaticReserve && (!Number.isInteger(reserveGiB) || reserveGiB < 1 || reserveGiB >= physicalMemoryGiB)) {
+    return json(res, 400, { error: `Physical RAM reserve must be a whole number from 1 to ${Math.max(1, physicalMemoryGiB - 1)} GB, or Automatic.` });
+  }
+  const safety = calculateAlwaysOnHostMemorySafety(totalmem(), automaticReserve ? "" : String(reserveGiB));
+  const safeMaximum = protectionEnabled
+    ? Math.min(MAX_ALWAYS_ON_STARTUP_PARALLELISM, safety.recommendedParallelism)
+    : MAX_ALWAYS_ON_STARTUP_PARALLELISM;
+  if (!Number.isInteger(value) || value < 1 || value > safeMaximum) {
+    return json(res, 400, { error: `Always-on startup parallelism must be a whole number from 1 to ${safeMaximum} with these protection settings.` });
   }
   updateEnvFileValue("DUNE_ALWAYS_ON_STARTUP_PARALLELISM", String(value));
+  updateEnvFileValue("DUNE_ALWAYS_ON_HOST_MEMORY_SAFETY", protectionEnabled ? "1" : "0");
+  updateEnvFileValue("DUNE_ALWAYS_ON_HOST_MEMORY_RESERVE_GIB", automaticReserve ? "" : String(reserveGiB));
   process.env.DUNE_ALWAYS_ON_STARTUP_PARALLELISM = String(value);
-  audit(config, req, "maps.runtime-settings", { DUNE_ALWAYS_ON_STARTUP_PARALLELISM: value });
+  process.env.DUNE_ALWAYS_ON_HOST_MEMORY_SAFETY = protectionEnabled ? "1" : "0";
+  process.env.DUNE_ALWAYS_ON_HOST_MEMORY_RESERVE_GIB = automaticReserve ? "" : String(reserveGiB);
+  audit(config, req, "maps.runtime-settings", {
+    DUNE_ALWAYS_ON_STARTUP_PARALLELISM: value,
+    DUNE_ALWAYS_ON_HOST_MEMORY_SAFETY: protectionEnabled ? 1 : 0,
+    DUNE_ALWAYS_ON_HOST_MEMORY_RESERVE_GIB: automaticReserve ? "automatic" : reserveGiB
+  });
   return json(res, 200, readMapsRuntimeSettings());
 }
 

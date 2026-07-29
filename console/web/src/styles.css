@@ -1546,7 +1546,13 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
 .maps-startup-settings { display: grid; gap: 12px; }
 .maps-startup-settings-copy { display: grid; gap: 4px; }
 .maps-startup-settings-copy strong { color: #ffd08a; }
-.maps-startup-settings-line { align-items: end; }
+.maps-startup-settings-line { display: grid; grid-template-columns: max-content minmax(230px, max-content) minmax(180px, max-content) max-content max-content; align-items: end; gap: 12px 18px; }
+.maps-startup-settings-line > * { min-width: 0; }
+.maps-host-memory-protection { align-self: end; min-height: 42px; }
+.maps-host-memory-reserve { min-width: 140px; }
+.maps-host-memory-reserve-input { display: grid; grid-template-columns: minmax(72px, 96px) max-content; align-items: center; gap: 8px; width: max-content; }
+.maps-host-memory-reserve-input > span { color: #ceb894; white-space: nowrap; }
+.maps-startup-settings-save { align-self: end; white-space: nowrap; }
 .maps-startup-result {
   flex-wrap: nowrap;
   max-width: none;
@@ -1554,6 +1560,19 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
   animation: fade-result 5s ease forwards;
 }
 .maps-startup-result .inline-task-message { flex: 0 1 auto; white-space: nowrap; }
+@media (max-width: 1100px) {
+  .maps-startup-settings-line { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .maps-startup-settings-save { justify-self: start; }
+  .maps-startup-result { grid-column: 1 / -1; white-space: normal; }
+  .maps-startup-result .inline-task-message { white-space: normal; }
+}
+@media (max-width: 620px) {
+  .maps-startup-settings-line { grid-template-columns: minmax(0, 1fr); }
+  .maps-startup-settings-line label, .maps-startup-settings-line select, .maps-startup-settings-line input { width: 100%; }
+  .maps-host-memory-reserve-input { grid-template-columns: minmax(0, 1fr) max-content; width: 100%; }
+  .maps-startup-settings-save { width: 100%; }
+  .maps-host-memory-protection { width: 100%; }
+}
 .maps-overview-table { table-layout: fixed; width: 100%; min-width: 920px; }
 .maps-overview-table th:nth-child(1), .maps-overview-table td:nth-child(1) { width: 28%; }
 .maps-overview-table th:nth-child(2), .maps-overview-table td:nth-child(2) { width: 16%; }
