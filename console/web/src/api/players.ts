@@ -34,6 +34,10 @@ export const playersApi = {
     return { rows, totalCount };
   },
   online: () => playersApi.listAll({ status: "online" }),
+  onlineCount: async () => {
+    const result = await api<PlayersListResult>("/api/players/online?page=0&pageSize=1");
+    return Number.isFinite(Number(result.totalCount)) ? Number(result.totalCount) : 0;
+  },
   profile: (playerId: string) => api<Record<string, unknown>>(`/api/players/${encodeURIComponent(playerId)}`),
   inventory: (playerId: string) => api<{ rows: Record<string, unknown>[]; capabilities: Record<string, unknown>; reason?: string }>(`/api/players/${encodeURIComponent(playerId)}/inventory`, { cache: "no-store" }),
   currency: (playerId: string) => api<{ rows: Record<string, unknown>[]; capabilities: Record<string, unknown>; reason?: string }>(`/api/players/${encodeURIComponent(playerId)}/currency`),

@@ -141,6 +141,17 @@ function publicServerListingUrl(serverId: string) {
 const REDBLINK_DISCORD_URL = "https://discord.gg/duneawakeningdocker";
 const REDBLINK_KOFI_URL = "https://ko-fi.com/redblink";
 
+export function SidebarNavIndicators({ item, onlinePlayerCount, addonUpdatesAvailable }: { item: Tab; onlinePlayerCount: number; addonUpdatesAvailable: boolean }) {
+  if (item === "Players") {
+    const label = `${onlinePlayerCount} player${onlinePlayerCount === 1 ? "" : "s"} online`;
+    return <span className="sidebar-nav-indicators"><span className="sidebar-nav-count sidebar-nav-count-online" title={label} aria-label={label}>{onlinePlayerCount}</span></span>;
+  }
+  if (item === "Addons" && addonUpdatesAvailable) {
+    return <span className="sidebar-nav-indicators"><span className="sidebar-nav-update-icon" title="Addon update available" aria-label="Addon update available"><CircleArrowUp size={14} aria-hidden="true" /></span></span>;
+  }
+  return null;
+}
+
 function DiscordLogo({ size = 18 }: { size?: number }) {
   return <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true" focusable="false">
     <path fill="currentColor" d="M20.3 4.4A18.4 18.4 0 0 0 15.8 3l-.2.4a13.1 13.1 0 0 1 4 2 14.2 14.2 0 0 0-5-1.5 14.8 14.8 0 0 0-5.2 0 14.2 14.2 0 0 0-5 1.5 13.1 13.1 0 0 1 4-2L8.2 3a18.4 18.4 0 0 0-4.5 1.4C.9 8.5.1 12.5.5 16.5A18.7 18.7 0 0 0 6 19.2l.7-.9a11.6 11.6 0 0 1-1.8-.9l.4-.3a13.2 13.2 0 0 0 13.4 0l.4.3a11.6 11.6 0 0 1-1.8.9l.7.9a18.7 18.7 0 0 0 5.5-2.7c.5-4.6-.8-8.5-3.2-12.1ZM8.4 14.2c-1 0-1.8-.9-1.8-2s.8-2 1.8-2 1.8.9 1.8 2-.8 2-1.8 2Zm7.2 0c-1 0-1.8-.9-1.8-2s.8-2 1.8-2 1.8.9 1.8 2-.8 2-1.8 2Z" />
@@ -302,8 +313,8 @@ export function App() {
     let cancelled = false;
     async function refreshOnlinePlayers() {
       try {
-        const result = await playersApi.online();
-        if (!cancelled) setOnlinePlayerCount((result.rows || []).length);
+        const count = await playersApi.onlineCount();
+        if (!cancelled) setOnlinePlayerCount(count);
       } catch {
         if (!cancelled) setOnlinePlayerCount(0);
       }
@@ -554,7 +565,7 @@ export function App() {
                     setSelectedPinnedAddonId("");
                     setTab(item.tab);
                     closeMobileNav();
-                  }}>{item.icon}<span>{item.tab}</span>{item.tab === "Players" && onlinePlayerCount > 0 && <span className="sidebar-nav-count sidebar-nav-count-online">{onlinePlayerCount}</span>}{item.tab === "Addons" && addonUpdatesAvailable && <span className="sidebar-nav-update-icon" title="Addon update available" aria-label="Addon update available"><CircleArrowUp size={14} aria-hidden="true" /></span>}</button>
+                  }}><span className="sidebar-nav-main">{item.icon}<span>{item.tab}</span></span><SidebarNavIndicators item={item.tab} onlinePlayerCount={onlinePlayerCount} addonUpdatesAvailable={addonUpdatesAvailable} /></button>
                   {item.tab === "Addons" && pinnedAddons.length > 0 && <div className="sidebar-addon-children">
                     {pinnedAddons.map((addon) => (
                       <button key={addon.id} className={tab === "Addons" && selectedPinnedAddonId === addon.id ? "active" : ""} onClick={() => {
