@@ -5,9 +5,16 @@ import { runDune, buildDuneArgs } from "./runner.js";
 import { liveItemGrantWarning } from "./grantResults.js";
 import { createUpdateCheckCache } from "./services/updateCheckCache.js";
 
+// Operations that leave a map down with the database still reachable, so
+// anything queued for that map can be applied before it comes back up. "stop"
+// is deliberately absent: stop-all.sh removes the Postgres container too, so
+// there is nothing to write to once it finishes.
+const MAP_DOWN_OPERATIONS = new Set(["mapsDespawn", "restartService", "sietchesRestart"]);
+
 export class TaskManager {
   constructor(config, options = {}) {
     this.config = config;
+    this.onMapDown = options.onMapDown || null;
     this.tasks = new Map();
     this.updateCheckCache = options.updateCheckCache || createUpdateCheckCache(config, {
       collect: () => runDune(config, buildDuneArgs("updateCheck"), {
@@ -101,6 +108,7 @@ export class TaskManager {
         const grantWarning = itemGrantTaskWarning(operation, result);
         if (grantWarning) throw Object.assign(new Error(grantWarning), { code: 1, stdout: result.stdout, stderr: result.stderr });
         lastCode = result.code;
+        if (MAP_DOWN_OPERATIONS.has(operation)) await this.flushPendingMapWrites(task, operation);
       }
       if (["updateApply", "updateFixSteamcmd"].includes(task.operation)) {
         this.updateCheckCache.invalidate();
@@ -155,6 +163,22 @@ export class TaskManager {
     task.currentStep = "Update helper started";
     task.finishedAt = new Date().toISOString();
     this.emit(task, "Update helper started. The Web UI may reconnect while the console restarts.");
+  }
+
+  // The background poller in server.js is the general safety net for queued
+  // writes, but a respawn closes its own window -- mapsDespawn is followed
+  // immediately by mapsSpawn -- so flush here rather than hope a tick lands in
+  // between. Never fails the restart: an unreachable database just means the
+  // entries stay queued for the next window.
+  async flushPendingMapWrites(task, operation) {
+    if (!this.onMapDown) return;
+    try {
+      const result = await this.onMapDown(operation);
+      const applied = (result?.flushed || []).filter((entry) => entry.ok).length;
+      if (applied) this.append(task, `Applied ${applied} queued generator refill${applied === 1 ? "" : "s"}.`, "stdout");
+    } catch (error) {
+      this.append(task, `Queued generator refills were not applied: ${error?.message || error}`, "stderr");
+    }
   }
 
   append(task, text, stream) {

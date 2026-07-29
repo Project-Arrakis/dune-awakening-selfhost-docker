@@ -53,7 +53,8 @@ const auth = createAuth(config);
 const loginRateLimiter = createLoginRateLimiter();
 const mutationRateLimiter = createMutationRateLimiter();
 const bridgeRateLimiter = createBridgeRateLimiter();
-const tasks = new TaskManager(config);
+// Deferred db read: db is assigned below and is reassignable on reconnect.
+const tasks = new TaskManager(config, { onMapDown: () => duneDb.flushGeneratorRefills(db, config.repoRoot) });
 let db = createDb(config);
 const publicDirectory = createPublicDirectoryReporter(config, { getDb: () => db });
 let carePackageAutoRunning = false;
@@ -138,6 +139,21 @@ setInterval(() => {
 }, deathPoller.intervalMs).unref?.();
 
 if (deathPoller.enabled) deathPoller.init(db, config.repoRoot).catch(() => {});
+
+// Queued generator refills apply while their map is down. This polls instead of
+// hooking the restart tasks because stop-all.sh removes the Postgres container
+// alongside the game servers, so there is no post-stop moment when the console
+// could still write: the window it waits for is a reachable database with no
+// live server on that partition, which start-all.sh opens well before the map
+// servers boot. Polling also covers restarts the console never initiated
+// (scheduler, IP change, CLI). Idle cost is one small file read per tick.
+setInterval(() => {
+  if (!duneDb.listQueuedGeneratorRefills(config.repoRoot).length) return;
+  runBackgroundTick("Generator refill flush", async () => {
+    const result = await duneDb.flushGeneratorRefills(db, config.repoRoot);
+    for (const entry of result.flushed || []) audit(config, null, "bases.flush-queued-refill", entry);
+  });
+}, Number(process.env.ADMIN_REFILL_FLUSH_INTERVAL_MS || 5000)).unref?.();
 
 function runBackgroundTick(label, fn) {
   Promise.resolve()
@@ -430,8 +446,10 @@ async function handleApi(req, res) {
     sortColumn: url.searchParams.get("sortColumn") || "name",
     sortDirection: url.searchParams.get("sortDirection") || "asc"
   }));
+  if (path === "/api/bases/pending-refills") return pendingGeneratorRefillsRoute(res);
   if (path.match(/^\/api\/bases\/[^/]+\/export$/) && req.method === "GET") return baseBlueprintDownloadRoute(req, res, path);
   if (path.match(/^\/api\/bases\/[^/]+\/refill-generators$/) && req.method === "POST") return baseRefillGeneratorsRoute(req, res, path);
+  if (path.match(/^\/api\/bases\/[^/]+\/queued-refill$/) && req.method === "DELETE") return baseCancelQueuedRefillRoute(req, res, path);
   if (path === "/api/admin/items/catalog") return json(res, 200, { rows: listCatalogItems(config.repoRoot, { q: url.searchParams.get("q") || "", limit: url.searchParams.get("limit") || 500 }) });
   if (path === "/api/admin/items/search") return commandJson(res, "adminItemSearch", { q: url.searchParams.get("q") || "" });
   if (path === "/api/admin/items") return commandJson(res, url.searchParams.get("category") ? "adminItemListCategory" : "adminItemList", { category: url.searchParams.get("category") || "" });
@@ -1916,8 +1934,51 @@ async function baseRefillGeneratorsRoute(req, res, path) {
   if (!Number.isFinite(baseId) || baseId < 1) return json(res, 400, { error: "Invalid base ID" });
   // No confirmation phrase: refilling is additive and reversible, unlike the
   // deletes and overwrites that phrase-gate. Still rate limited and audited.
-  return directDbMutation(req, res, "bases.refill-generators", null,
-    () => duneDb.refillBaseGenerators(db, config.repoRoot, baseId), { baseId });
+  return directDbMutation(req, res, "bases.refill-generators", null, async () => {
+    const target = await duneDb.baseRefillTarget(db, baseId);
+    // A live game server rewrites its own copy of a base back to Postgres on a
+    // timer, so refilling a running map now can be overwritten before anyone
+    // sees the fuel. Record it instead and let the flush tick apply it once
+    // that map is down.
+    if (target.queueSupported && !target.writeSafeNow) {
+      const entry = duneDb.queueGeneratorRefill(config.repoRoot, {
+        baseId,
+        map: target.map,
+        partitionId: target.partitionId
+      });
+      return { ok: true, queued: true, ...entry };
+    }
+    return duneDb.refillBaseGenerators(db, config.repoRoot, baseId);
+  }, { baseId });
+}
+
+async function baseCancelQueuedRefillRoute(req, res, path) {
+  const baseId = Number(decodeURIComponent(path.split("/")[3]));
+  if (!Number.isFinite(baseId) || baseId < 1) return json(res, 400, { error: "Invalid base ID" });
+  return directDbMutation(req, res, "bases.cancel-queued-refill", null,
+    () => duneDb.cancelQueuedGeneratorRefill(config.repoRoot, baseId), { baseId });
+}
+
+// Grouped per (map, partition) so the Bases banner, the Maps panel badges, and
+// the battlegroup buttons all read the same counts from one call. Grouping by
+// map alone is not enough: a Sietch partition of Survival_1 needs its own
+// container restarted, which restarting the map's primary service would not do.
+function pendingGeneratorRefillsRoute(res) {
+  const pending = duneDb.listQueuedGeneratorRefills(config.repoRoot);
+  const byTarget = new Map();
+  for (const entry of pending) {
+    const map = entry.map || "Unknown";
+    const key = `${map}|${entry.partitionId}`;
+    const group = byTarget.get(key) || { map, partitionId: entry.partitionId, count: 0 };
+    group.count += 1;
+    byTarget.set(key, group);
+  }
+  return json(res, 200, {
+    supported: true,
+    total: pending.length,
+    pending,
+    byTarget: [...byTarget.values()].sort((a, b) => a.map.localeCompare(b.map) || a.partitionId - b.partitionId)
+  });
 }
 
 async function blueprintBulkExportRoute(req, res) {

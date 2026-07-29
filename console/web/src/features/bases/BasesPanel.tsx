@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ChevronDown, ChevronUp, Download, Fuel } from "lucide-react";
+import { ChevronDown, ChevronUp, Download, Fuel, X } from "lucide-react";
 import { basesApi, type RefillDeviceResult } from "../../api/bases";
+import { mapsApi } from "../../api/maps";
+import { serverApi } from "../../api/server";
 import { apiDownload } from "../../api/client";
 import { DataTable, type SortDirection } from "../../components/common/DataTable";
+import { usePendingRefills } from "../../lib/usePendingRefills";
 
 type BasesPanelProps = {
   onError: (text: string) => void;
@@ -104,11 +107,40 @@ function errorText(error: unknown) {
   return error instanceof Error ? error.message : String(error);
 }
 
+type QueueRestartTarget =
+  | { kind: "sietch"; partitionId: number; label: string }
+  | { kind: "service"; service: string; label: string }
+  | { kind: "none" };
+
+// Mirrors the map/partition -> restart action mapping the API already uses (see
+// restartPayload in server.js). A Survival_1 base restarts through the Sietch
+// path, which resolves the partition itself: dimension 0 re-runs the primary
+// server, any other partition despawns and respawns just that container.
+// Restarting the survival-1 service instead would leave a Sietch partition
+// running, so its queued refills would never flush. Deep Desert and the Overmap
+// share one service and have no per-partition path.
+function queueRestartTarget(map: string, partitionId: number): QueueRestartTarget {
+  const key = String(map || "").trim().toLowerCase();
+  if (key === "survival_1" || key === "survival1") {
+    if (!partitionId) return { kind: "none" };
+    return { kind: "sietch", partitionId, label: `Restart ${map} partition ${partitionId}` };
+  }
+  if (key === "overmap" || key.startsWith("deepdesert")) {
+    return { kind: "service", service: "overmap", label: `Restart ${map}` };
+  }
+  return { kind: "none" };
+}
+
 // Report what actually changed per device rather than a generic "Action
 // completed." — "nothing was added" is a meaningful outcome here, not a failure.
-function summarizeRefill(response: { result?: { totalAdded: number; devices: RefillDeviceResult[] } }) {
+function summarizeRefill(response: {
+  result?: { queued?: boolean; map?: string; totalAdded?: number; devices?: RefillDeviceResult[] };
+}) {
   const result = response.result;
-  if (!result || !Array.isArray(result.devices)) return "";
+  if (result?.queued) {
+    return `Refill queued for ${result.map || "this base"}. It applies the next time that map restarts or stops, so a running server cannot overwrite it.`;
+  }
+  if (!result || !Array.isArray(result.devices) || typeof result.totalAdded !== "number") return "";
   const changed = result.devices.filter((device) => (device.added || 0) > 0);
   if (!changed.length) return `All ${result.devices.length} device${result.devices.length === 1 ? " was" : "s were"} already full. Nothing added.`;
   const detail = changed
@@ -200,9 +232,14 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
   const [refillingId, setRefillingId] = useState("");
   const [refillResult, setRefillResult] = useState("");
   const [canRefill, setCanRefill] = useState(false);
+  const [canQueue, setCanQueue] = useState(false);
+  const [cancelingId, setCancelingId] = useState("");
+  const [restartingTarget, setRestartingTarget] = useState("");
   const [expandedBaseId, setExpandedBaseId] = useState<string | null>(null);
   const requestIdRef = useRef(0);
   const skipNextSearchReset = useRef(true);
+  const { pending: pendingRefills, refresh: refreshPendingRefills } = usePendingRefills(canQueue);
+  const previousPendingTotal = useRef<number | null>(null);
 
   useEffect(() => {
     if (skipNextSearchReset.current) {
@@ -230,6 +267,7 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
       const nextRows = (result.rows || []).map(withCoordinates);
       setRows(nextRows);
       setCanRefill(Boolean(result.capabilities?.generatorRefill));
+      setCanQueue(Boolean(result.capabilities?.generatorRefillQueue));
       setTotalCount(result.totalCount || 0);
       setTotalBases(result.totalBases || 0);
       setTotalPieces(result.totalPieces || 0);
@@ -298,6 +336,18 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
     };
   }, [submittedQ, page, pageSize, sortColumn, sortDirection, load]);
 
+  // A background flush drains the queue whenever a map goes down, which can
+  // happen without anyone touching this panel. When the count drops, the fuel
+  // numbers on screen are stale, so refetch the table.
+  useEffect(() => {
+    if (!canQueue || !pendingRefills) return;
+    const previous = previousPendingTotal.current;
+    previousPendingTotal.current = pendingRefills.total;
+    if (previous === null || pendingRefills.total >= previous) return;
+    basesCache = null;
+    void load({ q: submittedQ, page, pageSize, sortColumn, sortDirection }, { silent: true });
+  }, [canQueue, pendingRefills, load, submittedQ, page, pageSize, sortColumn, sortDirection]);
+
   async function handleDownloadBlueprint(row: BaseRow) {
     const id = String(row.base_id);
     setDownloadingId(id);
@@ -327,7 +377,9 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
       {
         title: "Refill Generators",
         confirmLabel: "Refill",
-        warning: "Refill writes fuel straight to the database. A running game server will not show the new fuel in-game until the map server restarts."
+        warning: canQueue
+          ? "If this base's map is running, the refill is queued and applied the next time that map restarts or stops, so a live server cannot overwrite it. If the map is already down, it is written now."
+          : "Refill writes fuel straight to the database. A running game server will not show the new fuel in-game until the map server restarts."
       }
     );
     if (!confirmed) return;
@@ -336,15 +388,70 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
     try {
       const response = await basesApi.refillGenerators(id);
       setRefillResult(summarizeRefill(response) || formatMutationResult(response));
-      // The module cache still holds pre-refill fuel counts for this view.
-      basesCache = null;
-      await load({ q: submittedQ, page, pageSize, sortColumn, sortDirection });
+      if (response.result?.queued) {
+        await refreshPendingRefills();
+      } else {
+        // The module cache still holds pre-refill fuel counts for this view.
+        basesCache = null;
+        await load({ q: submittedQ, page, pageSize, sortColumn, sortDirection });
+      }
     } catch (error) {
       const text = errorText(error);
       setRefillResult(text);
       onError(text);
     } finally {
       setRefillingId("");
+    }
+  }
+
+  async function handleCancelQueuedRefill(base: BaseRow) {
+    const id = String(base.base_id);
+    const label = base.name || `base ${id}`;
+    const confirmed = await confirmAction(`Cancel the queued generator refill for "${label}"?`, {
+      title: "Cancel Queued Refill",
+      confirmLabel: "Cancel Refill"
+    });
+    if (!confirmed) return;
+    onError("");
+    setCancelingId(id);
+    try {
+      await basesApi.cancelQueuedRefill(id);
+      setRefillResult(`Queued refill for "${label}" was canceled.`);
+      await refreshPendingRefills();
+    } catch (error) {
+      const text = errorText(error);
+      setRefillResult(text);
+      onError(text);
+    } finally {
+      setCancelingId("");
+    }
+  }
+
+  async function handleRestartForQueue(group: { map: string; partitionId: number; count: number }) {
+    const target = queueRestartTarget(group.map, group.partitionId);
+    if (target.kind === "none") return;
+    const key = `${group.map}|${group.partitionId}`;
+    const confirmed = await confirmAction(
+      `${target.label} now to apply ${group.count} queued generator refill${group.count === 1 ? "" : "s"}?`,
+      {
+        title: "Restart Map",
+        confirmLabel: "Restart",
+        warning: "Players on this map are disconnected while it restarts."
+      }
+    );
+    if (!confirmed) return;
+    onError("");
+    setRestartingTarget(key);
+    try {
+      if (target.kind === "sietch") await mapsApi.restartSietch(String(target.partitionId));
+      else await serverApi.restartService(target.service);
+      setRefillResult(`${group.map} is restarting. Its queued refills apply while it is down.`);
+    } catch (error) {
+      const text = errorText(error);
+      setRefillResult(text);
+      onError(text);
+    } finally {
+      setRestartingTarget("");
     }
   }
 
@@ -358,6 +465,8 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
     </section>;
   }
 
+  const pendingTotal = pendingRefills?.total || 0;
+  const queuedBaseIds = new Set((pendingRefills?.pending || []).map((entry) => String(entry.baseId)));
   const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
   const rangeStart = totalCount === 0 ? 0 : page * pageSize + 1;
   const rangeEnd = totalCount === 0 ? 0 : rangeStart + rows.length - 1;
@@ -395,8 +504,37 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
         Total Bases: {totalBases.toLocaleString()} · Total Building Pieces: {totalPieces.toLocaleString()} · Total Placeables: {totalPlaceables.toLocaleString()}
       </p>
       {canRefill && <><br /><p className="action-help-note">
-        Refill writes fuel straight to the database. A running game server will not show the new fuel in-game until the map server restarts.
+        {canQueue
+          ? "Refilling a base on a running map queues the write and applies it the next time that map restarts or stops, so a live server cannot overwrite it. A base on a map that is already down is refilled immediately."
+          : "Refill writes fuel straight to the database. A running game server will not show the new fuel in-game until the map server restarts."}
       </p></>}
+      {pendingTotal > 0 && <div className="bases-pending-refills">
+        <p className="bases-pending-refills-title">
+          <Fuel size={16} aria-hidden="true" />
+          {pendingTotal.toLocaleString()} generator refill{pendingTotal === 1 ? "" : "s"} queued
+        </p>
+        <p className="action-help-note">
+          Each one is written when its map next restarts or stops. Stopping or restarting the battlegroup applies all of them.
+        </p>
+        <ul className="bases-pending-refills-list">
+          {(pendingRefills?.byTarget || []).map((group) => {
+            const target = queueRestartTarget(group.map, group.partitionId);
+            const key = `${group.map}|${group.partitionId}`;
+            return <li key={key}>
+              <span>
+                {group.map}{group.partitionId ? ` · partition ${group.partitionId}` : ""}
+                <span className="muted"> — {group.count.toLocaleString()} queued</span>
+              </span>
+              {target.kind === "none"
+                ? <span className="muted">Restart this map from the Maps tab</span>
+                : <button
+                    disabled={restartingTarget === key}
+                    onClick={() => void handleRestartForQueue(group)}
+                  >{restartingTarget === key ? "Restarting…" : target.label}</button>}
+            </li>;
+          })}
+        </ul>
+      </div>}
       {refillResult && <p className="danger-note">{refillResult}</p>}
       <div className="action-row bases-search-row">
         <input
@@ -435,7 +573,21 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
             : !base.generatorDataAvailable ? "Generator data is unavailable for this base"
             : refillable ? "Refill Generators" : "No generators at this base";
           return <span className="icon-toggle-group">
-            <button className="icon-toggle-button" title={refillTitle} aria-label="Refill Generators" disabled={!refillable || refillingId === id} onClick={(event) => { event.stopPropagation(); void handleRefillGenerators(base); }}><Fuel size={16} /></button>
+            {/* The actions column is a fixed 96px, so the queued state stays two
+                glyphs wide rather than a text pill: the banner above carries the
+                wording, and each glyph has its own tooltip. */}
+            {queuedBaseIds.has(id)
+              ? <span className="bases-queued-refill" title="Refill queued — applies when this map next restarts or stops">
+                  <Fuel size={16} aria-label="Refill queued for this base" />
+                  <button
+                    className="icon-toggle-button bases-queued-refill-cancel"
+                    title="Cancel Queued Refill"
+                    aria-label="Cancel Queued Refill"
+                    disabled={cancelingId === id}
+                    onClick={(event) => { event.stopPropagation(); void handleCancelQueuedRefill(base); }}
+                  ><X size={14} /></button>
+                </span>
+              : <button className="icon-toggle-button" title={refillTitle} aria-label="Refill Generators" disabled={!refillable || refillingId === id} onClick={(event) => { event.stopPropagation(); void handleRefillGenerators(base); }}><Fuel size={16} /></button>}
             <button className="icon-toggle-button" title="Download Base as Blueprint" aria-label="Download Base as Blueprint" disabled={downloadingId === id} onClick={(event) => { event.stopPropagation(); void handleDownloadBlueprint(base); }}><Download size={16} /></button>
           </span>;
         }}
