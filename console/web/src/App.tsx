@@ -74,6 +74,7 @@ function confirmDialog(message: string, options: Partial<Omit<ConfirmDialogReque
       cancelLabel: options.cancelLabel || "No",
       danger,
       details: options.details,
+      warning: options.warning,
       resolve
     });
   });

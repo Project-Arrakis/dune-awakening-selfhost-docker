@@ -6,7 +6,7 @@ import { DataTable, type SortDirection } from "../../components/common/DataTable
 
 type BasesPanelProps = {
   onError: (text: string) => void;
-  confirmAction: (message: string, options?: { title?: string; confirmLabel?: string }) => Promise<boolean>;
+  confirmAction: (message: string, options?: { title?: string; confirmLabel?: string; warning?: string }) => Promise<boolean>;
   formatMutationResult: (result: unknown) => string;
 };
 
@@ -324,7 +324,11 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
     const count = Number(base.generatorCount) || 0;
     const confirmed = await confirmAction(
       `Refill ${count} power device${count === 1 ? "" : "s"} at "${base.name || `base ${id}`}" to full fuel?`,
-      { title: "Refill Generators", confirmLabel: "Refill" }
+      {
+        title: "Refill Generators",
+        confirmLabel: "Refill",
+        warning: "Refill writes fuel straight to the database. A running game server will not show the new fuel in-game until the map server restarts."
+      }
     );
     if (!confirmed) return;
     onError("");
@@ -390,9 +394,9 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
       <p className="action-help-note">
         Total Bases: {totalBases.toLocaleString()} · Total Building Pieces: {totalPieces.toLocaleString()} · Total Placeables: {totalPlaceables.toLocaleString()}
       </p>
-      {canRefill && <p className="action-help-note">
-        Refill writes fuel straight to the database. A running game server may not show the new fuel in-game until the base unloads and reloads.
-      </p>}
+      {canRefill && <><br /><p className="action-help-note">
+        Refill writes fuel straight to the database. A running game server will not show the new fuel in-game until the map server restarts.
+      </p></>}
       {refillResult && <p className="danger-note">{refillResult}</p>}
       <div className="action-row bases-search-row">
         <input
