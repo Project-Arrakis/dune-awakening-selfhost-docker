@@ -24,6 +24,7 @@ const SAMPLE_PLAN = {
   price_multiplier: 5,
   rows: [
     { template_id: "WaterBottle", display_name: "Water Bottle", kind: "resource", stack_size: 10, price: 1000, category_mask: 1, category_depth: 1, quality_level: 0, listings: 4 },
+    { template_id: "Sword", display_name: "Sword", kind: "equippable", stack_size: 1, price: 2000, category_mask: 2, category_depth: 2, quality_level: 0, listings: 2 },
     { template_id: "Sword", display_name: "Sword Schematic", kind: "schematic", stack_size: 1, price: 2500, category_mask: 2, category_depth: 2, quality_level: 2, listings: 2 },
     { template_id: "O'Brien", display_name: "Quoted Template", kind: "resource", stack_size: 1, price: 100, category_mask: 1, category_depth: 1, quality_level: 0, listings: 1 }
   ]
@@ -179,11 +180,10 @@ test("builds buyback SQL server-side from the bundled seed plan", () => {
     const plan = loadBuybackSeedPlan(config);
     const schedule = normalizeBuybackSchedule({ enabled: true, exchangeId: "77", priceMultiplier: 5, buybackPercent: 60, maxBuys: 250 });
 
-    // Sword is bundled at grade 2 (multiplier 1.25): 2500 normalizes to a
-    // grade-0 price of 2000, then 60% rounds up to 1200. WaterBottle stays
-    // 1000 grade-0, 60% -> 600. Quotes in template ids are escaped.
+    // Caps are calculated independently for every seeded grade. Sword grade
+    // 0 is 1200 and grade 2 is 1500 at 60%; quotes remain escaped.
     const values = buybackPlanValuesSql(plan, schedule);
-    assert.equal(values, "('O''Brien',60),\n('Sword',1200),\n('WaterBottle',600)");
+    assert.equal(values, "('O''Brien',0,60),\n('Sword',0,1200),\n('Sword',2,1500),\n('WaterBottle',0,600)");
 
     const eligibilitySql = buildBuybackEligibilitySql(plan, schedule);
     assert.ok(isReadOnlySql(eligibilitySql), "eligibility probe must be read-only SQL");
@@ -195,7 +195,12 @@ test("builds buyback SQL server-side from the bundled seed plan", () => {
     assert.match(sweepSql, /FOR UPDATE OF o, s SKIP LOCKED/);
     assert.match(sweepSql, /LIMIT 250 FOR UPDATE/);
     assert.match(sweepSql, /999999999/, "payment entries use the never-expires sentinel");
-    assert.match(sweepSql, /\(ARRAY\[1\.0,1\.0,1\.25,1\.5,1\.75,2\.0\]\)/, "grade multipliers are applied in SQL");
+    assert.match(sweepSql, /PRIMARY KEY \(template_id, quality_level\)/, "the plan preserves exact per-grade caps");
+    assert.match(sweepSql, /GREATEST\(COALESCE\(i\.stack_size, 0\), COALESCE\(s\.initial_stack_size, 0\)\) AS actual_stack/, "the entire listed stack is purchased");
+    assert.match(sweepSql, /LEAST\(GREATEST\(COALESCE\(o\.quality_level, 0\), COALESCE\(i\.quality_level, 0\), 0\), 5\)/, "grade can come from the order or backing item");
+    assert.match(sweepSql, /LEFT JOIN LATERAL \(/, "unseeded grades use the conservative fallback lookup");
+    assert.match(sweepSql, /o\.item_price > 0 AND GREATEST\(/, "non-positive prices and empty stacks are rejected");
+    assert.doesNotMatch(sweepSql, /FLOOR\(p\.max_unit_price \*/, "exact grade caps are not multiplied a second time");
     assert.match(sweepSql, /o\.exchange_id = 77\b/);
     assert.doesNotMatch(sweepSql, /\b(?:BEGIN|COMMIT)\s*;/i, "transaction ownership stays with the database wrapper");
 
