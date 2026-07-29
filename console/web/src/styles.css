@@ -189,6 +189,15 @@ h1, h2, h3, h4, h5 { color: var(--title); line-height: 1.2; letter-spacing: 0; }
 .confirm-modal-details dd.accent { color: var(--title); }
 .confirm-modal-details dd.success { color: var(--success-text); }
 .confirm-modal-details dd.danger { color: var(--danger-text); }
+.confirm-modal-warning {
+  background: rgba(169, 121, 50, .12);
+  border: 1px solid var(--warning);
+  padding: 10px 12px;
+  border-radius: 6px;
+  font-size: 14px;
+  line-height: 1.5;
+  color: #e7b866;
+}
 .confirm-modal-actions {
   display: flex;
   justify-content: flex-end;

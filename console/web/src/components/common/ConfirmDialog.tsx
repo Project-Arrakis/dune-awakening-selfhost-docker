@@ -10,6 +10,7 @@ export type ConfirmDialogRequest = {
   cancelLabel: string;
   danger: boolean;
   details?: ConfirmDialogDetail[];
+  warning?: string;
   resolve: (confirmed: boolean) => void;
 };
 
@@ -34,6 +35,9 @@ export function ConfirmDialog({ request, onClose }: { request: ConfirmDialogRequ
         <button ref={closeButtonRef} className="icon-action" aria-label="Close dialog" onClick={() => onClose(false)}><X size={18} /></button>
       </div>
       <p>{request.message}</p>
+      {request.warning && <div className="confirm-modal-warning">
+        {request.warning}
+      </div>}
       {request.details?.length ? <dl className="confirm-modal-details">
         {request.details.map((detail) => <div key={`${detail.label}-${detail.value}`}><dt>{detail.label}</dt><dd className={detail.tone || "accent"}>{detail.value}</dd></div>)}
       </dl> : null}
