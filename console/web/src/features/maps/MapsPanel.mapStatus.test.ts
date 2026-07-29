@@ -22,6 +22,10 @@ describe("map table sorting", () => {
     { map: "Survival_1", status: "Loading", mode: "Core Map", memory: "12 GB" },
     { map: "SH_Arrakeen", status: "Not Running", mode: "Dynamic", memory: "2 GB" }
   ];
+  const liveMemory = [
+    { container: "dune-server-sh-harkovillage-4", map: "SH_HarkoVillage", usedBytes: 4 * 1024 ** 3, limitBytes: 6 * 1024 ** 3, percent: 66.7, raw: "" },
+    { container: "dune-server-deepdesert-1-8", map: "DeepDesert_1", usedBytes: 10 * 1024 ** 3, limitBytes: 15 * 1024 ** 3, percent: 66.7, raw: "" }
+  ];
 
   it("pins core maps first while sorting other maps by name", () => {
     expect(sortMapRows(rows, "map", "desc").map((row) => row.map)).toEqual([
@@ -29,9 +33,12 @@ describe("map table sorting", () => {
     ]);
   });
 
-  it("sorts memory numerically without moving core maps", () => {
-    expect(sortMapRows(rows, "memory", "asc").map((row) => row.map)).toEqual([
-      "Survival_1", "Overmap", "SH_Arrakeen", "SH_HarkoVillage", "DeepDesert_1"
+  it("sorts by live memory load and keeps unloaded maps last", () => {
+    expect(sortMapRows(rows, "memory", "asc", liveMemory).map((row) => row.map)).toEqual([
+      "Survival_1", "Overmap", "SH_HarkoVillage", "DeepDesert_1", "SH_Arrakeen"
+    ]);
+    expect(sortMapRows(rows, "memory", "desc", liveMemory).map((row) => row.map)).toEqual([
+      "Survival_1", "Overmap", "DeepDesert_1", "SH_HarkoVillage", "SH_Arrakeen"
     ]);
   });
 
