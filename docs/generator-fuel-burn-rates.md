@@ -85,3 +85,7 @@ The persisted duration is the normal value and may not include a live-event
 multiplier shown by the game UI. If a duration changes outside an announced
 event, update the normal constant and re-run `console/api`'s test suite. For a
 temporary event, add or update a bounded event policy instead.
+
+See [generator-refill-caps.md](generator-refill-caps.md) for how these same
+generator types map to fuel refill stack/cap limits and their operator
+override file.
