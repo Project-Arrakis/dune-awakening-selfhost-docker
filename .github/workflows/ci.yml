@@ -104,6 +104,7 @@ jobs:
           tests/update-systemd-timer-health-test.sh
           tests/memory-status-effective-defaults-test.sh
           tests/always-on-memory-safety-test.sh
+          tests/autoscaler-browser-heal-safety-test.sh
           tests/db-backup-validation-test.sh
       - name: Test Compose project-name portability
         run: |
