@@ -25,6 +25,14 @@ type MapsTaskSequenceOptions = {
 };
 type PersistedMapsTask = { taskId?: string; result: HomeTaskResult | null; runningTitle?: string; successTitle?: string; resultScope?: MapsResultScope };
 type SpicefieldDraft = { maxActive: string; maxPrimed: string; spawningActive: boolean; spawnWeight: string };
+export type MapSortColumn = "map" | "status" | "mode" | "memory";
+type MapSortState = { column: MapSortColumn | null; direction: "asc" | "desc" };
+const MAP_SORT_COLUMNS: Array<[MapSortColumn, string]> = [
+  ["map", "Map"],
+  ["status", "Status"],
+  ["mode", "Mode"],
+  ["memory", "Memory"]
+];
 type ConfirmAction = (message: string, options?: { title?: string; confirmLabel?: string; cancelLabel?: string; danger?: boolean; details?: { label: string; value: string; tone?: "danger" | "success" | "accent" }[] }) => Promise<boolean>;
 type MapsPanelProps = {
   onError: (text: string) => void;
@@ -288,6 +296,7 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
   const [sietchPasswordTouched, setSietchPasswordTouched] = useState<Record<string, boolean>>({});
   const [selectedMapName, setSelectedMapName] = useState("");
   const [selectedPartitionId, setSelectedPartitionId] = useState("");
+  const [mapSort, setMapSort] = useState<MapSortState>({ column: null, direction: "asc" });
   const [engineMapName, setEngineMapName] = useState("__global__");
   const [enginePartitionId, setEnginePartitionId] = useState("");
   const [userGameMapName, setUserGameMapName] = useState("");
@@ -947,6 +956,7 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
     };
   }, []);
   const mapRows = mergeMapAndMemoryRows(mapsText, memoryText, serversText, readinessText);
+  const sortedMapRows = sortMapRows(mapRows, mapSort.column, mapSort.direction);
   const serverPartitionRows = parseServerPartitionRows(serversText);
   const readinessStatusByPartitionId = parseReadinessPartitionStatuses(readinessText);
   const partitionStatusById = new globalThis.Map(serverPartitionRows.map((row) => [String(row.partitionId || ""), String(row.status || "")]));
@@ -1578,7 +1588,14 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
       </div>
       {loading && !mapRows.length && <div className="empty"><span className="loading-dots">Loading Maps</span></div>}
       {!loading && loadError && !mapRows.length && <div className="result-panel"><strong>Map list could not be loaded.</strong><p>{loadError}</p><button onClick={() => run(loadMaps)}>Retry</button></div>}
-      {mapRows.length ? <div className="table-wrap maps-overview-table-wrap"><table className="maps-overview-table"><thead><tr><th>Map</th><th>Status</th><th>Mode</th><th>Memory</th><th className="actions-column">Action</th></tr></thead><tbody>{mapRows.map((row) => {
+      {mapRows.length ? <div className="table-wrap maps-overview-table-wrap"><table className="maps-overview-table"><thead><tr>{MAP_SORT_COLUMNS.map(([column, label]) => {
+        const active = mapSort.column === column;
+        return <th key={column} className="sortable" aria-sort={active ? (mapSort.direction === "asc" ? "ascending" : "descending") : "none"}>
+          <button type="button" className="maps-sort-button" onClick={() => setMapSort((current) => current.column === column ? { column, direction: current.direction === "asc" ? "desc" : "asc" } : { column, direction: "asc" })}>
+            <span>{label}</span><span className={`sort-indicator ${active ? "active" : ""}`} aria-hidden="true">{active ? (mapSort.direction === "asc" ? "↑" : "↓") : "↕"}</span>
+          </button>
+        </th>;
+      })}<th className="actions-column">Action</th></tr></thead><tbody>{sortedMapRows.map((row) => {
         const rowName = String(row.map || "");
         const isSurvivalRow = rowName === "Survival_1";
         const isDeepDesertRow = /^DeepDesert_/i.test(rowName);
@@ -2611,6 +2628,31 @@ function memoryValueToBytes(value: string) {
   const unit = (match[2] || "GB").toLowerCase();
   const multiplier = unit.startsWith("m") ? 1024 ** 2 : 1024 ** 3;
   return amount * multiplier;
+}
+
+function coreMapRank(row: Record<string, unknown>) {
+  const map = String(row.map || "").trim().toLowerCase();
+  if (map === "survival_1") return 0;
+  if (map === "overmap") return 1;
+  return String(row.mode || "").trim().toLowerCase() === "core map" ? 2 : Number.POSITIVE_INFINITY;
+}
+
+export function sortMapRows(rows: Record<string, unknown>[], column: MapSortColumn | null, direction: "asc" | "desc") {
+  const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+  return rows.map((row, index) => ({ row, index })).sort((left, right) => {
+    const leftCoreRank = coreMapRank(left.row);
+    const rightCoreRank = coreMapRank(right.row);
+    const leftIsCore = Number.isFinite(leftCoreRank);
+    const rightIsCore = Number.isFinite(rightCoreRank);
+    if (leftIsCore !== rightIsCore) return leftIsCore ? -1 : 1;
+    if (leftIsCore && rightIsCore) return leftCoreRank - rightCoreRank || left.index - right.index;
+    if (!column) return left.index - right.index;
+
+    const compare = column === "memory"
+      ? memoryValueToBytes(String(left.row.memory || "")) - memoryValueToBytes(String(right.row.memory || ""))
+      : collator.compare(String(left.row[column] || ""), String(right.row[column] || ""));
+    return (direction === "asc" ? compare : -compare) || left.index - right.index;
+  }).map(({ row }) => row);
 }
 
 function normalizeRawIniContent(value: string) {
