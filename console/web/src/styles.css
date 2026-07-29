@@ -1614,8 +1614,7 @@ body.debug .technical-details { display: block; }
 .blueprint-actions-column .icon-toggle-group { justify-content: center; }
 .bases-table { width: 100%; min-width: 0; table-layout: fixed; }
 .bases-table th { max-width: none; white-space: normal; overflow: visible; text-overflow: clip; line-height: 1.2; }
-.bases-table th, .bases-table td { padding: 8px 6px; }
-.bases-table th:nth-child(1), .bases-table td:nth-child(1) { width: 2.5%; text-align: center; }
+.bases-table th, .bases-table td { padding: 8px 6px; font-size: 14px; }
 .bases-table th:nth-child(2), .bases-table td:nth-child(2) { width: 5%; text-align: center; }
 .bases-table th:nth-child(3), .bases-table td:nth-child(3) { width: 12%; }
 .bases-table th:nth-child(4), .bases-table td:nth-child(4) { width: 8%; }
@@ -2060,8 +2059,8 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
   font-style: normal;
 }
 .bases-table th.bases-expand-column, .bases-table td.bases-expand-column {
-  width: 2.5%;
-  padding-inline: 0;
+  width: 32px;
+  padding-inline: 4px;
   text-align: center;
   overflow: visible;
   text-overflow: clip;
@@ -2088,10 +2087,11 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
 }
 .bases-generator-breakdown {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 240px));
   gap: 12px;
   width: 100%;
   align-items: stretch;
+  justify-content: start;
 }
 .bases-uptime-event {
   grid-column: 1 / -1;
@@ -2145,6 +2145,7 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
   min-width: 0;
   color: #ffd08a;
   font-weight: 700;
+  font-size: 14px;
   margin-bottom: 4px;
   overflow-wrap: anywhere;
 }
@@ -2152,8 +2153,7 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
    inherit the outer column widths, centring and row borders. */
 .bases-generator-stats {
   display: grid;
-  grid-template-columns: minmax(96px, 128px) minmax(0, 1fr);
-  column-gap: 14px;
+  grid-template-columns: 1fr;
   width: 100%;
   min-width: 0;
   margin: 0;
@@ -2161,22 +2161,22 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
 .bases-generator-stats dt {
   min-width: 0;
   color: var(--muted-warm);
-  padding: 7px 0;
-  border-bottom: 1px solid rgba(255, 208, 138, .16);
+  padding: 6px 0 0;
+  font-size: 12px;
   line-height: 1.25;
   overflow-wrap: anywhere;
 }
 .bases-generator-stats dd {
   min-width: 0;
   margin: 0;
-  padding: 7px 0;
+  padding: 0 0 6px;
   border-bottom: 1px solid rgba(255, 208, 138, .16);
   white-space: normal;
+  font-size: 13px;
   line-height: 1.25;
   overflow-wrap: anywhere;
 }
-.bases-generator-stats dt:nth-last-child(-n + 2),
-.bases-generator-stats dd:nth-last-child(-n + 2) {
+.bases-generator-stats dd:last-child {
   border-bottom: 0;
 }
 .inventory-augment-input-line {
@@ -2356,25 +2356,6 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
   text-align: center;
 }
 
-.bases-table {
-  min-width: 1220px;
-  table-layout: fixed;
-}
-.bases-table th,
-.bases-table td { padding: 9px 8px; }
-.bases-table th:nth-child(1), .bases-table td:nth-child(1) { width: 42px; }
-.bases-table th:nth-child(2), .bases-table td:nth-child(2) { width: 92px; }
-.bases-table th:nth-child(3), .bases-table td:nth-child(3) { width: 180px; }
-.bases-table th:nth-child(4), .bases-table td:nth-child(4) { width: 112px; }
-.bases-table th:nth-child(5), .bases-table td:nth-child(5) { width: 140px; }
-.bases-table th:nth-child(6), .bases-table td:nth-child(6) { width: 140px; }
-.bases-table th:nth-child(7), .bases-table td:nth-child(7) { width: 112px; }
-.bases-table th:nth-child(8), .bases-table td:nth-child(8) { width: 210px; }
-.bases-table th:nth-child(9), .bases-table td:nth-child(9),
-.bases-table th:nth-child(10), .bases-table td:nth-child(10) { width: 92px; }
-.bases-table th:nth-child(11), .bases-table td:nth-child(11) { width: 150px; }
-.bases-table th.bases-actions-column,
-.bases-table td.bases-actions-column { width: 58px; }
 .bases-table td:nth-child(2),
 .bases-table td:nth-child(3) { overflow-wrap: normal; word-break: normal; }
 .bases-table td:nth-child(2) { font-variant-numeric: tabular-nums; }

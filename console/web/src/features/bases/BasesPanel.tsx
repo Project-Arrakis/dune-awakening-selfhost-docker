@@ -484,9 +484,9 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
                   <div className="bases-generator-group-title">{generator.name}</div>
                   <dl className="bases-generator-stats">
                     <dt>Generators</dt>
-                    <dd>{generator.generatorCount}</dd>
-                    <dt>Fuel Cells <br />Queued</dt>
-                    <dd>{generator.fuelCells} {generator.fuelName}{generator.fuelCells === 1 ? "" : "s"}</dd>
+                    <dd>{generator.generatorCount.toLocaleString()}</dd>
+                    <dt>Fuel Queued</dt>
+                    <dd>{generator.fuelCells.toLocaleString()} {generator.fuelName}{generator.fuelCells === 1 ? "" : "s"}</dd>
                     {!hasNoQueuedFuel(generator.unstockedCount, generator.generatorCount) ? (
                       <>
                         <dt>Lowest Queued <br />Reserve</dt>
@@ -495,8 +495,8 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
                     ) : null}
                     {generator.unstockedCount ? (
                       <>
-                        <dt>No queued fuel</dt>
-                        <dd>{generator.unstockedCount} of {generator.generatorCount}</dd>
+                        <dt>No Queued Fuel</dt>
+                        <dd>{generator.unstockedCount.toLocaleString()} of {generator.generatorCount.toLocaleString()}</dd>
                       </>
                     ) : null}
                   </dl>
