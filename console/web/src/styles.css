@@ -1552,6 +1552,8 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
 .maps-overview-table th:nth-child(4), .maps-overview-table td:nth-child(4) { width: 26%; }
 .maps-overview-table th:nth-child(5), .maps-overview-table td:nth-child(5) { width: 14%; }
 .maps-overview-table .inline-edit-row td { width: auto; max-width: none; white-space: normal; overflow: visible; text-overflow: clip; }
+.map-runtime-status { display: grid; justify-items: start; gap: 5px; min-width: 0; }
+.map-runtime-status-detail { display: block; max-width: 28rem; color: #d8b15f; font-size: 11px; font-weight: 700; line-height: 1.25; white-space: normal; overflow-wrap: anywhere; }
 .sietch-child-row td { background: rgba(255, 208, 138, .035); }
 .sietch-child-row td:first-child { padding-left: 28px; }
 .sietch-child-name { display: block; color: #e9dcc8; font-weight: 700; }

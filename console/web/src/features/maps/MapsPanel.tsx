@@ -1604,7 +1604,7 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
         const rowSietchRestartResultActive = Boolean(rowResultActive && mapsResult && mapsResultScope === "maps" && isSietchRestartResult(mapsResult));
         const rowForceDespawnResultActive = Boolean(rowResultActive && mapsResult && mapsResultScope === "maps" && isForceDespawnResult(mapsResult) && !isDeepDesertDualResult(mapsResult));
         const rowForceSpawnResultActive = Boolean(rowResultActive && mapsResult && mapsResultScope === "maps" && isForceSpawnResult(mapsResult));
-        return <Fragment key={rowName}><tr><td>{isSurvivalRow ? <SietchMapName name={rowName} sietch={primarySurvivalSietch} draft={primaryDraft} /> : rowName}</td><td><MapRuntimeStatus value={displayStatus} /></td><td>{String(row.mode || "Not Available")}</td><td><MemoryUsageBar row={memoryRow} fallback={liveMemoryFallback(row)} configuredLimit={row.memory} /></td><td className="actions-column"><button className="stable-action-button" onClick={() => selectMap(row)}>{isSelected ? "Close" : "Edit"}</button></td></tr>
+        return <Fragment key={rowName}><tr><td>{isSurvivalRow ? <SietchMapName name={rowName} sietch={primarySurvivalSietch} draft={primaryDraft} /> : rowName}</td><td><MapRuntimeStatus value={displayStatus} detail={row.statusDetail} /></td><td>{String(row.mode || "Not Available")}</td><td><MemoryUsageBar row={memoryRow} fallback={liveMemoryFallback(row)} configuredLimit={row.memory} /></td><td className="actions-column"><button className="stable-action-button" onClick={() => selectMap(row)}>{isSelected ? "Close" : "Edit"}</button></td></tr>
           {isSelected && <tr className="inline-edit-row" key={`${rowName}-edit`}><td colSpan={5}>
             <section className="inline-edit-panel">
               <div className="panel-title"><h4>Edit {rowName}</h4></div>
@@ -2008,10 +2008,12 @@ function SietchName({ sietch, draft }: { sietch: SietchRow; draft?: { password: 
   return <span className="map-name-with-lock sietch-name-with-lock">{sietchHasPassword(sietch, draft) && <Lock size={15} aria-label="Password set" />}<span>{sietch.displayName}</span></span>;
 }
 
-function MapRuntimeStatus({ value }: { value: unknown }) {
+export function MapRuntimeStatus({ value, detail }: { value: unknown; detail?: unknown }) {
   const label = String(value || "Not Available");
-  return <span className="map-runtime-status" title={mapRuntimeStatusDetail(label)}>
+  const explanation = String(detail || mapRuntimeStatusDetail(label));
+  return <span className="map-runtime-status" title={explanation}>
     <StatusPill value={label} />
+    {detail ? <small className="map-runtime-status-detail">{String(detail)}</small> : null}
   </span>;
 }
 
@@ -2323,7 +2325,7 @@ function isMissingPersistedTaskError(error: unknown) {
   return /task not found|404/i.test(message);
 }
 
-function parseMapRows(text: string): Record<string, unknown>[] {
+export function parseMapRows(text: string): Record<string, unknown>[] {
   const parsed = parseJsonMaybe(text);
   if (parsed && typeof parsed === "object") {
     const record = parsed as Record<string, unknown>;
@@ -2347,9 +2349,14 @@ function parseMapRows(text: string): Record<string, unknown>[] {
     const assigned = line.match(/\bAssigned:\s*(\d+)/i)?.[1] || "";
     const partitions = line.match(/\bPartitions:\s*(\d+)/i)?.[1] || "";
     const mode = friendlyMapMode(line.match(/\bCurrent:\s*(dynamic|always-on|overmap-active|disabled)\b/i)?.[1] || line.match(/\b(dynamic|always-on|overmap-active|disabled)\b/i)?.[1] || "");
+    const memoryBlock = line.match(/\bBlock:\s*host-memory\s+available=(\d+)GiB\s+required=(\d+)GiB\s+requested=(\d+)GiB\s+reserve=(\d+)GiB\s+swap-free=(\d+)GiB/i);
+    const statusDetail = memoryBlock
+      ? `Waiting for physical RAM: ${memoryBlock[1]} GB available; ${memoryBlock[2]} GB required (${memoryBlock[3]} GB map + ${memoryBlock[4]} GB safety reserve). Swap is emergency-only and is not used as startup capacity.`
+      : "";
     return {
       map,
       status: assigned && Number(assigned) > 0 ? "Starting" : /^Always On$/i.test(mode) ? "Queued" : "Not Running",
+      statusDetail,
       mode,
       partitions: partitions || "Unknown",
       assigned: assigned || "Unknown",

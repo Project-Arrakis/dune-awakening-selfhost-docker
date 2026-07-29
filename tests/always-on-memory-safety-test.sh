@@ -35,6 +35,30 @@ if output="$(run_safety check-map DeepDesert_1 31 2>&1)"; then
 fi
 grep -Fq 'Automatic startup was deferred' <<<"$output"
 grep -Fq 'swap-free=32GiB' <<<"$output"
+grep -Fq 'required=21GiB' <<<"$output"
+
+map_status="$(run_safety map-status DeepDesert_1 31)"
+grep -Fq 'state=blocked reason=host-memory' <<<"$map_status"
+grep -Fq 'required_gib=21' <<<"$map_status"
+
+# Autoscaler checks log a block immediately, suppress identical loop noise,
+# repeat it periodically, and reset as soon as the map becomes admissible.
+wait_state="$test_root/waits"
+run_throttled() {
+  (
+    cd "$repo_root"
+    DUNE_HOST_MEMORY_MEMINFO_FILE="$meminfo" \
+      DUNE_HOST_MEMORY_WAIT_STATE_DIR="$wait_state" \
+      DUNE_HOST_MEMORY_WAIT_NOW_EPOCH="$1" \
+      "$repo_root/runtime/scripts/host-memory-safety.sh" check-map-throttled DeepDesert_1 31
+  )
+}
+if first_wait="$(run_throttled 100 2>&1)"; then exit 1; fi
+grep -Fq 'WAIT always-on' <<<"$first_wait"
+if repeated_wait="$(run_throttled 101 2>&1)"; then exit 1; fi
+[ -z "$repeated_wait" ]
+if reminder_wait="$(run_throttled 400 2>&1)"; then exit 1; fi
+grep -Fq 'WAIT always-on' <<<"$reminder_wait"
 
 # Swap remains visible in diagnostics but cannot make an unsafe launch pass.
 status="$(run_safety status)"
@@ -44,6 +68,11 @@ grep -Fq 'swap_free_gib=32' <<<"$status"
 write_meminfo $((64 * 1024 * 1024)) $((40 * 1024 * 1024)) $((8 * 1024 * 1024))
 [ "$(run_safety recommended-parallelism)" = "3" ]
 run_safety check-map DeepDesert_1 31
+run_throttled 401
+
+write_meminfo $((30 * 1024 * 1024)) $((12 * 1024 * 1024)) $((32 * 1024 * 1024))
+if reset_wait="$(run_throttled 402 2>&1)"; then exit 1; fi
+grep -Fq 'WAIT always-on' <<<"$reset_wait"
 
 # Partition overrides use the exact same effective limit as the launcher.
 write_meminfo $((30 * 1024 * 1024)) $((8 * 1024 * 1024)) 0
