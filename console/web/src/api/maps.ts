@@ -60,6 +60,8 @@ export type MapRuntimeSettings = {
   hostMemorySafetyLimited: boolean;
   physicalMemoryGiB: number;
   hostMemoryReserveGiB: number;
+  automaticHostMemoryReserveGiB: number;
+  hostMemoryReserveConfigured: boolean;
 };
 
 export type SpicefieldTypeRow = {
@@ -128,7 +130,7 @@ export const mapsApi = {
   setMode: (body: { map: string; mode: string; confirmation: string }) => post<{ task: Task }>("/api/maps/mode", body),
   saveMapSettings: (body: { map: string; partitionId?: string; mode?: string; memory?: string; modeChanged: boolean; memoryChanged: boolean; running: boolean; confirmation: string }) => post<{ task: Task }>("/api/maps/settings", body),
   runtimeSettings: () => api<MapRuntimeSettings>("/api/maps/runtime-settings"),
-  saveRuntimeSettings: (body: { alwaysOnStartupParallelism: number }) => post<MapRuntimeSettings>("/api/maps/runtime-settings", body),
+  saveRuntimeSettings: (body: { alwaysOnStartupParallelism: number; hostMemoryProtectionEnabled: boolean; hostMemoryReserveGiB: number | null }) => post<MapRuntimeSettings>("/api/maps/runtime-settings", body),
   reconcile: (confirmation: string) => post<{ task: Task }>("/api/maps/reconcile", { confirmation }),
   spawn: (target: string, confirmation: string) => post<{ task: Task }>("/api/maps/spawn", { target, confirmation }),
   despawn: (target: string, confirmation: string) => post<{ task: Task }>("/api/maps/despawn", { target, confirmation }),

@@ -258,6 +258,14 @@ function friendlySettingName(key: string) {
   return key.replace(/_/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
+function alwaysOnParallelismLimit(settings: MapRuntimeSettings | null, protectionEnabled: boolean, reserveMode: "automatic" | "custom", reserveValue: string) {
+  if (!protectionEnabled) return 16;
+  const physical = settings?.physicalMemoryGiB || 0;
+  const reserve = reserveMode === "automatic" ? settings?.automaticHostMemoryReserveGiB || 4 : Number(reserveValue);
+  if (!physical || !Number.isFinite(reserve) || reserve < 1 || reserve >= physical) return settings?.maxAlwaysOnStartupParallelism || 1;
+  return Math.max(1, Math.min(16, Math.floor((physical - reserve) / 16)));
+}
+
 export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, waitForTaskWithUpdates, taskTechnicalDetails }: MapsPanelProps) {
   const [mapsText, setMapsText] = useState("");
   const [memoryText, setMemoryText] = useState("");
@@ -285,6 +293,9 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
   const [memorySwapResult, setMemorySwapResult] = useState<HomeTaskResult | null>(null);
   const [runtimeSettings, setRuntimeSettings] = useState<MapRuntimeSettings | null>(null);
   const [startupParallelism, setStartupParallelism] = useState("1");
+  const [hostMemoryProtection, setHostMemoryProtection] = useState(true);
+  const [hostMemoryReserveMode, setHostMemoryReserveMode] = useState<"automatic" | "custom">("automatic");
+  const [hostMemoryReserve, setHostMemoryReserve] = useState("4");
   const [runtimeSettingsSaving, setRuntimeSettingsSaving] = useState(false);
   const [runtimeSettingsResult, setRuntimeSettingsResult] = useState<HomeTaskResult | null>(null);
   const [combatStateByMap, setCombatStateByMap] = useState<Record<string, MapCombatStateResult>>({});
@@ -646,6 +657,9 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
     const settings = await mapsApi.runtimeSettings();
     setRuntimeSettings(settings);
     setStartupParallelism(String(settings.alwaysOnStartupParallelism));
+    setHostMemoryProtection(settings.hostMemoryProtectionEnabled);
+    setHostMemoryReserveMode(settings.hostMemoryReserveConfigured ? "custom" : "automatic");
+    setHostMemoryReserve(String(settings.hostMemoryReserveGiB));
   }
   async function loadSpicefields(options: { preserveDrafts?: boolean } = {}) {
     const result = await mapsApi.spicefields();
@@ -791,19 +805,46 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
     }
   }
   async function saveRuntimeSettings() {
-    const max = runtimeSettings?.maxAlwaysOnStartupParallelism || 16;
+    const max = alwaysOnParallelismLimit(runtimeSettings, hostMemoryProtection, hostMemoryReserveMode, hostMemoryReserve);
     const value = Number(startupParallelism);
     if (!Number.isInteger(value) || value < 1 || value > max) {
       setRuntimeSettingsResult({ status: "failed", title: "Startup Setting Not Saved", message: `Use a whole number from 1 to ${max}.` });
       return;
     }
+    const reserve = hostMemoryReserveMode === "automatic" ? null : Number(hostMemoryReserve);
+    const maxReserve = Math.max(1, (runtimeSettings?.physicalMemoryGiB || 2) - 1);
+    if (reserve !== null && (!Number.isInteger(reserve) || reserve < 1 || reserve > maxReserve)) {
+      setRuntimeSettingsResult({ status: "failed", title: "Startup Setting Not Saved", message: `Use a physical RAM reserve from 1 to ${maxReserve} GB, or select Automatic.` });
+      return;
+    }
+    const loweringProtection = runtimeSettings ? (
+      runtimeSettings.hostMemoryProtectionEnabled && !hostMemoryProtection
+      || hostMemoryProtection && reserve !== null && reserve < runtimeSettings.hostMemoryReserveGiB
+    ) : false;
+    if (loweringProtection && !(await confirmAction("Reduce Always-On host memory protection? This can allow more maps to start, but may make the host slow or unresponsive under memory pressure.", {
+      title: "Reduce Host Memory Protection",
+      confirmLabel: "Save Protection Settings",
+      danger: true,
+      details: [
+        { label: "Protection", value: hostMemoryProtection ? "Enabled" : "Disabled", tone: hostMemoryProtection ? undefined : "danger" },
+        { label: "Physical RAM Reserve", value: hostMemoryProtection ? (reserve === null ? `Automatic (${runtimeSettings?.automaticHostMemoryReserveGiB || 4} GB)` : `${reserve} GB`) : "Not enforced" },
+        { label: "Dynamic Maps", value: "Not affected" }
+      ]
+    }))) return;
     setRuntimeSettingsSaving(true);
     setRuntimeSettingsResult(null);
     try {
-      const next = await mapsApi.saveRuntimeSettings({ alwaysOnStartupParallelism: value });
+      const next = await mapsApi.saveRuntimeSettings({
+        alwaysOnStartupParallelism: value,
+        hostMemoryProtectionEnabled: hostMemoryProtection,
+        hostMemoryReserveGiB: reserve
+      });
       setRuntimeSettings(next);
       setStartupParallelism(String(next.alwaysOnStartupParallelism));
-      setRuntimeSettingsResult({ status: "succeeded", title: "Startup Setting Saved", message: "Applies to the next always-on reconcile." });
+      setHostMemoryProtection(next.hostMemoryProtectionEnabled);
+      setHostMemoryReserveMode(next.hostMemoryReserveConfigured ? "custom" : "automatic");
+      setHostMemoryReserve(String(next.hostMemoryReserveGiB));
+      setRuntimeSettingsResult({ status: "succeeded", title: "Startup Settings Saved", message: "Applies to Always-On map startup only. Dynamic maps remain available on demand." });
     } catch (error) {
       setRuntimeSettingsResult({ status: "failed", title: "Startup Setting Failed", message: error instanceof Error ? error.message : String(error) });
     } finally {
@@ -1539,8 +1580,11 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
   const modifiersAvailable = mapsLoaded;
   const advancedAvailable = mapsLoaded;
   const runtimeParallelismValue = runtimeSettings?.alwaysOnStartupParallelism ?? 1;
-  const runtimeParallelismMax = runtimeSettings?.maxAlwaysOnStartupParallelism ?? 16;
-  const startupParallelismDirty = Number(startupParallelism) !== runtimeParallelismValue;
+  const runtimeParallelismMax = alwaysOnParallelismLimit(runtimeSettings, hostMemoryProtection, hostMemoryReserveMode, hostMemoryReserve);
+  const startupParallelismDirty = Boolean(runtimeSettings) && (Number(startupParallelism) !== runtimeParallelismValue
+    || hostMemoryProtection !== runtimeSettings?.hostMemoryProtectionEnabled
+    || (hostMemoryReserveMode === "custom") !== Boolean(runtimeSettings?.hostMemoryReserveConfigured)
+    || hostMemoryReserveMode === "custom" && Number(hostMemoryReserve) !== runtimeSettings?.hostMemoryReserveGiB);
   return <section className="panel maps-panel">
     <div className="panel-title maps-page-header"><h2>Maps & Sietches</h2><div className="maps-title-actions"><div className="memory-feature-toggle"><InfoTooltip id="memory-balancer-help" label="About Memory Balancer">Memory Balancer redistributes existing physical RAM limits between running map containers. It does not create additional memory.</InfoTooltip><button className={`switch-toggle maps-memory-balancer-toggle ${memoryBalancer?.enabled ? "enabled" : "disabled"}`} disabled={memoryBalancerSaving} onClick={() => run(toggleMemoryBalancer)}><span className="switch-label">Memory Balancer</span><strong className="switch-state">{memoryBalancer?.enabled ? "ON" : "OFF"}</strong></button></div><div className="memory-feature-toggle"><InfoTooltip id="memory-swap-help" label="About Memory Swap">Memory Swap adds controlled per-map emergency swap limits and can create a Console-managed host swap file. Turning it off removes those custom controls and restores Docker's normal swap behavior without changing existing host swap.</InfoTooltip><button className={`switch-toggle maps-memory-swap-toggle ${memorySwap?.enabled ? "enabled" : "disabled"}`} disabled={memorySwapSaving || !memorySwap} onClick={() => run(() => saveMemorySwap(!memorySwap?.enabled))}><span className="switch-label">Memory Swap</span><strong className="switch-state">{memorySwap?.enabled ? "ON" : "OFF"}</strong></button></div><button className="maps-refresh-button" disabled={loading} onClick={() => run(loadMaps)}>{loading ? "Refreshing..." : "Refresh Maps"}</button></div></div>
     {memoryBalancer?.enabled ? <div className={`maps-memory-balancer-status ${memoryBalancer.lastError ? "danger" : ""}`}>{memoryBalancer.lastError ? `Memory Balancer error: ${memoryBalancer.lastError}` : memoryBalancer.lastMessage || "Memory Balancer is monitoring running maps"}</div> : null}
@@ -1573,12 +1617,20 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
         {startupSettingsOpen && <div className="playerAdmin_toggleBody maps-startup-settings">
         <div className="maps-startup-settings-copy">
           <strong>Parallel Map Warmup</strong>
-          <p>Starts multiple always-on maps at once on stronger hosts. Higher values warm faster but spike CPU, RAM, and disk I/O.</p>
+          <p>Controls Always-On map warmup only. Dynamic maps requested by player travel are not blocked by this protection.</p>
+          <p>Automatic protection preserves 15% of physical RAM, with a 4 GB minimum. Swap remains emergency headroom rather than normal startup capacity.</p>
           {runtimeSettings?.hostMemorySafetyLimited ? <p className="warning">This host is limited to {runtimeSettings.maxAlwaysOnStartupParallelism} parallel start{runtimeSettings.maxAlwaysOnStartupParallelism === 1 ? "" : "s"} to preserve {runtimeSettings.hostMemoryReserveGiB} GB of its {runtimeSettings.physicalMemoryGiB} GB RAM.</p> : null}
         </div>
-        <div className="action-line maps-startup-settings-line">
+        <div className="maps-startup-settings-line">
           <label className="memory-number-field">Parallel Starts<input type="number" min="1" max={runtimeParallelismMax} step="1" value={startupParallelism} onChange={(event) => setStartupParallelism(event.target.value)} /></label>
-          <button disabled={!startupParallelismDirty || runtimeSettingsSaving} onClick={() => run(saveRuntimeSettings)}>{runtimeSettingsSaving ? "Saving..." : "Save Setting"}</button>
+          <div className="memory-feature-toggle maps-host-memory-protection"><InfoTooltip id="always-on-memory-protection-help" label="About Always-On host memory protection">Prevents automatic Always-On map startup from consuming the physical RAM reserved for the host. Dynamic maps requested by player travel are not subject to this check.</InfoTooltip><button type="button" className={`switch-toggle ${hostMemoryProtection ? "enabled" : "disabled"}`} disabled={runtimeSettingsSaving} onClick={() => setHostMemoryProtection((enabled) => !enabled)}><span className="switch-label">Host Memory Protection</span><strong className="switch-state">{hostMemoryProtection ? "ON" : "OFF"}</strong></button></div>
+          {hostMemoryProtection ? <label className="compact-select">Physical RAM Reserve<select value={hostMemoryReserveMode} disabled={runtimeSettingsSaving} onChange={(event) => {
+            const mode = event.target.value as "automatic" | "custom";
+            setHostMemoryReserveMode(mode);
+            if (mode === "automatic") setHostMemoryReserve(String(runtimeSettings?.automaticHostMemoryReserveGiB || 4));
+          }}><option value="automatic">Automatic ({runtimeSettings?.automaticHostMemoryReserveGiB || 4} GB)</option><option value="custom">Custom</option></select></label> : null}
+          {hostMemoryProtection && hostMemoryReserveMode === "custom" ? <label className="maps-host-memory-reserve">Reserve<span className="maps-host-memory-reserve-input"><input type="number" min="1" max={Math.max(1, (runtimeSettings?.physicalMemoryGiB || 2) - 1)} step="1" value={hostMemoryReserve} onChange={(event) => setHostMemoryReserve(event.target.value)} /><span>GB</span></span></label> : null}
+          <button className="maps-startup-settings-save" disabled={!startupParallelismDirty || runtimeSettingsSaving} onClick={() => run(saveRuntimeSettings)}>{runtimeSettingsSaving ? "Saving..." : "Save Settings"}</button>
           {runtimeSettingsResult ? <span className={`inline-task-result map-action-result maps-startup-result result-${inlineTaskResultClass(runtimeSettingsResult)}`}>
             <strong>{runtimeSettingsResult.title}</strong>
             {runtimeSettingsResult.message && <span className="inline-task-message">{runtimeSettingsResult.message}</span>}

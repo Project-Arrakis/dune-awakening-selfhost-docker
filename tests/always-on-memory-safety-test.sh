@@ -82,6 +82,20 @@ write_meminfo $((30 * 1024 * 1024)) $((8 * 1024 * 1024)) 0
     runtime/scripts/host-memory-safety.sh check-map DeepDesert_1 31
 )
 
+# Operators can deliberately lower the physical-RAM reserve for an existing
+# Always-On layout without disabling protection or treating swap as RAM.
+write_meminfo $((39 * 1024 * 1024)) $((5500 * 1024)) $((23 * 1024 * 1024))
+if output="$(cd "$repo_root" && DUNE_HOST_MEMORY_MEMINFO_FILE="$meminfo" DUNE_MEMORY_PARTITION_4=2g runtime/scripts/host-memory-safety.sh check-map SH_HarkoVillage 4 2>&1)"; then
+  echo "expected the automatic reserve to defer Artiam's low-headroom layout" >&2
+  exit 1
+fi
+grep -Fq 'requested=2GiB reserve=6GiB required=8GiB' <<<"$output"
+(
+  cd "$repo_root"
+  DUNE_HOST_MEMORY_MEMINFO_FILE="$meminfo" DUNE_MEMORY_PARTITION_4=2g DUNE_ALWAYS_ON_HOST_MEMORY_RESERVE_GIB=3 \
+    runtime/scripts/host-memory-safety.sh check-map SH_HarkoVillage 4
+)
+
 # An explicit advanced override remains available and produces a warning.
 output="$(cd "$repo_root" && DUNE_HOST_MEMORY_MEMINFO_FILE="$meminfo" DUNE_ALWAYS_ON_HOST_MEMORY_SAFETY=0 runtime/scripts/host-memory-safety.sh check-map DeepDesert_1 31)"
 grep -Fq 'host-memory safety is disabled' <<<"$output"
