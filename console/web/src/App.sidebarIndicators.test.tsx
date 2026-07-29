@@ -3,12 +3,14 @@ import { describe, expect, it } from "vitest";
 import { SidebarNavIndicators } from "./App";
 
 describe("sidebar navigation indicators", () => {
-  it("keeps the online-player count visible, including zero", () => {
+  it("shows the online-player count only when players are online", () => {
     const { rerender } = render(<SidebarNavIndicators item="Players" onlinePlayerCount={0} addonUpdatesAvailable={false} />);
-    expect(screen.getByLabelText("0 players online")).toHaveTextContent("0");
+    expect(screen.queryByLabelText("0 players online")).not.toBeInTheDocument();
 
     rerender(<SidebarNavIndicators item="Players" onlinePlayerCount={3} addonUpdatesAvailable={false} />);
-    expect(screen.getByLabelText("3 players online")).toHaveTextContent("3");
+    const indicator = screen.getByLabelText("3 players online");
+    expect(indicator).toHaveTextContent("3");
+    expect(indicator).toHaveClass("sidebar-nav-count-online");
   });
 
   it("shows the Addons icon only when an update is available", () => {
