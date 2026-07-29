@@ -956,7 +956,7 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
     };
   }, []);
   const mapRows = mergeMapAndMemoryRows(mapsText, memoryText, serversText, readinessText);
-  const sortedMapRows = sortMapRows(mapRows, mapSort.column, mapSort.direction);
+  const sortedMapRows = sortMapRows(mapRows, mapSort.column, mapSort.direction, liveMemory);
   const serverPartitionRows = parseServerPartitionRows(serversText);
   const readinessStatusByPartitionId = parseReadinessPartitionStatuses(readinessText);
   const partitionStatusById = new globalThis.Map(serverPartitionRows.map((row) => [String(row.partitionId || ""), String(row.status || "")]));
@@ -2637,7 +2637,7 @@ function coreMapRank(row: Record<string, unknown>) {
   return String(row.mode || "").trim().toLowerCase() === "core map" ? 2 : Number.POSITIVE_INFINITY;
 }
 
-export function sortMapRows(rows: Record<string, unknown>[], column: MapSortColumn | null, direction: "asc" | "desc") {
+export function sortMapRows(rows: Record<string, unknown>[], column: MapSortColumn | null, direction: "asc" | "desc", liveMemoryRows: LiveMapMemoryRow[] = []) {
   const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
   return rows.map((row, index) => ({ row, index })).sort((left, right) => {
     const leftCoreRank = coreMapRank(left.row);
@@ -2648,9 +2648,16 @@ export function sortMapRows(rows: Record<string, unknown>[], column: MapSortColu
     if (leftIsCore && rightIsCore) return leftCoreRank - rightCoreRank || left.index - right.index;
     if (!column) return left.index - right.index;
 
-    const compare = column === "memory"
-      ? memoryValueToBytes(String(left.row.memory || "")) - memoryValueToBytes(String(right.row.memory || ""))
-      : collator.compare(String(left.row[column] || ""), String(right.row[column] || ""));
+    if (column === "memory") {
+      const leftMemory = memoryForMap(liveMemoryRows, String(left.row.map || ""), left.row);
+      const rightMemory = memoryForMap(liveMemoryRows, String(right.row.map || ""), right.row);
+      if (Boolean(leftMemory) !== Boolean(rightMemory)) return leftMemory ? -1 : 1;
+      if (!leftMemory || !rightMemory) return left.index - right.index;
+      const compare = leftMemory.usedBytes - rightMemory.usedBytes || leftMemory.percent - rightMemory.percent;
+      return (direction === "asc" ? compare : -compare) || left.index - right.index;
+    }
+
+    const compare = collator.compare(String(left.row[column] || ""), String(right.row[column] || ""));
     return (direction === "asc" ? compare : -compare) || left.index - right.index;
   }).map(({ row }) => row);
 }
