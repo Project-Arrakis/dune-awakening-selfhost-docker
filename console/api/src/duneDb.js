@@ -1,7 +1,7 @@
 import { assertIdentifier, intParam, isReadOnlySql, quoteIdentifier, quoteQualified, rowsResult } from "./db.js";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import {
   craftingRecipeCatalogRows,
   compareJourneyCatalogOrder,
@@ -2871,9 +2871,12 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
     // Probed here rather than per row so the panel can disable Refill outright
     // instead of failing on click.
     const generatorRefill = await supportsGeneratorRefill(db).catch(() => false);
+    // Without world_partition the console cannot tell a running map from a
+    // stopped one, so the panel hides the queue entirely and refills stay immediate.
+    const generatorRefillQueue = generatorRefill && await supportsGeneratorRefillQueue(db).catch(() => false);
 
     return {
-      capabilities: { bases: true, generatorRefill },
+      capabilities: { bases: true, generatorRefill, generatorRefillQueue },
       totalCount: result.rows[0] ? Number(result.rows[0].total_count) : 0,
       totalBases: totalsResult.rows[0] ? Number(totalsResult.rows[0].total_bases) : 0,
       totalPieces: totalsResult.rows[0] ? Number(totalsResult.rows[0].total_pieces) : 0,
@@ -4849,6 +4852,316 @@ export async function refillBaseGenerators(db, repoRoot, baseId) {
       totalAdded: refilled.reduce((sum, entry) => sum + (entry.added || 0), 0)
     };
   });
+}
+
+// Pending-refill queue. A refill written while the base's map has a live game
+// server can be silently overwritten the next time that server flushes its own
+// state to Postgres, so a refill aimed at a running map is recorded here and
+// applied later, in the window where that map is down (see flushGeneratorRefills).
+const PENDING_REFILL_PATH = "runtime/generated/pending-generator-refills.json";
+const MAX_PENDING_REFILLS = 500;
+const MAX_REFILL_FLUSH_ATTEMPTS = 3;
+
+// Backstops for an entry that can never succeed. The attempt limit only counts
+// failures classified as permanent, and that classification is a guess from an
+// error string -- a genuinely permanent fault whose message looks transient
+// (a dropped table reads as `relation ... does not exist`) would otherwise be
+// retried on every tick forever. The age limit bounds the entry's life whatever
+// its errors say, and the retry delay keeps a failing entry from being retried
+// at the full tick rate in the meantime.
+function pendingRefillMaxAgeMs() {
+  return Number(process.env.ADMIN_REFILL_MAX_AGE_MS || 7 * 24 * 60 * 60 * 1000);
+}
+function pendingRefillRetryDelayMs() {
+  return Number(process.env.ADMIN_REFILL_RETRY_DELAY_MS || 60000);
+}
+
+function pendingRefillFile(repoRoot) {
+  return resolve(repoRoot || "", PENDING_REFILL_PATH);
+}
+
+function normalizePendingRefill(entry) {
+  const baseId = Math.floor(Number(entry?.baseId));
+  if (!Number.isInteger(baseId) || baseId < 1) return null;
+  const partitionId = Math.floor(Number(entry?.partitionId));
+  return {
+    baseId,
+    map: String(entry?.map ?? "").slice(0, 120),
+    partitionId: Number.isInteger(partitionId) && partitionId > 0 ? partitionId : 0,
+    queuedAt: typeof entry?.queuedAt === "string" ? entry.queuedAt.slice(0, 40) : "",
+    attempts: clampInt(entry?.attempts, 0, 0, MAX_REFILL_FLUSH_ATTEMPTS),
+    nextRetryAt: Number.isFinite(Number(entry?.nextRetryAt)) ? Number(entry.nextRetryAt) : 0,
+    lastError: String(entry?.lastError ?? "").slice(0, 300)
+  };
+}
+
+export function listQueuedGeneratorRefills(repoRoot) {
+  const file = pendingRefillFile(repoRoot);
+  if (!existsSync(file)) return [];
+  try {
+    const parsed = JSON.parse(readFileSync(file, "utf8"));
+    if (!Array.isArray(parsed)) return [];
+    // One entry per base, so a double-clicked button cannot queue a base twice.
+    const seen = new Set();
+    return parsed.map(normalizePendingRefill).filter((entry) => {
+      if (!entry || seen.has(entry.baseId)) return false;
+      seen.add(entry.baseId);
+      return true;
+    });
+  } catch (error) {
+    console.warn(`Ignoring unreadable pending generator refill queue: ${error?.message || error}`);
+    return [];
+  }
+}
+
+// Deliberately synchronous read-modify-write, matching saveBuybackSchedule in
+// addonJobs.js: with no await between read and write, two requests in one
+// console process cannot interleave and drop each other's entry. The temp-file
+// rename covers crash safety.
+function writeQueuedGeneratorRefills(repoRoot, entries) {
+  const file = pendingRefillFile(repoRoot);
+  mkdirSync(dirname(file), { recursive: true });
+  const temporaryPath = `${file}.${process.pid}.tmp`;
+  writeFileSync(temporaryPath, `${JSON.stringify(entries, null, 2)}\n`, { mode: 0o600 });
+  renameSync(temporaryPath, file);
+  return entries;
+}
+
+export function queueGeneratorRefill(repoRoot, { baseId, map = "", partitionId = 0, now = () => new Date() } = {}) {
+  const entry = normalizePendingRefill({ baseId, map, partitionId, queuedAt: now().toISOString() });
+  if (!entry) throw new Error("Invalid base id");
+  const others = listQueuedGeneratorRefills(repoRoot).filter((row) => row.baseId !== entry.baseId);
+  if (others.length >= MAX_PENDING_REFILLS) {
+    throw new Error(`The pending refill queue already holds ${MAX_PENDING_REFILLS} bases. Restart the affected maps to apply them first.`);
+  }
+  writeQueuedGeneratorRefills(repoRoot, [...others, entry]);
+  return entry;
+}
+
+export function cancelQueuedGeneratorRefill(repoRoot, baseId) {
+  const target = intParam(baseId, "base id", 1);
+  const entries = listQueuedGeneratorRefills(repoRoot);
+  const remaining = entries.filter((entry) => entry.baseId !== target);
+  if (remaining.length === entries.length) throw new Error("That base has no queued generator refill.");
+  writeQueuedGeneratorRefills(repoRoot, remaining);
+  return { ok: true, baseId: target, pending: remaining.length };
+}
+
+// How long a partition must stay disconnected before a write to its bases is
+// considered safe. Absence of a connection is ambiguous in a single sample: a
+// restarting map server and a Postgres restart that dropped every connection
+// look identical. A reconnecting game server returns in seconds, a restarting
+// one stays away for minutes, so requiring the gap to persist tells them apart.
+function refillDownDwellMs() {
+  return Number(process.env.ADMIN_REFILL_DOWN_DWELL_MS || 30000);
+}
+const partitionDisconnectedSince = new Map();
+
+export function _resetRefillPartitionDwellForTests() {
+  partitionDisconnectedSince.clear();
+}
+
+// Observes which partitions are safe to write to. Returns null when
+// dune.world_partition is absent: without it there is no way to tell a running
+// map from a stopped one, so queueing is not offered at all and refills stay
+// immediate (see supportsGeneratorRefillQueue).
+//
+// Connection state is read straight from pg_stat_activity, matching the
+// "DuneSandbox - <server_id>" application_name a game server connects under.
+// That is the same mechanism as the game's own dune.active_server_ids view, but
+// queried directly: pg_stat_activity is a core catalog view present on every
+// Postgres, so there is no second, weaker code path to fall back to. Testing
+// world_partition.server_id instead would be exactly that weaker path --
+// restartService on an always-on map replaces the container without ever
+// clearing it, so those partitions would read as permanently live and their
+// refills could never flush. This check is also deliberately broader than the
+// view, which additionally requires a farm_state row: a server visible here but
+// missing from farm_state still counts as connected, which errs toward leaving
+// work queued.
+//
+// Two ways a partition becomes safe:
+//   - its server_id is released entirely, which despawn does -- positive
+//     evidence the map is gone, trusted immediately so a despawn/spawn pair
+//     still gets its short window;
+//   - its server_id is still assigned but has had no connection for the whole
+//     dwell period, which covers restartService and stop/start, where the
+//     assignment lingers.
+// Anything else stays unsafe, so a momentary loss of visibility keeps refills
+// queued instead of writing them into a live base.
+export async function observeRefillPartitions(db, { now = Date.now } = {}) {
+  if (!(await tableExists(db, "world_partition"))) return null;
+  const result = await db.query(
+    `select wp.partition_id,
+            nullif(wp.server_id, '') is null as unassigned,
+            exists (
+              select 1 from pg_stat_activity sa
+              where sa.application_name = 'DuneSandbox - ' || nullif(wp.server_id, '')
+            ) as connected
+     from dune.world_partition wp`);
+
+  const timestamp = now();
+  const safe = new Set();
+  const known = new Set();
+  for (const row of result.rows || []) {
+    const partitionId = Number(row.partition_id || 0);
+    if (partitionId <= 0) continue;
+    known.add(partitionId);
+    if (row.connected) {
+      partitionDisconnectedSince.delete(partitionId);
+      continue;
+    }
+    if (row.unassigned) {
+      partitionDisconnectedSince.delete(partitionId);
+      safe.add(partitionId);
+      continue;
+    }
+    const since = partitionDisconnectedSince.get(partitionId) ?? timestamp;
+    partitionDisconnectedSince.set(partitionId, since);
+    if (timestamp - since >= refillDownDwellMs()) safe.add(partitionId);
+  }
+  for (const partitionId of [...partitionDisconnectedSince.keys()]) {
+    if (!known.has(partitionId)) partitionDisconnectedSince.delete(partitionId);
+  }
+  return { safe, known };
+}
+
+// A base outside any known partition is simulated by nothing, so it is always
+// safe; a null observation means the queue is unsupported and writes stay
+// immediate, matching the behaviour before the queue existed.
+function partitionWriteSafe(observed, partitionId) {
+  if (!observed) return true;
+  if (partitionId <= 0) return true;
+  if (!observed.known.has(partitionId)) return true;
+  return observed.safe.has(partitionId);
+}
+
+export async function supportsGeneratorRefillQueue(db) {
+  if (!(await supportsGeneratorRefill(db))) return false;
+  return tableExists(db, "world_partition");
+}
+
+// The map and partition a base sits in. Resolved server-side on every request:
+// whether a write is safe must never depend on a client-supplied map name.
+export async function baseMapLocation(db, baseId) {
+  const target = intParam(baseId, "base id", 1);
+  const result = await db.query(`
+    select coalesce(a.map, '') as map,
+           coalesce(a.partition_id, 0)::int as partition_id
+    from dune.buildings b
+    join dune.building_instances bi on bi.building_id = b.id
+    join dune.actor_fgl_entities afe on afe.entity_id = bi.owner_entity_id
+    join dune.actors a on a.id = afe.actor_id
+    where b.id = $1
+    limit 1`, [target]);
+  const row = result.rows[0];
+  if (!row) throw new Error("That base was not found.");
+  return { map: String(row.map || ""), partitionId: Number(row.partition_id || 0) };
+}
+
+// One probe for the refill route: where the base lives, and whether its map is
+// live enough that an immediate write would be at risk.
+export async function baseRefillTarget(db, baseId) {
+  const observed = await observeRefillPartitions(db);
+  // Check queue support first. With no way to tell a running map from a stopped
+  // one there is nothing to decide, and resolving the base's location would
+  // mean querying dune.actors columns an older schema need not have -- which
+  // would turn an unsupported queue into a broken refill.
+  if (!observed) return { map: "", partitionId: 0, queueSupported: false, writeSafeNow: true };
+  const location = await baseMapLocation(db, baseId);
+  return {
+    ...location,
+    queueSupported: true,
+    writeSafeNow: partitionWriteSafe(observed, location.partitionId)
+  };
+}
+
+// A database that is restarting, or a schema mid-migration, will succeed on a
+// later tick. Mirrors the filter runBackgroundTick and the death poller already
+// use for the same "the stack is moving, not broken" states.
+function isTransientFlushError(message) {
+  return /connect|ECONNREFUSED|ECONNRESET|terminated|timeout|does not exist|relation|shutting down|starting up|deadlock|too many clients/i.test(message);
+}
+
+// Applies every queued refill whose map is currently down and leaves the rest
+// queued. Driven by a background tick rather than by the restart task runner:
+// stop-all.sh removes the Postgres container along with the game servers, so
+// there is no post-stop moment when the console could still write. The window
+// that does exist is on the way back up (start-all.sh brings Postgres up well
+// before the map servers) plus any single-map despawn, and polling for "this
+// partition has no server" catches both -- including restarts triggered by the
+// scheduler, an IP change, or the CLI, none of which run through the console.
+export async function flushGeneratorRefills(db, repoRoot, { now = Date.now } = {}) {
+  const pending = listQueuedGeneratorRefills(repoRoot);
+  if (!pending.length) return { flushed: [], pending: 0 };
+  const observed = await observeRefillPartitions(db, { now });
+  if (!observed) return { flushed: [], pending: pending.length, unsupported: true };
+
+  const flushed = [];
+  const outcomes = new Map();
+  const timestamp = now();
+  for (const entry of pending) {
+    // Age is checked before write-safety: an expired entry should be cleared
+    // even for a map that never comes down again.
+    const queuedMs = Date.parse(entry.queuedAt);
+    if (Number.isFinite(queuedMs) && timestamp - queuedMs >= pendingRefillMaxAgeMs()) {
+      const message = `Queued for longer than the ${Math.round(pendingRefillMaxAgeMs() / 3600000)}h limit without being applied.`;
+      outcomes.set(entry.baseId, { queuedAt: entry.queuedAt, keep: false });
+      flushed.push({ baseId: entry.baseId, map: entry.map, partitionId: entry.partitionId, ok: false, expired: true, dropped: true, error: message });
+      continue;
+    }
+    if (!partitionWriteSafe(observed, entry.partitionId)) continue;
+    if (entry.nextRetryAt && timestamp < entry.nextRetryAt) continue;
+    try {
+      const result = await refillBaseGenerators(db, repoRoot, entry.baseId);
+      outcomes.set(entry.baseId, { queuedAt: entry.queuedAt, keep: false });
+      flushed.push({
+        baseId: entry.baseId,
+        map: entry.map,
+        partitionId: entry.partitionId,
+        ok: true,
+        totalAdded: result.totalAdded,
+        devices: result.devices
+      });
+    } catch (error) {
+      // A base can be released or deleted while its refill sits queued, so a
+      // failure that will never succeed must not be retried on every tick
+      // forever. Transient failures do not burn an attempt: start-all.sh runs
+      // update-db.sh inside the very window this flush targets, and three
+      // strikes at a few seconds apart would otherwise all land inside one
+      // migration and silently discard the operator's request.
+      const message = String(error?.message || error).slice(0, 300);
+      const attempts = isTransientFlushError(message) ? entry.attempts : entry.attempts + 1;
+      const dropped = attempts >= MAX_REFILL_FLUSH_ATTEMPTS;
+      const nextRetryAt = timestamp + pendingRefillRetryDelayMs();
+      outcomes.set(entry.baseId, { queuedAt: entry.queuedAt, keep: !dropped, attempts, nextRetryAt, lastError: message });
+      flushed.push({ baseId: entry.baseId, map: entry.map, partitionId: entry.partitionId, ok: false, attempts, dropped, error: message });
+    }
+  }
+  const remaining = outcomes.size ? reconcileQueuedGeneratorRefills(repoRoot, outcomes) : pending;
+  return { flushed, pending: remaining.length };
+}
+
+// Applies this flush's outcomes to whatever the queue holds *now*, in one
+// synchronous read-modify-write. The loop above awaits a database transaction
+// per base, and a refill queued or canceled during one of those awaits would be
+// lost if the pre-flush snapshot were written back wholesale.
+//
+// An entry is only touched when its queuedAt still matches the one that was
+// processed, so a base canceled and re-queued mid-flush keeps its new entry.
+// Cancelling a base whose refill is already mid-transaction cannot recall the
+// write; it only stops the entry coming back.
+function reconcileQueuedGeneratorRefills(repoRoot, outcomes) {
+  const next = [];
+  for (const entry of listQueuedGeneratorRefills(repoRoot)) {
+    const outcome = outcomes.get(entry.baseId);
+    if (!outcome || outcome.queuedAt !== entry.queuedAt) {
+      next.push(entry);
+      continue;
+    }
+    if (outcome.keep) next.push({ ...entry, attempts: outcome.attempts, nextRetryAt: outcome.nextRetryAt, lastError: outcome.lastError });
+  }
+  writeQueuedGeneratorRefills(repoRoot, next);
+  return next;
 }
 
 export async function giveItemToPlayer(db, playerId, { itemName = "", itemId = "", templateId = "", quantity = 1, quality = 1, augments = [], augmentQuality = 1, allowOnlinePreAugmented = false }) {

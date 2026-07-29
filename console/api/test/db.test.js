@@ -1,7 +1,20 @@
 import test, { beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { assertIdentifier, discoverDbConfig, isReadOnlySql, quoteQualified, redactDbError, rowsResult } from "../src/db.js";
+import {
+  _resetRefillPartitionDwellForTests,
+  baseRefillTarget,
+  cancelQueuedGeneratorRefill,
+  flushGeneratorRefills,
+  listQueuedGeneratorRefills,
+  observeRefillPartitions,
+  queueGeneratorRefill,
+  supportsGeneratorRefillQueue
+} from "../src/duneDb.js";
 import { addCurrency, addFactionReputation, addIntel, addonLeadershipPlayers, addonOpsHealthFarms, addonOpsHealthPlayers, addonOpsHealthSummary, addonOpsHealthSummaryV2, addSpecializationXp, applyLandsraadMilestonePreset, augmentInventoryItem, augmentNewestPlayerItem, baseGenerators, changeDunePassword, completeJourneyNode, completeTutorial, dbStatus, deleteInventoryItem, exportBaseAsBlueprint, generatorUptimePolicy, giveItemToPlayer, giveItemToStorage, guildMembers, landsraadOverview, listBases, listGuilds, listPlayers, listRoutines, listSpicefieldTypes, listTables, liveMapPlayers, liveMapServices, playerCraftingRecipes, playerCurrency, playerFactions, playerIntel, playerInventory, playerJourney, playerPortalSnapshots, playerPosition, playerProfile, playerProgression, playerResearchItems, playerSolarisCoinTotal, playerVitals, portalGeneratorFuel, portalVehicles, refillBaseGenerators, repairVehicleDecay, resetJourneyNode, resetTutorial, routineDefinition, runSql, setLandsraadPlayerContribution, supportsGeneratorRefill, tablePreview, teleportOfflinePlayerToCoords, unlockCraftingRecipe, unlockResearchItem, updateInventoryItem, updateLandsraadRewardTier, updateLandsraadTaskGoal, updateLandsraadTermTaskGoals, updateSpicefieldType, updateTableRow, UnsupportedCapabilityError, _resetPlayerTargetCacheForTests } from "../src/duneDb.js";
 
 beforeEach(() => {
@@ -4217,4 +4230,365 @@ test("generator refill rejects an invalid base id before writing anything", asyn
   const { db } = fakeRefillDb(calls, { devices: [FUEL_DEVICE] });
   await assert.rejects(() => refillBaseGenerators(db, "", 0), /Invalid base id/);
   assert.equal(calls.some((call) => String(call.text).includes("insert into dune.items")), false);
+});
+
+// --- Pending refill queue ---------------------------------------------------
+
+// Must await fn: without it the finally deletes the directory at the callback's
+// first await, and everything after that reads an empty queue.
+async function withTempRepoRoot(fn) {
+  const repoRoot = mkdtempSync(join(tmpdir(), "dune-refill-queue-"));
+  try {
+    return await fn(repoRoot);
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+}
+
+// Extends fakeRefillDb with the partition observation the queue needs. Each
+// entry of `partitions` is { partitionId, connected, unassigned } -- "unassigned"
+// meaning world_partition.server_id was released, as despawn does.
+function fakeQueueDb(calls, { devices = [], items = {}, partitions = [], basePartition = null, hasWorldPartition = true } = {}) {
+  const { state, db } = fakeRefillDb(calls, { devices, items });
+  const inner = db.query;
+  const query = async (text, values = []) => {
+    // Record here too: the branches below return without reaching fakeRefillDb,
+    // which is where calls are normally pushed.
+    if (text.includes("to_regclass") || text.includes("from dune.world_partition")) calls.push({ text, values });
+    if (text.includes("to_regclass")) {
+      const target = String(values[0]);
+      if (target === "dune.world_partition") return { rows: [{ exists: hasWorldPartition }] };
+    }
+    if (text.includes("from dune.world_partition")) {
+      return { rows: partitions.map((partition) => ({
+        partition_id: partition.partitionId,
+        unassigned: Boolean(partition.unassigned),
+        connected: Boolean(partition.connected)
+      })) };
+    }
+    if (text.includes("coalesce(a.partition_id, 0)::int as partition_id")) {
+      return { rows: basePartition ? [basePartition] : [] };
+    }
+    return inner(text, values);
+  };
+  return { state, db: { query, transaction: async (fn) => fn({ query }) } };
+}
+
+// Every partition the queue tests reference, with a live server attached.
+const LIVE_PARTITIONS = [{ partitionId: 3, connected: true }, { partitionId: 9, connected: true }];
+// The same partitions after a despawn released their server_id.
+const DESPAWNED_PARTITIONS = [{ partitionId: 3, unassigned: true }, { partitionId: 9, unassigned: true }];
+
+test("refill queue stores one entry per base and survives a re-read", async () => {
+  await withTempRepoRoot((repoRoot) => {
+    assert.deepEqual(listQueuedGeneratorRefills(repoRoot), []);
+
+    queueGeneratorRefill(repoRoot, { baseId: 482, map: "Survival_1", partitionId: 3 });
+    queueGeneratorRefill(repoRoot, { baseId: 517, map: "Overmap", partitionId: 9 });
+    // Re-queueing the same base must replace its entry, not add a second one.
+    queueGeneratorRefill(repoRoot, { baseId: 482, map: "Survival_1", partitionId: 3 });
+
+    const pending = listQueuedGeneratorRefills(repoRoot);
+    assert.deepEqual(pending.map((entry) => entry.baseId), [517, 482]);
+    assert.equal(pending.find((entry) => entry.baseId === 482).map, "Survival_1");
+    assert.equal(pending.find((entry) => entry.baseId === 482).partitionId, 3);
+  });
+});
+
+test("refill queue cancel removes only the requested base and reports a missing one", async () => {
+  await withTempRepoRoot((repoRoot) => {
+    queueGeneratorRefill(repoRoot, { baseId: 482, map: "Survival_1", partitionId: 3 });
+    queueGeneratorRefill(repoRoot, { baseId: 517, map: "Overmap", partitionId: 9 });
+
+    const result = cancelQueuedGeneratorRefill(repoRoot, 482);
+
+    assert.equal(result.pending, 1);
+    assert.deepEqual(listQueuedGeneratorRefills(repoRoot).map((entry) => entry.baseId), [517]);
+    assert.throws(() => cancelQueuedGeneratorRefill(repoRoot, 482), /no queued generator refill/);
+  });
+});
+
+test("refill queue ignores a corrupt file rather than blocking the panel", async () => {
+  await withTempRepoRoot((repoRoot) => {
+    queueGeneratorRefill(repoRoot, { baseId: 482, map: "Survival_1", partitionId: 3 });
+    writeFileSync(join(repoRoot, "runtime/generated/pending-generator-refills.json"), "{not json");
+    assert.deepEqual(listQueuedGeneratorRefills(repoRoot), []);
+  });
+});
+
+test("a released server_id is safe at once, so a despawn/spawn pair gets its window", async () => {
+  _resetRefillPartitionDwellForTests();
+  const calls = [];
+  const { db } = fakeQueueDb(calls, { partitions: [{ partitionId: 3, unassigned: true }, { partitionId: 9, connected: true }] });
+
+  const observed = await observeRefillPartitions(db);
+
+  assert.equal(observed.safe.has(3), true);
+  assert.equal(observed.safe.has(9), false);
+  // Connection state must come from pg_stat_activity, not from a server_id that
+  // restartService leaves behind on an always-on map.
+  assert.ok(calls.some((call) => String(call.text).includes("pg_stat_activity")));
+  assert.equal(calls.some((call) => String(call.text).includes("nullif(server_id, '') is not null")), false);
+});
+
+// The regression guard for the Postgres-restart hazard: losing every game
+// server's connection at once must not read as "every map is down".
+test("a still-assigned partition needs the full dwell before it is safe to write", async () => {
+  _resetRefillPartitionDwellForTests();
+  // server_id is still assigned; only the connection is gone.
+  const { db } = fakeQueueDb([], { partitions: [{ partitionId: 3, connected: false }] });
+
+  const first = await observeRefillPartitions(db, { now: () => 1_000_000 });
+  assert.equal(first.safe.has(3), false);
+
+  const justUnder = await observeRefillPartitions(db, { now: () => 1_000_000 + 29_999 });
+  assert.equal(justUnder.safe.has(3), false);
+
+  const elapsed = await observeRefillPartitions(db, { now: () => 1_000_000 + 30_000 });
+  assert.equal(elapsed.safe.has(3), true);
+});
+
+test("a reconnecting game server resets the dwell instead of ageing into safety", async () => {
+  _resetRefillPartitionDwellForTests();
+  const disconnected = fakeQueueDb([], { partitions: [{ partitionId: 3, connected: false }] });
+  const reconnected = fakeQueueDb([], { partitions: [{ partitionId: 3, connected: true }] });
+
+  // Postgres restarted: the connection vanishes, then returns seconds later.
+  await observeRefillPartitions(disconnected.db, { now: () => 1_000_000 });
+  await observeRefillPartitions(reconnected.db, { now: () => 1_000_005 });
+  await observeRefillPartitions(disconnected.db, { now: () => 1_000_010 });
+
+  // The clock restarted at the reconnect, so the original timestamp cannot
+  // carry a still-running map across the dwell threshold.
+  const afterOriginalDwell = await observeRefillPartitions(disconnected.db, { now: () => 1_000_000 + 30_000 });
+  assert.equal(afterOriginalDwell.safe.has(3), false);
+});
+
+test("queueing is unsupported without world_partition, so refills stay immediate", async () => {
+  _resetRefillPartitionDwellForTests();
+  const calls = [];
+  const { db } = fakeQueueDb(calls, { devices: [FUEL_DEVICE], hasWorldPartition: false });
+
+  assert.equal(await supportsGeneratorRefillQueue(db), false);
+  assert.equal(await observeRefillPartitions(db), null);
+
+  const target = await baseRefillTarget(db, 482);
+  assert.equal(target.queueSupported, false);
+  assert.equal(target.writeSafeNow, true);
+});
+
+test("a base on a running map is not write-safe, one on a despawned map is", async () => {
+  _resetRefillPartitionDwellForTests();
+  const running = fakeQueueDb([], {
+    partitions: LIVE_PARTITIONS,
+    basePartition: { map: "Survival_1", partition_id: 3 }
+  });
+  const runningTarget = await baseRefillTarget(running.db, 482);
+  assert.deepEqual(runningTarget, { map: "Survival_1", partitionId: 3, queueSupported: true, writeSafeNow: false });
+
+  _resetRefillPartitionDwellForTests();
+  const stopped = fakeQueueDb([], {
+    partitions: DESPAWNED_PARTITIONS,
+    basePartition: { map: "Survival_1", partition_id: 3 }
+  });
+  const stoppedTarget = await baseRefillTarget(stopped.db, 482);
+  assert.equal(stoppedTarget.writeSafeNow, true);
+  assert.equal(stoppedTarget.queueSupported, true);
+});
+
+test("a base in a partition that no longer exists is write-safe rather than stuck", async () => {
+  _resetRefillPartitionDwellForTests();
+  const { db } = fakeQueueDb([], {
+    partitions: LIVE_PARTITIONS,
+    basePartition: { map: "Survival_1", partition_id: 4242 }
+  });
+
+  const target = await baseRefillTarget(db, 482);
+
+  assert.equal(target.writeSafeNow, true);
+});
+
+// The regression guard for the lost-write hazard: the flush awaits a database
+// transaction per base, and anything queued during one of those awaits must
+// survive the queue file being rewritten.
+test("flush preserves a refill queued while it was awaiting the database", async () => {
+  await withTempRepoRoot(async (repoRoot) => {
+    _resetRefillPartitionDwellForTests();
+    queueGeneratorRefill(repoRoot, { baseId: 482, map: "Survival_1", partitionId: 3 });
+
+    const { db } = fakeQueueDb([], { devices: [FUEL_DEVICE], partitions: DESPAWNED_PARTITIONS });
+    const inner = db.transaction;
+    db.transaction = async (fn) => {
+      // Stands in for an operator clicking Refill on another base mid-flush.
+      queueGeneratorRefill(repoRoot, { baseId: 517, map: "Overmap", partitionId: 9 });
+      return inner(fn);
+    };
+
+    const result = await flushGeneratorRefills(db, repoRoot);
+
+    assert.deepEqual(result.flushed.map((entry) => entry.baseId), [482]);
+    assert.deepEqual(listQueuedGeneratorRefills(repoRoot).map((entry) => entry.baseId), [517]);
+  });
+});
+
+test("flush does not resurrect an entry canceled while it was awaiting the database", async () => {
+  await withTempRepoRoot(async (repoRoot) => {
+    _resetRefillPartitionDwellForTests();
+    queueGeneratorRefill(repoRoot, { baseId: 482, map: "Survival_1", partitionId: 3 });
+    queueGeneratorRefill(repoRoot, { baseId: 517, map: "Overmap", partitionId: 9 });
+
+    const { db } = fakeQueueDb([], { devices: [FUEL_DEVICE], partitions: DESPAWNED_PARTITIONS });
+    const inner = db.transaction;
+    let cancelled = false;
+    db.transaction = async (fn) => {
+      if (!cancelled) {
+        cancelled = true;
+        cancelQueuedGeneratorRefill(repoRoot, 517);
+      }
+      return inner(fn);
+    };
+
+    await flushGeneratorRefills(db, repoRoot);
+
+    assert.deepEqual(listQueuedGeneratorRefills(repoRoot), []);
+  });
+});
+
+test("flush applies refills for stopped partitions and leaves running ones queued", async () => {
+  await withTempRepoRoot(async (repoRoot) => {
+    _resetRefillPartitionDwellForTests();
+    queueGeneratorRefill(repoRoot, { baseId: 482, map: "Survival_1", partitionId: 3 });
+    queueGeneratorRefill(repoRoot, { baseId: 517, map: "Overmap", partitionId: 9 });
+
+    const calls = [];
+    // Partition 9 still has a live server, so only base 482 may be written.
+    const { state, db } = fakeQueueDb(calls, {
+      devices: [FUEL_DEVICE],
+      partitions: [{ partitionId: 3, unassigned: true }, { partitionId: 9, connected: true }]
+    });
+
+    const result = await flushGeneratorRefills(db, repoRoot);
+
+    assert.deepEqual(result.flushed.map((entry) => ({ baseId: entry.baseId, ok: entry.ok })), [{ baseId: 482, ok: true }]);
+    assert.equal(result.pending, 1);
+    assert.deepEqual(listQueuedGeneratorRefills(repoRoot).map((entry) => entry.baseId), [517]);
+    assert.deepEqual(state.inserts, [{ inventoryId: "701", templateId: "Oil", stackSize: 499, positionIndex: 0 }]);
+  });
+});
+
+test("flush is a no-op with an empty queue and never queries the database", async () => {
+  await withTempRepoRoot(async (repoRoot) => {
+    const calls = [];
+    const { db } = fakeQueueDb(calls, { devices: [FUEL_DEVICE] });
+
+    const result = await flushGeneratorRefills(db, repoRoot);
+
+    assert.deepEqual(result, { flushed: [], pending: 0 });
+    assert.equal(calls.length, 0);
+  });
+});
+
+test("flush keeps retrying through a restarting database without burning attempts", async () => {
+  await withTempRepoRoot(async (repoRoot) => {
+    _resetRefillPartitionDwellForTests();
+    queueGeneratorRefill(repoRoot, { baseId: 482, map: "Survival_1", partitionId: 3 });
+
+    // start-all.sh runs update-db.sh inside the very window the flush targets,
+    // so a mid-migration error must not count toward the drop limit. Liveness
+    // still resolves; only the write fails.
+    const live = fakeQueueDb([], { devices: [FUEL_DEVICE], partitions: DESPAWNED_PARTITIONS });
+    const db = {
+      query: live.db.query,
+      transaction: async () => { throw new Error('relation "dune.items" does not exist'); }
+    };
+
+    // Step past the retry delay each round, otherwise the backoff below skips it.
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const at = 1_000_000 + attempt * 120_000;
+      const result = await flushGeneratorRefills(db, repoRoot, { now: () => at });
+      assert.equal(result.flushed[0].attempts, 0);
+      assert.equal(result.flushed[0].dropped, false);
+    }
+    assert.equal(listQueuedGeneratorRefills(repoRoot).length, 1);
+  });
+});
+
+// The regression guard for unbounded retries: an entry whose permanent fault
+// reads as transient must still leave the queue eventually.
+test("flush expires an entry that has outlived the maximum queue age", async () => {
+  await withTempRepoRoot(async (repoRoot) => {
+    _resetRefillPartitionDwellForTests();
+    queueGeneratorRefill(repoRoot, { baseId: 482, map: "Survival_1", partitionId: 3 });
+    const queuedAt = Date.parse(listQueuedGeneratorRefills(repoRoot)[0].queuedAt);
+
+    const live = fakeQueueDb([], { devices: [FUEL_DEVICE], partitions: DESPAWNED_PARTITIONS });
+    const db = {
+      query: live.db.query,
+      // A dropped table reads as transient forever, so only the age limit can
+      // clear this entry.
+      transaction: async () => { throw new Error('relation "dune.items" does not exist'); }
+    };
+
+    const beforeLimit = await flushGeneratorRefills(db, repoRoot, { now: () => queuedAt + 7 * 24 * 3600_000 - 1000 });
+    assert.equal(beforeLimit.flushed[0].expired, undefined);
+    assert.equal(listQueuedGeneratorRefills(repoRoot).length, 1);
+
+    const atLimit = await flushGeneratorRefills(db, repoRoot, { now: () => queuedAt + 7 * 24 * 3600_000 });
+    assert.equal(atLimit.flushed[0].expired, true);
+    assert.equal(atLimit.flushed[0].dropped, true);
+    assert.deepEqual(listQueuedGeneratorRefills(repoRoot), []);
+  });
+});
+
+test("flush backs off a failed entry instead of retrying it every tick", async () => {
+  await withTempRepoRoot(async (repoRoot) => {
+    _resetRefillPartitionDwellForTests();
+    queueGeneratorRefill(repoRoot, { baseId: 482, map: "Survival_1", partitionId: 3 });
+
+    let transactions = 0;
+    const live = fakeQueueDb([], { devices: [FUEL_DEVICE], partitions: DESPAWNED_PARTITIONS });
+    const db = {
+      query: live.db.query,
+      transaction: async () => { transactions += 1; throw new Error("connection terminated"); }
+    };
+
+    await flushGeneratorRefills(db, repoRoot, { now: () => 1_000_000 });
+    assert.equal(transactions, 1);
+
+    // Inside the 60s delay: skipped entirely, so nothing is reported for it.
+    const skipped = await flushGeneratorRefills(db, repoRoot, { now: () => 1_000_000 + 30_000 });
+    assert.deepEqual(skipped.flushed, []);
+    assert.equal(transactions, 1);
+
+    await flushGeneratorRefills(db, repoRoot, { now: () => 1_000_000 + 60_000 });
+    assert.equal(transactions, 2);
+  });
+});
+
+test("flush drops an entry that keeps failing instead of retrying it forever", async () => {
+  await withTempRepoRoot(async (repoRoot) => {
+    queueGeneratorRefill(repoRoot, { baseId: 482, map: "Survival_1", partitionId: 3 });
+
+    // No devices: the base was released while its refill sat queued. Each round
+    // steps past the retry delay so the backoff does not skip it.
+    let round = 0;
+    const runFlush = () => flushGeneratorRefills(
+      fakeQueueDb([], { devices: [], partitions: DESPAWNED_PARTITIONS }).db,
+      repoRoot,
+      { now: () => 1_000_000 + (round++) * 120_000 }
+    );
+
+    const first = await runFlush();
+    assert.equal(first.flushed[0].ok, false);
+    assert.equal(first.flushed[0].attempts, 1);
+    assert.equal(first.flushed[0].dropped, false);
+    assert.equal(listQueuedGeneratorRefills(repoRoot).length, 1);
+
+    await runFlush();
+    const third = await runFlush();
+
+    assert.equal(third.flushed[0].attempts, 3);
+    assert.equal(third.flushed[0].dropped, true);
+    assert.deepEqual(listQueuedGeneratorRefills(repoRoot), []);
+  });
 });

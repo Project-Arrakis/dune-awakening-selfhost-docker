@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { Dispatch, SetStateAction } from "react";
-import { Play, Trash2 } from "lucide-react";
+import { Fuel, Play, Trash2 } from "lucide-react";
 import { serverApi, type PerformanceSnapshot } from "../../api/server";
 import { setupApi, type Task } from "../../api/setup";
 import { PortChecklist } from "../../components/PortChecklist";
@@ -10,10 +10,23 @@ import { KeyValueGrid, StatusPill, TechnicalDetails } from "../../components/com
 import { formatDisplayValue, formatUiSentence, friendlyColumnName, stripAnsi, summarizeCommandText, titleCase } from "../../lib/display";
 import { friendlyServiceName } from "../../lib/serviceDisplay";
 import { conciseTaskError, funcomTokenMismatchDetected } from "../../lib/taskDisplay";
+import { usePendingRefills } from "../../lib/usePendingRefills";
 
 export type HomeLoadResult = { statusLoaded: boolean; readinessLoaded: boolean; statusError: string; readinessError: string; statusText: string; readinessText: string };
 export type HomeTaskResult = { status: "running" | "succeeded" | "failed" | "stopped"; title: string; message?: string; details?: string };
 export type RestartLifecycleState = { stopObserved: boolean; startObserved: boolean };
+
+// Taking the battlegroup down takes every map with it, so any queued generator
+// refill is written during the cycle. Both battlegroup control rows say so.
+function PendingRefillNote() {
+  const { pending } = usePendingRefills();
+  const total = pending?.total || 0;
+  if (!total) return null;
+  return <p className="action-help-note pending-refill-note">
+    <Fuel size={14} aria-hidden="true" />
+    {total.toLocaleString()} generator refill{total === 1 ? "" : "s"} queued across all maps. Stopping or restarting the battlegroup applies {total === 1 ? "it" : "them"}.
+  </p>;
+}
 type ConfirmAction = (message: string, options?: { title?: string; confirmLabel?: string; cancelLabel?: string; danger?: boolean }) => Promise<boolean>;
 type ServerMode = "public" | "local";
 
@@ -416,6 +429,7 @@ export function HomePanel({ status, readiness, taskResult, setTaskResult, funcom
           <button disabled={stopDisabled} onClick={() => runServerAction("stop")}>Stop</button>
           <button disabled={restartDisabled} onClick={() => runServerAction("restart")}>Restart Battlegroup</button>
         </div>
+        <PendingRefillNote />
         {taskResult && <HomeTaskResultCard result={taskResult} />}
         {localError && <p className="error">{localError}</p>}
       </article>
@@ -1055,6 +1069,7 @@ export function ServerPanel(props: {
         <button disabled={actionRunning || serviceRestartRunning || titleSaving || funcomTokenSaving || scheduleSaving || serverState.stopped} onClick={() => runServerAction("restart")}>Restart Battlegroup</button>
         <button disabled={actionRunning || serviceRestartRunning || titleSaving || funcomTokenSaving || scheduleSaving} onClick={props.onRedeploy}>Redeploy</button>
       </div>
+      <PendingRefillNote />
       {taskResult && <HomeTaskResultCard result={taskResult} />}
       <div className="action-line restart-service-line">
         <label className="compact-select">Restart Service<select value={service} onChange={(event) => setService(event.target.value)}>
