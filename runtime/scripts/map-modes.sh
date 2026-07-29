@@ -358,6 +358,11 @@ warming_always_on_count() {
     from dune.world_partition wp
     left join dune.farm_state fs on fs.server_id = wp.server_id
     where coalesce(wp.server_id, '') <> ''
+      -- Core readiness is validated from container logs by ready.sh because
+      -- farm_state.ready can remain false after Survival_1 or Overmap is
+      -- already travel-ready. A stale core row must not permanently consume
+      -- the dynamic Always-On warm-up slots.
+      and wp.map not in ('Survival_1', 'Overmap')
       and coalesce(fs.alive, false) = true
       and coalesce(fs.ready, false) = false;
   " 2>/dev/null | tr -d '[:space:]' || echo 0
