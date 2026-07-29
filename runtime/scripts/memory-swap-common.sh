@@ -36,18 +36,23 @@ memory_swap_total_for_limit() {
   local allowance_gib memory_mib
 
   allowance_gib="$(memory_swap_allowance_gib)"
-  if [ "$allowance_gib" -eq 0 ]; then
-    printf '%s\n' "$memory"
-    return
-  fi
   memory_mib="$(memory_to_mib "$memory")" || {
     printf '%s\n' "$memory"
     return
   }
+  if [ "$allowance_gib" -eq 0 ]; then
+    # Docker's legacy/default behavior when --memory is set without
+    # --memory-swap is an equal amount of additional swap. Live memory
+    # updates must spell that total out so changing RAM does not retain a
+    # stale swap ceiling from the previous limit.
+    printf '%sm\n' "$((memory_mib * 2))"
+    return
+  fi
   printf '%sm\n' "$((memory_mib + allowance_gib * 1024))"
 }
 
 memory_swap_docker_args() {
   local memory="$1"
+  [ "$(memory_swap_allowance_gib)" -gt 0 ] || return 0
   printf '%s\n' --memory-swap "$(memory_swap_total_for_limit "$memory")"
 }

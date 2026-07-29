@@ -8,17 +8,24 @@ source runtime/scripts/memory-swap-common.sh
 
 DUNE_MEMORY_SWAP_ENABLED=0
 DUNE_MEMORY_SWAP_PER_SERVER_GIB=2
-[ "$(memory_swap_total_for_limit 12g)" = "12g" ]
+[ "$(memory_swap_total_for_limit 12g)" = "24576m" ]
+mapfile -t disabled_args < <(memory_swap_docker_args 12g)
+[ "${#disabled_args[@]}" -eq 0 ]
 
 DUNE_MEMORY_SWAP_ENABLED=1
 [ "$(memory_swap_total_for_limit 12g)" = "14336m" ]
 [ "$(memory_swap_total_for_limit 3072m)" = "5120m" ]
+mapfile -t enabled_args < <(memory_swap_docker_args 12g)
+[ "${enabled_args[*]}" = "--memory-swap 14336m" ]
 
 # The following patterns intentionally inspect literal shell expressions.
 # shellcheck disable=SC2016
 for script in runtime/scripts/start-server-survival-1.sh runtime/scripts/start-server-overmap.sh runtime/scripts/spawn-server.sh; do
-  grep -Fq -- '--memory-swap "$(memory_swap_total_for_limit "$MEMORY")"' "$script"
+  grep -Fq 'mapfile -t MEMORY_SWAP_ARGS < <(memory_swap_docker_args "$MEMORY")' "$script"
+  grep -Fq '"${MEMORY_SWAP_ARGS[@]}"' "$script"
 done
+
+grep -Fq 'swap_mib=$((memory_mib * 2))' runtime/scripts/memory-swap.sh
 
 grep -Fq 'docker run --rm --user 0:0 --privileged --pid=host' runtime/scripts/memory-swap.sh
 grep -Fq 'SWAP_DIR="/var/lib/dune-awakening"' runtime/scripts/memory-swap-host.sh
