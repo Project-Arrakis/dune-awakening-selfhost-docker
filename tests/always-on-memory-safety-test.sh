@@ -86,8 +86,10 @@ write_meminfo $((30 * 1024 * 1024)) $((8 * 1024 * 1024)) 0
 output="$(cd "$repo_root" && DUNE_HOST_MEMORY_MEMINFO_FILE="$meminfo" DUNE_ALWAYS_ON_HOST_MEMORY_SAFETY=0 runtime/scripts/host-memory-safety.sh check-map DeepDesert_1 31)"
 grep -Fq 'host-memory safety is disabled' <<<"$output"
 
-# A stale core farm_state.ready flag must not consume the warm-up slot used
-# for Always-On dynamic maps. Core readiness has its own log-aware checks.
-grep -Fq "and wp.map not in ('Survival_1', 'Overmap')" "$repo_root/runtime/scripts/map-modes.sh"
+# Stale farm_state.ready flags must not consume the warm-up slot after a map's
+# live container has logged its definitive ready signal.
+grep -Fq "docker inspect -f '{{.State.Running}}'" "$repo_root/runtime/scripts/map-modes.sh"
+grep -Fq 'index($0, "Server farm is READY")' "$repo_root/runtime/scripts/map-modes.sh"
+grep -Fq 'partition $partition_id, server $server_id,' "$repo_root/runtime/scripts/map-modes.sh"
 
 echo "always-on startup respects host RAM headroom, effective map limits, and the emergency-only role of swap"
