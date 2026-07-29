@@ -178,6 +178,7 @@ commit;
 " >/dev/null
 
 ensure_host_latency_tuned
+mapfile -t MEMORY_SWAP_ARGS < <(memory_swap_docker_args "$MEMORY")
 
 docker run -d \
   "${DUNE_DOCKER_LOG_ARGS[@]}" \
@@ -188,7 +189,7 @@ docker run -d \
   --cap-add SYS_ADMIN \
   --security-opt seccomp=unconfined \
   --memory "$MEMORY" \
-  --memory-swap "$(memory_swap_total_for_limit "$MEMORY")" \
+  "${MEMORY_SWAP_ARGS[@]}" \
   --memory-reservation "$MEMORY" \
   -v "$(host_path "$PWD/runtime/game/overmap/Saved"):/home/dune/server/DuneSandbox/Saved" \
   -v "$(host_path "$PWD/runtime/game/artifacts"):/home/dune/artifacts" \

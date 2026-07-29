@@ -74,9 +74,18 @@ apply_container_allowance() {
     memory_bytes="$(docker inspect "$container" --format '{{.HostConfig.Memory}}' 2>/dev/null || echo 0)"
     printf '%s' "$memory_bytes" | grep -Eq '^[1-9][0-9]*$' || continue
     memory_mib=$(((memory_bytes + 1024 * 1024 - 1) / 1024 / 1024))
-    swap_mib=$((memory_mib + allowance_gib * 1024))
+    if [ "$allowance_gib" -gt 0 ]; then
+      swap_mib=$((memory_mib + allowance_gib * 1024))
+    else
+      # Restore Docker's pre-feature default: swap allowance equals RAM.
+      swap_mib=$((memory_mib * 2))
+    fi
     docker update --memory-swap "${swap_mib}m" "$container" >/dev/null
-    echo "Applied ${allowance_gib} GiB swap allowance to $container."
+    if [ "$allowance_gib" -gt 0 ]; then
+      echo "Applied ${allowance_gib} GiB swap allowance to $container."
+    else
+      echo "Restored Docker's default swap allowance for $container."
+    fi
   done < <(docker ps --format '{{.Names}}' 2>/dev/null | grep '^dune-server-' || true)
 }
 

@@ -11,7 +11,7 @@ test("memory balancer updates Docker swap limit with memory limit", () => {
     "--memory",
     "2048m",
     "--memory-swap",
-    "2048m",
+    "4096m",
     "--memory-reservation",
     "2048m",
     "dune-server-overmap"

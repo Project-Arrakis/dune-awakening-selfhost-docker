@@ -276,7 +276,11 @@ async function dockerUpdateMemoryLimit(config, container, limitBytes) {
 
 export function dockerMemoryUpdateArgs(container, limitBytes, swapAllowanceBytes = 0) {
   const memory = dockerMemoryArg(limitBytes);
-  const memorySwap = dockerMemoryArg(limitBytes + Math.max(0, swapAllowanceBytes));
+  // With managed swap disabled, retain Docker's historical default of an
+  // additional swap allowance equal to the RAM limit. Docker updates require
+  // an explicit total so an old swap ceiling is not left behind.
+  const additionalSwapBytes = swapAllowanceBytes > 0 ? swapAllowanceBytes : limitBytes;
+  const memorySwap = dockerMemoryArg(limitBytes + additionalSwapBytes);
   return ["update", "--memory", memory, "--memory-swap", memorySwap, "--memory-reservation", memory, container];
 }
 
