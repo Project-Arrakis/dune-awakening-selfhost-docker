@@ -353,19 +353,38 @@ recent_spawn_blocking() {
 }
 
 warming_always_on_count() {
-  docker exec dune-postgres psql -U postgres -d dune -At -c "
-    select count(*)
+  local rows map partition_id server_id container logs warming=0
+
+  rows="$(docker exec dune-postgres psql -U postgres -d dune -At -F '|' -c "
+    select wp.map, wp.partition_id, wp.server_id
     from dune.world_partition wp
     left join dune.farm_state fs on fs.server_id = wp.server_id
     where coalesce(wp.server_id, '') <> ''
-      -- Core readiness is validated from container logs by ready.sh because
-      -- farm_state.ready can remain false after Survival_1 or Overmap is
-      -- already travel-ready. A stale core row must not permanently consume
-      -- the dynamic Always-On warm-up slots.
       and wp.map not in ('Survival_1', 'Overmap')
       and coalesce(fs.alive, false) = true
-      and coalesce(fs.ready, false) = false;
-  " 2>/dev/null | tr -d '[:space:]' || echo 0
+      and coalesce(fs.ready, false) = false
+    order by wp.partition_id;
+  " 2>/dev/null || true)"
+
+  while IFS='|' read -r map partition_id server_id; do
+    [ -n "${map:-}" ] && [ -n "${partition_id:-}" ] && [ -n "${server_id:-}" ] || continue
+    container="$(container_name_for_map_partition "$map" "$partition_id")"
+
+    # farm_state.ready can remain false after any world server is travel-ready.
+    # Count only a live container that has not logged readiness; stale database
+    # assignments and log-confirmed ready servers must not block the next map.
+    docker inspect -f '{{.State.Running}}' "$container" 2>/dev/null | grep -qx true || continue
+    logs="$(timeout --kill-after=2s 12s docker logs --tail 4000 "$container" 2>&1 || true)"
+    if awk -v identity="partition $partition_id, server $server_id," '
+      index($0, "Server farm is READY") && index($0, identity) { found=1; exit }
+      END { exit !found }
+    ' <<<"$logs"; then
+      continue
+    fi
+    warming=$((warming + 1))
+  done <<<"$rows"
+
+  printf '%s\n' "$warming"
 }
 
 run_spawn_server() {
