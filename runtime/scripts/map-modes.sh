@@ -227,20 +227,36 @@ PY
 }
 
 list_maps() {
+  local mode memory_status state available requested reserve required swap_free
   require_postgres
   ensure_state_file
   docker exec dune-postgres psql -U postgres -d dune -At -F '|' -c "
     select
       wp.map,
       count(*) as partitions,
-      count(nullif(wp.server_id, '')) as assigned
+      count(nullif(wp.server_id, '')) as assigned,
+      min(wp.partition_id) as partition_id
     from dune.world_partition wp
     where wp.map not in ('Survival_1', 'Overmap')
     group by wp.map
     order by min(wp.partition_id);
-  " | while IFS='|' read -r map partitions assigned; do
+  " | while IFS='|' read -r map partitions assigned partition_id; do
     [ -n "${map:-}" ] || continue
-    printf '%-28s Current: %-14s Partitions: %-3s Assigned: %s\n' "$map" "$(mode_for_map "$map")" "$partitions" "$assigned"
+    mode="$(mode_for_map "$map")"
+    printf '%-28s Current: %-14s Partitions: %-3s Assigned: %s' "$map" "$mode" "$partitions" "$assigned"
+    if [ "$mode" = "always-on" ] && [ "${assigned:-0}" -eq 0 ]; then
+      memory_status="$(runtime/scripts/host-memory-safety.sh map-status "$map" "$partition_id" 2>/dev/null || true)"
+      state="$(structured_status_field "$memory_status" state)"
+      if [ "$state" = "blocked" ] && grep -q 'reason=host-memory' <<<"$memory_status"; then
+        available="$(structured_status_field "$memory_status" available_gib)"
+        requested="$(structured_status_field "$memory_status" requested_gib)"
+        reserve="$(structured_status_field "$memory_status" reserve_gib)"
+        required="$(structured_status_field "$memory_status" required_gib)"
+        swap_free="$(structured_status_field "$memory_status" swap_free_gib)"
+        printf ' Block: host-memory available=%sGiB required=%sGiB requested=%sGiB reserve=%sGiB swap-free=%sGiB' "$available" "$required" "$requested" "$reserve" "$swap_free"
+      fi
+    fi
+    printf '\n'
   done
 }
 
@@ -252,6 +268,21 @@ show_mode() {
   fi
   map="$(canonical_map "$map")"
   printf '%s\t%s\n' "$map" "$(mode_for_map "$map")"
+}
+
+structured_status_field() {
+  local line="$1"
+  local field="$2"
+
+  awk -v field="$field" '{
+    for (i = 1; i <= NF; i++) {
+      if ($i ~ ("^" field "=")) {
+        sub("^[^=]*=", "", $i)
+        print $i
+        exit
+      }
+    }
+  }' <<<"$line"
 }
 
 container_name_for_map_partition() {
@@ -348,7 +379,11 @@ spawn_gate_allows() {
   local partition_id="$2"
   local warming
 
-  if ! runtime/scripts/host-memory-safety.sh check-map "$map" "$partition_id"; then
+  if [ -n "${DUNE_HOST_MEMORY_WAIT_STATE_DIR:-}" ]; then
+    if ! runtime/scripts/host-memory-safety.sh check-map-throttled "$map" "$partition_id"; then
+      return 1
+    fi
+  elif ! runtime/scripts/host-memory-safety.sh check-map "$map" "$partition_id"; then
     return 1
   fi
 

@@ -1259,13 +1259,15 @@ map_dynamic_grace_remaining() {
 }
 
 reconcile_always_on_maps() {
-  runtime/scripts/map-modes.sh reconcile || true
+  DUNE_HOST_MEMORY_WAIT_STATE_DIR="runtime/generated/autoscaler-memory-waits" \
+    runtime/scripts/map-modes.sh reconcile || true
 }
 
 reconcile_always_on_map() {
   local map="$1"
   [ -n "$map" ] || return 0
-  runtime/scripts/map-modes.sh reconcile "$map" || true
+  DUNE_HOST_MEMORY_WAIT_STATE_DIR="runtime/generated/autoscaler-memory-waits" \
+    runtime/scripts/map-modes.sh reconcile "$map" || true
 }
 
 remember_server_id_map() {

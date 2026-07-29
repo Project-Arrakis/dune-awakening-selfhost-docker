@@ -177,7 +177,7 @@ check_deepdesert_mode() {
 
 check_always_on_memory_safety() {
   local configured recommended total available swap_free reserve
-  local status
+  local status blocked_rows line map available_gib required_gib requested_gib reserve_gib
 
   if [ ! -x runtime/scripts/host-memory-safety.sh ]; then
     warn_msg "Always-on host-memory safety helper is missing"
@@ -206,6 +206,19 @@ check_always_on_memory_safety() {
   else
     ok "Always-on host-memory protection active (parallelism $configured/${recommended:-1}, reserve ${reserve:-?} GiB)"
   fi
+
+  is_running dune-postgres || return
+  blocked_rows="$(runtime/scripts/map-modes.sh list 2>/dev/null | grep 'Block: host-memory' || true)"
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    map="$(awk '{ print $1 }' <<<"$line")"
+    available_gib="$(sed -n 's/.*Block: host-memory available=\([0-9][0-9]*\)GiB.*/\1/p' <<<"$line")"
+    required_gib="$(sed -n 's/.* required=\([0-9][0-9]*\)GiB.*/\1/p' <<<"$line")"
+    requested_gib="$(sed -n 's/.* requested=\([0-9][0-9]*\)GiB.*/\1/p' <<<"$line")"
+    reserve_gib="$(sed -n 's/.* reserve=\([0-9][0-9]*\)GiB.*/\1/p' <<<"$line")"
+    warn_msg "Always-on map $map is queued by physical-memory safety (${available_gib:-?} GiB available; ${required_gib:-?} GiB required)"
+    echo "     The map needs ${requested_gib:-?} GiB plus a ${reserve_gib:-?} GiB host safety reserve. Swap is emergency headroom and is not used as startup capacity."
+  done <<<"$blocked_rows"
 }
 
 config_value() {
