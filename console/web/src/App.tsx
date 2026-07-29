@@ -142,9 +142,10 @@ const REDBLINK_DISCORD_URL = "https://discord.gg/duneawakeningdocker";
 const REDBLINK_KOFI_URL = "https://ko-fi.com/redblink";
 
 export function SidebarNavIndicators({ item, onlinePlayerCount, addonUpdatesAvailable }: { item: Tab; onlinePlayerCount: number; addonUpdatesAvailable: boolean }) {
-  if (item === "Players") {
-    const label = `${onlinePlayerCount} player${onlinePlayerCount === 1 ? "" : "s"} online`;
-    return <span className="sidebar-nav-indicators"><span className="sidebar-nav-count sidebar-nav-count-online" title={label} aria-label={label}>{onlinePlayerCount}</span></span>;
+  const visibleOnlinePlayerCount = Math.max(0, Math.floor(Number(onlinePlayerCount) || 0));
+  if (item === "Players" && visibleOnlinePlayerCount > 0) {
+    const label = `${visibleOnlinePlayerCount} player${visibleOnlinePlayerCount === 1 ? "" : "s"} online`;
+    return <span className="sidebar-nav-indicators"><span className="sidebar-nav-count sidebar-nav-count-online" title={label} aria-label={label}>{visibleOnlinePlayerCount}</span></span>;
   }
   if (item === "Addons" && addonUpdatesAvailable) {
     return <span className="sidebar-nav-indicators"><span className="sidebar-nav-update-icon" title="Addon update available" aria-label="Addon update available"><CircleArrowUp size={14} aria-hidden="true" /></span></span>;
