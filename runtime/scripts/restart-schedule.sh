@@ -9,6 +9,13 @@ HOST_ROOT_DIR="${DUNE_HOST_REPO_ROOT:-$ROOT_DIR}"
 [ -r runtime/generated/battlegroup.env ] && . runtime/generated/battlegroup.env
 source runtime/scripts/runtime-env.sh
 
+HOST_SERVICE_UID="${DUNE_HOST_UID:-$(stat -c '%u' "$ROOT_DIR")}"
+HOST_SERVICE_GID="${DUNE_HOST_GID:-$(stat -c '%g' "$ROOT_DIR")}"
+if ! [[ "$HOST_SERVICE_UID" =~ ^[0-9]+$ && "$HOST_SERVICE_GID" =~ ^[0-9]+$ ]]; then
+  echo "Invalid scheduled restart service identity: ${HOST_SERVICE_UID}:${HOST_SERVICE_GID}" >&2
+  exit 1
+fi
+
 STATE_FILE="runtime/generated/restart-schedule.env"
 LAST_RUN_FILE="runtime/generated/restart-schedule-last-run"
 SERVICE_NAME="dune-awakening-scheduled-restart.service"
@@ -117,6 +124,8 @@ After=network-online.target docker.service
 
 [Service]
 Type=oneshot
+User=$HOST_SERVICE_UID
+Group=$HOST_SERVICE_GID
 WorkingDirectory=$exec_root
 TimeoutStartSec=0
 ExecStart=$exec_root/runtime/scripts/restart-schedule.sh run-now
@@ -130,6 +139,8 @@ After=network-online.target docker.service
 
 [Service]
 Type=oneshot
+User=$HOST_SERVICE_UID
+Group=$HOST_SERVICE_GID
 WorkingDirectory=$exec_root
 ExecStart=$exec_root/runtime/scripts/restart-schedule.sh notify-now $notify_minutes
 EOF
@@ -190,6 +201,8 @@ install_units_via_docker_host() {
     -e DUNE_SCHEDULED_RESTART_NOTIFY_MINUTES="$notify_minutes" \
     -e DUNE_SCHEDULED_RESTART_NOTIFY_TIME="$notify_time" \
     -e DUNE_HOST_REPO_ROOT="$HOST_ROOT_DIR" \
+    -e DUNE_HOST_SERVICE_UID="$HOST_SERVICE_UID" \
+    -e DUNE_HOST_SERVICE_GID="$HOST_SERVICE_GID" \
     -v /:/host \
     --entrypoint bash \
     "$image" -lc '
@@ -204,6 +217,8 @@ After=network-online.target docker.service
 
 [Service]
 Type=oneshot
+User=${DUNE_HOST_SERVICE_UID}
+Group=${DUNE_HOST_SERVICE_GID}
 WorkingDirectory=${DUNE_HOST_REPO_ROOT}
 TimeoutStartSec=0
 ExecStart=${DUNE_HOST_REPO_ROOT}/runtime/scripts/restart-schedule.sh run-now
@@ -216,6 +231,8 @@ After=network-online.target docker.service
 
 [Service]
 Type=oneshot
+User=${DUNE_HOST_SERVICE_UID}
+Group=${DUNE_HOST_SERVICE_GID}
 WorkingDirectory=${DUNE_HOST_REPO_ROOT}
 ExecStart=${DUNE_HOST_REPO_ROOT}/runtime/scripts/restart-schedule.sh notify-now ${DUNE_SCHEDULED_RESTART_NOTIFY_MINUTES}
 EOF
