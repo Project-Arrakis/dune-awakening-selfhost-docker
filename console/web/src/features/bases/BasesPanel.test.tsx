@@ -100,7 +100,7 @@ describe("BasesPanel generator details", () => {
     expect(screen.getByText("Fuel-Powered Generator")).toBeInTheDocument();
     expect(screen.getByText("Spice-Powered Generator")).toBeInTheDocument();
     expect(document.querySelectorAll(".bases-generator-group")).toHaveLength(2);
-    expect(screen.getAllByText(/Fuel Cells\s+Queued/)).toHaveLength(2);
+    expect(screen.getAllByText("Fuel Queued")).toHaveLength(2);
     expect(screen.getByText("1 Fuel Cell")).toBeInTheDocument();
     expect(screen.getByText("2 Spice-infused Fuel Cells")).toBeInTheDocument();
     expect(screen.getByText("2h 0m")).toBeInTheDocument();
@@ -252,7 +252,13 @@ describe("BasesPanel generator refill", () => {
 
     await waitFor(() => expect(props.confirmAction).toHaveBeenCalledWith(
       'Refill 2 power devices at "Sietch Refill" to full fuel?',
-      { title: "Refill Generators", confirmLabel: "Refill" }
+      {
+        title: "Refill Generators",
+        confirmLabel: "Refill",
+        // This base's schema reports generatorRefill without generatorRefillQueue,
+        // so the dialog must warn about the direct write rather than promise queueing.
+        warning: expect.stringContaining("Refill writes fuel straight to the database")
+      }
     ));
     await waitFor(() => expect(basesApi.refillGenerators).toHaveBeenCalledWith("2001"));
     expect(await screen.findByText(/Added 856 fuel units across 2 devices/)).toBeInTheDocument();
