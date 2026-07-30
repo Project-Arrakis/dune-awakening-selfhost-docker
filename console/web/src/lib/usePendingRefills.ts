@@ -41,3 +41,15 @@ export function pendingRefillCountForPartition(pending: PendingRefills | null, p
   if (!pending || !partitionId) return 0;
   return pending.pending.filter((entry) => entry.partitionId === partitionId).length;
 }
+
+// Totals every partition belonging to one world_partition map, so a map whose
+// only restart path is a per-partition respawn still shows what is waiting on it.
+// Matches on partitionMap, not the queue entry's own map name -- those are
+// different namespaces (see partitionRestartTargets in duneDb.js).
+export function pendingRefillCountForMap(pending: PendingRefills | null, partitionMap: string) {
+  const key = String(partitionMap || "").trim().toLowerCase();
+  if (!pending || !key) return 0;
+  return pending.byTarget
+    .filter((group) => group.partitionMap.trim().toLowerCase() === key)
+    .reduce((total, group) => total + group.count, 0);
+}

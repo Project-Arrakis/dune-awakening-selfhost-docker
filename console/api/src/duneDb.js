@@ -5040,6 +5040,24 @@ export async function supportsGeneratorRefillQueue(db) {
   return tableExists(db, "world_partition");
 }
 
+// dune.actors.map and dune.world_partition.map are different namespaces: a base
+// on partition 1 reports the in-game region ("HaggaBasin") while the partition
+// itself is "Survival_1", and partition 8 reports "DeepDesert" against
+// "DeepDesert_1". Only the world_partition name lines up with the restart
+// machinery, so anything choosing a restart target has to resolve it from the
+// partition id rather than from whatever the base's actor row says.
+export async function partitionRestartTargets(db) {
+  if (!(await tableExists(db, "world_partition"))) return new Map();
+  const result = await db.query(
+    "select partition_id, map, coalesce(dimension_index, 0)::int as dimension_index from dune.world_partition");
+  const targets = new Map();
+  for (const row of result.rows || []) {
+    const partitionId = Number(row.partition_id || 0);
+    if (partitionId > 0) targets.set(partitionId, { map: String(row.map || ""), dimensionIndex: Number(row.dimension_index || 0) });
+  }
+  return targets;
+}
+
 // The map and partition a base sits in. Resolved server-side on every request:
 // whether a write is safe must never depend on a client-supplied map name.
 export async function baseMapLocation(db, baseId) {

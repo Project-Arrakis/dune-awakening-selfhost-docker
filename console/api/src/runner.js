@@ -194,6 +194,12 @@ export function buildDuneArgs(operation, payload = {}) {
       return ["true"];
     case "mapsReconcile":
       return ["maps", "reconcile"];
+    case "mapsRespawn":
+      // Composite: taskOperations expands this into mapsDespawn + mapsSpawn, so
+      // these argv never run. The validate call is the point -- it lets the route
+      // reject a bad target before a task is created.
+      validateMapOrPartition(payload.target);
+      return ["true"];
     case "mapsSpawn":
       return ["spawn", validateMapOrPartition(payload.target)];
     case "mapsDespawn":

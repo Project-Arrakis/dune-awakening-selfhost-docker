@@ -54,7 +54,9 @@ const loginRateLimiter = createLoginRateLimiter();
 const mutationRateLimiter = createMutationRateLimiter();
 const bridgeRateLimiter = createBridgeRateLimiter();
 // Deferred db read: db is assigned below and is reassignable on reconnect.
-const tasks = new TaskManager(config, { onMapDown: () => duneDb.flushGeneratorRefills(db, config.repoRoot) });
+// Both flush paths go through flushQueuedGeneratorRefills so a write lands in the
+// audit log no matter which one applied it.
+const tasks = new TaskManager(config, { onMapDown: () => flushQueuedGeneratorRefills() });
 let db = createDb(config);
 const publicDirectory = createPublicDirectoryReporter(config, { getDb: () => db });
 let carePackageAutoRunning = false;
@@ -149,11 +151,17 @@ if (deathPoller.enabled) deathPoller.init(db, config.repoRoot).catch(() => {});
 // (scheduler, IP change, CLI). Idle cost is one small file read per tick.
 setInterval(() => {
   if (!duneDb.listQueuedGeneratorRefills(config.repoRoot).length) return;
-  runBackgroundTick("Generator refill flush", async () => {
-    const result = await duneDb.flushGeneratorRefills(db, config.repoRoot);
-    for (const entry of result.flushed || []) audit(config, null, "bases.flush-queued-refill", entry);
-  });
+  runBackgroundTick("Generator refill flush", () => flushQueuedGeneratorRefills());
 }, Number(process.env.ADMIN_REFILL_FLUSH_INTERVAL_MS || 5000)).unref?.();
+
+// Every queued-refill write goes through here so it is audited whichever path
+// triggered it: the tick above, or the restart task runner's onMapDown hook.
+// These are real writes to player property, so an unaudited one is not acceptable.
+async function flushQueuedGeneratorRefills() {
+  const result = await duneDb.flushGeneratorRefills(db, config.repoRoot);
+  for (const entry of result.flushed || []) audit(config, null, "bases.flush-queued-refill", entry);
+  return result;
+}
 
 function runBackgroundTick(label, fn) {
   Promise.resolve()
@@ -598,6 +606,9 @@ async function handleApi(req, res) {
   if (path === "/api/maps/reconcile" && req.method === "POST") return confirmedTask(req, res, "maps", "mapsReconcile", {}, "RECONCILE MAPS");
   if (path === "/api/maps/spawn" && req.method === "POST") return confirmedTask(req, res, "maps", "mapsSpawn", {}, "SPAWN MAP");
   if (path === "/api/maps/despawn" && req.method === "POST") return confirmedTask(req, res, "maps", "mapsDespawn", {}, "DESPAWN MAP");
+  // Restart for a map with no managed service: one task that despawns then
+  // respawns its partition. task() audits and validates the target for us.
+  if (path === "/api/maps/respawn" && req.method === "POST") return confirmedTask(req, res, "maps", "mapsRespawn", {}, "RESTART MAP");
   if (path === "/api/maps/autoscaler" && req.method === "POST") return confirmedTask(req, res, "maps", "autoscalerAction", {}, "AUTOSCALER CHANGE");
   if (path === "/api/maps/autoscaler") return commandJson(res, "autoscalerStatus");
   if (path === "/api/maps/memory" && req.method === "POST") return memoryRoute(req, res);
@@ -1963,13 +1974,31 @@ async function baseCancelQueuedRefillRoute(req, res, path) {
 // the battlegroup buttons all read the same counts from one call. Grouping by
 // map alone is not enough: a Sietch partition of Survival_1 needs its own
 // container restarted, which restarting the map's primary service would not do.
-function pendingGeneratorRefillsRoute(res) {
+//
+// Each group also carries the partition's world_partition identity, resolved
+// here rather than stored on the queue entry: the entry's own map name comes
+// from dune.actors and is a different namespace (see partitionRestartTargets),
+// resolving live keeps entries queued before this existed working, and it cannot
+// go stale if a partition is reassigned.
+async function pendingGeneratorRefillsRoute(res) {
   const pending = duneDb.listQueuedGeneratorRefills(config.repoRoot);
+  // Counts must still render when the database is unreachable -- which is
+  // precisely when a battlegroup is down and the queue matters most.
+  const targets = pending.length
+    ? await duneDb.partitionRestartTargets(db).catch(() => new Map())
+    : new Map();
   const byTarget = new Map();
   for (const entry of pending) {
     const map = entry.map || "Unknown";
     const key = `${map}|${entry.partitionId}`;
-    const group = byTarget.get(key) || { map, partitionId: entry.partitionId, count: 0 };
+    const target = targets.get(entry.partitionId);
+    const group = byTarget.get(key) || {
+      map,
+      partitionId: entry.partitionId,
+      partitionMap: target?.map || "",
+      dimensionIndex: target?.dimensionIndex ?? 0,
+      count: 0
+    };
     group.count += 1;
     byTarget.set(key, group);
   }
