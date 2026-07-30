@@ -4757,6 +4757,66 @@ export async function baseGenerators(db, baseId) {
   return result.rows;
 }
 
+// Per-device fuel level for one base, as a fraction of the same cap
+// refillBaseGenerators would fill to. Device discovery goes through
+// baseGenerators so the reading and the write share one allowlist and can never
+// disagree about what counts as a generator.
+//
+// This is deliberately per-device rather than reusing portalGeneratorFuel, which
+// aggregates by (base_id, generator_type): that shape cannot see a single
+// starved device standing among full siblings of the same type, and that device
+// is exactly what an automated refill decision turns on.
+//
+// lowestPercent is null for a base with no recognised devices, not 0 -- "nothing
+// to measure" must not read as "empty" to a caller deciding whether to refill.
+export async function baseGeneratorFuelLevels(db, repoRoot, baseId) {
+  const target = intParam(baseId, "base id", 1);
+  const caps = refillCaps(repoRoot);
+  const devices = await baseGenerators(db, target);
+  const inventoryIds = devices.map((device) => device.inventory_id).filter(Boolean);
+
+  // One grouped read for every device at the base rather than a query per
+  // device: this runs for every enrolled base on each scan.
+  const stocked = new Map();
+  if (inventoryIds.length) {
+    const result = await db.query(`
+      select inventory_id::text as inventory_id,
+        lower(template_id) as template_id,
+        sum(stack_size)::int as units
+      from dune.items
+      where inventory_id = any($1::bigint[])
+      group by 1, 2`, [inventoryIds]);
+    for (const row of result.rows || []) {
+      stocked.set(`${row.inventory_id}:${row.template_id}`, Number(row.units) || 0);
+    }
+  }
+
+  const entries = [];
+  for (const device of devices) {
+    const cap = caps[device.generator_type];
+    if (!cap) continue;
+    // A device with no inventory row cannot hold fuel at all, so it reads as
+    // empty -- the same case refillBaseGenerators reports as "no-inventory".
+    const units = device.inventory_id
+      ? stocked.get(`${device.inventory_id}:${cap.templateId.toLowerCase()}`) || 0
+      : 0;
+    entries.push({
+      placeableId: device.placeable_id,
+      generatorType: device.generator_type,
+      units,
+      cap: cap.totalCap,
+      percent: cap.totalCap > 0 ? Math.round((units / cap.totalCap) * 1000) / 10 : 0
+    });
+  }
+
+  return {
+    baseId: target,
+    deviceCount: entries.length,
+    devices: entries,
+    lowestPercent: entries.length ? Math.min(...entries.map((entry) => entry.percent)) : null
+  };
+}
+
 // Tops every power device at a base up to its configured cap in one
 // transaction: partial stacks are filled before new rows are created, so a
 // device never ends up with more rows than the game would have made itself.

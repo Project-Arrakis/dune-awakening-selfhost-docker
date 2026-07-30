@@ -1725,6 +1725,48 @@ body.debug .technical-details { display: block; }
   color: inherit;
   min-width: 0;
 }
+.bases-pending-refills-stale {
+  margin: 10px 0 0;
+  font-size: 12px;
+  color: var(--title);
+}
+.bases-auto-refill {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 0 0 12px;
+  padding: 0 0 12px;
+  border-bottom: 1px solid var(--border);
+}
+.bases-auto-refill .action-help-note { margin: 0; flex: 1 1 260px; min-width: 0; }
+/* Wide enough for the "Saving" state, matching settings-server-listing-toggle. */
+.bases-auto-refill-toggle .switch-state { min-width: 62px; }
+/* Auto-refill marks the existing Refill button instead of adding a control: the
+   actions column is a fixed 96px and already holds two glyphs. Fill only, so it
+   still reads and behaves as the working button it remains. */
+.bases-auto-refill-on {
+  border-color: var(--success);
+  background: rgba(61, 139, 98, .18);
+  color: var(--success-text);
+}
+.bases-auto-refill-unknown {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+.bases-auto-refill-unknown button { padding: 4px 10px; font-size: 12px; }
+/* Auto-refill giving up on a base is an alert, not a footnote: the operator
+   otherwise believes fuel is handled while the base quietly stays empty. */
+.bases-auto-refill-stalled {
+  flex: 1 1 100%;
+  margin: 0;
+  font-size: 12px;
+  color: var(--danger-text);
+}
 @media (max-width: 760px) {
   .blueprint-file-field { flex-basis: 100%; max-width: none; }
   .blueprint-list-toolbar, .blueprint-list-toolbar .service-actions { align-items: stretch; }

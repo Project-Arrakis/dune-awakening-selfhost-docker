@@ -46,6 +46,7 @@ import { grantAddonItem } from "./addonItemGrants.js";
 import { EDA_EXCHANGE_BOT_ADDON_ID, ADDON_SCHEDULER_PERMISSION, createAddonJobScheduler, probeBuybackEligibility, readBuybackSchedule, saveBuybackSchedule } from "./addonJobs.js";
 import { createPublicDirectoryReporter, normalizeDiscordInvite, readDirectorySettings } from "./services/publicDirectory.js";
 import { choamTerminalOverview, installChoamTerminals, removeChoamTerminals } from "./services/choamTerminals.js";
+import { autoRefillPublicState, createAutoRefillScheduler, setBaseAutoRefill } from "./services/autoRefill.js";
 import { calculateAlwaysOnHostMemorySafety } from "./services/hostMemorySafety.js";
 
 const config = loadConfig();
@@ -81,6 +82,12 @@ const addonJobScheduler = createAddonJobScheduler(config, {
   failureBackoffMs: BACKGROUND_SCAN_FAILURE_BACKOFF_MS
 });
 const landsraadMilestoneReconciler = createLandsraadMilestoneReconciler(config, { getDb: () => db });
+const autoRefillScheduler = createAutoRefillScheduler({
+  config,
+  getDb: () => db,
+  duneDb,
+  failureBackoffMs: BACKGROUND_SCAN_FAILURE_BACKOFF_MS
+});
 
 process.on("unhandledRejection", (error) => {
   console.error(`Unhandled background rejection: ${redact(error?.message || error)}`);
@@ -129,6 +136,9 @@ setInterval(() => {
   runBackgroundTick("Player announcements", playerAnnouncementsAutoTick);
   runBackgroundTick("Addon scheduled jobs", () => addonJobScheduler.tick());
   runBackgroundTick("Landsraad milestone preset", () => landsraadMilestoneReconciler.tick());
+  // Daily, but gated inside the tick like every other long-period job here.
+  // Costs one small file read when no base is enrolled, and no database query.
+  runBackgroundTick("Bases auto-refill", () => autoRefillScheduler.tick());
 }, 10000).unref?.();
 
 setInterval(() => {
@@ -455,9 +465,11 @@ async function handleApi(req, res) {
     sortDirection: url.searchParams.get("sortDirection") || "asc"
   }));
   if (path === "/api/bases/pending-refills") return pendingGeneratorRefillsRoute(res);
+  if (path === "/api/bases/auto-refill") return basesAutoRefillStateRoute(res);
   if (path.match(/^\/api\/bases\/[^/]+\/export$/) && req.method === "GET") return baseBlueprintDownloadRoute(req, res, path);
   if (path.match(/^\/api\/bases\/[^/]+\/refill-generators$/) && req.method === "POST") return baseRefillGeneratorsRoute(req, res, path);
   if (path.match(/^\/api\/bases\/[^/]+\/queued-refill$/) && req.method === "DELETE") return baseCancelQueuedRefillRoute(req, res, path);
+  if (path.match(/^\/api\/bases\/[^/]+\/auto-refill$/) && req.method === "POST") return baseAutoRefillToggleRoute(req, res, path);
   if (path === "/api/admin/items/catalog") return json(res, 200, { rows: listCatalogItems(config.repoRoot, { q: url.searchParams.get("q") || "", limit: url.searchParams.get("limit") || 500 }) });
   if (path === "/api/admin/items/search") return commandJson(res, "adminItemSearch", { q: url.searchParams.get("q") || "" });
   if (path === "/api/admin/items") return commandJson(res, url.searchParams.get("category") ? "adminItemListCategory" : "adminItemList", { category: url.searchParams.get("category") || "" });
@@ -2008,6 +2020,41 @@ async function pendingGeneratorRefillsRoute(res) {
     pending,
     byTarget: [...byTarget.values()].sort((a, b) => a.map.localeCompare(b.map) || a.partitionId - b.partitionId)
   });
+}
+
+// Enrollment state for the Bases panel's auto-refill toggle. Like the pending
+// counts above, this still answers when the database is unreachable: the
+// enrollment list is a file, and only `supported` needs a live connection.
+async function basesAutoRefillStateRoute(res) {
+  const supported = await duneDb.supportsGeneratorRefillQueue(db).catch(() => false);
+  return json(res, 200, { supported, ...autoRefillPublicState(config.repoRoot) });
+}
+
+// Console-owned configuration rather than a database mutation, so this follows
+// the settings routes (plain handler plus an explicit audit) instead of
+// directDbMutation's confirmation-phrase machinery.
+async function baseAutoRefillToggleRoute(req, res, path) {
+  const baseId = Number(decodeURIComponent(path.split("/")[3]));
+  if (!Number.isFinite(baseId) || baseId < 1) return json(res, 400, { error: "Invalid base ID" });
+  const body = await readJson(req);
+  if (typeof body.enabled !== "boolean") {
+    return json(res, 400, { error: "Auto-refill enabled must be true or false." });
+  }
+  // Checked on the server too, not just hidden in the UI. Without
+  // dune.world_partition a queued refill cannot wait for a safe window, so an
+  // automated refill would write straight into a possibly-live base.
+  if (body.enabled && !(await duneDb.supportsGeneratorRefillQueue(db).catch(() => false))) {
+    return json(res, 501, {
+      error: "Auto-refill needs the pending-refill queue, which requires dune.world_partition on this database."
+    });
+  }
+  try {
+    const result = setBaseAutoRefill(config.repoRoot, baseId, body.enabled);
+    audit(config, req, "bases.auto-refill", { baseId, enabled: result.enabled, total: result.total });
+    return json(res, 200, result);
+  } catch (error) {
+    return json(res, 400, { ok: false, error: redact(error?.message || error) });
+  }
 }
 
 async function blueprintBulkExportRoute(req, res) {

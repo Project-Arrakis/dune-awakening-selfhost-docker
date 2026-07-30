@@ -1,7 +1,7 @@
 import test, { beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { assertIdentifier, discoverDbConfig, isReadOnlySql, quoteQualified, redactDbError, rowsResult } from "../src/db.js";
@@ -16,7 +16,7 @@ import {
   queueGeneratorRefill,
   supportsGeneratorRefillQueue
 } from "../src/duneDb.js";
-import { addCurrency, addFactionReputation, addIntel, addonLeadershipPlayers, addonOpsHealthFarms, addonOpsHealthPlayers, addonOpsHealthSummary, addonOpsHealthSummaryV2, addSpecializationXp, applyLandsraadMilestonePreset, augmentInventoryItem, augmentNewestPlayerItem, baseGenerators, changeDunePassword, completeJourneyNode, completeTutorial, dbStatus, deleteInventoryItem, exportBaseAsBlueprint, generatorUptimePolicy, giveItemToPlayer, giveItemToStorage, guildMembers, landsraadOverview, listBases, listGuilds, listPlayers, listRoutines, listSpicefieldTypes, listTables, liveMapPlayers, liveMapServices, playerCraftingRecipes, playerCurrency, playerFactions, playerIntel, playerInventory, playerJourney, playerPortalSnapshots, playerPosition, playerProfile, playerProgression, playerResearchItems, playerSolarisCoinTotal, playerVitals, portalGeneratorFuel, portalVehicles, refillBaseGenerators, repairVehicleDecay, resetJourneyNode, resetTutorial, routineDefinition, runSql, setLandsraadPlayerContribution, supportsGeneratorRefill, tablePreview, teleportOfflinePlayerToCoords, unlockCraftingRecipe, unlockResearchItem, updateInventoryItem, updateLandsraadRewardTier, updateLandsraadTaskGoal, updateLandsraadTermTaskGoals, updateSpicefieldType, updateTableRow, UnsupportedCapabilityError, _resetPlayerTargetCacheForTests } from "../src/duneDb.js";
+import { addCurrency, addFactionReputation, addIntel, addonLeadershipPlayers, addonOpsHealthFarms, addonOpsHealthPlayers, addonOpsHealthSummary, addonOpsHealthSummaryV2, addSpecializationXp, applyLandsraadMilestonePreset, augmentInventoryItem, augmentNewestPlayerItem, baseGeneratorFuelLevels, baseGenerators, changeDunePassword, completeJourneyNode, completeTutorial, dbStatus, deleteInventoryItem, exportBaseAsBlueprint, generatorUptimePolicy, giveItemToPlayer, giveItemToStorage, guildMembers, landsraadOverview, listBases, listGuilds, listPlayers, listRoutines, listSpicefieldTypes, listTables, liveMapPlayers, liveMapServices, playerCraftingRecipes, playerCurrency, playerFactions, playerIntel, playerInventory, playerJourney, playerPortalSnapshots, playerPosition, playerProfile, playerProgression, playerResearchItems, playerSolarisCoinTotal, playerVitals, portalGeneratorFuel, portalVehicles, refillBaseGenerators, repairVehicleDecay, resetJourneyNode, resetTutorial, routineDefinition, runSql, setLandsraadPlayerContribution, supportsGeneratorRefill, tablePreview, teleportOfflinePlayerToCoords, unlockCraftingRecipe, unlockResearchItem, updateInventoryItem, updateLandsraadRewardTier, updateLandsraadTaskGoal, updateLandsraadTermTaskGoals, updateSpicefieldType, updateTableRow, UnsupportedCapabilityError, _resetPlayerTargetCacheForTests } from "../src/duneDb.js";
 
 beforeEach(() => {
   _resetPlayerTargetCacheForTests();
@@ -4090,6 +4090,20 @@ function fakeRefillDb(calls, { devices = [], items = {}, hasPlaceables = true } 
     if (text.includes("count(*)::int as count from dune.items")) {
       return { rows: [{ count: (state.items[values[0]] || []).length }] };
     }
+    // baseGeneratorFuelLevels reads every device's fuel in one grouped query
+    // rather than one query per device.
+    if (text.includes("sum(stack_size)::int as units")) {
+      const rows = [];
+      for (const inventoryId of (Array.isArray(values[0]) ? values[0] : []).map(String)) {
+        const totals = new Map();
+        for (const row of state.items[inventoryId] || []) {
+          const key = String(row.template_id).toLowerCase();
+          totals.set(key, (totals.get(key) || 0) + (Number(row.stack_size) || 0));
+        }
+        for (const [template_id, units] of totals) rows.push({ inventory_id: inventoryId, template_id, units });
+      }
+      return { rows };
+    }
     if (text.includes("max(position_index)")) {
       const rows = state.items[values[0]] || [];
       return { rows: [{ position_index: rows.reduce((max, row) => Math.max(max, row.position_index), -1) + 1 }] };
@@ -4620,4 +4634,90 @@ test("flush drops an entry that keeps failing instead of retrying it forever", a
     assert.equal(third.flushed[0].dropped, true);
     assert.deepEqual(listQueuedGeneratorRefills(repoRoot), []);
   });
+});
+
+// --- Per-device generator fuel levels ---------------------------------------
+
+const SECOND_FUEL_DEVICE = { placeable_id: "5003", generator_type: "fuel", inventory_id: "703", max_item_count: 10 };
+const NO_INVENTORY_DEVICE = { placeable_id: "5004", generator_type: "fuel", inventory_id: null, max_item_count: 0 };
+const UNKNOWN_DEVICE = { placeable_id: "5005", generator_type: "somethingElse", inventory_id: "705", max_item_count: 10 };
+
+test("baseGeneratorFuelLevels finds one starved device among full siblings of the same type", async () => {
+  const calls = [];
+  const { db } = fakeRefillDb(calls, {
+    devices: [FUEL_DEVICE, SECOND_FUEL_DEVICE],
+    items: {
+      701: [{ id: 1, template_id: "Oil", stack_size: 499, position_index: 0 }],
+      703: [{ id: 2, template_id: "Oil", stack_size: 100, position_index: 0 }]
+    }
+  });
+
+  const levels = await baseGeneratorFuelLevels(db, "", 482);
+
+  // The aggregate portalGeneratorFuel path groups by generator_type and would
+  // report these two as one healthy row; the per-device read is the whole point.
+  assert.equal(levels.deviceCount, 2);
+  assert.equal(levels.devices.find((entry) => entry.placeableId === "5001").percent, 100);
+  assert.equal(levels.devices.find((entry) => entry.placeableId === "5003").percent, 20);
+  assert.equal(levels.lowestPercent, 20);
+  // One grouped read for the whole base, not one query per device.
+  assert.equal(calls.filter((call) => call.text.includes("sum(stack_size)::int as units")).length, 1);
+});
+
+test("baseGeneratorFuelLevels counts a device with no inventory as empty", async () => {
+  const { db } = fakeRefillDb([], {
+    devices: [FUEL_DEVICE, NO_INVENTORY_DEVICE],
+    items: { 701: [{ id: 1, template_id: "Oil", stack_size: 499, position_index: 0 }] }
+  });
+
+  const levels = await baseGeneratorFuelLevels(db, "", 482);
+
+  assert.equal(levels.devices.find((entry) => entry.placeableId === "5004").units, 0);
+  assert.equal(levels.lowestPercent, 0);
+});
+
+test("baseGeneratorFuelLevels ignores fuel that is not the type's accepted fuel", async () => {
+  const { db } = fakeRefillDb([], {
+    devices: [FUEL_DEVICE],
+    // A full stack of turbine lubricant does not fuel an oil generator.
+    items: { 701: [{ id: 1, template_id: "WindTurbineLubricant1", stack_size: 499, position_index: 0 }] }
+  });
+
+  const levels = await baseGeneratorFuelLevels(db, "", 482);
+
+  assert.equal(levels.devices[0].units, 0);
+  assert.equal(levels.lowestPercent, 0);
+});
+
+test("baseGeneratorFuelLevels honours a cap override and excludes unknown placeables", async () => {
+  await withTempRepoRoot(async (repoRoot) => {
+    mkdirSync(join(repoRoot, "runtime/data"), { recursive: true });
+    writeFileSync(join(repoRoot, "runtime/data/generator-refill-caps.json"),
+      JSON.stringify({ fuel: { totalCap: 200 } }));
+    const { db } = fakeRefillDb([], {
+      devices: [FUEL_DEVICE, UNKNOWN_DEVICE],
+      items: {
+        701: [{ id: 1, template_id: "Oil", stack_size: 100, position_index: 0 }],
+        705: [{ id: 2, template_id: "Oil", stack_size: 0, position_index: 0 }]
+      }
+    });
+
+    const levels = await baseGeneratorFuelLevels(db, repoRoot, 482);
+
+    // Against the overridden cap of 200, 100 units is exactly half.
+    assert.equal(levels.devices[0].cap, 200);
+    assert.equal(levels.devices[0].percent, 50);
+    // An unrecognised placeable is left out rather than assumed to burn oil.
+    assert.equal(levels.deviceCount, 1);
+  });
+});
+
+test("baseGeneratorFuelLevels reports null rather than zero for a base with no generators", async () => {
+  const { db } = fakeRefillDb([], { devices: [] });
+
+  const levels = await baseGeneratorFuelLevels(db, "", 482);
+
+  // null must not read as "empty" to a caller deciding whether to refill.
+  assert.equal(levels.lowestPercent, null);
+  assert.equal(levels.deviceCount, 0);
 });

@@ -1,10 +1,17 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { basesApi } from "../../api/bases";
+import { basesApi, type AutoRefillBase } from "../../api/bases";
 import { BasesPanel } from "./BasesPanel";
 
 vi.mock("../../api/bases", () => ({
-  basesApi: { list: vi.fn(), refillGenerators: vi.fn() }
+  basesApi: {
+    list: vi.fn(),
+    refillGenerators: vi.fn(),
+    cancelQueuedRefill: vi.fn(),
+    pendingRefills: vi.fn(),
+    autoRefill: vi.fn(),
+    setAutoRefill: vi.fn()
+  }
 }));
 
 vi.mock("../../api/client", () => ({
@@ -318,5 +325,286 @@ describe("BasesPanel generator refill", () => {
     const refill = await awaitFreshRows("Sietch Unknown");
     expect(refill).toBeDisabled();
     expect(refill).toHaveAttribute("title", "Generator data is unavailable for this base");
+  });
+});
+
+describe("BasesPanel auto-refill", () => {
+  const enrollableBase = {
+    ...commonRow,
+    generatorDataAvailable: true,
+    generatorCount: 2,
+    fuelCells: 12,
+    generatorRuntimeSeconds: 7200,
+    generators: [
+      { type: "fuel", name: "Fuel-Powered Generator", fuelName: "Fuel Cell", fuelCells: 12, generatorCount: 2, runtimeSeconds: 7200 }
+    ]
+  };
+
+  function queueCapableList(row: Record<string, unknown>) {
+    return {
+      capabilities: { bases: true, generatorRefill: true, generatorRefillQueue: true },
+      totalCount: 1,
+      totalBases: 1,
+      totalPieces: 10,
+      totalPlaceables: 4,
+      rows: [{ ...enrollableBase, ...row }]
+    };
+  }
+
+  function enrolled(baseId: number, overrides: Partial<AutoRefillBase> = {}): AutoRefillBase {
+    return {
+      baseId,
+      enabledAt: "2026-07-29T12:00:00.000Z",
+      lastCheckedAt: "",
+      lastQueuedAt: "",
+      lastLowestPercent: null,
+      consecutiveQueues: 0,
+      stalledAt: "",
+      ...overrides
+    };
+  }
+
+  function autoRefillState(bases: AutoRefillBase[] = []) {
+    return {
+      supported: true,
+      thresholdPercent: 50,
+      intervalHours: 24,
+      nextRunAt: "2026-07-31T12:00:00.000Z",
+      lastRunAt: "",
+      lastRunStatus: "",
+      lastRunDetail: "",
+      total: bases.length,
+      bases
+    };
+  }
+
+  beforeEach(() => {
+    vi.mocked(basesApi.pendingRefills).mockResolvedValue({ supported: true, total: 0, pending: [], byTarget: [] });
+    vi.mocked(basesApi.autoRefill).mockResolvedValue(autoRefillState());
+  });
+
+  async function expandRow(name: string) {
+    await screen.findByText(name);
+    fireEvent.click(await screen.findByRole("button", { name: `Show generator details for ${name}` }));
+  }
+
+  it("offers the toggle only when the database supports the refill queue", async () => {
+    vi.mocked(basesApi.list).mockResolvedValue({
+      capabilities: { bases: true, generatorRefill: true },
+      totalCount: 1,
+      totalBases: 1,
+      totalPieces: 10,
+      totalPlaceables: 4,
+      rows: [{ ...enrollableBase, base_id: "3001", name: "Sietch NoQueue" }]
+    });
+
+    renderPanel();
+    await expandRow("Sietch NoQueue");
+
+    // Without dune.world_partition a refill cannot wait for a safe window, so
+    // automating it would write into a possibly-live base.
+    expect(screen.queryByText("Auto-Refill")).not.toBeInTheDocument();
+    expect(basesApi.autoRefill).not.toHaveBeenCalled();
+  });
+
+  it("shows the rule and turns auto-refill on without refetching the base list", async () => {
+    vi.mocked(basesApi.list).mockResolvedValue(queueCapableList({ base_id: "3002", name: "Sietch Enroll" }));
+    vi.mocked(basesApi.setAutoRefill).mockResolvedValue({ ok: true, baseId: 3002, enabled: true, total: 1 });
+
+    const props = renderPanel();
+    await waitFor(() => expect(basesApi.autoRefill).toHaveBeenCalled());
+    await expandRow("Sietch Enroll");
+
+    expect(screen.getByText("Auto-Refill")).toBeInTheDocument();
+    expect(screen.getByText("OFF")).toBeInTheDocument();
+    expect(screen.getByText(/Checked every 24h\. Queues a refill when any generator drops below 50%\./)).toBeInTheDocument();
+
+    const listCallsBefore = vi.mocked(basesApi.list).mock.calls.length;
+    fireEvent.click(screen.getByText("Auto-Refill"));
+
+    await waitFor(() => expect(props.confirmAction).toHaveBeenCalledWith(
+      'Turn on auto-refill for "Sietch Enroll"?',
+      {
+        title: "Auto-Refill",
+        confirmLabel: "Turn On",
+        // The dialog must be explicit that this never restarts a map by itself.
+        warning: expect.stringContaining("auto-refill never restarts a map by itself")
+      }
+    ));
+    await waitFor(() => expect(basesApi.setAutoRefill).toHaveBeenCalledWith("3002", true));
+    expect(await screen.findByText("ON")).toBeInTheDocument();
+    // Enrollment is not part of a base row, and basesApi.list is expensive.
+    expect(vi.mocked(basesApi.list).mock.calls.length).toBe(listCallsBefore);
+  });
+
+  it("does not enroll when the confirm dialog is declined", async () => {
+    vi.mocked(basesApi.list).mockResolvedValue(queueCapableList({ base_id: "3003", name: "Sietch Declined Auto" }));
+
+    renderPanel({ confirmAction: vi.fn().mockResolvedValue(false) });
+    await expandRow("Sietch Declined Auto");
+    fireEvent.click(screen.getByText("Auto-Refill"));
+
+    await waitFor(() => expect(basesApi.setAutoRefill).not.toHaveBeenCalled());
+  });
+
+  it("turns auto-refill off without a confirm dialog", async () => {
+    vi.mocked(basesApi.list).mockResolvedValue(queueCapableList({ base_id: "3004", name: "Sietch Disable" }));
+    vi.mocked(basesApi.autoRefill).mockResolvedValue(autoRefillState([
+      enrolled(3004)
+    ]));
+    vi.mocked(basesApi.setAutoRefill).mockResolvedValue({ ok: true, baseId: 3004, enabled: false, total: 0 });
+
+    const props = renderPanel();
+    await expandRow("Sietch Disable");
+
+    expect(await screen.findByText("ON")).toBeInTheDocument();
+    expect(screen.getByText(/Not checked yet\./)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("Auto-Refill"));
+
+    await waitFor(() => expect(basesApi.setAutoRefill).toHaveBeenCalledWith("3004", false));
+    // Turning automation off is not a destructive action.
+    expect(props.confirmAction).not.toHaveBeenCalled();
+    expect(await screen.findByText("OFF")).toBeInTheDocument();
+  });
+
+  it("reports the last check result once a scan has run", async () => {
+    vi.mocked(basesApi.list).mockResolvedValue(queueCapableList({ base_id: "3005", name: "Sietch Checked" }));
+    vi.mocked(basesApi.autoRefill).mockResolvedValue(autoRefillState([
+      enrolled(3005, { lastCheckedAt: new Date(Date.now() - 3 * 3600_000).toISOString(), lastLowestPercent: 78 })
+    ]));
+
+    renderPanel();
+    await expandRow("Sietch Checked");
+
+    expect(await screen.findByText(/Last checked 3h ago . lowest 78%\./)).toBeInTheDocument();
+  });
+
+  it("marks the refill button as automated while keeping it clickable", async () => {
+    vi.mocked(basesApi.list).mockResolvedValue(queueCapableList({ base_id: "3006", name: "Sietch Marked" }));
+    vi.mocked(basesApi.autoRefill).mockResolvedValue(autoRefillState([
+      enrolled(3006)
+    ]));
+    vi.mocked(basesApi.refillGenerators).mockResolvedValue({
+      supported: true,
+      result: { ok: true, baseId: 3006, queued: true, map: "DeepDesert_1", partitionId: 8 }
+    });
+
+    renderPanel();
+    await screen.findByText("Sietch Marked");
+
+    // No new column and no extra glyph: the actions column is a fixed 96px.
+    const refill = await screen.findByRole("button", { name: "Refill Generators (auto-refill on)" });
+    expect(refill).toHaveClass("bases-auto-refill-on");
+    expect(refill).toHaveAttribute("title", expect.stringContaining("Click to refill now"));
+    // Enrolling a base must not cost the operator the on-demand refill.
+    expect(refill).toBeEnabled();
+
+    fireEvent.click(refill);
+
+    await waitFor(() => expect(basesApi.refillGenerators).toHaveBeenCalledWith("3006"));
+  });
+
+  it("keeps the queued pill when a base is both enrolled and already queued", async () => {
+    vi.mocked(basesApi.list).mockResolvedValue(queueCapableList({ base_id: "3007", name: "Sietch Queued Auto" }));
+    vi.mocked(basesApi.autoRefill).mockResolvedValue(autoRefillState([
+      enrolled(3007, { lastQueuedAt: "2026-07-30T11:00:00.000Z", lastLowestPercent: 12 })
+    ]));
+    vi.mocked(basesApi.pendingRefills).mockResolvedValue({
+      supported: true,
+      total: 1,
+      pending: [{ baseId: 3007, map: "DeepDesert", partitionId: 8, queuedAt: new Date().toISOString(), attempts: 0, lastError: "" }],
+      byTarget: [{ map: "DeepDesert", partitionId: 8, partitionMap: "DeepDesert_1", dimensionIndex: 0, count: 1 }]
+    });
+
+    renderPanel();
+    await screen.findByText("Sietch Queued Auto");
+
+    // The queued state has to keep that slot: its X is the only way to cancel.
+    expect(await screen.findByRole("button", { name: "Cancel Queued Refill" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Refill Generators (auto-refill on)" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Refill Generators" })).not.toBeInTheDocument();
+  });
+
+  it("calls out queued refills that have waited more than a day", async () => {
+    vi.mocked(basesApi.list).mockResolvedValue(queueCapableList({ base_id: "3008", name: "Sietch Stale" }));
+    vi.mocked(basesApi.pendingRefills).mockResolvedValue({
+      supported: true,
+      total: 2,
+      pending: [
+        { baseId: 3008, map: "DeepDesert", partitionId: 8, queuedAt: new Date(Date.now() - 30 * 3600_000).toISOString(), attempts: 0, lastError: "" },
+        { baseId: 3009, map: "DeepDesert", partitionId: 8, queuedAt: new Date().toISOString(), attempts: 0, lastError: "" }
+      ],
+      byTarget: [{ map: "DeepDesert", partitionId: 8, partitionMap: "DeepDesert_1", dimensionIndex: 0, count: 2 }]
+    });
+
+    renderPanel();
+
+    // Otherwise an entry on an always-up map expires silently after 7 days.
+    expect(await screen.findByText(/1 queued over 24h/)).toBeInTheDocument();
+    expect(screen.getByText(/Restart above to apply\./)).toBeInTheDocument();
+  });
+
+  it("points a stale refill at the Maps tab when the banner has no restart button", async () => {
+    vi.mocked(basesApi.list).mockResolvedValue(queueCapableList({ base_id: "3010", name: "Sietch Unresolved" }));
+    vi.mocked(basesApi.pendingRefills).mockResolvedValue({
+      supported: true,
+      total: 1,
+      // partitionId 0 means the partition never resolved, so this group renders
+      // "Restart this map from the Maps tab" instead of a button.
+      pending: [{ baseId: 3010, map: "DeepDesert", partitionId: 0, queuedAt: new Date(Date.now() - 30 * 3600_000).toISOString(), attempts: 0, lastError: "" }],
+      byTarget: [{ map: "DeepDesert", partitionId: 0, partitionMap: "", dimensionIndex: 0, count: 1 }]
+    });
+
+    renderPanel();
+
+    expect(await screen.findByText(/1 queued over 24h/)).toBeInTheDocument();
+    // Telling the operator to "restart above" when there is no control above
+    // would be wrong exactly when they most need correct guidance.
+    expect(screen.getByText(/Restart from the Maps tab to apply\./)).toBeInTheDocument();
+    expect(screen.queryByText(/Restart above to apply\./)).not.toBeInTheDocument();
+  });
+
+  it("says the enrollment state is unreadable rather than reporting it as off", async () => {
+    vi.mocked(basesApi.list).mockResolvedValue(queueCapableList({ base_id: "3011", name: "Sietch Unreadable" }));
+    vi.mocked(basesApi.autoRefill).mockRejectedValue(new Error("Postgres is not running"));
+
+    renderPanel();
+    await expandRow("Sietch Unreadable");
+
+    // Rendering OFF here would let an operator conclude automation had stopped
+    // for every enrolled base and start managing fuel by hand.
+    expect(await screen.findByText(/Auto-refill state could not be read/)).toBeInTheDocument();
+    expect(screen.queryByText("OFF")).not.toBeInTheDocument();
+    expect(screen.queryByText("ON")).not.toBeInTheDocument();
+
+    // And it is recoverable without reloading the page.
+    vi.mocked(basesApi.autoRefill).mockResolvedValue(autoRefillState([enrolled(3011)]));
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+
+    expect(await screen.findByText("ON")).toBeInTheDocument();
+  });
+
+  it("reports a base whose refills keep failing instead of looking healthy", async () => {
+    vi.mocked(basesApi.list).mockResolvedValue(queueCapableList({ base_id: "3012", name: "Sietch Stalled" }));
+    vi.mocked(basesApi.autoRefill).mockResolvedValue(autoRefillState([
+      enrolled(3012, {
+        lastCheckedAt: new Date(Date.now() - 3600_000).toISOString(),
+        lastQueuedAt: new Date(Date.now() - 3600_000).toISOString(),
+        lastLowestPercent: 8,
+        consecutiveQueues: 3,
+        stalledAt: new Date(Date.now() - 3600_000).toISOString()
+      })
+    ]));
+
+    renderPanel();
+    await expandRow("Sietch Stalled");
+
+    // Auto-refill giving up has to be visible, or the operator believes fuel is
+    // handled while this base quietly stays empty.
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Paused after 3 refills that did not raise this base's fuel");
+    // Still shown as enrolled, because it is.
+    expect(screen.getByText("ON")).toBeInTheDocument();
   });
 });
