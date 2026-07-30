@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { itemIsRankedSchematic, itemIsSchematic, itemRequiresDatabaseGrant, listCatalogItems, resolveCatalogItem } from "../src/adminCatalog.js";
+import { itemIsRankedSchematic, itemIsSchematic, itemRequiresDatabaseGrant, listCatalogItems, resolveCatalogItem, resolveFillableCatalogItem, resolveItemVolume } from "../src/adminCatalog.js";
 
 function fixtureRepo() {
   const root = mkdtempSync(join(tmpdir(), "web-admin-catalog-"));
@@ -12,7 +12,10 @@ function fixtureRepo() {
     { id: "PlantFiber", name: "Plant Fiber", category: "materials", source: "Resources" },
     { id: "CupOfWater", name: "Cup of Water", category: "consumables", source: "Survival" },
     { id: "ChoamHeavyLasgunSchematic", name: "Arhun K-28 Lasgun", category: "schematics", source: "Schematics" },
-    { id: "ArmorPiercingAugment", name: "Armor Piercing Augment", category: "augments", source: "Items" }
+    { id: "ArmorPiercingAugment", name: "Armor Piercing Augment", category: "augments", source: "Items" },
+    { id: "SteelBar", name: "Steel Ingot", category: "resources", source: "Resources", group: "refined_resource", volume: 1.0 },
+    { id: "T6RefinedResourceA", name: "Plastanium Ingot", category: "resources", source: "Resources", group: "refined_resource", volume: 1.0 },
+    { id: "FremenComponent1", name: "EMF Generator", category: "resources", source: "Resources", group: "component", volume: 1.0 }
   ]));
   return root;
 }
@@ -61,4 +64,44 @@ test("ranked physical schematics are distinguished from Grade 0 live grants", ()
   assert.equal(itemIsRankedSchematic(schematic, 0), false);
   assert.equal(itemIsRankedSchematic(schematic, 5), true);
   assert.equal(itemIsRankedSchematic(normalItem, 5), false);
+});
+
+test("resolveFillableCatalogItem accepts refined resources", () => {
+  const root = fixtureRepo();
+  const item = resolveFillableCatalogItem(root, { itemId: "SteelBar" });
+  assert.equal(item.group, "refined_resource");
+  assert.equal(item.volume, 1.0);
+});
+
+test("resolveFillableCatalogItem accepts components", () => {
+  const root = fixtureRepo();
+  const item = resolveFillableCatalogItem(root, { itemId: "FremenComponent1" });
+  assert.equal(item.group, "component");
+});
+
+test("resolveFillableCatalogItem rejects unfillable items", () => {
+  const root = fixtureRepo();
+  assert.throws(
+    () => resolveFillableCatalogItem(root, { itemId: "PlantFiber" }),
+    /Item type not allowed for fill/
+  );
+});
+
+test("resolveFillableCatalogItem rejects unknown item ids", () => {
+  const root = fixtureRepo();
+  assert.throws(
+    () => resolveFillableCatalogItem(root, { itemId: "NonExistentItem" }),
+    /Item type not allowed for fill/
+  );
+});
+
+test("resolveItemVolume returns volume for catalogued items", () => {
+  const root = fixtureRepo();
+  assert.equal(resolveItemVolume(root, "SteelBar"), 1.0);
+  assert.equal(resolveItemVolume(root, "PlantFiber"), 0);
+});
+
+test("resolveItemVolume returns 0 for unknown templates", () => {
+  const root = fixtureRepo();
+  assert.equal(resolveItemVolume(root, "NonExistent"), 0);
 });

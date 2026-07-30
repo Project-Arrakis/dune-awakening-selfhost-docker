@@ -14,7 +14,7 @@ import { createDb, quoteIdentifier } from "./db.js";
 import * as duneDb from "./duneDb.js";
 import { audit, recordAdminHistory } from "./audit.js";
 import { redact } from "./redact.js";
-import { itemIsRankedSchematic, itemIsSchematic, itemRequiresDatabaseGrant, listCatalogItems, resolveCatalogItem } from "./adminCatalog.js";
+import { itemIsRankedSchematic, itemIsSchematic, itemRequiresDatabaseGrant, listCatalogItems, resolveCatalogItem, resolveFillableCatalogItem, resolveItemVolume } from "./adminCatalog.js";
 import { buildBroadcastCommand, buildShutdownBroadcastCommand, publishMapChat, publishServerCommand } from "./rmq.js";
 import { clearCarePackageHistory, enableCarePackage, ensureCarePackageServerPersona, grantEligibleCarePackages, grantCarePackage, retryCarePackageGrant, runCarePackageAutoScan, saveCarePackageConfig, carePackageCapabilities, carePackageConfig, carePackageEligiblePlayers, carePackageHistory } from "./carePackage.js";
 import { readJsonBody, readMultipartForm } from "./httpSafety.js";
@@ -530,6 +530,7 @@ async function handleApi(req, res) {
   if (path.match(/^\/api\/storage\/[^/]+$/)) return dbJson(res, async () => ({ storage: (await duneDb.listStorage(db)).rows.find((row) => String(row.id) === decodeURIComponent(path.split("/")[3])) || null }));
   if (path.match(/^\/api\/storage\/[^/]+\/items$/)) return dbJson(res, () => duneDb.storageItems(db, decodeURIComponent(path.split("/")[3])));
   if (path.match(/^\/api\/storage\/[^/]+\/give-item$/) && req.method === "POST") return storageGiveItemRoute(req, res, path);
+  if (path.match(/^\/api\/storage\/[^/]+\/fill-item$/) && req.method === "POST") return storageFillItemRoute(req, res, path);
   if (path.match(/^\/api\/storage\/[^/]+\/export$/)) return exportJson(res, `storage-${decodeURIComponent(path.split("/")[3])}.json`, () => duneDb.storageItems(db, decodeURIComponent(path.split("/")[3])));
   if (path === "/api/blueprints" && req.method === "GET") return dbJson(res, () => listBlueprints(db));
   if (path === "/api/blueprints/export" && req.method === "POST") return blueprintBulkExportRoute(req, res);
@@ -1862,6 +1863,15 @@ async function storageGiveItemRoute(req, res, path) {
   return directDbMutation(req, res, "storage.give-item", "GIVE ITEM TO STORAGE", async (body) => {
     const resolved = resolveCatalogItem(config.repoRoot, body);
     return duneDb.giveItemToStorage(db, storageId, { ...body, templateId: resolved.itemId });
+  }, { storageId });
+}
+
+async function storageFillItemRoute(req, res, path) {
+  const storageId = decodeURIComponent(path.split("/")[3]);
+  return directDbMutation(req, res, "storage.fill-item", "FILL ITEM TO STORAGE", async (body) => {
+    const resolved = resolveFillableCatalogItem(config.repoRoot, body);
+    const itemVolume = resolved.volume || resolveItemVolume(config.repoRoot, resolved.itemId);
+    return duneDb.fillItemToStorage(db, config.repoRoot, storageId, { ...body, templateId: resolved.itemId, itemVolume });
   }, { storageId });
 }
 
