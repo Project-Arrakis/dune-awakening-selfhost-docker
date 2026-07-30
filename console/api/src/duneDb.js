@@ -2945,6 +2945,9 @@ export async function listStorage(db) {
              p.building_type as class,
              coalesce(a.map, '') as map,
              count(i.id)::int as item_count,
+             coalesce(max(inv.max_item_count), 0)::int as max_item_count,
+             coalesce(max(inv.max_item_volume), 0)::real as max_item_volume,
+             coalesce(sum(coalesce(i.volume_override, 0)), 0)::real as current_volume,
              coalesce(max(ps.character_name), '') as owner_name,
              'placeable' as type
       from dune.placeables p
@@ -2971,6 +2974,9 @@ export async function listStorage(db) {
              coalesce(max(a.class), '') as class,
              coalesce(a.map, '') as map,
              count(i.id)::int as item_count,
+             coalesce(max(inv.max_item_count), 0)::int as max_item_count,
+             coalesce(max(inv.max_item_volume), 0)::real as max_item_volume,
+             coalesce(sum(coalesce(i.volume_override, 0)), 0)::real as current_volume,
              coalesce(max(ps.character_name), '') as owner_name,
              'vehicle' as type
       from dune.actors a
