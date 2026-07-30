@@ -29,6 +29,17 @@ test("host systemd helpers explicitly run as root", () => {
   }
 });
 
+test("scheduled restart jobs run as the host checkout owner", () => {
+  const source = readFileSync(resolve(repoRoot, "runtime/scripts/restart-schedule.sh"), "utf8");
+
+  assert.match(source, /HOST_SERVICE_UID="\$\{DUNE_HOST_UID:-\$\(stat -c '%u' "\$ROOT_DIR"\)\}"/);
+  assert.match(source, /HOST_SERVICE_GID="\$\{DUNE_HOST_GID:-\$\(stat -c '%g' "\$ROOT_DIR"\)\}"/);
+  assert.equal(source.match(/^User=\$HOST_SERVICE_UID$/gm)?.length, 2);
+  assert.equal(source.match(/^Group=\$HOST_SERVICE_GID$/gm)?.length, 2);
+  assert.equal(source.match(/^User=\$\{DUNE_HOST_SERVICE_UID\}$/gm)?.length, 2);
+  assert.equal(source.match(/^Group=\$\{DUNE_HOST_SERVICE_GID\}$/gm)?.length, 2);
+});
+
 test("shell self-update helper uses host ownership and Docker socket group", () => {
   const source = readFileSync(resolve(repoRoot, "runtime/scripts/self-update.sh"), "utf8");
 
