@@ -9,6 +9,47 @@ Keep a Changelog style, grouped by upstream base version, newest first.
 
 ## Unreleased (on top of upstream v1.3.65)
 
+### Security
+
+- Cherry-picked upstream `3ca8c4c` ("fix(backups): preserve env ownership during scheduled
+  tasks", upstream v1.3.67) — `.env` is no longer silently rewritten as root-owned when
+  a systemd timer triggers Compose project-name resolution. Existing non-root-owned `.env`
+  files now have their ownership preserved (`chown --reference`) before the atomic `mv`
+  replacement, and when the project name is already correct the function is a no-op
+  (no file write at all). Documented as INC-2026-07-27-001.
+
+### Fixed
+
+- Item display names in `playerInventory`, `playerOwnedStorageQuery`, `guildStorageQuery`,
+  `searchItemsInContainers`, and `searchItemsInPlayerInventory` now resolve against the
+  `adminItemMetadata()` catalog instead of showing raw `template_id`s. Added shared
+  `enrichWithDisplayName()` helper. Fixed `ContainerVehicle` name conflict with
+  `admin-vehicle.json` preferring `admin-items.json`'s display name.
+- Storage and item-find embeds now match Core's actual response payload shape
+  (`{grouped, rows, count}`) instead of the never-implemented `{groups, matches}` contract.
+  Added `containersAsGroups()` helper for container rows.
+- Building types (Sub-Fief Console, Small Storage Container, Fabricator, etc.) now resolve
+  to real display names via `adminBuildingMetadata()`/`resolveBuildingDisplayName()` instead
+  of raw `building_type` IDs. Catalog individually verified against `dune.gaming.tools`.
+- Non-storage placeables (Water Shipper Door, Blood Purifier) no longer appear in container
+  listings — added `EXISTS (select 1 from dune.inventories...)` filter to
+  `playerOwnedStorageQuery()` and `guildStorageQuery()`.
+- Fixed `verify/characters/unlink` routes: repointed from the never-existent
+  `player-links-*` routes to Core's real `players/link/verify`, `players/accounts/list`, and
+  `players/accounts/unlink`. Removed broken `playerLinks()`/`playerUnlinkV2()`.
+- Phase-one 1:1 linking constraint: `linkPlayerProvider()` and `linkAdditionalAccount()`
+  reject linking a second character to the same Discord account with a lore-styled error
+  message.
+- Same-character re-link short-circuit: re-linking an already-linked character is now an
+  immediate no-op (`{ok: true, alreadyLinked: true}`) with no whisper, no Steam OAuth
+  round-trip, and no rejection at the end of a pointless flow.
+- `players-accounts-list` and `players-accounts-unlink` added to `config.js`'s runtime
+  `paths`/`methods` object and `UPSTREAM_CONTRACT` — previously added to
+  `DEFAULT_PATHS`/`DEFAULT_METHODS` but never to the runtime object (same class of gap as
+  the `players-link-verify` bug).
+- `formatLinkEmbed` now checks `payload.alreadyLinked` first, showing an "Already Linked"
+  message with Core's verbatim lore text instead of the generic "Character Linked" embed.
+
 ### Fixed
 
 - Adopted upstream's revert of a Compose `name:` pin that this fork had
