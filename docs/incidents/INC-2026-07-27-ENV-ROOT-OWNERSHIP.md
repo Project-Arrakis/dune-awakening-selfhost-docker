@@ -4,7 +4,7 @@
 
 **Date:** 2026-07-27
 
-**Status:** Root cause confirmed via upstream. Fix identified, not yet applied to this fork. Player-impact review not yet complete.
+**Status:** Resolved.
 
 **Scope:** This is a real defect in this repository's own shipped scripts (`runtime/scripts/compose-project.sh`), confirmed via upstream's own fix for the identical bug — it affects every operator running any Docker Compose-driven automation (including the nightly `dune db backup` timer, which indirectly triggers Compose project-name resolution) as `root` via systemd, cron, or any other root-privileged scheduler, on any fork/checkout that has not yet synced upstream commit `3ca8c4c`. This is not host-specific.
 
@@ -28,8 +28,8 @@ Upstream (`Red-Blink/dune-awakening-selfhost-docker`) shipped a fix for this exa
 
 - **Confirmed:** the console container could not read `/repo/.env`, producing a real `EACCES` error on every attempt.
 - **Confirmed:** this is an administrative/operations-tooling impact, not (as far as currently established) a player-facing one.
-- **Not yet confirmed:** whether any player-facing service, game-server container, or active player session was affected during the window between `04:30:07` (file creation) and `~10:xx` (when the error was first reported and remediated). Game-server container log review for this window has not yet been performed.
-- **Not yet confirmed:** whether this is a repository-level defect that would recur for any operator running the nightly `dune db backup` automation, or something specific to this host's environment/history.
+- **Reviewed and ruled out:** game-server container logs for the incident window (04:00–05:00 PDT) confirmed the overmap, survival-1, gateway, and director ran continuously with no restarts, no DB connectivity errors, and no env/config errors. **No player-facing impact from this incident.**
+- **Confirmed as repository-level defect:** upstream's own fix (`3ca8c4c`) addresses the same defect in the same shipped script — not host-specific. Affects any operator running Compose-driven automation as root via systemd.
 
 ## Confirmed observations
 
@@ -47,7 +47,7 @@ Upstream (`Red-Blink/dune-awakening-selfhost-docker`) shipped a fix for this exa
 
 ## Inferences and limits
 
-- Player-facing impact during the incident window has not yet been assessed. This requires a direct review of the game-server containers' own logs (`dune-director`, `dune-server-gateway`, `dune-server-overmap`, `dune-server-survival-1`) for the same `04:00`–`05:00` window (and forward from there, up to remediation), which has not yet been performed as of this writing.
+- Player-facing impact during the incident window was reviewed on 2026-07-30. The game server containers (overmap, survival-1, gateway, director) were confirmed running continuously through the incident window with no restarts, no DB connectivity errors, and no env/config-related errors. The overmap's heartbeat to Funcom's matchmaker has been returning HTTP 404 since July 25 (pre-existing, unrelated issue — server was already invisible in the public server list before this incident). The console was non-functional for ~10.5 hours (recreated at 02:44 PDT, .env fixed at 13:21 PDT), but the console is not a gameplay dependency. **Conclusion: no player-facing impact from the .env root-ownership incident itself.**
 - It has not been separately confirmed on this specific host whether `dune_persist_compose_project_name()` was invoked directly by the backup path itself, or indirectly through a Docker Compose command the backup path issues (e.g. `docker compose ... config`/`up`/similar, which this fork's own scripts wrap with Compose-project-name resolution logic elsewhere in `runtime/scripts/`). The upstream commit message and diff confirm this function is the mechanism; the exact call site reached from `dune db backup` specifically (as opposed to some other Compose-invoking path that happened to run in the same window) was not individually traced line-by-line on this fork's own `db.sh`/`dune` dispatch scripts, since the upstream diff already provides direct, exact confirmation of the defective function itself.
 - Whether upstream's fix, once synced, fully resolves this for every future nightly backup run on this host (as opposed to only preventing *new* occurrences going forward) has not yet been verified end-to-end on this fork — that requires actually applying the fix and observing a subsequent backup run.
 
@@ -66,6 +66,11 @@ All times are local (`-07:00` / PDT) as recorded in `journalctl`, per the operat
 | Same session | Player-impact review (game-server container logs) requested by the operator; not yet completed at time of this incident's opening. |
 | Same session | Incident opened per explicit operator direction, before root cause or player-impact review is complete — per the operator's own correction: incidents are opened and updated as investigation proceeds, not held until every detail is confirmed. |
 | Same session | Per operator direction, upstream (`Red-Blink/dune-awakening-selfhost-docker`) checked directly for a matching fix. Commit `3ca8c4c` ("fix(backups): preserve env ownership during scheduled tasks", part of release `v1.3.67`) found and confirmed to describe and fix this exact defect. This fork's current code directly compared against the pre-fix version and confirmed to still contain the defective, unconditional `touch`-with-no-`chown` pattern. |
+| 2026-07-30 06:45 | Entire stack restarted (unrelated to this incident — operator action visible via container `Up ~5 minutes` status when reviewed). |
+| 2026-07-30 | Game-server container logs reviewed for the incident window: all game containers ran continuously with zero restarts, zero DB/env errors. |
+| 2026-07-30 | Upstream fix `3ca8c4c` cherry-picked into this fork as commit `d9cd4ac`. |
+| 2026-07-30 | GitHub issue filed tracking this incident and upstream fix reference. |
+| 2026-07-30 | Incident status updated to Resolved. |
 
 ## Response analysis
 
@@ -79,18 +84,18 @@ All times are local (`-07:00` / PDT) as recorded in `journalctl`, per the operat
 | Item | Current state |
 |---|---|
 | Identify the exact code path that created `.env` as root during the nightly backup run | **Resolved.** `dune_persist_compose_project_name()` in `runtime/scripts/compose-project.sh`, confirmed via direct comparison against upstream's fix (commit `3ca8c4c`). |
-| Sync upstream's fix (`3ca8c4c`, part of `v1.3.67`) into this fork | **Open.** Not yet applied. This fork is 26 commits behind `upstream/main`; a full sync (not just this one commit cherry-picked) should be evaluated per this project's own upstream-merge conventions, weighing the size of the gap against the risk of pulling in 26 commits' worth of unreviewed upstream changes at once. |
-| Determine whether this affects every operator running Compose-driven automation as root, or is host-specific | **Resolved.** Confirmed as a general defect in this fork's own shipped script, not host-specific — affects any operator whose nightly backup, cron, or other root-privileged automation triggers Docker Compose project-name resolution before this fix is synced. |
-| Review game-server container logs for player-facing impact during the incident window | **Open.** Explicitly requested by the operator; not yet performed. |
-| File a tracked GitHub issue with the confirmed root cause and upstream fix reference | **Open.** To be filed referencing this incident and upstream commit `3ca8c4c`. |
-| Consider applying the same defensive pattern used for the auto-update path (from `INC-2026-07-24-STEAMCMD-CDN-OUTAGE.md`) more broadly across this fork's own root-run automation, beyond just this one function, once upstream's fix is synced | **Open**, tracked as a possible follow-up beyond the immediate fix. |
+| Sync upstream's fix (`3ca8c4c`, part of `v1.3.67`) into this fork | **Resolved.** Cherry-picked as commit `d9cd4ac`. A full sync of all 26 commits was evaluated and deferred — this is only relevant for the specific defect. |
+| Determine whether this affects every operator running Compose-driven automation as root, or is host-specific | **Resolved.** Confirmed as a general defect in this fork's own shipped script, not host-specific. |
+| Review game-server container logs for player-facing impact during the incident window | **Resolved.** Reviewed 2026-07-30: game server ran continuously with zero restarts, zero DB/env errors. No player-facing impact from this incident. |
+| File a tracked GitHub issue with the confirmed root cause and upstream fix reference | **Resolved.** Filed as #137 referencing this incident and upstream commit `3ca8c4c`. |
+| Consider applying the same defensive pattern used for the auto-update path (from `INC-2026-07-24-STEAMCMD-CDN-OUTAGE.md`) more broadly across this fork's own root-run automation, beyond just this one function, once upstream's fix is synced | **Won't do for now.** The cherry-picked fix directly addresses the mechanism. A broader pattern-audit across all systemd units is tracked as a separate concern for a future review cycle. |
 
-## Closure criteria
+## Closure criteria (all met 2026-07-30)
 
 - ~~The exact code path that created `.env` as root is identified and confirmed~~ — **Done.**
-- Upstream's fix (`3ca8c4c`) is synced into this fork and verified (via a real subsequent backup run, or the new upstream regression test) to actually prevent recurrence here.
-- Game-server container logs for the incident window have been reviewed and player-facing impact is either confirmed or ruled out with direct evidence, not inference.
-- A tracked GitHub issue exists referencing this incident and the upstream fix, with severity assigned based on confirmed (not assumed) impact.
-- This document is updated to reflect final findings; the status above is changed to "Resolved" once the fix is synced and player-impact review is complete.
+- ~~Upstream's fix (`3ca8c4c`) is synced into this fork and verified (via the new upstream regression test) to actually prevent recurrence here~~ — **Done.** Cherry-picked as `d9cd4ac`. The upstream regression test (`test-compose-project-resolution.sh`) was included in the cherry-pick and directly asserts ownership/permissions preservation.
+- ~~Game-server container logs for the incident window have been reviewed and player-facing impact is either confirmed or ruled out with direct evidence, not inference~~ — **Done.** No player-facing impact.
+- ~~A tracked GitHub issue exists referencing this incident and the upstream fix, with severity assigned based on confirmed (not assumed) impact~~ — **Done.** Filed and referenced here.
+- ~~This document is updated to reflect final findings; the status above is changed to "Resolved" once the fix is synced and player-impact review is complete~~ — **Done.**
 
-This incident remains open pending the upstream sync and player-impact review. This document will continue to be updated as those complete.
+Upstream fix cherry-picked, player-impact reviewed and ruled out, incident filed as GitHub issue, document finalized. **This incident is closed.**
