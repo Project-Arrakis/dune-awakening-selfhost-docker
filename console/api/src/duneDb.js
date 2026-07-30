@@ -2932,28 +2932,64 @@ export async function exportBaseAsBlueprint(db, id) {
 }
 
 export async function listStorage(db) {
-  if (!(await tableExists(db, "placeables"))) return unsupported("storage", ["dune.placeables"]);
-  const result = await db.query(`
-    select p.id,
-           coalesce(max(case when pa.actor_name not like '##%' and pa.actor_name <> 'None' then pa.actor_name end), '') as name,
-           p.building_type as class,
-           coalesce(a.map, '') as map,
-           count(i.id)::int as item_count,
-           coalesce(max(ps.character_name), '') as owner_name
-    from dune.placeables p
-    left join dune.actors a on a.id = p.id
-    left join dune.permission_actor pa on pa.actor_id = p.id
-    left join dune.inventories inv on inv.actor_id = p.id
-    left join dune.items i on i.inventory_id = inv.id
-    left join dune.actor_fgl_entities afe on afe.entity_id = p.owner_entity_id
-    left join dune.permission_actor_rank par on par.permission_actor_id = afe.actor_id
-    left join dune.actors player_a on player_a.id = par.player_id
-    left join dune.player_state ps on ps.account_id = player_a.owner_account_id
-    where p.building_type in ('SpiceSilo_Placeable','GenericContainer_Placeable','StorageContainer_Placeable','MediumStorageContainer_Placeable')
-      and p.is_hologram = false and p.owner_entity_id is not null and p.owner_entity_id != 0
-    group by p.id, p.building_type, a.map
-    order by p.id`);
-  return { capabilities: { storage: true, storageGiveItem: await supportsStorageGiveItem(db) }, rows: result.rows };
+  const capabilities = {
+    storage: false,
+    storageGiveItem: false,
+    storageFillItem: false
+  };
+  let rows = [];
+  if (await tableExists(db, "placeables")) {
+    const placeableResult = await db.query(`
+      select p.id,
+             coalesce(max(case when pa.actor_name not like '##%' and pa.actor_name <> 'None' then pa.actor_name end), '') as name,
+             p.building_type as class,
+             coalesce(a.map, '') as map,
+             count(i.id)::int as item_count,
+             coalesce(max(ps.character_name), '') as owner_name,
+             'placeable' as type
+      from dune.placeables p
+      left join dune.actors a on a.id = p.id
+      left join dune.permission_actor pa on pa.actor_id = p.id
+      left join dune.inventories inv on inv.actor_id = p.id
+      left join dune.items i on i.inventory_id = inv.id
+      left join dune.actor_fgl_entities afe on afe.entity_id = p.owner_entity_id
+      left join dune.permission_actor_rank par on par.permission_actor_id = afe.actor_id
+      left join dune.actors player_a on player_a.id = par.player_id
+      left join dune.player_state ps on ps.account_id = player_a.owner_account_id
+      where p.building_type in ('SpiceSilo_Placeable','GenericContainer_Placeable','StorageContainer_Placeable','MediumStorageContainer_Placeable')
+        and p.is_hologram = false and p.owner_entity_id is not null and p.owner_entity_id != 0
+      group by p.id, p.building_type, a.map
+      order by p.id`);
+    rows = placeableResult.rows;
+    capabilities.storage = true;
+    capabilities.storageGiveItem = await supportsStorageGiveItem(db);
+  }
+  if (await tableExists(db, "vehicles")) {
+    const vehicleResult = await db.query(`
+      select a.id,
+             coalesce(max(case when pa.actor_name not like '##%' and pa.actor_name <> 'None' then pa.actor_name end), '') as name,
+             coalesce(max(a.class), '') as class,
+             coalesce(a.map, '') as map,
+             count(i.id)::int as item_count,
+             coalesce(max(ps.character_name), '') as owner_name,
+             'vehicle' as type
+      from dune.actors a
+      join dune.vehicles v on v.id = a.id
+      left join dune.permission_actor pa on pa.actor_id = a.id
+      left join dune.inventories inv on inv.actor_id = a.id
+      left join dune.items i on i.inventory_id = inv.id
+      left join dune.actor_fgl_entities afe on afe.entity_id = a.id
+      left join dune.permission_actor_rank par on par.permission_actor_id = afe.actor_id
+      left join dune.actors player_a on player_a.id = par.player_id
+      left join dune.player_state ps on ps.account_id = player_a.owner_account_id
+      where a.id is not null
+      group by a.id, a.map
+      order by a.id`);
+    rows = [...rows, ...vehicleResult.rows];
+    capabilities.storage = true;
+  }
+  capabilities.storageFillItem = await supportsStorageFillItem(db);
+  return { capabilities, rows };
 }
 
 export async function storageItems(db, id) {
@@ -2962,7 +2998,8 @@ export async function storageItems(db, id) {
 
 export async function storageCapabilities(db) {
   return {
-    storageGiveItem: await supportsStorageGiveItem(db)
+    storageGiveItem: await supportsStorageGiveItem(db),
+    storageFillItem: await supportsStorageFillItem(db)
   };
 }
 
@@ -4594,6 +4631,67 @@ export async function giveItemToStorage(db, storageId, { itemName = "", itemId =
   });
 }
 
+export async function fillItemToStorage(db, repoRoot, storageId, { itemName = "", itemId = "", templateId = "", quantity = 1, quality = 0, itemVolume = 0, augments = [], augmentQuality = 1 }) {
+  await requireCapability(await supportsStorageFillItem(db), "Storage fill-item requires compatible dune.inventories and dune.items insert columns including volume_override.");
+  const target = intParam(storageId, "storage id", 1);
+  const resolvedTemplate = validateTemplateId(templateId || itemId || itemName);
+  const stackSize = intParam(quantity, "quantity", 1, 1000000);
+  const qualityLevel = normalizeStandaloneAugmentQuality(resolvedTemplate, intParam(quality, "quality", 0, 1000000));
+  const augmentIds = validateAugmentIds(augments);
+  const augmentQualityLevel = normalizeAugmentQuality(augmentQuality);
+  validateAugmentsForTemplate(resolvedTemplate, augmentIds);
+  const itemVolumeNum = Number(itemVolume) || 0;
+  return db.transaction(async (tx) => {
+    const itemColumns = await columnsFor(tx, "items");
+    const storage = await tx.query(`
+      select id, actor_id, coalesce(max_item_count, 0)::int as max_item_count, coalesce(max_item_volume, 0)::real as max_item_volume
+      from dune.inventories
+      where actor_id = $1
+      order by id
+      limit 1
+      for update`, [target]);
+    if (!storage.rows[0]) throw new Error("Storage inventory was not found for the selected storage actor");
+    const inventory = storage.rows[0];
+    const count = await tx.query("select count(*)::int as count from dune.items where inventory_id = $1", [inventory.id]);
+    const currentCount = Number(count.rows[0]?.count || 0);
+    if (inventory.max_item_count > 0 && currentCount >= inventory.max_item_count) throw new Error("Storage is full by item slot count");
+    if (inventory.max_item_volume > 0 && itemVolumeNum > 0) {
+      const volume = await tx.query("select coalesce(sum(coalesce(volume_override, 0)), 0)::real as total_volume from dune.items where inventory_id = $1", [inventory.id]);
+      const currentVolume = Number(volume.rows[0]?.total_volume || 0);
+      const neededVolume = itemVolumeNum * stackSize;
+      if (currentVolume + neededVolume > inventory.max_item_volume) {
+        throw new Error(`Storage is full by volume (${currentVolume.toFixed(1)}/${inventory.max_item_volume.toFixed(1)} used, need ${neededVolume.toFixed(1)})`);
+      }
+    }
+    const position = await tx.query("select coalesce(max(position_index), -1)::int + 1 as position_index from dune.items where inventory_id = $1", [inventory.id]);
+    const standaloneAugment = isStandaloneAugmentTemplate(resolvedTemplate);
+    const rollPayloads = await loadAugmentRollPayloads(
+      tx,
+      standaloneAugment ? [resolvedTemplate] : augmentIds,
+      standaloneAugment ? qualityLevel : augmentQualityLevel,
+      { sourceTemplateId: resolvedTemplate }
+    );
+    const stats = buildItemStats({ templateId: resolvedTemplate, augments: augmentIds, rollPayloads });
+    const insertColumns = ["inventory_id", "template_id", "stack_size", "quality_level", "position_index", "stats"];
+    const insertValues = [inventory.id, resolvedTemplate, stackSize, qualityLevel, Number(position.rows[0]?.position_index || 0), JSON.stringify(stats)];
+    if (itemColumns.has("volume_override")) {
+      insertColumns.push("volume_override");
+      insertValues.push(itemVolumeNum);
+    }
+    const insert = itemInsertShape(insertColumns, insertValues, itemColumns);
+    const inserted = await tx.query(`
+      insert into dune.items (${insert.columns.join(", ")})
+      values (${insert.values.map((_, index) => {
+        const col = insertColumns[index];
+        if (col === "stats") return `$${index + 1}::jsonb`;
+        if (col === "volume_override") return `$${index + 1}::real`;
+        return `$${index + 1}`;
+      }).join(", ")})
+      returning id, template_id, stack_size, quality_level, position_index, inventory_id, volume_override`, insert.values);
+    return { ok: true, storage: inventory, inserted: inserted.rows[0], augments: augmentIds.length > 0 ? augmentIds : undefined };
+  });
+}
+
 export async function giveItemToPlayer(db, playerId, { itemName = "", itemId = "", templateId = "", quantity = 1, quality = 1, augments = [], augmentQuality = 1, allowOnlinePreAugmented = false }) {
   await requireCapability(await supportsPlayerGiveItem(db), "Player give-item requires compatible dune.inventories and dune.items insert columns.");
   const target = intParam(playerId, "player id", 1);
@@ -5099,6 +5197,14 @@ async function supportsPlayerGiveItem(db) {
   const itemColumns = await columnsFor(db, "items");
   return ["id", "actor_id", "inventory_type", "max_item_count", "max_item_volume"].every((column) => inventoryColumns.has(column)) &&
     ["inventory_id", "template_id", "stack_size", "quality_level", "position_index", "stats"].every((column) => itemColumns.has(column));
+}
+
+async function supportsStorageFillItem(db) {
+  if (!(await tableExists(db, "items")) || !(await tableExists(db, "inventories"))) return false;
+  const inventoryColumns = await columnsFor(db, "inventories");
+  const itemColumns = await columnsFor(db, "items");
+  return ["id", "actor_id", "max_item_count", "max_item_volume"].every((column) => inventoryColumns.has(column)) &&
+    ["inventory_id", "template_id", "stack_size", "quality_level", "position_index", "stats", "volume_override"].every((column) => itemColumns.has(column));
 }
 
 async function supportsRepairGear(db) {

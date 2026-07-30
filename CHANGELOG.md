@@ -50,6 +50,19 @@ Keep a Changelog style, grouped by upstream base version, newest first.
 - `formatLinkEmbed` now checks `payload.alreadyLinked` first, showing an "Already Linked"
   message with Core's verbatim lore text instead of the generic "Character Linked" embed.
 
+### Added
+
+- `POST /api/storage/{storageId}/fill-item` endpoint: fills a container (placeable storage
+  or container vehicle) with refined resources or components, respecting both item-slot
+  and volume limits. Restricted to items classified as `refined_resource` or `component`
+  in `admin-items.json`. Sets `volume_override` on inserted items. Added `fillItemToStorage()`
+  in `duneDb.js`, `resolveFillableCatalogItem()`/`resolveItemVolume()` in `adminCatalog.js`.
+- Extended `GET /api/storage` to include container vehicles (from `dune.vehicles` +
+  `dune.actors`) alongside placeable storage buildings. Each row now has a `type` field
+  (`"placeable"` or `"vehicle"`).
+- Added `group` and `volume` fields to 75 items in `runtime/data/admin-items.json`
+  (21 refined resources, 54 components) for use by the fill-item endpoint.
+
 ### Fixed
 
 - Adopted upstream's revert of a Compose `name:` pin that this fork had
