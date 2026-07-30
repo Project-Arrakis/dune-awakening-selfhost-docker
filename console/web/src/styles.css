@@ -1739,28 +1739,9 @@ body.debug .technical-details { display: block; }
   padding: 0 0 12px;
   border-bottom: 1px solid var(--border);
 }
-.bases-auto-refill .action-help-note {
-  flex: 1 1 100%;
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  margin: 0;
-  font-size: 10px;
-  font-style: normal;
-  font-weight: 500;
-  color: var(--muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-/* Scoped to this modifier rather than the shared .switch-checkbox, which ~10
-   other panels also use. Sized a notch below the toggle's own text so the
-   description reads as secondary, not the loudest thing in the block. */
-.bases-auto-refill-toggle { min-height: 32px; padding: 3px 4px 3px 10px; }
-.bases-auto-refill-toggle .switch-label { font-size: 12px; }
+.bases-auto-refill .action-help-note { margin: 0; flex: 1 1 260px; min-width: 0; }
 /* Wide enough for the "Saving" state, matching settings-server-listing-toggle. */
-.bases-auto-refill-toggle .switch-state { font-size: 11px; min-width: 48px; padding: 4px 8px; }
+.bases-auto-refill-toggle .switch-state { min-width: 62px; }
 /* Auto-refill marks the existing Refill button instead of adding a control: the
    actions column is a fixed 96px and already holds two glyphs. Fill only, so it
    still reads and behaves as the working button it remains. */
@@ -1774,16 +1755,16 @@ body.debug .technical-details { display: block; }
   align-items: center;
   gap: 10px;
   margin: 0;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--muted);
 }
-.bases-auto-refill-unknown button { padding: 4px 10px; font-size: 11px; }
+.bases-auto-refill-unknown button { padding: 4px 10px; font-size: 12px; }
 /* Auto-refill giving up on a base is an alert, not a footnote: the operator
    otherwise believes fuel is handled while the base quietly stays empty. */
 .bases-auto-refill-stalled {
   flex: 1 1 100%;
   margin: 0;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--danger-text);
 }
 @media (max-width: 760px) {

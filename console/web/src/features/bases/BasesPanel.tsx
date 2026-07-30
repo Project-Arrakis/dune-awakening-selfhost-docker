@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ChevronDown, ChevronUp, Download, Fuel, Info, X } from "lucide-react";
+import { ChevronDown, ChevronUp, Download, Fuel, X } from "lucide-react";
 import { basesApi, type AutoRefillBase, type RefillDeviceResult } from "../../api/bases";
 import { mapsApi } from "../../api/maps";
 import { serverApi } from "../../api/server";
@@ -895,7 +895,6 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
                         <strong className="switch-state">{savingAutoRefill ? "Saving" : autoRefillEntry ? "ON" : "OFF"}</strong>
                       </label>
                       <p className="action-help-note">
-                        <Info size={11} aria-hidden="true" />
                         Checked every {autoRefillIntervalHours}h. Queues a refill when any generator drops below {autoRefillThreshold}%.
                         {autoRefillEntry && lastChecked ? ` Last checked ${lastChecked}${autoRefillEntry.lastLowestPercent === null ? "" : ` — lowest ${autoRefillEntry.lastLowestPercent}%`}.` : ""}
                         {autoRefillEntry && !lastChecked ? " Not checked yet." : ""}
