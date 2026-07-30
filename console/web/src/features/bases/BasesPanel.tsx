@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ChevronDown, ChevronUp, Download, Fuel, X } from "lucide-react";
-import { basesApi, type RefillDeviceResult } from "../../api/bases";
+import { basesApi, type AutoRefillBase, type RefillDeviceResult } from "../../api/bases";
 import { mapsApi } from "../../api/maps";
 import { serverApi } from "../../api/server";
 import { setupApi, type Task } from "../../api/setup";
@@ -79,6 +79,22 @@ function hasNoQueuedFuel(unstockedCount: number | undefined, generatorCount: num
 }
 
 const QUEUED_RESERVE_EXPLANATION = "Queued Reserve counts fuel still in inventory. It excludes fuel currently burning, so the in-game Total Uptime may be higher.";
+
+// A queued refill only applies while its map is confirmed down. On a map that
+// never comes down an entry would otherwise sit unnoticed until the server-side
+// age limit discards it, so entries past this age are called out in the banner.
+const STALE_QUEUED_REFILL_MS = 24 * 60 * 60_000;
+
+function formatAgo(iso: string) {
+  const at = Date.parse(iso);
+  if (!Number.isFinite(at)) return "";
+  const minutes = Math.max(0, Math.floor((Date.now() - at) / 60_000));
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
 
 const BASES_AUTO_REFRESH_MS = 15 * 60_000; // 15 minutes — listBases is expensive
 const BASES_PAGE_SIZES = [25, 50, 100, 200] as const;
@@ -303,6 +319,15 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
   // clickable and a second restart cannot erase the first one's spinner.
   const [restartingTargets, setRestartingTargets] = useState<string[]>(() => restartingTargetsCache);
   const [expandedBaseId, setExpandedBaseId] = useState<string | null>(null);
+  // Enrollment is console-owned config, not part of a base row, so it is fetched
+  // once rather than polled: it only changes when this panel changes it.
+  const [autoRefillBases, setAutoRefillBases] = useState<Map<string, AutoRefillBase>>(new Map());
+  const [autoRefillThreshold, setAutoRefillThreshold] = useState(50);
+  const [autoRefillIntervalHours, setAutoRefillIntervalHours] = useState(24);
+  const [savingAutoRefillId, setSavingAutoRefillId] = useState("");
+  // Distinct from "no bases enrolled": the enrollment read itself failed, so
+  // what is on screen may not reflect reality.
+  const [autoRefillUnavailable, setAutoRefillUnavailable] = useState(false);
   const requestIdRef = useRef(0);
   const skipNextSearchReset = useRef(true);
   const { pending: pendingRefills, refresh: refreshPendingRefills } = usePendingRefills(canQueue);
@@ -519,6 +544,87 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
     }
   }
 
+  const refreshAutoRefill = useCallback(async () => {
+    try {
+      const state = await basesApi.autoRefill();
+      setAutoRefillBases(new Map(state.bases.map((entry) => [String(entry.baseId), entry])));
+      setAutoRefillThreshold(state.thresholdPercent);
+      setAutoRefillIntervalHours(state.intervalHours);
+      setAutoRefillUnavailable(false);
+    } catch {
+      // Failing to read enrollment must not blank the bases list, which is this
+      // panel's actual job -- but it must not be reported as "off" either.
+      // Clearing the map here would render every enrolled base as OFF and let an
+      // operator conclude automation had stopped, so whatever was last known is
+      // kept and the state is flagged as unread instead.
+      setAutoRefillUnavailable(true);
+    }
+  }, []);
+
+  // canQueue arrives with the first list response, so this fires once the
+  // capability is known rather than on mount with an unknown capability.
+  useEffect(() => {
+    if (!canQueue) return;
+    void refreshAutoRefill();
+  }, [canQueue, refreshAutoRefill]);
+
+  async function handleToggleAutoRefill(base: BaseRow, nextEnabled: boolean) {
+    const id = String(base.base_id);
+    const label = base.name || `base ${id}`;
+    if (nextEnabled) {
+      const confirmed = await confirmAction(
+        `Turn on auto-refill for "${label}"?`,
+        {
+          title: "Auto-Refill",
+          confirmLabel: "Turn On",
+          warning: `Every ${autoRefillIntervalHours}h this base is checked, and a refill is queued if any generator holds less than ${autoRefillThreshold}% of its fuel cap. Queued refills are written the next time this base's map restarts or stops — auto-refill never restarts a map by itself.`
+        }
+      );
+      if (!confirmed) return;
+    }
+    onError("");
+    setSavingAutoRefillId(id);
+    try {
+      const result = await basesApi.setAutoRefill(id, nextEnabled);
+      // A successful write proves the endpoint is reachable again, so recover the
+      // full picture rather than leaving the rest of the panel on stale data.
+      if (autoRefillUnavailable) {
+        void refreshAutoRefill();
+      }
+      // The response is authoritative, so no list refetch: enrollment is not
+      // part of a base row, and basesApi.list is expensive.
+      setAutoRefillBases((current) => {
+        const next = new Map(current);
+        if (result.enabled) {
+          next.set(id, next.get(id) || {
+            baseId: Number(id),
+            enabledAt: new Date().toISOString(),
+            lastCheckedAt: "",
+            lastQueuedAt: "",
+            lastLowestPercent: null,
+            consecutiveQueues: 0,
+            stalledAt: ""
+          });
+        } else {
+          next.delete(id);
+        }
+        return next;
+      });
+      writeRefillStatus(
+        result.enabled
+          ? `Auto-refill is on for "${label}". Checked every ${autoRefillIntervalHours}h.`
+          : `Auto-refill is off for "${label}".`,
+        "ok"
+      );
+    } catch (error) {
+      const text = errorText(error);
+      writeRefillStatus(text, "fail");
+      onError(text);
+    } finally {
+      setSavingAutoRefillId("");
+    }
+  }
+
   async function handleRestartForQueue(group: { map: string; partitionId: number; partitionMap: string; dimensionIndex: number; count: number }) {
     const target = queueRestartTarget(group.partitionMap, group.partitionId, group.dimensionIndex);
     if (target.kind === "none") return;
@@ -573,6 +679,20 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
 
   const pendingTotal = pendingRefills?.total || 0;
   const queuedBaseIds = new Set((pendingRefills?.pending || []).map((entry) => String(entry.baseId)));
+  const staleQueued = (pendingRefills?.pending || []).filter((entry) => {
+    const queuedAt = Date.parse(entry.queuedAt);
+    return Number.isFinite(queuedAt) && Date.now() - queuedAt > STALE_QUEUED_REFILL_MS;
+  });
+  const staleQueuedCount = staleQueued.length;
+  // Whether any stale entry actually has a restart button in the list above. A
+  // group whose partition does not resolve renders "Restart this map from the
+  // Maps tab" instead, so pointing at a button that is not there would be wrong.
+  const staleTargetKeys = new Set(staleQueued.map((entry) => `${entry.map || "Unknown"}|${entry.partitionId}`));
+  const staleHasRestartButton = (pendingRefills?.byTarget || []).some((group) =>
+    staleTargetKeys.has(`${group.map}|${group.partitionId}`)
+    && queueRestartTarget(group.partitionMap, group.partitionId, group.dimensionIndex).kind !== "none");
+  // With no enrollment read at all, the toggle cannot honestly show ON or OFF.
+  const autoRefillUnrecoverable = autoRefillUnavailable && autoRefillBases.size === 0;
   const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
   const rangeStart = totalCount === 0 ? 0 : page * pageSize + 1;
   const rangeEnd = totalCount === 0 ? 0 : rangeStart + rows.length - 1;
@@ -639,6 +759,9 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
             </li>;
           })}
         </ul>
+        {staleQueuedCount > 0 && <p className="bases-pending-refills-stale" role="status">
+          {staleQueuedCount.toLocaleString()} queued over 24h — {staleQueuedCount === 1 ? "its map has" : "their maps have"} not been down since. {staleHasRestartButton ? "Restart above to apply." : "Restart from the Maps tab to apply."}
+        </p>}
       </div>}
       {refillResult && <p
         className={`inline-task-result bases-refill-status${refillStatus ? ` result-${refillStatus}` : ""}`}
@@ -680,9 +803,16 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
           const base = row as BaseRow;
           const id = String(base.base_id);
           const refillable = canRefill && base.generatorDataAvailable && (Number(base.generatorCount) || 0) > 0;
+          // Auto-refill is shown by restyling this button rather than by adding a
+          // control: the column is a fixed 96px and already full. The button
+          // stays clickable when enrolled, so turning automation on never costs
+          // the on-demand refill.
+          const autoRefillOn = autoRefillBases.has(id);
           const refillTitle = !canRefill ? "Refill is unsupported on this database"
             : !base.generatorDataAvailable ? "Generator data is unavailable for this base"
-            : refillable ? "Refill Generators" : "No generators at this base";
+            : !refillable ? "No generators at this base"
+            : autoRefillOn ? `Auto-refill is on — checked every ${autoRefillIntervalHours}h below ${autoRefillThreshold}%. Click to refill now.`
+            : "Refill Generators";
           return <span className="icon-toggle-group">
             {/* The actions column is a fixed 96px, so the queued state stays two
                 glyphs wide rather than a text pill: the banner above carries the
@@ -698,7 +828,13 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
                     onClick={(event) => { event.stopPropagation(); void handleCancelQueuedRefill(base); }}
                   ><X size={14} /></button>
                 </span>
-              : <button className="icon-toggle-button" title={refillTitle} aria-label="Refill Generators" disabled={!refillable || refillingId === id} onClick={(event) => { event.stopPropagation(); void handleRefillGenerators(base); }}><Fuel size={16} /></button>}
+              : <button
+                  className={`icon-toggle-button${autoRefillOn ? " bases-auto-refill-on" : ""}`}
+                  title={refillTitle}
+                  aria-label={autoRefillOn ? "Refill Generators (auto-refill on)" : "Refill Generators"}
+                  disabled={!refillable || refillingId === id}
+                  onClick={(event) => { event.stopPropagation(); void handleRefillGenerators(base); }}
+                ><Fuel size={16} /></button>}
             <button className="icon-toggle-button" title="Download Base as Blueprint" aria-label="Download Base as Blueprint" disabled={downloadingId === id} onClick={(event) => { event.stopPropagation(); void handleDownloadBlueprint(base); }}><Download size={16} /></button>
           </span>;
         }}
@@ -731,8 +867,46 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
           if (!base.generatorDataAvailable) return <p className="muted">Generator data is currently unavailable.</p>;
           const generators = base.generators ?? [];
           if (!generators.length) return <p className="muted">No generators built at this base.</p>;
+          const id = String(base.base_id);
+          const autoRefillEntry = autoRefillBases.get(id);
+          const savingAutoRefill = savingAutoRefillId === id;
+          const lastChecked = autoRefillEntry?.lastCheckedAt ? formatAgo(autoRefillEntry.lastCheckedAt) : "";
           return (
             <div className="bases-generator-breakdown">
+              {/* Hidden entirely without the queue capability: automating a
+                  refill that cannot wait for a safe window would write into a
+                  possibly-live base, which is the hazard the queue prevents. */}
+              {canQueue && <div className="bases-auto-refill" onClick={(event) => event.stopPropagation()}>
+                {/* With no enrollment data at all, an OFF pill would be a claim
+                    this panel cannot make. Say what is actually known instead. */}
+                {autoRefillUnrecoverable
+                  ? <p className="bases-auto-refill-unknown" role="status">
+                      Auto-refill state could not be read. <button onClick={() => void refreshAutoRefill()}>Retry</button>
+                    </p>
+                  : <>
+                      <label className={`switch-checkbox bases-auto-refill-toggle ${autoRefillEntry ? "enabled" : "disabled"}`}>
+                        <input
+                          type="checkbox"
+                          checked={Boolean(autoRefillEntry)}
+                          disabled={savingAutoRefill || !canRefill}
+                          onChange={(event) => { void handleToggleAutoRefill(base, event.target.checked); }}
+                        />
+                        <span className="switch-label">Auto-Refill</span>
+                        <strong className="switch-state">{savingAutoRefill ? "Saving" : autoRefillEntry ? "ON" : "OFF"}</strong>
+                      </label>
+                      <p className="action-help-note">
+                        Checked every {autoRefillIntervalHours}h. Queues a refill when any generator drops below {autoRefillThreshold}%.
+                        {autoRefillEntry && lastChecked ? ` Last checked ${lastChecked}${autoRefillEntry.lastLowestPercent === null ? "" : ` — lowest ${autoRefillEntry.lastLowestPercent}%`}.` : ""}
+                        {autoRefillEntry && !lastChecked ? " Not checked yet." : ""}
+                        {autoRefillUnavailable ? " Last known state — the latest read failed." : ""}
+                      </p>
+                    </>}
+                {/* Giving up has to be visible, or the operator believes fuel is
+                    being handled while this base quietly stays empty. */}
+                {autoRefillEntry?.stalledAt && <p className="bases-auto-refill-stalled" role="alert">
+                  Paused after {autoRefillEntry.consecutiveQueues} refills that did not raise this base's fuel. Refill manually to check why, or turn auto-refill off and on to resume.
+                </p>}
+              </div>}
               {base.generatorUptimeMultiplier > 1 ? (
                 <div className="bases-uptime-event" role="status">
                   <span className="bases-uptime-event-badge">{base.generatorUptimeMultiplier}× Uptime Event</span>
