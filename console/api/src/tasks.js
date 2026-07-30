@@ -298,7 +298,7 @@ function shellQuote(value) {
 }
 
 export function taskTimeoutMs(config, operation) {
-  if (["start", "stop", "restartAll", "restartService", "serverTitle", "serverConfig", "init", "updateApply", "updateFixSteamcmd", "selfUpdateApply", "backupRestore", "storageCleanupImages", "storageCleanupBuildCache", "userSettingsSaveAndRestart", "userSettingsResetAndRestart", "userSettingsRawAndRestart", "mapsApplySettings", "sietchesSetActive", "sietchesRestart", "sietchesReconcile"].includes(operation)) {
+  if (["start", "stop", "restartAll", "restartService", "serverTitle", "serverConfig", "init", "updateApply", "updateFixSteamcmd", "selfUpdateApply", "backupRestore", "storageCleanupImages", "storageCleanupBuildCache", "userSettingsSaveAndRestart", "userSettingsResetAndRestart", "userSettingsRawAndRestart", "mapsApplySettings", "mapsRespawn", "sietchesSetActive", "sietchesRestart", "sietchesReconcile"].includes(operation)) {
     return Math.max(config.commandTimeoutMs, 30 * 60 * 1000);
   }
   return config.commandTimeoutMs;
@@ -306,6 +306,11 @@ export function taskTimeoutMs(config, operation) {
 
 export function taskOperations(operation, payload = {}) {
   if (operation === "restartAll") return ["stop", "start"];
+  // The only way to restart a map that is neither Survival_1 nor the Overmap:
+  // those two have managed services, everything else (Deep Desert, the SH_*
+  // hubs) exists only as a spawned partition container. One task so a failed
+  // spawn cannot be mistaken for a completed restart.
+  if (operation === "mapsRespawn") return restartOperations({ restartMode: "respawn", target: payload.target });
   if (operation === "mapsApplySettings") {
     return [
       ...(payload.memoryChanged ? ["memorySetNoRestart"] : []),

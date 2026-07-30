@@ -12,6 +12,7 @@ import {
   flushGeneratorRefills,
   listQueuedGeneratorRefills,
   observeRefillPartitions,
+  partitionRestartTargets,
   queueGeneratorRefill,
   supportsGeneratorRefillQueue
 } from "../src/duneDb.js";
@@ -4394,6 +4395,34 @@ test("a base on a running map is not write-safe, one on a despawned map is", asy
   const stoppedTarget = await baseRefillTarget(stopped.db, 482);
   assert.equal(stoppedTarget.writeSafeNow, true);
   assert.equal(stoppedTarget.queueSupported, true);
+});
+
+// dune.actors.map is not the name the restart machinery uses: on a live server
+// partition 1 reports "HaggaBasin" against world_partition's "Survival_1", and
+// partition 8 reports "DeepDesert" against "DeepDesert_1". Choosing a restart
+// target from the base's own map name picks the wrong container, or none.
+test("restart targets resolve from world_partition, not from the base's map name", async () => {
+  const db = {
+    query: async (text) => {
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      return { rows: [
+        { partition_id: 1, map: "Survival_1", dimension_index: 0 },
+        { partition_id: 8, map: "DeepDesert_1", dimension_index: 0 },
+        { partition_id: 0, map: "Ignored", dimension_index: 0 }
+      ] };
+    }
+  };
+
+  const targets = await partitionRestartTargets(db);
+
+  assert.deepEqual(targets.get(1), { map: "Survival_1", dimensionIndex: 0 });
+  assert.deepEqual(targets.get(8), { map: "DeepDesert_1", dimensionIndex: 0 });
+  assert.equal(targets.has(0), false);
+});
+
+test("restart targets are empty rather than throwing without world_partition", async () => {
+  const db = { query: async () => ({ rows: [{ exists: false }] }) };
+  assert.equal((await partitionRestartTargets(db)).size, 0);
 });
 
 test("a base in a partition that no longer exists is write-safe rather than stuck", async () => {

@@ -3,6 +3,7 @@ import { ChevronDown, ChevronUp, Download, Fuel, X } from "lucide-react";
 import { basesApi, type RefillDeviceResult } from "../../api/bases";
 import { mapsApi } from "../../api/maps";
 import { serverApi } from "../../api/server";
+import { setupApi, type Task } from "../../api/setup";
 import { apiDownload } from "../../api/client";
 import { DataTable, type SortDirection } from "../../components/common/DataTable";
 import { usePendingRefills } from "../../lib/usePendingRefills";
@@ -99,6 +100,46 @@ type BasesCache = {
 
 let basesCache: BasesCache | null = null;
 
+type RefillStatusKind = "" | "running" | "ok" | "fail";
+
+// Held at module scope for the same reason basesCache is: switching tabs unmounts
+// this panel, but a map restart runs server-side for minutes. Without this,
+// returning to Bases showed a blank banner with no hint that a restart was still
+// in flight. Written through synchronously so the detached task-wait keeps
+// recording progress after the component is gone.
+let refillStatusCache: { text: string; kind: RefillStatusKind; at: number } = { text: "", kind: "", at: 0 };
+let restartingTargetsCache: string[] = [];
+
+const REFILL_STATUS_TTL_MS = 10_000;
+
+// The task-wait that outlives a tab switch belongs to the unmounted instance, so
+// it cannot push into the new one's state directly. Writes go to the cache and
+// notify whichever instance is currently mounted, so a restart that finishes
+// while you are on another tab still clears its spinner when you come back.
+const refillStatusSubscribers = new Set<() => void>();
+
+function writeRefillStatus(text: string, kind: RefillStatusKind) {
+  refillStatusCache = { text, kind, at: Date.now() };
+  refillStatusSubscribers.forEach((notify) => notify());
+}
+
+function writeRestartingTarget(key: string, active: boolean) {
+  restartingTargetsCache = active
+    ? [...restartingTargetsCache.filter((entry) => entry !== key), key]
+    : restartingTargetsCache.filter((entry) => entry !== key);
+  refillStatusSubscribers.forEach((notify) => notify());
+}
+
+// A finished success is only worth restoring for as long as it would have stayed
+// on screen; past that it would read as news when it is history. Running and
+// failed states are kept: one is still true, the other still needs reading.
+function readCachedRefillStatus() {
+  if (refillStatusCache.kind === "ok" && Date.now() - refillStatusCache.at > REFILL_STATUS_TTL_MS) {
+    refillStatusCache = { text: "", kind: "", at: 0 };
+  }
+  return refillStatusCache;
+}
+
 function sameView(cache: BasesCache | null, q: string, page: number, pageSize: number, sortColumn: string, sortDirection: SortDirection) {
   return !!cache && cache.q === q && cache.page === page && cache.pageSize === pageSize && cache.sortColumn === sortColumn && cache.sortDirection === sortDirection;
 }
@@ -107,28 +148,49 @@ function errorText(error: unknown) {
   return error instanceof Error ? error.message : String(error);
 }
 
+// Polls a restart task to a terminal state. The ceiling matches the 30-minute
+// timeout the API gives restart operations, since a Deep Desert respawn has to
+// boot and load a level, not just bounce a service.
+async function waitForTask(task: Task) {
+  let current = task;
+  for (let i = 0; i < 1800 && !["succeeded", "failed", "cancelled"].includes(current.status); i += 1) {
+    await new Promise((resolveTick) => window.setTimeout(resolveTick, 1000));
+    current = (await setupApi.task(current.id)).task;
+  }
+  return current;
+}
+
 type QueueRestartTarget =
   | { kind: "sietch"; partitionId: number; label: string }
   | { kind: "service"; service: string; label: string }
+  | { kind: "respawn"; partitionId: number; label: string }
   | { kind: "none" };
 
-// Mirrors the map/partition -> restart action mapping the API already uses (see
-// restartPayload in server.js). A Survival_1 base restarts through the Sietch
-// path, which resolves the partition itself: dimension 0 re-runs the primary
-// server, any other partition despawns and respawns just that container.
-// Restarting the survival-1 service instead would leave a Sietch partition
-// running, so its queued refills would never flush. Deep Desert and the Overmap
-// share one service and have no per-partition path.
-function queueRestartTarget(map: string, partitionId: number): QueueRestartTarget {
-  const key = String(map || "").trim().toLowerCase();
-  if (key === "survival_1" || key === "survival1") {
-    if (!partitionId) return { kind: "none" };
-    return { kind: "sietch", partitionId, label: `Restart ${map} partition ${partitionId}` };
+// Chooses the restart action for a queued base's partition. The name compared
+// here must be world_partition.map (supplied as partitionMap), never the base's
+// own map: dune.actors reports "HaggaBasin" for partition 1 and "DeepDesert" for
+// partition 8, while the restart machinery knows those as "Survival_1" and
+// "DeepDesert_1".
+//
+// Survival_1 goes through the Sietch path, which resolves the partition itself:
+// dimension 0 re-runs the primary server, any other dimension despawns and
+// respawns just that partition's container. The Overmap is a single service.
+// Everything else -- Deep Desert, the SH_* hubs, dungeon and story instances --
+// has no managed service at all and only restarts by despawning and respawning
+// its own partition.
+function queueRestartTarget(partitionMap: string, partitionId: number, dimensionIndex: number): QueueRestartTarget {
+  const key = String(partitionMap || "").trim().toLowerCase();
+  // Nothing to target: the partition could not be resolved from world_partition.
+  if (!partitionId) return { kind: "none" };
+  if (key === "survival_1") {
+    return {
+      kind: "sietch",
+      partitionId,
+      label: dimensionIndex > 0 ? `Restart Survival_1 Sietch ${partitionId}` : "Restart Survival_1"
+    };
   }
-  if (key === "overmap" || key.startsWith("deepdesert")) {
-    return { kind: "service", service: "overmap", label: `Restart ${map}` };
-  }
-  return { kind: "none" };
+  if (key === "overmap") return { kind: "service", service: "overmap", label: "Restart Overmap" };
+  return { kind: "respawn", partitionId, label: `Restart ${partitionMap}` };
 }
 
 // Report what actually changed per device rather than a generic "Action
@@ -230,11 +292,16 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
   const [loading, setLoading] = useState(() => basesCache === null);
   const [downloadingId, setDownloadingId] = useState("");
   const [refillingId, setRefillingId] = useState("");
-  const [refillResult, setRefillResult] = useState("");
+  const [refillResult, setRefillResult] = useState(() => readCachedRefillStatus().text);
+  // Drives the status line's styling: "running" keeps it on screen with a
+  // spinner, "ok"/"fail" colour it.
+  const [refillStatus, setRefillStatus] = useState<RefillStatusKind>(() => readCachedRefillStatus().kind);
   const [canRefill, setCanRefill] = useState(false);
   const [canQueue, setCanQueue] = useState(false);
   const [cancelingId, setCancelingId] = useState("");
-  const [restartingTarget, setRestartingTarget] = useState("");
+  // A list, not one key: each row shows its own progress, so the other rows stay
+  // clickable and a second restart cannot erase the first one's spinner.
+  const [restartingTargets, setRestartingTargets] = useState<string[]>(() => restartingTargetsCache);
   const [expandedBaseId, setExpandedBaseId] = useState<string | null>(null);
   const requestIdRef = useRef(0);
   const skipNextSearchReset = useRef(true);
@@ -348,6 +415,31 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
     void load({ q: submittedQ, page, pageSize, sortColumn, sortDirection }, { silent: true });
   }, [canQueue, pendingRefills, load, submittedQ, page, pageSize, sortColumn, sortDirection]);
 
+  // Mirror the module cache into this instance's state, and stay subscribed so a
+  // restart still in flight from a previous mount reports here when it finishes.
+  useEffect(() => {
+    const sync = () => {
+      const cached = readCachedRefillStatus();
+      setRefillResult(cached.text);
+      setRefillStatus(cached.kind);
+      setRestartingTargets(restartingTargetsCache);
+    };
+    refillStatusSubscribers.add(sync);
+    sync();
+    return () => { refillStatusSubscribers.delete(sync); };
+  }, []);
+
+  // The .result-ok/.result-fail rules animate a "fade-result" keyframes that does
+  // not exist, so nothing clears a finished message by itself -- which is why a
+  // restart notice used to sit on screen indefinitely. Retire the success case
+  // here. Failures stay until the next action: losing an error is worse than a
+  // stale one, and a running notice must never vanish mid-restart.
+  useEffect(() => {
+    if (refillStatus !== "ok") return;
+    const timer = window.setTimeout(() => writeRefillStatus("", ""), REFILL_STATUS_TTL_MS);
+    return () => window.clearTimeout(timer);
+  }, [refillStatus, refillResult]);
+
   async function handleDownloadBlueprint(row: BaseRow) {
     const id = String(row.base_id);
     setDownloadingId(id);
@@ -387,7 +479,7 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
     setRefillingId(id);
     try {
       const response = await basesApi.refillGenerators(id);
-      setRefillResult(summarizeRefill(response) || formatMutationResult(response));
+      writeRefillStatus(summarizeRefill(response) || formatMutationResult(response), "ok");
       if (response.result?.queued) {
         await refreshPendingRefills();
       } else {
@@ -397,7 +489,7 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
       }
     } catch (error) {
       const text = errorText(error);
-      setRefillResult(text);
+      writeRefillStatus(text, "fail");
       onError(text);
     } finally {
       setRefillingId("");
@@ -416,19 +508,19 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
     setCancelingId(id);
     try {
       await basesApi.cancelQueuedRefill(id);
-      setRefillResult(`Queued refill for "${label}" was canceled.`);
+      writeRefillStatus(`Queued refill for "${label}" was canceled.`, "ok");
       await refreshPendingRefills();
     } catch (error) {
       const text = errorText(error);
-      setRefillResult(text);
+      writeRefillStatus(text, "fail");
       onError(text);
     } finally {
       setCancelingId("");
     }
   }
 
-  async function handleRestartForQueue(group: { map: string; partitionId: number; count: number }) {
-    const target = queueRestartTarget(group.map, group.partitionId);
+  async function handleRestartForQueue(group: { map: string; partitionId: number; partitionMap: string; dimensionIndex: number; count: number }) {
+    const target = queueRestartTarget(group.partitionMap, group.partitionId, group.dimensionIndex);
     if (target.kind === "none") return;
     const key = `${group.map}|${group.partitionId}`;
     const confirmed = await confirmAction(
@@ -441,17 +533,31 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
     );
     if (!confirmed) return;
     onError("");
-    setRestartingTarget(key);
+    writeRestartingTarget(key, true);
+    const label = group.partitionMap || group.map;
     try {
-      if (target.kind === "sietch") await mapsApi.restartSietch(String(target.partitionId));
-      else await serverApi.restartService(target.service);
-      setRefillResult(`${group.map} is restarting. Its queued refills apply while it is down.`);
+      // No trailing period: the running state appends animated dots.
+      writeRefillStatus(`Restarting ${label}, its queued refills apply while it is down`, "running");
+      const started = target.kind === "sietch" ? await mapsApi.restartSietch(String(target.partitionId))
+        : target.kind === "respawn" ? await mapsApi.respawn(String(target.partitionId), "RESTART MAP")
+        : await serverApi.restartService(target.service);
+      // Report what the restart actually did. Without this the running line
+      // stands forever and a failed restart reads as a successful one.
+      const finished = await waitForTask(started.task);
+      if (finished.status === "succeeded") {
+        writeRefillStatus(`${label} restarted. Any refills queued for it have been applied.`, "ok");
+      } else {
+        const text = `${label} restart ${finished.status}. Its refills are still queued.`;
+        writeRefillStatus(text, "fail");
+        onError(text);
+      }
+      await refreshPendingRefills();
     } catch (error) {
       const text = errorText(error);
-      setRefillResult(text);
+      writeRefillStatus(text, "fail");
       onError(text);
     } finally {
-      setRestartingTarget("");
+      writeRestartingTarget(key, false);
     }
   }
 
@@ -503,11 +609,6 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
       <p className="action-help-note">
         Total Bases: {totalBases.toLocaleString()} · Total Building Pieces: {totalPieces.toLocaleString()} · Total Placeables: {totalPlaceables.toLocaleString()}
       </p>
-      {canRefill && <><br /><p className="action-help-note">
-        {canQueue
-          ? "Refilling a base on a running map queues the write and applies it the next time that map restarts or stops, so a live server cannot overwrite it. A base on a map that is already down is refilled immediately."
-          : "Refill writes fuel straight to the database. A running game server will not show the new fuel in-game until the map server restarts."}
-      </p></>}
       {pendingTotal > 0 && <div className="bases-pending-refills">
         <p className="bases-pending-refills-title">
           <Fuel size={16} aria-hidden="true" />
@@ -518,24 +619,34 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
         </p>
         <ul className="bases-pending-refills-list">
           {(pendingRefills?.byTarget || []).map((group) => {
-            const target = queueRestartTarget(group.map, group.partitionId);
+            const target = queueRestartTarget(group.partitionMap, group.partitionId, group.dimensionIndex);
             const key = `${group.map}|${group.partitionId}`;
             return <li key={key}>
               <span>
-                {group.map}{group.partitionId ? ` · partition ${group.partitionId}` : ""}
+                {group.map}
+                {group.partitionMap && group.partitionMap !== group.map ? ` (${group.partitionMap})` : ""}
+                {group.partitionId ? ` · partition ${group.partitionId}` : ""}
                 <span className="muted"> — {group.count.toLocaleString()} queued</span>
               </span>
               {target.kind === "none"
                 ? <span className="muted">Restart this map from the Maps tab</span>
-                : <button
-                    disabled={restartingTarget === key}
-                    onClick={() => void handleRestartForQueue(group)}
-                  >{restartingTarget === key ? "Restarting…" : target.label}</button>}
+                : restartingTargets.includes(key)
+                  ? <span className="bases-restarting-pill">
+                      <span className="spinner" aria-hidden="true" />
+                      <span className="loading-dots" role="status">Restarting</span>
+                    </span>
+                  : <button onClick={() => void handleRestartForQueue(group)}>{target.label}</button>}
             </li>;
           })}
         </ul>
       </div>}
-      {refillResult && <p className="danger-note">{refillResult}</p>}
+      {refillResult && <p
+        className={`inline-task-result bases-refill-status${refillStatus ? ` result-${refillStatus}` : ""}`}
+        role={refillStatus === "fail" ? "alert" : "status"}
+      >
+        {refillStatus === "running" && <span className="spinner" aria-hidden="true" />}
+        <strong className={refillStatus === "running" ? "loading-dots" : ""}>{refillResult}</strong>
+      </p>}
       <div className="action-row bases-search-row">
         <input
           value={q}

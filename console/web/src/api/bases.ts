@@ -25,7 +25,7 @@ export type PendingRefills = {
   supported: boolean;
   total: number;
   pending: QueuedRefill[];
-  byTarget: { map: string; partitionId: number; count: number }[];
+  byTarget: { map: string; partitionId: number; partitionMap: string; dimensionIndex: number; count: number }[];
 };
 
 export const basesApi = {
