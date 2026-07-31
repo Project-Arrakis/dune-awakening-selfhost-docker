@@ -64,7 +64,7 @@ as a warning and treated as no overrides (defaults apply everywhere).
 ## How it's used
 
 `refillBaseGenerators(db, repoRoot, baseId)` (`console/api/src/duneDb.js`,
-~line 4666) calls `refillCaps(repoRoot)` once, then for each power device at
+~line 4730) calls `refillCaps(repoRoot)` once, then for each power device at
 the base: tops up existing partial stacks first, then inserts new stacks
 bounded by `maxStacks`, `totalCap`, and the inventory's free slot count. A
 device already at or above `totalCap` is left untouched (`added: 0`).

@@ -1738,6 +1738,9 @@ body.debug .technical-details { display: block; }
   white-space: nowrap;
 }
 .bases-queued-refill .bases-queued-refill-cancel {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 20px;
   padding: 0;
   border: 0;
   background: none;
@@ -2044,7 +2047,7 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
   .memory-swap-panel { align-items: stretch; }
   .memory-swap-copy, .memory-swap-panel label, .memory-swap-metrics { width: 100%; }
   .memory-swap-panel label { justify-content: space-between; }
-  .memory-info-box { position: fixed; top: auto; right: 14px; bottom: 14px; left: 14px; width: auto; }
+  .memory-info-box, .bases-auto-refill .memory-info-box { position: fixed; top: auto; right: 14px; bottom: 14px; left: 14px; width: auto; }
 }
 .live-map-layer-list { display: grid; gap: 8px; }
 .live-map-layer { justify-content: flex-start; width: 100%; min-height: 34px; color: #d9c8aa; }

@@ -2,6 +2,7 @@ import { assertIdentifier, intParam, isReadOnlySql, quoteIdentifier, quoteQualif
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { dirname, resolve } from "node:path";
+import { redact } from "./redact.js";
 import {
   craftingRecipeCatalogRows,
   compareJourneyCatalogOrder,
@@ -3852,7 +3853,7 @@ function refillCaps(repoRoot) {
   try {
     if (repoRoot && existsSync(overridePath)) overrides = JSON.parse(readFileSync(overridePath, "utf8")) || {};
   } catch (error) {
-    console.warn(`Ignoring unreadable generator refill cap overrides: ${error?.message || error}`);
+    console.warn(`Ignoring unreadable generator refill cap overrides: ${redact(error?.message || error)}`);
   }
   const caps = {};
   for (const type of GENERATOR_TYPE_ORDER) {
