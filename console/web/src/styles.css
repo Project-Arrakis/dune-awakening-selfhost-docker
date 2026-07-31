@@ -1674,6 +1674,25 @@ body.debug .technical-details { display: block; }
   font-size: 11px;
   white-space: nowrap;
 }
+/* Same shape as .bases-pending-refills below, in danger tones rather than
+   --title: a stalled base is not routine (waiting for a restart window), it
+   means auto-refill gave up, so it reads as a warning rather than a status. */
+.bases-stalled-banner {
+  margin: 12px 0 0;
+  padding: 12px 16px;
+  background: var(--panel-soft);
+  border-left: 3px solid var(--danger);
+}
+.bases-stalled-banner-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  color: var(--danger-text);
+  font-size: 14px;
+  font-weight: 500;
+}
+.bases-stalled-banner .action-help-note { margin: 6px 0 0; }
 .bases-pending-refills {
   margin: 12px 0 0;
   padding: 12px 16px;
@@ -1737,11 +1756,28 @@ body.debug .technical-details { display: block; }
   flex-wrap: wrap;
   margin: 0 0 12px;
   padding: 0 0 12px;
-  border-bottom: 1px solid var(--border);
+  /* .bases-generator-breakdown is a grid of 240px columns (one per generator
+     type). Without this, this block was squeezed into a single 240px cell
+     instead of spanning the row. Matches the same rule already on
+     .bases-uptime-event and .bases-generator-reserve-note in this grid. */
+  grid-column: 1 / -1;
 }
-.bases-auto-refill .action-help-note { margin: 0; flex: 1 1 260px; min-width: 0; }
+/* The shared InfoTooltip popover opens leftward (.memory-info-box right: 0)
+   for Maps' right-anchored icons. This toggle's icon sits near the left edge
+   of the table, so flip direction here only. */
+.bases-auto-refill .memory-info-box { left: 0; right: auto; }
+/* Scoped to this modifier rather than the shared .switch-checkbox, which ~10
+   other panels also use. Sized a notch below the toggle's own text so the
+   description reads as secondary, not the loudest thing in the block.
+   The rule explanation and last-checked status live in this element's title
+   attribute (a native hover tooltip) rather than as inline text: this row's
+   available width is whatever the grid handed it, sometimes just one 240px
+   column, which made a fixed-width inline note either wrap unpredictably or
+   (with a hard nowrap) silently truncate. A tooltip has no such constraint. */
+.bases-auto-refill-toggle { min-height: 32px; padding: 3px 4px 3px 10px; }
+.bases-auto-refill-toggle .switch-label { font-size: 12px; }
 /* Wide enough for the "Saving" state, matching settings-server-listing-toggle. */
-.bases-auto-refill-toggle .switch-state { min-width: 62px; }
+.bases-auto-refill-toggle .switch-state { font-size: 11px; min-width: 48px; padding: 4px 8px; }
 /* Auto-refill marks the existing Refill button instead of adding a control: the
    actions column is a fixed 96px and already holds two glyphs. Fill only, so it
    still reads and behaves as the working button it remains. */
@@ -1750,21 +1786,34 @@ body.debug .technical-details { display: block; }
   background: rgba(61, 139, 98, .18);
   color: var(--success-text);
 }
+/* Takes precedence over .bases-auto-refill-on: a base that has given up is a
+   worse state than "on and healthy", not a variant of it. */
+.bases-auto-refill-stalled-icon {
+  border-color: var(--danger);
+  background: rgba(167, 73, 73, .18);
+  color: var(--danger-text);
+}
 .bases-auto-refill-unknown {
   display: flex;
   align-items: center;
   gap: 10px;
   margin: 0;
-  font-size: 12px;
+  font-size: 11px;
   color: var(--muted);
 }
-.bases-auto-refill-unknown button { padding: 4px 10px; font-size: 12px; }
+.bases-auto-refill-unknown button { padding: 4px 10px; font-size: 11px; }
 /* Auto-refill giving up on a base is an alert, not a footnote: the operator
-   otherwise believes fuel is handled while the base quietly stays empty. */
+   otherwise believes fuel is handled while the base quietly stays empty. Left
+   as inline text rather than folded into the toggle's tooltip -- unlike the
+   rule explanation, this is urgent and per-base, so it should be visible
+   without hovering. Allowed to wrap (no nowrap/ellipsis) for the same reason
+   the row now uses grid-column: 1 / -1 above: available width is whatever the
+   grid hands this row, which is not always enough for one line. */
 .bases-auto-refill-stalled {
   flex: 1 1 100%;
   margin: 0;
-  font-size: 12px;
+  font-size: 11px;
+  line-height: 1.4;
   color: var(--danger-text);
 }
 @media (max-width: 760px) {

@@ -3,7 +3,7 @@ import { ChevronDown, ChevronUp, Download, Fuel, Grid2X2, Info, List, Lock } fro
 import { mapsApi, type ChoamTerminalOverview, type ChoamTradeCenter, type LiveMapMemoryRow, type MapCombatStateResult, type MapRuntimeSettings, type MemoryBalancerState, type MemorySwapState, type PartitionCombatStateRow, type SpicefieldTypeRow, type UserSettingField, type UserSettingsSchema } from "../../api/maps";
 import { setupApi, type Task } from "../../api/setup";
 import { SecretInput } from "../../components/SecretInput";
-import { KeyValueGrid, StatusPill, TechnicalDetails } from "../../components/common/DisplayPrimitives";
+import { InfoTooltip, KeyValueGrid, StatusPill, TechnicalDetails } from "../../components/common/DisplayPrimitives";
 import { firstDefined, formatUiSentence, stripAnsi, summarizeCommandText, titleCase } from "../../lib/display";
 import { titleCaseWords } from "../players/playerAdminUtils";
 import { pendingRefillCountForMap, pendingRefillCountForPartition, usePendingRefills } from "../../lib/usePendingRefills";
@@ -57,37 +57,6 @@ const LIVE_MEMORY_STALE_GRACE_MS = 20000;
 const LIVE_MEMORY_REFRESH_MS = 15000;
 const MAP_RUNTIME_REFRESH_MS = 15000;
 type CachedLiveMemoryRow = { row: LiveMapMemoryRow; sampledAt: number };
-
-export function InfoTooltip({ id, label, children }: { id: string; label: string; children: string }) {
-  const [open, setOpen] = useState(false);
-  const rootRef = useRef<HTMLSpanElement>(null);
-  function openTooltip() {
-    window.dispatchEvent(new CustomEvent("memory-info-open", { detail: id }));
-    setOpen(true);
-  }
-  useEffect(() => {
-    const closeOtherTooltip = (event: Event) => {
-      if ((event as CustomEvent<string>).detail !== id) setOpen(false);
-    };
-    window.addEventListener("memory-info-open", closeOtherTooltip);
-    return () => window.removeEventListener("memory-info-open", closeOtherTooltip);
-  }, [id]);
-  useEffect(() => {
-    if (!open) return undefined;
-    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === "Escape") setOpen(false); };
-    const closeOutside = (event: PointerEvent) => { if (!rootRef.current?.contains(event.target as Node)) setOpen(false); };
-    document.addEventListener("keydown", closeOnEscape);
-    document.addEventListener("pointerdown", closeOutside);
-    return () => {
-      document.removeEventListener("keydown", closeOnEscape);
-      document.removeEventListener("pointerdown", closeOutside);
-    };
-  }, [open]);
-  return <span ref={rootRef} className={`memory-info-tooltip ${open ? "open" : ""}`} onMouseEnter={openTooltip} onMouseLeave={() => setOpen(false)}>
-    <button type="button" className="memory-info-button" aria-label={label} aria-expanded={open} aria-describedby={id} onClick={() => open ? setOpen(false) : openTooltip()} onFocus={openTooltip}><Info size={15} aria-hidden="true" /></button>
-    <span id={id} role="tooltip" className="memory-info-box">{children}</span>
-  </span>;
-}
 
 function formatResultTitle(value: unknown, pending = false) {
   return formatUiSentence(value, pending);
