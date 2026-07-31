@@ -2,7 +2,7 @@ import test, { beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { assertIdentifier, discoverDbConfig, isReadOnlySql, quoteQualified, redactDbError, rowsResult } from "../src/db.js";
-import { addCurrency, addFactionReputation, addIntel, addonLeadershipPlayers, addonOpsHealthFarms, addonOpsHealthPlayers, addonOpsHealthSummary, addonOpsHealthSummaryV2, addSpecializationXp, applyLandsraadMilestonePreset, augmentInventoryItem, augmentNewestPlayerItem, changeDunePassword, completeJourneyNode, completeTutorial, deleteInventoryItem, exportBaseAsBlueprint, generatorUptimePolicy, giveItemToPlayer, giveItemToStorage, guildMembers, landsraadOverview, listBases, listGuilds, listPlayers, listSpicefieldTypes, listTables, liveMapPlayers, liveMapServices, playerCraftingRecipes, playerCurrency, playerFactions, playerIntel, playerInventory, playerJourney, playerPortalSnapshots, playerPosition, playerProfile, playerProgression, playerResearchItems, playerSolarisCoinTotal, playerVitals, portalGeneratorFuel, portalVehicles, repairVehicleDecay, resetJourneyNode, resetTutorial, runSql, setLandsraadPlayerContribution, tablePreview, teleportOfflinePlayerToCoords, unlockCraftingRecipe, unlockResearchItem, updateInventoryItem, updateLandsraadRewardTier, updateLandsraadTaskGoal, updateLandsraadTermTaskGoals, updateSpicefieldType, updateTableRow, UnsupportedCapabilityError, _resetPlayerTargetCacheForTests } from "../src/duneDb.js";
+import { addCurrency, addFactionReputation, addIntel, addonLeadershipPlayers, addonOpsHealthFarms, addonOpsHealthPlayers, addonOpsHealthSummary, addonOpsHealthSummaryV2, addSpecializationXp, applyLandsraadMilestonePreset, augmentInventoryItem, augmentNewestPlayerItem, changeDunePassword, completeJourneyNode, completeTutorial, dbStatus, deleteInventoryItem, exportBaseAsBlueprint, generatorUptimePolicy, giveItemToPlayer, giveItemToStorage, guildMembers, landsraadOverview, listBases, listGuilds, listPlayers, listRoutines, listSpicefieldTypes, listTables, liveMapPlayers, liveMapServices, playerCraftingRecipes, playerCurrency, playerFactions, playerIntel, playerInventory, playerJourney, playerPortalSnapshots, playerPosition, playerProfile, playerProgression, playerResearchItems, playerSolarisCoinTotal, playerVitals, portalGeneratorFuel, portalVehicles, repairVehicleDecay, resetJourneyNode, resetTutorial, routineDefinition, runSql, setLandsraadPlayerContribution, tablePreview, teleportOfflinePlayerToCoords, unlockCraftingRecipe, unlockResearchItem, updateInventoryItem, updateLandsraadRewardTier, updateLandsraadTaskGoal, updateLandsraadTermTaskGoals, updateSpicefieldType, updateTableRow, UnsupportedCapabilityError, _resetPlayerTargetCacheForTests } from "../src/duneDb.js";
 
 beforeEach(() => {
   _resetPlayerTargetCacheForTests();
@@ -19,6 +19,59 @@ test("discovers RedBlink Postgres defaults and env overrides", () => {
   });
   assert.equal(discoverDbConfig({ ADMIN_DATABASE_URL: "postgres://user:secret@host/db" }).source, "ADMIN_DATABASE_URL");
   assert.equal(discoverDbConfig({ DUNE_DB_HOST: "db", DUNE_DB_PORT: "5432" }).host, "db");
+});
+
+test("database status exposes SSH tunneling only for a loopback database endpoint", async () => {
+  const responses = [
+    { rows: [{ current_user: "dune", current_database: "dune", version: "PostgreSQL test" }] },
+    { rows: [{ count: 42 }] }
+  ];
+  const loopback = await dbStatus({
+    config: { host: "127.0.0.1", port: 15432, database: "dune", user: "dune" },
+    query: async () => responses.shift()
+  });
+  assert.deepEqual(loopback.sshTunnelAccess, {
+    available: true,
+    loopbackOnly: true,
+    host: "127.0.0.1",
+    port: 15432,
+    database: "dune",
+    user: "dune"
+  });
+
+  const remoteResponses = [
+    { rows: [{ current_user: "dune", current_database: "dune", version: "PostgreSQL test" }] },
+    { rows: [{ count: 42 }] }
+  ];
+  const remote = await dbStatus({
+    config: { host: "database.example", port: 5432, database: "dune", user: "dune" },
+    query: async () => remoteResponses.shift()
+  });
+  assert.equal(remote.sshTunnelAccess.available, false);
+  assert.equal(remote.sshTunnelAccess.loopbackOnly, false);
+  assert.equal(remote.sshTunnelAccess.host, "");
+});
+
+test("lists function and procedure metadata with parameterized filters", async () => {
+  const calls = [];
+  const rows = [{ oid: "123", schema: "dune", name: "refresh_player", kind: "function", arguments: "account_id bigint" }];
+  const db = { query: async (text, values) => { calls.push({ text, values }); return { rows }; } };
+  assert.deepEqual(await listRoutines(db, "dune", "player"), rows);
+  assert.deepEqual(calls[0].values, ["dune", "player"]);
+  assert.match(calls[0].text, /p\.prokind in \('f', 'p'\)/);
+  assert.match(calls[0].text, /limit 500/);
+  await assert.rejects(() => listRoutines(db, "dune;drop", ""), /Invalid schema/);
+  await assert.rejects(() => listRoutines(db, "dune", "x".repeat(121)), /too long/);
+});
+
+test("loads one routine definition by validated OID", async () => {
+  const calls = [];
+  const row = { oid: "123", schema: "dune", name: "refresh_player", kind: "function", arguments: "account_id bigint", definition: "CREATE FUNCTION ..." };
+  const db = { query: async (text, values) => { calls.push({ text, values }); return { rows: [row] }; } };
+  assert.deepEqual(await routineDefinition(db, "123"), row);
+  assert.deepEqual(calls[0].values, [123]);
+  assert.match(calls[0].text, /pg_get_functiondef/);
+  await assert.rejects(() => routineDefinition(db, "1;drop"), /Invalid routine oid/);
 });
 
 test("validates and quotes SQL identifiers", () => {

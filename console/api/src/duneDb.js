@@ -65,7 +65,23 @@ export class UnsupportedCapabilityError extends Error {
 export async function dbStatus(db) {
   const result = await db.query("select current_user, current_database(), version()");
   const tables = await db.query("select count(*)::int as count from information_schema.tables where table_schema = 'dune'");
-  return { connected: true, config: db.config, server: result.rows[0], duneTableCount: tables.rows[0]?.count ?? 0, usesDefaultPassword: process.env.DUNE_DB_PASSWORD ? process.env.DUNE_DB_PASSWORD === "dune" : true };
+  const host = String(db.config?.host || "");
+  const loopbackOnly = ["127.0.0.1", "::1", "localhost"].includes(host.toLowerCase());
+  return {
+    connected: true,
+    config: db.config,
+    server: result.rows[0],
+    duneTableCount: tables.rows[0]?.count ?? 0,
+    usesDefaultPassword: process.env.DUNE_DB_PASSWORD ? process.env.DUNE_DB_PASSWORD === "dune" : true,
+    sshTunnelAccess: {
+      available: loopbackOnly && Number.isInteger(Number(db.config?.port)),
+      loopbackOnly,
+      host: loopbackOnly ? host : "",
+      port: loopbackOnly ? Number(db.config.port) : null,
+      database: String(db.config?.database || result.rows[0]?.current_database || "dune"),
+      user: String(db.config?.user || result.rows[0]?.current_user || "dune")
+    }
+  };
 }
 
 export async function changeDunePassword(db, password) {
@@ -77,6 +93,47 @@ export async function changeDunePassword(db, password) {
 export async function listSchemas(db) {
   const result = await db.query("select schema_name from information_schema.schemata order by schema_name");
   return result.rows.map((row) => row.schema_name);
+}
+
+export async function listRoutines(db, schema = "dune", search = "") {
+  assertIdentifier(schema, "schema");
+  const term = String(search || "").trim();
+  if (term.length > 120) throw new Error("Routine search is too long");
+  const result = await db.query(`
+    select p.oid::bigint::text as oid,
+           n.nspname as schema,
+           p.proname as name,
+           case p.prokind when 'p' then 'procedure' else 'function' end as kind,
+           pg_get_function_identity_arguments(p.oid) as arguments,
+           case when p.prokind = 'p' then null else pg_get_function_result(p.oid) end as result_type,
+           l.lanname as language,
+           pg_get_userbyid(p.proowner) as owner,
+           coalesce(obj_description(p.oid, 'pg_proc'), '') as description
+    from pg_proc p
+    join pg_namespace n on n.oid = p.pronamespace
+    join pg_language l on l.oid = p.prolang
+    where n.nspname = $1
+      and p.prokind in ('f', 'p')
+      and ($2 = '' or p.proname ilike '%' || $2 || '%' or pg_get_function_identity_arguments(p.oid) ilike '%' || $2 || '%')
+    order by p.proname, pg_get_function_identity_arguments(p.oid)
+    limit 500`, [schema, term]);
+  return result.rows;
+}
+
+export async function routineDefinition(db, oid) {
+  const safeOid = intParam(oid, "routine oid", 1, 4294967295);
+  const result = await db.query(`
+    select p.oid::bigint::text as oid,
+           n.nspname as schema,
+           p.proname as name,
+           case p.prokind when 'p' then 'procedure' else 'function' end as kind,
+           pg_get_function_identity_arguments(p.oid) as arguments,
+           pg_get_functiondef(p.oid) as definition
+    from pg_proc p
+    join pg_namespace n on n.oid = p.pronamespace
+    where p.oid = $1::oid and p.prokind in ('f', 'p')`, [safeOid]);
+  if (!result.rows[0]) throw new Error("Routine not found");
+  return result.rows[0];
 }
 
 export async function listTables(db, schema = "dune") {
