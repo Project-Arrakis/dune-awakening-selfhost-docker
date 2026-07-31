@@ -231,7 +231,11 @@ Complete reference for all HTTP API endpoints in the Dune Docker Console. All en
 |--------|-------|-------------|------------|
 | GET | `/api/bases` | List bases (paginated) | `q?`, `page?`, `pageSize?`, `sortColumn?`, `sortDirection?` |
 | GET | `/api/bases/{baseId}/export` | Export base as blueprint | `baseId` |
-| POST | `/api/bases/{baseId}/refill-generators` | Refill all base generators | `baseId` |
+| POST | `/api/bases/{baseId}/refill-generators` | Refill all base generators (queued instead if the map isn't safely writable right now) | `baseId` |
+| GET | `/api/bases/pending-refills` | List queued generator refills, grouped by restart target | None |
+| DELETE | `/api/bases/{baseId}/queued-refill` | Cancel a base's queued generator refill | `baseId` |
+| GET | `/api/bases/auto-refill` | Get per-base auto-refill enrollment state | None |
+| POST | `/api/bases/{baseId}/auto-refill` | Enable/disable auto-refill for a base | `baseId`, `enabled` |
 
 ### Storage
 
@@ -273,6 +277,7 @@ Complete reference for all HTTP API endpoints in the Dune Docker Console. All en
 | POST | `/api/maps/reconcile` | Reconcile map state | `confirmation: "RECONCILE MAPS"` |
 | POST | `/api/maps/spawn` | Spawn map server | `target`, `confirmation: "SPAWN MAP"` |
 | POST | `/api/maps/despawn` | Despawn map server | `target`, `confirmation: "DESPAWN MAP"` |
+| POST | `/api/maps/respawn` | Restart a map with no managed service (despawn then respawn its partition) | `target`, `confirmation: "RESTART MAP"` |
 
 ### Memory Management
 
