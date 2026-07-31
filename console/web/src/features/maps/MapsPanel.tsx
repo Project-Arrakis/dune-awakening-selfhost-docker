@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useRef, useState } from "react";
-import { ChevronDown, ChevronUp, Download, Fuel, Grid2X2, Info, List, Lock } from "lucide-react";
+import { ChevronDown, ChevronUp, Download, Fuel, Grid2X2, List, Lock } from "lucide-react";
 import { mapsApi, type ChoamTerminalOverview, type ChoamTradeCenter, type LiveMapMemoryRow, type MapCombatStateResult, type MapRuntimeSettings, type MemoryBalancerState, type MemorySwapState, type PartitionCombatStateRow, type SpicefieldTypeRow, type UserSettingField, type UserSettingsSchema } from "../../api/maps";
 import { setupApi, type Task } from "../../api/setup";
 import { SecretInput } from "../../components/SecretInput";

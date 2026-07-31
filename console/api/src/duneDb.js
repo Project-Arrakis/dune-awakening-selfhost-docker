@@ -4965,7 +4965,7 @@ export function listQueuedGeneratorRefills(repoRoot) {
       return true;
     });
   } catch (error) {
-    console.warn(`Ignoring unreadable pending generator refill queue: ${error?.message || error}`);
+    console.warn(`Ignoring unreadable pending generator refill queue: ${redact(error?.message || error)}`);
     return [];
   }
 }
