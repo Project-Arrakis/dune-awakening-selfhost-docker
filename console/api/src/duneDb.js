@@ -4641,7 +4641,7 @@ export async function fillItemToStorage(db, repoRoot, storageId, { itemName = ""
   await requireCapability(await supportsStorageFillItem(db), "Storage fill-item requires compatible dune.inventories and dune.items insert columns including volume_override.");
   const target = intParam(storageId, "storage id", 1);
   const resolvedTemplate = validateTemplateId(templateId || itemId || itemName);
-  const stackSize = intParam(quantity, "quantity", 1, 1000000);
+  let stackSize = intParam(quantity, "quantity", 0, 1000000);
   const qualityLevel = normalizeStandaloneAugmentQuality(resolvedTemplate, intParam(quality, "quality", 0, 1000000));
   const augmentIds = validateAugmentIds(augments);
   const augmentQualityLevel = normalizeAugmentQuality(augmentQuality);
@@ -4661,6 +4661,18 @@ export async function fillItemToStorage(db, repoRoot, storageId, { itemName = ""
     const count = await tx.query("select count(*)::int as count from dune.items where inventory_id = $1", [inventory.id]);
     const currentCount = Number(count.rows[0]?.count || 0);
     if (inventory.max_item_count > 0 && currentCount >= inventory.max_item_count) throw new Error("Storage is full by item slot count");
+    if (stackSize === 0) {
+      const slotsRemaining = inventory.max_item_count > 0 ? Math.max(0, inventory.max_item_count - currentCount) : 1000000;
+      let volumeRemaining = 1000000;
+      if (inventory.max_item_volume > 0 && itemVolumeNum > 0) {
+        const volume = await tx.query("select coalesce(sum(coalesce(volume_override, 0)), 0)::real as total_volume from dune.items where inventory_id = $1", [inventory.id]);
+        const currentVolume = Number(volume.rows[0]?.total_volume || 0);
+        volumeRemaining = Math.floor((inventory.max_item_volume - currentVolume) / itemVolumeNum);
+      }
+      stackSize = Math.min(slotsRemaining, volumeRemaining, 1000000);
+      if (stackSize < 1) throw new Error("Container is full (no slots or volume remaining)");
+    }
+    if (inventory.max_item_count > 0 && currentCount + stackSize > inventory.max_item_count) throw new Error("Storage is full by item slot count");
     if (inventory.max_item_volume > 0 && itemVolumeNum > 0) {
       const volume = await tx.query("select coalesce(sum(coalesce(volume_override, 0)), 0)::real as total_volume from dune.items where inventory_id = $1", [inventory.id]);
       const currentVolume = Number(volume.rows[0]?.total_volume || 0);
