@@ -2465,7 +2465,7 @@ export async function liveMapStorage(db, map = "") {
       left join dune.permission_actor pa on pa.actor_id = p.id
       left join dune.inventories inv on inv.actor_id = p.id
       left join dune.items i on i.inventory_id = inv.id
-      where p.building_type in ('SpiceSilo_Placeable','GenericContainer_Placeable','StorageContainer_Placeable','MediumStorageContainer_Placeable')
+      where p.building_type in ('SpiceSilo_Placeable','GenericContainer_Placeable','StorageContainer_Placeable','MediumStorageContainer_Placeable','Developer_StorageContainer_Placeable')
         and a.transform is not null ${partitionWhere} ${where}
       group by p.id, p.building_type, a.map, a.partition_id, a.transform
       order by a.map, a.partition_id, p.id`, values);
@@ -2979,7 +2979,7 @@ export async function listStorage(db) {
       left join dune.permission_actor_rank par on par.permission_actor_id = afe.actor_id
       left join dune.actors player_a on player_a.id = par.player_id
       left join dune.player_state ps on ps.account_id = player_a.owner_account_id
-      where p.building_type in ('SpiceSilo_Placeable','GenericContainer_Placeable','StorageContainer_Placeable','MediumStorageContainer_Placeable')
+      where p.building_type in ('SpiceSilo_Placeable','GenericContainer_Placeable','StorageContainer_Placeable','MediumStorageContainer_Placeable','Developer_StorageContainer_Placeable')
         and p.is_hologram = false and p.owner_entity_id is not null and p.owner_entity_id != 0
       group by p.id, p.building_type, a.map
       order by p.id`);
@@ -2988,6 +2988,25 @@ export async function listStorage(db) {
     capabilities.storageGiveItem = await supportsStorageGiveItem(db);
   }
   if (await tableExists(db, "vehicles")) {
+    // Vehicle ownership does NOT go through actor_fgl_entities /
+    // permission_actor_rank the way placeable ownership does -- that
+    // chain was copied from the placeable query above without
+    // verifying it applies to vehicles, and confirmed live (2026-07-31,
+    // a real spawned+owned Buggy) to return zero rows for a vehicle's
+    // actor_id (actor_fgl_entities.entity_id never matches a vehicle).
+    // The real, verified chain for vehicles is simpler: permission_actor_rank
+    // links directly by permission_actor_id = the vehicle's own actor id
+    // (no FGL entity hop), to player_id, whose dune.actors row carries
+    // owner_account_id, which dune.player_state.account_id resolves to
+    // a real character_name. Also confirmed live: a vehicle's own
+    // storage inventory IS linked via dune.inventories.actor_id
+    // (inventory_type = 0), the same as a placeable -- despite
+    // dune.inventories.vehicle_module_id and dune.vehicle_module_inventories
+    // existing in the schema, they were empty on every real vehicle
+    // module tested, including one with a genuine BuggyInventory_5
+    // module attached; whatever those columns are for, it isn't how
+    // vehicle storage capacity is actually populated in practice, so
+    // the join here intentionally does NOT go through vehicle_modules.
     const vehicleResult = await db.query(`
       select a.id,
              coalesce(max(case when pa.actor_name not like '##%' and pa.actor_name <> 'None' then pa.actor_name end), '') as name,
@@ -2998,16 +3017,17 @@ export async function listStorage(db) {
              coalesce(max(inv.max_item_volume), 0)::real as max_item_volume,
              coalesce(sum(coalesce(i.volume_override, 0)), 0)::real as current_volume,
              coalesce(max(ps.character_name), '') as owner_name,
+             (array_agg(vm.template_id) filter (where vm.template_id ilike '%inventory%'))[1] as inventory_module_id,
              'vehicle' as type
       from dune.actors a
       join dune.vehicles v on v.id = a.id
       left join dune.permission_actor pa on pa.actor_id = a.id
       left join dune.inventories inv on inv.actor_id = a.id
       left join dune.items i on i.inventory_id = inv.id
-      left join dune.actor_fgl_entities afe on afe.entity_id = a.id
-      left join dune.permission_actor_rank par on par.permission_actor_id = afe.actor_id
+      left join dune.permission_actor_rank par on par.permission_actor_id = a.id
       left join dune.actors player_a on player_a.id = par.player_id
       left join dune.player_state ps on ps.account_id = player_a.owner_account_id
+      left join dune.vehicle_modules vm on vm.vehicle_id = a.id
       where a.id is not null
       group by a.id, a.map
       order by a.id`);
@@ -3015,10 +3035,26 @@ export async function listStorage(db) {
     capabilities.storage = true;
   }
   capabilities.storageFillItem = await supportsStorageFillItem(db);
-  rows = rows.map((row) => ({
-    ...row,
-    class_name: row.type === "vehicle" ? portalVehicleDisplayName(row.class) : resolveBuildingDisplayName(row.class)
-  }));
+  rows = rows.map((row) => {
+    if (row.type !== "vehicle") {
+      return { ...row, class_name: resolveBuildingDisplayName(row.class) };
+    }
+    // Per explicit operator direction: a vehicle's storage row must
+    // show the real name of its attached inventory MODULE (e.g. "Buggy
+    // Storage Mk5" for BuggyInventory_5), not just the vehicle type
+    // ("Buggy") -- because capacity, and indeed whether storage is
+    // usable at all, depends entirely on which module tier is welded
+    // on. Confirmed live 2026-07-31: BuggyInventory_5 already has a
+    // real, verified name in admin-items.json (the same catalog
+    // adminItemMetadata() already serves elsewhere), matching the
+    // in-game module name exactly. Falls back to the vehicle type name
+    // only if no inventory-pattern module is attached (shouldn't
+    // normally happen for a row that has real max_item_count > 0, but
+    // keeps this honest rather than showing an empty/wrong name).
+    const { inventory_module_id: moduleId, ...vehicleRow } = row;
+    const moduleName = moduleId ? adminItemMetadata().get(moduleId)?.name : null;
+    return { ...vehicleRow, class_name: moduleName || portalVehicleDisplayName(row.class) };
+  });
   return { capabilities, rows };
 }
 
@@ -4797,6 +4833,13 @@ export async function fillItemToStorage(db, repoRoot, storageId, { itemName = ""
   const itemVolumeNum = Number(itemVolume) || 0;
   return db.transaction(async (tx) => {
     const itemColumns = await columnsFor(tx, "items");
+    // A vehicle's storage inventory is linked via dune.inventories.actor_id
+    // the same as a placeable's (inventory_type = 0, actor_id = the
+    // vehicle's own actor id) -- confirmed live 2026-07-31 against a
+    // real spawned+owned Buggy with a genuine BuggyInventory_5 module
+    // attached. dune.inventories.vehicle_module_id and
+    // dune.vehicle_module_inventories exist in the schema but were
+    // empty in that real case; do not join through them here.
     const storage = await tx.query(`
       select id, actor_id, coalesce(max_item_count, 0)::int as max_item_count, coalesce(max_item_volume, 0)::real as max_item_volume
       from dune.inventories
@@ -4804,7 +4847,7 @@ export async function fillItemToStorage(db, repoRoot, storageId, { itemName = ""
       order by id
       limit 1
       for update`, [target]);
-    if (!storage.rows[0]) throw new Error("Storage inventory was not found for the selected storage actor");
+    if (!storage.rows[0]) throw new Error("Storage inventory was not found for the selected storage actor -- if this is a vehicle, it may not have a storage module attached");
     const inventory = storage.rows[0];
     const count = await tx.query("select count(*)::int as count from dune.items where inventory_id = $1", [inventory.id]);
     const currentCount = Number(count.rows[0]?.count || 0);
