@@ -8,7 +8,9 @@ import { KeyValueGrid, StatusPill, TechnicalDetails } from "../../components/com
 import { formatUiSentence } from "../../lib/display";
 import { conciseTaskError } from "../../lib/taskDisplay";
 import { serializeEditableDbValue, parseEditableDbValue } from "../../lib/dbValues";
+import { copyText } from "../../lib/clipboard";
 import { DatabaseSchemaBrowser } from "./DatabaseSchemaBrowser";
+import { JsonValueEditor } from "./JsonValueEditor";
 
 type HomeTaskResult = { status: "running" | "succeeded" | "failed" | "stopped"; title: string; message?: string; details?: string };
 type DatabasePasswordState = { taskId?: string; result: HomeTaskResult | null };
@@ -167,6 +169,10 @@ export function DatabasePanel() {
   const [databaseStatus, setDatabaseStatus] = useState<Record<string, unknown> | null>(null);
   const [databaseStatusError, setDatabaseStatusError] = useState("");
   const [databaseStatusLoading, setDatabaseStatusLoading] = useState(false);
+  const [databaseStatusVisible, setDatabaseStatusVisible] = useState(false);
+  const [tunnelPanelOpen, setTunnelPanelOpen] = useState(false);
+  const [tunnelLocalPort, setTunnelLocalPort] = useState("15432");
+  const [tunnelCopyResult, setTunnelCopyResult] = useState("");
   const [passwordPanelOpen, setPasswordPanelOpen] = useState(false);
   const [databasePassword, setDatabasePassword] = useState("");
   const [databasePasswordConfirm, setDatabasePasswordConfirm] = useState("");
@@ -182,6 +188,7 @@ export function DatabasePanel() {
   const [editRow, setEditRow] = useState<Record<string, unknown> | null>(null);
   const [editValues, setEditValues] = useState<Record<string, string>>({});
   const [editResult, setEditResult] = useState<HomeTaskResult | null>(null);
+  const [jsonEditorColumn, setJsonEditorColumn] = useState("");
   const previewRef = useRef<HTMLHeadingElement | null>(null);
   const editRef = useRef<HTMLElement | null>(null);
   const sqlEditorRef = useRef<HTMLTextAreaElement | null>(null);
@@ -203,13 +210,12 @@ export function DatabasePanel() {
     };
   }, [databasePasswordState.taskId, databasePasswordState.result?.status]);
   useEffect(() => {
-    if (!(databaseStatus || databaseStatusError) || databaseStatusLoading) return undefined;
+    if (!databaseStatusVisible || databaseStatusLoading) return undefined;
     const timer = window.setTimeout(() => {
-      setDatabaseStatus(null);
-      setDatabaseStatusError("");
+      setDatabaseStatusVisible(false);
     }, 5000);
     return () => window.clearTimeout(timer);
-  }, [databaseStatus, databaseStatusError, databaseStatusLoading]);
+  }, [databaseStatusVisible, databaseStatusLoading, databaseStatus, databaseStatusError]);
   useEffect(() => {
     if (!editResult || editResult.status === "running") return undefined;
     const timer = window.setTimeout(() => setEditResult(null), 5000);
@@ -301,7 +307,8 @@ export function DatabasePanel() {
     previewSort.reset();
     if (selected) await refreshTablePreview(selected, 0, previewPageSize, null);
   }
-  async function loadDatabaseStatus() {
+  async function loadDatabaseStatus(showResult = true) {
+    if (showResult) setDatabaseStatusVisible(true);
     setDatabaseStatusLoading(true);
     setDatabaseStatusError("");
     try {
@@ -311,6 +318,20 @@ export function DatabasePanel() {
       setDatabaseStatusError(error instanceof Error ? error.message : String(error));
     } finally {
     setDatabaseStatusLoading(false);
+    }
+  }
+  function toggleTunnelPanel() {
+    const nextOpen = !tunnelPanelOpen;
+    setTunnelPanelOpen(nextOpen);
+    setTunnelCopyResult("");
+    if (nextOpen && !databaseStatus && !databaseStatusLoading) void loadDatabaseStatus(false);
+  }
+  async function copyTunnelCommand(command: string) {
+    try {
+      await copyText(command);
+      setTunnelCopyResult("Copied");
+    } catch {
+      setTunnelCopyResult("Copy failed. Select the command manually.");
     }
   }
   async function changeDatabasePassword() {
@@ -346,7 +367,17 @@ export function DatabasePanel() {
     setEditResult({ status: "running", title: "Saving Row..." });
     try {
       const originalValues = Object.fromEntries(databasePreviewColumns(preview).map((column) => [column, editRow[column]]));
-      const nextValues = Object.fromEntries(Object.entries(editValues).map(([key, value]) => [key, parseEditableDbValue(value, originalValues[key])]));
+      const nextValues = Object.fromEntries(Object.entries(editValues).map(([key, value]) => {
+        if (isJsonDatabaseColumn(columns, key)) {
+          if (/^NULL$/i.test(value.trim())) return [key, null];
+          try {
+            return [key, JSON.parse(value)];
+          } catch (error) {
+            throw new Error(`${key} contains invalid JSON: ${error instanceof Error ? error.message : String(error)}`);
+          }
+        }
+        return [key, parseEditableDbValue(value, originalValues[key])];
+      }));
       const result = await databaseApi.updateRow(schema, selected, rowId, nextValues);
       await refreshTablePreview(selected, previewPage, previewPageSize);
       setEditRow(null);
@@ -394,6 +425,12 @@ export function DatabasePanel() {
   }
   const databaseServer = databaseStatus?.server as Record<string, unknown> | undefined;
   const databaseConfig = databaseStatus?.config as Record<string, unknown> | undefined;
+  const tunnelAccess = databaseStatus?.sshTunnelAccess as Record<string, unknown> | undefined;
+  const tunnelRemotePort = Number(tunnelAccess?.port || databaseConfig?.port || 15432);
+  const safeTunnelLocalPort = /^\d{1,5}$/.test(tunnelLocalPort) && Number(tunnelLocalPort) > 0 && Number(tunnelLocalPort) <= 65535 ? tunnelLocalPort : "15432";
+  const tunnelCommand = `ssh -N -o ExitOnForwardFailure=yes -L ${safeTunnelLocalPort}:127.0.0.1:${tunnelRemotePort} your-user@your-server`;
+  const tunnelDatabase = String(tunnelAccess?.database || databaseConfig?.database || "dune");
+  const tunnelUser = String(tunnelAccess?.user || databaseConfig?.user || "dune");
   const showDefaultDatabasePasswordNote = !databaseStatus || databaseStatus.usesDefaultPassword !== false;
   const previewColumns = databasePreviewColumns(preview);
   const previewRows = preview?.rows || [];
@@ -424,7 +461,7 @@ export function DatabasePanel() {
     <p className="database-browser-note">
       Database edits may require relog or map/server restart.
     </p>
-    <div className="action-row"><button onClick={loadTables}>Refresh Tables</button><button onClick={() => setPasswordPanelOpen((open) => !open)}>Change Password</button><button disabled={databaseStatusLoading} onClick={loadDatabaseStatus}>{databaseStatusLoading ? "Checking..." : "Status"}</button></div>
+    <div className="action-row"><button onClick={loadTables}>Refresh Tables</button><button onClick={() => setPasswordPanelOpen((open) => !open)}>Change Password</button><button disabled={databaseStatusLoading} onClick={() => void loadDatabaseStatus(true)}>{databaseStatusLoading && databaseStatusVisible ? "Checking..." : "Status"}</button><button onClick={toggleTunnelPanel}>SSH Tunnel Access</button></div>
     {passwordPanelOpen && <section className="result-panel database-password-panel">
       <div className="panel-title database-status-title"><strong>Change Database Password</strong><StatusPill value={databasePasswordResult?.status === "failed" ? "Failed" : databasePasswordResult?.status === "succeeded" ? "Saved" : "Info"} /></div>
       {showDefaultDatabasePasswordNote && <p className="muted">The default password is "dune".</p>}
@@ -438,9 +475,9 @@ export function DatabasePanel() {
         {databasePasswordResult.message && <span className="inline-task-message">{formatResultMessage(databasePasswordResult.message)}</span>}
       </span>}
     </section>}
-    {(databaseStatus || databaseStatusError) && <section className={`result-panel transient-result ${databaseStatusError ? "result-fail" : "result-ok"}`}>
-      <div className="panel-title database-status-title"><strong>Database Status</strong><StatusPill value={databaseStatusError ? "Failed" : "Connected"} /></div>
-      {databaseStatusError ? <p>{databaseStatusError}</p> : <KeyValueGrid items={[
+    {databaseStatusVisible && (databaseStatus || databaseStatusError || databaseStatusLoading) && <section className={`result-panel database-status-result ${databaseStatusError ? "result-fail" : "result-ok"}`}>
+      <div className="panel-title database-status-title"><strong>Database Status</strong><StatusPill value={databaseStatusLoading ? "Checking" : databaseStatusError ? "Failed" : "Connected"} /></div>
+      {databaseStatusLoading ? <p className="muted">Checking the database connection...</p> : databaseStatusError ? <p>{databaseStatusError}</p> : <KeyValueGrid items={[
         ["Connected", databaseStatus?.connected ? "Yes" : "No"],
         ["Database", databaseServer?.current_database || databaseConfig?.database || "Unknown"],
         ["User", databaseServer?.current_user || databaseConfig?.user || "Unknown"],
@@ -448,7 +485,39 @@ export function DatabasePanel() {
         ["Host", databaseConfig?.host || "Unknown"],
         ["Port", databaseConfig?.port || "Unknown"]
       ]} />}
-      {!databaseStatusError && Boolean(databaseServer?.version) && <TechnicalDetails title="Postgres version" text={String(databaseServer?.version)} />}
+      {!databaseStatusLoading && !databaseStatusError && Boolean(databaseServer?.version) && <TechnicalDetails title="Postgres version" text={String(databaseServer?.version)} />}
+    </section>}
+    {tunnelPanelOpen && <section className="result-panel database-tunnel-panel">
+      <div className="panel-title database-status-title"><strong>SSH Tunnel Access</strong><StatusPill value={databaseStatusLoading ? "Checking" : tunnelAccess?.available ? "Loopback Only" : "Unavailable"} /></div>
+      <p>Connect DBeaver or another PostgreSQL application without exposing the database to your network. PostgreSQL remains bound to the server loopback interface, and the encrypted SSH connection carries database traffic.</p>
+      {databaseStatusLoading && <p className="muted">Checking the database listener...</p>}
+      {databaseStatusError && <p className="danger-note">{databaseStatusError}</p>}
+      {!databaseStatusLoading && !databaseStatusError && tunnelAccess?.available === true && <>
+        {databaseStatus?.usesDefaultPassword !== false && <p className="danger-note">Change the default database password before connecting an external database tool.</p>}
+        <ol className="database-tunnel-steps">
+          <li><div><strong>Choose a port on your computer</strong><p>Keep <code>15432</code> unless another application on your computer already uses it. This does not change the server’s database port.</p></div>
+            <label>Local Port<input inputMode="numeric" value={tunnelLocalPort} onChange={(event) => setTunnelLocalPort(event.target.value.replace(/\D/g, "").slice(0, 5))} /></label>
+          </li>
+          <li><div><strong>Run the command on the computer running DBeaver</strong><p>Do not run it inside the Dune server’s SSH terminal. Replace <code>your-user</code> with the server’s SSH username and <code>your-server</code> with its LAN IP, VPN address, hostname, or public SSH address.</p></div>
+            <div className="database-tunnel-command"><div className="database-tunnel-command-control"><input readOnly value={tunnelCommand} aria-label="SSH tunnel command" onFocus={(event) => event.currentTarget.select()} /><button onClick={() => void copyTunnelCommand(tunnelCommand)}>Copy</button></div></div>
+          </li>
+          <li><div><strong>Authenticate and keep the terminal open</strong><p>Enter the server’s SSH password when prompted. Password characters will not appear while typing. A blank terminal after login means the tunnel is active; close it with <code>Ctrl+C</code> when finished.</p></div>
+            <div className="database-tunnel-check"><span>Optional Windows check</span><code>Test-NetConnection 127.0.0.1 -Port {safeTunnelLocalPort}</code></div>
+          </li>
+          <li><div><strong>Connect DBeaver to PostgreSQL</strong><p>Select PostgreSQL and use these values. Leave DBeaver’s built-in SSH tab disabled because the separate terminal already provides the tunnel.</p></div>
+            <KeyValueGrid items={[
+              ["Host", "127.0.0.1"],
+              ["Port", safeTunnelLocalPort],
+              ["Database", tunnelDatabase],
+              ["Username", tunnelUser],
+              ["Password", "Your Dune database password"]
+            ]} />
+          </li>
+        </ol>
+        <p className="database-tunnel-security-note"><strong>External access:</strong> use a VPN address or an SSH-reachable public hostname. Never forward or expose PostgreSQL port <code>{tunnelRemotePort}</code> on your router.</p>
+        {tunnelCopyResult && <span className="muted" role="status">{tunnelCopyResult}</span>}
+      </>}
+      {!databaseStatusLoading && !databaseStatusError && tunnelAccess?.available !== true && <p className="danger-note">The console is using a non-loopback database connection, so tunnel instructions are unavailable. No public binding will be created automatically.</p>}
     </section>}
     <h3>Tables</h3>
     <div className="action-row database-table-search-row">
@@ -488,7 +557,7 @@ export function DatabasePanel() {
         <DataTable rows={columnsSort.sortedRows} emptyMessage={columnSearchTerm ? "No matching columns found." : "No columns found."} sortColumn={columnsSort.sortColumn} sortDirection={columnsSort.sortDirection} onSort={columnsSort.onSort} />
       </details>
       {!previewLoading && !previewError && (previewRows.length
-        ? <DataTable rows={previewSort.sortedRows} columns={previewColumns} action={(row) => <button onClick={(event) => { event.stopPropagation(); startEdit(row); }}>Edit</button>} actionClassName="backup-table-actions" tableClassName="backup-table" sortColumn={previewSort.sortColumn} sortDirection={previewSort.sortDirection} onSort={previewSort.onSort} rowKey={(row) => String(row.__rowid)} />
+        ? <DataTable rows={previewSort.sortedRows} columns={previewColumns} action={(row) => <button onClick={(event) => { event.stopPropagation(); startEdit(row); }}>Edit</button>} actionClassName="database-preview-actions" tableClassName="database-preview-table" sortColumn={previewSort.sortColumn} sortDirection={previewSort.sortDirection} onSort={previewSort.onSort} rowKey={(row) => String(row.__rowid)} />
         : <div className="empty database-empty">{previewFilter ? "No matching rows found." : "This table has no rows to preview."}</div>)}
       {!editRow && editResult && <section className={`result-panel ${editResult.status === "running" ? "" : "transient-result"} ${editResult.status === "succeeded" ? "result-ok" : editResult.status === "failed" ? "result-fail" : "result-running"}`}>
         <div className="panel-title"><strong>{formatResultTitle(editResult.title, editResult.status === "running")}</strong><StatusPill value={editResult.status === "succeeded" ? "Saved" : editResult.status === "failed" ? "Failed" : "Saving"} /></div>
@@ -497,7 +566,14 @@ export function DatabasePanel() {
       {editRow && <section ref={editRef} className="result-panel database-edit-panel">
         <div className="panel-title"><strong>Edit Row</strong><StatusPill value={editResult?.status === "failed" ? "Failed" : editResult?.status === "succeeded" ? "Saved" : "Editing"} /></div>
         <div className="database-edit-grid">
-          {previewColumns.map((column) => <label key={column}>{column}<textarea rows={2} value={editValues[column] || ""} onChange={(event) => setEditValues({ ...editValues, [column]: event.target.value })} /></label>)}
+          {previewColumns.map((column) => {
+            const jsonColumn = isJsonDatabaseColumn(columns, column);
+            return <label className={jsonColumn ? "database-json-field" : ""} key={column}>
+              <span className="database-edit-label">{column}{jsonColumn && <small>JSON</small>}</span>
+              <textarea rows={jsonColumn ? 5 : 2} value={editValues[column] || ""} onChange={(event) => setEditValues({ ...editValues, [column]: event.target.value })} />
+              {jsonColumn && <button type="button" onClick={() => setJsonEditorColumn(column)}>Open Large JSON Editor</button>}
+            </label>;
+          })}
         </div>
         <div className="action-line">
           <button disabled={editResult?.status === "running"} onClick={saveEditedRow}>Save Row</button>
@@ -508,12 +584,18 @@ export function DatabasePanel() {
           {editResult.message && <span className="inline-task-message">{formatResultMessage(editResult.message)}</span>}
         </span>}
       </section>}
+      {jsonEditorColumn && <JsonValueEditor
+        column={jsonEditorColumn}
+        value={editValues[jsonEditorColumn] || ""}
+        onApply={(value) => setEditValues((current) => ({ ...current, [jsonEditorColumn]: value }))}
+        onClose={() => setJsonEditorColumn("")}
+      />}
     </section>}
     <h3>Search Tables and Columns</h3>
     <div className="action-row"><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search tables or columns" /><button onClick={searchColumns}>Search</button></div>
     {searchRan && (searchRows.length ? <DataTable rows={searchSort.sortedRows} sortColumn={searchSort.sortColumn} sortDirection={searchSort.sortDirection} onSort={searchSort.onSort} /> : <div className="empty database-empty">No matching tables or columns found.</div>)}
     <div className={`playerAdmin_toggle database-schema-section ${schemaBrowserOpen ? "open" : ""}`}>
-      <button className="playerAdmin_toggleHeader" aria-label={schemaBrowserOpen ? "Collapse Table Schemas" : "Expand Table Schemas"} onClick={() => setSchemaBrowserOpen(!schemaBrowserOpen)}>{schemaBrowserOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}<span>Table Schemas</span></button>
+      <button className="playerAdmin_toggleHeader" aria-label={schemaBrowserOpen ? "Collapse Database Objects" : "Expand Database Objects"} onClick={() => setSchemaBrowserOpen(!schemaBrowserOpen)}>{schemaBrowserOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}<span>Database Objects</span></button>
       {schemaBrowserOpen && <div className="playerAdmin_toggleBody">
         <DatabaseSchemaBrowser schema={schema} tables={tables} onCreateQuery={createSqlQuery} />
       </div>}
@@ -547,4 +629,10 @@ function omitInternalRowFields(row: Record<string, unknown>) {
   const { __rowid, ...visible } = row;
   void __rowid;
   return visible;
+}
+
+function isJsonDatabaseColumn(columns: Record<string, unknown>[], columnName: string) {
+  const column = columns.find((entry) => String(entry.name) === columnName);
+  const type = String(column?.data_type || "").toLowerCase();
+  return type === "json" || type === "jsonb";
 }

@@ -383,6 +383,8 @@ async function handleApi(req, res) {
   }
   if (path === "/api/database/status") return dbJson(res, () => duneDb.dbStatus(db));
   if (path === "/api/database/schemas") return dbJson(res, () => duneDb.listSchemas(db));
+  if (path === "/api/database/routines") return dbJson(res, () => duneDb.listRoutines(db, url.searchParams.get("schema") || "dune", url.searchParams.get("q") || ""));
+  if (path.match(/^\/api\/database\/routines\/[^/]+$/)) return dbJson(res, () => duneDb.routineDefinition(db, decodeURIComponent(path.split("/").pop())));
   if (path === "/api/database/tables") return dbJson(res, () => duneDb.listTables(db, url.searchParams.get("schema") || "dune"));
   if (path.match(/^\/api\/database\/tables\/[^/]+\/[^/]+\/columns$/)) return databaseTableRoute(req, res, path, "columns", url);
   if (path.match(/^\/api\/database\/tables\/[^/]+\/[^/]+\/preview$/)) return databaseTableRoute(req, res, path, "preview", url);
