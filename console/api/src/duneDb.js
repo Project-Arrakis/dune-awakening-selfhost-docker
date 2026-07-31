@@ -4571,6 +4571,31 @@ function buildItemStats({ templateId = "", augments = [], durability = {}, rollP
     FCustomizationStats: [[], {}],
     FItemStackAndDurabilityStats: [[], durabilityObj]
   }, durability);
+  // Plain resources (not weapon/clothing -- those are already handled
+  // above via normalizeAugmentableBaseStats -> normalizeDurabilityStats,
+  // which fills in Current/Max/DecayedMaxDurability from the fallback)
+  // previously never carried a DecayedMaxDurability key at all, unlike
+  // every real, naturally-acquired resource item in this world's own
+  // database (e.g. {"FItemStackAndDurabilityStats": [[],
+  // {"DecayedMaxDurability": 0.0}]}) and unlike this repo's own
+  // documented real item-stats format (docs/blueprints.md, the
+  // BuildingBlueprint_CopyDevice solido example). This was found
+  // 2026-07-31 while investigating a live report that fill-item (and
+  // give-item) grants for plain resources never appear in a storage
+  // container in-game, even after a full relog -- this fix makes the
+  // stats shape match real items exactly, which is a genuine
+  // correctness improvement regardless. HOWEVER: this fix has NOT been
+  // confirmed to actually resolve the in-game visibility problem --
+  // a live test after deploying this change still showed nothing
+  // appearing in-game. The root cause of the in-game visibility issue
+  // remains open; do not treat this comment as evidence it's fixed.
+  // Applied only after normalizeAugmentableBaseStats, so it does not
+  // affect items that function already handles (kind === "clothing" or
+  // "weapon").
+  const statsDurability = stats.FItemStackAndDurabilityStats;
+  if (Array.isArray(statsDurability) && statsDurability[1] && typeof statsDurability[1] === "object" && !("DecayedMaxDurability" in statsDurability[1])) {
+    stats.FItemStackAndDurabilityStats = [statsDurability[0], { ...statsDurability[1], DecayedMaxDurability: 0.0 }];
+  }
   if (isStandaloneAugmentTemplate(templateId)) {
     const payload = rollPayloads.get(templateId)?.rollData;
     if (!payload) throw new Error(`Cannot build standalone augment payload for: ${templateId}.`);
