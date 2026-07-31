@@ -2,6 +2,72 @@ import test, { beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { assertIdentifier, discoverDbConfig, isReadOnlySql, quoteQualified, redactDbError, rowsResult } from "../src/db.js";
+import {
+  UnsupportedCapabilityError,
+  _resetPlayerTargetCacheForTests,
+  addCurrency,
+  addFactionReputation,
+  addIntel,
+  addSpecializationXp,
+  addonLeadershipPlayers,
+  addonOpsHealthFarms,
+  addonOpsHealthPlayers,
+  addonOpsHealthSummary,
+  addonOpsHealthSummaryV2,
+  applyLandsraadMilestonePreset,
+  augmentInventoryItem,
+  augmentNewestPlayerItem,
+  changeDunePassword,
+  characterHasSteamId,
+  completeJourneyNode,
+  completeTutorial,
+  deleteInventoryItem,
+  exportBaseAsBlueprint,
+  fillItemToStorage,
+  generatorUptimePolicy,
+  giveItemToPlayer,
+  giveItemToStorage,
+  guildMembers,
+  landsraadOverview,
+  listBases,
+  listGuilds,
+  listPlayers,
+  listSpicefieldTypes,
+  listTables,
+  liveMapPlayers,
+  liveMapServices,
+  matchSteamIdForCharacter,
+  playerCraftingRecipes,
+  playerCurrency,
+  playerFactions,
+  playerIntel,
+  playerInventory,
+  playerJourney,
+  playerPortalSnapshots,
+  playerPosition,
+  playerProfile,
+  playerProgression,
+  playerResearchItems,
+  playerSolarisCoinTotal,
+  playerVitals,
+  portalGeneratorFuel,
+  portalVehicles,
+  repairVehicleDecay,
+  resetJourneyNode,
+  resetTutorial,
+  runSql,
+  setLandsraadPlayerContribution,
+  tablePreview,
+  teleportOfflinePlayerToCoords,
+  unlockCraftingRecipe,
+  unlockResearchItem,
+  updateInventoryItem,
+  updateLandsraadRewardTier,
+  updateLandsraadTaskGoal,
+  updateLandsraadTermTaskGoals,
+  updateSpicefieldType,
+  updateTableRow
+} from "../src/duneDb.js";
 
 beforeEach(() => {
   _resetPlayerTargetCacheForTests();
@@ -2657,21 +2723,28 @@ test("storage give-item validates capacity and inserts parameterized item rows",
   assert.deepEqual(insert.values.slice(0, 5), [7, "WaterBottle_1", 3, 0, 2]);
 });
 
-test("storage fill-item inserts with volume_override and respects slot limit", async () => {
+test("storage fill-item inserts with TOTAL stack volume_override (per-unit x quantity) and respects slot limit", async () => {
+  // volume_override must be the total volume of the stack (itemVolume *
+  // quantity), not the per-unit volume -- fixed 2026-07-31 after a live
+  // discrepancy where a quantity=3 fill only added 1 to current_volume
+  // instead of 3. This test previously asserted the old, buggy per-unit
+  // behavior (50 * 1.0 = 50 total, but the test asserted 1.0) and was
+  // never updated when the underlying bug was fixed -- caught only by
+  // actually running the suite, not by re-reading the diff.
   const calls = [];
   const db = fakeMutationDb(calls, {
     storageRows: [{ id: 7, actor_id: 222, max_item_count: 30, max_item_volume: 100 }],
     countRows: [{ count: 1 }],
     volumeRows: [{ total_volume: 10 }],
-    insertedRows: [{ id: 502, template_id: "T6RefinedResourceA", stack_size: 50, quality_level: 0, position_index: 3, inventory_id: 7, volume_override: 1.0 }]
+    insertedRows: [{ id: 502, template_id: "T6RefinedResourceA", stack_size: 50, quality_level: 0, position_index: 3, inventory_id: 7, volume_override: 50.0 }]
   });
   const result = await fillItemToStorage(db, "/tmp", 222, { templateId: "T6RefinedResourceA", quantity: 50, itemVolume: 1.0 });
   assert.equal(result.inserted.id, 502);
-  assert.equal(result.inserted.volume_override, 1.0);
+  assert.equal(result.inserted.volume_override, 50.0);
   const insert = calls.find((call) => call.text.includes("insert into dune.items"));
   assert.ok(insert);
   const volIdx = insert.values.length - 1;
-  assert.equal(insert.values[volIdx], 1.0);
+  assert.equal(insert.values[volIdx], 50.0);
   const volumeCall = calls.find((call) => call.text.includes("sum(coalesce(volume_override"));
   assert.ok(volumeCall, "volume sum query must run");
 });
