@@ -2787,7 +2787,14 @@ test("player give-item persists selected item grade", async () => {
   assert.ok(insert);
   assert.deepEqual(insert.values.slice(0, 5), [7, "WaterBottle_1", 3, 5, 2]);
   const stats = JSON.parse(insert.values[5]);
-  assert.deepEqual(stats.FCustomizationStats, [[], {}]);
+  // WaterBottle_1 is a plain item (neither weapon nor clothing), so
+  // FCustomizationStats must NOT be present -- confirmed 2026-07-31 by
+  // diffing against a real, engine-verified reference row (a live
+  // adminGiveItemId RCON grant of AzuriteOre) that has no
+  // FCustomizationStats key at all. This test previously asserted the
+  // old, incorrect behavior (an unconditional empty
+  // FCustomizationStats: [[], {}] on every item).
+  assert.equal(stats.FCustomizationStats, undefined);
   assert.equal(stats.FItemStackAndDurabilityStats[1].CurrentDurability, 100);
   assert.equal(stats.FItemStackAndDurabilityStats[1].MaxDurability, 100);
 });
@@ -2873,7 +2880,11 @@ test("player give-item with augments writes normal acquisition metadata when sup
   assert.ok(insert);
   assert.match(insert.text, /is_new/);
   assert.match(insert.text, /acquisition_time/);
-  assert.equal(insert.values[6], false);
+  // is_new must be true, matching dune.items' own column default and a
+  // real, engine-verified reference row (a live adminGiveItemId RCON
+  // grant) -- confirmed 2026-07-31. Was previously hardcoded false for
+  // every admin-inserted item; this test asserted that incorrect value.
+  assert.equal(insert.values[6], true);
   assert.ok(Number(insert.values[7]) > 0);
 });
 

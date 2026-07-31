@@ -4567,10 +4567,24 @@ function buildItemStats({ templateId = "", augments = [], durability = {}, rollP
   const durabilityObj = durability.max !== undefined
     ? { CurrentDurability: Number(durability.current ?? durability.max), MaxDurability: Number(durability.max), DecayedMaxDurability: Number(durability.max) }
     : {};
-  const stats = normalizeAugmentableBaseStats(templateId, {
-    FCustomizationStats: [[], {}],
-    FItemStackAndDurabilityStats: [[], durabilityObj]
-  }, durability);
+  // FCustomizationStats must only be present for weapon/clothing items
+  // (the only kinds normalizeAugmentableBaseStats actually populates it
+  // for) -- confirmed 2026-07-31 by diffing a raw insert's row against
+  // a real, engine-verified reference row (granted via the live
+  // adminGiveItemId RCON path, server logged "Verified inventory stack
+  // increased"). The reference row for a plain resource (AzuriteOre)
+  // has NO FCustomizationStats key at all; every prior raw insert here
+  // unconditionally included an empty FCustomizationStats: [[], {}],
+  // which the reference row never has. Still unconfirmed whether this
+  // (or the also-newly-found is_new mismatch, see below) is what
+  // actually blocks in-game visibility -- both are real, verified
+  // structural differences from a known-good row, not yet proven as
+  // the fix.
+  const kind = augmentItemKindForTemplate(templateId);
+  const baseStats = kind === "clothing" || kind === "weapon"
+    ? { FCustomizationStats: [[], {}], FItemStackAndDurabilityStats: [[], durabilityObj] }
+    : { FItemStackAndDurabilityStats: [[], durabilityObj] };
+  const stats = normalizeAugmentableBaseStats(templateId, baseStats, durability);
   // Plain resources (not weapon/clothing -- those are already handled
   // above via normalizeAugmentableBaseStats -> normalizeDurabilityStats,
   // which fills in Current/Max/DecayedMaxDurability from the fallback)
@@ -4613,8 +4627,16 @@ function itemInsertShape(baseColumns, baseValues, itemColumns) {
   const columns = [...baseColumns];
   const values = [...baseValues];
   if (itemColumns.has("is_new")) {
+    // Was hardcoded false for every admin-inserted item. Confirmed
+    // 2026-07-31 by diffing against a real, engine-verified reference
+    // row (granted via the live adminGiveItemId RCON path, server
+    // logged "Verified inventory stack increased") -- that row has
+    // is_new = true, matching dune.items' own column default. Still
+    // unconfirmed whether this (or the also-newly-found
+    // FCustomizationStats mismatch, see buildItemStats) is what
+    // actually blocks in-game visibility for raw-inserted items.
     columns.push("is_new");
-    values.push(false);
+    values.push(true);
   }
   if (itemColumns.has("acquisition_time")) {
     columns.push("acquisition_time");
