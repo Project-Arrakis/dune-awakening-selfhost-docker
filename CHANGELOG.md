@@ -7,7 +7,7 @@ whatever upstream version is currently checked out, per the versioning
 convention documented in this account's operating docs. Entries are in
 Keep a Changelog style, grouped by upstream base version, newest first.
 
-## Unreleased (on top of upstream v1.3.65)
+## Unreleased (on top of upstream v1.3.74)
 
 ### Security
 
@@ -52,6 +52,13 @@ Keep a Changelog style, grouped by upstream base version, newest first.
 
 ### Added
 
+- Atrium console Storage tab: new "Apply Fills (Restart Survival)" action that restarts the
+  survival game server via the existing `POST /api/server/restart-service` endpoint after a
+  danger-styled confirmation dialog warning that all connected players will be disconnected.
+  Container fill rows inserted into `dune.items` are claimed by the game engine only on
+  server startup — proven via the `dune.item_audit_log` audit trigger (bulk claim bursts at
+  2026-07-31 04:40:52Z and 05:01:44Z, both startup reads; a live leave-and-return test
+  showed no engine claim on actor respawn). Documented as INC-2026-07-31-001.
 - `POST /api/storage/{storageId}/fill-item` endpoint: fills a container (placeable storage
   or container vehicle) with refined resources or components, respecting both item-slot
   and volume limits. Restricted to items classified as `refined_resource` or `component`
@@ -92,6 +99,14 @@ Keep a Changelog style, grouped by upstream base version, newest first.
 
 ### Documentation
 
+- Added `docs/incidents/INC-2026-07-31-FILL-ITEMS-VISIBLE-ONLY-AFTER-RESTART.md`
+  documenting the investigation proving that fill-item rows inserted into `dune.items`
+  for container inventories are claimed by the game engine only on server startup
+  (audit-trigger burst evidence plus a live leave-and-return test with no engine claim),
+  and the "Apply Fills (Restart Survival)" console action that makes the required
+  restart explicit. Documented as INC-2026-07-31-001. Relates to the prior row-shape
+  fixes (`be5081a`, `65dd632`, `c5c486f`), which were confirmed not to resolve in-game
+  visibility on their own.
 - Revised `docs/security/audit-2026-07-04.md` following direct,
   detailed technical review from the upstream maintainer. Corrected
   several severity ratings that had conflated verified vulnerabilities
