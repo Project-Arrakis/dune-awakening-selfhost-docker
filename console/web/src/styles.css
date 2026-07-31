@@ -1769,6 +1769,11 @@ body.debug .technical-details { display: block; }
    for Maps' right-anchored icons. This toggle's icon sits near the left edge
    of the table, so flip direction here only. */
 .bases-auto-refill .memory-info-box { left: 0; right: auto; }
+/* .memory-feature-toggle's Maps-specific rule (min-height: 42px, padded,
+   tinted background) insets the toggle pill inside a taller boxed wrapper
+   here, making it look shorter/heavier than the bare uptime-event badge
+   beside it despite both pills sharing the same 32px min-height. */
+.bases-auto-refill .memory-feature-toggle { min-height: 0; padding: 0; background: none; }
 /* Scoped to this modifier rather than the shared .switch-checkbox, which ~10
    other panels also use. Sized a notch below the toggle's own text so the
    description reads as secondary, not the loudest thing in the block.
