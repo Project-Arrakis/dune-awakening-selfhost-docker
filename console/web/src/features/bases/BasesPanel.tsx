@@ -7,7 +7,7 @@ import { serverApi } from "../../api/server";
 import { setupApi, type Task } from "../../api/setup";
 import { apiDownload } from "../../api/client";
 import { DataTable, type SortDirection } from "../../components/common/DataTable";
-import { usePendingRefills } from "../../lib/usePendingRefills";
+import { pendingRefillCountForPartition, usePendingRefills } from "../../lib/usePendingRefills";
 
 type BasesPanelProps = {
   onError: (text: string) => void;
@@ -197,8 +197,11 @@ type QueueRestartTarget =
 // its own partition.
 function queueRestartTarget(partitionMap: string, partitionId: number, dimensionIndex: number): QueueRestartTarget {
   const key = String(partitionMap || "").trim().toLowerCase();
-  // Nothing to target: the partition could not be resolved from world_partition.
-  if (!partitionId) return { kind: "none" };
+  // Nothing to target: the partition could not be resolved from world_partition
+  // (including when the database was unreachable and every group's partitionMap
+  // came back empty) -- guessing "respawn" here would pick the wrong mechanism
+  // for Survival_1/Overmap, which need the sietch/service path instead.
+  if (!partitionId || !key) return { kind: "none" };
   if (key === "survival_1") {
     return {
       kind: "sietch",
@@ -651,14 +654,23 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
       // Report what the restart actually did. Without this the running line
       // stands forever and a failed restart reads as a successful one.
       const finished = await waitForTask(started.task);
+      const refreshed = await refreshPendingRefills();
       if (finished.status === "succeeded") {
-        writeRefillStatus(`${label} restarted. Any refills queued for it have been applied.`, "ok");
+        // The flush races the restart's own write-safety window, so a
+        // succeeded task does not guarantee the refill actually landed --
+        // check the queue itself rather than assume.
+        const stillQueued = pendingRefillCountForPartition(refreshed, group.partitionId);
+        writeRefillStatus(
+          stillQueued
+            ? `${label} restarted. Its refills are still queued and will apply once the map is confirmed down.`
+            : `${label} restarted. Any refills queued for it have been applied.`,
+          "ok"
+        );
       } else {
         const text = `${label} restart ${finished.status}. Its refills are still queued.`;
         writeRefillStatus(text, "fail");
         onError(text);
       }
-      await refreshPendingRefills();
     } catch (error) {
       const text = errorText(error);
       writeRefillStatus(text, "fail");
@@ -749,7 +761,7 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
           {pendingTotal.toLocaleString()} generator refill{pendingTotal === 1 ? "" : "s"} queued
         </p>
         <p className="action-help-note">
-          Each one is written when its map next restarts or stops. Stopping or restarting the battlegroup applies all of them.
+          Each one is written when its map next restarts. Restarting the battlegroup applies all of them; stopping leaves them queued.
         </p>
         <ul className="bases-pending-refills-list">
           {(pendingRefills?.byTarget || []).map((group) => {

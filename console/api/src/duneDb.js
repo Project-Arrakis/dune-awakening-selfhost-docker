@@ -1,8 +1,9 @@
 import { assertIdentifier, intParam, isReadOnlySql, quoteIdentifier, quoteQualified, rowsResult } from "./db.js";
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { dirname, resolve } from "node:path";
+import { resolve } from "node:path";
 import { redact } from "./redact.js";
+import { clampInt, writeJsonAtomic } from "./jsonStore.js";
 import {
   craftingRecipeCatalogRows,
   compareJourneyCatalogOrder,
@@ -3868,12 +3869,6 @@ function refillCaps(repoRoot) {
   return caps;
 }
 
-function clampInt(value, fallback, min, max) {
-  const n = Math.floor(Number(value));
-  if (!Number.isFinite(n)) return Math.min(Math.max(fallback, min), max);
-  return Math.min(Math.max(n, min), max);
-}
-
 export async function portalGeneratorFuel(db, baseIds, { now = new Date() } = {}) {
   if (!baseIds.length) return new Map();
   const uptimePolicy = generatorUptimePolicy(now);
@@ -4931,7 +4926,7 @@ const MAX_REFILL_FLUSH_ATTEMPTS = 3;
 // its errors say, and the retry delay keeps a failing entry from being retried
 // at the full tick rate in the meantime.
 function pendingRefillMaxAgeMs() {
-  return Number(process.env.ADMIN_REFILL_MAX_AGE_MS || 7 * 24 * 60 * 60 * 1000);
+  return clampInt(process.env.ADMIN_REFILL_MAX_AGE_MS, 7 * 24 * 60 * 60 * 1000, 1, Number.MAX_SAFE_INTEGER);
 }
 function pendingRefillRetryDelayMs() {
   return Number(process.env.ADMIN_REFILL_RETRY_DELAY_MS || 60000);
@@ -4980,11 +4975,7 @@ export function listQueuedGeneratorRefills(repoRoot) {
 // console process cannot interleave and drop each other's entry. The temp-file
 // rename covers crash safety.
 function writeQueuedGeneratorRefills(repoRoot, entries) {
-  const file = pendingRefillFile(repoRoot);
-  mkdirSync(dirname(file), { recursive: true });
-  const temporaryPath = `${file}.${process.pid}.tmp`;
-  writeFileSync(temporaryPath, `${JSON.stringify(entries, null, 2)}\n`, { mode: 0o600 });
-  renameSync(temporaryPath, file);
+  writeJsonAtomic(pendingRefillFile(repoRoot), entries);
   return entries;
 }
 
@@ -5139,18 +5130,21 @@ export async function baseMapLocation(db, baseId) {
 
 // One probe for the refill route: where the base lives, and whether its map is
 // live enough that an immediate write would be at risk.
-export async function baseRefillTarget(db, baseId) {
-  const observed = await observeRefillPartitions(db);
+// `observed` lets a caller looping over many bases in one pass (the auto-refill
+// scan) observe the cluster once and reuse it, instead of every base re-running
+// the same world_partition/pg_stat_activity query.
+export async function baseRefillTarget(db, baseId, { observed } = {}) {
+  const resolvedObserved = observed !== undefined ? observed : await observeRefillPartitions(db);
   // Check queue support first. With no way to tell a running map from a stopped
   // one there is nothing to decide, and resolving the base's location would
   // mean querying dune.actors columns an older schema need not have -- which
   // would turn an unsupported queue into a broken refill.
-  if (!observed) return { map: "", partitionId: 0, queueSupported: false, writeSafeNow: true };
+  if (!resolvedObserved) return { map: "", partitionId: 0, queueSupported: false, writeSafeNow: true };
   const location = await baseMapLocation(db, baseId);
   return {
     ...location,
     queueSupported: true,
-    writeSafeNow: partitionWriteSafe(observed, location.partitionId)
+    writeSafeNow: partitionWriteSafe(resolvedObserved, location.partitionId)
   };
 }
 

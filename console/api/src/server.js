@@ -63,6 +63,11 @@ const publicDirectory = createPublicDirectoryReporter(config, { getDb: () => db 
 let carePackageAutoRunning = false;
 let carePackageAutoLastRun = 0;
 let carePackageAutoNextAllowedRun = 0;
+// The 5s poll and the restart-task onMapDown hook both call
+// flushQueuedGeneratorRefills and can overlap; refillBaseGenerators only locks
+// existing fuel rows, so an empty generator has nothing to serialize two
+// concurrent inserts against without this guard.
+let generatorRefillFlushRunning = false;
 let messageOfTheDayAutoRunning = false;
 let messageOfTheDayAutoLastRun = 0;
 let messageOfTheDayAutoNextAllowedRun = 0;
@@ -159,18 +164,25 @@ if (deathPoller.enabled) deathPoller.init(db, config.repoRoot).catch(() => {});
 // live server on that partition, which start-all.sh opens well before the map
 // servers boot. Polling also covers restarts the console never initiated
 // (scheduler, IP change, CLI). Idle cost is one small file read per tick.
+const generatorRefillFlushIntervalMs = Number(process.env.ADMIN_REFILL_FLUSH_INTERVAL_MS);
 setInterval(() => {
   if (!duneDb.listQueuedGeneratorRefills(config.repoRoot).length) return;
   runBackgroundTick("Generator refill flush", () => flushQueuedGeneratorRefills());
-}, Number(process.env.ADMIN_REFILL_FLUSH_INTERVAL_MS || 5000)).unref?.();
+}, Number.isFinite(generatorRefillFlushIntervalMs) && generatorRefillFlushIntervalMs > 0 ? generatorRefillFlushIntervalMs : 5000).unref?.();
 
 // Every queued-refill write goes through here so it is audited whichever path
 // triggered it: the tick above, or the restart task runner's onMapDown hook.
 // These are real writes to player property, so an unaudited one is not acceptable.
 async function flushQueuedGeneratorRefills() {
-  const result = await duneDb.flushGeneratorRefills(db, config.repoRoot);
-  for (const entry of result.flushed || []) audit(config, null, "bases.flush-queued-refill", entry);
-  return result;
+  if (generatorRefillFlushRunning) return { flushed: [] };
+  generatorRefillFlushRunning = true;
+  try {
+    const result = await duneDb.flushGeneratorRefills(db, config.repoRoot);
+    for (const entry of result.flushed || []) audit(config, null, "bases.flush-queued-refill", entry);
+    return result;
+  } finally {
+    generatorRefillFlushRunning = false;
+  }
 }
 
 function runBackgroundTick(label, fn) {

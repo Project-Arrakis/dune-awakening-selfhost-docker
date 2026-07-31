@@ -79,6 +79,10 @@ function fakeDuneDb({
       calls.push({ fn: "baseRefillTarget", baseId });
       return typeof target === "function" ? target(baseId) : target;
     },
+    observeRefillPartitions: async () => {
+      calls.push({ fn: "observeRefillPartitions" });
+      return null;
+    },
     queueGeneratorRefill,
     listQueuedGeneratorRefills
   };
