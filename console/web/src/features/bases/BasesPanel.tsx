@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ChevronDown, ChevronUp, Download, Fuel, X } from "lucide-react";
 import { basesApi, type AutoRefillBase, type RefillDeviceResult } from "../../api/bases";
 import { mapsApi } from "../../api/maps";
+import { InfoTooltip } from "../../components/common/DisplayPrimitives";
 import { serverApi } from "../../api/server";
 import { setupApi, type Task } from "../../api/setup";
 import { apiDownload } from "../../api/client";
@@ -693,6 +694,10 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
     && queueRestartTarget(group.partitionMap, group.partitionId, group.dimensionIndex).kind !== "none");
   // With no enrollment read at all, the toggle cannot honestly show ON or OFF.
   const autoRefillUnrecoverable = autoRefillUnavailable && autoRefillBases.size === 0;
+  // autoRefillBases is fetched globally (GET /api/bases/auto-refill), same
+  // scope as pendingRefills, so this counts stalled bases across the whole
+  // battlegroup -- not just whatever page of the list happens to be loaded.
+  const stalledAutoRefillCount = [...autoRefillBases.values()].filter((entry) => entry.stalledAt).length;
   const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
   const rangeStart = totalCount === 0 ? 0 : page * pageSize + 1;
   const rangeEnd = totalCount === 0 ? 0 : rangeStart + rows.length - 1;
@@ -729,6 +734,15 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
       <p className="action-help-note">
         Total Bases: {totalBases.toLocaleString()} · Total Building Pieces: {totalPieces.toLocaleString()} · Total Placeables: {totalPlaceables.toLocaleString()}
       </p>
+      {stalledAutoRefillCount > 0 && <div className="bases-stalled-banner" role="alert">
+        <p className="bases-stalled-banner-title">
+          <Fuel size={16} aria-hidden="true" />
+          {stalledAutoRefillCount.toLocaleString()} base{stalledAutoRefillCount === 1 ? " has" : "s have"} stalled auto-refill
+        </p>
+        <p className="action-help-note">
+          Auto-refill queued 3 refills for {stalledAutoRefillCount === 1 ? "this base" : "each of these bases"} without raising the fuel. Refill manually to find out why, or turn auto-refill off and back on to resume trying.
+        </p>
+      </div>}
       {pendingTotal > 0 && <div className="bases-pending-refills">
         <p className="bases-pending-refills-title">
           <Fuel size={16} aria-hidden="true" />
@@ -807,10 +821,13 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
           // control: the column is a fixed 96px and already full. The button
           // stays clickable when enrolled, so turning automation on never costs
           // the on-demand refill.
-          const autoRefillOn = autoRefillBases.has(id);
+          const autoRefillEntryForRow = autoRefillBases.get(id);
+          const autoRefillOn = Boolean(autoRefillEntryForRow);
+          const autoRefillStalled = Boolean(autoRefillEntryForRow?.stalledAt);
           const refillTitle = !canRefill ? "Refill is unsupported on this database"
             : !base.generatorDataAvailable ? "Generator data is unavailable for this base"
             : !refillable ? "No generators at this base"
+            : autoRefillStalled ? `Auto-refill has stalled after ${autoRefillEntryForRow?.consecutiveQueues || 3} refills that did not raise the fuel. Click to refill now.`
             : autoRefillOn ? `Auto-refill is on — checked every ${autoRefillIntervalHours}h below ${autoRefillThreshold}%. Click to refill now.`
             : "Refill Generators";
           return <span className="icon-toggle-group">
@@ -829,9 +846,9 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
                   ><X size={14} /></button>
                 </span>
               : <button
-                  className={`icon-toggle-button${autoRefillOn ? " bases-auto-refill-on" : ""}`}
+                  className={`icon-toggle-button${autoRefillStalled ? " bases-auto-refill-stalled-icon" : autoRefillOn ? " bases-auto-refill-on" : ""}`}
                   title={refillTitle}
-                  aria-label={autoRefillOn ? "Refill Generators (auto-refill on)" : "Refill Generators"}
+                  aria-label={autoRefillStalled ? "Refill Generators (auto-refill stalled)" : autoRefillOn ? "Refill Generators (auto-refill on)" : "Refill Generators"}
                   disabled={!refillable || refillingId === id}
                   onClick={(event) => { event.stopPropagation(); void handleRefillGenerators(base); }}
                 ><Fuel size={16} /></button>}
@@ -871,6 +888,18 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
           const autoRefillEntry = autoRefillBases.get(id);
           const savingAutoRefill = savingAutoRefillId === id;
           const lastChecked = autoRefillEntry?.lastCheckedAt ? formatAgo(autoRefillEntry.lastCheckedAt) : "";
+          // An InfoTooltip (the same component Maps uses for Host Memory
+          // Protection / Memory Balancer / Memory Swap) rather than inline
+          // text: the expanded row sits in a CSS grid of 240px generator-type
+          // columns, so inline text here has no guaranteed width to render
+          // into and either wraps unpredictably or silently truncates.
+          // InfoTooltip's popover is absolutely positioned with its own fixed
+          // max-width, so it has no such constraint -- and it matches the
+          // rest of the app rather than a bare native title attribute.
+          const autoRefillTooltip = `Checked every ${autoRefillIntervalHours}h. Queues a refill when any generator drops below ${autoRefillThreshold}%.`
+            + (autoRefillEntry && lastChecked ? ` Last checked ${lastChecked}${autoRefillEntry.lastLowestPercent === null ? "" : ` — lowest ${autoRefillEntry.lastLowestPercent}%`}.` : "")
+            + (autoRefillEntry && !lastChecked ? " Not checked yet." : "")
+            + (autoRefillUnavailable ? " Last known state — the latest read failed." : "");
           return (
             <div className="bases-generator-breakdown">
               {/* Hidden entirely without the queue capability: automating a
@@ -883,7 +912,8 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
                   ? <p className="bases-auto-refill-unknown" role="status">
                       Auto-refill state could not be read. <button onClick={() => void refreshAutoRefill()}>Retry</button>
                     </p>
-                  : <>
+                  : <div className="memory-feature-toggle">
+                      <InfoTooltip id={`auto-refill-help-${id}`} label="About Auto-Refill">{autoRefillTooltip}</InfoTooltip>
                       <label className={`switch-checkbox bases-auto-refill-toggle ${autoRefillEntry ? "enabled" : "disabled"}`}>
                         <input
                           type="checkbox"
@@ -894,13 +924,7 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
                         <span className="switch-label">Auto-Refill</span>
                         <strong className="switch-state">{savingAutoRefill ? "Saving" : autoRefillEntry ? "ON" : "OFF"}</strong>
                       </label>
-                      <p className="action-help-note">
-                        Checked every {autoRefillIntervalHours}h. Queues a refill when any generator drops below {autoRefillThreshold}%.
-                        {autoRefillEntry && lastChecked ? ` Last checked ${lastChecked}${autoRefillEntry.lastLowestPercent === null ? "" : ` — lowest ${autoRefillEntry.lastLowestPercent}%`}.` : ""}
-                        {autoRefillEntry && !lastChecked ? " Not checked yet." : ""}
-                        {autoRefillUnavailable ? " Last known state — the latest read failed." : ""}
-                      </p>
-                    </>}
+                    </div>}
                 {/* Giving up has to be visible, or the operator believes fuel is
                     being handled while this base quietly stays empty. */}
                 {autoRefillEntry?.stalledAt && <p className="bases-auto-refill-stalled" role="alert">

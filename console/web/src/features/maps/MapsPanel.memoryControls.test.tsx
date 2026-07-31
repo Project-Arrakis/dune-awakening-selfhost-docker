@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import { InfoTooltip } from "./MapsPanel";
+import { InfoTooltip } from "../../components/common/DisplayPrimitives";
 
 describe("memory controls help", () => {
   it("exposes the tooltip to pointer, keyboard, and assistive technology users", () => {

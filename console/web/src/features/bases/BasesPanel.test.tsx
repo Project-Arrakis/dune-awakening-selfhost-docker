@@ -417,7 +417,10 @@ describe("BasesPanel auto-refill", () => {
 
     expect(screen.getByText("Auto-Refill")).toBeInTheDocument();
     expect(screen.getByText("OFF")).toBeInTheDocument();
-    expect(screen.getByText(/Checked every 24h\. Queues a refill when any generator drops below 50%\./)).toBeInTheDocument();
+    // The rule explanation lives in an InfoTooltip (the same component Maps
+    // uses for Host Memory Protection etc.), not as visible text -- the row's
+    // grid column can be as narrow as 240px.
+    expect(screen.getByRole("tooltip")).toHaveTextContent("Checked every 24h. Queues a refill when any generator drops below 50%.");
 
     const listCallsBefore = vi.mocked(basesApi.list).mock.calls.length;
     fireEvent.click(screen.getByText("Auto-Refill"));
@@ -458,7 +461,7 @@ describe("BasesPanel auto-refill", () => {
     await expandRow("Sietch Disable");
 
     expect(await screen.findByText("ON")).toBeInTheDocument();
-    expect(screen.getByText(/Not checked yet\./)).toBeInTheDocument();
+    expect(screen.getByRole("tooltip")).toHaveTextContent("Not checked yet.");
 
     fireEvent.click(screen.getByText("Auto-Refill"));
 
@@ -477,7 +480,7 @@ describe("BasesPanel auto-refill", () => {
     renderPanel();
     await expandRow("Sietch Checked");
 
-    expect(await screen.findByText(/Last checked 3h ago . lowest 78%\./)).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("tooltip")).toHaveTextContent(/Last checked 3h ago . lowest 78%\./));
   });
 
   it("marks the refill button as automated while keeping it clickable", async () => {
@@ -598,13 +601,42 @@ describe("BasesPanel auto-refill", () => {
     ]));
 
     renderPanel();
+
+    // A stalled base surfaces at the page level too, not only inside its own
+    // expanded row -- otherwise the operator has to know to look for it.
+    expect(await screen.findByText("1 base has stalled auto-refill")).toBeInTheDocument();
+
+    // The actions-column icon turns red rather than staying the "healthy"
+    // green: a stalled base is a worse state than "on", not a variant of it.
+    const refill = await screen.findByRole("button", { name: "Refill Generators (auto-refill stalled)" });
+    expect(refill).toHaveClass("bases-auto-refill-stalled-icon");
+    expect(refill).not.toHaveClass("bases-auto-refill-on");
+    expect(refill).toHaveAttribute("title", expect.stringContaining("Auto-refill has stalled after 3 refills"));
+
     await expandRow("Sietch Stalled");
 
-    // Auto-refill giving up has to be visible, or the operator believes fuel is
-    // handled while this base quietly stays empty.
-    const alert = await screen.findByRole("alert");
-    expect(alert).toHaveTextContent("Paused after 3 refills that did not raise this base's fuel");
+    // Auto-refill giving up has to be visible in the row too, or the operator
+    // believes fuel is handled while this base quietly stays empty. Two
+    // role="alert" elements now exist (the page banner and this row), so this
+    // has to be scoped to the row's own paragraph rather than a bare query.
+    const rowAlert = screen.getByText(/Paused after 3 refills that did not raise this base's fuel/);
+    expect(rowAlert).toHaveAttribute("role", "alert");
     // Still shown as enrolled, because it is.
     expect(screen.getByText("ON")).toBeInTheDocument();
+  });
+
+  it("does not show the stalled banner or icon for a base that is merely queued, not stalled", async () => {
+    vi.mocked(basesApi.list).mockResolvedValue(queueCapableList({ base_id: "3013", name: "Sietch Healthy Auto" }));
+    vi.mocked(basesApi.autoRefill).mockResolvedValue(autoRefillState([
+      enrolled(3013, { lastLowestPercent: 30, consecutiveQueues: 1 })
+    ]));
+
+    renderPanel();
+    await screen.findByText("Sietch Healthy Auto");
+
+    expect(screen.queryByText(/stalled auto-refill/)).not.toBeInTheDocument();
+    const refill = await screen.findByRole("button", { name: "Refill Generators (auto-refill on)" });
+    expect(refill).toHaveClass("bases-auto-refill-on");
+    expect(refill).not.toHaveClass("bases-auto-refill-stalled-icon");
   });
 });
