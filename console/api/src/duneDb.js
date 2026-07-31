@@ -2936,6 +2936,21 @@ export async function exportBaseAsBlueprint(db, id) {
   };
 }
 
+// listStorage's placeable/vehicle rows previously surfaced raw internal
+// IDs (building_type like "SpiceSilo_Placeable", vehicle actor_class
+// paths) as the only fallback label when a player hadn't custom-named
+// their container -- the same class of bug already fixed for items
+// (adminItemMetadata) and for player:storage/player:find embeds
+// (resolveBuildingDisplayName), just not yet applied here. Reuses the
+// existing, already-verified resolvers instead of inventing a third
+// building/vehicle name mapping: resolveBuildingDisplayName() for
+// placeables (admin-buildings.json, confirmed against dune.gaming.tools
+// -- SpiceSilo_Placeable is "Small Storage Container", NOT "Sub-Fief";
+// Totem_Small_Placeable is the real Sub-Fief Console) and
+// portalVehicleDisplayName() for vehicles, since that function already
+// matches on the raw actor_class blueprint path this query's a.class
+// column actually contains (not the short admin-vehicles.json id, which
+// adminVehicleMetadata() keys on and would never match here).
 export async function listStorage(db) {
   const capabilities = {
     storage: false,
@@ -3000,6 +3015,10 @@ export async function listStorage(db) {
     capabilities.storage = true;
   }
   capabilities.storageFillItem = await supportsStorageFillItem(db);
+  rows = rows.map((row) => ({
+    ...row,
+    class_name: row.type === "vehicle" ? portalVehicleDisplayName(row.class) : resolveBuildingDisplayName(row.class)
+  }));
   return { capabilities, rows };
 }
 
