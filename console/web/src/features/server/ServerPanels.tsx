@@ -16,15 +16,17 @@ export type HomeLoadResult = { statusLoaded: boolean; readinessLoaded: boolean; 
 export type HomeTaskResult = { status: "running" | "succeeded" | "failed" | "stopped"; title: string; message?: string; details?: string };
 export type RestartLifecycleState = { stopObserved: boolean; startObserved: boolean };
 
-// Taking the battlegroup down takes every map with it, so any queued generator
-// refill is written during the cycle. Both battlegroup control rows say so.
+// A stop alone leaves refills queued -- stop-all.sh removes the Postgres
+// container too, so there is nothing to write to. Only a restart's start-all.sh
+// step opens a window with Postgres reachable and the map server not yet
+// booted, which the background flush uses. Both battlegroup control rows say so.
 function PendingRefillNote() {
   const { pending } = usePendingRefills();
   const total = pending?.total || 0;
   if (!total) return null;
   return <p className="action-help-note pending-refill-note">
     <Fuel size={14} aria-hidden="true" />
-    {total.toLocaleString()} generator refill{total === 1 ? "" : "s"} queued across all maps. Stopping or restarting the battlegroup applies {total === 1 ? "it" : "them"}.
+    {total.toLocaleString()} generator refill{total === 1 ? "" : "s"} queued across all maps. Restarting the battlegroup applies {total === 1 ? "it" : "them"}; stopping leaves {total === 1 ? "it" : "them"} queued.
   </p>;
 }
 type ConfirmAction = (message: string, options?: { title?: string; confirmLabel?: string; cancelLabel?: string; danger?: boolean }) => Promise<boolean>;

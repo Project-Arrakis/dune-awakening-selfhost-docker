@@ -1,7 +1,8 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { audit } from "../audit.js";
 import { redact } from "../redact.js";
+import { clampInt, writeJsonAtomic } from "../jsonStore.js";
 
 // Opt-in per-base automatic generator refills. This owns only the enrollment
 // list and the daily decision; the refill itself goes through the existing
@@ -22,12 +23,6 @@ const MAX_CONSECUTIVE_QUEUES = 3;
 
 // How far out an overdue scan is armed at boot. See the note in tick().
 const OVERDUE_ARM_DELAY_MS = 5 * 60 * 1000;
-
-function clampInt(value, fallback, min, max) {
-  const n = Math.floor(Number(value));
-  if (!Number.isFinite(n)) return Math.min(Math.max(fallback, min), max);
-  return Math.min(Math.max(n, min), max);
-}
 
 // Fixed in code, env-overridable only -- matching how every other refill
 // tunable (ADMIN_REFILL_*) is exposed rather than adding a settings surface.
@@ -123,10 +118,7 @@ export function readAutoRefillState(repoRoot) {
 export function writeAutoRefillState(repoRoot, state) {
   const file = autoRefillFile(repoRoot);
   const next = normalizeState(state);
-  mkdirSync(dirname(file), { recursive: true });
-  const temporaryPath = `${file}.${process.pid}.tmp`;
-  writeFileSync(temporaryPath, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600 });
-  renameSync(temporaryPath, file);
+  writeJsonAtomic(file, next);
   return next;
 }
 
@@ -138,7 +130,7 @@ export function isAutoRefillEnabled(repoRoot, baseId) {
 
 // Idempotent in both directions: a double-clicked toggle is not an error.
 export function setBaseAutoRefill(repoRoot, baseId, enabled, { now = () => Date.now(), env = process.env } = {}) {
-  const target = Math.floor(Number(baseId));
+  const target = Number(baseId);
   if (!Number.isInteger(target) || target < 1) throw new Error("Invalid base id");
   const state = readAutoRefillState(repoRoot);
   const key = String(target);
@@ -239,8 +231,11 @@ export function createAutoRefillScheduler(options = {}) {
       lastRunStatus: status,
       lastRunDetail: detail,
       // Re-arm from completion, not from run start, so a slow scan cannot
-      // trigger back-to-back runs.
-      nextRunAt: remaining ? new Date(completedAtMs + intervalMs()).toISOString() : ""
+      // trigger back-to-back runs. A run where every base failed (status
+      // "fail") never throws out of run(), so it would otherwise wait a full
+      // interval before retrying a transient outage -- use the same short
+      // backoff a failure that escapes run() gets instead.
+      nextRunAt: remaining ? new Date(completedAtMs + (status === "fail" ? failureBackoffMs : intervalMs())).toISOString() : ""
     });
   }
 
@@ -304,7 +299,7 @@ export function createAutoRefillScheduler(options = {}) {
         return;
       }
 
-      const target = await duneDb.baseRefillTarget(db, baseId);
+      const target = await duneDb.baseRefillTarget(db, baseId, { observed: context.observed });
       if (!target.queueSupported) {
         // Enrollment is gated on the queue capability, so reaching here means
         // the database changed under a running console. Refusing keeps an
@@ -363,6 +358,9 @@ export function createAutoRefillScheduler(options = {}) {
       enrollment,
       // Read once per scan: which bases already have an unflushed queue entry.
       pendingBaseIds: new Set(duneDb.listQueuedGeneratorRefills(config.repoRoot).map((entry) => entry.baseId)),
+      // Observed once per scan and reused by every base's baseRefillTarget call
+      // below, rather than every base re-running the same world_partition scan.
+      observed: await duneDb.observeRefillPartitions(getDb()),
       outcomes: new Map(),
       removed: [],
       failures: [],
