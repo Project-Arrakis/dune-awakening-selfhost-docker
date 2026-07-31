@@ -1401,6 +1401,10 @@ const PLAYER_SORT_COLUMNS = {
   actor_id: { order: ["actor_id"] }
 };
 
+// Funcom creates this reserved GM identity in some freshly initialized
+// battlegroups. It is an internal service actor, not an administrable player.
+const INTERNAL_GM_PLAYER_PAWN_ID = "900000103";
+
 export async function listPlayers(db, { status = "all", q = "", page = 0, pageSize = 50, sortColumn = "character_name", sortDirection = "asc", includeTotals = true } = {}) {
   if (!(await tableExists(db, "actors")) || !(await tableExists(db, "player_state"))) {
     return { ...unsupported("players", ["dune.actors", "dune.player_state"]), totalCount: 0, totalPlayers: 0 };
@@ -1433,6 +1437,7 @@ export async function listPlayers(db, { status = "all", q = "", page = 0, pageSi
     end
   `;
   let baseWhere = "a.class ilike '%PlayerCharacter%'";
+  baseWhere += ` and a.id <> ${INTERNAL_GM_PLAYER_PAWN_ID}::bigint`;
   baseWhere += " and coalesce(ac.\"user\", '') <> 'A5C0DE5E12A00001'";
   baseWhere += " and coalesce(ac.\"user\", '') <> 'A5C0DE5E12A00002'";
   baseWhere += " and coalesce(ac.funcom_id, '') <> 'Server#0001'";

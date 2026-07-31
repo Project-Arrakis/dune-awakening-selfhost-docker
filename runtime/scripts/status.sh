@@ -427,6 +427,7 @@ if is_running dune-postgres; then
         left join dune.player_state ps on ps.account_id = a.owner_account_id
         left join dune.accounts ac on ac.id = ps.account_id
         where a.class ilike '%PlayerCharacter%'
+          and a.id <> 900000103
           and coalesce(ps.online_status::text, '') = 'Online'
           and (
             not exists (

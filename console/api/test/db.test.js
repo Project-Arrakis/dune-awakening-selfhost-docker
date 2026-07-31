@@ -1406,6 +1406,7 @@ test("players query uses parameterized search input", async () => {
   assert.match(playerQuery.text, /as action_player_id/);
   assert.match(playerQuery.text, /A5C0DE5E12A00001/);
   assert.match(playerQuery.text, /Server#0001/);
+  assert.match(playerQuery.text, /a\.id <> 900000103::bigint/);
   assert.match(playerQuery.text, /\$1/);
   assert.equal(playerQuery.values[0], "%RedBlink'; drop table dune.actors; --%");
   assert.equal(result.rows[0].actor_id, 82);
@@ -1414,6 +1415,29 @@ test("players query uses parameterized search input", async () => {
   assert.equal(result.rows[0].funcom_id, "RedBlink#75570");
   assert.equal(result.rows[0].fls_id, "RedBlink#75570");
   assert.equal(result.rows[0].action_player_id, "RedBlink#75570");
+});
+
+test("players query excludes the reserved fresh-install GM identity from rows and totals", async () => {
+  const calls = [];
+  const db = {
+    query: async (text) => {
+      calls.push(text);
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("information_schema.columns")) return { rows: [{ column_name: "online_status" }] };
+      if (text.includes("count(distinct dedupe_key)")) return { rows: [{ total_players: 0 }] };
+      return { rows: [{ actor_id: null, total_count: 0 }] };
+    }
+  };
+
+  const result = await listPlayers(db);
+  const playerQueries = calls.filter((text) => text.includes("from dune.actors"));
+  assert.equal(playerQueries.length, 2);
+  for (const query of playerQueries) {
+    assert.match(query, /a\.id <> 900000103::bigint/);
+  }
+  assert.deepEqual(result.rows, []);
+  assert.equal(result.totalCount, 0);
+  assert.equal(result.totalPlayers, 0);
 });
 
 test("players query filters stale actor rows when player_state has current pawn id", async () => {
