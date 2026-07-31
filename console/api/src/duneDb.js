@@ -3262,7 +3262,7 @@ export function adminItemMetadata() {
     for (const item of Array.isArray(items) ? items : []) {
       const id = String(item.id || "").trim();
       if (!id) continue;
-      metadata.set(id, { name: String(item.name || ""), category: String(item.category || ""), source: String(item.source || "") });
+      metadata.set(id, { name: String(item.name || ""), category: String(item.category || ""), source: String(item.source || ""), group: item.group ? String(item.group) : "" });
     }
   } catch {
     // Inventory still works without the optional local catalog metadata.
@@ -4360,6 +4360,20 @@ function augmentItemKindForTemplate(templateId) {
   const category = String(metadata.category || "").toLowerCase();
   const source = String(metadata.source || "").toLowerCase();
   const text = augmentItemText(templateId);
+  // A confirmed refined_resource/component (verified against
+  // dune.gaming.tools, same catalog fill-item restricts grants to) can
+  // never legitimately be a weapon or clothing piece, regardless of
+  // words appearing in its display name. Found 2026-07-31: 13 of the
+  // 75 fillable items (e.g. "Blade Parts", "Armor Plating", "Stillsuit
+  // Tubing", "Ballistic Weave Fabric") were being misclassified as
+  // weapon/clothing purely because their real crafting-material names
+  // happen to contain weapon/clothing-adjacent keywords -- this
+  // injected bogus FWeaponItemStats/full-durability stats or
+  // FCustomizationStats-with-clothing-assumptions into what should be
+  // a plain resource's stats via buildItemStats(). Checked before the
+  // keyword-matching checks below, which remain unchanged for every
+  // other item kind.
+  if (metadata.group === "refined_resource" || metadata.group === "component") return "other";
   if (category === "schematics" || source === "schematics" || /_schematic$/i.test(String(templateId || "")) || /schematic/i.test(text)) return "schematic";
   if (
     category === "clothing" ||
