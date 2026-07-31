@@ -1751,15 +1751,15 @@ body.debug .technical-details { display: block; }
 }
 .bases-auto-refill {
   display: flex;
-  align-items: center;
-  gap: 12px;
+  align-items: flex-start;
+  gap: 16px;
   flex-wrap: wrap;
   margin: 0 0 12px;
   padding: 0 0 12px;
   /* .bases-generator-breakdown is a grid of 240px columns (one per generator
      type). Without this, this block was squeezed into a single 240px cell
      instead of spanning the row. Matches the same rule already on
-     .bases-uptime-event and .bases-generator-reserve-note in this grid. */
+     .bases-generator-reserve-note in this grid. */
   grid-column: 1 / -1;
 }
 /* The shared InfoTooltip popover opens leftward (.memory-info-box right: 0)
@@ -2287,19 +2287,17 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
   align-items: stretch;
   justify-content: start;
 }
-.bases-uptime-event {
-  grid-column: 1 / -1;
+.bases-uptime-event-inline {
   display: inline-flex;
   flex-direction: column;
   align-items: flex-start;
-  justify-self: start;
   gap: 4px;
   margin: 0;
 }
 .bases-uptime-event-badge {
   display: inline-flex;
   align-items: center;
-  min-height: 26px;
+  min-height: 32px;
   padding: 4px 10px;
   border: 1px solid rgba(143, 255, 210, .55);
   border-radius: 999px;
@@ -2311,11 +2309,12 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
   line-height: 1;
   letter-spacing: .02em;
   white-space: nowrap;
+  box-sizing: border-box;
 }
-.bases-uptime-event small {
+.bases-uptime-event-inline small {
   padding-left: 3px;
   color: var(--muted-warm);
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1.25;
 }
 .bases-generator-reserve-note {

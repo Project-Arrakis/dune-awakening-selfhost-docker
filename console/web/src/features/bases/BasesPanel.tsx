@@ -905,38 +905,38 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
               {/* Hidden entirely without the queue capability: automating a
                   refill that cannot wait for a safe window would write into a
                   possibly-live base, which is the hazard the queue prevents. */}
-              {canQueue && <div className="bases-auto-refill" onClick={(event) => event.stopPropagation()}>
-                {/* With no enrollment data at all, an OFF pill would be a claim
-                    this panel cannot make. Say what is actually known instead. */}
-                {autoRefillUnrecoverable
-                  ? <p className="bases-auto-refill-unknown" role="status">
-                      Auto-refill state could not be read. <button onClick={() => void refreshAutoRefill()}>Retry</button>
-                    </p>
-                  : <div className="memory-feature-toggle">
-                      <InfoTooltip id={`auto-refill-help-${id}`} label="About Auto-Refill">{autoRefillTooltip}</InfoTooltip>
-                      <label className={`switch-checkbox bases-auto-refill-toggle ${autoRefillEntry ? "enabled" : "disabled"}`}>
-                        <input
-                          type="checkbox"
-                          checked={Boolean(autoRefillEntry)}
-                          disabled={savingAutoRefill || !canRefill}
-                          onChange={(event) => { void handleToggleAutoRefill(base, event.target.checked); }}
-                        />
-                        <span className="switch-label">Auto-Refill</span>
-                        <strong className="switch-state">{savingAutoRefill ? "Saving" : autoRefillEntry ? "ON" : "OFF"}</strong>
-                      </label>
-                    </div>}
-                {/* Giving up has to be visible, or the operator believes fuel is
-                    being handled while this base quietly stays empty. */}
-                {autoRefillEntry?.stalledAt && <p className="bases-auto-refill-stalled" role="alert">
-                  Paused after {autoRefillEntry.consecutiveQueues} refills that did not raise this base's fuel. Refill manually to check why, or turn auto-refill off and on to resume.
-                </p>}
-              </div>}
-              {base.generatorUptimeMultiplier > 1 ? (
-                <div className="bases-uptime-event" role="status">
+              {(canQueue || base.generatorUptimeMultiplier > 1) && <div className="bases-auto-refill" onClick={(event) => event.stopPropagation()}>
+                {canQueue && <>
+                  {/* With no enrollment data at all, an OFF pill would be a claim
+                      this panel cannot make. Say what is actually known instead. */}
+                  {autoRefillUnrecoverable
+                    ? <p className="bases-auto-refill-unknown" role="status">
+                        Auto-refill state could not be read. <button onClick={() => void refreshAutoRefill()}>Retry</button>
+                      </p>
+                    : <div className="memory-feature-toggle">
+                        <InfoTooltip id={`auto-refill-help-${id}`} label="About Auto-Refill">{autoRefillTooltip}</InfoTooltip>
+                        <label className={`switch-checkbox bases-auto-refill-toggle ${autoRefillEntry ? "enabled" : "disabled"}`}>
+                          <input
+                            type="checkbox"
+                            checked={Boolean(autoRefillEntry)}
+                            disabled={savingAutoRefill || !canRefill}
+                            onChange={(event) => { void handleToggleAutoRefill(base, event.target.checked); }}
+                          />
+                          <span className="switch-label">Auto-Refill</span>
+                          <strong className="switch-state">{savingAutoRefill ? "Saving" : autoRefillEntry ? "ON" : "OFF"}</strong>
+                        </label>
+                      </div>}
+                  {/* Giving up has to be visible, or the operator believes fuel is
+                      being handled while this base quietly stays empty. */}
+                  {autoRefillEntry?.stalledAt && <p className="bases-auto-refill-stalled" role="alert">
+                    Paused after {autoRefillEntry.consecutiveQueues} refills that did not raise this base's fuel. Refill manually to check why, or turn auto-refill off and on to resume.
+                  </p>}
+                </>}
+                {base.generatorUptimeMultiplier > 1 && <div className="bases-uptime-event-inline" role="status">
                   <span className="bases-uptime-event-badge">{base.generatorUptimeMultiplier}× Uptime Event</span>
                   <small>Ends {formatEventThroughDate(base.generatorUptimeEventEndsAt)}</small>
-                </div>
-              ) : null}
+                </div>}
+              </div>}
               <p className="bases-generator-reserve-note" role="note">
                 {QUEUED_RESERVE_EXPLANATION}
               </p>
