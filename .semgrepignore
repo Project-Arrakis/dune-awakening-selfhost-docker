@@ -4,6 +4,17 @@ console/web/
 console/api/Dockerfile
 runtime/scripts/bootstrap-runtime-secrets.sh
 runtime/scripts/start-rabbitmq.sh
+# Upstream Director-compat build tool (merged from upstream/main v1.3.64).
+# Its final image stage is `FROM director` (Funcom's own
+# seabass-server-bg-director base image) — the base image's own user
+# configuration is unverified from this checkout (no local copy of that
+# image exists to inspect, and it requires registry credentials this
+# session doesn't have). Adding a USER directive without first
+# confirming the base image's real requirements risks breaking a
+# component directly in the FLS/BattleGroup heartbeat path this session
+# has already verified is sensitive to misconfiguration. Allowlisted
+# rather than guessed at; revisit once the base image can be verified.
+tools/director-compat-patcher/
 
 # Generated/CI artifacts
 .security-reports/

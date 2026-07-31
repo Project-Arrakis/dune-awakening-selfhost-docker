@@ -2,7 +2,6 @@ import test, { beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { assertIdentifier, discoverDbConfig, isReadOnlySql, quoteQualified, redactDbError, rowsResult } from "../src/db.js";
-import { addCurrency, addFactionReputation, addIntel, addonLeadershipPlayers, addonOpsHealthFarms, addonOpsHealthPlayers, addonOpsHealthSummary, addonOpsHealthSummaryV2, addSpecializationXp, applyLandsraadMilestonePreset, augmentInventoryItem, augmentNewestPlayerItem, changeDunePassword, completeJourneyNode, completeTutorial, deleteInventoryItem, exportBaseAsBlueprint, generatorUptimePolicy, giveItemToPlayer, giveItemToStorage, guildMembers, landsraadOverview, listBases, listGuilds, listPlayers, listSpicefieldTypes, listTables, liveMapPlayers, liveMapServices, playerCraftingRecipes, playerCurrency, playerFactions, playerIntel, playerInventory, playerJourney, playerPortalSnapshots, playerPosition, playerProfile, playerProgression, playerResearchItems, playerSolarisCoinTotal, playerVitals, portalGeneratorFuel, portalVehicles, repairVehicleDecay, resetJourneyNode, resetTutorial, runSql, setLandsraadPlayerContribution, tablePreview, teleportOfflinePlayerToCoords, unlockCraftingRecipe, unlockResearchItem, updateInventoryItem, updateLandsraadRewardTier, updateLandsraadTaskGoal, updateLandsraadTermTaskGoals, updateSpicefieldType, updateTableRow, UnsupportedCapabilityError, _resetPlayerTargetCacheForTests } from "../src/duneDb.js";
 
 beforeEach(() => {
   _resetPlayerTargetCacheForTests();
@@ -2658,6 +2657,50 @@ test("storage give-item validates capacity and inserts parameterized item rows",
   assert.deepEqual(insert.values.slice(0, 5), [7, "WaterBottle_1", 3, 0, 2]);
 });
 
+test("storage fill-item inserts with volume_override and respects slot limit", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    storageRows: [{ id: 7, actor_id: 222, max_item_count: 30, max_item_volume: 100 }],
+    countRows: [{ count: 1 }],
+    volumeRows: [{ total_volume: 10 }],
+    insertedRows: [{ id: 502, template_id: "T6RefinedResourceA", stack_size: 50, quality_level: 0, position_index: 3, inventory_id: 7, volume_override: 1.0 }]
+  });
+  const result = await fillItemToStorage(db, "/tmp", 222, { templateId: "T6RefinedResourceA", quantity: 50, itemVolume: 1.0 });
+  assert.equal(result.inserted.id, 502);
+  assert.equal(result.inserted.volume_override, 1.0);
+  const insert = calls.find((call) => call.text.includes("insert into dune.items"));
+  assert.ok(insert);
+  const volIdx = insert.values.length - 1;
+  assert.equal(insert.values[volIdx], 1.0);
+  const volumeCall = calls.find((call) => call.text.includes("sum(coalesce(volume_override"));
+  assert.ok(volumeCall, "volume sum query must run");
+});
+
+test("storage fill-item rejects when volume limit would be exceeded", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    storageRows: [{ id: 7, actor_id: 222, max_item_count: 30, max_item_volume: 15 }],
+    countRows: [{ count: 1 }],
+    volumeRows: [{ total_volume: 10 }]
+  });
+  await assert.rejects(
+    () => fillItemToStorage(db, "/tmp", 222, { templateId: "T6RefinedResourceA", quantity: 50, itemVolume: 1.0 }),
+    /Storage is full by volume/
+  );
+});
+
+test("storage fill-item rejects when slot limit would be exceeded", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    storageRows: [{ id: 7, actor_id: 222, max_item_count: 2, max_item_volume: 100 }],
+    countRows: [{ count: 2 }]
+  });
+  await assert.rejects(
+    () => fillItemToStorage(db, "/tmp", 222, { templateId: "T6RefinedResourceA", quantity: 50, itemVolume: 1.0 }),
+    /Storage is full by item slot/
+  );
+});
+
 test("player give-item persists selected item grade", async () => {
   const calls = [];
   const db = fakeMutationDb(calls, {
@@ -3850,7 +3893,7 @@ function fakeMutationDb(calls, fixtures = {}) {
               ? [fixtures.journeyIdentityColumn || "account_id", "story_node_id", "has_pending_reward", "complete_condition_state", "reveal_condition_state", "fail_condition_state", "metadata_state", "reset_group"]
               : table === "player_tags"
                 ? [fixtures.journeyIdentityColumn || "account_id", "tag"]
-                : fixtures.itemColumns || ["inventory_id", "template_id", "stack_size", "quality_level", "position_index", "stats"];
+                : fixtures.itemColumns || ["inventory_id", "template_id", "stack_size", "quality_level", "position_index", "stats", "volume_override"];
         return { rows: names.map((column_name) => ({ column_name })) };
       }
       if (text.includes("TechKnowledgePlayerComponent") && text.includes("all_research")) return { rows: fixtures.researchListRows || [] };
@@ -3894,6 +3937,7 @@ function fakeMutationDb(calls, fixtures = {}) {
       if (text.includes("from dune.inventories") && text.includes("where actor_id")) return { rows: fixtures.storageRows || [] };
       if (text.includes("from dune.vehicle_modules vm") && text.includes("count(*)::int as scanned")) return { rows: fixtures.vehicleModuleScanRows || [{ scanned: 0, vehicles: 0 }] };
       if (text.includes("update dune.vehicle_modules vm")) return { rows: fixtures.repairedVehicleModuleRows || [] };
+      if (text.includes("sum(coalesce(volume_override")) return { rows: fixtures.volumeRows || [{ total_volume: 0 }] };
       if (text.includes("count(*)::int")) return { rows: fixtures.countRows || [{ count: 0 }] };
       if (text.includes("max(position_index)")) return { rows: [{ position_index: 2 }] };
       if (text.includes("insert into dune.items")) return { rows: fixtures.insertedRows || [] };
@@ -3908,3 +3952,110 @@ function fakeMutationDb(calls, fixtures = {}) {
   };
   return db;
 }
+
+// ─── characterHasSteamId / matchSteamIdForCharacter ────────────────────────
+// See docs/steam-link-implementation-prompt.md Part 1 and duneDb.js's own
+// comments on both functions for the full design rationale.
+
+function createSteamCharacterDb(fixturePlayers = []) {
+  return {
+    async query(text, values = []) {
+      if (text.includes("from dune.accounts ac") && text.includes("ps.player_controller_id::text = $1") && !text.includes("any(")) {
+        // characterHasSteamId(playerControllerId)
+        const player = fixturePlayers.find((p) => p.player_controller_id === values[0]);
+        const has = Boolean(player?.platform_name?.toLowerCase() === "steam" && player.platform_id);
+        return { rows: has ? [{ "?column?": 1 }] : [], rowCount: has ? 1 : 0 };
+      }
+      if (text.includes("from dune.accounts ac") && text.includes("any($1::text[])")) {
+        // matchSteamIdForCharacter(playerControllerId, steamId64List)
+        const player = fixturePlayers.find((p) => p.player_controller_id === values[1]);
+        const matched = Boolean(
+          player?.platform_name?.toLowerCase() === "steam" &&
+          player.platform_id &&
+          (values[0] || []).includes(player.platform_id)
+        );
+        return { rows: matched ? [{ "?column?": 1 }] : [], rowCount: matched ? 1 : 0 };
+      }
+      throw new Error(`Unexpected query: ${text}`);
+    }
+  };
+}
+
+test("characterHasSteamId returns true for a character with a non-empty steam platform_id", async () => {
+  const db = createSteamCharacterDb([
+    { player_controller_id: "42", platform_name: "Steam", platform_id: "76561198000000042" }
+  ]);
+  assert.equal(await characterHasSteamId(db, "42"), true);
+});
+
+test("characterHasSteamId is case-insensitive on platform_name", async () => {
+  const db = createSteamCharacterDb([
+    { player_controller_id: "42", platform_name: "STEAM", platform_id: "76561198000000042" }
+  ]);
+  assert.equal(await characterHasSteamId(db, "42"), true);
+});
+
+test("characterHasSteamId returns false for a non-Steam platform", async () => {
+  const db = createSteamCharacterDb([
+    { player_controller_id: "42", platform_name: "PSN", platform_id: "some-psn-id" }
+  ]);
+  assert.equal(await characterHasSteamId(db, "42"), false);
+});
+
+test("characterHasSteamId returns false for a character with no account row at all", async () => {
+  const db = createSteamCharacterDb([]);
+  assert.equal(await characterHasSteamId(db, "999"), false);
+});
+
+test("characterHasSteamId returns false (not throw) for a missing playerControllerId", async () => {
+  const db = createSteamCharacterDb([]);
+  assert.equal(await characterHasSteamId(db, ""), false);
+  assert.equal(await characterHasSteamId(db, null), false);
+  assert.equal(await characterHasSteamId(db, undefined), false);
+});
+
+test("matchSteamIdForCharacter returns true when the character's Steam ID appears in a multi-element list", async () => {
+  const db = createSteamCharacterDb([
+    { player_controller_id: "42", platform_name: "steam", platform_id: "76561198000000042" }
+  ]);
+  const matched = await matchSteamIdForCharacter(db, "42", [
+    "76561198111111111",
+    "76561198000000042",
+    "76561198222222222"
+  ]);
+  assert.equal(matched, true);
+});
+
+test("matchSteamIdForCharacter returns false for a well-formed but non-matching list", async () => {
+  const db = createSteamCharacterDb([
+    { player_controller_id: "42", platform_name: "steam", platform_id: "76561198000000042" }
+  ]);
+  assert.equal(await matchSteamIdForCharacter(db, "42", ["76561198999999999"]), false);
+});
+
+test("matchSteamIdForCharacter silently ignores malformed SteamID64 entries rather than throwing", async () => {
+  const db = createSteamCharacterDb([
+    { player_controller_id: "42", platform_name: "steam", platform_id: "76561198000000042" }
+  ]);
+  const matched = await matchSteamIdForCharacter(db, "42", [
+    "not-a-steam-id",
+    "12345", // too short
+    "76561198000000042999", // too long
+    "76561198000000042" // the real one, still present
+  ]);
+  assert.equal(matched, true);
+});
+
+test("matchSteamIdForCharacter returns false for an empty or all-malformed list", async () => {
+  const db = createSteamCharacterDb([
+    { player_controller_id: "42", platform_name: "steam", platform_id: "76561198000000042" }
+  ]);
+  assert.equal(await matchSteamIdForCharacter(db, "42", []), false);
+  assert.equal(await matchSteamIdForCharacter(db, "42", ["not-valid", "also-not-valid"]), false);
+});
+
+test("matchSteamIdForCharacter returns false (not throw) for a missing playerControllerId", async () => {
+  const db = createSteamCharacterDb([]);
+  assert.equal(await matchSteamIdForCharacter(db, "", ["76561198000000042"]), false);
+  assert.equal(await matchSteamIdForCharacter(db, null, ["76561198000000042"]), false);
+});

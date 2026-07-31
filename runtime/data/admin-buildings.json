@@ -1,0 +1,38 @@
+[
+  {
+    "id": "Totem_Small_Placeable",
+    "name": "Sub-Fief Console",
+    "category": "utilities",
+    "source": "dune.gaming.tools/placeables/totem_small_placeable"
+  },
+  {
+    "id": "SpiceSilo_Placeable",
+    "name": "Small Storage Container",
+    "category": "storage",
+    "source": "dune.gaming.tools/placeables/spicesilo_placeable"
+  },
+  {
+    "id": "Fabricator_Placeable",
+    "name": "Fabricator",
+    "category": "fabricators",
+    "source": "dune.gaming.tools/placeables/fabricator_placeable"
+  },
+  {
+    "id": "BloodWaterExtractor_Placeable",
+    "name": "Blood Purifier",
+    "category": "refineries",
+    "source": "dune.gaming.tools/placeables/bloodwaterextractor_placeable"
+  },
+  {
+    "id": "SmallOreRefinery_Placeable",
+    "name": "Small Ore Refinery",
+    "category": "refineries",
+    "source": "dune.gaming.tools/placeables/smallorerefinery_placeable"
+  },
+  {
+    "id": "MTX_Watershippers_Door_Placeable",
+    "name": "Water Shipper Door",
+    "category": "cosmetic",
+    "source": "dune.gaming.tools/buildables/watershippers_door_frame"
+  }
+]
