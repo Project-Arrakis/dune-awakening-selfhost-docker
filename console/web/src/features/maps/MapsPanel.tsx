@@ -861,6 +861,7 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
     run(loadRuntimeSettings);
     run(loadSietches);
     run(loadSpicefields);
+    void loadCombatState("Survival_1").catch(() => {});
     void loadCombatState("DeepDesert_1").catch(() => {});
   }, []);
   useEffect(() => {
@@ -977,6 +978,7 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
       if (document.visibilityState !== "visible") return;
       void refreshMapRuntime().catch(() => {});
       void loadSietches({ preserveDrafts: true }).catch(() => {});
+      void loadCombatState("Survival_1").catch(() => {});
       void loadCombatState("DeepDesert_1").catch(() => {});
     }, MAP_RUNTIME_REFRESH_MS);
     return () => window.clearInterval(id);
@@ -987,6 +989,7 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
       void refreshMapRuntime().catch(() => {});
       void loadLiveMemory().catch(() => {});
       void loadSietches({ preserveDrafts: true }).catch(() => {});
+      void loadCombatState("Survival_1").catch(() => {});
       void loadCombatState("DeepDesert_1").catch(() => {});
     };
     window.addEventListener("focus", refreshVisibleMaps);
@@ -1733,9 +1736,9 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
             const childResultActive = mapsResultTarget === childTarget;
             const childMapSettingsResultActive = Boolean(childResultActive && mapsResult && mapsResultScope === "maps" && isMapSettingsResult(mapsResult));
             const childForceDespawnResultActive = Boolean(childResultActive && mapsResult && mapsResultScope === "maps" && isForceDespawnResult(mapsResult) && !isDeepDesertDualResult(mapsResult));
-            const childForceSpawnResultActive = Boolean(childResultActive && mapsResult && mapsResultScope === "maps" && isForceSpawnResult(mapsResult));
             const childCombatRow = combatStateByMap["DeepDesert_1"]?.partitions.find((p) => p.partitionId === String(deepRow.partitionId || "")) || null;
             const childName = deepDesertPartitionName(deepRow, childCombatRow);
+            const childForceSpawnResultActive = Boolean(childResultActive && mapsResult && mapsResultScope === "maps" && isForceSpawnResult(mapsResult));
             return <Fragment key={`deepdesert-${String(deepRow.partitionId || deepRow.dimension || "")}`}><tr className="sietch-child-row"><td><span className="sietch-child-name">{childName}</span><span className="sietch-child-meta">Partition {String(deepRow.partitionId || "Unknown")} / Dimension {String(deepRow.dimension || "Unknown")}{childCombatRow?.configurationDrift ? " / Restart required to apply saved PvP-PvE settings" : ""}</span></td><td><MapRuntimeStatus value={childStatus} /></td><td>Dual</td><td><MemoryUsageBar row={childMemoryRow} fallback={liveMemoryFallback({ ...row, status: childStatus })} configuredLimit={deepMemory} /></td><td className="actions-column"><button className="stable-action-button" onClick={() => selectDeepDesertPartition(deepRow)}>{childSelected ? "Close" : "Edit"}</button></td></tr>
               {childSelected && <tr className="inline-edit-row"><td colSpan={5}><section className="inline-edit-panel">
                 <div className="panel-title"><h4>Edit {childName}</h4></div>

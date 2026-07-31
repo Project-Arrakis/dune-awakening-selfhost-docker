@@ -15,7 +15,7 @@ import { createDb, quoteIdentifier } from "./db.js";
 import * as duneDb from "./duneDb.js";
 import { audit, recordAdminHistory } from "./audit.js";
 import { redact } from "./redact.js";
-import { itemIsRankedSchematic, itemIsSchematic, itemRequiresDatabaseGrant, listCatalogItems, resolveCatalogItem } from "./adminCatalog.js";
+import { itemIsRankedSchematic, itemIsSchematic, itemRequiresDatabaseGrant, listCatalogItems, resolveCatalogItem, resolveFillableCatalogItem, resolveItemVolume } from "./adminCatalog.js";
 import { buildBroadcastCommand, buildShutdownBroadcastCommand, publishMapChat, publishServerCommand } from "./rmq.js";
 import { clearCarePackageHistory, enableCarePackage, ensureCarePackageServerPersona, grantEligibleCarePackages, grantCarePackage, retryCarePackageGrant, runCarePackageAutoScan, saveCarePackageConfig, carePackageCapabilities, carePackageConfig, carePackageEligiblePlayers, carePackageHistory } from "./carePackage.js";
 import { readJsonBody, readMultipartForm } from "./httpSafety.js";
@@ -539,6 +539,7 @@ async function handleApi(req, res) {
   if (path.match(/^\/api\/storage\/[^/]+$/)) return dbJson(res, async () => ({ storage: (await duneDb.listStorage(db)).rows.find((row) => String(row.id) === decodeURIComponent(path.split("/")[3])) || null }));
   if (path.match(/^\/api\/storage\/[^/]+\/items$/)) return dbJson(res, () => duneDb.storageItems(db, decodeURIComponent(path.split("/")[3])));
   if (path.match(/^\/api\/storage\/[^/]+\/give-item$/) && req.method === "POST") return storageGiveItemRoute(req, res, path);
+  if (path.match(/^\/api\/storage\/[^/]+\/fill-item$/) && req.method === "POST") return storageFillItemRoute(req, res, path);
   if (path.match(/^\/api\/storage\/[^/]+\/export$/)) return exportJson(res, `storage-${decodeURIComponent(path.split("/")[3])}.json`, () => duneDb.storageItems(db, decodeURIComponent(path.split("/")[3])));
   if (path === "/api/blueprints" && req.method === "GET") return dbJson(res, () => listBlueprints(db));
   if (path === "/api/blueprints/export" && req.method === "POST") return blueprintBulkExportRoute(req, res);
@@ -654,7 +655,7 @@ async function addonBridgeRoute(req, res, path) {
   }
   if (action === "ops.resources.summary") {
     const addon = assertInstalledAddonPermission(config, id, "ops:read");
-    const result = await duneDb.addonOpsResourcesSummary(db);
+    const result = await duneDb.addonOpsResourcesSummary(db, config);
     audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, ok: true });
     return json(res, 200, { ok: true, result });
   }
@@ -667,6 +668,24 @@ async function addonBridgeRoute(req, res, path) {
   if (action === "ops.economy.summary") {
     const addon = assertInstalledAddonPermission(config, id, "ops:read");
     const result = await duneDb.addonOpsEconomySummary(db);
+    audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, ok: true });
+    return json(res, 200, { ok: true, result });
+  }
+  if (action === "ops.inventory.summary") {
+    const addon = assertInstalledAddonPermission(config, id, "ops:read");
+    const result = await duneDb.addonOpsInventorySummary(db);
+    audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, ok: true });
+    return json(res, 200, { ok: true, result });
+  }
+  if (action === "ops.soc.summary") {
+    const addon = assertInstalledAddonPermission(config, id, "ops:read");
+    const result = duneDb.addonOpsSocSummary();
+    audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, ok: true });
+    return json(res, 200, { ok: true, result });
+  }
+  if (action === "ops.health.prometheus") {
+    const addon = assertInstalledAddonPermission(config, id, "ops:read");
+    const result = await duneDb.addonOpsPrometheusHealth();
     audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, ok: true });
     return json(res, 200, { ok: true, result });
   }
@@ -791,9 +810,19 @@ function addonContentRoute(req, res, path) {
   const contentPath = decodeURIComponent(parts.slice(6).join("/"));
   const target = installedAddonContentPath(config, id, contentPath);
   if (!existsSync(target)) return json(res, 404, { error: "Addon content file not found." });
+  // No Cache-Control was previously sent here at all, which leaves browsers
+  // free to apply their own heuristic caching (RFC 7234) -- observed in
+  // practice to cause an addon's iframe to keep serving a stale addon.js
+  // well after the underlying file was updated and the file's own byte
+  // content confirmed correct via direct authenticated fetch, surviving
+  // even a full page hard-refresh and iframe close/reopen. Addon files are
+  // small, locally-served, and change on every addon update/manual
+  // install, so there is no real benefit to caching them here -- always
+  // revalidate instead of guessing.
   res.writeHead(200, withSecurityHeaders({
     "content-type": contentTypeForPath(target),
-    "x-frame-options": "SAMEORIGIN"
+    "x-frame-options": "SAMEORIGIN",
+    "cache-control": "no-cache, no-store, must-revalidate"
   }));
   createReadStream(target).pipe(res);
 }
@@ -1868,6 +1897,15 @@ async function storageGiveItemRoute(req, res, path) {
   return directDbMutation(req, res, "storage.give-item", "GIVE ITEM TO STORAGE", async (body) => {
     const resolved = resolveCatalogItem(config.repoRoot, body);
     return duneDb.giveItemToStorage(db, storageId, { ...body, templateId: resolved.itemId });
+  }, { storageId });
+}
+
+async function storageFillItemRoute(req, res, path) {
+  const storageId = decodeURIComponent(path.split("/")[3]);
+  return directDbMutation(req, res, "storage.fill-item", "FILL ITEM TO STORAGE", async (body) => {
+    const resolved = resolveFillableCatalogItem(config.repoRoot, body);
+    const itemVolume = resolved.volume || resolveItemVolume(config.repoRoot, resolved.itemId);
+    return duneDb.fillItemToStorage(db, config.repoRoot, storageId, { ...body, templateId: resolved.itemId, itemVolume });
   }, { storageId });
 }
 

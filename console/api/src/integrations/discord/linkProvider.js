@@ -6,14 +6,58 @@ import {
   resolvePlayerByName,
   createPendingLink,
   deletePendingLink,
-  consumePendingLink
+  consumePendingLink,
+  characterHasSteamId
 } from "../../duneDb.js";
 import { policyError } from "./policy.js";
 import { publishCarePackageWhisper } from "../../rmq.js";
 import { ensureCarePackageServerPersona } from "../../carePackage.js";
+import { createLoginRateLimiter } from "../../rateLimit.js";
 
 const CODE_LENGTH = 6;
 const CODE_EXPIRY_MINUTES = 5;
+
+// Verification-attempt rate limiting — FINDING-LINK-3
+// (docs/security/discord-player-link-hardening.md). Codes are 6 chars from
+// a 32-symbol alphabet (~30 bits of entropy) with a 5-minute expiry and had
+// no attempt throttling: a party able to reach this route (e.g. holding the
+// adapter bearer token) could pick a target discordUserId and try many
+// codes with no lockout. Reuses the same per-key + global-aggregate
+// lockout shape already proven for login attempts
+// (docs/security/login-rate-limit-defense.md) rather than inventing a new
+// limiter shape. Keyed by discordUserId, since consumePendingLink() itself
+// is scoped to (code, discord_user_id) — an attacker must already know or
+// guess the target's Discord user ID, and this limiter makes repeated
+// guessing against one target ID costly regardless of how many different
+// codes are tried.
+const DEFAULT_VERIFY_MAX_ATTEMPTS = 5;
+const DEFAULT_VERIFY_GLOBAL_MAX_ATTEMPTS = 50;
+const DEFAULT_VERIFY_WINDOW_MS = 5 * 60 * 1000;
+const DEFAULT_VERIFY_BLOCK_MS = 15 * 60 * 1000;
+
+function envInt(name, fallback) {
+  const value = Number.parseInt(process.env[name] || "", 10);
+  return Number.isSafeInteger(value) && value > 0 ? value : fallback;
+}
+
+function createVerifyRateLimiter() {
+  return createLoginRateLimiter({
+    maxAttempts: envInt("DUNE_DISCORD_LINK_VERIFY_MAX_ATTEMPTS", DEFAULT_VERIFY_MAX_ATTEMPTS),
+    globalMaxAttempts: envInt("DUNE_DISCORD_LINK_VERIFY_GLOBAL_MAX_ATTEMPTS", DEFAULT_VERIFY_GLOBAL_MAX_ATTEMPTS),
+    windowMs: envInt("DUNE_DISCORD_LINK_VERIFY_WINDOW_MS", DEFAULT_VERIFY_WINDOW_MS),
+    blockMs: envInt("DUNE_DISCORD_LINK_VERIFY_BLOCK_MS", DEFAULT_VERIFY_BLOCK_MS)
+  });
+}
+
+let verifyRateLimiter = createVerifyRateLimiter();
+
+// Test-only: replaces the module-level limiter with a fresh instance (or a
+// caller-supplied fake) so tests don't leak lockout state into each other
+// and can use fast/deterministic clocks. Mirrors the "reset between tests"
+// pattern used by other module-level singletons in this codebase.
+export function resetVerifyRateLimiterForTests(customLimiter) {
+  verifyRateLimiter = customLimiter || createVerifyRateLimiter();
+}
 
 function generateVerificationCode() {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -28,6 +72,26 @@ function expiresAtMinutes(minutes) {
   return new Date(Date.now() + minutes * 60 * 1000).toISOString();
 }
 
+// FIX (2026-07-27, per explicit operator direction): the multi-account
+// system (FINDING-LINK-6/7, console.discord_account_links) is a genuine,
+// tested, working feature -- but is deliberately not exposed to real
+// players yet. Phase one is a strict 1:1 relationship: one Discord user
+// may link exactly one character, globally, ever, until they unlink it.
+// A second /dune player link attempt for a DIFFERENT character must be
+// rejected with a clear error, not silently overwrite the existing link
+// (the legacy single-link table's prior behavior -- an
+// "on conflict ... do update", now guarded against reaching that clause
+// at all for a genuinely different character). Re-running /dune player
+// link for the SAME already-linked character is allowed to proceed
+// unchanged (harmless idempotent re-link, not a conflict worth
+// rejecting).
+//
+// This does not touch or disable the multi-account tables/routes/code
+// themselves -- see linkAdditionalAccount()'s own comment in duneDb.js
+// for the matching gate on that side, added in the same change. Phase
+// two (tracked separately) is expected to relax this by actually
+// exposing /dune player enable/disable/default to players once Core's
+// currently-nonexistent guild-character-grants feature is built.
 export async function linkPlayerProvider(db, config, { discordUserId, characterName }, dependencies = {}) {
   if (!characterName || !String(characterName).trim()) {
     throw policyError("invalid_request", "characterName is required.");
@@ -45,6 +109,60 @@ export async function linkPlayerProvider(db, config, { discordUserId, characterN
   }
 
   const player = matches[0];
+
+  const existingLink = await getLinkedPlayer(db, discordUserId);
+  if (existingLink && existingLink.player_controller_id !== player.player_controller_id) {
+    return {
+      ok: false,
+      error: `Your voice already answers to ${existingLink.character_name} in the eyes of the Landsraad. A soul may not walk two paths in the desert -- use /dune player unlink before you may bind yourself to ${player.character_name}.`
+    };
+  }
+
+  // FIX (2026-07-27, found via a real live report): re-requesting a link
+  // to the SAME character you already have was allowed to fall all the
+  // way through to the hasSteam check below, returning
+  // { ok: true, hasSteam: true, ... } for a Steam-linkable character --
+  // telling the bot to send the user through a full external OAuth
+  // round-trip, only to have Core reject the resulting
+  // linkAdditionalAccount() call at the very end with a generic
+  // "already linked to your Discord account" error. Real operator
+  // question that surfaced this: "why send the player a link button when
+  // we already can determine that they are already linked?" -- there is
+  // no good answer; Core already has this information right here, before
+  // any external round-trip, and should say so immediately. Short-circuits
+  // with the SAME in-lore phrasing as the different-character rejection
+  // above (a re-affirmation, not a failure -- ok: true, matching this
+  // function's existing convention that "you're already set up" is a
+  // success, not an error), instead of proceeding to the hasSteam/online/
+  // Funcom-ID checks at all.
+  if (existingLink && existingLink.player_controller_id === player.player_controller_id) {
+    return {
+      ok: true,
+      alreadyLinked: true,
+      characterName: player.character_name,
+      message: `Your voice already answers to ${player.character_name} in the eyes of the Landsraad -- no further binding is required.`
+    };
+  }
+
+  // hasSteam: added for the Steam-connections-based linking flow (see
+  // yacketrj/arrakis-control-panel:docs/steam-link-architecture.md).
+  // Checked BEFORE the online/funcom-id gates below, on purpose -- Steam
+  // linking never needs the character in-game (unlike the whisper flow,
+  // which requires an online character to receive an in-game message), so
+  // a character with a Steam ID on file can be offered the instant Steam
+  // path regardless of online status. This field is additive; every other
+  // field/behavior below is UNCHANGED for hasSteam: false characters,
+  // including the online/funcom-id checks and the whisper send itself.
+  const hasSteam = await characterHasSteamId(db, player.player_controller_id);
+  if (hasSteam) {
+    return {
+      ok: true,
+      hasSteam: true,
+      playerControllerId: player.player_controller_id,
+      characterName: player.character_name
+    };
+  }
+
   if (player.online_status !== "Online") {
     return { ok: false, error: `${player.character_name} must be online to receive the private verification code.` };
   }
@@ -96,14 +214,26 @@ export async function verifyPlayerLinkProvider(db, { discordUserId, code }) {
     throw policyError("invalid_request", "code is required.");
   }
 
+  const rateLimitKey = String(discordUserId || "");
+  const rateLimit = verifyRateLimiter.check(rateLimitKey);
+  if (!rateLimit.allowed) {
+    throw policyError(
+      "verify_rate_limited",
+      `Too many verification attempts. Wait ${rateLimit.retryAfterSeconds}s, then try /dune data link <character> again for a new code.`,
+      429
+    );
+  }
+
   const pending = await consumePendingLink(db, discordUserId, String(code).trim().toUpperCase());
 
   if (!pending) {
+    verifyRateLimiter.recordFailure(rateLimitKey);
     return { ok: false, error: "Invalid or expired verification code. Use /dune data link <character> to generate a new one." };
   }
 
   await discordPlayerLink(db, discordUserId, pending.player_controller_id);
   const linked = await getLinkedPlayer(db, discordUserId);
+  verifyRateLimiter.recordSuccess(rateLimitKey);
 
   return {
     ok: true,

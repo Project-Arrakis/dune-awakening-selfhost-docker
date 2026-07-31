@@ -42,7 +42,7 @@ test("reports adapter health with isolated link-state writes", async () => {
   assert.equal(result.experimental, true);
   assert.equal(result.readOnly, false);
   assert.equal(result.gameDataWritesEnabled, false);
-  assert.deepEqual(result.adapterDataWrites, ["player-link"]);
+  assert.deepEqual(result.adapterDataWrites, ["player-link", "account-link"]);
   assert.equal(result.writesEnabled, false);
   assert.deepEqual([...result.liveRoutes].sort(), [
     "/api/integrations/discord/announcements",
@@ -51,6 +51,19 @@ test("reports adapter health with isolated link-state writes", async () => {
     "/api/integrations/discord/guilds/find",
     "/api/integrations/discord/guilds/storage",
     "/api/integrations/discord/health",
+    "/api/integrations/discord/ops/activity",
+    "/api/integrations/discord/ops/combat",
+    "/api/integrations/discord/ops/economy",
+    "/api/integrations/discord/ops/inventory",
+    "/api/integrations/discord/ops/prometheus",
+    "/api/integrations/discord/ops/resources",
+    "/api/integrations/discord/ops/soc",
+    "/api/integrations/discord/players/accounts/link",
+    "/api/integrations/discord/players/accounts/link-steam",
+    "/api/integrations/discord/players/accounts/link/verify",
+    "/api/integrations/discord/players/accounts/list",
+    "/api/integrations/discord/players/accounts/set-default",
+    "/api/integrations/discord/players/accounts/unlink",
     "/api/integrations/discord/players/find",
     "/api/integrations/discord/players/inventory",
     "/api/integrations/discord/players/inventory-search",
@@ -68,7 +81,21 @@ test("reports adapter health with isolated link-state writes", async () => {
     "/api/integrations/discord/version"
   ].sort());
   assert.ok(result.plannedRoutes.includes("/api/integrations/discord/logs"));
-  assert.ok(result.plannedRoutes.includes("/api/integrations/discord/ops/activity"));
+  // ops/activity, ops/combat, ops/resources, ops/economy, ops/inventory,
+  // ops/soc, ops/prometheus are now wired to real data sources and moved
+  // to liveRoutes (see the seven assertions above — soc via an in-memory
+  // rolling counter over the audit log, prometheus via a real HTTP
+  // integration against an optional metrics stack that may itself report
+  // "not running", neither a SQL query like the other five). The
+  // remaining OPS route (location) is intentionally, permanently out of
+  // scope for this addon (per-player location tracking already belongs
+  // to the Console's own map UI — decided 2026-07-24) and is correctly,
+  // permanently reported as planned.
+  assert.ok(result.plannedRoutes.includes("/api/integrations/discord/ops/location"));
+  assert.ok(!result.liveRoutes.includes("/api/integrations/discord/ops/location"));
+  assert.ok(result.liveRoutes.includes("/api/integrations/discord/ops/soc"));
+  assert.ok(result.liveRoutes.includes("/api/integrations/discord/ops/inventory"));
+  assert.ok(result.liveRoutes.includes("/api/integrations/discord/ops/prometheus"));
 });
 
 test("forces writes disabled even if environment attempts to enable them", () => {
@@ -98,6 +125,12 @@ test("exposes only allowlisted adapter route names", () => {
     "/api/integrations/discord/ops/prometheus",
     "/api/integrations/discord/ops/resources",
     "/api/integrations/discord/ops/soc",
+    "/api/integrations/discord/players/accounts/link",
+    "/api/integrations/discord/players/accounts/link-steam",
+    "/api/integrations/discord/players/accounts/link/verify",
+    "/api/integrations/discord/players/accounts/list",
+    "/api/integrations/discord/players/accounts/set-default",
+    "/api/integrations/discord/players/accounts/unlink",
     "/api/integrations/discord/players/find",
     "/api/integrations/discord/players/inventory",
     "/api/integrations/discord/players/inventory-search",
@@ -294,6 +327,743 @@ test("adapter routes respond through mounted HTTP server path", async () => {
 
           // Auth: 404 unknown route
           assert.equal((await fetch(`${base}/api/integrations/discord/nonexistent`, { headers: auth })).status, 404);
+
+          server.close();
+          resolve();
+        } catch (e) { server.close(); reject(e); }
+      });
+    });
+  } finally {
+    try { unlinkSync(tokenFile); } catch {}
+  }
+});
+
+// Actor signature enforcement — FINDING-LINK-1
+// (docs/security/discord-player-link-hardening.md): when
+// DUNE_DISCORD_ACTOR_SECRET is configured, the bearer token alone is no
+// longer sufficient to make requests on behalf of an arbitrary actor.
+test("adapter route rejects an unsigned or spoofed actor when DUNE_DISCORD_ACTOR_SECRET is configured", async () => {
+  const tokenFile = "/tmp/discord-adapter-actor-sig-test-token.txt";
+  writeFileSync(tokenFile, "server-test-token");
+  const OLD_SECRET = process.env.DUNE_DISCORD_ACTOR_SECRET;
+  process.env.DUNE_DISCORD_ACTOR_SECRET = "integration-test-actor-secret";
+  const testConfig = { discordBotApiTokenFile: tokenFile, discordAdapterEnabled: true, auditLog: "/tmp/discord-adapter-actor-sig-test-audit.jsonl", generatedDir: "/tmp/discord-adapter-actor-sig-test-generated" };
+  const mockStatus = async () => ({ ok: true, summary: { overall: "OK", region: "us", mode: "pve", population: "8/128" } });
+
+  const { signActorPayload, ACTOR_SIGNATURE_HEADER, ACTOR_TIMESTAMP_HEADER } = await import("../src/integrations/discord/actorSignature.js");
+
+  try {
+    await new Promise((resolve, reject) => {
+      const server = createServer(async (req, res) => {
+        const url = new URL(req.url || "/", "http://local");
+        const path = url.pathname;
+        const readJson = async () => {
+          const chunks = [];
+          for await (const chunk of req) chunks.push(chunk);
+          return Buffer.concat(chunks).length ? JSON.parse(Buffer.concat(chunks).toString()) : {};
+        };
+        const json = (r, code, body) => { r.writeHead(code, { "content-type": "application/json" }); r.end(JSON.stringify(body)); };
+        await handleDiscordAdapterRoute({ req, res, path, config: testConfig, readJson, json, statusProvider: mockStatus });
+      });
+      const auth = { authorization: "Bearer server-test-token" };
+
+      server.listen(async () => {
+        try {
+          const base = `http://127.0.0.1:${server.address().port}`;
+          const observerActor = actor(["role-observer"]);
+
+          // Valid bearer token but no actor signature at all: rejected even
+          // though this exact request would have succeeded before
+          // DUNE_DISCORD_ACTOR_SECRET was configured.
+          const unsigned = await fetch(`${base}/api/integrations/discord/status`, {
+            method: "POST",
+            headers: { ...auth, "content-type": "application/json" },
+            body: JSON.stringify({ actor: observerActor })
+          });
+          assert.equal(unsigned.status, 403);
+          const unsignedBody = await unsigned.json();
+          assert.equal(unsignedBody.code, "missing_actor_signature");
+
+          // Correctly signed actor: accepted.
+          const timestamp = Math.floor(Date.now() / 1000);
+          const { signature } = signActorPayload(observerActor, "integration-test-actor-secret", timestamp, "/api/integrations/discord/status");
+          const validSigned = await fetch(`${base}/api/integrations/discord/status`, {
+            method: "POST",
+            headers: {
+              ...auth,
+              "content-type": "application/json",
+              [ACTOR_SIGNATURE_HEADER]: signature,
+              [ACTOR_TIMESTAMP_HEADER]: String(timestamp)
+            },
+            body: JSON.stringify({ actor: observerActor })
+          });
+          assert.equal(validSigned.status, 200);
+          const validBody = await validSigned.json();
+          assert.equal(validBody.ok, true);
+
+          // Signature was computed for a different actor (observer); an
+          // attacker with the bearer token tries to reuse that signature
+          // while claiming an owner role to escalate privilege. Must be
+          // rejected — this is exactly the confused-deputy scenario
+          // FINDING-LINK-1 describes.
+          const spoofedActor = { ...observerActor, roleIds: ["role-owner"] };
+          const spoofed = await fetch(`${base}/api/integrations/discord/status`, {
+            method: "POST",
+            headers: {
+              ...auth,
+              "content-type": "application/json",
+              [ACTOR_SIGNATURE_HEADER]: signature,
+              [ACTOR_TIMESTAMP_HEADER]: String(timestamp)
+            },
+            body: JSON.stringify({ actor: spoofedActor })
+          });
+          assert.equal(spoofed.status, 403);
+          const spoofedBody = await spoofed.json();
+          assert.equal(spoofedBody.code, "invalid_actor_signature");
+
+          server.close();
+          resolve();
+        } catch (e) { server.close(); reject(e); }
+      });
+    });
+  } finally {
+    try { unlinkSync(tokenFile); } catch {}
+    if (OLD_SECRET === undefined) delete process.env.DUNE_DISCORD_ACTOR_SECRET;
+    else process.env.DUNE_DISCORD_ACTOR_SECRET = OLD_SECRET;
+  }
+});
+
+// Cross-route replay rejection — FINDING-LINK-1 hardening. A signature that
+// covered only actor identity fields (not the route) could be captured from
+// one legitimate request (e.g. a routine "status" call, which requires no
+// special privilege to observe) and replayed verbatim against a completely
+// different, more sensitive route within the freshness window. Proves the
+// route-bound signature closes that gap: the same actor + signature +
+// timestamp that is valid for /status must be rejected for /readiness.
+test("a signature valid for one route is rejected when replayed against a different route", async () => {
+  const { signActorPayload, ACTOR_SIGNATURE_HEADER, ACTOR_TIMESTAMP_HEADER } = await import("../src/integrations/discord/actorSignature.js");
+  const tokenFile = "/tmp/discord-adapter-cross-route-replay-test-token.txt";
+  writeFileSync(tokenFile, "server-test-token");
+  const OLD_SECRET = process.env.DUNE_DISCORD_ACTOR_SECRET;
+  process.env.DUNE_DISCORD_ACTOR_SECRET = "cross-route-test-secret";
+  const testConfig = { discordBotApiTokenFile: tokenFile, discordAdapterEnabled: true, auditLog: "/tmp/discord-adapter-cross-route-replay-test-audit.jsonl", generatedDir: "/tmp/discord-adapter-cross-route-replay-test-generated" };
+  const mockStatus = async () => ({ ok: true, summary: { overall: "OK", region: "us", mode: "pve", population: "8/128" } });
+  const mockReadiness = async () => ({ ready: true, overall: "READY", issues: [] });
+
+  try {
+    await new Promise((resolve, reject) => {
+      const server = createServer(async (req, res) => {
+        const url = new URL(req.url || "/", "http://local");
+        const path = url.pathname;
+        const readJson = async () => {
+          const chunks = [];
+          for await (const chunk of req) chunks.push(chunk);
+          return Buffer.concat(chunks).length ? JSON.parse(Buffer.concat(chunks).toString()) : {};
+        };
+        const json = (r, code, body) => { r.writeHead(code, { "content-type": "application/json" }); r.end(JSON.stringify(body)); };
+        await handleDiscordAdapterRoute({ req, res, path, config: testConfig, readJson, json, statusProvider: mockStatus, readinessProvider: mockReadiness });
+      });
+      const auth = { authorization: "Bearer server-test-token" };
+
+      server.listen(async () => {
+        try {
+          const base = `http://127.0.0.1:${server.address().port}`;
+          const observerActor = actor(["role-observer"]);
+          const timestamp = Math.floor(Date.now() / 1000);
+          const { signature } = signActorPayload(observerActor, "cross-route-test-secret", timestamp, "/api/integrations/discord/status");
+          const headers = {
+            ...auth,
+            "content-type": "application/json",
+            [ACTOR_SIGNATURE_HEADER]: signature,
+            [ACTOR_TIMESTAMP_HEADER]: String(timestamp)
+          };
+
+          // The signature is valid for /status...
+          const statusResponse = await fetch(`${base}/api/integrations/discord/status`, {
+            method: "POST",
+            headers,
+            body: JSON.stringify({ actor: observerActor })
+          });
+          assert.equal(statusResponse.status, 200);
+
+          // ...but must be rejected when replayed against /readiness, even
+          // though the actor, timestamp, and signature bytes are identical
+          // and still within the freshness window.
+          const readinessResponse = await fetch(`${base}/api/integrations/discord/readiness`, {
+            method: "POST",
+            headers,
+            body: JSON.stringify({ actor: observerActor })
+          });
+          assert.equal(readinessResponse.status, 403);
+          const readinessBody = await readinessResponse.json();
+          assert.equal(readinessBody.code, "invalid_actor_signature");
+
+          server.close();
+          resolve();
+        } catch (e) { server.close(); reject(e); }
+      });
+    });
+  } finally {
+    try { unlinkSync(tokenFile); } catch {}
+    if (OLD_SECRET === undefined) delete process.env.DUNE_DISCORD_ACTOR_SECRET;
+    else process.env.DUNE_DISCORD_ACTOR_SECRET = OLD_SECRET;
+  }
+});
+
+// Self-scoped capability enforcement — FINDING-LINK-2
+// (docs/security/discord-player-link-hardening.md): player-link:write is
+// no longer tier-gated at all; it authorizes any recognized Discord
+// principal to act on their own identity, and rejects an actor with no
+// configured role (public tier) regardless of what they claim as userId.
+test("player-link route rejects a public-tier actor and allows an observer-tier actor", async () => {
+  const tokenFile = "/tmp/discord-adapter-self-scoped-test-token.txt";
+  writeFileSync(tokenFile, "server-test-token");
+  const testConfig = { discordBotApiTokenFile: tokenFile, discordAdapterEnabled: true, auditLog: "/tmp/discord-adapter-self-scoped-test-audit.jsonl", generatedDir: "/tmp/discord-adapter-self-scoped-test-generated" };
+
+  // Minimal permissive db stub: satisfies migrateDiscordAdapterSchema()'s
+  // DDL calls and resolvePlayerByName()'s lookup query. Returns no rows for
+  // the player lookup so linkPlayerProvider() itself returns a normal "no
+  // player found" business result for the observer-tier case — the point
+  // of this test is proving the actor never reaches that far when
+  // unauthorized, not exercising the full link/whisper flow.
+  const db = {
+    transaction: (fn) => fn(db),
+    async query() {
+      return { rows: [], rowCount: 0 };
+    }
+  };
+
+  try {
+    await new Promise((resolve, reject) => {
+      const server = createServer(async (req, res) => {
+        const url = new URL(req.url || "/", "http://local");
+        const path = url.pathname;
+        const readJson = async () => {
+          const chunks = [];
+          for await (const chunk of req) chunks.push(chunk);
+          return Buffer.concat(chunks).length ? JSON.parse(Buffer.concat(chunks).toString()) : {};
+        };
+        const json = (r, code, body) => { r.writeHead(code, { "content-type": "application/json" }); r.end(JSON.stringify(body)); };
+        await handleDiscordAdapterRoute({ req, res, path, config: testConfig, readJson, json, db });
+      });
+      const auth = { authorization: "Bearer server-test-token" };
+
+      server.listen(async () => {
+        try {
+          const base = `http://127.0.0.1:${server.address().port}`;
+
+          // Public tier (no configured role at all) must be rejected, even
+          // with a valid bearer token, even though PLAYER_LINK_WRITE is a
+          // self-scoped capability meant to be broadly available.
+          const publicActor = { guildId: "guild-1", channelId: "channel-1", userId: "public-user", username: "no-role", roleIds: [] };
+          const publicResponse = await fetch(`${base}/api/integrations/discord/players/link`, {
+            method: "POST",
+            headers: { ...auth, "content-type": "application/json" },
+            body: JSON.stringify({ actor: publicActor, characterName: "Chani" })
+          });
+          assert.equal(publicResponse.status, 403);
+          const publicBody = await publicResponse.json();
+          assert.equal(publicBody.code, "not_authorized");
+
+          // Observer tier (any recognized principal) is authorized for
+          // this self-scoped action — the request proceeds into
+          // linkPlayerProvider() and returns a normal business result
+          // (no player found, since the db stub returns no rows) rather
+          // than a 403.
+          const observerActor = actor(["role-observer"]);
+          const observerResponse = await fetch(`${base}/api/integrations/discord/players/link`, {
+            method: "POST",
+            headers: { ...auth, "content-type": "application/json" },
+            body: JSON.stringify({ actor: observerActor, characterName: "Chani" })
+          });
+          assert.equal(observerResponse.status, 200);
+          const observerBody = await observerResponse.json();
+          assert.equal(observerBody.ok, false);
+          assert.match(observerBody.error, /No player found/i);
+
+          server.close();
+          resolve();
+        } catch (e) { server.close(); reject(e); }
+      });
+    });
+  } finally {
+    try { unlinkSync(tokenFile); } catch {}
+  }
+});
+
+// Verification rate limiting — FINDING-LINK-3
+// (docs/security/discord-player-link-hardening.md): repeated wrong-code
+// guesses against /players/link/verify for one discordUserId must
+// eventually be rejected with 429, not left unthrottled.
+test("player-link verify route rate limits repeated wrong-code attempts for one discordUserId", async () => {
+  const { resetVerifyRateLimiterForTests } = await import("../src/integrations/discord/linkProvider.js");
+  const { createLoginRateLimiter } = await import("../src/rateLimit.js");
+  resetVerifyRateLimiterForTests(createLoginRateLimiter({ maxAttempts: 2, globalMaxAttempts: 99, windowMs: 60000, blockMs: 60000 }));
+
+  const tokenFile = "/tmp/discord-adapter-verify-rate-limit-test-token.txt";
+  writeFileSync(tokenFile, "server-test-token");
+  const testConfig = { discordBotApiTokenFile: tokenFile, discordAdapterEnabled: true, auditLog: "/tmp/discord-adapter-verify-rate-limit-test-audit.jsonl", generatedDir: "/tmp/discord-adapter-verify-rate-limit-test-generated" };
+  const db = {
+    transaction: (fn) => fn(db),
+    async query() {
+      return { rows: [], rowCount: 0 };
+    }
+  };
+
+  try {
+    await new Promise((resolve, reject) => {
+      const server = createServer(async (req, res) => {
+        const url = new URL(req.url || "/", "http://local");
+        const path = url.pathname;
+        const readJson = async () => {
+          const chunks = [];
+          for await (const chunk of req) chunks.push(chunk);
+          return Buffer.concat(chunks).length ? JSON.parse(Buffer.concat(chunks).toString()) : {};
+        };
+        const json = (r, code, body) => { r.writeHead(code, { "content-type": "application/json" }); r.end(JSON.stringify(body)); };
+        await handleDiscordAdapterRoute({ req, res, path, config: testConfig, readJson, json, db });
+      });
+      const auth = { authorization: "Bearer server-test-token" };
+
+      server.listen(async () => {
+        try {
+          const base = `http://127.0.0.1:${server.address().port}`;
+          const observerActor = actor(["role-observer"]);
+          const verifyOnce = () => fetch(`${base}/api/integrations/discord/players/link/verify`, {
+            method: "POST",
+            headers: { ...auth, "content-type": "application/json" },
+            body: JSON.stringify({ actor: observerActor, code: "ACP-WRONG" })
+          });
+
+          const first = await verifyOnce();
+          assert.equal(first.status, 200);
+          const firstBody = await first.json();
+          assert.equal(firstBody.ok, false);
+
+          const second = await verifyOnce();
+          assert.equal(second.status, 200);
+
+          const third = await verifyOnce();
+          assert.equal(third.status, 429);
+          const thirdBody = await third.json();
+          assert.equal(thirdBody.code, "verify_rate_limited");
+
+          server.close();
+          resolve();
+        } catch (e) { server.close(); reject(e); }
+      });
+    });
+  } finally {
+    try { unlinkSync(tokenFile); } catch {}
+  }
+});
+
+// Multi-account routes — FINDING-LINK-6
+// (docs/security/discord-player-link-hardening.md): additive to the
+// single-link routes above, gated by its own self-scoped capability
+// (ACCOUNT_LINK_WRITE), not by reusing PLAYER_LINK_WRITE.
+test("account-link routes reject a public-tier actor and allow an observer-tier actor to link and list accounts", async () => {
+  const tokenFile = "/tmp/discord-adapter-multi-account-test-token.txt";
+  writeFileSync(tokenFile, "server-test-token");
+  const testConfig = { discordBotApiTokenFile: tokenFile, discordAdapterEnabled: true, auditLog: "/tmp/discord-adapter-multi-account-test-audit.jsonl", generatedDir: "/tmp/discord-adapter-multi-account-test-generated" };
+
+  const player = { player_controller_id: "42", player_pawn_id: "84", character_name: "Chani", online_status: "Online", funcom_id: "Chani#1234" };
+  const accounts = [];
+  const db = {
+    transaction: (fn) => fn(db),
+    async query(text, values = []) {
+      if (text.includes("from dune.player_state ps") && text.includes("lower(ps.character_name)")) {
+        return { rows: [player], rowCount: 1 };
+      }
+      if (text.includes("from console.discord_account_links dal")) {
+        const rows = accounts.filter((a) => a.discordUserId === values[0]).map((a) => ({
+          discord_user_id: a.discordUserId,
+          player_controller_id: a.playerControllerId,
+          is_default: a.isDefault,
+          character_name: player.character_name,
+          player_pawn_id: player.player_pawn_id,
+          online_status: player.online_status
+        }));
+        return { rows, rowCount: rows.length };
+      }
+      if (text.includes("for update")) return { rows: [], rowCount: 0 };
+      if (text.includes("select 1 from console.discord_account_links")) return { rows: [], rowCount: 0 };
+      if (text.includes("insert into console.discord_account_links")) {
+        accounts.push({ discordUserId: values[0], playerControllerId: values[1], isDefault: Boolean(values[2]) });
+        return { rows: [], rowCount: 1 };
+      }
+      return { rows: [], rowCount: 0 };
+    }
+  };
+
+  try {
+    await new Promise((resolve, reject) => {
+      const server = createServer(async (req, res) => {
+        const url = new URL(req.url || "/", "http://local");
+        const path = url.pathname;
+        const readJson = async () => {
+          const chunks = [];
+          for await (const chunk of req) chunks.push(chunk);
+          return Buffer.concat(chunks).length ? JSON.parse(Buffer.concat(chunks).toString()) : {};
+        };
+        const json = (r, code, body) => { r.writeHead(code, { "content-type": "application/json" }); r.end(JSON.stringify(body)); };
+        await handleDiscordAdapterRoute({ req, res, path, config: testConfig, readJson, json, db });
+      });
+      const auth = { authorization: "Bearer server-test-token" };
+
+      server.listen(async () => {
+        try {
+          const base = `http://127.0.0.1:${server.address().port}`;
+
+          // Public tier is rejected for the account-link route, same as the
+          // single-link route — ACCOUNT_LINK_WRITE is self-scoped but still
+          // requires a recognized principal (observer tier or above).
+          const publicActor = { guildId: "guild-1", channelId: "channel-1", userId: "public-user", username: "no-role", roleIds: [] };
+          const publicResponse = await fetch(`${base}/api/integrations/discord/players/accounts/link`, {
+            method: "POST",
+            headers: { ...auth, "content-type": "application/json" },
+            body: JSON.stringify({ actor: publicActor, characterName: "Chani" })
+          });
+          assert.equal(publicResponse.status, 403);
+          const publicBody = await publicResponse.json();
+          assert.equal(publicBody.code, "not_authorized");
+
+          // Observer tier is authorized: the list route reaches
+          // listAccountsProvider without a 403 and returns a normal empty
+          // result for a user with no linked accounts yet.
+          const observerActor = actor(["role-observer"]);
+          const listResponse = await fetch(`${base}/api/integrations/discord/players/accounts/list`, {
+            method: "POST",
+            headers: { ...auth, "content-type": "application/json" },
+            body: JSON.stringify({ actor: observerActor })
+          });
+          assert.equal(listResponse.status, 200);
+          const listBody = await listResponse.json();
+          assert.equal(listBody.ok, true);
+          assert.deepEqual(listBody.accounts, []);
+
+          server.close();
+          resolve();
+        } catch (e) { server.close(); reject(e); }
+      });
+    });
+  } finally {
+    try { unlinkSync(tokenFile); } catch {}
+  }
+});
+
+// End-to-end coverage for the Steam-OAuth-based link route (link-steam) --
+// see linkAccountViaSteamProvider()'s own comment for why match-check and
+// link happen together in one route rather than as two.
+test("link-steam route rejects a public-tier actor, links on a genuine match, and passes through the generic conflict error unchanged (FINDING-STEAM-3)", async () => {
+  const { resetSteamLinkRateLimiterForTests } = await import("../src/integrations/discord/multiAccountLinkProvider.js");
+  const { createLoginRateLimiter } = await import("../src/rateLimit.js");
+  resetSteamLinkRateLimiterForTests(createLoginRateLimiter({ maxAttempts: 99, globalMaxAttempts: 999, windowMs: 60000, blockMs: 60000 }));
+
+  const tokenFile = "/tmp/discord-adapter-link-steam-test-token.txt";
+  writeFileSync(tokenFile, "server-test-token");
+  const testConfig = { discordBotApiTokenFile: tokenFile, discordAdapterEnabled: true, auditLog: "/tmp/discord-adapter-link-steam-test-audit.jsonl", generatedDir: "/tmp/discord-adapter-link-steam-test-generated" };
+
+  const STEAM_ID = "76561198000000042";
+  const player = { player_controller_id: "42", platform_id: STEAM_ID, platform_name: "steam" };
+  const accounts = [];
+  const db = {
+    transaction: (fn) => fn(db),
+    async query(text, values = []) {
+      if (text.includes("from dune.accounts ac") && text.includes("any($1::text[])")) {
+        const matched = values[1] === player.player_controller_id && (values[0] || []).includes(player.platform_id);
+        return matched ? { rows: [{ "?column?": 1 }], rowCount: 1 } : { rows: [], rowCount: 0 };
+      }
+      if (text.includes("from console.discord_account_links") && text.includes("for update")) {
+        const conflict = accounts.find((a) => a.playerControllerId === values[0] && a.discordUserId !== values[1]);
+        return conflict ? { rows: [{ discord_user_id: conflict.discordUserId }], rowCount: 1 } : { rows: [], rowCount: 0 };
+      }
+      if (text.includes("from console.discord_player_links") && text.includes("for update")) {
+        return { rows: [], rowCount: 0 };
+      }
+      if (text.includes("select 1 from console.discord_account_links")) return { rows: [], rowCount: 0 };
+      if (text.includes("insert into console.discord_account_links")) {
+        accounts.push({ discordUserId: values[0], playerControllerId: values[1], isDefault: Boolean(values[2]) });
+        return { rows: [], rowCount: 1 };
+      }
+      return { rows: [], rowCount: 0 };
+    }
+  };
+
+  try {
+    await new Promise((resolve, reject) => {
+      const server = createServer(async (req, res) => {
+        const url = new URL(req.url || "/", "http://local");
+        const path = url.pathname;
+        const readJson = async () => {
+          const chunks = [];
+          for await (const chunk of req) chunks.push(chunk);
+          return Buffer.concat(chunks).length ? JSON.parse(Buffer.concat(chunks).toString()) : {};
+        };
+        const json = (r, code, body) => { r.writeHead(code, { "content-type": "application/json" }); r.end(JSON.stringify(body)); };
+        await handleDiscordAdapterRoute({ req, res, path, config: testConfig, readJson, json, db });
+      });
+      const auth = { authorization: "Bearer server-test-token" };
+
+      server.listen(async () => {
+        try {
+          const base = `http://127.0.0.1:${server.address().port}`;
+
+          // Public tier is rejected, same as every other self-scoped route.
+          const publicActor = { guildId: "guild-1", channelId: "channel-1", userId: "public-user", username: "no-role", roleIds: [] };
+          const publicResponse = await fetch(`${base}/api/integrations/discord/players/accounts/link-steam`, {
+            method: "POST",
+            headers: { ...auth, "content-type": "application/json" },
+            body: JSON.stringify({ actor: publicActor, playerControllerId: "42", steamId64List: [STEAM_ID] })
+          });
+          assert.equal(publicResponse.status, 403);
+
+          // Observer tier, genuine Steam-ID match: links successfully.
+          const observerActor = actor(["role-observer"]);
+          const linkResponse = await fetch(`${base}/api/integrations/discord/players/accounts/link-steam`, {
+            method: "POST",
+            headers: { ...auth, "content-type": "application/json" },
+            body: JSON.stringify({ actor: observerActor, playerControllerId: "42", steamId64List: [STEAM_ID] })
+          });
+          assert.equal(linkResponse.status, 200);
+          const linkBody = await linkResponse.json();
+          assert.equal(linkBody.ok, true);
+          assert.equal(linkBody.matched, true);
+
+          // A different Discord user attempting to link the SAME character
+          // gets the generic conflict error, with no identifying detail
+          // about the first (observer) user. actor() always returns
+          // userId: "user-1", so build this actor object directly rather
+          // than through that helper.
+          const attackerActor = { ...actor(["role-observer"]), userId: "attacker-user" };
+          const conflictResponse = await fetch(`${base}/api/integrations/discord/players/accounts/link-steam`, {
+            method: "POST",
+            headers: { ...auth, "content-type": "application/json" },
+            body: JSON.stringify({ actor: attackerActor, playerControllerId: "42", steamId64List: [STEAM_ID] })
+          });
+          assert.equal(conflictResponse.status, 409);
+          const conflictBody = await conflictResponse.json();
+          assert.equal(conflictBody.code, "character_already_linked");
+          assert.ok(!JSON.stringify(conflictBody).includes(observerActor.userId));
+
+          server.close();
+          resolve();
+        } catch (e) { server.close(); reject(e); }
+      });
+    });
+  } finally {
+    try { unlinkSync(tokenFile); } catch {}
+  }
+});
+
+// Rate limiting for the multi-account verify route — mirrors the
+// single-link route's rate-limit test, but proves it uses a SEPARATE
+// limiter instance so exhausting one flow's allowance never affects the
+// other (FINDING-LINK-6's "Minimal Impact" design decision).
+test("account-link verify route rate limits independently from the single-link verify route", async () => {
+  const { resetVerifyRateLimiterForTests } = await import("../src/integrations/discord/linkProvider.js");
+  const { resetAccountLinkVerifyRateLimiterForTests } = await import("../src/integrations/discord/multiAccountLinkProvider.js");
+  const { createLoginRateLimiter } = await import("../src/rateLimit.js");
+  resetVerifyRateLimiterForTests(createLoginRateLimiter({ maxAttempts: 99, globalMaxAttempts: 999, windowMs: 60000, blockMs: 60000 }));
+  resetAccountLinkVerifyRateLimiterForTests(createLoginRateLimiter({ maxAttempts: 2, globalMaxAttempts: 99, windowMs: 60000, blockMs: 60000 }));
+
+  const tokenFile = "/tmp/discord-adapter-multi-account-rate-limit-test-token.txt";
+  writeFileSync(tokenFile, "server-test-token");
+  const testConfig = { discordBotApiTokenFile: tokenFile, discordAdapterEnabled: true, auditLog: "/tmp/discord-adapter-multi-account-rate-limit-test-audit.jsonl", generatedDir: "/tmp/discord-adapter-multi-account-rate-limit-test-generated" };
+  const db = {
+    transaction: (fn) => fn(db),
+    async query() {
+      return { rows: [], rowCount: 0 };
+    }
+  };
+
+  try {
+    await new Promise((resolve, reject) => {
+      const server = createServer(async (req, res) => {
+        const url = new URL(req.url || "/", "http://local");
+        const path = url.pathname;
+        const readJson = async () => {
+          const chunks = [];
+          for await (const chunk of req) chunks.push(chunk);
+          return Buffer.concat(chunks).length ? JSON.parse(Buffer.concat(chunks).toString()) : {};
+        };
+        const json = (r, code, body) => { r.writeHead(code, { "content-type": "application/json" }); r.end(JSON.stringify(body)); };
+        await handleDiscordAdapterRoute({ req, res, path, config: testConfig, readJson, json, db });
+      });
+      const auth = { authorization: "Bearer server-test-token" };
+
+      server.listen(async () => {
+        try {
+          const base = `http://127.0.0.1:${server.address().port}`;
+          const observerActor = actor(["role-observer"]);
+
+          const verifyAccountOnce = () => fetch(`${base}/api/integrations/discord/players/accounts/link/verify`, {
+            method: "POST",
+            headers: { ...auth, "content-type": "application/json" },
+            body: JSON.stringify({ actor: observerActor, code: "ACP-WRONG" })
+          });
+          const verifySingleOnce = () => fetch(`${base}/api/integrations/discord/players/link/verify`, {
+            method: "POST",
+            headers: { ...auth, "content-type": "application/json" },
+            body: JSON.stringify({ actor: observerActor, code: "ACP-WRONG" })
+          });
+
+          assert.equal((await verifyAccountOnce()).status, 200);
+          assert.equal((await verifyAccountOnce()).status, 200);
+          const thirdAccount = await verifyAccountOnce();
+          assert.equal(thirdAccount.status, 429);
+          const thirdAccountBody = await thirdAccount.json();
+          assert.equal(thirdAccountBody.code, "verify_rate_limited");
+
+          // The single-link verify route (separate limiter, and configured
+          // with a much higher allowance above) is unaffected by the
+          // account-link route's lockout for the same discordUserId.
+          const singleAfterAccountLockout = await verifySingleOnce();
+          assert.equal(singleAfterAccountLockout.status, 200);
+
+          server.close();
+          resolve();
+        } catch (e) { server.close(); reject(e); }
+      });
+    });
+  } finally {
+    try { unlinkSync(tokenFile); } catch {}
+  }
+});
+
+// OPS observability routes — real data wiring (Phase 1/2 of the cross-repo
+// stats/live-data remediation effort). ops/activity, ops/combat,
+// ops/resources, ops/economy, ops/inventory, ops/soc, ops/prometheus are
+// now backed by real data sources via opsProvider.js; the remaining OPS
+// route (location) remains an unimplemented placeholder pending a
+// privacy-consideration decision. Exercises the actual HTTP route path
+// (not just the provider function directly) to prove db reaches the
+// provider correctly through handleDiscordAdapterRoute()'s routing.
+test("ops/activity, ops/inventory, ops/soc, and ops/prometheus routes return real data (or a real, specific 'unavailable' reason) through the HTTP route path, ops/location remains a planned placeholder", async () => {
+  const tokenFile = "/tmp/discord-adapter-ops-live-test-token.txt";
+  writeFileSync(tokenFile, "server-test-token");
+  const testConfig = { discordBotApiTokenFile: tokenFile, discordAdapterEnabled: true, auditLog: "/tmp/discord-adapter-ops-live-test-audit.jsonl", generatedDir: "/tmp/discord-adapter-ops-live-test-generated" };
+
+  const db = {
+    transaction: (fn) => fn(db),
+    async query(text, values = []) {
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("information_schema.columns")) return { rows: [] };
+      if (text.includes("from dune.player_state") && text.includes("count(*)::int as total_players")) {
+        return { rows: [{ total_players: 9, online_players: 4, players_dead: 1, active_last_1h: 0, active_last_24h: 0, active_last_7d: 0, inactive_players: 0, returning_players: 0, new_players: 0 }] };
+      }
+      if (text.includes("from dune.items") && text.includes("count(*)::int as total_items")) {
+        return { rows: [{ total_items: 5 }] };
+      }
+      if (text.includes("from dune.items") && text.includes("group by i.template_id")) {
+        return { rows: [{ template_id: "Stone", count: 5, total_stack: 2477 }] };
+      }
+      if (text.includes("from dune.placeables p") && text.includes("building_type in")) {
+        return { rows: [{ id: 13, name: "", class: "SpiceSilo_Placeable", map: "HaggaBasin", item_count: 5, owner_name: "Sihaya" }] };
+      }
+      return { rows: [] };
+    }
+  };
+
+  try {
+    await new Promise((resolve, reject) => {
+      const server = createServer(async (req, res) => {
+        const url = new URL(req.url || "/", "http://local");
+        const path = url.pathname;
+        const readJson = async () => {
+          const chunks = [];
+          for await (const chunk of req) chunks.push(chunk);
+          return Buffer.concat(chunks).length ? JSON.parse(Buffer.concat(chunks).toString()) : {};
+        };
+        const json = (r, code, body) => { r.writeHead(code, { "content-type": "application/json" }); r.end(JSON.stringify(body)); };
+        await handleDiscordAdapterRoute({ req, res, path, config: testConfig, readJson, json, db });
+      });
+      const auth = { authorization: "Bearer server-test-token" };
+
+      server.listen(async () => {
+        try {
+          const base = `http://127.0.0.1:${server.address().port}`;
+          const observerActor = actor(["role-observer"]);
+
+          const activityResponse = await fetch(`${base}/api/integrations/discord/ops/activity`, {
+            method: "POST",
+            headers: { ...auth, "content-type": "application/json" },
+            body: JSON.stringify({ actor: observerActor })
+          });
+          assert.equal(activityResponse.status, 200);
+          const activityBody = await activityResponse.json();
+          assert.equal(activityBody.ok, true);
+          assert.equal(activityBody.result.totalPlayers, 9);
+          assert.equal(activityBody.result.onlinePlayers, 4);
+          assert.equal("status" in activityBody, false, "must not look like the old placeholder shape");
+
+          const inventoryResponse = await fetch(`${base}/api/integrations/discord/ops/inventory`, {
+            method: "POST",
+            headers: { ...auth, "content-type": "application/json" },
+            body: JSON.stringify({ actor: observerActor })
+          });
+          assert.equal(inventoryResponse.status, 200);
+          const inventoryBody = await inventoryResponse.json();
+          assert.equal(inventoryBody.ok, true);
+          assert.equal(inventoryBody.result.totalItems, 5);
+          assert.equal(inventoryBody.result.totalInventories, 1);
+          assert.equal(inventoryBody.result.totalCrafted, null, "totalCrafted has no real source and must stay null, never a guessed number");
+          assert.equal("status" in inventoryBody, false, "must not look like the old placeholder shape");
+
+          const socResponse = await fetch(`${base}/api/integrations/discord/ops/soc`, {
+            method: "POST",
+            headers: { ...auth, "content-type": "application/json" },
+            body: JSON.stringify({ actor: observerActor })
+          });
+          assert.equal(socResponse.status, 200);
+          const socBody = await socResponse.json();
+          assert.equal(socBody.ok, true);
+          // The Discord adapter path (handleDiscordAdapterRoute, tested
+          // here) never itself calls audit(config, req, "addons.bridge",
+          // ...) — only the separate addon-bridge path in server.js does,
+          // for installed third-party addons, which is a different
+          // consumer than the Discord bot. So the in-memory rolling
+          // counter this route reads from is correctly, legitimately
+          // empty in this test's process — asserting a real 0, not a
+          // placeholder, is exactly the right check here.
+          assert.equal(socBody.result.bridgeRequests, 0);
+          assert.equal(socBody.result.bridgeErrors, 0);
+          assert.equal(socBody.result.platformHealth, "Unknown");
+          assert.equal("status" in socBody, false, "must not look like the old placeholder shape");
+
+          // ops/prometheus is real, but conditionally available: this
+          // test environment does not have the optional metrics stack
+          // running (dune metrics start), so this correctly exercises
+          // addonOpsPrometheusHealth()'s "not running" precondition path
+          // — the same, real, distinct-from-generic-"planned" shape that
+          // was directly verified against a live deployment before this
+          // was written (see duneDb.js's own comment on
+          // addonOpsPrometheusHealth for that verification).
+          const prometheusResponse = await fetch(`${base}/api/integrations/discord/ops/prometheus`, {
+            method: "POST",
+            headers: { ...auth, "content-type": "application/json" },
+            body: JSON.stringify({ actor: observerActor })
+          });
+          assert.equal(prometheusResponse.status, 200);
+          const prometheusBody = await prometheusResponse.json();
+          assert.equal(prometheusBody.ok, true);
+          assert.equal(prometheusBody.result.status, "planned");
+          assert.equal(prometheusBody.result.reason, "metrics_stack_not_running", "must report the specific reason, distinct from a generically unimplemented route");
+
+          // A route with no backing query (or an unresolved privacy
+          // consideration, for location — which is intentionally,
+          // permanently out of scope for this addon) is untouched and
+          // still returns its placeholder shape through the same
+          // dispatch path.
+          const locationResponse = await fetch(`${base}/api/integrations/discord/ops/location`, {
+            method: "POST",
+            headers: { ...auth, "content-type": "application/json" },
+            body: JSON.stringify({ actor: observerActor })
+          });
+          assert.equal(locationResponse.status, 200);
+          const locationBody = await locationResponse.json();
+          assert.equal(locationBody.ok, true);
+          assert.equal(locationBody.status, "planned");
 
           server.close();
           resolve();

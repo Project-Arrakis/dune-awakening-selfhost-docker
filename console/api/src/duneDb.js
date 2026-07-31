@@ -1,4 +1,6 @@
 import { assertIdentifier, intParam, isReadOnlySql, quoteIdentifier, quoteQualified, rowsResult } from "./db.js";
+import { getBridgeRequestSummary } from "./audit.js";
+import { resolveMapCombatState } from "./services/mapCombatState.js";
 import { existsSync, readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
@@ -2935,28 +2937,70 @@ export async function exportBaseAsBlueprint(db, id) {
 }
 
 export async function listStorage(db) {
-  if (!(await tableExists(db, "placeables"))) return unsupported("storage", ["dune.placeables"]);
-  const result = await db.query(`
-    select p.id,
-           coalesce(max(case when pa.actor_name not like '##%' and pa.actor_name <> 'None' then pa.actor_name end), '') as name,
-           p.building_type as class,
-           coalesce(a.map, '') as map,
-           count(i.id)::int as item_count,
-           coalesce(max(ps.character_name), '') as owner_name
-    from dune.placeables p
-    left join dune.actors a on a.id = p.id
-    left join dune.permission_actor pa on pa.actor_id = p.id
-    left join dune.inventories inv on inv.actor_id = p.id
-    left join dune.items i on i.inventory_id = inv.id
-    left join dune.actor_fgl_entities afe on afe.entity_id = p.owner_entity_id
-    left join dune.permission_actor_rank par on par.permission_actor_id = afe.actor_id
-    left join dune.actors player_a on player_a.id = par.player_id
-    left join dune.player_state ps on ps.account_id = player_a.owner_account_id
-    where p.building_type in ('SpiceSilo_Placeable','GenericContainer_Placeable','StorageContainer_Placeable','MediumStorageContainer_Placeable')
-      and p.is_hologram = false and p.owner_entity_id is not null and p.owner_entity_id != 0
-    group by p.id, p.building_type, a.map
-    order by p.id`);
-  return { capabilities: { storage: true, storageGiveItem: await supportsStorageGiveItem(db) }, rows: result.rows };
+  const capabilities = {
+    storage: false,
+    storageGiveItem: false,
+    storageFillItem: false
+  };
+  let rows = [];
+  if (await tableExists(db, "placeables")) {
+    const placeableResult = await db.query(`
+      select p.id,
+             coalesce(max(case when pa.actor_name not like '##%' and pa.actor_name <> 'None' then pa.actor_name end), '') as name,
+             p.building_type as class,
+             coalesce(a.map, '') as map,
+             count(i.id)::int as item_count,
+             coalesce(max(inv.max_item_count), 0)::int as max_item_count,
+             coalesce(max(inv.max_item_volume), 0)::real as max_item_volume,
+             coalesce(sum(coalesce(i.volume_override, 0)), 0)::real as current_volume,
+             coalesce(max(ps.character_name), '') as owner_name,
+             'placeable' as type
+      from dune.placeables p
+      left join dune.actors a on a.id = p.id
+      left join dune.permission_actor pa on pa.actor_id = p.id
+      left join dune.inventories inv on inv.actor_id = p.id
+      left join dune.items i on i.inventory_id = inv.id
+      left join dune.actor_fgl_entities afe on afe.entity_id = p.owner_entity_id
+      left join dune.permission_actor_rank par on par.permission_actor_id = afe.actor_id
+      left join dune.actors player_a on player_a.id = par.player_id
+      left join dune.player_state ps on ps.account_id = player_a.owner_account_id
+      where p.building_type in ('SpiceSilo_Placeable','GenericContainer_Placeable','StorageContainer_Placeable','MediumStorageContainer_Placeable')
+        and p.is_hologram = false and p.owner_entity_id is not null and p.owner_entity_id != 0
+      group by p.id, p.building_type, a.map
+      order by p.id`);
+    rows = placeableResult.rows;
+    capabilities.storage = true;
+    capabilities.storageGiveItem = await supportsStorageGiveItem(db);
+  }
+  if (await tableExists(db, "vehicles")) {
+    const vehicleResult = await db.query(`
+      select a.id,
+             coalesce(max(case when pa.actor_name not like '##%' and pa.actor_name <> 'None' then pa.actor_name end), '') as name,
+             coalesce(max(a.class), '') as class,
+             coalesce(a.map, '') as map,
+             count(i.id)::int as item_count,
+             coalesce(max(inv.max_item_count), 0)::int as max_item_count,
+             coalesce(max(inv.max_item_volume), 0)::real as max_item_volume,
+             coalesce(sum(coalesce(i.volume_override, 0)), 0)::real as current_volume,
+             coalesce(max(ps.character_name), '') as owner_name,
+             'vehicle' as type
+      from dune.actors a
+      join dune.vehicles v on v.id = a.id
+      left join dune.permission_actor pa on pa.actor_id = a.id
+      left join dune.inventories inv on inv.actor_id = a.id
+      left join dune.items i on i.inventory_id = inv.id
+      left join dune.actor_fgl_entities afe on afe.entity_id = a.id
+      left join dune.permission_actor_rank par on par.permission_actor_id = afe.actor_id
+      left join dune.actors player_a on player_a.id = par.player_id
+      left join dune.player_state ps on ps.account_id = player_a.owner_account_id
+      where a.id is not null
+      group by a.id, a.map
+      order by a.id`);
+    rows = [...rows, ...vehicleResult.rows];
+    capabilities.storage = true;
+  }
+  capabilities.storageFillItem = await supportsStorageFillItem(db);
+  return { capabilities, rows };
 }
 
 export async function storageItems(db, id) {
@@ -2965,7 +3009,8 @@ export async function storageItems(db, id) {
 
 export async function storageCapabilities(db) {
   return {
-    storageGiveItem: await supportsStorageGiveItem(db)
+    storageGiveItem: await supportsStorageGiveItem(db),
+    storageFillItem: await supportsStorageFillItem(db)
   };
 }
 
@@ -3150,7 +3195,7 @@ function craftingRecipeCatalog() {
   return craftingRecipeCatalogCache;
 }
 
-function adminItemMetadata() {
+export function adminItemMetadata() {
   if (adminItemMetadataCache) return adminItemMetadataCache;
   const metadata = new Map();
   try {
@@ -3169,6 +3214,149 @@ function adminItemMetadata() {
   }
   adminItemMetadataCache = metadata;
   return adminItemMetadataCache;
+}
+
+// Display-name overrides for runtime/data/admin-vehicles.json's `id`
+// field. Unlike admin-items.json, this catalog has no separate `name`
+// field -- its `id` values (Sandbike, Buggy, Tank, ...) are already
+// reasonably readable, EXCEPT for the three Ornithopter variants, whose
+// bare tier-suffix names (Light/Medium/Transport) don't communicate their
+// actual in-game role. Renamed per explicit operator direction
+// (2026-07-27): OrnithopterLight -> Scout, OrnithopterMedium -> Assault,
+// OrnithopterTransport -> Carrier -- these describe what the vehicle is
+// FOR, not just its size class.
+//
+// Added defensively (2026-07-27): no Discord command currently exposes
+// vehicle data at all (confirmed via direct grep of every route/provider
+// in this integration before adding this) -- this exists so a future
+// vehicle-related command has a correct, ready-to-use lookup rather than
+// needing to invent one at that point, and so the same
+// "OrnithopterLight" ambiguity found in items doesn't quietly recur here
+// too.
+const VEHICLE_DISPLAY_NAME_OVERRIDES = Object.freeze({
+  OrnithopterLight: "Scout",
+  OrnithopterMedium: "Assault",
+  OrnithopterTransport: "Carrier"
+});
+
+// splitCamelCase: "ContainerVehicle" -> "Container Vehicle",
+// "TreadWheel" -> "Tread Wheel". Single-word IDs with no internal
+// capitalization (e.g. "Sandcrawler", "Sandbike", "Buggy", "Tank") are
+// returned unchanged -- there is nothing to split. Added 2026-07-27,
+// same session as the override map above, as the fallback for any
+// vehicle ID not explicitly overridden, so a compressed multi-word ID
+// never displays as a single mashed-together word by default.
+function splitCamelCase(value) {
+  return String(value || "").replace(/([a-z0-9])([A-Z])/g, "$1 $2");
+}
+
+let adminVehicleMetadataCache = null;
+
+// FIX (2026-07-27, found during manual review after the initial vehicle
+// resolver was added -- not yet exercised by a live command): admin-items.json
+// (the 2558-entry item catalog) and admin-vehicles.json (this 9-entry
+// vehicle-table catalog) are not disjoint -- ContainerVehicle exists in
+// BOTH, with two different names ("Carrier Ornithopter Cargo Container"
+// in admin-items.json's vehicles category vs. this file's own
+// camelCase-split fallback, "Container Vehicle"). Per explicit operator
+// direction: admin-items.json is the bigger, more actively-maintained
+// catalog, so its real name wins for any ID present in both. This
+// function now checks it FIRST, falling back to
+// VEHICLE_DISPLAY_NAME_OVERRIDES, then splitCamelCase(), only for IDs
+// admin-items.json doesn't know about (the other 8 vehicle-table
+// entries -- Sandbike, Buggy, Tank, Sandcrawler, OrnithopterLight/
+// Medium/Transport, TreadWheel -- are genuinely vehicle-table-only, not
+// items, and are unaffected by this change).
+export function adminVehicleMetadata() {
+  if (adminVehicleMetadataCache) return adminVehicleMetadataCache;
+  const metadata = new Map();
+  try {
+    const itemCatalog = adminItemMetadata();
+    const path = [
+      resolve(process.cwd(), "runtime/data/admin-vehicles.json"),
+      resolve(process.cwd(), "../../runtime/data/admin-vehicles.json")
+    ].find((candidate) => existsSync(candidate)) || resolve(process.cwd(), "runtime/data/admin-vehicles.json");
+    const vehicles = JSON.parse(readFileSync(path, "utf8"));
+    for (const vehicle of Array.isArray(vehicles) ? vehicles : []) {
+      const id = String(vehicle.id || "").trim();
+      if (!id) continue;
+      const itemCatalogName = itemCatalog.get(id)?.name;
+      const name = itemCatalogName || VEHICLE_DISPLAY_NAME_OVERRIDES[id] || splitCamelCase(id);
+      metadata.set(id, { name });
+    }
+  } catch {
+    // No vehicle command depends on this yet -- fail open, same
+    // convention as adminItemMetadata() above.
+  }
+  adminVehicleMetadataCache = metadata;
+  return adminVehicleMetadataCache;
+}
+
+let adminBuildingMetadataCache = null;
+
+// FIX (2026-07-27, found via a real live user report immediately after
+// the storage/find display-name fix above shipped): playerOwnedStorageQuery()/
+// guildStorageQuery()'s container rows use dune.placeables.building_type
+// as their display name directly (e.g. "SpiceSilo_Placeable",
+// "Totem_Small_Placeable") -- the exact same class of raw-internal-ID
+// bug as the original item display-name report, just for buildings
+// instead of items. There is no existing local catalog for building
+// display names (unlike items/vehicles) -- runtime/data/admin-buildings.json
+// is new, seeded only with the 6 real building_type values confirmed
+// live in this world's own database (dune.placeables), each verified
+// against the real community database at dune.gaming.tools before being
+// added (not guessed or invented):
+//   Totem_Small_Placeable -> Sub-Fief Console
+//   SpiceSilo_Placeable -> Small Storage Container
+//   Fabricator_Placeable -> Fabricator
+//   BloodWaterExtractor_Placeable -> Blood Purifier
+//   SmallOreRefinery_Placeable -> Small Ore Refinery
+//   MTX_Watershippers_Door_Placeable -> Water Shipper Door
+// Falls back to splitCamelCase() (stripping the MTX_/_Placeable
+// affixes first) for any building_type not yet in the catalog, per
+// explicit operator direction: an honest, readable fallback is
+// preferable to blocking on confirming every possible building type
+// before shipping, since new building types can be added to this
+// catalog incrementally as they're confirmed.
+function splitBuildingTypeFallback(buildingType) {
+  const stripped = String(buildingType || "")
+    .replace(/^MTX_/, "")
+    .replace(/_Placeable$/, "");
+  return splitCamelCase(stripped) || String(buildingType || "Unknown Building");
+}
+
+export function adminBuildingMetadata() {
+  if (adminBuildingMetadataCache) return adminBuildingMetadataCache;
+  const metadata = new Map();
+  try {
+    const path = [
+      resolve(process.cwd(), "runtime/data/admin-buildings.json"),
+      resolve(process.cwd(), "../../runtime/data/admin-buildings.json")
+    ].find((candidate) => existsSync(candidate)) || resolve(process.cwd(), "runtime/data/admin-buildings.json");
+    const buildings = JSON.parse(readFileSync(path, "utf8"));
+    for (const building of Array.isArray(buildings) ? buildings : []) {
+      const id = String(building.id || "").trim();
+      if (!id) continue;
+      metadata.set(id, { name: String(building.name || "") || splitBuildingTypeFallback(id) });
+    }
+  } catch {
+    // Storage listings still work (showing the raw building_type,
+    // pre-fix behavior) without the optional local catalog metadata.
+  }
+  adminBuildingMetadataCache = metadata;
+  return adminBuildingMetadataCache;
+}
+
+// resolveBuildingDisplayName: looks up a real building_type against the
+// curated catalog above, falling back to splitBuildingTypeFallback() for
+// anything not yet confirmed and added. Exported separately from
+// adminBuildingMetadata() so callers needing just the name (the common
+// case) don't need to know about the Map-based catalog shape.
+export function resolveBuildingDisplayName(buildingType) {
+  const id = String(buildingType || "").trim();
+  if (!id) return "Unknown Building";
+  const metadata = adminBuildingMetadata();
+  return metadata.get(id)?.name || splitBuildingTypeFallback(id);
 }
 
 function augmentCompatibilityCatalog() {
@@ -4578,6 +4766,79 @@ export async function giveItemToStorage(db, storageId, { itemName = "", itemId =
   });
 }
 
+export async function fillItemToStorage(db, repoRoot, storageId, { itemName = "", itemId = "", templateId = "", quantity = 1, quality = 0, itemVolume = 0, augments = [], augmentQuality = 1 }) {
+  await requireCapability(await supportsStorageFillItem(db), "Storage fill-item requires compatible dune.inventories and dune.items insert columns including volume_override.");
+  const target = intParam(storageId, "storage id", 1);
+  const resolvedTemplate = validateTemplateId(templateId || itemId || itemName);
+  let stackSize = intParam(quantity, "quantity", 0, 1000000);
+  const qualityLevel = normalizeStandaloneAugmentQuality(resolvedTemplate, intParam(quality, "quality", 0, 1000000));
+  const augmentIds = validateAugmentIds(augments);
+  const augmentQualityLevel = normalizeAugmentQuality(augmentQuality);
+  validateAugmentsForTemplate(resolvedTemplate, augmentIds);
+  const itemVolumeNum = Number(itemVolume) || 0;
+  return db.transaction(async (tx) => {
+    const itemColumns = await columnsFor(tx, "items");
+    const storage = await tx.query(`
+      select id, actor_id, coalesce(max_item_count, 0)::int as max_item_count, coalesce(max_item_volume, 0)::real as max_item_volume
+      from dune.inventories
+      where actor_id = $1
+      order by id
+      limit 1
+      for update`, [target]);
+    if (!storage.rows[0]) throw new Error("Storage inventory was not found for the selected storage actor");
+    const inventory = storage.rows[0];
+    const count = await tx.query("select count(*)::int as count from dune.items where inventory_id = $1", [inventory.id]);
+    const currentCount = Number(count.rows[0]?.count || 0);
+    if (inventory.max_item_count > 0 && currentCount >= inventory.max_item_count) throw new Error("Storage is full by item slot count");
+    if (stackSize === 0) {
+      const slotsRemaining = inventory.max_item_count > 0 ? Math.max(0, inventory.max_item_count - currentCount) : 1000000;
+      let volumeRemaining = 1000000;
+      if (inventory.max_item_volume > 0 && itemVolumeNum > 0) {
+        const volume = await tx.query("select coalesce(sum(coalesce(volume_override, 0)), 0)::real as total_volume from dune.items where inventory_id = $1", [inventory.id]);
+        const currentVolume = Number(volume.rows[0]?.total_volume || 0);
+        volumeRemaining = Math.floor((inventory.max_item_volume - currentVolume) / itemVolumeNum);
+      }
+      stackSize = Math.min(slotsRemaining, volumeRemaining, 1000000);
+      if (stackSize < 1) throw new Error("Container is full (no slots or volume remaining)");
+    }
+    if (inventory.max_item_count > 0 && currentCount + stackSize > inventory.max_item_count) throw new Error("Storage is full by item slot count");
+    if (inventory.max_item_volume > 0 && itemVolumeNum > 0) {
+      const volume = await tx.query("select coalesce(sum(coalesce(volume_override, 0)), 0)::real as total_volume from dune.items where inventory_id = $1", [inventory.id]);
+      const currentVolume = Number(volume.rows[0]?.total_volume || 0);
+      const neededVolume = itemVolumeNum * stackSize;
+      if (currentVolume + neededVolume > inventory.max_item_volume) {
+        throw new Error(`Storage is full by volume (${currentVolume.toFixed(1)}/${inventory.max_item_volume.toFixed(1)} used, need ${neededVolume.toFixed(1)})`);
+      }
+    }
+    const position = await tx.query("select coalesce(max(position_index), -1)::int + 1 as position_index from dune.items where inventory_id = $1", [inventory.id]);
+    const standaloneAugment = isStandaloneAugmentTemplate(resolvedTemplate);
+    const rollPayloads = await loadAugmentRollPayloads(
+      tx,
+      standaloneAugment ? [resolvedTemplate] : augmentIds,
+      standaloneAugment ? qualityLevel : augmentQualityLevel,
+      { sourceTemplateId: resolvedTemplate }
+    );
+    const stats = buildItemStats({ templateId: resolvedTemplate, augments: augmentIds, rollPayloads });
+    const insertColumns = ["inventory_id", "template_id", "stack_size", "quality_level", "position_index", "stats"];
+    const insertValues = [inventory.id, resolvedTemplate, stackSize, qualityLevel, Number(position.rows[0]?.position_index || 0), JSON.stringify(stats)];
+    if (itemColumns.has("volume_override")) {
+      insertColumns.push("volume_override");
+      insertValues.push(itemVolumeNum);
+    }
+    const insert = itemInsertShape(insertColumns, insertValues, itemColumns);
+    const inserted = await tx.query(`
+      insert into dune.items (${insert.columns.join(", ")})
+      values (${insert.values.map((_, index) => {
+        const col = insertColumns[index];
+        if (col === "stats") return `$${index + 1}::jsonb`;
+        if (col === "volume_override") return `$${index + 1}::real`;
+        return `$${index + 1}`;
+      }).join(", ")})
+      returning id, template_id, stack_size, quality_level, position_index, inventory_id, volume_override`, insert.values);
+    return { ok: true, storage: inventory, inserted: inserted.rows[0], augments: augmentIds.length > 0 ? augmentIds : undefined };
+  });
+}
+
 export async function giveItemToPlayer(db, playerId, { itemName = "", itemId = "", templateId = "", quantity = 1, quality = 1, augments = [], augmentQuality = 1, allowOnlinePreAugmented = false }) {
   await requireCapability(await supportsPlayerGiveItem(db), "Player give-item requires compatible dune.inventories and dune.items insert columns.");
   const target = intParam(playerId, "player id", 1);
@@ -5087,6 +5348,14 @@ async function supportsPlayerGiveItem(db) {
     ["inventory_id", "template_id", "stack_size", "quality_level", "position_index", "stats"].every((column) => itemColumns.has(column));
 }
 
+async function supportsStorageFillItem(db) {
+  if (!(await tableExists(db, "items")) || !(await tableExists(db, "inventories"))) return false;
+  const inventoryColumns = await columnsFor(db, "inventories");
+  const itemColumns = await columnsFor(db, "items");
+  return ["id", "actor_id", "max_item_count", "max_item_volume"].every((column) => inventoryColumns.has(column)) &&
+    ["inventory_id", "template_id", "stack_size", "quality_level", "position_index", "stats", "volume_override"].every((column) => itemColumns.has(column));
+}
+
 async function supportsRepairGear(db) {
   if (!(await tableExists(db, "items")) || !(await tableExists(db, "inventories"))) return false;
   const inventoryColumns = await columnsFor(db, "inventories");
@@ -5530,63 +5799,348 @@ function emptyActivitySummary() {
   };
 }
 
-export async function addonOpsResourcesSummary(db) {
+// Display-map-name -> server-partition-map-name alias, for joining spice
+// data (dune.resourcefield_state/spicefield_types, keyed by the in-game
+// display map name e.g. "HaggaBasin"/"DeepDesert") to partition/combat-state
+// data (dune.world_partition, keyed by the server-instance map name e.g.
+// "Survival_1"/"DeepDesert_1"). This is the SAME real, already-used
+// alias table server.js's mapChatServerMaps() defines — duplicated here
+// (not imported) only because server.js imports duneDb.js, not the
+// reverse, and importing server.js from here would be circular. Keep
+// these two lists in sync if either display map ever gets a different
+// underlying partition map name.
+const SPICE_MAP_PARTITION_ALIAS = {
+  HaggaBasin: "Survival_1",
+  DeepDesert: "DeepDesert_1"
+};
+
+// Which spice field sizes each map supports by design, independent of
+// which sizes happen to have a live spicefield_types row on any given
+// server (a size can be a real, supported category for a map even if
+// zero fields of that size are currently spawned anywhere). Hagga Basin
+// currently only spawns Small fields in this game version — verified
+// directly against a live, populated deployment (no Medium/Large
+// spicefield_types rows exist for HaggaBasin on any known real server).
+// Deep Desert supports all three sizes. If a future game update adds
+// Medium/Large to Hagga Basin, or a new size to either map, this table
+// must be updated to match — it is intentionally not auto-derived from
+// whatever a single server's spicefield_types rows happen to contain,
+// so a quiet/freshly-reset server doesn't misreport its own map as
+// supporting fewer sizes than it actually does.
+const SUPPORTED_SIZES_BY_DISPLAY_MAP = {
+  DeepDesert: ["Small", "Medium", "Large"],
+  HaggaBasin: ["Small"]
+};
+
+// addonOpsResourcesSummary: Deep Desert / Hagga Basin spice-field summary
+// for the OPS observability addon's Spice Melange tab, separated by map
+// and by instance/sietch (dune.world_partition row, keyed by
+// dimension_index), each annotated with its real, config-resolved PvP/PvE
+// state (services/mapCombatState.js — never inferred from dimension_index,
+// labels, or lifecycle mode).
+//
+// Verified live against a real deployment before writing this: confirmed
+// resourcefield_state has real per-field value_remaining but NO size-tier
+// label; spicefield_types has real per-size active-field counts but NO
+// remaining-spice column; there is no shared join key between them (no
+// common field-instance id) and no evidence of a fixed value-per-size
+// relationship (all live fields observed had identical value_remaining
+// regardless of size, and no static per-size capacity/value config exists
+// anywhere in the schema). Given that, per-size "active fields" is real
+// and reported; per-size "remaining spice" has no real source and is
+// reported as null, never estimated or apportioned from the map-level
+// total by ratio -- that would be exactly the fabrication anti-pattern
+// this whole effort exists to eliminate. The map/dimension-level total
+// remaining spice IS real (summed directly from resourcefield_state) and
+// is reported at the instance and summary level.
+export async function addonOpsResourcesSummary(db, config) {
   if (!(await tableExists(db, "resourcefield_state"))) return emptyResourcesSummary();
 
-  const result = await db.query(`
-    select count(*)::int as total_fields,
-           coalesce(sum(value_remaining), 0)::bigint as total_value
+  const deepDesert = await resourcesSectionForDisplayMap(db, config, "DeepDesert");
+  const haggaBasin = await resourcesSectionForDisplayMap(db, config, "HaggaBasin");
+
+  return { deepDesert, haggaBasin };
+}
+
+// Builds one map's (Deep Desert's or Hagga Basin's) full section: real
+// per-instance/sietch rows (each with real PvP/PvE state, real per-size
+// active-field counts, and real total remaining spice), plus a summary
+// aggregated ONLY from the instances actually returned -- never from
+// hidden, filtered, or historical records, per the addon's own
+// requirements.
+async function resourcesSectionForDisplayMap(db, config, displayMap) {
+  const partitionMap = SPICE_MAP_PARTITION_ALIAS[displayMap];
+  const emptySection = {
+    summary: emptyResourcesSectionSummary(),
+    instances: []
+  };
+  if (!partitionMap) return emptySection;
+
+  // Real per-instance/dimension identity + runtime status, from the same
+  // query the Console's own map-combat-state route already uses
+  // (server.js's mapCombatStateRoute -> mapCombatPartitionRows). A
+  // successful, empty result here (no world_partition rows for this map)
+  // is a normal, valid "no instances currently provisioned" state --
+  // e.g. Deep Desert with nothing spawned -- never treated as an error.
+  const partitionResult = await mapCombatPartitionRows(db, partitionMap);
+  if (partitionResult.capabilities?.combatState === false || !partitionResult.rows.length) {
+    return emptySection;
+  }
+
+  const partitionRows = partitionResult.rows.map((row) => ({
+    partitionId: row.partition_id,
+    dimensionIndex: row.dimension_index,
+    databaseLabel: row.database_label || null,
+    serverId: row.server_id || "",
+    ready: Boolean(row.ready),
+    alive: Boolean(row.alive),
+    blocked: Boolean(row.blocked)
+  }));
+
+  // Real, config-resolved PvP/PvE per instance -- never inferred from
+  // dimension_index, label, or lifecycle. Resolver failures degrade to
+  // "UNKNOWN" per-partition (see mapCombatState.js's own error handling)
+  // rather than throwing and losing the whole section.
+  let combatState;
+  try {
+    combatState = await resolveMapCombatState(config, partitionMap, partitionRows);
+  } catch {
+    combatState = { map: partitionMap, mapState: "UNKNOWN", partitions: partitionRows.map((p) => ({ ...p, configuredState: "UNKNOWN" })) };
+  }
+  const combatStateByDimension = new Map(combatState.partitions.map((p) => [Number(p.dimensionIndex), p]));
+
+  // Real per-dimension field totals (count + summed remaining spice) --
+  // ground truth, counted directly from live field rows, not a
+  // separately-maintained counter.
+  const totalsResult = await db.query(`
+    select dimension_index,
+           count(*)::int as active_fields,
+           coalesce(sum(value_remaining), 0)::bigint as remaining_spice
     from dune.resourcefield_state
-    where field_kind_id = 1`);
+    where map = $1 and field_kind_id = 1
+    group by dimension_index`, [displayMap]);
+  const totalsByDimension = new Map(totalsResult.rows.map((r) => [Number(r.dimension_index), { activeFields: Number(r.active_fields || 0), remainingSpice: Number(r.remaining_spice || 0) }]));
 
-  const r = result.rows?.[0] || {};
-
-  let resourcesByMap = [];
+  // Real per-dimension, per-size active-field counts, from
+  // dune.spicefield_types -- the game's own real, authoritative
+  // size-naming and per-size capacity table (field_type names the size
+  // directly: "Small"/"Medium"/"Large"; max_globally_active/
+  // current_globally_active are real, live-configured caps -- e.g. Hagga
+  // Basin's Small-field limit of 5 is spicefield_types.max_globally_active
+  // for its one Small row, verified live 2026-07-24).
+  let sizesByDimension = new Map();
   try {
-      const mapResult = await db.query(`
-        select map,
-               count(*)::int as fields,
-               coalesce(sum(value_remaining), 0)::bigint as total_value
-        from dune.resourcefield_state
-        where field_kind_id = 1
-        group by map
-        order by fields desc`);
-    resourcesByMap = mapResult.rows || [];
-  } catch { }
-
-  let spiceFieldsBySize = [];
-  try {
-    const spiceExists = await tableExists(db, "spicefield_types");
-    if (spiceExists) {
-      const spiceResult = await db.query(`
-        select sft.field_type as size,
-               sft.map_name as map,
-               coalesce(sum(sft.current_globally_active), 0)::int as currently_active,
-               coalesce(sum(sft.max_globally_active), 0)::int as max_active,
-               (select coalesce(sum(value_remaining), 0)::bigint
-                from dune.resourcefield_state rfs
-                where rfs.map = sft.map_name and rfs.field_kind_id = 1) as total_value,
-               (select count(*)::int
-                from dune.resourcefield_state rfs
-                where rfs.map = sft.map_name and rfs.field_kind_id = 1) as active_fields
-        from dune.spicefield_types sft
-        where sft.is_spawning_active = true
-        group by sft.field_type, sft.map_name
-        order by sft.map_name, sft.field_type`);
-      spiceFieldsBySize = spiceResult.rows || [];
+    const sizesExist = await tableExists(db, "spicefield_types");
+    if (sizesExist) {
+      const sizesResult = await db.query(`
+        select dimension_index, field_type, coalesce(current_globally_active, 0)::int as active_fields
+        from dune.spicefield_types
+        where map_name = $1
+        order by dimension_index, field_type`, [displayMap]);
+      for (const row of sizesResult.rows) {
+        const dim = Number(row.dimension_index);
+        if (!sizesByDimension.has(dim)) sizesByDimension.set(dim, []);
+        sizesByDimension.get(dim).push({ size: row.field_type, activeFields: Number(row.active_fields || 0), remainingSpice: null });
+      }
     }
   } catch { }
 
-  return {
-    totalFields: Number(r.total_fields || 0),
-    totalValueRemaining: Number(r.total_value || 0),
-    resourcesByMap,
-    spiceFieldsBySize
+  // Real per-dimension groupings of resourcefield_state's raw
+  // value_remaining, used ONLY as input to resolvePerSizePotentialSpice's
+  // rank-match attempt below -- resourcefield_state itself still has no
+  // size-tier column (verified 2026-07-24: schema is field_id, map,
+  // dimension_index, spawn_time, value_remaining, field_kind_id only; no
+  // foreign key to spicefield_types).
+  let valueGroupsByDimension = new Map();
+  try {
+    const valuesResult = await db.query(`
+      select dimension_index, value_remaining, count(*)::int as field_count
+      from dune.resourcefield_state
+      where map = $1 and field_kind_id = 1
+      group by dimension_index, value_remaining
+      order by dimension_index, value_remaining`, [displayMap]);
+    for (const row of valuesResult.rows) {
+      const dim = Number(row.dimension_index);
+      if (!valueGroupsByDimension.has(dim)) valueGroupsByDimension.set(dim, []);
+      valueGroupsByDimension.get(dim).push({ valueRemaining: Number(row.value_remaining), fieldCount: Number(row.field_count) });
+    }
+  } catch { }
+
+  const instances = partitionRows
+    .map((row) => {
+      const dim = Number(row.dimensionIndex);
+      const combat = combatStateByDimension.get(dim);
+      const totals = totalsByDimension.get(dim) || { activeFields: 0, remainingSpice: 0 };
+      // Every size tier this map supports BY DESIGN must appear as a row,
+      // even at 0 active fields for this specific instance -- a reporting
+      // instance with no active Small fields shows Small: 0, never an
+      // omitted row (0 is a valid, real value; omission would look like
+      // missing data). Deliberately keyed off the fixed
+      // SUPPORTED_SIZES_BY_DISPLAY_MAP table, not off whatever sizes
+      // happen to have a live spicefield_types row today -- a size that
+      // is real for this map but has zero fields spawned anywhere right
+      // now must still show as a real 0, not be silently dropped from
+      // the row list entirely.
+      const supportedSizes = SUPPORTED_SIZES_BY_DISPLAY_MAP[displayMap] || allKnownSizesForDisplayMap(sizesByDimension);
+      const sizesForThisDimension = sizesByDimension.get(dim) || [];
+      const sizesByName = new Map(sizesForThisDimension.map((s) => [s.size, s]));
+      // Real per-size Potential Spice, when it can be determined safely --
+      // see resolvePerSizePotentialSpice's own comment for the exact
+      // rank-match condition and why it refuses to guess when that
+      // condition doesn't hold.
+      const perSizeSpice = resolvePerSizePotentialSpice(supportedSizes, valueGroupsByDimension.get(dim) || []);
+      const sizes = supportedSizes.map((size) => {
+        const base = sizesByName.get(size) || { size, activeFields: 0, remainingSpice: null };
+        return { ...base, remainingSpice: perSizeSpice.has(size) ? perSizeSpice.get(size) : null };
+      });
+
+      return {
+        partitionId: row.partitionId,
+        dimensionIndex: dim,
+        // A real, human display name: prefer world_partition.label (e.g.
+        // "Sietch Abbir"); fall back to a stable, non-fabricated
+        // "<Map> <dimension>" identifier if no label was ever set --
+        // never invent a name.
+        name: row.databaseLabel || `${displayMap} ${dim}`,
+        runtimeStatus: combat?.runtimeStatus || "UNKNOWN",
+        // PVP/PVE/CONFLICT/UNKNOWN, normalized uppercase per
+        // mapCombatState.js's own contract -- never re-derived here.
+        combatState: combat?.configuredState || "UNKNOWN",
+        activeFields: totals.activeFields,
+        remainingSpice: totals.remainingSpice,
+        sizes
+      };
+    })
+    // Natural sort by dimensionIndex (Deep Desert's real numbering) with
+    // a stable fallback to name for maps where dimensionIndex ties (not
+    // expected today, but a defensible, deterministic order if it ever
+    // happens) -- NOT alphabetical by name for Deep Desert (its identity
+    // is numeric), matching the addon's own natural-sort requirement for
+    // Deep Desert vs. alphabetical-by-name for Hagga Basin, which the
+    // addon's own rendering layer applies per section.
+    .sort((a, b) => a.dimensionIndex - b.dimensionIndex);
+
+  const summary = {
+    totalActiveFields: instances.reduce((sum, i) => sum + i.activeFields, 0),
+    totalRemainingSpice: instances.reduce((sum, i) => sum + i.remainingSpice, 0),
+    pvpInstances: instances.filter((i) => i.combatState === "PVP").length,
+    pveInstances: instances.filter((i) => i.combatState === "PVE").length,
+    bySize: aggregateSizesAcrossInstances(instances)
   };
+
+  return { summary, instances };
+}
+
+// Attempts to determine real, per-size Potential Spice for one map
+// dimension by rank-matching resourcefield_state's distinct
+// value_remaining groups against the map's known, ordered size list
+// (Small < Medium < Large, dune.spicefield_types.field_type is the real,
+// authoritative size name -- see SUPPORTED_SIZES_BY_DISPLAY_MAP).
+//
+// Verified live 2026-07-24 against a real Deep Desert spawn: every field
+// of a given size shared one exact value_remaining (10 Small fields all
+// at 5000, 10 Medium at 150000, 1 Large at 2500000 -- confirmed by
+// grouping, not a single-sample coincidence), and Hagga Basin's Small
+// fields independently matched the same 5000 value -- consistent with
+// value_remaining being a fixed per-size starting capacity, not a
+// randomly-varying harvested-down amount (spawn_time varied across
+// fields within the same value group, yet the value never did).
+//
+// resourcefield_state has no size-tier column and no foreign key to
+// spicefield_types (verified: schema is field_id, map, dimension_index,
+// spawn_time, value_remaining, field_kind_id only) -- so there is no
+// robust way to join a specific field row to a specific size. Matching
+// by live active-field COUNT is not safe either: this map's own real
+// data has produced a genuine tie (Small and Medium both showing
+// current_globally_active = 10 simultaneously), which would make a
+// count-based join ambiguous or silently wrong.
+//
+// Rank-matching by value is used instead: sort the map's supported
+// sizes in their real, natural order (Small < Medium < Large) and sort
+// the distinct observed values ascending, then pair position-by-
+// position. This is only applied when the number of distinct
+// value_remaining groups exactly equals the number of supported sizes
+// for that map -- if it doesn't (e.g. a size hasn't spawned any fields
+// yet, so its value never appears; or harvesting has ever caused two
+// fields of the same size to diverge in value, producing more distinct
+// groups than sizes), the mapping is ambiguous and this function
+// deliberately returns nothing rather than guess. This is an inference
+// grounded in real, live-verified data, not a guaranteed formula --
+// documented as such in docs/tabs/SPICE-MELANGE.md.
+function resolvePerSizePotentialSpice(supportedSizes, valueGroups) {
+  const result = new Map();
+  if (!Array.isArray(valueGroups) || valueGroups.length !== supportedSizes.length || valueGroups.length === 0) {
+    return result;
+  }
+  const orderedSizes = [...supportedSizes].sort((a, b) => {
+    const order = ["Small", "Medium", "Large"];
+    const ai = order.indexOf(a);
+    const bi = order.indexOf(b);
+    return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
+  });
+  const orderedGroups = [...valueGroups].sort((a, b) => a.valueRemaining - b.valueRemaining);
+  for (let i = 0; i < orderedSizes.length; i++) {
+    result.set(orderedSizes[i], orderedGroups[i].valueRemaining * orderedGroups[i].fieldCount);
+  }
+  return result;
+}
+
+function allKnownSizesForDisplayMap(sizesByDimension) {
+  const sizes = new Set();
+  for (const rows of sizesByDimension.values()) {
+    for (const row of rows) sizes.add(row.size);
+  }
+  // Stable, canonical ordering when multiple sizes exist; falls back to
+  // whatever was actually found (never fabricates a size that doesn't
+  // appear anywhere in the real data).
+  const order = ["Small", "Medium", "Large"];
+  return [...sizes].sort((a, b) => (order.indexOf(a) === -1 ? 99 : order.indexOf(a)) - (order.indexOf(b) === -1 ? 99 : order.indexOf(b)));
+}
+
+function aggregateSizesAcrossInstances(instances) {
+  // sumBySize/hasNullBySize are tracked separately (rather than folding
+  // null-handling into a single running total) so a null from any one
+  // instance can correctly poison only that size's final total, without
+  // the running-sum math itself needing to branch on null every
+  // iteration.
+  const sumBySize = new Map();
+  const hasNullBySize = new Map();
+  const activeFieldsBySize = new Map();
+  const order = [];
+  for (const instance of instances) {
+    for (const s of instance.sizes) {
+      if (!sumBySize.has(s.size)) {
+        sumBySize.set(s.size, 0);
+        hasNullBySize.set(s.size, false);
+        activeFieldsBySize.set(s.size, 0);
+        order.push(s.size);
+      }
+      activeFieldsBySize.set(s.size, activeFieldsBySize.get(s.size) + s.activeFields);
+      if (s.remainingSpice === null) {
+        hasNullBySize.set(s.size, true);
+      } else {
+        sumBySize.set(s.size, sumBySize.get(s.size) + s.remainingSpice);
+      }
+    }
+  }
+  // Only sum a real number into a real number -- if any contributing
+  // instance's per-size remainingSpice is null (rank-match wasn't safe
+  // for that instance/dimension), the section-level per-size total for
+  // that size is null too, rather than silently summing partial data as
+  // if it were the complete real total.
+  return order.map((size) => ({
+    size,
+    activeFields: activeFieldsBySize.get(size),
+    remainingSpice: hasNullBySize.get(size) ? null : sumBySize.get(size)
+  }));
+}
+
+function emptyResourcesSectionSummary() {
+  return { totalActiveFields: 0, totalRemainingSpice: 0, pvpInstances: 0, pveInstances: 0, bySize: [] };
 }
 
 function emptyResourcesSummary() {
-  return { totalFields: 0, totalValueRemaining: 0, resourcesByMap: [], spiceFieldsBySize: [] };
+  return { deepDesert: { summary: emptyResourcesSectionSummary(), instances: [] }, haggaBasin: { summary: emptyResourcesSectionSummary(), instances: [] } };
 }
 
 export async function addonOpsCombatDeaths(db) {
@@ -5706,27 +6260,281 @@ export async function addonOpsEconomySummary(db) {
 function emptyEconomySummary() {
   return { totalCurrencyHolders: 0, totalSupply: 0, activeOrders: 0, fulfilledOrders: 0, taxCollected: 0, currencyBreakdown: [], topTradedItems: [] };
 }
+
+// addonOpsInventorySummary: aggregate-only, read-only inventory/storage
+// summary for the OPS observability addon's Inventory tab. Reuses
+// listStorage()'s existing storage-container query for storageUsage/
+// totalInventories (already used by /api/storage — see that route in
+// server.js) rather than duplicating its SQL. itemsByTemplate is a new
+// query grouping dune.items by template_id across all non-hologram,
+// owned storage containers, enriched with human-readable names/
+// categories from the same local admin-items.json catalog
+// adminItemMetadata()/playerInventory() already use.
+//
+// totalCrafted has no real source anywhere in this schema — verified by
+// direct search (only per-player recipe-*unlock* tracking exists, which
+// is a different concept from a crafted-item count) — and is returned
+// as null unconditionally. Do not estimate this from itemsByTemplate,
+// storageUsage, or any other proxy; an unavailable field must stay
+// unavailable, never a guessed number that merely looks plausible.
+export async function addonOpsInventorySummary(db) {
+  if (!(await tableExists(db, "items")) || !(await tableExists(db, "inventories")) || !(await tableExists(db, "placeables"))) {
+    return emptyInventorySummary();
+  }
+
+  let totalItems = 0;
+  let itemsByTemplate = [];
+  try {
+    const totals = await db.query(`
+      select count(*)::int as total_items
+      from dune.items i
+      join dune.inventories inv on i.inventory_id = inv.id
+      join dune.placeables p on p.id = inv.actor_id
+      where p.is_hologram = false and p.owner_entity_id is not null and p.owner_entity_id != 0`);
+    totalItems = Number(totals.rows?.[0]?.total_items || 0);
+
+    const byTemplate = await db.query(`
+      select i.template_id::text as template_id,
+             count(*)::int as count,
+             coalesce(sum(i.stack_size), 0)::bigint as total_stack
+      from dune.items i
+      join dune.inventories inv on i.inventory_id = inv.id
+      join dune.placeables p on p.id = inv.actor_id
+      where p.is_hologram = false and p.owner_entity_id is not null and p.owner_entity_id != 0
+      group by i.template_id
+      order by count desc
+      limit 50`);
+    const metadata = adminItemMetadata();
+    itemsByTemplate = (byTemplate.rows || []).map((row) => {
+      const meta = metadata.get(row.template_id);
+      return { ...row, name: meta?.name || row.template_id, category: meta?.category || "" };
+    });
+  } catch { }
+
+  let storageUsage = [];
+  let totalInventories = 0;
+  try {
+    const storage = await listStorage(db);
+    storageUsage = (storage.rows || []).map((row) => ({ inventoryId: row.id, itemCount: row.item_count, totalStack: null }));
+    totalInventories = storageUsage.length;
+  } catch { }
+
+  return {
+    totalItems,
+    totalInventories,
+    itemsByTemplate,
+    totalCrafted: null,
+    storageUsage
+  };
+}
+
+function emptyInventorySummary() {
+  return { totalItems: 0, totalInventories: 0, itemsByTemplate: [], totalCrafted: null, storageUsage: [] };
+}
+
+// addonOpsSocSummary: platform-health summary for the OPS observability
+// addon's SOC tab. Deliberately does not take a `db` parameter — unlike
+// every other addonOps* function, this domain has no aggregate SQL query
+// backing it. bridgeRequests/bridgeErrors/bridgeSuccessRate come from an
+// in-memory rolling counter (audit.js's getBridgeRequestSummary()),
+// updated at audit()-call time whenever an addons.bridge action is
+// logged, rather than re-parsing the (potentially large) audit log file
+// on every request — see audit.js's own comment for why. Verified against
+// this project's own live, running audit log (runtime/generated/
+// web-admin-audit.jsonl, 1301 real lines, 485 real addons.bridge entries
+// at the time of writing) that the exact detail.ok field shape this
+// depends on is correct in production, not just in a mocked test.
+export function addonOpsSocSummary() {
+  const { requests, errors } = getBridgeRequestSummary();
+  const successRate = requests > 0 ? Math.round(((requests - errors) / requests) * 100) : null;
+  const platformHealth = requests === 0 ? "Unknown" : errors / requests > 0.1 ? "Degraded" : "Healthy";
+  return {
+    platformHealth,
+    bridgeRequests: requests,
+    bridgeErrors: errors,
+    bridgeSuccessRate: successRate
+  };
+}
+
+// addonOpsPrometheusHealth: reports the health of this project's optional,
+// opt-in metrics stack (docker-compose.metrics.yml, started via
+// `dune metrics start` — NOT running by default). Deliberately takes no
+// `db` parameter — this is an HTTP integration against a local Prometheus
+// instance, not a SQL query.
+//
+// Mandatory precondition check, verified live on a real deployment before
+// writing this: attempts a short-timeout /-/healthy request first. If
+// Prometheus is not reachable (the default, common state — this stack is
+// opt-in), returns { status: "planned", domain: "prometheus", reason:
+// "metrics_stack_not_running", message, summary: {} } — deliberately
+// reusing the exact same { status: "planned", ... } shape
+// opsPrometheusProvider's own placeholder already returns (opsProvider.js's
+// opsPlaceholder()), which is the shape the addon's own
+// fetchLiveOrUnavailable() (web/data-providers.js) already knows how to
+// recognize as "unavailable" without requiring any change on the addon
+// side. The added `reason: "metrics_stack_not_running"` field distinguishes
+// this specific case from a route that's genuinely not implemented at all
+// (location, still a bare opsPlaceholder with no reason field) for any
+// caller that inspects the raw bridge response directly — e.g. the
+// Discord bot, or a future addon version — even though the current addon
+// version's fetchLiveOrUnavailable() collapses both into the same
+// "not_implemented" SourceResult reason today. This is intentional: Core
+// reports the most specific truth it can; it is not Core's job to decide
+// how precisely a particular consumer chooses to surface that truth.
+//
+// avgCpuPercent/avgMemoryMb come from node-exporter host-level metrics
+// (100 - idle-cpu-percent; MemTotal - MemAvailable), which were directly
+// verified to work correctly against a real, running instance of this
+// exact metrics stack. totalRestarts and any per-container breakdown are
+// NOT computed here: verified live, on this same real deployment, that
+// this stack's cAdvisor (docker-compose.metrics.yml's current
+// --docker_only=true / --store_container_labels=false configuration) only
+// exposes root-cgroup-aggregate metrics (id="/", no per-container `name`
+// label) on this system's Docker/OverlayFS configuration — confirmed via
+// cAdvisor's own container logs ("failed to identify the read-write layer
+// ID for container ..." for every single running container). This is a
+// pre-existing cAdvisor configuration/compatibility issue in
+// docker-compose.metrics.yml itself, out of scope for this change to fix,
+// and NOT something to work around by fabricating or guessing a
+// totalRestarts value — it is returned as null, honestly reflecting that
+// per-container metrics are not currently obtainable from this stack as
+// configured, distinct from the target simply being reachable (which
+// `targets.active`/`targets.total` below correctly reports based on
+// Prometheus's own /api/v1/targets `health` field, which does NOT depend
+// on cAdvisor's per-container metric quality — a target can be "up"
+// (reachable, scraping successfully) while still only exposing an
+// incomplete/aggregate metric set).
+export async function addonOpsPrometheusHealth(promBaseUrl = process.env.METRICS_PROMETHEUS_URL || `http://127.0.0.1:${process.env.METRICS_PROMETHEUS_PORT || 9090}`) {
+  try {
+    const healthRes = await fetch(`${promBaseUrl}/-/healthy`, { signal: AbortSignal.timeout(2000) });
+    if (!healthRes.ok) return metricsStackNotRunning();
+  } catch {
+    return metricsStackNotRunning();
+  }
+
+  let active = 0;
+  let total = 0;
+  const services = {};
+  try {
+    const targetsRes = await fetch(`${promBaseUrl}/api/v1/targets`, { signal: AbortSignal.timeout(3000) });
+    const targetsBody = await targetsRes.json();
+    const activeTargets = targetsBody?.data?.activeTargets || [];
+    total = activeTargets.length;
+    for (const t of activeTargets) {
+      const job = t.labels?.job || t.labels?.service || "unknown";
+      const isUp = t.health === "up";
+      if (isUp) active += 1;
+      services[job] = isUp ? "up" : "down";
+    }
+  } catch { }
+
+  const avgCpuPercent = await promScalar(promBaseUrl, `100 - (avg(rate(node_cpu_seconds_total{mode="idle"}[1m])) * 100)`);
+  const memUsedBytes = await promScalar(promBaseUrl, `node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes`);
+
+  // Flat shape (not nested under an extra `data` key) — this return value
+  // becomes the addon-bridge response's `result` field directly (see
+  // server.js's addonBridgeRoute), which becomes exactly what the addon's
+  // web/data-providers.js receives as its raw bridge response and wraps
+  // in its own SourceResult envelope as `.data`. Matches the shape
+  // web/addon.js's renderPrometheus() already expects to read
+  // (result.data.healthy / .targets / .summary).
+  return {
+    healthy: true,
+    targets: { active, inactive: total - active, pending: 0, total },
+    services,
+    summary: {
+      avgCpuPercent: avgCpuPercent === null ? null : Math.round(avgCpuPercent * 10) / 10,
+      avgMemoryMb: memUsedBytes === null ? null : Math.round(memUsedBytes / (1024 * 1024)),
+      // Not computed — see the function-level comment above for the
+      // real, verified reason (cAdvisor per-container metrics are not
+      // currently obtainable from this stack's configuration on this
+      // system). Never estimated from the root-cgroup aggregate or any
+      // other proxy.
+      totalRestarts: null
+    }
+  };
+}
+
+function metricsStackNotRunning() {
+  return {
+    status: "planned",
+    domain: "prometheus",
+    reason: "metrics_stack_not_running",
+    message: "The optional Prometheus metrics stack is not running on this deployment. Run `dune metrics start` to enable it.",
+    summary: {}
+  };
+}
+
+async function promScalar(promBaseUrl, query) {
+  try {
+    const res = await fetch(`${promBaseUrl}/api/v1/query?${new URLSearchParams({ query })}`, { signal: AbortSignal.timeout(3000) });
+    const body = await res.json();
+    const value = body?.data?.result?.[0]?.value?.[1];
+    const num = Number(value);
+    return Number.isFinite(num) ? num : null;
+  } catch {
+    return null;
+  }
+}
+// All Discord-linking state lives in a dedicated `console` schema, NOT
+// in `dune` — the `dune` schema belongs entirely to the game server
+// itself (Funcom's igw-postgres image owns and manages it; every table
+// in it besides these was created by the game, not by this project).
+// This project has no business creating tables inside a vendor-owned
+// schema: a future game-server upgrade could add, rename, or otherwise
+// collide with anything living there, and mixing our own state into it
+// makes "what does this project actually own" impossible to tell at a
+// glance. `console` is a schema this project fully owns in the same
+// Postgres database (not a separate database or container) — this
+// keeps existing pg_dump-based backup/restore tooling (runtime/scripts/
+// db.sh, db-manager.sh) working unchanged, since it backs up the whole
+// `dune` database, schemas included, with zero new infrastructure.
+//
+// Migration note (FINDING-LINK-SCHEMA, found during review): earlier
+// versions of this migration created these same four tables directly
+// under `dune.*`. Since confirmed via direct inspection of a live
+// deployment that no production data had ever been written to them
+// (discord_player_links was empty; discord_account_links/
+// discord_pending_account_links had never even been created yet), this
+// migration drops the old `dune.*` copies outright rather than adding
+// a data-preserving migration path — there is nothing to preserve. If
+// you are running this against a deployment where these tables somehow
+// do contain data, back it up manually before upgrading; this migration
+// will discard it.
+async function ensureConsoleSchema(tx) {
+  await tx.query("create schema if not exists console");
+  // Drop-if-exists cleanup of the old, incorrectly-placed dune.* copies
+  // from before this fix. Safe because confirmed empty on the only known
+  // deployment; see the migration note above.
+  await tx.query("drop table if exists dune.discord_player_links");
+  await tx.query("drop table if exists dune.discord_pending_links");
+  await tx.query("drop table if exists dune.discord_account_links");
+  await tx.query("drop table if exists dune.discord_pending_account_links");
+}
+
 export async function migrateDiscordAdapterSchema(db) {
   const migrate = async (tx) => {
+    await ensureConsoleSchema(tx);
+
     await tx.query(`
-      create table if not exists dune.discord_player_links (
+      create table if not exists console.discord_player_links (
         discord_user_id text primary key,
         player_controller_id text not null,
         linked_at timestamp with time zone not null default now()
       )`);
-    await tx.query("alter table dune.discord_player_links alter column linked_at set default now()");
-    await tx.query("update dune.discord_player_links set linked_at = now() where linked_at is null");
-    await tx.query("alter table dune.discord_player_links alter column linked_at set not null");
+    await tx.query("alter table console.discord_player_links alter column linked_at set default now()");
+    await tx.query("update console.discord_player_links set linked_at = now() where linked_at is null");
+    await tx.query("alter table console.discord_player_links alter column linked_at set not null");
     await tx.query(`
-      delete from dune.discord_player_links older
-      using dune.discord_player_links newer
+      delete from console.discord_player_links older
+      using console.discord_player_links newer
       where older.player_controller_id = newer.player_controller_id
         and (older.linked_at, older.discord_user_id) < (newer.linked_at, newer.discord_user_id)`);
     await tx.query(`
       create unique index if not exists discord_player_links_player_controller_id_uidx
-      on dune.discord_player_links (player_controller_id)`);
+      on console.discord_player_links (player_controller_id)`);
     await tx.query(`
-      create table if not exists dune.discord_pending_links (
+      create table if not exists console.discord_pending_links (
         code text primary key,
         discord_user_id text not null,
         player_controller_id text not null,
@@ -5734,26 +6542,96 @@ export async function migrateDiscordAdapterSchema(db) {
         created_at timestamp with time zone not null default now(),
         expires_at timestamp with time zone not null
       )`);
-    await tx.query("alter table dune.discord_pending_links alter column created_at set default now()");
-    await tx.query("update dune.discord_pending_links set created_at = now() where created_at is null");
-    await tx.query("alter table dune.discord_pending_links alter column created_at set not null");
-    await tx.query("delete from dune.discord_pending_links where expires_at <= now()");
+    await tx.query("alter table console.discord_pending_links alter column created_at set default now()");
+    await tx.query("update console.discord_pending_links set created_at = now() where created_at is null");
+    await tx.query("alter table console.discord_pending_links alter column created_at set not null");
+    await tx.query("delete from console.discord_pending_links where expires_at <= now()");
     await tx.query(`
-      delete from dune.discord_pending_links older
-      using dune.discord_pending_links newer
+      delete from console.discord_pending_links older
+      using console.discord_pending_links newer
       where older.discord_user_id = newer.discord_user_id
         and (older.created_at, older.code) < (newer.created_at, newer.code)`);
     await tx.query(`
-      delete from dune.discord_pending_links older
-      using dune.discord_pending_links newer
+      delete from console.discord_pending_links older
+      using console.discord_pending_links newer
       where older.player_controller_id = newer.player_controller_id
         and (older.created_at, older.code) < (newer.created_at, newer.code)`);
     await tx.query(`
       create unique index if not exists discord_pending_links_discord_user_id_uidx
-      on dune.discord_pending_links (discord_user_id)`);
+      on console.discord_pending_links (discord_user_id)`);
     await tx.query(`
       create unique index if not exists discord_pending_links_player_controller_id_uidx
-      on dune.discord_pending_links (player_controller_id)`);
+      on console.discord_pending_links (player_controller_id)`);
+
+    // Multi-account linking — FINDING-LINK-6
+    // (docs/security/discord-player-link-hardening.md). console.discord_player_links
+    // above uniques on discord_user_id alone, so one Discord user can only
+    // ever have ONE linked character at a time; re-linking silently
+    // overwrites the previous link. console.discord_account_links is
+    // additive: it uniques on (discord_user_id, player_controller_id)
+    // instead, letting one Discord user link multiple characters/accounts,
+    // while still keeping player_controller_id unique on its own (a
+    // character still belongs to exactly one Discord user, never shared).
+    // Deliberately does NOT replace or migrate discord_player_links — both
+    // tables coexist; see linkAdditionalPlayerProvider() /
+    // FINDING-LINK-6's "Minimal Impact" note for why no data migration is
+    // required.
+    await tx.query(`
+      create table if not exists console.discord_account_links (
+        id bigint generated always as identity primary key,
+        discord_user_id text not null,
+        player_controller_id text not null,
+        is_default boolean not null default false,
+        linked_at timestamp with time zone not null default now()
+      )`);
+    await tx.query(`
+      create unique index if not exists discord_account_links_user_player_uidx
+      on console.discord_account_links (discord_user_id, player_controller_id)`);
+    await tx.query(`
+      create unique index if not exists discord_account_links_player_uidx
+      on console.discord_account_links (player_controller_id)`);
+    // Partial unique index: at most one default row per discord_user_id.
+    // (Zero defaults is allowed — e.g. immediately after linking a second
+    // account before the caller has chosen a default — but never more than
+    // one.)
+    await tx.query(`
+      create unique index if not exists discord_account_links_default_uidx
+      on console.discord_account_links (discord_user_id) where is_default`);
+
+    // Pending links for the multi-account flow are keyed by
+    // (discord_user_id, player_controller_id) rather than discord_user_id
+    // alone, so a user verifying a second/third account does not collide
+    // with — or silently cancel — a still-pending verification for a
+    // different character. This mirrors console.discord_pending_links'
+    // shape but with a wider uniqueness key.
+    await tx.query(`
+      create table if not exists console.discord_pending_account_links (
+        code text primary key,
+        discord_user_id text not null,
+        player_controller_id text not null,
+        character_name text not null,
+        created_at timestamp with time zone not null default now(),
+        expires_at timestamp with time zone not null
+      )`);
+    await tx.query("delete from console.discord_pending_account_links where expires_at <= now()");
+    await tx.query(`
+      delete from console.discord_pending_account_links older
+      using console.discord_pending_account_links newer
+      where older.discord_user_id = newer.discord_user_id
+        and older.player_controller_id = newer.player_controller_id
+        and (older.created_at, older.code) < (newer.created_at, newer.code)`);
+    await tx.query(`
+      delete from console.discord_pending_account_links older
+      using console.discord_pending_account_links newer
+      where older.player_controller_id = newer.player_controller_id
+        and older.discord_user_id <> newer.discord_user_id
+        and (older.created_at, older.code) < (newer.created_at, newer.code)`);
+    await tx.query(`
+      create unique index if not exists discord_pending_account_links_user_player_uidx
+      on console.discord_pending_account_links (discord_user_id, player_controller_id)`);
+    await tx.query(`
+      create unique index if not exists discord_pending_account_links_player_uidx
+      on console.discord_pending_account_links (player_controller_id)`);
   };
   if (typeof db.transaction === "function") return db.transaction(migrate);
   return migrate(db);
@@ -5777,33 +6655,174 @@ export async function resolvePlayerByName(db, characterName) {
   return result.rows;
 }
 
-export async function getLinkedPlayer(db, discordUserId) {
+// characterHasSteamId: read-only check used when a player first runs
+// /dune player link <character-name>, BEFORE any OAuth flow starts -- this
+// is what decides whether the bot offers a "Link via Steam" button at all,
+// or falls straight to the existing whisper flow with no mention of Steam.
+// Separate from matchSteamIdForCharacter() below, which runs LATER, after
+// the player has completed OAuth, to check whether their specific
+// connected Steam account(s) actually match.
+//
+// Live-schema verification (2026-07-26, dune-postgres container, re-checked
+// after upstream v1.3.66 sync): dune.accounts is a view over
+// encrypted_accounts exposing platform_id/platform_name (no unique
+// constraint on platform_id); dune.player_state is a view over
+// encrypted_player_state filtered to character_state = 'Active', joined via
+// account_id. Matches the same join shape already used by
+// playerPortalSnapshots() above.
+export async function characterHasSteamId(db, playerControllerId) {
+  if (!playerControllerId) return false;
   const result = await db.query(`
+    select 1
+    from dune.accounts ac
+    join dune.player_state ps on ps.account_id = ac.id
+    where ps.player_controller_id::text = $1
+      and lower(coalesce(ac.platform_name, '')) = 'steam'
+      and ac.platform_id is not null
+      and ac.platform_id != ''
+    limit 1`, [String(playerControllerId)]);
+  return result.rows.length > 0;
+}
+
+// matchSteamIdForCharacter: read-only check used by the Discord bot's
+// Steam-connections-based linking flow (see
+// yacketrj/arrakis-control-panel:docs/steam-link-architecture.md). Given
+// ONE specific playerControllerId (already resolved and named by the
+// player -- this is never a bulk/candidate-list lookup) and the array of
+// SteamID64 strings Discord's own GET /users/@me/connections returned for
+// the linking Discord user, returns true if that character's on-file
+// platform_id appears anywhere in the array.
+//
+// SECURITY NOTE (added during five-hat pre-implementation review,
+// 2026-07-26): this function itself performs no actor/ownership check --
+// that is the CALLER's responsibility. It is intentionally not exposed as
+// its own adapter route; it is only ever called from inside
+// linkAccountViaSteamProvider() below, which is reached only via the
+// PLAYERS_ACCOUNTS_LINK_STEAM route, itself gated by
+// requireSelfScopedCapability() with discordUserId bound to actor.userId,
+// exactly like every other self-scoped route. An earlier draft of this
+// feature proposed a SEPARATE match-steam route taking a raw
+// playerControllerId with no discordUserId binding at all -- that would
+// have let any actor above "public" tier probe arbitrary characters they
+// don't own (an enumeration oracle), since requireSelfScopedCapability()
+// only checks capability tier, never target ownership (see its own doc
+// comment in policy.js). Folding the match check into the single
+// link-steam call site, which already carries a real discordUserId,
+// closes that gap structurally rather than requiring a second, easier-to-
+// misuse public entry point into this check.
+export async function matchSteamIdForCharacter(db, playerControllerId, steamId64List) {
+  const ids = (Array.isArray(steamId64List) ? steamId64List : [])
+    .map((value) => String(value || "").trim())
+    .filter((value) => /^[0-9]{17}$/.test(value)); // SteamID64 is always 17 digits
+  if (!ids.length || !playerControllerId) return false;
+  const result = await db.query(`
+    select 1
+    from dune.accounts ac
+    join dune.player_state ps on ps.account_id = ac.id
+    where lower(coalesce(ac.platform_name, '')) = 'steam'
+      and ac.platform_id = any($1::text[])
+      and ps.player_controller_id::text = $2
+    limit 1`, [ids, String(playerControllerId)]);
+  return result.rows.length > 0;
+}
+
+// getLinkedPlayer: returns the ONE character a Discord user should be
+// treated as linked to for every read/write route that isn't explicitly
+// multi-account-aware (players/me, players/inventory, players/storage,
+// players/find, guilds/storage, guilds/find -- all via
+// requireLinkedPlayer() below).
+//
+// FIX (2026-07-26, found via a real live end-to-end test): this
+// previously checked ONLY console.discord_player_links (the legacy
+// single-link table). A user linked exclusively via
+// console.discord_account_links (the multi-account table --
+// FINDING-LINK-6, and every Steam-connections-based link via
+// FINDING-LINK-7, since linkAccountViaSteamProvider() always writes into
+// this table, never the legacy one) was therefore ALWAYS treated as
+// "not linked" by every one of the six routes above, regardless of
+// having a real, successful link. Confirmed live: a real Steam-link
+// success wrote a real row into discord_account_links, and the very
+// next /dune data inventory call failed with 403 not_linked.
+//
+// Fix: check the legacy table first (preserves exact existing behavior
+// for every pre-existing single-link user, zero migration needed), and
+// if nothing is found there, fall back to the multi-account table's
+// DEFAULT account (is_default = true) -- matching this function's own
+// contract of returning exactly ONE character, and matching
+// linkAdditionalAccount()'s own invariant that a user with >=1 linked
+// account always has exactly one default.
+export async function getLinkedPlayer(db, discordUserId) {
+  const singleLinkResult = await db.query(`
     select dpl.discord_user_id,
            dpl.player_controller_id,
            coalesce(ps.character_name, '') as character_name,
            coalesce(ps.player_pawn_id::text, '0') as player_pawn_id,
            coalesce(ps.online_status::text, 'Offline') as online_status
-    from dune.discord_player_links dpl
+    from console.discord_player_links dpl
     join dune.player_state ps on ps.player_controller_id::text = dpl.player_controller_id
     where dpl.discord_user_id = $1
     limit 1`, [String(discordUserId)]);
-  return result.rows[0] || null;
+  if (singleLinkResult.rows[0]) return singleLinkResult.rows[0];
+
+  const multiAccountResult = await db.query(`
+    select dal.discord_user_id,
+           dal.player_controller_id,
+           coalesce(ps.character_name, '') as character_name,
+           coalesce(ps.player_pawn_id::text, '0') as player_pawn_id,
+           coalesce(ps.online_status::text, 'Offline') as online_status
+    from console.discord_account_links dal
+    join dune.player_state ps on ps.player_controller_id::text = dal.player_controller_id
+    where dal.discord_user_id = $1
+      and dal.is_default = true
+    limit 1`, [String(discordUserId)]);
+  return multiAccountResult.rows[0] || null;
+}
+
+// Checks the given discord_*_links table (in the console schema — see
+// migrateDiscordAdapterSchema()'s comment for why this project's own
+// state lives there, not in dune) for a row that would conflict with
+// linking playerControllerId to discordUserId. Used to enforce "a
+// character belongs to exactly one Discord user" ACROSS both the
+// single-link (console.discord_player_links) and multi-account
+// (console.discord_account_links) tables, not just within whichever
+// table a given operation is writing to. Without this cross-table
+// check, the two flows each only enforced that invariant within their
+// own table — a character already owned by one Discord user via one
+// flow could be silently claimed by a DIFFERENT Discord user via the
+// other flow. Locks the matching row (if any) with "for update" so this
+// check is race-safe against a concurrent link attempt in the other
+// table within the same transaction. `table` must be a fixed,
+// non-user-controlled string literal from a caller in this module —
+// never pass through user input.
+async function otherTableLinkConflict(tx, table, playerControllerId, discordUserId) {
+  const result = await tx.query(`
+    select discord_user_id
+    from console.${table}
+    where player_controller_id = $1
+      and discord_user_id <> $2
+    for update`, [playerControllerId, String(discordUserId)]);
+  return result.rowCount > 0;
 }
 
 export async function discordPlayerLink(db, discordUserId, playerControllerId) {
   const link = async (tx) => {
     const conflict = await tx.query(`
       select discord_user_id
-      from dune.discord_player_links
+      from console.discord_player_links
       where player_controller_id = $1
         and discord_user_id <> $2
       for update`, [playerControllerId, String(discordUserId)]);
     if (conflict.rowCount) {
       return { conflict: true };
     }
+    // FINDING-LINK-6 cross-table check: reject if this character is
+    // already linked to a DIFFERENT Discord user via the multi-account
+    // table, even though this is the single-link table's own insert.
+    if (await otherTableLinkConflict(tx, "discord_account_links", playerControllerId, discordUserId)) {
+      return { conflict: true };
+    }
     await tx.query(`
-      insert into dune.discord_player_links (discord_user_id, player_controller_id)
+      insert into console.discord_player_links (discord_user_id, player_controller_id)
       values ($1, $2)
       on conflict (discord_user_id) do update
         set player_controller_id = excluded.player_controller_id,
@@ -5820,12 +6839,259 @@ export async function discordPlayerLink(db, discordUserId, playerControllerId) {
   return result.player;
 }
 
+// discordPlayerUnlink: the legacy, no-character-argument /dune player
+// unlink path. FIX (2026-07-26, found alongside the getLinkedPlayer()
+// fix above): this previously deleted ONLY from
+// console.discord_player_links, regardless of which table getLinkedPlayer()
+// actually found the player in. For a multi-account-only user (every
+// Steam-linked user, and anyone using FINDING-LINK-6's multi-account
+// flow), this meant: getLinkedPlayer() correctly reports them as linked,
+// this function's Boolean(player) return correctly reports success, but
+// the delete statement affects zero rows -- a silent no-op that claims
+// success while leaving the real link entirely intact.
+//
+// Fix: delete from whichever table the player was actually found in.
+// Mirrors getLinkedPlayer()'s own single-link-table-first,
+// multi-account-default-fallback order, and reuses
+// unlinkAdditionalAccount() (not a duplicated delete) so the multi-account
+// path also gets that function's own default-promotion behavior for free.
 export async function discordPlayerUnlink(db, discordUserId) {
-  const player = await getLinkedPlayer(db, discordUserId);
-  await db.query("delete from dune.discord_player_links where discord_user_id = $1", [String(discordUserId)]);
-  return Boolean(player);
+  const singleLinkResult = await db.query(
+    "select 1 from console.discord_player_links where discord_user_id = $1",
+    [String(discordUserId)]
+  );
+  if (singleLinkResult.rowCount) {
+    await db.query("delete from console.discord_player_links where discord_user_id = $1", [String(discordUserId)]);
+    return true;
+  }
+
+  const defaultAccount = await db.query(
+    "select player_controller_id from console.discord_account_links where discord_user_id = $1 and is_default = true limit 1",
+    [String(discordUserId)]
+  );
+  if (!defaultAccount.rows[0]) return false;
+  // unlinkAdditionalAccount() returns a plain boolean (result.removed),
+  // not { removed: boolean } -- verified directly against its own source
+  // before relying on this, since guessing the wrong shape here would
+  // have silently always evaluated to false.
+  return await unlinkAdditionalAccount(db, discordUserId, defaultAccount.rows[0].player_controller_id);
 }
 
+// ─── Multi-account linking (console.discord_account_links) — FINDING-LINK-6 ──
+//
+// Independent of, and additive to, the single-link functions above. See
+// migrateDiscordAdapterSchema()'s comment for why both tables coexist,
+// and for why this project's own state lives in the console schema
+// rather than dune.
+
+export async function listLinkedAccounts(db, discordUserId) {
+  const result = await db.query(`
+    select dal.discord_user_id,
+           dal.player_controller_id,
+           dal.is_default,
+           dal.linked_at,
+           coalesce(ps.character_name, '') as character_name,
+           coalesce(ps.player_pawn_id::text, '0') as player_pawn_id,
+           coalesce(ps.online_status::text, 'Offline') as online_status
+    from console.discord_account_links dal
+    join dune.player_state ps on ps.player_controller_id::text = dal.player_controller_id
+    where dal.discord_user_id = $1
+    order by dal.is_default desc, dal.linked_at asc`, [String(discordUserId)]);
+  return result.rows;
+}
+
+// Links an additional character to a Discord user who may already have
+// other linked accounts. Unlike discordPlayerLink() (single-link,
+// "on conflict do update" overwrite semantics), this INSERTs a new row and
+// throws on a genuine conflict rather than silently replacing anything.
+// The first account a user links becomes their default automatically;
+// subsequent accounts are not default unless setDefaultLinkedAccount() is
+// called.
+export async function linkAdditionalAccount(db, discordUserId, playerControllerId) {
+  const link = async (tx) => {
+    const conflict = await tx.query(`
+      select discord_user_id
+      from console.discord_account_links
+      where player_controller_id = $1
+        and discord_user_id <> $2
+      for update`, [playerControllerId, String(discordUserId)]);
+    if (conflict.rowCount) {
+      return { conflict: "character_already_linked" };
+    }
+    // FINDING-LINK-6 cross-table check: reject if this character is
+    // already linked to a DIFFERENT Discord user via the legacy
+    // single-link table. See otherTableLinkConflict()'s comment above
+    // discordPlayerLink() for why this check exists in both directions.
+    if (await otherTableLinkConflict(tx, "discord_player_links", playerControllerId, discordUserId)) {
+      return { conflict: "character_already_linked" };
+    }
+    const existing = await tx.query(`
+      select 1 from console.discord_account_links
+      where discord_user_id = $1 and player_controller_id = $2`,
+      [String(discordUserId), playerControllerId]);
+    if (existing.rowCount) {
+      return { conflict: "already_linked_to_this_account" };
+    }
+    // FIX (2026-07-27, per explicit operator direction): phase one is a
+    // strict 1:1 relationship (one Discord user, one character, globally)
+    // -- the multi-account system itself stays intact and tested, but is
+    // gated off from actually letting a user acquire a SECOND, DIFFERENT
+    // character for now. Checks BOTH tables: a user with an existing
+    // legacy single-link (discord_player_links) for a different character
+    // must be rejected here too -- this is the multi-account side of the
+    // exact same gate added to linkPlayerProvider() (linkProvider.js) for
+    // the single-link side. Re-linking the SAME character via the other
+    // table is not reachable in practice (a character with a Steam ID on
+    // file always takes the Steam-link path exclusively, per
+    // characterHasSteamId()'s check in linkPlayerProvider() -- there is no
+    // real flow that links the same character via both tables), so this
+    // does not special-case it.
+    const existingSingleLink = await tx.query(`
+      select player_controller_id from console.discord_player_links
+      where discord_user_id = $1 limit 1`, [String(discordUserId)]);
+    if (existingSingleLink.rowCount && existingSingleLink.rows[0].player_controller_id !== playerControllerId) {
+      return { conflict: "user_already_has_a_character" };
+    }
+    const hasAnyExisting = await tx.query(`
+      select player_controller_id from console.discord_account_links where discord_user_id = $1 limit 1`,
+      [String(discordUserId)]);
+    if (hasAnyExisting.rowCount && hasAnyExisting.rows[0].player_controller_id !== playerControllerId) {
+      return { conflict: "user_already_has_a_character" };
+    }
+    const shouldBeDefault = true;
+    await tx.query(`
+      insert into console.discord_account_links (discord_user_id, player_controller_id, is_default)
+      values ($1, $2, $3)`, [String(discordUserId), playerControllerId, shouldBeDefault]);
+    return { conflict: null };
+  };
+  const result = typeof db.transaction === "function" ? await db.transaction(link) : await link(db);
+  if (result.conflict === "character_already_linked") {
+    const error = new Error("This character is already linked to another Discord account.");
+    error.code = "character_already_linked";
+    error.statusCode = 409;
+    throw error;
+  }
+  if (result.conflict === "already_linked_to_this_account") {
+    const error = new Error("This character is already linked to your Discord account.");
+    error.code = "already_linked_to_this_account";
+    error.statusCode = 409;
+    throw error;
+  }
+  if (result.conflict === "user_already_has_a_character") {
+    const existingCharacter = await getLinkedPlayer(db, discordUserId);
+    const existingName = existingCharacter?.character_name || "another character";
+    const error = new Error(`Your voice already answers to ${existingName} in the eyes of the Landsraad. A soul may not walk two paths in the desert -- use /dune player unlink before you may bind yourself to a new name.`);
+    error.code = "user_already_has_a_character";
+    error.statusCode = 409;
+    throw error;
+  }
+  return listLinkedAccounts(db, discordUserId);
+}
+
+export async function unlinkAdditionalAccount(db, discordUserId, playerControllerId) {
+  const unlink = async (tx) => {
+    const existing = await tx.query(`
+      select is_default from console.discord_account_links
+      where discord_user_id = $1 and player_controller_id = $2`,
+      [String(discordUserId), playerControllerId]);
+    if (!existing.rowCount) return { removed: false };
+    await tx.query(`
+      delete from console.discord_account_links
+      where discord_user_id = $1 and player_controller_id = $2`,
+      [String(discordUserId), playerControllerId]);
+    // If the removed account was the default, promote the next-oldest
+    // remaining link (if any) to default so the user always has at most
+    // one unambiguous default rather than none, as long as they still
+    // have at least one linked account.
+    if (existing.rows[0].is_default) {
+      await tx.query(`
+        update console.discord_account_links
+        set is_default = true
+        where id = (
+          select id from console.discord_account_links
+          where discord_user_id = $1
+          order by linked_at asc
+          limit 1
+        )`, [String(discordUserId)]);
+    }
+    return { removed: true };
+  };
+  const result = typeof db.transaction === "function" ? await db.transaction(unlink) : await unlink(db);
+  return result.removed;
+}
+
+export async function setDefaultLinkedAccount(db, discordUserId, playerControllerId) {
+  const setDefault = async (tx) => {
+    const existing = await tx.query(`
+      select 1 from console.discord_account_links
+      where discord_user_id = $1 and player_controller_id = $2`,
+      [String(discordUserId), playerControllerId]);
+    if (!existing.rowCount) return { found: false };
+    await tx.query(`
+      update console.discord_account_links set is_default = false
+      where discord_user_id = $1 and is_default`, [String(discordUserId)]);
+    await tx.query(`
+      update console.discord_account_links set is_default = true
+      where discord_user_id = $1 and player_controller_id = $2`,
+      [String(discordUserId), playerControllerId]);
+    return { found: true };
+  };
+  const result = typeof db.transaction === "function" ? await db.transaction(setDefault) : await setDefault(db);
+  return result.found;
+}
+
+export async function createPendingAccountLink(db, discordUserId, playerControllerId, characterName, code, expiresAt) {
+  const create = async (tx) => {
+    await tx.query(`
+      delete from console.discord_pending_account_links
+      where discord_user_id = $1 and player_controller_id = $2`,
+      [String(discordUserId), playerControllerId]);
+    const result = await tx.query(`
+      insert into console.discord_pending_account_links (code, discord_user_id, player_controller_id, character_name, expires_at)
+      values ($1, $2, $3, $4, $5)
+      on conflict (code) do nothing`, [code, String(discordUserId), playerControllerId, characterName, expiresAt]);
+    return result.rowCount === 1;
+  };
+  if (typeof db.transaction === "function") return db.transaction(create);
+  return create(db);
+}
+
+export async function deletePendingAccountLink(db, discordUserId, code) {
+  const result = await db.query(`
+    delete from console.discord_pending_account_links
+    where discord_user_id = $1 and code = $2`, [String(discordUserId), code]);
+  return result.rowCount || 0;
+}
+
+export async function consumePendingAccountLink(db, discordUserId, code) {
+  const result = await db.query(`
+    delete from console.discord_pending_account_links
+    where code = $1
+      and discord_user_id = $2
+      and expires_at > now()
+    returning discord_user_id, player_controller_id, character_name`, [code, String(discordUserId)]);
+  return result.rows[0] || null;
+}
+
+// FIX (2026-07-27, found via a real live user report immediately after
+// the building display-name fix shipped): a Water Shipper Door and a
+// Blood Purifier both showed up in this player's real storage listing,
+// despite neither one being a storage container in-game at all -- a
+// Blood Purifier's real function is water extraction (confirmed via
+// dune.gaming.tools: "Water Capacity 1000", no "Inventory Slot
+// Capacity" field at all, unlike every genuine storage/fabricator
+// placeable which does have one), and a cosmetic door obviously has no
+// inventory. Root cause: this query LEFT JOINs dune.inventories, so
+// every owned placeable is returned regardless of whether it actually
+// has a dune.inventories row -- confirmed live via direct query showing
+// both the Door and the Blood Purifier have zero rows in
+// dune.inventories (inventory_id is null), while the three genuine
+// containers (Sub-Fief Console, Small Storage Container, Fabricator)
+// each have at least one. Added an EXISTS filter requiring at least one
+// real dune.inventories row for the placeable before it's considered a
+// "container" at all -- this is a correctness fix at the data-selection
+// level, not a display-name issue, and is independent of (but was only
+// discovered because of) the building display-name fix above.
 export async function playerOwnedStorageQuery(db, playerControllerId) {
   const result = await db.query(`
     select p.id,
@@ -5845,6 +7111,7 @@ export async function playerOwnedStorageQuery(db, playerControllerId) {
       and p.is_hologram = false
       and p.owner_entity_id is not null
       and p.owner_entity_id != 0
+      and exists (select 1 from dune.inventories inv2 where inv2.actor_id = p.id)
     group by p.id, p.building_type, a.map
     order by p.id`, [playerControllerId]);
   return { rows: result.rows };
@@ -5870,11 +7137,25 @@ export async function guildStorageQuery(db, playerControllerId) {
       and p.is_hologram = false
       and p.owner_entity_id is not null
       and p.owner_entity_id != 0
+      and exists (select 1 from dune.inventories inv2 where inv2.actor_id = p.id)
     group by p.id, p.building_type, a.map
     order by p.id`, [playerControllerId]);
   return { rows: result.rows };
 }
 
+// FIX (2026-07-27, found via a real live user report on /dune player
+// storage showing "No owned storage containers found" despite a real
+// base with real containers): this previously returned only
+// container_id, with no container name or map at all. The Discord
+// bot's formatFindEmbed has always expected each result to carry
+// container_name and map (to answer "search found it, but WHICH
+// container, on WHICH map") -- Core never actually supplied either
+// field, so results were consistently gutted of exactly the context
+// a player needs to go retrieve the item. Added the same
+// name-resolution join (permission_actor / actor_name, falling back to
+// building_type) and map join already used by
+// playerOwnedStorageQuery()/guildStorageQuery() above, so a search
+// result and a storage listing describe a container identically.
 export async function searchItemsInContainers(db, { playerControllerId, query, scope = "owned" }) {
   const searchTerm = `%${String(query).trim()}%`;
 
@@ -5886,23 +7167,28 @@ export async function searchItemsInContainers(db, { playerControllerId, query, s
              i.quality_level,
              i.inventory_id,
              inv.actor_id as container_id,
+             coalesce(max(case when pa.actor_name not like '##%' and pa.actor_name <> 'None' then pa.actor_name end), p.building_type) as container_name,
+             coalesce(a.map, '') as map,
              coalesce(
-               nullif((i.stats->'FItemStackAndDurabilityStats'->1->>'CurrentDurability'), null),
+               nullif((max(i.stats->'FItemStackAndDurabilityStats'->1->>'CurrentDurability')), null),
                null
              ) as current_durability,
              coalesce(
-               nullif((i.stats->'FItemStackAndDurabilityStats'->1->>'MaxDurability')::numeric, 0),
-               nullif((i.stats->'FItemStackAndDurabilityStats'->1->>'DecayedMaxDurability')::numeric, 0),
+               nullif((max(i.stats->'FItemStackAndDurabilityStats'->1->>'MaxDurability'))::numeric, 0),
+               nullif((max(i.stats->'FItemStackAndDurabilityStats'->1->>'DecayedMaxDurability'))::numeric, 0),
                null
              ) as max_durability
       from dune.items i
       join dune.inventories inv on i.inventory_id = inv.id
       join dune.placeables p on p.id = inv.actor_id
+      left join dune.actors a on a.id = p.id
       left join dune.actor_fgl_entities afe on afe.entity_id = p.owner_entity_id
       left join dune.permission_actor_rank par on par.permission_actor_id = afe.actor_id
+      left join dune.permission_actor pa on pa.actor_id = par.permission_actor_id
       where par.player_id = $1
         and par.rank = 1
         and i.template_id ilike $2
+      group by i.id, i.template_id, i.stack_size, i.quality_level, i.inventory_id, inv.actor_id, p.building_type, a.map
       order by i.template_id
       limit 200`, [playerControllerId, searchTerm]);
     return { rows: result.rows };
@@ -5910,30 +7196,35 @@ export async function searchItemsInContainers(db, { playerControllerId, query, s
 
   if (scope === "guild") {
     const result = await db.query(`
-      select distinct i.id,
+      select i.id,
              i.template_id,
              i.stack_size,
              i.quality_level,
              i.inventory_id,
              inv.actor_id as container_id,
+             coalesce(max(case when pa.actor_name not like '##%' and pa.actor_name <> 'None' then pa.actor_name end), p.building_type) as container_name,
+             coalesce(a.map, '') as map,
              coalesce(
-               nullif((i.stats->'FItemStackAndDurabilityStats'->1->>'CurrentDurability'), null),
+               nullif((max(i.stats->'FItemStackAndDurabilityStats'->1->>'CurrentDurability')), null),
                null
              ) as current_durability,
              coalesce(
-               nullif((i.stats->'FItemStackAndDurabilityStats'->1->>'MaxDurability')::numeric, 0),
-               nullif((i.stats->'FItemStackAndDurabilityStats'->1->>'DecayedMaxDurability')::numeric, 0),
+               nullif((max(i.stats->'FItemStackAndDurabilityStats'->1->>'MaxDurability'))::numeric, 0),
+               nullif((max(i.stats->'FItemStackAndDurabilityStats'->1->>'DecayedMaxDurability'))::numeric, 0),
                null
              ) as max_durability
       from dune.items i
       join dune.inventories inv on i.inventory_id = inv.id
       join dune.placeables p on p.id = inv.actor_id
+      left join dune.actors a on a.id = p.id
       left join dune.actor_fgl_entities afe on afe.entity_id = p.owner_entity_id
       left join dune.permission_actor_rank par on par.permission_actor_id = afe.actor_id
       left join dune.guild_members gm on gm.player_id = par.player_id
       left join dune.guild_members self_gm on self_gm.player_id = $1
+      left join dune.permission_actor pa on pa.actor_id = par.permission_actor_id
       where gm.guild_id = self_gm.guild_id
         and i.template_id ilike $2
+      group by i.id, i.template_id, i.stack_size, i.quality_level, i.inventory_id, inv.actor_id, p.building_type, a.map
       order by i.template_id
       limit 200`, [playerControllerId, searchTerm]);
     return { rows: result.rows };
@@ -5972,10 +7263,10 @@ export async function searchItemsInPlayerInventory(db, playerPawnId, query) {
 export async function createPendingLink(db, discordUserId, playerControllerId, characterName, code, expiresAt) {
   const create = async (tx) => {
     await tx.query(`
-      delete from dune.discord_pending_links
+      delete from console.discord_pending_links
       where discord_user_id = $1`, [String(discordUserId)]);
     const result = await tx.query(`
-      insert into dune.discord_pending_links (code, discord_user_id, player_controller_id, character_name, expires_at)
+      insert into console.discord_pending_links (code, discord_user_id, player_controller_id, character_name, expires_at)
       values ($1, $2, $3, $4, $5)
       on conflict (code) do nothing`, [code, String(discordUserId), playerControllerId, characterName, expiresAt]);
     return result.rowCount === 1;
@@ -5986,14 +7277,14 @@ export async function createPendingLink(db, discordUserId, playerControllerId, c
 
 export async function deletePendingLink(db, discordUserId, code) {
   const result = await db.query(`
-    delete from dune.discord_pending_links
+    delete from console.discord_pending_links
     where discord_user_id = $1 and code = $2`, [String(discordUserId), code]);
   return result.rowCount || 0;
 }
 
 export async function consumePendingLink(db, discordUserId, code) {
   const result = await db.query(`
-    delete from dune.discord_pending_links
+    delete from console.discord_pending_links
     where code = $1
       and discord_user_id = $2
       and expires_at > now()
@@ -6002,6 +7293,6 @@ export async function consumePendingLink(db, discordUserId, code) {
 }
 
 export async function cleanupExpiredPendingLinks(db) {
-  const result = await db.query("delete from dune.discord_pending_links where expires_at <= now()");
+  const result = await db.query("delete from console.discord_pending_links where expires_at <= now()");
   return result.rowCount;
 }
