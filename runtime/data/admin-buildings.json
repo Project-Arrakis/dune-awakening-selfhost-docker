@@ -34,5 +34,11 @@
     "name": "Water Shipper Door",
     "category": "cosmetic",
     "source": "dune.gaming.tools/buildables/watershippers_door_frame"
+  },
+  {
+    "id": "Developer_StorageContainer_Placeable",
+    "name": "Developer Storage Container",
+    "category": "storage",
+    "source": "not in the public dune.gaming.tools catalog -- confirmed live via dune.placeables on this world (2026-07-31), a real owned/inventoried container (inventory_type=4, max_item_count=1000, max_item_volume=50000) excluded from listStorage's building_type whitelist purely by string mismatch"
   }
 ]
