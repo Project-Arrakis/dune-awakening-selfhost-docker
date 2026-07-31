@@ -4808,19 +4808,26 @@ export async function fillItemToStorage(db, repoRoot, storageId, { itemName = ""
     const inventory = storage.rows[0];
     const count = await tx.query("select count(*)::int as count from dune.items where inventory_id = $1", [inventory.id]);
     const currentCount = Number(count.rows[0]?.count || 0);
+    // One fill-item call always inserts exactly one dune.items row (one
+    // stack, with quantity folded into that row's stack_size) -- it
+    // consumes exactly one inventory slot regardless of quantity, the
+    // same as giveItemToStorage/giveItemToPlayer below. Checking
+    // currentCount + stackSize here (as an earlier version of this
+    // function did) wrongly treated "quantity of items" as "number of
+    // slots consumed" and rejected fills that had plenty of real slots
+    // free -- found via a live discrepancy where a fill was rejected as
+    // "full by item slot count" at 9/10 real slots used.
     if (inventory.max_item_count > 0 && currentCount >= inventory.max_item_count) throw new Error("Storage is full by item slot count");
     if (stackSize === 0) {
-      const slotsRemaining = inventory.max_item_count > 0 ? Math.max(0, inventory.max_item_count - currentCount) : 1000000;
       let volumeRemaining = 1000000;
       if (inventory.max_item_volume > 0 && itemVolumeNum > 0) {
         const volume = await tx.query("select coalesce(sum(coalesce(volume_override, 0)), 0)::real as total_volume from dune.items where inventory_id = $1", [inventory.id]);
         const currentVolume = Number(volume.rows[0]?.total_volume || 0);
         volumeRemaining = Math.floor((inventory.max_item_volume - currentVolume) / itemVolumeNum);
       }
-      stackSize = Math.min(slotsRemaining, volumeRemaining, 1000000);
-      if (stackSize < 1) throw new Error("Container is full (no slots or volume remaining)");
+      stackSize = Math.min(volumeRemaining, 1000000);
+      if (stackSize < 1) throw new Error("Container is full (no volume remaining)");
     }
-    if (inventory.max_item_count > 0 && currentCount + stackSize > inventory.max_item_count) throw new Error("Storage is full by item slot count");
     if (inventory.max_item_volume > 0 && itemVolumeNum > 0) {
       const volume = await tx.query("select coalesce(sum(coalesce(volume_override, 0)), 0)::real as total_volume from dune.items where inventory_id = $1", [inventory.id]);
       const currentVolume = Number(volume.rows[0]?.total_volume || 0);
@@ -4840,9 +4847,18 @@ export async function fillItemToStorage(db, repoRoot, storageId, { itemName = ""
     const stats = buildItemStats({ templateId: resolvedTemplate, augments: augmentIds, rollPayloads });
     const insertColumns = ["inventory_id", "template_id", "stack_size", "quality_level", "position_index", "stats"];
     const insertValues = [inventory.id, resolvedTemplate, stackSize, qualityLevel, Number(position.rows[0]?.position_index || 0), JSON.stringify(stats)];
+    // volume_override must reflect the TOTAL volume of the stack being
+    // inserted (itemVolumeNum * stackSize), not the per-unit volume --
+    // otherwise current_volume (summed across dune.items in listStorage
+    // and in the checks above) silently undercounts every stack with
+    // quantity > 1, and the volume cap stops being enforced correctly
+    // on subsequent fills. Found via a real live discrepancy: a
+    // quantity=3 AluminiumBar fill only added 1 to current_volume
+    // instead of 3.
+    const stackVolume = itemVolumeNum * stackSize;
     if (itemColumns.has("volume_override")) {
       insertColumns.push("volume_override");
-      insertValues.push(itemVolumeNum);
+      insertValues.push(stackVolume);
     }
     const insert = itemInsertShape(insertColumns, insertValues, itemColumns);
     const inserted = await tx.query(`
