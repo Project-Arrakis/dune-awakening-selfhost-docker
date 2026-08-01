@@ -4845,6 +4845,14 @@ export async function refillBaseGenerators(db, repoRoot, baseId) {
         continue;
       }
 
+      // Lock the inventory row itself before its fuel rows: FOR UPDATE only
+      // locks rows it selects, so a device with zero fuel rows (new, or fully
+      // drained) leaves nothing for a concurrent refill to serialize against.
+      // The inventory row always exists once inventory_id is set, so locking
+      // it first gives concurrent refills of the same device something to
+      // queue behind -- same technique as giveItemToStorage/giveItemToPlayer.
+      await tx.query("select id from dune.inventories where id = $1 for update", [device.inventory_id]);
+
       // Lock this device's fuel rows so a concurrent refill cannot double-fill it.
       const existing = await tx.query(`
         select id, stack_size, position_index
@@ -4929,7 +4937,7 @@ function pendingRefillMaxAgeMs() {
   return clampInt(process.env.ADMIN_REFILL_MAX_AGE_MS, 7 * 24 * 60 * 60 * 1000, 1, Number.MAX_SAFE_INTEGER);
 }
 function pendingRefillRetryDelayMs() {
-  return Number(process.env.ADMIN_REFILL_RETRY_DELAY_MS || 60000);
+  return clampInt(process.env.ADMIN_REFILL_RETRY_DELAY_MS, 60000, 1, Number.MAX_SAFE_INTEGER);
 }
 
 function pendingRefillFile(repoRoot) {
@@ -5005,7 +5013,7 @@ export function cancelQueuedGeneratorRefill(repoRoot, baseId) {
 // look identical. A reconnecting game server returns in seconds, a restarting
 // one stays away for minutes, so requiring the gap to persist tells them apart.
 function refillDownDwellMs() {
-  return Number(process.env.ADMIN_REFILL_DOWN_DWELL_MS || 30000);
+  return clampInt(process.env.ADMIN_REFILL_DOWN_DWELL_MS, 30000, 1, Number.MAX_SAFE_INTEGER);
 }
 const partitionDisconnectedSince = new Map();
 

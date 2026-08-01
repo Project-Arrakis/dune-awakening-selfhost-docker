@@ -1,15 +1,18 @@
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { statSync } from "node:fs";
-import { runDune, buildDuneArgs } from "./runner.js";
+import { runDune, buildDuneArgs, validateServiceName } from "./runner.js";
 import { liveItemGrantWarning } from "./grantResults.js";
 import { createUpdateCheckCache } from "./services/updateCheckCache.js";
 
 // Operations that leave a map down with the database still reachable, so
 // anything queued for that map can be applied before it comes back up. "stop"
 // is deliberately absent: stop-all.sh removes the Postgres container too, so
-// there is nothing to write to once it finishes.
-const MAP_DOWN_OPERATIONS = new Set(["mapsDespawn", "restartService", "sietchesRestart"]);
+// there is nothing to write to once it finishes. restartServiceStop/
+// sietchesRestartStop (not their Start halves) cover survival/Sietch
+// restarts -- see taskOperations, which splits those into separate stop and
+// start operations so the flush lands between them instead of after both.
+const MAP_DOWN_OPERATIONS = new Set(["mapsDespawn", "restartService", "restartServiceStop", "sietchesRestartStop"]);
 
 export class TaskManager {
   constructor(config, options = {}) {
@@ -298,7 +301,7 @@ function shellQuote(value) {
 }
 
 export function taskTimeoutMs(config, operation) {
-  if (["start", "stop", "restartAll", "restartService", "serverTitle", "serverConfig", "init", "updateApply", "updateFixSteamcmd", "selfUpdateApply", "backupRestore", "storageCleanupImages", "storageCleanupBuildCache", "userSettingsSaveAndRestart", "userSettingsResetAndRestart", "userSettingsRawAndRestart", "mapsApplySettings", "mapsRespawn", "sietchesSetActive", "sietchesRestart", "sietchesReconcile"].includes(operation)) {
+  if (["start", "stop", "restartAll", "restartService", "restartServiceStop", "restartServiceStart", "serverTitle", "serverConfig", "init", "updateApply", "updateFixSteamcmd", "selfUpdateApply", "backupRestore", "storageCleanupImages", "storageCleanupBuildCache", "userSettingsSaveAndRestart", "userSettingsResetAndRestart", "userSettingsRawAndRestart", "mapsApplySettings", "mapsRespawn", "sietchesSetActive", "sietchesRestart", "sietchesRestartStop", "sietchesRestartStart", "sietchesReconcile"].includes(operation)) {
     return Math.max(config.commandTimeoutMs, 30 * 60 * 1000);
   }
   return config.commandTimeoutMs;
@@ -306,6 +309,10 @@ export function taskTimeoutMs(config, operation) {
 
 export function taskOperations(operation, payload = {}) {
   if (operation === "restartAll") return ["stop", "start"];
+  if (operation === "restartService") return restartServiceOperations(payload);
+  // Every Sietch partition is a Survival_1 sub-partition, so this always
+  // splits -- the shell layer resolves primary vs. secondary internally.
+  if (operation === "sietchesRestart") return ["sietchesRestartStop", "sietchesRestartStart"];
   // The only way to restart a map that is neither Survival_1 nor the Overmap:
   // those two have managed services, everything else (Deep Desert, the SH_*
   // hubs) exists only as a spawned partition container. One task so a failed
@@ -341,10 +348,23 @@ export function taskOperations(operation, payload = {}) {
 function restartOperations(payload = {}) {
   if (payload.restartMode === "none") return [];
   if (payload.restartMode === "stack") return ["stop", "start"];
-  if (payload.restartMode === "service") return ["restartService"];
+  if (payload.restartMode === "service") return restartServiceOperations(payload);
   if (payload.restartMode === "respawn" && payload.mode === "disabled") return [];
   if (payload.restartMode === "respawn") return ["mapsDespawn", "mapsSpawn"];
   return [];
+}
+
+// Survival/Sietches are the only restart targets that host player bases and
+// generators, so only they need the flush window a stop/start split
+// provides -- other services (overmap, gateway, director, text-router)
+// never host bases, so a single combined op is still correct for them. Used
+// both for a direct "Restart Battlegroup" task and for settings-driven
+// restarts routed through restartOperations, so both paths get the fix.
+function restartServiceOperations(payload = {}) {
+  const service = validateServiceName(payload.service);
+  return service === "survival" || service === "survival-1"
+    ? ["restartServiceStop", "restartServiceStart"]
+    : ["restartService"];
 }
 
 export function publicTask(task) {

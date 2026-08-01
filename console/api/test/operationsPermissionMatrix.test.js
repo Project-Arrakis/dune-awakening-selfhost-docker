@@ -262,7 +262,10 @@ test("39 Web UI: restart schedule write executes through the task runner", async
 });
 test("40 Web UI: sietch write executes through the task runner", async () => {
   await assertWebWrite("sietchesSetActive", { map: "Survival_1", count: 2 }, ["sietches", "set-active", "Survival_1", "2"]);
-  await assertWebWrite("sietchesRestart", { partitionId: 31 }, ["sietches", "restart", "31"]);
+  // sietchesRestart now splits into a stop then a start step so a queued
+  // generator-refill flush can land between them -- see tasks.js taskOperations.
+  await assertWebWrite("sietchesRestart", { partitionId: 31 }, ["sietches", "stop-partition", "31"]);
+  await assertWebWrite("sietchesRestart", { partitionId: 31 }, ["sietches", "start-partition", "31"]);
 });
 test("40b Web UI: memory swap changes execute through validated task arguments", async () => {
   await assertWebWrite("memorySwapEnable", { perServerGiB: 2, poolGiB: 8 }, ["memory-swap", "enable", "2", "8"]);

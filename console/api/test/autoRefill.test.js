@@ -538,6 +538,43 @@ test("a base whose refills never take effect stops being queued after three cycl
   });
 });
 
+test("stalledAt is not set on the same scan that queues the third refill", async () => {
+  await withTempRepoRoot(async (repoRoot) => {
+    const clock = makeClock();
+    setBaseAutoRefill(repoRoot, 482, true, { now: clock.now, env: TEST_ENV });
+    const duneDb = fakeDuneDb({ levels: { 482: { lowestPercent: 10 } } });
+    const { scheduler, audits } = makeScheduler(repoRoot, duneDb, clock);
+    await primeScheduler(scheduler, repoRoot, clock);
+
+    for (let cycle = 0; cycle < 2; cycle += 1) {
+      forceDue(repoRoot, clock);
+      await scheduler.tick();
+      drainQueue(repoRoot);
+      clock.advance(24 * HOUR_MS);
+    }
+
+    // Third queue: consecutiveQueues reaches the cap, but the entry has not
+    // been flushed yet -- it must not be marked stalled on this same scan.
+    forceDue(repoRoot, clock);
+    const thirdResult = await scheduler.tick();
+    assert.equal(thirdResult.queued, 1);
+    let entry = readAutoRefillState(repoRoot).bases["482"];
+    assert.equal(entry.consecutiveQueues, 3);
+    assert.equal(entry.stalledAt, "");
+    assert.equal(audits.filter((a) => a.action === "bases.auto-refill-stalled").length, 0);
+
+    // Only once the queue entry is gone (drained, standing in for a flush that
+    // did not fix the fuel) and the next scan still sees low fuel is it stalled.
+    drainQueue(repoRoot);
+    clock.advance(24 * HOUR_MS);
+    forceDue(repoRoot, clock);
+    await scheduler.tick();
+    entry = readAutoRefillState(repoRoot).bases["482"];
+    assert.notEqual(entry.stalledAt, "");
+    assert.equal(audits.filter((a) => a.action === "bases.auto-refill-stalled").length, 1);
+  });
+});
+
 test("a base that comes back above the threshold clears its stall", async () => {
   await withTempRepoRoot(async (repoRoot) => {
     const clock = makeClock();

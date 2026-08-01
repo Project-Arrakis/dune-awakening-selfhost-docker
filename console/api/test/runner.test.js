@@ -62,6 +62,8 @@ test("builds allowlisted command arguments without shell interpolation", () => {
   assert.deepEqual(buildDuneArgs("storageCleanupImages"), ["storage", "cleanup"]);
   assert.deepEqual(buildDuneArgs("storageCleanupBuildCache"), ["storage", "cleanup", "--build-cache"]);
   assert.deepEqual(buildDuneArgs("restartService", { service: "director" }), ["restart", "director"]);
+  assert.deepEqual(buildDuneArgs("restartServiceStop", { service: "survival" }), ["stop-service", "survival"]);
+  assert.deepEqual(buildDuneArgs("restartServiceStart", { service: "survival" }), ["restart", "survival"]);
   assert.deepEqual(buildDuneArgs("logs", { service: "gateway" }), ["logs", "gateway"]);
   assert.deepEqual(buildDuneArgs("backupRestore", { backup: "dune-db-test.backup" }), ["db", "restore", "dune-db-test.backup", "--no-safety-backup"]);
   assert.deepEqual(buildDuneArgs("backupDelete", { backup: "dune-db-test.backup" }), ["db", "delete", "dune-db-test.backup"]);
@@ -124,6 +126,8 @@ test("builds allowlisted command arguments without shell interpolation", () => {
   assert.deepEqual(buildDuneArgs("sietchesSetDisplay", { partitionId: 38, displayName: "sietch   Alraab v2" }), ["sietches", "set-display", "38", "sietch   Alraab v2"]);
   assert.deepEqual(buildDuneArgs("sietchesSetSettings", { partitionId: 38, displayName: "New Home", password: "secret" }), ["sietches", "set-settings", "38", "New Home", "secret"]);
   assert.deepEqual(buildDuneArgs("sietchesRestart", { partitionId: 38 }), ["sietches", "restart", "38"]);
+  assert.deepEqual(buildDuneArgs("sietchesRestartStop", { partitionId: 38 }), ["sietches", "stop-partition", "38"]);
+  assert.deepEqual(buildDuneArgs("sietchesRestartStart", { partitionId: 38 }), ["sietches", "start-partition", "38"]);
   assert.deepEqual(buildDuneArgs("sietchesSetDisplay", { partitionId: 38, displayName: "" }), ["sietches", "set-display", "38", ""]);
   assert.throws(() => buildDuneArgs("sietchesSetDisplay", { partitionId: 38, displayName: "Duke's Sietch" }), /not supported/);
   assert.throws(() => buildDuneArgs("sietchesSetDisplay", { partitionId: 38, displayName: "Alpha|Beta" }), /not supported/);
@@ -202,6 +206,42 @@ test("can save and materialize UserGame modifiers without restarting immediately
   assert.deepEqual(taskOperations("userSettingsSaveAndRestart", { scope: "global", restartMode: "none" }), [
     "userSettingsSave",
     "userSettingsMaterializeCurrent"
+  ]);
+});
+
+test("restartService splits survival into stop/start so a flush can land between them", () => {
+  assert.deepEqual(taskOperations("restartService", { service: "survival" }), [
+    "restartServiceStop",
+    "restartServiceStart"
+  ]);
+  assert.deepEqual(taskOperations("restartService", { service: "survival-1" }), [
+    "restartServiceStop",
+    "restartServiceStart"
+  ]);
+  // Other services never host bases, so the flush window is a no-op for
+  // them -- a single combined op is still correct.
+  assert.deepEqual(taskOperations("restartService", { service: "overmap" }), ["restartService"]);
+  assert.deepEqual(taskOperations("restartService", { service: "director" }), ["restartService"]);
+});
+
+test("a settings-driven survival restart also splits into stop/start", () => {
+  assert.deepEqual(taskOperations("userSettingsSaveAndRestart", { scope: "partitionEngine", restartMode: "service", service: "survival" }), [
+    "userSettingsSave",
+    "userSettingsMaterializeCurrent",
+    "restartServiceStop",
+    "restartServiceStart"
+  ]);
+  assert.deepEqual(taskOperations("userSettingsSaveAndRestart", { scope: "partitionEngine", restartMode: "service", service: "overmap" }), [
+    "userSettingsSave",
+    "userSettingsMaterializeCurrent",
+    "restartService"
+  ]);
+});
+
+test("sietchesRestart always splits into stop/start", () => {
+  assert.deepEqual(taskOperations("sietchesRestart", { partitionId: 31 }), [
+    "sietchesRestartStop",
+    "sietchesRestartStart"
   ]);
 });
 

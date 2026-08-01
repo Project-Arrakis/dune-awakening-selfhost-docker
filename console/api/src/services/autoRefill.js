@@ -291,10 +291,22 @@ export function createAutoRefillScheduler(options = {}) {
       // Queued this many times without the fuel ever coming back up. Something
       // about this base cannot be fixed by a refill (a slot-blocked inventory, a
       // flush that keeps failing until it drops the entry), so stop rather than
-      // queue a write against player property every day forever.
+      // queue a write against player property every day forever. This only
+      // fires once the prior queue entry has left pendingBaseIds -- applied or
+      // dropped by the flush -- so a map that simply has not restarted yet
+      // never gets marked stalled before its queued refill had a chance to land.
       if (priorQueues >= MAX_CONSECUTIVE_QUEUES) {
         counters.stalled += 1;
+        const stalledNow = !previous.stalledAt;
         outcome.stalledAt = previous.stalledAt || new Date(now()).toISOString();
+        if (stalledNow) {
+          auditSafely("bases.auto-refill-stalled", {
+            baseId,
+            lowestPercent: lowest,
+            thresholdPercent: threshold,
+            consecutiveQueues: priorQueues
+          });
+        }
         outcomes.set(key, outcome);
         return;
       }
@@ -325,18 +337,9 @@ export function createAutoRefillScheduler(options = {}) {
         map: target.map,
         partitionId: target.partitionId
       });
-      if (outcome.consecutiveQueues >= MAX_CONSECUTIVE_QUEUES) {
-        outcome.stalledAt = new Date(now()).toISOString();
-        counters.stalled += 1;
-        // Surfaced, not silent: the panel reports a stalled base so the operator
-        // can look at why its refills are not landing.
-        auditSafely("bases.auto-refill-stalled", {
-          baseId,
-          lowestPercent: lowest,
-          thresholdPercent: threshold,
-          consecutiveQueues: outcome.consecutiveQueues
-        });
-      }
+      // Do not mark stalled here: this refill was only just queued, not yet
+      // applied. Stalling is decided on a later scan (above) once this queue
+      // entry has left pendingBaseIds and fuel is still low.
       outcomes.set(key, outcome);
     } catch (error) {
       const message = String(error?.message || error);
