@@ -1,5 +1,7 @@
 ## Container Hardening — Change Summary
 
+**Status:** Current | **Last Updated:** July 2026
+
 ### Overview
 
 This PR hardens the console and orchestrator containers to run with reduced

@@ -1,5 +1,7 @@
 # R1 Metrics Stack MVP Implementation Notes
 
+**Status:** Historical record — describes the state at issue #82, branch `feature/metrics`. Not maintained. See [E2E Metrics Testing](../runtime/E2E-METRICS-TESTING.md) for the current procedure.
+
 Tracking issue: #82
 Branch: `feature/metrics`
 PR: #83

@@ -234,3 +234,7 @@ Both flows call `ensureAugmentSlotKeystones()` and `loadAugmentRollPayloads()`.
 | `runtime/data/augment-compatibility.json` | Augment-to-tag mapping (T6_Augment_ prefix) |
 | `console/web/src/lib/augmentEligibility.ts` | Frontend compatibility matching |
 | `console/api/test/pre-augmented-gear-regression.test.js` | Regression tests |
+
+See [pre-augmented-gear-grant.md](../security/pre-augmented-gear-grant.md) for
+the security review of the grant path (historical record, not maintained; the
+control described is still in force).

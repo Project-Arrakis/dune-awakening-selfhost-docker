@@ -1,5 +1,7 @@
 # Blueprint Import/Export — Developer Documentation
 
+**Status:** Current | **Last Updated:** August 2026
+
 ## Overview
 
 The Blueprints feature allows server admins to import, export, list, and delete
@@ -404,3 +406,7 @@ cd console/web && npx vite build
 | `console/api/test/blueprints.test.js` | Unit tests |
 | `console/api/test/httpSafety.test.js` | Multipart tests |
 | `console/api/test/blueprints-http-routes.test.js` | Route tests |
+
+See [blueprints-report.md](../archive/blueprints-report.md) for the original
+feature specification and test report from PR #80 (historical record, not
+maintained).

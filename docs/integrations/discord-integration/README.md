@@ -1,5 +1,13 @@
 # Discord Adapter — Setup and Configuration
 
+**Status:** Current | **Last Updated:** July 2026
+
+> **Which Discord docs do I want?** This folder (`discord-integration/`) is the
+> **operator-facing** set — start here if you are setting up Discord on your server.
+> The sibling folder [`discord-control-bot/`](../discord-control-bot/setup-guide.md) is
+> the **internal** set: the adapter contract, command surface, and bot-side reference.
+> The two overlap; where they disagree, this folder is the newer one.
+
 The Dune Docker Console includes a built-in Discord adapter that lets you
 connect a companion Discord bot for server monitoring and management.
 
@@ -125,5 +133,5 @@ for setup instructions.
 ## Sources
 
 - [Bot Repository](https://github.com/yacketrj/dune-awakening-selfhost-discordbot)
-- [Adapter Contract](api-adapter-contract.md)
+- [Adapter Contract](../discord-control-bot/api-adapter-contract.md)
 - [Discord Developer Portal](https://discord.com/developers/applications)

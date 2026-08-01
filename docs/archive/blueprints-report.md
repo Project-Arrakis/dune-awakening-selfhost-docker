@@ -1,5 +1,7 @@
 # Blueprint Import/Export — Feature Specification & Test Report
 
+**Status:** Historical record — describes the state at PR [#80](https://github.com/Red-Blink/dune-awakening-selfhost-docker/pull/80). Not maintained. See [Blueprints](../console/blueprints.md) for current reference.
+
 > **Branch**: `feature/blueprints-ui` | **PR**: [#80](https://github.com/Red-Blink/dune-awakening-selfhost-docker/pull/80)
 > **Status**: Complete | **Tests**: 97 pass / 0 fail | **OWASP**: All 10 categories pass
 

@@ -1,5 +1,7 @@
 # Addon Scheduled Jobs (Server-Side Buyback)
 
+**Status:** Current | **Last Updated:** August 2026
+
 The console API process can run recurring addon work in the background, so automation keeps running when no browser has the addon page open. The first supported job is the **EDA Exchange Bot** (`eda-exchange-bot`) buyback sweep.
 
 ## How it works
@@ -62,3 +64,6 @@ await bridge("scheduler.run");
 ```
 
 The existing addon bridge rate limits apply to these actions; scheduled background runs consume a dedicated mutation rate-limit scope (`addon-scheduler:eda-exchange-bot`) since no session or client IP exists in that context.
+
+See [addon-provenance.md](../security/addon-provenance.md) for the addon
+discovery and code-signing threat model this job runner assumes.
