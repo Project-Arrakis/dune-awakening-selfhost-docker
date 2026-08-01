@@ -63,20 +63,21 @@ test("builds Care Package private whisper courier payload", () => {
     now: "2026-06-08T12:00:00.000Z",
     messageId: "care-package-test"
   });
-  assert.equal(payload.outer.Type, "ECourierMessageType::TextChat");
+  assert.equal(payload.outer.Type, "TextChat");
   const inner = JSON.parse(payload.outer.Content);
   assert.equal(inner.m_Id, "care-package-test");
-  assert.equal(inner.m_ChannelType, "ETextChatChannelType::Whispers");
+  assert.equal(inner.m_ChannelType, "Whispers");
   assert.equal(inner.m_SubChannelId, "RedBlink#75570");
   assert.equal(inner.m_bUseSpoofedUserName, false);
-  assert.deepEqual(inner.m_SpoofedUserNameFrom, { m_Id: "", m_DisplayName: "" });
+  assert.deepEqual(inner.m_SpoofedUserNameFrom, { m_TableId: "", m_Key: "", m_UnlocalizedName: "" });
   assert.equal(inner.m_FuncomIdFrom, "Server#00000");
   assert.equal(inner.m_UserNameTo, "RedBlink");
   assert.equal(inner.m_Message.m_UnlocalizedMessage, "Welcome");
   assert.equal(inner.m_Message.m_LocalizedMessage.m_TableId, "");
   assert.equal(inner.m_Message.m_LocalizedMessage.m_Key, "");
   assert.deepEqual(inner.m_Message.m_LocalizedMessage.m_FormatArgs, []);
-  assert.equal(inner.m_TimeStamp, "2026-06-08T12:00:00.000Z");
+  assert.equal(inner.m_Timestamp, "2026.06.08-12.00.00");
+  assert.equal(Object.hasOwn(inner, "m_TimeStamp"), false);
   assert.deepEqual(inner.m_OriginLocation, { X: 0, Y: 0, Z: 0 });
   assert.equal(inner.m_HasSeenMessage, false);
 });
@@ -89,7 +90,7 @@ test("builds map chat courier payload", () => {
     messageId: "map-chat-test"
   });
   assert.equal(payload.outer.Type, "TextChat");
-  const inner = JSON.parse(payload.outer.content);
+  const inner = JSON.parse(payload.outer.Content);
   assert.equal(inner.m_Id, "map-chat-test");
   assert.equal(inner.m_ChannelType, "Map");
   assert.equal(inner.m_bUseSpoofedUserName, false);
@@ -98,8 +99,8 @@ test("builds map chat courier payload", () => {
   assert.equal(inner.m_UserNameTo, "");
   assert.equal(inner.m_Message.m_UnlocalizedMessage, "Event starts soon");
   assert.deepEqual(inner.m_Message.m_LocalizedMessage.m_FormatArgs, []);
-  assert.equal(inner.m_TimeStamp, "2026.06.08-12.34.56");
-  assert.equal(Object.hasOwn(inner, "m_Timestamp"), false);
+  assert.equal(inner.m_Timestamp, "2026.06.08-12.34.56");
+  assert.equal(Object.hasOwn(inner, "m_TimeStamp"), false);
   assert.deepEqual(inner.m_OriginLocation, { X: 0, Y: 0, Z: 0 });
   assert.equal(inner.m_HasSeenMessage, false);
 });
