@@ -2,6 +2,8 @@ import { assertIdentifier, intParam, isReadOnlySql, quoteIdentifier, quoteQualif
 import { existsSync, readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
+import { redact } from "./redact.js";
+import { clampInt, writeJsonAtomic } from "./jsonStore.js";
 import {
   craftingRecipeCatalogRows,
   compareJourneyCatalogOrder,
@@ -2868,8 +2870,15 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
       }
     }
 
+    // Probed here rather than per row so the panel can disable Refill outright
+    // instead of failing on click.
+    const generatorRefill = await supportsGeneratorRefill(db).catch(() => false);
+    // Without world_partition the console cannot tell a running map from a
+    // stopped one, so the panel hides the queue entirely and refills stay immediate.
+    const generatorRefillQueue = generatorRefill && await supportsGeneratorRefillQueue(db).catch(() => false);
+
     return {
-      capabilities: { bases: true },
+      capabilities: { bases: true, generatorRefill, generatorRefillQueue },
       totalCount: result.rows[0] ? Number(result.rows[0].total_count) : 0,
       totalBases: totalsResult.rows[0] ? Number(totalsResult.rows[0].total_bases) : 0,
       totalPieces: totalsResult.rows[0] ? Number(totalsResult.rows[0].total_pieces) : 0,
@@ -2900,7 +2909,7 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
       }))
     };
   } catch (error) {
-    return { capabilities: { bases: false }, rows: [], totalCount: 0, totalBases: 0, totalPieces: 0, totalPlaceables: 0, reason: `Base list query is unsupported by this schema: ${error.message}` };
+    return { capabilities: { bases: false, generatorRefill: false }, rows: [], totalCount: 0, totalBases: 0, totalPieces: 0, totalPlaceables: 0, reason: `Base list query is unsupported by this schema: ${error.message}` };
   }
 }
 
@@ -3787,30 +3796,38 @@ export function generatorUptimePolicy(now = new Date()) {
 // Display metadata, accepted fuels, and explicit placeable allowlists per
 // generator type. Both mappings are passed into SQL as parameters, so adding a
 // supported type or known alias requires changing this object only.
+// The `refill` block drives refillBaseGenerators: templateId is the cased id
+// written to dune.items (it must appear lower-cased in `fuels`), stackSize is
+// the per-row stack the game accepts, and totalCap bounds the whole device
+// across at most maxStacks rows.
 const GENERATOR_TYPES = {
   fuel: {
     name: "Fuel-Powered Generator",
     fuelName: "Fuel Cell",
     fuels: ["oil"],
-    buildingTypes: ["generator_placeable"]
+    buildingTypes: ["generator_placeable"],
+    refill: { templateId: "Oil", stackSize: 499, maxStacks: 1, totalCap: 499 }
   },
   spice: {
     name: "Spice-Powered Generator",
     fuelName: "Spice-infused Fuel Cell",
     fuels: ["spicedfuelcell"],
-    buildingTypes: ["spicegenerator_placeable"]
+    buildingTypes: ["spicegenerator_placeable"],
+    refill: { templateId: "SpicedFuelCell", stackSize: 499, maxStacks: 1, totalCap: 499 }
   },
   windTurbineOmni: {
     name: "Omnidirectional Wind Turbine",
     fuelName: "Low-grade Lubricant",
     fuels: ["windturbinelubricant1"],
-    buildingTypes: ["windturbineomnidirectional_placeable"]
+    buildingTypes: ["windturbineomnidirectional_placeable"],
+    refill: { templateId: "WindTurbineLubricant1", stackSize: 100, maxStacks: 5, totalCap: 499 }
   },
   windTurbineDirectional: {
     name: "Directional Wind Turbine",
     fuelName: "Industrial-grade Lubricant",
     fuels: ["windturbinelubricant2"],
-    buildingTypes: ["windturbinedirectional_placeable"]
+    buildingTypes: ["windturbinedirectional_placeable"],
+    refill: { templateId: "WindTurbineLubricant2", stackSize: 100, maxStacks: 5, totalCap: 499 }
   }
 };
 
@@ -3825,6 +3842,32 @@ const GENERATOR_BUILDING_TYPE_PAIRS = GENERATOR_TYPE_ORDER.flatMap(
   (type) => GENERATOR_TYPES[type].buildingTypes.map((buildingType) => [type, buildingType])
 );
 const FUEL_TEMPLATE_IDS = Object.keys(FUEL_BURN_SECONDS);
+
+// Operators can retune refill caps per generator type without a rebuild, the
+// same way runtime/data/admin-items.json is layered over the shipped catalog.
+// Values are clamped so a malformed override cannot request a ten-million-item
+// insert, and templateId is never overridable — fuel identity is fixed by the
+// game, not by configuration.
+function refillCaps(repoRoot) {
+  const overridePath = resolve(repoRoot || "", "runtime/data/generator-refill-caps.json");
+  let overrides = {};
+  try {
+    if (repoRoot && existsSync(overridePath)) overrides = JSON.parse(readFileSync(overridePath, "utf8")) || {};
+  } catch (error) {
+    console.warn(`Ignoring unreadable generator refill cap overrides: ${redact(error?.message || error)}`);
+  }
+  const caps = {};
+  for (const type of GENERATOR_TYPE_ORDER) {
+    const defaults = GENERATOR_TYPES[type].refill;
+    const merged = { ...defaults, ...(overrides[type] || {}) };
+    merged.templateId = defaults.templateId;
+    merged.stackSize = clampInt(merged.stackSize, defaults.stackSize, 1, 10000);
+    merged.maxStacks = clampInt(merged.maxStacks, defaults.maxStacks, 1, 50);
+    merged.totalCap = clampInt(merged.totalCap, defaults.totalCap, 1, merged.stackSize * merged.maxStacks);
+    caps[type] = merged;
+  }
+  return caps;
+}
 
 export async function portalGeneratorFuel(db, baseIds, { now = new Date() } = {}) {
   if (!baseIds.length) return new Map();
@@ -4672,6 +4715,536 @@ export async function giveItemToStorage(db, storageId, { itemName = "", itemId =
   });
 }
 
+// Every power device at a base, with the inventory its fuel lives in. Claim
+// resolution mirrors portalGeneratorFuel so both agree on which placeables
+// belong to a base, and classification is the same explicit allowlist — an
+// unknown placeable is left out entirely rather than assumed to burn oil.
+export async function baseGenerators(db, baseId) {
+  const target = intParam(baseId, "base id", 1);
+  const result = await db.query(`
+    with requested_claims as (
+      select distinct b.id, afe.actor_id
+      from dune.buildings b
+      join dune.building_instances bi on bi.building_id = b.id
+      join dune.actor_fgl_entities afe on afe.entity_id = bi.owner_entity_id
+      where b.id = $1
+    ), base_entities as (
+      select distinct rc.id, claim_afe.entity_id as owner_entity_id
+      from requested_claims rc
+      join dune.actor_fgl_entities claim_afe on claim_afe.actor_id = rc.actor_id
+    ), generator_types as (
+      select * from unnest($2::text[], $3::text[]) as t(generator_type, building_type)
+    )
+    select distinct p.id::text as placeable_id,
+      gt.generator_type,
+      inv.id::text as inventory_id,
+      coalesce(inv.max_item_count, 0)::int as max_item_count
+    from base_entities be
+    join dune.placeables p on p.owner_entity_id = be.owner_entity_id
+    join generator_types gt on gt.building_type = lower(p.building_type)
+    left join lateral (
+      select id, max_item_count from dune.inventories where actor_id = p.id order by id limit 1
+    ) inv on true
+    order by placeable_id`, [
+      target,
+      GENERATOR_BUILDING_TYPE_PAIRS.map(([type]) => type),
+      GENERATOR_BUILDING_TYPE_PAIRS.map(([, buildingType]) => buildingType)
+    ]);
+  return result.rows;
+}
+
+// Per-device fuel level for one base, as a fraction of the same cap
+// refillBaseGenerators would fill to. Device discovery goes through
+// baseGenerators so the reading and the write share one allowlist and can never
+// disagree about what counts as a generator.
+//
+// This is deliberately per-device rather than reusing portalGeneratorFuel, which
+// aggregates by (base_id, generator_type): that shape cannot see a single
+// starved device standing among full siblings of the same type, and that device
+// is exactly what an automated refill decision turns on.
+//
+// lowestPercent is null for a base with no recognised devices, not 0 -- "nothing
+// to measure" must not read as "empty" to a caller deciding whether to refill.
+export async function baseGeneratorFuelLevels(db, repoRoot, baseId) {
+  const target = intParam(baseId, "base id", 1);
+  const caps = refillCaps(repoRoot);
+  const devices = await baseGenerators(db, target);
+  const inventoryIds = devices.map((device) => device.inventory_id).filter(Boolean);
+
+  // One grouped read for every device at the base rather than a query per
+  // device: this runs for every enrolled base on each scan.
+  const stocked = new Map();
+  if (inventoryIds.length) {
+    const result = await db.query(`
+      select inventory_id::text as inventory_id,
+        lower(template_id) as template_id,
+        sum(stack_size)::int as units
+      from dune.items
+      where inventory_id = any($1::bigint[])
+      group by 1, 2`, [inventoryIds]);
+    for (const row of result.rows || []) {
+      stocked.set(`${row.inventory_id}:${row.template_id}`, Number(row.units) || 0);
+    }
+  }
+
+  const entries = [];
+  for (const device of devices) {
+    const cap = caps[device.generator_type];
+    if (!cap) continue;
+    // A device with no inventory row cannot hold fuel at all, so it reads as
+    // empty -- the same case refillBaseGenerators reports as "no-inventory".
+    const units = device.inventory_id
+      ? stocked.get(`${device.inventory_id}:${cap.templateId.toLowerCase()}`) || 0
+      : 0;
+    entries.push({
+      placeableId: device.placeable_id,
+      generatorType: device.generator_type,
+      units,
+      cap: cap.totalCap,
+      percent: cap.totalCap > 0 ? Math.round((units / cap.totalCap) * 1000) / 10 : 0
+    });
+  }
+
+  return {
+    baseId: target,
+    deviceCount: entries.length,
+    devices: entries,
+    lowestPercent: entries.length ? Math.min(...entries.map((entry) => entry.percent)) : null
+  };
+}
+
+// Tops every power device at a base up to its configured cap in one
+// transaction: partial stacks are filled before new rows are created, so a
+// device never ends up with more rows than the game would have made itself.
+export async function refillBaseGenerators(db, repoRoot, baseId) {
+  await requireCapability(
+    await supportsGeneratorRefill(db),
+    "Generator refill requires dune.placeables plus compatible dune.inventories and dune.items insert columns."
+  );
+  const target = intParam(baseId, "base id", 1);
+  const caps = refillCaps(repoRoot);
+
+  return db.transaction(async (tx) => {
+    const itemColumns = await columnsFor(tx, "items");
+    const devices = await baseGenerators(tx, target);
+    if (!devices.length) throw new Error("No generators or wind turbines were found at this base");
+
+    const refilled = [];
+    for (const device of devices) {
+      const type = GENERATOR_TYPES[device.generator_type];
+      const cap = caps[device.generator_type];
+      if (!type || !cap) continue;
+      const summary = {
+        placeableId: device.placeable_id,
+        type: device.generator_type,
+        label: type.name,
+        fuelName: type.fuelName
+      };
+      if (!device.inventory_id) {
+        refilled.push({ ...summary, before: 0, after: 0, added: 0, skipped: "no-inventory" });
+        continue;
+      }
+
+      // Lock the inventory row itself before its fuel rows: FOR UPDATE only
+      // locks rows it selects, so a device with zero fuel rows (new, or fully
+      // drained) leaves nothing for a concurrent refill to serialize against.
+      // The inventory row always exists once inventory_id is set, so locking
+      // it first gives concurrent refills of the same device something to
+      // queue behind -- same technique as giveItemToStorage/giveItemToPlayer.
+      await tx.query("select id from dune.inventories where id = $1 for update", [device.inventory_id]);
+
+      // Lock this device's fuel rows so a concurrent refill cannot double-fill it.
+      const existing = await tx.query(`
+        select id, stack_size, position_index
+        from dune.items
+        where inventory_id = $1 and lower(template_id) = lower($2)
+        order by position_index
+        for update`, [device.inventory_id, cap.templateId]);
+
+      const before = existing.rows.reduce((sum, row) => sum + (Number(row.stack_size) || 0), 0);
+      let deficit = Math.max(0, cap.totalCap - before);
+      if (deficit === 0) {
+        refilled.push({ ...summary, before, after: before, added: 0, capped: false });
+        continue;
+      }
+
+      for (const row of existing.rows) {
+        if (deficit === 0) break;
+        const room = cap.stackSize - (Number(row.stack_size) || 0);
+        if (room <= 0) continue;
+        const add = Math.min(room, deficit);
+        await tx.query("update dune.items set stack_size = stack_size + $1 where id = $2", [add, row.id]);
+        deficit -= add;
+      }
+
+      const slotCount = await tx.query(
+        "select count(*)::int as count from dune.items where inventory_id = $1", [device.inventory_id]);
+      let freeSlots = device.max_item_count > 0
+        ? Math.max(0, device.max_item_count - (Number(slotCount.rows[0]?.count) || 0))
+        : Number.MAX_SAFE_INTEGER;
+      let stacksAllowed = Math.max(0, cap.maxStacks - existing.rows.length);
+      const position = await tx.query(
+        "select coalesce(max(position_index), -1)::int + 1 as position_index from dune.items where inventory_id = $1",
+        [device.inventory_id]);
+      let nextPosition = Number(position.rows[0]?.position_index) || 0;
+
+      while (deficit > 0 && stacksAllowed > 0 && freeSlots > 0) {
+        const size = Math.min(cap.stackSize, deficit);
+        const insert = itemInsertShape(
+          ["inventory_id", "template_id", "stack_size", "quality_level", "position_index", "stats"],
+          [device.inventory_id, cap.templateId, size, 0, nextPosition, JSON.stringify({})],
+          itemColumns
+        );
+        await tx.query(`
+          insert into dune.items (${insert.columns.join(", ")})
+          values (${insert.values.map((_, index) => index === 5 ? `$${index + 1}::jsonb` : `$${index + 1}`).join(", ")})`,
+          insert.values);
+        deficit -= size;
+        nextPosition += 1;
+        stacksAllowed -= 1;
+        freeSlots -= 1;
+      }
+
+      const after = cap.totalCap - deficit;
+      refilled.push({ ...summary, before, after, added: after - before, capped: deficit > 0 });
+    }
+
+    return {
+      ok: true,
+      baseId: target,
+      devices: refilled,
+      totalAdded: refilled.reduce((sum, entry) => sum + (entry.added || 0), 0)
+    };
+  });
+}
+
+// Pending-refill queue. A refill written while the base's map has a live game
+// server can be silently overwritten the next time that server flushes its own
+// state to Postgres, so a refill aimed at a running map is recorded here and
+// applied later, in the window where that map is down (see flushGeneratorRefills).
+const PENDING_REFILL_PATH = "runtime/generated/pending-generator-refills.json";
+const MAX_PENDING_REFILLS = 500;
+const MAX_REFILL_FLUSH_ATTEMPTS = 3;
+
+// Backstops for an entry that can never succeed. The attempt limit only counts
+// failures classified as permanent, and that classification is a guess from an
+// error string -- a genuinely permanent fault whose message looks transient
+// (a dropped table reads as `relation ... does not exist`) would otherwise be
+// retried on every tick forever. The age limit bounds the entry's life whatever
+// its errors say, and the retry delay keeps a failing entry from being retried
+// at the full tick rate in the meantime.
+function pendingRefillMaxAgeMs() {
+  return clampInt(process.env.ADMIN_REFILL_MAX_AGE_MS, 7 * 24 * 60 * 60 * 1000, 1, Number.MAX_SAFE_INTEGER);
+}
+function pendingRefillRetryDelayMs() {
+  return clampInt(process.env.ADMIN_REFILL_RETRY_DELAY_MS, 60000, 1, Number.MAX_SAFE_INTEGER);
+}
+
+function pendingRefillFile(repoRoot) {
+  return resolve(repoRoot || "", PENDING_REFILL_PATH);
+}
+
+function normalizePendingRefill(entry) {
+  const baseId = Math.floor(Number(entry?.baseId));
+  if (!Number.isInteger(baseId) || baseId < 1) return null;
+  const partitionId = Math.floor(Number(entry?.partitionId));
+  return {
+    baseId,
+    map: String(entry?.map ?? "").slice(0, 120),
+    partitionId: Number.isInteger(partitionId) && partitionId > 0 ? partitionId : 0,
+    queuedAt: typeof entry?.queuedAt === "string" ? entry.queuedAt.slice(0, 40) : "",
+    attempts: clampInt(entry?.attempts, 0, 0, MAX_REFILL_FLUSH_ATTEMPTS),
+    nextRetryAt: Number.isFinite(Number(entry?.nextRetryAt)) ? Number(entry.nextRetryAt) : 0,
+    lastError: String(entry?.lastError ?? "").slice(0, 300)
+  };
+}
+
+export function listQueuedGeneratorRefills(repoRoot) {
+  const file = pendingRefillFile(repoRoot);
+  if (!existsSync(file)) return [];
+  try {
+    const parsed = JSON.parse(readFileSync(file, "utf8"));
+    if (!Array.isArray(parsed)) return [];
+    // One entry per base, so a double-clicked button cannot queue a base twice.
+    const seen = new Set();
+    return parsed.map(normalizePendingRefill).filter((entry) => {
+      if (!entry || seen.has(entry.baseId)) return false;
+      seen.add(entry.baseId);
+      return true;
+    });
+  } catch (error) {
+    console.warn(`Ignoring unreadable pending generator refill queue: ${redact(error?.message || error)}`);
+    return [];
+  }
+}
+
+// Deliberately synchronous read-modify-write, matching saveBuybackSchedule in
+// addonJobs.js: with no await between read and write, two requests in one
+// console process cannot interleave and drop each other's entry. The temp-file
+// rename covers crash safety.
+function writeQueuedGeneratorRefills(repoRoot, entries) {
+  writeJsonAtomic(pendingRefillFile(repoRoot), entries);
+  return entries;
+}
+
+export function queueGeneratorRefill(repoRoot, { baseId, map = "", partitionId = 0, now = () => new Date() } = {}) {
+  const entry = normalizePendingRefill({ baseId, map, partitionId, queuedAt: now().toISOString() });
+  if (!entry) throw new Error("Invalid base id");
+  const others = listQueuedGeneratorRefills(repoRoot).filter((row) => row.baseId !== entry.baseId);
+  if (others.length >= MAX_PENDING_REFILLS) {
+    throw new Error(`The pending refill queue already holds ${MAX_PENDING_REFILLS} bases. Restart the affected maps to apply them first.`);
+  }
+  writeQueuedGeneratorRefills(repoRoot, [...others, entry]);
+  return entry;
+}
+
+export function cancelQueuedGeneratorRefill(repoRoot, baseId) {
+  const target = intParam(baseId, "base id", 1);
+  const entries = listQueuedGeneratorRefills(repoRoot);
+  const remaining = entries.filter((entry) => entry.baseId !== target);
+  if (remaining.length === entries.length) throw new Error("That base has no queued generator refill.");
+  writeQueuedGeneratorRefills(repoRoot, remaining);
+  return { ok: true, baseId: target, pending: remaining.length };
+}
+
+// How long a partition must stay disconnected before a write to its bases is
+// considered safe. Absence of a connection is ambiguous in a single sample: a
+// restarting map server and a Postgres restart that dropped every connection
+// look identical. A reconnecting game server returns in seconds, a restarting
+// one stays away for minutes, so requiring the gap to persist tells them apart.
+function refillDownDwellMs() {
+  return clampInt(process.env.ADMIN_REFILL_DOWN_DWELL_MS, 30000, 1, Number.MAX_SAFE_INTEGER);
+}
+const partitionDisconnectedSince = new Map();
+
+export function _resetRefillPartitionDwellForTests() {
+  partitionDisconnectedSince.clear();
+}
+
+// Observes which partitions are safe to write to. Returns null when
+// dune.world_partition is absent: without it there is no way to tell a running
+// map from a stopped one, so queueing is not offered at all and refills stay
+// immediate (see supportsGeneratorRefillQueue).
+//
+// Connection state is read straight from pg_stat_activity, matching the
+// "DuneSandbox - <server_id>" application_name a game server connects under.
+// That is the same mechanism as the game's own dune.active_server_ids view, but
+// queried directly: pg_stat_activity is a core catalog view present on every
+// Postgres, so there is no second, weaker code path to fall back to. Testing
+// world_partition.server_id instead would be exactly that weaker path --
+// restartService on an always-on map replaces the container without ever
+// clearing it, so those partitions would read as permanently live and their
+// refills could never flush. This check is also deliberately broader than the
+// view, which additionally requires a farm_state row: a server visible here but
+// missing from farm_state still counts as connected, which errs toward leaving
+// work queued.
+//
+// Two ways a partition becomes safe:
+//   - its server_id is released entirely, which despawn does -- positive
+//     evidence the map is gone, trusted immediately so a despawn/spawn pair
+//     still gets its short window;
+//   - its server_id is still assigned but has had no connection for the whole
+//     dwell period, which covers restartService and stop/start, where the
+//     assignment lingers.
+// Anything else stays unsafe, so a momentary loss of visibility keeps refills
+// queued instead of writing them into a live base.
+export async function observeRefillPartitions(db, { now = Date.now } = {}) {
+  if (!(await tableExists(db, "world_partition"))) return null;
+  const result = await db.query(
+    `select wp.partition_id,
+            nullif(wp.server_id, '') is null as unassigned,
+            exists (
+              select 1 from pg_stat_activity sa
+              where sa.application_name = 'DuneSandbox - ' || nullif(wp.server_id, '')
+            ) as connected
+     from dune.world_partition wp`);
+
+  const timestamp = now();
+  const safe = new Set();
+  const known = new Set();
+  for (const row of result.rows || []) {
+    const partitionId = Number(row.partition_id || 0);
+    if (partitionId <= 0) continue;
+    known.add(partitionId);
+    if (row.connected) {
+      partitionDisconnectedSince.delete(partitionId);
+      continue;
+    }
+    if (row.unassigned) {
+      partitionDisconnectedSince.delete(partitionId);
+      safe.add(partitionId);
+      continue;
+    }
+    const since = partitionDisconnectedSince.get(partitionId) ?? timestamp;
+    partitionDisconnectedSince.set(partitionId, since);
+    if (timestamp - since >= refillDownDwellMs()) safe.add(partitionId);
+  }
+  for (const partitionId of [...partitionDisconnectedSince.keys()]) {
+    if (!known.has(partitionId)) partitionDisconnectedSince.delete(partitionId);
+  }
+  return { safe, known };
+}
+
+// A base outside any known partition is simulated by nothing, so it is always
+// safe; a null observation means the queue is unsupported and writes stay
+// immediate, matching the behaviour before the queue existed.
+function partitionWriteSafe(observed, partitionId) {
+  if (!observed) return true;
+  if (partitionId <= 0) return true;
+  if (!observed.known.has(partitionId)) return true;
+  return observed.safe.has(partitionId);
+}
+
+export async function supportsGeneratorRefillQueue(db) {
+  if (!(await supportsGeneratorRefill(db))) return false;
+  return tableExists(db, "world_partition");
+}
+
+// dune.actors.map and dune.world_partition.map are different namespaces: a base
+// on partition 1 reports the in-game region ("HaggaBasin") while the partition
+// itself is "Survival_1", and partition 8 reports "DeepDesert" against
+// "DeepDesert_1". Only the world_partition name lines up with the restart
+// machinery, so anything choosing a restart target has to resolve it from the
+// partition id rather than from whatever the base's actor row says.
+export async function partitionRestartTargets(db) {
+  if (!(await tableExists(db, "world_partition"))) return new Map();
+  const result = await db.query(
+    "select partition_id, map, coalesce(dimension_index, 0)::int as dimension_index from dune.world_partition");
+  const targets = new Map();
+  for (const row of result.rows || []) {
+    const partitionId = Number(row.partition_id || 0);
+    if (partitionId > 0) targets.set(partitionId, { map: String(row.map || ""), dimensionIndex: Number(row.dimension_index || 0) });
+  }
+  return targets;
+}
+
+// The map and partition a base sits in. Resolved server-side on every request:
+// whether a write is safe must never depend on a client-supplied map name.
+export async function baseMapLocation(db, baseId) {
+  const target = intParam(baseId, "base id", 1);
+  const result = await db.query(`
+    select coalesce(a.map, '') as map,
+           coalesce(a.partition_id, 0)::int as partition_id
+    from dune.buildings b
+    join dune.building_instances bi on bi.building_id = b.id
+    join dune.actor_fgl_entities afe on afe.entity_id = bi.owner_entity_id
+    join dune.actors a on a.id = afe.actor_id
+    where b.id = $1
+    limit 1`, [target]);
+  const row = result.rows[0];
+  if (!row) throw new Error("That base was not found.");
+  return { map: String(row.map || ""), partitionId: Number(row.partition_id || 0) };
+}
+
+// One probe for the refill route: where the base lives, and whether its map is
+// live enough that an immediate write would be at risk.
+// `observed` lets a caller looping over many bases in one pass (the auto-refill
+// scan) observe the cluster once and reuse it, instead of every base re-running
+// the same world_partition/pg_stat_activity query.
+export async function baseRefillTarget(db, baseId, { observed } = {}) {
+  const resolvedObserved = observed !== undefined ? observed : await observeRefillPartitions(db);
+  // Check queue support first. With no way to tell a running map from a stopped
+  // one there is nothing to decide, and resolving the base's location would
+  // mean querying dune.actors columns an older schema need not have -- which
+  // would turn an unsupported queue into a broken refill.
+  if (!resolvedObserved) return { map: "", partitionId: 0, queueSupported: false, writeSafeNow: true };
+  const location = await baseMapLocation(db, baseId);
+  return {
+    ...location,
+    queueSupported: true,
+    writeSafeNow: partitionWriteSafe(resolvedObserved, location.partitionId)
+  };
+}
+
+// A database that is restarting, or a schema mid-migration, will succeed on a
+// later tick. Mirrors the filter runBackgroundTick and the death poller already
+// use for the same "the stack is moving, not broken" states.
+function isTransientFlushError(message) {
+  return /connect|ECONNREFUSED|ECONNRESET|terminated|timeout|does not exist|relation|shutting down|starting up|deadlock|too many clients/i.test(message);
+}
+
+// Applies every queued refill whose map is currently down and leaves the rest
+// queued. Driven by a background tick rather than by the restart task runner:
+// stop-all.sh removes the Postgres container along with the game servers, so
+// there is no post-stop moment when the console could still write. The window
+// that does exist is on the way back up (start-all.sh brings Postgres up well
+// before the map servers) plus any single-map despawn, and polling for "this
+// partition has no server" catches both -- including restarts triggered by the
+// scheduler, an IP change, or the CLI, none of which run through the console.
+export async function flushGeneratorRefills(db, repoRoot, { now = Date.now } = {}) {
+  const pending = listQueuedGeneratorRefills(repoRoot);
+  if (!pending.length) return { flushed: [], pending: 0 };
+  const observed = await observeRefillPartitions(db, { now });
+  if (!observed) return { flushed: [], pending: pending.length, unsupported: true };
+
+  const flushed = [];
+  const outcomes = new Map();
+  const timestamp = now();
+  for (const entry of pending) {
+    // Age is checked before write-safety: an expired entry should be cleared
+    // even for a map that never comes down again.
+    const queuedMs = Date.parse(entry.queuedAt);
+    if (Number.isFinite(queuedMs) && timestamp - queuedMs >= pendingRefillMaxAgeMs()) {
+      const message = `Queued for longer than the ${Math.round(pendingRefillMaxAgeMs() / 3600000)}h limit without being applied.`;
+      outcomes.set(entry.baseId, { queuedAt: entry.queuedAt, keep: false });
+      flushed.push({ baseId: entry.baseId, map: entry.map, partitionId: entry.partitionId, ok: false, expired: true, dropped: true, error: message });
+      continue;
+    }
+    if (!partitionWriteSafe(observed, entry.partitionId)) continue;
+    if (entry.nextRetryAt && timestamp < entry.nextRetryAt) continue;
+    try {
+      const result = await refillBaseGenerators(db, repoRoot, entry.baseId);
+      outcomes.set(entry.baseId, { queuedAt: entry.queuedAt, keep: false });
+      flushed.push({
+        baseId: entry.baseId,
+        map: entry.map,
+        partitionId: entry.partitionId,
+        ok: true,
+        totalAdded: result.totalAdded,
+        devices: result.devices
+      });
+    } catch (error) {
+      // A base can be released or deleted while its refill sits queued, so a
+      // failure that will never succeed must not be retried on every tick
+      // forever. Transient failures do not burn an attempt: start-all.sh runs
+      // update-db.sh inside the very window this flush targets, and three
+      // strikes at a few seconds apart would otherwise all land inside one
+      // migration and silently discard the operator's request.
+      const message = String(error?.message || error).slice(0, 300);
+      const attempts = isTransientFlushError(message) ? entry.attempts : entry.attempts + 1;
+      const dropped = attempts >= MAX_REFILL_FLUSH_ATTEMPTS;
+      const nextRetryAt = timestamp + pendingRefillRetryDelayMs();
+      outcomes.set(entry.baseId, { queuedAt: entry.queuedAt, keep: !dropped, attempts, nextRetryAt, lastError: message });
+      flushed.push({ baseId: entry.baseId, map: entry.map, partitionId: entry.partitionId, ok: false, attempts, dropped, error: message });
+    }
+  }
+  const remaining = outcomes.size ? reconcileQueuedGeneratorRefills(repoRoot, outcomes) : pending;
+  return { flushed, pending: remaining.length };
+}
+
+// Applies this flush's outcomes to whatever the queue holds *now*, in one
+// synchronous read-modify-write. The loop above awaits a database transaction
+// per base, and a refill queued or canceled during one of those awaits would be
+// lost if the pre-flush snapshot were written back wholesale.
+//
+// An entry is only touched when its queuedAt still matches the one that was
+// processed, so a base canceled and re-queued mid-flush keeps its new entry.
+// Cancelling a base whose refill is already mid-transaction cannot recall the
+// write; it only stops the entry coming back.
+function reconcileQueuedGeneratorRefills(repoRoot, outcomes) {
+  const next = [];
+  for (const entry of listQueuedGeneratorRefills(repoRoot)) {
+    const outcome = outcomes.get(entry.baseId);
+    if (!outcome || outcome.queuedAt !== entry.queuedAt) {
+      next.push(entry);
+      continue;
+    }
+    if (outcome.keep) next.push({ ...entry, attempts: outcome.attempts, nextRetryAt: outcome.nextRetryAt, lastError: outcome.lastError });
+  }
+  writeQueuedGeneratorRefills(repoRoot, next);
+  return next;
+}
+
 export async function giveItemToPlayer(db, playerId, { itemName = "", itemId = "", templateId = "", quantity = 1, quality = 1, augments = [], augmentQuality = 1, allowOnlinePreAugmented = false }) {
   await requireCapability(await supportsPlayerGiveItem(db), "Player give-item requires compatible dune.inventories and dune.items insert columns.");
   const target = intParam(playerId, "player id", 1);
@@ -5171,6 +5744,15 @@ async function supportsStorageGiveItem(db) {
   const itemColumns = await columnsFor(db, "items");
   return ["id", "actor_id", "max_item_count", "max_item_volume"].every((column) => inventoryColumns.has(column)) &&
     ["inventory_id", "template_id", "stack_size", "quality_level", "position_index", "stats"].every((column) => itemColumns.has(column));
+}
+
+// Refill writes the same items/inventories shape a storage grant does, plus it
+// has to resolve placeables to classify each device.
+export async function supportsGeneratorRefill(db) {
+  if (!(await tableExists(db, "placeables"))) return false;
+  if (!(await supportsStorageGiveItem(db))) return false;
+  const placeableColumns = await columnsFor(db, "placeables");
+  return ["id", "owner_entity_id", "building_type"].every((column) => placeableColumns.has(column));
 }
 
 async function supportsPlayerGiveItem(db) {

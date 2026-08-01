@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, writeFileSync, readFileSync } from "node:fs";
+import { appendFileSync, chmodSync, mkdtempSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildSelfUpdateHelperDockerArgs, TaskManager, taskTimeoutMs } from "../src/tasks.js";
@@ -59,6 +59,10 @@ test("long-running server tasks get an extended timeout", () => {
   assert.equal(taskTimeoutMs(config, "sietchesSetActive"), 30 * 60 * 1000);
   assert.equal(taskTimeoutMs(config, "sietchesRestart"), 30 * 60 * 1000);
   assert.equal(taskTimeoutMs(config, "sietchesReconcile"), 30 * 60 * 1000);
+  assert.equal(taskTimeoutMs(config, "restartServiceStop"), 30 * 60 * 1000);
+  assert.equal(taskTimeoutMs(config, "restartServiceStart"), 30 * 60 * 1000);
+  assert.equal(taskTimeoutMs(config, "sietchesRestartStop"), 30 * 60 * 1000);
+  assert.equal(taskTimeoutMs(config, "sietchesRestartStart"), 30 * 60 * 1000);
 });
 
 test("web self-update helper mounts the host repo path", () => {
@@ -315,6 +319,48 @@ test("create() falls through to the queued/async path when peek returns null", a
   const task = await waitForTask(manager, created.id);
   assert.equal(task.status, "succeeded");
   assert.match(task.logLines.map((l) => l.line).join("\n"), /Ran a live Steam update check/);
+});
+
+test("a survival restart flushes queued map writes between the stop and start steps, not after both", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "arrakis-task-flush-order-"));
+  const duneScript = join(dir, "dune");
+  const callLogPath = join(dir, "calls.log");
+  writeFileSync(callLogPath, "");
+  writeFileSync(duneScript, `#!/usr/bin/env bash\necho "$*" >> "${callLogPath}"\n`, { mode: 0o700 });
+  chmodSync(duneScript, 0o700);
+
+  const manager = new TaskManager(
+    { duneScript, repoRoot: dir, taskRetention: 20, commandTimeoutMs: 5000 },
+    { onMapDown: async (operation) => { appendFileSync(callLogPath, `flush:${operation}\n`); return { flushed: [] }; } }
+  );
+
+  const created = manager.create("server", "restartService", { service: "survival" });
+  const task = await waitForTask(manager, created.id);
+  assert.equal(task.status, "succeeded", task.errorMessage);
+
+  const callLog = readFileSync(callLogPath, "utf8").trim().split("\n");
+  assert.deepEqual(callLog, ["stop-service survival", "flush:restartServiceStop", "restart survival"]);
+});
+
+test("a Sietch restart flushes queued map writes between the stop and start steps, not after both", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "arrakis-task-flush-order-sietch-"));
+  const duneScript = join(dir, "dune");
+  const callLogPath = join(dir, "calls.log");
+  writeFileSync(callLogPath, "");
+  writeFileSync(duneScript, `#!/usr/bin/env bash\necho "$*" >> "${callLogPath}"\n`, { mode: 0o700 });
+  chmodSync(duneScript, 0o700);
+
+  const manager = new TaskManager(
+    { duneScript, repoRoot: dir, taskRetention: 20, commandTimeoutMs: 5000 },
+    { onMapDown: async (operation) => { appendFileSync(callLogPath, `flush:${operation}\n`); return { flushed: [] }; } }
+  );
+
+  const created = manager.create("server", "sietchesRestart", { partitionId: 31 });
+  const task = await waitForTask(manager, created.id);
+  assert.equal(task.status, "succeeded", task.errorMessage);
+
+  const callLog = readFileSync(callLogPath, "utf8").trim().split("\n");
+  assert.deepEqual(callLog, ["sietches stop-partition 31", "flush:sietchesRestartStop", "sietches start-partition 31"]);
 });
 
 function waitForTask(manager, id) {

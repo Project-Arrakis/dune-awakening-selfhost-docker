@@ -95,6 +95,8 @@ function repairRootOwnedHostState(repoRoot) {
     resolve(repoRoot, "runtime/generated/spicefield-overrides.json"),
     resolve(repoRoot, "runtime/generated/update-auto.env"),
     resolve(repoRoot, "runtime/generated/usersettings.json"),
+    resolve(repoRoot, "runtime/generated/auto-refill-bases.json"),
+    resolve(repoRoot, "runtime/generated/pending-generator-refills.json"),
     resolve(repoRoot, "runtime/generated/gameplay-profile.ini"),
     resolve(repoRoot, "runtime/generated/care-package.json"),
     resolve(repoRoot, "runtime/generated/care-package-grants.jsonl"),
