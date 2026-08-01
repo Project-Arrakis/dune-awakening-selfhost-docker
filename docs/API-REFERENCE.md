@@ -599,7 +599,7 @@ Poll status with `GET /api/setup/tasks/{id}` or stream with `GET /api/setup/task
 ### Database Mutations
 - Read-only: queries starting with `SELECT`, `WITH`, `SHOW`, `EXPLAIN`
 - Write-capable: `INSERT`, `UPDATE`, `DELETE`, `CREATE`, `ALTER`
-- Write operations create automatic backups unless in mock mode
+- Write operations do not create automatic backups; responses always report `backupCreated: false`. Take a manual backup first if you want a rollback point before a destructive query.
 
 ### Authentication
 - All endpoints except `/api/health`, `/api/auth/login`, and `/api/auth/state` require:

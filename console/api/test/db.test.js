@@ -4059,9 +4059,14 @@ function fakeMutationDb(calls, fixtures = {}) {
 
 // --- Generator refill -------------------------------------------------------
 
-function fakeRefillDb(calls, { devices = [], items = {}, hasPlaceables = true } = {}) {
-  const state = { items: JSON.parse(JSON.stringify(items)), inserts: [], nextId: 9000 };
-  const query = async (text, values = []) => {
+// lockDelayMs, when set, holds a newly-acquired FOR UPDATE lock open for that
+// long before the caller proceeds -- forcing two Promise.all'd callers to
+// genuinely overlap in real time rather than happening to interleave only by
+// microtask ordering, matching the idiom in addonItemGrants.test.js's
+// "serializes concurrent duplicate grants".
+function fakeRefillDb(calls, { devices = [], items = {}, hasPlaceables = true, lockDelayMs = 0 } = {}) {
+  const state = { items: JSON.parse(JSON.stringify(items)), inserts: [], nextId: 9000, locks: new Map() };
+  const rawQuery = async (text, values = []) => {
     calls.push({ text, values });
     if (text.includes("to_regclass")) {
       return { rows: [{ exists: String(values[0]) === "dune.placeables" ? hasPlaceables : true }] };
@@ -4075,6 +4080,12 @@ function fakeRefillDb(calls, { devices = [], items = {}, hasPlaceables = true } 
       return { rows: columns.map((column_name) => ({ column_name })) };
     }
     if (text.includes("from base_entities be")) return { rows: devices };
+    // The inventory row itself always exists once inventory_id is set, so its
+    // FOR UPDATE lock query always returns a row -- unlike the fuel-items
+    // query below, which returns nothing for a device with no fuel yet.
+    if (text.includes("from dune.inventories") && /for update/i.test(text)) {
+      return { rows: [{ id: values[0] }] };
+    }
     if (text.includes("lower(template_id) = lower($2)")) {
       const rows = (state.items[values[0]] || []).filter((row) =>
         String(row.template_id).toLowerCase() === String(values[1]).toLowerCase());
@@ -4116,7 +4127,40 @@ function fakeRefillDb(calls, { devices = [], items = {}, hasPlaceables = true } 
     }
     return { rows: [] };
   };
-  return { state, db: { query, transaction: async (fn) => fn({ query }) } };
+
+  // A key is locked once a FOR UPDATE query returns rows for it, and stays
+  // locked until the transaction that acquired it settles -- mirroring
+  // Postgres releasing row locks on commit/rollback, not on the statement
+  // that acquired them.
+  async function acquireLock(heldByMe, key) {
+    if (heldByMe.has(key)) return;
+    while (state.locks.has(key)) await state.locks.get(key);
+    let release;
+    state.locks.set(key, new Promise((resolve) => { release = resolve; }));
+    heldByMe.set(key, release);
+    if (lockDelayMs) await new Promise((resolve) => setTimeout(resolve, lockDelayMs));
+  }
+
+  async function transaction(fn) {
+    const heldByMe = new Map();
+    const query = async (text, values = []) => {
+      const result = await rawQuery(text, values);
+      if (/for update/i.test(text) && result.rows.length > 0 && values.length) {
+        await acquireLock(heldByMe, values[0]);
+      }
+      return result;
+    };
+    try {
+      return await fn({ query });
+    } finally {
+      for (const [key, release] of heldByMe) {
+        state.locks.delete(key);
+        release();
+      }
+    }
+  }
+
+  return { state, db: { query: rawQuery, transaction } };
 }
 
 const FUEL_DEVICE = { placeable_id: "5001", generator_type: "fuel", inventory_id: "701", max_item_count: 10 };
@@ -4199,6 +4243,24 @@ test("generator refill leaves an already-full device untouched", async () => {
   assert.equal(calls.some((call) => String(call.text).startsWith("update dune.items")), false);
   assert.equal(result.devices[0].added, 0);
   assert.equal(result.totalAdded, 0);
+});
+
+test("concurrent refills of an empty-inventory device do not both insert a full stack", async () => {
+  const calls = [];
+  const { state, db } = fakeRefillDb(calls, { devices: [FUEL_DEVICE], lockDelayMs: 5 });
+
+  const [first, second] = await Promise.all([
+    refillBaseGenerators(db, "", 482),
+    refillBaseGenerators(db, "", 482)
+  ]);
+
+  // Without the inventory-row lock, both callers would read `before: 0` and
+  // each insert a full 499-unit stack. With it, the second caller blocks
+  // until the first commits, then sees the first's fuel and adds nothing.
+  assert.equal(state.inserts.length, 1);
+  const totalUnits = (state.items["701"] || []).reduce((sum, row) => sum + row.stack_size, 0);
+  assert.equal(totalUnits, 499);
+  assert.equal(first.totalAdded + second.totalAdded, 499);
 });
 
 test("generator refill stops at the inventory slot limit and reports it as capped", async () => {

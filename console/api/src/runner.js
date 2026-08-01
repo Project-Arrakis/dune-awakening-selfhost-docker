@@ -82,6 +82,10 @@ export function buildDuneArgs(operation, payload = {}) {
   switch (operation) {
     case "restartService":
       return ["restart", validateServiceName(payload.service)];
+    case "restartServiceStop":
+      return ["stop-service", validateServiceName(payload.service)];
+    case "restartServiceStart":
+      return ["restart", validateServiceName(payload.service)];
     case "serverTitle":
       return ["config", "title", validateServerTitle(payload.title), "--yes"];
     case "serverConfig":
@@ -240,6 +244,10 @@ export function buildDuneArgs(operation, payload = {}) {
       return ["sietches", "set-settings", validatePartitionId(payload.partitionId), validateDisplayName(payload.displayName), validateSietchPassword(payload.password ?? "")];
     case "sietchesRestart":
       return ["sietches", "restart", validatePartitionId(payload.partitionId)];
+    case "sietchesRestartStop":
+      return ["sietches", "stop-partition", validatePartitionId(payload.partitionId)];
+    case "sietchesRestartStart":
+      return ["sietches", "start-partition", validatePartitionId(payload.partitionId)];
     case "sietchesSync":
       return ["sietches", "sync"];
     case "sietchesValidate":
