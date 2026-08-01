@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { containerStatusLineHas, isHomeStopComplete } from "./ServerPanels";
+import { containerStatusLineHas, isHomeStopComplete, preserveTerminalStackResult } from "./ServerPanels";
 
 // Keep the shared parser tolerant of docker ps-style column padding while
 // requiring an exact container-name match.
@@ -43,5 +43,25 @@ describe("isHomeStopComplete", () => {
     const lines = requiredContainers.map((name) => `${name} Up 5 minutes`);
     const status = ["=== Containers ===", "SERVICE STATUS", ...lines, "=== Listeners ==="].join("\n");
     expect(isHomeStopComplete(status, "")).toBe(false);
+  });
+});
+
+describe("preserveTerminalStackResult", () => {
+  it("does not let a late readiness poll replace startup success with Finalizing Startup", () => {
+    const succeeded = { status: "succeeded" as const, title: "Battlegroup Started Successfully" };
+    const staleProgress = {
+      status: "running" as const,
+      title: "Finalizing Startup",
+      message: "Services reported ready once. Confirming they stay ready."
+    };
+
+    expect(preserveTerminalStackResult(succeeded, staleProgress)).toBe(succeeded);
+  });
+
+  it("continues updating progress while the action is still running", () => {
+    const waiting = { status: "running" as const, title: "Waiting for Server Readiness" };
+    const confirming = { status: "running" as const, title: "Finalizing Startup" };
+
+    expect(preserveTerminalStackResult(waiting, confirming)).toEqual(confirming);
   });
 });
