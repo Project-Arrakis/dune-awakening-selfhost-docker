@@ -43,6 +43,7 @@ test("player announcements default to disabled with official text", () => {
 
 test("player announcements validate booleans and templates", () => {
   assert.equal(normalizeSettings({ joinEnabled: true, joinMessage: "{playerName} joined", leaveEnabled: false, leaveMessage: "{playerName} left" }).joinEnabled, true);
+  assert.equal(normalizeSettings({ joinEnabled: true, joinMessage: "{playerName}\njoined", leaveEnabled: false, leaveMessage: "{playerName}\nleft" }).joinMessage, "{playerName} joined");
   assert.equal(normalizeSettings({ joinEnabled: true, joinMessage: "{playerName} has entered the sands of Arrakis.", leaveEnabled: true, leaveMessage: "{playerName} has vanished beyond the dunes." }).joinMessage, "{playerName} has entered {mapName}, their trail fresh upon the sands.");
   assert.throws(() => normalizeSettings({ joinEnabled: "true", joinMessage: "joined", leaveEnabled: false, leaveMessage: "left" }), /joinEnabled must be true or false/);
   assert.throws(() => normalizeSettings({ joinEnabled: true, joinMessage: "", leaveEnabled: false, leaveMessage: "left" }), /Join message is required/);

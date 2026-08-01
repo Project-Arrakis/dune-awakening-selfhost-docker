@@ -45,6 +45,7 @@ test("message of the day defaults are disabled with an empty draft", () => {
 
 test("message of the day validates booleans and message text", () => {
   assert.deepEqual(normalizeSettings({ enabled: true, title: "Daily", message: "Hello" }), { enabled: true, title: "", message: "Hello" });
+  assert.equal(normalizeSettings({ enabled: true, message: "First\n\nSecond" }).message, "First Second");
   assert.throws(() => normalizeSettings({ enabled: "true", title: "Daily", message: "Hello" }), /enabled must be true or false/);
   assert.throws(() => normalizeSettings({ enabled: true, title: "Daily", message: "x".repeat(501) }), /Message must be 1-500/);
 });
@@ -152,7 +153,7 @@ test("message of the day skips incomplete recipient identities without recording
 
   const result = await runMessageOfTheDayScan(cfg, [onlinePlayer({
     fls_id: "not a queue identity",
-    funcom_id: "invalid recipient identity"
+    funcom_id: "invalid\u0000recipient identity"
   })], { mockMode: true });
 
   assert.equal(result.sent, 0);
@@ -165,6 +166,20 @@ test("message of the day can fall back to a valid Funcom route when the FLS iden
   saveMessageOfTheDay(cfg, { enabled: true, title: "Daily", message: "Welcome back" });
 
   const result = await runMessageOfTheDayScan(cfg, [onlinePlayer({ fls_id: "unavailable" })], { mockMode: true });
+
+  assert.equal(result.sent, 1);
+  assert.equal(result.failed, 0);
+});
+
+test("message of the day accepts native 15-character FLS IDs and Unicode Funcom names", async () => {
+  const cfg = config();
+  saveMessageOfTheDay(cfg, { enabled: true, message: "Welcome, {playerName}!" });
+
+  const result = await runMessageOfTheDayScan(cfg, [onlinePlayer({
+    fls_id: "DCFAB28D07E0F79",
+    funcom_id: "❤️  SugarFluff  ❤#42013",
+    character_name: "SugarFluff"
+  })], { mockMode: true });
 
   assert.equal(result.sent, 1);
   assert.equal(result.failed, 0);

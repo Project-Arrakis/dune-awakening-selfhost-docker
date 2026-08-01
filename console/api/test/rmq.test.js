@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { buildBroadcastCommand, buildCarePackageWhisperPayload, buildMapChatPayload, buildShutdownBroadcastCommand, commandAuthToken, publishCarePackageWhisper, publishMapChat, validateBroadcastMessage, validateLocalizedTexts, validatePublishLabel } from "../src/rmq.js";
+import { buildBroadcastCommand, buildCarePackageWhisperPayload, buildMapChatPayload, buildShutdownBroadcastCommand, commandAuthToken, formatChatBodyMessage, isValidHexFlsId, isValidWhisperIdentity, publishCarePackageWhisper, publishMapChat, validateBroadcastMessage, validateLocalizedTexts, validatePublishLabel } from "../src/rmq.js";
 
 test("builds verified ServiceBroadcast generic command payload", () => {
   const command = buildBroadcastCommand({ message: "Server event starts soon", durationSec: 45, title: "Event" });
@@ -40,6 +40,23 @@ test("validates broadcast and whisper-style message bounds", () => {
   assert.throws(() => validateLocalizedTexts([{ Key: "bad\u0001key", Title: "Event", Body: "hello" }]));
   assert.throws(() => validateLocalizedTexts([{ Key: "AdminBroadcast", Title: "Event", Body: "hello" }]));
   assert.throws(() => validateLocalizedTexts([{ Key: "en", Title: "Event", Body: "" }]));
+});
+
+test("accepts native variable-width FLS IDs and printable Unicode Funcom IDs", () => {
+  assert.equal(isValidHexFlsId("DCFAB28D07E0F79"), true);
+  assert.equal(isValidHexFlsId("A5C0DE5E12A00001"), true);
+  assert.equal(isValidHexFlsId("12345"), false);
+  assert.equal(isValidWhisperIdentity("❤️  SugarFluff  ❤#42013"), true);
+  assert.equal(isValidWhisperIdentity("bad\u0000identity"), false);
+});
+
+test("collapses multiline chat because Funcom exposes its rich-text wrapper", () => {
+  assert.equal(formatChatBodyMessage("One line"), "One line");
+  assert.equal(
+    formatChatBodyMessage("First line\r\n\r\nThird line"),
+    "First line Third line"
+  );
+  assert.equal(formatChatBodyMessage("First\nSecond").includes("<Chat_Body>"), false);
 });
 
 test("builds shutdown ServiceBroadcast with strict shutdown type", () => {
@@ -90,7 +107,8 @@ test("builds map chat courier payload", () => {
     messageId: "map-chat-test"
   });
   assert.equal(payload.outer.Type, "TextChat");
-  const inner = JSON.parse(payload.outer.Content);
+  assert.equal(Object.hasOwn(payload.outer, "Content"), false);
+  const inner = JSON.parse(payload.outer.content);
   assert.equal(inner.m_Id, "map-chat-test");
   assert.equal(inner.m_ChannelType, "Map");
   assert.equal(inner.m_bUseSpoofedUserName, false);

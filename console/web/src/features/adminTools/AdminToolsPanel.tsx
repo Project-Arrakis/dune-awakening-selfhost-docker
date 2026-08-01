@@ -584,7 +584,7 @@ export function AdminToolsPanel({ onError, confirmAction }: AdminToolsPanelProps
             <label className={`switch-checkbox ${messageOfTheDay.enabled ? "enabled" : "disabled"}`}><input type="checkbox" checked={messageOfTheDay.enabled} onChange={(event) => run(() => toggleMessageOfTheDay(event.target.checked))} /><span className="switch-label">Login Message</span><strong className="switch-state">{messageOfTheDay.enabled ? "ON" : "OFF"}</strong></label>
           </div>
           {messageOfTheDayDirty && <p className="dirty-note">Unsaved changes: Message of the Day</p>}
-          <p className="muted">Shown as a private in-game message once per player login session. Use <code>{"{playerName}"}</code> to include the recipient's character name. Saving does not send it immediately to players who are already online.</p>
+          <p className="muted">Shown as a private in-game message once per player login session. Use <code>{"{playerName}"}</code> to include the recipient's character name. Funcom chat does not support manual line breaks, so messages are saved and sent as a single line. Saving does not send it immediately to players who are already online.</p>
           {messageOfTheDayStatus.lastScanError && <p className="danger-note">Last MOTD scan was interrupted: {messageOfTheDayStatus.lastScanAt ? new Date(messageOfTheDayStatus.lastScanAt).toLocaleString() : "time unavailable"} ({messageOfTheDayStatus.lastScanError}). It will retry automatically.</p>}
           {messageOfTheDayStatus.lastAttemptAt && <p className={messageOfTheDayStatus.lastFailed > 0 ? "danger-note" : "muted"}>Last delivery attempt: {new Date(messageOfTheDayStatus.lastAttemptAt).toLocaleString()} — sent {messageOfTheDayStatus.lastSent}, failed {messageOfTheDayStatus.lastFailed}{messageOfTheDayStatus.lastError ? ` (${messageOfTheDayStatus.lastError})` : ""}.</p>}
           <label className="broadcast-message">Message<textarea rows={3} value={messageOfTheDay.message} onChange={(event) => setMessageOfTheDay((current) => ({ ...current, message: event.target.value }))} placeholder="Message shown when a player logs in" /></label>
@@ -622,6 +622,7 @@ export function AdminToolsPanel({ onError, confirmAction }: AdminToolsPanelProps
           <div className="panel-title schedule-panel-title">
             <h4>Player Arrival & Departure Messages</h4>
           </div>
+          <p className="muted">Funcom chat does not support manual line breaks. Join and leave messages are saved and sent as a single line.</p>
           {playerAnnouncementsDirty && <p className="dirty-note">Unsaved changes: Player announcements</p>}
           <label className="checkbox-line">
             <input type="checkbox" checked={playerAnnouncements.joinEnabled} onChange={(event) => setPlayerAnnouncements((current) => ({ ...current, joinEnabled: event.target.checked }))} />

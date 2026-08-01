@@ -1435,9 +1435,9 @@ export async function listPlayers(db, { status = "all", q = "", page = 0, pageSi
          end as funcom_id
        ) decrypted_account on true`
     : "";
-  const plainFlsId = "case when trim(coalesce(ac.\"user\", '')) ~ '^[A-Fa-f0-9]{16,64}$' then trim(ac.\"user\") else '' end";
+  const plainFlsId = "case when trim(coalesce(ac.\"user\", '')) ~ '^[A-Fa-f0-9]{15,64}$' then trim(ac.\"user\") else '' end";
   const encryptedFlsId = canReadEncryptedAccounts
-    ? "case when trim(coalesce(ea.\"user\", '')) ~ '^[A-Fa-f0-9]{16,64}$' then trim(ea.\"user\") else '' end"
+    ? "case when trim(coalesce(ea.\"user\", '')) ~ '^[A-Fa-f0-9]{15,64}$' then trim(ea.\"user\") else '' end"
     : "''";
   const resolvedFlsId = canReadEncryptedAccounts
     ? `coalesce(nullif(${plainFlsId}, ''), nullif(${encryptedFlsId}, ''), '')`
@@ -1445,8 +1445,8 @@ export async function listPlayers(db, { status = "all", q = "", page = 0, pageSi
   const decryptedFuncomId = canReadEncryptedAccounts
     ? "coalesce(decrypted_account.funcom_id, '')"
     : "''";
-  const plainFuncomId = "case when trim(coalesce(ac.funcom_id, '')) ~ '^[A-Za-z0-9_#.@:+/-]{1,180}$' then trim(ac.funcom_id) else '' end";
-  const validDecryptedFuncomId = `case when trim(${decryptedFuncomId}) ~ '^[A-Za-z0-9_#.@:+/-]{1,180}$' then trim(${decryptedFuncomId}) else '' end`;
+  const plainFuncomId = "case when char_length(trim(coalesce(ac.funcom_id, ''))) between 1 and 180 and trim(coalesce(ac.funcom_id, '')) !~ '[[:cntrl:]]' then trim(ac.funcom_id) else '' end";
+  const validDecryptedFuncomId = `case when char_length(trim(${decryptedFuncomId})) between 1 and 180 and trim(${decryptedFuncomId}) !~ '[[:cntrl:]]' then trim(${decryptedFuncomId}) else '' end`;
   const resolvedFuncomId = canReadEncryptedAccounts
     ? `coalesce(nullif(${plainFuncomId}, ''), nullif(${validDecryptedFuncomId}, ''), '')`
     : plainFuncomId;
