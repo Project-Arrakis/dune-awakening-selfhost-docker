@@ -1,5 +1,7 @@
 # Login Rate Limit Defense
 
+**Status:** Historical record — describes the state at branch `security/login-rate-limit-defense`. Not maintained. The control it documents is still in force.
+
 Branch: `security/login-rate-limit-defense`
 
 ## Purpose

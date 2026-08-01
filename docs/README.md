@@ -1,0 +1,70 @@
+# Documentation Index
+
+This folder mirrors the repo's own structure: component docs live under a folder
+named for the component they document (`console/`, `runtime/`, `addons/`), while
+docs that span the whole product or are pure assets stay at this root
+(`screenshots.md`). Cross-cutting concerns (`security/`, `incidents/`) get their
+own top-level folders.
+
+Docs marked **Historical record** describe a point-in-time state (a branch, a PR,
+an issue) and are not kept up to date — read them for context, not as current
+reference. Everything else is marked **Current** and is expected to stay accurate.
+
+## Console (`console/api`, `console/web`)
+
+- [API-REFERENCE.md](console/API-REFERENCE.md) — Current. Full HTTP API reference for every console endpoint.
+- [blueprints.md](console/blueprints.md) — Current. Blueprint import/export developer documentation.
+- [PRE-AUGMENTED-GEAR.md](console/PRE-AUGMENTED-GEAR.md) — Current. API reference for granting gear with augments pre-applied.
+- [generator-fuel-burn-rates.md](console/generator-fuel-burn-rates.md) — Current. Per-generator fuel burn constants and where they live in code.
+- [generator-refill-caps.md](console/generator-refill-caps.md) — Current. Refill-generators endpoint behavior and per-type fuel caps.
+
+## Runtime (`runtime/`)
+
+- [CONTAINER-HARDENING.md](runtime/CONTAINER-HARDENING.md) — Current. Summary of container hardening changes.
+- [E2E-METRICS-TESTING.md](runtime/E2E-METRICS-TESTING.md) — Current. End-to-end validation procedure for the metrics stack (`runtime/metrics`).
+
+## Addons
+
+- [addon-item-grants.md](addons/addon-item-grants.md) — Current. The `admin:grant-items` permissioned addon item grant flow.
+- [addon-scheduled-jobs.md](addons/addon-scheduled-jobs.md) — Current. Server-side scheduled addon jobs (EDA Exchange Bot buyback sweep).
+
+## Discord Integrations
+
+Two overlapping doc sets — start with whichever matches your role:
+
+- [discord-integration/README.md](integrations/discord-integration/README.md) — Current, **operator-facing**. Adapter overview, setup, routes, and RBAC.
+  - [admin-guide.md](integrations/discord-integration/admin-guide.md) — Walkthrough for getting the bot running on your server.
+  - [faq.md](integrations/discord-integration/faq.md) — Frequently asked questions.
+  - [troubleshooting.md](integrations/discord-integration/troubleshooting.md) — Common problems and fixes.
+- [discord-control-bot/admin-guide.md](integrations/discord-control-bot/admin-guide.md) — Current, **internal**. Admin guide for the experimental read-only companion bot.
+  - [setup-guide.md](integrations/discord-control-bot/setup-guide.md) — Validating the command layer and adapter without a live Discord connection.
+  - [user-guide.md](integrations/discord-control-bot/user-guide.md) — Command reference for end users.
+  - [api-adapter-contract.md](integrations/discord-control-bot/api-adapter-contract.md) — The protected server-side adapter contract.
+
+## Security
+
+All four docs below describe controls that are still in force; they are marked
+historical because they read as point-in-time PR records, not because the
+control itself is stale.
+
+- [addon-provenance.md](security/addon-provenance.md) — Historical record. Community addon discovery and code-signing threat model.
+- [generated-command-auth-token.md](security/generated-command-auth-token.md) — Historical record. Command auth token generation hardening.
+- [login-rate-limit-defense.md](security/login-rate-limit-defense.md) — Historical record. Login rate limiting defense.
+- [pre-augmented-gear-grant.md](security/pre-augmented-gear-grant.md) — Historical record. Security review of the pre-augmented gear grant path — see [PRE-AUGMENTED-GEAR.md](console/PRE-AUGMENTED-GEAR.md) for current reference.
+
+## Incidents
+
+- [INC-2026-07-24-STEAMCMD-CDN-OUTAGE.md](incidents/INC-2026-07-24-STEAMCMD-CDN-OUTAGE.md) — Historical record. Post-incident case study: SteamCMD content-host failure.
+
+## Archive
+
+Frozen PR/issue evidence, kept for history. Not maintained; see the linked
+current doc for anything still accurate today.
+
+- [blueprints-report.md](archive/blueprints-report.md) — Historical record. Feature spec and test report for PR #80 — see [blueprints.md](console/blueprints.md).
+- [PR-EVIDENCE-ADDON-METRICS-SUPPORT.md](archive/PR-EVIDENCE-ADDON-METRICS-SUPPORT.md) — Historical record. PR evidence for the addon metrics stack — see [E2E-METRICS-TESTING.md](runtime/E2E-METRICS-TESTING.md).
+- [R1-METRICS-STACK-IMPLEMENTATION-NOTES.md](archive/R1-METRICS-STACK-IMPLEMENTATION-NOTES.md) — Historical record. Implementation notes for issue #82 — see [E2E-METRICS-TESTING.md](runtime/E2E-METRICS-TESTING.md).
+
+## Other
+
+- [screenshots.md](screenshots.md) — Current. Whole-product screenshot gallery, linked from the root [README](../README.md).

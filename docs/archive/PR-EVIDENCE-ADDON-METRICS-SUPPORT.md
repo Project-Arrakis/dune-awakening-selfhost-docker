@@ -1,3 +1,7 @@
+# PR Evidence — Addon Metrics Support
+
+**Status:** Historical record — PR evidence for the addon metrics stack. Not maintained. See [E2E Metrics Testing](../runtime/E2E-METRICS-TESTING.md) for the current procedure.
+
 ## Summary
 
 Adds an opt-in operational metrics stack intended to support Dune Ops Observability addon work without changing the default runtime path.

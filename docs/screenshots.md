@@ -1,5 +1,7 @@
 # Screenshots
 
+**Status:** Current | **Last Updated:** August 2026
+
 ## Home
 
 ![Home](screenshots/Home.png)

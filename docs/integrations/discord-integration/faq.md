@@ -173,6 +173,6 @@ For a full troubleshooting guide, see [Troubleshooting](troubleshooting.md).
 ## Sources
 
 - [Admin Guide](admin-guide.md) — full server setup instructions
-- [User Guide](user-guide.md) — how to use all commands
+- [User Guide](../discord-control-bot/user-guide.md) — how to use all commands
 - [Troubleshooting](troubleshooting.md) — error messages and fixes
-- [Configuration Reference](configuration.md) — all settings explained
+- [Configuration Reference](admin-guide.md#step-10-create-the-configuration-file) — all settings explained

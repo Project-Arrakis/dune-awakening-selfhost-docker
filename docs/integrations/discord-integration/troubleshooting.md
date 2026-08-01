@@ -224,7 +224,7 @@ git commit --no-verify
 
 1. Check the [FAQ](faq.md) for common questions
 2. See the [Admin Guide](admin-guide.md) for setup instructions
-3. Review the [Configuration Reference](configuration.md) for all settings
+3. Review the [Configuration Reference](admin-guide.md#step-10-create-the-configuration-file) for all settings
 4. Open an issue at [github.com/yacketrj/dune-awakening-selfhost-discordbot](https://github.com/yacketrj/dune-awakening-selfhost-discordbot/issues)
 
 ## Sources

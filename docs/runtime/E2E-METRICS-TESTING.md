@@ -1,5 +1,7 @@
 # E2E Metrics Stack Testing
 
+**Status:** Current | **Last Updated:** August 2026
+
 This document describes the end-to-end validation procedure for the addon-supporting operational metrics stack.
 
 The goal is to verify that the opt-in metrics stack can be started, scraped, validated, inspected, and stopped without changing the normal Dune server startup path.
