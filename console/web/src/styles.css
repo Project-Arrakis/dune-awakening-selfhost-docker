@@ -1765,15 +1765,15 @@ body.debug .technical-details { display: block; }
      .bases-generator-reserve-note in this grid. */
   grid-column: 1 / -1;
 }
-/* The shared InfoTooltip popover opens leftward (.memory-info-box right: 0)
-   for Maps' right-anchored icons. This toggle's icon sits near the left edge
-   of the table, so flip direction here only. */
-.bases-auto-refill .memory-info-box { left: 0; right: auto; }
+/* Keep the Auto-Refill control at the far edge of the expanded row. When the
+   row wraps on a phone, auto margin still right-aligns the control on its new
+   line without imposing a fixed width. Its tooltip opens inward from there. */
+.bases-auto-refill .memory-info-box { left: auto; right: 0; }
 /* .memory-feature-toggle's Maps-specific rule (min-height: 42px, padded,
    tinted background) insets the toggle pill inside a taller boxed wrapper
    here, making it look shorter/heavier than the bare uptime-event badge
    beside it despite both pills sharing the same 32px min-height. */
-.bases-auto-refill .memory-feature-toggle { min-height: 0; padding: 0; background: none; }
+.bases-auto-refill .memory-feature-toggle { min-height: 0; margin-left: auto; padding: 0; background: none; }
 /* Scoped to this modifier rather than the shared .switch-checkbox, which ~10
    other panels also use. Sized a notch below the toggle's own text so the
    description reads as secondary, not the loudest thing in the block.
@@ -2289,18 +2289,19 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
 }
 .bases-generator-breakdown {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 240px));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
   gap: 12px;
   width: 100%;
+  padding: clamp(12px, 1.5vw, 18px);
+  box-sizing: border-box;
   align-items: stretch;
-  justify-content: start;
 }
 .bases-uptime-event-inline {
   display: inline-flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 4px;
+  align-items: center;
+  gap: 8px;
   margin: 0;
+  white-space: nowrap;
 }
 .bases-uptime-event-badge {
   display: inline-flex;
@@ -2320,7 +2321,6 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
   box-sizing: border-box;
 }
 .bases-uptime-event-inline small {
-  padding-left: 3px;
   color: var(--muted-warm);
   font-size: 11px;
   line-height: 1.25;
