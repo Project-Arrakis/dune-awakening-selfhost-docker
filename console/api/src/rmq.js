@@ -189,6 +189,20 @@ export async function publishCarePackageWhisper(config, fields) {
   };
 }
 
+export async function listReadyRabbitQueues(config) {
+  const output = await dockerExec(
+    ["exec", RMQ_CONTAINER, "rabbitmqctl", "-q", "list_queues", "name", "consumers", "state"],
+    config.commandTimeoutMs
+  );
+  const ready = new Set();
+  for (const line of output.stdout.split(/\r?\n/)) {
+    const [name = "", consumersText = "", state = ""] = line.trim().split(/\s+/);
+    const consumers = Number(consumersText);
+    if (name && Number.isInteger(consumers) && consumers > 0 && (!state || state === "running")) ready.add(name);
+  }
+  return ready;
+}
+
 export async function publishMapChat(config, fields) {
   const senderHexFlsId = validateHexFlsId(fields?.senderHexFlsId);
   const amqpUserId = validateHexFlsId(fields?.amqpUserId || senderHexFlsId);

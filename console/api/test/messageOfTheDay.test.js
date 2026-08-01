@@ -236,6 +236,31 @@ test("message of the day does not mark fresh sessions delivered before the delay
   assert.equal(mature.sent, 1);
 });
 
+test("message of the day keeps delivery pending until the player queue has a consumer", async () => {
+  const cfg = config();
+  saveMessageOfTheDay(cfg, { enabled: true, title: "Daily", message: "Welcome back" });
+  const player = onlinePlayer({ login_session: "2026-06-30T00:00:00.000Z" });
+  const now = new Date("2026-06-30T00:01:00.000Z");
+
+  const waiting = await runMessageOfTheDayScan(cfg, [player], {
+    mockMode: true,
+    now,
+    readyRecipientQueues: new Set()
+  });
+  assert.equal(waiting.sent, 0);
+  assert.equal(waiting.failed, 0);
+  assert.equal(waiting.deferred, 1);
+  assert.deepEqual(JSON.parse(readFileSync(join(cfg.generatedDir, "message-of-the-day-state.json"), "utf8")).delivered, {});
+
+  const delivered = await runMessageOfTheDayScan(cfg, [player], {
+    mockMode: true,
+    now,
+    readyRecipientQueues: new Set(["ABCDEF1234567890_queue"])
+  });
+  assert.equal(delivered.sent, 1);
+  assert.equal(delivered.deferred, 0);
+});
+
 test("message of the day does not resend on map or actor changes within the same login", async () => {
   const cfg = config();
   saveMessageOfTheDay(cfg, { enabled: true, title: "Daily", message: "Welcome back" });
