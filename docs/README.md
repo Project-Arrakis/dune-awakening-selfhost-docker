@@ -10,6 +10,32 @@ Docs marked **Historical record** describe a point-in-time state (a branch, a PR
 an issue) and are not kept up to date — read them for context, not as current
 reference. Everything else is marked **Current** and is expected to stay accurate.
 
+## Adding a new doc
+
+1. **Pick the folder by what the doc documents, not what kind of doc it is.**
+   If it explains a piece of `console/api` or `console/web`, it goes in
+   `docs/console/`. If it explains something under `runtime/`, it goes in
+   `docs/runtime/`. Addon-platform behavior goes in `docs/addons/`. Only use
+   `docs/security/` or `docs/incidents/` for concerns that cut across
+   components (a vulnerability class, a post-incident review) rather than a
+   single feature. Don't add a new top-level folder for one document — put it
+   in the closest existing one.
+2. **Decide Current vs Historical up front**, and put the line right after the
+   H1, matching the existing docs:
+   - Living reference that should be kept accurate as code changes:
+     `**Status:** Current | **Last Updated:** <Month Year>`
+   - A frozen snapshot of a PR, branch, or issue — a test report, a change
+     summary, implementation notes — goes in `docs/archive/` with:
+     `**Status:** Historical record — describes the state at <PR/branch/issue>. Not maintained.`
+     Add a pointer to the current doc that superseded it, if one exists.
+3. **Add one line to this index**, in the matching section above: a link, one
+   sentence of purpose, and the status word. A doc with no line here is
+   effectively invisible — this file is the only thing every other doc is
+   guaranteed to be reachable from.
+4. **Cross-link the doc's nearest relatives** (the feature doc it complements,
+   the security review of the same code path, the API reference section that
+   covers its endpoints) directly in the doc body, not just in this index.
+
 ## Console (`console/api`, `console/web`)
 
 - [API-REFERENCE.md](console/API-REFERENCE.md) — Current. Full HTTP API reference for every console endpoint.
