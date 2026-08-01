@@ -189,6 +189,15 @@ h1, h2, h3, h4, h5 { color: var(--title); line-height: 1.2; letter-spacing: 0; }
 .confirm-modal-details dd.accent { color: var(--title); }
 .confirm-modal-details dd.success { color: var(--success-text); }
 .confirm-modal-details dd.danger { color: var(--danger-text); }
+.confirm-modal-warning {
+  background: rgba(169, 121, 50, .12);
+  border: 1px solid var(--warning);
+  padding: 10px 12px;
+  border-radius: 6px;
+  font-size: 14px;
+  line-height: 1.5;
+  color: #e7b866;
+}
 .confirm-modal-actions {
   display: flex;
   justify-content: flex-end;
@@ -1605,25 +1614,216 @@ body.debug .technical-details { display: block; }
 .blueprint-actions-column .icon-toggle-group { justify-content: center; }
 .bases-table { width: 100%; min-width: 0; table-layout: fixed; }
 .bases-table th { max-width: none; white-space: normal; overflow: visible; text-overflow: clip; line-height: 1.2; }
-.bases-table th, .bases-table td { padding: 8px 6px; }
-.bases-table th:nth-child(1), .bases-table td:nth-child(1) { width: 2.5%; text-align: center; }
+.bases-table th, .bases-table td { padding: 8px 6px; font-size: 14px; }
 .bases-table th:nth-child(2), .bases-table td:nth-child(2) { width: 5%; text-align: center; }
 .bases-table th:nth-child(3), .bases-table td:nth-child(3) { width: 12%; }
-.bases-table th:nth-child(4), .bases-table td:nth-child(4) { width: 8%; }
-.bases-table th:nth-child(5), .bases-table td:nth-child(5) { width: 8%; }
+.bases-table th:nth-child(4), .bases-table td:nth-child(4) { width: 7%; }
+.bases-table th:nth-child(5), .bases-table td:nth-child(5) { width: 7%; }
 .bases-table th:nth-child(6), .bases-table td:nth-child(6) { width: 9%; }
-.bases-table th:nth-child(7), .bases-table td:nth-child(7) { width: 8%; }
+.bases-table th:nth-child(7), .bases-table td:nth-child(7) { width: 7%; }
 .bases-table th:nth-child(8), .bases-table td:nth-child(8) { width: 17%; }
-.bases-table th:nth-child(9), .bases-table td:nth-child(9) { width: 7%; text-align: center; }
-.bases-table th:nth-child(10), .bases-table td:nth-child(10) { width: 7%; text-align: center; }
-.bases-table th:nth-child(11), .bases-table td:nth-child(11) { width: 11.5%; }
-.bases-table th.bases-actions-column, .bases-table td.bases-actions-column { width: 5%; overflow: visible; }
+.bases-table th:nth-child(9), .bases-table td:nth-child(9) { width: 6%; text-align: center; }
+.bases-table th:nth-child(10), .bases-table td:nth-child(10) { width: 6%; text-align: center; }
+.bases-table th:nth-child(11), .bases-table td:nth-child(11) { width: 10.5%; }
+.bases-table th.bases-actions-column, .bases-table td.bases-actions-column { width: 96px; }
 .bases-table td { max-width: none; white-space: normal; overflow-wrap: anywhere; text-overflow: clip; }
 .bases-name, .bases-ellipsis-cell { display: block; overflow: visible; text-overflow: clip; white-space: normal; overflow-wrap: anywhere; }
 .bases-generator-summary { display: block; white-space: normal; overflow: visible; text-overflow: clip; line-height: 1.4; }
 .bases-fuel-alert { color: var(--danger-text); }
 .bases-pagination-footer { margin-top: 12px; margin-bottom: 0; align-items: center; }
 .bases-pagination-footer .action-help-note { margin: 0; }
+.pending-refill-note, .pending-refill-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--title);
+}
+.pending-refill-badge {
+  gap: 4px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: rgba(255, 208, 138, .12);
+  font-size: 11px;
+  white-space: nowrap;
+}
+/* inline-task-result is built for the flex action rows in Maps/Server; this one
+   stands alone under the banner, so drop the flex sizing it assumes. Its
+   result-ok rule animates "fade-result" and retires itself; result-fail does
+   not, matching BasesPanel's own JS timer, which only clears the success case
+   -- losing an error is worse than a stale one. */
+.bases-refill-status {
+  align-self: auto;
+  flex: 0 1 auto;
+  max-width: none;
+  margin: 10px 0 0;
+}
+.bases-refill-status .spinner,
+.bases-restarting-pill .spinner {
+  width: 13px;
+  height: 13px;
+  border-width: 2px;
+}
+.bases-restarting-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 9px;
+  border-radius: 6px;
+  background: rgba(255, 208, 138, .12);
+  color: var(--title);
+  font-size: 11px;
+  white-space: nowrap;
+}
+/* Same shape as .bases-pending-refills below, in danger tones rather than
+   --title: a stalled base is not routine (waiting for a restart window), it
+   means auto-refill gave up, so it reads as a warning rather than a status. */
+.bases-stalled-banner {
+  margin: 12px 0 0;
+  padding: 12px 16px;
+  background: var(--panel-soft);
+  border-left: 3px solid var(--danger);
+}
+.bases-stalled-banner-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  color: var(--danger-text);
+  font-size: 14px;
+  font-weight: 500;
+}
+.bases-stalled-banner .action-help-note { margin: 6px 0 0; }
+.bases-pending-refills {
+  margin: 12px 0 0;
+  padding: 12px 16px;
+  background: var(--panel-soft);
+  border-left: 3px solid var(--title);
+}
+.bases-pending-refills-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  color: var(--title);
+  font-size: 14px;
+  font-weight: 500;
+}
+.bases-pending-refills .action-help-note { margin: 6px 0 0; }
+.bases-pending-refills-list {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+.bases-pending-refills-list li {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  background: var(--panel-muted);
+  border-radius: 6px;
+  font-size: 13px;
+}
+.bases-pending-refills-list button { padding: 5px 10px; font-size: 12px; }
+.bases-pending-refills-list .muted { color: var(--muted); }
+.bases-queued-refill {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 4px;
+  border-radius: 6px;
+  background: rgba(255, 208, 138, .12);
+  color: var(--title);
+  white-space: nowrap;
+}
+.bases-queued-refill .bases-queued-refill-cancel {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 20px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  min-width: 0;
+}
+.bases-pending-refills-stale {
+  margin: 10px 0 0;
+  font-size: 12px;
+  color: var(--title);
+}
+.bases-auto-refill {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin: 0 0 12px;
+  padding: 0 0 12px;
+  /* .bases-generator-breakdown is a grid of 240px columns (one per generator
+     type). Without this, this block was squeezed into a single 240px cell
+     instead of spanning the row. Matches the same rule already on
+     .bases-generator-reserve-note in this grid. */
+  grid-column: 1 / -1;
+}
+/* Keep the Auto-Refill control at the far edge of the expanded row. When the
+   row wraps on a phone, auto margin still right-aligns the control on its new
+   line without imposing a fixed width. Its tooltip opens inward from there. */
+.bases-auto-refill .memory-info-box { left: auto; right: 0; }
+/* .memory-feature-toggle's Maps-specific rule (min-height: 42px, padded,
+   tinted background) insets the toggle pill inside a taller boxed wrapper
+   here, making it look shorter/heavier than the bare uptime-event badge
+   beside it despite both pills sharing the same 32px min-height. */
+.bases-auto-refill .memory-feature-toggle { min-height: 0; margin-left: auto; padding: 0; background: none; }
+/* Scoped to this modifier rather than the shared .switch-checkbox, which ~10
+   other panels also use. Sized a notch below the toggle's own text so the
+   description reads as secondary, not the loudest thing in the block.
+   The rule explanation and last-checked status live in this element's title
+   attribute (a native hover tooltip) rather than as inline text: this row's
+   available width is whatever the grid handed it, sometimes just one 240px
+   column, which made a fixed-width inline note either wrap unpredictably or
+   (with a hard nowrap) silently truncate. A tooltip has no such constraint. */
+.bases-auto-refill-toggle { min-height: 32px; padding: 3px 4px 3px 10px; }
+.bases-auto-refill-toggle .switch-label { font-size: 12px; }
+/* Wide enough for the "Saving" state, matching settings-server-listing-toggle. */
+.bases-auto-refill-toggle .switch-state { font-size: 11px; min-width: 48px; padding: 4px 8px; }
+/* Auto-refill marks the existing Refill button instead of adding a control: the
+   actions column is a fixed 96px and already holds two glyphs. Fill only, so it
+   still reads and behaves as the working button it remains. */
+.bases-auto-refill-on {
+  border-color: var(--success);
+  background: rgba(61, 139, 98, .18);
+  color: var(--success-text);
+}
+/* Takes precedence over .bases-auto-refill-on: a base that has given up is a
+   worse state than "on and healthy", not a variant of it. */
+.bases-auto-refill-stalled-icon {
+  border-color: var(--danger);
+  background: rgba(167, 73, 73, .18);
+  color: var(--danger-text);
+}
+.bases-auto-refill-unknown {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  font-size: 11px;
+  color: var(--muted);
+}
+.bases-auto-refill-unknown button { padding: 4px 10px; font-size: 11px; }
+/* Auto-refill giving up on a base is an alert, not a footnote: the operator
+   otherwise believes fuel is handled while the base quietly stays empty. Left
+   as inline text rather than folded into the toggle's tooltip -- unlike the
+   rule explanation, this is urgent and per-base, so it should be visible
+   without hovering. Allowed to wrap (no nowrap/ellipsis) for the same reason
+   the row now uses grid-column: 1 / -1 above: available width is whatever the
+   grid hands this row, which is not always enough for one line. */
+.bases-auto-refill-stalled {
+  flex: 1 1 100%;
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--danger-text);
+}
 @media (max-width: 760px) {
   .blueprint-file-field { flex-basis: 100%; max-width: none; }
   .blueprint-list-toolbar, .blueprint-list-toolbar .service-actions { align-items: stretch; }
@@ -1646,8 +1846,18 @@ body.debug .technical-details { display: block; }
 .inline-task-result { align-self: flex-end; flex: 1 1 260px; max-width: 640px; border-left: 3px solid #80613c; color: #d9c8aa; padding: 0 10px; min-height: 42px; display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .inline-task-result.map-action-result { order: 20; flex: 0 1 420px; max-width: 520px; }
 .inline-task-result .inline-task-message { flex: 0 0 100%; }
+/* Hold at full opacity for all but the last ~4% of the duration, then fade: at
+   the 10.4s used below that is ~10s visible + a 0.4s fade, matching the intent
+   already spelled out by homeResultFadeOut's ".4s ease 10s". Opacity only, no
+   layout collapse -- same as landsraadResultFade and homeResultFadeOut. Only
+   result-ok animates: a failure stays until the next action rather than fading
+   out of sight, matching every panel's BasesPanel-style intent. */
+@keyframes fade-result {
+  0%, 96% { opacity: 1; }
+  100% { opacity: 0; }
+}
 .inline-task-result.result-ok { border-color: #6f8f5f; color: #d8f0c8; animation: fade-result 10.4s ease forwards; }
-.inline-task-result.result-fail { border-color: #a84848; color: var(--danger-text); animation: fade-result 10.4s ease forwards; }
+.inline-task-result.result-fail { border-color: #a84848; color: var(--danger-text); }
 .inline-task-result.result-running { border-color: #c68b4a; color: #ffd08a; }
 .table-wrap { overflow: auto; max-height: min(64vh, 620px); border: 1px solid #302b25; border-radius: 8px; margin: 12px 0; }
 table { width: max-content; min-width: 100%; border-collapse: collapse; }
@@ -1842,7 +2052,7 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
   .memory-swap-panel { align-items: stretch; }
   .memory-swap-copy, .memory-swap-panel label, .memory-swap-metrics { width: 100%; }
   .memory-swap-panel label { justify-content: space-between; }
-  .memory-info-box { position: fixed; top: auto; right: 14px; bottom: 14px; left: 14px; width: auto; }
+  .memory-info-box, .bases-auto-refill .memory-info-box { position: fixed; top: auto; right: 14px; bottom: 14px; left: 14px; width: auto; }
 }
 .live-map-layer-list { display: grid; gap: 8px; }
 .live-map-layer { justify-content: flex-start; width: 100%; min-height: 34px; color: #d9c8aa; }
@@ -2051,8 +2261,8 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
   font-style: normal;
 }
 .bases-table th.bases-expand-column, .bases-table td.bases-expand-column {
-  width: 2.5%;
-  padding-inline: 0;
+  width: 32px;
+  padding-inline: 4px;
   text-align: center;
   overflow: visible;
   text-overflow: clip;
@@ -2079,24 +2289,24 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
 }
 .bases-generator-breakdown {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
   gap: 12px;
   width: 100%;
+  padding: clamp(12px, 1.5vw, 18px);
+  box-sizing: border-box;
   align-items: stretch;
 }
-.bases-uptime-event {
-  grid-column: 1 / -1;
+.bases-uptime-event-inline {
   display: inline-flex;
-  flex-direction: column;
-  align-items: flex-start;
-  justify-self: start;
-  gap: 4px;
+  align-items: center;
+  gap: 8px;
   margin: 0;
+  white-space: nowrap;
 }
 .bases-uptime-event-badge {
   display: inline-flex;
   align-items: center;
-  min-height: 26px;
+  min-height: 32px;
   padding: 4px 10px;
   border: 1px solid rgba(143, 255, 210, .55);
   border-radius: 999px;
@@ -2108,11 +2318,11 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
   line-height: 1;
   letter-spacing: .02em;
   white-space: nowrap;
+  box-sizing: border-box;
 }
-.bases-uptime-event small {
-  padding-left: 3px;
+.bases-uptime-event-inline small {
   color: var(--muted-warm);
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1.25;
 }
 .bases-generator-reserve-note {
@@ -2136,6 +2346,7 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
   min-width: 0;
   color: #ffd08a;
   font-weight: 700;
+  font-size: 14px;
   margin-bottom: 4px;
   overflow-wrap: anywhere;
 }
@@ -2143,8 +2354,7 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
    inherit the outer column widths, centring and row borders. */
 .bases-generator-stats {
   display: grid;
-  grid-template-columns: minmax(96px, 128px) minmax(0, 1fr);
-  column-gap: 14px;
+  grid-template-columns: 1fr;
   width: 100%;
   min-width: 0;
   margin: 0;
@@ -2152,22 +2362,22 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
 .bases-generator-stats dt {
   min-width: 0;
   color: var(--muted-warm);
-  padding: 7px 0;
-  border-bottom: 1px solid rgba(255, 208, 138, .16);
+  padding: 6px 0 0;
+  font-size: 12px;
   line-height: 1.25;
   overflow-wrap: anywhere;
 }
 .bases-generator-stats dd {
   min-width: 0;
   margin: 0;
-  padding: 7px 0;
+  padding: 0 0 6px;
   border-bottom: 1px solid rgba(255, 208, 138, .16);
   white-space: normal;
+  font-size: 13px;
   line-height: 1.25;
   overflow-wrap: anywhere;
 }
-.bases-generator-stats dt:nth-last-child(-n + 2),
-.bases-generator-stats dd:nth-last-child(-n + 2) {
+.bases-generator-stats dd:last-child {
   border-bottom: 0;
 }
 .inventory-augment-input-line {
@@ -2347,25 +2557,6 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
   text-align: center;
 }
 
-.bases-table {
-  min-width: 1220px;
-  table-layout: fixed;
-}
-.bases-table th,
-.bases-table td { padding: 9px 8px; }
-.bases-table th:nth-child(1), .bases-table td:nth-child(1) { width: 42px; }
-.bases-table th:nth-child(2), .bases-table td:nth-child(2) { width: 92px; }
-.bases-table th:nth-child(3), .bases-table td:nth-child(3) { width: 180px; }
-.bases-table th:nth-child(4), .bases-table td:nth-child(4) { width: 112px; }
-.bases-table th:nth-child(5), .bases-table td:nth-child(5) { width: 140px; }
-.bases-table th:nth-child(6), .bases-table td:nth-child(6) { width: 140px; }
-.bases-table th:nth-child(7), .bases-table td:nth-child(7) { width: 112px; }
-.bases-table th:nth-child(8), .bases-table td:nth-child(8) { width: 210px; }
-.bases-table th:nth-child(9), .bases-table td:nth-child(9),
-.bases-table th:nth-child(10), .bases-table td:nth-child(10) { width: 92px; }
-.bases-table th:nth-child(11), .bases-table td:nth-child(11) { width: 150px; }
-.bases-table th.bases-actions-column,
-.bases-table td.bases-actions-column { width: 58px; }
 .bases-table td:nth-child(2),
 .bases-table td:nth-child(3) { overflow-wrap: normal; word-break: normal; }
 .bases-table td:nth-child(2) { font-variant-numeric: tabular-nums; }

@@ -134,6 +134,10 @@ export const mapsApi = {
   reconcile: (confirmation: string) => post<{ task: Task }>("/api/maps/reconcile", { confirmation }),
   spawn: (target: string, confirmation: string) => post<{ task: Task }>("/api/maps/spawn", { target, confirmation }),
   despawn: (target: string, confirmation: string) => post<{ task: Task }>("/api/maps/despawn", { target, confirmation }),
+  // Restart for a map with no managed service (Deep Desert, the SH_* hubs):
+  // despawn then spawn as one task. Always pass a partition id, never a map name
+  // -- spawn-server.sh given a name picks the first unassigned partition.
+  respawn: (partitionId: string, confirmation: string) => post<{ task: Task }>("/api/maps/respawn", { target: partitionId, confirmation }),
   autoscaler: () => api<{ stdout: string }>("/api/maps/autoscaler"),
   autoscalerAction: (action: string, confirmation: string) => post<{ task: Task }>("/api/maps/autoscaler", { action, confirmation }),
   memory: () => api<{ stdout: string }>("/api/maps/memory"),

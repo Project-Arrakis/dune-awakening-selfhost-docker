@@ -46,6 +46,7 @@ import { grantAddonItem } from "./addonItemGrants.js";
 import { EDA_EXCHANGE_BOT_ADDON_ID, ADDON_SCHEDULER_PERMISSION, createAddonJobScheduler, probeBuybackEligibility, readBuybackSchedule, saveBuybackSchedule } from "./addonJobs.js";
 import { createPublicDirectoryReporter, normalizeDiscordInvite, readDirectorySettings } from "./services/publicDirectory.js";
 import { choamTerminalOverview, installChoamTerminals, removeChoamTerminals } from "./services/choamTerminals.js";
+import { autoRefillPublicState, createAutoRefillScheduler, setBaseAutoRefill } from "./services/autoRefill.js";
 import { calculateAlwaysOnHostMemorySafety } from "./services/hostMemorySafety.js";
 
 const config = loadConfig();
@@ -53,12 +54,20 @@ const auth = createAuth(config);
 const loginRateLimiter = createLoginRateLimiter();
 const mutationRateLimiter = createMutationRateLimiter();
 const bridgeRateLimiter = createBridgeRateLimiter();
-const tasks = new TaskManager(config);
+// Deferred db read: db is assigned below and is reassignable on reconnect.
+// Both flush paths go through flushQueuedGeneratorRefills so a write lands in the
+// audit log no matter which one applied it.
+const tasks = new TaskManager(config, { onMapDown: () => flushQueuedGeneratorRefills() });
 let db = createDb(config);
 const publicDirectory = createPublicDirectoryReporter(config, { getDb: () => db });
 let carePackageAutoRunning = false;
 let carePackageAutoLastRun = 0;
 let carePackageAutoNextAllowedRun = 0;
+// The 5s poll and the restart-task onMapDown hook both call
+// flushQueuedGeneratorRefills and can overlap; refillBaseGenerators only locks
+// existing fuel rows, so an empty generator has nothing to serialize two
+// concurrent inserts against without this guard.
+let generatorRefillFlushRunning = false;
 let messageOfTheDayAutoRunning = false;
 let messageOfTheDayAutoLastRun = 0;
 let messageOfTheDayAutoNextAllowedRun = 0;
@@ -78,6 +87,12 @@ const addonJobScheduler = createAddonJobScheduler(config, {
   failureBackoffMs: BACKGROUND_SCAN_FAILURE_BACKOFF_MS
 });
 const landsraadMilestoneReconciler = createLandsraadMilestoneReconciler(config, { getDb: () => db });
+const autoRefillScheduler = createAutoRefillScheduler({
+  config,
+  getDb: () => db,
+  duneDb,
+  failureBackoffMs: BACKGROUND_SCAN_FAILURE_BACKOFF_MS
+});
 
 process.on("unhandledRejection", (error) => {
   console.error(`Unhandled background rejection: ${redact(error?.message || error)}`);
@@ -126,6 +141,9 @@ setInterval(() => {
   runBackgroundTick("Player announcements", playerAnnouncementsAutoTick);
   runBackgroundTick("Addon scheduled jobs", () => addonJobScheduler.tick());
   runBackgroundTick("Landsraad milestone preset", () => landsraadMilestoneReconciler.tick());
+  // Daily, but gated inside the tick like every other long-period job here.
+  // Costs one small file read when no base is enrolled, and no database query.
+  runBackgroundTick("Bases auto-refill", () => autoRefillScheduler.tick());
 }, 10000).unref?.();
 
 setInterval(() => {
@@ -138,6 +156,34 @@ setInterval(() => {
 }, deathPoller.intervalMs).unref?.();
 
 if (deathPoller.enabled) deathPoller.init(db, config.repoRoot).catch(() => {});
+
+// Queued generator refills apply while their map is down. This polls instead of
+// hooking the restart tasks because stop-all.sh removes the Postgres container
+// alongside the game servers, so there is no post-stop moment when the console
+// could still write: the window it waits for is a reachable database with no
+// live server on that partition, which start-all.sh opens well before the map
+// servers boot. Polling also covers restarts the console never initiated
+// (scheduler, IP change, CLI). Idle cost is one small file read per tick.
+const generatorRefillFlushIntervalMs = Number(process.env.ADMIN_REFILL_FLUSH_INTERVAL_MS);
+setInterval(() => {
+  if (!duneDb.listQueuedGeneratorRefills(config.repoRoot).length) return;
+  runBackgroundTick("Generator refill flush", () => flushQueuedGeneratorRefills());
+}, Number.isFinite(generatorRefillFlushIntervalMs) && generatorRefillFlushIntervalMs > 0 ? generatorRefillFlushIntervalMs : 5000).unref?.();
+
+// Every queued-refill write goes through here so it is audited whichever path
+// triggered it: the tick above, or the restart task runner's onMapDown hook.
+// These are real writes to player property, so an unaudited one is not acceptable.
+async function flushQueuedGeneratorRefills() {
+  if (generatorRefillFlushRunning) return { flushed: [] };
+  generatorRefillFlushRunning = true;
+  try {
+    const result = await duneDb.flushGeneratorRefills(db, config.repoRoot);
+    for (const entry of result.flushed || []) audit(config, null, "bases.flush-queued-refill", entry);
+    return result;
+  } finally {
+    generatorRefillFlushRunning = false;
+  }
+}
 
 function runBackgroundTick(label, fn) {
   Promise.resolve()
@@ -430,7 +476,12 @@ async function handleApi(req, res) {
     sortColumn: url.searchParams.get("sortColumn") || "name",
     sortDirection: url.searchParams.get("sortDirection") || "asc"
   }));
+  if (path === "/api/bases/pending-refills") return pendingGeneratorRefillsRoute(res);
+  if (path === "/api/bases/auto-refill") return basesAutoRefillStateRoute(res);
   if (path.match(/^\/api\/bases\/[^/]+\/export$/) && req.method === "GET") return baseBlueprintDownloadRoute(req, res, path);
+  if (path.match(/^\/api\/bases\/[^/]+\/refill-generators$/) && req.method === "POST") return baseRefillGeneratorsRoute(req, res, path);
+  if (path.match(/^\/api\/bases\/[^/]+\/queued-refill$/) && req.method === "DELETE") return baseCancelQueuedRefillRoute(req, res, path);
+  if (path.match(/^\/api\/bases\/[^/]+\/auto-refill$/) && req.method === "POST") return baseAutoRefillToggleRoute(req, res, path);
   if (path === "/api/admin/items/catalog") return json(res, 200, { rows: listCatalogItems(config.repoRoot, { q: url.searchParams.get("q") || "", limit: url.searchParams.get("limit") || 500 }) });
   if (path === "/api/admin/items/search") return commandJson(res, "adminItemSearch", { q: url.searchParams.get("q") || "" });
   if (path === "/api/admin/items") return commandJson(res, url.searchParams.get("category") ? "adminItemListCategory" : "adminItemList", { category: url.searchParams.get("category") || "" });
@@ -579,6 +630,9 @@ async function handleApi(req, res) {
   if (path === "/api/maps/reconcile" && req.method === "POST") return confirmedTask(req, res, "maps", "mapsReconcile", {}, "RECONCILE MAPS");
   if (path === "/api/maps/spawn" && req.method === "POST") return confirmedTask(req, res, "maps", "mapsSpawn", {}, "SPAWN MAP");
   if (path === "/api/maps/despawn" && req.method === "POST") return confirmedTask(req, res, "maps", "mapsDespawn", {}, "DESPAWN MAP");
+  // Restart for a map with no managed service: one task that despawns then
+  // respawns its partition. task() audits and validates the target for us.
+  if (path === "/api/maps/respawn" && req.method === "POST") return confirmedTask(req, res, "maps", "mapsRespawn", {}, "RESTART MAP");
   if (path === "/api/maps/autoscaler" && req.method === "POST") return confirmedTask(req, res, "maps", "autoscalerAction", {}, "AUTOSCALER CHANGE");
   if (path === "/api/maps/autoscaler") return commandJson(res, "autoscalerStatus");
   if (path === "/api/maps/memory" && req.method === "POST") return memoryRoute(req, res);
@@ -1907,6 +1961,111 @@ async function baseBlueprintDownloadRoute(req, res, path) {
   } catch (error) {
     const status = error.unsupported ? 501 : 500;
     return json(res, status, { ok: false, error: redact(error.message || error) });
+  }
+}
+
+async function baseRefillGeneratorsRoute(req, res, path) {
+  const baseId = Number(decodeURIComponent(path.split("/")[3]));
+  if (!Number.isFinite(baseId) || baseId < 1) return json(res, 400, { error: "Invalid base ID" });
+  // No confirmation phrase: refilling is additive and reversible, unlike the
+  // deletes and overwrites that phrase-gate. Still rate limited and audited.
+  return directDbMutation(req, res, "bases.refill-generators", null, async () => {
+    const target = await duneDb.baseRefillTarget(db, baseId);
+    // A live game server rewrites its own copy of a base back to Postgres on a
+    // timer, so refilling a running map now can be overwritten before anyone
+    // sees the fuel. Record it instead and let the flush tick apply it once
+    // that map is down.
+    if (target.queueSupported && !target.writeSafeNow) {
+      const entry = duneDb.queueGeneratorRefill(config.repoRoot, {
+        baseId,
+        map: target.map,
+        partitionId: target.partitionId
+      });
+      return { ok: true, queued: true, ...entry };
+    }
+    return duneDb.refillBaseGenerators(db, config.repoRoot, baseId);
+  }, { baseId });
+}
+
+async function baseCancelQueuedRefillRoute(req, res, path) {
+  const baseId = Number(decodeURIComponent(path.split("/")[3]));
+  if (!Number.isFinite(baseId) || baseId < 1) return json(res, 400, { error: "Invalid base ID" });
+  return directDbMutation(req, res, "bases.cancel-queued-refill", null,
+    () => duneDb.cancelQueuedGeneratorRefill(config.repoRoot, baseId), { baseId });
+}
+
+// Grouped per (map, partition) so the Bases banner, the Maps panel badges, and
+// the battlegroup buttons all read the same counts from one call. Grouping by
+// map alone is not enough: a Sietch partition of Survival_1 needs its own
+// container restarted, which restarting the map's primary service would not do.
+//
+// Each group also carries the partition's world_partition identity, resolved
+// here rather than stored on the queue entry: the entry's own map name comes
+// from dune.actors and is a different namespace (see partitionRestartTargets),
+// resolving live keeps entries queued before this existed working, and it cannot
+// go stale if a partition is reassigned.
+async function pendingGeneratorRefillsRoute(res) {
+  const pending = duneDb.listQueuedGeneratorRefills(config.repoRoot);
+  // Counts must still render when the database is unreachable -- which is
+  // precisely when a battlegroup is down and the queue matters most.
+  const targets = pending.length
+    ? await duneDb.partitionRestartTargets(db).catch(() => new Map())
+    : new Map();
+  const byTarget = new Map();
+  for (const entry of pending) {
+    const map = entry.map || "Unknown";
+    const key = `${map}|${entry.partitionId}`;
+    const target = targets.get(entry.partitionId);
+    const group = byTarget.get(key) || {
+      map,
+      partitionId: entry.partitionId,
+      partitionMap: target?.map || "",
+      dimensionIndex: target?.dimensionIndex ?? 0,
+      count: 0
+    };
+    group.count += 1;
+    byTarget.set(key, group);
+  }
+  return json(res, 200, {
+    supported: true,
+    total: pending.length,
+    pending,
+    byTarget: [...byTarget.values()].sort((a, b) => a.map.localeCompare(b.map) || a.partitionId - b.partitionId)
+  });
+}
+
+// Enrollment state for the Bases panel's auto-refill toggle. Like the pending
+// counts above, this still answers when the database is unreachable: the
+// enrollment list is a file, and only `supported` needs a live connection.
+async function basesAutoRefillStateRoute(res) {
+  const supported = await duneDb.supportsGeneratorRefillQueue(db).catch(() => false);
+  return json(res, 200, { supported, ...autoRefillPublicState(config.repoRoot) });
+}
+
+// Console-owned configuration rather than a database mutation, so this follows
+// the settings routes (plain handler plus an explicit audit) instead of
+// directDbMutation's confirmation-phrase machinery.
+async function baseAutoRefillToggleRoute(req, res, path) {
+  const baseId = Number(decodeURIComponent(path.split("/")[3]));
+  if (!Number.isFinite(baseId) || baseId < 1) return json(res, 400, { error: "Invalid base ID" });
+  const body = await readJson(req);
+  if (typeof body.enabled !== "boolean") {
+    return json(res, 400, { error: "Auto-refill enabled must be true or false." });
+  }
+  // Checked on the server too, not just hidden in the UI. Without
+  // dune.world_partition a queued refill cannot wait for a safe window, so an
+  // automated refill would write straight into a possibly-live base.
+  if (body.enabled && !(await duneDb.supportsGeneratorRefillQueue(db).catch(() => false))) {
+    return json(res, 501, {
+      error: "Auto-refill needs the pending-refill queue, which requires dune.world_partition on this database."
+    });
+  }
+  try {
+    const result = setBaseAutoRefill(config.repoRoot, baseId, body.enabled);
+    audit(config, req, "bases.auto-refill", { baseId, enabled: result.enabled, total: result.total });
+    return json(res, 200, result);
+  } catch (error) {
+    return json(res, 400, { ok: false, error: redact(error?.message || error) });
   }
 }
 

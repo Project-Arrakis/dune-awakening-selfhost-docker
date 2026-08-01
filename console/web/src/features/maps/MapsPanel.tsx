@@ -1,11 +1,23 @@
 import { Fragment, useEffect, useRef, useState } from "react";
-import { ChevronDown, ChevronUp, Download, Grid2X2, Info, List, Lock } from "lucide-react";
+import { ChevronDown, ChevronUp, Download, Fuel, Grid2X2, List, Lock } from "lucide-react";
 import { mapsApi, type ChoamTerminalOverview, type ChoamTradeCenter, type LiveMapMemoryRow, type MapCombatStateResult, type MapRuntimeSettings, type MemoryBalancerState, type MemorySwapState, type PartitionCombatStateRow, type SpicefieldTypeRow, type UserSettingField, type UserSettingsSchema } from "../../api/maps";
 import { setupApi, type Task } from "../../api/setup";
 import { SecretInput } from "../../components/SecretInput";
-import { KeyValueGrid, StatusPill, TechnicalDetails } from "../../components/common/DisplayPrimitives";
+import { InfoTooltip, KeyValueGrid, StatusPill, TechnicalDetails } from "../../components/common/DisplayPrimitives";
 import { firstDefined, formatUiSentence, stripAnsi, summarizeCommandText, titleCase } from "../../lib/display";
 import { titleCaseWords } from "../players/playerAdminUtils";
+import { pendingRefillCountForMap, pendingRefillCountForPartition, usePendingRefills } from "../../lib/usePendingRefills";
+import type { PendingRefills } from "../../api/bases";
+
+// Taking a partition down is when any generator refill queued for a base on it
+// gets written, so every control that does so says what is waiting on it.
+function PendingRefillBadge({ count }: { count: number }) {
+  if (!count) return null;
+  return <span className="pending-refill-badge" title="Queued generator refills are written while this is down">
+    <Fuel size={12} aria-hidden="true" />
+    {count.toLocaleString()} refill{count === 1 ? "" : "s"} pending
+  </span>;
+}
 
 type HomeTaskResult = { status: "running" | "succeeded" | "failed" | "stopped"; title: string; message?: string; details?: string };
 type MapsResultScope = "maps" | "modifiers";
@@ -45,37 +57,6 @@ const LIVE_MEMORY_STALE_GRACE_MS = 20000;
 const LIVE_MEMORY_REFRESH_MS = 15000;
 const MAP_RUNTIME_REFRESH_MS = 15000;
 type CachedLiveMemoryRow = { row: LiveMapMemoryRow; sampledAt: number };
-
-export function InfoTooltip({ id, label, children }: { id: string; label: string; children: string }) {
-  const [open, setOpen] = useState(false);
-  const rootRef = useRef<HTMLSpanElement>(null);
-  function openTooltip() {
-    window.dispatchEvent(new CustomEvent("memory-info-open", { detail: id }));
-    setOpen(true);
-  }
-  useEffect(() => {
-    const closeOtherTooltip = (event: Event) => {
-      if ((event as CustomEvent<string>).detail !== id) setOpen(false);
-    };
-    window.addEventListener("memory-info-open", closeOtherTooltip);
-    return () => window.removeEventListener("memory-info-open", closeOtherTooltip);
-  }, [id]);
-  useEffect(() => {
-    if (!open) return undefined;
-    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === "Escape") setOpen(false); };
-    const closeOutside = (event: PointerEvent) => { if (!rootRef.current?.contains(event.target as Node)) setOpen(false); };
-    document.addEventListener("keydown", closeOnEscape);
-    document.addEventListener("pointerdown", closeOutside);
-    return () => {
-      document.removeEventListener("keydown", closeOnEscape);
-      document.removeEventListener("pointerdown", closeOutside);
-    };
-  }, [open]);
-  return <span ref={rootRef} className={`memory-info-tooltip ${open ? "open" : ""}`} onMouseEnter={openTooltip} onMouseLeave={() => setOpen(false)}>
-    <button type="button" className="memory-info-button" aria-label={label} aria-expanded={open} aria-describedby={id} onClick={() => open ? setOpen(false) : openTooltip()} onFocus={openTooltip}><Info size={15} aria-hidden="true" /></button>
-    <span id={id} role="tooltip" className="memory-info-box">{children}</span>
-  </span>;
-}
 
 function formatResultTitle(value: unknown, pending = false) {
   return formatUiSentence(value, pending);
@@ -336,6 +317,7 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
   const [mapsResultScope, setMapsResultScope] = useState<MapsResultScope>(() => loadPersistedMapsResultScope());
   const [mapsResultTarget, setMapsResultTarget] = useState("");
   const [mapsTaskQueueStates, setMapsTaskQueueStates] = useState<Record<string, MapsTaskQueueState>>({});
+  const { pending: pendingRefills } = usePendingRefills();
   const mapsLoadRef = useRef<Promise<void> | null>(null);
   const mapsRuntimeRefreshRef = useRef<Promise<void> | null>(null);
   const mapsDisplayedTerminalTaskRef = useRef<Set<string>>(new Set());
@@ -1442,6 +1424,23 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
     if (!target || !(await confirmAction(`Force spawn ${rowName}?`, { danger: false, confirmLabel: "Force Spawn" }))) return;
     await runTaskAndRefresh(() => mapsApi.spawn(target, "SPAWN MAP"), `Spawning ${rowName}`, `${rowName} Spawned`, { resultTarget: mapResultTarget(rowName) });
   }
+  // Restart for a map with no managed service: Survival_1 and the Overmap have
+  // their own restart paths, everything else only cycles by despawning and
+  // respawning its partition. One task so a failed spawn cannot look like a
+  // completed restart, and always by partition id -- a map name would let
+  // spawn-server.sh pick the first unassigned partition instead.
+  async function respawnMap(row: Record<string, unknown>) {
+    const rowName = String(row.map || "").trim();
+    if (!rowName || rowName === "Survival_1" || rowName === "Overmap") return;
+    const partitionId = String(row.partitionId || row.partition || "").trim();
+    if (!partitionId) return;
+    const confirmed = await confirmAction(`Restart ${rowName}?`, {
+      confirmLabel: "Restart",
+      cancelLabel: "Cancel"
+    });
+    if (!confirmed) return;
+    await runTaskAndRefresh(() => mapsApi.respawn(partitionId, "RESTART MAP"), `Restarting ${rowName}`, `${rowName} Restarted`, { resultTarget: mapResultTarget(rowName) });
+  }
   async function forceDespawnDeepDesertPartition(row: Record<string, unknown>) {
     const partitionId = String(row.partitionId || "").trim();
     if (!partitionId) return;
@@ -1687,7 +1686,17 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
                 {isSurvivalRow && primarySurvivalSietch && primarySietchDraft && <label>Name<input value={primarySietchDraft.displayName} placeholder="Default name" onChange={(event) => setSietchDrafts({ ...sietchDrafts, [primarySurvivalSietch.partitionId]: { ...primarySietchDraft, displayName: event.target.value } })} /></label>}
                 {isSurvivalRow && primarySurvivalSietch && primarySietchDraft && <label>Password<SecretInput value={sietchPasswordInputValue(primarySurvivalSietch, primarySietchDraft, Boolean(sietchPasswordTouched[primarySurvivalSietch.partitionId]))} placeholder={passwordPlaceholder(sietchHasPassword(primarySurvivalSietch, primarySietchDraft))} onFocus={(event) => { if (!sietchPasswordTouched[primarySurvivalSietch.partitionId] && primarySurvivalSietch.passwordSet) event.currentTarget.select(); }} onChange={(event) => { setSietchPasswordTouched({ ...sietchPasswordTouched, [primarySurvivalSietch.partitionId]: true }); setSietchDrafts({ ...sietchDrafts, [primarySurvivalSietch.partitionId]: { ...primarySietchDraft, password: event.target.value } }); }} /></label>}
                 <button disabled={!mapSettingsDirty || Boolean(rowTaskQueueState)} onClick={() => run(() => saveSelectedMapSettings(row))}>{rowTaskQueueState?.phase === "queued" ? "Queued" : rowTaskQueueState?.phase === "running" ? "Saving..." : "Save Map Settings"}</button>
+                {/* Survival_1 restarts per Sietch, so scope the badge to the
+                    primary partition; every other map only respawns whole, so
+                    show everything queued anywhere on it. */}
+                {isSurvivalRow && primarySurvivalSietch?.active
+                  ? <PendingRefillBadge count={pendingRefillCountForPartition(pendingRefills, Number(primarySurvivalSietch.partitionId))} />
+                  : <PendingRefillBadge count={pendingRefillCountForMap(pendingRefills, rowName)} />}
                 {isSurvivalRow && primarySurvivalSietch?.active && <button disabled={Boolean(rowTaskQueueState)} title="Restart only this Sietch" onClick={() => run(() => restartSietch(primarySurvivalSietch, rowTarget))}>{rowTaskQueueState?.phase === "queued" ? "Queued" : rowTaskQueueState?.phase === "running" ? "Restarting..." : "Restart"}</button>}
+                {/* Only offered while the map is up -- a stopped map wants Force
+                    Spawn, not a despawn+spawn cycle. */}
+                {rowName !== "Survival_1" && rowName !== "Overmap" && canForceDespawn && String(row.partitionId || row.partition || "").trim()
+                  && <button disabled={Boolean(rowTaskQueueState)} title="Restart this map by despawning and respawning its partition" onClick={() => run(() => respawnMap(row))}>{rowTaskQueueState?.phase === "queued" ? "Queued" : rowTaskQueueState?.phase === "running" ? "Restarting..." : "Restart"}</button>}
                 {rowName !== "Survival_1" && rowName !== "Overmap" && canForceSpawn && <button title="Force spawn this stopped map" onClick={() => run(() => forceSpawnMap(row))}>Force Spawn</button>}
                 {rowName !== "Survival_1" && rowName !== "Overmap" && canForceDespawn && <button className="danger" title="Force despawn this running map" onClick={() => run(() => forceDespawnMap(row))}>Force Despawn</button>}
                 {rowMapSettingsResultActive && mapsResult ? <span className={`inline-task-result map-action-result result-${inlineTaskResultClass(mapsResult)}`}>
@@ -1786,6 +1795,7 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
                   <label>Name<input value={draft.displayName} placeholder="Default name" onChange={(event) => setSietchDrafts({ ...sietchDrafts, [sietch.partitionId]: { ...draft, displayName: event.target.value } })} /></label>
                   <label>Password<SecretInput value={sietchPasswordInputValue(sietch, draft, Boolean(sietchPasswordTouched[sietch.partitionId]))} placeholder={passwordPlaceholder(sietchHasPassword(sietch, draft))} onFocus={(event) => { if (!sietchPasswordTouched[sietch.partitionId] && sietch.passwordSet) event.currentTarget.select(); }} onChange={(event) => { setSietchPasswordTouched({ ...sietchPasswordTouched, [sietch.partitionId]: true }); setSietchDrafts({ ...sietchDrafts, [sietch.partitionId]: { ...draft, password: event.target.value } }); }} /></label>
                   <button disabled={!childDirty || Boolean(childTaskQueueState)} onClick={() => run(() => saveSietchSettings(sietch))}>{childTaskQueueState?.phase === "queued" ? "Queued" : childTaskQueueState?.phase === "running" ? "Saving..." : "Save Sietch Settings"}</button>
+                  {sietch.active && <PendingRefillBadge count={pendingRefillCountForPartition(pendingRefills, Number(sietch.partitionId))} />}
                   {sietch.active && <button disabled={Boolean(childTaskQueueState)} title="Restart only this Sietch" onClick={() => run(() => restartSietch(sietch, childTarget))}>{childTaskQueueState?.phase === "queued" ? "Queued" : childTaskQueueState?.phase === "running" ? "Restarting..." : "Restart"}</button>}
                   {childMapSettingsResultActive && mapsResult ? <span className={`inline-task-result map-action-result result-${inlineTaskResultClass(mapsResult)}`}>
                     <strong className={mapsResult.status === "running" ? "loading-dots" : ""}>{formatResultTitle(mapsResult.title, mapsResult.status === "running")}</strong>
