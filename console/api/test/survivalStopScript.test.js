@@ -22,6 +22,7 @@ function runFixture(env = {}) {
   const scripts = join(fixture, "runtime", "scripts");
   const bin = join(fixture, "bin");
   const calls = join(fixture, "calls.log");
+  const removed = join(fixture, "container-removed");
   mkdirSync(scripts, { recursive: true });
   mkdirSync(bin, { recursive: true });
   copyFileSync(join(repoRoot, "runtime/scripts/stop-server-survival-1.sh"), join(scripts, "stop-server-survival-1.sh"));
@@ -32,7 +33,16 @@ function runFixture(env = {}) {
     "resolve_igw_port_base() { echo 7888; }"
   ].join("\n"));
 
-  executable(join(bin, "docker"), `printf "%s\\n" "$*" >> "${calls}"`);
+  executable(join(bin, "docker"), `
+printf "%s\\n" "$*" >> "${calls}"
+if [ "\${1:-}" = "ps" ]; then
+  [ -f "${removed}" ] || printf '%s\\n' dune-server-survival-1
+  exit 0
+fi
+if [ "\${1:-}" = "rm" ]; then
+  [ "\${DUNE_TEST_DOCKER_RM_FAIL:-0}" != "1" ] || exit 42
+  touch "${removed}"
+fi`);
 
   const result = spawnSync("bash", ["runtime/scripts/stop-server-survival-1.sh"], {
     cwd: fixture,
@@ -65,4 +75,11 @@ test("stop-server-survival-1.sh defaults to partition 1 without DUNE_SURVIVAL_PA
   const result = runFixture({});
   assert.equal(result.status, 0, result.stderr || result.stdout);
   assert.match(result.callLog, /partition_id = 1/);
+});
+
+test("stop-server-survival-1.sh never clears database state when Docker cannot remove the container", () => {
+  const result = runFixture({ DUNE_TEST_DOCKER_RM_FAIL: "1" });
+  assert.notEqual(result.status, 0);
+  assert.match(result.callLog, /rm -f dune-server-survival-1/);
+  assert.doesNotMatch(result.callLog, /exec dune-postgres psql/);
 });

@@ -14,7 +14,18 @@ GAME_PORT="$((CLIENT_PORT_BASE + 1))"
 IGW_PORT="$IGW_PORT_BASE"
 PARTITION_ID="${DUNE_SURVIVAL_PARTITION_ID:-1}"
 
-docker rm -f dune-server-survival-1 2>/dev/null || true
+# Do not clear the partition assignment unless Docker positively confirms the
+# game container is gone. Ignoring an rm/daemon/permission failure here would
+# make the refill queue treat a still-running map as safe to write.
+containers="$(docker ps -a --format '{{.Names}}')"
+if printf '%s\n' "$containers" | grep -qx dune-server-survival-1; then
+  docker rm -f dune-server-survival-1 >/dev/null
+fi
+containers="$(docker ps -a --format '{{.Names}}')"
+if printf '%s\n' "$containers" | grep -qx dune-server-survival-1; then
+  echo "Failed to stop dune-server-survival-1; database state was not changed." >&2
+  exit 1
+fi
 
 docker exec dune-postgres psql -U postgres -d dune -v ON_ERROR_STOP=1 -c "
 begin;
