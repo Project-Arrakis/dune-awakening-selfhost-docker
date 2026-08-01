@@ -14,11 +14,17 @@ export function validateBroadcastMessage(message) {
 }
 
 export function isValidWhisperIdentity(value) {
-  return /^[A-Za-z0-9_#.@:+/-]{1,180}$/.test(String(value || "").trim());
+  const raw = String(value || "").trim();
+  return raw.length >= 1 && raw.length <= 180 && !/[\u0000-\u001f\u007f]/.test(raw);
 }
 
 export function isValidHexFlsId(value) {
-  return /^[A-Fa-f0-9]{16,64}$/.test(String(value || "").trim());
+  return /^[A-Fa-f0-9]{15,64}$/.test(String(value || "").trim());
+}
+
+export function formatChatBodyMessage(message) {
+  const text = validateBroadcastMessage(message).replace(/\r\n?/g, "\n");
+  return text.split("\n").map((line) => line.trim()).filter(Boolean).join(" ");
 }
 
 export function buildBroadcastCommand({ message, title = "Admin Broadcast", durationSec = 30, texts } = {}) {
@@ -77,7 +83,7 @@ export function buildCarePackageWhisperPayload({ recipientFuncomId, recipientCha
   const recipientName = validateWhisperName(recipientCharacterName, "recipient character name");
   const senderId = validateWhisperIdentity(senderFuncomId, "sender Funcom ID");
   const spoofedName = validateOptionalSpoofedName(senderDisplayName);
-  const text = validateBroadcastMessage(message);
+  const text = formatChatBodyMessage(message);
   const id = validateMessageId(messageId || randomUUID());
   const timestamp = formatMapChatTimestamp(now);
   const inner = {
@@ -116,7 +122,7 @@ export function buildCarePackageWhisperPayload({ recipientFuncomId, recipientCha
 export function buildMapChatPayload({ senderFuncomId, senderDisplayName = "", message, now = new Date(), messageId } = {}) {
   const senderId = validateWhisperIdentity(senderFuncomId, "sender Funcom ID");
   const spoofedName = validateOptionalSpoofedName(senderDisplayName);
-  const text = validateBroadcastMessage(message);
+  const text = formatChatBodyMessage(message);
   const id = validateMessageId(messageId || randomUUID());
   const timestamp = formatMapChatTimestamp(now);
   const inner = {
@@ -145,7 +151,8 @@ export function buildMapChatPayload({ senderFuncomId, senderDisplayName = "", me
   return {
     inner,
     outer: {
-      Content: JSON.stringify(inner),
+      // Map chat uses the protocol's lowercase field, unlike whisper envelopes.
+      content: JSON.stringify(inner),
       Type: "TextChat"
     }
   };
@@ -202,7 +209,7 @@ export async function publishMapChat(config, fields) {
   if (!/publish=ok/.test(output.stdout)) throw new Error("RabbitMQ map chat publish did not report publish=ok");
   return {
     ...output,
-    stdout: `${output.stdout}outer=${JSON.stringify(payload.outer)}\ninner=${payload.outer.Content}\n`,
+    stdout: `${output.stdout}outer=${JSON.stringify(payload.outer)}\ninner=${payload.outer.content}\n`,
     payload,
     amqp: {
       exchange: exchangeLabel,

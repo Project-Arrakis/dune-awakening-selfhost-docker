@@ -1,6 +1,6 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { isValidHexFlsId, isValidWhisperIdentity, publishCarePackageWhisper, validateBroadcastMessage } from "../rmq.js";
+import { formatChatBodyMessage, isValidHexFlsId, isValidWhisperIdentity, publishCarePackageWhisper } from "../rmq.js";
 import { ensureMessageOfTheDayPersona, MESSAGE_OF_THE_DAY_PERSONA } from "../carePackage.js";
 import { redact } from "../redact.js";
 
@@ -142,7 +142,7 @@ export function normalizeSettings(input = {}) {
 }
 
 export function renderMessageOfTheDay(template, playerName) {
-  return validateBroadcastMessage(String(template || "").replaceAll("{playerName}", String(playerName || "Player")));
+  return formatChatBodyMessage(String(template || "").replaceAll("{playerName}", String(playerName || "Player")));
 }
 
 export function messageOfTheDayDeliveryPlan(settings, players, state = EMPTY_STATE) {
@@ -284,7 +284,7 @@ function normalizeBoolean(value, field) {
 function normalizeMessage(value) {
   const raw = String(value ?? "").trim();
   if (!raw) return "";
-  return validateBroadcastMessage(raw);
+  return formatChatBodyMessage(raw);
 }
 
 function settingsPath(config) {

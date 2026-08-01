@@ -1486,7 +1486,8 @@ test("players query falls back to validated encrypted account identities", async
   const playerQuery = calls.find((call) => call.text.includes("from dune.actors") && !call.text.includes("count(distinct dedupe_key)"));
   assert.match(playerQuery.text, /left join dune\.encrypted_accounts ea/);
   assert.match(playerQuery.text, /dune\.decrypt_user_data\(ea\.encrypted_funcom_id\)/);
-  assert.match(playerQuery.text, /\^\[A-Fa-f0-9\]\{16,64\}\$/);
+  assert.match(playerQuery.text, /\^\[A-Fa-f0-9\]\{15,64\}\$/);
+  assert.match(playerQuery.text, /\[\[:cntrl:\]\]/);
   assert.equal(result.rows[0].funcom_id, "Vixen#1234");
   assert.equal(result.rows[0].fls_id, "254A06043E9F0B16");
 });
