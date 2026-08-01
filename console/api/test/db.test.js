@@ -1440,6 +1440,63 @@ test("players query excludes the reserved fresh-install GM identity from rows an
   assert.equal(result.totalPlayers, 0);
 });
 
+test("players query falls back to validated encrypted account identities", async () => {
+  const calls = [];
+  const db = {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("information_schema.columns")) {
+        if (values[1] === "player_state") return { rows: [{ column_name: "online_status" }] };
+        if (values[1] === "encrypted_accounts") {
+          return { rows: ["id", "user", "encrypted_funcom_id"].map((column_name) => ({ column_name })) };
+        }
+        return { rows: [] };
+      }
+      if (text.includes("to_regprocedure")) return { rows: [{ exists: true }] };
+      if (text.includes("count(distinct dedupe_key)")) return { rows: [{ total_players: 1 }] };
+      return { rows: [{
+        actor_id: 82,
+        player_pawn_id: 82,
+        account_id: 276,
+        character_name: "Vixen",
+        funcom_id: "Vixen#1234",
+        fls_id: "254A06043E9F0B16",
+        action_player_id: "254A06043E9F0B16",
+        total_count: 1
+      }] };
+    }
+  };
+
+  const result = await listPlayers(db);
+  const playerQuery = calls.find((call) => call.text.includes("from dune.actors") && !call.text.includes("count(distinct dedupe_key)"));
+  assert.match(playerQuery.text, /left join dune\.encrypted_accounts ea/);
+  assert.match(playerQuery.text, /dune\.decrypt_user_data\(ea\.encrypted_funcom_id\)/);
+  assert.match(playerQuery.text, /\^\[A-Fa-f0-9\]\{16,64\}\$/);
+  assert.equal(result.rows[0].funcom_id, "Vixen#1234");
+  assert.equal(result.rows[0].fls_id, "254A06043E9F0B16");
+});
+
+test("players query remains compatible when encrypted accounts are unavailable", async () => {
+  const calls = [];
+  const db = {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes("to_regclass")) {
+        return { rows: [{ exists: values[0] !== "dune.encrypted_accounts" }] };
+      }
+      if (text.includes("information_schema.columns")) return { rows: [] };
+      if (text.includes("count(distinct dedupe_key)")) return { rows: [{ total_players: 1 }] };
+      return { rows: [{ actor_id: 82, funcom_id: "Vixen#1234", fls_id: "254A06043E9F0B16", total_count: 1 }] };
+    }
+  };
+
+  await listPlayers(db);
+  const playerQuery = calls.find((call) => call.text.includes("from dune.actors") && !call.text.includes("count(distinct dedupe_key)"));
+  assert.doesNotMatch(playerQuery.text, /encrypted_accounts/);
+  assert.doesNotMatch(playerQuery.text, /decrypt_user_data/);
+});
+
 test("players query filters stale actor rows when player_state has current pawn id", async () => {
   const calls = [];
   const db = {

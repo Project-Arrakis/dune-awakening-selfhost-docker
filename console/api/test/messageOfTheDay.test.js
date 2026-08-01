@@ -140,6 +140,30 @@ test("message of the day ignores offline rows even if they are passed to the sca
   assert.equal(result.sent, 0);
 });
 
+test("message of the day skips incomplete recipient identities without recording a failed delivery", async () => {
+  const cfg = config();
+  saveMessageOfTheDay(cfg, { enabled: true, title: "Daily", message: "Welcome back" });
+
+  const result = await runMessageOfTheDayScan(cfg, [onlinePlayer({
+    fls_id: "not a queue identity",
+    funcom_id: "invalid recipient identity"
+  })], { mockMode: true });
+
+  assert.equal(result.sent, 0);
+  assert.equal(result.failed, 0);
+  assert.equal(readMessageOfTheDay(cfg).status.lastFailed, 0);
+});
+
+test("message of the day can fall back to a valid Funcom route when the FLS identity is unavailable", async () => {
+  const cfg = config();
+  saveMessageOfTheDay(cfg, { enabled: true, title: "Daily", message: "Welcome back" });
+
+  const result = await runMessageOfTheDayScan(cfg, [onlinePlayer({ fls_id: "unavailable" })], { mockMode: true });
+
+  assert.equal(result.sent, 1);
+  assert.equal(result.failed, 0);
+});
+
 test("message of the day treats changed login session as a new online session", async () => {
   const cfg = config();
   saveMessageOfTheDay(cfg, { enabled: true, title: "Daily", message: "Welcome back" });

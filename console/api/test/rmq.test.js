@@ -98,7 +98,8 @@ test("builds map chat courier payload", () => {
   assert.equal(inner.m_UserNameTo, "");
   assert.equal(inner.m_Message.m_UnlocalizedMessage, "Event starts soon");
   assert.deepEqual(inner.m_Message.m_LocalizedMessage.m_FormatArgs, []);
-  assert.equal(inner.m_Timestamp, "2026.06.08-12.34.56");
+  assert.equal(inner.m_TimeStamp, "2026.06.08-12.34.56");
+  assert.equal(Object.hasOwn(inner, "m_Timestamp"), false);
   assert.deepEqual(inner.m_OriginLocation, { X: 0, Y: 0, Z: 0 });
   assert.equal(inner.m_HasSeenMessage, false);
 });

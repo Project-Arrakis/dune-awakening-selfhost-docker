@@ -1418,6 +1418,36 @@ export async function listPlayers(db, { status = "all", q = "", page = 0, pageSi
   const pagedOrder = [...sortOrder, ...(sortOrder.includes("actor_id") ? [] : ["actor_id"])]
     .map((column) => `${column} ${safeSortDirection}`).join(", ");
   const playerStateColumns = await columnsFor(db, "player_state");
+  const encryptedAccountColumns = await tableExists(db, "encrypted_accounts")
+    ? await columnsFor(db, "encrypted_accounts")
+    : new Set();
+  const canReadEncryptedAccounts = ["id", "user", "encrypted_funcom_id"]
+    .every((column) => encryptedAccountColumns.has(column)) &&
+    await functionExists(db, "dune.decrypt_user_data(bytea)");
+  const encryptedAccountsJoin = canReadEncryptedAccounts
+    ? `left join dune.encrypted_accounts ea on ea.id = a.owner_account_id
+       left join lateral (
+         select case
+           when ea.encrypted_funcom_id is null then ''
+           else coalesce(dune.decrypt_user_data(ea.encrypted_funcom_id), '')
+         end as funcom_id
+       ) decrypted_account on true`
+    : "";
+  const plainFlsId = "case when trim(coalesce(ac.\"user\", '')) ~ '^[A-Fa-f0-9]{16,64}$' then trim(ac.\"user\") else '' end";
+  const encryptedFlsId = canReadEncryptedAccounts
+    ? "case when trim(coalesce(ea.\"user\", '')) ~ '^[A-Fa-f0-9]{16,64}$' then trim(ea.\"user\") else '' end"
+    : "''";
+  const resolvedFlsId = canReadEncryptedAccounts
+    ? `coalesce(nullif(${plainFlsId}, ''), nullif(${encryptedFlsId}, ''), '')`
+    : plainFlsId;
+  const decryptedFuncomId = canReadEncryptedAccounts
+    ? "coalesce(decrypted_account.funcom_id, '')"
+    : "''";
+  const plainFuncomId = "case when trim(coalesce(ac.funcom_id, '')) ~ '^[A-Za-z0-9_#.@:+/-]{1,180}$' then trim(ac.funcom_id) else '' end";
+  const validDecryptedFuncomId = `case when trim(${decryptedFuncomId}) ~ '^[A-Za-z0-9_#.@:+/-]{1,180}$' then trim(${decryptedFuncomId}) else '' end`;
+  const resolvedFuncomId = canReadEncryptedAccounts
+    ? `coalesce(nullif(${plainFuncomId}, ''), nullif(${validDecryptedFuncomId}, ''), '')`
+    : plainFuncomId;
   const lastSeenSelect = await playerLastSeenSelect(db);
   const loginSessionSelect = playerStateColumns.has("last_login_time")
     ? "coalesce(ps.last_login_time::text, '')"
@@ -1438,10 +1468,10 @@ export async function listPlayers(db, { status = "all", q = "", page = 0, pageSi
   `;
   let baseWhere = "a.class ilike '%PlayerCharacter%'";
   baseWhere += ` and a.id <> ${INTERNAL_GM_PLAYER_PAWN_ID}::bigint`;
-  baseWhere += " and coalesce(ac.\"user\", '') <> 'A5C0DE5E12A00001'";
-  baseWhere += " and coalesce(ac.\"user\", '') <> 'A5C0DE5E12A00002'";
-  baseWhere += " and coalesce(ac.funcom_id, '') <> 'Server#0001'";
-  baseWhere += " and coalesce(ac.funcom_id, '') <> 'MessageOfTheDay#0001'";
+  baseWhere += ` and ${resolvedFlsId} <> 'A5C0DE5E12A00001'`;
+  baseWhere += ` and ${resolvedFlsId} <> 'A5C0DE5E12A00002'`;
+  baseWhere += ` and ${resolvedFuncomId} <> 'Server#0001'`;
+  baseWhere += ` and ${resolvedFuncomId} <> 'MessageOfTheDay#0001'`;
   baseWhere += " and coalesce(ps.character_name, '') <> 'Server'";
   baseWhere += " and coalesce(ps.character_name, '') <> 'Message of the Day'";
   if (hasOnlineStatus) {
@@ -1457,7 +1487,7 @@ export async function listPlayers(db, { status = "all", q = "", page = 0, pageSi
   }
   if (q) {
     values.push(`%${q}%`);
-    where += ` and (ps.character_name ilike $${values.length} or ac."user" ilike $${values.length} or a.id::text = $${values.length} or a.owner_account_id::text = $${values.length})`;
+    where += ` and (ps.character_name ilike $${values.length} or ${resolvedFlsId} ilike $${values.length} or a.id::text = $${values.length} or a.owner_account_id::text = $${values.length})`;
   }
   values.push(safePageSize, offset);
   const limitParamIndex = values.length - 1;
@@ -1470,10 +1500,10 @@ export async function listPlayers(db, { status = "all", q = "", page = 0, pageSi
              coalesce(a.owner_account_id, 0) as account_id,
              coalesce(ps.character_name, '') as character_name,
              coalesce(ps.player_controller_id, 0) as player_controller_id,
-             coalesce(ac.funcom_id, '') as funcom_id,
-             coalesce(ac."user", '') as fls_id,
+             ${resolvedFuncomId} as funcom_id,
+             ${resolvedFlsId} as fls_id,
              case
-               when nullif(ac."user", '') is not null then ac."user"
+               when nullif(${resolvedFlsId}, '') is not null then ${resolvedFlsId}
                when a.owner_account_id is not null and a.owner_account_id <> 0 then a.owner_account_id::text
                else ''
              end as action_player_id,
@@ -1492,6 +1522,7 @@ export async function listPlayers(db, { status = "all", q = "", page = 0, pageSi
       from dune.actors a
       left join dune.player_state ps on ps.account_id = a.owner_account_id
       left join dune.accounts ac on ac.id = a.owner_account_id
+      ${encryptedAccountsJoin}
       where ${where}
     ),
     deduped_players as (
@@ -1532,6 +1563,7 @@ export async function listPlayers(db, { status = "all", q = "", page = 0, pageSi
       from dune.actors a
       left join dune.player_state ps on ps.account_id = a.owner_account_id
       left join dune.accounts ac on ac.id = a.owner_account_id
+      ${encryptedAccountsJoin}
       where ${baseWhere}
     )
     select count(distinct dedupe_key)::int as total_players

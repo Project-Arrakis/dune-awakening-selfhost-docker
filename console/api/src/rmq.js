@@ -13,6 +13,14 @@ export function validateBroadcastMessage(message) {
   return raw;
 }
 
+export function isValidWhisperIdentity(value) {
+  return /^[A-Za-z0-9_#.@:+/-]{1,180}$/.test(String(value || "").trim());
+}
+
+export function isValidHexFlsId(value) {
+  return /^[A-Fa-f0-9]{16,64}$/.test(String(value || "").trim());
+}
+
 export function buildBroadcastCommand({ message, title = "Admin Broadcast", durationSec = 30, texts } = {}) {
   const localizedText = validateLocalizedTexts(texts, message, title);
   const duration = validateInteger(durationSec, 1, 3600, "durationSec");
@@ -129,7 +137,7 @@ export function buildMapChatPayload({ senderFuncomId, senderDisplayName = "", me
         m_FormatArgs: []
       }
     },
-    m_Timestamp: timestamp,
+    m_TimeStamp: timestamp,
     m_OriginLocation: { X: 0, Y: 0, Z: 0 },
     m_HasSeenMessage: false
   };
@@ -279,7 +287,7 @@ function validateShutdownType(value) {
 
 function validateWhisperIdentity(value, label) {
   const raw = String(value || "").trim();
-  if (/^[A-Za-z0-9_#.@:+/-]{1,180}$/.test(raw)) return raw;
+  if (isValidWhisperIdentity(raw)) return raw;
   throw new Error(`Care Package message whisper cannot be sent: ${label} is unavailable or invalid`);
 }
 
@@ -291,7 +299,7 @@ function validateWhisperName(value, label) {
 
 function validateHexFlsId(value) {
   const raw = String(value || "").trim();
-  if (/^[A-Fa-f0-9]{16,64}$/.test(raw)) return raw;
+  if (isValidHexFlsId(raw)) return raw;
   throw new Error("Care Package message whisper cannot be sent: sender hex FLS ID is unavailable or invalid");
 }
 

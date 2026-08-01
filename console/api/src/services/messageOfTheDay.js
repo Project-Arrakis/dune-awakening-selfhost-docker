@@ -1,6 +1,6 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { publishCarePackageWhisper, validateBroadcastMessage } from "../rmq.js";
+import { isValidHexFlsId, isValidWhisperIdentity, publishCarePackageWhisper, validateBroadcastMessage } from "../rmq.js";
 import { ensureMessageOfTheDayPersona, MESSAGE_OF_THE_DAY_PERSONA } from "../carePackage.js";
 import { redact } from "../redact.js";
 
@@ -208,8 +208,10 @@ function healthyScanStatus(status, now) {
 }
 
 function normalizePlayer(player = {}) {
-  const flsId = String(player.fls_id || player.flsId || player.recipientFlsId || "").trim();
-  const funcomId = String(player.funcom_id || player.funcomId || player.recipientFuncomId || "").trim();
+  const rawFlsId = String(player.fls_id || player.flsId || player.recipientFlsId || "").trim();
+  const rawFuncomId = String(player.funcom_id || player.funcomId || player.recipientFuncomId || "").trim();
+  const flsId = isValidHexFlsId(rawFlsId) ? rawFlsId : "";
+  const funcomId = isValidWhisperIdentity(rawFuncomId) ? rawFuncomId : "";
   const characterName = String(player.character_name || player.characterName || player.recipientCharacterName || "").trim();
   const key = String(flsId || funcomId || player.action_player_id || player.actor_id || player.player_pawn_id || "").trim();
   const sessionKey = String(player.login_session || player.loginSession || player.last_login_time || player.lastLoginTime || "").trim();
