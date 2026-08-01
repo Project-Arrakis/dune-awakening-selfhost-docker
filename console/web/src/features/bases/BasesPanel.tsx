@@ -918,6 +918,10 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
                   refill that cannot wait for a safe window would write into a
                   possibly-live base, which is the hazard the queue prevents. */}
               {(canQueue || base.generatorUptimeMultiplier > 1) && <div className="bases-auto-refill" onClick={(event) => event.stopPropagation()}>
+                {base.generatorUptimeMultiplier > 1 && <div className="bases-uptime-event-inline" role="status">
+                  <span className="bases-uptime-event-badge">{base.generatorUptimeMultiplier}× Uptime Event</span>
+                  <small>Ends {formatEventThroughDate(base.generatorUptimeEventEndsAt)}</small>
+                </div>}
                 {canQueue && <>
                   {/* With no enrollment data at all, an OFF pill would be a claim
                       this panel cannot make. Say what is actually known instead. */}
@@ -944,10 +948,6 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
                     Paused after {autoRefillEntry.consecutiveQueues} refills that did not raise this base's fuel. Refill manually to check why, or turn auto-refill off and on to resume.
                   </p>}
                 </>}
-                {base.generatorUptimeMultiplier > 1 && <div className="bases-uptime-event-inline" role="status">
-                  <span className="bases-uptime-event-badge">{base.generatorUptimeMultiplier}× Uptime Event</span>
-                  <small>Ends {formatEventThroughDate(base.generatorUptimeEventEndsAt)}</small>
-                </div>}
               </div>}
               <p className="bases-generator-reserve-note" role="note">
                 {QUEUED_RESERVE_EXPLANATION}
