@@ -88,7 +88,7 @@ export async function runMessageOfTheDayScan(config, players, context = {}) {
         results.push({ player: player.characterName, ok: true, mock: true, senderName: persona.displayName });
       } else {
         const result = await publishCarePackageWhisper(config, {
-          message: settings.message,
+          message: renderMessageOfTheDay(settings.message, player.characterName),
           senderFuncomId: persona.funcomId,
           senderHexFlsId: persona.hexFlsId,
           recipientFuncomId: player.funcomId,
@@ -139,6 +139,10 @@ export function normalizeSettings(input = {}) {
     title: "",
     message: normalizeMessage(input.message ?? input.body ?? "")
   };
+}
+
+export function renderMessageOfTheDay(template, playerName) {
+  return validateBroadcastMessage(String(template || "").replaceAll("{playerName}", String(playerName || "Player")));
 }
 
 export function messageOfTheDayDeliveryPlan(settings, players, state = EMPTY_STATE) {

@@ -9,6 +9,7 @@ import {
   primeMessageOfTheDayOnlineState,
   readMessageOfTheDay,
   recordMessageOfTheDayScanFailure,
+  renderMessageOfTheDay,
   restoreMessageOfTheDay,
   runMessageOfTheDayScan,
   saveMessageOfTheDay
@@ -46,6 +47,11 @@ test("message of the day validates booleans and message text", () => {
   assert.deepEqual(normalizeSettings({ enabled: true, title: "Daily", message: "Hello" }), { enabled: true, title: "", message: "Hello" });
   assert.throws(() => normalizeSettings({ enabled: "true", title: "Daily", message: "Hello" }), /enabled must be true or false/);
   assert.throws(() => normalizeSettings({ enabled: true, title: "Daily", message: "x".repeat(501) }), /Message must be 1-500/);
+});
+
+test("message of the day renders the recipient name without changing unknown text", () => {
+  assert.equal(renderMessageOfTheDay("Welcome, {playerName}!", "JaneDoe"), "Welcome, JaneDoe!");
+  assert.equal(renderMessageOfTheDay("Welcome to {serverName}", "JaneDoe"), "Welcome to {serverName}");
 });
 
 test("message of the day saves and restores persisted settings", () => {

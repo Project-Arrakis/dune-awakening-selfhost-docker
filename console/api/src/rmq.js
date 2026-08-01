@@ -79,15 +79,16 @@ export function buildCarePackageWhisperPayload({ recipientFuncomId, recipientCha
   const spoofedName = validateOptionalSpoofedName(senderDisplayName);
   const text = validateBroadcastMessage(message);
   const id = validateMessageId(messageId || randomUUID());
-  const timestamp = new Date(now).toISOString();
+  const timestamp = formatMapChatTimestamp(now);
   const inner = {
     m_Id: id,
-    m_ChannelType: "ETextChatChannelType::Whispers",
+    m_ChannelType: "Whispers",
     m_SubChannelId: recipientId,
     m_bUseSpoofedUserName: Boolean(spoofedName),
     m_SpoofedUserNameFrom: {
-      m_Id: "",
-      m_DisplayName: spoofedName
+      m_TableId: "",
+      m_Key: "",
+      m_UnlocalizedName: spoofedName
     },
     m_FuncomIdFrom: senderId,
     m_UserNameTo: recipientName,
@@ -99,7 +100,7 @@ export function buildCarePackageWhisperPayload({ recipientFuncomId, recipientCha
         m_FormatArgs: []
       }
     },
-    m_TimeStamp: timestamp,
+    m_Timestamp: timestamp,
     m_OriginLocation: { X: 0, Y: 0, Z: 0 },
     m_HasSeenMessage: false
   };
@@ -107,7 +108,7 @@ export function buildCarePackageWhisperPayload({ recipientFuncomId, recipientCha
     inner,
     outer: {
       Content: JSON.stringify(inner),
-      Type: "ECourierMessageType::TextChat"
+      Type: "TextChat"
     }
   };
 }
@@ -137,14 +138,14 @@ export function buildMapChatPayload({ senderFuncomId, senderDisplayName = "", me
         m_FormatArgs: []
       }
     },
-    m_TimeStamp: timestamp,
+    m_Timestamp: timestamp,
     m_OriginLocation: { X: 0, Y: 0, Z: 0 },
     m_HasSeenMessage: false
   };
   return {
     inner,
     outer: {
-      content: JSON.stringify(inner),
+      Content: JSON.stringify(inner),
       Type: "TextChat"
     }
   };
@@ -201,7 +202,7 @@ export async function publishMapChat(config, fields) {
   if (!/publish=ok/.test(output.stdout)) throw new Error("RabbitMQ map chat publish did not report publish=ok");
   return {
     ...output,
-    stdout: `${output.stdout}outer=${JSON.stringify(payload.outer)}\ninner=${payload.outer.content}\n`,
+    stdout: `${output.stdout}outer=${JSON.stringify(payload.outer)}\ninner=${payload.outer.Content}\n`,
     payload,
     amqp: {
       exchange: exchangeLabel,
