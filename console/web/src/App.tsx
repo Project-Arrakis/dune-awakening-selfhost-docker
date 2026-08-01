@@ -499,7 +499,9 @@ export function App() {
           <p>Beyond the Dunes, Every Choice Shapes the Future</p>
           <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Admin Password" />
           <button type="submit">Sign In</button>
-          {error && <p className="error">{error}</p>}
+          {error && <p className="error">{error === AUTH_SESSION_EXPIRED_MESSAGE
+            ? <>Your browser login session expired.<br />Sign in again to continue.</>
+            : error}</p>}
         </form>
       </main>
     );
