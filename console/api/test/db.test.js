@@ -2731,12 +2731,55 @@ test("inventory update whitelists editable columns and rejects id, inventory_id,
   assert.doesNotMatch(setClause, /"stats"/);
 });
 
-test("inventory update rejects max_durability outside the 0-100 range", async () => {
+test("inventory update repairs a specialization-crafted item to its stored 200 durability maximum", async () => {
+  const calls = [];
+  const db = {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("from dune.actors a")) return { rows: [{ actor_id: 123, account_id: 44, controller_id: 55, player_state_id: 5, online_status: "Offline" }] };
+      if (text.includes("where i.id = $1 and inv.actor_id = $2")) return { rows: [{ id: 99, stats: { FItemStackAndDurabilityStats: [[], { CurrentDurability: 100, MaxDurability: 200 }] } }] };
+      if (text.includes("pg_index")) return { rows: [{ name: "id" }] };
+      if (text.includes("information_schema.columns")) return { rows: [{ name: "id" }, { name: "stats", data_type: "jsonb" }] };
+      return { rows: [], rowCount: 1 };
+    },
+    transaction: async (fn) => fn(db)
+  };
+  const result = await updateInventoryItem(db, 123, 99, { current_durability: "200" });
+  assert.equal(result.updatedRows, 1);
+  const updateCall = calls.find((call) => String(call.text).startsWith("update"));
+  assert.ok(updateCall);
+  const statsValue = JSON.parse(updateCall.values[0]);
+  assert.deepEqual(statsValue.FItemStackAndDurabilityStats[1], { CurrentDurability: 200, MaxDurability: 200 });
+});
+
+test("inventory update uses DecayedMaxDurability when legacy MaxDurability is zero", async () => {
+  const calls = [];
+  const db = {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("from dune.actors a")) return { rows: [{ actor_id: 123, account_id: 44, controller_id: 55, player_state_id: 5, online_status: "Offline" }] };
+      if (text.includes("where i.id = $1 and inv.actor_id = $2")) return { rows: [{ id: 99, stats: { FItemStackAndDurabilityStats: [[], { CurrentDurability: 100, MaxDurability: 0, DecayedMaxDurability: 200 }] } }] };
+      if (text.includes("pg_index")) return { rows: [{ name: "id" }] };
+      if (text.includes("information_schema.columns")) return { rows: [{ name: "id" }, { name: "stats", data_type: "jsonb" }] };
+      return { rows: [], rowCount: 1 };
+    },
+    transaction: async (fn) => fn(db)
+  };
+  const result = await updateInventoryItem(db, 123, 99, { current_durability: "200" });
+  assert.equal(result.updatedRows, 1);
+  const updateCall = calls.find((call) => String(call.text).startsWith("update"));
+  const statsValue = JSON.parse(updateCall.values[0]);
+  assert.deepEqual(statsValue.FItemStackAndDurabilityStats[1], { CurrentDurability: 200, MaxDurability: 0, DecayedMaxDurability: 200 });
+});
+
+test("inventory update rejects attempts to change the stored maximum durability", async () => {
   const calls = [];
   const db = fakeMutationDb(calls, {
     itemRows: [{ id: 99, template_id: "WaterBottle_1", stack_size: 1, quality_level: 0, position_index: 0, inventory_id: 7, actor_id: 123, stats: { FItemStackAndDurabilityStats: [[], { CurrentDurability: 50, DecayedMaxDurability: 80 }] } }]
   });
-  await assert.rejects(() => updateInventoryItem(db, 123, 99, { max_durability: "150" }), /Invalid max durability/);
+  await assert.rejects(() => updateInventoryItem(db, 123, 99, { max_durability: "200" }), /Maximum durability is read-only/);
   assert.equal(calls.some((call) => String(call.text).startsWith("update dune.items")), false);
 });
 
@@ -2745,11 +2788,11 @@ test("inventory update rejects current_durability greater than max_durability", 
   const db = fakeMutationDb(calls, {
     itemRows: [{ id: 99, template_id: "WaterBottle_1", stack_size: 1, quality_level: 0, position_index: 0, inventory_id: 7, actor_id: 123, stats: { FItemStackAndDurabilityStats: [[], { CurrentDurability: 50, DecayedMaxDurability: 80 }] } }]
   });
-  await assert.rejects(() => updateInventoryItem(db, 123, 99, { current_durability: "95", max_durability: "80" }), /Invalid current durability/);
+  await assert.rejects(() => updateInventoryItem(db, 123, 99, { current_durability: "95" }), /Invalid current durability/);
   assert.equal(calls.some((call) => String(call.text).startsWith("update dune.items")), false);
 });
 
-test("inventory update merges durability into the existing DecayedMaxDurability key", async () => {
+test("inventory update preserves the existing DecayedMaxDurability while changing current durability", async () => {
   const calls = [];
   const db = {
     query: async (text, values = []) => {
@@ -2763,13 +2806,13 @@ test("inventory update merges durability into the existing DecayedMaxDurability 
     },
     transaction: async (fn) => fn(db)
   };
-  const result = await updateInventoryItem(db, 123, 99, { current_durability: "60", max_durability: "90" });
+  const result = await updateInventoryItem(db, 123, 99, { current_durability: "60" });
   assert.equal(result.updatedRows, 1);
   const updateCall = calls.find((call) => String(call.text).startsWith("update"));
   assert.ok(updateCall);
   const statsValue = JSON.parse(updateCall.values[0]);
   assert.deepEqual(statsValue.FCustomizationStats, [[], { color: "sand" }]);
-  assert.deepEqual(statsValue.FItemStackAndDurabilityStats[1], { CurrentDurability: 60, DecayedMaxDurability: 90 });
+  assert.deepEqual(statsValue.FItemStackAndDurabilityStats[1], { CurrentDurability: 60, DecayedMaxDurability: 80 });
 });
 
 test("inventory update treats explicit null durability values as not provided", async () => {

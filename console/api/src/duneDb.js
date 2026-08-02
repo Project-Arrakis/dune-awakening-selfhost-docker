@@ -48,7 +48,7 @@ function maxHealthForCombatLevel(combatLevel) {
   return VITALITY_HEALTH_TIERS.reduce((total, tier) => (combatLevel >= tier.level ? total + tier.bonus : total), BASE_MAX_HEALTH);
 }
 const MAX_TABLE_PREVIEW_ROWS = 10000;
-const INVENTORY_EDITABLE_COLUMNS = new Set(["stack_size", "quality_level", "position_index", "current_durability", "max_durability"]);
+const INVENTORY_EDITABLE_COLUMNS = new Set(["stack_size", "quality_level", "position_index", "current_durability"]);
 let craftingRecipeCatalogCache = null;
 let adminItemMetadataCache = null;
 let augmentCompatibilityCache = null;
@@ -4154,6 +4154,9 @@ export async function deleteInventoryItem(db, playerId, itemId) {
 export async function updateInventoryItem(db, playerId, itemId, values) {
   await requireCapability(await supportsInventoryEdit(db), "Inventory edit requires dune.items and dune.inventories.");
   const safeItemId = intParam(itemId, "item id", 1);
+  if (Object.prototype.hasOwnProperty.call(values || {}, "max_durability") && values.max_durability !== null && values.max_durability !== "") {
+    throw new Error("Maximum durability is read-only because it is determined by the item created in-game");
+  }
   const nextValues = Object.fromEntries(Object.entries(values || {}).filter(([key]) => INVENTORY_EDITABLE_COLUMNS.has(key)));
   return db.transaction(async (tx) => {
     const player = await resolvePlayerMutationTarget(tx, playerId);
@@ -4165,16 +4168,17 @@ export async function updateInventoryItem(db, playerId, itemId, values) {
       for update`, [safeItemId, player.actorId]);
     if (!owned.rows[0]) throw new Error("Inventory item was not found in the selected player's directly-owned inventory");
 
-    const hasMax = Object.prototype.hasOwnProperty.call(nextValues, "max_durability") && nextValues.max_durability !== null && nextValues.max_durability !== "";
     const hasCurrent = Object.prototype.hasOwnProperty.call(nextValues, "current_durability") && nextValues.current_durability !== null && nextValues.current_durability !== "";
-    if (hasMax || hasCurrent) {
+    if (hasCurrent) {
       const stats = owned.rows[0].stats || {};
       const durability = { ...(stats.FItemStackAndDurabilityStats?.[1] || {}) };
-      const maxKey = Object.prototype.hasOwnProperty.call(durability, "MaxDurability") ? "MaxDurability" : "DecayedMaxDurability";
-      const nextMax = numberParam(hasMax ? nextValues.max_durability : durability[maxKey], "max durability", 0, 100);
-      const nextCurrent = numberParam(hasCurrent ? nextValues.current_durability : durability.CurrentDurability, "current durability", 0, nextMax);
+      const maxDurability = Number(durability.MaxDurability);
+      const storedMaxValue = Number.isFinite(maxDurability) && maxDurability !== 0
+        ? durability.MaxDurability
+        : durability.DecayedMaxDurability;
+      const storedMax = numberParam(storedMaxValue, "stored max durability", 0);
+      const nextCurrent = numberParam(nextValues.current_durability, "current durability", 0, storedMax);
       durability.CurrentDurability = nextCurrent;
-      durability[maxKey] = nextMax;
       nextValues.stats = { ...stats, FItemStackAndDurabilityStats: [stats.FItemStackAndDurabilityStats?.[0] || [], durability] };
     }
     delete nextValues.current_durability;
