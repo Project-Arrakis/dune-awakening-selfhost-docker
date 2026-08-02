@@ -9,6 +9,7 @@ import { ItemGradeSelect } from "../../components/common/ItemCatalog";
 import { formatUiSentence, friendlyColumnName } from "../../lib/display";
 import { serializeEditableDbValue, parseEditableDbValue } from "../../lib/dbValues";
 import { augmentLimitForItem, filterAugmentsForItem, formatAugmentOptions, itemCanUseAugments } from "../../lib/augmentEligibility";
+import { inventoryDurabilityError } from "./inventoryDurability";
 
 const EDITABLE_INVENTORY_COLUMNS = ["stack_size", "quality_level", "position_index", "current_durability", "max_durability"];
 const INVENTORY_COLUMNS = ["id", "inventory_id", "template_id", "stack_size", "quality_level", "position_index", "current_durability", "max_durability", "augments"];
@@ -174,9 +175,8 @@ export function PlayerDetailTab({
     setAugmentTargetRow(null);
     setAugmentSelected([]);
     setEditRow(row);
-    const hasCurrentAtLoad = row.current_durability != null;
     setEditValues(Object.fromEntries(EDITABLE_INVENTORY_COLUMNS.map((column) => {
-      if (column === "max_durability" && row.max_durability == null) return [column, hasCurrentAtLoad ? "100" : ""];
+      if (column === "max_durability" && row.max_durability == null) return [column, ""];
       if (column === "current_durability" && row.current_durability == null) return [column, ""];
       return [column, serializeEditableDbValue(row[column])];
     })));
@@ -208,24 +208,13 @@ export function PlayerDetailTab({
     const itemId = String(editRow.id || "");
     const templateId = String(editRow.template_id || "Unknown item");
 
-    const hasCurrent = editRow.current_durability != null;
-    const hasMax = editRow.max_durability != null || hasCurrent;
-    const maxDurability = hasMax ? Number(editValues.max_durability) : undefined;
-    if (hasMax && (!Number.isFinite(maxDurability) || maxDurability! < 0 || maxDurability! > 100)) {
-      setMessage("Max Durability must be a number between 0 and 100.");
+    const canEditDurability = editRow.current_durability != null && editRow.max_durability != null;
+    const durabilityError = inventoryDurabilityError(editValues.current_durability, editRow.max_durability, canEditDurability);
+    if (durabilityError) {
+      setMessage(durabilityError);
       setMessageTone("default");
       setMessageDetails("");
       return;
-    }
-    if (hasCurrent) {
-      const currentDurability = Number(editValues.current_durability);
-      const upperBound = hasMax ? maxDurability! : Number.POSITIVE_INFINITY;
-      if (!Number.isFinite(currentDurability) || currentDurability < 0 || currentDurability > upperBound) {
-        setMessage("Current Durability must be a number between 0 and Max Durability.");
-        setMessageTone("default");
-        setMessageDetails("");
-        return;
-      }
     }
 
     if (!(await confirmAction("Save changes to this inventory item?", {
@@ -240,7 +229,7 @@ export function PlayerDetailTab({
     setEditSaving(true);
     try {
       const values = Object.fromEntries(EDITABLE_INVENTORY_COLUMNS
-        .filter((column) => !((column === "current_durability" && !hasCurrent) || (column === "max_durability" && !hasMax)))
+        .filter((column) => column !== "max_durability" && !(column === "current_durability" && !canEditDurability))
         .map((column) => [column, parseEditableDbValue(editValues[column] ?? "", editRow[column])]));
       const response = await playersApi.updateInventoryItem(playerId, itemId, values, "SAVE ITEM");
       setMessageTone("success");
@@ -318,23 +307,27 @@ export function PlayerDetailTab({
 
   function renderEditPanel(row: Record<string, unknown>) {
     const hasCurrentAtLoad = row.current_durability != null;
-    const hasMaxAtLoad = row.max_durability != null || hasCurrentAtLoad;
+    const hasMaxAtLoad = row.max_durability != null;
+    const canEditDurability = hasCurrentAtLoad && hasMaxAtLoad;
     return <div className="result-panel database-edit-panel">
       <div className="panel-title"><strong>Edit Inventory Item</strong></div>
       <div className="database-edit-grid inventory-edit-grid">
         {EDITABLE_INVENTORY_COLUMNS.map((column) => {
-          const isDisabled = column === "current_durability" ? !hasCurrentAtLoad : column === "max_durability" ? !hasMaxAtLoad : false;
+          const isDisabled = column === "current_durability" ? !canEditDurability : column === "max_durability";
           const isDurability = column === "current_durability" || column === "max_durability";
           if (column === "quality_level") {
             return <label key={column}>Grade
               <ItemGradeSelect value={editValues[column] || "0"} minGrade={0} onChange={(value) => setEditValues({ ...editValues, [column]: value })} />
             </label>;
           }
-          return <label key={column}>{friendlyColumnName(column)}
-            <input type="number" step="any" min={isDurability ? 0 : undefined} max={column === "max_durability" ? 100 : undefined} value={editValues[column] || ""} disabled={isDisabled} placeholder={isDisabled ? "N/A" : undefined} onChange={(event) => setEditValues({ ...editValues, [column]: event.target.value })} />
+          const label = column === "max_durability" ? "Max Durability (Read-only)" : friendlyColumnName(column);
+          const currentMaximum = column === "current_durability" && hasMaxAtLoad ? Number(row.max_durability) : undefined;
+          return <label key={column}>{label}
+            <input type="number" step="any" min={isDurability ? 0 : undefined} max={currentMaximum} value={editValues[column] || ""} disabled={isDisabled} placeholder={!hasMaxAtLoad && isDurability ? "N/A" : undefined} onChange={(event) => setEditValues({ ...editValues, [column]: event.target.value })} />
           </label>;
         })}
       </div>
+      {hasMaxAtLoad && <p className="muted inventory-durability-note">Maximum durability is set by the game when the item is created. Current durability can be repaired up to that stored maximum.</p>}
       <div className="action-line">
         <button disabled={editSaving} onClick={() => void saveEditItem()}>{editSaving ? "Saving..." : "Save Item"}</button>
         <button onClick={closeEditItem}>Cancel</button>
