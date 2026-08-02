@@ -8,6 +8,7 @@ import { firstDefined, formatUiSentence, stripAnsi, summarizeCommandText, titleC
 import { titleCaseWords } from "../players/playerAdminUtils";
 import { pendingRefillCountForMap, pendingRefillCountForPartition, usePendingRefills } from "../../lib/usePendingRefills";
 import type { PendingRefills } from "../../api/bases";
+import { friendlyMapName, hasFriendlyMapName } from "./mapNames";
 
 // Taking a partition down is when any generator refill queued for a base on it
 // gets written, so every control that does so says what is waiting on it.
@@ -1672,7 +1673,7 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
         const rowSietchRestartResultActive = Boolean(rowResultActive && mapsResult && mapsResultScope === "maps" && isSietchRestartResult(mapsResult));
         const rowForceDespawnResultActive = Boolean(rowResultActive && mapsResult && mapsResultScope === "maps" && isForceDespawnResult(mapsResult) && !isDeepDesertDualResult(mapsResult));
         const rowForceSpawnResultActive = Boolean(rowResultActive && mapsResult && mapsResultScope === "maps" && isForceSpawnResult(mapsResult));
-        return <Fragment key={rowName}><tr><td>{isSurvivalRow ? <SietchMapName name={rowName} sietch={primarySurvivalSietch} draft={primaryDraft} /> : rowName}</td><td><MapRuntimeStatus value={displayStatus} detail={row.statusDetail} /></td><td>{String(row.mode || "Not Available")}</td><td><MemoryUsageBar row={memoryRow} fallback={liveMemoryFallback(row)} configuredLimit={row.memory} /></td><td className="actions-column"><button className="stable-action-button" onClick={() => selectMap(row)}>{isSelected ? "Close" : "Edit"}</button></td></tr>
+        return <Fragment key={rowName}><tr><td><MapDisplayName mapId={rowName} sietch={isSurvivalRow ? primarySurvivalSietch : null} draft={isSurvivalRow ? primaryDraft : undefined} /></td><td><MapRuntimeStatus value={displayStatus} detail={row.statusDetail} /></td><td>{String(row.mode || "Not Available")}</td><td><MemoryUsageBar row={memoryRow} fallback={liveMemoryFallback(row)} configuredLimit={row.memory} /></td><td className="actions-column"><button className="stable-action-button" onClick={() => selectMap(row)}>{isSelected ? "Close" : "Edit"}</button></td></tr>
           {isSelected && <tr className="inline-edit-row" key={`${rowName}-edit`}><td colSpan={5}>
             <section className="inline-edit-panel">
               <div className="panel-title"><h4>Edit {rowName}</h4></div>
@@ -1745,7 +1746,7 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
             const childForceSpawnResultActive = Boolean(childResultActive && mapsResult && mapsResultScope === "maps" && isForceSpawnResult(mapsResult));
             const childCombatRow = combatStateByMap["DeepDesert_1"]?.partitions.find((p) => p.partitionId === String(deepRow.partitionId || "")) || null;
             const childName = deepDesertPartitionName(deepRow, childCombatRow);
-            return <Fragment key={`deepdesert-${String(deepRow.partitionId || deepRow.dimension || "")}`}><tr className="sietch-child-row"><td><span className="sietch-child-name">{childName}</span><span className="sietch-child-meta">Partition {String(deepRow.partitionId || "Unknown")} / Dimension {String(deepRow.dimension || "Unknown")}{childCombatRow?.configurationDrift ? " / Restart required to apply saved PvP-PvE settings" : ""}</span></td><td><MapRuntimeStatus value={childStatus} /></td><td>Dual</td><td><MemoryUsageBar row={childMemoryRow} fallback={liveMemoryFallback({ ...row, status: childStatus })} configuredLimit={deepMemory} /></td><td className="actions-column"><button className="stable-action-button" onClick={() => selectDeepDesertPartition(deepRow)}>{childSelected ? "Close" : "Edit"}</button></td></tr>
+            return <Fragment key={`deepdesert-${String(deepRow.partitionId || deepRow.dimension || "")}`}><tr className="sietch-child-row"><td><MapDisplayName mapId="DeepDesert_1" instanceName={childName} /><span className="sietch-child-meta">Partition {String(deepRow.partitionId || "Unknown")} / Dimension {String(deepRow.dimension || "Unknown")}{childCombatRow?.configurationDrift ? " / Restart required to apply saved PvP-PvE settings" : ""}</span></td><td><MapRuntimeStatus value={childStatus} /></td><td>Dual</td><td><MemoryUsageBar row={childMemoryRow} fallback={liveMemoryFallback({ ...row, status: childStatus })} configuredLimit={deepMemory} /></td><td className="actions-column"><button className="stable-action-button" onClick={() => selectDeepDesertPartition(deepRow)}>{childSelected ? "Close" : "Edit"}</button></td></tr>
               {childSelected && <tr className="inline-edit-row"><td colSpan={5}><section className="inline-edit-panel">
                 <div className="panel-title"><h4>Edit {childName}</h4></div>
                 <KeyValueGrid items={[["Partition", deepRow.partitionId], ["Dimension", deepRow.dimension], ["Status", childStatus], ["Memory", deepMemory]]} />
@@ -1785,7 +1786,7 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
             const childResultActive = mapsResultTarget === childTarget;
             const childMapSettingsResultActive = Boolean(childResultActive && mapsResult && mapsResultScope === "maps" && isMapSettingsResult(mapsResult));
             const childSietchRestartResultActive = Boolean(childResultActive && mapsResult && mapsResultScope === "maps" && isSietchRestartResult(mapsResult));
-            return <Fragment key={`sietch-${sietch.partitionId}`}><tr className="sietch-child-row"><td><span className="sietch-child-name"><SietchName sietch={sietch} draft={draft} /></span><span className="sietch-child-meta">Partition {sietch.partitionId} / Dimension {sietch.dimension}</span></td><td><MapRuntimeStatus value={childStatus} /></td><td>Sietch</td><td>{sietch.active ? <MemoryUsageBar row={childMemoryRow} fallback={liveMemoryFallback(row)} configuredLimit={sietchMemory} /> : <span className="muted">Unallocated</span>}</td><td className="actions-column"><button className="stable-action-button" onClick={() => selectSietch(sietch)}>{childSelected ? "Close" : "Edit"}</button></td></tr>
+            return <Fragment key={`sietch-${sietch.partitionId}`}><tr className="sietch-child-row"><td><MapDisplayName mapId="Survival_1" sietch={sietch} draft={draft} /><span className="sietch-child-meta">Partition {sietch.partitionId} / Dimension {sietch.dimension}</span></td><td><MapRuntimeStatus value={childStatus} /></td><td>Sietch</td><td>{sietch.active ? <MemoryUsageBar row={childMemoryRow} fallback={liveMemoryFallback(row)} configuredLimit={sietchMemory} /> : <span className="muted">Unallocated</span>}</td><td className="actions-column"><button className="stable-action-button" onClick={() => selectSietch(sietch)}>{childSelected ? "Close" : "Edit"}</button></td></tr>
               {childSelected && <tr className="inline-edit-row"><td colSpan={5}><section className="inline-edit-panel">
                 <div className="panel-title"><h4>Edit {sietch.displayName}</h4></div>
                 <KeyValueGrid items={[["Partition", sietch.partitionId], ["Dimension", sietch.dimension], ["Status", childStatus], ["Memory", sietchMemory], ["Password", sietch.passwordSet ? "Set" : "Not Set"]]} />
@@ -2077,14 +2078,15 @@ function sietchTargetDisplayName(row: SietchRow, draftDisplayName?: string) {
   return defaultSietchName(row) || row.displayName || `partition ${row.partitionId}`;
 }
 
-function SietchMapName({ name, sietch, draft }: { name: string; sietch?: SietchRow | null; draft?: { password: string } }) {
+function MapDisplayName({ mapId, instanceName, sietch, draft }: { mapId: string; instanceName?: string; sietch?: SietchRow | null; draft?: { password: string } }) {
   const passwordSet = sietchHasPassword(sietch, draft);
-  const label = sietch?.displayName ? `${name} (${sietch.displayName})` : name;
-  return <span className="map-name-with-lock">{passwordSet && <Lock size={15} aria-label="Password set" />}<span>{label}</span></span>;
-}
-
-function SietchName({ sietch, draft }: { sietch: SietchRow; draft?: { password: string } }) {
-  return <span className="map-name-with-lock sietch-name-with-lock">{sietchHasPassword(sietch, draft) && <Lock size={15} aria-label="Password set" />}<span>{sietch.displayName}</span></span>;
+  const friendlyName = friendlyMapName(mapId);
+  const instanceLabel = String(instanceName || sietch?.displayName || "").trim();
+  const rawLabel = instanceLabel ? `${mapId}: ${instanceLabel}` : mapId;
+  return <span className="map-display-name">
+    <span className="map-display-name-primary">{passwordSet && <Lock size={15} aria-label="Password set" />}<strong>{friendlyName}</strong></span>
+    {hasFriendlyMapName(mapId) && <small className="map-display-name-id">{rawLabel}</small>}
+  </span>;
 }
 
 export function MapRuntimeStatus({ value, detail }: { value: unknown; detail?: unknown }) {

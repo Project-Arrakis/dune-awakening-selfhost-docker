@@ -1936,6 +1936,11 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
 .sietch-child-row td:first-child { padding-left: 28px; }
 .sietch-child-name { display: block; color: #e9dcc8; font-weight: 700; }
 .sietch-child-meta { display: block; color: #9f927d; font-size: 12px; margin-top: 2px; }
+.map-display-name { display: grid; gap: 3px; min-width: 0; white-space: normal; }
+.map-display-name-primary { display: flex; align-items: center; gap: 7px; min-width: 0; color: #e9dcc8; }
+.map-display-name-primary svg { flex: 0 0 auto; color: #d8b15f; }
+.map-display-name-primary strong { min-width: 0; overflow-wrap: anywhere; line-height: 1.25; }
+.map-display-name-id { display: block; min-width: 0; color: #9f927d; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; line-height: 1.25; overflow-wrap: anywhere; }
 .map-name-with-lock { display: inline-flex; align-items: center; gap: 7px; min-width: 0; color: #e9dcc8; font-weight: 700; }
 .map-name-with-lock svg { flex: 0 0 auto; color: #d8b15f; }
 .map-name-with-lock span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
