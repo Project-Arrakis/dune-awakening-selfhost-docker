@@ -8,9 +8,6 @@ import {
   craftingRecipeCatalogRows,
   compareJourneyCatalogOrder,
   factionDisplayName,
-  factionIdByName,
-  factionTierBumps,
-  journeyCompletionNodeIds,
   journeyDepth,
   journeyDisplayName,
   journeyParentId,
@@ -22,7 +19,6 @@ import {
   researchProductGroup,
   researchRecipeId,
   researchType,
-  tagsForJourneyNodeSubtree,
   tutorialStatus,
   validateMapName,
   validateRecipeId,
@@ -4023,80 +4019,12 @@ function portalGuildRole(roleId) {
   return "Member";
 }
 
-export async function completeJourneyNode(db, id, { nodeId }, journeyTagsData = {}) {
-  const schema = await journeyIdentitySchema(db);
-  await requireCapability(await supportsJourneySchema(db, schema), "Journey completion is unavailable for this game database schema.");
-  const safeNodeId = validateJourneyNodeId(nodeId);
-  return db.transaction(async (tx) => {
-    const player = await resolvePlayerMutationTarget(tx, id);
-    const journeyIdColumn = quoteIdentifier(schema.journeyIdColumn);
-    const journeyIdentityId = playerJourneyIdentity(player, schema.journeyIdColumn);
-    const tagIdentityId = playerJourneyIdentity(player, schema.tagIdColumn);
-    if (isContractNode(safeNodeId, journeyTagsData)) {
-      const tags = contractTagsForNode(safeNodeId, journeyTagsData);
-      const tagResult = await applyDirectJourneyTags(tx, player, tags, "add", schema.tagIdColumn, tagIdentityId);
-      return { ok: true, player, nodeId: safeNodeId, updatedRows: 0, tagsApplied: tags.length, factionBumps: tagResult.factionBumps, contract: true };
-    }
-    const completionNodeIds = journeyCompletionNodeIds(safeNodeId, journeyTagsData);
-    const updated = await tx.query(`
-      update dune.journey_story_node
-      set complete_condition_state = 'true'::jsonb,
-          reveal_condition_state = 'true'::jsonb
-      where ${journeyIdColumn} = $1
-        and (story_node_id = any($2::text[]) or story_node_id = $3 or story_node_id like $3 || '.%')`, [journeyIdentityId, completionNodeIds, safeNodeId]);
-    let updatedRows = Number(updated.rowCount || 0);
-    const inserted = await tx.query(`
-      with wanted(story_node_id) as (
-        select unnest($2::text[])
-      )
-      insert into dune.journey_story_node
-        (${journeyIdColumn}, story_node_id, has_pending_reward, complete_condition_state, reveal_condition_state, fail_condition_state, metadata_state, reset_group)
-      select $1, wanted.story_node_id, false, 'true'::jsonb, 'true'::jsonb, '{}'::jsonb, '{}'::jsonb, 'Default'::dune.JourneyStoryResetGroup
-      from wanted
-      where not exists (
-        select 1
-        from dune.journey_story_node existing
-        where existing.${journeyIdColumn} = $1
-          and existing.story_node_id = wanted.story_node_id
-      )`, [journeyIdentityId, completionNodeIds]);
-    updatedRows += Number(inserted.rowCount || 0);
-    if (updatedRows === 0) {
-      const fallback = await tx.query(`
-        insert into dune.journey_story_node
-          (${journeyIdColumn}, story_node_id, has_pending_reward, complete_condition_state, reveal_condition_state, fail_condition_state, metadata_state, reset_group)
-        values ($1, $2, false, 'true'::jsonb, 'true'::jsonb, '{}'::jsonb, '{}'::jsonb, 'Default'::dune.JourneyStoryResetGroup)`, [journeyIdentityId, safeNodeId]);
-      updatedRows = Number(fallback.rowCount || 1);
-    }
-    const tags = tagsForJourneyNodeSubtree(safeNodeId, journeyTagsData);
-    const tagResult = await applyDirectJourneyTags(tx, player, tags, "add", schema.tagIdColumn, tagIdentityId);
-    return { ok: true, player, nodeId: safeNodeId, updatedRows, tagsApplied: tags.length, factionBumps: tagResult.factionBumps };
-  });
+export async function completeJourneyNode() {
+  throw new UnsupportedCapabilityError("Story, Contract, and Codex progression is read-only because direct database completion can leave game-managed rewards, schematics, and tags inconsistent. Tutorial actions remain available.");
 }
 
-export async function resetJourneyNode(db, id, { nodeId }, journeyTagsData = {}) {
-  const schema = await journeyIdentitySchema(db);
-  await requireCapability(await supportsJourneySchema(db, schema), "Journey reset is unavailable for this game database schema.");
-  const safeNodeId = validateJourneyNodeId(nodeId);
-  return db.transaction(async (tx) => {
-    const player = await resolvePlayerMutationTarget(tx, id);
-    const journeyIdColumn = quoteIdentifier(schema.journeyIdColumn);
-    const journeyIdentityId = playerJourneyIdentity(player, schema.journeyIdColumn);
-    const tagIdentityId = playerJourneyIdentity(player, schema.tagIdColumn);
-    if (isContractNode(safeNodeId, journeyTagsData)) {
-      const tags = contractTagsForNode(safeNodeId, journeyTagsData);
-      await applyDirectJourneyTags(tx, player, tags, "remove", schema.tagIdColumn, tagIdentityId);
-      return { ok: true, player, nodeId: safeNodeId, updatedRows: 0, tagsRemoved: tags.length, contract: true };
-    }
-    const updated = await tx.query(`
-      update dune.journey_story_node
-      set complete_condition_state = 'false'::jsonb,
-          has_pending_reward = false
-      where ${journeyIdColumn} = $1
-        and (story_node_id = $2 or story_node_id like $2 || '.%')`, [journeyIdentityId, safeNodeId]);
-    const tags = tagsForJourneyNodeSubtree(safeNodeId, journeyTagsData);
-    await applyDirectJourneyTags(tx, player, tags, "remove", schema.tagIdColumn, tagIdentityId);
-    return { ok: true, player, nodeId: safeNodeId, updatedRows: Number(updated.rowCount || 0), tagsRemoved: tags.length };
-  });
+export async function resetJourneyNode() {
+  throw new UnsupportedCapabilityError("Story, Contract, and Codex progression is read-only because direct database reset can leave game-managed rewards, schematics, and tags inconsistent. Tutorial actions remain available.");
 }
 
 export async function completeTutorial(db, id, { tutorialId }) {
@@ -5582,12 +5510,6 @@ async function supportsTutorials(db) {
     await functionExists(db, "dune.create_or_update_tutorial_entry(bigint,smallint,smallint)");
 }
 
-function validateJourneyNodeId(value) {
-  const nodeId = String(value || "").trim();
-  if (!nodeId || nodeId.length > 500 || /[\r\n]/.test(nodeId)) throw new Error("Journey node ID is invalid");
-  return nodeId;
-}
-
 function journeyGroup(nodeId) {
   const value = String(nodeId || "");
   if (/^DA_(CT|LDR)_/.test(value)) return "contract";
@@ -5630,56 +5552,6 @@ function contractNodeRow(nodeId, contractTags, contractAliases, tagState) {
     tags: tags.length,
     dependency: ""
   };
-}
-
-function isContractNode(nodeId, journeyTagsData = {}) {
-  const contractTags = journeyTagsData?.contract_tags || {};
-  return Array.isArray(contractTags[nodeId]);
-}
-
-function contractTagsForNode(nodeId, journeyTagsData = {}) {
-  const contractTags = journeyTagsData?.contract_tags || {};
-  const tags = contractTags[nodeId];
-  if (!Array.isArray(tags) || !tags.length) throw new Error(`Contract ${nodeId} was not found in the game data catalog.`);
-  return tags.map((tag) => String(tag || "").trim()).filter(Boolean);
-}
-
-async function applyDirectJourneyTags(db, player, tags, mode, tagColumnName, identityId) {
-  if (!tags.length) return { factionBumps: 0 };
-  const tagColumn = quoteIdentifier(tagColumnName);
-  if (mode === "remove") {
-    await db.query(`delete from dune.player_tags where ${tagColumn} = $1 and tag = any($2::text[])`, [identityId, tags]);
-    return { factionBumps: 0 };
-  }
-  await db.query(`
-    insert into dune.player_tags (${tagColumn}, tag)
-    select $1, incoming.tag
-    from unnest($2::text[]) as incoming(tag)
-    where not exists (
-      select 1
-      from dune.player_tags existing
-      where existing.${tagColumn} = $1
-        and existing.tag = incoming.tag
-    )`, [identityId, tags]);
-  return applyJourneyFactionBumps(db, player, tags);
-}
-
-async function applyJourneyFactionBumps(db, player, tags) {
-  const bumps = factionTierBumps(tags);
-  let factionBumps = 0;
-  for (const [name, rep] of bumps.entries()) {
-    const factionId = factionIdByName(name);
-    if (!factionId) continue;
-    const current = await db.query(`
-      select coalesce(reputation_amount, 0) as reputation_amount
-      from dune.player_faction_reputation
-      where actor_id = $1 and faction_id = $2`, [player.controllerId, factionId]);
-    if (Number(current.rows[0]?.reputation_amount || 0) >= rep) continue;
-    await db.query("select dune.set_player_faction_reputation($1::bigint, $2::smallint, $3::integer)", [player.controllerId, factionId, rep]);
-    factionBumps += 1;
-  }
-  if (factionBumps > 0) await syncFactionComponent(db, player.controllerId);
-  return { factionBumps };
 }
 
 function linkedResearchRecipeId(itemKey) {
