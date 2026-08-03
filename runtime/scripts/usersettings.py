@@ -58,21 +58,35 @@ STAKING_EXTENSION_FIELDS = {
     "staking_unit_vertical_extension_default_times": "m_StakingUnitVerticalExtensionDefaultTimes",
     "staking_unit_extension_default_times": "m_StakingUnitExtensionDefaultTimes",
 }
-FIELD_TYPE_OVERRIDES = {
-    "staking_unit_vertical_extension_default_times": "integer",
-    "staking_unit_extension_default_times": "integer",
-    "sun_exposure_enabled": "boolean",
-}
-
 # Engine fields whose UI is a True/False boolean but whose ini value must be
 # literal "1"/"0" (the game only accepts numeric 0/1 for these, not True/False).
-NUMERIC_BOOLEAN_ENGINE_FIELDS = {"sun_exposure_enabled"}
+# Without this the console renders them as a free-text box you type "1" into,
+# because there is no "toggle" branch in the frontend's SettingInput.
+NUMERIC_BOOLEAN_ENGINE_FIELDS = {
+    "sun_exposure_enabled",
+    "sandstorm_enabled",
+    "sandstorm_treasure_enabled",
+    "sandworm_enabled",
+    "weapon_specific_quick_melee_enabled",
+    "spice_visions_enabled",
+    "passenger_taxi_enabled",
+    "double_difficulty_loot_enabled",
+    "regenerate_per_player_loot_enabled",
+}
 
 
 def normalize_engine_field_value(field_id: str, value: str) -> str:
     if field_id in NUMERIC_BOOLEAN_ENGINE_FIELDS:
         return "1" if truthy(value) else "0"
     return value
+
+
+FIELD_TYPE_OVERRIDES = {
+    "staking_unit_vertical_extension_default_times": "integer",
+    "staking_unit_extension_default_times": "integer",
+    # Derived rather than listed so the select and the 1/0 conversion cannot drift.
+    **{field_id: "boolean" for field_id in NUMERIC_BOOLEAN_ENGINE_FIELDS},
+}
 
 ENGINE_FIELDS = {
     "port": ("URL", "Port", "7777"),
@@ -101,6 +115,12 @@ ENGINE_FIELDS = {
     "landsraad_reward_multiplier_faction_xp": ("ConsoleVariables", "dw.LandsraadMissionRewardMultiplierFactionXP", "1.0"),
     "landsraad_reward_multiplier_house_credit": ("ConsoleVariables", "dw.LandsraadMissionRewardMultiplierHouseCredit", "1.0"),
     "landsraad_reward_multiplier_specialization_xp": ("ConsoleVariables", "dw.LandsraadMissionRewardMultiplierSpecializationXP", "1.0"),
+    # "-1" is the inert value by naming convention (an "Override" that is off);
+    # Funcom's compiled default was not recovered, so this is unconfirmed.
+    "deathstill_conversion_time_override": ("ConsoleVariables", "Deathstill.ConversionTimeOverride", "-1.0"),
+    # Both defaults confirmed against the game; do not "correct" them to 1.
+    "double_difficulty_loot_enabled": ("ConsoleVariables", "Dune.GiveDoubleDifficultyLoot", "0"),
+    "regenerate_per_player_loot_enabled": ("ConsoleVariables", "Loot.ShouldAlwaysRegeneratePerPlayerLoot", "0"),
 }
 
 # All ENGINE_FIELDS share the literal ini section "ConsoleVariables", so the
@@ -129,31 +149,62 @@ ENGINE_FIELD_CATEGORIES = {
     "landsraad_reward_multiplier_faction_xp": "Landsraad",
     "landsraad_reward_multiplier_house_credit": "Landsraad",
     "landsraad_reward_multiplier_specialization_xp": "Landsraad",
+    "deathstill_conversion_time_override": "Environment",
+    "double_difficulty_loot_enabled": "Loot",
+    "regenerate_per_player_loot_enabled": "Loot",
 }
 
 # Free-text field descriptions shown in the console UI. Only populated for
 # fields as they're documented; metadata() falls back to "" for the rest.
 FIELD_DESCRIPTIONS = {
+    "server_display_name": "Display name shown for this server instance. Used as the Dimension name when the server is a Dimension server.",
+    "server_login_password": "Password players must enter to join. Leave empty for no password.",
+    "mining_output_multiplier": "Multiplier applied to personal mining output for all players.",
+    "vehicle_mining_output_multiplier": "Multiplier applied to vehicle mining output for all players.",
+    "pvp_resource_multiplier": "Multiplier applied to resource yield inside PvP zones.",
+    "vehicle_durability_damage_multiplier": "Multiplier applied to durability damage taken by vehicles.",
+    "sandstorm_enabled": "Toggles sandstorm spawning. 1 = ON (default), 0 = OFF.",
+    "sandstorm_treasure_enabled": "Toggles sandstorm treasure spawning. 1 = ON (default), 0 = OFF.",
     "sun_exposure_enabled": "Toggles whether players take sun exposure/heat damage. True/1 = ON (default), False/0 = OFF.",
-    "vehicle_max_per_player": "Maximum number of vehicles a single player is allowed to own at once.",
+    "vehicle_max_per_player": "Maximum number of vehicles a single player is allowed to own at once. 0 = no limit.",
     "fuel_burning_multiplier": "Multiplier applied to fuel burn duration. Larger values make fuel last longer. Conservative test range 0.1-10.0 (not enforced); 1.0 is normal.",
     "landsraad_reward_multiplier_faction_xp": "Multiplier applied to Faction XP rewarded from Landsraad missions.",
     "landsraad_reward_multiplier_house_credit": "Multiplier applied to House Credits rewarded from Landsraad missions.",
     "landsraad_reward_multiplier_specialization_xp": "Multiplier applied to Specialization XP rewarded from Landsraad missions.",
+    "hydration_enabled": "Master toggle for the hydration / thirst system. Off = players never get thirsty.",
+    "water_consumption_rate": "How quickly players consume water.",
+    "player_starting_water": "Water amount when a player spawns.",
+    "item_durability_loss_multiplier": "Scales durability loss for all items. 0 = off.",
+    "cross_map_respawn_drop_items": "Whether items are dropped when a player respawns on a different map.",
+    "item_deterioration_rate": "Deterioration tick rate. 0 = off, 1-10 typical.",
+    "water_consumption_in_storm_multiplier": "Additional water drain during sandstorms.",
+    "players_drop_loot_on_defeat": "Whether a player drops loot when downed/defeated (not a full death).",
+    "players_drop_loot_on_death": "Whether a player drops their inventory as loot when killed (PvP looting).",
+    "deathstill_conversion_time_override": "Overrides how long it takes to process a body in a Deathstill. Value is the length of the cycle in seconds.",
+    "double_difficulty_loot_enabled": "Gives double loot when the encounter difficulty is above 0. Field-confirmed with dungeon loot.",
+    "regenerate_per_player_loot_enabled": "Whether per-player loot is regenerated each time a player interacts with a loot container. Field-confirmed. Enabling this can make a single container farmable indefinitely.",
 }
 
 # Maps a field id to the client-side ini filename it also must be applied to
 # (players copy the exported client file into their own Saved/Config/WindowsClient/
-# folder). "Engine.ini" values drive client_engine_ini()'s selection below; a future
-# "Game.ini" entry would only drive the console's "Client Required" badge, since
+# folder). "Engine.ini" values drive client_engine_ini()'s selection below; a
+# "Game.ini" entry only drives the console's "Client Required" badge, since
 # client_game_ini() already exports every saved UserGame value unconditionally.
 CLIENT_FILE_REQUIRED = {
-    "sun_exposure_enabled": "Engine.ini",
     "vehicle_max_per_player": "Engine.ini",
     "fuel_burning_multiplier": "Engine.ini",
     "landsraad_reward_multiplier_faction_xp": "Engine.ini",
     "landsraad_reward_multiplier_house_credit": "Engine.ini",
     "landsraad_reward_multiplier_specialization_xp": "Engine.ini",
+    "hydration_enabled": "Game.ini",
+    "water_consumption_rate": "Game.ini",
+    "player_starting_water": "Game.ini",
+    "item_durability_loss_multiplier": "Game.ini",
+    "cross_map_respawn_drop_items": "Game.ini",
+    "item_deterioration_rate": "Game.ini",
+    "water_consumption_in_storm_multiplier": "Game.ini",
+    "players_drop_loot_on_defeat": "Game.ini",
+    "players_drop_loot_on_death": "Game.ini",
 }
 
 MAP_FIELDS = {
@@ -259,6 +310,7 @@ MAP_FIELDS = {
     "item_durability_loss_multiplier": ("/Script/DuneSandbox.DuneGameMode", "m_ItemDurabilityLossMultiplier", "1.0"),
     "legacy_pvp_enabled": ("/Script/DuneSandbox.DuneGameMode", "bPvPEnabled", "False"),
     "server_pve": ("/Script/DuneSandbox.DuneGameMode", "bServerPVE", "True"),
+    "hydration_enabled": ("/Script/DuneSandbox.HydrationSubsystem", "m_bHydrationEnabled", "True"),
     "water_consumption_rate": ("/Script/DuneSandbox.DuneGameMode", "m_WaterConsumptionRate", "1.0"),
     "water_consumption_in_storm_multiplier": ("/Script/DuneSandbox.DuneGameMode", "m_WaterConsumptionInStormMultiplier", "4.0"),
     "global_damage_to_npcs_multiplier": ("/Script/DuneSandbox.DuneGameMode", "m_GlobalDamageToNpcsMultiplier", "1.0"),
@@ -1582,6 +1634,12 @@ def userengine_ini_text(values: dict[str, str]) -> str:
         f"dw.LandsraadMissionRewardMultiplierFactionXP={values.get('landsraad_reward_multiplier_faction_xp', ENGINE_FIELDS['landsraad_reward_multiplier_faction_xp'][2])}",
         f"dw.LandsraadMissionRewardMultiplierHouseCredit={values.get('landsraad_reward_multiplier_house_credit', ENGINE_FIELDS['landsraad_reward_multiplier_house_credit'][2])}",
         f"dw.LandsraadMissionRewardMultiplierSpecializationXP={values.get('landsraad_reward_multiplier_specialization_xp', ENGINE_FIELDS['landsraad_reward_multiplier_specialization_xp'][2])}",
+        "; Experimental: overrides how long a Deathstill takes to process a body, in seconds.",
+        f"Deathstill.ConversionTimeOverride={values.get('deathstill_conversion_time_override', ENGINE_FIELDS['deathstill_conversion_time_override'][2])}",
+        "; Experimental: double loot when the encounter difficulty is above 0.",
+        f"Dune.GiveDoubleDifficultyLoot={values.get('double_difficulty_loot_enabled', ENGINE_FIELDS['double_difficulty_loot_enabled'][2])}",
+        "; Experimental: regenerate per-player loot on every container interaction.",
+        f"Loot.ShouldAlwaysRegeneratePerPlayerLoot={values.get('regenerate_per_player_loot_enabled', ENGINE_FIELDS['regenerate_per_player_loot_enabled'][2])}",
     ])
     return "\n".join(lines) + "\n"
 
@@ -1675,6 +1733,19 @@ def render_ini_sections(section_lines: dict[str, list[str]], leading_comments: l
     return "\n".join(lines).rstrip() + "\n"
 
 
+def field_value_is_default(field_id: str, value: str, default) -> bool:
+    """True when a saved value matches the schema default, ignoring boolean spelling
+    (a field stored as "1" is not a change from a "True" default)."""
+    default_str = "" if default is None else str(default)
+    if value == default_str:
+        return True
+    if value == "" or default_str == "":
+        return False
+    if FIELD_TYPE_OVERRIDES.get(field_id, infer_field_type(default)) == "boolean":
+        return truthy(value) == truthy(default_str)
+    return False
+
+
 def compiled_userengine_ini(profile: dict, map_name: str = "", partition_id: str | None = None) -> str:
     if map_name and partition_id:
         values = profile_partition_engine_values(profile, map_name, str(partition_id))
@@ -1689,6 +1760,11 @@ def compiled_userengine_ini(profile: dict, map_name: str = "", partition_id: str
             continue
         value = values.get(field_id, "" if default is None else str(default))
         if value == "" and default is None:
+            continue
+        # Only settings that differ from the default are written -- the game falls
+        # back to its own compiled default for anything omitted. [URL] is per-server
+        # identity rather than a tunable, so it is always emitted.
+        if section != "URL" and field_value_is_default(field_id, value, default):
             continue
         if field_id in {"server_display_name", "server_login_password"} and value:
             value = quote_ini_string(value)
@@ -1714,12 +1790,15 @@ def compiled_usergame_ini(profile: dict, map_name: str, partition_id: str | None
         section, key, default = spec
         if not section or not key:
             continue
-        section_lines.setdefault(section, []).append(f"{key}={values.get(field_id, default)}")
+        value = values.get(field_id, default)
+        # Same rule as UserEngine: defaults are left out so the game uses its own.
+        if not field_value_is_default(field_id, str(value), default):
+            section_lines.setdefault(section, []).append(f"{key}={value}")
         if section == "/Script/DuneSandbox.PvpPveSettings" and key == "m_bShouldForceEnablePvpOnAllPartitions" and target_partition:
             if truthy(values.get("partition_pvp_enabled", "False")):
-                section_lines[section].append(f"+m_PvpEnabledPartitions={target_partition}")
+                section_lines.setdefault(section, []).append(f"+m_PvpEnabledPartitions={target_partition}")
             if truthy(values.get("partition_pve_enabled", "False")):
-                section_lines[section].append(f"+m_PveEnabledPartitions={target_partition}")
+                section_lines.setdefault(section, []).append(f"+m_PveEnabledPartitions={target_partition}")
     scopes = [("global", "", ""), ("map", target_map, "")]
     if target_partition:
         scopes.append(("partition", target_map, target_partition))
