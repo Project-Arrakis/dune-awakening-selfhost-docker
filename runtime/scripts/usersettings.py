@@ -61,7 +61,18 @@ STAKING_EXTENSION_FIELDS = {
 FIELD_TYPE_OVERRIDES = {
     "staking_unit_vertical_extension_default_times": "integer",
     "staking_unit_extension_default_times": "integer",
+    "sun_exposure_enabled": "boolean",
 }
+
+# Engine fields whose UI is a True/False boolean but whose ini value must be
+# literal "1"/"0" (the game only accepts numeric 0/1 for these, not True/False).
+NUMERIC_BOOLEAN_ENGINE_FIELDS = {"sun_exposure_enabled"}
+
+
+def normalize_engine_field_value(field_id: str, value: str) -> str:
+    if field_id in NUMERIC_BOOLEAN_ENGINE_FIELDS:
+        return "1" if truthy(value) else "0"
+    return value
 
 ENGINE_FIELDS = {
     "port": ("URL", "Port", "7777"),
@@ -84,6 +95,21 @@ ENGINE_FIELDS = {
     "passenger_taxi_enabled": ("ConsoleVariables", "IgwTravel.AllowPassengerToUseTaxi", "0"),
     "blood_doors_enabled": ("ConsoleVariables", "Ai.BloodDoors.Enabled", "True"),
     "blood_doors_disable_blight_ecolab": ("ConsoleVariables", "Ai.BloodDoors.DisableBlightEcolab", "False"),
+    "sun_exposure_enabled": ("ConsoleVariables", "Hydration.SunExposureEnabled", "1"),
+    "vehicle_max_per_player": ("ConsoleVariables", "Vehicle.MaxVehiclesPerPlayer", "10"),
+    "fuel_burning_multiplier": ("ConsoleVariables", "dw.FuelBurningMultiplier", "1.0"),
+    "landsraad_reward_multiplier_faction_xp": ("ConsoleVariables", "dw.LandsraadMissionRewardMultiplierFactionXP", "1.0"),
+    "landsraad_reward_multiplier_house_credit": ("ConsoleVariables", "dw.LandsraadMissionRewardMultiplierHouseCredit", "1.0"),
+    "landsraad_reward_multiplier_specialization_xp": ("ConsoleVariables", "dw.LandsraadMissionRewardMultiplierSpecializationXP", "1.0"),
+}
+
+CLIENT_ENGINE_FIELDS = {
+    "sun_exposure_enabled",
+    "vehicle_max_per_player",
+    "fuel_burning_multiplier",
+    "landsraad_reward_multiplier_faction_xp",
+    "landsraad_reward_multiplier_house_credit",
+    "landsraad_reward_multiplier_specialization_xp",
 }
 
 MAP_FIELDS = {
@@ -1057,7 +1083,7 @@ def set_profile_field(profile: dict, scope: str, map_name: str, partition_id: st
             return
         spec = ENGINE_FIELDS[field_id]
         if spec[0] and spec[1]:
-            profile_set_key(profile, "engine", spec[0], spec[1], value)
+            profile_set_key(profile, "engine", spec[0], spec[1], normalize_engine_field_value(field_id, value))
         return
 
     if scope == "map_engine":
@@ -1068,7 +1094,7 @@ def set_profile_field(profile: dict, scope: str, map_name: str, partition_id: st
             if value == "":
                 profile_remove_key(profile, "map_engine", spec[0], spec[1], map_name)
             else:
-                profile_set_key(profile, "map_engine", spec[0], spec[1], value, map_name)
+                profile_set_key(profile, "map_engine", spec[0], spec[1], normalize_engine_field_value(field_id, value), map_name)
         return
 
     if scope == "partition_engine":
@@ -1085,7 +1111,7 @@ def set_profile_field(profile: dict, scope: str, map_name: str, partition_id: st
             if value == "":
                 profile_remove_key(profile, "partition_engine", spec[0], spec[1], target_map, target_partition)
             else:
-                profile_set_key(profile, "partition_engine", spec[0], spec[1], value, target_map, target_partition)
+                profile_set_key(profile, "partition_engine", spec[0], spec[1], normalize_engine_field_value(field_id, value), target_map, target_partition)
         return
 
     if scope == "global":
@@ -1498,6 +1524,17 @@ def userengine_ini_text(values: dict[str, str]) -> str:
         f"IgwTravel.AllowPassengerToUseTaxi={values.get('passenger_taxi_enabled', ENGINE_FIELDS['passenger_taxi_enabled'][2])}",
         f"Ai.BloodDoors.Enabled={values.get('blood_doors_enabled', ENGINE_FIELDS['blood_doors_enabled'][2])}",
         f"Ai.BloodDoors.DisableBlightEcolab={values.get('blood_doors_disable_blight_ecolab', ENGINE_FIELDS['blood_doors_disable_blight_ecolab'][2])}",
+        "",
+        "; Experimental: disables sun exposure/heat effects on players when set to 0.",
+        f"Hydration.SunExposureEnabled={values.get('sun_exposure_enabled', ENGINE_FIELDS['sun_exposure_enabled'][2])}",
+        "; Experimental: maximum number of vehicles a single player may own at once.",
+        f"Vehicle.MaxVehiclesPerPlayer={values.get('vehicle_max_per_player', ENGINE_FIELDS['vehicle_max_per_player'][2])}",
+        "; Experimental: multiplier for fuel burn duration. Larger values increase burn time. Conservative test range 0.1-10.0 (not enforced); 1.0 is normal.",
+        f"dw.FuelBurningMultiplier={values.get('fuel_burning_multiplier', ENGINE_FIELDS['fuel_burning_multiplier'][2])}",
+        "; Experimental: Landsraad mission reward multipliers (faction XP, house credits, specialization XP).",
+        f"dw.LandsraadMissionRewardMultiplierFactionXP={values.get('landsraad_reward_multiplier_faction_xp', ENGINE_FIELDS['landsraad_reward_multiplier_faction_xp'][2])}",
+        f"dw.LandsraadMissionRewardMultiplierHouseCredit={values.get('landsraad_reward_multiplier_house_credit', ENGINE_FIELDS['landsraad_reward_multiplier_house_credit'][2])}",
+        f"dw.LandsraadMissionRewardMultiplierSpecializationXP={values.get('landsraad_reward_multiplier_specialization_xp', ENGINE_FIELDS['landsraad_reward_multiplier_specialization_xp'][2])}",
     ])
     return "\n".join(lines) + "\n"
 
@@ -1703,6 +1740,34 @@ def client_game_ini(profile: dict, map_name: str, partition_id: str | None = Non
         "; Game.ini for the Dune: Awakening client.",
         f"; Generated from Docker UserGame.ini values for {target_label}.",
         "; Copy these sections into Saved/Config/WindowsClient/Game.ini while the game is closed.",
+    ])
+
+
+def client_engine_ini(profile: dict, map_name: str = "", partition_id: str | None = None) -> str:
+    target_map = canonical_map(map_name) if str(map_name or "").strip() else ""
+    target_partition = str(partition_id or "")
+    if target_map and target_partition:
+        values = profile_partition_engine_values(profile, target_map, target_partition)
+    elif target_map:
+        values = profile_map_engine_values(profile, target_map)
+    else:
+        values = profile_engine_values(profile)
+
+    section_lines: dict[str, list[str]] = {}
+    for field_id, spec in ENGINE_FIELDS.items():
+        if field_id not in CLIENT_ENGINE_FIELDS:
+            continue
+        section, key, default = spec
+        if not section or not key:
+            continue
+        value = values.get(field_id, "" if default is None else str(default))
+        section_lines.setdefault(section, []).append(f"{key}={value}")
+
+    target_label = "global UserEngine" if not target_map else target_map if not target_partition else f"{target_map} partition {target_partition}"
+    return render_ini_sections(section_lines, [
+        "; Experimental: Engine.ini for the Dune: Awakening client.",
+        f"; Generated from Docker UserEngine.ini values for {target_label}.",
+        "; Copy these sections into Saved/Config/WindowsClient/Engine.ini while the game is closed.",
     ])
 
 
@@ -2576,6 +2641,15 @@ def main(argv: list[str]) -> int:
         return 0
     if command == "client-game-ini" and len(argv) == 4:
         sys.stdout.write(client_game_ini(read_profile(), argv[2], argv[3]))
+        return 0
+    if command == "client-engine-ini" and len(argv) == 2:
+        sys.stdout.write(client_engine_ini(read_profile()))
+        return 0
+    if command == "client-engine-ini" and len(argv) == 3:
+        sys.stdout.write(client_engine_ini(read_profile(), argv[2]))
+        return 0
+    if command == "client-engine-ini" and len(argv) == 4:
+        sys.stdout.write(client_engine_ini(read_profile(), argv[2], argv[3]))
         return 0
     if command == "profile-game-write-b64" and len(argv) == 3:
         return profile_game_write_encoded(argv[2])
