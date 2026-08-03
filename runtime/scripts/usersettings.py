@@ -84,6 +84,9 @@ def normalize_engine_field_value(field_id: str, value: str) -> str:
 FIELD_TYPE_OVERRIDES = {
     "staking_unit_vertical_extension_default_times": "integer",
     "staking_unit_extension_default_times": "integer",
+    # Empty default (no override) would otherwise infer as "text" -- this holds a
+    # float number of seconds, so force the numeric input/validation.
+    "deathstill_conversion_time_override": "number",
     # Derived rather than listed so the select and the 1/0 conversion cannot drift.
     **{field_id: "boolean" for field_id in NUMERIC_BOOLEAN_ENGINE_FIELDS},
 }
@@ -115,9 +118,9 @@ ENGINE_FIELDS = {
     "landsraad_reward_multiplier_faction_xp": ("ConsoleVariables", "dw.LandsraadMissionRewardMultiplierFactionXP", "1.0"),
     "landsraad_reward_multiplier_house_credit": ("ConsoleVariables", "dw.LandsraadMissionRewardMultiplierHouseCredit", "1.0"),
     "landsraad_reward_multiplier_specialization_xp": ("ConsoleVariables", "dw.LandsraadMissionRewardMultiplierSpecializationXP", "1.0"),
-    # "-1" is the inert value by naming convention (an "Override" that is off);
-    # Funcom's compiled default was not recovered, so this is unconfirmed.
-    "deathstill_conversion_time_override": ("ConsoleVariables", "Deathstill.ConversionTimeOverride", "-1.0"),
+    # Empty means "no override" -- Funcom's compiled default was not recovered,
+    # so this is the least assumption we can make rather than a guessed number.
+    "deathstill_conversion_time_override": ("ConsoleVariables", "Deathstill.ConversionTimeOverride", ""),
     # Both defaults confirmed against the game; do not "correct" them to 1.
     "double_difficulty_loot_enabled": ("ConsoleVariables", "Dune.GiveDoubleDifficultyLoot", "0"),
     "regenerate_per_player_loot_enabled": ("ConsoleVariables", "Loot.ShouldAlwaysRegeneratePerPlayerLoot", "0"),
@@ -877,6 +880,13 @@ def profile_array_contains(profile: dict, scope: str, section: str, key: str, va
 
 
 def profile_set_key(profile: dict, scope: str, section: str, key: str, value: str, map_name: str = "", partition_id: str = "", prefix: str = "") -> None:
+    # Every field-write path (bulk_save, legacy-config migration, guild-field
+    # aliasing, staking-extension sync) funnels through this one function to
+    # build a "key=value" line -- guard it here so none of those callers can
+    # smuggle a newline/NUL that breaks out of the line into a new key or
+    # [Section] once compiled_userengine_ini/compiled_usergame_ini render it.
+    if "\n" in value or "\r" in value or "\x00" in value:
+        raise SystemExit(f"{section}.{key} may not contain a newline or NUL character.")
     block = find_profile_section(profile, scope, section, map_name, partition_id, create=True)
     target_left = f"{prefix}{key}"
     target_index = None
@@ -2110,6 +2120,11 @@ def bulk_save(scope: str, map_name: str, partition_id: str, encoded_values: str)
         serialized = str(value)
         if "\x00" in serialized:
             raise SystemExit(f"{field_id} contains an invalid NUL character.")
+        if "\n" in serialized or "\r" in serialized:
+            # A newline here would break out of this field's "key=value" line in the
+            # generated ini and let the rest of the string inject arbitrary keys or
+            # a new [Section] once written by compiled_userengine_ini/compiled_usergame_ini.
+            raise SystemExit(f"{field_id} may not contain a newline.")
         landsraad_changed = landsraad_changed or field_id == "landsraad_enabled" or field_id in LANDSRAAD_DATA_FIELDS
         if scope == "engine":
             set_profile_field(profile, "engine", "", "", field_id, serialized)
