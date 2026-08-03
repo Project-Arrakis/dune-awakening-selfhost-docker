@@ -3099,6 +3099,7 @@ td .inline-action-result-wrap { flex: 1 0 100%; justify-content: flex-start; min
 .settings-list-table tr:has(+ .settings-list-description-row) td { border-bottom: none; }
 .settings-list-description-row td { padding-top: 0; }
 .settings-list-table input, .settings-list-table select, .settings-list-table textarea { width: 100%; margin-top: -10px; }
+.settings-list-table tr.settings-list-badge-row + tr input, .settings-list-table tr.settings-list-badge-row + tr select, .settings-list-table tr.settings-list-badge-row + tr textarea { margin-top: 0; }
 .spicefields-table { min-width: 980px; }
 .spicefields-table th:nth-child(n), .spicefields-table td:nth-child(n) { width: auto; }
 .spicefields-table th:nth-child(1), .spicefields-table td:nth-child(1) { width: 18%; }
