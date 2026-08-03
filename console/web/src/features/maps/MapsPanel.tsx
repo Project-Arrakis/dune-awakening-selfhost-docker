@@ -1558,6 +1558,12 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
     const result = await mapsApi.rawUserSettings("client-game", map, partitionId);
     downloadText("Game.ini", result.content || "");
   }
+  async function downloadClientEngineIni() {
+    const map = isEngineGlobal ? undefined : engineMapName;
+    const partitionId = isEngineGlobal ? undefined : enginePartitionId || undefined;
+    const result = await mapsApi.rawUserSettings("client-engine", map, partitionId);
+    downloadText("Engine.ini", result.content || "");
+  }
   async function toggleAdvanced() {
     if (!mapsLoaded) return;
     if (advancedOpen) {
@@ -1830,6 +1836,7 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
           <button className={settingsTab === "choam" ? "active" : ""} role="tab" aria-selected={settingsTab === "choam"} onClick={() => { setSettingsTab("choam"); void loadChoamTerminals().catch(() => undefined); }}>CHOAM Terminals</button>
         </div>
         {(settingsTab === "engine" || settingsTab === "game") && <button className="settings-download-button" type="button" title={userGameName && !isUserGameGlobal ? "Download client Game.ini for the selected UserGame target" : "Download client Game.ini for global UserGame values"} onClick={() => run(downloadClientGameIni)}><Download size={16} /> Game.ini</button>}
+        {settingsTab === "engine" && <button className="settings-download-button" type="button" title={!isEngineGlobal ? "Download experimental client Engine.ini for the selected UserEngine target" : "Download experimental client Engine.ini for global UserEngine values"} onClick={() => run(downloadClientEngineIni)}><Download size={16} /> Engine.ini</button>}
       </div>
       {settingsTab === "engine" ? <>
         <div className="settings-selector-row">
