@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useRef, useState } from "react";
-import { ChevronDown, ChevronUp, Download, Fuel, Grid2X2, List, Lock } from "lucide-react";
+import { ChevronDown, ChevronUp, Download, Fuel, Grid2X2, Info, List, Lock, RotateCcw } from "lucide-react";
 import { mapsApi, type ChoamTerminalOverview, type ChoamTradeCenter, type LiveMapMemoryRow, type MapCombatStateResult, type MapRuntimeSettings, type MemoryBalancerState, type MemorySwapState, type PartitionCombatStateRow, type SpicefieldTypeRow, type UserSettingField, type UserSettingsSchema } from "../../api/maps";
 import { setupApi, type Task } from "../../api/setup";
 import { SecretInput } from "../../components/SecretInput";
@@ -46,7 +46,7 @@ const MAP_SORT_COLUMNS: Array<[MapSortColumn, string]> = [
   ["mode", "Mode"],
   ["memory", "Memory"]
 ];
-type ConfirmAction = (message: string, options?: { title?: string; confirmLabel?: string; cancelLabel?: string; danger?: boolean; details?: { label: string; value: string; tone?: "danger" | "success" | "accent" }[] }) => Promise<boolean>;
+type ConfirmAction = (message: string, options?: { title?: string; confirmLabel?: string; cancelLabel?: string; danger?: boolean; warning?: string; details?: { label: string; value: string; tone?: "danger" | "success" | "accent" }[] }) => Promise<boolean>;
 type MapsPanelProps = {
   onError: (text: string) => void;
   confirmAction: ConfirmAction;
@@ -295,6 +295,7 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
   const [userGameMapName, setUserGameMapName] = useState("");
   const [userGamePartitionId, setUserGamePartitionId] = useState("");
   const [selectedGameCategory, setSelectedGameCategory] = useState("");
+  const [selectedEngineCategory, setSelectedEngineCategory] = useState("");
   const [modifierFilter, setModifierFilter] = useState("");
   const [modifierViewMode, setModifierViewMode] = useState<"grid" | "list">("grid");
   const [settingsTab, setSettingsTab] = useState<"engine" | "game" | "spicefields" | "choam">("engine");
@@ -307,6 +308,7 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
   const [choamSavingKey, setChoamSavingKey] = useState("");
   const [choamResult, setChoamResult] = useState<HomeTaskResult | null>(null);
   const [modifiersOpen, setModifiersOpen] = useState(false);
+  const [clientIniCounts, setClientIniCounts] = useState<{ engine: number | null; game: number | null }>({ engine: null, game: null });
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [startupSettingsOpen, setStartupSettingsOpen] = useState(false);
   const [memory, setMemory] = useState("8");
@@ -1034,7 +1036,7 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
   const engineTargetKey = settingsTargetKey(engineMapName, isEngineGlobal ? "" : enginePartitionId);
   const gameFields = schema ? (effectivePartitionId ? schema.partition : schema.game).filter((field) => field.id !== "partition_pve_enabled" || effectivePartitionId) : [];
   const userGameFields = schema && userGameName ? (!isUserGameGlobal && effectiveUserGamePartitionId ? schema.partition : schema.game).filter((field) => field.id !== "partition_pve_enabled" || (!isUserGameGlobal && effectiveUserGamePartitionId)) : [];
-  const gameGroups = groupSettingsFields(userGameFields, true);
+  const gameGroups = groupSettingsFields(userGameFields, true, modifiedSettingsFields(userGameFields, gameValues, gameDraft));
   const activeGameCategory = gameGroups.some(([category]) => category === selectedGameCategory) ? selectedGameCategory : gameGroups[0]?.[0] || "";
   const activeGameFields = activeGameCategory === "All" ? userGameFields : gameGroups.find(([category]) => category === activeGameCategory)?.[1] || [];
   const filteredGameFields = filterSettingsFields(activeGameFields, modifierFilter);
@@ -1045,8 +1047,28 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
       ? schema?.partitionEngine || []
       : schema?.mapEngine || [];
   const engineFields = engineSchemaFields.filter((field) => !["server_display_name", "server_login_password", "port", "igw_port"].includes(field.id));
-  const engineDirty = changedKeys(engineValues, engineDraft, engineFields.map((field) => field.id));
-  const gameDirty = changedKeys(gameValues, gameDraft, userGameFields.map((field) => field.id));
+  const engineGroups = groupSettingsFields(engineFields, true, modifiedSettingsFields(engineFields, engineValues, engineDraft));
+  const activeEngineCategory = engineGroups.some(([category]) => category === selectedEngineCategory) ? selectedEngineCategory : engineGroups[0]?.[0] || "";
+  const activeEngineFields = activeEngineCategory === "All" ? engineFields : engineGroups.find(([category]) => category === activeEngineCategory)?.[1] || [];
+  const filteredEngineFields = filterSettingsFields(activeEngineFields, modifierFilter);
+  const engineDirty = changedKeys(engineValues, engineDraft, engineFields);
+  const gameDirty = changedKeys(gameValues, gameDraft, userGameFields);
+  // The download buttons report how many settings each client ini actually carries.
+  // Count the generated file rather than the drafts: the download reflects saved
+  // state, and client_game_ini emits whatever was saved rather than a diff.
+  useEffect(() => {
+    if (!modifiersOpen || (settingsTab !== "engine" && settingsTab !== "game")) return undefined;
+    let cancelled = false;
+    const engineMap = isEngineGlobal ? undefined : engineMapName;
+    const enginePartition = isEngineGlobal ? undefined : enginePartitionId || undefined;
+    const gameMap = !userGameName || isUserGameGlobal ? undefined : userGameName;
+    const gamePartition = !userGameName || isUserGameGlobal ? undefined : effectiveUserGamePartitionId;
+    const count = (kind: "client-engine" | "client-game", map?: string, partitionId?: string) =>
+      mapsApi.rawUserSettings(kind, map, partitionId).then((result) => countIniOverrides(result.content || "")).catch(() => null);
+    void Promise.all([count("client-engine", engineMap, enginePartition), count("client-game", gameMap, gamePartition)])
+      .then(([engine, game]) => { if (!cancelled) setClientIniCounts({ engine, game }); });
+    return () => { cancelled = true; };
+  }, [modifiersOpen, settingsTab, engineMapName, enginePartitionId, isEngineGlobal, userGameName, isUserGameGlobal, effectiveUserGamePartitionId, engineValues, gameValues]);
   const currentActiveSietches = String(survivalSietchRows.filter((row) => row.active).length || survivalSietchRows.length || "");
   const activeSietchesDirty = activeSietches !== currentActiveSietches;
   const primarySietchDraft = primarySurvivalSietch ? sietchDrafts[primarySurvivalSietch.partitionId] || { displayName: primarySurvivalSietch.displayName, password: primarySurvivalSietch.password } : null;
@@ -1144,6 +1166,7 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
     if (!target) return;
     setEngineMapName(target.map);
     setEnginePartitionId(target.partitionId);
+    setSelectedEngineCategory("");
     void loadSelectedEngineSettings(target.map, target.partitionId || undefined).catch((error) => onError(error instanceof Error ? error.message : String(error)));
   }
   async function saveEngine() {
@@ -1558,6 +1581,32 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
     const result = await mapsApi.rawUserSettings("client-game", map, partitionId);
     downloadText("Game.ini", result.content || "");
   }
+  // Stages defaults into the draft only -- nothing reaches the server until Save,
+  // so this deliberately carries no restart warning. Covers every field on the tab,
+  // not just the ones the active category/filter happens to show.
+  async function resetAllToDefaults(kind: "engine" | "game") {
+    const fields = kind === "engine" ? engineFields : userGameFields;
+    if (!fields.length) return;
+    const label = kind === "engine" ? "UserEngine" : "UserGame";
+    const targetLabel = kind === "engine"
+      ? (isEngineGlobal ? "Global" : `${engineMapName}${enginePartitionId ? ` partition ${enginePartitionId}` : ""}`)
+      : (isUserGameGlobal ? "Global" : `${userGameName}${effectiveUserGamePartitionId ? ` partition ${effectiveUserGamePartitionId}` : ""}`);
+    const confirmed = await confirmAction(`Sets every ${label} setting for ${targetLabel} back to its default value in the form below.`, {
+      title: `Restore ${label} Defaults`,
+      confirmLabel: "Restore Defaults",
+      cancelLabel: "Cancel",
+      danger: false,
+      details: [
+        { label: "Settings", value: `${fields.length}, including any hidden by your current category or filter` },
+        { label: "Target", value: targetLabel }
+      ],
+      warning: "Nothing is written yet. Press Save to apply, or Discard Changes to undo."
+    });
+    if (!confirmed) return;
+    const defaults = Object.fromEntries(fields.map((field) => [field.id, field.default ?? ""]));
+    if (kind === "engine") setEngineDraft((current) => ({ ...current, ...defaults }));
+    else setGameDraft((current) => ({ ...current, ...defaults }));
+  }
   async function downloadClientEngineIni() {
     const map = isEngineGlobal ? undefined : engineMapName;
     const partitionId = isEngineGlobal ? undefined : enginePartitionId || undefined;
@@ -1835,15 +1884,25 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
           <button className={settingsTab === "spicefields" ? "active" : ""} role="tab" aria-selected={settingsTab === "spicefields"} onClick={() => { setSettingsTab("spicefields"); void loadSpicefields({ preserveDrafts: true }).catch(() => undefined); }}>Spice Fields</button>
           <button className={settingsTab === "choam" ? "active" : ""} role="tab" aria-selected={settingsTab === "choam"} onClick={() => { setSettingsTab("choam"); void loadChoamTerminals().catch(() => undefined); }}>CHOAM Terminals</button>
         </div>
-        {(settingsTab === "engine" || settingsTab === "game") && <button className="settings-download-button" type="button" title={userGameName && !isUserGameGlobal ? "Download client Game.ini for the selected UserGame target" : "Download client Game.ini for global UserGame values"} onClick={() => run(downloadClientGameIni)}><Download size={16} /> Game.ini</button>}
-        {settingsTab === "engine" && <button className="settings-download-button" type="button" title={!isEngineGlobal ? "Download experimental client Engine.ini for the selected UserEngine target" : "Download experimental client Engine.ini for global UserEngine values"} onClick={() => run(downloadClientEngineIni)}><Download size={16} /> Engine.ini</button>}
+        {(settingsTab === "engine" || settingsTab === "game") && <div className="settings-download-buttons">
+          <button className="settings-download-button" type="button" title={!isEngineGlobal ? "Download experimental client Engine.ini for the selected UserEngine target" : "Download experimental client Engine.ini for global UserEngine values"} onClick={() => run(downloadClientEngineIni)}><Download size={16} /> Engine.ini{clientIniCounts.engine === null ? "" : ` (${clientIniCounts.engine})`}</button>
+          <button className="settings-download-button" type="button" title={userGameName && !isUserGameGlobal ? "Download client Game.ini for the selected UserGame target" : "Download client Game.ini for global UserGame values"} onClick={() => run(downloadClientGameIni)}><Download size={16} /> Game.ini{clientIniCounts.game === null ? "" : ` (${clientIniCounts.game})`}</button>
+        </div>}
       </div>
       {settingsTab === "engine" ? <>
         <div className="settings-selector-row">
           <label className="compact-select">Target<select value={engineTargetKey} onChange={(event) => selectEngineTarget(event.target.value)}>{userGameTargets.map((target) => <option key={target.key} value={target.key}>{target.label}</option>)}</select></label>
+          <label className="compact-select">Modifier Category<select disabled={!engineGroups.length} value={activeEngineCategory} onChange={(event) => setSelectedEngineCategory(event.target.value)}>{engineGroups.length ? engineGroups.map(([category, fields]) => <option key={category} value={category}>{category} ({fields.length})</option>) : <option value="">--</option>}</select></label>
+          <div className="modifier-search-tools">
+            <input className="modifier-filter-input" aria-label="Filter Modifiers" value={modifierFilter} onChange={(event) => setModifierFilter(event.target.value)} placeholder="Filter modifiers" />
+            <div className="catalog-view-toggle" aria-label="Modifier view">
+              <button type="button" className={modifierViewMode === "grid" ? "active" : ""} title="Grid view" aria-label="Grid view" aria-pressed={modifierViewMode === "grid"} onClick={() => setModifierViewMode("grid")}><Grid2X2 size={17} /></button>
+              <button type="button" className={modifierViewMode === "list" ? "active" : ""} title="List view" aria-label="List view" aria-pressed={modifierViewMode === "list"} onClick={() => setModifierViewMode("list")}><List size={18} /></button>
+            </div>
+          </div>
         </div>
-        <SettingsEditor fields={engineFields} values={engineDraft} onChange={(id, value) => setEngineDraft({ ...engineDraft, [id]: value })} />
-        <div className="action-row"><button disabled={!engineDirty.length} onClick={() => run(saveEngine)}>Save</button><button disabled={!engineDirty.length} onClick={() => setEngineDraft(engineValues)}>Discard Changes</button></div>
+        <SettingsCardGrid fields={filteredEngineFields} values={engineDraft} onChange={(id, value) => setEngineDraft({ ...engineDraft, [id]: value })} viewMode={modifierViewMode} emptyMessage={modifierEmptyMessage(!!schema, engineFields.length, modifierFilter, activeEngineCategory)} />
+        <div className="action-row"><button disabled={!engineDirty.length} onClick={() => run(saveEngine)}>Save</button><button disabled={!engineDirty.length} onClick={() => setEngineDraft(engineValues)}>Discard Changes</button><button className="settings-reset-all-button" disabled={!engineFields.length} title="Set every UserEngine setting on this tab back to its default value" onClick={() => run(() => resetAllToDefaults("engine"))}>Restore Defaults</button></div>
       </> : settingsTab === "game" ? <>
         <div className="settings-selector-row">
           <label className="compact-select">Target<select value={userGameTargetKey} onChange={(event) => selectUserGameTarget(event.target.value)}><option value="">Select Map Or Partition</option>{userGameTargets.map((target) => <option key={target.key} value={target.key}>{target.label}</option>)}</select></label>
@@ -1856,8 +1915,8 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
             </div>
           </div>
         </div>
-        {userGameName && <SettingsCardGrid fields={filteredGameFields} values={gameDraft} onChange={(id, value) => setGameDraft({ ...gameDraft, [id]: value })} viewMode={modifierViewMode} emptyMessage={modifierFilter.trim() ? "No modifiers match your filter." : "Select a modifier category."} />}
-        <div className="action-row"><button disabled={!gameDirty.length || !userGameName} onClick={() => run(saveGame)}>Save</button><button disabled={!gameDirty.length} onClick={() => setGameDraft(gameValues)}>Discard Changes</button></div>
+        {userGameName && <SettingsCardGrid fields={filteredGameFields} values={gameDraft} onChange={(id, value) => setGameDraft({ ...gameDraft, [id]: value })} viewMode={modifierViewMode} emptyMessage={modifierEmptyMessage(!!schema, userGameFields.length, modifierFilter, activeGameCategory)} />}
+        <div className="action-row"><button disabled={!gameDirty.length || !userGameName} onClick={() => run(saveGame)}>Save</button><button disabled={!gameDirty.length} onClick={() => setGameDraft(gameValues)}>Discard Changes</button><button className="settings-reset-all-button" disabled={!userGameName || !userGameFields.length} title="Set every UserGame setting on this tab back to its default value" onClick={() => run(() => resetAllToDefaults("game"))}>Restore Defaults</button></div>
       </> : settingsTab === "spicefields" ? <>
         <SpicefieldsEditor
           rows={filteredSpicefieldRows}
@@ -2005,32 +2064,51 @@ function ChoamTerminalsEditor({
   </section>;
 }
 
-function SettingsEditor({ fields, values, onChange }: { fields: UserSettingField[]; values: Record<string, string>; onChange: (id: string, value: string) => void }) {
-  if (!fields.length) return <div className="empty">Settings schema is loading.</div>;
-  const groups = groupSettingsFields(fields);
-  return <div className="settings-category-list">{groups.map(([category, categoryFields]) => <details className="settings-category" key={category} open>
-    <summary><span>{category}</span><strong>{categoryFields.length}</strong></summary>
-    <div className="settings-grid settings-grid-roomy">{categoryFields.map((field) => <SettingControl key={field.id} field={field} value={values[field.id] ?? field.default ?? ""} onChange={(value) => onChange(field.id, value)} />)}</div>
-  </details>)}</div>;
-}
-
 function SettingsCardGrid({ fields, values, onChange, viewMode = "grid", emptyMessage = "Select a modifier category." }: { fields: UserSettingField[]; values: Record<string, string>; onChange: (id: string, value: string) => void; viewMode?: "grid" | "list"; emptyMessage?: string }) {
   if (!fields.length) return <div className="empty">{emptyMessage}</div>;
   if (viewMode === "list") {
-    return <div className="settings-list-wrap"><table className="settings-list-table"><thead><tr><th>Modifier</th><th>Setting Key</th><th>Value</th></tr></thead><tbody>{fields.map((field) => <tr key={field.id}>
-      <td><strong>{friendlySettingLabel(field.id, field.key || field.id)}</strong><small>{settingsCategory(field.section || field.key || field.id)}</small></td>
-      <td>{field.key || field.id}</td>
-      <td><SettingInput field={field} value={values[field.id] ?? field.default ?? ""} inputId={`setting-list-${field.scope}-${field.id}`} onChange={(value) => onChange(field.id, value)} /></td>
-    </tr>)}</tbody></table></div>;
+    return <div className="settings-list-wrap"><table className="settings-list-table"><thead><tr><th>Modifier</th><th>Setting Key</th><th>Value</th></tr></thead><tbody>{fields.map((field) => {
+      const value = values[field.id] ?? field.default ?? "";
+      const modified = isModifiedFromDefault(field, value);
+      return <Fragment key={field.id}>
+        {(field.clientFile || modified) && <tr className="settings-list-badge-row"><td colSpan={3}>
+          {field.clientFile && <span className="badge badge-info settings-list-badge" title={`Also requires updating the client's ${field.clientFile}.`}>Client &quot;{field.clientFile}&quot;</span>}
+          {modified && <ModifiedBadge field={field} label={friendlySettingLabel(field.id, field.key || field.id)} onReset={() => onChange(field.id, field.default ?? "")} />}
+        </td></tr>}
+        <tr>
+          <td><strong>{friendlySettingLabel(field.id, field.key || field.id)}</strong><small>{fieldCategory(field)}</small></td>
+          <td>{field.key || field.id}</td>
+          <td><SettingInput field={field} value={value} inputId={`setting-list-${field.scope}-${field.id}`} onChange={(nextValue) => onChange(field.id, nextValue)} /></td>
+        </tr>
+        {field.description && <tr className="settings-list-description-row"><td colSpan={3}><span className="settings-field-description"><Info size={14} aria-hidden="true" /><span className="settings-field-description-text">{field.description}</span></span></td></tr>}
+      </Fragment>;
+    })}</tbody></table></div>;
   }
   return <div className="settings-grid settings-grid-roomy">{fields.map((field) => <SettingControl key={field.id} field={field} value={values[field.id] ?? field.default ?? ""} onChange={(value) => onChange(field.id, value)} />)}</div>;
+}
+
+function ModifiedBadge({ field, label, onReset }: { field: UserSettingField; label: string; onReset: () => void }) {
+  const defaultLabel = field.default || "empty";
+  return <span className="badge warn settings-modified-badge" title={`Changed from the default (${defaultLabel}).`}>
+    Modified
+    <button type="button" className="settings-reset-button" title={`Reset to default (${defaultLabel})`} aria-label={`Reset ${label} to its default value`} onClick={(event) => { event.preventDefault(); onReset(); }}><RotateCcw size={12} aria-hidden="true" /></button>
+  </span>;
 }
 
 function SettingControl({ field, value, onChange }: { field: UserSettingField; value: string; onChange: (value: string) => void }) {
   const label = friendlySettingLabel(field.id, field.key || field.id);
   const inputId = `setting-${field.scope}-${field.id}`;
+  const modified = isModifiedFromDefault(field, value);
   return <label className="settings-field" htmlFor={inputId}>
-    <span><strong>{label}</strong><small>{field.key || field.id}</small></span>
+    <div className="settings-field-heading">
+      {(field.clientFile || modified) && <span className="settings-field-badges">
+        {field.clientFile && <span className="badge badge-info" title={`Also requires updating the client's ${field.clientFile}.`}>Client &quot;{field.clientFile}&quot;</span>}
+        {modified && <ModifiedBadge field={field} label={label} onReset={() => onChange(field.default ?? "")} />}
+      </span>}
+      <strong>{label}</strong>
+      <small>{field.key || field.id}</small>
+    </div>
+    {field.description && <span className="settings-field-description"><Info size={14} aria-hidden="true" /><span className="settings-field-description-text">{field.description}</span></span>}
     <SettingInput field={field} value={value} inputId={inputId} onChange={onChange} />
   </label>;
 }
@@ -2119,14 +2197,18 @@ function passwordPlaceholder(passwordSet: boolean) {
   return "Empty for none";
 }
 
-function groupSettingsFields(fields: UserSettingField[], includeAll = false): [string, UserSettingField[]][] {
+function groupSettingsFields(fields: UserSettingField[], includeAll = false, modified?: UserSettingField[]): [string, UserSettingField[]][] {
   const grouped = new globalThis.Map<string, UserSettingField[]>();
   for (const field of fields) {
-    const category = settingsCategory(field.section || field.key || field.id);
+    const category = fieldCategory(field);
     grouped.set(category, [...(grouped.get(category) || []), field]);
   }
   const groups = [...grouped.entries()];
-  return includeAll && fields.length ? [["All", fields], ...groups] : groups;
+  if (!includeAll || !fields.length) return groups;
+  // "Modified" stays in the list at (0) rather than vanishing, so selecting it does
+  // not bounce the admin back to "All" the moment they reset the last override.
+  const leading: [string, UserSettingField[]][] = modified ? [["All", fields], [MODIFIED_CATEGORY, modified]] : [["All", fields]];
+  return [...leading, ...groups];
 }
 
 function filterSettingsFields(fields: UserSettingField[], query: string) {
@@ -2134,10 +2216,20 @@ function filterSettingsFields(fields: UserSettingField[], query: string) {
   if (!needle) return fields;
   return fields.filter((field) => {
     const label = friendlySettingLabel(field.id, field.key || field.id);
-    const category = settingsCategory(field.section || field.key || field.id);
+    const category = fieldCategory(field);
     const haystack = `${label} ${field.id} ${field.key || ""} ${field.section || ""} ${category}`.toLowerCase();
     return haystack.includes(needle);
   });
+}
+
+// "Select a modifier category." is only correct once the schema has arrived and
+// actually has fields -- otherwise it points the admin at an empty dropdown.
+export function modifierEmptyMessage(schemaLoaded: boolean, fieldCount: number, query: string, category = "") {
+  if (!schemaLoaded) return "Settings schema is loading.";
+  if (!fieldCount) return "No modifiers available for this target.";
+  if (String(query || "").trim()) return "No modifiers match your filter.";
+  if (category === MODIFIED_CATEGORY) return "Every setting is at its default value.";
+  return "Select a modifier category.";
 }
 
 function filterSpicefieldRows(rows: SpicefieldTypeRow[], query: string) {
@@ -2175,6 +2267,10 @@ function settingsCategory(value: string) {
   return titleCaseWords(cleaned.replace(/Subsystem$/, "").replace(/Settings$/, " Settings").replace(/Config$/, " Config").replace(/([a-z])([A-Z])/g, "$1 $2"));
 }
 
+function fieldCategory(field: UserSettingField) {
+  return field.category || settingsCategory(field.section || field.key || field.id);
+}
+
 function friendlySettingLabel(id: string, fallback: string) {
   return titleCaseWords(id.replace(/^partition_/, "").replace(/_/g, " ")) || titleCaseWords(fallback);
 }
@@ -2187,13 +2283,58 @@ function parseUserSettingsMap(text: string) {
   return Object.fromEntries(parseUserSettingRows(text).map((row) => [String(row.key || row.setting), String(row.value ?? "")]));
 }
 
-function changedKeys(original: Record<string, string>, draft: Record<string, string>, keys: string[]) {
-  return keys.filter((key) => String(original[key] ?? "") !== String(draft[key] ?? ""));
+// A boolean control always emits "True"/"False", but the stored value can be
+// "1"/"0" (Hydration.SunExposureEnabled) or lowercase "true"/"false". Compare the
+// normalized form so re-picking the value a field already has is not treated as a
+// pending change -- saving UserEngine/UserGame restarts the maps.
+function settingValueChanged(field: UserSettingField | undefined, original: string, draft: string) {
+  if (original === draft) return false;
+  if (field?.type === "boolean" && original !== "" && draft !== "") return normalizeBooleanText(original) !== normalizeBooleanText(draft);
+  return true;
 }
 
-function valuesForDirtyFields(original: Record<string, string>, draft: Record<string, string>, fields: UserSettingField[]) {
+// How many settings a generated client ini actually carries: every line that is
+// not blank, a "; comment", or a "[Section]" header.
+export function countIniOverrides(content: string) {
+  return String(content || "").split(/\r?\n/).filter((line) => {
+    const trimmed = line.trim();
+    return trimmed !== "" && !trimmed.startsWith(";") && !trimmed.startsWith("[");
+  }).length;
+}
+
+// Drives the "Modified" badge: does this field's current value differ from the
+// schema default? Shares settingValueChanged so a boolean stored as 1/0 is not
+// permanently flagged against a "True"/"False" selection.
+export function isModifiedFromDefault(field: UserSettingField, value: string) {
+  return settingValueChanged(field, String(field.default ?? ""), String(value ?? ""));
+}
+
+// Pseudo-category listed alongside the real ones, so an admin can see just the
+// settings this target overrides.
+export const MODIFIED_CATEGORY = "Modified";
+
+// A field would drop out of the "Modified" view the instant its value matched the
+// default again -- typing "10" over "25" hits the default on the last keystroke and
+// yanks the row out from under the cursor. Keep whatever is modified in the saved
+// values visible until the next save settles it, and add anything the draft has
+// changed since.
+export function modifiedSettingsFields(fields: UserSettingField[], saved: Record<string, string>, draft: Record<string, string>) {
+  return fields.filter((field) => {
+    const savedValue = saved[field.id] ?? field.default ?? "";
+    const draftValue = draft[field.id] ?? field.default ?? "";
+    return isModifiedFromDefault(field, savedValue) || isModifiedFromDefault(field, draftValue);
+  });
+}
+
+export function changedKeys(original: Record<string, string>, draft: Record<string, string>, fields: UserSettingField[]) {
+  return fields
+    .filter((field) => settingValueChanged(field, String(original[field.id] ?? ""), String(draft[field.id] ?? "")))
+    .map((field) => field.id);
+}
+
+export function valuesForDirtyFields(original: Record<string, string>, draft: Record<string, string>, fields: UserSettingField[]) {
   return Object.fromEntries(fields
-    .filter((field) => String(original[field.id] ?? "") !== String(draft[field.id] ?? ""))
+    .filter((field) => settingValueChanged(field, String(original[field.id] ?? ""), String(draft[field.id] ?? "")))
     .map((field) => [field.id, String(draft[field.id] ?? field.default ?? "")]));
 }
 
