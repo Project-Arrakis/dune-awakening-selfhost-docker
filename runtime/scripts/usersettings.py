@@ -123,6 +123,83 @@ ENGINE_FIELDS = {
     "regenerate_per_player_loot_enabled": ("ConsoleVariables", "Loot.ShouldAlwaysRegeneratePerPlayerLoot", "0"),
 }
 
+# Explanatory ini comment(s) for a field, in the exact wording userengine_ini_text()
+# and compiled_userengine_ini() both emit -- single source of truth, so the two
+# documents can never drift the way the hand-duplicated strings did before. Several
+# fields intentionally share one tuple (e.g. the three mining multipliers): that
+# comment is meant to introduce the whole group, not just the first key under it.
+ENGINE_FIELD_INI_COMMENTS: dict[str, tuple[str, ...]] = {
+    "port": (
+        "The starting port that servers listen to for players. Each server",
+        "will use the next available port in a sequence (7777, 7778 etc.). The range should",
+        "not intersect with the IGWPort range bellow",
+    ),
+    "igw_port": (
+        "The port that servers listen to for other servers. Each server",
+        "will use the next available port in a sequence (7888, 7889 etc.). The range should",
+        "not intersect with the Port range above",
+    ),
+    "server_display_name": (
+        "Set the name of every Sietch in the battlegroup",
+        "If Sietches should have different names use the battlegroup editor instead",
+        "Special characters like ' and | are not allowed and double quotes should be used",
+    ),
+    "server_login_password": (
+        "Set a password for every Sietch in the battlegroup",
+        "If Sietches should have different passwords use the battlegroup editor instead",
+        "Special characters like ' and | are not allowed and double quotes should be used",
+    ),
+    "mining_output_multiplier": ("Mining multipliers",),
+    "vehicle_mining_output_multiplier": ("Mining multipliers",),
+    "pvp_resource_multiplier": ("Mining multipliers",),
+    "vehicle_durability_damage_multiplier": ("Durability damage multiplier for vehicles | (0 to 10)  0=off",),
+    "sandstorm_enabled": ("Sandstorm and sandstorm treasure spawning settings",),
+    "sandstorm_treasure_enabled": ("Sandstorm and sandstorm treasure spawning settings",),
+    "sandworm_enabled": ("Sandworm settings",),
+    "sandworm_collision_interaction": ("Sandworm can push/damage vehicles",),
+    "sandworm_danger_zones_enabled": ("Enables dangerzones where the sandworm can attack",),
+    "sandworm_invulnerability_on_exit": ("Seconds of invunerability from sandworm on specific situations",),
+    "sandworm_invulnerability_on_restart": ("Seconds of invunerability from sandworm on specific situations",),
+    "weapon_specific_quick_melee_enabled": ("Character, spice, travel, and AI gameplay toggles",),
+    "spice_visions_enabled": ("Character, spice, travel, and AI gameplay toggles",),
+    "passenger_taxi_enabled": ("Character, spice, travel, and AI gameplay toggles",),
+    "blood_doors_enabled": ("Character, spice, travel, and AI gameplay toggles",),
+    "blood_doors_disable_blight_ecolab": ("Character, spice, travel, and AI gameplay toggles",),
+    "sun_exposure_enabled": ("Experimental: disables sun exposure/heat effects on players when set to 0.",),
+    "vehicle_max_per_player": ("Experimental: maximum number of vehicles a single player may own at once.",),
+    "fuel_burning_multiplier": (
+        "Experimental: multiplier for fuel burn duration. Larger values increase burn time. "
+        "Conservative test range 0.1-10.0 (not enforced); 1.0 is normal.",
+    ),
+    "landsraad_reward_multiplier_faction_xp": (
+        "Experimental: Landsraad mission reward multipliers (faction XP, house credits, specialization XP).",
+    ),
+    "landsraad_reward_multiplier_house_credit": (
+        "Experimental: Landsraad mission reward multipliers (faction XP, house credits, specialization XP).",
+    ),
+    "landsraad_reward_multiplier_specialization_xp": (
+        "Experimental: Landsraad mission reward multipliers (faction XP, house credits, specialization XP).",
+    ),
+    "deathstill_conversion_time_override": ("Experimental: overrides how long a Deathstill takes to process a body, in seconds.",),
+    "double_difficulty_loot_enabled": ("Experimental: double loot when the encounter difficulty is above 0.",),
+    "regenerate_per_player_loot_enabled": ("Experimental: regenerate per-player loot on every container interaction.",),
+}
+
+
+def schema_comment_lines_by_section(comments: dict[str, tuple[str, ...]], fields: dict[str, tuple[str | None, str | None, str | None]]) -> dict[str, set[str]]:
+    """Every literal "; ..." line any field's comment could produce, grouped by ini
+    section. Used to recognize -- and drop -- a schema comment surviving verbatim in
+    a saved profile document, since compiled_userengine_ini now regenerates that same
+    comment fresh next to its value; keeping the old copy too would duplicate it."""
+    result: dict[str, set[str]] = {}
+    for field_id, lines in comments.items():
+        spec = fields.get(field_id)
+        if not spec or not spec[0]:
+            continue
+        result.setdefault(spec[0], set()).update(f"; {line}" for line in lines)
+    return result
+
+
 # All ENGINE_FIELDS share the literal ini section "ConsoleVariables", so the
 # generic section-derived category logic the console uses for UserGame fields
 # can't distinguish them. This gives each one an explicit, functional grouping.
@@ -1550,6 +1627,12 @@ def truthy(value: str) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+# Kept hand-written rather than generated from ENGINE_FIELD_INI_COMMENTS: this
+# always shows every field regardless of default, so it never had the orphaned-
+# comment problem that motivated that map, and its blank-line grouping is
+# irregular in a way a mechanical rewrite would risk silently reformatting. The
+# comment WORDING must still match ENGINE_FIELD_INI_COMMENTS verbatim -- a test
+# asserts that.
 def userengine_ini_text(values: dict[str, str]) -> str:
     lines = [
         "; UserEngine.ini managed by Docker.",
@@ -1691,7 +1774,7 @@ def known_keys_by_section(fields: dict[str, tuple[str | None, str | None, str | 
     return known
 
 
-def append_profile_unknown_lines(target: dict[str, list[str]], profile: dict, scopes: list[tuple[str, str, str]], known: dict[str, set[str]]) -> None:
+def append_profile_unknown_lines(target: dict[str, list[str]], profile: dict, scopes: list[tuple[str, str, str]], known: dict[str, set[str]], schema_comment_lines: dict[str, set[str]] | None = None) -> None:
     scope_names = {
         "engine": "Engine",
         "global": "Global",
@@ -1712,7 +1795,13 @@ def append_profile_unknown_lines(target: dict[str, list[str]], profile: dict, sc
             ):
                 continue
             section = str(block.get("ini_section", ""))
+            reserved_comments = (schema_comment_lines or {}).get(section, set())
             for raw in block.get("lines", []):
+                if raw.strip() in reserved_comments:
+                    # The field loop now regenerates this exact comment fresh next
+                    # to its value when that value survives; keeping the copy
+                    # stored in the profile too would duplicate it.
+                    continue
                 parsed = split_ini_assignment(raw)
                 if parsed:
                     prefix, left, _ = parsed
@@ -1754,6 +1843,7 @@ def compiled_userengine_ini(profile: dict, map_name: str = "", partition_id: str
     else:
         values = profile_engine_values(profile)
     section_lines: dict[str, list[str]] = {}
+    last_comment: dict[str, tuple[str, ...]] = {}
     for field_id, spec in ENGINE_FIELDS.items():
         section, key, default = spec
         if not section or not key:
@@ -1768,13 +1858,24 @@ def compiled_userengine_ini(profile: dict, map_name: str = "", partition_id: str
             continue
         if field_id in {"server_display_name", "server_login_password"} and value:
             value = quote_ini_string(value)
+        # A field's comment is emitted directly beside its value -- not sourced
+        # from the raw profile document -- so it can never survive without the
+        # value it explains. Several fields intentionally share one comment tuple
+        # (e.g. the three mining multipliers); only show it once per run of those.
+        comment = ENGINE_FIELD_INI_COMMENTS.get(field_id)
+        if comment and last_comment.get(section) != comment:
+            section_lines.setdefault(section, []).extend(f"; {line}" for line in comment)
+            last_comment[section] = comment
         section_lines.setdefault(section, []).append(f"{key}={value}")
     scopes = [("engine", "", "")]
     if map_name:
         scopes.append(("map_engine", canonical_map(map_name), ""))
     if map_name and partition_id:
         scopes.append(("partition_engine", canonical_map(map_name), str(partition_id)))
-    append_profile_unknown_lines(section_lines, profile, scopes, known_keys_by_section(ENGINE_FIELDS))
+    append_profile_unknown_lines(
+        section_lines, profile, scopes, known_keys_by_section(ENGINE_FIELDS),
+        schema_comment_lines_by_section(ENGINE_FIELD_INI_COMMENTS, ENGINE_FIELDS),
+    )
     return render_ini_sections(section_lines, [
         "; UserEngine.ini managed by Docker.",
         "; Global values are resolved with map and partition overrides for this server.",
