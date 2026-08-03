@@ -103,13 +103,57 @@ ENGINE_FIELDS = {
     "landsraad_reward_multiplier_specialization_xp": ("ConsoleVariables", "dw.LandsraadMissionRewardMultiplierSpecializationXP", "1.0"),
 }
 
-CLIENT_ENGINE_FIELDS = {
-    "sun_exposure_enabled",
-    "vehicle_max_per_player",
-    "fuel_burning_multiplier",
-    "landsraad_reward_multiplier_faction_xp",
-    "landsraad_reward_multiplier_house_credit",
-    "landsraad_reward_multiplier_specialization_xp",
+# All ENGINE_FIELDS share the literal ini section "ConsoleVariables", so the
+# generic section-derived category logic the console uses for UserGame fields
+# can't distinguish them. This gives each one an explicit, functional grouping.
+ENGINE_FIELD_CATEGORIES = {
+    "sandstorm_enabled": "Sandstorm",
+    "sandstorm_treasure_enabled": "Sandstorm",
+    "sandworm_enabled": "Sandworm",
+    "sandworm_collision_interaction": "Sandworm",
+    "sandworm_danger_zones_enabled": "Sandworm",
+    "sandworm_invulnerability_on_exit": "Sandworm",
+    "sandworm_invulnerability_on_restart": "Sandworm",
+    "mining_output_multiplier": "Multipliers",
+    "vehicle_mining_output_multiplier": "Multipliers",
+    "pvp_resource_multiplier": "Multipliers",
+    "vehicle_durability_damage_multiplier": "Multipliers",
+    "fuel_burning_multiplier": "Multipliers",
+    "vehicle_max_per_player": "Vehicles",
+    "sun_exposure_enabled": "Environment",
+    "weapon_specific_quick_melee_enabled": "Gameplay Toggles",
+    "spice_visions_enabled": "Gameplay Toggles",
+    "passenger_taxi_enabled": "Gameplay Toggles",
+    "blood_doors_enabled": "Gameplay Toggles",
+    "blood_doors_disable_blight_ecolab": "Gameplay Toggles",
+    "landsraad_reward_multiplier_faction_xp": "Landsraad",
+    "landsraad_reward_multiplier_house_credit": "Landsraad",
+    "landsraad_reward_multiplier_specialization_xp": "Landsraad",
+}
+
+# Free-text field descriptions shown in the console UI. Only populated for
+# fields as they're documented; metadata() falls back to "" for the rest.
+FIELD_DESCRIPTIONS = {
+    "sun_exposure_enabled": "Toggles whether players take sun exposure/heat damage. True/1 = ON (default), False/0 = OFF.",
+    "vehicle_max_per_player": "Maximum number of vehicles a single player is allowed to own at once.",
+    "fuel_burning_multiplier": "Multiplier applied to fuel burn duration. Larger values make fuel last longer. Conservative test range 0.1-10.0 (not enforced); 1.0 is normal.",
+    "landsraad_reward_multiplier_faction_xp": "Multiplier applied to Faction XP rewarded from Landsraad missions.",
+    "landsraad_reward_multiplier_house_credit": "Multiplier applied to House Credits rewarded from Landsraad missions.",
+    "landsraad_reward_multiplier_specialization_xp": "Multiplier applied to Specialization XP rewarded from Landsraad missions.",
+}
+
+# Maps a field id to the client-side ini filename it also must be applied to
+# (players copy the exported client file into their own Saved/Config/WindowsClient/
+# folder). "Engine.ini" values drive client_engine_ini()'s selection below; a future
+# "Game.ini" entry would only drive the console's "Client Required" badge, since
+# client_game_ini() already exports every saved UserGame value unconditionally.
+CLIENT_FILE_REQUIRED = {
+    "sun_exposure_enabled": "Engine.ini",
+    "vehicle_max_per_player": "Engine.ini",
+    "fuel_burning_multiplier": "Engine.ini",
+    "landsraad_reward_multiplier_faction_xp": "Engine.ini",
+    "landsraad_reward_multiplier_house_credit": "Engine.ini",
+    "landsraad_reward_multiplier_specialization_xp": "Engine.ini",
 }
 
 MAP_FIELDS = {
@@ -1328,6 +1372,9 @@ def metadata() -> int:
             "key": key or "",
             "default": "" if default is None else str(default),
             "type": FIELD_TYPE_OVERRIDES.get(field_id, infer_field_type(default)),
+            "clientFile": CLIENT_FILE_REQUIRED.get(field_id, ""),
+            "category": ENGINE_FIELD_CATEGORIES.get(field_id, ""),
+            "description": FIELD_DESCRIPTIONS.get(field_id, ""),
         }
 
     payload = {
@@ -1755,12 +1802,15 @@ def client_engine_ini(profile: dict, map_name: str = "", partition_id: str | Non
 
     section_lines: dict[str, list[str]] = {}
     for field_id, spec in ENGINE_FIELDS.items():
-        if field_id not in CLIENT_ENGINE_FIELDS:
+        if CLIENT_FILE_REQUIRED.get(field_id) != "Engine.ini":
             continue
         section, key, default = spec
         if not section or not key:
             continue
-        value = values.get(field_id, "" if default is None else str(default))
+        default_str = "" if default is None else str(default)
+        value = values.get(field_id, default_str)
+        if value == default_str:
+            continue
         section_lines.setdefault(section, []).append(f"{key}={value}")
 
     target_label = "global UserEngine" if not target_map else target_map if not target_partition else f"{target_map} partition {target_partition}"
@@ -1768,6 +1818,7 @@ def client_engine_ini(profile: dict, map_name: str = "", partition_id: str | Non
         "; Experimental: Engine.ini for the Dune: Awakening client.",
         f"; Generated from Docker UserEngine.ini values for {target_label}.",
         "; Copy these sections into Saved/Config/WindowsClient/Engine.ini while the game is closed.",
+        "; Only settings changed from the default are listed. Delete any keys from an earlier copy that are not here.",
     ])
 
 

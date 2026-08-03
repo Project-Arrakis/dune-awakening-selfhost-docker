@@ -8,6 +8,9 @@ export type UserSettingField = {
   key: string | null;
   default: string;
   type: "boolean" | "integer" | "number" | "text";
+  clientFile: string;
+  category: string;
+  description: string;
 };
 
 export type UserSettingsSchema = {
