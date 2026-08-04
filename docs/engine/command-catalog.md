@@ -417,23 +417,64 @@ AddItemToInventory flow) and `SpecializationXP`.
 - `WeaponInfiniteAmmo`
 - `WeaponInfiniteAmmoReload`
 
+## Phase 2 result (2026-08-04): FLS channel is a narrow allowlist
+
+Live probes over the real FLS channel (exchange `heartbeats`, routing
+`notifications`, `app_id=fls_backend`, builtin command-auth token) confirmed
+the engine dispatches **only** the commands Funcom's cloud FLS backend actually
+sends (the fork's ~12 FLS-VERIFIED commands). 25 probed candidates, including
+all of the below, were rejected with
+`Warning: Deserialized message has unknown Server Command '<name>'` (no-op,
+no state change, no log spam beyond the single warning):
+
+- Print/introspection (13): `PrintFarmStartTime`, `PrintListRecoveredVehicles`,
+  `ListCommChannel`, `LootPrintLootInfo`, `CoriolisPrintSeed`,
+  `FactionPrintAlignment`, `BotsPrintList`, `EncountersPrintStats`,
+  `SandwormPrintLocations`, `PrintListPlayers`, `PrintPlayerCap`,
+  `SessionMonitor_PlayersAsJson`, `ClaimSystemPrintCharacterPacks_Server`.
+- Print/introspection (10): `PrintAccessCodes`, `PrintAllCharacterFloatStats`,
+  `GlobalDistributionPrintLootSettingsForCurrentLocation`,
+  `GlobalDistributionPrintTagsForCurrentLocation`, `CoriolisPrintStoredSeeds`,
+  `ItemsPrintAllDeteriorationStats`, `DebugLandsraadPrintGuildVote`,
+  `LootPrintTreasureCount`, `PatrolShipListSpawned`, `GetLastCoriolisTime`.
+- State-changing fill candidates (3, operator-approved): `UpdateAllFillables`,
+  `AddItemToVehicleInventory`, `SetPlaceableWaterStored`.
+
+Positive control: `KickPlayer` with a nonexistent PlayerId dispatched normally
+(`Now running ServerCommand 'KickPlayer' ...`), proving the probe format is
+valid and the rejections are real dispatch gates, not a malformed payload.
+
+**Conclusion: no engine-native FLS command exists for filling storage
+containers.** Only `UpdateAllWaterFillables` (officially self-host-able) works
+over FLS. The 855-command table is the `UDuneServerCommandsCheatManager`
+console/debug surface (`CHEAT-EXEC`, ServerExecRPC-gated and shipping-gated);
+it is not reachable from the FLS ServerCommand channel. The
+console fill-item != storage restart limitation (INC-2026-07-31-001) stands as
+designed; a native fill feature is not feasible short of running the game
+server with a server-side hook that writes through a command the engine will
+honour at runtime, which the FLS dispatch gate does not provide for these
+names.
+
 ## Immediate candidates for the container-fill problem (Phase 2 targets)
 
-- `UpdateAllFillables` - distinct from UpdateAllWaterFillables; may cover non-water
-  fillables. Highest-value verification target.
-- `AddItemToVehicleInventory` - engine-side add to vehicle inventory (vs. the
-  fork's DB-only fill-item).
+Phase 2 verdict above; the previously-listed candidates are recorded for
+archive completeness:
+
+- `UpdateAllFillables` - **REJECTED over FLS** (2026-08-04).
+- `AddItemToVehicleInventory` - **REJECTED over FLS** (2026-08-04).
 - `AddItemsToInventory` / `AddBasicInventoryToCharacter` - inventory mutation
-  variants.
-- `SetPlaceableWaterStored` / `SetPlaceableWaterGenerationRate` - placeable-level
-  water mutation (placeables are the containers we fill).
+  variants; unprobed (cheat-exec class, same gate).
+- `SetPlaceableWaterStored` / `SetPlaceableWaterGenerationRate` - **on page:
+  `SetPlaceableWaterStored` REJECTED over FLS** (2026-08-04); the rest of this
+  class is unprobed and presumed same gate.
 - `RepairAllItems` / `ItemsSetDurability*` / `ItemsPrintAllDeteriorationStats` -
-  durability maintenance surface.
+  durability maintenance surface; unprobed, presumed same gate.
 - `PrintClosestPlaceableInventoryPointers` / `AuditPlayerInventories` /
-  `PrintClosestPlaceableInfo` - read-only introspection, safe first probes.
+  `PrintClosestPlaceableInfo` - read-only introspection; unprobed, presumed
+  same gate.
 - `SetBackpackSize`, `SetPlayerVisibility`, `SummonPlayer`, `TeleportToPlayer`,
-  `SetGodMode` - console-feature candidates (destructive/cheat-adjacent: gate
-  behind explicit operator approval).
+  `SetGodMode` - console-feature candidates (destructive/cheat-adjacent:
+  gate behind explicit operator approval); unprobed, presumed same gate.
 
 ## Dangerous / clearly-not-for-prod commands (never probe on a live server)
 
@@ -445,13 +486,15 @@ AddItemToInventory flow) and `SpecializationXP`.
 
 ## Open questions / next phases
 
-1. Phase 2: FLS-channel verification of the highest-value candidates
-   (UpdateAllFillables first) - read-only or reversible commands only, explicit
-   operator approval per command, engine-log confirmation after each.
+1. Phase 2 (2026-08-04, DONE): FLS-channel verification completed. Verdict:
+   FLS is a narrow allowlist; the cheat-exec class (`CHEAT-EXEC`) is not
+   reachable over FLS. Native container-fill via FLS is not feasible.
 2. Phase 3: full FLS protocol map (exchanges/queues/message shapes) and
    parameter-name discovery for each verified command (params live in the
    engine code near each command name; e.g. `PlayerId=`, `WaterAmount=`).
-3. Phase 4: decide console features from the verified surface; file separate
-   issues per feature.
+3. Phase 4: decide console features from the verified surface only; file
+   separate issues per feature. The container-fill feature remains
+   restart-based (INC-2026-07-31-001), which is the correct documented
+   behaviour, not a gap awaiting a native command.
 4. Refresh method: re-run strings extraction after every engine image update
    and diff the catalog (engine may add/remove commands between builds).
