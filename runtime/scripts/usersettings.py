@@ -126,11 +126,11 @@ ENGINE_FIELDS = {
     "regenerate_per_player_loot_enabled": ("ConsoleVariables", "Loot.ShouldAlwaysRegeneratePerPlayerLoot", "0"),
 }
 
-# Explanatory ini comment(s) for a field, in the exact wording userengine_ini_text()
-# and compiled_userengine_ini() both emit -- single source of truth, so the two
-# documents can never drift the way the hand-duplicated strings did before. Several
-# fields intentionally share one tuple (e.g. the three mining multipliers): that
-# comment is meant to introduce the whole group, not just the first key under it.
+# Explanatory ini comment(s) for a field, emitted by both compiled_userengine_ini()
+# (beside a surviving non-default value) and profile_engine_text() (beside the
+# always-synthesized identity fields). Several fields intentionally share one tuple
+# (e.g. the three mining multipliers): that comment is meant to introduce the whole
+# group, not just the first key under it.
 ENGINE_FIELD_INI_COMMENTS: dict[str, tuple[str, ...]] = {
     "port": (
         "The starting port that servers listen to for players. Each server",
@@ -1637,110 +1637,6 @@ def truthy(value: str) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
-# Kept hand-written rather than generated from ENGINE_FIELD_INI_COMMENTS: this
-# always shows every field regardless of default, so it never had the orphaned-
-# comment problem that motivated that map, and its blank-line grouping is
-# irregular in a way a mechanical rewrite would risk silently reformatting. The
-# comment WORDING must still match ENGINE_FIELD_INI_COMMENTS verbatim -- a test
-# asserts that.
-def userengine_ini_text(values: dict[str, str]) -> str:
-    lines = [
-        "; UserEngine.ini managed by Docker.",
-        "; Values here apply to all maps unless overridden by UserEngine.ini.",
-        "",
-        "; Settings in these config files will be applied to every server in the battlegroup",
-        "; If you need to override different settings for different servers, use the battlegroup editor instead",
-        "",
-        "[URL]",
-        "; The starting port that servers listen to for players. Each server",
-        "; will use the next available port in a sequence (7777, 7778 etc.). The range should",
-        "; not intersect with the IGWPort range bellow",
-        f"Port={values.get('port', ENGINE_FIELDS['port'][2])}",
-        "; The port that servers listen to for other servers. Each server",
-        "; will use the next available port in a sequence (7888, 7889 etc.). The range should",
-        "; not intersect with the Port range above",
-        f"IGWPort={values.get('igw_port', ENGINE_FIELDS['igw_port'][2])}",
-        "",
-        "[ConsoleVariables]",
-        "; Set the name of every Sietch in the battlegroup",
-        "; If Sietches should have different names use the battlegroup editor instead",
-        "; Special characters like ' and | are not allowed and double quotes should be used",
-    ]
-
-    display_name = values.get("server_display_name", "")
-    if display_name:
-        lines.append(f"Bgd.ServerDisplayName={quote_ini_string(display_name)}")
-    else:
-        lines.append(';Bgd.ServerDisplayName="My Arrakis, My Dune"')
-
-    lines.extend([
-        "",
-        "; Set a password for every Sietch in the battlegroup",
-        "; If Sietches should have different passwords use the battlegroup editor instead",
-        "; Special characters like ' and | are not allowed and double quotes should be used",
-    ])
-
-    login_password = values.get("server_login_password", "")
-    if login_password:
-        lines.append(f"Bgd.ServerLoginPassword={quote_ini_string(login_password)}")
-    else:
-        lines.append(';Bgd.ServerLoginPassword="Sandworm"')
-
-    lines.extend([
-        "",
-        "; Mining multipliers",
-        f"Dune.GlobalMiningOutputMultiplier={values.get('mining_output_multiplier', ENGINE_FIELDS['mining_output_multiplier'][2])}",
-        f"Dune.GlobalVehicleMiningOutputMultiplier={values.get('vehicle_mining_output_multiplier', ENGINE_FIELDS['vehicle_mining_output_multiplier'][2])}",
-        f"SecurityZones.PvpResourceMultiplier={values.get('pvp_resource_multiplier', ENGINE_FIELDS['pvp_resource_multiplier'][2])}",
-        "",
-        "; Durability damage multiplier for vehicles | (0 to 10)  0=off",
-        f"dw.VehicleDurabilityDamageMultiplier={values.get('vehicle_durability_damage_multiplier', ENGINE_FIELDS['vehicle_durability_damage_multiplier'][2])}",
-        "",
-        "; Sandstorm and sandstorm treasure spawning settings",
-        f"Sandstorm.Enabled={values.get('sandstorm_enabled', ENGINE_FIELDS['sandstorm_enabled'][2])}",
-        f"Sandstorm.Treasure.Enabled={values.get('sandstorm_treasure_enabled', ENGINE_FIELDS['sandstorm_treasure_enabled'][2])} ",
-        "",
-        "; Sandworm settings",
-        f"sandworm.dune.Enabled={values.get('sandworm_enabled', ENGINE_FIELDS['sandworm_enabled'][2])}",
-        "; Sandworm can push/damage vehicles",
-        f"Vehicle.SandwormCollisionInteraction={values.get('sandworm_collision_interaction', ENGINE_FIELDS['sandworm_collision_interaction'][2])}",
-        "; Enables dangerzones where the sandworm can attack",
-        f"Sandworm.SandwormDangerZonesEnabled={values.get('sandworm_danger_zones_enabled', ENGINE_FIELDS['sandworm_danger_zones_enabled'][2])}",
-        "; Seconds of invunerability from sandworm on specific situations",
-        f"Vehicle.SandwormInvulnerabilitySecondsOnExit={values.get('sandworm_invulnerability_on_exit', ENGINE_FIELDS['sandworm_invulnerability_on_exit'][2])}",
-        f"Vehicle.SandwormInvulnerabilitySecondsOnServerRestart={values.get('sandworm_invulnerability_on_restart', ENGINE_FIELDS['sandworm_invulnerability_on_restart'][2])}",
-        "",
-        "; Character, spice, travel, and AI gameplay toggles",
-        f"Character.WeaponSpecificQuickMelee.Enabled={values.get('weapon_specific_quick_melee_enabled', ENGINE_FIELDS['weapon_specific_quick_melee_enabled'][2])}",
-        f"SpiceAddiction.SpiceVisionsEnabled={values.get('spice_visions_enabled', ENGINE_FIELDS['spice_visions_enabled'][2])}",
-        f"IgwTravel.AllowPassengerToUseTaxi={values.get('passenger_taxi_enabled', ENGINE_FIELDS['passenger_taxi_enabled'][2])}",
-        f"Ai.BloodDoors.Enabled={values.get('blood_doors_enabled', ENGINE_FIELDS['blood_doors_enabled'][2])}",
-        f"Ai.BloodDoors.DisableBlightEcolab={values.get('blood_doors_disable_blight_ecolab', ENGINE_FIELDS['blood_doors_disable_blight_ecolab'][2])}",
-        "",
-        "; Experimental: disables sun exposure/heat effects on players when set to 0.",
-        f"Hydration.SunExposureEnabled={values.get('sun_exposure_enabled', ENGINE_FIELDS['sun_exposure_enabled'][2])}",
-        "; Experimental: maximum number of vehicles a single player may own at once.",
-        f"Vehicle.MaxVehiclesPerPlayer={values.get('vehicle_max_per_player', ENGINE_FIELDS['vehicle_max_per_player'][2])}",
-        "; Experimental: multiplier for fuel burn duration. Larger values increase burn time. Conservative test range 0.1-10.0 (not enforced); 1.0 is normal.",
-        f"dw.FuelBurningMultiplier={values.get('fuel_burning_multiplier', ENGINE_FIELDS['fuel_burning_multiplier'][2])}",
-        "; Experimental: Landsraad mission reward multipliers (faction XP, house credits, specialization XP).",
-        f"dw.LandsraadMissionRewardMultiplierFactionXP={values.get('landsraad_reward_multiplier_faction_xp', ENGINE_FIELDS['landsraad_reward_multiplier_faction_xp'][2])}",
-        f"dw.LandsraadMissionRewardMultiplierHouseCredit={values.get('landsraad_reward_multiplier_house_credit', ENGINE_FIELDS['landsraad_reward_multiplier_house_credit'][2])}",
-        f"dw.LandsraadMissionRewardMultiplierSpecializationXP={values.get('landsraad_reward_multiplier_specialization_xp', ENGINE_FIELDS['landsraad_reward_multiplier_specialization_xp'][2])}",
-        "; Experimental: overrides how long a Deathstill takes to process a body, in seconds.",
-        f"Deathstill.ConversionTimeOverride={values.get('deathstill_conversion_time_override', ENGINE_FIELDS['deathstill_conversion_time_override'][2])}",
-        "; Experimental: double loot when the encounter difficulty is above 0.",
-        f"Dune.GiveDoubleDifficultyLoot={values.get('double_difficulty_loot_enabled', ENGINE_FIELDS['double_difficulty_loot_enabled'][2])}",
-        "; Experimental: regenerate per-player loot on every container interaction.",
-        f"Loot.ShouldAlwaysRegeneratePerPlayerLoot={values.get('regenerate_per_player_loot_enabled', ENGINE_FIELDS['regenerate_per_player_loot_enabled'][2])}",
-    ])
-    return "\n".join(lines) + "\n"
-
-
-def write_userengine_ini(path: Path, values: dict[str, str]) -> None:
-    atomic_write_text(path, userengine_ini_text(values))
-
-
 def write_usergame_ini(path: Path, values: dict[str, str], partition_id: str | None = None) -> None:
     lines = [
         "; Settings in these config files will be applied to every server in the battlegroup",
@@ -2178,8 +2074,77 @@ def profile_game_text() -> str:
     return serialize_profile(game_profile)
 
 
+ENGINE_IDENTITY_CV_KEYS = {"Bgd.ServerDisplayName", "Bgd.ServerLoginPassword"}
+
+
 def profile_engine_text() -> str:
-    return userengine_ini_text(profile_engine_values(read_profile()))
+    # Port/IGWPort and the two Bgd.* identity fields are server identity, not
+    # tunables -- the "Restore Defaults" confirm dialog promises these four are
+    # always preserved, so they're synthesized fresh from schema every time
+    # (matching compiled_userengine_ini's own URL exception). Everything else is a
+    # sparse pass-through of what's actually stored, matching profile_game_text().
+    profile = read_profile()
+    values = profile_engine_values(profile)
+
+    def commented(field_id: str) -> list[str]:
+        comment = ENGINE_FIELD_INI_COMMENTS.get(field_id)
+        return [f"; {line}" for line in comment] if comment else []
+
+    url_lines: list[str] = []
+    for field_id in ("port", "igw_port"):
+        _section, key, default = ENGINE_FIELDS[field_id]
+        url_lines.extend(commented(field_id))
+        url_lines.append(f"{key}={values.get(field_id, default)}")
+
+    display_name = values.get("server_display_name") or ""
+    login_password = values.get("server_login_password") or ""
+    identity_cv_lines = [
+        *commented("server_display_name"),
+        f"Bgd.ServerDisplayName={quote_ini_string(display_name)}" if display_name
+            else ';Bgd.ServerDisplayName="My Arrakis, My Dune"',
+        "",
+        *commented("server_login_password"),
+        f"Bgd.ServerLoginPassword={quote_ini_string(login_password)}" if login_password
+            else ';Bgd.ServerLoginPassword="Sandworm"',
+    ]
+
+    other_cv_lines = [
+        raw
+        for block in profile.get("sections", [])
+        if block.get("scope") == "Engine" and block.get("ini_section") == "ConsoleVariables"
+        for raw in block.get("lines", [])
+        if not (split_ini_assignment(raw) and split_ini_assignment(raw)[1] in ENGINE_IDENTITY_CV_KEYS)
+    ]
+
+    other_sections = [
+        block for block in profile.get("sections", [])
+        if block.get("scope") == "Engine" and block.get("ini_section") not in {"URL", "ConsoleVariables"}
+    ]
+
+    # URL is placed first explicitly rather than via serialize_profile()'s generic
+    # alphabetical tie-break (both sections share scope "Engine", so "ConsoleVariables"
+    # would otherwise sort ahead of "URL") -- Port/IGWPort should always be the first
+    # thing an admin sees. Any other custom Engine section still gets the normal sort.
+    ordered_sections = [
+        {"header": profile_header("engine", "URL"), "scope": "Engine", "map": "", "partition": "",
+         "ini_section": "URL", "lines": url_lines},
+        {"header": profile_header("engine", "ConsoleVariables"), "scope": "Engine", "map": "", "partition": "",
+         "ini_section": "ConsoleVariables", "lines": identity_cv_lines + ([""] if other_cv_lines else []) + other_cv_lines},
+    ] + sorted_profile_sections(other_sections)
+
+    lines = [
+        "; UserEngine.ini managed by Docker.",
+        "; Values here apply to all maps unless overridden by UserEngine.ini.",
+        "",
+        "; Settings in these config files will be applied to every server in the battlegroup",
+        "; If you need to override different settings for different servers, use the battlegroup editor instead",
+    ]
+    for section in ordered_sections:
+        if lines and lines[-1].strip():
+            lines.append("")
+        lines.append(f"[{section['header']}]")
+        lines.extend(section.get("lines", []))
+    return "\n".join(lines).rstrip() + "\n"
 
 
 def replace_profile_game_sections(profile: dict, incoming: dict) -> None:
