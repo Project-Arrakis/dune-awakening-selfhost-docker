@@ -52,6 +52,16 @@ Keep a Changelog style, grouped by upstream base version, newest first.
 
 ### Added
 
+- Engine reverse-engineering deliverable (issue #148, Phases 1-4): `docs/engine/command-catalog.md`
+  now maps the full Funcom engine admin-command surface. Phase 2 verified the FLS
+  ServerCommand channel is a narrow allowlist (25 live probes rejected "unknown Server
+  Command"; positive-control KickPlayer dispatch proved the probe path) — the 855-command
+  `UDuneServerCommandsCheatManager` cheat-exec table is not reachable over FLS, so no
+  engine-native container-fill command exists. Phase 3 documents the complete FLS
+  transport contract (rabbitmq exchange `heartbeats`/routing `notifications`,
+  `fls_backend` identity, two-hop base64 envelope, per-command parameter contracts).
+  Phase 4 scoped console features to the verified surface and filed #149 for the sole
+  gap (engine-native `ServiceBroadcast` restart-warning is CLI-only today).
 - Atrium console Storage tab: new "Apply Fills (Restart Survival)" action that restarts the
   survival game server via the existing `POST /api/server/restart-service` endpoint after a
   danger-styled confirmation dialog warning that all connected players will be disconnected.
