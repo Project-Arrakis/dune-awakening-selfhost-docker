@@ -90,6 +90,8 @@ jobs:
         run: python3 runtime/scripts/test_partition_combat_state.py
       - name: Test UserEngine.ini comment placement
         run: python3 runtime/scripts/test_userengine_ini_comments.py
+      - name: Test Global/Map/Partition override precedence
+        run: python3 runtime/scripts/test_profile_override_precedence.py
       - name: Test combat-state publishers
         run: |
           runtime/tests/test-deepdesert-combat-state-publication.sh

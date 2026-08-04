@@ -516,6 +516,32 @@ PARTITION_ENGINE_FIELDS = {
 }
 
 PROTECTED_ENGINE_FIELDS = {"server_display_name", "server_login_password"}
+
+
+def known_keys_by_section(fields: dict[str, tuple[str | None, str | None, str | None]]) -> dict[str, set[str]]:
+    known: dict[str, set[str]] = {}
+    for section, key, _ in fields.values():
+        if section and key:
+            known.setdefault(section, set()).add(key)
+    return known
+
+
+# Which ini sections are legitimate for each engine-family scope, derived from the
+# schema itself (not hand-listed) so a future field added under a new section is
+# automatically allowed here without a second edit.
+ENGINE_ALLOWED_SECTIONS_BY_SCOPE = {
+    "Engine": set(known_keys_by_section(ENGINE_FIELDS)),
+    "MapEngine": set(known_keys_by_section(MAP_ENGINE_FIELDS)),
+    "PartitionEngine": set(known_keys_by_section(PARTITION_ENGINE_FIELDS)),
+}
+# Section names that only ever appear in Engine-family schemas (URL/ConsoleVariables) --
+# no GLOBAL/MAP/PARTITION UserGame field ever uses either name. The Advanced UserGame.ini
+# tab's raw editor has no section allowlist of its own (UserGame's schema uses too many
+# distinct /Script/... section names to enumerate), so this narrow denylist is what stops
+# UserEngine content -- now rendered with the same Global/Map/Partition header vocabulary
+# as UserGame, see ENGINE_HEADER_DISPLAY_NAMES below -- from being silently accepted if
+# pasted into the wrong tab.
+ENGINE_EXCLUSIVE_INI_SECTIONS = set().union(*ENGINE_ALLOWED_SECTIONS_BY_SCOPE.values())
 RESET_PRESERVED_ENGINE_FIELDS = {"port", "igw_port", "server_display_name", "server_login_password"}
 PROFILE_HEADER_ORDER = {
     "Engine": 0,
@@ -526,6 +552,18 @@ PROFILE_HEADER_ORDER = {
     "Partition": 5,
 }
 ENGINE_PROFILE_SCOPES = {"Engine", "MapEngine", "PartitionEngine"}
+# The Advanced UserEngine.ini tab displays/accepts UserGame's Global/Map/Partition
+# vocabulary for readability, translated to/from the internal Engine/MapEngine/
+# PartitionEngine tags at the profile_engine_text()/profile_engine_write_encoded()
+# boundary only -- internal storage (and every already-saved gameplay-profile.ini)
+# keeps using the internal tags, never touched by this translation.
+ENGINE_HEADER_DISPLAY_NAMES = {"Engine": "Global", "MapEngine": "Map", "PartitionEngine": "Partition"}
+ENGINE_HEADER_INTERNAL_NAMES = {v: k for k, v in ENGINE_HEADER_DISPLAY_NAMES.items()}
+# Derived from ENGINE_HEADER_DISPLAY_NAMES's own values rather than hardcoded, so a
+# future tier added to that dict can't silently drift out of sync with this regex.
+_ENGINE_DISPLAY_HEADER_RE = re.compile(
+    r"^\[(" + "|".join(re.escape(name) for name in ENGINE_HEADER_DISPLAY_NAMES.values()) + r"):(.*)\]$"
+)
 LEGACY_GUILD_FIELD_ALIASES = {
     "guild_creation_cost": "guild_settings_creation_cost",
     "max_guilds_allowed": "guild_settings_max_guilds_allowed",
@@ -1668,14 +1706,6 @@ def write_usergame_ini(path: Path, values: dict[str, str], partition_id: str | N
     atomic_write_text(path, "\n".join(lines) + "\n")
 
 
-def known_keys_by_section(fields: dict[str, tuple[str | None, str | None, str | None]]) -> dict[str, set[str]]:
-    known: dict[str, set[str]] = {}
-    for section, key, _ in fields.values():
-        if section and key:
-            known.setdefault(section, set()).add(key)
-    return known
-
-
 def append_profile_unknown_lines(target: dict[str, list[str]], profile: dict, scopes: list[tuple[str, str, str]], known: dict[str, set[str]], schema_comment_lines: dict[str, set[str]] | None = None) -> None:
     scope_names = {
         "engine": "Engine",
@@ -1774,9 +1804,16 @@ def compiled_userengine_ini(profile: dict, map_name: str = "", partition_id: str
         scopes.append(("map_engine", canonical_map(map_name), ""))
     if map_name and partition_id:
         scopes.append(("partition_engine", canonical_map(map_name), str(partition_id)))
+    reserved_lines_by_section = schema_comment_lines_by_section(ENGINE_FIELD_INI_COMMENTS, ENGINE_FIELDS)
+    # Also reserve the identity fields' commented-out placeholder VALUE lines (not
+    # just their explanatory comments, already covered above) -- otherwise a
+    # placeholder saved back verbatim through the Advanced tab's round trip (see
+    # ENGINE_IDENTITY_RESERVED_CV_LINES) leaks into the actual deployed ini as a
+    # stray line, even though profile_engine_text() correctly hides it from the editor.
+    reserved_lines_by_section["ConsoleVariables"] = reserved_lines_by_section.get("ConsoleVariables", set()) | ENGINE_IDENTITY_RESERVED_CV_LINES
     append_profile_unknown_lines(
         section_lines, profile, scopes, known_keys_by_section(ENGINE_FIELDS),
-        schema_comment_lines_by_section(ENGINE_FIELD_INI_COMMENTS, ENGINE_FIELDS),
+        reserved_lines_by_section,
     )
     return render_ini_sections(section_lines, [
         "; UserEngine.ini managed by Docker.",
@@ -2070,7 +2107,36 @@ def profile_game_text() -> str:
     return serialize_profile(game_profile)
 
 
-ENGINE_IDENTITY_CV_KEYS = {"Bgd.ServerDisplayName", "Bgd.ServerLoginPassword"}
+# Single source of truth for each identity field's "no value set" placeholder line --
+# read by both the synthesis in profile_engine_text() and the reserved-lines set
+# below, so the two can never quote different text for the same field.
+ENGINE_IDENTITY_PLACEHOLDER_LINES = {
+    "server_display_name": ';Bgd.ServerDisplayName="My Arrakis, My Dune"',
+    "server_login_password": ';Bgd.ServerLoginPassword="Sandworm"',
+}
+# Derived from ENGINE_FIELDS rather than hardcoded a second time, so the ini key
+# spellings here can't drift from the schema's own.
+ENGINE_IDENTITY_CV_KEYS = {ENGINE_FIELDS[field_id][1] for field_id in ENGINE_IDENTITY_PLACEHOLDER_LINES}
+# Every literal line the identity synthesis below can produce for an UNSET field --
+# its explanatory comments and its commented-out placeholder value. These need their
+# own exact-match filter because split_ini_assignment() returns None for any line
+# starting with ";" (by design, since comments aren't assignments), so the
+# ENGINE_IDENTITY_CV_KEYS check alone never catches them once they've been saved back
+# verbatim through a real round trip, letting them duplicate on every subsequent read.
+# Reuses schema_comment_lines_by_section() (the same helper compiled_userengine_ini()
+# uses for its own comment de-dup) rather than re-deriving the comment text by hand,
+# scoped to just these two fields' comments via a filtered input dict.
+ENGINE_IDENTITY_RESERVED_CV_LINES = schema_comment_lines_by_section(
+    {field_id: ENGINE_FIELD_INI_COMMENTS[field_id] for field_id in ENGINE_IDENTITY_PLACEHOLDER_LINES if field_id in ENGINE_FIELD_INI_COMMENTS},
+    ENGINE_FIELDS,
+).get("ConsoleVariables", set()) | set(ENGINE_IDENTITY_PLACEHOLDER_LINES.values())
+
+
+def _is_engine_identity_cv_line(raw: str) -> bool:
+    if raw.strip() in ENGINE_IDENTITY_RESERVED_CV_LINES:
+        return True
+    parsed = split_ini_assignment(raw)
+    return bool(parsed and parsed[1] in ENGINE_IDENTITY_CV_KEYS)
 
 
 def profile_engine_text() -> str:
@@ -2097,24 +2163,45 @@ def profile_engine_text() -> str:
     identity_cv_lines = [
         *commented("server_display_name"),
         f"Bgd.ServerDisplayName={quote_ini_string(display_name)}" if display_name
-            else ';Bgd.ServerDisplayName="My Arrakis, My Dune"',
+            else ENGINE_IDENTITY_PLACEHOLDER_LINES["server_display_name"],
         "",
         *commented("server_login_password"),
         f"Bgd.ServerLoginPassword={quote_ini_string(login_password)}" if login_password
-            else ';Bgd.ServerLoginPassword="Sandworm"',
+            else ENGINE_IDENTITY_PLACEHOLDER_LINES["server_login_password"],
     ]
 
-    other_cv_lines = [
+    console_variable_lines = [
         raw
         for block in profile.get("sections", [])
         if block.get("scope") == "Engine" and block.get("ini_section") == "ConsoleVariables"
         for raw in block.get("lines", [])
-        if not (split_ini_assignment(raw) and split_ini_assignment(raw)[1] in ENGINE_IDENTITY_CV_KEYS)
+    ]
+    other_cv_lines = [
+        raw for idx, raw in enumerate(console_variable_lines)
+        if not _is_engine_identity_cv_line(raw)
+        # A blank line touching identity content on either side is the identity
+        # synthesis's own separator, not spacing an admin added between their own
+        # custom entries -- without this, a blank line saved back verbatim as part
+        # of an identity round trip gets treated as "other" content, and the render
+        # below adds its own separator blank line ahead of it, growing by one line
+        # on every save/read cycle. Only blanks adjacent to identity content are
+        # dropped; a blank line between two unrelated custom cvars is preserved.
+        and not (
+            not raw.strip()
+            and any(
+                _is_engine_identity_cv_line(console_variable_lines[j])
+                for j in (idx - 1, idx + 1) if 0 <= j < len(console_variable_lines)
+            )
+        )
     ]
 
+    # MapEngine/PartitionEngine sections get no synthesis (unlike the four global
+    # identity fields above) -- pure sparse pass-through, matching how UserGame's
+    # Map/Partition tiers already behave in profile_game_text().
     other_sections = [
         block for block in profile.get("sections", [])
-        if block.get("scope") == "Engine" and block.get("ini_section") not in {"URL", "ConsoleVariables"}
+        if (block.get("scope") == "Engine" and block.get("ini_section") not in {"URL", "ConsoleVariables"})
+        or block.get("scope") in {"MapEngine", "PartitionEngine"}
     ]
 
     # URL is placed first explicitly rather than via serialize_profile()'s generic
@@ -2130,17 +2217,32 @@ def profile_engine_text() -> str:
 
     lines = [
         "; UserEngine.ini managed by Docker.",
-        "; Values here apply to all maps unless overridden by UserEngine.ini.",
-        "",
-        "; Settings in these config files will be applied to every server in the battlegroup",
-        "; If you need to override different settings for different servers, use the battlegroup editor instead",
+        "; Edit this single file for all map and partition UserEngine settings.",
+        "; Docker applies the correct values to each server when maps start or restart.",
     ]
     for section in ordered_sections:
         if lines and lines[-1].strip():
             lines.append("")
-        lines.append(f"[{section['header']}]")
+        lines.append(f"[{_display_engine_header(section['header'], section['scope'])}]")
         lines.extend(section.get("lines", []))
     return "\n".join(lines).rstrip() + "\n"
+
+
+def _display_engine_header(header: str, scope: str) -> str:
+    _tier, _, rest = header.partition(":")
+    return f"{ENGINE_HEADER_DISPLAY_NAMES.get(scope, scope)}:{rest}"
+
+
+def _internal_engine_header_text(content: str) -> str:
+    out_lines = []
+    for line in content.splitlines():
+        match = _ENGINE_DISPLAY_HEADER_RE.match(line.strip())
+        if match:
+            tier, rest = match.groups()
+            out_lines.append(f"[{ENGINE_HEADER_INTERNAL_NAMES[tier]}:{rest}]")
+        else:
+            out_lines.append(line)
+    return "\n".join(out_lines)
 
 
 def replace_profile_game_sections(profile: dict, incoming: dict) -> None:
@@ -2154,7 +2256,7 @@ def replace_profile_game_sections(profile: dict, incoming: dict) -> None:
 def replace_profile_engine_sections(profile: dict, engine_sections: list[dict]) -> None:
     profile["sections"] = [
         block for block in profile.get("sections", [])
-        if block.get("scope") != "Engine"
+        if block.get("scope") not in ENGINE_PROFILE_SCOPES
     ] + engine_sections
 
 
@@ -2167,8 +2269,15 @@ def profile_game_write_encoded(encoded_content: str) -> int:
     if any(block.get("scope") in ENGINE_PROFILE_SCOPES for block in incoming.get("sections", [])):
         raise SystemExit("UserGame.ini cannot contain Engine scoped sections.")
     for block in incoming.get("sections", []):
+        section = str(block.get("ini_section", ""))
+        # Global/Map/Partition are now rendered by the UserEngine Advanced tab too (see
+        # ENGINE_HEADER_DISPLAY_NAMES), so a scope check alone no longer catches UserEngine
+        # content pasted into this tab by mistake -- URL/ConsoleVariables are section names
+        # no genuine UserGame field ever uses, so rejecting them here is safe and closes
+        # that gap without needing a full section allowlist for UserGame's own content.
+        if section in ENGINE_EXCLUSIVE_INI_SECTIONS:
+            raise SystemExit(f'UserGame.ini cannot contain a "{section}" section.')
         if block.get("scope") == "Raw":
-            section = str(block.get("ini_section", ""))
             block.update({
                 "header": profile_header("global", section),
                 "scope": "Global",
@@ -2182,21 +2291,44 @@ def profile_game_write_encoded(encoded_content: str) -> int:
     return 0
 
 
+def _validate_engine_section(scope: str, section: str, existing_sections_by_scope: dict[str, set[str]]) -> None:
+    # A section name the schema doesn't use for this scope is allowed only if it was
+    # already present in the stored profile before this save -- otherwise a pasted
+    # UserGame section (now indistinguishable by header vocabulary alone) could reach
+    # compiled_userengine_ini() as an injected section, and URL could be smuggled into a
+    # MapEngine/PartitionEngine scope where it has never legitimately existed. Grandfathering
+    # in pre-existing names (legal to save before this allowlist existed) keeps an unmodified
+    # resubmit of a legacy custom section from blocking the whole document.
+    if section in ENGINE_ALLOWED_SECTIONS_BY_SCOPE[scope] or section in existing_sections_by_scope.get(scope, set()):
+        return
+    raise SystemExit(f'UserEngine.ini cannot contain a "{section}" section.')
+
+
 def profile_engine_write_encoded(encoded_content: str) -> int:
     try:
         content = b64decode(encoded_content.encode("ascii")).decode("utf-8")
     except ValueError as exc:
         raise SystemExit("Invalid UserEngine payload.") from exc
+    content = _internal_engine_header_text(content)
     parsed = parse_profile_text(content)
+    profile = read_profile()
+    existing_sections_by_scope: dict[str, set[str]] = {}
+    for block in profile.get("sections", []):
+        scope = block.get("scope")
+        if scope in ENGINE_PROFILE_SCOPES:
+            existing_sections_by_scope.setdefault(scope, set()).add(str(block.get("ini_section", "")))
     engine_sections = []
     for block in parsed.get("sections", []):
         scope = block.get("scope")
         if scope != "Raw":
-            if scope != "Engine":
+            if scope not in ENGINE_PROFILE_SCOPES:
                 raise SystemExit("UserEngine.ini can only contain normal UserEngine or Engine scoped sections.")
+            section = str(block.get("ini_section", ""))
+            _validate_engine_section(scope, section, existing_sections_by_scope)
             engine_sections.append(block)
             continue
         section = str(block.get("ini_section", ""))
+        _validate_engine_section("Engine", section, existing_sections_by_scope)
         engine_sections.append({
             "header": profile_header("engine", section),
             "scope": "Engine",
@@ -2205,7 +2337,6 @@ def profile_engine_write_encoded(encoded_content: str) -> int:
             "ini_section": section,
             "lines": block.get("lines", []),
         })
-    profile = read_profile()
     incoming = {"preamble": [], "sections": engine_sections}
     validate_profile_port_ranges(incoming)
     replace_profile_engine_sections(profile, incoming.get("sections", []))
@@ -2272,7 +2403,14 @@ Dune.GlobalVehicleMiningOutputMultiplier=10
         raise SystemExit("Compiled UserGame dropped unknown profile lines.")
     if "UnknownEngine=xyz" not in compiled_engine:
         raise SystemExit("Compiled UserEngine dropped unknown profile lines.")
-    if "Sandstorm.Enabled=1" not in compiled_engine or "Sandstorm.Enabled=0" not in compiled_map_engine:
+    # Sandstorm.Enabled was never set at global scope, so it sits at its schema
+    # default there (1) -- compiled_userengine_ini() only writes non-default values
+    # (see field_value_is_default()), so it must be OMITTED from the global ini
+    # entirely, not written as "=1". The map-level override (0) differs from that
+    # default, so it must still be written for that map's compiled ini.
+    if "Sandstorm.Enabled=" in compiled_engine:
+        raise SystemExit("Default-valued global UserEngine field was written despite matching the schema default.")
+    if "Sandstorm.Enabled=0" not in compiled_map_engine:
         raise SystemExit("Map UserEngine override did not win over the global value.")
     if "sandworm.dune.Enabled=0" not in compiled_partition_engine:
         raise SystemExit("Partition UserEngine override was not compiled.")
@@ -2332,13 +2470,25 @@ Dune.GlobalVehicleMiningOutputMultiplier=10
         ],
     }))
     replace_profile_game_sections(reparsed, advanced_game)
-    advanced_engine = parse_profile_text("[Engine:ConsoleVariables]\nUnknownEngine=still-here\n")
+    advanced_engine = parse_profile_text(
+        "[Engine:ConsoleVariables]\nUnknownEngine=still-here\n"
+        "[MapEngine:Survival_1:ConsoleVariables]\nCustomMapEngineValue=keep-map\n"
+        "[PartitionEngine:Survival_1:3:ConsoleVariables]\nCustomPartitionEngineValue=keep-partition\n"
+    )
     replace_profile_engine_sections(reparsed, advanced_engine.get("sections", []))
     advanced_round_trip = serialize_profile(reparsed)
     if "UnknownGlobal=abc" not in advanced_round_trip or "CustomPartitionKey=True" not in advanced_round_trip:
         raise SystemExit("Advanced INI round trip dropped existing UserGame values.")
     if "CustomMapEngineValue=keep-map" not in advanced_round_trip or "CustomPartitionEngineValue=keep-partition" not in advanced_round_trip:
-        raise SystemExit("Advanced INI round trip dropped scoped UserEngine values.")
+        raise SystemExit("Advanced INI round trip dropped scoped UserEngine values that were resubmitted.")
+    # A stale scoped section that is NOT resubmitted must be dropped, not preserved --
+    # this is the correctness fix replace_profile_engine_sections needed once it started
+    # stripping all of ENGINE_PROFILE_SCOPES instead of just "Engine".
+    stale_drop = parse_profile_text("[Engine:ConsoleVariables]\nUnknownEngine=still-here\n")
+    replace_profile_engine_sections(reparsed, stale_drop.get("sections", []))
+    stale_dropped = serialize_profile(reparsed)
+    if "CustomMapEngineValue=keep-map" in stale_dropped or "CustomPartitionEngineValue=keep-partition" in stale_dropped:
+        raise SystemExit("Stale scoped UserEngine section was not dropped on save.")
     preserved_landsraad = profile_get_key(reparsed, "global", LANDSRAAD_SETTINGS_SECTION, LANDSRAAD_DATA_KEY) or ""
     if unreal_struct_values(preserved_landsraad).get("m_LandsraadCycleDurationInSeconds") != "1209600":
         raise SystemExit("Advanced INI round trip dropped the Landsraad Data structure.")
