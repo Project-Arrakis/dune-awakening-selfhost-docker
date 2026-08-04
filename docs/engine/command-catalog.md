@@ -1,6 +1,8 @@
 # Engine Command Catalog
 
-Status: Phase 1 (binary string-table extraction, 2026-07-31). See issue #148.
+Status: Phase 1 (binary string-table extraction, 2026-07-31), Phase 2 (FLS
+allowlist verdict, 2026-08-04), Phase 3 (protocol map, 2026-08-04). See issue
+#148.
 
 ## What this is
 
@@ -66,6 +68,94 @@ These are the only commands confirmed to execute via the fork's FLS channel
 mechanism (heartbeats/notifications). The fork's `admin-tools.sh` set also
 includes `GrantTemplate` (custom multi-step grant, engine-verified via
 AddItemToInventory flow) and `SpecializationXP`.
+
+## FLS protocol map (Phase 3, 2026-08-04)
+
+This is the complete, observed transport contract for the FLS ServerCommand
+channel on seabass-server 2051294-0-shipping, as used by the fork's
+`runtime/scripts/admin-tools.sh` and independently confirmed live.
+
+### Transport
+
+- **Broker**: the game server's own RabbitMQ (`seabass-server-rabbitmq`,
+  container `dune-rmq-game` on this host). Called by RabbitMQ's management
+  plugin interchangeably via `rabbitmqctl eval` in the fork, or `rabbitmqadmin`
+  by Funcom's backend.
+- **Exchange**: `heartbeats` (direct exchange, virtual host `/`).
+- **Routing key**: `notifications`.
+- **Publishing identity**: `app_id=fls_backend`, `user_id=fls` — i.e. messages
+  MUST present as Funcom's own Live Services backend.
+- **No explicit send-side queue binding**: the exchange's only consumer is the
+  game server process itself (the engine's FLS client subscribes to the
+  `notifications` binding). The engine does not ack/reply on this exchange; all
+  outcomes are observable only in the server log.
+
+### Message shape (two hops)
+
+Outer envelope, base64 of a compact JSON object:
+
+```json
+{"Version": 2, "AuthToken": "<command-auth-token>", "MessageContent": "<inner json string>"}
+```
+
+- `AuthToken` is the fork's `DUNE_COMMAND_AUTH_TOKEN` (builtin
+  `runtime/scripts/command-auth-token.sh` value, `Nu6VmPWUMvdPMeB7qErr`), the
+  same secret the game's `.env` configures for the FLS backend relationship.
+- `MessageContent` is a *serialized JSON string* (not an object) — the engine
+  deserializes it with its JSON reader.
+
+Inner payload (what the engine logs as "parameters"):
+
+```json
+{"ServerCommand": "<name>", "<Param1>": "<v1>", ...}
+```
+
+All parameter values are strings even when the engine treats them numerically
+(e.g. a teleport logs `"X":"187780.000000"`). The engine's FLS reader parses
+each `"<Key>":"<value>"` pair; numeric keys are converted per handler. Unknown
+commands produce `Warning: Deserialized message has unknown Server Command
+'<name>'` and are silently dropped — no error reply, no crash, no state change.
+
+### Verified command parameter contracts
+
+From engine-log observations on this host plus the fork's builders
+(`admin-tools.sh`); PlayerId is always required unless noted.
+
+| Command | Parameters | Notes |
+|---|---|---|
+| `AddItemToInventory` | `PlayerId`, `ItemName`, `Quantity`, `Durability`, `Quality`, `Grade`, `ItemQuality` | Durability float (1.0 = full); Quality/Grade/ItemQuality redundant ints. Engine log confirms the optional extras are ignored. |
+| `KickPlayer` | `PlayerId` | Nonexistent player dispatches but no-ops (no error logged). |
+| `TeleportTo` | `PlayerId`, `X`, `Y`, `Z`, `Yaw` | All float strings. |
+| `CleanPlayerInventory` | `PlayerId` | Destructive (wipes inventory). |
+| `ResetProgression` | `PlayerId` | Destructive. |
+| `SkillsSetUnspentSkillPoints` | `PlayerId`, `SkillPoints` | Int. |
+| `SkillsSetModuleLevel` | `PlayerId`, `Module`, `Level` | Module = skill-module id string; Level int. |
+| `SpawnVehicleAt` | `PlayerId`, `ClassName`, `TemplateName`, `X`, `Y`, `Z`, `Rotation`, `Persistent` | Engine log format string: `SpawnVehicleAt %s %f %f %f %f %s %f %s`. Requires specific player (not `*`). `Persistent=1.0` float. |
+| `UpdateAllWaterFillables` | `PlayerId`, `WaterAmount` | WaterAmount int (e.g. 1000000). |
+| `AwardXP` | `PlayerId`, `Amount`, `Category` | Category defaults to `Combat` in the fork's builder. [Implied by fork builder; param contract from `build_passthrough_json` + fork docs.] |
+| `ServiceBroadcast` | `BroadcastType`, `BroadcastPayload` | `BroadcastType=Generic`; payload `{BroadcastDuration, LocalizedText:[{Key,Title,Body}]}`. Used by the fork's restart-warning feature. |
+| `GrantTemplate` | `PlayerId`, `Template` | Fork-specific convenience wrapping AddItemToInventory (engine-verified via that flow). |
+| `SpecializationXP` | `Tracks`, `Level`, `XpAmount` | Fork-specific: implemented by the fork against `specialization-xp` admin API (DB), not a single engine ServerCommand. |
+
+For the two fork-specific entries (`GrantTemplate`, `SpecializationXP`), the
+engine-side command is a composite built by the fork; the authoritative
+implementations are `admin-tools.sh`'s `grant_item_command` / build flows.
+
+### Publish mechanics (fork, reusable)
+
+1. `build_passthrough_json` builds the inner JSON.
+2. `build_outer_b64` wraps with `{Version:2, AuthToken, MessageContent}` and
+   base64-encodes the whole outer object.
+3. `publish_inner_json` runs `rabbitmqctl eval` inside the RMQ container that
+   decodes the outer base64, looks up the `heartbeats` exchange, and publishes
+   with the `fls_backend`/`fls` identity to routing `notifications`, printing
+   `publish=ok` on success.
+4. Guardrails: `require_rmq_game_running` (exchange must exist), require-online
+   for `AwardXP|UpdateAllWaterFillables|SpawnVehicleAt`, dry-run support, and
+   `redact_sensitive_output` for auth tokens in any echoed output.
+
+Phase 2 probe harness `fls-probe.sh` (invoked identically) confirmed both hops
+collect, and the positive `KickPlayer` control confirmed authoritative dispatch.
 
 ## Catalog by domain (855 compiled-in candidates; unverified unless marked)
 
