@@ -272,10 +272,6 @@ FIELD_DESCRIPTIONS = {
 # client_game_ini() already exports every saved UserGame value unconditionally.
 CLIENT_FILE_REQUIRED = {
     "vehicle_max_per_player": "Engine.ini",
-    "fuel_burning_multiplier": "Engine.ini",
-    "landsraad_reward_multiplier_faction_xp": "Engine.ini",
-    "landsraad_reward_multiplier_house_credit": "Engine.ini",
-    "landsraad_reward_multiplier_specialization_xp": "Engine.ini",
     "hydration_enabled": "Game.ini",
     "water_consumption_rate": "Game.ini",
     "player_starting_water": "Game.ini",
