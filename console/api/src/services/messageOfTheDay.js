@@ -1,6 +1,6 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { formatChatBodyMessage, isValidHexFlsId, isValidWhisperIdentity, publishCarePackageWhisper } from "../rmq.js";
+import { formatChatBodyMessage, isValidHexFlsId, isValidWhisperIdentity, listReadyRabbitQueues, publishCarePackageWhisper } from "../rmq.js";
 import { ensureMessageOfTheDayPersona, MESSAGE_OF_THE_DAY_PERSONA } from "../carePackage.js";
 import { redact } from "../redact.js";
 
@@ -79,12 +79,25 @@ export async function runMessageOfTheDayScan(config, players, context = {}) {
   const results = [];
   let sent = 0;
   let failed = 0;
+  let deferred = 0;
+  const mockMode = Boolean(context.mockMode || config.mockMode);
+  const playersWithDirectQueues = pendingPlayers.filter((player) => player.queue);
+  const readyRecipientQueues = context.readyRecipientQueues instanceof Set
+    ? context.readyRecipientQueues
+    : !mockMode && playersWithDirectQueues.length
+      ? await listReadyRabbitQueues(config)
+      : null;
   const persona = (context.mockMode || config.mockMode)
     ? (context.persona || MESSAGE_OF_THE_DAY_PERSONA)
     : await ensureMessageOfTheDayPersona(context.db);
   for (const player of pendingPlayers) {
     try {
-      if (context.mockMode || config.mockMode) {
+      if (player.queue && readyRecipientQueues && !readyRecipientQueues.has(player.queue)) {
+        deferred += 1;
+        results.push({ player: player.characterName, ok: true, deferred: true, reason: "Player message queue is not ready" });
+        continue;
+      }
+      if (mockMode) {
         results.push({ player: player.characterName, ok: true, mock: true, senderName: persona.displayName });
       } else {
         const result = await publishCarePackageWhisper(config, {
@@ -119,7 +132,7 @@ export async function runMessageOfTheDayScan(config, players, context = {}) {
     lastScanError: ""
   };
   writeJson(statePath(config), { delivered, status }, 0o600);
-  return { ok: failed === 0, skipped: false, sent, failed, results };
+  return { ok: failed === 0, skipped: false, sent, failed, deferred, results };
 }
 
 export function recordMessageOfTheDayScanFailure(config, error, now = new Date()) {

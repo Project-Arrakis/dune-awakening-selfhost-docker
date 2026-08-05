@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { buildBroadcastCommand, buildCarePackageWhisperPayload, buildMapChatPayload, buildShutdownBroadcastCommand, commandAuthToken, formatChatBodyMessage, isValidHexFlsId, isValidWhisperIdentity, publishCarePackageWhisper, publishMapChat, validateBroadcastMessage, validateLocalizedTexts, validatePublishLabel } from "../src/rmq.js";
+import { buildBroadcastCommand, buildCarePackageWhisperPayload, buildMapChatPayload, buildShutdownBroadcastCommand, commandAuthToken, formatChatBodyMessage, isValidHexFlsId, isValidWhisperIdentity, listReadyRabbitQueues, publishCarePackageWhisper, publishMapChat, validateBroadcastMessage, validateLocalizedTexts, validatePublishLabel } from "../src/rmq.js";
 
 test("builds verified ServiceBroadcast generic command payload", () => {
   const command = buildBroadcastCommand({ message: "Server event starts soon", durationSec: 45, title: "Event" });
@@ -232,6 +232,22 @@ test("publishes Care Package whisper to direct player queue when available", asy
     assert.equal(result.amqp.userId, "A5C0DE5E12A00001");
     assert.equal(result.amqp.senderHexFlsId, "A5C0DE5E12A00001");
     assert.match(calls[0].args.join(" "), /rabbitmqctl eval/);
+  } finally {
+    globalThis.__testSpawn = originalSpawn;
+  }
+});
+
+test("lists only running RabbitMQ queues with active consumers as ready", async () => {
+  const originalSpawn = globalThis.__testSpawn;
+  try {
+    globalThis.__testSpawn = () => fakeSpawn([
+      "READYQUEUE000001_queue\t1\trunning",
+      "WAITINGQUEUE0001_queue\t0\trunning",
+      "STOPPEDQUEUE0001_queue\t2\tstopped",
+      ""
+    ].join("\n"));
+    const ready = await listReadyRabbitQueues({ commandTimeoutMs: 1000 });
+    assert.deepEqual([...ready], ["READYQUEUE000001_queue"]);
   } finally {
     globalThis.__testSpawn = originalSpawn;
   }
