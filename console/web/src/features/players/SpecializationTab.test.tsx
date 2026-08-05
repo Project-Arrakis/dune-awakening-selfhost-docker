@@ -391,6 +391,71 @@ describe("SpecializationTab", () => {
       });
     });
 
+    it("ignores a completed action and reload from the previously selected player", async () => {
+      const nextPlayerResponse = {
+        rows: [{ track_type: "Swordmaster", xp_amount: 9000, level: 5 }],
+        skillModules: [],
+        capabilities: {}
+      };
+      vi.mocked(playersApi.specs).mockImplementation(async (playerId) => (
+        playerId === "player-999" ? nextPlayerResponse : mockSpecsResponse
+      ));
+      let resolveAdd: (value: { supported: boolean }) => void = () => {};
+      vi.mocked(playersApi.addSpecializationXp).mockImplementation(
+        () => new Promise<{ supported: boolean }>((resolve) => { resolveAdd = resolve; })
+      );
+
+      const { rerender } = render(<SpecializationTab {...defaultProps} />);
+      await waitFor(() => {
+        expect(screen.getByText("Trooper")).toBeInTheDocument();
+      });
+
+      fireEvent.click(screen.getByRole("button", { name: "Add XP to Trooper" }));
+      await waitFor(() => {
+        expect(playersApi.addSpecializationXp).toHaveBeenCalledTimes(1);
+      });
+
+      rerender(<SpecializationTab {...defaultProps} dbPlayerId="player-999" playerName="NextPlayer" />);
+      await waitFor(() => {
+        expect(screen.getByText("Swordmaster")).toBeInTheDocument();
+      });
+
+      await act(async () => {
+        resolveAdd({ supported: true });
+      });
+
+      expect(screen.getByText("Swordmaster")).toBeInTheDocument();
+      expect(screen.queryByText("Trooper")).not.toBeInTheDocument();
+      expect(screen.queryByText("XP updated. Relog required.")).not.toBeInTheDocument();
+      expect(playersApi.specs).toHaveBeenCalledTimes(2);
+      expect(playersApi.specs).toHaveBeenLastCalledWith("player-999");
+    });
+
+    it("does not dispatch a confirmed action after the selected player changes", async () => {
+      vi.mocked(playersApi.specs).mockResolvedValue(mockSpecsResponse);
+      let resolveConfirmation: (value: boolean) => void = () => {};
+      mockConfirmAction.mockImplementation(
+        () => new Promise<boolean>((resolve) => { resolveConfirmation = resolve; })
+      );
+
+      const { rerender } = render(<SpecializationTab {...defaultProps} />);
+      await waitFor(() => {
+        expect(screen.getByText("Trooper")).toBeInTheDocument();
+      });
+
+      fireEvent.click(screen.getByRole("button", { name: "Grant Max for Trooper" }));
+      await waitFor(() => {
+        expect(mockConfirmAction).toHaveBeenCalledTimes(1);
+      });
+
+      rerender(<SpecializationTab {...defaultProps} dbPlayerId="player-999" playerName="NextPlayer" />);
+      await act(async () => {
+        resolveConfirmation(true);
+      });
+
+      expect(playersApi.grantMaxSpecialization).not.toHaveBeenCalled();
+    });
+
     it("does not submit Add XP while the player is online", async () => {
       vi.mocked(playersApi.specs).mockResolvedValue(mockSpecsResponse);
       render(<SpecializationTab {...defaultProps} isOnline={true} />);

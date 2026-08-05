@@ -75,6 +75,8 @@ export function SpecializationTab({
   const [actionResults, setActionResults] = useState<Record<string, ActionResult>>({});
   const resultTimers = useRef<Record<string, number>>({});
   const loadRequest = useRef(0);
+  const activePlayerId = useRef(dbPlayerId);
+  activePlayerId.current = dbPlayerId;
 
   useEffect(() => {
     clearResults();
@@ -110,9 +112,13 @@ export function SpecializationTab({
     }, 8000);
   }
 
-  async function load() {
+  function isActivePlayer(playerId: string) {
+    return activePlayerId.current === playerId;
+  }
+
+  async function load(playerId = dbPlayerId) {
     const request = ++loadRequest.current;
-    if (!dbPlayerId) {
+    if (!playerId) {
       setRows([]);
       setError("");
       setLoading(false);
@@ -122,8 +128,8 @@ export function SpecializationTab({
     setLoading(true);
     setError("");
     try {
-      const response = await playersApi.specs(dbPlayerId);
-      if (request !== loadRequest.current) return;
+      const response = await playersApi.specs(playerId);
+      if (request !== loadRequest.current || !isActivePlayer(playerId)) return;
       setRows((response.rows || []).map((row) => ({
         trackType: String(row.track_type || row.trackType || ""),
         xp: Number(row.xp_amount ?? row.xp ?? 0),
@@ -140,7 +146,7 @@ export function SpecializationTab({
       }).filter(([moduleId, level]) => moduleId && Number(level) > 0));
       onSkillBaselineChange?.(baseline);
     } catch (err) {
-      if (request !== loadRequest.current) return;
+      if (request !== loadRequest.current || !isActivePlayer(playerId)) return;
       setRows([]);
       setError(friendlyInlineError(err));
       onSkillBaselineChange?.({});
@@ -150,6 +156,7 @@ export function SpecializationTab({
   }
 
   async function addXp(trackType: string) {
+    const playerId = dbPlayerId;
     const amount = Number(xpAmounts[trackType] ?? DEFAULT_XP_AMOUNT) || 0;
     if (!amount) {
       showResult(trackResultKey(trackType), "Enter an XP amount first.", "danger");
@@ -162,18 +169,20 @@ export function SpecializationTab({
     onError("");
     showResult(trackResultKey(trackType), "Updating XP", "neutral", true);
     try {
-      await playersApi.addSpecializationXp(dbPlayerId, { trackType, amount, confirmation: "ADD SPECIALIZATION XP" });
-      showResult(trackResultKey(trackType), "XP updated. Relog required.", "success");
+      await playersApi.addSpecializationXp(playerId, { trackType, amount, confirmation: "ADD SPECIALIZATION XP" });
       onActionLog?.("Add Specialization XP", trackType, String(amount), "Succeeded");
-      await load();
+      if (!isActivePlayer(playerId)) return;
+      showResult(trackResultKey(trackType), "XP updated. Relog required.", "success");
+      await load(playerId);
     } catch (err) {
       const message = friendlyInlineError(err);
-      showResult(trackResultKey(trackType), message, "danger");
       onActionLog?.("Add Specialization XP", trackType, String(amount), `Failed: ${message}`);
+      if (isActivePlayer(playerId)) showResult(trackResultKey(trackType), message, "danger");
     }
   }
 
   async function grantMax(trackType: string) {
+    const playerId = dbPlayerId;
     if (isOnline) {
       showResult(trackResultKey(trackType), "The player must be offline for specialization changes.", "danger");
       return;
@@ -184,21 +193,24 @@ export function SpecializationTab({
       danger: true,
       details: [{ label: "Track", value: trackType, tone: "accent" }, { label: "Player", value: playerName }]
     }))) return;
+    if (!isActivePlayer(playerId)) return;
     onError("");
     showResult(trackResultKey(trackType), "Granting max level", "neutral", true);
     try {
-      await playersApi.grantMaxSpecialization(dbPlayerId, { trackType, confirmation: "GRANT MAX SPECIALIZATION" });
-      showResult(trackResultKey(trackType), "Max level granted. Relog required.", "success");
+      await playersApi.grantMaxSpecialization(playerId, { trackType, confirmation: "GRANT MAX SPECIALIZATION" });
       onActionLog?.("Grant Max Specialization", trackType, "1", "Succeeded");
-      await load();
+      if (!isActivePlayer(playerId)) return;
+      showResult(trackResultKey(trackType), "Max level granted. Relog required.", "success");
+      await load(playerId);
     } catch (err) {
       const message = friendlyInlineError(err);
-      showResult(trackResultKey(trackType), message, "danger");
       onActionLog?.("Grant Max Specialization", trackType, "1", `Failed: ${message}`);
+      if (isActivePlayer(playerId)) showResult(trackResultKey(trackType), message, "danger");
     }
   }
 
   async function resetTrack(trackType: string) {
+    const playerId = dbPlayerId;
     if (isOnline) {
       showResult(trackResultKey(trackType), "The player must be offline for specialization changes.", "danger");
       return;
@@ -208,21 +220,24 @@ export function SpecializationTab({
       danger: true,
       details: [{ label: "Track", value: trackType, tone: "danger" }]
     }))) return;
+    if (!isActivePlayer(playerId)) return;
     onError("");
     showResult(trackResultKey(trackType), "Resetting track", "neutral", true);
     try {
-      await playersApi.resetSpecialization(dbPlayerId, { trackType, confirmation: "RESET SPECIALIZATION" });
-      showResult(trackResultKey(trackType), "Track reset. Relog required.", "success");
+      await playersApi.resetSpecialization(playerId, { trackType, confirmation: "RESET SPECIALIZATION" });
       onActionLog?.("Reset Specialization", trackType, "1", "Succeeded");
-      await load();
+      if (!isActivePlayer(playerId)) return;
+      showResult(trackResultKey(trackType), "Track reset. Relog required.", "success");
+      await load(playerId);
     } catch (err) {
       const message = friendlyInlineError(err);
-      showResult(trackResultKey(trackType), message, "danger");
       onActionLog?.("Reset Specialization", trackType, "1", `Failed: ${message}`);
+      if (isActivePlayer(playerId)) showResult(trackResultKey(trackType), message, "danger");
     }
   }
 
   async function grantAllKeystones() {
+    const playerId = dbPlayerId;
     if (isOnline) {
       showResult(KEYSTONE_RESULT_KEY, "The player must be offline for specialization changes.", "danger");
       return;
@@ -233,26 +248,29 @@ export function SpecializationTab({
       danger: true,
       details: [{ label: "Player", value: playerName, tone: "accent" }]
     }))) return;
+    if (!isActivePlayer(playerId)) return;
     onError("");
     showResult(KEYSTONE_RESULT_KEY, "Granting keystones", "neutral", true);
     try {
-      const response = await playersApi.grantAllSpecializationKeystones(dbPlayerId, "GRANT ALL KEYSTONES");
+      const response = await playersApi.grantAllSpecializationKeystones(playerId, "GRANT ALL KEYSTONES");
       const granted = countFromResult(response, "insertedRows");
+      onActionLog?.("Grant All Keystones", playerName, String(granted), "Succeeded");
+      if (!isActivePlayer(playerId)) return;
       showResult(
         KEYSTONE_RESULT_KEY,
         granted ? `${granted} ${pluralKeystones(granted)} granted. Relog required.` : "All keystones were already granted.",
         granted ? "success" : "neutral"
       );
-      onActionLog?.("Grant All Keystones", playerName, String(granted), "Succeeded");
-      await load();
+      await load(playerId);
     } catch (err) {
       const message = friendlyInlineError(err);
-      showResult(KEYSTONE_RESULT_KEY, message, "danger");
       onActionLog?.("Grant All Keystones", playerName, "1", `Failed: ${message}`);
+      if (isActivePlayer(playerId)) showResult(KEYSTONE_RESULT_KEY, message, "danger");
     }
   }
 
   async function resetAllKeystones() {
+    const playerId = dbPlayerId;
     if (isOnline) {
       showResult(KEYSTONE_RESULT_KEY, "The player must be offline for specialization changes.", "danger");
       return;
@@ -262,22 +280,24 @@ export function SpecializationTab({
       danger: true,
       details: [{ label: "Player", value: playerName, tone: "danger" }]
     }))) return;
+    if (!isActivePlayer(playerId)) return;
     onError("");
     showResult(KEYSTONE_RESULT_KEY, "Resetting keystones", "neutral", true);
     try {
-      const response = await playersApi.resetAllSpecializationKeystones(dbPlayerId, "RESET ALL KEYSTONES");
+      const response = await playersApi.resetAllSpecializationKeystones(playerId, "RESET ALL KEYSTONES");
       const removed = countFromResult(response, "deletedRows");
+      onActionLog?.("Reset All Keystones", playerName, String(removed), "Succeeded");
+      if (!isActivePlayer(playerId)) return;
       showResult(
         KEYSTONE_RESULT_KEY,
         removed ? `${removed} ${pluralKeystones(removed)} reset. Relog required.` : "This player had no keystones to reset.",
         removed ? "success" : "neutral"
       );
-      onActionLog?.("Reset All Keystones", playerName, String(removed), "Succeeded");
-      await load();
+      await load(playerId);
     } catch (err) {
       const message = friendlyInlineError(err);
-      showResult(KEYSTONE_RESULT_KEY, message, "danger");
       onActionLog?.("Reset All Keystones", playerName, "1", `Failed: ${message}`);
+      if (isActivePlayer(playerId)) showResult(KEYSTONE_RESULT_KEY, message, "danger");
     }
   }
 
