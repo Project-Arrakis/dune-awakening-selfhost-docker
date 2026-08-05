@@ -2944,6 +2944,261 @@ function permissionRankLabel(rank) {
   return PERMISSION_RANK_LABELS[rank] || `Rank ${rank}`;
 }
 
+const PERMISSION_OWNER_RANK = 1;
+const PERMISSION_EDITABLE_RANKS = new Set([1, 2, 3]);
+// Fallback only. The real cap comes from live server config via
+// parseEffectivePermissionLimit -- matching the shipped DefaultGame.ini's
+// m_MaxPermissionsPerActor=32 under [/Script/DuneSandbox.PermissionSettings].
+const DEFAULT_MAX_PERMISSIONS_PER_ACTOR = 32;
+
+// Base permission editing goes through the game's own stored procedures, never
+// through direct DML on permission_actor_rank. They do three things a hand-
+// written insert would skip: refresh the base marker, delete the player's marker
+// on removal, and pg_notify('permission_notify_channel', ...) -- which the
+// running map server LISTENs on and applies immediately. Verified in-game on a
+// live server: a rank change written this way moved a player between sections in
+// the owner's open Permissions panel with no relog and no restart. Writing the
+// table directly would land the row and leave the running server unaware of it,
+// which is the silently-reverted behaviour this avoids.
+async function supportsBasePermissionEditing(db) {
+  for (const table of ["permission_actor_rank", "permission_actor", "actors", "player_state", "map_names"]) {
+    if (!(await tableExists(db, table))) return false;
+  }
+  return await functionExists(db, "dune.permission_set_player_rank(bigint,bigint,smallint,text)")
+    && await functionExists(db, "dune.permission_remove_player_rank(bigint,bigint)");
+}
+
+export async function basePermissionsSupported(db) {
+  return supportsBasePermissionEditing(db).catch(() => false);
+}
+
+// The base id the Bases table shows is min(buildings.id) for the claim, which is
+// NOT the permission actor id -- on a live server the two differ for every base,
+// by a varying offset. Resolving the actor here (rather than trusting anything
+// client-supplied) is what keeps an edit from landing on a neighbouring base.
+//
+// map_name_id is resolved for the same call: permission_set_player_rank
+// interpolates its map argument into the notify payload unquoted, so it must be
+// the numeric dune.map_names id. Passing the text map name would emit malformed
+// JSON to the game server.
+export async function basePermissionActor(db, baseId) {
+  const target = intParam(baseId, "base id", 1);
+  const result = await db.query(`
+    select a.id::text as actor_id,
+           coalesce(a.map, '') as map,
+           coalesce(mn.map_name_id, 0)::int as map_name_id,
+           coalesce(a.partition_id, 0)::int as partition_id
+    from dune.buildings b
+    join dune.building_instances bi on bi.building_id = b.id
+    join dune.actor_fgl_entities afe on afe.entity_id = bi.owner_entity_id
+    join dune.actors a on a.id = afe.actor_id
+    left join dune.map_names mn on mn.map_name = a.map
+    where b.id = $1
+    limit 1`, [target]);
+  const row = result.rows[0];
+  if (!row) throw new Error("That base was not found.");
+  return {
+    baseId: target,
+    actorId: String(row.actor_id),
+    map: String(row.map || ""),
+    mapNameId: Number(row.map_name_id || 0),
+    partitionId: Number(row.partition_id || 0)
+  };
+}
+
+// permission_actor_rank.player_id is a player's player_controller_id, not just
+// any actors row belonging to their account -- one account holds several. The
+// shipped permission_actor_create_or_update_base_marker joins
+// `player_state on player_controller_id = player_id`, and a live A/B confirmed
+// it: a rank row written for a non-canonical actor id was accepted by the
+// procedure and never appeared in game, while the same write against the
+// player_controller_id appeared immediately.
+//
+// The fallback lookup exists so such a phantom row is still shown to the
+// operator rather than silently vanishing from the roster: resolving the name
+// through owner_account_id is how listBases does it, and every actors row of an
+// account maps to the same character name.
+export async function listBasePermissions(db, baseId) {
+  await requireCapability(await supportsBasePermissionEditing(db),
+    "Base permission editing requires dune.permission_actor_rank, dune.map_names, and the dune.permission_set_player_rank/permission_remove_player_rank functions.");
+  const { actorId, map, mapNameId } = await basePermissionActor(db, baseId);
+  const result = await db.query(`
+    select par.player_id::text as player_id,
+           coalesce(ps.character_name, fallback.character_name, '') as character_name,
+           par.rank::int as rank,
+           (ps.player_controller_id is not null) as canonical
+    from dune.permission_actor_rank par
+    left join dune.player_state ps on ps.player_controller_id = par.player_id
+    left join lateral (
+      select fps.character_name
+      from dune.actors fa
+      join dune.player_state fps on fps.account_id = fa.owner_account_id
+      where fa.id = par.player_id
+      limit 1
+    ) fallback on true
+    where par.permission_actor_id = $1::bigint
+    order by par.rank asc, coalesce(ps.character_name, fallback.character_name, '') asc`, [actorId]);
+  return {
+    baseId: intParam(baseId, "base id", 1),
+    actorId,
+    map,
+    mapNameId,
+    entries: result.rows.map((row) => ({
+      playerId: String(row.player_id),
+      name: String(row.character_name || ""),
+      rank: Number(row.rank),
+      label: permissionRankLabel(Number(row.rank)),
+      // False means this row names an actor that is not the account's
+      // player_controller_id, so the game ignores it. Surfaced rather than
+      // hidden: it is the one roster state the console can see and the game
+      // client cannot.
+      canonical: row.canonical === true
+    }))
+  };
+}
+
+// Candidates for the roster picker. Deliberately keyed on player_controller_id
+// rather than reusing listPlayers' actor_id: listPlayers is row-per-pawn, and
+// handing a pawn id to permission_set_player_rank writes a row the game ignores.
+export async function basePermissionCandidates(db, { q = "", limit = 25 } = {}) {
+  await requireCapability(await supportsBasePermissionEditing(db),
+    "Base permission editing requires dune.permission_actor_rank, dune.map_names, and the dune.permission_set_player_rank/permission_remove_player_rank functions.");
+  const safeLimit = intParam(limit, "limit", 1, 100);
+  const values = [];
+  let filter = "";
+  if (q) {
+    values.push(`%${q}%`);
+    filter = `and (ps.character_name ilike $${values.length} or ps.player_controller_id::text = $${values.length})`;
+  }
+  values.push(safeLimit);
+  const result = await db.query(`
+    select distinct ps.player_controller_id::text as player_id,
+           coalesce(ps.character_name, '') as character_name
+    from dune.player_state ps
+    where coalesce(ps.player_controller_id, 0) > 0
+      and nullif(btrim(coalesce(ps.character_name, '')), '') is not null
+      and ps.character_name not in ('Server', 'Message of the Day')
+      ${filter}
+    order by character_name asc
+    limit $${values.length}`, values);
+  return result.rows.map((row) => ({ playerId: String(row.player_id), name: String(row.character_name || "") }));
+}
+
+function normalizeDesiredPermissions(entries) {
+  if (!Array.isArray(entries)) throw new Error("Permissions must be a list of players and ranks.");
+  const seen = new Set();
+  const desired = entries.map((entry) => {
+    const playerId = String(intParam(entry?.playerId, "player id", 1));
+    const rank = Number(entry?.rank);
+    if (!PERMISSION_EDITABLE_RANKS.has(rank)) {
+      throw new Error(`Rank ${entry?.rank} is not a valid base permission rank.`);
+    }
+    if (seen.has(playerId)) throw new Error("The same player was listed twice.");
+    seen.add(playerId);
+    return { playerId, rank };
+  });
+  const owners = desired.filter((entry) => entry.rank === PERMISSION_OWNER_RANK);
+  if (owners.length !== 1) {
+    throw new Error(owners.length === 0
+      ? "A base must have exactly one Owner. Promote a player to Owner before saving."
+      : `A base can only have one Owner; ${owners.length} were selected.`);
+  }
+  return desired;
+}
+
+// Applies a whole roster in one transaction, built entirely from the shipped
+// procedures. Two invariants the procedures do NOT enforce are enforced here:
+//
+//   - One Owner. permission_set_player_rank is a plain upsert, so setting rank 1
+//     for a second player would simply leave the base with two owners.
+//   - The cap. The procedure never counts rows; the limit comes from live server
+//     config (see parseEffectivePermissionLimit), not a constant.
+//
+// Write order matters even though NOTIFY is only delivered at commit: the marker
+// refresh inside permission_set_player_rank looks up the rank-1 holder with a
+// LIMIT 1, so a moment with two rank-1 rows could stamp the wrong owner onto the
+// base marker. Removals run first, then non-owner ranks, then the Owner last --
+// so at most one rank-1 row exists when the owner write lands.
+export async function setBasePermissions(db, baseId, entries, maxPermissionsPerActor = DEFAULT_MAX_PERMISSIONS_PER_ACTOR) {
+  await requireCapability(await supportsBasePermissionEditing(db),
+    "Base permission editing requires dune.permission_actor_rank, dune.map_names, and the dune.permission_set_player_rank/permission_remove_player_rank functions.");
+  const target = intParam(baseId, "base id", 1);
+  const safeMax = intParam(maxPermissionsPerActor, "maximum permissions per base", 1, 2147483647);
+  const desired = normalizeDesiredPermissions(entries);
+  if (desired.length > safeMax) {
+    throw new Error(`This base would hold ${desired.length} permissions, above the configured maximum of ${safeMax}.`);
+  }
+
+  return db.transaction(async (tx) => {
+    // The shipped procedures reference their tables unqualified and carry no
+    // `SET search_path` of their own; they resolve only because the console
+    // connects as the `dune` role, whose default "$user" path puts the dune
+    // schema first. Every query this file writes is schema-qualified, so setting
+    // it here costs nothing and keeps the feature working if ADMIN_DATABASE_URL
+    // is ever pointed at a differently-named role.
+    await tx.query("set local search_path to dune, public");
+
+    const actor = await basePermissionActor(tx, target);
+    if (!actor.mapNameId) {
+      throw new Error(`This base's map (${actor.map || "unknown"}) has no dune.map_names entry, so the game cannot be notified of the change.`);
+    }
+    // Lock the claim actor row, not the rank rows: a base whose roster is being
+    // fully replaced may have no rank rows to lock, and `for update` over zero
+    // rows serializes nothing. The actors row is guaranteed to exist.
+    const locked = await tx.query("select id from dune.actors where id = $1::bigint for update", [actor.actorId]);
+    if (!locked.rowCount) throw new Error("That base was not found.");
+
+    const existing = await tx.query(
+      "select player_id::text as player_id, rank::int as rank from dune.permission_actor_rank where permission_actor_id = $1::bigint",
+      [actor.actorId]);
+    const currentByPlayer = new Map(existing.rows.map((row) => [String(row.player_id), Number(row.rank)]));
+
+    // Every target player must be a real permission holder, i.e. an account's
+    // player_controller_id. Anything else writes a row the game ignores.
+    const canonical = await tx.query(
+      "select player_controller_id::text as player_id from dune.player_state where player_controller_id = any($1::bigint[])",
+      [desired.map((entry) => entry.playerId)]);
+    const canonicalIds = new Set(canonical.rows.map((row) => String(row.player_id)));
+    for (const entry of desired) {
+      if (!canonicalIds.has(entry.playerId)) {
+        throw new Error(`Player ${entry.playerId} is not a known player character, so the game would ignore this permission.`);
+      }
+    }
+
+    const desiredByPlayer = new Map(desired.map((entry) => [entry.playerId, entry.rank]));
+    const removed = [...currentByPlayer.keys()].filter((playerId) => !desiredByPlayer.has(playerId));
+    // Unchanged rows are skipped: every write fires a notify, and re-notifying
+    // the game about a rank it already has is pointless traffic.
+    const changed = desired.filter((entry) => currentByPlayer.get(entry.playerId) !== entry.rank);
+
+    for (const playerId of removed) {
+      await tx.query("select dune.permission_remove_player_rank($1::bigint, $2::bigint)", [actor.actorId, playerId]);
+    }
+    for (const entry of changed.filter((row) => row.rank !== PERMISSION_OWNER_RANK)) {
+      await tx.query("select dune.permission_set_player_rank($1::bigint, $2::bigint, $3::smallint, $4::text)",
+        [actor.actorId, entry.playerId, entry.rank, String(actor.mapNameId)]);
+    }
+    for (const entry of changed.filter((row) => row.rank === PERMISSION_OWNER_RANK)) {
+      await tx.query("select dune.permission_set_player_rank($1::bigint, $2::bigint, $3::smallint, $4::text)",
+        [actor.actorId, entry.playerId, entry.rank, String(actor.mapNameId)]);
+    }
+
+    return {
+      ok: true,
+      baseId: target,
+      actorId: actor.actorId,
+      map: actor.map,
+      added: changed.filter((entry) => !currentByPlayer.has(entry.playerId)).length,
+      reranked: changed.filter((entry) => currentByPlayer.has(entry.playerId)).length,
+      removed: removed.length,
+      total: desired.length,
+      // Changes reach a running map server immediately: the procedures notify
+      // permission_notify_channel, which the server LISTENs on. No restart.
+      message: "Permissions were updated. The change applies to the running map immediately."
+    };
+  });
+}
+
 const BASE_SORT_COLUMNS = {
   base_id: { order: ["id"] },
   name: { order: ["lower(coalesce(name, ''))"] },
@@ -3131,9 +3386,13 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
     // Without world_partition the console cannot tell a running map from a
     // stopped one, so the panel hides the queue entirely and refills stay immediate.
     const generatorRefillQueue = generatorRefill && await supportsGeneratorRefillQueue(db).catch(() => false);
+    // Probed the same way and for the same reason: without the shipped
+    // permission procedures the panel hides the editor rather than offering a
+    // control that fails on save.
+    const basePermissions = await supportsBasePermissionEditing(db).catch(() => false);
 
     return {
-      capabilities: { bases: true, generatorRefill, generatorRefillQueue },
+      capabilities: { bases: true, generatorRefill, generatorRefillQueue, basePermissions },
       totalCount: result.rows[0] ? Number(result.rows[0].total_count) : 0,
       totalBases: totalsResult.rows[0] ? Number(totalsResult.rows[0].total_bases) : 0,
       totalPieces: totalsResult.rows[0] ? Number(totalsResult.rows[0].total_pieces) : 0,

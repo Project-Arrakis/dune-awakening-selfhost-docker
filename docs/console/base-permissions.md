@@ -1,0 +1,164 @@
+# Base permissions
+
+**Status:** Current | **Last Updated:** August 2026
+
+The Bases panel can edit who owns a base and who it is shared with. The editor
+lives in the **Permissions** tab of an expanded base row, alongside the existing
+**Power** tab.
+
+Unlike generator refills, permission changes are **not** queued for a map
+restart — they reach a running map immediately. See
+[Why there is no queue](#why-there-is-no-queue).
+
+## Ranks
+
+Permissions are rows in `dune.permission_actor_rank`, one per player per base:
+
+| Rank | Label | Notes |
+|---:|---|---|
+| 1 | Owner | Exactly one per base. Shown in the **Owner** column. |
+| 2 | Co-Owner | Shown in the **Shared With** column. |
+| 3 | Associate | Shown in the **Shared With** column. |
+
+The in-game Permissions panel displays `5` / `4` / `3` beside Owner / Co-Owner /
+Associate. Those are decoration, not database ranks — an in-game Co-Owner is
+stored as rank `2`, and no row ever holds a `4` or `5`.
+
+## Endpoints
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/api/bases/:baseId/permissions` | The base's roster, with resolved names and rank labels. |
+| `PUT` | `/api/bases/:baseId/permissions` | Replace the roster. Body: `{ entries: [{ playerId, rank }] }`. |
+| `GET` | `/api/bases/permission-candidates?q=&limit=` | Player search for the add-player picker. |
+
+`PUT` takes a **whole roster**, not a delta. The server diffs it against current
+state and applies only the difference, so an unchanged row is never rewritten —
+every write emits a notification, and re-notifying an unchanged rank is pointless
+traffic to the game server.
+
+Audited as `bases.set-permissions`. Rate limited. No confirmation phrase, matching
+the guild mutations and the refill route: the change is reversible from the same
+editor.
+
+## What the server enforces
+
+Client-side rules are re-checked server-side; none of them are trusted from the
+request.
+
+- **Exactly one Owner.** `permission_set_player_rank` is a plain upsert, so
+  setting rank 1 for a second player would simply leave the base with two owners.
+  The outgoing Owner is demoted first, in the same transaction.
+- **The roster cap**, read from live server config (see below).
+- **Ranks limited to 1–3**, no duplicate players.
+- **Every player id must be a `player_controller_id`** (see below).
+
+## The roster cap comes from server config
+
+The game caps permissions per actor. Two settings exist:
+
+| Key | Section | Shipped default |
+|---|---|---:|
+| `permission_max_permissions_per_actor` | `/Script/DuneSandbox.PermissionSettings` | **32** |
+| `max_permissions_per_actor` | `/Script/DuneSandbox.DuneGameMode` (legacy) | 20 |
+
+`DefaultGame.ini` inside the server image defines `m_MaxPermissionsPerActor=32`
+under `[PermissionSettings]` only — there is no `DuneGameMode` form of the key —
+so the canonical field is the one the server enforces.
+`parseEffectivePermissionLimit` (`console/api/src/services/permissionSettings.js`)
+therefore reads the canonical key **first** and falls back to the legacy one,
+defaulting to 32.
+
+Note this is the **opposite** precedence to `parseEffectiveGuildMemberLimit`,
+where the legacy `DuneGameMode` field wins. Reading the legacy key first here
+would inherit its `20` and silently cap rosters below what the server permits.
+
+To raise the cap, edit `permission_max_permissions_per_actor` in the settings
+editor — the console reads it per save, so no release is needed.
+
+> **Footgun:** writing the *legacy* field through the Advanced Editor introduces
+> a `DuneGameMode` value defaulting to 20, which can lower the effective cap
+> below the shipped 32.
+
+## Two ids that are easy to confuse
+
+**The base id is not the permission actor id.** The id shown in the Bases table
+is `min(buildings.id)` for the claim; `permission_actor_rank.permission_actor_id`
+is the claim *actor* id (`dune.actors.id`). They differ for every base and by a
+varying offset — observed live: `70 → 354`, `1006 → 1004`, `1675 → 1717`,
+`3030 → 3116`. The actor is always resolved server-side from the base id; an
+actor id is never accepted from a client.
+
+**`player_id` must be a `player_controller_id`.** One account owns several
+`dune.actors` rows, and only the one matching
+`dune.player_state.player_controller_id` is a real permission holder. A rank row
+written against any other actor id of the same account is accepted by the
+procedure and then **ignored by the game**.
+
+This is easy to get wrong because the read path hides it: names resolve through
+`actors.owner_account_id`, and every actor row of an account maps to the same
+character name — so a bad row renders perfectly in the console while doing
+nothing in game. The roster marks such rows (`canonical: false`) rather than
+hiding them; the console can see them and the game client cannot.
+
+## Why there is no queue
+
+Generator refills are queued until a map is down because a running server
+rewrites its own state back to Postgres and would overwrite the refill.
+Permissions are different: the game ships stored procedures that **notify the
+running server**, and the console calls those rather than writing the table.
+
+- `dune.permission_set_player_rank(actor_id, player_id, rank, map_id)` — upserts
+  the rank row, refreshes the base marker, then
+  `pg_notify('permission_notify_channel', 'set_rank#{…}')`.
+- `dune.permission_remove_player_rank(actor_id, player_id)` — deletes the rank
+  row and the player's marker, then notifies.
+
+Every map server `LISTEN`s on that channel (`LogFarmNotification: Display:
+Listening for notification 'permission_notify_channel'` in the server log).
+Verified in-game: a rank change written this way moved a player between sections
+in the owner's open Permissions panel with no relog and no map restart.
+
+**Do not write `permission_actor_rank` directly.** Direct DML skips the marker
+refresh and the notification, producing exactly the silently-reverted behaviour
+the refill queue exists to avoid.
+
+`dune.permission_actor_takeover` is **not** a transfer path — it refuses any
+actor that already has a rank-1 owner and returns quietly via `RAISE NOTICE`, so
+calling it on an owned base looks successful while doing nothing. Ownership
+transfer is demote-then-promote through `permission_set_player_rank`.
+
+## Two implementation constraints
+
+**`search_path`.** The shipped procedures reference their tables unqualified and
+carry no `SET search_path` of their own. They resolve only because every client —
+the game servers and the console — connects as the `dune` role, whose default
+`"$user", public` path reaches the `dune` schema. Since every query the console
+writes is schema-qualified, this had never mattered before; `setBasePermissions`
+now issues `set local search_path to dune, public` inside its transaction so the
+feature survives `ADMIN_DATABASE_URL` pointing at a differently-named role.
+
+**Write order.** The marker refresh inside `permission_set_player_rank` resolves
+the owner with a `LIMIT 1` over rank-1 rows, so a moment with two rank-1 rows
+could stamp the wrong owner onto the base marker. Removals run first, then
+non-owner ranks, then the Owner last — at most one rank-1 row exists when the
+owner write lands. (`NOTIFY` is only delivered on commit, so the game never
+observes the intermediate state; the marker refresh, running inside the
+transaction, does.)
+
+**Locking** is a row lock on the claim actor (`dune.actors`), not on the rank
+rows: a base whose roster is being fully replaced may have no rank rows, and
+`for update` over zero rows serializes nothing.
+
+## Capability gating
+
+The panel hides the editor unless `listBases` reports `capabilities.basePermissions`.
+That requires `dune.permission_actor_rank`, `dune.permission_actor`, `dune.actors`,
+`dune.player_state` and `dune.map_names`, plus both stored procedures — probed
+once per list request rather than per row.
+
+## Related
+
+- [generator-refill-caps.md](generator-refill-caps.md) — the refill endpoint, and
+  the queue this feature deliberately does not use.
+- [API-REFERENCE.md](API-REFERENCE.md) — full HTTP API reference.
