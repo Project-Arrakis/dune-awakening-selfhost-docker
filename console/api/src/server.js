@@ -468,6 +468,11 @@ async function handleApi(req, res) {
     sortColumn: url.searchParams.get("sortColumn") || "guild_name",
     sortDirection: url.searchParams.get("sortDirection") || "asc"
   }));
+  if (path.match(/^\/api\/guilds\/[^/]+\/members\/[^/]+\/promote$/) && req.method === "POST") return guildPromoteRoute(req, res, path);
+  if (path.match(/^\/api\/guilds\/[^/]+\/members\/[^/]+\/demote$/) && req.method === "POST") return guildDemoteRoute(req, res, path);
+  if (path.match(/^\/api\/guilds\/[^/]+\/members$/) && req.method === "POST") return guildAddMemberRoute(req, res, path);
+  if (path.match(/^\/api\/guilds\/[^/]+\/members\/[^/]+$/) && req.method === "DELETE") return guildRemoveMemberRoute(req, res, path);
+  if (path.match(/^\/api\/guilds\/[^/]+$/) && req.method === "DELETE") return guildDisbandRoute(req, res, path);
   if (path.match(/^\/api\/guilds\/[^/]+\/members$/)) return dbJson(res, () => duneDb.guildMembers(db, decodeURIComponent(path.split("/")[3])));
   if (path === "/api/bases") return dbJson(res, () => duneDb.listBases(db, {
     q: url.searchParams.get("q") || "",
@@ -1903,6 +1908,37 @@ function queryParams(url, names) {
 async function playerDbMutation(req, res, path, action, phrase, fn) {
   const playerId = decodeURIComponent(path.split("/")[3]);
   return directDbMutation(req, res, action, phrase, (body) => fn(playerId, body), { playerId });
+}
+
+async function guildPromoteRoute(req, res, path) {
+  const parts = path.split("/");
+  const guildId = decodeURIComponent(parts[3]);
+  const playerId = decodeURIComponent(parts[5]);
+  return directDbMutation(req, res, "guilds.promote-member", null, () => duneDb.promoteGuildMember(db, guildId, playerId), { guildId, playerId });
+}
+
+async function guildDemoteRoute(req, res, path) {
+  const parts = path.split("/");
+  const guildId = decodeURIComponent(parts[3]);
+  const playerId = decodeURIComponent(parts[5]);
+  return directDbMutation(req, res, "guilds.demote-member", null, () => duneDb.demoteGuildMember(db, guildId, playerId), { guildId, playerId });
+}
+
+async function guildAddMemberRoute(req, res, path) {
+  const guildId = decodeURIComponent(path.split("/")[3]);
+  return directDbMutation(req, res, "guilds.add-member", null, (body) => duneDb.addGuildMember(db, guildId, body.playerId, body.roleId), { guildId });
+}
+
+async function guildRemoveMemberRoute(req, res, path) {
+  const parts = path.split("/");
+  const guildId = decodeURIComponent(parts[3]);
+  const playerId = decodeURIComponent(parts[5]);
+  return directDbMutation(req, res, "guilds.remove-member", null, () => duneDb.removeGuildMember(db, guildId, playerId), { guildId, playerId });
+}
+
+async function guildDisbandRoute(req, res, path) {
+  const guildId = decodeURIComponent(path.split("/")[3]);
+  return directDbMutation(req, res, "guilds.disband", "DISBAND GUILD", () => duneDb.disbandGuild(db, guildId), { guildId });
 }
 
 async function inventoryDeleteRoute(req, res, path) {
