@@ -1,5 +1,7 @@
 # Generator refill caps
 
+**Status:** Current | **Last Updated:** August 2026
+
 `POST /api/bases/:baseId/refill-generators` tops every power device at a base
 up to a per-type fuel cap. The defaults live in the `refill` block of
 `GENERATOR_TYPES` (`console/api/src/duneDb.js`, ~line 3704) alongside the
@@ -72,3 +74,6 @@ device already at or above `totalCap` is left untouched (`added: 0`).
 The response's `capped: true` flag on a device means it hit `maxStacks` or ran
 out of inventory slots before reaching `totalCap` — not an error, just a
 partial refill worth surfacing to the operator.
+
+See [generator-fuel-burn-rates.md](generator-fuel-burn-rates.md) for how these
+same generator types map to their normal per-unit fuel burn rates.

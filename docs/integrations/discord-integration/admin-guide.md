@@ -12,7 +12,7 @@ minutes.
 - About 20 minutes of setup time
 
 No coding or Docker experience is required if someone else handles the hosting.
-If you're doing everything yourself, see the [Installation Guide](installation-guide.md).
+If you're doing everything yourself, see the [Companion Bot Setup Guide](../discord-control-bot/setup-guide.md).
 
 ---
 
@@ -236,10 +236,10 @@ Test these commands in your Discord server:
 
 ## Next Steps
 
-- [User Guide](user-guide.md) — how to use all 25 commands
+- [User Guide](../discord-control-bot/user-guide.md) — how to use all 25 commands
 - [FAQ](faq.md) — answers to common questions
 - [Troubleshooting](troubleshooting.md) — what to do when things go wrong
-- [Configuration Reference](configuration.md) — all available settings
+- [Configuration Reference](#step-10-create-the-configuration-file) — all available settings
 
 ## Sources
 

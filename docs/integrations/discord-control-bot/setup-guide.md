@@ -1,5 +1,12 @@
 # Dune Discord Companion Bot - Setup Guide
 
+**Status:** Current | **Last Updated:** July 2026
+
+> **Which Discord docs do I want?** This folder (`discord-control-bot/`) is the
+> **internal** set — the adapter contract, command surface, and bot-side reference.
+> If you are a server owner setting up Discord, start with the operator-facing
+> [`discord-integration/`](../discord-integration/README.md) instead.
+
 ## Scope
 
 This setup path validates the read-only Discord companion bot command layer and protected Console adapter without requiring manual edits to core Console files.

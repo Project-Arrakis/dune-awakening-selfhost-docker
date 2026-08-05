@@ -1,8 +1,8 @@
 # Dune: Awakening Console API Reference
 
-Complete reference for all HTTP API endpoints in the Dune Docker Console. All endpoints require authentication (session cookie + CSRF token) unless otherwise noted.
+**Status:** Current | **Last Updated:** August 2026
 
-**Last Updated:** 2026-07-29
+Complete reference for all HTTP API endpoints in the Dune Docker Console. All endpoints require authentication (session cookie + CSRF token) unless otherwise noted.
 
 **Format:** HTTP Method | Route | Description | Parameters
 
@@ -260,6 +260,8 @@ Complete reference for all HTTP API endpoints in the Dune Docker Console. All en
 | POST | `/api/blueprints/import` | Import blueprint file | multipart form: `player_id`, `file` |
 | DELETE | `/api/blueprints/{blueprintId}` | Delete blueprint | `blueprintId` |
 
+See [blueprints.md](blueprints.md) for the full import/export design.
+
 ---
 
 ## Maps & World
@@ -488,6 +490,8 @@ Complete reference for all HTTP API endpoints in the Dune Docker Console. All en
 ## Discord Adapter (Experimental)
 
 All Discord adapter endpoints require bearer token authentication (`DUNE_DISCORD_ADAPTER_TOKEN`) and support role-based capability checks. The adapter is disabled by default; enable with `DUNE_DISCORD_ADAPTER_ENABLED=true`.
+
+See [../integrations/discord-integration/README.md](../integrations/discord-integration/README.md) for setup and configuration, or [../integrations/discord-control-bot/api-adapter-contract.md](../integrations/discord-control-bot/api-adapter-contract.md) for the full adapter contract.
 
 ### Health & Status
 
