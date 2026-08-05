@@ -2048,8 +2048,26 @@ test("guild add member resolves the player and passes a one-guild-per-player cap
   assert.equal(result.ok, true);
   const add = calls.find((call) => call.text.includes("dune.add_guild_member("));
   assert.ok(add);
+  const advisoryLockIndex = calls.findIndex((call) => call.text.includes("guilds_get_exclusive_operation_lock"));
+  const guildRowLockIndex = calls.findIndex((call) => call.text.includes("from dune.guilds where guild_id = $1 for update"));
+  assert.ok(advisoryLockIndex >= 0 && advisoryLockIndex < guildRowLockIndex);
   // dune.add_guild_member(in_player_id, in_guild_id, ...) -- player id first, then guild id.
-  assert.deepEqual(add.values, [41, 1, 50, 1, 2147483647, 3]);
+  assert.deepEqual(add.values, [41, 1, 50, 1, 32, 3]);
+});
+
+test("guild add member enforces the configured capacity before invoking the game function", async () => {
+  const calls = [];
+  const db = guildMutationDb(calls, { memberCount: 48 });
+  await assert.rejects(() => addGuildMember(db, 1, 40, 1, 48), /configured maximum of 48 members/);
+  assert.ok(!calls.some((call) => call.text.includes("dune.add_guild_member(")));
+});
+
+test("guild add member passes a custom configured capacity to the game function", async () => {
+  const calls = [];
+  const db = guildMutationDb(calls, { memberCount: 47 });
+  await addGuildMember(db, 1, 40, 1, 48);
+  const add = calls.find((call) => call.text.includes("dune.add_guild_member("));
+  assert.deepEqual(add.values, [41, 1, 1, 1, 48, 3]);
 });
 
 test("guild add member surfaces a friendly error when the player is already in a guild", async () => {
