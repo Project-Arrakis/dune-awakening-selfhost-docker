@@ -273,7 +273,7 @@ Prototype pollution   ✅  String player IDs   ✅  Null item_id delete    ✅
 
 | File | Purpose |
 |------|---------|
-| `docs/blueprints.md` | Architecture, API reference, schema, security analysis |
+| `docs/console/blueprints.md` | Architecture, API reference, schema, security analysis |
 | `ISSUES.md` | Issue tracking (P34 crash, frontend UI) |
 | `CHANGELOG.md` | Feature changelog |
 
