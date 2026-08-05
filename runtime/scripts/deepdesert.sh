@@ -3,17 +3,24 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 
-OVERRIDE_FILE="runtime/generated/director-deepdesert-dual.ini"
+OVERRIDE_FILE="${DUNE_DEEPDESERT_OVERRIDE_FILE:-runtime/generated/director-deepdesert-dual.ini}"
 
 usage() {
   cat <<'EOF'
 Usage:
   dune deepdesert dual status
+  dune deepdesert dual configured
   dune deepdesert dual enable [--yes]
   dune deepdesert dual disable [--force] [--no-despawn] [--yes]
   dune deepdesert dual bootstrap [--yes]
   dune deepdesert dual repair
 EOF
+}
+
+dual_configured() {
+  [ -s "$OVERRIDE_FILE" ] || return 1
+  grep -Eq '^\[DeepDesert_1\][[:space:]]*$' "$OVERRIDE_FILE" \
+    && grep -Eq '^NumExtraServers=[1-9][0-9]*[[:space:]]*$' "$OVERRIDE_FILE"
 }
 
 require_postgres() {
@@ -178,6 +185,10 @@ PY
     fi
     echo "Director override: $override_state"
     echo "Expected override: NumExtraServers=1 and MinServers=0 for DeepDesert_1"
+  elif dual_configured; then
+    echo "Director override: present"
+    echo "Dual Deep Desert status: repair required (dimension 1 is missing)"
+    echo "The next battlegroup start will restore the missing dimension automatically."
   else
     echo "Director override: not configured yet"
     echo "Dual Deep Desert status: disabled"
@@ -533,6 +544,14 @@ case "$cmd" in
     done
     case "$sub" in
       status) status_dual ;;
+      configured)
+        if dual_configured; then
+          echo "Dual Deep Desert is configured."
+        else
+          echo "Dual Deep Desert is not configured."
+          exit 1
+        fi
+        ;;
       enable|repair) enable_dual ;;
       disable) disable_dual "$FORCE" "$NO_DESPAWN" ;;
       bootstrap) bootstrap_dual ;;

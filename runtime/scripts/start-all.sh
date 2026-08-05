@@ -64,6 +64,10 @@ else
   run_timed_step "Ensuring Database Is Up To Date" runtime/scripts/update-db.sh
 fi
 
+if runtime/scripts/deepdesert.sh dual configured >/dev/null 2>&1; then
+  run_timed_step "Reconciling Dual Deep Desert" runtime/scripts/deepdesert.sh dual repair --yes
+fi
+
 run_timed_step "Applying Spice Field Overrides" runtime/scripts/spicefield-overrides.sh apply
 
 run_timed_step "Synchronizing Public IP" runtime/scripts/ensure-public-ip.sh sync
