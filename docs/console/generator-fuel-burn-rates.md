@@ -1,5 +1,7 @@
 # Generator fuel burn rates
 
+**Status:** Current | **Last Updated:** August 2026
+
 `FUEL_BURN_SECONDS` in `console/api/src/duneDb.js` stores the normal, per-unit
 uptime for each supported generator consumable. The values match the persisted
 `m_FuelBurningDuration` fields and the normal burn times documented by the

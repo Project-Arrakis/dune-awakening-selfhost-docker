@@ -3993,7 +3993,7 @@ function portalVehicleDisplayName(type) {
 // the generator burning it — every fuel maps to exactly one duration across all
 // generators — so these constants replace reading the component per generator.
 // Re-verify after game updates; the measurement query lives in
-// docs/generator-fuel-burn-rates.md.
+// docs/console/generator-fuel-burn-rates.md.
 const FUEL_BURN_SECONDS = {
   oil: 60 * 60,                   // measured across 69 populated components
   spicedfuelcell: 90 * 60,        // measured — confirmed 2026-07-26 after the

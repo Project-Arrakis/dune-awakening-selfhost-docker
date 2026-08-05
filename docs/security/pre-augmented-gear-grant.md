@@ -1,5 +1,7 @@
 # Feature: Pre-Augmented Gear Grant
 
+**Status:** Historical record — describes the state at branch `feature/pre-augmented-gear-grant`. Not maintained. See [Pre-Augmented Gear](../console/PRE-AUGMENTED-GEAR.md) for current reference.
+
 Branch: `feature/pre-augmented-gear-grant`
 
 ## Design

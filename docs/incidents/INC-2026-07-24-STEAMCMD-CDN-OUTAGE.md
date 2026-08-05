@@ -1,5 +1,7 @@
 # Incident Case Study: SteamCMD Content-Host Failure
 
+**Status:** Historical record — post-incident case study from 2026-07-24. Not maintained.
+
 **Incident ID:** INC-2026-07-24-001
 
 **Date:** 2026-07-24
