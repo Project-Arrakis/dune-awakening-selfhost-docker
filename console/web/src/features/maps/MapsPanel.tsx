@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useRef, useState } from "react";
-import { ChevronDown, ChevronUp, Download, Fuel, Grid2X2, Info, List, Lock, RotateCcw } from "lucide-react";
+import { AlertTriangle, ChevronDown, ChevronUp, Download, Fuel, Grid2X2, Info, List, Lock, RotateCcw } from "lucide-react";
 import { mapsApi, type ChoamTerminalOverview, type ChoamTradeCenter, type LiveMapMemoryRow, type MapCombatStateResult, type MapRuntimeSettings, type MemoryBalancerState, type MemorySwapState, type PartitionCombatStateRow, type SpicefieldTypeRow, type UserSettingField, type UserSettingsSchema } from "../../api/maps";
 import { setupApi, type Task } from "../../api/setup";
 import { SecretInput } from "../../components/SecretInput";
@@ -20,7 +20,7 @@ function PendingRefillBadge({ count }: { count: number }) {
   </span>;
 }
 
-type HomeTaskResult = { status: "running" | "succeeded" | "failed" | "stopped"; title: string; message?: string; details?: string };
+type HomeTaskResult = { status: "running" | "succeeded" | "failed" | "stopped"; title: string; message?: string; details?: string; warnings?: string[] };
 type MapsResultScope = "maps" | "modifiers";
 type MapsTaskQueueState = { phase: "queued" | "running"; title: string };
 type MapsTaskOptions = {
@@ -74,6 +74,12 @@ function HomeTaskResultCard({ result }: { result: HomeTaskResult }) {
     <strong className={pending ? "loading-dots" : ""}>{formatResultTitle(result.title, pending)}</strong>
     {result.message && <p>{formatResultMessage(result.message)}</p>}
     {result.details && <TechnicalDetails title="Technical details" text={result.details} />}
+    {result.warnings && result.warnings.length > 0 && <div className="home-task-result-warnings">
+      {result.warnings.map((warning, index) => <p key={`${warning}-${index}`}>
+        <AlertTriangle size={14} aria-hidden="true" style={{ verticalAlign: "-2px", marginRight: 6 }} />
+        {formatResultMessage(warning)}
+      </p>)}
+    </div>}
   </div>;
 }
 
@@ -387,7 +393,13 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
           mapsDisplayedTerminalTaskRef.current.add(task.id);
           setMapsResultScope(resultScope);
           setMapsResultTarget(resultTarget);
-          setMapsResult({ status: "succeeded", title: successTitle, message: options.restartAcceptedMessage });
+          // The final terminal `next` (below) never actually displays once this
+          // branch has fired -- see the `!restartAcceptedShown || next.status !== "succeeded"`
+          // guard after waitForTaskWithUpdates resolves. warnings must come from
+          // THIS task snapshot instead; safe because the raw-write step (where
+          // usersettings.py prints USERSETTINGS_WARNING lines) always runs before
+          // the restart step this handoff fires on, so task.warnings is already complete.
+          setMapsResult({ status: "succeeded", title: successTitle, message: options.restartAcceptedMessage, warnings: task.warnings });
           persistMapsTask(null);
         }
         return;
@@ -405,7 +417,7 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
       persistMapsTask({ taskId: task.id, result: nextProgress, runningTitle, successTitle, resultScope });
     });
     const next: HomeTaskResult = final.status === "succeeded"
-      ? { status: "succeeded", title: successTitle, details: taskTechnicalDetails(final) }
+      ? { status: "succeeded", title: successTitle, details: taskTechnicalDetails(final), warnings: final.warnings }
       : { status: "failed", title: "Map Change Failed", details: taskTechnicalDetails(final) || final.errorMessage || final.progressMessage };
     mapsDisplayedTerminalTaskRef.current.add(final.id);
     if (next.status === "succeeded") applyOptimisticMemoryUpdates(options.memoryUpdates);
@@ -435,6 +447,7 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
     let final: Task | null = null;
     let handedOffToWarming = false;
     let acceptedShown = false;
+    const collectedWarnings: string[] = [];
     for (const [index, action] of actions.entries()) {
       const progressMessage = `Step ${index + 1} of ${actions.length}: ${action.label}`;
       if (!handedOffToWarming) {
@@ -453,7 +466,13 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
           mapsDisplayedTerminalTaskRef.current.add(task.id);
           if (!acceptedShown) {
             acceptedShown = true;
-            const accepted: HomeTaskResult = { status: "succeeded", title: successTitle, message: options.saveAcceptedMessage };
+            // task.warnings is already complete by handoff time -- same reasoning as
+            // runTaskAndRefreshNow's restart-handoff branch: the raw-write step (where
+            // usersettings.py prints USERSETTINGS_WARNING lines) always runs before the
+            // step this handoff fires on. Fold in whatever earlier actions in this
+            // sequence already collected too.
+            const handoffWarnings = [...collectedWarnings, ...(task.warnings || [])];
+            const accepted: HomeTaskResult = { status: "succeeded", title: successTitle, message: options.saveAcceptedMessage, warnings: handoffWarnings.length ? handoffWarnings : undefined };
             setMapsResultScope(resultScope);
             setMapsResultTarget(resultTarget);
             setMapsResult(accepted);
@@ -477,10 +496,11 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
         setMapsResult(nextProgress);
         persistMapsTask({ taskId: task.id, result: nextProgress, runningTitle, successTitle, resultScope });
       });
+      if (final?.warnings?.length) collectedWarnings.push(...final.warnings);
       if (final.status !== "succeeded") break;
     }
     const next: HomeTaskResult = final?.status === "succeeded"
-      ? { status: "succeeded", title: successTitle, message: options.saveAcceptedMessage || undefined, details: options.saveAcceptedMessage ? undefined : taskTechnicalDetails(final) }
+      ? { status: "succeeded", title: successTitle, message: options.saveAcceptedMessage || undefined, details: options.saveAcceptedMessage ? undefined : taskTechnicalDetails(final), warnings: collectedWarnings.length ? collectedWarnings : undefined }
       : { status: "failed", title: "Map Change Failed", details: final ? taskTechnicalDetails(final) || final.errorMessage || final.progressMessage : "No task result." };
     if (final?.id) mapsDisplayedTerminalTaskRef.current.add(final.id);
     if (next.status === "succeeded") applyOptimisticMemoryUpdates(options.memoryUpdates);
