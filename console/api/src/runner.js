@@ -272,6 +272,8 @@ export function buildDuneArgs(operation, payload = {}) {
       return ["usersettings", "profile-game-raw"];
     case "userSettingsClientGameIni":
       return payload.map ? (payload.partitionId ? ["usersettings", "client-game-ini", validateMapName(payload.map), validatePartitionId(payload.partitionId)] : ["usersettings", "client-game-ini", validateMapName(payload.map)]) : ["usersettings", "client-game-ini"];
+    case "userSettingsClientEngineIni":
+      return payload.map ? (payload.partitionId ? ["usersettings", "client-engine-ini", validateMapName(payload.map), validatePartitionId(payload.partitionId)] : ["usersettings", "client-engine-ini", validateMapName(payload.map)]) : ["usersettings", "client-engine-ini"];
     case "userSettingsProfileGameWrite":
       return ["usersettings", "profile-game-write-b64", encodeTextArg(payload.content || "")];
     case "userSettingsProfileEngineRaw":

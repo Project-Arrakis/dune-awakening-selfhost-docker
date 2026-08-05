@@ -313,14 +313,40 @@ end
 }
 
 write_director_override() {
+  local pvp pve
+  pvp="$(pvp_partition_id)"
+  pve="$(pve_partition_id)"
+  [ -n "$pvp" ] || { echo "Missing DeepDesert_1 PvP partition."; exit 1; }
+  [ -n "$pve" ] || { echo "Missing DeepDesert_1 PvE partition."; exit 1; }
   mkdir -p "$(dirname "$OVERRIDE_FILE")"
-  cat > "$OVERRIDE_FILE" <<'EOF'
+  cat > "$OVERRIDE_FILE" <<EOF
+; ManagedPvpPartition=$pvp
+; ManagedPvePartition=$pve
 
 [DeepDesert_1]
 NumExtraServers=1
 MinServers=0
 EOF
   echo "Director DeepDesert_1 override written: $OVERRIDE_FILE"
+}
+
+managed_selector_from_override() {
+  local key="$1"
+  [ -f "$OVERRIDE_FILE" ] || return 0
+  sed -n "s/^; ${key}=\([0-9][0-9]*\)$/\1/p" "$OVERRIDE_FILE" | head -n1
+}
+
+remove_dual_usergame_selectors() {
+  local pvp="$1" pve="$2"
+  # Remove only the exact values recorded by this toggle. The managed override retains
+  # those IDs even if a partial/manual cleanup removed the dimension-1 database row first.
+  if [ -n "$pvp" ]; then
+    python3 runtime/scripts/usersettings.py map-set Global global_pvp_enabled_partition_remove "$pvp" >/dev/null 2>&1 || true
+  fi
+  if [ -n "$pve" ]; then
+    python3 runtime/scripts/usersettings.py map-set Global global_pve_enabled_partition_remove "$pve" >/dev/null 2>&1 || true
+  fi
+  python3 runtime/scripts/usersettings.py materialize-current >/dev/null || true
 }
 
 apply_usergame() {
@@ -331,17 +357,22 @@ apply_usergame() {
   [ -n "$pve" ] || { echo "Missing DeepDesert_1 PvE partition."; exit 1; }
   runtime/scripts/sietches.sh set-display "$pvp" "Deep Desert PvP" >/dev/null
   runtime/scripts/sietches.sh set-display "$pve" "Deep Desert PvE" >/dev/null
+  # force_pvp_all_partitions stays Map-scoped to DeepDesert_1, not Global: it's a defensive
+  # False so this map's PvP/PvE split can never be hijacked by a force-PvP-everywhere setting
+  # some admin has legitimately configured at Global scope for other maps -- writing it at
+  # Global scope would silently overwrite that unrelated setting instead.
   python3 runtime/scripts/usersettings.py map-set DeepDesert_1 force_pvp_all_partitions False
-  python3 runtime/scripts/usersettings.py partition-set DeepDesert_1 "$pvp" partition_pvp_enabled True
-  python3 runtime/scripts/usersettings.py partition-set DeepDesert_1 "$pvp" partition_pve_enabled False
-  python3 runtime/scripts/usersettings.py partition-set DeepDesert_1 "$pve" partition_pvp_enabled False
-  python3 runtime/scripts/usersettings.py partition-set DeepDesert_1 "$pve" partition_pve_enabled True
-  python3 runtime/scripts/usersettings.py partition-set DeepDesert_1 "$pvp" legacy_pvp_enabled True
-  python3 runtime/scripts/usersettings.py partition-set DeepDesert_1 "$pve" legacy_pvp_enabled False
-  python3 runtime/scripts/usersettings.py partition-set DeepDesert_1 "$pvp" server_pve False
-  python3 runtime/scripts/usersettings.py partition-set DeepDesert_1 "$pve" server_pve True
+  # Both partition selectors are exact-value adds to the shared Global PvpPveSettings section
+  # (see global_pvp/pve_enabled_partition_add in usersettings.py) -- never a blanket clear, so
+  # an unrelated admin-added entry in that section is untouched. The PvE partition selector is
+  # written explicitly (not left to legacy_pvp_enabled/server_pve fallback defaults) so it can't
+  # be pulled off PVE by an unrelated legacy-field override configured elsewhere at Global/Map
+  # scope for a different purpose.
+  python3 runtime/scripts/usersettings.py map-set Global global_pvp_enabled_partition_add "$pvp"
+  python3 runtime/scripts/usersettings.py map-set Global global_pve_enabled_partition_add "$pve"
   python3 runtime/scripts/usersettings.py materialize-current >/dev/null || true
   echo "UserGame PvP/PvE settings applied. PvP partition: $pvp. PvE partition: $pve."
+  echo "This uses the Global PvP/PvE partition selectors (+m_PvpEnabledPartitions=$pvp, +m_PveEnabledPartitions=$pve), shared across the whole battlegroup -- a matching manual edit in the Advanced Editor's Global UserGame section may be affected by this toggle."
 }
 
 enable_dual() {
@@ -368,7 +399,7 @@ enable_dual() {
 }
 
 disable_dual() {
-  local force="${1:-0}" no_despawn="${2:-0}" pve assigned mode
+  local force="${1:-0}" no_despawn="${2:-0}" pvp pve assigned mode
   local rows row partition_id dimension_index server_id
 
   require_postgres
@@ -378,17 +409,21 @@ disable_dual() {
     exit 2
   fi
 
+  pvp="$(pvp_partition_id)"
+  pve="$(pve_partition_id)"
+  [ -n "$pvp" ] || pvp="$(managed_selector_from_override ManagedPvpPartition)"
+  [ -n "$pve" ] || pve="$(managed_selector_from_override ManagedPvePartition)"
+
   rows="$(extra_deepdesert_partition_rows)"
   [ -n "$rows" ] || {
     echo "No extra DeepDesert_1 dimensions are present."
+    remove_dual_usergame_selectors "$pvp" "$pve"
     rm -f "$OVERRIDE_FILE"
     reset_single_sietch_dimension
     restart_director_if_running
     despawn_idle_dynamic_deepdesert_servers
     return 0
   }
-
-  pve="$(pve_partition_id)"
 
   while IFS='|' read -r partition_id dimension_index server_id; do
     [ -n "${partition_id:-}" ] || continue
@@ -453,13 +488,15 @@ disable_dual() {
 
   echo "Removing DeepDesert_1 extra dimensions/config..."
   psql -v ON_ERROR_STOP=1 -c "delete from dune.world_partition where map = 'DeepDesert_1' and dimension_index > 0;"
+  remove_dual_usergame_selectors "$pvp" "$pve"
   rm -f "$OVERRIDE_FILE"
   reset_single_sietch_dimension
-  python3 runtime/scripts/usersettings.py partition-set DeepDesert_1 "$(pvp_partition_id)" partition_pvp_enabled False >/dev/null 2>&1 || true
-  python3 runtime/scripts/usersettings.py materialize-current >/dev/null || true
   restart_director_if_running
   despawn_idle_dynamic_deepdesert_servers
   echo "Dual Deep Desert PvP/PvE disabled."
+  if [ -n "$pvp" ] || [ -n "$pve" ]; then
+    echo "This removed +m_PvpEnabledPartitions=${pvp:-<unknown>} and +m_PveEnabledPartitions=${pve:-<unknown>} from the Global UserGame section -- a matching manual edit in the Advanced Editor may have been affected by this toggle."
+  fi
 }
 
 bootstrap_dual() {

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { appendFileSync, chmodSync, mkdtempSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildSelfUpdateHelperDockerArgs, TaskManager, taskTimeoutMs } from "../src/tasks.js";
+import { buildSelfUpdateHelperDockerArgs, publicTask, taskWarnings, TaskManager, taskTimeoutMs } from "../src/tasks.js";
 
 test("task manager creates and completes allowlisted dune tasks", async () => {
   const dir = mkdtempSync(join(tmpdir(), "arrakis-task-"));
@@ -45,6 +45,52 @@ test("game update check exit 100 is treated as update-available success", async 
   assert.equal(task.status, "succeeded");
   assert.equal(task.exitCode, 100);
   assert.match(task.logLines.map((line) => line.line).join("\n"), /Update available/);
+});
+
+test("USERSETTINGS_WARNING lines surface as task.warnings without disturbing logLines", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "arrakis-task-warn-"));
+  const duneScript = join(dir, "dune");
+  writeFileSync(
+    duneScript,
+    "#!/usr/bin/env bash\necho 'Global: +m_PvpEnabledPartitions=8 was saved -- Dual Deep Desert can change this.'\necho 'USERSETTINGS_WARNING: Global: +m_PvpEnabledPartitions=8 (PvP partition selector) was saved -- Dual Deep Desert can change this.'\necho done\n",
+    { mode: 0o700 }
+  );
+  chmodSync(duneScript, 0o700);
+
+  const manager = new TaskManager({
+    duneScript,
+    repoRoot: dir,
+    taskRetention: 20,
+    commandTimeoutMs: 5000
+  });
+
+  const created = manager.create("server", "status", {});
+  assert.equal(created.status, "queued");
+  const task = await waitForTask(manager, created.id);
+
+  assert.deepEqual(taskWarnings(task), [
+    "Global: +m_PvpEnabledPartitions=8 (PvP partition selector) was saved -- Dual Deep Desert can change this."
+  ]);
+  assert.deepEqual(publicTask(task).warnings, taskWarnings(task));
+  assert.match(task.logLines.map((line) => line.line).join("\n"), /USERSETTINGS_WARNING: /);
+});
+
+test("a task with no USERSETTINGS_WARNING lines has an empty warnings array", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "arrakis-task-nowarn-"));
+  const duneScript = join(dir, "dune");
+  writeFileSync(duneScript, "#!/usr/bin/env bash\necho task:$*\n", { mode: 0o700 });
+  chmodSync(duneScript, 0o700);
+
+  const manager = new TaskManager({
+    duneScript,
+    repoRoot: dir,
+    taskRetention: 20,
+    commandTimeoutMs: 5000
+  });
+
+  const created = manager.create("server", "status", {});
+  const task = await waitForTask(manager, created.id);
+  assert.deepEqual(publicTask(task).warnings, []);
 });
 
 test("long-running server tasks get an extended timeout", () => {
