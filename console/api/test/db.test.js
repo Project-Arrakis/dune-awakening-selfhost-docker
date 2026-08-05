@@ -16,7 +16,7 @@ import {
   queueGeneratorRefill,
   supportsGeneratorRefillQueue
 } from "../src/duneDb.js";
-import { addCurrency, addFactionReputation, addIntel, addonLeadershipPlayers, addonOpsHealthFarms, addonOpsHealthPlayers, addonOpsHealthSummary, addonOpsHealthSummaryV2, addSpecializationXp, applyLandsraadMilestonePreset, augmentInventoryItem, augmentNewestPlayerItem, baseGeneratorFuelLevels, baseGenerators, changeDunePassword, completeJourneyNode, completeTutorial, dbStatus, deleteInventoryItem, exportBaseAsBlueprint, generatorUptimePolicy, giveItemToPlayer, giveItemToStorage, guildMembers, landsraadOverview, listBases, listGuilds, listPlayers, listRoutines, listSpicefieldTypes, listTables, liveMapPlayers, liveMapServices, playerCraftingRecipes, playerCurrency, playerFactions, playerIntel, playerInventory, playerJourney, playerPortalSnapshots, playerPosition, playerProfile, playerProgression, playerResearchItems, playerSolarisCoinTotal, playerVitals, portalGeneratorFuel, portalVehicles, refillBaseGenerators, repairVehicleDecay, resetJourneyNode, resetTutorial, routineDefinition, runSql, setLandsraadPlayerContribution, supportsGeneratorRefill, tablePreview, teleportOfflinePlayerToCoords, unlockCraftingRecipe, unlockResearchItem, updateInventoryItem, updateLandsraadRewardTier, updateLandsraadTaskGoal, updateLandsraadTermTaskGoals, updateSpicefieldType, updateTableRow, UnsupportedCapabilityError, _resetPlayerTargetCacheForTests } from "../src/duneDb.js";
+import { addCurrency, addFactionReputation, addGuildMember, addIntel, addonLeadershipPlayers, addonOpsHealthFarms, addonOpsHealthPlayers, addonOpsHealthSummary, addonOpsHealthSummaryV2, addSpecializationXp, applyLandsraadMilestonePreset, augmentInventoryItem, augmentNewestPlayerItem, baseGeneratorFuelLevels, baseGenerators, changeDunePassword, completeJourneyNode, completeTutorial, dbStatus, deleteInventoryItem, demoteGuildMember, disbandGuild, exportBaseAsBlueprint, generatorUptimePolicy, giveItemToPlayer, giveItemToStorage, guildMembers, landsraadOverview, listBases, listGuilds, listPlayers, listRoutines, listSpicefieldTypes, listTables, liveMapPlayers, liveMapServices, playerCraftingRecipes, playerCurrency, playerFactions, playerIntel, playerInventory, playerJourney, playerPortalSnapshots, playerPosition, playerProfile, playerProgression, playerResearchItems, playerSolarisCoinTotal, playerVitals, portalGeneratorFuel, portalVehicles, promoteGuildMember, refillBaseGenerators, removeGuildMember, repairVehicleDecay, resetJourneyNode, resetTutorial, routineDefinition, runSql, setLandsraadPlayerContribution, supportsGeneratorRefill, tablePreview, teleportOfflinePlayerToCoords, unlockCraftingRecipe, unlockResearchItem, updateInventoryItem, updateLandsraadRewardTier, updateLandsraadTaskGoal, updateLandsraadTermTaskGoals, updateSpicefieldType, updateTableRow, UnsupportedCapabilityError, _resetPlayerTargetCacheForTests } from "../src/duneDb.js";
 
 beforeEach(() => {
   _resetPlayerTargetCacheForTests();
@@ -1886,6 +1886,254 @@ test("guild members falls back to a direct account-id join when dune.actors is u
   assert.ok(memberQuery);
   assert.doesNotMatch(memberQuery.text, /dune\.actors/);
   assert.match(memberQuery.text, /left join dune\.player_state ps_by_account on ps_by_account\.account_id = coalesce\(null, gm\."player_id"\)/);
+});
+
+function okRows(rows) {
+  return { rows, rowCount: rows.length };
+}
+
+function guildMutationDb(calls, fixtures = {}) {
+  const db = {
+    async query(text, values = []) {
+      calls.push({ text, values });
+      if (text.includes("to_regclass")) return okRows([{ exists: true }]);
+      if (text.includes("to_regprocedure")) return okRows([{ exists: true }]);
+      if (text.includes("information_schema.columns")) {
+        const table = values[1];
+        if (table === "guilds") return okRows((fixtures.guildColumns || ["guild_id", "guild_name"]).map((column_name) => ({ column_name })));
+        if (table === "guild_members") return okRows((fixtures.memberColumns || ["guild_id", "player_id", "role_id"]).map((column_name) => ({ column_name })));
+        return okRows([]);
+      }
+      if (text.includes("from dune.guilds where guild_id = $1 for update")) {
+        return fixtures.guildRows === null ? okRows([]) : okRows(fixtures.guildRows || [{ guild_id: 1, guild_name: "Spicy Girls" }]);
+      }
+      if (text.includes("from dune.guild_members where guild_id = $1 and player_id = $2 for update")) {
+        return fixtures.memberRows === null ? okRows([]) : okRows(fixtures.memberRows || [{ role_id: "1" }]);
+      }
+      if (text.includes("select player_id from dune.guild_members where guild_id = $1 and role_id = $2")) {
+        return okRows(fixtures.previousLeaderRows || [{ player_id: "10" }]);
+      }
+      if (text.includes("dune.promote_guild_member(")) {
+        if (fixtures.promoteError) throw new Error(fixtures.promoteError);
+        return okRows([]);
+      }
+      if (text.includes("dune.demote_guild_member(")) {
+        if (fixtures.demoteError) throw new Error(fixtures.demoteError);
+        return okRows([]);
+      }
+      if (text.includes("from dune.actors a")) {
+        return okRows(fixtures.playerRows || [{ actor_id: 40, account_id: 44, controller_id: 41, player_state_id: 5, online_status: "Offline" }]);
+      }
+      if (text.includes("dune.add_guild_member(")) {
+        if (fixtures.addError) throw new Error(fixtures.addError);
+        return okRows([]);
+      }
+      if (text.includes("dune.remove_guild_members(")) {
+        if (fixtures.removeError) throw new Error(fixtures.removeError);
+        return okRows([]);
+      }
+      if (text.includes("select count(*)::int as count from dune.guild_members where guild_id = $1")) {
+        return okRows([{ count: fixtures.memberCount ?? 3 }]);
+      }
+      if (text.includes("dune.disband_guild(")) {
+        if (fixtures.disbandError) throw new Error(fixtures.disbandError);
+        return okRows([]);
+      }
+      return okRows([]);
+    },
+    async transaction(fn) {
+      return fn(db);
+    }
+  };
+  return db;
+}
+
+test("guild promotion bumps a member to officer without touching the leader", async () => {
+  const calls = [];
+  const db = guildMutationDb(calls, { memberRows: [{ role_id: "1" }] });
+  const result = await promoteGuildMember(db, 1, 20);
+  assert.equal(result.ok, true);
+  assert.equal(result.newRoleId, 50);
+  assert.equal(result.previousLeaderId, null);
+  const promote = calls.find((call) => call.text.includes("dune.promote_guild_member("));
+  assert.ok(promote);
+  assert.deepEqual(promote.values, [1, 20, 50]);
+  // A plain member-to-officer bump never needs to know who the current leader is.
+  assert.ok(!calls.some((call) => call.text.includes("select player_id from dune.guild_members where guild_id = $1 and role_id = $2")));
+});
+
+test("guild promotion bumps an officer to leader and demotes the previous leader", async () => {
+  const calls = [];
+  const db = guildMutationDb(calls, { memberRows: [{ role_id: "50" }], previousLeaderRows: [{ player_id: "10" }] });
+  const result = await promoteGuildMember(db, 1, 20);
+  assert.equal(result.ok, true);
+  assert.equal(result.newRoleId, 100);
+  assert.equal(result.previousLeaderId, "10");
+  const promote = calls.find((call) => call.text.includes("dune.promote_guild_member("));
+  assert.ok(promote);
+  assert.deepEqual(promote.values, [1, 20, 100]);
+});
+
+test("guild promotion is a no-op when the target is already the leader", async () => {
+  const calls = [];
+  const db = guildMutationDb(calls, { memberRows: [{ role_id: "100" }] });
+  const result = await promoteGuildMember(db, 1, 20);
+  assert.equal(result.alreadyLeader, true);
+  assert.ok(!calls.some((call) => call.text.includes("dune.promote_guild_member(")));
+});
+
+test("guild promotion rejects when the guild does not exist", async () => {
+  const db = guildMutationDb([], { guildRows: [] });
+  await assert.rejects(() => promoteGuildMember(db, 1, 20), /was not found/);
+});
+
+test("guild promotion rejects when the player is not a guild member", async () => {
+  const db = guildMutationDb([], { memberRows: [] });
+  await assert.rejects(() => promoteGuildMember(db, 1, 20), /is not a member/);
+});
+
+test("guild promotion reports unsupported capability when schema functions are absent", async () => {
+  const db = { query: async (text) => text.includes("to_regclass") ? okRows([{ exists: false }]) : okRows([]) };
+  await assert.rejects(() => promoteGuildMember(db, 1, 20), UnsupportedCapabilityError);
+});
+
+test("guild promotion reports unsupported capability when guild_members lacks the expected columns", async () => {
+  const db = guildMutationDb([], { memberColumns: ["guild_id", "role_id"] }); // missing player_id
+  await assert.rejects(() => promoteGuildMember(db, 1, 20), UnsupportedCapabilityError);
+});
+
+test("guild demotion downgrades an officer to member", async () => {
+  const calls = [];
+  const db = guildMutationDb(calls, { memberRows: [{ role_id: "50" }] });
+  const result = await demoteGuildMember(db, 1, 20);
+  assert.equal(result.ok, true);
+  const demote = calls.find((call) => call.text.includes("dune.demote_guild_member("));
+  assert.ok(demote);
+  assert.deepEqual(demote.values, [1, 20, 1]);
+});
+
+test("guild demotion rejects the guild leader without calling the database function", async () => {
+  const calls = [];
+  const db = guildMutationDb(calls, { memberRows: [{ role_id: "100" }] });
+  await assert.rejects(() => demoteGuildMember(db, 1, 20), /is the guild leader/);
+  assert.ok(!calls.some((call) => call.text.includes("dune.demote_guild_member(")));
+});
+
+test("guild demotion rejects a plain member who cannot be demoted further", async () => {
+  const calls = [];
+  const db = guildMutationDb(calls, { memberRows: [{ role_id: "1" }] });
+  await assert.rejects(() => demoteGuildMember(db, 1, 20), /already a Member/);
+  assert.ok(!calls.some((call) => call.text.includes("dune.demote_guild_member(")));
+});
+
+test("guild demotion rejects when the guild does not exist", async () => {
+  const db = guildMutationDb([], { guildRows: [] });
+  await assert.rejects(() => demoteGuildMember(db, 1, 20), /was not found/);
+});
+
+test("guild demotion rejects when the player is not a member", async () => {
+  const db = guildMutationDb([], { memberRows: [] });
+  await assert.rejects(() => demoteGuildMember(db, 1, 20), /is not a member/);
+});
+
+test("guild demotion reports unsupported capability when schema functions are absent", async () => {
+  const db = { query: async (text) => text.includes("to_regclass") ? okRows([{ exists: false }]) : okRows([]) };
+  await assert.rejects(() => demoteGuildMember(db, 1, 20), UnsupportedCapabilityError);
+});
+
+test("guild add member resolves the player and passes a one-guild-per-player cap", async () => {
+  const calls = [];
+  const db = guildMutationDb(calls);
+  const result = await addGuildMember(db, 1, 40, 50);
+  assert.equal(result.ok, true);
+  const add = calls.find((call) => call.text.includes("dune.add_guild_member("));
+  assert.ok(add);
+  // dune.add_guild_member(in_player_id, in_guild_id, ...) -- player id first, then guild id.
+  assert.deepEqual(add.values, [41, 1, 50, 1, 2147483647, 3]);
+});
+
+test("guild add member surfaces a friendly error when the player is already in a guild", async () => {
+  const db = guildMutationDb([], { addError: "Cannot insert more than 1 guild entries for each user." });
+  await assert.rejects(() => addGuildMember(db, 1, 40, 1), /already in a guild/);
+});
+
+test("guild add member surfaces a friendly error when the guild does not exist", async () => {
+  const db = guildMutationDb([], { addError: "Trying to add user to non existing guild 1." });
+  await assert.rejects(() => addGuildMember(db, 1, 40, 1), /was not found/);
+});
+
+test("guild add member surfaces a friendly error when factions are incompatible", async () => {
+  const db = guildMutationDb([], { addError: "Trying to add user to with non compatible. player faction: 1, guild faction: 2" });
+  await assert.rejects(() => addGuildMember(db, 1, 40, 1), /faction is not compatible/);
+});
+
+test("guild add member reports unsupported capability when schema functions are absent", async () => {
+  const db = { query: async (text) => text.includes("to_regclass") ? okRows([{ exists: false }]) : okRows([]) };
+  await assert.rejects(() => addGuildMember(db, 1, 40, 1), UnsupportedCapabilityError);
+});
+
+test("guild remove member deletes a non-leader", async () => {
+  const calls = [];
+  const db = guildMutationDb(calls, { memberRows: [{ role_id: "50" }] });
+  const result = await removeGuildMember(db, 1, 20);
+  assert.equal(result.ok, true);
+  const remove = calls.find((call) => call.text.includes("dune.remove_guild_members("));
+  assert.ok(remove);
+  assert.deepEqual(remove.values, [[20], 1, 0]);
+});
+
+test("guild remove member rejects removing the leader without calling the database function", async () => {
+  const calls = [];
+  const db = guildMutationDb(calls, { memberRows: [{ role_id: "100" }] });
+  await assert.rejects(() => removeGuildMember(db, 1, 20), /is the guild leader/);
+  assert.ok(!calls.some((call) => call.text.includes("dune.remove_guild_members(")));
+});
+
+test("guild remove member rejects when the guild does not exist", async () => {
+  const db = guildMutationDb([], { guildRows: [] });
+  await assert.rejects(() => removeGuildMember(db, 1, 20), /was not found/);
+});
+
+test("guild remove member rejects when the player is not a member", async () => {
+  const db = guildMutationDb([], { memberRows: [] });
+  await assert.rejects(() => removeGuildMember(db, 1, 20), /is not a member/);
+});
+
+test("guild remove member reports unsupported capability when schema functions are absent", async () => {
+  const db = { query: async (text) => text.includes("to_regclass") ? okRows([{ exists: false }]) : okRows([]) };
+  await assert.rejects(() => removeGuildMember(db, 1, 20), UnsupportedCapabilityError);
+});
+
+test("guild disband deletes the guild then cleans up orphaned guild_members rows", async () => {
+  const calls = [];
+  const db = guildMutationDb(calls, { memberCount: 5 });
+  const result = await disbandGuild(db, 1);
+  assert.equal(result.ok, true);
+  assert.equal(result.guildName, "Spicy Girls");
+  assert.equal(result.memberCount, 5);
+  const disband = calls.find((call) => call.text.includes("dune.disband_guild("));
+  assert.ok(disband);
+  assert.deepEqual(disband.values, [1]);
+  const cleanup = calls.find((call) => call.text.includes("delete from dune.guild_members where guild_id = $1"));
+  assert.ok(cleanup, "expected a defensive cleanup delete of orphaned guild_members rows");
+  assert.deepEqual(cleanup.values, [1]);
+  // The cleanup delete must run after the game's own disband function, not before.
+  assert.ok(calls.indexOf(disband) < calls.indexOf(cleanup));
+});
+
+test("guild disband rejects when the guild does not exist", async () => {
+  const db = guildMutationDb([], { guildRows: [] });
+  await assert.rejects(() => disbandGuild(db, 1), /was not found/);
+});
+
+test("guild disband reports unsupported capability when schema functions are absent", async () => {
+  const db = { query: async (text) => text.includes("to_regclass") ? okRows([{ exists: false }]) : okRows([]) };
+  await assert.rejects(() => disbandGuild(db, 1), UnsupportedCapabilityError);
+});
+
+test("guild disband reports unsupported capability when dune.guilds lacks the expected columns", async () => {
+  const db = guildMutationDb([], { guildColumns: ["guild_id"] }); // missing guild_name
+  await assert.rejects(() => disbandGuild(db, 1), UnsupportedCapabilityError);
 });
 
 const BASE_REQUIRED_TABLES = ["dune.buildings", "dune.building_instances", "dune.actor_fgl_entities", "dune.actors"];
