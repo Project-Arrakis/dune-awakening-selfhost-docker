@@ -4,8 +4,6 @@
 
 Complete reference for all HTTP API endpoints in the Dune Docker Console. All endpoints require authentication (session cookie + CSRF token) unless otherwise noted.
 
-**Last Updated:** 2026-07-29
-
 **Format:** HTTP Method | Route | Description | Parameters
 
 ---

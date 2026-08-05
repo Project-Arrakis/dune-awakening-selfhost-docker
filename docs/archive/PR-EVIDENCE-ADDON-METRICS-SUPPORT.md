@@ -135,9 +135,9 @@ Result: passed.
 ## Documentation
 
 Added or updated:
-- `docs/R1-METRICS-STACK-IMPLEMENTATION-NOTES.md`
-- `docs/E2E-METRICS-TESTING.md`
-- `docs/PR-EVIDENCE-ADDON-METRICS-SUPPORT.md`
+- `docs/archive/R1-METRICS-STACK-IMPLEMENTATION-NOTES.md`
+- `docs/runtime/E2E-METRICS-TESTING.md`
+- `docs/archive/PR-EVIDENCE-ADDON-METRICS-SUPPORT.md`
 
 The evidence document contains the detailed validation trail for local testing, security, E2E, and WebUI checks.
 
