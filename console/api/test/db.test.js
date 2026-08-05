@@ -2122,7 +2122,7 @@ test("guild remove member reports unsupported capability when schema functions a
   await assert.rejects(() => removeGuildMember(db, 1, 20), UnsupportedCapabilityError);
 });
 
-test("guild disband deletes the guild then cleans up orphaned guild_members rows", async () => {
+test("guild disband delegates to the game function and reports the member count it removed", async () => {
   const calls = [];
   const db = guildMutationDb(calls, { memberCount: 5 });
   const result = await disbandGuild(db, 1);
@@ -2132,11 +2132,16 @@ test("guild disband deletes the guild then cleans up orphaned guild_members rows
   const disband = calls.find((call) => call.text.includes("dune.disband_guild("));
   assert.ok(disband);
   assert.deepEqual(disband.values, [1]);
-  const cleanup = calls.find((call) => call.text.includes("delete from dune.guild_members where guild_id = $1"));
-  assert.ok(cleanup, "expected a defensive cleanup delete of orphaned guild_members rows");
-  assert.deepEqual(cleanup.values, [1]);
-  // The cleanup delete must run after the game's own disband function, not before.
-  assert.ok(calls.indexOf(disband) < calls.indexOf(cleanup));
+  // guild_members rows cascade away with the guilds row via guild_members_guild_id_fkey
+  // (ON DELETE CASCADE), so we must not issue a redundant delete of our own.
+  assert.ok(
+    !calls.some((call) => call.text.includes("delete from dune.guild_members")),
+    "expected no manual guild_members delete -- the FK cascade already removes those rows"
+  );
+  // The member count is read before the disband, so the reported total isn't always zero.
+  const count = calls.find((call) => call.text.includes("count(*)::int as count from dune.guild_members"));
+  assert.ok(count);
+  assert.ok(calls.indexOf(count) < calls.indexOf(disband));
 });
 
 test("guild disband rejects when the guild does not exist", async () => {
