@@ -11,6 +11,7 @@ cp "$repo_root/runtime/scripts/runtime-env.sh" "$test_root/project/runtime/scrip
 cp "$repo_root/runtime/scripts/memory-swap-common.sh" "$test_root/project/runtime/scripts/memory-swap-common.sh"
 cp "$repo_root/runtime/scripts/compose-project.sh" "$test_root/project/runtime/scripts/compose-project.sh"
 cp "$repo_root/runtime/scripts/fls-signals.sh" "$test_root/project/runtime/scripts/fls-signals.sh"
+cp "$repo_root/runtime/scripts/farm-readiness.sh" "$test_root/project/runtime/scripts/farm-readiness.sh"
 
 cat > "$test_root/project/.env" <<'EOF'
 POSTGRES_PORT=16432
