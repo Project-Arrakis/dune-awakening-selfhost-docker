@@ -2115,11 +2115,10 @@ export async function disbandGuild(db, guildId) {
 
     const memberCount = await tx.query("select count(*)::int as count from dune.guild_members where guild_id = $1", [safeGuildId]);
 
+    // dune.disband_guild deletes the guilds row; guild_members rows for this guild go with it via
+    // guild_members_guild_id_fkey (FOREIGN KEY ... REFERENCES dune.guilds ON DELETE CASCADE), so
+    // there is nothing left for us to clean up here.
     await tx.query("select dune.disband_guild($1::bigint)", [safeGuildId]);
-    // dune.disband_guild deletes the guilds row but leaves guild_members rows behind, which would
-    // otherwise strand former members against the one-guild-per-player cap (MAX_GUILD_COUNT_PER_PLAYER)
-    // forever, since add_guild_member counts guild_members rows with no join back to guilds.
-    await tx.query("delete from dune.guild_members where guild_id = $1", [safeGuildId]);
 
     return { ok: true, guildId: safeGuildId, guildName: guild.rows[0].guild_name, memberCount: memberCount.rows[0]?.count || 0 };
   });

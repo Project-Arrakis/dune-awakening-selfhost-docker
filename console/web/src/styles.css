@@ -1628,8 +1628,10 @@ body.debug .technical-details { display: block; }
 .guild-add-member-search-row { align-items: center; }
 .guild-add-member-search-row input { flex: 1 1 auto; min-width: 0; }
 .guild-add-member-results { display: grid; gap: 6px; max-height: 220px; overflow-y: auto; }
-.guild-add-member-result { text-align: left; width: 100%; }
+.guild-add-member-result { text-align: left; width: 100%; overflow-wrap: anywhere; }
 .guild-add-member-selected { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel-soft); font-weight: 700; }
+.guild-add-member-selected span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.guild-add-member-selected button { flex-shrink: 0; }
 .bases-table { width: 100%; min-width: 0; table-layout: fixed; }
 .bases-table th { max-width: none; white-space: normal; overflow: visible; text-overflow: clip; line-height: 1.2; }
 .bases-table th, .bases-table td { padding: 8px 6px; font-size: 14px; }
