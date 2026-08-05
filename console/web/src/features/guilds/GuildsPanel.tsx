@@ -405,6 +405,7 @@ export function GuildsPanel({ onError, confirmAction }: GuildsPanelProps) {
             columns={["character_name", "role_id"]}
             tableClassName="guild-members-table"
             actionClassName="actions-column"
+            rowKey={(row) => String(row.player_id)}
             emptyMessage={membersLoading ? "Loading members..." : "This guild has no members."}
             renderCell={(row, col) => {
               if (col === "role_id") return guildRoleLabel(row.role_id);
