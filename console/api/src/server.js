@@ -48,6 +48,7 @@ import { createPublicDirectoryReporter, normalizeDiscordInvite, readDirectorySet
 import { choamTerminalOverview, installChoamTerminals, removeChoamTerminals } from "./services/choamTerminals.js";
 import { autoRefillPublicState, createAutoRefillScheduler, setBaseAutoRefill } from "./services/autoRefill.js";
 import { calculateAlwaysOnHostMemorySafety } from "./services/hostMemorySafety.js";
+import { parseEffectiveGuildMemberLimit } from "./services/guildSettings.js";
 
 const config = loadConfig();
 const auth = createAuth(config);
@@ -1926,7 +1927,11 @@ async function guildDemoteRoute(req, res, path) {
 
 async function guildAddMemberRoute(req, res, path) {
   const guildId = decodeURIComponent(path.split("/")[3]);
-  return directDbMutation(req, res, "guilds.add-member", null, (body) => duneDb.addGuildMember(db, guildId, body.playerId, body.roleId), { guildId });
+  return directDbMutation(req, res, "guilds.add-member", null, async (body) => {
+    const settings = await runDune(config, buildDuneArgs("userSettingsMapValues", { map: "Survival_1" }), { timeoutMs: 8000 });
+    const maxMembers = parseEffectiveGuildMemberLimit(settings.stdout);
+    return duneDb.addGuildMember(db, guildId, body.playerId, body.roleId, maxMembers);
+  }, { guildId });
 }
 
 async function guildRemoveMemberRoute(req, res, path) {
