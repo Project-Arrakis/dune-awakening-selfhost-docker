@@ -498,6 +498,15 @@ MAP_FIELDS = {
     "reveal_distributed_tech_item": ("/Script/DuneSandbox.TechKnowledgeSettings", "m_bRevealItemOnDistributedToCharacter", "False"),
 }
 
+# Synthetic Global-scope fields for Dual Deep Desert's PvP/PvE partition selectors: value is
+# a partition id, add/remove touch only that exact `+m_Pvp/PveEnabledPartitions=<value>` array
+# line (see profile_remove_key's value= match) -- never a blanket clear, since Global scope is
+# one shared section for the whole battlegroup and could hold unrelated admin-added entries.
+GLOBAL_ARRAY_FIELD_IDS = {
+    "global_pvp_enabled_partition_add", "global_pvp_enabled_partition_remove",
+    "global_pve_enabled_partition_add", "global_pve_enabled_partition_remove",
+}
+
 PARTITION_FIELDS = {
     "partition_pvp_enabled": (None, None, "False"),
     "partition_pve_enabled": (None, None, "False"),
@@ -945,7 +954,13 @@ def profile_set_key(profile: dict, scope: str, section: str, key: str, value: st
         block["lines"][target_index] = line
 
 
-def profile_remove_key(profile: dict, scope: str, section: str, key: str, map_name: str = "", partition_id: str = "", prefixes: set[str] | None = None) -> None:
+def profile_remove_key(profile: dict, scope: str, section: str, key: str, map_name: str = "", partition_id: str = "", prefixes: set[str] | None = None, value: str | None = None) -> None:
+    """Removes every line matching `key` (and, if given, restricted to `prefixes` and/or the
+    exact `value`). Passing `value` turns this into an exact-entry removal for array-style
+    `+key=value` lines -- e.g. Global-scope toggles (Dual Deep Desert's PvP/PvE partition
+    selectors) use it to remove only the one entry they own, leaving any other value for the
+    same key untouched, since a blanket prefix-only clear would delete unrelated entries
+    sharing that one shared section."""
     block = find_profile_section(profile, scope, section, map_name, partition_id)
     if not block:
         return
@@ -954,8 +969,8 @@ def profile_remove_key(profile: dict, scope: str, section: str, key: str, map_na
     for raw in block.get("lines", []):
         parsed = split_ini_assignment(raw)
         if parsed:
-            prefix, left, _ = parsed
-            if left == key and (allowed_prefixes is None or prefix in allowed_prefixes):
+            prefix, left, right = parsed
+            if left == key and (allowed_prefixes is None or prefix in allowed_prefixes) and (value is None or right == str(value)):
                 continue
         out.append(raw)
     block["lines"] = out
@@ -1332,6 +1347,16 @@ def set_profile_field(profile: dict, scope: str, map_name: str, partition_id: st
         return
 
     if scope == "global":
+        if field_id in GLOBAL_ARRAY_FIELD_IDS:
+            partition_value = str(value or "").strip()
+            if not partition_value:
+                return
+            array_key = "m_PvpEnabledPartitions" if "pvp" in field_id else "m_PveEnabledPartitions"
+            if field_id.endswith("_add"):
+                profile_set_key(profile, "global", "/Script/DuneSandbox.PvpPveSettings", array_key, partition_value, prefix="+")
+            else:
+                profile_remove_key(profile, "global", "/Script/DuneSandbox.PvpPveSettings", array_key, prefixes={"+"}, value=partition_value)
+            return
         if field_id not in MAP_FIELDS:
             raise SystemExit(f"Unknown global UserGame field: {field_id}")
         spec = MAP_FIELDS[field_id]
@@ -1424,6 +1449,20 @@ def profile_global_values(profile: dict) -> dict[str, str]:
     return sync_legacy_guild_values(values)
 
 
+def profile_partition_array_selector_active(profile: dict, section: str, key: str, target_map: str, target_partition: str) -> bool:
+    """True when `target_partition`'s own id appears in a `+key=` array under `section`, at
+    ANY scope that ends up merged into that partition's compiled UserGame.ini -- mirrors the
+    exact scope list compiled_usergame_ini() merges (global, then this map, then this
+    partition). Global-scope entries (e.g. Dual Deep Desert's PvP partition selector) are
+    invisible to a Partition-scope-only check, which would otherwise leave this "configured"
+    reading permanently disagreeing with the post-compile "materialized" reading."""
+    return (
+        profile_array_contains(profile, "global", section, key, target_partition)
+        or profile_array_contains(profile, "map", section, key, target_partition, target_map)
+        or profile_array_contains(profile, "partition", section, key, target_partition, target_map, target_partition)
+    )
+
+
 def profile_partition_values(profile: dict, map_name: str, partition_id: str) -> dict[str, str]:
     target_map = canonical_map(map_name)
     target_partition = str(partition_id)
@@ -1436,11 +1475,11 @@ def profile_partition_values(profile: dict, map_name: str, partition_id: str) ->
         partition_value = profile_get_key(profile, "partition", section, ini_key, target_map, target_partition)
         if partition_value is not None:
             values[key] = partition_value
-    values["partition_pvp_enabled"] = "True" if profile_array_contains(
-        profile, "partition", "/Script/DuneSandbox.PvpPveSettings", "m_PvpEnabledPartitions", target_partition, target_map, target_partition
+    values["partition_pvp_enabled"] = "True" if profile_partition_array_selector_active(
+        profile, "/Script/DuneSandbox.PvpPveSettings", "m_PvpEnabledPartitions", target_map, target_partition
     ) else values.get("partition_pvp_enabled", "False")
-    values["partition_pve_enabled"] = "True" if profile_array_contains(
-        profile, "partition", "/Script/DuneSandbox.PvpPveSettings", "m_PveEnabledPartitions", target_partition, target_map, target_partition
+    values["partition_pve_enabled"] = "True" if profile_partition_array_selector_active(
+        profile, "/Script/DuneSandbox.PvpPveSettings", "m_PveEnabledPartitions", target_map, target_partition
     ) else values.get("partition_pve_enabled", "False")
     return sync_legacy_guild_values(values)
 
@@ -1572,10 +1611,12 @@ def set_field(scope: str, name: str | None, field_id: str, value: str) -> int:
         set_profile_field(profile, "engine", "", "", field_id, value)
         validate_profile_port_ranges(profile)
     else:
-        if field_id not in MAP_FIELDS:
+        if field_id not in MAP_FIELDS and field_id not in GLOBAL_ARRAY_FIELD_IDS:
             raise SystemExit(f"Unknown map field: {field_id}")
         map_name = canonical_map(name or "")
         target_scope = "global" if map_name in {"", "Global"} else "map"
+        if field_id in GLOBAL_ARRAY_FIELD_IDS and target_scope != "global":
+            raise SystemExit(f"{field_id} may only be set at Global scope.")
         set_profile_field(profile, target_scope, map_name, "", field_id, value)
     write_profile(profile)
     return 0
@@ -1739,8 +1780,6 @@ def append_profile_unknown_lines(target: dict[str, list[str]], profile: dict, sc
                     prefix, left, _ = parsed
                     if not prefix and left in known.get(section, set()):
                         continue
-                    if prefix == "+" and section == "/Script/DuneSandbox.PvpPveSettings" and left in {"m_PvpEnabledPartitions", "m_PveEnabledPartitions"}:
-                        continue
                 target.setdefault(section, []).append(raw)
 
 
@@ -1776,6 +1815,7 @@ def compiled_userengine_ini(profile: dict, map_name: str = "", partition_id: str
         values = profile_engine_values(profile)
     section_lines: dict[str, list[str]] = {}
     last_comment: dict[str, tuple[str, ...]] = {}
+    emitted_comment_lines: dict[str, set[str]] = {}
     for field_id, spec in ENGINE_FIELDS.items():
         section, key, default = spec
         if not section or not key:
@@ -1798,13 +1838,21 @@ def compiled_userengine_ini(profile: dict, map_name: str = "", partition_id: str
         if comment and last_comment.get(section) != comment:
             section_lines.setdefault(section, []).extend(f"; {line}" for line in comment)
             last_comment[section] = comment
+            emitted_comment_lines.setdefault(section, set()).update(f"; {line}" for line in comment)
         section_lines.setdefault(section, []).append(f"{key}={value}")
     scopes = [("engine", "", "")]
     if map_name:
         scopes.append(("map_engine", canonical_map(map_name), ""))
     if map_name and partition_id:
         scopes.append(("partition_engine", canonical_map(map_name), str(partition_id)))
-    reserved_lines_by_section = schema_comment_lines_by_section(ENGINE_FIELD_INI_COMMENTS, ENGINE_FIELDS)
+    # Reserved comment lines are scoped to what THIS run actually re-emitted above
+    # (emitted_comment_lines), not the full static schema table -- a field sitting at
+    # its default never gets its value or comment written here, so a comment the admin
+    # manually kept next to it must not be treated as reserved either, or it's deleted
+    # with nothing regenerated to replace it (the bug this replaced: the old static
+    # per-field-name table reserved a field's comment text unconditionally, even on a
+    # run where that field's default meant nothing was ever (re)emitted for it).
+    reserved_lines_by_section = {section: set(lines) for section, lines in emitted_comment_lines.items()}
     # Also reserve the identity fields' commented-out placeholder VALUE lines (not
     # just their explanatory comments, already covered above) -- otherwise a
     # placeholder saved back verbatim through the Advanced tab's round trip (see
@@ -1845,6 +1893,19 @@ def compiled_usergame_ini(profile: dict, map_name: str, partition_id: str | None
     known = known_keys_by_section(MAP_FIELDS)
     known.setdefault("/Script/DuneSandbox.PvpPveSettings", set()).update({"m_PvpEnabledPartitions", "m_PveEnabledPartitions"})
     append_profile_unknown_lines(section_lines, profile, scopes, known)
+    pvp_pve_section = "/Script/DuneSandbox.PvpPveSettings"
+    if pvp_pve_section in section_lines:
+        # A Global-scoped array line can now duplicate the same value emitted
+        # structurally by the partition toggle above; collapse exact repeats
+        # rather than writing the same +m_Pvp/PveEnabledPartitions line twice.
+        seen: set[str] = set()
+        deduped: list[str] = []
+        for line in section_lines[pvp_pve_section]:
+            if line in seen:
+                continue
+            seen.add(line)
+            deduped.append(line)
+        section_lines[pvp_pve_section] = deduped
     section_lines[BUILDING_SETTINGS_SECTION] = normalize_staking_extension_removals(
         section_lines.get(BUILDING_SETTINGS_SECTION, []),
         add_defaults=True,
@@ -2260,6 +2321,134 @@ def replace_profile_engine_sections(profile: dict, engine_sections: list[dict]) 
     ] + engine_sections
 
 
+def _advanced_editor_block_label(block: dict) -> str:
+    scope = block.get("scope")
+    if scope == "Global":
+        return "Global"
+    if scope == "Map":
+        return f"Map {block.get('map')}"
+    if scope == "Partition":
+        return f"{block.get('map')} partition {block.get('partition')}"
+    if scope == "Engine":
+        return "Engine"
+    if scope == "MapEngine":
+        return f"Map {block.get('map')} Engine"
+    if scope == "PartitionEngine":
+        return f"{block.get('map')} partition {block.get('partition')} Engine"
+    return str(scope or "")
+
+
+def _advanced_editor_duplicate_key_warnings(sections: list[dict]) -> list[str]:
+    """Flag a key assigned more than once in the same saved section -- last-line-wins
+    is normal INI behavior, but the earlier value(s) otherwise vanish from the
+    compiled output with no trace they were ever submitted."""
+    warnings: list[str] = []
+    for block in sections:
+        where = _advanced_editor_block_label(block)
+        seen: dict[str, list[str]] = {}
+        for raw in block.get("lines", []):
+            parsed = split_ini_assignment(raw)
+            if not parsed:
+                continue
+            prefix, left, right = parsed
+            if prefix:
+                continue
+            seen.setdefault(left, []).append(right)
+        for key, values in seen.items():
+            if len(values) > 1:
+                dropped = ", ".join(values[:-1])
+                warnings.append(
+                    f"{where}: {key} was set {len(values)} times; only the last value "
+                    f"({values[-1]}) applies -- earlier value(s) ({dropped}) were dropped."
+                )
+    return warnings
+
+
+def _advanced_editor_pvp_pve_warnings(sections: list[dict]) -> list[str]:
+    """Flag manually-set +m_Pvp/PveEnabledPartitions lines with wording matched to which
+    mechanism can actually change that scope's value: Dual Deep Desert only ever touches
+    Global scope, the per-partition PvP/PvE toggle only ever touches Partition scope, and
+    nothing structurally manages Map scope for these two keys.
+
+    One message per (scope block, key) -- not per value -- so a section listing several
+    partition ids produces one sentence naming all of them instead of one near-identical
+    sentence per id (this repeated badly enough during live testing to be worth avoiding)."""
+    warnings: list[str] = []
+    pvp_section = "/Script/DuneSandbox.PvpPveSettings"
+    for block in sections:
+        if str(block.get("ini_section", "")) != pvp_section:
+            continue
+        scope = block.get("scope")
+        where = _advanced_editor_block_label(block)
+        values_by_key: dict[str, list[str]] = {}
+        for raw in block.get("lines", []):
+            parsed = split_ini_assignment(raw)
+            if not parsed:
+                continue
+            prefix, left, right = parsed
+            if prefix != "+" or left not in {"m_PvpEnabledPartitions", "m_PveEnabledPartitions"}:
+                continue
+            values_by_key.setdefault(left, []).append(right)
+        for key, values in values_by_key.items():
+            kind = "PvP" if key == "m_PvpEnabledPartitions" else "PvE"
+            single = len(values) == 1
+            if scope == "Global":
+                consequence = f"If Dual Deep Desert is toggled it could affect {'this setting' if single else 'these settings'}."
+            elif scope == "Partition":
+                consequence = f"this partition's PvP/PvE toggle could change {'this' if single else 'these'} the next time it's switched."
+            elif scope == "Map":
+                consequence = f"this applies to every partition in {block.get('map')}; nothing clears it automatically."
+            else:
+                consequence = "review this manually -- its scope isn't automatically managed."
+            if single:
+                warnings.append(f"{where}: +{key}={values[0]} ({kind} partition selector) -- {consequence}")
+            else:
+                warnings.append(f"{where}: +{key} has {len(values)} {kind} entries ({', '.join(values)}) -- {consequence}")
+    return warnings
+
+
+def _advanced_editor_find_scoped_key_value(sections: list[dict], reference_block: dict, section: str, key: str) -> str | None:
+    for block in sections:
+        if block.get("ini_section") != section or block.get("scope") != reference_block.get("scope"):
+            continue
+        if block.get("map") != reference_block.get("map") or block.get("partition") != reference_block.get("partition"):
+            continue
+        # Last-assignment-wins, same as profile_get_key -- a key set twice in one saved
+        # block resolves to its last line, so the earlier line must never be returned here.
+        for raw in reversed(block.get("lines", [])):
+            parsed = split_ini_assignment(raw)
+            if parsed and not parsed[0] and parsed[1] == key:
+                return parsed[2]
+    return None
+
+
+def _advanced_editor_legacy_guild_warnings(sections: list[dict]) -> list[str]:
+    """Flag the case sync_legacy_guild_values() (~1024) resolves silently: a non-default
+    legacy field overriding a canonical field explicitly set to its own default. The
+    canonical field's explicit line is then also dropped by the known-key filter in
+    append_profile_unknown_lines(), so without this warning the admin has no way to know
+    their explicit default was superseded."""
+    warnings: list[str] = []
+    for block in sections:
+        section = str(block.get("ini_section", ""))
+        where = _advanced_editor_block_label(block)
+        for legacy_field, canonical_field in LEGACY_GUILD_FIELD_ALIASES.items():
+            legacy_spec = MAP_FIELDS[legacy_field]
+            canonical_spec = MAP_FIELDS[canonical_field]
+            if section != legacy_spec[0]:
+                continue
+            legacy_value = _advanced_editor_find_scoped_key_value(sections, block, legacy_spec[0], legacy_spec[1])
+            if legacy_value is None or legacy_value == str(legacy_spec[2]):
+                continue
+            canonical_value = _advanced_editor_find_scoped_key_value(sections, block, canonical_spec[0], canonical_spec[1])
+            if canonical_value is not None and canonical_value == str(canonical_spec[2]):
+                warnings.append(
+                    f"{where}: legacy field {legacy_spec[1]}={legacy_value} overrides the explicit default "
+                    f"you set on {canonical_spec[1]}={canonical_value} -- the canonical value was dropped."
+                )
+    return warnings
+
+
 def profile_game_write_encoded(encoded_content: str) -> int:
     try:
         content = b64decode(encoded_content.encode("ascii")).decode("utf-8")
@@ -2285,9 +2474,16 @@ def profile_game_write_encoded(encoded_content: str) -> int:
                 "partition": "",
                 "ini_section": section,
             })
+    warnings = (
+        _advanced_editor_duplicate_key_warnings(incoming.get("sections", []))
+        + _advanced_editor_pvp_pve_warnings(incoming.get("sections", []))
+        + _advanced_editor_legacy_guild_warnings(incoming.get("sections", []))
+    )
     profile = read_profile()
     replace_profile_game_sections(profile, incoming)
     write_profile(profile)
+    for message in warnings:
+        print(f"USERSETTINGS_WARNING: {message}")
     return 0
 
 
@@ -2339,8 +2535,11 @@ def profile_engine_write_encoded(encoded_content: str) -> int:
         })
     incoming = {"preamble": [], "sections": engine_sections}
     validate_profile_port_ranges(incoming)
+    warnings = _advanced_editor_duplicate_key_warnings(engine_sections)
     replace_profile_engine_sections(profile, incoming.get("sections", []))
     write_profile(profile)
+    for message in warnings:
+        print(f"USERSETTINGS_WARNING: {message}")
     return 0
 
 
@@ -2351,8 +2550,19 @@ m_GlobalXPMultiplier=1.0
 m_MaxGuildMembersAllowed=5
 UnknownGlobal=abc
 
+[Global:/Script/DuneSandbox.GuildSettings]
+m_MaxGuildMembersAllowed=32
+
+[Global:/Script/DuneSandbox.PvpPveSettings]
++m_PvpEnabledPartitions=3
++m_PvpEnabledPartitions=7
++m_PveEnabledPartitions=9
+
 [Map:Survival_1:/Script/DuneSandbox.DuneGameMode]
 m_GlobalXPMultiplier=2.0
+
+[Map:Survival_1:/Script/DuneSandbox.PvpPveSettings]
++m_PvpEnabledPartitions=15
 
 [MapEngine:Survival_1:ConsoleVariables]
 Sandstorm.Enabled=0
@@ -2360,6 +2570,7 @@ CustomMapEngineValue=keep-map
 
 [Partition:Survival_1:3:/Script/DuneSandbox.PvpPveSettings]
 +m_PvpEnabledPartitions=3
++m_PvpEnabledPartitions=42
 CustomPartitionKey=True
 
 [Partition:Survival_1:3:ConsoleVariables]
@@ -2370,6 +2581,7 @@ sandworm.dune.Enabled=0
 CustomPartitionEngineValue=keep-partition
 
 [Engine:ConsoleVariables]
+; Sandworm settings
 Dune.GlobalMiningOutputMultiplier=1.0
 UnknownEngine=xyz
 
@@ -2397,6 +2609,10 @@ Dune.GlobalVehicleMiningOutputMultiplier=10
         raise SystemExit("Compiled runtime INI contains scoped profile headers.")
     if "+m_PvpEnabledPartitions=3" not in compiled_game:
         raise SystemExit("Partition PvP array line was not compiled.")
+    if "+m_PvpEnabledPartitions=7" not in compiled_game or "+m_PveEnabledPartitions=9" not in compiled_game:
+        raise SystemExit("Global-scoped Advanced editor PvP/PvE array lines were not compiled.")
+    if compiled_game.count("+m_PvpEnabledPartitions=3") != 1:
+        raise SystemExit("Global and partition-toggle PvP array lines for the same value were not deduplicated.")
     if "[/Script/DuneSandbox.GuildSettings]" not in compiled_game or "m_MaxGuildMembersAllowed=5" not in compiled_game:
         raise SystemExit("Legacy guild member limit was not mirrored to GuildSettings.")
     if "UnknownGlobal=abc" not in compiled_game or "CustomPartitionKey=True" not in compiled_game:
@@ -2574,6 +2790,114 @@ Dune.GlobalVehicleMiningOutputMultiplier=10
         raise SystemExit("Dynamic Survival runtime folder was not inferred.")
     if infer_runtime_target(Path("/tmp/runtime/game/deepdesert-1-58/Saved")) != ("DeepDesert_1", "58"):
         raise SystemExit("Dynamic Deep Desert runtime folder was not inferred.")
+
+    if "+m_PvpEnabledPartitions=42" not in compiled_game:
+        raise SystemExit("A Partition-scope PvP array line with no matching structured emission was still silently dropped.")
+    if "+m_PvpEnabledPartitions=15" not in compiled_game:
+        raise SystemExit("Map-scoped PvP array line was not compiled into the partition's UserGame.ini.")
+    if "; Sandworm settings" not in compiled_engine:
+        raise SystemExit("A manually-kept UserEngine comment next to a default-valued field was still deleted.")
+
+    dup_sections = parse_profile_text(
+        "[Global:/Script/DuneSandbox.DuneGameMode]\nm_MaxGuildsAllowed=1\nm_MaxGuildsAllowed=2\n"
+    ).get("sections", [])
+    dup_warnings = _advanced_editor_duplicate_key_warnings(dup_sections)
+    if not any("m_MaxGuildsAllowed was set 2 times" in w and "(1)" in w and "(2)" in w for w in dup_warnings):
+        raise SystemExit("Duplicate-key Advanced Editor warning did not fire correctly.")
+
+    legacy_warnings = _advanced_editor_legacy_guild_warnings(reparsed.get("sections", []))
+    if not any("m_MaxGuildMembersAllowed=5 overrides" in w for w in legacy_warnings):
+        raise SystemExit("Legacy guild-alias override warning did not fire.")
+
+    # Regression: _advanced_editor_find_scoped_key_value must use the LAST assignment of a
+    # duplicated key (matching profile_get_key's last-wins semantics), not the first -- the
+    # canonical field below is set twice, non-default then default, so a first-match read
+    # would see "99" and wrongly conclude the explicit default was never set, suppressing
+    # the legacy-alias-override warning this whole mechanism exists to raise.
+    last_wins_sections = parse_profile_text(
+        "[Global:/Script/DuneSandbox.DuneGameMode]\nm_MaxGuildMembersAllowed=5\n"
+        "[Global:/Script/DuneSandbox.GuildSettings]\nm_MaxGuildMembersAllowed=99\nm_MaxGuildMembersAllowed=32\n"
+    ).get("sections", [])
+    last_wins_warnings = _advanced_editor_legacy_guild_warnings(last_wins_sections)
+    if not any("m_MaxGuildMembersAllowed=5 overrides" in w and "m_MaxGuildMembersAllowed=32" in w for w in last_wins_warnings):
+        raise SystemExit("Legacy guild-alias warning used the first assignment of a duplicated canonical key instead of the last-wins effective value.")
+
+    pvp_scope_warnings = _advanced_editor_pvp_pve_warnings(reparsed.get("sections", []))
+    global_warning = next((w for w in pvp_scope_warnings if w.startswith("Global:")), None)
+    partition_warning = next((w for w in pvp_scope_warnings if w.startswith("Survival_1 partition 3:")), None)
+    map_warning = next((w for w in pvp_scope_warnings if w.startswith("Map Survival_1:")), None)
+    if not global_warning or "Dual Deep Desert" not in global_warning:
+        raise SystemExit("Global-scope PvP warning did not mention Dual Deep Desert.")
+    if not partition_warning or "partition's PvP/PvE toggle" not in partition_warning:
+        raise SystemExit("Partition-scope PvP warning did not mention the per-partition toggle.")
+    if not map_warning or "nothing clears it automatically" not in map_warning:
+        raise SystemExit("Map-scope PvP warning was not framed as an FYI.")
+    if "Dual Deep Desert" in partition_warning or "PvP/PvE toggle" in global_warning:
+        raise SystemExit("PvP warning wording was not scope-specific -- it named the wrong mechanism.")
+    if "2 PvP entries (3, 7)" not in global_warning:
+        raise SystemExit("Multiple Global-scope PvP values were not aggregated into a single warning.")
+    if "2 PvP entries (3, 42)" not in partition_warning:
+        raise SystemExit("Multiple Partition-scope PvP values were not aggregated into a single warning.")
+    if sum(1 for w in pvp_scope_warnings if w.startswith("Global:") and "m_PvpEnabledPartitions" in w) != 1:
+        raise SystemExit("Global-scope m_PvpEnabledPartitions values leaked into more than one warning line.")
+
+    toggle_profile = parse_profile_text("")
+    set_profile_field(toggle_profile, "global", "", "", "global_pvp_enabled_partition_add", "8")
+    set_profile_field(toggle_profile, "global", "", "", "global_pvp_enabled_partition_add", "55")
+    set_profile_field(toggle_profile, "global", "", "", "global_pvp_enabled_partition_add", "8")
+    toggle_serialized = serialize_profile(toggle_profile)
+    if toggle_serialized.count("+m_PvpEnabledPartitions=8") != 1:
+        raise SystemExit("global_pvp_enabled_partition_add was not idempotent.")
+    if "+m_PvpEnabledPartitions=55" not in toggle_serialized:
+        raise SystemExit("global_pvp_enabled_partition_add did not add the entry.")
+    set_profile_field(toggle_profile, "global", "", "", "global_pvp_enabled_partition_remove", "8")
+    toggle_after_remove = serialize_profile(toggle_profile)
+    if "+m_PvpEnabledPartitions=8" in toggle_after_remove:
+        raise SystemExit("global_pvp_enabled_partition_remove did not remove the exact value.")
+    if "+m_PvpEnabledPartitions=55" not in toggle_after_remove:
+        raise SystemExit("global_pvp_enabled_partition_remove touched an unrelated entry -- it must be exact-value only.")
+
+    pve_toggle_profile = parse_profile_text("")
+    set_profile_field(pve_toggle_profile, "global", "", "", "global_pve_enabled_partition_add", "9")
+    set_profile_field(pve_toggle_profile, "global", "", "", "global_pve_enabled_partition_add", "60")
+    set_profile_field(pve_toggle_profile, "global", "", "", "global_pve_enabled_partition_add", "9")
+    pve_toggle_serialized = serialize_profile(pve_toggle_profile)
+    if pve_toggle_serialized.count("+m_PveEnabledPartitions=9") != 1:
+        raise SystemExit("global_pve_enabled_partition_add was not idempotent.")
+    if "+m_PveEnabledPartitions=60" not in pve_toggle_serialized:
+        raise SystemExit("global_pve_enabled_partition_add did not add the entry.")
+    set_profile_field(pve_toggle_profile, "global", "", "", "global_pve_enabled_partition_remove", "9")
+    pve_toggle_after_remove = serialize_profile(pve_toggle_profile)
+    if "+m_PveEnabledPartitions=9" in pve_toggle_after_remove:
+        raise SystemExit("global_pve_enabled_partition_remove did not remove the exact value.")
+    if "+m_PveEnabledPartitions=60" not in pve_toggle_after_remove:
+        raise SystemExit("global_pve_enabled_partition_remove touched an unrelated entry -- it must be exact-value only.")
+
+    # Regression coverage for the Dual Deep Desert PvP/PvE scope bugs found in review:
+    # (1) force_pvp_all_partitions must stay Map-scoped so it can't leak into another map's
+    #     Global-scope setting, and (2) the PvE partition must resolve to PVE via its own
+    #     explicit Global selector even when an unrelated legacy override would otherwise
+    #     force it to PvP/CONFLICT through the legacy-field fallback rules.
+    dual_regression_profile = parse_profile_text(
+        "[Global:/Script/DuneSandbox.PvpPveSettings]\n"
+        "m_bShouldForceEnablePvpOnAllPartitions=True\n"
+        "[Global:/Script/DuneSandbox.DuneGameMode]\n"
+        "bPvPEnabled=True\n"
+        "bServerPVE=False\n"
+    )
+    set_profile_field(dual_regression_profile, "map", "DeepDesert_1", "", "force_pvp_all_partitions", "False")
+    set_profile_field(dual_regression_profile, "global", "", "", "global_pvp_enabled_partition_add", "58")
+    set_profile_field(dual_regression_profile, "global", "", "", "global_pve_enabled_partition_add", "12")
+    other_map_values = profile_map_values(dual_regression_profile, "Survival_1")
+    if other_map_values.get("force_pvp_all_partitions") != "True":
+        raise SystemExit("force_pvp_all_partitions at Map:DeepDesert_1 leaked into Survival_1's resolved value.")
+    pve_state = resolve_partition_combat_state(profile_partition_values(dual_regression_profile, "DeepDesert_1", "12"))
+    if pve_state["state"] != "PVE":
+        raise SystemExit(f"Deep Desert PvE partition did not resolve to PVE despite an explicit selector (got {pve_state['state']}).")
+    pvp_state = resolve_partition_combat_state(profile_partition_values(dual_regression_profile, "DeepDesert_1", "58"))
+    if pvp_state["state"] != "PVP":
+        raise SystemExit(f"Deep Desert PvP partition did not resolve to PVP despite an explicit selector (got {pvp_state['state']}).")
+
     print("profile selftest ok")
     return 0
 

@@ -881,6 +881,16 @@ main { padding: 22px; min-width: 0; }
   color: #ffd08a;
   font-weight: 700;
 }
+.home-task-result-warnings {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid #302b25;
+  display: grid;
+  gap: 6px;
+}
+/* Specificity must beat .result-ok p (defined below, same 0-1-1 weight) so the
+   warning color doesn't silently fall back to the success message's green. */
+.result-ok .home-task-result-warnings p { margin: 0; color: #ffd08a; }
 .result-fail { border-color: var(--danger); color: var(--danger-text); }
 .result-running { border-color: #6b5b39; }
 .transient-result { animation: backupResultFadeOut .4s ease 4.6s forwards; }
