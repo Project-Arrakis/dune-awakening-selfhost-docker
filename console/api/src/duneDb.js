@@ -2402,6 +2402,23 @@ export async function playerVitals(db, id) {
   };
 }
 
+// dune.specialization_keystones_map has no track column; the track is the name prefix
+// (e.g. "Combat_CombatKeystone_SkillPoint4" belongs to the Combat track).
+async function specializationKeystoneCounts(db, controllerId) {
+  const result = await db.query(`
+    select split_part(m.name, '_', 1) as track_type,
+           count(*)::int as total,
+           count(p.player_id)::int as owned
+    from dune.specialization_keystones_map m
+    left join dune.purchased_specialization_keystones p
+      on p.keystone_id = m.id and p.player_id = $1
+    group by 1`, [controllerId]).catch(() => ({ rows: [] }));
+  return new Map((result.rows || []).map((row) => [String(row.track_type || ""), {
+    owned: Number(row.owned) || 0,
+    total: Number(row.total) || 0
+  }]));
+}
+
 export async function playerSpecs(db, id) {
   if (!(await tableExists(db, "specialization_tracks"))) return unsupported("specs", ["dune.specialization_tracks"]);
   const player = await resolvePlayerMutationTarget(db, id);
@@ -2416,22 +2433,29 @@ export async function playerSpecs(db, id) {
     select coalesce((fe.components->'FLevelComponent'->1->>'UnspentSkillPoints')::int,0) unspent_points
     from dune.actor_fgl_entities afe join dune.fgl_entities fe on fe.entity_id=afe.entity_id
     where afe.slot_name='DuneCharacter' and afe.actor_id=$1 limit 1`, [player.actorId]).catch(() => ({ rows: [] }));
+  const keystonesSupported = await tableExists(db, "purchased_specialization_keystones")
+    && await tableExists(db, "specialization_keystones_map");
+  const keystonesByTrack = keystonesSupported ? await specializationKeystoneCounts(db, player.controllerId) : new Map();
   return {
     capabilities: {
       specs: true,
       specializationMutation: await supportsSpecializationLiveRefresh(db),
-      keystones: await tableExists(db, "purchased_specialization_keystones")
+      keystones: keystonesSupported
     },
     player,
     unspentPoints: Number(points.rows[0]?.unspent_points) || 0,
     skillModules: await playerSkillModules(db, player),
     rows: tracks.map((track) => {
       const row = byTrack.get(track);
+      const keystones = keystonesByTrack.get(track) || { owned: 0, total: 0 };
       return {
         player_id: player.controllerId,
         track_type: track,
         xp_amount: row?.xp_amount ?? 0,
-        level: row?.level ?? 0
+        level: row?.level ?? 0,
+        keystone_count: keystones.owned,
+        keystone_total: keystones.total,
+        has_keystone: keystones.total > 0 && keystones.owned >= keystones.total
       };
     })
   };

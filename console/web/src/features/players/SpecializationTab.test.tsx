@@ -43,7 +43,9 @@ const mockSpecsResponse = {
 };
 
 beforeEach(() => {
-  vi.clearAllMocks();
+  // resetAllMocks, not clearAllMocks: the busy-state tests install deferred
+  // implementations that would otherwise leak into every later test in the file.
+  vi.resetAllMocks();
   mockConfirmAction.mockResolvedValue(true);
 });
 
@@ -108,6 +110,110 @@ describe("SpecializationTab", () => {
         expect(mockOnSkillBaselineChange).toHaveBeenCalledWith({
           "Skills.Key.Trooper1": 2
         });
+      });
+    });
+  });
+
+  describe("keystone column", () => {
+    it("shows Granted when every keystone for the track is owned", async () => {
+      vi.mocked(playersApi.specs).mockResolvedValue({
+        rows: [{ track_type: "Combat", xp_amount: 0, level: 0, keystone_count: 41, keystone_total: 41, has_keystone: true }],
+        skillModules: [],
+        capabilities: {}
+      });
+      render(<SpecializationTab {...defaultProps} />);
+      await waitFor(() => {
+        expect(screen.getByText("Granted")).toBeInTheDocument();
+      });
+    });
+
+    it("shows a partial count when only some keystones are owned", async () => {
+      vi.mocked(playersApi.specs).mockResolvedValue({
+        rows: [{ track_type: "Combat", xp_amount: 0, level: 0, keystone_count: 12, keystone_total: 41, has_keystone: false }],
+        skillModules: [],
+        capabilities: {}
+      });
+      render(<SpecializationTab {...defaultProps} />);
+      await waitFor(() => {
+        expect(screen.getByText("12/41")).toBeInTheDocument();
+      });
+      expect(screen.queryByText("Granted")).not.toBeInTheDocument();
+    });
+
+    it("shows the empty marker when no keystones are owned", async () => {
+      vi.mocked(playersApi.specs).mockResolvedValue({
+        rows: [{ track_type: "Combat", xp_amount: 0, level: 0, keystone_count: 0, keystone_total: 41, has_keystone: false }],
+        skillModules: [],
+        capabilities: {}
+      });
+      render(<SpecializationTab {...defaultProps} />);
+      await waitFor(() => {
+        expect(screen.getByText("Combat")).toBeInTheDocument();
+      });
+      expect(screen.queryByText("Granted")).not.toBeInTheDocument();
+      expect(screen.getByText("—")).toBeInTheDocument();
+    });
+  });
+
+  describe("keystone action feedback", () => {
+    it("reports how many keystones were reset", async () => {
+      vi.mocked(playersApi.specs).mockResolvedValue(mockSpecsResponse);
+      vi.mocked(playersApi.resetAllSpecializationKeystones).mockResolvedValue({ supported: true, result: { deletedRows: 205 } });
+      render(<SpecializationTab {...defaultProps} />);
+      await waitFor(() => {
+        expect(screen.getByText("Trooper")).toBeInTheDocument();
+      });
+
+      fireEvent.click(screen.getByRole("button", { name: "Reset All Keystones" }));
+
+      await waitFor(() => {
+        expect(screen.getByText(/205 keystones reset/i)).toBeInTheDocument();
+      });
+    });
+
+    it("says nothing was reset when the player had no keystones", async () => {
+      vi.mocked(playersApi.specs).mockResolvedValue(mockSpecsResponse);
+      vi.mocked(playersApi.resetAllSpecializationKeystones).mockResolvedValue({ supported: true, result: { deletedRows: 0 } });
+      render(<SpecializationTab {...defaultProps} />);
+      await waitFor(() => {
+        expect(screen.getByText("Trooper")).toBeInTheDocument();
+      });
+
+      fireEvent.click(screen.getByRole("button", { name: "Reset All Keystones" }));
+
+      await waitFor(() => {
+        expect(screen.getByText(/no keystones to reset/i)).toBeInTheDocument();
+      });
+      expect(mockOnActionLog).toHaveBeenCalledWith("Reset All Keystones", "TestPlayer", "0", "Succeeded");
+    });
+
+    it("reports how many keystones were granted", async () => {
+      vi.mocked(playersApi.specs).mockResolvedValue(mockSpecsResponse);
+      vi.mocked(playersApi.grantAllSpecializationKeystones).mockResolvedValue({ supported: true, result: { insertedRows: 205 } });
+      render(<SpecializationTab {...defaultProps} />);
+      await waitFor(() => {
+        expect(screen.getByText("Trooper")).toBeInTheDocument();
+      });
+
+      fireEvent.click(screen.getByRole("button", { name: "Grant All Keystones" }));
+
+      await waitFor(() => {
+        expect(screen.getByText(/205 keystones granted/i)).toBeInTheDocument();
+      });
+    });
+
+    it("says nothing changed when every keystone was already granted", async () => {
+      vi.mocked(playersApi.specs).mockResolvedValue(mockSpecsResponse);
+      vi.mocked(playersApi.grantAllSpecializationKeystones).mockResolvedValue({ supported: true, result: { insertedRows: 0 } });
+      render(<SpecializationTab {...defaultProps} />);
+      await waitFor(() => {
+        expect(screen.getByText("Trooper")).toBeInTheDocument();
+      });
+
+      fireEvent.click(screen.getByRole("button", { name: "Grant All Keystones" }));
+
+      await waitFor(() => {
+        expect(screen.getByText(/already granted/i)).toBeInTheDocument();
       });
     });
   });
@@ -217,6 +323,139 @@ describe("SpecializationTab", () => {
       });
     });
 
+    it("keeps the XP amount independent for each track", async () => {
+      vi.mocked(playersApi.specs).mockResolvedValue(mockSpecsResponse);
+      render(<SpecializationTab {...defaultProps} />);
+      await waitFor(() => {
+        expect(screen.getByText("Trooper")).toBeInTheDocument();
+      });
+
+      const xpInputs = screen.getAllByRole("spinbutton");
+      await fireEvent.change(xpInputs[0], { target: { value: "5000" } });
+
+      expect(xpInputs[0]).toHaveValue(5000);
+      expect(xpInputs[1]).toHaveValue(1000);
+      expect(xpInputs[2]).toHaveValue(1000);
+    });
+
+    it("submits each track with its own XP amount", async () => {
+      vi.mocked(playersApi.specs).mockResolvedValue(mockSpecsResponse);
+      vi.mocked(playersApi.addSpecializationXp).mockResolvedValue({ supported: true });
+      render(<SpecializationTab {...defaultProps} />);
+      await waitFor(() => {
+        expect(screen.getByText("Trooper")).toBeInTheDocument();
+      });
+
+      await fireEvent.change(screen.getAllByRole("spinbutton")[0], { target: { value: "5000" } });
+
+      const addButtons = screen.getAllByRole("button", { name: /Add XP to/i });
+      await act(async () => {
+        fireEvent.click(addButtons[1]);
+      });
+
+      await waitFor(() => {
+        expect(playersApi.addSpecializationXp).toHaveBeenCalledWith("player-123", {
+          trackType: "Mentat",
+          amount: 1000,
+          confirmation: "ADD SPECIALIZATION XP"
+        });
+      });
+
+      await act(async () => {
+        fireEvent.click(addButtons[0]);
+      });
+
+      await waitFor(() => {
+        expect(playersApi.addSpecializationXp).toHaveBeenCalledWith("player-123", {
+          trackType: "Trooper",
+          amount: 5000,
+          confirmation: "ADD SPECIALIZATION XP"
+        });
+      });
+    });
+
+    it("resets XP amounts when the selected player changes", async () => {
+      vi.mocked(playersApi.specs).mockResolvedValue(mockSpecsResponse);
+      const { rerender } = render(<SpecializationTab {...defaultProps} />);
+      await waitFor(() => {
+        expect(screen.getByText("Trooper")).toBeInTheDocument();
+      });
+
+      await fireEvent.change(screen.getAllByRole("spinbutton")[0], { target: { value: "5000" } });
+      expect(screen.getAllByRole("spinbutton")[0]).toHaveValue(5000);
+
+      rerender(<SpecializationTab {...defaultProps} dbPlayerId="player-999" />);
+
+      await waitFor(() => {
+        expect(screen.getAllByRole("spinbutton")[0]).toHaveValue(1000);
+      });
+    });
+
+    it("ignores a completed action and reload from the previously selected player", async () => {
+      const nextPlayerResponse = {
+        rows: [{ track_type: "Swordmaster", xp_amount: 9000, level: 5 }],
+        skillModules: [],
+        capabilities: {}
+      };
+      vi.mocked(playersApi.specs).mockImplementation(async (playerId) => (
+        playerId === "player-999" ? nextPlayerResponse : mockSpecsResponse
+      ));
+      let resolveAdd: (value: { supported: boolean }) => void = () => {};
+      vi.mocked(playersApi.addSpecializationXp).mockImplementation(
+        () => new Promise<{ supported: boolean }>((resolve) => { resolveAdd = resolve; })
+      );
+
+      const { rerender } = render(<SpecializationTab {...defaultProps} />);
+      await waitFor(() => {
+        expect(screen.getByText("Trooper")).toBeInTheDocument();
+      });
+
+      fireEvent.click(screen.getByRole("button", { name: "Add XP to Trooper" }));
+      await waitFor(() => {
+        expect(playersApi.addSpecializationXp).toHaveBeenCalledTimes(1);
+      });
+
+      rerender(<SpecializationTab {...defaultProps} dbPlayerId="player-999" playerName="NextPlayer" />);
+      await waitFor(() => {
+        expect(screen.getByText("Swordmaster")).toBeInTheDocument();
+      });
+
+      await act(async () => {
+        resolveAdd({ supported: true });
+      });
+
+      expect(screen.getByText("Swordmaster")).toBeInTheDocument();
+      expect(screen.queryByText("Trooper")).not.toBeInTheDocument();
+      expect(screen.queryByText("XP updated. Relog required.")).not.toBeInTheDocument();
+      expect(playersApi.specs).toHaveBeenCalledTimes(2);
+      expect(playersApi.specs).toHaveBeenLastCalledWith("player-999");
+    });
+
+    it("does not dispatch a confirmed action after the selected player changes", async () => {
+      vi.mocked(playersApi.specs).mockResolvedValue(mockSpecsResponse);
+      let resolveConfirmation: (value: boolean) => void = () => {};
+      mockConfirmAction.mockImplementation(
+        () => new Promise<boolean>((resolve) => { resolveConfirmation = resolve; })
+      );
+
+      const { rerender } = render(<SpecializationTab {...defaultProps} />);
+      await waitFor(() => {
+        expect(screen.getByText("Trooper")).toBeInTheDocument();
+      });
+
+      fireEvent.click(screen.getByRole("button", { name: "Grant Max for Trooper" }));
+      await waitFor(() => {
+        expect(mockConfirmAction).toHaveBeenCalledTimes(1);
+      });
+
+      rerender(<SpecializationTab {...defaultProps} dbPlayerId="player-999" playerName="NextPlayer" />);
+      await act(async () => {
+        resolveConfirmation(true);
+      });
+
+      expect(playersApi.grantMaxSpecialization).not.toHaveBeenCalled();
+    });
+
     it("does not submit Add XP while the player is online", async () => {
       vi.mocked(playersApi.specs).mockResolvedValue(mockSpecsResponse);
       render(<SpecializationTab {...defaultProps} isOnline={true} />);
@@ -228,6 +467,63 @@ describe("SpecializationTab", () => {
       fireEvent.click(addButtons[0]);
       expect(addButtons[0]).toBeDisabled();
       expect(playersApi.addSpecializationXp).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("busy state", () => {
+    type SpecActionResult = { supported: boolean; result?: Record<string, unknown>; reason?: string };
+
+    it("locks only the row whose action is in flight", async () => {
+      vi.mocked(playersApi.specs).mockResolvedValue(mockSpecsResponse);
+      let resolveAdd: (value: SpecActionResult) => void = () => {};
+      vi.mocked(playersApi.addSpecializationXp).mockImplementation(
+        () => new Promise<SpecActionResult>((resolve) => { resolveAdd = resolve; })
+      );
+      render(<SpecializationTab {...defaultProps} />);
+      await waitFor(() => {
+        expect(screen.getByText("Trooper")).toBeInTheDocument();
+      });
+
+      const addButtons = screen.getAllByRole("button", { name: /Add XP to/i });
+      await act(async () => {
+        fireEvent.click(addButtons[0]);
+      });
+
+      expect(addButtons[0]).toBeDisabled();
+      expect(screen.getByRole("button", { name: "Grant Max for Trooper" })).toBeDisabled();
+      expect(addButtons[1]).not.toBeDisabled();
+      expect(screen.getAllByRole("spinbutton")[1]).not.toBeDisabled();
+      expect(screen.getByRole("button", { name: "Grant Max for Mentat" })).not.toBeDisabled();
+
+      await act(async () => {
+        resolveAdd({ supported: true });
+      });
+    });
+
+    it("locks every row while a keystone action is in flight", async () => {
+      vi.mocked(playersApi.specs).mockResolvedValue(mockSpecsResponse);
+      let resolveGrant: (value: SpecActionResult) => void = () => {};
+      vi.mocked(playersApi.grantAllSpecializationKeystones).mockImplementation(
+        () => new Promise<SpecActionResult>((resolve) => { resolveGrant = resolve; })
+      );
+      render(<SpecializationTab {...defaultProps} />);
+      await waitFor(() => {
+        expect(screen.getByText("Trooper")).toBeInTheDocument();
+      });
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: "Grant All Keystones" }));
+      });
+
+      await waitFor(() => {
+        screen.getAllByRole("button", { name: /Add XP to/i }).forEach((btn) => {
+          expect(btn).toBeDisabled();
+        });
+      });
+
+      await act(async () => {
+        resolveGrant({ supported: true });
+      });
     });
   });
 
