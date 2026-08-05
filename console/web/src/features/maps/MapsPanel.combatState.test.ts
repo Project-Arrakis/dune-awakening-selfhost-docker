@@ -88,4 +88,18 @@ describe("deepDesertPartitionName", () => {
     );
     expect(name).toContain("PvP");
   });
+
+  // The primary/dimension-0 row (e.g. partition 8) previously never called this
+  // function at all -- MapsPanel.tsx's top-level row only wired it in for the
+  // dynamically-created dimension>0 rows, so the primary row rendered as bare
+  // "DeepDesert_1" no matter what. This case documents the exact scenario the
+  // wiring fix now covers; it was already correct at the function level before
+  // that fix, since the bug was a missing call site, not a bug in this function.
+  it("labels the primary (dimension 0) partition from its resolved combat state", () => {
+    const name = deepDesertPartitionName(
+      { label: "DeepDesert_0", dimension: 0 },
+      combatRow({ partitionId: "8", dimensionIndex: 0, configuredState: "PVP" })
+    );
+    expect(name).toBe("Deep Desert 1 (PvP)");
+  });
 });
