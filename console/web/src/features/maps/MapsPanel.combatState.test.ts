@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { deepDesertPartitionName } from "./MapsPanel";
+import { deepDesertPartitionName, isPrimaryDeepDesertPartition } from "./MapsPanel";
 import type { PartitionCombatStateRow } from "../../api/maps";
 
 // Regression coverage for the fix to deepDesertPartitionName: it must
@@ -27,6 +27,10 @@ function combatRow(overrides: Partial<PartitionCombatStateRow> = {}): PartitionC
 }
 
 describe("deepDesertPartitionName", () => {
+  it("recognizes a numeric zero dimension as the primary partition", () => {
+    expect(isPrimaryDeepDesertPartition({ dimension: 0 })).toBe(true);
+    expect(isPrimaryDeepDesertPartition({ dimension: 1 })).toBe(false);
+  });
   it("uses a real database label when present and not purely numeric", () => {
     const name = deepDesertPartitionName({ label: "Custom Sietch Name", dimension: 0 });
     expect(name).toBe("Custom Sietch Name");

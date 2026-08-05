@@ -507,6 +507,11 @@ GLOBAL_ARRAY_FIELD_IDS = {
     "global_pve_enabled_partition_add", "global_pve_enabled_partition_remove",
 }
 
+DEEPDESERT_MATCHMAKER_SECTION = "/Script/DuneSandbox.MatchmakerEventsSettings"
+DEEPDESERT_MATCHMAKER_KEY = "m_BattlegroupsAllMapSettings"
+DEEPDESERT_MATCHMAKER_FIRST_OF_GROUP = '(MapName="DeepDesert_1",MapSettings=(SelectionRule="FirstOfGroup",MaxPlayerCapacity=100,IsStartingMap=False))'
+DEEPDESERT_MATCHMAKER_HOME_DIMENSION = '(MapName="DeepDesert_1",MapSettings=(SelectionRule="HomeDimension",MaxPlayerCapacity=100,IsStartingMap=False))'
+
 PARTITION_FIELDS = {
     "partition_pvp_enabled": (None, None, "False"),
     "partition_pve_enabled": (None, None, "False"),
@@ -1123,6 +1128,36 @@ def read_ini_array_contains(path: Path, section: str, key: str, value: str) -> b
     return False
 
 
+def read_ini_array_key_present(path: Path, section: str, keys: set[str]) -> bool:
+    """Return whether any positive entry for one of ``keys`` exists.
+
+    Unreal's partition selector is an allow-list: once a PvP/PvE selector
+    array is present, an unlisted partition uses the PvE/default side of the
+    split instead of falling back to the older map-wide PvP compatibility
+    flags.  Presence therefore matters independently of membership.
+    """
+    if not path.exists():
+        return False
+    current_section = None
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return False
+    wanted_keys = keys | {f"+{key}" for key in keys}
+    for raw in lines:
+        stripped = raw.strip()
+        if not stripped or stripped.startswith((";", "#")):
+            continue
+        if stripped.startswith("[") and stripped.endswith("]"):
+            current_section = stripped[1:-1]
+            continue
+        if current_section == section and "=" in stripped:
+            left, _right = stripped.split("=", 1)
+            if left.strip() in wanted_keys:
+                return True
+    return False
+
+
 def update_ini_key(path: Path, section: str, key: str, value: str, append_prefix: str = "") -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = path.with_suffix(path.suffix + ".lock")
@@ -1463,6 +1498,22 @@ def profile_partition_array_selector_active(profile: dict, section: str, key: st
     )
 
 
+def profile_partition_selector_mode_active(profile: dict, target_map: str, target_partition: str) -> bool:
+    section = "/Script/DuneSandbox.PvpPveSettings"
+    selector_keys = {"m_PvpEnabledPartitions", "m_PveEnabledPartitions"}
+    blocks = (
+        find_profile_section(profile, "global", section),
+        find_profile_section(profile, "map", section, target_map),
+        find_profile_section(profile, "partition", section, target_map, target_partition),
+    )
+    for block in blocks:
+        for raw in (block or {}).get("lines", []):
+            parsed = split_ini_assignment(raw)
+            if parsed and parsed[0] in {"", "+"} and parsed[1] in selector_keys:
+                return True
+    return False
+
+
 def profile_partition_values(profile: dict, map_name: str, partition_id: str) -> dict[str, str]:
     target_map = canonical_map(map_name)
     target_partition = str(partition_id)
@@ -1481,6 +1532,9 @@ def profile_partition_values(profile: dict, map_name: str, partition_id: str) ->
     values["partition_pve_enabled"] = "True" if profile_partition_array_selector_active(
         profile, "/Script/DuneSandbox.PvpPveSettings", "m_PveEnabledPartitions", target_map, target_partition
     ) else values.get("partition_pve_enabled", "False")
+    values["partition_selector_mode_active"] = "True" if profile_partition_selector_mode_active(
+        profile, target_map, target_partition
+    ) else "False"
     return sync_legacy_guild_values(values)
 
 
@@ -1618,6 +1672,62 @@ def set_field(scope: str, name: str | None, field_id: str, value: str) -> int:
         if field_id in GLOBAL_ARRAY_FIELD_IDS and target_scope != "global":
             raise SystemExit(f"{field_id} may only be set at Global scope.")
         set_profile_field(profile, target_scope, map_name, "", field_id, value)
+    write_profile(profile)
+    return 0
+
+
+def unset_map_field(name: str, field_id: str) -> int:
+    if field_id not in MAP_FIELDS:
+        raise SystemExit(f"Unknown map field: {field_id}")
+    section, key, _default = MAP_FIELDS[field_id]
+    if not section or not key:
+        raise SystemExit(f"Map field cannot be removed directly: {field_id}")
+    profile = read_profile()
+    map_name = canonical_map(name)
+    target_scope = "global" if map_name in {"", "Global"} else "map"
+    profile_remove_key(profile, target_scope, section, key, map_name=map_name)
+    write_profile(profile)
+    return 0
+
+
+def set_dual_deepdesert_matchmaker(enabled: bool) -> int:
+    """Manage only the two exact Unreal array entries owned by Dual Deep Desert.
+
+    ``HomeDimension`` is what carries the selected dimension through Director
+    matchmaking.  The paired ``-FirstOfGroup`` line removes the engine's
+    default Deep Desert rule without clearing or rewriting settings for any
+    other map.
+    """
+    profile = read_profile()
+    for prefix, value in (
+        ("-", DEEPDESERT_MATCHMAKER_FIRST_OF_GROUP),
+        ("+", DEEPDESERT_MATCHMAKER_HOME_DIMENSION),
+    ):
+        profile_remove_key(
+            profile,
+            "global",
+            DEEPDESERT_MATCHMAKER_SECTION,
+            DEEPDESERT_MATCHMAKER_KEY,
+            prefixes={prefix},
+            value=value,
+        )
+    if enabled:
+        profile_set_key(
+            profile,
+            "global",
+            DEEPDESERT_MATCHMAKER_SECTION,
+            DEEPDESERT_MATCHMAKER_KEY,
+            DEEPDESERT_MATCHMAKER_FIRST_OF_GROUP,
+            prefix="-",
+        )
+        profile_set_key(
+            profile,
+            "global",
+            DEEPDESERT_MATCHMAKER_SECTION,
+            DEEPDESERT_MATCHMAKER_KEY,
+            DEEPDESERT_MATCHMAKER_HOME_DIMENSION,
+            prefix="+",
+        )
     write_profile(profile)
     return 0
 
@@ -3006,6 +3116,7 @@ MAP_COMBAT_STATES = ("PVP", "PVE", "MIXED", "CONFLICT", "UNKNOWN")
 # restarts. Order is not significant.
 COMBAT_STATE_FIELDS = (
     "force_pvp_all_partitions",
+    "partition_selector_mode_active",
     "partition_pvp_enabled",
     "partition_pve_enabled",
     "legacy_pvp_enabled",
@@ -3037,7 +3148,8 @@ def resolve_partition_combat_state(values: dict) -> dict:
     """Resolve a single partition's PvP/PvE combat state.
 
     `values` must contain (or omit, for UNKNOWN) the keys:
-      force_pvp_all_partitions, partition_pvp_enabled, partition_pve_enabled,
+      force_pvp_all_partitions, partition_selector_mode_active,
+      partition_pvp_enabled, partition_pve_enabled,
       legacy_pvp_enabled, server_pve, security_zones_enabled
 
     Returns a dict with keys: state, source, securityZonesEnabled, warnings,
@@ -3049,9 +3161,10 @@ def resolve_partition_combat_state(values: dict) -> dict:
       3. force_pvp_all_partitions                              -> PVP
       4. partition_pvp_enabled                                 -> PVP
       5. partition_pve_enabled                                 -> PVE
-      6. legacy_pvp_enabled AND NOT server_pve                 -> PVP
-      7. NOT legacy_pvp_enabled AND server_pve                 -> PVE
-      8. otherwise                                              -> UNKNOWN
+      6. selector mode active, partition not otherwise listed  -> PVE
+      7. legacy_pvp_enabled AND NOT server_pve                 -> PVP
+      8. NOT legacy_pvp_enabled AND server_pve                 -> PVE
+      9. otherwise                                              -> UNKNOWN
 
     Explicit partition selectors (rules 1, 2, 4, 5) always take precedence
     over the legacy compatibility fields (rules 6, 7). Unresolved (None)
@@ -3059,6 +3172,7 @@ def resolve_partition_combat_state(values: dict) -> dict:
     configuration cannot be mistaken for an explicit selection.
     """
     force_all_pvp = bool_or_none(values.get("force_pvp_all_partitions"))
+    selector_mode_active = bool_or_none(values.get("partition_selector_mode_active"))
     partition_pvp = bool_or_none(values.get("partition_pvp_enabled"))
     partition_pve = bool_or_none(values.get("partition_pve_enabled"))
     legacy_pvp = bool_or_none(values.get("legacy_pvp_enabled"))
@@ -3068,6 +3182,7 @@ def resolve_partition_combat_state(values: dict) -> dict:
     unresolved_fields = [
         key for key, raw in (
             ("force_pvp_all_partitions", values.get("force_pvp_all_partitions")),
+            ("partition_selector_mode_active", values.get("partition_selector_mode_active")),
             ("partition_pvp_enabled", values.get("partition_pvp_enabled")),
             ("partition_pve_enabled", values.get("partition_pve_enabled")),
             ("legacy_pvp_enabled", values.get("legacy_pvp_enabled")),
@@ -3122,6 +3237,15 @@ def resolve_partition_combat_state(values: dict) -> dict:
         return {
             "state": "PVE",
             "source": "partition-pve-selector",
+            "securityZonesEnabled": bool(security_zones_enabled),
+            "warnings": warnings,
+            "unresolvedFields": unresolved_fields,
+        }
+
+    if selector_mode_active is True:
+        return {
+            "state": "PVE",
+            "source": "partition-selector-default",
             "securityZonesEnabled": bool(security_zones_enabled),
             "warnings": warnings,
             "unresolvedFields": unresolved_fields,
@@ -3226,12 +3350,16 @@ def materialized_partition_combat_values(map_name: str, partition_id: str) -> di
     force_all = read_ini_value(path, pvp_pve_section, "m_bShouldForceEnablePvpOnAllPartitions")
     partition_pvp = read_ini_array_contains(path, pvp_pve_section, "m_PvpEnabledPartitions", str(partition_id))
     partition_pve = read_ini_array_contains(path, pvp_pve_section, "m_PveEnabledPartitions", str(partition_id))
+    selector_mode_active = read_ini_array_key_present(
+        path, pvp_pve_section, {"m_PvpEnabledPartitions", "m_PveEnabledPartitions"}
+    )
     legacy_pvp = read_ini_value(path, game_mode_section, "bPvPEnabled")
     server_pve = read_ini_value(path, game_mode_section, "bServerPVE")
     security_zones = read_ini_value(path, security_zones_section, "m_bAreSecurityZonesEnabled")
 
     return {
         "force_pvp_all_partitions": force_all if force_all is not None else "False",
+        "partition_selector_mode_active": "True" if selector_mode_active else "False",
         "partition_pvp_enabled": "True" if partition_pvp else "False",
         "partition_pve_enabled": "True" if partition_pve else "False",
         "legacy_pvp_enabled": legacy_pvp if legacy_pvp is not None else "False",
@@ -3361,6 +3489,10 @@ def main(argv: list[str]) -> int:
         return set_field("engine", None, argv[2], argv[3])
     if command == "map-set" and len(argv) == 5:
         return set_field("map", argv[2], argv[3], argv[4])
+    if command == "map-unset" and len(argv) == 4:
+        return unset_map_field(argv[2], argv[3])
+    if command == "dual-deepdesert-matchmaker" and len(argv) == 3 and argv[2] in {"enable", "disable"}:
+        return set_dual_deepdesert_matchmaker(argv[2] == "enable")
     if command == "partition-set" and len(argv) == 6:
         return set_partition_field(argv[2], argv[3], argv[4], argv[5])
     if command == "partition-engine-set" and len(argv) == 6:

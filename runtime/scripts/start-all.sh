@@ -140,7 +140,7 @@ runtime/scripts/publish-network-server-state-overrides.sh stop || true
 if [ -f runtime/generated/director-deepdesert-dual.ini ]; then
   echo
   echo "=== Dual Deep Desert Override Present ==="
-  echo "Deep Desert dual-mode config detected. Selector names/Kanly remain client/backend-controlled."
+  echo "Deep Desert dual-mode config detected. Its persisted PvP/PvE partition roles will be reconciled through the global gameplay profile."
 fi
 
 run_timed_step "Starting ServerGateway" runtime/scripts/start-server-gateway.sh
@@ -166,7 +166,7 @@ runtime/scripts/publish-deepdesert-overrides.sh once || {
 if [ -f runtime/generated/director-deepdesert-dual.ini ]; then
   echo
   echo "=== Dual Deep Desert Note ==="
-  echo "Deep Desert dual-mode gameplay config is active. Selector names/Kanly remain cosmetic."
+  echo "Deep Desert dual-mode gameplay config is active. The global gameplay profile assigns the persisted partition roles."
 fi
 
 run_timed_step "Starting Autoscaler" bash -c '
