@@ -367,6 +367,18 @@ function restartServiceOperations(payload = {}) {
     : ["restartService"];
 }
 
+const USERSETTINGS_WARNING_PREFIX = "USERSETTINGS_WARNING: ";
+
+// usersettings.py prints one of these lines per Advanced Editor content warning (duplicate
+// keys, PvP/PvE selector overlaps with a toggle, legacy guild-alias overrides) instead of
+// silently dropping the content -- surfaced here as a distinct field so callers can show it
+// without parsing logLines themselves, while logLines keeps the raw line for diagnostics.
+export function taskWarnings(task) {
+  return task.logLines
+    .filter((entry) => entry.line.startsWith(USERSETTINGS_WARNING_PREFIX))
+    .map((entry) => entry.line.slice(USERSETTINGS_WARNING_PREFIX.length));
+}
+
 export function publicTask(task) {
   return {
     id: task.id,
@@ -376,6 +388,7 @@ export function publicTask(task) {
     currentStep: task.currentStep,
     progressMessage: task.progressMessage,
     logLines: task.logLines,
+    warnings: taskWarnings(task),
     startedAt: task.startedAt,
     finishedAt: task.finishedAt,
     exitCode: task.exitCode,

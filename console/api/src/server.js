@@ -1574,15 +1574,17 @@ async function userSettingsSchemaRoute(res) {
 
 async function userSettingsRawRoute(res, url) {
   const kind = String(url.searchParams.get("kind") || "engine");
-  const map = kind === "client-game" ? (url.searchParams.get("map") || "") : (url.searchParams.get("map") || "Survival_1");
+  const map = (kind === "client-game" || kind === "client-engine") ? (url.searchParams.get("map") || "") : (url.searchParams.get("map") || "Survival_1");
   const partitionId = url.searchParams.get("partitionId") || "";
   const operation = kind === "profile"
     ? "userSettingsProfileRaw"
     : kind === "client-game"
       ? "userSettingsClientGameIni"
-      : kind === "engine"
-        ? "userSettingsRawEngine"
-        : "userSettingsRawGame";
+      : kind === "client-engine"
+        ? "userSettingsClientEngineIni"
+        : kind === "engine"
+          ? "userSettingsRawEngine"
+          : "userSettingsRawGame";
   try {
     const result = await runDune(config, buildDuneArgs(operation, { map, partitionId }), { timeoutMs: 8000, redactOutput: false });
     return json(res, 200, { content: result.stdout || "" });

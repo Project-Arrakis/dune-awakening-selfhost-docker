@@ -12,6 +12,7 @@ function failedDeployment(lines: string[]): Task {
     currentStep: "Deploying",
     progressMessage: "",
     logLines: lines.map((line, index) => ({ timestamp: String(index), stream: "stdout", line })),
+    warnings: [],
     startedAt: "2026-07-26T10:00:00.000Z",
     finishedAt: "2026-07-26T10:10:00.000Z",
     errorMessage: "Deployment command exited with status 1"
