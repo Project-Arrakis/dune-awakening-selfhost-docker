@@ -9,6 +9,7 @@ set -a
 set +a
 source runtime/scripts/runtime-env.sh
 source runtime/scripts/fls-signals.sh
+source runtime/scripts/farm-readiness.sh
 
 issue=0
 warming=0
@@ -166,10 +167,9 @@ dynamic_listener_rows() {
 
 map_state() {
   local container="$1"
-  local pattern="$2"
   local logs
   local partition_id=""
-  local farm_ready=""
+  local required_reports="0"
 
   if ! is_running "$container"; then
     issue=1
@@ -185,27 +185,18 @@ map_state() {
     partition_id="2"
   fi
 
-  if [ -n "$partition_id" ] && is_running dune-postgres; then
-    farm_ready="$(
-      docker exec dune-postgres psql -U dune -d dune -Atc "
-        select coalesce(fs.ready::text, 'f')
-        from dune.world_partition wp
-        left join dune.farm_state fs on fs.server_id = wp.server_id
-        where wp.partition_id = ${partition_id}
-        limit 1;
-      " 2>/dev/null | tr -d '[:space:]'
-    )"
-    if [[ "${farm_ready,,}" =~ ^(t|true|1|yes|y)$ ]]; then
-      echo "READY"
-      return
-    fi
+  if [ "$partition_id" = "1" ]; then
+    required_reports="$farm_ready_survival_reports"
+  fi
+
+  if [ -n "$partition_id" ] && farm_partition_is_ready "$container" "$partition_id" "$required_reports"; then
+    echo "READY"
+    return
   fi
 
   logs="$(docker logs "$container" 2>&1 || true)"
 
-  if grep -Eq "$pattern" <<< "$logs"; then
-    echo "READY"
-  elif grep -Eiq 'fatal error|segmentation fault|sigsegv|assertion failed|unhandled exception|core dumped|panic:' <<< "$logs"; then
+  if grep -Eiq 'fatal error|segmentation fault|sigsegv|assertion failed|unhandled exception|core dumped|panic:' <<< "$logs"; then
     issue=1
     echo "ERROR"
   else
