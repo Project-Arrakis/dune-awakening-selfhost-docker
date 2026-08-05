@@ -59,6 +59,10 @@ const LIVE_MEMORY_REFRESH_MS = 15000;
 const MAP_RUNTIME_REFRESH_MS = 15000;
 type CachedLiveMemoryRow = { row: LiveMapMemoryRow; sampledAt: number };
 
+export function isPrimaryDeepDesertPartition(row: Record<string, unknown>) {
+  return String(row.dimension ?? "") === "0";
+}
+
 function formatResultTitle(value: unknown, pending = false) {
   return formatUiSentence(value, pending);
 }
@@ -1038,7 +1042,7 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
   const dynamicSurvivalSietchRows = survivalSietchRows.filter((row) => String(row.dimension) !== "0");
   const deepDesertPartitionRows = serverPartitionRows.filter((row) => String(row.map || "") === "DeepDesert_1").sort((a, b) => Number(a.dimension ?? 0) - Number(b.dimension ?? 0));
   const userGameDeepDesertPartitionOptions = isUserGameDeepDesert ? deepDesertPartitionRows.filter((row) => row.partitionId) : [];
-  const dynamicDeepDesertRows = deepDesertPartitionRows.filter((row) => String(row.dimension || "") !== "0");
+  const dynamicDeepDesertRows = deepDesertPartitionRows.filter((row) => !isPrimaryDeepDesertPartition(row));
   const deepDesertDualEnabled = dynamicDeepDesertRows.length > 0;
   const deepDesertDualConfiguring = mapsResultScope === "maps" && mapsResult?.status === "running" && isDeepDesertDualResult(mapsResult);
   const partitionOptions = isSurvival ? survivalSietchRows : [];
@@ -1727,10 +1731,10 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
         const isSurvivalRow = rowName === "Survival_1";
         const isDeepDesertRow = /^DeepDesert_/i.test(rowName);
         const isSelected = selectedMapName === rowName && (!(isSurvivalRow || isDeepDesertRow) || !selectedPartitionId);
-        const memoryRow = memoryForMap(liveMemory, rowName, row);
         const mapSettingsDirty = isSelected && ((modeDraft !== modeInputValue(String(row.mode || "")) && String(row.mode) !== "Core Map") || memory !== memoryInputValue(String(row.memory || "")) || (isSurvivalRow && (activeSietchesDirty || primarySietchDirty)));
         const primaryDraft = primarySurvivalSietch ? sietchDrafts[primarySurvivalSietch.partitionId] || { displayName: primarySurvivalSietch.displayName, password: primarySurvivalSietch.password } : undefined;
-        const primaryDeepDesertPartition = isDeepDesertRow ? deepDesertPartitionRows.find((deepRow) => String(deepRow.dimension || "") === "0") || deepDesertPartitionRows[0] : undefined;
+        const primaryDeepDesertPartition = isDeepDesertRow ? deepDesertPartitionRows.find(isPrimaryDeepDesertPartition) || deepDesertPartitionRows[0] : undefined;
+        const memoryRow = memoryForDisplayedMap(liveMemory, rowName, row, primaryDeepDesertPartition);
         const primaryDeepDesertCombatRow = isDeepDesertRow && primaryDeepDesertPartition
           ? combatStateByMap["DeepDesert_1"]?.partitions.find((p) => p.partitionId === String(primaryDeepDesertPartition.partitionId || "")) || null
           : null;
@@ -2409,7 +2413,7 @@ function memoryForMap(rows: LiveMapMemoryRow[], map: string, row?: Record<string
     return container.endsWith(`-${partitionId.toLowerCase()}`);
   }) || null : null;
   if (partitionMatch) return partitionMatch;
-  if (partitionId && normalized === "survival_1") return null;
+  if (partitionId && (normalized === "survival_1" || normalized === "deepdesert_1")) return null;
   return rows.find((memoryRow) => {
     const memoryMap = normalizeMapKey(memoryRow.map);
     const memoryContainerMap = normalizeContainerMapKey(memoryRow.map);
@@ -2422,7 +2426,17 @@ function memoryForMap(rows: LiveMapMemoryRow[], map: string, row?: Record<string
   }) || null;
 }
 
-function statusWithLiveMemory(status: string, memoryRow: LiveMapMemoryRow | null, mode?: unknown) {
+export function memoryForDisplayedMap(rows: LiveMapMemoryRow[], map: string, row?: Record<string, unknown>, primaryDeepDesertPartition?: Record<string, unknown>) {
+  if (/^DeepDesert_/i.test(map) && primaryDeepDesertPartition) {
+    return memoryForMap(rows, map, {
+      ...row,
+      partitionId: primaryDeepDesertPartition.partitionId ?? primaryDeepDesertPartition.partition
+    });
+  }
+  return memoryForMap(rows, map, row);
+}
+
+export function statusWithLiveMemory(status: string, memoryRow: LiveMapMemoryRow | null, mode?: unknown) {
   const normalized = String(status || "Not Available");
   if (/^Always On$/i.test(String(mode || "").trim()) && /^(Not Running|Not Available|Unallocated|Assigned|Idle|Starting|Queued)$/i.test(normalized)) {
     return memoryRow ? "Loading" : "Queued";
