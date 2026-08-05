@@ -141,6 +141,12 @@ test("builds allowlisted command arguments without shell interpolation", () => {
   assert.deepEqual(buildDuneArgs("userSettingsResetAndRestart", { scope: "global" }), ["usersettings", "reset-global-game"]);
   assert.deepEqual(buildDuneArgs("userSettingsResetAndRestart", { scope: "mapEngine", map: "Survival_1" }), ["usersettings", "reset-map-engine", "Survival_1"]);
   assert.deepEqual(buildDuneArgs("userSettingsResetAndRestart", { scope: "partitionEngine", map: "Survival_1", partitionId: 3 }), ["usersettings", "reset-partition-engine", "Survival_1", "3"]);
+  assert.deepEqual(buildDuneArgs("userSettingsClientGameIni", {}), ["usersettings", "client-game-ini"]);
+  assert.deepEqual(buildDuneArgs("userSettingsClientGameIni", { map: "Survival_1" }), ["usersettings", "client-game-ini", "Survival_1"]);
+  assert.deepEqual(buildDuneArgs("userSettingsClientGameIni", { map: "Survival_1", partitionId: 3 }), ["usersettings", "client-game-ini", "Survival_1", "3"]);
+  assert.deepEqual(buildDuneArgs("userSettingsClientEngineIni", {}), ["usersettings", "client-engine-ini"]);
+  assert.deepEqual(buildDuneArgs("userSettingsClientEngineIni", { map: "Survival_1" }), ["usersettings", "client-engine-ini", "Survival_1"]);
+  assert.deepEqual(buildDuneArgs("userSettingsClientEngineIni", { map: "Survival_1", partitionId: 3 }), ["usersettings", "client-engine-ini", "Survival_1", "3"]);
   assert.throws(() => buildDuneArgs("adminAddXp", { playerId: "bad;id", amount: 1000 }));
   assert.throws(() => buildDuneArgs("backupRestore", { backup: "../dump.backup" }));
   assert.throws(() => buildDuneArgs("adminGiveItem", { playerId: "FLS_TEST", itemName: "", quantity: 1 }));
