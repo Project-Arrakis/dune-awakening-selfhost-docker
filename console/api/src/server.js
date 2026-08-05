@@ -49,6 +49,7 @@ import { choamTerminalOverview, installChoamTerminals, removeChoamTerminals } fr
 import { autoRefillPublicState, createAutoRefillScheduler, setBaseAutoRefill } from "./services/autoRefill.js";
 import { calculateAlwaysOnHostMemorySafety } from "./services/hostMemorySafety.js";
 import { parseEffectiveGuildMemberLimit } from "./services/guildSettings.js";
+import { parseEffectivePermissionLimit } from "./services/permissionSettings.js";
 
 const config = loadConfig();
 const auth = createAuth(config);
@@ -488,6 +489,9 @@ async function handleApi(req, res) {
   if (path.match(/^\/api\/bases\/[^/]+\/refill-generators$/) && req.method === "POST") return baseRefillGeneratorsRoute(req, res, path);
   if (path.match(/^\/api\/bases\/[^/]+\/queued-refill$/) && req.method === "DELETE") return baseCancelQueuedRefillRoute(req, res, path);
   if (path.match(/^\/api\/bases\/[^/]+\/auto-refill$/) && req.method === "POST") return baseAutoRefillToggleRoute(req, res, path);
+  if (path === "/api/bases/permission-candidates") return basePermissionCandidatesRoute(res, url);
+  if (path.match(/^\/api\/bases\/[^/]+\/permissions$/) && req.method === "GET") return basePermissionsRoute(res, path);
+  if (path.match(/^\/api\/bases\/[^/]+\/permissions$/) && req.method === "PUT") return baseSetPermissionsRoute(req, res, path);
   if (path === "/api/admin/items/catalog") return json(res, 200, { rows: listCatalogItems(config.repoRoot, { q: url.searchParams.get("q") || "", limit: url.searchParams.get("limit") || 500 }) });
   if (path === "/api/admin/items/search") return commandJson(res, "adminItemSearch", { q: url.searchParams.get("q") || "" });
   if (path === "/api/admin/items") return commandJson(res, url.searchParams.get("category") ? "adminItemListCategory" : "adminItemList", { category: url.searchParams.get("category") || "" });
@@ -2027,6 +2031,47 @@ async function baseRefillGeneratorsRoute(req, res, path) {
       return { ok: true, queued: true, ...entry };
     }
     return duneDb.refillBaseGenerators(db, config.repoRoot, baseId);
+  }, { baseId });
+}
+
+async function basePermissionsRoute(res, path) {
+  const baseId = Number(decodeURIComponent(path.split("/")[3]));
+  if (!Number.isFinite(baseId) || baseId < 1) return json(res, 400, { error: "Invalid base ID" });
+  try {
+    return json(res, 200, { supported: true, ...(await duneDb.listBasePermissions(db, baseId)) });
+  } catch (error) {
+    const status = error.unsupported ? 501 : 400;
+    return json(res, status, { supported: false, error: redact(error.message || error), reason: redact(error.message || error) });
+  }
+}
+
+async function basePermissionCandidatesRoute(res, url) {
+  try {
+    const rows = await duneDb.basePermissionCandidates(db, {
+      q: url.searchParams.get("q") || "",
+      limit: url.searchParams.get("limit") || 25
+    });
+    return json(res, 200, { supported: true, rows });
+  } catch (error) {
+    const status = error.unsupported ? 501 : 400;
+    return json(res, status, { supported: false, rows: [], error: redact(error.message || error), reason: redact(error.message || error) });
+  }
+}
+
+// No confirmation phrase, matching the guild mutations and the refill route:
+// permissions are reversible from this same editor. Still rate limited and
+// audited -- this writes to player property.
+//
+// The cap is read from live server config on every save rather than baked in,
+// exactly as guildAddMemberRoute resolves the guild member limit. Raising it is
+// then a settings edit, not a release.
+async function baseSetPermissionsRoute(req, res, path) {
+  const baseId = Number(decodeURIComponent(path.split("/")[3]));
+  if (!Number.isFinite(baseId) || baseId < 1) return json(res, 400, { error: "Invalid base ID" });
+  return directDbMutation(req, res, "bases.set-permissions", null, async (body) => {
+    const settings = await runDune(config, buildDuneArgs("userSettingsMapValues", { map: "Survival_1" }), { timeoutMs: 8000 });
+    const maxPermissions = parseEffectivePermissionLimit(settings.stdout);
+    return duneDb.setBasePermissions(db, baseId, body.entries, maxPermissions);
   }, { baseId });
 }
 

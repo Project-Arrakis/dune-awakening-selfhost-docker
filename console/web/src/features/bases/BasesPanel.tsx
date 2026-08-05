@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ChevronDown, ChevronUp, Download, Fuel, X } from "lucide-react";
+import { ChevronDown, ChevronUp, Download, Fuel, Users, X, Zap } from "lucide-react";
+import { BasePermissionsTab } from "./BasePermissionsTab";
 import { basesApi, type AutoRefillBase, type RefillDeviceResult } from "../../api/bases";
 import { mapsApi } from "../../api/maps";
 import { InfoTooltip } from "../../components/common/DisplayPrimitives";
@@ -318,6 +319,10 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
   const [refillStatus, setRefillStatus] = useState<RefillStatusKind>(() => readCachedRefillStatus().kind);
   const [canRefill, setCanRefill] = useState(false);
   const [canQueue, setCanQueue] = useState(false);
+  const [canEditPermissions, setCanEditPermissions] = useState(false);
+  // Which tab the expanded row is showing. Power is the default so expanding a
+  // row behaves exactly as it did before this feature existed.
+  const [expandedTab, setExpandedTab] = useState<"power" | "permissions">("power");
   const [cancelingId, setCancelingId] = useState("");
   // A list, not one key: each row shows its own progress, so the other rows stay
   // clickable and a second restart cannot erase the first one's spinner.
@@ -333,6 +338,7 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
   // what is on screen may not reflect reality.
   const [autoRefillUnavailable, setAutoRefillUnavailable] = useState(false);
   const requestIdRef = useRef(0);
+  const lastExpandedRef = useRef<string | null>(null);
   const skipNextSearchReset = useRef(true);
   const { pending: pendingRefills, refresh: refreshPendingRefills } = usePendingRefills(canQueue);
   const previousPendingTotal = useRef<number | null>(null);
@@ -364,6 +370,7 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
       setRows(nextRows);
       setCanRefill(Boolean(result.capabilities?.generatorRefill));
       setCanQueue(Boolean(result.capabilities?.generatorRefillQueue));
+      setCanEditPermissions(Boolean(result.capabilities?.basePermissions));
       setTotalCount(result.totalCount || 0);
       setTotalBases(result.totalBases || 0);
       setTotalPieces(result.totalPieces || 0);
@@ -680,6 +687,43 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
     }
   }
 
+  // Move focus into a row that has just opened. The expanded panel renders below
+  // the row, so without this the focus stays on the chevron and the content can
+  // open below the fold. Keyed on the base id alone: switching tabs already
+  // focuses the tab that was clicked, and re-focusing on every tab change would
+  // fight the user.
+  //
+  // Must stay above the `loading` early return -- a hook after it changes the
+  // hook count between renders.
+  useEffect(() => {
+    if (!expandedBaseId || lastExpandedRef.current === expandedBaseId) {
+      lastExpandedRef.current = expandedBaseId;
+      return;
+    }
+    lastExpandedRef.current = expandedBaseId;
+    // Synchronous, not deferred to a frame: the expanded row is committed by the
+    // time this effect runs, and a requestAnimationFrame callback never fires
+    // while the tab is backgrounded -- which would silently drop the focus move.
+    const tab = document.querySelector<HTMLButtonElement>(".bases-expanded-tab.active");
+    tab?.focus({ preventScroll: true });
+    // Bring the opened panel into view. The table lives in a `.table-wrap`
+    // scrollport with its own overflow-y, so the element that needs scrolling is
+    // usually that container rather than the window -- scrollIntoView walks every
+    // scrollable ancestor and handles both, which hand-rolled window.scrollBy
+    // arithmetic does not.
+    //
+    // block:"nearest" leaves an already-visible panel alone, so opening a row
+    // near the top never jumps the view, and aligns the top edge when the panel
+    // is taller than the scrollport (showing its start rather than its middle).
+    // No behavior:"smooth" -- it is compositor-driven and does not settle
+    // reliably in a backgrounded tab.
+    //
+    // Optional call: jsdom does not implement scrollIntoView, and scrolling is a
+    // nicety -- the focus move is the part that matters.
+    const panel = document.querySelector<HTMLElement>(".bases-table tbody tr.expanded-row");
+    (panel ?? tab)?.scrollIntoView?.({ block: "nearest" });
+  }, [expandedBaseId]);
+
   if (loading) {
     return <section className="panel">
       <div className="panel-title"><h2>Bases</h2></div>
@@ -722,7 +766,13 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
   }
 
   function toggleExpanded(id: string) {
-    setExpandedBaseId((current) => current === id ? null : id);
+    setExpandedBaseId((current) => {
+      // Opening a different base starts on Power again; leaving the previous
+      // row's tab selected would drop you into Permissions for a base you only
+      // wanted to glance at.
+      if (current !== id) setExpandedTab("power");
+      return current === id ? null : id;
+    });
   }
 
   function handleSort(column: string) {
@@ -822,6 +872,7 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
           coordinates: "Coordinates"
         }}
         tableClassName="bases-table"
+        wrapClassName="bases-table-wrap"
         headerTitles
         actionClassName="actions-column bases-actions-column"
         renderCell={renderBaseCell}
@@ -874,8 +925,16 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
           const base = row as BaseRow;
           const id = String(base.base_id);
           const isExpanded = expandedBaseId === id;
-          if (!base.generatorDataAvailable || !base.generatorCount) return null;
-          const label = `${isExpanded ? "Collapse" : "Show"} generator details for ${base.name || `base ${id}`}`;
+          const hasGeneratorDetail = base.generatorDataAvailable && Boolean(base.generatorCount);
+          // Before permissions editing, a base with no generators had nothing to
+          // expand into and so had no chevron. It does now, so the chevron has
+          // to appear for those rows too -- otherwise the only way into the
+          // Permissions tab for a generator-less base would be the pencil.
+          if (!hasGeneratorDetail && !canEditPermissions) return null;
+          const detail = hasGeneratorDetail && canEditPermissions ? "details"
+            : hasGeneratorDetail ? "generator details"
+            : "permissions";
+          const label = `${isExpanded ? "Collapse" : "Show"} ${detail} for ${base.name || `base ${id}`}`;
           return <button
             className="bases-expand-button"
             title={label}
@@ -893,10 +952,11 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
         isRowExpanded={(row) => expandedBaseId === String(row.base_id)}
         renderExpandedRow={(row) => {
           const base = row as BaseRow;
+          const id = String(base.base_id);
+          const renderPower = () => {
           if (!base.generatorDataAvailable) return <p className="muted">Generator data is currently unavailable.</p>;
           const generators = base.generators ?? [];
           if (!generators.length) return <p className="muted">No generators built at this base.</p>;
-          const id = String(base.base_id);
           const autoRefillEntry = autoRefillBases.get(id);
           const savingAutoRefill = savingAutoRefillId === id;
           const lastChecked = autoRefillEntry?.lastCheckedAt ? formatAgo(autoRefillEntry.lastCheckedAt) : "";
@@ -975,6 +1035,47 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
                   </dl>
                 </div>
               ))}
+            </div>
+          );
+          };
+          // Without the capability there is no second tab, so the row keeps its
+          // original shape rather than growing a tab strip with one tab in it.
+          if (!canEditPermissions) return renderPower();
+          return (
+            <div className="bases-expanded-tabs" onClick={(event) => event.stopPropagation()}>
+              <div className="bases-expanded-tablist" role="tablist" aria-label="Base details">
+                <button
+                  role="tab"
+                  id={`bases-tab-power-${id}`}
+                  aria-selected={expandedTab === "power"}
+                  aria-controls={`bases-panel-power-${id}`}
+                  className={`bases-expanded-tab${expandedTab === "power" ? " active" : ""}`}
+                  onClick={() => setExpandedTab("power")}
+                ><Zap size={15} aria-hidden="true" />Power</button>
+                <button
+                  role="tab"
+                  id={`bases-tab-permissions-${id}`}
+                  aria-selected={expandedTab === "permissions"}
+                  aria-controls={`bases-panel-permissions-${id}`}
+                  className={`bases-expanded-tab${expandedTab === "permissions" ? " active" : ""}`}
+                  onClick={() => setExpandedTab("permissions")}
+                ><Users size={15} aria-hidden="true" />Permissions</button>
+              </div>
+              {expandedTab === "power"
+                ? <div role="tabpanel" id={`bases-panel-power-${id}`} aria-labelledby={`bases-tab-power-${id}`}>{renderPower()}</div>
+                : <div role="tabpanel" id={`bases-panel-permissions-${id}`} aria-labelledby={`bases-tab-permissions-${id}`}>
+                    <BasePermissionsTab
+                      baseId={id}
+                      baseName={String(base.name || `base ${id}`)}
+                      // Owner and Shared With are rendered from the list
+                      // response, so a saved roster has to refetch or the row
+                      // above keeps showing the pre-edit names.
+                      onSaved={() => {
+                        basesCache = null;
+                        void load({ q: submittedQ, page, pageSize, sortColumn, sortDirection }, { silent: true });
+                      }}
+                    />
+                  </div>}
             </div>
           );
         }}

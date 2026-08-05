@@ -2286,6 +2286,160 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
   color: #ad9f89;
   font-style: normal;
 }
+
+/* Folder-style tabs: the active one is a raised tab sitting on the panel,
+   reusing the same #25201b fill the app's buttons already use. The -1px margin
+   pulls it over the strip's bottom border so the tab and the content below it
+   read as one continuous surface. */
+/* Bases opts out of the shared .table-wrap height cap so the table grows with
+   its rows and the page scrolls instead of a container inside it. An expanded
+   row's panel is tall enough that the 620px cap left it fighting for room in a
+   nested scrollport. Row count stays bounded by the page-size control. */
+/* Two-class selector deliberately: a later grouped rule re-declares
+   `overflow: auto` on .table-wrap at equal specificity, so a single-class
+   override here would lose on source order. */
+.table-wrap.bases-table-wrap { max-height: none; overflow: visible; }
+
+/* Below this width the twelve columns have nowhere to go. The table has no
+   intrinsic minimum, so instead of overflowing it crushes -- cells collapse to
+   one character per line and "Advanced Sub-Fief" renders vertically. (That
+   predates the height-cap change: with no min-width the table always shrank to
+   its container, so the wrap's overflow-x never had anything to scroll.)
+   Give it a floor and let the container scroll horizontally again.
+   The sticky header does not survive here, because a sticky element is confined
+   to its nearest scrolling ancestor and that is now the wrap again -- readable
+   columns are worth more than a pinned header on a phone. */
+@media (max-width: 1100px) {
+  .table-wrap.bases-table-wrap { overflow: auto; }
+  .bases-table { min-width: 860px; }
+  /* The expanded panel is a cell of that 860px table, so without this it
+     inherits the width and pushes its own controls off-screen -- the rank
+     dropdown, remove button and player picker all end up past the right edge.
+     Sticky-left pins the panel to the visible edge while the columns scroll
+     underneath, and the width cap keeps its controls inside the scrollport. */
+  .bases-table td.expanded-row-cell { position: sticky; left: 0; }
+  .bases-table td.expanded-row-cell > * { max-width: calc(100vw - 76px); }
+}
+/* The shared `th` rule is already position:sticky, but an overflow:auto ancestor
+   confines a sticky element to that ancestor's scrollport -- so with the height
+   cap gone the header stuck to a container that no longer scrolls and rode off
+   with the page. Dropping the wrap's overflow makes the page itself the sticky
+   context, which is what keeps the header pinned while the rows scroll. */
+/* The search row pins above the table header so Search/Clear stay reachable
+   while scrolling a long list. It needs an opaque background of its own -- the
+   panel's is semi-transparent, so rows would scroll visibly through it. Its
+   margins become padding so the sticky box is one solid band with no gap for
+   rows to show through between it and the header below. */
+.bases-search-row {
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  margin-block: 0;
+  padding-block: 12px;
+  background: var(--panel);
+}
+/* 67px = the search row's 43px of content plus its 24px of padding, so the
+   header parks directly beneath the search bar rather than under it. */
+.table-wrap.bases-table-wrap { margin-top: 0; }
+.bases-table-wrap .bases-table th { top: 67px; z-index: 3; }
+/* Below 900px the sidebar stops being a column and becomes a sticky header at
+   top:0 with z-index:100, so a search bar pinned to the same edge sits behind
+   it. Offsetting by the sidebar's height would break the moment the hamburger
+   expands it, so the bar simply scrolls with the page here -- which matches the
+   table header, itself not page-sticky at this width. */
+@media (max-width: 900px) {
+  .bases-search-row { position: static; }
+}
+
+.bases-expanded-tablist {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--border-strong);
+  margin-bottom: 14px;
+  padding-top: 8px;
+}
+.bases-expanded-tab {
+  width: auto;
+  min-width: 0;
+  border: 1px solid transparent;
+  border-radius: 6px 6px 0 0;
+  background: transparent;
+  color: var(--muted);
+  padding: 9px 16px;
+  font-size: 13px;
+  margin-bottom: -1px;
+}
+.bases-expanded-tab:hover { color: var(--muted-warm); border-color: transparent; }
+.bases-expanded-tab.active {
+  background: #25201b;
+  border-color: var(--border-strong);
+  border-bottom-color: #25201b;
+  color: var(--title);
+}
+.bases-expanded-tab.active:hover { border-color: var(--border-strong); border-bottom-color: #25201b; }
+
+.bases-permissions { display: grid; gap: 12px; }
+.bases-permissions-roster { display: grid; gap: 6px; }
+.bases-permissions-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 150px 38px;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  padding: 6px 10px;
+}
+.bases-permissions-row-owner { border-color: var(--border-strong); }
+.bases-permissions-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+.bases-permissions-row-owner .bases-permissions-name { color: var(--text-strong); }
+.bases-permissions-orphan { display: inline-flex; color: var(--warning); flex: 0 0 auto; }
+.bases-permissions-remove { border-color: var(--danger-strong); color: var(--danger-text); }
+.bases-permissions-add { display: grid; gap: 8px; }
+.bases-permissions-search-row { flex-wrap: wrap; }
+.bases-permissions-candidates {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+.bases-permissions-candidates li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 10px;
+  font-size: 13px;
+}
+.bases-permissions-candidates li span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bases-permissions-warning { margin: 0; }
+.bases-permissions-error { color: var(--danger-text); margin: 0; }
+.bases-permissions-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  justify-content: flex-end;
+}
+.bases-permissions-actions > .muted { margin-right: auto; font-size: 12px; }
+.bases-permissions-actions button { width: auto; }
 .bases-table th.bases-expand-column, .bases-table td.bases-expand-column {
   width: 32px;
   padding-inline: 4px;

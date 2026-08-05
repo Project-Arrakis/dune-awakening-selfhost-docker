@@ -53,6 +53,47 @@ export type AutoRefillState = {
   bases: AutoRefillBase[];
 };
 
+// rank 1/2/3 = Owner/Co-Owner/Associate, confirmed in both directions against a
+// live server: the game's own Permissions panel writes exactly these values.
+// The 5/4/3 badges the game UI shows beside those labels are decoration, not
+// ranks -- no row in permission_actor_rank ever holds a 4 or 5.
+export type BasePermissionRank = 1 | 2 | 3;
+
+export type BasePermissionEntry = {
+  playerId: string;
+  name: string;
+  rank: BasePermissionRank;
+  label: string;
+  // False when this row names an actor that is not the account's
+  // player_controller_id. The game ignores such rows, but they are shown rather
+  // than hidden -- it is a state the console can see and the game client cannot.
+  canonical: boolean;
+};
+
+export type BasePermissions = {
+  supported: boolean;
+  baseId: number;
+  actorId: string;
+  map: string;
+  mapNameId: number;
+  entries: BasePermissionEntry[];
+  reason?: string;
+};
+
+export type BasePermissionCandidate = { playerId: string; name: string };
+
+export type SetBasePermissionsResult = {
+  ok: boolean;
+  baseId: number;
+  actorId: string;
+  map: string;
+  added: number;
+  reranked: number;
+  removed: number;
+  total: number;
+  message: string;
+};
+
 export const basesApi = {
   list: (params: { q?: string; page?: number; pageSize?: number; sortColumn?: string; sortDirection?: "asc" | "desc" } = {}) => {
     const search = new URLSearchParams();
@@ -87,5 +128,21 @@ export const basesApi = {
   autoRefill: () => api<AutoRefillState>("/api/bases/auto-refill"),
   setAutoRefill: (baseId: string, enabled: boolean) =>
     post<{ ok: boolean; baseId: number; enabled: boolean; total: number }>(
-      `/api/bases/${encodeURIComponent(baseId)}/auto-refill`, { enabled })
+      `/api/bases/${encodeURIComponent(baseId)}/auto-refill`, { enabled }),
+  permissions: (baseId: string) =>
+    api<BasePermissions>(`/api/bases/${encodeURIComponent(baseId)}/permissions`),
+  // A whole roster, not a delta: the server diffs it against current state and
+  // applies the difference through the game's own stored procedures in one
+  // transaction. Changes reach a running map immediately -- no restart.
+  setPermissions: (baseId: string, entries: { playerId: string; rank: BasePermissionRank }[]) =>
+    api<{ supported: boolean; result?: SetBasePermissionsResult; reason?: string }>(
+      `/api/bases/${encodeURIComponent(baseId)}/permissions`,
+      { method: "PUT", body: JSON.stringify({ entries }) }),
+  permissionCandidates: (q: string, limit = 25) => {
+    const search = new URLSearchParams();
+    if (q) search.set("q", q);
+    search.set("limit", String(limit));
+    return api<{ supported: boolean; rows: BasePermissionCandidate[]; reason?: string }>(
+      `/api/bases/permission-candidates?${search.toString()}`);
+  }
 };

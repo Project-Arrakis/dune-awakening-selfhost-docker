@@ -10,7 +10,10 @@ vi.mock("../../api/bases", () => ({
     cancelQueuedRefill: vi.fn(),
     pendingRefills: vi.fn(),
     autoRefill: vi.fn(),
-    setAutoRefill: vi.fn()
+    setAutoRefill: vi.fn(),
+    permissions: vi.fn(),
+    setPermissions: vi.fn(),
+    permissionCandidates: vi.fn()
   }
 }));
 
@@ -638,5 +641,168 @@ describe("BasesPanel auto-refill", () => {
     const refill = await screen.findByRole("button", { name: "Refill Generators (auto-refill on)" });
     expect(refill).toHaveClass("bases-auto-refill-on");
     expect(refill).not.toHaveClass("bases-auto-refill-stalled-icon");
+  });
+});
+
+describe("BasesPanel permissions editing", () => {
+  const permissionRow = {
+    ...commonRow,
+    base_id: "1006",
+    name: "Sietch One",
+    owner_name: "DarkShark",
+    shared_with: [{ name: "Yaida", rank: 2, label: "Co-Owner" }],
+    generatorDataAvailable: true,
+    generatorCount: 0,
+    generatorUptimeMultiplier: 1,
+    generatorUptimeEventLabel: "",
+    generatorUptimeEventEndsAt: "",
+    generatorUnstockedCount: 0,
+    generatorAllUnstocked: false
+  };
+
+  function mockList(basePermissions: boolean) {
+    vi.mocked(basesApi.list).mockResolvedValue({
+      capabilities: { bases: true, basePermissions },
+      totalCount: 1,
+      totalBases: 1,
+      totalPieces: 10,
+      totalPlaceables: 4,
+      rows: [permissionRow]
+    } as never);
+  }
+
+  // The only route into the editor now that the pencil is gone: expand the row,
+  // then switch to Permissions.
+  async function openPermissionsTab() {
+    fireEvent.click(await screen.findByRole("button", { name: "Show permissions for Sietch One" }));
+    fireEvent.click(await screen.findByRole("tab", { name: "Permissions" }));
+    await waitFor(() => expect(screen.getByRole("tab", { name: "Permissions" })).toHaveAttribute("aria-selected", "true"));
+  }
+
+  function mockRoster() {
+    vi.mocked(basesApi.permissions).mockResolvedValue({
+      supported: true,
+      baseId: 1006,
+      actorId: "1004",
+      map: "DeepDesert",
+      mapNameId: 7,
+      entries: [
+        { playerId: "4", name: "DarkShark", rank: 1, label: "Owner", canonical: true },
+        { playerId: "29", name: "Yaida", rank: 2, label: "Co-Owner", canonical: true }
+      ]
+    } as never);
+  }
+
+  it("hides the editor entirely when the schema does not support it", async () => {
+    mockList(false);
+    renderPanel();
+    expect(await screen.findByText("Sietch One")).toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "Permissions" })).not.toBeInTheDocument();
+    // With no generators and no permission capability there is nothing to
+    // expand into, so the row keeps its original chevron-less shape.
+    expect(screen.queryByRole("button", { name: /Sietch One/ })).not.toBeInTheDocument();
+  });
+
+  // A base with no generators had no expand chevron before this feature. It
+  // needs one now, or the Permissions tab would be unreachable for those rows.
+  it("gives a generator-less base an expand chevron once permissions are editable", async () => {
+    mockList(true);
+    mockRoster();
+    renderPanel();
+    expect(await screen.findByRole("button", { name: "Show permissions for Sietch One" })).toBeInTheDocument();
+  });
+
+  it("reaches the roster by expanding the row and switching tabs", async () => {
+    mockList(true);
+    mockRoster();
+    renderPanel();
+    await openPermissionsTab();
+    // The roster's own control, not the name text -- "DarkShark" also appears in
+    // the Owner cell of the row above.
+    expect(await screen.findByRole("combobox", { name: "Rank for DarkShark" })).toBeInTheDocument();
+  });
+
+  it("defaults to the Power tab when the row is expanded normally", async () => {
+    mockList(true);
+    mockRoster();
+    renderPanel();
+    fireEvent.click(await screen.findByText("Sietch One"));
+    await waitFor(() => expect(screen.getByRole("tab", { name: "Power" })).toHaveAttribute("aria-selected", "true"));
+  });
+
+  // Promoting has to demote the incumbent in the same edit, so the one-owner
+  // rule can never be violated on screen.
+  it("demotes the current owner when another player is promoted", async () => {
+    mockList(true);
+    mockRoster();
+    renderPanel();
+    await openPermissionsTab();
+    const yaidaRank = await screen.findByRole("combobox", { name: "Rank for Yaida" });
+    fireEvent.change(yaidaRank, { target: { value: "1" } });
+    await waitFor(() => {
+      expect(screen.getByRole("combobox", { name: "Rank for Yaida" })).toHaveValue("1");
+      expect(screen.getByRole("combobox", { name: "Rank for DarkShark" })).toHaveValue("2");
+    });
+  });
+
+  it("blocks removing the owner and enables Save only once the roster is dirty", async () => {
+    mockList(true);
+    mockRoster();
+    renderPanel();
+    await openPermissionsTab();
+    expect(await screen.findByRole("button", { name: "Remove DarkShark" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Remove Yaida" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Save changes" })).toBeDisabled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove Yaida" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Save changes" })).toBeEnabled());
+    expect(screen.getByText("Unsaved changes")).toBeInTheDocument();
+  });
+
+  it("reverts local edits without calling the server", async () => {
+    mockList(true);
+    mockRoster();
+    renderPanel();
+    await openPermissionsTab();
+    fireEvent.click(await screen.findByRole("button", { name: "Remove Yaida" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Revert" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Revert" }));
+    await waitFor(() => expect(screen.getByRole("combobox", { name: "Rank for Yaida" })).toBeInTheDocument());
+    expect(basesApi.setPermissions).not.toHaveBeenCalled();
+  });
+
+  it("saves the whole roster as one request", async () => {
+    mockList(true);
+    mockRoster();
+    vi.mocked(basesApi.setPermissions).mockResolvedValue({
+      supported: true,
+      result: { ok: true, baseId: 1006, actorId: "1004", map: "DeepDesert", added: 0, reranked: 0, removed: 1, total: 1, message: "Permissions were updated." }
+    } as never);
+    renderPanel();
+    await openPermissionsTab();
+    fireEvent.click(await screen.findByRole("button", { name: "Remove Yaida" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Save changes" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(basesApi.setPermissions).toHaveBeenCalledWith("1006", [{ playerId: "4", rank: 1 }]));
+  });
+
+  // A roster row naming a non-canonical actor is one the game ignores. The
+  // console can see it and the game client cannot, so it must be visible here.
+  it("flags a roster entry the game ignores", async () => {
+    mockList(true);
+    vi.mocked(basesApi.permissions).mockResolvedValue({
+      supported: true,
+      baseId: 1006,
+      actorId: "1004",
+      map: "DeepDesert",
+      mapNameId: 7,
+      entries: [
+        { playerId: "4", name: "DarkShark", rank: 1, label: "Owner", canonical: true },
+        { playerId: "5", name: "DarkShark", rank: 3, label: "Associate", canonical: false }
+      ]
+    } as never);
+    renderPanel();
+    await openPermissionsTab();
+    expect(await screen.findByLabelText("Ignored by the game")).toBeInTheDocument();
   });
 });
