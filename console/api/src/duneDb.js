@@ -3017,7 +3017,7 @@ export async function listStorage(db) {
              coalesce(max(inv.max_item_volume), 0)::real as max_item_volume,
              coalesce(sum(coalesce(i.volume_override, 0)), 0)::real as current_volume,
              coalesce(max(ps.character_name), '') as owner_name,
-             (array_agg(vm.template_id) filter (where vm.template_id ilike '%inventory%'))[1] as inventory_module_id,
+             (select vm2.template_id from dune.vehicle_modules vm2 where vm2.vehicle_id = a.id and vm2.template_id ilike '%inventory%' limit 1) as inventory_module_id,
              'vehicle' as type
       from dune.actors a
       join dune.vehicles v on v.id = a.id
@@ -3027,7 +3027,6 @@ export async function listStorage(db) {
       left join dune.permission_actor_rank par on par.permission_actor_id = a.id
       left join dune.actors player_a on player_a.id = par.player_id
       left join dune.player_state ps on ps.account_id = player_a.owner_account_id
-      left join dune.vehicle_modules vm on vm.vehicle_id = a.id
       where a.id is not null
       group by a.id, a.map
       order by a.id`);
