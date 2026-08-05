@@ -109,6 +109,8 @@ test("archive self-update replaces project files and preserves local state", asy
   mkdirSync(join(installDir, "runtime", "generated"), { recursive: true });
   mkdirSync(join(installDir, "runtime", "secrets"), { recursive: true });
   writeFileSync(join(installDir, "runtime", "generated", "map-runtime-modes.json"), "{\"DeepDesert_1\":\"always-on\"}\n");
+  writeFileSync(join(installDir, "runtime", "generated", "landsraad-milestones.json"), "{\"enabled\":true,\"goalAmount\":70000,\"thresholds\":[700,3500]}\n");
+  writeFileSync(join(installDir, "runtime", "generated", "director-deepdesert-dual.ini"), "[DeepDesert_1]\nNumExtraServers=1\nMinServers=0\n");
   writeFileSync(join(installDir, "runtime", "generated", "public-directory-status.json"), "{\"state\":\"online\"}\n");
   writeFileSync(join(installDir, "runtime", "generated", "public-probe.env"), "DUNE_PUBLIC_PROBE_ENABLED=true\nDUNE_PUBLIC_PROBE_ADDRESS=203.0.113.42\nDUNE_PUBLIC_PROBE_ENDPOINT=https://203.0.113.42\n");
   writeFileSync(join(installDir, "runtime", "secrets", "funcom-token.txt"), "test-token\n");
@@ -199,6 +201,8 @@ exit 0
     assert.ok(updatedEnv.includes("COMPOSE_PROJECT_NAME=install\n"));
     assert.equal(existsSync(join(installDir, "runtime", "scripts", "compose-project.sh")), true);
     assert.equal(readFileSync(join(installDir, "runtime", "generated", "map-runtime-modes.json"), "utf8"), "{\"DeepDesert_1\":\"always-on\"}\n");
+    assert.equal(readFileSync(join(installDir, "runtime", "generated", "landsraad-milestones.json"), "utf8"), "{\"enabled\":true,\"goalAmount\":70000,\"thresholds\":[700,3500]}\n");
+    assert.equal(readFileSync(join(installDir, "runtime", "generated", "director-deepdesert-dual.ini"), "utf8"), "[DeepDesert_1]\nNumExtraServers=1\nMinServers=0\n");
     assert.equal(readFileSync(join(installDir, "runtime", "generated", "public-directory-status.json"), "utf8"), "{\"state\":\"online\"}\n");
     assert.equal(readFileSync(join(installDir, "runtime", "generated", "public-probe.env"), "utf8"), "DUNE_PUBLIC_PROBE_ENABLED=true\nDUNE_PUBLIC_PROBE_ADDRESS=203.0.113.42\nDUNE_PUBLIC_PROBE_ENDPOINT=https://203.0.113.42\n");
     assert.equal(readFileSync(join(installDir, "runtime", "secrets", "funcom-token.txt"), "utf8"), "test-token\n");
