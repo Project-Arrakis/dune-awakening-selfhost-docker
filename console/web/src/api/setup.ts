@@ -9,6 +9,7 @@ export type Task = {
   currentStep: string;
   progressMessage: string;
   logLines: { timestamp: string; stream: string; line: string }[];
+  warnings: string[];
   startedAt: string;
   finishedAt: string | null;
   errorMessage: string | null;
