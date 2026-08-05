@@ -3,11 +3,35 @@ import { KeyRound, RotateCcw, Trophy, Zap } from "lucide-react";
 import { playersApi } from "../../api/players";
 import { InlineActionResult } from "../../components/common/InlineActionResult";
 
-type SpecializationTrackRow = { trackType: string; xp: number; level: number; keystone?: boolean };
+type SpecializationTrackRow = {
+  trackType: string;
+  xp: number;
+  level: number;
+  keystone: boolean;
+  keystoneOwned: number;
+  keystoneTotal: number;
+};
 
 type ConfirmAction = (message: string, options?: { title?: string; confirmLabel?: string; cancelLabel?: string; danger?: boolean; details?: { label: string; value: string; tone?: "accent" | "success" | "danger" }[] }) => Promise<boolean>;
 
 type ActionResult = { key: string; tone: "success" | "danger" | "neutral"; text: string; pending?: boolean };
+
+const DEFAULT_XP_AMOUNT = "1000";
+const KEYSTONE_RESULT_KEY = "specKeystones";
+
+function trackResultKey(trackType: string) {
+  return `spec_${trackType}`;
+}
+
+function pluralKeystones(count: number) {
+  return count === 1 ? "keystone" : "keystones";
+}
+
+// Keystone mutations report how many rows they touched; a zero count means the action
+// succeeded but changed nothing, which needs different wording from a real change.
+function countFromResult(response: { result?: Record<string, unknown> } | undefined, field: string) {
+  return Math.max(0, Math.floor(Number(response?.result?.[field] ?? 0) || 0));
+}
 
 type SpecializationTabProps = {
   dbPlayerId: string;
@@ -18,6 +42,18 @@ type SpecializationTabProps = {
   onSkillBaselineChange?: (baseline: Record<string, number>) => void;
   onActionLog?: (actionType: string, target: string, amount: string, notes: string) => void;
 };
+
+function KeystoneCell({ row }: { row: SpecializationTrackRow }) {
+  if (row.keystone) return <span className="spec-keystone-yes"><KeyRound size={14} /> Granted</span>;
+  if (row.keystoneOwned > 0) {
+    return (
+      <span className="spec-keystone-partial" title={`${row.keystoneOwned} of ${row.keystoneTotal} keystones purchased`}>
+        <KeyRound size={14} /> {row.keystoneOwned}/{row.keystoneTotal}
+      </span>
+    );
+  }
+  return <span className="spec-keystone-no">—</span>;
+}
 
 function friendlyInlineError(error: unknown) {
   return error instanceof Error ? error.message : String(error);
@@ -35,22 +71,43 @@ export function SpecializationTab({
   const [rows, setRows] = useState<SpecializationTrackRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [xpAmount, setXpAmount] = useState("1000");
-  const [actionResult, setActionResult] = useState<ActionResult | null>(null);
-  const resultTimer = useRef<number | null>(null);
+  const [xpAmounts, setXpAmounts] = useState<Record<string, string>>({});
+  const [actionResults, setActionResults] = useState<Record<string, ActionResult>>({});
+  const resultTimers = useRef<Record<string, number>>({});
   const loadRequest = useRef(0);
 
   useEffect(() => {
+    clearResults();
+    setXpAmounts({});
     void load();
   }, [dbPlayerId]);
 
-  useEffect(() => () => { if (resultTimer.current) window.clearTimeout(resultTimer.current); }, []);
+  useEffect(() => () => clearResultTimers(), []);
+
+  function clearResultTimers() {
+    Object.values(resultTimers.current).forEach((timer) => window.clearTimeout(timer));
+    resultTimers.current = {};
+  }
+
+  function clearResults() {
+    clearResultTimers();
+    setActionResults({});
+  }
 
   function showResult(key: string, text: string, tone: "success" | "danger" | "neutral" = "success", pending = false) {
-    setActionResult({ key, text, tone, pending });
-    if (resultTimer.current) window.clearTimeout(resultTimer.current);
-    resultTimer.current = null;
-    if (!pending) resultTimer.current = window.setTimeout(() => setActionResult(null), 8000);
+    setActionResults((current) => ({ ...current, [key]: { key, text, tone, pending } }));
+    if (resultTimers.current[key]) window.clearTimeout(resultTimers.current[key]);
+    delete resultTimers.current[key];
+    if (pending) return;
+    resultTimers.current[key] = window.setTimeout(() => {
+      delete resultTimers.current[key];
+      setActionResults((current) => {
+        if (!current[key]) return current;
+        const next = { ...current };
+        delete next[key];
+        return next;
+      });
+    }, 8000);
   }
 
   async function load() {
@@ -71,7 +128,9 @@ export function SpecializationTab({
         trackType: String(row.track_type || row.trackType || ""),
         xp: Number(row.xp_amount ?? row.xp ?? 0),
         level: Math.max(0, Math.floor(Number(row.level ?? 0) || 0)),
-        keystone: Boolean(row.keystone || row.has_keystone)
+        keystone: Boolean(row.keystone || row.has_keystone),
+        keystoneOwned: Math.max(0, Math.floor(Number(row.keystone_count ?? 0) || 0)),
+        keystoneTotal: Math.max(0, Math.floor(Number(row.keystone_total ?? 0) || 0))
       })).filter((row) => row.trackType));
       const learnedRows = Array.isArray(response.skillModules) ? response.skillModules as Record<string, unknown>[] : [];
       const baseline = Object.fromEntries(learnedRows.map((row) => {
@@ -91,32 +150,32 @@ export function SpecializationTab({
   }
 
   async function addXp(trackType: string) {
-    const amount = Number(xpAmount) || 0;
+    const amount = Number(xpAmounts[trackType] ?? DEFAULT_XP_AMOUNT) || 0;
     if (!amount) {
-      showResult(`spec_${trackType}`, "Enter an XP amount first.", "danger");
+      showResult(trackResultKey(trackType), "Enter an XP amount first.", "danger");
       return;
     }
     if (isOnline) {
-      showResult(`spec_${trackType}`, "The player must be offline for specialization changes.", "danger");
+      showResult(trackResultKey(trackType), "The player must be offline for specialization changes.", "danger");
       return;
     }
     onError("");
-    showResult(`spec_${trackType}`, "Updating XP", "neutral", true);
+    showResult(trackResultKey(trackType), "Updating XP", "neutral", true);
     try {
       await playersApi.addSpecializationXp(dbPlayerId, { trackType, amount, confirmation: "ADD SPECIALIZATION XP" });
-      showResult(`spec_${trackType}`, "XP updated. Relog required.", "success");
+      showResult(trackResultKey(trackType), "XP updated. Relog required.", "success");
       onActionLog?.("Add Specialization XP", trackType, String(amount), "Succeeded");
       await load();
     } catch (err) {
       const message = friendlyInlineError(err);
-      showResult(`spec_${trackType}`, message, "danger");
+      showResult(trackResultKey(trackType), message, "danger");
       onActionLog?.("Add Specialization XP", trackType, String(amount), `Failed: ${message}`);
     }
   }
 
   async function grantMax(trackType: string) {
     if (isOnline) {
-      showResult(`spec_${trackType}`, "The player must be offline for specialization changes.", "danger");
+      showResult(trackResultKey(trackType), "The player must be offline for specialization changes.", "danger");
       return;
     }
     if (!(await confirmAction(`Grant max level for ${trackType} to ${playerName}? This is a high-impact action.`, {
@@ -126,22 +185,22 @@ export function SpecializationTab({
       details: [{ label: "Track", value: trackType, tone: "accent" }, { label: "Player", value: playerName }]
     }))) return;
     onError("");
-    showResult(`spec_${trackType}`, "Granting max level", "neutral", true);
+    showResult(trackResultKey(trackType), "Granting max level", "neutral", true);
     try {
       await playersApi.grantMaxSpecialization(dbPlayerId, { trackType, confirmation: "GRANT MAX SPECIALIZATION" });
-      showResult(`spec_${trackType}`, "Max level granted. Relog required.", "success");
+      showResult(trackResultKey(trackType), "Max level granted. Relog required.", "success");
       onActionLog?.("Grant Max Specialization", trackType, "1", "Succeeded");
       await load();
     } catch (err) {
       const message = friendlyInlineError(err);
-      showResult(`spec_${trackType}`, message, "danger");
+      showResult(trackResultKey(trackType), message, "danger");
       onActionLog?.("Grant Max Specialization", trackType, "1", `Failed: ${message}`);
     }
   }
 
   async function resetTrack(trackType: string) {
     if (isOnline) {
-      showResult(`spec_${trackType}`, "The player must be offline for specialization changes.", "danger");
+      showResult(trackResultKey(trackType), "The player must be offline for specialization changes.", "danger");
       return;
     }
     if (!(await confirmAction(`Reset ${trackType} specialization for ${playerName}?`, {
@@ -150,22 +209,22 @@ export function SpecializationTab({
       details: [{ label: "Track", value: trackType, tone: "danger" }]
     }))) return;
     onError("");
-    showResult(`spec_${trackType}`, "Resetting track", "neutral", true);
+    showResult(trackResultKey(trackType), "Resetting track", "neutral", true);
     try {
       await playersApi.resetSpecialization(dbPlayerId, { trackType, confirmation: "RESET SPECIALIZATION" });
-      showResult(`spec_${trackType}`, "Track reset. Relog required.", "success");
+      showResult(trackResultKey(trackType), "Track reset. Relog required.", "success");
       onActionLog?.("Reset Specialization", trackType, "1", "Succeeded");
       await load();
     } catch (err) {
       const message = friendlyInlineError(err);
-      showResult(`spec_${trackType}`, message, "danger");
+      showResult(trackResultKey(trackType), message, "danger");
       onActionLog?.("Reset Specialization", trackType, "1", `Failed: ${message}`);
     }
   }
 
   async function grantAllKeystones() {
     if (isOnline) {
-      showResult("specKeystones", "The player must be offline for specialization changes.", "danger");
+      showResult(KEYSTONE_RESULT_KEY, "The player must be offline for specialization changes.", "danger");
       return;
     }
     if (!(await confirmAction(`Grant all specialization keystones to ${playerName}? This is a high-impact action that affects all tracks.`, {
@@ -175,22 +234,27 @@ export function SpecializationTab({
       details: [{ label: "Player", value: playerName, tone: "accent" }]
     }))) return;
     onError("");
-    showResult("specKeystones", "Granting keystones", "neutral", true);
+    showResult(KEYSTONE_RESULT_KEY, "Granting keystones", "neutral", true);
     try {
-      await playersApi.grantAllSpecializationKeystones(dbPlayerId, "GRANT ALL KEYSTONES");
-      showResult("specKeystones", "Keystones granted. Relog required.", "success");
-      onActionLog?.("Grant All Keystones", playerName, "1", "Succeeded");
+      const response = await playersApi.grantAllSpecializationKeystones(dbPlayerId, "GRANT ALL KEYSTONES");
+      const granted = countFromResult(response, "insertedRows");
+      showResult(
+        KEYSTONE_RESULT_KEY,
+        granted ? `${granted} ${pluralKeystones(granted)} granted. Relog required.` : "All keystones were already granted.",
+        granted ? "success" : "neutral"
+      );
+      onActionLog?.("Grant All Keystones", playerName, String(granted), "Succeeded");
       await load();
     } catch (err) {
       const message = friendlyInlineError(err);
-      showResult("specKeystones", message, "danger");
+      showResult(KEYSTONE_RESULT_KEY, message, "danger");
       onActionLog?.("Grant All Keystones", playerName, "1", `Failed: ${message}`);
     }
   }
 
   async function resetAllKeystones() {
     if (isOnline) {
-      showResult("specKeystones", "The player must be offline for specialization changes.", "danger");
+      showResult(KEYSTONE_RESULT_KEY, "The player must be offline for specialization changes.", "danger");
       return;
     }
     if (!(await confirmAction(`Reset all specialization keystones for ${playerName}?`, {
@@ -199,20 +263,28 @@ export function SpecializationTab({
       details: [{ label: "Player", value: playerName, tone: "danger" }]
     }))) return;
     onError("");
-    showResult("specKeystones", "Resetting keystones", "neutral", true);
+    showResult(KEYSTONE_RESULT_KEY, "Resetting keystones", "neutral", true);
     try {
-      await playersApi.resetAllSpecializationKeystones(dbPlayerId, "RESET ALL KEYSTONES");
-      showResult("specKeystones", "Keystones reset. Relog required.", "success");
-      onActionLog?.("Reset All Keystones", playerName, "1", "Succeeded");
+      const response = await playersApi.resetAllSpecializationKeystones(dbPlayerId, "RESET ALL KEYSTONES");
+      const removed = countFromResult(response, "deletedRows");
+      showResult(
+        KEYSTONE_RESULT_KEY,
+        removed ? `${removed} ${pluralKeystones(removed)} reset. Relog required.` : "This player had no keystones to reset.",
+        removed ? "success" : "neutral"
+      );
+      onActionLog?.("Reset All Keystones", playerName, String(removed), "Succeeded");
       await load();
     } catch (err) {
       const message = friendlyInlineError(err);
-      showResult("specKeystones", message, "danger");
+      showResult(KEYSTONE_RESULT_KEY, message, "danger");
       onActionLog?.("Reset All Keystones", playerName, "1", `Failed: ${message}`);
     }
   }
 
-  const isBusy = Boolean(actionResult?.pending);
+  // Keystone actions touch every track, so they block (and are blocked by) all rows.
+  // A per-track action only locks its own row.
+  const keystoneBusy = Boolean(actionResults[KEYSTONE_RESULT_KEY]?.pending);
+  const anyBusy = Object.values(actionResults).some((result) => result.pending);
   const canAct = Boolean(dbPlayerId) && !isOnline;
 
   return (
@@ -228,7 +300,7 @@ export function SpecializationTab({
             {loading ? "Loading..." : "Reload"}
           </button>
           <button
-            disabled={!canAct || isBusy}
+            disabled={!canAct || anyBusy}
             onClick={() => void grantAllKeystones()}
             aria-label="Grant All Keystones"
           >
@@ -236,13 +308,13 @@ export function SpecializationTab({
           </button>
           <button
             className="danger"
-            disabled={!canAct || isBusy}
+            disabled={!canAct || anyBusy}
             onClick={() => void resetAllKeystones()}
             aria-label="Reset All Keystones"
           >
             <RotateCcw size={14} /> Reset All Keystones
           </button>
-          <InlineActionResult result={actionResult} resultKey="specKeystones" />
+          <InlineActionResult result={actionResults[KEYSTONE_RESULT_KEY] ?? null} resultKey={KEYSTONE_RESULT_KEY} />
         </div>
         <p className="specialization-offline-notice">
           The player must be offline for all specialization changes. A relog is required to see changes in-game.
@@ -272,14 +344,17 @@ export function SpecializationTab({
             </tr>
           </thead>
           <tbody>
-            {rows.map((row) => (
+            {rows.map((row) => {
+              const resultKey = trackResultKey(row.trackType);
+              const rowBusy = keystoneBusy || Boolean(actionResults[resultKey]?.pending);
+              return (
               <tr key={row.trackType}>
                 <td>
                   <div className="spec-track-name">
                     <Trophy size={14} className="spec-track-icon" />
                     {row.trackType}
                   </div>
-                  <InlineActionResult result={actionResult} resultKey={`spec_${row.trackType}`} />
+                  <InlineActionResult result={actionResults[resultKey] ?? null} resultKey={resultKey} />
                 </td>
                 <td>{row.xp.toLocaleString()}</td>
                 <td>
@@ -289,9 +364,7 @@ export function SpecializationTab({
                   </span>
                 </td>
                 <td>
-                  {row.keystone
-                    ? <span className="spec-keystone-yes"><KeyRound size={14} /> Granted</span>
-                    : <span className="spec-keystone-no">—</span>}
+                  <KeystoneCell row={row} />
                 </td>
                 <td>
                   <div className="specialization-xp-control">
@@ -299,13 +372,13 @@ export function SpecializationTab({
                       className="playerAdmin_specXpInput"
                       type="number"
                       min="0"
-                      value={xpAmount}
-                      onChange={(event) => setXpAmount(event.target.value)}
-                      disabled={!canAct || isBusy}
+                      value={xpAmounts[row.trackType] ?? DEFAULT_XP_AMOUNT}
+                      onChange={(event) => setXpAmounts((current) => ({ ...current, [row.trackType]: event.target.value }))}
+                      disabled={!canAct || rowBusy}
                       aria-label={`XP amount for ${row.trackType}`}
                     />
                     <button
-                      disabled={!canAct || isBusy}
+                      disabled={!canAct || rowBusy}
                       onClick={() => void addXp(row.trackType)}
                       aria-label={`Add XP to ${row.trackType}`}
                     >
@@ -315,7 +388,7 @@ export function SpecializationTab({
                 </td>
                 <td className="playerAdmin_actionCell">
                   <button
-                    disabled={!canAct || isBusy}
+                    disabled={!canAct || rowBusy}
                     onClick={() => void grantMax(row.trackType)}
                     aria-label={`Grant Max for ${row.trackType}`}
                   >
@@ -323,7 +396,7 @@ export function SpecializationTab({
                   </button>
                   <button
                     className="danger"
-                    disabled={!canAct || isBusy}
+                    disabled={!canAct || rowBusy}
                     onClick={() => void resetTrack(row.trackType)}
                     aria-label={`Reset ${row.trackType}`}
                   >
@@ -331,7 +404,8 @@ export function SpecializationTab({
                   </button>
                 </td>
               </tr>
-            ))}
+              );
+            })}
             {!rows.length && (
               <tr>
                 <td colSpan={6}>
