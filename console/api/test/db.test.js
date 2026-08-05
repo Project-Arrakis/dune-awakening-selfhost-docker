@@ -2731,12 +2731,55 @@ test("inventory update whitelists editable columns and rejects id, inventory_id,
   assert.doesNotMatch(setClause, /"stats"/);
 });
 
-test("inventory update rejects max_durability outside the 0-100 range", async () => {
+test("inventory update repairs a specialization-crafted item to its stored 200 durability maximum", async () => {
+  const calls = [];
+  const db = {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("from dune.actors a")) return { rows: [{ actor_id: 123, account_id: 44, controller_id: 55, player_state_id: 5, online_status: "Offline" }] };
+      if (text.includes("where i.id = $1 and inv.actor_id = $2")) return { rows: [{ id: 99, stats: { FItemStackAndDurabilityStats: [[], { CurrentDurability: 100, MaxDurability: 200 }] } }] };
+      if (text.includes("pg_index")) return { rows: [{ name: "id" }] };
+      if (text.includes("information_schema.columns")) return { rows: [{ name: "id" }, { name: "stats", data_type: "jsonb" }] };
+      return { rows: [], rowCount: 1 };
+    },
+    transaction: async (fn) => fn(db)
+  };
+  const result = await updateInventoryItem(db, 123, 99, { current_durability: "200" });
+  assert.equal(result.updatedRows, 1);
+  const updateCall = calls.find((call) => String(call.text).startsWith("update"));
+  assert.ok(updateCall);
+  const statsValue = JSON.parse(updateCall.values[0]);
+  assert.deepEqual(statsValue.FItemStackAndDurabilityStats[1], { CurrentDurability: 200, MaxDurability: 200 });
+});
+
+test("inventory update uses DecayedMaxDurability when legacy MaxDurability is zero", async () => {
+  const calls = [];
+  const db = {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("from dune.actors a")) return { rows: [{ actor_id: 123, account_id: 44, controller_id: 55, player_state_id: 5, online_status: "Offline" }] };
+      if (text.includes("where i.id = $1 and inv.actor_id = $2")) return { rows: [{ id: 99, stats: { FItemStackAndDurabilityStats: [[], { CurrentDurability: 100, MaxDurability: 0, DecayedMaxDurability: 200 }] } }] };
+      if (text.includes("pg_index")) return { rows: [{ name: "id" }] };
+      if (text.includes("information_schema.columns")) return { rows: [{ name: "id" }, { name: "stats", data_type: "jsonb" }] };
+      return { rows: [], rowCount: 1 };
+    },
+    transaction: async (fn) => fn(db)
+  };
+  const result = await updateInventoryItem(db, 123, 99, { current_durability: "200" });
+  assert.equal(result.updatedRows, 1);
+  const updateCall = calls.find((call) => String(call.text).startsWith("update"));
+  const statsValue = JSON.parse(updateCall.values[0]);
+  assert.deepEqual(statsValue.FItemStackAndDurabilityStats[1], { CurrentDurability: 200, MaxDurability: 0, DecayedMaxDurability: 200 });
+});
+
+test("inventory update rejects attempts to change the stored maximum durability", async () => {
   const calls = [];
   const db = fakeMutationDb(calls, {
     itemRows: [{ id: 99, template_id: "WaterBottle_1", stack_size: 1, quality_level: 0, position_index: 0, inventory_id: 7, actor_id: 123, stats: { FItemStackAndDurabilityStats: [[], { CurrentDurability: 50, DecayedMaxDurability: 80 }] } }]
   });
-  await assert.rejects(() => updateInventoryItem(db, 123, 99, { max_durability: "150" }), /Invalid max durability/);
+  await assert.rejects(() => updateInventoryItem(db, 123, 99, { max_durability: "200" }), /Maximum durability is read-only/);
   assert.equal(calls.some((call) => String(call.text).startsWith("update dune.items")), false);
 });
 
@@ -2745,11 +2788,11 @@ test("inventory update rejects current_durability greater than max_durability", 
   const db = fakeMutationDb(calls, {
     itemRows: [{ id: 99, template_id: "WaterBottle_1", stack_size: 1, quality_level: 0, position_index: 0, inventory_id: 7, actor_id: 123, stats: { FItemStackAndDurabilityStats: [[], { CurrentDurability: 50, DecayedMaxDurability: 80 }] } }]
   });
-  await assert.rejects(() => updateInventoryItem(db, 123, 99, { current_durability: "95", max_durability: "80" }), /Invalid current durability/);
+  await assert.rejects(() => updateInventoryItem(db, 123, 99, { current_durability: "95" }), /Invalid current durability/);
   assert.equal(calls.some((call) => String(call.text).startsWith("update dune.items")), false);
 });
 
-test("inventory update merges durability into the existing DecayedMaxDurability key", async () => {
+test("inventory update preserves the existing DecayedMaxDurability while changing current durability", async () => {
   const calls = [];
   const db = {
     query: async (text, values = []) => {
@@ -2763,13 +2806,13 @@ test("inventory update merges durability into the existing DecayedMaxDurability 
     },
     transaction: async (fn) => fn(db)
   };
-  const result = await updateInventoryItem(db, 123, 99, { current_durability: "60", max_durability: "90" });
+  const result = await updateInventoryItem(db, 123, 99, { current_durability: "60" });
   assert.equal(result.updatedRows, 1);
   const updateCall = calls.find((call) => String(call.text).startsWith("update"));
   assert.ok(updateCall);
   const statsValue = JSON.parse(updateCall.values[0]);
   assert.deepEqual(statsValue.FCustomizationStats, [[], { color: "sand" }]);
-  assert.deepEqual(statsValue.FItemStackAndDurabilityStats[1], { CurrentDurability: 60, DecayedMaxDurability: 90 });
+  assert.deepEqual(statsValue.FItemStackAndDurabilityStats[1], { CurrentDurability: 60, DecayedMaxDurability: 80 });
 });
 
 test("inventory update treats explicit null durability values as not provided", async () => {
@@ -3701,80 +3744,28 @@ test("main quest nodes with contract in the name stay under story", async () => 
   assert.equal(result.rows.story[0].category, "Story");
 });
 
-test("journey complete updates subtree and applies tags", async () => {
-  const calls = [];
-  const db = fakeMutationDb(calls, {
-    journeyUpdateRows: 2,
-    reputationRows: [{ reputation_amount: 0 }],
-    factionRows: [{ faction_id: 1, reputation_amount: 100 }]
-  });
-  const result = await completeJourneyNode(db, 123, { nodeId: "DA_Story.Root" }, { journey_node_tags: { "DA_Story.Root": ["Story.Tag", "Faction.Atreides.Tier1"], "DA_Story.Root.Child": ["Child.Tag"] } });
-  assert.equal(result.updatedRows, 3);
-  assert.equal(result.tagsApplied, 3);
-  assert.ok(calls.some((call) => call.text.includes("story_node_id = any($2::text[])") && call.values[2] === "DA_Story.Root"));
-  assert.ok(calls.some((call) => call.text.includes("insert into dune.player_tags") && call.values[0] === 44 && call.values[1].includes("Child.Tag")));
-  assert.ok(!calls.some((call) => call.text.includes("dune.update_player_tags")));
-  assert.ok(calls.some((call) => call.text.includes("set_player_faction_reputation") && call.values[2] === 100));
-});
-
-test("journey complete materializes parent path for leaf quest steps", async () => {
+test("story, contract, and codex completion is read-only", async () => {
   const calls = [];
   const db = fakeMutationDb(calls);
-  const result = await completeJourneyNode(db, 123, { nodeId: "DA_MQ_FindTheFremen.FifthTest.FifthQuestion.CompleteFifthTest" }, { journey_node_tags: {} });
-  assert.equal(result.updatedRows, 1);
-  const insert = calls.find((call) => call.text.includes("with wanted(story_node_id)"));
-  assert.ok(insert);
-  assert.deepEqual(insert.values[1], [
-    "DA_MQ_FindTheFremen.FifthTest",
-    "DA_MQ_FindTheFremen.FifthTest.FifthQuestion",
-    "DA_MQ_FindTheFremen.FifthTest.FifthQuestion.CompleteFifthTest"
-  ]);
+  await assert.rejects(
+    () => completeJourneyNode(db, 123, { nodeId: "DA_Story.Root" }, {}),
+    (error) => error instanceof UnsupportedCapabilityError
+      && error.unsupported === true
+      && /read-only/.test(error.message)
+  );
+  assert.equal(calls.length, 0);
 });
 
-test("journey reset clears subtree completion and removes tags", async () => {
-  const calls = [];
-  const db = fakeMutationDb(calls, { journeyUpdateRows: 1 });
-  const result = await resetJourneyNode(db, 123, { nodeId: "DA_Story.Root" }, { journey_node_tags: { "DA_Story.Root": ["Story.Tag"], "DA_Story.Root.Child": ["Child.Tag"] } });
-  assert.equal(result.updatedRows, 1);
-  assert.equal(result.tagsRemoved, 2);
-  assert.ok(calls.some((call) => call.text.includes("complete_condition_state = 'false'::jsonb")));
-  assert.ok(calls.some((call) => call.text.includes("delete from dune.player_tags") && call.values[0] === 44 && call.values[1].includes("Child.Tag")));
-  assert.ok(!calls.some((call) => call.text.includes("dune.update_player_tags")));
-});
-
-test("journey complete writes tags through current character_id schema", async () => {
-  const calls = [];
-  const db = fakeMutationDb(calls, { journeyIdentityColumn: "character_id", journeyUpdateRows: 1 });
-  const result = await completeJourneyNode(db, 123, { nodeId: "DA_Story.Root" }, {
-    journey_node_tags: { "DA_Story.Root": ["Story.Tag"] }
-  });
-  assert.equal(result.tagsApplied, 1);
-  assert.ok(calls.some((call) => call.text.includes("insert into dune.player_tags") && call.text.includes('"character_id"') && call.values[0] === 5 && call.values[1].includes("Story.Tag")));
-  assert.ok(!calls.some((call) => call.text.includes("dune.update_player_tags")));
-});
-
-test("contract complete writes player tags directly", async () => {
-  const calls = [];
-  const db = fakeMutationDb(calls, { reputationRows: [{ reputation_amount: 0 }] });
-  const result = await completeJourneyNode(db, 123, { nodeId: "DA_CT_Trainer_Trooper1_01" }, {
-    contract_tags: { DA_CT_Trainer_Trooper1_01: ["Contract.Trainer.Trooper1.Completed"] }
-  });
-  assert.equal(result.contract, true);
-  assert.equal(result.tagsApplied, 1);
-  assert.ok(calls.some((call) => call.text.includes("insert into dune.player_tags") && call.values[0] === 44 && call.values[1].includes("Contract.Trainer.Trooper1.Completed")));
-  assert.ok(!calls.some((call) => call.text.includes("dune.update_player_tags")));
-});
-
-test("contract reset removes player tags directly", async () => {
+test("story, contract, and codex reset is read-only", async () => {
   const calls = [];
   const db = fakeMutationDb(calls);
-  const result = await resetJourneyNode(db, 123, { nodeId: "DA_CT_Trainer_Trooper1_01" }, {
-    contract_tags: { DA_CT_Trainer_Trooper1_01: ["Contract.Trainer.Trooper1.Completed"] }
-  });
-  assert.equal(result.contract, true);
-  assert.equal(result.tagsRemoved, 1);
-  assert.ok(calls.some((call) => call.text.includes("delete from dune.player_tags") && call.values[0] === 44 && call.values[1].includes("Contract.Trainer.Trooper1.Completed")));
-  assert.ok(!calls.some((call) => call.text.includes("dune.update_player_tags")));
+  await assert.rejects(
+    () => resetJourneyNode(db, 123, { nodeId: "DA_Story.Root" }, {}),
+    (error) => error instanceof UnsupportedCapabilityError
+      && error.unsupported === true
+      && /read-only/.test(error.message)
+  );
+  assert.equal(calls.length, 0);
 });
 
 test("tutorial complete and reset use player controller tutorial records", async () => {
