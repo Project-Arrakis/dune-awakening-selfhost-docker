@@ -45,6 +45,8 @@ button.active { background: #9b5f2a; border-color: var(--accent-strong); }
 button.danger { border-color: var(--danger-strong); color: #ffc9c9; }
 button.success { border-color: var(--success); color: #d8f0c8; }
 button.success:hover { border-color: #63b57f; }
+button.warning { border-color: var(--warning); color: #ffd9a8; }
+button.warning:hover { border-color: #c68b4a; }
 button.restore-action, .icon-action.danger, .download-action { border-color: #f7e7c7; color: #f7e7c7; }
 button.restore-action:hover, .icon-action.danger:hover, .download-action:hover { border-color: #fff3d7; }
 .icon-action { width: 38px; height: 38px; padding: 7px; flex: 0 0 38px; }
@@ -1622,6 +1624,11 @@ body.debug .technical-details { display: block; }
 .blueprints-table th:last-child, .blueprints-table td:last-child { width: 154px; text-align: center; overflow: visible; }
 .blueprint-name { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-strong); font-weight: 700; }
 .blueprint-actions-column .icon-toggle-group { justify-content: center; }
+.guild-add-member-search-row { align-items: center; }
+.guild-add-member-search-row input { flex: 1 1 auto; min-width: 0; }
+.guild-add-member-results { display: grid; gap: 6px; max-height: 220px; overflow-y: auto; }
+.guild-add-member-result { text-align: left; width: 100%; }
+.guild-add-member-selected { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel-soft); font-weight: 700; }
 .bases-table { width: 100%; min-width: 0; table-layout: fixed; }
 .bases-table th { max-width: none; white-space: normal; overflow: visible; text-overflow: clip; line-height: 1.2; }
 .bases-table th, .bases-table td { padding: 8px 6px; font-size: 14px; }

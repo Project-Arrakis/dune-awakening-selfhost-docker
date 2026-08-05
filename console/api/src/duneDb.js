@@ -1178,7 +1178,7 @@ async function pledgeGuildAdminFactionIfNeeded(db, actorId, factionId) {
       from dune.guild_members gm
       join dune.guilds g on g.guild_id = gm.guild_id
       where gm.player_id = $1::bigint
-        and gm.role_id = 100`, [actorId]);
+        and gm.role_id = ${GUILD_LEADER_ROLE_ID}`, [actorId]);
     for (const row of result.rows) {
       if (Number(row.guild_faction) === Number(factionId)) continue;
       await db.query("select dune.pledge_guild_allegiance($1::bigint, $2::bigint, 3::smallint)", [row.guild_id, actorId]);
@@ -1887,6 +1887,242 @@ export async function guildMembers(db, guildId) {
     order by ${memberRoleColumn ? `gm.${quoteIdentifier(memberRoleColumn)} asc, ` : ""}lower(${characterNameSelect})`, [id]);
 
   return { capabilities: { guildMembers: true }, rows: result.rows };
+}
+
+const GUILD_OFFICER_ROLE_ID = 50;
+const GUILD_LEADER_ROLE_ID = 100;
+const MAX_GUILD_COUNT_PER_PLAYER = 1; // real game invariant -- get_guild_for_player does a bare SELECT INTO with no LIMIT, implying one guild per player
+const DEFAULT_MAX_MEMBERS_PER_GUILD = 32;
+// Verified against dune.guild_handle_actor_delete in the shipped database: the game's own
+// generic database-removal path publishes reason 0 through dune.remove_guild_members.
+const GUILD_REMOVE_REASON_DATABASE_REMOVAL = 0;
+
+// The four guild mutations below hardcode literal guild_id/player_id/role_id/guild_name column
+// names in raw SQL, unlike guildMembers()'s defensive firstExistingColumn() resolution for reads
+// -- because these column names are what dune.promote_guild_member/dune.add_guild_member/
+// dune.remove_guild_members/dune.disband_guild's own PL/pgSQL bodies reference internally, so any
+// schema where those functions exist must already have these exact names. This check still
+// verifies it directly (rather than relying solely on functionExists) so a schema drift a future
+// game patch introduces surfaces as a clean "unsupported" response instead of a raw SQL error.
+async function guildIdentityColumnsExist(db, { members = [] } = {}) {
+  const guildColumns = await columnsFor(db, "guilds");
+  if (!guildColumns.has("guild_id") || !guildColumns.has("guild_name")) return false;
+  if (!members.length) return true;
+  const memberColumns = await columnsFor(db, "guild_members");
+  return members.every((column) => memberColumns.has(column));
+}
+
+async function lockGuildOperations(db) {
+  // Match the lock order used by every shipped guild mutation. Taking the game's advisory
+  // transaction lock before row locks avoids deadlocking with an in-game mutation that already
+  // owns the advisory lock and is waiting for the same guild row.
+  await db.query("select dune.guilds_get_exclusive_operation_lock()");
+}
+
+async function supportsGuildPromotion(db) {
+  return await tableExists(db, "guild_members") && await tableExists(db, "guilds") &&
+    await functionExists(db, "dune.promote_guild_member(bigint,bigint,smallint)") &&
+    await guildIdentityColumnsExist(db, { members: ["guild_id", "player_id", "role_id"] });
+}
+
+// dune.promote_guild_member(guild_id, player_id, new_role) only special-cases new_role = 100
+// (it demotes whoever currently holds it); for any other target role it's a plain role_id
+// update. This lets Promote graduate a Member straight to Officer with no leader side effect,
+// and Officer to Leader (with the automatic leader demotion), using the one real stored
+// procedure -- confirmed by reading its body in .claude/dune_backup.sql before relying on it.
+export async function promoteGuildMember(db, guildId, playerId) {
+  await requireCapability(await supportsGuildPromotion(db), "Guild leadership changes require dune.guild_members, dune.guilds, and dune.promote_guild_member(bigint,bigint,smallint).");
+  const safeGuildId = intParam(guildId, "guild id", 1);
+  const safePlayerId = intParam(playerId, "player id", 1);
+
+  return db.transaction(async (tx) => {
+    await lockGuildOperations(tx);
+    // Lock the guilds row first -- guaranteed to exist if the guild is real, giving concurrent
+    // promote requests for the same guild something to serialize against even before touching
+    // guild_members. Same technique as the inventory-row lock in refillBaseGenerators.
+    const guild = await tx.query("select guild_id, guild_name from dune.guilds where guild_id = $1 for update", [safeGuildId]);
+    if (!guild.rowCount) throw new Error(`Guild ${safeGuildId} was not found.`);
+
+    const member = await tx.query(
+      "select role_id::text as role_id from dune.guild_members where guild_id = $1 and player_id = $2 for update",
+      [safeGuildId, safePlayerId]
+    );
+    if (!member.rowCount) throw new Error(`Player ${safePlayerId} is not a member of guild ${safeGuildId}.`);
+    const currentRole = Number(member.rows[0].role_id);
+    if (currentRole >= GUILD_LEADER_ROLE_ID) {
+      return { ok: true, alreadyLeader: true, guildId: safeGuildId, playerId: safePlayerId };
+    }
+    const nextRole = currentRole >= GUILD_OFFICER_ROLE_ID ? GUILD_LEADER_ROLE_ID : GUILD_OFFICER_ROLE_ID;
+
+    let previousLeaderId = null;
+    if (nextRole === GUILD_LEADER_ROLE_ID) {
+      const previousLeader = await tx.query(
+        "select player_id from dune.guild_members where guild_id = $1 and role_id = $2",
+        [safeGuildId, GUILD_LEADER_ROLE_ID]
+      );
+      previousLeaderId = previousLeader.rows[0]?.player_id ? String(previousLeader.rows[0].player_id) : null;
+    }
+
+    await tx.query("select dune.promote_guild_member($1::bigint, $2::bigint, $3::smallint)", [safeGuildId, safePlayerId, nextRole]);
+
+    return {
+      ok: true,
+      guildId: safeGuildId,
+      guildName: guild.rows[0].guild_name,
+      playerId: safePlayerId,
+      newRoleId: nextRole,
+      previousLeaderId,
+      message: nextRole === GUILD_LEADER_ROLE_ID
+        ? "Leadership was updated in the database. Online players may need to relog before the change appears in-game."
+        : "Rank was updated in the database. Online players may need to relog before the change appears in-game."
+    };
+  });
+}
+
+async function supportsGuildDemotion(db) {
+  return await tableExists(db, "guild_members") && await tableExists(db, "guilds") &&
+    await functionExists(db, "dune.demote_guild_member(bigint,bigint,smallint)") &&
+    await guildIdentityColumnsExist(db, { members: ["guild_id", "player_id", "role_id"] });
+}
+
+// dune.demote_guild_member(guild_id, player_id, new_role) already refuses to demote the guild
+// leader itself (raises "Trying to demote admin. promote a member to admin instead."), and this
+// feature only ever offers Demote on Officer rows (Leader and Member are excluded in the UI), so
+// Demote always targets the plain Member role.
+export async function demoteGuildMember(db, guildId, playerId) {
+  await requireCapability(await supportsGuildDemotion(db), "Guild demotions require dune.guild_members, dune.guilds, and dune.demote_guild_member(bigint,bigint,smallint).");
+  const safeGuildId = intParam(guildId, "guild id", 1);
+  const safePlayerId = intParam(playerId, "player id", 1);
+
+  return db.transaction(async (tx) => {
+    await lockGuildOperations(tx);
+    const guild = await tx.query("select guild_id from dune.guilds where guild_id = $1 for update", [safeGuildId]);
+    if (!guild.rowCount) throw new Error(`Guild ${safeGuildId} was not found.`);
+
+    const member = await tx.query(
+      "select role_id::text as role_id from dune.guild_members where guild_id = $1 and player_id = $2 for update",
+      [safeGuildId, safePlayerId]
+    );
+    if (!member.rowCount) throw new Error(`Player ${safePlayerId} is not a member of guild ${safeGuildId}.`);
+    const currentRole = Number(member.rows[0].role_id);
+    if (currentRole >= GUILD_LEADER_ROLE_ID) {
+      throw new Error("This player is the guild leader. Promote another member to Leader before demoting them.");
+    }
+    if (currentRole < GUILD_OFFICER_ROLE_ID) {
+      throw new Error(`Player ${safePlayerId} is already a Member and cannot be demoted further.`);
+    }
+
+    await tx.query("select dune.demote_guild_member($1::bigint, $2::bigint, $3::smallint)", [safeGuildId, safePlayerId, 1]);
+
+    return { ok: true, guildId: safeGuildId, playerId: safePlayerId };
+  });
+}
+
+async function supportsGuildAdd(db) {
+  return await tableExists(db, "guild_members") && await tableExists(db, "guilds") &&
+    await functionExists(db, "dune.add_guild_member(bigint,bigint,smallint,integer,integer,smallint)") &&
+    await guildIdentityColumnsExist(db);
+}
+
+export async function addGuildMember(db, guildId, playerId, roleId = 1, maxMembersPerGuild = DEFAULT_MAX_MEMBERS_PER_GUILD) {
+  await requireCapability(await supportsGuildAdd(db), "Adding guild members requires dune.guild_members, dune.guilds, and dune.add_guild_member(bigint,bigint,smallint,integer,integer,smallint).");
+  const safeGuildId = intParam(guildId, "guild id", 1);
+  const safeRole = intParam(roleId, "role id", 1, 99); // Add Member never creates a second Leader -- promote is a separate, explicit action
+  const safeMaxMembers = intParam(maxMembersPerGuild, "maximum guild members", 1, 2147483647);
+
+  return db.transaction(async (tx) => {
+    await lockGuildOperations(tx);
+    const guild = await tx.query("select guild_id, guild_name from dune.guilds where guild_id = $1 for update", [safeGuildId]);
+    if (!guild.rowCount) throw new Error(`Guild ${safeGuildId} was not found.`);
+
+    // add_guild_member uses this limit only to decide when invitations should be cleared; it
+    // does not reject an over-capacity insert itself. Enforce the effective server limit while
+    // holding the same guild-row lock that serializes concurrent Console additions.
+    const memberCount = await tx.query("select count(*)::int as count from dune.guild_members where guild_id = $1", [safeGuildId]);
+    const currentMembers = Number(memberCount.rows[0]?.count || 0);
+    if (currentMembers >= safeMaxMembers) {
+      throw new Error(`Guild ${safeGuildId} already has the configured maximum of ${safeMaxMembers} members.`);
+    }
+
+    const player = await resolvePlayerMutationTarget(tx, playerId);
+    try {
+      // dune.add_guild_member(in_player_id, in_guild_id, ...) -- player id comes first,
+      // confirmed against the real function signature in .claude/dune_backup.sql and against
+      // a live restore of it (an earlier version of this code had these two swapped).
+      await tx.query(
+        "select dune.add_guild_member($1::bigint, $2::bigint, $3::smallint, $4::integer, $5::integer, $6::smallint)",
+        [player.controllerId, safeGuildId, safeRole, MAX_GUILD_COUNT_PER_PLAYER, safeMaxMembers, NEUTRAL_GUILD_FACTION_ID]
+      );
+    } catch (error) {
+      if (/Cannot insert more than/.test(error.message)) throw new Error("This player is already in a guild. Remove them from their current guild first.");
+      if (/non existing guild/.test(error.message)) throw new Error(`Guild ${safeGuildId} was not found.`);
+      if (/non compatible/.test(error.message)) throw new Error("This player's faction is not compatible with this guild.");
+      throw error;
+    }
+
+    return { ok: true, guildId: safeGuildId, guildName: guild.rows[0].guild_name, playerId: player.controllerId, roleId: safeRole };
+  });
+}
+
+async function supportsGuildRemove(db) {
+  return await tableExists(db, "guild_members") && await tableExists(db, "guilds") &&
+    await functionExists(db, "dune.remove_guild_members(bigint[],bigint,smallint)") &&
+    await guildIdentityColumnsExist(db, { members: ["guild_id", "player_id", "role_id"] });
+}
+
+export async function removeGuildMember(db, guildId, playerId) {
+  await requireCapability(await supportsGuildRemove(db), "Removing guild members requires dune.guild_members, dune.guilds, and dune.remove_guild_members(bigint[],bigint,smallint).");
+  const safeGuildId = intParam(guildId, "guild id", 1);
+  const safePlayerId = intParam(playerId, "player id", 1);
+
+  return db.transaction(async (tx) => {
+    await lockGuildOperations(tx);
+    const guild = await tx.query("select guild_id from dune.guilds where guild_id = $1 for update", [safeGuildId]);
+    if (!guild.rowCount) throw new Error(`Guild ${safeGuildId} was not found.`);
+
+    const member = await tx.query(
+      "select role_id::text as role_id from dune.guild_members where guild_id = $1 and player_id = $2 for update",
+      [safeGuildId, safePlayerId]
+    );
+    if (!member.rowCount) throw new Error(`Player ${safePlayerId} is not a member of guild ${safeGuildId}.`);
+    if (Number(member.rows[0].role_id) >= GUILD_LEADER_ROLE_ID) {
+      throw new Error("This player is the guild leader. Promote another member to Leader before removing them.");
+    }
+
+    // The leader check above happens inside this same locked transaction (guild row + member
+    // row both FOR UPDATE), so there's no window for a concurrent promote to change leadership
+    // between the check and the delete below.
+    await tx.query("select dune.remove_guild_members($1::bigint[], $2::bigint, $3::smallint)", [[safePlayerId], safeGuildId, GUILD_REMOVE_REASON_DATABASE_REMOVAL]);
+
+    return { ok: true, guildId: safeGuildId, playerId: safePlayerId };
+  });
+}
+
+async function supportsGuildDisband(db) {
+  return await tableExists(db, "guilds") && await tableExists(db, "guild_members") &&
+    await functionExists(db, "dune.disband_guild(bigint)") &&
+    await guildIdentityColumnsExist(db, { members: ["guild_id"] });
+}
+
+export async function disbandGuild(db, guildId) {
+  await requireCapability(await supportsGuildDisband(db), "Disbanding a guild requires dune.guilds and dune.disband_guild(bigint).");
+  const safeGuildId = intParam(guildId, "guild id", 1);
+
+  return db.transaction(async (tx) => {
+    await lockGuildOperations(tx);
+    const guild = await tx.query("select guild_id, guild_name from dune.guilds where guild_id = $1 for update", [safeGuildId]);
+    if (!guild.rowCount) throw new Error(`Guild ${safeGuildId} was not found.`);
+
+    const memberCount = await tx.query("select count(*)::int as count from dune.guild_members where guild_id = $1", [safeGuildId]);
+
+    await tx.query("select dune.disband_guild($1::bigint)", [safeGuildId]);
+    // dune.disband_guild deletes the guilds row but leaves guild_members rows behind, which would
+    // otherwise strand former members against the one-guild-per-player cap (MAX_GUILD_COUNT_PER_PLAYER)
+    // forever, since add_guild_member counts guild_members rows with no join back to guilds.
+    await tx.query("delete from dune.guild_members where guild_id = $1", [safeGuildId]);
+
+    return { ok: true, guildId: safeGuildId, guildName: guild.rows[0].guild_name, memberCount: memberCount.rows[0]?.count || 0 };
+  });
 }
 
 function firstExistingColumn(columns, names) {
@@ -4014,7 +4250,7 @@ async function portalGuild(db, identity) {
 
 function portalGuildRole(roleId) {
   const value = Number(roleId);
-  if (value >= 100) return "Leader";
+  if (value >= GUILD_LEADER_ROLE_ID) return "Leader";
   if (value > 1) return "Officer";
   return "Member";
 }
