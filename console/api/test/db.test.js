@@ -4634,7 +4634,11 @@ function fakeQueueDb(calls, { devices = [], items = {}, partitions = [], basePar
       })) };
     }
     if (text.includes("coalesce(a.partition_id, 0)::int as partition_id")) {
-      return { rows: basePartition ? [basePartition] : [] };
+      // baseMapLocation now also selects actor_id to distinguish a genuinely
+      // missing base from one with a broken owner-entity link; default it to
+      // a resolved id here so existing callers testing write-safety don't
+      // have to know about that distinction unless they explicitly opt in.
+      return { rows: basePartition ? [{ actor_id: "1", ...basePartition }] : [] };
     }
     return inner(text, values);
   };
