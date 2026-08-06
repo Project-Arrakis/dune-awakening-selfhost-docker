@@ -77,7 +77,9 @@ const SCHEMA = `
   create schema dune;
 
   create table dune.buildings (id bigint primary key);
-  create table dune.building_instances (building_id bigint not null, owner_entity_id bigint not null);
+  -- owner_entity_id is nullable in production: it carries an
+  -- ON DELETE SET NULL foreign key against fgl_entities.
+  create table dune.building_instances (building_id bigint not null, owner_entity_id bigint);
   create table dune.actor_fgl_entities (entity_id bigint not null, actor_id bigint not null);
   create table dune.actors (id bigint primary key, map text, partition_id bigint, owner_account_id bigint);
   create table dune.map_names (map_name_id smallint primary key, map_name text not null);
@@ -312,6 +314,30 @@ test("real PostgreSQL: a rank row on a non-canonical actor is surfaced, not hidd
     // The name still resolves through the account, which is why the console can
     // show it meaningfully rather than as a bare id.
     assert.equal(orphan.name, "DarkShark");
+  });
+});
+
+// building_instances.owner_entity_id is nullable in production (ON DELETE SET
+// NULL against fgl_entities), so a base can exist in dune.buildings while its
+// owning entity link is broken. That must surface a distinct, clear error --
+// not the same "not found" message a genuinely deleted base id gets, which
+// would read as a client-side glitch to an operator looking at a base that is
+// plainly visible in the table.
+test("real PostgreSQL: a base with a broken owner-entity link gets a clear error, not 'not found'", async (t) => {
+  await withDatabase(t, async (pool) => {
+    const orphanBaseId = 2000;
+    await pool.query("insert into dune.buildings (id) values ($1)", [orphanBaseId]);
+    await pool.query("insert into dune.building_instances (building_id, owner_entity_id) values ($1, null)", [orphanBaseId]);
+
+    const db = transactionalDb(pool);
+    await assert.rejects(
+      () => listBasePermissions(db, orphanBaseId),
+      /no resolvable owner entity/);
+    // A genuinely nonexistent base id must still get the original message --
+    // the left-join restructuring must not blur the two cases together.
+    await assert.rejects(
+      () => listBasePermissions(db, 999999),
+      /That base was not found/);
   });
 });
 
