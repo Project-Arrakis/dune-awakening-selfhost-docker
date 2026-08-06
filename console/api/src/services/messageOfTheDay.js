@@ -12,7 +12,11 @@ const DEFAULT_MESSAGE_OF_THE_DAY = {
 
 const EMPTY_STATUS = { lastAttemptAt: "", lastSent: 0, lastFailed: 0, lastError: "", lastScanAt: "", lastScanError: "" };
 const EMPTY_STATE = { delivered: {}, status: EMPTY_STATUS };
-const MIN_MOTD_SESSION_AGE_MS = 5_000;
+// player_state.last_login_time is written before the character finishes spawning and
+// before the in-game chat UI is consistently ready. RabbitMQ can accept and consume a
+// whisper during that gap even though the client never renders it, so leave a bounded
+// post-login grace period before recording the session as delivered.
+const MIN_MOTD_SESSION_AGE_MS = 30_000;
 const DELIVERED_SESSION_RETENTION_MS = 24 * 60 * 60 * 1000;
 
 export function readMessageOfTheDay(config) {
