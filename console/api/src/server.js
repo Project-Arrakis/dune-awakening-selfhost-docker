@@ -180,10 +180,13 @@ if (deathPoller.enabled) deathPoller.init(db, config.repoRoot).catch(() => {});
 // (scheduler, IP change, CLI). Idle cost is one small file read per tick.
 const generatorRefillFlushIntervalMs = Number(process.env.ADMIN_REFILL_FLUSH_INTERVAL_MS);
 setInterval(() => {
-  if (!duneDb.listQueuedGeneratorRefills(config.repoRoot).length) return;
-  runBackgroundTick("Generator refill flush", () => flushQueuedGeneratorRefills());
-  // Independent check in the same tick rather than a second setInterval: an
-  // idle water queue costs one more cheap file read, not a new timer.
+  // Two independent checks in the same tick rather than two setIntervals: an
+  // idle queue costs one more cheap file read, not a new timer. Each queue's
+  // check must stand alone -- an early return keyed on one queue's length
+  // would silently skip the other whenever only it had pending entries.
+  if (duneDb.listQueuedGeneratorRefills(config.repoRoot).length) {
+    runBackgroundTick("Generator refill flush", () => flushQueuedGeneratorRefills());
+  }
   if (duneDb.listQueuedWaterRefills(config.repoRoot).length) {
     runBackgroundTick("Water refill flush", () => flushQueuedWaterRefills());
   }
