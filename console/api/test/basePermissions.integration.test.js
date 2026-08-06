@@ -1,10 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { randomBytes } from "node:crypto";
 import pg from "pg";
 import { setBasePermissions, listBasePermissions, basePermissionCandidates, baseMapLocation } from "../src/duneDb.js";
+import { pgConnectionConfig, pgTransactionalDb, withIsolatedDatabase } from "../test-support/pgIntegrationDb.js";
 
-const { Pool, Client } = pg;
+const { Client } = pg;
 
 // The mocked suite in basePermissions.test.js string-matches SQL and can prove
 // what we *intend* to send. It cannot catch the failures that only a real
@@ -36,42 +36,6 @@ const ACTOR_ID = 1004;
 const ENTITY_ID = 5001;
 const MAP_NAME = "DeepDesert";
 const MAP_NAME_ID = 7;
-
-function connectionConfig(database = "dune") {
-  if (process.env.ADMIN_DATABASE_URL) {
-    const url = new URL(process.env.ADMIN_DATABASE_URL);
-    url.pathname = `/${database}`;
-    return { connectionString: url.toString() };
-  }
-  return {
-    host: process.env.DUNE_DB_HOST || process.env.PGHOST || "127.0.0.1",
-    port: Number(process.env.DUNE_DB_PORT || process.env.PGPORT || process.env.POSTGRES_PORT || 15432),
-    database,
-    user: process.env.DUNE_DB_USER || process.env.PGUSER || "dune",
-    password: process.env.DUNE_DB_PASSWORD || process.env.PGPASSWORD || "dune",
-    connectionTimeoutMillis: 3000
-  };
-}
-
-function transactionalDb(pool) {
-  return {
-    query: (text, values = []) => pool.query(text, values),
-    async transaction(fn) {
-      const client = await pool.connect();
-      try {
-        await client.query("begin");
-        const result = await fn({ query: (text, values = []) => client.query(text, values) });
-        await client.query("commit");
-        return result;
-      } catch (error) {
-        await client.query("rollback").catch(() => {});
-        throw error;
-      } finally {
-        client.release();
-      }
-    }
-  };
-}
 
 const SCHEMA = `
   create schema dune;
@@ -136,35 +100,14 @@ const SEED = `
 `;
 
 async function withDatabase(t, run) {
-  const admin = new Pool(connectionConfig());
-  const database = `dune_perms_${process.pid}_${randomBytes(4).toString("hex")}`;
-  let pool;
-  try {
-    await admin.query("select 1");
-  } catch (error) {
-    await admin.end().catch(() => {});
-    if (process.env.CI) throw new Error(`PostgreSQL is required for the base permission integration test: ${error.message}`);
-    t.skip(`PostgreSQL unavailable: ${error.message}`);
-    return null;
-  }
-  try {
-    await admin.query(`create database "${database}"`);
-  } catch (error) {
-    await admin.end().catch(() => {});
-    if (process.env.CI) throw new Error(`PostgreSQL must allow an isolated test database: ${error.message}`);
-    t.skip(`PostgreSQL cannot create an isolated test database: ${error.message}`);
-    return null;
-  }
-  try {
-    pool = new Pool({ ...connectionConfig(database), max: 4 });
+  return withIsolatedDatabase(t, {
+    namePrefix: "dune_perms",
+    unavailableLabel: "the base permission integration test"
+  }, async (pool, database) => {
     await pool.query(SCHEMA);
     await pool.query(SEED);
-    return await run(pool, database);
-  } finally {
-    await pool?.end().catch(() => {});
-    await admin.query(`drop database if exists "${database}" with (force)`).catch(() => {});
-    await admin.end().catch(() => {});
-  }
+    return run(pool, database);
+  });
 }
 
 async function ranks(pool) {
@@ -176,7 +119,7 @@ async function ranks(pool) {
 
 test("real PostgreSQL: a roster save writes through the shipped procedures with the right argument order", async (t) => {
   await withDatabase(t, async (pool) => {
-    const db = transactionalDb(pool);
+    const db = pgTransactionalDb(pool);
     const result = await setBasePermissions(db, BASE_ID, [
       { playerId: "4", rank: OWNER_RANK },
       { playerId: "23", rank: ASSOCIATE_RANK }
@@ -195,7 +138,7 @@ test("real PostgreSQL: a roster save writes through the shipped procedures with 
 
 test("real PostgreSQL: promoting swaps the owner without ever leaving two", async (t) => {
   await withDatabase(t, async (pool) => {
-    const db = transactionalDb(pool);
+    const db = pgTransactionalDb(pool);
     await setBasePermissions(db, BASE_ID, [
       { playerId: "4", rank: OWNER_RANK },
       { playerId: "23", rank: CO_OWNER_RANK }
@@ -216,7 +159,7 @@ test("real PostgreSQL: promoting swaps the owner without ever leaving two", asyn
 
 test("real PostgreSQL: removing a player deletes only that rank row", async (t) => {
   await withDatabase(t, async (pool) => {
-    const db = transactionalDb(pool);
+    const db = pgTransactionalDb(pool);
     await setBasePermissions(db, BASE_ID, [
       { playerId: "4", rank: OWNER_RANK },
       { playerId: "23", rank: ASSOCIATE_RANK },
@@ -240,13 +183,13 @@ test("real PostgreSQL: removing a player deletes only that rank row", async (t) 
 // notification the game receives is only valid if we pass the numeric id.
 test("real PostgreSQL: the emitted notification payload is well-formed JSON carrying the numeric map id", async (t) => {
   await withDatabase(t, async (pool, database) => {
-    const listener = new Client(connectionConfig(database));
+    const listener = new Client(pgConnectionConfig(database));
     const received = [];
     await listener.connect();
     listener.on("notification", (message) => received.push(message.payload));
     await listener.query("listen permission_notify_channel");
 
-    const db = transactionalDb(pool);
+    const db = pgTransactionalDb(pool);
     await setBasePermissions(db, BASE_ID, [
       { playerId: "4", rank: OWNER_RANK },
       { playerId: "23", rank: ASSOCIATE_RANK }
@@ -272,7 +215,7 @@ test("real PostgreSQL: the emitted notification payload is well-formed JSON carr
 // successful save. Confirmed against a live server before this guard existed.
 test("real PostgreSQL: a player id that is not a player_controller_id is refused", async (t) => {
   await withDatabase(t, async (pool) => {
-    const db = transactionalDb(pool);
+    const db = pgTransactionalDb(pool);
     await assert.rejects(
       () => setBasePermissions(db, BASE_ID, [
         { playerId: "4", rank: OWNER_RANK },
@@ -286,7 +229,7 @@ test("real PostgreSQL: a player id that is not a player_controller_id is refused
 
 test("real PostgreSQL: the roster reads back with resolved names and rank labels", async (t) => {
   await withDatabase(t, async (pool) => {
-    const db = transactionalDb(pool);
+    const db = pgTransactionalDb(pool);
     await setBasePermissions(db, BASE_ID, [
       { playerId: "4", rank: OWNER_RANK },
       { playerId: "29", rank: CO_OWNER_RANK }
@@ -308,7 +251,7 @@ test("real PostgreSQL: a rank row on a non-canonical actor is surfaced, not hidd
   await withDatabase(t, async (pool) => {
     await pool.query("insert into dune.permission_actor_rank (permission_actor_id, player_id, rank) values ($1, 5, $2)",
       [ACTOR_ID, ASSOCIATE_RANK]);
-    const roster = await listBasePermissions(transactionalDb(pool), BASE_ID);
+    const roster = await listBasePermissions(pgTransactionalDb(pool), BASE_ID);
     const orphan = roster.entries.find((entry) => entry.playerId === "5");
     assert.ok(orphan, "the ignored row must still be listed");
     assert.equal(orphan.canonical, false);
@@ -330,7 +273,7 @@ test("real PostgreSQL: a base with a broken owner-entity link gets a clear error
     await pool.query("insert into dune.buildings (id) values ($1)", [orphanBaseId]);
     await pool.query("insert into dune.building_instances (building_id, instance_id, owner_entity_id) values ($1, 0, null)", [orphanBaseId]);
 
-    const db = transactionalDb(pool);
+    const db = pgTransactionalDb(pool);
     await assert.rejects(
       () => listBasePermissions(db, orphanBaseId),
       /no resolvable owner entity/);
@@ -354,7 +297,7 @@ test("real PostgreSQL: a base with one orphaned piece and one valid piece still 
     // missing order by regressed, an unordered LIMIT 1 could return this one.
     await pool.query("insert into dune.building_instances (building_id, instance_id, owner_entity_id) values ($1, 1, null)", [BASE_ID]);
 
-    const db = transactionalDb(pool);
+    const db = pgTransactionalDb(pool);
     const roster = await listBasePermissions(db, BASE_ID);
     assert.equal(roster.actorId, String(ACTOR_ID));
 
@@ -369,7 +312,7 @@ test("real PostgreSQL: baseMapLocation distinguishes a broken owner-entity link 
     await pool.query("insert into dune.buildings (id) values ($1)", [orphanBaseId]);
     await pool.query("insert into dune.building_instances (building_id, instance_id, owner_entity_id) values ($1, 0, null)", [orphanBaseId]);
 
-    const db = transactionalDb(pool);
+    const db = pgTransactionalDb(pool);
     await assert.rejects(
       () => baseMapLocation(db, orphanBaseId),
       /no resolvable owner entity/);
@@ -384,7 +327,7 @@ test("real PostgreSQL: baseMapLocation distinguishes a broken owner-entity link 
 
 test("real PostgreSQL: the candidate picker returns player_controller_ids and excludes system accounts", async (t) => {
   await withDatabase(t, async (pool) => {
-    const candidates = await basePermissionCandidates(transactionalDb(pool), { limit: 50 });
+    const candidates = await basePermissionCandidates(pgTransactionalDb(pool), { limit: 50 });
     const ids = candidates.map((row) => row.playerId);
     assert.deepEqual(ids.sort(), ["23", "29", "4"].sort());
     assert.ok(!candidates.some((row) => row.name === "Server"), "system accounts must not be offered");
