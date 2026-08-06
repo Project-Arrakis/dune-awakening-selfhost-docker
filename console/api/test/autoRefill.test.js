@@ -57,10 +57,17 @@ const TEST_ENV = {};
 function fakeDuneDb({
   levels = {},
   missingBases = [],
+  // Distinct from missingBases: the real baseMapLocation throws a different
+  // message for a base whose owner-entity link is broken (still exists) vs
+  // one that's genuinely gone. Only the latter should un-enroll -- collapsing
+  // the two would silently drop a base that still exists and may still need
+  // fuel, which is exactly the bug this option exists to guard against.
+  orphanedBases = [],
   target = { map: "Survival_1", partitionId: 3, queueSupported: true, writeSafeNow: false },
   calls = []
 } = {}) {
   const missing = new Set(missingBases.map(Number));
+  const orphaned = new Set(orphanedBases.map(Number));
   return {
     calls,
     baseGeneratorFuelLevels: async (_db, _repoRoot, baseId) => {
@@ -73,6 +80,7 @@ function fakeDuneDb({
     baseMapLocation: async (_db, baseId) => {
       calls.push({ fn: "baseMapLocation", baseId });
       if (missing.has(Number(baseId))) throw new Error("That base was not found.");
+      if (orphaned.has(Number(baseId))) throw new Error("This base has no resolvable owner entity, so its map location is unavailable.");
       return { map: "Survival_1", partitionId: 3 };
     },
     baseRefillTarget: async (_db, baseId) => {
@@ -381,6 +389,32 @@ test("a base that no longer exists is un-enrolled, but other failures keep their
     // un-enrolling it, so only 517 actually errored.
     assert.equal(state.lastRunStatus, "partial");
     assert.match(state.lastRunDetail, /517/);
+  });
+});
+
+test("a base with a broken owner-entity link is not un-enrolled, unlike a genuinely deleted base", async () => {
+  await withTempRepoRoot(async (repoRoot) => {
+    const clock = makeClock();
+    setBaseAutoRefill(repoRoot, 482, true, { now: clock.now, env: TEST_ENV });
+    writeAutoRefillState(repoRoot, { ...readAutoRefillState(repoRoot), nextRunAt: new Date(START).toISOString() });
+    const duneDb = fakeDuneDb({
+      // Reads as zero devices, same as a deleted base -- only baseMapLocation
+      // tells them apart, and it must not collapse "link broken" into "gone".
+      orphanedBases: [482],
+      levels: {}
+    });
+    const { scheduler, audits } = makeScheduler(repoRoot, duneDb, clock);
+
+    await scheduler.tick();
+    clock.advance(2000);
+    const result = await scheduler.tick();
+
+    const state = readAutoRefillState(repoRoot);
+    // The base still exists -- dropping it here could leave its generators
+    // unattended, so enrollment must survive.
+    assert.deepEqual(Object.keys(state.bases), ["482"]);
+    assert.equal(audits.some((entry) => entry.action === "bases.auto-refill-unenrolled"), false);
+    assert.equal(result.failures, 1);
   });
 });
 

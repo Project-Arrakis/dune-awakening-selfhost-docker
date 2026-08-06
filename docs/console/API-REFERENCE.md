@@ -237,6 +237,29 @@ Complete reference for all HTTP API endpoints in the Dune Docker Console. All en
 | DELETE | `/api/bases/{baseId}/queued-refill` | Cancel a base's queued generator refill | `baseId` |
 | GET | `/api/bases/auto-refill` | Get per-base auto-refill enrollment state | None |
 | POST | `/api/bases/{baseId}/auto-refill` | Enable/disable auto-refill for a base | `baseId`, `enabled` |
+| GET | `/api/bases/{baseId}/water` | Get a base's water storage containers (count, volume, fill %; blood volume/fill for Blood Purifiers) | `baseId` |
+| POST | `/api/bases/{baseId}/refill-water` | Refill all base water storage (queued instead if the map isn't safely writable right now). Water only -- blood is never touched | `baseId` |
+| GET | `/api/bases/pending-water-refills` | List queued water refills, grouped by restart target | None |
+| DELETE | `/api/bases/{baseId}/queued-water-refill` | Cancel a base's queued water refill | `baseId` |
+| GET | `/api/bases/auto-refill-water` | Get per-base water auto-refill enrollment state | None |
+| POST | `/api/bases/{baseId}/auto-refill-water` | Enable/disable water auto-refill for a base | `baseId`, `enabled` |
+| GET | `/api/bases/{baseId}/permissions` | Get a base's permission roster (Owner, Co-Owners, Associates) | `baseId` |
+| PUT | `/api/bases/{baseId}/permissions` | Replace a base's permission roster | `baseId`, `entries[]` (`playerId`, `rank`) |
+| GET | `/api/bases/permission-candidates` | Search players eligible to be added to a roster | `q?`, `limit?` |
+
+`GET /api/bases` reports `capabilities.basePermissions`; the permission routes are
+unavailable when it is false (the schema lacks the required tables or the game's
+`permission_set_player_rank` / `permission_remove_player_rank` procedures).
+
+`PUT` takes the whole roster rather than a delta — the server diffs it against
+current state and applies only the difference. `rank` is `1` Owner, `2` Co-Owner,
+`3` Associate, and exactly one entry must be rank 1. `playerId` must be a player's
+`player_state.player_controller_id`; any other actor id belonging to the same
+account is rejected, because the game would ignore such a row. The roster size
+limit comes from live server config, not a constant.
+
+Changes reach a running map immediately — there is no restart queue, unlike the
+generator refill routes above. See [base-permissions.md](base-permissions.md).
 
 ### Storage
 

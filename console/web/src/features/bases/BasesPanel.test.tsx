@@ -10,7 +10,16 @@ vi.mock("../../api/bases", () => ({
     cancelQueuedRefill: vi.fn(),
     pendingRefills: vi.fn(),
     autoRefill: vi.fn(),
-    setAutoRefill: vi.fn()
+    setAutoRefill: vi.fn(),
+    permissions: vi.fn(),
+    setPermissions: vi.fn(),
+    permissionCandidates: vi.fn(),
+    water: vi.fn(),
+    refillWater: vi.fn(),
+    cancelQueuedWaterRefill: vi.fn(),
+    pendingWaterRefills: vi.fn(),
+    autoRefillWater: vi.fn(),
+    setAutoRefillWater: vi.fn()
   }
 }));
 
@@ -97,12 +106,14 @@ describe("BasesPanel generator details", () => {
       "2 · Lowest Queued Reserve 2h 0m. Queued Reserve counts fuel still in inventory. It excludes fuel currently burning, so the in-game Total Uptime may be higher."
     );
     expect(screen.getByText("Unavailable")).toHaveAttribute("title", "Generator data is unavailable");
-    expect(screen.queryByRole("button", { name: "Show generator details for Sietch Two" })).not.toBeInTheDocument();
+    // The chevron always renders now -- every base can be expanded into at
+    // least the Water tab, even one with no generator data at all.
+    expect(screen.getByRole("button", { name: "Show details for Sietch Two" })).toBeInTheDocument();
     // Column headers get the same tooltip treatment for when their label is
     // wider than the (user-resizable) column default.
     expect(screen.getByRole("columnheader", { name: /Building Pieces/ })).toHaveAttribute("title", "Building Pieces");
 
-    fireEvent.click(screen.getByRole("button", { name: "Show generator details for Sietch One" }));
+    fireEvent.click(screen.getByRole("button", { name: "Show details for Sietch One" }));
 
     expect(screen.getByText("Fuel-Powered Generator")).toBeInTheDocument();
     expect(screen.getByText("Spice-Powered Generator")).toBeInTheDocument();
@@ -159,7 +170,7 @@ describe("BasesPanel generator details", () => {
       "4 · 1 with no queued fuel · Lowest Queued Reserve 3h 0m. Queued Reserve counts fuel still in inventory. It excludes fuel currently burning, so the in-game Total Uptime may be higher."
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Show generator details for Sietch Three" }));
+    fireEvent.click(screen.getByRole("button", { name: "Show details for Sietch Three" }));
 
     expect(screen.getByText("Fuel-Powered Generator")).toBeInTheDocument();
     expect(screen.getByText("Spice-Powered Generator")).toBeInTheDocument();
@@ -385,7 +396,7 @@ describe("BasesPanel auto-refill", () => {
 
   async function expandRow(name: string) {
     await screen.findByText(name);
-    fireEvent.click(await screen.findByRole("button", { name: `Show generator details for ${name}` }));
+    fireEvent.click(await screen.findByRole("button", { name: `Show details for ${name}` }));
   }
 
   it("offers the toggle only when the database supports the refill queue", async () => {
@@ -638,5 +649,366 @@ describe("BasesPanel auto-refill", () => {
     const refill = await screen.findByRole("button", { name: "Refill Generators (auto-refill on)" });
     expect(refill).toHaveClass("bases-auto-refill-on");
     expect(refill).not.toHaveClass("bases-auto-refill-stalled-icon");
+  });
+});
+
+describe("BasesPanel permissions editing", () => {
+  const permissionRow = {
+    ...commonRow,
+    base_id: "1006",
+    name: "Sietch One",
+    owner_name: "DarkShark",
+    shared_with: [{ name: "Yaida", rank: 2, label: "Co-Owner" }],
+    generatorDataAvailable: true,
+    generatorCount: 0,
+    generatorUptimeMultiplier: 1,
+    generatorUptimeEventLabel: "",
+    generatorUptimeEventEndsAt: "",
+    generatorUnstockedCount: 0,
+    generatorAllUnstocked: false
+  };
+
+  function mockList(basePermissions: boolean) {
+    vi.mocked(basesApi.list).mockResolvedValue({
+      capabilities: { bases: true, basePermissions },
+      totalCount: 1,
+      totalBases: 1,
+      totalPieces: 10,
+      totalPlaceables: 4,
+      rows: [permissionRow]
+    } as never);
+  }
+
+  // The only route into the editor now that the pencil is gone: expand the row,
+  // then switch to Permissions.
+  async function openPermissionsTab() {
+    fireEvent.click(await screen.findByRole("button", { name: "Show details for Sietch One" }));
+    fireEvent.click(await screen.findByRole("tab", { name: "Permissions" }));
+    await waitFor(() => expect(screen.getByRole("tab", { name: "Permissions" })).toHaveAttribute("aria-selected", "true"));
+  }
+
+  function mockRoster() {
+    vi.mocked(basesApi.permissions).mockResolvedValue({
+      supported: true,
+      baseId: 1006,
+      actorId: "1004",
+      map: "DeepDesert",
+      mapNameId: 7,
+      entries: [
+        { playerId: "4", name: "DarkShark", rank: 1, label: "Owner", canonical: true },
+        { playerId: "29", name: "Yaida", rank: 2, label: "Co-Owner", canonical: true }
+      ]
+    } as never);
+  }
+
+  it("hides the Permissions tab when the schema does not support it, but still allows expanding into Power/Water", async () => {
+    mockList(false);
+    renderPanel();
+    expect(await screen.findByText("Sietch One")).toBeInTheDocument();
+    // The chevron always renders now -- every base can always be expanded
+    // into at least the Water tab -- so this base's lack of permission
+    // support has to be checked by expanding it, not by the chevron's absence.
+    fireEvent.click(await screen.findByRole("button", { name: "Show details for Sietch One" }));
+    expect(screen.getByRole("tab", { name: "Power" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Water" })).toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "Permissions" })).not.toBeInTheDocument();
+  });
+
+  // A base with no generators had no expand chevron before this feature. It
+  // needs one now, or the Permissions tab would be unreachable for those rows.
+  it("gives a generator-less base an expand chevron once permissions are editable", async () => {
+    mockList(true);
+    mockRoster();
+    renderPanel();
+    expect(await screen.findByRole("button", { name: "Show details for Sietch One" })).toBeInTheDocument();
+  });
+
+  it("reaches the roster by expanding the row and switching tabs", async () => {
+    mockList(true);
+    mockRoster();
+    renderPanel();
+    await openPermissionsTab();
+    // The roster's own control, not the name text -- "DarkShark" also appears in
+    // the Owner cell of the row above.
+    expect(await screen.findByRole("combobox", { name: "Rank for DarkShark" })).toBeInTheDocument();
+  });
+
+  it("defaults to the Power tab when the row is expanded normally", async () => {
+    mockList(true);
+    mockRoster();
+    renderPanel();
+    fireEvent.click(await screen.findByText("Sietch One"));
+    await waitFor(() => expect(screen.getByRole("tab", { name: "Power" })).toHaveAttribute("aria-selected", "true"));
+  });
+
+  // Promoting has to demote the incumbent in the same edit, so the one-owner
+  // rule can never be violated on screen.
+  it("demotes the current owner when another player is promoted", async () => {
+    mockList(true);
+    mockRoster();
+    renderPanel();
+    await openPermissionsTab();
+    const yaidaRank = await screen.findByRole("combobox", { name: "Rank for Yaida" });
+    fireEvent.change(yaidaRank, { target: { value: "1" } });
+    await waitFor(() => {
+      expect(screen.getByRole("combobox", { name: "Rank for Yaida" })).toHaveValue("1");
+      expect(screen.getByRole("combobox", { name: "Rank for DarkShark" })).toHaveValue("2");
+    });
+  });
+
+  it("blocks removing the owner and enables Save only once the roster is dirty", async () => {
+    mockList(true);
+    mockRoster();
+    renderPanel();
+    await openPermissionsTab();
+    expect(await screen.findByRole("button", { name: "Remove DarkShark" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Remove Yaida" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Save changes" })).toBeDisabled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove Yaida" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Save changes" })).toBeEnabled());
+    expect(screen.getByText("Unsaved changes")).toBeInTheDocument();
+  });
+
+  it("reverts local edits without calling the server", async () => {
+    mockList(true);
+    mockRoster();
+    renderPanel();
+    await openPermissionsTab();
+    fireEvent.click(await screen.findByRole("button", { name: "Remove Yaida" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Revert" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Revert" }));
+    await waitFor(() => expect(screen.getByRole("combobox", { name: "Rank for Yaida" })).toBeInTheDocument());
+    expect(basesApi.setPermissions).not.toHaveBeenCalled();
+  });
+
+  it("saves the whole roster as one request", async () => {
+    mockList(true);
+    mockRoster();
+    vi.mocked(basesApi.setPermissions).mockResolvedValue({
+      supported: true,
+      result: { ok: true, baseId: 1006, actorId: "1004", map: "DeepDesert", added: 0, reranked: 0, removed: 1, total: 1, message: "Permissions were updated." }
+    } as never);
+    renderPanel();
+    await openPermissionsTab();
+    fireEvent.click(await screen.findByRole("button", { name: "Remove Yaida" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Save changes" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(basesApi.setPermissions).toHaveBeenCalledWith("1006", [{ playerId: "4", rank: 1 }]));
+  });
+
+  // A roster row naming a non-canonical actor is one the game ignores. The
+  // console can see it and the game client cannot, so it must be visible here.
+  it("flags a roster entry the game ignores", async () => {
+    mockList(true);
+    vi.mocked(basesApi.permissions).mockResolvedValue({
+      supported: true,
+      baseId: 1006,
+      actorId: "1004",
+      map: "DeepDesert",
+      mapNameId: 7,
+      entries: [
+        { playerId: "4", name: "DarkShark", rank: 1, label: "Owner", canonical: true },
+        { playerId: "5", name: "DarkShark", rank: 3, label: "Associate", canonical: false }
+      ]
+    } as never);
+    renderPanel();
+    await openPermissionsTab();
+    expect(await screen.findByLabelText("Ignored by the game")).toBeInTheDocument();
+  });
+});
+
+describe("BasesPanel water refill", () => {
+  const waterCapableBase = {
+    ...commonRow,
+    generatorDataAvailable: true,
+    generatorCount: 0,
+    generators: []
+  };
+
+  function waterCapableList(row: Record<string, unknown>) {
+    return {
+      capabilities: { bases: true, waterRefill: true, waterRefillQueue: true },
+      totalCount: 1,
+      totalBases: 1,
+      totalPieces: 10,
+      totalPlaceables: 4,
+      rows: [{ ...waterCapableBase, ...row }]
+    };
+  }
+
+  beforeEach(() => {
+    vi.mocked(basesApi.pendingRefills).mockResolvedValue({ supported: true, total: 0, pending: [], byTarget: [] });
+    vi.mocked(basesApi.pendingWaterRefills).mockResolvedValue({ supported: true, total: 0, pending: [], byTarget: [] });
+  });
+
+  // Water isn't part of the row/list data the way generator fuel is --
+  // BaseWaterTab fetches its own container levels -- so an immediate
+  // (non-queued) refill needs its own signal to make an already-open Water
+  // tab refetch, rather than relying on the bases list reloading.
+  it("refetches the open Water tab's container levels after an immediate refill", async () => {
+    vi.mocked(basesApi.list).mockResolvedValue(waterCapableList({ base_id: "4002", name: "Sietch Immediate" }));
+    vi.mocked(basesApi.water)
+      .mockResolvedValueOnce({
+        supported: true,
+        baseId: 4002,
+        containers: [{ type: "waterCistern", name: "Water Cistern", count: 1, stored: 1250, capacity: 5000, percent: 25 }]
+      })
+      .mockResolvedValueOnce({
+        supported: true,
+        baseId: 4002,
+        containers: [{ type: "waterCistern", name: "Water Cistern", count: 1, stored: 5000, capacity: 5000, percent: 100 }]
+      });
+    vi.mocked(basesApi.refillWater).mockResolvedValue({
+      supported: true,
+      result: {
+        ok: true,
+        baseId: 4002,
+        totalAdded: 3750,
+        devices: [{ placeableId: "9101", type: "waterCistern", label: "Water Cistern", before: 1250, after: 5000, added: 3750 }]
+      }
+    });
+
+    renderPanel();
+    await screen.findByText("Sietch Immediate");
+    fireEvent.click(await screen.findByRole("button", { name: "Show details for Sietch Immediate" }));
+    fireEvent.click(await screen.findByRole("tab", { name: "Water" }));
+
+    expect(await screen.findByText("1,250 / 5,000")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Refill Water" }));
+    await waitFor(() => expect(basesApi.refillWater).toHaveBeenCalledWith("4002"));
+
+    expect(await screen.findByText("5,000 / 5,000")).toBeInTheDocument();
+    expect(vi.mocked(basesApi.water).mock.calls.length).toBe(2);
+  });
+
+  it("does not refetch the Water tab when the refill is queued instead of applied immediately", async () => {
+    vi.mocked(basesApi.list).mockResolvedValue(waterCapableList({ base_id: "4003", name: "Sietch Queued Water" }));
+    vi.mocked(basesApi.water).mockResolvedValue({
+      supported: true,
+      baseId: 4003,
+      containers: [{ type: "waterCistern", name: "Water Cistern", count: 1, stored: 1250, capacity: 5000, percent: 25 }]
+    });
+    vi.mocked(basesApi.refillWater).mockResolvedValue({
+      supported: true,
+      result: { ok: true, baseId: 4003, queued: true, map: "DeepDesert_1", partitionId: 8 }
+    });
+
+    renderPanel();
+    await screen.findByText("Sietch Queued Water");
+    fireEvent.click(await screen.findByRole("button", { name: "Show details for Sietch Queued Water" }));
+    fireEvent.click(await screen.findByRole("tab", { name: "Water" }));
+
+    await screen.findByText("1,250 / 5,000");
+    fireEvent.click(screen.getByRole("button", { name: "Refill Water" }));
+    await waitFor(() => expect(basesApi.refillWater).toHaveBeenCalledWith("4003"));
+
+    // Queued refills are applied later by a map restart, not written yet -- so
+    // there is nothing fresh to refetch, and the queue banner is what should
+    // update instead (covered by basesApi.pendingWaterRefills below).
+    await waitFor(() => expect(basesApi.pendingWaterRefills).toHaveBeenCalled());
+    expect(vi.mocked(basesApi.water).mock.calls.length).toBe(1);
+  });
+});
+
+describe("BasesPanel combined fuel/water queue and stalled banners", () => {
+  beforeEach(() => {
+    vi.mocked(basesApi.pendingRefills).mockResolvedValue({ supported: true, total: 0, pending: [], byTarget: [] });
+    vi.mocked(basesApi.autoRefill).mockResolvedValue({
+      supported: true, thresholdPercent: 50, intervalHours: 24, nextRunAt: "", lastRunAt: "", lastRunStatus: "", lastRunDetail: "", total: 0, bases: []
+    });
+  });
+
+  it("shows only the water badge, not a fuel badge, when only water refills are queued", async () => {
+    vi.mocked(basesApi.list).mockResolvedValue({
+      capabilities: { bases: true, waterRefill: true, waterRefillQueue: true },
+      totalCount: 1,
+      totalBases: 1,
+      totalPieces: 10,
+      totalPlaceables: 4,
+      rows: [{ ...commonRow, base_id: "4101", name: "Sietch Water Only", generatorDataAvailable: true, generatorCount: 0, generators: [] }]
+    });
+    vi.mocked(basesApi.pendingWaterRefills).mockResolvedValue({
+      supported: true,
+      total: 1,
+      pending: [{ baseId: 4101, map: "DeepDesert", partitionId: 8, queuedAt: new Date().toISOString(), attempts: 0, lastError: "" }],
+      byTarget: [{ map: "DeepDesert", partitionId: 8, partitionMap: "DeepDesert_1", dimensionIndex: 0, count: 1 }]
+    });
+    vi.mocked(basesApi.autoRefillWater).mockResolvedValue({
+      supported: true, thresholdPercent: 50, intervalHours: 24, nextRunAt: "", lastRunAt: "", lastRunStatus: "", lastRunDetail: "", total: 0, bases: []
+    });
+
+    renderPanel();
+
+    expect(await screen.findByText("1 refill queued")).toBeInTheDocument();
+    // The banner's title icons and each row's badges are gated on
+    // fuelCount/waterCount independently -- with zero fuel queued, no "fuel"
+    // badge should render alongside the water one.
+    expect(screen.queryByText(/\d+ fuel\b/)).not.toBeInTheDocument();
+  });
+
+  it("scopes the stalled-banner explanation to only the resource that actually stalled", async () => {
+    vi.mocked(basesApi.list).mockResolvedValue({
+      capabilities: { bases: true, waterRefill: true, waterRefillQueue: true },
+      totalCount: 1,
+      totalBases: 1,
+      totalPieces: 10,
+      totalPlaceables: 4,
+      rows: [{ ...commonRow, base_id: "4102", name: "Sietch Stalled Water", generatorDataAvailable: true, generatorCount: 0, generators: [] }]
+    });
+    vi.mocked(basesApi.pendingWaterRefills).mockResolvedValue({ supported: true, total: 0, pending: [], byTarget: [] });
+    vi.mocked(basesApi.autoRefillWater).mockResolvedValue({
+      supported: true, thresholdPercent: 50, intervalHours: 24, nextRunAt: "", lastRunAt: "", lastRunStatus: "", lastRunDetail: "",
+      total: 1,
+      bases: [{
+        baseId: 4102,
+        enabledAt: "2026-07-29T12:00:00.000Z",
+        lastCheckedAt: "",
+        lastQueuedAt: "",
+        lastLowestPercent: 8,
+        consecutiveQueues: 3,
+        stalledAt: new Date().toISOString()
+      }]
+    });
+
+    renderPanel();
+
+    expect(await screen.findByText("1 base has stalled auto-refill")).toBeInTheDocument();
+    expect(screen.getByText(/without raising the water on this base/)).toBeInTheDocument();
+    expect(screen.queryByText(/fuel or water/)).not.toBeInTheDocument();
+  });
+
+  it("merges both resources into one queued-refills banner with per-type badges", async () => {
+    vi.mocked(basesApi.list).mockResolvedValue({
+      capabilities: { bases: true, generatorRefill: true, generatorRefillQueue: true, waterRefill: true, waterRefillQueue: true },
+      totalCount: 1,
+      totalBases: 1,
+      totalPieces: 10,
+      totalPlaceables: 4,
+      rows: [{ ...commonRow, base_id: "4103", name: "Sietch Both Queued", generatorDataAvailable: true, generatorCount: 1, generators: [] }]
+    });
+    vi.mocked(basesApi.pendingRefills).mockResolvedValue({
+      supported: true,
+      total: 1,
+      pending: [{ baseId: 4103, map: "DeepDesert", partitionId: 8, queuedAt: new Date().toISOString(), attempts: 0, lastError: "" }],
+      byTarget: [{ map: "DeepDesert", partitionId: 8, partitionMap: "DeepDesert_1", dimensionIndex: 0, count: 1 }]
+    });
+    vi.mocked(basesApi.pendingWaterRefills).mockResolvedValue({
+      supported: true,
+      total: 1,
+      pending: [{ baseId: 4103, map: "DeepDesert", partitionId: 8, queuedAt: new Date().toISOString(), attempts: 0, lastError: "" }],
+      byTarget: [{ map: "DeepDesert", partitionId: 8, partitionMap: "DeepDesert_1", dimensionIndex: 0, count: 1 }]
+    });
+    vi.mocked(basesApi.autoRefillWater).mockResolvedValue({
+      supported: true, thresholdPercent: 50, intervalHours: 24, nextRunAt: "", lastRunAt: "", lastRunStatus: "", lastRunDetail: "", total: 0, bases: []
+    });
+
+    renderPanel();
+
+    // One target, one queued fuel refill and one queued water refill: a single
+    // combined banner, not two separate ones.
+    expect(await screen.findByText("2 refills queued")).toBeInTheDocument();
+    expect(document.querySelectorAll(".bases-pending-refills")).toHaveLength(1);
   });
 });
