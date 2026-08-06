@@ -13,7 +13,7 @@ const SUPPORTED_FUNCTIONS = [
 const BASE_ID = 1006;
 const ACTOR_ID = "1004";
 
-function createDb({ existing = [], canonicalPlayers = ["4", "23", "29", "437"], mapNameId = 7 } = {}) {
+function createDb({ existing = [], canonicalPlayers = ["4", "23", "29", "437"], mapNameId = 7, buildings = "found" } = {}) {
   const calls = [];
   const db = {
     calls,
@@ -26,6 +26,12 @@ function createDb({ existing = [], canonicalPlayers = ["4", "23", "29", "437"], 
         return { rows: [{ exists: SUPPORTED_FUNCTIONS.includes(String(values[0] || "")) }] };
       }
       if (text.includes("from dune.buildings b")) {
+        // "missing" mirrors a base id that does not exist at all; "orphaned"
+        // mirrors building_instances.owner_entity_id being null (it is
+        // nullable, ON DELETE SET NULL against fgl_entities) so the left-join
+        // chain resolves the buildings row but not down to an actor.
+        if (buildings === "missing") return { rows: [] };
+        if (buildings === "orphaned") return { rows: [{ actor_id: null, map: null, map_name_id: null, partition_id: null }] };
         return { rows: [{ actor_id: ACTOR_ID, map: "DeepDesert", map_name_id: mapNameId, partition_id: 59 }] };
       }
       if (text.includes("for update")) return { rows: [{ id: ACTOR_ID }], rowCount: 1 };
@@ -89,6 +95,24 @@ test("setBasePermissions refuses a base whose map has no map_names entry", async
   await assert.rejects(
     () => setBasePermissions(createDb({ mapNameId: 0 }), BASE_ID, [{ playerId: "4", rank: 1 }]),
     /no dune.map_names entry/);
+});
+
+test("listBasePermissions rejects a base id that does not exist", async () => {
+  await assert.rejects(
+    () => listBasePermissions(createDb({ buildings: "missing" }), 999999),
+    /That base was not found/);
+});
+
+test("listBasePermissions surfaces a clear error when the base's owner-entity link is broken", async () => {
+  await assert.rejects(
+    () => listBasePermissions(createDb({ buildings: "orphaned" }), BASE_ID),
+    /no resolvable owner entity/);
+});
+
+test("setBasePermissions surfaces a clear error when the base's owner-entity link is broken", async () => {
+  await assert.rejects(
+    () => setBasePermissions(createDb({ buildings: "orphaned" }), BASE_ID, [{ playerId: "4", rank: 1 }]),
+    /no resolvable owner entity/);
 });
 
 test("setBasePermissions writes through the shipped procedures, never raw DML", async () => {

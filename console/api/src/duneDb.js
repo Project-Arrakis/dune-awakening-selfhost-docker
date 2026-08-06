@@ -2989,14 +2989,20 @@ export async function basePermissionActor(db, baseId) {
            coalesce(mn.map_name_id, 0)::int as map_name_id,
            coalesce(a.partition_id, 0)::int as partition_id
     from dune.buildings b
-    join dune.building_instances bi on bi.building_id = b.id
-    join dune.actor_fgl_entities afe on afe.entity_id = bi.owner_entity_id
-    join dune.actors a on a.id = afe.actor_id
+    left join dune.building_instances bi on bi.building_id = b.id
+    left join dune.actor_fgl_entities afe on afe.entity_id = bi.owner_entity_id
+    left join dune.actors a on a.id = afe.actor_id
     left join dune.map_names mn on mn.map_name = a.map
     where b.id = $1
     limit 1`, [target]);
   const row = result.rows[0];
   if (!row) throw new Error("That base was not found.");
+  // building_instances.owner_entity_id is nullable (ON DELETE SET NULL against
+  // fgl_entities), so the entity link can be broken even though the base row
+  // itself still exists. Left-joining down to actors instead of inner-joining
+  // lets that case surface as its own message rather than the same "not found"
+  // an operator would see for a genuinely deleted base id.
+  if (!row.actor_id) throw new Error("This base has no resolvable owner entity, so permission editing is unavailable for it.");
   return {
     baseId: target,
     actorId: String(row.actor_id),

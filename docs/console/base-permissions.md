@@ -150,6 +150,17 @@ transaction, does.)
 rows: a base whose roster is being fully replaced may have no rank rows, and
 `for update` over zero rows serializes nothing.
 
+## A base can be visible but unresolvable
+
+`building_instances.owner_entity_id` is nullable — it carries an
+`ON DELETE SET NULL` foreign key against `fgl_entities` — so a base can still
+have a row in `dune.buildings` (and so still appear in the Bases table) while
+its link down to a permission actor is broken. Opening the Permissions tab for
+such a base returns *"This base has no resolvable owner entity, so permission
+editing is unavailable for it,"* distinct from *"That base was not found"*
+(which means the base id itself doesn't exist). No such rows exist in
+production today; this is a documented edge case, not an active issue.
+
 ## Capability gating
 
 The panel hides the editor unless `listBases` reports `capabilities.basePermissions`.
