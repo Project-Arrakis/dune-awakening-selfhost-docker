@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ChevronDown, ChevronUp, Download, Fuel, X } from "lucide-react";
-import { basesApi, type AutoRefillBase, type RefillDeviceResult } from "../../api/bases";
+import { ChevronDown, ChevronUp, Download, Droplet, Fuel, Users, X, Zap } from "lucide-react";
+import { BasePermissionsTab } from "./BasePermissionsTab";
+import { BaseWaterTab } from "./BaseWaterTab";
+import { basesApi, type AutoRefillBase, type AutoRefillWaterBase, type RefillDeviceResult, type RefillWaterDeviceResult } from "../../api/bases";
 import { mapsApi } from "../../api/maps";
 import { InfoTooltip } from "../../components/common/DisplayPrimitives";
 import { serverApi } from "../../api/server";
 import { setupApi, type Task } from "../../api/setup";
 import { apiDownload } from "../../api/client";
 import { DataTable, type SortDirection } from "../../components/common/DataTable";
-import { pendingRefillCountForPartition, usePendingRefills } from "../../lib/usePendingRefills";
+import { pendingRefillCountForPartition, usePendingRefills, usePendingWaterRefills } from "../../lib/usePendingRefills";
 
 type BasesPanelProps = {
   onError: (text: string) => void;
@@ -232,6 +234,22 @@ function summarizeRefill(response: {
   return `Added ${result.totalAdded} fuel unit${result.totalAdded === 1 ? "" : "s"} across ${changed.length} device${changed.length === 1 ? "" : "s"}. ${detail}${skipped ? ` · ${skipped} skipped (no inventory)` : ""}`;
 }
 
+// Mirrors summarizeRefill. No fuelName/capped/skipped -- water refill is a
+// plain jsonb_set straight to capacity, not a stack of discrete items.
+function summarizeWaterRefill(response: {
+  result?: { queued?: boolean; map?: string; totalAdded?: number; devices?: RefillWaterDeviceResult[] };
+}) {
+  const result = response.result;
+  if (result?.queued) {
+    return `Water refill queued for ${result.map || "this base"}. It applies the next time that map restarts or stops, so a running server cannot overwrite it.`;
+  }
+  if (!result || !Array.isArray(result.devices) || typeof result.totalAdded !== "number") return "";
+  const changed = result.devices.filter((device) => (device.added || 0) > 0);
+  if (!changed.length) return `All ${result.devices.length} container${result.devices.length === 1 ? " was" : "s were"} already full. Nothing added.`;
+  const detail = changed.map((device) => `${device.label}: +${device.added.toLocaleString()}`).join(" · ");
+  return `Added ${result.totalAdded.toLocaleString()} water across ${changed.length} container${changed.length === 1 ? "" : "s"}. ${detail}`;
+}
+
 function withCoordinates(row: Record<string, unknown>): BaseRow {
   const x = Math.round(Number(row.x) || 0);
   const y = Math.round(Number(row.y) || 0);
@@ -318,7 +336,19 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
   const [refillStatus, setRefillStatus] = useState<RefillStatusKind>(() => readCachedRefillStatus().kind);
   const [canRefill, setCanRefill] = useState(false);
   const [canQueue, setCanQueue] = useState(false);
+  const [canEditPermissions, setCanEditPermissions] = useState(false);
+  const [canRefillWater, setCanRefillWater] = useState(false);
+  const [canQueueWater, setCanQueueWater] = useState(false);
+  // Which tab the expanded row is showing. Power is the default so expanding a
+  // row behaves exactly as it did before this feature existed.
+  const [expandedTab, setExpandedTab] = useState<"power" | "water" | "permissions">("power");
   const [cancelingId, setCancelingId] = useState("");
+  const [cancelingWaterId, setCancelingWaterId] = useState("");
+  const [refillingWaterId, setRefillingWaterId] = useState("");
+  // Bumped after an immediate (non-queued) water refill so an already-open
+  // Water tab knows to refetch -- it fetches its own data independently of
+  // the bases list/row, so nothing else tells it a refill just landed.
+  const [waterRefreshToken, setWaterRefreshToken] = useState(0);
   // A list, not one key: each row shows its own progress, so the other rows stay
   // clickable and a second restart cannot erase the first one's spinner.
   const [restartingTargets, setRestartingTargets] = useState<string[]>(() => restartingTargetsCache);
@@ -332,9 +362,18 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
   // Distinct from "no bases enrolled": the enrollment read itself failed, so
   // what is on screen may not reflect reality.
   const [autoRefillUnavailable, setAutoRefillUnavailable] = useState(false);
+  // Mirrors the block above, for water auto-refill -- own enrollment state so
+  // the two subsystems never share or interfere with each other.
+  const [autoRefillWaterBases, setAutoRefillWaterBases] = useState<Map<string, AutoRefillWaterBase>>(new Map());
+  const [autoRefillWaterThreshold, setAutoRefillWaterThreshold] = useState(50);
+  const [autoRefillWaterIntervalHours, setAutoRefillWaterIntervalHours] = useState(24);
+  const [savingAutoRefillWaterId, setSavingAutoRefillWaterId] = useState("");
+  const [autoRefillWaterUnavailable, setAutoRefillWaterUnavailable] = useState(false);
   const requestIdRef = useRef(0);
+  const lastExpandedRef = useRef<string | null>(null);
   const skipNextSearchReset = useRef(true);
   const { pending: pendingRefills, refresh: refreshPendingRefills } = usePendingRefills(canQueue);
+  const { pending: pendingWaterRefills, refresh: refreshPendingWaterRefills } = usePendingWaterRefills(canQueueWater);
   const previousPendingTotal = useRef<number | null>(null);
 
   useEffect(() => {
@@ -364,6 +403,9 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
       setRows(nextRows);
       setCanRefill(Boolean(result.capabilities?.generatorRefill));
       setCanQueue(Boolean(result.capabilities?.generatorRefillQueue));
+      setCanEditPermissions(Boolean(result.capabilities?.basePermissions));
+      setCanRefillWater(Boolean(result.capabilities?.waterRefill));
+      setCanQueueWater(Boolean(result.capabilities?.waterRefillQueue));
       setTotalCount(result.totalCount || 0);
       setTotalBases(result.totalBases || 0);
       setTotalPieces(result.totalPieces || 0);
@@ -548,6 +590,68 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
     }
   }
 
+  // Mirrors handleRefillGenerators. No generatorCount-style count in the
+  // confirm copy: the Water tab's own container list is fetched on demand,
+  // not part of this row's data, so there is nothing to count without an
+  // extra request just for the confirm dialog's wording.
+  async function handleRefillWater(base: BaseRow) {
+    const id = String(base.base_id);
+    const confirmed = await confirmAction(
+      `Refill water storage at "${base.name || `base ${id}`}" to full?`,
+      {
+        title: "Refill Water",
+        confirmLabel: "Refill",
+        warning: canQueueWater
+          ? "If this base's map is running, the refill is queued and applied the next time that map restarts or stops, so a live server cannot overwrite it. If the map is already down, it is written now. Blood is never touched -- only water."
+          : "Refill writes water straight to the database. A running game server will not show the new water in-game until the map server restarts. Blood is never touched -- only water."
+      }
+    );
+    if (!confirmed) return;
+    onError("");
+    setRefillingWaterId(id);
+    try {
+      const response = await basesApi.refillWater(id);
+      writeRefillStatus(summarizeWaterRefill(response) || formatMutationResult(response), "ok");
+      if (response.result?.queued) {
+        await refreshPendingWaterRefills();
+      } else {
+        // Unlike generator fuel, water isn't part of the row/list data --
+        // BaseWaterTab fetches it separately -- so an immediate (non-queued)
+        // write needs its own signal to make an already-open Water tab refetch.
+        setWaterRefreshToken((token) => token + 1);
+      }
+    } catch (error) {
+      const text = errorText(error);
+      writeRefillStatus(text, "fail");
+      onError(text);
+    } finally {
+      setRefillingWaterId("");
+    }
+  }
+
+  async function handleCancelQueuedWaterRefill(base: BaseRow) {
+    const id = String(base.base_id);
+    const label = base.name || `base ${id}`;
+    const confirmed = await confirmAction(`Cancel the queued water refill for "${label}"?`, {
+      title: "Cancel Queued Refill",
+      confirmLabel: "Cancel Refill"
+    });
+    if (!confirmed) return;
+    onError("");
+    setCancelingWaterId(id);
+    try {
+      await basesApi.cancelQueuedWaterRefill(id);
+      writeRefillStatus(`Queued water refill for "${label}" was canceled.`, "ok");
+      await refreshPendingWaterRefills();
+    } catch (error) {
+      const text = errorText(error);
+      writeRefillStatus(text, "fail");
+      onError(text);
+    } finally {
+      setCancelingWaterId("");
+    }
+  }
+
   const refreshAutoRefill = useCallback(async () => {
     try {
       const state = await basesApi.autoRefill();
@@ -571,6 +675,23 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
     if (!canQueue) return;
     void refreshAutoRefill();
   }, [canQueue, refreshAutoRefill]);
+
+  const refreshAutoRefillWater = useCallback(async () => {
+    try {
+      const state = await basesApi.autoRefillWater();
+      setAutoRefillWaterBases(new Map(state.bases.map((entry) => [String(entry.baseId), entry])));
+      setAutoRefillWaterThreshold(state.thresholdPercent);
+      setAutoRefillWaterIntervalHours(state.intervalHours);
+      setAutoRefillWaterUnavailable(false);
+    } catch {
+      setAutoRefillWaterUnavailable(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!canQueueWater) return;
+    void refreshAutoRefillWater();
+  }, [canQueueWater, refreshAutoRefillWater]);
 
   async function handleToggleAutoRefill(base: BaseRow, nextEnabled: boolean) {
     const id = String(base.base_id);
@@ -629,12 +750,74 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
     }
   }
 
-  async function handleRestartForQueue(group: { map: string; partitionId: number; partitionMap: string; dimensionIndex: number; count: number }) {
+  // Mirrors handleToggleAutoRefill.
+  async function handleToggleAutoRefillWater(base: BaseRow, nextEnabled: boolean) {
+    const id = String(base.base_id);
+    const label = base.name || `base ${id}`;
+    if (nextEnabled) {
+      const confirmed = await confirmAction(
+        `Turn on water auto-refill for "${label}"?`,
+        {
+          title: "Auto-Refill Water",
+          confirmLabel: "Turn On",
+          warning: `Every ${autoRefillWaterIntervalHours}h this base is checked, and a refill is queued if any water container holds less than ${autoRefillWaterThreshold}% of its capacity. Queued refills are written the next time this base's map restarts or stops — auto-refill never restarts a map by itself. Blood is never touched -- only water.`
+        }
+      );
+      if (!confirmed) return;
+    }
+    onError("");
+    setSavingAutoRefillWaterId(id);
+    try {
+      const result = await basesApi.setAutoRefillWater(id, nextEnabled);
+      if (autoRefillWaterUnavailable) {
+        void refreshAutoRefillWater();
+      }
+      setAutoRefillWaterBases((current) => {
+        const next = new Map(current);
+        if (result.enabled) {
+          next.set(id, next.get(id) || {
+            baseId: Number(id),
+            enabledAt: new Date().toISOString(),
+            lastCheckedAt: "",
+            lastQueuedAt: "",
+            lastLowestPercent: null,
+            consecutiveQueues: 0,
+            stalledAt: ""
+          });
+        } else {
+          next.delete(id);
+        }
+        return next;
+      });
+      writeRefillStatus(
+        result.enabled
+          ? `Water auto-refill is on for "${label}". Checked every ${autoRefillWaterIntervalHours}h.`
+          : `Water auto-refill is off for "${label}".`,
+        "ok"
+      );
+    } catch (error) {
+      const text = errorText(error);
+      writeRefillStatus(text, "fail");
+      onError(text);
+    } finally {
+      setSavingAutoRefillWaterId("");
+    }
+  }
+
+  // Restarting a partition/service already flushes whichever queue(s) have
+  // entries waiting on it -- server.js's onMapDown hook fires both
+  // flushQueuedGeneratorRefills and flushQueuedWaterRefills unconditionally --
+  // so one restart call covers a target with fuel, water, or both queued, and
+  // the combined banner below only needs a single handler rather than two.
+  async function handleRestartForCombinedQueue(group: { map: string; partitionId: number; partitionMap: string; dimensionIndex: number; fuelCount: number; waterCount: number }) {
     const target = queueRestartTarget(group.partitionMap, group.partitionId, group.dimensionIndex);
     if (target.kind === "none") return;
     const key = `${group.map}|${group.partitionId}`;
+    const parts = [];
+    if (group.fuelCount) parts.push(`${group.fuelCount} queued generator refill${group.fuelCount === 1 ? "" : "s"}`);
+    if (group.waterCount) parts.push(`${group.waterCount} queued water refill${group.waterCount === 1 ? "" : "s"}`);
     const confirmed = await confirmAction(
-      `${target.label} now to apply ${group.count} queued generator refill${group.count === 1 ? "" : "s"}?`,
+      `${target.label} now to apply ${parts.join(" and ")}?`,
       {
         title: "Restart Map",
         confirmLabel: "Restart",
@@ -654,12 +837,15 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
       // Report what the restart actually did. Without this the running line
       // stands forever and a failed restart reads as a successful one.
       const finished = await waitForTask(started.task);
-      const refreshed = await refreshPendingRefills();
+      const [refreshedFuel, refreshedWater] = await Promise.all([refreshPendingRefills(), refreshPendingWaterRefills()]);
       if (finished.status === "succeeded") {
         // The flush races the restart's own write-safety window, so a
         // succeeded task does not guarantee the refill actually landed --
-        // check the queue itself rather than assume.
-        const stillQueued = pendingRefillCountForPartition(refreshed, group.partitionId);
+        // check both queues rather than assume.
+        const stillQueued = Boolean(
+          pendingRefillCountForPartition(refreshedFuel, group.partitionId)
+          || pendingRefillCountForPartition(refreshedWater, group.partitionId)
+        );
         writeRefillStatus(
           stillQueued
             ? `${label} restarted. Its refills are still queued and will apply once the map is confirmed down.`
@@ -680,6 +866,43 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
     }
   }
 
+  // Move focus into a row that has just opened. The expanded panel renders below
+  // the row, so without this the focus stays on the chevron and the content can
+  // open below the fold. Keyed on the base id alone: switching tabs already
+  // focuses the tab that was clicked, and re-focusing on every tab change would
+  // fight the user.
+  //
+  // Must stay above the `loading` early return -- a hook after it changes the
+  // hook count between renders.
+  useEffect(() => {
+    if (!expandedBaseId || lastExpandedRef.current === expandedBaseId) {
+      lastExpandedRef.current = expandedBaseId;
+      return;
+    }
+    lastExpandedRef.current = expandedBaseId;
+    // Synchronous, not deferred to a frame: the expanded row is committed by the
+    // time this effect runs, and a requestAnimationFrame callback never fires
+    // while the tab is backgrounded -- which would silently drop the focus move.
+    const tab = document.querySelector<HTMLButtonElement>(".bases-expanded-tab.active");
+    tab?.focus({ preventScroll: true });
+    // Bring the opened panel into view. The table lives in a `.table-wrap`
+    // scrollport with its own overflow-y, so the element that needs scrolling is
+    // usually that container rather than the window -- scrollIntoView walks every
+    // scrollable ancestor and handles both, which hand-rolled window.scrollBy
+    // arithmetic does not.
+    //
+    // block:"nearest" leaves an already-visible panel alone, so opening a row
+    // near the top never jumps the view, and aligns the top edge when the panel
+    // is taller than the scrollport (showing its start rather than its middle).
+    // No behavior:"smooth" -- it is compositor-driven and does not settle
+    // reliably in a backgrounded tab.
+    //
+    // Optional call: jsdom does not implement scrollIntoView, and scrolling is a
+    // nicety -- the focus move is the part that matters.
+    const panel = document.querySelector<HTMLElement>(".bases-table tbody tr.expanded-row");
+    (panel ?? tab)?.scrollIntoView?.({ block: "nearest" });
+  }, [expandedBaseId]);
+
   if (loading) {
     return <section className="panel">
       <div className="panel-title"><h2>Bases</h2></div>
@@ -696,20 +919,68 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
     const queuedAt = Date.parse(entry.queuedAt);
     return Number.isFinite(queuedAt) && Date.now() - queuedAt > STALE_QUEUED_REFILL_MS;
   });
-  const staleQueuedCount = staleQueued.length;
-  // Whether any stale entry actually has a restart button in the list above. A
-  // group whose partition does not resolve renders "Restart this map from the
-  // Maps tab" instead, so pointing at a button that is not there would be wrong.
   const staleTargetKeys = new Set(staleQueued.map((entry) => `${entry.map || "Unknown"}|${entry.partitionId}`));
-  const staleHasRestartButton = (pendingRefills?.byTarget || []).some((group) =>
-    staleTargetKeys.has(`${group.map}|${group.partitionId}`)
-    && queueRestartTarget(group.partitionMap, group.partitionId, group.dimensionIndex).kind !== "none");
   // With no enrollment read at all, the toggle cannot honestly show ON or OFF.
   const autoRefillUnrecoverable = autoRefillUnavailable && autoRefillBases.size === 0;
   // autoRefillBases is fetched globally (GET /api/bases/auto-refill), same
   // scope as pendingRefills, so this counts stalled bases across the whole
   // battlegroup -- not just whatever page of the list happens to be loaded.
-  const stalledAutoRefillCount = [...autoRefillBases.values()].filter((entry) => entry.stalledAt).length;
+  const stalledFuelBaseIds = new Set([...autoRefillBases.entries()].filter(([, entry]) => entry.stalledAt).map(([baseId]) => baseId));
+
+  // Mirrors the block above, for the water refill queue.
+  const pendingWaterTotal = pendingWaterRefills?.total || 0;
+  const queuedWaterBaseIds = new Set((pendingWaterRefills?.pending || []).map((entry) => String(entry.baseId)));
+  const staleQueuedWater = (pendingWaterRefills?.pending || []).filter((entry) => {
+    const queuedAt = Date.parse(entry.queuedAt);
+    return Number.isFinite(queuedAt) && Date.now() - queuedAt > STALE_QUEUED_REFILL_MS;
+  });
+  const staleWaterTargetKeys = new Set(staleQueuedWater.map((entry) => `${entry.map || "Unknown"}|${entry.partitionId}`));
+  const autoRefillWaterUnrecoverable = autoRefillWaterUnavailable && autoRefillWaterBases.size === 0;
+  const stalledWaterBaseIds = new Set([...autoRefillWaterBases.entries()].filter(([, entry]) => entry.stalledAt).map(([baseId]) => baseId));
+
+  // Combined queue banner: one box covering both queues. Merge byTarget rows
+  // keyed on map|partitionId -- restarting a target already flushes
+  // whichever queue(s) are waiting on it (see handleRestartForCombinedQueue),
+  // so one restart button per target is correct even though the fuel/water
+  // counts come from two separate endpoints.
+  type CombinedQueueTarget = { map: string; partitionId: number; partitionMap: string; dimensionIndex: number; fuelCount: number; waterCount: number };
+  const combinedQueueTargets: CombinedQueueTarget[] = (() => {
+    const byKey = new Map<string, CombinedQueueTarget>();
+    for (const group of pendingRefills?.byTarget || []) {
+      byKey.set(`${group.map}|${group.partitionId}`, {
+        map: group.map, partitionId: group.partitionId, partitionMap: group.partitionMap, dimensionIndex: group.dimensionIndex,
+        fuelCount: group.count, waterCount: 0
+      });
+    }
+    for (const group of pendingWaterRefills?.byTarget || []) {
+      const key = `${group.map}|${group.partitionId}`;
+      const existing = byKey.get(key);
+      if (existing) existing.waterCount = group.count;
+      else byKey.set(key, {
+        map: group.map, partitionId: group.partitionId, partitionMap: group.partitionMap, dimensionIndex: group.dimensionIndex,
+        fuelCount: 0, waterCount: group.count
+      });
+    }
+    return [...byKey.values()];
+  })();
+  const combinedQueueTotal = pendingTotal + pendingWaterTotal;
+  // Whether any stale entry actually has a restart button in the list above. A
+  // group whose partition does not resolve renders "Restart this map from the
+  // Maps tab" instead, so pointing at a button that is not there would be wrong.
+  const combinedStaleTargetKeys = new Set([...staleTargetKeys, ...staleWaterTargetKeys]);
+  const combinedStaleCount = staleQueued.length + staleQueuedWater.length;
+  const combinedStaleHasRestartButton = combinedQueueTargets.some((group) =>
+    combinedStaleTargetKeys.has(`${group.map}|${group.partitionId}`)
+    && queueRestartTarget(group.partitionMap, group.partitionId, group.dimensionIndex).kind !== "none");
+
+  // Combined stalled auto-refill banner: the headline counts unique bases,
+  // not queue entries -- a base stalled on both fuel and water should not
+  // read as "2 bases have stalled auto-refill" when it is one base with two
+  // badges (each badge below does count occurrences, i.e. queue entries).
+  const stalledCombinedBaseIds = new Set([...stalledFuelBaseIds, ...stalledWaterBaseIds]);
+  const stalledCombinedCount = stalledCombinedBaseIds.size;
+  const stalledFuelCount = stalledFuelBaseIds.size;
+  const stalledWaterCount = stalledWaterBaseIds.size;
   const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
   const rangeStart = totalCount === 0 ? 0 : page * pageSize + 1;
   const rangeEnd = totalCount === 0 ? 0 : rangeStart + rows.length - 1;
@@ -722,7 +993,13 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
   }
 
   function toggleExpanded(id: string) {
-    setExpandedBaseId((current) => current === id ? null : id);
+    setExpandedBaseId((current) => {
+      // Opening a different base starts on Power again; leaving the previous
+      // row's tab selected would drop you into Permissions for a base you only
+      // wanted to glance at.
+      if (current !== id) setExpandedTab("power");
+      return current === id ? null : id;
+    });
   }
 
   function handleSort(column: string) {
@@ -746,25 +1023,31 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
       <p className="action-help-note">
         Total Bases: {totalBases.toLocaleString()} · Total Building Pieces: {totalPieces.toLocaleString()} · Total Placeables: {totalPlaceables.toLocaleString()}
       </p>
-      {stalledAutoRefillCount > 0 && <div className="bases-stalled-banner" role="alert">
+      {stalledCombinedCount > 0 && <div className="bases-stalled-banner" role="alert">
         <p className="bases-stalled-banner-title">
-          <Fuel size={16} aria-hidden="true" />
-          {stalledAutoRefillCount.toLocaleString()} base{stalledAutoRefillCount === 1 ? " has" : "s have"} stalled auto-refill
+          {stalledCombinedCount.toLocaleString()} base{stalledCombinedCount === 1 ? " has" : "s have"} stalled auto-refill
+          {stalledFuelCount > 0 && <span className="bases-queue-badge bases-queue-badge-fuel">
+            <Fuel size={13} aria-hidden="true" />{stalledFuelCount.toLocaleString()} fuel
+          </span>}
+          {stalledWaterCount > 0 && <span className="bases-queue-badge bases-queue-badge-water">
+            <Droplet size={13} aria-hidden="true" />{stalledWaterCount.toLocaleString()} water
+          </span>}
         </p>
         <p className="action-help-note">
-          Auto-refill queued 3 refills for {stalledAutoRefillCount === 1 ? "this base" : "each of these bases"} without raising the fuel. Refill manually to find out why, or turn auto-refill off and back on to resume trying.
+          Auto-refill queued 3 refills without raising the {stalledFuelCount > 0 && stalledWaterCount > 0 ? "fuel or water" : stalledFuelCount > 0 ? "fuel" : "water"} on {stalledCombinedCount === 1 ? "this base" : "these bases"}. Refill manually to find out why, or turn auto-refill off and back on to resume trying.
         </p>
       </div>}
-      {pendingTotal > 0 && <div className="bases-pending-refills">
+      {combinedQueueTotal > 0 && <div className="bases-pending-refills">
         <p className="bases-pending-refills-title">
-          <Fuel size={16} aria-hidden="true" />
-          {pendingTotal.toLocaleString()} generator refill{pendingTotal === 1 ? "" : "s"} queued
+          {pendingTotal > 0 && <Fuel size={16} aria-hidden="true" />}
+          {pendingWaterTotal > 0 && <Droplet size={16} aria-hidden="true" />}
+          {combinedQueueTotal.toLocaleString()} refill{combinedQueueTotal === 1 ? "" : "s"} queued
         </p>
         <p className="action-help-note">
           Each one is written when its map next restarts. Restarting the battlegroup applies all of them; stopping leaves them queued.
         </p>
         <ul className="bases-pending-refills-list">
-          {(pendingRefills?.byTarget || []).map((group) => {
+          {combinedQueueTargets.map((group) => {
             const target = queueRestartTarget(group.partitionMap, group.partitionId, group.dimensionIndex);
             const key = `${group.map}|${group.partitionId}`;
             return <li key={key}>
@@ -772,8 +1055,13 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
                 {group.map}
                 {group.partitionMap && group.partitionMap !== group.map ? ` (${group.partitionMap})` : ""}
                 {group.partitionId ? ` · partition ${group.partitionId}` : ""}
-                <span className="muted"> — {group.count.toLocaleString()} queued</span>
               </span>
+              {group.fuelCount > 0 && <span className="bases-queue-badge bases-queue-badge-fuel">
+                <Fuel size={13} aria-hidden="true" />{group.fuelCount.toLocaleString()}
+              </span>}
+              {group.waterCount > 0 && <span className="bases-queue-badge bases-queue-badge-water">
+                <Droplet size={13} aria-hidden="true" />{group.waterCount.toLocaleString()}
+              </span>}
               {target.kind === "none"
                 ? <span className="muted">Restart this map from the Maps tab</span>
                 : restartingTargets.includes(key)
@@ -781,12 +1069,12 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
                       <span className="spinner" aria-hidden="true" />
                       <span className="loading-dots" role="status">Restarting</span>
                     </span>
-                  : <button onClick={() => void handleRestartForQueue(group)}>{target.label}</button>}
+                  : <button onClick={() => void handleRestartForCombinedQueue(group)}>{target.label}</button>}
             </li>;
           })}
         </ul>
-        {staleQueuedCount > 0 && <p className="bases-pending-refills-stale" role="status">
-          {staleQueuedCount.toLocaleString()} queued over 24h — {staleQueuedCount === 1 ? "its map has" : "their maps have"} not been down since. {staleHasRestartButton ? "Restart above to apply." : "Restart from the Maps tab to apply."}
+        {combinedStaleCount > 0 && <p className="bases-pending-refills-stale" role="status">
+          {combinedStaleCount.toLocaleString()} queued over 24h — {combinedStaleCount === 1 ? "its map has" : "their maps have"} not been down since. {combinedStaleHasRestartButton ? "Restart above to apply." : "Restart from the Maps tab to apply."}
         </p>}
       </div>}
       {refillResult && <p
@@ -822,6 +1110,7 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
           coordinates: "Coordinates"
         }}
         tableClassName="bases-table"
+        wrapClassName="bases-table-wrap"
         headerTitles
         actionClassName="actions-column bases-actions-column"
         renderCell={renderBaseCell}
@@ -830,9 +1119,9 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
           const id = String(base.base_id);
           const refillable = canRefill && base.generatorDataAvailable && (Number(base.generatorCount) || 0) > 0;
           // Auto-refill is shown by restyling this button rather than by adding a
-          // control: the column is a fixed 96px and already full. The button
-          // stays clickable when enrolled, so turning automation on never costs
-          // the on-demand refill.
+          // control: the column is a fixed width and already holds one button per
+          // refillable resource. The button stays clickable when enrolled, so
+          // turning automation on never costs the on-demand refill.
           const autoRefillEntryForRow = autoRefillBases.get(id);
           const autoRefillOn = Boolean(autoRefillEntryForRow);
           const autoRefillStalled = Boolean(autoRefillEntryForRow?.stalledAt);
@@ -842,10 +1131,22 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
             : autoRefillStalled ? `Auto-refill has stalled after ${autoRefillEntryForRow?.consecutiveQueues || 3} refills that did not raise the fuel. Click to refill now.`
             : autoRefillOn ? `Auto-refill is on — checked every ${autoRefillIntervalHours}h below ${autoRefillThreshold}%. Click to refill now.`
             : "Refill Generators";
+          // Water isn't bundled into this row's data (fetched on demand in the
+          // Water tab instead), so there is no per-row "has water storage"
+          // signal to disable on the way generator's `refillable` does --
+          // this is enabled whenever the capability exists, and a base with
+          // none simply reports "No water storage was found" on click.
+          const autoRefillWaterEntryForRow = autoRefillWaterBases.get(id);
+          const autoRefillWaterOn = Boolean(autoRefillWaterEntryForRow);
+          const autoRefillWaterStalled = Boolean(autoRefillWaterEntryForRow?.stalledAt);
+          const refillWaterTitle = !canRefillWater ? "Water refill is unsupported on this database"
+            : autoRefillWaterStalled ? `Water auto-refill has stalled after ${autoRefillWaterEntryForRow?.consecutiveQueues || 3} refills that did not raise the water. Click to refill now.`
+            : autoRefillWaterOn ? `Water auto-refill is on — checked every ${autoRefillWaterIntervalHours}h below ${autoRefillWaterThreshold}%. Click to refill now.`
+            : "Refill Water";
           return <span className="icon-toggle-group">
-            {/* The actions column is a fixed 96px, so the queued state stays two
-                glyphs wide rather than a text pill: the banner above carries the
-                wording, and each glyph has its own tooltip. */}
+            {/* The actions column is a fixed width, so the queued state stays a
+                compact glyph pill rather than a text label: the banner above
+                carries the wording, and each glyph has its own tooltip. */}
             {queuedBaseIds.has(id)
               ? <span className="bases-queued-refill" title="Refill queued — applies when this map next restarts or stops">
                   <Fuel size={16} aria-label="Refill queued for this base" />
@@ -864,6 +1165,24 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
                   disabled={!refillable || refillingId === id}
                   onClick={(event) => { event.stopPropagation(); void handleRefillGenerators(base); }}
                 ><Fuel size={16} /></button>}
+            {queuedWaterBaseIds.has(id)
+              ? <span className="bases-queued-refill" title="Water refill queued — applies when this map next restarts or stops">
+                  <Droplet size={16} aria-label="Water refill queued for this base" />
+                  <button
+                    className="icon-toggle-button bases-queued-refill-cancel"
+                    title="Cancel Queued Refill"
+                    aria-label="Cancel Queued Water Refill"
+                    disabled={cancelingWaterId === id}
+                    onClick={(event) => { event.stopPropagation(); void handleCancelQueuedWaterRefill(base); }}
+                  ><X size={14} /></button>
+                </span>
+              : <button
+                  className={`icon-toggle-button${autoRefillWaterStalled ? " bases-auto-refill-stalled-icon" : autoRefillWaterOn ? " bases-auto-refill-on" : ""}`}
+                  title={refillWaterTitle}
+                  aria-label={autoRefillWaterStalled ? "Refill Water (auto-refill stalled)" : autoRefillWaterOn ? "Refill Water (auto-refill on)" : "Refill Water"}
+                  disabled={!canRefillWater || refillingWaterId === id}
+                  onClick={(event) => { event.stopPropagation(); void handleRefillWater(base); }}
+                ><Droplet size={16} /></button>}
             <button className="icon-toggle-button" title="Download Base as Blueprint" aria-label="Download Base as Blueprint" disabled={downloadingId === id} onClick={(event) => { event.stopPropagation(); void handleDownloadBlueprint(base); }}><Download size={16} /></button>
           </span>;
         }}
@@ -874,8 +1193,11 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
           const base = row as BaseRow;
           const id = String(base.base_id);
           const isExpanded = expandedBaseId === id;
-          if (!base.generatorDataAvailable || !base.generatorCount) return null;
-          const label = `${isExpanded ? "Collapse" : "Show"} generator details for ${base.name || `base ${id}`}`;
+          // The chevron always renders now: every base can always be expanded
+          // into at least the Water tab (fetched on demand, not gated on
+          // per-row data the way generators are), so there is no longer a case
+          // with nothing to expand into, and no need to pick a granular label.
+          const label = `${isExpanded ? "Collapse" : "Show"} details for ${base.name || `base ${id}`}`;
           return <button
             className="bases-expand-button"
             title={label}
@@ -893,10 +1215,11 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
         isRowExpanded={(row) => expandedBaseId === String(row.base_id)}
         renderExpandedRow={(row) => {
           const base = row as BaseRow;
+          const id = String(base.base_id);
+          const renderPower = () => {
           if (!base.generatorDataAvailable) return <p className="muted">Generator data is currently unavailable.</p>;
           const generators = base.generators ?? [];
           if (!generators.length) return <p className="muted">No generators built at this base.</p>;
-          const id = String(base.base_id);
           const autoRefillEntry = autoRefillBases.get(id);
           const savingAutoRefill = savingAutoRefillId === id;
           const lastChecked = autoRefillEntry?.lastCheckedAt ? formatAgo(autoRefillEntry.lastCheckedAt) : "";
@@ -952,6 +1275,7 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
               <p className="bases-generator-reserve-note" role="note">
                 {QUEUED_RESERVE_EXPLANATION}
               </p>
+              <div className="bases-generator-cards">
               {generators.map((generator, index) => (
                 <div className="bases-generator-group" key={`${generator.type}-${index}`}>
                   <div className="bases-generator-group-title">{generator.name}</div>
@@ -975,6 +1299,84 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
                   </dl>
                 </div>
               ))}
+              </div>
+            </div>
+          );
+          };
+
+          const autoRefillWaterEntry = autoRefillWaterBases.get(id);
+          const savingAutoRefillWater = savingAutoRefillWaterId === id;
+          const lastCheckedWater = autoRefillWaterEntry?.lastCheckedAt ? formatAgo(autoRefillWaterEntry.lastCheckedAt) : "";
+          const autoRefillWaterTooltip = `Checked every ${autoRefillWaterIntervalHours}h. Queues a refill when any water container drops below ${autoRefillWaterThreshold}%. Blood is never touched.`
+            + (autoRefillWaterEntry && lastCheckedWater ? ` Last checked ${lastCheckedWater}${autoRefillWaterEntry.lastLowestPercent === null ? "" : ` — lowest ${autoRefillWaterEntry.lastLowestPercent}%`}.` : "")
+            + (autoRefillWaterEntry && !lastCheckedWater ? " Not checked yet." : "")
+            + (autoRefillWaterUnavailable ? " Last known state — the latest read failed." : "");
+
+          // Power and Water always render (Water needs no capability the way
+          // Permissions does -- see baseWater's "no capability gate" note in
+          // the plan); Permissions only when the schema supports it.
+          return (
+            <div className="bases-expanded-tabs" onClick={(event) => event.stopPropagation()}>
+              <div className="bases-expanded-tablist" role="tablist" aria-label="Base details">
+                <button
+                  role="tab"
+                  id={`bases-tab-power-${id}`}
+                  aria-selected={expandedTab === "power"}
+                  aria-controls={`bases-panel-power-${id}`}
+                  className={`bases-expanded-tab${expandedTab === "power" ? " active" : ""}`}
+                  onClick={() => setExpandedTab("power")}
+                ><Zap size={15} aria-hidden="true" />Power</button>
+                <button
+                  role="tab"
+                  id={`bases-tab-water-${id}`}
+                  aria-selected={expandedTab === "water"}
+                  aria-controls={`bases-panel-water-${id}`}
+                  className={`bases-expanded-tab${expandedTab === "water" ? " active" : ""}`}
+                  onClick={() => setExpandedTab("water")}
+                ><Droplet size={15} aria-hidden="true" />Water</button>
+                {canEditPermissions && <button
+                  role="tab"
+                  id={`bases-tab-permissions-${id}`}
+                  aria-selected={expandedTab === "permissions"}
+                  aria-controls={`bases-panel-permissions-${id}`}
+                  className={`bases-expanded-tab${expandedTab === "permissions" ? " active" : ""}`}
+                  onClick={() => setExpandedTab("permissions")}
+                ><Users size={15} aria-hidden="true" />Permissions</button>}
+              </div>
+              {expandedTab === "power"
+                ? <div role="tabpanel" id={`bases-panel-power-${id}`} aria-labelledby={`bases-tab-power-${id}`}>{renderPower()}</div>
+                : expandedTab === "water"
+                ? <div role="tabpanel" id={`bases-panel-water-${id}`} aria-labelledby={`bases-tab-water-${id}`}>
+                    <BaseWaterTab
+                      baseId={id}
+                      refreshToken={waterRefreshToken}
+                      autoRefill={{
+                        supported: canQueueWater,
+                        unavailable: autoRefillWaterUnrecoverable,
+                        enabled: Boolean(autoRefillWaterEntry),
+                        saving: savingAutoRefillWater,
+                        stalledAt: autoRefillWaterEntry?.stalledAt || "",
+                        consecutiveQueues: autoRefillWaterEntry?.consecutiveQueues || 0,
+                        canToggle: canRefillWater,
+                        tooltip: autoRefillWaterTooltip,
+                        onToggle: (enabled) => { void handleToggleAutoRefillWater(base, enabled); },
+                        onRetry: () => { void refreshAutoRefillWater(); }
+                      }}
+                    />
+                  </div>
+                : <div role="tabpanel" id={`bases-panel-permissions-${id}`} aria-labelledby={`bases-tab-permissions-${id}`}>
+                    <BasePermissionsTab
+                      baseId={id}
+                      baseName={String(base.name || `base ${id}`)}
+                      // Owner and Shared With are rendered from the list
+                      // response, so a saved roster has to refetch or the row
+                      // above keeps showing the pre-edit names.
+                      onSaved={() => {
+                        basesCache = null;
+                        void load({ q: submittedQ, page, pageSize, sortColumn, sortDirection }, { silent: true });
+                      }}
+                    />
+                  </div>}
             </div>
           );
         }}

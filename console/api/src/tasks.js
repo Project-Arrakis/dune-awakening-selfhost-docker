@@ -177,8 +177,15 @@ export class TaskManager {
     if (!this.onMapDown) return;
     try {
       const result = await this.onMapDown(operation);
-      const applied = (result?.flushed || []).filter((entry) => entry.ok).length;
-      if (applied) this.append(task, `Applied ${applied} queued generator refill${applied === 1 ? "" : "s"}.`, "stdout");
+      const applied = (result?.flushed || []).filter((entry) => entry.ok);
+      const generators = applied.filter((entry) => entry.refillType !== "water").length;
+      const water = applied.filter((entry) => entry.refillType === "water").length;
+      if (generators) this.append(task, `Applied ${generators} queued generator refill${generators === 1 ? "" : "s"}.`, "stdout");
+      if (water) this.append(task, `Applied ${water} queued water refill${water === 1 ? "" : "s"}.`, "stdout");
+      for (const failure of result?.failures || []) {
+        const label = failure.refillType === "water" ? "water refills" : "generator refills";
+        this.append(task, `Queued ${label} were not applied: ${failure.error || "unknown error"}`, "stderr");
+      }
     } catch (error) {
       this.append(task, `Queued generator refills were not applied: ${error?.message || error}`, "stderr");
     }
