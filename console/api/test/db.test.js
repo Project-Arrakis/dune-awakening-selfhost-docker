@@ -2565,6 +2565,33 @@ test("export base throws an unsupported error when required tables are missing",
   await assert.rejects(() => exportBaseAsBlueprint(db, 1006), UnsupportedCapabilityError);
 });
 
+test("export base reports a genuinely missing base id as not found", async () => {
+  const db = {
+    query: async (text) => {
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("from dune.buildings b")) return { rows: [] };
+      // The follow-up existence check: no buildings row at all.
+      if (text.includes("select 1 from dune.buildings where id")) return { rows: [] };
+      return { rows: [] };
+    }
+  };
+  await assert.rejects(() => exportBaseAsBlueprint(db, 999999), /was not found/);
+});
+
+test("export base distinguishes a broken owner-entity link from a missing base id", async () => {
+  const db = {
+    query: async (text) => {
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("from dune.buildings b")) return { rows: [] };
+      // The follow-up existence check: the buildings row exists, so the empty
+      // result above must be from a broken owner-entity link, not a missing id.
+      if (text.includes("select 1 from dune.buildings where id")) return { rows: [{ "?column?": 1 }] };
+      return { rows: [] };
+    }
+  };
+  await assert.rejects(() => exportBaseAsBlueprint(db, 1006), /no resolvable owner entity/);
+});
+
 test("export base resolves the owner via the base's actor id", async () => {
   const calls = [];
   const db = {
@@ -4607,7 +4634,11 @@ function fakeQueueDb(calls, { devices = [], items = {}, partitions = [], basePar
       })) };
     }
     if (text.includes("coalesce(a.partition_id, 0)::int as partition_id")) {
-      return { rows: basePartition ? [basePartition] : [] };
+      // baseMapLocation now also selects actor_id to distinguish a genuinely
+      // missing base from one with a broken owner-entity link; default it to
+      // a resolved id here so existing callers testing write-safety don't
+      // have to know about that distinction unless they explicitly opt in.
+      return { rows: basePartition ? [{ actor_id: "1", ...basePartition }] : [] };
     }
     return inner(text, values);
   };

@@ -37,6 +37,38 @@ export function usePendingRefills(enabled = true) {
   return { pending, refresh };
 }
 
+// Mirrors usePendingRefills above for the water refill queue -- a separate
+// hook rather than a parameterized fetcher, matching the rest of this
+// codebase's per-resource duplication (WATER_TYPES vs GENERATOR_TYPES,
+// autoRefillWater.js vs autoRefill.js) over a shared abstraction.
+export function usePendingWaterRefills(enabled = true) {
+  const [pending, setPending] = useState<PendingRefills | null>(null);
+
+  const refresh = useCallback(async () => {
+    try {
+      const next = await basesApi.pendingWaterRefills();
+      setPending(next);
+      return next;
+    } catch {
+      return null;
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!enabled) return;
+    let cancelled = false;
+    const tick = () => { if (!cancelled) void refresh(); };
+    tick();
+    const intervalId = window.setInterval(tick, PENDING_REFILL_POLL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [enabled, refresh]);
+
+  return { pending, refresh };
+}
+
 export function pendingRefillCountForPartition(pending: PendingRefills | null, partitionId: number) {
   if (!pending || !partitionId) return 0;
   return pending.pending.filter((entry) => entry.partitionId === partitionId).length;

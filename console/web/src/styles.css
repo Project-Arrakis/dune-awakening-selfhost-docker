@@ -915,6 +915,8 @@ main { padding: 22px; min-width: 0; }
 .progress-row { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 12px; }
 .progress-track { height: 10px; overflow: hidden; border-radius: 999px; background: #0c0e10; border: 1px solid #302b25; }
 .progress-fill { height: 100%; border-radius: inherit; background: #c68b4a; transition: width .35s ease; }
+.progress-fill-water { background: #4a90c6; }
+.progress-fill-blood { background: #a03d3d; }
 .result-ok .progress-fill { background: #3d8b62; }
 .result-ok .progress-track { border-color: #3d8b62; }
 .result-ok .panel-title h4, .result-ok p, .result-ok .progress-row strong { color: #9be6bd; }
@@ -1645,7 +1647,10 @@ body.debug .technical-details { display: block; }
 .bases-table th:nth-child(9), .bases-table td:nth-child(9) { width: 6%; text-align: center; }
 .bases-table th:nth-child(10), .bases-table td:nth-child(10) { width: 6%; text-align: center; }
 .bases-table th:nth-child(11), .bases-table td:nth-child(11) { width: 10.5%; }
-.bases-table th.bases-actions-column, .bases-table td.bases-actions-column { width: 96px; }
+/* 96px fit two icon-toggle-buttons (Refill Generators, Download); a third
+   (Refill Water) plus the wider queued-refill pills need more room, so this
+   grew to comfortably fit all three at once, queued or not. */
+.bases-table th.bases-actions-column, .bases-table td.bases-actions-column { width: 148px; }
 .bases-table td { max-width: none; white-space: normal; overflow-wrap: anywhere; text-overflow: clip; }
 .bases-name, .bases-ellipsis-cell { display: block; overflow: visible; text-overflow: clip; white-space: normal; overflow-wrap: anywhere; }
 .bases-generator-summary { display: block; white-space: normal; overflow: visible; text-overflow: clip; line-height: 1.4; }
@@ -1747,6 +1752,20 @@ body.debug .technical-details { display: block; }
 }
 .bases-pending-refills-list button { padding: 5px 10px; font-size: 12px; }
 .bases-pending-refills-list .muted { color: var(--muted); }
+/* Distinguishes the fuel vs water counts inside the combined queue/stalled
+   banners -- same colors as the Water tab's progress bars, so a glance at
+   either surface reads the same way. */
+.bases-queue-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border-radius: 6px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.bases-queue-badge-fuel { background: rgba(198, 139, 74, .18); color: var(--accent); }
+.bases-queue-badge-water { background: rgba(74, 144, 198, .18); color: #7fb2df; }
 .bases-queued-refill {
   display: inline-flex;
   align-items: center;
@@ -1779,11 +1798,6 @@ body.debug .technical-details { display: block; }
   flex-wrap: wrap;
   margin: 0 0 12px;
   padding: 0 0 12px;
-  /* .bases-generator-breakdown is a grid of 240px columns (one per generator
-     type). Without this, this block was squeezed into a single 240px cell
-     instead of spanning the row. Matches the same rule already on
-     .bases-generator-reserve-note in this grid. */
-  grid-column: 1 / -1;
 }
 /* Keep the Auto-Refill control at the far edge of the expanded row. When the
    row wraps on a phone, auto margin still right-aligns the control on its new
@@ -1798,10 +1812,9 @@ body.debug .technical-details { display: block; }
    other panels also use. Sized a notch below the toggle's own text so the
    description reads as secondary, not the loudest thing in the block.
    The rule explanation and last-checked status live in this element's title
-   attribute (a native hover tooltip) rather than as inline text: this row's
-   available width is whatever the grid handed it, sometimes just one 240px
-   column, which made a fixed-width inline note either wrap unpredictably or
-   (with a hard nowrap) silently truncate. A tooltip has no such constraint. */
+   attribute (a native hover tooltip) rather than as inline text: at narrow
+   viewport widths a fixed-width inline note either wraps unpredictably or
+   (with a hard nowrap) silently truncates. A tooltip has no such constraint. */
 .bases-auto-refill-toggle { min-height: 32px; padding: 3px 4px 3px 10px; }
 .bases-auto-refill-toggle .switch-label { font-size: 12px; }
 /* Wide enough for the "Saving" state, matching settings-server-listing-toggle. */
@@ -1834,9 +1847,8 @@ body.debug .technical-details { display: block; }
    otherwise believes fuel is handled while the base quietly stays empty. Left
    as inline text rather than folded into the toggle's tooltip -- unlike the
    rule explanation, this is urgent and per-base, so it should be visible
-   without hovering. Allowed to wrap (no nowrap/ellipsis) for the same reason
-   the row now uses grid-column: 1 / -1 above: available width is whatever the
-   grid hands this row, which is not always enough for one line. */
+   without hovering. Allowed to wrap (no nowrap/ellipsis): at narrow viewport
+   widths this row's available width is not always enough for one line. */
 .bases-auto-refill-stalled {
   flex: 1 1 100%;
   margin: 0;
@@ -2286,6 +2298,166 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
   color: #ad9f89;
   font-style: normal;
 }
+
+/* Folder-style tabs: the active one is a raised tab sitting on the panel,
+   reusing the same #25201b fill the app's buttons already use. The -1px margin
+   pulls it over the strip's bottom border so the tab and the content below it
+   read as one continuous surface. */
+/* Bases opts out of the shared .table-wrap height cap so the table grows with
+   its rows and the page scrolls instead of a container inside it. An expanded
+   row's panel is tall enough that the 620px cap left it fighting for room in a
+   nested scrollport. Row count stays bounded by the page-size control. */
+/* Two-class selector deliberately: a later grouped rule re-declares
+   `overflow: auto` on .table-wrap at equal specificity, so a single-class
+   override here would lose on source order. */
+.table-wrap.bases-table-wrap { max-height: none; overflow: visible; }
+
+/* Below this width the twelve columns have nowhere to go. The table has no
+   intrinsic minimum, so instead of overflowing it crushes -- cells collapse to
+   one character per line and "Advanced Sub-Fief" renders vertically. (That
+   predates the height-cap change: with no min-width the table always shrank to
+   its container, so the wrap's overflow-x never had anything to scroll.)
+   Give it a floor and let the container scroll horizontally again.
+   The sticky header does not survive here, because a sticky element is confined
+   to its nearest scrolling ancestor and that is now the wrap again -- readable
+   columns are worth more than a pinned header on a phone. */
+@media (max-width: 1100px) {
+  .table-wrap.bases-table-wrap { overflow: auto; }
+  .bases-table { min-width: 860px; }
+  /* The expanded panel is a cell of that 860px table, so without this it
+     inherits the width and pushes its own controls off-screen -- the rank
+     dropdown, remove button and player picker all end up past the right edge.
+     Sticky-left pins the panel to the visible edge while the columns scroll
+     underneath, and the width cap keeps its controls inside the scrollport. */
+  .bases-table td.expanded-row-cell { position: sticky; left: 0; }
+  .bases-table td.expanded-row-cell > * { max-width: calc(100vw - 76px); }
+}
+/* The shared `th` rule is already position:sticky, but an overflow:auto ancestor
+   confines a sticky element to that ancestor's scrollport -- so with the height
+   cap gone the header stuck to a container that no longer scrolls and rode off
+   with the page. Dropping the wrap's overflow makes the page itself the sticky
+   context, which is what keeps the header pinned while the rows scroll. */
+/* The search row pins above the table header so Search/Clear stay reachable
+   while scrolling a long list. It needs an opaque background of its own -- the
+   panel's is semi-transparent, so rows would scroll visibly through it. Its
+   margins become padding so the sticky box is one solid band with no gap for
+   rows to show through between it and the header below. */
+.bases-search-row {
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  margin-block: 0;
+  padding-block: 12px;
+  background: var(--panel);
+}
+/* 67px = the search row's 43px of content plus its 24px of padding, so the
+   header parks directly beneath the search bar rather than under it. */
+.table-wrap.bases-table-wrap { margin-top: 0; }
+.bases-table-wrap .bases-table th { top: 67px; z-index: 3; }
+/* Below 900px the sidebar stops being a column and becomes a sticky header at
+   top:0 with z-index:100, so a search bar pinned to the same edge sits behind
+   it. Offsetting by the sidebar's height would break the moment the hamburger
+   expands it, so the bar simply scrolls with the page here -- which matches the
+   table header, itself not page-sticky at this width. */
+@media (max-width: 900px) {
+  .bases-search-row { position: static; }
+}
+
+.bases-expanded-tablist {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--border-strong);
+  margin-bottom: 14px;
+  padding-top: 8px;
+}
+.bases-expanded-tab {
+  width: auto;
+  min-width: 0;
+  border: 1px solid transparent;
+  border-radius: 6px 6px 0 0;
+  background: transparent;
+  color: var(--muted);
+  padding: 9px 16px;
+  font-size: 13px;
+  margin-bottom: -1px;
+}
+.bases-expanded-tab:hover { color: var(--muted-warm); border-color: transparent; }
+.bases-expanded-tab.active {
+  background: #25201b;
+  border-color: var(--border-strong);
+  border-bottom-color: #25201b;
+  color: var(--title);
+}
+.bases-expanded-tab.active:hover { border-color: var(--border-strong); border-bottom-color: #25201b; }
+
+.bases-water { display: grid; gap: 12px; }
+.bases-permissions { display: grid; gap: 12px; }
+.bases-permissions-roster { display: grid; gap: 6px; }
+.bases-permissions-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 150px 38px;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  padding: 6px 10px;
+}
+.bases-permissions-row-owner { border-color: var(--border-strong); }
+.bases-permissions-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+.bases-permissions-row-owner .bases-permissions-name { color: var(--text-strong); }
+.bases-permissions-orphan { display: inline-flex; color: var(--warning); flex: 0 0 auto; }
+.bases-permissions-remove { border-color: var(--danger-strong); color: var(--danger-text); }
+.bases-permissions-add { display: grid; gap: 8px; }
+/* Overrides .action-row's align-items: center -- "Add as" has a label line
+   above its select that the bare input/buttons don't, so centering the row
+   left the select's bottom edge hanging lower than the rest. Bottom-aligning
+   (matching .action-line's convention for the same label-above-control
+   shape) puts every control's bottom edge on the same line. */
+.bases-permissions-search-row { flex-wrap: wrap; align-items: flex-end; }
+.bases-permissions-candidates {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+.bases-permissions-candidates li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 10px;
+  font-size: 13px;
+}
+.bases-permissions-candidates li span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bases-permissions-warning { margin: 0; }
+.bases-permissions-error { color: var(--danger-text); margin: 0; }
+.bases-permissions-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  justify-content: flex-end;
+}
+.bases-permissions-actions > .muted { margin-right: auto; font-size: 12px; }
+.bases-permissions-actions button { width: auto; }
 .bases-table th.bases-expand-column, .bases-table td.bases-expand-column {
   width: 32px;
   padding-inline: 4px;
@@ -2313,14 +2485,35 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
 .bases-table td.expanded-row-cell {
   text-align: left;
 }
+/* A plain full-width column, not a grid: the auto-refill row and the reserve
+   note need the row's true full width (flex's default align-items: stretch
+   gives every direct child 100% width for free), while only the actual cards
+   below get wrapped into the capped auto-fit grid in .bases-generator-cards.
+   A single grid used to do both jobs via grid-column: 1 / -1 on those two
+   children, but that only reaches the edge of the grid's own tracks -- once
+   the cards' columns were capped at a fixed max-width (rather than 1fr) the
+   tracks stopped summing to the container's full width, so "span every
+   track" silently stopped meaning "reach the right edge" and both rows fell
+   short of it. */
 .bases-generator-breakdown {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
+  display: flex;
+  flex-direction: column;
   gap: 12px;
   width: 100%;
   padding: clamp(12px, 1.5vw, 18px);
   box-sizing: border-box;
+}
+.bases-generator-cards {
+  display: grid;
+  /* Capped at 280px rather than 1fr: with few groups (a base with one or two
+     water containers, in particular) an unbounded 1fr stretches each card to
+     fill the row instead of staying a card. */
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 280px));
+  gap: 12px;
   align-items: stretch;
+}
+.bases-generator-cards.bases-water-cards {
+  align-items: start;
 }
 .bases-uptime-event-inline {
   display: inline-flex;
@@ -2352,7 +2545,6 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
   line-height: 1.25;
 }
 .bases-generator-reserve-note {
-  grid-column: 1 / -1;
   margin: 0;
   color: var(--muted-warm);
   font-size: 12px;
