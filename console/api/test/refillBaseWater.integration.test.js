@@ -117,7 +117,7 @@ test("real PostgreSQL refillBaseWater tops water to capacity, leaves blood untou
     assert.equal(bloodBefore.stored, 200);
     assert.equal(bloodBefore.bloodStored, 3115); // rounded
 
-    const result = await refillBaseWater(db, "", 482);
+    const result = await refillBaseWater(db, 482);
     assert.equal(result.ok, true);
     assert.equal(result.totalAdded, (5000 - 1250) + (1000 - 200));
 
@@ -135,7 +135,7 @@ test("real PostgreSQL refillBaseWater tops water to capacity, leaves blood untou
     assert.equal(Number(bloodProperty.rows[0].amount), 3114.6);
 
     // A second refill on an already-full base adds nothing.
-    const again = await refillBaseWater(db, "", 482);
+    const again = await refillBaseWater(db, 482);
     assert.equal(again.totalAdded, 0);
   } finally {
     await pool?.end().catch(() => {});

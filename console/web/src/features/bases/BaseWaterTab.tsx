@@ -21,13 +21,17 @@ export type BaseWaterAutoRefillProps = {
 type BaseWaterTabProps = {
   baseId: string;
   autoRefill: BaseWaterAutoRefillProps;
+  // Bumped by BasesPanel after an immediate (non-queued) refill -- water isn't
+  // part of the row/list data this tab could otherwise pick up on its own, so
+  // this is the only signal telling an already-open tab to refetch.
+  refreshToken?: number;
 };
 
 function errorText(error: unknown) {
   return error instanceof Error ? error.message : String(error);
 }
 
-export function BaseWaterTab({ baseId, autoRefill }: BaseWaterTabProps) {
+export function BaseWaterTab({ baseId, autoRefill, refreshToken }: BaseWaterTabProps) {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [containers, setContainers] = useState<WaterContainerEntry[]>([]);
@@ -45,7 +49,7 @@ export function BaseWaterTab({ baseId, autoRefill }: BaseWaterTabProps) {
     }
   }, [baseId]);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => { void load(); }, [load, refreshToken]);
 
   if (loading) {
     return <p className="muted" role="status">Loading water storage…</p>;
@@ -58,32 +62,32 @@ export function BaseWaterTab({ baseId, autoRefill }: BaseWaterTabProps) {
 
   return (
     <div className="bases-water" onClick={(event) => event.stopPropagation()}>
-      {autoRefill.supported && <div className="bases-auto-refill">
-        {autoRefill.unavailable
-          ? <p className="bases-auto-refill-unknown" role="status">
-              Auto-refill state could not be read. <button onClick={autoRefill.onRetry}>Retry</button>
-            </p>
-          : <div className="memory-feature-toggle">
-              <InfoTooltip id={`auto-refill-water-help-${baseId}`} label="About Auto-Refill">{autoRefill.tooltip}</InfoTooltip>
-              <label className={`switch-checkbox bases-auto-refill-toggle ${autoRefill.enabled ? "enabled" : "disabled"}`}>
-                <input
-                  type="checkbox"
-                  checked={autoRefill.enabled}
-                  disabled={autoRefill.saving || !autoRefill.canToggle}
-                  onChange={(event) => autoRefill.onToggle(event.target.checked)}
-                />
-                <span className="switch-label">Auto-Refill</span>
-                <strong className="switch-state">{autoRefill.saving ? "Saving" : autoRefill.enabled ? "ON" : "OFF"}</strong>
-              </label>
-            </div>}
-        {autoRefill.stalledAt && <p className="bases-auto-refill-stalled" role="alert">
-          Paused after {autoRefill.consecutiveQueues} refills that did not raise the water. Refill manually to check why, or turn auto-refill off and on to resume.
-        </p>}
-      </div>}
-
-      {!containers.length && <p className="muted">No water storage at this base.</p>}
-
       <div className="bases-generator-breakdown">
+        {autoRefill.supported && <div className="bases-auto-refill">
+          {autoRefill.unavailable
+            ? <p className="bases-auto-refill-unknown" role="status">
+                Auto-refill state could not be read. <button onClick={autoRefill.onRetry}>Retry</button>
+              </p>
+            : <div className="memory-feature-toggle">
+                <InfoTooltip id={`auto-refill-water-help-${baseId}`} label="About Auto-Refill">{autoRefill.tooltip}</InfoTooltip>
+                <label className={`switch-checkbox bases-auto-refill-toggle ${autoRefill.enabled ? "enabled" : "disabled"}`}>
+                  <input
+                    type="checkbox"
+                    checked={autoRefill.enabled}
+                    disabled={autoRefill.saving || !autoRefill.canToggle}
+                    onChange={(event) => autoRefill.onToggle(event.target.checked)}
+                  />
+                  <span className="switch-label">Auto-Refill</span>
+                  <strong className="switch-state">{autoRefill.saving ? "Saving" : autoRefill.enabled ? "ON" : "OFF"}</strong>
+                </label>
+              </div>}
+          {autoRefill.stalledAt && <p className="bases-auto-refill-stalled" role="alert">
+            Paused after {autoRefill.consecutiveQueues} refills that did not raise the water. Refill manually to check why, or turn auto-refill off and on to resume.
+          </p>}
+        </div>}
+
+        {!containers.length && <p className="muted">No water storage at this base.</p>}
+
         <div className="bases-generator-cards bases-water-cards">
           {containers.map((container) => (
             <div className="bases-generator-group" key={container.type}>

@@ -2223,7 +2223,7 @@ async function baseRefillWaterRoute(req, res, path) {
       });
       return { ok: true, queued: true, ...entry };
     }
-    return duneDb.refillBaseWater(db, config.repoRoot, baseId);
+    return duneDb.refillBaseWater(db, baseId);
   }, { baseId });
 }
 
