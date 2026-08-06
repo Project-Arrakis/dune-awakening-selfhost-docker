@@ -345,6 +345,10 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
   const [cancelingId, setCancelingId] = useState("");
   const [cancelingWaterId, setCancelingWaterId] = useState("");
   const [refillingWaterId, setRefillingWaterId] = useState("");
+  // Bumped after an immediate (non-queued) water refill so an already-open
+  // Water tab knows to refetch -- it fetches its own data independently of
+  // the bases list/row, so nothing else tells it a refill just landed.
+  const [waterRefreshToken, setWaterRefreshToken] = useState(0);
   // A list, not one key: each row shows its own progress, so the other rows stay
   // clickable and a second restart cannot erase the first one's spinner.
   const [restartingTargets, setRestartingTargets] = useState<string[]>(() => restartingTargetsCache);
@@ -610,6 +614,11 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
       writeRefillStatus(summarizeWaterRefill(response) || formatMutationResult(response), "ok");
       if (response.result?.queued) {
         await refreshPendingWaterRefills();
+      } else {
+        // Unlike generator fuel, water isn't part of the row/list data --
+        // BaseWaterTab fetches it separately -- so an immediate (non-queued)
+        // write needs its own signal to make an already-open Water tab refetch.
+        setWaterRefreshToken((token) => token + 1);
       }
     } catch (error) {
       const text = errorText(error);
@@ -1025,13 +1034,13 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
           </span>}
         </p>
         <p className="action-help-note">
-          Auto-refill queued 3 refills without raising the fuel or water on {stalledCombinedCount === 1 ? "this base" : "these bases"}. Refill manually to find out why, or turn auto-refill off and back on to resume trying.
+          Auto-refill queued 3 refills without raising the {stalledFuelCount > 0 && stalledWaterCount > 0 ? "fuel or water" : stalledFuelCount > 0 ? "fuel" : "water"} on {stalledCombinedCount === 1 ? "this base" : "these bases"}. Refill manually to find out why, or turn auto-refill off and back on to resume trying.
         </p>
       </div>}
       {combinedQueueTotal > 0 && <div className="bases-pending-refills">
         <p className="bases-pending-refills-title">
-          <Fuel size={16} aria-hidden="true" />
-          <Droplet size={16} aria-hidden="true" />
+          {pendingTotal > 0 && <Fuel size={16} aria-hidden="true" />}
+          {pendingWaterTotal > 0 && <Droplet size={16} aria-hidden="true" />}
           {combinedQueueTotal.toLocaleString()} refill{combinedQueueTotal === 1 ? "" : "s"} queued
         </p>
         <p className="action-help-note">
@@ -1340,6 +1349,7 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
                 ? <div role="tabpanel" id={`bases-panel-water-${id}`} aria-labelledby={`bases-tab-water-${id}`}>
                     <BaseWaterTab
                       baseId={id}
+                      refreshToken={waterRefreshToken}
                       autoRefill={{
                         supported: canQueueWater,
                         unavailable: autoRefillWaterUnrecoverable,

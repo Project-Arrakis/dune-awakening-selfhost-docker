@@ -3068,7 +3068,10 @@ export async function basePermissionCandidates(db, { q = "", limit = 25 } = {}) 
   let filter = "";
   if (q) {
     values.push(`%${q}%`);
-    filter = `and (ps.character_name ilike $${values.length} or ps.player_controller_id::text = $${values.length})`;
+    const likeParam = values.length;
+    values.push(q);
+    const idParam = values.length;
+    filter = `and (ps.character_name ilike $${likeParam} or ps.player_controller_id::text = $${idParam})`;
   }
   values.push(safeLimit);
   const result = await db.query(`
@@ -3381,22 +3384,32 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
     }
 
     // Probed here rather than per row so the panel can disable Refill outright
-    // instead of failing on click.
-    const generatorRefill = await supportsGeneratorRefill(db).catch(() => false);
+    // instead of failing on click. These three don't depend on each other, so
+    // they run concurrently rather than as three sequential round-trip chains
+    // on this hot list/search/sort/page endpoint.
+    //
+    // basePermissions: probed the same way and for the same reason as
+    // generatorRefill -- without the shipped permission procedures the panel
+    // hides the editor rather than offering a control that fails on save.
+    //
+    // waterRefill: gated on supportsWaterRefill rather than
+    // supportsGeneratorRefill: water refill needs none of the item-insert
+    // columns the generator capability check requires, so reusing that check
+    // would wrongly hide Refill Water on a schema that has everything water
+    // actually needs.
+    const [generatorRefill, basePermissions, waterRefill] = await Promise.all([
+      supportsGeneratorRefill(db).catch(() => false),
+      supportsBasePermissionEditing(db).catch(() => false),
+      supportsWaterRefill(db).catch(() => false)
+    ]);
     // Without world_partition the console cannot tell a running map from a
-    // stopped one, so the panel hides the queue entirely and refills stay immediate.
-    const generatorRefillQueue = generatorRefill && await supportsGeneratorRefillQueue(db).catch(() => false);
-    // Probed the same way and for the same reason: without the shipped
-    // permission procedures the panel hides the editor rather than offering a
-    // control that fails on save.
-    const basePermissions = await supportsBasePermissionEditing(db).catch(() => false);
-    // Same probing pattern as generatorRefill/generatorRefillQueue above, but
-    // gated on supportsWaterRefill rather than supportsGeneratorRefill: water
-    // refill needs none of the item-insert columns the generator capability
-    // check requires, so reusing that check would wrongly hide Refill Water
-    // on a schema that has everything water actually needs.
-    const waterRefill = await supportsWaterRefill(db).catch(() => false);
-    const waterRefillQueue = waterRefill && await supportsWaterRefillQueue(db).catch(() => false);
+    // stopped one, so the panel hides the queue entirely and refills stay
+    // immediate. Each check reuses the flag just computed above instead of
+    // re-deriving it, and both run concurrently for the same reason as above.
+    const [generatorRefillQueue, waterRefillQueue] = await Promise.all([
+      generatorRefill ? supportsGeneratorRefillQueue(db, { generatorRefill }).catch(() => false) : Promise.resolve(false),
+      waterRefill ? supportsWaterRefillQueue(db, { waterRefill }).catch(() => false) : Promise.resolve(false)
+    ]);
 
     return {
       capabilities: { bases: true, generatorRefill, generatorRefillQueue, basePermissions, waterRefill, waterRefillQueue },
@@ -5552,8 +5565,12 @@ function partitionWriteSafe(observed, partitionId) {
   return observed.safe.has(partitionId);
 }
 
-export async function supportsGeneratorRefillQueue(db) {
-  if (!(await supportsGeneratorRefill(db))) return false;
+// generatorRefill accepts an already-known flag so a caller that just
+// computed supportsGeneratorRefill (e.g. listBases) doesn't pay for a second,
+// redundant re-derivation of the same boolean on every call.
+export async function supportsGeneratorRefillQueue(db, { generatorRefill } = {}) {
+  const supported = generatorRefill !== undefined ? generatorRefill : await supportsGeneratorRefill(db);
+  if (!supported) return false;
   return tableExists(db, "world_partition");
 }
 
@@ -5893,8 +5910,11 @@ export async function supportsWaterRefill(db) {
   return ["id", "owner_entity_id", "building_type"].every((column) => placeableColumns.has(column));
 }
 
-export async function supportsWaterRefillQueue(db) {
-  if (!(await supportsWaterRefill(db))) return false;
+// Mirrors supportsGeneratorRefillQueue's waterRefill-reuse parameter, for the
+// same reason.
+export async function supportsWaterRefillQueue(db, { waterRefill } = {}) {
+  const supported = waterRefill !== undefined ? waterRefill : await supportsWaterRefill(db);
+  if (!supported) return false;
   return tableExists(db, "world_partition");
 }
 
@@ -5903,7 +5923,7 @@ export async function supportsWaterRefillQueue(db) {
 // bookkeeping like generator fuel needs (water is a scalar, not a stack of
 // discrete items). Blood (dune.actors.properties) is never touched here: per
 // user decision it's meant to be gathered in-world, not admin-conjured.
-export async function refillBaseWater(db, repoRoot, baseId) {
+export async function refillBaseWater(db, baseId) {
   await requireCapability(await supportsWaterRefill(db),
     "Water refill requires dune.placeables, dune.actor_fgl_entities, and dune.fgl_entities.");
   const target = intParam(baseId, "base id", 1);
@@ -6082,7 +6102,7 @@ export async function flushWaterRefills(db, repoRoot, { now = Date.now } = {}) {
     if (!partitionWriteSafe(observed, entry.partitionId)) continue;
     if (entry.nextRetryAt && timestamp < entry.nextRetryAt) continue;
     try {
-      const result = await refillBaseWater(db, repoRoot, entry.baseId);
+      const result = await refillBaseWater(db, entry.baseId);
       outcomes.set(entry.baseId, { queuedAt: entry.queuedAt, keep: false });
       flushed.push({
         baseId: entry.baseId,
