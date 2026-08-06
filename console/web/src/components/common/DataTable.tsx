@@ -84,6 +84,9 @@ type DataTableProps = {
   secondaryActionClassName?: string;
   secondaryActionPosition?: "start" | "end";
   tableClassName?: string;
+  // Extra class on the scroll container. Lets a panel opt out of the shared
+  // max-height cap without changing it for every table.
+  wrapClassName?: string;
   renderCell?: (row: Record<string, unknown>, column: string) => ReactNode;
   emptyMessage?: string;
   sortColumn?: string;
@@ -109,6 +112,7 @@ export function DataTable({
   secondaryActionClassName = "",
   secondaryActionPosition = "end",
   tableClassName = "",
+  wrapClassName = "",
   renderCell,
   emptyMessage = "No rows.",
   sortColumn,
@@ -129,5 +133,5 @@ export function DataTable({
   const totalColumns = cols.length + (action ? 1 : 0) + (secondaryAction ? 1 : 0);
   const leadingSecondaryHeader = secondaryAction && secondaryActionPosition === "start" ? <th className={secondaryActionClassName}>{secondaryActionLabel}</th> : null;
   const trailingSecondaryHeader = secondaryAction && secondaryActionPosition === "end" ? <th className={secondaryActionClassName}>{secondaryActionLabel}</th> : null;
-  return <div className="table-wrap" role="region" aria-label="Scrollable data table" tabIndex={0}><table className={tableClassName}><thead><tr>{leadingSecondaryHeader}{cols.map((col) => { const sortable = onSort && !nonSortableColumns.includes(col); const label = columnLabels[col] || friendlyColumnName(col); return <th key={col} className={sortable ? "sortable" : ""} style={colStyle(col)} title={headerTitles ? label : undefined} onClick={sortable ? () => onSort?.(col) : undefined}>{label}{sortable && sortColumn === col && <span className="sort-indicator">{sortDirection === "desc" ? " ↓" : " ↑"}</span>}{resizableColumns && resize.resizeHandle(col)}</th>; })}{action && <th className={actionClassName}>Actions</th>}{trailingSecondaryHeader}</tr></thead><tbody>{rows.map((row, index) => <Fragment key={rowKey ? rowKey(row) : index}><tr onClick={() => onRowClick?.(row)} className={onRowClick ? "clickable" : ""}>{secondaryAction && secondaryActionPosition === "start" && <td className={secondaryActionClassName}>{secondaryAction(row)}</td>}{cols.map((col) => <td key={col} style={colStyle(col)}>{renderCell ? renderCell(row, col) : formatCell(row[col])}</td>)}{action && <td className={actionClassName}>{action(row)}</td>}{secondaryAction && secondaryActionPosition === "end" && <td className={secondaryActionClassName}>{secondaryAction(row)}</td>}</tr>{isRowExpanded?.(row) && renderExpandedRow && <tr className="expanded-row"><td colSpan={totalColumns} className="expanded-row-cell">{renderExpandedRow(row)}</td></tr>}</Fragment>)}</tbody></table></div>;
+  return <div className={`table-wrap${wrapClassName ? ` ${wrapClassName}` : ""}`} role="region" aria-label="Scrollable data table" tabIndex={0}><table className={tableClassName}><thead><tr>{leadingSecondaryHeader}{cols.map((col) => { const sortable = onSort && !nonSortableColumns.includes(col); const label = columnLabels[col] || friendlyColumnName(col); return <th key={col} className={sortable ? "sortable" : ""} style={colStyle(col)} title={headerTitles ? label : undefined} onClick={sortable ? () => onSort?.(col) : undefined}>{label}{sortable && sortColumn === col && <span className="sort-indicator">{sortDirection === "desc" ? " ↓" : " ↑"}</span>}{resizableColumns && resize.resizeHandle(col)}</th>; })}{action && <th className={actionClassName}>Actions</th>}{trailingSecondaryHeader}</tr></thead><tbody>{rows.map((row, index) => <Fragment key={rowKey ? rowKey(row) : index}><tr onClick={() => onRowClick?.(row)} className={onRowClick ? "clickable" : ""}>{secondaryAction && secondaryActionPosition === "start" && <td className={secondaryActionClassName}>{secondaryAction(row)}</td>}{cols.map((col) => <td key={col} style={colStyle(col)}>{renderCell ? renderCell(row, col) : formatCell(row[col])}</td>)}{action && <td className={actionClassName}>{action(row)}</td>}{secondaryAction && secondaryActionPosition === "end" && <td className={secondaryActionClassName}>{secondaryAction(row)}</td>}</tr>{isRowExpanded?.(row) && renderExpandedRow && <tr className="expanded-row"><td colSpan={totalColumns} className="expanded-row-cell">{renderExpandedRow(row)}</td></tr>}</Fragment>)}</tbody></table></div>;
 }
