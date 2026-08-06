@@ -89,20 +89,22 @@ test("real PostgreSQL refillBaseWater tops water to capacity, leaves blood untou
       insert into dune.placeables values (5001, 100, 'WaterCistern_Placeable');
       insert into dune.actors values (5001, '{}'::jsonb);
       insert into dune.fgl_entities values (9001, '{"FWaterStorageComponent": [0, {"m_WaterStored": 1250}]}'::jsonb);
-      insert into dune.actor_fgl_entities values (5001, 9001, 'Actor');
+      -- actor_fgl_entities columns are (entity_id, actor_id, slot_name):
+      -- entity_id=9001 (the fgl_entities row above), actor_id=5001 (the placeable).
+      insert into dune.actor_fgl_entities values (9001, 5001, 'Actor');
       -- Same placeable also carries a ContainerInventory-slot entity with no
       -- water component -- the exact fan-out shape confirmed live on dune2.
       -- An unguarded join must not double the container or overwrite the
       -- wrong entity.
       insert into dune.fgl_entities values (9002, '{}'::jsonb);
-      insert into dune.actor_fgl_entities values (5001, 9002, 'ContainerInventory');
+      insert into dune.actor_fgl_entities values (9002, 5001, 'ContainerInventory');
 
       -- A Blood Purifier (water capacity 1000, blood capacity 6000), with
       -- both water and blood partially filled.
       insert into dune.placeables values (5002, 100, 'BloodWaterExtractor_Placeable');
       insert into dune.actors values (5002, '{"BP_BloodWaterExtractor_C": {"m_CurrentAmount": 3114.6}}'::jsonb);
       insert into dune.fgl_entities values (9003, '{"FWaterStorageComponent": [0, {"m_WaterStored": 200}]}'::jsonb);
-      insert into dune.actor_fgl_entities values (5002, 9003, 'Actor');
+      insert into dune.actor_fgl_entities values (9003, 5002, 'Actor');
     `);
 
     const db = transactionalDb(pool);
