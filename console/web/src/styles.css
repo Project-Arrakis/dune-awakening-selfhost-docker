@@ -1645,7 +1645,10 @@ body.debug .technical-details { display: block; }
 .bases-table th:nth-child(9), .bases-table td:nth-child(9) { width: 6%; text-align: center; }
 .bases-table th:nth-child(10), .bases-table td:nth-child(10) { width: 6%; text-align: center; }
 .bases-table th:nth-child(11), .bases-table td:nth-child(11) { width: 10.5%; }
-.bases-table th.bases-actions-column, .bases-table td.bases-actions-column { width: 96px; }
+/* 96px fit two icon-toggle-buttons (Refill Generators, Download); a third
+   (Refill Water) plus the wider queued-refill pills need more room, so this
+   grew to comfortably fit all three at once, queued or not. */
+.bases-table th.bases-actions-column, .bases-table td.bases-actions-column { width: 148px; }
 .bases-table td { max-width: none; white-space: normal; overflow-wrap: anywhere; text-overflow: clip; }
 .bases-name, .bases-ellipsis-cell { display: block; overflow: visible; text-overflow: clip; white-space: normal; overflow-wrap: anywhere; }
 .bases-generator-summary { display: block; white-space: normal; overflow: visible; text-overflow: clip; line-height: 1.4; }
@@ -2378,6 +2381,7 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
 }
 .bases-expanded-tab.active:hover { border-color: var(--border-strong); border-bottom-color: #25201b; }
 
+.bases-water { display: grid; gap: 12px; }
 .bases-permissions { display: grid; gap: 12px; }
 .bases-permissions-roster { display: grid; gap: 6px; }
 .bases-permissions-row {

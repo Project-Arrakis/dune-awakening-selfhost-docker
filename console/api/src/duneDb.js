@@ -3390,9 +3390,16 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
     // permission procedures the panel hides the editor rather than offering a
     // control that fails on save.
     const basePermissions = await supportsBasePermissionEditing(db).catch(() => false);
+    // Same probing pattern as generatorRefill/generatorRefillQueue above, but
+    // gated on supportsWaterRefill rather than supportsGeneratorRefill: water
+    // refill needs none of the item-insert columns the generator capability
+    // check requires, so reusing that check would wrongly hide Refill Water
+    // on a schema that has everything water actually needs.
+    const waterRefill = await supportsWaterRefill(db).catch(() => false);
+    const waterRefillQueue = waterRefill && await supportsWaterRefillQueue(db).catch(() => false);
 
     return {
-      capabilities: { bases: true, generatorRefill, generatorRefillQueue, basePermissions },
+      capabilities: { bases: true, generatorRefill, generatorRefillQueue, basePermissions, waterRefill, waterRefillQueue },
       totalCount: result.rows[0] ? Number(result.rows[0].total_count) : 0,
       totalBases: totalsResult.rows[0] ? Number(totalsResult.rows[0].total_bases) : 0,
       totalPieces: totalsResult.rows[0] ? Number(totalsResult.rows[0].total_pieces) : 0,
@@ -5693,6 +5700,409 @@ function reconcileQueuedGeneratorRefills(repoRoot, outcomes) {
   }
   writeQueuedGeneratorRefills(repoRoot, next);
   return next;
+}
+
+// ---------------------------------------------------------------------------
+// Water
+//
+// Water storage lives somewhere fundamentally different from generator fuel:
+// the fill level is a JSONB scalar on the placeable's own component
+// (FWaterStorageComponent.m_WaterStored), not a stack of discrete inventory
+// items. Blood (Blood Purifier / Improved Blood Purifier only) is different
+// again -- it isn't a component at all, but a Blueprint-class-keyed property
+// on dune.actors.properties (BP_BloodWaterExtractor[_Advanced]_C.m_CurrentAmount).
+// Both mechanisms, every building_type, and every capacity below were
+// confirmed against a live database, not guessed -- see
+// C:\Users\jvign\.claude\plans\bases\water-storage-tab.md for the full trail.
+// ---------------------------------------------------------------------------
+
+const WATER_TYPES = {
+  waterCistern: {
+    name: "Water Cistern",
+    buildingTypes: ["watercistern_placeable"],
+    capacity: 5000
+  },
+  mediumWaterCistern: {
+    name: "Medium Water Cistern",
+    buildingTypes: ["mediumwatercistern_placeable"],
+    capacity: 25000
+  },
+  largeWaterCistern: {
+    name: "Large Water Cistern",
+    buildingTypes: ["largewatercistern_placeable"],
+    capacity: 100000
+  },
+  windtrap: {
+    name: "Windtrap",
+    buildingTypes: ["windtrap_placeable"],
+    capacity: 500
+  },
+  // Displays in-game as "Blood Purifier" / "Improved Blood Purifier" (see
+  // runtime/data/admin-items.json's BloodWaterExtraction[Advanced]_Patent
+  // entries) -- building_type keeps the game's own internal name.
+  bloodWaterExtractor: {
+    name: "Blood Purifier",
+    buildingTypes: ["bloodwaterextractor_placeable"],
+    capacity: 1000,
+    bloodPropertyKey: "BP_BloodWaterExtractor_C",
+    bloodCapacity: 6000
+  },
+  bloodWaterExtractorAdvanced: {
+    name: "Improved Blood Purifier",
+    buildingTypes: ["bloodwaterextractionadvanced_placeable"],
+    capacity: 1000,
+    bloodPropertyKey: "BP_BloodWaterExtractor_Advanced_C",
+    bloodCapacity: 24000
+  }
+};
+
+const WATER_TYPE_ORDER = [
+  "waterCistern", "mediumWaterCistern", "largeWaterCistern",
+  "windtrap", "bloodWaterExtractor", "bloodWaterExtractorAdvanced"
+];
+
+const WATER_BUILDING_TYPE_PAIRS = WATER_TYPE_ORDER.flatMap(
+  (type) => WATER_TYPES[type].buildingTypes.map((buildingType) => [type, buildingType])
+);
+
+function waterTypeParams() {
+  return [
+    WATER_BUILDING_TYPE_PAIRS.map(([type]) => type),
+    WATER_BUILDING_TYPE_PAIRS.map(([, buildingType]) => buildingType)
+  ];
+}
+
+// Every water container at a base, grouped by type -- the Water tab's shape.
+// Mirrors portalGeneratorFuel, but for one base rather than many, and reads
+// levels straight off each placeable's own row rather than an inventory:
+// there is no fuel-cell-style consumable involved.
+export async function baseWater(db, baseId) {
+  const target = intParam(baseId, "base id", 1);
+  const [types, buildingTypes] = waterTypeParams();
+  const bloodKeys = WATER_BUILDING_TYPE_PAIRS.map(([type]) => WATER_TYPES[type].bloodPropertyKey || null);
+  const result = await db.query(`
+    with requested_claims as (
+      select distinct b.id, afe.actor_id
+      from dune.buildings b
+      join dune.building_instances bi on bi.building_id = b.id
+      join dune.actor_fgl_entities afe on afe.entity_id = bi.owner_entity_id
+      where b.id = $1
+    ), base_entities as (
+      select distinct rc.id, claim_afe.entity_id as owner_entity_id
+      from requested_claims rc
+      join dune.actor_fgl_entities claim_afe on claim_afe.actor_id = rc.actor_id
+    ), water_types as (
+      select * from unnest($2::text[], $3::text[], $4::text[]) as t(water_type, building_type, blood_property_key)
+    ), containers as (
+      select p.id as placeable_id, wt.water_type,
+        coalesce(state.stored, 0) as water_stored,
+        case when wt.blood_property_key is not null
+          then (a.properties -> wt.blood_property_key ->> 'm_CurrentAmount')::numeric
+          else null
+        end as blood_stored
+      from base_entities be
+      join dune.placeables p on p.owner_entity_id = be.owner_entity_id
+      join dune.actors a on a.id = p.id
+      join water_types wt on wt.building_type = lower(p.building_type)
+      left join lateral (
+        -- Guarded + limit 1: some water placeables carry a second
+        -- actor_fgl_entities row (slot_name='ContainerInventory') alongside
+        -- the one that actually holds FWaterStorageComponent. An unguarded
+        -- join fans out and double-counts the container -- confirmed live
+        -- against dune2 (a base's Windtrap count read 7 instead of 4).
+        select (fe.components->'FWaterStorageComponent'->1->>'m_WaterStored')::int as stored
+        from dune.actor_fgl_entities afe
+        join dune.fgl_entities fe on fe.entity_id = afe.entity_id
+        where afe.actor_id = p.id and fe.components ? 'FWaterStorageComponent'
+        limit 1
+      ) state on true
+    )
+    select water_type, count(*)::int as container_count,
+      sum(water_stored)::int as water_stored,
+      sum(blood_stored)::numeric as blood_stored
+    from containers group by water_type`, [target, types, buildingTypes, bloodKeys]);
+
+  const containers = result.rows.map((row) => {
+    const type = row.water_type;
+    const spec = WATER_TYPES[type];
+    const count = Number(row.container_count) || 0;
+    const stored = Number(row.water_stored) || 0;
+    const capacity = count * spec.capacity;
+    const entry = {
+      type,
+      name: spec.name,
+      count,
+      stored,
+      capacity,
+      percent: capacity > 0 ? Math.round((stored / capacity) * 1000) / 10 : 0
+    };
+    if (spec.bloodCapacity) {
+      const bloodStored = Math.round(Number(row.blood_stored) || 0);
+      const bloodCapacity = count * spec.bloodCapacity;
+      entry.bloodStored = bloodStored;
+      entry.bloodCapacity = bloodCapacity;
+      entry.bloodPercent = bloodCapacity > 0 ? Math.round((bloodStored / bloodCapacity) * 1000) / 10 : 0;
+    }
+    return entry;
+  }).sort((left, right) => WATER_TYPE_ORDER.indexOf(left.type) - WATER_TYPE_ORDER.indexOf(right.type));
+
+  return { baseId: target, containers };
+}
+
+// Every water device at a base, individually. Refill and the auto-refill scan
+// (like baseGeneratorFuelLevels) need to see and write each one, not just a
+// per-type total -- entity_id is resolved here through the same guarded
+// lateral used by baseWater, so reading and writing can never disagree about
+// which fgl_entities row backs a given placeable.
+export async function baseWaterDevices(db, baseId) {
+  const target = intParam(baseId, "base id", 1);
+  const [types, buildingTypes] = waterTypeParams();
+  const result = await db.query(`
+    with requested_claims as (
+      select distinct b.id, afe.actor_id
+      from dune.buildings b
+      join dune.building_instances bi on bi.building_id = b.id
+      join dune.actor_fgl_entities afe on afe.entity_id = bi.owner_entity_id
+      where b.id = $1
+    ), base_entities as (
+      select distinct rc.id, claim_afe.entity_id as owner_entity_id
+      from requested_claims rc
+      join dune.actor_fgl_entities claim_afe on claim_afe.actor_id = rc.actor_id
+    ), water_types as (
+      select * from unnest($2::text[], $3::text[]) as t(water_type, building_type)
+    )
+    select distinct p.id::text as placeable_id, wt.water_type, entity.entity_id::text as entity_id
+    from base_entities be
+    join dune.placeables p on p.owner_entity_id = be.owner_entity_id
+    join water_types wt on wt.building_type = lower(p.building_type)
+    left join lateral (
+      select afe.entity_id
+      from dune.actor_fgl_entities afe
+      join dune.fgl_entities fe on fe.entity_id = afe.entity_id
+      where afe.actor_id = p.id and fe.components ? 'FWaterStorageComponent'
+      limit 1
+    ) entity on true
+    order by placeable_id`, [target, types, buildingTypes]);
+  return result.rows;
+}
+
+export async function supportsWaterRefill(db) {
+  if (!(await tableExists(db, "placeables"))) return false;
+  if (!(await tableExists(db, "actor_fgl_entities")) || !(await tableExists(db, "fgl_entities"))) return false;
+  const placeableColumns = await columnsFor(db, "placeables");
+  return ["id", "owner_entity_id", "building_type"].every((column) => placeableColumns.has(column));
+}
+
+export async function supportsWaterRefillQueue(db) {
+  if (!(await supportsWaterRefill(db))) return false;
+  return tableExists(db, "world_partition");
+}
+
+// Tops every water device at a base up to its configured cap, straight into
+// FWaterStorageComponent -- one jsonb_set per device, no stack/slot
+// bookkeeping like generator fuel needs (water is a scalar, not a stack of
+// discrete items). Blood (dune.actors.properties) is never touched here: per
+// user decision it's meant to be gathered in-world, not admin-conjured.
+export async function refillBaseWater(db, repoRoot, baseId) {
+  await requireCapability(await supportsWaterRefill(db),
+    "Water refill requires dune.placeables, dune.actor_fgl_entities, and dune.fgl_entities.");
+  const target = intParam(baseId, "base id", 1);
+  const devices = await baseWaterDevices(db, target);
+  if (!devices.length) throw new Error("No water storage was found at this base");
+
+  return db.transaction(async (tx) => {
+    const refilled = [];
+    for (const device of devices) {
+      const spec = WATER_TYPES[device.water_type];
+      const summary = { placeableId: device.placeable_id, type: device.water_type, label: spec.name };
+      if (!device.entity_id) {
+        refilled.push({ ...summary, before: 0, after: 0, added: 0 });
+        continue;
+      }
+      // Lock the entity row before reading it, so a concurrent refill of the
+      // same device can't race the read-then-write -- same technique
+      // refillBaseGenerators uses for its inventory rows.
+      const current = await tx.query(
+        `select (components->'FWaterStorageComponent'->1->>'m_WaterStored')::int as stored
+         from dune.fgl_entities where entity_id = $1 for update`, [device.entity_id]);
+      const before = Number(current.rows[0]?.stored) || 0;
+      const cap = spec.capacity;
+      if (before >= cap) {
+        refilled.push({ ...summary, before, after: before, added: 0 });
+        continue;
+      }
+      await tx.query(
+        `update dune.fgl_entities
+         set components = jsonb_set(components, '{FWaterStorageComponent,1,m_WaterStored}', to_jsonb($1::int))
+         where entity_id = $2`, [cap, device.entity_id]);
+      refilled.push({ ...summary, before, after: cap, added: cap - before });
+    }
+    return {
+      ok: true,
+      baseId: target,
+      devices: refilled,
+      totalAdded: refilled.reduce((sum, entry) => sum + (entry.added || 0), 0)
+    };
+  });
+}
+
+// Per-device fill percent for one base, as a fraction of the same cap
+// refillBaseWater fills to -- the auto-refill scan's view. Deliberately
+// per-device rather than reusing baseWater's per-type aggregate, for the same
+// reason baseGeneratorFuelLevels doesn't reuse portalGeneratorFuel: a single
+// starved device standing among full siblings of the same type is exactly
+// what an automated refill decision turns on.
+//
+// lowestPercent is null for a base with no recognised devices, not 0 --
+// "nothing to measure" must not read as "empty" to a caller deciding whether
+// to refill.
+export async function baseWaterFuelLevels(db, baseId) {
+  const target = intParam(baseId, "base id", 1);
+  const devices = await baseWaterDevices(db, target);
+  const entityIds = devices.map((device) => device.entity_id).filter(Boolean);
+
+  const stored = new Map();
+  if (entityIds.length) {
+    const result = await db.query(
+      `select entity_id::text as entity_id,
+        (components->'FWaterStorageComponent'->1->>'m_WaterStored')::int as stored
+       from dune.fgl_entities where entity_id = any($1::bigint[])`, [entityIds]);
+    for (const row of result.rows || []) {
+      stored.set(row.entity_id, Number(row.stored) || 0);
+    }
+  }
+
+  const entries = [];
+  for (const device of devices) {
+    const spec = WATER_TYPES[device.water_type];
+    const units = device.entity_id ? (stored.get(device.entity_id) || 0) : 0;
+    entries.push({
+      placeableId: device.placeable_id,
+      waterType: device.water_type,
+      units,
+      cap: spec.capacity,
+      percent: spec.capacity > 0 ? Math.round((units / spec.capacity) * 1000) / 10 : 0
+    });
+  }
+
+  return {
+    baseId: target,
+    deviceCount: entries.length,
+    devices: entries,
+    lowestPercent: entries.length ? Math.min(...entries.map((entry) => entry.percent)) : null
+  };
+}
+
+// Pending water-refill queue. Same reasoning and shape as the generator
+// queue above (a live map can overwrite an immediate write, so a refill
+// aimed at one is recorded here and applied once that map is confirmed
+// down) -- own file, so the two queues can never collide or cross-count.
+const PENDING_WATER_REFILL_PATH = "runtime/generated/pending-water-refills.json";
+
+function pendingWaterRefillFile(repoRoot) {
+  return resolve(repoRoot || "", PENDING_WATER_REFILL_PATH);
+}
+
+export function listQueuedWaterRefills(repoRoot) {
+  const file = pendingWaterRefillFile(repoRoot);
+  if (!existsSync(file)) return [];
+  try {
+    const parsed = JSON.parse(readFileSync(file, "utf8"));
+    if (!Array.isArray(parsed)) return [];
+    const seen = new Set();
+    return parsed.map(normalizePendingRefill).filter((entry) => {
+      if (!entry || seen.has(entry.baseId)) return false;
+      seen.add(entry.baseId);
+      return true;
+    });
+  } catch (error) {
+    console.warn(`Ignoring unreadable pending water refill queue: ${redact(error?.message || error)}`);
+    return [];
+  }
+}
+
+function writeQueuedWaterRefills(repoRoot, entries) {
+  writeJsonAtomic(pendingWaterRefillFile(repoRoot), entries);
+  return entries;
+}
+
+export function queueWaterRefill(repoRoot, { baseId, map = "", partitionId = 0, now = () => new Date() } = {}) {
+  const entry = normalizePendingRefill({ baseId, map, partitionId, queuedAt: now().toISOString() });
+  if (!entry) throw new Error("Invalid base id");
+  const others = listQueuedWaterRefills(repoRoot).filter((row) => row.baseId !== entry.baseId);
+  if (others.length >= MAX_PENDING_REFILLS) {
+    throw new Error(`The pending water refill queue already holds ${MAX_PENDING_REFILLS} bases. Restart the affected maps to apply them first.`);
+  }
+  writeQueuedWaterRefills(repoRoot, [...others, entry]);
+  return entry;
+}
+
+export function cancelQueuedWaterRefill(repoRoot, baseId) {
+  const target = intParam(baseId, "base id", 1);
+  const entries = listQueuedWaterRefills(repoRoot);
+  const remaining = entries.filter((entry) => entry.baseId !== target);
+  if (remaining.length === entries.length) throw new Error("That base has no queued water refill.");
+  writeQueuedWaterRefills(repoRoot, remaining);
+  return { ok: true, baseId: target, pending: remaining.length };
+}
+
+function reconcileQueuedWaterRefills(repoRoot, outcomes) {
+  const next = [];
+  for (const entry of listQueuedWaterRefills(repoRoot)) {
+    const outcome = outcomes.get(entry.baseId);
+    if (!outcome || outcome.queuedAt !== entry.queuedAt) {
+      next.push(entry);
+      continue;
+    }
+    if (outcome.keep) next.push({ ...entry, attempts: outcome.attempts, nextRetryAt: outcome.nextRetryAt, lastError: outcome.lastError });
+  }
+  writeQueuedWaterRefills(repoRoot, next);
+  return next;
+}
+
+// Applies every queued water refill whose map is currently down and leaves
+// the rest queued. Same driver and reasoning as flushGeneratorRefills.
+export async function flushWaterRefills(db, repoRoot, { now = Date.now } = {}) {
+  const pending = listQueuedWaterRefills(repoRoot);
+  if (!pending.length) return { flushed: [], pending: 0 };
+  const observed = await observeRefillPartitions(db, { now });
+  if (!observed) return { flushed: [], pending: pending.length, unsupported: true };
+
+  const flushed = [];
+  const outcomes = new Map();
+  const timestamp = now();
+  for (const entry of pending) {
+    const queuedMs = Date.parse(entry.queuedAt);
+    if (Number.isFinite(queuedMs) && timestamp - queuedMs >= pendingRefillMaxAgeMs()) {
+      const message = `Queued for longer than the ${Math.round(pendingRefillMaxAgeMs() / 3600000)}h limit without being applied.`;
+      outcomes.set(entry.baseId, { queuedAt: entry.queuedAt, keep: false });
+      flushed.push({ baseId: entry.baseId, map: entry.map, partitionId: entry.partitionId, ok: false, expired: true, dropped: true, error: message });
+      continue;
+    }
+    if (!partitionWriteSafe(observed, entry.partitionId)) continue;
+    if (entry.nextRetryAt && timestamp < entry.nextRetryAt) continue;
+    try {
+      const result = await refillBaseWater(db, repoRoot, entry.baseId);
+      outcomes.set(entry.baseId, { queuedAt: entry.queuedAt, keep: false });
+      flushed.push({
+        baseId: entry.baseId,
+        map: entry.map,
+        partitionId: entry.partitionId,
+        ok: true,
+        totalAdded: result.totalAdded,
+        devices: result.devices
+      });
+    } catch (error) {
+      const message = String(error?.message || error).slice(0, 300);
+      const attempts = isTransientFlushError(message) ? entry.attempts : entry.attempts + 1;
+      const dropped = attempts >= MAX_REFILL_FLUSH_ATTEMPTS;
+      const nextRetryAt = timestamp + pendingRefillRetryDelayMs();
+      outcomes.set(entry.baseId, { queuedAt: entry.queuedAt, keep: !dropped, attempts, nextRetryAt, lastError: message });
+      flushed.push({ baseId: entry.baseId, map: entry.map, partitionId: entry.partitionId, ok: false, attempts, dropped, error: message });
+    }
+  }
+  const remaining = outcomes.size ? reconcileQueuedWaterRefills(repoRoot, outcomes) : pending;
+  return { flushed, pending: remaining.length };
 }
 
 export async function giveItemToPlayer(db, playerId, { itemName = "", itemId = "", templateId = "", quantity = 1, quality = 1, augments = [], augmentQuality = 1, allowOnlinePreAugmented = false }) {
