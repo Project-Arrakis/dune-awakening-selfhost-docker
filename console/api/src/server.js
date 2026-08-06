@@ -51,6 +51,7 @@ import { autoRefillWaterPublicState, createAutoRefillWaterScheduler, setBaseAuto
 import { calculateAlwaysOnHostMemorySafety } from "./services/hostMemorySafety.js";
 import { parseEffectiveGuildMemberLimit } from "./services/guildSettings.js";
 import { parseEffectivePermissionLimit } from "./services/permissionSettings.js";
+import { flushBaseRefillQueues } from "./services/baseRefillFlush.js";
 
 const config = loadConfig();
 const auth = createAuth(config);
@@ -61,7 +62,10 @@ const bridgeRateLimiter = createBridgeRateLimiter();
 // Both flush paths go through flushQueuedGeneratorRefills/flushQueuedWaterRefills
 // so a write lands in the audit log no matter which one applied it.
 const tasks = new TaskManager(config, {
-  onMapDown: () => { void flushQueuedGeneratorRefills(); void flushQueuedWaterRefills(); }
+  onMapDown: () => flushBaseRefillQueues({
+    flushGenerators: flushQueuedGeneratorRefills,
+    flushWater: flushQueuedWaterRefills
+  })
 });
 let db = createDb(config);
 const publicDirectory = createPublicDirectoryReporter(config, { getDb: () => db });
