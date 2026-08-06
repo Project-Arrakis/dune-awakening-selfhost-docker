@@ -31,7 +31,9 @@ function createDb({ existing = [], canonicalPlayers = ["4", "23", "29", "437"], 
         // nullable, ON DELETE SET NULL against fgl_entities) so the left-join
         // chain resolves the buildings row but not down to an actor.
         if (buildings === "missing") return { rows: [] };
-        if (buildings === "orphaned") return { rows: [{ actor_id: null, map: null, map_name_id: null, partition_id: null }] };
+        // Matches the real query's coalesce(...) wrapping: a genuine orphaned
+        // row never comes back with literal nulls for these three fields.
+        if (buildings === "orphaned") return { rows: [{ actor_id: null, map: "", map_name_id: 0, partition_id: 0 }] };
         return { rows: [{ actor_id: ACTOR_ID, map: "DeepDesert", map_name_id: mapNameId, partition_id: 59 }] };
       }
       if (text.includes("for update")) return { rows: [{ id: ACTOR_ID }], rowCount: 1 };

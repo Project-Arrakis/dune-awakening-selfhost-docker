@@ -2994,6 +2994,12 @@ export async function basePermissionActor(db, baseId) {
     left join dune.actors a on a.id = afe.actor_id
     left join dune.map_names mn on mn.map_name = a.map
     where b.id = $1
+    -- A base commonly has several building_instances rows ("pieces"), and only
+    -- this one column varies per piece. Without an explicit order, an orphaned
+    -- piece (owner_entity_id null) could beat a sibling piece that resolves
+    -- fine, since the left join no longer filters candidacy down to valid rows
+    -- the way the old inner join did. Prefer a resolved row deterministically.
+    order by (a.id is null) asc, bi.instance_id asc
     limit 1`, [target]);
   const row = result.rows[0];
   if (!row) throw new Error("That base was not found.");
@@ -3498,7 +3504,18 @@ export async function exportBaseAsBlueprint(db, id) {
       limit 1
     ) owner on true
     group by pa.actor_name, owner.character_name, a.id, a.class, a.map, a.transform`, [baseId]);
-  if (!baseRow.rows.length) throw new UnsupportedCapabilityError(`Base ${baseId} was not found.`);
+  if (!baseRow.rows.length) {
+    // The query above inner-joins all the way to a resolved actor -- it can't
+    // usefully left-join instead, since a blueprint needs real, resolved piece
+    // data to export. So distinguishing "doesn't exist" from "exists but its
+    // owner-entity link is broken" (building_instances.owner_entity_id is
+    // nullable) takes a cheap follow-up existence check instead, the same
+    // distinction basePermissionActor and baseMapLocation make for their
+    // simpler single-row queries.
+    const exists = await db.query("select 1 from dune.buildings where id = $1", [baseId]);
+    if (exists.rows.length) throw new UnsupportedCapabilityError(`Base ${baseId} has no resolvable owner entity, so it cannot be exported.`);
+    throw new UnsupportedCapabilityError(`Base ${baseId} was not found.`);
+  }
   const base = baseRow.rows[0];
   const anchor = { x: Number(base.x), y: Number(base.y), z: Number(base.z) };
 
@@ -5600,19 +5617,31 @@ export async function partitionRestartTargets(db) {
 
 // The map and partition a base sits in. Resolved server-side on every request:
 // whether a write is safe must never depend on a client-supplied map name.
+//
+// Left-joined rather than inner-joined so a base whose owner-entity link is
+// broken (building_instances.owner_entity_id is nullable, ON DELETE SET NULL
+// against fgl_entities) is distinguished from a base that never existed --
+// autoRefill.js pattern-matches the "was not found" text specifically to
+// decide whether to un-enroll a base, so the two cases must throw different
+// messages rather than collapse a broken link into "no longer exists".
+// order by prefers a resolved sibling piece the same way basePermissionActor
+// does, so a multi-piece base with one orphaned piece still resolves cleanly.
 export async function baseMapLocation(db, baseId) {
   const target = intParam(baseId, "base id", 1);
   const result = await db.query(`
-    select coalesce(a.map, '') as map,
+    select a.id::text as actor_id,
+           coalesce(a.map, '') as map,
            coalesce(a.partition_id, 0)::int as partition_id
     from dune.buildings b
-    join dune.building_instances bi on bi.building_id = b.id
-    join dune.actor_fgl_entities afe on afe.entity_id = bi.owner_entity_id
-    join dune.actors a on a.id = afe.actor_id
+    left join dune.building_instances bi on bi.building_id = b.id
+    left join dune.actor_fgl_entities afe on afe.entity_id = bi.owner_entity_id
+    left join dune.actors a on a.id = afe.actor_id
     where b.id = $1
+    order by (a.id is null) asc, bi.instance_id asc
     limit 1`, [target]);
   const row = result.rows[0];
   if (!row) throw new Error("That base was not found.");
+  if (!row.actor_id) throw new Error("This base has no resolvable owner entity, so its map location is unavailable.");
   return { map: String(row.map || ""), partitionId: Number(row.partition_id || 0) };
 }
 

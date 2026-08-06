@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import pg from "pg";
-import { setBasePermissions, listBasePermissions, basePermissionCandidates } from "../src/duneDb.js";
+import { setBasePermissions, listBasePermissions, basePermissionCandidates, baseMapLocation } from "../src/duneDb.js";
 
 const { Pool, Client } = pg;
 
@@ -78,8 +78,9 @@ const SCHEMA = `
 
   create table dune.buildings (id bigint primary key);
   -- owner_entity_id is nullable in production: it carries an
-  -- ON DELETE SET NULL foreign key against fgl_entities.
-  create table dune.building_instances (building_id bigint not null, owner_entity_id bigint);
+  -- ON DELETE SET NULL foreign key against fgl_entities. instance_id is the
+  -- per-piece tiebreak basePermissionActor/baseMapLocation order by.
+  create table dune.building_instances (building_id bigint not null, instance_id integer not null, owner_entity_id bigint);
   create table dune.actor_fgl_entities (entity_id bigint not null, actor_id bigint not null);
   create table dune.actors (id bigint primary key, map text, partition_id bigint, owner_account_id bigint);
   create table dune.map_names (map_name_id smallint primary key, map_name text not null);
@@ -119,7 +120,7 @@ const SCHEMA = `
 
 const SEED = `
   insert into dune.buildings (id) values (${BASE_ID});
-  insert into dune.building_instances (building_id, owner_entity_id) values (${BASE_ID}, ${ENTITY_ID});
+  insert into dune.building_instances (building_id, instance_id, owner_entity_id) values (${BASE_ID}, 0, ${ENTITY_ID});
   insert into dune.actor_fgl_entities (entity_id, actor_id) values (${ENTITY_ID}, ${ACTOR_ID});
   insert into dune.actors (id, map, partition_id, owner_account_id) values (${ACTOR_ID}, '${MAP_NAME}', 8, null);
   insert into dune.map_names (map_name_id, map_name) values (${MAP_NAME_ID}, '${MAP_NAME}');
@@ -327,7 +328,7 @@ test("real PostgreSQL: a base with a broken owner-entity link gets a clear error
   await withDatabase(t, async (pool) => {
     const orphanBaseId = 2000;
     await pool.query("insert into dune.buildings (id) values ($1)", [orphanBaseId]);
-    await pool.query("insert into dune.building_instances (building_id, owner_entity_id) values ($1, null)", [orphanBaseId]);
+    await pool.query("insert into dune.building_instances (building_id, instance_id, owner_entity_id) values ($1, 0, null)", [orphanBaseId]);
 
     const db = transactionalDb(pool);
     await assert.rejects(
@@ -338,6 +339,46 @@ test("real PostgreSQL: a base with a broken owner-entity link gets a clear error
     await assert.rejects(
       () => listBasePermissions(db, 999999),
       /That base was not found/);
+  });
+});
+
+// A base can legitimately have several building_instances rows ("pieces") --
+// listBases' piece_count and exportBaseAsBlueprint's multi-piece fetch both
+// depend on that. Before the left-join fix's order by, an orphaned piece
+// could nondeterministically beat a sibling piece that resolves fine. This
+// seeds one orphaned piece alongside the SEED's already-valid piece on the
+// same base and proves resolution is stable regardless of insertion order.
+test("real PostgreSQL: a base with one orphaned piece and one valid piece still resolves the valid one", async (t) => {
+  await withDatabase(t, async (pool) => {
+    // instance_id 1, inserted after the SEED's valid instance_id 0 -- if the
+    // missing order by regressed, an unordered LIMIT 1 could return this one.
+    await pool.query("insert into dune.building_instances (building_id, instance_id, owner_entity_id) values ($1, 1, null)", [BASE_ID]);
+
+    const db = transactionalDb(pool);
+    const roster = await listBasePermissions(db, BASE_ID);
+    assert.equal(roster.actorId, String(ACTOR_ID));
+
+    const location = await baseMapLocation(db, BASE_ID);
+    assert.equal(location.map, MAP_NAME);
+  });
+});
+
+test("real PostgreSQL: baseMapLocation distinguishes a broken owner-entity link from a missing base id", async (t) => {
+  await withDatabase(t, async (pool) => {
+    const orphanBaseId = 2001;
+    await pool.query("insert into dune.buildings (id) values ($1)", [orphanBaseId]);
+    await pool.query("insert into dune.building_instances (building_id, instance_id, owner_entity_id) values ($1, 0, null)", [orphanBaseId]);
+
+    const db = transactionalDb(pool);
+    await assert.rejects(
+      () => baseMapLocation(db, orphanBaseId),
+      /no resolvable owner entity/);
+    await assert.rejects(
+      () => baseMapLocation(db, 999999),
+      /That base was not found/);
+    // The unbroken case is unaffected.
+    const location = await baseMapLocation(db, BASE_ID);
+    assert.equal(location.map, MAP_NAME);
   });
 });
 

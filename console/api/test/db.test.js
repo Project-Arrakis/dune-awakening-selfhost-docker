@@ -2565,6 +2565,33 @@ test("export base throws an unsupported error when required tables are missing",
   await assert.rejects(() => exportBaseAsBlueprint(db, 1006), UnsupportedCapabilityError);
 });
 
+test("export base reports a genuinely missing base id as not found", async () => {
+  const db = {
+    query: async (text) => {
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("from dune.buildings b")) return { rows: [] };
+      // The follow-up existence check: no buildings row at all.
+      if (text.includes("select 1 from dune.buildings where id")) return { rows: [] };
+      return { rows: [] };
+    }
+  };
+  await assert.rejects(() => exportBaseAsBlueprint(db, 999999), /was not found/);
+});
+
+test("export base distinguishes a broken owner-entity link from a missing base id", async () => {
+  const db = {
+    query: async (text) => {
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("from dune.buildings b")) return { rows: [] };
+      // The follow-up existence check: the buildings row exists, so the empty
+      // result above must be from a broken owner-entity link, not a missing id.
+      if (text.includes("select 1 from dune.buildings where id")) return { rows: [{ "?column?": 1 }] };
+      return { rows: [] };
+    }
+  };
+  await assert.rejects(() => exportBaseAsBlueprint(db, 1006), /no resolvable owner entity/);
+});
+
 test("export base resolves the owner via the base's actor id", async () => {
   const calls = [];
   const db = {
