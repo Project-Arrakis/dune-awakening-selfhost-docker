@@ -47,6 +47,7 @@ import { EDA_EXCHANGE_BOT_ADDON_ID, ADDON_SCHEDULER_PERMISSION, createAddonJobSc
 import { createPublicDirectoryReporter, normalizeDiscordInvite, readDirectorySettings } from "./services/publicDirectory.js";
 import { choamTerminalOverview, installChoamTerminals, removeChoamTerminals } from "./services/choamTerminals.js";
 import { autoRefillPublicState, createAutoRefillScheduler, setBaseAutoRefill } from "./services/autoRefill.js";
+import { autoRefillWaterPublicState, createAutoRefillWaterScheduler, setBaseAutoRefillWater } from "./services/autoRefillWater.js";
 import { calculateAlwaysOnHostMemorySafety } from "./services/hostMemorySafety.js";
 import { parseEffectiveGuildMemberLimit } from "./services/guildSettings.js";
 import { parseEffectivePermissionLimit } from "./services/permissionSettings.js";
@@ -57,9 +58,11 @@ const loginRateLimiter = createLoginRateLimiter();
 const mutationRateLimiter = createMutationRateLimiter();
 const bridgeRateLimiter = createBridgeRateLimiter();
 // Deferred db read: db is assigned below and is reassignable on reconnect.
-// Both flush paths go through flushQueuedGeneratorRefills so a write lands in the
-// audit log no matter which one applied it.
-const tasks = new TaskManager(config, { onMapDown: () => flushQueuedGeneratorRefills() });
+// Both flush paths go through flushQueuedGeneratorRefills/flushQueuedWaterRefills
+// so a write lands in the audit log no matter which one applied it.
+const tasks = new TaskManager(config, {
+  onMapDown: () => { void flushQueuedGeneratorRefills(); void flushQueuedWaterRefills(); }
+});
 let db = createDb(config);
 const publicDirectory = createPublicDirectoryReporter(config, { getDb: () => db });
 let carePackageAutoRunning = false;
@@ -70,6 +73,8 @@ let carePackageAutoNextAllowedRun = 0;
 // existing fuel rows, so an empty generator has nothing to serialize two
 // concurrent inserts against without this guard.
 let generatorRefillFlushRunning = false;
+// Same reasoning as generatorRefillFlushRunning, for the water queue.
+let waterRefillFlushRunning = false;
 let messageOfTheDayAutoRunning = false;
 let messageOfTheDayAutoLastRun = 0;
 let messageOfTheDayAutoNextAllowedRun = 0;
@@ -90,6 +95,12 @@ const addonJobScheduler = createAddonJobScheduler(config, {
 });
 const landsraadMilestoneReconciler = createLandsraadMilestoneReconciler(config, { getDb: () => db });
 const autoRefillScheduler = createAutoRefillScheduler({
+  config,
+  getDb: () => db,
+  duneDb,
+  failureBackoffMs: BACKGROUND_SCAN_FAILURE_BACKOFF_MS
+});
+const autoRefillWaterScheduler = createAutoRefillWaterScheduler({
   config,
   getDb: () => db,
   duneDb,
@@ -146,6 +157,7 @@ setInterval(() => {
   // Daily, but gated inside the tick like every other long-period job here.
   // Costs one small file read when no base is enrolled, and no database query.
   runBackgroundTick("Bases auto-refill", () => autoRefillScheduler.tick());
+  runBackgroundTick("Bases water auto-refill", () => autoRefillWaterScheduler.tick());
 }, 10000).unref?.();
 
 setInterval(() => {
@@ -170,6 +182,11 @@ const generatorRefillFlushIntervalMs = Number(process.env.ADMIN_REFILL_FLUSH_INT
 setInterval(() => {
   if (!duneDb.listQueuedGeneratorRefills(config.repoRoot).length) return;
   runBackgroundTick("Generator refill flush", () => flushQueuedGeneratorRefills());
+  // Independent check in the same tick rather than a second setInterval: an
+  // idle water queue costs one more cheap file read, not a new timer.
+  if (duneDb.listQueuedWaterRefills(config.repoRoot).length) {
+    runBackgroundTick("Water refill flush", () => flushQueuedWaterRefills());
+  }
 }, Number.isFinite(generatorRefillFlushIntervalMs) && generatorRefillFlushIntervalMs > 0 ? generatorRefillFlushIntervalMs : 5000).unref?.();
 
 // Every queued-refill write goes through here so it is audited whichever path
@@ -184,6 +201,19 @@ async function flushQueuedGeneratorRefills() {
     return result;
   } finally {
     generatorRefillFlushRunning = false;
+  }
+}
+
+// Same reasoning as flushQueuedGeneratorRefills, for the water queue.
+async function flushQueuedWaterRefills() {
+  if (waterRefillFlushRunning) return { flushed: [] };
+  waterRefillFlushRunning = true;
+  try {
+    const result = await duneDb.flushWaterRefills(db, config.repoRoot);
+    for (const entry of result.flushed || []) audit(config, null, "bases.flush-queued-water-refill", entry);
+    return result;
+  } finally {
+    waterRefillFlushRunning = false;
   }
 }
 
@@ -485,10 +515,16 @@ async function handleApi(req, res) {
   }));
   if (path === "/api/bases/pending-refills") return pendingGeneratorRefillsRoute(res);
   if (path === "/api/bases/auto-refill") return basesAutoRefillStateRoute(res);
+  if (path === "/api/bases/pending-water-refills") return pendingWaterRefillsRoute(res);
+  if (path === "/api/bases/auto-refill-water") return basesAutoRefillWaterStateRoute(res);
   if (path.match(/^\/api\/bases\/[^/]+\/export$/) && req.method === "GET") return baseBlueprintDownloadRoute(req, res, path);
   if (path.match(/^\/api\/bases\/[^/]+\/refill-generators$/) && req.method === "POST") return baseRefillGeneratorsRoute(req, res, path);
   if (path.match(/^\/api\/bases\/[^/]+\/queued-refill$/) && req.method === "DELETE") return baseCancelQueuedRefillRoute(req, res, path);
   if (path.match(/^\/api\/bases\/[^/]+\/auto-refill$/) && req.method === "POST") return baseAutoRefillToggleRoute(req, res, path);
+  if (path.match(/^\/api\/bases\/[^/]+\/water$/) && req.method === "GET") return baseWaterRoute(res, path);
+  if (path.match(/^\/api\/bases\/[^/]+\/refill-water$/) && req.method === "POST") return baseRefillWaterRoute(req, res, path);
+  if (path.match(/^\/api\/bases\/[^/]+\/queued-water-refill$/) && req.method === "DELETE") return baseCancelQueuedWaterRefillRoute(req, res, path);
+  if (path.match(/^\/api\/bases\/[^/]+\/auto-refill-water$/) && req.method === "POST") return baseAutoRefillWaterToggleRoute(req, res, path);
   if (path === "/api/bases/permission-candidates") return basePermissionCandidatesRoute(res, url);
   if (path.match(/^\/api\/bases\/[^/]+\/permissions$/) && req.method === "GET") return basePermissionsRoute(res, path);
   if (path.match(/^\/api\/bases\/[^/]+\/permissions$/) && req.method === "PUT") return baseSetPermissionsRoute(req, res, path);
@@ -2151,6 +2187,103 @@ async function baseAutoRefillToggleRoute(req, res, path) {
   try {
     const result = setBaseAutoRefill(config.repoRoot, baseId, body.enabled);
     audit(config, req, "bases.auto-refill", { baseId, enabled: result.enabled, total: result.total });
+    return json(res, 200, result);
+  } catch (error) {
+    return json(res, 400, { ok: false, error: redact(error?.message || error) });
+  }
+}
+
+async function baseWaterRoute(res, path) {
+  const baseId = Number(decodeURIComponent(path.split("/")[3]));
+  if (!Number.isFinite(baseId) || baseId < 1) return json(res, 400, { error: "Invalid base ID" });
+  try {
+    return json(res, 200, { supported: true, ...(await duneDb.baseWater(db, baseId)) });
+  } catch (error) {
+    const status = error.unsupported ? 501 : 400;
+    return json(res, status, { supported: false, error: redact(error.message || error), reason: redact(error.message || error) });
+  }
+}
+
+// Mirrors baseRefillGeneratorsRoute: no confirmation phrase (additive and
+// reversible), queued instead of written immediately when the base's map is
+// currently live.
+async function baseRefillWaterRoute(req, res, path) {
+  const baseId = Number(decodeURIComponent(path.split("/")[3]));
+  if (!Number.isFinite(baseId) || baseId < 1) return json(res, 400, { error: "Invalid base ID" });
+  return directDbMutation(req, res, "bases.refill-water", null, async () => {
+    const target = await duneDb.baseRefillTarget(db, baseId);
+    if (target.queueSupported && !target.writeSafeNow) {
+      const entry = duneDb.queueWaterRefill(config.repoRoot, {
+        baseId,
+        map: target.map,
+        partitionId: target.partitionId
+      });
+      return { ok: true, queued: true, ...entry };
+    }
+    return duneDb.refillBaseWater(db, config.repoRoot, baseId);
+  }, { baseId });
+}
+
+async function baseCancelQueuedWaterRefillRoute(req, res, path) {
+  const baseId = Number(decodeURIComponent(path.split("/")[3]));
+  if (!Number.isFinite(baseId) || baseId < 1) return json(res, 400, { error: "Invalid base ID" });
+  return directDbMutation(req, res, "bases.cancel-queued-water-refill", null,
+    () => duneDb.cancelQueuedWaterRefill(config.repoRoot, baseId), { baseId });
+}
+
+// Mirrors pendingGeneratorRefillsRoute.
+async function pendingWaterRefillsRoute(res) {
+  const pending = duneDb.listQueuedWaterRefills(config.repoRoot);
+  const targets = pending.length
+    ? await duneDb.partitionRestartTargets(db).catch(() => new Map())
+    : new Map();
+  const byTarget = new Map();
+  for (const entry of pending) {
+    const map = entry.map || "Unknown";
+    const key = `${map}|${entry.partitionId}`;
+    const target = targets.get(entry.partitionId);
+    const group = byTarget.get(key) || {
+      map,
+      partitionId: entry.partitionId,
+      partitionMap: target?.map || "",
+      dimensionIndex: target?.dimensionIndex ?? 0,
+      count: 0
+    };
+    group.count += 1;
+    byTarget.set(key, group);
+  }
+  return json(res, 200, {
+    supported: true,
+    total: pending.length,
+    pending,
+    byTarget: [...byTarget.values()].sort((a, b) => a.map.localeCompare(b.map) || a.partitionId - b.partitionId)
+  });
+}
+
+// Mirrors basesAutoRefillStateRoute, gated on supportsWaterRefillQueue rather
+// than supportsGeneratorRefillQueue -- water refill needs none of the
+// item-insert columns the generator capability check requires.
+async function basesAutoRefillWaterStateRoute(res) {
+  const supported = await duneDb.supportsWaterRefillQueue(db).catch(() => false);
+  return json(res, 200, { supported, ...autoRefillWaterPublicState(config.repoRoot) });
+}
+
+// Mirrors baseAutoRefillToggleRoute.
+async function baseAutoRefillWaterToggleRoute(req, res, path) {
+  const baseId = Number(decodeURIComponent(path.split("/")[3]));
+  if (!Number.isFinite(baseId) || baseId < 1) return json(res, 400, { error: "Invalid base ID" });
+  const body = await readJson(req);
+  if (typeof body.enabled !== "boolean") {
+    return json(res, 400, { error: "Auto-refill enabled must be true or false." });
+  }
+  if (body.enabled && !(await duneDb.supportsWaterRefillQueue(db).catch(() => false))) {
+    return json(res, 501, {
+      error: "Auto-refill needs the pending water-refill queue, which requires dune.world_partition on this database."
+    });
+  }
+  try {
+    const result = setBaseAutoRefillWater(config.repoRoot, baseId, body.enabled);
+    audit(config, req, "bases.auto-refill-water", { baseId, enabled: result.enabled, total: result.total });
     return json(res, 200, result);
   } catch (error) {
     return json(res, 400, { ok: false, error: redact(error?.message || error) });

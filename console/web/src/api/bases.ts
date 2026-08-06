@@ -53,6 +53,60 @@ export type AutoRefillState = {
   bases: AutoRefillBase[];
 };
 
+// Water refill has no fuelName/capped/skipped concepts: it's a plain
+// jsonb_set straight to capacity, not a stack of discrete inventory items.
+export type RefillWaterDeviceResult = {
+  placeableId: string;
+  type: string;
+  label: string;
+  before: number;
+  after: number;
+  added: number;
+};
+
+export type WaterContainerEntry = {
+  type: string;
+  name: string;
+  count: number;
+  stored: number;
+  capacity: number;
+  percent: number;
+  // Only present for Blood Purifier / Improved Blood Purifier -- their raw
+  // blood input buffer, a completely different storage mechanism from water.
+  bloodStored?: number;
+  bloodCapacity?: number;
+  bloodPercent?: number;
+};
+
+export type BaseWater = {
+  supported: boolean;
+  baseId: number;
+  containers: WaterContainerEntry[];
+  reason?: string;
+};
+
+export type AutoRefillWaterBase = {
+  baseId: number;
+  enabledAt: string;
+  lastCheckedAt: string;
+  lastQueuedAt: string;
+  lastLowestPercent: number | null;
+  consecutiveQueues: number;
+  stalledAt: string;
+};
+
+export type AutoRefillWaterState = {
+  supported: boolean;
+  thresholdPercent: number;
+  intervalHours: number;
+  nextRunAt: string;
+  lastRunAt: string;
+  lastRunStatus: string;
+  lastRunDetail: string;
+  total: number;
+  bases: AutoRefillWaterBase[];
+};
+
 // rank 1/2/3 = Owner/Co-Owner/Associate, confirmed in both directions against a
 // live server: the game's own Permissions panel writes exactly these values.
 // The 5/4/3 badges the game UI shows beside those labels are decoration, not
@@ -144,5 +198,31 @@ export const basesApi = {
     search.set("limit", String(limit));
     return api<{ supported: boolean; rows: BasePermissionCandidate[]; reason?: string }>(
       `/api/bases/permission-candidates?${search.toString()}`);
-  }
+  },
+  water: (baseId: string) =>
+    api<BaseWater>(`/api/bases/${encodeURIComponent(baseId)}/water`),
+  // A refill for a map that is currently running comes back as
+  // `result.queued`: the write is deferred to the next time that map is down.
+  refillWater: (baseId: string) =>
+    post<{
+      supported: boolean;
+      result?: {
+        ok: boolean;
+        baseId: number;
+        queued?: boolean;
+        map?: string;
+        partitionId?: number;
+        totalAdded?: number;
+        devices?: RefillWaterDeviceResult[];
+      };
+      reason?: string;
+    }>(`/api/bases/${encodeURIComponent(baseId)}/refill-water`, {}),
+  cancelQueuedWaterRefill: (baseId: string) =>
+    api<{ supported: boolean; result?: { ok: boolean; baseId: number; pending: number }; reason?: string }>(
+      `/api/bases/${encodeURIComponent(baseId)}/queued-water-refill`, { method: "DELETE" }),
+  pendingWaterRefills: () => api<PendingRefills>("/api/bases/pending-water-refills"),
+  autoRefillWater: () => api<AutoRefillWaterState>("/api/bases/auto-refill-water"),
+  setAutoRefillWater: (baseId: string, enabled: boolean) =>
+    post<{ ok: boolean; baseId: number; enabled: boolean; total: number }>(
+      `/api/bases/${encodeURIComponent(baseId)}/auto-refill-water`, { enabled })
 };
