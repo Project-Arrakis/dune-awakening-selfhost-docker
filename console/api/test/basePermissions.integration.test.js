@@ -50,7 +50,7 @@ const SCHEMA = `
   create table dune.map_names (map_name_id smallint primary key, map_name text not null);
   create table dune.permission_actor (actor_id bigint primary key, actor_name text);
   create table dune.permission_actor_rank (permission_actor_id bigint not null, player_id bigint not null, rank smallint not null);
-  create table dune.player_state (account_id bigint, player_controller_id bigint, character_name text);
+  create table dune.player_state (account_id bigint, player_controller_id bigint, player_pawn_id bigint, character_name text);
 
   create function dune.permission_actor_create_or_update_base_marker(in_actor_id bigint, in_player_id bigint, in_rank smallint)
   returns void language plpgsql as $$ begin return; end $$;
@@ -93,8 +93,14 @@ const SEED = `
   -- Account 2 owns three actor rows; only player_controller_id 4 is a real
   -- permission holder. Ids 5 and 6 exist to prove they are rejected.
   insert into dune.actors (id, owner_account_id) values (4, 2), (5, 2), (6, 2), (23, 6), (29, 8);
-  insert into dune.player_state (account_id, player_controller_id, character_name)
-    values (2, 4, 'DarkShark'), (6, 23, 'Furizu'), (8, 29, 'Yaida'), (99, 900000201, 'Server');
+  insert into dune.player_state (account_id, player_controller_id, player_pawn_id, character_name)
+    values
+      (2, 4, 4, 'DarkShark'),
+      (6, 23, 23, 'Furizu'),
+      (8, 29, 29, 'Yaida'),
+      (99, 900000201, 900000201, 'Server'),
+      (100, 900000202, 900000103, 'GM'),
+      (101, 900000103, 900000203, 'Reserved GM Controller');
 
   insert into dune.permission_actor_rank (permission_actor_id, player_id, rank) values (${ACTOR_ID}, 4, ${OWNER_RANK});
 `;
@@ -331,6 +337,8 @@ test("real PostgreSQL: the candidate picker returns player_controller_ids and ex
     const ids = candidates.map((row) => row.playerId);
     assert.deepEqual(ids.sort(), ["23", "29", "4"].sort());
     assert.ok(!candidates.some((row) => row.name === "Server"), "system accounts must not be offered");
+    assert.ok(!candidates.some((row) => row.name === "GM"), "the reserved GM pawn must not be offered");
+    assert.ok(!candidates.some((row) => row.name === "Reserved GM Controller"), "the reserved GM controller must not be offered");
     // 5 and 6 belong to the same account as 4 but are not controller ids.
     assert.ok(!ids.includes("5") && !ids.includes("6"));
   });

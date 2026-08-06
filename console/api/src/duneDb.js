@@ -3076,6 +3076,10 @@ export async function basePermissionCandidates(db, { q = "", limit = 25 } = {}) 
   await requireCapability(await supportsBasePermissionEditing(db),
     "Base permission editing requires dune.permission_actor_rank, dune.map_names, and the dune.permission_set_player_rank/permission_remove_player_rank functions.");
   const safeLimit = intParam(limit, "limit", 1, 100);
+  const playerStateColumns = await columnsFor(db, "player_state");
+  const internalGmPawnFilter = playerStateColumns.has("player_pawn_id")
+    ? `and coalesce(ps.player_pawn_id, 0) <> ${INTERNAL_GM_PLAYER_PAWN_ID}::bigint`
+    : "";
   const values = [];
   let filter = "";
   if (q) {
@@ -3091,6 +3095,8 @@ export async function basePermissionCandidates(db, { q = "", limit = 25 } = {}) 
            coalesce(ps.character_name, '') as character_name
     from dune.player_state ps
     where coalesce(ps.player_controller_id, 0) > 0
+      and ps.player_controller_id <> ${INTERNAL_GM_PLAYER_PAWN_ID}::bigint
+      ${internalGmPawnFilter}
       and nullif(btrim(coalesce(ps.character_name, '')), '') is not null
       and ps.character_name not in ('Server', 'Message of the Day')
       ${filter}
@@ -5764,8 +5770,7 @@ function reconcileQueuedGeneratorRefills(repoRoot, outcomes) {
 // again -- it isn't a component at all, but a Blueprint-class-keyed property
 // on dune.actors.properties (BP_BloodWaterExtractor[_Advanced]_C.m_CurrentAmount).
 // Both mechanisms, every building_type, and every capacity below were
-// confirmed against a live database, not guessed -- see
-// C:\Users\jvign\.claude\plans\bases\water-storage-tab.md for the full trail.
+// confirmed against a live database rather than inferred from display names.
 // ---------------------------------------------------------------------------
 
 const WATER_TYPES = {

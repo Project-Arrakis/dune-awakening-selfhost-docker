@@ -409,6 +409,32 @@ test("a Sietch restart flushes queued map writes between the stop and start step
   assert.deepEqual(callLog, ["sietches stop-partition 31", "flush:sietchesRestartStop", "sietches start-partition 31"]);
 });
 
+test("map-down refill results distinguish generator, water, and queue-specific failures", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "arrakis-task-flush-results-"));
+  const manager = new TaskManager(
+    { duneScript: join(dir, "dune"), repoRoot: dir, taskRetention: 20, commandTimeoutMs: 5000 },
+    {
+      onMapDown: async () => ({
+        flushed: [
+          { ok: true, refillType: "generator" },
+          { ok: true, refillType: "water" }
+        ],
+        failures: [{ refillType: "water", error: "database unavailable" }]
+      })
+    }
+  );
+  const task = { logLines: [], subscribers: new Set() };
+
+  await manager.flushPendingMapWrites(task, "restartServiceStop");
+
+  const lines = task.logLines.map((entry) => entry.line);
+  assert.deepEqual(lines, [
+    "Applied 1 queued generator refill.",
+    "Applied 1 queued water refill.",
+    "Queued water refills were not applied: database unavailable"
+  ]);
+});
+
 function waitForTask(manager, id) {
   return new Promise((resolve, reject) => {
     const deadline = Date.now() + 3000;
