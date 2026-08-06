@@ -150,16 +150,25 @@ transaction, does.)
 rows: a base whose roster is being fully replaced may have no rank rows, and
 `for update` over zero rows serializes nothing.
 
-## A base can be visible but unresolvable
+## A base can exist but be unresolvable
 
 `building_instances.owner_entity_id` is nullable — it carries an
 `ON DELETE SET NULL` foreign key against `fgl_entities` — so a base can still
-have a row in `dune.buildings` (and so still appear in the Bases table) while
-its link down to a permission actor is broken. Opening the Permissions tab for
-such a base returns *"This base has no resolvable owner entity, so permission
-editing is unavailable for it,"* distinct from *"That base was not found"*
-(which means the base id itself doesn't exist). No such rows exist in
-production today; this is a documented edge case, not an active issue.
+have a row in `dune.buildings` while its link down to a permission actor is
+broken. **Such a base does not appear in the Bases table** — `listBases` still
+inner-joins the same chain, so it's excluded from the list entirely rather than
+shown with a broken Permissions tab. The distinct error instead surfaces from
+paths that resolve a base id directly: a `GET`/`PUT` to
+`/api/bases/:baseId/permissions` with a stale or copied id returns *"This base
+has no resolvable owner entity, so permission editing is unavailable for it,"*
+distinct from *"That base was not found"* (the base id itself doesn't exist).
+The same distinction applies to blueprint export and to the auto-refill
+scanner's existence check (`baseMapLocation`), both of which resolve the same
+join chain and must not conflate "link broken" with "base deleted" — the
+scanner in particular un-enrolls a base from auto-refill on the latter, so
+collapsing the two would silently drop a base that still exists and may still
+need fuel. No such rows exist in production today; this is a documented edge
+case, not an active issue.
 
 ## Capability gating
 
