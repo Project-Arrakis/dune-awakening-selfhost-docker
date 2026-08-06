@@ -84,35 +84,37 @@ export function BaseWaterTab({ baseId, autoRefill }: BaseWaterTabProps) {
       {!containers.length && <p className="muted">No water storage at this base.</p>}
 
       <div className="bases-generator-breakdown">
-        {containers.map((container) => (
-          <div className="bases-generator-group" key={container.type}>
-            <div className="bases-generator-group-title">{container.name}</div>
-            <dl className="bases-generator-stats">
-              <dt>Containers</dt>
-              <dd>{container.count.toLocaleString()}</dd>
-              <dt>Water Volume</dt>
-              <dd>{container.stored.toLocaleString()} / {container.capacity.toLocaleString()}</dd>
-              <dt>Water Fill</dt>
-              <dd>
-                <div className="progress-row">
-                  <div className="progress-track"><div className="progress-fill" style={{ width: `${container.percent}%` }} /></div>
-                  <span>{container.percent}%</span>
-                </div>
-              </dd>
-              {container.bloodCapacity !== undefined && <>
-                <dt>Blood Volume</dt>
-                <dd>{(container.bloodStored ?? 0).toLocaleString()} / {container.bloodCapacity.toLocaleString()}</dd>
-                <dt>Blood Fill</dt>
+        <div className="bases-generator-cards bases-water-cards">
+          {containers.map((container) => (
+            <div className="bases-generator-group" key={container.type}>
+              <div className="bases-generator-group-title">{container.name}</div>
+              <dl className="bases-generator-stats">
+                <dt>Containers</dt>
+                <dd>{container.count.toLocaleString()}</dd>
+                <dt>Water Volume</dt>
+                <dd>{container.stored.toLocaleString()} / {container.capacity.toLocaleString()}</dd>
+                <dt>Water Fill</dt>
                 <dd>
                   <div className="progress-row">
-                    <div className="progress-track"><div className="progress-fill" style={{ width: `${container.bloodPercent ?? 0}%` }} /></div>
-                    <span>{container.bloodPercent ?? 0}%</span>
+                    <div className="progress-track"><div className="progress-fill progress-fill-water" style={{ width: `${container.percent}%` }} /></div>
+                    <span>{container.percent}%</span>
                   </div>
                 </dd>
-              </>}
-            </dl>
-          </div>
-        ))}
+                {container.bloodCapacity !== undefined && <>
+                  <dt>Blood Volume</dt>
+                  <dd>{(container.bloodStored ?? 0).toLocaleString()} / {container.bloodCapacity.toLocaleString()}</dd>
+                  <dt>Blood Fill</dt>
+                  <dd>
+                    <div className="progress-row">
+                      <div className="progress-track"><div className="progress-fill progress-fill-blood" style={{ width: `${container.bloodPercent ?? 0}%` }} /></div>
+                      <span>{container.bloodPercent ?? 0}%</span>
+                    </div>
+                  </dd>
+                </>}
+              </dl>
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   );

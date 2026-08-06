@@ -795,12 +795,20 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
     }
   }
 
-  async function handleRestartForQueue(group: { map: string; partitionId: number; partitionMap: string; dimensionIndex: number; count: number }) {
+  // Restarting a partition/service already flushes whichever queue(s) have
+  // entries waiting on it -- server.js's onMapDown hook fires both
+  // flushQueuedGeneratorRefills and flushQueuedWaterRefills unconditionally --
+  // so one restart call covers a target with fuel, water, or both queued, and
+  // the combined banner below only needs a single handler rather than two.
+  async function handleRestartForCombinedQueue(group: { map: string; partitionId: number; partitionMap: string; dimensionIndex: number; fuelCount: number; waterCount: number }) {
     const target = queueRestartTarget(group.partitionMap, group.partitionId, group.dimensionIndex);
     if (target.kind === "none") return;
     const key = `${group.map}|${group.partitionId}`;
+    const parts = [];
+    if (group.fuelCount) parts.push(`${group.fuelCount} queued generator refill${group.fuelCount === 1 ? "" : "s"}`);
+    if (group.waterCount) parts.push(`${group.waterCount} queued water refill${group.waterCount === 1 ? "" : "s"}`);
     const confirmed = await confirmAction(
-      `${target.label} now to apply ${group.count} queued generator refill${group.count === 1 ? "" : "s"}?`,
+      `${target.label} now to apply ${parts.join(" and ")}?`,
       {
         title: "Restart Map",
         confirmLabel: "Restart",
@@ -820,61 +828,15 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
       // Report what the restart actually did. Without this the running line
       // stands forever and a failed restart reads as a successful one.
       const finished = await waitForTask(started.task);
-      const refreshed = await refreshPendingRefills();
+      const [refreshedFuel, refreshedWater] = await Promise.all([refreshPendingRefills(), refreshPendingWaterRefills()]);
       if (finished.status === "succeeded") {
         // The flush races the restart's own write-safety window, so a
         // succeeded task does not guarantee the refill actually landed --
-        // check the queue itself rather than assume.
-        const stillQueued = pendingRefillCountForPartition(refreshed, group.partitionId);
-        writeRefillStatus(
-          stillQueued
-            ? `${label} restarted. Its refills are still queued and will apply once the map is confirmed down.`
-            : `${label} restarted. Any refills queued for it have been applied.`,
-          "ok"
+        // check both queues rather than assume.
+        const stillQueued = Boolean(
+          pendingRefillCountForPartition(refreshedFuel, group.partitionId)
+          || pendingRefillCountForPartition(refreshedWater, group.partitionId)
         );
-      } else {
-        const text = `${label} restart ${finished.status}. Its refills are still queued.`;
-        writeRefillStatus(text, "fail");
-        onError(text);
-      }
-    } catch (error) {
-      const text = errorText(error);
-      writeRefillStatus(text, "fail");
-      onError(text);
-    } finally {
-      writeRestartingTarget(key, false);
-    }
-  }
-
-  // Mirrors handleRestartForQueue, for the water refill queue. Shares
-  // writeRestartingTarget/restartingTargets with the generator version --
-  // both key on map|partitionId, which is correct: restarting a partition
-  // applies whichever queue(s) had entries waiting on it.
-  async function handleRestartForWaterQueue(group: { map: string; partitionId: number; partitionMap: string; dimensionIndex: number; count: number }) {
-    const target = queueRestartTarget(group.partitionMap, group.partitionId, group.dimensionIndex);
-    if (target.kind === "none") return;
-    const key = `${group.map}|${group.partitionId}`;
-    const confirmed = await confirmAction(
-      `${target.label} now to apply ${group.count} queued water refill${group.count === 1 ? "" : "s"}?`,
-      {
-        title: "Restart Map",
-        confirmLabel: "Restart",
-        warning: "Players on this map are disconnected while it restarts."
-      }
-    );
-    if (!confirmed) return;
-    onError("");
-    writeRestartingTarget(key, true);
-    const label = group.partitionMap || group.map;
-    try {
-      writeRefillStatus(`Restarting ${label}, its queued refills apply while it is down`, "running");
-      const started = target.kind === "sietch" ? await mapsApi.restartSietch(String(target.partitionId))
-        : target.kind === "respawn" ? await mapsApi.respawn(String(target.partitionId), "RESTART MAP")
-        : await serverApi.restartService(target.service);
-      const finished = await waitForTask(started.task);
-      const refreshed = await refreshPendingWaterRefills();
-      if (finished.status === "succeeded") {
-        const stillQueued = pendingRefillCountForPartition(refreshed, group.partitionId);
         writeRefillStatus(
           stillQueued
             ? `${label} restarted. Its refills are still queued and will apply once the map is confirmed down.`
@@ -948,20 +910,13 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
     const queuedAt = Date.parse(entry.queuedAt);
     return Number.isFinite(queuedAt) && Date.now() - queuedAt > STALE_QUEUED_REFILL_MS;
   });
-  const staleQueuedCount = staleQueued.length;
-  // Whether any stale entry actually has a restart button in the list above. A
-  // group whose partition does not resolve renders "Restart this map from the
-  // Maps tab" instead, so pointing at a button that is not there would be wrong.
   const staleTargetKeys = new Set(staleQueued.map((entry) => `${entry.map || "Unknown"}|${entry.partitionId}`));
-  const staleHasRestartButton = (pendingRefills?.byTarget || []).some((group) =>
-    staleTargetKeys.has(`${group.map}|${group.partitionId}`)
-    && queueRestartTarget(group.partitionMap, group.partitionId, group.dimensionIndex).kind !== "none");
   // With no enrollment read at all, the toggle cannot honestly show ON or OFF.
   const autoRefillUnrecoverable = autoRefillUnavailable && autoRefillBases.size === 0;
   // autoRefillBases is fetched globally (GET /api/bases/auto-refill), same
   // scope as pendingRefills, so this counts stalled bases across the whole
   // battlegroup -- not just whatever page of the list happens to be loaded.
-  const stalledAutoRefillCount = [...autoRefillBases.values()].filter((entry) => entry.stalledAt).length;
+  const stalledFuelBaseIds = new Set([...autoRefillBases.entries()].filter(([, entry]) => entry.stalledAt).map(([baseId]) => baseId));
 
   // Mirrors the block above, for the water refill queue.
   const pendingWaterTotal = pendingWaterRefills?.total || 0;
@@ -970,13 +925,53 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
     const queuedAt = Date.parse(entry.queuedAt);
     return Number.isFinite(queuedAt) && Date.now() - queuedAt > STALE_QUEUED_REFILL_MS;
   });
-  const staleQueuedWaterCount = staleQueuedWater.length;
   const staleWaterTargetKeys = new Set(staleQueuedWater.map((entry) => `${entry.map || "Unknown"}|${entry.partitionId}`));
-  const staleWaterHasRestartButton = (pendingWaterRefills?.byTarget || []).some((group) =>
-    staleWaterTargetKeys.has(`${group.map}|${group.partitionId}`)
-    && queueRestartTarget(group.partitionMap, group.partitionId, group.dimensionIndex).kind !== "none");
   const autoRefillWaterUnrecoverable = autoRefillWaterUnavailable && autoRefillWaterBases.size === 0;
-  const stalledAutoRefillWaterCount = [...autoRefillWaterBases.values()].filter((entry) => entry.stalledAt).length;
+  const stalledWaterBaseIds = new Set([...autoRefillWaterBases.entries()].filter(([, entry]) => entry.stalledAt).map(([baseId]) => baseId));
+
+  // Combined queue banner: one box covering both queues. Merge byTarget rows
+  // keyed on map|partitionId -- restarting a target already flushes
+  // whichever queue(s) are waiting on it (see handleRestartForCombinedQueue),
+  // so one restart button per target is correct even though the fuel/water
+  // counts come from two separate endpoints.
+  type CombinedQueueTarget = { map: string; partitionId: number; partitionMap: string; dimensionIndex: number; fuelCount: number; waterCount: number };
+  const combinedQueueTargets: CombinedQueueTarget[] = (() => {
+    const byKey = new Map<string, CombinedQueueTarget>();
+    for (const group of pendingRefills?.byTarget || []) {
+      byKey.set(`${group.map}|${group.partitionId}`, {
+        map: group.map, partitionId: group.partitionId, partitionMap: group.partitionMap, dimensionIndex: group.dimensionIndex,
+        fuelCount: group.count, waterCount: 0
+      });
+    }
+    for (const group of pendingWaterRefills?.byTarget || []) {
+      const key = `${group.map}|${group.partitionId}`;
+      const existing = byKey.get(key);
+      if (existing) existing.waterCount = group.count;
+      else byKey.set(key, {
+        map: group.map, partitionId: group.partitionId, partitionMap: group.partitionMap, dimensionIndex: group.dimensionIndex,
+        fuelCount: 0, waterCount: group.count
+      });
+    }
+    return [...byKey.values()];
+  })();
+  const combinedQueueTotal = pendingTotal + pendingWaterTotal;
+  // Whether any stale entry actually has a restart button in the list above. A
+  // group whose partition does not resolve renders "Restart this map from the
+  // Maps tab" instead, so pointing at a button that is not there would be wrong.
+  const combinedStaleTargetKeys = new Set([...staleTargetKeys, ...staleWaterTargetKeys]);
+  const combinedStaleCount = staleQueued.length + staleQueuedWater.length;
+  const combinedStaleHasRestartButton = combinedQueueTargets.some((group) =>
+    combinedStaleTargetKeys.has(`${group.map}|${group.partitionId}`)
+    && queueRestartTarget(group.partitionMap, group.partitionId, group.dimensionIndex).kind !== "none");
+
+  // Combined stalled auto-refill banner: the headline counts unique bases,
+  // not queue entries -- a base stalled on both fuel and water should not
+  // read as "2 bases have stalled auto-refill" when it is one base with two
+  // badges (each badge below does count occurrences, i.e. queue entries).
+  const stalledCombinedBaseIds = new Set([...stalledFuelBaseIds, ...stalledWaterBaseIds]);
+  const stalledCombinedCount = stalledCombinedBaseIds.size;
+  const stalledFuelCount = stalledFuelBaseIds.size;
+  const stalledWaterCount = stalledWaterBaseIds.size;
   const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
   const rangeStart = totalCount === 0 ? 0 : page * pageSize + 1;
   const rangeEnd = totalCount === 0 ? 0 : rangeStart + rows.length - 1;
@@ -1019,25 +1014,31 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
       <p className="action-help-note">
         Total Bases: {totalBases.toLocaleString()} · Total Building Pieces: {totalPieces.toLocaleString()} · Total Placeables: {totalPlaceables.toLocaleString()}
       </p>
-      {stalledAutoRefillCount > 0 && <div className="bases-stalled-banner" role="alert">
+      {stalledCombinedCount > 0 && <div className="bases-stalled-banner" role="alert">
         <p className="bases-stalled-banner-title">
-          <Fuel size={16} aria-hidden="true" />
-          {stalledAutoRefillCount.toLocaleString()} base{stalledAutoRefillCount === 1 ? " has" : "s have"} stalled auto-refill
+          {stalledCombinedCount.toLocaleString()} base{stalledCombinedCount === 1 ? " has" : "s have"} stalled auto-refill
+          {stalledFuelCount > 0 && <span className="bases-queue-badge bases-queue-badge-fuel">
+            <Fuel size={13} aria-hidden="true" />{stalledFuelCount.toLocaleString()} fuel
+          </span>}
+          {stalledWaterCount > 0 && <span className="bases-queue-badge bases-queue-badge-water">
+            <Droplet size={13} aria-hidden="true" />{stalledWaterCount.toLocaleString()} water
+          </span>}
         </p>
         <p className="action-help-note">
-          Auto-refill queued 3 refills for {stalledAutoRefillCount === 1 ? "this base" : "each of these bases"} without raising the fuel. Refill manually to find out why, or turn auto-refill off and back on to resume trying.
+          Auto-refill queued 3 refills without raising the fuel or water on {stalledCombinedCount === 1 ? "this base" : "these bases"}. Refill manually to find out why, or turn auto-refill off and back on to resume trying.
         </p>
       </div>}
-      {pendingTotal > 0 && <div className="bases-pending-refills">
+      {combinedQueueTotal > 0 && <div className="bases-pending-refills">
         <p className="bases-pending-refills-title">
           <Fuel size={16} aria-hidden="true" />
-          {pendingTotal.toLocaleString()} generator refill{pendingTotal === 1 ? "" : "s"} queued
+          <Droplet size={16} aria-hidden="true" />
+          {combinedQueueTotal.toLocaleString()} refill{combinedQueueTotal === 1 ? "" : "s"} queued
         </p>
         <p className="action-help-note">
           Each one is written when its map next restarts. Restarting the battlegroup applies all of them; stopping leaves them queued.
         </p>
         <ul className="bases-pending-refills-list">
-          {(pendingRefills?.byTarget || []).map((group) => {
+          {combinedQueueTargets.map((group) => {
             const target = queueRestartTarget(group.partitionMap, group.partitionId, group.dimensionIndex);
             const key = `${group.map}|${group.partitionId}`;
             return <li key={key}>
@@ -1045,8 +1046,13 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
                 {group.map}
                 {group.partitionMap && group.partitionMap !== group.map ? ` (${group.partitionMap})` : ""}
                 {group.partitionId ? ` · partition ${group.partitionId}` : ""}
-                <span className="muted"> — {group.count.toLocaleString()} queued</span>
               </span>
+              {group.fuelCount > 0 && <span className="bases-queue-badge bases-queue-badge-fuel">
+                <Fuel size={13} aria-hidden="true" />{group.fuelCount.toLocaleString()}
+              </span>}
+              {group.waterCount > 0 && <span className="bases-queue-badge bases-queue-badge-water">
+                <Droplet size={13} aria-hidden="true" />{group.waterCount.toLocaleString()}
+              </span>}
               {target.kind === "none"
                 ? <span className="muted">Restart this map from the Maps tab</span>
                 : restartingTargets.includes(key)
@@ -1054,55 +1060,12 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
                       <span className="spinner" aria-hidden="true" />
                       <span className="loading-dots" role="status">Restarting</span>
                     </span>
-                  : <button onClick={() => void handleRestartForQueue(group)}>{target.label}</button>}
+                  : <button onClick={() => void handleRestartForCombinedQueue(group)}>{target.label}</button>}
             </li>;
           })}
         </ul>
-        {staleQueuedCount > 0 && <p className="bases-pending-refills-stale" role="status">
-          {staleQueuedCount.toLocaleString()} queued over 24h — {staleQueuedCount === 1 ? "its map has" : "their maps have"} not been down since. {staleHasRestartButton ? "Restart above to apply." : "Restart from the Maps tab to apply."}
-        </p>}
-      </div>}
-      {stalledAutoRefillWaterCount > 0 && <div className="bases-stalled-banner" role="alert">
-        <p className="bases-stalled-banner-title">
-          <Droplet size={16} aria-hidden="true" />
-          {stalledAutoRefillWaterCount.toLocaleString()} base{stalledAutoRefillWaterCount === 1 ? " has" : "s have"} stalled water auto-refill
-        </p>
-        <p className="action-help-note">
-          Auto-refill queued 3 refills for {stalledAutoRefillWaterCount === 1 ? "this base" : "each of these bases"} without raising the water. Refill manually to find out why, or turn auto-refill off and back on to resume trying.
-        </p>
-      </div>}
-      {pendingWaterTotal > 0 && <div className="bases-pending-refills">
-        <p className="bases-pending-refills-title">
-          <Droplet size={16} aria-hidden="true" />
-          {pendingWaterTotal.toLocaleString()} water refill{pendingWaterTotal === 1 ? "" : "s"} queued
-        </p>
-        <p className="action-help-note">
-          Each one is written when its map next restarts. Restarting the battlegroup applies all of them; stopping leaves them queued.
-        </p>
-        <ul className="bases-pending-refills-list">
-          {(pendingWaterRefills?.byTarget || []).map((group) => {
-            const target = queueRestartTarget(group.partitionMap, group.partitionId, group.dimensionIndex);
-            const key = `${group.map}|${group.partitionId}`;
-            return <li key={key}>
-              <span>
-                {group.map}
-                {group.partitionMap && group.partitionMap !== group.map ? ` (${group.partitionMap})` : ""}
-                {group.partitionId ? ` · partition ${group.partitionId}` : ""}
-                <span className="muted"> — {group.count.toLocaleString()} queued</span>
-              </span>
-              {target.kind === "none"
-                ? <span className="muted">Restart this map from the Maps tab</span>
-                : restartingTargets.includes(key)
-                  ? <span className="bases-restarting-pill">
-                      <span className="spinner" aria-hidden="true" />
-                      <span className="loading-dots" role="status">Restarting</span>
-                    </span>
-                  : <button onClick={() => void handleRestartForWaterQueue(group)}>{target.label}</button>}
-            </li>;
-          })}
-        </ul>
-        {staleQueuedWaterCount > 0 && <p className="bases-pending-refills-stale" role="status">
-          {staleQueuedWaterCount.toLocaleString()} queued over 24h — {staleQueuedWaterCount === 1 ? "its map has" : "their maps have"} not been down since. {staleWaterHasRestartButton ? "Restart above to apply." : "Restart from the Maps tab to apply."}
+        {combinedStaleCount > 0 && <p className="bases-pending-refills-stale" role="status">
+          {combinedStaleCount.toLocaleString()} queued over 24h — {combinedStaleCount === 1 ? "its map has" : "their maps have"} not been down since. {combinedStaleHasRestartButton ? "Restart above to apply." : "Restart from the Maps tab to apply."}
         </p>}
       </div>}
       {refillResult && <p
@@ -1303,6 +1266,7 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
               <p className="bases-generator-reserve-note" role="note">
                 {QUEUED_RESERVE_EXPLANATION}
               </p>
+              <div className="bases-generator-cards">
               {generators.map((generator, index) => (
                 <div className="bases-generator-group" key={`${generator.type}-${index}`}>
                   <div className="bases-generator-group-title">{generator.name}</div>
@@ -1326,6 +1290,7 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
                   </dl>
                 </div>
               ))}
+              </div>
             </div>
           );
           };
