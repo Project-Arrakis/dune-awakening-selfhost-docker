@@ -3,7 +3,7 @@ import { dirname, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { buildDuneArgs, runDune } from "./runner.js";
 import { itemIsSchematic, itemRequiresDatabaseGrant, resolveCatalogItem } from "./adminCatalog.js";
-import { publishCarePackageWhisper } from "./rmq.js";
+import { isValidHexFlsId, publishCarePackageWhisper } from "./rmq.js";
 import { giveItemToPlayer } from "./duneDb.js";
 import { liveItemGrantOk, liveItemGrantWarning } from "./grantResults.js";
 
@@ -933,7 +933,7 @@ function validatePlayerTarget(value) {
 
 function resolveWelcomeWhisperRecipient(playerId, body = {}) {
   const funcomId = String(body.funcomId || body.recipientFuncomId || body.flsId || (/^[A-Za-z0-9_.-]+#\d+$/.test(String(playerId || "")) ? playerId : "")).trim();
-  const flsId = String(body.flsId || body.recipientFlsId || (/^[A-Fa-f0-9]{16,64}$/.test(String(playerId || "")) ? playerId : "")).trim();
+  const flsId = String(body.flsId || body.recipientFlsId || (isValidHexFlsId(playerId) ? playerId : "")).trim();
   const characterName = String(body.characterName || body.recipientCharacterName || body.userNameTo || "").trim();
   if (!funcomId) throw new Error("Care Package message whisper cannot be sent: recipient Funcom ID is unavailable");
   if (!characterName) throw new Error("Care Package message whisper cannot be sent: recipient character name is unavailable");
@@ -1050,7 +1050,7 @@ async function resolveSyntheticWhisperPersona(db, persona, label) {
   const row = result.rows?.[0] || {};
   const hexFlsId = String(row.hex_fls_id || "").trim();
   const funcomId = String(row.funcom_id || "").trim();
-  if (!/^[A-Fa-f0-9]{16,64}$/.test(hexFlsId)) throw new Error(`${label} cannot be sent: ${persona.displayName} sender hex FLS ID was not resolved from the database`);
+  if (!isValidHexFlsId(hexFlsId)) throw new Error(`${label} cannot be sent: ${persona.displayName} sender hex FLS ID was not resolved from the database`);
   if (!funcomId) throw new Error(`${label} cannot be sent: ${persona.displayName} sender Funcom ID was not resolved from the database`);
   return {
     ...persona,

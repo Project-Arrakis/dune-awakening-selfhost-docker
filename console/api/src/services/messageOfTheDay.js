@@ -1,6 +1,6 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { publishCarePackageWhisper, validateBroadcastMessage } from "../rmq.js";
+import { formatChatBodyMessage, isValidHexFlsId, isValidWhisperIdentity, listReadyRabbitQueues, publishCarePackageWhisper } from "../rmq.js";
 import { ensureMessageOfTheDayPersona, MESSAGE_OF_THE_DAY_PERSONA } from "../carePackage.js";
 import { redact } from "../redact.js";
 
@@ -12,7 +12,11 @@ const DEFAULT_MESSAGE_OF_THE_DAY = {
 
 const EMPTY_STATUS = { lastAttemptAt: "", lastSent: 0, lastFailed: 0, lastError: "", lastScanAt: "", lastScanError: "" };
 const EMPTY_STATE = { delivered: {}, status: EMPTY_STATUS };
-const MIN_MOTD_SESSION_AGE_MS = 5_000;
+// player_state.last_login_time is written before the character finishes spawning and
+// before the in-game chat UI is consistently ready. RabbitMQ can accept and consume a
+// whisper during that gap even though the client never renders it, so leave a bounded
+// post-login grace period before recording the session as delivered.
+const MIN_MOTD_SESSION_AGE_MS = 30_000;
 const DELIVERED_SESSION_RETENTION_MS = 24 * 60 * 60 * 1000;
 
 export function readMessageOfTheDay(config) {
@@ -79,16 +83,29 @@ export async function runMessageOfTheDayScan(config, players, context = {}) {
   const results = [];
   let sent = 0;
   let failed = 0;
+  let deferred = 0;
+  const mockMode = Boolean(context.mockMode || config.mockMode);
+  const playersWithDirectQueues = pendingPlayers.filter((player) => player.queue);
+  const readyRecipientQueues = context.readyRecipientQueues instanceof Set
+    ? context.readyRecipientQueues
+    : !mockMode && playersWithDirectQueues.length
+      ? await listReadyRabbitQueues(config)
+      : null;
   const persona = (context.mockMode || config.mockMode)
     ? (context.persona || MESSAGE_OF_THE_DAY_PERSONA)
     : await ensureMessageOfTheDayPersona(context.db);
   for (const player of pendingPlayers) {
     try {
-      if (context.mockMode || config.mockMode) {
+      if (player.queue && readyRecipientQueues && !readyRecipientQueues.has(player.queue)) {
+        deferred += 1;
+        results.push({ player: player.characterName, ok: true, deferred: true, reason: "Player message queue is not ready" });
+        continue;
+      }
+      if (mockMode) {
         results.push({ player: player.characterName, ok: true, mock: true, senderName: persona.displayName });
       } else {
         const result = await publishCarePackageWhisper(config, {
-          message: settings.message,
+          message: renderMessageOfTheDay(settings.message, player.characterName),
           senderFuncomId: persona.funcomId,
           senderHexFlsId: persona.hexFlsId,
           recipientFuncomId: player.funcomId,
@@ -119,7 +136,7 @@ export async function runMessageOfTheDayScan(config, players, context = {}) {
     lastScanError: ""
   };
   writeJson(statePath(config), { delivered, status }, 0o600);
-  return { ok: failed === 0, skipped: false, sent, failed, results };
+  return { ok: failed === 0, skipped: false, sent, failed, deferred, results };
 }
 
 export function recordMessageOfTheDayScanFailure(config, error, now = new Date()) {
@@ -139,6 +156,10 @@ export function normalizeSettings(input = {}) {
     title: "",
     message: normalizeMessage(input.message ?? input.body ?? "")
   };
+}
+
+export function renderMessageOfTheDay(template, playerName) {
+  return formatChatBodyMessage(String(template || "").replaceAll("{playerName}", String(playerName || "Player")));
 }
 
 export function messageOfTheDayDeliveryPlan(settings, players, state = EMPTY_STATE) {
@@ -208,8 +229,10 @@ function healthyScanStatus(status, now) {
 }
 
 function normalizePlayer(player = {}) {
-  const flsId = String(player.fls_id || player.flsId || player.recipientFlsId || "").trim();
-  const funcomId = String(player.funcom_id || player.funcomId || player.recipientFuncomId || "").trim();
+  const rawFlsId = String(player.fls_id || player.flsId || player.recipientFlsId || "").trim();
+  const rawFuncomId = String(player.funcom_id || player.funcomId || player.recipientFuncomId || "").trim();
+  const flsId = isValidHexFlsId(rawFlsId) ? rawFlsId : "";
+  const funcomId = isValidWhisperIdentity(rawFuncomId) ? rawFuncomId : "";
   const characterName = String(player.character_name || player.characterName || player.recipientCharacterName || "").trim();
   const key = String(flsId || funcomId || player.action_player_id || player.actor_id || player.player_pawn_id || "").trim();
   const sessionKey = String(player.login_session || player.loginSession || player.last_login_time || player.lastLoginTime || "").trim();
@@ -278,7 +301,7 @@ function normalizeBoolean(value, field) {
 function normalizeMessage(value) {
   const raw = String(value ?? "").trim();
   if (!raw) return "";
-  return validateBroadcastMessage(raw);
+  return formatChatBodyMessage(raw);
 }
 
 function settingsPath(config) {

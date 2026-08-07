@@ -1,6 +1,6 @@
 import { Fragment, Suspense, lazy, useCallback, useEffect, useRef, useState } from "react";
 import { Archive, Building2, CircleArrowUp, Database, ExternalLink, FileText, Gift, Heart, Home, Landmark, Map as MapIcon, Menu, MessageCircle, PackagePlus, RefreshCw, Server, Settings, Shield, Sparkles, Users, X } from "lucide-react";
-import { api, post, setCsrfToken } from "./api/client";
+import { api, AUTH_SESSION_EXPIRED_EVENT, AUTH_SESSION_EXPIRED_MESSAGE, post, setCsrfToken } from "./api/client";
 import { serverApi } from "./api/server";
 import { updatesApi } from "./api/updates";
 import { addonsApi } from "./api/addons";
@@ -74,6 +74,7 @@ function confirmDialog(message: string, options: Partial<Omit<ConfirmDialogReque
       cancelLabel: options.cancelLabel || "No",
       danger,
       details: options.details,
+      warning: options.warning,
       resolve
     });
   });
@@ -231,6 +232,21 @@ export function App() {
 
   useEffect(() => {
     preloadPlayerAdminIconRailAssets();
+  }, []);
+
+  useEffect(() => {
+    const handleSessionExpired = () => {
+      setCsrfToken(null);
+      setAuth(false);
+      setPassword("");
+      setTab("Home");
+      setMobileNavOpen(false);
+      setRedeploySetupOpen(false);
+      setConfirmRequest(null);
+      setError(AUTH_SESSION_EXPIRED_MESSAGE);
+    };
+    window.addEventListener(AUTH_SESSION_EXPIRED_EVENT, handleSessionExpired);
+    return () => window.removeEventListener(AUTH_SESSION_EXPIRED_EVENT, handleSessionExpired);
   }, []);
 
   useEffect(() => {
@@ -504,6 +520,10 @@ export function App() {
             </a>
           )}
           {error && <p className="error">{error}</p>}
+          
+          {error && <p className="error">{error === AUTH_SESSION_EXPIRED_MESSAGE
+            ? <>Your browser login session expired.<br />Sign in again to continue.</>
+            : error}</p>}
         </form>
       </main>
     );
@@ -641,8 +661,8 @@ export function App() {
         }} />}
         {!redeploySetupOpen && tab === "Services" && <LazyTabBoundary label="Loading Services"><ServicesPanel services={services} setServices={setServices} setTask={setTask} openLogs={(service) => { setRedeploySetupOpen(false); setSelectedLogService(service); setTab("Logs"); }} onError={setError} confirmAction={confirmDialog} /></LazyTabBoundary>}
         {!redeploySetupOpen && tab === "Players" && <LazyTabBoundary label="Loading Players"><PlayersPanel onError={setError} renderCharacterAdmin={(props) => <LazyTabBoundary label="Loading Player Details"><CharacterAdminUI {...props} onError={setError} confirmAction={confirmDialog} waitForTask={waitForTaskSilently} formatMutationResult={formatMutationResult} /></LazyTabBoundary>} /></LazyTabBoundary>}
-        {!redeploySetupOpen && tab === "Guilds" && <LazyTabBoundary label="Loading Guilds"><GuildsPanel onError={setError} /></LazyTabBoundary>}
-        {!redeploySetupOpen && tab === "Bases" && <LazyTabBoundary label="Loading Bases"><BasesPanel onError={setError} /></LazyTabBoundary>}
+        {!redeploySetupOpen && tab === "Guilds" && <LazyTabBoundary label="Loading Guilds"><GuildsPanel onError={setError} confirmAction={confirmDialog} /></LazyTabBoundary>}
+        {!redeploySetupOpen && tab === "Bases" && <LazyTabBoundary label="Loading Bases"><BasesPanel onError={setError} confirmAction={confirmDialog} formatMutationResult={formatMutationResult} /></LazyTabBoundary>}
         {!redeploySetupOpen && tab === "Landsraad" && <LazyTabBoundary label="Loading Landsraad"><LandsraadPanel onError={setError} confirmAction={confirmDialog} /></LazyTabBoundary>}
         {!redeploySetupOpen && tab === "Admin Tools" && <LazyTabBoundary label="Loading Admin Tools"><AdminToolsPanel onError={setError} confirmAction={confirmDialog} /></LazyTabBoundary>}
         {!redeploySetupOpen && tab === "Live Map" && <LazyTabBoundary label="Loading Live Map"><LiveMapPanel onError={setError} confirmAction={confirmDialog} waitForTask={waitForTaskSilently} taskTechnicalDetails={taskTechnicalDetails} /></LazyTabBoundary>}

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseMapRows, sortMapRows } from "./MapsPanel";
+import { memoryForDisplayedMap, parseMapRows, sortMapRows, statusWithLiveMemory } from "./MapsPanel";
 
 describe("queued always-on map diagnostics", () => {
   it("shows the exact physical-memory safety reason from map status", () => {
@@ -46,5 +46,41 @@ describe("map table sorting", () => {
     expect(sortMapRows(rows, null, "asc").map((row) => row.map)).toEqual([
       "Survival_1", "Overmap", "SH_HarkoVillage", "DeepDesert_1", "SH_Arrakeen"
     ]);
+  });
+});
+
+describe("dual Deep Desert runtime status", () => {
+  const pvpMemory = {
+    container: "dune-server-deepdesert-1-40",
+    map: "DeepDesert_1",
+    usedBytes: 8 * 1024 ** 3,
+    limitBytes: 16 * 1024 ** 3,
+    percent: 50,
+    raw: ""
+  };
+
+  it("does not show a stopped primary PvE instance as loading when only the sibling PvP instance is running", () => {
+    const memory = memoryForDisplayedMap(
+      [pvpMemory],
+      "DeepDesert_1",
+      { map: "DeepDesert_1", mode: "Dynamic" },
+      { partitionId: "8", dimension: 0 }
+    );
+
+    expect(memory).toBeNull();
+    expect(statusWithLiveMemory("Not Running", memory, "Dynamic")).toBe("Not Running");
+  });
+
+  it("still reports live memory when the primary partition itself is running", () => {
+    const pveMemory = { ...pvpMemory, container: "dune-server-deepdesert-1-8" };
+    const memory = memoryForDisplayedMap(
+      [pveMemory, pvpMemory],
+      "DeepDesert_1",
+      { map: "DeepDesert_1", mode: "Dynamic" },
+      { partitionId: "8", dimension: 0 }
+    );
+
+    expect(memory?.container).toBe("dune-server-deepdesert-1-8");
+    expect(statusWithLiveMemory("Ready", memory, "Dynamic")).toBe("Ready");
   });
 });
