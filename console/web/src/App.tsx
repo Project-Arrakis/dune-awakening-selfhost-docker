@@ -520,7 +520,7 @@ export function App() {
             </a>
           )}
           {error && <p className="error">{error}</p>}
-          
+
           {error && <p className="error">{error === AUTH_SESSION_EXPIRED_MESSAGE
             ? <>Your browser login session expired.<br />Sign in again to continue.</>
             : error}</p>}
