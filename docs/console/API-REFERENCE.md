@@ -247,7 +247,7 @@ Complete reference for all HTTP API endpoints in the Dune Docker Console. All en
 | GET | `/api/bases/auto-refill-water` | Get per-base water auto-refill enrollment state | None |
 | POST | `/api/bases/{baseId}/auto-refill-water` | Enable/disable water auto-refill for a base | `baseId`, `enabled` |
 | GET | `/api/bases/{baseId}/permissions` | Get a base's permission roster (Owner, Co-Owners, Associates) | `baseId` |
-| POST | `/api/bases/{baseId}/system-custodian` | Transfer ownership to the detected Server system custodian while preserving the roster | `baseId` |
+| POST | `/api/bases/{baseId}/system-custodian` | Transfer ownership to the detected Server or GM system custodian while preserving the roster | `baseId` |
 | PUT | `/api/bases/{baseId}/permissions` | Replace a base's permission roster | `baseId`, `entries[]` (`playerId`, `rank`) |
 | GET | `/api/bases/permission-candidates` | Search players eligible to be added to a roster | `q?`, `limit?` |
 

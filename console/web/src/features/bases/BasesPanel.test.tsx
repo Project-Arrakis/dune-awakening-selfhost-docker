@@ -827,13 +827,38 @@ describe("BasesPanel permissions editing", () => {
       actorId: "1004",
       map: "DeepDesert",
       mapNameId: 7,
-      systemCustodian: { available: false, reason: "No canonical Server system identity was found in player_state." },
+      systemCustodian: { available: false, reason: "No supported system custodian was found." },
       entries: [{ playerId: "4", name: "DarkShark", rank: 1, label: "Owner", canonical: true }]
     });
     renderPanel();
     await openPermissionsTab();
-    expect(await screen.findByRole("button", { name: "Transfer to Server" })).toBeDisabled();
-    expect(screen.getByText(/No canonical Server system identity/)).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Transfer to Custodian" })).toBeDisabled();
+    expect(screen.getByText(/No supported system custodian/)).toBeInTheDocument();
+  });
+
+  it("uses the detected GM identity when Server is not present", async () => {
+    mockList(true);
+    vi.mocked(basesApi.permissions).mockResolvedValue({
+      supported: true,
+      baseId: 1006,
+      actorId: "1004",
+      map: "DeepDesert",
+      mapNameId: 7,
+      systemCustodian: { available: true, playerId: "900000101", name: "GM" },
+      entries: [{ playerId: "4", name: "DarkShark", rank: 1, label: "Owner", canonical: true }]
+    });
+    vi.mocked(basesApi.transferToSystemCustodian).mockResolvedValue({
+      supported: true,
+      result: { ok: true, baseId: 1006, actorId: "1004", map: "DeepDesert", added: 1, reranked: 1, removed: 0, total: 2, message: "Ownership was transferred to the GM system custodian." }
+    });
+    const props = renderPanel();
+    await openPermissionsTab();
+    fireEvent.click(await screen.findByRole("button", { name: "Transfer to GM" }));
+    await waitFor(() => expect(props.confirmAction).toHaveBeenCalledWith(
+      expect.stringContaining("reserved GM identity"),
+      expect.objectContaining({ title: "Transfer to GM Custodian" })
+    ));
+    await waitFor(() => expect(basesApi.transferToSystemCustodian).toHaveBeenCalledWith("1006"));
   });
 
   // A roster row naming a non-canonical actor is one the game ignores. The

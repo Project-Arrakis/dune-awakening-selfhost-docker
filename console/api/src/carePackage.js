@@ -6,26 +6,11 @@ import { itemIsSchematic, itemRequiresDatabaseGrant, resolveCatalogItem } from "
 import { isValidHexFlsId, publishCarePackageWhisper } from "./rmq.js";
 import { giveItemToPlayer } from "./duneDb.js";
 import { liveItemGrantOk, liveItemGrantWarning } from "./grantResults.js";
+import { CARE_PACKAGE_SERVER_PERSONA, MESSAGE_OF_THE_DAY_PERSONA } from "./systemPersonas.js";
+
+export { MESSAGE_OF_THE_DAY_PERSONA } from "./systemPersonas.js";
 
 const DEFAULT_KIT_ID = "care-package-v1";
-const CARE_PACKAGE_SERVER_PERSONA = {
-  accountId: "9000002",
-  funcomId: "Server#4242",
-  hexFlsId: "5E121CE000000001",
-  displayName: "Server",
-  playerControllerId: "900000201",
-  playerStateId: "900000202",
-  playerPawnId: "900000203"
-};
-export const MESSAGE_OF_THE_DAY_PERSONA = {
-  accountId: "9000003",
-  funcomId: "MOTD#4242",
-  hexFlsId: "5E121CE000000002",
-  displayName: "Message of the Day",
-  playerControllerId: "900000301",
-  playerStateId: "900000302",
-  playerPawnId: "900000303"
-};
 const DEFAULT_KIT = {
   id: DEFAULT_KIT_ID,
   name: "Care Package",
