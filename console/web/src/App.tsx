@@ -32,27 +32,61 @@ import {
 import { parseUpdateTask, stackVersionButtonLabel, stackVersionButtonTitle } from "./features/updates/updateUtils";
 import { formatUiSentence, stripAnsi, summarizeCommandText, titleCase } from "./lib/display";
 
-type Tab = "Home" | "Server Control" | "Services" | "Players" | "Guilds" | "Bases" | "Landsraad" | "Admin Tools" | "Live Map" | "Maps" | "Care Package" | "Addons" | "Database" | "Storage" | "Backups" | "Logs" | "Updates" | "Settings";
+type Tab = "Home" | "Server Control" | "Services" | "Players" | "Guilds" | "Bases" | "Landsraad" | "Admin Tools" | "Live Map" | "Maps" | "Care Package" | "Addons" | "Database" | "Storage" | "Backups" | "Logs" | "Updates" | "Settings" | "Access Control";
 
-const Capability = {
-  STATUS_READ: "STATUS_READ",
-  WORLD_READ: "WORLD_READ",
-  WORLD_WRITE: "WORLD_WRITE",
-  LOGS_READ: "LOGS_READ",
-  BACKUPS_READ: "BACKUPS_READ",
-  BACKUPS_WRITE: "BACKUPS_WRITE",
-  DATABASE_READ: "DATABASE_READ",
-  DATABASE_WRITE: "DATABASE_WRITE",
-  UPDATES_READ: "UPDATES_READ",
-  UPDATES_WRITE: "UPDATES_WRITE",
-  SERVER_CONTROL: "SERVER_CONTROL",
-  SETTINGS_WRITE: "SETTINGS_WRITE",
-  ADDONS_READ: "ADDONS_READ",
-  ADDONS_WRITE: "ADDONS_WRITE",
-  ADMIN_TOOLS: "ADMIN_TOOLS",
-  CARE_PACKAGE_GRANT: "CARE_PACKAGE_GRANT",
-  PLAYER_MUTATE: "PLAYER_MUTATE",
-  MAP_WRITE: "MAP_WRITE",
+// IAM action namespace constants — mirrors server-side actions.js catalog.
+// These are used for navGroup requiredAction and for per-component gating.
+const Action = {
+  SETUP_READ: "setup:read",
+  SERVER_READ: "server:read",
+  SERVER_START: "server:start",
+  SERVER_STOP: "server:stop",
+  SERVER_RESTART: "server:restart",
+  SERVER_RESTART_SERVICE: "server:restart-service",
+  SERVER_CONTROL: "server:*",
+  LOGS_READ: "logs:read",
+  BACKUPS_READ: "backups:read",
+  BACKUPS_CREATE: "backups:create",
+  BACKUPS_RESTORE: "backups:restore",
+  BACKUPS_WRITE: "backups:*",
+  DATABASE_READ: "database:read",
+  DATABASE_QUERY: "database:query",
+  UPDATES_READ: "updates:read",
+  UPDATES_APPLY: "updates:apply",
+  UPDATES_CHECK: "updates:check",
+  SETTINGS_READ: "settings:read",
+  SETTINGS_WRITE: "settings:write",
+  SETTINGS_CHANGE_PASSWORD: "settings:change-password",
+  PLAYERS_READ: "players:read",
+  PLAYERS_MUTATE: "players:mutate",
+  GUILDS_READ: "guilds:read",
+  GUILDS_MUTATE: "guilds:mutate",
+  BASES_READ: "bases:read",
+  BASES_MUTATE: "bases:mutate",
+  MAPS_READ: "maps:read",
+  MAPS_SPAWN: "maps:spawn",
+  MAPS_DESPAWN: "maps:despawn",
+  MAPS_RESTART: "maps:restart",
+  MAPS_WRITE: "maps:*",
+  SIETCHES_READ: "sietches:read",
+  SIETCHES_WRITE: "sietches:write",
+  DEEPDESERT_READ: "deepdesert:read",
+  DEEPDESERT_WRITE: "deepdesert:write",
+  LANDSRAAD_READ: "landsraad:read",
+  LANDSRAAD_WRITE: "landsraad:write",
+  ADMIN_ITEMS_READ: "admin:items:read",
+  ADMIN_BROADCAST: "admin:broadcast",
+  ADMIN_HISTORY_CLEAR: "admin:history:clear",
+  ADMIN_TOOLS: "admin:*",
+  ADDONS_READ: "addons:read",
+  ADDONS_WRITE: "addons:*",
+  CAREPACKAGE_READ: "carepackage:read",
+  CAREPACKAGE_GRANT: "carepackage:grant",
+  CAREPACKAGE_WRITE: "carepackage:*",
+  STORAGE_READ: "storage:read",
+  STORAGE_MUTATE: "storage:mutate",
+  BLUEPRINTS_READ: "blueprints:read",
+  BLUEPRINTS_MUTATE: "blueprints:mutate",
 } as const;
 type SetupState = { files: Record<string, boolean>; config: Record<string, unknown> };
 type PublicDirectoryStatus = {
@@ -120,36 +154,37 @@ function formatResultMessage(value: unknown) {
   return formatUiSentence(value, false);
 }
 
-const navGroups: { title: string; items: { tab: Tab; icon: React.ReactNode; requiredCapability?: string }[] }[] = [
+const navGroups: { title: string; items: { tab: Tab; icon: React.ReactNode; requiredAction?: string }[] }[] = [
   {
     title: "Server Operations",
     items: [
-      { tab: "Home", icon: <Home size={18} />, requiredCapability: Capability.STATUS_READ },
-      { tab: "Server Control", icon: <Server size={18} />, requiredCapability: Capability.SERVER_CONTROL },
-      { tab: "Backups", icon: <Archive size={18} />, requiredCapability: Capability.BACKUPS_READ },
-      { tab: "Database", icon: <Database size={18} />, requiredCapability: Capability.DATABASE_READ },
-      { tab: "Updates", icon: <RefreshCw size={18} />, requiredCapability: Capability.UPDATES_READ },
-      { tab: "Logs", icon: <FileText size={18} />, requiredCapability: Capability.LOGS_READ },
-      { tab: "Settings", icon: <Settings size={18} />, requiredCapability: Capability.SETTINGS_WRITE }
+      { tab: "Home", icon: <Home size={18} />, requiredAction: Action.SERVER_READ },
+      { tab: "Server Control", icon: <Server size={18} />, requiredAction: Action.SERVER_CONTROL },
+      { tab: "Access Control", icon: <Shield size={18} />, requiredAction: Action.SERVER_CONTROL },
+      { tab: "Backups", icon: <Archive size={18} />, requiredAction: Action.BACKUPS_READ },
+      { tab: "Database", icon: <Database size={18} />, requiredAction: Action.DATABASE_READ },
+      { tab: "Updates", icon: <RefreshCw size={18} />, requiredAction: Action.UPDATES_READ },
+      { tab: "Logs", icon: <FileText size={18} />, requiredAction: Action.LOGS_READ },
+      { tab: "Settings", icon: <Settings size={18} />, requiredAction: Action.SETTINGS_WRITE }
     ]
   },
   {
     title: "Arrakis Management",
     items: [
-      { tab: "Maps", icon: <MapIcon size={18} />, requiredCapability: Capability.WORLD_READ },
-      { tab: "Players", icon: <Users size={18} />, requiredCapability: Capability.WORLD_READ },
-      { tab: "Guilds", icon: <Shield size={18} />, requiredCapability: Capability.WORLD_READ },
-      { tab: "Bases", icon: <Building2 size={18} />, requiredCapability: Capability.WORLD_READ },
-      { tab: "Live Map", icon: <MapIcon size={18} />, requiredCapability: Capability.WORLD_READ },
-      { tab: "Landsraad", icon: <Landmark size={18} />, requiredCapability: Capability.WORLD_READ },
-      { tab: "Admin Tools", icon: <PackagePlus size={18} />, requiredCapability: Capability.ADMIN_TOOLS },
-      { tab: "Care Package", icon: <Gift size={18} />, requiredCapability: Capability.CARE_PACKAGE_GRANT }
+      { tab: "Maps", icon: <MapIcon size={18} />, requiredAction: Action.MAPS_READ },
+      { tab: "Players", icon: <Users size={18} />, requiredAction: Action.PLAYERS_READ },
+      { tab: "Guilds", icon: <Shield size={18} />, requiredAction: Action.GUILDS_READ },
+      { tab: "Bases", icon: <Building2 size={18} />, requiredAction: Action.BASES_READ },
+      { tab: "Live Map", icon: <MapIcon size={18} />, requiredAction: Action.MAPS_READ },
+      { tab: "Landsraad", icon: <Landmark size={18} />, requiredAction: Action.LANDSRAAD_READ },
+      { tab: "Admin Tools", icon: <PackagePlus size={18} />, requiredAction: Action.ADMIN_TOOLS },
+      { tab: "Care Package", icon: <Gift size={18} />, requiredAction: Action.CAREPACKAGE_GRANT }
     ]
   },
   {
     title: "Community",
     items: [
-      { tab: "Addons", icon: <Sparkles size={18} />, requiredCapability: Capability.ADDONS_READ }
+      { tab: "Addons", icon: <Sparkles size={18} />, requiredAction: Action.ADDONS_READ }
     ]
   }
 ];
@@ -249,7 +284,7 @@ export function App() {
   const [confirmRequest, setConfirmRequest] = useState<ConfirmDialogRequest | null>(null);
   const [discordSignInAvailable, setDiscordSignInAvailable] = useState(false);
   const [me, setMe] = useState<{ id: string; username: string; tier: string; guildId: string } | null>(null);
-  const [capabilities, setCapabilities] = useState<string[]>([]);
+  const [allowedActions, setAllowedActions] = useState<string[]>([]);
   const setupComplete = Boolean(setupState?.files?.complete ?? (setupState?.files?.env && setupState?.files?.token && setupState?.files?.battlegroup));
   const firstRunSetup = auth && setupStateLoaded && !setupComplete;
 
@@ -290,9 +325,9 @@ export function App() {
       return;
     }
     let cancelled = false;
-    api<{ user: { id: string; username: string; tier: string; guildId: string }; capabilities: string[] }>("/api/auth/me")
-      .then((res) => { if (!cancelled) { setMe(res.user); setCapabilities(res.capabilities || []); } })
-      .catch(() => { if (!cancelled) { setMe(null); setCapabilities([]); } });
+    api<{ user: { id: string; username: string; tier: string; guildId: string }; allowedActions: string[] }>("/api/auth/me")
+      .then((res) => { if (!cancelled) { setMe(res.user); setAllowedActions(res.allowedActions || []); } })
+      .catch(() => { if (!cancelled) { setMe(null); setAllowedActions([]); } });
     return () => { cancelled = true; };
   }, [auth]);
 
@@ -635,8 +670,8 @@ export function App() {
             <section className="sidebar-nav-group" key={group.title} aria-label={group.title}>
               <p className="sidebar-nav-heading">{group.title}</p>
               {group.items.filter((item) => {
-                if (!me || capabilities.length === 0) return true;
-                return !item.requiredCapability || capabilities.includes(item.requiredCapability);
+                if (!me || allowedActions.length === 0) return true;
+                return !item.requiredAction || allowedActions.includes(item.requiredAction);
               }).map((item) => (
                 <Fragment key={item.tab}>
                   <button className={tab === item.tab && (!selectedPinnedAddonId || item.tab !== "Addons") ? "active" : ""} onClick={() => {
