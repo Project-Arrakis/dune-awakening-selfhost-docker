@@ -1,14 +1,13 @@
 # Console RBAC — Unified Tier Model Implementation & Testing Plan
 
 **Status:** Design/implementation-and-testing plan. **Mechanism decision made
-(2026-08-06): B — bot relay via signed handoff.** Phase 2 shipped 2026-08-06
-(owner-tier Discord OAuth sign-in behind a fail-closed allowlist).
-Phase 3 shipped 2026-08-07 (signed HMAC handoff verifier, bot `resolveOAuthTier`
-integration with Phase 2 fallback; `handoff.js` + config).
-Phase 4 shipped 2026-08-07 (route capability gating, `rbac.js` with 160+ route
-entries, tier ladder + capability catalog, client-side navGroups gate, 40 unit tests).
-**Authorized:** 2026-08-06 (user-directed workstream: implement across all repos
-except this one; for this repo, produce this document first).
+(2026-08-06): B — bot relay via signed handoff.** Phase 2-4 shipped 2026-08-06/07.
+**IAM migration shipped 2026-08-07** — 18 coarse capabilities replaced with
+~130 fine-grained actions in an AWS IAM-style policy engine (`policy.js`,
+`actions.js`). In-console policy editor UI (`IamPolicyEditor.tsx`) under
+Access Control in the Server Control tab. See implementation files:
+`console/api/src/actions.js`, `console/api/src/policy.js`,
+`console/web/src/features/settings/IamPolicyEditor.tsx`.
 **Cross-repo companion work already landed:** `arrakis-control-panel` commit
 `4a2993d` (unified-RBAC Phase 1: multi-tenant `isCommandAllowed()`/`isAdminActor()`
 now honor owner/moderator tiers; `canWrite()` resolves tiers from `guild_roles`;
@@ -406,6 +405,21 @@ returns the tiered identity; plus a 403 for a non-home-guild member and a
 - `console/api/src/integrations/discord/policy.js` (tier/capability pattern).
 - `arrakis-control-panel/src/rbac.js` (bot-side unified tier model, landed
   in `4a2993d`).
+
+### IAM Implementation (Phase A, 2026-08-07)
+- `console/api/src/actions.js` — action catalog (~160 routes → action mapping, 19 namespaces)
+- `console/api/src/policy.js` — IAM policy engine (Deny > Allow > default Deny, wildcard matching)
+- `console/web/src/features/settings/IamPolicyEditor.tsx` — in-console policy editor (JSON + visual builder + test panel)
+- `runtime/generated/iam-policies.json` — on-disk policy documents (gitignored, auto-created at startup)
+- `test/rbacParity.test.js` — static parity test verifying every route has an action
+
+### Secrets Management (Phase 1 designed, 2026-08-07)
+- `docs/security/secrets-management.md` — full analysis: PKI, CMK, storage, retrieval, rotation
+- Proposed: age-based secret vault replacing plaintext `runtime/secrets/*.txt` files
+- Proposed: `console/api/src/secrets.js` — in-memory secret cache with age decryption
+- Proposed: `scripts/secrets.sh` — CLI wrapper for age: init, get, set, rotate, list
+- Proposed: `SecretsManager.tsx` UI (Phase 2) — in-console editor under Access Control
+
 - `docs/security/login-rate-limit-defense.md`, `docs/security/audit-2026-07-04.md`
   (existing security baselines to extend).
 - Issue #135 (actor signature — Phase 4 prerequisite).
