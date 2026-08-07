@@ -11,6 +11,20 @@ Keep a Changelog style, grouped by upstream base version, newest first.
 
 ### Added
 
+- Discord OAuth as primary sign-in method on the login page. Password login is
+  available as a secondary, collapsible option when OAuth is configured.
+- Local static file mount (`runtime/local-static` → `/app/web-dist/atrium`)
+  so operators can serve custom pages from the console domain. Directory
+  is gitignored — content is per-deployment and never pushed upstream.
+- Atrium page access control: the `/atrium/` path requires a valid session
+  and checks `ATRIUM_ALLOWED_USER_ID` against the session's Discord user ID.
+  Unauthorized users see a friendly access-denied page.
+- `POST /api/auth/discord/exchange` endpoint — accepts a Discord Bearer
+  access token, validates it, and returns a console session cookie + CSRF.
+  Used by the Atrium page for single-auth flow. Optional user-ID gate via
+  `ATRIUM_ALLOWED_DISCORD_USER_ID` env var.
+- Static file server now resolves directory paths to `index.html`
+  (`/atrium/` → `/atrium/index.html`).
 - RBAC Phase 3 — signed handoff tier resolution (Mechanism B, #135). The console
   can now resolve a Discord user's effective tier for the configured home guild
   by calling the ACP bot's `resolve-console-tier` endpoint and verifying the
@@ -35,6 +49,9 @@ Keep a Changelog style, grouped by upstream base version, newest first.
   files now have their ownership preserved (`chown --reference`) before the atomic `mv`
   replacement, and when the project name is already correct the function is a no-op
   (no file write at all). Documented as INC-2026-07-27-001.
+- Session cookies (`asc_session`) and OAuth state cookies (`discord_oauth_state`) always
+  include the `Secure` flag by default. Operators running the console locally over plain
+  HTTP can set `ADMIN_SECURE_COOKIES=0` in `.env` to opt out.
 
 ### Fixed
 
