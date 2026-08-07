@@ -134,6 +134,9 @@ export function IamPolicyEditor() {
     }
     for (const ns of Object.keys(groups)) groups[ns].sort();
     if (other.length) groups["other"] = other.sort();
+    for (const ns of Object.keys(groups)) {
+      if (groups[ns].length === 0) delete groups[ns];
+    }
     return groups;
   }, [catalog]);
 
