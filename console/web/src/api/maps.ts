@@ -28,6 +28,9 @@ export type LiveMapMemoryRow = {
   limitBytes: number;
   percent: number;
   raw: string;
+  swapUsedBytes?: number;
+  swapLimitBytes?: number;
+  swapSupported?: boolean;
 };
 
 export type MemoryBalancerState = {

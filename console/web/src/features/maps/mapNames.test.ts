@@ -8,6 +8,8 @@ describe("map friendly names", () => {
     ["SH_Arrakeen", "Arrakeen"],
     ["DeepDesert_1", "Deep Desert"],
     ["CB_Dungeon_ThePit", "The Old Quarry"],
+    ["CB_Dungeon_Hephaestus", "Wreck Of Hephaestus"],
+    ["CB_Dungeon_OldCarthag", "Ruins Of Old Carthag"],
     ["Story_Faction_Outpost_Hark", "Arsunt Garrison (Harkonnen)"]
   ])("maps %s to %s", (mapId, displayName) => {
     expect(friendlyMapName(mapId)).toBe(displayName);

@@ -10,6 +10,8 @@ const MAP_FRIENDLY_NAMES: Readonly<Record<string, string>> = Object.freeze({
   cb_ecolab_bronze_green_195: "PoisonLab",
   cb_ecolab_bronze_green_136: "Fire Lab",
   cb_dungeon_thepit: "The Old Quarry",
+  cb_dungeon_hephaestus: "Wreck Of Hephaestus",
+  cb_dungeon_oldcarthag: "Ruins Of Old Carthag",
   cb_overland_m_01: "Wreck of the Tyche",
   cb_overland_s_04: "Blushing Cavern",
   cb_overland_s_06: "Smugglers Run",
