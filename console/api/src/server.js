@@ -3272,8 +3272,15 @@ function sanitizedUrl(req, path) {
 }
 
 async function handleDiscordTokenExchange(req, res) {
+  const rateKey = loginRateLimitKey(req);
+  const rate = loginRateLimiter.check(rateKey);
+  if (!rate.allowed) {
+    return json(res, 429, { error: "Too many sign-in attempts. Please wait a few minutes, then try again." }, { "retry-after": String(rate.retryAfterSeconds) });
+  }
+
   const authHeader = (req.headers.authorization || "").trim();
   if (!authHeader.startsWith("Bearer ") || authHeader.length <= 7) {
+    loginRateLimiter.recordFailure(rateKey);
     return json(res, 401, { error: "Bearer token required." });
   }
   const accessToken = authHeader.slice(7).trim();
@@ -3282,16 +3289,19 @@ async function handleDiscordTokenExchange(req, res) {
   try {
     identity = await fetchDiscordIdentity({ accessToken, apiBaseUrl: config.discordOAuthApiBaseUrl });
   } catch (error) {
+    loginRateLimiter.recordFailure(rateKey);
     audit(config, req, "auth.oauth.exchange", { ok: false, reason: "identity_fetch_failed" });
     return json(res, 401, { error: "Discord token validation failed." });
   }
 
   const allowedUserId = String(process.env.ATRIUM_ALLOWED_DISCORD_USER_ID || "").trim();
   if (allowedUserId && identity.userId !== allowedUserId) {
+    loginRateLimiter.recordFailure(rateKey);
     audit(config, req, "auth.oauth.exchange", { ok: false, reason: "not_authorized", userId: identity.userId });
     return json(res, 403, { error: "Discord account not authorized for the Atrium exchange." });
   }
 
+  loginRateLimiter.recordSuccess(rateKey);
   const session = auth.makeSession({
     tier: "owner",
     userId: identity.userId,
