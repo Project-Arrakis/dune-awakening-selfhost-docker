@@ -1,5 +1,5 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { playersApi } from "../../api/players";
 import { PlayersPanel } from "./PlayersPanel";
 
@@ -32,6 +32,10 @@ beforeEach(() => {
   vi.mocked(playersApi.profile).mockResolvedValue({ player: bannedPlayer });
 });
 
+afterEach(() => {
+  vi.useRealTimers();
+});
+
 describe("PlayersPanel persistent bans", () => {
   it("renders banned status and requests the banned filter", async () => {
     render(<PlayersPanel onError={vi.fn()} renderCharacterAdmin={() => null} />);
@@ -43,5 +47,22 @@ describe("PlayersPanel persistent bans", () => {
     fireEvent.change(filter, { target: { value: "banned" } });
 
     await waitFor(() => expect(playersApi.list).toHaveBeenLastCalledWith(expect.objectContaining({ status: "banned" })));
+  });
+
+  it("automatically refreshes an open player profile", async () => {
+    vi.useFakeTimers();
+    render(<PlayersPanel onError={vi.fn()} renderCharacterAdmin={({ detail }) => <div data-testid="open-player-map">{String((detail?.player as Record<string, unknown> | undefined)?.map || "Loading")}</div>} />);
+    await act(async () => { await Promise.resolve(); });
+
+    fireEvent.click(screen.getByText("Vixen"));
+    await act(async () => { await Promise.resolve(); });
+    expect(playersApi.profile).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId("open-player-map")).toHaveTextContent("Survival_1");
+
+    vi.mocked(playersApi.profile).mockResolvedValue({ player: { ...bannedPlayer, map: "DeepDesert_1" } });
+    await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+
+    expect(playersApi.profile).toHaveBeenCalledTimes(2);
+    expect(screen.getByTestId("open-player-map")).toHaveTextContent("DeepDesert_1");
   });
 });
