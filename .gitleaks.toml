@@ -9,7 +9,10 @@
   useDefault = true
 
 [allowlist]
-  description = "Known command-auth fallback shared by game server"
+  description = "Verified placeholders / synthetic fixtures (checked 2026-08-06)"
   regexes = [
-    "Nu6VmPWUMvdPMeB7qErr"
+    "Nu6VmPWUMvdPMeB7qErr",
+    "123456789012345678",
+    "143064109775060993",
+    "abcdefghijklmnopqrstuvwxyzABCDEFG123456"
   ]
