@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import { redact } from "./redact.js";
 import { clampInt, writeJsonAtomic } from "./jsonStore.js";
+import { CARE_PACKAGE_SERVER_PERSONA, FUNCOM_GM_PERSONA } from "./systemPersonas.js";
 import {
   craftingRecipeCatalogRows,
   compareJourneyCatalogOrder,
@@ -1401,7 +1402,7 @@ const PLAYER_SORT_COLUMNS = {
 
 // Funcom creates this reserved GM identity in some freshly initialized
 // battlegroups. It is an internal service actor, not an administrable player.
-const INTERNAL_GM_PLAYER_PAWN_ID = "900000103";
+const INTERNAL_GM_PLAYER_PAWN_ID = FUNCOM_GM_PERSONA.playerPawnId;
 
 export async function listPlayers(db, { status = "all", q = "", page = 0, pageSize = 50, sortColumn = "character_name", sortDirection = "asc", includeTotals = true, bannedFlsIds = [] } = {}) {
   if (!(await tableExists(db, "actors")) || !(await tableExists(db, "player_state"))) {
@@ -3049,13 +3050,39 @@ export async function listBasePermissions(db, baseId) {
   await requireCapability(await supportsBasePermissionEditing(db),
     "Base permission editing requires dune.permission_actor_rank, dune.map_names, and the dune.permission_set_player_rank/permission_remove_player_rank functions.");
   const { actorId, map, mapNameId } = await basePermissionActor(db, baseId);
+  const encryptedPlayerStateColumns = await tableExists(db, "encrypted_player_state")
+    ? await columnsFor(db, "encrypted_player_state")
+    : new Set();
+  const hasEncryptedController = encryptedPlayerStateColumns.has("player_controller_id");
+  const canDecryptEncryptedName = hasEncryptedController
+    && encryptedPlayerStateColumns.has("encrypted_character_name")
+    && await functionExists(db, "dune.decrypt_user_data(bytea)");
+  const encryptedJoin = hasEncryptedController
+    ? `left join lateral (
+      select eps.player_controller_id,
+             ${canDecryptEncryptedName ? `case
+               when eps.player_controller_id in (${CARE_PACKAGE_SERVER_PERSONA.playerControllerId}::bigint, ${FUNCOM_GM_PERSONA.playerControllerId}::bigint) then ''::text
+               else dune.decrypt_user_data(eps.encrypted_character_name)
+             end` : "''::text"} as character_name
+      from dune.encrypted_player_state eps
+      where eps.player_controller_id = par.player_id
+      limit 1
+    ) eps on true`
+    : "";
+  const encryptedName = hasEncryptedController ? "eps.character_name" : "''";
+  const encryptedCanonical = hasEncryptedController ? "or eps.player_controller_id is not null" : "";
   const result = await db.query(`
     select par.player_id::text as player_id,
-           coalesce(ps.character_name, fallback.character_name, '') as character_name,
+           case
+             when par.player_id = ${CARE_PACKAGE_SERVER_PERSONA.playerControllerId}::bigint then '${CARE_PACKAGE_SERVER_PERSONA.displayName}'
+             when par.player_id = ${FUNCOM_GM_PERSONA.playerControllerId}::bigint then '${FUNCOM_GM_PERSONA.displayName}'
+             else coalesce(ps.character_name, ${encryptedName}, fallback.character_name, '')
+           end as character_name,
            par.rank::int as rank,
-           (ps.player_controller_id is not null) as canonical
+           (ps.player_controller_id is not null ${encryptedCanonical}) as canonical
     from dune.permission_actor_rank par
     left join dune.player_state ps on ps.player_controller_id = par.player_id
+    ${encryptedJoin}
     left join lateral (
       select fps.character_name
       from dune.actors fa
@@ -3086,12 +3113,54 @@ export async function listBasePermissions(db, baseId) {
   };
 }
 
-// System identities stay out of ordinary player search. The Server identity is
-// useful as an administrative parking owner, but only when it resolves to one
-// unambiguous player_controller_id -- the same canonical id the game requires
-// for every other permission holder. Never fall back to an arbitrary actor id,
-// and never treat the reserved GM pawn as a custodian.
+// System identities stay out of ordinary player search. Prefer the RedBlink
+// Server persona when installed, then fall back to Funcom's reserved GM persona.
+// Both are matched by their stable account/controller/state/pawn tuple rather
+// than their display name: encrypted schemas do not expose a plain name, and a
+// normal character can be named "Server". The legacy name lookup is retained
+// last for installations that created Server before the reserved tuple existed.
 export async function basePermissionSystemCustodian(db) {
+  const personas = [CARE_PACKAGE_SERVER_PERSONA, FUNCOM_GM_PERSONA];
+  const sources = [];
+  for (const table of ["player_state", "encrypted_player_state"]) {
+    if (!(await tableExists(db, table))) continue;
+    const columns = await columnsFor(db, table);
+    if (!columns.has("account_id") || !columns.has("player_controller_id")) continue;
+    sources.push({ table, columns });
+  }
+
+  for (const persona of personas) {
+    for (const source of sources) {
+      const predicates = ["account_id = $1::bigint", "player_controller_id = $2::bigint"];
+      const values = [persona.accountId, persona.playerControllerId];
+      if (source.columns.has("player_state_id")) {
+        values.push(persona.playerStateId);
+        predicates.push(`player_state_id = $${values.length}::bigint`);
+      }
+      if (source.columns.has("player_pawn_id")) {
+        values.push(persona.playerPawnId);
+        predicates.push(`player_pawn_id = $${values.length}::bigint`);
+      }
+      const exact = await db.query(`
+        select player_controller_id::text as player_id
+        from dune.${source.table}
+        where ${predicates.join(" and ")}
+        limit 2`, values);
+      if (exact.rows.length > 1) {
+        return { available: false, reason: `More than one canonical ${persona.displayName} system identity was found; refusing an ambiguous transfer.` };
+      }
+      if (exact.rows.length === 1) {
+        return {
+          available: true,
+          playerId: persona.playerControllerId,
+          name: persona.displayName
+        };
+      }
+    }
+  }
+
+  // Compatibility for an older, manually-created Server persona whose ids do
+  // not use the now-reserved 9000002xx tuple.
   const playerStateColumns = await columnsFor(db, "player_state");
   const internalGmPawnFilter = playerStateColumns.has("player_pawn_id")
     ? `and coalesce(ps.player_pawn_id, 0) <> ${INTERNAL_GM_PLAYER_PAWN_ID}::bigint`
@@ -3107,7 +3176,7 @@ export async function basePermissionSystemCustodian(db) {
     order by player_id
     limit 2`);
   if (result.rows.length === 0) {
-    return { available: false, reason: "No canonical Server system identity was found in player_state." };
+    return { available: false, reason: "No supported system custodian was found. Expected the RedBlink Server identity or Funcom GM identity." };
   }
   if (result.rows.length > 1) {
     return { available: false, reason: "More than one canonical Server system identity was found; refusing an ambiguous transfer." };
@@ -3220,9 +3289,20 @@ async function mutateBasePermissions(db, target, safeMax, desiredRoster) {
     }
 
     // Every target player must be a real permission holder, i.e. an account's
-    // player_controller_id. Anything else writes a row the game ignores.
+    // player_controller_id. Newer servers keep this in encrypted_player_state;
+    // older schemas expose player_state. Anything else writes a row the game
+    // ignores.
+    const canonicalSources = [
+      "select player_controller_id from dune.player_state where player_controller_id = any($1::bigint[])"
+    ];
+    if (await tableExists(tx, "encrypted_player_state")) {
+      const encryptedColumns = await columnsFor(tx, "encrypted_player_state");
+      if (encryptedColumns.has("player_controller_id")) {
+        canonicalSources.push("select player_controller_id from dune.encrypted_player_state where player_controller_id = any($1::bigint[])");
+      }
+    }
     const canonical = await tx.query(
-      "select player_controller_id::text as player_id from dune.player_state where player_controller_id = any($1::bigint[])",
+      `select distinct player_controller_id::text as player_id from (${canonicalSources.join(" union all ")}) known_players`,
       [desired.map((entry) => entry.playerId)]);
     const canonicalIds = new Set(canonical.rows.map((row) => String(row.player_id)));
     for (const entry of desired) {
@@ -3299,8 +3379,8 @@ export async function transferBaseToSystemCustodian(db, baseId, maxPermissionsPe
     ...result,
     systemCustodian: custodian,
     message: result.reranked === 0 && result.added === 0
-      ? "This base is already owned by the Server system custodian."
-      : "Ownership was transferred to the Server system custodian. The change applies to the running map immediately."
+      ? `This base is already owned by the ${custodian.name} system custodian.`
+      : `Ownership was transferred to the ${custodian.name} system custodian. The change applies to the running map immediately.`
   };
 }
 

@@ -51,6 +51,16 @@ const SCHEMA = `
   create table dune.permission_actor (actor_id bigint primary key, actor_name text);
   create table dune.permission_actor_rank (permission_actor_id bigint not null, player_id bigint not null, rank smallint not null);
   create table dune.player_state (account_id bigint, player_controller_id bigint, player_pawn_id bigint, character_name text);
+  create table dune.encrypted_player_state (
+    account_id bigint,
+    player_controller_id bigint,
+    player_state_id bigint,
+    player_pawn_id bigint,
+    encrypted_character_name bytea
+  );
+
+  create function dune.decrypt_user_data(value bytea)
+  returns text language sql immutable as $$ select convert_from(value, 'UTF8') $$;
 
   create function dune.permission_actor_create_or_update_base_marker(in_actor_id bigint, in_player_id bigint, in_rank smallint)
   returns void language plpgsql as $$ begin return; end $$;
@@ -103,6 +113,9 @@ const SEED = `
       (101, 900000103, 900000203, 'Reserved GM Controller');
 
   insert into dune.permission_actor_rank (permission_actor_id, player_id, rank) values (${ACTOR_ID}, 4, ${OWNER_RANK});
+  insert into dune.encrypted_player_state
+    (account_id, player_controller_id, player_state_id, player_pawn_id, encrypted_character_name)
+    values (9000001, 900000101, 900000102, 900000103, convert_to('GM', 'UTF8'));
 `;
 
 async function withDatabase(t, run) {
@@ -353,5 +366,23 @@ test("real PostgreSQL: Server can own a base while the previous roster is preser
       { playerId: "900000201", rank: OWNER_RANK },
       { playerId: "4", rank: CO_OWNER_RANK }
     ]);
+  });
+});
+
+test("real PostgreSQL: encrypted Funcom GM is used when Server is absent", async (t) => {
+  await withDatabase(t, async (pool) => {
+    await pool.query("delete from dune.player_state where character_name = 'Server'");
+    const db = pgTransactionalDb(pool);
+    const result = await transferBaseToSystemCustodian(db, BASE_ID);
+    assert.deepEqual(result.systemCustodian, { available: true, playerId: "900000101", name: "GM" });
+    assert.match(result.message, /GM system custodian/);
+    assert.deepEqual(await ranks(pool), [
+      { playerId: "900000101", rank: OWNER_RANK },
+      { playerId: "4", rank: CO_OWNER_RANK }
+    ]);
+
+    const roster = await listBasePermissions(db, BASE_ID);
+    const owner = roster.entries.find((entry) => entry.rank === OWNER_RANK);
+    assert.deepEqual([owner.name, owner.playerId, owner.canonical], ["GM", "900000101", true]);
   });
 });

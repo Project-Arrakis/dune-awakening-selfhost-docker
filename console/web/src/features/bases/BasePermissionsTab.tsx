@@ -172,15 +172,16 @@ export function BasePermissionsTab({ baseId, baseName, onSaved, confirmAction }:
 
   async function transferToSystemCustodian() {
     if (!systemCustodian.available || !systemCustodian.playerId) return;
+    const custodianName = systemCustodian.name || "System";
     const confirmed = await confirmAction(
-      "Transfer this base to the reserved Server identity? Existing access entries will be preserved and the current Owner will become a Co-Owner.",
+      `Transfer this base to the reserved ${custodianName} identity? Existing access entries will be preserved and the current Owner will become a Co-Owner.`,
       {
-        title: "Transfer to Server Custodian",
+        title: `Transfer to ${custodianName} Custodian`,
         confirmLabel: "Transfer Ownership",
         warning: "This is an administrative parking owner. Verify building access in-game after the transfer before using it broadly.",
         details: [
           { label: "Base", value: baseName },
-          { label: "New Owner", value: `${systemCustodian.name || "Server"} (System Custodian)`, tone: "accent" }
+          { label: "New Owner", value: `${custodianName} (System Custodian)`, tone: "accent" }
         ]
       }
     );
@@ -190,7 +191,7 @@ export function BasePermissionsTab({ baseId, baseName, onSaved, confirmAction }:
     setStatusKind("");
     try {
       const response = await basesApi.transferToSystemCustodian(baseId);
-      setStatus(response.result?.message || "Ownership was transferred to the Server system custodian.");
+      setStatus(response.result?.message || `Ownership was transferred to the ${custodianName} system custodian.`);
       setStatusKind("ok");
       await load();
       onSaved();
@@ -294,15 +295,15 @@ export function BasePermissionsTab({ baseId, baseName, onSaved, confirmAction }:
       <div className="bases-system-custodian">
         <div>
           <strong>System Custodian</strong>
-          <p className="muted">Park ownership on the reserved Server identity while preserving the current permission roster.</p>
+          <p className="muted">Park ownership on a detected reserved system identity while preserving the current permission roster.</p>
           {!systemCustodian.available && systemCustodian.reason && <p className="bases-permissions-error">{systemCustodian.reason}</p>}
         </div>
         <button
           className="warning"
           disabled={!systemCustodian.available || owner?.playerId === systemCustodian.playerId || saving || dirty}
-          title={dirty ? "Save or revert roster changes first" : owner?.playerId === systemCustodian.playerId ? "This base is already owned by the Server system custodian" : "Transfer ownership to the Server system custodian"}
+          title={dirty ? "Save or revert roster changes first" : owner?.playerId === systemCustodian.playerId ? `This base is already owned by the ${systemCustodian.name || "detected"} system custodian` : `Transfer ownership to the ${systemCustodian.name || "detected"} system custodian`}
           onClick={() => void transferToSystemCustodian()}
-        >{owner?.playerId === systemCustodian.playerId ? "Owned by Server" : "Transfer to Server"}</button>
+        >{owner?.playerId === systemCustodian.playerId ? `Owned by ${systemCustodian.name || "Custodian"}` : systemCustodian.available ? `Transfer to ${systemCustodian.name || "Custodian"}` : "Transfer to Custodian"}</button>
       </div>
 
       {dirty && <p className="confirm-modal-warning bases-permissions-warning" role="status">
