@@ -2417,6 +2417,7 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
 }
 .bases-permissions-row-owner .bases-permissions-name { color: var(--text-strong); }
 .bases-permissions-orphan { display: inline-flex; color: var(--warning); flex: 0 0 auto; }
+.bases-permissions-system-label { padding: 2px 6px; border: 1px solid var(--warning); border-radius: 999px; color: #ffd08a; font-size: 10px; font-weight: 800; letter-spacing: .03em; text-transform: uppercase; }
 .bases-permissions-remove { border-color: var(--danger-strong); color: var(--danger-text); }
 .bases-permissions-add { display: grid; gap: 8px; }
 /* Overrides .action-row's align-items: center -- "Add as" has a label line
@@ -2451,6 +2452,9 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
 }
 .bases-permissions-warning { margin: 0; }
 .bases-permissions-error { color: var(--danger-text); margin: 0; }
+.bases-system-custodian { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px; border: 1px solid var(--warning); border-radius: 8px; background: rgba(169, 121, 50, .08); }
+.bases-system-custodian p { margin: 4px 0 0; }
+.bases-system-custodian button { flex: 0 0 auto; }
 .bases-permissions-actions {
   display: flex;
   align-items: center;

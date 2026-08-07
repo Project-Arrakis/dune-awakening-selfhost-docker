@@ -11,6 +11,7 @@ type BasePermissionsTabProps = {
   baseId: string;
   baseName: string;
   onSaved: () => void;
+  confirmAction: (message: string, options?: { title?: string; confirmLabel?: string; warning?: string; danger?: boolean; details?: { label: string; value: string; tone?: "accent" | "success" | "danger" }[] }) => Promise<boolean>;
 };
 
 const OWNER_RANK: BasePermissionRank = 1;
@@ -50,7 +51,7 @@ function errorText(error: unknown) {
   return error instanceof Error ? error.message : String(error);
 }
 
-export function BasePermissionsTab({ baseId, baseName, onSaved }: BasePermissionsTabProps) {
+export function BasePermissionsTab({ baseId, baseName, onSaved, confirmAction }: BasePermissionsTabProps) {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [saved, setSaved] = useState<DraftEntry[]>([]);
@@ -63,6 +64,7 @@ export function BasePermissionsTab({ baseId, baseName, onSaved }: BasePermission
   const [searching, setSearching] = useState(false);
   const [searched, setSearched] = useState(false);
   const [addRank, setAddRank] = useState<BasePermissionRank>(ASSOCIATE_RANK);
+  const [systemCustodian, setSystemCustodian] = useState<{ available: boolean; playerId?: string; name?: string; reason?: string }>({ available: false });
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -72,6 +74,7 @@ export function BasePermissionsTab({ baseId, baseName, onSaved }: BasePermission
       const entries = toDraft(result.entries || []);
       setSaved(entries);
       setDraft(entries);
+      setSystemCustodian(result.systemCustodian || { available: false, reason: "System custodian detection is unavailable." });
     } catch (error) {
       setLoadError(errorText(error));
     } finally {
@@ -80,6 +83,19 @@ export function BasePermissionsTab({ baseId, baseName, onSaved }: BasePermission
   }, [baseId]);
 
   useEffect(() => { void load(); }, [load]);
+
+  useEffect(() => {
+    if (!status || statusKind !== "ok") return undefined;
+    // Keep this aligned with .inline-task-result.result-ok's 10.4s animation.
+    // CSS opacity does not release layout space, so retire successful results
+    // from React state when their visual lifetime ends. The animation handler
+    // below normally wins; this timer also covers reduced-motion/missed events.
+    const retire = window.setTimeout(() => {
+      setStatus("");
+      setStatusKind("");
+    }, 10_400);
+    return () => window.clearTimeout(retire);
+  }, [status, statusKind]);
 
   const dirty = !sameRoster(saved, draft);
   const owner = draft.find((entry) => entry.rank === OWNER_RANK);
@@ -154,6 +170,38 @@ export function BasePermissionsTab({ baseId, baseName, onSaved }: BasePermission
     }
   }
 
+  async function transferToSystemCustodian() {
+    if (!systemCustodian.available || !systemCustodian.playerId) return;
+    const confirmed = await confirmAction(
+      "Transfer this base to the reserved Server identity? Existing access entries will be preserved and the current Owner will become a Co-Owner.",
+      {
+        title: "Transfer to Server Custodian",
+        confirmLabel: "Transfer Ownership",
+        warning: "This is an administrative parking owner. Verify building access in-game after the transfer before using it broadly.",
+        details: [
+          { label: "Base", value: baseName },
+          { label: "New Owner", value: `${systemCustodian.name || "Server"} (System Custodian)`, tone: "accent" }
+        ]
+      }
+    );
+    if (!confirmed) return;
+    setSaving(true);
+    setStatus("");
+    setStatusKind("");
+    try {
+      const response = await basesApi.transferToSystemCustodian(baseId);
+      setStatus(response.result?.message || "Ownership was transferred to the Server system custodian.");
+      setStatusKind("ok");
+      await load();
+      onSaved();
+    } catch (error) {
+      setStatus(errorText(error));
+      setStatusKind("fail");
+    } finally {
+      setSaving(false);
+    }
+  }
+
   if (loading) {
     return <p className="muted" role="status">Loading permissions…</p>;
   }
@@ -174,10 +222,12 @@ export function BasePermissionsTab({ baseId, baseName, onSaved }: BasePermission
       <div className="bases-permissions-roster">
         {sortDraft(draft).map((entry) => {
           const isOwner = entry.rank === OWNER_RANK;
+          const isSystemCustodian = systemCustodian.available && entry.playerId === systemCustodian.playerId;
           return (
             <div className={`bases-permissions-row${isOwner ? " bases-permissions-row-owner" : ""}`} key={entry.playerId}>
               <span className="bases-permissions-name" title={entry.name || entry.playerId}>
                 {entry.name || `Player ${entry.playerId}`}
+                {isSystemCustodian && <span className="bases-permissions-system-label">System Custodian</span>}
                 {!entry.canonical && <span className="bases-permissions-orphan" title="This entry does not match a known player character, so the game ignores it. Removing it is safe.">
                   <TriangleAlert size={13} aria-label="Ignored by the game" />
                 </span>}
@@ -241,13 +291,39 @@ export function BasePermissionsTab({ baseId, baseName, onSaved }: BasePermission
         </ul>}
       </div>
 
+      <div className="bases-system-custodian">
+        <div>
+          <strong>System Custodian</strong>
+          <p className="muted">Park ownership on the reserved Server identity while preserving the current permission roster.</p>
+          {!systemCustodian.available && systemCustodian.reason && <p className="bases-permissions-error">{systemCustodian.reason}</p>}
+        </div>
+        <button
+          className="warning"
+          disabled={!systemCustodian.available || owner?.playerId === systemCustodian.playerId || saving || dirty}
+          title={dirty ? "Save or revert roster changes first" : owner?.playerId === systemCustodian.playerId ? "This base is already owned by the Server system custodian" : "Transfer ownership to the Server system custodian"}
+          onClick={() => void transferToSystemCustodian()}
+        >{owner?.playerId === systemCustodian.playerId ? "Owned by Server" : "Transfer to Server"}</button>
+      </div>
+
       {dirty && <p className="confirm-modal-warning bases-permissions-warning" role="status">
         Saving writes to the live database and notifies the running map server. An online player may need to reopen the base's panel to see the change.
       </p>}
       {!owner && <p className="bases-permissions-error" role="alert">
         This base has no Owner. Set one before saving.
       </p>}
-      {status && <p className={`inline-task-result${statusKind ? ` result-${statusKind}` : ""}`} role={statusKind === "fail" ? "alert" : "status"}>
+      {status && <p
+        className={`inline-task-result${statusKind ? ` result-${statusKind}` : ""}`}
+        role={statusKind === "fail" ? "alert" : "status"}
+        onAnimationEnd={() => {
+          // The shared success animation fades opacity only. Remove this result
+          // after that fade so an invisible flex item does not keep reserving
+          // space in the permissions layout. Failures remain until the next
+          // action so their details are not lost.
+          if (statusKind !== "ok") return;
+          setStatus("");
+          setStatusKind("");
+        }}
+      >
         <strong>{status}</strong>
       </p>}
 

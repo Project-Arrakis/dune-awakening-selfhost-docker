@@ -3065,11 +3065,13 @@ export async function listBasePermissions(db, baseId) {
     ) fallback on true
     where par.permission_actor_id = $1::bigint
     order by par.rank asc, coalesce(ps.character_name, fallback.character_name, '') asc`, [actorId]);
+  const systemCustodian = await basePermissionSystemCustodian(db);
   return {
     baseId: intParam(baseId, "base id", 1),
     actorId,
     map,
     mapNameId,
+    systemCustodian,
     entries: result.rows.map((row) => ({
       playerId: String(row.player_id),
       name: String(row.character_name || ""),
@@ -3081,6 +3083,39 @@ export async function listBasePermissions(db, baseId) {
       // client cannot.
       canonical: row.canonical === true
     }))
+  };
+}
+
+// System identities stay out of ordinary player search. The Server identity is
+// useful as an administrative parking owner, but only when it resolves to one
+// unambiguous player_controller_id -- the same canonical id the game requires
+// for every other permission holder. Never fall back to an arbitrary actor id,
+// and never treat the reserved GM pawn as a custodian.
+export async function basePermissionSystemCustodian(db) {
+  const playerStateColumns = await columnsFor(db, "player_state");
+  const internalGmPawnFilter = playerStateColumns.has("player_pawn_id")
+    ? `and coalesce(ps.player_pawn_id, 0) <> ${INTERNAL_GM_PLAYER_PAWN_ID}::bigint`
+    : "";
+  const result = await db.query(`
+    select distinct ps.player_controller_id::text as player_id,
+           btrim(ps.character_name) as character_name
+    from dune.player_state ps
+    where coalesce(ps.player_controller_id, 0) > 0
+      and ps.player_controller_id <> ${INTERNAL_GM_PLAYER_PAWN_ID}::bigint
+      ${internalGmPawnFilter}
+      and lower(btrim(coalesce(ps.character_name, ''))) = 'server'
+    order by player_id
+    limit 2`);
+  if (result.rows.length === 0) {
+    return { available: false, reason: "No canonical Server system identity was found in player_state." };
+  }
+  if (result.rows.length > 1) {
+    return { available: false, reason: "More than one canonical Server system identity was found; refusing an ambiguous transfer." };
+  }
+  return {
+    available: true,
+    playerId: String(result.rows[0].player_id),
+    name: String(result.rows[0].character_name || "Server")
   };
 }
 
@@ -3155,16 +3190,7 @@ function normalizeDesiredPermissions(entries) {
 // LIMIT 1, so a moment with two rank-1 rows could stamp the wrong owner onto the
 // base marker. Removals run first, then non-owner ranks, then the Owner last --
 // so at most one rank-1 row exists when the owner write lands.
-export async function setBasePermissions(db, baseId, entries, maxPermissionsPerActor = DEFAULT_MAX_PERMISSIONS_PER_ACTOR) {
-  await requireCapability(await supportsBasePermissionEditing(db),
-    "Base permission editing requires dune.permission_actor_rank, dune.map_names, and the dune.permission_set_player_rank/permission_remove_player_rank functions.");
-  const target = intParam(baseId, "base id", 1);
-  const safeMax = intParam(maxPermissionsPerActor, "maximum permissions per base", 1, 2147483647);
-  const desired = normalizeDesiredPermissions(entries);
-  if (desired.length > safeMax) {
-    throw new Error(`This base would hold ${desired.length} permissions, above the configured maximum of ${safeMax}.`);
-  }
-
+async function mutateBasePermissions(db, target, safeMax, desiredRoster) {
   return db.transaction(async (tx) => {
     // The shipped procedures reference their tables unqualified and carry no
     // `SET search_path` of their own; they resolve only because the console
@@ -3188,6 +3214,10 @@ export async function setBasePermissions(db, baseId, entries, maxPermissionsPerA
       "select player_id::text as player_id, rank::int as rank from dune.permission_actor_rank where permission_actor_id = $1::bigint",
       [actor.actorId]);
     const currentByPlayer = new Map(existing.rows.map((row) => [String(row.player_id), Number(row.rank)]));
+    const desired = normalizeDesiredPermissions(await desiredRoster(existing.rows, tx));
+    if (desired.length > safeMax) {
+      throw new Error(`This base would hold ${desired.length} permissions, above the configured maximum of ${safeMax}.`);
+    }
 
     // Every target player must be a real permission holder, i.e. an account's
     // player_controller_id. Anything else writes a row the game ignores.
@@ -3233,6 +3263,45 @@ export async function setBasePermissions(db, baseId, entries, maxPermissionsPerA
       message: "Permissions were updated. The change applies to the running map immediately."
     };
   });
+}
+
+export async function setBasePermissions(db, baseId, entries, maxPermissionsPerActor = DEFAULT_MAX_PERMISSIONS_PER_ACTOR) {
+  await requireCapability(await supportsBasePermissionEditing(db),
+    "Base permission editing requires dune.permission_actor_rank, dune.map_names, and the dune.permission_set_player_rank/permission_remove_player_rank functions.");
+  const target = intParam(baseId, "base id", 1);
+  const safeMax = intParam(maxPermissionsPerActor, "maximum permissions per base", 1, 2147483647);
+  // Validate before opening the transaction too, so malformed input fails
+  // without taking a claim lock. It is normalized again after the lock because
+  // the shared mutation path also accepts a roster built from current state.
+  const desired = normalizeDesiredPermissions(entries);
+  return mutateBasePermissions(db, target, safeMax, async () => desired);
+}
+
+export async function transferBaseToSystemCustodian(db, baseId, maxPermissionsPerActor = DEFAULT_MAX_PERMISSIONS_PER_ACTOR) {
+  await requireCapability(await supportsBasePermissionEditing(db),
+    "Base permission editing requires dune.permission_actor_rank, dune.map_names, and the dune.permission_set_player_rank/permission_remove_player_rank functions.");
+  const target = intParam(baseId, "base id", 1);
+  const safeMax = intParam(maxPermissionsPerActor, "maximum permissions per base", 1, 2147483647);
+  let custodian;
+  const result = await mutateBasePermissions(db, target, safeMax, async (existing, tx) => {
+    custodian = await basePermissionSystemCustodian(tx);
+    if (!custodian.available) throw new Error(custodian.reason);
+    const roster = existing.map((row) => ({
+      playerId: String(row.player_id),
+      rank: Number(row.rank) === PERMISSION_OWNER_RANK ? 2 : Number(row.rank)
+    }));
+    const currentCustodian = roster.find((entry) => entry.playerId === custodian.playerId);
+    if (currentCustodian) currentCustodian.rank = PERMISSION_OWNER_RANK;
+    else roster.push({ playerId: custodian.playerId, rank: PERMISSION_OWNER_RANK });
+    return roster;
+  });
+  return {
+    ...result,
+    systemCustodian: custodian,
+    message: result.reranked === 0 && result.added === 0
+      ? "This base is already owned by the Server system custodian."
+      : "Ownership was transferred to the Server system custodian. The change applies to the running map immediately."
+  };
 }
 
 const BASE_SORT_COLUMNS = {

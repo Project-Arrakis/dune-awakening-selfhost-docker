@@ -13,6 +13,7 @@ vi.mock("../../api/bases", () => ({
     setAutoRefill: vi.fn(),
     permissions: vi.fn(),
     setPermissions: vi.fn(),
+    transferToSystemCustodian: vi.fn(),
     permissionCandidates: vi.fn(),
     water: vi.fn(),
     refillWater: vi.fn(),
@@ -694,6 +695,7 @@ describe("BasesPanel permissions editing", () => {
       actorId: "1004",
       map: "DeepDesert",
       mapNameId: 7,
+      systemCustodian: { available: true, playerId: "900000201", name: "Server" },
       entries: [
         { playerId: "4", name: "DarkShark", rank: 1, label: "Owner", canonical: true },
         { playerId: "29", name: "Yaida", rank: 2, label: "Co-Owner", canonical: true }
@@ -795,6 +797,43 @@ describe("BasesPanel permissions editing", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: "Save changes" })).toBeEnabled());
     fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
     await waitFor(() => expect(basesApi.setPermissions).toHaveBeenCalledWith("1006", [{ playerId: "4", rank: 1 }]));
+  });
+
+  it("confirms and transfers to the detected Server custodian without exposing it in player search", async () => {
+    mockList(true);
+    mockRoster();
+    vi.mocked(basesApi.transferToSystemCustodian).mockResolvedValue({
+      supported: true,
+      result: { ok: true, baseId: 1006, actorId: "1004", map: "DeepDesert", added: 1, reranked: 1, removed: 0, total: 3, message: "Ownership was transferred to the Server system custodian." }
+    });
+    const props = renderPanel();
+    await openPermissionsTab();
+    fireEvent.click(await screen.findByRole("button", { name: "Transfer to Server" }));
+    await waitFor(() => expect(props.confirmAction).toHaveBeenCalledWith(
+      expect.stringContaining("reserved Server identity"),
+      expect.objectContaining({ title: "Transfer to Server Custodian", confirmLabel: "Transfer Ownership" })
+    ));
+    await waitFor(() => expect(basesApi.transferToSystemCustodian).toHaveBeenCalledWith("1006"));
+    expect(basesApi.permissionCandidates).not.toHaveBeenCalled();
+    expect(await screen.findByText("Ownership was transferred to the Server system custodian.")).toBeInTheDocument();
+    expect(screen.getByText("System Custodian", { selector: ".bases-system-custodian strong" })).toBeInTheDocument();
+  });
+
+  it("disables the custodian transfer when Server is unavailable", async () => {
+    mockList(true);
+    vi.mocked(basesApi.permissions).mockResolvedValue({
+      supported: true,
+      baseId: 1006,
+      actorId: "1004",
+      map: "DeepDesert",
+      mapNameId: 7,
+      systemCustodian: { available: false, reason: "No canonical Server system identity was found in player_state." },
+      entries: [{ playerId: "4", name: "DarkShark", rank: 1, label: "Owner", canonical: true }]
+    });
+    renderPanel();
+    await openPermissionsTab();
+    expect(await screen.findByRole("button", { name: "Transfer to Server" })).toBeDisabled();
+    expect(screen.getByText(/No canonical Server system identity/)).toBeInTheDocument();
   });
 
   // A roster row naming a non-canonical actor is one the game ignores. The
