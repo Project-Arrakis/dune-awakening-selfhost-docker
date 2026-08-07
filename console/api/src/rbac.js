@@ -243,6 +243,7 @@ const EXACT_ROUTES = {
   "GET /api/care-package/config": CAPABILITIES.ADMIN_TOOLS,
   "POST /api/care-package/history/clear": CAPABILITIES.CARE_PACKAGE_GRANT,
   "GET /api/care-package/grants": CAPABILITIES.ADMIN_TOOLS,
+  "GET /api/care-package/history": CAPABILITIES.ADMIN_TOOLS,
   "GET /api/care-package/eligible": CAPABILITIES.ADMIN_TOOLS,
   "POST /api/care-package/grant-eligible": CAPABILITIES.CARE_PACKAGE_GRANT,
   "POST /api/care-package/run": CAPABILITIES.CARE_PACKAGE_GRANT,
