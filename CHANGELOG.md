@@ -20,6 +20,12 @@ Keep a Changelog style, grouped by upstream base version, newest first.
 - When the handoff is not configured (no secret, no URL, or no home guild), the
   OAuth callback falls back to Phase 2's owner-bootstrap gates — zero new
   required config, no operator breakage (Strict Requirement 0).
+- RBAC Phase 4 — route & panel capability gating. Server-side `rbac.js` enforces
+  tier-based access on every API route (160+ entries, exact + regex patterns);
+  `/api/auth/me` returns per-tier capabilities. Client-side `App.tsx` filters
+  navGroup tabs by capability (UX only — server remains authoritative). 40
+  unit tests covering tier ladder, capability sets, fail-closed session
+  resolution, route pattern matching, and tier-appropriate gating.
 
 ### Security
 
