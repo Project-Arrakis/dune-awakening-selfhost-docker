@@ -49,6 +49,11 @@ Keep a Changelog style, grouped by upstream base version, newest first.
   files now have their ownership preserved (`chown --reference`) before the atomic `mv`
   replacement, and when the project name is already correct the function is a no-op
   (no file write at all). Documented as INC-2026-07-27-001.
+- Session cookies now carry the user's tier and ID in the HMAC-signed payload. When
+  the console restarts and in-memory sessions are lost, the synthesized session
+  preserves the original tier instead of defaulting to owner (#157). Legacy cookies
+  (pre-RBAC or plain session-id format) continue to synthesize as owner — backward
+  compatible per Requirement 0.
 - Session cookies (`asc_session`) and OAuth state cookies (`discord_oauth_state`) always
   include the `Secure` flag by default. Operators running the console locally over plain
   HTTP can set `ADMIN_SECURE_COOKIES=0` in `.env` to opt out.
