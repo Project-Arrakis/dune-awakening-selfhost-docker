@@ -43,15 +43,26 @@ export const CAPABILITY_BY_TIER = {
   admin: [
     CAPABILITIES.STATUS_READ,
     CAPABILITIES.WORLD_READ,
+    CAPABILITIES.WORLD_WRITE,
     CAPABILITIES.LOGS_READ,
     CAPABILITIES.BACKUPS_READ,
+    CAPABILITIES.BACKUPS_WRITE,
     CAPABILITIES.DATABASE_READ,
     CAPABILITIES.UPDATES_READ,
+    CAPABILITIES.UPDATES_WRITE,
+    CAPABILITIES.SERVER_CONTROL,
     CAPABILITIES.ADDONS_READ,
+    CAPABILITIES.ADDONS_WRITE,
+    CAPABILITIES.ADMIN_TOOLS,
+    CAPABILITIES.PLAYER_MUTATE,
+    CAPABILITIES.MAP_WRITE,
   ],
   moderator: [
     CAPABILITIES.STATUS_READ,
     CAPABILITIES.WORLD_READ,
+    CAPABILITIES.LOGS_READ,
+    CAPABILITIES.ADMIN_TOOLS,
+    CAPABILITIES.PLAYER_MUTATE,
   ],
   player: [
     CAPABILITIES.STATUS_READ,
@@ -93,6 +104,14 @@ export function capabilitiesForTier(tier) {
 }
 
 // ---- Route-to-capability assignment ----
+//
+// Updated 2026-08-07: revised capability ladder per operator feedback.
+// Admin now has real administrative power (14/18 caps) — can restart,
+// manage maps, manage players/bases, broadcast, browse logs, manage
+// addons. What admin CANNOT do: change settings, admin password, write
+// to database directly, grant care packages (owner-only destructive ops).
+// Moderator is now distinct from player — can kick, broadcast, view
+// logs for moderation evidence. Player remains read-only (2/18).
 //
 // Ordered list of [path pattern, method, capability] where the first
 // matching entry wins. Patterns use exact-match first, then regex.
