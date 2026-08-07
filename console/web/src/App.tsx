@@ -225,6 +225,8 @@ export function App() {
   const [redeploySetupOpen, setRedeploySetupOpen] = useState(false);
   const [error, setError] = useState("");
   const [confirmRequest, setConfirmRequest] = useState<ConfirmDialogRequest | null>(null);
+  const [discordSignInAvailable, setDiscordSignInAvailable] = useState(false);
+  const [me, setMe] = useState<{ id: string; username: string; tier: string; guildId: string } | null>(null);
   const setupComplete = Boolean(setupState?.files?.complete ?? (setupState?.files?.env && setupState?.files?.token && setupState?.files?.battlegroup));
   const firstRunSetup = auth && setupStateLoaded && !setupComplete;
 
@@ -252,11 +254,24 @@ export function App() {
   }, [pinnedAddons]);
 
   useEffect(() => {
-    api<{ authenticated: boolean; csrfToken: string | null }>("/api/auth/state").then((state) => {
+    api<{ authenticated: boolean; csrfToken: string | null; config?: { discordOAuthConfigured?: boolean } }>("/api/auth/state").then((state) => {
       setAuth(state.authenticated);
       setCsrfToken(state.csrfToken);
+      setDiscordSignInAvailable(Boolean(state.config?.discordOAuthConfigured));
     }).catch(() => undefined);
   }, []);
+
+  useEffect(() => {
+    if (!auth) {
+      setMe(null);
+      return;
+    }
+    let cancelled = false;
+    api<{ user: { id: string; username: string; tier: string; guildId: string } }>("/api/auth/me")
+      .then((me) => { if (!cancelled) setMe(me.user); })
+      .catch(() => { if (!cancelled) setMe(null); });
+    return () => { cancelled = true; };
+  }, [auth]);
 
   useEffect(() => {
     persistFuncomTokenResult(funcomTokenResult);
@@ -500,8 +515,12 @@ export function App() {
           <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Admin Password" />
           <button type="submit">Sign In</button>
           {error && <p className="error">{error === AUTH_SESSION_EXPIRED_MESSAGE
-            ? <>Your browser login session expired.<br />Sign in again to continue.</>
-            : error}</p>}
+          {discordSignInAvailable && (
+            <a className="login-discord-button" href="/api/auth/discord/start">
+              <DiscordLogo size={19} aria-hidden="true" /> Sign in with Discord
+            </a>
+          )}
+          {error && <p className="error">{error}</p>}
         </form>
       </main>
     );
@@ -617,6 +636,7 @@ export function App() {
             <span>{visibleSubtitle}</span>
           </div>
           <div className="topbar-links" aria-label="Community links">
+            {me && <span className="session-user-badge" title={`Signed in as ${me.username}`}><span className="session-user-name">{me.username}</span><span className={`session-user-tier session-user-tier-${me.tier}`}>{me.tier}</span></span>}
             {publicDirectoryStatus?.mode === "public" && publicDirectoryStatus.serverId && <a
               className={`listing-claim-badge ${publicDirectoryStatus.listingClaimed ? "claimed" : "unclaimed"}`}
               href={publicServerListingUrl(publicDirectoryStatus.serverId)}
