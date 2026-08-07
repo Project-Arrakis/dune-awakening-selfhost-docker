@@ -34,7 +34,10 @@ function runFixture(row, args) {
     'if [ "${1:-}" = "ps" ] && [ "${2:-}" = "-a" ]; then',
     '  printf "%s\\n" dune-server-survival-1-31',
     'elif [ "${1:-}" = "ps" ]; then',
+    // Keep writing after the first matching name. A grep -q consumer exits
+    // early and makes this pipe fail with SIGPIPE under `set -o pipefail`.
     '  printf "%s\\n" dune-postgres dune-server-survival-1 dune-server-survival-1-31',
+    '  for i in {1..4096}; do printf "mock-container-%s\\n" "$i"; done',
     'elif [ "${1:-}" = "exec" ]; then',
     '  printf "%s\\n" "$MOCK_PARTITION_ROW"',
     'fi'
@@ -139,6 +142,17 @@ test("autoscaler browser healing pauses during coordinated Sietch topology chang
   assert.match(
     autoscalerSource,
     /marker_age.*SIETCH_TOPOLOGY_HEAL_GRACE_SECONDS[\s\S]*?director_heal_clear stale_since\s+return 0/,
+  );
+});
+
+test("autoscaler browser healing ignores READY markers from previous core server processes", () => {
+  const coreReady = autoscalerSource.match(/core_maps_ready_for_browser_heal\(\) \{([\s\S]*?)\n\}/)?.[1] || "";
+  assert.match(coreReady, /\{\{\.State\.StartedAt\}\}/);
+  assert.match(coreReady, /docker logs --since "\$started_at"/);
+  assert.match(autoscalerSource, /AUTOSCALER_STARTED_AT="\$\(date \+%s\)"/);
+  assert.match(
+    autoscalerSource,
+    /now - AUTOSCALER_STARTED_AT[\s\S]*?director_heal_clear stale_since[\s\S]*?director_heal_clear core_ready_since[\s\S]*?return 0/,
   );
 });
 

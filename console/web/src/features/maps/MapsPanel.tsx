@@ -145,6 +145,11 @@ function formatBytes(value: number) {
   return `${index === 0 ? amount.toFixed(0) : amount.toFixed(1)} ${units[index]}`;
 }
 
+function formatGiB(value: number) {
+  const amount = Number.isFinite(value) && value > 0 ? value / (1024 ** 3) : 0;
+  return `${amount.toFixed(1)} GB`;
+}
+
 function escapeRegExp(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -1761,7 +1766,7 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
         const rowSietchRestartResultActive = Boolean(rowResultActive && mapsResult && mapsResultScope === "maps" && isSietchRestartResult(mapsResult));
         const rowForceDespawnResultActive = Boolean(rowResultActive && mapsResult && mapsResultScope === "maps" && isForceDespawnResult(mapsResult) && !isDeepDesertDualResult(mapsResult));
         const rowForceSpawnResultActive = Boolean(rowResultActive && mapsResult && mapsResultScope === "maps" && isForceSpawnResult(mapsResult));
-        return <Fragment key={rowName}><tr><td><MapDisplayName mapId={rowName} instanceName={isDeepDesertRow ? primaryDeepDesertName : undefined} sietch={isSurvivalRow ? primarySurvivalSietch : null} draft={isSurvivalRow ? primaryDraft : undefined} /></td><td><MapRuntimeStatus value={displayStatus} detail={row.statusDetail} /></td><td>{String(row.mode || "Not Available")}</td><td><MemoryUsageBar row={memoryRow} fallback={liveMemoryFallback(row)} configuredLimit={row.memory} /></td><td className="actions-column"><button className="stable-action-button" onClick={() => selectMap(row)}>{isSelected ? "Close" : "Edit"}</button></td></tr>
+        return <Fragment key={rowName}><tr><td><MapDisplayName mapId={rowName} instanceName={isDeepDesertRow ? primaryDeepDesertName : undefined} sietch={isSurvivalRow ? primarySurvivalSietch : null} draft={isSurvivalRow ? primaryDraft : undefined} /></td><td><MapRuntimeStatus value={displayStatus} detail={row.statusDetail} /></td><td>{String(row.mode || "Not Available")}</td><td><MemoryUsageBar row={memoryRow} fallback={liveMemoryFallback(row)} configuredLimit={row.memory} swapEnabled={Boolean(memorySwap?.enabled)} /></td><td className="actions-column"><button className="stable-action-button" onClick={() => selectMap(row)}>{isSelected ? "Close" : "Edit"}</button></td></tr>
           {isSelected && <tr className="inline-edit-row" key={`${rowName}-edit`}><td colSpan={5}>
             <section className="inline-edit-panel">
               <div className="panel-title"><h4>Edit {isDeepDesertRow && primaryDeepDesertName ? primaryDeepDesertName : rowName}</h4></div>
@@ -1834,7 +1839,7 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
             const childCombatRow = combatStateByMap["DeepDesert_1"]?.partitions.find((p) => p.partitionId === String(deepRow.partitionId || "")) || null;
             const childName = deepDesertPartitionName(deepRow, childCombatRow);
             const childForceSpawnResultActive = Boolean(childResultActive && mapsResult && mapsResultScope === "maps" && isForceSpawnResult(mapsResult));
-            return <Fragment key={`deepdesert-${String(deepRow.partitionId || deepRow.dimension || "")}`}><tr className="sietch-child-row"><td><MapDisplayName mapId="DeepDesert_1" instanceName={childName} /><span className="sietch-child-meta">Partition {String(deepRow.partitionId || "Unknown")} / Dimension {String(deepRow.dimension || "Unknown")}{childCombatRow?.configurationDrift ? " / Restart required to apply saved PvP-PvE settings" : ""}</span></td><td><MapRuntimeStatus value={childStatus} /></td><td>Dual</td><td><MemoryUsageBar row={childMemoryRow} fallback={liveMemoryFallback({ ...row, status: childStatus })} configuredLimit={deepMemory} /></td><td className="actions-column"><button className="stable-action-button" onClick={() => selectDeepDesertPartition(deepRow)}>{childSelected ? "Close" : "Edit"}</button></td></tr>
+            return <Fragment key={`deepdesert-${String(deepRow.partitionId || deepRow.dimension || "")}`}><tr className="sietch-child-row"><td><MapDisplayName mapId="DeepDesert_1" instanceName={childName} /><span className="sietch-child-meta">Partition {String(deepRow.partitionId || "Unknown")} / Dimension {String(deepRow.dimension || "Unknown")}{childCombatRow?.configurationDrift ? " / Restart required to apply saved PvP-PvE settings" : ""}</span></td><td><MapRuntimeStatus value={childStatus} /></td><td>Dual</td><td><MemoryUsageBar row={childMemoryRow} fallback={liveMemoryFallback({ ...row, status: childStatus })} configuredLimit={deepMemory} swapEnabled={Boolean(memorySwap?.enabled)} /></td><td className="actions-column"><button className="stable-action-button" onClick={() => selectDeepDesertPartition(deepRow)}>{childSelected ? "Close" : "Edit"}</button></td></tr>
               {childSelected && <tr className="inline-edit-row"><td colSpan={5}><section className="inline-edit-panel">
                 <div className="panel-title"><h4>Edit {childName}</h4></div>
                 <KeyValueGrid items={[["Partition", deepRow.partitionId], ["Dimension", deepRow.dimension], ["Status", childStatus], ["Memory", deepMemory]]} />
@@ -1874,7 +1879,7 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
             const childResultActive = mapsResultTarget === childTarget;
             const childMapSettingsResultActive = Boolean(childResultActive && mapsResult && mapsResultScope === "maps" && isMapSettingsResult(mapsResult));
             const childSietchRestartResultActive = Boolean(childResultActive && mapsResult && mapsResultScope === "maps" && isSietchRestartResult(mapsResult));
-            return <Fragment key={`sietch-${sietch.partitionId}`}><tr className="sietch-child-row"><td><MapDisplayName mapId="Survival_1" sietch={sietch} draft={draft} /><span className="sietch-child-meta">Partition {sietch.partitionId} / Dimension {sietch.dimension}</span></td><td><MapRuntimeStatus value={childStatus} /></td><td>Sietch</td><td>{sietch.active ? <MemoryUsageBar row={childMemoryRow} fallback={liveMemoryFallback(row)} configuredLimit={sietchMemory} /> : <span className="muted">Unallocated</span>}</td><td className="actions-column"><button className="stable-action-button" onClick={() => selectSietch(sietch)}>{childSelected ? "Close" : "Edit"}</button></td></tr>
+            return <Fragment key={`sietch-${sietch.partitionId}`}><tr className="sietch-child-row"><td><MapDisplayName mapId="Survival_1" sietch={sietch} draft={draft} /><span className="sietch-child-meta">Partition {sietch.partitionId} / Dimension {sietch.dimension}</span></td><td><MapRuntimeStatus value={childStatus} /></td><td>Sietch</td><td>{sietch.active ? <MemoryUsageBar row={childMemoryRow} fallback={liveMemoryFallback(row)} configuredLimit={sietchMemory} swapEnabled={Boolean(memorySwap?.enabled)} /> : <span className="muted">Unallocated</span>}</td><td className="actions-column"><button className="stable-action-button" onClick={() => selectSietch(sietch)}>{childSelected ? "Close" : "Edit"}</button></td></tr>
               {childSelected && <tr className="inline-edit-row"><td colSpan={5}><section className="inline-edit-panel">
                 <div className="panel-title"><h4>Edit {sietch.displayName}</h4></div>
                 <KeyValueGrid items={[["Partition", sietch.partitionId], ["Dimension", sietch.dimension], ["Status", childStatus], ["Memory", sietchMemory], ["Password", sietch.passwordSet ? "Set" : "Not Set"]]} />
@@ -2156,15 +2161,33 @@ function SettingInput({ field, value, inputId, onChange }: { field: UserSettingF
         : <input id={inputId} value={value} onChange={(event) => onChange(event.target.value)} />;
 }
 
-function MemoryUsageBar({ row, fallback, configuredLimit }: { row: LiveMapMemoryRow | null; fallback: string; configuredLimit?: unknown }) {
+export function MemoryUsageBar({ row, fallback, configuredLimit, swapEnabled = false }: { row: LiveMapMemoryRow | null; fallback: string; configuredLimit?: unknown; swapEnabled?: boolean }) {
   if (!row) return <span className="muted">{fallback}</span>;
   const configuredLimitBytes = memoryValueToBytes(String(configuredLimit || ""));
   const limitBytes = configuredLimitBytes || row.limitBytes;
-  const percent = limitBytes > 0 ? Math.max(0, Math.min(100, (row.usedBytes / limitBytes) * 100)) : Math.max(0, Math.min(100, Number(row.percent) || 0));
-  return <div className="memory-usage-cell">
-    <div className="memory-usage-bar"><span style={{ width: `${percent}%` }} /></div>
+  const showSwap = swapEnabled && row.swapSupported === true;
+  const swapUsedBytes = showSwap ? Math.max(0, Number(row.swapUsedBytes) || 0) : 0;
+  const swapLimitBytes = showSwap ? Math.max(0, Number(row.swapLimitBytes) || 0) : 0;
+  const combinedLimitBytes = limitBytes + swapLimitBytes;
+  const measuredUsedBytes = row.usedBytes + swapUsedBytes;
+  const percentDenominator = showSwap && combinedLimitBytes > 0 ? combinedLimitBytes : limitBytes;
+  const percent = percentDenominator > 0 ? Math.max(0, Math.min(100, (measuredUsedBytes / percentDenominator) * 100)) : Math.max(0, Math.min(100, Number(row.percent) || 0));
+  const ramCapacityWidth = showSwap && combinedLimitBytes > 0 ? (limitBytes / combinedLimitBytes) * 100 : 100;
+  const swapCapacityWidth = showSwap && combinedLimitBytes > 0 ? (swapLimitBytes / combinedLimitBytes) * 100 : 0;
+  const ramFillWidth = limitBytes > 0 ? Math.max(0, Math.min(100, (row.usedBytes / limitBytes) * 100)) : percent;
+  const swapFillWidth = swapLimitBytes > 0 ? Math.max(0, Math.min(100, (swapUsedBytes / swapLimitBytes) * 100)) : 0;
+  const title = showSwap
+    ? `${formatBytes(row.usedBytes)} RAM used of ${formatBytes(limitBytes)}; ${formatBytes(swapUsedBytes)} swap used of ${formatBytes(swapLimitBytes)}; ${formatBytes(combinedLimitBytes)} combined allowance.`
+    : `${formatBytes(row.usedBytes)} RAM used of ${formatBytes(limitBytes)}.`;
+  return <div className={`memory-usage-cell${showSwap ? " swap-active" : ""}`} title={title}>
+    <div className="memory-usage-bar" role="progressbar" aria-label={showSwap ? "Combined RAM and swap usage" : "RAM usage"} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Number(percent.toFixed(1))}>
+      <span className="memory-usage-zone memory-usage-ram-zone" style={{ width: `${ramCapacityWidth}%` }}><span className="memory-usage-ram" style={{ width: `${ramFillWidth}%` }} /></span>
+      {showSwap && swapCapacityWidth > 0 ? <span className="memory-usage-zone memory-usage-swap-zone" style={{ width: `${swapCapacityWidth}%` }}><span className="memory-usage-swap" style={{ width: `${swapFillWidth}%` }} /></span> : null}
+    </div>
     <strong>{percent.toFixed(1)}%</strong>
-    <span>{formatBytes(row.usedBytes)} / {formatBytes(limitBytes)}</span>
+    {showSwap
+      ? <span className="memory-usage-detail"><span>{formatGiB(row.usedBytes)} / {formatGiB(limitBytes)} RAM</span><span className="memory-swap-used">+ {formatGiB(swapLimitBytes)} Swap</span><span className="memory-swap-consumed">({formatGiB(swapUsedBytes)} Used)</span></span>
+      : <span className="memory-usage-detail">{formatBytes(row.usedBytes)} / {formatBytes(limitBytes)}</span>}
   </div>;
 }
 

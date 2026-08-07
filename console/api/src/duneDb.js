@@ -6,6 +6,7 @@ import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import { redact } from "./redact.js";
 import { clampInt, writeJsonAtomic } from "./jsonStore.js";
+import { CARE_PACKAGE_SERVER_PERSONA, FUNCOM_GM_PERSONA } from "./systemPersonas.js";
 import {
   craftingRecipeCatalogRows,
   compareJourneyCatalogOrder,
@@ -1403,9 +1404,9 @@ const PLAYER_SORT_COLUMNS = {
 
 // Funcom creates this reserved GM identity in some freshly initialized
 // battlegroups. It is an internal service actor, not an administrable player.
-const INTERNAL_GM_PLAYER_PAWN_ID = "900000103";
+const INTERNAL_GM_PLAYER_PAWN_ID = FUNCOM_GM_PERSONA.playerPawnId;
 
-export async function listPlayers(db, { status = "all", q = "", page = 0, pageSize = 50, sortColumn = "character_name", sortDirection = "asc", includeTotals = true } = {}) {
+export async function listPlayers(db, { status = "all", q = "", page = 0, pageSize = 50, sortColumn = "character_name", sortDirection = "asc", includeTotals = true, bannedFlsIds = [] } = {}) {
   if (!(await tableExists(db, "actors")) || !(await tableExists(db, "player_state"))) {
     return { ...unsupported("players", ["dune.actors", "dune.player_state"]), totalCount: 0, totalPlayers: 0 };
   }
@@ -1479,15 +1480,24 @@ export async function listPlayers(db, { status = "all", q = "", page = 0, pageSi
   }
   baseWhere += currentPawnFilter;
 
-  const values = [];
+  const normalizedBannedFlsIds = [...new Set((Array.isArray(bannedFlsIds) ? bannedFlsIds : [])
+    .map((value) => String(value || "").trim().toLowerCase())
+    .filter((value) => /^[a-f0-9]{15,64}$/.test(value)))]
+    .slice(0, 2000);
+  const values = [normalizedBannedFlsIds];
+  const bannedExpression = `lower(${resolvedFlsId}) = any($1::text[])`;
   let where = baseWhere;
   if (hasOnlineStatus) {
-    if (status === "online") where += " and coalesce(ps.online_status::text, '') = 'Online'";
-    if (status === "offline") where += " and coalesce(ps.online_status::text, '') <> 'Online'";
+    if (status === "online") where += ` and not (${bannedExpression}) and coalesce(ps.online_status::text, '') = 'Online'`;
+    if (status === "offline") where += ` and not (${bannedExpression}) and coalesce(ps.online_status::text, '') <> 'Online'`;
   }
+  if (status === "banned") where += ` and (${bannedExpression})`;
   if (q) {
     values.push(`%${q}%`);
-    where += ` and (ps.character_name ilike $${values.length} or ${resolvedFlsId} ilike $${values.length} or a.id::text = $${values.length} or a.owner_account_id::text = $${values.length})`;
+    const fuzzySearchParameter = values.length;
+    values.push(String(q));
+    const exactIdParameter = values.length;
+    where += ` and (ps.character_name ilike $${fuzzySearchParameter} or ${resolvedFlsId} ilike $${fuzzySearchParameter} or a.id::text = $${exactIdParameter} or a.owner_account_id::text = $${exactIdParameter})`;
   }
   values.push(safePageSize, offset);
   const limitParamIndex = values.length - 1;
@@ -1509,7 +1519,11 @@ export async function listPlayers(db, { status = "all", q = "", page = 0, pageSi
              end as action_player_id,
              a.class,
              coalesce(a.map, '') as map,
-             ${hasOnlineStatus ? "coalesce(ps.online_status::text, 'Offline')" : "'Offline'"} as online_status,
+             ${hasOnlineStatus ? "coalesce(ps.online_status::text, 'Offline')" : "'Offline'"} as actual_online_status,
+             case when ${bannedExpression} then 'Banned'
+                  else ${hasOnlineStatus ? "coalesce(ps.online_status::text, 'Offline')" : "'Offline'"}
+             end as online_status,
+             (${bannedExpression}) as is_banned,
              ${loginSessionSelect} as login_session,
              ${lastSeenWithOnlineFallback} as last_seen,
              coalesce(nullif(ps.player_controller_id, 0), nullif(a.owner_account_id, 0), a.id) as dedupe_key,
@@ -1537,7 +1551,9 @@ export async function listPlayers(db, { status = "all", q = "", page = 0, pageSi
              action_player_id,
              class,
              map,
+             actual_online_status,
              online_status,
+             is_banned,
              login_session,
              last_seen
       from player_rows
@@ -1570,7 +1586,7 @@ export async function listPlayers(db, { status = "all", q = "", page = 0, pageSi
     from player_rows`) : null;
 
   return {
-    capabilities: { players: true, status, statusFilterApplied: hasOnlineStatus },
+    capabilities: { players: true, status, statusFilterApplied: hasOnlineStatus, banFilterApplied: true },
     totalCount: result.rows[0] ? Number(result.rows[0].total_count) : 0,
     totalPlayers: totalsResult ? (totalsResult.rows[0] ? Number(totalsResult.rows[0].total_players) : 0) : undefined,
     rows: result.rows
@@ -3036,13 +3052,39 @@ export async function listBasePermissions(db, baseId) {
   await requireCapability(await supportsBasePermissionEditing(db),
     "Base permission editing requires dune.permission_actor_rank, dune.map_names, and the dune.permission_set_player_rank/permission_remove_player_rank functions.");
   const { actorId, map, mapNameId } = await basePermissionActor(db, baseId);
+  const encryptedPlayerStateColumns = await tableExists(db, "encrypted_player_state")
+    ? await columnsFor(db, "encrypted_player_state")
+    : new Set();
+  const hasEncryptedController = encryptedPlayerStateColumns.has("player_controller_id");
+  const canDecryptEncryptedName = hasEncryptedController
+    && encryptedPlayerStateColumns.has("encrypted_character_name")
+    && await functionExists(db, "dune.decrypt_user_data(bytea)");
+  const encryptedJoin = hasEncryptedController
+    ? `left join lateral (
+      select eps.player_controller_id,
+             ${canDecryptEncryptedName ? `case
+               when eps.player_controller_id in (${CARE_PACKAGE_SERVER_PERSONA.playerControllerId}::bigint, ${FUNCOM_GM_PERSONA.playerControllerId}::bigint) then ''::text
+               else dune.decrypt_user_data(eps.encrypted_character_name)
+             end` : "''::text"} as character_name
+      from dune.encrypted_player_state eps
+      where eps.player_controller_id = par.player_id
+      limit 1
+    ) eps on true`
+    : "";
+  const encryptedName = hasEncryptedController ? "eps.character_name" : "''";
+  const encryptedCanonical = hasEncryptedController ? "or eps.player_controller_id is not null" : "";
   const result = await db.query(`
     select par.player_id::text as player_id,
-           coalesce(ps.character_name, fallback.character_name, '') as character_name,
+           case
+             when par.player_id = ${CARE_PACKAGE_SERVER_PERSONA.playerControllerId}::bigint then '${CARE_PACKAGE_SERVER_PERSONA.displayName}'
+             when par.player_id = ${FUNCOM_GM_PERSONA.playerControllerId}::bigint then '${FUNCOM_GM_PERSONA.displayName}'
+             else coalesce(ps.character_name, ${encryptedName}, fallback.character_name, '')
+           end as character_name,
            par.rank::int as rank,
-           (ps.player_controller_id is not null) as canonical
+           (ps.player_controller_id is not null ${encryptedCanonical}) as canonical
     from dune.permission_actor_rank par
     left join dune.player_state ps on ps.player_controller_id = par.player_id
+    ${encryptedJoin}
     left join lateral (
       select fps.character_name
       from dune.actors fa
@@ -3052,11 +3094,13 @@ export async function listBasePermissions(db, baseId) {
     ) fallback on true
     where par.permission_actor_id = $1::bigint
     order by par.rank asc, coalesce(ps.character_name, fallback.character_name, '') asc`, [actorId]);
+  const systemCustodian = await basePermissionSystemCustodian(db);
   return {
     baseId: intParam(baseId, "base id", 1),
     actorId,
     map,
     mapNameId,
+    systemCustodian,
     entries: result.rows.map((row) => ({
       playerId: String(row.player_id),
       name: String(row.character_name || ""),
@@ -3068,6 +3112,81 @@ export async function listBasePermissions(db, baseId) {
       // client cannot.
       canonical: row.canonical === true
     }))
+  };
+}
+
+// System identities stay out of ordinary player search. Prefer the RedBlink
+// Server persona when installed, then fall back to Funcom's reserved GM persona.
+// Both are matched by their stable account/controller/state/pawn tuple rather
+// than their display name: encrypted schemas do not expose a plain name, and a
+// normal character can be named "Server". The legacy name lookup is retained
+// last for installations that created Server before the reserved tuple existed.
+export async function basePermissionSystemCustodian(db) {
+  const personas = [CARE_PACKAGE_SERVER_PERSONA, FUNCOM_GM_PERSONA];
+  const sources = [];
+  for (const table of ["player_state", "encrypted_player_state"]) {
+    if (!(await tableExists(db, table))) continue;
+    const columns = await columnsFor(db, table);
+    if (!columns.has("account_id") || !columns.has("player_controller_id")) continue;
+    sources.push({ table, columns });
+  }
+
+  for (const persona of personas) {
+    for (const source of sources) {
+      const predicates = ["account_id = $1::bigint", "player_controller_id = $2::bigint"];
+      const values = [persona.accountId, persona.playerControllerId];
+      if (source.columns.has("player_state_id")) {
+        values.push(persona.playerStateId);
+        predicates.push(`player_state_id = $${values.length}::bigint`);
+      }
+      if (source.columns.has("player_pawn_id")) {
+        values.push(persona.playerPawnId);
+        predicates.push(`player_pawn_id = $${values.length}::bigint`);
+      }
+      const exact = await db.query(`
+        select player_controller_id::text as player_id
+        from dune.${source.table}
+        where ${predicates.join(" and ")}
+        limit 2`, values);
+      if (exact.rows.length > 1) {
+        return { available: false, reason: `More than one canonical ${persona.displayName} system identity was found; refusing an ambiguous transfer.` };
+      }
+      if (exact.rows.length === 1) {
+        return {
+          available: true,
+          playerId: persona.playerControllerId,
+          name: persona.displayName
+        };
+      }
+    }
+  }
+
+  // Compatibility for an older, manually-created Server persona whose ids do
+  // not use the now-reserved 9000002xx tuple.
+  const playerStateColumns = await columnsFor(db, "player_state");
+  const internalGmPawnFilter = playerStateColumns.has("player_pawn_id")
+    ? `and coalesce(ps.player_pawn_id, 0) <> ${INTERNAL_GM_PLAYER_PAWN_ID}::bigint`
+    : "";
+  const result = await db.query(`
+    select distinct ps.player_controller_id::text as player_id,
+           btrim(ps.character_name) as character_name
+    from dune.player_state ps
+    where coalesce(ps.player_controller_id, 0) > 0
+      and ps.player_controller_id <> ${INTERNAL_GM_PLAYER_PAWN_ID}::bigint
+      ${internalGmPawnFilter}
+      and lower(btrim(coalesce(ps.character_name, ''))) = 'server'
+    order by player_id
+    limit 2`);
+  if (result.rows.length === 0) {
+    return { available: false, reason: "No supported system custodian was found. Expected the RedBlink Server identity or Funcom GM identity." };
+  }
+  if (result.rows.length > 1) {
+    return { available: false, reason: "More than one canonical Server system identity was found; refusing an ambiguous transfer." };
+  }
+  return {
+    available: true,
+    playerId: String(result.rows[0].player_id),
+    name: String(result.rows[0].character_name || "Server")
   };
 }
 
@@ -3142,16 +3261,7 @@ function normalizeDesiredPermissions(entries) {
 // LIMIT 1, so a moment with two rank-1 rows could stamp the wrong owner onto the
 // base marker. Removals run first, then non-owner ranks, then the Owner last --
 // so at most one rank-1 row exists when the owner write lands.
-export async function setBasePermissions(db, baseId, entries, maxPermissionsPerActor = DEFAULT_MAX_PERMISSIONS_PER_ACTOR) {
-  await requireCapability(await supportsBasePermissionEditing(db),
-    "Base permission editing requires dune.permission_actor_rank, dune.map_names, and the dune.permission_set_player_rank/permission_remove_player_rank functions.");
-  const target = intParam(baseId, "base id", 1);
-  const safeMax = intParam(maxPermissionsPerActor, "maximum permissions per base", 1, 2147483647);
-  const desired = normalizeDesiredPermissions(entries);
-  if (desired.length > safeMax) {
-    throw new Error(`This base would hold ${desired.length} permissions, above the configured maximum of ${safeMax}.`);
-  }
-
+async function mutateBasePermissions(db, target, safeMax, desiredRoster) {
   return db.transaction(async (tx) => {
     // The shipped procedures reference their tables unqualified and carry no
     // `SET search_path` of their own; they resolve only because the console
@@ -3175,11 +3285,26 @@ export async function setBasePermissions(db, baseId, entries, maxPermissionsPerA
       "select player_id::text as player_id, rank::int as rank from dune.permission_actor_rank where permission_actor_id = $1::bigint",
       [actor.actorId]);
     const currentByPlayer = new Map(existing.rows.map((row) => [String(row.player_id), Number(row.rank)]));
+    const desired = normalizeDesiredPermissions(await desiredRoster(existing.rows, tx));
+    if (desired.length > safeMax) {
+      throw new Error(`This base would hold ${desired.length} permissions, above the configured maximum of ${safeMax}.`);
+    }
 
     // Every target player must be a real permission holder, i.e. an account's
-    // player_controller_id. Anything else writes a row the game ignores.
+    // player_controller_id. Newer servers keep this in encrypted_player_state;
+    // older schemas expose player_state. Anything else writes a row the game
+    // ignores.
+    const canonicalSources = [
+      "select player_controller_id from dune.player_state where player_controller_id = any($1::bigint[])"
+    ];
+    if (await tableExists(tx, "encrypted_player_state")) {
+      const encryptedColumns = await columnsFor(tx, "encrypted_player_state");
+      if (encryptedColumns.has("player_controller_id")) {
+        canonicalSources.push("select player_controller_id from dune.encrypted_player_state where player_controller_id = any($1::bigint[])");
+      }
+    }
     const canonical = await tx.query(
-      "select player_controller_id::text as player_id from dune.player_state where player_controller_id = any($1::bigint[])",
+      `select distinct player_controller_id::text as player_id from (${canonicalSources.join(" union all ")}) known_players`,
       [desired.map((entry) => entry.playerId)]);
     const canonicalIds = new Set(canonical.rows.map((row) => String(row.player_id)));
     for (const entry of desired) {
@@ -3220,6 +3345,45 @@ export async function setBasePermissions(db, baseId, entries, maxPermissionsPerA
       message: "Permissions were updated. The change applies to the running map immediately."
     };
   });
+}
+
+export async function setBasePermissions(db, baseId, entries, maxPermissionsPerActor = DEFAULT_MAX_PERMISSIONS_PER_ACTOR) {
+  await requireCapability(await supportsBasePermissionEditing(db),
+    "Base permission editing requires dune.permission_actor_rank, dune.map_names, and the dune.permission_set_player_rank/permission_remove_player_rank functions.");
+  const target = intParam(baseId, "base id", 1);
+  const safeMax = intParam(maxPermissionsPerActor, "maximum permissions per base", 1, 2147483647);
+  // Validate before opening the transaction too, so malformed input fails
+  // without taking a claim lock. It is normalized again after the lock because
+  // the shared mutation path also accepts a roster built from current state.
+  const desired = normalizeDesiredPermissions(entries);
+  return mutateBasePermissions(db, target, safeMax, async () => desired);
+}
+
+export async function transferBaseToSystemCustodian(db, baseId, maxPermissionsPerActor = DEFAULT_MAX_PERMISSIONS_PER_ACTOR) {
+  await requireCapability(await supportsBasePermissionEditing(db),
+    "Base permission editing requires dune.permission_actor_rank, dune.map_names, and the dune.permission_set_player_rank/permission_remove_player_rank functions.");
+  const target = intParam(baseId, "base id", 1);
+  const safeMax = intParam(maxPermissionsPerActor, "maximum permissions per base", 1, 2147483647);
+  let custodian;
+  const result = await mutateBasePermissions(db, target, safeMax, async (existing, tx) => {
+    custodian = await basePermissionSystemCustodian(tx);
+    if (!custodian.available) throw new Error(custodian.reason);
+    const roster = existing.map((row) => ({
+      playerId: String(row.player_id),
+      rank: Number(row.rank) === PERMISSION_OWNER_RANK ? 2 : Number(row.rank)
+    }));
+    const currentCustodian = roster.find((entry) => entry.playerId === custodian.playerId);
+    if (currentCustodian) currentCustodian.rank = PERMISSION_OWNER_RANK;
+    else roster.push({ playerId: custodian.playerId, rank: PERMISSION_OWNER_RANK });
+    return roster;
+  });
+  return {
+    ...result,
+    systemCustodian: custodian,
+    message: result.reranked === 0 && result.added === 0
+      ? `This base is already owned by the ${custodian.name} system custodian.`
+      : `Ownership was transferred to the ${custodian.name} system custodian. The change applies to the running map immediately.`
+  };
 }
 
 const BASE_SORT_COLUMNS = {

@@ -31,15 +31,18 @@ stored as rank `2`, and no row ever holds a `4` or `5`.
 | `GET` | `/api/bases/:baseId/permissions` | The base's roster, with resolved names and rank labels. |
 | `PUT` | `/api/bases/:baseId/permissions` | Replace the roster. Body: `{ entries: [{ playerId, rank }] }`. |
 | `GET` | `/api/bases/permission-candidates?q=&limit=` | Player search for the add-player picker. |
+| `POST` | `/api/bases/:baseId/system-custodian` | Transfer ownership to a detected reserved Server or GM identity while preserving access. |
 
 `PUT` takes a **whole roster**, not a delta. The server diffs it against current
 state and applies only the difference, so an unchanged row is never rewritten —
 every write emits a notification, and re-notifying an unchanged rank is pointless
 traffic to the game server.
 
-Audited as `bases.set-permissions`. Rate limited. No confirmation phrase, matching
-the guild mutations and the refill route: the change is reversible from the same
-editor.
+Roster saves are audited as `bases.set-permissions`; custodian transfers use
+`bases.transfer-system-custodian`. Both are rate limited. No confirmation phrase
+is required by the API, matching the guild mutations and refill route; the UI
+shows an explicit transfer confirmation and the change is reversible from the
+same editor.
 
 ## What the server enforces
 
@@ -52,6 +55,27 @@ request.
 - **The roster cap**, read from live server config (see below).
 - **Ranks limited to 1–3**, no duplicate players.
 - **Every player id must be a `player_controller_id`** (see below).
+
+## System custodian
+
+The Permissions tab offers a transfer action when it detects a supported
+reserved identity. It prefers the RedBlink `Server` persona (`9000002xx`) and
+falls back to Funcom's `GM` persona (`9000001xx`), which is present in some
+battlegroup databases instead. Detection uses the complete stable
+account/controller/state/pawn tuple from `player_state` or
+`encrypted_player_state`, not a possibly encrypted or renamed display value.
+Older manually-created `Server` identities remain
+supported through an exact-name compatibility lookup.
+
+Both identities remain excluded from normal player search. The dedicated action
+preserves every existing permission, demotes the outgoing Owner to Co-Owner, and
+promotes the detected custodian last in the same locked transaction.
+
+This provides a reversible administrative parking owner without leaving the
+base ownerless. If neither supported identity exists, or a matching identity is
+ambiguous, the action is disabled rather than guessing an actor id. As with
+ordinary transfers, the shipped permission procedures notify the running map
+immediately; no map restart is queued.
 
 ## The roster cap comes from server config
 

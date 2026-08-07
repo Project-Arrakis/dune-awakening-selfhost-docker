@@ -13,7 +13,7 @@ import { pendingRefillCountForPartition, usePendingRefills, usePendingWaterRefil
 
 type BasesPanelProps = {
   onError: (text: string) => void;
-  confirmAction: (message: string, options?: { title?: string; confirmLabel?: string; warning?: string }) => Promise<boolean>;
+  confirmAction: (message: string, options?: { title?: string; confirmLabel?: string; warning?: string; danger?: boolean; details?: { label: string; value: string; tone?: "accent" | "success" | "danger" }[] }) => Promise<boolean>;
   formatMutationResult: (result: unknown) => string;
 };
 
@@ -1368,6 +1368,7 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
                     <BasePermissionsTab
                       baseId={id}
                       baseName={String(base.name || `base ${id}`)}
+                      confirmAction={confirmAction}
                       // Owner and Shared With are rendered from the list
                       // response, so a saved roster has to refetch or the row
                       // above keeps showing the pre-edit names.
