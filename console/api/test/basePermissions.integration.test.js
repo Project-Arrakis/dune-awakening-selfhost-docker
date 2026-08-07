@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import pg from "pg";
-import { setBasePermissions, listBasePermissions, basePermissionCandidates, baseMapLocation } from "../src/duneDb.js";
+import { setBasePermissions, listBasePermissions, basePermissionCandidates, baseMapLocation, transferBaseToSystemCustodian } from "../src/duneDb.js";
 import { pgConnectionConfig, pgTransactionalDb, withIsolatedDatabase } from "../test-support/pgIntegrationDb.js";
 
 const { Client } = pg;
@@ -341,5 +341,17 @@ test("real PostgreSQL: the candidate picker returns player_controller_ids and ex
     assert.ok(!candidates.some((row) => row.name === "Reserved GM Controller"), "the reserved GM controller must not be offered");
     // 5 and 6 belong to the same account as 4 but are not controller ids.
     assert.ok(!ids.includes("5") && !ids.includes("6"));
+  });
+});
+
+test("real PostgreSQL: Server can own a base while the previous roster is preserved", async (t) => {
+  await withDatabase(t, async (pool) => {
+    const db = pgTransactionalDb(pool);
+    const result = await transferBaseToSystemCustodian(db, BASE_ID);
+    assert.equal(result.systemCustodian.playerId, "900000201");
+    assert.deepEqual(await ranks(pool), [
+      { playerId: "900000201", rank: OWNER_RANK },
+      { playerId: "4", rank: CO_OWNER_RANK }
+    ]);
   });
 });

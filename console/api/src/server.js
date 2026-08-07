@@ -545,6 +545,7 @@ async function handleApi(req, res) {
   if (path === "/api/bases/permission-candidates") return basePermissionCandidatesRoute(res, url);
   if (path.match(/^\/api\/bases\/[^/]+\/permissions$/) && req.method === "GET") return basePermissionsRoute(res, path);
   if (path.match(/^\/api\/bases\/[^/]+\/permissions$/) && req.method === "PUT") return baseSetPermissionsRoute(req, res, path);
+  if (path.match(/^\/api\/bases\/[^/]+\/system-custodian$/) && req.method === "POST") return baseSystemCustodianRoute(req, res, path);
   if (path === "/api/admin/items/catalog") return json(res, 200, { rows: listCatalogItems(config.repoRoot, { q: url.searchParams.get("q") || "", limit: url.searchParams.get("limit") || 500 }) });
   if (path === "/api/admin/items/search") return commandJson(res, "adminItemSearch", { q: url.searchParams.get("q") || "" });
   if (path === "/api/admin/items") return commandJson(res, url.searchParams.get("category") ? "adminItemListCategory" : "adminItemList", { category: url.searchParams.get("category") || "" });
@@ -2185,6 +2186,16 @@ async function baseSetPermissionsRoute(req, res, path) {
     const settings = await runDune(config, buildDuneArgs("userSettingsMapValues", { map: "Survival_1" }), { timeoutMs: 8000 });
     const maxPermissions = parseEffectivePermissionLimit(settings.stdout);
     return duneDb.setBasePermissions(db, baseId, body.entries, maxPermissions);
+  }, { baseId });
+}
+
+async function baseSystemCustodianRoute(req, res, path) {
+  const baseId = Number(decodeURIComponent(path.split("/")[3]));
+  if (!Number.isFinite(baseId) || baseId < 1) return json(res, 400, { error: "Invalid base ID" });
+  return directDbMutation(req, res, "bases.transfer-system-custodian", null, async () => {
+    const settings = await runDune(config, buildDuneArgs("userSettingsMapValues", { map: "Survival_1" }), { timeoutMs: 8000 });
+    const maxPermissions = parseEffectivePermissionLimit(settings.stdout);
+    return duneDb.transferBaseToSystemCustodian(db, baseId, maxPermissions);
   }, { baseId });
 }
 

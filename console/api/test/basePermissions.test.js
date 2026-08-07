@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { setBasePermissions, listBasePermissions } from "../src/duneDb.js";
+import { setBasePermissions, listBasePermissions, basePermissionSystemCustodian, transferBaseToSystemCustodian } from "../src/duneDb.js";
 
 const SUPPORTED_TABLES = ["dune.permission_actor_rank", "dune.permission_actor", "dune.actors", "dune.player_state", "dune.map_names"];
 const SUPPORTED_FUNCTIONS = [
@@ -13,7 +13,7 @@ const SUPPORTED_FUNCTIONS = [
 const BASE_ID = 1006;
 const ACTOR_ID = "1004";
 
-function createDb({ existing = [], canonicalPlayers = ["4", "23", "29", "437"], mapNameId = 7, buildings = "found" } = {}) {
+function createDb({ existing = [], canonicalPlayers = ["4", "23", "29", "437", "900000201"], mapNameId = 7, buildings = "found", custodians = [{ player_id: "900000201", character_name: "Server" }] } = {}) {
   const calls = [];
   const db = {
     calls,
@@ -44,6 +44,7 @@ function createDb({ existing = [], canonicalPlayers = ["4", "23", "29", "437"], 
         const requested = values[0] || [];
         return { rows: requested.filter((id) => canonicalPlayers.includes(String(id))).map((id) => ({ player_id: String(id) })) };
       }
+      if (text.includes("lower(btrim(coalesce(ps.character_name")) return { rows: custodians };
       return { rows: [] };
     },
     transaction: async (fn) => fn(db)
@@ -182,6 +183,46 @@ test("setBasePermissions locks the claim actor row, not the rank rows", async ()
   const lock = db.calls.find((call) => call.text.includes("for update"));
   assert.match(lock.text, /from dune\.actors/);
   assert.deepEqual(lock.values, [ACTOR_ID]);
+});
+
+test("system custodian detection requires one unambiguous canonical Server identity", async () => {
+  assert.deepEqual(await basePermissionSystemCustodian(createDb()), {
+    available: true,
+    playerId: "900000201",
+    name: "Server"
+  });
+  assert.match((await basePermissionSystemCustodian(createDb({ custodians: [] }))).reason, /No canonical Server/);
+  assert.match((await basePermissionSystemCustodian(createDb({
+    custodians: [
+      { player_id: "900000201", character_name: "Server" },
+      { player_id: "900000202", character_name: "Server" }
+    ]
+  }))).reason, /More than one/);
+});
+
+test("transferBaseToSystemCustodian preserves access, demotes the owner, and promotes Server last", async () => {
+  const db = createDb({ existing: [{ playerId: "4", rank: 1 }, { playerId: "29", rank: 2 }] });
+  const result = await transferBaseToSystemCustodian(db, BASE_ID);
+  const ranks = procCalls(db, "permission_set_player_rank").map((values) => ({ playerId: String(values[1]), rank: values[2] }));
+  assert.deepEqual(ranks, [
+    { playerId: "4", rank: 2 },
+    { playerId: "900000201", rank: 1 }
+  ]);
+  assert.equal(result.total, 3);
+  assert.equal(result.systemCustodian.playerId, "900000201");
+  assert.match(result.message, /Server system custodian/);
+});
+
+test("transferBaseToSystemCustodian refuses a missing or ambiguous Server identity", async () => {
+  await assert.rejects(
+    () => transferBaseToSystemCustodian(createDb({ custodians: [] }), BASE_ID),
+    /No canonical Server/);
+  await assert.rejects(
+    () => transferBaseToSystemCustodian(createDb({ custodians: [
+      { player_id: "900000201", character_name: "Server" },
+      { player_id: "900000202", character_name: "Server" }
+    ] }), BASE_ID),
+    /More than one/);
 });
 
 test("listBasePermissions labels ranks and flags rows the game ignores", async () => {
