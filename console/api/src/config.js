@@ -9,7 +9,6 @@ export function loadConfig() {
   const repoRoot = resolve(process.env.DUNE_DOCKER_DIR || process.env.RUNTIME_DIR || process.cwd());
   const generatedDir = resolve(repoRoot, "runtime/generated");
   const secretsDir = resolve(repoRoot, "runtime/secrets");
-  const secureCookieEnv = process.env.ADMIN_SECURE_COOKIES;
   mkdirSync(generatedDir, { recursive: true });
   mkdirSync(secretsDir, { recursive: true });
   repairRootOwnedHostState(repoRoot);
@@ -24,7 +23,7 @@ export function loadConfig() {
     host: resolveAdminBindHost(process.env.ADMIN_BIND_HOST),
     port: Number(process.env.ADMIN_BIND_PORT || 8088),
     authDisabled: process.env.ADMIN_AUTH_DISABLED === "1",
-    secureCookies: secureCookieEnv === undefined ? process.env.NODE_ENV === "production" : secureCookieEnv === "1",
+    secureCookies: true,
     allowHostBootstrap: process.env.ALLOW_HOST_BOOTSTRAP === "true",
     mockMode: process.env.ADMIN_MOCK_MODE === "1",
     sessionSecret: getOrCreateSecret(resolve(secretsDir, "admin-web-session-secret.txt"), 48),

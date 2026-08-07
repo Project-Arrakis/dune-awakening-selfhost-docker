@@ -433,7 +433,7 @@ async function handleApi(req, res) {
     if (!state) {
       return json(res, 429, { error: "Too many Discord sign-in sessions in progress. Try again in a moment." });
     }
-    res.setHeader("Set-Cookie", oauthStateCookie(state, config.secureCookies));
+    res.setHeader("Set-Cookie", oauthStateCookie(state));
     const authorizeUrl = buildAuthorizeUrl({ clientId: config.discordOAuthClientId, redirectUri: config.discordOAuthRedirectUri, state });
     res.writeHead(302, { Location: authorizeUrl });
     res.end();
@@ -3305,7 +3305,7 @@ async function handleOAuthCallback(req, res) {
     return json(res, 403, { error: "Discord sign-in succeeded, but this account is not authorized to sign in to this console." });
   }
   const session = auth.makeSession({ tier, userId: identity.userId, username: identity.username, guildId: config.discordHomeGuildId });
-  res.setHeader("Set-Cookie", [sessionCookieValue(session, config), clearOAuthStateCookie(config.secureCookies)]);
+  res.setHeader("Set-Cookie", [sessionCookieValue(session, config), clearOAuthStateCookie()]);
   audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: true, tier });
   return html(res, 200, oauthReturnPage());
 }
