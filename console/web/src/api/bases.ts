@@ -130,6 +130,12 @@ export type BasePermissions = {
   actorId: string;
   map: string;
   mapNameId: number;
+  systemCustodian?: {
+    available: boolean;
+    playerId?: string;
+    name?: string;
+    reason?: string;
+  };
   entries: BasePermissionEntry[];
   reason?: string;
 };
@@ -192,6 +198,9 @@ export const basesApi = {
     api<{ supported: boolean; result?: SetBasePermissionsResult; reason?: string }>(
       `/api/bases/${encodeURIComponent(baseId)}/permissions`,
       { method: "PUT", body: JSON.stringify({ entries }) }),
+  transferToSystemCustodian: (baseId: string) =>
+    post<{ supported: boolean; result?: SetBasePermissionsResult; reason?: string }>(
+      `/api/bases/${encodeURIComponent(baseId)}/system-custodian`, {}),
   permissionCandidates: (q: string, limit = 25) => {
     const search = new URLSearchParams();
     if (q) search.set("q", q);

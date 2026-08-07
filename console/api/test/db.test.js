@@ -1573,8 +1573,11 @@ test("players query uses parameterized search input", async () => {
   assert.match(playerQuery.text, /A5C0DE5E12A00001/);
   assert.match(playerQuery.text, /Server#0001/);
   assert.match(playerQuery.text, /a\.id <> 900000103::bigint/);
-  assert.match(playerQuery.text, /\$1/);
-  assert.equal(playerQuery.values[0], "%RedBlink'; drop table dune.actors; --%");
+  assert.match(playerQuery.text, /\$2/);
+  assert.match(playerQuery.text, /\$3/);
+  assert.deepEqual(playerQuery.values[0], []);
+  assert.equal(playerQuery.values[1], "%RedBlink'; drop table dune.actors; --%");
+  assert.equal(playerQuery.values[2], "RedBlink'; drop table dune.actors; --");
   assert.equal(result.rows[0].actor_id, 82);
   assert.equal(result.rows[0].player_pawn_id, 82);
   assert.equal(result.rows[0].account_id, 276);
@@ -1728,6 +1731,27 @@ test("listPlayers reports statusFilterApplied based on online_status column pres
   assert.equal(withColumn.capabilities.statusFilterApplied, true);
   const withoutColumn = await listPlayers(mockDb([]), {});
   assert.equal(withoutColumn.capabilities.statusFilterApplied, false);
+});
+
+test("players query marks and filters persistent bans by parameterized FLS ID", async () => {
+  const calls = [];
+  const db = {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("information_schema.columns")) return { rows: [{ column_name: "online_status" }] };
+      return { rows: [{ actor_id: 82, fls_id: "254A06043E9F0B16", actual_online_status: "Online", online_status: "Banned", is_banned: true, total_count: 1 }] };
+    }
+  };
+  const bannedId = "254A06043E9F0B16";
+  const result = await listPlayers(db, { status: "banned", bannedFlsIds: [bannedId, "not-an-id"] });
+  const playerQuery = calls.find((call) => call.text.includes("from dune.actors"));
+  assert.deepEqual(playerQuery.values[0], [bannedId.toLowerCase()]);
+  assert.match(playerQuery.text, /lower\(.+\) = any\(\$1::text\[\]\)/s);
+  assert.match(playerQuery.text, /then 'Banned'/);
+  assert.equal(result.rows[0].online_status, "Banned");
+  assert.equal(result.rows[0].actual_online_status, "Online");
+  assert.equal(result.capabilities.banFilterApplied, true);
 });
 
 test("players query filters offline transferred character placeholder actor rows", async () => {

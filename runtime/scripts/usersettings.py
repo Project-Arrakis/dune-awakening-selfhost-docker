@@ -42,21 +42,9 @@ LANDSRAAD_DATA_FIELDS = {
     "landsraad_task_goal_amount": ("m_TaskGoalAmount", "56000", "integer", 1, 2147483647),
     "landsraad_control_points_per_cycle": ("m_ControlPointsPerCycle", "2", "integer", 0, 1000000),
 }
-STAKING_EXTENSION_DEFAULT_TIMES = (
-    "60.000000",
-    "120.000000",
-    "240.000000",
-    "480.000000",
-    "960.000000",
-    "1920.000000",
-    "3840.000000",
-    "7680.000000",
-    "15360.000000",
-    "30720.000000",
-)
-STAKING_EXTENSION_FIELDS = {
-    "staking_unit_vertical_extension_default_times": "m_StakingUnitVerticalExtensionDefaultTimes",
-    "staking_unit_extension_default_times": "m_StakingUnitExtensionDefaultTimes",
+UNSAFE_STAKING_EXTENSION_KEYS = {
+    "m_StakingUnitVerticalExtensionDefaultTimes",
+    "m_StakingUnitExtensionDefaultTimes",
 }
 # Engine fields whose UI is a True/False boolean but whose ini value must be
 # literal "1"/"0" (the game only accepts numeric 0/1 for these, not True/False).
@@ -82,8 +70,6 @@ def normalize_engine_field_value(field_id: str, value: str) -> str:
 
 
 FIELD_TYPE_OVERRIDES = {
-    "staking_unit_vertical_extension_default_times": "integer",
-    "staking_unit_extension_default_times": "integer",
     # Empty default (no override) would otherwise infer as "text" -- this holds a
     # float number of seconds, so force the numeric input/validation.
     "deathstill_conversion_time_override": "number",
@@ -357,8 +343,6 @@ MAP_FIELDS = {
     "free_rotate_max": (BUILDING_SETTINGS_SECTION, "m_FreeRotateMax", "90.000000"),
     "sand_buildup_placeables_sheltered_target_value": (BUILDING_SETTINGS_SECTION, "m_SandBuildUpPlaceablesShelteredTargetValue", "0.1"),
     "sand_buildup_placeables_unsheltered_target_value": (BUILDING_SETTINGS_SECTION, "m_SandBuildUpPlaceablesUnShelteredTargetValue", "0.3"),
-    "staking_unit_vertical_extension_default_times": (BUILDING_SETTINGS_SECTION, "m_StakingUnitVerticalExtensionDefaultTimes", "1"),
-    "staking_unit_extension_default_times": (BUILDING_SETTINGS_SECTION, "m_StakingUnitExtensionDefaultTimes", "1"),
     "building_near_server_borders_enabled": (BUILDING_SETTINGS_SECTION, "m_bEnableBuildingNearServerBorders", "False"),
     "min_buildable_distance_from_server_border": (BUILDING_SETTINGS_SECTION, "m_bMinBuildableDistanceFromServerBorder", "1000.000000"),
     "can_remove_buildables_with_no_owner": (BUILDING_SETTINGS_SECTION, "m_bCanRemoveBuildablesWithNoOwner", "True"),
@@ -981,49 +965,21 @@ def profile_remove_key(profile: dict, scope: str, section: str, key: str, map_na
     block["lines"] = out
 
 
-def sync_staking_extension_removals(profile: dict, scope: str, map_name: str, partition_id: str, field_id: str) -> None:
-    key = STAKING_EXTENSION_FIELDS.get(field_id)
-    if not key:
-        return
-    profile_remove_key(profile, scope, BUILDING_SETTINGS_SECTION, key, map_name, partition_id, {"-"})
-    for default_time in STAKING_EXTENSION_DEFAULT_TIMES:
-        profile_set_key(
-            profile,
-            scope,
-            BUILDING_SETTINGS_SECTION,
-            key,
-            default_time,
-            map_name,
-            partition_id,
-            "-",
-        )
+def strip_unsafe_staking_extension_lines(lines: list[str]) -> list[str]:
+    """Keep the engine's packaged staking arrays intact.
 
-
-def normalize_staking_extension_removals(lines: list[str], add_defaults: bool = False) -> list[str]:
-    staking_keys = set(STAKING_EXTENSION_FIELDS.values())
-    seen: set[tuple[str, str]] = set()
-    normalized: list[str] = []
+    Older releases exposed these array properties as scalar integer settings and
+    emitted '-' directives for every packaged value. That can leave the arrays
+    empty and crash the native server when a Staking Unit is deployed. Ignore
+    legacy profile entries instead of materializing them into runtime configs.
+    """
+    safe: list[str] = []
     for raw in lines:
         parsed = split_ini_assignment(raw)
-        if not parsed:
-            normalized.append(raw)
+        if parsed and parsed[1] in UNSAFE_STAKING_EXTENSION_KEYS:
             continue
-        prefix, key, value = parsed
-        if prefix != "-" or key not in staking_keys:
-            normalized.append(raw)
-            continue
-        identity = (key, value)
-        if identity in seen:
-            continue
-        seen.add(identity)
-        normalized.append(raw)
-    if add_defaults:
-        for key in STAKING_EXTENSION_FIELDS.values():
-            if any(existing_key == key for existing_key, _ in seen):
-                continue
-            for default_time in STAKING_EXTENSION_DEFAULT_TIMES:
-                normalized.append(f"-{key}={default_time}")
-    return normalized
+        safe.append(raw)
+    return safe
 
 
 def mirror_legacy_guild_profile_field(profile: dict, scope: str, map_name: str, partition_id: str, field_id: str, value: str) -> None:
@@ -1397,7 +1353,6 @@ def set_profile_field(profile: dict, scope: str, map_name: str, partition_id: st
         spec = MAP_FIELDS[field_id]
         if spec[0] and spec[1]:
             profile_set_key(profile, "global", spec[0], spec[1], value)
-            sync_staking_extension_removals(profile, "global", "", "", field_id)
             mirror_legacy_guild_profile_field(profile, "global", "", "", field_id, value)
         return
 
@@ -1407,7 +1362,6 @@ def set_profile_field(profile: dict, scope: str, map_name: str, partition_id: st
         spec = MAP_FIELDS[field_id]
         if spec[0] and spec[1]:
             profile_set_key(profile, "map", spec[0], spec[1], value, map_name=map_name)
-            sync_staking_extension_removals(profile, "map", map_name, "", field_id)
             mirror_legacy_guild_profile_field(profile, "map", map_name, "", field_id, value)
         return
 
@@ -1431,7 +1385,6 @@ def set_profile_field(profile: dict, scope: str, map_name: str, partition_id: st
         spec = MAP_FIELDS.get(field_id)
         if spec and spec[0] and spec[1]:
             profile_set_key(profile, "partition", spec[0], spec[1], value, target_map, target_partition)
-            sync_staking_extension_removals(profile, "partition", target_map, target_partition, field_id)
             mirror_legacy_guild_profile_field(profile, "partition", target_map, target_partition, field_id, value)
         return
 
@@ -2016,10 +1969,10 @@ def compiled_usergame_ini(profile: dict, map_name: str, partition_id: str | None
             seen.add(line)
             deduped.append(line)
         section_lines[pvp_pve_section] = deduped
-    section_lines[BUILDING_SETTINGS_SECTION] = normalize_staking_extension_removals(
-        section_lines.get(BUILDING_SETTINGS_SECTION, []),
-        add_defaults=True,
-    )
+    if BUILDING_SETTINGS_SECTION in section_lines:
+        section_lines[BUILDING_SETTINGS_SECTION] = strip_unsafe_staking_extension_lines(
+            section_lines[BUILDING_SETTINGS_SECTION]
+        )
     return render_ini_sections(section_lines, [
         "; UserGame.ini managed by Docker.",
         "; Edit this single file for all map and partition UserGame settings.",
@@ -2070,7 +2023,9 @@ def client_game_ini(profile: dict, map_name: str, partition_id: str | None = Non
                 entries[previous_index] = raw
 
     if BUILDING_SETTINGS_SECTION in section_lines:
-        section_lines[BUILDING_SETTINGS_SECTION] = normalize_staking_extension_removals(section_lines[BUILDING_SETTINGS_SECTION])
+        section_lines[BUILDING_SETTINGS_SECTION] = strip_unsafe_staking_extension_lines(
+            section_lines[BUILDING_SETTINGS_SECTION]
+        )
 
     target_label = "global UserGame" if not target_map else target_map if not target_partition else f"{target_map} partition {target_partition}"
     return render_ini_sections(section_lines, [
@@ -2842,60 +2797,23 @@ Dune.GlobalVehicleMiningOutputMultiplier=10
         "building_blueprint_max_extensions": "16",
         "base_backup_max_extensions": "40",
         "building_restriction_limits_enabled": "True",
-        "staking_unit_vertical_extension_default_times": "1",
-        "staking_unit_extension_default_times": "1",
     }
     for field_id, expected in expected_building_defaults.items():
         if building_defaults.get(field_id) != expected:
             raise SystemExit(f"Building modifier default is incorrect for {field_id}.")
-    for field_id in STAKING_EXTENSION_FIELDS:
-        if FIELD_TYPE_OVERRIDES.get(field_id) != "integer":
-            raise SystemExit(f"Staking modifier is not exposed as an integer input: {field_id}")
-
-    staking_profile = parse_profile_text("")
-    set_profile_field(staking_profile, "global", "", "", "staking_unit_vertical_extension_default_times", "1")
-    set_profile_field(staking_profile, "map", "Survival_1", "", "staking_unit_extension_default_times", "1")
-    set_profile_field(staking_profile, "partition", "Survival_1", "3", "staking_unit_vertical_extension_default_times", "2")
-    staking_serialized = serialize_profile(staking_profile)
-    for key in STAKING_EXTENSION_FIELDS.values():
-        for default_time in STAKING_EXTENSION_DEFAULT_TIMES:
-            expected_line = f"-{key}={default_time}"
-            if staking_serialized.count(expected_line) < 1:
-                raise SystemExit(f"Advanced profile dropped staking array directive: {expected_line}")
-    if profile_map_values(staking_profile, "Survival_1")["staking_unit_extension_default_times"] != "1":
-        raise SystemExit("Advanced staking value did not feed Interactive Modifiers.")
-    compiled_staking = compiled_usergame_ini(staking_profile, "Survival_1", "3")
-    if "m_StakingUnitVerticalExtensionDefaultTimes=2" not in compiled_staking:
-        raise SystemExit("Partition staking override did not compile.")
-    for default_time in STAKING_EXTENSION_DEFAULT_TIMES:
-        if compiled_staking.count(f"-m_StakingUnitVerticalExtensionDefaultTimes={default_time}") != 1:
-            raise SystemExit("Compiled UserGame dropped a vertical staking array directive.")
-        if compiled_staking.count(f"-m_StakingUnitExtensionDefaultTimes={default_time}") != 1:
-            raise SystemExit("Compiled UserGame dropped a staking array directive.")
-    if compiled_staking.count(f"[{BUILDING_SETTINGS_SECTION}]") != 1:
-        raise SystemExit("Compiled UserGame duplicated the BuildingSettings section.")
-
-    advanced_staking = parse_profile_text(
+    legacy_staking = parse_profile_text(
         f"[Global:{BUILDING_SETTINGS_SECTION}]\n"
         "m_StakingUnitExtensionDefaultTimes=1\n"
-        + "\n".join(f"-m_StakingUnitExtensionDefaultTimes={value}" for value in STAKING_EXTENSION_DEFAULT_TIMES)
-        + "\n"
+        "-m_StakingUnitExtensionDefaultTimes=60.000000\n"
+        "+m_StakingUnitVerticalExtensionDefaultTimes=120.000000\n"
     )
-    advanced_staking_serialized = serialize_profile(advanced_staking)
-    for default_time in STAKING_EXTENSION_DEFAULT_TIMES:
-        expected_line = f"-m_StakingUnitExtensionDefaultTimes={default_time}"
-        if advanced_staking_serialized.count(expected_line) != 1:
-            raise SystemExit(f"Advanced round trip changed staking array directive: {expected_line}")
-    default_compiled_staking = compiled_usergame_ini(parse_profile_text(""), "Survival_1")
-    for key in STAKING_EXTENSION_FIELDS.values():
-        for default_time in STAKING_EXTENSION_DEFAULT_TIMES:
-            if default_compiled_staking.count(f"-{key}={default_time}") != 1:
-                raise SystemExit("Fresh UserGame compilation did not preserve the default staking directives.")
-    client_staking = client_game_ini(staking_profile, "Survival_1", "3")
-    for key in STAKING_EXTENSION_FIELDS.values():
-        for default_time in STAKING_EXTENSION_DEFAULT_TIMES:
-            if client_staking.count(f"-{key}={default_time}") != 1:
-                raise SystemExit("Client Game.ini export duplicated or dropped a staking directive.")
+    compiled_staking = compiled_usergame_ini(legacy_staking, "Survival_1")
+    client_staking = client_game_ini(legacy_staking, "Survival_1")
+    for unsafe_key in UNSAFE_STAKING_EXTENSION_KEYS:
+        if unsafe_key in compiled_staking or unsafe_key in client_staking:
+            raise SystemExit(f"Unsafe legacy staking override was materialized: {unsafe_key}")
+    if any(key in compiled_usergame_ini(parse_profile_text(""), "Survival_1") for key in UNSAFE_STAKING_EXTENSION_KEYS):
+        raise SystemExit("Fresh UserGame compilation overrides the packaged staking arrays.")
     if infer_runtime_target(Path("/tmp/runtime/game/survival-1-34/Saved")) != ("Survival_1", "34"):
         raise SystemExit("Dynamic Survival runtime folder was not inferred.")
     if infer_runtime_target(Path("/tmp/runtime/game/deepdesert-1-58/Saved")) != ("DeepDesert_1", "58"):

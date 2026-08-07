@@ -132,7 +132,8 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
   const playerAdmin_profile = (detail?.player && typeof detail.player === "object" ? detail.player : fallback) as Record<string, unknown>;
   const playerAdmin_faction = playerAssignedFaction(playerAdmin_profile.faction, playerAdmin_profile.faction_assigned);
   const playerAdmin_craftingCategories = ["Essentials", "Water Discipline", "Combat", "Construction", "Exploration", "Vehicles"];
-  const playerAdmin_isOnline = String(firstDefined(detail?.online_status, fallback.online_status) || "").toLowerCase() === "online";
+  const playerAdmin_isOnline = String(firstDefined(playerAdmin_profile.actual_online_status, playerAdmin_profile.online_status, fallback.actual_online_status, fallback.online_status) || "").toLowerCase() === "online";
+  const playerAdmin_isBanned = Boolean(firstDefined(playerAdmin_profile.is_banned, fallback.is_banned));
   const playerAdmin_canRunLiveAction = Boolean(actionPlayerId) && playerAdmin_isOnline;
   const playerAdmin_allowedSelectedAugments = playerAdmin_selectedAugments.filter((augmentId) => playerAdmin_filteredAugments.some((augment) => augment.id === augmentId));
   const playerAdmin_selectedGrantItems = playerAdmin_multiList.length ? playerAdmin_multiList : playerAdmin_selectedItem ? [{
@@ -165,7 +166,7 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
   function playerAdmin_addLog(actionType: string, target: string, amount: string, notes: string) {
     const row = { "Date / Time": new Date().toLocaleString(), Admin: "Console", "Action Type": actionType, Target: target, Amount: amount, Notes: notes };
     playerAdmin_setCharacterLog((current) => [row, ...current].slice(0, 25));
-    if (/kick|wipe|reset progression|teleport|spawn vehicle|load position/i.test(actionType)) playerAdmin_setAdminLog((current) => [row, ...current].slice(0, 25));
+    if (/kick|ban|unban|wipe|reset progression|teleport|spawn vehicle|load position/i.test(actionType)) playerAdmin_setAdminLog((current) => [row, ...current].slice(0, 25));
   }
   function playerAdmin_actionResultOrNote(key: string, text: string) {
     return playerAdmin_actionResult?.key === key ? <InlineActionResult result={playerAdmin_actionResult} resultKey={key} /> : <span className="inline-action-result-wrap"><span className="inline-action-result note">{text}</span></span>;
@@ -1212,13 +1213,34 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
       }}>Repair Login Queue</button><button className="danger" disabled={!playerAdmin_canRunLiveAction || playerAdmin_actionResult?.pending} onClick={async () => {
         if (!(await confirmAction(`Kick ${playerName} from the server?`))) return;
         void playerAdmin_runAction("adminKick", `Kicking ${playerName}`, () => playerAdmin_runTask(() => playersApi.kick(actionPlayerId)), `${playerName} was kicked from the server.`, { actionType: "Kick Player", target: playerName, amount: "1" }, "danger");
-      }}>Kick Player</button><button className="danger" disabled={!playerAdmin_canRunLiveAction || playerAdmin_actionResult?.pending} onClick={async () => {
+      }}>Kick Player</button><button className="danger" disabled={!dbPlayerId || playerAdmin_actionResult?.pending} onClick={async () => {
+        if (playerAdmin_isBanned) {
+          if (!(await confirmAction(`Unban ${playerName}? This account will be allowed to connect again.`, {
+            title: "Unban Player",
+            confirmLabel: "Unban Player",
+            danger: true,
+            details: [{ label: "Player", value: playerName, tone: "accent" }]
+          }))) return;
+          void playerAdmin_runAction("adminUnban", `Unbanning ${playerName}`, async () => { const result = await playersApi.unban(dbPlayerId); onRefresh(); return result; }, `${playerName} was unbanned and may connect again.`, { actionType: "Unban Player", target: playerName, amount: "1" });
+          return;
+        }
+        if (!(await confirmAction(`Permanently ban ${playerName}? The ban follows the player's Funcom/FLS account across characters and IP addresses.`, {
+          title: "Ban Player",
+          confirmLabel: "Ban Player",
+          danger: true,
+          details: [
+            { label: "Player", value: playerName, tone: "accent" },
+            { label: "Enforcement", value: "Persistent account ban", tone: "danger" }
+          ]
+        }))) return;
+        void playerAdmin_runAction("adminBan", `Banning ${playerName}`, async () => { const result = await playersApi.ban(dbPlayerId); onRefresh(); return result; }, `${playerName} was permanently banned.`, { actionType: "Ban Player", target: playerName, amount: "Permanent" }, "danger");
+      }}>{playerAdmin_isBanned ? "Unban Player" : "Ban Player"}</button><button className="danger" disabled={!playerAdmin_canRunLiveAction || playerAdmin_actionResult?.pending} onClick={async () => {
         if (!(await confirmAction(`Wipe ${playerName}'s inventory?`))) return;
         void playerAdmin_runAction("adminWipe", `Wiping ${playerName}'s inventory`, () => playerAdmin_runTask(() => playersApi.cleanInventory(actionPlayerId, "CLEAN INVENTORY")), `${playerName}'s inventory was wiped.`, { actionType: "Wipe Inventory", target: playerName, amount: "1" }, "danger");
       }}>Wipe Inventory</button><button className="danger" disabled={!playerAdmin_canRunLiveAction || playerAdmin_actionResult?.pending} onClick={async () => {
         if (!(await confirmAction(`Reset ${playerName}'s progression?`))) return;
         void playerAdmin_runAction("adminReset", `Resetting ${playerName}'s progression`, () => playerAdmin_runTask(() => playersApi.resetProgression(actionPlayerId, "RESET PROGRESSION")), `${playerName}'s progression was reset.`, { actionType: "Reset Progression", target: playerName, amount: "1" }, "danger");
-      }}>Reset Progression</button><InlineActionResult result={playerAdmin_actionResult} resultKey="repairLoginQueue" /><InlineActionResult result={playerAdmin_actionResult} resultKey="adminKick" /><InlineActionResult result={playerAdmin_actionResult} resultKey="adminWipe" /><InlineActionResult result={playerAdmin_actionResult} resultKey="adminReset" /></div></div></section><section className="playerAdmin_box"><h4>Movement / Vehicles</h4><p>The player must be online.</p><div className="playerAdmin_actionRow playerAdmin_coordinatesRow"><span>Coordinates</span><input value={playerAdmin_coords.x} onChange={(event) => playerAdmin_setCoords({ ...playerAdmin_coords, x: event.target.value })} placeholder="X" /><input value={playerAdmin_coords.y} onChange={(event) => playerAdmin_setCoords({ ...playerAdmin_coords, y: event.target.value })} placeholder="Y" /><input value={playerAdmin_coords.z} onChange={(event) => playerAdmin_setCoords({ ...playerAdmin_coords, z: event.target.value })} placeholder="Z" /><input value={playerAdmin_coords.yaw} onChange={(event) => playerAdmin_setCoords({ ...playerAdmin_coords, yaw: event.target.value })} placeholder="Yaw" /><button disabled={!dbPlayerId || playerAdmin_actionResult?.pending} onClick={() => void playerAdmin_runAction("adminPosition", `Loading ${playerName}'s position`, playerAdmin_useCurrentPosition, "Position loaded. Edit X/Y/Z before teleporting if needed.", { actionType: "Load Position", target: playerName, amount: "1" })}>Use Current Position</button><button disabled={!playerAdmin_canRunLiveAction || playerAdmin_actionResult?.pending} onClick={async () => {
+      }}>Reset Progression</button><InlineActionResult result={playerAdmin_actionResult} resultKey="repairLoginQueue" /><InlineActionResult result={playerAdmin_actionResult} resultKey="adminKick" /><InlineActionResult result={playerAdmin_actionResult} resultKey="adminBan" /><InlineActionResult result={playerAdmin_actionResult} resultKey="adminUnban" /><InlineActionResult result={playerAdmin_actionResult} resultKey="adminWipe" /><InlineActionResult result={playerAdmin_actionResult} resultKey="adminReset" /></div></div></section><section className="playerAdmin_box"><h4>Movement / Vehicles</h4><p>The player must be online.</p><div className="playerAdmin_actionRow playerAdmin_coordinatesRow"><span>Coordinates</span><input value={playerAdmin_coords.x} onChange={(event) => playerAdmin_setCoords({ ...playerAdmin_coords, x: event.target.value })} placeholder="X" /><input value={playerAdmin_coords.y} onChange={(event) => playerAdmin_setCoords({ ...playerAdmin_coords, y: event.target.value })} placeholder="Y" /><input value={playerAdmin_coords.z} onChange={(event) => playerAdmin_setCoords({ ...playerAdmin_coords, z: event.target.value })} placeholder="Z" /><input value={playerAdmin_coords.yaw} onChange={(event) => playerAdmin_setCoords({ ...playerAdmin_coords, yaw: event.target.value })} placeholder="Yaw" /><button disabled={!dbPlayerId || playerAdmin_actionResult?.pending} onClick={() => void playerAdmin_runAction("adminPosition", `Loading ${playerName}'s position`, playerAdmin_useCurrentPosition, "Position loaded. Edit X/Y/Z before teleporting if needed.", { actionType: "Load Position", target: playerName, amount: "1" })}>Use Current Position</button><button disabled={!playerAdmin_canRunLiveAction || playerAdmin_actionResult?.pending} onClick={async () => {
         if (!(await confirmAction(`Teleport ${playerName} to X=${playerAdmin_coords.x} Y=${playerAdmin_coords.y} Z=${playerAdmin_coords.z}?`))) return;
         void playerAdmin_runAction("adminTeleport", `Teleporting ${playerName}`, () => playerAdmin_runTask(() => playersApi.teleport(actionPlayerId, { x: Number(playerAdmin_coords.x), y: Number(playerAdmin_coords.y), z: Number(playerAdmin_coords.z), yaw: Number(playerAdmin_coords.yaw) })), `${playerName} was teleported.`, { actionType: "Teleport", target: playerName, amount: "1" });
       }}>Teleport</button><InlineActionResult result={playerAdmin_actionResult} resultKey="adminPosition" /><InlineActionResult result={playerAdmin_actionResult} resultKey="adminTeleport" /></div><div className="playerAdmin_actionRow playerAdmin_spawnVehicleRow"><span>Spawn Vehicle</span><select value={playerAdmin_vehicleId} onChange={(event) => { const nextVehicle = event.target.value; playerAdmin_setVehicleId(nextVehicle); playerAdmin_setVehicleTemplate([...(playerAdmin_vehicleCatalog[nextVehicle] || [])].sort((a, b) => friendlyVehicleTemplateName(a).localeCompare(friendlyVehicleTemplateName(b)))[0] || ""); }}>{playerAdmin_vehicleIds.length === 0 && <option value="">Manual Vehicle ID</option>}{playerAdmin_vehicleIds.map((id) => <option key={id} value={id}>{friendlyVehicleName(id)}</option>)}</select><select value={playerAdmin_vehicleTemplate} onChange={(event) => playerAdmin_setVehicleTemplate(event.target.value)}>{playerAdmin_selectedTemplates.length === 0 && <option value="">Manual Template</option>}{playerAdmin_selectedTemplates.map((template) => <option key={template} value={template}>{friendlyVehicleTemplateName(template)}</option>)}</select><button disabled={!playerAdmin_canRunLiveAction || playerAdmin_actionResult?.pending} onClick={async () => {

@@ -6,7 +6,7 @@ type PlayersListResult = { rows: Record<string, unknown>[]; totalCount: number; 
 const PLAYERS_ALL_PAGE_SIZE = 200;
 
 export const playersApi = {
-  list: (params: { q?: string; page?: number; pageSize?: number; status?: "all" | "online" | "offline"; sortColumn?: string; sortDirection?: "asc" | "desc" } = {}) => {
+  list: (params: { q?: string; page?: number; pageSize?: number; status?: "all" | "online" | "offline" | "banned"; sortColumn?: string; sortDirection?: "asc" | "desc" } = {}) => {
     const search = new URLSearchParams();
     if (params.q) search.set("q", params.q);
     if (params.page !== undefined) search.set("page", String(params.page));
@@ -19,7 +19,7 @@ export const playersApi = {
   },
   // Fetches every matching player (not one UI page) for dropdowns/bulk actions/counts —
   // loops the paginated endpoint since the backend caps a single page at 200 rows.
-  listAll: async (params: { q?: string; status?: "all" | "online" | "offline" } = {}) => {
+  listAll: async (params: { q?: string; status?: "all" | "online" | "offline" | "banned" } = {}) => {
     let page = 0;
     let rows: Record<string, unknown>[] = [];
     let totalCount = 0;
@@ -65,6 +65,8 @@ export const playersApi = {
   resetAllSpecializationKeystones: (playerId: string, confirmation: string) => post<{ supported: boolean; result?: Record<string, unknown>; reason?: string }>(`/api/players/${encodeURIComponent(playerId)}/specializations/keystones/reset-all`, { confirmation }),
   refillWater: (playerId: string, amount = 1000000) => post<{ task: Task }>(`/api/players/${encodeURIComponent(playerId)}/refill-water`, { amount }),
   kick: (playerId: string) => post<{ task: Task }>(`/api/players/${encodeURIComponent(playerId)}/kick`),
+  ban: (playerId: string, reason = "") => post<{ ok: boolean; banned: boolean; ban: Record<string, unknown>; enforcement?: Record<string, unknown> }>(`/api/players/${encodeURIComponent(playerId)}/ban`, { confirmation: "BAN PLAYER", reason }),
+  unban: (playerId: string) => api<{ ok: boolean; banned: boolean; wasBanned: boolean }>(`/api/players/${encodeURIComponent(playerId)}/ban`, { method: "DELETE" }),
   repairLoginQueue: (playerId: string, confirmation: string) => post<{ task: Task }>(`/api/players/${encodeURIComponent(playerId)}/repair-login-queue`, { confirmation }),
   teleport: (playerId: string, body: { x: number; y: number; z: number; yaw: number }) => post<{ task: Task }>(`/api/players/${encodeURIComponent(playerId)}/teleport`, body),
   spawnVehicle: (playerId: string, body: { vehicleId: string; template: string; offset: number }) => post<{ task: Task }>(`/api/players/${encodeURIComponent(playerId)}/spawn-vehicle`, body),

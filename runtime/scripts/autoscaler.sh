@@ -31,6 +31,7 @@ IGWO_UNAVAILABLE_SCAN_SECONDS="${DUNE_AUTOSCALER_IGWO_UNAVAILABLE_SCAN_SECONDS:-
 IGWO_UNAVAILABLE_COOLDOWN_SECONDS="${DUNE_AUTOSCALER_IGWO_UNAVAILABLE_COOLDOWN_SECONDS:-60}"
 STALE_SERVER_STATE_SCAN_SECONDS="${DUNE_AUTOSCALER_STALE_SERVER_STATE_SCAN_SECONDS:-15}"
 STALE_SERVER_STATE_COOLDOWN_SECONDS="${DUNE_AUTOSCALER_STALE_SERVER_STATE_COOLDOWN_SECONDS:-45}"
+AUTOSCALER_STARTED_AT="$(date +%s)"
 
 mkdir -p "$(dirname "$STATE_FILE")"
 touch "$STATE_FILE"
@@ -2210,11 +2211,20 @@ director_logs_contain_live_ids() {
 }
 
 core_maps_ready_for_browser_heal() {
-  local container partition logs
+  local container partition state running started_at logs
 
   while IFS='|' read -r container partition; do
-    docker inspect -f '{{.State.Running}}' "$container" 2>/dev/null | grep -qx true || return 1
-    logs="$(timeout --kill-after=2s 12s docker logs --tail 5000 "$container" 2>&1 || true)"
+    state="$(docker inspect -f '{{.State.Running}}|{{.State.StartedAt}}' "$container" 2>/dev/null || true)"
+    IFS='|' read -r running started_at <<<"$state"
+    [ "$running" = "true" ] || return 1
+    [ -n "${started_at:-}" ] || return 1
+
+    # Docker retains logs across restarts of the same named container. Looking
+    # at the unbounded tail can therefore find a READY marker from the previous
+    # process and let browser healing restart Director while the replacement
+    # core server is still loading. Only accept readiness emitted by the
+    # container's current process generation.
+    logs="$(timeout --kill-after=2s 12s docker logs --since "$started_at" --tail 5000 "$container" 2>&1 || true)"
     grep -Eq "Server farm is READY .*partition ${partition}([,[:space:]]|$)" <<<"$logs" || return 1
   done <<'EOF'
 dune-server-survival-1|1
@@ -2238,6 +2248,11 @@ scan_director_browser_state() {
   fi
 
   now="$(date +%s)"
+  if [ $((now - AUTOSCALER_STARTED_AT)) -lt "$DIRECTOR_CORE_READY_GRACE_SECONDS" ]; then
+    director_heal_clear stale_since
+    director_heal_clear core_ready_since
+    return 0
+  fi
   if core_ready_since="$(director_heal_get core_ready_since 2>/dev/null)"; then
     age=$((now - core_ready_since))
   else

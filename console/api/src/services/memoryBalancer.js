@@ -13,12 +13,30 @@ const MEMORY_BALANCER_DONOR_POST_TRANSFER_MAX_PERCENT = 80;
 const MEMORY_BALANCER_CHUNK_BYTES = 1024 ** 3;
 const MEMORY_BALANCER_MIN_HEADROOM_BYTES = 1024 ** 3;
 const LIVE_MEMORY_CACHE_MS = 10000;
+const SWAP_SAMPLE_CONCURRENCY = 4;
+const SWAP_SAMPLE_TIMEOUT_MS = 3000;
+const CONTAINER_SWAP_STAT_SCRIPT = `if [ -r /sys/fs/cgroup/memory.swap.current ]; then
+  current=$(cat /sys/fs/cgroup/memory.swap.current 2>/dev/null) || exit 1
+  maximum=$(cat /sys/fs/cgroup/memory.swap.max 2>/dev/null) || exit 1
+  printf 'v2|%s|%s\\n' "$current" "$maximum"
+elif [ -r /sys/fs/cgroup/memory/memory.memsw.usage_in_bytes ] && [ -r /sys/fs/cgroup/memory/memory.usage_in_bytes ]; then
+  memory_current=$(cat /sys/fs/cgroup/memory/memory.usage_in_bytes 2>/dev/null) || exit 1
+  combined_current=$(cat /sys/fs/cgroup/memory/memory.memsw.usage_in_bytes 2>/dev/null) || exit 1
+  memory_max=$(cat /sys/fs/cgroup/memory/memory.limit_in_bytes 2>/dev/null) || exit 1
+  combined_max=$(cat /sys/fs/cgroup/memory/memory.memsw.limit_in_bytes 2>/dev/null) || exit 1
+  printf 'v1|%s|%s|%s|%s\\n' "$memory_current" "$combined_current" "$memory_max" "$combined_max"
+else
+  exit 2
+fi`;
 
 export function createDockerStatsSampler(config, options = {}) {
   const collect = options.collect || (async () => {
     const stdout = await runProcessText(config, "docker", ["stats", "--no-stream", "--format", "{{json .}}"], 10000);
     return stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).map(parseDockerStatsRow).filter(Boolean);
   });
+  // Injected RAM collectors are used by unit tests and callers that do not own
+  // Docker access. They opt into swap enrichment by injecting collectSwap too.
+  const collectSwap = options.collectSwap || (options.collect ? async () => new Map() : (rows) => collectContainerSwapStats(config, rows));
   const now = options.now || Date.now;
   const cacheMs = Math.max(0, Number(options.cacheMs ?? LIVE_MEMORY_CACHE_MS));
   let cached = null;
@@ -31,6 +49,7 @@ export function createDockerStatsSampler(config, options = {}) {
 
     inFlight = Promise.resolve()
       .then(collect)
+      .then(async (rows) => applyContainerSwapStats(rows, await collectSwap(rows)))
       .then((rows) => {
         const sampledAtMs = now();
         cached = {
@@ -47,6 +66,76 @@ export function createDockerStatsSampler(config, options = {}) {
   }
 
   return { read };
+}
+
+export async function collectContainerSwapStats(config, rows, options = {}) {
+  if (readMemorySwapAllowanceBytes(config) <= 0) return new Map();
+  const run = options.run || ((container) => runProcessText(config, "docker", ["exec", container, "sh", "-c", CONTAINER_SWAP_STAT_SCRIPT], SWAP_SAMPLE_TIMEOUT_MS));
+  const concurrency = Math.max(1, Math.min(16, Number(options.concurrency) || SWAP_SAMPLE_CONCURRENCY));
+  const queue = [...new Set((rows || []).map((row) => String(row?.container || "")).filter((name) => /^dune-server-[a-z0-9-]+$/i.test(name)))];
+  const result = new Map();
+
+  for (let index = 0; index < queue.length; index += concurrency) {
+    await Promise.all(queue.slice(index, index + concurrency).map(async (container) => {
+      try {
+        const output = await run(container);
+        const parsed = parseContainerSwapStats(output);
+        if (parsed.supported) result.set(container, parsed);
+      } catch {
+        // A container may stop between docker stats and this sample. RAM data
+        // remains valid while swap simply renders as unavailable for this poll.
+      }
+    }));
+  }
+  return result;
+}
+
+export function applyContainerSwapStats(rows, swapByContainer) {
+  return (rows || []).map((row) => {
+    const swap = swapByContainer?.get?.(row.container);
+    return {
+      ...row,
+      swapUsedBytes: swap?.supported ? swap.usedBytes : 0,
+      swapLimitBytes: swap?.supported ? swap.limitBytes : 0,
+      swapSupported: Boolean(swap?.supported)
+    };
+  });
+}
+
+export function parseContainerSwapStats(value) {
+  const parts = String(value || "").trim().split("|");
+  if (parts[0] === "v2" && parts.length === 3) {
+    const usedBytes = parseCgroupByteCounter(parts[1]);
+    const limitBytes = parseCgroupByteCounter(parts[2], { allowMax: true });
+    if (usedBytes === null || limitBytes === null) return unsupportedSwapStats();
+    return { supported: true, cgroupVersion: 2, usedBytes, limitBytes };
+  }
+  if (parts[0] === "v1" && parts.length === 5) {
+    const memoryUsed = parseCgroupByteCounter(parts[1]);
+    const combinedUsed = parseCgroupByteCounter(parts[2]);
+    const memoryLimit = parseCgroupByteCounter(parts[3]);
+    const combinedLimit = parseCgroupByteCounter(parts[4], { allowMax: true });
+    if ([memoryUsed, combinedUsed, memoryLimit, combinedLimit].some((entry) => entry === null)) return unsupportedSwapStats();
+    return {
+      supported: true,
+      cgroupVersion: 1,
+      usedBytes: Math.max(0, combinedUsed - memoryUsed),
+      limitBytes: Math.max(0, combinedLimit - memoryLimit)
+    };
+  }
+  return unsupportedSwapStats();
+}
+
+function parseCgroupByteCounter(value, options = {}) {
+  const text = String(value || "").trim();
+  if (options.allowMax && text === "max") return 0;
+  if (!/^\d+$/.test(text)) return null;
+  const number = Number(text);
+  return Number.isSafeInteger(number) && number >= 0 ? number : null;
+}
+
+function unsupportedSwapStats() {
+  return { supported: false, cgroupVersion: 0, usedBytes: 0, limitBytes: 0 };
 }
 
 export function createMemoryBalancer(config) {

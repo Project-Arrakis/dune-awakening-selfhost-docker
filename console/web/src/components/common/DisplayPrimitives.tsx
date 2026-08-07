@@ -26,8 +26,10 @@ export function OutputPanel({ title, text, action, onAction }: { title: string; 
 }
 
 export function PlayerStatusCell({ value }: { value: unknown }) {
-  const online = String(value || "").toLowerCase() === "online";
-  return <span className={`player-status-cell ${online ? "online" : "offline"}`}>{online && <span className="player-status-dot" />}<span>{online ? "Online" : "Offline"}</span></span>;
+  const status = String(value || "").toLowerCase();
+  const online = status === "online";
+  const banned = status === "banned";
+  return <span className={`player-status-cell ${banned ? "banned" : online ? "online" : "offline"}`}>{online && <span className="player-status-dot" />}<span>{banned ? "Banned" : online ? "Online" : "Offline"}</span></span>;
 }
 
 // A small (i) button next to a toggle that opens a custom popover on hover,

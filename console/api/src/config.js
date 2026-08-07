@@ -106,6 +106,7 @@ function repairRootOwnedHostState(repoRoot) {
     resolve(repoRoot, "runtime/generated/message-of-the-day-state.json"),
     resolve(repoRoot, "runtime/generated/player-announcements.json"),
     resolve(repoRoot, "runtime/generated/player-announcements-state.json"),
+    resolve(repoRoot, "runtime/generated/player-bans.json"),
     resolve(repoRoot, "runtime/generated/public-directory-status.json"),
     resolve(repoRoot, "runtime/generated/restart-schedule.env"),
     resolve(repoRoot, "runtime/generated/shutdown-protection.env"),
