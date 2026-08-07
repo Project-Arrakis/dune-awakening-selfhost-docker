@@ -193,6 +193,7 @@ function LazyTabBoundary({ children, label = "Loading Section" }: { children: Re
 export function App() {
   const [auth, setAuth] = useState(false);
   const [password, setPassword] = useState("");
+  const [showPasswordLogin, setShowPasswordLogin] = useState(false);
   const [tab, setTab] = useState<Tab>("Home");
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [pinnedAddons, setPinnedAddons] = useState<PinnedAddon[]>(() => loadPinnedAddons());
@@ -512,15 +513,30 @@ export function App() {
           <h1>Dune Docker Console</h1>
           <img className="login-logo" src="/dune-docker-logo.png" alt="Dune Docker Console logo" />
           <p>Beyond the Dunes, Every Choice Shapes the Future</p>
-          <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Admin Password" />
-          <button type="submit">Sign In</button>
-          {error && <p className="error">{error === AUTH_SESSION_EXPIRED_MESSAGE
-          {discordSignInAvailable && (
-            <a className="login-discord-button" href="/api/auth/discord/start">
-              <DiscordLogo size={19} aria-hidden="true" /> Sign in with Discord
-            </a>
+          {discordSignInAvailable ? (
+            <>
+              <a className="login-discord-button login-discord-button-primary" href="/api/auth/discord/start">
+                <DiscordLogo size={19} aria-hidden="true" /> Sign in with Discord
+              </a>
+              <button type="button" className="login-password-toggle" onClick={() => setShowPasswordLogin(!showPasswordLogin)}>
+                {showPasswordLogin ? 'Hide password sign-in' : 'Sign in with password instead'}
+              </button>
+              {showPasswordLogin && (
+                <div className="login-password-fields">
+                  <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Admin Password" />
+                  <button type="submit">Sign In</button>
+                </div>
+              )}
+            </>
+          ) : (
+            <>
+              <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Admin Password" />
+              <button type="submit">Sign In</button>
+            </>
           )}
-          {error && <p className="error">{error}</p>}
+          {error && <p className="error">{error === AUTH_SESSION_EXPIRED_MESSAGE
+            ? <>Your browser login session expired.<br />Sign in again to continue.</>
+            : error}</p>}
         </form>
       </main>
     );
