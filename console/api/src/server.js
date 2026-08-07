@@ -34,7 +34,8 @@ import { readCharacterTransferSettings, saveCharacterTransferSettings } from "./
 import { handleDiscordAdapterRoute, isDiscordAdapterRoute } from "./integrations/discord/routes.js";
 import { createPendingStateStore, exchangeDiscordAuthCode, fetchDiscordIdentity, createOAuthTierResolver, buildAuthorizeUrl, oauthStateCookie, clearOAuthStateCookie } from "./integrations/discord/oauth.js";
 import { createHandoff } from "./integrations/discord/handoff.js";
-import { capabilityForRoute, requireConsoleCapability, capabilitiesForTier } from "./rbac.js";
+import { actionForRoute } from "./actions.js";
+import { evaluate, loadPolicies, getAllPolicies, resolveSessionTier, resolveAllowedActions } from "./policy.js";
 import { discordAdapterEnabled } from "./integrations/discord/adapter.js";
 import { initializeDiscordAdapterSchema } from "./integrations/discord/schema.js";
 import { liveItemGrantOk, liveItemGrantWarning } from "./grantResults.js";
@@ -57,6 +58,7 @@ import { parseEffectivePermissionLimit } from "./services/permissionSettings.js"
 import { flushBaseRefillQueues } from "./services/baseRefillFlush.js";
 
 const config = loadConfig();
+loadPolicies(config.repoRoot);
 const auth = createAuth(config);
 const loginRateLimiter = createLoginRateLimiter();
 const mutationRateLimiter = createMutationRateLimiter();
@@ -418,7 +420,7 @@ async function handleApi(req, res) {
         tier: session.tier || "owner",
         guildId: session.guildId || ""
       },
-      capabilities: capabilitiesForTier(session.tier)
+      allowedActions: resolveAllowedActions(session.tier || "owner")
     });
   }
   if (path === "/api/auth/discord/start" && req.method === "GET") {
@@ -460,8 +462,8 @@ async function handleApi(req, res) {
   if (!session) return;
   req.authSession = session;
 
-  const routeCapability = capabilityForRoute(path, req.method);
-  if (routeCapability && !requireConsoleCapability(session, routeCapability)) {
+  const action = actionForRoute(path, req.method);
+  if (action && !evaluate(session, action)) {
     return json(res, 403, { error: "Your account does not have permission to access this resource." });
   }
 
