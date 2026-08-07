@@ -111,6 +111,7 @@ const PUBLIC_ROUTES = new Set([
   "GET /api/auth/me",
   "GET /api/auth/discord/start",
   "GET /api/auth/discord/callback",
+  "POST /api/auth/discord/exchange",
   "GET /api/auth/discord/error",
 ]);
 
