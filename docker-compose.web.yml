@@ -69,6 +69,7 @@ services:
       DUNE_PUBLIC_DIRECTORY_CLAIM_URL: "${DUNE_PUBLIC_DIRECTORY_CLAIM_URL:-}"
     volumes:
       - "${DUNE_HOST_REPO_ROOT:-.}:/repo"
+      - ./runtime/local-static:/app/web-dist/atrium:ro
       - /etc/localtime:/etc/localtime:ro
       # WARNING: mounting the Docker socket gives this container broad control
       # over the host Docker daemon. Expose the web admin only to trusted admins.
