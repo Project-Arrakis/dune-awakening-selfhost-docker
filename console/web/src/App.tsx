@@ -671,7 +671,15 @@ export function App() {
               <p className="sidebar-nav-heading">{group.title}</p>
               {group.items.filter((item) => {
                 if (!me || allowedActions.length === 0) return true;
-                return !item.requiredAction || allowedActions.includes(item.requiredAction);
+                if (!item.requiredAction) return true;
+                if (allowedActions.includes(item.requiredAction)) return true;
+                // Wildcard patterns like "server:*" must be checked against
+                // individual allowed actions (e.g. "server:read", "server:start").
+                if (item.requiredAction.includes("*")) {
+                  const prefix = item.requiredAction.replace(/\*.*$/, "");
+                  return allowedActions.some((a) => a.startsWith(prefix));
+                }
+                return false;
               }).map((item) => (
                 <Fragment key={item.tab}>
                   <button className={tab === item.tab && (!selectedPinnedAddonId || item.tab !== "Addons") ? "active" : ""} onClick={() => {
