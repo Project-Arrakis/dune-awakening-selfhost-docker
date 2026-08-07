@@ -15,26 +15,37 @@ type StoragePanelProps = {
 
 export function StoragePanel({ onError, confirmAction, formatMutationResult, waitForTask }: StoragePanelProps) {
   const [rows, setRows] = useState<Record<string, unknown>[]>([]);
+  const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<Record<string, unknown> | null>(null);
   const [items, setItems] = useState<Record<string, unknown>[]>([]);
   const [itemName, setItemName] = useState("");
   const [quantityText, setQuantityText] = useState("100");
   const [canGiveItem, setCanGiveItem] = useState(false);
   const [canFillItem, setCanFillItem] = useState(false);
-  const [storageResult, setStorageResult] = useState("Give Item to Storage runs only when the backend verifies the storage schema.");
+  const [storageResult, setStorageResult] = useState("");
+  const [storageResultIsError, setStorageResultIsError] = useState(false);
   const [restartStatus, setRestartStatus] = useState("");
   const [restartRunning, setRestartRunning] = useState(false);
 
   async function load() {
     onError("");
+    setLoading(true);
     try {
       const result = await worldDataApi.storage();
       setRows(result.rows || []);
       setCanGiveItem(Boolean(result.capabilities?.storageGiveItem));
       setCanFillItem(Boolean(result.capabilities?.storageFillItem));
-      if (!result.capabilities?.storageGiveItem) setStorageResult("Storage give-item is unsupported until this database exposes compatible dune.inventories and dune.items insert columns.");
+      setStorageResult("");
+      setStorageResultIsError(false);
+      if (!result.capabilities?.storageGiveItem && !result.capabilities?.storageFillItem) {
+        setStorageResult("Storage operations require compatible dune.inventories and dune.items tables.");
+      }
     } catch (error) {
+      setStorageResult(error instanceof Error ? error.message : String(error));
+      setStorageResultIsError(true);
       onError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setLoading(false);
     }
   }
 
@@ -54,10 +65,12 @@ export function StoragePanel({ onError, confirmAction, formatMutationResult, wai
       if (!(await confirmAction(`Give ${quantity()} x ${itemName} to storage ${String(selected.id)}?`))) return;
       const response = await worldDataApi.storageGiveItem(String(selected.id), { itemName, quantity: quantity(), confirmation: "GIVE ITEM TO STORAGE" });
       setStorageResult(formatMutationResult(response));
+      setStorageResultIsError(false);
       setItems((await worldDataApi.storageItems(String(selected.id))).rows || []);
     } catch (error) {
       const text = error instanceof Error ? error.message : String(error);
       setStorageResult(text);
+      setStorageResultIsError(true);
       onError(text);
     }
   }
@@ -69,10 +82,12 @@ export function StoragePanel({ onError, confirmAction, formatMutationResult, wai
       if (!(await confirmAction(`Fill container ${String(selected.id)} with ${quantity()} x ${itemName}? Only refined resources and components are allowed.`))) return;
       const response = await worldDataApi.storageFillItem(String(selected.id), { itemName, quantity: quantity(), confirmation: "FILL ITEM TO STORAGE" });
       setStorageResult(formatMutationResult(response));
+      setStorageResultIsError(false);
       setItems((await worldDataApi.storageItems(String(selected.id))).rows || []);
     } catch (error) {
       const text = error instanceof Error ? error.message : String(error);
       setStorageResult(text);
+      setStorageResultIsError(true);
       onError(text);
     }
   }
@@ -104,5 +119,5 @@ export function StoragePanel({ onError, confirmAction, formatMutationResult, wai
     void load();
   }, []);
 
-  return <section className="panel"><div className="panel-title"><h2>Storage</h2><button onClick={() => void load()}>Refresh Storage</button><button disabled={restartRunning} onClick={() => void applyRestart()}>Apply Fills (Restart Survival)</button></div><p className="danger-note">{storageResult}</p>{restartStatus && <p className="info-note">{restartStatus}</p>}<p className="info-note">Fills become visible in-game after the Survival server restarts; the restart disconnects players for a few minutes.</p><DataTable rows={rows} onRowClick={open} />{selected && <section className="drawer"><h3>Storage {String(selected.id)}</h3><div className="action-row"><a className="button-link" href={worldDataApi.storageExportUrl(String(selected.id))}>Export JSON</a><input value={itemName} onChange={(event) => setItemName(event.target.value)} placeholder="Item name or ID" /><input value={quantityText} onChange={(event) => setQuantityText(event.target.value)} className="small-input" type="number" min={1} max={1000000} placeholder="Qty" /><button disabled={!canGiveItem || restartRunning} onClick={() => void giveStorageItem()}>Give Item</button><button disabled={!canFillItem || restartRunning} onClick={() => void fillStorageItem()}>Fill Container</button></div><p className="info-note">Fill Container accepts refined resources and components only, respecting slot and volume limits.</p><DataTable rows={items} /></section>}</section>;
+  return <section className="panel"><div className="panel-title"><h2>Storage</h2><button onClick={() => void load()}>Refresh Storage</button><button disabled={restartRunning} onClick={() => void applyRestart()}>Apply Fills (Restart Survival)</button></div>{storageResultIsError && <p className="danger-note">{storageResult}</p>}{!storageResultIsError && storageResult && <p className="info-note">{storageResult}</p>}{restartStatus && <p className="info-note">{restartStatus}</p>}<p className="info-note">Fills become visible in-game after the Survival server restarts; the restart disconnects players for a few minutes.</p>{loading ? <p className="info-note"><span className="spinner" aria-hidden="true" /> Loading storage containers...</p> : <DataTable rows={rows} onRowClick={open} />}{selected && <section className="drawer"><h3>Storage {String(selected.id)}</h3><div className="action-row"><a className="button-link" href={worldDataApi.storageExportUrl(String(selected.id))}>Export JSON</a><input value={itemName} onChange={(event) => setItemName(event.target.value)} placeholder="Item name or ID" /><input value={quantityText} onChange={(event) => setQuantityText(event.target.value)} className="small-input" type="number" min={1} max={1000000} placeholder="Qty" /><button disabled={!canGiveItem || restartRunning} onClick={() => void giveStorageItem()} title={!canGiveItem ? "Storage give-item schema not detected" : ""}>Give Item</button><button disabled={!canFillItem || restartRunning} onClick={() => void fillStorageItem()} title={!canFillItem ? "Storage fill-item schema not detected" : ""}>Fill Container</button></div><p className="info-note">Fill Container accepts refined resources and components only, respecting slot and volume limits.</p><DataTable rows={items} /></section>}</section>;
 }
