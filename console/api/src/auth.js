@@ -44,29 +44,51 @@ export function createAuth(config) {
     const id = randomBytes(32).toString("base64url");
     const csrf = randomBytes(24).toString("base64url");
     const expiresAt = now() + 12 * 60 * 60 * 1000;
+    const payload = Buffer.from(JSON.stringify({ id, tier, userId, exp: expiresAt })).toString("base64url");
     sessions.set(id, { id, csrf, expiresAt, tier, userId, username, guildId });
-    return { id, csrf, expiresAt, tier, userId, username, guildId, cookie: `${id}.${sign(id)}` };
+    return { id, csrf, expiresAt, tier, userId, username, guildId, cookie: `${payload}.${sign(payload)}` };
   }
 
   function readSession(req) {
     if (config.authDisabled) return { id: "dev", csrf: "dev", expiresAt: Number.MAX_SAFE_INTEGER, tier: "owner" };
     const raw = parseCookies(req.headers.cookie || "").get("asc_session");
     if (!raw) return null;
-    const [id, sig] = raw.split(".");
-    if (!id || !sig || !constantTimeStringEqual(sign(id), sig)) return null;
+    const dot = raw.lastIndexOf(".");
+    if (dot < 1) return null;
+    const payload = raw.slice(0, dot);
+    const sig = raw.slice(dot + 1);
+    if (!payload || !sig || !constantTimeStringEqual(sign(payload), sig)) return null;
+
+    // Decode the payload — may be a legacy plain session id or a JSON bundle.
+    let id, tier, userId, exp;
+    try {
+      const obj = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+      id = String(obj.id || "");
+      tier = String(obj.tier || "owner");
+      userId = String(obj.userId || "");
+      exp = Number(obj.exp) || 0;
+    } catch {
+      // Legacy format: payload is the plain session id with no JSON structure.
+      id = payload;
+      tier = "owner";
+      userId = "";
+      exp = 0;
+    }
+    if (!id) return null;
+
     let session = sessions.get(id);
     if (!session) {
       // Upgrade path (Strict Requirement 0): a signature-valid cookie whose
       // session is no longer in the in-memory Map (e.g. created by a
-      // pre-RBAC build, or after a restart) synthesizes a fresh full-access
-      // owner session rather than logging the operator out. The HMAC over
-      // the session id is what proves the cookie is genuine.
+      // pre-RBAC build, or after a restart) synthesizes a fresh session.
+      // The tier and userId are carried in the cookie payload so a restart
+      // does not promote every tier to owner.
       session = {
         id,
         csrf: randomBytes(24).toString("base64url"),
-        expiresAt: now() + 12 * 60 * 60 * 1000,
-        tier: "owner",
-        userId: "",
+        expiresAt: exp || now() + 12 * 60 * 60 * 1000,
+        tier,
+        userId,
         username: "",
         guildId: ""
       };
