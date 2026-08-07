@@ -7,7 +7,19 @@ whatever upstream version is currently checked out, per the versioning
 convention documented in this account's operating docs. Entries are in
 Keep a Changelog style, grouped by upstream base version, newest first.
 
-## Unreleased (on top of upstream v1.3.74)
+## Unreleased (on top of upstream v1.3.79+)
+
+### Added
+
+- RBAC Phase 3 — signed handoff tier resolution (Mechanism B, #135). The console
+  can now resolve a Discord user's effective tier for the configured home guild
+  by calling the ACP bot's `resolve-console-tier` endpoint and verifying the
+  HMAC-signed response. No unsigned tier claim can produce a tiered session.
+  New module: `console/api/src/integrations/discord/handoff.js`. New config keys
+  in `.env.example`: `DISCORD_BOT_HANDOFF_SECRET`, `DISCORD_BOT_HANDOFF_URL`.
+- When the handoff is not configured (no secret, no URL, or no home guild), the
+  OAuth callback falls back to Phase 2's owner-bootstrap gates — zero new
+  required config, no operator breakage (Strict Requirement 0).
 
 ### Security
 

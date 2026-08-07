@@ -147,19 +147,36 @@ export async function fetchDiscordIdentity({ accessToken, apiBaseUrl = DISCORD_O
   return { userId, username, guildIds };
 }
 
-// ---- Tier decision (Phase 2: only the operator-gated owner bootstrap) ----
-// Returns the tier to mint ("owner") or "" when the bootstrap gate denies.
-// A later phase replaces this whole function with the signed handoff role
-// resolver (the bot's shared guild_roles registry).
+// ---- Tier decision (Phase 3: signed handoff with Phase 2 owner-bootstrap fallback) ----
+// Phase 2 resolveBootstrapTier is kept as a pure fallback function — it only
+// ever produces "owner" or "" and is used only when the handoff is not
+// configured. Phase 3 resolveOAuthTier delegates to the signed handoff when
+// available and falls back to the bootstrap gates when it isn't.
 export function resolveBootstrapTier({ userId, guildIds, allowOwnerBootstrap, homeGuildId, ownerAllowlist = [] }) {
   if (!allowOwnerBootstrap) return "";
   if (!homeGuildId) return "";
   if (!guildIds.includes(homeGuildId)) return "";
-  // Fail-closed: the owner allowlist must explicitly name the user. An empty
-  // allowlist denies every Discord owner session (the password path remains
-  // the owner fallback); it never means "any home-guild member".
   if (!ownerAllowlist.includes(userId)) return "";
   return "owner";
+}
+
+export function createOAuthTierResolver({ bootstrap = {}, handoff = null } = {}) {
+  return async function resolveOAuthTier(identity) {
+    const { userId, guildIds } = identity;
+
+    if (handoff && handoff.enabled) {
+      const tier = await handoff.resolveTier({ userId, username: identity.username });
+      if (tier) return tier;
+    }
+
+    return resolveBootstrapTier({
+      userId,
+      guildIds,
+      allowOwnerBootstrap: bootstrap.allowOwnerBootstrap || false,
+      homeGuildId: bootstrap.homeGuildId || "",
+      ownerAllowlist: bootstrap.ownerAllowlist || []
+    });
+  };
 }
 
 export function parseDiscordAllowlist(value) {

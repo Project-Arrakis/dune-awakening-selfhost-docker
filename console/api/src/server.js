@@ -32,7 +32,8 @@ import { updateEnvFileValue as updateEnvValue } from "./services/envFile.js";
 import { funcomAuthMismatchDetected, matchingFuncomAuthLines, saveFuncomTokenValue as writeFuncomToken, validDockerSince } from "./services/funcomAuth.js";
 import { readCharacterTransferSettings, saveCharacterTransferSettings } from "./services/characterTransferSettings.js";
 import { handleDiscordAdapterRoute, isDiscordAdapterRoute } from "./integrations/discord/routes.js";
-import { createPendingStateStore, exchangeDiscordAuthCode, fetchDiscordIdentity, resolveBootstrapTier, buildAuthorizeUrl, oauthStateCookie, clearOAuthStateCookie } from "./integrations/discord/oauth.js";
+import { createPendingStateStore, exchangeDiscordAuthCode, fetchDiscordIdentity, createOAuthTierResolver, buildAuthorizeUrl, oauthStateCookie, clearOAuthStateCookie } from "./integrations/discord/oauth.js";
+import { createHandoff } from "./integrations/discord/handoff.js";
 import { discordAdapterEnabled } from "./integrations/discord/adapter.js";
 import { initializeDiscordAdapterSchema } from "./integrations/discord/schema.js";
 import { liveItemGrantOk, liveItemGrantWarning } from "./grantResults.js";
@@ -60,6 +61,19 @@ const loginRateLimiter = createLoginRateLimiter();
 const mutationRateLimiter = createMutationRateLimiter();
 const bridgeRateLimiter = createBridgeRateLimiter();
 const oauthPendingStates = createPendingStateStore();
+const handoff = createHandoff({
+  secret: config.discordBotHandoffSecret,
+  botUrl: config.discordBotHandoffUrl,
+  homeGuildId: config.discordHomeGuildId
+});
+const resolveOAuthTier = createOAuthTierResolver({
+  bootstrap: {
+    allowOwnerBootstrap: config.discordOAuthAllowOwnerBootstrap,
+    homeGuildId: config.discordHomeGuildId,
+    ownerAllowlist: config.discordOAuthOwnerAllowlist
+  },
+  handoff: handoff.enabled ? handoff : null
+});
 // Deferred db read: db is assigned below and is reassignable on reconnect.
 // Both flush paths go through flushQueuedGeneratorRefills/flushQueuedWaterRefills
 // so a write lands in the audit log no matter which one applied it.
@@ -3214,13 +3228,7 @@ async function handleOAuthCallback(req, res) {
     const status = error.statusCode && error.statusCode >= 400 && error.statusCode < 600 ? error.statusCode : 400;
     return json(res, status, { error: "Discord sign-in failed. Please try again, or sign in with your password." });
   }
-  const tier = resolveBootstrapTier({
-    userId: identity.userId,
-    guildIds: identity.guildIds,
-    allowOwnerBootstrap: config.discordOAuthAllowOwnerBootstrap,
-    homeGuildId: config.discordHomeGuildId,
-    ownerAllowlist: config.discordOAuthOwnerAllowlist
-  });
+  const tier = await resolveOAuthTier(identity);
   if (!tier) {
     loginRateLimiter.recordFailure(rateKey);
     audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: false, reason: "not_authorized" });
