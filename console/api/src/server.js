@@ -706,6 +706,7 @@ async function handleApi(req, res) {
   if (path.match(/^\/api\/storage\/[^/]+\/items$/)) return dbJson(res, () => duneDb.storageItems(db, decodeURIComponent(path.split("/")[3])));
   if (path.match(/^\/api\/storage\/[^/]+\/give-item$/) && req.method === "POST") return storageGiveItemRoute(req, res, path);
   if (path.match(/^\/api\/storage\/[^/]+\/fill-item$/) && req.method === "POST") return storageFillItemRoute(req, res, path);
+  if (path.match(/^\/api\/storage\/[^/]+\/remove-items$/) && req.method === "POST") return storageRemoveItemsRoute(req, res, path);
   if (path.match(/^\/api\/storage\/[^/]+\/export$/)) return exportJson(res, `storage-${decodeURIComponent(path.split("/")[3])}.json`, () => duneDb.storageItems(db, decodeURIComponent(path.split("/")[3])));
   if (path === "/api/blueprints" && req.method === "GET") return dbJson(res, () => listBlueprints(db));
   if (path === "/api/blueprints/export" && req.method === "POST") return blueprintBulkExportRoute(req, res);
@@ -2112,6 +2113,13 @@ async function storageFillItemRoute(req, res, path) {
     const resolved = resolveFillableCatalogItem(config.repoRoot, body);
     const itemVolume = resolved.volume || resolveItemVolume(config.repoRoot, resolved.itemId);
     return duneDb.fillItemToStorage(db, config.repoRoot, storageId, { ...body, templateId: resolved.itemId, itemVolume });
+  }, { storageId });
+}
+
+async function storageRemoveItemsRoute(req, res, path) {
+  const storageId = decodeURIComponent(path.split("/")[3]);
+  return directDbMutation(req, res, "storage.remove-items", "REMOVE ITEMS FROM STORAGE", async (body) => {
+    return duneDb.removeItemsFromStorage(db, storageId, body);
   }, { storageId });
 }
 
