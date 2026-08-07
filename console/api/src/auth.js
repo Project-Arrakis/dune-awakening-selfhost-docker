@@ -110,8 +110,7 @@ export function setSessionCookie(res, session, config = {}) {
 }
 
 export function sessionCookieValue(session, config = {}) {
-  const secure = config.secureCookies ? "; Secure" : "";
-  return `asc_session=${encodeURIComponent(session.cookie)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=43200${secure}`;
+  return `asc_session=${encodeURIComponent(session.cookie)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=43200; Secure`;
 }
 
 export function clearSessionCookie(res, config = {}) {
@@ -119,8 +118,7 @@ export function clearSessionCookie(res, config = {}) {
 }
 
 export function clearSessionCookieValue(config = {}) {
-  const secure = config.secureCookies ? "; Secure" : "";
-  return `asc_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0${secure}`;
+  return `asc_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0; Secure`;
 }
 
 export function json(res, status, body, headers = {}) {

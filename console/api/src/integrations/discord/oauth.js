@@ -198,12 +198,10 @@ export function buildAuthorizeUrl({ clientId, redirectUri, state }) {
 // The pending OAuth state is bound to a short-lived, path-scoped cookie so a
 // third-party site cannot start a login and complete it in a victim's
 // browser (login CSRF). SameSite=Lax + HttpOnly; cleared after the callback.
-export function oauthStateCookie(value, secure = false) {
-  const securePart = secure ? "; Secure" : "";
-  return `discord_oauth_state=${encodeURIComponent(value)}; HttpOnly; SameSite=Lax; Path=/api/auth/discord/callback; Max-Age=600${securePart}`;
+export function oauthStateCookie(value) {
+  return `discord_oauth_state=${encodeURIComponent(value)}; HttpOnly; SameSite=Lax; Path=/api/auth/discord/callback; Max-Age=600; Secure`;
 }
 
-export function clearOAuthStateCookie(secure = false) {
-  const securePart = secure ? "; Secure" : "";
-  return `discord_oauth_state=; HttpOnly; SameSite=Lax; Path=/api/auth/discord/callback; Max-Age=0${securePart}`;
+export function clearOAuthStateCookie() {
+  return `discord_oauth_state=; HttpOnly; SameSite=Lax; Path=/api/auth/discord/callback; Max-Age=0; Secure`;
 }
