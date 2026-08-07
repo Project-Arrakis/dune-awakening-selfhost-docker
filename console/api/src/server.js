@@ -423,6 +423,12 @@ async function handleApi(req, res) {
     audit(config, sanitizedUrl(req, "/api/auth/discord/start"), "auth.oauth.start", { ok: true });
     return;
   }
+  if (path === "/api/auth/discord/exchange" && req.method === "POST") {
+    if (!config.discordOAuthConfigured) {
+      return json(res, 404, { error: "Discord sign-in is not configured for this console." });
+    }
+    return handleDiscordTokenExchange(req, res);
+  }
   if (path === "/api/auth/discord/callback") {
     if (!config.discordOAuthConfigured) {
       return json(res, 404, { error: "Discord sign-in is not configured for this console. Sign in with the admin password." });
@@ -3198,6 +3204,39 @@ function loginRateLimitKey(req) {
 // log. server.js's audit() logs req.url verbatim otherwise.
 function sanitizedUrl(req, path) {
   return { ...req, url: path };
+}
+
+async function handleDiscordTokenExchange(req, res) {
+  const authHeader = (req.headers.authorization || "").trim();
+  if (!authHeader.startsWith("Bearer ") || authHeader.length <= 7) {
+    return json(res, 401, { error: "Bearer token required." });
+  }
+  const accessToken = authHeader.slice(7).trim();
+
+  let identity;
+  try {
+    identity = await fetchDiscordIdentity({ accessToken, apiBaseUrl: config.discordOAuthApiBaseUrl });
+  } catch (error) {
+    audit(config, req, "auth.oauth.exchange", { ok: false, reason: "identity_fetch_failed" });
+    return json(res, 401, { error: "Discord token validation failed." });
+  }
+
+  const allowedUserId = String(process.env.ATRIUM_ALLOWED_DISCORD_USER_ID || "").trim();
+  if (allowedUserId && identity.id !== allowedUserId) {
+    audit(config, req, "auth.oauth.exchange", { ok: false, reason: "not_authorized", userId: identity.id });
+    return json(res, 403, { error: "Discord account not authorized for the Atrium exchange." });
+  }
+
+  const session = auth.makeSession({
+    tier: "owner",
+    userId: identity.id,
+    username: identity.username || identity.id,
+    guildId: config.discordHomeGuildId
+  });
+
+  res.setHeader("Set-Cookie", sessionCookieValue(session, config));
+  audit(config, req, "auth.oauth.exchange", { ok: true, userId: identity.id });
+  return json(res, 200, { ok: true, authenticated: true, csrfToken: session.csrf });
 }
 
 function oauthReturnPage() {
