@@ -54,15 +54,18 @@ export const CAPABILITY_BY_TIER = {
     CAPABILITIES.ADDONS_READ,
     CAPABILITIES.ADDONS_WRITE,
     CAPABILITIES.ADMIN_TOOLS,
+    CAPABILITIES.CARE_PACKAGE_GRANT,
     CAPABILITIES.PLAYER_MUTATE,
     CAPABILITIES.MAP_WRITE,
   ],
   moderator: [
     CAPABILITIES.STATUS_READ,
     CAPABILITIES.WORLD_READ,
+    CAPABILITIES.WORLD_WRITE,
     CAPABILITIES.LOGS_READ,
     CAPABILITIES.ADMIN_TOOLS,
     CAPABILITIES.PLAYER_MUTATE,
+    CAPABILITIES.MAP_WRITE,
   ],
   player: [
     CAPABILITIES.STATUS_READ,
@@ -106,12 +109,19 @@ export function capabilitiesForTier(tier) {
 // ---- Route-to-capability assignment ----
 //
 // Updated 2026-08-07: revised capability ladder per operator feedback.
-// Admin now has real administrative power (14/18 caps) — can restart,
-// manage maps, manage players/bases, broadcast, browse logs, manage
-// addons. What admin CANNOT do: change settings, admin password, write
-// to database directly, grant care packages (owner-only destructive ops).
-// Moderator is now distinct from player — can kick, broadcast, view
-// logs for moderation evidence. Player remains read-only (2/18).
+//
+// Owner:   18/18 — full access (unchanged).
+// Admin:   16/18 — operations: server control, map write, player mutate,
+//          world write, care package grants, backups write, updates write,
+//          addons write, admin tools, log/db/backup/update reads.
+//          Excluded: SETTINGS_WRITE, DATABASE_WRITE.
+// Mod:      7/18 — community management: player mutate (kick/give water),
+//          world write (refill bases, manage guilds/storage), map write
+//          (restart maps), admin tools (broadcast), logs read, status/read.
+// Player:   2/18 — read-only: STATUS_READ + WORLD_READ.
+//
+// Tab visibility: Owner 16/16, Admin 15/16 (no Settings), Mod 9/16,
+// Player 7/16.
 //
 // Ordered list of [path pattern, method, capability] where the first
 // matching entry wins. Patterns use exact-match first, then regex.

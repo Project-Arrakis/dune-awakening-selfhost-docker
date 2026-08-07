@@ -99,20 +99,22 @@ test("capabilitiesForTier returns admin-level caps for admin", () => {
   assert.ok(caps.includes(CAPABILITIES.MAP_WRITE));
   assert.ok(!caps.includes(CAPABILITIES.SETTINGS_WRITE));
   assert.ok(!caps.includes(CAPABILITIES.DATABASE_WRITE));
-  assert.ok(!caps.includes(CAPABILITIES.CARE_PACKAGE_GRANT));
 });
 
 test("capabilitiesForTier returns moderation caps for moderator", () => {
   const caps = capabilitiesForTier("moderator");
   assert.ok(caps.includes(CAPABILITIES.STATUS_READ));
   assert.ok(caps.includes(CAPABILITIES.WORLD_READ));
+  assert.ok(caps.includes(CAPABILITIES.WORLD_WRITE));
   assert.ok(caps.includes(CAPABILITIES.LOGS_READ));
   assert.ok(caps.includes(CAPABILITIES.ADMIN_TOOLS));
   assert.ok(caps.includes(CAPABILITIES.PLAYER_MUTATE));
-  assert.ok(!caps.includes(CAPABILITIES.WORLD_WRITE));
+  assert.ok(caps.includes(CAPABILITIES.MAP_WRITE));
   assert.ok(!caps.includes(CAPABILITIES.SERVER_CONTROL));
   assert.ok(!caps.includes(CAPABILITIES.BACKUPS_READ));
   assert.ok(!caps.includes(CAPABILITIES.DATABASE_READ));
+  assert.ok(!caps.includes(CAPABILITIES.SETTINGS_WRITE));
+  assert.ok(!caps.includes(CAPABILITIES.CARE_PACKAGE_GRANT));
 });
 
 test("capabilitiesForTier returns read-only caps for player", () => {
@@ -151,7 +153,10 @@ test("requireConsoleCapability allows admin for admin-level caps", () => {
 test("requireConsoleCapability denies admin for owner-only caps", () => {
   assert.equal(requireConsoleCapability({ tier: "admin" }, CAPABILITIES.SETTINGS_WRITE), false);
   assert.equal(requireConsoleCapability({ tier: "admin" }, CAPABILITIES.DATABASE_WRITE), false);
-  assert.equal(requireConsoleCapability({ tier: "admin" }, CAPABILITIES.CARE_PACKAGE_GRANT), false);
+});
+
+test("requireConsoleCapability allows admin to grant care packages", () => {
+  assert.equal(requireConsoleCapability({ tier: "admin" }, CAPABILITIES.CARE_PACKAGE_GRANT), true);
 });
 
 test("requireConsoleCapability allows moderator for moderator-level caps", () => {
@@ -163,10 +168,11 @@ test("requireConsoleCapability allows moderator for moderator-level caps", () =>
 });
 
 test("requireConsoleCapability denies moderator for admin-level caps", () => {
-  assert.equal(requireConsoleCapability({ tier: "moderator" }, CAPABILITIES.WORLD_WRITE), false);
   assert.equal(requireConsoleCapability({ tier: "moderator" }, CAPABILITIES.SERVER_CONTROL), false);
   assert.equal(requireConsoleCapability({ tier: "moderator" }, CAPABILITIES.BACKUPS_READ), false);
   assert.equal(requireConsoleCapability({ tier: "moderator" }, CAPABILITIES.DATABASE_READ), false);
+  assert.equal(requireConsoleCapability({ tier: "moderator" }, CAPABILITIES.SETTINGS_WRITE), false);
+  assert.equal(requireConsoleCapability({ tier: "moderator" }, CAPABILITIES.CARE_PACKAGE_GRANT), false);
 });
 
 test("requireConsoleCapability allows player for read-only caps", () => {
