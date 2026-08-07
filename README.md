@@ -36,6 +36,10 @@ This project is unofficial. It is not affiliated with, endorsed by, sponsored by
 
 See the [Screenshots Gallery](docs/screenshots.md).
 
+## Documentation
+
+Full documentation index: [docs/README.md](docs/README.md).
+
 ## Requirements
 
 You do not need to be a Linux expert. Start with a fresh server and the installer will check the basics for you.

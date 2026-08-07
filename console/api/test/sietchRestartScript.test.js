@@ -16,7 +16,7 @@ function executable(path, body) {
   chmodSync(path, 0o755);
 }
 
-function runFixture(row) {
+function runFixture(row, args) {
   const fixture = mkdtempSync(join(tmpdir(), "dune-sietch-restart-"));
   const scripts = join(fixture, "runtime", "scripts");
   const generated = join(fixture, "runtime", "generated");
@@ -42,6 +42,7 @@ function runFixture(row) {
 
   for (const [name, label] of [
     ["start-server-survival-1.sh", "primary"],
+    ["stop-server-survival-1.sh", "stop"],
     ["spicefield-overrides.sh", "spicefield"],
     ["publish-sietch-overrides.sh", "publish"],
     ["despawn-server.sh", "despawn"],
@@ -50,7 +51,7 @@ function runFixture(row) {
     executable(join(scripts, name), `printf "${label} %s\\n" "$*" >> "${calls}"`);
   }
 
-  const result = spawnSync("bash", ["runtime/scripts/sietches.sh", "restart", row.startsWith("0|") ? "1" : "31"], {
+  const result = spawnSync("bash", ["runtime/scripts/sietches.sh", ...args], {
     cwd: fixture,
     encoding: "utf8",
     env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, MOCK_PARTITION_ROW: row }
@@ -61,24 +62,57 @@ function runFixture(row) {
 }
 
 test("primary Sietch restart touches only the primary Survival_1 container", () => {
-  const result = runFixture("0|f|1");
+  const result = runFixture("0|f|1", ["restart", "1"]);
   assert.equal(result.status, 0, result.stderr || result.stdout);
-  assert.equal(result.callLog, "primary \nspicefield apply\npublish restart\npublish once\n");
+  assert.equal(result.callLog, "stop \nprimary \nspicefield apply\npublish restart\npublish once\n");
   assert.match(result.stdout, /primary Survival_1 Sietch/);
 });
 
 test("secondary Sietch restart despawns and respawns only its partition", () => {
-  const result = runFixture("1|f|2");
+  const result = runFixture("1|f|2", ["restart", "31"]);
   assert.equal(result.status, 0, result.stderr || result.stdout);
   assert.equal(result.callLog, "despawn 31 --force\nspawn 31\n");
   assert.match(result.stdout, /partition 31 restart completed/);
 });
 
 test("inactive Sietches cannot be restarted", () => {
-  const result = runFixture("2|f|3");
+  const result = runFixture("2|f|3", ["restart", "31"]);
   assert.notEqual(result.status, 0);
   assert.equal(result.callLog, "");
   assert.match(result.stderr, /not active/);
+});
+
+test("stop-partition stops only the primary Survival_1 container", () => {
+  const result = runFixture("0|f|1", ["stop-partition", "1"]);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.equal(result.callLog, "stop \n");
+});
+
+test("start-partition starts only the primary Survival_1 container", () => {
+  const result = runFixture("0|f|1", ["start-partition", "1"]);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.equal(result.callLog, "primary \nspicefield apply\npublish restart\npublish once\n");
+  assert.match(result.stdout, /primary Survival_1 Sietch/);
+});
+
+test("stop-partition despawns only a secondary Sietch container", () => {
+  const result = runFixture("1|f|2", ["stop-partition", "31"]);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.equal(result.callLog, "despawn 31 --force\n");
+});
+
+test("start-partition spawns only a secondary Sietch container", () => {
+  const result = runFixture("1|f|2", ["start-partition", "31"]);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.equal(result.callLog, "spawn 31\n");
+  assert.match(result.stdout, /partition 31 restart completed/);
+});
+
+test("start-partition on an unknown partition fails instead of guessing", () => {
+  const result = runFixture("", ["start-partition", "31"]);
+  assert.notEqual(result.status, 0);
+  assert.equal(result.callLog, "");
+  assert.match(result.stderr, /is not a Survival_1 Sietch/);
 });
 
 test("changing active Sietches does not restart Director or primary Survival", () => {

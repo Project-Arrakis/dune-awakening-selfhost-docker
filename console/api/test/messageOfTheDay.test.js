@@ -9,6 +9,7 @@ import {
   primeMessageOfTheDayOnlineState,
   readMessageOfTheDay,
   recordMessageOfTheDayScanFailure,
+  renderMessageOfTheDay,
   restoreMessageOfTheDay,
   runMessageOfTheDayScan,
   saveMessageOfTheDay
@@ -44,8 +45,14 @@ test("message of the day defaults are disabled with an empty draft", () => {
 
 test("message of the day validates booleans and message text", () => {
   assert.deepEqual(normalizeSettings({ enabled: true, title: "Daily", message: "Hello" }), { enabled: true, title: "", message: "Hello" });
+  assert.equal(normalizeSettings({ enabled: true, message: "First\n\nSecond" }).message, "First Second");
   assert.throws(() => normalizeSettings({ enabled: "true", title: "Daily", message: "Hello" }), /enabled must be true or false/);
   assert.throws(() => normalizeSettings({ enabled: true, title: "Daily", message: "x".repeat(501) }), /Message must be 1-500/);
+});
+
+test("message of the day renders the recipient name without changing unknown text", () => {
+  assert.equal(renderMessageOfTheDay("Welcome, {playerName}!", "JaneDoe"), "Welcome, JaneDoe!");
+  assert.equal(renderMessageOfTheDay("Welcome to {serverName}", "JaneDoe"), "Welcome to {serverName}");
 });
 
 test("message of the day saves and restores persisted settings", () => {
@@ -140,6 +147,44 @@ test("message of the day ignores offline rows even if they are passed to the sca
   assert.equal(result.sent, 0);
 });
 
+test("message of the day skips incomplete recipient identities without recording a failed delivery", async () => {
+  const cfg = config();
+  saveMessageOfTheDay(cfg, { enabled: true, title: "Daily", message: "Welcome back" });
+
+  const result = await runMessageOfTheDayScan(cfg, [onlinePlayer({
+    fls_id: "not a queue identity",
+    funcom_id: "invalid\u0000recipient identity"
+  })], { mockMode: true });
+
+  assert.equal(result.sent, 0);
+  assert.equal(result.failed, 0);
+  assert.equal(readMessageOfTheDay(cfg).status.lastFailed, 0);
+});
+
+test("message of the day can fall back to a valid Funcom route when the FLS identity is unavailable", async () => {
+  const cfg = config();
+  saveMessageOfTheDay(cfg, { enabled: true, title: "Daily", message: "Welcome back" });
+
+  const result = await runMessageOfTheDayScan(cfg, [onlinePlayer({ fls_id: "unavailable" })], { mockMode: true });
+
+  assert.equal(result.sent, 1);
+  assert.equal(result.failed, 0);
+});
+
+test("message of the day accepts native 15-character FLS IDs and Unicode Funcom names", async () => {
+  const cfg = config();
+  saveMessageOfTheDay(cfg, { enabled: true, message: "Welcome, {playerName}!" });
+
+  const result = await runMessageOfTheDayScan(cfg, [onlinePlayer({
+    fls_id: "DCFAB28D07E0F79",
+    funcom_id: "❤️  SugarFluff  ❤#42013",
+    character_name: "SugarFluff"
+  })], { mockMode: true });
+
+  assert.equal(result.sent, 1);
+  assert.equal(result.failed, 0);
+});
+
 test("message of the day treats changed login session as a new online session", async () => {
   const cfg = config();
   saveMessageOfTheDay(cfg, { enabled: true, title: "Daily", message: "Welcome back" });
@@ -159,10 +204,10 @@ test("message of the day waits for a fresh login session before sending", async 
   saveMessageOfTheDay(cfg, { enabled: true, title: "Daily", message: "Welcome back" });
   const freshLogin = onlinePlayer({ login_session: "2026-06-30T00:00:00.000Z" });
 
-  const tooEarly = await runMessageOfTheDayScan(cfg, [freshLogin], { mockMode: true, persona: { funcomId: "Server#0001", hexFlsId: "A5C0DE5E12A00001" }, now: new Date("2026-06-30T00:00:04.000Z") });
+  const tooEarly = await runMessageOfTheDayScan(cfg, [freshLogin], { mockMode: true, persona: { funcomId: "Server#0001", hexFlsId: "A5C0DE5E12A00001" }, now: new Date("2026-06-30T00:00:29.999Z") });
   assert.equal(tooEarly.sent, 0);
 
-  const mature = await runMessageOfTheDayScan(cfg, [freshLogin], { mockMode: true, persona: { funcomId: "Server#0001", hexFlsId: "A5C0DE5E12A00001" }, now: new Date("2026-06-30T00:00:06.000Z") });
+  const mature = await runMessageOfTheDayScan(cfg, [freshLogin], { mockMode: true, persona: { funcomId: "Server#0001", hexFlsId: "A5C0DE5E12A00001" }, now: new Date("2026-06-30T00:00:30.000Z") });
   assert.equal(mature.sent, 1);
 });
 
@@ -171,10 +216,10 @@ test("message of the day waits when Postgres session timestamp uses short UTC of
   saveMessageOfTheDay(cfg, { enabled: true, title: "Daily", message: "Welcome back" });
   const freshLogin = onlinePlayer({ login_session: "2026-06-30 00:00:00.000000+00" });
 
-  const tooEarly = await runMessageOfTheDayScan(cfg, [freshLogin], { mockMode: true, persona: { funcomId: "Server#0001", hexFlsId: "A5C0DE5E12A00001" }, now: new Date("2026-06-30T00:00:04.000Z") });
+  const tooEarly = await runMessageOfTheDayScan(cfg, [freshLogin], { mockMode: true, persona: { funcomId: "Server#0001", hexFlsId: "A5C0DE5E12A00001" }, now: new Date("2026-06-30T00:00:29.999Z") });
   assert.equal(tooEarly.sent, 0);
 
-  const mature = await runMessageOfTheDayScan(cfg, [freshLogin], { mockMode: true, persona: { funcomId: "Server#0001", hexFlsId: "A5C0DE5E12A00001" }, now: new Date("2026-06-30T00:00:06.000Z") });
+  const mature = await runMessageOfTheDayScan(cfg, [freshLogin], { mockMode: true, persona: { funcomId: "Server#0001", hexFlsId: "A5C0DE5E12A00001" }, now: new Date("2026-06-30T00:00:30.000Z") });
   assert.equal(mature.sent, 1);
 });
 
@@ -183,12 +228,37 @@ test("message of the day does not mark fresh sessions delivered before the delay
   saveMessageOfTheDay(cfg, { enabled: true, title: "Daily", message: "Welcome back" });
   const freshLogin = onlinePlayer({ login_session: "2026-06-30T00:00:00.000Z" });
 
-  await runMessageOfTheDayScan(cfg, [freshLogin], { mockMode: true, persona: { funcomId: "Server#0001", hexFlsId: "A5C0DE5E12A00001" }, now: new Date("2026-06-30T00:00:04.000Z") });
+  await runMessageOfTheDayScan(cfg, [freshLogin], { mockMode: true, persona: { funcomId: "Server#0001", hexFlsId: "A5C0DE5E12A00001" }, now: new Date("2026-06-30T00:00:29.999Z") });
   const delivered = JSON.parse(readFileSync(join(cfg.generatedDir, "message-of-the-day-state.json"), "utf8")).delivered;
   assert.deepEqual(delivered, {});
 
-  const mature = await runMessageOfTheDayScan(cfg, [freshLogin], { mockMode: true, persona: { funcomId: "Server#0001", hexFlsId: "A5C0DE5E12A00001" }, now: new Date("2026-06-30T00:00:06.000Z") });
+  const mature = await runMessageOfTheDayScan(cfg, [freshLogin], { mockMode: true, persona: { funcomId: "Server#0001", hexFlsId: "A5C0DE5E12A00001" }, now: new Date("2026-06-30T00:00:30.000Z") });
   assert.equal(mature.sent, 1);
+});
+
+test("message of the day keeps delivery pending until the player queue has a consumer", async () => {
+  const cfg = config();
+  saveMessageOfTheDay(cfg, { enabled: true, title: "Daily", message: "Welcome back" });
+  const player = onlinePlayer({ login_session: "2026-06-30T00:00:00.000Z" });
+  const now = new Date("2026-06-30T00:01:00.000Z");
+
+  const waiting = await runMessageOfTheDayScan(cfg, [player], {
+    mockMode: true,
+    now,
+    readyRecipientQueues: new Set()
+  });
+  assert.equal(waiting.sent, 0);
+  assert.equal(waiting.failed, 0);
+  assert.equal(waiting.deferred, 1);
+  assert.deepEqual(JSON.parse(readFileSync(join(cfg.generatedDir, "message-of-the-day-state.json"), "utf8")).delivered, {});
+
+  const delivered = await runMessageOfTheDayScan(cfg, [player], {
+    mockMode: true,
+    now,
+    readyRecipientQueues: new Set(["ABCDEF1234567890_queue"])
+  });
+  assert.equal(delivered.sent, 1);
+  assert.equal(delivered.deferred, 0);
 });
 
 test("message of the day does not resend on map or actor changes within the same login", async () => {

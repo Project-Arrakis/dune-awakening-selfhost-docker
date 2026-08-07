@@ -8,6 +8,9 @@ export type UserSettingField = {
   key: string | null;
   default: string;
   type: "boolean" | "integer" | "number" | "text";
+  clientFile: string;
+  category: string;
+  description: string;
 };
 
 export type UserSettingsSchema = {
@@ -134,6 +137,10 @@ export const mapsApi = {
   reconcile: (confirmation: string) => post<{ task: Task }>("/api/maps/reconcile", { confirmation }),
   spawn: (target: string, confirmation: string) => post<{ task: Task }>("/api/maps/spawn", { target, confirmation }),
   despawn: (target: string, confirmation: string) => post<{ task: Task }>("/api/maps/despawn", { target, confirmation }),
+  // Restart for a map with no managed service (Deep Desert, the SH_* hubs):
+  // despawn then spawn as one task. Always pass a partition id, never a map name
+  // -- spawn-server.sh given a name picks the first unassigned partition.
+  respawn: (partitionId: string, confirmation: string) => post<{ task: Task }>("/api/maps/respawn", { target: partitionId, confirmation }),
   autoscaler: () => api<{ stdout: string }>("/api/maps/autoscaler"),
   autoscalerAction: (action: string, confirmation: string) => post<{ task: Task }>("/api/maps/autoscaler", { action, confirmation }),
   memory: () => api<{ stdout: string }>("/api/maps/memory"),
@@ -157,7 +164,7 @@ export const mapsApi = {
   userSettingsSchema: () => api<UserSettingsSchema>("/api/maps/user-settings/schema"),
   userSettingsRestartPending: () => api<{ pending: boolean }>("/api/maps/user-settings/restart-pending"),
   userSettingsValues: (scope: "engine" | "mapEngine" | "partitionEngine" | "global" | "map" | "partition", map?: string, partitionId?: string) => api<{ stdout: string }>(`/api/maps/user-settings/values?scope=${encodeURIComponent(scope)}${map ? `&map=${encodeURIComponent(map)}` : ""}${partitionId ? `&partitionId=${encodeURIComponent(partitionId)}` : ""}`),
-  rawUserSettings: (kind: "engine" | "game" | "profile" | "client-game", map?: string, partitionId?: string) => api<{ content: string }>(`/api/maps/user-settings/raw?kind=${encodeURIComponent(kind)}${map ? `&map=${encodeURIComponent(map)}` : ""}${partitionId ? `&partitionId=${encodeURIComponent(partitionId)}` : ""}`),
+  rawUserSettings: (kind: "engine" | "game" | "profile" | "client-game" | "client-engine", map?: string, partitionId?: string) => api<{ content: string }>(`/api/maps/user-settings/raw?kind=${encodeURIComponent(kind)}${map ? `&map=${encodeURIComponent(map)}` : ""}${partitionId ? `&partitionId=${encodeURIComponent(partitionId)}` : ""}`),
   saveUserSettings: (body: { scope: "engine" | "mapEngine" | "partitionEngine" | "global" | "map" | "partition"; map?: string; partitionId?: string; values: Record<string, string>; restart?: boolean }) => post<{ task: Task }>("/api/maps/user-settings/save", body),
   resetUserSettings: (body: { scope: "engine" | "mapEngine" | "partitionEngine" | "global" | "map" | "partition"; map?: string; partitionId?: string; confirmation: string }) => post<{ task: Task }>("/api/maps/user-settings/reset", body),
   saveRawUserSettings: (body: { scope: "engine" | "game" | "global" | "profile"; map?: string; partitionId?: string; content: string }) => post<{ task: Task }>("/api/maps/user-settings/raw", body),

@@ -45,6 +45,8 @@ button.active { background: #9b5f2a; border-color: var(--accent-strong); }
 button.danger { border-color: var(--danger-strong); color: #ffc9c9; }
 button.success { border-color: var(--success); color: #d8f0c8; }
 button.success:hover { border-color: #63b57f; }
+button.warning { border-color: var(--warning); color: #ffd9a8; }
+button.warning:hover { border-color: #c68b4a; }
 button.restore-action, .icon-action.danger, .download-action { border-color: #f7e7c7; color: #f7e7c7; }
 button.restore-action:hover, .icon-action.danger:hover, .download-action:hover { border-color: #fff3d7; }
 .icon-action { width: 38px; height: 38px; padding: 7px; flex: 0 0 38px; }
@@ -189,6 +191,15 @@ h1, h2, h3, h4, h5 { color: var(--title); line-height: 1.2; letter-spacing: 0; }
 .confirm-modal-details dd.accent { color: var(--title); }
 .confirm-modal-details dd.success { color: var(--success-text); }
 .confirm-modal-details dd.danger { color: var(--danger-text); }
+.confirm-modal-warning {
+  background: rgba(169, 121, 50, .12);
+  border: 1px solid var(--warning);
+  padding: 10px 12px;
+  border-radius: 6px;
+  font-size: 14px;
+  line-height: 1.5;
+  color: #e7b866;
+}
 .confirm-modal-actions {
   display: flex;
   justify-content: flex-end;
@@ -881,6 +892,16 @@ main { padding: 22px; min-width: 0; }
   color: #ffd08a;
   font-weight: 700;
 }
+.home-task-result-warnings {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid #302b25;
+  display: grid;
+  gap: 6px;
+}
+/* Specificity must beat .result-ok p (defined below, same 0-1-1 weight) so the
+   warning color doesn't silently fall back to the success message's green. */
+.result-ok .home-task-result-warnings p { margin: 0; color: #ffd08a; }
 .result-fail { border-color: var(--danger); color: var(--danger-text); }
 .result-running { border-color: #6b5b39; }
 .transient-result { animation: backupResultFadeOut .4s ease 4.6s forwards; }
@@ -903,6 +924,8 @@ main { padding: 22px; min-width: 0; }
 .progress-row { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 12px; }
 .progress-track { height: 10px; overflow: hidden; border-radius: 999px; background: #0c0e10; border: 1px solid #302b25; }
 .progress-fill { height: 100%; border-radius: inherit; background: #c68b4a; transition: width .35s ease; }
+.progress-fill-water { background: #4a90c6; }
+.progress-fill-blood { background: #a03d3d; }
 .result-ok .progress-fill { background: #3d8b62; }
 .result-ok .progress-track { border-color: #3d8b62; }
 .result-ok .panel-title h4, .result-ok p, .result-ok .progress-row strong { color: #9be6bd; }
@@ -963,6 +986,107 @@ main { padding: 22px; min-width: 0; }
 .database-page-indicator { min-width: 110px; text-align: center; }
 .database-edit-panel { display: grid; gap: 12px; }
 .database-edit-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px; }
+.database-edit-label { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; }
+.database-edit-label small { color: #9be6bd; font-size: 11px; font-weight: 800; letter-spacing: .04em; }
+.database-json-field { grid-column: 1 / -1; }
+.database-json-field > button { width: max-content; max-width: 100%; }
+.database-preview-table th.database-preview-actions,
+.database-preview-table td.database-preview-actions {
+  position: sticky;
+  right: 0;
+  width: 86px;
+  min-width: 86px;
+  max-width: 86px;
+  background: #171a1d;
+  box-shadow: -8px 0 12px rgba(0, 0, 0, .28);
+  text-align: center;
+}
+.database-preview-table th.database-preview-actions { z-index: 3; }
+.database-preview-table td.database-preview-actions { z-index: 2; }
+.database-preview-actions button { width: 100%; min-width: 0; }
+.database-json-modal {
+  width: min(1040px, calc(100vw - 32px));
+  max-height: calc(100dvh - 32px);
+  display: grid;
+  grid-template-rows: auto auto minmax(260px, 1fr) auto auto;
+  gap: 12px;
+  padding: clamp(14px, 2vw, 20px);
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: #171a1d;
+  box-shadow: 0 18px 52px rgba(0, 0, 0, .5);
+  overflow: hidden;
+}
+.database-json-modal .confirm-modal-title > div { min-width: 0; }
+.database-json-modal .confirm-modal-title code { display: block; margin-top: 4px; overflow-wrap: anywhere; }
+.database-json-modal textarea {
+  width: 100%;
+  min-height: 260px;
+  resize: none;
+  font: 13px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: pre;
+  overflow: auto;
+  tab-size: 2;
+}
+.database-json-search { display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; align-items: center; gap: 8px; }
+.database-json-search input { width: 100%; }
+.database-json-error { margin: 0; overflow-wrap: anywhere; }
+.database-tunnel-panel { display: grid; gap: 10px; margin-top: 12px; }
+.database-tunnel-panel p { margin: 0; max-width: 900px; line-height: 1.5; }
+.database-tunnel-steps { display: grid; gap: 12px; margin: 4px 0 0; padding: 0; list-style: none; counter-reset: tunnel-step; }
+.database-tunnel-steps > li {
+  counter-increment: tunnel-step;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(180px, .9fr);
+  gap: 12px 20px;
+  align-items: center;
+  padding: 14px;
+  border: 1px solid #39332c;
+  border-radius: 7px;
+  background: rgba(0, 0, 0, .12);
+}
+.database-tunnel-steps > li > div:first-child { position: relative; display: grid; gap: 5px; padding-left: 36px; min-width: 0; }
+.database-tunnel-steps > li > div:first-child::before {
+  content: counter(tunnel-step);
+  position: absolute;
+  left: 0;
+  top: -2px;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border: 1px solid #c68b4a;
+  border-radius: 50%;
+  color: #ffd08a;
+  font-weight: 800;
+}
+.database-tunnel-steps > li > div:first-child > strong { color: #fff1d4; }
+.database-tunnel-steps > li > div:first-child > p { color: #bcae98; }
+.database-tunnel-steps > li > label { width: 150px; max-width: 100%; justify-self: end; }
+.database-tunnel-command { display: grid; gap: 6px; min-width: 0; }
+.database-tunnel-command-control { display: flex; align-items: stretch; min-width: 0; }
+.database-tunnel-command-control input {
+  flex: 1 1 auto;
+  width: 100%;
+  min-width: 0;
+  height: 42px;
+  border-radius: 6px 0 0 6px;
+  font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.database-tunnel-command-control button {
+  flex: 0 0 auto;
+  width: auto;
+  min-width: 76px;
+  height: 42px;
+  min-height: 42px;
+  margin-left: -1px;
+  border-radius: 0 6px 6px 0;
+}
+.database-tunnel-check { display: grid; gap: 6px; min-width: 0; }
+.database-tunnel-check span { color: #ceb894; font-size: 13px; }
+.database-tunnel-check code { min-width: 0; padding: 10px; border: 1px solid #39332c; border-radius: 6px; background: rgba(0, 0, 0, .18); overflow-x: auto; white-space: nowrap; }
+.database-tunnel-steps .key-value-grid { grid-template-columns: repeat(2, minmax(120px, 1fr)); }
+.database-tunnel-security-note { padding: 10px 12px; border-left: 3px solid #c68b4a; background: rgba(198, 139, 74, .08); }
 .inventory-edit-grid {
   display: grid;
   grid-template-columns: repeat(5, minmax(130px, 1fr));
@@ -993,6 +1117,8 @@ main { padding: 22px; min-width: 0; }
 .database-advanced-section h3 { margin: 0; color: #ffd08a; }
 .database-schema-section { margin-top: 16px; }
 .database-schema-browser { min-width: 0; }
+.database-browser-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+.database-browser-tabs button.active { border-color: #c68b4a; color: #fff1d4; background: #2a211a; }
 .database-schema-filter {
   display: grid;
   grid-template-columns: 20px minmax(0, 1fr) 36px;
@@ -1008,6 +1134,26 @@ main { padding: 22px; min-width: 0; }
   overflow: auto;
   min-width: 0;
 }
+.database-routines-panel { min-width: 0; }
+.database-routine-toolbar { display: flex; flex-wrap: wrap; align-items: end; gap: 8px 12px; margin-bottom: 10px; }
+.database-routine-toolbar label { min-width: min(190px, 100%); }
+.database-routine-toolbar select { width: 100%; }
+.database-routine-toolbar button { display: inline-flex; align-items: center; gap: 7px; }
+.database-routine-list { border-block: 1px solid #39332c; max-height: 560px; overflow: auto; }
+.database-routine-header,
+.database-routine-row { display: grid; grid-template-columns: 36px minmax(260px, 1.4fr) 100px minmax(160px, .8fr) 36px; align-items: center; gap: 8px; padding-inline: 8px; }
+.database-routine-header { position: sticky; top: 0; z-index: 2; min-height: 36px; color: #bcae98; background: #121416; font-size: 12px; font-weight: 700; }
+.database-routine { border-top: 1px solid #2d2925; }
+.database-routine:first-of-type { border-top: 0; }
+.database-routine-row { min-height: 48px; }
+.database-routine-row > div { display: grid; gap: 3px; min-width: 0; }
+.database-routine-row code { min-width: 0; color: #f1dfc1; overflow: hidden; text-overflow: ellipsis; }
+.database-routine-row small { color: #a99b86; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.database-routine-row > span { text-transform: capitalize; color: #cdbfa9; }
+.database-routine-definition { display: grid; gap: 8px; padding: 10px 16px 14px 52px; border-top: 1px solid rgba(45, 41, 37, .72); background: rgba(0, 0, 0, .16); }
+.database-routine-meta { display: flex; flex-wrap: wrap; gap: 8px 18px; color: #a99b86; font-size: 12px; }
+.database-routine-definition pre { max-width: 100%; max-height: 360px; margin: 0; padding: 12px; border: 1px solid #39332c; background: #101214; overflow: auto; white-space: pre; }
+.database-routine-definition pre code { color: #f1dfc1; }
 .database-schema-table-header,
 .database-schema-table-row {
   display: grid;
@@ -1097,6 +1243,23 @@ main { padding: 22px; min-width: 0; }
   .database-schema-column-header span:nth-child(4),
   .database-schema-column-row span:nth-child(3),
   .database-schema-column-row code:nth-child(4) { display: none; }
+  .database-routine-header,
+  .database-routine-row { grid-template-columns: 36px minmax(190px, 1fr) 92px 36px; }
+  .database-routine-header span:nth-child(4),
+  .database-routine-row > code { display: none; }
+  .database-routine-definition { padding-left: 12px; }
+  .database-tunnel-steps > li { grid-template-columns: 1fr; }
+  .database-tunnel-steps > li > label { justify-self: start; }
+}
+@media (max-width: 520px) {
+  .database-json-modal { width: calc(100vw - 20px); max-height: calc(100dvh - 20px); grid-template-rows: auto auto minmax(180px, 1fr) auto auto; }
+  .database-json-search { grid-template-columns: 20px minmax(0, 1fr); }
+  .database-json-search button { grid-column: 1 / -1; width: 100%; }
+  .database-json-modal .confirm-modal-actions { display: grid; grid-template-columns: 1fr; }
+  .database-json-modal .confirm-modal-actions button { width: 100%; min-height: 44px; }
+  .database-tunnel-command-control input { font-size: 12px; }
+  .database-tunnel-steps > li { padding: 12px; }
+  .database-tunnel-steps .key-value-grid { grid-template-columns: 1fr; }
 }
 .key-value-item span { color: #ad9f89; font-size: 13px; }
 .key-value-item strong { color: #fff1d4; overflow-wrap: anywhere; }
@@ -1411,10 +1574,11 @@ body.debug .technical-details { display: block; }
 .spec-track-icon { flex: 0 0 auto; color: #c68b4a; }
 .playerAdmin_specializationTable td:first-child .inline-action-result-wrap { display: flex; justify-content: flex-start; width: 100%; min-height: 0; margin-top: 5px; white-space: normal; }
 .playerAdmin_specializationTable td:first-child .inline-action-result { font-size: 12px; line-height: 1.3; text-align: left; }
-.spec-level-badge, .spec-keystone-yes { display: inline-flex; align-items: center; justify-content: center; gap: 5px; color: #ceb894; }
+.spec-level-badge, .spec-keystone-yes, .spec-keystone-partial { display: inline-flex; align-items: center; justify-content: center; gap: 5px; color: #ceb894; }
 .spec-level-badge { width: 60px; min-width: 60px; max-width: 60px; min-height: 28px; box-sizing: border-box; padding: 4px 8px; border: 1px solid rgba(214, 185, 140, .2); border-radius: 6px; background: rgba(255, 255, 255, .03); font-weight: 700; }
 .spec-level-max, .spec-keystone-yes { color: #8ed0a8; }
 .spec-keystone-no { color: #746c61; }
+.spec-keystone-partial { color: #d6b98c; font-variant-numeric: tabular-nums; }
 .specialization-xp-control { display: flex; align-items: center; justify-content: center; gap: 7px; width: 100%; }
 .specialization-xp-control button { flex: 0 0 104px; width: 104px; min-width: 104px; justify-content: center; padding-inline: 8px; }
 .playerAdmin_specializationTable .playerAdmin_actionCell { display: flex; align-items: center; justify-content: center; flex-wrap: nowrap; gap: 8px; width: 100%; min-width: 0; }
@@ -1472,27 +1636,235 @@ body.debug .technical-details { display: block; }
 .blueprints-table th:last-child, .blueprints-table td:last-child { width: 154px; text-align: center; overflow: visible; }
 .blueprint-name { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-strong); font-weight: 700; }
 .blueprint-actions-column .icon-toggle-group { justify-content: center; }
+.guild-add-member-search-row { align-items: center; }
+.guild-add-member-search-row input { flex: 1 1 auto; min-width: 0; }
+.guild-add-member-results { display: grid; gap: 6px; max-height: 220px; overflow-y: auto; }
+.guild-add-member-result { text-align: left; width: 100%; overflow-wrap: anywhere; }
+.guild-add-member-selected { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel-soft); font-weight: 700; }
+.guild-add-member-selected span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.guild-add-member-selected button { flex-shrink: 0; }
 .bases-table { width: 100%; min-width: 0; table-layout: fixed; }
 .bases-table th { max-width: none; white-space: normal; overflow: visible; text-overflow: clip; line-height: 1.2; }
-.bases-table th, .bases-table td { padding: 8px 6px; }
-.bases-table th:nth-child(1), .bases-table td:nth-child(1) { width: 2.5%; text-align: center; }
+.bases-table th, .bases-table td { padding: 8px 6px; font-size: 14px; }
 .bases-table th:nth-child(2), .bases-table td:nth-child(2) { width: 5%; text-align: center; }
 .bases-table th:nth-child(3), .bases-table td:nth-child(3) { width: 12%; }
-.bases-table th:nth-child(4), .bases-table td:nth-child(4) { width: 8%; }
-.bases-table th:nth-child(5), .bases-table td:nth-child(5) { width: 8%; }
+.bases-table th:nth-child(4), .bases-table td:nth-child(4) { width: 7%; }
+.bases-table th:nth-child(5), .bases-table td:nth-child(5) { width: 7%; }
 .bases-table th:nth-child(6), .bases-table td:nth-child(6) { width: 9%; }
-.bases-table th:nth-child(7), .bases-table td:nth-child(7) { width: 8%; }
+.bases-table th:nth-child(7), .bases-table td:nth-child(7) { width: 7%; }
 .bases-table th:nth-child(8), .bases-table td:nth-child(8) { width: 17%; }
-.bases-table th:nth-child(9), .bases-table td:nth-child(9) { width: 7%; text-align: center; }
-.bases-table th:nth-child(10), .bases-table td:nth-child(10) { width: 7%; text-align: center; }
-.bases-table th:nth-child(11), .bases-table td:nth-child(11) { width: 11.5%; }
-.bases-table th.bases-actions-column, .bases-table td.bases-actions-column { width: 5%; overflow: visible; }
+.bases-table th:nth-child(9), .bases-table td:nth-child(9) { width: 6%; text-align: center; }
+.bases-table th:nth-child(10), .bases-table td:nth-child(10) { width: 6%; text-align: center; }
+.bases-table th:nth-child(11), .bases-table td:nth-child(11) { width: 10.5%; }
+/* 96px fit two icon-toggle-buttons (Refill Generators, Download); a third
+   (Refill Water) plus the wider queued-refill pills need more room, so this
+   grew to comfortably fit all three at once, queued or not. */
+.bases-table th.bases-actions-column, .bases-table td.bases-actions-column { width: 148px; }
 .bases-table td { max-width: none; white-space: normal; overflow-wrap: anywhere; text-overflow: clip; }
 .bases-name, .bases-ellipsis-cell { display: block; overflow: visible; text-overflow: clip; white-space: normal; overflow-wrap: anywhere; }
 .bases-generator-summary { display: block; white-space: normal; overflow: visible; text-overflow: clip; line-height: 1.4; }
 .bases-fuel-alert { color: var(--danger-text); }
 .bases-pagination-footer { margin-top: 12px; margin-bottom: 0; align-items: center; }
 .bases-pagination-footer .action-help-note { margin: 0; }
+.pending-refill-note, .pending-refill-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--title);
+}
+.pending-refill-badge {
+  gap: 4px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: rgba(255, 208, 138, .12);
+  font-size: 11px;
+  white-space: nowrap;
+}
+/* inline-task-result is built for the flex action rows in Maps/Server; this one
+   stands alone under the banner, so drop the flex sizing it assumes. Its
+   result-ok rule animates "fade-result" and retires itself; result-fail does
+   not, matching BasesPanel's own JS timer, which only clears the success case
+   -- losing an error is worse than a stale one. */
+.bases-refill-status {
+  align-self: auto;
+  flex: 0 1 auto;
+  max-width: none;
+  margin: 10px 0 0;
+}
+.bases-refill-status .spinner,
+.bases-restarting-pill .spinner {
+  width: 13px;
+  height: 13px;
+  border-width: 2px;
+}
+.bases-restarting-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 9px;
+  border-radius: 6px;
+  background: rgba(255, 208, 138, .12);
+  color: var(--title);
+  font-size: 11px;
+  white-space: nowrap;
+}
+/* Same shape as .bases-pending-refills below, in danger tones rather than
+   --title: a stalled base is not routine (waiting for a restart window), it
+   means auto-refill gave up, so it reads as a warning rather than a status. */
+.bases-stalled-banner {
+  margin: 12px 0 0;
+  padding: 12px 16px;
+  background: var(--panel-soft);
+  border-left: 3px solid var(--danger);
+}
+.bases-stalled-banner-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  color: var(--danger-text);
+  font-size: 14px;
+  font-weight: 500;
+}
+.bases-stalled-banner .action-help-note { margin: 6px 0 0; }
+.bases-pending-refills {
+  margin: 12px 0 0;
+  padding: 12px 16px;
+  background: var(--panel-soft);
+  border-left: 3px solid var(--title);
+}
+.bases-pending-refills-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  color: var(--title);
+  font-size: 14px;
+  font-weight: 500;
+}
+.bases-pending-refills .action-help-note { margin: 6px 0 0; }
+.bases-pending-refills-list {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+.bases-pending-refills-list li {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  background: var(--panel-muted);
+  border-radius: 6px;
+  font-size: 13px;
+}
+.bases-pending-refills-list button { padding: 5px 10px; font-size: 12px; }
+.bases-pending-refills-list .muted { color: var(--muted); }
+/* Distinguishes the fuel vs water counts inside the combined queue/stalled
+   banners -- same colors as the Water tab's progress bars, so a glance at
+   either surface reads the same way. */
+.bases-queue-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border-radius: 6px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.bases-queue-badge-fuel { background: rgba(198, 139, 74, .18); color: var(--accent); }
+.bases-queue-badge-water { background: rgba(74, 144, 198, .18); color: #7fb2df; }
+.bases-queued-refill {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 4px;
+  border-radius: 6px;
+  background: rgba(255, 208, 138, .12);
+  color: var(--title);
+  white-space: nowrap;
+}
+.bases-queued-refill .bases-queued-refill-cancel {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 20px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  min-width: 0;
+}
+.bases-pending-refills-stale {
+  margin: 10px 0 0;
+  font-size: 12px;
+  color: var(--title);
+}
+.bases-auto-refill {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin: 0 0 12px;
+  padding: 0 0 12px;
+}
+/* Keep the Auto-Refill control at the far edge of the expanded row. When the
+   row wraps on a phone, auto margin still right-aligns the control on its new
+   line without imposing a fixed width. Its tooltip opens inward from there. */
+.bases-auto-refill .memory-info-box { left: auto; right: 0; }
+/* .memory-feature-toggle's Maps-specific rule (min-height: 42px, padded,
+   tinted background) insets the toggle pill inside a taller boxed wrapper
+   here, making it look shorter/heavier than the bare uptime-event badge
+   beside it despite both pills sharing the same 32px min-height. */
+.bases-auto-refill .memory-feature-toggle { min-height: 0; margin-left: auto; padding: 0; background: none; }
+/* Scoped to this modifier rather than the shared .switch-checkbox, which ~10
+   other panels also use. Sized a notch below the toggle's own text so the
+   description reads as secondary, not the loudest thing in the block.
+   The rule explanation and last-checked status live in this element's title
+   attribute (a native hover tooltip) rather than as inline text: at narrow
+   viewport widths a fixed-width inline note either wraps unpredictably or
+   (with a hard nowrap) silently truncates. A tooltip has no such constraint. */
+.bases-auto-refill-toggle { min-height: 32px; padding: 3px 4px 3px 10px; }
+.bases-auto-refill-toggle .switch-label { font-size: 12px; }
+/* Wide enough for the "Saving" state, matching settings-server-listing-toggle. */
+.bases-auto-refill-toggle .switch-state { font-size: 11px; min-width: 48px; padding: 4px 8px; }
+/* Auto-refill marks the existing Refill button instead of adding a control: the
+   actions column is a fixed 96px and already holds two glyphs. Fill only, so it
+   still reads and behaves as the working button it remains. */
+.bases-auto-refill-on {
+  border-color: var(--success);
+  background: rgba(61, 139, 98, .18);
+  color: var(--success-text);
+}
+/* Takes precedence over .bases-auto-refill-on: a base that has given up is a
+   worse state than "on and healthy", not a variant of it. */
+.bases-auto-refill-stalled-icon {
+  border-color: var(--danger);
+  background: rgba(167, 73, 73, .18);
+  color: var(--danger-text);
+}
+.bases-auto-refill-unknown {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  font-size: 11px;
+  color: var(--muted);
+}
+.bases-auto-refill-unknown button { padding: 4px 10px; font-size: 11px; }
+/* Auto-refill giving up on a base is an alert, not a footnote: the operator
+   otherwise believes fuel is handled while the base quietly stays empty. Left
+   as inline text rather than folded into the toggle's tooltip -- unlike the
+   rule explanation, this is urgent and per-base, so it should be visible
+   without hovering. Allowed to wrap (no nowrap/ellipsis): at narrow viewport
+   widths this row's available width is not always enough for one line. */
+.bases-auto-refill-stalled {
+  flex: 1 1 100%;
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--danger-text);
+}
 @media (max-width: 760px) {
   .blueprint-file-field { flex-basis: 100%; max-width: none; }
   .blueprint-list-toolbar, .blueprint-list-toolbar .service-actions { align-items: stretch; }
@@ -1515,8 +1887,18 @@ body.debug .technical-details { display: block; }
 .inline-task-result { align-self: flex-end; flex: 1 1 260px; max-width: 640px; border-left: 3px solid #80613c; color: #d9c8aa; padding: 0 10px; min-height: 42px; display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .inline-task-result.map-action-result { order: 20; flex: 0 1 420px; max-width: 520px; }
 .inline-task-result .inline-task-message { flex: 0 0 100%; }
+/* Hold at full opacity for all but the last ~4% of the duration, then fade: at
+   the 10.4s used below that is ~10s visible + a 0.4s fade, matching the intent
+   already spelled out by homeResultFadeOut's ".4s ease 10s". Opacity only, no
+   layout collapse -- same as landsraadResultFade and homeResultFadeOut. Only
+   result-ok animates: a failure stays until the next action rather than fading
+   out of sight, matching every panel's BasesPanel-style intent. */
+@keyframes fade-result {
+  0%, 96% { opacity: 1; }
+  100% { opacity: 0; }
+}
 .inline-task-result.result-ok { border-color: #6f8f5f; color: #d8f0c8; animation: fade-result 10.4s ease forwards; }
-.inline-task-result.result-fail { border-color: #a84848; color: var(--danger-text); animation: fade-result 10.4s ease forwards; }
+.inline-task-result.result-fail { border-color: #a84848; color: var(--danger-text); }
 .inline-task-result.result-running { border-color: #c68b4a; color: #ffd08a; }
 .table-wrap { overflow: auto; max-height: min(64vh, 620px); border: 1px solid #302b25; border-radius: 8px; margin: 12px 0; }
 table { width: max-content; min-width: 100%; border-collapse: collapse; }
@@ -1595,6 +1977,11 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
 .sietch-child-row td:first-child { padding-left: 28px; }
 .sietch-child-name { display: block; color: #e9dcc8; font-weight: 700; }
 .sietch-child-meta { display: block; color: #9f927d; font-size: 12px; margin-top: 2px; }
+.map-display-name { display: grid; gap: 3px; min-width: 0; white-space: normal; }
+.map-display-name-primary { display: flex; align-items: center; gap: 7px; min-width: 0; color: #e9dcc8; }
+.map-display-name-primary svg { flex: 0 0 auto; color: #d8b15f; }
+.map-display-name-primary strong { min-width: 0; overflow-wrap: anywhere; line-height: 1.25; }
+.map-display-name-id { display: block; min-width: 0; color: #9f927d; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; line-height: 1.25; overflow-wrap: anywhere; }
 .map-name-with-lock { display: inline-flex; align-items: center; gap: 7px; min-width: 0; color: #e9dcc8; font-weight: 700; }
 .map-name-with-lock svg { flex: 0 0 auto; color: #d8b15f; }
 .map-name-with-lock span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
@@ -1626,7 +2013,8 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
 .settings-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 4px; }
 .settings-tabs-row .settings-tabs { margin-bottom: 0; }
 .settings-tabs button { width: auto; min-width: 120px; }
-.settings-download-button { width: auto; min-width: 120px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; margin-left: auto; }
+.settings-download-buttons { display: flex; gap: 8px; margin-left: auto; }
+.settings-download-button { width: auto; min-width: 120px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; }
 .care-package-grant-header { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 4px; }
 .care-package-grant-header .settings-tabs { margin-bottom: 0; }
 .care-package-grant-header .inline-task-result { align-self: center; }
@@ -1711,7 +2099,7 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
   .memory-swap-panel { align-items: stretch; }
   .memory-swap-copy, .memory-swap-panel label, .memory-swap-metrics { width: 100%; }
   .memory-swap-panel label { justify-content: space-between; }
-  .memory-info-box { position: fixed; top: auto; right: 14px; bottom: 14px; left: 14px; width: auto; }
+  .memory-info-box, .bases-auto-refill .memory-info-box { position: fixed; top: auto; right: 14px; bottom: 14px; left: 14px; width: auto; }
 }
 .live-map-layer-list { display: grid; gap: 8px; }
 .live-map-layer { justify-content: flex-start; width: 100%; min-height: 34px; color: #d9c8aa; }
@@ -1919,9 +2307,169 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
   color: #ad9f89;
   font-style: normal;
 }
+
+/* Folder-style tabs: the active one is a raised tab sitting on the panel,
+   reusing the same #25201b fill the app's buttons already use. The -1px margin
+   pulls it over the strip's bottom border so the tab and the content below it
+   read as one continuous surface. */
+/* Bases opts out of the shared .table-wrap height cap so the table grows with
+   its rows and the page scrolls instead of a container inside it. An expanded
+   row's panel is tall enough that the 620px cap left it fighting for room in a
+   nested scrollport. Row count stays bounded by the page-size control. */
+/* Two-class selector deliberately: a later grouped rule re-declares
+   `overflow: auto` on .table-wrap at equal specificity, so a single-class
+   override here would lose on source order. */
+.table-wrap.bases-table-wrap { max-height: none; overflow: visible; }
+
+/* Below this width the twelve columns have nowhere to go. The table has no
+   intrinsic minimum, so instead of overflowing it crushes -- cells collapse to
+   one character per line and "Advanced Sub-Fief" renders vertically. (That
+   predates the height-cap change: with no min-width the table always shrank to
+   its container, so the wrap's overflow-x never had anything to scroll.)
+   Give it a floor and let the container scroll horizontally again.
+   The sticky header does not survive here, because a sticky element is confined
+   to its nearest scrolling ancestor and that is now the wrap again -- readable
+   columns are worth more than a pinned header on a phone. */
+@media (max-width: 1100px) {
+  .table-wrap.bases-table-wrap { overflow: auto; }
+  .bases-table { min-width: 860px; }
+  /* The expanded panel is a cell of that 860px table, so without this it
+     inherits the width and pushes its own controls off-screen -- the rank
+     dropdown, remove button and player picker all end up past the right edge.
+     Sticky-left pins the panel to the visible edge while the columns scroll
+     underneath, and the width cap keeps its controls inside the scrollport. */
+  .bases-table td.expanded-row-cell { position: sticky; left: 0; }
+  .bases-table td.expanded-row-cell > * { max-width: calc(100vw - 76px); }
+}
+/* The shared `th` rule is already position:sticky, but an overflow:auto ancestor
+   confines a sticky element to that ancestor's scrollport -- so with the height
+   cap gone the header stuck to a container that no longer scrolls and rode off
+   with the page. Dropping the wrap's overflow makes the page itself the sticky
+   context, which is what keeps the header pinned while the rows scroll. */
+/* The search row pins above the table header so Search/Clear stay reachable
+   while scrolling a long list. It needs an opaque background of its own -- the
+   panel's is semi-transparent, so rows would scroll visibly through it. Its
+   margins become padding so the sticky box is one solid band with no gap for
+   rows to show through between it and the header below. */
+.bases-search-row {
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  margin-block: 0;
+  padding-block: 12px;
+  background: var(--panel);
+}
+/* 67px = the search row's 43px of content plus its 24px of padding, so the
+   header parks directly beneath the search bar rather than under it. */
+.table-wrap.bases-table-wrap { margin-top: 0; }
+.bases-table-wrap .bases-table th { top: 67px; z-index: 3; }
+/* Below 900px the sidebar stops being a column and becomes a sticky header at
+   top:0 with z-index:100, so a search bar pinned to the same edge sits behind
+   it. Offsetting by the sidebar's height would break the moment the hamburger
+   expands it, so the bar simply scrolls with the page here -- which matches the
+   table header, itself not page-sticky at this width. */
+@media (max-width: 900px) {
+  .bases-search-row { position: static; }
+}
+
+.bases-expanded-tablist {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--border-strong);
+  margin-bottom: 14px;
+  padding-top: 8px;
+}
+.bases-expanded-tab {
+  width: auto;
+  min-width: 0;
+  border: 1px solid transparent;
+  border-radius: 6px 6px 0 0;
+  background: transparent;
+  color: var(--muted);
+  padding: 9px 16px;
+  font-size: 13px;
+  margin-bottom: -1px;
+}
+.bases-expanded-tab:hover { color: var(--muted-warm); border-color: transparent; }
+.bases-expanded-tab.active {
+  background: #25201b;
+  border-color: var(--border-strong);
+  border-bottom-color: #25201b;
+  color: var(--title);
+}
+.bases-expanded-tab.active:hover { border-color: var(--border-strong); border-bottom-color: #25201b; }
+
+.bases-water { display: grid; gap: 12px; }
+.bases-permissions { display: grid; gap: 12px; }
+.bases-permissions-roster { display: grid; gap: 6px; }
+.bases-permissions-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 150px 38px;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  padding: 6px 10px;
+}
+.bases-permissions-row-owner { border-color: var(--border-strong); }
+.bases-permissions-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+.bases-permissions-row-owner .bases-permissions-name { color: var(--text-strong); }
+.bases-permissions-orphan { display: inline-flex; color: var(--warning); flex: 0 0 auto; }
+.bases-permissions-remove { border-color: var(--danger-strong); color: var(--danger-text); }
+.bases-permissions-add { display: grid; gap: 8px; }
+/* Overrides .action-row's align-items: center -- "Add as" has a label line
+   above its select that the bare input/buttons don't, so centering the row
+   left the select's bottom edge hanging lower than the rest. Bottom-aligning
+   (matching .action-line's convention for the same label-above-control
+   shape) puts every control's bottom edge on the same line. */
+.bases-permissions-search-row { flex-wrap: wrap; align-items: flex-end; }
+.bases-permissions-candidates {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+.bases-permissions-candidates li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 10px;
+  font-size: 13px;
+}
+.bases-permissions-candidates li span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bases-permissions-warning { margin: 0; }
+.bases-permissions-error { color: var(--danger-text); margin: 0; }
+.bases-permissions-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  justify-content: flex-end;
+}
+.bases-permissions-actions > .muted { margin-right: auto; font-size: 12px; }
+.bases-permissions-actions button { width: auto; }
 .bases-table th.bases-expand-column, .bases-table td.bases-expand-column {
-  width: 2.5%;
-  padding-inline: 0;
+  width: 32px;
+  padding-inline: 4px;
   text-align: center;
   overflow: visible;
   text-overflow: clip;
@@ -1946,26 +2494,47 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
 .bases-table td.expanded-row-cell {
   text-align: left;
 }
+/* A plain full-width column, not a grid: the auto-refill row and the reserve
+   note need the row's true full width (flex's default align-items: stretch
+   gives every direct child 100% width for free), while only the actual cards
+   below get wrapped into the capped auto-fit grid in .bases-generator-cards.
+   A single grid used to do both jobs via grid-column: 1 / -1 on those two
+   children, but that only reaches the edge of the grid's own tracks -- once
+   the cards' columns were capped at a fixed max-width (rather than 1fr) the
+   tracks stopped summing to the container's full width, so "span every
+   track" silently stopped meaning "reach the right edge" and both rows fell
+   short of it. */
 .bases-generator-breakdown {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
+  display: flex;
+  flex-direction: column;
   gap: 12px;
   width: 100%;
+  padding: clamp(12px, 1.5vw, 18px);
+  box-sizing: border-box;
+}
+.bases-generator-cards {
+  display: grid;
+  /* Capped at 280px rather than 1fr: with few groups (a base with one or two
+     water containers, in particular) an unbounded 1fr stretches each card to
+     fill the row instead of staying a card. */
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 280px));
+  gap: 12px;
   align-items: stretch;
 }
-.bases-uptime-event {
-  grid-column: 1 / -1;
+.bases-generator-cards.bases-water-cards {
+  align-items: start;
+}
+.bases-uptime-event-inline {
   display: inline-flex;
-  flex-direction: column;
-  align-items: flex-start;
-  justify-self: start;
-  gap: 4px;
+  align-items: center;
+  gap: 8px;
   margin: 0;
+  white-space: nowrap;
 }
 .bases-uptime-event-badge {
   display: inline-flex;
   align-items: center;
-  min-height: 26px;
+  min-height: 32px;
   padding: 4px 10px;
   border: 1px solid rgba(143, 255, 210, .55);
   border-radius: 999px;
@@ -1977,15 +2546,14 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
   line-height: 1;
   letter-spacing: .02em;
   white-space: nowrap;
+  box-sizing: border-box;
 }
-.bases-uptime-event small {
-  padding-left: 3px;
+.bases-uptime-event-inline small {
   color: var(--muted-warm);
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1.25;
 }
 .bases-generator-reserve-note {
-  grid-column: 1 / -1;
   margin: 0;
   color: var(--muted-warm);
   font-size: 12px;
@@ -2005,6 +2573,7 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
   min-width: 0;
   color: #ffd08a;
   font-weight: 700;
+  font-size: 14px;
   margin-bottom: 4px;
   overflow-wrap: anywhere;
 }
@@ -2012,8 +2581,7 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
    inherit the outer column widths, centring and row borders. */
 .bases-generator-stats {
   display: grid;
-  grid-template-columns: minmax(96px, 128px) minmax(0, 1fr);
-  column-gap: 14px;
+  grid-template-columns: 1fr;
   width: 100%;
   min-width: 0;
   margin: 0;
@@ -2021,22 +2589,22 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
 .bases-generator-stats dt {
   min-width: 0;
   color: var(--muted-warm);
-  padding: 7px 0;
-  border-bottom: 1px solid rgba(255, 208, 138, .16);
+  padding: 6px 0 0;
+  font-size: 12px;
   line-height: 1.25;
   overflow-wrap: anywhere;
 }
 .bases-generator-stats dd {
   min-width: 0;
   margin: 0;
-  padding: 7px 0;
+  padding: 0 0 6px;
   border-bottom: 1px solid rgba(255, 208, 138, .16);
   white-space: normal;
+  font-size: 13px;
   line-height: 1.25;
   overflow-wrap: anywhere;
 }
-.bases-generator-stats dt:nth-last-child(-n + 2),
-.bases-generator-stats dd:nth-last-child(-n + 2) {
+.bases-generator-stats dd:last-child {
   border-bottom: 0;
 }
 .inventory-augment-input-line {
@@ -2216,25 +2784,6 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
   text-align: center;
 }
 
-.bases-table {
-  min-width: 1220px;
-  table-layout: fixed;
-}
-.bases-table th,
-.bases-table td { padding: 9px 8px; }
-.bases-table th:nth-child(1), .bases-table td:nth-child(1) { width: 42px; }
-.bases-table th:nth-child(2), .bases-table td:nth-child(2) { width: 92px; }
-.bases-table th:nth-child(3), .bases-table td:nth-child(3) { width: 180px; }
-.bases-table th:nth-child(4), .bases-table td:nth-child(4) { width: 112px; }
-.bases-table th:nth-child(5), .bases-table td:nth-child(5) { width: 140px; }
-.bases-table th:nth-child(6), .bases-table td:nth-child(6) { width: 140px; }
-.bases-table th:nth-child(7), .bases-table td:nth-child(7) { width: 112px; }
-.bases-table th:nth-child(8), .bases-table td:nth-child(8) { width: 210px; }
-.bases-table th:nth-child(9), .bases-table td:nth-child(9),
-.bases-table th:nth-child(10), .bases-table td:nth-child(10) { width: 92px; }
-.bases-table th:nth-child(11), .bases-table td:nth-child(11) { width: 150px; }
-.bases-table th.bases-actions-column,
-.bases-table td.bases-actions-column { width: 58px; }
 .bases-table td:nth-child(2),
 .bases-table td:nth-child(3) { overflow-wrap: normal; word-break: normal; }
 .bases-table td:nth-child(2) { font-variant-numeric: tabular-nums; }
@@ -2318,18 +2867,6 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
   border-radius: 8px;
   background: rgba(255, 255, 255, .025);
 }
-.package-auto-line {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(150px, 1fr)) max-content;
-  align-items: end;
-}
-.package-auto-line label.compact-field,
-.package-auto-line label.compact-select {
-  width: 100%;
-  max-width: none;
-  min-width: 0;
-}
-
 .addons-page-header {
   align-items: center;
   gap: 14px;
@@ -2355,8 +2892,6 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
 @media (max-width: 1100px) {
   .memory-swap-controls.custom { grid-template-columns: minmax(200px, 260px) max-content max-content minmax(0, 1fr); }
   .memory-swap-controls.custom .memory-swap-apply { grid-column: 4; grid-row: 2; }
-  .package-auto-line { grid-template-columns: repeat(2, minmax(180px, 1fr)); }
-  .package-auto-line > button { justify-self: start; }
 }
 
 @media (max-width: 900px) {
@@ -2368,7 +2903,6 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
   .maps-refresh-button { width: 100%; }
   .live-map-main { overflow: visible; }
   .live-map-frame { overflow: hidden; }
-  .package-auto-line { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 @media (max-width: 680px) {
@@ -2386,10 +2920,8 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
   .memory-swap-apply,
   .memory-swap-controls.custom .memory-swap-apply { grid-column: 1; grid-row: auto; justify-self: end; }
   .memory-swap-metrics { grid-template-columns: 1fr; }
-  .care-package-configuration .care-package-builder,
-  .package-auto-line { grid-template-columns: 1fr; }
-  .care-package-configuration .care-package-builder > button,
-  .package-auto-line > button { width: 100%; }
+  .care-package-configuration .care-package-builder { grid-template-columns: 1fr; }
+  .care-package-configuration .care-package-builder > button { width: 100%; }
   .addons-page-header { align-items: stretch; }
   .addons-title-actions { width: 100%; grid-template-columns: repeat(2, minmax(0, 1fr)); margin-left: 0; }
   .addons-title-actions > * { width: 100%; justify-content: center; }
@@ -2521,9 +3053,6 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
 .augment-dropdown-effect.positive { color: #9ee6a8; border-color: rgba(91, 173, 103, 0.45); background: rgba(67, 132, 76, 0.16); }
 .augment-dropdown-effect.negative { color: #ff9f9f; border-color: rgba(199, 82, 82, 0.5); background: rgba(145, 45, 45, 0.18); }
 .augment-dropdown-effect.neutral { color: #d9c8aa; }
-.package-auto-line { align-items: flex-end; gap: 10px; }
-.package-auto-line label.compact-field { flex: 0 0 150px; max-width: 150px; }
-.package-auto-line label.compact-select { flex: 0 0 190px; max-width: 190px; }
 .package-auto-rules { display: grid; gap: 10px; }
 .package-auto-rule { display: grid; grid-template-columns: auto minmax(220px, 1fr) auto auto; gap: 10px; align-items: center; border: 1px solid rgba(214, 185, 140, .16); background: rgba(255,255,255,.03); border-radius: 8px; padding: 10px; }
 .package-auto-rule label { min-width: 0; }
@@ -2739,8 +3268,20 @@ td .inline-action-result-wrap { flex: 1 0 100%; justify-content: flex-start; min
 .modifier-filter-input { width: 100%; min-height: 42px; }
 .settings-field { display: grid; gap: 9px; align-content: start; min-width: 0; border: 1px solid rgba(214, 185, 140, .13); background: rgba(255,255,255,.03); border-radius: 8px; padding: 14px; }
 .settings-field span { display: grid; gap: 2px; }
+.settings-field-heading { overflow: hidden; }
+.settings-field .settings-field-badges { float: right; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; margin: 0 0 6px 10px; }
+.settings-field-heading strong, .settings-field-heading small { display: block; }
+.settings-field-heading small { margin-top: 3px; }
+.settings-field .settings-field-badges .badge { display: inline-flex; align-items: center; }
+.settings-modified-badge { display: inline-flex; align-items: center; vertical-align: middle; }
+.settings-reset-button { border: none; background: none; color: inherit; padding: 0; margin: 0 -2px 0 5px; border-radius: 0; min-width: 0; opacity: .75; }
+.settings-reset-button:hover { border-color: transparent; opacity: 1; }
+.settings-reset-button:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
 .settings-field strong { overflow-wrap: anywhere; }
 .settings-field small { color: #a99577; overflow-wrap: anywhere; }
+.settings-field-description, .settings-field .settings-field-description { display: flex; gap: 6px; align-items: flex-start; color: #e4d9c4; font-size: 12.5px; line-height: 1.45; min-width: 0; }
+.settings-field-description svg { flex-shrink: 0; margin-top: 1px; color: var(--accent); }
+.settings-field-description-text { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
 .settings-field input, .settings-field select, .settings-field textarea, .raw-editor-card textarea { width: 100%; }
 .character-transfer-grid { display: grid; gap: 8px; max-width: 820px; }
 .character-transfer-row {
@@ -2763,14 +3304,23 @@ td .inline-action-result-wrap { flex: 1 0 100%; justify-content: flex-start; min
 .settings-list-wrap { overflow: auto; border: 1px solid rgba(214, 185, 140, .16); border-radius: 8px; background: rgba(0,0,0,.12); }
 .settings-list-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
 .settings-list-table th, .settings-list-table td { padding: 10px 12px; border-bottom: 1px solid rgba(214, 185, 140, .12); vertical-align: top; }
+.settings-list-table td { padding-top: 20px; }
 .settings-list-table th { color: #ffd08a; text-align: left; font-size: 12px; text-transform: uppercase; }
 .settings-list-table th:nth-child(1), .settings-list-table td:nth-child(1) { width: 30%; }
 .settings-list-table th:nth-child(2), .settings-list-table td:nth-child(2) { width: 32%; }
 .settings-list-table th:nth-child(3), .settings-list-table td:nth-child(3) { width: 38%; }
-.settings-list-table td { overflow-wrap: anywhere; }
+.settings-list-table td { white-space: normal; overflow: visible; text-overflow: clip; max-width: none; overflow-wrap: anywhere; }
 .settings-list-table td strong, .settings-list-table td small { display: block; }
 .settings-list-table td small { color: #a99577; margin-top: 3px; }
-.settings-list-table input, .settings-list-table select, .settings-list-table textarea { width: 100%; }
+.settings-reset-all-button { margin-left: auto; }
+.settings-list-badge { display: inline-block; margin: 0; }
+.settings-list-badge-row .badge + .badge { margin-left: 6px; }
+.settings-list-badge-row td { border-bottom: none; padding-top: 10px; padding-bottom: 4px; }
+.settings-list-table tr.settings-list-badge-row + tr td { padding-top: 2px; }
+.settings-list-table tr:has(+ .settings-list-description-row) td { border-bottom: none; }
+.settings-list-description-row td { padding-top: 0; }
+.settings-list-table input, .settings-list-table select, .settings-list-table textarea { width: 100%; margin-top: -10px; }
+.settings-list-table tr.settings-list-badge-row + tr input, .settings-list-table tr.settings-list-badge-row + tr select, .settings-list-table tr.settings-list-badge-row + tr textarea { margin-top: 0; }
 .spicefields-table { min-width: 980px; }
 .spicefields-table th:nth-child(n), .spicefields-table td:nth-child(n) { width: auto; }
 .spicefields-table th:nth-child(1), .spicefields-table td:nth-child(1) { width: 18%; }

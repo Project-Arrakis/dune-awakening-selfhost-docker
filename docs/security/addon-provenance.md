@@ -1,5 +1,7 @@
 # PR 12 - Addon Provenance
 
+**Status:** Historical record — describes the state at branch `security/addon-provenance`. Not maintained. The control it documents is still in force.
+
 Branch: `security/addon-provenance`
 
 ## Source Findings
