@@ -11,8 +11,7 @@ import { formatDisplayValue, formatUiSentence, friendlyColumnName, stripAnsi, su
 import { friendlyServiceName } from "../../lib/serviceDisplay";
 import { conciseTaskError, funcomTokenMismatchDetected } from "../../lib/taskDisplay";
 import { usePendingRefills } from "../../lib/usePendingRefills";
-import { IamPolicyEditor } from "../settings/IamPolicyEditor";
-
+// IamPolicyEditor rendered in its own Access Control tab in App.tsx, not here.
 export type HomeLoadResult = { statusLoaded: boolean; readinessLoaded: boolean; statusError: string; readinessError: string; statusText: string; readinessText: string };
 export type HomeTaskResult = { status: "running" | "succeeded" | "failed" | "stopped"; title: string; message?: string; details?: string };
 export type RestartLifecycleState = { stopObserved: boolean; startObserved: boolean };
@@ -1010,11 +1009,6 @@ export function ServerPanel(props: {
       {networkBindResult && <HomeTaskResultCard result={networkBindResult} />}
       {storageCleanupResult && <HomeTaskResultCard result={storageCleanupResult} />}
 
-      <section className="action-section">
-        <div className="panel-title"><h3>Access Control</h3></div>
-        <p className="panel-description">Manage what each role can see and do in the console. Policies follow AWS IAM-style semantics — changes take effect immediately for new sessions.</p>
-        <IamPolicyEditor />
-      </section>
     </section>
   );
 }
