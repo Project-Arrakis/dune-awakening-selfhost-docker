@@ -34,6 +34,7 @@ import { readCharacterTransferSettings, saveCharacterTransferSettings } from "./
 import { handleDiscordAdapterRoute, isDiscordAdapterRoute } from "./integrations/discord/routes.js";
 import { createPendingStateStore, exchangeDiscordAuthCode, fetchDiscordIdentity, createOAuthTierResolver, buildAuthorizeUrl, oauthStateCookie, clearOAuthStateCookie } from "./integrations/discord/oauth.js";
 import { createHandoff } from "./integrations/discord/handoff.js";
+import { capabilityForRoute, requireConsoleCapability, capabilitiesForTier } from "./rbac.js";
 import { discordAdapterEnabled } from "./integrations/discord/adapter.js";
 import { initializeDiscordAdapterSchema } from "./integrations/discord/schema.js";
 import { liveItemGrantOk, liveItemGrantWarning } from "./grantResults.js";
@@ -400,7 +401,7 @@ async function handleApi(req, res) {
         tier: session.tier || "owner",
         guildId: session.guildId || ""
       },
-      capabilities: []
+      capabilities: capabilitiesForTier(session.tier)
     });
   }
   if (path === "/api/auth/discord/start" && req.method === "GET") {
@@ -435,6 +436,11 @@ async function handleApi(req, res) {
   const session = auth.requireAuth(req, res);
   if (!session) return;
   req.authSession = session;
+
+  const routeCapability = capabilityForRoute(path, req.method);
+  if (routeCapability && !requireConsoleCapability(session, routeCapability)) {
+    return json(res, 403, { error: "Your account does not have permission to access this resource." });
+  }
 
   if (path === "/api/setup/state") return json(res, 200, await setupState());
   if (path === "/api/setup/preflight" && req.method === "POST") return json(res, 200, await preflight(config));
