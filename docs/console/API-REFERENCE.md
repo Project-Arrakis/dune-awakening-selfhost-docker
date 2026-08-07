@@ -119,7 +119,7 @@ Complete reference for all HTTP API endpoints in the Dune Docker Console. All en
 
 | Method | Route | Description | Parameters |
 |--------|-------|-------------|------------|
-| GET | `/api/players` | List players (paginated) | `q?`, `page?`, `pageSize?`, `status?`, `sortColumn?`, `sortDirection?` |
+| GET | `/api/players` | List players (paginated) | `q?`, `page?`, `pageSize?`, `status?` (`all`, `online`, `offline`, or `banned`), `sortColumn?`, `sortDirection?` |
 | GET | `/api/players/online` | List currently online players | `page?`, `pageSize?` |
 | GET | `/api/players/search` | Search players by name/ID | `q` (required, query param) |
 
@@ -161,6 +161,9 @@ Complete reference for all HTTP API endpoints in the Dune Docker Console. All en
 | Method | Route | Description | Parameters |
 |--------|-------|-------------|------------|
 | POST | `/api/players/{playerId}/kick` | Kick player from server | None |
+| GET | `/api/players/{playerId}/ban` | Get persistent account-ban status | None |
+| POST | `/api/players/{playerId}/ban` | Persistently ban and enforce removal of a player's FLS account | `confirmation: "BAN PLAYER"`, `reason?` |
+| DELETE | `/api/players/{playerId}/ban` | Remove a persistent account ban | None |
 | POST | `/api/players/{playerId}/repair-login-queue` | Fix login queue issues | `confirmation: "REPAIR LOGIN QUEUE"` |
 | POST | `/api/players/{playerId}/teleport` | Teleport to coordinates | `x`, `y`, `z`, `yaw`, `online?`, `partitionId?` |
 | POST | `/api/players/{playerId}/spawn-vehicle` | Spawn vehicle | `vehicleId`, `template`, `offset` |
