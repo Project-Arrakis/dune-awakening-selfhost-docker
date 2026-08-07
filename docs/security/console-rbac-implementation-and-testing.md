@@ -1,8 +1,9 @@
 # Console RBAC — Unified Tier Model Implementation & Testing Plan
 
 **Status:** Design/implementation-and-testing plan. **Mechanism decision made
-(2026-08-06): B — bot relay via signed handoff.** Phase 2 implementation in
-progress (operator-directed pipeline, 2026-08-06).
+(2026-08-06): B — bot relay via signed handoff.** Phase 2 shipped 2026-08-06
+(owner-tier Discord OAuth sign-in behind a fail-closed allowlist; role-mapped
+tiers and route gating remain Phase 3/4).
 **Authorized:** 2026-08-06 (user-directed workstream: implement across all repos
 except this one; for this repo, produce this document first).
 **Cross-repo companion work already landed:** `arrakis-control-panel` commit
@@ -190,8 +191,19 @@ explicitly public); a **parity test** (§8.1) mechanically enforces coverage.
    exchanges token, fetches identity, and — once Phase 3 ships — resolves
    tier via the signed handoff; **until then the callback may only produce
    an owner-tier session if the operator explicitly permits it**).
-4. New `/api/auth/me`: `{ user: {id, username, tier}, capabilities: [...] }`
-   for the UI.
+   Owner-tier gating is fail-closed: the user must be a member of
+   `discord.homeGuildId` **and** be named in `discord.oauth.ownerAllowlist`,
+   with `discord.oauth.allowOwnerBootstrap` set. An **empty allowlist denies
+   every Discord owner session** — it never means "any guild member is
+   owner" (implemented and pinned in `oauth.js:resolveBootstrapTier`;
+   an empty-allowlist grant would hand a Docker-socket admin to any guild
+   member, including future joiners).
+4. New `/api/auth/me`: `{ user: {id, username, tier, guildId}, capabilities: [...] }`
+   for the UI. The Web Console login screen shows a Discord sign-in link
+   only when `discord.oauth.configured` is true; the OAuth `/callback`
+   success response is a small HTML autoredirect page (`window.location.replace("/")`)
+   because a real browser lands on that URL after the Discord round-trip
+   (returning JSON would show the user a data blob).
 5. Config: optional `discord.oauth.*`, `discord.homeGuildId`,
    `discord.botHandoff.*`. All optional — unset ⇒ console unchanged (§5).
 6. Migration path: no required new env vars; password login always available
@@ -295,6 +307,19 @@ explicitly public); a **parity test** (§8.1) mechanically enforces coverage.
   `server.js` and assert `ROUTE_CAPABILITIES` + the public-route list cover
   every branch — a new route without a capability assignment fails CI.
   (Same technique as the repo's existing route/help reconciliation tests.)
+
+Phase 2 shipped tests (2026-08-06): `test/oauth.test.js` covers pending
+state (missing/stale/reused, cookie-bound, full store), token exchange
+(invalid code / upstream error / unreachable host / malformed payload),
+identity fetch (fail-closed on malformed user or failed guilds), bootstrap
+tier fail-closed gates, allowlist parsing, and the authorize-URL contract.
+`test/oauthRoutes.integration.test.js` boots the real `server.js` against
+a local fake Discord API on ephemeral ports and exercises the full
+browser-shaped flow: `/api/auth/state` advertises `discordOAuthConfigured`,
+`/start` 302s to Discord and sets the pending-state cookie, `/callback`
+mints a session and returns the HTML autoredirect page, `/api/auth/me`
+returns the tiered identity; plus a 403 for a non-home-guild member and a
+404 when OAuth is unconfigured.
 
 ### 8.2 Integration tests — `console/api`
 

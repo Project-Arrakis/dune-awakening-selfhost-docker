@@ -50,6 +50,75 @@ test("json responses include defensive browser headers", () => {
   assert.match(res.headers["permissions-policy"], /camera=\(\)/);
 });
 
+test("auth rejects a cookie whose HMAC signature was tampered", () => {
+  const auth = createAuth({ sessionSecret: "secret", adminPassword: "admin", authDisabled: false });
+  const session = auth.makeSession();
+  const tampered = session.cookie.slice(0, -2) + (session.cookie.endsWith("aa") ? "bb" : "aa");
+  const req = { headers: { cookie: `asc_session=${encodeURIComponent(tampered)}` } };
+  assert.equal(auth.readSession(req), null);
+});
+
+test("auth rejects an expired session", () => {
+  let currentTime = 1_700_000_000_000;
+  const auth = createAuth({ sessionSecret: "secret", adminPassword: "admin", authDisabled: false, now: () => currentTime });
+  const session = auth.makeSession();
+  assert.equal(auth.readSession({ headers: { cookie: `asc_session=${encodeURIComponent(session.cookie)}` } })?.id, session.id);
+  currentTime += 12 * 60 * 60 * 1000 + 1000;
+  const req = { headers: { cookie: `asc_session=${encodeURIComponent(session.cookie)}` } };
+  assert.equal(auth.readSession(req), null);
+});
+
+test("legacy signed cookie without a live session synthesizes an owner-tier session (upgrade path)", () => {
+  // Strict Requirement 0: a cookie minted by a pre-RBAC build (or a cookie
+  // surviving a restart) must not lock the operator out. The HMAC proves
+  // the cookie is genuine; the missing Map entry gets a fresh owner session.
+  const secret = "shared-secret";
+  const legacyAuth = createAuth({ sessionSecret: secret, adminPassword: "admin", authDisabled: false });
+  const legacy = legacyAuth.makeSession(); // would have been the old format: same shape
+  const cookieValue = legacy.cookie;
+
+  const freshAuth = createAuth({ sessionSecret: secret, adminPassword: "admin", authDisabled: false });
+  const req = { headers: { cookie: `asc_session=${encodeURIComponent(cookieValue)}` } };
+  const session = freshAuth.readSession(req);
+  assert.ok(session, "signature-valid legacy cookie must not be rejected");
+  assert.equal(session.tier, "owner");
+  assert.equal(session.id, legacy.id);
+});
+
+test("legacy cookie synthesized session can authenticate via its fresh CSRF token", () => {
+  const secret = "another-secret";
+  const legacyAuth = createAuth({ sessionSecret: secret, adminPassword: "admin", authDisabled: false });
+  const legacy = legacyAuth.makeSession();
+  const freshAuth = createAuth({ sessionSecret: secret, adminPassword: "admin", authDisabled: false });
+
+  // The browser always does /api/auth/state first, which returns the
+  // synthesized session's CSRF token (moved by requireAuth→readSession).
+  const read = freshAuth.readSession({ headers: { cookie: `asc_session=${encodeURIComponent(legacy.cookie)}` } });
+  assert.ok(read, "signature-valid legacy cookie must establish a session");
+  const res = fakeResponse();
+  const authed = freshAuth.requireAuth({ method: "POST", headers: { cookie: `asc_session=${encodeURIComponent(legacy.cookie)}`, "x-csrf-token": read.csrf } }, res);
+  assert.equal(authed?.tier, "owner");
+  assert.equal(res.status, null);
+});
+
+test("makeSession defaults to owner tier and carries identity fields", () => {
+  const auth = createAuth({ sessionSecret: "secret", adminPassword: "admin", authDisabled: false });
+  const plain = auth.makeSession();
+  assert.equal(plain.tier, "owner");
+  assert.equal(plain.userId, "");
+
+  const oauth = auth.makeSession({ tier: "owner", userId: "123456789012345678", username: "operator", guildId: "987654321098765432" });
+  assert.equal(oauth.tier, "owner");
+  assert.equal(oauth.userId, "123456789012345678");
+  assert.equal(oauth.username, "operator");
+  assert.equal(oauth.guildId, "987654321098765432");
+
+  const readBack = auth.readSession({ headers: { cookie: `asc_session=${encodeURIComponent(oauth.cookie)}` } });
+  assert.equal(readBack?.tier, "owner");
+  assert.equal(readBack?.userId, "123456789012345678");
+  assert.equal(readBack?.username, "operator");
+});
+
 function fakeResponse() {
   return {
     status: null,
