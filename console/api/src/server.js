@@ -34,8 +34,8 @@ import { readCharacterTransferSettings, saveCharacterTransferSettings } from "./
 import { handleDiscordAdapterRoute, isDiscordAdapterRoute } from "./integrations/discord/routes.js";
 import { createPendingStateStore, exchangeDiscordAuthCode, fetchDiscordIdentity, createOAuthTierResolver, buildAuthorizeUrl, oauthStateCookie, clearOAuthStateCookie } from "./integrations/discord/oauth.js";
 import { createHandoff } from "./integrations/discord/handoff.js";
-import { actionForRoute } from "./actions.js";
-import { evaluate, loadPolicies, getAllPolicies, resolveSessionTier, resolveAllowedActions } from "./policy.js";
+import { actionForRoute, ROUTE_ACTIONS, NAMESPACES } from "./actions.js";
+import { evaluate, loadPolicies, getAllPolicies, setPolicies, resolveSessionTier, resolveAllowedActions, matchAction } from "./policy.js";
 import { discordAdapterEnabled } from "./integrations/discord/adapter.js";
 import { initializeDiscordAdapterSchema } from "./integrations/discord/schema.js";
 import { liveItemGrantOk, liveItemGrantWarning } from "./grantResults.js";
@@ -570,6 +570,52 @@ async function handleApi(req, res) {
   if (path === "/api/database/password" && req.method === "POST") return databasePasswordRoute(req, res);
   if (path === "/api/settings/admin-password" && req.method === "POST") return adminPasswordRoute(req, res);
   if (path === "/api/settings/web-port" && req.method === "POST") return webPortRoute(req, res);
+  if (path === "/api/settings/iam/policies" && req.method === "GET") {
+    const policies = getAllPolicies();
+    return json(res, 200, {
+      policies: Object.fromEntries(
+        Object.entries(policies).map(([tier, doc]) => [tier, { version: doc.version, tier: doc.tier, statements: doc.statements }])
+      ),
+      actions: Object.keys(ROUTE_ACTIONS).sort(),
+      namespaces: NAMESPACES
+    });
+  }
+  if (path === "/api/settings/iam/policy" && req.method === "PUT") {
+    const body = await readJson(req);
+    if (!body || !body.tier || !body.statements) return json(res, 400, { error: "tier and statements are required" });
+    const validActions = new Set(Object.values(ROUTE_ACTIONS));
+    for (const stmt of body.statements) {
+      if (!stmt.Effect || !["Allow", "Deny"].includes(stmt.Effect)) return json(res, 400, { error: `Invalid Effect: ${stmt.Effect}` });
+      const actions = Array.isArray(stmt.Action) ? stmt.Action : [stmt.Action];
+      for (const a of actions) {
+        if (a !== "*" && !a.includes("*") && !validActions.has(a)) return json(res, 400, { error: `Unknown action: ${a}` });
+      }
+    }
+    const policies = getAllPolicies();
+    policies[body.tier] = { version: 1, tier: body.tier, statements: body.statements };
+    setPolicies(policies);
+    return json(res, 200, { ok: true, tier: body.tier });
+  }
+  if (path === "/api/settings/iam/policy/test" && req.method === "POST") {
+    const body = await readJson(req);
+    if (!body || !body.statements) return json(res, 400, { error: "statements are required" });
+    const results = {};
+    for (const [route, action] of Object.entries(ROUTE_ACTIONS)) {
+      let allowed = false;
+      for (const stmt of body.statements) {
+        const stmtActions = Array.isArray(stmt.Action) ? stmt.Action : [stmt.Action];
+        for (const pattern of stmtActions) {
+          if (matchAction(pattern, action)) {
+            if (stmt.Effect === "Deny") { allowed = false; break; }
+            if (stmt.Effect === "Allow") allowed = true;
+          }
+        }
+        if (allowed === false && stmt.Effect === "Deny") break;
+      }
+      results[action] = allowed;
+    }
+    return json(res, 200, { results });
+  }
 
   if (path === "/api/players") return dbJson(res, () => duneDb.listPlayers(db, {
     q: url.searchParams.get("q") || "",

@@ -117,6 +117,9 @@ export const ROUTE_ACTIONS = {
   "POST /api/settings":                        "settings:write",
   "POST /api/settings/admin-password":         "settings:change-password",
   "POST /api/settings/web-port":               "settings:change-port",
+  "GET /api/settings/iam/policies":            "settings:read",
+  "PUT /api/settings/iam/policy":              "settings:write",
+  "POST /api/settings/iam/policy/test":        "settings:read",
   "POST /api/settings/public-directory":       "settings:write",
   "POST /api/settings/public-directory/claim": "settings:write",
 
