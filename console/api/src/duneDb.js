@@ -3634,17 +3634,23 @@ export async function listStorage(db) {
              coalesce(max(inv.max_item_count), 0)::int as max_item_count,
              coalesce(max(inv.max_item_volume), 0)::real as max_item_volume,
              coalesce(sum(coalesce(i.volume_override, 0)), 0)::real as current_volume,
-             coalesce(max(ps.character_name), '') as owner_name,
-             'placeable' as type
+             coalesce(max(owner_lat.character_name), '') as owner_name,
+              'placeable' as type
       from dune.placeables p
       left join dune.actors a on a.id = p.id
       left join dune.permission_actor pa on pa.actor_id = p.id
       left join dune.inventories inv on inv.actor_id = p.id
       left join dune.items i on i.inventory_id = inv.id
       left join dune.actor_fgl_entities afe on afe.entity_id = p.owner_entity_id
-      left join dune.permission_actor_rank par on par.permission_actor_id = afe.actor_id
-      left join dune.actors player_a on player_a.id = par.player_id
-      left join dune.player_state ps on ps.account_id = player_a.owner_account_id
+      left join lateral (
+        select ps2.character_name
+        from dune.permission_actor_rank par2
+        join dune.actors player_a2 on player_a2.id = par2.player_id
+        join dune.player_state ps2 on ps2.account_id = player_a2.owner_account_id
+        where par2.permission_actor_id = afe.actor_id
+        order by par2.rank asc, ps2.character_name asc
+        limit 1
+      ) owner_lat on true
       where p.building_type in ('SpiceSilo_Placeable','GenericContainer_Placeable','StorageContainer_Placeable','MediumStorageContainer_Placeable','Developer_StorageContainer_Placeable')
         and p.is_hologram = false and p.owner_entity_id is not null and p.owner_entity_id != 0
       group by p.id, p.building_type, a.map
@@ -3682,7 +3688,7 @@ export async function listStorage(db) {
              coalesce(max(inv.max_item_count), 0)::int as max_item_count,
              coalesce(max(inv.max_item_volume), 0)::real as max_item_volume,
              coalesce(sum(coalesce(i.volume_override, 0)), 0)::real as current_volume,
-             coalesce(max(ps.character_name), '') as owner_name,
+             coalesce(max(owner_lat.character_name), '') as owner_name,
              (select vm2.template_id from dune.vehicle_modules vm2 where vm2.vehicle_id = a.id and vm2.template_id ilike '%inventory%' limit 1) as inventory_module_id,
              'vehicle' as type
       from dune.actors a
@@ -3690,9 +3696,15 @@ export async function listStorage(db) {
       left join dune.permission_actor pa on pa.actor_id = a.id
       left join dune.inventories inv on inv.actor_id = a.id
       left join dune.items i on i.inventory_id = inv.id
-      left join dune.permission_actor_rank par on par.permission_actor_id = a.id
-      left join dune.actors player_a on player_a.id = par.player_id
-      left join dune.player_state ps on ps.account_id = player_a.owner_account_id
+      left join lateral (
+        select ps2.character_name
+        from dune.permission_actor_rank par2
+        join dune.actors player_a2 on player_a2.id = par2.player_id
+        join dune.player_state ps2 on ps2.account_id = player_a2.owner_account_id
+        where par2.permission_actor_id = a.id
+        order by par2.rank asc, ps2.character_name asc
+        limit 1
+      ) owner_lat on true
       where a.id is not null
       group by a.id, a.map
       order by a.id`);

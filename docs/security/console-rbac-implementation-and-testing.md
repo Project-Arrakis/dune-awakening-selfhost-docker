@@ -2,8 +2,9 @@
 
 **Status:** Design/implementation-and-testing plan. **Mechanism decision made
 (2026-08-06): B — bot relay via signed handoff.** Phase 2 shipped 2026-08-06
-(owner-tier Discord OAuth sign-in behind a fail-closed allowlist; role-mapped
-tiers and route gating remain Phase 3/4).
+(owner-tier Discord OAuth sign-in behind a fail-closed allowlist).
+Phase 3 shipped 2026-08-07 (signed HMAC handoff verifier, bot `resolveOAuthTier`
+integration with Phase 2 fallback; `handoff.js` + config; route gating remains Phase 4).
 **Authorized:** 2026-08-06 (user-directed workstream: implement across all repos
 except this one; for this repo, produce this document first).
 **Cross-repo companion work already landed:** `arrakis-control-panel` commit
