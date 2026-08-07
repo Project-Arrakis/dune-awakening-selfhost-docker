@@ -1361,6 +1361,7 @@ body.debug .technical-details { display: block; }
 .player-status-cell { display: inline-flex; align-items: center; gap: 7px; font-weight: 700; }
 .player-status-cell.online { color: var(--success-text); }
 .player-status-cell.offline { color: var(--danger-text); }
+.player-status-cell.banned { color: var(--danger-text); font-weight: 800; }
 .key-value-item .player-status-cell,
 .key-value-item .player-status-cell span { font-size: inherit; }
 .key-value-item .player-status-cell.online,

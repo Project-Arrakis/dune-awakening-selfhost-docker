@@ -52,6 +52,7 @@ import { calculateAlwaysOnHostMemorySafety } from "./services/hostMemorySafety.j
 import { parseEffectiveGuildMemberLimit } from "./services/guildSettings.js";
 import { parseEffectivePermissionLimit } from "./services/permissionSettings.js";
 import { flushBaseRefillQueues } from "./services/baseRefillFlush.js";
+import { banPlayer, bannedFlsIds, createPlayerBanEnforcer, playerBanFor, unbanPlayer } from "./services/playerBans.js";
 
 const config = loadConfig();
 const auth = createAuth(config);
@@ -110,6 +111,12 @@ const autoRefillWaterScheduler = createAutoRefillWaterScheduler({
   duneDb,
   failureBackoffMs: BACKGROUND_SCAN_FAILURE_BACKOFF_MS
 });
+const playerBanEnforcer = createPlayerBanEnforcer({
+  config,
+  getDb: () => db,
+  duneDb,
+  failureBackoffMs: BACKGROUND_SCAN_FAILURE_BACKOFF_MS
+});
 
 process.on("unhandledRejection", (error) => {
   console.error(`Unhandled background rejection: ${redact(error?.message || error)}`);
@@ -153,6 +160,7 @@ createServer(async (req, res) => {
 });
 
 setInterval(() => {
+  runBackgroundTick("Player ban enforcement", () => playerBanEnforcer.tick());
   runBackgroundTick("Care Package auto-grant", carePackageAutoTick);
   runBackgroundTick("Message of the Day", messageOfTheDayAutoTick);
   runBackgroundTick("Player announcements", playerAnnouncementsAutoTick);
@@ -492,14 +500,16 @@ async function handleApi(req, res) {
     pageSize: url.searchParams.get("pageSize") || 50,
     status: url.searchParams.get("status") || "all",
     sortColumn: url.searchParams.get("sortColumn") || "character_name",
-    sortDirection: url.searchParams.get("sortDirection") || "asc"
+    sortDirection: url.searchParams.get("sortDirection") || "asc",
+    bannedFlsIds: bannedFlsIds(config.repoRoot)
   }));
   if (path === "/api/players/online") return dbJson(res, () => duneDb.listPlayers(db, {
     status: "online",
     page: url.searchParams.get("page") || 0,
-    pageSize: url.searchParams.get("pageSize") || 200
+    pageSize: url.searchParams.get("pageSize") || 200,
+    bannedFlsIds: bannedFlsIds(config.repoRoot)
   }));
-  if (path === "/api/players/search") return dbJson(res, () => duneDb.listPlayers(db, { q: url.searchParams.get("q") || "" }));
+  if (path === "/api/players/search") return dbJson(res, () => duneDb.listPlayers(db, { q: url.searchParams.get("q") || "", bannedFlsIds: bannedFlsIds(config.repoRoot) }));
   if (path === "/api/guilds") return dbJson(res, () => duneDb.listGuilds(db, {
     q: url.searchParams.get("q") || "",
     page: url.searchParams.get("page") || 0,
@@ -598,6 +608,7 @@ async function handleApi(req, res) {
   if (path.match(/^\/api\/players\/[^/]+\/set-skill-module$/) && req.method === "POST") return playerTask(req, res, path, "adminSetSkillModule");
   if (path.match(/^\/api\/players\/[^/]+\/refill-water$/) && req.method === "POST") return playerTask(req, res, path, "adminRefillWater");
   if (path.match(/^\/api\/players\/[^/]+\/kick$/) && req.method === "POST") return playerTask(req, res, path, "adminKick");
+  if (path.match(/^\/api\/players\/[^/]+\/ban$/)) return playerBanRoute(req, res, path);
   if (path.match(/^\/api\/players\/[^/]+\/repair-login-queue$/) && req.method === "POST") return playerTask(req, res, path, "adminRepairLoginQueue", "REPAIR LOGIN QUEUE");
   if (path === "/api/players/kick-all-online" && req.method === "POST") return confirmedTask(req, res, "admin", "adminKickAllOnline", {}, "KICK ALL ONLINE PLAYERS");
   if (path.match(/^\/api\/players\/[^/]+\/teleport$/) && req.method === "POST") return playerTask(req, res, path, "adminTeleport");
@@ -639,7 +650,7 @@ async function handleApi(req, res) {
   if (path.match(/^\/api\/players\/[^/]+\/events$/)) return dbPlayerUnsupported(res, path, "events");
   if (path.match(/^\/api\/players\/[^/]+\/stats$/)) return dbPlayerUnsupported(res, path, "stats");
   if (path.match(/^\/api\/players\/[^/]+\/history$/)) return dbPlayerUnsupported(res, path, "history");
-  if (path.match(/^\/api\/players\/[^/]+$/)) return dbPlayerRoute(res, path, duneDb.playerProfile);
+  if (path.match(/^\/api\/players\/[^/]+$/)) return playerProfileRoute(res, path);
 
   if (path === "/api/storage") return dbJson(res, () => duneDb.listStorage(db));
   if (path.match(/^\/api\/storage\/[^/]+$/)) return dbJson(res, async () => ({ storage: (await duneDb.listStorage(db)).rows.find((row) => String(row.id) === decodeURIComponent(path.split("/")[3])) || null }));
@@ -1804,6 +1815,65 @@ async function playerTask(req, res, path, operation, phrase = "") {
   if (!applyMutationRateLimit(req, res, `players.${operation}`)) return;
   const playerId = decodeURIComponent(path.split("/")[3]);
   return task(req, res, "admin", operation, { ...body, playerId });
+}
+
+async function playerIdentityForBan(playerId) {
+  const result = await duneDb.listPlayers(db, { q: String(playerId), page: 0, pageSize: 10, includeTotals: false });
+  const player = (result.rows || []).find((row) => String(row.actor_id) === String(playerId));
+  if (!player) throw Object.assign(new Error("Player not found."), { statusCode: 404 });
+  if (!player.fls_id) throw Object.assign(new Error("This player has no stable FLS account ID yet. Ask them to connect once before banning them."), { statusCode: 409 });
+  return player;
+}
+
+async function playerProfileRoute(res, path) {
+  const playerId = decodeURIComponent(path.split("/")[3]);
+  return dbJson(res, async () => {
+    const profile = await duneDb.playerProfile(db, playerId);
+    const fallbackIdentity = profile.player || {};
+    const identity = fallbackIdentity.fls_id ? fallbackIdentity : await playerIdentityForBan(playerId).catch(() => fallbackIdentity);
+    const ban = playerBanFor(config.repoRoot, identity);
+    profile.player = { ...profile.player, is_banned: Boolean(ban), ban: ban || null };
+    return profile;
+  });
+}
+
+async function playerBanRoute(req, res, path) {
+  if (!["GET", "POST", "DELETE"].includes(req.method || "GET")) return json(res, 405, { error: "Method not allowed" });
+  if (req.method !== "GET" && !applyMutationRateLimit(req, res, `players.${req.method === "POST" ? "ban" : "unban"}`)) return;
+  const playerId = decodeURIComponent(path.split("/")[3]);
+  try {
+    const player = await playerIdentityForBan(playerId);
+    const existing = playerBanFor(config.repoRoot, player);
+    if (req.method === "GET") return json(res, 200, { ok: true, banned: Boolean(existing), ban: existing });
+
+    if (req.method === "DELETE") {
+      const result = unbanPlayer(config.repoRoot, player.fls_id);
+      audit(config, req, "players.unban", { playerId, flsId: player.fls_id, characterName: player.character_name, wasBanned: result.wasBanned });
+      return json(res, 200, { ...result, banned: false });
+    }
+
+    const body = await readJson(req);
+    if (body.confirmation !== "BAN PLAYER") return json(res, 400, { error: "Confirmation phrase required: BAN PLAYER" });
+    const result = banPlayer(config.repoRoot, player, { reason: body.reason });
+    let enforcement = { enforced: false, reason: "offline" };
+    if (String(player.actual_online_status || player.online_status || "").toLowerCase() === "online") {
+      enforcement = await playerBanEnforcer.enforcePlayer(player);
+    }
+    audit(config, req, "players.ban", {
+      playerId,
+      flsId: player.fls_id,
+      accountId: player.account_id,
+      characterName: player.character_name,
+      reason: result.ban.reason,
+      alreadyBanned: result.alreadyBanned,
+      enforcement: enforcement.enforced
+    });
+    return json(res, 200, { ...result, banned: true, enforcement });
+  } catch (error) {
+    const payload = apiErrorPayload(error, 400);
+    audit(config, req, req.method === "DELETE" ? "players.unban" : "players.ban", { playerId, ok: false, error: payload.body.error });
+    return json(res, payload.status, payload.body);
+  }
 }
 
 async function carePackageConfigRoute(req, res) {

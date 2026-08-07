@@ -20,7 +20,7 @@ type PlayersPanelProps = {
   renderCharacterAdmin: (props: CharacterAdminRenderProps) => ReactNode;
 };
 
-type PlayerStatusFilter = "all" | "online" | "offline";
+type PlayerStatusFilter = "all" | "online" | "offline" | "banned";
 
 const PLAYERS_AUTO_REFRESH_MS = 10_000;
 const PLAYERS_PAGE_SIZES = [25, 50, 100, 200] as const;
@@ -140,7 +140,9 @@ export function PlayersPanel({ onError, renderCharacterAdmin }: PlayersPanelProp
     ? "No players are currently online."
     : playerFilter === "offline"
       ? "No offline players were found."
-      : "No players have been found yet.";
+      : playerFilter === "banned"
+        ? "No banned players were found."
+        : "No players have been found yet.";
 
   const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
   const rangeStart = totalCount === 0 ? 0 : page * pageSize + 1;
@@ -174,6 +176,7 @@ export function PlayersPanel({ onError, renderCharacterAdmin }: PlayersPanelProp
               <option value="all">All Players</option>
               <option value="online">Online</option>
               <option value="offline">Offline</option>
+              <option value="banned">Banned</option>
             </select>
           </label>
           <button onClick={() => void load({ q: submittedQ, page, pageSize, status: playerFilter, sortColumn, sortDirection })}>Refresh</button>
@@ -230,7 +233,12 @@ export function PlayersPanel({ onError, renderCharacterAdmin }: PlayersPanelProp
         dbPlayerId,
         actionPlayerId,
         playerName: String(selected.character_name || actionPlayerId || dbPlayerId || "Selected player"),
-        onRefresh: () => { void open(selected); },
+        onRefresh: () => {
+          void Promise.all([
+            open(selected),
+            load({ q: submittedQ, page, pageSize, status: playerFilter, sortColumn, sortDirection }, { silent: true })
+          ]);
+        },
         onClose: () => setSelected(null)
       })}
     </section>
@@ -238,7 +246,7 @@ export function PlayersPanel({ onError, renderCharacterAdmin }: PlayersPanelProp
 }
 
 function formatLastOnline(row: Record<string, unknown>) {
-  if (String(row.online_status || "").toLowerCase() === "online") return "Currently Active";
+  if (String(row.actual_online_status || row.online_status || "").toLowerCase() === "online") return "Currently Active";
   const date = parseLastOnline(row.last_seen);
   if (!date) return "Unavailable";
   const absolute = new Intl.DateTimeFormat(undefined, {

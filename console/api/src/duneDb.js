@@ -1403,7 +1403,7 @@ const PLAYER_SORT_COLUMNS = {
 // battlegroups. It is an internal service actor, not an administrable player.
 const INTERNAL_GM_PLAYER_PAWN_ID = "900000103";
 
-export async function listPlayers(db, { status = "all", q = "", page = 0, pageSize = 50, sortColumn = "character_name", sortDirection = "asc", includeTotals = true } = {}) {
+export async function listPlayers(db, { status = "all", q = "", page = 0, pageSize = 50, sortColumn = "character_name", sortDirection = "asc", includeTotals = true, bannedFlsIds = [] } = {}) {
   if (!(await tableExists(db, "actors")) || !(await tableExists(db, "player_state"))) {
     return { ...unsupported("players", ["dune.actors", "dune.player_state"]), totalCount: 0, totalPlayers: 0 };
   }
@@ -1477,15 +1477,24 @@ export async function listPlayers(db, { status = "all", q = "", page = 0, pageSi
   }
   baseWhere += currentPawnFilter;
 
-  const values = [];
+  const normalizedBannedFlsIds = [...new Set((Array.isArray(bannedFlsIds) ? bannedFlsIds : [])
+    .map((value) => String(value || "").trim().toLowerCase())
+    .filter((value) => /^[a-f0-9]{15,64}$/.test(value)))]
+    .slice(0, 2000);
+  const values = [normalizedBannedFlsIds];
+  const bannedExpression = `lower(${resolvedFlsId}) = any($1::text[])`;
   let where = baseWhere;
   if (hasOnlineStatus) {
-    if (status === "online") where += " and coalesce(ps.online_status::text, '') = 'Online'";
-    if (status === "offline") where += " and coalesce(ps.online_status::text, '') <> 'Online'";
+    if (status === "online") where += ` and not (${bannedExpression}) and coalesce(ps.online_status::text, '') = 'Online'`;
+    if (status === "offline") where += ` and not (${bannedExpression}) and coalesce(ps.online_status::text, '') <> 'Online'`;
   }
+  if (status === "banned") where += ` and (${bannedExpression})`;
   if (q) {
     values.push(`%${q}%`);
-    where += ` and (ps.character_name ilike $${values.length} or ${resolvedFlsId} ilike $${values.length} or a.id::text = $${values.length} or a.owner_account_id::text = $${values.length})`;
+    const fuzzySearchParameter = values.length;
+    values.push(String(q));
+    const exactIdParameter = values.length;
+    where += ` and (ps.character_name ilike $${fuzzySearchParameter} or ${resolvedFlsId} ilike $${fuzzySearchParameter} or a.id::text = $${exactIdParameter} or a.owner_account_id::text = $${exactIdParameter})`;
   }
   values.push(safePageSize, offset);
   const limitParamIndex = values.length - 1;
@@ -1507,7 +1516,11 @@ export async function listPlayers(db, { status = "all", q = "", page = 0, pageSi
              end as action_player_id,
              a.class,
              coalesce(a.map, '') as map,
-             ${hasOnlineStatus ? "coalesce(ps.online_status::text, 'Offline')" : "'Offline'"} as online_status,
+             ${hasOnlineStatus ? "coalesce(ps.online_status::text, 'Offline')" : "'Offline'"} as actual_online_status,
+             case when ${bannedExpression} then 'Banned'
+                  else ${hasOnlineStatus ? "coalesce(ps.online_status::text, 'Offline')" : "'Offline'"}
+             end as online_status,
+             (${bannedExpression}) as is_banned,
              ${loginSessionSelect} as login_session,
              ${lastSeenWithOnlineFallback} as last_seen,
              coalesce(nullif(ps.player_controller_id, 0), nullif(a.owner_account_id, 0), a.id) as dedupe_key,
@@ -1535,7 +1548,9 @@ export async function listPlayers(db, { status = "all", q = "", page = 0, pageSi
              action_player_id,
              class,
              map,
+             actual_online_status,
              online_status,
+             is_banned,
              login_session,
              last_seen
       from player_rows
@@ -1568,7 +1583,7 @@ export async function listPlayers(db, { status = "all", q = "", page = 0, pageSi
     from player_rows`) : null;
 
   return {
-    capabilities: { players: true, status, statusFilterApplied: hasOnlineStatus },
+    capabilities: { players: true, status, statusFilterApplied: hasOnlineStatus, banFilterApplied: true },
     totalCount: result.rows[0] ? Number(result.rows[0].total_count) : 0,
     totalPlayers: totalsResult ? (totalsResult.rows[0] ? Number(totalsResult.rows[0].total_players) : 0) : undefined,
     rows: result.rows
