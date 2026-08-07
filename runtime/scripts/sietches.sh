@@ -443,7 +443,11 @@ sanitize_positive_integer_arg() {
 }
 
 docker_postgres_running() {
-  docker ps --format '{{.Names}}' 2>/dev/null | grep -qx dune-postgres
+  # Do not use grep -q here. With pipefail enabled it may stop reading after
+  # the first match, give `docker ps` SIGPIPE while it is still writing the
+  # remaining container names, and turn a successful check into a transient
+  # failure. Consume the complete listing while keeping the output silent.
+  docker ps --format '{{.Names}}' 2>/dev/null | grep -x dune-postgres >/dev/null
 }
 
 psql_value() {
