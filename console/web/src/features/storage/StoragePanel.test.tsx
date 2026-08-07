@@ -34,7 +34,8 @@ function taskFixture(status: Task["status"]): Task {
     logLines: [],
     startedAt: "2026-07-31T00:00:00Z",
     finishedAt: null,
-    errorMessage: status === "failed" ? "bind failed" : null
+    errorMessage: status === "failed" ? "bind failed" : null,
+    warnings: [],
   };
 }
 
