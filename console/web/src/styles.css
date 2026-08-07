@@ -3339,11 +3339,17 @@ td .inline-action-result-wrap { flex: 1 0 100%; justify-content: flex-start; min
 }
 .spicefield-row-actions { gap: 6px; margin: 0; }
 .spicefield-row-actions button { min-width: 72px; }
-.memory-usage-cell { min-width: 180px; display: grid; grid-template-columns: 1fr auto; gap: 4px 8px; align-items: center; }
-.memory-usage-bar { grid-column: 1 / -1; height: 8px; overflow: hidden; border-radius: 999px; background: rgba(255,255,255,.11); }
-.memory-usage-bar span { display: block; height: 100%; background: linear-gradient(90deg, #6f8f5f, #c68b4a); }
+.memory-usage-cell { min-width: 200px; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 5px 9px; align-items: center; }
+.memory-usage-bar { grid-column: 1 / -1; display: flex; height: 8px; overflow: hidden; border-radius: 999px; background: rgba(255,255,255,.11); }
+.memory-usage-zone { display: block; height: 100%; overflow: hidden; }
+.memory-usage-ram-zone { background: rgba(255,255,255,.035); }
+.memory-usage-swap-zone { background: rgba(80,190,120,.2); box-shadow: inset 1px 0 rgba(121,217,156,.72); }
+.memory-usage-bar .memory-usage-ram { display: block; height: 100%; background: linear-gradient(90deg, #6f8f5f, #c68b4a); }
+.memory-usage-bar .memory-usage-swap { display: block; height: 100%; background: linear-gradient(90deg, #3b9e68, #79d99c); }
 .memory-usage-cell strong { color: #ead8b8; }
-.memory-usage-cell span:last-child { color: #b9a98f; font-size: .84rem; }
+.memory-usage-detail { min-width: 0; display: inline-flex; justify-content: flex-end; gap: 4px; flex-wrap: wrap; color: #b9a98f; font-size: .84rem; line-height: 1.25; text-align: right; }
+.memory-usage-detail .memory-swap-used { color: #79d99c; font-weight: 800; white-space: nowrap; }
+.memory-usage-detail .memory-swap-consumed { color: #8fba9e; white-space: nowrap; }
 .advanced-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); gap: 16px; }
 .raw-editor-card { border: 1px solid rgba(214, 185, 140, .16); background: rgba(0,0,0,.14); border-radius: 8px; padding: 12px; display: grid; gap: 10px; }
 .raw-editor-card textarea { min-height: 260px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace; font-size: .86rem; }
