@@ -5,7 +5,7 @@ import { spawn } from "node:child_process";
 import { existsSync, writeFileSync, chmodSync, mkdirSync, createReadStream, readFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { loadConfig, publicConfig, parseAllowedIps } from "./config.js";
-import { createAuth, setSessionCookie, clearSessionCookie, json, withSecurityHeaders } from "./auth.js";
+import { createAuth, setSessionCookie, clearSessionCookie, json, html, withSecurityHeaders, parseCookies, sessionCookieValue } from "./auth.js";
 import { createLoginRateLimiter, createMutationRateLimiter } from "./rateLimit.js";
 import { createBridgeRateLimiter } from "./bridgeRateLimit.js";
 import { buildSelfUpdateHelperDockerArgs, detectDockerSocketGid, TaskManager, publicTask } from "./tasks.js";
@@ -32,6 +32,7 @@ import { updateEnvFileValue as updateEnvValue } from "./services/envFile.js";
 import { funcomAuthMismatchDetected, matchingFuncomAuthLines, saveFuncomTokenValue as writeFuncomToken, validDockerSince } from "./services/funcomAuth.js";
 import { readCharacterTransferSettings, saveCharacterTransferSettings } from "./services/characterTransferSettings.js";
 import { handleDiscordAdapterRoute, isDiscordAdapterRoute } from "./integrations/discord/routes.js";
+import { createPendingStateStore, exchangeDiscordAuthCode, fetchDiscordIdentity, resolveBootstrapTier, buildAuthorizeUrl, oauthStateCookie, clearOAuthStateCookie } from "./integrations/discord/oauth.js";
 import { discordAdapterEnabled } from "./integrations/discord/adapter.js";
 import { initializeDiscordAdapterSchema } from "./integrations/discord/schema.js";
 import { liveItemGrantOk, liveItemGrantWarning } from "./grantResults.js";
@@ -53,6 +54,7 @@ const auth = createAuth(config);
 const loginRateLimiter = createLoginRateLimiter();
 const mutationRateLimiter = createMutationRateLimiter();
 const bridgeRateLimiter = createBridgeRateLimiter();
+const oauthPendingStates = createPendingStateStore();
 const tasks = new TaskManager(config);
 let db = createDb(config);
 const publicDirectory = createPublicDirectoryReporter(config, { getDb: () => db });
@@ -288,6 +290,44 @@ async function handleApi(req, res) {
     clearSessionCookie(res, config);
     audit(config, req, "auth.logout");
     return json(res, 200, { ok: true });
+  }
+  if (path === "/api/auth/me") {
+    const session = auth.requireAuth(req, res);
+    if (!session) return;
+    return json(res, 200, {
+      user: {
+        id: session.userId || "local-admin",
+        username: session.username || "Admin",
+        tier: session.tier || "owner",
+        guildId: session.guildId || ""
+      },
+      capabilities: []
+    });
+  }
+  if (path === "/api/auth/discord/start" && req.method === "GET") {
+    if (!config.discordOAuthConfigured) {
+      return json(res, 404, { error: "Discord sign-in is not configured for this console. Sign in with the admin password." });
+    }
+    const rate = loginRateLimiter.check(loginRateLimitKey(req));
+    if (!rate.allowed) {
+      return json(res, 429, { error: "Too many sign-in attempts. Please wait a few minutes, then try again." }, { "retry-after": String(rate.retryAfterSeconds) });
+    }
+    const state = oauthPendingStates.issue();
+    if (!state) {
+      return json(res, 429, { error: "Too many Discord sign-in sessions in progress. Try again in a moment." });
+    }
+    res.setHeader("Set-Cookie", oauthStateCookie(state, config.secureCookies));
+    const authorizeUrl = buildAuthorizeUrl({ clientId: config.discordOAuthClientId, redirectUri: config.discordOAuthRedirectUri, state });
+    res.writeHead(302, { Location: authorizeUrl });
+    res.end();
+    audit(config, sanitizedUrl(req, "/api/auth/discord/start"), "auth.oauth.start", { ok: true });
+    return;
+  }
+  if (path === "/api/auth/discord/callback") {
+    if (!config.discordOAuthConfigured) {
+      return json(res, 404, { error: "Discord sign-in is not configured for this console. Sign in with the admin password." });
+    }
+    return handleOAuthCallback(req, res);
   }
   if (isDiscordAdapterRoute(path)) {
     return handleDiscordAdapterRoute({ req, res, path, config, readJson, json, db });
@@ -2734,6 +2774,73 @@ function mockCommand(operation) {
 
 function loginRateLimitKey(req) {
   return req.socket?.remoteAddress || "unknown";
+}
+
+// Strips query strings before an audit write so the Discord OAuth `code` and
+// `state` params (present in the browser redirect URL) never reach the audit
+// log. server.js's audit() logs req.url verbatim otherwise.
+function sanitizedUrl(req, path) {
+  return { ...req, url: path };
+}
+
+function oauthReturnPage() {
+  return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>Sign-in complete</title></head><body><noscript><a href="/">Return to the console</a></noscript><script>window.location.replace("/");</script></body></html>`;
+}
+
+async function handleOAuthCallback(req, res) {
+  const url = new URL(req.url || "", "http://localhost");
+  const code = url.searchParams.get("code") || "";
+  const state = url.searchParams.get("state") || "";
+  const cookieState = parseCookies(req.headers.cookie || "").get("discord_oauth_state") || "";
+  const rateKey = loginRateLimitKey(req);
+  const rate = loginRateLimiter.check(rateKey);
+  if (!rate.allowed) {
+    return json(res, 429, { error: "Too many sign-in attempts. Please wait a few minutes, then try again." }, { "retry-after": String(rate.retryAfterSeconds) });
+  }
+  const consumed = oauthPendingStates.consume(state, cookieState);
+  if (!config.discordOAuthAllowOwnerBootstrap) {
+    loginRateLimiter.recordFailure(rateKey);
+    audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: false, reason: "bootstrap_disabled" });
+    return json(res, 403, { error: "Discord sign-in is enabled but owner bootstrap is disabled. Sign in with the admin password." });
+  }
+  if (!consumed.ok) {
+    loginRateLimiter.recordFailure(rateKey);
+    audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: false, reason: consumed.reason });
+    return json(res, 400, { error: "Discord sign-in could not be completed. The request was invalid or expired — start again." });
+  }
+  let token;
+  let identity;
+  try {
+    token = await exchangeDiscordAuthCode({
+      code,
+      redirectUri: config.discordOAuthRedirectUri,
+      clientId: config.discordOAuthClientId,
+      clientSecret: config.discordOAuthClientSecret,
+      apiBaseUrl: config.discordOAuthApiBaseUrl
+    });
+    identity = await fetchDiscordIdentity({ accessToken: token.access_token, apiBaseUrl: config.discordOAuthApiBaseUrl });
+  } catch (error) {
+    loginRateLimiter.recordFailure(rateKey);
+    audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: false, reason: error.code || "oauth_error" });
+    const status = error.statusCode && error.statusCode >= 400 && error.statusCode < 600 ? error.statusCode : 400;
+    return json(res, status, { error: "Discord sign-in failed. Please try again, or sign in with your password." });
+  }
+  const tier = resolveBootstrapTier({
+    userId: identity.userId,
+    guildIds: identity.guildIds,
+    allowOwnerBootstrap: config.discordOAuthAllowOwnerBootstrap,
+    homeGuildId: config.discordHomeGuildId,
+    ownerAllowlist: config.discordOAuthOwnerAllowlist
+  });
+  if (!tier) {
+    loginRateLimiter.recordFailure(rateKey);
+    audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: false, reason: "not_authorized" });
+    return json(res, 403, { error: "Discord sign-in succeeded, but this account is not authorized to sign in to this console." });
+  }
+  const session = auth.makeSession({ tier, userId: identity.userId, username: identity.username, guildId: config.discordHomeGuildId });
+  res.setHeader("Set-Cookie", [sessionCookieValue(session, config), clearOAuthStateCookie(config.secureCookies)]);
+  audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: true, tier });
+  return html(res, 200, oauthReturnPage());
 }
 
 function applyMutationRateLimit(req, res, scope) {

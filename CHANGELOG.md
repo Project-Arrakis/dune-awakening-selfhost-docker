@@ -83,6 +83,22 @@ Keep a Changelog style, grouped by upstream base version, newest first.
   (`"placeable"` or `"vehicle"`).
 - Added `group` and `volume` fields to 75 items in `runtime/data/admin-items.json`
   (21 refined resources, 54 components) for use by the fill-item endpoint.
+- Console RBAC Phase 2 (issue #151): optional Discord OAuth sign-in for the
+  Web Console. New `GET /api/auth/discord/start` + `/api/auth/discord/callback`
+  routes, `/api/auth/me` identity endpoint, tiered sessions
+  (`owner`/`admin`/`moderator`/`player`) on the existing HMAC session cookie,
+  and a Discord sign-in button on the login screen when configured. Fully
+  opt-in — with no `DISCORD_OAUTH_*`/`DISCORD_HOME_GUILD_ID` env vars set,
+  the console behaves exactly as before (password sign-in, single owner
+  session). Owner-tier bootstrap is fail-closed: requires
+  `DISCORD_OAUTH_ALLOW_OWNER_BOOTSTRAP=1`, home-guild membership, and the
+  user's snowflake in `DISCORD_OAUTH_OWNER_ALLOWLIST`; an empty allowlist
+  denies all Discord owner sessions, with the admin password remaining the
+  owner fallback. `DISCORD_OAUTH_CLIENT_SECRET` may live in
+  `runtime/secrets/discord-oauth-client-secret.txt` (never auto-created).
+  Implemented behind the plan in
+  `docs/security/console-rbac-implementation-and-testing.md` (Phase 2 of 5);
+  role-mapped tiers await Phase 3's signed bot handoff (#135).
 
 ### Fixed
 
