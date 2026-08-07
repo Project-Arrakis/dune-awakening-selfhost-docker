@@ -3239,20 +3239,20 @@ async function handleDiscordTokenExchange(req, res) {
   }
 
   const allowedUserId = String(process.env.ATRIUM_ALLOWED_DISCORD_USER_ID || "").trim();
-  if (allowedUserId && identity.id !== allowedUserId) {
-    audit(config, req, "auth.oauth.exchange", { ok: false, reason: "not_authorized", userId: identity.id });
+  if (allowedUserId && identity.userId !== allowedUserId) {
+    audit(config, req, "auth.oauth.exchange", { ok: false, reason: "not_authorized", userId: identity.userId });
     return json(res, 403, { error: "Discord account not authorized for the Atrium exchange." });
   }
 
   const session = auth.makeSession({
     tier: "owner",
-    userId: identity.id,
-    username: identity.username || identity.id,
+    userId: identity.userId,
+    username: identity.username,
     guildId: config.discordHomeGuildId
   });
 
   res.setHeader("Set-Cookie", sessionCookieValue(session, config));
-  audit(config, req, "auth.oauth.exchange", { ok: true, userId: identity.id });
+  audit(config, req, "auth.oauth.exchange", { ok: true, userId: identity.userId });
   return json(res, 200, { ok: true, authenticated: true, csrfToken: session.csrf });
 }
 
