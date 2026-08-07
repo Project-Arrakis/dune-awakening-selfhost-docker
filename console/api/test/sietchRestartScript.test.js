@@ -145,6 +145,17 @@ test("autoscaler browser healing pauses during coordinated Sietch topology chang
   );
 });
 
+test("autoscaler browser healing ignores READY markers from previous core server processes", () => {
+  const coreReady = autoscalerSource.match(/core_maps_ready_for_browser_heal\(\) \{([\s\S]*?)\n\}/)?.[1] || "";
+  assert.match(coreReady, /\{\{\.State\.StartedAt\}\}/);
+  assert.match(coreReady, /docker logs --since "\$started_at"/);
+  assert.match(autoscalerSource, /AUTOSCALER_STARTED_AT="\$\(date \+%s\)"/);
+  assert.match(
+    autoscalerSource,
+    /now - AUTOSCALER_STARTED_AT[\s\S]*?director_heal_clear stale_since[\s\S]*?director_heal_clear core_ready_since[\s\S]*?return 0/,
+  );
+});
+
 test("scaling down removes inactive Sietch rows before publishing topology", () => {
   const deleteAt = reconcileSource.indexOf("delete from dune.world_partition");
   const refreshAt = reconcileSource.indexOf("refresh_survival_browser_state");
