@@ -146,6 +146,23 @@ createServer(async (req, res) => {
       await handleApi(req, res);
       return;
     }
+    if (req.url?.startsWith("/atrium/")) {
+      const allowedUser = String(process.env.ATRIUM_ALLOWED_USER_ID || "").trim();
+      if (allowedUser) {
+        const session = auth.readSession(req);
+        if (!session) {
+          json(res, 401, { error: "Authentication required. Sign in to the console first." });
+          return;
+        }
+        if (session.userId !== allowedUser) {
+          res.writeHead(403, { "Content-Type": "text/html; charset=utf-8" });
+          res.end("<!DOCTYPE html><html><head><meta charset=\"UTF-8\"><title>Access Denied</title><style>body{font-family:-apple-system,sans-serif;background:#0d0f12;color:#f3efe7;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;text-align:center;padding:20px}h1{color:#e8a84c;font-size:1.5rem}p{color:#ad9f89;margin-top:8px}</style></head><body><div><h1>Access Denied</h1><p>This page is restricted. Contact the Discord server administration to request access.</p></div></body></html>");
+          return;
+        }
+      }
+      serveStatic(config, req, res);
+      return;
+    }
     serveStatic(config, req, res);
   } catch (error) {
     const payload = apiErrorPayload(error);
