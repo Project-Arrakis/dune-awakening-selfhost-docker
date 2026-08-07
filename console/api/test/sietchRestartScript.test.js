@@ -34,7 +34,10 @@ function runFixture(row, args) {
     'if [ "${1:-}" = "ps" ] && [ "${2:-}" = "-a" ]; then',
     '  printf "%s\\n" dune-server-survival-1-31',
     'elif [ "${1:-}" = "ps" ]; then',
+    // Keep writing after the first matching name. A grep -q consumer exits
+    // early and makes this pipe fail with SIGPIPE under `set -o pipefail`.
     '  printf "%s\\n" dune-postgres dune-server-survival-1 dune-server-survival-1-31',
+    '  for i in {1..4096}; do printf "mock-container-%s\\n" "$i"; done',
     'elif [ "${1:-}" = "exec" ]; then',
     '  printf "%s\\n" "$MOCK_PARTITION_ROW"',
     'fi'
