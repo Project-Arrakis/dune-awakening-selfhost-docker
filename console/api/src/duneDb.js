@@ -3736,7 +3736,38 @@ export async function listStorage(db) {
 }
 
 export async function storageItems(db, id) {
-  return playerInventory(db, id);
+  if (!(await tableExists(db, "items")) || !(await tableExists(db, "inventories"))) return unsupported("storage-items", ["dune.items", "dune.inventories"]);
+
+  const inv = await db.query(`
+    select id, max_item_count, max_item_volume
+    from dune.inventories
+    where actor_id = $1
+    order by id limit 1`, [intParam(id, "storage id", 1)]);
+
+  const invId = inv.rows[0]?.id;
+  if (!invId) return { capabilities: { storageItems: false }, rows: [], reason: "No inventory found for the selected storage" };
+  const maxSlots = Number(inv.rows[0]?.max_item_count) || 0;
+  const maxVolume = Number(inv.rows[0]?.max_item_volume) || 0;
+
+  const result = await db.query(`
+    select i.id,
+           i.template_id,
+           i.stack_size,
+           i.quality_level,
+           i.position_index,
+           i.inventory_id,
+           coalesce((i.stats->'FItemStackAndDurabilityStats'->1->>'CurrentDurability'), null) as current_durability,
+           coalesce(
+             nullif((i.stats->'FItemStackAndDurabilityStats'->1->>'MaxDurability')::numeric, 0),
+             nullif((i.stats->'FItemStackAndDurabilityStats'->1->>'DecayedMaxDurability')::numeric, 0),
+             null
+           ) as max_durability,
+           i.stats
+    from dune.items i
+    where i.inventory_id = $1
+    order by i.position_index, i.id`, [invId]);
+
+  return { capabilities: { storageItems: true }, rows: result.rows, maxSlots, maxVolume };
 }
 
 export async function storageCapabilities(db) {
@@ -5630,6 +5661,43 @@ export async function fillItemToStorage(db, repoRoot, storageId, { itemName = ""
 // resolution mirrors portalGeneratorFuel so both agree on which placeables
 // belong to a base, and classification is the same explicit allowlist — an
 // unknown placeable is left out entirely rather than assumed to burn oil.
+export async function removeItemsFromStorage(db, storageId, { itemIds = [] } = {}) {
+  await requireCapability(await supportsInventoryDelete(db), "Storage item removal requires dune.items, dune.inventories, and dune.delete_item(bigint).");
+  const target = intParam(storageId, "storage id", 1);
+  const safeIds = [...new Set((Array.isArray(itemIds) ? itemIds : []).map((id) => intParam(id, "item id", 1)))];
+  if (!safeIds.length) throw new Error("At least one item ID is required");
+
+  return db.transaction(async (tx) => {
+    const storage = await tx.query(`
+      select id, actor_id
+      from dune.inventories
+      where actor_id = $1
+      order by id
+      limit 1
+      for update`, [target]);
+    if (!storage.rows[0]) throw new Error("Storage inventory was not found for the selected storage — if this is a vehicle, it may not have a storage module attached");
+    const inventory = storage.rows[0];
+
+    let removed = 0;
+    for (const itemId of safeIds) {
+      const owned = await tx.query(`
+        select id from dune.items
+        where id = $1 and inventory_id = $2
+        for update`, [itemId, inventory.id]);
+      if (!owned.rows[0]) continue;
+
+      await tx.query("select dune.delete_item($1::bigint)", [itemId]);
+      const stillExists = await tx.query("select exists(select 1 from dune.items where id = $1 and inventory_id = $2) as exists", [itemId, inventory.id]);
+      if (stillExists.rows[0]?.exists) {
+        await tx.query("delete from dune.items where id = $1 and inventory_id = $2", [itemId, inventory.id]);
+      }
+      removed++;
+    }
+
+    return { ok: true, removed, storageId: inventory.actor_id };
+  });
+}
+
 export async function baseGenerators(db, baseId) {
   const target = intParam(baseId, "base id", 1);
   const result = await db.query(`
