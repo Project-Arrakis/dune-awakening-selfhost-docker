@@ -84,22 +84,44 @@ test("capabilitiesForTier returns admin-level caps for admin", () => {
   const caps = capabilitiesForTier("admin");
   assert.ok(caps.includes(CAPABILITIES.STATUS_READ));
   assert.ok(caps.includes(CAPABILITIES.WORLD_READ));
+  assert.ok(caps.includes(CAPABILITIES.WORLD_WRITE));
   assert.ok(caps.includes(CAPABILITIES.LOGS_READ));
   assert.ok(caps.includes(CAPABILITIES.BACKUPS_READ));
+  assert.ok(caps.includes(CAPABILITIES.BACKUPS_WRITE));
   assert.ok(caps.includes(CAPABILITIES.DATABASE_READ));
   assert.ok(caps.includes(CAPABILITIES.UPDATES_READ));
+  assert.ok(caps.includes(CAPABILITIES.UPDATES_WRITE));
+  assert.ok(caps.includes(CAPABILITIES.SERVER_CONTROL));
   assert.ok(caps.includes(CAPABILITIES.ADDONS_READ));
-  assert.ok(!caps.includes(CAPABILITIES.SERVER_CONTROL));
+  assert.ok(caps.includes(CAPABILITIES.ADDONS_WRITE));
+  assert.ok(caps.includes(CAPABILITIES.ADMIN_TOOLS));
+  assert.ok(caps.includes(CAPABILITIES.PLAYER_MUTATE));
+  assert.ok(caps.includes(CAPABILITIES.MAP_WRITE));
   assert.ok(!caps.includes(CAPABILITIES.SETTINGS_WRITE));
-  assert.ok(!caps.includes(CAPABILITIES.ADMIN_TOOLS));
+  assert.ok(!caps.includes(CAPABILITIES.DATABASE_WRITE));
+  assert.ok(!caps.includes(CAPABILITIES.CARE_PACKAGE_GRANT));
+});
+
+test("capabilitiesForTier returns moderation caps for moderator", () => {
+  const caps = capabilitiesForTier("moderator");
+  assert.ok(caps.includes(CAPABILITIES.STATUS_READ));
+  assert.ok(caps.includes(CAPABILITIES.WORLD_READ));
+  assert.ok(caps.includes(CAPABILITIES.LOGS_READ));
+  assert.ok(caps.includes(CAPABILITIES.ADMIN_TOOLS));
+  assert.ok(caps.includes(CAPABILITIES.PLAYER_MUTATE));
+  assert.ok(!caps.includes(CAPABILITIES.WORLD_WRITE));
+  assert.ok(!caps.includes(CAPABILITIES.SERVER_CONTROL));
+  assert.ok(!caps.includes(CAPABILITIES.BACKUPS_READ));
+  assert.ok(!caps.includes(CAPABILITIES.DATABASE_READ));
 });
 
 test("capabilitiesForTier returns read-only caps for player", () => {
   const caps = capabilitiesForTier("player");
   assert.ok(caps.includes(CAPABILITIES.STATUS_READ));
   assert.ok(caps.includes(CAPABILITIES.WORLD_READ));
-  assert.ok(!caps.includes(CAPABILITIES.SERVER_CONTROL));
   assert.ok(!caps.includes(CAPABILITIES.LOGS_READ));
+  assert.ok(!caps.includes(CAPABILITIES.SERVER_CONTROL));
+  assert.ok(!caps.includes(CAPABILITIES.PLAYER_MUTATE));
 });
 
 test("capabilitiesForTier returns empty for invalid tier", () => {
@@ -118,13 +140,33 @@ test("requireConsoleCapability allows owner for every capability", () => {
 test("requireConsoleCapability allows admin for admin-level caps", () => {
   assert.equal(requireConsoleCapability({ tier: "admin" }, CAPABILITIES.STATUS_READ), true);
   assert.equal(requireConsoleCapability({ tier: "admin" }, CAPABILITIES.WORLD_READ), true);
+  assert.equal(requireConsoleCapability({ tier: "admin" }, CAPABILITIES.WORLD_WRITE), true);
   assert.equal(requireConsoleCapability({ tier: "admin" }, CAPABILITIES.LOGS_READ), true);
+  assert.equal(requireConsoleCapability({ tier: "admin" }, CAPABILITIES.SERVER_CONTROL), true);
+  assert.equal(requireConsoleCapability({ tier: "admin" }, CAPABILITIES.PLAYER_MUTATE), true);
+  assert.equal(requireConsoleCapability({ tier: "admin" }, CAPABILITIES.BACKUPS_WRITE), true);
+  assert.equal(requireConsoleCapability({ tier: "admin" }, CAPABILITIES.ADDONS_WRITE), true);
 });
 
-test("requireConsoleCapability denies admin for owner-level caps", () => {
-  assert.equal(requireConsoleCapability({ tier: "admin" }, CAPABILITIES.SERVER_CONTROL), false);
+test("requireConsoleCapability denies admin for owner-only caps", () => {
   assert.equal(requireConsoleCapability({ tier: "admin" }, CAPABILITIES.SETTINGS_WRITE), false);
-  assert.equal(requireConsoleCapability({ tier: "admin" }, CAPABILITIES.ADMIN_TOOLS), false);
+  assert.equal(requireConsoleCapability({ tier: "admin" }, CAPABILITIES.DATABASE_WRITE), false);
+  assert.equal(requireConsoleCapability({ tier: "admin" }, CAPABILITIES.CARE_PACKAGE_GRANT), false);
+});
+
+test("requireConsoleCapability allows moderator for moderator-level caps", () => {
+  assert.equal(requireConsoleCapability({ tier: "moderator" }, CAPABILITIES.STATUS_READ), true);
+  assert.equal(requireConsoleCapability({ tier: "moderator" }, CAPABILITIES.WORLD_READ), true);
+  assert.equal(requireConsoleCapability({ tier: "moderator" }, CAPABILITIES.LOGS_READ), true);
+  assert.equal(requireConsoleCapability({ tier: "moderator" }, CAPABILITIES.ADMIN_TOOLS), true);
+  assert.equal(requireConsoleCapability({ tier: "moderator" }, CAPABILITIES.PLAYER_MUTATE), true);
+});
+
+test("requireConsoleCapability denies moderator for admin-level caps", () => {
+  assert.equal(requireConsoleCapability({ tier: "moderator" }, CAPABILITIES.WORLD_WRITE), false);
+  assert.equal(requireConsoleCapability({ tier: "moderator" }, CAPABILITIES.SERVER_CONTROL), false);
+  assert.equal(requireConsoleCapability({ tier: "moderator" }, CAPABILITIES.BACKUPS_READ), false);
+  assert.equal(requireConsoleCapability({ tier: "moderator" }, CAPABILITIES.DATABASE_READ), false);
 });
 
 test("requireConsoleCapability allows player for read-only caps", () => {
@@ -135,6 +177,7 @@ test("requireConsoleCapability allows player for read-only caps", () => {
 test("requireConsoleCapability denies player for anything beyond read", () => {
   assert.equal(requireConsoleCapability({ tier: "player" }, CAPABILITIES.LOGS_READ), false);
   assert.equal(requireConsoleCapability({ tier: "player" }, CAPABILITIES.SERVER_CONTROL), false);
+  assert.equal(requireConsoleCapability({ tier: "player" }, CAPABILITIES.PLAYER_MUTATE), false);
 });
 
 test("requireConsoleCapability denies invalid session", () => {
