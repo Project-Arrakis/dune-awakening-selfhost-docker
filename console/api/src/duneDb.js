@@ -7780,57 +7780,44 @@ export async function addonOpsResourcesSummary(db, config) {
   if (!(await tableExists(db, "resourcefield_state"))) return emptyResourcesSummary();
 
   // Load sietch display-name overrides (operator-set via "Save Sietch Settings")
-  loadSietchConfig(config.repoRoot);
-
   const deepDesert = await resourcesSectionForDisplayMap(db, config, "DeepDesert");
   const haggaBasin = await resourcesSectionForDisplayMap(db, config, "HaggaBasin");
 
   return { deepDesert, haggaBasin };
 }
 
-let _sietchConfig = null;
-let _sietchConfigLoaded = false;
-
-function loadSietchConfig(repoRoot) {
-  if (_sietchConfigLoaded) return _sietchConfig;
-  _sietchConfigLoaded = true;
-  try {
-    const path = resolve(repoRoot, "runtime/generated/sietch-config.json");
-    if (existsSync(path)) {
-      _sietchConfig = JSON.parse(readFileSync(path, "utf8"));
-      return _sietchConfig;
-    }
-  } catch { /* ignore parse errors, return null */ }
-  return null;
-}
-
-function sietchDisplayName(partitionId, databaseLabel, mapName, dimensionIndex) {
+function sietchDisplayName(partitionId, databaseLabel, displayMap, dimensionIndex, repoRoot) {
   // Prefer the operator-set display_name from sietch-config.json.
-  // This is the same name the Maps tab shows (set via "Save Sietch
-  // Settings" or "sietches set-display" in the console).
-  const cfg = _sietchConfig;
-  if (cfg && cfg.maps) {
-    const mapCfg = cfg.maps[mapName];
-    if (mapCfg) {
-      const dimCfg = mapCfg.dimensions && mapCfg.dimensions[String(dimensionIndex)];
-      if (dimCfg && dimCfg.display_name) return dimCfg.display_name;
-      // Also check top-level per-map display_name
-      if (mapCfg.display_name && String(mapCfg.partition_id) === String(partitionId)) return mapCfg.display_name;
-    }
+  // sietch-config stores under the actual map key (e.g. "Survival_1"),
+  // not the display map name (e.g. "HaggaBasin").
+  const partitionMap = SPICE_MAP_PARTITION_ALIAS[displayMap];
+  if (repoRoot && partitionMap) {
+    try {
+      const cfgPath = resolve(repoRoot, "runtime/generated/sietch-config.json");
+      if (existsSync(cfgPath)) {
+        const cfg = JSON.parse(readFileSync(cfgPath, "utf8"));
+        if (cfg && cfg.maps) {
+          const mapCfg = cfg.maps[partitionMap];
+          if (mapCfg) {
+            const dimCfg = mapCfg.dimensions && mapCfg.dimensions[String(dimensionIndex)];
+            if (dimCfg && dimCfg.display_name) return dimCfg.display_name;
+            if (mapCfg.display_name && String(mapCfg.partition_id) === String(partitionId)) return mapCfg.display_name;
+          }
+        }
+      }
+    } catch { /* file missing or malformed — fall through to label */ }
   }
 
-  // Fall back to the database_label with "Sietch " prefix for Survival_1,
-  // matching the Python default_display_name() in sietches.sh
+  // Fall back to the database_label with "Sietch " prefix for Survival_1
   const label = (databaseLabel || "").trim();
   if (label) {
-    if (mapName === "Survival_1" && !label.toLowerCase().startsWith("sietch ")) {
+    if (partitionMap === "Survival_1" && !label.toLowerCase().startsWith("sietch ")) {
       return `Sietch ${label}`;
     }
     return label;
   }
 
-  // Last resort: stable, non-fabricated identifier
-  return `${mapName} ${dimensionIndex}`;
+  return `${displayMap} ${dimensionIndex}`;
 }
 
 // Builds one map's (Deep Desert's or Hagga Basin's) full section: real
@@ -7973,7 +7960,7 @@ async function resourcesSectionForDisplayMap(db, config, displayMap) {
         // fall back to world_partition.label (e.g. "Abbir" → "Sietch
         // Abbir"), then a stable "<Map> <dim>" identifier — never
         // invent a name.
-        name: sietchDisplayName(row.partitionId, row.databaseLabel, displayMap, dim),
+        name: sietchDisplayName(row.partitionId, row.databaseLabel, displayMap, dim, config.repoRoot),
         runtimeStatus: combat?.runtimeStatus || "UNKNOWN",
         // PVP/PVE/CONFLICT/UNKNOWN, normalized uppercase per
         // mapCombatState.js's own contract -- never re-derived here.
