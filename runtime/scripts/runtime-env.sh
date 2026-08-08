@@ -395,7 +395,7 @@ resolve_bind_ip() {
     "$(container_env_value_any_state dune-server-overmap POD_IP 2>/dev/null || true)" \
     "$(any_container_env_value_matching '^dune-server-' POD_IP 2>/dev/null || true)" \
     || true)"
-  if is_ipv4 "$existing"; then
+  if bind_ip_is_assigned "$existing"; then
     printf '%s' "$existing"
     return 0
   fi
