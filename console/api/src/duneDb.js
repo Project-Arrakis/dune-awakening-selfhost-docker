@@ -1406,7 +1406,7 @@ const PLAYER_SORT_COLUMNS = {
 // battlegroups. It is an internal service actor, not an administrable player.
 const INTERNAL_GM_PLAYER_PAWN_ID = FUNCOM_GM_PERSONA.playerPawnId;
 
-export async function listPlayers(db, { status = "all", q = "", page = 0, pageSize = 50, sortColumn = "character_name", sortDirection = "asc", includeTotals = true, bannedFlsIds = [] } = {}) {
+export async function listPlayers(db, { status = "all", q = "", page = 0, pageSize = 50, sortColumn = "character_name", sortDirection = "asc", includeTotals = true, bannedFlsIds = [], controllerIds } = {}) {
   if (!(await tableExists(db, "actors")) || !(await tableExists(db, "player_state"))) {
     return { ...unsupported("players", ["dune.actors", "dune.player_state"]), totalCount: 0, totalPlayers: 0 };
   }
@@ -1492,6 +1492,10 @@ export async function listPlayers(db, { status = "all", q = "", page = 0, pageSi
     if (status === "offline") where += ` and not (${bannedExpression}) and coalesce(ps.online_status::text, '') <> 'Online'`;
   }
   if (status === "banned") where += ` and (${bannedExpression})`;
+  if (controllerIds && controllerIds.length > 0) {
+    values.push(controllerIds.map(String));
+    where += ` and ps.player_controller_id::text = any($${values.length}::text[])`;
+  }
   if (q) {
     values.push(`%${q}%`);
     const fuzzySearchParameter = values.length;
@@ -8591,6 +8595,12 @@ export async function migrateDiscordAdapterSchema(db) {
     await tx.query(`
       create unique index if not exists discord_pending_account_links_player_uidx
       on console.discord_pending_account_links (player_controller_id)`);
+    // Expression indexes for text-to-bigint JOINs (C3, #169).
+    // discord_account_links stores player_controller_id as text but
+    // game tables use bigint — casts cannot use btree indexes.
+    await tx.query(`create index if not exists player_state_controller_id_text_idx on dune.player_state ((player_controller_id::text))`);
+    await tx.query(`create index if not exists guild_members_player_id_text_idx on dune.guild_members ((player_id::text))`);
+    await tx.query(`create index if not exists permission_actor_rank_player_id_text_idx on dune.permission_actor_rank ((player_id::text))`);
   };
   if (typeof db.transaction === "function") return db.transaction(migrate);
   return migrate(db);
@@ -8743,7 +8753,13 @@ export async function getAllLinkedPlayers(db, discordUserId) {
            coalesce(ps.character_name, '') as character_name
     from console.discord_account_links dal
     join dune.player_state ps on ps.player_controller_id::text = dal.player_controller_id
-    where dal.discord_user_id = $1`, [String(discordUserId)]);
+    where dal.discord_user_id = $1
+    union
+    select dpl.player_controller_id,
+           coalesce(ps2.character_name, '') as character_name
+    from console.discord_player_links dpl
+    join dune.player_state ps2 on ps2.player_controller_id::text = dpl.player_controller_id
+    where dpl.discord_user_id = $1`, [String(discordUserId)]);
   return result.rows;
 }
 

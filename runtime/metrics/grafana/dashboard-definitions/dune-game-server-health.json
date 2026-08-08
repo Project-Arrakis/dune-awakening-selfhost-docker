@@ -1,6 +1,9 @@
 {
+  "uid": "dune-game-server-health",
   "title": "Dune — Game Server Health",
   "tags": ["dune", "noc"],
+  "schemaVersion": 39,
+  "version": 1,
   "refresh": "30s",
   "panels": [
     {
