@@ -103,6 +103,7 @@ jobs:
       - name: Test runtime safety regressions
         run: |
           runtime/tests/test-command-auth-token.sh
+          runtime/tests/test-bind-ip-resolution.sh
           runtime/tests/test-deepdesert-dual-startup-reconcile.sh
           runtime/tests/test-deepdesert-dual-selector-cleanup.sh
           runtime/tests/test-director-log-id-normalization.sh
