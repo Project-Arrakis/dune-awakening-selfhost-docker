@@ -1236,6 +1236,12 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
     const activeSietchesDecreased = activeChanged && Number.isFinite(requestedActiveSietches) && requestedActiveSietches < currentActiveCount;
     const primaryChanged = rowName === "Survival_1" && primarySietchDirty;
     if (!modeChanged && !memoryChanged && !activeChanged && !primaryChanged) return;
+    // This save carries the primary sietch's name and password alongside the
+    // map settings, so it refuses on the same terms as the sietch Save.
+    if (rowName === "Survival_1" && primarySurvivalSietch
+      && blockedSietchEdits(survivalSietchRows, sietchDrafts, sietchPasswordTouched, primarySurvivalSietch.partitionId).length) {
+      return onError(SIETCH_PARTITION_IDS_UNREADABLE);
+    }
     const running = mapRuntimeNeedsLiveApply(row.status);
     const actions: Array<{ label: string; run: () => Promise<{ task: Task }> }> = [];
     if (modeChanged || memoryChanged) {
@@ -1307,9 +1313,7 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
       for (const sietch of survivalSietchRows) {
         if (!isSietchWriteTarget(sietch)) continue;
         if (partitionId && sietch.partitionId !== partitionId) continue;
-        const draft = sietchDrafts[sietch.partitionId] || { displayName: sietch.displayName, password: sietch.password };
-        const nameChanged = draft.displayName !== sietch.displayName;
-        const passwordChanged = sietchPasswordDraftChanged(sietch, draft, Boolean(sietchPasswordTouched[sietch.partitionId]));
+        const { draft, nameChanged, passwordChanged } = sietchDraftChanges(sietch, sietchDrafts, sietchPasswordTouched);
         const targetName = sietchTargetDisplayName(sietch, draft.displayName);
         if (nameChanged && passwordChanged) {
           actions.push({
@@ -1336,6 +1340,12 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
     return actions;
   }
   async function saveSurvivalSietches() {
+    // Refuse before building anything: skipping the unwritable rows would let a
+    // dirty active-sietch count save on its own and report the whole thing as
+    // saved, silently dropping the edited names and passwords.
+    if (blockedSietchEdits(survivalSietchRows, sietchDrafts, sietchPasswordTouched).length) {
+      return onError(SIETCH_PARTITION_IDS_UNREADABLE);
+    }
     const actions = survivalSietchActions({ includeActive: true, includePartitions: true });
     if (!actions.length) return;
     if (await confirmAction(`Save ${actions.length} Survival_1 Sietch change${actions.length === 1 ? "" : "s"}?`)) {
@@ -2203,6 +2213,46 @@ function sietchPasswordDraftChanged(row: SietchRow, draft: { password: string },
   if (!touched) return false;
   if (row.passwordSet) return draft.password !== SIETCH_PASSWORD_MASK;
   return Boolean(draft.password);
+}
+
+// The draft a row is being edited with, plus which of its fields differ from
+// what the server reported. One definition, shared by the code that builds
+// sietch write actions and the code that refuses to build them, so the two can
+// never disagree about what "edited" means.
+export function sietchDraftChanges(
+  row: SietchRow,
+  drafts: Record<string, { displayName: string; password: string }>,
+  passwordTouched: Record<string, boolean> = {}
+) {
+  const draft = drafts[row.partitionId] || { displayName: row.displayName, password: row.password };
+  return {
+    draft,
+    nameChanged: draft.displayName !== row.displayName,
+    passwordChanged: sietchPasswordDraftChanged(row, draft, Boolean(passwordTouched[row.partitionId]))
+  };
+}
+
+// Rows the operator has edited that cannot be written safely, because their
+// partition id fell back to a dimension index (see isSietchWriteTarget).
+//
+// survivalSietchActions skips those rows when building actions. On its own that
+// would make a bulk Save drop the edit without saying so: with nothing else
+// dirty the Save does nothing at all, and with the active-sietch count also
+// dirty that unrelated change still runs and the save reports success while the
+// edited fields are discarded. Callers refuse the whole save instead, matching
+// what the per-sietch Save and Restart already do.
+export function blockedSietchEdits(
+  rows: SietchRow[],
+  drafts: Record<string, { displayName: string; password: string }>,
+  passwordTouched: Record<string, boolean> = {},
+  partitionId?: string
+) {
+  return rows.filter((row) => {
+    if (isSietchWriteTarget(row)) return false;
+    if (partitionId && row.partitionId !== partitionId) return false;
+    const { nameChanged, passwordChanged } = sietchDraftChanges(row, drafts, passwordTouched);
+    return nameChanged || passwordChanged;
+  });
 }
 
 function sietchHasPassword(row: SietchRow | null | undefined, draft?: { password: string }) {
