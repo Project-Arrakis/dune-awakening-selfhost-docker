@@ -14,7 +14,7 @@
 // - membership + explicit operator gates before any owner-tier session
 // - fail closed: any missing/invalid input yields no session, never a partial one
 
-import { randomBytes, timingSafeEqual } from "node:crypto";
+import { randomBytes, timingSafeEqual, createHash } from "node:crypto";
 
 export const DISCORD_OAUTH_BASE_URL = "https://discord.com/api/v10";
 export const DISCORD_OAUTH_AUTHORIZE_URL = "https://discord.com/oauth2/authorize";
@@ -40,12 +40,13 @@ export function createPendingStateStore({
   function issue(random = randomBytes) {
     if (pending.size >= maxEntries) return null;
     const state = random(16).toString("base64url");
-    pending.set(state, { createdAt: now(), used: false });
-    return state;
+    const verifier = random(32).toString("base64url");
+    const challenge = createHash("sha256").update(verifier).digest("base64url");
+    pending.set(state, { createdAt: now(), used: false, verifier, challenge });
+    return { state, challenge };
   }
 
-  // Single-use, TTL-bounded, cookie-bound. Consume-before-verify so a failed
-  // attempt never leaves a reusable state behind.
+  // PKCE-enabled consume: returns code_verifier on success.
   function consume(state, cookieValue, timestamp = now()) {
     if (typeof state !== "string" || state.length === 0 || state.length > 128) {
       return { ok: false, reason: "invalid_state" };
@@ -59,7 +60,7 @@ export function createPendingStateStore({
     if (!constantTimeStringEqual(state, cookieValue)) return { ok: false, reason: "state_cookie_mismatch" };
     if (timestamp - entry.createdAt > ttlMs) return { ok: false, reason: "stale_state" };
     entry.used = true;
-    return { ok: true };
+    return { ok: true, verifier: entry.verifier };
   }
 
   return { issue, consume, size: () => pending.size };
@@ -100,6 +101,7 @@ export async function exchangeDiscordAuthCode({
   redirectUri,
   clientId,
   clientSecret,
+  codeVerifier,
   apiBaseUrl = DISCORD_OAUTH_BASE_URL,
   fetchImpl = globalThis.fetch
 }) {
@@ -113,6 +115,7 @@ export async function exchangeDiscordAuthCode({
     code: code.trim(),
     redirect_uri: redirectUri
   });
+  if (codeVerifier) params.set("code_verifier", codeVerifier);
   const token = await discordJsonRequest(`${apiBaseUrl}/oauth2/token`, {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
@@ -184,7 +187,7 @@ export function parseDiscordAllowlist(value) {
   return list.map((item) => String(item || "").trim()).filter((item) => /^\d{17,19}$/.test(item));
 }
 
-export function buildAuthorizeUrl({ clientId, redirectUri, state }) {
+export function buildAuthorizeUrl({ clientId, redirectUri, state, codeChallenge }) {
   const params = new URLSearchParams({
     client_id: clientId,
     redirect_uri: redirectUri,
@@ -192,6 +195,10 @@ export function buildAuthorizeUrl({ clientId, redirectUri, state }) {
     scope: OAUTH_SCOPES,
     state
   });
+  if (codeChallenge) {
+    params.set("code_challenge", codeChallenge);
+    params.set("code_challenge_method", "S256");
+  }
   return `${DISCORD_OAUTH_AUTHORIZE_URL}?${params.toString()}`;
 }
 

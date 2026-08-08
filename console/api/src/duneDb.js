@@ -8601,6 +8601,9 @@ export async function migrateDiscordAdapterSchema(db) {
     await tx.query(`create index if not exists player_state_controller_id_text_idx on dune.player_state ((player_controller_id::text))`);
     await tx.query(`create index if not exists guild_members_player_id_text_idx on dune.guild_members ((player_id::text))`);
     await tx.query(`create index if not exists permission_actor_rank_player_id_text_idx on dune.permission_actor_rank ((player_id::text))`);
+    // Clean up stale link rows where the game character was deleted (M5, #183).
+    await tx.query(`delete from console.discord_account_links where not exists (select 1 from dune.player_state ps where ps.player_controller_id::text = player_controller_id)`);
+    await tx.query(`delete from console.discord_player_links where not exists (select 1 from dune.player_state ps where ps.player_controller_id::text = player_controller_id)`);
   };
   if (typeof db.transaction === "function") return db.transaction(migrate);
   return migrate(db);

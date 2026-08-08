@@ -472,12 +472,13 @@ async function handleApi(req, res) {
     if (!rate.allowed) {
       return json(res, 429, { error: "Too many sign-in attempts. Please wait a few minutes, then try again." }, { "retry-after": String(rate.retryAfterSeconds) });
     }
-    const state = oauthPendingStates.issue();
-    if (!state) {
+    const pending = oauthPendingStates.issue();
+    if (!pending) {
       return json(res, 429, { error: "Too many Discord sign-in sessions in progress. Try again in a moment." });
     }
+    const { state, challenge } = pending;
     res.setHeader("Set-Cookie", oauthStateCookie(state, config.secureCookies));
-    const authorizeUrl = buildAuthorizeUrl({ clientId: config.discordOAuthClientId, redirectUri: config.discordOAuthRedirectUri, state });
+    const authorizeUrl = buildAuthorizeUrl({ clientId: config.discordOAuthClientId, redirectUri: config.discordOAuthRedirectUri, state, codeChallenge: challenge });
     res.writeHead(302, { Location: authorizeUrl });
     res.end();
     audit(config, sanitizedUrl(req, "/api/auth/discord/start"), "auth.oauth.start", { ok: true });
@@ -3475,6 +3476,7 @@ async function handleOAuthCallback(req, res) {
       redirectUri: config.discordOAuthRedirectUri,
       clientId: config.discordOAuthClientId,
       clientSecret: config.discordOAuthClientSecret,
+      codeVerifier: consumed.verifier,
       apiBaseUrl: config.discordOAuthApiBaseUrl
     });
     identity = await fetchDiscordIdentity({ accessToken: token.access_token, apiBaseUrl: config.discordOAuthApiBaseUrl });

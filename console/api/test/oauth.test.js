@@ -17,7 +17,7 @@ function jsonResponse(payload, status = 200) {
 test("pending state issues single-use cookie-bound entries", () => {
   const now = [1_000_000];
   const store = createPendingStateStore({ now: () => now[0] });
-  const state = store.issue();
+  const state = store.issue().state;
   assert.ok(state && state.length > 0);
   assert.equal(store.size(), 1);
 
@@ -33,7 +33,7 @@ test("pending state issues single-use cookie-bound entries", () => {
 test("pending state: stale TTL is rejected", () => {
   const now = [1_000_000];
   const store = createPendingStateStore({ now: () => now[0], ttlMs: 10_000 });
-  const state = store.issue();
+  const state = store.issue().state;
   now[0] += 10_001;
   const result = store.consume(state, state, now[0]);
   assert.equal(result.ok, false);
@@ -43,7 +43,7 @@ test("pending state: stale TTL is rejected", () => {
 test("pending state: cookie mismatch rejected and state still consumed", () => {
   const now = [1_000_000];
   const store = createPendingStateStore({ now: () => now[0] });
-  const state = store.issue();
+  const state = store.issue().state;
   const result = store.consume(state, "attacker-chosen-cookie", now[0]);
   assert.equal(result.ok, false);
   assert.equal(result.reason, "state_cookie_mismatch");
