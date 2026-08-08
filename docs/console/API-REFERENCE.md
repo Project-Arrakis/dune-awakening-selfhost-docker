@@ -252,6 +252,12 @@ Complete reference for all HTTP API endpoints in the Dune Docker Console. All en
 | PUT | `/api/bases/{baseId}/permissions` | Replace a base's permission roster | `baseId`, `entries[]` (`playerId`, `rank`) |
 | GET | `/api/bases/permission-candidates` | Search players eligible to be added to a roster | `q?`, `limit?` |
 
+Each `GET /api/bases` row carries `partitionMap` and `dimensionIndex` alongside
+`map` and `partition_id`. `map` is the game's own name (`HaggaBasin`) and cannot
+distinguish two instances of one map; `partitionMap` is the name the rest of the
+console uses (`Survival_1`), and `partition_id` identifies the single running
+instance. Both are empty on a schema without `dune.world_partition`.
+
 `GET /api/bases` reports `capabilities.basePermissions`; the permission routes are
 unavailable when it is false (the schema lacks the required tables or the game's
 `permission_set_player_rank` / `permission_remove_player_rank` procedures).

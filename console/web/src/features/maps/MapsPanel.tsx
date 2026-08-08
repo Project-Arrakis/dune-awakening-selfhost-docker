@@ -9,6 +9,9 @@ import { titleCaseWords } from "../players/playerAdminUtils";
 import { pendingRefillCountForMap, pendingRefillCountForPartition, usePendingRefills } from "../../lib/usePendingRefills";
 import type { PendingRefills } from "../../api/bases";
 import { friendlyMapName, hasFriendlyMapName } from "./mapNames";
+// Re-exported so existing importers (and MapsPanel.sietchNames.test.ts) keep working.
+export { parseSietchRows, type SietchRow } from "./sietchRows";
+import { parseSietchRows, type SietchRow } from "./sietchRows";
 
 // Taking a partition down is when any generator refill queued for a base on it
 // gets written, so every control that does so says what is waiting on it.
@@ -2391,41 +2394,7 @@ export function valuesForDirtyFields(original: Record<string, string>, draft: Re
     .map((field) => [field.id, String(draft[field.id] ?? field.default ?? "")]));
 }
 
-type SietchRow = { partitionId: string; dimension: string; displayName: string; password: string; passwordSet: boolean; active: boolean };
 const SIETCH_PASSWORD_MASK = "********";
-
-export function parseSietchRows(text: string, idsText = ""): SietchRow[] {
-  const rows: SietchRow[] = [];
-  const ids = idsText.split(/\r?\n/).map((line) => line.trim()).filter((line) => /^\d+$/.test(line));
-  let dimensionIndex = 0;
-  for (const line of text.split(/\r?\n/)) {
-    if (/^\s*DIMENSION\b/i.test(line)) continue;
-    const tableMatch = line.match(/^\s*(\d+)\s+(.+?)\s+(\((?:un)?set\))\s*$/i);
-    if (tableMatch) {
-      const dimension = tableMatch[1];
-      const partitionId = ids[dimensionIndex] || dimension;
-      const displayName = tableMatch[2].trim();
-      const passwordSet = /^\(set\)$/i.test(tableMatch[3]);
-      rows.push({ partitionId, dimension, displayName, password: "", passwordSet, active: true });
-      dimensionIndex += 1;
-      continue;
-    }
-    const partitionMatch = line.match(/\b(?:partition|id)\s*[:=]?\s*(\d+)\b/i) || line.match(/^\s*(\d+)\s+/);
-    if (!partitionMatch) continue;
-    const dimension = partitionMatch[1];
-    const partitionId = ids[dimensionIndex] || partitionMatch[1];
-    const displayName = (line.match(/\b(?:display|name)\s*[:=]\s*([^|,\t]+)/i)?.[1] || line.match(/\bSietch\s+([A-Za-z0-9 _-]+)/i)?.[0] || `Sietch ${partitionId}`).trim();
-    const passwordValue = (line.match(/\bpassword\s*[:=]\s*([^|,\t]+)/i)?.[1] || line.match(/\((?:un)?set\)\s*$/i)?.[0] || "").trim();
-    const passwordSet = /\(set\)|\bset\b|true|yes/i.test(passwordValue) || /\(set\)\s*$/i.test(line);
-    const password = /\(set\)|\(unset\)|\bset\b|\bunset\b/i.test(passwordValue) ? "" : passwordValue;
-    const active = !/\binactive|disabled|stopped\b/i.test(line);
-    rows.push({ partitionId, dimension, displayName, password, passwordSet: passwordSet || Boolean(password), active });
-    dimensionIndex += 1;
-  }
-  const unique = new globalThis.Map<string, SietchRow>();
-  for (const row of rows) unique.set(row.partitionId, row);
-  return [...unique.values()].sort((a, b) => Number(a.dimension) - Number(b.dimension));
-}
 
 function memoryForMap(rows: LiveMapMemoryRow[], map: string, row?: Record<string, unknown>) {
   const normalized = normalizeMapKey(map);

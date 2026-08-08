@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { basesApi, type AutoRefillBase } from "../../api/bases";
+import { mapsApi } from "../../api/maps";
 import { BasesPanel } from "./BasesPanel";
 
 vi.mock("../../api/bases", () => ({
@@ -27,6 +28,14 @@ vi.mock("../../api/bases", () => ({
 
 vi.mock("../../api/client", () => ({
   apiDownload: vi.fn()
+}));
+
+vi.mock("../../api/maps", () => ({
+  mapsApi: {
+    sietchDimensions: vi.fn(),
+    restartSietch: vi.fn(),
+    respawn: vi.fn()
+  }
 }));
 
 function renderPanel(overrides: Partial<Parameters<typeof BasesPanel>[0]> = {}) {
@@ -1133,5 +1142,72 @@ describe("BasesPanel combined fuel/water queue and stalled banners", () => {
     expect(screen.getByText("1 fuel")).toBeInTheDocument();
     expect(screen.getByText("1 water")).toBeInTheDocument();
     expect(document.querySelectorAll(".bases-pending-refills")).toHaveLength(1);
+  });
+});
+
+describe("BasesPanel map column", () => {
+  // Verbatim `dune sietches dimensions DeepDesert_1` output from the live
+  // server, paired with its `--ids` output: two instances of one map, which is
+  // exactly the case the map name alone cannot distinguish.
+  const DEEP_DESERT_TABLE = [
+    "DIMENSION  DISPLAY NAME                     PASSWORD",
+    "0          Deep Desert PvP                  (unset)",
+    "1          Deep Desert PvE                  (unset)"
+  ].join("\n");
+  const DEEP_DESERT_IDS = "8\n59\n";
+
+  function mockTwoDeepDesertBases() {
+    vi.mocked(basesApi.list).mockResolvedValue({
+      capabilities: { bases: true },
+      totalCount: 2,
+      totalBases: 2,
+      totalPieces: 20,
+      totalPlaceables: 8,
+      rows: [
+        { ...commonRow, base_id: "5001", name: "PvP Outpost", map: "DeepDesert", partition_id: 8, partitionMap: "DeepDesert_1", dimensionIndex: 0, generatorDataAvailable: false, generatorCount: 0 },
+        { ...commonRow, base_id: "5002", name: "PvE Outpost", map: "DeepDesert", partition_id: 59, partitionMap: "DeepDesert_1", dimensionIndex: 1, generatorDataAvailable: false, generatorCount: 0 }
+      ]
+    } as never);
+  }
+
+  function mapCells() {
+    return [...document.querySelectorAll(".bases-map-cell")].map((cell) => ({
+      map: cell.querySelector(".bases-map-name")?.textContent,
+      instance: cell.querySelector(".bases-map-instance")?.textContent
+    }));
+  }
+
+  it("renders the friendly map name and upgrades the partition to its instance name", async () => {
+    mockTwoDeepDesertBases();
+    vi.mocked(mapsApi.sietchDimensions).mockImplementation((_map?: string, ids?: boolean) =>
+      Promise.resolve({ stdout: ids ? DEEP_DESERT_IDS : DEEP_DESERT_TABLE }) as never);
+
+    renderPanel();
+    expect(await screen.findByText("PvP Outpost")).toBeInTheDocument();
+
+    // "DeepDesert" is the game's internal name; the column shows the real one,
+    // keeping the raw value in the title for anyone matching against the DB.
+    await waitFor(() => expect(mapCells()).toEqual([
+      { map: "Deep Desert", instance: "Deep Desert PvP" },
+      { map: "Deep Desert", instance: "Deep Desert PvE" }
+    ]));
+    expect(document.querySelector(".bases-map-name")).toHaveAttribute("title", "DeepDesert");
+    // One pair of requests for the single distinct partition map, not per row.
+    expect(vi.mocked(mapsApi.sietchDimensions).mock.calls.map((call) => call[0])).toEqual(["DeepDesert_1", "DeepDesert_1"]);
+  });
+
+  it("falls back to the partition number when the instance names cannot be read", async () => {
+    // These endpoints shell out to the runtime CLI and are absent on a
+    // console-only install. The rows must still identify their instance.
+    mockTwoDeepDesertBases();
+    vi.mocked(mapsApi.sietchDimensions).mockRejectedValue(new Error("spawn runtime/scripts/dune ENOENT"));
+
+    renderPanel();
+    expect(await screen.findByText("PvP Outpost")).toBeInTheDocument();
+
+    expect(mapCells()).toEqual([
+      { map: "Deep Desert", instance: "Partition 8" },
+      { map: "Deep Desert", instance: "Partition 59" }
+    ]);
   });
 });

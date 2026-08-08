@@ -1658,6 +1658,14 @@ body.debug .technical-details { display: block; }
 .bases-table th.bases-actions-column, .bases-table td.bases-actions-column { width: 148px; }
 .bases-table td { max-width: none; white-space: normal; overflow-wrap: anywhere; text-overflow: clip; }
 .bases-name, .bases-ellipsis-cell { display: block; overflow: visible; text-overflow: clip; white-space: normal; overflow-wrap: anywhere; }
+
+/* Map over instance. Two instances of one map are identical in the map column
+   alone -- production runs DeepDesert_1 as both "Deep Desert PvP" and "Deep
+   Desert PvE" -- so the instance line is what actually identifies the row. Same
+   muted tone as the inventory card subtitle. */
+.bases-map-cell { display: grid; gap: 1px; min-width: 0; }
+.bases-map-name { overflow-wrap: anywhere; }
+.bases-map-instance { color: #bebcb6; font-size: 11.5px; overflow-wrap: anywhere; }
 .bases-generator-summary { display: block; white-space: normal; overflow: visible; text-overflow: clip; line-height: 1.4; }
 .bases-fuel-alert { color: var(--danger-text); }
 .bases-pagination-footer { margin-top: 12px; margin-bottom: 0; align-items: center; }
