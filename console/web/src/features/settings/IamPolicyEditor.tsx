@@ -216,6 +216,10 @@ export function IamPolicyEditor() {
   const savePolicy = async () => {
     const valid = validateJson(jsonText);
     if (!valid || !catalog) return;
+    if (selectedTier === "owner" && Array.isArray(valid) && valid.length === 0) {
+      setJsonError("Cannot save an empty policy for the owner tier. At least one own er-level permission is required to prevent permanent lock-out.");
+      return;
+    }
     setSaving(true);
     try {
       await post("/api/settings/iam/policy", { tier: selectedTier, statements: valid });

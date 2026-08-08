@@ -1390,7 +1390,9 @@ async function databasePasswordRoute(req, res) {
     return json(res, 400, { error: "Database password changes are unavailable while ADMIN_DATABASE_URL is set. Update the connection URL instead." });
   }
   await duneDb.changeDunePassword(db, password);
-  updateEnvFileValue("DUNE_DB_PASSWORD", password);
+  const pwFile = resolve(config.secretsDir, "dune-db-password.txt");
+  writeFileSync(pwFile, `${password}\n`, { mode: 0o600 });
+  try { chmodSync(pwFile, 0o600); } catch {}
   process.env.DUNE_DB_PASSWORD = password;
   const previousDb = db;
   db = createDb(config);
