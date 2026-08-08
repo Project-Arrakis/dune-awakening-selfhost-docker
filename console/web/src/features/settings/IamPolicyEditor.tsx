@@ -269,8 +269,8 @@ export function IamPolicyEditor() {
                           checked={allowed.has(action)}
                           onChange={() => toggleAction(action)}
                         />
-                        <span className="iam-perm-label" style={{color:"#ff0",background:"#f00",padding:"2px 6px",fontWeight:700,fontSize:"14px"}}>PERMISSION: {humanLabel(action)}</span>
-                        <span className="iam-perm-action" title={action} style={{color:"#0ff",background:"#00f",padding:"2px 6px",fontWeight:700,fontSize:"12px"}}>{action.split("/api/")[1] || action}</span>
+                        <span className="iam-perm-label">{humanLabel(action)}</span>
+                        <span className="iam-perm-action" title={action}>{action.split("/api/")[1] || action}</span>
                       </label>
                     ))}
                   </div>
