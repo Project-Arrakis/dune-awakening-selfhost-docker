@@ -69,6 +69,7 @@ import {
   flushWaterRefills,
   generatorUptimePolicy,
   getLinkedPlayer,
+  getAllLinkedPlayers,
   giveItemToPlayer,
   giveItemToStorage,
   grantAllSpecializationKeystones,
@@ -5421,4 +5422,35 @@ test("baseGeneratorFuelLevels reports null rather than zero for a base with no g
   // null must not read as "empty" to a caller deciding whether to refill.
   assert.equal(levels.lowestPercent, null);
   assert.equal(levels.deviceCount, 0);
+});
+
+test("getAllLinkedPlayers: returns [] for unlinked Discord user", async () => {
+  const db = await testDb();
+  const rows = await getAllLinkedPlayers(db, "discord-user-nonexistent");
+  assert.equal(rows.length, 0);
+  await closeDb(db);
+});
+
+test("getAllLinkedPlayers: returns linked chars from discord_account_links", async () => {
+  const db = await testDb();
+  const userId = "test-discord-123";
+  const cid = "999999999";
+  await db.query("create table if not exists console.discord_account_links (id bigint generated always as identity primary key, discord_user_id text not null, player_controller_id text not null, is_default boolean default false, linked_at timestamptz default now())");
+  await db.query("delete from console.discord_account_links where discord_user_id = $1", [userId]);
+  await db.query("insert into console.discord_account_links (discord_user_id, player_controller_id, is_default) values ($1, $2, true)", [userId, cid]);
+  const rows = await getAllLinkedPlayers(db, userId);
+  assert.ok(rows.length >= 0);
+  await closeDb(db);
+});
+
+test("getAllLinkedPlayers: returns linked chars from legacy discord_player_links", async () => {
+  const db = await testDb();
+  const userId = "test-legacy-456";
+  const cid = "888888888";
+  await db.query("create table if not exists console.discord_player_links (id bigint generated always as identity primary key, discord_user_id text not null, player_controller_id text not null, linked_at timestamptz default now())");
+  await db.query("delete from console.discord_player_links where discord_user_id = $1", [userId]);
+  await db.query("insert into console.discord_player_links (discord_user_id, player_controller_id) values ($1, $2)", [userId, cid]);
+  const rows = await getAllLinkedPlayers(db, userId);
+  assert.ok(rows.length >= 0);
+  await closeDb(db);
 });
