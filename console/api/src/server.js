@@ -510,7 +510,7 @@ async function handleApi(req, res) {
   req.authSession = session;
 
   const action = actionForRoute(path, req.method);
-  if (action && !evaluate(session, action)) {
+  if (!action || !evaluate(session, action)) {
     return json(res, 403, { error: "Your account does not have permission to access this resource." });
   }
 

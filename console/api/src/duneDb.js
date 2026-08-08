@@ -9018,6 +9018,7 @@ async function otherTableLinkConflict(tx, table, playerControllerId, discordUser
 
 export async function discordPlayerLink(db, discordUserId, playerControllerId) {
   const link = async (tx) => {
+    await tx.query(`select pg_advisory_xact_lock(hashtext('link:' || $1::text))`, [playerControllerId]);
     const conflict = await tx.query(`
       select discord_user_id
       from console.discord_player_links
@@ -9121,6 +9122,7 @@ export async function listLinkedAccounts(db, discordUserId) {
 // called.
 export async function linkAdditionalAccount(db, discordUserId, playerControllerId) {
   const link = async (tx) => {
+    await tx.query(`select pg_advisory_xact_lock(hashtext('link:' || $1::text))`, [playerControllerId]);
     const conflict = await tx.query(`
       select discord_user_id
       from console.discord_account_links

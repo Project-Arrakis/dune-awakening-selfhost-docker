@@ -262,11 +262,12 @@ export async function handleDiscordAdapterRoute({ req, res, path, config, readJs
       const body = await readJson(req, { requireActorSignature: true });
       const actor = validateDiscordActor(body.actor);
       requireSelfScopedCapability(actor, mapping, DISCORD_CAPABILITIES.PLAYER_LINK_WRITE);
-      return json(res, 200, await verifyPlayerLinkProvider(db, {
-      audit(config, req, "discord.player.link.verify", { actorId: actor.userId, ok: true });
+      const verifyResult = await verifyPlayerLinkProvider(db, {
         discordUserId: actor.userId,
         code: body.code
-      }));
+      });
+      audit(config, req, "discord.player.link.verify", { actorId: actor.userId, ok: verifyResult.ok });
+      return json(res, 200, verifyResult);
     }
 
     // Players unlink

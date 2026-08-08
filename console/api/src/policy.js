@@ -139,6 +139,7 @@ export function getAllPolicies(policies = null) {
 
 export function setPolicies(docs) {
   _policies = docs;
+  _allowedActions = {};
 }
 
 // ---- Default policies (mirror the CAPABILITY_BY_TIER ladder) ----
