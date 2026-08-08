@@ -26,15 +26,6 @@ const RANK_LABELS: Record<BasePermissionRank, string> = {
 
 const RANK_OPTIONS: BasePermissionRank[] = [OWNER_RANK, CO_OWNER_RANK, ASSOCIATE_RANK];
 
-// Abbreviated for the segmented control, which has to fit three options in the
-// width one <select> used to take. The full RANK_LABELS word carries the
-// accessible name -- see RankSegments.
-const RANK_SEGMENT_LABELS: Record<BasePermissionRank, string> = {
-  1: "Own",
-  2: "Co-own",
-  3: "Assoc"
-};
-
 // `label` is the server's own rendering of the rank ("Owner", or "Rank 7" for
 // anything outside 1-3). Carried through so a rank the segmented control cannot
 // represent is still readable on screen -- see unknownRankLabel.
@@ -152,7 +143,7 @@ function RankSegments({ entry, baseId, disabled, onChange }: {
             // idempotent for a rank the entry already holds.
             onClick={() => onChange(rank)}
           />
-          <span aria-hidden="true">{RANK_SEGMENT_LABELS[rank]}</span>
+          <span aria-hidden="true">{RANK_LABELS[rank]}</span>
         </label>
       ))}
     </div>
@@ -277,6 +268,11 @@ export function BasePermissionsTab({ baseId, baseName, onSaved, confirmAction }:
         ? entry
         : { ...entry, rank: CO_OWNER_RANK });
     });
+    // Adding completes the search interaction. Reset it instead of leaving a
+    // stale query and result list sitting beneath the newly-added roster row.
+    setCandidateQuery("");
+    setCandidates([]);
+    setSearched(false);
   }
 
   // Explicit submit rather than search-as-you-type: this queries the server, and
@@ -382,18 +378,90 @@ export function BasePermissionsTab({ baseId, baseName, onSaved, confirmAction }:
   return (
     <div className="bases-permissions" onClick={(event) => event.stopPropagation()}>
       <div className="bases-permissions-content">
-        <p className="action-help-note">
-          Exactly one Owner. Promoting a player demotes the current Owner to Co-Owner. Changes apply to the running map immediately. Transferring to the system custodian parks ownership on a reserved identity and keeps the roster intact.
-        </p>
+        <div className="bases-permissions-intro">
+          <p className="action-help-note">
+            Exactly one Owner. Promoting a player demotes the current Owner to Co-Owner. Changes apply to the running map immediately. Transferring to the system custodian parks ownership on a reserved identity and keeps the roster intact.
+          </p>
+          <OwnerHeroCard
+            owner={owner}
+            isCustodian={ownerIsCustodian}
+            systemCustodian={systemCustodian}
+            saving={saving}
+            dirty={dirty}
+            onTransfer={() => void transferToSystemCustodian()}
+          />
+        </div>
 
-        <OwnerHeroCard
-          owner={owner}
-          isCustodian={ownerIsCustodian}
-          systemCustodian={systemCustodian}
-          saving={saving}
-          dirty={dirty}
-          onTransfer={() => void transferToSystemCustodian()}
-        />
+        <div className="bases-permissions-toolbar">
+          <div className="bases-permissions-add">
+            <div className="action-row bases-permissions-search-row">
+              <input
+                value={candidateQuery}
+                placeholder="Search a player to add"
+                disabled={saving}
+                onChange={(event) => setCandidateQuery(event.target.value)}
+                onKeyDown={(event) => { if (event.key === "Enter") void submitCandidateSearch(); }}
+              />
+              <button disabled={searching || saving} onClick={() => void submitCandidateSearch()}>Search</button>
+              <button disabled={!candidateQuery && !searched} onClick={clearCandidateSearch}>Clear</button>
+              <label className="compact-select">
+                Add as
+                <select value={String(addRank)} disabled={saving} onChange={(event) => setAddRank(Number(event.target.value) as BasePermissionRank)}>
+                  {RANK_OPTIONS.map((rank) => <option key={rank} value={rank}>{RANK_LABELS[rank]}</option>)}
+                </select>
+              </label>
+            </div>
+            {searched && !candidates.length && <p className="muted">No players matched that search.</p>}
+            {candidates.length > 0 && <ul className="bases-permissions-candidates">
+              {candidates.map((candidate) => (
+                <li key={candidate.playerId}>
+                  <span>{candidate.name}</span>
+                  <button
+                    className="icon-toggle-button"
+                    disabled={alreadyOnRoster.has(candidate.playerId) || saving}
+                    title={alreadyOnRoster.has(candidate.playerId) ? "Already on this base" : `Add ${candidate.name} as ${RANK_LABELS[addRank]}`}
+                    aria-label={`Add ${candidate.name}`}
+                    onClick={() => addCandidate(candidate)}
+                  ><Plus size={15} /></button>
+                </li>
+              ))}
+            </ul>}
+          </div>
+
+          <div className="bases-permissions-actions">
+            <span className="muted">{dirty ? "Unsaved changes" : ""}</span>
+            <button disabled={!dirty || saving} onClick={() => setDraft(saved)}>Revert</button>
+            <button
+              className="update-action"
+              disabled={!dirty || !owner || saving}
+              title={`Save permissions for ${baseName}`}
+              onClick={() => void save()}
+            >{saving ? "Saving…" : "Save changes"}</button>
+          </div>
+        </div>
+
+        {/* Do not reserve an empty message area. Warnings and results appear
+            only when they have useful information, matching the compact action
+            layouts elsewhere in the console. */}
+        {(dirty || !owner || status) && <div className="bases-permissions-banner-slot">
+          {dirty && <p className="confirm-modal-warning bases-permissions-warning" role="status">
+            Saving writes to the live database and notifies the running map server. An online player may need to reopen the base's panel to see the change.
+          </p>}
+          {!owner && <p className="bases-permissions-error" role="alert">
+            This base has no Owner. Set one before saving.
+          </p>}
+          {status && <p
+            className={`inline-task-result${statusKind ? ` result-${statusKind}` : ""}`}
+            role={statusKind === "fail" ? "alert" : "status"}
+            onAnimationEnd={() => {
+              if (statusKind !== "ok") return;
+              setStatus("");
+              setStatusKind("");
+            }}
+          >
+            <strong>{status}</strong>
+          </p>}
+        </div>}
 
         <div className="bases-permissions-section-head">
           <span className="bases-permissions-section-title">Shared with · {nonOwners.length}</span>
@@ -424,85 +492,6 @@ export function BasePermissionsTab({ baseId, baseName, onSaved, confirmAction }:
             </div>
           ))}
           {!nonOwners.length && <p className="muted">This base is not shared with anyone else.</p>}
-        </div>
-
-        <div className="bases-permissions-add">
-          <div className="action-row bases-permissions-search-row">
-            <input
-              value={candidateQuery}
-              placeholder="Search a player to add"
-              disabled={saving}
-              onChange={(event) => setCandidateQuery(event.target.value)}
-              onKeyDown={(event) => { if (event.key === "Enter") void submitCandidateSearch(); }}
-            />
-            <button disabled={searching || saving} onClick={() => void submitCandidateSearch()}>Search</button>
-            <button disabled={!candidateQuery && !searched} onClick={clearCandidateSearch}>Clear</button>
-            <label className="compact-select">
-              Add as
-              <select value={String(addRank)} disabled={saving} onChange={(event) => setAddRank(Number(event.target.value) as BasePermissionRank)}>
-                {RANK_OPTIONS.map((rank) => <option key={rank} value={rank}>{RANK_LABELS[rank]}</option>)}
-              </select>
-            </label>
-          </div>
-          {searched && !candidates.length && <p className="muted">No players matched that search.</p>}
-          {candidates.length > 0 && <ul className="bases-permissions-candidates">
-            {candidates.map((candidate) => (
-              <li key={candidate.playerId}>
-                <span>{candidate.name}</span>
-                <button
-                  className="icon-toggle-button"
-                  disabled={alreadyOnRoster.has(candidate.playerId) || saving}
-                  title={alreadyOnRoster.has(candidate.playerId) ? "Already on this base" : `Add ${candidate.name} as ${RANK_LABELS[addRank]}`}
-                  aria-label={`Add ${candidate.name}`}
-                  onClick={() => addCandidate(candidate)}
-                ><Plus size={15} /></button>
-              </li>
-            ))}
-          </ul>}
-        </div>
-
-        {/* Reserved slot. All three of these mount and unmount, and each one
-            used to shove the action bar down and back up as it came and went
-            mid-edit. Holding the space keeps the bar still. */}
-        <div className="bases-permissions-banner-slot">
-          {dirty && <p className="confirm-modal-warning bases-permissions-warning" role="status">
-            Saving writes to the live database and notifies the running map server. An online player may need to reopen the base's panel to see the change.
-          </p>}
-          {!owner && <p className="bases-permissions-error" role="alert">
-            This base has no Owner. Set one before saving.
-          </p>}
-          {status && <p
-            className={`inline-task-result${statusKind ? ` result-${statusKind}` : ""}`}
-            role={statusKind === "fail" ? "alert" : "status"}
-            onAnimationEnd={() => {
-              // The shared success animation fades opacity only. Remove this
-              // result after that fade so an invisible flex item does not keep
-              // reserving space in the permissions layout. Failures remain
-              // until the next action so their details are not lost.
-              if (statusKind !== "ok") return;
-              setStatus("");
-              setStatusKind("");
-            }}
-          >
-            <strong>{status}</strong>
-          </p>}
-        </div>
-      </div>
-
-      {/* The bar itself stays full-bleed so its rule and fill span the tab, but
-          the controls sit in a wrapper sharing the content column's width, so
-          Save lines up with the right edge of the roster rows above it rather
-          than drifting off toward the far side of a wide screen. */}
-      <div className="bases-permissions-actions">
-        <div className="bases-permissions-actions-inner">
-          <span className="muted">{dirty ? "Unsaved changes" : ""}</span>
-          <button disabled={!dirty || saving} onClick={() => setDraft(saved)}>Revert</button>
-          <button
-            className="update-action"
-            disabled={!dirty || !owner || saving}
-            title={`Save permissions for ${baseName}`}
-            onClick={() => void save()}
-          >{saving ? "Saving…" : "Save changes"}</button>
         </div>
       </div>
     </div>
