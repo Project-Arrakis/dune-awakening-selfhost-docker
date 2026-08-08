@@ -79,6 +79,43 @@ describe("parseSietchRows", () => {
       ["1", false]
     ]);
   });
+
+  // A short --ids output makes a real id collide with a later row's fallback
+  // whenever that id equals the later row's dimension index -- i.e. whenever
+  // partition 1 is in play, which it is on every stock Survival_1. Rows are
+  // deduplicated by partitionId because the draft layer is keyed by it, so one
+  // of the pair has to go; it must not be the row whose id is real.
+  it("keeps the real id over a colliding dimension-index fallback", () => {
+    const table = [
+      "DIMENSION  DISPLAY NAME                     PASSWORD",
+      "0          Sietch Abbir                     (unset)",
+      "1          Sietch Alraab                    (unset)"
+    ].join("\n");
+
+    // Dimension 0 is partition 1; dimension 1 falls back to its index, also "1".
+    expect(parseSietchRows(table, "1\n")).toEqual([
+      { partitionId: "1", partitionIdFromIds: true, dimension: "0", displayName: "Sietch Abbir", password: "", passwordSet: false, active: true }
+    ]);
+  });
+
+  // `dune sietches list` is a per-map summary -- MAP / MAX DIMENSIONS / ACTIVE
+  // DIMENSIONS / MEMORY / TYPE -- with no partition ids in it at all. Captured
+  // verbatim from the live server. loadSietches falls back to this output when
+  // `sietches dimensions` returns nothing, so it is worth pinning that the
+  // fallback yields no rows rather than rows with invented ids.
+  it("yields nothing from the per-map `sietches list` output", () => {
+    const list = [
+      "MAP                          MAX DIMENSIONS ACTIVE DIMENSIONS  MEMORY     TYPE",
+      "Survival_1                   2              1                  16g        Always-On",
+      "Overmap                      1              1                  3g         Always-On",
+      "SH_Arrakeen                  1              Managed            3g         Dedicated Scaling",
+      "DeepDesert_1                 2              2                  15Gi       Dedicated Scaling",
+      "CB_Ecolab_Bronze_Green_089   1              Managed            6Gi        Dedicated Scaling",
+      "CB_Dungeon_ThePit            1              Managed            2Gi        Dedicated Scaling"
+    ].join("\n");
+
+    expect(parseSietchRows(list, "")).toEqual([]);
+  });
 });
 
 describe("isSietchWriteTarget", () => {

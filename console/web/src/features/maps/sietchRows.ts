@@ -80,7 +80,21 @@ export function parseSietchRows(text: string, idsText = ""): SietchRow[] {
     });
     dimensionIndex += 1;
   }
+  // Deduplicated by partitionId because the whole draft layer is keyed by it
+  // (sietchDrafts[partitionId], sietchPasswordTouched[partitionId]) -- two rows
+  // sharing an id would share one draft, so an edit to either would show in
+  // both. One of a colliding pair therefore has to go.
+  //
+  // Two rows collide when the `--ids` output is shorter than the table: a real
+  // id from --ids equals a later row's dimension-index fallback, which is what
+  // happens whenever partition 1 is in play. Keep the row whose id actually
+  // came from --ids -- plain last-wins would drop the one sietch whose
+  // partition is known and leave an unwritable row standing in its place.
   const unique = new globalThis.Map<string, SietchRow>();
-  for (const row of rows) unique.set(row.partitionId, row);
+  for (const row of rows) {
+    const existing = unique.get(row.partitionId);
+    if (existing?.partitionIdFromIds && !row.partitionIdFromIds) continue;
+    unique.set(row.partitionId, row);
+  }
   return [...unique.values()].sort((a, b) => Number(a.dimension) - Number(b.dimension));
 }
