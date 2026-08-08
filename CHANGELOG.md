@@ -209,10 +209,3 @@ report, and others) — not individually itemized here since this file
 did not exist yet to capture them as they happened. See `git log` and
 the PRs referenced in `docs/security/`, `docs/discord-integration/`,
 and `docs/incidents/` for that history.
-
-## [2026-08-08] — RO Command Polish
-
-### Fixed
-- **Backups + Announcements wired to real data** (#212). `/dune data backups` now runs `dune db list`. `/dune ops announcements` reads from `services/playerAnnouncements.js`. Both previously returned empty stub arrays.
-- **LOGS / MAP_STATE / MAINTENANCE routes now have real handlers** (#211, #213). Three adapter routes were declared as constants but never registered in `DISCORD_LIVE_ADAPTER_ROUTES`, causing 8 bot slash commands (`/dune logs:*`, `/dune server services-detail`, `/dune server maintenance`) to 404 on every call. LOGS tails container logs via `runDockerLogs`; MAP_STATE returns per-map status; MAINTENANCE runs `dune ready`.
-- **Broadcast enabled via env var** (#214). `discordWritesEnabled()` previously hardcoded `return false`, making `/dune admin broadcast` 403 regardless of configuration. Now checks `DUNE_DISCORD_WRITES_ENABLED=1`.
