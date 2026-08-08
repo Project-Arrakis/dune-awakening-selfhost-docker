@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { basesApi, type AutoRefillBase } from "../../api/bases";
 import { mapsApi } from "../../api/maps";
@@ -1204,6 +1204,73 @@ describe("BasesPanel map column", () => {
 
     renderPanel();
     expect(await screen.findByText("PvP Outpost")).toBeInTheDocument();
+
+    expect(mapCells()).toEqual([
+      { map: "Deep Desert", instance: "Partition 8" },
+      { map: "Deep Desert", instance: "Partition 59" }
+    ]);
+  });
+
+  // Two bases on two different maps, which is what makes the id keyspace
+  // matter: a partition number is only unique once its map is fixed.
+  function mockOneBasePerMap() {
+    vi.mocked(basesApi.list).mockResolvedValue({
+      capabilities: { bases: true },
+      totalCount: 2,
+      totalBases: 2,
+      totalPieces: 20,
+      totalPlaceables: 8,
+      rows: [
+        { ...commonRow, base_id: "5001", name: "Basin Hold", map: "HaggaBasin", partition_id: 1, partitionMap: "Survival_1", dimensionIndex: 0, generatorDataAvailable: false, generatorCount: 0 },
+        { ...commonRow, base_id: "5002", name: "PvP Outpost", map: "DeepDesert", partition_id: 8, partitionMap: "DeepDesert_1", dimensionIndex: 0, generatorDataAvailable: false, generatorCount: 0 }
+      ]
+    } as never);
+  }
+
+  // Both assertions below are negative -- an instance name must NOT appear --
+  // so they need a sync point that does not depend on one arriving. A
+  // module-level cache means the panel mounts with the previous test's rows and
+  // fires this effect twice, so the call count is not usable either; wait for
+  // the call the current rows triggered, then drain the resolve pass.
+  async function settleInstanceNames(map: string) {
+    await waitFor(() => expect(vi.mocked(mapsApi.sietchDimensions)).toHaveBeenCalledWith(map, true));
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+  }
+
+  // The dimension table lists rows 0 and 1 while --ids comes back empty, so
+  // parseSietchRows keys those rows by dimension index. Pooled into one map
+  // across every partition map, DeepDesert_1's dimension 1 then answers the
+  // lookup for Survival_1's partition 1 and labels the Hagga Basin base
+  // "Deep Desert PvE".
+  it("does not label a base with another map's instance when partition ids are missing", async () => {
+    mockOneBasePerMap();
+    vi.mocked(mapsApi.sietchDimensions).mockImplementation((map?: string, ids?: boolean) =>
+      Promise.resolve({ stdout: map === "DeepDesert_1" && !ids ? DEEP_DESERT_TABLE : "" }) as never);
+
+    renderPanel();
+    expect(await screen.findByText("Basin Hold")).toBeInTheDocument();
+    await settleInstanceNames("Survival_1");
+
+    expect(mapCells()).toEqual([
+      // Never "Deep Desert PvE": that name is keyed by a dimension index, and
+      // this base is on a different map entirely.
+      { map: "Hagga Basin", instance: "Partition 1" },
+      { map: "Deep Desert", instance: "Partition 8" }
+    ]);
+  });
+
+  // commandJson answers 200 with an empty stdout when the CLI exits non-zero,
+  // so the failure is only visible in exitCode.
+  it("keeps the partition fallback when the CLI reports a non-zero exit", async () => {
+    mockTwoDeepDesertBases();
+    // Plausible stdout, but the command failed -- trusting it would publish
+    // instance names read from a stale or partial table.
+    vi.mocked(mapsApi.sietchDimensions).mockImplementation((_map?: string, ids?: boolean) =>
+      Promise.resolve({ stdout: ids ? DEEP_DESERT_IDS : DEEP_DESERT_TABLE, exitCode: 1 }) as never);
+
+    renderPanel();
+    expect(await screen.findByText("PvP Outpost")).toBeInTheDocument();
+    await settleInstanceNames("DeepDesert_1");
 
     expect(mapCells()).toEqual([
       { map: "Deep Desert", instance: "Partition 8" },

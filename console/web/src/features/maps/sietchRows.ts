@@ -1,5 +1,12 @@
 export type SietchRow = {
   partitionId: string;
+  // False when the `--ids` output ran out and partitionId fell back to the
+  // dimension index. A dimension index is only unique *within one map*, so a
+  // caller pooling rows from several maps (BasesPanel) must drop these rather
+  // than key on them -- otherwise DeepDesert_1's dimension 1 answers to the
+  // lookup for Survival_1's partition 1 and labels a Hagga Basin base
+  // "Deep Desert PvE".
+  partitionIdFromIds: boolean;
   dimension: string;
   displayName: string;
   password: string;
@@ -30,7 +37,15 @@ export function parseSietchRows(text: string, idsText = ""): SietchRow[] {
       const partitionId = ids[dimensionIndex] || dimension;
       const displayName = tableMatch[2].trim();
       const passwordSet = /^\(set\)$/i.test(tableMatch[3]);
-      rows.push({ partitionId, dimension, displayName, password: "", passwordSet, active: true });
+      rows.push({
+        partitionId,
+        partitionIdFromIds: Boolean(ids[dimensionIndex]),
+        dimension,
+        displayName,
+        password: "",
+        passwordSet,
+        active: true
+      });
       dimensionIndex += 1;
       continue;
     }
@@ -43,7 +58,15 @@ export function parseSietchRows(text: string, idsText = ""): SietchRow[] {
     const passwordSet = /\(set\)|\bset\b|true|yes/i.test(passwordValue) || /\(set\)\s*$/i.test(line);
     const password = /\(set\)|\(unset\)|\bset\b|\bunset\b/i.test(passwordValue) ? "" : passwordValue;
     const active = !/\binactive|disabled|stopped\b/i.test(line);
-    rows.push({ partitionId, dimension, displayName, password, passwordSet: passwordSet || Boolean(password), active });
+    rows.push({
+      partitionId,
+      partitionIdFromIds: Boolean(ids[dimensionIndex]),
+      dimension,
+      displayName,
+      password,
+      passwordSet: passwordSet || Boolean(password),
+      active
+    });
     dimensionIndex += 1;
   }
   const unique = new globalThis.Map<string, SietchRow>();

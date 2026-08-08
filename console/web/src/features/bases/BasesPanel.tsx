@@ -268,10 +268,13 @@ function renderBaseCell(row: Record<string, unknown>, column: string, instanceNa
     const mapId = String(row.map || "");
     if (!mapId) return <span className="muted">—</span>;
     const partitionId = String(row.partition_id || "");
+    // Looked up under the same map-scoped key the effect writes: a bare
+    // partition number is only unique once the map it belongs to is fixed.
+    const partitionMap = String(row.partitionMap || "").trim();
     // The instance name if it has arrived, otherwise the partition number.
     // Something identifying always renders, because two instances of one map
     // are otherwise indistinguishable in this column.
-    const instance = (partitionId && instanceNames?.get(partitionId))
+    const instance = (partitionId && partitionMap && instanceNames?.get(`${partitionMap}:${partitionId}`))
       || (partitionId ? `Partition ${partitionId}` : "");
     return (
       <span className="bases-map-cell">
@@ -519,8 +522,18 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
             mapsApi.sietchDimensions(map, false),
             mapsApi.sietchDimensions(map, true)
           ]);
+          // A non-zero exit still answers 200 with empty stdout, so a failed
+          // command is indistinguishable from a map with no sietches unless
+          // the code is checked. Treat it as unreadable and keep the fallback.
+          if (table.exitCode || ids.exitCode) return;
           for (const row of parseSietchRows(table.stdout || "", ids.stdout || "")) {
-            if (row.displayName) resolved.set(row.partitionId, row.displayName);
+            // Keyed by map as well as id, and only for ids that really came
+            // from the --ids output: a row that fell back to its dimension
+            // index would otherwise answer for another map's partition of the
+            // same number and label that base with this map's instance name.
+            if (row.displayName && row.partitionIdFromIds) {
+              resolved.set(`${map}:${row.partitionId}`, row.displayName);
+            }
           }
         } catch {
           // Leave this map on the partition-number fallback.
