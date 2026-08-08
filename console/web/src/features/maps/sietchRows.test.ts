@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseSietchRows } from "./sietchRows";
+import { isSietchWriteTarget, parseSietchRows } from "./sietchRows";
 
 describe("parseSietchRows", () => {
   // Verbatim `dune sietches dimensions DeepDesert_1` output and its --ids
@@ -78,5 +78,38 @@ describe("parseSietchRows", () => {
       ["8", true],
       ["1", false]
     ]);
+  });
+});
+
+describe("isSietchWriteTarget", () => {
+  // Real `dune sietches dimensions Survival_1 --active-only` shape: three
+  // dimensions whose partitions are 1, 31 and 55 -- deliberately not equal to
+  // their dimension indices, which is what makes the fallback dangerous.
+  const SURVIVAL_TABLE = [
+    "DIMENSION  DISPLAY NAME                     PASSWORD",
+    "0          Hagga Basin                      (unset)",
+    "1          Sietch Abbir                     (set)",
+    "2          The Kulon Show                   (unset)"
+  ].join("\n");
+
+  it("accepts every row when the partition ids were read", () => {
+    const rows = parseSietchRows(SURVIVAL_TABLE, "1\n31\n55\n");
+    expect(rows.filter(isSietchWriteTarget).map((row) => row.partitionId)).toEqual(["1", "31", "55"]);
+  });
+
+  // `sietches dimensions --ids` is a separate CLI invocation from the one that
+  // prints the table, and the API answers 200 with empty stdout when it fails.
+  // The rows still parse, but their partition ids are dimension indices: using
+  // one as a write target would rename dimension 1 by sending partition "1",
+  // which is a different sietch entirely.
+  it("rejects every row when the partition ids could not be read", () => {
+    const rows = parseSietchRows(SURVIVAL_TABLE, "");
+    expect(rows.map((row) => row.partitionId)).toEqual(["0", "1", "2"]);
+    expect(rows.filter(isSietchWriteTarget)).toEqual([]);
+  });
+
+  it("rejects only the rows the ids output did not cover", () => {
+    const rows = parseSietchRows(SURVIVAL_TABLE, "1\n31\n");
+    expect(rows.filter(isSietchWriteTarget).map((row) => row.partitionId)).toEqual(["1", "31"]);
   });
 });

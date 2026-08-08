@@ -14,6 +14,17 @@ export type SietchRow = {
   active: boolean;
 };
 
+// Whether a row may be used as the target of a write (rename, set password,
+// save settings, restart). Only rows whose partition id really came from the
+// `--ids` output qualify: a row that fell back to its dimension index would
+// send that index as a partition id and land on whichever partition happens to
+// carry the same number, so renaming dimension 1 would rename partition 1.
+// Reads are unaffected -- a fallback row still renders, it just cannot be
+// written to.
+export function isSietchWriteTarget(row: SietchRow) {
+  return row.partitionIdFromIds;
+}
+
 // Parses the fixed-width table `dune sietches dimensions <map>` prints, pairing
 // each row with the partition id at the same index from the `--ids` output:
 //

@@ -11,7 +11,7 @@ import type { PendingRefills } from "../../api/bases";
 import { friendlyMapName, hasFriendlyMapName } from "./mapNames";
 // Re-exported so existing importers (and MapsPanel.sietchNames.test.ts) keep working.
 export { parseSietchRows, type SietchRow } from "./sietchRows";
-import { parseSietchRows, type SietchRow } from "./sietchRows";
+import { isSietchWriteTarget, parseSietchRows, type SietchRow } from "./sietchRows";
 
 // Taking a partition down is when any generator refill queued for a base on it
 // gets written, so every control that does so says what is waiting on it.
@@ -611,10 +611,15 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
   }
   async function loadSietches(options: { preserveDrafts?: boolean } = {}) {
     const [list, dimensions, ids] = await Promise.all([mapsApi.sietches(), mapsApi.sietchDimensions("Survival_1"), mapsApi.sietchDimensions("Survival_1", true)]);
+    // A non-zero exit still answers 200 with empty stdout, so a failed command
+    // is only visible in exitCode. Discard its output rather than parsing
+    // whatever it managed to print.
+    const dimensionsText = dimensions.exitCode ? "" : (dimensions.stdout || "");
+    const idsText = ids.exitCode ? "" : (ids.stdout || "");
     setSietchesText(list.stdout || "");
-    setSietchDimensionsText(dimensions.stdout || "");
-    setSietchDimensionIdsText(ids.stdout || "");
-    const rows = parseSietchRows(dimensions.stdout || list.stdout || "", ids.stdout || "");
+    setSietchDimensionsText(dimensionsText);
+    setSietchDimensionIdsText(idsText);
+    const rows = parseSietchRows(dimensionsText || list.stdout || "", idsText);
     const drafts = Object.fromEntries(rows.map((row) => [row.partitionId, { displayName: row.displayName, password: row.password }]));
     if (rows.length) {
       if (!options.preserveDrafts) {
@@ -1300,6 +1305,7 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
     }
     if (includePartitions) {
       for (const sietch of survivalSietchRows) {
+        if (!isSietchWriteTarget(sietch)) continue;
         if (partitionId && sietch.partitionId !== partitionId) continue;
         const draft = sietchDrafts[sietch.partitionId] || { displayName: sietch.displayName, password: sietch.password };
         const nameChanged = draft.displayName !== sietch.displayName;
@@ -1342,6 +1348,7 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
     }
   }
   async function saveSietchSettings(sietch: SietchRow) {
+    if (!isSietchWriteTarget(sietch)) return onError(SIETCH_PARTITION_IDS_UNREADABLE);
     const parent = mapRows.find((row) => String(row.map || "") === "Survival_1") || {};
     const draft = sietchDrafts[sietch.partitionId] || { displayName: sietch.displayName, password: sietch.password };
     const originalMemory = memoryInputValue(partitionMemoryValue(memoryText, sietch.partitionId, String(parent.memory || "")));
@@ -1389,6 +1396,7 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
   }
   async function restartSietch(sietch: SietchRow, resultTarget: string) {
     if (!sietch.active) return;
+    if (!isSietchWriteTarget(sietch)) return onError(SIETCH_PARTITION_IDS_UNREADABLE);
     const label = sietch.displayName || `Partition ${sietch.partitionId}`;
     if (!(await confirmAction(`Restart ${label}?`, {
       title: "Restart Sietch",
@@ -2395,6 +2403,11 @@ export function valuesForDirtyFields(original: Record<string, string>, draft: Re
 }
 
 const SIETCH_PASSWORD_MASK = "********";
+
+// Shown instead of writing when isSietchWriteTarget rejects a row, so a
+// refused Restart or Save says why rather than appearing to do nothing.
+const SIETCH_PARTITION_IDS_UNREADABLE =
+  "Sietch partition IDs could not be read from the server, so this change cannot be applied to the right Sietch. Reload the Maps tab and try again.";
 
 function memoryForMap(rows: LiveMapMemoryRow[], map: string, row?: Record<string, unknown>) {
   const normalized = normalizeMapKey(map);
