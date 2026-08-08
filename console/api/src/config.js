@@ -15,6 +15,7 @@ export function loadConfig() {
 
   const adminPasswordFile = resolve(secretsDir, "admin-web-password.txt");
   const adminPasswordEnvManaged = Boolean(process.env.ADMIN_PASSWORD);
+  const oauthHomeGuildId = /^\d{17,19}$/.test(process.env.DISCORD_HOME_GUILD_ID || "") ? process.env.DISCORD_HOME_GUILD_ID : "";
   return {
     appName: APP_NAME,
     version: readConsoleVersion(repoRoot),
@@ -33,7 +34,8 @@ export function loadConfig() {
     discordOAuthConfigured: Boolean(
       process.env.DISCORD_OAUTH_CLIENT_ID &&
       (process.env.DISCORD_OAUTH_CLIENT_SECRET || existsSync(resolve(secretsDir, "discord-oauth-client-secret.txt"))) &&
-      process.env.DISCORD_OAUTH_REDIRECT_URI
+      process.env.DISCORD_OAUTH_REDIRECT_URI &&
+      oauthHomeGuildId
     ),
     discordOAuthClientId: process.env.DISCORD_OAUTH_CLIENT_ID || "",
     discordOAuthClientSecret: readInlineOrFile(process.env.DISCORD_OAUTH_CLIENT_SECRET, resolve(secretsDir, "discord-oauth-client-secret.txt")),
@@ -41,7 +43,7 @@ export function loadConfig() {
     discordOAuthApiBaseUrl: process.env.DISCORD_OAUTH_BASE_URL || "https://discord.com/api/v10",
     discordOAuthAllowOwnerBootstrap: process.env.DISCORD_OAUTH_ALLOW_OWNER_BOOTSTRAP === "1",
     discordOAuthOwnerAllowlist: String(process.env.DISCORD_OAUTH_OWNER_ALLOWLIST || "").split(",").map((item) => item.trim()).filter((item) => /^\d{17,19}$/.test(item)),
-    discordHomeGuildId: /^\d{17,19}$/.test(process.env.DISCORD_HOME_GUILD_ID || "") ? process.env.DISCORD_HOME_GUILD_ID : "",
+    discordHomeGuildId: oauthHomeGuildId,
     discordBotHandoffSecret: readInlineOrFile(process.env.DISCORD_BOT_HANDOFF_SECRET, resolve(secretsDir, "discord-bot-handoff-secret.txt")),
     discordBotHandoffUrl: (process.env.DISCORD_BOT_HANDOFF_URL || "").replace(/\/+$/, ""),
     discordHandoffEnabled: Boolean(

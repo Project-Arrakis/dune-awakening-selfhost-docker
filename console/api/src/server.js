@@ -206,6 +206,11 @@ createServer(async (req, res) => {
   if (!config.authDisabled) {
     console.log("Initial admin password is stored in runtime/secrets/admin-web-password.txt");
   }
+  if (process.env.DISCORD_OAUTH_CLIENT_ID && !config.discordOAuthConfigured) {
+    console.warn("Warning: DISCORD_OAUTH_CLIENT_ID is set but Discord OAuth is incomplete.");
+    console.warn("Make sure DISCORD_HOME_GUILD_ID, DISCORD_OAUTH_REDIRECT_URI, and the client secret are all configured.");
+    console.warn("See .env.example for the full list of Discord OAuth environment variables.");
+  }
   scheduleBootAutoStart();
   publicDirectory.start();
   if (discordAdapterEnabled(config)) {
