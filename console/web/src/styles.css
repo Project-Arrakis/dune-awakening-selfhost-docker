@@ -3866,10 +3866,10 @@ td :where(.service-actions, .action-row, .map-action-buttons) { max-width: 100%;
   grid-template-columns: auto 1fr auto;
   align-items: center;
   gap: .5rem;
-  padding: .45rem .85rem;
+  padding: .55rem .85rem;
   cursor: pointer;
   transition: background .1s;
-  border-bottom: 1px solid rgba(255,255,255,.04);
+  border-bottom: 1px solid rgba(255,255,255,.06);
 }
 
 .iam-perm-row:last-child { border-bottom: none; }
@@ -3886,18 +3886,20 @@ td :where(.service-actions, .action-row, .map-action-buttons) { max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: #aaa;
-  font-size: .85rem;
+  color: #c0c0c0;
+  font-size: .9rem;
+  line-height: 1.5;
 }
 
-.iam-perm-row.perm-on .iam-perm-label { color: var(--success-text, #9be6bd); font-weight: 500; }
-.iam-perm-row.perm-off .iam-perm-label { color: var(--text-muted, #888); }
+.iam-perm-row.perm-on .iam-perm-label { color: #5ddb8d; font-weight: 600; }
+.iam-perm-row.perm-off .iam-perm-label { color: #b0b0b0; }
 
 .iam-perm-action {
-  font-size: .72rem;
-  color: var(--text-muted, #666);
+  font-size: .75rem;
+  color: #888;
   font-family: ui-monospace, SFMono-Regular, monospace;
   white-space: nowrap;
+  line-height: 1.5;
 }
 
 /* JSON Editor */
