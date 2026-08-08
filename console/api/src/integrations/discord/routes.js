@@ -1,5 +1,6 @@
 import { timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { audit } from "../../audit.js";
 import {
   discordAdapterEnabled, discordAdapterErrorResponse, discordAdapterHealth,
   discordAdapterPopulation, discordAdapterReadiness, discordAdapterServices,
@@ -243,10 +244,12 @@ export async function handleDiscordAdapterRoute({ req, res, path, config, readJs
       const body = await readJson(req);
       const actor = validateDiscordActor(body.actor);
       requireSelfScopedCapability(actor, mapping, DISCORD_CAPABILITIES.PLAYER_LINK_WRITE);
-      return json(res, 200, await linkPlayerProvider(db, config, {
+      const linkResult = await linkPlayerProvider(db, config, {
         discordUserId: actor.userId,
         characterName: body.characterName
-      }));
+      });
+      audit(config, req, "discord.player.link", { actorId: actor.userId, characterName: body.characterName, ok: linkResult.ok });
+      return json(res, 200, linkResult);
     }
 
     // Players link verify
@@ -265,9 +268,11 @@ export async function handleDiscordAdapterRoute({ req, res, path, config, readJs
       const body = await readJson(req);
       const actor = validateDiscordActor(body.actor);
       requireSelfScopedCapability(actor, mapping, DISCORD_CAPABILITIES.PLAYER_LINK_WRITE);
-      return json(res, 200, await unlinkProvider(db, {
+      const unlinkResult = await unlinkProvider(db, {
         discordUserId: actor.userId
-      }));
+      });
+      audit(config, req, "discord.player.unlink", { actorId: actor.userId, ok: unlinkResult.ok });
+      return json(res, 200, unlinkResult);
     }
 
     // Multi-account: link an additional character (FINDING-LINK-6).
