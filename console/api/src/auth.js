@@ -43,9 +43,10 @@ export function createAuth(config) {
   function makeSession({ tier = "owner", userId = "", username = "", guildId = "" } = {}) {
     const id = randomBytes(32).toString("base64url");
     const csrf = randomBytes(24).toString("base64url");
-    const expiresAt = now() + 12 * 60 * 60 * 1000;
-    const payload = Buffer.from(JSON.stringify({ id, tier, userId, exp: expiresAt })).toString("base64url");
-    sessions.set(id, { id, csrf, expiresAt, tier, userId, username, guildId });
+    const createdAt = now();
+    const expiresAt = createdAt + 12 * 60 * 60 * 1000;
+    const payload = Buffer.from(JSON.stringify({ id, tier, userId, exp: expiresAt, iat: createdAt })).toString("base64url");
+    sessions.set(id, { id, csrf, expiresAt, createdAt, tier, userId, username, guildId });
     return { id, csrf, expiresAt, tier, userId, username, guildId, cookie: `${payload}.${sign(payload)}` };
   }
 
@@ -60,13 +61,16 @@ export function createAuth(config) {
     if (!payload || !sig || !constantTimeStringEqual(sign(payload), sig)) return null;
 
     // Decode the payload — may be a legacy plain session id or a JSON bundle.
-    let id, tier, userId, exp;
+    const ABSOLUTE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+    let id, tier, userId, exp, iat;
     try {
       const obj = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
       id = String(obj.id || "");
       tier = String(obj.tier || "owner");
       userId = String(obj.userId || "");
       exp = Number(obj.exp) || 0;
+      iat = Number(obj.iat) || 0;
+      if (iat && now() - iat > ABSOLUTE_MAX_AGE_MS) return null;
     } catch {
       // Legacy format: payload is the plain session id with no JSON structure.
       id = payload;
@@ -87,6 +91,7 @@ export function createAuth(config) {
         id,
         csrf: randomBytes(24).toString("base64url"),
         expiresAt: exp || now() + 12 * 60 * 60 * 1000,
+        createdAt: iat || now(),
         tier,
         userId,
         username: "",
