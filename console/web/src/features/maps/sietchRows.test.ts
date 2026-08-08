@@ -58,7 +58,25 @@ describe("parseSietchRows", () => {
   it("falls back to the dimension when no partition ids are supplied", () => {
     const table = "0          Solo Sietch                      (unset)";
     expect(parseSietchRows(table)).toEqual([
-      { partitionId: "0", dimension: "0", displayName: "Solo Sietch", password: "", passwordSet: false, active: true }
+      // partitionIdFromIds false: this id is a dimension index wearing the
+      // partition field, unique only within this one map.
+      { partitionId: "0", partitionIdFromIds: false, dimension: "0", displayName: "Solo Sietch", password: "", passwordSet: false, active: true }
+    ]);
+  });
+
+  // The --ids call can succeed with fewer ids than the table has rows. Rows
+  // past the end must be marked as fallbacks too, not just an all-empty ids
+  // list -- BasesPanel pools rows from several maps and keys on this flag.
+  it("marks only the rows an id actually covered", () => {
+    const table = [
+      "DIMENSION  DISPLAY NAME                     PASSWORD",
+      "0          Deep Desert PvP                  (unset)",
+      "1          Deep Desert PvE                  (unset)"
+    ].join("\n");
+
+    expect(parseSietchRows(table, "8\n").map((row) => [row.partitionId, row.partitionIdFromIds])).toEqual([
+      ["8", true],
+      ["1", false]
     ]);
   });
 });
