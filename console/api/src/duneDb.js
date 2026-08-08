@@ -8737,6 +8737,16 @@ export async function getLinkedPlayer(db, discordUserId) {
   return multiAccountResult.rows[0] || null;
 }
 
+export async function getAllLinkedPlayers(db, discordUserId) {
+  const result = await db.query(`
+    select dal.player_controller_id,
+           coalesce(ps.character_name, '') as character_name
+    from console.discord_account_links dal
+    join dune.player_state ps on ps.player_controller_id::text = dal.player_controller_id
+    where dal.discord_user_id = $1`, [String(discordUserId)]);
+  return result.rows;
+}
+
 // Checks the given discord_*_links table (in the console schema — see
 // migrateDiscordAdapterSchema()'s comment for why this project's own
 // state lives there, not in dune) for a row that would conflict with

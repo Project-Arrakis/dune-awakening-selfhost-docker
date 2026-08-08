@@ -421,6 +421,10 @@ async function handleApi(req, res) {
   if (path === "/api/auth/me") {
     const session = auth.requireAuth(req, res);
     if (!session) return;
+    let linkedCharacters = [];
+    if (session.userId) {
+      try { linkedCharacters = await duneDb.getAllLinkedPlayers(pool, session.userId) || []; } catch { linkedCharacters = []; }
+    }
     return json(res, 200, {
       user: {
         id: session.userId || "local-admin",
@@ -428,8 +432,17 @@ async function handleApi(req, res) {
         tier: session.tier || "owner",
         guildId: session.guildId || ""
       },
+      linkedCharacters,
       allowedActions: resolveAllowedActions(session.tier || "owner")
     });
+  }
+  if (path === "/api/auth/characters" && req.method === "GET") {
+    const session = auth.requireAuth(req, res);
+    if (!session) return;
+    try {
+      const chars = await duneDb.getAllLinkedPlayers(pool, session.userId);
+      return json(res, 200, { characters: chars || [] });
+    } catch { return json(res, 200, { characters: [] }); }
   }
   if (path === "/api/auth/discord/start" && req.method === "GET") {
     if (!config.discordOAuthConfigured) {
