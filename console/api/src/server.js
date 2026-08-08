@@ -906,6 +906,12 @@ async function addonBridgeRoute(req, res, path) {
     audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, ok: true });
     return json(res, 200, { ok: true, result });
   }
+  if (action === "ops.location.activity") {
+    // Permanently out of scope — per-player location tracking belongs to the
+    // Console's map UI. The addon handles this gracefully by showing the
+    // Location tab as permanently unavailable.
+    return json(res, 200, { ok: true, status: "planned", reason: "not_implemented" });
+  }
   if (action === "ops.resources.summary") {
     const addon = assertInstalledAddonPermission(config, id, "ops:read");
     const result = await duneDb.addonOpsResourcesSummary(db, config);
