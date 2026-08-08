@@ -225,6 +225,8 @@ export async function handleDiscordAdapterRoute({ req, res, path, config, readJs
 
     // Announcements — real data from player announcements service
     if (path === DISCORD_ADAPTER_ROUTES.ANNOUNCEMENTS && req.method === "POST") {
+      const body = await readJson(req);
+      validateDiscordActor(body.actor);
       try {
         const result = await readPlayerAnnouncements(config);
         return json(res, 200, { ok: true, announcements: result || [] });
@@ -233,6 +235,7 @@ export async function handleDiscordAdapterRoute({ req, res, path, config, readJs
 
     // Backups — real data from dune db list
     if (path === DISCORD_ADAPTER_ROUTES.BACKUPS_LIST && req.method === "GET") {
+      // Backups is a GET route — no actor body to validate
       try {
         const { stdout } = await runDune(config, buildDuneArgs("db", ["list"]));
         return json(res, 200, { ok: true, backups: stdout.trim() || "No backups found." });
@@ -468,11 +471,14 @@ export async function handleDiscordAdapterRoute({ req, res, path, config, readJs
 
     // Maintenance — health summary via dune-ready
     if (path === DISCORD_ADAPTER_ROUTES.MAINTENANCE && req.method === "POST") {
+      const body = await readJson(req);
+      validateDiscordActor(body.actor);
       return json(res, 200, await maintenanceProvider(config));
     }
 
     // Logs — tail container logs for a named service
     if (path === DISCORD_ADAPTER_ROUTES.LOGS && req.method === "POST") {
+      validateDiscordActor(body.actor);
       const body = await readJson(req);
       const service = String(body.service || "").trim();
       if (!service) return json(res, 400, { ok: false, error: "Service name required (body.service)." });
@@ -481,6 +487,8 @@ export async function handleDiscordAdapterRoute({ req, res, path, config, readJs
 
     // Map state — per-map status details
     if (path === DISCORD_ADAPTER_ROUTES.MAP_STATE && req.method === "POST") {
+      const body = await readJson(req);
+      validateDiscordActor(body.actor);
       return json(res, 200, await mapStateProvider(config));
     }
 
