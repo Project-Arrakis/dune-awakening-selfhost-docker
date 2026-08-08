@@ -24,10 +24,11 @@ export function PlayerLinkPrompt() {
     <section className="link-prompt">
       <div className="link-prompt-card">
         <h2>Link Your Character</h2>
-        <p>To see your personal data (inventory, storage, guild, bases), link your Discord account to your in-game character.</p>
+        <p>When you link your Discord account to your in-game character, your data views are scoped to only show your character, guild, bases, and storage.</p>
         <p className="link-prompt-instruction">
-          In Discord, use <code>/dune player link &lt;name&gt;</code> to link your character, then refresh this page.
+          In your Discord server, use <code>/dune player link YourCharacterName</code> to link, then refresh this page.
         </p>
+        <p style="font-size:.8rem;color:var(--text-muted,#888);margin-top:.5rem;">Without linking, you can browse world-level data (maps, sietches, server status) but not personal player data.</p>
         <button className="btn" onClick={() => setDismissed(true)}>Continue without linking</button>
       </div>
     </section>
