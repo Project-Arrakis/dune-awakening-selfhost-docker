@@ -3,8 +3,8 @@
 **Status:** Current | **Last Updated:** August 2026
 
 The Bases panel can edit who owns a base and who it is shared with. The editor
-lives in the **Permissions** tab of an expanded base row, alongside the existing
-**Power** tab.
+lives in the **Sub-Fief Permissions** tab of an expanded base row, alongside the
+existing **Power** tab.
 
 Unlike generator refills, permission changes are **not** queued for a map
 restart — they reach a running map immediately. See
@@ -58,7 +58,7 @@ request.
 
 ## System custodian
 
-The Permissions tab offers a transfer action when it detects a supported
+The Sub-Fief Permissions tab offers a transfer action when it detects a supported
 reserved identity. It prefers the RedBlink `Server` persona (`9000002xx`) and
 falls back to Funcom's `GM` persona (`9000001xx`), which is present in some
 battlegroup databases instead. Detection uses the complete stable
@@ -181,7 +181,7 @@ rows: a base whose roster is being fully replaced may have no rank rows, and
 have a row in `dune.buildings` while its link down to a permission actor is
 broken. **Such a base does not appear in the Bases table** — `listBases` still
 inner-joins the same chain, so it's excluded from the list entirely rather than
-shown with a broken Permissions tab. The distinct error instead surfaces from
+shown with a broken Sub-Fief Permissions tab. The distinct error instead surfaces from
 paths that resolve a base id directly: a `GET`/`PUT` to
 `/api/bases/:baseId/permissions` with a stale or copied id returns *"This base
 has no resolvable owner entity, so permission editing is unavailable for it,"*
