@@ -3831,7 +3831,6 @@ td :where(.service-actions, .action-row, .map-action-buttons) { max-width: 100%;
 .iam-ns-card {
   border: 1px solid var(--border-color, #333);
   border-radius: 6px;
-  overflow: hidden;
 }
 
 .iam-ns-header {
@@ -3841,6 +3840,7 @@ td :where(.service-actions, .action-row, .map-action-buttons) { max-width: 100%;
   padding: .45rem .75rem;
   background: var(--bg-secondary, #1a1a2e);
   border-bottom: 1px solid var(--border-color, #222);
+  border-radius: 6px 6px 0 0;
 }
 
 .iam-ns-name {
@@ -3855,16 +3855,15 @@ td :where(.service-actions, .action-row, .map-action-buttons) { max-width: 100%;
 }
 
 .iam-ns-actions {
-  padding: .15rem 0;
+  padding: 0;
 }
 
 .iam-perm-row {
   display: flex;
   align-items: center;
   gap: .55rem;
-  padding: .32rem .75rem;
+  padding: .35rem .75rem;
   cursor: pointer;
-  font-size: .82rem;
   transition: background .1s;
 }
 
@@ -3876,28 +3875,24 @@ td :where(.service-actions, .action-row, .map-action-buttons) { max-width: 100%;
 }
 
 .iam-perm-label {
-  flex: 1;
-  min-width: 8rem;
-  color: #e8d5a3;
-  font-size: .85rem;
-  font-weight: 600;
-  background: rgba(212,168,83,.12);
+  flex: 1 0 auto;
+  color: #d4c5a9;
+  font-size: .82rem;
+  line-height: 1.4;
 }
 
-.iam-perm-row.perm-on .iam-perm-label { color: #2ecc71; font-weight: 500; }
-.iam-perm-row.perm-off .iam-perm-label { color: #999; }
+.iam-perm-row.perm-on .iam-perm-label { color: #4caf50; }
+.iam-perm-row.perm-off .iam-perm-label { color: #8a8a8a; }
 
 .iam-perm-action {
-  font-size: .7rem;
-  color: #7a8a9a;
+  font-size: .66rem;
+  color: #5a6a7a;
   font-family: ui-monospace, SFMono-Regular, monospace;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 18rem;
-  background: rgba(122,138,154,.08);
-  padding: .1rem .35rem;
-  border-radius: 3px;
+  max-width: 16rem;
+  flex-shrink: 1;
 }
 
 /* JSON Editor */
