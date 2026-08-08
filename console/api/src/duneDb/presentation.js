@@ -36,6 +36,14 @@ const SPECIALIZATION_CUMULATIVE_XP_BY_LEVEL = [
 
 const FACTION_TIER_THRESHOLDS = [0, 99, 249, 499, 999, 1999, 2224, 2524, 2899, 3349, 3874, 4474, 5149, 5899, 6724, 7624, 8599, 9649, 10774, 11974, 12474];
 
+const RECIPE_DISPLAY_ALIASES = new Map([
+  ["AssaultRifleRecipe", "Karpov 38"]
+]);
+
+const RESEARCH_DISPLAY_ALIASES = new Map([
+  ["RCP_AssaultRifleRecipe", "Karpov 38"]
+]);
+
 export function xpToLevel(xp) {
   if (xp <= 0) return 0;
   let lo = 1;
@@ -204,6 +212,8 @@ export function validateRecipeId(value) {
 }
 
 export function recipeDisplayName(recipeId) {
+  const alias = RECIPE_DISPLAY_ALIASES.get(String(recipeId || ""));
+  if (alias) return alias;
   return String(recipeId || "")
     .replace(/_?recipe$/i, "")
     .replace(/_/g, " ")
@@ -273,6 +283,8 @@ export function researchRecipeId(itemKey) {
 }
 
 export function researchDisplayName(itemKey) {
+  const alias = RESEARCH_DISPLAY_ALIASES.get(String(itemKey || ""));
+  if (alias) return alias;
   return String(itemKey || "")
     .replace(/^(RCP_|DA_GRP_|BLD_)/, "")
     .replace(/_?Patent$/i, "")

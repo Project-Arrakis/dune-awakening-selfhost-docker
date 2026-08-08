@@ -53,7 +53,9 @@ test("display helpers normalize game identifiers", () => {
     DA_MQ_NPEAutocompleted: "The Fall of the Proteus"
   }), "The Fall of the Proteus");
   assert.equal(recipeDisplayName("Buggy_TreadWheel_Recipe"), "Buggy Tread Wheel");
+  assert.equal(recipeDisplayName("AssaultRifleRecipe"), "Karpov 38");
   assert.equal(researchDisplayName("RCP_SandbikeEnginePatent"), "Sandbike Engine");
+  assert.equal(researchDisplayName("RCP_AssaultRifleRecipe"), "Karpov 38");
 });
 
 test("journey tree helpers resolve parents, depth, and subtree tags", () => {
