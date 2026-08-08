@@ -1005,8 +1005,9 @@ describe("BasesPanel combined fuel/water queue and stalled banners", () => {
 
     renderPanel();
 
-    expect(await screen.findByText("1 refill queued")).toBeInTheDocument();
-    // The banner's title icons and each row's badges are gated on
+    expect(await screen.findByText("Refills queued")).toBeInTheDocument();
+    expect(screen.getByText("1 water")).toBeInTheDocument();
+    // The banner's title badges and each row's badges are gated on
     // fuelCount/waterCount independently -- with zero fuel queued, no "fuel"
     // badge should render alongside the water one.
     expect(screen.queryByText(/\d+ fuel\b/)).not.toBeInTheDocument();
@@ -1071,8 +1072,11 @@ describe("BasesPanel combined fuel/water queue and stalled banners", () => {
     renderPanel();
 
     // One target, one queued fuel refill and one queued water refill: a single
-    // combined banner, not two separate ones.
-    expect(await screen.findByText("2 refills queued")).toBeInTheDocument();
+    // combined banner, not two separate ones, and the title splits the total
+    // per resource rather than reporting a bare "2".
+    expect(await screen.findByText("Refills queued")).toBeInTheDocument();
+    expect(screen.getByText("1 fuel")).toBeInTheDocument();
+    expect(screen.getByText("1 water")).toBeInTheDocument();
     expect(document.querySelectorAll(".bases-pending-refills")).toHaveLength(1);
   });
 });

@@ -1658,11 +1658,23 @@ body.debug .technical-details { display: block; }
 .bases-fuel-alert { color: var(--danger-text); }
 .bases-pagination-footer { margin-top: 12px; margin-bottom: 0; align-items: center; }
 .bases-pagination-footer .action-help-note { margin: 0; }
-.pending-refill-note, .pending-refill-badge {
+.pending-refill-badge {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   color: var(--title);
+}
+/* Deliberately not a flex row. The sentence has to wrap inside the narrow Home
+   card, and as a flex item it wrapped as one block shoved to the right of the
+   badges rather than flowing around them. Normal inline flow lets the badges
+   sit in the text like chips at any width. */
+.pending-refill-note {
+  display: block;
+  color: var(--title);
+}
+.pending-refill-note .bases-queue-badge {
+  margin-right: 6px;
+  vertical-align: 1px;
 }
 .pending-refill-badge {
   gap: 4px;
