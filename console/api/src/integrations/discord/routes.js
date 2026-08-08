@@ -31,7 +31,7 @@ import {
   setDefaultAccountProvider,
   linkAccountViaSteamProvider
 } from "./multiAccountLinkProvider.js";
-import { verifyActorSignature } from "./actorSignature.js";
+import { verifyActorSignature, actorSignatureRequired } from "./actorSignature.js";
 import {
   playerInventoryProvider,
   playerStorageProvider,
@@ -234,7 +234,7 @@ export async function handleDiscordAdapterRoute({ req, res, path, config, readJs
     // Backups — real data from dune db list
     if (path === DISCORD_ADAPTER_ROUTES.BACKUPS_LIST && req.method === "GET") {
       try {
-        const { stdout } = await runDune(config.repoRoot, "db", ["list"]);
+        const { stdout } = await runDune(config, buildDuneArgs("db", ["list"]));
         return json(res, 200, { ok: true, backups: stdout.trim() || "No backups found." });
       } catch { return json(res, 200, { ok: false, backups: [], error: "dune db list unavailable" }); }
     }
@@ -493,7 +493,7 @@ export async function handleDiscordAdapterRoute({ req, res, path, config, readJs
 
 async function maintenanceProvider(config) {
   try {
-    const result = await runDune(config.repoRoot, "ready", []);
+    const result = await runDune(config, buildDuneArgs("ready", ["ready"]));
     return { ok: true, output: result.stdout?.trim() || "" };
   } catch { return { ok: true, output: "dune ready unavailable" }; }
 }
@@ -507,7 +507,7 @@ async function logsProvider(config, service) {
 
 async function mapStateProvider(config) {
   try {
-    const result = await runDune(config.repoRoot, "status", ["--json"]);
+    const result = await runDune(config, buildDuneArgs("status", ["--json"]));
     const status = typeof result === "string" ? JSON.parse(result) : result;
     return { ok: true, maps: status.maps || [] };
   } catch { return { ok: true, maps: [] }; }
