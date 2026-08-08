@@ -141,6 +141,17 @@ process.on("unhandledRejection", (error) => {
   console.error(`Unhandled background rejection: ${redact(error?.message || error)}`);
 });
 
+async function resolvePlayerScopedIds(session, db) {
+  if (!session || !session.userId) return { scoped: true, ids: new Set() };
+  if (session.tier !== "player") return { scoped: false, ids: new Set() };
+  try {
+    const chars = await duneDb.getAllLinkedPlayers(db, session.userId);
+    return { scoped: true, ids: new Set(chars.map(c => c.player_controller_id)) };
+  } catch {
+    return { scoped: true, ids: new Set() };
+  }
+}
+
 createServer(async (req, res) => {
   if (config.allowedIps.length) {
     const remoteIp = (req.socket.remoteAddress || "").replace(/^::ffff:/, "");
@@ -423,7 +434,7 @@ async function handleApi(req, res) {
     if (!session) return;
     let linkedCharacters = [];
     if (session.userId) {
-      try { linkedCharacters = await duneDb.getAllLinkedPlayers(pool, session.userId) || []; } catch { linkedCharacters = []; }
+      try { linkedCharacters = await duneDb.getAllLinkedPlayers(db, session.userId) || []; } catch { linkedCharacters = []; }
     }
     return json(res, 200, {
       user: {
@@ -440,7 +451,7 @@ async function handleApi(req, res) {
     const session = auth.requireAuth(req, res);
     if (!session) return;
     try {
-      const chars = await duneDb.getAllLinkedPlayers(pool, session.userId);
+      const chars = await duneDb.getAllLinkedPlayers(db, session.userId);
       return json(res, 200, { characters: chars || [] });
     } catch { return json(res, 200, { characters: [] }); }
   }
@@ -639,15 +650,20 @@ async function handleApi(req, res) {
     return json(res, 200, { results });
   }
 
-  if (path === "/api/players") return dbJson(res, () => duneDb.listPlayers(db, {
-    q: url.searchParams.get("q") || "",
-    page: url.searchParams.get("page") || 0,
-    pageSize: url.searchParams.get("pageSize") || 50,
-    status: url.searchParams.get("status") || "all",
-    sortColumn: url.searchParams.get("sortColumn") || "character_name",
-    sortDirection: url.searchParams.get("sortDirection") || "asc",
-    bannedFlsIds: bannedFlsIds(config.repoRoot)
-  }));
+  if (path === "/api/players") return dbJson(res, async () => {
+    const session = auth.readSession(req);
+    const scope = await resolvePlayerScopedIds(session, db);
+    return duneDb.listPlayers(db, {
+      q: url.searchParams.get("q") || "",
+      page: url.searchParams.get("page") || 0,
+      pageSize: url.searchParams.get("pageSize") || 50,
+      status: url.searchParams.get("status") || "all",
+      sortColumn: url.searchParams.get("sortColumn") || "character_name",
+      sortDirection: url.searchParams.get("sortDirection") || "asc",
+      bannedFlsIds: bannedFlsIds(config.repoRoot),
+      controllerIds: scope.scoped ? Array.from(scope.ids) : undefined
+    });
+  });
   if (path === "/api/players/online") return dbJson(res, () => duneDb.listPlayers(db, {
     status: "online",
     page: url.searchParams.get("page") || 0,

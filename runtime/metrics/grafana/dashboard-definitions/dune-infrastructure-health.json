@@ -1,6 +1,9 @@
 {
+  "uid": "dune-infrastructure-health",
   "title": "Dune — Infrastructure Health",
   "tags": ["dune", "soc"],
+  "schemaVersion": 39,
+  "version": 1,
   "refresh": "30s",
   "panels": [
     {

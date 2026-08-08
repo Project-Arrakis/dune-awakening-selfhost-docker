@@ -1,6 +1,9 @@
 {
+  "uid": "dune-player-economy",
   "title": "Dune — Player & Economy",
   "tags": ["dune", "gameops"],
+  "schemaVersion": 39,
+  "version": 1,
   "refresh": "60s",
   "panels": [
     {
