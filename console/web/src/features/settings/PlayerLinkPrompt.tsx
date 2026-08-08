@@ -28,7 +28,7 @@ export function PlayerLinkPrompt() {
         <p className="link-prompt-instruction">
           In your Discord server, use <code>/dune player link YourCharacterName</code> to link, then refresh this page.
         </p>
-        <p style="font-size:.8rem;color:var(--text-muted,#888);margin-top:.5rem;">Without linking, you can browse world-level data (maps, sietches, server status) but not personal player data.</p>
+        <p style={{fontSize:".8rem",color:"var(--text-muted,#888)",marginTop:".5rem"}}>Without linking, you can browse world-level data (maps, sietches, server status) but not personal player data.</p>
         <button className="btn" onClick={() => setDismissed(true)}>Continue without linking</button>
       </div>
     </section>
