@@ -1,0 +1,91 @@
+{
+  "title": "Dune — Player & Economy",
+  "tags": ["dune", "gameops"],
+  "refresh": "60s",
+  "panels": [
+    {
+      "title": "Players Online",
+      "type": "stat",
+      "gridPos": {"x": 0, "y": 0, "w": 6, "h": 3},
+      "targets": [{"expr": "dune_players_online", "legendFormat": "Online"}]
+    },
+    {
+      "title": "Active (24h)",
+      "type": "stat",
+      "gridPos": {"x": 6, "y": 0, "w": 6, "h": 3},
+      "targets": [{"expr": "dune_players_active_24h", "legendFormat": "24h"}]
+    },
+    {
+      "title": "New Players (7d)",
+      "type": "stat",
+      "gridPos": {"x": 12, "y": 0, "w": 6, "h": 3},
+      "targets": [{"expr": "dune_players_new", "legendFormat": "New"}]
+    },
+    {
+      "title": "Returning Players",
+      "type": "stat",
+      "gridPos": {"x": 18, "y": 0, "w": 6, "h": 3},
+      "targets": [{"expr": "dune_players_returning", "legendFormat": "Returning"}]
+    },
+    {
+      "title": "Player Count — 30d Trend",
+      "type": "timeseries",
+      "gridPos": {"x": 0, "y": 3, "w": 24, "h": 8},
+      "targets": [
+        {"expr": "dune_players_online", "legendFormat": "Online"},
+        {"expr": "dune_players_active_24h", "legendFormat": "Active 24h"}
+      ]
+    },
+    {
+      "title": "Solaris Supply",
+      "type": "stat",
+      "gridPos": {"x": 0, "y": 11, "w": 6, "h": 3},
+      "targets": [{"expr": "dune_economy_supply", "legendFormat": "Supply"}]
+    },
+    {
+      "title": "Active Orders",
+      "type": "stat",
+      "gridPos": {"x": 6, "y": 11, "w": 6, "h": 3},
+      "targets": [{"expr": "dune_economy_active_orders", "legendFormat": "Orders"}]
+    },
+    {
+      "title": "Currency Holders",
+      "type": "stat",
+      "gridPos": {"x": 12, "y": 11, "w": 6, "h": 3},
+      "targets": [{"expr": "dune_economy_holders", "legendFormat": "Holders"}]
+    },
+    {
+      "title": "Total Deaths",
+      "type": "stat",
+      "gridPos": {"x": 18, "y": 11, "w": 6, "h": 3},
+      "targets": [{"expr": "dune_combat_deaths_total", "legendFormat": "Deaths"}]
+    },
+    {
+      "title": "Spice Fields — Hagga Basin",
+      "type": "gauge",
+      "gridPos": {"x": 0, "y": 14, "w": 8, "h": 4},
+      "targets": [{"expr": "dune_spice_active_fields{map=\"haggaBasin\"}", "legendFormat": "Fields"}]
+    },
+    {
+      "title": "Spice Fields — Deep Desert",
+      "type": "gauge",
+      "gridPos": {"x": 8, "y": 14, "w": 8, "h": 4},
+      "targets": [{"expr": "dune_spice_active_fields{map=\"deepDesert\"}", "legendFormat": "Fields"}]
+    },
+    {
+      "title": "Economy — 30d Trend",
+      "type": "timeseries",
+      "gridPos": {"x": 16, "y": 14, "w": 8, "h": 4},
+      "targets": [{"expr": "dune_economy_supply", "legendFormat": "Supply"}]
+    },
+    {
+      "title": "Spice Remaining — 30d Trend",
+      "type": "timeseries",
+      "gridPos": {"x": 0, "y": 18, "w": 24, "h": 6},
+      "targets": [
+        {"expr": "dune_spice_remaining{map=\"haggaBasin\"}", "legendFormat": "Hagga Basin"},
+        {"expr": "dune_spice_remaining{map=\"deepDesert\"}", "legendFormat": "Deep Desert"}
+      ]
+    }
+  ]
+}

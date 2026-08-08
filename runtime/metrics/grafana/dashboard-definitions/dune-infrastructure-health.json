@@ -1,0 +1,73 @@
+{
+  "title": "Dune — Infrastructure Health",
+  "tags": ["dune", "soc"],
+  "refresh": "30s",
+  "panels": [
+    {
+      "title": "Host Uptime",
+      "type": "stat",
+      "gridPos": {"x": 0, "y": 0, "w": 6, "h": 3},
+      "targets": [{"expr": "time() - node_boot_time_seconds", "legendFormat": "Uptime"}],
+      "fieldConfig": {"defaults": {"unit": "s"}}
+    },
+    {
+      "title": "Load Average (15m)",
+      "type": "gauge",
+      "gridPos": {"x": 6, "y": 0, "w": 6, "h": 3},
+      "targets": [{"expr": "node_load15", "legendFormat": "Load 15m"}]
+    },
+    {
+      "title": "Available Memory",
+      "type": "stat",
+      "gridPos": {"x": 12, "y": 0, "w": 6, "h": 3},
+      "targets": [{"expr": "node_memory_MemAvailable_bytes / 1073741824", "legendFormat": "GB"}],
+      "fieldConfig": {"defaults": {"unit": "decgbytes"}}
+    },
+    {
+      "title": "Filesystem Free",
+      "type": "stat",
+      "gridPos": {"x": 18, "y": 0, "w": 6, "h": 3},
+      "targets": [{"expr": "node_filesystem_avail_bytes{fstype!=\"tmpfs\"} / 1073741824", "legendFormat": "GB Free"}],
+      "fieldConfig": {"defaults": {"unit": "decgbytes"}}
+    },
+    {
+      "title": "Service Health",
+      "type": "table",
+      "gridPos": {"x": 0, "y": 3, "w": 12, "h": 8},
+      "targets": [
+        {"expr": "up{job=\"dune-prometheus\"}", "legendFormat": "Prometheus"},
+        {"expr": "up{job=\"dune-node\"}", "legendFormat": "Node Exporter"},
+        {"expr": "up{job=\"dune-postgres\"}", "legendFormat": "Postgres Exporter"},
+        {"expr": "up{job=\"dune-rabbitmq-admin\"}", "legendFormat": "RabbitMQ Admin"},
+        {"expr": "up{job=\"dune-rabbitmq-game\"}", "legendFormat": "RabbitMQ Game"}
+      ]
+    },
+    {
+      "title": "Alert States Over Time",
+      "type": "timeseries",
+      "gridPos": {"x": 12, "y": 3, "w": 12, "h": 8},
+      "targets": [{"expr": "count by (alertstate) (ALERTS)", "legendFormat": "{{alertstate}}"}]
+    },
+    {
+      "title": "Postgres Deadlocks (30d)",
+      "type": "timeseries",
+      "gridPos": {"x": 0, "y": 11, "w": 12, "h": 6},
+      "targets": [{"expr": "rate(pg_stat_database_deadlocks{datname=\"dune\"}[5m])", "legendFormat": "Deadlocks/s"}]
+    },
+    {
+      "title": "RabbitMQ Queue Backlog",
+      "type": "timeseries",
+      "gridPos": {"x": 12, "y": 11, "w": 12, "h": 6},
+      "targets": [
+        {"expr": "rabbitmq_queue_messages_ready", "legendFormat": "Ready"},
+        {"expr": "rabbitmq_queue_messages_unacked", "legendFormat": "Unacked"}
+      ]
+    },
+    {
+      "title": "Container Restarts (24h)",
+      "type": "table",
+      "gridPos": {"x": 0, "y": 17, "w": 24, "h": 6},
+      "targets": [{"expr": "changes(container_last_seen{name=~\"dune-.*\"}[24h])", "legendFormat": "{{name}}"}]
+    }
+  ]
+}

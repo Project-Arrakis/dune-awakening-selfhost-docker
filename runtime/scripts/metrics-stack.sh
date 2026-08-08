@@ -144,6 +144,8 @@ show_status() {
     --filter "name=dune-node-exporter" \
     --filter "name=dune-cadvisor" \
     --filter "name=dune-postgres-exporter" \
+    --filter "name=dune-alertmanager" \
+    --filter "name=dune-grafana" \
     --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" || true
 
   echo
@@ -153,6 +155,22 @@ show_status() {
     print_url
   else
     echo "not reachable on 127.0.0.1:${prometheus_port}"
+  fi
+
+  echo
+  echo "=== Alertmanager health ==="
+  if curl -s "http://127.0.0.1:9093/-/healthy" >/dev/null 2>&1; then
+    echo "healthy"
+  else
+    echo "not reachable on 127.0.0.1:9093"
+  fi
+
+  echo
+  echo "=== Grafana health ==="
+  if curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${METRICS_GRAFANA_PORT:-3000}/api/health" 2>/dev/null | grep -q "200"; then
+    echo "healthy (http://127.0.0.1:${METRICS_GRAFANA_PORT:-3000})"
+  else
+    echo "not reachable on 127.0.0.1:${METRICS_GRAFANA_PORT:-3000}"
   fi
 
   echo
@@ -384,14 +402,14 @@ case "$command_name" in
   help|--help|-h)
     cat <<EOF
 Usage:
-  dune metrics start
-  dune metrics stop
-  dune metrics restart
-  dune metrics status
-  dune metrics validate
-  dune metrics logs [service]
-  dune metrics config
-  dune metrics pull
+  dune metrics start        Start Prometheus + Alertmanager + Grafana + exporters
+  dune metrics stop         Stop the full metrics stack
+  dune metrics restart      Stop then start
+  dune metrics status       Show container status + health checks
+  dune metrics validate     Full validation: Prometheus + Alertmanager + Grafana health, targets, rules, up query
+  dune metrics logs [svc]   Show compose logs (all or specific service)
+  dune metrics config       Render compose config
+  dune metrics pull         Pull updated images
 
 The metrics stack is opt-in and independent from the game stack.
 Prometheus binds to 127.0.0.1:${prometheus_port} by default.
