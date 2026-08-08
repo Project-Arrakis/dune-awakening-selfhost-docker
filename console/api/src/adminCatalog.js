@@ -82,7 +82,7 @@ function normalizeItem(item, repoRoot = "") {
   };
 }
 
-function itemImagePath(repoRoot, id) {
+export function itemImagePath(repoRoot, id) {
   if (!repoRoot) return "/images/items/image-unavailable.png";
   const filename = `${id}.png`;
   const relativePath = `images/items/${filename}`;
