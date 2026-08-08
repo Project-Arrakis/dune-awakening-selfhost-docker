@@ -129,13 +129,28 @@ describe("BasePermissionsTab layout", () => {
     expect(screen.getByText("This base is not shared with anyone else.")).toBeInTheDocument();
   });
 
-  // The slot holds space for the dirty warning / no-owner alert / task result so
-  // the Revert and Save buttons never move as those come and go.
-  it("keeps the reserved banner slot mounted on a clean roster", async () => {
+  it("does not reserve empty banner space on a clean roster", async () => {
     mockRoster(DEFAULT_ROSTER);
     renderTab();
     await screen.findByText("Shared with · 2");
-    expect(document.querySelector(".bases-permissions-banner-slot")).not.toBeNull();
+    expect(document.querySelector(".bases-permissions-banner-slot")).toBeNull();
+  });
+
+  it("clears the player search after adding a result", async () => {
+    mockRoster(DEFAULT_ROSTER);
+    vi.mocked(basesApi.permissionCandidates).mockResolvedValue({
+      rows: [{ playerId: "32", name: "Chani" }]
+    } as never);
+    renderTab();
+
+    const search = await screen.findByPlaceholderText("Search a player to add");
+    fireEvent.change(search, { target: { value: "Chani" } });
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Add Chani" }));
+
+    await waitFor(() => expect(search).toHaveValue(""));
+    expect(screen.queryByRole("button", { name: "Add Chani" })).not.toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: "Associate for Chani" })).toBeChecked();
   });
 });
 

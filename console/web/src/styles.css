@@ -2421,10 +2421,10 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
    clamp() matches .bases-generator-breakdown's exactly, which is what makes
    Power, Water and Permissions inset their content identically. */
 .bases-permissions {
-  /* Both the reading column and the action bar's controls measure themselves
-     against these, so Save always lands on the same right edge as the roster
-     rows. Change the column width here and the bar follows. */
-  --bases-permissions-measure: 720px;
+  /* Keep the editor and its action bar aligned while allowing both to use the
+     full expanded-row width. The previous 720px cap left a large, unused area
+     on desktop even though the surrounding base details panel was full-width. */
+  --bases-permissions-measure: 100%;
   --bases-permissions-inset: clamp(12px, 1.5vw, 18px);
   display: flex;
   flex-direction: column;
@@ -2436,16 +2436,36 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
   display: grid;
   gap: 12px;
   width: 100%;
-  /* A cap, not a width. Under 1100px the expanded cell already clamps its
-     children to calc(100vw - 76px) (see .bases-table td.expanded-row-cell > *
-     below); on a phone that is ~300px, so the viewport cap wins outright and
-     this is inert. Every child sets min-width: 0 so the shrink lands on
-     ellipsis rather than on overflow -- intrinsic minimum width, not
-     max-width, is what would actually push past the scrollport. */
+  /* Match the full expanded-row width. The existing min-width rules and mobile
+     breakpoint still prevent horizontal overflow on narrow screens. */
   max-width: var(--bases-permissions-measure);
   min-width: 0;
   padding: var(--bases-permissions-inset);
   box-sizing: border-box;
+}
+
+/* First row: guidance on the left, the compact ownership card on the right. */
+.bases-permissions-intro {
+  display: grid;
+  grid-template-columns: minmax(240px, 1fr) minmax(360px, 500px);
+  align-items: center;
+  gap: clamp(18px, 3vw, 36px);
+}
+.bases-permissions-intro > .action-help-note {
+  max-width: 720px;
+}
+
+/* Second row: player search on the left, edit actions on the right. Search
+   results expand only their own column and do not move the action controls. */
+.bases-permissions-toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 16px;
+  min-width: 0;
+  padding: 10px 0;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
 }
 
 /* Owner hero. Same amber vocabulary as the standalone custodian section it
@@ -2589,6 +2609,7 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
   display: inline-grid;
   grid-auto-flow: column;
   grid-auto-columns: minmax(0, 1fr);
+  height: 38px;
   min-width: 0;
   border: 1px solid var(--border-strong);
   border-radius: 6px;
@@ -2602,7 +2623,7 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
   gap: 0;
   align-items: center;
   justify-content: center;
-  min-height: 30px;
+  min-height: 38px;
   padding: 0 10px;
   border-left: 1px solid var(--border);
   color: var(--muted-warm);
@@ -2630,13 +2651,18 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
 .bases-rank-segments:has(input:disabled) { opacity: .45; }
 .bases-rank-segment:has(input:disabled) { cursor: not-allowed; }
 
-.bases-permissions-add { display: grid; gap: 8px; }
-/* Overrides .action-row's align-items: center -- "Add as" has a label line
-   above its select that the bare input/buttons don't, so centering the row
-   left the select's bottom edge hanging lower than the rest. Bottom-aligning
-   (matching .action-line's convention for the same label-above-control
-   shape) puts every control's bottom edge on the same line. */
-.bases-permissions-search-row { flex-wrap: wrap; align-items: flex-end; }
+.bases-permissions-add { display: grid; gap: 8px; min-width: 0; }
+/* Keep the search controls on one visual line where space allows. The global
+   label style stacks text above controls, which made "Add as" increase the
+   entire row's height and leave an empty strip above the search input. */
+.bases-permissions-search-row { flex-wrap: wrap; align-items: center; margin: 0; }
+.bases-permissions-search-row .compact-select {
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+}
 .bases-permissions-candidates {
   list-style: none;
   margin: 0;
@@ -2662,16 +2688,12 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* Reserved slot. The dirty warning, the no-owner alert and the task result all
-   mount and unmount, and each one shoved the action bar down and back up as it
-   came and went. Holding the space means the bar never moves; min-height (not
-   height) so a warning that wraps to three lines on a narrow viewport still
-   grows instead of clipping. */
+/* This container is mounted only while a warning or result exists. Keeping it
+   out of the clean state avoids a permanent empty band above the action bar. */
 .bases-permissions-banner-slot {
   display: grid;
   align-content: center;
   gap: 8px;
-  min-height: 66px;
 }
 .bases-permissions-warning { margin: 0; }
 .bases-permissions-error { color: var(--danger-text); margin: 0; }
@@ -2684,28 +2706,16 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
   margin: 0;
 }
 
-/* The action bar is a sibling of the capped content column, not a child, so its
-   rule and fill span the full tab panel and it reads as a footer rather than as
-   one more item in the list above it. Only the fill is full-bleed: the controls
-   inside sit in a wrapper carrying the same measure and inset as the content
-   column, so Save's right edge matches the roster rows' instead of drifting to
-   the far side of a wide screen. */
 .bases-permissions-actions {
-  padding: 10px 0;
-  border-top: 1px solid var(--border-strong);
-  background: var(--panel-soft);
-}
-.bases-permissions-actions-inner {
   display: flex;
   align-items: center;
   gap: 10px;
   justify-content: flex-end;
-  max-width: var(--bases-permissions-measure);
   min-width: 0;
-  padding: 0 var(--bases-permissions-inset);
-  box-sizing: border-box;
+  min-height: 42px;
 }
-.bases-permissions-actions-inner > .muted { margin-right: auto; font-size: 12px; }
+.bases-permissions-actions > .muted { font-size: 12px; white-space: nowrap; }
+.bases-permissions-actions > .muted:empty { display: none; }
 .bases-permissions-actions button { width: auto; }
 
 /* Below this the row's three columns cannot hold a name, three segments and a
@@ -2728,6 +2738,20 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
     align-items: stretch;
   }
   .bases-permissions-owner-card > button { width: 100%; }
+}
+@media (max-width: 700px) {
+  .bases-permissions-intro {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 12px;
+  }
+  .bases-permissions-intro > .action-help-note { max-width: none; }
+}
+@media (max-width: 900px) {
+  .bases-permissions-toolbar {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 10px;
+  }
+  .bases-permissions-actions { justify-content: flex-end; }
 }
 .bases-table th.bases-expand-column, .bases-table td.bases-expand-column {
   width: 32px;
