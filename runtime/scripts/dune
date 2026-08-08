@@ -523,7 +523,9 @@ Usage:
   dune admin repair-login-queue <player-fls-id|queue-name> [--yes] [--force]
   dune config title ["New Server Name"]
   dune memory status
-  dune memory-swap [status|enable|disable]
+  dune memory-swap status
+  dune memory-swap enable [per-server-gib] [pool-gib] [swappiness]
+  dune memory-swap disable
   dune memory list-maps
   dune memory set <map-name> <memory>
   dune memory unset <map-name>

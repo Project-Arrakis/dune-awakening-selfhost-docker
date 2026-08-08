@@ -1575,7 +1575,7 @@ async function memorySwapRoute(req, res) {
   const phrase = enabled ? "ENABLE MEMORY SWAP" : "DISABLE MEMORY SWAP";
   if (body.confirmation !== phrase) return json(res, 400, { error: `Confirmation phrase required: ${phrase}` });
   const operation = enabled ? "memorySwapEnable" : "memorySwapDisable";
-  audit(config, req, "maps.memory.swap", { enabled, perServerGiB: body.perServerGiB, poolGiB: body.poolGiB });
+  audit(config, req, "maps.memory.swap", { enabled, perServerGiB: body.perServerGiB, poolGiB: body.poolGiB, swappiness: body.swappiness });
   return task(req, res, "maps", operation, body);
 }
 

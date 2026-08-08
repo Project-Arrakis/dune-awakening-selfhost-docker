@@ -268,7 +268,9 @@ test("40 Web UI: sietch write executes through the task runner", async () => {
   await assertWebWrite("sietchesRestart", { partitionId: 31 }, ["sietches", "start-partition", "31"]);
 });
 test("40b Web UI: memory swap changes execute through validated task arguments", async () => {
-  await assertWebWrite("memorySwapEnable", { perServerGiB: 2, poolGiB: 8 }, ["memory-swap", "enable", "2", "8"]);
+  await assertWebWrite("memorySwapEnable", { perServerGiB: 2, poolGiB: 8, swappiness: 25 }, ["memory-swap", "enable", "2", "8", "25"]);
+  assert.throws(() => buildDuneArgs("memorySwapEnable", { perServerGiB: 2, poolGiB: 8, swappiness: -1 }), /integer/);
+  assert.throws(() => buildDuneArgs("memorySwapEnable", { perServerGiB: 2, poolGiB: 8, swappiness: 101 }), /integer/);
   await assertWebWrite("memorySwapDisable", {}, ["memory-swap", "disable"]);
 });
 

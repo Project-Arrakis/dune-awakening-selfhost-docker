@@ -287,6 +287,7 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
   const [memorySwapMode, setMemorySwapMode] = useState<"low" | "automatic" | "custom">("automatic");
   const [memorySwapAllowance, setMemorySwapAllowance] = useState("2");
   const [memorySwapPool, setMemorySwapPool] = useState("4");
+  const [memorySwapSwappiness, setMemorySwapSwappiness] = useState("10");
   const [memorySwapResult, setMemorySwapResult] = useState<HomeTaskResult | null>(null);
   const [runtimeSettings, setRuntimeSettings] = useState<MapRuntimeSettings | null>(null);
   const [startupParallelism, setStartupParallelism] = useState("1");
@@ -661,10 +662,17 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
     const status = await mapsApi.memorySwap();
     setMemorySwap(status);
     if (!preserveDraft) {
-      const mode = status.perServerGiB === 1 ? "low" : status.perServerGiB === 2 ? "automatic" : "custom";
+      const usesStandardSwappiness = status.configuredSwappiness === 10;
+      const usesRecommendedPool = status.poolGiB === status.recommendedPoolGiB;
+      const mode = usesStandardSwappiness && usesRecommendedPool && status.perServerGiB === 1
+        ? "low"
+        : usesStandardSwappiness && usesRecommendedPool && status.perServerGiB === 2
+          ? "automatic"
+          : "custom";
       setMemorySwapMode(mode);
       setMemorySwapAllowance(String(status.perServerGiB || 2));
       setMemorySwapPool(String(status.poolGiB || status.recommendedPoolGiB || 1));
+      setMemorySwapSwappiness(String(status.configuredSwappiness ?? 10));
     }
   }
   async function loadRuntimeSettings() {
@@ -775,12 +783,13 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
     const allowance = memorySwapMode === "low" ? 1 : memorySwapMode === "automatic" ? 2 : Number(memorySwapAllowance);
     const automaticPool = Math.max(0, Math.min(32, allowance * (memorySwap?.worldServerCount || 2) - (memorySwap?.existingSwapGiB || 0)));
     const pool = memorySwapMode === "custom" ? Number(memorySwapPool) : automaticPool;
-    return { allowance, pool };
+    const swappiness = memorySwapMode === "custom" ? Number(memorySwapSwappiness) : 10;
+    return { allowance, pool, swappiness };
   }
   async function saveMemorySwap(enabled: boolean) {
-    const { allowance, pool } = selectedSwapValues();
-    if (enabled && (!Number.isInteger(allowance) || allowance < 1 || allowance > 16 || !Number.isInteger(pool) || pool < 0 || pool > 32)) {
-      setMemorySwapResult({ status: "failed", title: "Memory Swap Not Saved", message: "Use 1-16 GB per running map and a 0-32 GB managed swap file." });
+    const { allowance, pool, swappiness } = selectedSwapValues();
+    if (enabled && (!Number.isInteger(allowance) || allowance < 1 || allowance > 16 || !Number.isInteger(pool) || pool < 0 || pool > 32 || !Number.isInteger(swappiness) || swappiness < 0 || swappiness > 100)) {
+      setMemorySwapResult({ status: "failed", title: "Memory Swap Not Saved", message: "Use 1-16 GB per running map, a 0-32 GB managed swap file, and swappiness from 0-100." });
       return;
     }
     if (enabled && memorySwap && pool > memorySwap.safeAvailableDiskGiB) {
@@ -789,8 +798,8 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
     }
     const existingSwapIsSufficient = enabled && pool === 0 && (memorySwap?.existingSwapGiB || 0) > 0;
     const enableMessage = existingSwapIsSufficient
-      ? `Use the existing ${memorySwap?.existingSwapGiB || 0} GB of host swap with up to ${allowance} GB available to each running map? No additional managed swap file will be created.`
-      : `Enable ${pool} GB of managed swap with up to ${allowance} GB available to each running map?`;
+      ? `Use the existing ${memorySwap?.existingSwapGiB || 0} GB of host swap with up to ${allowance} GB available to each running map and host swappiness ${swappiness}? No additional managed swap file will be created.`
+      : `Enable ${pool} GB of managed swap with up to ${allowance} GB available to each running map and host swappiness ${swappiness}?`;
     const confirmed = await confirmAction(enabled ? enableMessage : "Disable custom swap limits and remove the Console-managed Memory Swap file? Existing host swap remains available through Docker's default behavior.", {
       title: enabled ? "Enable Memory Swap" : "Disable Memory Swap",
       confirmLabel: enabled ? "Enable Memory Swap" : "Disable Memory Swap",
@@ -799,6 +808,7 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
         ...(existingSwapIsSufficient ? [{ label: "Existing Host Swap", value: `${memorySwap?.existingSwapGiB || 0} GB` }] : []),
         { label: "Additional Managed Swap", value: pool === 0 ? "Not needed (0 GB)" : `${pool} GB` },
         { label: "Per Running Map", value: `${allowance} GB` },
+        { label: "Host Swappiness", value: String(swappiness) },
         { label: "Disk Safety Reserve", value: "At least 25 GB or 10%" }
       ] : undefined
     });
@@ -806,7 +816,7 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
     setMemorySwapSaving(true);
     setMemorySwapResult({ status: "running", title: enabled ? "Enabling Memory Swap..." : "Disabling Memory Swap..." });
     try {
-      const response = await mapsApi.setMemorySwap({ enabled, perServerGiB: allowance, poolGiB: pool, confirmation: enabled ? "ENABLE MEMORY SWAP" : "DISABLE MEMORY SWAP" });
+      const response = await mapsApi.setMemorySwap({ enabled, perServerGiB: allowance, poolGiB: pool, swappiness, confirmation: enabled ? "ENABLE MEMORY SWAP" : "DISABLE MEMORY SWAP" });
       const final = await waitForTaskWithUpdates(response.task, (current) => setMemorySwapResult({ status: "running", title: enabled ? "Enabling Memory Swap..." : "Disabling Memory Swap...", details: taskTechnicalDetails(current) }));
       if (final.status !== "succeeded") throw new Error(taskTechnicalDetails(final) || final.errorMessage || "Memory Swap operation failed.");
       await loadMemorySwap();
@@ -1675,7 +1685,7 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
     {memorySwap?.enabled ? <div className="memory-swap-panel">
       <div className="memory-swap-summary">
         <div className="memory-swap-copy"><strong>Emergency Swap Settings</strong><span>{memorySwap.hostPoolActive ? `${memorySwap.poolGiB} GB Managed Swap Active · ${memorySwap.perServerGiB} GB per Running Map` : `Existing Host Swap Active · ${memorySwap.perServerGiB} GB per Running Map`}</span></div>
-        <div className="memory-swap-metrics"><span><strong>{memorySwap.physicalMemoryGiB} GB</strong> RAM</span><span><strong>{memorySwap.existingSwapGiB} GB</strong> Existing Swap</span><span><strong>{memorySwap.safeAvailableDiskGiB} GB</strong> Safe Disk Available</span></div>
+        <div className="memory-swap-metrics"><span><strong>{memorySwap.physicalMemoryGiB} GB</strong> RAM</span><span><strong>{memorySwap.existingSwapGiB} GB</strong> Existing Swap</span><span><strong>{memorySwap.safeAvailableDiskGiB} GB</strong> Safe Disk Available</span><span><strong>{memorySwap.swappiness}</strong> Host Swappiness</span></div>
       </div>
       <div className={`memory-swap-controls ${memorySwapMode === "custom" ? "custom" : "standard"}`}>
         <label className="memory-swap-mode-field">Mode<select value={memorySwapMode} disabled={memorySwapSaving} onChange={(event) => {
@@ -1687,6 +1697,7 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
         {memorySwapMode === "custom" ? <div className="memory-swap-custom-fields">
           <label><span className="memory-swap-label-with-help">Per Running Map<InfoTooltip id="memory-swap-per-map-help" label="About the per-running-map allowance">Each active map or Sietch runs in its own game-server container. This is the maximum emergency swap each one may use; it is not a limit for the whole physical server.</InfoTooltip></span><span className="memory-swap-number-field"><input type="number" min="1" max="16" value={memorySwapAllowance} onChange={(event) => setMemorySwapAllowance(event.target.value)} /><span>GB</span></span></label>
           <label><span className="memory-swap-label-with-help">Managed Swap<InfoTooltip id="memory-swap-pool-help" label="About managed swap">This is the additional host swap file created and managed by the Console. Existing host swap is counted first, so this can be 0 GB when the host already has enough swap.</InfoTooltip></span><span className="memory-swap-number-field"><input type="number" min="0" max="32" value={memorySwapPool} onChange={(event) => setMemorySwapPool(event.target.value)} /><span>GB</span></span></label>
+          <label><span className="memory-swap-label-with-help">Swappiness<InfoTooltip id="memory-swap-swappiness-help" label="About host swappiness">Controls how readily Linux considers swapping. This is a host-wide kernel setting, not a per-container value. The default is 10.</InfoTooltip></span><span className="memory-swap-number-field"><input type="number" min="0" max="100" value={memorySwapSwappiness} onChange={(event) => setMemorySwapSwappiness(event.target.value)} /><span>0-100</span></span></label>
         </div> : null}
         <button className="memory-swap-apply" disabled={memorySwapSaving} onClick={() => run(() => saveMemorySwap(true))}>{memorySwapSaving ? "Applying..." : "Apply Swap Settings"}</button>
       </div>

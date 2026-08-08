@@ -223,7 +223,13 @@ export function buildDuneArgs(operation, payload = {}) {
     case "memoryUnset":
       return ["memory", "unset", validateMemoryTarget(memoryTarget(payload))];
     case "memorySwapEnable":
-      return ["memory-swap", "enable", String(validateInteger(payload.perServerGiB ?? 2, 1, 16)), String(validateInteger(payload.poolGiB, 0, 32))];
+      return [
+        "memory-swap",
+        "enable",
+        String(validateInteger(payload.perServerGiB ?? 2, 1, 16)),
+        String(validateInteger(payload.poolGiB, 0, 32)),
+        String(validateInteger(payload.swappiness ?? 10, 0, 100))
+      ];
     case "memorySwapDisable":
       return ["memory-swap", "disable"];
     case "sietchesShow":

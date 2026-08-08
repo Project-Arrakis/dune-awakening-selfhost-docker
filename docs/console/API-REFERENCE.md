@@ -318,7 +318,7 @@ See [blueprints.md](blueprints.md) for the full import/export design.
 | GET | `/api/maps/memory/balancer` | Get memory balancer state | None |
 | POST | `/api/maps/memory/balancer` | Enable/disable memory balancer | `enabled` |
 | GET | `/api/maps/memory/swap` | Get memory swap status | None |
-| POST | `/api/maps/memory/swap` | Enable/disable memory swap | `enabled`, `perServerGiB?`, `poolGiB?`, `confirmation` |
+| POST | `/api/maps/memory/swap` | Enable/disable memory swap | `enabled`, `perServerGiB?`, `poolGiB?`, `swappiness?` (0-100, default 10), `confirmation` |
 | GET | `/api/maps/memory/live` | Get live per-map RAM usage and, when enabled/supported, current swap usage and allowance | None |
 
 ### Autoscaler
