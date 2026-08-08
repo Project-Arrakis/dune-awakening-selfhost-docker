@@ -20,7 +20,8 @@ vi.mock("../../api/bases", () => ({
     cancelQueuedWaterRefill: vi.fn(),
     pendingWaterRefills: vi.fn(),
     autoRefillWater: vi.fn(),
-    setAutoRefillWater: vi.fn()
+    setAutoRefillWater: vi.fn(),
+    inventory: vi.fn()
   }
 }));
 
@@ -713,7 +714,48 @@ describe("BasesPanel permissions editing", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Show details for Sietch One" }));
     expect(screen.getByRole("tab", { name: "Power" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Water" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Inventory" })).toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: "Sub-Fief Permissions" })).not.toBeInTheDocument();
+  });
+
+  // Inventory sits between Water and Permissions, and is ungated the way Water
+  // is: the backend response, not the tab's absence, reports an unreadable
+  // schema.
+  it("opens the Inventory tab and loads that base's stored items", async () => {
+    mockList(false);
+    vi.mocked(basesApi.inventory).mockResolvedValue({
+      supported: true,
+      baseId: 1006,
+      groups: [
+        { key: "storage", name: "Storage", containerCount: 1, itemCount: 1000 },
+        { key: "refining", name: "Refining", containerCount: 0, itemCount: 0 },
+        { key: "crafting", name: "Crafting", containerCount: 0, itemCount: 0 },
+        { key: "machines", name: "Machines", containerCount: 0, itemCount: 0 }
+      ],
+      containers: [{
+        placeableId: "40001", name: "Vault", typeName: "Storage Container", group: "storage",
+        usedSlots: 1, maxSlots: 45, itemCount: 1000,
+        items: [{ templateId: "Stone", name: "Granite Stone", quantity: 1000 }]
+      }],
+      items: [{
+        templateId: "Stone", name: "Granite Stone", image: "/images/items/image-unavailable.png",
+        category: "resources", quantity: 1000, containerCount: 1,
+        containers: [{ placeableId: "40001", name: "Vault", typeName: "Storage Container", group: "storage", quantity: 1000 }]
+      }],
+      totals: { items: 1000, distinct: 1, containers: 1, usedSlots: 1, maxSlots: 45 }
+    } as never);
+
+    renderPanel();
+    fireEvent.click(await screen.findByRole("button", { name: "Show details for Sietch One" }));
+
+    const tabs = screen.getAllByRole("tab").map((tab) => tab.getAttribute("aria-label") || tab.textContent);
+    expect(tabs).toEqual(["Power", "Water", "Inventory"]);
+
+    fireEvent.click(screen.getByRole("tab", { name: "Inventory" }));
+    // The tab opens on the container cards, not the item rollup.
+    expect(await screen.findByText("Vault")).toBeInTheDocument();
+    expect(document.querySelectorAll(".bases-inventory-cards .bases-generator-group")).toHaveLength(1);
+    await waitFor(() => expect(basesApi.inventory).toHaveBeenCalledWith("1006"));
   });
 
   // A base with no generators had no expand chevron before this feature. It
@@ -928,19 +970,19 @@ describe("BasesPanel water refill", () => {
     vi.mocked(basesApi.water)
       .mockResolvedValueOnce({
         supported: true,
-        baseId: 4002,
+        baseId: 1006,
         containers: [{ type: "waterCistern", name: "Water Cistern", count: 1, stored: 1250, capacity: 5000, percent: 25 }]
       })
       .mockResolvedValueOnce({
         supported: true,
-        baseId: 4002,
+        baseId: 1006,
         containers: [{ type: "waterCistern", name: "Water Cistern", count: 1, stored: 5000, capacity: 5000, percent: 100 }]
       });
     vi.mocked(basesApi.refillWater).mockResolvedValue({
       supported: true,
       result: {
         ok: true,
-        baseId: 4002,
+        baseId: 1006,
         totalAdded: 3750,
         devices: [{ placeableId: "9101", type: "waterCistern", label: "Water Cistern", before: 1250, after: 5000, added: 3750 }]
       }
