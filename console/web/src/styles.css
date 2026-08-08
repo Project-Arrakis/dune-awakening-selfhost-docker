@@ -1504,7 +1504,8 @@ body.debug .technical-details { display: block; }
 .playerAdmin_journeyTable .playerAdmin_resultCell .inline-action-result { font-size: 12px; line-height: 1.3; }
 .playerAdmin_journeyTable th:nth-child(6), .playerAdmin_journeyTable td:nth-child(6) { text-align: center; }
 .playerAdmin_journeyTable th:last-child, .playerAdmin_journeyTable td:last-child { text-align: center; }
-.playerAdmin_journeyTable .playerAdmin_actionCell { justify-content: center; }
+.playerAdmin_journeyTable .playerAdmin_actionCell { display: table-cell; }
+.playerAdmin_journeyTable .playerAdmin_actionCellInner { display: flex; align-items: center; justify-content: center; gap: 10px; flex-wrap: wrap; }
 .playerAdmin_shortCode code { display: inline-block; max-width: 130px; overflow: hidden; text-overflow: ellipsis; vertical-align: bottom; }
 .playerAdmin_expanderButton { width: 24px; height: 24px; min-height: 24px; padding: 0; margin-right: 8px; justify-content: center; font-weight: 800; }
 .playerAdmin_expanderSpacer { display: inline-block; width: 32px; }

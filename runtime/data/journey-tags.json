@@ -4076,6 +4076,14 @@
     "Trainer_Trooper2_05": "DA_CT_Trainer_Trooper2_05",
     "Trainer_Trooper2_06": "DA_CT_Trainer_Trooper2_06"
   },
+  "contract_remove_tags": {
+    "DA_CT_Fac_Atre_Rank04_05_Skorda": [
+      "Contract.Tracking.FactionStory.ShowSkorda"
+    ],
+    "DA_CT_Fac_Hark_Rank04_05_Skorda": [
+      "Contract.Tracking.FactionStory.ShowSkorda"
+    ]
+  },
   "contract_skill_grants": {
     "DA_CT_Trainer_Mentat2_06": [
       "Skills.Key.CapstoneMentalCalculus"
