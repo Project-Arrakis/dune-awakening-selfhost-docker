@@ -38,7 +38,7 @@ import {
   inventorySearchProvider
 } from "./inventoryProvider.js";
 import { broadcastProvider } from "./broadcastProvider.js";
-import { buildDuneArgs, runDune } from "../../runner.js";
+import { buildDuneArgs, runDockerLogs, runDune } from "../../runner.js";
 import { initializeDiscordAdapterSchema } from "./schema.js";
 
 const INFRA_OPERATIONS = Object.freeze({
@@ -471,11 +471,51 @@ export async function handleDiscordAdapterRoute({ req, res, path, config, readJs
       return json(res, 200, { ok: true, version: config.version || "dev" });
     }
 
+    // Maintenance — health summary via dune-ready
+    if (path === DISCORD_ADAPTER_ROUTES.MAINTENANCE && req.method === "POST") {
+      return json(res, 200, await maintenanceProvider(config));
+    }
+
+    // Logs — tail container logs for a named service
+    if (path === DISCORD_ADAPTER_ROUTES.LOGS && req.method === "POST") {
+      const body = await readJson(req);
+      const service = String(body.service || "").trim();
+      if (!service) return json(res, 400, { ok: false, error: "Service name required (body.service)." });
+      return json(res, 200, await logsProvider(config, service));
+    }
+
+    // Map state — per-map status details
+    if (path === DISCORD_ADAPTER_ROUTES.MAP_STATE && req.method === "POST") {
+      return json(res, 200, await mapStateProvider(config));
+    }
+
     throw policyError("not_found", "Discord adapter route not found.", 404);
   } catch (error) {
     const response = discordAdapterErrorResponse(error);
     return json(res, response.statusCode, response.body);
   }
+}
+
+async function maintenanceProvider(config) {
+  try {
+    const result = await runDune(config.repoRoot, "ready", []);
+    return { ok: true, output: result.stdout?.trim() || "" };
+  } catch { return { ok: true, output: "dune ready unavailable" }; }
+}
+
+async function logsProvider(config, service) {
+  try {
+    const { stdout, stderr } = await runDockerLogs(service, { tail: 100, timeoutMs: 10000 });
+    return { ok: true, service, lines: (stdout + stderr).split(/\r?\n/).filter(Boolean).slice(-50) };
+  } catch { return { ok: false, service, error: "Logs unavailable for this service" }; }
+}
+
+async function mapStateProvider(config) {
+  try {
+    const result = await runDune(config.repoRoot, "status", ["--json"]);
+    const status = typeof result === "string" ? JSON.parse(result) : result;
+    return { ok: true, maps: status.maps || [] };
+  } catch { return { ok: true, maps: [] }; }
 }
 
 export function requireDiscordBotToken(req, config) {

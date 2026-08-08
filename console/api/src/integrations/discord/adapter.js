@@ -63,6 +63,9 @@ export const DISCORD_LIVE_ADAPTER_ROUTES = Object.freeze([
   DISCORD_ADAPTER_ROUTES.OPS_INVENTORY,
   DISCORD_ADAPTER_ROUTES.OPS_SOC,
   DISCORD_ADAPTER_ROUTES.OPS_PROMETHEUS,
+  DISCORD_ADAPTER_ROUTES.LOGS,
+  DISCORD_ADAPTER_ROUTES.MAP_STATE,
+  DISCORD_ADAPTER_ROUTES.MAINTENANCE,
   DISCORD_ADAPTER_ROUTES.BROADCAST,
   DISCORD_ADAPTER_ROUTES.ANNOUNCEMENTS,
   DISCORD_ADAPTER_ROUTES.PLAYERS_LINK,
@@ -96,8 +99,7 @@ export function discordAdapterEnabled(config) {
 }
 
 export function discordWritesEnabled(_config) {
-  // Experimental companion bot is intentionally read-only.
-  return false;
+  return process.env.DUNE_DISCORD_WRITES_ENABLED === "1";
 }
 
 export function discordRoleMappingFromEnv(env = process.env) {
