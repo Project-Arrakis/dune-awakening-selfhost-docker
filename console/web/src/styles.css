@@ -1658,11 +1658,23 @@ body.debug .technical-details { display: block; }
 .bases-fuel-alert { color: var(--danger-text); }
 .bases-pagination-footer { margin-top: 12px; margin-bottom: 0; align-items: center; }
 .bases-pagination-footer .action-help-note { margin: 0; }
-.pending-refill-note, .pending-refill-badge {
+.pending-refill-badge {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   color: var(--title);
+}
+/* Deliberately not a flex row. The sentence has to wrap inside the narrow Home
+   card, and as a flex item it wrapped as one block shoved to the right of the
+   badges rather than flowing around them. Normal inline flow lets the badges
+   sit in the text like chips at any width. */
+.pending-refill-note {
+  display: block;
+  color: var(--title);
+}
+.pending-refill-note .bases-queue-badge {
+  margin-right: 6px;
+  vertical-align: 1px;
 }
 .pending-refill-badge {
   gap: 4px;
@@ -2382,6 +2394,14 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
   font-size: 13px;
   margin-bottom: -1px;
 }
+/* Stacks "Sub-Fief" over "Permissions". The tablist is a flex row with the
+   default align-items: stretch, so the taller tab sets the height and the
+   single-line tabs stay vertically centred against it. */
+.bases-expanded-tab-lines {
+  display: grid;
+  justify-items: start;
+  line-height: 1.2;
+}
 .bases-expanded-tab:hover { color: var(--muted-warm); border-color: transparent; }
 .bases-expanded-tab.active {
   background: #25201b;
@@ -2392,11 +2412,148 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
 .bases-expanded-tab.active:hover { border-color: var(--border-strong); border-bottom-color: #25201b; }
 
 .bases-water { display: grid; gap: 12px; }
-.bases-permissions { display: grid; gap: 12px; }
-.bases-permissions-roster { display: grid; gap: 6px; }
+
+/* Permissions is a single reading column with the Revert/Save bar full-bleed
+   beneath it. The inset padding lives on .bases-permissions-content rather than
+   here, so the bar reaches both edges of the tab panel without negative margins
+   -- which would be unsafe under the position: sticky expanded cell below. The
+   clamp() matches .bases-generator-breakdown's exactly, which is what makes
+   Power, Water and Permissions inset their content identically. */
+.bases-permissions {
+  /* Both the reading column and the action bar's controls measure themselves
+     against these, so Save always lands on the same right edge as the roster
+     rows. Change the column width here and the bar follows. */
+  --bases-permissions-measure: 720px;
+  --bases-permissions-inset: clamp(12px, 1.5vw, 18px);
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+.bases-permissions-content {
+  display: grid;
+  gap: 12px;
+  width: 100%;
+  /* A cap, not a width. Under 1100px the expanded cell already clamps its
+     children to calc(100vw - 76px) (see .bases-table td.expanded-row-cell > *
+     below); on a phone that is ~300px, so the viewport cap wins outright and
+     this is inert. Every child sets min-width: 0 so the shrink lands on
+     ellipsis rather than on overflow -- intrinsic minimum width, not
+     max-width, is what would actually push past the scrollport. */
+  max-width: var(--bases-permissions-measure);
+  min-width: 0;
+  padding: var(--bases-permissions-inset);
+  box-sizing: border-box;
+}
+
+/* Owner hero. Same amber vocabulary as the standalone custodian section it
+   replaced: that section held nothing but the transfer button, and ownership
+   having two homes on one tab was why the tab read as flat. */
+/* Auto-placement rather than grid-template-areas. Naming a "note" row would
+   declare it whether or not the custodian-reason note renders, and an explicit
+   empty row still takes its row-gap -- 8px of dead space under the owner name
+   on every base that has a working custodian, which is the normal case. The
+   note spans both columns via grid-column instead, so its row only exists when
+   the note does. */
+.bases-permissions-owner-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--warning);
+  border-radius: 8px;
+  background: rgba(169, 121, 50, .08);
+}
+.bases-permissions-owner-card-empty {
+  border-color: var(--danger-strong);
+  background: rgba(167, 73, 73, .08);
+}
+.bases-permissions-owner-identity {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+.bases-permissions-owner-eyebrow {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  line-height: 1;
+}
+.bases-permissions-owner-name {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-strong);
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+.bases-permissions-owner-none { color: var(--danger-text); font-style: italic; font-weight: 400; }
+.bases-permissions-owner-card > button { width: auto; flex: 0 0 auto; }
+.bases-permissions-owner-note { grid-column: 1 / -1; margin: 0; font-size: 12px; }
+
+.bases-permissions-section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+.bases-permissions-section-title {
+  color: var(--title);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: .02em;
+  white-space: nowrap;
+}
+.bases-permissions-section-meta {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 12px;
+  text-align: right;
+}
+
+/* Capping the roster is what pins the action bar: bases opts out of the shared
+   table height cap (.table-wrap.bases-table-wrap below), so there is no
+   scrollport for position: sticky to attach to. Bounding the one list that can
+   grow without limit keeps the bar in normal flow and still on screen. The
+   220px on .bases-permissions-candidates is the same trick.
+   overscroll-behavior stops a flick at the end of the roster from scrolling the
+   whole bases table underneath it. */
+.bases-permissions-roster {
+  display: grid;
+  gap: 6px;
+  align-content: start;
+  /* Five rows without a scrollbar. A row is 52px (a 38px icon button plus 6px
+     padding and 1px border each side) and the gap is 6px, so five come to
+     5*52 + 4*6 = 284px; the rest is headroom. A sixth row overflows to ~342px,
+     which leaves part of a row showing as the cue that the list scrolls. Badges
+     on a row do not change its height -- the button sets it. */
+  max-height: 300px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  /* No scrollbar gutter. A reserved right inset would hold the rows 4px short
+     of the owner card, the section header and the Save button on every roster
+     that fits -- now the common case -- for the sake of the one that does not.
+     When it does overflow, overflow-y: auto takes the scrollbar's width out of
+     the content box anyway, which is the same breathing room. */
+}
 .bases-permissions-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 150px 38px;
+  grid-template-columns: minmax(0, 1fr) auto 38px;
   align-items: center;
   gap: 8px;
   border: 1px solid var(--border);
@@ -2404,7 +2561,6 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
   background: var(--panel);
   padding: 6px 10px;
 }
-.bases-permissions-row-owner { border-color: var(--border-strong); }
 .bases-permissions-name {
   display: flex;
   align-items: center;
@@ -2415,10 +2571,64 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
   white-space: nowrap;
   font-size: 13px;
 }
-.bases-permissions-row-owner .bases-permissions-name { color: var(--text-strong); }
 .bases-permissions-orphan { display: inline-flex; color: var(--warning); flex: 0 0 auto; }
-.bases-permissions-system-label { padding: 2px 6px; border: 1px solid var(--warning); border-radius: 999px; color: #ffd08a; font-size: 10px; font-weight: 800; letter-spacing: .03em; text-transform: uppercase; }
+.bases-permissions-system-label { flex: 0 0 auto; padding: 2px 6px; border: 1px solid var(--warning); border-radius: 999px; color: #ffd08a; font-size: 10px; font-weight: 800; letter-spacing: .03em; text-transform: uppercase; }
+/* A rank the three segments cannot represent, shown so the row is not silently
+   blank. Danger-toned rather than amber: unlike the custodian pill this marks
+   something that will be overwritten as soon as anyone touches the control. */
+.bases-permissions-rank-unknown { flex: 0 0 auto; padding: 2px 6px; border: 1px solid var(--danger-strong); border-radius: 999px; color: var(--danger-text); font-size: 10px; font-weight: 800; letter-spacing: .03em; text-transform: uppercase; }
 .bases-permissions-remove { border-color: var(--danger-strong); color: var(--danger-text); }
+
+/* Segmented rank control. The radios are real <input type="radio"> so the
+   browser supplies arrow-key navigation and one-tab-stop roving focus for free;
+   they are hidden the same way .switch-checkbox input is, and the wrapping
+   <label> is what gets painted. The checked fill is button.active's #9b5f2a so
+   a selected segment reads as the same "on" state used elsewhere. */
+.bases-rank-segments {
+  display: inline-grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  min-width: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: #151719;
+  overflow: hidden;
+}
+.bases-rank-segment {
+  position: relative;
+  /* Overrides the global `label { display: grid; gap: 6px }`. */
+  display: flex;
+  gap: 0;
+  align-items: center;
+  justify-content: center;
+  min-height: 30px;
+  padding: 0 10px;
+  border-left: 1px solid var(--border);
+  color: var(--muted-warm);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+}
+.bases-rank-segment:first-child { border-left: 0; }
+.bases-rank-segment input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+}
+.bases-rank-segment:hover { background: rgba(198, 139, 74, .12); color: var(--text-strong); }
+.bases-rank-segment:has(input:checked) { background: #9b5f2a; color: var(--text-strong); }
+/* outline-offset is negative because .bases-rank-segments clips with
+   overflow: hidden -- an outset ring would be cut off on the end segments. */
+.bases-rank-segment:has(input:focus-visible) { outline: 2px solid var(--accent-strong); outline-offset: -2px; }
+.bases-rank-segments:has(input:disabled) { opacity: .45; }
+.bases-rank-segment:has(input:disabled) { cursor: not-allowed; }
+
 .bases-permissions-add { display: grid; gap: 8px; }
 /* Overrides .action-row's align-items: center -- "Add as" has a label line
    above its select that the bare input/buttons don't, so centering the row
@@ -2434,6 +2644,7 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
   gap: 4px;
   max-height: 220px;
   overflow-y: auto;
+  overscroll-behavior: contain;
 }
 .bases-permissions-candidates li {
   display: grid;
@@ -2450,19 +2661,73 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* Reserved slot. The dirty warning, the no-owner alert and the task result all
+   mount and unmount, and each one shoved the action bar down and back up as it
+   came and went. Holding the space means the bar never moves; min-height (not
+   height) so a warning that wraps to three lines on a narrow viewport still
+   grows instead of clipping. */
+.bases-permissions-banner-slot {
+  display: grid;
+  align-content: center;
+  gap: 8px;
+  min-height: 66px;
+}
 .bases-permissions-warning { margin: 0; }
 .bases-permissions-error { color: var(--danger-text); margin: 0; }
-.bases-system-custodian { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px; border: 1px solid var(--warning); border-radius: 8px; background: rgba(169, 121, 50, .08); }
-.bases-system-custodian p { margin: 4px 0 0; }
-.bases-system-custodian button { flex: 0 0 auto; }
+/* .inline-task-result is built for the flex action rows in Maps/Server; here it
+   stands alone in the reserved slot, so drop the flex sizing it assumes. */
+.bases-permissions-banner-slot .inline-task-result {
+  align-self: auto;
+  flex: 0 1 auto;
+  max-width: none;
+  margin: 0;
+}
+
+/* The action bar is a sibling of the capped content column, not a child, so its
+   rule and fill span the full tab panel and it reads as a footer rather than as
+   one more item in the list above it. Only the fill is full-bleed: the controls
+   inside sit in a wrapper carrying the same measure and inset as the content
+   column, so Save's right edge matches the roster rows' instead of drifting to
+   the far side of a wide screen. */
 .bases-permissions-actions {
+  padding: 10px 0;
+  border-top: 1px solid var(--border-strong);
+  background: var(--panel-soft);
+}
+.bases-permissions-actions-inner {
   display: flex;
   align-items: center;
   gap: 10px;
   justify-content: flex-end;
+  max-width: var(--bases-permissions-measure);
+  min-width: 0;
+  padding: 0 var(--bases-permissions-inset);
+  box-sizing: border-box;
 }
-.bases-permissions-actions > .muted { margin-right: auto; font-size: 12px; }
+.bases-permissions-actions-inner > .muted { margin-right: auto; font-size: 12px; }
 .bases-permissions-actions button { width: auto; }
+
+/* Below this the row's three columns cannot hold a name, three segments and a
+   trash button side by side -- inside the expanded cell the available width is
+   calc(100vw - 76px), which is ~300px on a phone. Stack the control under the
+   name and let it span the full row. */
+@media (max-width: 560px) {
+  .bases-permissions-row {
+    grid-template-columns: minmax(0, 1fr) 38px;
+    grid-template-areas: "name remove" "rank rank";
+    row-gap: 6px;
+  }
+  .bases-permissions-name { grid-area: name; }
+  .bases-rank-segments { grid-area: rank; display: grid; }
+  .bases-permissions-remove { grid-area: remove; }
+  /* One column: auto-placement stacks identity, button and note in source
+     order, and the note's grid-column: 1 / -1 still resolves to that column. */
+  .bases-permissions-owner-card {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
+  }
+  .bases-permissions-owner-card > button { width: 100%; }
+}
 .bases-table th.bases-expand-column, .bases-table td.bases-expand-column {
   width: 32px;
   padding-inline: 4px;
