@@ -141,6 +141,15 @@ process.on("unhandledRejection", (error) => {
   console.error(`Unhandled background rejection: ${redact(error?.message || error)}`);
 });
 
+async async function filterForPlayerScope(session, db, data, getter) {
+  const scope = await resolvePlayerScopedIds(session, db);
+  if (!scope.scoped) return data;
+  return data.filter(row => {
+    const id = getter(row);
+    return id && scope.ids.has(String(id));
+  });
+}
+
 async function resolvePlayerScopedIds(session, db) {
   if (!session || !session.userId) return { scoped: true, ids: new Set() };
   if (session.tier !== "player") return { scoped: false, ids: new Set() };
