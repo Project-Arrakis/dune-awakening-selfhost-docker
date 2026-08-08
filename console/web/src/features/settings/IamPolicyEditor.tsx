@@ -9,6 +9,7 @@ interface PolicyStatement {
 interface PolicyCatalog {
   policies: Record<string, { version: number; tier: string; statements: PolicyStatement[] }>;
   actions: string[];
+  actionMap: Record<string, string>;
   namespaces: Record<string, string>;
 }
 
@@ -26,11 +27,27 @@ function parseStatements(text: string): PolicyStatement[] | null {
   } catch { return null; }
 }
 
-function allowedActions(statements: PolicyStatement[]): Set<string> {
-  const allowed = new Set<string>();
+function iamActionAllowed(iamAction: string, allowPatterns: string[]): boolean {
+  for (const pattern of allowPatterns) {
+    if (pattern === "*") return true;
+    if (pattern === iamAction) return true;
+    if (pattern.endsWith(":*") && iamAction.startsWith(pattern.slice(0, -1))) return true;
+  }
+  return false;
+}
+
+function resolvedAllowedActions(statements: PolicyStatement[], actionMap: Record<string, string>): Set<string> {
+  const allowPatterns: string[] = [];
   for (const stmt of statements) {
     if (stmt.Effect !== "Allow") continue;
-    for (const a of stmt.Action) allowed.add(a);
+    for (const a of stmt.Action) allowPatterns.push(a);
+  }
+  const allowed = new Set<string>();
+  for (const catalogAction of Object.keys(actionMap)) {
+    const iamAction = actionMap[catalogAction];
+    if (iamActionAllowed(iamAction, allowPatterns)) {
+      allowed.add(catalogAction);
+    }
   }
   return allowed;
 }
@@ -109,7 +126,7 @@ export function IamPolicyEditor() {
   };
 
   const statements = useMemo(() => parseStatements(jsonText) || [], [jsonText]);
-  const allowed = useMemo(() => allowedActions(statements), [statements]);
+  const allowed = useMemo(() => resolvedAllowedActions(statements, catalog?.actionMap || {}), [statements, catalog?.actionMap]);
 
   const namespaceOrder = [
     "server", "players", "guilds", "bases", "storage", "maps",
@@ -155,12 +172,14 @@ export function IamPolicyEditor() {
 
   const toggleAction = (action: string) => {
     const stmts = parseStatements(jsonText) || [];
+    const map = catalog?.actionMap || {};
+    const iamAction = map[action] || action;
     let updated: PolicyStatement[];
 
     if (allowed.has(action)) {
       updated = stmts.map(s => {
         if (s.Effect !== "Allow") return s;
-        const filtered = s.Action.filter(a => a !== action);
+        const filtered = s.Action.filter(a => a !== iamAction);
         return { ...s, Action: filtered };
       }).filter(s => s.Action.length > 0);
     } else {
@@ -170,7 +189,9 @@ export function IamPolicyEditor() {
         allowStmt = { Effect: "Allow" as const, Action: [] };
         updated.push(allowStmt);
       }
-      allowStmt.Action = [...allowStmt.Action, action];
+      if (!allowStmt.Action.includes(iamAction)) {
+        allowStmt.Action = [...allowStmt.Action, iamAction];
+      }
     }
     setJsonText(JSON.stringify(updated, null, 2));
     setSaved(false);
