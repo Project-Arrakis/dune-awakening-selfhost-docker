@@ -1081,7 +1081,9 @@ function addonContentRoute(req, res, path) {
   res.writeHead(200, withSecurityHeaders({
     "content-type": contentTypeForPath(target),
     "x-frame-options": "SAMEORIGIN",
-    "cache-control": "no-cache, no-store, must-revalidate"
+    "cache-control": "no-cache, no-store, must-revalidate",
+    "pragma": "no-cache",
+    "expires": "0"
   }));
   createReadStream(target).pipe(res);
 }
