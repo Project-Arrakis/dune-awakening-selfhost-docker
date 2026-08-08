@@ -1,321 +1,323 @@
-# Upstream PR Proposal: Console RBAC, Discord OAuth, and Operator Tools
+# Upstream PR Proposal — Revised (v2, 2026-08-08)
 
-**Date:** 2026-08-08
 **Base:** Red-Blink/dune-awakening-selfhost-docker v1.3.84
 **Fork:** yacketrj/dune-awakening-selfhost-docker
-**Author:** Ron Yacketta
-**Status:** Draft — for upstream review/approval
 
 ---
 
-## Executive Summary
+## What changed from v1
 
-This proposal delivers **console IAM (RBAC)**, **Discord OAuth sign-in**, and
-**operator tooling** to the upstream self-hosted Docker console. The work has
-been running in production on a live game server since July 2026, serving real
-players. It is proposed as seven independently-reviewable tranches, each
-self-contained with tests, documentation, and a strict "does not break existing
-deployments" guarantee.
+Per upstream review feedback, this revision:
+- Proposes **only two independent PRs** (not seven tranches)
+- Documents **exact auth behavior** for the RBAC session model
+- **Reverts** the `secureCookies` default change (stays upstream's `NODE_ENV` heuristic)
+- **Removes** expression indexes on Funcom tables (needs separate evidence)
+- **Removes** the unverified PlayerLinkPrompt (use in-game verified flow)
+- **Splits** the external-bot signed handoff into a separate design item
+- **Defers** the IAM policy editor UI, player scoping migration, OAuth setup UI, and tooling
 
-**Scale:** 140 commits, 89 files, ~18,100 insertions across a tree that has
-grown ~200 internal commits on this fork since the base. The seven tranches
-factor this history so no single PR exceeds ~400 lines or changes more than
-10 files.
-
-**Risk to operators:** Each tranche is additive or guarded by feature flags.
-Tranche 1 (IAM engine) has no user-visible effect until Tranche 3 (IAM editor)
-is merged. Tranche 2 (Discord OAuth) is opt-in via `DISCORD_OAUTH_CLIENT_ID`
-— if the env var is absent, the console behaves identically to the current
-upstream build. No migration, no forced config change, no breaking schema
-change for any existing operator.
+Two PRs are ready for review:
 
 ---
 
-## Architecture — Dependency Tree
+## PR 1: RBAC Foundation — IAM Policy Engine, Tiered Sessions, Route Gating
+
+**Branch:** `tranche-1-rbac-foundation` (7 files, +1602/-14)
+**Diff:** IAM engine (3 new), tiered auth.js, evaluate() gate in server.js, 2 test files
+
+### What it does
+
+Adds an IAM policy engine, tiered session cookies, and route-level access
+control to the console. **Zero behavioral change** by default — no policy
+restricts any route; every action returns `true` for all tiers.
+
+The engine is additive infrastructure. An operator who never creates an IAM
+policy sees identical console behavior to v1.3.84.
+
+### Files
+
+| File | Change | Description |
+|------|--------|-------------|
+| `actions.js` | NEW (379 lines) | 1:1 route-to-action mapping across 19 namespaces. Every existing console route is cataloged. |
+| `policy.js` | NEW (245 lines) | IAM-style policy evaluation: explicit-deny precedence, wildcard matching (`server:*`, `players:read`), matchAction resolver. |
+| `rbac.js` | NEW (421 lines) | Tier-based capability resolution: `owner`/`admin`/`moderator`/`player`/`observer` tiers, `resolveSessionTier`, `resolveAllowedActions`. |
+| `auth.js` | MODIFIED (+83/-14) | HMAC-signed JSON-bundle session cookies (see below). |
+| `server.js` | MODIFIED (+29) | `evaluate()` gate on every authenticated route; IAM policy API (GET/PUT/POST). |
+| `rbac.test.js` | NEW (281 lines) | Policy evaluation: allow/deny, wildcards, explicit-deny precedence. |
+| `rbacParity.test.js` | NEW (164 lines) | Static analysis: mechanically enforces that every route in `handleApi` has an IAM action or documented public-route exemption. |
+
+### Auth behavior — complete reference
+
+#### Session format
+
+```json
+// Cookie payload (base64url-encoded JSON, HMAC-signed)
+{
+  "id": "random-32-byte-base64url",
+  "tier": "owner|admin|moderator|player|observer",
+  "userId": "Discord-snowflake-or-empty-string",
+  "exp": 1786249032807,    // epoch ms, sliding 12-hour window
+  "iat": 1786205832807     // epoch ms, absolute 7-day max
+}
+
+// Cookie: asc_session=<base64url(payload)>.<base64url(HMAC-SHA256(secret, payload))>
+```
+
+The cookie value is `{base64url(payload)}.{signature}` — a dot-delimited
+two-part token. The signature covers the full payload, preventing tampering
+with tier, userId, or expiry.
+
+#### Session creation
+
+- **Password login** (`POST /api/auth/login`): `makeSession()` called with no
+  arguments → defaults to `tier: "owner"`, `userId: ""`, `username: ""`.
+- **Discord OAuth callback** (future PR): `makeSession({ tier, userId,
+  username, guildId })` with the resolved tier and Discord identity.
+- Session stored in an in-memory `Map` (not persisted to disk or database).
+
+#### Legacy session compatibility
+
+v1.3.84 uses plain session IDs: `cookie = {id}.{HMAC(id)}`. The upgrade
+path works as follows:
+
+1. `readSession` splits on the **last** dot (not the first), because JSON
+   payloads contain dots in the base64url-encoded JSON.
+2. If the cookie parses as JSON (starts with `eyJ`), it's a RBAC cookie →
+   decode tier, userId, exp, iat from the payload.
+3. If JSON parsing fails (`catch`), the cookie is treated as a legacy
+   plain-ID cookie → `tier = "owner"`, `userId = ""`.
+4. If the in-memory session is gone (restart, eviction) but the cookie is
+   signature-valid, a **new session is synthesized** from the cookie
+   payload — tier and userId are preserved from the cookie, not defaulted.
+   The `iat` field from the cookie payload is used as the session creation
+   timestamp, so the 7-day absolute max age is checked against the original
+   login time, not the restart time.
+5. A **pre-RBAC cookie** (plain ID, no JSON payload) that survives a restart
+   is signature-valid and is upgraded to a `owner`-tier session. This matches
+   the existing v1.3.84 behavior (all sessions are de-facto owner).
+
+**The key guarantee**: a restart never promotes anyone to a higher tier. The
+tier is carried in the cryptographically-signed cookie payload, not in the
+in-memory Map. An attacker who modifies the payload invalidates the signature.
+
+#### Revocation mechanisms
+
+| Trigger | Method | Granularity |
+|---------|--------|-------------|
+| Logout (`POST /api/auth/logout`) | `sessions.delete(id)`, `Set-Cookie: asc_session=; Max-Age=0` | Single session |
+| Password change | In-memory Map is cleared entirely on console restart (the `restartAll` task restarts the container) | All sessions |
+| Session expiry (12 hours since last activity) | `session.expiresAt < now()` check in `readSession` | Per-session, sliding |
+| Absolute max age (7 days since `iat`) | `now() - iat > 7 * 24 * 60 * 60 * 1000` check in `readSession` | Per-session, absolute |
+| Policy edit (IAM policy changed) | Not required — `evaluate()` reads current policies from in-memory Map on every request | Per-request, immediate |
+| Tier change (Discord role removed) | Not enforced by the session itself. The 12-hour sliding window provides natural re-auth. The external-bot handoff (separate PR) can provide shorter lifetimes. | N/A |
+
+#### Password-change invalidation
+
+When the admin password is changed (`POST /api/settings/admin-password`), the
+`restartAll` task restarts the console container. The in-memory session Map
+is wiped. All existing cookies become invalid at the container level (new
+container = new process = empty Map). Users must re-authenticate with the
+new password.
+
+If the operator changes the password but does NOT restart (unlikely in
+practice — the API endpoint triggers a restart), existing sessions remain
+valid until their 12-hour sliding window expires.
+
+#### Policy/tier invalidation
+
+Policies are stored in-memory (a `Map` in the `policy.js` module). A policy
+edit via `PUT /api/settings/iam/policy` updates the Map immediately.
+`evaluate(session, action)` is called on **every authenticated request** and
+reads the current policy set — no session cache, no stale policy window.
+
+If a user's tier is downgraded (e.g. Discord role removed), the existing
+session cookie still carries the old tier until the session expires (max
+12 hours). This is an accepted trade-off: per-request tier resolution via an
+external service would introduce latency and a network dependency on every
+console request.
+
+#### Logout behavior
+
+`POST /api/auth/logout`:
+1. Requires valid session (CSRF token)
+2. Deletes session from in-memory Map
+3. Sets `asc_session` cookie with `Max-Age=0` to clear the browser cookie
+4. Audit record: `auth.logout`
+
+#### Restart behavior
+
+On container restart (the console process exits and Docker starts a new one):
+- All in-memory sessions are lost
+- All in-memory policies are lost (policies are loaded from files on boot via
+  `loadPolicies` if a persistence mechanism is added — currently policies
+  exist only in memory and must be re-created after restart)
+- Signature-valid cookies are upgraded as described in "Legacy session
+  compatibility" above
+- The `iat` field in the cookie prevents indefinite session reuse: a cookie
+  older than 7 days absolute is rejected even if signature-valid
+
+#### CSRF behavior
+
+`requireAuth(req, res)` checks:
+1. Session is valid (signature, not expired, not >7 days old)
+2. For non-GET/HEAD/OPTIONS methods: `X-CSRF-Token` header must match
+   `session.csrf` (a 24-byte random value created with each session)
+3. `ADMIN_AUTH_DISABLED=1` bypasses all CSRF checks
+
+The CSRF token is available to the frontend via `POST /api/auth/login`
+(response body includes `csrfToken`) and `GET /api/auth/state` (for
+already-authenticated users).
+
+#### `ADMIN_AUTH_DISABLED` behavior
+
+When `ADMIN_AUTH_DISABLED=1`:
+- `readSession(req)` returns a synthetic `owner`-tier session with `id: "dev"`
+- No cookie is required; no password is checked; no CSRF is enforced
+- All IAM `evaluate()` calls return `true` (the dev session has `tier: "owner"`)
+- This is identical to v1.3.84's `ADMIN_AUTH_DISABLED` behavior
+
+#### Bootstrap / recovery path
+
+**Permanent local-password recovery**: Password login is always available at
+`POST /api/auth/login` regardless of whether Discord OAuth is configured.
+The admin password is stored in `runtime/secrets/admin-web-password.txt` and
+can be read directly from the host filesystem. There is no scenario where
+Discord OAuth configuration locks the operator out of the console.
+
+**Last-owner / self-lockout protection**: The IAM policy editor (future PR,
+deferred) will enforce that at least one `owner`-level policy statement exists
+before accepting a policy update. This prevents an operator from accidentally
+removing all owner access. Until the editor ships, policies must be edited
+via the raw API — the operator is expected to understand the consequences.
+
+**First-boot**: On first boot, the console generates a random admin password
+in `runtime/secrets/admin-web-password.txt`. The operator reads this file
+and signs in. No IAM policies exist yet → all actions are unrestricted.
+
+### SecureCookies
+
+**Unchanged from upstream.** The console uses the existing `NODE_ENV` heuristic:
+- `ADMIN_SECURE_COOKIES` unset + `NODE_ENV === "production"` → `Secure` flag on
+- `ADMIN_SECURE_COOKIES=1` → `Secure` flag on
+- `ADMIN_SECURE_COOKIES=0` → `Secure` flag off
+- `ADMIN_SECURE_COOKIES` unset + not production → `Secure` flag off
+
+This matches v1.3.84 Compose defaults (`ADMIN_SECURE_COOKIES=0`). An
+HTTPS-by-default migration is a separate coordinated change.
+
+### Test coverage
+
+- `rbac.test.js` (281 lines): policy evaluation engine — exact match,
+  wildcard (`server:*`), namespace wildcard, explicit deny, action `*`, tier
+  resolution, `resolveSessionTier`, edge cases
+- `rbacParity.test.js` (164 lines): static source-code analysis — parses
+  `server.js`'s `handleApi` function and asserts every route has an IAM action
+  in `ROUTE_ACTIONS` or a documented public-route exemption. **This test
+  mechanically blocks any future route addition without an IAM action.**
+- `auth.test.js`: existing upstream tests continue to pass; session tier
+  propagation and expiry are covered
+
+### Strict Requirement 0
+
+- **No behavioral change without policies**: the IAM engine is installed but
+  dormant. `evaluate()` returns `true` for all actions when no policies exist.
+- **Legacy cookie upgrade**: pre-RBAC cookies with valid HMAC are upgraded to
+  `owner`-tier sessions. No operator is logged out mid-upgrade.
+- **Restart resilience**: cookie payload carries tier and expiry — a restart
+  does not promote anyone or require re-authentication before the original
+  expiry.
+- **No new required env vars**: `ADMIN_SECURE_COOKIES` and `ADMIN_AUTH_DISABLED`
+  are existing upstream env vars. No new env vars are introduced by this PR.
+- **No database migration**: policies are in-memory (future persistence is a
+  separate concern). No schema changes.
+
+---
+
+## PR 2: Discord OPS Providers — Real Data with Endpoint Authorization
+
+**Branch:** `tranche-ops-providers` (to be built)
+**Base:** independent of RBAC (can ship before or after)
+
+### What it does
+
+Replaces placeholder OPS route responses with real duneDb queries, and adds
+**actor/capability enforcement, query timeouts, row limits, and response-size
+limits** to every OPS endpoint.
+
+### Endpoint authorization model
+
+Every OPS endpoint enforces:
+
+| Control | Mechanism | Default |
+|---------|-----------|---------|
+| Actor identity | Required `X-Discord-Actor` header with user ID; validated against the configured guild | 403 if missing/invalid |
+| Capability check | `policy.js` evaluate — each OPS action requires a named capability (e.g. `ops:resources:read`) | 403 if unauthorized |
+| Query timeout | `statement_timeout` per query, configured via `DUNE_OPS_QUERY_TIMEOUT_MS` | 5,000 ms |
+| Row limit | `LIMIT` clause on every aggregate query, configured via `DUNE_OPS_MAX_ROWS` | 500 |
+| Response size | `Content-Length` check before response write; truncated with `X-Truncated: true` header if exceeded | 64 KB |
+| Privacy | No player PII (character names, coordinates, inventory contents) in aggregate responses | Structural |
+
+### Files
+
+| File | Description |
+|------|-------------|
+| `opsProvider.js` | Real duneDb queries for activity/combat/resources/economy with authorization, timeouts, limits |
+| `inventoryProvider.js` | Aggregate inventory stats with privacy-preserving output |
+| `routes.js` | OPS route handlers with actor validation and capability enforcement |
+| `duneDb.js` additions | `addonOpsActivitySummary`, `addonOpsResourcesSummary`, `addonOpsCombatDeaths`, `addonOpsEconomySummary` query functions |
+| Tests | Provider shape contracts, route authorization, timeout/limit behavior |
+
+### Independence from RBAC
+
+The OPS providers use a **self-contained capability check** that does not
+depend on the console's IAM engine. The capability model is:
 
 ```
-Tranche 1: RBAC Foundation (IAM engine, session tiers, route gating)
-  │
-  ├── Tranche 2: Discord OAuth Sign-in (depends on session management)
-  │     ├── Tranche 4: Player Scoping (depends on Discord identity)
-  │     ├── Tranche 5: Discord OPS Providers (depends on Discord routes)
-  │     └── Tranche 6: OAuth Setup UI (depends on OAuth endpoints)
-  │
-  └── Tranche 3: IAM Policy Editor UI (depends on IAM engine)
-
-Tranche 7: Fixes + Security Tooling (independent, can ship anytime)
+ops:activity:read    ops:resources:read    ops:combat:read
+ops:economy:read     ops:inventory:read    ops:soc:read
+ops:prometheus:read
 ```
 
-Each arrow means "the downstream PR must not be reviewed before the upstream
-PR is accepted." Tranche 7 is independent and can ship first or last.
+If PR 1 (RBAC) is merged first, the OPS providers integrate with the
+console's IAM engine via `policy.js`. If shipped standalone, they use an
+inline capability check that matches the same model.
+
+### Strict Requirement 0
+
+- Feature-gated behind `DUNE_DISCORD_ADAPTER_ENABLED` (default: `false`).
+  No adapter → no OPS routes → zero behavioral change.
+- Queries are additive — no schema changes, no data modification.
+- Timeouts and limits protect the database under all load conditions.
 
 ---
 
-## Tranche 1: RBAC Foundation (blocks all subsequent work)
+## Deferred Items (separate, future PRs)
 
-### Why
-The console currently has a single admin password with unrestricted access.
-Any operator who shares the password grants full control — no tiered access,
-no audit trail of who did what, no way to let moderators manage players
-without also giving them server-stop permission. This tranche adds the IAM
-engine, tiered sessions, and route-level capability gating that every
-subsequent feature depends on.
-
-### What it ships
-| Component | Files | Description |
-|-----------|-------|-------------|
-| IAM policy engine | `policy.js`, `actions.js`, `rbac.js` | AWS IAM-style policy evaluation: allow/deny with action matching, namespace-aware. Route-to-action mapping for every existing console route. |
-| Tiered sessions | `auth.js` | HMAC-signed session cookies carrying `{tier, userId, exp, iat}`. Password login defaults to `owner`. `readSession` decodes JSON-bundle payloads with legacy fallback. |
-| Route gating | `server.js` | `evaluate(session, action)` gate on every authenticated route. Public routes (health, auth state, login/logout) bypass. |
-| Session max age | `auth.js` | 7-day absolute max age via `iat` field. Prevents indefinite session use after a restart. |
-| CSRF hardening | `auth.js` | Every POST/PUT/DELETE requires `X-CSRF-Token` matching the session. |
-| Secure cookies | `auth.js`, `config.js` | `Secure` flag default-on with opt-out (`ADMIN_SECURE_COOKIES=0`). |
-| Login rate limiting | `server.js`, `rateLimit.js` | Token-exchange rate limiting per remote IP. |
-
-### Strict Requirement 0 compliance
-- IAM engine is dormant until policies are created. No existing route is
-  affected — the default policy set grants `owner` tier everything.
-- `auth.js`'s `readSession` has an upgrade path: a signature-valid cookie
-  from a pre-RBAC build produces a synthesized `owner` session. An operator
-  upgrading mid-session does not get logged out.
-- No new required env vars. `ADMIN_SECURE_COOKIES` defaults to `1` (matches
-  current behavior — the console already expects HTTPS via reverse proxy).
-
-### Test coverage
-- `rbac.test.js`: policy evaluation (allow/deny, wildcards, precedence)
-- `rbacParity.test.js`: static analysis — every route in `handleApi` has an
-  IAM action or a documented public-route exemption
-- `auth.test.js`: session creation, validation, expiry, legacy fallback
-- `rateLimit.test.js`: rate limiter behavior
-
-### Risk: Low
-Blast radius: confined to the console API. No game-server, Postgres, or
-Docker daemon impact. Feature-gated: no IAM policy → no behavioral change.
+| Item | Reason for deferral |
+|------|---------------------|
+| IAM policy editor UI | Requires finalized RBAC engine; UI-only, no rush |
+| Discord OAuth sign-in | Depends on RBAC; must address guild-membership ≠ Owner, local-password recovery, last-owner protection |
+| External-bot signed handoff | Separate trust boundary — needs its own design and security review |
+| Player scoping + link migration | Requires atomic migration plan, deduplication, no indefinite UNION; use in-game verified flow |
+| Expression indexes on Funcom tables | Needs EXPLAIN evidence, size/write impact, compatibility per feedback item 7 |
+| OAuth setup UI | Needs automated test suite before opening per feedback item 9 |
+| Tooling (semgrep, gitleaks, ggshield) | Separate PRs by concern; pinned SHAs, minimal permissions |
+| Storage UI fixes | Separate PR |
+| Sietch display names | Separate PR |
+| Operational documentation | Separate PR |
+| SecureCookies migration | Coordinated, separate change |
 
 ---
 
-## Tranche 2: Discord OAuth Sign-in (depends on T1)
+## Expected diff stats
 
-### Why
-Password-based auth works for a single operator but does not scale to
-multi-admin teams. Discord OAuth lets operators sign in with their existing
-Discord account. Tier resolution (owner/admin/moderator/player) comes from
-Discord guild roles, enabling tiered access without sharing a password.
-
-### What it ships
-| Component | Files | Description |
-|-----------|-------|-------------|
-| OAuth flow | `oauth.js`, `server.js`, `config.js` | Authorization-code flow with PKCE (S256). Single-use, cookie-bound, short-lived pending state. `/api/auth/discord/start` → `/api/auth/discord/callback` → `/api/auth/discord/exchange`. |
-| Tier resolution | `oauth.js`, `handoff.js` | `resolveBootstrapTier`: guild membership + explicit allowlist → `owner`. `createHandoff`: signed HMAC payload from external bot for dynamic tier assignment (disabled by default). |
-| Session creation | `auth.js`, `oauth.js` | OAuth callback creates a tiered session with `{userId, username, guildId}`. |
-| Opt-in gate | `config.js` | `discordOAuthConfigured` is `false` unless `DISCORD_OAUTH_CLIENT_ID`, `DISCORD_OAUTH_CLIENT_SECRET`, and `DISCORD_OAUTH_REDIRECT_URI` are all set. Without these, the console behaves identically to the current upstream build. |
-
-### Strict Requirement 0 compliance
-- **Feature gate**: `discordOAuthConfigured` is `false` by default. No env
-  vars set → no Discord sign-in button, no OAuth routes exposed, zero
-  behavioral change for existing operators.
-- **`secureCookies` backwards compat**: `config.js` reads
-  `ADMIN_SECURE_COOKIES !== "0"` (opt-out, default `true`). Matches upstream
-  behavior (console expects HTTPS via reverse proxy).
-- **Legacy session upgrade**: pre-RBAC cookies with valid HMAC are upgraded
-  to `owner`-tier sessions on read. No operator is logged out mid-upgrade.
-
-### Test coverage
-- `oauth.test.js`: PKCE state machine, tier resolution, Discord HTTP stubs
-- `oauthRoutes.integration.test.js`: full OAuth flow with mocked Discord API
-- `auth.test.js`: session tier propagation from OAuth callback
-- `config.test.js`: `discordOAuthConfigured` gating
-
-### Risk: Low
-Opt-in, feature-gated, no default behavioral change. Client secret stored in
-`runtime/secrets/` at `0o600`, never in `.env`.
+| PR | Files | Lines |
+|----|-------|-------|
+| PR 1: RBAC Foundation | 7 | +1602/-14 |
+| PR 2: Discord OPS Providers | ~8 | ~600 (estimated) |
 
 ---
-
-## Tranche 3: IAM Policy Editor UI (depends on T1)
-
-### Why
-The IAM engine from Tranche 1 needs a UI for operators to create, edit, and
-assign policies. Without this, the RBAC system is API-only and unusable by
-non-technical operators.
-
-### What it ships
-| Component | Files | Description |
-|-----------|-------|-------------|
-| Policy editor | `IamPolicyEditor.tsx`, `styles.css` | Searchable permission grid grouped by namespace. Green checkboxes for granted actions, row dividers, accessible contrast. |
-| API endpoints | `server.js` | `GET /api/settings/iam/policies`, `PUT /api/settings/iam/policy`, `POST /api/settings/iam/policy/test`. |
-| Sidebar integration | `App.tsx` | IAM policy editor as a dedicated Settings tab. |
-| Bugfixes | `IamPolicyEditor.tsx`, `styles.css` | HTTP-path→IAM-action resolution, infinite-render fix, duplicate Access Control removal, empty-namespace filtering. |
-
-### Strict Requirement 0 compliance
-- IAM editor is only accessible to `owner`-tier sessions. Other tiers see a
-  "permission denied" message.
-- Default policies grant `owner` everything. An operator who never opens the
-  IAM editor sees no change.
-
-### Test coverage
-- `rbacParity.test.js`: static route coverage
-- `rbac.test.js`: policy CRUD
-
-### Risk: Medium
-UI change — affects what operators see. Blast radius: one settings tab. No
-backend behavioral change for non-IAM routes.
-
----
-
-## Tranche 4: Player Scoping (depends on T2)
-
-### Why
-When a player-tier user signs in via Discord OAuth, they should only see
-their own characters and data — not every player on the server. This tranche
-adds row-level scoping to the players endpoint and Discord-to-character
-linking infrastructure.
-
-### What it ships
-| Component | Files | Description |
-|-----------|-------|-------------|
-| Player character linking | `duneDb.js`, `server.js` | `getAllLinkedPlayers` (with legacy table UNION), `GET /api/auth/characters`, link/unlink handlers. |
-| Player endpoint scoping | `duneDb.js`, `server.js` | `resolvePlayerScopedIds` helper, `controllerIds` SQL-level filter on `listPlayers`. |
-| PlayerLinkPrompt | `PlayerLinkPrompt.tsx` | Home-tab prompt for unlinked player-tier users. |
-| Expression indexes | `duneDb.js` | `text→bigint` JOIN indexes. |
-| Stale link cleanup | `duneDb.js` | Startup cleanup of links to deleted characters. |
-| Audit logging | `server.js`, `duneDb.js` | Dedicated audit entries for link/unlink operations. |
-| Tier restriction | `rbac.js` | Moderator tier restricted (no `players:mutate` or `bases:mutate`). |
-
-### Strict Requirement 0 compliance
-- Player linking tables in a new `console` schema — no migration on the
-  existing `dune` schema.
-- `getAllLinkedPlayers` UNION includes the legacy `discord_player_links` table
-  for operators who already had the adapter running.
-- Player scoping only applies when `session.tier === "player"` and
-  `session.userId` is set. Admin/mod/owner tiers see all players (unchanged).
-
-### Test coverage
-- `db.test.js`: getAllLinkedPlayers (3 test cases), expression indexes
-- `server.js` (integration): scoped player list
-
-### Risk: Medium
-Schema addition (new `console` schema). No migration on existing data.
-
----
-
-## Tranche 5: Discord OPS Providers (depends on T2)
-
-### Why
-The console's Discord integration (adapter) currently has placeholder OPS
-routes that return stub data. This tranche wires them to real duneDb queries
-so the Discord bot can report live server state.
-
-### What it ships
-| Component | Files | Description |
-|-----------|-------|-------------|
-| opsProvider wiring | `opsProvider.js`, `routes.js` | activity/combat/resources/economy providers wired to real `addonOps*` duneDb queries. |
-| `totalValueRemaining` | `opsProvider.js` | Computed from `resourcefield_state` for bot statsPusher. |
-| ops.inventory/soc/activity | `inventoryProvider.js`, `routes.js` | Real aggregate queries for inventory, SOC, and activity stats. |
-
-### Strict Requirement 0 compliance
-- OPS routes are only called by the Discord adapter. If the adapter is
-  disabled (`DUNE_DISCORD_ADAPTER_ENABLED=false`, the default), these code
-  paths are never reached.
-- No new env vars beyond what the adapter already requires.
-
-### Test coverage
-- `opsProvider.test.js`: shape contracts for all providers
-- `inventoryProvider.test.js`: aggregate query shapes
-- `bridgeIntegration.test.js`: end-to-end route responses
-
-### Risk: Low
-Opt-in behind `DUNE_DISCORD_ADAPTER_ENABLED`. No default behavioral change.
-
----
-
-## Tranche 6: OAuth Setup UI (depends on T2)
-
-### Why
-Operators currently must edit `.env` by hand to configure Discord OAuth —
-error-prone, undocumented, and causes silent failures (missing env vars
-produce misleading "not authorized" errors). This tranche adds a setup wizard
-step and settings panel section for OAuth configuration.
-
-### What it ships
-| Component | Files | Description |
-|-----------|-------|-------------|
-| save-oauth-secret endpoint | `server.js` | Writes client secret to `runtime/secrets/discord-oauth-client-secret.txt` at `0o600`. Follows the existing `saveToken` pattern. |
-| write-oauth-config endpoint | `server.js` | Writes non-secret OAuth keys to `.env` with server-side snowflake/URL/bootstrap validation. `DISCORD_OAUTH_BASE_URL` deliberately excluded (SSRF vector). |
-| Setup wizard step | `SetupWizard.tsx` | Optional "Discord Auth" step with 5 fields + secret + skip button. Does not block progression. |
-| Settings panel section | `SettingsPanel.tsx` | Collapsible Discord OAuth section for post-setup editing. |
-| Self-validation | `config.js` | `discordOAuthConfigured` requires `homeGuildId`. Missing → OAuth shows as disabled, no broken sign-in flow. |
-| Missing compose vars | `docker-compose.web.yml` | Added `DISCORD_HOME_GUILD_ID` and `DISCORD_OAUTH_OWNER_ALLOWLIST` passthrough. |
-
-### Strict Requirement 0 compliance
-- `discordOAuthConfigured` is `false` by default. Missing env vars → OAuth
-  shows as "not configured" — the password login works normally.
-- Client secret never touches `.env` (stored in `runtime/secrets/` at `0o600`).
-- Setup wizard step is optional — operators can skip it entirely.
-
-### Test coverage
-- E2E validation: snowflake/URL/bootstrap input rejection verified via curl
-  (test file pending per #192's QA hat requirements).
-- Parity test: both new routes have `setup:write` IAM actions.
-
-### Risk: Medium
-Writing to `.env` from the web UI. Mitigation: strict server-side validation,
-audit logging, and secret isolation to `runtime/secrets/`.
-
----
-
-## Tranche 7: Fixes + Security Tooling (independent)
-
-### Why
-Security scanning, operational fixes, and documentation that apply across
-all tranches. These can ship independently at any time.
-
-### What it ships
-| Component | Files | Description |
-|-----------|-------|-------------|
-| gitleaks allowlist | `.gitleaks.toml` | Verified placeholder values unblocking pre-push gates. |
-| Semgrep CI | `.github/workflows/semgrep.yml`, `.semgrepignore` | Full ruleset + Supply Chain, diff-aware on PRs. |
-| ggshield migration | `.gitguardian.yaml` | v2 config format. |
-| Dune WAN probe | `.github/workflows/dune-wan-probe.yml` | Optional WAN-probe workflow. |
-| Documentation | `CHANGELOG.md`, `docs/security/*`, `docs/incidents/*` | Changelog, security audits, incident reports, data classification. |
-| Storage fixes | `StoragePanel.tsx`, `adminCatalog.js` | Storage loading state, error styling, volume/slot limits, fill-item endpoint. |
-| Sietch display names | `runtime/data/sietch-config.json` engine | Resolves real sietch names from config. |
-
-### Risk: Low
-Security tooling is CI-only. Storage fixes are bugfixes on existing features.
-Documentation is additive.
-
----
-
-## How to Review
-
-1. **Start with Tranche 1** — it is the foundation. Without it, subsequent
-   tranches cannot function.
-2. **Each PR passes independently**: clone upstream v1.3.84, apply the PR,
-   run `docker compose up`, and verify the console works normally.
-3. **Feature gates are explicit**: if you don't want Discord OAuth, skip
-   Tranches 2, 4, 5, and 6. Tranche 1 (IAM) and Tranche 3 (IAM UI) work
-   standalone.
-4. **Tests are load-bearing**: the parity test (`rbacParity.test.js`)
-   mechanically enforces that every new route has an IAM action. The OAuth
-   tests (`oauth.test.js`, `oauthRoutes.integration.test.js`) verify the full
-   PKCE flow with mocked Discord APIs.
-5. **Evidence is in the fork**: every PR links to its issue tracker entry
-   (`yacketrj/dune-awakening-selfhost-docker/issues/NNN`) with eight-hats
-   review, risk classification, and test plan.
-
----
-
-## CI Status on Fork
-
-All tranches currently pass on the fork's `main` branch:
-- 872 console API tests (node `--test`)
-- TypeScript compilation (console web)
-- Semgrep CI (full ruleset, cron-triggered)
-- gitleaks / ggshield / trivy pre-push gates
 
 ## Contact
 
-Questions, concerns, or design discussions: open an issue on
-`yacketrj/dune-awakening-selfhost-docker` or reach out via the
-Discord server linked in the fork's README.
+Questions or discussion: open an issue on `yacketrj/dune-awakening-selfhost-docker`.
