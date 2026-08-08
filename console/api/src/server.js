@@ -493,6 +493,28 @@ async function handleApi(req, res) {
   if (path === "/api/database/password" && req.method === "POST") return databasePasswordRoute(req, res);
   if (path === "/api/settings/admin-password" && req.method === "POST") return adminPasswordRoute(req, res);
   if (path === "/api/settings/web-port" && req.method === "POST") return webPortRoute(req, res);
+  if (path === "/api/settings/iam/policies" && req.method === "GET") {
+    return json(res, 200, { policies: getAllPolicies() });
+  }
+  if (path === "/api/settings/iam/policy" && req.method === "PUT") {
+    const body = await readJson(req);
+    if (!body || typeof body !== "object" || !Array.isArray(body.statements)) {
+      return json(res, 400, { error: "Policy must be an object with a 'statements' array." });
+    }
+    const result = setPolicies(body);
+    audit(config, req, "iam.policy-set", { policyId: body.id || "custom" });
+    return json(res, 200, result);
+  }
+  if (path === "/api/settings/iam/policy/test" && req.method === "POST") {
+    const body = await readJson(req);
+    const testAction = body?.action || "";
+    const testTier = body?.tier || "";
+    if (!testAction || !testTier) {
+      return json(res, 400, { error: "Both 'action' and 'tier' are required." });
+    }
+    const result = matchAction(testAction) && evaluate({ tier: testTier, ...auth.makeSession({ tier: testTier }) }, testAction);
+    return json(res, 200, { allowed: Boolean(result) });
+  }
 
   if (path === "/api/players") return dbJson(res, () => duneDb.listPlayers(db, {
     q: url.searchParams.get("q") || "",
