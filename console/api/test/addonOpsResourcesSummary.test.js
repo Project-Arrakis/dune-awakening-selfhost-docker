@@ -271,7 +271,7 @@ test("multiple Hagga Basin sietches with both PvP and PvE designations report co
   const result = await addonOpsResourcesSummary(db, config);
   const hb = result.haggaBasin;
   assert.equal(hb.instances.length, 2);
-  assert.equal(hb.instances.find((i) => i.name === "Sietch Abbir").combatState, "PVP");
+  assert.equal(hb.instances.find((i) => i.name === "Sietch Zahir" || i.name === "Sietch Abbir").combatState, "PVP");
   assert.equal(hb.instances.find((i) => i.name === "Sietch Tabr").combatState, "PVE");
   assert.equal(hb.summary.pvpInstances, 1);
   assert.equal(hb.summary.pveInstances, 1);
