@@ -11,6 +11,20 @@
 //
 // Naming convention: namespace:action-name (e.g. "players:kick",
 // "bases:refill-generators", "server:restart")
+//
+// ---- WHEN ADDING A NEW ROUTE IN server.js (hard requirement) ----
+//
+// 1. If the route requires authorization: add it to ROUTE_ACTIONS below
+//    in the same commit. Follow the existing "METHOD /path": "ns:action"
+//    format exactly — one line, alphabetically grouped by namespace.
+//
+// 2. If the route is always public (no IAM action needed): add the EXACT
+//    path to the PUBLIC_EXACT array in test/rbacParity.test.js. The
+//    parity test statically extracts every route from server.js and
+//    asserts 100% coverage — a missing entry is a hard test failure.
+//
+// 3. Verify: `node --test test/rbacParity.test.js` must pass before push.
+//    This gate enforces the requirement mechanically.
 
 // ---- Namespaces ----
 
@@ -49,6 +63,8 @@ export const ROUTE_ACTIONS = {
   "GET /api/setup/tasks":                      "setup:read",
   "POST /api/setup/preflight":                 "setup:write",
   "POST /api/setup/write-config":              "setup:write",
+  "POST /api/setup/write-oauth-config":        "setup:write",
+  "POST /api/setup/save-oauth-secret":         "setup:write",
   "POST /api/setup/save-token":                "setup:write",
   "POST /api/setup/init":                      "setup:write",
   "GET /api/public-directory/status":          "setup:read",
