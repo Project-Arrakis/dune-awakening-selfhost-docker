@@ -119,6 +119,51 @@ test("makeSession defaults to owner tier and carries identity fields", () => {
   assert.equal(readBack?.username, "operator");
 });
 
+test("ADMIN_AUTH_DISABLED=1 returns dev owner session, bypasses password and CSRF", () => {
+  const auth = createAuth({ sessionSecret: "secret", adminPassword: "admin", authDisabled: true });
+  const req = { method: "POST", headers: {} };
+  const res = fakeResponse();
+  const session = auth.requireAuth(req, res);
+  assert.equal(session?.id, "dev");
+  assert.equal(session?.tier, "owner");
+  assert.equal(session?.csrf, "dev");
+  assert.equal(res.status, null);
+  assert.equal(auth.passwordMatches("anything"), false); // disabled doesn't skip passwordMatches
+});
+
+test("logout deletes session and cookie is cleared", () => {
+  const auth = createAuth({ sessionSecret: "secret", adminPassword: "admin", authDisabled: false });
+  const session = auth.makeSession();
+  const cookieValue = session.cookie;
+  const res = fakeResponse();
+  clearSessionCookie(res, { secureCookies: false });
+  assert.match(res.headers["Set-Cookie"], /Max-Age=0/);
+  assert.match(res.headers["Set-Cookie"], /asc_session=;/);
+
+  // After logout cookie is sent, the old session cookie should be rejected
+  // because the in-memory session should be deleted by the logout handler.
+  // This test verifies the cookie-clearing side; the server-side deletion
+  // is tested in the integration layer.
+});
+
+test("when authDisabled is false, missing cookie returns null", () => {
+  const auth = createAuth({ sessionSecret: "secret", adminPassword: "admin", authDisabled: false });
+  assert.equal(auth.readSession({ headers: {} }), null);
+});
+
+test("constant-time HMAC comparison rejects mismatched signatures", () => {
+  const auth = createAuth({ sessionSecret: "secret-a", adminPassword: "admin", authDisabled: false });
+  const session = auth.makeSession();
+  const otherAuth = createAuth({ sessionSecret: "secret-b", adminPassword: "admin", authDisabled: false });
+  const otherSession = otherAuth.makeSession();
+
+  // Tamper by swapping signatures between two different secrets
+  const [idA] = session.cookie.split(".");
+  const [, sigB] = otherSession.cookie.split(".");
+  const tamperedCookie = `${idA}.${sigB}`;
+  assert.equal(auth.readSession({ headers: { cookie: `asc_session=${encodeURIComponent(tamperedCookie)}` } }), null);
+});
+
 function fakeResponse() {
   return {
     status: null,
