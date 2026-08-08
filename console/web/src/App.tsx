@@ -735,7 +735,7 @@ export function App() {
           </div>
         </header>
         {error && <div className="error-banner">{error}</div>}
-        {me?.tier === "player" && <PlayerLinkPrompt />}
+        {me?.tier === "player" && tab === "Home" && <PlayerLinkPrompt />}
         {redeploySetupOpen && <SetupWizard initialStep={setupJump.step} jumpNonce={setupJump.nonce} mode="redeploy" onSetupComplete={async () => setSetupState(await setupApi.state())} />}
         {!redeploySetupOpen && tab === "Home" && <HomePanel status={status} readiness={readiness} taskResult={homeTaskResult} setTaskResult={setHomeTaskResult} funcomTokenResult={funcomTokenResult} setFuncomTokenResult={setFuncomTokenResult} runningAction={homeRunningAction} restartStartObserved={homeRestartStarted} setRunningAction={setHomeRunningAction} onLoad={loadStackStatus} confirmAction={confirmDialog} />}
         {!redeploySetupOpen && tab === "Access Control" && <IamPolicyEditor />}
