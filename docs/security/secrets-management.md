@@ -1,6 +1,6 @@
 # Secrets Management Deep Dive — PKI, CMK, Storage, Retrieval & Rotation
 
-**Date:** 2026-08-07  
+**Date:** 2026-08-07
 **Status:** Analysis — candidate evaluation before implementation
 
 ---
@@ -297,7 +297,7 @@ Server Control → Access Control
 
 function SecretsManager() {
   // State: secretKeys[], selectedKey, revealMode, auditLog[]
-  
+
   return (
     <section className="secrets-manager">
       <div className="secret-list-panel">
@@ -311,7 +311,7 @@ function SecretsManager() {
           </div>
         ))}
       </div>
-      
+
       {revealMode && (
         <div className="secret-reveal-dialog">
           <p>Revealing secret: <strong>{selectedKey}</strong></p>
@@ -319,7 +319,7 @@ function SecretsManager() {
           <ConfirmDialog onConfirm={() => showValue()} />
         </div>
       )}
-      
+
       <div className="secret-audit-panel">
         <h4>Access History</h4>
         {auditLog.map(entry => (

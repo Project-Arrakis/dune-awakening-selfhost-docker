@@ -1,9 +1,9 @@
 # Specialization Readiness Tool — Architecture & Design
 
-**Status:** Design (not yet implemented)  
-**Issue:** `yacketrj/dune-awakening-selfhost-docker#153`  
-**Last updated:** 2026-08-07  
-**Depends on:** Nothing (standalone feature — additive to existing Specialization tab)  
+**Status:** Design (not yet implemented)
+**Issue:** `yacketrj/dune-awakening-selfhost-docker#153`
+**Last updated:** 2026-08-07
+**Depends on:** Nothing (standalone feature — additive to existing Specialization tab)
 **Blocks:** None
 
 ---
