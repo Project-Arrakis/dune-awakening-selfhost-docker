@@ -26,14 +26,18 @@ const RANK_LABELS: Record<BasePermissionRank, string> = {
 
 const RANK_OPTIONS: BasePermissionRank[] = [OWNER_RANK, CO_OWNER_RANK, ASSOCIATE_RANK];
 
-type DraftEntry = { playerId: string; name: string; rank: BasePermissionRank; canonical: boolean };
+// `label` is the server's own rendering of the rank ("Owner", or "Rank 7" for
+// anything outside 1-3). Carried through so a rank the segmented control cannot
+// represent is still readable on screen -- see unknownRankLabel.
+type DraftEntry = { playerId: string; name: string; rank: BasePermissionRank; canonical: boolean; label: string };
 
 function toDraft(entries: BasePermissionEntry[]): DraftEntry[] {
   return entries.map((entry) => ({
     playerId: entry.playerId,
     name: entry.name,
     rank: entry.rank,
-    canonical: entry.canonical
+    canonical: entry.canonical,
+    label: entry.label || ""
   }));
 }
 
@@ -49,6 +53,142 @@ function sameRoster(left: DraftEntry[], right: DraftEntry[]) {
 
 function errorText(error: unknown) {
   return error instanceof Error ? error.message : String(error);
+}
+
+function plural(count: number, word: string) {
+  return `${count} ${word}${count === 1 ? "" : "s"}`;
+}
+
+// "1 co-owner, 4 associates", skipping whichever count is zero so a base shared
+// with associates only does not advertise "0 co-owners". Empty when nobody is
+// on the roster -- the caller drops the element rather than rendering "".
+// `other` covers rows the game stored outside rank 1-3 plus any duplicate Owner;
+// they are real roster members and have to be counted, but calling them
+// Associates would put a rank on them that nobody chose.
+function formatShareBreakdown(coOwners: number, associates: number, other = 0) {
+  const parts: string[] = [];
+  if (coOwners) parts.push(plural(coOwners, "co-owner"));
+  if (associates) parts.push(plural(associates, "associate"));
+  if (other) parts.push(`${other} of another rank`);
+  return parts.join(", ");
+}
+
+// The three segments cover rank 1-3 only. Anything else the game stored has no
+// segment to check, so the control would render blank with no way to read the
+// real rank -- show it instead of silently dropping it.
+function unknownRankLabel(entry: DraftEntry) {
+  if (RANK_OPTIONS.includes(entry.rank)) return "";
+  return entry.label || `Rank ${entry.rank}`;
+}
+
+// Shared by the Owner hero card and the roster rows so the custodian pill and
+// the ignored-entry warning follow a player between the two as their rank
+// changes, instead of being duplicated in both places and drifting apart.
+function EntryName({ entry, isSystemCustodian, className }: {
+  entry: DraftEntry;
+  isSystemCustodian: boolean;
+  className: string;
+}) {
+  return (
+    <span className={className} title={entry.name || entry.playerId}>
+      {entry.name || `Player ${entry.playerId}`}
+      {unknownRankLabel(entry) && <span
+        className="bases-permissions-rank-unknown"
+        title="The game stored a rank this editor cannot represent. Changing it below replaces it with the rank you pick."
+      >{unknownRankLabel(entry)}</span>}
+      {isSystemCustodian && <span className="bases-permissions-system-label">System Custodian</span>}
+      {!entry.canonical && <span className="bases-permissions-orphan" title="This entry does not match a known player character, so the game ignores it. Removing it is safe.">
+        <TriangleAlert size={13} aria-label="Ignored by the game" />
+      </span>}
+    </span>
+  );
+}
+
+// Native radios rather than aria-pressed buttons: the browser supplies arrow-key
+// navigation and a single roving tab stop per group for free, so a five-member
+// roster costs five tab stops before Save instead of fifteen. aria-pressed would
+// also announce "toggle, pressed" with no set position, which is wrong for one
+// mutually exclusive value.
+function RankSegments({ entry, baseId, disabled, onChange }: {
+  entry: DraftEntry;
+  baseId: string;
+  disabled: boolean;
+  onChange: (rank: BasePermissionRank) => void;
+}) {
+  const who = entry.name || entry.playerId;
+  // baseId is in the group name so two rosters rendered at once could never
+  // merge two players' radios into one browser group, where selecting in one
+  // row would silently clear the other.
+  const groupName = `bases-rank-${baseId}-${entry.playerId}`;
+  return (
+    <div className="bases-rank-segments" role="radiogroup" aria-label={`Rank for ${who}`}>
+      {RANK_OPTIONS.map((rank) => (
+        <label className="bases-rank-segment" key={rank}>
+          <input
+            type="radio"
+            name={groupName}
+            value={rank}
+            checked={entry.rank === rank}
+            disabled={disabled}
+            // Full rank word in the accessible name, abbreviation on screen.
+            // Each abbreviation is a prefix of the full label, so the
+            // label-in-name requirement still holds for voice control.
+            aria-label={`${RANK_LABELS[rank]} for ${who}`}
+            onChange={() => onChange(rank)}
+            // Clicking an already-checked radio fires no change event, which
+            // would strand a base carrying two rank-1 rows: the duplicate's
+            // "Own" segment renders checked, so the click that is supposed to
+            // demote the other Owner would do nothing. onChange is still what
+            // arrow-key navigation fires, so both are needed. changeRank is
+            // idempotent for a rank the entry already holds.
+            onClick={() => onChange(rank)}
+          />
+          <span aria-hidden="true">{RANK_LABELS[rank]}</span>
+        </label>
+      ))}
+    </div>
+  );
+}
+
+// The Owner is the one thing an admin opens this tab to check, so it gets its
+// own card instead of being one row among many. The custodian transfer lives
+// here too -- it only ever changes the Owner, and as a section of its own it
+// was the loudest thing on the tab despite being a rare action.
+function OwnerHeroCard({ owner, isCustodian, systemCustodian, saving, dirty, onTransfer }: {
+  owner: DraftEntry | undefined;
+  isCustodian: boolean;
+  systemCustodian: { available: boolean; playerId?: string; name?: string; reason?: string };
+  saving: boolean;
+  dirty: boolean;
+  onTransfer: () => void;
+}) {
+  const custodianName = systemCustodian.name || "Custodian";
+  const ownedByCustodian = Boolean(owner && owner.playerId === systemCustodian.playerId);
+  return (
+    <div className={`bases-permissions-owner-card${owner ? "" : " bases-permissions-owner-card-empty"}`}>
+      <div className="bases-permissions-owner-identity">
+        <span className="bases-permissions-owner-eyebrow">Owner</span>
+        {owner
+          ? <EntryName entry={owner} isSystemCustodian={isCustodian} className="bases-permissions-owner-name" />
+          : <span className="bases-permissions-owner-name bases-permissions-owner-none">No Owner set</span>}
+      </div>
+      <button
+        className="warning"
+        // Still enabled on an ownerless base: that state arrives from the
+        // server with a clean draft, so parking ownership on the custodian is
+        // the fastest legitimate way out of it.
+        disabled={!systemCustodian.available || ownedByCustodian || saving || dirty}
+        title={dirty
+          ? "Save or revert roster changes first"
+          : ownedByCustodian
+          ? `This base is already owned by the ${systemCustodian.name || "detected"} system custodian`
+          : `Park ownership on the reserved ${systemCustodian.name || "detected"} system identity, preserving the current permission roster`}
+        onClick={onTransfer}
+      >{ownedByCustodian ? `Owned by ${custodianName}` : systemCustodian.available ? `Transfer to ${custodianName}` : "Transfer to Custodian"}</button>
+      {!systemCustodian.available && systemCustodian.reason &&
+        <p className="bases-permissions-error bases-permissions-owner-note">{systemCustodian.reason}</p>}
+    </div>
+  );
 }
 
 export function BasePermissionsTab({ baseId, baseName, onSaved, confirmAction }: BasePermissionsTabProps) {
@@ -119,7 +259,8 @@ export function BasePermissionsTab({ baseId, baseName, onSaved, confirmAction }:
   function addCandidate(candidate: BasePermissionCandidate) {
     setDraft((current) => {
       if (current.some((entry) => entry.playerId === candidate.playerId)) return current;
-      const next = [...current, { playerId: candidate.playerId, name: candidate.name, rank: addRank, canonical: true }];
+      // No label: the rank is one this editor picked, so RANK_LABELS covers it.
+      const next = [...current, { playerId: candidate.playerId, name: candidate.name, rank: addRank, canonical: true, label: "" }];
       // Adding straight to Owner has to demote the incumbent for the same
       // reason changeRank does.
       if (addRank !== OWNER_RANK) return next;
@@ -127,6 +268,11 @@ export function BasePermissionsTab({ baseId, baseName, onSaved, confirmAction }:
         ? entry
         : { ...entry, rank: CO_OWNER_RANK });
     });
+    // Adding completes the search interaction. Reset it instead of leaving a
+    // stale query and result list sitting beneath the newly-added roster row.
+    setCandidateQuery("");
+    setCandidates([]);
+    setSearched(false);
   }
 
   // Explicit submit rather than search-as-you-type: this queries the server, and
@@ -213,130 +359,140 @@ export function BasePermissionsTab({ baseId, baseName, onSaved, confirmAction }:
   }
 
   const alreadyOnRoster = new Set(draft.map((entry) => entry.playerId));
+  // The roster holds every entry except the one the hero card is showing --
+  // keyed on that entry's id, not on "rank is not Owner". A base whose rows the
+  // game wrote directly can carry a second rank-1 row (permission_set_player_rank
+  // is a plain upsert), and filtering by rank would drop it from the screen while
+  // leaving it in the draft that Save submits. Keeping it as a row makes it
+  // visible, removable, and fixable: its "Own" segment demotes the incumbent.
+  const nonOwners = sortDraft(draft.filter((entry) => entry.playerId !== owner?.playerId));
+  const coOwnerCount = nonOwners.filter((entry) => entry.rank === CO_OWNER_RANK).length;
+  const associateCount = nonOwners.filter((entry) => entry.rank === ASSOCIATE_RANK).length;
+  // Anything the game stored outside 1-3, plus any duplicate Owner row. Counted
+  // separately rather than folded into the associate tally, which would state
+  // something false about a rank nobody chose.
+  const otherRankCount = nonOwners.length - coOwnerCount - associateCount;
+  const shareBreakdown = formatShareBreakdown(coOwnerCount, associateCount, otherRankCount);
+  const ownerIsCustodian = Boolean(systemCustodian.available && owner && owner.playerId === systemCustodian.playerId);
 
   return (
     <div className="bases-permissions" onClick={(event) => event.stopPropagation()}>
-      <p className="action-help-note">
-        Exactly one Owner. Promoting a player demotes the current Owner to Co-Owner. Changes apply to the running map immediately.
-      </p>
+      <div className="bases-permissions-content">
+        <div className="bases-permissions-intro">
+          <p className="action-help-note">
+            Exactly one Owner. Promoting a player demotes the current Owner to Co-Owner. Changes apply to the running map immediately. Transferring to the system custodian parks ownership on a reserved identity and keeps the roster intact.
+          </p>
+          <OwnerHeroCard
+            owner={owner}
+            isCustodian={ownerIsCustodian}
+            systemCustodian={systemCustodian}
+            saving={saving}
+            dirty={dirty}
+            onTransfer={() => void transferToSystemCustodian()}
+          />
+        </div>
 
-      <div className="bases-permissions-roster">
-        {sortDraft(draft).map((entry) => {
-          const isOwner = entry.rank === OWNER_RANK;
-          const isSystemCustodian = systemCustodian.available && entry.playerId === systemCustodian.playerId;
-          return (
-            <div className={`bases-permissions-row${isOwner ? " bases-permissions-row-owner" : ""}`} key={entry.playerId}>
-              <span className="bases-permissions-name" title={entry.name || entry.playerId}>
-                {entry.name || `Player ${entry.playerId}`}
-                {isSystemCustodian && <span className="bases-permissions-system-label">System Custodian</span>}
-                {!entry.canonical && <span className="bases-permissions-orphan" title="This entry does not match a known player character, so the game ignores it. Removing it is safe.">
-                  <TriangleAlert size={13} aria-label="Ignored by the game" />
-                </span>}
-              </span>
-              <select
-                value={String(entry.rank)}
+        <div className="bases-permissions-toolbar">
+          <div className="bases-permissions-add">
+            <div className="action-row bases-permissions-search-row">
+              <input
+                value={candidateQuery}
+                placeholder="Search a player to add"
                 disabled={saving}
-                aria-label={`Rank for ${entry.name || entry.playerId}`}
-                onChange={(event) => changeRank(entry.playerId, Number(event.target.value) as BasePermissionRank)}
-              >
-                {RANK_OPTIONS.map((rank) => <option key={rank} value={rank}>{RANK_LABELS[rank]}</option>)}
-              </select>
+                onChange={(event) => setCandidateQuery(event.target.value)}
+                onKeyDown={(event) => { if (event.key === "Enter") void submitCandidateSearch(); }}
+              />
+              <button disabled={searching || saving} onClick={() => void submitCandidateSearch()}>Search</button>
+              <button disabled={!candidateQuery && !searched} onClick={clearCandidateSearch}>Clear</button>
+              <label className="compact-select">
+                Add as
+                <select value={String(addRank)} disabled={saving} onChange={(event) => setAddRank(Number(event.target.value) as BasePermissionRank)}>
+                  {RANK_OPTIONS.map((rank) => <option key={rank} value={rank}>{RANK_LABELS[rank]}</option>)}
+                </select>
+              </label>
+            </div>
+            {searched && !candidates.length && <p className="muted">No players matched that search.</p>}
+            {candidates.length > 0 && <ul className="bases-permissions-candidates">
+              {candidates.map((candidate) => (
+                <li key={candidate.playerId}>
+                  <span>{candidate.name}</span>
+                  <button
+                    className="icon-toggle-button"
+                    disabled={alreadyOnRoster.has(candidate.playerId) || saving}
+                    title={alreadyOnRoster.has(candidate.playerId) ? "Already on this base" : `Add ${candidate.name} as ${RANK_LABELS[addRank]}`}
+                    aria-label={`Add ${candidate.name}`}
+                    onClick={() => addCandidate(candidate)}
+                  ><Plus size={15} /></button>
+                </li>
+              ))}
+            </ul>}
+          </div>
+
+          <div className="bases-permissions-actions">
+            <span className="muted">{dirty ? "Unsaved changes" : ""}</span>
+            <button disabled={!dirty || saving} onClick={() => setDraft(saved)}>Revert</button>
+            <button
+              className="update-action"
+              disabled={!dirty || !owner || saving}
+              title={`Save permissions for ${baseName}`}
+              onClick={() => void save()}
+            >{saving ? "Saving…" : "Save changes"}</button>
+          </div>
+        </div>
+
+        {/* Do not reserve an empty message area. Warnings and results appear
+            only when they have useful information, matching the compact action
+            layouts elsewhere in the console. */}
+        {(dirty || !owner || status) && <div className="bases-permissions-banner-slot">
+          {dirty && <p className="confirm-modal-warning bases-permissions-warning" role="status">
+            Saving writes to the live database and notifies the running map server. An online player may need to reopen the base's panel to see the change.
+          </p>}
+          {!owner && <p className="bases-permissions-error" role="alert">
+            This base has no Owner. Set one before saving.
+          </p>}
+          {status && <p
+            className={`inline-task-result${statusKind ? ` result-${statusKind}` : ""}`}
+            role={statusKind === "fail" ? "alert" : "status"}
+            onAnimationEnd={() => {
+              if (statusKind !== "ok") return;
+              setStatus("");
+              setStatusKind("");
+            }}
+          >
+            <strong>{status}</strong>
+          </p>}
+        </div>}
+
+        <div className="bases-permissions-section-head">
+          <span className="bases-permissions-section-title">Shared with · {nonOwners.length}</span>
+          {shareBreakdown && <span className="bases-permissions-section-meta">{shareBreakdown}</span>}
+        </div>
+
+        <div className="bases-permissions-roster">
+          {nonOwners.map((entry) => (
+            <div className="bases-permissions-row" key={entry.playerId}>
+              <EntryName
+                entry={entry}
+                className="bases-permissions-name"
+                isSystemCustodian={systemCustodian.available && entry.playerId === systemCustodian.playerId}
+              />
+              <RankSegments
+                entry={entry}
+                baseId={baseId}
+                disabled={saving}
+                onChange={(rank) => changeRank(entry.playerId, rank)}
+              />
               <button
                 className="icon-toggle-button bases-permissions-remove"
-                // Removing the Owner would leave the base ownerless, which the
-                // server rejects. Promote a replacement first -- that demotes
-                // this one automatically and frees the button.
-                disabled={isOwner || saving}
-                title={isOwner ? "Promote another player to Owner before removing this one" : `Remove ${entry.name || entry.playerId}`}
+                disabled={saving}
+                title={`Remove ${entry.name || entry.playerId}`}
                 aria-label={`Remove ${entry.name || entry.playerId}`}
                 onClick={() => removeEntry(entry.playerId)}
               ><Trash2 size={15} /></button>
             </div>
-          );
-        })}
-        {!draft.length && <p className="muted">This base has no permission entries.</p>}
-      </div>
-
-      <div className="bases-permissions-add">
-        <div className="action-row bases-permissions-search-row">
-          <input
-            value={candidateQuery}
-            placeholder="Search a player to add"
-            disabled={saving}
-            onChange={(event) => setCandidateQuery(event.target.value)}
-            onKeyDown={(event) => { if (event.key === "Enter") void submitCandidateSearch(); }}
-          />
-          <button disabled={searching || saving} onClick={() => void submitCandidateSearch()}>Search</button>
-          <button disabled={!candidateQuery && !searched} onClick={clearCandidateSearch}>Clear</button>
-          <label className="compact-select">
-            Add as
-            <select value={String(addRank)} disabled={saving} onChange={(event) => setAddRank(Number(event.target.value) as BasePermissionRank)}>
-              {RANK_OPTIONS.map((rank) => <option key={rank} value={rank}>{RANK_LABELS[rank]}</option>)}
-            </select>
-          </label>
-        </div>
-        {searched && !candidates.length && <p className="muted">No players matched that search.</p>}
-        {candidates.length > 0 && <ul className="bases-permissions-candidates">
-          {candidates.map((candidate) => (
-            <li key={candidate.playerId}>
-              <span>{candidate.name}</span>
-              <button
-                className="icon-toggle-button"
-                disabled={alreadyOnRoster.has(candidate.playerId) || saving}
-                title={alreadyOnRoster.has(candidate.playerId) ? "Already on this base" : `Add ${candidate.name} as ${RANK_LABELS[addRank]}`}
-                aria-label={`Add ${candidate.name}`}
-                onClick={() => addCandidate(candidate)}
-              ><Plus size={15} /></button>
-            </li>
           ))}
-        </ul>}
-      </div>
-
-      <div className="bases-system-custodian">
-        <div>
-          <strong>System Custodian</strong>
-          <p className="muted">Park ownership on a detected reserved system identity while preserving the current permission roster.</p>
-          {!systemCustodian.available && systemCustodian.reason && <p className="bases-permissions-error">{systemCustodian.reason}</p>}
+          {!nonOwners.length && <p className="muted">This base is not shared with anyone else.</p>}
         </div>
-        <button
-          className="warning"
-          disabled={!systemCustodian.available || owner?.playerId === systemCustodian.playerId || saving || dirty}
-          title={dirty ? "Save or revert roster changes first" : owner?.playerId === systemCustodian.playerId ? `This base is already owned by the ${systemCustodian.name || "detected"} system custodian` : `Transfer ownership to the ${systemCustodian.name || "detected"} system custodian`}
-          onClick={() => void transferToSystemCustodian()}
-        >{owner?.playerId === systemCustodian.playerId ? `Owned by ${systemCustodian.name || "Custodian"}` : systemCustodian.available ? `Transfer to ${systemCustodian.name || "Custodian"}` : "Transfer to Custodian"}</button>
-      </div>
-
-      {dirty && <p className="confirm-modal-warning bases-permissions-warning" role="status">
-        Saving writes to the live database and notifies the running map server. An online player may need to reopen the base's panel to see the change.
-      </p>}
-      {!owner && <p className="bases-permissions-error" role="alert">
-        This base has no Owner. Set one before saving.
-      </p>}
-      {status && <p
-        className={`inline-task-result${statusKind ? ` result-${statusKind}` : ""}`}
-        role={statusKind === "fail" ? "alert" : "status"}
-        onAnimationEnd={() => {
-          // The shared success animation fades opacity only. Remove this result
-          // after that fade so an invisible flex item does not keep reserving
-          // space in the permissions layout. Failures remain until the next
-          // action so their details are not lost.
-          if (statusKind !== "ok") return;
-          setStatus("");
-          setStatusKind("");
-        }}
-      >
-        <strong>{status}</strong>
-      </p>}
-
-      <div className="bases-permissions-actions">
-        <span className="muted">{dirty ? "Unsaved changes" : ""}</span>
-        <button disabled={!dirty || saving} onClick={() => setDraft(saved)}>Revert</button>
-        <button
-          className="update-action"
-          disabled={!dirty || !owner || saving}
-          title={`Save permissions for ${baseName}`}
-          onClick={() => void save()}
-        >{saving ? "Saving…" : "Save changes"}</button>
       </div>
     </div>
   );

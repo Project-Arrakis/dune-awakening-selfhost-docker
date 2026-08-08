@@ -1038,13 +1038,29 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
         </p>
       </div>}
       {combinedQueueTotal > 0 && <div className="bases-pending-refills">
+        {/* Per-resource counts rather than two bare icons over a combined
+            total: "2 refills queued" beside a fuel and a water icon does not
+            say which is which, and the split is what decides whether you go
+            looking at generators or at water containers. Same badge vocabulary
+            as the stalled banner above and the per-map rows below. */}
         <p className="bases-pending-refills-title">
-          {pendingTotal > 0 && <Fuel size={16} aria-hidden="true" />}
-          {pendingWaterTotal > 0 && <Droplet size={16} aria-hidden="true" />}
-          {combinedQueueTotal.toLocaleString()} refill{combinedQueueTotal === 1 ? "" : "s"} queued
+          {/* Explicit spaces around the badges: they are inline elements, so
+              without them the text content reads "Refills queued2 fuel1 water"
+              to a screen reader and to anyone copying it. */}
+          Refills queued
+          {pendingTotal > 0 && <> <span className="bases-queue-badge bases-queue-badge-fuel">
+            <Fuel size={13} aria-hidden="true" />{pendingTotal.toLocaleString()} fuel
+          </span></>}
+          {pendingWaterTotal > 0 && <> <span className="bases-queue-badge bases-queue-badge-water">
+            <Droplet size={13} aria-hidden="true" />{pendingWaterTotal.toLocaleString()} water
+          </span></>}
         </p>
         <p className="action-help-note">
-          Each one is written when its map next restarts. Restarting the battlegroup applies all of them; stopping leaves them queued.
+          {/* No battlegroup-level advice here: this banner only offers the
+              per-map restart buttons below, so pointing at a control that
+              lives on another page is noise. Server Control's note still
+              covers the battlegroup case, next to the button that does it. */}
+          Each one is written when its map next restarts.
         </p>
         <ul className="bases-pending-refills-list">
           {combinedQueueTargets.map((group) => {
@@ -1340,8 +1356,15 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
                   aria-selected={expandedTab === "permissions"}
                   aria-controls={`bases-panel-permissions-${id}`}
                   className={`bases-expanded-tab${expandedTab === "permissions" ? " active" : ""}`}
+                  // The label wraps onto two deliberate lines, so name the tab
+                  // explicitly rather than letting the accessible name be
+                  // assembled from two adjacent inline spans.
+                  aria-label="Sub-Fief Permissions"
                   onClick={() => setExpandedTab("permissions")}
-                ><Users size={15} aria-hidden="true" />Permissions</button>}
+                ><Users size={15} aria-hidden="true" /><span className="bases-expanded-tab-lines">
+                  <span>Sub-Fief</span>
+                  <span>Permissions</span>
+                </span></button>}
               </div>
               {expandedTab === "power"
                 ? <div role="tabpanel" id={`bases-panel-power-${id}`} aria-labelledby={`bases-tab-power-${id}`}>{renderPower()}</div>
