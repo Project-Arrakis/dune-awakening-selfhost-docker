@@ -1253,7 +1253,7 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
             + (autoRefillEntry && !lastChecked ? " Not checked yet." : "")
             + (autoRefillUnavailable ? " Last known state — the latest read failed." : "");
           return (
-            <div className="bases-generator-breakdown">
+            <div className="bases-tab-body">
               {/* Hidden entirely without the queue capability: automating a
                   refill that cannot wait for a safe window would write into a
                   possibly-live base, which is the hazard the queue prevents. */}
@@ -1292,11 +1292,11 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
               <p className="bases-generator-reserve-note" role="note">
                 {QUEUED_RESERVE_EXPLANATION}
               </p>
-              <div className="bases-generator-cards">
+              <div className="bases-card-grid">
               {generators.map((generator, index) => (
-                <div className="bases-generator-group" key={`${generator.type}-${index}`}>
-                  <div className="bases-generator-group-title">{generator.name}</div>
-                  <dl className="bases-generator-stats">
+                <div className="bases-card" key={`${generator.type}-${index}`}>
+                  <div className="bases-card-title">{generator.name}</div>
+                  <dl className="bases-card-stats">
                     <dt>Generators</dt>
                     <dd>{generator.generatorCount.toLocaleString()}</dd>
                     <dt>Fuel Queued</dt>
