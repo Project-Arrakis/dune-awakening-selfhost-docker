@@ -38,6 +38,16 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl }: SettingsP
   const [claimCode, setClaimCode] = useState("");
   const [loginPasswordOpen, setLoginPasswordOpen] = useState(false);
   const [webPortOpen, setWebPortOpen] = useState(false);
+  const [discordOAuthOpen, setDiscordOAuthOpen] = useState(false);
+  const [discordOAuthSaving, setDiscordOAuthSaving] = useState(false);
+  const [discordOAuthResult, setDiscordOAuthResult] = useState<SettingsTaskResult | null>(null);
+  const [discordClientId, setDiscordClientId] = useState("");
+  const [discordRedirectUri, setDiscordRedirectUri] = useState("");
+  const [discordClientSecret, setDiscordClientSecret] = useState("");
+  const [discordHomeGuildId, setDiscordHomeGuildId] = useState("");
+  const [discordOwnerAllowlist, setDiscordOwnerAllowlist] = useState("");
+  const [discordBootstrap, setDiscordBootstrap] = useState(false);
+  const [discordSecretSaved, setDiscordSecretSaved] = useState(false);
   const [webPort, setWebPort] = useState("");
   const [webPortRedirectUrl, setWebPortRedirectUrl] = useState("");
   const [webPortRedirectCountdown, setWebPortRedirectCountdown] = useState<number | null>(null);
@@ -46,7 +56,14 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl }: SettingsP
     setSettings(nextSettings);
     const config = (nextSettings.config as Record<string, unknown> | undefined) || {};
     const directory = (nextSettings.publicDirectory as PublicDirectorySettings | undefined) || {};
+    const serverConfig = (nextSettings.serverConfig as Record<string, string> | undefined) || {};
     setWebPort(String(config.port || "8088"));
+    setDiscordClientId(serverConfig["DISCORD_OAUTH_CLIENT_ID"] || "");
+    setDiscordRedirectUri(serverConfig["DISCORD_OAUTH_REDIRECT_URI"] || "");
+    setDiscordHomeGuildId(serverConfig["DISCORD_HOME_GUILD_ID"] || "");
+    setDiscordOwnerAllowlist(serverConfig["DISCORD_OAUTH_OWNER_ALLOWLIST"] || "");
+    setDiscordBootstrap(serverConfig["DISCORD_OAUTH_ALLOW_OWNER_BOOTSTRAP"] === "1");
+    setDiscordSecretSaved(Boolean(serverConfig["_discordOAuthSecretSaved"]));
   }
   useEffect(() => {
     refresh().catch(() => undefined);
@@ -170,6 +187,33 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl }: SettingsP
       setPublicProfileSaving(false);
     }
   }
+  async function saveDiscordOAuth() {
+    setDiscordOAuthSaving(true);
+    setDiscordOAuthResult({ status: "running", title: "Saving Discord OAuth config..." });
+    try {
+      await post<{ ok: boolean }>("/api/setup/write-oauth-config", {
+        DISCORD_OAUTH_CLIENT_ID: discordClientId,
+        DISCORD_OAUTH_REDIRECT_URI: discordRedirectUri,
+        DISCORD_HOME_GUILD_ID: discordHomeGuildId,
+        DISCORD_OAUTH_OWNER_ALLOWLIST: discordOwnerAllowlist,
+        DISCORD_OAUTH_ALLOW_OWNER_BOOTSTRAP: discordBootstrap ? "1" : "0"
+      });
+      if (discordClientSecret) {
+        await post<{ ok: boolean }>("/api/setup/save-oauth-secret", { secret: discordClientSecret });
+        setDiscordClientSecret("");
+        setDiscordSecretSaved(true);
+      }
+      setDiscordOAuthResult({ status: "succeeded", title: "Discord OAuth config saved. Restart console for changes to take effect." });
+    } catch (error) {
+      setDiscordOAuthResult({
+        status: "failed",
+        title: "Save failed",
+        message: error instanceof Error ? error.message : String(error)
+      });
+    } finally {
+      setDiscordOAuthSaving(false);
+    }
+  }
   const config = (settings?.config as Record<string, unknown> | undefined) || {};
   const publicDirectory = (settings?.publicDirectory as PublicDirectorySettings | undefined) || {};
   const serverListingVisible = settings !== null && publicDirectory.available === true;
@@ -263,6 +307,32 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl }: SettingsP
             {passwordResult && <span className={`inline-task-result result-${passwordResult.status === "succeeded" ? "ok" : passwordResult.status === "failed" ? "fail" : "running"}`}>
               <strong className={passwordResult.status === "running" ? "loading-dots" : ""}>{formatResultTitle(passwordResult.title, passwordResult.status === "running")}</strong>
               {passwordResult.message && <span className="inline-task-message">{formatResultMessage(passwordResult.message)}</span>}
+            </span>}
+          </div>
+        </div>}
+      </div>
+      <div className={`playerAdmin_toggle ${discordOAuthOpen ? "open" : ""}`}>
+        <button className="playerAdmin_toggleHeader" aria-label={discordOAuthOpen ? "Collapse Discord OAuth" : "Expand Discord OAuth"} onClick={() => setDiscordOAuthOpen(!discordOAuthOpen)}>{discordOAuthOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}<span>Discord OAuth</span></button>
+        {discordOAuthOpen && <div className="playerAdmin_toggleBody">
+          <p className="muted">Configure Discord sign-in for console administrators. Requires a Discord OAuth application. Leave blank for password-only auth.</p>
+          <div className="settings-password-grid">
+            <label>Client ID<input disabled={discordOAuthSaving} value={discordClientId} onChange={(event) => setDiscordClientId(event.target.value)} placeholder="Discord application client ID" /></label>
+            <label>Redirect URI<input disabled={discordOAuthSaving} value={discordRedirectUri} onChange={(event) => setDiscordRedirectUri(event.target.value)} placeholder="https://your-host:8088/api/auth/discord/callback" /></label>
+            <label>Client Secret{discordSecretSaved ? <span className="theme-note"> (saved)</span> : null}<SecretInput disabled={discordOAuthSaving} value={discordClientSecret} onChange={(event) => setDiscordClientSecret(event.target.value)} placeholder="Paste new to replace" /></label>
+            <label>Home Guild ID<input disabled={discordOAuthSaving} value={discordHomeGuildId} onChange={(event) => setDiscordHomeGuildId(event.target.value)} placeholder="Discord server ID (snowflake)" /></label>
+            <label>Owner Allowlist<input disabled={discordOAuthSaving} value={discordOwnerAllowlist} onChange={(event) => setDiscordOwnerAllowlist(event.target.value)} placeholder="Comma-separated Discord user IDs" /></label>
+          </div>
+          <label style={{ display: "flex", alignItems: "center", gap: "8px", marginTop: "12px" }}>
+            <input type="checkbox" disabled={discordOAuthSaving} checked={discordBootstrap} onChange={(event) => setDiscordBootstrap(event.target.checked)} />
+            <span>Allow owner bootstrap</span>
+          </label>
+          <div className="action-row" style={{ marginTop: "12px" }}>
+            <button disabled={discordOAuthSaving || (!discordClientId && !discordRedirectUri && !discordClientSecret && !discordHomeGuildId && !discordOwnerAllowlist)} onClick={() => { void saveDiscordOAuth(); }}>
+              {discordOAuthSaving ? "Saving..." : "Save OAuth Config"}
+            </button>
+            {discordOAuthResult && <span className={`inline-task-result result-${discordOAuthResult.status === "succeeded" ? "ok" : discordOAuthResult.status === "failed" ? "fail" : "running"}`}>
+              <strong className={discordOAuthResult.status === "running" ? "loading-dots" : ""}>{formatResultTitle(discordOAuthResult.title, discordOAuthResult.status === "running")}</strong>
+              {discordOAuthResult.message && <span className="inline-task-message">{formatResultMessage(discordOAuthResult.message)}</span>}
             </span>}
           </div>
         </div>}

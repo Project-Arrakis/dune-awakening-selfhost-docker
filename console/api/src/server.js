@@ -518,6 +518,8 @@ async function handleApi(req, res) {
   if (path === "/api/setup/preflight" && req.method === "POST") return json(res, 200, await preflight(config));
   if (path === "/api/setup/write-config" && req.method === "POST") return writeConfig(req, res);
   if (path === "/api/setup/save-token" && req.method === "POST") return saveToken(req, res);
+  if (path === "/api/setup/save-oauth-secret" && req.method === "POST") return saveOAuthClientSecret(req, res);
+  if (path === "/api/setup/write-oauth-config" && req.method === "POST") return writeOAuthConfig(req, res);
   if (path === "/api/setup/init" && req.method === "POST") return task(req, res, "setup", "init", {});
   if (path === "/api/setup/tasks") return json(res, 200, { tasks: tasks.list().map(publicTask) });
   if (path === "/api/public-directory/status") return json(res, 200, publicDirectory.publicState());
@@ -3087,7 +3089,8 @@ function publicDirectorySettings() {
 }
 
 function readSetupConfigValues() {
-  const allowed = ["SERVER_IP", "SERVER_IP_MODE", "SERVER_TITLE", "SERVER_REGION", "SERVER_PROVIDER", "STEAM_APP_ID", "BATTLEGROUP_ID"];
+  const allowed = ["SERVER_IP", "SERVER_IP_MODE", "SERVER_TITLE", "SERVER_REGION", "SERVER_PROVIDER", "STEAM_APP_ID", "BATTLEGROUP_ID",
+    "DISCORD_HOME_GUILD_ID", "DISCORD_OAUTH_CLIENT_ID", "DISCORD_OAUTH_REDIRECT_URI", "DISCORD_OAUTH_ALLOW_OWNER_BOOTSTRAP", "DISCORD_OAUTH_OWNER_ALLOWLIST"];
   const values = {};
   for (const file of [resolve(config.repoRoot, ".env"), resolve(config.generatedDir, "battlegroup.env")]) {
     if (!existsSync(file)) continue;
@@ -3096,6 +3099,9 @@ function readSetupConfigValues() {
       if (!parsed || !allowed.includes(parsed.key) || values[parsed.key] !== undefined) continue;
       values[parsed.key] = parsed.value;
     }
+  }
+  if (existsSync(resolve(config.secretsDir, "discord-oauth-client-secret.txt"))) {
+    values._discordOAuthSecretSaved = "1";
   }
   return values;
 }
@@ -3361,6 +3367,72 @@ async function saveToken(req, res) {
   writeFuncomToken(config, body.token);
   audit(config, req, "setup.save-token", { token: "<redacted>" });
   return json(res, 200, { ok: true });
+}
+
+async function saveOAuthClientSecret(req, res) {
+  const body = await readJson(req);
+  const secret = body.secret;
+  if (!secret || String(secret).length < 20) {
+    return json(res, 400, { error: "Client secret must be at least 20 characters." });
+  }
+  const dir = config.secretsDir;
+  mkdirSync(dir, { recursive: true });
+  const path = resolve(dir, "discord-oauth-client-secret.txt");
+  try {
+    writeFileSync(path, `${String(secret).trim()}\n`, { mode: 0o600 });
+    chmodSync(path, 0o600);
+  } catch (error) {
+    return json(res, 500, { error: "Failed to save client secret." });
+  }
+  audit(config, req, "setup.save-oauth-secret", { secret: "<redacted>" });
+  return json(res, 200, { ok: true });
+}
+
+const DISCORD_SNOWFLAKE_RE = /^\d{17,19}$/;
+
+function validateOAuthWriteConfigKey(key, value) {
+  const v = String(value || "").trim();
+  if (!v) return null;
+  switch (key) {
+    case "DISCORD_HOME_GUILD_ID":
+    case "DISCORD_OAUTH_CLIENT_ID":
+      if (!DISCORD_SNOWFLAKE_RE.test(v)) return `Invalid Discord snowflake for ${key}`;
+      break;
+    case "DISCORD_OAUTH_ALLOW_OWNER_BOOTSTRAP":
+      if (v !== "0" && v !== "1") return `${key} must be "0" or "1"`;
+      break;
+    case "DISCORD_OAUTH_OWNER_ALLOWLIST":
+      if (v) {
+        const items = v.split(",").map((item) => item.trim()).filter(Boolean);
+        if (items.some((item) => !DISCORD_SNOWFLAKE_RE.test(item))) return `${key} must be comma-separated Discord user IDs (17-19 digits each)`;
+      }
+      break;
+    case "DISCORD_OAUTH_REDIRECT_URI":
+      if (!/^https?:\/\/.+/.test(v)) return `${key} must be a valid URL`;
+      break;
+  }
+  return null;
+}
+
+async function writeOAuthConfig(req, res) {
+  const body = await readJson(req);
+  const allowed = [
+    "DISCORD_HOME_GUILD_ID",
+    "DISCORD_OAUTH_CLIENT_ID",
+    "DISCORD_OAUTH_REDIRECT_URI",
+    "DISCORD_OAUTH_ALLOW_OWNER_BOOTSTRAP",
+    "DISCORD_OAUTH_OWNER_ALLOWLIST"
+  ];
+  const changes = [];
+  for (const key of allowed) {
+    if (body[key] === undefined) continue;
+    const error = validateOAuthWriteConfigKey(key, body[key]);
+    if (error) return json(res, 400, { error });
+    updateEnvFileValue(key, String(body[key]));
+    changes.push(key);
+  }
+  audit(config, req, "setup.write-oauth-config", { keys: changes });
+  return json(res, 200, { ok: true, changes });
 }
 
 async function saveServerFuncomToken(req, res) {
