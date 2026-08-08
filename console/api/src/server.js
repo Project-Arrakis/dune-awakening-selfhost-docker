@@ -585,6 +585,7 @@ async function handleApi(req, res) {
         Object.entries(policies).map(([tier, doc]) => [tier, { version: doc.version, tier: doc.tier, statements: doc.statements }])
       ),
       actions: Object.keys(ROUTE_ACTIONS).sort(),
+      actionMap: ROUTE_ACTIONS,
       namespaces: NAMESPACES
     });
   }
