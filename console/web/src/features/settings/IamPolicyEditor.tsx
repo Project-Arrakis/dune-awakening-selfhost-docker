@@ -97,6 +97,7 @@ function namespaceLabel(action: string): string {
 
 export function IamPolicyEditor() {
   const [catalog, setCatalog] = useState<PolicyCatalog | null>(null);
+  const [loadError, setLoadError] = useState(false);
   const [selectedTier, setSelectedTier] = useState<string>("admin");
   const [jsonText, setJsonText] = useState("");
   const [jsonError, setJsonError] = useState("");
@@ -111,8 +112,10 @@ export function IamPolicyEditor() {
       setCatalog(data);
       const doc = data.policies[selectedTier];
       if (doc) setJsonText(JSON.stringify(doc.statements, null, 2));
-    }).catch(() => {});
+    }).catch(() => { setLoadError(true); });
   }, []);
+
+  if (!catalog && loadError) return <section className="iam-editor-error"><h3>Failed to load IAM policies</h3><button onClick={() => { setLoadError(false); window.location.reload(); }}>Retry</button></section>;
 
   const selectTier = (tier: string) => {
     setSelectedTier(tier);
@@ -345,6 +348,7 @@ export function IamPolicyEditor() {
       </div>
 
       <div className="iam-editor-footer">
+        {jsonError && <p className="iam-json-error" style={{ marginBottom: "8px" }}>{jsonError}</p>}
         <button className="stable-action-button" onClick={savePolicy} disabled={saving || (editorTab === "json" && !!jsonError)}>
           {saving ? "Saving..." : saved ? "Saved" : `Save ${selectedTier} policy`}
         </button>

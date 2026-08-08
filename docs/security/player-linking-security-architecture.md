@@ -106,8 +106,9 @@ Rejects with `401 missing_bot_token` or `401 invalid_bot_token`.
 
 ### Gate 2: Actor Signature Validation (when `DUNE_DISCORD_ACTOR_SECRET` is set)
 ```
-Header: X-Discord-Actor: <JSON>
-Header: X-Discord-Actor-Signature: <hex(HMAC-SHA256(secret, JSON))>
+JSON body: { ..., actor: { userId, guildId, channelId, roleIds, interactionId } }
+Header: X-Dune-Actor-Signature: <hex(HMAC-SHA256(secret, canonicalPayload))>
+Header: X-Dune-Actor-Timestamp: <unix-seconds>
 ```
 The signature covers: `{route, userId, guildId, channelId, roleIds,
 interactionId, timestamp}`. 30-second freshness window. Prevents replay of
@@ -275,14 +276,11 @@ They have been migrated to `console` (project-owned) with these properties:
 
 ## Steam-ID Validation
 
-SteamID64 validation uses `BigInt` arithmetic with well-known operations:
-```
-(steamId >> 0n) % 2n                    → account type bit
-((steamId - 76561197960265728n) >> 1n)  → account number
-```
-Only valid `individual` SteamID64 values (17-digit decimal) are accepted for
-linking. Malformed or non-numeric entries are silently filtered from the
-input list before database querying.
+SteamID64 validation uses a 17-digit regex (`/^[0-9]{17}$/`) to filter
+well-formed entries from the input list before database querying. A
+future iteration should add BigInt arithmetic for individual-account
+verification (account type bit + account number calculation) before
+re-enabling the Steam link flow.
 
 ---
 
