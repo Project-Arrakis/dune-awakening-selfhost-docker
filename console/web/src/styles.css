@@ -3877,22 +3877,27 @@ td :where(.service-actions, .action-row, .map-action-buttons) { max-width: 100%;
 
 .iam-perm-label {
   flex: 1;
-  min-width: 6rem;
-  color: #ccc;
+  min-width: 8rem;
+  color: #e8d5a3;
   font-size: .85rem;
+  font-weight: 600;
+  background: rgba(212,168,83,.12);
 }
 
 .iam-perm-row.perm-on .iam-perm-label { color: #2ecc71; font-weight: 500; }
 .iam-perm-row.perm-off .iam-perm-label { color: #999; }
 
 .iam-perm-action {
-  font-size: .68rem;
-  color: var(--text-muted, #555);
+  font-size: .7rem;
+  color: #7a8a9a;
   font-family: ui-monospace, SFMono-Regular, monospace;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 18rem;
+  background: rgba(122,138,154,.08);
+  padding: .1rem .35rem;
+  border-radius: 3px;
 }
 
 /* JSON Editor */
