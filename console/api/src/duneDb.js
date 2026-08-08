@@ -8696,13 +8696,22 @@ async function promScalar(promBaseUrl, query) {
 // will discard it.
 async function ensureConsoleSchema(tx) {
   await tx.query("create schema if not exists console");
-  // Drop-if-exists cleanup of the old, incorrectly-placed dune.* copies
-  // from before this fix. Safe because confirmed empty on the only known
-  // deployment; see the migration note above.
-  await tx.query("drop table if exists dune.discord_player_links");
-  await tx.query("drop table if exists dune.discord_pending_links");
-  await tx.query("drop table if exists dune.discord_account_links");
-  await tx.query("drop table if exists dune.discord_pending_account_links");
+
+  // Migrate data from the old dune.* tables if they contain rows.
+  // Previously this was a destructive DROP; now we copy existing data
+  // transactionally so no operator loses link state on upgrade.
+  for (const table of ["discord_player_links", "discord_pending_links",
+                        "discord_account_links", "discord_pending_account_links"]) {
+    const exists = await tx.query(
+      `select exists (select 1 from information_schema.tables where table_schema = 'dune' and table_name = $1)`, [table]);
+    if (!exists.rows[0]?.exists) continue;
+
+    await tx.query(`insert into console.${table} select * from dune.${table} on conflict do nothing`);
+
+    // Warn but do not drop — the old tables stay until the operator
+    // manually removes them after confirming the migration was successful.
+    console.warn(`Migrated data from dune.${table} to console.${table}. The old dune.* table was NOT dropped — drop it manually after verifying no data loss.`);
+  }
 }
 
 export async function migrateDiscordAdapterSchema(db) {
