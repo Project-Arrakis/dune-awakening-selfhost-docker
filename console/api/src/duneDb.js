@@ -3432,6 +3432,18 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
       return { ...unsupported("bases", requiredTables.map((t) => `dune.${t}`)), totalCount: 0, totalBases: 0, totalPieces: 0, totalPlaceables: 0 };
     }
   }
+  // A base's own a.map is the game's map name ("HaggaBasin"), which cannot tell
+  // two instances of it apart. world_partition resolves the partition to the
+  // name the rest of the console uses ("Survival_1") plus its dimension --
+  // together, the identity of one running instance. Optional table: without it
+  // the fields come back empty rather than the query failing.
+  const hasWorldPartition = await tableExists(db, "world_partition");
+  const partitionSelect = hasWorldPartition
+    ? "coalesce(wp.map, '') as partition_map, coalesce(wp.dimension_index, 0) as dimension_index,"
+    : "'' as partition_map, 0 as dimension_index,";
+  const partitionJoin = hasWorldPartition
+    ? "left join dune.world_partition wp on wp.partition_id = p.partition_id"
+    : "";
   const safePageSize = intParam(pageSize, "pageSize", 1, 200);
   const safePage = intParam(page, "page", 0);
   const offset = safePage * safePageSize;
@@ -3530,6 +3542,7 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
              ${finalOwnerSelect}
              p.map,
              p.partition_id,
+             ${partitionSelect}
              p.x,
              p.y,
              p.z,
@@ -3538,6 +3551,7 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
              ${finalPlaceableCount} as placeable_count,
              coalesce(shared.entries, '[]'::jsonb) as shared_with
       from paged p
+      ${partitionJoin}
       ${finalOwnerJoin}
       left join lateral (
         select jsonb_agg(jsonb_build_object('name', ps.character_name, 'rank', par.rank) order by par.rank asc, ps.character_name asc) as entries
@@ -3615,6 +3629,8 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
       rows: result.rows.map(({ total_count, sort_position, ...row }) => ({
         ...row,
         partition_id: Number(row.partition_id || 0),
+        partitionMap: String(row.partition_map || ""),
+        dimensionIndex: Number(row.dimension_index || 0),
         x: Number(row.x),
         y: Number(row.y),
         z: Number(row.z),
