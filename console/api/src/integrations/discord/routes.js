@@ -121,7 +121,9 @@ export async function handleDiscordAdapterRoute({ req, res, path, config, readJs
     try {
       verifyActorSignature({ actorPayload: body?.actor, headers: request.headers, config, route: path, required: requireActorSignature });
     } catch (error) {
-      if (requireActorSignature) throw error;
+      // When a secret is configured: always throw (even for read routes).
+      // When no secret: only throw for mutation routes (requireActorSignature).
+      if (requireActorSignature || actorSignatureRequired(config)) throw error;
     }
     return body;
   }

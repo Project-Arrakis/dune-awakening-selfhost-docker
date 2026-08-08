@@ -671,7 +671,7 @@ export function App() {
             <section className="sidebar-nav-group" key={group.title} aria-label={group.title}>
               <p className="sidebar-nav-heading">{group.title}</p>
               {group.items.filter((item) => {
-                if (!me || allowedActions.length === 0) return true;
+                if (!me) return false;
                 if (!item.requiredAction) return true;
                 if (allowedActions.includes(item.requiredAction)) return true;
                 // Wildcard patterns like "server:*" must be checked against
