@@ -4281,28 +4281,66 @@ test("main quest nodes with contract in the name stay under story", async () => 
   assert.equal(result.rows.story[0].category, "Story");
 });
 
-test("story, contract, and codex completion is read-only", async () => {
+test("journey completion requires the player to be offline", async () => {
   const calls = [];
-  const db = fakeMutationDb(calls);
+  const db = fakeMutationDb(calls, { playerRows: [{ actor_id: 123, account_id: 44, controller_id: 55, player_state_id: 5, online_status: "Online" }] });
   await assert.rejects(
     () => completeJourneyNode(db, 123, { nodeId: "DA_Story.Root" }, {}),
-    (error) => error instanceof UnsupportedCapabilityError
-      && error.unsupported === true
-      && /read-only/.test(error.message)
+    /require the player to be offline/
   );
-  assert.equal(calls.length, 0);
+  assert.ok(!calls.some((call) => call.text.includes("update dune.journey_story_node")));
 });
 
-test("story, contract, and codex reset is read-only", async () => {
+test("journey completion updates the selected subtree without completing ancestor containers", async () => {
   const calls = [];
   const db = fakeMutationDb(calls);
-  await assert.rejects(
-    () => resetJourneyNode(db, 123, { nodeId: "DA_Story.Root" }, {}),
-    (error) => error instanceof UnsupportedCapabilityError
-      && error.unsupported === true
-      && /read-only/.test(error.message)
-  );
-  assert.equal(calls.length, 0);
+  const result = await completeJourneyNode(db, 123, { nodeId: "DA_Story.Root.Child" }, {
+    journey_node_tags: { "DA_Story.Root": ["Story.Root"], "DA_Story.Root.Child": ["Story.Child"] }
+  });
+  assert.equal(result.ok, true);
+  assert.ok(calls.some((call) => call.text.includes("update dune.journey_story_node") && call.values[1] === "DA_Story.Root.Child"));
+  assert.ok(!calls.some((call) => Array.isArray(call.values[1]) && call.values[1].includes("DA_Story.Root")));
+  assert.ok(calls.some((call) => call.text.includes("insert into dune.player_tags") && call.values[1].includes("Story.Child")));
+});
+
+test("Find the Fremen completion grants its extra tag, TechKnowledge rewards, and Spice Vision", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, { currentResearchItems: [] });
+  const result = await completeJourneyNode(db, 123, { nodeId: "DA_MQ_FindTheFremen" }, {
+    journey_node_tags: { "DA_MQ_FindTheFremen.FirstTest.FirstQuestion.CompleteFirstTest": ["JourneySets.Fremkit.First"] }
+  });
+  assert.equal(result.recipesGranted, 5);
+  assert.ok(calls.some((call) => call.text.includes("insert into dune.player_tags") && call.values[1].includes("Journey.RewardsUnblocked")));
+  assert.equal(calls.filter((call) => call.text.includes("TechKnowledgePlayerComponent,m_TechKnowledge,m_TechKnowledgeData") && call.text.includes("update dune.actors")).length, 5);
+  assert.ok(calls.some((call) => call.text.includes("FSpiceAddictionComponent,1,SystemStatus")));
+});
+
+test("contract completion applies skills, removes superseded tags, and dismisses its active item", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, { contractSkillRows: 1, dismissedContractRows: 1, trackedContractRows: 1 });
+  const nodeId = "DA_CT_Trainer_Trooper2_03";
+  const result = await completeJourneyNode(db, 123, { nodeId }, {
+    contract_aliases: { Trainer_Trooper2_03: nodeId },
+    contract_tags: { [nodeId]: ["Contract.Trainer.Done"] },
+    contract_remove_tags: { [nodeId]: ["Contract.Trainer.Active"] },
+    contract_skill_grants: { [nodeId]: ["Skills.Key.Trooper3"] }
+  });
+  assert.equal(result.skillsGranted, 1);
+  assert.equal(result.dismissedContracts, 1);
+  assert.equal(result.trackedContractCleared, true);
+  assert.ok(calls.some((call) => call.text.includes("delete from dune.player_tags") && call.values[1].includes("Contract.Trainer.Active")));
+  assert.ok(calls.some((call) => call.text.includes("FContractItemStats") && call.values[1].includes("Trainer_Trooper2_03")));
+});
+
+test("journey reset clears subtree state and mapped tags but does not revoke rewards", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, { journeyUpdateRows: 2 });
+  const result = await resetJourneyNode(db, 123, { nodeId: "DA_Story.Root" }, {
+    journey_node_tags: { "DA_Story.Root.Child": ["Story.Child"] }
+  });
+  assert.equal(result.updatedRows, 2);
+  assert.ok(calls.some((call) => call.text.includes("delete from dune.player_tags") && call.values[1].includes("Story.Child")));
+  assert.ok(!calls.some((call) => call.text.includes("TechKnowledgePlayerComponent") || call.text.includes("FSpiceAddictionComponent")));
 });
 
 test("tutorial complete and reset use player controller tutorial records", async () => {
@@ -4567,6 +4605,10 @@ function fakeMutationDb(calls, fixtures = {}) {
       if (text.includes("not exists(select 1 from dune.items where id = $1")) return { rows: [{ deleted: true }] };
       if (text.includes("exists(select 1 from dune.items where id = $1")) return { rows: [{ exists: Boolean(fixtures.itemStillExists) }] };
       if (text.includes("delete from dune.items where id = $1")) return { rows: [], rowCount: 1 };
+      if (text.includes("FContractItemStats") && text.includes("delete from dune.items")) return { rows: [], rowCount: fixtures.dismissedContractRows ?? 0 };
+      if (text.includes("FLevelComponent") && text.includes("ModuleData") && text.includes("update dune.fgl_entities")) return { rows: [], rowCount: fixtures.contractSkillRows ?? 0 };
+      if (text.includes("ContractsCoordinatorComponent,m_TrackedContractItemUid") && text.includes("update dune.actors")) return { rows: [], rowCount: fixtures.trackedContractRows ?? 0 };
+      if (text.includes("FSpiceAddictionComponent") && text.includes("update dune.fgl_entities")) return { rows: [], rowCount: fixtures.spiceVisionRows ?? 1 };
       if (text.includes("dune.delete_item")) return { rows: [{ ok: true }] };
       if (text.includes("from dune.inventories") && text.includes("where actor_id")) return { rows: fixtures.storageRows || [] };
       if (text.includes("from dune.vehicle_modules vm") && text.includes("count(*)::int as scanned")) return { rows: fixtures.vehicleModuleScanRows || [{ scanned: 0, vehicles: 0 }] };

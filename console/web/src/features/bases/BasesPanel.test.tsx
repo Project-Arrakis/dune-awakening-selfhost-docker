@@ -684,8 +684,8 @@ describe("BasesPanel permissions editing", () => {
   // then switch to Permissions.
   async function openPermissionsTab() {
     fireEvent.click(await screen.findByRole("button", { name: "Show details for Sietch One" }));
-    fireEvent.click(await screen.findByRole("tab", { name: "Permissions" }));
-    await waitFor(() => expect(screen.getByRole("tab", { name: "Permissions" })).toHaveAttribute("aria-selected", "true"));
+    fireEvent.click(await screen.findByRole("tab", { name: "Sub-Fief Permissions" }));
+    await waitFor(() => expect(screen.getByRole("tab", { name: "Sub-Fief Permissions" })).toHaveAttribute("aria-selected", "true"));
   }
 
   function mockRoster() {
@@ -713,7 +713,7 @@ describe("BasesPanel permissions editing", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Show details for Sietch One" }));
     expect(screen.getByRole("tab", { name: "Power" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Water" })).toBeInTheDocument();
-    expect(screen.queryByRole("tab", { name: "Permissions" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "Sub-Fief Permissions" })).not.toBeInTheDocument();
   });
 
   // A base with no generators had no expand chevron before this feature. It
@@ -730,9 +730,11 @@ describe("BasesPanel permissions editing", () => {
     mockRoster();
     renderPanel();
     await openPermissionsTab();
-    // The roster's own control, not the name text -- "DarkShark" also appears in
-    // the Owner cell of the row above.
-    expect(await screen.findByRole("combobox", { name: "Rank for DarkShark" })).toBeInTheDocument();
+    // DarkShark is the Owner, so he is in the hero card and not the roster. The
+    // selector scopes past the Owner cell of the collapsed row above, which
+    // also says "DarkShark".
+    expect(await screen.findByText("DarkShark", { selector: ".bases-permissions-owner-name" })).toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: "Co-Owner for Yaida" })).toBeChecked();
   });
 
   it("defaults to the Power tab when the row is expanded normally", async () => {
@@ -750,12 +752,14 @@ describe("BasesPanel permissions editing", () => {
     mockRoster();
     renderPanel();
     await openPermissionsTab();
-    const yaidaRank = await screen.findByRole("combobox", { name: "Rank for Yaida" });
-    fireEvent.change(yaidaRank, { target: { value: "1" } });
+    fireEvent.click(await screen.findByRole("radio", { name: "Owner for Yaida" }));
     await waitFor(() => {
-      expect(screen.getByRole("combobox", { name: "Rank for Yaida" })).toHaveValue("1");
-      expect(screen.getByRole("combobox", { name: "Rank for DarkShark" })).toHaveValue("2");
+      expect(screen.getByText("Yaida", { selector: ".bases-permissions-owner-name" })).toBeInTheDocument();
+      expect(screen.getByRole("radio", { name: "Co-Owner for DarkShark" })).toBeChecked();
     });
+    // The new Owner leaves the roster entirely -- there is no second place a
+    // rank can be edited, so the one-owner rule cannot be violated on screen.
+    expect(screen.queryByRole("radio", { name: "Owner for Yaida" })).not.toBeInTheDocument();
   });
 
   it("blocks removing the owner and enables Save only once the roster is dirty", async () => {
@@ -763,7 +767,10 @@ describe("BasesPanel permissions editing", () => {
     mockRoster();
     renderPanel();
     await openPermissionsTab();
-    expect(await screen.findByRole("button", { name: "Remove DarkShark" })).toBeDisabled();
+    // The Owner has no remove control at all now -- promoting a replacement is
+    // the only way to free him, which is what the old disabled button said.
+    expect(await screen.findByText("DarkShark", { selector: ".bases-permissions-owner-name" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Remove DarkShark" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Remove Yaida" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Save changes" })).toBeDisabled();
 
@@ -780,7 +787,7 @@ describe("BasesPanel permissions editing", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Remove Yaida" }));
     await waitFor(() => expect(screen.getByRole("button", { name: "Revert" })).toBeEnabled());
     fireEvent.click(screen.getByRole("button", { name: "Revert" }));
-    await waitFor(() => expect(screen.getByRole("combobox", { name: "Rank for Yaida" })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole("radio", { name: "Co-Owner for Yaida" })).toBeChecked());
     expect(basesApi.setPermissions).not.toHaveBeenCalled();
   });
 
@@ -816,7 +823,10 @@ describe("BasesPanel permissions editing", () => {
     await waitFor(() => expect(basesApi.transferToSystemCustodian).toHaveBeenCalledWith("1006"));
     expect(basesApi.permissionCandidates).not.toHaveBeenCalled();
     expect(await screen.findByText("Ownership was transferred to the Server system custodian.")).toBeInTheDocument();
-    expect(screen.getByText("System Custodian", { selector: ".bases-system-custodian strong" })).toBeInTheDocument();
+    // The custodian control now lives in the Owner hero card rather than a
+    // section of its own -- assert the placement, not just its presence.
+    expect(document.querySelector(".bases-permissions-owner-card"))
+      .toContainElement(screen.getByRole("button", { name: "Transfer to Server" }));
   });
 
   it("disables the custodian transfer when Server is unavailable", async () => {
@@ -863,6 +873,9 @@ describe("BasesPanel permissions editing", () => {
 
   // A roster row naming a non-canonical actor is one the game ignores. The
   // console can see it and the game client cannot, so it must be visible here.
+  // Both entries below are named "DarkShark" on purpose, and it is load-bearing
+  // that one of them is the Owner: the Owner renders in the hero card, so only
+  // one node ends up carrying the warning and findByLabelText stays unambiguous.
   it("flags a roster entry the game ignores", async () => {
     mockList(true);
     vi.mocked(basesApi.permissions).mockResolvedValue({
@@ -1005,8 +1018,9 @@ describe("BasesPanel combined fuel/water queue and stalled banners", () => {
 
     renderPanel();
 
-    expect(await screen.findByText("1 refill queued")).toBeInTheDocument();
-    // The banner's title icons and each row's badges are gated on
+    expect(await screen.findByText("Refills queued")).toBeInTheDocument();
+    expect(screen.getByText("1 water")).toBeInTheDocument();
+    // The banner's title badges and each row's badges are gated on
     // fuelCount/waterCount independently -- with zero fuel queued, no "fuel"
     // badge should render alongside the water one.
     expect(screen.queryByText(/\d+ fuel\b/)).not.toBeInTheDocument();
@@ -1071,8 +1085,11 @@ describe("BasesPanel combined fuel/water queue and stalled banners", () => {
     renderPanel();
 
     // One target, one queued fuel refill and one queued water refill: a single
-    // combined banner, not two separate ones.
-    expect(await screen.findByText("2 refills queued")).toBeInTheDocument();
+    // combined banner, not two separate ones, and the title splits the total
+    // per resource rather than reporting a bare "2".
+    expect(await screen.findByText("Refills queued")).toBeInTheDocument();
+    expect(screen.getByText("1 fuel")).toBeInTheDocument();
+    expect(screen.getByText("1 water")).toBeInTheDocument();
     expect(document.querySelectorAll(".bases-pending-refills")).toHaveLength(1);
   });
 });

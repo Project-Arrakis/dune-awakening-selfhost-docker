@@ -1,3 +1,3 @@
 export function journeyActionsAvailable(category: string) {
-  return category === "Tutorial";
+  return ["Story", "Contract", "Codex", "Tutorial"].includes(category);
 }

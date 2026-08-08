@@ -10,10 +10,13 @@ import { CARE_PACKAGE_SERVER_PERSONA, FUNCOM_GM_PERSONA } from "./systemPersonas
 import {
   craftingRecipeCatalogRows,
   compareJourneyCatalogOrder,
+  factionIdByName,
+  factionTierBumps,
   factionDisplayName,
   journeyDepth,
   journeyDisplayName,
   journeyParentId,
+  tagsForJourneyNodeSubtree,
   recipeCategory,
   recipeDisplayName,
   repairTarget,
@@ -42,6 +45,15 @@ const VITALITY_HEALTH_TIERS = [
 const BASE_MAX_HEALTH = 150;
 const BASE_MAX_HYDRATION = 100;
 const BASE_MAX_ADDICTION = 10;
+const FIND_FREMEN_JOURNEY_ROOT = "DA_MQ_FindTheFremen";
+const FIND_FREMEN_REWARD_TAG = "Journey.RewardsUnblocked";
+const JOURNEY_RECIPE_REWARDS = new Map([
+  ["DA_MQ_FindTheFremen.FirstTest.FirstQuestion.CompleteFirstTest", "RCP_LeakyStillsuit_Top_Recipe"],
+  ["DA_MQ_FindTheFremen.SecondTest.SecondQuestion.CompleteSecondTest", "RCP_ChoamStaticCompactorRecipe"],
+  ["DA_MQ_FindTheFremen.FourthTest.FourthQuestion.CompleteFourthTest", "RCP_Crysknife_Recipe"],
+  ["DA_MQ_FindTheFremen.FifthTest.FifthQuestion.CompleteFifthTest", "RCP_T4_Structure_Thumper1_Recipe"],
+  ["DA_MQ_FindTheFremen.SeventhTest.SeventhQuestion.CompleteSeventhTest", "RCP_StilltentRecipe"]
+]);
 
 function maxHealthForCombatLevel(combatLevel) {
   return VITALITY_HEALTH_TIERS.reduce((total, tier) => (combatLevel >= tier.level ? total + tier.bonus : total), BASE_MAX_HEALTH);
@@ -5039,12 +5051,87 @@ function portalGuildRole(roleId) {
   return "Member";
 }
 
-export async function completeJourneyNode() {
-  throw new UnsupportedCapabilityError("Story, Contract, and Codex progression is read-only because direct database completion can leave game-managed rewards, schematics, and tags inconsistent. Tutorial actions remain available.");
+export async function completeJourneyNode(db, id, { nodeId }, journeyTagsData = {}) {
+  const schema = await journeyIdentitySchema(db);
+  await requireCapability(await supportsJourneySchema(db, schema), "Journey completion is unavailable for this game database schema.");
+  const safeNodeId = validateJourneyNodeId(nodeId);
+  return db.transaction(async (tx) => {
+    const player = await resolvePlayerMutationTarget(tx, id);
+    requireOfflinePlayer(player, "Journey changes");
+    const tagIdentityId = playerJourneyIdentity(player, schema.tagIdColumn);
+    if (isContractNode(safeNodeId, journeyTagsData)) {
+      const tags = contractTagsForNode(safeNodeId, journeyTagsData);
+      const removeTags = catalogStrings(journeyTagsData?.contract_remove_tags?.[safeNodeId]);
+      const skills = catalogStrings(journeyTagsData?.contract_skill_grants?.[safeNodeId]);
+      const tagResult = await applyDirectJourneyTags(tx, player, tags, "add", schema.tagIdColumn, tagIdentityId);
+      if (removeTags.length) await applyDirectJourneyTags(tx, player, removeTags, "remove", schema.tagIdColumn, tagIdentityId);
+      const skillsGranted = await mutateContractSkills(tx, player.actorId, skills, "add");
+      const dismissedContracts = await dismissActiveContracts(tx, player.actorId, contractShortNames(safeNodeId, journeyTagsData));
+      const trackedContractCleared = await clearDanglingTrackedContract(tx, player.actorId);
+      return { ok: true, player, nodeId: safeNodeId, updatedRows: 0, tagsApplied: tags.length, tagsRemoved: removeTags.length,
+        factionBumps: tagResult.factionBumps, skillsGranted, dismissedContracts, trackedContractCleared, contract: true,
+        message: "Contract completion was applied and will take effect on the next login." };
+    }
+
+    const journeyIdColumn = quoteIdentifier(schema.journeyIdColumn);
+    const journeyIdentityId = playerJourneyIdentity(player, schema.journeyIdColumn);
+    const updated = await tx.query(`
+      update dune.journey_story_node
+      set complete_condition_state = 'true'::jsonb, reveal_condition_state = 'true'::jsonb
+      where ${journeyIdColumn} = $1
+        and (story_node_id = $2 or story_node_id like $2 || '.%')`, [journeyIdentityId, safeNodeId]);
+    let updatedRows = Number(updated.rowCount || 0);
+    if (updatedRows === 0) {
+      const fallback = await tx.query(`
+        insert into dune.journey_story_node
+          (${journeyIdColumn}, story_node_id, has_pending_reward, complete_condition_state, reveal_condition_state, fail_condition_state, metadata_state, reset_group)
+        values ($1, $2, false, 'true'::jsonb, 'true'::jsonb, '{}'::jsonb, '{}'::jsonb, 'Default'::dune.JourneyStoryResetGroup)`, [journeyIdentityId, safeNodeId]);
+      updatedRows = Number(fallback.rowCount || 1);
+    }
+    const tags = tagsForJourneyNodeSubtree(safeNodeId, journeyTagsData);
+    if (journeyScopesOverlap(safeNodeId, FIND_FREMEN_JOURNEY_ROOT)) tags.push(FIND_FREMEN_REWARD_TAG);
+    const uniqueTags = [...new Set(tags)];
+    const tagResult = await applyDirectJourneyTags(tx, player, uniqueTags, "add", schema.tagIdColumn, tagIdentityId);
+    let recipesGranted = 0;
+    for (const recipe of journeyRewardRecipes(safeNodeId)) {
+      if (await grantJourneyTechRecipe(tx, player.actorId, recipe)) recipesGranted += 1;
+    }
+    const spiceVisionEnabled = journeyScopesOverlap(safeNodeId, FIND_FREMEN_JOURNEY_ROOT)
+      ? await enableJourneySpiceVision(tx, player.actorId)
+      : false;
+    return { ok: true, player, nodeId: safeNodeId, updatedRows, tagsApplied: uniqueTags.length,
+      factionBumps: tagResult.factionBumps, recipesGranted, spiceVisionEnabled,
+      message: "Journey completion and its known rewards were applied and will take effect on the next login." };
+  });
 }
 
-export async function resetJourneyNode() {
-  throw new UnsupportedCapabilityError("Story, Contract, and Codex progression is read-only because direct database reset can leave game-managed rewards, schematics, and tags inconsistent. Tutorial actions remain available.");
+export async function resetJourneyNode(db, id, { nodeId }, journeyTagsData = {}) {
+  const schema = await journeyIdentitySchema(db);
+  await requireCapability(await supportsJourneySchema(db, schema), "Journey reset is unavailable for this game database schema.");
+  const safeNodeId = validateJourneyNodeId(nodeId);
+  return db.transaction(async (tx) => {
+    const player = await resolvePlayerMutationTarget(tx, id);
+    requireOfflinePlayer(player, "Journey changes");
+    const tagIdentityId = playerJourneyIdentity(player, schema.tagIdColumn);
+    if (isContractNode(safeNodeId, journeyTagsData)) {
+      const tags = contractTagsForNode(safeNodeId, journeyTagsData);
+      const skills = catalogStrings(journeyTagsData?.contract_skill_grants?.[safeNodeId]);
+      await applyDirectJourneyTags(tx, player, tags, "remove", schema.tagIdColumn, tagIdentityId);
+      const skillsRemoved = await mutateContractSkills(tx, player.actorId, skills, "remove");
+      return { ok: true, player, nodeId: safeNodeId, updatedRows: 0, tagsRemoved: tags.length, skillsRemoved, contract: true,
+        message: "Contract flags were reset for the next login. A contract item already consumed by completion is not recreated." };
+    }
+    const journeyIdColumn = quoteIdentifier(schema.journeyIdColumn);
+    const journeyIdentityId = playerJourneyIdentity(player, schema.journeyIdColumn);
+    const updated = await tx.query(`
+      update dune.journey_story_node
+      set complete_condition_state = 'false'::jsonb, has_pending_reward = false
+      where ${journeyIdColumn} = $1 and (story_node_id = $2 or story_node_id like $2 || '.%')`, [journeyIdentityId, safeNodeId]);
+    const tags = tagsForJourneyNodeSubtree(safeNodeId, journeyTagsData);
+    await applyDirectJourneyTags(tx, player, tags, "remove", schema.tagIdColumn, tagIdentityId);
+    return { ok: true, player, nodeId: safeNodeId, updatedRows: Number(updated.rowCount || 0), tagsRemoved: tags.length,
+      message: "Journey state and mapped tags were reset for the next login. Previously granted rewards are retained." };
+  });
 }
 
 export async function completeTutorial(db, id, { tutorialId }) {
@@ -7188,6 +7275,149 @@ function contractNodeRow(nodeId, contractTags, contractAliases, tagState) {
     tags: tags.length,
     dependency: ""
   };
+}
+
+function validateJourneyNodeId(value) {
+  const nodeId = String(value || "").trim();
+  if (!nodeId || nodeId.length > 500 || /[\r\n]/.test(nodeId)) throw new Error("Journey node ID is invalid");
+  return nodeId;
+}
+
+function catalogStrings(value) {
+  return Array.isArray(value) ? [...new Set(value.map((entry) => String(entry || "").trim()).filter(Boolean))] : [];
+}
+
+function isContractNode(nodeId, journeyTagsData = {}) {
+  return Array.isArray(journeyTagsData?.contract_tags?.[nodeId]);
+}
+
+function contractTagsForNode(nodeId, journeyTagsData = {}) {
+  const tags = catalogStrings(journeyTagsData?.contract_tags?.[nodeId]);
+  if (!tags.length) throw new Error(`Contract ${nodeId} was not found in the game data catalog.`);
+  return tags;
+}
+
+function journeyScopesOverlap(left, right) {
+  return left === right || left.startsWith(`${right}.`) || right.startsWith(`${left}.`);
+}
+
+function journeyRewardRecipes(nodeId) {
+  return [...JOURNEY_RECIPE_REWARDS.entries()]
+    .filter(([rewardNode]) => journeyScopesOverlap(nodeId, rewardNode))
+    .map(([, recipe]) => recipe);
+}
+
+function contractShortNames(nodeId, journeyTagsData = {}) {
+  const aliases = Object.entries(journeyTagsData?.contract_aliases || {})
+    .filter(([, fullId]) => fullId === nodeId)
+    .map(([shortName]) => shortName);
+  return [...new Set([...aliases, nodeId.replace(/^DA_CT_/, "")])];
+}
+
+async function applyDirectJourneyTags(db, player, tags, mode, tagColumnName, identityId) {
+  if (!tags.length) return { factionBumps: 0 };
+  const tagColumn = quoteIdentifier(tagColumnName);
+  if (mode === "remove") {
+    await db.query(`delete from dune.player_tags where ${tagColumn} = $1 and tag = any($2::text[])`, [identityId, tags]);
+    return { factionBumps: 0 };
+  }
+  await db.query(`
+    insert into dune.player_tags (${tagColumn}, tag)
+    select $1, incoming.tag from unnest($2::text[]) as incoming(tag)
+    where not exists (select 1 from dune.player_tags existing
+      where existing.${tagColumn} = $1 and existing.tag = incoming.tag)`, [identityId, tags]);
+  return applyJourneyFactionBumps(db, player, tags);
+}
+
+async function applyJourneyFactionBumps(db, player, tags) {
+  const bumps = factionTierBumps(tags);
+  let factionBumps = 0;
+  for (const [name, rep] of bumps.entries()) {
+    const factionId = factionIdByName(name);
+    if (!factionId) continue;
+    const current = await db.query(`select coalesce(reputation_amount, 0) as reputation_amount
+      from dune.player_faction_reputation where actor_id = $1 and faction_id = $2`, [player.controllerId, factionId]);
+    if (Number(current.rows[0]?.reputation_amount || 0) >= rep) continue;
+    await db.query("select dune.set_player_faction_reputation($1::bigint, $2::smallint, $3::integer)", [player.controllerId, factionId, rep]);
+    factionBumps += 1;
+  }
+  if (factionBumps > 0) await syncFactionComponent(db, player.controllerId);
+  return { factionBumps };
+}
+
+async function grantJourneyTechRecipe(db, actorId, recipeId) {
+  const current = await db.query(`select properties->'TechKnowledgePlayerComponent'->'m_TechKnowledge'->'m_TechKnowledgeData' as items
+    from dune.actors where id = $1 for update`, [actorId]);
+  if (!current.rows.length) return false;
+  const items = Array.isArray(current.rows[0]?.items) ? current.rows[0].items : [];
+  let found = false;
+  let changed = false;
+  const next = items.map((item) => {
+    if (item?.ItemKey !== recipeId) return item;
+    found = true;
+    if (item.UnlockedState === "Purchased" && item.bIsNewEntry === false) return item;
+    changed = true;
+    return { ...item, bIsNewEntry: false, UnlockedState: "Purchased" };
+  });
+  if (!found) {
+    changed = true;
+    next.push({ ItemKey: recipeId, bIsNewEntry: false, UnlockedState: "Purchased" });
+  }
+  if (changed) {
+    await db.query(`update dune.actors set properties = jsonb_set(
+      jsonb_set(jsonb_set(coalesce(properties, '{}'::jsonb), '{TechKnowledgePlayerComponent}', coalesce(properties->'TechKnowledgePlayerComponent', '{}'::jsonb), true),
+        '{TechKnowledgePlayerComponent,m_TechKnowledge}', coalesce(properties#>'{TechKnowledgePlayerComponent,m_TechKnowledge}', '{}'::jsonb), true),
+      '{TechKnowledgePlayerComponent,m_TechKnowledge,m_TechKnowledgeData}', $2::jsonb, true)
+      where id = $1`, [actorId, JSON.stringify(next)]);
+  }
+  return changed;
+}
+
+async function enableJourneySpiceVision(db, actorId) {
+  const result = await db.query(`update dune.fgl_entities fe set components = jsonb_set(
+      jsonb_set(fe.components, '{FSpiceAddictionComponent,1,SystemStatus}', '"FullyEnabled"'::jsonb, true),
+      '{FSpiceAddictionComponent,1,SpiceVisionEnabledStatus}', '"FullyEnabled"'::jsonb, true)
+    where fe.entity_id = (select entity_id from dune.actor_fgl_entities where actor_id = $1 and slot_name = 'DuneCharacter')
+      and fe.components #> '{FSpiceAddictionComponent,1}' is not null
+      and (coalesce(fe.components #>> '{FSpiceAddictionComponent,1,SystemStatus}', '') <> 'FullyEnabled'
+        or coalesce(fe.components #>> '{FSpiceAddictionComponent,1,SpiceVisionEnabledStatus}', '') <> 'FullyEnabled')`, [actorId]);
+  return Number(result.rowCount || 0) > 0;
+}
+
+async function mutateContractSkills(db, actorId, skills, mode) {
+  let changed = 0;
+  for (const skill of skills) {
+    const key = `(TagName="${skill}")`;
+    const result = mode === "add"
+      ? await db.query(`update dune.fgl_entities fe
+          set components = jsonb_set(fe.components, array['FLevelComponent','1','ModuleData',$2], '{"SkillPointsSpent":1}'::jsonb, true)
+          where fe.entity_id = (select entity_id from dune.actor_fgl_entities where actor_id = $1 and slot_name = 'DuneCharacter')
+            and coalesce((fe.components->'FLevelComponent'->1->'ModuleData'->$2->>'SkillPointsSpent')::int, 0) < 1`, [actorId, key])
+      : await db.query(`update dune.fgl_entities fe
+          set components = jsonb_set(fe.components, array['FLevelComponent','1','ModuleData'], (fe.components->'FLevelComponent'->1->'ModuleData') - $2)
+          where fe.entity_id = (select entity_id from dune.actor_fgl_entities where actor_id = $1 and slot_name = 'DuneCharacter')
+            and coalesce((fe.components->'FLevelComponent'->1->'ModuleData'->$2->>'SkillPointsSpent')::int, 0) <= 1`, [actorId, key]);
+    changed += Number(result.rowCount || 0);
+  }
+  return changed;
+}
+
+async function dismissActiveContracts(db, actorId, shortNames) {
+  const result = await db.query(`delete from dune.items i using dune.inventories inv
+    where inv.id = i.inventory_id and inv.actor_id = $1 and inv.inventory_type = 29
+      and i.template_id = 'ContractItem'
+      and i.stats->'FContractItemStats'->1->'ContractName'->>'Name' = any($2::text[])`, [actorId, shortNames]);
+  return Number(result.rowCount || 0);
+}
+
+async function clearDanglingTrackedContract(db, actorId) {
+  const result = await db.query(`update dune.actors a
+    set properties = jsonb_set(a.properties, '{ContractsCoordinatorComponent,m_TrackedContractItemUid}', to_jsonb('!!itm#0'::text), true)
+    where a.id = $1 and a.properties ? 'ContractsCoordinatorComponent'
+      and coalesce(a.properties->'ContractsCoordinatorComponent'->>'m_TrackedContractItemUid', '!!itm#0') <> '!!itm#0'
+      and not exists (select 1 from dune.items item
+        where ('!!itm#' || item.id::text) = a.properties->'ContractsCoordinatorComponent'->>'m_TrackedContractItemUid')`, [actorId]);
+  return Number(result.rowCount || 0) > 0;
 }
 
 function linkedResearchRecipeId(itemKey) {
