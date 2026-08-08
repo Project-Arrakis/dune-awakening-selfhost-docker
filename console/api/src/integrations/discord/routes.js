@@ -478,8 +478,8 @@ export async function handleDiscordAdapterRoute({ req, res, path, config, readJs
 
     // Logs — tail container logs for a named service
     if (path === DISCORD_ADAPTER_ROUTES.LOGS && req.method === "POST") {
-      validateDiscordActor(body.actor);
       const body = await readJson(req);
+      validateDiscordActor(body.actor);
       const service = String(body.service || "").trim();
       if (!service) return json(res, 400, { ok: false, error: "Service name required (body.service)." });
       return json(res, 200, await logsProvider(config, service));
