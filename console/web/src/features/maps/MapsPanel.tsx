@@ -1110,11 +1110,6 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
   const activeSietchesDirty = activeSietches !== currentActiveSietches;
   const primarySietchDraft = primarySurvivalSietch ? sietchDrafts[primarySurvivalSietch.partitionId] || { displayName: primarySurvivalSietch.displayName, password: primarySurvivalSietch.password } : null;
   const primarySietchDirty = Boolean(primarySurvivalSietch && primarySietchDraft && (primarySietchDraft.displayName !== primarySurvivalSietch.displayName || sietchPasswordDraftChanged(primarySurvivalSietch, primarySietchDraft, Boolean(sietchPasswordTouched[primarySurvivalSietch.partitionId]))));
-  const sietchesDirty = activeSietchesDirty || partitionOptions.some((sietch) => {
-    const draft = sietchDrafts[sietch.partitionId] || { displayName: sietch.displayName, password: sietch.password };
-    const passwordTouched = Boolean(sietchPasswordTouched[sietch.partitionId]);
-    return draft.displayName !== sietch.displayName || sietchPasswordDraftChanged(sietch, draft, passwordTouched);
-  });
   const rawEngineDirty = normalizeRawIniContent(rawEngine) !== normalizeRawIniContent(rawEngineOriginal);
   const rawGameDirty = normalizeRawIniContent(rawGame) !== normalizeRawIniContent(rawGameOriginal);
   const modifierDirtySummary = [
@@ -1338,24 +1333,6 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
     }
     if (activeAction) actions.push(activeAction);
     return actions;
-  }
-  async function saveSurvivalSietches() {
-    // Refuse before building anything: skipping the unwritable rows would let a
-    // dirty active-sietch count save on its own and report the whole thing as
-    // saved, silently dropping the edited names and passwords.
-    if (blockedSietchEdits(survivalSietchRows, sietchDrafts, sietchPasswordTouched).length) {
-      return onError(SIETCH_PARTITION_IDS_UNREADABLE);
-    }
-    const actions = survivalSietchActions({ includeActive: true, includePartitions: true });
-    if (!actions.length) return;
-    if (await confirmAction(`Save ${actions.length} Survival_1 Sietch change${actions.length === 1 ? "" : "s"}?`)) {
-      const activeChanged = Boolean(activeSietches && activeSietchesDirty);
-      await runTaskSequenceAndRefresh(actions, "Saving Sietch Changes", "Sietches Saved", {
-        saveAcceptedMessage: activeChanged
-          ? "Sietch changes saved successfully. The sietch is starting and may take a few minutes to appear in-game after it is running."
-          : "Sietch settings saved successfully. Changes may take a short time to appear in-game."
-      });
-    }
   }
   async function saveSietchSettings(sietch: SietchRow) {
     if (!isSietchWriteTarget(sietch)) return onError(SIETCH_PARTITION_IDS_UNREADABLE);
