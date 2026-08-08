@@ -1356,8 +1356,15 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
                   aria-selected={expandedTab === "permissions"}
                   aria-controls={`bases-panel-permissions-${id}`}
                   className={`bases-expanded-tab${expandedTab === "permissions" ? " active" : ""}`}
+                  // The label wraps onto two deliberate lines, so name the tab
+                  // explicitly rather than letting the accessible name be
+                  // assembled from two adjacent inline spans.
+                  aria-label="Sub-Fief Permissions"
                   onClick={() => setExpandedTab("permissions")}
-                ><Users size={15} aria-hidden="true" />Permissions</button>}
+                ><Users size={15} aria-hidden="true" /><span className="bases-expanded-tab-lines">
+                  <span>Sub-Fief</span>
+                  <span>Permissions</span>
+                </span></button>}
               </div>
               {expandedTab === "power"
                 ? <div role="tabpanel" id={`bases-panel-power-${id}`} aria-labelledby={`bases-tab-power-${id}`}>{renderPower()}</div>
