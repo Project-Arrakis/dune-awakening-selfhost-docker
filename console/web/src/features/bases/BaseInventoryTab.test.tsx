@@ -89,7 +89,7 @@ function itemRows() {
 }
 
 function cards() {
-  return [...document.querySelectorAll(".bases-inventory-cards .bases-generator-group")];
+  return [...document.querySelectorAll(".bases-inventory-cards .bases-card")];
 }
 
 // Group names appear twice on screen -- once as a filter chip, once as a
@@ -197,7 +197,7 @@ describe("BaseInventoryTab", () => {
     renderTab();
     await loaded();
 
-    const titles = cards().map((card) => card.querySelector(".bases-generator-group-title")?.textContent);
+    const titles = cards().map((card) => card.querySelector(".bases-card-title")?.textContent);
     expect(titles).toEqual(["Alpha Vault", "Chest", "Chest", "Zeta Vault"]);
     // The two Chests are ordered #9 before #10, not lexically.
     expect(cards()[1].textContent).toContain("#9");

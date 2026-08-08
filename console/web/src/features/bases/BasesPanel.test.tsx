@@ -119,7 +119,7 @@ describe("BasesPanel generator details", () => {
 
     expect(screen.getByText("Fuel-Powered Generator")).toBeInTheDocument();
     expect(screen.getByText("Spice-Powered Generator")).toBeInTheDocument();
-    expect(document.querySelectorAll(".bases-generator-group")).toHaveLength(2);
+    expect(document.querySelectorAll(".bases-card")).toHaveLength(2);
     expect(screen.getAllByText("Fuel Queued")).toHaveLength(2);
     expect(screen.getByText("1 Fuel Cell")).toBeInTheDocument();
     expect(screen.getByText("2 Spice-infused Fuel Cells")).toBeInTheDocument();
@@ -754,7 +754,7 @@ describe("BasesPanel permissions editing", () => {
     fireEvent.click(screen.getByRole("tab", { name: "Inventory" }));
     // The tab opens on the container cards, not the item rollup.
     expect(await screen.findByText("Vault")).toBeInTheDocument();
-    expect(document.querySelectorAll(".bases-inventory-cards .bases-generator-group")).toHaveLength(1);
+    expect(document.querySelectorAll(".bases-inventory-cards .bases-card")).toHaveLength(1);
     await waitFor(() => expect(basesApi.inventory).toHaveBeenCalledWith("1006"));
   });
 

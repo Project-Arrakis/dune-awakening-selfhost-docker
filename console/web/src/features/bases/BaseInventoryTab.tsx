@@ -155,7 +155,7 @@ export function BaseInventoryTab({ baseId }: BaseInventoryTabProps) {
 
   return (
     <div className="bases-inventory" onClick={(event) => event.stopPropagation()}>
-      <div className="bases-inventory-content">
+      <div className="bases-tab-body">
         {/* Stated before the data rather than after it: it governs how to read
             everything below, and at the foot of a 27-card list it was never
             seen. */}
@@ -282,14 +282,14 @@ export function BaseInventoryTab({ baseId }: BaseInventoryTabProps) {
                           bordered group and the rule-separated definition list
                           -- rather than a bespoke one, so the four tabs read
                           as one panel. */}
-                      <div className="bases-generator-cards bases-inventory-cards">
+                      <div className="bases-card-grid bases-inventory-cards">
                         {owned.map((container) => {
                           const percent = container.maxSlots > 0
                             ? Math.round((container.usedSlots / container.maxSlots) * 100)
                             : 0;
                           return (
-                            <div className="bases-generator-group" key={container.placeableId}>
-                              <div className="bases-generator-group-title">
+                            <div className="bases-card" key={container.placeableId}>
+                              <div className="bases-card-title">
                                 {container.name || container.typeName}
                               </div>
                               {/* The type sits under the name rather than in a
@@ -302,7 +302,7 @@ export function BaseInventoryTab({ baseId }: BaseInventoryTabProps) {
                                   ? `${container.typeName} · #${container.placeableId}`
                                   : `#${container.placeableId}`}
                               </p>
-                              <dl className="bases-generator-stats">
+                              <dl className="bases-card-stats">
                                 <dt>Slots Used</dt>
                                 <dd>
                                   <div className="progress-row">
