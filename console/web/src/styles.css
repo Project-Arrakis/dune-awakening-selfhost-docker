@@ -3862,26 +3862,23 @@ td :where(.service-actions, .action-row, .map-action-buttons) { max-width: 100%;
 }
 
 .iam-perm-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
   align-items: center;
   gap: .5rem;
   padding: .3rem .75rem;
   cursor: pointer;
   transition: background .1s;
-  min-width: 0;
 }
 
 .iam-perm-row:hover { background: var(--bg-hover, #1e1e32); }
 
 .iam-perm-row input[type="checkbox"] {
   cursor: pointer;
-  flex-shrink: 0;
   accent-color: var(--accent-color, #d4a853);
 }
 
 .iam-perm-label {
-  flex: 1 1 0;
-  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -3893,10 +3890,10 @@ td :where(.service-actions, .action-row, .map-action-buttons) { max-width: 100%;
 .iam-perm-row.perm-off .iam-perm-label { color: #7a7a7a; }
 
 .iam-perm-action {
-  flex-shrink: 0;
   font-size: .64rem;
   color: #4a5568;
   font-family: ui-monospace, SFMono-Regular, monospace;
+  white-space: nowrap;
 }
 
 /* JSON Editor */
