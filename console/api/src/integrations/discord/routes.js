@@ -1,4 +1,5 @@
 import { timingSafeEqual } from "node:crypto";
+import { readPlayerAnnouncements } from "../../services/playerAnnouncements.js";
 import { readFileSync } from "node:fs";
 import { audit } from "../../audit.js";
 import {
@@ -222,26 +223,20 @@ export async function handleDiscordAdapterRoute({ req, res, path, config, readJs
       return json(res, 200, result);
     }
 
-    // Announcements route
+    // Announcements — real data from player announcements service
     if (path === DISCORD_ADAPTER_ROUTES.ANNOUNCEMENTS && req.method === "POST") {
-      const body = await readJson(req);
-      return json(res, 200, {
-        ok: true,
-        status: "planned",
-        route: path,
-        announcements: [],
-        message: "Announcements route is planned. Requires game server event bridge."
-      });
+      try {
+        const result = await readPlayerAnnouncements(config);
+        return json(res, 200, { ok: true, announcements: result || [] });
+      } catch { return json(res, 200, { ok: false, announcements: [], error: "Player announcements unavailable (database not ready)." }); }
     }
 
-    // Backups route — returns metadata from dune db list
+    // Backups — real data from dune db list
     if (path === DISCORD_ADAPTER_ROUTES.BACKUPS_LIST && req.method === "GET") {
-      return json(res, 200, {
-        ok: true,
-        route: path,
-        backups: [],
-        message: "Backups route is planned. Requires dune db list integration."
-      });
+      try {
+        const { stdout } = await runDune(config.repoRoot, "db", ["list"]);
+        return json(res, 200, { ok: true, backups: stdout.trim() || "No backups found." });
+      } catch { return json(res, 200, { ok: false, backups: [], error: "dune db list unavailable" }); }
     }
 
     const mapping = discordRoleMappingFromEnv();
