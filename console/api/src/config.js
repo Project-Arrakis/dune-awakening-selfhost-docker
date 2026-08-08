@@ -15,6 +15,7 @@ export function loadConfig() {
 
   const adminPasswordFile = resolve(secretsDir, "admin-web-password.txt");
   const adminPasswordEnvManaged = Boolean(process.env.ADMIN_PASSWORD);
+  const secureCookieEnv = process.env.ADMIN_SECURE_COOKIES;
   const oauthHomeGuildId = /^\d{17,19}$/.test(process.env.DISCORD_HOME_GUILD_ID || "") ? process.env.DISCORD_HOME_GUILD_ID : "";
   return {
     appName: APP_NAME,
@@ -24,7 +25,7 @@ export function loadConfig() {
     host: resolveAdminBindHost(process.env.ADMIN_BIND_HOST),
     port: Number(process.env.ADMIN_BIND_PORT || 8088),
     authDisabled: process.env.ADMIN_AUTH_DISABLED === "1",
-    secureCookies: process.env.ADMIN_SECURE_COOKIES !== "0",
+    secureCookies: secureCookieEnv === undefined ? process.env.NODE_ENV === "production" : secureCookieEnv === "1",
     allowHostBootstrap: process.env.ALLOW_HOST_BOOTSTRAP === "true",
     mockMode: process.env.ADMIN_MOCK_MODE === "1",
     sessionSecret: getOrCreateSecret(resolve(secretsDir, "admin-web-session-secret.txt"), 48),
