@@ -3010,7 +3010,7 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
   min-width: 0;
 }
 .memory-swap-controls.custom {
-  grid-template-columns: minmax(220px, 280px) max-content max-content minmax(0, 1fr) max-content;
+  grid-template-columns: minmax(220px, 280px) minmax(0, 1fr) max-content;
 }
 .memory-swap-controls.standard { align-items: center; }
 .memory-swap-controls label {
@@ -3021,7 +3021,11 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
 }
 .memory-swap-controls label select { width: 100%; min-width: 0; }
 .memory-swap-custom-fields {
-  display: contents;
+  display: grid;
+  grid-template-columns: repeat(3, max-content);
+  align-items: end;
+  gap: 20px;
+  min-width: 0;
 }
 .memory-swap-custom-fields > label {
   width: max-content;
@@ -3051,10 +3055,10 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
   justify-self: end;
   white-space: nowrap;
 }
-.memory-swap-controls.custom .memory-swap-apply { align-self: center; }
+.memory-swap-controls.custom .memory-swap-apply { align-self: end; }
 .memory-swap-metrics {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 8px;
   min-width: 0;
 }
@@ -3176,8 +3180,10 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
 }
 
 @media (max-width: 1100px) {
-  .memory-swap-controls.custom { grid-template-columns: minmax(200px, 260px) max-content max-content minmax(0, 1fr); }
-  .memory-swap-controls.custom .memory-swap-apply { grid-column: 4; grid-row: 2; }
+  .memory-swap-controls.custom { grid-template-columns: minmax(200px, 260px) minmax(0, 1fr); }
+  .memory-swap-custom-fields { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .memory-swap-custom-fields > label { width: 100%; }
+  .memory-swap-controls.custom .memory-swap-apply { grid-column: 2; grid-row: 2; }
 }
 
 @media (max-width: 900px) {
@@ -3203,6 +3209,8 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
   .memory-feature-toggle .switch-toggle { flex: 1 1 auto; }
   .memory-swap-controls,
   .memory-swap-controls.custom { grid-template-columns: minmax(0, 1fr); justify-content: stretch; }
+  .memory-swap-custom-fields { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .memory-swap-custom-fields > label { width: 100%; }
   .memory-swap-apply,
   .memory-swap-controls.custom .memory-swap-apply { grid-column: 1; grid-row: auto; justify-self: end; }
   .memory-swap-metrics { grid-template-columns: 1fr; }

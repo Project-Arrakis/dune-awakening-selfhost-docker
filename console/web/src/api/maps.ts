@@ -53,6 +53,7 @@ export type MemorySwapState = {
   physicalMemoryGiB: number;
   safeAvailableDiskGiB: number;
   swappiness: string;
+  configuredSwappiness: number;
   swapFile: string;
 };
 
@@ -148,7 +149,7 @@ export const mapsApi = {
   memoryBalancer: () => api<MemoryBalancerState>("/api/maps/memory/balancer"),
   setMemoryBalancer: (enabled: boolean) => post<MemoryBalancerState>("/api/maps/memory/balancer", { enabled }),
   memorySwap: () => api<MemorySwapState>("/api/maps/memory/swap"),
-  setMemorySwap: (body: { enabled: boolean; perServerGiB?: number; poolGiB?: number; confirmation: string }) => post<{ task: Task }>("/api/maps/memory/swap", body),
+  setMemorySwap: (body: { enabled: boolean; perServerGiB?: number; poolGiB?: number; swappiness?: number; confirmation: string }) => post<{ task: Task }>("/api/maps/memory/swap", body),
   setMemory: (body: { map: string; memory: string; confirmation: string }) => post<{ task: Task }>("/api/maps/memory", { ...body, action: "set" }),
   spicefields: () => api<{ capabilities?: Record<string, boolean>; rows: SpicefieldTypeRow[]; reason?: string }>("/api/maps/spicefields"),
   updateSpicefield: (typeId: number | string, body: { max_globally_active: number; max_globally_primed: number; is_spawning_active: boolean; global_spawn_weight: number }) =>
