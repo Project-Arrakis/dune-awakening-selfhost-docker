@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { Dispatch, SetStateAction } from "react";
-import { Fuel, Play, Trash2 } from "lucide-react";
+import { Droplet, Fuel, Play, Trash2 } from "lucide-react";
 import { serverApi, type PerformanceSnapshot } from "../../api/server";
 import { setupApi, type Task } from "../../api/setup";
 import { PortChecklist } from "../../components/PortChecklist";
@@ -10,7 +10,7 @@ import { KeyValueGrid, StatusPill, TechnicalDetails } from "../../components/com
 import { formatDisplayValue, formatUiSentence, friendlyColumnName, stripAnsi, summarizeCommandText, titleCase } from "../../lib/display";
 import { friendlyServiceName } from "../../lib/serviceDisplay";
 import { conciseTaskError, funcomTokenMismatchDetected } from "../../lib/taskDisplay";
-import { usePendingRefills } from "../../lib/usePendingRefills";
+import { usePendingRefills, usePendingWaterRefills } from "../../lib/usePendingRefills";
 
 export type HomeLoadResult = { statusLoaded: boolean; readinessLoaded: boolean; statusError: string; readinessError: string; statusText: string; readinessText: string };
 export type HomeTaskResult = { status: "running" | "succeeded" | "failed" | "stopped"; title: string; message?: string; details?: string };
@@ -22,11 +22,26 @@ export type RestartLifecycleState = { stopObserved: boolean; startObserved: bool
 // booted, which the background flush uses. Both battlegroup control rows say so.
 function PendingRefillNote() {
   const { pending } = usePendingRefills();
-  const total = pending?.total || 0;
+  const { pending: pendingWater } = usePendingWaterRefills();
+  const fuelTotal = pending?.total || 0;
+  const waterTotal = pendingWater?.total || 0;
+  const total = fuelTotal + waterTotal;
   if (!total) return null;
+  // Split per resource rather than reporting one number: both queues flush on
+  // the same restart, but which one is waiting decides whether an operator
+  // goes looking at generators or at water containers. Same badge vocabulary
+  // as the Bases panel's queue banner.
   return <p className="action-help-note pending-refill-note">
-    <Fuel size={14} aria-hidden="true" />
-    {total.toLocaleString()} generator refill{total === 1 ? "" : "s"} queued across all maps. Restarting the battlegroup applies {total === 1 ? "it" : "them"}; stopping leaves {total === 1 ? "it" : "them"} queued.
+    {fuelTotal > 0 && <span className="bases-queue-badge bases-queue-badge-fuel">
+      <Fuel size={13} aria-hidden="true" />{fuelTotal.toLocaleString()} fuel
+    </span>}
+    {waterTotal > 0 && <> <span className="bases-queue-badge bases-queue-badge-water">
+      <Droplet size={13} aria-hidden="true" />{waterTotal.toLocaleString()} water
+    </span></>}
+    {/* Explicit space: the badges are inline elements, so without it the
+        paragraph's text content reads "1 waterrefills queued" to a screen
+        reader and to anyone copying it. The CSS margin is visual only. */}
+    {" "}refill{total === 1 ? "" : "s"} queued across all maps. Restarting the battlegroup applies {total === 1 ? "it" : "them"}; stopping leaves {total === 1 ? "it" : "them"} queued.
   </p>;
 }
 type ConfirmAction = (message: string, options?: { title?: string; confirmLabel?: string; cancelLabel?: string; danger?: boolean }) => Promise<boolean>;
