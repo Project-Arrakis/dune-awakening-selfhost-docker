@@ -88,7 +88,7 @@ function isCovered(route) {
   if (route.path.startsWith(DISCORD_PREFIX)) return true;
 
   // Public routes return null from actionForRoute — those are expected
-  const PUBLIC_EXACT = ["/api/health", "/api/auth/state", "/api/auth/login", "/api/auth/logout", "/api/auth/me", "/api/auth/discord/start", "/api/auth/discord/callback", "/api/auth/discord/exchange"];
+  const PUBLIC_EXACT = ["/api/health", "/api/auth/state", "/api/auth/login", "/api/auth/logout", "/api/auth/me", "/api/auth/characters", "/api/auth/discord/start", "/api/auth/discord/callback", "/api/auth/discord/exchange"];
   if (PUBLIC_EXACT.includes(route.path)) return true;
 
   for (const method of methodsToCheck(route)) {
