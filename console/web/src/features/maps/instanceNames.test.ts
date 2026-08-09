@@ -51,6 +51,24 @@ describe("instance names", () => {
     expect(cachedInstanceNames(["DeepDesert_1"])).toBeNull();
   });
 
+  it("does not restore a lookup invalidated while its requests are in flight", async () => {
+    let resolveTable!: (value: { stdout: string; exitCode: number }) => void;
+    let resolveIds!: (value: { stdout: string; exitCode: number }) => void;
+    vi.mocked(mapsApi.sietchDimensions).mockImplementation((_map?: string, wantIds?: boolean) =>
+      new Promise((resolve) => {
+        if (wantIds) resolveIds = resolve;
+        else resolveTable = resolve;
+      }) as never);
+
+    const pending = resolveInstanceNames(["DeepDesert_1"]);
+    invalidateInstanceNames();
+    resolveTable({ stdout: TABLE, exitCode: 0 });
+    resolveIds({ stdout: "8\n59\n", exitCode: 0 });
+
+    await expect(pending).resolves.toBeNull();
+    expect(cachedInstanceNames(["DeepDesert_1"])).toBeNull();
+  });
+
   it("does not answer a lookup for a different set of maps", async () => {
     respond();
     await resolveInstanceNames(["DeepDesert_1"]);

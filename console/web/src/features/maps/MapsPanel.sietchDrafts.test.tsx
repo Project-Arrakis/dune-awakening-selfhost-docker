@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { mapsApi } from "../../api/maps";
 import { MapsPanel } from "./MapsPanel";
-import { invalidateInstanceNames } from "./instanceNames";
+import { cachedInstanceNames, invalidateInstanceNames, resolveInstanceNames } from "./instanceNames";
 
 // The first full MapsPanel mount in the suite. It exists because the bug it
 // covers is invisible from the pure helpers: sietchWriteGuard.test.ts asserted
@@ -170,5 +170,27 @@ describe("MapsPanel sietch drafts", () => {
     await waitFor(() => expect(nameInput().value).toBe("Renamed Verified"));
     await openSietch("2");
     await waitFor(() => expect(nameInput().value).toBe("Renamed Fallback"));
+  });
+
+  it("invalidates names again after an accepted sietch write finishes", async () => {
+    stubMapsApi();
+    const props = renderMapsPanel();
+    let finishTask!: () => void;
+    const taskCompletion = new Promise<void>((resolve) => { finishTask = resolve; });
+    props.waitForTaskWithUpdates.mockImplementation(async (task: { id: string }) => {
+      // Simulate the Bases tab resolving the old name after the API accepted
+      // the write but before the background task actually changed it.
+      await resolveInstanceNames(["Survival_1"]);
+      await taskCompletion;
+      return { ...task, status: "succeeded" };
+    });
+
+    await openSietch("31");
+    fireEvent.change(nameInput(), { target: { value: "Renamed Verified" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save Sietch Settings" }));
+
+    await waitFor(() => expect(cachedInstanceNames(["Survival_1"])).not.toBeNull());
+    finishTask();
+    await waitFor(() => expect(cachedInstanceNames(["Survival_1"])).toBeNull());
   });
 });
