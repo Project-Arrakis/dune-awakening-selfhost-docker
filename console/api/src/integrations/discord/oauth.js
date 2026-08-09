@@ -207,10 +207,10 @@ export function buildAuthorizeUrl({ clientId, redirectUri, state, codeChallenge 
 // browser (login CSRF). SameSite=Lax + HttpOnly; cleared after the callback.
 export function oauthStateCookie(value, secure = true) {
   const securePart = secure ? "; Secure" : "";
-  return `discord_oauth_state=${encodeURIComponent(value)}; HttpOnly; SameSite=Lax; Path=/api/auth/discord/callback; Max-Age=600${securePart}`;
+  return `discord_oauth_state=${encodeURIComponent(value)}; HttpOnly; SameSite=None; Path=/api/auth/discord/callback; Max-Age=600${securePart}`;
 }
 
 export function clearOAuthStateCookie(secure = true) {
   const securePart = secure ? "; Secure" : "";
-  return `discord_oauth_state=; HttpOnly; SameSite=Lax; Path=/api/auth/discord/callback; Max-Age=0${securePart}`;
+  return `discord_oauth_state=; HttpOnly; SameSite=None; Path=/api/auth/discord/callback; Max-Age=0${securePart}`;
 }
