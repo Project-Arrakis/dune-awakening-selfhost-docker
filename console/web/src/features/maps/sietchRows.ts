@@ -73,6 +73,74 @@ export function blockedSietchEdits(
   });
 }
 
+// The exact complement of blockedSietchEdits: rows a save will really write.
+// Same three conditions, with the write-target test inverted.
+//
+// One definition for both, because two callers need to agree on it and used to
+// derive it separately: the code that builds the write actions, and the code
+// that decides which drafts the post-save refresh may discard. When those
+// disagreed, a save for one partition reset every draft on the panel.
+export function writableSietchEdits(
+  rows: SietchRow[],
+  drafts: Record<string, { displayName: string; password: string }>,
+  passwordTouched: Record<string, boolean> = {},
+  partitionId?: string
+) {
+  return rows.filter((row) => {
+    if (!isSietchWriteTarget(row)) return false;
+    if (partitionId && row.partitionId !== partitionId) return false;
+    const { nameChanged, passwordChanged } = sietchDraftChanges(row, drafts, passwordTouched);
+    return nameChanged || passwordChanged;
+  });
+}
+
+// What the drafts should be after a save's refresh reloads the sietch rows.
+//
+// A save writes one partition, but the refresh reloads them all. Replacing
+// every draft with the server's values therefore discarded pending edits on
+// rows the save never touched -- including the fallback rows the write guard
+// had just refused, so the guard's warning was followed by the edit silently
+// disappearing.
+//
+// Written partitions take the server's values: that write landed, so the
+// server is now the truth. Every other row keeps whatever is pending. Pass an
+// empty writtenPartitionIds to keep everything, which is what a failed save
+// wants.
+//
+// Split from reconcileSietchPasswordTouched below rather than returning both,
+// so each depends on exactly one piece of React state and can be applied as a
+// plain functional setState against the newest value. Combined, one of them
+// would have had to read the other through a stale closure.
+export function reconcileSietchDrafts(
+  freshRows: SietchRow[],
+  currentDrafts: Record<string, { displayName: string; password: string }>,
+  writtenPartitionIds: string[]
+) {
+  const written = new Set(writtenPartitionIds);
+  const drafts: Record<string, { displayName: string; password: string }> = {};
+  for (const row of freshRows) {
+    const pending = currentDrafts[row.partitionId];
+    drafts[row.partitionId] = !written.has(row.partitionId) && pending
+      ? pending
+      : { displayName: row.displayName, password: row.password };
+  }
+  return drafts;
+}
+
+// A written partition's password now matches the server, so its touched flag
+// goes; an untouched row never had one. Everything still pending keeps it,
+// because sietchPasswordDraftChanged reads it to tell an edited password from
+// the mask.
+export function reconcileSietchPasswordTouched(
+  currentTouched: Record<string, boolean>,
+  writtenPartitionIds: string[]
+) {
+  const written = new Set(writtenPartitionIds);
+  return Object.fromEntries(
+    Object.entries(currentTouched).filter(([partitionId, touched]) => touched && !written.has(partitionId))
+  );
+}
+
 // Parses the fixed-width table `dune sietches dimensions <map>` prints, pairing
 // each row with the partition id at the same index from the `--ids` output:
 //
