@@ -16,7 +16,7 @@ import {
   queueGeneratorRefill,
   supportsGeneratorRefillQueue
 } from "../src/duneDb.js";
-import { addCurrency, addFactionReputation, addGuildMember, addIntel, addonLeadershipPlayers, addonOpsHealthFarms, addonOpsHealthPlayers, addonOpsHealthSummary, addonOpsHealthSummaryV2, addSpecializationXp, applyLandsraadMilestonePreset, augmentInventoryItem, augmentNewestPlayerItem, baseGeneratorFuelLevels, baseGenerators, changeDunePassword, completeJourneyNode, completeTutorial, dbStatus, deleteInventoryItem, demoteGuildMember, disbandGuild, exportBaseAsBlueprint, generatorUptimePolicy, giveItemToPlayer, giveItemToStorage, guildMembers, landsraadOverview, listBases, listGuilds, listPlayers, listRoutines, listSpicefieldTypes, listTables, liveMapPlayers, liveMapServices, playerCraftingRecipes, playerCurrency, playerFactions, playerIntel, playerInventory, playerJourney, playerPortalSnapshots, playerPosition, playerProfile, playerProgression, playerResearchItems, playerSolarisCoinTotal, playerVitals, portalGeneratorFuel, portalVehicles, promoteGuildMember, refillBaseGenerators, removeGuildMember, repairVehicleDecay, resetJourneyNode, resetTutorial, routineDefinition, runSql, setLandsraadPlayerContribution, supportsGeneratorRefill, tablePreview, teleportOfflinePlayerToCoords, unlockCraftingRecipe, unlockResearchItem, updateInventoryItem, updateLandsraadRewardTier, updateLandsraadTaskGoal, updateLandsraadTermTaskGoals, updateSpicefieldType, updateTableRow, UnsupportedCapabilityError, _resetPlayerTargetCacheForTests } from "../src/duneDb.js";
+import { addCurrency, addFactionReputation, addGuildMember, addIntel, addonLeadershipPlayers, addonOpsHealthFarms, addonOpsHealthPlayers, addonOpsHealthSummary, addonOpsHealthSummaryV2, addSpecializationXp, applyLandsraadMilestonePreset, augmentInventoryItem, augmentNewestPlayerItem, baseGeneratorFuelLevels, baseGenerators, changeDunePassword, completeJourneyNode, completeTutorial, dbStatus, deleteInventoryItem, demoteGuildMember, disbandGuild, exportBaseAsBlueprint, generatorUptimePolicy, giveItemToPlayer, giveItemToStorage, guildMembers, landsraadOverview, listBases, listGuilds, listPlayers, listRoutines, listSpicefieldTypes, listTables, liveMapPlayers, liveMapServices, playerCraftingRecipes, playerCurrency, playerFactions, playerIntel, playerInventory, playerInventoryAll, playerJourney, playerPortalSnapshots, playerPosition, playerProfile, playerProgression, playerResearchItems, playerSolarisCoinTotal, playerVitals, portalGeneratorFuel, portalVehicles, promoteGuildMember, refillBaseGenerators, removeGuildMember, repairVehicleDecay, resetJourneyNode, resetTutorial, routineDefinition, runSql, setLandsraadPlayerContribution, supportsGeneratorRefill, tablePreview, teleportOfflinePlayerToCoords, unlockCraftingRecipe, unlockResearchItem, updateInventoryItem, updateLandsraadRewardTier, updateLandsraadTaskGoal, updateLandsraadTermTaskGoals, updateSpicefieldType, updateTableRow, UnsupportedCapabilityError, _resetPlayerTargetCacheForTests } from "../src/duneDb.js";
 
 beforeEach(() => {
   _resetPlayerTargetCacheForTests();
@@ -2959,6 +2959,41 @@ test("player inventory enriches rows with catalog category and source for augmen
   assert.equal(result.rows[0].template_id, "SmugDmr5");
   assert.equal(result.rows[0].category, "weapons");
   assert.equal(result.rows[0].source, "Weapons");
+});
+
+test("player inventory (all containers) queries every player-carried type and tags rows with inventory_type", async () => {
+  const calls = [];
+  const db = {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("order by id limit 1")) return { rows: [{ max_item_count: 50, max_item_volume: 300 }] };
+      if (text.includes("from dune.items i")) return { rows: [
+        { id: 1, template_id: "WaterBottle_1", stack_size: 1, quality_level: 0, position_index: 0, inventory_id: 7, inventory_type: 0, current_durability: null, max_durability: null, stats: {} },
+        { id: 2, template_id: "Armor_Chest_T4", stack_size: 1, quality_level: 4, position_index: 0, inventory_id: 9, inventory_type: 15, current_durability: "210", max_durability: "300", stats: {} }
+      ] };
+      return { rows: [] };
+    }
+  };
+  const result = await playerInventoryAll(db, 123);
+  const itemsCall = calls.find((call) => call.text.includes("from dune.items i"));
+  assert.ok(itemsCall);
+  assert.match(itemsCall.text, /inv2\.inventory_type = any\(\$2::int\[\]\)/);
+  assert.match(itemsCall.text, /order by inv2\.inventory_type, i\.template_id/);
+  assert.deepEqual(itemsCall.values[1], [0, 1, 15, 30]);
+  assert.equal(result.maxSlots, 50);
+  assert.equal(result.maxVolume, 300);
+  assert.equal(result.rows.length, 2);
+  assert.equal(result.rows[0].inventory_type, 0);
+  assert.equal(result.rows[1].inventory_type, 15);
+  assert.deepEqual(result.rows[1].augments, []);
+});
+
+test("player inventory (all containers) reports unsupported when inventory tables are missing", async () => {
+  const db = { query: async () => ({ rows: [{ exists: false }] }) };
+  const result = await playerInventoryAll(db, 123);
+  assert.equal(result.capabilities.inventory, false);
+  assert.match(result.reason, /dune\.items|dune\.inventories/);
 });
 
 test("inventory delete verifies ownership before calling dune.delete_item", async () => {
