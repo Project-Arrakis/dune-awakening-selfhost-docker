@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { blockedSietchEdits, isSietchWriteTarget, parseSietchRows, sietchDraftChanges } from "./sietchRows";
+import {
+  blockedSietchEdits,
+  isSietchWriteTarget,
+  parseSietchRows,
+  reconcileSietchDrafts,
+  reconcileSietchPasswordTouched,
+  sietchDraftChanges,
+  writableSietchEdits
+} from "./sietchRows";
 
 // Real `dune sietches dimensions Survival_1 --active-only` output. The real
 // partitions are 1, 31 and 55 -- deliberately not equal to their dimension
@@ -99,8 +107,10 @@ describe("blockedSietchEdits", () => {
     expect(isSietchWriteTarget(rows[2])).toBe(false);
     expect(blockedSietchEdits(rows, drafts, {}, "2").map((row) => row.displayName)).toEqual(["The Kulon Show"]);
 
-    // Nothing here mutates drafts, so the fallback edit is still pending and
-    // still rendered after the verified row is saved.
+    // These helpers are pure, so the fallback edit is untouched here. Whether
+    // it survives the *save* is a caller-level question about loadSietches'
+    // refresh -- covered in MapsPanel.sietchDrafts.test.tsx, because it cannot
+    // be seen from this level and was in fact broken while this file passed.
     expect(drafts["2"].displayName).toBe("Renamed Fallback");
     expect(sietchDraftChanges(rows[2], drafts, {}).nameChanged).toBe(true);
   });
@@ -113,6 +123,100 @@ describe("blockedSietchEdits", () => {
 
     expect(blockedSietchEdits(rows, drafts, {}, "1")).toHaveLength(1);
     expect(blockedSietchEdits(rows, drafts, {}, "0")).toEqual([]);
+  });
+});
+
+describe("writableSietchEdits", () => {
+  // The exact complement of blockedSietchEdits: between them they must account
+  // for every edited row and never claim the same one.
+  it("is the complement of blockedSietchEdits over the same rows", () => {
+    const rows = parseSietchRows(SURVIVAL_TABLE, IDS_PARTIAL);
+    const drafts = draftsFor(rows, {
+      "1": { displayName: "Renamed Verified A" },
+      "31": { displayName: "Renamed Verified B" },
+      "2": { displayName: "Renamed Fallback" }
+    });
+
+    const writable = writableSietchEdits(rows, drafts, {}).map((row) => row.partitionId);
+    const blocked = blockedSietchEdits(rows, drafts, {}).map((row) => row.partitionId);
+
+    expect(writable).toEqual(["1", "31"]);
+    expect(blocked).toEqual(["2"]);
+    expect(writable.filter((id) => blocked.includes(id))).toEqual([]);
+    expect([...writable, ...blocked].sort()).toEqual(["1", "2", "31"]);
+  });
+
+  it("reports only rows that are actually edited, and honours the partition scope", () => {
+    const rows = parseSietchRows(SURVIVAL_TABLE, IDS_PARTIAL);
+
+    // Clean drafts write nothing, so a save must not claim to have written them.
+    expect(writableSietchEdits(rows, draftsFor(rows), {})).toEqual([]);
+
+    const drafts = draftsFor(rows, { "1": { displayName: "Renamed" } });
+    expect(writableSietchEdits(rows, drafts, {}, "1").map((row) => row.partitionId)).toEqual(["1"]);
+    expect(writableSietchEdits(rows, drafts, {}, "31")).toEqual([]);
+  });
+
+  it("counts a touched password as an edit, like the guard does", () => {
+    const rows = parseSietchRows(SURVIVAL_TABLE, IDS_PARTIAL);
+    const drafts = draftsFor(rows, { "31": { password: "new-secret" } });
+
+    expect(writableSietchEdits(rows, drafts, {})).toEqual([]);
+    expect(writableSietchEdits(rows, drafts, { "31": true }).map((row) => row.partitionId)).toEqual(["31"]);
+  });
+});
+
+describe("reconcileSietchDrafts", () => {
+  // The bug this exists for: a save writes one partition, the refresh reloads
+  // them all, and replacing every draft discarded the pending edits the save
+  // never touched -- including fallback rows the guard had just refused.
+  it("keeps pending edits on rows the save did not write", () => {
+    const rows = parseSietchRows(SURVIVAL_TABLE, IDS_PARTIAL);
+    const current = draftsFor(rows, {
+      "31": { displayName: "Renamed Verified" },
+      "2": { displayName: "Renamed Fallback" }
+    });
+
+    const next = reconcileSietchDrafts(rows, current, ["31"]);
+
+    // Written: the server is the truth now.
+    expect(next["31"].displayName).toBe("Sietch Abbir");
+    // Not written: still pending, still on screen.
+    expect(next["2"].displayName).toBe("Renamed Fallback");
+    // Untouched rows come back as the server reported them.
+    expect(next["1"].displayName).toBe("Hagga Basin");
+  });
+
+  it("keeps everything when nothing was written, which is what a failed save needs", () => {
+    const rows = parseSietchRows(SURVIVAL_TABLE, IDS_PARTIAL);
+    const current = draftsFor(rows, {
+      "31": { displayName: "Renamed Verified" },
+      "2": { displayName: "Renamed Fallback" }
+    });
+
+    const next = reconcileSietchDrafts(rows, current, []);
+
+    expect(next["31"].displayName).toBe("Renamed Verified");
+    expect(next["2"].displayName).toBe("Renamed Fallback");
+  });
+
+  it("is keyed on the fresh rows, so a partition that vanished is dropped", () => {
+    const rows = parseSietchRows(SURVIVAL_TABLE, IDS_PARTIAL);
+    const current = { ...draftsFor(rows), "999": { displayName: "Gone", password: "" } };
+
+    expect(Object.keys(reconcileSietchDrafts(rows, current, [])).sort()).toEqual(["1", "2", "31"]);
+  });
+});
+
+describe("reconcileSietchPasswordTouched", () => {
+  // sietchPasswordDraftChanged reads this flag to tell an edited password from
+  // the mask, so dropping it for a still-pending row would silently discard
+  // that password edit even though the draft text survived.
+  it("drops the flag only for written partitions", () => {
+    const touched = { "31": true, "2": true, "1": false };
+
+    expect(reconcileSietchPasswordTouched(touched, ["31"])).toEqual({ "2": true });
+    expect(reconcileSietchPasswordTouched(touched, [])).toEqual({ "2": true, "31": true });
   });
 });
 

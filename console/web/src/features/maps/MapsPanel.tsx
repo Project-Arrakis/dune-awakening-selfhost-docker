@@ -17,8 +17,11 @@ import {
   blockedSietchEdits,
   isSietchWriteTarget,
   parseSietchRows,
+  reconcileSietchDrafts,
+  reconcileSietchPasswordTouched,
   sietchDraftChanges,
   sietchPasswordDraftChanged,
+  writableSietchEdits,
   type SietchRow
 } from "./sietchRows";
 
@@ -47,6 +50,11 @@ type MapsTaskSequenceOptions = {
   memoryUpdates?: Array<{ map: string; partitionId?: string; memory: string }>;
   resultScope?: MapsResultScope;
   resultTarget?: string;
+  // Partitions this sequence writes sietch name/password for. The refresh at
+  // the end reloads every row, so without this it replaced every draft --
+  // discarding pending edits on rows the save never touched. Omit it when the
+  // sequence writes no sietch fields at all; then nothing is discarded.
+  writtenPartitionIds?: string[];
 };
 type PersistedMapsTask = { taskId?: string; result: HomeTaskResult | null; runningTitle?: string; successTitle?: string; resultScope?: MapsResultScope };
 type SpicefieldDraft = { maxActive: string; maxPrimed: string; spawningActive: boolean; spawnWeight: string };
@@ -511,7 +519,9 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
             persistMapsTask(null);
             void refreshMapRuntime().catch(() => undefined);
             void loadLiveMemory().catch(() => undefined);
-            void loadSietches().catch(() => undefined);
+            // Handoff means the writes were accepted, so the written rows can
+            // take the server's values -- but only those rows.
+            void loadSietches({ writtenPartitionIds: options.writtenPartitionIds || [] }).catch(() => undefined);
           }
           return;
         }
@@ -544,7 +554,12 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
     persistMapsTask(null);
     await loadMaps();
     if (next.status === "succeeded") applyOptimisticMemoryUpdates(options.memoryUpdates);
-    await loadSietches();
+    // This runs after the loop breaks on failure too, so a failed save used to
+    // wipe the drafts along with showing the error. Only a succeeded sequence
+    // may discard anything, and then only the partitions it wrote.
+    await loadSietches({
+      writtenPartitionIds: next.status === "succeeded" ? (options.writtenPartitionIds || []) : []
+    });
   }
   async function loadMaps() {
     if (mapsLoadRef.current) return mapsLoadRef.current;
@@ -629,7 +644,14 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
     setRawGame(raw.content || "");
     setRawGameOriginal(raw.content || "");
   }
-  async function loadSietches(options: { preserveDrafts?: boolean } = {}) {
+  // Three draft policies, deliberately distinct:
+  //   preserveDrafts      -- background polling; whatever is on screen wins.
+  //   writtenPartitionIds -- after a save; only the partitions actually written
+  //                          take the server's values, everything else stays
+  //                          pending (see reconcileSietchDrafts).
+  //   neither             -- full reset, for a mount or an explicit refresh
+  //                          where there is nothing pending to protect.
+  async function loadSietches(options: { preserveDrafts?: boolean; writtenPartitionIds?: string[] } = {}) {
     const [list, dimensions, ids] = await Promise.all([mapsApi.sietches(), mapsApi.sietchDimensions("Survival_1"), mapsApi.sietchDimensions("Survival_1", true)]);
     // A non-zero exit still answers 200 with empty stdout, so a failed command
     // is only visible in exitCode. Discard its output rather than parsing
@@ -647,6 +669,13 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
       }
       if (options.preserveDrafts) {
         setSietchDrafts((current) => ({ ...drafts, ...current }));
+      } else if (options.writtenPartitionIds) {
+        // Functional updates on purpose: a save is long enough for the operator
+        // to type into another row while it runs, and the closure this ran from
+        // would not see that edit.
+        const written = options.writtenPartitionIds;
+        setSietchDrafts((current) => reconcileSietchDrafts(rows, current, written));
+        setSietchPasswordTouched((current) => reconcileSietchPasswordTouched(current, written));
       } else {
         setSietchDrafts(drafts);
         setSietchPasswordTouched({});
@@ -901,6 +930,7 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
     run(loadMemoryBalancer);
     run(() => loadMemorySwap());
     run(loadRuntimeSettings);
+    // Full reset is right here: this is the mount, so there is nothing pending.
     run(loadSietches);
     run(loadSpicefields);
     void loadCombatState("DeepDesert_1").catch(() => {});
@@ -940,6 +970,9 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
       setMapsResult(next);
       persistMapsTask(null);
       await loadMaps();
+      // A task resumed from a previous mount: the persisted record carries no
+      // written-partition set, so there is nothing to reconcile against and a
+      // full reset is the only honest option.
       await loadSietches();
     })().catch((error) => {
       if (isMissingPersistedTaskError(error)) {
@@ -1300,7 +1333,13 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
         {
           saveAcceptedMessage: successMessage,
           memoryUpdates: memoryChanged ? [{ map: rowName, memory: memoryCliValue(memory) }] : [],
-          resultTarget: mapResultTarget(rowName)
+          resultTarget: mapResultTarget(rowName),
+          // This form only carries the primary sietch's fields, so that is the
+          // only partition whose draft the refresh may replace.
+          writtenPartitionIds: rowName === "Survival_1" && primarySurvivalSietch
+            ? writableSietchEdits(survivalSietchRows, sietchDrafts, sietchPasswordTouched, primarySurvivalSietch.partitionId)
+              .map((sietch) => sietch.partitionId)
+            : []
         }
       );
     }
@@ -1325,9 +1364,9 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
       };
     }
     if (includePartitions) {
-      for (const sietch of survivalSietchRows) {
-        if (!isSietchWriteTarget(sietch)) continue;
-        if (partitionId && sietch.partitionId !== partitionId) continue;
+      // The same helper the post-save refresh uses to decide which drafts it
+      // may discard, so the two can never disagree about what was written.
+      for (const sietch of writableSietchEdits(survivalSietchRows, sietchDrafts, sietchPasswordTouched, partitionId)) {
         const { draft, nameChanged, passwordChanged } = sietchDraftChanges(sietch, sietchDrafts, sietchPasswordTouched);
         const targetName = sietchTargetDisplayName(sietch, draft.displayName);
         if (nameChanged && passwordChanged) {
@@ -1397,7 +1436,12 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
       await runTaskSequenceAndRefresh(actions, `Saving ${sietchTargetDisplayName(sietch, draft.displayName)} Settings`, "Sietch Saved", {
         saveAcceptedMessage: successMessage,
         memoryUpdates: memoryChanged ? [{ map: "Survival_1", partitionId: sietch.partitionId, memory: memoryCliValue(memory) }] : [],
-        resultTarget: mapResultTarget("Survival_1", sietch.partitionId)
+        resultTarget: mapResultTarget("Survival_1", sietch.partitionId),
+        // Derived from sietchActions' own source, so a pending edit on any
+        // other row -- including a fallback row the guard refused -- survives
+        // this save's refresh.
+        writtenPartitionIds: writableSietchEdits(survivalSietchRows, sietchDrafts, sietchPasswordTouched, sietch.partitionId)
+          .map((row) => row.partitionId)
       });
     }
   }
