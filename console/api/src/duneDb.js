@@ -2227,6 +2227,72 @@ export async function playerProfile(db, id) {
   return { capabilities: await playerCapabilities(db), player: row };
 }
 
+// Player-carried inventory containers keyed by dune.inventories.inventory_type.
+// The console groups them into four tabs (labels applied client-side):
+//   backpack           = 0
+//   character          = 1  (worn armor/clothing)
+//   loadout            = 15 (held weapons/tools)
+//   unique schematics  = 30
+// Emote/cosmetic containers (14, 27) are deliberately excluded: across every player
+// in the reference data they hold nothing but Emote_* items, which are neither
+// equipped gear nor schematics. (repairGear keeps its own wider set; emote items
+// simply carry no durability to repair.)
+const PLAYER_BACKPACK_INVENTORY_TYPE = 0;
+const PLAYER_GEAR_INVENTORY_TYPES = [1, 15];
+const PLAYER_SCHEMATIC_INVENTORY_TYPES = [30];
+const PLAYER_INVENTORY_TYPES = [
+  PLAYER_BACKPACK_INVENTORY_TYPE,
+  ...PLAYER_GEAR_INVENTORY_TYPES,
+  ...PLAYER_SCHEMATIC_INVENTORY_TYPES
+];
+
+// Shared shaping for inventory item rows: strips the raw stats blob and folds in
+// admin catalog metadata + extracted augment ids. Used by both the backpack-only
+// playerInventory and the all-containers playerInventoryAll.
+function mapInventoryItemRows(rows) {
+  const itemMetadata = adminItemMetadata();
+  return rows.map(({ stats, ...row }) => {
+    const metadata = itemMetadata.get(String(row.template_id || ""));
+    return {
+      ...row,
+      item_name: metadata?.name || "",
+      category: metadata?.category || "",
+      source: metadata?.source || "",
+      augments: extractAugmentIdsFromStats(stats)
+    };
+  });
+}
+
+const INVENTORY_ITEM_SELECT = `
+    select i.id,
+           i.template_id,
+           i.stack_size,
+           i.quality_level,
+           i.position_index,
+           i.inventory_id,
+           inv2.inventory_type,
+           coalesce((i.stats->'FItemStackAndDurabilityStats'->1->>'CurrentDurability'), null) as current_durability,
+           coalesce(
+             nullif((i.stats->'FItemStackAndDurabilityStats'->1->>'MaxDurability')::numeric, 0),
+             nullif((i.stats->'FItemStackAndDurabilityStats'->1->>'DecayedMaxDurability')::numeric, 0),
+             null
+           ) as max_durability,
+           i.stats
+    from dune.items i
+    join dune.inventories inv2 on i.inventory_id = inv2.id`;
+
+async function backpackCapacity(db, playerId) {
+  const inv = await db.query(`
+    select max_item_count, max_item_volume
+    from dune.inventories
+    where actor_id = $1 and inventory_type = 0
+    order by id limit 1`, [playerId]);
+  return {
+    maxSlots: Number(inv.rows[0]?.max_item_count) || 40,
+    maxVolume: Number(inv.rows[0]?.max_item_volume) || 225
+  };
+}
+
 export async function playerInventory(db, id) {
   if (!(await tableExists(db, "items")) || !(await tableExists(db, "inventories"))) return unsupported("inventory", ["dune.items", "dune.inventories"]);
 
@@ -2258,16 +2324,23 @@ export async function playerInventory(db, id) {
     join dune.inventories inv2 on i.inventory_id = inv2.id
     where inv2.actor_id = $1 and inv2.inventory_type = 0
     order by i.template_id`, [intParam(id, "player id", 1)]);
-  const itemMetadata = adminItemMetadata();
-  const rows = result.rows.map(({ stats, ...row }) => {
-    const metadata = itemMetadata.get(String(row.template_id || ""));
-    return {
-      ...row,
-      category: metadata?.category || "",
-      source: metadata?.source || "",
-      augments: extractAugmentIdsFromStats(stats)
-    };
-  });
+  const rows = mapInventoryItemRows(result.rows);
+  return { capabilities: { inventory: true }, maxSlots, maxVolume, rows };
+}
+
+// Like playerInventory but returns every player-carried container (backpack +
+// equipped gear), tagging each row with inventory_type so the console can group
+// them. maxSlots/maxVolume still describe the backpack for backward compatibility.
+export async function playerInventoryAll(db, id) {
+  if (!(await tableExists(db, "items")) || !(await tableExists(db, "inventories"))) return unsupported("inventory", ["dune.items", "dune.inventories"]);
+  const playerId = intParam(id, "player id", 1);
+
+  const { maxSlots, maxVolume } = await backpackCapacity(db, playerId);
+
+  const result = await db.query(`${INVENTORY_ITEM_SELECT}
+    where inv2.actor_id = $1 and inv2.inventory_type = any($2::int[])
+    order by inv2.inventory_type, i.template_id`, [playerId, PLAYER_INVENTORY_TYPES]);
+  const rows = mapInventoryItemRows(result.rows);
   return { capabilities: { inventory: true }, maxSlots, maxVolume, rows };
 }
 

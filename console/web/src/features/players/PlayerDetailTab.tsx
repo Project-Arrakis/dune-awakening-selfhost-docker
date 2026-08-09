@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Circle, X } from "lucide-react";
+import { Circle, Info, X } from "lucide-react";
 import { playersApi } from "../../api/players";
 import { adminApi } from "../../api/admin";
 import { DataTable, useSortableRows } from "../../components/common/DataTable";
@@ -12,7 +12,11 @@ import { augmentLimitForItem, filterAugmentsForItem, formatAugmentOptions, itemC
 import { inventoryDurabilityError } from "./inventoryDurability";
 
 const EDITABLE_INVENTORY_COLUMNS = ["stack_size", "quality_level", "position_index", "current_durability", "max_durability"];
-const INVENTORY_COLUMNS = ["id", "inventory_id", "template_id", "stack_size", "quality_level", "position_index", "current_durability", "max_durability", "augments"];
+const INVENTORY_COLUMNS = ["id", "item_name", "stack_size", "quality_level", "position_index", "current_durability", "max_durability", "augments"];
+// Unique-gear schematics carry no grade, durability, or augments — drop those
+// columns and keep only what applies, both in the table and the edit form.
+const SCHEMATIC_INVENTORY_COLUMNS = ["id", "item_name", "stack_size", "position_index"];
+const SCHEMATIC_EDITABLE_COLUMNS = ["stack_size", "position_index"];
 
 function inventoryAugmentLimit(templateId: string) {
   return augmentLimitForItem({ templateId });
@@ -92,7 +96,8 @@ export function PlayerDetailTab({
   onActionLog,
   confirmAction,
   formatMutationResult,
-  playerIsOnline = false
+  playerIsOnline = false,
+  variant = "standard"
 }: {
   playerId: string;
   data: Record<string, unknown> | null;
@@ -104,7 +109,11 @@ export function PlayerDetailTab({
   confirmAction: ConfirmAction;
   formatMutationResult: (result: unknown) => string;
   playerIsOnline?: boolean;
+  variant?: "standard" | "schematics";
 }) {
+  const isSchematics = variant === "schematics";
+  const inventoryColumns = isSchematics ? SCHEMATIC_INVENTORY_COLUMNS : INVENTORY_COLUMNS;
+  const editableColumns = isSchematics ? SCHEMATIC_EDITABLE_COLUMNS : EDITABLE_INVENTORY_COLUMNS;
   const [message, setMessage] = useState("");
   const [messageDetails, setMessageDetails] = useState("");
   const [messageTone, setMessageTone] = useState<"default" | "success">("default");
@@ -175,7 +184,7 @@ export function PlayerDetailTab({
     setAugmentTargetRow(null);
     setAugmentSelected([]);
     setEditRow(row);
-    setEditValues(Object.fromEntries(EDITABLE_INVENTORY_COLUMNS.map((column) => {
+    setEditValues(Object.fromEntries(editableColumns.map((column) => {
       if (column === "max_durability" && row.max_durability == null) return [column, ""];
       if (column === "current_durability" && row.current_durability == null) return [column, ""];
       return [column, serializeEditableDbValue(row[column])];
@@ -228,7 +237,7 @@ export function PlayerDetailTab({
 
     setEditSaving(true);
     try {
-      const values = Object.fromEntries(EDITABLE_INVENTORY_COLUMNS
+      const values = Object.fromEntries(editableColumns
         .filter((column) => column !== "max_durability" && !(column === "current_durability" && !canEditDurability))
         .map((column) => [column, parseEditableDbValue(editValues[column] ?? "", editRow[column])]));
       const response = await playersApi.updateInventoryItem(playerId, itemId, values, "SAVE ITEM");
@@ -312,7 +321,7 @@ export function PlayerDetailTab({
     return <div className="result-panel database-edit-panel">
       <div className="panel-title"><strong>Edit Inventory Item</strong></div>
       <div className="database-edit-grid inventory-edit-grid">
-        {EDITABLE_INVENTORY_COLUMNS.map((column) => {
+        {editableColumns.map((column) => {
           const isDisabled = column === "current_durability" ? !canEditDurability : column === "max_durability";
           const isDurability = column === "current_durability" || column === "max_durability";
           if (column === "quality_level") {
@@ -345,6 +354,11 @@ export function PlayerDetailTab({
         const text = value == null || value === "" ? "—" : String(value);
         return <span className="inventory-template-id" title={text}>{text}</span>;
       }
+      if (column === "item_name") {
+        const name = value == null || value === "" ? "—" : String(value);
+        const templateId = String(row.template_id || "");
+        return <span className="inventory-item-name">{name}{templateId && <span className="inventory-name-info" title={`Template ID: ${templateId}`} aria-label={`Template ID: ${templateId}`}><Info size={13} /></span>}</span>;
+      }
       if (Array.isArray(value)) return value.join(", ");
       return value == null || value === "" ? "—" : String(value);
     }
@@ -353,18 +367,18 @@ export function PlayerDetailTab({
     return <span className="inventory-augment-list">{augments.map((id) => <span key={id}>{augmentNameById.get(id) || id}</span>)}</span>;
   }
 
-  return <div>
+  return <div className="player-inventory-detail">
     {data?.reason ? <p className="danger-note">{formatUiSentence(data.reason)}</p> : null}
     {message && <div className={`result-panel transient-result ${messageTone === "success" ? "success-result" : ""}`}><strong>{messageTone === "success" ? "Applied Successfully" : "Mutation Result."}</strong><p>{formatUiSentence(message)}</p>{messageDetails && <TechnicalDetails text={messageDetails} />}</div>}
     <DataTable
       rows={inventorySort.sortedRows}
-      columns={INVENTORY_COLUMNS}
+      columns={inventoryColumns}
       emptyMessage={emptyMessage}
       renderCell={renderInventoryCell}
       tableClassName="player-inventory-table"
       actionClassName="actions-column"
       action={(row) => {
-        const canUseAugments = inventoryItemCanUseAugments(row);
+        const canUseAugments = !isSchematics && inventoryItemCanUseAugments(row);
         return <span className="icon-toggle-group">
           <button className="icon-toggle-button success" title="Edit item" aria-label="Edit item" onClick={(event) => { event.stopPropagation(); startEditItem(row); }}><Circle size={16} /></button>
           {canUseAugments && <button className="icon-toggle-button accent" title={playerIsOnline ? "Player must be offline to apply augments" : "Apply Augments"} aria-label="Apply Augments" disabled={playerIsOnline} onClick={(event) => { event.stopPropagation(); startApplyAugments(row); }}>+A</button>}
