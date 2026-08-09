@@ -99,8 +99,25 @@ const itemImagePathCache = new Map();
 // checkout at /repo and points DUNE_DOCKER_DIR at it, so the files are live on
 // disk. What makes the stale window harmless is that updating the checkout
 // restarts the console container, not that the files cannot change.
+// An id becomes both a filesystem path and a URL below, so it may not carry
+// path structure. normalizeItem's own id regex does not cover this -- it admits
+// "." and "/", so "../../secret" satisfies it -- and baseInventory passes a raw
+// dune.items.template_id with no validation at all. Without this, resolve()
+// normalises the traversal away and existsSync probes outside the public
+// directory, while the returned string reaches an <img src>.
+//
+// Rejected ids resolve to the unavailable image rather than throwing, matching
+// what a missing file already does. Checked before the cache so a malformed id
+// cannot take a slot in it either.
+function isSafeItemImageId(id) {
+  const value = String(id ?? "");
+  if (!value || value.length > 240) return false;
+  if (/[\\/\0]/.test(value)) return false;
+  return value !== "." && value !== "..";
+}
+
 export function itemImagePath(repoRoot, id) {
-  if (!repoRoot) return "/images/items/image-unavailable.png";
+  if (!repoRoot || !isSafeItemImageId(id)) return "/images/items/image-unavailable.png";
   let byId = itemImagePathCache.get(repoRoot);
   if (!byId) {
     byId = new Map();
