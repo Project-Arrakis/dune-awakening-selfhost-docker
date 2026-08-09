@@ -123,6 +123,52 @@ class GameFieldOverridePrecedenceTests(ProfilePathTestCase):
         self.assertNotIn(f"{key}=4.0", compiled_sibling_partition)
 
 
+class StakingExtensionArrayTests(ProfilePathTestCase):
+    """Staking timers are ten-element native arrays, exposed as one safe scalar."""
+
+    FIELD_ID = "staking_unit_extension_default_times"
+    KEY = "m_StakingUnitExtensionDefaultTimes"
+
+    def assert_complete_array(self, rendered: str, value: str):
+        lines = rendered.splitlines()
+        self.assertEqual(lines.count(f"!{self.KEY}=ClearArray"), 1)
+        self.assertEqual(lines.count(f".{self.KEY}={value}"), usersettings.STAKING_EXTENSION_ARRAY_LENGTH)
+        self.assertFalse(any(line.startswith((f"{self.KEY}=", f"+{self.KEY}=", f"-{self.KEY}=")) for line in lines))
+
+    def test_blank_value_preserves_funcom_packaged_defaults(self):
+        rendered = usersettings.compiled_usergame_ini(usersettings.empty_profile(), MAP_NAME)
+        self.assertNotIn(self.KEY, rendered)
+
+    def test_scalar_is_compiled_as_a_complete_duplicate_preserving_array(self):
+        profile = usersettings.empty_profile()
+        usersettings.set_profile_field(profile, "global", "", "", self.FIELD_ID, "2")
+        self.assert_complete_array(usersettings.compiled_usergame_ini(profile, MAP_NAME), "2.000000")
+        self.assert_complete_array(usersettings.client_game_ini(profile, MAP_NAME), "2.000000")
+
+    def test_map_and_partition_precedence_selects_one_complete_array(self):
+        profile = usersettings.empty_profile()
+        usersettings.set_profile_field(profile, "global", "", "", self.FIELD_ID, "2")
+        usersettings.set_profile_field(profile, "map", MAP_NAME, "", self.FIELD_ID, "3")
+        usersettings.set_profile_field(profile, "partition", MAP_NAME, PARTITION_ID, self.FIELD_ID, "4")
+        self.assert_complete_array(usersettings.compiled_usergame_ini(profile, MAP_NAME), "3.000000")
+        self.assert_complete_array(usersettings.compiled_usergame_ini(profile, MAP_NAME, PARTITION_ID), "4.000000")
+        self.assert_complete_array(usersettings.compiled_usergame_ini(profile, MAP_NAME, OTHER_PARTITION_ID), "3.000000")
+
+    def test_saving_cleans_legacy_array_fragments(self):
+        profile = usersettings.parse_profile_text(
+            f"[Global:{usersettings.BUILDING_SETTINGS_SECTION}]\n"
+            f"{self.KEY}=1\n-{self.KEY}=60.000000\n.{self.KEY}=120.000000\n"
+        )
+        usersettings.set_profile_field(profile, "global", "", "", self.FIELD_ID, "2")
+        self.assertEqual(profile["sections"][0]["lines"], [f"{self.KEY}=2.000000"])
+        self.assert_complete_array(usersettings.compiled_usergame_ini(profile, MAP_NAME), "2.000000")
+
+    def test_invalid_or_dangerously_extreme_values_are_rejected(self):
+        for value in ("0", "nan", "604801"):
+            with self.subTest(value=value), self.assertRaises(SystemExit):
+                usersettings.normalize_staking_extension_seconds(value)
+
+
 class EngineFieldOverridePrecedenceTests(ProfilePathTestCase):
     """UserEngine.ini's Global -> Map -> Partition chain (internally
     Engine -> MapEngine -> PartitionEngine; the Advanced tab displays these

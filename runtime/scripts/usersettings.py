@@ -42,10 +42,12 @@ LANDSRAAD_DATA_FIELDS = {
     "landsraad_task_goal_amount": ("m_TaskGoalAmount", "56000", "integer", 1, 2147483647),
     "landsraad_control_points_per_cycle": ("m_ControlPointsPerCycle", "2", "integer", 0, 1000000),
 }
-UNSAFE_STAKING_EXTENSION_KEYS = {
-    "m_StakingUnitVerticalExtensionDefaultTimes",
-    "m_StakingUnitExtensionDefaultTimes",
+STAKING_EXTENSION_ARRAY_LENGTH = 10
+STAKING_EXTENSION_FIELDS = {
+    "staking_unit_vertical_extension_default_times": "m_StakingUnitVerticalExtensionDefaultTimes",
+    "staking_unit_extension_default_times": "m_StakingUnitExtensionDefaultTimes",
 }
+UNSAFE_STAKING_EXTENSION_KEYS = set(STAKING_EXTENSION_FIELDS.values())
 # Engine fields whose UI is a True/False boolean but whose ini value must be
 # literal "1"/"0" (the game only accepts numeric 0/1 for these, not True/False).
 # Without this the console renders them as a free-text box you type "1" into,
@@ -70,6 +72,8 @@ def normalize_engine_field_value(field_id: str, value: str) -> str:
 
 
 FIELD_TYPE_OVERRIDES = {
+    "staking_unit_vertical_extension_default_times": "number",
+    "staking_unit_extension_default_times": "number",
     # Empty default (no override) would otherwise infer as "text" -- this holds a
     # float number of seconds, so force the numeric input/validation.
     "deathstill_conversion_time_override": "number",
@@ -223,6 +227,8 @@ ENGINE_FIELD_CATEGORIES = {
 # Free-text field descriptions shown in the console UI. Only populated for
 # fields as they're documented; metadata() falls back to "" for the rest.
 FIELD_DESCRIPTIONS = {
+    "staking_unit_vertical_extension_default_times": "Seconds required for every vertical Staking Unit extension level (0.1-604800). Leave empty to use Funcom's progressively longer defaults.",
+    "staking_unit_extension_default_times": "Seconds required for every horizontal Staking Unit extension level (0.1-604800). Leave empty to use Funcom's progressively longer defaults.",
     "server_display_name": "Display name shown for this server instance. Used as the Dimension name when the server is a Dimension server.",
     "server_login_password": "Password players must enter to join. Leave empty for no password.",
     "mining_output_multiplier": "Multiplier applied to personal mining output for all players.",
@@ -343,6 +349,11 @@ MAP_FIELDS = {
     "free_rotate_max": (BUILDING_SETTINGS_SECTION, "m_FreeRotateMax", "90.000000"),
     "sand_buildup_placeables_sheltered_target_value": (BUILDING_SETTINGS_SECTION, "m_SandBuildUpPlaceablesShelteredTargetValue", "0.1"),
     "sand_buildup_placeables_unsheltered_target_value": (BUILDING_SETTINGS_SECTION, "m_SandBuildUpPlaceablesUnShelteredTargetValue", "0.3"),
+    # These are native ten-element arrays. The scalar stored in the editable
+    # profile is expanded into a complete duplicate-preserving array during
+    # compilation; it must never be emitted directly as a one-element array.
+    "staking_unit_vertical_extension_default_times": (BUILDING_SETTINGS_SECTION, "m_StakingUnitVerticalExtensionDefaultTimes", ""),
+    "staking_unit_extension_default_times": (BUILDING_SETTINGS_SECTION, "m_StakingUnitExtensionDefaultTimes", ""),
     "building_near_server_borders_enabled": (BUILDING_SETTINGS_SECTION, "m_bEnableBuildingNearServerBorders", "False"),
     "min_buildable_distance_from_server_border": (BUILDING_SETTINGS_SECTION, "m_bMinBuildableDistanceFromServerBorder", "1000.000000"),
     "can_remove_buildables_with_no_owner": (BUILDING_SETTINGS_SECTION, "m_bCanRemoveBuildablesWithNoOwner", "True"),
@@ -759,7 +770,7 @@ def split_ini_assignment(line: str) -> tuple[str, str, str] | None:
     left, right = stripped.split("=", 1)
     left = left.strip()
     prefix = ""
-    if left.startswith(("+", "-", ".")):
+    if left.startswith(("+", "-", ".", "!")):
         prefix = left[0]
         left = left[1:]
     return prefix, left.strip(), right.strip()
@@ -966,12 +977,12 @@ def profile_remove_key(profile: dict, scope: str, section: str, key: str, map_na
 
 
 def strip_unsafe_staking_extension_lines(lines: list[str]) -> list[str]:
-    """Keep the engine's packaged staking arrays intact.
+    """Remove raw staking-array fragments before rebuilding a complete array.
 
     Older releases exposed these array properties as scalar integer settings and
     emitted '-' directives for every packaged value. That can leave the arrays
-    empty and crash the native server when a Staking Unit is deployed. Ignore
-    legacy profile entries instead of materializing them into runtime configs.
+    empty and crash the native server when a Staking Unit is deployed. Never
+    materialize those legacy fragments directly into runtime configs.
     """
     safe: list[str] = []
     for raw in lines:
@@ -980,6 +991,28 @@ def strip_unsafe_staking_extension_lines(lines: list[str]) -> list[str]:
             continue
         safe.append(raw)
     return safe
+
+
+def normalize_staking_extension_seconds(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if not re.fullmatch(r"(?:\d+(?:\.\d*)?|\.\d+)", text):
+        raise SystemExit("Staking Unit extension time must be a number of seconds.")
+    seconds = float(text)
+    if seconds < 0.1 or seconds > 604800:
+        raise SystemExit("Staking Unit extension time must be between 0.1 and 604800 seconds.")
+    return f"{seconds:.6f}"
+
+
+def append_safe_staking_extension_arrays(section_lines: dict[str, list[str]], values: dict[str, str]) -> None:
+    for field_id, key in STAKING_EXTENSION_FIELDS.items():
+        value = normalize_staking_extension_seconds(values.get(field_id, ""))
+        if not value:
+            continue
+        entries = section_lines.setdefault(BUILDING_SETTINGS_SECTION, [])
+        entries.append(f"!{key}=ClearArray")
+        entries.extend(f".{key}={value}" for _ in range(STAKING_EXTENSION_ARRAY_LENGTH))
 
 
 def mirror_legacy_guild_profile_field(profile: dict, scope: str, map_name: str, partition_id: str, field_id: str, value: str) -> None:
@@ -1335,6 +1368,35 @@ def set_profile_field(profile: dict, scope: str, map_name: str, partition_id: st
                 profile_remove_key(profile, "partition_engine", spec[0], spec[1], target_map, target_partition)
             else:
                 profile_set_key(profile, "partition_engine", spec[0], spec[1], normalize_engine_field_value(field_id, value), target_map, target_partition)
+        return
+
+    if field_id in STAKING_EXTENSION_FIELDS:
+        if scope not in {"global", "map", "partition"}:
+            raise SystemExit("Staking Unit extension time must use global, map, or partition scope.")
+        normalized = normalize_staking_extension_seconds(value)
+        target_map = canonical_map(map_name or "Survival_1") if scope != "global" else ""
+        target_partition = str(partition_id or "").strip() if scope == "partition" else ""
+        if scope == "partition" and not target_partition:
+            raise SystemExit("Partition save requires a partition id.")
+        key = STAKING_EXTENSION_FIELDS[field_id]
+        profile_remove_key(
+            profile,
+            scope,
+            BUILDING_SETTINGS_SECTION,
+            key,
+            target_map,
+            target_partition,
+        )
+        if normalized:
+            profile_set_key(
+                profile,
+                scope,
+                BUILDING_SETTINGS_SECTION,
+                key,
+                normalized,
+                target_map,
+                target_partition,
+            )
         return
 
     if scope == "global":
@@ -1941,6 +2003,8 @@ def compiled_usergame_ini(profile: dict, map_name: str, partition_id: str | None
         section, key, default = spec
         if not section or not key:
             continue
+        if field_id in STAKING_EXTENSION_FIELDS:
+            continue
         value = values.get(field_id, default)
         # Same rule as UserEngine: defaults are left out so the game uses its own.
         if not field_value_is_default(field_id, str(value), default):
@@ -1973,6 +2037,7 @@ def compiled_usergame_ini(profile: dict, map_name: str, partition_id: str | None
         section_lines[BUILDING_SETTINGS_SECTION] = strip_unsafe_staking_extension_lines(
             section_lines[BUILDING_SETTINGS_SECTION]
         )
+    append_safe_staking_extension_arrays(section_lines, values)
     return render_ini_sections(section_lines, [
         "; UserGame.ini managed by Docker.",
         "; Edit this single file for all map and partition UserGame settings.",
@@ -2026,6 +2091,13 @@ def client_game_ini(profile: dict, map_name: str, partition_id: str | None = Non
         section_lines[BUILDING_SETTINGS_SECTION] = strip_unsafe_staking_extension_lines(
             section_lines[BUILDING_SETTINGS_SECTION]
         )
+    if target_map and target_partition:
+        staking_values = profile_partition_values(profile, target_map, target_partition)
+    elif target_map:
+        staking_values = profile_map_values(profile, target_map)
+    else:
+        staking_values = profile_global_values(profile)
+    append_safe_staking_extension_arrays(section_lines, staking_values)
 
     target_label = "global UserGame" if not target_map else target_map if not target_partition else f"{target_map} partition {target_partition}"
     return render_ini_sections(section_lines, [
@@ -2803,15 +2875,43 @@ Dune.GlobalVehicleMiningOutputMultiplier=10
             raise SystemExit(f"Building modifier default is incorrect for {field_id}.")
     legacy_staking = parse_profile_text(
         f"[Global:{BUILDING_SETTINGS_SECTION}]\n"
-        "m_StakingUnitExtensionDefaultTimes=1\n"
+        "m_StakingUnitExtensionDefaultTimes=2\n"
         "-m_StakingUnitExtensionDefaultTimes=60.000000\n"
+        "m_StakingUnitVerticalExtensionDefaultTimes=3\n"
         "+m_StakingUnitVerticalExtensionDefaultTimes=120.000000\n"
     )
     compiled_staking = compiled_usergame_ini(legacy_staking, "Survival_1")
     client_staking = client_game_ini(legacy_staking, "Survival_1")
-    for unsafe_key in UNSAFE_STAKING_EXTENSION_KEYS:
-        if unsafe_key in compiled_staking or unsafe_key in client_staking:
-            raise SystemExit(f"Unsafe legacy staking override was materialized: {unsafe_key}")
+    expected_staking_values = {
+        "m_StakingUnitExtensionDefaultTimes": "2.000000",
+        "m_StakingUnitVerticalExtensionDefaultTimes": "3.000000",
+    }
+    for rendered in (compiled_staking, client_staking):
+        rendered_lines = rendered.splitlines()
+        for key, expected in expected_staking_values.items():
+            if rendered_lines.count(f"!{key}=ClearArray") != 1:
+                raise SystemExit(f"Safe staking array did not clear the packaged values exactly once: {key}")
+            if rendered_lines.count(f".{key}={expected}") != STAKING_EXTENSION_ARRAY_LENGTH:
+                raise SystemExit(f"Safe staking array did not preserve all extension levels: {key}")
+            if any(line.startswith((f"{key}=", f"+{key}=", f"-{key}=")) for line in rendered_lines):
+                raise SystemExit(f"Unsafe legacy staking array syntax was materialized: {key}")
+    cleaned_staking = parse_profile_text(
+        f"[Global:{BUILDING_SETTINGS_SECTION}]\n"
+        "m_StakingUnitExtensionDefaultTimes=1\n"
+        "-m_StakingUnitExtensionDefaultTimes=60.000000\n"
+        ".m_StakingUnitExtensionDefaultTimes=120.000000\n"
+    )
+    set_profile_field(cleaned_staking, "global", "", "", "staking_unit_extension_default_times", "2")
+    cleaned_lines = cleaned_staking["sections"][0]["lines"]
+    if cleaned_lines != ["m_StakingUnitExtensionDefaultTimes=2.000000"]:
+        raise SystemExit("Saving a staking duration did not clean legacy array fragments from the editable profile.")
+    for invalid_staking_value in ("0", "nan", "604801"):
+        try:
+            normalize_staking_extension_seconds(invalid_staking_value)
+        except SystemExit:
+            pass
+        else:
+            raise SystemExit(f"Invalid staking duration was accepted: {invalid_staking_value}")
     if any(key in compiled_usergame_ini(parse_profile_text(""), "Survival_1") for key in UNSAFE_STAKING_EXTENSION_KEYS):
         raise SystemExit("Fresh UserGame compilation overrides the packaged staking arrays.")
     if infer_runtime_target(Path("/tmp/runtime/game/survival-1-34/Saved")) != ("Survival_1", "34"):
