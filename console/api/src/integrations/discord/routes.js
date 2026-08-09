@@ -1,5 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { readPlayerAnnouncements } from "../../services/playerAnnouncements.js";
+import { parseBackupListRows } from "../../statusParsers.js";
 import {
   discordAdapterEnabled, discordAdapterErrorResponse, discordAdapterHealth,
   discordAdapterPopulation, discordAdapterReadiness, discordAdapterServices,
@@ -28,7 +30,8 @@ import {
   inventorySearchProvider
 } from "./inventoryProvider.js";
 import { broadcastProvider } from "./broadcastProvider.js";
-import { buildDuneArgs, runDune } from "../../runner.js";
+import { buildDuneArgs, runDockerLogs, runDune, validateServiceName } from "../../runner.js";
+import { sanitizeDiscordValue } from "./sanitize.js";
 import { initializeDiscordAdapterSchema } from "./schema.js";
 
 const INFRA_OPERATIONS = Object.freeze({
@@ -93,7 +96,13 @@ export function isDiscordAdapterRoute(path) {
   return Object.values(DISCORD_ADAPTER_ROUTES).includes(path);
 }
 
-export async function handleDiscordAdapterRoute({ req, res, path, config, readJson, json, db, statusProvider, readinessProvider, servicesProvider, populationProvider }) {
+export async function handleDiscordAdapterRoute({
+  req, res, path, config, readJson, json, db,
+  statusProvider, readinessProvider, servicesProvider, populationProvider,
+  commandRunner = runDune,
+  dockerLogsRunner = runDockerLogs,
+  announcementsProvider = readPlayerAnnouncements
+}) {
   const safeStatusProvider = typeof statusProvider === "function" ? statusProvider : () => discordStatusProvider(config);
   const safeReadinessProvider = typeof readinessProvider === "function" ? readinessProvider : () => discordReadinessProvider(config);
   const safeServicesProvider = typeof servicesProvider === "function" ? servicesProvider : () => discordServicesProvider(config);
@@ -193,26 +202,22 @@ export async function handleDiscordAdapterRoute({ req, res, path, config, readJs
       return json(res, 200, result);
     }
 
-    // Announcements route
+    // Announcement settings used by the companion bot's read-only status command.
     if (path === DISCORD_ADAPTER_ROUTES.ANNOUNCEMENTS && req.method === "POST") {
       const body = await readJson(req);
-      return json(res, 200, {
-        ok: true,
-        status: "planned",
-        route: path,
-        announcements: [],
-        message: "Announcements route is planned. Requires game server event bridge."
-      });
+      const actor = validateDiscordActor(body.actor);
+      requireDiscordCapability(actor, discordRoleMappingFromEnv(), DISCORD_CAPABILITIES.MAPS_READ);
+      const announcements = await announcementsProvider(config);
+      return json(res, 200, { ok: true, announcements: sanitizeDiscordValue(announcements) });
     }
 
-    // Backups route — returns metadata from dune db list
+    // Backup metadata only. No create, restore, delete, or filesystem paths.
     if (path === DISCORD_ADAPTER_ROUTES.BACKUPS_LIST && req.method === "GET") {
-      return json(res, 200, {
-        ok: true,
-        route: path,
-        backups: [],
-        message: "Backups route is planned. Requires dune db list integration."
+      const result = await commandRunner(config, buildDuneArgs("backupList"), {
+        timeoutMs: 15000,
+        allowedExitCodes: [0]
       });
+      return json(res, 200, { ok: true, backups: parseBackupListRows(result.stdout || "").slice(0, 100) });
     }
 
     const mapping = discordRoleMappingFromEnv();
@@ -361,11 +366,49 @@ export async function handleDiscordAdapterRoute({ req, res, path, config, readJs
       return json(res, 200, { ok: true, version: config.version || "dev" });
     }
 
+    if (path === DISCORD_ADAPTER_ROUTES.MAINTENANCE && req.method === "POST") {
+      const body = await readJson(req);
+      const actor = validateDiscordActor(body.actor);
+      requireDiscordCapability(actor, mapping, DISCORD_CAPABILITIES.READINESS_READ);
+      const result = await commandRunner(config, buildDuneArgs("readiness"), {
+        timeoutMs: 15000,
+        allowedExitCodes: [0, 1]
+      });
+      return json(res, 200, { ok: result.code === 0, output: cappedOutput(result.stdout || result.stderr) });
+    }
+
+    if (path === DISCORD_ADAPTER_ROUTES.LOGS && req.method === "POST") {
+      const body = await readJson(req);
+      const actor = validateDiscordActor(body.actor);
+      requireDiscordCapability(actor, mapping, DISCORD_CAPABILITIES.LOGS_READ);
+      const service = validateServiceName(body.service);
+      const result = await dockerLogsRunner(service, { tail: 100, timeoutMs: 10000 });
+      const lines = sanitizeDiscordValue(`${result.stdout || ""}${result.stderr || ""}`)
+        .split(/\r?\n/).filter(Boolean).slice(-50);
+      return json(res, 200, { ok: true, service, lines });
+    }
+
+    if (path === DISCORD_ADAPTER_ROUTES.MAP_STATE && req.method === "POST") {
+      const body = await readJson(req);
+      const actor = validateDiscordActor(body.actor);
+      requireDiscordCapability(actor, mapping, DISCORD_CAPABILITIES.MAPS_READ);
+      const result = await commandRunner(config, buildDuneArgs("mapsList"), {
+        timeoutMs: 15000,
+        allowedExitCodes: [0]
+      });
+      const output = cappedOutput(result.stdout || result.stderr);
+      return json(res, 200, { ok: true, maps: output.split(/\r?\n/).filter(Boolean), output });
+    }
+
     throw policyError("not_found", "Discord adapter route not found.", 404);
   } catch (error) {
     const response = discordAdapterErrorResponse(error);
     return json(res, response.statusCode, response.body);
   }
+}
+
+function cappedOutput(value, maxChars = 12000) {
+  return sanitizeDiscordValue(String(value || "")).slice(0, maxChars);
 }
 
 export function requireDiscordBotToken(req, config) {
