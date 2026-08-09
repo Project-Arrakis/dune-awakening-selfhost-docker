@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { blockedSietchEdits, parseSietchRows, sietchDraftChanges } from "./sietchRows";
+import { blockedSietchEdits, isSietchWriteTarget, parseSietchRows, sietchDraftChanges } from "./sietchRows";
 
 // Real `dune sietches dimensions Survival_1 --active-only` output. The real
 // partitions are 1, 31 and 55 -- deliberately not equal to their dimension
@@ -15,6 +15,9 @@ const IDS_READ = "1\n31\n55\n";
 // `sietches dimensions --ids` is a separate CLI invocation from the one that
 // prints the table, and the API answers 200 with empty stdout when it fails.
 const IDS_UNREADABLE = "";
+// The realistic middle case: the --ids output is short, so the rows it covers
+// carry real partition ids and the rest fall back to their dimension index.
+const IDS_PARTIAL = "1\n31\n";
 
 function draftsFor(rows: ReturnType<typeof parseSietchRows>, overrides: Record<string, Partial<{ displayName: string; password: string }>> = {}) {
   return Object.fromEntries(rows.map((row) => [
@@ -71,6 +74,35 @@ describe("blockedSietchEdits", () => {
 
     expect(rows.every((row) => row.partitionIdFromIds)).toBe(true);
     expect(blockedSietchEdits(rows, drafts, {})).toEqual([]);
+  });
+
+  // Partial ids are the realistic failure: one map's rows split between
+  // verified and fallen-back. Editing a fallback row must not quietly ride
+  // along with a save aimed at a verified one, and the edit must survive that
+  // save so it is still on screen to be dealt with.
+  it("keeps a fallback row's edit out of a verified row's save, and does not discard it", () => {
+    const rows = parseSietchRows(SURVIVAL_TABLE, IDS_PARTIAL);
+    // Two real ids, then a row that fell back to its dimension index.
+    expect(rows.map((row) => [row.partitionId, isSietchWriteTarget(row)]))
+      .toEqual([["1", true], ["31", true], ["2", false]]);
+
+    const drafts = draftsFor(rows, {
+      "2": { displayName: "Renamed Fallback" },
+      "31": { displayName: "Renamed Verified" }
+    });
+
+    // Saving the verified row is scoped to it, so the unwritable edit elsewhere
+    // neither blocks it nor gets written by it.
+    expect(blockedSietchEdits(rows, drafts, {}, "31")).toEqual([]);
+    // The fallback row's own Save is refused instead -- isSietchWriteTarget is
+    // what saveSietchSettings and restartSietch check before writing.
+    expect(isSietchWriteTarget(rows[2])).toBe(false);
+    expect(blockedSietchEdits(rows, drafts, {}, "2").map((row) => row.displayName)).toEqual(["The Kulon Show"]);
+
+    // Nothing here mutates drafts, so the fallback edit is still pending and
+    // still rendered after the verified row is saved.
+    expect(drafts["2"].displayName).toBe("Renamed Fallback");
+    expect(sietchDraftChanges(rows[2], drafts, {}).nameChanged).toBe(true);
   });
 
   // saveSelectedMapSettings carries only the primary sietch's fields, so it
