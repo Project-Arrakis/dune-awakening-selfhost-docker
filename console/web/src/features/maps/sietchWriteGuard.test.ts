@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { blockedSietchEdits, sietchDraftChanges } from "./MapsPanel";
-import { parseSietchRows } from "./sietchRows";
+import { blockedSietchEdits, parseSietchRows, sietchDraftChanges } from "./sietchRows";
 
 // Real `dune sietches dimensions Survival_1 --active-only` output. The real
 // partitions are 1, 31 and 55 -- deliberately not equal to their dimension

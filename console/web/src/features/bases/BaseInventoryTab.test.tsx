@@ -289,6 +289,28 @@ describe("BaseInventoryTab", () => {
     expect(itemRows()).toHaveLength(25);
   });
 
+  // An unreadable schema is a settled answer, not a failure: it arrives as a
+  // normal 200 and must not offer a Retry, which could only fail identically.
+  it("states an unsupported schema without offering a retry", async () => {
+    mockInventory({
+      supported: false,
+      reason: "Unsupported by detected schema. Missing required table(s): dune.items",
+      baseId: 1006,
+      groups: [],
+      containers: [],
+      items: [],
+      totals: { items: 0, distinct: 0, containers: 0, usedSlots: 0, maxSlots: 0 }
+    });
+    renderTab();
+
+    expect(await screen.findByText(/Missing required table\(s\): dune\.items/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+    // None of the tab's own controls render, so there is nothing to interact
+    // with that would imply the data is merely empty.
+    expect(screen.queryByRole("button", { name: "Containers" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Slots used")).not.toBeInTheDocument();
+  });
+
   it("says so plainly when a base stores nothing", async () => {
     mockInventory({
       ...PAYLOAD,

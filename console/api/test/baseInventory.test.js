@@ -183,14 +183,19 @@ test("baseInventory drops the uncapped second inventory refineries carry", async
   assert.match(mainQuery(db).text, /inv\.max_item_count >= 0/);
 });
 
+// A capability response, not a throw: a schema that cannot back the tab is a
+// settled answer the UI states plainly, so it must not reach the caller as an
+// error indistinguishable from a transient failure.
 test("baseInventory reports unsupported when a required table is missing", async () => {
   for (const table of REQUIRED_TABLES) {
-    const db = createDb({ missingTable: table });
-    await assert.rejects(() => baseInventory(db, BASE_ID), (error) => {
-      assert.equal(error.unsupported, true);
-      assert.match(error.message, new RegExp(table.replace(".", "\\.")));
-      return true;
-    });
+    const result = await baseInventory(createDb({ missingTable: table }), BASE_ID);
+    assert.equal(result.supported, false);
+    assert.match(result.reason, new RegExp(table.replace(".", "\\.")));
+    // Still shaped like a real response, so nothing downstream has to guard
+    // every field before reading it.
+    assert.deepEqual(result.containers, []);
+    assert.deepEqual(result.items, []);
+    assert.deepEqual(result.totals, { items: 0, distinct: 0, containers: 0, usedSlots: 0, maxSlots: 0 });
   }
 });
 

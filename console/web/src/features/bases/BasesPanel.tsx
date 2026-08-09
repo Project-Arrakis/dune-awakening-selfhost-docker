@@ -4,9 +4,9 @@ import { BaseInventoryTab } from "./BaseInventoryTab";
 import { BasePermissionsTab } from "./BasePermissionsTab";
 import { BaseWaterTab } from "./BaseWaterTab";
 import { basesApi, type AutoRefillBase, type AutoRefillWaterBase, type RefillDeviceResult, type RefillWaterDeviceResult } from "../../api/bases";
-import { mapsApi } from "../../api/maps";
 import { friendlyMapName } from "../maps/mapNames";
-import { parseSietchRows } from "../maps/sietchRows";
+import { mapsApi } from "../../api/maps";
+import { cachedInstanceNames, resolveInstanceNames } from "../maps/instanceNames";
 import { InfoTooltip } from "../../components/common/DisplayPrimitives";
 import { serverApi } from "../../api/server";
 import { setupApi, type Task } from "../../api/setup";
@@ -350,6 +350,9 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
   // from a CLI-backed endpoint, and the partition number alone already
   // distinguishes instances if that call is slow or fails outright.
   const [instanceNames, setInstanceNames] = useState<Map<string, string>>(new Map());
+  // Bumped by the same refresh cycle that reloads the rows, so a stale TTL is
+  // re-checked on the panel's own schedule rather than only on remount.
+  const [instanceNamesTick, setInstanceNamesTick] = useState(0);
   const [totalCount, setTotalCount] = useState(() => basesCache?.totalCount ?? 0);
   const [totalBases, setTotalBases] = useState(() => basesCache?.totalBases ?? 0);
   const [totalPieces, setTotalPieces] = useState(() => basesCache?.totalPieces ?? 0);
@@ -450,6 +453,11 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
         totalPlaceables: result.totalPlaceables || 0,
         lastFetchedAt: Date.now()
       };
+      // Re-run the instance-name effect on the same cycle. Its own dependency
+      // (the set of partition maps) does not change when a sietch is renamed
+      // elsewhere, so without this the TTL would only ever be re-checked on a
+      // remount.
+      setInstanceNamesTick((tick) => tick + 1);
     } catch (error) {
       if (requestIdRef.current === requestId && !options.silent) onError(errorText(error));
     } finally {
@@ -513,36 +521,17 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
   useEffect(() => {
     const maps = partitionMapsKey ? partitionMapsKey.split(",") : [];
     if (!maps.length) return undefined;
+    const cached = cachedInstanceNames(maps);
+    if (cached) {
+      setInstanceNames(cached);
+      return undefined;
+    }
     let cancelled = false;
-    void (async () => {
-      const resolved = new Map<string, string>();
-      await Promise.all(maps.map(async (map) => {
-        try {
-          const [table, ids] = await Promise.all([
-            mapsApi.sietchDimensions(map, false),
-            mapsApi.sietchDimensions(map, true)
-          ]);
-          // A non-zero exit still answers 200 with empty stdout, so a failed
-          // command is indistinguishable from a map with no sietches unless
-          // the code is checked. Treat it as unreadable and keep the fallback.
-          if (table.exitCode || ids.exitCode) return;
-          for (const row of parseSietchRows(table.stdout || "", ids.stdout || "")) {
-            // Keyed by map as well as id, and only for ids that really came
-            // from the --ids output: a row that fell back to its dimension
-            // index would otherwise answer for another map's partition of the
-            // same number and label that base with this map's instance name.
-            if (row.displayName && row.partitionIdFromIds) {
-              resolved.set(`${map}:${row.partitionId}`, row.displayName);
-            }
-          }
-        } catch {
-          // Leave this map on the partition-number fallback.
-        }
-      }));
-      if (!cancelled && resolved.size) setInstanceNames(resolved);
-    })();
+    void resolveInstanceNames(maps).then((resolved) => {
+      if (!cancelled && resolved) setInstanceNames(resolved);
+    });
     return () => { cancelled = true; };
-  }, [partitionMapsKey]);
+  }, [partitionMapsKey, instanceNamesTick]);
 
   // A background flush drains the queue whenever a map goes down, which can
   // happen without anyone touching this panel. When the count drops, the fuel

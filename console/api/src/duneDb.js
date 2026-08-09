@@ -3427,17 +3427,20 @@ end`;
 
 export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColumn = "name", sortDirection = "asc", includeGenerators = true } = {}) {
   const requiredTables = ["buildings", "building_instances", "actor_fgl_entities", "actors"];
-  for (const table of requiredTables) {
-    if (!(await tableExists(db, table))) {
-      return { ...unsupported("bases", requiredTables.map((t) => `dune.${t}`)), totalCount: 0, totalBases: 0, totalPieces: 0, totalPlaceables: 0 };
-    }
+  // One round-trip each and none of them depends on another, so probe them
+  // together rather than five times in series before any real work starts.
+  const [required, hasWorldPartition] = await Promise.all([
+    Promise.all(requiredTables.map((table) => tableExists(db, table))),
+    tableExists(db, "world_partition")
+  ]);
+  if (required.some((exists) => !exists)) {
+    return { ...unsupported("bases", requiredTables.map((t) => `dune.${t}`)), totalCount: 0, totalBases: 0, totalPieces: 0, totalPlaceables: 0 };
   }
   // A base's own a.map is the game's map name ("HaggaBasin"), which cannot tell
   // two instances of it apart. world_partition resolves the partition to the
   // name the rest of the console uses ("Survival_1") plus its dimension --
   // together, the identity of one running instance. Optional table: without it
   // the fields come back empty rather than the query failing.
-  const hasWorldPartition = await tableExists(db, "world_partition");
   const partitionSelect = hasWorldPartition
     ? "coalesce(wp.map, '') as partition_map, coalesce(wp.dimension_index, 0) as dimension_index,"
     : "'' as partition_map, 0 as dimension_index,";
@@ -6455,12 +6458,25 @@ function baseInventoryTypeParams() {
 // while every id here is a row id -- so an edit could not reach a running map
 // without a relog or a map restart.
 export async function baseInventory(db, baseId, { repoRoot = "" } = {}) {
-  for (const table of ["placeables", "inventories", "items"]) {
-    if (!(await tableExists(db, table))) {
-      throw new UnsupportedCapabilityError(`Base inventory requires dune.${table}.`);
-    }
-  }
   const target = intParam(baseId, "base id", 1);
+  // Independent probes, so one round-trip rather than three in series.
+  const required = ["placeables", "inventories", "items"];
+  const present = await Promise.all(required.map((table) => tableExists(db, table)));
+  const missing = required.filter((_, index) => !present[index]);
+  // A capability response rather than a throw, matching listBases and the rest
+  // of the read paths here: the tab can then say the schema cannot support this
+  // instead of rendering a failed request with a retry that can never succeed.
+  if (missing.length) {
+    return {
+      supported: false,
+      reason: `Unsupported by detected schema. Missing required table(s): ${missing.map((table) => `dune.${table}`).join(", ")}`,
+      baseId: target,
+      groups: [],
+      containers: [],
+      items: [],
+      totals: { items: 0, distinct: 0, containers: 0, usedSlots: 0, maxSlots: 0 }
+    };
+  }
   const [groups, buildingTypes, typeNames] = baseInventoryTypeParams();
 
   const result = await db.query(`
@@ -6507,6 +6523,12 @@ export async function baseInventory(db, baseId, { repoRoot = "" } = {}) {
   const containersById = new Map();
   const itemsByTemplate = new Map();
   const countedInventories = new Set();
+  // Side indexes over the arrays being built: a container's entry for a
+  // template, and an item's holder for a placeable. Without them each row
+  // rescans everything accumulated so far, which is quadratic in the distinct
+  // templates a base holds.
+  const containerEntries = new Map();
+  const itemHolders = new Map();
 
   for (const row of result.rows) {
     const placeableId = String(row.placeable_id);
@@ -6541,9 +6563,15 @@ export async function baseInventory(db, baseId, { repoRoot = "" } = {}) {
 
     const metadata = itemMetadata.get(templateId);
     const name = metadata?.name || templateId;
-    const existing = container.items.find((entry) => entry.templateId === templateId);
+    let entries = containerEntries.get(placeableId);
+    if (!entries) containerEntries.set(placeableId, entries = new Map());
+    const existing = entries.get(templateId);
     if (existing) existing.quantity += quantity;
-    else container.items.push({ templateId, name, quantity });
+    else {
+      const entry = { templateId, name, quantity };
+      entries.set(templateId, entry);
+      container.items.push(entry);
+    }
 
     let item = itemsByTemplate.get(templateId);
     if (!item) {
@@ -6559,15 +6587,21 @@ export async function baseInventory(db, baseId, { repoRoot = "" } = {}) {
       itemsByTemplate.set(templateId, item);
     }
     item.quantity += quantity;
-    const holder = item.containers.find((entry) => entry.placeableId === placeableId);
+    let holders = itemHolders.get(templateId);
+    if (!holders) itemHolders.set(templateId, holders = new Map());
+    const holder = holders.get(placeableId);
     if (holder) holder.quantity += quantity;
-    else item.containers.push({
-      placeableId,
-      name: container.name,
-      typeName: container.typeName,
-      group: container.group,
-      quantity
-    });
+    else {
+      const next = {
+        placeableId,
+        name: container.name,
+        typeName: container.typeName,
+        group: container.group,
+        quantity
+      };
+      holders.set(placeableId, next);
+      item.containers.push(next);
+    }
   }
 
   const byQuantityDesc = (left, right) => right.quantity - left.quantity || left.name.localeCompare(right.name);
@@ -6584,6 +6618,7 @@ export async function baseInventory(db, baseId, { repoRoot = "" } = {}) {
   }
 
   return {
+    supported: true,
     baseId: target,
     groups: BASE_INVENTORY_GROUP_ORDER.map((group) => {
       const owned = containers.filter((container) => container.group === group);
