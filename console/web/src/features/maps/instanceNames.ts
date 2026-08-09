@@ -17,6 +17,7 @@ import { parseSietchRows } from "./sietchRows";
 const TTL_MS = 5 * 60 * 1000;
 
 let cache: { key: string; names: Map<string, string>; at: number } | null = null;
+let cacheGeneration = 0;
 
 // Callers hold a list of partition maps; the cache key must not depend on the
 // order they happened to appear in.
@@ -28,6 +29,7 @@ function cacheKey(maps: string[]) {
 // scope outlives an individual case.
 export function invalidateInstanceNames() {
   cache = null;
+  cacheGeneration += 1;
 }
 
 export function cachedInstanceNames(maps: string[]) {
@@ -40,6 +42,7 @@ export function cachedInstanceNames(maps: string[]) {
 // on purpose: these endpoints are absent on a console-only install, and a
 // missing instance name must never take the caller's list down with it.
 export async function resolveInstanceNames(maps: string[]) {
+  const generation = cacheGeneration;
   const resolved = new Map<string, string>();
   await Promise.all(maps.map(async (map) => {
     try {
@@ -63,6 +66,10 @@ export async function resolveInstanceNames(maps: string[]) {
       // Leave this map on its caller's fallback.
     }
   }));
+  // A sietch write may invalidate the cache while these CLI requests are in
+  // flight. Never let a response started before that write restore the old
+  // names, or return those stale names to the caller that initiated it.
+  if (generation !== cacheGeneration) return null;
   if (!resolved.size) return null;
   cache = { key: cacheKey(maps), names: resolved, at: Date.now() };
   return resolved;

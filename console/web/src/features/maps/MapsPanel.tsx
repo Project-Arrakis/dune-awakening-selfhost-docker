@@ -38,6 +38,8 @@ function PendingRefillBadge({ count }: { count: number }) {
 type HomeTaskResult = { status: "running" | "succeeded" | "failed" | "stopped"; title: string; message?: string; details?: string; warnings?: string[] };
 type MapsResultScope = "maps" | "modifiers";
 type MapsTaskQueueState = { phase: "queued" | "running"; title: string };
+type MapsTaskResponse = { task: Task; invalidatesInstanceNamesOnSuccess?: boolean };
+type MapsTaskAction = { label: string; run: () => Promise<MapsTaskResponse> };
 type MapsTaskOptions = {
   memoryUpdates?: Array<{ map: string; partitionId?: string; memory: string }>;
   resultScope?: MapsResultScope;
@@ -290,7 +292,7 @@ function alwaysOnParallelismLimit(settings: MapRuntimeSettings | null, protectio
 function updateSietches(body: Record<string, unknown>) {
   return mapsApi.updateSietches(body).then((result) => {
     invalidateInstanceNames();
-    return result;
+    return { ...result, invalidatesInstanceNamesOnSuccess: true };
   });
 }
 
@@ -472,11 +474,11 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
     await loadUserEngine();
     if (userGameMapName) await loadSelectedSettings(userGameMapName, userGamePartitionId);
   }
-  async function runTaskSequenceAndRefresh(actions: Array<{ label: string; run: () => Promise<{ task: Task }> }>, runningTitle = "Applying Map Changes", successTitle = "Map Changes Applied", options: MapsTaskSequenceOptions = {}) {
+  async function runTaskSequenceAndRefresh(actions: MapsTaskAction[], runningTitle = "Applying Map Changes", successTitle = "Map Changes Applied", options: MapsTaskSequenceOptions = {}) {
     if (!actions.length) return;
     await enqueueMapsTask(options.resultTarget || "", runningTitle, () => runTaskSequenceAndRefreshNow(actions, runningTitle, successTitle, options));
   }
-  async function runTaskSequenceAndRefreshNow(actions: Array<{ label: string; run: () => Promise<{ task: Task }> }>, runningTitle: string, successTitle: string, options: MapsTaskSequenceOptions) {
+  async function runTaskSequenceAndRefreshNow(actions: MapsTaskAction[], runningTitle: string, successTitle: string, options: MapsTaskSequenceOptions) {
     const resultScope = options.resultScope || "maps";
     const resultTarget = options.resultTarget || "";
     const savingMessage = "Saving settings.";
@@ -538,6 +540,12 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
         setMapsResult(nextProgress);
         persistMapsTask({ taskId: task.id, result: nextProgress, runningTitle, successTitle, resultScope });
       });
+      if (final.status === "succeeded" && response.invalidatesInstanceNamesOnSuccess) {
+        // The first invalidation happens when the task is accepted so stale
+        // names are not served during the write. Repeat it after completion:
+        // a lookup made while the task was running may have read the old name.
+        invalidateInstanceNames();
+      }
       if (final?.warnings?.length) collectedWarnings.push(...final.warnings);
       if (final.status !== "succeeded") break;
     }
@@ -1291,7 +1299,7 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
       return onError(SIETCH_PARTITION_IDS_UNREADABLE);
     }
     const running = mapRuntimeNeedsLiveApply(row.status);
-    const actions: Array<{ label: string; run: () => Promise<{ task: Task }> }> = [];
+    const actions: MapsTaskAction[] = [];
     if (modeChanged || memoryChanged) {
       actions.push({
         label: `Saving ${rowName}${partitionId ? ` partition ${partitionId}` : ""} map settings`,
@@ -1345,8 +1353,8 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
     }
   }
   function survivalSietchActions({ includeActive, includePartitions, partitionId }: { includeActive: boolean; includePartitions: boolean; partitionId?: string }) {
-    const actions: Array<{ label: string; run: () => Promise<{ task: Task }> }> = [];
-    let activeAction: { label: string; run: () => Promise<{ task: Task }> } | null = null;
+    const actions: MapsTaskAction[] = [];
+    let activeAction: MapsTaskAction | null = null;
     if (includeActive && activeSietches && activeSietchesDirty) {
       const requestedActive = Number(activeSietches);
       const currentActive = Number(currentActiveSietches) || survivalSietchRows.length;
@@ -1400,7 +1408,7 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
     const originalMemory = memoryInputValue(partitionMemoryValue(memoryText, sietch.partitionId, String(parent.memory || "")));
     const memoryChanged = memory !== originalMemory;
     const running = mapRuntimeNeedsLiveApply(parent.status);
-    const actions: Array<{ label: string; run: () => Promise<{ task: Task }> }> = [];
+    const actions: MapsTaskAction[] = [];
     if (memoryChanged) {
       actions.push({
         label: `Saving RAM for ${sietch.displayName}`,
