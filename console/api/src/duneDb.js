@@ -6106,6 +6106,24 @@ function waterTypeParams() {
 // there is no fuel-cell-style consumable involved.
 export async function baseWater(db, baseId) {
   const target = intParam(baseId, "base id", 1);
+  // Every table the query below touches, including fgl_entities inside the
+  // lateral -- a missing one raises a bare Postgres error otherwise, which the
+  // tab could only render as a failed request with a retry that can never
+  // succeed. listBases probes four of these, but not placeables or
+  // fgl_entities, so a schema can list bases fine and still be unable to
+  // answer this: that is exactly the case the capability response is for.
+  const required = ["buildings", "building_instances", "actor_fgl_entities", "placeables", "actors", "fgl_entities"];
+  // Independent probes, so one round-trip rather than six in series.
+  const present = await Promise.all(required.map((table) => tableExists(db, table)));
+  const missing = required.filter((_, index) => !present[index]);
+  if (missing.length) {
+    return {
+      supported: false,
+      reason: `Unsupported by detected schema. Missing required table(s): ${missing.map((table) => `dune.${table}`).join(", ")}`,
+      baseId: target,
+      containers: []
+    };
+  }
   const [types, buildingTypes] = waterTypeParams();
   const bloodKeys = WATER_BUILDING_TYPE_PAIRS.map(([type]) => WATER_TYPES[type].bloodPropertyKey || null);
   const result = await db.query(`
@@ -6174,7 +6192,7 @@ export async function baseWater(db, baseId) {
     return entry;
   }).sort((left, right) => WATER_TYPE_ORDER.indexOf(left.type) - WATER_TYPE_ORDER.indexOf(right.type));
 
-  return { baseId: target, containers };
+  return { supported: true, baseId: target, containers };
 }
 
 // Every water device at a base, individually. Refill and the auto-refill scan

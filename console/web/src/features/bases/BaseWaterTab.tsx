@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { basesApi, type WaterContainerEntry } from "../../api/bases";
 import { InfoTooltip } from "../../components/common/DisplayPrimitives";
 
@@ -35,17 +35,35 @@ export function BaseWaterTab({ baseId, autoRefill, refreshToken }: BaseWaterTabP
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [containers, setContainers] = useState<WaterContainerEntry[]>([]);
+  const [unsupportedReason, setUnsupportedReason] = useState("");
+
+  // Only the newest request may write state. Two get to overlap here:
+  // StrictMode double-invokes the effect, and refreshToken re-runs it on a
+  // mounted instance after an immediate refill -- so whichever settles last
+  // would otherwise win, and a first attempt failing after a second succeeded
+  // would replace fresh levels with an error banner. Same requestIdRef pattern
+  // BasesPanel and BaseInventoryTab use.
+  const requestIdRef = useRef(0);
 
   const load = useCallback(async () => {
+    const requestId = ++requestIdRef.current;
     setLoading(true);
     setLoadError("");
+    setUnsupportedReason("");
     try {
       const result = await basesApi.water(baseId);
+      if (requestIdRef.current !== requestId) return;
+      setUnsupportedReason(result.supported === false
+        ? result.reason || "Water storage is unsupported by the detected schema."
+        : "");
       setContainers(result.containers || []);
     } catch (error) {
+      if (requestIdRef.current !== requestId) return;
       setLoadError(errorText(error));
     } finally {
-      setLoading(false);
+      // Left to the newest request too, so an early finisher cannot clear the
+      // spinner while the request that will actually fill the tab is open.
+      if (requestIdRef.current === requestId) setLoading(false);
     }
   }, [baseId]);
 
@@ -58,6 +76,14 @@ export function BaseWaterTab({ baseId, autoRefill, refreshToken }: BaseWaterTabP
     return <p className="bases-permissions-error" role="alert">
       {loadError} <button onClick={() => void load()}>Retry</button>
     </p>;
+  }
+  // A settled answer, not a failure: this database cannot back the tab, so it
+  // gets a plain statement and no Retry -- the request would fail identically
+  // every time. Genuine failures still land in the branch above, where Retry
+  // means something. The auto-refill toggle is suppressed with it, since it
+  // acts on the same devices this schema cannot describe.
+  if (unsupportedReason) {
+    return <p className="muted" role="status">{unsupportedReason}</p>;
   }
 
   return (

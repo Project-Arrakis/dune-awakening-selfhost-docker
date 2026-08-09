@@ -277,6 +277,12 @@ fabricator and machine inventories; generator and windtrap fuel belong to the
 refill and water routes above. It is read-only — inventory writes have no path
 to a running map. See [base-inventory.md](base-inventory.md).
 
+Both `GET /api/bases/{baseId}/water` and `GET /api/bases/{baseId}/inventory`
+answer **200 with `supported: false` and a `reason`** when the detected schema
+lacks a table they need, rather than an error status — the same capability shape
+`/api/bases` uses. An error status from either means a genuine failure, so the
+tab can offer a retry only where retrying could actually help.
+
 ### Storage
 
 | Method | Route | Description | Parameters |
