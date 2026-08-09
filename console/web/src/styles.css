@@ -1450,7 +1450,8 @@ body.debug .technical-details { display: block; }
 .playerAdmin_box > p { font-style: italic; }
 .playerAdmin_toggle { padding: 0; overflow: hidden; }
 .playerAdmin_toggle.open { overflow: visible; }
-.playerAdmin_toggleHeader { width: 100%; min-height: 44px; display: flex; align-items: center; gap: 10px; justify-content: flex-start; border: 0; border-radius: 0; background: #171a1d; color: #ffd08a; }
+.playerAdmin_toggleHeader { width: 100%; min-height: 44px; display: flex; align-items: center; gap: 10px; justify-content: flex-start; border: 0; border-radius: 7px; background: #171a1d; color: #ffd08a; }
+.playerAdmin_toggle.open > .playerAdmin_toggleHeader { border-radius: 7px 7px 0 0; }
 .playerAdmin_toggleHeader span { font-weight: 700; }
 .playerAdmin_toggleBody { display: grid; gap: 10px; padding: 14px; border-top: 1px solid #302b25; }
 .playerAdmin_tableWrap { overflow: auto; max-height: 360px; border: 1px solid #302b25; border-radius: 8px; }
@@ -2343,6 +2344,16 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
    `overflow: auto` on .table-wrap at equal specificity, so a single-class
    override here would lose on source order. */
 .table-wrap.bases-table-wrap { max-height: none; overflow: visible; }
+/* The desktop wrapper deliberately keeps overflow visible so its sticky
+   header follows the page, which means the wrapper itself cannot clip the
+   table into its rounded border. Give the table's four outer cells matching
+   inner radii instead, and let the wrapper own the final bottom border. */
+.bases-table-wrap .bases-table { border-collapse: separate; border-spacing: 0; }
+.bases-table-wrap .bases-table thead > tr:first-child > th:first-child { border-top-left-radius: 7px; }
+.bases-table-wrap .bases-table thead > tr:first-child > th:last-child { border-top-right-radius: 7px; }
+.bases-table-wrap .bases-table tbody > tr:last-child > td { border-bottom: 0; }
+.bases-table-wrap .bases-table tbody > tr:last-child > td:first-child { border-bottom-left-radius: 7px; }
+.bases-table-wrap .bases-table tbody > tr:last-child > td:last-child { border-bottom-right-radius: 7px; }
 
 /* Below this width the twelve columns have nowhere to go. The table has no
    intrinsic minimum, so instead of overflowing it crushes -- cells collapse to
