@@ -2299,10 +2299,12 @@ async function baseInventoryRoute(res, path) {
   const baseId = Number(decodeURIComponent(path.split("/")[3]));
   if (!Number.isFinite(baseId) || baseId < 1) return json(res, 400, { error: "Invalid base ID" });
   try {
-    return json(res, 200, { supported: true, ...(await duneDb.baseInventory(db, baseId, { repoRoot: config.repoRoot })) });
+    // A schema without the inventory tables comes back as a 200 carrying
+    // supported:false, the same capability shape listBases uses -- only a real
+    // failure is an error status, so the tab's retry always means something.
+    return json(res, 200, await duneDb.baseInventory(db, baseId, { repoRoot: config.repoRoot }));
   } catch (error) {
-    const status = error.unsupported ? 501 : 400;
-    return json(res, status, { supported: false, error: redact(error.message || error), reason: redact(error.message || error) });
+    return json(res, 400, { supported: false, error: redact(error.message || error), reason: redact(error.message || error) });
   }
 }
 

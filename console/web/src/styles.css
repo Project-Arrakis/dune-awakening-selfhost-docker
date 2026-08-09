@@ -11,6 +11,13 @@
   --text-strong: #fff1d4;
   --muted: #ad9f89;
   --muted-warm: #ceb894;
+  /* A neutral, not a fourth amber step: the title, field labels and muted
+     tones are all the same warm family, so another one read as a blurred
+     block rather than a hierarchy. --text blended 75% toward the card
+     background -- a solid value, not opacity, which would drift against the
+     differently-tinted surfaces these sit on. 8.40:1, still brighter than
+     the labels beneath it so title > subtitle > label survives. */
+  --text-subtle: #bebcb6;
   --title: #ffd08a;
   --accent: #c68b4a;
   --accent-strong: #d49a5c;
@@ -1665,7 +1672,7 @@ body.debug .technical-details { display: block; }
    muted tone as the inventory card subtitle. */
 .bases-map-cell { display: grid; gap: 1px; min-width: 0; }
 .bases-map-name { overflow-wrap: anywhere; }
-.bases-map-instance { color: #bebcb6; font-size: 11.5px; overflow-wrap: anywhere; }
+.bases-map-instance { color: var(--text-subtle); font-size: 11.5px; overflow-wrap: anywhere; }
 .bases-generator-summary { display: block; white-space: normal; overflow: visible; text-overflow: clip; line-height: 1.4; }
 .bases-fuel-alert { color: var(--danger-text); }
 .bases-pagination-footer { margin-top: 12px; margin-bottom: 0; align-items: center; }
@@ -2430,21 +2437,14 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
    Power, Water, Inventory and Permissions line their content up. */
 .bases-inventory { display: grid; width: 100%; min-width: 0; }
 /* Sits directly under .bases-card-title, which already carries the
-   4px bottom margin, so this only needs to close that gap back up.
-
-   Deliberately NOT an amber: the title, the field labels and the muted tones
-   are all the same warm family, so a fourth amber step read as one blurred
-   block rather than as a hierarchy. This is --text blended 75% toward the card
-   background -- a solid value, not opacity, which would drift against the
-   differently-tinted surfaces this card sits on. 8.40:1, still brighter than
-   the labels below it so title > subtitle > label survives. */
+   4px bottom margin, so this only needs to close that gap back up. */
 .bases-inventory-card-subtitle {
   margin: -2px 0 0;
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
   min-width: 0;
-  color: #bebcb6;
+  color: var(--text-subtle);
   font-size: 12px;
   line-height: 1.25;
   overflow-wrap: anywhere;

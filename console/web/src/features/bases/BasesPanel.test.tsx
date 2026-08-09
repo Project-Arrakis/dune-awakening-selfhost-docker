@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { basesApi, type AutoRefillBase } from "../../api/bases";
 import { mapsApi } from "../../api/maps";
 import { BasesPanel } from "./BasesPanel";
+import { invalidateInstanceNames } from "../maps/instanceNames";
 
 vi.mock("../../api/bases", () => ({
   basesApi: {
@@ -67,6 +68,10 @@ const commonRow = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Instance names are cached at module scope so remounting the panel does not
+  // respawn the CLI. That cache outlives a single test, so a case asserting a
+  // cold lookup would otherwise read the previous case's resolved names.
+  invalidateInstanceNames();
 });
 
 describe("BasesPanel generator details", () => {

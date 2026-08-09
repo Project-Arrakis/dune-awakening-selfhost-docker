@@ -68,20 +68,19 @@ export function BaseInventoryTab({ baseId }: BaseInventoryTabProps) {
   const items = useMemo(() => {
     if (!data) return [] as BaseInventoryItem[];
     return data.items
-      .map((item) => (group === "all"
-        ? item
-        : {
-            ...item,
-            containers: item.containers.filter((holder) => holder.group === group)
-          }))
       // Filtering by group re-derives the quantity from the surviving
       // containers -- showing the base-wide total under a group chip would
       // claim stock the group does not hold.
-      .map((item) => (group === "all" ? item : {
-        ...item,
-        quantity: item.containers.reduce((total, holder) => total + holder.quantity, 0),
-        containerCount: item.containers.length
-      }))
+      .map((item) => {
+        if (group === "all") return item;
+        const containers = item.containers.filter((holder) => holder.group === group);
+        return {
+          ...item,
+          containers,
+          quantity: containers.reduce((total, holder) => total + holder.quantity, 0),
+          containerCount: containers.length
+        };
+      })
       .filter((item) => item.containers.length > 0)
       .filter((item) => !term ||
         item.name.toLowerCase().includes(term) ||
@@ -148,6 +147,15 @@ export function BaseInventoryTab({ baseId }: BaseInventoryTabProps) {
     </p>;
   }
   if (!data) return null;
+  // A settled answer, not a failure: this database cannot back the tab, so it
+  // gets a plain statement and no Retry -- the request would fail identically
+  // every time. Genuine failures still land in the branch above, where Retry
+  // means something.
+  if (!data.supported) {
+    return <p className="muted" role="status">
+      {data.reason || "Base inventory is unsupported by the detected schema."}
+    </p>;
+  }
 
   const { totals } = data;
   const slotPercent = totals.maxSlots > 0 ? Math.round((totals.usedSlots / totals.maxSlots) * 100) : 0;

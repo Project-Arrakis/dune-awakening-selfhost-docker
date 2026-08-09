@@ -9,9 +9,18 @@ import { titleCaseWords } from "../players/playerAdminUtils";
 import { pendingRefillCountForMap, pendingRefillCountForPartition, usePendingRefills } from "../../lib/usePendingRefills";
 import type { PendingRefills } from "../../api/bases";
 import { friendlyMapName, hasFriendlyMapName } from "./mapNames";
+import { invalidateInstanceNames } from "./instanceNames";
 // Re-exported so existing importers (and MapsPanel.sietchNames.test.ts) keep working.
 export { parseSietchRows, type SietchRow } from "./sietchRows";
-import { isSietchWriteTarget, parseSietchRows, type SietchRow } from "./sietchRows";
+import {
+  SIETCH_PASSWORD_MASK,
+  blockedSietchEdits,
+  isSietchWriteTarget,
+  parseSietchRows,
+  sietchDraftChanges,
+  sietchPasswordDraftChanged,
+  type SietchRow
+} from "./sietchRows";
 
 // Taking a partition down is when any generator refill queued for a base on it
 // gets written, so every control that does so says what is waiting on it.
@@ -264,6 +273,17 @@ function alwaysOnParallelismLimit(settings: MapRuntimeSettings | null, protectio
   const reserve = reserveMode === "automatic" ? settings?.automaticHostMemoryReserveGiB || 4 : Number(reserveValue);
   if (!physical || !Number.isFinite(reserve) || reserve < 1 || reserve >= physical) return settings?.maxAlwaysOnStartupParallelism || 1;
   return Math.max(1, Math.min(16, Math.floor((physical - reserve) / 16)));
+}
+
+// Every sietch mutation goes through here so the Bases panel's cached instance
+// names cannot outlive a rename. Routed through one wrapper rather than five
+// call sites because a missed one is invisible until someone notices a stale
+// label on another tab.
+function updateSietches(body: Record<string, unknown>) {
+  return mapsApi.updateSietches(body).then((result) => {
+    invalidateInstanceNames();
+    return result;
+  });
 }
 
 export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, waitForTaskWithUpdates, taskTechnicalDetails }: MapsPanelProps) {
@@ -1294,14 +1314,14 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
       if (requestedActive > survivalSietchRows.length) {
         actions.push({
           label: `Creating ${requestedActive} available sietch dimensions`,
-          run: () => mapsApi.updateSietches({ action: "set-max", map: "Survival_1", count: requestedActive, confirmation: "UPDATE SIETCHES" })
+          run: () => updateSietches({ action: "set-max", map: "Survival_1", count: requestedActive, confirmation: "UPDATE SIETCHES" })
         });
       }
       activeAction = {
         label: requestedActive < currentActive
           ? `Despawning extra sietch${currentActive - requestedActive === 1 ? "" : "es"} and setting active sietches to ${requestedActive}`
           : `Activating ${requestedActive} sietch${requestedActive === 1 ? "" : "es"}`,
-        run: () => mapsApi.updateSietches({ action: "set-active", map: "Survival_1", count: requestedActive, confirmation: "UPDATE SIETCHES" })
+        run: () => updateSietches({ action: "set-active", map: "Survival_1", count: requestedActive, confirmation: "UPDATE SIETCHES" })
       };
     }
     if (includePartitions) {
@@ -1313,20 +1333,20 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
         if (nameChanged && passwordChanged) {
           actions.push({
             label: `Saving settings for ${targetName}`,
-            run: () => mapsApi.updateSietches({ action: "set-settings", partitionId: sietch.partitionId, displayName: draft.displayName, password: draft.password, confirmation: "UPDATE SIETCHES" })
+            run: () => updateSietches({ action: "set-settings", partitionId: sietch.partitionId, displayName: draft.displayName, password: draft.password, confirmation: "UPDATE SIETCHES" })
           });
           continue;
         }
         if (nameChanged) {
           actions.push({
             label: `Saving name for ${targetName}`,
-            run: () => mapsApi.updateSietches({ action: "set-display", partitionId: sietch.partitionId, displayName: draft.displayName, confirmation: "UPDATE SIETCHES" })
+            run: () => updateSietches({ action: "set-display", partitionId: sietch.partitionId, displayName: draft.displayName, confirmation: "UPDATE SIETCHES" })
           });
         }
         if (passwordChanged) {
           actions.push({
             label: `Saving password for ${targetName}`,
-            run: () => mapsApi.updateSietches({ action: "set-password", partitionId: sietch.partitionId, password: draft.password, confirmation: "UPDATE SIETCHES" })
+            run: () => updateSietches({ action: "set-password", partitionId: sietch.partitionId, password: draft.password, confirmation: "UPDATE SIETCHES" })
           });
         }
       }
@@ -2186,52 +2206,6 @@ export function MemoryUsageBar({ row, fallback, configuredLimit, swapEnabled = f
   </div>;
 }
 
-function sietchPasswordDraftChanged(row: SietchRow, draft: { password: string }, touched = false) {
-  if (!touched) return false;
-  if (row.passwordSet) return draft.password !== SIETCH_PASSWORD_MASK;
-  return Boolean(draft.password);
-}
-
-// The draft a row is being edited with, plus which of its fields differ from
-// what the server reported. One definition, shared by the code that builds
-// sietch write actions and the code that refuses to build them, so the two can
-// never disagree about what "edited" means.
-export function sietchDraftChanges(
-  row: SietchRow,
-  drafts: Record<string, { displayName: string; password: string }>,
-  passwordTouched: Record<string, boolean> = {}
-) {
-  const draft = drafts[row.partitionId] || { displayName: row.displayName, password: row.password };
-  return {
-    draft,
-    nameChanged: draft.displayName !== row.displayName,
-    passwordChanged: sietchPasswordDraftChanged(row, draft, Boolean(passwordTouched[row.partitionId]))
-  };
-}
-
-// Rows the operator has edited that cannot be written safely, because their
-// partition id fell back to a dimension index (see isSietchWriteTarget).
-//
-// survivalSietchActions skips those rows when building actions. On its own that
-// would make a bulk Save drop the edit without saying so: with nothing else
-// dirty the Save does nothing at all, and with the active-sietch count also
-// dirty that unrelated change still runs and the save reports success while the
-// edited fields are discarded. Callers refuse the whole save instead, matching
-// what the per-sietch Save and Restart already do.
-export function blockedSietchEdits(
-  rows: SietchRow[],
-  drafts: Record<string, { displayName: string; password: string }>,
-  passwordTouched: Record<string, boolean> = {},
-  partitionId?: string
-) {
-  return rows.filter((row) => {
-    if (isSietchWriteTarget(row)) return false;
-    if (partitionId && row.partitionId !== partitionId) return false;
-    const { nameChanged, passwordChanged } = sietchDraftChanges(row, drafts, passwordTouched);
-    return nameChanged || passwordChanged;
-  });
-}
-
 function sietchHasPassword(row: SietchRow | null | undefined, draft?: { password: string }) {
   return Boolean(row?.passwordSet || row?.password || (draft?.password && draft.password !== SIETCH_PASSWORD_MASK));
 }
@@ -2429,7 +2403,6 @@ export function valuesForDirtyFields(original: Record<string, string>, draft: Re
     .map((field) => [field.id, String(draft[field.id] ?? field.default ?? "")]));
 }
 
-const SIETCH_PASSWORD_MASK = "********";
 
 // Shown instead of writing when isSietchWriteTarget rejects a row, so a
 // refused Restart or Save says why rather than appearing to do nothing.

@@ -165,12 +165,16 @@ export type BaseInventoryItem = {
 };
 
 export type BaseInventory = {
+  // False when the database lacks dune.placeables/inventories/items. That is a
+  // 200 carrying `reason`, not an error status -- a schema that cannot support
+  // the tab is a settled answer, and retrying it would never change.
   supported: boolean;
   baseId: number;
   groups: BaseInventoryGroup[];
   containers: BaseInventoryContainer[];
   items: BaseInventoryItem[];
   totals: { items: number; distinct: number; containers: number; usedSlots: number; maxSlots: number };
+  // Only set alongside supported: false.
   reason?: string;
 };
 
