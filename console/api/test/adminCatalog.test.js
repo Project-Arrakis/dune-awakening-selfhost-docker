@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { itemIsRankedSchematic, itemIsSchematic, itemRequiresDatabaseGrant, listCatalogItems, resolveCatalogItem } from "../src/adminCatalog.js";
+import { itemImagePath, itemIsRankedSchematic, itemIsSchematic, itemRequiresDatabaseGrant, listCatalogItems, resolveCatalogItem } from "../src/adminCatalog.js";
 
 function fixtureRepo() {
   const root = mkdtempSync(join(tmpdir(), "web-admin-catalog-"));
@@ -73,6 +73,33 @@ test("item image lookups are resolved once per repo root", () => {
   mkdirSync(otherImages, { recursive: true });
   writeFileSync(join(otherImages, "PlantFiber.png"), "");
   assert.equal(resolveCatalogItem(other, { itemId: "PlantFiber" }).image, "/images/items/PlantFiber.png");
+});
+
+// The id becomes both a filesystem path and an <img src>. normalizeItem's id
+// regex admits "." and "/", and baseInventory passes a raw template_id with no
+// validation, so this is the only thing standing between a crafted id and a
+// path outside the public directory.
+test("item image ids cannot escape the images directory", () => {
+  const root = fixtureRepo();
+  mkdirSync(join(root, "console/web/public/images/items"), { recursive: true });
+  // images/items sits five levels below the repo root, so this is the depth a
+  // crafted id needs to land back on it. The file has to genuinely exist or the
+  // assertion passes for the wrong reason -- an unreadable path and a rejected
+  // one both come back unavailable.
+  writeFileSync(join(root, "secret.png"), "");
+
+  const unavailable = "/images/items/image-unavailable.png";
+  for (const id of ["../../../../../secret", "..\\..\\..\\..\\..\\secret", "images/items/../../secret", "..", ".", "", "a/b"]) {
+    const resolved = itemImagePath(root, id);
+    assert.equal(resolved, unavailable, `id ${JSON.stringify(id)} must not resolve`);
+    // Belt and braces: whatever comes back is also a URL, so it must never
+    // carry path structure even if it did point at something real.
+    assert.ok(!resolved.includes(".."), `id ${JSON.stringify(id)} leaked traversal into the URL`);
+  }
+
+  // The ordinary path is untouched.
+  writeFileSync(join(root, "console/web/public/images/items/PlantFiber.png"), "");
+  assert.equal(itemImagePath(root, "PlantFiber"), "/images/items/PlantFiber.png");
 });
 
 test("ranked physical schematics are distinguished from Grade 0 live grants", () => {
