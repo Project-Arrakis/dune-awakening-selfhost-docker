@@ -6477,8 +6477,17 @@ function baseInventoryTypeParams() {
 // without a relog or a map restart.
 export async function baseInventory(db, baseId, { repoRoot = "" } = {}) {
   const target = intParam(baseId, "base id", 1);
-  // Independent probes, so one round-trip rather than three in series.
-  const required = ["placeables", "inventories", "items"];
+  // Every table the query below touches, in the order it reaches them. The
+  // LEFT JOINs count too: Postgres resolves a relation at parse time, so a
+  // missing permission_actor raises exactly as hard as a missing placeables.
+  // permission_actor is the one that matters most here -- listBases probes the
+  // first three and actors, so a schema lacking only permission_actor lists
+  // bases fine and then fails on this tab alone.
+  // Independent probes, so one round-trip rather than seven in series.
+  const required = [
+    "buildings", "building_instances", "actor_fgl_entities",
+    "placeables", "inventories", "permission_actor", "items"
+  ];
   const present = await Promise.all(required.map((table) => tableExists(db, table)));
   const missing = required.filter((_, index) => !present[index]);
   // A capability response rather than a throw, matching listBases and the rest

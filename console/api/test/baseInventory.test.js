@@ -2,7 +2,15 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { baseInventory } from "../src/duneDb.js";
 
-const REQUIRED_TABLES = ["dune.placeables", "dune.inventories", "dune.items"];
+// Every table the query touches, including the LEFT JOINed ones -- a missing
+// relation raises at parse time regardless of join type. permission_actor is
+// the reachable gap: listBases probes buildings/building_instances/
+// actor_fgl_entities/actors, so a schema lacking only permission_actor lists
+// bases fine and fails on this tab alone.
+const REQUIRED_TABLES = [
+  "dune.buildings", "dune.building_instances", "dune.actor_fgl_entities",
+  "dune.placeables", "dune.inventories", "dune.permission_actor", "dune.items"
+];
 const BASE_ID = 1006;
 
 // Template ids deliberately absent from runtime/data/admin-items.json, so the
@@ -188,9 +196,13 @@ test("baseInventory drops the uncapped second inventory refineries carry", async
 // error indistinguishable from a transient failure.
 test("baseInventory reports unsupported when a required table is missing", async () => {
   for (const table of REQUIRED_TABLES) {
-    const result = await baseInventory(createDb({ missingTable: table }), BASE_ID);
+    const db = createDb({ missingTable: table });
+    const result = await baseInventory(db, BASE_ID);
     assert.equal(result.supported, false);
     assert.match(result.reason, new RegExp(table.replace(".", "\\.")));
+    // The point of probing is to never issue the query that would have raised
+    // "relation ... does not exist" -- answering after the fact would defeat it.
+    assert.equal(mainQuery(db), undefined, `${table} missing: the query must not run`);
     // Still shaped like a real response, so nothing downstream has to guard
     // every field before reading it.
     assert.deepEqual(result.containers, []);
