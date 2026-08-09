@@ -539,6 +539,7 @@ async function handleApi(req, res) {
   if (path.match(/^\/api\/bases\/[^/]+\/queued-refill$/) && req.method === "DELETE") return baseCancelQueuedRefillRoute(req, res, path);
   if (path.match(/^\/api\/bases\/[^/]+\/auto-refill$/) && req.method === "POST") return baseAutoRefillToggleRoute(req, res, path);
   if (path.match(/^\/api\/bases\/[^/]+\/water$/) && req.method === "GET") return baseWaterRoute(res, path);
+  if (path.match(/^\/api\/bases\/[^/]+\/inventory$/) && req.method === "GET") return baseInventoryRoute(res, path);
   if (path.match(/^\/api\/bases\/[^/]+\/refill-water$/) && req.method === "POST") return baseRefillWaterRoute(req, res, path);
   if (path.match(/^\/api\/bases\/[^/]+\/queued-water-refill$/) && req.method === "DELETE") return baseCancelQueuedWaterRefillRoute(req, res, path);
   if (path.match(/^\/api\/bases\/[^/]+\/auto-refill-water$/) && req.method === "POST") return baseAutoRefillWaterToggleRoute(req, res, path);
@@ -2283,12 +2284,43 @@ async function baseAutoRefillToggleRoute(req, res, path) {
 
 async function baseWaterRoute(res, path) {
   const baseId = Number(decodeURIComponent(path.split("/")[3]));
-  if (!Number.isFinite(baseId) || baseId < 1) return json(res, 400, { error: "Invalid base ID" });
+  // Same reasoning as baseInventoryRoute: match intParam so bad input stays a
+  // 400 and the catch is left to genuine failures.
+  if (!Number.isInteger(baseId) || baseId < 1 || baseId > Number.MAX_SAFE_INTEGER) {
+    return json(res, 400, { error: "Invalid base ID" });
+  }
   try {
-    return json(res, 200, { supported: true, ...(await duneDb.baseWater(db, baseId)) });
+    // A schema that cannot back this comes through as a 200 carrying
+    // supported:false, the same capability shape listBases and baseInventory
+    // use -- so an error status here means only a real failure, and the tab's
+    // Retry always has something it could fix.
+    return json(res, 200, await duneDb.baseWater(db, baseId));
   } catch (error) {
-    const status = error.unsupported ? 501 : 400;
-    return json(res, status, { supported: false, error: redact(error.message || error), reason: redact(error.message || error) });
+    return json(res, 500, { supported: false, error: redact(error.message || error), reason: redact(error.message || error) });
+  }
+}
+
+// Read-only, so no directDbMutation wrapper and no confirmation phrase.
+// repoRoot is passed through only to resolve each item's catalog icon.
+async function baseInventoryRoute(res, path) {
+  const baseId = Number(decodeURIComponent(path.split("/")[3]));
+  // Matches intParam's contract rather than just isFinite: 4.5 and 1e20 both
+  // clear a finite/>=1 check and then throw inside baseInventory. Rejecting
+  // them here keeps bad client input on 400 and leaves the catch below for
+  // failures that are genuinely ours.
+  if (!Number.isInteger(baseId) || baseId < 1 || baseId > Number.MAX_SAFE_INTEGER) {
+    return json(res, 400, { error: "Invalid base ID" });
+  }
+  try {
+    // A schema without the inventory tables comes back as a 200 carrying
+    // supported:false, the same capability shape listBases uses -- only a real
+    // failure is an error status, so the tab's retry always means something.
+    return json(res, 200, await duneDb.baseInventory(db, baseId, { repoRoot: config.repoRoot }));
+  } catch (error) {
+    // Nothing reaching here is the caller's fault: the id is already validated
+    // and an unsupported schema returns a 200 above, so what is left is a query
+    // or connection failure.
+    return json(res, 500, { supported: false, error: redact(error.message || error), reason: redact(error.message || error) });
   }
 }
 
