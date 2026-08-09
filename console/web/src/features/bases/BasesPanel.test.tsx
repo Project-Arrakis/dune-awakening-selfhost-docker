@@ -1043,6 +1043,33 @@ describe("BasesPanel water refill", () => {
     await waitFor(() => expect(basesApi.pendingWaterRefills).toHaveBeenCalled());
     expect(vi.mocked(basesApi.water).mock.calls.length).toBe(1);
   });
+
+  // A schema that cannot back the tab is a settled answer, not a transient
+  // failure: it arrives as a 200 carrying supported:false, so it must not be
+  // rendered in the error style with a Retry that could only fail identically.
+  it("states the reason with no Retry when the schema cannot back the Water tab", async () => {
+    vi.mocked(basesApi.list).mockResolvedValue(waterCapableList({ base_id: "4004", name: "Sietch Unsupported" }));
+    vi.mocked(basesApi.water).mockResolvedValue({
+      supported: false,
+      reason: "Unsupported by detected schema. Missing required table(s): dune.placeables",
+      baseId: 4004,
+      containers: []
+    });
+
+    renderPanel();
+    await screen.findByText("Sietch Unsupported");
+    fireEvent.click(await screen.findByRole("button", { name: "Show details for Sietch Unsupported" }));
+    fireEvent.click(await screen.findByRole("tab", { name: "Water" }));
+
+    const notice = await screen.findByText(/Missing required table\(s\): dune\.placeables/);
+    expect(notice).toHaveAttribute("role", "status");
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+    // Not the empty-base wording either -- "no water storage" would read as a
+    // fact about this base rather than about the database.
+    expect(screen.queryByText("No water storage at this base.")).not.toBeInTheDocument();
+    // Auto-refill acts on the very devices this schema cannot describe.
+    expect(screen.queryByRole("checkbox", { name: /Auto-Refill/ })).not.toBeInTheDocument();
+  });
 });
 
 describe("BasesPanel combined fuel/water queue and stalled banners", () => {

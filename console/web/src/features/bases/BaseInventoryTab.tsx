@@ -49,15 +49,28 @@ export function BaseInventoryTab({ baseId }: BaseInventoryTabProps) {
   const [showAllItems, setShowAllItems] = useState(false);
   const closeContentsRef = useRef<HTMLButtonElement>(null);
 
+  // Only the newest request may write state. StrictMode double-invokes this
+  // effect, so two requests really are open at once here, and whichever settles
+  // last wins -- a first attempt that fails after a second one succeeded would
+  // otherwise replace good data with an error banner. Same requestIdRef pattern
+  // BasesPanel uses for its own overlapping loads.
+  const requestIdRef = useRef(0);
+
   const load = useCallback(async () => {
+    const requestId = ++requestIdRef.current;
     setLoading(true);
     setLoadError("");
     try {
-      setData(await basesApi.inventory(baseId));
+      const result = await basesApi.inventory(baseId);
+      if (requestIdRef.current !== requestId) return;
+      setData(result);
     } catch (error) {
+      if (requestIdRef.current !== requestId) return;
       setLoadError(errorText(error));
     } finally {
-      setLoading(false);
+      // Left to the newest request too, so an early finisher cannot clear the
+      // spinner while the request that will actually fill the tab is open.
+      if (requestIdRef.current === requestId) setLoading(false);
     }
   }, [baseId]);
 

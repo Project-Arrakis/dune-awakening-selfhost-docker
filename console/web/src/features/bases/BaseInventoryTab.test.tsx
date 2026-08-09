@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { StrictMode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { basesApi, type BaseInventory } from "../../api/bases";
 import { BaseInventoryTab } from "./BaseInventoryTab";
@@ -407,7 +408,31 @@ describe("BaseInventoryTab", () => {
     expect(screen.getByRole("dialog").textContent).toContain("Granite Stone");
   });
 
-  it("shows an empty container rather than hiding it", async () => {
+  // StrictMode double-invokes the load effect, so two requests are genuinely
+  // open at once and whichever settles last writes state. A first attempt that
+  // fails after the second succeeded must not replace the loaded tab with an
+  // error banner.
+  it("ignores a stale response that settles after a newer one", async () => {
+    const gates: Array<{ resolve: (v: unknown) => void; reject: (e: unknown) => void }> = [];
+    vi.mocked(basesApi.inventory).mockImplementation(() => new Promise((resolve, reject) => {
+      gates.push({ resolve, reject });
+    }) as never);
+
+    render(<StrictMode><BaseInventoryTab baseId="1006" /></StrictMode>);
+    await waitFor(() => expect(gates.length).toBe(2));
+
+    // Newest request wins the tab...
+    gates[1].resolve(PAYLOAD);
+    await loaded();
+
+    // ...and the older one failing afterwards must change nothing.
+    gates[0].reject(new Error("stale failure"));
+    await waitFor(() => expect(screen.getByText("Distinct")).toBeTruthy());
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+    expect(screen.queryByText(/stale failure/)).toBeNull();
+  });
+
+  it("shows a container's slot usage on its card", async () => {
     mockInventory();
     renderTab();
     await loaded();
