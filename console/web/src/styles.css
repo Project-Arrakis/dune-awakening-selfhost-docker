@@ -2268,19 +2268,38 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.player-inventory-table th:nth-child(1), .player-inventory-table td:nth-child(1) { width: 112px; max-width: 112px; }
-.player-inventory-table th:nth-child(2), .player-inventory-table td:nth-child(2) { width: 112px; max-width: 112px; }
-.player-inventory-table th:nth-child(3), .player-inventory-table td:nth-child(3) { width: 285px; max-width: 285px; }
-.player-inventory-table th:nth-child(4), .player-inventory-table td:nth-child(4) { width: 92px; max-width: 92px; }
-.player-inventory-table th:nth-child(5), .player-inventory-table td:nth-child(5) { width: 76px; max-width: 76px; }
-.player-inventory-table th:nth-child(6), .player-inventory-table td:nth-child(6) { width: 126px; max-width: 126px; }
-.player-inventory-table th:nth-child(7), .player-inventory-table td:nth-child(7) { width: 154px; max-width: 154px; }
-.player-inventory-table th:nth-child(8), .player-inventory-table td:nth-child(8) { width: 132px; max-width: 132px; }
-.player-inventory-table th:nth-child(9),
-.player-inventory-table td:nth-child(9) {
-  width: 190px;
-  max-width: 190px;
-  white-space: normal;
+.player-inventory-table th { white-space: normal; overflow-wrap: anywhere; vertical-align: bottom; line-height: 1.2; }
+/* The Character-tab panel is a stack of nested CSS grids, whose items default to
+   min-width:auto (min-content). The wide inventory table would otherwise expand
+   that whole chain past the modal instead of scrolling. Zeroing min-width from the
+   panel down to the table's own scroll-container parent lets .table-wrap
+   (overflow-x:auto) scroll horizontally within the panel. */
+.playerAdmin_content, .playerAdmin_toggle, .playerAdmin_toggleBody, .player-inventory-detail { min-width: 0; }
+
+/* Column widths keyed by column name (not position) so adding/removing a column
+   never shifts the rest. ID and Item Name size to their content. */
+.player-inventory-table th[data-column="id"], .player-inventory-table td[data-column="id"],
+.player-inventory-table th[data-column="item_name"], .player-inventory-table td[data-column="item_name"] {
+  width: 1%;
+  max-width: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: clip;
+}
+/* Item Name is content-sized; keep its trailing (i) icon visible on the widest
+   row (overflow:hidden would clip it). The grid min-width:0 rule above stops this
+   from re-expanding the panel. */
+.player-inventory-table th[data-column="item_name"], .player-inventory-table td[data-column="item_name"] { overflow: visible; }
+.player-inventory-table th[data-column="stack_size"], .player-inventory-table td[data-column="stack_size"] { width: 92px; max-width: 92px; }
+.player-inventory-table th[data-column="quality_level"], .player-inventory-table td[data-column="quality_level"] { width: 76px; max-width: 76px; }
+.player-inventory-table th[data-column="position_index"], .player-inventory-table td[data-column="position_index"] { width: 126px; max-width: 126px; }
+.player-inventory-table th[data-column="current_durability"], .player-inventory-table td[data-column="current_durability"] { width: 154px; max-width: 154px; }
+.player-inventory-table th[data-column="max_durability"], .player-inventory-table td[data-column="max_durability"] { width: 132px; max-width: 132px; }
+.player-inventory-table th[data-column="augments"], .player-inventory-table td[data-column="augments"] { width: 150px; max-width: 150px; white-space: normal; }
+.player-inventory-table th[data-column="stack_size"], .player-inventory-table td[data-column="stack_size"],
+.player-inventory-table th[data-column="quality_level"], .player-inventory-table td[data-column="quality_level"],
+.player-inventory-table th[data-column="position_index"], .player-inventory-table td[data-column="position_index"] {
+  text-align: center;
 }
 .player-inventory-table th.actions-column,
 .player-inventory-table td.actions-column {
@@ -2297,6 +2316,9 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.inventory-item-name { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.inventory-name-info { display: inline-flex; align-items: center; flex-shrink: 0; color: var(--muted); cursor: help; }
+.inventory-name-info:hover { color: var(--accent); }
 .inventory-augment-list {
   display: grid;
   gap: 2px;
@@ -2440,6 +2462,25 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
   color: var(--title);
 }
 .bases-expanded-tab.active:hover { border-color: var(--border-strong); border-bottom-color: #25201b; }
+
+.playerAdmin_invGroupTabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+.playerAdmin_invGroupTab {
+  width: auto;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  padding: 6px 14px;
+  font-size: 13px;
+}
+.playerAdmin_invGroupTab:hover { color: var(--muted-warm); }
+.playerAdmin_invGroupTab.active { border-color: #c68b4a; background: rgba(198, 139, 74, .16); color: #ffd08a; }
+.playerAdmin_invGroupCount { font-size: 12px; color: var(--muted); }
+.playerAdmin_invGroupTab.active .playerAdmin_invGroupCount { color: #ffd08a; }
 
 .bases-water { display: grid; gap: 12px; }
 
