@@ -60,6 +60,7 @@ const MAX_TABLE_PREVIEW_ROWS = 10000;
 const INVENTORY_EDITABLE_COLUMNS = new Set(["stack_size", "quality_level", "position_index", "current_durability"]);
 let craftingRecipeCatalogCache = null;
 let adminItemMetadataCache = null;
+let mapRegionNamesCache = null;
 let augmentCompatibilityCache = null;
 const PLAYER_TARGET_CACHE_TTL_MS = 3000;
 const playerTargetCache = new Map(); // id -> { promise, expiresAt }
@@ -4013,6 +4014,82 @@ function adminItemMetadata() {
   return adminItemMetadataCache;
 }
 
+// Map area_id -> sub-region name, keyed by dune.actors.map. Sourced from the game
+// client paks (see runtime/data/hagga-regions.json); the area_id space matches
+// dune.markers.area_id, so a vehicle is labelled by the nearest marker's area.
+function mapRegionNames() {
+  if (mapRegionNamesCache) return mapRegionNamesCache;
+  let data = {};
+  try {
+    const path = [
+      resolve(process.cwd(), "runtime/data/hagga-regions.json"),
+      resolve(process.cwd(), "../../runtime/data/hagga-regions.json")
+    ].find((candidate) => existsSync(candidate)) || resolve(process.cwd(), "runtime/data/hagga-regions.json");
+    const parsed = JSON.parse(readFileSync(path, "utf8"));
+    for (const [map, areas] of Object.entries(parsed)) {
+      if (!areas || typeof areas !== "object" || Array.isArray(areas)) continue;
+      const byId = new Map();
+      for (const [areaId, name] of Object.entries(areas)) {
+        const id = Number(areaId);
+        if (Number.isInteger(id) && typeof name === "string" && name) byId.set(id, name);
+      }
+      if (byId.size) data[map] = byId;
+    }
+  } catch {
+    // Region labelling is optional; vehicles still list without it.
+    data = {};
+  }
+  mapRegionNamesCache = data;
+  return mapRegionNamesCache;
+}
+
+// Attach a `region` name to each vehicle row whose map has a region table, using
+// the area of the nearest marker. Best-effort: silently no-ops when the markers/
+// map_names tables are absent (region stays undefined). Mutates `rows` in place.
+async function attachVehicleRegions(db, rows) {
+  const regionTable = mapRegionNames();
+  const eligible = rows.filter((row) => regionTable[row.map] && row.x !== null && row.x !== undefined && row.y !== null && row.y !== undefined);
+  if (!eligible.length) return;
+  if (!(await tableExists(db, "markers")) || !(await tableExists(db, "map_names"))) return;
+
+  const byMap = new Map();
+  for (const row of eligible) {
+    if (!byMap.has(row.map)) byMap.set(row.map, []);
+    byMap.get(row.map).push(row);
+  }
+
+  for (const [map, mapRows] of byMap) {
+    const mapNameResult = await db.query("select map_name_id from dune.map_names where map_name = $1 limit 1", [map]);
+    const mapNameId = mapNameResult.rows[0] ? Number(mapNameResult.rows[0].map_name_id) : null;
+    if (mapNameId === null || Number.isNaN(mapNameId)) continue;
+
+    const values = [mapNameId];
+    const tuples = mapRows.map((row) => {
+      values.push(String(row.id), Number(row.x), Number(row.y));
+      const base = values.length;
+      return `($${base - 2}::bigint, $${base - 1}::numeric, $${base}::numeric)`;
+    }).join(", ");
+
+    const result = await db.query(`
+      select p.id::text id, near.area_id
+      from (values ${tuples}) p(id, vx, vy)
+      cross join lateral (
+        select m.area_id
+        from dune.markers m
+        where m.map_name_id = $1 and m.area_id <> 0 and (m.marker).x is not null
+        order by power((m.marker).x - p.vx, 2) + power((m.marker).y - p.vy, 2)
+        limit 1
+      ) near`, values);
+
+    const areaById = new Map(result.rows.map((r) => [String(r.id), Number(r.area_id)]));
+    const names = regionTable[map];
+    for (const row of mapRows) {
+      const areaId = areaById.get(String(row.id));
+      if (areaId !== undefined && names.has(areaId)) row.region = names.get(areaId);
+    }
+  }
+}
+
 function augmentCompatibilityCatalog() {
   if (augmentCompatibilityCache) return augmentCompatibilityCache;
   try {
@@ -4593,24 +4670,27 @@ export async function listVehicles(db, { q = "", page = 0, pageSize = 50, sortCo
 
     const totalsResult = await db.query("select count(*)::int as total_vehicles from dune.vehicles");
 
+    const rows = result.rows
+      .filter((row) => row.id !== null && row.id !== undefined)
+      .map(({ total_count, ...row }) => ({
+        ...row,
+        shared_with: (Array.isArray(row.shared_with) ? row.shared_with : []).map((entry) => ({
+          name: entry.name,
+          rank: entry.rank,
+          label: permissionRankLabel(entry.rank)
+        })),
+        modules: (row.modules || []).map((module) => ({
+          ...module,
+          name: portalVehicleModuleName(module.templateId)
+        }))
+      }));
+    await attachVehicleRegions(db, rows);
+
     return {
       capabilities: { vehicles: true },
       totalCount: result.rows[0] ? Number(result.rows[0].total_count) : 0,
       totalVehicles: totalsResult.rows[0] ? Number(totalsResult.rows[0].total_vehicles) : 0,
-      rows: result.rows
-        .filter((row) => row.id !== null && row.id !== undefined)
-        .map(({ total_count, ...row }) => ({
-          ...row,
-          shared_with: (Array.isArray(row.shared_with) ? row.shared_with : []).map((entry) => ({
-            name: entry.name,
-            rank: entry.rank,
-            label: permissionRankLabel(entry.rank)
-          })),
-          modules: (row.modules || []).map((module) => ({
-            ...module,
-            name: portalVehicleModuleName(module.templateId)
-          }))
-        }))
+      rows
     };
   } catch (error) {
     return { ...unsupported("vehicles", requiredTables.map((t) => `dune.${t}`)), totalCount: 0, totalVehicles: 0, reason: `Vehicles query failed: ${error.message}` };

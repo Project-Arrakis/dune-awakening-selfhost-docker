@@ -125,11 +125,14 @@ function renderVehicleCell(row: Record<string, unknown>, column: string) {
     );
   }
   if (column === "location") {
+    // Second row: the Deep Desert sector grid, else a named sub-region resolved
+    // server-side (e.g. Hagga Basin). Whichever the map provides.
     const sector = mapGridSector(vehicle);
+    const subLine = sector ? `Sector ${sector}` : (vehicle.region ? String(vehicle.region) : null);
     return (
       <div className="vehicles-location-cell">
         <span className="vehicles-coords">{formatCoords(vehicle)}</span>
-        {sector && <span className="vehicles-grid">Sector {sector}</span>}
+        {subLine && <span className="vehicles-grid">{subLine}</span>}
       </div>
     );
   }

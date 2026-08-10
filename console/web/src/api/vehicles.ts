@@ -29,6 +29,9 @@ export type VehicleRow = {
   x: number | string | null;
   y: number | string | null;
   z: number | string | null;
+  // Nearest-marker sub-region name for maps with a region table (e.g. Hagga
+  // Basin). Absent for maps without one, or when marker data is unavailable.
+  region?: string | null;
   modules: VehicleModule[];
 };
 

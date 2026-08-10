@@ -1636,6 +1636,29 @@ test("listVehicles resolves positional locomotion module names from the catalog"
   ]);
 });
 
+test("listVehicles labels a vehicle with its nearest-marker sub-region", async () => {
+  const db = {
+    query: async (text) => {
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("total_vehicles")) return { rows: [{ total_vehicles: 1 }] };
+      if (text.includes("from dune.map_names where map_name")) return { rows: [{ map_name_id: 11 }] };
+      if (text.includes("cross join lateral") && text.includes("dune.markers")) {
+        return { rows: [{ id: "5001", area_id: 3 }] };
+      }
+      if (text.includes("module_durability")) return { rows: [{
+        id: "5001", name: "Sihaya", type: "Sandbike", owner: "", condition_percent: 90,
+        current_fuel: null, max_fuel: null, fuel_percent: null,
+        map: "HaggaBasin", partition_id: 1, x: "323137", y: "-24360", z: "0",
+        total_count: 1, shared_with: [], modules: []
+      }] };
+      return { rows: [] };
+    }
+  };
+  const result = await listVehicles(db, {});
+  // area_id 3 resolves to "Hagga Rift" via runtime/data/hagga-regions.json.
+  assert.equal(result.rows[0].region, "Hagga Rift");
+});
+
 test("listVehicles returns unsupported when a required table is missing", async () => {
   const db = {
     query: async (text, values = []) => {
