@@ -124,6 +124,14 @@ command_can_sudo_reexec_safely() {
     status|ps|servers|ports|ping|ping-diagnostics|ready|logs|doctor)
       return 0
       ;;
+    vehicle-fix)
+      case "$target" in
+        ""|status|help|--help|-h)
+          return 0
+          ;;
+      esac
+      return 1
+      ;;
     metrics)
       case "$target" in
         ""|status|ps|logs|config|help|--help|-h)
@@ -463,6 +471,11 @@ EOF
     runtime/scripts/deepdesert.sh "$@"
     ;;
 
+  vehicle-fix)
+    shift || true
+    runtime/scripts/vehicle-permission-reset-fix.sh "$@"
+    ;;
+
   admin)
     shift || true
     runtime/scripts/admin-tools.sh "$@"
@@ -519,6 +532,7 @@ Usage:
   dune maps set <map> <dynamic|always-on|overmap-active|disabled>
   dune maps reconcile
   dune deepdesert dual [status|enable|disable|bootstrap|repair]
+  dune vehicle-fix [status|auto|build|enable|disable|remove]
   dune admin login-queues [--all]
   dune admin repair-login-queue <player-fls-id|queue-name> [--yes] [--force]
   dune config title ["New Server Name"]

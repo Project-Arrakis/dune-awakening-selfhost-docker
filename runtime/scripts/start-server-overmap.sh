@@ -10,8 +10,7 @@ cd "$(dirname "$0")/../.."
 source runtime/scripts/host-paths.sh
 source runtime/scripts/runtime-env.sh
 source runtime/scripts/image-tags.sh
-WORLD_IMAGE_TAG="$(resolve_world_image_tag)"
-IMAGE="registry.funcom.com/funcom/self-hosting/seabass-server:${WORLD_IMAGE_TAG}"
+IMAGE="$(resolve_game_server_image)"
 
 TOKEN_FILE="runtime/secrets/funcom-token.txt"
 RMQ_SECRET_FILE="runtime/secrets/rmq-http-token-auth-secret.txt"

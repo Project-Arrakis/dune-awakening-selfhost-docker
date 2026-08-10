@@ -24,7 +24,7 @@ require_docker() {
 }
 
 current_image_refs() {
-  local world_tag="" postgres_tag=""
+  local world_tag="" postgres_tag="" safe_world_tag=""
   if [ -r runtime/generated/image-tags.env ]; then
     # shellcheck disable=SC1091
     . runtime/generated/image-tags.env
@@ -40,6 +40,8 @@ current_image_refs() {
       registry.funcom.com/funcom/self-hosting/seabass-server-gateway "$world_tag" \
       registry.funcom.com/funcom/self-hosting/seabass-server-rabbitmq "$world_tag" \
       registry.funcom.com/funcom/self-hosting/seabass-server-text-router "$world_tag"
+    safe_world_tag="${world_tag//[^a-zA-Z0-9_.-]/-}"
+    printf '%s\n' "redblink-dune-game-server:vehicle-permission-reset-${safe_world_tag}"
   fi
   if [ -n "$postgres_tag" ]; then
     printf '%s:%s\n' registry.funcom.com/funcom/self-hosting/igw-postgres "$postgres_tag"
@@ -81,7 +83,8 @@ obsolete_dune_image_ids() {
       registry.funcom.com/funcom/self-hosting/seabass-server-db-utils|\
       registry.funcom.com/funcom/self-hosting/seabass-server-gateway|\
       registry.funcom.com/funcom/self-hosting/seabass-server-rabbitmq|\
-      registry.funcom.com/funcom/self-hosting/seabass-server-text-router) ;;
+      registry.funcom.com/funcom/self-hosting/seabass-server-text-router|\
+      redblink-dune-game-server) ;;
       *)
         if ! docker image inspect --format '{{index .Config.Labels "io.github.red-blink.dune-selfhost.component"}}' "$id" 2>/dev/null \
           | grep -Eq '^(console|orchestrator)$'; then
