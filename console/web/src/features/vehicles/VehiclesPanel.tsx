@@ -92,7 +92,9 @@ function formatCoords(row: VehicleRow) {
   const x = toNumber(row.x);
   const y = toNumber(row.y);
   if (x === null || y === null) return "—";
-  return `(${Math.round(x).toLocaleString()}, ${Math.round(y).toLocaleString()})`;
+  // Plain integers (no thousands separators) so the x,y pair can't be misread —
+  // grouping commas inside a comma-separated pair are ambiguous.
+  return `(${Math.round(x)}, ${Math.round(y)})`;
 }
 
 // Deep Desert is a 9x9 sector grid, 250k units per cell, spanning +/-1,125,000:
