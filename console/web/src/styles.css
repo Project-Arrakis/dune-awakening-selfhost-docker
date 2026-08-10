@@ -1945,6 +1945,63 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
 .actions-column .icon-toggle-group { display: inline-flex; gap: 6px; margin-inline: auto; }
 .actions-column .icon-toggle-group button { margin-inline: 0; }
 .expanded-row-cell { padding: 12px; background: #101316; }
+
+/* Vehicles page */
+.vehicles-search-row { margin: 12px 0; }
+/* Grow to fit the rows on the page instead of the shared height cap, while
+   keeping the inherited horizontal `overflow: auto` so a wide table scrolls
+   inside its box at narrow widths rather than breaking out of the panel. */
+.table-wrap.vehicles-table-wrap { max-height: none; }
+.vehicles-table th.vehicles-expand-column, .vehicles-table td.vehicles-expand-column {
+  width: 32px;
+  padding-inline: 4px;
+  text-align: center;
+  overflow: visible;
+  text-overflow: clip;
+}
+.vehicles-expand-button {
+  width: 24px;
+  height: 24px;
+  min-width: 0;
+  padding: 0;
+  margin: 0 auto;
+  border: 0;
+  background: none;
+  color: inherit;
+  display: inline-grid;
+  place-items: center;
+  cursor: pointer;
+}
+.vehicles-expand-chevron { opacity: 0.6; vertical-align: middle; }
+.vehicles-name-cell { display: flex; flex-direction: column; gap: 2px; white-space: normal; }
+.vehicles-name { color: #fff1d4; font-weight: 500; }
+.vehicles-location { color: #ad9f89; font-size: 13px; }
+/* Center the Location column (8th = after the leading expand column). */
+.vehicles-table thead th:nth-child(8), .vehicles-table tbody td:nth-child(8) { text-align: center; }
+.vehicles-location-cell { display: flex; flex-direction: column; align-items: center; gap: 1px; white-space: normal; }
+.vehicles-coords { color: var(--text); font-variant-numeric: tabular-nums; }
+.vehicles-grid { color: #ceb894; font-size: 11px; }
+/* "Lowest Condition" header wraps to two lines within the meter column width.
+   6th column = after the leading expand column: Vehicle, Type, Owner, Shared
+   With, [Condition]. */
+.vehicles-table thead th:nth-child(6) { white-space: normal; line-height: 1.2; }
+.vehicles-meter-cell { display: inline-flex; flex-direction: column; gap: 3px; min-width: 78px; }
+.vehicles-meter { width: 78px; height: 7px; border-radius: 4px; background: #0c0e10; border: 1px solid #302b25; overflow: hidden; }
+.vehicles-meter > i { display: block; height: 100%; }
+.vehicles-meter-pct { font-size: 13px; color: #ceb894; }
+.vehicles-shared-list { display: grid; gap: 2px; max-height: 4.2em; overflow-y: auto; overflow-wrap: anywhere; white-space: normal; font-size: 11px; line-height: 1.25; }
+.vehicles-shared-list span { display: block; }
+.vehicles-shared-list em { color: #ad9f89; font-style: normal; }
+.vehicles-expanded { display: flex; flex-direction: column; gap: 9px; }
+.vehicles-expanded-header { margin: 0; font-size: 11px; letter-spacing: .04em; text-transform: uppercase; color: #ad9f89; }
+.vehicles-component-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
+.vehicles-component-card { background: #171a1d; border: 1px solid #302b25; border-radius: 8px; padding: 10px 11px; display: flex; flex-direction: column; gap: 6px; min-width: 0; white-space: normal; overflow-wrap: anywhere; }
+.vehicles-component-name { color: #fff1d4; font-size: 13px; display: flex; flex-direction: column; gap: 1px; }
+.vehicles-component-position { color: #ceb894; font-size: 11px; }
+.vehicles-component-meta { color: #ad9f89; font-size: 12px; }
+.vehicles-component-card .vehicles-meter { width: 100%; }
+.vehicles-pagination-footer { margin-top: 12px; }
+
 .stable-action-button { min-width: 72px; }
 .map-action-buttons { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; }
 .map-action-buttons .stable-action-button { min-width: 72px; width: auto; }
