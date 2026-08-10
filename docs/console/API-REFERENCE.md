@@ -17,6 +17,7 @@ Complete reference for all HTTP API endpoints in the Dune Docker Console. All en
 - [Players](#players)
 - [Guilds](#guilds)
 - [Bases & Storage](#bases--storage)
+- [Vehicles](#vehicles)
 - [Blueprints](#blueprints)
 - [Maps & World](#maps--world)
 - [Live Map](#live-map)
@@ -274,6 +275,33 @@ generator refill routes above. See [base-permissions.md](base-permissions.md).
 | GET | `/api/storage/{storageId}/items` | Get storage inventory | `storageId` |
 | POST | `/api/storage/{storageId}/give-item` | Add item to storage | `itemName`, `quantity`, `confirmation: "GIVE ITEM TO STORAGE"` |
 | GET | `/api/storage/{storageId}/export` | Export storage as JSON | `storageId` |
+
+---
+
+## Vehicles
+
+| Method | Route | Description | Parameters |
+|--------|-------|-------------|------------|
+| GET | `/api/vehicles` | List all player vehicles (paginated), each with owner, shared-with roster, lowest-component condition %, fuel %, map/partition, coordinates, and per-component durability | `q?`, `page?`, `pageSize?`, `sortColumn?`, `sortDirection?` |
+
+Read-only. `GET /api/vehicles` reports `capabilities.vehicles`; it is false (with a
+`reason`) when the schema lacks the required tables (`vehicles`, `vehicle_modules`,
+`actors`, `permission_actor`, `permission_actor_rank`, `player_state`,
+`actor_fgl_entities`, `fgl_entities`). Sortable `sortColumn` values: `name`,
+`type`, `owner`, `condition_percent`, `fuel_percent`, `map`; `q` matches vehicle
+name, type, owner, map, and exact id. Response fields mirror the paginated-list
+convention (`rows`, `totalCount`, unfiltered `totalVehicles`). Owner resolves from
+the rank-1 permission holder, falling back to the actor's account owner; the
+`shared_with` roster is the rank 2/3 holders. A component's max durability is read
+from its own stats blob (`MaxDurability`, else the decayed cap), falling back to
+the max seen on sibling instances of the same template; `maxCondition`/
+`conditionPercent` are null only when the game recorded no durability figures
+anywhere for it. Fuel percent is null when the database holds fewer than two
+samples of that generator template, so no capacity can be inferred.
+
+The separate `/api/admin/vehicles*` routes under [Admin Tools](#admin-tools) are a
+different, CLI-backed surface (blueprint catalog and spawning), not this Postgres
+read.
 
 ---
 
