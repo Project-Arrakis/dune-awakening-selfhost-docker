@@ -173,4 +173,84 @@ describe("VehiclesPanel", () => {
     expect(await screen.findByText(/Missing required table/)).toBeInTheDocument();
     expect(screen.queryByPlaceholderText("Search name, type, owner, or map")).not.toBeInTheDocument();
   });
+
+  it("renders rounded world coordinates on the Location column", async () => {
+    vi.mocked(vehiclesApi.list).mockResolvedValue(listResponse({
+      rows: [{ ...listResponse().rows[0], x: 100.4, y: -217653.8, map: "HaggaBasin", region: null }]
+    }));
+    renderPanel();
+
+    // Rounded to plain integers, no thousands separators.
+    expect(await screen.findByText("(100, -217654)")).toBeInTheDocument();
+  });
+
+  it("colors each meter by its condition threshold", async () => {
+    vi.mocked(vehiclesApi.list).mockResolvedValue(listResponse({
+      rows: [{
+        ...listResponse().rows[0],
+        condition_percent: 80, // green (>=66)
+        fuel_percent: 50, // amber (>=33)
+        modules: [{ templateId: "Engine", name: "Engine", condition: 5, maxCondition: 100, conditionPercent: 10 }] // red (<33)
+      }]
+    }));
+    const { container } = render(
+      <VehiclesPanel onError={vi.fn()} confirmAction={vi.fn().mockResolvedValue(true)} formatMutationResult={vi.fn().mockReturnValue("")} />
+    );
+
+    await screen.findByText("Sihaya");
+    fireEvent.click(screen.getByLabelText("Show components for Sihaya"));
+    await screen.findByText("Engine");
+
+    const backgrounds = Array.from(container.querySelectorAll<HTMLElement>(".vehicles-meter i"))
+      .map((fill) => fill.getAttribute("style") || "");
+    expect(backgrounds.some((style) => style.includes("--success"))).toBe(true);
+    expect(backgrounds.some((style) => style.includes("--warning"))).toBe(true);
+    expect(backgrounds.some((style) => style.includes("--danger"))).toBe(true);
+  });
+
+  it("splits a locomotion component's mount position onto its own line", async () => {
+    vi.mocked(vehiclesApi.list).mockResolvedValue(listResponse({
+      rows: [{
+        ...listResponse().rows[0],
+        modules: [
+          { templateId: "Loco", name: "Heavy Locomotion (Front Left)", condition: 90, maxCondition: 100, conditionPercent: 90 },
+          { templateId: "Gen", name: "Generator", condition: 90, maxCondition: 100, conditionPercent: 90 }
+        ]
+      }]
+    }));
+    renderPanel();
+
+    fireEvent.click(await screen.findByLabelText("Show components for Sihaya"));
+
+    // The mount position is broken out into its own element, leaving the tier name.
+    const position = await screen.findByText("Front Left");
+    expect(position).toHaveClass("vehicles-component-position");
+    expect(screen.getByText("Heavy Locomotion")).toBeInTheDocument();
+    // A name without a position marker stays whole -- no stray position element.
+    expect(screen.getByText("Generator")).toBeInTheDocument();
+  });
+
+  it("sorts by a column when its header is clicked", async () => {
+    vi.mocked(vehiclesApi.list).mockResolvedValue(listResponse());
+    renderPanel();
+
+    await screen.findByText("Sihaya");
+    fireEvent.click(screen.getByRole("columnheader", { name: /Type/ }));
+
+    await waitFor(() => {
+      expect(vi.mocked(vehiclesApi.list)).toHaveBeenCalledWith(expect.objectContaining({ sortColumn: "type", sortDirection: "asc" }));
+    });
+  });
+
+  it("reloads with the chosen page size", async () => {
+    vi.mocked(vehiclesApi.list).mockResolvedValue(listResponse({ totalCount: 300, totalVehicles: 300 }));
+    renderPanel();
+
+    await screen.findByText("Sihaya");
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: "100" } });
+
+    await waitFor(() => {
+      expect(vi.mocked(vehiclesApi.list)).toHaveBeenCalledWith(expect.objectContaining({ pageSize: 100 }));
+    });
+  });
 });

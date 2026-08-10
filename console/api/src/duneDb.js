@@ -4476,17 +4476,25 @@ const VEHICLE_SORT_COLUMNS = {
   map: { order: ["lower(coalesce(map, ''))", "partition_id"] }
 };
 
-// Friendly vehicle label computed in SQL so it can be searched and sorted.
-// Mirrors portalVehicleDisplayName() (which runs on the path-stripped class),
-// falling back to the stripped class name for anything unmapped.
+// Single source of truth for the friendly vehicle-type mapping. Both the SQL
+// label (VEHICLE_TYPE_SQL below, computed in SQL so type can be searched/sorted
+// server-side) and the JS portalVehicleDisplayName() (Discord portal path) are
+// derived from this list, so the two representations can't drift apart. Order
+// matters: the first substring match wins.
+const VEHICLE_TYPE_MAP = [
+  { match: "lightornithopter", label: "Scout Ornithopter" },
+  { match: "mediumornithopter", label: "Assault Ornithopter" },
+  { match: "transportornithopter", label: "Carrier Ornithopter" },
+  { match: "sandcrawler", label: "Sandcrawler" },
+  { match: "sandbike", label: "Sandbike" },
+  { match: "buggy", label: "Buggy" },
+  { match: "tank", label: "Battle Tank" }
+];
+
+// Friendly vehicle label, generated from VEHICLE_TYPE_MAP; unmapped classes fall
+// back to the stripped class name.
 const VEHICLE_TYPE_SQL = `case
-  when lower(coalesce(a.class, '')) like '%lightornithopter%' then 'Scout Ornithopter'
-  when lower(coalesce(a.class, '')) like '%mediumornithopter%' then 'Assault Ornithopter'
-  when lower(coalesce(a.class, '')) like '%transportornithopter%' then 'Carrier Ornithopter'
-  when lower(coalesce(a.class, '')) like '%sandcrawler%' then 'Sandcrawler'
-  when lower(coalesce(a.class, '')) like '%sandbike%' then 'Sandbike'
-  when lower(coalesce(a.class, '')) like '%buggy%' then 'Buggy'
-  when lower(coalesce(a.class, '')) like '%tank%' then 'Battle Tank'
+${VEHICLE_TYPE_MAP.map((entry) => `  when lower(coalesce(a.class, '')) like '%${entry.match}%' then '${entry.label}'`).join("\n")}
   else regexp_replace(a.class, '^.*/|\\..*$', '', 'g')
 end`;
 
@@ -4800,16 +4808,13 @@ function portalVehicleModuleName(templateId) {
   return id || "Vehicle Module";
 }
 
-function portalVehicleDisplayName(type) {
+// Derived from the same VEHICLE_TYPE_MAP as VEHICLE_TYPE_SQL, so the portal and
+// the admin page always agree on the friendly label. Runs on the path-stripped
+// class; unmapped classes pass through unchanged.
+export function portalVehicleDisplayName(type) {
   const value = String(type || "").toLowerCase();
-  if (value.includes("lightornithopter")) return "Scout Ornithopter";
-  if (value.includes("mediumornithopter")) return "Assault Ornithopter";
-  if (value.includes("transportornithopter")) return "Carrier Ornithopter";
-  if (value.includes("sandcrawler")) return "Sandcrawler";
-  if (value.includes("sandbike")) return "Sandbike";
-  if (value.includes("buggy")) return "Buggy";
-  if (value.includes("tank")) return "Battle Tank";
-  return String(type || "Vehicle");
+  const mapped = VEHICLE_TYPE_MAP.find((entry) => value.includes(entry.match));
+  return mapped ? mapped.label : String(type || "Vehicle");
 }
 
 // Seconds of runtime per fuel unit, measured from m_FuelBurningDuration on the
