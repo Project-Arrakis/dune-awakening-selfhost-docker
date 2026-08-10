@@ -232,6 +232,28 @@ describe("PlayerSummary", () => {
   });
 
   describe("Faction Reputation", () => {
+    it("reloads reputation immediately when its refresh key changes", async () => {
+      vi.mocked(playersApi.factions)
+        .mockResolvedValueOnce({
+          rows: [{ faction_id: 1, faction_name: "Atreides", reputation_amount: 500 }],
+          capabilities: { factions: true }
+        })
+        .mockResolvedValue({
+          rows: [{ faction_id: 1, faction_name: "Atreides", reputation_amount: 5200 }],
+          capabilities: { factions: true }
+        });
+      const detail = { player: { character_name: "Benny Jesserette", faction: "Atreides" } };
+      const { rerender } = render(
+        <PlayerSummary {...baseProps} detail={detail} fallback={{}} refreshKey={0} />
+      );
+
+      expect(await screen.findByText("500")).toBeInTheDocument();
+      rerender(<PlayerSummary {...baseProps} detail={detail} fallback={{}} refreshKey={1} />);
+
+      expect(await screen.findByText("5200")).toBeInTheDocument();
+      expect(playersApi.factions).toHaveBeenCalledTimes(2);
+    });
+
     it("renders each faction's reputation amount, distinct from the Faction row", async () => {
       vi.mocked(playersApi.factions).mockResolvedValue({
         rows: [

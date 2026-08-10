@@ -183,6 +183,7 @@ Complete reference for all HTTP API endpoints in the Dune Docker Console. All en
 |--------|-------|-------------|------------|
 | POST | `/api/players/{playerId}/add-currency` | Add currency | `currencyId`, `amount`, `confirmation` |
 | POST | `/api/players/{playerId}/add-faction-reputation` | Add faction reputation | `factionId`, `amount`, `confirmation` |
+| POST | `/api/players/{playerId}/faction` | Assign Atreides, Harkonnen, or Neutral | `factionId` (`1`, `2`, or `3`), `confirmation` |
 | POST | `/api/players/{playerId}/add-intel` | Add intel | `amount`, `confirmation` |
 | POST | `/api/players/{playerId}/specializations/add-xp` | Add spec XP | `trackType`, `amount`, `confirmation` |
 | POST | `/api/players/{playerId}/specializations/grant-max` | Max out specialization | `trackType`, `confirmation` |

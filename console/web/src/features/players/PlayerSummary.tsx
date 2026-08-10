@@ -23,12 +23,14 @@ export function PlayerSummary({
   fallback,
   dbPlayerId,
   actionPlayerId,
+  refreshKey = 0,
   actions
 }: {
   detail: Record<string, unknown> | null;
   fallback: Record<string, unknown>;
   dbPlayerId: string;
   actionPlayerId: string;
+  refreshKey?: number;
   actions?: ReactNode;
 }) {
   const player = ((detail?.player as Record<string, unknown> | undefined) || fallback) as Record<string, unknown>;
@@ -98,7 +100,7 @@ export function PlayerSummary({
       active = false;
       window.clearInterval(timer);
     };
-  }, [dbPlayerId]);
+  }, [dbPlayerId, refreshKey]);
 
   const text = (value: unknown): string => (value === undefined || value === null ? "" : String(value));
   const idText = (value: unknown): string => {
