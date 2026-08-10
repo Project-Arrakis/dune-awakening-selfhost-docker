@@ -31,7 +31,7 @@ stored as rank `2`, and no row ever holds a `4` or `5`.
 | `GET` | `/api/bases/:baseId/permissions` | The base's roster, with resolved names and rank labels. |
 | `PUT` | `/api/bases/:baseId/permissions` | Replace the roster. Body: `{ entries: [{ playerId, rank }] }`. |
 | `GET` | `/api/bases/permission-candidates?q=&limit=` | Player search for the add-player picker. |
-| `POST` | `/api/bases/:baseId/system-custodian` | Transfer ownership to a detected reserved Server or GM identity while preserving access. |
+| `POST` | `/api/bases/:baseId/system-custodian` | Transfer ownership to a reserved Server or GM identity while preserving access; creates the Server identity first when needed. |
 
 `PUT` takes a **whole roster**, not a delta. The server diffs it against current
 state and applies only the difference, so an unchanged row is never rewritten —
@@ -72,10 +72,13 @@ preserves every existing permission, demotes the outgoing Owner to Co-Owner, and
 promotes the detected custodian last in the same locked transaction.
 
 This provides a reversible administrative parking owner without leaving the
-base ownerless. If neither supported identity exists, or a matching identity is
-ambiguous, the action is disabled rather than guessing an actor id. As with
-ordinary transfers, the shipped permission procedures notify the running map
-immediately; no map restart is queued.
+base ownerless. If neither supported identity exists, the UI offers **Transfer
+to Server** and creates the same reserved Server persona used by Care Packages
+before transferring ownership. This keeps the action available when messaging
+services have never been enabled. An ambiguous matching identity still disables
+the action rather than guessing an actor id. As with ordinary transfers, the
+shipped permission procedures notify the running map immediately; no map restart
+is queued.
 
 ## The roster cap comes from server config
 

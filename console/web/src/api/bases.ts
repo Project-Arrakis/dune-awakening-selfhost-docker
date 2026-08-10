@@ -203,6 +203,7 @@ export type BasePermissions = {
   mapNameId: number;
   systemCustodian?: {
     available: boolean;
+    canCreate?: boolean;
     playerId?: string;
     name?: string;
     reason?: string;

@@ -902,6 +902,40 @@ describe("BasesPanel permissions editing", () => {
     expect(screen.getByText(/No supported system custodian/)).toBeInTheDocument();
   });
 
+  it("offers to create Server while transferring when no service has provisioned it", async () => {
+    mockList(true);
+    vi.mocked(basesApi.permissions).mockResolvedValue({
+      supported: true,
+      baseId: 1006,
+      actorId: "1004",
+      map: "DeepDesert",
+      mapNameId: 7,
+      systemCustodian: {
+        available: false,
+        canCreate: true,
+        playerId: "900000201",
+        name: "Server",
+        reason: "The reserved Server identity will be created when ownership is transferred."
+      },
+      entries: [{ playerId: "4", name: "DarkShark", rank: 1, label: "Owner", canonical: true }]
+    });
+    vi.mocked(basesApi.transferToSystemCustodian).mockResolvedValue({
+      supported: true,
+      result: { ok: true, baseId: 1006, actorId: "1004", map: "DeepDesert", added: 1, reranked: 1, removed: 0, total: 2, message: "Ownership was transferred to the Server system custodian." }
+    });
+    const props = renderPanel();
+    await openPermissionsTab();
+    const transfer = await screen.findByRole("button", { name: "Transfer to Server" });
+    expect(transfer).toBeEnabled();
+    expect(screen.getByText(/will be created when ownership is transferred/)).toBeInTheDocument();
+    fireEvent.click(transfer);
+    await waitFor(() => expect(props.confirmAction).toHaveBeenCalledWith(
+      expect.stringContaining("reserved Server identity"),
+      expect.objectContaining({ title: "Transfer to Server Custodian" })
+    ));
+    await waitFor(() => expect(basesApi.transferToSystemCustodian).toHaveBeenCalledWith("1006"));
+  });
+
   it("uses the detected GM identity when Server is not present", async () => {
     mockList(true);
     vi.mocked(basesApi.permissions).mockResolvedValue({

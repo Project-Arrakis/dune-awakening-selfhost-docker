@@ -157,7 +157,7 @@ function RankSegments({ entry, baseId, disabled, onChange }: {
 function OwnerHeroCard({ owner, isCustodian, systemCustodian, saving, dirty, onTransfer }: {
   owner: DraftEntry | undefined;
   isCustodian: boolean;
-  systemCustodian: { available: boolean; playerId?: string; name?: string; reason?: string };
+  systemCustodian: { available: boolean; canCreate?: boolean; playerId?: string; name?: string; reason?: string };
   saving: boolean;
   dirty: boolean;
   onTransfer: () => void;
@@ -177,14 +177,14 @@ function OwnerHeroCard({ owner, isCustodian, systemCustodian, saving, dirty, onT
         // Still enabled on an ownerless base: that state arrives from the
         // server with a clean draft, so parking ownership on the custodian is
         // the fastest legitimate way out of it.
-        disabled={!systemCustodian.available || ownedByCustodian || saving || dirty}
+        disabled={(!systemCustodian.available && !systemCustodian.canCreate) || ownedByCustodian || saving || dirty}
         title={dirty
           ? "Save or revert roster changes first"
           : ownedByCustodian
           ? `This base is already owned by the ${systemCustodian.name || "detected"} system custodian`
           : `Park ownership on the reserved ${systemCustodian.name || "detected"} system identity, preserving the current permission roster`}
         onClick={onTransfer}
-      >{ownedByCustodian ? `Owned by ${custodianName}` : systemCustodian.available ? `Transfer to ${custodianName}` : "Transfer to Custodian"}</button>
+      >{ownedByCustodian ? `Owned by ${custodianName}` : (systemCustodian.available || systemCustodian.canCreate) ? `Transfer to ${custodianName}` : "Transfer to Custodian"}</button>
       {!systemCustodian.available && systemCustodian.reason &&
         <p className="bases-permissions-error bases-permissions-owner-note">{systemCustodian.reason}</p>}
     </div>
@@ -204,7 +204,7 @@ export function BasePermissionsTab({ baseId, baseName, onSaved, confirmAction }:
   const [searching, setSearching] = useState(false);
   const [searched, setSearched] = useState(false);
   const [addRank, setAddRank] = useState<BasePermissionRank>(ASSOCIATE_RANK);
-  const [systemCustodian, setSystemCustodian] = useState<{ available: boolean; playerId?: string; name?: string; reason?: string }>({ available: false });
+  const [systemCustodian, setSystemCustodian] = useState<{ available: boolean; canCreate?: boolean; playerId?: string; name?: string; reason?: string }>({ available: false });
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -317,7 +317,7 @@ export function BasePermissionsTab({ baseId, baseName, onSaved, confirmAction }:
   }
 
   async function transferToSystemCustodian() {
-    if (!systemCustodian.available || !systemCustodian.playerId) return;
+    if ((!systemCustodian.available && !systemCustodian.canCreate) || !systemCustodian.playerId) return;
     const custodianName = systemCustodian.name || "System";
     const confirmed = await confirmAction(
       `Transfer this base to the reserved ${custodianName} identity? Existing access entries will be preserved and the current Owner will become a Co-Owner.`,
