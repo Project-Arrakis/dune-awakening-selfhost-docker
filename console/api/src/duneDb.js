@@ -8648,6 +8648,29 @@ export async function addonOpsPrometheusHealth(promBaseUrl = process.env.METRICS
   };
 }
 
+export async function addonOpsContainerHealth() {
+  try {
+    const { execSync } = await import("node:child_process");
+    const raw = execSync(
+      "docker stats --no-stream --format '{{json .}}'",
+      { encoding: "utf8", timeout: 5000, maxBuffer: 1024 * 1024 }
+    );
+    const containers = raw.trim().split("\n").map(l => JSON.parse(l)).map(c => ({
+      name: c.Name || "unknown",
+      cpu: c.CPUPerc || "0%",
+      mem: c.MemUsage ? c.MemUsage.split(" / ")[0] : "0B",
+      memLimit: c.MemUsage ? c.MemUsage.split(" / ")[1] || "" : "",
+      netIO: c.NetIO || "0B",
+      blockIO: c.BlockIO || "0B",
+      status: c.State || "unknown"
+    }));
+    return { containers };
+  } catch {
+    return { containers: [], error: "Docker stats unavailable — is Docker running?" };
+  }
+}
+
+
 function metricsStackNotRunning() {
   return {
     status: "planned",
