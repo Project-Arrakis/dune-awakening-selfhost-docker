@@ -2888,6 +2888,7 @@ function publicDirectorySettings() {
   return {
     available: settings.mode === "public",
     enabled: settings.mode === "public" && settings.enabled,
+    anonymousCountEnabled: settings.anonymousCountEnabled,
     discordInvite: settings.discordInvite,
     mode: settings.mode,
     state: reporter.state || (settings.mode === "public" ? "pending" : "local-only"),
@@ -3123,14 +3124,18 @@ async function publicDirectorySettingsRoute(req, res) {
   const body = await readJson(req);
   const hasEnabled = Object.hasOwn(body, "enabled");
   const hasDiscordInvite = Object.hasOwn(body, "discordInvite");
-  if (!hasEnabled && !hasDiscordInvite) {
+  const hasAnonymousCountEnabled = Object.hasOwn(body, "anonymousCountEnabled");
+  if (!hasEnabled && !hasDiscordInvite && !hasAnonymousCountEnabled) {
     return json(res, 400, { error: "No public listing setting was provided." });
   }
   if (hasEnabled && typeof body.enabled !== "boolean") {
     return json(res, 400, { error: "Server listing enabled must be true or false." });
   }
+  if (hasAnonymousCountEnabled && typeof body.anonymousCountEnabled !== "boolean") {
+    return json(res, 400, { error: "Anonymous server count enabled must be true or false." });
+  }
   const current = readDirectorySettings(config.repoRoot);
-  if (current.mode !== "public") {
+  if ((hasEnabled || hasDiscordInvite) && current.mode !== "public") {
     return json(res, 409, { error: "Server listing is available only when the server is running in public mode." });
   }
   let discordInvite = current.discordInvite;
@@ -3144,8 +3149,12 @@ async function publicDirectorySettingsRoute(req, res) {
   if (hasEnabled) {
     updateEnvFileValue("DUNE_PUBLIC_DIRECTORY_ENABLED", body.enabled ? "true" : "false");
   }
+  if (hasAnonymousCountEnabled) {
+    updateEnvFileValue("DUNE_ANONYMOUS_SERVER_COUNT_ENABLED", body.anonymousCountEnabled ? "true" : "false");
+  }
   audit(config, req, "settings.public-directory", {
     enabled: hasEnabled ? body.enabled : current.enabled,
+    anonymousCountEnabled: hasAnonymousCountEnabled ? body.anonymousCountEnabled : current.anonymousCountEnabled,
     discordInviteConfigured: Boolean(discordInvite)
   });
   await publicDirectory.tick();

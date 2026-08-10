@@ -4,60 +4,43 @@
 
 ![Docker](https://img.shields.io/badge/Docker-Ready-brightgreen) ![Linux](https://img.shields.io/badge/Linux-Supported-brightgreen) ![WSL2](https://img.shields.io/badge/WSL2-Supported-brightgreen) ![Self--Hosted](https://img.shields.io/badge/Self--Hosted-Yes-brightgreen) ![Status](https://img.shields.io/badge/Status-Experimental-orange) ![License](https://img.shields.io/badge/License-MIT-brightgreen) [![DuneDocker.app](https://img.shields.io/badge/Website-DuneDocker.app-f47fff)](https://dunedocker.app/)
 
-Dune Docker Console is a Docker-based self-hosting package for Dune: Awakening with a built-in browser admin panel. Install it on a fresh server, open the Web UI, finish setup in the wizard, and manage players, maps, backups, updates, live tools, and server operations without living in the terminal.
+Dune Docker Console is a Docker-based Dune: Awakening dedicated server manager for Linux, Windows/WSL2, and virtual machines. It provides guided installation and a browser admin panel for managing players, maps, backups, updates, and server operations without living in the terminal.
 
-This project is unofficial. It is not affiliated with, endorsed by, sponsored by, or supported by Funcom.
+This is an unofficial community project and is not affiliated with, endorsed by, sponsored by, or supported by Funcom.
 
-## Project Links
+The project is experimental, and Funcom self-hosting behavior may change over time.
 
-- [Official Website](https://dunedocker.app/) - Project information, installation guidance, FAQ, and the public server directory
-- [Discord Community](https://discord.gg/duneawakeningdocker) - Support, updates, addons, and community discussion
-- [Support the Project](https://ko-fi.com/redblink) - Help support development, testing, and project infrastructure
+## What You Can Do
 
-## Features
+- Set up and manage the server from your browser
+- Monitor status, logs, readiness, backups, and updates
+- Manage players, inventories, progression, rewards, vehicles, and admin actions
+- Control maps, Sietches, Deep Desert layouts, and live map activity
+- Configure memory, autoscaling, and game settings
+- Manage databases, bases, storage, and player blueprints
+- Extend the console with optional Community Addons
 
-- Browser setup wizard for fresh self-hosted servers
-- Live status, readiness, service controls, logs, backups, and updates
-- Player tools for lookup, profile, inventory, crafting, progression, journey, skills, stats, history, and online activity views
-- Player actions for item grants, XP, skill points, water refill, teleport, kick, and vehicle spawn
-- Admin Tools with item, vehicle, skill, command history, and broadcast workflows
-- Care Packages with configurable kits and automatic grant rules
-- Live map marker/list view for online player and server activity
-- Map management for dynamic or always-on maps, Sietches, and Deep Desert layouts
-- Interactive UserEngine and UserGame editing without manually editing config files
-- Memory controls, including per-map settings, the Memory Balancer, and optional host-backed Memory Swap
-- Autoscaler controls for starting, stopping, and reconciling dynamic map servers
-- Database browser plus database backup, restore, import, and maintenance tools
-- Item granting and inventory editing with compatible augments, augment grades, and effect previews
-- Blueprint management for importing, exporting, archiving, and deleting player building blueprints
-- And much more!
-
-## Screenshots
-
-See the [Screenshots Gallery](docs/screenshots.md).
-
-## Documentation
-
-Full documentation index: [docs/README.md](docs/README.md).
+See the [Screenshots Gallery](docs/screenshots.md) for a closer look.
 
 ## Requirements
 
-You do not need to be a Linux expert. Start with a fresh server and the installer will check the basics for you.
+You do not need to be a Linux expert. The installer checks the basics and prepares Docker on supported Linux systems.
 
-| What you need | Plain Explanation |
+| What&nbsp;You&nbsp;Need | Recommendation |
 |---|---|
-| A server | Ubuntu/Linux is the easiest path. Docker Desktop on Windows/WSL2 or a VM can also work. |
-| Docker | You can start even if Docker is not ready yet. On supported Linux servers, the installer prepares Docker for you. |
-| Funcom token | You will paste this into the browser setup wizard. |
-| CPU support | The game server needs AVX/AVX2. Most modern dedicated servers and VPS plans expose this. |
-| Disk space | 200 GB or more is recommended. |
-| Web access | Open the Web UI on port `8088` from your browser. You can use the public address or the same-network/local address shown by the installer. |
+| Server | A fresh 64-bit Ubuntu server is the recommended and easiest option. Other Linux distributions, Docker Desktop on Windows/WSL2, and virtual machines are also supported. |
+| Docker | The installer prepares Docker on supported Linux systems if it is not already available. |
+| CPU | AVX/AVX2 support |
+| Memory | Start with 20 GB RAM; use 30–40 GB or more for additional always-on maps |
+| Storage | 200 GB or more |
+| Funcom token | Entered securely during browser setup |
 
-Memory Guide:
+<details>
+<summary>Memory & CPU Guidance</summary>
 
-RAM decides how many Dune map servers you can keep running comfortably. Start with the basic layout if you are unsure. Add more RAM when you want more maps online at the same time or expect heavier player activity.
+RAM determines how many Dune map servers can run comfortably. Start with the basic layout if you are unsure and add more RAM for additional always-on maps or heavier player activity.
 
-The official Survival server commonly keeps roughly 10-12 GB resident even with no players online; a single idle snapshot is not by itself a memory leak. When reading `docker stats`, CPU is measured in CPU-core units: `100%` is one fully used logical CPU, so `34%` is about one third of one core rather than 34% of the whole host.
+The official Survival server commonly keeps roughly 10–12 GB resident even with no players online; a single idle snapshot is not by itself a memory leak. In `docker stats`, CPU is measured in CPU-core units: `100%` means one fully used logical CPU.
 
 | Server Layout | Recommended RAM |
 |---|---:|
@@ -66,67 +49,57 @@ The official Survival server commonly keeps roughly 10-12 GB resident even with 
 | Main world, extra maps, and Deep Desert | 40 GB |
 | Many always-on maps or heavier player activity | 60 GB+ |
 
-Forward these ports for public/internet hosting:
+</details>
+
+For public/internet hosting, forward these ports:
 
 | Port | Protocol | Purpose |
 |---|---|---|
-| `8088` | TCP | Web admin setup panel |
-| `31982` | TCP | Game messaging |
-| `7777-7810` | UDP | Game traffic |
+| `8088` | TCP | Web admin panel; allow access only for trusted administrators |
+| `31982` | TCP | Game Messaging |
+| `7777-7810` | UDP | Game Traffic |
 
-Keep database and internal admin ports private.
+Keep database and internal admin ports private. Do not expose the Web UI to untrusted users.
 
-## Getting Started
+## Installation
 
-Copy and paste this on a fresh Linux server:
+Copy and paste this command on a fresh Linux server:
 
 ```sh
 sh -c 'set -eu; echo "==> Setting up Dune Docker Console..."; if command -v curl >/dev/null 2>&1; then _download() { curl -fsSL "$1"; }; _download_progress() { curl -fSL "$1"; }; _download_effective_url() { curl -fsSLI -o /dev/null -w "%{url_effective}" "$1"; }; elif command -v wget >/dev/null 2>&1; then _download() { wget -qO- "$1"; }; _download_progress() { wget -O- "$1"; }; _download_effective_url() { wget -qS --spider "$1" 2>&1 | grep -i "^ *Location:" | tail -1 | awk "{print \$2}"; }; else echo "==> Neither curl nor wget found. Installing prerequisites..."; if command -v apt-get >/dev/null 2>&1; then sudo apt-get update && sudo apt-get install -y ca-certificates curl tar; elif command -v dnf >/dev/null 2>&1; then sudo dnf install -y curl tar; elif command -v yum >/dev/null 2>&1; then sudo yum install -y curl tar; elif command -v zypper >/dev/null 2>&1; then sudo zypper install -y curl tar; elif command -v pacman >/dev/null 2>&1; then sudo pacman -Sy --noconfirm curl tar; elif command -v apk >/dev/null 2>&1; then sudo apk add --no-cache curl tar; elif command -v xbps-install >/dev/null 2>&1; then sudo xbps-install -Sy curl tar; else echo "Could not detect package manager. Please install curl or wget manually." >&2; exit 1; fi; _download() { curl -fsSL "$1"; }; _download_progress() { curl -fSL "$1"; }; _download_effective_url() { curl -fsSLI -o /dev/null -w "%{url_effective}" "$1"; }; fi; mkdir -p "$HOME/dune-awakening-selfhost-docker"; cd "$HOME/dune-awakening-selfhost-docker"; echo "==> Finding the latest release..."; latest_url="$(_download_effective_url https://github.com/Red-Blink/dune-awakening-selfhost-docker/releases/latest)"; version="${latest_url##*/}"; echo "==> Downloading dune-awakening-selfhost-docker ${version}..."; _download_progress "https://github.com/Red-Blink/dune-awakening-selfhost-docker/archive/refs/tags/${version}.tar.gz" | tar -xz --strip-components=1; chmod +x install.sh; echo "==> Starting the installer..."; ./install.sh'
 ```
 
+The installer downloads the latest release, starts the Web UI, and tells you which address to open. Complete the remaining setup in your browser.
 
-The installer downloads the latest release, prepares the server, starts the Web UI, and tells you what address to open in your browser. If you are on the same network as the server, use the same-network address. If you are connecting over the internet, use the public address and allow TCP `8088` in your firewall.
-
-On Alpine Linux, the installer uses the distribution's Docker and Docker Compose packages and starts Docker through OpenRC. If the Alpine community repository is disabled or missing, the installer asks before changing the repository configuration.
+On Alpine Linux, the installer uses the distribution's Docker and Docker Compose packages and starts Docker through OpenRC. If the community repository is unavailable, the installer asks before changing repository configuration.
 
 ## Public Server Directory
 
-[dunedocker.app](https://dunedocker.app/) provides a live directory of public servers running Dune Docker Console, including server status, players, region, Sietches, personalized latency, and optional community Discord links.
+[DuneDocker.app](https://dunedocker.app/) helps public server owners showcase their communities and helps players find the right server. Each listing provides a live server page with status, player count, region, Sietches, personalized latency, and an optional Discord community link.
 
-Public server owners can manage their listing and Discord invite from the console Settings page. Local and LAN-only servers are not listed.
+Owners can claim their listing directly from the Console Settings page to verify ownership, manage their public profile and Discord invite, and promote their server through the directory. Public listings can be enabled or disabled at any time.
+
+Local and LAN-only servers are never listed. For transparency, installations contribute only an anonymous server count by default—never server names, addresses, players, or settings—and this can be disabled separately in Settings.
 
 ## Community Addons
 
-Dune Docker Console includes a Community Addons area for extra tools built by the community. Server owners can discover, install, update, enable, and remove addons from the Web UI without replacing the main console. When the catalog publishes a newer semantic version, the installed addon shows an **Update Available** badge and an **Update** button. Updates are checksum-verified and preserve the addon's enabled state, approved access, saved schedules, server-side state, and browser preferences. Any newly requested permission must be reviewed and approved before the update runs.
+Community Addons provide optional tools that can be installed and managed from the Web UI. Addons declare their permissions before installation, and updates preserve their settings and require approval for any new permissions.
 
-Addons are designed to let the community experiment with new panels, reports, helpers, and server-owner workflows while keeping the core console clean. Each addon declares what it needs before it is installed, so server owners can review permissions first.
+Developers can start with the [Official Addon Template](https://github.com/Red-Blink/dune-docker-addon-template).
 
-Have an idea you want to build for Dune Docker Console? Start with the official addon template:
+## Help and Documentation
 
-```text
-https://github.com/Red-Blink/dune-docker-addon-template
-```
+- [Official Website](https://dunedocker.app/) — Project information, installation guidance, FAQ, and server directory
+- [Discord Community](https://discord.gg/duneawakeningdocker) — Support, updates, addons, and community discussion
+- [Documentation](docs/README.md) — Technical and feature documentation
+- [Support the Project](https://ko-fi.com/redblink) — Help support development, testing, and infrastructure
 
-The template gives addon developers a ready-to-use structure, examples, validation, and GitHub release packaging. Build your addon in its own repo, publish a release, then submit it to the community addons list when it is ready for others to try.
+## Contributing
 
-## Contributing & Project Notes
+Issues, fixes, and improvements are welcome. Keep secrets, generated runtime files, and backups out of Git, and never expose the Web UI to untrusted users.
 
-- Issues, fixes, and improvements are welcome.
-- This project is community maintained and experimental.
-- Funcom self-hosting behavior may change over time.
-- Keep secrets, generated runtime files, and backups out of git.
-- Do not expose the Web UI to untrusted users.
+## Credits and License
 
-## Credits
+Dune Docker Console is led and maintained by RedBlink with contributions from the community. Please credit RedBlink as the original developer when sharing or redistributing the project.
 
-Dune Docker Console is led and actively maintained by RedBlink, with fixes, testing, ideas, and contributions from the wider community.
-
-You are welcome to use, fork, modify, share, and redistribute this project. When doing so, please credit RedBlink as the original developer.
-
-## License
-
-**Free and open source under the MIT License.**
-
-You can use, fork, modify, share, and redistribute Dune Docker Console in personal or commercial projects, subject to the license terms.
-
-Read the full [MIT License](LICENSE).
+**Free and open source under the [MIT License](LICENSE).**

@@ -2,13 +2,14 @@ import { useEffect, useState } from "react";
 import { ChevronDown, ChevronUp } from "lucide-react";
 import { api, post } from "../../api/client";
 import { SecretInput } from "../../components/SecretInput";
-import { KeyValueGrid, StatusPill } from "../../components/common/DisplayPrimitives";
+import { InfoTooltip, KeyValueGrid, StatusPill } from "../../components/common/DisplayPrimitives";
 import { firstDefined, formatUiSentence, friendlyColumnName } from "../../lib/display";
 
 type SettingsTaskResult = { status: "running" | "succeeded" | "failed" | "stopped"; title: string; message?: string; details?: string };
 type PublicDirectorySettings = {
   available?: boolean;
   enabled?: boolean;
+  anonymousCountEnabled?: boolean;
   mode?: string;
   state?: string;
   lastSuccessAt?: string | null;
@@ -31,6 +32,7 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl }: SettingsP
   const [passwordSaving, setPasswordSaving] = useState(false);
   const [webPortSaving, setWebPortSaving] = useState(false);
   const [serverListingSaving, setServerListingSaving] = useState(false);
+  const [anonymousCountSaving, setAnonymousCountSaving] = useState(false);
   const [serverListingError, setServerListingError] = useState("");
   const [publicProfileOpen, setPublicProfileOpen] = useState(false);
   const [publicProfileSaving, setPublicProfileSaving] = useState(false);
@@ -148,6 +150,18 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl }: SettingsP
       setServerListingSaving(false);
     }
   }
+  async function changeAnonymousCount(enabled: boolean) {
+    setAnonymousCountSaving(true);
+    setServerListingError("");
+    try {
+      const result = await post<{ ok: boolean; publicDirectory: PublicDirectorySettings }>("/api/settings/public-directory", { anonymousCountEnabled: enabled });
+      setSettings((current) => current ? { ...current, publicDirectory: result.publicDirectory } : current);
+    } catch (error) {
+      setServerListingError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setAnonymousCountSaving(false);
+    }
+  }
   async function verifyListingClaim() {
     setPublicProfileSaving(true);
     setPublicProfileResult({ status: "running", title: "Verifying Listing Claim..." });
@@ -174,10 +188,24 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl }: SettingsP
   const publicDirectory = (settings?.publicDirectory as PublicDirectorySettings | undefined) || {};
   const serverListingVisible = settings !== null && publicDirectory.available === true;
   const serverListingEnabled = publicDirectory.enabled === true;
+  const anonymousCountEnabled = publicDirectory.anonymousCountEnabled !== false;
   const passwordEnvManaged = Boolean(config.adminPasswordEnvManaged);
   const currentPort = String(config.port || "8088");
   return <section className="panel">
     <div className="panel-title"><h2>Settings</h2><div className="action-row settings-title-actions">
+      <div className="memory-feature-toggle settings-anonymous-count-control">
+        <InfoTooltip id="anonymous-count-help" label="About Anonymous Count">Helps us understand how many Dune Docker servers are in use, including local and unlisted installations. Only anonymous server presence is reported—never your server name, IP address, players, or configuration. These statistics help demonstrate project usage and guide future development.</InfoTooltip>
+        <label className={`switch-checkbox settings-anonymous-count-toggle ${anonymousCountEnabled ? "enabled" : "disabled"}`}>
+          <input
+            type="checkbox"
+            disabled={anonymousCountSaving}
+            checked={anonymousCountEnabled}
+            onChange={(event) => { void changeAnonymousCount(event.target.checked); }}
+          />
+          <span className="switch-label">Anonymous Count:</span>
+          <strong className="switch-state">{anonymousCountSaving ? "Saving" : anonymousCountEnabled ? "Enabled" : "Disabled"}</strong>
+        </label>
+      </div>
       {serverListingVisible && <label className={`switch-checkbox settings-server-listing-toggle ${serverListingEnabled ? "enabled" : "disabled"}`}>
         <input
           type="checkbox"

@@ -160,6 +160,11 @@ export function createPublicDirectoryReporter(config, options = {}) {
     process.env.DUNE_PUBLIC_DIRECTORY_URL ||
     DEFAULT_BASE_URL
   ).replace(/\/+$/, "");
+  const presenceBaseUrl = String(
+    options.presenceBaseUrl ||
+    process.env.DUNE_SERVER_PRESENCE_URL ||
+    baseUrl.replace(/\/servers$/, "/server-presence")
+  ).replace(/\/+$/, "");
   const claimBaseUrl = String(
     options.claimBaseUrl ||
     process.env.DUNE_PUBLIC_DIRECTORY_CLAIM_URL ||
@@ -194,6 +199,12 @@ export function createPublicDirectoryReporter(config, options = {}) {
       const settings = readDirectorySettings(config.repoRoot);
       if (!settings.enabled || settings.mode !== "public") {
         await removeRemoteListing(settings);
+        const identity = readIdentity(identityPath);
+        if (settings.anonymousCountEnabled) {
+          await reportAnonymousPresence(settings, identity || getOrCreateIdentity(identityPath));
+        } else if (identity) {
+          await removeRemotePresence(identity);
+        }
         failureCount = 0;
         schedule(DEFAULT_HEARTBEAT_SECONDS * 1000);
         return;
@@ -363,6 +374,50 @@ export function createPublicDirectoryReporter(config, options = {}) {
     });
   }
 
+  async function reportAnonymousPresence(settings, identity) {
+    const attemptedAt = new Date(now()).toISOString();
+    const receipt = await requestJson(fetchImpl, `${presenceBaseUrl}/heartbeat`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        serverId: identity.serverId,
+        secret: identity.secret,
+        installationKey: readDirectoryInstallationKey(config.repoRoot) || undefined,
+        visibility: settings.mode === "public" ? "unlisted_public" : "local",
+        running: await getBattlegroupRunning(),
+        version: readGameBuild(config.repoRoot) || undefined
+      })
+    });
+    const heartbeatSeconds = clampInteger(
+      receipt.nextHeartbeatSeconds,
+      30,
+      15 * 60,
+      DEFAULT_HEARTBEAT_SECONDS
+    );
+    writeState({
+      ...state,
+      enabled: settings.enabled,
+      mode: settings.mode,
+      state: "anonymous-reporting",
+      serverId: identity.serverId,
+      remoteListed: false,
+      lastAttemptAt: attemptedAt,
+      lastSuccessAt: attemptedAt,
+      nextHeartbeatAt: new Date(now() + heartbeatSeconds * 1000).toISOString(),
+      error: null
+    });
+  }
+
+  async function removeRemotePresence(identity) {
+    const response = await fetchImpl(`${presenceBaseUrl}/${encodeURIComponent(identity.serverId)}`, {
+      method: "DELETE",
+      headers: { authorization: `Bearer ${identity.secret}` }
+    });
+    if (!response.ok && response.status !== 404) {
+      throw new Error(`Directory presence removal failed with HTTP ${response.status}.`);
+    }
+  }
+
   async function verifyClaim(code) {
     const identity = readIdentity(identityPath);
     if (!identity) throw new Error("Public server identity is not available yet.");
@@ -409,6 +464,10 @@ export function createPublicDirectoryReporter(config, options = {}) {
 export function readDirectorySettings(repoRoot, env = process.env) {
   const fileEnv = readEnvFile(resolve(repoRoot, ".env"));
   const rawEnabled = firstValue(fileEnv.DUNE_PUBLIC_DIRECTORY_ENABLED, env.DUNE_PUBLIC_DIRECTORY_ENABLED);
+  const rawAnonymousCountEnabled = firstValue(
+    fileEnv.DUNE_ANONYMOUS_SERVER_COUNT_ENABLED,
+    env.DUNE_ANONYMOUS_SERVER_COUNT_ENABLED
+  );
   const mode = String(firstValue(fileEnv.SERVER_IP_MODE, env.SERVER_IP_MODE, "local")).trim().toLowerCase();
   const discordInvite = normalizeDiscordInvite(firstValue(
     fileEnv.DUNE_PUBLIC_DIRECTORY_DISCORD_INVITE,
@@ -417,6 +476,9 @@ export function readDirectorySettings(repoRoot, env = process.env) {
   ));
   return {
     enabled: rawEnabled === undefined ? true : !/^(0|false|no|off|disabled)$/i.test(String(rawEnabled).trim()),
+    anonymousCountEnabled: rawAnonymousCountEnabled === undefined
+      ? true
+      : !/^(0|false|no|off|disabled)$/i.test(String(rawAnonymousCountEnabled).trim()),
     mode,
     title: cleanText(firstValue(fileEnv.SERVER_TITLE, env.SERVER_TITLE, ""), 120),
     region: normalizeRegion(firstValue(fileEnv.SERVER_REGION, env.SERVER_REGION, "")),

@@ -572,7 +572,7 @@ See [blueprints.md](blueprints.md) for the full import/export design.
 | POST | `/api/settings` | Write config | Config object |
 | GET | `/api/settings` | Get setup state | None |
 | GET | `/api/public-directory/status` | Get public directory status | None |
-| POST | `/api/settings/public-directory` | Save public directory settings | `enabled?`, `discordInvite?` |
+| POST | `/api/settings/public-directory` | Save public directory and anonymous-count settings | `enabled?`, `anonymousCountEnabled?`, `discordInvite?` |
 | POST | `/api/settings/public-directory/claim` | Claim server listing | `code` |
 
 ---
