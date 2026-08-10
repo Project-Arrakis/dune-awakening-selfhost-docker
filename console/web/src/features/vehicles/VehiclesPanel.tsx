@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ChevronDown, ChevronUp } from "lucide-react";
-import { vehiclesApi, type VehicleModule, type VehicleRow, type VehicleSharedEntry } from "../../api/vehicles";
-import { DataTable, type SortDirection } from "../../components/common/DataTable";
+import { vehiclesApi, type VehicleRow } from "../../api/vehicles";
+import type { SortDirection } from "../../components/common/DataTable";
+import { VehicleTable } from "./VehicleTable";
 
 type VehiclesPanelProps = {
   onError: (text: string) => void;
@@ -15,21 +15,6 @@ type VehiclesPanelProps = {
 const VEHICLES_AUTO_REFRESH_MS = 15 * 60_000; // 15 minutes — listVehicles is expensive
 const VEHICLES_PAGE_SIZES = [25, 50, 100, 200] as const;
 const VEHICLES_DEFAULT_PAGE_SIZE = 50;
-
-const VEHICLE_COLUMNS = ["name", "type", "owner", "shared_with", "condition_percent", "fuel_percent", "location"];
-const VEHICLE_COLUMN_LABELS: Record<string, string> = {
-  name: "Vehicle",
-  type: "Type",
-  owner: "Owner",
-  shared_with: "Shared With",
-  condition_percent: "Lowest Condition",
-  fuel_percent: "Fuel",
-  location: "Location"
-};
-// shared_with is resolved only on the paged rows server-side, so it has no
-// stable sort key; location is a derived (map + partition + coords) display
-// string with no single server sort column — both are non-sortable.
-const VEHICLE_NON_SORTABLE = ["shared_with", "location"];
 
 type VehiclesCache = {
   q: string;
@@ -55,143 +40,6 @@ function errorText(error: unknown) {
   return error instanceof Error ? error.message : String(error);
 }
 
-function toNumber(value: unknown): number | null {
-  if (value === null || value === undefined || value === "") return null;
-  const n = Number(value);
-  return Number.isFinite(n) ? n : null;
-}
-
-// Green ≥66, amber ≥33, red below — the same thresholds the mockup uses.
-function meterColor(pct: number) {
-  if (pct >= 66) return "var(--success)";
-  if (pct >= 33) return "var(--warning)";
-  return "var(--danger)";
-}
-
-function renderMeter(pct: number | null) {
-  if (pct === null) return <span className="muted">—</span>;
-  const clamped = Math.max(0, Math.min(100, Math.round(pct)));
-  return (
-    <div className="vehicles-meter-cell">
-      <div className="vehicles-meter"><i style={{ width: `${clamped}%`, background: meterColor(clamped) }} /></div>
-      <span className="vehicles-meter-pct">{clamped}%</span>
-    </div>
-  );
-}
-
-// Map name + partition id disambiguate the many instances of the same region
-// (two "HaggaBasin" partitions, two "DeepDesert" partitions, ...) — shown as the
-// subtext under the vehicle name.
-function formatMapPartition(row: VehicleRow) {
-  const map = String(row.map || "").trim() || "Unknown map";
-  return `${map} · partition ${row.partition_id ?? 0}`;
-}
-
-// Rounded world coordinates, shown on the first row of the Location column.
-function formatCoords(row: VehicleRow) {
-  const x = toNumber(row.x);
-  const y = toNumber(row.y);
-  if (x === null || y === null) return "—";
-  // Plain integers (no thousands separators) so the x,y pair can't be misread —
-  // grouping commas inside a comma-separated pair are ambiguous.
-  return `(${Math.round(x)}, ${Math.round(y)})`;
-}
-
-// Deep Desert is a 9x9 sector grid, 250k units per cell, spanning +/-1,125,000:
-// the letter (A-I) tracks Y descending, the number (1-9) tracks X ascending.
-// Only Deep Desert uses this grid; other maps have no documented sector scheme,
-// so they show coordinates alone.
-function mapGridSector(row: VehicleRow): string | null {
-  if (!/deepdesert/i.test(String(row.map || ""))) return null;
-  const x = toNumber(row.x);
-  const y = toNumber(row.y);
-  if (x === null || y === null) return null;
-  const letter = String.fromCharCode(65 + Math.max(0, Math.min(8, Math.floor((1125000 - y) / 250000))));
-  const number = Math.max(0, Math.min(8, Math.floor((x + 1125000) / 250000))) + 1;
-  return `${letter}-${number}`;
-}
-
-function formatDurability(value: unknown): string {
-  const n = toNumber(value);
-  return n === null ? "—" : Math.round(n).toLocaleString();
-}
-
-function renderVehicleCell(row: Record<string, unknown>, column: string) {
-  const vehicle = row as VehicleRow;
-  if (column === "name") {
-    return (
-      <div className="vehicles-name-cell">
-        <span className="vehicles-name">{vehicle.name || "—"}</span>
-        <span className="vehicles-location">{formatMapPartition(vehicle)}</span>
-      </div>
-    );
-  }
-  if (column === "location") {
-    // Second row: the Deep Desert sector grid, else a named sub-region resolved
-    // server-side (e.g. Hagga Basin). Whichever the map provides.
-    const sector = mapGridSector(vehicle);
-    const subLine = sector ? `Sector ${sector}` : (vehicle.region ? String(vehicle.region) : null);
-    return (
-      <div className="vehicles-location-cell">
-        <span className="vehicles-coords">{formatCoords(vehicle)}</span>
-        {subLine && <span className="vehicles-grid">{subLine}</span>}
-      </div>
-    );
-  }
-  if (column === "type") {
-    return vehicle.type ? String(vehicle.type) : <span className="muted">—</span>;
-  }
-  if (column === "owner") {
-    return vehicle.owner ? String(vehicle.owner) : <span className="muted">—</span>;
-  }
-  if (column === "condition_percent") {
-    return renderMeter(toNumber(vehicle.condition_percent));
-  }
-  if (column === "fuel_percent") {
-    return renderMeter(toNumber(vehicle.fuel_percent));
-  }
-  if (column === "shared_with") {
-    const shared: VehicleSharedEntry[] = Array.isArray(vehicle.shared_with) ? vehicle.shared_with : [];
-    if (!shared.length) return <span className="muted">—</span>;
-    return (
-      <span className="vehicles-shared-list">
-        {shared.map((entry) => (
-          <span key={`${entry.name}-${entry.rank}`}>{entry.name} <em>({entry.label})</em></span>
-        ))}
-      </span>
-    );
-  }
-  const value = row[column];
-  return value === null || value === undefined || value === "" ? "—" : String(value);
-}
-
-// A locomotion piece's name carries its mount position as a trailing "(Front
-// Left)" etc. Split it so the position sits on its own line, smaller — the tier
-// name stays the scannable part.
-function splitComponentName(name: string): { base: string; position: string | null } {
-  const match = /^(.*\S)\s+\((Front|Back|Center) (Left|Right|Center)\)$/.exec(name || "");
-  return match ? { base: match[1], position: `${match[2]} ${match[3]}` } : { base: name, position: null };
-}
-
-function renderComponent(module: VehicleModule, index: number) {
-  const pct = module.conditionPercent;
-  const { base, position } = splitComponentName(module.name || "");
-  return (
-    <div className="vehicles-component-card" key={`${module.templateId}-${index}`}>
-      <span className="vehicles-component-name">
-        {base}
-        {position && <span className="vehicles-component-position">{position}</span>}
-      </span>
-      {pct === null || pct === undefined
-        ? <span className="vehicles-component-meta">{module.condition === null || module.condition === undefined ? "Durability not reported" : `${formatDurability(module.condition)} durability`}</span>
-        : <>
-            <div className="vehicles-meter"><i style={{ width: `${Math.max(0, Math.min(100, Math.round(pct)))}%`, background: meterColor(pct) }} /></div>
-            <span className="vehicles-component-meta">{formatDurability(module.condition)} / {formatDurability(module.maxCondition)} · {Math.round(pct)}%</span>
-          </>}
-    </div>
-  );
-}
-
 export function VehiclesPanel({ onError }: VehiclesPanelProps) {
   const [q, setQ] = useState(() => vehiclesCache?.q ?? "");
   const [submittedQ, setSubmittedQ] = useState(() => vehiclesCache?.q ?? "");
@@ -205,7 +53,6 @@ export function VehiclesPanel({ onError }: VehiclesPanelProps) {
   const [supported, setSupported] = useState(() => vehiclesCache?.supported ?? true);
   const [reason, setReason] = useState(() => vehiclesCache?.reason ?? "");
   const [loading, setLoading] = useState(() => vehiclesCache === null);
-  const [expandedId, setExpandedId] = useState<string | null>(null);
   const requestIdRef = useRef(0);
   const skipNextSearchReset = useRef(true);
 
@@ -239,10 +86,6 @@ export function VehiclesPanel({ onError }: VehiclesPanelProps) {
   function changePageSize(nextSize: number) {
     setPageSize(nextSize);
     setPage(0);
-  }
-
-  function toggleExpanded(id: string) {
-    setExpandedId((current) => (current === id ? null : id));
   }
 
   const load = useCallback(async (params: { q: string; page: number; pageSize: number; sortColumn: string; sortDirection: SortDirection }, options: { silent?: boolean } = {}) => {
@@ -360,49 +203,11 @@ export function VehiclesPanel({ onError }: VehiclesPanelProps) {
           <button onClick={submitSearch}>Search</button>
           <button onClick={handleClearSearch} disabled={!q && !submittedQ}>Clear</button>
         </div>
-        <DataTable
+        <VehicleTable
           rows={rows}
-          columns={VEHICLE_COLUMNS}
-          columnLabels={VEHICLE_COLUMN_LABELS}
-          tableClassName="vehicles-table"
-          wrapClassName="vehicles-table-wrap"
-          headerTitles
-          renderCell={renderVehicleCell}
-          nonSortableColumns={VEHICLE_NON_SORTABLE}
           sortColumn={sortColumn}
           sortDirection={sortDirection}
           onSort={handleSort}
-          secondaryActionPosition="start"
-          secondaryActionLabel=""
-          secondaryActionClassName="vehicles-expand-column"
-          secondaryAction={(row) => {
-            const vehicle = row as VehicleRow;
-            const id = String(vehicle.id);
-            const isExpanded = expandedId === id;
-            const label = `${isExpanded ? "Collapse" : "Show"} components for ${vehicle.name || `vehicle ${id}`}`;
-            return <button
-              className="vehicles-expand-button"
-              title={label}
-              aria-label={label}
-              aria-expanded={isExpanded}
-              onClick={(event) => { event.stopPropagation(); toggleExpanded(id); }}
-            >{isExpanded ? <ChevronUp size={14} className="vehicles-expand-chevron" /> : <ChevronDown size={14} className="vehicles-expand-chevron" />}</button>;
-          }}
-          rowKey={(row) => String((row as VehicleRow).id)}
-          onRowClick={(row) => toggleExpanded(String((row as VehicleRow).id))}
-          isRowExpanded={(row) => expandedId === String((row as VehicleRow).id)}
-          renderExpandedRow={(row) => {
-            const vehicle = row as VehicleRow;
-            const modules: VehicleModule[] = Array.isArray(vehicle.modules) ? vehicle.modules : [];
-            return (
-              <div className="vehicles-expanded">
-                <p className="vehicles-expanded-header">{modules.length} component{modules.length === 1 ? "" : "s"}</p>
-                {modules.length === 0
-                  ? <p className="muted">No components fitted.</p>
-                  : <div className="vehicles-component-grid">{modules.map(renderComponent)}</div>}
-              </div>
-            );
-          }}
           emptyMessage="No vehicles have been found yet."
         />
         <div className="panel-title vehicles-pagination-footer">

@@ -130,6 +130,7 @@ Complete reference for all HTTP API endpoints in the Dune Docker Console. All en
 |--------|-------|-------------|------------|
 | GET | `/api/players/{playerId}` | Get player profile summary | `playerId` |
 | GET | `/api/players/{playerId}/inventory` | Get player inventory items — backpack, character gear, loadout, and unique-gear schematics (emote containers excluded), each row tagged with `inventory_type` | `playerId` |
+| GET | `/api/players/{playerId}/vehicles` | Get vehicles owned by or shared with the player, including the player's access relationship | `playerId` |
 | GET | `/api/players/{playerId}/currency` | Get player currency totals | `playerId` |
 | GET | `/api/players/{playerId}/solaris-coin` | Get Solaris Coin total | `playerId` |
 | GET | `/api/players/{playerId}/factions` | Get faction reputation | `playerId` |
@@ -301,6 +302,7 @@ tab can offer a retry only where retrying could actually help.
 | Method | Route | Description | Parameters |
 |--------|-------|-------------|------------|
 | GET | `/api/vehicles` | List all player vehicles (paginated), each with owner, shared-with roster, lowest-component condition %, fuel %, map/partition, coordinates, and per-component durability | `q?`, `page?`, `pageSize?`, `sortColumn?`, `sortDirection?` |
+| GET | `/api/players/{playerId}/vehicles` | List the selected player's owned and shared vehicles using the same vehicle details | `playerId` |
 
 Read-only. `GET /api/vehicles` reports `capabilities.vehicles`; it is false (with a
 `reason`) when the schema lacks the required tables (`vehicles`, `vehicle_modules`,
@@ -310,12 +312,20 @@ Read-only. `GET /api/vehicles` reports `capabilities.vehicles`; it is false (wit
 name, type, owner, map, and exact id. Response fields mirror the paginated-list
 convention (`rows`, `totalCount`, unfiltered `totalVehicles`). Owner resolves from
 the rank-1 permission holder, falling back to the actor's account owner; the
-`shared_with` roster is the rank 2/3 holders. A component's max durability is read
-from its own stats blob (`MaxDurability`, else the decayed cap), falling back to
-the max seen on sibling instances of the same template; `maxCondition`/
-`conditionPercent` are null only when the game recorded no durability figures
-anywhere for it. Fuel percent is null when the database holds fewer than two
-samples of that generator template, so no capacity can be inferred.
+`shared_with` roster is the rank 2/3 holders. A component's maximum durability is
+read from its own stats blob (`MaxDurability`, else the decayed cap). If no stored
+maximum exists, it is inferred only when at least two non-null current-durability
+observations exist for the same template; inferred rows set `maxInferred: true`.
+Missing current durability remains null and is never treated as 0% or 100%.
+`condition_percent` is the lowest comparable component and
+`condition_estimated` reports whether an inferred maximum contributed. Fuel
+capacity is likewise the highest observed current fuel for a generator template;
+`fuel_percent` is null with fewer than two non-null samples, while `current_fuel`
+remains available for raw display.
+
+The player-scoped route is also read-only. Its rows include `relationship`, derived
+from account ownership and permission rank: `Owner`, `Co-Owner`, `Associate`, or
+`Rank N` for a future/unknown nonstandard rank.
 
 Each row also carries a `region` sub-region name where the map has a region table
 (`runtime/data/hagga-regions.json`, extracted from the game paks; Hagga Basin is

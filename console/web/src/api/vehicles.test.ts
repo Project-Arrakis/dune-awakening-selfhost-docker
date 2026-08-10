@@ -28,4 +28,9 @@ describe("vehiclesApi.list", () => {
     vehiclesApi.list({ q: "a&b c" });
     expect(api).toHaveBeenCalledWith("/api/vehicles?q=a%26b+c");
   });
+
+  it("requests a player's vehicles with an encoded player id", () => {
+    vehiclesApi.forPlayer("player/42");
+    expect(api).toHaveBeenCalledWith("/api/players/player%2F42/vehicles");
+  });
 });

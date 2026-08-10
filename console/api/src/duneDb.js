@@ -4601,12 +4601,67 @@ const VEHICLE_CUSTOM_NAME_SQL = `case
   else btrim(pa.actor_name)
 end`;
 
+// Shared by the admin Vehicles pages and the dunedocker.app player snapshot.
+// The game database always gives us a current value for fuel/durability when it
+// records one, but it does not consistently persist a corresponding maximum.
+// A stored module maximum is authoritative. Otherwise, infer a maximum only
+// when at least two non-null observations exist for the exact same template.
+// Missing current values remain unknown: they must never become 0% or 100%.
+const VEHICLE_STATUS_CTES_SQL = `module_raw as (
+  select vm.id, vm.vehicle_id, vm.template_id,
+    (vm.stats->'FVehicleModuleDurabilityStats'->1->>'CurrentDurability')::numeric own_current,
+    nullif((vm.stats->'FVehicleModuleDurabilityStats'->1->>'DecayedMaxDurability')::numeric, 0) own_decayed,
+    nullif((vm.stats->'FVehicleModuleDurabilityStats'->1->>'MaxDurability')::numeric, 0) own_max
+  from dune.vehicle_modules vm
+), module_observed as (
+  select module_raw.*,
+    count(own_current) over(partition by template_id)::int current_samples,
+    max(own_current) over(partition by template_id) observed_max
+  from module_raw
+), module_durability as (
+  select id, vehicle_id, template_id,
+    own_current current_durability,
+    coalesce(own_max, own_decayed,
+      case when current_samples >= 2 then observed_max else null end) max_durability,
+    case
+      when own_max is not null or own_decayed is not null then false
+      when current_samples >= 2 and observed_max is not null then true
+      else null
+    end max_inferred
+  from module_observed
+), vehicle_fuel as (
+  select v.id vehicle_id,
+    fuel.current_fuel,
+    generator.template_id generator_template
+  from dune.vehicles v
+  left join lateral (
+    select (fe.components->'FVehicleComponent'->1->>'CurrentFuel')::numeric current_fuel
+    from dune.actor_fgl_entities afe
+    join dune.fgl_entities fe on fe.entity_id=afe.entity_id
+    where afe.actor_id=v.id and fe.components ? 'FVehicleComponent'
+    limit 1
+  ) fuel on true
+  left join lateral (
+    select vm.template_id
+    from dune.vehicle_modules vm
+    where vm.vehicle_id=v.id and vm.template_id ilike '%Generator%'
+    limit 1
+  ) generator on true
+), fuel_capacity as (
+  select generator_template,
+    max(current_fuel) max_fuel,
+    count(current_fuel)::int fuel_samples
+  from vehicle_fuel
+  where generator_template is not null
+  group by generator_template
+)`;
+
 // Lists every vehicle (across all players) for the admin console, one page at a
 // time. Reuses portalVehicles' module-durability and fuel-capacity CTEs, the
 // listPlayers totals + LEFT JOIN LATERAL pagination (so totalCount survives an
 // out-of-range page — do NOT switch to count(*) over() inside the paged CTE),
 // and the listBases shared-with lateral (resolved only on the paged rows).
-export async function listVehicles(db, { q = "", page = 0, pageSize = 50, sortColumn = "name", sortDirection = "asc" } = {}) {
+export async function listVehicles(db, { q = "", page = 0, pageSize = 50, sortColumn = "name", sortDirection = "asc", playerId = "" } = {}) {
   const requiredTables = [
     "vehicles", "vehicle_modules", "actors", "permission_actor",
     "permission_actor_rank", "player_state", "actor_fgl_entities", "fgl_entities"
@@ -4626,70 +4681,49 @@ export async function listVehicles(db, { q = "", page = 0, pageSize = 50, sortCo
   const pagedOrder = [...sortOrder, ...(sortOrder.includes("id") ? [] : ["id"])]
     .map((column) => `${column} ${safeSortDirection}`).join(", ");
 
+  const player = playerId ? await resolvePlayerMutationTarget(db, playerId) : null;
   const values = [];
-  let searchClause = "";
+  const filters = [];
+  let viewerJoin = "";
+  let relationshipSql = "null::text";
+  if (player) {
+    values.push(player.accountId);
+    const accountParam = values.length;
+    values.push(player.controllerId);
+    const controllerParam = values.length;
+    viewerJoin = `left join lateral (
+          select min(par.rank)::int as rank
+          from dune.permission_actor_rank par
+          where par.permission_actor_id=vc.id and par.player_id=$${controllerParam}
+        ) viewer on true`;
+    filters.push(`(vc.owner_account_id=$${accountParam} or viewer.rank is not null)`);
+    relationshipSql = `case
+            when vc.owner_account_id=$${accountParam} or viewer.rank=1 then 'Owner'
+            when viewer.rank=2 then 'Co-Owner'
+            when viewer.rank=3 then 'Associate'
+            when viewer.rank is not null then 'Rank ' || viewer.rank::text
+            else null
+          end`;
+  }
   if (q) {
     values.push(`%${q}%`);
     const likeParam = values.length;
     values.push(String(q));
     const exactParam = values.length;
-    searchClause = ` where (coalesce(vc.clean_name, vc.type) ilike $${likeParam}`
+    filters.push(`(coalesce(vc.clean_name, vc.type) ilike $${likeParam}`
       + ` or vc.type ilike $${likeParam}`
       + ` or coalesce(own.owner, '') ilike $${likeParam}`
       + ` or vc.map ilike $${likeParam}`
-      + ` or vc.id::text = $${exactParam})`;
+      + ` or vc.id::text = $${exactParam})`);
   }
+  const filterClause = filters.length ? `where ${filters.join(" and ")}` : "";
   values.push(safePageSize, offset);
   const limitParamIndex = values.length - 1;
   const offsetParamIndex = values.length;
 
   try {
     const result = await db.query(`
-      with module_raw as (
-        select vm.id, vm.vehicle_id, vm.template_id,
-          (vm.stats->'FVehicleModuleDurabilityStats'->1->>'CurrentDurability')::numeric own_current,
-          (vm.stats->'FVehicleModuleDurabilityStats'->1->>'DecayedMaxDurability')::numeric own_decayed,
-          (vm.stats->'FVehicleModuleDurabilityStats'->1->>'MaxDurability')::numeric own_max
-        from dune.vehicle_modules vm
-      ), module_durability as (
-        -- Read each module's max from its OWN stats blob (MaxDurability, else the
-        -- decayed cap) so a bar shows even for a one-off module. Only when a module
-        -- records none of its own do we borrow the max seen on sibling instances of
-        -- the same template. A missing CurrentDurability means the module sits at
-        -- its ceiling (undamaged), not zero.
-        select id, vehicle_id, template_id,
-          coalesce(own_current, own_decayed, own_max,
-            max(coalesce(own_max, own_decayed, own_current)) over(partition by template_id)) current_durability,
-          coalesce(own_max, own_decayed,
-            max(coalesce(own_max, own_decayed, own_current)) over(partition by template_id),
-            own_current) max_durability
-        from module_raw
-      ), vehicle_fuel as (
-        select v.id vehicle_id,
-          fuel.current_fuel,
-          generator.template_id generator_template
-        from dune.vehicles v
-        left join lateral (
-          select (fe.components->'FVehicleComponent'->1->>'CurrentFuel')::numeric current_fuel
-          from dune.actor_fgl_entities afe
-          join dune.fgl_entities fe on fe.entity_id=afe.entity_id
-          where afe.actor_id=v.id and fe.components ? 'FVehicleComponent'
-          limit 1
-        ) fuel on true
-        left join lateral (
-          select vm.template_id
-          from dune.vehicle_modules vm
-          where vm.vehicle_id=v.id and vm.template_id ilike '%Generator%'
-          limit 1
-        ) generator on true
-      ), fuel_capacity as (
-        select generator_template,
-          max(current_fuel) max_fuel,
-          count(*) filter(where current_fuel is not null)::int fuel_samples
-        from vehicle_fuel
-        where generator_template is not null
-        group by generator_template
-      ), vehicle_core as (
+      with ${VEHICLE_STATUS_CTES_SQL}, vehicle_core as (
         select v.id,
           ${VEHICLE_TYPE_SQL} as type,
           ${VEHICLE_CUSTOM_NAME_SQL} as clean_name,
@@ -4705,9 +4739,11 @@ export async function listVehicles(db, { q = "", page = 0, pageSize = 50, sortCo
           coalesce(vc.clean_name, vc.type) as name,
           vc.type,
           coalesce(own.owner, '') as owner,
-          min(case when md.max_durability > 0 then
+          ${relationshipSql} as relationship,
+          min(case when md.current_durability is not null and md.max_durability > 0 then
             greatest(0, least(100, floor(100 * md.current_durability / nullif(md.max_durability, 0))))::int
           else null end) condition_percent,
+          (count(*) filter(where md.max_inferred is true and md.current_durability is not null and md.max_durability > 0) > 0) condition_estimated,
           fuel.current_fuel,
           case when cap.fuel_samples >= 2 then cap.max_fuel else null end max_fuel,
           case when cap.fuel_samples >= 2 then
@@ -4721,7 +4757,8 @@ export async function listVehicles(db, { q = "", page = 0, pageSize = 50, sortCo
             'templateId', md.template_id,
             'condition', md.current_durability,
             'maxCondition', md.max_durability,
-            'conditionPercent', case when md.max_durability > 0 then
+            'maxInferred', md.max_inferred,
+            'conditionPercent', case when md.current_durability is not null and md.max_durability > 0 then
               greatest(0, least(100, floor(100 * md.current_durability / nullif(md.max_durability, 0))))::int
             else null end
           ) order by md.template_id) filter(where md.id is not null), '[]'::jsonb) modules
@@ -4740,12 +4777,13 @@ export async function listVehicles(db, { q = "", page = 0, pageSize = 50, sortCo
                order by ps.character_name limit 1)
           ) as owner
         ) own on true
+        ${viewerJoin}
         left join vehicle_fuel fuel on fuel.vehicle_id=vc.id
         left join fuel_capacity cap on cap.generator_template=fuel.generator_template
         left join module_durability md on md.vehicle_id=vc.id
-        ${searchClause}
+        ${filterClause}
         group by vc.id, vc.type, vc.clean_name, vc.map, vc.partition_id, vc.transform,
-          own.owner, fuel.current_fuel, cap.max_fuel, cap.fuel_samples
+          vc.owner_account_id, own.owner, ${player ? "viewer.rank," : ""} fuel.current_fuel, cap.max_fuel, cap.fuel_samples
       ), totals as (
         select count(*)::int as total_count from matched
       )
@@ -4800,41 +4838,13 @@ export async function listVehicles(db, { q = "", page = 0, pageSize = 50, sortCo
 
 export async function portalVehicles(db, playerIds) {
   const result = await db.query(`
-    with module_durability as (
-      select vm.id, vm.vehicle_id, vm.template_id, vm.stats,
-        coalesce((vm.stats->'FVehicleModuleDurabilityStats'->1->>'CurrentDurability')::numeric, 0) current_durability,
-        max(coalesce((vm.stats->'FVehicleModuleDurabilityStats'->1->>'CurrentDurability')::numeric, 0)) over(partition by vm.template_id) max_durability,
-        count(*) over(partition by vm.template_id) durability_samples
-      from dune.vehicle_modules vm
-    ), vehicle_fuel as (
-      select v.id vehicle_id,
-        fuel.current_fuel,
-        generator.template_id generator_template
-      from dune.vehicles v
-      left join lateral (
-        select (fe.components->'FVehicleComponent'->1->>'CurrentFuel')::numeric current_fuel
-        from dune.actor_fgl_entities afe
-        join dune.fgl_entities fe on fe.entity_id=afe.entity_id
-        where afe.actor_id=v.id and fe.components ? 'FVehicleComponent'
-        limit 1
-      ) fuel on true
-      left join lateral (
-        select vm.template_id
-        from dune.vehicle_modules vm
-        where vm.vehicle_id=v.id and vm.template_id ilike '%Generator%'
-        limit 1
-      ) generator on true
-    ), fuel_capacity as (
-      select generator_template,
-        max(current_fuel) max_fuel,
-        count(*) filter(where current_fuel is not null)::int fuel_samples
-      from vehicle_fuel
-      where generator_template is not null
-      group by generator_template
-    )
+    with ${VEHICLE_STATUS_CTES_SQL}
     select v.id::text id, regexp_replace(a.class, '^.*/|\\..*$', '', 'g') type,
       pa.actor_name custom_name,
-      coalesce(floor(100 * sum(vm.current_durability) / nullif(sum(vm.max_durability), 0)), 0)::int condition_percent,
+      min(case when vm.current_durability is not null and vm.max_durability > 0 then
+        greatest(0, least(100, floor(100 * vm.current_durability / nullif(vm.max_durability, 0))))::int
+      else null end) condition_percent,
+      (count(*) filter(where vm.max_inferred is true and vm.current_durability is not null and vm.max_durability > 0) > 0) condition_estimated,
       fuel.current_fuel,
       case when capacity.fuel_samples >= 2 then capacity.max_fuel else null end max_fuel,
       case when capacity.fuel_samples >= 2 then
@@ -4847,8 +4857,9 @@ export async function portalVehicles(db, playerIds) {
       coalesce(jsonb_agg(jsonb_build_object(
         'templateId',vm.template_id,
         'condition',vm.current_durability,
-        'maxCondition',case when vm.durability_samples >= 2 then vm.max_durability else null end,
-        'conditionPercent',case when vm.durability_samples >= 2 then
+        'maxCondition',vm.max_durability,
+        'maxInferred',vm.max_inferred,
+        'conditionPercent',case when vm.current_durability is not null and vm.max_durability > 0 then
           greatest(0, least(100, floor(100 * vm.current_durability / nullif(vm.max_durability, 0))))::int
         else null end
       ) order by vm.template_id) filter(where vm.id is not null),'[]'::jsonb) modules
