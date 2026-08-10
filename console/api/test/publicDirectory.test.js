@@ -197,13 +197,15 @@ test("directory settings default public servers on and normalize test regions", 
   try {
     assert.deepEqual(readDirectorySettings(files.repoRoot, {}), {
       enabled: true,
+      anonymousCountEnabled: true,
       mode: "public",
       title: "Test Sietch",
       region: "Europe",
       discordInvite: "https://discord.gg/Test_Code"
     });
-    writeFileSync(join(files.repoRoot, ".env"), "SERVER_IP_MODE=public\nDUNE_PUBLIC_DIRECTORY_ENABLED=false\n");
+    writeFileSync(join(files.repoRoot, ".env"), "SERVER_IP_MODE=public\nDUNE_PUBLIC_DIRECTORY_ENABLED=false\nDUNE_ANONYMOUS_SERVER_COUNT_ENABLED=false\n");
     assert.equal(readDirectorySettings(files.repoRoot, {}).enabled, false);
+    assert.equal(readDirectorySettings(files.repoRoot, {}).anonymousCountEnabled, false);
   } finally {
     files.cleanup();
   }
@@ -687,7 +689,7 @@ test("an immediate UI-triggered heartbeat replaces the scheduled timer", async (
   }
 });
 
-test("reporter removes a previous listing after switching to local mode", async () => {
+test("reporter removes a previous listing and reports anonymous presence after switching to local mode", async () => {
   const files = fixture();
   const identityPath = join(files.secretsDir, "public-directory.json");
   const statusPath = join(files.generatedDir, "public-directory-status.json");
@@ -703,6 +705,7 @@ test("reporter removes a previous listing after switching to local mode", async 
     }, {
       db: fakeDb(),
       baseUrl: "https://directory.test/api/v1/servers",
+      getBattlegroupRunning: () => false,
       fetchImpl: async (url, options) => {
         requests.push({ url, options });
         return response({ ok: true });
@@ -712,11 +715,21 @@ test("reporter removes a previous listing after switching to local mode", async 
 
     await reporter.tick();
 
-    assert.equal(requests.length, 1);
+    assert.equal(requests.length, 2);
     assert.equal(requests[0].options.method, "DELETE");
     assert.equal(requests[0].url, `https://directory.test/api/v1/servers/${identity.serverId}`);
     assert.equal(requests[0].options.headers.authorization, `Bearer ${identity.secret}`);
-    assert.equal(reporter.publicState().state, "local-only");
+    assert.equal(requests[1].options.method, "POST");
+    assert.equal(requests[1].url, "https://directory.test/api/v1/server-presence/heartbeat");
+    assert.deepEqual(JSON.parse(requests[1].options.body), {
+      serverId: identity.serverId,
+      secret: identity.secret,
+      installationKey: readDirectoryInstallationKey(files.repoRoot),
+      visibility: "local",
+      running: false,
+      version: "2036754"
+    });
+    assert.equal(reporter.publicState().state, "anonymous-reporting");
     assert.equal(reporter.publicState().remoteListed, false);
   } finally {
     files.cleanup();

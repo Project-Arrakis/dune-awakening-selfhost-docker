@@ -120,7 +120,7 @@ button.refresh-status-button.refreshing:disabled {
 .switch-toggle:hover, .switch-checkbox:hover { border-color: var(--accent); }
 .switch-checkbox:has(input:disabled) { opacity: .45; cursor: not-allowed; }
 .settings-title-actions { justify-content: flex-end; }
-.settings-server-listing-toggle .switch-state { min-width: 72px; }
+.settings-server-listing-toggle .switch-state, .settings-anonymous-count-toggle .switch-state { min-width: 72px; }
 .settings-server-listing-error { margin: 0 0 12px; text-align: right; }
 .settings-discord-field { max-width: 720px; }
 .settings-server-page-link { display: inline-flex; align-items: center; gap: 4px; color: var(--title); font-weight: 700; text-decoration: none; }
