@@ -3263,7 +3263,13 @@ export async function basePermissionSystemCustodian(db) {
     order by player_id
     limit 2`);
   if (result.rows.length === 0) {
-    return { available: false, reason: "No supported system custodian was found. Expected the RedBlink Server identity or Funcom GM identity." };
+    return {
+      available: false,
+      canCreate: true,
+      playerId: CARE_PACKAGE_SERVER_PERSONA.playerControllerId,
+      name: CARE_PACKAGE_SERVER_PERSONA.displayName,
+      reason: "The reserved Server identity will be created when ownership is transferred."
+    };
   }
   if (result.rows.length > 1) {
     return { available: false, reason: "More than one canonical Server system identity was found; refusing an ambiguous transfer." };
