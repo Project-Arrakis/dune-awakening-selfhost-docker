@@ -3380,13 +3380,16 @@ async function saveOAuthClientSecret(req, res) {
   const dir = config.secretsDir;
   mkdirSync(dir, { recursive: true });
   const path = resolve(dir, "discord-oauth-client-secret.txt");
+  if (existsSync(path) && readFileSync(path, "utf8").trim().length > 0 && !body.overwrite) {
+    return json(res, 409, { error: "A client secret already exists. Set 'overwrite: true' to replace it." });
+  }
   try {
     writeFileSync(path, `${String(secret).trim()}\n`, { mode: 0o600 });
     chmodSync(path, 0o600);
   } catch (error) {
     return json(res, 500, { error: "Failed to save client secret." });
   }
-  audit(config, req, "setup.save-oauth-secret", { secret: "<redacted>" });
+  audit(config, req, "setup.save-oauth-secret", { secret: "<redacted>", overwrite: Boolean(body.overwrite) });
   return json(res, 200, { ok: true });
 }
 
