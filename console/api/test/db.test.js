@@ -1,4 +1,5 @@
 import test, { beforeEach } from "node:test";
+import { listVehicles, portalVehicleDisplayName } from "../src/duneDb.js";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -1565,6 +1566,170 @@ test("listPlayers preserves the filtered total when the requested page is empty"
   assert.equal(result.totalCount, 12);
   assert.equal(result.totalPlayers, 12);
   assert.deepEqual(result.rows, []);
+});
+
+test("listVehicles returns vehicles with mapped modules and shared_with", async () => {
+  const db = {
+    query: async (text) => {
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("total_vehicles")) return { rows: [{ total_vehicles: 3 }] };
+      if (text.includes("module_durability")) return { rows: [{
+        id: "5001",
+        name: "Sihaya",
+        type: "Sandbike",
+        owner: "Duncan_Idaho",
+        condition_percent: 92,
+        current_fuel: "61",
+        max_fuel: "100",
+        fuel_percent: 61,
+        map: "HaggaBasin",
+        partition_id: 1,
+        x: "1", y: "2", z: "3",
+        total_count: 3,
+        modules: [{ templateId: "GeneratorModule", condition: "440", maxCondition: "500", conditionPercent: 88 }],
+        shared_with: [{ name: "Gurney_H", rank: 2 }]
+      }] };
+      return { rows: [] };
+    }
+  };
+  const result = await listVehicles(db, { page: 0, pageSize: 50 });
+  assert.equal(result.capabilities.vehicles, true);
+  assert.equal(result.totalCount, 3);
+  assert.equal(result.totalVehicles, 3);
+  assert.equal(result.rows.length, 1);
+  assert.equal(result.rows[0].name, "Sihaya");
+  assert.equal(result.rows[0].type, "Sandbike");
+  assert.equal(result.rows[0].owner, "Duncan_Idaho");
+  assert.equal(result.rows[0].partition_id, 1);
+  assert.deepEqual(result.rows[0].shared_with, [{ name: "Gurney_H", rank: 2, label: "Co-Owner" }]);
+  assert.equal(result.rows[0].modules.length, 1);
+  assert.equal(typeof result.rows[0].modules[0].name, "string");
+  assert.equal(result.rows[0].total_count, undefined);
+});
+
+test("listVehicles resolves positional locomotion module names from the catalog", async () => {
+  const db = {
+    query: async (text) => {
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("total_vehicles")) return { rows: [{ total_vehicles: 1 }] };
+      if (text.includes("module_durability")) return { rows: [{
+        id: "1", name: "Buggy", type: "Buggy", owner: "", condition_percent: 100,
+        current_fuel: null, max_fuel: null, fuel_percent: null,
+        map: "HaggaBasin", partition_id: 1, x: null, y: null, z: null,
+        total_count: 1, shared_with: [],
+        modules: [
+          { templateId: "BuggyLocomotionBackLeft_5", condition: 100, maxCondition: 100, conditionPercent: 100 },
+          { templateId: "SandbikeLocomotionBackCenter_2", condition: 50, maxCondition: 100, conditionPercent: 50 },
+          { templateId: "OrnithopterMediumLocomotionCenterRight_5", condition: 90, maxCondition: 100, conditionPercent: 90 }
+        ]
+      }] };
+      return { rows: [] };
+    }
+  };
+  const result = await listVehicles(db, {});
+  const names = result.rows[0].modules.map((module) => module.name);
+  // Positional ids have no direct catalog entry; the base vehicle+tier name is
+  // resolved and the mounting position appended — no raw template ids leak through.
+  assert.deepEqual(names, [
+    "Buggy Tread Mk5 (Back Left)",
+    "Sandbike Tread Mk2 (Back Center)",
+    "Assault Ornithopter Wing Mk5 (Center Right)"
+  ]);
+});
+
+test("listVehicles labels a vehicle with its nearest-marker sub-region", async () => {
+  const db = {
+    query: async (text) => {
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("total_vehicles")) return { rows: [{ total_vehicles: 1 }] };
+      if (text.includes("from dune.map_names where map_name")) return { rows: [{ map_name_id: 11 }] };
+      if (text.includes("cross join lateral") && text.includes("dune.markers")) {
+        return { rows: [{ id: "5001", area_id: 3 }] };
+      }
+      if (text.includes("module_durability")) return { rows: [{
+        id: "5001", name: "Sihaya", type: "Sandbike", owner: "", condition_percent: 90,
+        current_fuel: null, max_fuel: null, fuel_percent: null,
+        map: "HaggaBasin", partition_id: 1, x: "323137", y: "-24360", z: "0",
+        total_count: 1, shared_with: [], modules: []
+      }] };
+      return { rows: [] };
+    }
+  };
+  const result = await listVehicles(db, {});
+  // area_id 3 resolves to "Hagga Rift" via runtime/data/hagga-regions.json.
+  assert.equal(result.rows[0].region, "Hagga Rift");
+});
+
+test("listVehicles returns unsupported when a required table is missing", async () => {
+  const db = {
+    query: async (text, values = []) => {
+      if (text.includes("to_regclass")) {
+        return { rows: [{ exists: !String(values[0] || "").includes("vehicle_modules") }] };
+      }
+      return { rows: [] };
+    }
+  };
+  const result = await listVehicles(db, {});
+  assert.equal(result.capabilities.vehicles, false);
+  assert.equal(result.totalCount, 0);
+  assert.equal(result.totalVehicles, 0);
+  assert.deepEqual(result.rows, []);
+  assert.match(result.reason, /vehicle_modules/);
+});
+
+test("listVehicles preserves the filtered total when the requested page is empty", async () => {
+  const db = {
+    query: async (text) => {
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("total_vehicles")) return { rows: [{ total_vehicles: 9 }] };
+      // Out-of-range page: the LATERAL yields an all-NULL placeholder row, but
+      // total_count still comes from the separate totals CTE.
+      if (text.includes("module_durability")) return { rows: [{ id: null, total_count: 9, shared_with: null, modules: null }] };
+      return { rows: [] };
+    }
+  };
+  const result = await listVehicles(db, { page: 5, pageSize: 5 });
+  assert.equal(result.totalCount, 9);
+  assert.equal(result.totalVehicles, 9);
+  assert.deepEqual(result.rows, []);
+});
+
+test("listVehicles parameterizes the search term", async () => {
+  const calls = [];
+  const db = {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("total_vehicles")) return { rows: [{ total_vehicles: 0 }] };
+      if (text.includes("module_durability")) return { rows: [] };
+      return { rows: [] };
+    }
+  };
+  const injection = "Sihaya'; drop table dune.vehicles; --";
+  await listVehicles(db, { q: injection });
+  const mainQuery = calls.find((call) => call.text.includes("module_durability"));
+  assert.ok(mainQuery.values.includes(`%${injection}%`));
+  assert.ok(mainQuery.values.includes(injection));
+  assert.ok(!mainQuery.text.includes(injection));
+  assert.match(mainQuery.text, /ilike \$\d/);
+});
+
+test("portalVehicleDisplayName maps known classes and passes unmapped ones through", () => {
+  // Real class strings carry a path/prefix; the substring match still resolves.
+  assert.equal(portalVehicleDisplayName("DA_Vehicle_LightOrnithopter_C"), "Scout Ornithopter");
+  assert.equal(portalVehicleDisplayName("MediumOrnithopter"), "Assault Ornithopter");
+  assert.equal(portalVehicleDisplayName("TransportOrnithopter"), "Carrier Ornithopter");
+  assert.equal(portalVehicleDisplayName("SandCrawler"), "Sandcrawler");
+  assert.equal(portalVehicleDisplayName("Sandbike_T3"), "Sandbike");
+  assert.equal(portalVehicleDisplayName("AssaultBuggy"), "Buggy");
+  assert.equal(portalVehicleDisplayName("AssaultTank"), "Battle Tank");
+  // First substring match wins: "transportornithopter" contains "ornithopter"
+  // but must resolve to Carrier, not fall through.
+  assert.equal(portalVehicleDisplayName("TransportOrnithopterHeavy"), "Carrier Ornithopter");
+  // Unmapped class passes through unchanged; empty resolves to the generic label.
+  assert.equal(portalVehicleDisplayName("Skiff"), "Skiff");
+  assert.equal(portalVehicleDisplayName(""), "Vehicle");
+  assert.equal(portalVehicleDisplayName(null), "Vehicle");
 });
 
 test("listPlayers reports statusFilterApplied based on online_status column presence", async () => {

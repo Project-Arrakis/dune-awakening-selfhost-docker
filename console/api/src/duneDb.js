@@ -61,6 +61,7 @@ const MAX_TABLE_PREVIEW_ROWS = 10000;
 const INVENTORY_EDITABLE_COLUMNS = new Set(["stack_size", "quality_level", "position_index", "current_durability"]);
 let craftingRecipeCatalogCache = null;
 let adminItemMetadataCache = null;
+let mapRegionNamesCache = null;
 let augmentCompatibilityCache = null;
 const PLAYER_TARGET_CACHE_TTL_MS = 3000;
 const playerTargetCache = new Map(); // id -> { promise, expiresAt }
@@ -4106,6 +4107,82 @@ function adminItemMetadata() {
   return adminItemMetadataCache;
 }
 
+// Map area_id -> sub-region name, keyed by dune.actors.map. Sourced from the game
+// client paks (see runtime/data/hagga-regions.json); the area_id space matches
+// dune.markers.area_id, so a vehicle is labelled by the nearest marker's area.
+function mapRegionNames() {
+  if (mapRegionNamesCache) return mapRegionNamesCache;
+  let data = {};
+  try {
+    const path = [
+      resolve(process.cwd(), "runtime/data/hagga-regions.json"),
+      resolve(process.cwd(), "../../runtime/data/hagga-regions.json")
+    ].find((candidate) => existsSync(candidate)) || resolve(process.cwd(), "runtime/data/hagga-regions.json");
+    const parsed = JSON.parse(readFileSync(path, "utf8"));
+    for (const [map, areas] of Object.entries(parsed)) {
+      if (!areas || typeof areas !== "object" || Array.isArray(areas)) continue;
+      const byId = new Map();
+      for (const [areaId, name] of Object.entries(areas)) {
+        const id = Number(areaId);
+        if (Number.isInteger(id) && typeof name === "string" && name) byId.set(id, name);
+      }
+      if (byId.size) data[map] = byId;
+    }
+  } catch {
+    // Region labelling is optional; vehicles still list without it.
+    data = {};
+  }
+  mapRegionNamesCache = data;
+  return mapRegionNamesCache;
+}
+
+// Attach a `region` name to each vehicle row whose map has a region table, using
+// the area of the nearest marker. Best-effort: silently no-ops when the markers/
+// map_names tables are absent (region stays undefined). Mutates `rows` in place.
+async function attachVehicleRegions(db, rows) {
+  const regionTable = mapRegionNames();
+  const eligible = rows.filter((row) => regionTable[row.map] && row.x !== null && row.x !== undefined && row.y !== null && row.y !== undefined);
+  if (!eligible.length) return;
+  if (!(await tableExists(db, "markers")) || !(await tableExists(db, "map_names"))) return;
+
+  const byMap = new Map();
+  for (const row of eligible) {
+    if (!byMap.has(row.map)) byMap.set(row.map, []);
+    byMap.get(row.map).push(row);
+  }
+
+  for (const [map, mapRows] of byMap) {
+    const mapNameResult = await db.query("select map_name_id from dune.map_names where map_name = $1 limit 1", [map]);
+    const mapNameId = mapNameResult.rows[0] ? Number(mapNameResult.rows[0].map_name_id) : null;
+    if (mapNameId === null || Number.isNaN(mapNameId)) continue;
+
+    const values = [mapNameId];
+    const tuples = mapRows.map((row) => {
+      values.push(String(row.id), Number(row.x), Number(row.y));
+      const base = values.length;
+      return `($${base - 2}::bigint, $${base - 1}::numeric, $${base}::numeric)`;
+    }).join(", ");
+
+    const result = await db.query(`
+      select p.id::text id, near.area_id
+      from (values ${tuples}) p(id, vx, vy)
+      cross join lateral (
+        select m.area_id
+        from dune.markers m
+        where m.map_name_id = $1 and m.area_id <> 0 and (m.marker).x is not null
+        order by power((m.marker).x - p.vx, 2) + power((m.marker).y - p.vy, 2)
+        limit 1
+      ) near`, values);
+
+    const areaById = new Map(result.rows.map((r) => [String(r.id), Number(r.area_id)]));
+    const names = regionTable[map];
+    for (const row of mapRows) {
+      const areaId = areaById.get(String(row.id));
+      if (areaId !== undefined && names.has(areaId)) row.region = names.get(areaId);
+    }
+  }
+}
+
 function augmentCompatibilityCatalog() {
   if (augmentCompatibilityCache) return augmentCompatibilityCache;
   try {
@@ -4479,6 +4556,248 @@ function portalSkillType(value) {
   return ({ Ability: "Ability", Attribute: "Passive", Key: "Keystone", Perk: "Technique", Science: "Science", Spice: "Spice" })[value] || "Skill";
 }
 
+// Admin Vehicles page. Columns operate on the `matched` CTE's output names.
+// shared_with is resolved only on the paged rows (not here), so it is not
+// sortable — matching how the frontend marks it non-sortable.
+const VEHICLE_SORT_COLUMNS = {
+  id: { order: ["id"] },
+  name: { order: ["lower(coalesce(name, ''))"] },
+  type: { order: ["lower(coalesce(type, ''))"] },
+  owner: { order: ["lower(coalesce(owner, ''))"] },
+  condition_percent: { order: ["condition_percent"] },
+  fuel_percent: { order: ["fuel_percent"] },
+  map: { order: ["lower(coalesce(map, ''))", "partition_id"] }
+};
+
+// Single source of truth for the friendly vehicle-type mapping. Both the SQL
+// label (VEHICLE_TYPE_SQL below, computed in SQL so type can be searched/sorted
+// server-side) and the JS portalVehicleDisplayName() (Discord portal path) are
+// derived from this list, so the two representations can't drift apart. Order
+// matters: the first substring match wins.
+const VEHICLE_TYPE_MAP = [
+  { match: "lightornithopter", label: "Scout Ornithopter" },
+  { match: "mediumornithopter", label: "Assault Ornithopter" },
+  { match: "transportornithopter", label: "Carrier Ornithopter" },
+  { match: "sandcrawler", label: "Sandcrawler" },
+  { match: "sandbike", label: "Sandbike" },
+  { match: "buggy", label: "Buggy" },
+  { match: "tank", label: "Battle Tank" }
+];
+
+// Friendly vehicle label, generated from VEHICLE_TYPE_MAP; unmapped classes fall
+// back to the stripped class name.
+const VEHICLE_TYPE_SQL = `case
+${VEHICLE_TYPE_MAP.map((entry) => `  when lower(coalesce(a.class, '')) like '%${entry.match}%' then '${entry.label}'`).join("\n")}
+  else regexp_replace(a.class, '^.*/|\\..*$', '', 'g')
+end`;
+
+// Custom actor name, cleaned in SQL to mirror portalCustomActorName():
+// blank, "none", and "##"-prefixed sentinels resolve to null (no custom name).
+const VEHICLE_CUSTOM_NAME_SQL = `case
+  when pa.actor_name is null then null
+  when btrim(pa.actor_name) = '' then null
+  when lower(btrim(pa.actor_name)) = 'none' then null
+  when btrim(pa.actor_name) like '##%' then null
+  else btrim(pa.actor_name)
+end`;
+
+// Lists every vehicle (across all players) for the admin console, one page at a
+// time. Reuses portalVehicles' module-durability and fuel-capacity CTEs, the
+// listPlayers totals + LEFT JOIN LATERAL pagination (so totalCount survives an
+// out-of-range page — do NOT switch to count(*) over() inside the paged CTE),
+// and the listBases shared-with lateral (resolved only on the paged rows).
+export async function listVehicles(db, { q = "", page = 0, pageSize = 50, sortColumn = "name", sortDirection = "asc" } = {}) {
+  const requiredTables = [
+    "vehicles", "vehicle_modules", "actors", "permission_actor",
+    "permission_actor_rank", "player_state", "actor_fgl_entities", "fgl_entities"
+  ];
+  for (const table of requiredTables) {
+    if (!(await tableExists(db, table))) {
+      return { ...unsupported("vehicles", requiredTables.map((t) => `dune.${t}`)), totalCount: 0, totalVehicles: 0 };
+    }
+  }
+
+  const safePageSize = intParam(pageSize, "pageSize", 1, 200);
+  const safePage = intParam(page, "page", 0);
+  const offset = safePage * safePageSize;
+  const safeSortColumn = Object.hasOwn(VEHICLE_SORT_COLUMNS, sortColumn) ? sortColumn : "name";
+  const safeSortDirection = String(sortDirection).toLowerCase() === "desc" ? "desc" : "asc";
+  const sortOrder = VEHICLE_SORT_COLUMNS[safeSortColumn].order;
+  const pagedOrder = [...sortOrder, ...(sortOrder.includes("id") ? [] : ["id"])]
+    .map((column) => `${column} ${safeSortDirection}`).join(", ");
+
+  const values = [];
+  let searchClause = "";
+  if (q) {
+    values.push(`%${q}%`);
+    const likeParam = values.length;
+    values.push(String(q));
+    const exactParam = values.length;
+    searchClause = ` where (coalesce(vc.clean_name, vc.type) ilike $${likeParam}`
+      + ` or vc.type ilike $${likeParam}`
+      + ` or coalesce(own.owner, '') ilike $${likeParam}`
+      + ` or vc.map ilike $${likeParam}`
+      + ` or vc.id::text = $${exactParam})`;
+  }
+  values.push(safePageSize, offset);
+  const limitParamIndex = values.length - 1;
+  const offsetParamIndex = values.length;
+
+  try {
+    const result = await db.query(`
+      with module_raw as (
+        select vm.id, vm.vehicle_id, vm.template_id,
+          (vm.stats->'FVehicleModuleDurabilityStats'->1->>'CurrentDurability')::numeric own_current,
+          (vm.stats->'FVehicleModuleDurabilityStats'->1->>'DecayedMaxDurability')::numeric own_decayed,
+          (vm.stats->'FVehicleModuleDurabilityStats'->1->>'MaxDurability')::numeric own_max
+        from dune.vehicle_modules vm
+      ), module_durability as (
+        -- Read each module's max from its OWN stats blob (MaxDurability, else the
+        -- decayed cap) so a bar shows even for a one-off module. Only when a module
+        -- records none of its own do we borrow the max seen on sibling instances of
+        -- the same template. A missing CurrentDurability means the module sits at
+        -- its ceiling (undamaged), not zero.
+        select id, vehicle_id, template_id,
+          coalesce(own_current, own_decayed, own_max,
+            max(coalesce(own_max, own_decayed, own_current)) over(partition by template_id)) current_durability,
+          coalesce(own_max, own_decayed,
+            max(coalesce(own_max, own_decayed, own_current)) over(partition by template_id),
+            own_current) max_durability
+        from module_raw
+      ), vehicle_fuel as (
+        select v.id vehicle_id,
+          fuel.current_fuel,
+          generator.template_id generator_template
+        from dune.vehicles v
+        left join lateral (
+          select (fe.components->'FVehicleComponent'->1->>'CurrentFuel')::numeric current_fuel
+          from dune.actor_fgl_entities afe
+          join dune.fgl_entities fe on fe.entity_id=afe.entity_id
+          where afe.actor_id=v.id and fe.components ? 'FVehicleComponent'
+          limit 1
+        ) fuel on true
+        left join lateral (
+          select vm.template_id
+          from dune.vehicle_modules vm
+          where vm.vehicle_id=v.id and vm.template_id ilike '%Generator%'
+          limit 1
+        ) generator on true
+      ), fuel_capacity as (
+        select generator_template,
+          max(current_fuel) max_fuel,
+          count(*) filter(where current_fuel is not null)::int fuel_samples
+        from vehicle_fuel
+        where generator_template is not null
+        group by generator_template
+      ), vehicle_core as (
+        select v.id,
+          ${VEHICLE_TYPE_SQL} as type,
+          ${VEHICLE_CUSTOM_NAME_SQL} as clean_name,
+          coalesce(a.map, '') as map,
+          coalesce(a.partition_id, 0)::int as partition_id,
+          a.transform,
+          a.owner_account_id
+        from dune.vehicles v
+        join dune.actors a on a.id=v.id
+        left join dune.permission_actor pa on pa.actor_id=v.id
+      ), matched as (
+        select vc.id,
+          coalesce(vc.clean_name, vc.type) as name,
+          vc.type,
+          coalesce(own.owner, '') as owner,
+          min(case when md.max_durability > 0 then
+            greatest(0, least(100, floor(100 * md.current_durability / nullif(md.max_durability, 0))))::int
+          else null end) condition_percent,
+          fuel.current_fuel,
+          case when cap.fuel_samples >= 2 then cap.max_fuel else null end max_fuel,
+          case when cap.fuel_samples >= 2 then
+            greatest(0, least(100, floor(100 * fuel.current_fuel / nullif(cap.max_fuel, 0))))::int
+          else null end fuel_percent,
+          vc.map, vc.partition_id,
+          ((vc.transform).location).x::numeric x,
+          ((vc.transform).location).y::numeric y,
+          ((vc.transform).location).z::numeric z,
+          coalesce(jsonb_agg(jsonb_build_object(
+            'templateId', md.template_id,
+            'condition', md.current_durability,
+            'maxCondition', md.max_durability,
+            'conditionPercent', case when md.max_durability > 0 then
+              greatest(0, least(100, floor(100 * md.current_durability / nullif(md.max_durability, 0))))::int
+            else null end
+          ) order by md.template_id) filter(where md.id is not null), '[]'::jsonb) modules
+        from vehicle_core vc
+        left join lateral (
+          select coalesce(
+            (select ps.character_name
+               from dune.permission_actor_rank par
+               join dune.actors pa2 on pa2.id=par.player_id
+               join dune.player_state ps on ps.account_id=pa2.owner_account_id
+               where par.permission_actor_id=vc.id and par.rank=1
+               order by ps.character_name limit 1),
+            (select ps.character_name
+               from dune.player_state ps
+               where ps.account_id=vc.owner_account_id
+               order by ps.character_name limit 1)
+          ) as owner
+        ) own on true
+        left join vehicle_fuel fuel on fuel.vehicle_id=vc.id
+        left join fuel_capacity cap on cap.generator_template=fuel.generator_template
+        left join module_durability md on md.vehicle_id=vc.id
+        ${searchClause}
+        group by vc.id, vc.type, vc.clean_name, vc.map, vc.partition_id, vc.transform,
+          own.owner, fuel.current_fuel, cap.max_fuel, cap.fuel_samples
+      ), totals as (
+        select count(*)::int as total_count from matched
+      )
+      select paged.*, totals.total_count,
+        coalesce(shared.entries, '[]'::jsonb) as shared_with
+      from totals
+      left join lateral (
+        select * from matched
+        order by ${pagedOrder}
+        limit $${limitParamIndex} offset $${offsetParamIndex}
+      ) paged on true
+      left join lateral (
+        select jsonb_agg(jsonb_build_object('name', ps.character_name, 'rank', par.rank)
+          order by par.rank asc, ps.character_name asc) as entries
+        from dune.permission_actor_rank par
+        join dune.actors player_a on player_a.id = par.player_id
+        join dune.player_state ps on ps.account_id = player_a.owner_account_id
+        where par.permission_actor_id = paged.id
+          and par.rank <> 1
+          and ps.character_name is distinct from paged.owner
+      ) shared on true
+      order by ${pagedOrder}`, values);
+
+    const totalsResult = await db.query("select count(*)::int as total_vehicles from dune.vehicles");
+
+    const rows = result.rows
+      .filter((row) => row.id !== null && row.id !== undefined)
+      .map(({ total_count, ...row }) => ({
+        ...row,
+        shared_with: (Array.isArray(row.shared_with) ? row.shared_with : []).map((entry) => ({
+          name: entry.name,
+          rank: entry.rank,
+          label: permissionRankLabel(entry.rank)
+        })),
+        modules: (row.modules || []).map((module) => ({
+          ...module,
+          name: portalVehicleModuleName(module.templateId)
+        }))
+      }));
+    await attachVehicleRegions(db, rows);
+
+    return {
+      capabilities: { vehicles: true },
+      totalCount: result.rows[0] ? Number(result.rows[0].total_count) : 0,
+      totalVehicles: totalsResult.rows[0] ? Number(totalsResult.rows[0].total_vehicles) : 0,
+      rows
+    };
+  } catch (error) {
+    return { ...unsupported("vehicles", requiredTables.map((t) => `dune.${t}`)), totalCount: 0, totalVehicles: 0, reason: `Vehicles query failed: ${error.message}` };
+  }
+}
+
 export async function portalVehicles(db, playerIds) {
   const result = await db.query(`
     with module_durability as (
@@ -4568,24 +4887,27 @@ function portalVehicleModuleName(templateId) {
   const id = String(templateId || "");
   const direct = adminItemMetadata().get(id)?.name;
   if (direct) return direct;
-  const wing = id.match(/^(OrnithopterLightLocomotion)(Front|Back)(Left|Right)_(\d+)$/i);
-  if (wing) {
-    const base = adminItemMetadata().get(`${wing[1]}_${wing[4]}`)?.name || "Scout Ornithopter Wing";
-    return `${base} (${wing[2]} ${wing[3]})`;
+  // Locomotion pieces (ornithopter wings, ground-vehicle treads) are catalogued
+  // per vehicle + tier, not per mounting position, so the positional template ids
+  // the game actually stores (e.g. BuggyLocomotionBackLeft_5,
+  // OrnithopterMediumLocomotionCenterRight_5) have no direct catalog entry. Strip
+  // the position, resolve the base name, and append the position for readability.
+  // Covers every vehicle class and the Front/Back/Center x Left/Right/Center grid.
+  const loco = id.match(/^([A-Za-z]+Locomotion)(Front|Back|Center)(Left|Right|Center)_(\d+)$/i);
+  if (loco) {
+    const base = adminItemMetadata().get(`${loco[1]}_${loco[4]}`)?.name;
+    if (base) return `${base} (${loco[2]} ${loco[3]})`;
   }
   return id || "Vehicle Module";
 }
 
-function portalVehicleDisplayName(type) {
+// Derived from the same VEHICLE_TYPE_MAP as VEHICLE_TYPE_SQL, so the portal and
+// the admin page always agree on the friendly label. Runs on the path-stripped
+// class; unmapped classes pass through unchanged.
+export function portalVehicleDisplayName(type) {
   const value = String(type || "").toLowerCase();
-  if (value.includes("lightornithopter")) return "Scout Ornithopter";
-  if (value.includes("mediumornithopter")) return "Assault Ornithopter";
-  if (value.includes("transportornithopter")) return "Carrier Ornithopter";
-  if (value.includes("sandcrawler")) return "Sandcrawler";
-  if (value.includes("sandbike")) return "Sandbike";
-  if (value.includes("buggy")) return "Buggy";
-  if (value.includes("tank")) return "Battle Tank";
-  return String(type || "Vehicle");
+  const mapped = VEHICLE_TYPE_MAP.find((entry) => value.includes(entry.match));
+  return mapped ? mapped.label : String(type || "Vehicle");
 }
 
 // Seconds of runtime per fuel unit, measured from m_FuelBurningDuration on the
