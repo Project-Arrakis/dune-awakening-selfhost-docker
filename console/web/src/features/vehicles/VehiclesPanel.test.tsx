@@ -1,7 +1,11 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { mapsApi } from "../../api/maps";
 import { vehiclesApi, type VehiclesListResponse } from "../../api/vehicles";
+import { invalidateInstanceNames } from "../maps/instanceNames";
 import { VehiclesPanel } from "./VehiclesPanel";
+
+vi.mock("../../api/maps", () => ({ mapsApi: { sietchDimensions: vi.fn() } }));
 
 vi.mock("../../api/vehicles", () => ({
   vehiclesApi: {
@@ -52,6 +56,8 @@ function listResponse(overrides: Partial<VehiclesListResponse> = {}): VehiclesLi
 
 beforeEach(() => {
   vi.clearAllMocks();
+  invalidateInstanceNames();
+  vi.mocked(mapsApi.sietchDimensions).mockResolvedValue({ stdout: "", exitCode: 1 } as never);
 });
 
 describe("VehiclesPanel", () => {
@@ -66,9 +72,23 @@ describe("VehiclesPanel", () => {
     expect(screen.getByText(/Gurney_H/)).toBeInTheDocument();
     expect(screen.getByText(/Co-Owner/)).toBeInTheDocument();
     // The location subtext carries the disambiguating map + partition.
-    expect(screen.getByText(/HaggaBasin · partition 1/)).toBeInTheDocument();
+    expect(screen.getByText("Hagga Basin · Partition 1")).toBeInTheDocument();
     // Hagga Basin has no sector grid — coords only, no second row.
     expect(screen.queryByText(/^Sector/)).toBeNull();
+  });
+
+  it("shows the configured map instance name when it can be resolved", async () => {
+    vi.mocked(mapsApi.sietchDimensions).mockImplementation((_map?: string, wantIds?: boolean) => Promise.resolve({
+      stdout: wantIds
+        ? "1\n"
+        : ["DIMENSION  DISPLAY NAME                     PASSWORD", "0          Sietch Abbir                     (unset)"].join("\n"),
+      exitCode: 0
+    }) as never);
+    vi.mocked(vehiclesApi.list).mockResolvedValue(listResponse());
+    renderPanel();
+
+    const location = await screen.findByText("Hagga Basin · Sietch Abbir");
+    expect(location).toHaveAttribute("title", "HaggaBasin · Partition 1");
   });
 
   it("shows the server-provided sub-region on the Location column", async () => {
@@ -115,7 +135,7 @@ describe("VehiclesPanel", () => {
     expect(await screen.findByText("Durability not reported")).toBeInTheDocument();
   });
 
-  it("renders a muted dash for fuel when capacity is unknown", async () => {
+  it("shows raw current fuel when capacity is unknown", async () => {
     vi.mocked(vehiclesApi.list).mockResolvedValue(listResponse({
       rows: [{
         ...listResponse().rows[0],
@@ -126,8 +146,25 @@ describe("VehiclesPanel", () => {
     renderPanel();
 
     await screen.findByText("Sihaya");
-    // Condition still shows a percent; fuel shows a dash.
+    // Condition still shows a percent; fuel retains its authoritative raw value.
     expect(screen.getByText("92%")).toBeInTheDocument();
+    expect(screen.getByText("61 current")).toBeInTheDocument();
+  });
+
+  it("labels inferred condition and fuel percentages as Estimated without a tilde", async () => {
+    vi.mocked(vehiclesApi.list).mockResolvedValue(listResponse({
+      rows: [{
+        ...listResponse().rows[0],
+        condition_estimated: true,
+        modules: [{ ...listResponse().rows[0].modules[0], maxInferred: true }]
+      }]
+    }));
+    renderPanel();
+
+    expect(await screen.findByText(/92%/)).toHaveTextContent("Estimated");
+    expect(screen.getByText(/61%/)).toHaveTextContent("Estimated");
+    fireEvent.click(screen.getByLabelText("Show components for Sihaya"));
+    expect(screen.getByText(/440 \/ 500 · 88% Estimated/)).toBeInTheDocument();
   });
 
   it("submits the search term and clears it", async () => {

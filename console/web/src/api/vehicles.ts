@@ -8,6 +8,7 @@ export type VehicleModule = {
   // inferred -- render the raw condition with no bar in that case.
   maxCondition: number | string | null;
   conditionPercent: number | null;
+  maxInferred?: boolean | null;
 };
 
 export type VehicleSharedEntry = { name: string; rank: number; label: string };
@@ -17,8 +18,10 @@ export type VehicleRow = {
   name: string;
   type: string;
   owner: string;
+  relationship?: string | null;
   shared_with: VehicleSharedEntry[];
   condition_percent: number | null;
+  condition_estimated?: boolean | null;
   // Null when fuel capacity cannot be inferred (<2 samples of the generator
   // template) -- render a muted dash, not a 0% bar.
   current_fuel: number | string | null;
@@ -53,5 +56,6 @@ export const vehiclesApi = {
     if (params.sortDirection) search.set("sortDirection", params.sortDirection);
     const qs = search.toString();
     return api<VehiclesListResponse>(`/api/vehicles${qs ? `?${qs}` : ""}`);
-  }
+  },
+  forPlayer: (playerId: string) => api<VehiclesListResponse>(`/api/players/${encodeURIComponent(playerId)}/vehicles`)
 };

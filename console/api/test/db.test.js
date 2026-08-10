@@ -1607,6 +1607,33 @@ test("listVehicles returns vehicles with mapped modules and shared_with", async 
   assert.equal(result.rows[0].total_count, undefined);
 });
 
+test("listVehicles filters a player's owned and shared vehicles and labels access", async () => {
+  const calls = [];
+  const db = {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("coalesce(ps.player_controller_id")) return { rows: [{ actor_id: 42, account_id: 77, controller_id: 88, player_state_id: 99, online_status: "Offline" }] };
+      if (text.includes("total_vehicles")) return { rows: [{ total_vehicles: 12 }] };
+      if (text.includes("module_durability")) return { rows: [{
+        id: "5001", name: "Sihaya", type: "Sandbike", owner: "Duncan_Idaho", relationship: "Co-Owner",
+        condition_percent: 92, current_fuel: null, max_fuel: null, fuel_percent: null,
+        map: "HaggaBasin", partition_id: 1, x: null, y: null, z: null,
+        total_count: 1, modules: [], shared_with: []
+      }] };
+      return { rows: [] };
+    }
+  };
+
+  const result = await listVehicles(db, { playerId: "42", pageSize: 200 });
+  const mainQuery = calls.find((call) => call.text.includes("module_durability"));
+  assert.equal(result.totalCount, 1);
+  assert.equal(result.rows[0].relationship, "Co-Owner");
+  assert.deepEqual(mainQuery.values.slice(0, 2), [77, 88]);
+  assert.match(mainQuery.text, /vc\.owner_account_id=\$1 or viewer\.rank is not null/);
+  assert.match(mainQuery.text, /par\.player_id=\$2/);
+});
+
 test("listVehicles resolves positional locomotion module names from the catalog", async () => {
   const db = {
     query: async (text) => {
@@ -1712,6 +1739,35 @@ test("listVehicles parameterizes the search term", async () => {
   assert.ok(mainQuery.values.includes(injection));
   assert.ok(!mainQuery.text.includes(injection));
   assert.match(mainQuery.text, /ilike \$\d/);
+});
+
+test("vehicle pages and player portal share conservative health calculations", async () => {
+  const listCalls = [];
+  const listDb = {
+    query: async (text, values = []) => {
+      listCalls.push({ text, values });
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("total_vehicles")) return { rows: [{ total_vehicles: 0 }] };
+      return { rows: [] };
+    }
+  };
+  await listVehicles(listDb, {});
+  const listQuery = listCalls.find((call) => call.text.includes("module_observed"));
+
+  const portalCalls = [];
+  await portalVehicles({ query: async (text, values = []) => { portalCalls.push({ text, values }); return { rows: [] }; } }, [42]);
+  const portalQuery = portalCalls[0];
+
+  for (const query of [listQuery, portalQuery]) {
+    assert.match(query.text, /count\(own_current\) over\(partition by template_id\)/);
+    assert.match(query.text, /case when current_samples >= 2 then observed_max else null end/);
+    assert.match(query.text, /own_current current_durability/);
+    assert.doesNotMatch(query.text, /coalesce\([^\n]*own_current[^\n]*,\s*0\)/);
+    assert.match(query.text, /count\(current_fuel\)::int fuel_samples/);
+  }
+  assert.match(portalQuery.text, /min\(case when vm\.current_durability is not null/);
+  assert.match(listQuery.text, /min\(case when md\.current_durability is not null/);
+  assert.match(listQuery.text, /'conditionPercent', case when md\.current_durability is not null/);
 });
 
 test("portalVehicleDisplayName maps known classes and passes unmapped ones through", () => {
