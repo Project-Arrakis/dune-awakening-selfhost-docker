@@ -1925,6 +1925,11 @@ body.debug .technical-details { display: block; }
 .inline-task-result.result-fail { border-color: #a84848; color: var(--danger-text); }
 .inline-task-result.result-running { border-color: #c68b4a; color: #ffd08a; }
 .table-wrap { overflow: auto; max-height: min(64vh, 620px); border: 1px solid #302b25; border-radius: 8px; margin: 12px 0; }
+/* With no detail panel below it, Players should use the full selected page
+   instead of creating a nested vertical scrollbar. Once a player is opened,
+   the shared cap returns so the detail panel remains close to the table. */
+.table-wrap.players-table-wrap-expanded { max-height: none; }
+.players-detail-anchor { scroll-margin-top: 12px; }
 table { width: max-content; min-width: 100%; border-collapse: collapse; }
 th, td { border-bottom: 1px solid #302b25; padding: 9px 10px; text-align: left; vertical-align: middle; max-width: 360px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 th { color: #ffd08a; background: #171a1d; position: sticky; top: 0; z-index: 1; }
