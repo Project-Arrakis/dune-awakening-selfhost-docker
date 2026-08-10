@@ -3964,6 +3964,62 @@ export async function addFactionReputation(db, id, { factionId, amount }) {
   });
 }
 
+const PLAYER_ASSIGNABLE_FACTIONS = Object.freeze({
+  1: "Atreides",
+  2: "Harkonnen",
+  3: "Neutral"
+});
+
+export async function setPlayerFaction(db, id, { factionId }) {
+  await requireCapability(
+    await supportsPlayerFactionAssignment(db),
+    "Faction assignment requires dune.player_faction and dune.change_player_faction(bigint,smallint,smallint,timestamp without time zone)."
+  );
+  const faction = intParam(factionId, "faction id", 1, 3);
+  if (!Object.hasOwn(PLAYER_ASSIGNABLE_FACTIONS, faction)) throw new Error("Faction must be Atreides, Harkonnen, or Neutral");
+
+  return db.transaction(async (tx) => {
+    const player = await resolvePlayerMutationTarget(tx, id);
+    const current = await tx.query(`
+      select faction_id
+      from dune.player_faction
+      where actor_id = $1
+      for update`, [player.controllerId]);
+    const oldFactionId = Number(current.rows[0]?.faction_id || 3);
+    if (oldFactionId === faction) {
+      return {
+        ok: true,
+        changed: false,
+        player,
+        oldFactionId,
+        factionId: faction,
+        faction: PLAYER_ASSIGNABLE_FACTIONS[faction],
+        message: `Player is already assigned to ${PLAYER_ASSIGNABLE_FACTIONS[faction]}.`
+      };
+    }
+
+    await tx.query(
+      "select dune.change_player_faction($1::bigint, $2::smallint, 3::smallint, now()::timestamp)",
+      [player.controllerId, faction]
+    );
+    // The shipped game function applies normal guild compatibility rules. Keep the
+    // console's existing database-editor behavior for guild leaders by re-pledging
+    // their guild to the newly selected House after the game breaks old allegiance.
+    await pledgeGuildAdminFactionIfNeeded(tx, player.controllerId, faction);
+
+    return {
+      ok: true,
+      changed: true,
+      player,
+      oldFactionId,
+      oldFaction: PLAYER_ASSIGNABLE_FACTIONS[oldFactionId] || `Faction ${oldFactionId}`,
+      factionId: faction,
+      faction: PLAYER_ASSIGNABLE_FACTIONS[faction],
+      message: `Player faction changed from ${PLAYER_ASSIGNABLE_FACTIONS[oldFactionId] || `Faction ${oldFactionId}`} to ${PLAYER_ASSIGNABLE_FACTIONS[faction]}.`
+    };
+  });
+}
+
 export async function addIntel(db, id, { amount }) {
   await requireCapability(await supportsIntelMutation(db), "Intel mutation requires dune.actors.properties with TechKnowledgePlayerComponent.");
   const delta = intParam(amount, "intel amount", 1, 1000000000);
@@ -7458,6 +7514,7 @@ async function playerCapabilities(db) {
     specs: await tableExists(db, "specialization_tracks"),
     addCurrency: await supportsCurrencyMutation(db),
     addFactionReputation: await supportsFactionMutation(db),
+    assignFaction: await supportsPlayerFactionAssignment(db),
     addIntel: await supportsIntelMutation(db),
     craftingRecipes: await supportsCraftingRecipes(db),
     researchItems: await supportsResearchItems(db),
@@ -7754,6 +7811,11 @@ async function supportsFactionMutation(db) {
   const actorColumns = await columnsFor(db, "actors");
   return actorColumns.has("properties") &&
     await functionExists(db, "dune.set_player_faction_reputation(bigint,smallint,integer)");
+}
+
+async function supportsPlayerFactionAssignment(db) {
+  return await tableExists(db, "player_faction") &&
+    await functionExists(db, "dune.change_player_faction(bigint,smallint,smallint,timestamp without time zone)");
 }
 
 async function supportsInventoryDelete(db) {

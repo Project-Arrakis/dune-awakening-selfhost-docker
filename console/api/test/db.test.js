@@ -17,7 +17,7 @@ import {
   queueGeneratorRefill,
   supportsGeneratorRefillQueue
 } from "../src/duneDb.js";
-import { addCurrency, addFactionReputation, addGuildMember, addIntel, addonLeadershipPlayers, addonOpsHealthFarms, addonOpsHealthPlayers, addonOpsHealthSummary, addonOpsHealthSummaryV2, addSpecializationXp, applyLandsraadMilestonePreset, augmentInventoryItem, augmentNewestPlayerItem, baseGeneratorFuelLevels, baseGenerators, changeDunePassword, completeJourneyNode, completeTutorial, dbStatus, deleteInventoryItem, demoteGuildMember, disbandGuild, exportBaseAsBlueprint, generatorUptimePolicy, giveItemToPlayer, giveItemToStorage, guildMembers, landsraadOverview, listBases, listGuilds, listPlayers, listRoutines, listSpicefieldTypes, listTables, liveMapPlayers, liveMapServices, playerCraftingRecipes, playerCurrency, playerFactions, playerIntel, playerInventory, playerInventoryAll, playerJourney, playerPortalSnapshots, playerPosition, playerProfile, playerProgression, playerResearchItems, playerSolarisCoinTotal, playerVitals, portalGeneratorFuel, portalVehicles, promoteGuildMember, refillBaseGenerators, removeGuildMember, repairVehicleDecay, resetJourneyNode, resetTutorial, routineDefinition, runSql, setLandsraadPlayerContribution, supportsGeneratorRefill, tablePreview, teleportOfflinePlayerToCoords, unlockCraftingRecipe, unlockResearchItem, updateInventoryItem, updateLandsraadRewardTier, updateLandsraadTaskGoal, updateLandsraadTermTaskGoals, updateSpicefieldType, updateTableRow, UnsupportedCapabilityError, _resetPlayerTargetCacheForTests } from "../src/duneDb.js";
+import { addCurrency, addFactionReputation, addGuildMember, addIntel, addonLeadershipPlayers, addonOpsHealthFarms, addonOpsHealthPlayers, addonOpsHealthSummary, addonOpsHealthSummaryV2, addSpecializationXp, applyLandsraadMilestonePreset, augmentInventoryItem, augmentNewestPlayerItem, baseGeneratorFuelLevels, baseGenerators, changeDunePassword, completeJourneyNode, completeTutorial, dbStatus, deleteInventoryItem, demoteGuildMember, disbandGuild, exportBaseAsBlueprint, generatorUptimePolicy, giveItemToPlayer, giveItemToStorage, guildMembers, landsraadOverview, listBases, listGuilds, listPlayers, listRoutines, listSpicefieldTypes, listTables, liveMapPlayers, liveMapServices, playerCraftingRecipes, playerCurrency, playerFactions, playerIntel, playerInventory, playerInventoryAll, playerJourney, playerPortalSnapshots, playerPosition, playerProfile, playerProgression, playerResearchItems, playerSolarisCoinTotal, playerVitals, portalGeneratorFuel, portalVehicles, promoteGuildMember, refillBaseGenerators, removeGuildMember, repairVehicleDecay, resetJourneyNode, resetTutorial, routineDefinition, runSql, setLandsraadPlayerContribution, setPlayerFaction, supportsGeneratorRefill, tablePreview, teleportOfflinePlayerToCoords, unlockCraftingRecipe, unlockResearchItem, updateInventoryItem, updateLandsraadRewardTier, updateLandsraadTaskGoal, updateLandsraadTermTaskGoals, updateSpicefieldType, updateTableRow, UnsupportedCapabilityError, _resetPlayerTargetCacheForTests } from "../src/duneDb.js";
 
 beforeEach(() => {
   _resetPlayerTargetCacheForTests();
@@ -3997,6 +3997,37 @@ test("faction mutation clamps reputation and syncs actor component JSON", async 
   assert.equal(result.newValue, 12474);
   assert.ok(calls.some((call) => call.text.includes("set_player_faction_reputation") && call.values[2] === 12474));
   assert.ok(calls.some((call) => call.text.includes("FactionPlayerComponent,m_FactionDataArray")));
+});
+
+test("player faction assignment uses the game's faction function with the controller id", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, { playerFactionRows: [] });
+
+  const result = await setPlayerFaction(db, 123, { factionId: 1 });
+
+  assert.equal(result.changed, true);
+  assert.equal(result.oldFaction, "Neutral");
+  assert.equal(result.faction, "Atreides");
+  const change = calls.find((call) => call.text.includes("dune.change_player_faction"));
+  assert.deepEqual(change.values, [55, 1]);
+});
+
+test("player faction assignment removes the personal assignment by selecting Neutral", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, { playerFactionRows: [{ faction_id: 2 }] });
+
+  const result = await setPlayerFaction(db, 123, { factionId: 3 });
+
+  assert.equal(result.changed, true);
+  assert.equal(result.oldFaction, "Harkonnen");
+  assert.equal(result.faction, "Neutral");
+  const change = calls.find((call) => call.text.includes("dune.change_player_faction"));
+  assert.deepEqual(change.values, [55, 3]);
+});
+
+test("player faction assignment rejects non-playable faction ids", async () => {
+  const db = fakeMutationDb([]);
+  await assert.rejects(() => setPlayerFaction(db, 123, { factionId: 4 }), /invalid faction id/i);
 });
 
 test("specialization XP mutation updates fractional level from the XP curve", async () => {
