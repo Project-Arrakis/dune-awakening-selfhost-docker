@@ -16,7 +16,7 @@ import {
   queueGeneratorRefill,
   supportsGeneratorRefillQueue
 } from "../src/duneDb.js";
-import { addCurrency, addFactionReputation, addGuildMember, addIntel, addonLeadershipPlayers, addonOpsHealthFarms, addonOpsHealthPlayers, addonOpsHealthSummary, addonOpsHealthSummaryV2, addSpecializationXp, applyLandsraadMilestonePreset, augmentInventoryItem, augmentNewestPlayerItem, baseGeneratorFuelLevels, baseGenerators, changeDunePassword, completeJourneyNode, completeTutorial, dbStatus, deleteInventoryItem, demoteGuildMember, disbandGuild, exportBaseAsBlueprint, generatorUptimePolicy, giveItemToPlayer, giveItemToStorage, guildMembers, landsraadOverview, listBases, listGuilds, listPlayers, listVehicles, listRoutines, listSpicefieldTypes, listTables, liveMapPlayers, liveMapServices, playerCraftingRecipes, playerCurrency, playerFactions, playerIntel, playerInventory, playerJourney, playerPortalSnapshots, playerPosition, playerProfile, playerProgression, playerResearchItems, playerSolarisCoinTotal, playerVitals, portalGeneratorFuel, portalVehicles, promoteGuildMember, refillBaseGenerators, removeGuildMember, repairVehicleDecay, resetJourneyNode, resetTutorial, routineDefinition, runSql, setLandsraadPlayerContribution, supportsGeneratorRefill, tablePreview, teleportOfflinePlayerToCoords, unlockCraftingRecipe, unlockResearchItem, updateInventoryItem, updateLandsraadRewardTier, updateLandsraadTaskGoal, updateLandsraadTermTaskGoals, updateSpicefieldType, updateTableRow, UnsupportedCapabilityError, _resetPlayerTargetCacheForTests } from "../src/duneDb.js";
+import { addCurrency, addFactionReputation, addGuildMember, addIntel, addonLeadershipPlayers, addonOpsHealthFarms, addonOpsHealthPlayers, addonOpsHealthSummary, addonOpsHealthSummaryV2, addSpecializationXp, applyLandsraadMilestonePreset, augmentInventoryItem, augmentNewestPlayerItem, baseGeneratorFuelLevels, baseGenerators, changeDunePassword, completeJourneyNode, completeTutorial, dbStatus, deleteInventoryItem, demoteGuildMember, disbandGuild, exportBaseAsBlueprint, generatorUptimePolicy, giveItemToPlayer, giveItemToStorage, guildMembers, landsraadOverview, listBases, listGuilds, listPlayers, listVehicles, listRoutines, listSpicefieldTypes, listTables, liveMapPlayers, liveMapServices, playerCraftingRecipes, playerCurrency, playerFactions, playerIntel, playerInventory, playerJourney, playerPortalSnapshots, playerPosition, playerProfile, playerProgression, playerResearchItems, playerSolarisCoinTotal, playerVitals, portalGeneratorFuel, portalVehicles, portalVehicleDisplayName, promoteGuildMember, refillBaseGenerators, removeGuildMember, repairVehicleDecay, resetJourneyNode, resetTutorial, routineDefinition, runSql, setLandsraadPlayerContribution, supportsGeneratorRefill, tablePreview, teleportOfflinePlayerToCoords, unlockCraftingRecipe, unlockResearchItem, updateInventoryItem, updateLandsraadRewardTier, updateLandsraadTaskGoal, updateLandsraadTermTaskGoals, updateSpicefieldType, updateTableRow, UnsupportedCapabilityError, _resetPlayerTargetCacheForTests } from "../src/duneDb.js";
 
 beforeEach(() => {
   _resetPlayerTargetCacheForTests();
@@ -1711,6 +1711,24 @@ test("listVehicles parameterizes the search term", async () => {
   assert.ok(mainQuery.values.includes(injection));
   assert.ok(!mainQuery.text.includes(injection));
   assert.match(mainQuery.text, /ilike \$\d/);
+});
+
+test("portalVehicleDisplayName maps known classes and passes unmapped ones through", () => {
+  // Real class strings carry a path/prefix; the substring match still resolves.
+  assert.equal(portalVehicleDisplayName("DA_Vehicle_LightOrnithopter_C"), "Scout Ornithopter");
+  assert.equal(portalVehicleDisplayName("MediumOrnithopter"), "Assault Ornithopter");
+  assert.equal(portalVehicleDisplayName("TransportOrnithopter"), "Carrier Ornithopter");
+  assert.equal(portalVehicleDisplayName("SandCrawler"), "Sandcrawler");
+  assert.equal(portalVehicleDisplayName("Sandbike_T3"), "Sandbike");
+  assert.equal(portalVehicleDisplayName("AssaultBuggy"), "Buggy");
+  assert.equal(portalVehicleDisplayName("AssaultTank"), "Battle Tank");
+  // First substring match wins: "transportornithopter" contains "ornithopter"
+  // but must resolve to Carrier, not fall through.
+  assert.equal(portalVehicleDisplayName("TransportOrnithopterHeavy"), "Carrier Ornithopter");
+  // Unmapped class passes through unchanged; empty resolves to the generic label.
+  assert.equal(portalVehicleDisplayName("Skiff"), "Skiff");
+  assert.equal(portalVehicleDisplayName(""), "Vehicle");
+  assert.equal(portalVehicleDisplayName(null), "Vehicle");
 });
 
 test("listPlayers reports statusFilterApplied based on online_status column presence", async () => {

@@ -287,7 +287,7 @@ generator refill routes above. See [base-permissions.md](base-permissions.md).
 Read-only. `GET /api/vehicles` reports `capabilities.vehicles`; it is false (with a
 `reason`) when the schema lacks the required tables (`vehicles`, `vehicle_modules`,
 `actors`, `permission_actor`, `permission_actor_rank`, `player_state`,
-`actor_fgl_entities`, `fgl_entities`). Sortable `sortColumn` values: `name`,
+`actor_fgl_entities`, `fgl_entities`). Sortable `sortColumn` values: `id`, `name`,
 `type`, `owner`, `condition_percent`, `fuel_percent`, `map`; `q` matches vehicle
 name, type, owner, map, and exact id. Response fields mirror the paginated-list
 convention (`rows`, `totalCount`, unfiltered `totalVehicles`). Owner resolves from
