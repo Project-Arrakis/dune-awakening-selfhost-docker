@@ -71,6 +71,15 @@ describe("VehiclesPanel", () => {
     expect(screen.queryByText(/^Sector/)).toBeNull();
   });
 
+  it("shows the server-provided sub-region on the Location column", async () => {
+    vi.mocked(vehiclesApi.list).mockResolvedValue(listResponse({
+      rows: [{ ...listResponse().rows[0], map: "HaggaBasin", region: "Hagga Rift" }]
+    }));
+    renderPanel();
+
+    expect(await screen.findByText("Hagga Rift")).toBeInTheDocument();
+  });
+
   it("shows the Deep Desert sector grid as a second location row", async () => {
     vi.mocked(vehiclesApi.list).mockResolvedValue(listResponse({
       rows: [{ ...listResponse().rows[0], map: "DeepDesert", partition_id: 8, x: 0, y: 0 }]

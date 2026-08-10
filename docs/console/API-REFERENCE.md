@@ -299,6 +299,12 @@ the max seen on sibling instances of the same template; `maxCondition`/
 anywhere for it. Fuel percent is null when the database holds fewer than two
 samples of that generator template, so no capacity can be inferred.
 
+Each row also carries a `region` sub-region name where the map has a region table
+(`runtime/data/hagga-regions.json`, extracted from the game paks; Hagga Basin is
+covered). It is resolved from the nearest `dune.markers.area_id` and is best-effort
+— absent when marker data is unavailable. Deep Desert instead exposes its A–I/1–9
+sector grid, derived client-side from coordinates.
+
 The separate `/api/admin/vehicles*` routes under [Admin Tools](#admin-tools) are a
 different, CLI-backed surface (blueprint catalog and spawning), not this Postgres
 read.
