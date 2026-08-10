@@ -8873,8 +8873,10 @@ export async function migrateDiscordAdapterSchema(db) {
       create unique index if not exists discord_pending_account_links_player_uidx
       on console.discord_pending_account_links (player_controller_id)`);
     // Clean up stale link rows where the game character was deleted (M5, #183).
-    await tx.query(`delete from console.discord_account_links where not exists (select 1 from dune.player_state ps where ps.player_controller_id::text = player_controller_id)`);
-    await tx.query(`delete from console.discord_player_links where not exists (select 1 from dune.player_state ps where ps.player_controller_id::text = player_controller_id)`);
+    // Both sides need ::text cast because Postgres resolves the unqualified
+    // outer-table reference against the dune.player_state bigint column first.
+    await tx.query(`delete from console.discord_account_links where not exists (select 1 from dune.player_state ps where ps.player_controller_id::text = player_controller_id::text)`);
+    await tx.query(`delete from console.discord_player_links where not exists (select 1 from dune.player_state ps where ps.player_controller_id::text = player_controller_id::text)`);
   };
   if (typeof db.transaction === "function") return db.transaction(migrate);
   return migrate(db);
