@@ -546,6 +546,13 @@ async function handleApi(req, res) {
   if (path.match(/^\/api\/bases\/[^/]+\/permissions$/) && req.method === "GET") return basePermissionsRoute(res, path);
   if (path.match(/^\/api\/bases\/[^/]+\/permissions$/) && req.method === "PUT") return baseSetPermissionsRoute(req, res, path);
   if (path.match(/^\/api\/bases\/[^/]+\/system-custodian$/) && req.method === "POST") return baseSystemCustodianRoute(req, res, path);
+  if (path === "/api/vehicles") return dbJson(res, () => duneDb.listVehicles(db, {
+    q: url.searchParams.get("q") || "",
+    page: url.searchParams.get("page") || 0,
+    pageSize: url.searchParams.get("pageSize") || 50,
+    sortColumn: url.searchParams.get("sortColumn") || "name",
+    sortDirection: url.searchParams.get("sortDirection") || "asc"
+  }));
   if (path === "/api/admin/items/catalog") return json(res, 200, { rows: listCatalogItems(config.repoRoot, { q: url.searchParams.get("q") || "", limit: url.searchParams.get("limit") || 500 }) });
   if (path === "/api/admin/items/search") return commandJson(res, "adminItemSearch", { q: url.searchParams.get("q") || "" });
   if (path === "/api/admin/items") return commandJson(res, url.searchParams.get("category") ? "adminItemListCategory" : "adminItemList", { category: url.searchParams.get("category") || "" });
