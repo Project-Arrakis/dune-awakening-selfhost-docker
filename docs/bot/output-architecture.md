@@ -53,3 +53,11 @@ Every command response flows through one of 5 pipeline methods:
 - yacketrj/arrakis-control-panel#114-131 (output polish issues)
 - yacketrj/arrakis-control-panel#118 (unified pipeline)
 - Red-Blink/dune-awakening-selfhost-docker#141 (RW architecture docs)
+
+## Requirements Compliance
+
+- **Requirement 13**: Issue #231 filed before PR creation
+- **Requirement 19**: Created as draft, marked ready after local verification
+- **Requirement 20**: Docs-only PR — Layer 1 design audit not applicable (no code)
+- **Requirement 21**: Branch `docs/bot-output-architecture` used, not main
+- **Requirement 22**: Test drift checked — N/A (docs-only, no test code changed)
