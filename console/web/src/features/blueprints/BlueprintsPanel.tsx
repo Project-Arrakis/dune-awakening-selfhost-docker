@@ -215,7 +215,9 @@ export function BlueprintsPanel({ onError, confirmAction, dbPlayerId = "", playe
     setImporting(true);
     try {
       const inventory = await api<{ rows: Record<string, unknown>[]; maxSlots?: number }>(`/api/players/${dbPlayerId}/inventory`);
-      const itemCount = (inventory.rows || []).length;
+      // The endpoint now returns equipped gear alongside the backpack; imported
+      // blueprints land in the backpack (inventory_type 0), so only those count.
+      const itemCount = (inventory.rows || []).filter((row) => Number(row.inventory_type) === 0).length;
       const maxSlots = inventory.maxSlots || 40;
       const available = maxSlots - itemCount;
       if (importFiles.length > available) {

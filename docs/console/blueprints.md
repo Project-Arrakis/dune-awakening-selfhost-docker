@@ -232,9 +232,11 @@ If `used >= max`, the import is rejected with:
 
 ### Slot Check (Frontend)
 
-The frontend calls `GET /api/players/:id/inventory` (now filtered to `inventory_type = 0`, backpack only)
-and blocks the entire batch if `importFiles.length > availableSlots`. This is all-or-nothing —
-no partial imports.
+The frontend calls `GET /api/players/:id/inventory` (which returns the backpack plus the
+character-gear, loadout, and unique-schematic containers, each row tagged with
+`inventory_type`) and counts only backpack rows — `inventory_type = 0` — against
+`availableSlots`, since imported blueprints land in the backpack. It blocks the entire batch
+if `importFiles.length > availableSlots`. This is all-or-nothing — no partial imports.
 
 ### Volume
 
