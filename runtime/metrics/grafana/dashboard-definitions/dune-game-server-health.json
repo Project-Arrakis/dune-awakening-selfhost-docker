@@ -1,87 +1,30 @@
-{
-  "uid": "dune-game-server-health",
-  "title": "Dune — Game Server Health",
-  "tags": ["dune", "noc"],
-  "schemaVersion": 39,
-  "version": 1,
-  "refresh": "30s",
-  "panels": [
-    {
-      "title": "Players Online",
-      "type": "stat",
-      "gridPos": {"x": 0, "y": 0, "w": 6, "h": 3},
-      "targets": [{"expr": "dune_players_online", "legendFormat": "Online"}]
-    },
-    {
-      "title": "CPU Usage",
-      "type": "gauge",
-      "gridPos": {"x": 6, "y": 0, "w": 6, "h": 3},
-      "targets": [{"expr": "100 * (1 - avg(rate(node_cpu_seconds_total{mode=\"idle\"}[5m])))", "legendFormat": "CPU %"}],
-      "fieldConfig": {
-        "defaults": {"unit": "percent", "min": 0, "max": 100, "thresholds": {"steps": [{"color": "green", "value": null}, {"color": "orange", "value": 70}, {"color": "red", "value": 90}]}}
-      }
-    },
-    {
-      "title": "Memory Usage",
-      "type": "gauge",
-      "gridPos": {"x": 12, "y": 0, "w": 6, "h": 3},
-      "targets": [{"expr": "100 * (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes))", "legendFormat": "Memory %"}],
-      "fieldConfig": {
-        "defaults": {"unit": "percent", "min": 0, "max": 100, "thresholds": {"steps": [{"color": "green", "value": null}, {"color": "orange", "value": 80}, {"color": "red", "value": 95}]}}
-      }
-    },
-    {
-      "title": "Disk Usage",
-      "type": "gauge",
-      "gridPos": {"x": 18, "y": 0, "w": 6, "h": 3},
-      "targets": [{"expr": "100 * (1 - (node_filesystem_avail_bytes{fstype!=\"tmpfs\"} / node_filesystem_size_bytes{fstype!=\"tmpfs\"}))", "legendFormat": "Disk %"}],
-      "fieldConfig": {
-        "defaults": {"unit": "percent", "min": 0, "max": 100, "thresholds": {"steps": [{"color": "green", "value": null}, {"color": "orange", "value": 80}, {"color": "red", "value": 95}]}}
-      }
-    },
-    {
-      "title": "CPU/Memory/Disk — 24h",
-      "type": "timeseries",
-      "gridPos": {"x": 0, "y": 3, "w": 24, "h": 8},
-      "targets": [
-        {"expr": "100 * (1 - avg(rate(node_cpu_seconds_total{mode=\"idle\"}[5m])))", "legendFormat": "CPU %"},
-        {"expr": "100 * (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes))", "legendFormat": "Memory %"},
-        {"expr": "100 * (1 - (node_filesystem_avail_bytes{fstype!=\"tmpfs\"} / node_filesystem_size_bytes{fstype!=\"tmpfs\"}))", "legendFormat": "Disk %"}
-      ]
-    },
-    {
-      "title": "Container Health",
-      "type": "stat",
-      "gridPos": {"x": 0, "y": 11, "w": 6, "h": 3},
-      "targets": [{"expr": "count(up{job=~\"dune-.*\"} == 1)", "legendFormat": "Running"}, {"expr": "count(up{job=~\"dune-.*\"})", "legendFormat": "Total"}],
-      "fieldConfig": {"defaults": {"thresholds": {"steps": [{"color": "green", "value": null}, {"color": "red", "value": 0}]}}}
-    },
-    {
-      "title": "Active Alerts",
-      "type": "stat",
-      "gridPos": {"x": 6, "y": 11, "w": 6, "h": 3},
-      "targets": [{"expr": "count(ALERTS{alertstate=\"firing\"})", "legendFormat": "Firing"}],
-      "fieldConfig": {"defaults": {"thresholds": {"steps": [{"color": "green", "value": null}, {"color": "orange", "value": 1}, {"color": "red", "value": 5}]}}}
-    },
-    {
-      "title": "Postgres Connections",
-      "type": "gauge",
-      "gridPos": {"x": 12, "y": 11, "w": 6, "h": 3},
-      "targets": [{"expr": "100 * (pg_stat_activity_count / pg_settings_max_connections)", "legendFormat": "PG Conn %"}],
-      "fieldConfig": {"defaults": {"unit": "percent", "max": 100, "thresholds": {"steps": [{"color": "green", "value": null}, {"color": "orange", "value": 70}, {"color": "red", "value": 90}]}}}
-    },
-    {
-      "title": "Postgres Cache Hit Ratio",
-      "type": "gauge",
-      "gridPos": {"x": 18, "y": 11, "w": 6, "h": 3},
-      "targets": [{"expr": "100 * (pg_stat_database_blks_hit{datname=\"dune\"} / (pg_stat_database_blks_hit{datname=\"dune\"} + pg_stat_database_blks_read{datname=\"dune\"}))", "legendFormat": "Cache Hit %"}],
-      "fieldConfig": {"defaults": {"unit": "percent", "max": 100, "thresholds": {"steps": [{"color": "green", "value": null}, {"color": "orange", "value": 95}, {"color": "red", "value": 90}]}}}
-    },
-    {
-      "title": "Alert List",
-      "type": "alertlist",
-      "gridPos": {"x": 0, "y": 14, "w": 24, "h": 6},
-      "options": {"showOptions": "current", "sortOrder": 1, "alertName": "", "dashboardAlerts": false, "stateFilter": {"firing": true, "pending": true}}
-    }
-  ]
-}
+{"uid":"dune-game-server-health","title":"Dune — Game Server Health","tags":["dune","noc"],"schemaVersion":39,"version":1,"refresh":"30s","panels":[
+{"type":"row","title":"HOST","gridPos":{"x":0,"y":0,"w":24,"h":1},"collapsed":false},
+{"title":"CPU","type":"gauge","gridPos":{"x":0,"y":1,"w":4,"h":4},"targets":[{"expr":"100*(1-avg(rate(node_cpu_seconds_total{mode=\"idle\"}[5m])))"}],"fieldConfig":{"defaults":{"unit":"percent","min":0,"max":100,"thresholds":{"steps":[{"color":"green","value":null},{"color":"orange","value":70},{"color":"red","value":90}]}}}},
+{"title":"Memory","type":"gauge","gridPos":{"x":4,"y":1,"w":4,"h":4},"targets":[{"expr":"100*(1-(node_memory_MemAvailable_bytes/node_memory_MemTotal_bytes))"}],"fieldConfig":{"defaults":{"unit":"percent","min":0,"max":100,"thresholds":{"steps":[{"color":"green","value":null},{"color":"orange","value":80},{"color":"red","value":95}]}}}},
+{"title":"Disk","type":"gauge","gridPos":{"x":8,"y":1,"w":4,"h":4},"targets":[{"expr":"100*(1-(node_filesystem_avail_bytes{fstype=\"ext4\",mountpoint!~\".*docker.*\"}/node_filesystem_size_bytes{fstype=\"ext4\",mountpoint!~\".*docker.*\"}))"}],"fieldConfig":{"defaults":{"unit":"percent","min":0,"max":100,"thresholds":{"steps":[{"color":"green","value":null},{"color":"orange","value":80},{"color":"red","value":95}]}}}},
+{"title":"Load","type":"stat","gridPos":{"x":12,"y":1,"w":3,"h":4},"targets":[{"expr":"node_load15"}]},
+{"title":"Uptime","type":"stat","gridPos":{"x":15,"y":1,"w":3,"h":4},"targets":[{"expr":"time()-node_boot_time_seconds"}],"fieldConfig":{"defaults":{"unit":"dtdurations"}}},
+{"title":"24h Trend","type":"timeseries","gridPos":{"x":18,"y":1,"w":6,"h":4},"targets":[{"expr":"100*(1-avg(rate(node_cpu_seconds_total{mode=\"idle\"}[5m])))","legendFormat":"CPU"},{"expr":"100*(1-(node_memory_MemAvailable_bytes/node_memory_MemTotal_bytes))","legendFormat":"Memory"},{"expr":"100*(1-(node_filesystem_avail_bytes{fstype=\"ext4\",mountpoint!~\".*docker.*\"}/node_filesystem_size_bytes{fstype=\"ext4\",mountpoint!~\".*docker.*\"}))","legendFormat":"Disk"}]},
+{"type":"row","title":"CONTAINERS","gridPos":{"x":0,"y":5,"w":24,"h":1},"collapsed":false},
+{"title":"Services Up","type":"stat","gridPos":{"x":0,"y":6,"w":2,"h":2},"targets":[{"expr":"count(up{job=~\"dune-.*\"}==1)"}],"fieldConfig":{"defaults":{"thresholds":{"steps":[{"color":"green","value":null}]}}}},
+{"title":"Prometheus","type":"stat","gridPos":{"x":2,"y":6,"w":3,"h":2},"targets":[{"expr":"up{job=\"dune-prometheus\"}"}],"fieldConfig":{"defaults":{"mappings":[{"type":"value","options":{"0":{"text":"Down"}}},{"type":"value","options":{"1":{"text":"Up"}}}],"thresholds":{"steps":[{"color":"red","value":0},{"color":"green","value":1}]}}}},
+{"title":"Node","type":"stat","gridPos":{"x":5,"y":6,"w":3,"h":2},"targets":[{"expr":"up{job=\"dune-node\"}"}],"fieldConfig":{"defaults":{"mappings":[{"type":"value","options":{"0":{"text":"Down"}}},{"type":"value","options":{"1":{"text":"Up"}}}],"thresholds":{"steps":[{"color":"red","value":0},{"color":"green","value":1}]}}}},
+{"title":"Postgres","type":"stat","gridPos":{"x":8,"y":6,"w":3,"h":2},"targets":[{"expr":"up{job=\"dune-postgres\"}"}],"fieldConfig":{"defaults":{"mappings":[{"type":"value","options":{"0":{"text":"Down"}}},{"type":"value","options":{"1":{"text":"Up"}}}],"thresholds":{"steps":[{"color":"red","value":0},{"color":"green","value":1}]}}}},
+{"title":"cAdvisor","type":"stat","gridPos":{"x":11,"y":6,"w":3,"h":2},"targets":[{"expr":"up{job=\"dune-cadvisor\"}"}],"fieldConfig":{"defaults":{"mappings":[{"type":"value","options":{"0":{"text":"Down"}}},{"type":"value","options":{"1":{"text":"Up"}}}],"thresholds":{"steps":[{"color":"red","value":0},{"color":"green","value":1}]}}}},
+{"title":"RMQ Admin","type":"stat","gridPos":{"x":14,"y":6,"w":3,"h":2},"targets":[{"expr":"up{job=\"dune-rabbitmq-admin\"}"}],"fieldConfig":{"defaults":{"mappings":[{"type":"value","options":{"0":{"text":"Down"}}},{"type":"value","options":{"1":{"text":"Up"}}}],"thresholds":{"steps":[{"color":"red","value":0},{"color":"green","value":1}]}}}},
+{"title":"RMQ Game","type":"stat","gridPos":{"x":17,"y":6,"w":3,"h":2},"targets":[{"expr":"up{job=\"dune-rabbitmq-game\"}"}],"fieldConfig":{"defaults":{"mappings":[{"type":"value","options":{"0":{"text":"Down"}}},{"type":"value","options":{"1":{"text":"Up"}}}],"thresholds":{"steps":[{"color":"red","value":0},{"color":"green","value":1}]}}}},
+{"type":"row","title":"DATABASE","gridPos":{"x":0,"y":8,"w":24,"h":1},"collapsed":false},
+{"title":"Conns","type":"stat","gridPos":{"x":0,"y":9,"w":4,"h":3},"targets":[{"expr":"pg_stat_activity_count"}],"fieldConfig":{"defaults":{"thresholds":{"steps":[{"color":"green","value":null},{"color":"orange","value":15},{"color":"red","value":20}]}}}},
+{"title":"Cache Hit","type":"gauge","gridPos":{"x":4,"y":9,"w":4,"h":3},"targets":[{"expr":"100*(pg_stat_database_blks_hit{datname=\"dune\"}/(pg_stat_database_blks_hit{datname=\"dune\"}+pg_stat_database_blks_read{datname=\"dune\"}))"}],"fieldConfig":{"defaults":{"unit":"percent","max":100,"min":90,"thresholds":{"steps":[{"color":"red","value":null},{"color":"orange","value":95},{"color":"green","value":99}]}}}},
+{"title":"Deadlocks/day","type":"stat","gridPos":{"x":8,"y":9,"w":4,"h":3},"targets":[{"expr":"rate(pg_stat_database_deadlocks{datname=\"dune\"}[5m])*86400"}],"fieldConfig":{"defaults":{"thresholds":{"steps":[{"color":"green","value":null},{"color":"red","value":1}]}}}},
+{"title":"DB Size","type":"stat","gridPos":{"x":12,"y":9,"w":4,"h":3},"targets":[{"expr":"pg_database_size_bytes{datname=\"dune\"}/1048576"}],"fieldConfig":{"defaults":{"unit":"decbytes"}}},
+{"type":"row","title":"MESSAGING","gridPos":{"x":0,"y":12,"w":24,"h":1},"collapsed":false},
+{"title":"Queue","type":"stat","gridPos":{"x":0,"y":13,"w":4,"h":3},"targets":[{"expr":"rabbitmq_queue_messages_ready{job=\"dune-rabbitmq-game\"}"}]},
+{"title":"Unacked","type":"stat","gridPos":{"x":4,"y":13,"w":4,"h":3},"targets":[{"expr":"rabbitmq_queue_messages_unacked{job=\"dune-rabbitmq-game\"}"}]},
+{"title":"Msg/s","type":"stat","gridPos":{"x":8,"y":13,"w":4,"h":3},"targets":[{"expr":"rate(rabbitmq_queue_messages_published_total{job=\"dune-rabbitmq-game\"}[5m])"}]},
+{"title":"Consumers","type":"stat","gridPos":{"x":12,"y":13,"w":4,"h":3},"targets":[{"expr":"rabbitmq_queue_consumers{job=\"dune-rabbitmq-game\"}"}]},
+{"type":"row","title":"ALERTS","gridPos":{"x":0,"y":16,"w":24,"h":1},"collapsed":false},
+{"title":"Firing","type":"stat","gridPos":{"x":0,"y":17,"w":3,"h":3},"targets":[{"expr":"count(ALERTS{alertstate=\"firing\"})"}],"fieldConfig":{"defaults":{"thresholds":{"steps":[{"color":"green","value":null},{"color":"orange","value":1},{"color":"red","value":5}]}}}},
+{"title":"Alert List","type":"alertlist","gridPos":{"x":3,"y":17,"w":21,"h":5},"options":{"showOptions":"current","sortOrder":4,"stateFilter":{"firing":true,"pending":true}}}
+]}
