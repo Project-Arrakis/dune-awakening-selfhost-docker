@@ -18,17 +18,18 @@ const EXCHANGE_AUTO_REFRESH_MS = 5 * 60_000; // 5 minutes — the market changes
 const EXCHANGE_PAGE_SIZES = [25, 50, 100, 200] as const;
 const EXCHANGE_DEFAULT_PAGE_SIZE = 50;
 const OWNER_OPTIONS: { value: ExchangeOwner; label: string }[] = [
+  { value: "all", label: "All listings" },
   { value: "player", label: "Player listings" },
-  { value: "bot", label: "Bot listings" },
-  { value: "all", label: "All listings" }
+  { value: "bot", label: "Bot listings" }
 ];
 
-type ExchangeView = { q: string; page: number; pageSize: number; sortColumn: string; sortDirection: SortDirection; owner: ExchangeOwner };
+type ExchangeView = { q: string; page: number; pageSize: number; sortColumn: string; sortDirection: SortDirection; owner: ExchangeOwner; category: string };
 
 type ExchangeCache = ExchangeView & {
   rows: ExchangeItem[];
   totalCount: number;
   totalItems: number;
+  categories: string[];
   supported: boolean;
   reason: string;
   lastFetchedAt: number;
@@ -36,9 +37,17 @@ type ExchangeCache = ExchangeView & {
 
 let exchangeCache: ExchangeCache | null = null;
 
+// Test-only: the module-level cache persists across renders (for instant
+// back-navigation), which leaks view state between test cases. Reset it in test
+// setup so each case starts from the default view.
+export function _resetExchangeCacheForTests() {
+  exchangeCache = null;
+}
+
 function sameView(cache: ExchangeCache | null, view: ExchangeView) {
   return !!cache && cache.q === view.q && cache.page === view.page && cache.pageSize === view.pageSize
-    && cache.sortColumn === view.sortColumn && cache.sortDirection === view.sortDirection && cache.owner === view.owner;
+    && cache.sortColumn === view.sortColumn && cache.sortDirection === view.sortDirection && cache.owner === view.owner
+    && cache.category === view.category;
 }
 
 function errorText(error: unknown) {
@@ -52,7 +61,9 @@ export function ExchangePanel({ onError }: ExchangePanelProps) {
   const [pageSize, setPageSize] = useState<number>(() => exchangeCache?.pageSize ?? EXCHANGE_DEFAULT_PAGE_SIZE);
   const [sortColumn, setSortColumn] = useState(() => exchangeCache?.sortColumn ?? "display_name");
   const [sortDirection, setSortDirection] = useState<SortDirection>(() => exchangeCache?.sortDirection ?? "asc");
-  const [owner, setOwner] = useState<ExchangeOwner>(() => exchangeCache?.owner ?? "player");
+  const [owner, setOwner] = useState<ExchangeOwner>(() => exchangeCache?.owner ?? "all");
+  const [category, setCategory] = useState(() => exchangeCache?.category ?? "");
+  const [categories, setCategories] = useState<string[]>(() => exchangeCache?.categories ?? []);
   const [rows, setRows] = useState<ExchangeItem[]>(() => exchangeCache?.rows ?? []);
   const [totalCount, setTotalCount] = useState(() => exchangeCache?.totalCount ?? 0);
   const [totalItems, setTotalItems] = useState(() => exchangeCache?.totalItems ?? 0);
@@ -69,7 +80,7 @@ export function ExchangePanel({ onError }: ExchangePanelProps) {
       return;
     }
     setPage(0);
-  }, [submittedQ, owner]);
+  }, [submittedQ, owner, category]);
 
   function submitSearch() {
     setSubmittedQ(q);
@@ -102,10 +113,12 @@ export function ExchangePanel({ onError }: ExchangePanelProps) {
       const result = await exchangeApi.items(view);
       if (requestIdRef.current !== requestId) return;
       const nextRows = result.rows || [];
+      const nextCategories = result.categories || [];
       const nextSupported = result.capabilities?.exchange !== false;
       setRows(nextRows);
       setTotalCount(result.totalCount || 0);
       setTotalItems(result.totalItems || 0);
+      setCategories(nextCategories);
       setSupported(nextSupported);
       setReason(result.reason || "");
       exchangeCache = {
@@ -113,6 +126,7 @@ export function ExchangePanel({ onError }: ExchangePanelProps) {
         rows: nextRows,
         totalCount: result.totalCount || 0,
         totalItems: result.totalItems || 0,
+        categories: nextCategories,
         supported: nextSupported,
         reason: result.reason || "",
         lastFetchedAt: Date.now()
@@ -127,13 +141,14 @@ export function ExchangePanel({ onError }: ExchangePanelProps) {
   useEffect(() => {
     let cancelled = false;
     let timeoutId: number | undefined;
-    const view: ExchangeView = { q: submittedQ, page, pageSize, sortColumn, sortDirection, owner };
+    const view: ExchangeView = { q: submittedQ, page, pageSize, sortColumn, sortDirection, owner, category };
     const cacheHit = sameView(exchangeCache, view) ? exchangeCache : null;
 
     if (cacheHit) {
       setRows(cacheHit.rows);
       setTotalCount(cacheHit.totalCount);
       setTotalItems(cacheHit.totalItems);
+      setCategories(cacheHit.categories);
       setSupported(cacheHit.supported);
       setReason(cacheHit.reason);
       setLoading(false);
@@ -165,10 +180,17 @@ export function ExchangePanel({ onError }: ExchangePanelProps) {
       window.clearTimeout(timeoutId);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, [submittedQ, page, pageSize, sortColumn, sortDirection, owner, load]);
+  }, [submittedQ, page, pageSize, sortColumn, sortDirection, owner, category, load]);
 
   function currentView(): ExchangeView {
-    return { q: submittedQ, page, pageSize, sortColumn, sortDirection, owner };
+    return { q: submittedQ, page, pageSize, sortColumn, sortDirection, owner, category };
+  }
+
+  function changeOwner(nextOwner: ExchangeOwner) {
+    setOwner(nextOwner);
+    // Categories differ per owner scope; clear the selection so a category that
+    // isn't in the new scope can't linger as a filter that hides everything.
+    setCategory("");
   }
 
   if (loading && !rows.length) {
@@ -197,7 +219,7 @@ export function ExchangePanel({ onError }: ExchangePanelProps) {
         </div>
       </div>
       {supported
-        ? <p className="action-help-note">Read-only view of the CHOAM exchange. {totalItems.toLocaleString()} item{totalItems === 1 ? "" : "s"} listed for the current filter.</p>
+        ? <p className="action-help-note">Read-only view of the CHOAM exchange. {totalCount.toLocaleString()}{totalCount !== totalItems ? ` of ${totalItems.toLocaleString()}` : ""} item{totalItems === 1 ? "" : "s"} listed for the current filter.</p>
         : <p className="action-help-note">{reason || "The Market Board is unsupported by the detected database schema."}</p>}
       {supported && <>
         <div className="action-row exchange-search-row">
@@ -209,9 +231,16 @@ export function ExchangePanel({ onError }: ExchangePanelProps) {
           />
           <button onClick={submitSearch}>Search</button>
           <button onClick={handleClearSearch} disabled={!q && !submittedQ}>Clear</button>
+          <label className="compact-select exchange-category-select">
+            Category
+            <select value={categories.includes(category) ? category : ""} onChange={(event) => setCategory(event.target.value)}>
+              <option value="">All categories</option>
+              {categories.map((name) => <option key={name} value={name}>{name}</option>)}
+            </select>
+          </label>
           <label className="compact-select exchange-owner-select">
             Show
-            <select value={owner} onChange={(event) => setOwner(event.target.value as ExchangeOwner)}>
+            <select value={owner} onChange={(event) => changeOwner(event.target.value as ExchangeOwner)}>
               {OWNER_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
             </select>
           </label>
@@ -221,6 +250,7 @@ export function ExchangePanel({ onError }: ExchangePanelProps) {
         </div>
         <ExchangeTable
           rows={rows}
+          owner={owner}
           sortColumn={sortColumn}
           sortDirection={sortDirection}
           onSort={handleSort}

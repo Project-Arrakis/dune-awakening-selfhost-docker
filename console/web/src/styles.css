@@ -2026,8 +2026,13 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
 
 /* Market Board (Exchange) */
 .exchange-search-row { margin: 12px 0; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-.exchange-owner-select { margin-left: auto; }
-.exchange-config-button { width: 34px; height: 34px; min-width: 0; padding: 0; display: inline-grid; place-items: center; }
+.exchange-search-row > input { flex: 1 1 220px; min-width: 160px; }
+/* Lay the filter controls out inline (label beside the select) instead of the
+   default stacked label grid, so they share the search row's baseline with the
+   input, buttons, and gear. The input's flex-grow right-aligns this cluster. */
+.exchange-category-select, .exchange-owner-select { display: flex; flex-direction: row; align-items: center; gap: 6px; flex: 0 0 auto; white-space: nowrap; }
+.exchange-category-select select, .exchange-owner-select select { width: auto; min-width: 150px; max-width: 220px; }
+.exchange-config-button { width: 43px; height: 43px; min-width: 0; padding: 0; display: inline-grid; place-items: center; }
 .table-wrap.exchange-table-wrap { max-height: none; }
 .exchange-table th.exchange-expand-column, .exchange-table td.exchange-expand-column {
   width: 32px;
@@ -2078,6 +2083,10 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
 .exchange-config-chips { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
 .exchange-config-chip { display: inline-flex; align-items: center; gap: 6px; background: #221a10; border: 1px solid #4d4031; color: #e7c893; border-radius: 999px; padding: 3px 8px; font-size: 12px; font-variant-numeric: tabular-nums; }
 .exchange-config-chip button { width: 18px; height: 18px; min-width: 0; padding: 0; border: 0; background: none; color: inherit; display: inline-grid; place-items: center; cursor: pointer; }
+.exchange-config-chip > span { display: inline-flex; align-items: center; gap: 6px; }
+.exchange-config-chip-builtin { background: #13212b; border-color: #33556a; color: #a9d0e6; }
+.exchange-config-chip-builtin em { font-style: normal; font-size: 9px; letter-spacing: 0.04em; text-transform: uppercase; color: #7fb0c9; border: 1px solid #33556a; border-radius: 999px; padding: 1px 5px; }
+.exchange-config-restore { width: auto; min-width: 0; align-self: flex-start; padding: 3px 10px; font-size: 12px; display: inline-flex; align-items: center; gap: 5px; }
 .exchange-config-add { display: flex; gap: 6px; }
 .exchange-config-add input { flex: 1; min-width: 0; }
 .exchange-config-add button { width: auto; min-width: 72px; }

@@ -14,20 +14,28 @@ function withRepo(run) {
   }
 }
 
-test("readExchangeConfig returns empty defaults when no file exists", () => {
+test("readExchangeConfig returns defaults (broker included) when no file exists", () => {
   withRepo((repo) => {
-    assert.deepEqual(readExchangeConfig(repo), { botOwnerIds: [], blacklistedOwnerIds: [] });
+    assert.deepEqual(readExchangeConfig(repo), { includeNpcBroker: true, botOwnerIds: [], blacklistedOwnerIds: [] });
   });
 });
 
 test("saveExchangeConfig validates, dedupes, persists, and round-trips", () => {
   withRepo((repo) => {
     const saved = saveExchangeConfig(repo, { botOwnerIds: ["75", "75", "123"], blacklistedOwnerIds: ["9929"] });
-    assert.deepEqual(saved, { botOwnerIds: ["75", "123"], blacklistedOwnerIds: ["9929"] });
+    assert.deepEqual(saved, { includeNpcBroker: true, botOwnerIds: ["75", "123"], blacklistedOwnerIds: ["9929"] });
     assert.deepEqual(readExchangeConfig(repo), saved);
     // persisted at the documented console-local path
     const raw = JSON.parse(readFileSync(join(repo, "runtime/generated/exchange-config.json"), "utf8"));
     assert.deepEqual(raw.botOwnerIds, ["75", "123"]);
+  });
+});
+
+test("saveExchangeConfig persists includeNpcBroker=false (broker removed)", () => {
+  withRepo((repo) => {
+    const saved = saveExchangeConfig(repo, { includeNpcBroker: false, botOwnerIds: [], blacklistedOwnerIds: [] });
+    assert.equal(saved.includeNpcBroker, false);
+    assert.equal(readExchangeConfig(repo).includeNpcBroker, false);
   });
 });
 
@@ -44,6 +52,6 @@ test("readExchangeConfig tolerates a corrupt file by falling back to defaults", 
     saveExchangeConfig(repo, { botOwnerIds: ["1"], blacklistedOwnerIds: [] });
     const file = join(repo, "runtime/generated/exchange-config.json");
     rmSync(file);
-    assert.deepEqual(readExchangeConfig(repo), { botOwnerIds: [], blacklistedOwnerIds: [] });
+    assert.deepEqual(readExchangeConfig(repo), { includeNpcBroker: true, botOwnerIds: [], blacklistedOwnerIds: [] });
   });
 });

@@ -51,6 +51,25 @@ test("tier parses from a T<n>_ prefix and is null otherwise", async () => {
   assert.equal(byId["PartialStabilizationBelt"].tier, null);
 });
 
+test("returns distinct sorted category options and filters rows by category", async () => {
+  const listed = await listExchangeItems(fakeDb(AGG_ROWS), { owner: "all", pageSize: 50 });
+  assert.ok(Array.isArray(listed.categories));
+  // deduped + sorted, no blanks
+  assert.deepEqual([...new Set(listed.categories)], listed.categories);
+  assert.deepEqual([...listed.categories].sort((a, b) => a.localeCompare(b)), listed.categories);
+  assert.ok(listed.categories.every((c) => c));
+
+  if (listed.categories.length) {
+    exchangeInternals.clearCache();
+    const cat = listed.categories[0];
+    const only = await listExchangeItems(fakeDb(AGG_ROWS), { owner: "all", category: cat, pageSize: 50 });
+    assert.ok(only.rows.length >= 1);
+    assert.ok(only.rows.every((row) => row.category === cat));
+    assert.equal(only.totalItems, listed.totalItems); // totalItems stays unfiltered
+    assert.ok(only.totalCount <= listed.totalCount);
+  }
+});
+
 test("search matches display_name / category / template_id", async () => {
   exchangeInternals.clearCache();
   const byTemplate = await listExchangeItems(fakeDb(AGG_ROWS), { owner: "all", q: "OrnithopterTransport" });
@@ -61,7 +80,7 @@ test("search matches display_name / category / template_id", async () => {
 test("owner filter maps to the documented SQL predicate", async () => {
   const player = {};
   await listExchangeItems(fakeDb(AGG_ROWS, player), { owner: "player" });
-  assert.match(player.sql, /not o\.is_npc_order and o\.owner_id <> all/);
+  assert.match(player.sql, /not \(o\.is_npc_order or o\.owner_id = any/);
 
   exchangeInternals.clearCache();
   const bot = {};
@@ -75,10 +94,59 @@ test("owner filter maps to the documented SQL predicate", async () => {
   assert.match(all.sql, /o\.owner_id <> all/);
 });
 
-test("an unknown owner value falls back to player", async () => {
+// Regression: owner="all" must not pass a parameter it never references, or
+// Postgres fails with "could not determine data type of parameter $N". A fake db
+// ignores param types, so assert the invariant directly on the generated SQL.
+function assertEveryParamReferenced(capture) {
+  const referenced = new Set([...capture.sql.matchAll(/\$(\d+)/g)].map((m) => Number(m[1])));
+  const maxReferenced = referenced.size ? Math.max(...referenced) : 0;
+  assert.ok(maxReferenced <= capture.params.length, `SQL references $${maxReferenced} but only ${capture.params.length} params were passed`);
+  for (let i = 1; i <= capture.params.length; i += 1) {
+    assert.ok(referenced.has(i), `param $${i} is passed but never referenced in the SQL`);
+  }
+}
+
+test("owner=all passes no unreferenced parameters (items + listings)", async () => {
+  const items = {};
+  await listExchangeItems(fakeDb(AGG_ROWS, items), { owner: "all", botOwnerIds: ["75"], blacklist: ["9"] });
+  assertEveryParamReferenced(items);
+
+  exchangeInternals.clearCache();
+  const listings = {};
+  await listExchangeListings(fakeDb([], listings), { templateId: "Belt", owner: "all", botOwnerIds: ["75"], blacklist: ["9"] });
+  assertEveryParamReferenced(listings);
+
+  // And with an owner value that does reference the bot param, plus a quality filter.
+  const withQuality = {};
+  await listExchangeListings(fakeDb([], withQuality), { templateId: "Belt", quality: 5, owner: "bot", botOwnerIds: ["75"] });
+  assertEveryParamReferenced(withQuality);
+});
+
+test("an unknown owner value falls back to the default (all)", async () => {
   const capture = {};
   await listExchangeItems(fakeDb(AGG_ROWS, capture), { owner: "bogus" });
-  assert.match(capture.sql, /not o\.is_npc_order/);
+  assert.match(capture.sql, /where true and o\.owner_id <> all/);
+});
+
+test("includeNpcBroker=false drops the in-game broker from the bot predicate", async () => {
+  // Assert on the WHERE predicate specifically — the SELECT always references
+  // is_npc_order for the npc_stock column, independent of the owner filter.
+  const withBroker = {};
+  await listExchangeItems(fakeDb(AGG_ROWS, withBroker), { owner: "bot", includeNpcBroker: true });
+  assert.match(withBroker.sql, /where \(o\.is_npc_order or o\.owner_id = any/);
+
+  exchangeInternals.clearCache();
+  const without = {};
+  await listExchangeItems(fakeDb(AGG_ROWS, without), { owner: "bot", includeNpcBroker: false });
+  assert.match(without.sql, /where \(false or o\.owner_id = any/);
+});
+
+test("a listing from the in-game broker is reclassified as player when the broker is excluded", async () => {
+  const rows = [{ order_id: "1", template_id: "Belt", is_npc_order: true, owner_id: "75", owner_name: "Revy", item_price: "44000", stock: "1", quality: "0" }];
+  const included = await listExchangeListings(fakeDb(rows), { templateId: "Belt", owner: "all", includeNpcBroker: true });
+  assert.equal(included.rows[0].owner_type, "bot");
+  const excluded = await listExchangeListings(fakeDb(rows), { templateId: "Belt", owner: "all", includeNpcBroker: false });
+  assert.equal(excluded.rows[0].owner_type, "player");
 });
 
 test("items returns the unsupported shape when a required table is missing", async () => {
