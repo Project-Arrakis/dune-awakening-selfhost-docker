@@ -11,6 +11,22 @@ test("auth creates readable signed sessions", () => {
   assert.equal(auth.passwordMatches("wrong"), false);
 });
 
+test("auth keeps tier and identity in the server-side session while the cookie remains opaque", () => {
+  const auth = createAuth({ sessionSecret: "secret", adminPassword: "admin", authDisabled: false });
+  const session = auth.makeSession({ tier: "moderator", userId: "123", username: "Tester" });
+  assert.equal(session.cookie.split(".")[0], session.id);
+  assert.equal(auth.readSession({ headers: { cookie: `asc_session=${encodeURIComponent(session.cookie)}` } })?.tier, "moderator");
+
+});
+
+test("auth uses the injected clock for session expiry", () => {
+  let currentTime = 1_700_000_000_000;
+  const auth = createAuth({ sessionSecret: "secret", adminPassword: "admin", authDisabled: false, now: () => currentTime });
+  const session = auth.makeSession();
+  currentTime += 12 * 60 * 60 * 1000 + 1;
+  assert.equal(auth.readSession({ headers: { cookie: `asc_session=${encodeURIComponent(session.cookie)}` } }), null);
+});
+
 test("auth rejects state-changing requests without CSRF token", () => {
   const auth = createAuth({ sessionSecret: "secret", adminPassword: "admin", authDisabled: false });
   const session = auth.makeSession();

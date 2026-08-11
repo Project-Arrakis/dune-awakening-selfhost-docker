@@ -24,30 +24,39 @@ export function parseCookies(header = "") {
 }
 
 export function createAuth(config) {
+  const now = config.now || (() => Date.now());
+
   function sign(value) {
     return createHmac("sha256", config.sessionSecret).update(value).digest("base64url");
   }
 
-  function makeSession() {
+  function constantTimeStringEqual(left, right) {
+    const a = Buffer.from(String(left || ""));
+    const b = Buffer.from(String(right || ""));
+    return a.length > 0 && a.length === b.length && timingSafeEqual(a, b);
+  }
+
+  function makeSession({ tier = "owner", userId = "", username = "", guildId = "" } = {}) {
     const id = randomBytes(32).toString("base64url");
     const csrf = randomBytes(24).toString("base64url");
-    const expiresAt = Date.now() + 12 * 60 * 60 * 1000;
-    sessions.set(id, { id, csrf, expiresAt });
-    return { id, csrf, expiresAt, cookie: `${id}.${sign(id)}` };
+    const expiresAt = now() + 12 * 60 * 60 * 1000;
+    const session = { id, csrf, expiresAt, tier, userId, username, guildId };
+    sessions.set(id, session);
+    return { ...session, cookie: `${id}.${sign(id)}` };
   }
 
   function readSession(req) {
-    if (config.authDisabled) return { id: "dev", csrf: "dev", expiresAt: Number.MAX_SAFE_INTEGER };
+    if (config.authDisabled) return { id: "dev", csrf: "dev", expiresAt: Number.MAX_SAFE_INTEGER, tier: "owner" };
     const raw = parseCookies(req.headers.cookie || "").get("asc_session");
     if (!raw) return null;
     const [id, sig] = raw.split(".");
-    if (!id || !sig || sign(id) !== sig) return null;
+    if (!id || !sig || !constantTimeStringEqual(sign(id), sig)) return null;
     const session = sessions.get(id);
-    if (!session || session.expiresAt < Date.now()) {
+    if (!session || session.expiresAt < now()) {
       sessions.delete(id);
       return null;
     }
-    session.expiresAt = Date.now() + 12 * 60 * 60 * 1000;
+    session.expiresAt = now() + 12 * 60 * 60 * 1000;
     return session;
   }
 
