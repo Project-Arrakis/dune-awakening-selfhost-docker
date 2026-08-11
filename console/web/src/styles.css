@@ -2029,9 +2029,12 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
 .exchange-search-row > input { flex: 1 1 220px; min-width: 160px; }
 /* Lay the filter controls out inline (label beside the select) instead of the
    default stacked label grid, so they share the search row's baseline with the
-   input, buttons, and gear. The input's flex-grow right-aligns this cluster. */
-.exchange-category-select, .exchange-owner-select { display: flex; flex-direction: row; align-items: center; gap: 6px; flex: 0 0 auto; white-space: nowrap; }
-.exchange-category-select select, .exchange-owner-select select { width: auto; min-width: 150px; max-width: 220px; }
+   input, buttons, and gear. The input's flex-grow right-aligns this cluster.
+   Qualified with `label` so `flex: 0 0 auto` matches the specificity of the global
+   `label.compact-select { flex: 0 1 240px }` and wins (later rule) — otherwise the
+   selects render as fixed 240px boxes instead of hugging their content. */
+label.exchange-category-select, label.exchange-owner-select { display: flex; flex-direction: row; align-items: center; gap: 6px; flex: 0 0 auto; white-space: nowrap; }
+.exchange-category-select select, .exchange-owner-select select { width: auto; min-width: 150px; max-width: 220px; height: 43px; }
 .exchange-config-button { width: 43px; height: 43px; min-width: 0; padding: 0; display: inline-grid; place-items: center; }
 .table-wrap.exchange-table-wrap { max-height: none; }
 .exchange-table th.exchange-expand-column, .exchange-table td.exchange-expand-column {
@@ -2062,6 +2065,13 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
 .exchange-item-template { color: #8f8371; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .exchange-price { color: var(--accent-strong); font-variant-numeric: tabular-nums; }
 .exchange-num { text-align: right; font-variant-numeric: tabular-nums; }
+/* Right-align the numeric magnitude columns (header + cells) so digits line up for
+   comparison and match the drill-down sub-table. Targeted by data-column (set by
+   DataTable) rather than nth-child, so it never touches the expanded drill-down row
+   and won't drift if column order changes. */
+.exchange-table th[data-column="lowest_price"], .exchange-table td[data-column="lowest_price"],
+.exchange-table th[data-column="total_stock"], .exchange-table td[data-column="total_stock"],
+.exchange-table th[data-column="listing_count"], .exchange-table td[data-column="listing_count"] { text-align: right; }
 .exchange-pagination-footer { margin-top: 12px; }
 .exchange-listings { padding: 6px 4px; display: grid; gap: 8px; }
 .exchange-listings-header { margin: 0; color: #ffd08a; font-size: 13px; }

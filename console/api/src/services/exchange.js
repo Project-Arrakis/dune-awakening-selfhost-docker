@@ -146,6 +146,12 @@ async function queryAggregatedItems(db, { owner, botIds, blacklist, includeNpcBr
   const ownerSql = ownerClause(owner, botIds, includeNpcBroker, params);
   params.push(blacklist);
   const blockParam = `$${params.length}::bigint[]`;
+  // The INNER join to dune_exchange_sell_orders is load-bearing: it scopes the board
+  // to ACTIVE sell listings. Orders that have been fulfilled have no sell_orders row
+  // (they live in dune_exchange_fulfilled_orders) and are intentionally excluded.
+  // Stock is items.stack_size (the live remaining stack); initial_stack_size is only a
+  // fallback for the rare case of a missing items row, and reflects the original (not
+  // remaining) quantity — harmless today because every active order has an items row.
   const result = await db.query(`
     select o.template_id,
            o.quality_level,
