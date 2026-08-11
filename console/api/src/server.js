@@ -49,6 +49,7 @@ import { grantAddonItem } from "./addonItemGrants.js";
 import { EDA_EXCHANGE_BOT_ADDON_ID, ADDON_SCHEDULER_PERMISSION, createAddonJobScheduler, probeBuybackEligibility, readBuybackSchedule, saveBuybackSchedule } from "./addonJobs.js";
 import { createPublicDirectoryReporter, normalizeDiscordInvite, readDirectorySettings } from "./services/publicDirectory.js";
 import { choamTerminalOverview, installChoamTerminals, removeChoamTerminals } from "./services/choamTerminals.js";
+import { exchangeStats, listExchangeItems, listExchangeListings, readExchangeConfig, saveExchangeConfig } from "./services/exchange.js";
 import { autoRefillPublicState, createAutoRefillScheduler, setBaseAutoRefill } from "./services/autoRefill.js";
 import { autoRefillWaterPublicState, createAutoRefillWaterScheduler, setBaseAutoRefillWater } from "./services/autoRefillWater.js";
 import { calculateAlwaysOnHostMemorySafety } from "./services/hostMemorySafety.js";
@@ -749,6 +750,36 @@ async function handleApi(req, res) {
   if (path === "/api/maps/choam-terminals" && req.method === "POST") return mapsChoamTerminalInstallRoute(req, res);
   if (path === "/api/maps/choam-terminals" && req.method === "DELETE") return mapsChoamTerminalRemoveRoute(req, res);
   if (path === "/api/maps/choam-terminals") return dbJson(res, () => choamTerminalOverview(db));
+  if (path === "/api/exchange/items") return dbJson(res, () => {
+    const exchangeConfig = readExchangeConfig(config.repoRoot);
+    return listExchangeItems(db, {
+      q: url.searchParams.get("q") || "",
+      page: url.searchParams.get("page") || 0,
+      pageSize: url.searchParams.get("pageSize") || 50,
+      sortColumn: url.searchParams.get("sortColumn") || "display_name",
+      sortDirection: url.searchParams.get("sortDirection") || "asc",
+      owner: url.searchParams.get("owner") || "player",
+      botOwnerIds: exchangeConfig.botOwnerIds,
+      blacklist: exchangeConfig.blacklistedOwnerIds,
+      repoRoot: config.repoRoot
+    });
+  });
+  if (path === "/api/exchange/listings") return dbJson(res, () => {
+    const exchangeConfig = readExchangeConfig(config.repoRoot);
+    return listExchangeListings(db, {
+      templateId: url.searchParams.get("templateId") || "",
+      qualityLevel: url.searchParams.get("quality") || "",
+      owner: url.searchParams.get("owner") || "all",
+      botOwnerIds: exchangeConfig.botOwnerIds,
+      blacklist: exchangeConfig.blacklistedOwnerIds
+    });
+  });
+  if (path === "/api/exchange/stats") return dbJson(res, () => {
+    const exchangeConfig = readExchangeConfig(config.repoRoot);
+    return exchangeStats(db, { botOwnerIds: exchangeConfig.botOwnerIds, blacklist: exchangeConfig.blacklistedOwnerIds });
+  });
+  if (path === "/api/exchange/config" && req.method === "GET") return json(res, 200, readExchangeConfig(config.repoRoot));
+  if (path === "/api/exchange/config" && req.method === "POST") return exchangeConfigSaveRoute(req, res);
   if (path === "/api/maps/user-settings/schema") return userSettingsSchemaRoute(res);
   if (path === "/api/maps/user-settings/restart-pending") return json(res, 200, { pending: existsSync(resolve(config.repoRoot, "runtime/generated/landsraad-restart-required")) });
   if (path === "/api/maps/user-settings/values") return userSettingsValuesRoute(res, url);
@@ -1161,6 +1192,21 @@ async function mapsChoamTerminalRemoveRoute(req, res) {
   if (!applyMutationRateLimit(req, res, "maps.choam-terminals.remove")) return;
   audit(config, req, "maps.choam-terminals.remove", { tradeCenterKey: body.tradeCenterKey });
   return dbJson(res, () => removeChoamTerminals(db, body));
+}
+
+async function exchangeConfigSaveRoute(req, res) {
+  const body = await readJson(req);
+  if (!applyMutationRateLimit(req, res, "exchange.config")) return;
+  audit(config, req, "exchange.config", {
+    botOwnerIds: Array.isArray(body?.botOwnerIds) ? body.botOwnerIds.length : 0,
+    blacklistedOwnerIds: Array.isArray(body?.blacklistedOwnerIds) ? body.blacklistedOwnerIds.length : 0
+  });
+  try {
+    return json(res, 200, saveExchangeConfig(config.repoRoot, body));
+  } catch (error) {
+    const payload = apiErrorPayload(error, 400);
+    return json(res, payload.status, { supported: false, ...payload.body });
+  }
 }
 
 async function safeCommand(operation, payload = {}) {

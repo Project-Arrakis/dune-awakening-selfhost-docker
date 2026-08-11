@@ -1,0 +1,127 @@
+import test, { beforeEach } from "node:test";
+import assert from "node:assert/strict";
+import { listExchangeItems, listExchangeListings, exchangeStats, exchangeInternals } from "../src/services/exchange.js";
+
+// Aggregated rows arrive from Postgres with bigint columns as strings; mirror that.
+const AGG_ROWS = [
+  { template_id: "T6_Augment_Acuracy1", quality_level: "0", lowest_price: "12000", total_stock: "2", npc_stock: "0", listing_count: "1" },
+  { template_id: "PartialStabilizationBelt", quality_level: "0", lowest_price: "45084", total_stock: "4", npc_stock: "0", listing_count: "4" },
+  { template_id: "OrnithopterTransportLocomotion_6", quality_level: "0", lowest_price: "49000", total_stock: "8", npc_stock: "8", listing_count: "8" }
+];
+
+// A fake db that answers to_regclass probes as "present" and routes the data
+// query by SQL shape. lastSql captures the aggregation/listings SQL so tests can
+// assert the owner/blacklist predicates that a fake db would otherwise ignore.
+function fakeDb(dataRows, capture = {}) {
+  return {
+    query: async (sql, params) => {
+      if (/to_regclass/.test(sql)) return { rows: [{ exists: true }] };
+      capture.sql = sql;
+      capture.params = params;
+      return { rows: dataRows };
+    }
+  };
+}
+
+function unsupportedDb() {
+  return { query: async (sql) => (/to_regclass/.test(sql) ? { rows: [{ exists: false }] } : { rows: [] }) };
+}
+
+beforeEach(() => {
+  exchangeInternals.clearCache();
+});
+
+test("aggregated items enrich, sort by name, and paginate with filtered/unfiltered totals", async () => {
+  const result = await listExchangeItems(fakeDb(AGG_ROWS), { owner: "player", pageSize: 2, sortColumn: "display_name", sortDirection: "asc" });
+  assert.equal(result.capabilities.exchange, true);
+  assert.equal(result.totalItems, 3); // unfiltered group count
+  assert.equal(result.totalCount, 3); // no search term
+  assert.equal(result.rows.length, 2); // page slice
+  // The known augment id resolves to a friendly catalog name; unknown ids fall back
+  // to the template id. Sorted ascending by display name.
+  const names = result.rows.map((r) => r.display_name);
+  assert.ok(names.every((n) => typeof n === "string" && n.length));
+  assert.deepEqual([...names].sort((a, b) => a.localeCompare(b)), names);
+});
+
+test("tier parses from a T<n>_ prefix and is null otherwise", async () => {
+  const result = await listExchangeItems(fakeDb(AGG_ROWS), { owner: "all", pageSize: 50 });
+  const byId = Object.fromEntries(result.rows.map((r) => [r.template_id, r]));
+  assert.equal(byId["T6_Augment_Acuracy1"].tier, 6);
+  assert.equal(byId["PartialStabilizationBelt"].tier, null);
+});
+
+test("search matches display_name / category / template_id", async () => {
+  exchangeInternals.clearCache();
+  const byTemplate = await listExchangeItems(fakeDb(AGG_ROWS), { owner: "all", q: "OrnithopterTransport" });
+  assert.equal(byTemplate.totalCount, 1);
+  assert.equal(byTemplate.rows[0].template_id, "OrnithopterTransportLocomotion_6");
+});
+
+test("owner filter maps to the documented SQL predicate", async () => {
+  const player = {};
+  await listExchangeItems(fakeDb(AGG_ROWS, player), { owner: "player" });
+  assert.match(player.sql, /not o\.is_npc_order and o\.owner_id <> all/);
+
+  exchangeInternals.clearCache();
+  const bot = {};
+  await listExchangeItems(fakeDb(AGG_ROWS, bot), { owner: "bot" });
+  assert.match(bot.sql, /o\.is_npc_order or o\.owner_id = any/);
+
+  exchangeInternals.clearCache();
+  const all = {};
+  await listExchangeItems(fakeDb(AGG_ROWS, all), { owner: "all" });
+  // blacklist predicate is always present, on every owner value
+  assert.match(all.sql, /o\.owner_id <> all/);
+});
+
+test("an unknown owner value falls back to player", async () => {
+  const capture = {};
+  await listExchangeItems(fakeDb(AGG_ROWS, capture), { owner: "bogus" });
+  assert.match(capture.sql, /not o\.is_npc_order/);
+});
+
+test("items returns the unsupported shape when a required table is missing", async () => {
+  const result = await listExchangeItems(unsupportedDb(), {});
+  assert.equal(result.capabilities.exchange, false);
+  assert.equal(result.totalCount, 0);
+  assert.equal(result.rows.length, 0);
+  assert.match(result.reason, /Missing required table/);
+});
+
+test("listings flag bot vs player and pass through the resolved seller name", async () => {
+  const rows = [
+    { order_id: "1", template_id: "Belt", is_npc_order: true, owner_id: "75", owner_name: "Revy", item_price: "44000", stock: "1", quality: "0" },
+    { order_id: "2", template_id: "Belt", is_npc_order: false, owner_id: "9929", owner_name: "Halfmoondee", item_price: "45084", stock: "1", quality: "0" },
+    { order_id: "3", template_id: "Belt", is_npc_order: false, owner_id: "555", owner_name: "BotAcct", item_price: "50000", stock: "2", quality: "0" }
+  ];
+  const result = await listExchangeListings(fakeDb(rows), { templateId: "Belt", owner: "all", botOwnerIds: ["555"] });
+  const byId = Object.fromEntries(result.rows.map((r) => [r.order_id, r]));
+  assert.equal(byId["1"].owner_type, "bot");            // is_npc_order
+  assert.equal(byId["1"].owner_name, "Revy");
+  assert.equal(byId["2"].owner_type, "player");         // real player
+  assert.equal(byId["3"].owner_type, "bot");            // configured bot owner id
+  assert.equal(byId["2"].price, 45084);
+});
+
+test("listings reject a missing or malformed template id", async () => {
+  await assert.rejects(() => listExchangeListings(fakeDb([]), { templateId: "" }), /valid item template id/);
+  await assert.rejects(() => listExchangeListings(fakeDb([]), { templateId: "bad\nid" }), /valid item template id/);
+});
+
+test("stats returns totals and the supported flag", async () => {
+  const rows = [{ total_listings: "5746", bot_listings: "5742", player_listings: "4", unique_items: "1429" }];
+  const result = await exchangeStats(fakeDb(rows), {});
+  assert.equal(result.capabilities.exchange, true);
+  assert.equal(result.totalListings, 5746);
+  assert.equal(result.botListings, 5742);
+  assert.equal(result.playerListings, 4);
+  assert.equal(result.uniqueItems, 1429);
+});
+
+test("internal helpers: coerceIdList validates, dedupes, and caps", () => {
+  assert.deepEqual(exchangeInternals.coerceIdList(["75", "75", "abc", "9929"]), ["75", "9929"]);
+  assert.throws(() => exchangeInternals.coerceIdList(["abc"], { throwOnInvalid: true }), /Invalid owner id/);
+  assert.equal(exchangeInternals.parseTier("T6_Augment_Acuracy1"), 6);
+  assert.equal(exchangeInternals.parseTier("PartialStabilizationBelt"), null);
+});
