@@ -13,10 +13,12 @@ import { setupApi, type Task } from "../../api/setup";
 import { apiDownload } from "../../api/client";
 import { DataTable, type SortDirection } from "../../components/common/DataTable";
 import { pendingRefillCountForPartition, usePendingRefills, usePendingWaterRefills } from "../../lib/usePendingRefills";
+import { runGatedRestart, type RestartGate } from "../server/restartQueueGuard";
 
 type BasesPanelProps = {
   onError: (text: string) => void;
   confirmAction: (message: string, options?: { title?: string; confirmLabel?: string; warning?: string; danger?: boolean; details?: { label: string; value: string; tone?: "accent" | "success" | "danger" }[] }) => Promise<boolean>;
+  restartGate: RestartGate;
   formatMutationResult: (result: unknown) => string;
 };
 
@@ -337,7 +339,7 @@ function renderBaseCell(row: Record<string, unknown>, column: string, instanceNa
   );
 }
 
-export function BasesPanel({ onError, confirmAction, formatMutationResult }: BasesPanelProps) {
+export function BasesPanel({ onError, confirmAction, restartGate, formatMutationResult }: BasesPanelProps) {
   const [q, setQ] = useState(() => basesCache?.q ?? "");
   const [submittedQ, setSubmittedQ] = useState(() => basesCache?.q ?? "");
   const [page, setPage] = useState(() => basesCache?.page ?? 0);
@@ -875,27 +877,34 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
     const parts = [];
     if (group.fuelCount) parts.push(`${group.fuelCount} queued generator refill${group.fuelCount === 1 ? "" : "s"}`);
     if (group.waterCount) parts.push(`${group.waterCount} queued water refill${group.waterCount === 1 ? "" : "s"}`);
-    const confirmed = await confirmAction(
-      `${target.label} now to apply ${parts.join(" and ")}?`,
-      {
-        title: "Restart Map",
-        confirmLabel: "Restart",
-        warning: "Players on this map are disconnected while it restarts."
-      }
-    );
-    if (!confirmed) return;
     onError("");
-    writeRestartingTarget(key, true);
     const label = group.partitionMap || group.map;
+    // Route through the restart queue: when it is enabled and players are online
+    // this becomes a countdown (the queued refills apply when the map finally
+    // goes down) rather than an immediate restart. The guard shows the single
+    // confirmation, carrying the refill context and disconnect warning.
+    const gated = await runGatedRestart({
+      restartGate,
+      label,
+      note: `Applies ${parts.join(" and ")}. Players on this map are disconnected while it restarts.`,
+      dispatch: (opts) => target.kind === "sietch" ? mapsApi.restartSietch(String(target.partitionId), { ...opts, label })
+        : target.kind === "respawn" ? mapsApi.respawn(String(target.partitionId), "RESTART MAP", { ...opts, label })
+        : serverApi.restartService(target.service, opts)
+    });
+    if (gated.outcome === "cancelled") return;
+    if (gated.outcome === "queued") {
+      writeRefillStatus(`${label} restart queued. Its queued refills apply once the countdown completes and the map is down.`, "ok");
+      return;
+    }
+    if (!gated.task) return;
+    const startedTask = gated.task;
+    writeRestartingTarget(key, true);
     try {
       // No trailing period: the running state appends animated dots.
       writeRefillStatus(`Restarting ${label}, its queued refills apply while it is down`, "running");
-      const started = target.kind === "sietch" ? await mapsApi.restartSietch(String(target.partitionId))
-        : target.kind === "respawn" ? await mapsApi.respawn(String(target.partitionId), "RESTART MAP")
-        : await serverApi.restartService(target.service);
       // Report what the restart actually did. Without this the running line
       // stands forever and a failed restart reads as a successful one.
-      const finished = await waitForTask(started.task);
+      const finished = await waitForTask(startedTask);
       const [refreshedFuel, refreshedWater] = await Promise.all([refreshPendingRefills(), refreshPendingWaterRefills()]);
       if (finished.status === "succeeded") {
         // The flush races the restart's own write-safety window, so a

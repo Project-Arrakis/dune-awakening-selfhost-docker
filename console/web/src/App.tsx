@@ -8,7 +8,8 @@ import { playersApi } from "./api/players";
 import { setupApi, type Task } from "./api/setup";
 import { SetupWizard } from "./components/SetupWizard";
 import { TaskProgress } from "./components/TaskProgress";
-import { ConfirmDialog, type ConfirmDialogDetail, type ConfirmDialogRequest } from "./components/common/ConfirmDialog";
+import { ConfirmDialog, type ConfirmDialogDetail, type ConfirmDialogOutcome, type ConfirmDialogRequest } from "./components/common/ConfirmDialog";
+import type { RestartGateChoice } from "./features/server/restartQueueGuard";
 import { loadPinnedAddons, savePinnedAddons, type PinnedAddon } from "./features/addons/pinnedAddons";
 import { hasAddonUpdates } from "./features/addons/addonVersions";
 import { preloadPlayerAdminIconRailAssets } from "./features/players/PlayerCategoryIconRail";
@@ -76,7 +77,51 @@ function confirmDialog(message: string, options: Partial<Omit<ConfirmDialogReque
       danger,
       details: options.details,
       warning: options.warning,
-      resolve
+      resolve: (outcome) => resolve(outcome === "confirm")
+    });
+  });
+}
+
+// The single confirmation dialog for a gated restart. Always shown (it is the
+// sole confirm for the action): when the queue is off, or on with nobody
+// online, it is a plain confirm that the restart runs now; when the queue is on
+// and players are online it offers Queue / Restart Immediately / Cancel.
+// Returns "immediate" only when the dialog cannot open, so the restart still
+// works headless.
+function restartGateChoice(meta: { label: string; enabled: boolean; playersOnline: number | null; countdownMinutes: number; note?: string; details?: ConfirmDialogDetail[] }): Promise<RestartGateChoice> {
+  return new Promise((resolve) => {
+    if (!openConfirmDialog) {
+      resolve("immediate");
+      return;
+    }
+    const online = meta.playersOnline ?? 0;
+    const minutes = Math.max(1, Math.round(meta.countdownMinutes));
+    const queued = meta.enabled && online > 0;
+    if (!queued) {
+      openConfirmDialog({
+        title: "Confirm restart",
+        message: meta.enabled
+          ? `No players are online, so this ${meta.label} restart will run immediately.`
+          : `Restart ${meta.label}? Anyone connected will be disconnected.`,
+        confirmLabel: "Restart Now",
+        cancelLabel: "Cancel",
+        danger: true,
+        warning: meta.note,
+        details: meta.details,
+        resolve: (outcome) => resolve(outcome === "confirm" ? "immediate" : "cancel")
+      });
+      return;
+    }
+    openConfirmDialog({
+      title: "Players are online",
+      message: `${online} ${online === 1 ? "player is" : "players are"} online. This ${meta.label} restart will start a ${minutes}-minute countdown with in-game warnings at each checkpoint.`,
+      confirmLabel: `Queue Restart (${minutes} min)`,
+      cancelLabel: "Cancel",
+      tertiaryLabel: "Restart Immediately",
+      danger: false,
+      warning: meta.note,
+      details: meta.details ?? [{ label: "Players online", value: String(online), tone: "accent" }],
+      resolve: (outcome) => resolve(outcome === "confirm" ? "queue" : outcome === "tertiary" ? "immediate" : "cancel")
     });
   });
 }
@@ -353,10 +398,10 @@ export function App() {
     };
   }, []);
 
-  function closeConfirmDialog(confirmed: boolean) {
+  function closeConfirmDialog(outcome: ConfirmDialogOutcome) {
     const request = confirmRequest;
     setConfirmRequest(null);
-    request?.resolve(confirmed);
+    request?.resolve(outcome);
   }
 
   async function login() {
@@ -632,21 +677,21 @@ export function App() {
         </header>
         {error && <div className="error-banner">{error}</div>}
         {redeploySetupOpen && <SetupWizard initialStep={setupJump.step} jumpNonce={setupJump.nonce} mode="redeploy" onSetupComplete={async () => setSetupState(await setupApi.state())} />}
-        {!redeploySetupOpen && tab === "Home" && <HomePanel status={status} readiness={readiness} taskResult={homeTaskResult} setTaskResult={setHomeTaskResult} funcomTokenResult={funcomTokenResult} setFuncomTokenResult={setFuncomTokenResult} runningAction={homeRunningAction} restartStartObserved={homeRestartStarted} setRunningAction={setHomeRunningAction} onLoad={loadStackStatus} confirmAction={confirmDialog} />}
-        {!redeploySetupOpen && tab === "Server Control" && <ServerPanel setTask={setTask} setStatus={setStatus} status={status} setReadiness={setReadiness} setPorts={setPorts} setDoctor={setDoctor} ports={ports} readiness={readiness} doctor={doctor} taskResult={homeTaskResult} setTaskResult={setHomeTaskResult} funcomTokenResult={funcomTokenResult} setFuncomTokenResult={setFuncomTokenResult} runningAction={homeRunningAction} restartStartObserved={homeRestartStarted} setRunningAction={setHomeRunningAction} onError={setError} confirmAction={confirmDialog} onRedeploy={() => {
+        {!redeploySetupOpen && tab === "Home" && <HomePanel status={status} readiness={readiness} taskResult={homeTaskResult} setTaskResult={setHomeTaskResult} funcomTokenResult={funcomTokenResult} setFuncomTokenResult={setFuncomTokenResult} runningAction={homeRunningAction} restartStartObserved={homeRestartStarted} setRunningAction={setHomeRunningAction} onLoad={loadStackStatus} confirmAction={confirmDialog} restartGate={restartGateChoice} />}
+        {!redeploySetupOpen && tab === "Server Control" && <ServerPanel setTask={setTask} setStatus={setStatus} status={status} setReadiness={setReadiness} setPorts={setPorts} setDoctor={setDoctor} ports={ports} readiness={readiness} doctor={doctor} taskResult={homeTaskResult} setTaskResult={setHomeTaskResult} funcomTokenResult={funcomTokenResult} setFuncomTokenResult={setFuncomTokenResult} runningAction={homeRunningAction} restartStartObserved={homeRestartStarted} setRunningAction={setHomeRunningAction} onError={setError} confirmAction={confirmDialog} restartGate={restartGateChoice} onRedeploy={() => {
           setSetupJump((current) => ({ step: 0, nonce: current.nonce + 1 }));
           setSelectedPinnedAddonId("");
           setRedeploySetupOpen(true);
         }} />}
-        {!redeploySetupOpen && tab === "Services" && <LazyTabBoundary label="Loading Services"><ServicesPanel services={services} setServices={setServices} setTask={setTask} openLogs={(service) => { setRedeploySetupOpen(false); setSelectedLogService(service); setTab("Logs"); }} onError={setError} confirmAction={confirmDialog} /></LazyTabBoundary>}
+        {!redeploySetupOpen && tab === "Services" && <LazyTabBoundary label="Loading Services"><ServicesPanel services={services} setServices={setServices} setTask={setTask} openLogs={(service) => { setRedeploySetupOpen(false); setSelectedLogService(service); setTab("Logs"); }} onError={setError} confirmAction={confirmDialog} restartGate={restartGateChoice} /></LazyTabBoundary>}
         {!redeploySetupOpen && tab === "Players" && <LazyTabBoundary label="Loading Players"><PlayersPanel onError={setError} renderCharacterAdmin={(props) => <LazyTabBoundary label="Loading Player Details"><CharacterAdminUI {...props} onError={setError} confirmAction={confirmDialog} waitForTask={waitForTaskSilently} formatMutationResult={formatMutationResult} /></LazyTabBoundary>} /></LazyTabBoundary>}
         {!redeploySetupOpen && tab === "Guilds" && <LazyTabBoundary label="Loading Guilds"><GuildsPanel onError={setError} confirmAction={confirmDialog} /></LazyTabBoundary>}
-        {!redeploySetupOpen && tab === "Bases" && <LazyTabBoundary label="Loading Bases"><BasesPanel onError={setError} confirmAction={confirmDialog} formatMutationResult={formatMutationResult} /></LazyTabBoundary>}
+        {!redeploySetupOpen && tab === "Bases" && <LazyTabBoundary label="Loading Bases"><BasesPanel onError={setError} confirmAction={confirmDialog} restartGate={restartGateChoice} formatMutationResult={formatMutationResult} /></LazyTabBoundary>}
         {!redeploySetupOpen && tab === "Vehicles" && <LazyTabBoundary label="Loading Vehicles"><VehiclesPanel onError={setError} confirmAction={confirmDialog} formatMutationResult={formatMutationResult} /></LazyTabBoundary>}
-        {!redeploySetupOpen && tab === "Landsraad" && <LazyTabBoundary label="Loading Landsraad"><LandsraadPanel onError={setError} confirmAction={confirmDialog} /></LazyTabBoundary>}
+        {!redeploySetupOpen && tab === "Landsraad" && <LazyTabBoundary label="Loading Landsraad"><LandsraadPanel onError={setError} confirmAction={confirmDialog} restartGate={restartGateChoice} /></LazyTabBoundary>}
         {!redeploySetupOpen && tab === "Admin Tools" && <LazyTabBoundary label="Loading Admin Tools"><AdminToolsPanel onError={setError} confirmAction={confirmDialog} /></LazyTabBoundary>}
         {!redeploySetupOpen && tab === "Live Map" && <LazyTabBoundary label="Loading Live Map"><LiveMapPanel onError={setError} confirmAction={confirmDialog} waitForTask={waitForTaskSilently} taskTechnicalDetails={taskTechnicalDetails} /></LazyTabBoundary>}
-        {!redeploySetupOpen && tab === "Maps" && <LazyTabBoundary label="Loading Maps"><MapsPanel onError={setError} confirmAction={confirmDialog} confirmSettingsRestart={confirmSettingsRestart} waitForTaskWithUpdates={waitForTaskWithUpdates} taskTechnicalDetails={taskTechnicalDetails} /></LazyTabBoundary>}
+        {!redeploySetupOpen && tab === "Maps" && <LazyTabBoundary label="Loading Maps"><MapsPanel onError={setError} confirmAction={confirmDialog} restartGate={restartGateChoice} confirmSettingsRestart={confirmSettingsRestart} waitForTaskWithUpdates={waitForTaskWithUpdates} taskTechnicalDetails={taskTechnicalDetails} /></LazyTabBoundary>}
         {!redeploySetupOpen && tab === "Care Package" && <LazyTabBoundary label="Loading Care Package"><CarePackagePanel onError={setError} confirmAction={confirmDialog} /></LazyTabBoundary>}
         {!redeploySetupOpen && tab === "Addons" && <LazyTabBoundary label="Loading Addons"><AddonsPanel pinnedAddons={pinnedAddons} setPinnedAddons={setPinnedAddons} selectedAddonId={selectedPinnedAddonId} clearSelectedAddon={() => setSelectedPinnedAddonId("")} setAddonUpdateAvailable={setAddonUpdatesAvailable} confirmAction={confirmDialog} /></LazyTabBoundary>}
         {!redeploySetupOpen && tab === "Database" && <LazyTabBoundary label="Loading Database"><DatabasePanel /></LazyTabBoundary>}

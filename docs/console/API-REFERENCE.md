@@ -77,9 +77,20 @@ Complete reference for all HTTP API endpoints in the Dune Docker Console. All en
 | GET | `/api/server/ip-change-restart` | Get IP change restart status | None |
 | POST | `/api/server/ip-change-restart` | Save IP change restart config | `enabled`, `intervalMinutes?`, `notifyMinutes?` |
 | POST | `/api/server/ip-change-restart/check` | Check for IP changes now | None |
+| GET | `/api/server/restart-queue` | Get restart-queue settings, defaults, active state and battlegroup online count | None |
+| POST | `/api/server/restart-queue` | Save restart-queue settings | `enabled`, `defaultCountdownMinutes`, `broadcastCheckpoints`, `broadcastDurationSec?`, `recoveryGraceMinutes?` |
+| POST | `/api/server/restart-queue/cancel` | Cancel one active countdown | `id` |
+| POST | `/api/server/restart-queue/restart-now` | Execute one queued restart immediately | `id` |
 | GET | `/api/server/shutdown-protection` | Get shutdown protection status | None |
 | POST | `/api/server/shutdown-protection` | Enable/disable shutdown protection | `enabled` (boolean) |
 | POST | `/api/server/shutdown-protection/remove` | Remove shutdown protection | None |
+
+When the Restart Queue is enabled, the restart routes above (`/api/server/restart`,
+`/api/server/restart-service`, and the map/sietch restart paths) return
+**`202 { queued: true, ... }`** when a restart is queued behind a countdown and
+**`409 { queued: false, error }`** on a concurrency conflict; append
+`?restartQueue=immediate` to force an immediate restart. See
+[restart-queue.md](restart-queue.md).
 
 ---
 

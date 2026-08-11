@@ -1,5 +1,6 @@
 import { api, post } from "./client";
 import type { Task } from "./setup";
+import type { RestartDispatchResponse } from "./server";
 
 export type UserSettingField = {
   scope: "engine" | "mapEngine" | "partitionEngine" | "game" | "partition";
@@ -142,7 +143,7 @@ export const mapsApi = {
   // Restart for a map with no managed service (Deep Desert, the SH_* hubs):
   // despawn then spawn as one task. Always pass a partition id, never a map name
   // -- spawn-server.sh given a name picks the first unassigned partition.
-  respawn: (partitionId: string, confirmation: string) => post<{ task: Task }>("/api/maps/respawn", { target: partitionId, confirmation }),
+  respawn: (partitionId: string, confirmation: string, opts?: { immediate?: boolean; label?: string }) => post<RestartDispatchResponse>(`/api/maps/respawn${opts?.immediate ? "?restartQueue=immediate" : ""}`, { target: partitionId, confirmation, restartLabel: opts?.label }),
   autoscaler: () => api<{ stdout: string }>("/api/maps/autoscaler"),
   memory: () => api<{ stdout: string }>("/api/maps/memory"),
   liveMemory: () => api<{ rows: LiveMapMemoryRow[]; sampledAt: string; error?: string }>("/api/maps/memory/live"),
@@ -165,16 +166,16 @@ export const mapsApi = {
   userSettingsRestartPending: () => api<{ pending: boolean }>("/api/maps/user-settings/restart-pending"),
   userSettingsValues: (scope: "engine" | "mapEngine" | "partitionEngine" | "global" | "map" | "partition", map?: string, partitionId?: string) => api<{ stdout: string }>(`/api/maps/user-settings/values?scope=${encodeURIComponent(scope)}${map ? `&map=${encodeURIComponent(map)}` : ""}${partitionId ? `&partitionId=${encodeURIComponent(partitionId)}` : ""}`),
   rawUserSettings: (kind: "engine" | "game" | "profile" | "client-game" | "client-engine", map?: string, partitionId?: string) => api<{ content: string }>(`/api/maps/user-settings/raw?kind=${encodeURIComponent(kind)}${map ? `&map=${encodeURIComponent(map)}` : ""}${partitionId ? `&partitionId=${encodeURIComponent(partitionId)}` : ""}`),
-  saveUserSettings: (body: { scope: "engine" | "mapEngine" | "partitionEngine" | "global" | "map" | "partition"; map?: string; partitionId?: string; values: Record<string, string>; restart?: boolean }) => post<{ task: Task }>("/api/maps/user-settings/save", body),
-  resetUserSettings: (body: { scope: "engine" | "mapEngine" | "partitionEngine" | "global" | "map" | "partition"; map?: string; partitionId?: string; confirmation: string }) => post<{ task: Task }>("/api/maps/user-settings/reset", body),
-  saveRawUserSettings: (body: { scope: "engine" | "game" | "global" | "profile"; map?: string; partitionId?: string; content: string }) => post<{ task: Task }>("/api/maps/user-settings/raw", body),
+  saveUserSettings: (body: { scope: "engine" | "mapEngine" | "partitionEngine" | "global" | "map" | "partition"; map?: string; partitionId?: string; values: Record<string, string>; restart?: boolean }) => post<RestartDispatchResponse>("/api/maps/user-settings/save", body),
+  resetUserSettings: (body: { scope: "engine" | "mapEngine" | "partitionEngine" | "global" | "map" | "partition"; map?: string; partitionId?: string; confirmation: string }) => post<RestartDispatchResponse>("/api/maps/user-settings/reset", body),
+  saveRawUserSettings: (body: { scope: "engine" | "game" | "global" | "profile"; map?: string; partitionId?: string; content: string }) => post<RestartDispatchResponse>("/api/maps/user-settings/raw", body),
   sietches: () => api<{ stdout: string }>("/api/sietches"),
   // exitCode is surfaced because commandJson answers 200 even when the CLI
   // fails: a caller that only reads stdout cannot tell "no sietches" from
   // "the command did not run".
   sietchDimensions: (map = "Survival_1", ids = false) => api<{ stdout: string; exitCode?: number }>(`/api/sietches/dimensions?map=${encodeURIComponent(map)}${ids ? "&ids=1" : ""}`),
   updateSietches: (body: Record<string, unknown>) => post<{ task: Task }>("/api/sietches/update", body),
-  restartSietch: (partitionId: string) => post<{ task: Task }>("/api/sietches/update", { action: "restart", partitionId, confirmation: "RESTART SIETCH" }),
+  restartSietch: (partitionId: string, opts?: { immediate?: boolean; label?: string }) => post<RestartDispatchResponse>(`/api/sietches/update${opts?.immediate ? "?restartQueue=immediate" : ""}`, { action: "restart", partitionId, confirmation: "RESTART SIETCH", restartLabel: opts?.label }),
   deepdesert: () => api<{ stdout: string }>("/api/deepdesert"),
   updateDeepdesert: (body: { action: string; confirmation: string }) => post<{ task: Task }>("/api/deepdesert/update", body),
   combatState: (map: string) => api<MapCombatStateResult>(`/api/maps/combat-state?map=${encodeURIComponent(map)}`)

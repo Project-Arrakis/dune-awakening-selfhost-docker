@@ -81,7 +81,8 @@ function renderMapsPanel() {
     // A prop, so no task polling is needed -- the sequence settles at once.
     waitForTaskWithUpdates: vi.fn().mockImplementation((task: { id: string }) =>
       Promise.resolve({ ...task, status: "succeeded" })),
-    taskTechnicalDetails: vi.fn().mockReturnValue("")
+    taskTechnicalDetails: vi.fn().mockReturnValue(""),
+    restartGate: vi.fn().mockResolvedValue("immediate")
   };
   render(<MapsPanel {...props} />);
   return props;

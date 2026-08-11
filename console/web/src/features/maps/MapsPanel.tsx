@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useRef, useState } from "react";
 import { AlertTriangle, ChevronDown, ChevronUp, Download, Fuel, Grid2X2, Info, List, Lock, RotateCcw } from "lucide-react";
 import { mapsApi, type ChoamTerminalOverview, type ChoamTradeCenter, type LiveMapMemoryRow, type MapCombatStateResult, type MapRuntimeSettings, type MemoryBalancerState, type MemorySwapState, type PartitionCombatStateRow, type SpicefieldTypeRow, type UserSettingField, type UserSettingsSchema } from "../../api/maps";
+import { runGatedRestart, type RestartGate } from "../server/restartQueueGuard";
 import { setupApi, type Task } from "../../api/setup";
 import { SecretInput } from "../../components/SecretInput";
 import { InfoTooltip, KeyValueGrid, StatusPill, TechnicalDetails } from "../../components/common/DisplayPrimitives";
@@ -38,7 +39,7 @@ function PendingRefillBadge({ count }: { count: number }) {
 type HomeTaskResult = { status: "running" | "succeeded" | "failed" | "stopped"; title: string; message?: string; details?: string; warnings?: string[] };
 type MapsResultScope = "maps" | "modifiers";
 type MapsTaskQueueState = { phase: "queued" | "running"; title: string };
-type MapsTaskResponse = { task: Task; invalidatesInstanceNamesOnSuccess?: boolean };
+type MapsTaskResponse = { task?: Task; queued?: boolean; invalidatesInstanceNamesOnSuccess?: boolean };
 type MapsTaskAction = { label: string; run: () => Promise<MapsTaskResponse> };
 type MapsTaskOptions = {
   memoryUpdates?: Array<{ map: string; partitionId?: string; memory: string }>;
@@ -72,6 +73,7 @@ type ConfirmAction = (message: string, options?: { title?: string; confirmLabel?
 type MapsPanelProps = {
   onError: (text: string) => void;
   confirmAction: ConfirmAction;
+  restartGate: RestartGate;
   confirmSettingsRestart: (kind: "UserEngine" | "UserGame") => Promise<boolean>;
   waitForTaskWithUpdates: (task: Task, onUpdate: (task: Task) => void) => Promise<Task>;
   taskTechnicalDetails: (task: Task) => string;
@@ -296,7 +298,7 @@ function updateSietches(body: Record<string, unknown>) {
   });
 }
 
-export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, waitForTaskWithUpdates, taskTechnicalDetails }: MapsPanelProps) {
+export function MapsPanel({ onError, confirmAction, restartGate, confirmSettingsRestart, waitForTaskWithUpdates, taskTechnicalDetails }: MapsPanelProps) {
   const [mapsText, setMapsText] = useState("");
   const [memoryText, setMemoryText] = useState("");
   const [serversText, setServersText] = useState("");
@@ -415,13 +417,24 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
     mapsTaskQueueRef.current = queuedTask.then(() => undefined, () => undefined);
     await queuedTask;
   }
-  async function runTaskAndRefresh(action: () => Promise<{ task: Task }>, runningTitle = "Applying Map Changes", successTitle = "Map Changes Applied", options: MapsTaskOptions = {}) {
+  async function runTaskAndRefresh(action: () => Promise<{ task?: Task; queued?: boolean }>, runningTitle = "Applying Map Changes", successTitle = "Map Changes Applied", options: MapsTaskOptions = {}) {
     await enqueueMapsTask(options.resultTarget || "", runningTitle, () => runTaskAndRefreshNow(action, runningTitle, successTitle, options));
   }
-  async function runTaskAndRefreshNow(action: () => Promise<{ task: Task }>, runningTitle: string, successTitle: string, options: MapsTaskOptions) {
+  async function runTaskAndRefreshNow(action: () => Promise<{ task?: Task; queued?: boolean }>, runningTitle: string, successTitle: string, options: MapsTaskOptions) {
     const resultScope = options.resultScope || "maps";
     const resultTarget = options.resultTarget || "";
     const response = await action();
+    if (!response.task) {
+      // Gated by the restart queue: this save-and-restart was captured into a
+      // countdown, so the change applies when it fires. Manage it under
+      // Admin Tools -> Restart Queue.
+      setMapsResultScope(resultScope);
+      setMapsResultTarget(resultTarget);
+      setMapsResult({ status: "succeeded", title: successTitle, message: "Restart queued. These changes apply when the countdown completes — manage it under Admin Tools → Restart Queue." });
+      persistMapsTask(null);
+      await loadMaps();
+      return;
+    }
     const started: HomeTaskResult = { status: "running", title: runningTitle };
     setMapsResultScope(resultScope);
     setMapsResultTarget(resultTarget);
@@ -500,6 +513,16 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
         persistMapsTask({ result: { status: "running", title: runningTitle, message: progressMessage }, runningTitle, successTitle, resultScope });
       }
       const response = await action.run();
+      if (!response.task) {
+        // Restart-queue gated (a save-and-restart step captured into a
+        // countdown): the remaining change applies when it fires.
+        setMapsResultScope(resultScope);
+        setMapsResultTarget(resultTarget);
+        setMapsResult({ status: "succeeded", title: successTitle, message: "Restart queued. The remaining changes apply when the countdown completes — manage it under Admin Tools → Restart Queue.", warnings: collectedWarnings.length ? collectedWarnings : undefined });
+        persistMapsTask(null);
+        await loadMaps();
+        return;
+      }
       if (!handedOffToWarming) {
         persistMapsTask({ taskId: response.task.id, result: { status: "running", title: runningTitle, message: progressMessage }, runningTitle, successTitle, resultScope });
       }
@@ -1467,17 +1490,27 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
     if (!sietch.active) return;
     if (!isSietchWriteTarget(sietch)) return onError(SIETCH_PARTITION_IDS_UNREADABLE);
     const label = sietch.displayName || `Partition ${sietch.partitionId}`;
-    if (!(await confirmAction(`Restart ${label}?`, {
-      title: "Restart Sietch",
-      confirmLabel: "Restart",
+    const gated = await runGatedRestart({
+      restartGate,
+      label,
+      note: "Players in this Sietch will be disconnected. Other Sietches will remain running.",
       details: [
         { label: "Sietch", value: label },
-        { label: "Partition", value: sietch.partitionId },
-        { label: "Impact", value: "Players in this Sietch will be disconnected. Other Sietches will remain running.", tone: "danger" }
-      ]
-    }))) return;
+        { label: "Partition", value: sietch.partitionId }
+      ],
+      dispatch: (opts) => mapsApi.restartSietch(sietch.partitionId, { ...opts, label })
+    });
+    if (gated.outcome === "cancelled") return;
+    if (gated.outcome === "queued") {
+      setMapsResultScope("maps");
+      setMapsResultTarget(resultTarget);
+      setMapsResult({ status: "succeeded", title: "Restart Queued", message: `${label} restart queued — see the Restart Queue panel in Admin Tools.` });
+      return;
+    }
+    if (!gated.task) return;
+    const task = gated.task;
     await runTaskAndRefresh(
-      () => mapsApi.restartSietch(sietch.partitionId),
+      () => Promise.resolve({ task }),
       `Restarting ${label}`,
       `${label} Restarted`,
       { resultTarget }
@@ -1567,12 +1600,17 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
     if (!rowName || rowName === "Survival_1" || rowName === "Overmap") return;
     const partitionId = String(row.partitionId || row.partition || "").trim();
     if (!partitionId) return;
-    const confirmed = await confirmAction(`Restart ${rowName}?`, {
-      confirmLabel: "Restart",
-      cancelLabel: "Cancel"
-    });
-    if (!confirmed) return;
-    await runTaskAndRefresh(() => mapsApi.respawn(partitionId, "RESTART MAP"), `Restarting ${rowName}`, `${rowName} Restarted`, { resultTarget: mapResultTarget(rowName) });
+    const gated = await runGatedRestart({ restartGate, label: rowName, dispatch: (opts) => mapsApi.respawn(partitionId, "RESTART MAP", { ...opts, label: rowName }) });
+    if (gated.outcome === "cancelled") return;
+    if (gated.outcome === "queued") {
+      setMapsResultScope("maps");
+      setMapsResultTarget(mapResultTarget(rowName));
+      setMapsResult({ status: "succeeded", title: "Restart Queued", message: `${rowName} restart queued — see the Restart Queue panel in Admin Tools.` });
+      return;
+    }
+    if (!gated.task) return;
+    const task = gated.task;
+    await runTaskAndRefresh(() => Promise.resolve({ task }), `Restarting ${rowName}`, `${rowName} Restarted`, { resultTarget: mapResultTarget(rowName) });
   }
   async function forceDespawnDeepDesertPartition(row: Record<string, unknown>) {
     const partitionId = String(row.partitionId || "").trim();
