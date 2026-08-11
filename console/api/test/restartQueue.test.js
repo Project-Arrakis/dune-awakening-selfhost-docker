@@ -139,6 +139,68 @@ test("buildWarning produces the two title/body variants with correct pluralizati
   assert.match(buildWarning("map", "Deep Desert", 5).body, /^Deep Desert will restart in 5 minutes\./);
 });
 
+test("defaults include the two message templates and defaultSettings clones them", () => {
+  const settings = readSettings(config());
+  assert.deepEqual(settings.messages, {
+    battlegroup: { title: "Battlegroup Restart", body: "All servers will restart in {minutes}. Please get to a safe place." },
+    map: { title: "Map Restart", body: "{mapLabel} will restart in {minutes}. Please move to another map or get to a safe place." }
+  });
+  // Mutating one call's result must not leak into the next.
+  const a = defaultSettings();
+  a.messages.battlegroup.title = "mutated";
+  assert.equal(defaultSettings().messages.battlegroup.title, "Battlegroup Restart");
+});
+
+test("normalizeSettings validates message templates per-field, falling back to defaults independently", () => {
+  const withCustom = normalizeSettings({ messages: { battlegroup: { title: "Heads up", body: "Down in {minutes}." }, map: { title: "", body: "x".repeat(600) } } });
+  assert.deepEqual(withCustom.messages.battlegroup, { title: "Heads up", body: "Down in {minutes}." });
+  // An empty title and an over-length body both fall back to the default for
+  // just that field -- the valid field on the other template is unaffected.
+  assert.equal(withCustom.messages.map.title, "Map Restart");
+  assert.equal(withCustom.messages.map.body, "{mapLabel} will restart in {minutes}. Please move to another map or get to a safe place.");
+
+  const untouched = normalizeSettings({ enabled: true });
+  assert.deepEqual(untouched.messages, defaultSettings().messages);
+});
+
+test("buildWarning renders a custom template's placeholders, including battlegroup-with-mapLabel", () => {
+  const custom = {
+    battlegroup: { title: "Heads up", body: "Down in {minutes}. GLHF." },
+    map: { title: "Bye {mapLabel}", body: "{mapLabel} closes in {minutes}." }
+  };
+  assert.deepEqual(buildWarning("battlegroup", "", 15, custom), { title: "Heads up", body: "Down in 15 minutes. GLHF." });
+  assert.deepEqual(buildWarning("map", "Deep Desert", 1, custom), { title: "Bye Deep Desert", body: "Deep Desert closes in 1 minute." });
+  // An unrecognized {token} is left as-is rather than silently erased.
+  assert.equal(buildWarning("battlegroup", "", 5, { battlegroup: { title: "T", body: "Unknown {frobnicate} token" }, map: custom.map }).body, "Unknown {frobnicate} token");
+});
+
+test("saveSettings merges a partial body onto the currently persisted settings instead of resetting untouched fields", () => {
+  const cfg = config();
+  saveSettings(cfg, { enabled: true, defaultCountdownMinutes: 20, broadcastCheckpoints: [30, 5], broadcastDurationSec: 45, recoveryGraceMinutes: 10 });
+
+  // Toggling the switch sends only `enabled` -- every other field, including
+  // a not-yet-set messages object, must survive untouched.
+  const toggled = saveSettings(cfg, { enabled: false });
+  assert.equal(toggled.settings.enabled, false);
+  assert.equal(toggled.settings.defaultCountdownMinutes, 20);
+  assert.deepEqual(toggled.settings.broadcastCheckpoints, [30, 5]);
+  assert.equal(toggled.settings.broadcastDurationSec, 45);
+  assert.equal(toggled.settings.recoveryGraceMinutes, 10);
+
+  // The messages editor sends only `messages` -- the countdown/checkpoint
+  // fields set above must survive that save too.
+  const customMessages = { battlegroup: { title: "Custom", body: "Restart in {minutes}." }, map: { title: "Custom Map", body: "{mapLabel} in {minutes}." } };
+  const withMessages = saveSettings(cfg, { messages: customMessages });
+  assert.deepEqual(withMessages.settings.messages, customMessages);
+  assert.equal(withMessages.settings.defaultCountdownMinutes, 20);
+  assert.deepEqual(withMessages.settings.broadcastCheckpoints, [30, 5]);
+
+  // And a countdown-only save afterward must not revert the saved messages.
+  const afterCountdownSave = saveSettings(cfg, { defaultCountdownMinutes: 25, broadcastCheckpoints: [30, 5] });
+  assert.deepEqual(afterCountdownSave.settings.messages, customMessages);
+  assert.equal(afterCountdownSave.settings.defaultCountdownMinutes, 25);
+});
+
 test("recover clears dispatched entries, resumes in-window, executes just-elapsed, discards stale", () => {
   const now = 10_000_000;
   const grace = 5;

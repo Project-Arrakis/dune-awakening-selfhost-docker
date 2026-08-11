@@ -4,7 +4,8 @@ import { adminApi } from "../../api/admin";
 import { liveMapApi } from "../../api/liveMap";
 import { playersApi } from "../../api/players";
 import { serverApi } from "../../api/server";
-import type { RestartQueueResponse } from "../../api/server";
+import type { RestartMessages, RestartQueueResponse } from "../../api/server";
+import { RestartMessagesModal } from "./RestartMessagesModal";
 import { setupApi, type Task } from "../../api/setup";
 import { DataTable } from "../../components/common/DataTable";
 import { KeyValueGrid, TechnicalDetails } from "../../components/common/DisplayPrimitives";
@@ -42,6 +43,9 @@ export function AdminToolsPanel({ onError, confirmAction }: AdminToolsPanelProps
   const [queueCheckpoints, setQueueCheckpoints] = useState("15, 10, 5, 1");
   const [queueResult, setQueueResult] = useState<HomeTaskResult | null>(null);
   const [queueNow, setQueueNow] = useState(() => Date.now());
+  const [queueMessagesOpen, setQueueMessagesOpen] = useState(false);
+  const [queueMessagesSaving, setQueueMessagesSaving] = useState(false);
+  const [queueMessagesError, setQueueMessagesError] = useState("");
   const [ipChangeRestart, setIpChangeRestart] = useState<{ stdout?: string; stderr?: string; exitCode?: number } | null>(null);
   const [ipChangeLoading, setIpChangeLoading] = useState(true);
   const [ipChangeEnabled, setIpChangeEnabled] = useState(false);
@@ -254,6 +258,23 @@ export function AdminToolsPanel({ onError, confirmAction }: AdminToolsPanelProps
       setQueueResult({ status: "succeeded", title: nextEnabled ? "Restart Queue Enabled" : "Restart Queue Saved" });
     } catch (error) {
       setQueueResult({ status: "failed", title: "Restart Queue Save Failed", details: error instanceof Error ? error.message : String(error) });
+    }
+  }
+
+  // Sends only `messages` -- the backend merges this onto the currently
+  // persisted settings, so the countdown/checkpoint fields above are untouched.
+  async function saveRestartMessages(next: RestartMessages) {
+    setQueueMessagesSaving(true);
+    setQueueMessagesError("");
+    try {
+      const response = await serverApi.saveRestartQueue({ messages: next });
+      setRestartQueue((current) => current ? { ...current, settings: response.settings, defaults: response.defaults, state: response.state } : current);
+      setQueueMessagesOpen(false);
+      setQueueResult({ status: "succeeded", title: "Restart Messages Saved" });
+    } catch (error) {
+      setQueueMessagesError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setQueueMessagesSaving(false);
     }
   }
 
@@ -794,10 +815,19 @@ export function AdminToolsPanel({ onError, confirmAction }: AdminToolsPanelProps
           <label className="compact-select schedule-notify-field">Default Countdown (Min)<input type="number" min="1" max="1440" step="1" disabled={queueSaving} value={queueCountdownMinutes} onChange={(event) => setQueueCountdownMinutes(event.target.value)} /></label>
           <label className="compact-select schedule-checkpoints-field">Broadcast Checkpoints (Min)<input type="text" disabled={queueSaving} value={queueCheckpoints} onChange={(event) => setQueueCheckpoints(event.target.value)} placeholder="15, 10, 5, 1" /></label>
           <button disabled={queueSaving || queueLoading} onClick={() => saveRestartQueue()}>Save Queue</button>
+          <button disabled={queueLoading || !queueSettings} onClick={() => setQueueMessagesOpen(true)}>Edit Messages</button>
           {queueResult && <span className={`inline-task-result result-${queueResult.status === "succeeded" ? "ok" : queueResult.status === "failed" ? "fail" : "running"}`}>
             <strong className={queueResult.status === "running" ? "loading-dots" : ""}>{formatResultTitle(queueResult.title, queueResult.status === "running")}</strong>
           </span>}
         </div>
+        {queueMessagesOpen && queueSettings && restartQueue?.defaults && <RestartMessagesModal
+          messages={queueSettings.messages}
+          defaults={restartQueue.defaults.messages}
+          saving={queueMessagesSaving}
+          error={queueMessagesError}
+          onSave={saveRestartMessages}
+          onClose={() => { setQueueMessagesOpen(false); setQueueMessagesError(""); }}
+        />}
         <div className="section-divider" />
         <div className="panel-title schedule-panel-title">
           <h4>Restart On Public IP Change</h4>

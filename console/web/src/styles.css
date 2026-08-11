@@ -606,6 +606,17 @@ main { padding: 22px; min-width: 0; }
 .restart-queue-banner .panel-title { align-items: flex-start; flex-wrap: nowrap; }
 .restart-queue-banner .panel-title h4 { flex: 1 1 auto; min-width: 0; }
 .restart-queue-banner .panel-title .switch-state { flex: 0 0 auto; }
+.restart-messages-modal { width: min(560px, calc(100vw - 32px)); }
+.restart-messages-tab-flag { margin-left: 6px; color: var(--danger-text); font-weight: 800; }
+.restart-messages-field { display: grid; gap: 4px; }
+.restart-messages-field label { display: grid; gap: 6px; color: var(--muted); font-size: 13px; }
+.restart-messages-field input, .restart-messages-field textarea { width: 100%; }
+.restart-messages-counter { justify-self: end; color: var(--muted); font-size: 12px; }
+.restart-messages-help { font-size: 12px; }
+.restart-messages-preview { border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; background: var(--panel-muted); display: grid; gap: 4px; }
+.restart-messages-preview-label { color: var(--muted); font-size: 12px; text-transform: uppercase; }
+.restart-messages-preview strong { color: var(--title); }
+.restart-messages-preview p { margin: 0; color: var(--text); overflow-wrap: anywhere; }
 .section-divider { height: 1px; margin: 16px 0; background: rgba(232, 224, 205, 0.14); }
 .action-line { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; }
 .action-line label { flex: 0 1 180px; }
