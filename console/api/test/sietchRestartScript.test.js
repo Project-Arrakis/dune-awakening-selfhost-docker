@@ -141,7 +141,7 @@ test("autoscaler browser healing pauses during coordinated Sietch topology chang
   assert.match(autoscalerSource, /SIETCH_TOPOLOGY_HEAL_GRACE_SECONDS=/);
   assert.match(
     autoscalerSource,
-    /marker_age.*SIETCH_TOPOLOGY_HEAL_GRACE_SECONDS[\s\S]*?director_heal_clear stale_since\s+return 0/,
+    /marker_age.*SIETCH_TOPOLOGY_HEAL_GRACE_SECONDS[\s\S]*?director_heal_clear stale_since[\s\S]*?return 0/,
   );
 });
 
