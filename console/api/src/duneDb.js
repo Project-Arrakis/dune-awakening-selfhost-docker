@@ -1,4 +1,5 @@
 import { assertIdentifier, intParam, isReadOnlySql, quoteIdentifier, quoteQualified, rowsResult } from "./db.js";
+import { getBridgeRequestSummary } from "./audit.js";
 import { existsSync, readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
@@ -8529,6 +8530,206 @@ export async function migrateDiscordAdapterSchema(db) {
   };
   if (typeof db.transaction === "function") return db.transaction(migrate);
   return migrate(db);
+}
+
+export async function addonOpsInventorySummary(db) {
+  if (!(await tableExists(db, "items")) || !(await tableExists(db, "inventories")) || !(await tableExists(db, "placeables"))) {
+    return emptyInventorySummary();
+  }
+
+  let totalItems = 0;
+  let itemsByTemplate = [];
+  try {
+    const totals = await db.query(`
+      select count(*)::int as total_items
+      from dune.items i
+      join dune.inventories inv on i.inventory_id = inv.id
+      join dune.placeables p on p.id = inv.actor_id
+      where p.is_hologram = false and p.owner_entity_id is not null and p.owner_entity_id != 0`);
+    totalItems = Number(totals.rows?.[0]?.total_items || 0);
+
+    const byTemplate = await db.query(`
+      select i.template_id::text as template_id,
+             count(*)::int as count,
+             coalesce(sum(i.stack_size), 0)::bigint as total_stack
+      from dune.items i
+      join dune.inventories inv on i.inventory_id = inv.id
+      join dune.placeables p on p.id = inv.actor_id
+      where p.is_hologram = false and p.owner_entity_id is not null and p.owner_entity_id != 0
+      group by i.template_id
+      order by count desc
+      limit 50`);
+    const metadata = adminItemMetadata();
+    itemsByTemplate = (byTemplate.rows || []).map((row) => {
+      const meta = metadata.get(row.template_id);
+      return { ...row, name: meta?.name || row.template_id, category: meta?.category || "" };
+    });
+  } catch { }
+
+  let storageUsage = [];
+  let totalInventories = 0;
+  try {
+    const storage = await listStorage(db);
+    storageUsage = (storage.rows || []).map((row) => ({ inventoryId: row.id, itemCount: row.item_count, totalStack: null }));
+    totalInventories = storageUsage.length;
+  } catch { }
+
+  return {
+    totalItems,
+    totalInventories,
+    itemsByTemplate,
+    totalCrafted: null,
+    storageUsage
+  };
+}
+
+function emptyInventorySummary() {
+  return { totalItems: 0, totalInventories: 0, itemsByTemplate: [], totalCrafted: null, storageUsage: [] };
+}
+
+// addonOpsSocSummary: platform-health summary for the OPS observability
+// addon's SOC tab. Deliberately does not take a `db` parameter — unlike
+// every other addonOps* function, this domain has no aggregate SQL query
+// backing it. bridgeRequests/bridgeErrors/bridgeSuccessRate come from an
+// in-memory rolling counter (audit.js's getBridgeRequestSummary()),
+// updated at audit()-call time whenever an addons.bridge action is
+// logged, rather than re-parsing the (potentially large) audit log file
+// on every request — see audit.js's own comment for why. Verified against
+// this project's own live, running audit log (runtime/generated/
+// web-admin-audit.jsonl, 1301 real lines, 485 real addons.bridge entries
+// at the time of writing) that the exact detail.ok field shape this
+// depends on is correct in production, not just in a mocked test.
+export function addonOpsSocSummary() {
+  const { requests, errors } = getBridgeRequestSummary();
+  const successRate = requests > 0 ? Math.round(((requests - errors) / requests) * 100) : null;
+  const platformHealth = requests === 0 ? "Unknown" : errors / requests > 0.1 ? "Degraded" : "Healthy";
+  return {
+    platformHealth,
+    bridgeRequests: requests,
+    bridgeErrors: errors,
+    bridgeSuccessRate: successRate
+  };
+}
+
+// addonOpsPrometheusHealth: reports the health of this project's optional,
+// opt-in metrics stack (docker-compose.metrics.yml, started via
+// `dune metrics start` — NOT running by default). Deliberately takes no
+// `db` parameter — this is an HTTP integration against a local Prometheus
+// instance, not a SQL query.
+//
+// Mandatory precondition check, verified live on a real deployment before
+// writing this: attempts a short-timeout /-/healthy request first. If
+// Prometheus is not reachable (the default, common state — this stack is
+// opt-in), returns { status: "planned", domain: "prometheus", reason:
+// "metrics_stack_not_running", message, summary: {} } — deliberately
+// reusing the exact same { status: "planned", ... } shape
+// opsPrometheusProvider's own placeholder already returns (opsProvider.js's
+// opsPlaceholder()), which is the shape the addon's own
+// fetchLiveOrUnavailable() (web/data-providers.js) already knows how to
+// recognize as "unavailable" without requiring any change on the addon
+// side. The added `reason: "metrics_stack_not_running"` field distinguishes
+// this specific case from a route that's genuinely not implemented at all
+// (location, still a bare opsPlaceholder with no reason field) for any
+// caller that inspects the raw bridge response directly — e.g. the
+// Discord bot, or a future addon version — even though the current addon
+// version's fetchLiveOrUnavailable() collapses both into the same
+// "not_implemented" SourceResult reason today. This is intentional: Core
+// reports the most specific truth it can; it is not Core's job to decide
+// how precisely a particular consumer chooses to surface that truth.
+//
+// avgCpuPercent/avgMemoryMb come from node-exporter host-level metrics
+// (100 - idle-cpu-percent; MemTotal - MemAvailable), which were directly
+// verified to work correctly against a real, running instance of this
+// exact metrics stack. totalRestarts and any per-container breakdown are
+// NOT computed here: verified live, on this same real deployment, that
+// this stack's cAdvisor (docker-compose.metrics.yml's current
+// --docker_only=true / --store_container_labels=false configuration) only
+// exposes root-cgroup-aggregate metrics (id="/", no per-container `name`
+// label) on this system's Docker/OverlayFS configuration — confirmed via
+// cAdvisor's own container logs ("failed to identify the read-write layer
+// ID for container ..." for every single running container). This is a
+// pre-existing cAdvisor configuration/compatibility issue in
+// docker-compose.metrics.yml itself, out of scope for this change to fix,
+// and NOT something to work around by fabricating or guessing a
+// totalRestarts value — it is returned as null, honestly reflecting that
+// per-container metrics are not currently obtainable from this stack as
+// configured, distinct from the target simply being reachable (which
+// `targets.active`/`targets.total` below correctly reports based on
+// Prometheus's own /api/v1/targets `health` field, which does NOT depend
+// on cAdvisor's per-container metric quality — a target can be "up"
+// (reachable, scraping successfully) while still only exposing an
+// incomplete/aggregate metric set).
+export async function addonOpsPrometheusHealth(promBaseUrl = process.env.METRICS_PROMETHEUS_URL || `http://127.0.0.1:${process.env.METRICS_PROMETHEUS_PORT || 9090}`) {
+  try {
+    const healthRes = await fetch(`${promBaseUrl}/-/healthy`, { signal: AbortSignal.timeout(2000) });
+    if (!healthRes.ok) return metricsStackNotRunning();
+  } catch {
+    return metricsStackNotRunning();
+  }
+
+  let active = 0;
+  let total = 0;
+  const services = {};
+  try {
+    const targetsRes = await fetch(`${promBaseUrl}/api/v1/targets`, { signal: AbortSignal.timeout(3000) });
+    const targetsBody = await targetsRes.json();
+    const activeTargets = targetsBody?.data?.activeTargets || [];
+    total = activeTargets.length;
+    for (const t of activeTargets) {
+      const job = t.labels?.job || t.labels?.service || "unknown";
+      const isUp = t.health === "up";
+      if (isUp) active += 1;
+      services[job] = isUp ? "up" : "down";
+    }
+  } catch { }
+
+  const avgCpuPercent = await promScalar(promBaseUrl, `100 - (avg(rate(node_cpu_seconds_total{mode="idle"}[1m])) * 100)`);
+  const memUsedBytes = await promScalar(promBaseUrl, `node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes`);
+
+  // Flat shape (not nested under an extra `data` key) — this return value
+  // becomes the addon-bridge response's `result` field directly (see
+  // server.js's addonBridgeRoute), which becomes exactly what the addon's
+  // web/data-providers.js receives as its raw bridge response and wraps
+  // in its own SourceResult envelope as `.data`. Matches the shape
+  // web/addon.js's renderPrometheus() already expects to read
+  // (result.data.healthy / .targets / .summary).
+  return {
+    healthy: true,
+    targets: { active, inactive: total - active, pending: 0, total },
+    services,
+    summary: {
+      avgCpuPercent: avgCpuPercent === null ? null : Math.round(avgCpuPercent * 10) / 10,
+      avgMemoryMb: memUsedBytes === null ? null : Math.round(memUsedBytes / (1024 * 1024)),
+      // Not computed — see the function-level comment above for the
+      // real, verified reason (cAdvisor per-container metrics are not
+      // currently obtainable from this stack's configuration on this
+      // system). Never estimated from the root-cgroup aggregate or any
+      // other proxy.
+      totalRestarts: null
+    }
+  };
+}
+
+function metricsStackNotRunning() {
+  return {
+    status: "planned",
+    domain: "prometheus",
+    reason: "metrics_stack_not_running",
+    message: "The optional Prometheus metrics stack is not running on this deployment. Run `dune metrics start` to enable it.",
+    summary: {}
+  };
+}
+
+async function promScalar(promBaseUrl, query) {
+  try {
+    const res = await fetch(`${promBaseUrl}/api/v1/query?${new URLSearchParams({ query })}`, { signal: AbortSignal.timeout(3000) });
+    const body = await res.json();
+    const value = body?.data?.result?.[0]?.value?.[1];
+    const num = Number(value);
+    return Number.isFinite(num) ? num : null;
+  } catch {
+    return null;
+  }
 }
 
 export async function resolvePlayerByName(db, characterName) {

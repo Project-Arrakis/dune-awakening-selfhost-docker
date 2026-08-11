@@ -1,5 +1,6 @@
 import { timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { audit } from "../../audit.js";
 import { readPlayerAnnouncements } from "../../services/playerAnnouncements.js";
 import { parseBackupListRows } from "../../statusParsers.js";
 import {
@@ -8,13 +9,13 @@ import {
   discordAdapterStatus, discordWritesEnabled, DISCORD_ADAPTER_ROUTES, DISCORD_PLANNED_ADAPTER_ROUTES,
   validateDiscordActor, discordRoleMappingFromEnv
 } from "./adapter.js";
-import { policyError, requireDiscordCapability, DISCORD_CAPABILITIES } from "./policy.js";
+import { discordActorTier, policyError, requireDiscordCapability, DISCORD_CAPABILITIES } from "./policy.js";
 import { discordStatusProvider } from "./statusProvider.js";
 import { discordReadinessProvider, discordServicesProvider } from "./readOnlyProviders.js";
 import {
   opsActivityProvider, opsCombatProvider, opsResourcesProvider,
-  opsEconomyProvider, opsInventoryProvider, opsLocationProvider,
-  opsSocProvider, opsPrometheusProvider, opsDashboardProvider
+  opsEconomyProvider, opsInventoryProvider,
+  opsSocProvider, opsPrometheusProvider
 } from "./opsProvider.js";
 import {
   linkPlayerProvider,
@@ -92,6 +93,19 @@ function parsePopulationValue(value = "") {
   return { onlinePlayers: "unknown", totalPlayers: "unknown", aggregate: true, detailsSuppressed: true };
 }
 
+function boundedEnvInt(name, fallback, min, max) {
+  const value = Number(process.env[name]);
+  return Number.isInteger(value) && value >= min && value <= max ? value : fallback;
+}
+
+async function runOpsProvider(db, timeoutMs, provider) {
+  if (!db || typeof db.transaction !== "function") return provider(db);
+  return db.transaction(async (tx) => {
+    await tx.query("select set_config('statement_timeout', $1, true)", [`${timeoutMs}ms`]);
+    return provider(tx);
+  });
+}
+
 export function isDiscordAdapterRoute(path) {
   return Object.values(DISCORD_ADAPTER_ROUTES).includes(path);
 }
@@ -157,38 +171,32 @@ export async function handleDiscordAdapterRoute({
       }));
     }
 
-    // OPS observability routes — wired to provider stubs
-    const OPS_PATHS = [
-      DISCORD_ADAPTER_ROUTES.OPS_ACTIVITY,
-      DISCORD_ADAPTER_ROUTES.OPS_COMBAT,
-      DISCORD_ADAPTER_ROUTES.OPS_RESOURCES,
-      DISCORD_ADAPTER_ROUTES.OPS_ECONOMY,
-      DISCORD_ADAPTER_ROUTES.OPS_INVENTORY,
-      DISCORD_ADAPTER_ROUTES.OPS_LOCATION,
-      DISCORD_ADAPTER_ROUTES.OPS_SOC,
-      DISCORD_ADAPTER_ROUTES.OPS_PROMETHEUS,
-      DISCORD_ADAPTER_ROUTES.OPS_DASHBOARD
-    ];
-
-    const OPS_PROVIDERS = {
-      [DISCORD_ADAPTER_ROUTES.OPS_ACTIVITY]: opsActivityProvider,
-      [DISCORD_ADAPTER_ROUTES.OPS_COMBAT]: opsCombatProvider,
-      [DISCORD_ADAPTER_ROUTES.OPS_RESOURCES]: opsResourcesProvider,
-      [DISCORD_ADAPTER_ROUTES.OPS_ECONOMY]: opsEconomyProvider,
-      [DISCORD_ADAPTER_ROUTES.OPS_INVENTORY]: opsInventoryProvider,
-      [DISCORD_ADAPTER_ROUTES.OPS_LOCATION]: opsLocationProvider,
-      [DISCORD_ADAPTER_ROUTES.OPS_SOC]: opsSocProvider,
-      [DISCORD_ADAPTER_ROUTES.OPS_PROMETHEUS]: opsPrometheusProvider,
-      [DISCORD_ADAPTER_ROUTES.OPS_DASHBOARD]: opsDashboardProvider,
+    const opsRoutes = {
+      [DISCORD_ADAPTER_ROUTES.OPS_ACTIVITY]: { capability: DISCORD_CAPABILITIES.OPS_ACTIVITY_READ, provider: opsActivityProvider },
+      [DISCORD_ADAPTER_ROUTES.OPS_COMBAT]: { capability: DISCORD_CAPABILITIES.OPS_COMBAT_READ, provider: opsCombatProvider },
+      [DISCORD_ADAPTER_ROUTES.OPS_RESOURCES]: { capability: DISCORD_CAPABILITIES.OPS_RESOURCES_READ, provider: opsResourcesProvider },
+      [DISCORD_ADAPTER_ROUTES.OPS_ECONOMY]: { capability: DISCORD_CAPABILITIES.OPS_ECONOMY_READ, provider: opsEconomyProvider },
+      [DISCORD_ADAPTER_ROUTES.OPS_INVENTORY]: { capability: DISCORD_CAPABILITIES.OPS_INVENTORY_READ, provider: opsInventoryProvider },
+      [DISCORD_ADAPTER_ROUTES.OPS_SOC]: { capability: DISCORD_CAPABILITIES.OPS_SOC_READ, provider: opsSocProvider, queryBound: false },
+      [DISCORD_ADAPTER_ROUTES.OPS_PROMETHEUS]: { capability: DISCORD_CAPABILITIES.OPS_PROMETHEUS_READ, provider: opsPrometheusProvider, queryBound: false }
     };
 
-    if (OPS_PATHS.includes(path) && req.method === "POST") {
+    if (opsRoutes[path] && req.method === "POST") {
       const body = await readJson(req);
-      const provider = OPS_PROVIDERS[path];
-      if (provider) {
-        return json(res, 200, await provider(config));
-      }
-      return json(res, 200, { ok: false, error: `OPS provider not found for: ${path}` });
+      const actor = validateDiscordActor(body.actor);
+      const mapping = discordRoleMappingFromEnv();
+      const route = opsRoutes[path];
+      requireDiscordCapability(actor, mapping, route.capability);
+      const timeoutMs = boundedEnvInt("DUNE_OPS_QUERY_TIMEOUT_MS", 5000, 250, 30000);
+      const maxBytes = boundedEnvInt("DUNE_OPS_MAX_RESPONSE_BYTES", 65536, 1024, 1048576);
+      const result = route.queryBound === false
+        ? await route.provider(config, db)
+        : await runOpsProvider(db, timeoutMs, (queryDb) => route.provider(config, queryDb));
+      const response = Buffer.byteLength(JSON.stringify(result), "utf8") <= maxBytes
+        ? result
+        : { ok: false, _truncated: true, _maxBytes: maxBytes, error: "OPS response exceeded the configured size limit." };
+      audit(config, req, "discord.ops", { route: path, userId: actor.userId, tier: discordActorTier(actor, mapping), ok: response.ok !== false });
+      return json(res, 200, response);
     }
 
     // Broadcast route — gated behind write enablement, actor identity, and admin/owner capability.
