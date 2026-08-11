@@ -8710,33 +8710,6 @@ export async function addonOpsPrometheusHealth(promBaseUrl = process.env.METRICS
   };
 }
 
-// addonOpsContainerHealth — per-container resource usage from docker stats.
-// Uses the console's Docker socket access (no new privileges needed) to
-// provide per-container CPU%, memory, and network I/O that cAdvisor can't
-// reliably produce on WSL/Docker Desktop deployments.
-// Returns { containers: [{name, cpu, mem, memLimit, netIO, blockIO, status}] }
-export async function addonOpsContainerHealth() {
-  try {
-    const { execSync } = await import("node:child_process");
-    const raw = execSync(
-      "docker stats --no-stream --format '{{json .}}'",
-      { encoding: "utf8", timeout: 5000, maxBuffer: 1024 * 1024 }
-    );
-    const containers = raw.trim().split("\n").map(l => JSON.parse(l)).map(c => ({
-      name: c.Name || "unknown",
-      cpu: c.CPUPerc || "0%",
-      mem: c.MemUsage ? c.MemUsage.split(" / ")[0] : "0B",
-      memLimit: c.MemUsage ? c.MemUsage.split(" / ")[1] || "" : "",
-      netIO: c.NetIO || "0B",
-      blockIO: c.BlockIO || "0B",
-      status: c.State || "unknown"
-    }));
-    return { containers };
-  } catch {
-    return { containers: [], error: "Docker stats unavailable — is Docker running?" };
-  }
-}
-
 function metricsStackNotRunning() {
   return {
     status: "planned",
