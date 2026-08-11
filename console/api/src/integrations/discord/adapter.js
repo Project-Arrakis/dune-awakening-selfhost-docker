@@ -27,16 +27,6 @@ export const DISCORD_ADAPTER_ROUTES = Object.freeze({
   PLAYERS_LINK: "/api/integrations/discord/players/link",
   PLAYERS_LINK_VERIFY: "/api/integrations/discord/players/link/verify",
   PLAYERS_UNLINK: "/api/integrations/discord/players/unlink",
-  PLAYERS_ACCOUNTS_LINK: "/api/integrations/discord/players/accounts/link",
-  PLAYERS_ACCOUNTS_LINK_VERIFY: "/api/integrations/discord/players/accounts/link/verify",
-  PLAYERS_ACCOUNTS_UNLINK: "/api/integrations/discord/players/accounts/unlink",
-  PLAYERS_ACCOUNTS_LIST: "/api/integrations/discord/players/accounts/list",
-  PLAYERS_ACCOUNTS_SET_DEFAULT: "/api/integrations/discord/players/accounts/set-default",
-  // PLAYERS_ACCOUNTS_LINK_STEAM: the single Steam-OAuth-based counterpart
-  // to PLAYERS_ACCOUNTS_LINK above -- see linkAccountViaSteamProvider()'s
-  // own comment in multiAccountLinkProvider.js for why this is ONE route
-  // (match-check + link together) rather than a separate match-only route.
-  PLAYERS_ACCOUNTS_LINK_STEAM: "/api/integrations/discord/players/accounts/link-steam",
   PLAYERS_ME: "/api/integrations/discord/players/me",
   PLAYERS_INVENTORY: "/api/integrations/discord/players/inventory",
   PLAYERS_STORAGE: "/api/integrations/discord/players/storage",
@@ -66,17 +56,12 @@ export const DISCORD_LIVE_ADAPTER_ROUTES = Object.freeze([
   DISCORD_ADAPTER_ROUTES.LOGS,
   DISCORD_ADAPTER_ROUTES.MAP_STATE,
   DISCORD_ADAPTER_ROUTES.MAINTENANCE,
+  DISCORD_ADAPTER_ROUTES.BACKUPS_LIST,
   DISCORD_ADAPTER_ROUTES.BROADCAST,
   DISCORD_ADAPTER_ROUTES.ANNOUNCEMENTS,
   DISCORD_ADAPTER_ROUTES.PLAYERS_LINK,
   DISCORD_ADAPTER_ROUTES.PLAYERS_LINK_VERIFY,
   DISCORD_ADAPTER_ROUTES.PLAYERS_UNLINK,
-  DISCORD_ADAPTER_ROUTES.PLAYERS_ACCOUNTS_LINK,
-  DISCORD_ADAPTER_ROUTES.PLAYERS_ACCOUNTS_LINK_VERIFY,
-  DISCORD_ADAPTER_ROUTES.PLAYERS_ACCOUNTS_UNLINK,
-  DISCORD_ADAPTER_ROUTES.PLAYERS_ACCOUNTS_LIST,
-  DISCORD_ADAPTER_ROUTES.PLAYERS_ACCOUNTS_SET_DEFAULT,
-  DISCORD_ADAPTER_ROUTES.PLAYERS_ACCOUNTS_LINK_STEAM,
   DISCORD_ADAPTER_ROUTES.PLAYERS_ME,
   DISCORD_ADAPTER_ROUTES.PLAYERS_INVENTORY,
   DISCORD_ADAPTER_ROUTES.PLAYERS_STORAGE,
@@ -98,8 +83,9 @@ export function discordAdapterEnabled(config) {
   return process.env.DUNE_DISCORD_ADAPTER_ENABLED === "true" || config?.discordAdapterEnabled === true;
 }
 
-export function discordWritesEnabled(_config) {
-  return process.env.DUNE_DISCORD_WRITES_ENABLED === "1";
+export function discordWritesEnabled(config) {
+  const value = process.env.DUNE_DISCORD_WRITES_ENABLED ?? config?.discordWritesEnabled;
+  return value === true || value === 1 || /^(?:1|true)$/i.test(String(value || "").trim());
 }
 
 export function discordRoleMappingFromEnv(env = process.env) {
@@ -132,8 +118,8 @@ export async function discordAdapterHealth(config) {
     experimental: true,
     readOnly: false,
     gameDataWritesEnabled: false,
-    adapterDataWrites: ["player-link", "account-link"],
-    writesEnabled: false,
+    adapterDataWrites: ["player-link"],
+    writesEnabled: discordWritesEnabled(config),
     routes: DISCORD_LIVE_ADAPTER_ROUTES,
     liveRoutes: DISCORD_LIVE_ADAPTER_ROUTES,
     plannedRoutes: DISCORD_PLANNED_ADAPTER_ROUTES,

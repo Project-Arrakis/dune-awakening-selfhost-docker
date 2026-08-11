@@ -115,12 +115,12 @@ test("opsCombatProvider returns the real empty shape when player_death_log doesn
 // opsResourcesProvider's own job: wrap the result in { ok, result} and
 // pass `config` through (needed for the real PvP/PvE resolver's
 // subprocess calls) -- a wiring concern, not a data-correctness one.
-test("opsResourcesProvider wraps addonOpsResourcesSummary's result in { ok, result } and forwards config", async () => {
-  const db = mockDb({ tables: new Set() }); // no world_partition/resourcefield_state -> both sections empty
+test("opsResourcesProvider wraps addonOpsResourcesSummary's result in { ok, result }", async () => {
+  const db = mockDb({ tables: new Set() });
   const response = await opsResourcesProvider({ repoRoot: "/tmp", duneScript: "/tmp/dune" }, db);
   assert.equal(response.ok, true);
-  assert.ok("deepDesert" in response.result);
-  assert.ok("haggaBasin" in response.result);
+  assert.equal(response.result.totalFields, 0);
+  assert.equal(response.result.totalValueRemaining, 0);
 });
 
 test("opsResourcesProvider returns the real empty shape (both sections, not a placeholder) when resourcefield_state doesn't exist", async () => {
@@ -128,8 +128,10 @@ test("opsResourcesProvider returns the real empty shape (both sections, not a pl
   const response = await opsResourcesProvider({}, db);
   assert.equal(response.ok, true);
   assert.deepEqual(response.result, {
-    deepDesert: { summary: { totalActiveFields: 0, totalRemainingSpice: 0, pvpInstances: 0, pveInstances: 0, bySize: [] }, instances: [] },
-    haggaBasin: { summary: { totalActiveFields: 0, totalRemainingSpice: 0, pvpInstances: 0, pveInstances: 0, bySize: [] }, instances: [] }
+    totalFields: 0,
+    totalValueRemaining: 0,
+    resourcesByMap: [],
+    spiceFieldsBySize: []
   });
 });
 
@@ -300,8 +302,8 @@ test("opsDashboardProvider aggregates a mix of real data and planned placeholder
   // dedicated test file covers the full instance/PvP-PvE/size-tier
   // behavior with a real mapCombatState.js resolver sandbox.
   assert.equal(response.dashboard.resources.ok, true);
-  assert.deepEqual(response.dashboard.resources.result.deepDesert.instances, []);
-  assert.deepEqual(response.dashboard.resources.result.haggaBasin.instances, []);
+  assert.equal(response.dashboard.resources.result.totalFields, 3);
+  assert.equal(response.dashboard.resources.result.totalValueRemaining, 100);
   assert.equal(response.dashboard.economy.result.totalCurrencyHolders, 1);
   assert.equal(response.dashboard.inventory.result.totalItems, 2);
   assert.equal(response.dashboard.inventory.result.totalCrafted, null);
