@@ -1,0 +1,70 @@
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { exchangeApi } from "../../api/exchange";
+import { ExchangeConfigOverlay } from "./ExchangeConfigOverlay";
+
+vi.mock("../../api/exchange", () => ({
+  exchangeApi: { getConfig: vi.fn(), saveConfig: vi.fn() }
+}));
+
+function renderOverlay() {
+  const props = { onClose: vi.fn(), onSaved: vi.fn(), onError: vi.fn() };
+  render(<ExchangeConfigOverlay {...props} />);
+  return props;
+}
+
+function listSection(title: string) {
+  return screen.getByText(title).closest(".exchange-config-list") as HTMLElement;
+}
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  vi.mocked(exchangeApi.saveConfig).mockImplementation(async (config) => config);
+});
+
+describe("ExchangeConfigOverlay", () => {
+  it("loads and shows existing bot ids as chips", async () => {
+    vi.mocked(exchangeApi.getConfig).mockResolvedValue({ botOwnerIds: ["75"], blacklistedOwnerIds: [] });
+    renderOverlay();
+
+    const botList = await waitFor(() => listSection("Bot user IDs"));
+    expect(await within(botList).findByText("75")).toBeInTheDocument();
+  });
+
+  it("adds a blacklist id and saves the merged config", async () => {
+    vi.mocked(exchangeApi.getConfig).mockResolvedValue({ botOwnerIds: ["75"], blacklistedOwnerIds: [] });
+    const props = renderOverlay();
+
+    await screen.findByText("75");
+    const blacklist = listSection("Blacklisted IDs");
+    fireEvent.change(within(blacklist).getByPlaceholderText("Add owner ID"), { target: { value: "9929" } });
+    fireEvent.click(within(blacklist).getByRole("button", { name: /Add/ }));
+    fireEvent.click(screen.getByText("Save"));
+
+    await waitFor(() => expect(vi.mocked(exchangeApi.saveConfig)).toHaveBeenCalledWith({ botOwnerIds: ["75"], blacklistedOwnerIds: ["9929"] }));
+    await waitFor(() => expect(props.onSaved).toHaveBeenCalled());
+    expect(props.onClose).toHaveBeenCalled();
+  });
+
+  it("strips non-numeric input and disables Add for empty values", async () => {
+    vi.mocked(exchangeApi.getConfig).mockResolvedValue({ botOwnerIds: [], blacklistedOwnerIds: [] });
+    renderOverlay();
+
+    const botList = await waitFor(() => listSection("Bot user IDs"));
+    const input = within(botList).getByPlaceholderText("Add owner ID") as HTMLInputElement;
+    const addButton = within(botList).getByRole("button", { name: /Add/ });
+    expect(addButton).toBeDisabled();
+    // Letters are stripped by the input handler, keeping the field numeric-only.
+    fireEvent.change(input, { target: { value: "1a2b3" } });
+    expect(input.value).toBe("123");
+  });
+
+  it("removes a bot id chip", async () => {
+    vi.mocked(exchangeApi.getConfig).mockResolvedValue({ botOwnerIds: ["75"], blacklistedOwnerIds: [] });
+    renderOverlay();
+
+    await screen.findByText("75");
+    fireEvent.click(screen.getByLabelText("Remove 75"));
+    expect(screen.queryByText("75")).not.toBeInTheDocument();
+  });
+});

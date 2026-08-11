@@ -2024,6 +2024,65 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
 .vehicles-access.co-owner { border-color: rgba(255, 208, 138, .42); color: #ffd08a; }
 .player-vehicles-table thead th:nth-child(8), .player-vehicles-table tbody td:nth-child(8) { text-align: center; }
 
+/* Market Board (Exchange) */
+.exchange-search-row { margin: 12px 0; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.exchange-owner-select { margin-left: auto; }
+.exchange-config-button { width: 34px; height: 34px; min-width: 0; padding: 0; display: inline-grid; place-items: center; }
+.table-wrap.exchange-table-wrap { max-height: none; }
+.exchange-table th.exchange-expand-column, .exchange-table td.exchange-expand-column {
+  width: 32px;
+  padding-inline: 4px;
+  text-align: center;
+  overflow: visible;
+  text-overflow: clip;
+}
+.exchange-expand-button {
+  width: 24px;
+  height: 24px;
+  min-width: 0;
+  padding: 0;
+  margin: 0 auto;
+  border: 0;
+  background: none;
+  color: inherit;
+  display: inline-grid;
+  place-items: center;
+  cursor: pointer;
+}
+.exchange-item-cell { display: flex; align-items: center; gap: 9px; white-space: normal; }
+.exchange-item-icon { width: 26px; height: 26px; border-radius: 5px; object-fit: contain; background: #171a1d; border: 1px solid #302b25; flex: none; }
+.exchange-item-icon-empty { display: inline-block; }
+.exchange-item-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.exchange-item-name { color: #fff1d4; font-weight: 500; }
+.exchange-item-template { color: #8f8371; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.exchange-price { color: var(--accent-strong); font-variant-numeric: tabular-nums; }
+.exchange-num { text-align: right; font-variant-numeric: tabular-nums; }
+.exchange-pagination-footer { margin-top: 12px; }
+.exchange-listings { padding: 6px 4px; display: grid; gap: 8px; }
+.exchange-listings-header { margin: 0; color: #ffd08a; font-size: 13px; }
+.exchange-listings-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.exchange-listings-table th { text-align: left; color: #ad9f89; font-weight: 500; padding: 5px 8px; border-bottom: 1px solid #302b25; }
+.exchange-listings-table th.exchange-num { text-align: right; }
+.exchange-listings-table td { padding: 5px 8px; border-top: 1px solid #201c17; }
+.exchange-seller-name { color: #f3efe7; }
+.exchange-owner-badge { margin-left: 6px; padding: 1px 7px; border-radius: 999px; font-size: 11px; border: 1px solid; }
+.exchange-owner-player { background: rgba(76, 175, 124, .12); color: #9be6bd; border-color: rgba(155, 230, 189, .35); }
+.exchange-owner-bot { background: rgba(198, 139, 74, .14); color: #e7c893; border-color: #4d4031; }
+.exchange-config-modal { width: min(480px, calc(100vw - 32px)); }
+.exchange-config-close { width: 28px; height: 28px; min-width: 0; padding: 0; border: 0; background: none; color: inherit; display: inline-grid; place-items: center; cursor: pointer; }
+.exchange-config-list { display: grid; gap: 8px; border: 1px solid #302b25; border-radius: 8px; padding: 10px 12px; background: #12151a; }
+.exchange-config-list-head { display: flex; flex-direction: column; gap: 2px; }
+.exchange-config-list-head strong { color: #ffd08a; }
+.exchange-config-list-head .muted { font-size: 12px; }
+.exchange-config-empty { margin: 0; font-style: italic; }
+.exchange-config-chips { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.exchange-config-chip { display: inline-flex; align-items: center; gap: 6px; background: #221a10; border: 1px solid #4d4031; color: #e7c893; border-radius: 999px; padding: 3px 8px; font-size: 12px; font-variant-numeric: tabular-nums; }
+.exchange-config-chip button { width: 18px; height: 18px; min-width: 0; padding: 0; border: 0; background: none; color: inherit; display: inline-grid; place-items: center; cursor: pointer; }
+.exchange-config-add { display: flex; gap: 6px; }
+.exchange-config-add input { flex: 1; min-width: 0; }
+.exchange-config-add button { width: auto; min-width: 72px; }
+.exchange-config-modal .confirm-modal-actions .primary { background: var(--accent); color: #1a130a; border-color: var(--accent); }
+
 .stable-action-button { min-width: 72px; }
 .map-action-buttons { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; }
 .map-action-buttons .stable-action-button { min-width: 72px; width: auto; }
