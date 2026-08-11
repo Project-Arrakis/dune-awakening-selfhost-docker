@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import { Droplet, Fuel, Play, Trash2 } from "lucide-react";
 import { serverApi, type PerformanceSnapshot } from "../../api/server";
+import { runGatedRestart, type RestartGate } from "./restartQueueGuard";
 import { setupApi, type Task } from "../../api/setup";
 import { PortChecklist } from "../../components/PortChecklist";
 import { ReadinessTimeline } from "../../components/ReadinessTimeline";
@@ -109,7 +110,7 @@ export function isRestartLifecycleReady(action: "start" | "stop" | "restart" | "
   return action !== "restart" || state.startObserved;
 }
 
-export function HomePanel({ status, readiness, taskResult, setTaskResult, funcomTokenResult, setFuncomTokenResult, runningAction, restartStartObserved, setRunningAction, onLoad, confirmAction }: {
+export function HomePanel({ status, readiness, taskResult, setTaskResult, funcomTokenResult, setFuncomTokenResult, runningAction, restartStartObserved, setRunningAction, onLoad, confirmAction, restartGate }: {
   status: string;
   readiness: string;
   taskResult: HomeTaskResult | null;
@@ -121,6 +122,7 @@ export function HomePanel({ status, readiness, taskResult, setTaskResult, funcom
   setRunningAction: Dispatch<SetStateAction<"start" | "stop" | "restart" | "">>;
   onLoad: () => Promise<HomeLoadResult>;
   confirmAction: ConfirmAction;
+  restartGate: RestartGate;
 }) {
   const [loading, setLoading] = useState(false);
   const [localError, setLocalError] = useState("");
@@ -171,7 +173,6 @@ export function HomePanel({ status, readiness, taskResult, setTaskResult, funcom
 
   async function runServerAction(action: "start" | "stop" | "restart") {
     if (action === "stop" && !(await confirmAction("Stop the battlegroup?"))) return;
-    if (action === "restart" && !(await confirmAction("Restart the battlegroup?"))) return;
     const actionRunId = ++homeActionRunId.current;
     homeActionStartedAt.current = Date.now();
     let commandAction = action;
@@ -197,8 +198,18 @@ export function HomePanel({ status, readiness, taskResult, setTaskResult, funcom
     }
     let keepPolling = false;
     try {
-      const response = commandAction === "start" ? await serverApi.start() : commandAction === "stop" ? await serverApi.stop() : await serverApi.restart();
-      const final = await waitForTaskSilently(response.task);
+      let final: Task;
+      if (commandAction === "restart") {
+        const gated = await runGatedRestart({ restartGate, label: "battlegroup", dispatch: (opts) => serverApi.restart(opts) });
+        if (homeActionRunId.current !== actionRunId) return;
+        if (gated.outcome === "cancelled") { setTaskResult(null); return; }
+        if (gated.outcome === "queued") { setTaskResult({ status: "succeeded", title: "Restart queued" }); return; }
+        if (!gated.task) { setTaskResult(null); return; }
+        final = await waitForTaskSilently(gated.task);
+      } else {
+        const response = commandAction === "start" ? await serverApi.start() : await serverApi.stop();
+        final = await waitForTaskSilently(response.task);
+      }
       if (homeActionRunId.current !== actionRunId) return;
       const details = taskTechnicalDetails(final);
       if (action === "restart") homeRestartLifecycle.current = advanceRestartLifecycleFromTaskDetails(homeRestartLifecycle.current, details);
@@ -483,6 +494,7 @@ export function ServerPanel(props: {
   onError: (text: string) => void;
   onRedeploy: () => void;
   confirmAction: ConfirmAction;
+  restartGate: RestartGate;
 }) {
   const [service, setService] = useState(RESTARTABLE_SERVICES[0].value);
   const [restartSchedule, setRestartSchedule] = useState<{ stdout?: string; stderr?: string; exitCode?: number } | null>(null);
@@ -508,7 +520,7 @@ export function ServerPanel(props: {
   const controlRestartLifecycle = useRef<RestartLifecycleState>(createRestartLifecycleState());
   const serviceRestartRunId = useRef(0);
   const doctorRequestId = useRef(0);
-  const { taskResult, setTaskResult, funcomTokenResult, setFuncomTokenResult, runningAction, setRunningAction, confirmAction } = props;
+  const { taskResult, setTaskResult, funcomTokenResult, setFuncomTokenResult, runningAction, setRunningAction, confirmAction, restartGate } = props;
   const actionRunning = Boolean(runningAction);
   const serviceRestartRunning = serviceRestartResult?.status === "running";
   const titleSaving = titleResult?.status === "running";
@@ -708,7 +720,6 @@ export function ServerPanel(props: {
   }
   async function runServerAction(action: "start" | "stop" | "restart") {
     if (action === "stop" && !(await confirmAction("Stop the battlegroup?"))) return;
-    if (action === "restart" && !(await confirmAction("Restart the battlegroup?"))) return;
     serviceRestartRunId.current += 1;
     setServiceRestartingService("");
     const actionRunId = ++controlActionRunId.current;
@@ -723,8 +734,18 @@ export function ServerPanel(props: {
     setTaskResult(stackActionPendingResult(action));
     let keepPolling = false;
     try {
-      const response = action === "start" ? await serverApi.start() : action === "stop" ? await serverApi.stop() : await serverApi.restart();
-      const final = await waitForTaskSilently(response.task);
+      let final: Task;
+      if (action === "restart") {
+        const gated = await runGatedRestart({ restartGate, label: "battlegroup", dispatch: (opts) => serverApi.restart(opts) });
+        if (controlActionRunId.current !== actionRunId) return;
+        if (gated.outcome === "cancelled") { setTaskResult(null); return; }
+        if (gated.outcome === "queued") { setTaskResult({ status: "succeeded", title: "Restart queued" }); return; }
+        if (!gated.task) { setTaskResult(null); return; }
+        final = await waitForTaskSilently(gated.task);
+      } else {
+        const response = action === "start" ? await serverApi.start() : await serverApi.stop();
+        final = await waitForTaskSilently(response.task);
+      }
       if (controlActionRunId.current !== actionRunId) return;
       const details = taskTechnicalDetails(final);
       if (action === "restart") controlRestartLifecycle.current = advanceRestartLifecycleFromTaskDetails(controlRestartLifecycle.current, details);
@@ -766,14 +787,18 @@ export function ServerPanel(props: {
     }
   }
   async function restartSelectedService() {
-    if (!(await confirmAction(`Restart ${friendlyServiceName(service)}?`))) return;
     const selectedService = service;
     const runId = ++serviceRestartRunId.current;
     setServiceRestartingService(selectedService);
     setServiceRestartResult({ status: "running", title: "Restarting" });
     props.onError("");
     try {
-      const final = await waitForTaskSilently((await serverApi.restartService(selectedService)).task);
+      const gated = await runGatedRestart({ restartGate, label: friendlyServiceName(selectedService), dispatch: (opts) => serverApi.restartService(selectedService, opts) });
+      if (serviceRestartRunId.current !== runId) return;
+      if (gated.outcome === "cancelled") { setServiceRestartingService(""); setServiceRestartResult(null); return; }
+      if (gated.outcome === "queued") { setServiceRestartingService(""); setServiceRestartResult({ status: "succeeded", title: "Restart queued" }); return; }
+      if (!gated.task) { setServiceRestartingService(""); setServiceRestartResult(null); return; }
+      const final = await waitForTaskSilently(gated.task);
       if (serviceRestartRunId.current !== runId) return;
       const postLoad = await loadControlStatus(true).catch(() => null);
       if (serviceRestartRunId.current !== runId) return;
