@@ -26,6 +26,7 @@ import { serveStatic, contentTypeForPath } from "./http/staticFiles.js";
 import { discoverServices } from "./services/serviceDiscovery.js";
 import { createBackupDownloadArchive, enrichBackupRows, nextImportedBackupName, normalizeImportedBackupMetadata, validBackupDownloadName } from "./services/backups.js";
 import { createMemoryBalancer } from "./services/memoryBalancer.js";
+import { collectContainerHealth } from "./services/containerHealth.js";
 import { parseMemorySwapStatus } from "./services/memorySwap.js";
 import { createDeathPoller } from "./deathPoller.js";
 import { updateEnvFileValue as updateEnvValue } from "./services/envFile.js";
@@ -800,6 +801,13 @@ async function addonBridgeRoute(req, res, path) {
     const result = await duneDb.addonOpsEconomySummary(db);
     audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, ok: true });
     return json(res, 200, { ok: true, result });
+  }
+  if (action === "ops.health.containers") {
+    const addon = assertInstalledAddonPermission(config, id, "ops:read");
+    const result = await collectContainerHealth();
+    const ok = !result.error;
+    audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, ok });
+    return json(res, 200, { ok, result });
   }
   if (action === "admin.items.grant") {
     const addon = assertInstalledAddonPermission(config, id, "admin:grant-items");
