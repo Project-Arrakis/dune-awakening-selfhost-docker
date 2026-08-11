@@ -1,7 +1,9 @@
 # RW Command Architecture — Discord Bot Write Operations
 
-**Date:** 2026-08-08  
-**Status:** Layer 1 Design (Requirement 20)  
+**Date:** 2026-08-08
+
+**Status:** Layer 1 Design (Requirement 20)
+
 **Audit:** Eight-Hat Layer 1 completed. 8 issues filed (#215-223). Awaiting fixes before Layer 2.
 
 ---

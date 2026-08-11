@@ -169,7 +169,7 @@ The catalog includes `version` and `minBotVersion` fields. The bot refuses to re
 
 ## 4. Migration Path
 
-### Phase 1: Core Catalog (this PR's scope)
+### Phase 1: Core Catalog (future implementation scope)
 
 1. Core adds `commandCatalog.js` — the single source of truth for Discord command metadata
 2. Core adds `GET /api/integrations/discord/catalog` endpoint
