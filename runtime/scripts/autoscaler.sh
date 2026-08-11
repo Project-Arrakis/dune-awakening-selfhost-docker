@@ -20,6 +20,7 @@ SIETCH_TOPOLOGY_MAINTENANCE_FILE="${DUNE_SIETCH_TOPOLOGY_MAINTENANCE_FILE:-runti
 SIETCH_TOPOLOGY_HEAL_GRACE_SECONDS="${DUNE_SIETCH_TOPOLOGY_HEAL_GRACE_SECONDS:-600}"
 DIRECTOR_HEAL_STALE_SECONDS="${DUNE_AUTOSCALER_DIRECTOR_HEAL_STALE_SECONDS:-15}"
 DIRECTOR_HEAL_COOLDOWN_SECONDS="${DUNE_AUTOSCALER_DIRECTOR_HEAL_COOLDOWN_SECONDS:-300}"
+DIRECTOR_HEAL_REPUBLISH_GRACE_SECONDS="${DUNE_AUTOSCALER_DIRECTOR_HEAL_REPUBLISH_GRACE_SECONDS:-45}"
 DIRECTOR_CORE_READY_GRACE_SECONDS="${DUNE_AUTOSCALER_DIRECTOR_CORE_READY_GRACE_SECONDS:-120}"
 DYNAMIC_READY_HEAL_STALE_SECONDS="${DUNE_AUTOSCALER_DYNAMIC_READY_HEAL_STALE_SECONDS:-20}"
 DIRECTOR_BROWSER_SCAN_SECONDS="${DUNE_AUTOSCALER_DIRECTOR_BROWSER_SCAN_SECONDS:-30}"
@@ -1226,6 +1227,23 @@ map_has_active_presence() {
   [ "$(map_effective_player_count "$map" | tr -d '[:space:]')" != "0" ]
 }
 
+battlegroup_effective_player_count() {
+  psql_value "
+    select count(*)
+    from dune.player_state ps
+    where
+      ps.online_status <> 'Offline'
+      or (
+        ps.reconnect_grace_period_end is not null
+        and ps.reconnect_grace_period_end > (current_timestamp at time zone 'UTC')
+      )
+      or (
+        ps.last_avatar_activity is not null
+        and ps.last_avatar_activity > (current_timestamp - make_interval(secs => ${IDLE_SECONDS}))
+      );
+  "
+}
+
 map_is_always_on() {
   local map="$1"
   runtime/scripts/map-modes.sh is-always-on "$map" >/dev/null 2>&1
@@ -2234,6 +2252,7 @@ EOF
 
 scan_director_browser_state() {
   local rows ready_count capacity now first_seen core_ready_since last_restart age since_restart
+  local republish_at republish_age online_players restart_deferred restart_pending
 
   director_heal_due browser_state "$DIRECTOR_BROWSER_SCAN_SECONDS" || return 0
 
@@ -2244,6 +2263,8 @@ scan_director_browser_state() {
   if ! core_maps_ready_for_browser_heal; then
     director_heal_clear stale_since
     director_heal_clear core_ready_since
+    director_heal_clear browser_republish_at
+    director_heal_clear browser_restart_deferred
     return 0
   fi
 
@@ -2251,6 +2272,8 @@ scan_director_browser_state() {
   if [ $((now - AUTOSCALER_STARTED_AT)) -lt "$DIRECTOR_CORE_READY_GRACE_SECONDS" ]; then
     director_heal_clear stale_since
     director_heal_clear core_ready_since
+    director_heal_clear browser_republish_at
+    director_heal_clear browser_restart_deferred
     return 0
   fi
   if core_ready_since="$(director_heal_get core_ready_since 2>/dev/null)"; then
@@ -2261,6 +2284,8 @@ scan_director_browser_state() {
   fi
   if [ "$age" -lt "$DIRECTOR_CORE_READY_GRACE_SECONDS" ]; then
     director_heal_clear stale_since
+    director_heal_clear browser_republish_at
+    director_heal_clear browser_restart_deferred
     return 0
   fi
 
@@ -2272,6 +2297,8 @@ scan_director_browser_state() {
     marker_age=$(( $(date +%s) - marker_mtime ))
     if [ "$marker_age" -ge 0 ] && [ "$marker_age" -lt "$SIETCH_TOPOLOGY_HEAL_GRACE_SECONDS" ]; then
       director_heal_clear stale_since
+      director_heal_clear browser_republish_at
+      director_heal_clear browser_restart_deferred
       return 0
     fi
     rm -f "$SIETCH_TOPOLOGY_MAINTENANCE_FILE" 2>/dev/null || true
@@ -2281,12 +2308,17 @@ scan_director_browser_state() {
   ready_count="$(printf '%s\n' "$rows" | sed '/^$/d' | wc -l | tr -d '[:space:]')"
   [ "${ready_count:-0}" -ge 2 ] || {
     director_heal_clear stale_since
+    director_heal_clear browser_republish_at
+    director_heal_clear browser_restart_deferred
     return 0
   }
 
   capacity="$(director_latest_capacity 2>/dev/null || true)"
   if [ "${capacity:-}" != "0" ] && director_logs_contain_live_ids "$rows"; then
     director_heal_clear stale_since
+    director_heal_clear browser_republish_at
+    director_heal_clear browser_restart_deferred
+    director_heal_clear browser_restart_pending
     return 0
   fi
 
@@ -2301,6 +2333,25 @@ scan_director_browser_state() {
     return 0
   fi
 
+  # A stale FLS/browser declaration is often recoverable by republishing the
+  # authoritative state already held by the running core maps. Try that first
+  # and give Director time to confirm it before recreating any container.
+  # This keeps transient Funcom publication stalls invisible to connected
+  # players and reserves the disruptive recovery for a confirmed failure.
+  if republish_at="$(director_heal_get browser_republish_at 2>/dev/null)"; then
+    republish_age=$((now - republish_at))
+    if [ "$republish_age" -lt "$DIRECTOR_HEAL_REPUBLISH_GRACE_SECONDS" ]; then
+      return 0
+    fi
+  else
+    echo "HEAL director stale browser state action=republish capacity=${capacity:-unknown} ready_maps=$ready_count"
+    publish_state_for_map Survival_1
+    publish_state_for_map Overmap
+    publish_state_for_map DeepDesert_1
+    director_heal_set browser_republish_at "$now"
+    return 0
+  fi
+
   if last_restart="$(director_heal_get last_restart 2>/dev/null)"; then
     since_restart=$((now - last_restart))
     if [ "$since_restart" -lt "$DIRECTOR_HEAL_COOLDOWN_SECONDS" ]; then
@@ -2308,13 +2359,37 @@ scan_director_browser_state() {
     fi
   fi
 
-  echo "HEAL director stale browser state capacity=${capacity:-unknown} ready_maps=$ready_count"
+  # One automatic restart is enough while people are connected. If that
+  # restart did not restore publication, preserve their sessions and leave a
+  # clear diagnostic instead of repeatedly recycling Survival_1. Track this
+  # recovery incident separately from the general restart cooldown so an old,
+  # successful recovery never prevents the first restart of a new incident.
+  restart_pending="$(director_heal_get browser_restart_pending 2>/dev/null || true)"
+  if [ -n "$restart_pending" ]; then
+    online_players="$(battlegroup_effective_player_count 2>/dev/null | tr -d '[:space:]' || true)"
+    if ! [[ "$online_players" =~ ^[0-9]+$ ]]; then
+      online_players="unknown"
+    fi
+    if [ "$online_players" = "unknown" ] || [ "$online_players" -gt 0 ]; then
+      restart_deferred="$(director_heal_get browser_restart_deferred 2>/dev/null || true)"
+      if [ -z "$restart_deferred" ]; then
+        echo "DEFER director stale browser state action=restart online_players=$online_players previous_restart_at=$restart_pending"
+        director_heal_set browser_restart_deferred "$now"
+      fi
+      return 0
+    fi
+  fi
+
+  echo "HEAL director stale browser state action=restart capacity=${capacity:-unknown} ready_maps=$ready_count republish_age=$republish_age"
   runtime/scripts/restart-director.sh >/dev/null 2>&1 || {
     echo "ERROR failed to restart director during stale browser state heal"
     return 0
   }
   director_heal_set last_restart "$now"
+  director_heal_set browser_restart_pending "$now"
   director_heal_clear stale_since
+  director_heal_clear browser_republish_at
+  director_heal_clear browser_restart_deferred
 }
 
 follow_director_hagga_handoffs &
