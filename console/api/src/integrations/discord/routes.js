@@ -1,20 +1,21 @@
 import { timingSafeEqual } from "node:crypto";
-import { readPlayerAnnouncements } from "../../services/playerAnnouncements.js";
 import { readFileSync } from "node:fs";
 import { audit } from "../../audit.js";
+import { readPlayerAnnouncements } from "../../services/playerAnnouncements.js";
+import { parseBackupListRows } from "../../statusParsers.js";
 import {
   discordAdapterEnabled, discordAdapterErrorResponse, discordAdapterHealth,
   discordAdapterPopulation, discordAdapterReadiness, discordAdapterServices,
   discordAdapterStatus, discordWritesEnabled, DISCORD_ADAPTER_ROUTES, DISCORD_PLANNED_ADAPTER_ROUTES,
   validateDiscordActor, discordRoleMappingFromEnv
 } from "./adapter.js";
-import { policyError, requireDiscordCapability, requireSelfScopedCapability, DISCORD_CAPABILITIES } from "./policy.js";
+import { discordActorTier, policyError, requireDiscordCapability, DISCORD_CAPABILITIES } from "./policy.js";
 import { discordStatusProvider } from "./statusProvider.js";
 import { discordReadinessProvider, discordServicesProvider } from "./readOnlyProviders.js";
 import {
   opsActivityProvider, opsCombatProvider, opsResourcesProvider,
-  opsEconomyProvider, opsInventoryProvider, opsLocationProvider,
-  opsSocProvider, opsPrometheusProvider, opsDashboardProvider
+  opsEconomyProvider, opsInventoryProvider,
+  opsSocProvider, opsPrometheusProvider
 } from "./opsProvider.js";
 import {
   linkPlayerProvider,
@@ -24,22 +25,14 @@ import {
   requireLinkedPlayer
 } from "./linkProvider.js";
 import {
-  linkAccountProvider,
-  verifyAccountLinkProvider,
-  unlinkAccountProvider,
-  listAccountsProvider,
-  setDefaultAccountProvider,
-  linkAccountViaSteamProvider
-} from "./multiAccountLinkProvider.js";
-import { verifyActorSignature, actorSignatureRequired } from "./actorSignature.js";
-import {
   playerInventoryProvider,
   playerStorageProvider,
   itemSearchProvider,
   inventorySearchProvider
 } from "./inventoryProvider.js";
 import { broadcastProvider } from "./broadcastProvider.js";
-import { buildDuneArgs, runDockerLogs, runDune } from "../../runner.js";
+import { buildDuneArgs, runDockerLogs, runDune, validateServiceName } from "../../runner.js";
+import { sanitizeDiscordValue } from "./sanitize.js";
 import { initializeDiscordAdapterSchema } from "./schema.js";
 
 const INFRA_OPERATIONS = Object.freeze({
@@ -100,34 +93,34 @@ function parsePopulationValue(value = "") {
   return { onlinePlayers: "unknown", totalPlayers: "unknown", aggregate: true, detailsSuppressed: true };
 }
 
+function boundedEnvInt(name, fallback, min, max) {
+  const value = Number(process.env[name]);
+  return Number.isInteger(value) && value >= min && value <= max ? value : fallback;
+}
+
+async function runOpsProvider(db, timeoutMs, provider) {
+  if (!db || typeof db.transaction !== "function") return provider(db);
+  return db.transaction(async (tx) => {
+    await tx.query("select set_config('statement_timeout', $1, true)", [`${timeoutMs}ms`]);
+    return provider(tx);
+  });
+}
+
 export function isDiscordAdapterRoute(path) {
   return Object.values(DISCORD_ADAPTER_ROUTES).includes(path);
 }
 
-export async function handleDiscordAdapterRoute({ req, res, path, config, readJson: readJsonBody, json, db, statusProvider, readinessProvider, servicesProvider, populationProvider }) {
+export async function handleDiscordAdapterRoute({
+  req, res, path, config, readJson, json, db,
+  statusProvider, readinessProvider, servicesProvider, populationProvider,
+  commandRunner = runDune,
+  dockerLogsRunner = runDockerLogs,
+  announcementsProvider = readPlayerAnnouncements
+}) {
   const safeStatusProvider = typeof statusProvider === "function" ? statusProvider : () => discordStatusProvider(config);
   const safeReadinessProvider = typeof readinessProvider === "function" ? readinessProvider : () => discordReadinessProvider(config);
   const safeServicesProvider = typeof servicesProvider === "function" ? servicesProvider : () => discordServicesProvider(config);
   const safePopulationProvider = typeof populationProvider === "function" ? populationProvider : () => defaultPopulationProvider(config);
-
-  // Reads the JSON body for a Discord adapter POST route and, when
-  // DUNE_DISCORD_ACTOR_SECRET is configured, verifies that body.actor
-  // carries a valid HMAC signature before any route handler trusts
-  // actor.userId/actor.roleIds. See actorSignature.js (FINDING-LINK-1).
-  // When `required` is true, the actor signature MUST be present and valid
-  // regardless of whether DUNE_DISCORD_ACTOR_SECRET is configured. Used for
-  // mutation routes (link, verify, unlink, steam-link).
-  async function readJson(request, { requireActorSignature = false } = {}) {
-    const body = await readJsonBody(request);
-    try {
-      verifyActorSignature({ actorPayload: body?.actor, headers: request.headers, config, route: path, required: requireActorSignature });
-    } catch (error) {
-      // When a secret is configured: always throw (even for read routes).
-      // When no secret: only throw for mutation routes (requireActorSignature).
-      if (requireActorSignature || actorSignatureRequired(config)) throw error;
-    }
-    return body;
-  }
   try {
     if (!discordAdapterEnabled(config)) throw policyError("adapter_disabled", "Discord adapter is disabled.", 404);
     requireDiscordBotToken(req, config);
@@ -178,38 +171,30 @@ export async function handleDiscordAdapterRoute({ req, res, path, config, readJs
       }));
     }
 
-    // OPS observability routes — wired to provider stubs
-    const OPS_PATHS = [
-      DISCORD_ADAPTER_ROUTES.OPS_ACTIVITY,
-      DISCORD_ADAPTER_ROUTES.OPS_COMBAT,
-      DISCORD_ADAPTER_ROUTES.OPS_RESOURCES,
-      DISCORD_ADAPTER_ROUTES.OPS_ECONOMY,
-      DISCORD_ADAPTER_ROUTES.OPS_INVENTORY,
-      DISCORD_ADAPTER_ROUTES.OPS_LOCATION,
-      DISCORD_ADAPTER_ROUTES.OPS_SOC,
-      DISCORD_ADAPTER_ROUTES.OPS_PROMETHEUS,
-      DISCORD_ADAPTER_ROUTES.OPS_DASHBOARD
-    ];
-
-    const OPS_PROVIDERS = {
-      [DISCORD_ADAPTER_ROUTES.OPS_ACTIVITY]: opsActivityProvider,
-      [DISCORD_ADAPTER_ROUTES.OPS_COMBAT]: opsCombatProvider,
-      [DISCORD_ADAPTER_ROUTES.OPS_RESOURCES]: opsResourcesProvider,
-      [DISCORD_ADAPTER_ROUTES.OPS_ECONOMY]: opsEconomyProvider,
-      [DISCORD_ADAPTER_ROUTES.OPS_INVENTORY]: opsInventoryProvider,
-      [DISCORD_ADAPTER_ROUTES.OPS_LOCATION]: opsLocationProvider,
-      [DISCORD_ADAPTER_ROUTES.OPS_SOC]: opsSocProvider,
-      [DISCORD_ADAPTER_ROUTES.OPS_PROMETHEUS]: opsPrometheusProvider,
-      [DISCORD_ADAPTER_ROUTES.OPS_DASHBOARD]: opsDashboardProvider,
+    const opsRoutes = {
+      [DISCORD_ADAPTER_ROUTES.OPS_ACTIVITY]: { capability: DISCORD_CAPABILITIES.OPS_ACTIVITY_READ, provider: opsActivityProvider },
+      [DISCORD_ADAPTER_ROUTES.OPS_COMBAT]: { capability: DISCORD_CAPABILITIES.OPS_COMBAT_READ, provider: opsCombatProvider },
+      [DISCORD_ADAPTER_ROUTES.OPS_RESOURCES]: { capability: DISCORD_CAPABILITIES.OPS_RESOURCES_READ, provider: opsResourcesProvider },
+      [DISCORD_ADAPTER_ROUTES.OPS_ECONOMY]: { capability: DISCORD_CAPABILITIES.OPS_ECONOMY_READ, provider: opsEconomyProvider },
+      [DISCORD_ADAPTER_ROUTES.OPS_INVENTORY]: { capability: DISCORD_CAPABILITIES.OPS_INVENTORY_READ, provider: opsInventoryProvider },
+      [DISCORD_ADAPTER_ROUTES.OPS_SOC]: { capability: DISCORD_CAPABILITIES.OPS_SOC_READ, provider: opsSocProvider },
+      [DISCORD_ADAPTER_ROUTES.OPS_PROMETHEUS]: { capability: DISCORD_CAPABILITIES.OPS_PROMETHEUS_READ, provider: opsPrometheusProvider }
     };
 
-    if (OPS_PATHS.includes(path) && req.method === "POST") {
+    if (opsRoutes[path] && req.method === "POST") {
       const body = await readJson(req);
-      const provider = OPS_PROVIDERS[path];
-      if (provider) {
-        return json(res, 200, await provider(config, db));
-      }
-      return json(res, 200, { ok: false, error: `OPS provider not found for: ${path}` });
+      const actor = validateDiscordActor(body.actor);
+      const mapping = discordRoleMappingFromEnv();
+      const route = opsRoutes[path];
+      requireDiscordCapability(actor, mapping, route.capability);
+      const timeoutMs = boundedEnvInt("DUNE_OPS_QUERY_TIMEOUT_MS", 5000, 250, 30000);
+      const maxBytes = boundedEnvInt("DUNE_OPS_MAX_RESPONSE_BYTES", 65536, 1024, 1048576);
+      const result = await runOpsProvider(db, timeoutMs, (queryDb) => route.provider(config, queryDb));
+      const response = Buffer.byteLength(JSON.stringify(result), "utf8") <= maxBytes
+        ? result
+        : { ok: false, _truncated: true, _maxBytes: maxBytes, error: "OPS response exceeded the configured size limit." };
+      audit(config, req, "discord.ops", { route: path, userId: actor.userId, tier: discordActorTier(actor, mapping), ok: response.ok !== false });
+      return json(res, 200, response);
     }
 
     // Broadcast route — gated behind write enablement, actor identity, and admin/owner capability.
@@ -223,138 +208,56 @@ export async function handleDiscordAdapterRoute({ req, res, path, config, readJs
       return json(res, 200, result);
     }
 
-    // Announcements — real data from player announcements service
+    // Announcement settings used by the companion bot's read-only status command.
     if (path === DISCORD_ADAPTER_ROUTES.ANNOUNCEMENTS && req.method === "POST") {
       const body = await readJson(req);
-      validateDiscordActor(body.actor);
-      try {
-        const result = await readPlayerAnnouncements(config);
-        return json(res, 200, { ok: true, announcements: result || [] });
-      } catch { return json(res, 200, { ok: false, announcements: [], error: "Player announcements unavailable (database not ready)." }); }
+      const actor = validateDiscordActor(body.actor);
+      requireDiscordCapability(actor, discordRoleMappingFromEnv(), DISCORD_CAPABILITIES.MAPS_READ);
+      const announcements = await announcementsProvider(config);
+      return json(res, 200, { ok: true, announcements: sanitizeDiscordValue(announcements) });
     }
 
-    // Backups — real data from dune db list
+    // Backup metadata only. No create, restore, delete, or filesystem paths.
     if (path === DISCORD_ADAPTER_ROUTES.BACKUPS_LIST && req.method === "GET") {
-      // Backups is a GET route — no actor body to validate
-      try {
-        const { stdout } = await runDune(config, buildDuneArgs("db", ["list"]));
-        return json(res, 200, { ok: true, backups: stdout.trim() || "No backups found." });
-      } catch { return json(res, 200, { ok: false, backups: [], error: "dune db list unavailable" }); }
+      const result = await commandRunner(config, buildDuneArgs("backupList"), {
+        timeoutMs: 15000,
+        allowedExitCodes: [0]
+      });
+      return json(res, 200, { ok: true, backups: parseBackupListRows(result.stdout || "").slice(0, 100) });
     }
 
     const mapping = discordRoleMappingFromEnv();
 
     // Players link
     if (path === DISCORD_ADAPTER_ROUTES.PLAYERS_LINK && req.method === "POST") {
-      const body = await readJson(req, { requireActorSignature: true });
+      const body = await readJson(req);
       const actor = validateDiscordActor(body.actor);
-      requireSelfScopedCapability(actor, mapping, DISCORD_CAPABILITIES.PLAYER_LINK_WRITE);
-      const linkResult = await linkPlayerProvider(db, config, {
+      requireDiscordCapability(actor, mapping, DISCORD_CAPABILITIES.PLAYER_LINK_WRITE);
+      return json(res, 200, await linkPlayerProvider(db, config, {
         discordUserId: actor.userId,
         characterName: body.characterName
-      });
-      audit(config, req, "discord.player.link", { actorId: actor.userId, characterName: body.characterName, ok: linkResult.ok });
-      return json(res, 200, linkResult);
+      }));
     }
 
     // Players link verify
     if (path === DISCORD_ADAPTER_ROUTES.PLAYERS_LINK_VERIFY && req.method === "POST") {
-      const body = await readJson(req, { requireActorSignature: true });
+      const body = await readJson(req);
       const actor = validateDiscordActor(body.actor);
-      requireSelfScopedCapability(actor, mapping, DISCORD_CAPABILITIES.PLAYER_LINK_WRITE);
-      const verifyResult = await verifyPlayerLinkProvider(db, {
+      requireDiscordCapability(actor, mapping, DISCORD_CAPABILITIES.PLAYER_LINK_WRITE);
+      return json(res, 200, await verifyPlayerLinkProvider(db, {
         discordUserId: actor.userId,
         code: body.code
-      });
-      audit(config, req, "discord.player.link.verify", { actorId: actor.userId, ok: verifyResult.ok });
-      return json(res, 200, verifyResult);
+      }));
     }
 
     // Players unlink
     if (path === DISCORD_ADAPTER_ROUTES.PLAYERS_UNLINK && req.method === "POST") {
-      const body = await readJson(req, { requireActorSignature: true });
-      const actor = validateDiscordActor(body.actor);
-      requireSelfScopedCapability(actor, mapping, DISCORD_CAPABILITIES.PLAYER_LINK_WRITE);
-      const unlinkResult = await unlinkProvider(db, {
-        discordUserId: actor.userId
-      });
-      audit(config, req, "discord.player.unlink", { actorId: actor.userId, ok: unlinkResult.ok });
-      return json(res, 200, unlinkResult);
-    }
-
-    // Multi-account: link an additional character (FINDING-LINK-6).
-    // Distinct from PLAYERS_LINK above: this is additive (a Discord user
-    // may hold several linked characters at once) rather than overwrite,
-    // and uses its own capability/rate limiter — see
-    // multiAccountLinkProvider.js and docs/security/discord-player-link-hardening.md.
-    if (path === DISCORD_ADAPTER_ROUTES.PLAYERS_ACCOUNTS_LINK && req.method === "POST") {
-      const body = await readJson(req, { requireActorSignature: true });
-      const actor = validateDiscordActor(body.actor);
-      requireSelfScopedCapability(actor, mapping, DISCORD_CAPABILITIES.ACCOUNT_LINK_WRITE);
-      audit(config, req, "discord.account.link", { actorId: actor.userId, characterName: body.characterName });
-      return json(res, 200, await linkAccountProvider(db, config, {
-        discordUserId: actor.userId,
-        characterName: body.characterName
-      }));
-    }
-
-    // Multi-account: verify a pending additional-account link
-    if (path === DISCORD_ADAPTER_ROUTES.PLAYERS_ACCOUNTS_LINK_VERIFY && req.method === "POST") {
-      const body = await readJson(req, { requireActorSignature: true });
-      const actor = validateDiscordActor(body.actor);
-      requireSelfScopedCapability(actor, mapping, DISCORD_CAPABILITIES.ACCOUNT_LINK_WRITE);
-      return json(res, 200, await verifyAccountLinkProvider(db, {
-        discordUserId: actor.userId,
-        code: body.code
-      }));
-    }
-
-    // Multi-account: unlink one additional character (does not affect the
-    // legacy single-link flow's console.discord_player_links entry, if any).
-    if (path === DISCORD_ADAPTER_ROUTES.PLAYERS_ACCOUNTS_UNLINK && req.method === "POST") {
-      const body = await readJson(req, { requireActorSignature: true });
-      const actor = validateDiscordActor(body.actor);
-      requireSelfScopedCapability(actor, mapping, DISCORD_CAPABILITIES.ACCOUNT_LINK_WRITE);
-      audit(config, req, "discord.account.unlink", { actorId: actor.userId, playerControllerId: body.playerControllerId });
-      return json(res, 200, await unlinkAccountProvider(db, {
-        discordUserId: actor.userId,
-        playerControllerId: body.playerControllerId
-      }));
-    }
-
-    // Multi-account: list all characters linked to the calling Discord user
-    if (path === DISCORD_ADAPTER_ROUTES.PLAYERS_ACCOUNTS_LIST && req.method === "POST") {
-      const body = await readJson(req, { requireActorSignature: true });
-      const actor = validateDiscordActor(body.actor);
-      requireSelfScopedCapability(actor, mapping, DISCORD_CAPABILITIES.ACCOUNT_LINK_WRITE);
-      return json(res, 200, await listAccountsProvider(db, {
-        discordUserId: actor.userId
-      }));
-    }
-
-    // Multi-account: change which linked character is the default
-    if (path === DISCORD_ADAPTER_ROUTES.PLAYERS_ACCOUNTS_SET_DEFAULT && req.method === "POST") {
       const body = await readJson(req);
       const actor = validateDiscordActor(body.actor);
-      requireSelfScopedCapability(actor, mapping, DISCORD_CAPABILITIES.ACCOUNT_LINK_WRITE);
-      return json(res, 200, await setDefaultAccountProvider(db, {
-        discordUserId: actor.userId,
-        playerControllerId: body.playerControllerId
+      requireDiscordCapability(actor, mapping, DISCORD_CAPABILITIES.PLAYER_LINK_WRITE);
+      return json(res, 200, await unlinkProvider(db, {
+        discordUserId: actor.userId
       }));
-    }
-
-    // Multi-account, Steam-OAuth-based: match a character's on-file Steam
-    // ID against the caller's already-completed Discord OAuth connections
-    // list, and link if it matches -- see linkAccountViaSteamProvider()'s
-    // own comment for why the match-check and the link happen together in
-    // one discordUserId-bound call rather than as two separate routes.
-    if (path === DISCORD_ADAPTER_ROUTES.PLAYERS_ACCOUNTS_LINK_STEAM && req.method === "POST") {
-      // Steam linking is disabled pending OAuth binding (security review 2026-08-08).
-      // The current implementation accepts playerControllerId and steamId64List directly
-      // without validating a Discord OAuth token, verifying the Steam connection, or
-      // binding the selected character to an OAuth state. Revisit when bot-side OAuth
-      // can bind the Discord user ↔ Steam identity ↔ target character in one flow.
-      return json(res, 200, { ok: false, status: "disabled", reason: "steam_linking_pending_oauth_binding", message: "Steam linking is temporarily disabled pending a security review. Use /dune data link while your character is online." });
     }
 
     // Players me
@@ -469,27 +372,38 @@ export async function handleDiscordAdapterRoute({ req, res, path, config, readJs
       return json(res, 200, { ok: true, version: config.version || "dev" });
     }
 
-    // Maintenance — health summary via dune-ready
     if (path === DISCORD_ADAPTER_ROUTES.MAINTENANCE && req.method === "POST") {
       const body = await readJson(req);
-      validateDiscordActor(body.actor);
-      return json(res, 200, await maintenanceProvider(config));
+      const actor = validateDiscordActor(body.actor);
+      requireDiscordCapability(actor, mapping, DISCORD_CAPABILITIES.READINESS_READ);
+      const result = await commandRunner(config, buildDuneArgs("readiness"), {
+        timeoutMs: 15000,
+        allowedExitCodes: [0, 1]
+      });
+      return json(res, 200, { ok: result.code === 0, output: cappedOutput(result.stdout || result.stderr) });
     }
 
-    // Logs — tail container logs for a named service
     if (path === DISCORD_ADAPTER_ROUTES.LOGS && req.method === "POST") {
       const body = await readJson(req);
-      validateDiscordActor(body.actor);
-      const service = String(body.service || "").trim();
-      if (!service) return json(res, 400, { ok: false, error: "Service name required (body.service)." });
-      return json(res, 200, await logsProvider(config, service));
+      const actor = validateDiscordActor(body.actor);
+      requireDiscordCapability(actor, mapping, DISCORD_CAPABILITIES.LOGS_READ);
+      const service = validateServiceName(body.service);
+      const result = await dockerLogsRunner(service, { tail: 100, timeoutMs: 10000 });
+      const lines = sanitizeDiscordValue(`${result.stdout || ""}${result.stderr || ""}`)
+        .split(/\r?\n/).filter(Boolean).slice(-50);
+      return json(res, 200, { ok: true, service, lines });
     }
 
-    // Map state — per-map status details
     if (path === DISCORD_ADAPTER_ROUTES.MAP_STATE && req.method === "POST") {
       const body = await readJson(req);
-      validateDiscordActor(body.actor);
-      return json(res, 200, await mapStateProvider(config));
+      const actor = validateDiscordActor(body.actor);
+      requireDiscordCapability(actor, mapping, DISCORD_CAPABILITIES.MAPS_READ);
+      const result = await commandRunner(config, buildDuneArgs("mapsList"), {
+        timeoutMs: 15000,
+        allowedExitCodes: [0]
+      });
+      const output = cappedOutput(result.stdout || result.stderr);
+      return json(res, 200, { ok: true, maps: output.split(/\r?\n/).filter(Boolean), output });
     }
 
     throw policyError("not_found", "Discord adapter route not found.", 404);
@@ -499,26 +413,8 @@ export async function handleDiscordAdapterRoute({ req, res, path, config, readJs
   }
 }
 
-async function maintenanceProvider(config) {
-  try {
-    const result = await runDune(config, buildDuneArgs("ready", ["ready"]));
-    return { ok: true, output: result.stdout?.trim() || "" };
-  } catch { return { ok: true, output: "dune ready unavailable" }; }
-}
-
-async function logsProvider(config, service) {
-  try {
-    const { stdout, stderr } = await runDockerLogs(service, { tail: 100, timeoutMs: 10000 });
-    return { ok: true, service, lines: (stdout + stderr).split(/\r?\n/).filter(Boolean).slice(-50) };
-  } catch { return { ok: false, service, error: "Logs unavailable for this service" }; }
-}
-
-async function mapStateProvider(config) {
-  try {
-    const result = await runDune(config, buildDuneArgs("status", ["--json"]));
-    const status = typeof result === "string" ? JSON.parse(result) : result;
-    return { ok: true, maps: status.maps || [] };
-  } catch { return { ok: true, maps: [] }; }
+function cappedOutput(value, maxChars = 12000) {
+  return sanitizeDiscordValue(String(value || "")).slice(0, maxChars);
 }
 
 export function requireDiscordBotToken(req, config) {
