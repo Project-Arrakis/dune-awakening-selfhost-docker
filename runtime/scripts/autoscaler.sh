@@ -32,6 +32,10 @@ IGWO_UNAVAILABLE_SCAN_SECONDS="${DUNE_AUTOSCALER_IGWO_UNAVAILABLE_SCAN_SECONDS:-
 IGWO_UNAVAILABLE_COOLDOWN_SECONDS="${DUNE_AUTOSCALER_IGWO_UNAVAILABLE_COOLDOWN_SECONDS:-60}"
 STALE_SERVER_STATE_SCAN_SECONDS="${DUNE_AUTOSCALER_STALE_SERVER_STATE_SCAN_SECONDS:-15}"
 STALE_SERVER_STATE_COOLDOWN_SECONDS="${DUNE_AUTOSCALER_STALE_SERVER_STATE_COOLDOWN_SECONDS:-45}"
+IGW_SOCKET_HEALTH_SCAN_SECONDS="${DUNE_AUTOSCALER_IGW_SOCKET_HEALTH_SCAN_SECONDS:-10}"
+IGW_SOCKET_STALL_SECONDS="${DUNE_AUTOSCALER_IGW_SOCKET_STALL_SECONDS:-30}"
+IGW_SOCKET_RX_QUEUE_THRESHOLD="${DUNE_AUTOSCALER_IGW_SOCKET_RX_QUEUE_THRESHOLD:-1048576}"
+IGW_SOCKET_RECOVERY_COOLDOWN_SECONDS="${DUNE_AUTOSCALER_IGW_SOCKET_RECOVERY_COOLDOWN_SECONDS:-600}"
 AUTOSCALER_STARTED_AT="$(date +%s)"
 
 mkdir -p "$(dirname "$STATE_FILE")"
@@ -56,6 +60,7 @@ echo "Dynamic ready heal scan: ${DYNAMIC_READY_HEAL_SCAN_SECONDS}s"
 echo "Chat exchange repair scan: ${CHAT_EXCHANGE_REPAIR_SECONDS}s"
 echo "IGWO unavailable heal scan: ${IGWO_UNAVAILABLE_SCAN_SECONDS}s"
 echo "Stale server-state heal scan: ${STALE_SERVER_STATE_SCAN_SECONDS}s"
+echo "IGW socket health scan: ${IGW_SOCKET_HEALTH_SCAN_SECONDS}s"
 echo "State file: ${STATE_FILE}"
 echo
 
@@ -1225,6 +1230,174 @@ map_effective_player_count() {
 map_has_active_presence() {
   local map="$1"
   [ "$(map_effective_player_count "$map" | tr -d '[:space:]')" != "0" ]
+}
+
+igw_receive_queue_bytes() {
+  local container="$1"
+  local port="$2"
+  local port_hex rx_hex total=0
+
+  [[ "$port" =~ ^[0-9]+$ ]] || return 1
+  port_hex="$(printf '%04X' "$port")"
+
+  while IFS= read -r rx_hex; do
+    [ -n "$rx_hex" ] || continue
+    rx_hex="${rx_hex^^}"
+    [[ "$rx_hex" =~ ^[0-9A-F]+$ ]] || continue
+    total=$((total + 16#$rx_hex))
+  done < <(
+    timeout --kill-after=1s 5s docker exec "$container" sh -c \
+      'cat /proc/net/udp /proc/net/udp6 2>/dev/null' 2>/dev/null \
+      | awk -v port="$port_hex" '
+          $2 ~ (":" port "$") {
+            split($5, queue, ":")
+            print queue[2]
+          }
+        '
+  )
+
+  printf '%s\n' "$total"
+}
+
+core_map_igw_port() {
+  local map="$1"
+  local safe="${map//\'/\'\'}"
+
+  psql_value "
+    select coalesce(igw_port::text, '')
+    from dune.farm_state
+    where map = '$safe'
+      and coalesce(alive, false) = true
+      and igw_port is not null
+    order by ready desc, server_id
+    limit 1;
+  " | tr -d '\r[:space:]'
+}
+
+core_map_is_reported_ready() {
+  local map="$1"
+  local safe="${map//\'/\'\'}"
+
+  [ "$(psql_value "
+    select count(*)
+    from dune.farm_state
+    where map = '$safe'
+      and coalesce(alive, false) = true
+      and coalesce(ready, false) = true;
+  " | tr -d '\r[:space:]')" != "0" ]
+}
+
+recover_deadlocked_core_map() {
+  local map="$1"
+  local container partition
+
+  case "$map" in
+    Survival_1)
+      container="dune-server-survival-1"
+      partition="1"
+      runtime/scripts/start-server-survival-1.sh >/dev/null 2>&1
+      ;;
+    Overmap)
+      container="dune-server-overmap"
+      partition="2"
+      runtime/scripts/start-server-overmap.sh >/dev/null 2>&1
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+
+  wait_for_core_map_ready "$container" "$partition" || return 1
+  publish_state_for_map "$map"
+}
+
+wait_for_core_map_ready() {
+  local container="$1"
+  local partition="$2"
+  local started_at attempt logs
+
+  started_at="$(docker inspect -f '{{.State.StartedAt}}' "$container" 2>/dev/null || true)"
+  [ -n "$started_at" ] || return 1
+
+  for attempt in $(seq 1 90); do
+    logs="$(timeout --kill-after=1s 8s docker logs --since "$started_at" --tail 5000 "$container" 2>&1 || true)"
+    if grep -Eq "Server farm is READY .*partition ${partition}([,[:space:]]|$)" <<<"$logs"; then
+      return 0
+    fi
+    if ! docker inspect -f '{{.State.Running}}' "$container" 2>/dev/null | grep -qx true; then
+      return 1
+    fi
+    sleep 2
+  done
+
+  return 1
+}
+
+scan_core_igw_socket_health() {
+  local now container map port queue first_seen age last_recovery players
+  local first_key recovery_key
+
+  director_heal_due igw_socket_health "$IGW_SOCKET_HEALTH_SCAN_SECONDS" || return 0
+  now="$(date +%s)"
+
+  while IFS='|' read -r container map; do
+    first_key="igw-stall:${map}"
+    recovery_key="igw-recovery:${map}"
+
+    if ! docker inspect -f '{{.State.Running}}' "$container" 2>/dev/null | grep -qx true; then
+      director_heal_clear "$first_key"
+      continue
+    fi
+
+    # A large queue is expected while a core map is still loading and cannot
+    # consume normal S2S traffic yet. Only a map that has already advertised
+    # itself as ready can regress into the deadlock this watchdog repairs.
+    if ! core_map_is_reported_ready "$map"; then
+      director_heal_clear "$first_key"
+      continue
+    fi
+
+    port="$(core_map_igw_port "$map" 2>/dev/null || true)"
+    if ! [[ "$port" =~ ^[0-9]+$ ]]; then
+      director_heal_clear "$first_key"
+      continue
+    fi
+
+    queue="$(igw_receive_queue_bytes "$container" "$port" 2>/dev/null || true)"
+    if ! [[ "$queue" =~ ^[0-9]+$ ]] || [ "$queue" -lt "$IGW_SOCKET_RX_QUEUE_THRESHOLD" ]; then
+      director_heal_clear "$first_key"
+      continue
+    fi
+
+    first_seen="$(director_heal_get "$first_key" 2>/dev/null || true)"
+    if ! [[ "$first_seen" =~ ^[0-9]+$ ]]; then
+      echo "WARN IGW receive queue stalled map=$map port=$port bytes=$queue action=confirm"
+      director_heal_set "$first_key" "$now"
+      continue
+    fi
+
+    age=$((now - first_seen))
+    if [ "$age" -lt "$IGW_SOCKET_STALL_SECONDS" ]; then
+      continue
+    fi
+
+    last_recovery="$(director_heal_get "$recovery_key" 2>/dev/null || true)"
+    if [[ "$last_recovery" =~ ^[0-9]+$ ]] && [ $((now - last_recovery)) -lt "$IGW_SOCKET_RECOVERY_COOLDOWN_SECONDS" ]; then
+      continue
+    fi
+
+    players="$(map_effective_player_count "$map" 2>/dev/null | tr -d '[:space:]' || true)"
+    [[ "$players" =~ ^[0-9]+$ ]] || players="unknown"
+    echo "HEAL deadlocked core map=$map port=$port rx_queue_bytes=$queue stalled_seconds=$age players=$players action=map-restart"
+    director_heal_set "$recovery_key" "$now"
+    director_heal_clear "$first_key"
+    if ! recover_deadlocked_core_map "$map"; then
+      echo "ERROR failed to recover deadlocked core map=$map"
+    fi
+  done <<'EOF'
+dune-server-survival-1|Survival_1
+dune-server-overmap|Overmap
+EOF
 }
 
 battlegroup_effective_player_count() {
@@ -2403,6 +2576,7 @@ while true; do
   ensure_overmap_travel_maps_prewarmed
   scan_travel_demand
   repair_chat_exchanges_due
+  scan_core_igw_socket_health
   scan_igwo_unavailable_maps
   scan_stale_server_state
   scan_unscoped_stale_server_state

@@ -114,6 +114,7 @@ jobs:
           tests/memory-status-effective-defaults-test.sh
           tests/always-on-memory-safety-test.sh
           tests/autoscaler-browser-heal-safety-test.sh
+          tests/autoscaler-igw-socket-health-test.sh
           tests/db-backup-validation-test.sh
       - name: Test Compose project-name portability
         run: |
