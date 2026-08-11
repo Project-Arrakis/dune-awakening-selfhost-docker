@@ -11,6 +11,13 @@ export const DISCORD_CAPABILITIES = Object.freeze({
   INVENTORY_READ: "inventory:read",
   STORAGE_READ: "storage:read",
   GUILD_READ: "guild:read",
+  OPS_ACTIVITY_READ: "ops:activity:read",
+  OPS_COMBAT_READ: "ops:combat:read",
+  OPS_RESOURCES_READ: "ops:resources:read",
+  OPS_ECONOMY_READ: "ops:economy:read",
+  OPS_INVENTORY_READ: "ops:inventory:read",
+  OPS_SOC_READ: "ops:soc:read",
+  OPS_PROMETHEUS_READ: "ops:prometheus:read",
   PLAYER_LINK_WRITE: "player-link:write",
   BROADCAST_SEND: "broadcast:send"
 });
