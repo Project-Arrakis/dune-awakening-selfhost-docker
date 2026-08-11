@@ -55,6 +55,13 @@ test("reports adapter health with isolated link-state writes", async () => {
     "/api/integrations/discord/map-state",
     "/api/integrations/discord/maintenance",
     "/api/integrations/discord/backups/list",
+    "/api/integrations/discord/ops/activity",
+    "/api/integrations/discord/ops/combat",
+    "/api/integrations/discord/ops/economy",
+    "/api/integrations/discord/ops/inventory",
+    "/api/integrations/discord/ops/prometheus",
+    "/api/integrations/discord/ops/resources",
+    "/api/integrations/discord/ops/soc",
     "/api/integrations/discord/players/find",
     "/api/integrations/discord/players/inventory",
     "/api/integrations/discord/players/inventory-search",
@@ -72,7 +79,8 @@ test("reports adapter health with isolated link-state writes", async () => {
     "/api/integrations/discord/version"
   ].sort());
   assert.ok(!result.plannedRoutes.includes("/api/integrations/discord/logs"));
-  assert.ok(result.plannedRoutes.includes("/api/integrations/discord/ops/activity"));
+  assert.ok(!result.plannedRoutes.includes("/api/integrations/discord/ops/activity"));
+  assert.ok(result.plannedRoutes.includes("/api/integrations/discord/ops/location"));
 });
 
 test("keeps writes disabled by default and accepts explicit opt-in values", () => {
