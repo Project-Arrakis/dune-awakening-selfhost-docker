@@ -177,8 +177,8 @@ export async function handleDiscordAdapterRoute({
       [DISCORD_ADAPTER_ROUTES.OPS_RESOURCES]: { capability: DISCORD_CAPABILITIES.OPS_RESOURCES_READ, provider: opsResourcesProvider },
       [DISCORD_ADAPTER_ROUTES.OPS_ECONOMY]: { capability: DISCORD_CAPABILITIES.OPS_ECONOMY_READ, provider: opsEconomyProvider },
       [DISCORD_ADAPTER_ROUTES.OPS_INVENTORY]: { capability: DISCORD_CAPABILITIES.OPS_INVENTORY_READ, provider: opsInventoryProvider },
-      [DISCORD_ADAPTER_ROUTES.OPS_SOC]: { capability: DISCORD_CAPABILITIES.OPS_SOC_READ, provider: opsSocProvider },
-      [DISCORD_ADAPTER_ROUTES.OPS_PROMETHEUS]: { capability: DISCORD_CAPABILITIES.OPS_PROMETHEUS_READ, provider: opsPrometheusProvider }
+      [DISCORD_ADAPTER_ROUTES.OPS_SOC]: { capability: DISCORD_CAPABILITIES.OPS_SOC_READ, provider: opsSocProvider, queryBound: false },
+      [DISCORD_ADAPTER_ROUTES.OPS_PROMETHEUS]: { capability: DISCORD_CAPABILITIES.OPS_PROMETHEUS_READ, provider: opsPrometheusProvider, queryBound: false }
     };
 
     if (opsRoutes[path] && req.method === "POST") {
@@ -189,7 +189,9 @@ export async function handleDiscordAdapterRoute({
       requireDiscordCapability(actor, mapping, route.capability);
       const timeoutMs = boundedEnvInt("DUNE_OPS_QUERY_TIMEOUT_MS", 5000, 250, 30000);
       const maxBytes = boundedEnvInt("DUNE_OPS_MAX_RESPONSE_BYTES", 65536, 1024, 1048576);
-      const result = await runOpsProvider(db, timeoutMs, (queryDb) => route.provider(config, queryDb));
+      const result = route.queryBound === false
+        ? await route.provider(config, db)
+        : await runOpsProvider(db, timeoutMs, (queryDb) => route.provider(config, queryDb));
       const response = Buffer.byteLength(JSON.stringify(result), "utf8") <= maxBytes
         ? result
         : { ok: false, _truncated: true, _maxBytes: maxBytes, error: "OPS response exceeded the configured size limit." };
