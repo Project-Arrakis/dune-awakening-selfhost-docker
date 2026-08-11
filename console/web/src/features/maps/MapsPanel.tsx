@@ -2067,7 +2067,7 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
   </section>;
 }
 
-function SpicefieldsEditor({
+export function SpicefieldsEditor({
   rows,
   allRows,
   drafts,
@@ -2102,15 +2102,15 @@ function SpicefieldsEditor({
     {allRows.length && !rows.length ? <div className="empty">No spice fields match this filter.</div> : null}
     {rows.length ? <div className="settings-list-wrap spicefields-table-wrap"><table className="settings-list-table spicefields-table">
       <thead><tr>
-        <th>Map</th>
-        <th>Type</th>
-        <th>Dimension</th>
-        <th>Live</th>
-        <th>Max Active</th>
-        <th>Max Primed</th>
-        <th>Spawning</th>
-        <th>Weight</th>
-        <th>Actions</th>
+        <th scope="col">Map</th>
+        <th scope="col">Type</th>
+        <th scope="col">Dimension</th>
+        <th scope="col">Live</th>
+        <th scope="col">Max Active</th>
+        <th scope="col">Max Primed</th>
+        <th scope="col">Spawning</th>
+        <th scope="col">Weight</th>
+        <th scope="col">Actions</th>
       </tr></thead>
       <tbody>{rows.map((row) => {
         const id = String(row.spicefield_type_id);
@@ -2118,15 +2118,15 @@ function SpicefieldsEditor({
         const dirty = spicefieldDraftDirty(row, draft);
         const saving = savingId === id;
         return <tr key={id}>
-          <td><strong>{row.map_name}</strong><small>ID {row.spicefield_type_id}</small></td>
-          <td>{row.field_type}</td>
-          <td>{row.dimension_index}</td>
-          <td><span>{row.current_globally_active ?? 0} active</span><small>{row.current_globally_primed ?? 0} primed</small></td>
-          <td><input type="number" min="0" step="1" value={draft.maxActive} onChange={(event) => onDraftChange(id, { ...draft, maxActive: event.target.value })} /></td>
-          <td><input type="number" min="0" step="1" value={draft.maxPrimed} onChange={(event) => onDraftChange(id, { ...draft, maxPrimed: event.target.value })} /></td>
-          <td><select value={draft.spawningActive ? "true" : "false"} onChange={(event) => onDraftChange(id, { ...draft, spawningActive: event.target.value === "true" })}><option value="true">Enabled</option><option value="false">Disabled</option></select></td>
-          <td><input type="number" min="0" step="any" value={draft.spawnWeight} onChange={(event) => onDraftChange(id, { ...draft, spawnWeight: event.target.value })} /></td>
-          <td><div className="action-row spicefield-row-actions"><button disabled={!dirty || saving} onClick={() => onSave(row)}>{saving ? "Saving..." : "Save"}</button><button disabled={!dirty || saving} onClick={() => onDiscard(row)}>Discard</button></div></td>
+          <td data-label="Map"><strong>{row.map_name}</strong><small>ID {row.spicefield_type_id}</small></td>
+          <td data-label="Type">{row.field_type}</td>
+          <td data-label="Dimension">{row.dimension_index}</td>
+          <td data-label="Live"><span>{row.current_globally_active ?? 0} active</span><small>{row.current_globally_primed ?? 0} primed</small></td>
+          <td data-label="Max Active"><input aria-label={`${row.map_name} Max Active`} type="number" min="0" step="1" value={draft.maxActive} onChange={(event) => onDraftChange(id, { ...draft, maxActive: event.target.value })} /></td>
+          <td data-label="Max Primed"><input aria-label={`${row.map_name} Max Primed`} type="number" min="0" step="1" value={draft.maxPrimed} onChange={(event) => onDraftChange(id, { ...draft, maxPrimed: event.target.value })} /></td>
+          <td data-label="Spawning"><select aria-label={`${row.map_name} Spawning`} value={draft.spawningActive ? "true" : "false"} onChange={(event) => onDraftChange(id, { ...draft, spawningActive: event.target.value === "true" })}><option value="true">Enabled</option><option value="false">Disabled</option></select></td>
+          <td data-label="Weight"><input aria-label={`${row.map_name} Weight`} type="number" min="0" step="any" value={draft.spawnWeight} onChange={(event) => onDraftChange(id, { ...draft, spawnWeight: event.target.value })} /></td>
+          <td data-label="Actions"><div className="action-row spicefield-row-actions"><button disabled={!dirty || saving} onClick={() => onSave(row)}>{saving ? "Saving..." : "Save"}</button><button disabled={!dirty || saving} onClick={() => onDiscard(row)}>Discard</button></div></td>
         </tr>;
       })}</tbody>
     </table></div> : null}
