@@ -10,12 +10,17 @@ export type PerformanceSnapshot = {
   sampledAt: string;
 };
 
+export type RestartMessageTemplate = { title: string; body: string };
+
+export type RestartMessages = { battlegroup: RestartMessageTemplate; map: RestartMessageTemplate };
+
 export type RestartQueueSettings = {
   enabled: boolean;
   defaultCountdownMinutes: number;
   broadcastCheckpoints: number[];
   broadcastDurationSec: number;
   recoveryGraceMinutes: number;
+  messages: RestartMessages;
 };
 
 export type RestartQueueEntry = {
@@ -41,12 +46,17 @@ export type RestartQueueResponse = {
   playersOnlineSupported: boolean;
 };
 
+// The backend now merges a partial body onto the currently persisted
+// settings (see restartQueue.js saveSettings), so every field here is
+// optional -- a caller sends only what it actually changed (e.g. the
+// messages editor sends only `messages`).
 export type SaveRestartQueueBody = {
-  enabled: boolean;
-  defaultCountdownMinutes: number;
-  broadcastCheckpoints: number[] | string;
+  enabled?: boolean;
+  defaultCountdownMinutes?: number;
+  broadcastCheckpoints?: number[] | string;
   broadcastDurationSec?: number;
   recoveryGraceMinutes?: number;
+  messages?: RestartMessages;
 };
 
 // A gated restart endpoint returns the normal { task } when it runs, or

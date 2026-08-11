@@ -11,12 +11,28 @@ import { clampInt } from "../jsonStore.js";
 // and the online-player count) lives in server.js and drives this on the 10s
 // master tick. See plans/server/restart-queue.md.
 
+// Default broadcast templates, matching the original hardcoded copy. `{minutes}`
+// renders as a pluralized quantity ("15 minutes" / "1 minute"); `{mapLabel}`
+// renders as the target's display name ("All servers" for a battlegroup entry,
+// the map/sietch name for a map entry). See renderTemplate/buildWarning.
+const DEFAULT_MESSAGES = {
+  battlegroup: {
+    title: "Battlegroup Restart",
+    body: "All servers will restart in {minutes}. Please get to a safe place."
+  },
+  map: {
+    title: "Map Restart",
+    body: "{mapLabel} will restart in {minutes}. Please move to another map or get to a safe place."
+  }
+};
+
 const DEFAULT_SETTINGS = {
   enabled: false,
   defaultCountdownMinutes: 15,
   broadcastCheckpoints: [15, 10, 5, 1],
   broadcastDurationSec: 30,
-  recoveryGraceMinutes: 5
+  recoveryGraceMinutes: 5,
+  messages: DEFAULT_MESSAGES
 };
 
 const EMPTY_STATE = { entries: [] };
@@ -24,6 +40,10 @@ const EMPTY_STATE = { entries: [] };
 const MAX_COUNTDOWN_MINUTES = 1440;
 const MAX_CHECKPOINTS = 12;
 const PUBLISH_LABEL = "restart-queue";
+// Matches rmq.js's buildBroadcastCommand validators (Title <=80 chars,
+// Body 1-500 chars) so a saved template can never fail at send time.
+const MAX_TITLE_LENGTH = 80;
+const MAX_BODY_LENGTH = 500;
 
 // The restart-bearing operations the queue gates. Includes the direct restart
 // controls and the settings-save-and-restart flows (whose payloads carry a
@@ -61,8 +81,40 @@ export function normalizeSettings(input = {}) {
     defaultCountdownMinutes: clampInt(source.defaultCountdownMinutes, DEFAULT_SETTINGS.defaultCountdownMinutes, 1, MAX_COUNTDOWN_MINUTES),
     broadcastCheckpoints: normalizeCheckpoints(source.broadcastCheckpoints),
     broadcastDurationSec: clampInt(source.broadcastDurationSec, DEFAULT_SETTINGS.broadcastDurationSec, 1, 3600),
-    recoveryGraceMinutes: clampInt(source.recoveryGraceMinutes, DEFAULT_SETTINGS.recoveryGraceMinutes, 0, 1440)
+    recoveryGraceMinutes: clampInt(source.recoveryGraceMinutes, DEFAULT_SETTINGS.recoveryGraceMinutes, 0, 1440),
+    messages: normalizeMessages(source.messages)
   };
+}
+
+// Falls back to the default template per-field (title/body independently) on
+// anything invalid, rather than throwing: this is a settings save, and a
+// half-bad edit should keep the other half rather than reject the whole save.
+// The actual send-time strictness lives in rmq.js's validators.
+function normalizeMessages(value) {
+  const source = value && typeof value === "object" ? value : {};
+  return {
+    battlegroup: normalizeMessageTemplate(source.battlegroup, DEFAULT_MESSAGES.battlegroup),
+    map: normalizeMessageTemplate(source.map, DEFAULT_MESSAGES.map)
+  };
+}
+
+function normalizeMessageTemplate(value, fallback) {
+  const source = value && typeof value === "object" ? value : {};
+  return {
+    title: clampTemplateText(source.title, fallback.title, MAX_TITLE_LENGTH),
+    body: clampTemplateText(source.body, fallback.body, MAX_BODY_LENGTH)
+  };
+}
+
+function clampTemplateText(value, fallback, maxLength) {
+  const raw = String(value ?? "").trim();
+  return raw.length >= 1 && raw.length <= maxLength ? raw : fallback;
+}
+
+// Substitutes {token} placeholders; an unrecognized token is left as-is so a
+// typo in a saved template is visible rather than silently erased.
+function renderTemplate(template, vars) {
+  return String(template || "").replace(/\{(\w+)\}/g, (match, key) => (Object.hasOwn(vars, key) ? vars[key] : match));
 }
 
 // Checkpoints are the minutes-remaining marks at which a warning fires. Accepts
@@ -92,18 +144,31 @@ export function readSettings(config) {
   try {
     return normalizeSettings(JSON.parse(readFileSync(settingsPath(config), "utf8")));
   } catch {
-    return { ...DEFAULT_SETTINGS, broadcastCheckpoints: [...DEFAULT_SETTINGS.broadcastCheckpoints] };
+    return defaultSettings();
   }
 }
 
+// Merges the incoming body onto the CURRENTLY PERSISTED settings before
+// normalizing, so a save that only touches one field (the enable toggle, the
+// countdown/checkpoints fields, or -- via the messages editor -- just the
+// broadcast templates) never resets every other field back to its default.
+// `current` is already fully normalized by readSettings, so a shallow merge
+// is sufficient; a caller that sends a full `messages` object (the editor
+// always does) replaces it wholesale, which is what "save this tab" means.
 export function saveSettings(config, body = {}) {
-  const settings = normalizeSettings(body);
+  const current = readSettings(config);
+  const patch = body && typeof body === "object" ? (body.settings && typeof body.settings === "object" ? body.settings : body) : {};
+  const settings = normalizeSettings({ ...current, ...patch });
   writeJson(settingsPath(config), settings, 0o600);
   return { settings, defaults: defaultSettings() };
 }
 
 export function defaultSettings() {
-  return { ...DEFAULT_SETTINGS, broadcastCheckpoints: [...DEFAULT_SETTINGS.broadcastCheckpoints] };
+  return {
+    ...DEFAULT_SETTINGS,
+    broadcastCheckpoints: [...DEFAULT_SETTINGS.broadcastCheckpoints],
+    messages: { battlegroup: { ...DEFAULT_MESSAGES.battlegroup }, map: { ...DEFAULT_MESSAGES.map } }
+  };
 }
 
 export function readState(config) {
@@ -279,24 +344,23 @@ export function checkpointsDue(entry, checkpoints, now = Date.now()) {
     .sort((a, b) => b - a);
 }
 
-export function buildWarning(target, mapLabel, minutesLeft) {
+// `messages` defaults to the built-in copy so existing callers (and tests)
+// that don't pass a settings object keep working unchanged.
+export function buildWarning(target, mapLabel, minutesLeft, messages = DEFAULT_MESSAGES) {
   const minutes = Math.max(1, Math.round(minutesLeft));
   const unit = minutes === 1 ? "minute" : "minutes";
-  if (target === "battlegroup") {
-    return {
-      title: "Battlegroup Restart",
-      body: `All servers will restart in ${minutes} ${unit}. Please get to a safe place.`
-    };
-  }
-  const label = String(mapLabel || "This map").trim() || "This map";
+  const defaultLabel = target === "battlegroup" ? "All servers" : "This map";
+  const label = String(mapLabel || defaultLabel).trim() || defaultLabel;
+  const template = target === "battlegroup" ? messages.battlegroup : messages.map;
+  const vars = { minutes: `${minutes} ${unit}`, mapLabel: label };
   return {
-    title: "Map Restart",
-    body: `${label} will restart in ${minutes} ${unit}. Please move to another map or get to a safe place.`
+    title: renderTemplate(template.title, vars),
+    body: renderTemplate(template.body, vars)
   };
 }
 
 export async function sendWarning(config, entry, minutesLeft, settings = readSettings(config)) {
-  const { title, body } = buildWarning(entry.target, entry.mapLabel, minutesLeft);
+  const { title, body } = buildWarning(entry.target, entry.mapLabel, minutesLeft, settings.messages);
   const command = buildBroadcastCommand({ title, message: body, durationSec: settings.broadcastDurationSec });
   return publishServerCommand(config, command, PUBLISH_LABEL);
 }

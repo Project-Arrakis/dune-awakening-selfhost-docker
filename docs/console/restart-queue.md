@@ -47,28 +47,45 @@ Settings persist to `runtime/generated/restart-queue.json`:
 | `broadcastCheckpoints` | `[15, 10, 5, 1]` | Minutes-remaining marks at which a warning broadcast is sent. |
 | `broadcastDurationSec` | — | How long each broadcast banner is shown in game. |
 | `recoveryGraceMinutes` | `5` | Crash-recovery window for a just-elapsed countdown (see below). |
+| `messages` | see below | The two customizable broadcast templates. |
 
 Configuration is read per save, so changes take effect without a console
-release.
+release. Saving any one field (the toggle, the countdown/checkpoints, or the
+message templates) merges onto the currently persisted settings — it never
+resets the fields you didn't touch.
 
 ## The two broadcast message variants
 
 Warnings are delivered as in-game **Server Broadcast** banners. The variant
-depends on the scope of the restart:
+depends on the scope of the restart, and both are **customizable**: click
+**Edit Messages** next to Save Queue to open a two-tab editor (Battlegroup
+Restart / Map Restart) with a live preview, a character counter, and a
+**Reset to Default** button per tab.
 
-**Battlegroup restart**
+**Battlegroup restart** — default title `Battlegroup Restart`, default body:
 
-- Title: `Battlegroup Restart`
-- Body: `All servers will restart in {x} minutes. Please get to a safe place.`
+> All servers will restart in {minutes}. Please get to a safe place.
 
-**Single-map restart**
+**Single-map restart** — default title `Map Restart`, default body:
 
-- Title: `Map Restart`
-- Body: `{MapLabel} will restart in {x} minutes. Please move to another map or get to a safe place.`
+> {mapLabel} will restart in {minutes}. Please move to another map or get to a safe place.
 
 The map warning is a **battlegroup-wide banner that names the map**, not a
 per-map banner. The shipped game has no per-map titled banner, so the message is
 broadcast to everyone and identifies the affected map by name in its body.
+
+**Placeholders** — substituted when the broadcast is sent:
+
+| Placeholder | Renders as | Available in |
+|---|---|---|
+| `{minutes}` | The countdown remaining, pluralized (`15 minutes`, `1 minute`) | Both templates |
+| `{mapLabel}` | The map/Sietch display name (`All servers` for a battlegroup entry) | Both templates |
+
+An unrecognized `{token}` is left as-is rather than silently erased, so a typo
+is visible in the preview and in the live broadcast. Title is 1-80 characters,
+body is 1-500 characters (the same limits the game's broadcast command
+enforces) — an edit outside those bounds is rejected per-field, in the editor
+and again on save.
 
 ## Concurrency rules
 
@@ -134,7 +151,7 @@ Extending the queue to cover those paths is a possible future enhancement.
 | Method | Route | Description | Parameters |
 |--------|-------|-------------|------------|
 | GET | `/api/server/restart-queue` | Settings, defaults, active state and online count | None |
-| POST | `/api/server/restart-queue` | Save settings | `enabled`, `defaultCountdownMinutes`, `broadcastCheckpoints`, `broadcastDurationSec?`, `recoveryGraceMinutes?` |
+| POST | `/api/server/restart-queue` | Save settings (partial; merges onto the current settings) | `enabled?`, `defaultCountdownMinutes?`, `broadcastCheckpoints?`, `broadcastDurationSec?`, `recoveryGraceMinutes?`, `messages?: { battlegroup: {title, body}, map: {title, body} }` |
 | POST | `/api/server/restart-queue/cancel` | Cancel one active countdown | `id` |
 | POST | `/api/server/restart-queue/restart-now` | Execute one queued restart immediately | `id` |
 
