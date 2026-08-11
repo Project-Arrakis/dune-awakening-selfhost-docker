@@ -215,3 +215,9 @@ report, and others) — not individually itemized here since this file
 did not exist yet to capture them as they happened. See `git log` and
 the PRs referenced in `docs/security/`, `docs/discord-integration/`,
 and `docs/incidents/` for that history.
+
+## [2026-08-10] — Steam Link Enablement
+
+### Added
+- Steam account linking enabled — bot-side OAuth binding validates Discord user
+  against Steam connections before calling the link endpoint (#238)
