@@ -12,9 +12,12 @@ function errorText(error: unknown) {
   return error instanceof Error ? error.message : String(error);
 }
 
-function IdListEditor({ title, hint, ids, onChange }: { title: string; hint: string; ids: string[]; onChange: (next: string[]) => void }) {
+type BuiltInEntry = { present: boolean; label: string; onToggle: (present: boolean) => void };
+
+function IdListEditor({ title, hint, ids, onChange, builtIn }: { title: string; hint: string; ids: string[]; onChange: (next: string[]) => void; builtIn?: BuiltInEntry }) {
   const [draft, setDraft] = useState("");
   const valid = /^\d{1,19}$/.test(draft.trim());
+  const hasChips = ids.length > 0 || Boolean(builtIn?.present);
 
   function add() {
     const id = draft.trim();
@@ -29,16 +32,25 @@ function IdListEditor({ title, hint, ids, onChange }: { title: string; hint: str
         <strong>{title}</strong>
         <span className="muted">{hint}</span>
       </div>
-      {ids.length === 0
-        ? <p className="muted exchange-config-empty">None yet.</p>
-        : <ul className="exchange-config-chips">
+      {hasChips
+        ? <ul className="exchange-config-chips">
+          {builtIn?.present && (
+            <li className="exchange-config-chip exchange-config-chip-builtin">
+              <span>{builtIn.label}<em>built-in</em></span>
+              <button type="button" aria-label={`Remove ${builtIn.label}`} onClick={() => builtIn.onToggle(false)}><Trash2 size={13} /></button>
+            </li>
+          )}
           {ids.map((id) => (
             <li key={id} className="exchange-config-chip">
               <span>{id}</span>
               <button type="button" aria-label={`Remove ${id}`} onClick={() => onChange(ids.filter((value) => value !== id))}><Trash2 size={13} /></button>
             </li>
           ))}
-        </ul>}
+        </ul>
+        : <p className="muted exchange-config-empty">None yet.</p>}
+      {builtIn && !builtIn.present && (
+        <button type="button" className="exchange-config-restore" onClick={() => builtIn.onToggle(true)}><Plus size={13} /> Restore {builtIn.label}</button>
+      )}
       <div className="exchange-config-add">
         <input
           value={draft}
@@ -54,6 +66,7 @@ function IdListEditor({ title, hint, ids, onChange }: { title: string; hint: str
 }
 
 export function ExchangeConfigOverlay({ onClose, onSaved, onError }: ExchangeConfigOverlayProps) {
+  const [includeNpcBroker, setIncludeNpcBroker] = useState(true);
   const [botOwnerIds, setBotOwnerIds] = useState<string[]>([]);
   const [blacklistedOwnerIds, setBlacklistedOwnerIds] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
@@ -64,6 +77,7 @@ export function ExchangeConfigOverlay({ onClose, onSaved, onError }: ExchangeCon
     void exchangeApi.getConfig()
       .then((config) => {
         if (cancelled) return;
+        setIncludeNpcBroker(config.includeNpcBroker !== false);
         setBotOwnerIds(config.botOwnerIds || []);
         setBlacklistedOwnerIds(config.blacklistedOwnerIds || []);
         setLoading(false);
@@ -80,7 +94,7 @@ export function ExchangeConfigOverlay({ onClose, onSaved, onError }: ExchangeCon
     setSaving(true);
     onError("");
     try {
-      const saved = await exchangeApi.saveConfig({ botOwnerIds, blacklistedOwnerIds });
+      const saved = await exchangeApi.saveConfig({ includeNpcBroker, botOwnerIds, blacklistedOwnerIds });
       onSaved(saved);
       onClose();
     } catch (error) {
@@ -101,7 +115,13 @@ export function ExchangeConfigOverlay({ onClose, onSaved, onError }: ExchangeCon
         {loading
           ? <p className="muted">Loading…</p>
           : <>
-            <IdListEditor title="Bot user IDs" hint="Counted as bot listings, alongside the in-game broker." ids={botOwnerIds} onChange={setBotOwnerIds} />
+            <IdListEditor
+              title="Bot user IDs"
+              hint="Counted as bot listings. The in-game broker is built in; remove it to stop treating its orders as bot."
+              ids={botOwnerIds}
+              onChange={setBotOwnerIds}
+              builtIn={{ present: includeNpcBroker, label: "In-game broker (Revy)", onToggle: setIncludeNpcBroker }}
+            />
             <IdListEditor title="Blacklisted IDs" hint="Hidden from the market on every view." ids={blacklistedOwnerIds} onChange={setBlacklistedOwnerIds} />
           </>}
         <div className="confirm-modal-actions">

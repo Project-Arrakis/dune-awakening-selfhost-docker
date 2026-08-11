@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { ChevronDown, ChevronUp } from "lucide-react";
-import { exchangeApi, type ExchangeItem, type ExchangeListing } from "../../api/exchange";
+import { exchangeApi, type ExchangeItem, type ExchangeListing, type ExchangeOwner } from "../../api/exchange";
 import { DataTable, type SortDirection } from "../../components/common/DataTable";
 
 const COLUMNS = ["display_name", "quality_level", "category", "tier", "lowest_price", "total_stock", "listing_count"];
@@ -16,6 +16,7 @@ const COLUMN_LABELS: Record<string, string> = {
 
 type ExchangeTableProps = {
   rows: ExchangeItem[];
+  owner: ExchangeOwner;
   sortColumn?: string;
   sortDirection?: SortDirection;
   onSort?: (column: string) => void;
@@ -88,8 +89,11 @@ function ListingRows({ listings }: { listings: ExchangeListing[] }) {
   );
 }
 
-export function ExchangeTable({ rows, sortColumn, sortDirection, onSort, emptyMessage = "No market listings found." }: ExchangeTableProps) {
+export function ExchangeTable({ rows, owner, sortColumn, sortDirection, onSort, emptyMessage = "No market listings found." }: ExchangeTableProps) {
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
+  // Listings are cached per (owner, item) because the owner filter changes which
+  // sellers are returned; keying by item alone would show a stale set after the
+  // filter changes.
   const [listings, setListings] = useState<Record<string, ExchangeListing[]>>({});
   const [loadingKey, setLoadingKey] = useState<string | null>(null);
   const [errorKey, setErrorKey] = useState<string | null>(null);
@@ -105,12 +109,13 @@ export function ExchangeTable({ rows, sortColumn, sortDirection, onSort, emptyMe
       return;
     }
     setExpandedKey(key);
-    if (listings[key]) return;
+    const cacheKey = `${owner}:${key}`;
+    if (listings[cacheKey]) return;
     setLoadingKey(key);
     setErrorKey(null);
     try {
-      const result = await exchangeApi.listings(row.template_id, row.quality_level, "all");
-      setListings((current) => ({ ...current, [key]: result.rows || [] }));
+      const result = await exchangeApi.listings(row.template_id, row.quality_level, owner);
+      setListings((current) => ({ ...current, [cacheKey]: result.rows || [] }));
     } catch {
       setErrorKey(key);
     } finally {
@@ -157,7 +162,7 @@ export function ExchangeTable({ rows, sortColumn, sortDirection, onSort, emptyMe
               ? <p className="muted">Loading listings…</p>
               : errorKey === key
                 ? <p className="muted">Could not load listings. Click again to retry.</p>
-                : <ListingRows listings={listings[key] || []} />}
+                : <ListingRows listings={listings[`${owner}:${key}`] || []} />}
           </div>
         );
       }}

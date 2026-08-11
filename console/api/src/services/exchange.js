@@ -102,9 +102,25 @@ function num(value) {
 // bot     -> the in-game NPC broker OR any configured bot owner id
 // all     -> no owner predicate
 // Blacklisted owner ids are always excluded, on every owner value.
-function ownerPredicate(owner, botParam) {
-  if (owner === "player") return `not o.is_npc_order and o.owner_id <> all(${botParam})`;
-  if (owner === "bot") return `(o.is_npc_order or o.owner_id = any(${botParam}))`;
+//
+// Pushes the bot-id array onto `params` ONLY when the predicate references it.
+// The `all` case references no bot param, so passing one would leave an
+// unreferenced parameter that Postgres cannot type ("could not determine data
+// type of parameter $N").
+// The in-game NPC broker (Revy) is classified as a bot via is_npc_order rather
+// than a configured owner id. `includeNpcBroker` (default true) lets an admin
+// stop treating it as a bot; when false, its orders fall out of the bot bucket
+// (and thus appear under player/all like any other seller).
+function ownerClause(owner, botIds, includeNpcBroker, params) {
+  const npc = includeNpcBroker ? "o.is_npc_order" : "false";
+  if (owner === "player") {
+    params.push(botIds);
+    return `not (${npc} or o.owner_id = any($${params.length}::bigint[]))`;
+  }
+  if (owner === "bot") {
+    params.push(botIds);
+    return `(${npc} or o.owner_id = any($${params.length}::bigint[]))`;
+  }
   return "true";
 }
 
@@ -125,10 +141,9 @@ function enrichItem(row, metadata, repoRoot) {
   };
 }
 
-async function queryAggregatedItems(db, { owner, botIds, blacklist, repoRoot }) {
+async function queryAggregatedItems(db, { owner, botIds, blacklist, includeNpcBroker, repoRoot }) {
   const params = [];
-  params.push(botIds);
-  const botParam = `$${params.length}::bigint[]`;
+  const ownerSql = ownerClause(owner, botIds, includeNpcBroker, params);
   params.push(blacklist);
   const blockParam = `$${params.length}::bigint[]`;
   const result = await db.query(`
@@ -141,14 +156,14 @@ async function queryAggregatedItems(db, { owner, botIds, blacklist, repoRoot }) 
     from dune.dune_exchange_orders o
     join dune.dune_exchange_sell_orders s on s.order_id = o.id
     left join dune.items i on i.id = o.item_id
-    where ${ownerPredicate(owner, botParam)} and o.owner_id <> all(${blockParam})
+    where ${ownerSql} and o.owner_id <> all(${blockParam})
     group by o.template_id, o.quality_level`, params);
   const metadata = adminItemMetadata();
   return result.rows.map((row) => enrichItem(row, metadata, repoRoot));
 }
 
 async function aggregatedItems(db, view) {
-  const key = `${view.owner}|${view.botIds.join(",")}|${view.blacklist.join(",")}`;
+  const key = `${view.owner}|${view.includeNpcBroker ? 1 : 0}|${view.botIds.join(",")}|${view.blacklist.join(",")}`;
   const now = Date.now();
   const cached = aggregateCache.get(key);
   if (cached && now - cached.at < AGG_CACHE_TTL_MS) return cached.rows;
@@ -172,13 +187,14 @@ function sortItems(rows, column, direction) {
 export async function listExchangeItems(db, {
   q = "", page = 0, pageSize = 50,
   sortColumn = "display_name", sortDirection = "asc",
-  owner = "player", botOwnerIds = [], blacklist = [], repoRoot = ""
+  owner = "all", category = "", botOwnerIds = [], blacklist = [], includeNpcBroker = true, repoRoot = ""
 } = {}) {
-  if (!(await exchangeSupported(db))) return { ...unsupported(), totalCount: 0, totalItems: 0 };
+  if (!(await exchangeSupported(db))) return { ...unsupported(), totalCount: 0, totalItems: 0, categories: [] };
 
   const safePageSize = intParam(pageSize, "pageSize", 1, 200);
   const safePage = intParam(page, "page", 0);
-  const safeOwner = OWNER_FILTERS.has(owner) ? owner : "player";
+  const safeOwner = OWNER_FILTERS.has(owner) ? owner : "all";
+  const safeCategory = String(category || "").trim().slice(0, 120);
   const safeSortColumn = Object.hasOwn(EXCHANGE_SORT_COLUMNS, sortColumn) ? sortColumn : "display_name";
   const safeSortDirection = String(sortDirection).toLowerCase() === "desc" ? "desc" : "asc";
 
@@ -186,15 +202,23 @@ export async function listExchangeItems(db, {
     owner: safeOwner,
     botIds: coerceIdList(botOwnerIds),
     blacklist: coerceIdList(blacklist),
+    includeNpcBroker: includeNpcBroker !== false,
     repoRoot
   });
 
+  // Category options are the distinct categories in the whole owner-scoped set
+  // (before the category/search filters) so the dropdown stays stable while you
+  // filter within it.
+  const categories = [...new Set(all.map((row) => row.category).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+
+  let filtered = all;
+  if (safeCategory && safeCategory !== "all") filtered = filtered.filter((row) => row.category === safeCategory);
   const term = String(q || "").trim().toLowerCase();
-  const filtered = term
-    ? all.filter((row) => row.display_name.toLowerCase().includes(term)
+  if (term) {
+    filtered = filtered.filter((row) => row.display_name.toLowerCase().includes(term)
       || row.category.toLowerCase().includes(term)
-      || row.template_id.toLowerCase().includes(term))
-    : all;
+      || row.template_id.toLowerCase().includes(term));
+  }
 
   const sorted = sortItems(filtered, safeSortColumn, safeSortDirection);
   const offset = safePage * safePageSize;
@@ -202,12 +226,13 @@ export async function listExchangeItems(db, {
     capabilities: { exchange: true },
     rows: sorted.slice(offset, offset + safePageSize),
     totalCount: filtered.length,
-    totalItems: all.length
+    totalItems: all.length,
+    categories
   };
 }
 
 export async function listExchangeListings(db, {
-  templateId = "", qualityLevel = "", owner = "all", botOwnerIds = [], blacklist = []
+  templateId = "", qualityLevel = "", owner = "all", botOwnerIds = [], blacklist = [], includeNpcBroker = true
 } = {}) {
   if (!(await exchangeSupported(db))) return unsupported();
 
@@ -220,8 +245,7 @@ export async function listExchangeListings(db, {
   const blacklistIds = coerceIdList(blacklist);
 
   const params = [tid];
-  params.push(botIds);
-  const botParam = `$${params.length}::bigint[]`;
+  const ownerSql = ownerClause(safeOwner, botIds, includeNpcBroker !== false, params);
   params.push(blacklistIds);
   const blockParam = `$${params.length}::bigint[]`;
   let qualitySql = "";
@@ -244,12 +268,12 @@ export async function listExchangeListings(db, {
     left join dune.items i on i.id = o.item_id
     left join dune.actors a on a.id = o.owner_id
     left join dune.player_state ps on ps.account_id = a.owner_account_id
-    where o.template_id = $1 and ${ownerPredicate(safeOwner, botParam)} and o.owner_id <> all(${blockParam})${qualitySql}
+    where o.template_id = $1 and ${ownerSql} and o.owner_id <> all(${blockParam})${qualitySql}
     order by o.item_price asc, o.id asc`, params);
 
   const botSet = new Set(botIds);
   const rows = result.rows.map((row) => {
-    const isBot = Boolean(row.is_npc_order) || botSet.has(String(row.owner_id));
+    const isBot = (includeNpcBroker !== false && Boolean(row.is_npc_order)) || botSet.has(String(row.owner_id));
     return {
       order_id: row.order_id,
       template_id: String(row.template_id || ""),
@@ -263,13 +287,14 @@ export async function listExchangeListings(db, {
   return { capabilities: { exchange: true }, rows };
 }
 
-export async function exchangeStats(db, { botOwnerIds = [], blacklist = [] } = {}) {
+export async function exchangeStats(db, { botOwnerIds = [], blacklist = [], includeNpcBroker = true } = {}) {
   if (!(await exchangeSupported(db))) return unsupported();
   const params = [coerceIdList(botOwnerIds), coerceIdList(blacklist)];
+  const npc = includeNpcBroker !== false ? "o.is_npc_order" : "false";
   const result = await db.query(`
     select count(*) as total_listings,
-           count(*) filter (where o.is_npc_order or o.owner_id = any($1::bigint[])) as bot_listings,
-           count(*) filter (where not o.is_npc_order and o.owner_id <> all($1::bigint[])) as player_listings,
+           count(*) filter (where ${npc} or o.owner_id = any($1::bigint[])) as bot_listings,
+           count(*) filter (where not (${npc} or o.owner_id = any($1::bigint[]))) as player_listings,
            count(distinct o.template_id) as unique_items
     from dune.dune_exchange_orders o
     join dune.dune_exchange_sell_orders s on s.order_id = o.id
@@ -286,21 +311,23 @@ export async function exchangeStats(db, { botOwnerIds = [], blacklist = [] } = {
 
 export function readExchangeConfig(repoRoot) {
   const file = configFile(repoRoot);
-  if (!existsSync(file)) return { botOwnerIds: [], blacklistedOwnerIds: [] };
+  if (!existsSync(file)) return { includeNpcBroker: true, botOwnerIds: [], blacklistedOwnerIds: [] };
   try {
     const raw = JSON.parse(readFileSync(file, "utf8"));
     return {
+      includeNpcBroker: raw?.includeNpcBroker !== false,
       botOwnerIds: coerceIdList(raw?.botOwnerIds),
       blacklistedOwnerIds: coerceIdList(raw?.blacklistedOwnerIds)
     };
   } catch (error) {
     console.warn(`Ignoring unreadable exchange config: ${redact(error?.message || error)}`);
-    return { botOwnerIds: [], blacklistedOwnerIds: [] };
+    return { includeNpcBroker: true, botOwnerIds: [], blacklistedOwnerIds: [] };
   }
 }
 
 export function saveExchangeConfig(repoRoot, next) {
   const config = {
+    includeNpcBroker: next?.includeNpcBroker !== false,
     botOwnerIds: coerceIdList(next?.botOwnerIds, { throwOnInvalid: true }),
     blacklistedOwnerIds: coerceIdList(next?.blacklistedOwnerIds, { throwOnInvalid: true })
   };
@@ -313,6 +340,6 @@ export const exchangeInternals = Object.freeze({
   EXCHANGE_SORT_COLUMNS,
   parseTier,
   coerceIdList,
-  ownerPredicate,
+  ownerClause,
   clearCache: () => aggregateCache.clear()
 });

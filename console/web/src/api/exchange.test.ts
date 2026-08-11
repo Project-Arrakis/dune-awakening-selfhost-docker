@@ -10,7 +10,7 @@ beforeEach(() => {
 
 describe("exchangeApi", () => {
   it("builds the items query string from the standard params + owner", () => {
-    exchangeApi.items({ q: "belt", page: 2, pageSize: 100, sortColumn: "lowest_price", sortDirection: "desc", owner: "bot" });
+    exchangeApi.items({ q: "belt", page: 2, pageSize: 100, sortColumn: "lowest_price", sortDirection: "desc", owner: "bot", category: "weapons" });
     const url = vi.mocked(api).mock.calls[0][0];
     expect(url).toContain("/api/exchange/items?");
     expect(url).toContain("q=belt");
@@ -19,6 +19,7 @@ describe("exchangeApi", () => {
     expect(url).toContain("sortColumn=lowest_price");
     expect(url).toContain("sortDirection=desc");
     expect(url).toContain("owner=bot");
+    expect(url).toContain("category=weapons");
   });
 
   it("omits empty params from the items query", () => {
@@ -35,7 +36,7 @@ describe("exchangeApi", () => {
   });
 
   it("saves config via POST", () => {
-    exchangeApi.saveConfig({ botOwnerIds: ["75"], blacklistedOwnerIds: [] });
-    expect(vi.mocked(post)).toHaveBeenCalledWith("/api/exchange/config", { botOwnerIds: ["75"], blacklistedOwnerIds: [] });
+    exchangeApi.saveConfig({ includeNpcBroker: true, botOwnerIds: ["75"], blacklistedOwnerIds: [] });
+    expect(vi.mocked(post)).toHaveBeenCalledWith("/api/exchange/config", { includeNpcBroker: true, botOwnerIds: ["75"], blacklistedOwnerIds: [] });
   });
 });

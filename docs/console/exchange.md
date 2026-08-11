@@ -57,8 +57,9 @@ effective rule is:
 - **player** = not a bot (not `is_npc_order` and not in `botOwnerIds`)
 - **all** = no owner filter
 
-Because most servers are dominated by NPC/broker stock, the board defaults to
-**Player listings** so real player activity is not buried.
+The board defaults to **All listings**; switch to **Player listings** to focus on
+real player activity (most servers are dominated by NPC/broker stock) or **Bot
+listings** to see only bot/broker stock.
 
 ## Filter configuration (gear icon)
 
@@ -66,7 +67,10 @@ The gear beside the owner selector opens a small overlay with two editable lists
 
 - **Bot user ids** — owner ids to treat as bot listings, unioned with `is_npc_order`
   as described above. Use this to capture bots that post through player accounts, or
-  bots run by other tools.
+  bots run by other tools. The in-game broker (Revy) appears here as a built-in,
+  removable entry: it is classified as a bot via `is_npc_order` rather than an id, and
+  removing it (persisted as `includeNpcBroker: false`) stops treating its orders as
+  bot — they then fall under player/all like any other seller. Restore it any time.
 - **Blacklisted ids** — owner ids to hide from the market entirely. A blacklisted
   seller is excluded from **every** view and every owner filter (including "All").
 

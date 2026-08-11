@@ -19,20 +19,43 @@ function listSection(title: string) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(exchangeApi.getConfig).mockResolvedValue({ includeNpcBroker: true, botOwnerIds: [], blacklistedOwnerIds: [] });
   vi.mocked(exchangeApi.saveConfig).mockImplementation(async (config) => config);
 });
 
 describe("ExchangeConfigOverlay", () => {
   it("loads and shows existing bot ids as chips", async () => {
-    vi.mocked(exchangeApi.getConfig).mockResolvedValue({ botOwnerIds: ["75"], blacklistedOwnerIds: [] });
+    vi.mocked(exchangeApi.getConfig).mockResolvedValue({ includeNpcBroker: true, botOwnerIds: ["75"], blacklistedOwnerIds: [] });
     renderOverlay();
 
     const botList = await waitFor(() => listSection("Bot user IDs"));
     expect(await within(botList).findByText("75")).toBeInTheDocument();
   });
 
+  it("shows the built-in in-game broker as a removable chip by default", async () => {
+    renderOverlay();
+
+    const botList = await waitFor(() => listSection("Bot user IDs"));
+    expect(within(botList).getByText("In-game broker (Revy)")).toBeInTheDocument();
+    expect(within(botList).getByLabelText("Remove In-game broker (Revy)")).toBeInTheDocument();
+  });
+
+  it("removes the built-in broker and saves includeNpcBroker=false, then can restore it", async () => {
+    const props = renderOverlay();
+
+    const botList = await waitFor(() => listSection("Bot user IDs"));
+    fireEvent.click(within(botList).getByLabelText("Remove In-game broker (Revy)"));
+    // A restore affordance appears once it is removed.
+    const restore = within(botList).getByRole("button", { name: /Restore In-game broker/ });
+    expect(restore).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("Save"));
+    await waitFor(() => expect(vi.mocked(exchangeApi.saveConfig)).toHaveBeenCalledWith({ includeNpcBroker: false, botOwnerIds: [], blacklistedOwnerIds: [] }));
+    expect(props.onSaved).toHaveBeenCalled();
+  });
+
   it("adds a blacklist id and saves the merged config", async () => {
-    vi.mocked(exchangeApi.getConfig).mockResolvedValue({ botOwnerIds: ["75"], blacklistedOwnerIds: [] });
+    vi.mocked(exchangeApi.getConfig).mockResolvedValue({ includeNpcBroker: true, botOwnerIds: ["75"], blacklistedOwnerIds: [] });
     const props = renderOverlay();
 
     await screen.findByText("75");
@@ -41,18 +64,17 @@ describe("ExchangeConfigOverlay", () => {
     fireEvent.click(within(blacklist).getByRole("button", { name: /Add/ }));
     fireEvent.click(screen.getByText("Save"));
 
-    await waitFor(() => expect(vi.mocked(exchangeApi.saveConfig)).toHaveBeenCalledWith({ botOwnerIds: ["75"], blacklistedOwnerIds: ["9929"] }));
+    await waitFor(() => expect(vi.mocked(exchangeApi.saveConfig)).toHaveBeenCalledWith({ includeNpcBroker: true, botOwnerIds: ["75"], blacklistedOwnerIds: ["9929"] }));
     await waitFor(() => expect(props.onSaved).toHaveBeenCalled());
     expect(props.onClose).toHaveBeenCalled();
   });
 
   it("strips non-numeric input and disables Add for empty values", async () => {
-    vi.mocked(exchangeApi.getConfig).mockResolvedValue({ botOwnerIds: [], blacklistedOwnerIds: [] });
     renderOverlay();
 
     const botList = await waitFor(() => listSection("Bot user IDs"));
     const input = within(botList).getByPlaceholderText("Add owner ID") as HTMLInputElement;
-    const addButton = within(botList).getByRole("button", { name: /Add/ });
+    const addButton = within(botList).getByRole("button", { name: /^Add/ });
     expect(addButton).toBeDisabled();
     // Letters are stripped by the input handler, keeping the field numeric-only.
     fireEvent.change(input, { target: { value: "1a2b3" } });
@@ -60,7 +82,7 @@ describe("ExchangeConfigOverlay", () => {
   });
 
   it("removes a bot id chip", async () => {
-    vi.mocked(exchangeApi.getConfig).mockResolvedValue({ botOwnerIds: ["75"], blacklistedOwnerIds: [] });
+    vi.mocked(exchangeApi.getConfig).mockResolvedValue({ includeNpcBroker: false, botOwnerIds: ["75"], blacklistedOwnerIds: [] });
     renderOverlay();
 
     await screen.findByText("75");

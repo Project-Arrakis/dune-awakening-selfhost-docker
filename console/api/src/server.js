@@ -758,9 +758,11 @@ async function handleApi(req, res) {
       pageSize: url.searchParams.get("pageSize") || 50,
       sortColumn: url.searchParams.get("sortColumn") || "display_name",
       sortDirection: url.searchParams.get("sortDirection") || "asc",
-      owner: url.searchParams.get("owner") || "player",
+      owner: url.searchParams.get("owner") || "all",
+      category: url.searchParams.get("category") || "",
       botOwnerIds: exchangeConfig.botOwnerIds,
       blacklist: exchangeConfig.blacklistedOwnerIds,
+      includeNpcBroker: exchangeConfig.includeNpcBroker,
       repoRoot: config.repoRoot
     });
   });
@@ -771,12 +773,13 @@ async function handleApi(req, res) {
       qualityLevel: url.searchParams.get("quality") || "",
       owner: url.searchParams.get("owner") || "all",
       botOwnerIds: exchangeConfig.botOwnerIds,
-      blacklist: exchangeConfig.blacklistedOwnerIds
+      blacklist: exchangeConfig.blacklistedOwnerIds,
+      includeNpcBroker: exchangeConfig.includeNpcBroker
     });
   });
   if (path === "/api/exchange/stats") return dbJson(res, () => {
     const exchangeConfig = readExchangeConfig(config.repoRoot);
-    return exchangeStats(db, { botOwnerIds: exchangeConfig.botOwnerIds, blacklist: exchangeConfig.blacklistedOwnerIds });
+    return exchangeStats(db, { botOwnerIds: exchangeConfig.botOwnerIds, blacklist: exchangeConfig.blacklistedOwnerIds, includeNpcBroker: exchangeConfig.includeNpcBroker });
   });
   if (path === "/api/exchange/config" && req.method === "GET") return json(res, 200, readExchangeConfig(config.repoRoot));
   if (path === "/api/exchange/config" && req.method === "POST") return exchangeConfigSaveRoute(req, res);

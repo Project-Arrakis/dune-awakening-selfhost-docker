@@ -344,11 +344,11 @@ read.
 
 | Method | Route | Description | Parameters |
 |--------|-------|-------------|------------|
-| GET | `/api/exchange/items` | List active CHOAM exchange sell orders aggregated by item + grade (paginated): lowest price, total stock, listing count | `q?`, `page?`, `pageSize?`, `sortColumn?`, `sortDirection?`, `owner?` |
+| GET | `/api/exchange/items` | List active CHOAM exchange sell orders aggregated by item + grade (paginated): lowest price, total stock, listing count | `q?`, `page?`, `pageSize?`, `sortColumn?`, `sortDirection?`, `owner?`, `category?` |
 | GET | `/api/exchange/listings` | List the individual sell orders for one item, each with a resolved seller | `templateId`, `quality?`, `owner?` |
 | GET | `/api/exchange/stats` | Aggregate totals (total, bot, player listings; unique items) | None |
 | GET | `/api/exchange/config` | Read the console-local bot/blacklist filter config | None |
-| POST | `/api/exchange/config` | Save the bot/blacklist filter config (audited, rate-limited) | body: `botOwnerIds[]`, `blacklistedOwnerIds[]` |
+| POST | `/api/exchange/config` | Save the bot/blacklist filter config (audited, rate-limited) | body: `includeNpcBroker`, `botOwnerIds[]`, `blacklistedOwnerIds[]` |
 
 Read-only over the game's own exchange tables (the game writes them; the console
 never mutates them). `GET /api/exchange/items` reports `capabilities.exchange`; it
@@ -356,12 +356,17 @@ is false (with a `reason`) when the schema lacks the required tables
 (`dune_exchange_orders`, `dune_exchange_sell_orders`, `items`, `actors`,
 `player_state`).
 
-The `owner` filter selects `player` (default for `/items`), `bot`, or `all`, where
-**bot** = `is_npc_order` OR a configured `botOwnerIds` entry, **player** = the
-complement, and **all** = no owner predicate. Blacklisted owner ids are excluded on
-every `owner` value. Sortable `sortColumn` values: `display_name`, `template_id`,
+The `owner` filter selects `all` (default for `/items`), `player`, or `bot`, where
+**bot** = the in-game NPC broker (unless excluded via `includeNpcBroker: false`) OR a
+configured `botOwnerIds` entry, **player** = the complement, and **all** = no owner
+predicate. Blacklisted owner ids are excluded on every `owner` value. `includeNpcBroker`
+(default true) is the built-in broker toggle: set it false to stop classifying the
+in-game broker's orders as bot. Sortable `sortColumn` values: `display_name`, `template_id`,
 `category`, `quality_level`, `tier`, `lowest_price`, `total_stock`, `listing_count`;
-`q` matches `display_name`, `category`, and `template_id`. The response mirrors the
+`q` matches `display_name`, `category`, and `template_id`. `category` filters to an
+exact catalog category; the response also returns `categories` — the distinct
+categories present in the current owner scope (computed before the category/search
+filters, so the list is stable for populating a dropdown). The response mirrors the
 paginated-list convention (`rows`, `totalCount` filtered, `totalItems` unfiltered).
 Because `display_name`/`category`/`tier` come from the local `admin-items.json`
 catalog rather than the database, search and sort run in the service after

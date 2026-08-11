@@ -19,6 +19,7 @@ export type ExchangeItemsResponse = {
   rows: ExchangeItem[];
   totalCount: number;
   totalItems: number;
+  categories: string[];
   capabilities: { exchange?: boolean } & Record<string, unknown>;
   reason?: string;
 };
@@ -40,12 +41,13 @@ export type ExchangeListingsResponse = {
 };
 
 export type ExchangeConfig = {
+  includeNpcBroker: boolean;
   botOwnerIds: string[];
   blacklistedOwnerIds: string[];
 };
 
 export const exchangeApi = {
-  items: (params: { q?: string; page?: number; pageSize?: number; sortColumn?: string; sortDirection?: "asc" | "desc"; owner?: ExchangeOwner } = {}) => {
+  items: (params: { q?: string; page?: number; pageSize?: number; sortColumn?: string; sortDirection?: "asc" | "desc"; owner?: ExchangeOwner; category?: string } = {}) => {
     const search = new URLSearchParams();
     if (params.q) search.set("q", params.q);
     if (params.page) search.set("page", String(params.page));
@@ -53,6 +55,7 @@ export const exchangeApi = {
     if (params.sortColumn) search.set("sortColumn", params.sortColumn);
     if (params.sortDirection) search.set("sortDirection", params.sortDirection);
     if (params.owner) search.set("owner", params.owner);
+    if (params.category) search.set("category", params.category);
     const qs = search.toString();
     return api<ExchangeItemsResponse>(`/api/exchange/items${qs ? `?${qs}` : ""}`);
   },

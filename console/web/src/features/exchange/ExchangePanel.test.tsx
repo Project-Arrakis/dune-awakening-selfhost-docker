@@ -1,7 +1,7 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { exchangeApi, type ExchangeItemsResponse } from "../../api/exchange";
-import { ExchangePanel } from "./ExchangePanel";
+import { ExchangePanel, _resetExchangeCacheForTests } from "./ExchangePanel";
 
 vi.mock("../../api/exchange", () => ({
   exchangeApi: {
@@ -29,6 +29,7 @@ function itemsResponse(overrides: Partial<ExchangeItemsResponse> = {}): Exchange
     capabilities: { exchange: true },
     totalCount: 1,
     totalItems: 1,
+    categories: ["utility", "weapons"],
     rows: [
       {
         template_id: "PartialStabilizationBelt",
@@ -49,7 +50,8 @@ function itemsResponse(overrides: Partial<ExchangeItemsResponse> = {}): Exchange
 
 beforeEach(() => {
   vi.clearAllMocks();
-  vi.mocked(exchangeApi.getConfig).mockResolvedValue({ botOwnerIds: [], blacklistedOwnerIds: [] });
+  _resetExchangeCacheForTests();
+  vi.mocked(exchangeApi.getConfig).mockResolvedValue({ includeNpcBroker: true, botOwnerIds: [], blacklistedOwnerIds: [] });
   vi.mocked(exchangeApi.listings).mockResolvedValue({ capabilities: { exchange: true }, rows: [] });
 });
 
@@ -62,12 +64,12 @@ describe("ExchangePanel", () => {
     expect(screen.getByText("45,084")).toBeInTheDocument();
   });
 
-  it("defaults the owner filter to player listings", async () => {
+  it("defaults the owner filter to all listings", async () => {
     vi.mocked(exchangeApi.items).mockResolvedValue(itemsResponse());
     renderPanel();
 
     await screen.findByText("Partial Stabilization Belt");
-    expect(vi.mocked(exchangeApi.items)).toHaveBeenCalledWith(expect.objectContaining({ owner: "player" }));
+    expect(vi.mocked(exchangeApi.items)).toHaveBeenCalledWith(expect.objectContaining({ owner: "all" }));
   });
 
   it("refetches when the owner filter changes", async () => {
@@ -78,6 +80,30 @@ describe("ExchangePanel", () => {
     fireEvent.change(screen.getByRole("combobox", { name: /Show/ }), { target: { value: "bot" } });
 
     await waitFor(() => expect(vi.mocked(exchangeApi.items)).toHaveBeenCalledWith(expect.objectContaining({ owner: "bot" })));
+  });
+
+  it("populates the category options and refetches on category change", async () => {
+    vi.mocked(exchangeApi.items).mockResolvedValue(itemsResponse());
+    renderPanel();
+
+    await screen.findByText("Partial Stabilization Belt");
+    const categorySelect = screen.getByRole("combobox", { name: /Category/ });
+    expect(within(categorySelect).getByRole("option", { name: "weapons" })).toBeInTheDocument();
+    fireEvent.change(categorySelect, { target: { value: "utility" } });
+
+    await waitFor(() => expect(vi.mocked(exchangeApi.items)).toHaveBeenCalledWith(expect.objectContaining({ category: "utility" })));
+  });
+
+  it("clears the category when the owner filter changes", async () => {
+    vi.mocked(exchangeApi.items).mockResolvedValue(itemsResponse());
+    renderPanel();
+
+    await screen.findByText("Partial Stabilization Belt");
+    fireEvent.change(screen.getByRole("combobox", { name: /Category/ }), { target: { value: "utility" } });
+    await waitFor(() => expect(vi.mocked(exchangeApi.items)).toHaveBeenCalledWith(expect.objectContaining({ category: "utility" })));
+
+    fireEvent.change(screen.getByRole("combobox", { name: /Show/ }), { target: { value: "bot" } });
+    await waitFor(() => expect(vi.mocked(exchangeApi.items)).toHaveBeenCalledWith(expect.objectContaining({ owner: "bot", category: "" })));
   });
 
   it("submits the search term", async () => {
@@ -134,6 +160,7 @@ describe("ExchangePanel", () => {
     fireEvent.click(await screen.findByLabelText("Show listings for Partial Stabilization Belt"));
 
     expect(await screen.findByText("Halfmoondee")).toBeInTheDocument();
+    // Drill-down respects the current owner filter (default: all).
     expect(vi.mocked(exchangeApi.listings)).toHaveBeenCalledWith("PartialStabilizationBelt", 0, "all");
   });
 
@@ -142,6 +169,7 @@ describe("ExchangePanel", () => {
       capabilities: { exchange: false },
       totalCount: 0,
       totalItems: 0,
+      categories: [],
       rows: [],
       reason: "Unsupported by detected schema. Missing required table(s): dune.dune_exchange_orders"
     });
