@@ -35,7 +35,7 @@ import { handleDiscordAdapterRoute, isDiscordAdapterRoute } from "./integrations
 import { discordAdapterEnabled } from "./integrations/discord/adapter.js";
 import { initializeDiscordAdapterSchema } from "./integrations/discord/schema.js";
 import { actionForRoute, ROUTE_ACTIONS } from "./actions.js";
-import { evaluate, loadPolicies, getAllPolicies, setPolicies, resolveAllowedActions, matchAction } from "./policy.js";
+import { evaluate, loadPolicies, getAllPolicies, setPolicies } from "./policy.js";
 import { liveItemGrantOk, liveItemGrantWarning } from "./grantResults.js";
 import { primeMessageOfTheDayOnlineState, readMessageOfTheDay, recordMessageOfTheDayScanFailure, restoreMessageOfTheDay, runMessageOfTheDayScan, saveMessageOfTheDay } from "./services/messageOfTheDay.js";
 import { primePlayerAnnouncementOnlineState, readPlayerAnnouncements, restorePlayerAnnouncements, runPlayerAnnouncementScan, savePlayerAnnouncements } from "./services/playerAnnouncements.js";
@@ -57,6 +57,7 @@ import { flushBaseRefillQueues } from "./services/baseRefillFlush.js";
 import { banPlayer, bannedFlsIds, createPlayerBanEnforcer, playerBanFor, unbanPlayer } from "./services/playerBans.js";
 
 const config = loadConfig();
+loadPolicies(config.repoRoot);
 const auth = createAuth(config);
 const loginRateLimiter = createLoginRateLimiter();
 const mutationRateLimiter = createMutationRateLimiter();
@@ -153,7 +154,6 @@ createServer(async (req, res) => {
     console.log("Initial admin password is stored in runtime/secrets/admin-web-password.txt");
   }
   scheduleBootAutoStart();
-  loadPolicies([]);
   publicDirectory.start();
   if (discordAdapterEnabled(config)) {
     initializeDiscordAdapterSchema(db).catch((error) => {
@@ -246,7 +246,6 @@ function runBackgroundTick(label, fn) {
 }
 
 function scheduleBootAutoStart() {
-  loadPolicies([]);
   if (config.mockMode || process.env.ADMIN_AUTO_START_STACK_ON_BOOT === "0") return;
   setTimeout(() => {
     void maybeAutoStartStackOnBoot();
@@ -502,7 +501,23 @@ async function handleApi(req, res) {
   if (path === "/api/database/password" && req.method === "POST") return databasePasswordRoute(req, res);
   if (path === "/api/settings/admin-password" && req.method === "POST") return adminPasswordRoute(req, res);
   if (path === "/api/settings/web-port" && req.method === "POST") return webPortRoute(req, res);
-  if (path === "/api/settings/iam/policies" && req.method === "GET") {    return json(res, 200, { policies: getAllPolicies() });  }  if (path === "/api/settings/iam/policy" && req.method === "PUT") {    const body = await readJson(req);    const result = setPolicies(body);    if (!result.ok) return json(res, 400, result);    audit(config, req, "iam.policy-set", { policyId: result.id });    return json(res, 200, result);  }  if (path === "/api/settings/iam/policy/test" && req.method === "POST") {    const body = await readJson(req);    const testAction = body?.action || "";    const testTier = body?.tier || "";    if (!testAction || !testTier) {      return json(res, 400, { error: "Both action and tier are required." });    }    const allowed = evaluate({ tier: testTier }, testAction);    return json(res, 200, { action: testAction, tier: testTier, allowed });  }
+  if (path === "/api/settings/iam/policies" && req.method === "GET") {
+    return json(res, 200, { policies: getAllPolicies() });
+  }
+  if (path === "/api/settings/iam/policy" && req.method === "PUT") {
+    const body = await readJson(req);
+    const result = setPolicies(body, config.repoRoot);
+    if (!result.ok) return json(res, 400, result);
+    audit(config, req, "iam.policy-set", { tiers: Object.keys(body) });
+    return json(res, 200, result);
+  }
+  if (path === "/api/settings/iam/policy/test" && req.method === "POST") {
+    const body = await readJson(req);
+    const testAction = String(body?.action || "").trim();
+    const testTier = String(body?.tier || "").trim();
+    if (!testAction || !testTier) return json(res, 400, { error: "Both action and tier are required." });
+    return json(res, 200, { action: testAction, tier: testTier, allowed: evaluate({ tier: testTier }, testAction) });
+  }
 
   if (path === "/api/players") return dbJson(res, () => duneDb.listPlayers(db, {
     q: url.searchParams.get("q") || "",

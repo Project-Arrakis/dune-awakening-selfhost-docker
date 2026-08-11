@@ -48,6 +48,7 @@ export const NAMESPACES = {
   CAREPACKAGE: "carepackage",
   STORAGE:     "storage",
   BLUEPRINTS:  "blueprints",
+  VEHICLES:    "vehicles",
 };
 
 // ---- Actions: route → action mapping ----
@@ -143,6 +144,9 @@ export const ROUTE_ACTIONS = {
   "GET /api/players":                          "players:read",
   "GET /api/players/online":                   "players:read",
   "GET /api/players/search":                   "players:read",
+
+  // --- Vehicles ---
+  "GET /api/vehicles":                         "vehicles:read",
 
   // --- Players (mutations) ---
   "POST /api/players/kick-all-online":         "players:kick-all",
