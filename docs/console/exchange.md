@@ -81,9 +81,43 @@ is a mutation: it is rate-limited and written to the audit log (only the id coun
 are recorded, no personal data). Blacklisting is a moderation action — it changes
 what the market shows — which is why every change is audited.
 
+## Market Bot
+
+The Bot button beside the filter gear opens the console-managed **Market Bot**
+(ported from [jeffstokes72/eda-exchange-bot](https://github.com/jeffstokes72/eda-exchange-bot),
+which itself ports Easy Dune Admin's exchange seeder — the same engine the EDA
+Exchange Bot addon drives through the scheduler bridge, now first-class):
+
+- **Market reseed** stocks the CHOAM exchange with NPC sell listings from a bundled
+  seed plan (`runtime/data/market-seed-plan.json`; an installed EDA Exchange Bot
+  addon's plan copy wins when present) at a configurable price multiplier. Every run
+  is **backup → clear the bot's own listings on that exchange → seed**; player
+  listings are never touched.
+- **Buyback sweeps** buy player sell listings whose per-unit ask is at or below the
+  buyback percentage of the chosen **price basis** — seeded NPC price at that
+  listing's grade (default), or the live player-market average / lowest ask with
+  seeded fallback. Whole listed stacks are bought in one pass, sellers are paid
+  through never-expiring "Take Solari" payment entries, and concurrent sweeps are
+  safe at the database level (`FOR UPDATE ... SKIP LOCKED`). Every run probes
+  eligibility with a read-only query first and only takes a backup + sweeps when
+  something qualifies.
+- **Schedules** run unattended inside the console API process (no browser page needs
+  to stay open) and survive restarts. Schedules saved from this UI are
+  `source: "console"`: they are authorized by RBAC at save time and do not require
+  the addon to be installed. Schedules saved by the EDA Exchange Bot addon through
+  the bridge stay `source: "addon"` and keep re-verifying the addon's approved
+  permissions on every run. Both kinds share one running lock, so console and addon
+  jobs can never write the exchange concurrently.
+
+Reads and the eligibility probe require the `exchange:market` action; schedule saves
+and run-now require `exchange:market-write`. Neither is granted to the viewer tiers
+that receive `exchange:read`, so by default only the admin tier (`exchange:*`) sees
+the Market Bot button at all. All mutations are rate-limited and audited.
+
 ## Scope
 
-Strictly read-only over game data. There is **no** buy/sell/cancel/relist action and
-**no** market bot here — the console only *classifies and hides* listings, it never
-places or automates orders. The sole persistence is the console-local filter config
-above.
+The board itself is strictly read-only over game data — it only *classifies and
+hides* listings. The Market Bot above is the deliberate exception: its seed and
+buyback runs write the game's exchange tables, always behind an explicit RBAC
+action, a confirm dialog (for manual runs), an audit entry, and a pre-write
+database backup.
