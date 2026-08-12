@@ -2995,11 +2995,11 @@ test("export base returns instances and placeables in blueprint-importable relat
   assert.equal(placeable.placeable_id, 2582);
   assert.equal(placeable.building_type, "Hark_Deco_Plate_02_Placeable");
   assert.equal(placeable.rx, 0);
-  assert.equal(placeable.ry, 0);
+  assert.equal(placeable.rz, 0);
   assert.ok(Math.abs(placeable.x - (placeablePos.x - anchor.x)) < 1e-6);
   const expectedPlaceableRotation = 2 * Math.atan2(placeablePos.qz, placeablePos.qw) * (180 / Math.PI);
-  assert.equal(placeable.rz, expectedPlaceableRotation);
-  assert.ok(Math.abs(placeable.rz - 20) < 1);
+  assert.equal(placeable.ry, expectedPlaceableRotation);
+  assert.ok(Math.abs(placeable.ry - 20) < 1);
 });
 
 test("export base combines claim partitions, deduplicates shared placeables, and remaps colliding instance IDs", async () => {

@@ -3895,8 +3895,9 @@ export async function exportBaseAsBlueprint(db, id) {
   // yaw-degree rotation for instances, not the live tables' absolute world coords + quaternion.
   // The anchor point is arbitrary (the base's own actor position) but consistent, so the exported
   // pieces stay correctly positioned relative to each other when re-placed anywhere in-game.
-  // Rotation is captured yaw-only (Z axis) since every sampled live piece has qx=qy=0; pitch/roll
-  // on tilted geometry, if any exists, is lost.
+  // Rotation is captured yaw-only since every sampled live piece has qx=qy=0; pitch/roll on
+  // tilted geometry, if any exists, is lost. Native Solido placeable transforms store that yaw
+  // in their second rotation slot (ry), despite the live actor quaternion rotating around Z.
   const pieceRows = await db.query(`
     select bi.building_id, bi.instance_id, bi.building_type, bi.transform
     from dune.building_instances bi
@@ -3946,8 +3947,8 @@ export async function exportBaseAsBlueprint(db, id) {
     y: Number(row.y) - anchor.y,
     z: Number(row.z) - anchor.z,
     rx: 0,
-    ry: 0,
-    rz: quaternionYawDegrees(row.qz, row.qw)
+    ry: quaternionYawDegrees(row.qz, row.qw),
+    rz: 0
   }));
 
   return {

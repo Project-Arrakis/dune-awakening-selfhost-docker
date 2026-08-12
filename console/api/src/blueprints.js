@@ -100,6 +100,21 @@ function resolveImportPlaceable(pl) {
   return { transform };
 }
 
+function normalizeLegacyPlaceableRotations(placeables) {
+  if (!Array.isArray(placeables) || placeables.length === 0) return placeables;
+
+  const nearZero = (value) => Math.abs(Number(value) || 0) < 0.0001;
+  // Live-base exports produced before the placeable-axis fix put every yaw in
+  // rz while forcing rx/ry to zero. Native Solido archives store horizontal
+  // placeable rotation in ry; preserve any archive that contains meaningful
+  // rx/ry data instead of guessing per row.
+  const legacyAxisLayout = placeables.every((pl) => nearZero(pl?.rx) && nearZero(pl?.ry))
+    && placeables.some((pl) => !nearZero(pl?.rz));
+  if (!legacyAxisLayout) return placeables;
+
+  return placeables.map((pl) => ({ ...pl, ry: pl.rz ?? 0, rz: 0 }));
+}
+
 function resolveImportIds(rows, key, label) {
   const sourceIds = rows.map((row) => {
     if (row[key] == null || row[key] === "") return null;
@@ -266,7 +281,8 @@ export async function importBlueprint(db, playerPawnId, blueprintFile, fallbackN
     }
     let placeableIdMap = new Map();
     if (bf.placeables && bf.placeables.length > 0) {
-      placeableIdMap = await insertBuildingPlaceables(tx, blueprintId, bf.placeables);
+      const placeables = normalizeLegacyPlaceableRotations(bf.placeables);
+      placeableIdMap = await insertBuildingPlaceables(tx, blueprintId, placeables);
     }
     if (bf.pentashields && bf.pentashields.length > 0) {
       await insertBuildingPentashields(tx, blueprintId, bf.pentashields, placeableIdMap);
