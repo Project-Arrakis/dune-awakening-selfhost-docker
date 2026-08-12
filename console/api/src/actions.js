@@ -156,6 +156,15 @@ export const ROUTE_ACTIONS = {
   "GET /api/exchange/config":                  "exchange:read",
   "POST /api/exchange/config":                 "exchange:write-config",
 
+  // --- Exchange Market Bot — console-managed NPC seeding / buyback (game-DB writes) ---
+  "GET /api/exchange/market":                  "exchange:market",
+  "GET /api/exchange/market/exchanges":        "exchange:market",
+  "POST /api/exchange/market/buyback/probe":   "exchange:market",
+  "POST /api/exchange/market/buyback/schedule": "exchange:market-write",
+  "POST /api/exchange/market/seed/schedule":   "exchange:market-write",
+  "POST /api/exchange/market/buyback/run":     "exchange:market-write",
+  "POST /api/exchange/market/seed/run":        "exchange:market-write",
+
   // --- Players (mutations) ---
   "POST /api/players/kick-all-online":         "players:kick-all",
 
