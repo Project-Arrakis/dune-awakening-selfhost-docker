@@ -3,7 +3,7 @@ import { createServer as createNetServer } from "node:net";
 import { totalmem } from "node:os";
 import { spawn } from "node:child_process";
 import { existsSync, writeFileSync, chmodSync, mkdirSync, createReadStream, readFileSync } from "node:fs";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { loadConfig, publicConfig, parseAllowedIps } from "./config.js";
 import { createAuth, setSessionCookie, clearSessionCookie, json, withSecurityHeaders } from "./auth.js";
 import { createLoginRateLimiter, createMutationRateLimiter } from "./rateLimit.js";
@@ -761,6 +761,7 @@ async function handleApi(req, res) {
   if (path === "/api/maps/choam-terminals") return dbJson(res, () => choamTerminalOverview(db));
   if (path === "/api/maps/user-settings/schema") return userSettingsSchemaRoute(res);
   if (path === "/api/maps/user-settings/restart-pending") return json(res, 200, { pending: existsSync(resolve(config.repoRoot, "runtime/generated/landsraad-restart-required")) });
+  if (path === "/api/maps/user-settings/deferred-pending") return json(res, 200, readDeferredRestartPending(config));
   if (path === "/api/maps/user-settings/values") return userSettingsValuesRoute(res, url);
   if (path === "/api/maps/user-settings/raw" && req.method === "POST") return userSettingsRawWriteRoute(req, res);
   if (path === "/api/maps/user-settings/raw") return userSettingsRawRoute(res, url);
@@ -2013,6 +2014,7 @@ async function userSettingsSaveRoute(req, res) {
   const body = await readJson(req);
   const payload = userSettingsTaskPayload(body);
   audit(config, req, "maps.user-settings.save", { scope: payload.scope, map: payload.map, partitionId: payload.partitionId, restartMode: payload.restartMode });
+  if (body.deferRestart === true) markDeferredRestartPending(config, deferredRestartLabel(payload));
   if (await maybeQueueRestart(req, res, "maps", "userSettingsSaveAndRestart", payload)) return;
   return json(res, 202, { task: tasks.create("maps", "userSettingsSaveAndRestart", payload) });
 }
@@ -2022,6 +2024,7 @@ async function userSettingsResetRoute(req, res) {
   if (body.confirmation !== "RESTORE MAP DEFAULTS") return json(res, 400, { error: "Confirmation phrase required: RESTORE MAP DEFAULTS" });
   const payload = userSettingsTaskPayload({ ...body, values: {} });
   audit(config, req, "maps.user-settings.reset", { scope: payload.scope, map: payload.map, partitionId: payload.partitionId, restartMode: payload.restartMode });
+  if (body.deferRestart === true) markDeferredRestartPending(config, deferredRestartLabel(payload));
   if (await maybeQueueRestart(req, res, "maps", "userSettingsResetAndRestart", payload)) return;
   return json(res, 202, { task: tasks.create("maps", "userSettingsResetAndRestart", payload) });
 }
@@ -2030,6 +2033,7 @@ async function userSettingsRawWriteRoute(req, res) {
   const body = await readJson(req);
   const payload = userSettingsTaskPayload({ ...body, values: {}, content: String(body.content || "") });
   audit(config, req, "maps.user-settings.raw-write", { scope: payload.scope, map: payload.map, partitionId: payload.partitionId, restartMode: payload.restartMode });
+  if (body.deferRestart === true) markDeferredRestartPending(config, deferredRestartLabel(payload));
   if (await maybeQueueRestart(req, res, "maps", "userSettingsRawAndRestart", payload)) return;
   return json(res, 202, { task: tasks.create("maps", "userSettingsRawAndRestart", payload) });
 }
@@ -2039,7 +2043,16 @@ function userSettingsTaskPayload(body) {
   const map = String(body.map || "Survival_1");
   const partitionId = String(body.partitionId || "").trim();
   const values = body.values && typeof body.values === "object" && !Array.isArray(body.values) ? body.values : {};
-  const restart = body.restart === false ? { restartMode: "none", restartLabel: "saved configuration" } : restartPayload(scope, map, partitionId);
+  // "Restart later": the admin chose to save (and fully materialize to disk)
+  // without restarting yet -- distinct from restart:false, which means the
+  // change never needed a restart at all. Both end up restartMode:"none" for
+  // the task executor, but only this one marks the deferred-restart-pending
+  // indicator (see markDeferredRestartPending below).
+  const restart = body.restart === false
+    ? { restartMode: "none", restartLabel: "saved configuration" }
+    : body.deferRestart === true
+      ? { restartMode: "none", restartLabel: "deferred until the next battlegroup restart" }
+      : restartPayload(scope, map, partitionId);
   return {
     scope,
     map,
@@ -2048,6 +2061,38 @@ function userSettingsTaskPayload(body) {
     content: String(body.content || ""),
     ...restart
   };
+}
+
+// Marker for the generic "settings saved, restart deferred" indicator (Maps
+// -> Interactive Modifiers/Advanced). Mirrors the Landsraad-specific
+// `landsraad-restart-required` file (set by usersettings.py, read at
+// server.js:736) but is written here in Node since it applies to any
+// UserEngine/UserGame save, not just Landsraad fields. One flag, not one per
+// scope/map -- a second deferred save just overwrites since/label.
+function deferredRestartPendingPath(config) {
+  return resolve(config.repoRoot, "runtime/generated/settings-restart-pending.json");
+}
+
+function markDeferredRestartPending(config, label) {
+  const path = deferredRestartPendingPath(config);
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, JSON.stringify({ pending: true, since: new Date().toISOString(), label }, null, 2));
+}
+
+function readDeferredRestartPending(config) {
+  try {
+    const parsed = JSON.parse(readFileSync(deferredRestartPendingPath(config), "utf8"));
+    if (!parsed?.pending) return { pending: false };
+    return { pending: true, since: String(parsed.since || ""), label: String(parsed.label || "") };
+  } catch {
+    return { pending: false };
+  }
+}
+
+function deferredRestartLabel(payload) {
+  if (payload.scope === "engine" || payload.scope === "mapEngine" || payload.scope === "partitionEngine") return "UserEngine settings";
+  if (payload.scope === "global" || payload.scope === "profile") return "UserGame settings";
+  return payload.map ? `UserGame settings (${payload.map})` : "UserGame settings";
 }
 
 // UserEngine.ini (unlike UserGame.ini) is not per-map: every scope that edits

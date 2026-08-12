@@ -418,12 +418,13 @@ See [blueprints.md](blueprints.md) for the full import/export design.
 |--------|-------|-------------|------------|
 | GET | `/api/maps/combat-state` | Get combat state by partition | `map` (query param) |
 | GET | `/api/maps/user-settings/schema` | Get user settings schema | None |
-| GET | `/api/maps/user-settings/restart-pending` | Check if restart pending | None |
+| GET | `/api/maps/user-settings/restart-pending` | Check if a Landsraad-field restart is pending | None |
+| GET | `/api/maps/user-settings/deferred-pending` | Check if a "Restart later" deferred save is pending (any UserEngine/UserGame save) | None |
 | GET | `/api/maps/user-settings/values` | Get settings values | `scope`, `map?`, `partitionId?` |
 | GET | `/api/maps/user-settings/raw` | Get raw settings file | `kind`, `map?`, `partitionId?` |
-| POST | `/api/maps/user-settings/save` | Save user settings | `scope`, `map?`, `partitionId?`, `values`, `restart?` |
-| POST | `/api/maps/user-settings/reset` | Reset to defaults | `scope`, `map?`, `partitionId?`, `confirmation: "RESTORE MAP DEFAULTS"` |
-| POST | `/api/maps/user-settings/raw` | Save raw settings | `scope`, `map?`, `partitionId?`, `content` |
+| POST | `/api/maps/user-settings/save` | Save user settings | `scope`, `map?`, `partitionId?`, `values`, `restart?`, `deferRestart?` |
+| POST | `/api/maps/user-settings/reset` | Reset to defaults | `scope`, `map?`, `partitionId?`, `confirmation: "RESTORE MAP DEFAULTS"`, `deferRestart?` |
+| POST | `/api/maps/user-settings/raw` | Save raw settings | `scope`, `map?`, `partitionId?`, `content`, `deferRestart?` |
 | POST | `/api/maps/user-settings/materialize` | Refresh settings | `confirmation: "REFRESH MAP SETTINGS"` |
 
 ### Engine & Game Settings

@@ -36,6 +36,25 @@ battlegroup:
   and 1 minutes** remaining). The restart runs at T-0. If everyone logs off
   before then, it restarts immediately.
 
+## Restart later (deferred settings saves)
+
+The settings-save confirm in **Maps → Interactive Modifiers** and
+**Maps → Advanced** offers a 4th choice alongside Cancel / Restart Immediately
+/ Queue Restart: **Restart later**. It's offered regardless of whether the
+queue above is enabled. Choosing it saves the change (`.ini` files are fully
+written to disk immediately, same as any other save) but skips the restart
+entirely — the change takes effect the next time the battlegroup restarts,
+whether that's a manual restart, the daily restart timer, or the IP-change
+restart.
+
+A **Pending Restart** badge and a **Restart Battlegroup** shortcut appear in
+Interactive Modifiers/Advanced (and a "Settings Pending" line in Admin Tools →
+Restart Queue) until that next full battlegroup restart clears it. A
+single-map or sietch restart does **not** clear it — only a full stack start
+does (`start-all.sh`), which every restart path (manual, scheduled,
+IP-change) ultimately runs. This mirrors the existing Landsraad "Pending
+Restart" indicator, generalized to any UserEngine/UserGame save.
+
 ## Enabling and configuring
 
 Open **Admin Tools → Schedule Server Restart** and turn on **Restart Queue**.
@@ -163,6 +182,7 @@ Extending the queue to cover those paths is a possible future enhancement.
 | POST | `/api/server/restart-queue` | Save settings (partial; merges onto the current settings) | `enabled?`, `defaultCountdownMinutes?`, `broadcastCheckpoints?`, `broadcastDurationSec?`, `recoveryGraceMinutes?`, `messages?: { battlegroup: {title, body}, map: {title, body} }` |
 | POST | `/api/server/restart-queue/cancel` | Cancel one active countdown | `id` |
 | POST | `/api/server/restart-queue/restart-now` | Execute one queued restart immediately | `id` |
+| GET | `/api/maps/user-settings/deferred-pending` | Whether a "Restart later" deferred save is pending | None |
 
 `GET /api/server/restart-queue` returns the saved settings, the shipped defaults,
 the active state (the queued `entries`), and the battlegroup `playersOnline`

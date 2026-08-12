@@ -2,7 +2,7 @@ import { Fragment, useEffect, useRef, useState } from "react";
 import { AlertTriangle, ChevronDown, ChevronUp, Download, Fuel, Grid2X2, Info, List, Lock, RotateCcw } from "lucide-react";
 import { mapsApi, type ChoamTerminalOverview, type ChoamTradeCenter, type LiveMapMemoryRow, type MapCombatStateResult, type MapRuntimeSettings, type MemoryBalancerState, type MemorySwapState, type PartitionCombatStateRow, type SpicefieldTypeRow, type UserSettingField, type UserSettingsSchema } from "../../api/maps";
 import { runGatedRestart, type RestartGate, type RestartGateChoice } from "../server/restartQueueGuard";
-import type { RestartQueueTarget } from "../../api/server";
+import { serverApi, type RestartQueueTarget } from "../../api/server";
 import { setupApi, type Task } from "../../api/setup";
 import { SecretInput } from "../../components/SecretInput";
 import { InfoTooltip, KeyValueGrid, StatusPill, TechnicalDetails } from "../../components/common/DisplayPrimitives";
@@ -374,6 +374,7 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
   const [choamSavingKey, setChoamSavingKey] = useState("");
   const [choamResult, setChoamResult] = useState<HomeTaskResult | null>(null);
   const [modifiersOpen, setModifiersOpen] = useState(false);
+  const [deferredRestartPending, setDeferredRestartPending] = useState<{ pending: boolean; since?: string; label?: string }>({ pending: false });
   const [clientIniCounts, setClientIniCounts] = useState<{ engine: number | null; game: number | null }>({ engine: null, game: null });
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [startupSettingsOpen, setStartupSettingsOpen] = useState(false);
@@ -990,6 +991,7 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
     run(loadSietches);
     run(loadSpicefields);
     void loadCombatState("DeepDesert_1").catch(() => {});
+    void refreshDeferredRestartPending();
   }, []);
   useEffect(() => {
     const persisted = loadPersistedMapsTask();
@@ -1310,6 +1312,26 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
     setSelectedEngineCategory("");
     void loadSelectedEngineSettings(target.map, target.partitionId || undefined).catch((error) => onError(error instanceof Error ? error.message : String(error)));
   }
+  async function refreshDeferredRestartPending() {
+    try {
+      setDeferredRestartPending(await mapsApi.deferredRestartPending());
+    } catch {
+      // Leave the previous state -- a transient fetch failure shouldn't
+      // flip a real pending indicator off.
+    }
+  }
+  async function restartBattlegroupForDeferredSettings() {
+    const gated = await runGatedRestart({ restartGate, label: "battlegroup", dispatch: (opts) => serverApi.restart(opts) });
+    if (gated.outcome === "cancelled") return;
+    if (gated.outcome === "queued") {
+      setMapsResultScope("modifiers");
+      setMapsResult({ status: "succeeded", title: "Restart Queued", message: "Battlegroup restart queued — see the Restart Queue panel in Admin Tools." });
+      return;
+    }
+    if (!gated.task) return;
+    await waitForTaskWithUpdates(gated.task, () => {});
+    await refreshDeferredRestartPending();
+  }
   async function saveEngine() {
     const isGlobal = engineMapName === "__global__";
     const scope = isGlobal ? "engine" : enginePartitionId ? "partitionEngine" : "mapEngine";
@@ -1321,13 +1343,15 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
         map: isGlobal ? undefined : engineMapName,
         partitionId: isGlobal ? undefined : enginePartitionId || undefined,
         values: valuesForDirtyFields(engineValues, engineDraft, engineFields),
-        immediate: choice === "immediate"
+        immediate: choice === "immediate",
+        deferRestart: choice === "manual"
       }),
       "Saving UserEngine changes",
       "UserEngine Saved",
       { resultScope: "modifiers", restartAcceptedMessage: "Changes saved successfully. The maps are restarting and should be back up soon." }
     );
     await loadSelectedEngineSettings(engineMapName, enginePartitionId || undefined);
+    await refreshDeferredRestartPending();
   }
   async function saveSelectedMapSettings(row: Record<string, unknown>) {
     const rowName = String(row.map || "");
@@ -1652,12 +1676,13 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
     const choice = await confirmSettingsRestart("UserGame", settingsRestartTarget(scope, map, partitionId));
     if (choice === "cancel") return;
     await runTaskAndRefresh(
-      () => mapsApi.saveUserSettings({ scope, map, partitionId, values: valuesForDirtyFields(gameValues, gameDraft, userGameFields), immediate: choice === "immediate" }),
+      () => mapsApi.saveUserSettings({ scope, map, partitionId, values: valuesForDirtyFields(gameValues, gameDraft, userGameFields), immediate: choice === "immediate", deferRestart: choice === "manual" }),
       `Saving ${isUserGameGlobal ? "Global" : userGameName} UserGame changes`,
       "UserGame Saved",
       { resultScope: "modifiers", restartAcceptedMessage: "Changes saved successfully. The maps are restarting and should be back up soon." }
     );
     await loadSelectedSettings(userGameName, partitionId);
+    await refreshDeferredRestartPending();
   }
   async function saveRaw(kind: "engine" | "game") {
     // Raw UserEngine.ini is always the stack-wide profile; raw UserGame.ini
@@ -1668,7 +1693,7 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
     if (choice === "cancel") return;
     if (kind === "engine") {
       await runTaskAndRefresh(
-        () => mapsApi.saveRawUserSettings({ scope: "engine", content: rawEngine, immediate: choice === "immediate" }),
+        () => mapsApi.saveRawUserSettings({ scope: "engine", content: rawEngine, immediate: choice === "immediate", deferRestart: choice === "manual" }),
         "Saving UserEngine changes",
         "UserEngine Saved",
         {
@@ -1681,7 +1706,7 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
       await loadUserEngine();
     } else {
       await runTaskAndRefresh(
-        () => mapsApi.saveRawUserSettings({ scope: "global", map: userGameName || "Survival_1", partitionId: effectiveUserGamePartitionId || undefined, content: rawGame, immediate: choice === "immediate" }),
+        () => mapsApi.saveRawUserSettings({ scope: "global", map: userGameName || "Survival_1", partitionId: effectiveUserGamePartitionId || undefined, content: rawGame, immediate: choice === "immediate", deferRestart: choice === "manual" }),
         "Saving UserGame changes",
         "UserGame Saved",
         {
@@ -1693,6 +1718,7 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
       setRawGameOriginal(rawGame);
       if (userGameName) await loadSelectedSettings(userGameName, effectiveUserGamePartitionId || undefined);
     }
+    await refreshDeferredRestartPending();
   }
   async function restoreRawGameDefaults() {
     if (userGameName) {
@@ -2048,8 +2074,13 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
       {loadError && mapRows.length ? <p className="danger-note">Some map data could not be refreshed: {loadError}</p> : null}
       {memoryError && <p className="danger-note">Live memory could not be read: {memoryError}</p>}
     </section>
-    {(modifierDirtySummary || (mapsResult && mapsResultScope === "modifiers")) && <div className="maps-modifier-status-slot">
+    {(modifierDirtySummary || (mapsResult && mapsResultScope === "modifiers") || deferredRestartPending.pending) && <div className="maps-modifier-status-slot">
       {modifierDirtySummary && <p className="dirty-note">Unsaved changes: {modifierDirtySummary}</p>}
+      {deferredRestartPending.pending && <div className="maps-deferred-restart-banner">
+        <span className="badge badge-warn">Pending Restart</span>
+        <span className="muted">{deferredRestartPending.label || "Settings"} saved — apply at the next battlegroup restart.</span>
+        <button className="secondary" onClick={() => run(restartBattlegroupForDeferredSettings)}>Restart Battlegroup</button>
+      </div>}
       {mapsResult && mapsResultScope === "modifiers" ? <div className="maps-result-slot"><HomeTaskResultCard result={mapsResult} /></div> : null}
     </div>}
     <div className={`playerAdmin_toggle maps-modifiers-toggle ${modifiersOpen && modifiersAvailable ? "open" : ""}`}>

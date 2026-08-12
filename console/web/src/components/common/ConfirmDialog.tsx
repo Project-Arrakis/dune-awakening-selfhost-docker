@@ -4,9 +4,10 @@ import { useEffect, useRef } from "react";
 export type ConfirmDialogDetail = { label: string; value: string; tone?: "accent" | "success" | "danger" };
 
 // "tertiary" is an optional third choice (e.g. the restart queue's "Restart
-// Immediately" alongside "Queue Restart" and "Cancel"). Dialogs without a
-// tertiaryLabel only ever resolve "confirm" or "cancel".
-export type ConfirmDialogOutcome = "confirm" | "cancel" | "tertiary";
+// Immediately" alongside "Queue Restart" and "Cancel"). "quaternary" is a
+// fourth (e.g. "Restart later"). Dialogs without those labels only ever
+// resolve "confirm" or "cancel".
+export type ConfirmDialogOutcome = "confirm" | "cancel" | "tertiary" | "quaternary";
 
 export type ConfirmDialogRequest = {
   title: string;
@@ -14,6 +15,7 @@ export type ConfirmDialogRequest = {
   confirmLabel: string;
   cancelLabel: string;
   tertiaryLabel?: string;
+  quaternaryLabel?: string;
   danger: boolean;
   details?: ConfirmDialogDetail[];
   warning?: string;
@@ -34,11 +36,12 @@ export function ConfirmDialog({ request, onClose }: { request: ConfirmDialogRequ
   }, [request, onClose]);
 
   if (!request) return null;
-  // A tertiary button makes this a 3-button row (Cancel / Restart Immediately /
-  // Queue Restart, etc.) that doesn't fit the base modal's 440px width -- widen
-  // it the same way RestartMessagesModal's action row does, for every dialog
-  // that ever adds a third choice, not just this one caller.
-  const modalClassName = ["confirm-modal", request.danger ? "danger" : "", request.tertiaryLabel ? "confirm-modal-wide" : ""].filter(Boolean).join(" ");
+  // A tertiary or quaternary button makes this a 3- or 4-button row (Cancel /
+  // Restart Later / Restart Immediately / Queue Restart, etc.) that doesn't
+  // fit the base modal's 440px width -- widen it the same way
+  // RestartMessagesModal's action row does, for every dialog that ever adds
+  // a third or fourth choice, not just this one caller.
+  const modalClassName = ["confirm-modal", request.danger ? "danger" : "", (request.tertiaryLabel || request.quaternaryLabel) ? "confirm-modal-wide" : ""].filter(Boolean).join(" ");
   return <div className="modal-overlay" role="presentation" onMouseDown={() => onClose("cancel")}>
     <section className={modalClassName} role="dialog" aria-modal="true" aria-labelledby="confirm-modal-title" onMouseDown={(event) => event.stopPropagation()}>
       <div className="confirm-modal-title">
@@ -52,11 +55,29 @@ export function ConfirmDialog({ request, onClose }: { request: ConfirmDialogRequ
       {request.details?.length ? <dl className="confirm-modal-details">
         {request.details.map((detail) => <div key={`${detail.label}-${detail.value}`}><dt>{detail.label}</dt><dd className={detail.tone || "accent"}>{detail.value}</dd></div>)}
       </dl> : null}
-      <div className="confirm-modal-actions">
-        <button onClick={() => onClose("cancel")}>{request.cancelLabel}</button>
-        {request.tertiaryLabel && <button onClick={() => onClose("tertiary")}>{request.tertiaryLabel}</button>}
-        <button className={request.danger ? "danger" : "success"} onClick={() => onClose("confirm")}>{request.confirmLabel}</button>
-      </div>
+      {request.quaternaryLabel ? (
+        // A 4th choice splits into two clusters -- "not restarting now"
+        // (Cancel, quaternary) vs "restarting soon" (tertiary, confirm) --
+        // separated by a divider, so the grouping is visible rather than
+        // four equal-weight buttons in a row.
+        <div className="confirm-modal-actions confirm-modal-actions-grouped">
+          <div className="confirm-modal-action-group">
+            <button onClick={() => onClose("cancel")}>{request.cancelLabel}</button>
+            <button onClick={() => onClose("quaternary")}>{request.quaternaryLabel}</button>
+          </div>
+          <div className="confirm-modal-action-divider" aria-hidden="true" />
+          <div className="confirm-modal-action-group">
+            {request.tertiaryLabel && <button onClick={() => onClose("tertiary")}>{request.tertiaryLabel}</button>}
+            <button className={request.danger ? "danger" : "success"} onClick={() => onClose("confirm")}>{request.confirmLabel}</button>
+          </div>
+        </div>
+      ) : (
+        <div className="confirm-modal-actions">
+          <button onClick={() => onClose("cancel")}>{request.cancelLabel}</button>
+          {request.tertiaryLabel && <button onClick={() => onClose("tertiary")}>{request.tertiaryLabel}</button>}
+          <button className={request.danger ? "danger" : "success"} onClick={() => onClose("confirm")}>{request.confirmLabel}</button>
+        </div>
+      )}
     </section>
   </div>;
 }

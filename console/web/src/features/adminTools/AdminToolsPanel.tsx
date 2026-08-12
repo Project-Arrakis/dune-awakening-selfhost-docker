@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { ChevronDown, ChevronUp } from "lucide-react";
 import { adminApi } from "../../api/admin";
 import { liveMapApi } from "../../api/liveMap";
+import { mapsApi } from "../../api/maps";
 import { playersApi } from "../../api/players";
 import { serverApi } from "../../api/server";
 import type { RestartMessages, RestartQueueResponse } from "../../api/server";
@@ -38,6 +39,7 @@ export function AdminToolsPanel({ onError, confirmAction }: AdminToolsPanelProps
   const [restartNotifyMinutes, setRestartNotifyMinutes] = useState("15");
   const [scheduleResult, setScheduleResult] = useState<HomeTaskResult | null>(null);
   const [restartQueue, setRestartQueue] = useState<RestartQueueResponse | null>(null);
+  const [deferredRestartPending, setDeferredRestartPending] = useState<{ pending: boolean; since?: string; label?: string }>({ pending: false });
   const [queueLoading, setQueueLoading] = useState(true);
   const [queueCountdownMinutes, setQueueCountdownMinutes] = useState("30");
   const [queueCheckpoints, setQueueCheckpoints] = useState("15, 10, 5, 1");
@@ -221,6 +223,15 @@ export function AdminToolsPanel({ onError, confirmAction }: AdminToolsPanelProps
     } catch (error) {
       setRestartEnabled(!requestedEnabled);
       setScheduleResult({ status: "failed", title: "Schedule Save Failed", details: error instanceof Error ? error.message : String(error) });
+    }
+  }
+
+  async function loadDeferredRestartPending() {
+    try {
+      setDeferredRestartPending(await mapsApi.deferredRestartPending());
+    } catch {
+      // Leave the previous state -- a transient fetch failure shouldn't flip
+      // a real pending indicator off.
     }
   }
 
@@ -521,6 +532,7 @@ export function AdminToolsPanel({ onError, confirmAction }: AdminToolsPanelProps
     loadHistory().catch(() => undefined);
     loadRestartSchedule().catch((error) => onError(error instanceof Error ? error.message : String(error)));
     loadRestartQueue().catch((error) => onError(error instanceof Error ? error.message : String(error)));
+    loadDeferredRestartPending().catch(() => undefined);
     loadIpChangeRestart().catch((error) => onError(error instanceof Error ? error.message : String(error)));
     loadShutdownProtection().catch((error) => onError(error instanceof Error ? error.message : String(error)));
     loadTransferSettings().catch((error) => onError(error instanceof Error ? error.message : String(error)));
@@ -548,6 +560,7 @@ export function AdminToolsPanel({ onError, confirmAction }: AdminToolsPanelProps
     const id = window.setInterval(() => {
       if (document.hidden || queueResult?.status === "running") return;
       loadRestartQueue({ showLoading: false, syncControls: false }).catch(() => undefined);
+      loadDeferredRestartPending().catch(() => undefined);
     }, 10000);
     return () => window.clearInterval(id);
   }, [scheduleOpen, queueResult?.status]);
@@ -819,7 +832,7 @@ export function AdminToolsPanel({ onError, confirmAction }: AdminToolsPanelProps
                 </div>
               </div>;
             })}</div>
-          : <KeyValueGrid items={[["Current Status", queueStatusLabel], ["Players Online", queuePlayersLabel], ["Active Queue", "None"], ["Default Countdown", queueDefaultCountdownLabel], ["Broadcast At", queueCheckpointsLabel]]} />}
+          : <KeyValueGrid items={[["Current Status", queueStatusLabel], ["Players Online", queuePlayersLabel], ["Active Queue", "None"], ["Default Countdown", queueDefaultCountdownLabel], ["Broadcast At", queueCheckpointsLabel], ["Settings Pending", deferredRestartPending.pending ? `Yes — ${deferredRestartPending.label || "settings"} awaiting restart` : "No"]]} />}
         <div className="action-line schedule-action-line">
           <label className="compact-select schedule-notify-field">Default Countdown (Min)<input type="number" min="1" max="1440" step="1" disabled={queueSaving} value={queueCountdownMinutes} onChange={(event) => setQueueCountdownMinutes(event.target.value)} /></label>
           <label className="compact-select schedule-checkpoints-field">Broadcast Checkpoints (Min)<input type="text" disabled={queueSaving} value={queueCheckpoints} onChange={(event) => setQueueCheckpoints(event.target.value)} placeholder="15, 10, 5, 1" /></label>

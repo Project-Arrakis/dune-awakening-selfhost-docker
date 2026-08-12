@@ -216,6 +216,17 @@ h1, h2, h3, h4, h5 { color: var(--title); line-height: 1.2; letter-spacing: 0; }
   flex-wrap: wrap;
 }
 .confirm-modal-actions button { width: auto; min-width: 84px; }
+/* A 4-button dialog (Cancel/Restart Later vs Restart Immediately/Queue
+   Restart) groups into two clusters with a divider between them, instead of
+   four equal-weight buttons in one row. Each cluster wraps as its own unit at
+   narrow widths rather than reflowing independently. */
+.confirm-modal-actions-grouped { justify-content: space-between; align-items: center; }
+.confirm-modal-action-group { display: flex; gap: 10px; flex-wrap: wrap; }
+.confirm-modal-action-divider { width: 1px; align-self: stretch; min-height: 24px; background: var(--border-strong); }
+@media (max-width: 480px) {
+  .confirm-modal-actions-grouped { flex-direction: column; align-items: stretch; gap: 12px; }
+  .confirm-modal-action-divider { display: none; }
+}
 
 .app-shell { display: grid; grid-template-columns: 260px 1fr; min-height: 100vh; }
 .setup-only-shell { grid-template-columns: 1fr; }
@@ -949,6 +960,8 @@ main { padding: 22px; min-width: 0; }
 .home-task-result { margin-top: 12px; display: grid; gap: 8px; }
 .maps-modifier-status-slot { display: grid; gap: 10px; margin: 16px 0 18px; }
 .maps-modifier-status-slot .dirty-note { margin: 0; }
+.maps-deferred-restart-banner { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.maps-deferred-restart-banner .muted { flex: 1 1 auto; min-width: 0; }
 .maps-result-slot { display: block; margin: 0 0 18px; }
 .maps-modifier-status-slot .maps-result-slot { margin: 0; }
 .maps-result-slot .home-task-result { margin-top: 0; }
