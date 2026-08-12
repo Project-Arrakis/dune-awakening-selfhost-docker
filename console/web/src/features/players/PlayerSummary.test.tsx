@@ -250,7 +250,7 @@ describe("PlayerSummary", () => {
       expect(await screen.findByText("500")).toBeInTheDocument();
       rerender(<PlayerSummary {...baseProps} detail={detail} fallback={{}} refreshKey={1} />);
 
-      expect(await screen.findByText("5200")).toBeInTheDocument();
+      expect(await screen.findByText("5,200")).toBeInTheDocument();
       expect(playersApi.factions).toHaveBeenCalledTimes(2);
     });
 
@@ -277,7 +277,24 @@ describe("PlayerSummary", () => {
       });
     });
 
-    it("lists reputation standings under a Reputation sub-heading, separate from the alignment", async () => {
+    it("shows estimated faction rank and a story progression limit when applicable", async () => {
+      vi.mocked(playersApi.factions).mockResolvedValue({
+        rows: [{ faction_id: 1, faction_name: "Atreides", reputation_amount: 5200, estimated_rank: 12, current_rank_limit: 4, rank_limited_by_progression: true }],
+        capabilities: { factions: true, factionRanks: true }
+      });
+      render(
+        <PlayerSummary
+          {...baseProps}
+          detail={{ player: { character_name: "Benny Jesserette", faction: "Atreides" } }}
+          fallback={{}}
+        />
+      );
+      expect(await screen.findByText("5,200")).toBeInTheDocument();
+      const atreides = screen.getByRole("row", { name: "Atreides reputation" });
+      expect(atreides).toHaveTextContent("Atreides5,200 Rep12 Est. Rank4 Story Limit");
+    });
+
+    it("lists reputation standings under a Faction Standings sub-heading, separate from the alignment", async () => {
       vi.mocked(playersApi.factions).mockResolvedValue({
         rows: [{ faction_id: 1, faction_name: "Atreides", reputation_amount: 500 }],
         capabilities: { factions: true }
@@ -290,9 +307,9 @@ describe("PlayerSummary", () => {
         />
       );
       await waitFor(() => {
-        expect(screen.getByText("Reputation")).toBeInTheDocument();
+        expect(screen.getByText("Faction Standings")).toBeInTheDocument();
       });
-      const block = screen.getByText("Reputation").closest(".summary-block");
+      const block = screen.getByText("Faction Standings").closest(".summary-block");
       expect(block).not.toBeNull();
       expect(block?.textContent).toContain("Alignment");
       expect(block?.textContent).toContain("Harkonnen");
@@ -300,7 +317,7 @@ describe("PlayerSummary", () => {
       expect(block?.textContent).toContain("500");
     });
 
-    it("keeps the Reputation sub-heading visible even when the player has no standings", async () => {
+    it("keeps the Faction Standings sub-heading visible even when the player has no standings", async () => {
       vi.mocked(playersApi.factions).mockResolvedValue({ rows: [], capabilities: { factions: true } });
       render(
         <PlayerSummary
@@ -310,11 +327,11 @@ describe("PlayerSummary", () => {
         />
       );
       await waitFor(() => {
-        expect(screen.getByText("Reputation")).toBeInTheDocument();
+        expect(screen.getByText("Faction Standings")).toBeInTheDocument();
       });
     });
 
-    it("hides the Reputation sub-heading when the factions capability is unsupported", async () => {
+    it("hides the Faction Standings sub-heading when the factions capability is unsupported", async () => {
       vi.mocked(playersApi.factions).mockResolvedValue({ rows: [], capabilities: {} });
       render(
         <PlayerSummary
@@ -326,7 +343,7 @@ describe("PlayerSummary", () => {
       await waitFor(() => {
         expect(screen.getByText("Alignment")).toBeInTheDocument();
       });
-      expect(screen.queryByText("Reputation")).not.toBeInTheDocument();
+        expect(screen.queryByText("Faction Standings")).not.toBeInTheDocument();
     });
   });
 
