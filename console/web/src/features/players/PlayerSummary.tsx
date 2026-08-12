@@ -13,7 +13,7 @@ const currencyIcon = (label: string): LucideIcon => {
 };
 
 type CurrencyRow = { currency_id: number; balance: number; label?: string };
-type FactionRow = { faction_id: number; faction_name?: string; reputation_amount: number };
+type FactionRow = { faction_id: number; faction_name?: string; reputation_amount: number; estimated_rank?: number; current_rank_limit?: number | null; rank_limited_by_progression?: boolean };
 type Progression = { level?: number; xp?: number; totalSkillPoints?: number; unspentSkillPoints?: number };
 type Vitals = { currentHealth: number | null; maxHealth: number; maxHealthEstimated: boolean; hydration: number | null; maxHydration: number; spiceAddictionLevel: number | null; maxSpiceAddictionLevel: number };
 const PLAYER_STATS_REFRESH_MS = 30_000;
@@ -180,11 +180,16 @@ export function PlayerSummary({
           <tr><td>Alignment</td><td>{faction}</td></tr>
         </tbody></table>
         {factionRows !== null && <>
-          <div className="summary-block-label summary-sublabel">Reputation</div>
-          <table className="summary-kv"><tbody>
-            {factionRows.map((row) => <tr key={row.faction_id}>
+          <div className="summary-block-label summary-sublabel">Faction Standings</div>
+          <table className="summary-kv summary-faction-standings"><tbody>
+            {factionRows.map((row) => <tr key={row.faction_id} aria-label={`${row.faction_name || `Faction ${row.faction_id}`} reputation`}>
               <td>{row.faction_name || `Faction ${row.faction_id}`}</td>
-              <td>{String(row.reputation_amount)}</td>
+              <td><span className="summary-faction-metrics">
+                <span><strong>{Number(row.reputation_amount).toLocaleString()}</strong> Rep</span>
+                {row.estimated_rank !== undefined && <span><strong>{row.estimated_rank}</strong> Est. Rank</span>}
+                {row.rank_limited_by_progression && row.current_rank_limit !== null && row.current_rank_limit !== undefined
+                  && <span><strong>{row.current_rank_limit}</strong> Story Limit</span>}
+              </span></td>
             </tr>)}
           </tbody></table>
         </>}

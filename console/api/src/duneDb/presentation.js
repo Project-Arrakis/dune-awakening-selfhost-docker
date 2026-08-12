@@ -197,6 +197,29 @@ export function factionTierBumps(tags) {
   return out;
 }
 
+export function factionReputationEstimatedRank(reputation) {
+  const value = Math.max(0, Math.min(Number(reputation) || 0, FACTION_TIER_THRESHOLDS.at(-1)));
+  if (value >= FACTION_TIER_THRESHOLDS[20]) return 20;
+  let rank = 0;
+  for (let candidate = 1; candidate < 20; candidate += 1) {
+    if (value > FACTION_TIER_THRESHOLDS[candidate]) rank = candidate;
+    else break;
+  }
+  return rank;
+}
+
+export function factionProgressionRankLimit(tags, factionName) {
+  const escapedName = String(factionName || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  if (!escapedName) return 0;
+  const pattern = new RegExp(`^Faction\\.${escapedName}\\.Tier([0-5])$`);
+  let limit = 0;
+  for (const tag of tags || []) {
+    const match = pattern.exec(String(tag || ""));
+    if (match) limit = Math.max(limit, Number(match[1]));
+  }
+  return limit >= 5 ? null : limit;
+}
+
 export function factionIdByName(name) {
   if (name === "Atreides") return 1;
   if (name === "Harkonnen") return 2;

@@ -574,15 +574,22 @@ main { padding: 22px; min-width: 0; }
 .summary-stat span, .summary-stat dt { color: #ad9f89; font-size: 13px; }
 .summary-stat strong, .summary-stat dd { color: #fff1d4; font-size: 22px; font-weight: 600; overflow-wrap: anywhere; }
 .summary-stat dd { margin: 0; }
-.summary-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; }
+.summary-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; align-items: stretch; }
+.summary-cols > .summary-block { min-width: 0; padding: 13px 14px; background: #171a1d; border: 1px solid #302b25; border-radius: 8px; }
 .summary-block { display: grid; gap: 8px; align-content: start; }
 .summary-block-label { color: #c68b4a; text-transform: uppercase; font-size: 12px; letter-spacing: 0.05em; }
-.summary-sublabel { margin-top: 6px; }
+.summary-sublabel { margin-top: 8px; padding-top: 10px; border-top: 1px solid rgba(214, 185, 140, .12); }
 .summary-kv { width: 100%; border-collapse: collapse; font-size: 13px; }
-.summary-kv td { padding: 5px 0; vertical-align: top; }
+.summary-kv td { padding: 5px 0; vertical-align: middle; }
 .summary-kv td:first-child { color: #ad9f89; }
 .summary-kv td:last-child { text-align: right; color: #fff1d4; overflow-wrap: anywhere; padding-left: 12px; }
 .summary-kv td.summary-mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+.summary-faction-standings tr + tr td { border-top: 1px solid rgba(214, 185, 140, .08); }
+.summary-faction-standings td:first-child { padding-right: 10px; color: #e9dcc8; font-weight: 600; white-space: nowrap; }
+.summary-faction-metrics { display: flex; align-items: baseline; justify-content: flex-end; gap: 4px 10px; flex-wrap: wrap; color: #8f8575; font-size: 11px; line-height: 1.35; }
+.summary-faction-metrics > span { white-space: nowrap; }
+.summary-faction-metrics > span + span::before { content: "\00b7"; margin-right: 10px; color: #5e574c; }
+.summary-faction-metrics strong { color: #fff1d4; font-size: 12px; font-weight: 600; }
 .summary-currency { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
 .summary-currency-tile { background: #171a1d; border: 1px solid #302b25; border-radius: 8px; padding: 10px 12px; display: flex; align-items: center; gap: 10px; }
 .summary-currency-icon { color: #c68b4a; flex: 0 0 auto; }
@@ -1428,6 +1435,7 @@ body.debug .technical-details { display: block; }
   display: contents;
 }
 .playerAdmin_actionRow .playerAdmin_actionLabel { min-width: 180px; color: #e9dcc8; font-weight: 700; display: grid; gap: 3px; }
+.playerAdmin_labelWithInfo { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
 .playerAdmin_box .playerAdmin_section > .playerAdmin_actionGroup .playerAdmin_actionRow > * { min-width: 0; }
 .playerAdmin_box .playerAdmin_section > .playerAdmin_actionGroup .playerAdmin_actionRow .playerAdmin_actionLabel { width: 100%; min-width: 0; overflow-wrap: anywhere; }
 .playerAdmin_quickRewardsSection .playerAdmin_actionLabel { grid-column: 1; }

@@ -3,6 +3,8 @@ import test from "node:test";
 import {
   factionDisplayName,
   factionIdByName,
+  factionProgressionRankLimit,
+  factionReputationEstimatedRank,
   factionTierBumps,
   craftingRecipeCatalogRows,
   compareJourneyCatalogOrder,
@@ -142,6 +144,13 @@ test("faction and repair helpers keep mutation math predictable", () => {
   assert.equal(factionIdByName("Atreides"), 1);
   assert.equal(factionIdByName("Unknown"), 0);
   assert.deepEqual([...factionTierBumps(["Faction.Atreides.Tier2", "Faction.Harkonnen.Tier0"])], [["Atreides", 250]]);
+  assert.equal(factionReputationEstimatedRank(0), 0);
+  assert.equal(factionReputationEstimatedRank(99), 0);
+  assert.equal(factionReputationEstimatedRank(100), 1);
+  assert.equal(factionReputationEstimatedRank(5200), 12);
+  assert.equal(factionReputationEstimatedRank(12474), 20);
+  assert.equal(factionProgressionRankLimit(["Faction.Atreides.Tier0", "Faction.Atreides.Tier4"], "Atreides"), 4);
+  assert.equal(factionProgressionRankLimit(["Faction.Atreides.Tier5"], "Atreides"), null);
   assert.equal(repairTarget({ MaxDurability: 100, CurrentDurability: 40, DecayedDurability: 10 }), 100);
   assert.equal(repairTarget({ MaxDurability: 100, CurrentDurability: 100, DecayedDurability: 100 }), 0);
   assert.equal(tutorialStatus(2), "Complete");

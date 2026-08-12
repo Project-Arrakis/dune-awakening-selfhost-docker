@@ -11,6 +11,8 @@ import {
   craftingRecipeCatalogRows,
   compareJourneyCatalogOrder,
   factionIdByName,
+  factionProgressionRankLimit,
+  factionReputationEstimatedRank,
   factionTierBumps,
   factionDisplayName,
   journeyDepth,
@@ -2410,7 +2412,31 @@ export async function playerFactions(db, id) {
         from dune.player_faction_reputation pfr
         where pfr.actor_id = $1
         order by pfr.faction_id`, [player.controllerId]);
-  return { capabilities: { factions: true, factionNames: hasFactions }, player, rows: result.rows };
+  const hasPlayerTags = await tableExists(db, "player_tags");
+  let playerTags = [];
+  if (hasPlayerTags && player.playerStateId) {
+    const tags = await db.query(`
+      select tag
+      from dune.player_tags
+      where character_id = $1
+        and tag like 'Faction.%'`, [player.playerStateId]);
+    playerTags = tags.rows.map((row) => String(row.tag || ""));
+  }
+  const rows = result.rows.map((row) => {
+    const factionId = Number(row.faction_id);
+    if (factionId !== 1 && factionId !== 2) return row;
+    const factionName = row.faction_name || (factionId === 1 ? "Atreides" : "Harkonnen");
+    const estimatedRank = factionReputationEstimatedRank(row.reputation_amount);
+    const progressionLimit = hasPlayerTags ? factionProgressionRankLimit(playerTags, factionName) : null;
+    const rankLimited = progressionLimit !== null && estimatedRank > progressionLimit;
+    return {
+      ...row,
+      estimated_rank: estimatedRank,
+      current_rank_limit: rankLimited ? progressionLimit : null,
+      rank_limited_by_progression: rankLimited
+    };
+  });
+  return { capabilities: { factions: true, factionNames: hasFactions, factionRanks: true }, player, rows };
 }
 
 export async function playerProgression(db, id) {
@@ -3957,6 +3983,23 @@ export async function addFactionReputation(db, id, { factionId, amount }) {
     const nextValue = Math.max(0, Math.min(12474, oldValue + delta));
     await tx.query("select dune.set_player_faction_reputation($1::bigint, $2::smallint, $3::integer)", [player.controllerId, faction, nextValue]);
     if (faction === 1 || faction === 2) await syncFactionComponent(tx, player.controllerId);
+    const estimatedRank = faction === 1 || faction === 2 ? factionReputationEstimatedRank(nextValue) : null;
+    let currentRankLimit = null;
+    if (estimatedRank !== null && player.playerStateId && await tableExists(tx, "player_tags")) {
+      const factionName = faction === 1 ? "Atreides" : "Harkonnen";
+      const tags = await tx.query(`
+        select tag
+        from dune.player_tags
+        where character_id = $1
+          and tag like $2`, [player.playerStateId, `Faction.${factionName}.Tier%`]);
+      const progressionLimit = factionProgressionRankLimit(tags.rows.map((row) => row.tag), factionName);
+      if (progressionLimit !== null && estimatedRank > progressionLimit) currentRankLimit = progressionLimit;
+    }
+    const rankMessage = estimatedRank === null
+      ? ""
+      : currentRankLimit === null
+        ? ` Estimated Rank: ${estimatedRank}.`
+        : ` Estimated Rank: ${estimatedRank}. Current Rank Limit: ${currentRankLimit} until the required faction story progression is completed.`;
     return {
       ok: true,
       player,
@@ -3964,9 +4007,11 @@ export async function addFactionReputation(db, id, { factionId, amount }) {
       actorId: player.controllerId,
       oldValue,
       newValue: nextValue,
+      estimatedRank,
+      currentRankLimit,
       message: playerOnline(player)
-        ? "Faction reputation was updated in the database. The player may need to relog before the new reputation appears in-game."
-        : "Faction reputation was updated in the database and will be loaded when the player next joins."
+        ? `Faction reputation was updated to ${nextValue}.${rankMessage} The player may need to relog before it appears in-game.`
+        : `Faction reputation was updated to ${nextValue}.${rankMessage} It will be loaded when the player next joins.`
     };
   });
 }

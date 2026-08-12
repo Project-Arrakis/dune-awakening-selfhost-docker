@@ -1013,6 +1013,32 @@ test("player factions coalesces an untouched faction's reputation to 0 and exclu
   assert.equal(result.rows.some((row) => row.faction_name === "None"), false);
 });
 
+test("player factions reports reputation-estimated rank and an unfinished-story limit", async () => {
+  const db = {
+    query: async (text, values = []) => {
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("from dune.actors a") && text.includes("left join dune.player_state ps")) {
+        return { rows: [{ actor_id: 91, account_id: 201, controller_id: 301, player_state_id: 44, online_status: "Offline" }] };
+      }
+      if (text.includes("from dune.factions f")) {
+        return { rows: [{ faction_id: 1, faction_name: "Atreides", reputation_amount: "5200" }] };
+      }
+      if (text.includes("from dune.player_tags")) {
+        assert.deepEqual(values, [44]);
+        return { rows: [
+          { tag: "Faction.Atreides.Tier0" },
+          { tag: "Faction.Atreides.Tier4" }
+        ] };
+      }
+      return { rows: [] };
+    }
+  };
+  const result = await playerFactions(db, "91");
+  assert.equal(result.rows[0].estimated_rank, 12);
+  assert.equal(result.rows[0].current_rank_limit, 4);
+  assert.equal(result.rows[0].rank_limited_by_progression, true);
+});
+
 test("player progression computes level from XP and reports skill points", async () => {
   const db = {
     query: async (text, values = []) => {
@@ -3997,6 +4023,10 @@ test("faction mutation clamps reputation and syncs actor component JSON", async 
   assert.equal(result.newValue, 12474);
   assert.ok(calls.some((call) => call.text.includes("set_player_faction_reputation") && call.values[2] === 12474));
   assert.ok(calls.some((call) => call.text.includes("FactionPlayerComponent,m_FactionDataArray")));
+  assert.equal(result.estimatedRank, 20);
+  assert.equal(result.currentRankLimit, 0);
+  assert.match(result.message, /Estimated Rank: 20/);
+  assert.match(result.message, /Current Rank Limit: 0/);
 });
 
 test("player faction assignment uses the game's faction function with the controller id", async () => {
