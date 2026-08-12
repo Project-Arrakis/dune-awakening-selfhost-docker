@@ -13,7 +13,7 @@ import { setupApi, type Task } from "../../api/setup";
 import { apiDownload } from "../../api/client";
 import { DataTable, type SortDirection } from "../../components/common/DataTable";
 import { pendingRefillCountForPartition, usePendingRefills, usePendingWaterRefills } from "../../lib/usePendingRefills";
-import { runGatedRestart, type RestartGate } from "../server/restartQueueGuard";
+import { runGatedRestart, serviceRestartTarget, type RestartGate } from "../server/restartQueueGuard";
 
 type BasesPanelProps = {
   onError: (text: string) => void;
@@ -887,7 +887,7 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
       restartGate,
       label,
       note: `Applies ${parts.join(" and ")}. Players on this map are disconnected while it restarts.`,
-      target: target.kind === "sietch" || target.kind === "respawn" ? { partitionId: target.partitionId } : undefined,
+      target: target.kind === "sietch" || target.kind === "respawn" ? { partitionId: target.partitionId } : serviceRestartTarget(target.service),
       dispatch: (opts) => target.kind === "sietch" ? mapsApi.restartSietch(String(target.partitionId), { ...opts, label })
         : target.kind === "respawn" ? mapsApi.respawn(String(target.partitionId), "RESTART MAP", { ...opts, label })
         : serverApi.restartService(target.service, opts)

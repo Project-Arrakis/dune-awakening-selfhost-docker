@@ -38,6 +38,16 @@ export type RestartGateMeta = {
 // destructive restart always gets one confirmation.
 export type RestartGate = (meta: RestartGateMeta) => Promise<RestartGateChoice>;
 
+// Direct restarts of the two game-server services have stable map partitions.
+// Shared infrastructure services intentionally return undefined because they
+// can affect every map and must keep battlegroup-wide queue protection.
+export function serviceRestartTarget(service: string): RestartQueueTarget | undefined {
+  const normalized = String(service || "").trim().toLowerCase();
+  if (normalized === "overmap") return { partitionId: 2, map: "Overmap" };
+  if (normalized === "survival" || normalized === "survival-1") return { partitionId: 1, map: "Survival_1" };
+  return undefined;
+}
+
 export type GatedRestartResult =
   | { outcome: "cancelled" }
   | { outcome: "queued"; online: number; state?: RestartQueueState }

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import { Droplet, Fuel, Play, Trash2 } from "lucide-react";
 import { serverApi, type PerformanceSnapshot } from "../../api/server";
-import { runGatedRestart, type RestartGate } from "./restartQueueGuard";
+import { runGatedRestart, serviceRestartTarget, type RestartGate } from "./restartQueueGuard";
 import { setupApi, type Task } from "../../api/setup";
 import { PortChecklist } from "../../components/PortChecklist";
 import { ReadinessTimeline } from "../../components/ReadinessTimeline";
@@ -793,7 +793,7 @@ export function ServerPanel(props: {
     setServiceRestartResult({ status: "running", title: "Restarting" });
     props.onError("");
     try {
-      const gated = await runGatedRestart({ restartGate, label: friendlyServiceName(selectedService), dispatch: (opts) => serverApi.restartService(selectedService, opts) });
+      const gated = await runGatedRestart({ restartGate, label: friendlyServiceName(selectedService), target: serviceRestartTarget(selectedService), dispatch: (opts) => serverApi.restartService(selectedService, opts) });
       if (serviceRestartRunId.current !== runId) return;
       if (gated.outcome === "cancelled") { setServiceRestartingService(""); setServiceRestartResult(null); return; }
       if (gated.outcome === "queued") { setServiceRestartingService(""); setServiceRestartResult({ status: "succeeded", title: "Restart queued" }); return; }
