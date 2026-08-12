@@ -34,8 +34,13 @@ export function ConfirmDialog({ request, onClose }: { request: ConfirmDialogRequ
   }, [request, onClose]);
 
   if (!request) return null;
+  // A tertiary button makes this a 3-button row (Cancel / Restart Immediately /
+  // Queue Restart, etc.) that doesn't fit the base modal's 440px width -- widen
+  // it the same way RestartMessagesModal's action row does, for every dialog
+  // that ever adds a third choice, not just this one caller.
+  const modalClassName = ["confirm-modal", request.danger ? "danger" : "", request.tertiaryLabel ? "confirm-modal-wide" : ""].filter(Boolean).join(" ");
   return <div className="modal-overlay" role="presentation" onMouseDown={() => onClose("cancel")}>
-    <section className={`confirm-modal ${request.danger ? "danger" : ""}`} role="dialog" aria-modal="true" aria-labelledby="confirm-modal-title" onMouseDown={(event) => event.stopPropagation()}>
+    <section className={modalClassName} role="dialog" aria-modal="true" aria-labelledby="confirm-modal-title" onMouseDown={(event) => event.stopPropagation()}>
       <div className="confirm-modal-title">
         <h3 id="confirm-modal-title">{request.title}</h3>
         <button ref={closeButtonRef} className="icon-action" aria-label="Close dialog" onClick={() => onClose("cancel")}><X size={18} /></button>

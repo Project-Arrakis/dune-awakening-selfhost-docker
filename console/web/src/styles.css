@@ -184,6 +184,7 @@ h1, h2, h3, h4, h5 { color: var(--title); line-height: 1.2; letter-spacing: 0; }
   box-shadow: 0 18px 52px rgba(0, 0, 0, .5);
 }
 .confirm-modal.danger { border-color: var(--danger-strong); }
+.confirm-modal.confirm-modal-wide { width: min(560px, calc(100vw - 32px)); }
 .confirm-modal-title {
   display: flex;
   align-items: center;

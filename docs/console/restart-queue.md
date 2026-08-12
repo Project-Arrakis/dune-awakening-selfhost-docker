@@ -20,10 +20,11 @@ intercepted:
 - Single-map respawn
 - Service restart
 - Sietch restart
-- Settings-save-and-restart (saving user/gameplay settings that require a
-  restart to apply — the whole save-and-restart is captured into the countdown
-  and runs at T-0). A settings save that does **not** restart (`restart: false`)
-  is unaffected.
+- Settings-save-and-restart — the three ops that persist a setting and then
+  restart to apply it: saving UserEngine/UserGame values, resetting them to
+  defaults, and writing a raw `.ini`. The whole save-and-restart is captured
+  into the countdown and runs at T-0. A settings save that does **not**
+  restart (`restart: false`) is unaffected.
 
 For each gated action, the console first checks how many real players are online across the
 battlegroup:
@@ -48,6 +49,12 @@ Settings persist to `runtime/generated/restart-queue.json`:
 | `broadcastDurationSec` | — | How long each broadcast banner is shown in game. |
 | `recoveryGraceMinutes` | `5` | Crash-recovery window for a just-elapsed countdown (see below). |
 | `messages` | see below | The two customizable broadcast templates. |
+
+Clicking **Save Queue** rejects the change with an inline error, before it is
+sent, if any `broadcastCheckpoints` value is later than
+`defaultCountdownMinutes` — that checkpoint's remaining-time mark would never
+be reached, so the warning could never fire. Lower the checkpoint or raise the
+countdown to save.
 
 Configuration is read per save, so changes take effect without a console
 release. Saving any one field (the toggle, the countdown/checkpoints, or the
