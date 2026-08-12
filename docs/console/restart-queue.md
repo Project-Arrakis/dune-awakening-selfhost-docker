@@ -46,7 +46,7 @@ Settings persist to `runtime/generated/restart-queue.json`:
 | `enabled` | `false` | Master toggle. When off, restarts run as before, ungated. |
 | `defaultCountdownMinutes` | `15` | Countdown length when players are online. |
 | `broadcastCheckpoints` | `[15, 10, 5, 1]` | Minutes-remaining marks at which a warning broadcast is sent. |
-| `broadcastDurationSec` | — | How long each broadcast banner is shown in game. |
+| `broadcastDurationSec` | `30` | How long each broadcast banner is shown in game (1-3600 seconds), shared by both message variants. Editable via **Edit Messages** → Display Duration (sec). |
 | `recoveryGraceMinutes` | `5` | Crash-recovery window for a just-elapsed countdown (see below). |
 | `messages` | see below | The two customizable broadcast templates. |
 
@@ -67,7 +67,9 @@ Warnings are delivered as in-game **Server Broadcast** banners. The variant
 depends on the scope of the restart, and both are **customizable**: click
 **Edit Messages** next to Save Queue to open a two-tab editor (Battlegroup
 Restart / Map Restart) with a live preview, a character counter, and a
-**Reset to Default** button per tab.
+**Reset to Default** button per tab. The editor also has a **Display Duration
+(sec)** field — how long the banner stays on screen — which is shared by both
+message types (there's one duration, not one per tab) and has its own Reset.
 
 **Battlegroup restart** — default title `Battlegroup Restart`, default body:
 

@@ -269,13 +269,14 @@ export function AdminToolsPanel({ onError, confirmAction }: AdminToolsPanelProps
     }
   }
 
-  // Sends only `messages` -- the backend merges this onto the currently
-  // persisted settings, so the countdown/checkpoint fields above are untouched.
-  async function saveRestartMessages(next: RestartMessages) {
+  // Sends only `messages`/`broadcastDurationSec` -- the backend merges this
+  // onto the currently persisted settings, so the countdown/checkpoint fields
+  // above are untouched.
+  async function saveRestartMessages(next: { messages: RestartMessages; broadcastDurationSec: number }) {
     setQueueMessagesSaving(true);
     setQueueMessagesError("");
     try {
-      const response = await serverApi.saveRestartQueue({ messages: next });
+      const response = await serverApi.saveRestartQueue({ messages: next.messages, broadcastDurationSec: next.broadcastDurationSec });
       setRestartQueue((current) => current ? { ...current, settings: response.settings, defaults: response.defaults, state: response.state } : current);
       setQueueMessagesOpen(false);
       setQueueResult({ status: "succeeded", title: "Restart Messages Saved" });
@@ -831,6 +832,8 @@ export function AdminToolsPanel({ onError, confirmAction }: AdminToolsPanelProps
         {queueMessagesOpen && queueSettings && restartQueue?.defaults && <RestartMessagesModal
           messages={queueSettings.messages}
           defaults={restartQueue.defaults.messages}
+          durationSec={queueSettings.broadcastDurationSec}
+          defaultDurationSec={restartQueue.defaults.broadcastDurationSec}
           saving={queueMessagesSaving}
           error={queueMessagesError}
           onSave={saveRestartMessages}
