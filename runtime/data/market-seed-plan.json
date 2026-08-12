@@ -22320,7 +22320,7 @@
       "display_name": "Iodine Pill",
       "kind": "consumable",
       "stack_size": 20,
-      "price": 1000,
+      "price": 800,
       "category_mask": 50725376,
       "category_depth": 3,
       "quality_level": 0,
