@@ -276,9 +276,10 @@ Changes reach a running map immediately — there is no restart queue, unlike th
 generator refill routes above. See [base-permissions.md](base-permissions.md).
 
 `GET /api/bases/{baseId}/inventory` covers storage containers plus refinery,
-fabricator and machine inventories; generator and windtrap fuel belong to the
-refill and water routes above. It is read-only — inventory writes have no path
-to a running map. See [base-inventory.md](base-inventory.md).
+fabricator, and other inventories (recycler, repair station, the base's own
+Sub-Fief console); generator and windtrap fuel belong to the refill and water
+routes above. It is read-only — inventory writes have no path to a running
+map. See [base-inventory.md](base-inventory.md).
 
 Both `GET /api/bases/{baseId}/water` and `GET /api/bases/{baseId}/inventory`
 answer **200 with `supported: false` and a `reason`** when the detected schema
