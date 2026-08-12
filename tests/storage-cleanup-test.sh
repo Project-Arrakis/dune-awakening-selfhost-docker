@@ -24,6 +24,14 @@ case "$*" in
     printf '%s\n' sha256:current-world ;;
   "image inspect --format {{.Id}} registry.funcom.com/funcom/self-hosting/igw-postgres:pg-current")
     printf '%s\n' sha256:current-postgres ;;
+  "image inspect --format {{.Id}} dune-orchestrator:dev")
+    printf '%s\n' sha256:required-orchestrator ;;
+  "image inspect --format {{.Id}} redblink-dune-docker-console:dev")
+    printf '%s\n' sha256:required-console ;;
+  image\ inspect\ --format*sha256:required-orchestrator)
+    printf '%s\n' orchestrator ;;
+  image\ inspect\ --format*sha256:required-console)
+    printf '%s\n' console ;;
   image\ inspect\ --format*sha256:old-console)
     printf '%s\n' console ;;
   "image inspect --format "*) exit 1 ;;
@@ -37,7 +45,11 @@ unrelated.example/app|old|sha256:foreign
 IMAGES
     ;;
   "image ls --no-trunc --filter label=io.github.red-blink.dune-selfhost.component --format {{.Repository}}|{{.Tag}}|{{.ID}}")
-    printf '%s\n' 'redblink-dune-docker-console|<none>|sha256:old-console'
+    cat <<'IMAGES'
+dune-orchestrator|dev|sha256:required-orchestrator
+redblink-dune-docker-console|dev|sha256:required-console
+redblink-dune-docker-console|<none>|sha256:old-console
+IMAGES
     ;;
   "image rm sha256:old-world") exit 0 ;;
   "image rm sha256:old-console") exit 0 ;;
@@ -58,7 +70,7 @@ if ! grep -q 'old-console' <<<"$dry_output"; then
 fi
 grep -q 'WOULD REMOVE .*seabass-server:old (sha256:old-world)' <<<"$dry_output"
 grep -q 'WOULD REMOVE redblink-dune-docker-console:<none> (sha256:old-console)' <<<"$dry_output"
-if grep -Eq 'current-world|used-old|foreign' <<<"$dry_output"; then
+if grep -Eq 'current-world|used-old|foreign|required-orchestrator|required-console' <<<"$dry_output"; then
   echo "Protected or unrelated image appeared in dry-run output:" >&2
   echo "$dry_output" >&2
   exit 1
@@ -67,7 +79,7 @@ fi
 runtime/scripts/storage.sh cleanup >/dev/null
 grep -qx 'image rm sha256:old-world' "$FAKE_DOCKER_LOG"
 grep -qx 'image rm sha256:old-console' "$FAKE_DOCKER_LOG"
-if grep -Eq 'image rm sha256:(current-world|used-old|foreign)' "$FAKE_DOCKER_LOG"; then
+if grep -Eq 'image rm sha256:(current-world|used-old|foreign|required-orchestrator|required-console)' "$FAKE_DOCKER_LOG"; then
   echo "Cleanup attempted to remove a protected or unrelated image." >&2
   exit 1
 fi
