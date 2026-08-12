@@ -2,8 +2,11 @@ import { useEffect, useRef, useState } from "react";
 import { ChevronDown, ChevronUp } from "lucide-react";
 import { adminApi } from "../../api/admin";
 import { liveMapApi } from "../../api/liveMap";
+import { mapsApi } from "../../api/maps";
 import { playersApi } from "../../api/players";
 import { serverApi } from "../../api/server";
+import type { RestartMessages, RestartQueueResponse } from "../../api/server";
+import { RestartMessagesModal } from "./RestartMessagesModal";
 import { setupApi, type Task } from "../../api/setup";
 import { DataTable } from "../../components/common/DataTable";
 import { KeyValueGrid, TechnicalDetails } from "../../components/common/DisplayPrimitives";
@@ -35,6 +38,16 @@ export function AdminToolsPanel({ onError, confirmAction }: AdminToolsPanelProps
   const [restartTime, setRestartTime] = useState("05:00");
   const [restartNotifyMinutes, setRestartNotifyMinutes] = useState("15");
   const [scheduleResult, setScheduleResult] = useState<HomeTaskResult | null>(null);
+  const [restartQueue, setRestartQueue] = useState<RestartQueueResponse | null>(null);
+  const [deferredRestartPending, setDeferredRestartPending] = useState<{ pending: boolean; since?: string; label?: string }>({ pending: false });
+  const [queueLoading, setQueueLoading] = useState(true);
+  const [queueCountdownMinutes, setQueueCountdownMinutes] = useState("30");
+  const [queueCheckpoints, setQueueCheckpoints] = useState("15, 10, 5, 1");
+  const [queueResult, setQueueResult] = useState<HomeTaskResult | null>(null);
+  const [queueNow, setQueueNow] = useState(() => Date.now());
+  const [queueMessagesOpen, setQueueMessagesOpen] = useState(false);
+  const [queueMessagesSaving, setQueueMessagesSaving] = useState(false);
+  const [queueMessagesError, setQueueMessagesError] = useState("");
   const [ipChangeRestart, setIpChangeRestart] = useState<{ stdout?: string; stderr?: string; exitCode?: number } | null>(null);
   const [ipChangeLoading, setIpChangeLoading] = useState(true);
   const [ipChangeEnabled, setIpChangeEnabled] = useState(false);
@@ -78,6 +91,17 @@ export function AdminToolsPanel({ onError, confirmAction }: AdminToolsPanelProps
   const scheduleDisplayActive = scheduleSaving ? restartEnabled : scheduleActive;
   const scheduleStatusLabel = !scheduleLoaded && !scheduleSaving ? "Checking" : scheduleDisplayActive ? "Enabled" : "Disabled";
   const scheduleDisplayTimerLabel = !scheduleLoaded && !scheduleSaving ? "Checking" : scheduleSaving ? restartEnabled ? "Activating" : "Deactivating" : restartEnabled ? scheduleTimerLabel : "Inactive";
+  const queueSettings = restartQueue?.settings || null;
+  const queueEntries = restartQueue?.state.entries || [];
+  const queueEnabled = Boolean(queueSettings?.enabled);
+  const queueSaving = queueResult?.status === "running";
+  const queuePlayersSupported = restartQueue?.playersOnlineSupported ?? false;
+  const queuePlayersOnline = restartQueue?.playersOnline ?? null;
+  const queuePlayersLabel = queuePlayersSupported ? `${Math.max(0, Math.round(queuePlayersOnline ?? 0))} online` : "Unavailable";
+  const queueLoaded = Boolean(restartQueue);
+  const queueStatusLabel = !queueLoaded && queueLoading ? "Checking" : queueEnabled ? "Idle · monitoring" : "Disabled";
+  const queueDefaultCountdownLabel = queueSettings ? `${Math.round(queueSettings.defaultCountdownMinutes)} minutes` : "";
+  const queueCheckpointsLabel = queueSettings && queueSettings.broadcastCheckpoints.length ? `${queueSettings.broadcastCheckpoints.join(", ")} min` : "";
   const ipChangeValues = parseKeyValueText(ipChangeRestart?.stdout || "");
   const ipChangeTimerValue = ipChangeValues.systemd_timer || "";
   const ipChangeTimerLabel = ipChangeTimerValue ? formatTimerStatus(ipChangeTimerValue) : "Not Installed";
@@ -199,6 +223,102 @@ export function AdminToolsPanel({ onError, confirmAction }: AdminToolsPanelProps
     } catch (error) {
       setRestartEnabled(!requestedEnabled);
       setScheduleResult({ status: "failed", title: "Schedule Save Failed", details: error instanceof Error ? error.message : String(error) });
+    }
+  }
+
+  async function loadDeferredRestartPending() {
+    try {
+      setDeferredRestartPending(await mapsApi.deferredRestartPending());
+    } catch {
+      // Leave the previous state -- a transient fetch failure shouldn't flip
+      // a real pending indicator off.
+    }
+  }
+
+  async function loadRestartQueue(options: { showLoading?: boolean; syncControls?: boolean } = {}) {
+    const showLoading = options.showLoading ?? true;
+    const syncControls = options.syncControls ?? true;
+    if (showLoading) setQueueLoading(true);
+    try {
+      const result = await serverApi.restartQueue();
+      setRestartQueue(result);
+      if (syncControls) {
+        setQueueCountdownMinutes(String(Math.round(result.settings.defaultCountdownMinutes)));
+        setQueueCheckpoints(result.settings.broadcastCheckpoints.join(", "));
+      }
+    } finally {
+      if (showLoading) setQueueLoading(false);
+    }
+  }
+
+  async function saveRestartQueue(nextEnabled = queueEnabled) {
+    const countdown = Number(queueCountdownMinutes);
+    if (!Number.isInteger(countdown) || countdown < 1 || countdown > 1440) {
+      setQueueResult({ status: "failed", title: "Default countdown must be 1 to 1440 minutes", message: "Default countdown must be between 1 and 1440 minutes." });
+      return;
+    }
+    // A checkpoint later than the countdown itself would never fire -- the
+    // remaining time never counts back up to reach it -- so block the save
+    // rather than silently accepting a warning that can't happen.
+    const overLimitCheckpoint = parseCheckpointMinutes(queueCheckpoints).find((minutes) => minutes > countdown);
+    if (overLimitCheckpoint !== undefined) {
+      setQueueResult({ status: "failed", title: "Broadcast checkpoints must not exceed the default countdown", message: `${overLimitCheckpoint} min is later than the ${countdown}-minute default countdown, so that warning could never fire. Lower the checkpoint or raise the countdown.` });
+      return;
+    }
+    setQueueCountdownMinutes(String(countdown));
+    setQueueResult({ status: "running", title: "Saving Restart Queue" });
+    onError("");
+    try {
+      const response = await serverApi.saveRestartQueue({ enabled: nextEnabled, defaultCountdownMinutes: countdown, broadcastCheckpoints: queueCheckpoints });
+      setRestartQueue((current) => current ? { ...current, settings: response.settings, defaults: response.defaults, state: response.state } : current);
+      setQueueCountdownMinutes(String(Math.round(response.settings.defaultCountdownMinutes)));
+      setQueueCheckpoints(response.settings.broadcastCheckpoints.join(", "));
+      await loadRestartQueue({ showLoading: false, syncControls: false });
+      setQueueResult({ status: "succeeded", title: nextEnabled ? "Restart Queue Enabled" : "Restart Queue Saved" });
+    } catch (error) {
+      setQueueResult({ status: "failed", title: "Restart Queue Save Failed", details: error instanceof Error ? error.message : String(error) });
+    }
+  }
+
+  // Sends only `messages`/`broadcastDurationSec` -- the backend merges this
+  // onto the currently persisted settings, so the countdown/checkpoint fields
+  // above are untouched.
+  async function saveRestartMessages(next: { messages: RestartMessages; broadcastDurationSec: number }) {
+    setQueueMessagesSaving(true);
+    setQueueMessagesError("");
+    try {
+      const response = await serverApi.saveRestartQueue({ messages: next.messages, broadcastDurationSec: next.broadcastDurationSec });
+      setRestartQueue((current) => current ? { ...current, settings: response.settings, defaults: response.defaults, state: response.state } : current);
+      setQueueMessagesOpen(false);
+      setQueueResult({ status: "succeeded", title: "Restart Messages Saved" });
+    } catch (error) {
+      setQueueMessagesError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setQueueMessagesSaving(false);
+    }
+  }
+
+  async function cancelQueueEntry(id: string) {
+    if (!(await confirmAction("Cancel this queued restart? Players will not be restarted.", { title: "Cancel Restart", confirmLabel: "Cancel Restart", danger: true }))) return;
+    onError("");
+    try {
+      const response = await serverApi.cancelRestartQueue({ id });
+      setRestartQueue((current) => current ? { ...current, state: response.state } : current);
+      await loadRestartQueue({ showLoading: false, syncControls: false });
+    } catch (error) {
+      onError(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function restartQueueEntryNow(id: string) {
+    if (!(await confirmAction("Restart now and skip the remaining countdown?", { title: "Restart Now", confirmLabel: "Restart Now", danger: true }))) return;
+    onError("");
+    try {
+      const response = await serverApi.restartQueueRestartNow({ id });
+      setRestartQueue((current) => current ? { ...current, state: response.state } : current);
+      await loadRestartQueue({ showLoading: false, syncControls: false });
+    } catch (error) {
+      onError(error instanceof Error ? error.message : String(error));
     }
   }
 
@@ -411,6 +531,8 @@ export function AdminToolsPanel({ onError, confirmAction }: AdminToolsPanelProps
     loadPlayerAnnouncements().catch(() => undefined);
     loadHistory().catch(() => undefined);
     loadRestartSchedule().catch((error) => onError(error instanceof Error ? error.message : String(error)));
+    loadRestartQueue().catch((error) => onError(error instanceof Error ? error.message : String(error)));
+    loadDeferredRestartPending().catch(() => undefined);
     loadIpChangeRestart().catch((error) => onError(error instanceof Error ? error.message : String(error)));
     loadShutdownProtection().catch((error) => onError(error instanceof Error ? error.message : String(error)));
     loadTransferSettings().catch((error) => onError(error instanceof Error ? error.message : String(error)));
@@ -432,6 +554,29 @@ export function AdminToolsPanel({ onError, confirmAction }: AdminToolsPanelProps
     const id = window.setTimeout(() => setScheduleResult(null), 10400);
     return () => window.clearTimeout(id);
   }, [scheduleResult?.status, scheduleResult?.title]);
+
+  useEffect(() => {
+    if (!scheduleOpen) return undefined;
+    const id = window.setInterval(() => {
+      if (document.hidden || queueResult?.status === "running") return;
+      loadRestartQueue({ showLoading: false, syncControls: false }).catch(() => undefined);
+      loadDeferredRestartPending().catch(() => undefined);
+    }, 10000);
+    return () => window.clearInterval(id);
+  }, [scheduleOpen, queueResult?.status]);
+
+  useEffect(() => {
+    if (!queueEntries.length) return undefined;
+    setQueueNow(Date.now());
+    const id = window.setInterval(() => setQueueNow(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [queueEntries.length]);
+
+  useEffect(() => {
+    if (!queueResult || queueResult.status === "running") return;
+    const id = window.setTimeout(() => setQueueResult(null), 10400);
+    return () => window.clearTimeout(id);
+  }, [queueResult?.status, queueResult?.title]);
 
   useEffect(() => {
     if (!ipChangeResult || ipChangeResult.status === "running") return;
@@ -661,6 +806,54 @@ export function AdminToolsPanel({ onError, confirmAction }: AdminToolsPanelProps
         </div>
         <div className="section-divider" />
         <div className="panel-title schedule-panel-title">
+          <h4>Restart Queue</h4>
+          <label className={`switch-checkbox ${queueEnabled ? "enabled" : "disabled"}`}><input type="checkbox" disabled={queueLoading || queueSaving} checked={queueEnabled} onChange={(event) => run(() => saveRestartQueue(event.target.checked))} /><span className="switch-label">Queue Status</span><strong className="switch-state">{queueEnabled ? "ON" : "OFF"}</strong></label>
+        </div>
+        <p className="muted">When enabled and players are online, restart requests hold in a countdown queue with in-game warnings before the server cycles. Restarts requested while no players are online run immediately.</p>
+        {queueEntries.length
+          ? <div className="restart-queue-active">{queueEntries.map((entry) => {
+              const restartAtMs = Number(entry.restartAt) || (queueNow + Math.max(0, Number(entry.remainingSeconds) || 0) * 1000);
+              const remainingSeconds = entry.status === "restarting" ? 0 : Math.max(0, Math.round((restartAtMs - queueNow) / 1000));
+              const nextCheckpoint = nextQueueCheckpoint(queueSettings?.broadcastCheckpoints || [], entry.sentCheckpoints || [], remainingSeconds);
+              const header = entry.target === "battlegroup" ? "Battlegroup Restart · all maps" : `Map Restart · ${entry.mapLabel}`;
+              const subtext = entry.status === "restarting"
+                ? "Restart in progress · maps are cycling."
+                : nextCheckpoint != null
+                  ? `Next in-game warning at ${nextCheckpoint} min remaining.`
+                  : "All warnings sent · restart imminent.";
+              const warningsSent = (entry.sentCheckpoints || []).length ? `${entry.sentCheckpoints.join(", ")} min` : "None";
+              return <div key={entry.id} className="restart-queue-banner">
+                <div className="panel-title schedule-panel-title"><h4>{header}</h4><strong className="switch-state" style={{ marginLeft: "auto", fontVariantNumeric: "tabular-nums", fontSize: "1.05rem" }}>{entry.status === "restarting" ? "Restarting" : formatCountdownClock(remainingSeconds)}</strong></div>
+                <p className="muted">{subtext}</p>
+                <KeyValueGrid items={[["Players Online", queuePlayersLabel], ["Warnings Sent", warningsSent], ["Requested By", entry.requestedBy || "Unknown"]]} />
+                <div className="action-line schedule-action-line">
+                  <button disabled={entry.status === "restarting"} onClick={() => restartQueueEntryNow(entry.id)}>Restart Now</button>
+                  <button className="danger" disabled={entry.status === "restarting"} onClick={() => cancelQueueEntry(entry.id)}>Cancel Restart</button>
+                </div>
+              </div>;
+            })}</div>
+          : <KeyValueGrid items={[["Current Status", queueStatusLabel], ["Players Online", queuePlayersLabel], ["Active Queue", "None"], ["Default Countdown", queueDefaultCountdownLabel], ["Broadcast At", queueCheckpointsLabel], ["Settings Pending", deferredRestartPending.pending ? `Yes — ${deferredRestartPending.label || "settings"} awaiting restart` : "No"]]} />}
+        <div className="action-line schedule-action-line">
+          <label className="compact-select schedule-notify-field">Default Countdown (Min)<input type="number" min="1" max="1440" step="1" disabled={queueSaving} value={queueCountdownMinutes} onChange={(event) => setQueueCountdownMinutes(event.target.value)} /></label>
+          <label className="compact-select schedule-checkpoints-field">Broadcast Checkpoints (Min)<input type="text" disabled={queueSaving} value={queueCheckpoints} onChange={(event) => setQueueCheckpoints(event.target.value)} placeholder="15, 10, 5, 1" /></label>
+          <button disabled={queueSaving || queueLoading} onClick={() => saveRestartQueue()}>Save Queue</button>
+          <button disabled={queueLoading || !queueSettings} onClick={() => setQueueMessagesOpen(true)}>Edit Messages</button>
+          {queueResult && <span className={`inline-task-result result-${queueResult.status === "succeeded" ? "ok" : queueResult.status === "failed" ? "fail" : "running"}`}>
+            <strong className={queueResult.status === "running" ? "loading-dots" : ""}>{formatResultTitle(queueResult.title, queueResult.status === "running")}</strong>
+          </span>}
+        </div>
+        {queueMessagesOpen && queueSettings && restartQueue?.defaults && <RestartMessagesModal
+          messages={queueSettings.messages}
+          defaults={restartQueue.defaults.messages}
+          durationSec={queueSettings.broadcastDurationSec}
+          defaultDurationSec={restartQueue.defaults.broadcastDurationSec}
+          saving={queueMessagesSaving}
+          error={queueMessagesError}
+          onSave={saveRestartMessages}
+          onClose={() => { setQueueMessagesOpen(false); setQueueMessagesError(""); }}
+        />}
+        <div className="section-divider" />
+        <div className="panel-title schedule-panel-title">
           <h4>Restart On Public IP Change</h4>
           <label className={`switch-checkbox ${ipChangeEnabled ? "enabled" : "disabled"}`}><input type="checkbox" disabled={ipChangeLoading || ipChangeSaving} checked={ipChangeEnabled} onChange={(event) => run(() => saveIpChangeRestart(event.target.checked))} /><span className="switch-label">IP Monitor</span><strong className="switch-state">{ipChangeEnabled ? "ON" : "OFF"}</strong></label>
         </div>
@@ -766,6 +959,29 @@ function toHourMinuteTime(value: unknown) {
 
 function sanitizeTimeInput(value: string) {
   return value.replace(/[^\d:]/g, "").slice(0, 5);
+}
+
+function formatCountdownClock(totalSeconds: number) {
+  const clamped = Math.max(0, Math.round(totalSeconds));
+  const minutes = Math.floor(clamped / 60);
+  const seconds = clamped % 60;
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+}
+
+function nextQueueCheckpoint(checkpoints: number[], sent: number[], remainingSeconds: number) {
+  const remainingMinutes = remainingSeconds / 60;
+  const pending = checkpoints.filter((checkpoint) => !sent.includes(checkpoint) && checkpoint <= remainingMinutes).sort((a, b) => b - a);
+  return pending.length ? pending[0] : null;
+}
+
+// Mirrors the backend's checkpoint parsing (restartQueue.js normalizeCheckpoints)
+// closely enough to validate the raw text field before it's ever sent: a
+// comma/whitespace-separated list of 1-1440 integers.
+function parseCheckpointMinutes(value: string): number[] {
+  return value
+    .split(/[\s,]+/)
+    .map((item) => Number(item.trim()))
+    .filter((minutes) => Number.isInteger(minutes) && minutes >= 1 && minutes <= 1440);
 }
 
 function isValidHourMinuteTime(value: string) {

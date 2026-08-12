@@ -1,14 +1,15 @@
 import { Fragment, Suspense, lazy, useCallback, useEffect, useRef, useState } from "react";
 import { Archive, Building2, Car, CircleArrowUp, Database, ExternalLink, FileText, Gift, Heart, Home, Landmark, Map as MapIcon, Menu, MessageCircle, PackagePlus, RefreshCw, Server, Settings, Shield, Sparkles, Store, Users, X } from "lucide-react";
 import { api, AUTH_SESSION_EXPIRED_EVENT, AUTH_SESSION_EXPIRED_MESSAGE, post, setCsrfToken } from "./api/client";
-import { serverApi } from "./api/server";
+import { serverApi, type RestartQueueTarget } from "./api/server";
 import { updatesApi } from "./api/updates";
 import { addonsApi } from "./api/addons";
 import { playersApi } from "./api/players";
 import { setupApi, type Task } from "./api/setup";
 import { SetupWizard } from "./components/SetupWizard";
 import { TaskProgress } from "./components/TaskProgress";
-import { ConfirmDialog, type ConfirmDialogDetail, type ConfirmDialogRequest } from "./components/common/ConfirmDialog";
+import { ConfirmDialog, type ConfirmDialogDetail, type ConfirmDialogOutcome, type ConfirmDialogRequest } from "./components/common/ConfirmDialog";
+import type { RestartGateChoice } from "./features/server/restartQueueGuard";
 import { loadPinnedAddons, savePinnedAddons, type PinnedAddon } from "./features/addons/pinnedAddons";
 import { hasAddonUpdates } from "./features/addons/addonVersions";
 import { preloadPlayerAdminIconRailAssets } from "./features/players/PlayerCategoryIconRail";
@@ -77,20 +78,109 @@ function confirmDialog(message: string, options: Partial<Omit<ConfirmDialogReque
       danger,
       details: options.details,
       warning: options.warning,
-      resolve
+      resolve: (outcome) => resolve(outcome === "confirm")
     });
   });
 }
 
-function confirmSettingsRestart(kind: "UserEngine" | "UserGame") {
-  return confirmDialog(
-    `Save ${kind} changes? To apply these changes, the Dune server services need to restart.`,
-    {
-      title: "Restart Required",
-      confirmLabel: "Yes, Save And Restart",
-      cancelLabel: "No, Cancel"
+// The single confirmation dialog for a gated restart. Always shown (it is the
+// sole confirm for the action): when the queue is off, or on with nobody
+// online, it is a plain confirm that the restart runs now; when the queue is on
+// and players are online it offers Queue / Restart Immediately / Cancel.
+// Returns "immediate" only when the dialog cannot open, so the restart still
+// works headless.
+function restartGateChoice(meta: { label: string; enabled: boolean; playersOnline: number | null; battlegroupPlayersOnline: number | null; mapScoped: boolean; countdownMinutes: number; note?: string; details?: ConfirmDialogDetail[]; manualLabel?: string }): Promise<RestartGateChoice> {
+  return new Promise((resolve) => {
+    if (!openConfirmDialog) {
+      resolve("immediate");
+      return;
     }
-  );
+    const online = meta.playersOnline ?? 0;
+    const minutes = Math.max(1, Math.round(meta.countdownMinutes));
+    const queued = meta.enabled && online > 0;
+    // Only worth mentioning when this restart is scoped to a map/partition
+    // and that count actually differs from the battlegroup-wide figure --
+    // for a battlegroup-wide restart the two are always the same query.
+    const battlegroupOnline = meta.battlegroupPlayersOnline;
+    const showBattlegroupContext = meta.mapScoped && battlegroupOnline !== null && battlegroupOnline !== online;
+    const battlegroupClause = showBattlegroupContext
+      ? ` (${battlegroupOnline} online battlegroup-wide)`
+      : "";
+    const scopeClause = meta.mapScoped ? `on ${meta.label}` : "in the battlegroup";
+    // With a 4th ("Restart later") choice on offer, no single sentence can
+    // presume the outcome -- 3 of the 4 choices don't restart on the spot --
+    // so the message stays neutral and the buttons carry the decision.
+    const resolveQuaternary = (outcome: ConfirmDialogOutcome) => outcome === "quaternary" ? "manual" as const : outcome;
+    if (!queued) {
+      openConfirmDialog({
+        title: "Confirm restart",
+        message: meta.enabled
+          ? meta.manualLabel
+            ? `No players are online ${scopeClause}${battlegroupClause}. The changes save now — choose when the restart that applies them should happen.`
+            : `No players are online ${scopeClause}${battlegroupClause}, so this restart will run immediately.`
+          : `Restart ${meta.label}? Anyone connected will be disconnected.`,
+        confirmLabel: "Restart Now",
+        cancelLabel: "Cancel",
+        quaternaryLabel: meta.manualLabel,
+        danger: true,
+        warning: meta.note,
+        details: meta.details,
+        resolve: (outcome) => resolve(resolveQuaternary(outcome) === "confirm" ? "immediate" : resolveQuaternary(outcome) === "manual" ? "manual" : "cancel")
+      });
+      return;
+    }
+    openConfirmDialog({
+      title: "Players are online",
+      message: meta.manualLabel
+        ? `${online} ${online === 1 ? "player is" : "players are"} online ${scopeClause}${battlegroupClause}. The changes save now — choose when the restart that applies them should happen.`
+        : `${online} ${online === 1 ? "player is" : "players are"} online ${scopeClause}${battlegroupClause}. This restart will start a ${minutes}-minute countdown with in-game warnings at each checkpoint.`,
+      confirmLabel: `Queue Restart (${minutes} min)`,
+      cancelLabel: "Cancel",
+      tertiaryLabel: "Restart Immediately",
+      quaternaryLabel: meta.manualLabel,
+      danger: false,
+      warning: meta.note,
+      details: meta.details ?? [{ label: "Players online", value: String(online), tone: "accent" }],
+      resolve: (outcome) => {
+        const resolved = resolveQuaternary(outcome);
+        resolve(resolved === "confirm" ? "queue" : resolved === "tertiary" ? "immediate" : resolved === "manual" ? "manual" : "cancel");
+      }
+    });
+  });
+}
+
+// Settings saves in Maps -> Interactive Modifiers and -> Advanced always
+// restart the affected server(s) to apply. This routes that restart through
+// the same queue interception as every other restart control: a plain
+// confirm when the queue is off (or nobody relevant is online), or the
+// Queue/Restart Immediately/Cancel choice -- with players-online context --
+// when it's on. `target` scopes the online check to the map/partition this
+// save actually restarts; omit it for a stack-wide (all game services) save.
+async function confirmSettingsRestart(kind: "UserEngine" | "UserGame", target?: RestartQueueTarget): Promise<RestartGateChoice> {
+  let status: Awaited<ReturnType<typeof serverApi.restartQueue>> | null = null;
+  try {
+    status = await serverApi.restartQueue(target);
+  } catch {
+    status = null;
+  }
+  // Name the actual map/partition being restarted when this save is scoped
+  // to one, rather than the generic "UserEngine/UserGame settings" label --
+  // that generic label is only accurate for a stack-wide (no target) save.
+  const label = target?.map
+    ? target.map
+    : target?.partitionId
+      ? `partition ${target.partitionId}`
+      : kind === "UserEngine" ? "UserEngine settings" : "UserGame settings";
+  return restartGateChoice({
+    label,
+    enabled: status?.settings.enabled ?? false,
+    playersOnline: status?.playersOnline ?? null,
+    battlegroupPlayersOnline: status?.battlegroupPlayersOnline ?? status?.playersOnline ?? null,
+    mapScoped: Boolean(target),
+    countdownMinutes: status?.settings.defaultCountdownMinutes ?? 15,
+    manualLabel: "Restart later",
+    note: "Restart later leaves the servers running as-is; the change applies at the next battlegroup restart, manual or automatic."
+  });
 }
 
 function formatResultTitle(value: unknown, pending = false) {
@@ -355,10 +445,10 @@ export function App() {
     };
   }, []);
 
-  function closeConfirmDialog(confirmed: boolean) {
+  function closeConfirmDialog(outcome: ConfirmDialogOutcome) {
     const request = confirmRequest;
     setConfirmRequest(null);
-    request?.resolve(confirmed);
+    request?.resolve(outcome);
   }
 
   async function login() {
@@ -634,22 +724,22 @@ export function App() {
         </header>
         {error && <div className="error-banner">{error}</div>}
         {redeploySetupOpen && <SetupWizard initialStep={setupJump.step} jumpNonce={setupJump.nonce} mode="redeploy" onSetupComplete={async () => setSetupState(await setupApi.state())} />}
-        {!redeploySetupOpen && tab === "Home" && <HomePanel status={status} readiness={readiness} taskResult={homeTaskResult} setTaskResult={setHomeTaskResult} funcomTokenResult={funcomTokenResult} setFuncomTokenResult={setFuncomTokenResult} runningAction={homeRunningAction} restartStartObserved={homeRestartStarted} setRunningAction={setHomeRunningAction} onLoad={loadStackStatus} confirmAction={confirmDialog} />}
-        {!redeploySetupOpen && tab === "Server Control" && <ServerPanel setTask={setTask} setStatus={setStatus} status={status} setReadiness={setReadiness} setPorts={setPorts} setDoctor={setDoctor} ports={ports} readiness={readiness} doctor={doctor} taskResult={homeTaskResult} setTaskResult={setHomeTaskResult} funcomTokenResult={funcomTokenResult} setFuncomTokenResult={setFuncomTokenResult} runningAction={homeRunningAction} restartStartObserved={homeRestartStarted} setRunningAction={setHomeRunningAction} onError={setError} confirmAction={confirmDialog} onRedeploy={() => {
+        {!redeploySetupOpen && tab === "Home" && <HomePanel status={status} readiness={readiness} taskResult={homeTaskResult} setTaskResult={setHomeTaskResult} funcomTokenResult={funcomTokenResult} setFuncomTokenResult={setFuncomTokenResult} runningAction={homeRunningAction} restartStartObserved={homeRestartStarted} setRunningAction={setHomeRunningAction} onLoad={loadStackStatus} confirmAction={confirmDialog} restartGate={restartGateChoice} />}
+        {!redeploySetupOpen && tab === "Server Control" && <ServerPanel setTask={setTask} setStatus={setStatus} status={status} setReadiness={setReadiness} setPorts={setPorts} setDoctor={setDoctor} ports={ports} readiness={readiness} doctor={doctor} taskResult={homeTaskResult} setTaskResult={setHomeTaskResult} funcomTokenResult={funcomTokenResult} setFuncomTokenResult={setFuncomTokenResult} runningAction={homeRunningAction} restartStartObserved={homeRestartStarted} setRunningAction={setHomeRunningAction} onError={setError} confirmAction={confirmDialog} restartGate={restartGateChoice} onRedeploy={() => {
           setSetupJump((current) => ({ step: 0, nonce: current.nonce + 1 }));
           setSelectedPinnedAddonId("");
           setRedeploySetupOpen(true);
         }} />}
-        {!redeploySetupOpen && tab === "Services" && <LazyTabBoundary label="Loading Services"><ServicesPanel services={services} setServices={setServices} setTask={setTask} openLogs={(service) => { setRedeploySetupOpen(false); setSelectedLogService(service); setTab("Logs"); }} onError={setError} confirmAction={confirmDialog} /></LazyTabBoundary>}
+        {!redeploySetupOpen && tab === "Services" && <LazyTabBoundary label="Loading Services"><ServicesPanel services={services} setServices={setServices} setTask={setTask} openLogs={(service) => { setRedeploySetupOpen(false); setSelectedLogService(service); setTab("Logs"); }} onError={setError} confirmAction={confirmDialog} restartGate={restartGateChoice} /></LazyTabBoundary>}
         {!redeploySetupOpen && tab === "Players" && <LazyTabBoundary label="Loading Players"><PlayersPanel onError={setError} renderCharacterAdmin={(props) => <LazyTabBoundary label="Loading Player Details"><CharacterAdminUI {...props} onError={setError} confirmAction={confirmDialog} waitForTask={waitForTaskSilently} formatMutationResult={formatMutationResult} /></LazyTabBoundary>} /></LazyTabBoundary>}
         {!redeploySetupOpen && tab === "Guilds" && <LazyTabBoundary label="Loading Guilds"><GuildsPanel onError={setError} confirmAction={confirmDialog} /></LazyTabBoundary>}
-        {!redeploySetupOpen && tab === "Bases" && <LazyTabBoundary label="Loading Bases"><BasesPanel onError={setError} confirmAction={confirmDialog} formatMutationResult={formatMutationResult} /></LazyTabBoundary>}
+        {!redeploySetupOpen && tab === "Bases" && <LazyTabBoundary label="Loading Bases"><BasesPanel onError={setError} confirmAction={confirmDialog} restartGate={restartGateChoice} formatMutationResult={formatMutationResult} /></LazyTabBoundary>}
         {!redeploySetupOpen && tab === "Vehicles" && <LazyTabBoundary label="Loading Vehicles"><VehiclesPanel onError={setError} confirmAction={confirmDialog} formatMutationResult={formatMutationResult} /></LazyTabBoundary>}
         {!redeploySetupOpen && tab === "Exchange" && <LazyTabBoundary label="Loading Market Board"><ExchangePanel onError={setError} confirmAction={confirmDialog} formatMutationResult={formatMutationResult} /></LazyTabBoundary>}
-        {!redeploySetupOpen && tab === "Landsraad" && <LazyTabBoundary label="Loading Landsraad"><LandsraadPanel onError={setError} confirmAction={confirmDialog} /></LazyTabBoundary>}
+        {!redeploySetupOpen && tab === "Landsraad" && <LazyTabBoundary label="Loading Landsraad"><LandsraadPanel onError={setError} confirmAction={confirmDialog} restartGate={restartGateChoice} /></LazyTabBoundary>}
         {!redeploySetupOpen && tab === "Admin Tools" && <LazyTabBoundary label="Loading Admin Tools"><AdminToolsPanel onError={setError} confirmAction={confirmDialog} /></LazyTabBoundary>}
         {!redeploySetupOpen && tab === "Live Map" && <LazyTabBoundary label="Loading Live Map"><LiveMapPanel onError={setError} confirmAction={confirmDialog} waitForTask={waitForTaskSilently} taskTechnicalDetails={taskTechnicalDetails} /></LazyTabBoundary>}
-        {!redeploySetupOpen && tab === "Maps" && <LazyTabBoundary label="Loading Maps"><MapsPanel onError={setError} confirmAction={confirmDialog} confirmSettingsRestart={confirmSettingsRestart} waitForTaskWithUpdates={waitForTaskWithUpdates} taskTechnicalDetails={taskTechnicalDetails} /></LazyTabBoundary>}
+        {!redeploySetupOpen && tab === "Maps" && <LazyTabBoundary label="Loading Maps"><MapsPanel onError={setError} confirmAction={confirmDialog} restartGate={restartGateChoice} confirmSettingsRestart={confirmSettingsRestart} waitForTaskWithUpdates={waitForTaskWithUpdates} taskTechnicalDetails={taskTechnicalDetails} /></LazyTabBoundary>}
         {!redeploySetupOpen && tab === "Care Package" && <LazyTabBoundary label="Loading Care Package"><CarePackagePanel onError={setError} confirmAction={confirmDialog} /></LazyTabBoundary>}
         {!redeploySetupOpen && tab === "Addons" && <LazyTabBoundary label="Loading Addons"><AddonsPanel pinnedAddons={pinnedAddons} setPinnedAddons={setPinnedAddons} selectedAddonId={selectedPinnedAddonId} clearSelectedAddon={() => setSelectedPinnedAddonId("")} setAddonUpdateAvailable={setAddonUpdatesAvailable} confirmAction={confirmDialog} /></LazyTabBoundary>}
         {!redeploySetupOpen && tab === "Database" && <LazyTabBoundary label="Loading Database"><DatabasePanel /></LazyTabBoundary>}
