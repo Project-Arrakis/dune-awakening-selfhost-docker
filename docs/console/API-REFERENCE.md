@@ -260,7 +260,7 @@ When the Restart Queue is enabled, the restart routes above (`/api/server/restar
 | DELETE | `/api/bases/{baseId}/queued-water-refill` | Cancel a base's queued water refill | `baseId` |
 | GET | `/api/bases/auto-refill-water` | Get per-base water auto-refill enrollment state | None |
 | POST | `/api/bases/{baseId}/auto-refill-water` | Enable/disable water auto-refill for a base | `baseId`, `enabled` |
-| GET | `/api/bases/{baseId}/inventory` | Get a base's stored items, rolled up by item template and by container (storage, refining, crafting, machines). Read-only | `baseId` |
+| GET | `/api/bases/{baseId}/inventory` | Get a base's stored items, rolled up by item template and by container (storage, refining, crafting, other). Read-only | `baseId` |
 | GET | `/api/bases/{baseId}/permissions` | Get a base's permission roster (Owner, Co-Owners, Associates) | `baseId` |
 | POST | `/api/bases/{baseId}/system-custodian` | Transfer ownership to the Server or detected GM system custodian while preserving the roster; provisions Server when no custodian exists | `baseId` |
 | PUT | `/api/bases/{baseId}/permissions` | Replace a base's permission roster | `baseId`, `entries[]` (`playerId`, `rank`) |
@@ -287,9 +287,10 @@ Changes reach a running map immediately — there is no restart queue, unlike th
 generator refill routes above. See [base-permissions.md](base-permissions.md).
 
 `GET /api/bases/{baseId}/inventory` covers storage containers plus refinery,
-fabricator and machine inventories; generator and windtrap fuel belong to the
-refill and water routes above. It is read-only — inventory writes have no path
-to a running map. See [base-inventory.md](base-inventory.md).
+fabricator, and other inventories (recycler, repair station, the base's own
+Sub-Fief console); generator and windtrap fuel belong to the refill and water
+routes above. It is read-only — inventory writes have no path to a running
+map. See [base-inventory.md](base-inventory.md).
 
 Both `GET /api/bases/{baseId}/water` and `GET /api/bases/{baseId}/inventory`
 answer **200 with `supported: false` and a `reason`** when the detected schema
@@ -348,6 +349,77 @@ sector grid, derived client-side from coordinates.
 The separate `/api/admin/vehicles*` routes under [Admin Tools](#admin-tools) are a
 different, CLI-backed surface (blueprint catalog and spawning), not this Postgres
 read.
+
+---
+
+## Market Board
+
+| Method | Route | Description | Parameters |
+|--------|-------|-------------|------------|
+| GET | `/api/exchange/items` | List active CHOAM exchange sell orders aggregated by item + grade (paginated): lowest price, total stock, listing count | `q?`, `page?`, `pageSize?`, `sortColumn?`, `sortDirection?`, `owner?`, `category?` |
+| GET | `/api/exchange/listings` | List the individual sell orders for one item, each with a resolved seller | `templateId`, `quality?`, `owner?` |
+| GET | `/api/exchange/stats` | Aggregate totals (total, bot, player listings; unique items) | None |
+| GET | `/api/exchange/config` | Read the console-local bot/blacklist filter config | None |
+| POST | `/api/exchange/config` | Save the bot/blacklist filter config (audited, rate-limited) | body: `includeNpcBroker`, `botOwnerIds[]`, `blacklistedOwnerIds[]` |
+
+Read-only over the game's own exchange tables (the game writes them; the console
+never mutates them). `GET /api/exchange/items` reports `capabilities.exchange`; it
+is false (with a `reason`) when the schema lacks the required tables
+(`dune_exchange_orders`, `dune_exchange_sell_orders`, `items`, `actors`,
+`player_state`).
+
+The `owner` filter selects `all` (default for `/items`), `player`, or `bot`, where
+**bot** = the in-game NPC broker (unless excluded via `includeNpcBroker: false`) OR a
+configured `botOwnerIds` entry, **player** = the complement, and **all** = no owner
+predicate. Blacklisted owner ids are excluded on every `owner` value. `includeNpcBroker`
+(default true) is the built-in broker toggle: set it false to stop classifying the
+in-game broker's orders as bot. Sortable `sortColumn` values: `display_name`, `template_id`,
+`category`, `quality_level`, `tier`, `lowest_price`, `total_stock`, `listing_count`;
+`q` matches `display_name`, `category`, and `template_id`. `category` filters to an
+exact catalog category; the response also returns `categories` — the distinct
+categories present in the current owner scope (computed before the category/search
+filters, so the list is stable for populating a dropdown). The response mirrors the
+paginated-list convention (`rows`, `totalCount` filtered, `totalItems` unfiltered).
+Because `display_name`/`category`/`tier` come from the local `admin-items.json`
+catalog rather than the database, search and sort run in the service after
+enrichment (a short-TTL cache of the enriched aggregate keeps interactive paging
+cheap).
+
+`GET /api/exchange/listings` requires `templateId`; `quality` and `owner` are
+optional. Each row carries `owner_type` (`player`|`bot`) and a resolved `owner_name`
+(via `actors.owner_account_id → player_state.character_name`, falling back to the
+actor class; NPC/broker orders show the in-game broker), plus `price`, `stock`, and
+`quality`.
+
+`POST /api/exchange/config` is the **only** write in this feature and persists
+**only** the console-local `runtime/generated/exchange-config.json` (no game-DB
+writes). Ids are validated as numeric owner-id strings, deduped, and length-capped.
+See [exchange.md](exchange.md) for how bot listings are identified and how the
+blacklist behaves.
+
+### Market Bot (console-managed seeding / buyback)
+
+| Method | Route | Description | Parameters |
+|--------|-------|-------------|------------|
+| GET | `/api/exchange/market` | Market Bot status: seed-plan availability and both schedules | None |
+| GET | `/api/exchange/market/exchanges` | Discover exchanges (BIGINT ids as strings; access-pointed exchanges first) | None |
+| POST | `/api/exchange/market/buyback/probe` | Read-only buyback eligibility count (no backup taken) | body: `exchangeId?`, `priceMultiplier?`, `buybackPercent?`, `maxBuys?` |
+| POST | `/api/exchange/market/buyback/schedule` | Save the buyback schedule (audited, rate-limited) | body: `enabled`, `intervalMinutes`, `exchangeId`, `priceMultiplier`, `buybackPercent`, `buybackPriceBasis`, `maxBuys` |
+| POST | `/api/exchange/market/seed/schedule` | Save the market reseed schedule (audited, rate-limited) | body: `enabled`, `intervalMinutes`, `exchangeId`, `priceMultiplier` |
+| POST | `/api/exchange/market/buyback/run` | Run a buyback sweep now with the saved schedule (probe → backup → sweep) | None |
+| POST | `/api/exchange/market/seed/run` | Run a market reseed now with the saved schedule (backup → clear bot listings → seed) | None |
+
+Unlike the board above, these routes **do write the game database** (through the
+same engine as the EDA Exchange Bot addon's scheduler: `addonJobs.js` /
+`addonSeedJob.js`). Reads and the probe require `exchange:market`; mutations
+require `exchange:market-write` (the admin tier's `exchange:*` covers both).
+Schedules saved here are marked `source: "console"`, run unattended inside the
+console API process, and do not require the addon to be installed; the seed plan
+resolves to an installed EDA Exchange Bot addon copy first, then the bundled
+`runtime/data/market-seed-plan.json`. Every write is preceded by a database
+backup, and buyback runs probe eligibility read-only first so idle intervals
+never take a backup. See [exchange.md](exchange.md#market-bot) for behavior
+details.
 
 ---
 

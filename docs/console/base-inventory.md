@@ -13,9 +13,11 @@ Classification is an explicit `building_type` allowlist in `BASE_INVENTORY_TYPES
 | Storage | `storagecontainer` → Storage Container · `mediumstoragecontainer`† → Medium Storage Container (100 slots) · `genericcontainer` → **Chest** · `spicesilo` and `smallstoragecontainer`† → **Small Storage Container** |
 | Refining | `smallorerefinery` · `mediumorerefinery` · `largeorerefinery`† · `smallchemicalrefinery` · `mediumchemicalrefinery` → matching names; `spicerefinery` → Spice Refinery · `mediumspicerefinery`† · `largespicerefinery`† |
 | Crafting | `fabricator` → Fabricator · `survivalfabricator` · `vehiclesfabricator` · `weaponsfabricator` · `wearablesfabricator` → Garment Fabricator · plus `advancedsurvivalfabricator`†, `advancedvehiclefabricator`† (singular), `advancedweaponsfabricator`†, `advancedwearablesfabricator`† → Advanced … |
-| Machines | `recycler` → Recycler · `repairstation` → Repair Station |
+| Other | `recycler` → Recycler · `repairstation` → Repair Station · `totem_small` → **Sub-Fief Console** · `totem` → **Advanced Sub-Fief** |
 
 All suffixed `_placeable`. † marks a type not present in any database seen so far — it is in the allowlist because the game ships it, not because it has been observed in use.
+
+`totem_small_placeable` and `totem_placeable` are the base's own claim structure — the totem, not a building placed inside the base. It carries a real 5-slot `dune.inventories` row like everything else here, reached through the same `placeables.owner_entity_id` join with no special-casing. Confirmed directly against a live restore of `kovalt_test.backup` rather than the paks grep below (the paks extraction is known-lossy, see below): 17 `totem_placeable` and 2 `totem_small_placeable` rows, each backed by a 5-slot inventory; base 3438's `totem_placeable` held 1 item (qty 83) and came back through the production `baseInventory` query unmodified. Display names are the catalog patent's, matching every other label in this table: `Totem_Small_Patent` is "Sub-Fief Console", `Totem_Patent` is "Advanced Sub-Fief".
 
 Every string was verified against the shipped server paks, where each building carries a `DA_BLD_<building_type>.uasset`:
 

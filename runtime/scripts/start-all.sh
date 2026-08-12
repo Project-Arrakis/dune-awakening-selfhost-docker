@@ -11,6 +11,13 @@ export DUNE_RUNTIME_PERMISSIONS_REPAIRED=1
 
 source runtime/scripts/runtime-env.sh
 
+# A configured installation must never silently start as "dune-docker" when
+# its persisted identity is missing. Recover only from evidence that matches
+# the current token, otherwise stop before starting stateful services.
+runtime/scripts/battlegroup-identity.sh ensure
+BATTLEGROUP_ID="$(resolve_battlegroup_id)"
+export BATTLEGROUP_ID
+
 set -a
 if [ -f .env ]; then
   . ./.env
@@ -181,9 +188,10 @@ if [ "${DUNE_START_FOREGROUND_DEFERRED_RECONCILE:-0}" = "1" ]; then
   run_timed_step "Running Deferred Dimension Reconcile" runtime/scripts/deferred-reconcile.sh
 else
   echo "=== Scheduling Deferred Dimension Reconcile ==="
+  mkdir -p runtime/generated
   (
     exec runtime/scripts/deferred-reconcile.sh
-  ) >/tmp/dune-deferred-reconcile.log 2>&1 &
+  ) >runtime/generated/deferred-reconcile.log 2>&1 &
 fi
 
 

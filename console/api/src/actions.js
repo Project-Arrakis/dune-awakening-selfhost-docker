@@ -49,6 +49,7 @@ export const NAMESPACES = {
   STORAGE:     "storage",
   BLUEPRINTS:  "blueprints",
   VEHICLES:    "vehicles",
+  EXCHANGE:    "exchange",
 };
 
 // ---- Actions: route → action mapping ----
@@ -151,6 +152,22 @@ export const ROUTE_ACTIONS = {
 
   // --- Vehicles ---
   "GET /api/vehicles":                         "vehicles:read",
+
+  // --- Exchange (Market Board) — read-only board + console-local filter config ---
+  "GET /api/exchange/items":                   "exchange:read",
+  "GET /api/exchange/listings":                "exchange:read",
+  "GET /api/exchange/stats":                   "exchange:read",
+  "GET /api/exchange/config":                  "exchange:read",
+  "POST /api/exchange/config":                 "exchange:write-config",
+
+  // --- Exchange Market Bot — console-managed NPC seeding / buyback (game-DB writes) ---
+  "GET /api/exchange/market":                  "exchange:market",
+  "GET /api/exchange/market/exchanges":        "exchange:market",
+  "POST /api/exchange/market/buyback/probe":   "exchange:market",
+  "POST /api/exchange/market/buyback/schedule": "exchange:market-write",
+  "POST /api/exchange/market/seed/schedule":   "exchange:market-write",
+  "POST /api/exchange/market/buyback/run":     "exchange:market-write",
+  "POST /api/exchange/market/seed/run":        "exchange:market-write",
 
   // --- Players (mutations) ---
   "POST /api/players/kick-all-online":         "players:kick-all",

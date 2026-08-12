@@ -47,9 +47,11 @@ import { exportBlueprint, importBlueprint, listBlueprints, deleteBlueprint } fro
 import { createZipArchive } from "./services/zipArchive.js";
 import { resolveMapCombatState } from "./services/mapCombatState.js";
 import { grantAddonItem } from "./addonItemGrants.js";
-import { EDA_EXCHANGE_BOT_ADDON_ID, ADDON_SCHEDULER_PERMISSION, createAddonJobScheduler, probeBuybackEligibility, readBuybackSchedule, saveBuybackSchedule } from "./addonJobs.js";
+import { EDA_EXCHANGE_BOT_ADDON_ID, ADDON_SCHEDULER_PERMISSION, createAddonJobScheduler, probeBuybackEligibility, readBuybackSchedule, saveBuybackSchedule, readSeedSchedule, saveSeedSchedule } from "./addonJobs.js";
 import { createPublicDirectoryReporter, normalizeDiscordInvite, readDirectorySettings } from "./services/publicDirectory.js";
 import { choamTerminalOverview, installChoamTerminals, removeChoamTerminals } from "./services/choamTerminals.js";
+import { exchangeStats, listExchangeItems, listExchangeListings, readExchangeConfig, saveExchangeConfig } from "./services/exchange.js";
+import { listMarketExchanges, marketBotStatus, saveMarketBuybackSchedule, saveMarketSeedSchedule } from "./services/exchangeMarket.js";
 import { autoRefillPublicState, createAutoRefillScheduler, setBaseAutoRefill } from "./services/autoRefill.js";
 import { autoRefillWaterPublicState, createAutoRefillWaterScheduler, setBaseAutoRefillWater } from "./services/autoRefillWater.js";
 import { calculateAlwaysOnHostMemorySafety } from "./services/hostMemorySafety.js";
@@ -759,6 +761,46 @@ async function handleApi(req, res) {
   if (path === "/api/maps/choam-terminals" && req.method === "POST") return mapsChoamTerminalInstallRoute(req, res);
   if (path === "/api/maps/choam-terminals" && req.method === "DELETE") return mapsChoamTerminalRemoveRoute(req, res);
   if (path === "/api/maps/choam-terminals") return dbJson(res, () => choamTerminalOverview(db));
+  if (path === "/api/exchange/items") return dbJson(res, () => {
+    const exchangeConfig = readExchangeConfig(config.repoRoot);
+    return listExchangeItems(db, {
+      q: url.searchParams.get("q") || "",
+      page: url.searchParams.get("page") || 0,
+      pageSize: url.searchParams.get("pageSize") || 50,
+      sortColumn: url.searchParams.get("sortColumn") || "display_name",
+      sortDirection: url.searchParams.get("sortDirection") || "asc",
+      owner: url.searchParams.get("owner") || "all",
+      category: url.searchParams.get("category") || "",
+      botOwnerIds: exchangeConfig.botOwnerIds,
+      blacklist: exchangeConfig.blacklistedOwnerIds,
+      includeNpcBroker: exchangeConfig.includeNpcBroker,
+      repoRoot: config.repoRoot
+    });
+  });
+  if (path === "/api/exchange/listings") return dbJson(res, () => {
+    const exchangeConfig = readExchangeConfig(config.repoRoot);
+    return listExchangeListings(db, {
+      templateId: url.searchParams.get("templateId") || "",
+      qualityLevel: url.searchParams.get("quality") || "",
+      owner: url.searchParams.get("owner") || "all",
+      botOwnerIds: exchangeConfig.botOwnerIds,
+      blacklist: exchangeConfig.blacklistedOwnerIds,
+      includeNpcBroker: exchangeConfig.includeNpcBroker
+    });
+  });
+  if (path === "/api/exchange/stats") return dbJson(res, () => {
+    const exchangeConfig = readExchangeConfig(config.repoRoot);
+    return exchangeStats(db, { botOwnerIds: exchangeConfig.botOwnerIds, blacklist: exchangeConfig.blacklistedOwnerIds, includeNpcBroker: exchangeConfig.includeNpcBroker });
+  });
+  if (path === "/api/exchange/config" && req.method === "GET") return json(res, 200, readExchangeConfig(config.repoRoot));
+  if (path === "/api/exchange/config" && req.method === "POST") return exchangeConfigSaveRoute(req, res);
+  if (path === "/api/exchange/market" && req.method === "GET") return dbJson(res, () => marketBotStatus(config, db));
+  if (path === "/api/exchange/market/exchanges" && req.method === "GET") return dbJson(res, () => listMarketExchanges(db));
+  if (path === "/api/exchange/market/buyback/probe" && req.method === "POST") return marketBuybackProbeRoute(req, res);
+  if (path === "/api/exchange/market/buyback/schedule" && req.method === "POST") return marketScheduleSaveRoute(req, res, "buyback");
+  if (path === "/api/exchange/market/seed/schedule" && req.method === "POST") return marketScheduleSaveRoute(req, res, "seed");
+  if (path === "/api/exchange/market/buyback/run" && req.method === "POST") return marketRunNowRoute(req, res, "buyback");
+  if (path === "/api/exchange/market/seed/run" && req.method === "POST") return marketRunNowRoute(req, res, "seed");
   if (path === "/api/maps/user-settings/schema") return userSettingsSchemaRoute(res);
   if (path === "/api/maps/user-settings/restart-pending") return json(res, 200, { pending: existsSync(resolve(config.repoRoot, "runtime/generated/landsraad-restart-required")) });
   if (path === "/api/maps/user-settings/deferred-pending") return json(res, 200, readDeferredRestartPending(config));
@@ -912,7 +954,9 @@ async function addonSchedulerBridgeAction(req, res, id, action, body) {
     if (leavesEnabled) assertInstalledAddonPermission(config, id, ADDON_SCHEDULER_PERMISSION);
     if (!applyMutationRateLimit(req, res, `addon:${id}:scheduler.schedule.set`)) return;
     try {
-      const result = saveBuybackSchedule(config, payload);
+      // Bridge saves always mark the schedule addon-sourced, so scheduled runs
+      // keep re-verifying the addon's approved permissions.
+      const result = saveBuybackSchedule(config, payload, { source: "addon" });
       audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, enabled: result.enabled, intervalMinutes: result.intervalMinutes, exchangeId: result.exchangeId, buybackPercent: result.buybackPercent, maxBuys: result.maxBuys, ok: true });
       return json(res, 200, { ok: true, result });
     } catch (error) {
@@ -937,6 +981,39 @@ async function addonSchedulerBridgeAction(req, res, id, action, body) {
     try {
       const result = await addonJobScheduler.runNow({ trigger: "manual" });
       audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, status: result.status, eligible: result.eligible, purchased: result.purchased, ok: true });
+      return json(res, 200, { ok: true, result });
+    } catch (error) {
+      audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, ok: false, error: redact(error.message || error) });
+      return json(res, 400, { ok: false, error: redact(error.message || error) });
+    }
+  }
+  if (action === "scheduler.seed.schedule.get") {
+    const addon = assertInstalledAddonPermission(config, id, "database:read");
+    const result = readSeedSchedule(config);
+    audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, ok: true });
+    return json(res, 200, { ok: true, result });
+  }
+  if (action === "scheduler.seed.schedule.set") {
+    const payload = body.schedule && typeof body.schedule === "object" ? body.schedule : body;
+    const addon = assertInstalledAddonPermission(config, id, "database:write");
+    const leavesEnabled = payload.enabled === undefined ? readSeedSchedule(config).enabled : payload.enabled === true;
+    if (leavesEnabled) assertInstalledAddonPermission(config, id, ADDON_SCHEDULER_PERMISSION);
+    if (!applyMutationRateLimit(req, res, `addon:${id}:scheduler.seed.schedule.set`)) return;
+    try {
+      const result = saveSeedSchedule(config, payload, { source: "addon" });
+      audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, enabled: result.enabled, intervalMinutes: result.intervalMinutes, exchangeId: result.exchangeId, priceMultiplier: result.priceMultiplier, ok: true });
+      return json(res, 200, { ok: true, result });
+    } catch (error) {
+      audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, ok: false, error: redact(error.message || error) });
+      return json(res, 400, { ok: false, error: redact(error.message || error) });
+    }
+  }
+  if (action === "scheduler.seed.run") {
+    const addon = assertInstalledAddonPermission(config, id, "database:write");
+    if (!applyMutationRateLimit(req, res, `addon:${id}:scheduler.seed.run`)) return;
+    try {
+      const result = await addonJobScheduler.runNow({ trigger: "manual", job: "seed" });
+      audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, status: result.status, listingCount: result.listingCount, ok: true });
       return json(res, 200, { ok: true, result });
     } catch (error) {
       audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, ok: false, error: redact(error.message || error) });
@@ -1172,6 +1249,70 @@ async function mapsChoamTerminalRemoveRoute(req, res) {
   if (!applyMutationRateLimit(req, res, "maps.choam-terminals.remove")) return;
   audit(config, req, "maps.choam-terminals.remove", { tradeCenterKey: body.tradeCenterKey });
   return dbJson(res, () => removeChoamTerminals(db, body));
+}
+
+async function exchangeConfigSaveRoute(req, res) {
+  const body = await readJson(req);
+  if (!applyMutationRateLimit(req, res, "exchange.config")) return;
+  audit(config, req, "exchange.config", {
+    botOwnerIds: Array.isArray(body?.botOwnerIds) ? body.botOwnerIds.length : 0,
+    blacklistedOwnerIds: Array.isArray(body?.blacklistedOwnerIds) ? body.blacklistedOwnerIds.length : 0
+  });
+  try {
+    return json(res, 200, saveExchangeConfig(config.repoRoot, body));
+  } catch (error) {
+    const payload = apiErrorPayload(error, 400);
+    return json(res, payload.status, { supported: false, ...payload.body });
+  }
+}
+
+// ---- First-class Market Bot (console-managed seed/buyback) ----
+//
+// Same engine as the EDA Exchange Bot addon's scheduler bridge, but managed
+// natively: schedules saved here are source:"console" (no installed addon or
+// addon permission approval required — authorization is the RBAC action on
+// these routes), and manual runs reuse the shared addonJobScheduler so a
+// console-triggered sweep can never overlap an addon-scheduled one.
+
+async function marketBuybackProbeRoute(req, res) {
+  const body = await readJson(req);
+  try {
+    const result = await probeBuybackEligibility(config, db, body && typeof body === "object" ? body : {});
+    audit(config, req, "exchange.market", { op: "buyback-probe", eligible: result.eligible, exchangeId: result.exchangeId, ok: true });
+    return json(res, 200, result);
+  } catch (error) {
+    audit(config, req, "exchange.market", { op: "buyback-probe", ok: false, error: redact(error.message || error) });
+    const payload = apiErrorPayload(error, 400);
+    return json(res, payload.status, payload.body);
+  }
+}
+
+async function marketScheduleSaveRoute(req, res, job) {
+  const body = await readJson(req);
+  if (!applyMutationRateLimit(req, res, `exchange.market.${job}.schedule`)) return;
+  const payload = body?.schedule && typeof body.schedule === "object" ? body.schedule : (body || {});
+  try {
+    const result = job === "seed" ? saveMarketSeedSchedule(config, payload) : saveMarketBuybackSchedule(config, payload);
+    audit(config, req, "exchange.market", { op: `${job}-schedule`, enabled: result.enabled, intervalMinutes: result.intervalMinutes, exchangeId: result.exchangeId, ok: true });
+    return json(res, 200, result);
+  } catch (error) {
+    audit(config, req, "exchange.market", { op: `${job}-schedule`, ok: false, error: redact(error.message || error) });
+    const payload = apiErrorPayload(error, 400);
+    return json(res, payload.status, payload.body);
+  }
+}
+
+async function marketRunNowRoute(req, res, job) {
+  if (!applyMutationRateLimit(req, res, `exchange.market.${job}.run`)) return;
+  try {
+    const result = await addonJobScheduler.runNow({ trigger: "console", job });
+    audit(config, req, "exchange.market", { op: `${job}-run`, status: result.status, purchased: result.purchased, listingCount: result.listingCount, ok: true });
+    return json(res, 200, result);
+  } catch (error) {
+    audit(config, req, "exchange.market", { op: `${job}-run`, ok: false, error: redact(error.message || error) });
+    const payload = apiErrorPayload(error, 400);
+    return json(res, payload.status, payload.body);
+  }
 }
 
 async function safeCommand(operation, payload = {}) {

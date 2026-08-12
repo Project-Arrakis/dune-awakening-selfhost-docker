@@ -3,6 +3,8 @@ set -euo pipefail
 
 # shellcheck disable=SC1091
 source runtime/scripts/memory-swap-common.sh
+# shellcheck source=runtime/scripts/env-file.sh
+source runtime/scripts/env-file.sh
 
 if [ -z "${DUNE_COMPOSE_PROJECT_NAME:-}" ]; then
   # shellcheck disable=SC1091
@@ -712,7 +714,8 @@ resolve_login_password_skew_seconds() {
 }
 
 resolve_battlegroup_id() {
-  first_known_value \
+  local candidate
+  for candidate in \
     "$(config_value runtime/generated/battlegroup.env BATTLEGROUP_ID 2>/dev/null || true)" \
     "$(container_env_value_any_state dune-director BATTLEGROUP 2>/dev/null || true)" \
     "$(container_env_value_any_state dune-server-gateway BATTLEGROUP 2>/dev/null || true)" \
@@ -720,6 +723,45 @@ resolve_battlegroup_id() {
     "$(container_env_value_any_state dune-server-survival-1 BATTLEGROUP 2>/dev/null || true)" \
     "$(any_container_env_value_matching '^dune-server-' BATTLEGROUP 2>/dev/null || true)" \
     "$(resolve_battlegroup_id_from_logs 2>/dev/null || true)" \
-    "${BATTLEGROUP_ID:-}" \
-    "dune-docker"
+    "${BATTLEGROUP_ID:-}"
+  do
+    if battlegroup_id_is_valid "$candidate"; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+battlegroup_id_is_valid() {
+  printf '%s' "${1:-}" | grep -Eq '^sh-[A-Za-z0-9]+-[A-Za-z0-9]+$'
+}
+
+battlegroup_host_id() {
+  local value="${1:-}"
+  battlegroup_id_is_valid "$value" || return 1
+  printf '%s\n' "$value" | sed -E 's/^sh-([A-Za-z0-9]+)-.*$/\1/'
+}
+
+funcom_token_host_id() {
+  local token_file="${1:-runtime/secrets/funcom-token.txt}"
+  [ -s "$token_file" ] || return 1
+  TOKEN_FILE="$token_file" python3 - <<'PY'
+import base64
+import json
+import os
+from pathlib import Path
+
+try:
+    token = Path(os.environ["TOKEN_FILE"]).read_text().strip()
+    payload = token.split(".")[1]
+    payload += "=" * (-len(payload) % 4)
+    data = json.loads(base64.urlsafe_b64decode(payload.encode()).decode())
+    host_id = data.get("HostId") or data.get("hostId") or data.get("host_id")
+    if not host_id:
+        raise ValueError("missing HostId")
+    print(str(host_id))
+except Exception:
+    raise SystemExit(1)
+PY
 }

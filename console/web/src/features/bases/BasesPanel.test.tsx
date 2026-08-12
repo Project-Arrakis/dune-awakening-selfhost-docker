@@ -745,7 +745,7 @@ describe("BasesPanel permissions editing", () => {
         { key: "storage", name: "Storage", containerCount: 1, itemCount: 1000 },
         { key: "refining", name: "Refining", containerCount: 0, itemCount: 0 },
         { key: "crafting", name: "Crafting", containerCount: 0, itemCount: 0 },
-        { key: "machines", name: "Machines", containerCount: 0, itemCount: 0 }
+        { key: "other", name: "Other", containerCount: 0, itemCount: 0 }
       ],
       containers: [{
         placeableId: "40001", name: "Vault", typeName: "Storage Container", group: "storage",
