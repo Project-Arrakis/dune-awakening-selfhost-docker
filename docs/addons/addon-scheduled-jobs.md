@@ -1,8 +1,8 @@
-# Addon Scheduled Jobs (Server-Side Buyback)
+# Addon Scheduled Jobs (Server-Side Buyback & Market Reseed)
 
 **Status:** Current | **Last Updated:** August 2026
 
-The console API process can run recurring addon work in the background, so automation keeps running when no browser has the addon page open. The first supported job is the **EDA Exchange Bot** (`eda-exchange-bot`) buyback sweep.
+The console API process can run recurring addon work in the background, so automation keeps running when no browser has the addon page open. The supported jobs are the **EDA Exchange Bot** (`eda-exchange-bot`) **buyback sweep** and **market reseed**. The same engine also powers the console's first-class [Market Bot](../console/exchange.md#market-bot) on the Exchange panel; schedules saved there are marked `source: "console"` and do not require the addon (see below).
 
 ## How it works
 
@@ -36,8 +36,10 @@ Fields:
 | `exchangeId` | Target exchange, validated as a decimal string up to the PostgreSQL BIGINT max. |
 | `priceMultiplier` | Seed-plan price multiplier used to derive buyback reference prices (1–100, default 5). |
 | `buybackPercent` | Buy player listings priced at or below this percent of the reference price (1–100, default 60). |
+| `buybackPriceBasis` | What the percent applies to: `seeded` (default; seeded NPC price at the listing's grade), `average`, or `lowest` (live player-market ask for that template + grade, with seeded fallback when no comps exist). |
 | `maxBuys` | Maximum listings bought per sweep (1–5000, default 500). |
-| `lastRunAt` / `lastRunStatus` / `lastRunDetail` / `nextRunAt` | Status reporting (`idle`, `swept`, or `error`). |
+| `source` | `addon` (bridge-managed; every scheduled run re-verifies the addon's approved permissions) or `console` (saved from the first-class Market Bot UI; authorized by RBAC at save time, no addon required). Never read from bridge payloads — bridge saves always pin it back to `addon`. |
+| `lastRunAt` / `lastRunStatus` / `lastRunDetail` / `nextRunAt` | Status reporting (`idle`, `swept`/`seeded`, or `error`). |
 
 Validation note for addon authors: `intervalMinutes` is the only field that silently clamps into its range; `exchangeId`, `priceMultiplier`, `buybackPercent`, and `maxBuys` reject out-of-range or malformed values with an error. `exchangeId` must be sent as a decimal **string**, and run results report `totalUnits`/`totalSolari` as decimal strings too (BIGINT-safe).
 
@@ -61,7 +63,19 @@ await bridge("scheduler.probe", { exchangeId: "42", buybackPercent: 60 });
 
 // Run one sweep now (requires database:write). Takes a backup only when eligible listings exist.
 await bridge("scheduler.run");
+
+// Market reseed schedule (same permission model; persists in seed.json).
+await bridge("scheduler.seed.schedule.get");
+await bridge("scheduler.seed.schedule.set", {
+  schedule: { enabled: true, exchangeId: "42", intervalMinutes: 15, priceMultiplier: 5 }
+});
+
+// Run one reseed now (requires database:write). Always: backup, clear the
+// bot's own listings on that exchange, seed from the plan.
+await bridge("scheduler.seed.run");
 ```
+
+The seed and buyback jobs share one running lock, so the two can never mutate the exchange at the same time. The seed plan resolves to the installed addon's `web/market-seed-plan.json` first, falling back to the console-bundled `runtime/data/market-seed-plan.json`.
 
 The existing addon bridge rate limits apply to these actions; scheduled background runs consume a dedicated mutation rate-limit scope (`addon-scheduler:eda-exchange-bot`) since no session or client IP exists in that context.
 
