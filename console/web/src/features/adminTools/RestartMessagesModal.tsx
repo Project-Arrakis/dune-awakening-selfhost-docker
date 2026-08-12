@@ -5,9 +5,15 @@ import type { RestartMessageTemplate, RestartMessages } from "../../api/server";
 type MessageTab = "battlegroup" | "map";
 
 const TAB_LABELS: Record<MessageTab, string> = { battlegroup: "Battlegroup Restart", map: "Map Restart" };
-const TAB_PLACEHOLDER_HELP: Record<MessageTab, string> = {
-  battlegroup: "Available placeholders: {minutes} — the countdown remaining, e.g. “15 minutes” or “1 minute”.",
-  map: "Available placeholders: {minutes} — the countdown remaining; {mapLabel} — the map or Sietch name, e.g. “Hagga Basin”."
+type PlaceholderInfo = { token: string; description: string };
+const TAB_PLACEHOLDERS: Record<MessageTab, PlaceholderInfo[]> = {
+  battlegroup: [
+    { token: "{minutes}", description: "The countdown remaining, e.g. “15 minutes” or “1 minute”." }
+  ],
+  map: [
+    { token: "{minutes}", description: "The countdown remaining, e.g. “15 minutes” or “1 minute”." },
+    { token: "{mapLabel}", description: "The map or Sietch name, e.g. “Hagga Basin”." }
+  ]
 };
 const PREVIEW_VARS = { minutes: "15 minutes", mapLabel: "Hagga Basin" };
 const MAX_TITLE_LENGTH = 80;
@@ -96,7 +102,12 @@ export function RestartMessagesModal({ messages, defaults, saving, error, onSave
         /></label>
         <span className="restart-messages-counter">{activeTemplate.body.length} / {MAX_BODY_LENGTH}</span>
       </div>
-      <p className="muted restart-messages-help">{TAB_PLACEHOLDER_HELP[tab]}</p>
+      <div className="restart-messages-help">
+        <span className="muted restart-messages-help-label">Available placeholders:</span>
+        <ul className="restart-messages-placeholder-list">
+          {TAB_PLACEHOLDERS[tab].map((placeholder) => <li key={placeholder.token}><code>{placeholder.token}</code> <span className="muted">— {placeholder.description}</span></li>)}
+        </ul>
+      </div>
       <div className="restart-messages-preview">
         <span className="restart-messages-preview-label">Preview</span>
         <strong>{renderPreview(activeTemplate.title, PREVIEW_VARS) || "—"}</strong>
