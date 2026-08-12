@@ -223,10 +223,6 @@ h1, h2, h3, h4, h5 { color: var(--title); line-height: 1.2; letter-spacing: 0; }
 .confirm-modal-actions-grouped { justify-content: space-between; align-items: center; }
 .confirm-modal-action-group { display: flex; gap: 10px; flex-wrap: wrap; }
 .confirm-modal-action-divider { width: 1px; align-self: stretch; min-height: 24px; background: var(--border-strong); }
-@media (max-width: 480px) {
-  .confirm-modal-actions-grouped { flex-direction: column; align-items: stretch; gap: 12px; }
-  .confirm-modal-action-divider { display: none; }
-}
 
 .app-shell { display: grid; grid-template-columns: 260px 1fr; min-height: 100vh; }
 .setup-only-shell { grid-template-columns: 1fr; }
@@ -4383,8 +4379,16 @@ td :where(.service-actions, .action-row, .map-action-buttons) { max-width: 100%;
   .topbar .topbar-links { grid-template-columns: 1fr; }
   .community-button, .listing-claim-badge { grid-column: auto; }
   .confirm-modal-details div { grid-template-columns: 1fr; gap: 3px; }
-  .confirm-modal-actions { display: grid; grid-template-columns: 1fr; }
-  .confirm-modal-actions button { width: 100%; min-height: 44px; }
+  /* Excludes the grouped (4-button/quaternary) layout below -- its own rule
+     right after this one handles it. A bare .confirm-modal-actions selector
+     here would win (same specificity, later in source) over
+     .confirm-modal-actions-grouped's `display: flex`, stacking its two
+     button clusters and the divider into orphaned separate rows. */
+  .confirm-modal-actions:not(.confirm-modal-actions-grouped) { display: grid; grid-template-columns: 1fr; }
+  .confirm-modal-actions:not(.confirm-modal-actions-grouped) button { width: 100%; min-height: 44px; }
+  .confirm-modal-actions-grouped { flex-direction: column; align-items: stretch; gap: 12px; }
+  .confirm-modal-action-group button { width: 100%; min-height: 44px; }
+  .confirm-modal-action-divider { display: none; }
   .grid, .two-col, .summary-cols, .actions-grid, .settings-grid, .advanced-grid,
   .setup-form-grid, .check-grid, .health-grid, .health-grid-compact,
   .catalog-item-picker, .menu-card-grid, .planned-grid, .playerAdmin_cardGrid {

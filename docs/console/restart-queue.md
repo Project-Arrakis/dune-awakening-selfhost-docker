@@ -26,8 +26,11 @@ intercepted:
   into the countdown and runs at T-0. A settings save that does **not**
   restart (`restart: false`) is unaffected.
 
-For each gated action, the console first checks how many real players are online across the
-battlegroup:
+For each gated action, the console first checks how many real players are online — scoped to
+that action's actual target. A battlegroup restart checks everyone; a single-map or sietch
+restart checks only players on that map/partition (resolved via `dune.world_partition`, never
+`dune.actors.map`, which names an in-game region rather than a restart target). The interception
+dialog also shows the battlegroup-wide count for context when it differs from the scoped one.
 
 - **No real players online** → the restart runs **immediately**, with no
   countdown.
@@ -149,14 +152,8 @@ dropping one that was seconds away.
 
 ## Limitations
 
-Two limitations are intentional in this version and are documented here so they
-are not mistaken for bugs.
-
-**Online-count scope is battlegroup-wide, not per-map.** The "players online"
-check counts real players across the whole battlegroup. A **map** restart
-therefore only runs immediately when the **entire battlegroup** is empty — a map
-with no players still gets a countdown if anyone is online elsewhere. This is a
-known v1 simplification.
+One limitation is intentional in this version and is documented here so it is
+not mistaken for a bug.
 
 **There is no join-lock.** Players can still join during a countdown. The shipped
 game commands offer no way to block new joins with a reason, so only the T-0
