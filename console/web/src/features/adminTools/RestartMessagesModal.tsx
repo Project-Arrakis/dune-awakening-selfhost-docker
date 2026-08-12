@@ -105,7 +105,7 @@ export function RestartMessagesModal({ messages, defaults, saving, error, onSave
       {activeError && <p className="danger-note" role="alert">{activeError}</p>}
       {error && <p className="danger-note" role="alert">{error}</p>}
       <div className="confirm-modal-actions">
-        <button disabled={saving} onClick={() => resetTab(tab)}>Reset {TAB_LABELS[tab]} to Default</button>
+        <button disabled={saving} title={`Reset the ${TAB_LABELS[tab]} template to its default`} onClick={() => resetTab(tab)}>Reset to Default</button>
         <button disabled={saving} onClick={onClose}>Cancel</button>
         <button className="success" disabled={!canSave} onClick={() => onSave(draft)}>{saving ? "Saving..." : "Save Messages"}</button>
       </div>
