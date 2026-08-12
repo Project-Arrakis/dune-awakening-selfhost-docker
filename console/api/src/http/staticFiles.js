@@ -16,6 +16,18 @@ export function contentTypeForPath(target) {
   return mime.get(extname(target)) || "application/octet-stream";
 }
 
+// Vite fingerprints every file under its default assetsDir ("/assets") with a
+// content hash, so those can be cached forever -- a rebuild that changes their
+// content always produces a new filename. Everything else, above all
+// index.html (the SPA shell every navigation and every unrecognized route
+// falls back to via safeStaticTarget), must never be cached without
+// revalidation: without this, a browser holding a stale index.html keeps
+// requesting hashed asset filenames a later image rebuild already replaced,
+// which looks like "the page doesn't update until I hard refresh."
+export function cacheControlForPath(path) {
+  return path.startsWith("/assets/") ? "public, max-age=31536000, immutable" : "no-cache";
+}
+
 export function serveStatic(config, req, res) {
   const path = new URL(req.url || "/", "http://localhost").pathname;
   const target = safeStaticTarget(config.staticDir, path);
@@ -23,6 +35,6 @@ export function serveStatic(config, req, res) {
     json(res, 200, { app: config.appName, message: "Frontend is not built yet. Run npm install && npm run build in console/web/." });
     return;
   }
-  res.writeHead(200, withSecurityHeaders({ "content-type": contentTypeForPath(target) }));
+  res.writeHead(200, withSecurityHeaders({ "content-type": contentTypeForPath(target), "cache-control": cacheControlForPath(path) }));
   createReadStream(target).pipe(res);
 }
