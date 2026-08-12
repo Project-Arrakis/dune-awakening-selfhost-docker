@@ -50,6 +50,7 @@ import { EDA_EXCHANGE_BOT_ADDON_ID, ADDON_SCHEDULER_PERMISSION, createAddonJobSc
 import { createPublicDirectoryReporter, normalizeDiscordInvite, readDirectorySettings } from "./services/publicDirectory.js";
 import { choamTerminalOverview, installChoamTerminals, removeChoamTerminals } from "./services/choamTerminals.js";
 import { exchangeStats, listExchangeItems, listExchangeListings, readExchangeConfig, saveExchangeConfig } from "./services/exchange.js";
+import { listMarketExchanges, marketBotStatus, saveMarketBuybackSchedule, saveMarketSeedSchedule } from "./services/exchangeMarket.js";
 import { autoRefillPublicState, createAutoRefillScheduler, setBaseAutoRefill } from "./services/autoRefill.js";
 import { autoRefillWaterPublicState, createAutoRefillWaterScheduler, setBaseAutoRefillWater } from "./services/autoRefillWater.js";
 import { calculateAlwaysOnHostMemorySafety } from "./services/hostMemorySafety.js";
@@ -783,6 +784,13 @@ async function handleApi(req, res) {
   });
   if (path === "/api/exchange/config" && req.method === "GET") return json(res, 200, readExchangeConfig(config.repoRoot));
   if (path === "/api/exchange/config" && req.method === "POST") return exchangeConfigSaveRoute(req, res);
+  if (path === "/api/exchange/market" && req.method === "GET") return dbJson(res, () => marketBotStatus(config, db));
+  if (path === "/api/exchange/market/exchanges" && req.method === "GET") return dbJson(res, () => listMarketExchanges(db));
+  if (path === "/api/exchange/market/buyback/probe" && req.method === "POST") return marketBuybackProbeRoute(req, res);
+  if (path === "/api/exchange/market/buyback/schedule" && req.method === "POST") return marketScheduleSaveRoute(req, res, "buyback");
+  if (path === "/api/exchange/market/seed/schedule" && req.method === "POST") return marketScheduleSaveRoute(req, res, "seed");
+  if (path === "/api/exchange/market/buyback/run" && req.method === "POST") return marketRunNowRoute(req, res, "buyback");
+  if (path === "/api/exchange/market/seed/run" && req.method === "POST") return marketRunNowRoute(req, res, "seed");
   if (path === "/api/maps/user-settings/schema") return userSettingsSchemaRoute(res);
   if (path === "/api/maps/user-settings/restart-pending") return json(res, 200, { pending: existsSync(resolve(config.repoRoot, "runtime/generated/landsraad-restart-required")) });
   if (path === "/api/maps/user-settings/values") return userSettingsValuesRoute(res, url);
@@ -935,7 +943,9 @@ async function addonSchedulerBridgeAction(req, res, id, action, body) {
     if (leavesEnabled) assertInstalledAddonPermission(config, id, ADDON_SCHEDULER_PERMISSION);
     if (!applyMutationRateLimit(req, res, `addon:${id}:scheduler.schedule.set`)) return;
     try {
-      const result = saveBuybackSchedule(config, payload);
+      // Bridge saves always mark the schedule addon-sourced, so scheduled runs
+      // keep re-verifying the addon's approved permissions.
+      const result = saveBuybackSchedule(config, payload, { source: "addon" });
       audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, enabled: result.enabled, intervalMinutes: result.intervalMinutes, exchangeId: result.exchangeId, buybackPercent: result.buybackPercent, maxBuys: result.maxBuys, ok: true });
       return json(res, 200, { ok: true, result });
     } catch (error) {
@@ -979,7 +989,7 @@ async function addonSchedulerBridgeAction(req, res, id, action, body) {
     if (leavesEnabled) assertInstalledAddonPermission(config, id, ADDON_SCHEDULER_PERMISSION);
     if (!applyMutationRateLimit(req, res, `addon:${id}:scheduler.seed.schedule.set`)) return;
     try {
-      const result = saveSeedSchedule(config, payload);
+      const result = saveSeedSchedule(config, payload, { source: "addon" });
       audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, enabled: result.enabled, intervalMinutes: result.intervalMinutes, exchangeId: result.exchangeId, priceMultiplier: result.priceMultiplier, ok: true });
       return json(res, 200, { ok: true, result });
     } catch (error) {
@@ -1242,6 +1252,55 @@ async function exchangeConfigSaveRoute(req, res) {
   } catch (error) {
     const payload = apiErrorPayload(error, 400);
     return json(res, payload.status, { supported: false, ...payload.body });
+  }
+}
+
+// ---- First-class Market Bot (console-managed seed/buyback) ----
+//
+// Same engine as the EDA Exchange Bot addon's scheduler bridge, but managed
+// natively: schedules saved here are source:"console" (no installed addon or
+// addon permission approval required — authorization is the RBAC action on
+// these routes), and manual runs reuse the shared addonJobScheduler so a
+// console-triggered sweep can never overlap an addon-scheduled one.
+
+async function marketBuybackProbeRoute(req, res) {
+  const body = await readJson(req);
+  try {
+    const result = await probeBuybackEligibility(config, db, body && typeof body === "object" ? body : {});
+    audit(config, req, "exchange.market", { op: "buyback-probe", eligible: result.eligible, exchangeId: result.exchangeId, ok: true });
+    return json(res, 200, result);
+  } catch (error) {
+    audit(config, req, "exchange.market", { op: "buyback-probe", ok: false, error: redact(error.message || error) });
+    const payload = apiErrorPayload(error, 400);
+    return json(res, payload.status, payload.body);
+  }
+}
+
+async function marketScheduleSaveRoute(req, res, job) {
+  const body = await readJson(req);
+  if (!applyMutationRateLimit(req, res, `exchange.market.${job}.schedule`)) return;
+  const payload = body?.schedule && typeof body.schedule === "object" ? body.schedule : (body || {});
+  try {
+    const result = job === "seed" ? saveMarketSeedSchedule(config, payload) : saveMarketBuybackSchedule(config, payload);
+    audit(config, req, "exchange.market", { op: `${job}-schedule`, enabled: result.enabled, intervalMinutes: result.intervalMinutes, exchangeId: result.exchangeId, ok: true });
+    return json(res, 200, result);
+  } catch (error) {
+    audit(config, req, "exchange.market", { op: `${job}-schedule`, ok: false, error: redact(error.message || error) });
+    const payload = apiErrorPayload(error, 400);
+    return json(res, payload.status, payload.body);
+  }
+}
+
+async function marketRunNowRoute(req, res, job) {
+  if (!applyMutationRateLimit(req, res, `exchange.market.${job}.run`)) return;
+  try {
+    const result = await addonJobScheduler.runNow({ trigger: "console", job });
+    audit(config, req, "exchange.market", { op: `${job}-run`, status: result.status, purchased: result.purchased, listingCount: result.listingCount, ok: true });
+    return json(res, 200, result);
+  } catch (error) {
+    audit(config, req, "exchange.market", { op: `${job}-run`, ok: false, error: redact(error.message || error) });
+    const payload = apiErrorPayload(error, 400);
+    return json(res, payload.status, payload.body);
   }
 }
 
