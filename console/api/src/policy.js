@@ -192,6 +192,7 @@ const DEFAULT_POLICIES = {
         "storage:*",
         "blueprints:*",
         "vehicles:*",
+        "exchange:*",
         "maps:*",
         "sietches:*",
         "deepdesert:*",
@@ -223,6 +224,7 @@ const DEFAULT_POLICIES = {
         "storage:read",
         "blueprints:read",
         "vehicles:read",
+        "exchange:read",
         "logs:*",
         "landsraad:read",
         "admin:broadcast",
@@ -245,6 +247,7 @@ const DEFAULT_POLICIES = {
         "storage:read",
         "blueprints:read",
         "vehicles:read",
+        "exchange:read",
         "landsraad:read",
       ]},
     ]
@@ -264,6 +267,7 @@ const DEFAULT_POLICIES = {
         "storage:read",
         "blueprints:read",
         "vehicles:read",
+        "exchange:read",
         "landsraad:read",
       ]},
     ]
