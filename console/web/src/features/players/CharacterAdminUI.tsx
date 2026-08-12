@@ -465,6 +465,7 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
     return playerAdmin_skillChanges[key] ?? playerAdmin_skillBaselineRank(school, card);
   }
   function playerAdmin_setSkillValue(school: string, card: SkillCard, rank: number) {
+    if (!playerAdmin_canRunLiveAction) return;
     const module = playerAdmin_findSkillModule(school, card);
     const key = module?.id || playerAdmin_skillKey(school, card.name);
     const maxRank = playerAdmin_skillMaxRank(school, card);
@@ -480,6 +481,11 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
   async function playerAdmin_saveSkillChanges() {
     const entries = Object.entries(playerAdmin_skillChanges);
     if (!entries.length) return;
+    if (!playerAdmin_canRunLiveAction) {
+      playerAdmin_setSkillChanges({});
+      playerAdmin_showResult("skillSave", "The player must be online to change skills. Unsaved changes were discarded.", "danger");
+      return;
+    }
     onError("");
     playerAdmin_showResult("skillSave", `Saving ${entries.length} skill change${entries.length === 1 ? "" : "s"} for ${playerName}`, "neutral", true);
     try {
@@ -668,6 +674,9 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
     playerAdmin_setSkillChanges({});
     playerAdmin_setSkillBaselineError("");
   }, [actionPlayerId]);
+  useEffect(() => {
+    if (!playerAdmin_canRunLiveAction) playerAdmin_setSkillChanges({});
+  }, [playerAdmin_canRunLiveAction]);
   useEffect(() => () => { if (playerAdmin_resultTimer.current) window.clearTimeout(playerAdmin_resultTimer.current); }, []);
   const playerAdmin_table = (playerAdmin_columns: string[], playerAdmin_rows: Record<string, string>[]) => (
     <div className="playerAdmin_tableWrap">
@@ -697,7 +706,8 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
           {Array.from({ length: maxRank }, (_, index) => {
             const rank = index + 1;
             const active = rank <= value;
-            return <button key={rank} type="button" className={active ? "active" : ""} disabled={!module || playerAdmin_actionResult?.pending} title={module ? `Set ${playerAdmin_item.name} to ${value === rank ? 0 : rank}` : "Skill module ID was not found"} onClick={() => playerAdmin_setSkillValue(playerAdmin_school, playerAdmin_item, value === rank ? 0 : rank)} aria-label={`Set ${playerAdmin_item.name} rank ${value === rank ? 0 : rank}`} />;
+            const disabledReason = !module ? "Skill module ID was not found" : !playerAdmin_canRunLiveAction ? "The player must be online to change skills" : "";
+            return <button key={rank} type="button" className={active ? "active" : ""} disabled={Boolean(disabledReason) || playerAdmin_actionResult?.pending} title={disabledReason || `Set ${playerAdmin_item.name} to ${value === rank ? 0 : rank}`} onClick={() => playerAdmin_setSkillValue(playerAdmin_school, playerAdmin_item, value === rank ? 0 : rank)} aria-label={`Set ${playerAdmin_item.name} rank ${value === rank ? 0 : rank}`} />;
           })}
         </div>
         <code>{module?.id || "Module ID not found"}</code>
@@ -1135,7 +1145,7 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
           <section className="playerAdmin_box">
             <h4>Skill Browser</h4>
             <div className="playerAdmin_boxHeaderLine">
-              <p>Use Restore Starter Skills after a progression reset leaves the starting tree locked.</p>
+              <p>{playerAdmin_canRunLiveAction ? "Use Restore Starter Skills after a progression reset leaves the starting tree locked." : "The player must be online to change skills or restore starter skills."}</p>
               <div className="playerAdmin_filterRow playerAdmin_filterRowRight">
                 <span className="playerAdmin_note">{playerAdmin_skillChangeCount} Unsaved Change{playerAdmin_skillChangeCount === 1 ? "" : "s"}</span>
                 <button disabled={!playerAdmin_canRunLiveAction || !playerAdmin_starterSkillPreset || playerAdmin_actionResult?.pending} onClick={() => playerAdmin_restoreStarterSkills()}>Restore Starter Skills</button>
