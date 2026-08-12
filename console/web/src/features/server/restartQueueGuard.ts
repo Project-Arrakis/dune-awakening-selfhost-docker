@@ -15,6 +15,11 @@ export type RestartGateMeta = {
   // Battlegroup-wide count, for context alongside a map-scoped playersOnline.
   // Equal to playersOnline for a battlegroup-wide restart.
   battlegroupPlayersOnline: number | null;
+  // Whether playersOnline was scoped to a specific map/partition (true) or is
+  // already battlegroup-wide (false). Drives the dialog's wording ("on
+  // {label}" vs "in the battlegroup") -- deciding this from the label text
+  // would be a guess; the caller already knows whether it passed a target.
+  mapScoped: boolean;
   countdownMinutes: number;
   note?: string;
   details?: RestartGateDetail[];
@@ -60,6 +65,7 @@ export async function runGatedRestart(params: {
     enabled: status?.settings.enabled ?? false,
     playersOnline: status?.playersOnline ?? null,
     battlegroupPlayersOnline: status?.battlegroupPlayersOnline ?? status?.playersOnline ?? null,
+    mapScoped: Boolean(params.target),
     countdownMinutes: status?.settings.defaultCountdownMinutes ?? 15,
     note: params.note,
     details: params.details
