@@ -208,6 +208,7 @@ echo "=== Required UDP listeners ==="
 ss -lnup | grep -E ":(${client_port_base}|$((client_port_base + 1))|${igw_port_base}|$((igw_port_base + 1)))" || true
 
 rm -f runtime/generated/landsraad-restart-required
+rm -f runtime/generated/settings-restart-pending.json
 
 cat <<'EOF'
 

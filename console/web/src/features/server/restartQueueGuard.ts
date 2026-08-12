@@ -3,8 +3,9 @@ import type { Task } from "../../api/setup";
 
 // Result of the restart-queue interception dialog. "immediate" bypasses the
 // queue (the restart runs now); "queue" lets the backend capture it into a
-// countdown; "cancel" aborts.
-export type RestartGateChoice = "queue" | "immediate" | "cancel";
+// countdown; "manual" defers the restart entirely (settings-save confirms
+// only -- see RestartGateMeta.manualLabel); "cancel" aborts.
+export type RestartGateChoice = "queue" | "immediate" | "manual" | "cancel";
 
 export type RestartGateDetail = { label: string; value: string; tone?: "accent" | "success" | "danger" };
 
@@ -23,6 +24,12 @@ export type RestartGateMeta = {
   countdownMinutes: number;
   note?: string;
   details?: RestartGateDetail[];
+  // Offers a 4th "defer entirely" choice resolving "manual" when set. Only
+  // confirmSettingsRestart (Maps -> Interactive Modifiers/Advanced) sets
+  // this -- runGatedRestart's other callers (battlegroup restart, map
+  // respawn, sietch restart) never do, so their dialogs are unaffected and
+  // can never resolve "manual".
+  manualLabel?: string;
 };
 
 // The interception presenter, provided by App (restartGateChoice). It shows the

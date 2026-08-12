@@ -88,7 +88,7 @@ function confirmDialog(message: string, options: Partial<Omit<ConfirmDialogReque
 // and players are online it offers Queue / Restart Immediately / Cancel.
 // Returns "immediate" only when the dialog cannot open, so the restart still
 // works headless.
-function restartGateChoice(meta: { label: string; enabled: boolean; playersOnline: number | null; battlegroupPlayersOnline: number | null; mapScoped: boolean; countdownMinutes: number; note?: string; details?: ConfirmDialogDetail[] }): Promise<RestartGateChoice> {
+function restartGateChoice(meta: { label: string; enabled: boolean; playersOnline: number | null; battlegroupPlayersOnline: number | null; mapScoped: boolean; countdownMinutes: number; note?: string; details?: ConfirmDialogDetail[]; manualLabel?: string }): Promise<RestartGateChoice> {
   return new Promise((resolve) => {
     if (!openConfirmDialog) {
       resolve("immediate");
@@ -106,31 +106,44 @@ function restartGateChoice(meta: { label: string; enabled: boolean; playersOnlin
       ? ` (${battlegroupOnline} online battlegroup-wide)`
       : "";
     const scopeClause = meta.mapScoped ? `on ${meta.label}` : "in the battlegroup";
+    // With a 4th ("Restart later") choice on offer, no single sentence can
+    // presume the outcome -- 3 of the 4 choices don't restart on the spot --
+    // so the message stays neutral and the buttons carry the decision.
+    const resolveQuaternary = (outcome: ConfirmDialogOutcome) => outcome === "quaternary" ? "manual" as const : outcome;
     if (!queued) {
       openConfirmDialog({
         title: "Confirm restart",
         message: meta.enabled
-          ? `No players are online ${scopeClause}${battlegroupClause}, so this restart will run immediately.`
+          ? meta.manualLabel
+            ? `No players are online ${scopeClause}${battlegroupClause}. The changes save now — choose when the restart that applies them should happen.`
+            : `No players are online ${scopeClause}${battlegroupClause}, so this restart will run immediately.`
           : `Restart ${meta.label}? Anyone connected will be disconnected.`,
         confirmLabel: "Restart Now",
         cancelLabel: "Cancel",
+        quaternaryLabel: meta.manualLabel,
         danger: true,
         warning: meta.note,
         details: meta.details,
-        resolve: (outcome) => resolve(outcome === "confirm" ? "immediate" : "cancel")
+        resolve: (outcome) => resolve(resolveQuaternary(outcome) === "confirm" ? "immediate" : resolveQuaternary(outcome) === "manual" ? "manual" : "cancel")
       });
       return;
     }
     openConfirmDialog({
       title: "Players are online",
-      message: `${online} ${online === 1 ? "player is" : "players are"} online ${scopeClause}${battlegroupClause}. This restart will start a ${minutes}-minute countdown with in-game warnings at each checkpoint.`,
+      message: meta.manualLabel
+        ? `${online} ${online === 1 ? "player is" : "players are"} online ${scopeClause}${battlegroupClause}. The changes save now — choose when the restart that applies them should happen.`
+        : `${online} ${online === 1 ? "player is" : "players are"} online ${scopeClause}${battlegroupClause}. This restart will start a ${minutes}-minute countdown with in-game warnings at each checkpoint.`,
       confirmLabel: `Queue Restart (${minutes} min)`,
       cancelLabel: "Cancel",
       tertiaryLabel: "Restart Immediately",
+      quaternaryLabel: meta.manualLabel,
       danger: false,
       warning: meta.note,
       details: meta.details ?? [{ label: "Players online", value: String(online), tone: "accent" }],
-      resolve: (outcome) => resolve(outcome === "confirm" ? "queue" : outcome === "tertiary" ? "immediate" : "cancel")
+      resolve: (outcome) => {
+        const resolved = resolveQuaternary(outcome);
+        resolve(resolved === "confirm" ? "queue" : resolved === "tertiary" ? "immediate" : resolved === "manual" ? "manual" : "cancel");
+      }
     });
   });
 }
@@ -164,7 +177,8 @@ async function confirmSettingsRestart(kind: "UserEngine" | "UserGame", target?: 
     battlegroupPlayersOnline: status?.battlegroupPlayersOnline ?? status?.playersOnline ?? null,
     mapScoped: Boolean(target),
     countdownMinutes: status?.settings.defaultCountdownMinutes ?? 15,
-    note: "To apply these changes, the affected server(s) need to restart."
+    manualLabel: "Restart later",
+    note: "Restart later leaves the servers running as-is; the change applies at the next battlegroup restart, manual or automatic."
   });
 }
 
