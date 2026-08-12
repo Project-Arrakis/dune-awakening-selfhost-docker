@@ -4194,7 +4194,7 @@ function craftingRecipeCatalog() {
   return craftingRecipeCatalogCache;
 }
 
-function adminItemMetadata() {
+export function adminItemMetadata() {
   if (adminItemMetadataCache) return adminItemMetadataCache;
   const metadata = new Map();
   try {

@@ -49,6 +49,7 @@ export const NAMESPACES = {
   STORAGE:     "storage",
   BLUEPRINTS:  "blueprints",
   VEHICLES:    "vehicles",
+  EXCHANGE:    "exchange",
 };
 
 // ---- Actions: route → action mapping ----
@@ -147,6 +148,13 @@ export const ROUTE_ACTIONS = {
 
   // --- Vehicles ---
   "GET /api/vehicles":                         "vehicles:read",
+
+  // --- Exchange (Market Board) — read-only board + console-local filter config ---
+  "GET /api/exchange/items":                   "exchange:read",
+  "GET /api/exchange/listings":                "exchange:read",
+  "GET /api/exchange/stats":                   "exchange:read",
+  "GET /api/exchange/config":                  "exchange:read",
+  "POST /api/exchange/config":                 "exchange:write-config",
 
   // --- Players (mutations) ---
   "POST /api/players/kick-all-online":         "players:kick-all",
