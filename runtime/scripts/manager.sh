@@ -684,29 +684,22 @@ EOF
 }
 
 persist_runtime_identity_snapshot() {
-  local battlegroup_id server_title server_region server_ip existing_battlegroup_id
+  local battlegroup_id server_title server_region server_ip
 
-  battlegroup_id="$(resolve_battlegroup_id 2>/dev/null || true)"
+  if ! runtime/scripts/battlegroup-identity.sh ensure; then
+    echo "Cannot save the runtime identity snapshot until the Battlegroup ID is repaired." >&2
+    return 1
+  fi
+  battlegroup_id="$(resolve_battlegroup_id)"
   server_title="$(resolve_server_title 2>/dev/null || true)"
   server_region="$(resolve_server_region 2>/dev/null || true)"
   server_ip="$(resolve_server_ip 2>/dev/null || true)"
-  existing_battlegroup_id="$(config_value runtime/generated/battlegroup.env BATTLEGROUP_ID 2>/dev/null || true)"
-
-  if { [ -z "$battlegroup_id" ] || [ "$battlegroup_id" = "unknown" ] || [ "$battlegroup_id" = "dune-docker" ]; } \
-    && [ -n "$existing_battlegroup_id" ] \
-    && [ "$existing_battlegroup_id" != "unknown" ] \
-    && [ "$existing_battlegroup_id" != "dune-docker" ]; then
-    battlegroup_id="$existing_battlegroup_id"
-  fi
 
   mkdir -p runtime/generated
-  {
-    printf 'BATTLEGROUP_ID=%q\n' "${battlegroup_id:-dune-docker}"
-    printf 'SERVER_TITLE=%q\n' "${server_title:-My Dune Server}"
-    printf 'SERVER_REGION=%q\n' "${server_region:-Europe}"
-    printf 'SERVER_IP=%q\n' "${server_ip:-auto}"
-  } > runtime/generated/battlegroup.env
-  chmod 664 runtime/generated/battlegroup.env 2>/dev/null || true
+  set_env_file_value runtime/generated/battlegroup.env BATTLEGROUP_ID "$battlegroup_id" 664
+  set_env_file_value runtime/generated/battlegroup.env SERVER_TITLE "${server_title:-My Dune Server}" 664 quoted
+  set_env_file_value runtime/generated/battlegroup.env SERVER_REGION "${server_region:-Europe}" 664 quoted
+  set_env_file_value runtime/generated/battlegroup.env SERVER_IP "${server_ip:-auto}" 664
 }
 
 show_config_summary() {
