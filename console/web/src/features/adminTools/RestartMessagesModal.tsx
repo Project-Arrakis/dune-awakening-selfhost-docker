@@ -18,6 +18,8 @@ const TAB_PLACEHOLDERS: Record<MessageTab, PlaceholderInfo[]> = {
 const PREVIEW_VARS = { minutes: "15 minutes", mapLabel: "Hagga Basin" };
 const MAX_TITLE_LENGTH = 80;
 const MAX_BODY_LENGTH = 500;
+const MIN_DURATION_SEC = 1;
+const MAX_DURATION_SEC = 3600;
 
 // Mirrors restartQueue.js's renderTemplate exactly (a `{token}` not present in
 // vars is left as-is) so the preview matches what will actually be broadcast.
@@ -35,16 +37,22 @@ function templateError(template: RestartMessageTemplate) {
   return "";
 }
 
-export function RestartMessagesModal({ messages, defaults, saving, error, onSave, onClose }: {
+export function RestartMessagesModal({ messages, defaults, durationSec, defaultDurationSec, saving, error, onSave, onClose }: {
   messages: RestartMessages;
   defaults: RestartMessages;
+  durationSec: number;
+  defaultDurationSec: number;
   saving: boolean;
   error: string;
-  onSave: (next: RestartMessages) => void;
+  onSave: (next: { messages: RestartMessages; broadcastDurationSec: number }) => void;
   onClose: () => void;
 }) {
   const [tab, setTab] = useState<MessageTab>("battlegroup");
   const [draft, setDraft] = useState<RestartMessages>(messages);
+  // Shared across both message types -- the game shows whichever banner is
+  // sent (battlegroup or map) for this long, there's no separate duration
+  // per template -- so it's a text field, not a per-tab one.
+  const [durationDraft, setDurationDraft] = useState(String(Math.round(durationSec)));
   const closeButtonRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
@@ -64,11 +72,15 @@ export function RestartMessagesModal({ messages, defaults, saving, error, onSave
     setDraft((current) => ({ ...current, [nextTab]: { ...defaults[nextTab] } }));
   }
 
+  const durationValue = Number(durationDraft);
+  const durationError = !Number.isInteger(durationValue) || durationValue < MIN_DURATION_SEC || durationValue > MAX_DURATION_SEC
+    ? `Duration must be a whole number of seconds, ${MIN_DURATION_SEC}-${MAX_DURATION_SEC}.`
+    : "";
   const battlegroundError = templateError(draft.battlegroup);
   const mapError = templateError(draft.map);
   const activeTemplate = draft[tab];
   const activeError = tab === "battlegroup" ? battlegroundError : mapError;
-  const canSave = !battlegroundError && !mapError && !saving;
+  const canSave = !battlegroundError && !mapError && !durationError && !saving;
 
   return <div className="modal-overlay" role="presentation" onMouseDown={onClose}>
     <section className="confirm-modal restart-messages-modal" role="dialog" aria-modal="true" aria-labelledby="restart-messages-title" onMouseDown={(event) => event.stopPropagation()}>
@@ -85,6 +97,19 @@ export function RestartMessagesModal({ messages, defaults, saving, error, onSave
           onClick={() => setTab(key)}
         >{TAB_LABELS[key]}{templateError(draft[key]) ? <span className="restart-messages-tab-flag" aria-hidden="true">!</span> : null}</button>)}
       </div>
+      <div className="restart-messages-field restart-messages-duration">
+        <label>Display Duration (sec)<input
+          type="number"
+          min={MIN_DURATION_SEC}
+          max={MAX_DURATION_SEC}
+          step={1}
+          value={durationDraft}
+          onChange={(event) => setDurationDraft(event.target.value)}
+        /></label>
+        <button type="button" disabled={saving} title="Reset the display duration to its default" onClick={() => setDurationDraft(String(Math.round(defaultDurationSec)))}>Reset</button>
+      </div>
+      <p className="muted restart-messages-help">How long the banner stays on screen — applies to both message types.</p>
+      {durationError && <p className="danger-note" role="alert">{durationError}</p>}
       <div className="restart-messages-field">
         <label>Title<input
           value={activeTemplate.title}
@@ -118,7 +143,7 @@ export function RestartMessagesModal({ messages, defaults, saving, error, onSave
       <div className="confirm-modal-actions">
         <button disabled={saving} title={`Reset the ${TAB_LABELS[tab]} template to its default`} onClick={() => resetTab(tab)}>Reset to Default</button>
         <button disabled={saving} onClick={onClose}>Cancel</button>
-        <button className="success" disabled={!canSave} onClick={() => onSave(draft)}>{saving ? "Saving..." : "Save Messages"}</button>
+        <button className="success" disabled={!canSave} onClick={() => onSave({ messages: draft, broadcastDurationSec: durationValue })}>{saving ? "Saving..." : "Save Messages"}</button>
       </div>
     </section>
   </div>;

@@ -613,6 +613,10 @@ main { padding: 22px; min-width: 0; }
 .restart-messages-field label { display: grid; gap: 6px; color: var(--muted); font-size: 13px; }
 .restart-messages-field input, .restart-messages-field textarea { width: 100%; }
 .restart-messages-counter { justify-self: end; color: var(--muted); font-size: 12px; }
+.restart-messages-duration { display: flex; align-items: flex-end; gap: 10px; }
+.restart-messages-duration label { flex: 1 1 220px; min-width: 160px; }
+.restart-messages-duration input { width: 100%; }
+.restart-messages-duration button { flex: 0 0 auto; }
 .restart-messages-help { display: grid; gap: 4px; font-size: 12px; }
 .restart-messages-help-label { text-transform: uppercase; letter-spacing: .02em; }
 .restart-messages-placeholder-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 3px; }
