@@ -36,7 +36,7 @@ test("mergeContainerHealth falls back to 'unknown' status when docker ps has no 
   assert.equal(result[0].status, "unknown");
 });
 
-test("addonOpsContainerHealth scopes both Docker calls to the configured Compose project", async () => {
+test("addonOpsContainerHealth scopes the docker ps lookup to the configured Compose project", async () => {
   const calls = [];
   const result = await addonOpsContainerHealth({
     projectName: "dune-test",
@@ -45,12 +45,39 @@ test("addonOpsContainerHealth scopes both Docker calls to the configured Compose
       return "";
     }
   });
+  // `docker ps` returns no rows, so there's nothing to scope `docker stats`
+  // to -- the implementation must not fall back to querying every
+  // container on the host, and must not call `docker stats` at all here.
   assert.deepEqual(result, { containers: [] });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].command, "docker");
+  assert.deepEqual(calls[0].args.slice(0, 1), ["ps"]);
+  assert.ok(calls[0].args.includes("label=com.docker.compose.project=dune-test"));
+});
+
+test("addonOpsContainerHealth passes docker ps's resolved container names positionally to docker stats, never --filter", async () => {
+  // `docker stats` (unlike `docker ps`) has no --filter flag -- confirmed
+  // against a live Docker CLI (see issue #246). Scoping must happen by
+  // resolving names via `docker ps --filter` first, then passing those
+  // names as positional CONTAINER arguments to `docker stats`.
+  const calls = [];
+  const result = await addonOpsContainerHealth({
+    projectName: "dune-test",
+    run: async (command, args) => {
+      calls.push({ command, args });
+      if (args[0] === "ps") {
+        return '{"Names":"dune-postgres","Status":"Up 2 hours"}\n{"Names":"dune-rmq-game","Status":"Up 1 hour"}\n';
+      }
+      return "";
+    }
+  });
   assert.equal(calls.length, 2);
-  for (const call of calls) {
-    assert.equal(call.command, "docker");
-    assert.ok(call.args.includes("label=com.docker.compose.project=dune-test"));
-  }
+  assert.deepEqual(calls[0].args.slice(0, 1), ["ps"]);
+  assert.deepEqual(calls[1].args.slice(0, 1), ["stats"]);
+  assert.ok(!calls[1].args.includes("--filter"), "docker stats must never receive --filter");
+  assert.ok(calls[1].args.includes("dune-postgres"));
+  assert.ok(calls[1].args.includes("dune-rmq-game"));
+  assert.deepEqual(result, { containers: [] });
 });
 
 test("addonOpsContainerHealth fails closed instead of exposing every host container when project name is unset", async () => {

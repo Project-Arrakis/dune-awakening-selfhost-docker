@@ -8705,6 +8705,13 @@ export async function addonOpsContainerHealth(options = {}) {
   // with ops:read. Also uses execFile (non-blocking, no shell) instead of
   // the earlier execSync, which blocked the whole Console API's event
   // loop for the duration of the docker stats call. See issue #240.
+  //
+  // `docker stats` has no --filter flag (confirmed via `docker stats
+  // --help` against a live deployment -- only `docker ps` supports label
+  // filters; see issue #246, found during the live-deployment test this
+  // fix's own PR requires). The scoping is therefore done in two steps:
+  // resolve this project's container names via a filtered `docker ps`
+  // first, then pass those names positionally to `docker stats`.
   const projectName = String(
     options.projectName ?? process.env.DUNE_COMPOSE_PROJECT_NAME ?? process.env.COMPOSE_PROJECT_NAME ?? ""
   ).trim();
@@ -8714,10 +8721,14 @@ export async function addonOpsContainerHealth(options = {}) {
   const run = options.run || execFileText;
   const filter = `label=com.docker.compose.project=${projectName}`;
   try {
-    const [statsOutput, statusOutput] = await Promise.all([
-      run("docker", ["stats", "--no-stream", "--format", "{{json .}}", "--filter", filter]),
-      run("docker", ["ps", "--filter", filter, "--format", "{{json .}}"])
-    ]);
+    const statusOutput = await run("docker", ["ps", "--filter", filter, "--format", "{{json .}}"]);
+    const names = parseDockerJsonLines(statusOutput)
+      .map((row) => String(row.Names || row.Name || "").trim())
+      .filter(Boolean);
+    if (names.length === 0) {
+      return { containers: [] };
+    }
+    const statsOutput = await run("docker", ["stats", "--no-stream", "--format", "{{json .}}", ...names]);
     return { containers: mergeContainerHealth(statsOutput, statusOutput) };
   } catch {
     return { containers: [], error: "Docker stats unavailable — is Docker running?" };
