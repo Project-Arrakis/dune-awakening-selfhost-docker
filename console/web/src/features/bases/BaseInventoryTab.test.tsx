@@ -22,7 +22,7 @@ const PAYLOAD: BaseInventory = {
     { key: "refining", name: "Refining", containerCount: 1, itemCount: 420 },
     // Empty groups are always present in the response; the chips filter them out.
     { key: "crafting", name: "Crafting", containerCount: 0, itemCount: 0 },
-    { key: "machines", name: "Machines", containerCount: 0, itemCount: 0 }
+    { key: "other", name: "Other", containerCount: 0, itemCount: 0 }
   ],
   containers: [
     {
@@ -181,7 +181,7 @@ describe("BaseInventoryTab", () => {
         { key: "storage", name: "Storage", containerCount: 4, itemCount: 0 },
         { key: "refining", name: "Refining", containerCount: 0, itemCount: 0 },
         { key: "crafting", name: "Crafting", containerCount: 0, itemCount: 0 },
-        { key: "machines", name: "Machines", containerCount: 0, itemCount: 0 }
+        { key: "other", name: "Other", containerCount: 0, itemCount: 0 }
       ],
       // Deliberately out of order, and mixing renamed with unrenamed: a
       // rename has to file under the name shown on the card, and "#9" has to
@@ -379,10 +379,10 @@ describe("BaseInventoryTab", () => {
     mockInventory({
       ...PAYLOAD,
       containers: [{
-        placeableId: "40009", name: "", typeName: "Repair Station", group: "machines",
+        placeableId: "40009", name: "", typeName: "Repair Station", group: "other",
         usedSlots: 0, maxSlots: 5, itemCount: 0, items: []
       }],
-      groups: PAYLOAD.groups.map((g) => g.key === "machines"
+      groups: PAYLOAD.groups.map((g) => g.key === "other"
         ? { ...g, containerCount: 1, itemCount: 0 }
         : { ...g, containerCount: 0, itemCount: 0 })
     });

@@ -7,7 +7,8 @@ test_root="$(mktemp -d)"
 trap 'rm -rf "$test_root"' EXIT
 
 bin_dir="$test_root/bin"
-mkdir -p "$bin_dir"
+mkdir -p "$bin_dir" "$test_root/runtime/scripts"
+cp runtime/scripts/env-file.sh "$test_root/runtime/scripts/env-file.sh"
 
 cat > "$bin_dir/docker" <<'EOF'
 #!/usr/bin/env bash

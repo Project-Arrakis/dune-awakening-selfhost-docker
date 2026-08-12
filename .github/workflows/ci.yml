@@ -117,6 +117,7 @@ jobs:
           tests/autoscaler-browser-heal-safety-test.sh
           tests/autoscaler-igw-socket-health-test.sh
           tests/db-backup-validation-test.sh
+          tests/battlegroup-identity-test.sh
       - name: Test Compose project-name portability
         run: |
           runtime/tests/test-compose-project-name-portability.sh

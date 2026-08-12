@@ -4,6 +4,8 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 ROOT_DIR="$(pwd)"
 HOST_ROOT_DIR="${DUNE_HOST_REPO_ROOT:-$ROOT_DIR}"
+# shellcheck source=runtime/scripts/env-file.sh
+source runtime/scripts/env-file.sh
 
 BACKUP_DIR_DEFAULT="runtime/backups/db"
 AUTO_STATE_FILE="runtime/generated/db-backup.env"
@@ -474,6 +476,14 @@ backup_db() {
   local staged_sidecar_file
   local tmp_file
 
+  if [ -x runtime/scripts/battlegroup-identity.sh ]; then
+    if ! runtime/scripts/battlegroup-identity.sh ensure; then
+      echo "WARNING: The database backup will continue, but its Battlegroup ID metadata will be recorded as unknown." >&2
+      echo "Repair the identity before restarting the battlegroup: runtime/scripts/battlegroup-identity.sh ensure" >&2
+    fi
+  else
+    echo "WARNING: Battlegroup identity validation is unavailable; backup metadata may record an unknown ID." >&2
+  fi
   require_postgres
   mkdir -p "$out_dir"
 
@@ -892,14 +902,11 @@ adopt_backup_battlegroup_id() {
   server_ip="$(config_value runtime/generated/battlegroup.env SERVER_IP || true)"
   server_ip_mode="$(config_value runtime/generated/battlegroup.env SERVER_IP_MODE || true)"
 
-  {
-    printf 'BATTLEGROUP_ID=%q\n' "$backup_battlegroup_id"
-    [ -n "$server_title" ] && printf 'SERVER_TITLE=%q\n' "$server_title"
-    [ -n "$server_region" ] && printf 'SERVER_REGION=%q\n' "$server_region"
-    [ -n "$server_ip" ] && printf 'SERVER_IP=%q\n' "$server_ip"
-    [ -n "$server_ip_mode" ] && printf 'SERVER_IP_MODE=%q\n' "$server_ip_mode"
-  } > runtime/generated/battlegroup.env
-  chmod 664 runtime/generated/battlegroup.env 2>/dev/null || true
+  set_env_file_value runtime/generated/battlegroup.env BATTLEGROUP_ID "$backup_battlegroup_id" 664
+  [ -z "$server_title" ] || set_env_file_value runtime/generated/battlegroup.env SERVER_TITLE "$server_title" 664 quoted
+  [ -z "$server_region" ] || set_env_file_value runtime/generated/battlegroup.env SERVER_REGION "$server_region" 664 quoted
+  [ -z "$server_ip" ] || set_env_file_value runtime/generated/battlegroup.env SERVER_IP "$server_ip" 664
+  [ -z "$server_ip_mode" ] || set_env_file_value runtime/generated/battlegroup.env SERVER_IP_MODE "$server_ip_mode" 664
 
   echo "Adopt backup battlegroup: $current_id -> $backup_battlegroup_id"
   echo "Battlegroup rollback point saved: $BATTLEGROUP_RESTORE_FILE"
