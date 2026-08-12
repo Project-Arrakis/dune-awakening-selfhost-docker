@@ -46,7 +46,7 @@ import { exportBlueprint, importBlueprint, listBlueprints, deleteBlueprint } fro
 import { createZipArchive } from "./services/zipArchive.js";
 import { resolveMapCombatState } from "./services/mapCombatState.js";
 import { grantAddonItem } from "./addonItemGrants.js";
-import { EDA_EXCHANGE_BOT_ADDON_ID, ADDON_SCHEDULER_PERMISSION, createAddonJobScheduler, probeBuybackEligibility, readBuybackSchedule, saveBuybackSchedule } from "./addonJobs.js";
+import { EDA_EXCHANGE_BOT_ADDON_ID, ADDON_SCHEDULER_PERMISSION, createAddonJobScheduler, probeBuybackEligibility, readBuybackSchedule, saveBuybackSchedule, readSeedSchedule, saveSeedSchedule } from "./addonJobs.js";
 import { createPublicDirectoryReporter, normalizeDiscordInvite, readDirectorySettings } from "./services/publicDirectory.js";
 import { choamTerminalOverview, installChoamTerminals, removeChoamTerminals } from "./services/choamTerminals.js";
 import { exchangeStats, listExchangeItems, listExchangeListings, readExchangeConfig, saveExchangeConfig } from "./services/exchange.js";
@@ -960,6 +960,39 @@ async function addonSchedulerBridgeAction(req, res, id, action, body) {
     try {
       const result = await addonJobScheduler.runNow({ trigger: "manual" });
       audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, status: result.status, eligible: result.eligible, purchased: result.purchased, ok: true });
+      return json(res, 200, { ok: true, result });
+    } catch (error) {
+      audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, ok: false, error: redact(error.message || error) });
+      return json(res, 400, { ok: false, error: redact(error.message || error) });
+    }
+  }
+  if (action === "scheduler.seed.schedule.get") {
+    const addon = assertInstalledAddonPermission(config, id, "database:read");
+    const result = readSeedSchedule(config);
+    audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, ok: true });
+    return json(res, 200, { ok: true, result });
+  }
+  if (action === "scheduler.seed.schedule.set") {
+    const payload = body.schedule && typeof body.schedule === "object" ? body.schedule : body;
+    const addon = assertInstalledAddonPermission(config, id, "database:write");
+    const leavesEnabled = payload.enabled === undefined ? readSeedSchedule(config).enabled : payload.enabled === true;
+    if (leavesEnabled) assertInstalledAddonPermission(config, id, ADDON_SCHEDULER_PERMISSION);
+    if (!applyMutationRateLimit(req, res, `addon:${id}:scheduler.seed.schedule.set`)) return;
+    try {
+      const result = saveSeedSchedule(config, payload);
+      audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, enabled: result.enabled, intervalMinutes: result.intervalMinutes, exchangeId: result.exchangeId, priceMultiplier: result.priceMultiplier, ok: true });
+      return json(res, 200, { ok: true, result });
+    } catch (error) {
+      audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, ok: false, error: redact(error.message || error) });
+      return json(res, 400, { ok: false, error: redact(error.message || error) });
+    }
+  }
+  if (action === "scheduler.seed.run") {
+    const addon = assertInstalledAddonPermission(config, id, "database:write");
+    if (!applyMutationRateLimit(req, res, `addon:${id}:scheduler.seed.run`)) return;
+    try {
+      const result = await addonJobScheduler.runNow({ trigger: "manual", job: "seed" });
+      audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, status: result.status, listingCount: result.listingCount, ok: true });
       return json(res, 200, { ok: true, result });
     } catch (error) {
       audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, ok: false, error: redact(error.message || error) });
