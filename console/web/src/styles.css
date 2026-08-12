@@ -775,6 +775,7 @@ main { padding: 22px; min-width: 0; }
 .auto-update-settings-row input:not([type="checkbox"]) { width: 100%; }
 .auto-update-settings-row input:disabled { opacity: .55; cursor: not-allowed; }
 .auto-update-settings-row.is-disabled { opacity: .55; }
+.auto-update-setting-help { margin: 0; font-size: 12px; line-height: 1.45; }
 .auto-update-settings-spacer { width: 20px; height: 20px; }
 .number-unit-field {
   display: grid;

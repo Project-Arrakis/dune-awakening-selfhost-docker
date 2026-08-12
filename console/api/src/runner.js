@@ -132,7 +132,7 @@ export function buildDuneArgs(operation, payload = {}) {
         String(validateInteger(payload.intervalMinutes ?? 60, 5, 1440)),
         payload.applyEnabled === false ? "0" : "1",
         payload.notifyEnabled === false ? "0" : "1",
-        String(validateInteger(payload.notifyMinutes ?? 15, 1, 1440)),
+        validateMinuteCheckpoints(payload.notifyMinutes ?? "15,10,5,1"),
         payload.waitUntilEmpty ? "1" : "0",
         String(validateInteger(payload.maxWaitMinutes ?? 360, 0, 10080))
       ];
@@ -526,6 +526,16 @@ function validateInteger(value, min, max) {
   const n = Number(value);
   if (!Number.isInteger(n) || n < min || n > max) throw new Error(`Expected integer ${min}-${max}`);
   return n;
+}
+
+function validateMinuteCheckpoints(value) {
+  const raw = Array.isArray(value) ? value : String(value ?? "").split(/[\s,]+/).filter(Boolean);
+  if (!raw.length || raw.length > 12) throw new Error("Expected 1-12 warning times between 1 and 1440 minutes");
+  const values = raw.map((item) => validateInteger(item, 1, 1440));
+  if (new Set(values).size !== values.length || values.some((minutes, index) => index > 0 && minutes >= values[index - 1])) {
+    throw new Error("Warning times must be unique and ordered from largest to smallest");
+  }
+  return values.join(",");
 }
 
 function validateNumber(value, min, max) {

@@ -295,7 +295,7 @@ check_project_systemd_timers() {
         *"$HOST_ROOT_DIR/runtime/scripts/update.sh"*"auto run"*) ;;
         *"$HOST_ROOT_DIR/runtime/scripts/dune"*"update --yes"*)
           warn_msg "$label timer uses the legacy update command from the current checkout"
-          echo "     Repair: dune update auto enable ${auto_interval:-60} ${auto_apply:-1} ${auto_notify:-1} ${auto_notify_minutes:-15} ${auto_wait_empty:-0} ${auto_max_wait:-360}"
+          echo "     Repair: dune update auto enable ${auto_interval:-60} ${auto_apply:-1} ${auto_notify:-1} ${auto_notify_minutes:-15,10,5,1} ${auto_wait_empty:-0} ${auto_max_wait:-360}"
           continue
           ;;
         *"$HOST_ROOT_DIR/"*)
