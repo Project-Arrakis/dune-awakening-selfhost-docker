@@ -7,6 +7,8 @@ tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
 
 python3 -c 'compile(open("patches/vehicle-permission-reset/patch.py", encoding="utf-8").read(), "patch.py", "exec")'
+grep -q '51a26e1e5c67cceef98fdb34ee4953c2016079216cda4668a6033a017c9e601e' patches/vehicle-permission-reset/patch.py
+grep -q '2ed150f8acaf7fe975664ab6021ed2cd8fa4138edf230f050e437b9acaaa2d01' patches/vehicle-permission-reset/patch.py
 
 printf 'not a Funcom binary' >"$tmp_dir/unsupported"
 if python3 patches/vehicle-permission-reset/patch.py \
