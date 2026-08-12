@@ -6,7 +6,7 @@ import { resolve } from "node:path";
 import { redact } from "./redact.js";
 import { itemImagePath } from "./adminCatalog.js";
 import { clampInt, writeJsonAtomic } from "./jsonStore.js";
-import { CARE_PACKAGE_SERVER_PERSONA, FUNCOM_GM_PERSONA } from "./systemPersonas.js";
+import { CARE_PACKAGE_SERVER_PERSONA, FUNCOM_GM_PERSONA, MESSAGE_OF_THE_DAY_PERSONA } from "./systemPersonas.js";
 import {
   craftingRecipeCatalogRows,
   compareJourneyCatalogOrder,
@@ -1421,6 +1421,12 @@ const PLAYER_SORT_COLUMNS = {
 // battlegroups. It is an internal service actor, not an administrable player.
 const INTERNAL_GM_PLAYER_PAWN_ID = FUNCOM_GM_PERSONA.playerPawnId;
 
+// Stable pawn ids of every reserved non-player identity (GM, Server, Message of
+// the Day). Exclude by id, not display name -- persona names may be encrypted
+// or absent in the legacy player_state view, and a real player could be named
+// "Server".
+const SYSTEM_PERSONA_PAWN_IDS = [FUNCOM_GM_PERSONA, CARE_PACKAGE_SERVER_PERSONA, MESSAGE_OF_THE_DAY_PERSONA].map((persona) => persona.playerPawnId);
+
 export async function listPlayers(db, { status = "all", q = "", page = 0, pageSize = 50, sortColumn = "character_name", sortDirection = "asc", includeTotals = true, bannedFlsIds = [] } = {}) {
   if (!(await tableExists(db, "actors")) || !(await tableExists(db, "player_state"))) {
     return { ...unsupported("players", ["dune.actors", "dune.player_state"]), totalCount: 0, totalPlayers: 0 };
@@ -1629,6 +1635,63 @@ export async function listAllPlayers(db, { status = "all", q = "" } = {}) {
     page += 1;
   }
   return { ...first, rows };
+}
+
+// Battlegroup-wide count of real players currently online. The restart queue
+// uses it to decide immediate-vs-countdown. dune.player_state is
+// battlegroup-wide (one Postgres for every map), so a single aggregate covers
+// the whole battlegroup. Excludes the game's own reserved identities (GM,
+// Server, Message of the Day) by their stable pawn ids -- not by display name,
+// which may be encrypted/absent and could collide with a real player -- so an
+// idle server never looks occupied.
+export async function countOnlinePlayers(db) {
+  if (!(await tableExists(db, "player_state"))) return { supported: false, online: 0, total: 0 };
+  const personaFilter = SYSTEM_PERSONA_PAWN_IDS.map((id) => `${id}::bigint`).join(", ");
+  const result = await db.query(`
+    select count(*) filter (where coalesce(online_status::text, '') = 'Online')::int as online,
+           count(*)::int as total
+    from dune.player_state
+    where coalesce(player_pawn_id, 0) not in (${personaFilter})`);
+  const r = result.rows?.[0] || {};
+  return { supported: true, online: Number(r.online || 0), total: Number(r.total || 0) };
+}
+
+// Scoped online count for a single restart target (a map or sietch partition),
+// so the restart queue can decide "immediate vs countdown" -- and tell the
+// admin -- based on who is actually on that map, not the whole battlegroup.
+// Resolves to one or more partition ids: a direct partitionId wins; otherwise
+// `map` is looked up against dune.world_partition.map, which is the same
+// namespace the restart machinery already uses for its targets (see
+// partitionRestartTargets above) -- never dune.actors.map, which names the
+// in-game region instead of the partition. Returns { supported: false } when
+// neither resolves to a real partition, so callers fall back to the
+// battlegroup-wide count rather than silently reporting zero.
+export async function countOnlinePlayersForTarget(db, { partitionId, map } = {}) {
+  if (!(await tableExists(db, "player_state")) || !(await tableExists(db, "actors"))) {
+    return { supported: false, online: 0, total: 0 };
+  }
+  const partitionIds = await resolveRestartTargetPartitionIds(db, { partitionId, map });
+  if (!partitionIds.length) return { supported: false, online: 0, total: 0 };
+  const result = await db.query(`
+    select count(*) filter (where coalesce(ps.online_status::text, '') = 'Online')::int as online,
+           count(*)::int as total
+    from dune.actors a
+    join dune.player_state ps on ps.player_pawn_id = a.id
+    where a.partition_id = any($1::int[])
+      and a.id not in (${SYSTEM_PERSONA_PAWN_IDS.map((id) => `${id}::bigint`).join(", ")})`, [partitionIds]);
+  const r = result.rows?.[0] || {};
+  return { supported: true, online: Number(r.online || 0), total: Number(r.total || 0) };
+}
+
+async function resolveRestartTargetPartitionIds(db, { partitionId, map } = {}) {
+  const direct = Number(partitionId);
+  if (Number.isInteger(direct) && direct > 0) return [direct];
+  const mapName = String(map || "").trim();
+  if (!mapName || !(await tableExists(db, "world_partition"))) return [];
+  const result = await db.query("select partition_id from dune.world_partition where map = $1", [mapName]);
+  return result.rows
+    .map((row) => Number(row.partition_id))
+    .filter((id) => Number.isInteger(id) && id > 0);
 }
 
 export async function addonLeadershipPlayers(db) {

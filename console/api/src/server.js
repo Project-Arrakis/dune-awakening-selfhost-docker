@@ -3,7 +3,7 @@ import { createServer as createNetServer } from "node:net";
 import { totalmem } from "node:os";
 import { spawn } from "node:child_process";
 import { existsSync, writeFileSync, chmodSync, mkdirSync, createReadStream, readFileSync } from "node:fs";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { loadConfig, publicConfig, parseAllowedIps } from "./config.js";
 import { createAuth, setSessionCookie, clearSessionCookie, json, withSecurityHeaders } from "./auth.js";
 import { createLoginRateLimiter, createMutationRateLimiter } from "./rateLimit.js";
@@ -40,6 +40,7 @@ import { evaluate, loadPolicies, getAllPolicies, setPolicies } from "./policy.js
 import { liveItemGrantOk, liveItemGrantWarning } from "./grantResults.js";
 import { primeMessageOfTheDayOnlineState, readMessageOfTheDay, recordMessageOfTheDayScanFailure, restoreMessageOfTheDay, runMessageOfTheDayScan, saveMessageOfTheDay } from "./services/messageOfTheDay.js";
 import { primePlayerAnnouncementOnlineState, readPlayerAnnouncements, restorePlayerAnnouncements, runPlayerAnnouncementScan, savePlayerAnnouncements } from "./services/playerAnnouncements.js";
+import * as restartQueue from "./services/restartQueue.js";
 import { persistSpicefieldOverride } from "./services/spicefieldOverrides.js";
 import { applySavedLandsraadMilestonePreset, createLandsraadMilestoneReconciler, readLandsraadMilestonePreset, saveLandsraadMilestonePreset } from "./services/landsraadMilestones.js";
 import { exportBlueprint, importBlueprint, listBlueprints, deleteBlueprint } from "./blueprints.js";
@@ -93,6 +94,8 @@ let messageOfTheDayAutoNextAllowedRun = 0;
 let playerAnnouncementsAutoRunning = false;
 let playerAnnouncementsAutoLastRun = 0;
 let playerAnnouncementsAutoNextAllowedRun = 0;
+let restartQueueAutoRunning = false;
+let restartQueueAutoLastRun = 0;
 const journeyTagsData = loadJourneyTagsData();
 const memoryBalancer = createMemoryBalancer(config);
 const deathPoller = createDeathPoller(config);
@@ -158,6 +161,7 @@ createServer(async (req, res) => {
     console.log("Initial admin password is stored in runtime/secrets/admin-web-password.txt");
   }
   scheduleBootAutoStart();
+  recoverRestartQueue();
   publicDirectory.start();
   if (discordAdapterEnabled(config)) {
     initializeDiscordAdapterSchema(db).catch((error) => {
@@ -177,6 +181,7 @@ setInterval(() => {
   // Costs one small file read when no base is enrolled, and no database query.
   runBackgroundTick("Bases auto-refill", () => autoRefillScheduler.tick());
   runBackgroundTick("Bases water auto-refill", () => autoRefillWaterScheduler.tick());
+  runBackgroundTick("Restart queue", restartQueueAutoTick);
 }, 10000).unref?.();
 
 setInterval(() => {
@@ -444,6 +449,10 @@ async function handleApi(req, res) {
     if (body.mode !== undefined) payload.mode = body.mode;
     return task(req, res, "server", "serverConfig", payload);
   }
+  if (path === "/api/server/restart-queue/cancel" && req.method === "POST") return restartQueueCancelRoute(req, res);
+  if (path === "/api/server/restart-queue/restart-now" && req.method === "POST") return restartQueueRestartNowRoute(req, res);
+  if (path === "/api/server/restart-queue" && req.method === "POST") return restartQueueSaveRoute(req, res);
+  if (path === "/api/server/restart-queue") return restartQueueStatusRoute(req, res, url);
   if (path === "/api/server/restart-schedule" && req.method === "POST") return restartScheduleRoute(req, res);
   if (path === "/api/server/restart-schedule") return safeCommandJson(res, "restartScheduleStatus");
   if (path === "/api/server/ip-change-restart" && req.method === "POST") return ipChangeRestartRoute(req, res);
@@ -794,6 +803,7 @@ async function handleApi(req, res) {
   if (path === "/api/exchange/market/seed/run" && req.method === "POST") return marketRunNowRoute(req, res, "seed");
   if (path === "/api/maps/user-settings/schema") return userSettingsSchemaRoute(res);
   if (path === "/api/maps/user-settings/restart-pending") return json(res, 200, { pending: existsSync(resolve(config.repoRoot, "runtime/generated/landsraad-restart-required")) });
+  if (path === "/api/maps/user-settings/deferred-pending") return json(res, 200, readDeferredRestartPending(config));
   if (path === "/api/maps/user-settings/values") return userSettingsValuesRoute(res, url);
   if (path === "/api/maps/user-settings/raw" && req.method === "POST") return userSettingsRawWriteRoute(req, res);
   if (path === "/api/maps/user-settings/raw") return userSettingsRawRoute(res, url);
@@ -1613,8 +1623,283 @@ async function task(req, res, type, operation, payload) {
   } catch (error) {
     return json(res, 400, { error: redact(error.message || error) });
   }
+  if (await maybeQueueRestart(req, res, type, operation, payload)) return;
   audit(config, req, `task.${operation}`, payload);
   return json(res, 202, { task: tasks.create(type, operation, payload) });
+}
+
+// Restart Queue gate. When the queue is enabled and real players are online, a
+// console-triggered restart becomes a countdown instead of running immediately.
+// Returns true when it has already sent the HTTP response (queued or rejected),
+// false to let the caller restart as normal. An explicit `?restartQueue=immediate`
+// override, a disabled queue, an empty battlegroup, or an undeterminable online
+// count all fall through to an immediate restart. The countdown processor
+// dispatches via tasks.create() directly, so it never re-enters this gate.
+async function maybeQueueRestart(req, res, type, operation, payload) {
+  const classification = restartQueue.classifyRestart(operation, payload);
+  if (!classification) return false;
+  let settings;
+  try {
+    settings = restartQueue.readSettings(config);
+  } catch {
+    return false;
+  }
+  if (!settings.enabled) return false;
+  if (restartQueueImmediateRequested(req)) {
+    audit(config, req, "restart-queue.override-immediate", { operation, target: classification.target });
+    return false;
+  }
+  let online = 0;
+  let battlegroupOnline = null;
+  try {
+    const scoped = await scopedOnlineCount(classification);
+    online = scoped.online;
+    battlegroupOnline = scoped.battlegroupOnline;
+  } catch {
+    // If we cannot read the online count the database is usually down or
+    // restarting -- there are no players to protect, so let the restart proceed.
+    return false;
+  }
+  if (online <= 0) return false;
+
+  const decision = restartQueue.canQueue(restartQueue.readState(config).entries, classification.target, classification.mapKey);
+  if (!decision.ok) {
+    json(res, 409, { queued: false, error: decision.reason, state: restartQueue.publicState(config) });
+    return true;
+  }
+  const entry = restartQueue.appendEntry(config, {
+    target: classification.target,
+    type,
+    operation,
+    payload,
+    mapKey: classification.mapKey,
+    mapLabel: classification.mapLabel,
+    partitionId: classification.partitionId,
+    map: classification.map,
+    requestedBy: "web-admin",
+    countdownMinutes: settings.defaultCountdownMinutes,
+    now: Date.now()
+  });
+  audit(config, req, "restart-queue.enqueue", { operation, target: classification.target, mapLabel: classification.mapLabel, entryId: entry.id, online, battlegroupOnline });
+  recordAdminHistory(config, {
+    command: "web-restart-queue",
+    target: classification.target === "battlegroup" ? "battlegroup" : classification.mapLabel,
+    friendly: "Restart Queue",
+    path: "runtime/generated/restart-queue-state.json",
+    result: "queued",
+    message: classification.target === "map" && battlegroupOnline !== null && battlegroupOnline !== online
+      ? `${settings.defaultCountdownMinutes}-minute countdown (${online} online on this map, ${battlegroupOnline} in the battlegroup)`
+      : `${settings.defaultCountdownMinutes}-minute countdown (${online} online)`
+  });
+  json(res, 202, { queued: true, online, battlegroupOnline, entryId: entry.id, state: restartQueue.publicState(config) });
+  return true;
+}
+
+// Online count for a restart decision, scoped to the actual target: a
+// battlegroup restart affects everyone, but a map/sietch restart only affects
+// players on that partition, so it must not be gated (or auto-run) by who
+// happens to be online elsewhere. Always also returns the battlegroup-wide
+// figure so callers can surface both ("2 online on this map, 5 in the
+// battlegroup") -- for a battlegroup classification the two are the same
+// query. Falls back to the battlegroup count when the target's map/partition
+// can't be resolved, so an unresolvable target never silently reports 0.
+async function scopedOnlineCount(classification) {
+  const battlegroup = await duneDb.countOnlinePlayers(db);
+  const battlegroupOnline = battlegroup.supported ? battlegroup.online : null;
+  if (classification.target !== "map") {
+    return { online: battlegroupOnline ?? 0, battlegroupOnline };
+  }
+  const scoped = await duneDb.countOnlinePlayersForTarget(db, { partitionId: classification.partitionId, map: classification.map });
+  return { online: scoped.supported ? scoped.online : (battlegroupOnline ?? 0), battlegroupOnline };
+}
+
+function restartQueueImmediateRequested(req) {
+  try {
+    const parsed = new URL(req.url, "http://localhost");
+    const value = String(
+      parsed.searchParams.get("restartQueue") || parsed.searchParams.get("queueMode") || parsed.searchParams.get("immediate") || ""
+    ).toLowerCase();
+    return value === "immediate" || value === "1" || value === "true";
+  } catch {
+    return false;
+  }
+}
+
+// Dispatch an entry's underlying restart. Flips the write-ahead `restarting`
+// marker and persists BEFORE dispatch so a mid-restart console bounce (a
+// battlegroup restart takes the console container with it) never re-fires it on
+// boot, then removes the entry so the section returns to idle.
+async function executeRestartEntry(entry) {
+  if (!entry) return;
+  try {
+    restartQueue.markEntryRestarting(config, entry.id);
+    audit(config, null, "restart-queue.execute", { operation: entry.operation, target: entry.target, mapLabel: entry.mapLabel, entryId: entry.id });
+    tasks.create(entry.type || "server", entry.operation, entry.payload || {});
+    restartQueue.removeEntry(config, entry.id);
+  } catch (error) {
+    console.error(`Restart queue execution failed for ${entry.operation}: ${redact(error.message || error)}`);
+  }
+}
+
+async function restartQueueAutoTick() {
+  if (restartQueueAutoRunning) return;
+  const now = Date.now();
+  if (now - restartQueueAutoLastRun < 5000) return;
+  let state;
+  try {
+    state = restartQueue.readState(config);
+  } catch {
+    return;
+  }
+  if (!state.entries.length) return;
+  restartQueueAutoRunning = true;
+  restartQueueAutoLastRun = now;
+  try {
+    const settings = restartQueue.readSettings(config);
+    let battlegroupOnline = null;
+    try {
+      const count = await duneDb.countOnlinePlayers(db);
+      battlegroupOnline = count.supported ? count.online : null;
+    } catch {
+      battlegroupOnline = null;
+    }
+    for (const entry of state.entries) {
+      if (entry.status !== "counting") continue;
+      // Battlegroup entries were already scoped to everyone by the query above.
+      // A map entry must only look at players on that specific partition --
+      // otherwise a map with nobody on it would keep counting down just
+      // because players are online elsewhere in the battlegroup, and (worse)
+      // a map WITH players would auto-execute the moment the battlegroup as a
+      // whole happened to read zero.
+      let online = battlegroupOnline;
+      if (entry.target === "map") {
+        try {
+          const scoped = await duneDb.countOnlinePlayersForTarget(db, { partitionId: entry.partitionId, map: entry.map });
+          online = scoped.supported ? scoped.online : battlegroupOnline;
+        } catch {
+          online = battlegroupOnline;
+        }
+      }
+      if (online === 0) {
+        await executeRestartEntry(entry);
+        continue;
+      }
+      for (const mark of restartQueue.checkpointsDue(entry, settings.broadcastCheckpoints, now)) {
+        try {
+          await restartQueue.sendWarning(config, entry, mark, settings);
+          restartQueue.recordCheckpointSent(config, entry.id, mark);
+        } catch (error) {
+          // Leave the mark unrecorded so the next tick retries it. Infra errors
+          // (RabbitMQ/container down) are expected transiently during a restart.
+          const message = String(error?.message || error);
+          if (!/publish|rabbitmq|docker|container|ECONNREFUSED|ECONNRESET/i.test(message)) {
+            console.error(`Restart queue warning failed: ${redact(message)}`);
+          }
+        }
+      }
+      if (Date.now() >= entry.restartAt) await executeRestartEntry(entry);
+    }
+  } finally {
+    restartQueueAutoRunning = false;
+  }
+}
+
+// One-time boot reconciliation of the persisted queue. See restartQueue.recover.
+function recoverRestartQueue() {
+  let state;
+  try {
+    state = restartQueue.readState(config);
+  } catch {
+    return;
+  }
+  if (!state.entries.length) return;
+  const settings = restartQueue.readSettings(config);
+  const result = restartQueue.recover(state, Date.now(), settings.recoveryGraceMinutes);
+  restartQueue.writeState(config, result.keep);
+  for (const entry of result.cleared) audit(config, null, "restart-queue.recovered-cleared", { entryId: entry.id, operation: entry.operation });
+  for (const entry of result.discarded) audit(config, null, "restart-queue.recovered-discarded", { entryId: entry.id, operation: entry.operation });
+  for (const entry of result.executeNow) void executeRestartEntry(entry);
+  if (result.resume.length) console.log(`Restart queue resumed ${result.resume.length} countdown(s) after boot.`);
+}
+
+// `partitionId`/`map` scope `playersOnline` to a specific restart target (the
+// interception dialog passes these before the admin has committed to a
+// restart, so it can show "2 online on this map" instead of the battlegroup
+// figure). `battlegroupPlayersOnline` is always the unscoped count -- for a
+// battlegroup-wide request the two are identical -- so the UI can show both
+// when they differ.
+async function restartQueueStatusRoute(req, res, url) {
+  const settings = restartQueue.readSettings(config);
+  let online = null;
+  let battlegroupOnline = null;
+  let supported = true;
+  try {
+    const count = await duneDb.countOnlinePlayers(db);
+    battlegroupOnline = count.supported ? count.online : null;
+    supported = count.supported;
+    online = battlegroupOnline;
+  } catch {
+    online = null;
+    battlegroupOnline = null;
+    supported = false;
+  }
+  const partitionId = Number(url?.searchParams?.get("partitionId") || 0);
+  const map = String(url?.searchParams?.get("map") || "").trim();
+  if (partitionId > 0 || map) {
+    try {
+      const scoped = await duneDb.countOnlinePlayersForTarget(db, { partitionId, map });
+      if (scoped.supported) online = scoped.online;
+    } catch {
+      // Keep the battlegroup-wide fallback already assigned above.
+    }
+  }
+  return json(res, 200, {
+    settings,
+    defaults: restartQueue.defaultSettings(),
+    state: restartQueue.publicState(config),
+    playersOnline: online,
+    battlegroupPlayersOnline: battlegroupOnline,
+    playersOnlineSupported: supported
+  });
+}
+
+async function restartQueueSaveRoute(req, res) {
+  const body = await readJson(req);
+  try {
+    const result = restartQueue.saveSettings(config, body);
+    audit(config, req, "restart-queue.save", { enabled: result.settings.enabled, defaultCountdownMinutes: result.settings.defaultCountdownMinutes });
+    recordAdminHistory(config, {
+      command: "web-restart-queue",
+      target: "server",
+      friendly: "Restart Queue",
+      path: "runtime/generated/restart-queue.json",
+      result: "saved",
+      message: result.settings.enabled ? "enabled" : "disabled"
+    });
+    return json(res, 200, { ok: true, ...result, state: restartQueue.publicState(config) });
+  } catch (error) {
+    return json(res, 400, { error: redact(error.message || error) });
+  }
+}
+
+async function restartQueueCancelRoute(req, res) {
+  const body = await readJson(req);
+  const id = String(body.id || "").trim();
+  if (!id) return json(res, 400, { error: "A queue entry id is required." });
+  restartQueue.removeEntry(config, id);
+  audit(config, req, "restart-queue.cancel", { entryId: id });
+  return json(res, 200, { ok: true, state: restartQueue.publicState(config) });
+}
+
+async function restartQueueRestartNowRoute(req, res) {
+  const body = await readJson(req);
+  const id = String(body.id || "").trim();
+  if (!id) return json(res, 400, { error: "A queue entry id is required." });
+  const entry = restartQueue.readState(config).entries.find((candidate) => candidate.id === id);
+  if (!entry) return json(res, 404, { error: "That restart is no longer queued." });
+  audit(config, req, "restart-queue.restart-now", { entryId: id });
+  await executeRestartEntry(entry);
+  return json(res, 200, { ok: true, state: restartQueue.publicState(config) });
 }
 
 async function characterTransferSettingsRoute(req, res) {
@@ -1870,6 +2155,8 @@ async function userSettingsSaveRoute(req, res) {
   const body = await readJson(req);
   const payload = userSettingsTaskPayload(body);
   audit(config, req, "maps.user-settings.save", { scope: payload.scope, map: payload.map, partitionId: payload.partitionId, restartMode: payload.restartMode });
+  if (body.deferRestart === true) markDeferredRestartPending(config, deferredRestartLabel(payload));
+  if (await maybeQueueRestart(req, res, "maps", "userSettingsSaveAndRestart", payload)) return;
   return json(res, 202, { task: tasks.create("maps", "userSettingsSaveAndRestart", payload) });
 }
 
@@ -1878,6 +2165,8 @@ async function userSettingsResetRoute(req, res) {
   if (body.confirmation !== "RESTORE MAP DEFAULTS") return json(res, 400, { error: "Confirmation phrase required: RESTORE MAP DEFAULTS" });
   const payload = userSettingsTaskPayload({ ...body, values: {} });
   audit(config, req, "maps.user-settings.reset", { scope: payload.scope, map: payload.map, partitionId: payload.partitionId, restartMode: payload.restartMode });
+  if (body.deferRestart === true) markDeferredRestartPending(config, deferredRestartLabel(payload));
+  if (await maybeQueueRestart(req, res, "maps", "userSettingsResetAndRestart", payload)) return;
   return json(res, 202, { task: tasks.create("maps", "userSettingsResetAndRestart", payload) });
 }
 
@@ -1885,6 +2174,8 @@ async function userSettingsRawWriteRoute(req, res) {
   const body = await readJson(req);
   const payload = userSettingsTaskPayload({ ...body, values: {}, content: String(body.content || "") });
   audit(config, req, "maps.user-settings.raw-write", { scope: payload.scope, map: payload.map, partitionId: payload.partitionId, restartMode: payload.restartMode });
+  if (body.deferRestart === true) markDeferredRestartPending(config, deferredRestartLabel(payload));
+  if (await maybeQueueRestart(req, res, "maps", "userSettingsRawAndRestart", payload)) return;
   return json(res, 202, { task: tasks.create("maps", "userSettingsRawAndRestart", payload) });
 }
 
@@ -1893,7 +2184,16 @@ function userSettingsTaskPayload(body) {
   const map = String(body.map || "Survival_1");
   const partitionId = String(body.partitionId || "").trim();
   const values = body.values && typeof body.values === "object" && !Array.isArray(body.values) ? body.values : {};
-  const restart = body.restart === false ? { restartMode: "none", restartLabel: "saved configuration" } : restartPayload(scope, map, partitionId);
+  // "Restart later": the admin chose to save (and fully materialize to disk)
+  // without restarting yet -- distinct from restart:false, which means the
+  // change never needed a restart at all. Both end up restartMode:"none" for
+  // the task executor, but only this one marks the deferred-restart-pending
+  // indicator (see markDeferredRestartPending below).
+  const restart = body.restart === false
+    ? { restartMode: "none", restartLabel: "saved configuration" }
+    : body.deferRestart === true
+      ? { restartMode: "none", restartLabel: "deferred until the next battlegroup restart" }
+      : restartPayload(scope, map, partitionId);
   return {
     scope,
     map,
@@ -1904,10 +2204,47 @@ function userSettingsTaskPayload(body) {
   };
 }
 
+// Marker for the generic "settings saved, restart deferred" indicator (Maps
+// -> Interactive Modifiers/Advanced). Mirrors the Landsraad-specific
+// `landsraad-restart-required` file (set by usersettings.py, read at
+// server.js:736) but is written here in Node since it applies to any
+// UserEngine/UserGame save, not just Landsraad fields. One flag, not one per
+// scope/map -- a second deferred save just overwrites since/label.
+function deferredRestartPendingPath(config) {
+  return resolve(config.repoRoot, "runtime/generated/settings-restart-pending.json");
+}
+
+function markDeferredRestartPending(config, label) {
+  const path = deferredRestartPendingPath(config);
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, JSON.stringify({ pending: true, since: new Date().toISOString(), label }, null, 2));
+}
+
+function readDeferredRestartPending(config) {
+  try {
+    const parsed = JSON.parse(readFileSync(deferredRestartPendingPath(config), "utf8"));
+    if (!parsed?.pending) return { pending: false };
+    return { pending: true, since: String(parsed.since || ""), label: String(parsed.label || "") };
+  } catch {
+    return { pending: false };
+  }
+}
+
+function deferredRestartLabel(payload) {
+  if (payload.scope === "engine" || payload.scope === "mapEngine" || payload.scope === "partitionEngine") return "UserEngine settings";
+  if (payload.scope === "global" || payload.scope === "profile") return "UserGame settings";
+  return payload.map ? `UserGame settings (${payload.map})` : "UserGame settings";
+}
+
+// UserEngine.ini (unlike UserGame.ini) is not per-map: every scope that edits
+// it -- "engine" (global), and "mapEngine"/"partitionEngine" (the same file,
+// just viewed/edited scoped to one map or partition for convenience) -- has
+// to restart every game service to actually apply, not just the map that
+// happened to be selected in the editor.
 function restartPayload(scope, map, partitionId) {
-  if (scope === "profile") return { restartMode: "stack", restartLabel: "all game services" };
-  if (scope === "engine") return { restartMode: "stack", restartLabel: "all game services" };
-  if (scope === "global") return { restartMode: "stack", restartLabel: "all game services" };
+  if (scope === "profile" || scope === "engine" || scope === "mapEngine" || scope === "partitionEngine" || scope === "global") {
+    return { restartMode: "stack", restartLabel: "all game services" };
+  }
   const normalizedMap = String(map || "").toLowerCase();
   const normalizedPartition = String(partitionId || "").trim();
   if (normalizedMap === "survival_1" && (!normalizedPartition || normalizedPartition === "1")) {

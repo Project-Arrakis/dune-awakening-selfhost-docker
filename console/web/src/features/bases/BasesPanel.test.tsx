@@ -43,6 +43,7 @@ function renderPanel(overrides: Partial<Parameters<typeof BasesPanel>[0]> = {}) 
   const props = {
     onError: vi.fn(),
     confirmAction: vi.fn().mockResolvedValue(true),
+    restartGate: vi.fn().mockResolvedValue("immediate"),
     formatMutationResult: vi.fn().mockReturnValue("Action completed."),
     ...overrides
   };

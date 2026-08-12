@@ -77,9 +77,20 @@ Complete reference for all HTTP API endpoints in the Dune Docker Console. All en
 | GET | `/api/server/ip-change-restart` | Get IP change restart status | None |
 | POST | `/api/server/ip-change-restart` | Save IP change restart config | `enabled`, `intervalMinutes?`, `notifyMinutes?` |
 | POST | `/api/server/ip-change-restart/check` | Check for IP changes now | None |
+| GET | `/api/server/restart-queue` | Get restart-queue settings, defaults, active state and battlegroup online count | None |
+| POST | `/api/server/restart-queue` | Save restart-queue settings (partial; merges onto the current settings) | `enabled?`, `defaultCountdownMinutes?`, `broadcastCheckpoints?`, `broadcastDurationSec?`, `recoveryGraceMinutes?`, `messages?` |
+| POST | `/api/server/restart-queue/cancel` | Cancel one active countdown | `id` |
+| POST | `/api/server/restart-queue/restart-now` | Execute one queued restart immediately | `id` |
 | GET | `/api/server/shutdown-protection` | Get shutdown protection status | None |
 | POST | `/api/server/shutdown-protection` | Enable/disable shutdown protection | `enabled` (boolean) |
 | POST | `/api/server/shutdown-protection/remove` | Remove shutdown protection | None |
+
+When the Restart Queue is enabled, the restart routes above (`/api/server/restart`,
+`/api/server/restart-service`, and the map/sietch restart paths) return
+**`202 { queued: true, ... }`** when a restart is queued behind a countdown and
+**`409 { queued: false, error }`** on a concurrency conflict; append
+`?restartQueue=immediate` to force an immediate restart. See
+[restart-queue.md](restart-queue.md).
 
 ---
 
@@ -479,12 +490,13 @@ See [blueprints.md](blueprints.md) for the full import/export design.
 |--------|-------|-------------|------------|
 | GET | `/api/maps/combat-state` | Get combat state by partition | `map` (query param) |
 | GET | `/api/maps/user-settings/schema` | Get user settings schema | None |
-| GET | `/api/maps/user-settings/restart-pending` | Check if restart pending | None |
+| GET | `/api/maps/user-settings/restart-pending` | Check if a Landsraad-field restart is pending | None |
+| GET | `/api/maps/user-settings/deferred-pending` | Check if a "Restart later" deferred save is pending (any UserEngine/UserGame save) | None |
 | GET | `/api/maps/user-settings/values` | Get settings values | `scope`, `map?`, `partitionId?` |
 | GET | `/api/maps/user-settings/raw` | Get raw settings file | `kind`, `map?`, `partitionId?` |
-| POST | `/api/maps/user-settings/save` | Save user settings | `scope`, `map?`, `partitionId?`, `values`, `restart?` |
-| POST | `/api/maps/user-settings/reset` | Reset to defaults | `scope`, `map?`, `partitionId?`, `confirmation: "RESTORE MAP DEFAULTS"` |
-| POST | `/api/maps/user-settings/raw` | Save raw settings | `scope`, `map?`, `partitionId?`, `content` |
+| POST | `/api/maps/user-settings/save` | Save user settings | `scope`, `map?`, `partitionId?`, `values`, `restart?`, `deferRestart?` |
+| POST | `/api/maps/user-settings/reset` | Reset to defaults | `scope`, `map?`, `partitionId?`, `confirmation: "RESTORE MAP DEFAULTS"`, `deferRestart?` |
+| POST | `/api/maps/user-settings/raw` | Save raw settings | `scope`, `map?`, `partitionId?`, `content`, `deferRestart?` |
 | POST | `/api/maps/user-settings/materialize` | Refresh settings | `confirmation: "REFRESH MAP SETTINGS"` |
 
 ### Engine & Game Settings

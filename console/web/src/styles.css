@@ -159,7 +159,8 @@ label.checkbox-line { display: flex; flex-direction: row; align-items: center; g
 label.checkbox-line input { width: auto; margin: 0; }
 label.wide-field { flex: 1 1 420px; min-width: min(420px, 100%); }
 label.compact-select { flex: 0 1 240px; }
-label.schedule-notify-field { flex: 0 0 260px; max-width: 260px; white-space: nowrap; }
+label.schedule-notify-field { flex: 0 1 260px; min-width: 216px; max-width: 300px; white-space: nowrap; }
+label.schedule-checkpoints-field { flex: 0 1 300px; min-width: 216px; max-width: 340px; white-space: nowrap; }
 code { color: #ffd08a; }
 h1, h2, h3, h4, h5 { color: var(--title); line-height: 1.2; letter-spacing: 0; }
 
@@ -183,6 +184,7 @@ h1, h2, h3, h4, h5 { color: var(--title); line-height: 1.2; letter-spacing: 0; }
   box-shadow: 0 18px 52px rgba(0, 0, 0, .5);
 }
 .confirm-modal.danger { border-color: var(--danger-strong); }
+.confirm-modal.confirm-modal-wide { width: min(560px, calc(100vw - 32px)); }
 .confirm-modal-title {
   display: flex;
   align-items: center;
@@ -214,6 +216,13 @@ h1, h2, h3, h4, h5 { color: var(--title); line-height: 1.2; letter-spacing: 0; }
   flex-wrap: wrap;
 }
 .confirm-modal-actions button { width: auto; min-width: 84px; }
+/* A 4-button dialog (Cancel/Restart Later vs Restart Immediately/Queue
+   Restart) groups into two clusters with a divider between them, instead of
+   four equal-weight buttons in one row. Each cluster wraps as its own unit at
+   narrow widths rather than reflowing independently. */
+.confirm-modal-actions-grouped { justify-content: space-between; align-items: center; }
+.confirm-modal-action-group { display: flex; gap: 10px; flex-wrap: wrap; }
+.confirm-modal-action-divider { width: 1px; align-self: stretch; min-height: 24px; background: var(--border-strong); }
 
 .app-shell { display: grid; grid-template-columns: 260px 1fr; min-height: 100vh; }
 .setup-only-shell { grid-template-columns: 1fr; }
@@ -599,6 +608,30 @@ main { padding: 22px; min-width: 0; }
 .danger-section { border-color: #6f3030; background: #1b1414; }
 .warning-panel { border-color: #a97932; background: #211b12; }
 .info-panel { border-color: #385067; background: #111922; }
+.restart-queue-banner { border-left: 4px solid var(--warning); background: rgba(169, 121, 50, .1); border-radius: 6px; padding: 12px 14px; margin-bottom: 10px; }
+/* Pin the countdown top-right and let a long map label wrap in the space to its
+   left, so the label never reaches the clock and no text is truncated. */
+.restart-queue-banner .panel-title { align-items: flex-start; flex-wrap: nowrap; }
+.restart-queue-banner .panel-title h4 { flex: 1 1 auto; min-width: 0; }
+.restart-queue-banner .panel-title .switch-state { flex: 0 0 auto; }
+.restart-messages-modal { width: min(560px, calc(100vw - 32px)); }
+.restart-messages-tab-flag { margin-left: 6px; color: var(--danger-text); font-weight: 800; }
+.restart-messages-field { display: grid; gap: 4px; }
+.restart-messages-field label { display: grid; gap: 6px; color: var(--muted); font-size: 13px; }
+.restart-messages-field input, .restart-messages-field textarea { width: 100%; }
+.restart-messages-counter { justify-self: end; color: var(--muted); font-size: 12px; }
+.restart-messages-duration { display: flex; align-items: flex-end; gap: 10px; }
+.restart-messages-duration label { flex: 1 1 220px; min-width: 160px; }
+.restart-messages-duration input { width: 100%; }
+.restart-messages-duration button { flex: 0 0 auto; }
+.restart-messages-help { display: grid; gap: 4px; font-size: 12px; }
+.restart-messages-help-label { text-transform: uppercase; letter-spacing: .02em; }
+.restart-messages-placeholder-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 3px; }
+.restart-messages-placeholder-list li { overflow-wrap: anywhere; }
+.restart-messages-preview { border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; background: var(--panel-muted); display: grid; gap: 4px; }
+.restart-messages-preview-label { color: var(--muted); font-size: 12px; text-transform: uppercase; }
+.restart-messages-preview strong { color: var(--title); }
+.restart-messages-preview p { margin: 0; color: var(--text); overflow-wrap: anywhere; }
 .section-divider { height: 1px; margin: 16px 0; background: rgba(232, 224, 205, 0.14); }
 .action-line { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; }
 .action-line label { flex: 0 1 180px; }
@@ -923,6 +956,8 @@ main { padding: 22px; min-width: 0; }
 .home-task-result { margin-top: 12px; display: grid; gap: 8px; }
 .maps-modifier-status-slot { display: grid; gap: 10px; margin: 16px 0 18px; }
 .maps-modifier-status-slot .dirty-note { margin: 0; }
+.maps-deferred-restart-banner { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.maps-deferred-restart-banner .muted { flex: 1 1 auto; min-width: 0; }
 .maps-result-slot { display: block; margin: 0 0 18px; }
 .maps-modifier-status-slot .maps-result-slot { margin: 0; }
 .maps-result-slot .home-task-result { margin-top: 0; }
@@ -1357,7 +1392,7 @@ body.debug .technical-details { display: block; }
 .setup-finish-celebration span:nth-child(3) { background: #b6d5ff; animation-delay: .24s; }
 .setup-finish-celebration span:nth-child(4) { background: #d9a7e2; animation-delay: .36s; }
 .setup-finish-celebration span:nth-child(5) { background: #fff1d4; animation-delay: .48s; }
-.danger-note, .error, .error-banner { color: var(--danger-text); }
+.danger-note, .error, .error-banner { color: var(--danger-text); overflow-wrap: anywhere; }
 .success-note { color: #9be6bd; }
 .error-banner { background: #351b1b; border: 1px solid var(--danger-strong); padding: 12px; border-radius: 6px; margin-bottom: 14px; }
 .drawer { border: 1px solid #302b25; border-radius: 8px; padding: 12px; color: #d9c8aa; background: rgba(13, 15, 17, .48); }
@@ -4437,8 +4472,16 @@ td :where(.service-actions, .action-row, .map-action-buttons) { max-width: 100%;
   .topbar .topbar-links { grid-template-columns: 1fr; }
   .community-button, .listing-claim-badge { grid-column: auto; }
   .confirm-modal-details div { grid-template-columns: 1fr; gap: 3px; }
-  .confirm-modal-actions { display: grid; grid-template-columns: 1fr; }
-  .confirm-modal-actions button { width: 100%; min-height: 44px; }
+  /* Excludes the grouped (4-button/quaternary) layout below -- its own rule
+     right after this one handles it. A bare .confirm-modal-actions selector
+     here would win (same specificity, later in source) over
+     .confirm-modal-actions-grouped's `display: flex`, stacking its two
+     button clusters and the divider into orphaned separate rows. */
+  .confirm-modal-actions:not(.confirm-modal-actions-grouped) { display: grid; grid-template-columns: 1fr; }
+  .confirm-modal-actions:not(.confirm-modal-actions-grouped) button { width: 100%; min-height: 44px; }
+  .confirm-modal-actions-grouped { flex-direction: column; align-items: stretch; gap: 12px; }
+  .confirm-modal-action-group button { width: 100%; min-height: 44px; }
+  .confirm-modal-action-divider { display: none; }
   .grid, .two-col, .summary-cols, .actions-grid, .settings-grid, .advanced-grid,
   .setup-form-grid, .check-grid, .health-grid, .health-grid-compact,
   .catalog-item-picker, .menu-card-grid, .planned-grid, .playerAdmin_cardGrid {
@@ -4450,7 +4493,7 @@ td :where(.service-actions, .action-row, .map-action-buttons) { max-width: 100%;
   .spicefields-table tbody td:last-child { grid-column: auto; }
   .action-row > button, .action-line > button { flex: 1 1 140px; min-height: 44px; }
   .service-actions button, .service-actions .button-link { min-height: 44px; }
-  label.inline-field, label.compact-field, label.compact-select, label.schedule-notify-field {
+  label.inline-field, label.compact-field, label.compact-select, label.schedule-notify-field, label.schedule-checkpoints-field {
     width: 100%;
     min-width: 0;
     max-width: none;
