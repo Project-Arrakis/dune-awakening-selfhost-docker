@@ -39,6 +39,7 @@ fi
 source runtime/scripts/host-paths.sh
 source runtime/scripts/runtime-env.sh
 source runtime/scripts/image-tags.sh
+source runtime/scripts/sietch-login-password-args.sh
 
 WORLD_IMAGE_TAG="$(resolve_world_image_tag)"
 IMAGE="registry.funcom.com/funcom/self-hosting/seabass-server:${WORLD_IMAGE_TAG}"
@@ -403,6 +404,16 @@ release_port_reservation "$CONTAINER_NAME"
 MEMORY="$(effective_memory_for_map "$MAP_NAME" "$PARTITION_ID")"
 mapfile -t SIETCH_RUNTIME_ARGS < <(runtime/scripts/sietches.sh runtime-args "$MAP_NAME" "$PARTITION_ID" 2>/dev/null || true)
 mapfile -t LOG_RUNTIME_ARGS < <(full_stdout_log_args)
+
+# GHSA-fc89-h24v-6j3x (issue #252): move ServerLoginPassword/ServerPassword
+# from docker run positional arguments to environment variables -- see
+# sietch-login-password-args.sh for the full rationale and the shared
+# implementation used identically by all three launcher scripts.
+declare -a SIETCH_LOGIN_PASSWORD_ARGS
+declare -a SIETCH_RUNTIME_ARGS_FILTERED
+sietch_login_password_docker_args SIETCH_RUNTIME_ARGS SIETCH_LOGIN_PASSWORD_ARGS SIETCH_RUNTIME_ARGS_FILTERED
+SIETCH_RUNTIME_ARGS=("${SIETCH_RUNTIME_ARGS_FILTERED[@]}")
+
 if [ "$MAP_NAME" = "Survival_1" ]; then
   if [ "$DIMENSION_INDEX" -eq 0 ]; then
     SERVER_INDEX=1
@@ -609,6 +620,7 @@ docker run -d \
   -e "AuthenticationConfiguration__BackendLoginConfiguration__ServerLoginSecret=$SERVER_LOGIN_PASSWORD_SECRET" \
   -e "AuthenticationConfiguration__BackendLoginConfiguration__ChecksumSecret=$SERVER_LOGIN_PASSWORD_SECRET" \
   -e "fls-apikey=$FLS_APIKEY" \
+  "${SIETCH_LOGIN_PASSWORD_ARGS[@]}" \
   "$IMAGE" \
   /opt/dune-local/run-server.sh \
   "$MAP_NAME" \
