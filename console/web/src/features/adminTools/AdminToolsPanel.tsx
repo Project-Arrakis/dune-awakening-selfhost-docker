@@ -246,6 +246,14 @@ export function AdminToolsPanel({ onError, confirmAction }: AdminToolsPanelProps
       setQueueResult({ status: "failed", title: "Default countdown must be 1 to 1440 minutes", message: "Default countdown must be between 1 and 1440 minutes." });
       return;
     }
+    // A checkpoint later than the countdown itself would never fire -- the
+    // remaining time never counts back up to reach it -- so block the save
+    // rather than silently accepting a warning that can't happen.
+    const overLimitCheckpoint = parseCheckpointMinutes(queueCheckpoints).find((minutes) => minutes > countdown);
+    if (overLimitCheckpoint !== undefined) {
+      setQueueResult({ status: "failed", title: "Broadcast checkpoints must not exceed the default countdown", message: `${overLimitCheckpoint} min is later than the ${countdown}-minute default countdown, so that warning could never fire. Lower the checkpoint or raise the countdown.` });
+      return;
+    }
     setQueueCountdownMinutes(String(countdown));
     setQueueResult({ status: "running", title: "Saving Restart Queue" });
     onError("");
@@ -948,6 +956,16 @@ function nextQueueCheckpoint(checkpoints: number[], sent: number[], remainingSec
   const remainingMinutes = remainingSeconds / 60;
   const pending = checkpoints.filter((checkpoint) => !sent.includes(checkpoint) && checkpoint <= remainingMinutes).sort((a, b) => b - a);
   return pending.length ? pending[0] : null;
+}
+
+// Mirrors the backend's checkpoint parsing (restartQueue.js normalizeCheckpoints)
+// closely enough to validate the raw text field before it's ever sent: a
+// comma/whitespace-separated list of 1-1440 integers.
+function parseCheckpointMinutes(value: string): number[] {
+  return value
+    .split(/[\s,]+/)
+    .map((item) => Number(item.trim()))
+    .filter((minutes) => Number.isInteger(minutes) && minutes >= 1 && minutes <= 1440);
 }
 
 function isValidHourMinuteTime(value: string) {
