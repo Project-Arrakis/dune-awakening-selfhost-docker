@@ -1,7 +1,8 @@
 import { Fragment, useEffect, useRef, useState } from "react";
 import { AlertTriangle, ChevronDown, ChevronUp, Download, Fuel, Grid2X2, Info, List, Lock, RotateCcw } from "lucide-react";
 import { mapsApi, type ChoamTerminalOverview, type ChoamTradeCenter, type LiveMapMemoryRow, type MapCombatStateResult, type MapRuntimeSettings, type MemoryBalancerState, type MemorySwapState, type PartitionCombatStateRow, type SpicefieldTypeRow, type UserSettingField, type UserSettingsSchema } from "../../api/maps";
-import { runGatedRestart, type RestartGate } from "../server/restartQueueGuard";
+import { runGatedRestart, type RestartGate, type RestartGateChoice } from "../server/restartQueueGuard";
+import type { RestartQueueTarget } from "../../api/server";
 import { setupApi, type Task } from "../../api/setup";
 import { SecretInput } from "../../components/SecretInput";
 import { InfoTooltip, KeyValueGrid, StatusPill, TechnicalDetails } from "../../components/common/DisplayPrimitives";
@@ -74,7 +75,7 @@ type MapsPanelProps = {
   onError: (text: string) => void;
   confirmAction: ConfirmAction;
   restartGate: RestartGate;
-  confirmSettingsRestart: (kind: "UserEngine" | "UserGame") => Promise<boolean>;
+  confirmSettingsRestart: (kind: "UserEngine" | "UserGame", target?: RestartQueueTarget) => Promise<RestartGateChoice>;
   waitForTaskWithUpdates: (task: Task, onUpdate: (task: Task) => void) => Promise<Task>;
   taskTechnicalDetails: (task: Task) => string;
 };
@@ -142,6 +143,17 @@ function isSietchRestartResult(result: HomeTaskResult | null) {
 
 function mapResultTarget(map: string, partitionId = "") {
   return partitionId ? `map:${map}:${partitionId}` : `map:${map}`;
+}
+
+// Mirrors server.js's restartPayload: "engine"/"global"/"profile" scopes
+// restart every game service (stack-wide), so the restart-queue online check
+// for those must stay battlegroup-wide (undefined target) rather than being
+// scoped to whatever map happens to be selected in the editor.
+function settingsRestartTarget(scope: string, map?: string, partitionId?: string): RestartQueueTarget | undefined {
+  if (scope === "engine" || scope === "global" || scope === "profile") return undefined;
+  if (partitionId) return { partitionId };
+  if (map) return { map };
+  return undefined;
 }
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
@@ -1296,15 +1308,17 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
     void loadSelectedEngineSettings(target.map, target.partitionId || undefined).catch((error) => onError(error instanceof Error ? error.message : String(error)));
   }
   async function saveEngine() {
-    if (!(await confirmSettingsRestart("UserEngine"))) return;
     const isGlobal = engineMapName === "__global__";
     const scope = isGlobal ? "engine" : enginePartitionId ? "partitionEngine" : "mapEngine";
+    const choice = await confirmSettingsRestart("UserEngine", settingsRestartTarget(scope, engineMapName, enginePartitionId));
+    if (choice === "cancel") return;
     await runTaskAndRefresh(
       () => mapsApi.saveUserSettings({
         scope,
         map: isGlobal ? undefined : engineMapName,
         partitionId: isGlobal ? undefined : enginePartitionId || undefined,
-        values: valuesForDirtyFields(engineValues, engineDraft, engineFields)
+        values: valuesForDirtyFields(engineValues, engineDraft, engineFields),
+        immediate: choice === "immediate"
       }),
       "Saving UserEngine changes",
       "UserEngine Saved",
@@ -1498,6 +1512,7 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
         { label: "Sietch", value: label },
         { label: "Partition", value: sietch.partitionId }
       ],
+      target: { partitionId: sietch.partitionId },
       dispatch: (opts) => mapsApi.restartSietch(sietch.partitionId, { ...opts, label })
     });
     if (gated.outcome === "cancelled") return;
@@ -1600,7 +1615,7 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
     if (!rowName || rowName === "Survival_1" || rowName === "Overmap") return;
     const partitionId = String(row.partitionId || row.partition || "").trim();
     if (!partitionId) return;
-    const gated = await runGatedRestart({ restartGate, label: rowName, dispatch: (opts) => mapsApi.respawn(partitionId, "RESTART MAP", { ...opts, label: rowName }) });
+    const gated = await runGatedRestart({ restartGate, label: rowName, target: { partitionId }, dispatch: (opts) => mapsApi.respawn(partitionId, "RESTART MAP", { ...opts, label: rowName }) });
     if (gated.outcome === "cancelled") return;
     if (gated.outcome === "queued") {
       setMapsResultScope("maps");
@@ -1628,12 +1643,13 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
   }
   async function saveGame() {
     if (!userGameName) return;
-    if (!(await confirmSettingsRestart("UserGame"))) return;
     const scope = isUserGameGlobal ? "global" : effectiveUserGamePartitionId ? "partition" : "map";
     const map = isUserGameGlobal ? "Survival_1" : userGameName;
     const partitionId = isUserGameGlobal ? undefined : effectiveUserGamePartitionId || undefined;
+    const choice = await confirmSettingsRestart("UserGame", settingsRestartTarget(scope, map, partitionId));
+    if (choice === "cancel") return;
     await runTaskAndRefresh(
-      () => mapsApi.saveUserSettings({ scope, map, partitionId, values: valuesForDirtyFields(gameValues, gameDraft, userGameFields) }),
+      () => mapsApi.saveUserSettings({ scope, map, partitionId, values: valuesForDirtyFields(gameValues, gameDraft, userGameFields), immediate: choice === "immediate" }),
       `Saving ${isUserGameGlobal ? "Global" : userGameName} UserGame changes`,
       "UserGame Saved",
       { resultScope: "modifiers", restartAcceptedMessage: "Changes saved successfully. The maps are restarting and should be back up soon." }
@@ -1641,10 +1657,15 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
     await loadSelectedSettings(userGameName, partitionId);
   }
   async function saveRaw(kind: "engine" | "game") {
-    if (!(await confirmSettingsRestart(kind === "engine" ? "UserEngine" : "UserGame"))) return;
+    // Raw UserEngine.ini is always the stack-wide profile; raw UserGame.ini
+    // here always saves as the global profile too (scope: "global" below),
+    // even though a specific map is selected for editing convenience -- so
+    // neither has a map/partition to scope the online check to.
+    const choice = await confirmSettingsRestart(kind === "engine" ? "UserEngine" : "UserGame");
+    if (choice === "cancel") return;
     if (kind === "engine") {
       await runTaskAndRefresh(
-        () => mapsApi.saveRawUserSettings({ scope: "engine", content: rawEngine }),
+        () => mapsApi.saveRawUserSettings({ scope: "engine", content: rawEngine, immediate: choice === "immediate" }),
         "Saving UserEngine changes",
         "UserEngine Saved",
         {
@@ -1657,7 +1678,7 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
       await loadUserEngine();
     } else {
       await runTaskAndRefresh(
-        () => mapsApi.saveRawUserSettings({ scope: "global", map: userGameName || "Survival_1", partitionId: effectiveUserGamePartitionId || undefined, content: rawGame }),
+        () => mapsApi.saveRawUserSettings({ scope: "global", map: userGameName || "Survival_1", partitionId: effectiveUserGamePartitionId || undefined, content: rawGame, immediate: choice === "immediate" }),
         "Saving UserGame changes",
         "UserGame Saved",
         {

@@ -77,7 +77,7 @@ function renderMapsPanel() {
   const props = {
     onError: vi.fn(),
     confirmAction: vi.fn().mockResolvedValue(true),
-    confirmSettingsRestart: vi.fn().mockResolvedValue(true),
+    confirmSettingsRestart: vi.fn().mockResolvedValue("immediate"),
     // A prop, so no task polling is needed -- the sequence settles at once.
     waitForTaskWithUpdates: vi.fn().mockImplementation((task: { id: string }) =>
       Promise.resolve({ ...task, status: "succeeded" })),

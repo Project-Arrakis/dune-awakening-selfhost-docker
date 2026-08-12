@@ -1,4 +1,4 @@
-import { serverApi, type RestartDispatchResponse, type RestartQueueState } from "../../api/server";
+import { serverApi, type RestartDispatchResponse, type RestartQueueState, type RestartQueueTarget } from "../../api/server";
 import type { Task } from "../../api/setup";
 
 // Result of the restart-queue interception dialog. "immediate" bypasses the
@@ -12,6 +12,9 @@ export type RestartGateMeta = {
   label: string;
   enabled: boolean;
   playersOnline: number | null;
+  // Battlegroup-wide count, for context alongside a map-scoped playersOnline.
+  // Equal to playersOnline for a battlegroup-wide restart.
+  battlegroupPlayersOnline: number | null;
   countdownMinutes: number;
   note?: string;
   details?: RestartGateDetail[];
@@ -41,10 +44,14 @@ export async function runGatedRestart(params: {
   dispatch: (opts: { immediate: boolean }) => Promise<RestartDispatchResponse>;
   note?: string;
   details?: RestartGateDetail[];
+  // The specific map/partition this restart targets. Omit for a
+  // battlegroup-wide restart. Scopes the online check to that map, so a
+  // restart only queues (or blocks/warns) based on who is actually there.
+  target?: RestartQueueTarget;
 }): Promise<GatedRestartResult> {
   let status: Awaited<ReturnType<typeof serverApi.restartQueue>> | null = null;
   try {
-    status = await serverApi.restartQueue();
+    status = await serverApi.restartQueue(params.target);
   } catch {
     status = null;
   }
@@ -52,6 +59,7 @@ export async function runGatedRestart(params: {
     label: params.label,
     enabled: status?.settings.enabled ?? false,
     playersOnline: status?.playersOnline ?? null,
+    battlegroupPlayersOnline: status?.battlegroupPlayersOnline ?? status?.playersOnline ?? null,
     countdownMinutes: status?.settings.defaultCountdownMinutes ?? 15,
     note: params.note,
     details: params.details

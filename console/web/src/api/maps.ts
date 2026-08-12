@@ -166,9 +166,12 @@ export const mapsApi = {
   userSettingsRestartPending: () => api<{ pending: boolean }>("/api/maps/user-settings/restart-pending"),
   userSettingsValues: (scope: "engine" | "mapEngine" | "partitionEngine" | "global" | "map" | "partition", map?: string, partitionId?: string) => api<{ stdout: string }>(`/api/maps/user-settings/values?scope=${encodeURIComponent(scope)}${map ? `&map=${encodeURIComponent(map)}` : ""}${partitionId ? `&partitionId=${encodeURIComponent(partitionId)}` : ""}`),
   rawUserSettings: (kind: "engine" | "game" | "profile" | "client-game" | "client-engine", map?: string, partitionId?: string) => api<{ content: string }>(`/api/maps/user-settings/raw?kind=${encodeURIComponent(kind)}${map ? `&map=${encodeURIComponent(map)}` : ""}${partitionId ? `&partitionId=${encodeURIComponent(partitionId)}` : ""}`),
-  saveUserSettings: (body: { scope: "engine" | "mapEngine" | "partitionEngine" | "global" | "map" | "partition"; map?: string; partitionId?: string; values: Record<string, string>; restart?: boolean }) => post<RestartDispatchResponse>("/api/maps/user-settings/save", body),
-  resetUserSettings: (body: { scope: "engine" | "mapEngine" | "partitionEngine" | "global" | "map" | "partition"; map?: string; partitionId?: string; confirmation: string }) => post<RestartDispatchResponse>("/api/maps/user-settings/reset", body),
-  saveRawUserSettings: (body: { scope: "engine" | "game" | "global" | "profile"; map?: string; partitionId?: string; content: string }) => post<RestartDispatchResponse>("/api/maps/user-settings/raw", body),
+  saveUserSettings: ({ immediate, ...body }: { scope: "engine" | "mapEngine" | "partitionEngine" | "global" | "map" | "partition"; map?: string; partitionId?: string; values: Record<string, string>; restart?: boolean; immediate?: boolean }) =>
+    post<RestartDispatchResponse>(`/api/maps/user-settings/save${immediate ? "?restartQueue=immediate" : ""}`, body),
+  resetUserSettings: ({ immediate, ...body }: { scope: "engine" | "mapEngine" | "partitionEngine" | "global" | "map" | "partition"; map?: string; partitionId?: string; confirmation: string; immediate?: boolean }) =>
+    post<RestartDispatchResponse>(`/api/maps/user-settings/reset${immediate ? "?restartQueue=immediate" : ""}`, body),
+  saveRawUserSettings: ({ immediate, ...body }: { scope: "engine" | "game" | "global" | "profile"; map?: string; partitionId?: string; content: string; immediate?: boolean }) =>
+    post<RestartDispatchResponse>(`/api/maps/user-settings/raw${immediate ? "?restartQueue=immediate" : ""}`, body),
   sietches: () => api<{ stdout: string }>("/api/sietches"),
   // exitCode is surfaced because commandJson answers 200 even when the CLI
   // fails: a caller that only reads stdout cannot tell "no sietches" from

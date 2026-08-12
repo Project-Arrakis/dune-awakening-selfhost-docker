@@ -887,6 +887,7 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
       restartGate,
       label,
       note: `Applies ${parts.join(" and ")}. Players on this map are disconnected while it restarts.`,
+      target: target.kind === "sietch" || target.kind === "respawn" ? { partitionId: target.partitionId } : undefined,
       dispatch: (opts) => target.kind === "sietch" ? mapsApi.restartSietch(String(target.partitionId), { ...opts, label })
         : target.kind === "respawn" ? mapsApi.respawn(String(target.partitionId), "RESTART MAP", { ...opts, label })
         : serverApi.restartService(target.service, opts)

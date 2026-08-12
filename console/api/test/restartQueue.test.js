@@ -64,7 +64,7 @@ test("settings persist to restart-queue.json and read back", () => {
 });
 
 test("classifyRestart maps operations to battlegroup or map targets", () => {
-  assert.deepEqual(classifyRestart("restartAll", {}), { target: "battlegroup", mapKey: "", mapLabel: "All servers" });
+  assert.deepEqual(classifyRestart("restartAll", {}), { target: "battlegroup", mapKey: "", mapLabel: "All servers", partitionId: 0, map: "" });
   // Settings-save-and-restart is gated by its payload's restartMode.
   assert.equal(classifyRestart("userSettingsSaveAndRestart", { restartMode: "stack", restartLabel: "all game services" }).target, "battlegroup");
   assert.equal(classifyRestart("userSettingsSaveAndRestart", { restartMode: "respawn", target: "3", restartLabel: "Deep Desert" }).target, "map");
@@ -76,9 +76,20 @@ test("classifyRestart maps operations to battlegroup or map targets", () => {
   assert.equal(map.target, "map");
   assert.equal(map.mapLabel, "Hagga Basin");
   assert.equal(map.mapKey, "survival_1:1");
+  // partitionId/map are carried onto the classification (and, from there, the
+  // queued entry) so the online check can be scoped to this specific map
+  // instead of the whole battlegroup.
+  assert.equal(map.partitionId, 1);
+  assert.equal(map.map, "Survival_1");
   assert.equal(isRestartOperation("mapsRespawn"), true);
   assert.equal(isRestartOperation("userSettingsSaveAndRestart"), true);
   assert.equal(isRestartOperation("mapsList"), false);
+});
+
+test("classifyRestart resolves partitionId from either partitionId or target, defaulting to 0 when absent", () => {
+  assert.equal(classifyRestart("mapsRespawn", { target: "3", restartLabel: "Deep Desert" }).partitionId, 3);
+  assert.equal(classifyRestart("mapsRespawn", { restartLabel: "this map" }).partitionId, 0);
+  assert.equal(classifyRestart("mapsRespawn", { partitionId: "not-a-number" }).partitionId, 0);
 });
 
 test("canQueue enforces the concurrency rules", () => {
@@ -116,6 +127,25 @@ test("appendEntry, readState, markEntryRestarting, recordCheckpointSent, removeE
 
   removeEntry(cfg, entry.id);
   assert.equal(readState(cfg).entries.length, 0);
+});
+
+test("appendEntry carries partitionId/map for a map entry and zeroes them for a battlegroup entry", () => {
+  const cfg = config();
+  const mapEntry = appendEntry(cfg, {
+    target: "map", type: "maps", operation: "mapsRespawn", payload: { map: "Survival_1", partitionId: "1" },
+    mapKey: "survival_1:1", mapLabel: "Hagga Basin", partitionId: 1, map: "Survival_1",
+    requestedBy: "web-admin", countdownMinutes: 15, now: 1_000_000
+  });
+  assert.equal(mapEntry.partitionId, 1);
+  assert.equal(mapEntry.map, "Survival_1");
+
+  const bgEntry = appendEntry(cfg, {
+    target: "battlegroup", type: "server", operation: "restartAll", payload: {},
+    mapKey: "", mapLabel: "All servers", partitionId: 3, map: "ignored-for-battlegroup",
+    requestedBy: "web-admin", countdownMinutes: 15, now: 1_000_000
+  });
+  assert.equal(bgEntry.partitionId, 0);
+  assert.equal(bgEntry.map, "");
 });
 
 test("checkpointsDue returns unsent marks at or past the remaining minutes, highest first", () => {

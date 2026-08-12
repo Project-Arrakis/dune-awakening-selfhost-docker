@@ -1656,6 +1656,44 @@ export async function countOnlinePlayers(db) {
   return { supported: true, online: Number(r.online || 0), total: Number(r.total || 0) };
 }
 
+// Scoped online count for a single restart target (a map or sietch partition),
+// so the restart queue can decide "immediate vs countdown" -- and tell the
+// admin -- based on who is actually on that map, not the whole battlegroup.
+// Resolves to one or more partition ids: a direct partitionId wins; otherwise
+// `map` is looked up against dune.world_partition.map, which is the same
+// namespace the restart machinery already uses for its targets (see
+// partitionRestartTargets above) -- never dune.actors.map, which names the
+// in-game region instead of the partition. Returns { supported: false } when
+// neither resolves to a real partition, so callers fall back to the
+// battlegroup-wide count rather than silently reporting zero.
+export async function countOnlinePlayersForTarget(db, { partitionId, map } = {}) {
+  if (!(await tableExists(db, "player_state")) || !(await tableExists(db, "actors"))) {
+    return { supported: false, online: 0, total: 0 };
+  }
+  const partitionIds = await resolveRestartTargetPartitionIds(db, { partitionId, map });
+  if (!partitionIds.length) return { supported: false, online: 0, total: 0 };
+  const result = await db.query(`
+    select count(*) filter (where coalesce(ps.online_status::text, '') = 'Online')::int as online,
+           count(*)::int as total
+    from dune.actors a
+    join dune.player_state ps on ps.player_pawn_id = a.id
+    where a.partition_id = any($1::int[])
+      and a.id not in (${SYSTEM_PERSONA_PAWN_IDS.map((id) => `${id}::bigint`).join(", ")})`, [partitionIds]);
+  const r = result.rows?.[0] || {};
+  return { supported: true, online: Number(r.online || 0), total: Number(r.total || 0) };
+}
+
+async function resolveRestartTargetPartitionIds(db, { partitionId, map } = {}) {
+  const direct = Number(partitionId);
+  if (Number.isInteger(direct) && direct > 0) return [direct];
+  const mapName = String(map || "").trim();
+  if (!mapName || !(await tableExists(db, "world_partition"))) return [];
+  const result = await db.query("select partition_id from dune.world_partition where map = $1", [mapName]);
+  return result.rows
+    .map((row) => Number(row.partition_id))
+    .filter((id) => Number.isInteger(id) && id > 0);
+}
+
 export async function addonLeadershipPlayers(db) {
   const result = await listAllPlayers(db, {});
   if (!result?.capabilities?.players) return result;

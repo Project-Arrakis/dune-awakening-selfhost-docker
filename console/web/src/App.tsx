@@ -1,7 +1,7 @@
 import { Fragment, Suspense, lazy, useCallback, useEffect, useRef, useState } from "react";
 import { Archive, Building2, Car, CircleArrowUp, Database, ExternalLink, FileText, Gift, Heart, Home, Landmark, Map as MapIcon, Menu, MessageCircle, PackagePlus, RefreshCw, Server, Settings, Shield, Sparkles, Users, X } from "lucide-react";
 import { api, AUTH_SESSION_EXPIRED_EVENT, AUTH_SESSION_EXPIRED_MESSAGE, post, setCsrfToken } from "./api/client";
-import { serverApi } from "./api/server";
+import { serverApi, type RestartQueueTarget } from "./api/server";
 import { updatesApi } from "./api/updates";
 import { addonsApi } from "./api/addons";
 import { playersApi } from "./api/players";
@@ -88,7 +88,7 @@ function confirmDialog(message: string, options: Partial<Omit<ConfirmDialogReque
 // and players are online it offers Queue / Restart Immediately / Cancel.
 // Returns "immediate" only when the dialog cannot open, so the restart still
 // works headless.
-function restartGateChoice(meta: { label: string; enabled: boolean; playersOnline: number | null; countdownMinutes: number; note?: string; details?: ConfirmDialogDetail[] }): Promise<RestartGateChoice> {
+function restartGateChoice(meta: { label: string; enabled: boolean; playersOnline: number | null; battlegroupPlayersOnline: number | null; countdownMinutes: number; note?: string; details?: ConfirmDialogDetail[] }): Promise<RestartGateChoice> {
   return new Promise((resolve) => {
     if (!openConfirmDialog) {
       resolve("immediate");
@@ -97,11 +97,20 @@ function restartGateChoice(meta: { label: string; enabled: boolean; playersOnlin
     const online = meta.playersOnline ?? 0;
     const minutes = Math.max(1, Math.round(meta.countdownMinutes));
     const queued = meta.enabled && online > 0;
+    // Only worth mentioning when this restart is scoped to a map/partition
+    // and that count actually differs from the battlegroup-wide figure --
+    // for a battlegroup restart the two are always the same query.
+    const battlegroupOnline = meta.battlegroupPlayersOnline;
+    const showBattlegroupContext = battlegroupOnline !== null && battlegroupOnline !== online;
+    const battlegroupClause = showBattlegroupContext
+      ? ` (${battlegroupOnline} online battlegroup-wide)`
+      : "";
+    const scopeClause = meta.label === "battlegroup" ? "in the battlegroup" : `on ${meta.label}`;
     if (!queued) {
       openConfirmDialog({
         title: "Confirm restart",
         message: meta.enabled
-          ? `No players are online, so this ${meta.label} restart will run immediately.`
+          ? `No players are online ${scopeClause}${battlegroupClause}, so this restart will run immediately.`
           : `Restart ${meta.label}? Anyone connected will be disconnected.`,
         confirmLabel: "Restart Now",
         cancelLabel: "Cancel",
@@ -114,7 +123,7 @@ function restartGateChoice(meta: { label: string; enabled: boolean; playersOnlin
     }
     openConfirmDialog({
       title: "Players are online",
-      message: `${online} ${online === 1 ? "player is" : "players are"} online. This ${meta.label} restart will start a ${minutes}-minute countdown with in-game warnings at each checkpoint.`,
+      message: `${online} ${online === 1 ? "player is" : "players are"} online ${scopeClause}${battlegroupClause}. This restart will start a ${minutes}-minute countdown with in-game warnings at each checkpoint.`,
       confirmLabel: `Queue Restart (${minutes} min)`,
       cancelLabel: "Cancel",
       tertiaryLabel: "Restart Immediately",
@@ -126,15 +135,28 @@ function restartGateChoice(meta: { label: string; enabled: boolean; playersOnlin
   });
 }
 
-function confirmSettingsRestart(kind: "UserEngine" | "UserGame") {
-  return confirmDialog(
-    `Save ${kind} changes? To apply these changes, the Dune server services need to restart.`,
-    {
-      title: "Restart Required",
-      confirmLabel: "Yes, Save And Restart",
-      cancelLabel: "No, Cancel"
-    }
-  );
+// Settings saves in Maps -> Interactive Modifiers and -> Advanced always
+// restart the affected server(s) to apply. This routes that restart through
+// the same queue interception as every other restart control: a plain
+// confirm when the queue is off (or nobody relevant is online), or the
+// Queue/Restart Immediately/Cancel choice -- with players-online context --
+// when it's on. `target` scopes the online check to the map/partition this
+// save actually restarts; omit it for a stack-wide (all game services) save.
+async function confirmSettingsRestart(kind: "UserEngine" | "UserGame", target?: RestartQueueTarget): Promise<RestartGateChoice> {
+  let status: Awaited<ReturnType<typeof serverApi.restartQueue>> | null = null;
+  try {
+    status = await serverApi.restartQueue(target);
+  } catch {
+    status = null;
+  }
+  return restartGateChoice({
+    label: kind === "UserEngine" ? "UserEngine settings" : "UserGame settings",
+    enabled: status?.settings.enabled ?? false,
+    playersOnline: status?.playersOnline ?? null,
+    battlegroupPlayersOnline: status?.battlegroupPlayersOnline ?? status?.playersOnline ?? null,
+    countdownMinutes: status?.settings.defaultCountdownMinutes ?? 15,
+    note: "To apply these changes, the affected server(s) need to restart."
+  });
 }
 
 function formatResultTitle(value: unknown, pending = false) {

@@ -202,6 +202,10 @@ function normalizeEntry(entry) {
     payload: entry.payload && typeof entry.payload === "object" ? entry.payload : {},
     mapKey: target === "map" ? String(entry.mapKey || "").trim() : "",
     mapLabel: String(entry.mapLabel || "").trim(),
+    // Denormalized from classifyRestart so the tick can re-scope the online
+    // check to this entry's map without re-parsing its restart payload.
+    partitionId: target === "map" ? clampInt(entry.partitionId, 0, 0, 2147483647) : 0,
+    map: target === "map" ? String(entry.map || "").trim() : "",
     startedAt: String(entry.startedAt || "").trim(),
     restartAt: Number(entry.restartAt) || 0,
     countdownMinutes: clampInt(entry.countdownMinutes, DEFAULT_SETTINGS.defaultCountdownMinutes, 1, MAX_COUNTDOWN_MINUTES),
@@ -222,19 +226,25 @@ export function classifyRestart(operation, payload = {}) {
 
   // Whole-battlegroup restarts.
   if (operation === "restartAll" || restartMode === "stack") {
-    return { target: "battlegroup", mapKey: "", mapLabel: "All servers" };
+    return { target: "battlegroup", mapKey: "", mapLabel: "All servers", partitionId: 0, map: "" };
   }
 
   // A bare "restart the survival/overmap service" with no map context is a
   // stack-level operation from the admin's point of view; treat it as
   // battlegroup so it can't run alongside anything else.
   if (operation === "restartService" && !payload?.map && !payload?.partitionId && !payload?.target) {
-    return { target: "battlegroup", mapKey: "", mapLabel: "All servers" };
+    return { target: "battlegroup", mapKey: "", mapLabel: "All servers", partitionId: 0, map: "" };
   }
 
   const mapLabel = String(payload?.restartLabel || payload?.map || payload?.service || "this map").trim() || "this map";
   const mapKey = restartMapKey(payload);
-  return { target: "map", mapKey, mapLabel };
+  // Carried onto the entry so the online-player check (both at gate time and
+  // on every tick) can be scoped to this specific map/partition instead of
+  // the whole battlegroup. See duneDb.countOnlinePlayersForTarget.
+  const rawPartitionId = Number(payload?.partitionId || payload?.target || 0);
+  const partitionId = Number.isInteger(rawPartitionId) && rawPartitionId > 0 ? rawPartitionId : 0;
+  const map = String(payload?.map || "").trim();
+  return { target: "map", mapKey, mapLabel, partitionId, map };
 }
 
 function restartMapKey(payload = {}) {
@@ -262,7 +272,7 @@ export function canQueue(entries, target, mapKey) {
 }
 
 // Append a new countdown entry. Caller has already validated via canQueue().
-export function appendEntry(config, { target, type, operation, payload, mapKey, mapLabel, requestedBy, countdownMinutes, now }) {
+export function appendEntry(config, { target, type, operation, payload, mapKey, mapLabel, partitionId, map, requestedBy, countdownMinutes, now }) {
   const state = readState(config);
   const startMs = Number.isFinite(now) ? now : Date.now();
   const minutes = clampInt(countdownMinutes, DEFAULT_SETTINGS.defaultCountdownMinutes, 1, MAX_COUNTDOWN_MINUTES);
@@ -275,6 +285,8 @@ export function appendEntry(config, { target, type, operation, payload, mapKey, 
     payload,
     mapKey: target === "map" ? mapKey : "",
     mapLabel,
+    partitionId: target === "map" ? partitionId : 0,
+    map: target === "map" ? map : "",
     startedAt: new Date(startMs).toISOString(),
     restartAt: startMs + minutes * 60_000,
     countdownMinutes: minutes,
