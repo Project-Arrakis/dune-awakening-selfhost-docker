@@ -97,11 +97,11 @@ export function AdminToolsPanel({ onError, confirmAction }: AdminToolsPanelProps
   const queueSaving = queueResult?.status === "running";
   const queuePlayersSupported = restartQueue?.playersOnlineSupported ?? false;
   const queuePlayersOnline = restartQueue?.playersOnline ?? null;
-  const queuePlayersLabel = queuePlayersSupported ? `${Math.max(0, Math.round(queuePlayersOnline ?? 0))} online` : "Unavailable";
+  const queuePlayersLabel = queuePlayersSupported ? `${Math.max(0, Math.round(queuePlayersOnline ?? 0))} Online` : "Unavailable";
   const queueLoaded = Boolean(restartQueue);
-  const queueStatusLabel = !queueLoaded && queueLoading ? "Checking" : queueEnabled ? "Idle · monitoring" : "Disabled";
-  const queueDefaultCountdownLabel = queueSettings ? `${Math.round(queueSettings.defaultCountdownMinutes)} minutes` : "";
-  const queueCheckpointsLabel = queueSettings && queueSettings.broadcastCheckpoints.length ? `${queueSettings.broadcastCheckpoints.join(", ")} min` : "";
+  const queueStatusLabel = !queueLoaded && queueLoading ? "Checking" : queueEnabled ? "Idle · Monitoring" : "Disabled";
+  const queueDefaultCountdownLabel = queueSettings ? `${Math.round(queueSettings.defaultCountdownMinutes)} Minutes` : "";
+  const queueCheckpointsLabel = queueSettings && queueSettings.broadcastCheckpoints.length ? `${queueSettings.broadcastCheckpoints.join(", ")} Min` : "";
   const ipChangeValues = parseKeyValueText(ipChangeRestart?.stdout || "");
   const ipChangeTimerValue = ipChangeValues.systemd_timer || "";
   const ipChangeTimerLabel = ipChangeTimerValue ? formatTimerStatus(ipChangeTimerValue) : "Not Installed";
@@ -815,7 +815,11 @@ export function AdminToolsPanel({ onError, confirmAction }: AdminToolsPanelProps
               const restartAtMs = Number(entry.restartAt) || (queueNow + Math.max(0, Number(entry.remainingSeconds) || 0) * 1000);
               const remainingSeconds = entry.status === "restarting" ? 0 : Math.max(0, Math.round((restartAtMs - queueNow) / 1000));
               const nextCheckpoint = nextQueueCheckpoint(queueSettings?.broadcastCheckpoints || [], entry.sentCheckpoints || [], remainingSeconds);
-              const header = entry.target === "battlegroup" ? "Battlegroup Restart · all maps" : `Map Restart · ${entry.mapLabel}`;
+              const header = entry.target === "battlegroup"
+                ? "Battlegroup Restart · All Maps"
+                : entry.target === "service"
+                  ? `Service Restart · ${entry.mapLabel}`
+                  : `Map Restart · ${entry.mapLabel}`;
               const subtext = entry.status === "restarting"
                 ? "Restart in progress · maps are cycling."
                 : nextCheckpoint != null

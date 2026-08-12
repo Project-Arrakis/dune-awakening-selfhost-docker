@@ -1687,7 +1687,7 @@ async function maybeQueueRestart(req, res, type, operation, payload) {
     friendly: "Restart Queue",
     path: "runtime/generated/restart-queue-state.json",
     result: "queued",
-    message: classification.target === "map" && battlegroupOnline !== null && battlegroupOnline !== online
+    message: classification.target !== "battlegroup" && battlegroupOnline !== null && battlegroupOnline !== online
       ? `${settings.defaultCountdownMinutes}-minute countdown (${online} online on this map, ${battlegroupOnline} in the battlegroup)`
       : `${settings.defaultCountdownMinutes}-minute countdown (${online} online)`
   });
@@ -1706,7 +1706,7 @@ async function maybeQueueRestart(req, res, type, operation, payload) {
 async function scopedOnlineCount(classification) {
   const battlegroup = await duneDb.countOnlinePlayers(db);
   const battlegroupOnline = battlegroup.supported ? battlegroup.online : null;
-  if (classification.target !== "map") {
+  if (classification.target === "battlegroup") {
     return { online: battlegroupOnline ?? 0, battlegroupOnline };
   }
   const scoped = await duneDb.countOnlinePlayersForTarget(db, { partitionId: classification.partitionId, map: classification.map });
@@ -1772,7 +1772,7 @@ async function restartQueueAutoTick() {
       // a map WITH players would auto-execute the moment the battlegroup as a
       // whole happened to read zero.
       let online = battlegroupOnline;
-      if (entry.target === "map") {
+      if (entry.target !== "battlegroup") {
         try {
           const scoped = await duneDb.countOnlinePlayersForTarget(db, { partitionId: entry.partitionId, map: entry.map });
           online = scoped.supported ? scoped.online : battlegroupOnline;

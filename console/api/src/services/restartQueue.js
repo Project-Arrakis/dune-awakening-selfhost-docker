@@ -189,7 +189,7 @@ export function writeState(config, state) {
 
 function normalizeEntry(entry) {
   if (!entry || typeof entry !== "object") return null;
-  const target = entry.target === "battlegroup" ? "battlegroup" : "map";
+  const target = entry.target === "battlegroup" ? "battlegroup" : entry.target === "service" ? "service" : "map";
   const id = String(entry.id || "").trim() || randomUUID();
   const operation = String(entry.operation || "").trim();
   if (!operation) return null;
@@ -200,12 +200,12 @@ function normalizeEntry(entry) {
     type: String(entry.type || "server").trim() || "server",
     operation,
     payload: entry.payload && typeof entry.payload === "object" ? entry.payload : {},
-    mapKey: target === "map" ? String(entry.mapKey || "").trim() : "",
+    mapKey: target !== "battlegroup" ? String(entry.mapKey || "").trim() : "",
     mapLabel: String(entry.mapLabel || "").trim(),
     // Denormalized from classifyRestart so the tick can re-scope the online
     // check to this entry's map without re-parsing its restart payload.
-    partitionId: target === "map" ? clampInt(entry.partitionId, 0, 0, 2147483647) : 0,
-    map: target === "map" ? String(entry.map || "").trim() : "",
+    partitionId: target !== "battlegroup" ? clampInt(entry.partitionId, 0, 0, 2147483647) : 0,
+    map: target !== "battlegroup" ? String(entry.map || "").trim() : "",
     startedAt: String(entry.startedAt || "").trim(),
     restartAt: Number(entry.restartAt) || 0,
     countdownMinutes: clampInt(entry.countdownMinutes, DEFAULT_SETTINGS.defaultCountdownMinutes, 1, MAX_COUNTDOWN_MINUTES),
@@ -229,10 +229,18 @@ export function classifyRestart(operation, payload = {}) {
     return { target: "battlegroup", mapKey: "", mapLabel: "All servers", partitionId: 0, map: "" };
   }
 
-  // A bare "restart the survival/overmap service" with no map context is a
-  // stack-level operation from the admin's point of view; treat it as
-  // battlegroup so it can't run alongside anything else.
+  // The two game-server services have stable partition targets. Preserve that
+  // scope so their queue label, online-player check, and warning copy describe
+  // the service that is actually cycling. Shared infrastructure services still
+  // affect the battlegroup and remain battlegroup-scoped.
   if (operation === "restartService" && !payload?.map && !payload?.partitionId && !payload?.target) {
+    const service = String(payload?.service || "").trim().toLowerCase();
+    if (service === "overmap") {
+      return { target: "service", mapKey: "overmap:2", mapLabel: "Overmap", partitionId: 2, map: "Overmap" };
+    }
+    if (service === "survival" || service === "survival-1") {
+      return { target: "service", mapKey: "survival_1:1", mapLabel: "Survival 1", partitionId: 1, map: "Survival_1" };
+    }
     return { target: "battlegroup", mapKey: "", mapLabel: "All servers", partitionId: 0, map: "" };
   }
 
@@ -283,10 +291,10 @@ export function appendEntry(config, { target, type, operation, payload, mapKey, 
     type,
     operation,
     payload,
-    mapKey: target === "map" ? mapKey : "",
+    mapKey: target !== "battlegroup" ? mapKey : "",
     mapLabel,
-    partitionId: target === "map" ? partitionId : 0,
-    map: target === "map" ? map : "",
+    partitionId: target !== "battlegroup" ? partitionId : 0,
+    map: target !== "battlegroup" ? map : "",
     startedAt: new Date(startMs).toISOString(),
     restartAt: startMs + minutes * 60_000,
     countdownMinutes: minutes,
@@ -365,8 +373,12 @@ export function buildWarning(target, mapLabel, minutesLeft, messages = DEFAULT_M
   const label = String(mapLabel || defaultLabel).trim() || defaultLabel;
   const template = target === "battlegroup" ? messages.battlegroup : messages.map;
   const vars = { minutes: `${minutes} ${unit}`, mapLabel: label };
+  const renderedTitle = renderTemplate(template.title, vars);
   return {
-    title: renderTemplate(template.title, vars),
+    // Keep customized map-warning titles intact. For the built-in generic map
+    // title, name the service explicitly so players never see "Map Restart"
+    // or "Battlegroup Restart" for an Overmap/Survival service restart.
+    title: target === "service" && template.title === DEFAULT_MESSAGES.map.title ? `${label} Restart` : renderedTitle,
     body: renderTemplate(template.body, vars)
   };
 }

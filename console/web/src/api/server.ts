@@ -26,7 +26,7 @@ export type RestartQueueSettings = {
 export type RestartQueueEntry = {
   id: string;
   status: "counting" | "restarting";
-  target: "battlegroup" | "map";
+  target: "battlegroup" | "map" | "service";
   mapLabel: string;
   requestedBy: string;
   startedAt: string;

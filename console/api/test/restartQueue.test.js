@@ -71,6 +71,12 @@ test("classifyRestart maps operations to battlegroup or map targets", () => {
   assert.equal(classifyRestart("userSettingsSaveAndRestart", { restartMode: "none" }), null); // a save with restart disabled is not gated
   assert.equal(classifyRestart("mapsList", {}), null); // not a restart op
   assert.equal(classifyRestart("restartService", { service: "director" }).target, "battlegroup"); // bare service restart
+  assert.deepEqual(classifyRestart("restartService", { service: "overmap" }), {
+    target: "service", mapKey: "overmap:2", mapLabel: "Overmap", partitionId: 2, map: "Overmap"
+  });
+  assert.deepEqual(classifyRestart("restartService", { service: "survival-1" }), {
+    target: "service", mapKey: "survival_1:1", mapLabel: "Survival 1", partitionId: 1, map: "Survival_1"
+  });
 
   const map = classifyRestart("mapsRespawn", { map: "Survival_1", partitionId: "1", restartLabel: "Hagga Basin" });
   assert.equal(map.target, "map");
@@ -167,6 +173,13 @@ test("buildWarning produces the two title/body variants with correct pluralizati
     body: "Hagga Basin will restart in 1 minute. Please move to another map or get to a safe place."
   });
   assert.match(buildWarning("map", "Deep Desert", 5).body, /^Deep Desert will restart in 5 minutes\./);
+});
+
+test("buildWarning names a service restart without claiming all maps restart", () => {
+  assert.deepEqual(buildWarning("service", "Overmap", 2), {
+    title: "Overmap Restart",
+    body: "Overmap will restart in 2 minutes. Please move to another map or get to a safe place."
+  });
 });
 
 test("defaults include the two message templates and defaultSettings clones them", () => {
