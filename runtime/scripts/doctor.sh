@@ -374,6 +374,12 @@ check_file .env ".env config" "Run: dune init"
 check_file runtime/secrets/funcom-token.txt "Funcom token file" "Run: dune init, or place the token in runtime/secrets/funcom-token.txt"
 check_file runtime/generated/battlegroup.env "Battlegroup config" "Run: dune init"
 check_file runtime/generated/image-tags.env "Generated image tags" "Run: dune update install during init, or re-run dune init if this is a fresh install"
+if runtime/scripts/battlegroup-identity.sh check >/dev/null 2>&1; then
+  ok "Battlegroup ID matches the Funcom token"
+else
+  fail_msg "Battlegroup ID is missing, invalid, or does not match the Funcom token"
+  echo "     Run: runtime/scripts/battlegroup-identity.sh ensure"
+fi
 
 echo
 echo "=== Host automation ==="
