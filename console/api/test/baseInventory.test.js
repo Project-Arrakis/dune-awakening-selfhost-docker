@@ -89,7 +89,7 @@ test("baseInventory rolls items up by template and by container", async () => {
     { key: "storage", name: "Storage", containerCount: 2, itemCount: 38 },
     { key: "refining", name: "Refining", containerCount: 1, itemCount: 7 },
     { key: "crafting", name: "Crafting", containerCount: 0, itemCount: 0 },
-    { key: "machines", name: "Machines", containerCount: 0, itemCount: 0 }
+    { key: "other", name: "Other", containerCount: 0, itemCount: 0 }
   ]);
 });
 
@@ -97,7 +97,7 @@ test("baseInventory keeps an empty container instead of dropping it", async () =
   // The left join against dune.items emits one all-null item row for a
   // container holding nothing.
   const db = createDb({
-    rows: [row({ placeable_id: "40010", inventory_id: "510", template_id: null, stack_size: null, max_item_count: 5, group_key: "machines", type_name: "Repair Station" })]
+    rows: [row({ placeable_id: "40010", inventory_id: "510", template_id: null, stack_size: null, max_item_count: 5, group_key: "other", type_name: "Repair Station" })]
   });
 
   const result = await baseInventory(db, BASE_ID);
@@ -106,7 +106,7 @@ test("baseInventory keeps an empty container instead of dropping it", async () =
     placeableId: "40010",
     name: "",
     typeName: "Repair Station",
-    group: "machines",
+    group: "other",
     usedSlots: 0,
     maxSlots: 5,
     itemCount: 0,
@@ -172,16 +172,22 @@ test("baseInventory only ever asks for allowlisted building types", async () => 
   assert.ok(buildingTypes.includes("smallorerefinery_placeable"));
   assert.ok(buildingTypes.includes("recycler_placeable"));
   assert.ok(buildingTypes.includes("repairstation_placeable"));
+  assert.ok(buildingTypes.includes("totem_small_placeable"));
+  assert.ok(buildingTypes.includes("totem_placeable"));
   // The Power and Water tabs own these; an unrecognised placeable must not
   // acquire a group by accident either.
   assert.ok(!buildingTypes.includes("generator_placeable"));
   assert.ok(!buildingTypes.includes("windtrap_placeable"));
   assert.ok(!buildingTypes.includes("watercistern_placeable"));
   assert.equal(groups.length, buildingTypes.length);
-  assert.deepEqual([...new Set(groups)], ["storage", "refining", "crafting", "machines"]);
+  assert.deepEqual([...new Set(groups)], ["storage", "refining", "crafting", "other"]);
   // Refineries and fabricators are separate groups, not one "production" bucket.
   assert.equal(groups[buildingTypes.indexOf("smallorerefinery_placeable")], "refining");
   assert.equal(groups[buildingTypes.indexOf("survivalfabricator_placeable")], "crafting");
+  // The base's own claim structure lands in Other alongside the recycler and
+  // repair station, not a bucket of its own.
+  assert.equal(groups[buildingTypes.indexOf("totem_small_placeable")], "other");
+  assert.equal(groups[buildingTypes.indexOf("totem_placeable")], "other");
 });
 
 test("baseInventory drops the uncapped second inventory refineries carry", async () => {

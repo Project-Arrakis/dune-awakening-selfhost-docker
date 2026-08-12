@@ -6956,16 +6956,28 @@ const BASE_INVENTORY_TYPES = {
       advancedwearablesfabricator_placeable: "Advanced Garment Fabricator"
     }
   },
-  machines: {
-    name: "Machines",
+  other: {
+    name: "Other",
     buildingTypes: {
       recycler_placeable: "Recycler",
-      repairstation_placeable: "Repair Station"
+      repairstation_placeable: "Repair Station",
+      // The base's own claim structure. Unlike every other entry here it is
+      // not a placeable a player builds inside their base -- it *is* the
+      // base -- but it carries a real 5-slot dune.inventories row of its own
+      // (verified against the kovalt_test.backup dump: 17 totem_placeable
+      // and 2 totem_small_placeable rows, each with an inv.actor_id = p.id
+      // row, max_item_count 5; base 3438's totem_placeable 3437 held 1 item,
+      // qty 83, pulled through this same owner_entity_id join with no
+      // special-casing). Names are the catalog patent's, matching every
+      // other label in this table: Totem_Small_Patent is "Sub-Fief Console",
+      // Totem_Patent is "Advanced Sub-Fief".
+      totem_small_placeable: "Sub-Fief Console",
+      totem_placeable: "Advanced Sub-Fief"
     }
   }
 };
 
-const BASE_INVENTORY_GROUP_ORDER = ["storage", "refining", "crafting", "machines"];
+const BASE_INVENTORY_GROUP_ORDER = ["storage", "refining", "crafting", "other"];
 
 const BASE_INVENTORY_TRIPLES = BASE_INVENTORY_GROUP_ORDER.flatMap((group) =>
   Object.entries(BASE_INVENTORY_TYPES[group].buildingTypes).map(
