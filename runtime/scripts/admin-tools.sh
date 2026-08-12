@@ -1740,7 +1740,7 @@ publish_player_command() {
 
   inner_json="$(build_passthrough_json "$command_id" "PlayerId=$resolved_player=string" "$@")"
   case "$command_id" in
-    AwardXP|UpdateAllWaterFillables|SpawnVehicleAt) require_online=1 ;;
+    AwardXP|SkillsSetUnspentSkillPoints|SkillsSetModuleLevel|UpdateAllWaterFillables|SpawnVehicleAt) require_online=1 ;;
   esac
 
   if [ "${DUNE_ADMIN_DRY_RUN:-0}" = "1" ]; then

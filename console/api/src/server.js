@@ -56,6 +56,7 @@ import { parseEffectiveGuildMemberLimit } from "./services/guildSettings.js";
 import { parseEffectivePermissionLimit } from "./services/permissionSettings.js";
 import { flushBaseRefillQueues } from "./services/baseRefillFlush.js";
 import { banPlayer, bannedFlsIds, createPlayerBanEnforcer, playerBanFor, unbanPlayer } from "./services/playerBans.js";
+import { findPlayerForLiveAction, playerIsOnlineForLiveAction } from "./playerLiveActions.js";
 
 const config = loadConfig();
 loadPolicies(config.repoRoot);
@@ -1858,6 +1859,12 @@ async function playerTask(req, res, path, operation, phrase = "") {
   }
   if (!applyMutationRateLimit(req, res, `players.${operation}`)) return;
   const playerId = decodeURIComponent(path.split("/")[3]);
+  if (["adminSetSkillPoints", "adminSetSkillModule"].includes(operation)) {
+    const player = await resolvePlayerGrantTarget(playerId);
+    if (!player.online) {
+      return json(res, 409, { error: "The player must be online to change skills." });
+    }
+  }
   return task(req, res, "admin", operation, { ...body, playerId });
 }
 
@@ -2052,14 +2059,12 @@ async function resolveCarePackagePlayerIdentity(playerId) {
 async function resolvePlayerGrantTarget(playerId) {
   const players = await duneDb.listAllPlayers(db, {}).catch(() => ({ rows: [] }));
   const rows = players.rows || [];
-  const target = String(playerId || "").toLowerCase();
-  const player = rows.find((row) => [row.action_player_id, row.funcom_id, row.fls_id, row.account_id, row.actor_id, row.player_pawn_id]
-    .some((value) => String(value || "").toLowerCase() === target));
+  const player = findPlayerForLiveAction(rows, playerId);
   return {
     actionId: String(player?.action_player_id || player?.funcom_id || player?.fls_id || playerId || ""),
     actorId: String(player?.actor_id || player?.player_pawn_id || (/^\d+$/.test(String(playerId || "")) ? playerId : "") || ""),
     characterName: player?.character_name || "",
-    online: String(player?.online_status || "").toLowerCase() === "online"
+    online: playerIsOnlineForLiveAction(player)
   };
 }
 
