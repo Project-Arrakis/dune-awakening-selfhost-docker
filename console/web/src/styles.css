@@ -2102,6 +2102,21 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 .exchange-config-add button { width: auto; min-width: 72px; }
 .exchange-config-modal .confirm-modal-actions .primary { background: var(--accent); color: #1a130a; border-color: var(--accent); }
 
+.market-bot-modal { width: min(680px, calc(100vw - 32px)); max-height: calc(100vh - 48px); overflow-y: auto; }
+.market-bot-exchange { width: 100%; }
+.market-bot-exchange select { width: 100%; }
+.market-bot-section { display: grid; gap: 8px; border: 1px solid #302b25; border-radius: 8px; padding: 10px 12px; background: #12151a; margin-top: 10px; }
+.market-bot-section > strong { color: #ffd08a; }
+.market-bot-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; }
+.market-bot-grid label { display: grid; gap: 4px; font-size: 12px; color: #cdbb95; }
+.market-bot-grid input, .market-bot-grid select { width: 100%; }
+.market-bot-toggle { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.market-bot-toggle input { width: auto; }
+.market-bot-actions { justify-content: flex-start; }
+.market-bot-actions button { width: auto; min-width: 0; }
+.market-bot-actions .danger { background: rgba(200, 77, 63, .15); border-color: rgba(200, 77, 63, .6); color: #ffd6d1; }
+.market-bot-notice { border: 1px solid rgba(99, 181, 127, .5); background: rgba(30, 76, 48, .35); color: #d8f0c8; border-radius: 8px; padding: 8px 10px; margin: 10px 0 0; font-size: 13px; }
+
 .stable-action-button { min-width: 72px; }
 .map-action-buttons { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; }
 .map-action-buttons .stable-action-button { min-width: 72px; width: auto; }
