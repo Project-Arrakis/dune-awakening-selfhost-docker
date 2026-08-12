@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { exchangeApi, type ExchangeItemsResponse } from "../../api/exchange";
+import { marketBotApi } from "../../api/marketBot";
 import { ExchangePanel, _resetExchangeCacheForTests } from "./ExchangePanel";
 
 vi.mock("../../api/exchange", () => ({
@@ -10,6 +11,18 @@ vi.mock("../../api/exchange", () => ({
     stats: vi.fn(),
     getConfig: vi.fn(),
     saveConfig: vi.fn()
+  }
+}));
+
+vi.mock("../../api/marketBot", () => ({
+  marketBotApi: {
+    status: vi.fn(),
+    exchanges: vi.fn(),
+    probeBuyback: vi.fn(),
+    saveBuybackSchedule: vi.fn(),
+    saveSeedSchedule: vi.fn(),
+    runBuyback: vi.fn(),
+    runSeed: vi.fn()
   }
 }));
 
@@ -53,6 +66,8 @@ beforeEach(() => {
   _resetExchangeCacheForTests();
   vi.mocked(exchangeApi.getConfig).mockResolvedValue({ includeNpcBroker: true, botOwnerIds: [], blacklistedOwnerIds: [] });
   vi.mocked(exchangeApi.listings).mockResolvedValue({ capabilities: { exchange: true }, rows: [] });
+  // Default: no exchange:market permission — the Market Bot button stays hidden.
+  vi.mocked(marketBotApi.status).mockRejectedValue(new Error("Forbidden"));
 });
 
 describe("ExchangePanel", () => {
@@ -177,5 +192,26 @@ describe("ExchangePanel", () => {
 
     expect(await screen.findByText(/Missing required table/)).toBeInTheDocument();
     expect(screen.queryByPlaceholderText("Search item name, category, or template")).not.toBeInTheDocument();
+  });
+
+  it("shows the Market Bot button only when the market status endpoint is reachable", async () => {
+    vi.mocked(exchangeApi.items).mockResolvedValue(itemsResponse());
+    vi.mocked(marketBotApi.status).mockResolvedValue({
+      capabilities: { exchangeMarket: true },
+      plan: { available: true, source: "bundled", rows: 10, panelVersion: "0.14.0", generatedAt: "" },
+      buyback: { enabled: false, intervalMinutes: 30, exchangeId: "", priceMultiplier: 5, buybackPercent: 60, buybackPriceBasis: "seeded", maxBuys: 500, source: "console", lastRunAt: "", lastRunStatus: "", lastRunDetail: "", nextRunAt: "" },
+      seed: { enabled: false, intervalMinutes: 15, exchangeId: "", priceMultiplier: 5, source: "console", lastRunAt: "", lastRunStatus: "", lastRunDetail: "", nextRunAt: "" }
+    });
+    renderPanel();
+
+    expect(await screen.findByLabelText("Market Bot settings")).toBeInTheDocument();
+  });
+
+  it("hides the Market Bot button when the status endpoint rejects (no exchange:market permission)", async () => {
+    vi.mocked(exchangeApi.items).mockResolvedValue(itemsResponse());
+    renderPanel();
+
+    await screen.findByText("Partial Stabilization Belt");
+    expect(screen.queryByLabelText("Market Bot settings")).not.toBeInTheDocument();
   });
 });

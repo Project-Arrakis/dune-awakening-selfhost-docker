@@ -386,6 +386,30 @@ writes). Ids are validated as numeric owner-id strings, deduped, and length-capp
 See [exchange.md](exchange.md) for how bot listings are identified and how the
 blacklist behaves.
 
+### Market Bot (console-managed seeding / buyback)
+
+| Method | Route | Description | Parameters |
+|--------|-------|-------------|------------|
+| GET | `/api/exchange/market` | Market Bot status: seed-plan availability and both schedules | None |
+| GET | `/api/exchange/market/exchanges` | Discover exchanges (BIGINT ids as strings; access-pointed exchanges first) | None |
+| POST | `/api/exchange/market/buyback/probe` | Read-only buyback eligibility count (no backup taken) | body: `exchangeId?`, `priceMultiplier?`, `buybackPercent?`, `maxBuys?` |
+| POST | `/api/exchange/market/buyback/schedule` | Save the buyback schedule (audited, rate-limited) | body: `enabled`, `intervalMinutes`, `exchangeId`, `priceMultiplier`, `buybackPercent`, `buybackPriceBasis`, `maxBuys` |
+| POST | `/api/exchange/market/seed/schedule` | Save the market reseed schedule (audited, rate-limited) | body: `enabled`, `intervalMinutes`, `exchangeId`, `priceMultiplier` |
+| POST | `/api/exchange/market/buyback/run` | Run a buyback sweep now with the saved schedule (probe → backup → sweep) | None |
+| POST | `/api/exchange/market/seed/run` | Run a market reseed now with the saved schedule (backup → clear bot listings → seed) | None |
+
+Unlike the board above, these routes **do write the game database** (through the
+same engine as the EDA Exchange Bot addon's scheduler: `addonJobs.js` /
+`addonSeedJob.js`). Reads and the probe require `exchange:market`; mutations
+require `exchange:market-write` (the admin tier's `exchange:*` covers both).
+Schedules saved here are marked `source: "console"`, run unattended inside the
+console API process, and do not require the addon to be installed; the seed plan
+resolves to an installed EDA Exchange Bot addon copy first, then the bundled
+`runtime/data/market-seed-plan.json`. Every write is preceded by a database
+backup, and buyback runs probe eligibility read-only first so idle intervals
+never take a backup. See [exchange.md](exchange.md#market-bot) for behavior
+details.
+
 ---
 
 ## Blueprints

@@ -1,15 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Settings } from "lucide-react";
+import { Bot, Settings } from "lucide-react";
 import { exchangeApi, type ExchangeItem, type ExchangeOwner } from "../../api/exchange";
+import { marketBotApi } from "../../api/marketBot";
 import type { SortDirection } from "../../components/common/DataTable";
 import { ExchangeTable } from "./ExchangeTable";
 import { ExchangeConfigOverlay } from "./ExchangeConfigOverlay";
+import { MarketBotOverlay } from "./MarketBotOverlay";
 
 type ExchangePanelProps = {
   onError: (text: string) => void;
-  // Read-only page: confirmAction/formatMutationResult are passed by App.tsx for
-  // parity with the other panels but intentionally unused here (the only writes
-  // are the bot/blacklist console config, handled inside ExchangeConfigOverlay).
+  // The board itself is read-only; confirmAction guards the Market Bot's
+  // game-DB writes (seed/buyback runs) inside MarketBotOverlay.
   confirmAction: (message: string, options?: { title?: string; confirmLabel?: string; warning?: string; danger?: boolean; details?: { label: string; value: string; tone?: "accent" | "success" | "danger" }[] }) => Promise<boolean>;
   formatMutationResult: (result: unknown) => string;
 };
@@ -54,7 +55,7 @@ function errorText(error: unknown) {
   return error instanceof Error ? error.message : String(error);
 }
 
-export function ExchangePanel({ onError }: ExchangePanelProps) {
+export function ExchangePanel({ onError, confirmAction }: ExchangePanelProps) {
   const [q, setQ] = useState(() => exchangeCache?.q ?? "");
   const [submittedQ, setSubmittedQ] = useState(() => exchangeCache?.q ?? "");
   const [page, setPage] = useState(() => exchangeCache?.page ?? 0);
@@ -71,8 +72,21 @@ export function ExchangePanel({ onError }: ExchangePanelProps) {
   const [reason, setReason] = useState(() => exchangeCache?.reason ?? "");
   const [loading, setLoading] = useState(() => exchangeCache === null);
   const [configOpen, setConfigOpen] = useState(false);
+  const [marketBotOpen, setMarketBotOpen] = useState(false);
+  // The Market Bot button only appears when the status endpoint answers, so
+  // viewers without the exchange:market action never see a control they
+  // cannot use. Checked silently once per mount.
+  const [marketBotAvailable, setMarketBotAvailable] = useState(false);
   const requestIdRef = useRef(0);
   const skipNextSearchReset = useRef(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    marketBotApi.status()
+      .then(() => { if (!cancelled) setMarketBotAvailable(true); })
+      .catch(() => { if (!cancelled) setMarketBotAvailable(false); });
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     if (skipNextSearchReset.current) {
@@ -247,6 +261,11 @@ export function ExchangePanel({ onError }: ExchangePanelProps) {
           <button className="exchange-config-button" title="Configure bots and blacklist" aria-label="Configure bots and blacklist" onClick={() => setConfigOpen(true)}>
             <Settings size={16} />
           </button>
+          {marketBotAvailable && (
+            <button className="exchange-config-button" title="Market Bot: NPC market seeding and buyback" aria-label="Market Bot settings" onClick={() => setMarketBotOpen(true)}>
+              <Bot size={16} />
+            </button>
+          )}
         </div>
         <ExchangeTable
           rows={rows}
@@ -278,6 +297,13 @@ export function ExchangePanel({ onError }: ExchangePanelProps) {
           onClose={() => setConfigOpen(false)}
           onError={onError}
           onSaved={() => { exchangeCache = null; void load(currentView()); }}
+        />
+      )}
+      {marketBotOpen && (
+        <MarketBotOverlay
+          onClose={() => { setMarketBotOpen(false); exchangeCache = null; void load(currentView(), { silent: true }); }}
+          onError={onError}
+          confirmAction={confirmAction}
         />
       )}
     </section>
