@@ -2050,10 +2050,15 @@ function userSettingsTaskPayload(body) {
   };
 }
 
+// UserEngine.ini (unlike UserGame.ini) is not per-map: every scope that edits
+// it -- "engine" (global), and "mapEngine"/"partitionEngine" (the same file,
+// just viewed/edited scoped to one map or partition for convenience) -- has
+// to restart every game service to actually apply, not just the map that
+// happened to be selected in the editor.
 function restartPayload(scope, map, partitionId) {
-  if (scope === "profile") return { restartMode: "stack", restartLabel: "all game services" };
-  if (scope === "engine") return { restartMode: "stack", restartLabel: "all game services" };
-  if (scope === "global") return { restartMode: "stack", restartLabel: "all game services" };
+  if (scope === "profile" || scope === "engine" || scope === "mapEngine" || scope === "partitionEngine" || scope === "global") {
+    return { restartMode: "stack", restartLabel: "all game services" };
+  }
   const normalizedMap = String(map || "").toLowerCase();
   const normalizedPartition = String(partitionId || "").trim();
   if (normalizedMap === "survival_1" && (!normalizedPartition || normalizedPartition === "1")) {

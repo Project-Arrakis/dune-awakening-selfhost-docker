@@ -88,7 +88,7 @@ function confirmDialog(message: string, options: Partial<Omit<ConfirmDialogReque
 // and players are online it offers Queue / Restart Immediately / Cancel.
 // Returns "immediate" only when the dialog cannot open, so the restart still
 // works headless.
-function restartGateChoice(meta: { label: string; enabled: boolean; playersOnline: number | null; battlegroupPlayersOnline: number | null; countdownMinutes: number; note?: string; details?: ConfirmDialogDetail[] }): Promise<RestartGateChoice> {
+function restartGateChoice(meta: { label: string; enabled: boolean; playersOnline: number | null; battlegroupPlayersOnline: number | null; mapScoped: boolean; countdownMinutes: number; note?: string; details?: ConfirmDialogDetail[] }): Promise<RestartGateChoice> {
   return new Promise((resolve) => {
     if (!openConfirmDialog) {
       resolve("immediate");
@@ -99,13 +99,13 @@ function restartGateChoice(meta: { label: string; enabled: boolean; playersOnlin
     const queued = meta.enabled && online > 0;
     // Only worth mentioning when this restart is scoped to a map/partition
     // and that count actually differs from the battlegroup-wide figure --
-    // for a battlegroup restart the two are always the same query.
+    // for a battlegroup-wide restart the two are always the same query.
     const battlegroupOnline = meta.battlegroupPlayersOnline;
-    const showBattlegroupContext = battlegroupOnline !== null && battlegroupOnline !== online;
+    const showBattlegroupContext = meta.mapScoped && battlegroupOnline !== null && battlegroupOnline !== online;
     const battlegroupClause = showBattlegroupContext
       ? ` (${battlegroupOnline} online battlegroup-wide)`
       : "";
-    const scopeClause = meta.label === "battlegroup" ? "in the battlegroup" : `on ${meta.label}`;
+    const scopeClause = meta.mapScoped ? `on ${meta.label}` : "in the battlegroup";
     if (!queued) {
       openConfirmDialog({
         title: "Confirm restart",
@@ -149,11 +149,20 @@ async function confirmSettingsRestart(kind: "UserEngine" | "UserGame", target?: 
   } catch {
     status = null;
   }
+  // Name the actual map/partition being restarted when this save is scoped
+  // to one, rather than the generic "UserEngine/UserGame settings" label --
+  // that generic label is only accurate for a stack-wide (no target) save.
+  const label = target?.map
+    ? target.map
+    : target?.partitionId
+      ? `partition ${target.partitionId}`
+      : kind === "UserEngine" ? "UserEngine settings" : "UserGame settings";
   return restartGateChoice({
-    label: kind === "UserEngine" ? "UserEngine settings" : "UserGame settings",
+    label,
     enabled: status?.settings.enabled ?? false,
     playersOnline: status?.playersOnline ?? null,
     battlegroupPlayersOnline: status?.battlegroupPlayersOnline ?? status?.playersOnline ?? null,
+    mapScoped: Boolean(target),
     countdownMinutes: status?.settings.defaultCountdownMinutes ?? 15,
     note: "To apply these changes, the affected server(s) need to restart."
   });

@@ -145,12 +145,15 @@ function mapResultTarget(map: string, partitionId = "") {
   return partitionId ? `map:${map}:${partitionId}` : `map:${map}`;
 }
 
-// Mirrors server.js's restartPayload: "engine"/"global"/"profile" scopes
-// restart every game service (stack-wide), so the restart-queue online check
-// for those must stay battlegroup-wide (undefined target) rather than being
-// scoped to whatever map happens to be selected in the editor.
+// Mirrors server.js's restartPayload: "engine"/"mapEngine"/"partitionEngine"
+// (UserEngine.ini is one shared file, not per-map -- "mapEngine"/
+// "partitionEngine" just scope the editor's view/edit to one map or
+// partition for convenience) plus "global"/"profile" all restart every game
+// service (stack-wide), so the restart-queue online check for those must
+// stay battlegroup-wide (undefined target) rather than being scoped to
+// whatever map happens to be selected in the editor.
 function settingsRestartTarget(scope: string, map?: string, partitionId?: string): RestartQueueTarget | undefined {
-  if (scope === "engine" || scope === "global" || scope === "profile") return undefined;
+  if (scope === "engine" || scope === "mapEngine" || scope === "partitionEngine" || scope === "global" || scope === "profile") return undefined;
   if (partitionId) return { partitionId };
   if (map) return { map };
   return undefined;
