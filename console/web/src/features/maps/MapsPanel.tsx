@@ -1904,6 +1904,7 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
         const rowName = String(row.map || "");
         const isSurvivalRow = rowName === "Survival_1";
         const isDeepDesertRow = /^DeepDesert_/i.test(rowName);
+        const requiresFreshProcess = isFreshProcessMap(rowName);
         const isSelected = selectedMapName === rowName && (!(isSurvivalRow || isDeepDesertRow) || !selectedPartitionId);
         const mapSettingsDirty = isSelected && ((modeDraft !== modeInputValue(String(row.mode || "")) && String(row.mode) !== "Core Map") || memory !== memoryInputValue(String(row.memory || "")) || (isSurvivalRow && (activeSietchesDirty || primarySietchDirty)));
         const primaryDraft = primarySurvivalSietch ? sietchDrafts[primarySurvivalSietch.partitionId] || { displayName: primarySurvivalSietch.displayName, password: primarySurvivalSietch.password } : undefined;
@@ -1937,9 +1938,11 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
             <section className="inline-edit-panel">
               <div className="panel-title"><h4>Edit {isDeepDesertRow && primaryDeepDesertName ? primaryDeepDesertName : rowName}</h4></div>
               <KeyValueGrid items={[["Status", displayStatus], ["Mode", row.mode], ["Memory", row.memory], ["Dimensions", row.dimensions], ...(isSurvivalRow && primarySurvivalSietch ? [["Password", primarySurvivalSietch.passwordSet ? "Set" : "Not Set"] as [string, unknown]] : [])]} />
-              {isVehicleDeployMap(rowName) && <p className="muted">Vehicle-deploy Overland maps use Overmap Active instead of Always On by default to avoid vehicle ownership restore races during startup.</p>}
+              {requiresFreshProcess
+                ? <p className="muted">Smuggler&apos;s Run stays Dynamic so its instance is retired as soon as it becomes empty and the next visit starts with fresh vehicle permissions.</p>
+                : isVehicleDeployMap(rowName) && <p className="muted">Vehicle-deploy Overland maps use Overmap Active instead of Always On by default to avoid vehicle ownership restore races during startup.</p>}
               <div className="action-line">
-                <label className="compact-select">Mode<select value={modeDraft} disabled={String(row.mode) === "Core Map"} onChange={(event) => setModeDraft(event.target.value)}><option value="dynamic">Dynamic</option><option value="always-on">Always On</option><option value="overmap-active">Overmap Active</option><option value="disabled">Disabled</option></select></label>
+                <label className="compact-select">Mode<select value={modeDraft} disabled={String(row.mode) === "Core Map"} onChange={(event) => setModeDraft(event.target.value)}><option value="dynamic">Dynamic</option>{!requiresFreshProcess && <option value="always-on">Always On</option>}{!requiresFreshProcess && <option value="overmap-active">Overmap Active</option>}<option value="disabled">Disabled</option></select></label>
                 <label className="memory-number-field">Memory<input type="number" min="0.01" step="0.01" inputMode="decimal" value={memory} onChange={(event) => setMemory(event.target.value)} placeholder="8" /></label>
                 <span className="unit-label">GB</span>
                 {isSurvivalRow && <label className="memory-number-field">Active Sietches<input type="number" min="1" max="64" step="1" value={activeSietches} onChange={(event) => setActiveSietches(event.target.value)} /></label>}
@@ -3010,6 +3013,10 @@ function friendlyMapMode(value: string) {
 
 function isVehicleDeployMap(value: string) {
   return /^CB_Overland_/i.test(String(value || "").trim());
+}
+
+function isFreshProcessMap(value: string) {
+  return String(value || "").trim() === "CB_Overland_S_06";
 }
 
 function modeInputValue(value: string) {

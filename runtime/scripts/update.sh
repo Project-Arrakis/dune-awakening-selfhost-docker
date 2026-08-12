@@ -1235,10 +1235,6 @@ echo "=== Current tags ==="
 cat runtime/generated/image-tags.env
 
 echo
-echo "=== Prepare vehicle permission compatibility ==="
-runtime/scripts/vehicle-permission-reset-fix.sh auto
-
-echo
 if [ "$cmd" = "install" ]; then
   echo "=== Start fresh Postgres for install/bootstrap ==="
   runtime/scripts/start-postgres.sh

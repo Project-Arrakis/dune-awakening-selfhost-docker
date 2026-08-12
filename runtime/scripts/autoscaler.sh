@@ -4,6 +4,11 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 
 INTERVAL="${DUNE_AUTOSCALER_INTERVAL:-5}"
+DEMAND_INTERVAL="${DUNE_AUTOSCALER_DEMAND_INTERVAL:-2}"
+if ! [[ "$DEMAND_INTERVAL" =~ ^[1-9][0-9]*$ ]]; then
+  echo "Invalid DUNE_AUTOSCALER_DEMAND_INTERVAL; using 2 seconds." >&2
+  DEMAND_INTERVAL=2
+fi
 SINCE="${DUNE_AUTOSCALER_LOG_SINCE:-30s}"
 NAMED_DESTINATION_SINCE="${DUNE_AUTOSCALER_NAMED_DESTINATION_LOG_SINCE:-10m}"
 IDLE_SECONDS="${DUNE_AUTOSCALER_IDLE_SECONDS:-300}"
@@ -50,9 +55,11 @@ touch "$DIRECTOR_HEAL_FILE"
 echo "=== Dune Docker autoscaler ==="
 echo "Watching Director travel queues and idle dynamic servers."
 echo "Interval: ${INTERVAL}s"
+echo "Travel demand interval: ${DEMAND_INTERVAL}s"
 echo "Log window: ${SINCE}"
 echo "Named destination log window: ${NAMED_DESTINATION_SINCE}"
 echo "Idle despawn grace: ${IDLE_SECONDS}s"
+echo "Fresh-process maps: immediate deallocation once empty"
 echo "Dynamic mode-change grace: ${DESPAWN_GRACE_SECONDS}s"
 echo "Travel grace: ${TRAVEL_GRACE_SECONDS}s"
 echo "Director browser heal scan: ${DIRECTOR_BROWSER_SCAN_SECONDS}s"
@@ -508,10 +515,13 @@ remember_map_demand() {
   local tmp
 
   [ -n "$map" ] || return 0
-  tmp="$(mktemp)"
-  awk -F '\t' -v map="$map" '$1 != map { print }' "$DEMAND_FILE" > "$tmp"
-  printf '%s\t%s\n' "$map" "$ts" >> "$tmp"
-  mv "$tmp" "$DEMAND_FILE"
+  (
+    flock -x 9
+    tmp="$(mktemp)"
+    awk -F '\t' -v map="$map" '$1 != map { print }' "$DEMAND_FILE" > "$tmp"
+    printf '%s\t%s\n' "$map" "$ts" >> "$tmp"
+    mv "$tmp" "$DEMAND_FILE"
+  ) 9>"${DEMAND_FILE}.lock"
 }
 
 forget_map_demand() {
@@ -555,10 +565,13 @@ remember_demand_event() {
   local tmp
 
   [ -n "$event_id" ] || return 0
-  tmp="$(mktemp)"
-  awk -F '\t' -v now="$ts" '$3 && now - $3 < 600 { print }' "$DEMAND_EVENT_FILE" > "$tmp"
-  printf '%s\t%s\t%s\n' "$event_id" "$map" "$ts" >> "$tmp"
-  mv "$tmp" "$DEMAND_EVENT_FILE"
+  (
+    flock -x 9
+    tmp="$(mktemp)"
+    awk -F '\t' -v now="$ts" '$3 && now - $3 < 600 { print }' "$DEMAND_EVENT_FILE" > "$tmp"
+    printf '%s\t%s\t%s\n' "$event_id" "$map" "$ts" >> "$tmp"
+    mv "$tmp" "$DEMAND_EVENT_FILE"
+  ) 9>"${DEMAND_EVENT_FILE}.lock"
 }
 
 hub_container_for_map() {
@@ -1438,6 +1451,23 @@ map_is_dynamic() {
   [ "$mode" = "dynamic" ]
 }
 
+map_requires_fresh_process() {
+  local map="$1"
+  runtime/scripts/map-modes.sh requires-fresh-process "$map" >/dev/null 2>&1
+}
+
+idle_seconds_for_map() {
+  local map="$1"
+  if map_requires_fresh_process "$map"; then
+    # Hyper-V scales this activity down once it has no players.  Keep inbound
+    # travel/reconnect protection in handle_idle_row, but add no idle timer
+    # after those state checks say the process is genuinely empty.
+    printf '0\n'
+  else
+    printf '%s\n' "$IDLE_SECONDS"
+  fi
+}
+
 overmap_active_maps() {
   runtime/scripts/map-modes.sh list 2>/dev/null | awk '
     /^[[:alnum:]_:-]+[[:space:]]/ && /Current:[[:space:]]+overmap-active/ {
@@ -1674,10 +1704,18 @@ handle_idle_row() {
       ;;
   esac
 
-  local key
+  local key idle_seconds
   key="$(state_key "$map" "$server_id")"
+  idle_seconds="$(idle_seconds_for_map "$map")"
 
   if [ "$connected_players" != "0" ] || [ "$effective_players" != "0" ] || ! [[ "${ready,,}" =~ ^(t|true|1|yes|y)$ ]] || ! [[ "${alive,,}" =~ ^(t|true|1|yes|y)$ ]]; then
+    # Once the destination has observed its player, the inbound allocation
+    # hold has served its purpose.  Clearing it here lets a later transition
+    # to genuinely empty scale down immediately instead of waiting out the
+    # original travel grace period.
+    if map_requires_fresh_process "$map" && { [ "$connected_players" != "0" ] || [ "$effective_players" != "0" ]; }; then
+      forget_map_demand "$map"
+    fi
     clear_idle_since "$key"
     return 0
   fi
@@ -1687,11 +1725,13 @@ handle_idle_row() {
     return 0
   fi
 
-  local remaining
-  remaining="$(map_dynamic_grace_remaining "$map" | tr -d '[:space:]')"
-  if [ "${remaining:-0}" -gt 0 ] 2>/dev/null; then
-    clear_idle_since "$key"
-    return 0
+  if ! map_requires_fresh_process "$map"; then
+    local remaining
+    remaining="$(map_dynamic_grace_remaining "$map" | tr -d '[:space:]')"
+    if [ "${remaining:-0}" -gt 0 ] 2>/dev/null; then
+      clear_idle_since "$key"
+      return 0
+    fi
   fi
 
   if map_is_overmap_active "$map" && map_has_active_presence "Overmap"; then
@@ -1708,10 +1748,10 @@ handle_idle_row() {
     since="$now"
     age=0
     set_idle_since "$key" "$since"
-    echo "IDLE map=$map server=$server_id players=0 effective=0 grace=${IDLE_SECONDS}s"
+    echo "IDLE map=$map server=$server_id players=0 effective=0 grace=${idle_seconds}s"
   fi
 
-  if [ "$age" -ge "$IDLE_SECONDS" ]; then
+  if [ "$age" -ge "$idle_seconds" ]; then
     echo "DESPAWN idle map=$map server=$server_id idle=${age}s"
     runtime/scripts/despawn-server.sh "$map" || true
     clear_idle_since "$key"
@@ -1936,6 +1976,15 @@ PY
 }
 
 scan_idle_servers() {
+  local scope="${1:-standard}"
+  local map_filter
+
+  case "$scope" in
+    fresh-process) map_filter="and fs.map = 'CB_Overland_S_06'" ;;
+    standard) map_filter="and fs.map <> 'CB_Overland_S_06'" ;;
+    *) echo "WARN invalid idle scan scope: $scope" >&2; return 1 ;;
+  esac
+
   docker exec dune-postgres psql -U postgres -d dune -At -F '|' -c "
     select
       fs.map,
@@ -1975,12 +2024,23 @@ scan_idle_servers() {
         )
     ) ep on true
     where fs.map not in ('Survival_1', 'Overmap')
+      $map_filter
       and coalesce(fs.server_id, '') <> ''
     order by map;
   " | while IFS='|' read -r map server_id connected_players effective_players ready alive; do
     [ -z "${map:-}" ] && continue
     remember_server_id_map "$map" "$server_id"
     handle_idle_row "$map" "$server_id" "$connected_players" "$effective_players" "$ready" "$alive"
+  done
+}
+
+# Hyper-V scales short-lived activity pods independently of unrelated
+# battlegroup maintenance.  Do the same for fresh-process-only Docker maps so
+# neither allocation nor empty deallocation waits behind a recovery command.
+follow_fresh_process_lifecycle() {
+  while true; do
+    scan_idle_servers fresh-process || echo "WARN fresh-process lifecycle scan failed; retrying"
+    sleep "$DEMAND_INTERVAL"
   done
 }
 
@@ -2124,9 +2184,9 @@ classical_pattern = re.compile(
     r"Processing travel queue for ClassicalInstancing group ([A-Za-z0-9_]+) "
     r"\(servers: \[[^\]]*\], num: ([0-9]+)\)"
 )
-dimension_request_pattern = re.compile(
+request_pattern = re.compile(
     r"Received travel request for ([0-9]+) player\(s\) to ([A-Za-z0-9_]+) "
-    r"\(instancingMode=Dimension\)"
+    r"\(instancingMode=(?:ClassicalInstancing|Dimension)\)"
 )
 
 seen = set()
@@ -2138,8 +2198,13 @@ for line in sys.stdin:
         num = int(match.group(2))
         if map_name == "DeepDesert_1":
             continue
+        # Smugglers Run is handled from its original request below. Repeated
+        # queue summaries can arrive after the player is already connected and
+        # must not recreate a completed inbound-travel hold.
+        if map_name == "CB_Overland_S_06":
+            continue
     else:
-        match = dimension_request_pattern.search(line)
+        match = request_pattern.search(line)
         if not match:
             continue
         num = int(match.group(1))
@@ -2162,6 +2227,16 @@ for line in sys.stdin:
     [ -n "${map:-}" ] || continue
     handle_demand "$map" "$num" "$event_id"
   done <<< "$demand_rows"
+}
+
+# Allocation demand must not wait behind maintenance scans that may publish
+# network state or run bounded recovery commands.  Hyper-V has a dedicated
+# allocator watching this queue; keep the Docker equivalent independent too.
+follow_director_travel_demand() {
+  while true; do
+    scan_travel_demand || echo "WARN travel demand scan failed; retrying"
+    sleep "$DEMAND_INTERVAL"
+  done
 }
 
 scan_igwo_unavailable_maps() {
@@ -2566,15 +2641,15 @@ scan_director_browser_state() {
 }
 
 follow_director_hagga_handoffs &
+follow_director_travel_demand &
+follow_fresh_process_lifecycle &
 reconcile_always_on_maps
-scan_travel_demand
 repair_chat_exchanges_due
 
 while true; do
   reconcile_always_on_maps
   scan_deepdesert_loading_responses
   ensure_overmap_travel_maps_prewarmed
-  scan_travel_demand
   repair_chat_exchanges_due
   scan_core_igw_socket_health
   scan_igwo_unavailable_maps
