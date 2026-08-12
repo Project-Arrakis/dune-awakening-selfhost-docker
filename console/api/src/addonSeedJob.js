@@ -50,11 +50,21 @@ export function normalizeSeedSchedule(payload = {}, previous = {}) {
     intervalMinutes: clampedIntegerField(payload.intervalMinutes ?? previous.intervalMinutes ?? 15, "intervalMinutes", 10, 1440),
     exchangeId,
     priceMultiplier: integerField(payload.priceMultiplier ?? previous.priceMultiplier ?? 5, "priceMultiplier", 1, 100),
+    // Who owns this schedule: "addon" (bridge-managed; scheduled runs re-verify
+    // the addon's approved permissions) or "console" (first-class Market Bot;
+    // authorized by RBAC at save time). Deliberately NOT read from the payload —
+    // only the save-path options can set it, so an addon iframe cannot flip a
+    // schedule to console-sourced and escape its permission checks.
+    source: normalizeScheduleSource(previous.source),
     lastRunAt: isoField(previous.lastRunAt),
     lastRunStatus: String(previous.lastRunStatus ?? "").slice(0, 40),
     lastRunDetail: String(previous.lastRunDetail ?? "").slice(0, MAX_RUN_DETAIL_LENGTH),
     nextRunAt: isoField(previous.nextRunAt)
   };
+}
+
+export function normalizeScheduleSource(value) {
+  return value === "console" ? "console" : "addon";
 }
 
 export function readSeedSchedule(config) {
@@ -75,9 +85,10 @@ export function readSeedSchedule(config) {
   }
 }
 
-export function saveSeedSchedule(config, payload = {}, { now = () => Date.now() } = {}) {
+export function saveSeedSchedule(config, payload = {}, { now = () => Date.now(), source } = {}) {
   const previous = readSeedSchedule(config);
   const next = normalizeSeedSchedule(payload, previous);
+  if (source !== undefined) next.source = normalizeScheduleSource(source);
   if (!next.enabled) {
     next.nextRunAt = "";
   } else if (!previous.enabled || next.intervalMinutes !== previous.intervalMinutes || !previous.nextRunAt) {
@@ -89,9 +100,21 @@ export function saveSeedSchedule(config, payload = {}, { now = () => Date.now() 
   return next;
 }
 
+// The plan ships with the console (runtime/data/market-seed-plan.json), so the
+// first-class Market Bot works with no addon installed. An installed EDA
+// Exchange Bot addon's bundled plan still wins when present: operators receive
+// catalog updates through addon releases, so the addon copy is assumed newer.
+export function resolveMarketSeedPlanPath(config, addonId = EDA_EXCHANGE_BOT_ADDON_ID) {
+  const addonPath = resolve(config.repoRoot, "runtime/addons/installed", addonId, "web", "market-seed-plan.json");
+  if (existsSync(addonPath)) return addonPath;
+  const bundledPath = resolve(config.repoRoot, "runtime/data/market-seed-plan.json");
+  if (existsSync(bundledPath)) return bundledPath;
+  return null;
+}
+
 export function loadMarketSeedPlan(config, addonId = EDA_EXCHANGE_BOT_ADDON_ID) {
-  const path = resolve(config.repoRoot, "runtime/addons/installed", addonId, "web", "market-seed-plan.json");
-  if (!existsSync(path)) throw new Error(`Installed addon ${addonId} does not include web/market-seed-plan.json.`);
+  const path = resolveMarketSeedPlanPath(config, addonId);
+  if (!path) throw new Error("No market seed plan found: neither the bundled runtime/data/market-seed-plan.json nor an installed addon copy exists.");
   const text = readFileSync(path, "utf8");
   if (text.length > MAX_SEED_PLAN_BYTES) throw new Error("Addon market seed plan is too large.");
   let plan;

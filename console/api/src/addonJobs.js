@@ -23,10 +23,12 @@ import {
   saveSeedSchedule,
   writeSeedSchedule,
   persistSeedRunCompletion,
-  executeSeedRun
+  executeSeedRun,
+  normalizeScheduleSource,
+  resolveMarketSeedPlanPath
 } from "./addonSeedJob.js";
 
-export { readSeedSchedule, normalizeSeedSchedule, saveSeedSchedule } from "./addonSeedJob.js";
+export { readSeedSchedule, normalizeSeedSchedule, saveSeedSchedule, normalizeScheduleSource, resolveMarketSeedPlanPath, loadMarketSeedPlan } from "./addonSeedJob.js";
 
 export const EDA_EXCHANGE_BOT_ADDON_ID = "eda-exchange-bot";
 export const ADDON_SCHEDULER_PERMISSION = "scheduler:server";
@@ -92,6 +94,10 @@ export function normalizeBuybackSchedule(payload = {}, previous = {}) {
     buybackPercent: integerField(payload.buybackPercent ?? previous.buybackPercent ?? 60, "buybackPercent", 1, 100),
     buybackPriceBasis: normalizeBuybackPriceBasis(payload.buybackPriceBasis ?? previous.buybackPriceBasis ?? "seeded"),
     maxBuys: integerField(payload.maxBuys ?? previous.maxBuys ?? 500, "maxBuys", 1, 5000),
+    // Never read from the payload: only the save-path options can set this
+    // (see saveBuybackSchedule), so a bridge payload cannot mark a schedule
+    // console-sourced and skip the addon permission re-checks.
+    source: normalizeScheduleSource(previous.source),
     lastRunAt: isoField(previous.lastRunAt),
     lastRunStatus: String(previous.lastRunStatus ?? "").slice(0, 40),
     lastRunDetail: String(previous.lastRunDetail ?? "").slice(0, MAX_RUN_DETAIL_LENGTH),
@@ -125,9 +131,10 @@ export function readBuybackSchedule(config) {
 // process they cannot interleave and clobber each other's fields; the atomic
 // temp-file rename covers crash safety. Multiple console processes sharing one
 // repoRoot are not a supported deployment for runtime/ state files.
-export function saveBuybackSchedule(config, payload = {}, { now = () => Date.now() } = {}) {
+export function saveBuybackSchedule(config, payload = {}, { now = () => Date.now(), source } = {}) {
   const previous = readBuybackSchedule(config);
   const next = normalizeBuybackSchedule(payload, previous);
+  if (source !== undefined) next.source = normalizeScheduleSource(source);
   if (!next.enabled) {
     next.nextRunAt = "";
   } else if (!previous.enabled || next.intervalMinutes !== previous.intervalMinutes || !previous.nextRunAt) {
@@ -142,8 +149,10 @@ export function saveBuybackSchedule(config, payload = {}, { now = () => Date.now
 }
 
 export function loadBuybackSeedPlan(config, addonId = EDA_EXCHANGE_BOT_ADDON_ID) {
-  const path = resolve(config.repoRoot, "runtime/addons/installed", addonId, "web", "market-seed-plan.json");
-  if (!existsSync(path)) throw new Error(`Installed addon ${addonId} does not include web/market-seed-plan.json.`);
+  // Same resolution as the seed job: installed addon copy first (assumed
+  // newest), then the console-bundled runtime/data/market-seed-plan.json.
+  const path = resolveMarketSeedPlanPath(config, addonId);
+  if (!path) throw new Error("No market seed plan found: neither the bundled runtime/data/market-seed-plan.json nor an installed addon copy exists.");
   const text = readFileSync(path, "utf8");
   if (text.length > MAX_SEED_PLAN_BYTES) throw new Error("Addon market seed plan is too large.");
   let plan;
@@ -506,12 +515,22 @@ export function createAddonJobScheduler(config, options = {}) {
     }
   }
 
+  // Addon-sourced schedules re-verify the addon's approved permissions on
+  // every scheduled run (the owner can revoke them at any time). A schedule
+  // saved from the console's own Market Bot UI ("console" source) was
+  // authorized by RBAC at save time and does not require the addon to be
+  // installed at all, so the addon permission re-check is skipped.
+  function assertScheduleRunAllowed(schedule) {
+    if (schedule?.source === "console") return;
+    assertPermission(config, EDA_EXCHANGE_BOT_ADDON_ID, "database:read");
+    assertPermission(config, EDA_EXCHANGE_BOT_ADDON_ID, "database:write");
+    assertPermission(config, EDA_EXCHANGE_BOT_ADDON_ID, ADDON_SCHEDULER_PERMISSION);
+  }
+
   async function runBuybackJob(trigger, schedule) {
     running = true;
     try {
-      assertPermission(config, EDA_EXCHANGE_BOT_ADDON_ID, "database:read");
-      assertPermission(config, EDA_EXCHANGE_BOT_ADDON_ID, "database:write");
-      assertPermission(config, EDA_EXCHANGE_BOT_ADDON_ID, ADDON_SCHEDULER_PERMISSION);
+      assertScheduleRunAllowed(schedule);
       const outcome = await executeBuybackRun(config, getDb(), schedule, { runDuneImpl });
       const completedAt = now();
       persistBuybackRunCompletion(completedAt, outcome.status, outcome.detail);
@@ -541,9 +560,7 @@ export function createAddonJobScheduler(config, options = {}) {
   async function runSeedJob(trigger, schedule) {
     running = true;
     try {
-      assertPermission(config, EDA_EXCHANGE_BOT_ADDON_ID, "database:read");
-      assertPermission(config, EDA_EXCHANGE_BOT_ADDON_ID, "database:write");
-      assertPermission(config, EDA_EXCHANGE_BOT_ADDON_ID, ADDON_SCHEDULER_PERMISSION);
+      assertScheduleRunAllowed(schedule);
       const outcome = await executeSeedRun(config, getDb(), schedule, { runDuneImpl, buildDuneArgs, runSql });
       const completedAt = now();
       persistSeedRunCompletion(config, completedAt, outcome.status, outcome.detail);
