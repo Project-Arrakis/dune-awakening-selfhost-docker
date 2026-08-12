@@ -42,9 +42,16 @@ export type RestartQueueResponse = {
   settings: RestartQueueSettings;
   defaults: RestartQueueSettings;
   state: RestartQueueState;
+  // Scoped to `target` when one was passed to restartQueue(); otherwise the
+  // same as battlegroupPlayersOnline.
   playersOnline: number | null;
+  // Always battlegroup-wide, so a scoped query can still show "X on this map,
+  // Y in the battlegroup" for context.
+  battlegroupPlayersOnline: number | null;
   playersOnlineSupported: boolean;
 };
+
+export type RestartQueueTarget = { partitionId?: string | number; map?: string };
 
 // The backend now merges a partial body onto the currently persisted
 // settings (see restartQueue.js saveSettings), so every field here is
@@ -92,7 +99,13 @@ export const serverApi = {
   checkFuncomToken: (since: string) => api<{ ok: boolean; mismatch: boolean; checkedSince: string; details?: string }>(`/api/server/funcom-token/check?since=${encodeURIComponent(since)}`),
   restartSchedule: () => api<{ stdout: string; stderr?: string; exitCode?: number }>("/api/server/restart-schedule"),
   saveRestartSchedule: (body: { enabled: boolean; time: string; notifyMinutes?: number }) => post<{ task: Task }>("/api/server/restart-schedule", body),
-  restartQueue: () => api<RestartQueueResponse>("/api/server/restart-queue"),
+  restartQueue: (target?: RestartQueueTarget) => {
+    const params = new URLSearchParams();
+    if (target?.partitionId) params.set("partitionId", String(target.partitionId));
+    if (target?.map) params.set("map", target.map);
+    const query = params.toString();
+    return api<RestartQueueResponse>(`/api/server/restart-queue${query ? `?${query}` : ""}`);
+  },
   saveRestartQueue: (body: SaveRestartQueueBody) => post<{ ok: boolean; settings: RestartQueueSettings; defaults: RestartQueueSettings; state: RestartQueueState }>("/api/server/restart-queue", body),
   cancelRestartQueue: (body: { id: string }) => post<{ ok: boolean; state: RestartQueueState }>("/api/server/restart-queue/cancel", body),
   restartQueueRestartNow: (body: { id: string }) => post<{ ok: boolean; state: RestartQueueState }>("/api/server/restart-queue/restart-now", body),

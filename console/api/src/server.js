@@ -450,7 +450,7 @@ async function handleApi(req, res) {
   if (path === "/api/server/restart-queue/cancel" && req.method === "POST") return restartQueueCancelRoute(req, res);
   if (path === "/api/server/restart-queue/restart-now" && req.method === "POST") return restartQueueRestartNowRoute(req, res);
   if (path === "/api/server/restart-queue" && req.method === "POST") return restartQueueSaveRoute(req, res);
-  if (path === "/api/server/restart-queue") return restartQueueStatusRoute(req, res);
+  if (path === "/api/server/restart-queue") return restartQueueStatusRoute(req, res, url);
   if (path === "/api/server/restart-schedule" && req.method === "POST") return restartScheduleRoute(req, res);
   if (path === "/api/server/restart-schedule") return safeCommandJson(res, "restartScheduleStatus");
   if (path === "/api/server/ip-change-restart" && req.method === "POST") return ipChangeRestartRoute(req, res);
@@ -1508,9 +1508,11 @@ async function maybeQueueRestart(req, res, type, operation, payload) {
     return false;
   }
   let online = 0;
+  let battlegroupOnline = null;
   try {
-    const count = await duneDb.countOnlinePlayers(db);
-    online = count.supported ? count.online : 0;
+    const scoped = await scopedOnlineCount(classification);
+    online = scoped.online;
+    battlegroupOnline = scoped.battlegroupOnline;
   } catch {
     // If we cannot read the online count the database is usually down or
     // restarting -- there are no players to protect, so let the restart proceed.
@@ -1530,21 +1532,43 @@ async function maybeQueueRestart(req, res, type, operation, payload) {
     payload,
     mapKey: classification.mapKey,
     mapLabel: classification.mapLabel,
+    partitionId: classification.partitionId,
+    map: classification.map,
     requestedBy: "web-admin",
     countdownMinutes: settings.defaultCountdownMinutes,
     now: Date.now()
   });
-  audit(config, req, "restart-queue.enqueue", { operation, target: classification.target, mapLabel: classification.mapLabel, entryId: entry.id, online });
+  audit(config, req, "restart-queue.enqueue", { operation, target: classification.target, mapLabel: classification.mapLabel, entryId: entry.id, online, battlegroupOnline });
   recordAdminHistory(config, {
     command: "web-restart-queue",
     target: classification.target === "battlegroup" ? "battlegroup" : classification.mapLabel,
     friendly: "Restart Queue",
     path: "runtime/generated/restart-queue-state.json",
     result: "queued",
-    message: `${settings.defaultCountdownMinutes}-minute countdown (${online} online)`
+    message: classification.target === "map" && battlegroupOnline !== null && battlegroupOnline !== online
+      ? `${settings.defaultCountdownMinutes}-minute countdown (${online} online on this map, ${battlegroupOnline} in the battlegroup)`
+      : `${settings.defaultCountdownMinutes}-minute countdown (${online} online)`
   });
-  json(res, 202, { queued: true, online, entryId: entry.id, state: restartQueue.publicState(config) });
+  json(res, 202, { queued: true, online, battlegroupOnline, entryId: entry.id, state: restartQueue.publicState(config) });
   return true;
+}
+
+// Online count for a restart decision, scoped to the actual target: a
+// battlegroup restart affects everyone, but a map/sietch restart only affects
+// players on that partition, so it must not be gated (or auto-run) by who
+// happens to be online elsewhere. Always also returns the battlegroup-wide
+// figure so callers can surface both ("2 online on this map, 5 in the
+// battlegroup") -- for a battlegroup classification the two are the same
+// query. Falls back to the battlegroup count when the target's map/partition
+// can't be resolved, so an unresolvable target never silently reports 0.
+async function scopedOnlineCount(classification) {
+  const battlegroup = await duneDb.countOnlinePlayers(db);
+  const battlegroupOnline = battlegroup.supported ? battlegroup.online : null;
+  if (classification.target !== "map") {
+    return { online: battlegroupOnline ?? 0, battlegroupOnline };
+  }
+  const scoped = await duneDb.countOnlinePlayersForTarget(db, { partitionId: classification.partitionId, map: classification.map });
+  return { online: scoped.supported ? scoped.online : (battlegroupOnline ?? 0), battlegroupOnline };
 }
 
 function restartQueueImmediateRequested(req) {
@@ -1590,15 +1614,30 @@ async function restartQueueAutoTick() {
   restartQueueAutoLastRun = now;
   try {
     const settings = restartQueue.readSettings(config);
-    let online = null;
+    let battlegroupOnline = null;
     try {
       const count = await duneDb.countOnlinePlayers(db);
-      online = count.supported ? count.online : null;
+      battlegroupOnline = count.supported ? count.online : null;
     } catch {
-      online = null;
+      battlegroupOnline = null;
     }
     for (const entry of state.entries) {
       if (entry.status !== "counting") continue;
+      // Battlegroup entries were already scoped to everyone by the query above.
+      // A map entry must only look at players on that specific partition --
+      // otherwise a map with nobody on it would keep counting down just
+      // because players are online elsewhere in the battlegroup, and (worse)
+      // a map WITH players would auto-execute the moment the battlegroup as a
+      // whole happened to read zero.
+      let online = battlegroupOnline;
+      if (entry.target === "map") {
+        try {
+          const scoped = await duneDb.countOnlinePlayersForTarget(db, { partitionId: entry.partitionId, map: entry.map });
+          online = scoped.supported ? scoped.online : battlegroupOnline;
+        } catch {
+          online = battlegroupOnline;
+        }
+      }
       if (online === 0) {
         await executeRestartEntry(entry);
         continue;
@@ -1641,23 +1680,43 @@ function recoverRestartQueue() {
   if (result.resume.length) console.log(`Restart queue resumed ${result.resume.length} countdown(s) after boot.`);
 }
 
-async function restartQueueStatusRoute(req, res) {
+// `partitionId`/`map` scope `playersOnline` to a specific restart target (the
+// interception dialog passes these before the admin has committed to a
+// restart, so it can show "2 online on this map" instead of the battlegroup
+// figure). `battlegroupPlayersOnline` is always the unscoped count -- for a
+// battlegroup-wide request the two are identical -- so the UI can show both
+// when they differ.
+async function restartQueueStatusRoute(req, res, url) {
   const settings = restartQueue.readSettings(config);
   let online = null;
+  let battlegroupOnline = null;
   let supported = true;
   try {
     const count = await duneDb.countOnlinePlayers(db);
-    online = count.supported ? count.online : null;
+    battlegroupOnline = count.supported ? count.online : null;
     supported = count.supported;
+    online = battlegroupOnline;
   } catch {
     online = null;
+    battlegroupOnline = null;
     supported = false;
+  }
+  const partitionId = Number(url?.searchParams?.get("partitionId") || 0);
+  const map = String(url?.searchParams?.get("map") || "").trim();
+  if (partitionId > 0 || map) {
+    try {
+      const scoped = await duneDb.countOnlinePlayersForTarget(db, { partitionId, map });
+      if (scoped.supported) online = scoped.online;
+    } catch {
+      // Keep the battlegroup-wide fallback already assigned above.
+    }
   }
   return json(res, 200, {
     settings,
     defaults: restartQueue.defaultSettings(),
     state: restartQueue.publicState(config),
     playersOnline: online,
+    battlegroupPlayersOnline: battlegroupOnline,
     playersOnlineSupported: supported
   });
 }
