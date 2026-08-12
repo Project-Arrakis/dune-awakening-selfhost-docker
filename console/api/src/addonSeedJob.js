@@ -28,6 +28,12 @@ const PAYMENT_SENTINEL_EXPIRY = 999999999;
 const MAX_RUN_DETAIL_LENGTH = 500;
 const MAX_SEED_PLAN_BYTES = 10 * 1024 * 1024;
 
+// Bot-sold standalone augments are pinned to the bottom 20% of their stat
+// ranges. Buying the augment item is the budget path; the schematic (sold
+// separately, priced higher) keeps the chance of crafting a better roll.
+const AUGMENT_TEMPLATE_PATTERN = /^T\d+_Augment_/i;
+const AUGMENT_STAT_ROLL = 0.2;
+
 export function normalizeSeedSchedule(payload = {}, previous = {}) {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
     throw new Error("Seed schedule must be a JSON object.");
@@ -126,6 +132,7 @@ export function loadMarketSeedPlan(config, addonId = EDA_EXCHANGE_BOT_ADDON_ID) 
   if (!plan || typeof plan !== "object" || Array.isArray(plan)) throw new Error("Addon market seed plan must be a JSON object.");
   if (!Array.isArray(plan.rows) || !plan.rows.length) throw new Error("Addon market seed plan has no seed rows.");
   const sourceMultiplier = Math.max(1, Number(plan.price_multiplier) || 1);
+  const augmentRolls = augmentStatRollCounts(config);
   const rows = plan.rows.map((row, index) => {
     const templateId = String(row?.template_id ?? "").trim();
     if (!templateId || templateId.length > 200) throw new Error(`Addon market seed plan row ${index + 1} has an invalid template_id.`);
@@ -139,6 +146,9 @@ export function loadMarketSeedPlan(config, addonId = EDA_EXCHANGE_BOT_ADDON_ID) 
     const qualityLevel = clampInteger(row?.quality_level, 0, 0, 5);
     const durMax = clampInteger(row?.durability_max ?? row?.durability_cur ?? 100, 100, 100, 200);
     const durCur = Math.min(clampInteger(row?.durability_cur ?? durMax, durMax, 100, 200), durMax);
+    const statRolls = kind !== "schematic" && AUGMENT_TEMPLATE_PATTERN.test(templateId)
+      ? Array.from({ length: augmentRolls.get(templateId) ?? 1 }, () => AUGMENT_STAT_ROLL)
+      : null;
     return {
       templateId,
       stackSize,
@@ -148,10 +158,45 @@ export function loadMarketSeedPlan(config, addonId = EDA_EXCHANGE_BOT_ADDON_ID) 
       qualityLevel,
       kind,
       listings,
-      itemStats: itemStatsJson(durCur, durMax)
+      itemStats: itemStatsJson(durCur, durMax, statRolls)
     };
   });
   return { sourceMultiplier, rows };
+}
+
+// Stat roll counts per augment template, derived from the bundled
+// runtime/data/augment-compatibility.json the same way duneDb.js
+// augmentRollCount() does: explicit rollCount, else the widest gradeEffects
+// list, else the effectSummary segments. Missing catalog data falls back to a
+// single roll in loadMarketSeedPlan.
+function augmentStatRollCounts(config) {
+  const counts = new Map();
+  let augments = {};
+  try {
+    const parsed = JSON.parse(readFileSync(resolve(config.repoRoot, "runtime/data/augment-compatibility.json"), "utf8"));
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed) && parsed.augments && typeof parsed.augments === "object") {
+      augments = parsed.augments;
+    }
+  } catch {
+    return counts;
+  }
+  for (const [templateId, entry] of Object.entries(augments)) {
+    const explicit = Number(entry?.rollCount ?? entry?.statRollCount);
+    if (Number.isFinite(explicit) && explicit > 0) {
+      counts.set(templateId, Math.trunc(explicit));
+      continue;
+    }
+    const gradeEffects = entry?.gradeEffects && typeof entry.gradeEffects === "object" ? Object.values(entry.gradeEffects) : [];
+    const effectCounts = gradeEffects.filter(Array.isArray).map((effects) => effects.length).filter((count) => count > 0);
+    if (effectCounts.length > 0) {
+      counts.set(templateId, Math.max(...effectCounts));
+      continue;
+    }
+    if (typeof entry?.effectSummary === "string" && entry.effectSummary.trim()) {
+      counts.set(templateId, Math.max(1, entry.effectSummary.split(";").map((part) => part.trim()).filter(Boolean).length));
+    }
+  }
+  return counts;
 }
 
 export function buildMarketSeedSql(plan, schedule) {
@@ -283,14 +328,18 @@ function requireSeedExchangeId(schedule) {
   return exchangeId;
 }
 
-function itemStatsJson(durCur, durMax) {
-  return JSON.stringify({
+function itemStatsJson(durCur, durMax, statRolls = null) {
+  const stats = {
     FItemStackAndDurabilityStats: [[], {
       CurrentDurability: durCur,
       MaxDurability: durMax,
       DecayedMaxDurability: durMax
     }]
-  });
+  };
+  if (Array.isArray(statRolls) && statRolls.length > 0) {
+    stats.FAugmentItemStats = [[], { StatRolls: statRolls, AppliedEffectIndices: [] }];
+  }
+  return JSON.stringify(stats);
 }
 
 function decimalString(value) {
