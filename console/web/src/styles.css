@@ -2024,6 +2024,84 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
 .vehicles-access.co-owner { border-color: rgba(255, 208, 138, .42); color: #ffd08a; }
 .player-vehicles-table thead th:nth-child(8), .player-vehicles-table tbody td:nth-child(8) { text-align: center; }
 
+/* Market Board (Exchange) */
+.exchange-search-row { margin: 12px 0; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.exchange-search-row > input { flex: 1 1 220px; min-width: 160px; }
+/* Lay the filter controls out inline (label beside the select) instead of the
+   default stacked label grid, so they share the search row's baseline with the
+   input, buttons, and gear. The input's flex-grow right-aligns this cluster.
+   Qualified with `label` so `flex: 0 0 auto` matches the specificity of the global
+   `label.compact-select { flex: 0 1 240px }` and wins (later rule) — otherwise the
+   selects render as fixed 240px boxes instead of hugging their content. */
+label.exchange-category-select, label.exchange-owner-select { display: flex; flex-direction: row; align-items: center; gap: 6px; flex: 0 0 auto; white-space: nowrap; }
+.exchange-category-select select, .exchange-owner-select select { width: auto; min-width: 150px; max-width: 220px; height: 43px; }
+.exchange-config-button { width: 43px; height: 43px; min-width: 0; padding: 0; display: inline-grid; place-items: center; }
+.table-wrap.exchange-table-wrap { max-height: none; }
+.exchange-table th.exchange-expand-column, .exchange-table td.exchange-expand-column {
+  width: 32px;
+  padding-inline: 4px;
+  text-align: center;
+  overflow: visible;
+  text-overflow: clip;
+}
+.exchange-expand-button {
+  width: 24px;
+  height: 24px;
+  min-width: 0;
+  padding: 0;
+  margin: 0 auto;
+  border: 0;
+  background: none;
+  color: inherit;
+  display: inline-grid;
+  place-items: center;
+  cursor: pointer;
+}
+.exchange-item-cell { display: flex; align-items: center; gap: 9px; white-space: normal; }
+.exchange-item-icon { width: 26px; height: 26px; border-radius: 5px; object-fit: contain; background: #171a1d; border: 1px solid #302b25; flex: none; }
+.exchange-item-icon-empty { display: inline-block; }
+.exchange-item-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.exchange-item-name { color: #fff1d4; font-weight: 500; }
+.exchange-item-template { color: #8f8371; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.exchange-price { color: var(--accent-strong); font-variant-numeric: tabular-nums; }
+.exchange-num { text-align: right; font-variant-numeric: tabular-nums; }
+/* Right-align the numeric magnitude columns (header + cells) so digits line up for
+   comparison and match the drill-down sub-table. Targeted by data-column (set by
+   DataTable) rather than nth-child, so it never touches the expanded drill-down row
+   and won't drift if column order changes. */
+.exchange-table th[data-column="lowest_price"], .exchange-table td[data-column="lowest_price"],
+.exchange-table th[data-column="total_stock"], .exchange-table td[data-column="total_stock"],
+.exchange-table th[data-column="listing_count"], .exchange-table td[data-column="listing_count"] { text-align: right; }
+.exchange-pagination-footer { margin-top: 12px; }
+.exchange-listings { padding: 6px 4px; display: grid; gap: 8px; }
+.exchange-listings-header { margin: 0; color: #ffd08a; font-size: 13px; }
+.exchange-listings-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.exchange-listings-table th { text-align: left; color: #ad9f89; font-weight: 500; padding: 5px 8px; border-bottom: 1px solid #302b25; }
+.exchange-listings-table th.exchange-num { text-align: right; }
+.exchange-listings-table td { padding: 5px 8px; border-top: 1px solid #201c17; }
+.exchange-seller-name { color: #f3efe7; }
+.exchange-owner-badge { margin-left: 6px; padding: 1px 7px; border-radius: 999px; font-size: 11px; border: 1px solid; }
+.exchange-owner-player { background: rgba(76, 175, 124, .12); color: #9be6bd; border-color: rgba(155, 230, 189, .35); }
+.exchange-owner-bot { background: rgba(198, 139, 74, .14); color: #e7c893; border-color: #4d4031; }
+.exchange-config-modal { width: min(480px, calc(100vw - 32px)); }
+.exchange-config-close { width: 28px; height: 28px; min-width: 0; padding: 0; border: 0; background: none; color: inherit; display: inline-grid; place-items: center; cursor: pointer; }
+.exchange-config-list { display: grid; gap: 8px; border: 1px solid #302b25; border-radius: 8px; padding: 10px 12px; background: #12151a; }
+.exchange-config-list-head { display: flex; flex-direction: column; gap: 2px; }
+.exchange-config-list-head strong { color: #ffd08a; }
+.exchange-config-list-head .muted { font-size: 12px; }
+.exchange-config-empty { margin: 0; font-style: italic; }
+.exchange-config-chips { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.exchange-config-chip { display: inline-flex; align-items: center; gap: 6px; background: #221a10; border: 1px solid #4d4031; color: #e7c893; border-radius: 999px; padding: 3px 8px; font-size: 12px; font-variant-numeric: tabular-nums; }
+.exchange-config-chip button { width: 18px; height: 18px; min-width: 0; padding: 0; border: 0; background: none; color: inherit; display: inline-grid; place-items: center; cursor: pointer; }
+.exchange-config-chip > span { display: inline-flex; align-items: center; gap: 6px; }
+.exchange-config-chip-builtin { background: #13212b; border-color: #33556a; color: #a9d0e6; }
+.exchange-config-chip-builtin em { font-style: normal; font-size: 9px; letter-spacing: 0.04em; text-transform: uppercase; color: #7fb0c9; border: 1px solid #33556a; border-radius: 999px; padding: 1px 5px; }
+.exchange-config-restore { width: auto; min-width: 0; align-self: flex-start; padding: 3px 10px; font-size: 12px; display: inline-flex; align-items: center; gap: 5px; }
+.exchange-config-add { display: flex; gap: 6px; }
+.exchange-config-add input { flex: 1; min-width: 0; }
+.exchange-config-add button { width: auto; min-width: 72px; }
+.exchange-config-modal .confirm-modal-actions .primary { background: var(--accent); color: #1a130a; border-color: var(--accent); }
+
 .stable-action-button { min-width: 72px; }
 .map-action-buttons { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; }
 .map-action-buttons .stable-action-button { min-width: 72px; width: auto; }
