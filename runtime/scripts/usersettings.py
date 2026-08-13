@@ -268,6 +268,7 @@ FIELD_DESCRIPTIONS = {
     "water_consumption_in_storm_multiplier": "Additional water drain during sandstorms.",
     "players_drop_loot_on_defeat": "Whether a player drops loot when downed/defeated (not a full death).",
     "players_drop_loot_on_death": "Whether a player drops their inventory as loot when killed (PvP looting).",
+    "base_backup_tool_time_restriction_seconds": "Cooldown before the Base Backup tool can be used again on the same base, in seconds. Funcom's default is 604800 (7 days).",
     "deathstill_conversion_time_override": "Overrides how long it takes to process a body in a Deathstill. Value is the length of the cycle in seconds.",
     "double_difficulty_loot_enabled": "Gives double loot when the encounter difficulty is above 0. Field-confirmed with dungeon loot.",
     "regenerate_per_player_loot_enabled": "Whether per-player loot is regenerated each time a player interacts with a loot container. Field-confirmed. Enabling this can make a single container farmable indefinitely.",
@@ -294,6 +295,7 @@ CLIENT_FILE_REQUIRED = {
     "water_consumption_in_storm_multiplier": "Game.ini",
     "players_drop_loot_on_defeat": "Game.ini",
     "players_drop_loot_on_death": "Game.ini",
+    "base_backup_tool_time_restriction_seconds": "Game.ini",
 }
 
 MAP_FIELDS = {
@@ -354,7 +356,7 @@ MAP_FIELDS = {
     "max_landclaim_segments": (BUILDING_SETTINGS_SECTION, "m_MaxNumLandclaimSegments", "24"),
     "building_blueprint_max_extensions": (BUILDING_SETTINGS_SECTION, "m_BuildingBlueprintMaxExtensions", "16"),
     "base_backup_max_extensions": (BUILDING_SETTINGS_SECTION, "m_BaseBackupMaxExtensions", "40"),
-    "base_backup_tool_time_restriction_seconds": (BUILDING_SETTINGS_SECTION, "m_BaseBackupToolTimeRestrictionInSeconds", "10"),
+    "base_backup_tool_time_restriction_seconds": (BUILDING_SETTINGS_SECTION, "m_BaseBackupToolTimeRestrictionInSeconds", "604800"),
     "building_restriction_limits_enabled": (BUILDING_SETTINGS_SECTION, "m_bBuildingRestrictionLimitsEnabled", "True"),
     "mitigate_all_sandstorm_damage": (BUILDING_SETTINGS_SECTION, "m_bMitigateAllSandstormDamage", "False"),
     "fallback_default_building_health": (BUILDING_SETTINGS_SECTION, "m_FallbackDefaultBuildingHealth", "5000.000000"),
@@ -2845,6 +2847,10 @@ Dune.GlobalVehicleMiningOutputMultiplier=10
         raise SystemExit("Base backup tool time restriction did not feed interactive map values.")
     if "m_BaseBackupToolTimeRestrictionInSeconds=60" not in compiled_usergame_ini(reparsed, "Survival_1", "3"):
         raise SystemExit("Base backup tool time restriction did not compile from interactive profile update.")
+    if "m_BaseBackupToolTimeRestrictionInSeconds=60" not in client_game_ini(reparsed, "Survival_1", "3"):
+        raise SystemExit("Base backup tool time restriction did not carry into the client Game.ini export.")
+    if CLIENT_FILE_REQUIRED.get("base_backup_tool_time_restriction_seconds") != "Game.ini":
+        raise SystemExit("Base backup tool time restriction is not flagged as requiring a client Game.ini update.")
     if profile_map_values(reparsed, "Survival_1")["building_restriction_limits_enabled"] != "True":
         raise SystemExit("Building restriction limits did not default to enabled when unset.")
     profile_set_key(reparsed, "global", BUILDING_SETTINGS_SECTION, "m_bBuildingRestrictionLimitsEnabled", "False")
@@ -2909,7 +2915,7 @@ Dune.GlobalVehicleMiningOutputMultiplier=10
         "free_rotate_max": "90.000000",
         "default_repair_cost_multiplier": "0.25",
         "pickup_total_durability_reduction": "0.0",
-        "base_backup_tool_time_restriction_seconds": "10",
+        "base_backup_tool_time_restriction_seconds": "604800",
         "fallback_default_building_health": "5000.000000",
         "fallback_default_placeable_health": "1000.000000",
         "building_destabilization_system_enabled": "False",
