@@ -116,6 +116,35 @@ dune_secrets_generate_dek() {
   python3 "$DUNE_SECRETS_AEAD_PY" generate-key
 }
 
+# _dune_secrets_aead_encrypt <key-hex> <plaintext>
+# _dune_secrets_aead_decrypt <key-hex> <payload-b64>
+#   Thin wrappers around secrets_aead.py that pass the key and
+#   plaintext/payload via STDIN, never as command-line arguments.
+#
+#   This is load-bearing, not a style choice: an earlier version of
+#   this file (and of secrets_aead.py) passed both values as argv,
+#   which a Requirement 20 Layer 2 audit found -- and this session
+#   independently reproduced via /proc/<pid>/cmdline -- made every KEK,
+#   DEK, and plaintext secret fully visible to any local user or
+#   process able to read /proc for the entire lifetime of the python3
+#   process. That is the exact vulnerability class
+#   (GHSA-fc89-h24v-6j3x) this whole initiative exists to eliminate,
+#   just relocated from Docker's `-e`/`docker inspect` exposure to a
+#   CLI argv exposure. `printf` below is a shell BUILTIN (confirmed via
+#   `type printf`), not a separate process -- so nothing here ever
+#   writes secret material to any process's own argv at any point.
+_dune_secrets_aead_encrypt() {
+  local key_hex="$1"
+  local plaintext="$2"
+  printf '%s\n%s\n' "$key_hex" "$plaintext" | python3 "$DUNE_SECRETS_AEAD_PY" encrypt
+}
+
+_dune_secrets_aead_decrypt() {
+  local key_hex="$1"
+  local payload_b64="$2"
+  printf '%s\n%s\n' "$key_hex" "$payload_b64" | python3 "$DUNE_SECRETS_AEAD_PY" decrypt
+}
+
 # dune_secrets_encrypted_path <name>
 #   Prints the path where <name>'s age-encrypted form would live, e.g.
 #   dune_secrets_encrypted_path postgres-password
@@ -210,8 +239,8 @@ dune_secrets_write_secret() {
   dek="$(dune_secrets_generate_dek)"
 
   local wrapped_dek ciphertext
-  wrapped_dek="$(python3 "$DUNE_SECRETS_AEAD_PY" encrypt "$kek" "$dek")"
-  ciphertext="$(python3 "$DUNE_SECRETS_AEAD_PY" encrypt "$dek" "$plaintext")"
+  wrapped_dek="$(_dune_secrets_aead_encrypt "$kek" "$dek")"
+  ciphertext="$(_dune_secrets_aead_encrypt "$dek" "$plaintext")"
 
   local enc_path
   enc_path="$(dune_secrets_encrypted_path "$name")"
@@ -255,12 +284,12 @@ dune_secrets_read_encrypted() {
   ciphertext="${rest#*:}"
 
   local dek
-  if ! dek="$(python3 "$DUNE_SECRETS_AEAD_PY" decrypt "$kek" "$wrapped_dek" 2>/dev/null)"; then
+  if ! dek="$(_dune_secrets_aead_decrypt "$kek" "$wrapped_dek" 2>/dev/null)"; then
     echo "dune secrets: failed to unwrap DEK for '$name' -- wrong KEK or corrupted $enc_path." >&2
     return 1
   fi
 
-  python3 "$DUNE_SECRETS_AEAD_PY" decrypt "$dek" "$ciphertext"
+  _dune_secrets_aead_decrypt "$dek" "$ciphertext"
 }
 
 # dune_secrets_read_secret <name> <legacy-flat-file-path>

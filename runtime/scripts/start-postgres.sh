@@ -60,50 +60,80 @@ docker volume create dune-postgres-data >/dev/null
 # the exact previous default value so an operator who has never run
 # `dune secrets setup` sees zero behavior change -- per section 7.1,
 # this remains strictly opt-in.
-postgres_superuser_password_render="runtime/generated/.pg-superuser-password-runtime"
+# This whole block (KEK read/generate, render, docker run, cleanup) is
+# wrapped in a dedicated flock so two overlapping invocations of this
+# script (e.g. two concurrent `dune restart` calls, a real scenario
+# this workstream's own operating docs explicitly warn about) cannot
+# race on the single shared render-file path below -- confirmed via a
+# Requirement 20 Layer 2 audit that reproduced exactly this race
+# (instance A's docker run binding instance B's password, or A's
+# cleanup deleting the file out from under B) with no lock in place.
+postgres_lock_file="runtime/generated/.pg-superuser-password.lock"
 mkdir -p runtime/generated
-if dune_secrets_backend_configured; then
-  # This secret has no pre-existing flat-file convention to fall back
-  # to (unlike funcom-token.txt etc., which already existed before this
-  # feature) -- so dune_secrets_read_secret's generic legacy-file
-  # fallback is deliberately NOT used here. Reading directly via
-  # dune_secrets_read_encrypted instead avoids a real bug: passing
-  # /dev/null as a "legacy path" would make dune_secrets_read_secret
-  # treat a readable-but-empty /dev/null as a successful read of an
-  # empty-string password on first run, silently skipping generation of
-  # a real one.
-  if ! postgres_superuser_password="$(dune_secrets_read_encrypted "postgres-superuser-password" 2>/dev/null)"; then
-    postgres_superuser_password="$(dune_secrets_generate_dek)"
-    dune_secrets_write_secret "postgres-superuser-password" "$postgres_superuser_password"
+
+(
+  flock -x 9
+
+  postgres_superuser_password_render="runtime/generated/.pg-superuser-password-runtime"
+  if dune_secrets_backend_configured; then
+    # This secret has no pre-existing flat-file convention to fall back
+    # to (unlike funcom-token.txt etc., which already existed before this
+    # feature) -- so dune_secrets_read_secret's generic legacy-file
+    # fallback is deliberately NOT used here. Reading directly via
+    # dune_secrets_read_encrypted instead avoids a real bug: passing
+    # /dev/null as a "legacy path" would make dune_secrets_read_secret
+    # treat a readable-but-empty /dev/null as a successful read of an
+    # empty-string password on first run, silently skipping generation of
+    # a real one.
+    if ! postgres_superuser_password="$(dune_secrets_read_encrypted "postgres-superuser-password" 2>/dev/null)"; then
+      postgres_superuser_password="$(dune_secrets_generate_dek)"
+      dune_secrets_write_secret "postgres-superuser-password" "$postgres_superuser_password"
+    fi
+  else
+    postgres_superuser_password="postgres"
   fi
-else
-  postgres_superuser_password="postgres"
-fi
 
-# Render to a short-lived, 0600, non-git-tracked file for the sole
-# purpose of the bind-mount below -- never the same file as the
-# age-encrypted form (runtime/secrets/postgres-superuser-password.enc),
-# and deleted immediately after the container is started, per section 3
-# of the design doc's flow chart.
-umask 077
-printf '%s' "$postgres_superuser_password" > "$postgres_superuser_password_render"
-chmod 600 "$postgres_superuser_password_render"
+  # Render to a short-lived, 0600, non-git-tracked file for the sole
+  # purpose of the bind-mount below -- never the same file as the
+  # age-encrypted form (runtime/secrets/postgres-superuser-password.enc).
+  # Cleanup is registered via `trap ... EXIT` BEFORE the docker run
+  # below, not placed as a final line after it -- a Requirement 20
+  # Layer 2 audit reproduced that the previous ordering (cleanup as the
+  # last line, after docker run) left the plaintext password file
+  # orphaned on disk indefinitely if `docker run` itself failed, since
+  # `set -euo pipefail` aborts the script at the failing command before
+  # ever reaching that final `rm -f`. A trap fires on any exit path
+  # (success, failure, or an interrupting signal), closing that gap.
+  # `umask 077` here only tightens the FILE's own permissions (0600,
+  # confirmed explicitly by the chmod below regardless of umask) --
+  # runtime/generated/ itself may already exist at a looser mode (0755
+  # on this host, unrelated to this change) since it's a shared
+  # directory used by other unrelated generated files. The actual
+  # security boundary is the file's own 0600 mode, not the containing
+  # directory's mode: a directory listing may still reveal this file's
+  # *name* to other OS users, but not its *contents*. Stated explicitly
+  # here after a Requirement 20 Layer 2 audit noted the original
+  # comment implied a stronger directory-level guarantee than this
+  # actually provides.
+  umask 077
+  printf '%s' "$postgres_superuser_password" > "$postgres_superuser_password_render"
+  chmod 600 "$postgres_superuser_password_render"
+  trap 'rm -f "$postgres_superuser_password_render"' EXIT
 
-docker run -d \
-  "${DUNE_DOCKER_LOG_ARGS[@]}" \
-  --name dune-postgres \
-  --network dune-net \
-  --restart unless-stopped \
-  -p "127.0.0.1:${POSTGRES_PORT}:5432" \
-  -e POSTGRES_USER=postgres \
-  -e POSTGRES_PASSWORD_FILE=/run/secrets/postgres-password \
-  -e POSTGRES_DB=dune \
-  -v dune-postgres-data:/var/lib/postgresql/data \
-  -v "$(host_path "$PWD/runtime/postgres/initdb"):/docker-entrypoint-initdb.d:ro" \
-  -v "$(host_path "$PWD/$postgres_superuser_password_render"):/run/secrets/postgres-password:ro" \
-  "$IMAGE"
-
-rm -f "$postgres_superuser_password_render"
+  docker run -d \
+    "${DUNE_DOCKER_LOG_ARGS[@]}" \
+    --name dune-postgres \
+    --network dune-net \
+    --restart unless-stopped \
+    -p "127.0.0.1:${POSTGRES_PORT}:5432" \
+    -e POSTGRES_USER=postgres \
+    -e POSTGRES_PASSWORD_FILE=/run/secrets/postgres-password \
+    -e POSTGRES_DB=dune \
+    -v dune-postgres-data:/var/lib/postgresql/data \
+    -v "$(host_path "$PWD/runtime/postgres/initdb"):/docker-entrypoint-initdb.d:ro" \
+    -v "$(host_path "$PWD/$postgres_superuser_password_render"):/run/secrets/postgres-password:ro" \
+    "$IMAGE"
+) 9>"$postgres_lock_file"
 
 echo "Waiting for Postgres..."
 ready=0

@@ -38,24 +38,50 @@ cross-language round-trip test (test-secrets-aead-cross-language.sh)
 is what actually proves this reconciliation is correct, not this
 docstring -- read that test if you're modifying this file.
 
-CLI usage (matches this repo's existing convention, e.g.
-usersettings.py, of `python3 <script> <subcommand> <args>` invoked
-directly from Bash with stdout captured):
+CLI usage: secret material is passed via STDIN, never as a command-line
+argument. This is deliberate and load-bearing, not a style choice --
+see the CRITICAL correction below.
 
-    python3 secrets_aead.py encrypt <key-hex> <plaintext>
-        -> prints base64(iv+tag+ct) to stdout
+    python3 secrets_aead.py encrypt
+        stdin: <key-hex>\n<plaintext>\n   (plaintext may itself contain
+               any bytes except a newline; if the secret could ever
+               contain a newline, this protocol would need revising --
+               none of this repo's current secrets do)
+        stdout: base64(iv+tag+ct)
 
-    python3 secrets_aead.py decrypt <key-hex> <base64-payload>
-        -> prints plaintext to stdout
+    python3 secrets_aead.py decrypt
+        stdin: <key-hex>\n<base64-payload>\n
+        stdout: plaintext
 
     python3 secrets_aead.py generate-key
-        -> prints a fresh, random 64-hex-char (32-byte) key to stdout
+        no stdin needed
+        stdout: a fresh, random 64-hex-char (32-byte) key
+
+    `runtime/scripts/lib/secrets.sh` calls this via a Bash heredoc or
+    `printf '%s\n%s\n' "$key" "$value" | python3 secrets_aead.py ...` --
+    `printf` is a shell BUILTIN, not a separate process, so the secret
+    value is never written to any process's own argv/`/proc/<pid>/cmdline`
+    at any point in that pipeline.
 
 Exit codes: 0 on success. 1 on any error (bad key length, malformed
-base64, decryption/auth failure, wrong argument count) -- errors are
+base64, decryption/auth failure, malformed stdin) -- errors are
 printed to stderr, never to stdout, so a caller doing
-`value="$(python3 secrets_aead.py decrypt ...)"` never accidentally
+`value="$(... | python3 secrets_aead.py decrypt)"` never accidentally
 captures an error message as if it were the secret.
+
+CRITICAL, corrected after a Requirement 20 Layer 2 audit found a real,
+reproduced vulnerability in an earlier version of this file: the
+original CLI took <key-hex> and <plaintext>/<payload> as plain
+positional argv arguments (`sys.argv[2]`, `sys.argv[3]`). Verified
+directly on this host that this made the KEK, DEK, and plaintext
+secret values fully visible, for the process's entire lifetime, via
+`/proc/<pid>/cmdline` and `ps aux` to any local user or process able to
+read `/proc` -- the exact vulnerability class (GHSA-fc89-h24v-6j3x)
+this whole age-secrets initiative exists to eliminate, just relocated
+from Docker's `-e`/`docker inspect` exposure to a `python3` CLI argv
+exposure. This is why the CLI now reads secret material from stdin
+exclusively; do not reintroduce a <key-hex>/<plaintext> argv parameter
+to "usage" convenience later without re-reading this paragraph.
 """
 from __future__ import annotations
 
@@ -164,32 +190,39 @@ def generate_key() -> str:
     return secrets.token_bytes(KEY_BYTES).hex()
 
 
-def main(argv: list[str]) -> int:
-    if len(argv) < 2:
+def _read_two_stdin_lines(subcommand: str) -> tuple[str, str]:
+    """Reads exactly two newline-terminated values from stdin: a
+    key-hex line, then a plaintext-or-payload line. Never reads from
+    argv -- see the module docstring's CRITICAL note for why."""
+    raw = sys.stdin.read()
+    lines = raw.split("\n")
+    if len(lines) < 2 or not lines[0]:
         _fail(
-            "usage: secrets_aead.py encrypt <key-hex> <plaintext> | "
-            "decrypt <key-hex> <payload-b64> | generate-key"
+            f"{subcommand} expects two newline-separated values on stdin "
+            f"(key-hex, then the value) -- got malformed or empty stdin"
         )
+    return lines[0], lines[1]
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) != 2:
+        _fail("usage: secrets_aead.py encrypt | decrypt | generate-key (secret material via stdin, never argv)")
         return 1  # unreachable, _fail exits
 
     subcommand = argv[1]
 
     if subcommand == "generate-key":
-        if len(argv) != 2:
-            _fail("generate-key takes no arguments")
         print(generate_key())
         return 0
 
     if subcommand == "encrypt":
-        if len(argv) != 4:
-            _fail("usage: secrets_aead.py encrypt <key-hex> <plaintext>")
-        print(encrypt(argv[2], argv[3]))
+        key_hex, plaintext = _read_two_stdin_lines("encrypt")
+        print(encrypt(key_hex, plaintext))
         return 0
 
     if subcommand == "decrypt":
-        if len(argv) != 4:
-            _fail("usage: secrets_aead.py decrypt <key-hex> <payload-b64>")
-        print(decrypt(argv[2], argv[3]))
+        key_hex, payload_b64 = _read_two_stdin_lines("decrypt")
+        print(decrypt(key_hex, payload_b64))
         return 0
 
     _fail(f"unknown subcommand: {subcommand!r} (expected encrypt, decrypt, or generate-key)")

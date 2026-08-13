@@ -49,7 +49,11 @@ key_hex="$(python3 "$SECRETS_AEAD" generate-key)"
 [ "${#key_hex}" -eq 64 ] || fail "generate-key did not produce a 64-hex-char key (got ${#key_hex} chars)"
 
 plaintext_py_to_node="cross-language-test-value-from-python-\$pecial-chars-日本語"
-ciphertext_from_python="$(python3 "$SECRETS_AEAD" encrypt "$key_hex" "$plaintext_py_to_node")"
+# secrets_aead.py's encrypt/decrypt subcommands read key + value from
+# stdin, never argv -- see secrets_aead.py's own module docstring for
+# why (a real, reproduced /proc/<pid>/cmdline exposure this was fixed
+# to close). `printf` is a shell builtin, not a separate process.
+ciphertext_from_python="$(printf '%s\n%s\n' "$key_hex" "$plaintext_py_to_node" | python3 "$SECRETS_AEAD" encrypt)"
 [ -n "$ciphertext_from_python" ] || fail "python3 encrypt produced empty output"
 
 decrypted_by_node="$(node -e '
@@ -95,7 +99,7 @@ process.stdout.write(payload.toString("base64"));
 
 [ -n "$ciphertext_from_node" ] || fail "node encrypt produced empty output"
 
-decrypted_by_python="$(python3 "$SECRETS_AEAD" decrypt "$key_hex" "$ciphertext_from_node")"
+decrypted_by_python="$(printf '%s\n%s\n' "$key_hex" "$ciphertext_from_node" | python3 "$SECRETS_AEAD" decrypt)"
 
 [ "$decrypted_by_python" = "$plaintext_node_to_py" ] || fail \
   "Node-encrypted payload did not decrypt correctly in Python. Expected: '$plaintext_node_to_py', got: '$decrypted_by_python'"

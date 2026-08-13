@@ -112,4 +112,29 @@ if dune_secrets_read_secret "nonexistent-secret" "runtime/secrets/also-nonexiste
   fail "expected dune_secrets_read_secret to fail (non-zero exit) when neither the .enc file nor the legacy file exist"
 fi
 
+# --- Test 8: _dune_secrets_atomic_write fails cleanly (non-zero exit,
+# no torn/partial final file) when the target directory cannot be
+# written to -- direct coverage for the atomic-write primitive itself,
+# which a Requirement 20 Layer 2 audit found had zero direct test
+# coverage (only exercised indirectly via dune_secrets_write_secret's
+# happy path in test 2 above). ---
+unwritable_dir="$test_root/unwritable"
+mkdir -p "$unwritable_dir"
+chmod 000 "$unwritable_dir"
+unwritable_target="$unwritable_dir/some-secret.enc"
+
+atomic_write_failed=0
+_dune_secrets_atomic_write "$unwritable_target" "should-never-be-written" 600 2>/dev/null || atomic_write_failed=1
+
+chmod 755 "$unwritable_dir"  # restore permissions before cleanup's rm -rf runs
+
+[ "$atomic_write_failed" -eq 1 ] || fail "expected _dune_secrets_atomic_write to fail when the target directory is unwritable, but it reported success"
+[ -e "$unwritable_target" ] && fail "expected no final file to exist after a failed atomic write, but $unwritable_target exists"
+# Also confirm no orphaned temp file was left behind in the unwritable
+# directory itself (there shouldn't be one, since mktemp there would
+# also fail -- but confirm explicitly rather than assume).
+if find "$unwritable_dir" -maxdepth 1 -name '*.tmp.*' 2>/dev/null | grep -q .; then
+  fail "expected no orphaned .tmp file after a failed atomic write"
+fi
+
 echo "All secrets.sh library tests passed."
