@@ -965,37 +965,49 @@ normalize_deepdesert_labels() {
   states_json="$(python3 runtime/scripts/usersettings.py partition-combat-states DeepDesert_1 "$dim0_id" "$dim1_id" 2>/dev/null || true)"
   [ -n "$states_json" ] || return 0
 
-  local resolved
+  local resolved dim0_label dim1_label
   resolved="$(printf '%s' "$states_json" | python3 -c '
 import json, sys
-data = json.load(sys.stdin)
-label = {"PVP": "PvP", "PVE": "PvE"}
-for partition in data.get("partitions", []):
-    state = partition.get("configuredState")
-    if state in label:
-        pid = partition.get("partitionId")
-        print(f"{pid}|{label[state]}")
-' 2>/dev/null || true)"
-  [ -n "$resolved" ] || return 0
 
-  # Labels are globally unique. Move both rows through partition-specific temporary labels so
-  # reversing an existing PvP/PvE pair cannot hit a transient duplicate-key violation.
+data = json.load(sys.stdin)
+expected = sys.argv[1:]
+states = {
+    str(partition.get("partitionId")): partition.get("configuredState")
+    for partition in data.get("partitions", [])
+}
+
+# The canonical short labels are globally unique in world_partition. Only
+# swap them when both requested partitions resolved and form the expected
+# one-PvP/one-PvE pair. UNKNOWN/CONFLICT or duplicate modes must leave the
+# existing labels untouched instead of producing temporary or duplicate
+# labels.
+if set(states) != set(expected):
+    raise SystemExit(1)
+if {states[partition_id] for partition_id in expected} != {"PVP", "PVE"}:
+    raise SystemExit(1)
+
+label = {"PVP": "PvP", "PVE": "PvE"}
+print("|".join(label[states[partition_id]] for partition_id in expected))
+' "$dim0_id" "$dim1_id" 2>/dev/null || true)"
+  IFS='|' read -r dim0_label dim1_label <<< "$resolved"
+  [ -n "$dim0_label" ] && [ -n "$dim1_label" ] || return 0
+
+  # Labels are globally unique. Swap both rows atomically through temporary
+  # partition-specific labels so a failure cannot strand either row with an
+  # internal DualDeepDesert_* label.
   docker exec dune-postgres psql -U postgres -d dune -v ON_ERROR_STOP=1 -c "
+begin;
 update dune.world_partition
 set label = 'DualDeepDesert_' || partition_id::text
-where map = 'DeepDesert_1'
-  and dimension_index in (0, 1);
-" >/dev/null
-
-  local partition_id label_value
-  while IFS='|' read -r partition_id label_value; do
-    [ -n "$partition_id" ] && [ -n "$label_value" ] || continue
-    docker exec dune-postgres psql -U postgres -d dune -v ON_ERROR_STOP=1 -c "
+where partition_id in ($dim0_id, $dim1_id);
 update dune.world_partition
-set label = '${label_value}'
-where partition_id = ${partition_id};
+set label = case partition_id
+  when $dim0_id then '$dim0_label'
+  when $dim1_id then '$dim1_label'
+end
+where partition_id in ($dim0_id, $dim1_id);
+commit;
 " >/dev/null
-  done <<< "$resolved"
 }
 
 refresh_survival_browser_state() {
