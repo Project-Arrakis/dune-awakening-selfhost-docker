@@ -729,8 +729,10 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
       <div className="playerAdmin_actionRow">
         <span className="playerAdmin_actionLabel">{playerAdmin_label}{playerAdmin_note && <em>{playerAdmin_note}</em>}</span>
         <span className="playerAdmin_fieldGroup">{playerAdmin_input}</span>
-        <button disabled={playerAdmin_disabled || playerAdmin_actionResult?.pending} onClick={playerAdmin_onClick}>{playerAdmin_buttonLabel}</button>
-        <InlineActionResult result={playerAdmin_actionResult} resultKey={playerAdmin_key} />
+        <span className="playerAdmin_actionFeedback">
+          <button disabled={playerAdmin_disabled || playerAdmin_actionResult?.pending} onClick={playerAdmin_onClick}>{playerAdmin_buttonLabel}</button>
+          <InlineActionResult result={playerAdmin_actionResult} resultKey={playerAdmin_key} />
+        </span>
       </div>
     </div>
   );
