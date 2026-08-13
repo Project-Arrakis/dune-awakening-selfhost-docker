@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { itemImagePath, itemIsRankedSchematic, itemIsSchematic, itemRequiresDatabaseGrant, listCatalogItems, resolveCatalogItem } from "../src/adminCatalog.js";
+import { buildingUnlockStatus, itemImagePath, itemIsRankedSchematic, itemIsSchematic, itemRequiresDatabaseGrant, listBuildingUnlockItems, listCatalogItems, resolveCatalogItem } from "../src/adminCatalog.js";
 
 function fixtureRepo() {
   const root = mkdtempSync(join(tmpdir(), "web-admin-catalog-"));
@@ -12,7 +12,9 @@ function fixtureRepo() {
     { id: "PlantFiber", name: "Plant Fiber", category: "materials", source: "Resources" },
     { id: "CupOfWater", name: "Cup of Water", category: "consumables", source: "Survival" },
     { id: "ChoamHeavyLasgunSchematic", name: "Arhun K-28 Lasgun", category: "schematics", source: "Schematics" },
-    { id: "ArmorPiercingAugment", name: "Armor Piercing Augment", category: "augments", source: "Items" }
+    { id: "ArmorPiercingAugment", name: "Armor Piercing Augment", category: "augments", source: "Items" },
+    { id: "BasicLighting_Patent", name: "Basic Lighting", category: "buildings", source: "BuildingSets" },
+    { id: "Developer_Storage_Container_Patent", name: "Developer Storage Container", category: "buildings", source: "BuildingSets" }
   ]));
   return root;
 }
@@ -25,6 +27,20 @@ test("catalog item list returns real item rows only", () => {
   assert.equal(rows[0].category, "materials");
   assert.notEqual(rows[0].name, "category");
   assert.notEqual(rows[0].name, "source");
+});
+
+test("building patent tokens are isolated from ordinary items and report ownership safely", () => {
+  const root = fixtureRepo();
+  assert.equal(listCatalogItems(root, { q: "lighting" }).length, 0);
+
+  const unlocks = listBuildingUnlockItems(root);
+  assert.equal(unlocks.length, 2);
+  assert.equal(unlocks.find((row) => row.itemId === "BasicLighting_Patent")?.group, "Furniture & Decorations");
+  assert.equal(unlocks.find((row) => row.itemId === "Developer_Storage_Container_Patent")?.experimental, true);
+  assert.equal(buildingUnlockStatus("BasicLighting_Patent", { owned: ["BasicLighting"], pending: [] }), "Owned");
+  assert.equal(buildingUnlockStatus("BasicLighting_Patent", { owned: [], pending: ["BasicLighting_Patent"] }), "Pending");
+  assert.equal(buildingUnlockStatus("BasicLighting_Patent", { owned: [], pending: [] }), "Available");
+  assert.equal(buildingUnlockStatus("BasicLighting_Patent", { owned: [], pending: [], supported: false }), "Unknown");
 });
 
 test("catalog resolver rejects duplicate display names instead of silently selecting one", () => {

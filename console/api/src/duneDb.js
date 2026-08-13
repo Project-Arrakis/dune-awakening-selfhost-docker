@@ -4467,6 +4467,54 @@ export async function playerResearchItems(db, id) {
   };
 }
 
+export async function playerBuildingUnlockState(db, id) {
+  const player = await resolvePlayerMutationTarget(db, id);
+  const progressionColumns = await tableExists(db, "building_progression") ? await columnsFor(db, "building_progression") : new Set();
+  const inventoryColumns = await tableExists(db, "inventories") ? await columnsFor(db, "inventories") : new Set();
+  const itemColumns = await tableExists(db, "items") ? await columnsFor(db, "items") : new Set();
+  const progressionSupported = ["character_id", "learned_building_sets", "new_buildable_pieces"].every((column) => progressionColumns.has(column));
+  const inventorySupported = ["id", "actor_id"].every((column) => inventoryColumns.has(column)) &&
+    ["inventory_id", "template_id"].every((column) => itemColumns.has(column));
+  if (!progressionSupported) {
+    return {
+      capabilities: { buildingUnlockOwnership: false, buildingUnlockPending: inventorySupported },
+      player,
+      owned: [],
+      pending: []
+    };
+  }
+
+  const progression = player.playerStateId ? await db.query(`
+    select coalesce(learned_building_sets, '{}'::text[]) as learned_building_sets,
+           coalesce(new_buildable_pieces, '{}'::text[]) as new_buildable_pieces
+    from dune.building_progression
+    where character_id = $1
+    limit 1`, [player.playerStateId]) : { rows: [] };
+  const row = progression.rows[0] || {};
+  const owned = [...new Set([
+    ...(Array.isArray(row.learned_building_sets) ? row.learned_building_sets : []),
+    ...(Array.isArray(row.new_buildable_pieces) ? row.new_buildable_pieces : [])
+  ].map(String).filter(Boolean))];
+
+  let pending = [];
+  if (inventorySupported) {
+    const pendingResult = await db.query(`
+      select distinct i.template_id
+      from dune.inventories inv
+      join dune.items i on i.inventory_id = inv.id
+      where inv.actor_id = $1
+        and i.template_id is not null`, [player.actorId]);
+    pending = pendingResult.rows.map((item) => String(item.template_id || "")).filter(Boolean);
+  }
+
+  return {
+    capabilities: { buildingUnlockOwnership: true, buildingUnlockPending: inventorySupported },
+    player,
+    owned,
+    pending
+  };
+}
+
 export async function unlockResearchItem(db, id, { itemKey }) {
   await requireCapability(await supportsResearchItems(db), "Research unlocks require dune.actors.properties with TechKnowledgePlayerComponent.");
   const safeItemKey = validateResearchKey(itemKey);
