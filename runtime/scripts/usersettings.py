@@ -124,9 +124,8 @@ ENGINE_FIELDS = {
     "landsraad_reward_multiplier_faction_xp": ("ConsoleVariables", "dw.LandsraadMissionRewardMultiplierFactionXP", "1.0"),
     "landsraad_reward_multiplier_house_credit": ("ConsoleVariables", "dw.LandsraadMissionRewardMultiplierHouseCredit", "1.0"),
     "landsraad_reward_multiplier_specialization_xp": ("ConsoleVariables", "dw.LandsraadMissionRewardMultiplierSpecializationXP", "1.0"),
-    # Empty means "no override" -- Funcom's compiled default was not recovered,
-    # so this is the least assumption we can make rather than a guessed number.
-    "deathstill_conversion_time_override": ("ConsoleVariables", "Deathstill.ConversionTimeOverride", ""),
+    # Funcom's compiled default: 3600 seconds (1 hour).
+    "deathstill_conversion_time_override": ("ConsoleVariables", "Deathstill.ConversionTimeOverride", "3600"),
     # Both defaults confirmed against the game; do not "correct" them to 1.
     "double_difficulty_loot_enabled": ("ConsoleVariables", "Dune.GiveDoubleDifficultyLoot", "0"),
     "regenerate_per_player_loot_enabled": ("ConsoleVariables", "Loot.ShouldAlwaysRegeneratePerPlayerLoot", "0"),
@@ -189,7 +188,7 @@ ENGINE_FIELD_INI_COMMENTS: dict[str, tuple[str, ...]] = {
     "landsraad_reward_multiplier_specialization_xp": (
         "Experimental: Landsraad mission reward multipliers (faction XP, house credits, specialization XP).",
     ),
-    "deathstill_conversion_time_override": ("Experimental: overrides how long a Deathstill takes to process a body, in seconds.",),
+    "deathstill_conversion_time_override": ("Experimental: overrides how long a Deathstill takes to process a body, in seconds. Funcom default: 3600 (1 hour).",),
     "double_difficulty_loot_enabled": ("Experimental: double loot when the encounter difficulty is above 0.",),
     "regenerate_per_player_loot_enabled": ("Experimental: regenerate per-player loot on every container interaction.",),
 }
@@ -250,7 +249,9 @@ FIELD_DESCRIPTIONS = {
     "mining_output_multiplier": "Multiplier applied to personal mining output for all players.",
     "vehicle_mining_output_multiplier": "Multiplier applied to vehicle mining output for all players.",
     "pvp_resource_multiplier": "Multiplier applied to resource yield inside PvP zones.",
-    "vehicle_durability_damage_multiplier": "Multiplier applied to durability damage taken by vehicles.",
+    "vehicle_durability_damage_multiplier": "Multiplier applied to durability damage taken by vehicles. Valid range 0-10; 0 = damage off.",
+    "sandworm_invulnerability_on_exit": "Seconds of invulnerability granted to a vehicle after a player exits it near a sandworm.",
+    "sandworm_invulnerability_on_restart": "Seconds of invulnerability granted to vehicles after a server restart, to prevent immediate sandworm attacks.",
     "sandstorm_enabled": "Toggles sandstorm spawning. 1 = ON (default), 0 = OFF.",
     "sandstorm_treasure_enabled": "Toggles sandstorm treasure spawning. 1 = ON (default), 0 = OFF.",
     "sun_exposure_enabled": "Toggles whether players take sun exposure/heat damage. True/1 = ON (default), False/0 = OFF.",
@@ -269,10 +270,17 @@ FIELD_DESCRIPTIONS = {
     "players_drop_loot_on_defeat": "Whether a player drops loot when downed/defeated (not a full death).",
     "players_drop_loot_on_death": "Whether a player drops their inventory as loot when killed (PvP looting).",
     "base_backup_tool_time_restriction_seconds": "Cooldown before the Base Backup tool can be used again on the same base, in seconds. Funcom's default is 604800 (7 days).",
-    "deathstill_conversion_time_override": "Overrides how long it takes to process a body in a Deathstill. Value is the length of the cycle in seconds.",
+    "deathstill_conversion_time_override": "Overrides how long it takes to process a body in a Deathstill. Value is the length of the cycle in seconds. Default: 3600 (1 hour).",
     "double_difficulty_loot_enabled": "Gives double loot when the encounter difficulty is above 0. Field-confirmed with dungeon loot.",
     "regenerate_per_player_loot_enabled": "Whether per-player loot is regenerated each time a player interacts with a loot container. Field-confirmed. Enabling this can make a single container farmable indefinitely.",
     "restart_server_on_coriolis_cycle_end": "Requests that Funcom restart the current map server process when its own Coriolis cycle ends. Docker restarts an exited map container automatically. This does not queue a Console battlegroup restart or send restart warnings.",
+    "max_landclaim_segments": "Maximum number of land-claim segments (flags) a player may own.",
+    "building_blueprint_max_extensions": "Maximum number of times a blueprinted building can be extended.",
+    "base_backup_max_extensions": "Maximum number of times a Base Backup can be extended.",
+    "building_restriction_limits_enabled": "Enforces building restriction limits (e.g. disallowing construction inside dungeons/restricted areas).",
+    "force_pvp_all_partitions": "If enabled, forces PvP on for every map partition regardless of each partition's individual PvP/PvE setting.",
+    "security_zones_enabled": "Master toggle for Security Zones. Disable to allow PvP and combat abilities everywhere on the map (no safe zones).",
+    "coriolis_auto_spawn_enabled": "Whether Coriolis storms spawn automatically on their normal cycle.",
 }
 
 FIELD_LABELS = {
@@ -353,9 +361,9 @@ MAP_FIELDS = {
     "forced_coriolis_world_seed": ("/Script/DuneSandbox.CoriolisSubsystem", "m_ForcedCoriolisWorldSeed", "-1"),
     "restart_server_on_coriolis_cycle_end": ("/Script/DuneSandbox.CoriolisSubsystem", "m_bShouldRestartServerOnCycleEnd", "True"),
     "coriolis_db_wipe_enabled": ("/Script/DuneSandbox.CoriolisSubsystem", "m_bIsDbWipeEnabled", "True"),
-    "max_landclaim_segments": (BUILDING_SETTINGS_SECTION, "m_MaxNumLandclaimSegments", "24"),
-    "building_blueprint_max_extensions": (BUILDING_SETTINGS_SECTION, "m_BuildingBlueprintMaxExtensions", "16"),
-    "base_backup_max_extensions": (BUILDING_SETTINGS_SECTION, "m_BaseBackupMaxExtensions", "40"),
+    "max_landclaim_segments": (BUILDING_SETTINGS_SECTION, "m_MaxNumLandclaimSegments", "6"),
+    "building_blueprint_max_extensions": (BUILDING_SETTINGS_SECTION, "m_BuildingBlueprintMaxExtensions", "4"),
+    "base_backup_max_extensions": (BUILDING_SETTINGS_SECTION, "m_BaseBackupMaxExtensions", "8"),
     "base_backup_tool_time_restriction_seconds": (BUILDING_SETTINGS_SECTION, "m_BaseBackupToolTimeRestrictionInSeconds", "604800"),
     "building_restriction_limits_enabled": (BUILDING_SETTINGS_SECTION, "m_bBuildingRestrictionLimitsEnabled", "True"),
     "mitigate_all_sandstorm_damage": (BUILDING_SETTINGS_SECTION, "m_bMitigateAllSandstormDamage", "False"),
@@ -2921,9 +2929,9 @@ Dune.GlobalVehicleMiningOutputMultiplier=10
         "building_destabilization_system_enabled": "False",
         "sand_buildup_placeables_sheltered_target_value": "0.1",
         "sand_buildup_placeables_unsheltered_target_value": "0.3",
-        "max_landclaim_segments": "24",
-        "building_blueprint_max_extensions": "16",
-        "base_backup_max_extensions": "40",
+        "max_landclaim_segments": "6",
+        "building_blueprint_max_extensions": "4",
+        "base_backup_max_extensions": "8",
         "building_restriction_limits_enabled": "True",
     }
     for field_id, expected in expected_building_defaults.items():
