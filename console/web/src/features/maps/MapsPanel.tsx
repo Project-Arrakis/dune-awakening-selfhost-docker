@@ -2632,7 +2632,14 @@ function partitionMemoryValue(memoryText: string, partitionId: string, fallback:
 // This function must NOT infer PvP/PvE from `row.dimension` — dimension
 // index is positional metadata only and does not determine combat state
 // (see the "Dual Deep Desert" resolver contract).
+//
+// `combatRow.serverDisplayName`, when present, is the effective, merged
+// Bgd.ServerDisplayName (partition -> map -> global UserEngine.ini) — the
+// name a player actually sees in-game. It takes precedence over the
+// synthesized "Deep Desert N (PvP/PvE)" text below.
 export function deepDesertPartitionName(row: Record<string, unknown>, combatRow?: PartitionCombatStateRow | null) {
+  const configuredName = String(combatRow?.serverDisplayName || "").trim();
+  if (configuredName) return configuredName;
   const dimension = Number(row.dimension);
   const suffix = Number.isFinite(dimension) ? ` ${dimension + 1}` : "";
   if (combatRow) {
