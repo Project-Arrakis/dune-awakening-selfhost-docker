@@ -35,10 +35,26 @@ repos:
 
       - id: semgrep
         name: semgrep
+        # Deliberately NOT pass_filenames: false / always_run: true.
+        # Those two settings together meant semgrep received no file
+        # arguments on every commit and fell back to scanning the
+        # entire repository regardless of what was staged -- confirmed
+        # via direct testing (issue #255): any pre-existing, already-
+        # tracked finding anywhere in the repo (e.g. #242, #243) blocked
+        # every subsequent commit, even ones that never touched the
+        # affected files. Letting pre-commit's default
+        # pass_filenames: true pass only the staged files restores the
+        # fast, scoped local-commit tier this repo's own operating docs
+        # already describe (~/projects/meta/Arrakis-Project/README.md's
+        # "Confirmed two-tier Semgrep design" section) -- full-ruleset,
+        # Supply-Chain-aware coverage still runs in CI via
+        # .github/workflows/semgrep.yml on every PR/push/schedule,
+        # unaffected by this change. This exact fix was already applied
+        # and documented in dune-ops-observability-addon's own
+        # .pre-commit-config.yaml; this brings this repo's hook in line
+        # with that established, working pattern.
         entry: semgrep --error --config p/default
         language: system
-        pass_filenames: false
-        always_run: true
         verbose: false
 
       - id: security-pr-checks
