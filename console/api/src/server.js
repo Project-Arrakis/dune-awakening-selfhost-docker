@@ -15,7 +15,7 @@ import { createDb, quoteIdentifier } from "./db.js";
 import * as duneDb from "./duneDb.js";
 import { audit, recordAdminHistory } from "./audit.js";
 import { redact } from "./redact.js";
-import { itemIsRankedSchematic, itemIsSchematic, itemRequiresDatabaseGrant, listCatalogItems, resolveCatalogItem } from "./adminCatalog.js";
+import { buildingUnlockStatus, isBuildingUnlockItem, itemIsRankedSchematic, itemIsSchematic, itemRequiresDatabaseGrant, listBuildingUnlockItems, listCatalogItems, resolveCatalogItem } from "./adminCatalog.js";
 import { buildBroadcastCommand, buildShutdownBroadcastCommand, publishMapChat, publishServerCommand } from "./rmq.js";
 import { clearCarePackageHistory, enableCarePackage, ensureCarePackageServerPersona, grantEligibleCarePackages, grantCarePackage, retryCarePackageGrant, runCarePackageAutoScan, saveCarePackageConfig, carePackageCapabilities, carePackageConfig, carePackageEligiblePlayers, carePackageHistory } from "./carePackage.js";
 import { readJsonBody, readMultipartForm } from "./httpSafety.js";
@@ -650,6 +650,7 @@ async function handleApi(req, res) {
   if (path.match(/^\/api\/players\/[^/]+\/give-item$/) && req.method === "POST") return giveSingleItemRoute(req, res, path, "adminGiveItem");
   if (path.match(/^\/api\/players\/[^/]+\/give-items$/) && req.method === "POST") return giveItemsRoute(req, res, path);
   if (path.match(/^\/api\/players\/[^/]+\/give-item-id$/) && req.method === "POST") return giveSingleItemRoute(req, res, path, "adminGiveItemId");
+  if (path.match(/^\/api\/players\/[^/]+\/building-unlocks\/grant$/) && req.method === "POST") return buildingUnlockGrantRoute(req, res, path);
   if (path.match(/^\/api\/players\/[^/]+\/add-xp$/) && req.method === "POST") return playerTask(req, res, path, "adminAddXp");
   if (path.match(/^\/api\/players\/[^/]+\/set-skill-points$/) && req.method === "POST") return playerTask(req, res, path, "adminSetSkillPoints");
   if (path.match(/^\/api\/players\/[^/]+\/set-skill-module$/) && req.method === "POST") return playerTask(req, res, path, "adminSetSkillModule");
@@ -686,6 +687,7 @@ async function handleApi(req, res) {
   if (path.match(/^\/api\/players\/[^/]+\/inventory\/[^/]+$/) && req.method === "PATCH") return inventoryUpdateRoute(req, res, path);
   if (path.match(/^\/api\/players\/[^/]+\/crafting-recipes$/)) return dbPlayerRoute(res, path, duneDb.playerCraftingRecipes);
   if (path.match(/^\/api\/players\/[^/]+\/research-items$/)) return dbPlayerRoute(res, path, duneDb.playerResearchItems);
+  if (path.match(/^\/api\/players\/[^/]+\/building-unlocks$/) && req.method === "GET") return buildingUnlocksRoute(res, path);
   if (path.match(/^\/api\/players\/[^/]+\/journey$/)) return dbPlayerRoute(res, path, (database, playerId) => duneDb.playerJourney(database, playerId, journeyTagsData));
   if (path.match(/^\/api\/players\/[^/]+\/inventory$/)) return dbPlayerRoute(res, path, duneDb.playerInventoryAll);
   if (path.match(/^\/api\/players\/[^/]+\/vehicles$/) && req.method === "GET") return dbPlayerRoute(res, path, (database, playerId) => duneDb.listVehicles(database, { playerId, pageSize: 200 }));
@@ -3086,6 +3088,58 @@ async function giveSingleItemRoute(req, res, path, operation) {
     return json(res, result.ok ? 200 : 207, result);
   } catch (error) {
     audit(config, req, operation === "adminGiveItemId" ? "players.give-item-id" : "players.give-item", { playerId, ok: false, error: redact(error.message || error) });
+    return json(res, 400, { ok: false, error: redact(error.message || error) });
+  }
+}
+
+function buildingUnlocksRoute(res, path) {
+  const playerId = decodeURIComponent(path.split("/")[3]);
+  return dbJson(res, async () => {
+    const state = await duneDb.playerBuildingUnlockState(db, playerId);
+    const supported = Boolean(state.capabilities?.buildingUnlockOwnership);
+    return {
+      capabilities: state.capabilities,
+      rows: listBuildingUnlockItems(config.repoRoot).map((item) => ({
+        ...item,
+        status: buildingUnlockStatus(item.itemId, { ...state, supported })
+      }))
+    };
+  });
+}
+
+async function buildingUnlockGrantRoute(req, res, path) {
+  const playerId = decodeURIComponent(path.split("/")[3]);
+  const body = await readJson(req);
+  if (body.confirmation !== "GRANT BUILDING UNLOCK") return json(res, 400, { error: "Confirmation phrase mismatch" });
+  if (!applyMutationRateLimit(req, res, "players.building-unlocks.grant")) return;
+
+  try {
+    const resolved = resolveCatalogItem(config.repoRoot, { itemId: body.itemId });
+    if (!isBuildingUnlockItem(resolved)) throw new Error("Select a verified entry from the Building Sets catalog.");
+    const target = await resolvePlayerGrantTarget(playerId);
+    if (!config.mockMode && !target.actorId) throw new Error("A database actor ID is required to verify building-set ownership.");
+
+    if (target.actorId) {
+      const state = await duneDb.playerBuildingUnlockState(db, target.actorId);
+      if (!state.capabilities?.buildingUnlockOwnership) {
+        throw new Error("This game database cannot verify building-set ownership, so the grant was not attempted.");
+      }
+      const status = buildingUnlockStatus(resolved.itemId, {
+        ...state,
+        supported: true
+      });
+      if (status === "Owned" || status === "Pending") {
+        audit(config, req, "players.building-unlocks.grant", { playerId, itemId: resolved.itemId, status, ok: true, noOp: true });
+        return json(res, 200, { ok: true, status, alreadyOwned: status === "Owned", alreadyPending: status === "Pending", item: resolved });
+      }
+    }
+
+    const result = await grantPlayerItem(playerId, { itemId: resolved.itemId, quantity: 1 }, target);
+    const status = result.ok ? (target.online ? "Processing" : "Pending") : "Available";
+    audit(config, req, "players.building-unlocks.grant", { playerId, itemId: resolved.itemId, status, ok: result.ok });
+    return json(res, result.ok ? 200 : 207, { ok: result.ok, status, item: resolved, result });
+  } catch (error) {
+    audit(config, req, "players.building-unlocks.grant", { playerId, itemId: body.itemId, ok: false, error: redact(error.message || error) });
     return json(res, 400, { ok: false, error: redact(error.message || error) });
   }
 }

@@ -1582,6 +1582,8 @@ body.debug .technical-details { display: block; }
 .playerAdmin_filterActionLine { justify-content: space-between; align-items: center; margin-top: 10px; }
 .playerAdmin_filterActionLine .playerAdmin_filterToolsRow { justify-content: flex-start; flex: 1 1 640px; }
 .playerAdmin_filterActionsRight { display: inline-flex; align-items: center; justify-content: flex-end; gap: 10px; margin-left: auto; flex: 0 0 auto; flex-wrap: wrap; }
+.playerAdmin_buildingExperimentalToggle { display: inline-flex; align-items: center; gap: 7px; min-height: 40px; color: #cbbd9f; font-size: 13px; white-space: nowrap; }
+.playerAdmin_buildingExperimentalToggle input { width: auto; margin: 0; }
 .playerAdmin_filterTextInput { flex: 1 1 320px; width: min(100%, 420px); max-width: 420px; min-height: 40px; }
 .playerAdmin_filterActionLine .playerAdmin_filterTextInput { flex-basis: 440px; width: min(100%, 500px); max-width: 500px; }
 .playerAdmin_filterToolsRow button { width: auto; }

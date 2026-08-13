@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Brain, Car, ChevronDown, ChevronUp, Hammer, Map as MapIcon, Microscope, ScrollText, ShieldCheck, Star, UserRound } from "lucide-react";
+import { Brain, Building2, Car, ChevronDown, ChevronUp, Hammer, Map as MapIcon, Microscope, ScrollText, ShieldCheck, Star, UserRound } from "lucide-react";
 import { adminApi } from "../../api/admin";
 import { playersApi } from "../../api/players";
 import type { Task } from "../../api/setup";
@@ -19,6 +19,7 @@ import { SpecializationTab } from "./SpecializationTab";
 import { journeyActionsAvailable } from "./journeySafety";
 import { adminTaskFailureDetail, friendlyCraftingSource, friendlyInlineError, friendlyVehicleName, friendlyVehicleTemplateName, parseSkillModuleRows, parseVehicleCatalog, playerAdmin_bulkItemFailure, playerAdmin_friendlyFailure, playerAdmin_taskFailureMessage, playerAssignedFaction, splitInventoryByGroup, titleCaseWords, vehicleSpawnDistanceLabel, vehicleSpawnOffsetUnits } from "./playerAdminUtils";
 import { BlueprintsPanel } from "../blueprints/BlueprintsPanel";
+import { BuildingUnlocksTab } from "./BuildingUnlocksTab";
 
 type CraftingRecipeRow = { recipeId: string; displayName: string; category: string; source: string; qualityLevel: number; unlocked: boolean };
 type ResearchItemRow = { itemKey: string; displayName: string; category: string; productGroup: string; type: string; unlockedState: string; unlocked: boolean; isNew: boolean; recipeId: string; recipeUnlocked: boolean; researchPurchased: boolean; actionable: boolean; needsRecipeRepair: boolean };
@@ -61,6 +62,7 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
     { label: "Character", icon: UserRound },
     { label: "Crafting", icon: Hammer },
     { label: "Research", icon: Microscope },
+    { label: "Building Sets", icon: Building2 },
     { label: "Skills", icon: Brain },
     { label: "Specialization", icon: Star },
     { label: "Journey", icon: MapIcon },
@@ -1144,6 +1146,7 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
           </section>
         </div>
       )}
+      {playerAdmin_activeTab === "Building Sets" && <BuildingUnlocksTab dbPlayerId={dbPlayerId} playerName={playerName} confirmAction={confirmAction} onActionLog={playerAdmin_addLog} />}
       {playerAdmin_activeTab === "Skills" && (
         <div className="playerAdmin_content">
           <section className="playerAdmin_box">
