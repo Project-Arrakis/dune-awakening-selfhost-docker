@@ -124,8 +124,9 @@ ENGINE_FIELDS = {
     "landsraad_reward_multiplier_faction_xp": ("ConsoleVariables", "dw.LandsraadMissionRewardMultiplierFactionXP", "1.0"),
     "landsraad_reward_multiplier_house_credit": ("ConsoleVariables", "dw.LandsraadMissionRewardMultiplierHouseCredit", "1.0"),
     "landsraad_reward_multiplier_specialization_xp": ("ConsoleVariables", "dw.LandsraadMissionRewardMultiplierSpecializationXP", "1.0"),
-    # Funcom's compiled default: 3600 seconds (1 hour).
-    "deathstill_conversion_time_override": ("ConsoleVariables", "Deathstill.ConversionTimeOverride", "3600"),
+    # Empty means "no override" -- Funcom's compiled default was not recovered,
+    # so this is the least assumption we can make rather than a guessed number.
+    "deathstill_conversion_time_override": ("ConsoleVariables", "Deathstill.ConversionTimeOverride", ""),
     # Both defaults confirmed against the game; do not "correct" them to 1.
     "double_difficulty_loot_enabled": ("ConsoleVariables", "Dune.GiveDoubleDifficultyLoot", "0"),
     "regenerate_per_player_loot_enabled": ("ConsoleVariables", "Loot.ShouldAlwaysRegeneratePerPlayerLoot", "0"),
@@ -188,7 +189,7 @@ ENGINE_FIELD_INI_COMMENTS: dict[str, tuple[str, ...]] = {
     "landsraad_reward_multiplier_specialization_xp": (
         "Experimental: Landsraad mission reward multipliers (faction XP, house credits, specialization XP).",
     ),
-    "deathstill_conversion_time_override": ("Experimental: overrides how long a Deathstill takes to process a body, in seconds. Funcom default: 3600 (1 hour).",),
+    "deathstill_conversion_time_override": ("Experimental: overrides how long a Deathstill takes to process a body, in seconds.",),
     "double_difficulty_loot_enabled": ("Experimental: double loot when the encounter difficulty is above 0.",),
     "regenerate_per_player_loot_enabled": ("Experimental: regenerate per-player loot on every container interaction.",),
 }
@@ -270,7 +271,7 @@ FIELD_DESCRIPTIONS = {
     "players_drop_loot_on_defeat": "Whether a player drops loot when downed/defeated (not a full death).",
     "players_drop_loot_on_death": "Whether a player drops their inventory as loot when killed (PvP looting).",
     "base_backup_tool_time_restriction_seconds": "Cooldown before the Base Backup tool can be used again on the same base, in seconds. Funcom's default is 604800 (7 days).",
-    "deathstill_conversion_time_override": "Overrides how long it takes to process a body in a Deathstill. Value is the length of the cycle in seconds. Default: 3600 (1 hour).",
+    "deathstill_conversion_time_override": "Overrides how long it takes to process a body in a Deathstill. Value is the length of the cycle in seconds.",
     "double_difficulty_loot_enabled": "Gives double loot when the encounter difficulty is above 0. Field-confirmed with dungeon loot.",
     "regenerate_per_player_loot_enabled": "Whether per-player loot is regenerated each time a player interacts with a loot container. Field-confirmed. Enabling this can make a single container farmable indefinitely.",
     "restart_server_on_coriolis_cycle_end": "Requests that Funcom restart the current map server process when its own Coriolis cycle ends. Docker restarts an exited map container automatically. This does not queue a Console battlegroup restart or send restart warnings.",
@@ -2814,6 +2815,8 @@ Dune.GlobalVehicleMiningOutputMultiplier=10
         raise SystemExit("Retired unsupported UserGame field leaked into compiled runtime INI.")
     if "UnknownEngine=xyz" not in compiled_engine:
         raise SystemExit("Compiled UserEngine dropped unknown profile lines.")
+    if ENGINE_FIELDS["deathstill_conversion_time_override"][2] != "" or "Deathstill.ConversionTimeOverride=" in compiled_engine:
+        raise SystemExit("Unconfirmed Deathstill conversion default was emitted as a server override.")
     # Sandstorm.Enabled was never set at global scope, so it sits at its schema
     # default there (1) -- compiled_userengine_ini() only writes non-default values
     # (see field_value_is_default()), so it must be OMITTED from the global ini
