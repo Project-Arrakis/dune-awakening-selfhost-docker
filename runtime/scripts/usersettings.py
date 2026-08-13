@@ -250,7 +250,9 @@ FIELD_DESCRIPTIONS = {
     "mining_output_multiplier": "Multiplier applied to personal mining output for all players.",
     "vehicle_mining_output_multiplier": "Multiplier applied to vehicle mining output for all players.",
     "pvp_resource_multiplier": "Multiplier applied to resource yield inside PvP zones.",
-    "vehicle_durability_damage_multiplier": "Multiplier applied to durability damage taken by vehicles.",
+    "vehicle_durability_damage_multiplier": "Multiplier applied to durability damage taken by vehicles. Valid range 0-10; 0 = damage off.",
+    "sandworm_invulnerability_on_exit": "Seconds of invulnerability granted to a vehicle after a player exits it near a sandworm.",
+    "sandworm_invulnerability_on_restart": "Seconds of invulnerability granted to vehicles after a server restart, to prevent immediate sandworm attacks.",
     "sandstorm_enabled": "Toggles sandstorm spawning. 1 = ON (default), 0 = OFF.",
     "sandstorm_treasure_enabled": "Toggles sandstorm treasure spawning. 1 = ON (default), 0 = OFF.",
     "sun_exposure_enabled": "Toggles whether players take sun exposure/heat damage. True/1 = ON (default), False/0 = OFF.",
@@ -273,6 +275,13 @@ FIELD_DESCRIPTIONS = {
     "double_difficulty_loot_enabled": "Gives double loot when the encounter difficulty is above 0. Field-confirmed with dungeon loot.",
     "regenerate_per_player_loot_enabled": "Whether per-player loot is regenerated each time a player interacts with a loot container. Field-confirmed. Enabling this can make a single container farmable indefinitely.",
     "restart_server_on_coriolis_cycle_end": "Requests that Funcom restart the current map server process when its own Coriolis cycle ends. Docker restarts an exited map container automatically. This does not queue a Console battlegroup restart or send restart warnings.",
+    "max_landclaim_segments": "Maximum number of land-claim segments (flags) a player may own.",
+    "building_blueprint_max_extensions": "Maximum number of times a blueprinted building can be extended.",
+    "base_backup_max_extensions": "Maximum number of times a Base Backup can be extended.",
+    "building_restriction_limits_enabled": "Enforces building restriction limits (e.g. disallowing construction inside dungeons/restricted areas).",
+    "force_pvp_all_partitions": "If enabled, forces PvP on for every map partition regardless of each partition's individual PvP/PvE setting.",
+    "security_zones_enabled": "Master toggle for Security Zones. Disable to allow PvP and combat abilities everywhere on the map (no safe zones).",
+    "coriolis_auto_spawn_enabled": "Whether Coriolis storms spawn automatically on their normal cycle.",
 }
 
 FIELD_LABELS = {
@@ -353,9 +362,9 @@ MAP_FIELDS = {
     "forced_coriolis_world_seed": ("/Script/DuneSandbox.CoriolisSubsystem", "m_ForcedCoriolisWorldSeed", "-1"),
     "restart_server_on_coriolis_cycle_end": ("/Script/DuneSandbox.CoriolisSubsystem", "m_bShouldRestartServerOnCycleEnd", "True"),
     "coriolis_db_wipe_enabled": ("/Script/DuneSandbox.CoriolisSubsystem", "m_bIsDbWipeEnabled", "True"),
-    "max_landclaim_segments": (BUILDING_SETTINGS_SECTION, "m_MaxNumLandclaimSegments", "24"),
-    "building_blueprint_max_extensions": (BUILDING_SETTINGS_SECTION, "m_BuildingBlueprintMaxExtensions", "16"),
-    "base_backup_max_extensions": (BUILDING_SETTINGS_SECTION, "m_BaseBackupMaxExtensions", "40"),
+    "max_landclaim_segments": (BUILDING_SETTINGS_SECTION, "m_MaxNumLandclaimSegments", "6"),
+    "building_blueprint_max_extensions": (BUILDING_SETTINGS_SECTION, "m_BuildingBlueprintMaxExtensions", "4"),
+    "base_backup_max_extensions": (BUILDING_SETTINGS_SECTION, "m_BaseBackupMaxExtensions", "8"),
     "base_backup_tool_time_restriction_seconds": (BUILDING_SETTINGS_SECTION, "m_BaseBackupToolTimeRestrictionInSeconds", "604800"),
     "building_restriction_limits_enabled": (BUILDING_SETTINGS_SECTION, "m_bBuildingRestrictionLimitsEnabled", "True"),
     "mitigate_all_sandstorm_damage": (BUILDING_SETTINGS_SECTION, "m_bMitigateAllSandstormDamage", "False"),
@@ -2806,6 +2815,8 @@ Dune.GlobalVehicleMiningOutputMultiplier=10
         raise SystemExit("Retired unsupported UserGame field leaked into compiled runtime INI.")
     if "UnknownEngine=xyz" not in compiled_engine:
         raise SystemExit("Compiled UserEngine dropped unknown profile lines.")
+    if ENGINE_FIELDS["deathstill_conversion_time_override"][2] != "" or "Deathstill.ConversionTimeOverride=" in compiled_engine:
+        raise SystemExit("Unconfirmed Deathstill conversion default was emitted as a server override.")
     # Sandstorm.Enabled was never set at global scope, so it sits at its schema
     # default there (1) -- compiled_userengine_ini() only writes non-default values
     # (see field_value_is_default()), so it must be OMITTED from the global ini
@@ -2921,9 +2932,9 @@ Dune.GlobalVehicleMiningOutputMultiplier=10
         "building_destabilization_system_enabled": "False",
         "sand_buildup_placeables_sheltered_target_value": "0.1",
         "sand_buildup_placeables_unsheltered_target_value": "0.3",
-        "max_landclaim_segments": "24",
-        "building_blueprint_max_extensions": "16",
-        "base_backup_max_extensions": "40",
+        "max_landclaim_segments": "6",
+        "building_blueprint_max_extensions": "4",
+        "base_backup_max_extensions": "8",
         "building_restriction_limits_enabled": "True",
     }
     for field_id, expected in expected_building_defaults.items():
