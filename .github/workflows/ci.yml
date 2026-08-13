@@ -104,6 +104,8 @@ jobs:
         run: runtime/tests/test-secrets-aead-cross-language.sh
       - name: Test secrets.sh library (age-based read/write/fallback)
         run: runtime/tests/test-secrets-lib.sh
+      - name: Test Postgres secrets upgrade path (issue #260 regression)
+        run: runtime/tests/test-postgres-secrets-upgrade-path.sh
       - name: Test combat-state publishers
         run: |
           runtime/tests/test-deepdesert-combat-state-publication.sh
