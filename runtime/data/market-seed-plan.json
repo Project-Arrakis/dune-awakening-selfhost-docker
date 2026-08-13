@@ -4,12 +4,12 @@
   "price_multiplier": 5,
   "market_bot_class": "Revy",
   "summary": {
-    "listings": 5790,
-    "unique_rows": 2868,
+    "listings": 5800,
+    "unique_rows": 2873,
     "unique_templates": 1423,
     "price_multiplier": 5,
     "listings_per_grade": 2,
-    "equippable_listings": 2890,
+    "equippable_listings": 2900,
     "schematic_listings": 2464,
     "resource_listings": 198,
     "ammunition_listings": 12,
@@ -401,7 +401,7 @@
     },
     {
       "category": "196608 / depth 2",
-      "listings": 4
+      "listings": 9
     },
     {
       "category": "33882112 / depth 3",
@@ -36356,6 +36356,76 @@
       "listings": 2,
       "durability_cur": 180.0,
       "durability_max": 180.0
+    },
+    {
+      "template_id": "Radiation_Suit_T6_Unique_Armored",
+      "display_name": "Tactical Radiation Suit",
+      "kind": "equippable",
+      "stack_size": 1,
+      "price": 5500000,
+      "category_mask": 196608,
+      "category_depth": 2,
+      "quality_level": 1,
+      "special_boost": false,
+      "listings": 2,
+      "durability_cur": 184.0,
+      "durability_max": 184.0
+    },
+    {
+      "template_id": "Radiation_Suit_T6_Unique_Armored",
+      "display_name": "Tactical Radiation Suit",
+      "kind": "equippable",
+      "stack_size": 1,
+      "price": 6900000,
+      "category_mask": 196608,
+      "category_depth": 2,
+      "quality_level": 2,
+      "special_boost": false,
+      "listings": 2,
+      "durability_cur": 188.0,
+      "durability_max": 188.0
+    },
+    {
+      "template_id": "Radiation_Suit_T6_Unique_Armored",
+      "display_name": "Tactical Radiation Suit",
+      "kind": "equippable",
+      "stack_size": 1,
+      "price": 8300000,
+      "category_mask": 196608,
+      "category_depth": 2,
+      "quality_level": 3,
+      "special_boost": false,
+      "listings": 2,
+      "durability_cur": 192.0,
+      "durability_max": 192.0
+    },
+    {
+      "template_id": "Radiation_Suit_T6_Unique_Armored",
+      "display_name": "Tactical Radiation Suit",
+      "kind": "equippable",
+      "stack_size": 1,
+      "price": 9600000,
+      "category_mask": 196608,
+      "category_depth": 2,
+      "quality_level": 4,
+      "special_boost": false,
+      "listings": 2,
+      "durability_cur": 196.0,
+      "durability_max": 196.0
+    },
+    {
+      "template_id": "Radiation_Suit_T6_Unique_Armored",
+      "display_name": "Tactical Radiation Suit",
+      "kind": "equippable",
+      "stack_size": 1,
+      "price": 11000000,
+      "category_mask": 196608,
+      "category_depth": 2,
+      "quality_level": 5,
+      "special_boost": false,
+      "listings": 2,
+      "durability_cur": 200.0,
+      "durability_max": 200.0
     },
     {
       "template_id": "Radiation_Suit_T6_Unique_Armored_Schematic",
