@@ -65,7 +65,7 @@ class ProfilePathTestCase(unittest.TestCase):
 class GameFieldOverridePrecedenceTests(ProfilePathTestCase):
     """UserGame.ini's Global -> Map -> Partition chain."""
 
-    FIELD_ID = "global_xp_multiplier"
+    FIELD_ID = "default_reconnect_grace_period_seconds"
 
     def _spec(self):
         return usersettings.MAP_FIELDS[self.FIELD_ID]
@@ -124,6 +124,53 @@ class GameFieldOverridePrecedenceTests(ProfilePathTestCase):
         compiled_sibling_partition = usersettings.compiled_usergame_ini(profile, MAP_NAME, OTHER_PARTITION_ID)
         self.assertIn(f"{key}=3.0", compiled_sibling_partition)
         self.assertNotIn(f"{key}=4.0", compiled_sibling_partition)
+
+
+class RetiredModifierAndCoriolisMetadataTests(ProfilePathTestCase):
+    RETIRED_IDS = {
+        "global_xp_multiplier",
+        "global_fame_multiplier",
+        "global_progression_speed_multiplier",
+        "global_harvest_health_multiplier",
+        "cutteray_hem_multiplier_per_node_tier_table",
+        "global_damage_to_npcs_multiplier",
+    }
+
+    def test_retired_controls_are_absent_from_schema_and_generated_ini(self):
+        self.assertTrue(self.RETIRED_IDS.isdisjoint(usersettings.MAP_FIELDS))
+        profile = usersettings.parse_profile_text(
+            "[Global:/Script/DuneSandbox.DuneGameMode]\n"
+            "m_GlobalXPMultiplier=100.0\n"
+            "m_GlobalDamageToNpcsMultiplier=1000.0\n"
+            "UnknownCommunitySetting=keep\n"
+        )
+        compiled = usersettings.compiled_usergame_ini(profile, MAP_NAME)
+        client = usersettings.client_game_ini(profile, MAP_NAME)
+        for retired in ("m_GlobalXPMultiplier", "m_GlobalDamageToNpcsMultiplier"):
+            self.assertNotIn(retired, compiled)
+            self.assertNotIn(retired, client)
+        self.assertIn("UnknownCommunitySetting=keep", compiled)
+        self.assertIn("UnknownCommunitySetting=keep", client)
+
+    def test_saving_profile_removes_only_retired_keys(self):
+        profile = usersettings.parse_profile_text(
+            "[Global:/Script/DuneSandbox.DuneGameMode]\n"
+            "m_GlobalFameMultiplier=3.0\n"
+            "m_DefaultReconnectGracePeriodSeconds=600\n"
+        )
+        usersettings.write_profile(profile)
+        saved = usersettings.PROFILE_PATH.read_text(encoding="utf-8")
+        self.assertNotIn("m_GlobalFameMultiplier", saved)
+        self.assertIn("m_DefaultReconnectGracePeriodSeconds=600", saved)
+
+    def test_coriolis_restart_metadata_names_its_map_process_scope(self):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.assertEqual(usersettings.metadata(), 0)
+        payload = json.loads(output.getvalue())
+        field = next(row for row in payload["game"] if row["id"] == "restart_server_on_coriolis_cycle_end")
+        self.assertEqual(field["label"], "Restart Map Process At Coriolis Cycle End")
+        self.assertIn("does not queue a Console battlegroup restart", field["description"])
 
 
 class StakingExtensionArrayTests(ProfilePathTestCase):

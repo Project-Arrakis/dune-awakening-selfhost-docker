@@ -40,7 +40,6 @@ test("public modifier reporting is allowlisted and omits defaults and secrets", 
       "Sandstorm.Enabled=0",
       "",
       "[Partition:Survival_1:1:/Script/DuneSandbox.DuneGameMode]",
-      "m_GlobalXPMultiplier=3.5",
       "m_WaterConsumptionRate=0.5",
       "m_DefaultReconnectGracePeriodSeconds=600",
       "",
@@ -54,7 +53,6 @@ test("public modifier reporting is allowlisted and omits defaults and secrets", 
     assert.deepEqual(readPublicModifiers(path), {
       "Mining Output": "7.77x",
       Sandstorms: "Disabled",
-      "XP Multiplier": "3.5x",
       "Water Consumption": "0.5x",
       "Reconnect Grace Period": "10 minutes",
       "Building Restriction Limits": "Disabled",
@@ -65,7 +63,7 @@ test("public modifier reporting is allowlisted and omits defaults and secrets", 
   }
 });
 
-test("public modifier reporting preserves differing map values without exposing map internals", () => {
+test("public modifier reporting ignores retired unsupported modifiers", () => {
   const files = fixture();
   const path = join(files.generatedDir, "gameplay-profile.ini");
   try {
@@ -79,9 +77,7 @@ test("public modifier reporting preserves differing map values without exposing 
       "[Partition:Survival_1:3:/Script/DuneSandbox.DuneGameMode]",
       "m_GlobalXPMultiplier=1.000000"
     ].join("\n"));
-    assert.deepEqual(readPublicModifiers(path), {
-      "XP Multiplier": "Varies: 2x, 3x"
-    });
+    assert.deepEqual(readPublicModifiers(path), {});
   } finally {
     files.cleanup();
   }

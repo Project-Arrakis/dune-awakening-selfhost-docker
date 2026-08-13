@@ -81,6 +81,22 @@ FIELD_TYPE_OVERRIDES = {
     **{field_id: "boolean" for field_id in NUMERIC_BOOLEAN_ENGINE_FIELDS},
 }
 
+# UserGame properties that older community catalogues presented as numeric
+# modifiers, but which the current Funcom server build cannot consume in the
+# advertised form. Keep the exact section/key pairs reserved so an old saved
+# profile cannot continue leaking them into generated server or client INIs as
+# unknown passthrough lines after the controls are removed from MAP_FIELDS.
+RETIRED_USERGAME_FIELDS = {
+    "global_xp_multiplier": ("/Script/DuneSandbox.DuneGameMode", "m_GlobalXPMultiplier", "1.0"),
+    "global_fame_multiplier": ("/Script/DuneSandbox.DuneGameMode", "m_GlobalFameMultiplier", "1.0"),
+    "global_progression_speed_multiplier": ("/Script/DuneSandbox.DuneGameMode", "m_GlobalProgressionSpeedMultiplier", "1.0"),
+    "global_harvest_health_multiplier": ("/Script/DuneSandbox.DuneGameMode", "m_GlobalHarvestHealthMultiplier", "1.0"),
+    # Funcom does have a property with this name, but it is an asset-table
+    # reference inside m_MiningSettings, not a scalar DuneGameMode multiplier.
+    "cutteray_hem_multiplier_per_node_tier_table": ("/Script/DuneSandbox.DuneGameMode", "CutterayHemMultiplierPerNodeTierTable", "1.0"),
+    "global_damage_to_npcs_multiplier": ("/Script/DuneSandbox.DuneGameMode", "m_GlobalDamageToNpcsMultiplier", "1.0"),
+}
+
 ENGINE_FIELDS = {
     "port": ("URL", "Port", "7777"),
     "igw_port": ("URL", "IGWPort", "7888"),
@@ -255,6 +271,11 @@ FIELD_DESCRIPTIONS = {
     "deathstill_conversion_time_override": "Overrides how long it takes to process a body in a Deathstill. Value is the length of the cycle in seconds.",
     "double_difficulty_loot_enabled": "Gives double loot when the encounter difficulty is above 0. Field-confirmed with dungeon loot.",
     "regenerate_per_player_loot_enabled": "Whether per-player loot is regenerated each time a player interacts with a loot container. Field-confirmed. Enabling this can make a single container farmable indefinitely.",
+    "restart_server_on_coriolis_cycle_end": "Requests that Funcom restart the current map server process when its own Coriolis cycle ends. Docker restarts an exited map container automatically. This does not queue a Console battlegroup restart or send restart warnings.",
+}
+
+FIELD_LABELS = {
+    "restart_server_on_coriolis_cycle_end": "Restart Map Process At Coriolis Cycle End",
 }
 
 # Maps a field id to the client-side ini filename it also must be applied to
@@ -367,16 +388,11 @@ MAP_FIELDS = {
     "npcs_drop_loot_on_death": ("/Script/DuneSandbox.DuneSandboxGameModeBase", "m_bShouldNpcDropLootOnDeath", "True"),
     "drop_amount_on_defeat": ("/Script/DuneSandbox.DuneSandboxGameModeBase", "m_DropAmountOnDefeat", "0.4"),
     "armor_mitigation_constant": ("/Script/DuneSandbox.DuneGameState", "m_ArmorMitigationConstant", "500"),
-    "global_xp_multiplier": ("/Script/DuneSandbox.DuneGameMode", "m_GlobalXPMultiplier", "1.0"),
-    "global_fame_multiplier": ("/Script/DuneSandbox.DuneGameMode", "m_GlobalFameMultiplier", "1.0"),
-    "global_progression_speed_multiplier": ("/Script/DuneSandbox.DuneGameMode", "m_GlobalProgressionSpeedMultiplier", "1.0"),
     "guild_creation_cost": ("/Script/DuneSandbox.DuneGameMode", "m_GuildCreationCost", "1000"),
     "sell_order_price_percentage_fee": ("/Script/DuneSandbox.DuneGameMode", "SellOrderPricePercentageFee", "2.0"),
     "spice_tax_amount": ("/Script/DuneSandbox.DuneGameMode", "SpiceTaxAmount", "0.1"),
     "spice_tax_interval": ("/Script/DuneSandbox.DuneGameMode", "SpiceTaxInterval", "3600"),
     "global_harvest_amount_multiplier": ("/Script/DuneSandbox.DuneGameMode", "m_GlobalHarvestAmountMultiplier", "1.0"),
-    "global_harvest_health_multiplier": ("/Script/DuneSandbox.DuneGameMode", "m_GlobalHarvestHealthMultiplier", "1.0"),
-    "cutteray_hem_multiplier_per_node_tier_table": ("/Script/DuneSandbox.DuneGameMode", "CutterayHemMultiplierPerNodeTierTable", "1.0"),
     "minimum_augmentable_item_quality": ("/Script/DuneSandbox.DuneGameMode", "m_MinimumAugmentableItemQuality", "0"),
     "item_durability_loss_multiplier": ("/Script/DuneSandbox.DuneGameMode", "m_ItemDurabilityLossMultiplier", "1.0"),
     "legacy_pvp_enabled": ("/Script/DuneSandbox.DuneGameMode", "bPvPEnabled", "False"),
@@ -384,7 +400,6 @@ MAP_FIELDS = {
     "hydration_enabled": ("/Script/DuneSandbox.HydrationSubsystem", "m_bHydrationEnabled", "True"),
     "water_consumption_rate": ("/Script/DuneSandbox.DuneGameMode", "m_WaterConsumptionRate", "1.0"),
     "water_consumption_in_storm_multiplier": ("/Script/DuneSandbox.DuneGameMode", "m_WaterConsumptionInStormMultiplier", "4.0"),
-    "global_damage_to_npcs_multiplier": ("/Script/DuneSandbox.DuneGameMode", "m_GlobalDamageToNpcsMultiplier", "1.0"),
     "global_damage_to_players_multiplier": ("/Script/DuneSandbox.DuneGameMode", "m_GlobalDamageToPlayersMultiplier", "1.0"),
     "global_health_multiplier": ("/Script/DuneSandbox.DuneGameMode", "m_GlobalHealthMultiplier", "1.0"),
     "global_building_damage_multiplier": ("/Script/DuneSandbox.DuneGameMode", "m_GlobalBuildingDamageMultiplier", "1.0"),
@@ -657,6 +672,7 @@ def read_profile_text() -> str:
 
 
 def write_profile(profile: dict) -> None:
+    strip_retired_usergame_profile_lines(profile)
     prune_empty_profile_sections(profile)
     atomic_write_text(PROFILE_PATH, serialize_profile(profile))
 
@@ -683,6 +699,26 @@ def prune_empty_profile_sections(profile: dict) -> None:
         section for section in profile.get("sections", [])
         if any(str(line).strip() for line in section.get("lines", []))
     ]
+
+
+def strip_retired_usergame_profile_lines(profile: dict) -> None:
+    """Remove retired catalogue keys from UserGame-family profile blocks.
+
+    Engine-family blocks are deliberately ignored: a custom ConsoleVariable
+    with the same text is a different namespace and must remain untouched.
+    """
+    retired = known_keys_by_section(RETIRED_USERGAME_FIELDS)
+    for block in profile.get("sections", []):
+        if block.get("scope") in ENGINE_PROFILE_SCOPES:
+            continue
+        section = str(block.get("ini_section", ""))
+        keys = retired.get(section, set())
+        if not keys:
+            continue
+        block["lines"] = [
+            raw for raw in block.get("lines", [])
+            if not ((parsed := split_ini_assignment(raw)) and parsed[1] in keys)
+        ]
 
 
 def sorted_profile_sections(sections: list[dict]) -> list[dict]:
@@ -1656,6 +1692,7 @@ def metadata() -> int:
             "clientFile": CLIENT_FILE_REQUIRED.get(field_id, ""),
             "category": ENGINE_FIELD_CATEGORIES.get(field_id, ""),
             "description": FIELD_DESCRIPTIONS.get(field_id, ""),
+            "label": FIELD_LABELS.get(field_id, ""),
         }
 
     payload = {
@@ -2017,7 +2054,10 @@ def compiled_usergame_ini(profile: dict, map_name: str, partition_id: str | None
     scopes = [("global", "", ""), ("map", target_map, "")]
     if target_partition:
         scopes.append(("partition", target_map, target_partition))
-    known = known_keys_by_section(MAP_FIELDS)
+    # Treat retired controls as known-but-not-emitted. This suppresses stale
+    # lines from profiles written by older releases without allowing unrelated
+    # custom Advanced-editor values to be dropped.
+    known = known_keys_by_section({**MAP_FIELDS, **RETIRED_USERGAME_FIELDS})
     known.setdefault("/Script/DuneSandbox.PvpPveSettings", set()).update({"m_PvpEnabledPartitions", "m_PveEnabledPartitions"})
     append_profile_unknown_lines(section_lines, profile, scopes, known)
     pvp_pve_section = "/Script/DuneSandbox.PvpPveSettings"
@@ -2050,6 +2090,7 @@ def client_game_ini(profile: dict, map_name: str, partition_id: str | None = Non
     target_partition = str(partition_id or "")
     section_lines: dict[str, list[str]] = {}
     replace_indexes: dict[tuple[str, str, str], int] = {}
+    retired = known_keys_by_section(RETIRED_USERGAME_FIELDS)
 
     def block_applies(block: dict) -> bool:
         scope = block.get("scope")
@@ -2074,6 +2115,8 @@ def client_game_ini(profile: dict, map_name: str, partition_id: str | None = Non
                 entries.append(raw)
                 continue
             prefix, key, _ = parsed
+            if key in retired.get(section, set()):
+                continue
             if key.startswith("Bgd."):
                 continue
             if prefix:
@@ -2294,6 +2337,7 @@ def profile_write_encoded(encoded_content: str) -> int:
 
 def profile_game_text() -> str:
     profile = read_profile()
+    strip_retired_usergame_profile_lines(profile)
     game_profile = {
         "preamble": [
             "; UserGame.ini managed by Docker.",
@@ -2684,6 +2728,7 @@ def profile_selftest() -> int:
     text = """; keep me
 [Global:/Script/DuneSandbox.DuneGameMode]
 m_GlobalXPMultiplier=1.0
+m_DefaultReconnectGracePeriodSeconds=300
 m_MaxGuildMembersAllowed=5
 UnknownGlobal=abc
 
@@ -2697,6 +2742,7 @@ m_MaxGuildMembersAllowed=32
 
 [Map:Survival_1:/Script/DuneSandbox.DuneGameMode]
 m_GlobalXPMultiplier=2.0
+m_DefaultReconnectGracePeriodSeconds=600
 
 [Map:Survival_1:/Script/DuneSandbox.PvpPveSettings]
 +m_PvpEnabledPartitions=15
@@ -2730,7 +2776,7 @@ Dune.GlobalVehicleMiningOutputMultiplier=10
     reparsed = parse_profile_text(serialized)
     if "UnknownGlobal=abc" not in serialized or "UnknownEngine=xyz" not in serialized:
         raise SystemExit("Profile round trip dropped unknown keys.")
-    if profile_map_values(reparsed, "Survival_1")["global_xp_multiplier"] != "2.0":
+    if profile_map_values(reparsed, "Survival_1")["default_reconnect_grace_period_seconds"] != "600":
         raise SystemExit("Map override did not win over global profile value.")
     if profile_partition_engine_values(reparsed, "Survival_1", "3").get("server_login_password") != "legacy-password":
         raise SystemExit("Legacy partition password did not feed scoped UserEngine values.")
@@ -2754,6 +2800,8 @@ Dune.GlobalVehicleMiningOutputMultiplier=10
         raise SystemExit("Legacy guild member limit was not mirrored to GuildSettings.")
     if "UnknownGlobal=abc" not in compiled_game or "CustomPartitionKey=True" not in compiled_game:
         raise SystemExit("Compiled UserGame dropped unknown profile lines.")
+    if "m_GlobalXPMultiplier=" in compiled_game:
+        raise SystemExit("Retired unsupported UserGame field leaked into compiled runtime INI.")
     if "UnknownEngine=xyz" not in compiled_engine:
         raise SystemExit("Compiled UserEngine dropped unknown profile lines.")
     # Sandstorm.Enabled was never set at global scope, so it sits at its schema
@@ -2776,8 +2824,10 @@ Dune.GlobalVehicleMiningOutputMultiplier=10
     client_game = client_game_ini(reparsed, "Survival_1", "3")
     if "[Global:" in client_game or "[Map:" in client_game or "[Partition:" in client_game:
         raise SystemExit("Client Game.ini export contains scoped Docker profile headers.")
-    if "m_GlobalXPMultiplier=2.0" not in client_game or "UnknownGlobal=abc" not in client_game or "CustomPartitionKey=True" not in client_game:
+    if "m_DefaultReconnectGracePeriodSeconds=600" not in client_game or "UnknownGlobal=abc" not in client_game or "CustomPartitionKey=True" not in client_game:
         raise SystemExit("Client Game.ini export dropped applicable saved UserGame values.")
+    if "m_GlobalXPMultiplier=" in client_game:
+        raise SystemExit("Retired unsupported UserGame field leaked into client Game.ini export.")
     if "m_MaxNumLandclaimSegments=" in client_game:
         raise SystemExit("Client Game.ini export included unsaved UserGame defaults.")
     profile_set_key(reparsed, "global", "ConsoleVariables", "Bgd.ServerDisplayName", quote_ini_string("Do Not Export"))
@@ -2787,7 +2837,7 @@ Dune.GlobalVehicleMiningOutputMultiplier=10
         raise SystemExit("Client Game.ini export included BGD identity values.")
     if profile_engine_values(reparsed)["vehicle_mining_output_multiplier"] != "10":
         raise SystemExit("Plain UserEngine raw section did not feed interactive engine values.")
-    profile_set_key(reparsed, "global", "/Script/DuneSandbox.DuneGameMode", "m_GlobalFameMultiplier", "3.0")
+    profile_set_key(reparsed, "global", "/Script/DuneSandbox.DuneGameMode", "m_DefaultReconnectGracePeriodSeconds", "900")
     if "UnknownGlobal=abc" not in serialize_profile(reparsed):
         raise SystemExit("Interactive profile update dropped unknown keys.")
     profile_set_key(reparsed, "global", "/Script/DuneSandbox.BuildingSettings", "m_BaseBackupToolTimeRestrictionInSeconds", "60")

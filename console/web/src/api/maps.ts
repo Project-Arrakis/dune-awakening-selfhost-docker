@@ -12,6 +12,7 @@ export type UserSettingField = {
   clientFile: string;
   category: string;
   description: string;
+  label?: string;
 };
 
 export type UserSettingsSchema = {
