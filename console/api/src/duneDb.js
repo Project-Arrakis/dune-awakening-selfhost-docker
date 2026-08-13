@@ -2461,6 +2461,11 @@ export async function playerFactions(db, id) {
   if (!(await tableExists(db, "player_faction_reputation"))) return unsupported("factions", ["dune.player_faction_reputation"]);
   const hasFactions = await tableExists(db, "factions");
   const player = await resolvePlayerMutationTargetCached(db, id);
+  const componentResult = await db.query(`
+    select properties->'FactionPlayerComponent'->'m_FactionDataArray' as faction_data
+    from dune.actors
+    where id = $1`, [player.controllerId]);
+  const componentReputation = factionComponentReputationMap(componentResult.rows[0]?.faction_data);
   const result = hasFactions
     ? await db.query(`
         select f.id as faction_id,
@@ -2488,12 +2493,17 @@ export async function playerFactions(db, id) {
   const rows = result.rows.map((row) => {
     const factionId = Number(row.faction_id);
     if (factionId !== 1 && factionId !== 2) return row;
+    const reputation = Number(row.reputation_amount || 0);
+    const componentValue = componentReputation.get(factionId);
+    const reputationInSync = componentValue === reputation || (reputation === 0 && componentValue === undefined);
     const factionName = row.faction_name || (factionId === 1 ? "Atreides" : "Harkonnen");
     const estimatedRank = factionReputationEstimatedRank(row.reputation_amount);
     const progressionLimit = hasPlayerTags ? factionProgressionRankLimit(playerTags, factionName) : null;
     const rankLimited = progressionLimit !== null && estimatedRank > progressionLimit;
     return {
       ...row,
+      component_reputation_amount: componentValue ?? null,
+      reputation_in_sync: reputationInSync,
       estimated_rank: estimatedRank,
       current_rank_limit: rankLimited ? progressionLimit : null,
       rank_limited_by_progression: rankLimited
@@ -4039,6 +4049,7 @@ export async function addFactionReputation(db, id, { factionId, amount }) {
   if (delta === 0) throw new Error("Faction reputation amount cannot be zero");
   return db.transaction(async (tx) => {
     const player = await resolvePlayerMutationTarget(tx, id);
+    requireOfflinePlayer(player, "Faction reputation changes");
     const current = await tx.query(`
       select reputation_amount
       from dune.player_faction_reputation
@@ -4073,9 +4084,32 @@ export async function addFactionReputation(db, id, { factionId, amount }) {
       newValue: nextValue,
       estimatedRank,
       currentRankLimit,
-      message: playerOnline(player)
-        ? `Faction reputation was updated to ${nextValue}.${rankMessage} The player may need to relog before it appears in-game.`
-        : `Faction reputation was updated to ${nextValue}.${rankMessage} It will be loaded when the player next joins.`
+      message: `Faction reputation and vendor access were synchronized at ${nextValue}.${rankMessage} They will be loaded when the player next joins.`
+    };
+  });
+}
+
+export async function repairFactionReputation(db, id) {
+  await requireCapability(await supportsFactionMutation(db) && await tableExists(db, "player_faction"), "Faction reputation repair requires dune.player_faction_reputation, dune.player_faction, dune.actors.properties, and dune.set_player_faction_reputation(bigint,smallint,integer).");
+  return db.transaction(async (tx) => {
+    const player = await resolvePlayerMutationTarget(tx, id);
+    requireOfflinePlayer(player, "Faction reputation repair");
+    const alignment = await tx.query(`
+      select faction_id
+      from dune.player_faction
+      where actor_id = $1
+      for update`, [player.controllerId]);
+    const factionId = Number(alignment.rows[0]?.faction_id || 3);
+    if (factionId !== 1 && factionId !== 2) {
+      throw new Error("Faction reputation repair requires the player to be assigned to Atreides or Harkonnen first.");
+    }
+    const payload = await syncFactionComponent(tx, player.controllerId);
+    return {
+      ok: true,
+      player,
+      factionId,
+      reputations: Object.fromEntries(payload.map((entry) => [entry.Faction.Name, entry.ReputationAmount])),
+      message: "Faction reputation and vendor access were synchronized. The player can log in now."
     };
   });
 }
@@ -8080,15 +8114,37 @@ async function syncFactionComponent(db, actorId) {
     from dune.player_faction_reputation
     where actor_id = $1 and faction_id in (1, 2)`, [actorId]);
   const reps = new Map(result.rows.map((row) => [Number(row.faction_id), Number(row.reputation_amount || 0)]));
-  const timestamp = Math.floor(Date.now() / 1000);
+  const timestamp = Date.now() / 1000;
+  const actor = await db.query(`
+    select properties->'FactionPlayerComponent'->'m_FactionDataArray' as faction_data
+    from dune.actors
+    where id = $1
+    for update`, [actorId]);
+  const existing = Array.isArray(actor.rows[0]?.faction_data) ? actor.rows[0].faction_data : [];
   const payload = [
     { Faction: { Name: "Atreides" }, timestamp, ReputationAmount: reps.get(1) || 0 },
-    { Faction: { Name: "Harkonnen" }, timestamp, ReputationAmount: reps.get(2) || 0 }
+    { Faction: { Name: "Harkonnen" }, timestamp, ReputationAmount: reps.get(2) || 0 },
+    ...existing.filter((entry) => !["Atreides", "Harkonnen"].includes(String(entry?.Faction?.Name || "")))
   ];
   await db.query(`
     update dune.actors
-    set properties = jsonb_set(coalesce(properties, '{}'::jsonb), '{FactionPlayerComponent,m_FactionDataArray}', $1::jsonb, true)
+    set properties = jsonb_set(
+      jsonb_set(coalesce(properties, '{}'::jsonb), '{FactionPlayerComponent}', coalesce(properties->'FactionPlayerComponent', '{}'::jsonb), true),
+      '{FactionPlayerComponent,m_FactionDataArray}', $1::jsonb, true)
     where id = $2`, [JSON.stringify(payload), actorId]);
+  return payload;
+}
+
+function factionComponentReputationMap(value) {
+  const rows = Array.isArray(value) ? value : [];
+  const factionIds = new Map([["Atreides", 1], ["Harkonnen", 2], ["None", 3], ["Smuggler", 4]]);
+  const result = new Map();
+  for (const row of rows) {
+    const factionId = factionIds.get(String(row?.Faction?.Name || ""));
+    const reputation = Number(row?.ReputationAmount);
+    if (factionId && Number.isFinite(reputation)) result.set(factionId, reputation);
+  }
+  return result;
 }
 
 function mapFilterClause(map, values, alias) {
