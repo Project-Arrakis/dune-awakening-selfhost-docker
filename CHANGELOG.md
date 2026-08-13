@@ -47,13 +47,16 @@ Keep a Changelog style, grouped by upstream base version, newest first.
   (#128, PR #257). GHSA-fc89-h24v-6j3x follow-on: the Postgres superuser
   password is no longer a hardcoded literal passed via
   `-e POSTGRES_PASSWORD=...` (visible in full via `docker inspect` to
-  anyone with Docker socket access). When an operator opts in via
-  `dune secrets setup` (`DUNE_KEK_FILE`/`DUNE_AGE_IDENTITY_FILE`), a
-  real random password is generated, stored age-encrypted at
-  `runtime/secrets/postgres-superuser-password.enc`, and passed to the
-  container via `POSTGRES_PASSWORD_FILE` instead. Strictly opt-in — an
-  operator who has never run `dune secrets setup` sees zero behavior
-  change (Requirement 0). New shared library: `runtime/scripts/lib/secrets.sh`
+  anyone with Docker socket access). When an operator opts in by setting
+  `DUNE_KEK_FILE`/`DUNE_AGE_IDENTITY_FILE` (provisioning those values is
+  currently a manual, documented step — a dedicated `dune secrets setup`
+  CLI command is a separate, not-yet-implemented deliverable, tracked in
+  the design doc's section 11), a real random password is generated,
+  stored age-encrypted at `runtime/secrets/postgres-superuser-password.enc`,
+  and passed to the container via `POSTGRES_PASSWORD_FILE` instead.
+  Strictly opt-in — an operator who has never set those two environment
+  variables sees zero behavior change (Requirement 0). New shared
+  library: `runtime/scripts/lib/secrets.sh`
   (`dune_secrets_read_secret`/`write_secret`/`backend_configured`/
   `generate_dek`/`render_plaintext_file`/`sync_postgres_password`) and
   AEAD primitive `runtime/scripts/lib/secrets_aead.py` (AES-256-GCM,
@@ -99,6 +102,32 @@ Keep a Changelog style, grouped by upstream base version, newest first.
   regression test: `runtime/tests/test-postgres-secrets-upgrade-path.sh`
   (real disposable Postgres container + real Docker network, verified
   to actually catch the regression via revert/restore).
+- **Fixed a CRITICAL finding from this PR's own Requirement 20 Layer 3
+  audit**, caught before merge: the first version of
+  `dune_secrets_sync_postgres_password()` (the #260 fix above) passed
+  the superuser password via `psql -c "ALTER USER ... '...'"`, which
+  put the plaintext password directly into that `psql` process's own
+  argv — visible via `/proc/<pid>/cmdline` on the host **and from
+  inside the container itself**, for the process's entire lifetime.
+  This reproduced the exact GHSA-fc89-h24v-6j3x exposure class this
+  whole PR exists to eliminate, in the very fix meant to close a
+  different bug. Independently reproduced live by two separate audit
+  reviews before being fixed by piping the SQL over stdin instead
+  (matching the same discipline already used by `secrets_aead.py`'s
+  CLI). New deterministic regression test using `strace -f -e
+  trace=execve` to capture real process argv at the moment of
+  `execve(2)` (a `/proc`-polling approach was tried first and found to
+  be an unreliable, racy way to catch this — a real `ALTER USER`
+  completes in well under 200ms).
+- Also from the same Layer 3 audit: `start-postgres.sh` previously
+  suppressed all diagnostics (`2>/dev/null`) when decrypting the stored
+  superuser password failed, silently generating and persisting a
+  brand-new random password even when the real cause was a
+  misconfigured `DUNE_KEK_FILE`/`DUNE_AGE_IDENTITY_FILE` rather than a
+  legitimate first run. Now fails loudly and explicitly in that case,
+  and the operator-facing error messages for both this and the #260
+  sync failure include concrete next steps instead of just an internal
+  issue number.
 - Known follow-up gap, tracked separately and not blocking (#261):
   disabling the age backend after having enabled it once does not
   revert the live password back to the hardcoded default, and nothing

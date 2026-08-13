@@ -227,13 +227,24 @@ dune_secrets_render_plaintext_file() {
 #
 #   Callers MUST treat a non-zero return as fatal and must NOT report
 #   success to the operator -- see start-postgres.sh for the required
-#   error-handling pattern. The password is passed to psql via a
-#   heredoc-style -c argument value, never appended to the container's
-#   argv in a way that would appear in `docker inspect`/`ps` (psql's
-#   own argv here contains only the SQL text with the password already
-#   substituted in-process, matching this fork's existing
-#   GHSA-fc89-h24v-6j3x remediation discipline for how secrets must
-#   reach a process).
+#   error-handling pattern.
+#
+#   CRITICAL, corrected after a Requirement 20 Layer 3 audit
+#   (independently reproduced by two separate audit hats, both live,
+#   via /proc/<pid>/cmdline on both the host-side `docker exec`
+#   process AND the actual `psql` process running inside the
+#   container): an earlier version of this function passed the
+#   password via `psql -c "ALTER USER ... PASSWORD '...'"`, which
+#   embeds the plaintext password as a literal argv element of the
+#   psql process for its entire lifetime -- reproducing the exact
+#   GHSA-fc89-h24v-6j3x exposure class this whole PR exists to
+#   eliminate, in new code added by the very fix for issue #260. The
+#   fixed version below pipes the SQL statement over STDIN instead
+#   (matching the same discipline already used by
+#   _dune_secrets_aead_encrypt/_dune_secrets_aead_decrypt above, and
+#   by start-postgres.sh's own pre-existing schema-normalization SQL
+#   block, which passes its SQL via a heredoc rather than -c). Never
+#   revert this to a `-c "...$password..."` invocation.
 #
 #   IMPORTANT for anyone verifying a fix built on this function: do NOT
 #   verify success/failure via `docker exec`/127.0.0.1 alone -- this
@@ -251,10 +262,10 @@ dune_secrets_sync_postgres_password() {
   local password_sql
   password_sql="$(printf '%s' "$password" | sed "s/'/''/g")"
 
-  docker exec -i "$container" psql -h 127.0.0.1 -p 5432 -U "$db_user" -d postgres \
-    -v ON_ERROR_STOP=1 \
-    -c "ALTER USER $db_user WITH PASSWORD '$password_sql';" \
-    >/dev/null
+  printf 'ALTER USER %s WITH PASSWORD %s;\n' "$db_user" "'$password_sql'" \
+    | docker exec -i "$container" psql -h 127.0.0.1 -p 5432 -U "$db_user" -d postgres \
+        -v ON_ERROR_STOP=1 \
+        >/dev/null
 }
 
 # _dune_secrets_atomic_write <final-path> <content> [<mode>]

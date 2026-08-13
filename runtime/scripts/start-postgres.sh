@@ -85,9 +85,31 @@ mkdir -p runtime/generated
     # treat a readable-but-empty /dev/null as a successful read of an
     # empty-string password on first run, silently skipping generation of
     # a real one.
-    if ! postgres_superuser_password="$(dune_secrets_read_encrypted "postgres-superuser-password" 2>/dev/null)"; then
+    #
+    # Requirement 20 Layer 3 audit fix (DBA finding): a bare
+    # `2>/dev/null` here previously suppressed EVERY diagnostic from
+    # dune_secrets_read_encrypted, not just the legitimate "no .enc
+    # file yet" case -- including "wrong KEK", "corrupted .enc file",
+    # and "not a recognized enc:v2: payload", all of which indicate a
+    # real misconfiguration, not a first run. Left unaddressed, any of
+    # those real errors would silently regenerate-and-overwrite the
+    # encrypted store with a brand-new random password with zero
+    # operator-visible signal -- directly contradicting this same
+    # file's own fail-loud discipline everywhere else (see the FATAL
+    # block below). Distinguish the two cases explicitly: only treat
+    # "the .enc file does not exist yet" as the legitimate
+    # first-run/generate path; any other failure is a real error and
+    # must be surfaced, not silently swallowed.
+    postgres_superuser_password_enc_path="$(dune_secrets_encrypted_path "postgres-superuser-password")"
+    if [ ! -e "$postgres_superuser_password_enc_path" ]; then
       postgres_superuser_password="$(dune_secrets_generate_dek)"
       dune_secrets_write_secret "postgres-superuser-password" "$postgres_superuser_password"
+    elif ! postgres_superuser_password="$(dune_secrets_read_encrypted "postgres-superuser-password")"; then
+      echo "FATAL: $postgres_superuser_password_enc_path exists but could not be" >&2
+      echo "decrypted (wrong DUNE_AGE_IDENTITY_FILE/DUNE_KEK_FILE, or the file" >&2
+      echo "is corrupted). Refusing to silently generate a replacement" >&2
+      echo "password, which would discard whatever is actually stored." >&2
+      exit 1
     fi
   else
     postgres_superuser_password="postgres"
@@ -210,11 +232,21 @@ mkdir -p runtime/generated
   # prevent. Fail loudly instead of continuing.
   if dune_secrets_backend_configured; then
     if ! dune_secrets_sync_postgres_password "dune-postgres" "postgres" "$postgres_superuser_password"; then
-      echo "FATAL: failed to synchronize the Postgres superuser password" >&2
-      echo "with the encrypted secrets store (issue #260)." >&2
-      echo "The live database and" >&2
-      echo "runtime/secrets/postgres-superuser-password.enc may now be" >&2
-      echo "out of sync. Refusing to report success." >&2
+      echo "FATAL: could not set the Postgres superuser password." >&2
+      echo >&2
+      echo "The dune-postgres container is running, but its password may" >&2
+      echo "not match what is stored in your encrypted secrets. Do NOT" >&2
+      echo "assume the server is working correctly." >&2
+      echo >&2
+      echo "What to do next:" >&2
+      echo "  1. Run this command again -- if the failure was transient," >&2
+      echo "     re-running will usually fix it." >&2
+      echo "  2. If it keeps failing, check 'docker logs dune-postgres'" >&2
+      echo "     for the underlying database error." >&2
+      echo "  3. Back up your data (dune db backup) before troubleshooting" >&2
+      echo "     further." >&2
+      echo "  4. If you need help, reference issue #260 in this project's" >&2
+      echo "     GitHub repository." >&2
       exit 1
     fi
   fi

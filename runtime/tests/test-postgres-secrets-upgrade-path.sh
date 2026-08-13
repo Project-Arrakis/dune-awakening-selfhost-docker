@@ -139,4 +139,53 @@ if dune_secrets_sync_postgres_password "does-not-exist-$$" "postgres" "irrelevan
   fail "expected dune_secrets_sync_postgres_password to fail against a nonexistent container, but it reported success"
 fi
 
+# --- Step 6: regression coverage for a Requirement 20 Layer 3 audit
+# finding (CRITICAL, independently reproduced live by two separate
+# audit hats): an earlier version of dune_secrets_sync_postgres_password
+# passed the password via `psql -c "ALTER USER ... '...'"`, which put
+# the plaintext password directly into that psql process's own argv --
+# visible via /proc/<pid>/cmdline (both on the host, for the `docker
+# exec` client process, and from inside the container, for the actual
+# psql process) for the process's entire lifetime. This is the exact
+# GHSA-fc89-h24v-6j3x exposure class this whole PR exists to eliminate,
+# reintroduced by the very fix for issue #260.
+#
+# A real ALTER USER completes in well under 200ms (measured), which
+# makes polling /proc while the process is still alive too racy to
+# trust as a regression test -- a fix that reintroduces the bug could
+# still slip past a slow poller purely by timing luck. Instead, this
+# uses `strace -f -e trace=execve` to deterministically capture the
+# EXACT argv every child process is launched with, at the moment of
+# `execve(2)` itself -- no race, no timing dependency. If the password
+# ever appears in any traced execve's argument list, this is a real,
+# unambiguous regression. ---
+command -v strace >/dev/null 2>&1 || { echo "SKIP: strace not found on PATH -- cannot run the argv-exposure regression check"; exit 0; }
+
+probe_password="ARGV_EXPOSURE_PROBE_$$_$(date +%s)"
+strace_log="$test_root/argv-exposure-strace.log"
+
+# The probe password is passed to the wrapper via an exported
+# environment variable, not a positional argv element -- if it were
+# passed as a `bash -c` argv element instead, THAT wrapper's own
+# execve (which strace -f also captures, since it's the traced parent
+# process) would falsely match the grep below, even though it has
+# nothing to do with dune_secrets_sync_postgres_password's own
+# behavior. Using an env var keeps the harness itself out of the
+# result the grep below is checking.
+DUNE_TEST_PROBE_PASSWORD="$probe_password" \
+  strace -f -e trace=execve -s 4096 -o "$strace_log" -- \
+  bash -c 'source "$1/runtime/scripts/lib/secrets.sh"; dune_secrets_sync_postgres_password "$2" "$3" "$DUNE_TEST_PROBE_PASSWORD"' \
+  _ "$repo_root" "$test_container" "postgres" \
+  || fail "dune_secrets_sync_postgres_password failed under strace -- cannot complete the argv-exposure regression check"
+
+if grep -qF "$probe_password" "$strace_log"; then
+  exposure_line="$(grep -F "$probe_password" "$strace_log" | head -1)"
+  fail "CRITICAL: found the plaintext password in a real execve(2) argv list while dune_secrets_sync_postgres_password was running -- this is the exact issue #260-fix argv-exposure regression (GHSA-fc89-h24v-6j3x class). The password must be piped to psql via stdin, never passed via -c. Offending execve: $exposure_line"
+fi
+
+# Restore the container's password back to the known value used by the
+# rest of this test, since step 6 above changed it to $probe_password.
+dune_secrets_sync_postgres_password "$test_container" "postgres" "$new_password" \
+  || fail "failed to restore the test container's password after the argv-exposure probe"
+
 echo "All Postgres secrets upgrade-path tests passed (issue #260 regression coverage)."
