@@ -93,32 +93,56 @@ mkdir -p runtime/generated
     postgres_superuser_password="postgres"
   fi
 
-  # Render to a short-lived, 0600, non-git-tracked file for the sole
-  # purpose of the bind-mount below -- never the same file as the
-  # age-encrypted form (runtime/secrets/postgres-superuser-password.enc).
-  # Cleanup is registered via `trap ... EXIT` BEFORE the docker run
-  # below, not placed as a final line after it -- a Requirement 20
-  # Layer 2 audit reproduced that the previous ordering (cleanup as the
-  # last line, after docker run) left the plaintext password file
-  # orphaned on disk indefinitely if `docker run` itself failed, since
-  # `set -euo pipefail` aborts the script at the failing command before
-  # ever reaching that final `rm -f`. A trap fires on any exit path
-  # (success, failure, or an interrupting signal), closing that gap.
-  # `umask 077` here only tightens the FILE's own permissions (0600,
-  # confirmed explicitly by the chmod below regardless of umask) --
-  # runtime/generated/ itself may already exist at a looser mode (0755
-  # on this host, unrelated to this change) since it's a shared
-  # directory used by other unrelated generated files. The actual
-  # security boundary is the file's own 0600 mode, not the containing
-  # directory's mode: a directory listing may still reveal this file's
-  # *name* to other OS users, but not its *contents*. Stated explicitly
-  # here after a Requirement 20 Layer 2 audit noted the original
-  # comment implied a stronger directory-level guarantee than this
-  # actually provides.
-  umask 077
-  printf '%s' "$postgres_superuser_password" > "$postgres_superuser_password_render"
-  chmod 600 "$postgres_superuser_password_render"
-  trap 'rm -f "$postgres_superuser_password_render"' EXIT
+  # Render to a 0600, non-git-tracked file for the sole purpose of the
+  # bind-mount below -- never the same file as the age-encrypted form
+  # (runtime/secrets/postgres-superuser-password.enc).
+  #
+  # CRITICAL, corrected after a real production incident (issue #258):
+  # this file is intentionally NOT deleted once the container starts,
+  # and there is deliberately no `trap ... EXIT` here anymore. An
+  # earlier version of this script did delete it immediately after
+  # `docker run` (via an EXIT trap, itself added to fix an earlier,
+  # narrower problem -- an orphaned file if `docker run` failed) --
+  # that broke `docker cp`/the Docker archive API for the ENTIRE
+  # container, not just this file, confirmed live on a production
+  # server: deleting a bind-mounted regular file's host-side source
+  # while the mount is still active leaves the file unlinked
+  # (`stat` inside the container showed `Links: 0`) but still resolvable
+  # through the mount, and that unlinked-but-mounted state corrupts
+  # Docker's own tar/archive-walking logic (`mkdirat run/secrets/...:
+  # file exists`) for every subsequent `docker cp`/backup attempt
+  # against that container, for as long as it keeps running.
+  #
+  # Corrected lifecycle: any STALE render file from a previous run is
+  # removed at the TOP of this block (see rm -f above the write below),
+  # before a fresh one is written -- never after `docker run` starts a
+  # new container that might still reference it. This is safe by
+  # construction: `docker rm -f dune-postgres` (earlier in this script,
+  # before this locked block even begins) has already removed any
+  # container that could have this file bind-mounted, so no live mount
+  # can exist at the point this stale-file cleanup runs. The file does
+  # persist on disk between the moment a container starts and the next
+  # `start-postgres.sh` invocation -- this is an accepted, bounded
+  # tradeoff (mode 0600, never git-tracked, contents are the Postgres
+  # superuser password which is itself rotatable) in exchange for never
+  # breaking the container's own backup path again.
+  #
+  # The actual security boundary is the rendered file's own 0600 mode,
+  # not runtime/generated/'s containing-directory mode (which may
+  # already be looser, e.g. 0755, for unrelated reasons on some hosts).
+  #
+  # dune_secrets_render_plaintext_file (secrets.sh) is used here rather
+  # than a plain `rm -f && printf && chmod` sequence specifically
+  # because it defends against a real, reproduced production incident
+  # (issue #259): a stray non-file (e.g. a directory Docker itself left
+  # behind at this exact path under an earlier failure condition --
+  # issue #258) makes a naive `rm -f` exit non-zero, which aborts this
+  # script under `set -euo pipefail` BEFORE `docker run` ever executes
+  # -- confirmed live, this left dune-postgres down. See secrets.sh's
+  # own docstring for the self-healing behavior and why it lives there,
+  # not duplicated inline in every script that renders a short-lived
+  # bind-mount file like this one.
+  dune_secrets_render_plaintext_file "$postgres_superuser_password_render" "$postgres_superuser_password" 600
 
   docker run -d \
     "${DUNE_DOCKER_LOG_ARGS[@]}" \
@@ -133,27 +157,68 @@ mkdir -p runtime/generated
     -v "$(host_path "$PWD/runtime/postgres/initdb"):/docker-entrypoint-initdb.d:ro" \
     -v "$(host_path "$PWD/$postgres_superuser_password_render"):/run/secrets/postgres-password:ro" \
     "$IMAGE"
-) 9>"$postgres_lock_file"
 
-echo "Waiting for Postgres..."
-ready=0
-for i in $(seq 1 60); do
-  if docker exec dune-postgres pg_isready -h 127.0.0.1 -p 5432 -U postgres -d dune >/dev/null 2>&1; then
-    ready=1
-    break
+  echo "Waiting for Postgres..."
+  ready=0
+  for i in $(seq 1 60); do
+    if docker exec dune-postgres pg_isready -h 127.0.0.1 -p 5432 -U postgres -d dune >/dev/null 2>&1; then
+      ready=1
+      break
+    fi
+    sleep 2
+  done
+
+  if [ "$ready" != "1" ]; then
+    echo "Postgres did not become ready in time."
+    echo
+    echo "=== Postgres logs ==="
+    docker logs --tail 200 dune-postgres || true
+    exit 1
   fi
-  sleep 2
-done
 
-if [ "$ready" != "1" ]; then
-  echo "Postgres did not become ready in time."
-  echo
-  echo "=== Postgres logs ==="
-  docker logs --tail 200 dune-postgres || true
-  exit 1
-fi
+  docker exec dune-postgres pg_isready -h 127.0.0.1 -p 5432 -U postgres -d dune
 
-docker exec dune-postgres pg_isready -h 127.0.0.1 -p 5432 -U postgres -d dune
+  # Issue #260 fix: POSTGRES_PASSWORD_FILE is only applied by Postgres's
+  # own docker-entrypoint.sh during first-time initdb. On an existing
+  # data directory -- the real upgrade path: an operator turning the
+  # age backend on for a host that already has a live cluster -- the
+  # file's value is silently ignored by Postgres and the actual live
+  # superuser password remains whatever it was at original initdb time.
+  # Left unaddressed, this means the encrypted secrets store can end up
+  # holding a password that does NOT match what Postgres will actually
+  # accept, with no error surfaced at the point the bad value is
+  # written. Confirmed via a real reproduction against a pre-existing
+  # data directory (see issue #260 for the full repro, including the
+  # pg_hba.conf `trust`-for-local false-pass trap hit during
+  # verification -- do not "verify" this fix via `docker exec`/
+  # 127.0.0.1, since password auth is not actually enforced on that
+  # path; verify over the real dune-net network instead).
+  #
+  # Fix: explicitly force the live superuser password to match
+  # $postgres_superuser_password via dune_secrets_sync_postgres_password
+  # (secrets.sh), which runs `ALTER USER ... WITH PASSWORD ...` over the
+  # local connection pg_hba.conf grants `trust` to regardless of which
+  # password is currently set (confirmed during the #260 reproduction).
+  # This runs on every startup when the age backend is configured, not
+  # only "first time" -- so the live password and the encrypted store
+  # can never silently diverge, whether this is a fresh install, an
+  # upgrade of an existing install, or a manual secret rotation.
+  #
+  # If this fails, the script must NOT report success: the encrypted
+  # store may now hold a value that doesn't match the live database,
+  # which is exactly the silent-failure mode issue #260 exists to
+  # prevent. Fail loudly instead of continuing.
+  if dune_secrets_backend_configured; then
+    if ! dune_secrets_sync_postgres_password "dune-postgres" "postgres" "$postgres_superuser_password"; then
+      echo "FATAL: failed to synchronize the Postgres superuser password" >&2
+      echo "with the encrypted secrets store (issue #260)." >&2
+      echo "The live database and" >&2
+      echo "runtime/secrets/postgres-superuser-password.enc may now be" >&2
+      echo "out of sync. Refusing to report success." >&2
+      exit 1
+    fi
+  fi
+) 9>"$postgres_lock_file"
 
 echo
 echo "=== Normalizing dune schema ownership and privileges ==="

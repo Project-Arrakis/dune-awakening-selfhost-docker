@@ -137,4 +137,25 @@ if find "$unwritable_dir" -maxdepth 1 -name '*.tmp.*' 2>/dev/null | grep -q .; t
   fail "expected no orphaned .tmp file after a failed atomic write"
 fi
 
+# --- Test 9: dune_secrets_render_plaintext_file self-heals when a
+# stray non-file (e.g. a directory) already exists at the target path,
+# instead of aborting -- direct regression coverage for a real,
+# reproduced production incident (issue #259): start-postgres.sh's
+# original `rm -f` on this exact class of path silently failed to
+# remove a directory Docker itself had left behind, which aborted the
+# script under set -euo pipefail BEFORE docker run ever executed,
+# leaving dune-postgres down on a live server. This test reproduces
+# the exact stray-directory state and confirms the fixed helper
+# recovers automatically rather than requiring manual intervention. ---
+stray_dir_target="$test_root/render-target-with-stray-directory"
+mkdir -p "$stray_dir_target"  # reproduce #259's exact state: a directory, not a file, at the render path
+
+dune_secrets_render_plaintext_file "$stray_dir_target" "recovered-value-after-stray-dir" 600 2>/dev/null
+render_result=$?
+
+[ "$render_result" -eq 0 ] || fail "expected dune_secrets_render_plaintext_file to succeed (self-heal) when a stray directory exists at the target path, got exit code $render_result"
+[ -f "$stray_dir_target" ] || fail "expected $stray_dir_target to be a regular file after self-healing, but it is not"
+rendered_content="$(cat "$stray_dir_target")"
+[ "$rendered_content" = "recovered-value-after-stray-dir" ] || fail "expected the rendered file to contain the correct value after self-healing, got '$rendered_content'"
+
 echo "All secrets.sh library tests passed."

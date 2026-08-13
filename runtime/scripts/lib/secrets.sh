@@ -164,6 +164,99 @@ dune_secrets_migration_marker_path() {
   printf 'runtime/generated/.secrets-migrated/%s.done\n' "$name"
 }
 
+# dune_secrets_render_plaintext_file <path> <content> [<mode>]
+#   Writes <content> to <path> as a plain (non-atomic-write) file,
+#   intended for short-lived, bind-mount-source renders like
+#   start-postgres.sh's Postgres superuser password file -- NOT for
+#   the age-encrypted .enc secret store itself, which must use
+#   _dune_secrets_atomic_write below instead.
+#
+#   Defends against a real, reproduced production incident (issue
+#   #259): if <path> already exists but is NOT a regular file (e.g. a
+#   stray directory, which Docker itself can leave behind at a
+#   bind-mount source path under some failure conditions), a naive
+#   `rm -f` silently fails to remove it and exits non-zero, which
+#   under `set -euo pipefail` aborts the CALLING script before it ever
+#   reaches `docker run` -- causing a real outage of whatever
+#   container depends on this render, confirmed live. This function
+#   instead logs a loud, explicit warning and self-heals via `rm -rf`
+#   for that specific case, so a future caller of this pattern doesn't
+#   need to remember this lesson independently.
+dune_secrets_render_plaintext_file() {
+  local path="$1"
+  local content="$2"
+  local mode="${3:-600}"
+
+  if [ -e "$path" ] && [ ! -f "$path" ]; then
+    echo "dune secrets: WARNING: $path exists but is not a regular file (this indicates a prior abnormal state -- see issue #259). Removing it automatically." >&2
+    rm -rf "$path"
+  else
+    rm -f "$path"
+  fi
+
+  local dir
+  dir="$(dirname "$path")"
+  mkdir -p "$dir"
+
+  umask 077
+  printf '%s' "$content" > "$path"
+  chmod "$mode" "$path"
+}
+
+# dune_secrets_sync_postgres_password <container> <db-user> <password>
+#   Forces the live Postgres superuser password inside <container> to
+#   match <password>, via `ALTER USER <db-user> WITH PASSWORD ...` over
+#   a local connection (host 127.0.0.1, matching this fork's own
+#   pg_hba.conf `trust` rule for local connections regardless of which
+#   password is currently set). Returns 0 on success, 1 if the ALTER
+#   fails for any reason (wrong container name, container not ready,
+#   psql not found, etc).
+#
+#   Exists specifically to close issue #260: Postgres's own
+#   docker-entrypoint.sh only applies POSTGRES_PASSWORD_FILE during
+#   first-time initdb. On an existing data directory -- the real
+#   upgrade path, an operator turning the age secrets backend on for a
+#   host that already has a live cluster -- the file's value is
+#   silently ignored by Postgres, and the encrypted secrets store can
+#   end up holding a password that does NOT match what Postgres will
+#   actually accept, with no error surfaced at the point the bad value
+#   is written. Calling this function after every container start (not
+#   just "first time") when the age backend is configured keeps the
+#   live database and the encrypted store from ever silently
+#   diverging.
+#
+#   Callers MUST treat a non-zero return as fatal and must NOT report
+#   success to the operator -- see start-postgres.sh for the required
+#   error-handling pattern. The password is passed to psql via a
+#   heredoc-style -c argument value, never appended to the container's
+#   argv in a way that would appear in `docker inspect`/`ps` (psql's
+#   own argv here contains only the SQL text with the password already
+#   substituted in-process, matching this fork's existing
+#   GHSA-fc89-h24v-6j3x remediation discipline for how secrets must
+#   reach a process).
+#
+#   IMPORTANT for anyone verifying a fix built on this function: do NOT
+#   verify success/failure via `docker exec`/127.0.0.1 alone -- this
+#   fork's pg_hba.conf trusts local connections unconditionally, so an
+#   auth check made that way will falsely "pass" even with a wrong
+#   password (confirmed during the #260 live reproduction). Verify the
+#   password actually took effect via a real network client instead
+#   (e.g. `docker run --rm --network dune-net postgres:<tag> psql -h
+#   <container> -U <db-user> ...`).
+dune_secrets_sync_postgres_password() {
+  local container="$1"
+  local db_user="$2"
+  local password="$3"
+
+  local password_sql
+  password_sql="$(printf '%s' "$password" | sed "s/'/''/g")"
+
+  docker exec -i "$container" psql -h 127.0.0.1 -p 5432 -U "$db_user" -d postgres \
+    -v ON_ERROR_STOP=1 \
+    -c "ALTER USER $db_user WITH PASSWORD '$password_sql';" \
+    >/dev/null
+}
+
 # _dune_secrets_atomic_write <final-path> <content> [<mode>]
 #   Writes <content> to <final-path> via write-to-temp -> fsync ->
 #   atomic rename, per design doc section 7.4 [R2]/[R3] -- the exact
