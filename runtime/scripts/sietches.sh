@@ -973,7 +973,8 @@ label = {"PVP": "PvP", "PVE": "PvE"}
 for partition in data.get("partitions", []):
     state = partition.get("configuredState")
     if state in label:
-        print(f"{partition[\"partitionId\"]}|{label[state]}")
+        pid = partition.get("partitionId")
+        print(f"{pid}|{label[state]}")
 ' 2>/dev/null || true)"
   [ -n "$resolved" ] || return 0
 
