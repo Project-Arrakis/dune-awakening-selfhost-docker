@@ -34,6 +34,8 @@ Or via unittest discovery:
 from __future__ import annotations
 
 import unittest
+import subprocess
+import sys
 from pathlib import Path
 
 SIETCHES_SH = Path(__file__).resolve().parent / "sietches.sh"
@@ -106,6 +108,46 @@ class EmbeddedPythonSyntaxTests(unittest.TestCase):
             except SyntaxError as exc:
                 failures.append(f"sietches.sh:{line_no}: {exc}")
         self.assertEqual(failures, [], "Syntax errors in embedded Python:\n" + "\n".join(failures))
+
+    def test_deep_desert_label_resolver_requires_a_complete_pvp_pve_pair(self):
+        text = SIETCHES_SH.read_text(encoding="utf-8")
+        source = next(
+            source for _, source in extract_python_blocks(text)
+            if "The canonical short labels are globally unique" in source
+        )
+
+        def resolve(payload: str):
+            return subprocess.run(
+                [sys.executable, "-c", source, "10", "20"],
+                input=payload,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+        valid = resolve('{"partitions":[{"partitionId":"10","configuredState":"PVP"},{"partitionId":"20","configuredState":"PVE"}]}')
+        self.assertEqual(valid.returncode, 0)
+        self.assertEqual(valid.stdout.strip(), "PvP|PvE")
+
+        reversed_pair = resolve('{"partitions":[{"partitionId":"10","configuredState":"PVE"},{"partitionId":"20","configuredState":"PVP"}]}')
+        self.assertEqual(reversed_pair.returncode, 0)
+        self.assertEqual(reversed_pair.stdout.strip(), "PvE|PvP")
+
+        for unsafe_payload in (
+            '{"partitions":[{"partitionId":"10","configuredState":"PVP"}]}',
+            '{"partitions":[{"partitionId":"10","configuredState":"UNKNOWN"},{"partitionId":"20","configuredState":"PVE"}]}',
+            '{"partitions":[{"partitionId":"10","configuredState":"PVP"},{"partitionId":"20","configuredState":"PVP"}]}',
+        ):
+            result = resolve(unsafe_payload)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(result.stdout, "")
+
+    def test_deep_desert_label_swap_is_one_atomic_database_command(self):
+        text = SIETCHES_SH.read_text(encoding="utf-8")
+        function_body = text.split("normalize_deepdesert_labels() {", 1)[1].split("\n}\n\nrefresh_survival_browser_state()", 1)[0]
+        self.assertEqual(function_body.count("docker exec dune-postgres psql"), 1)
+        self.assertIn("begin;", function_body)
+        self.assertIn("commit;", function_body)
 
 
 if __name__ == "__main__":
