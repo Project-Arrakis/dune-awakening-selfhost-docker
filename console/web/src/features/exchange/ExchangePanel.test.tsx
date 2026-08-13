@@ -200,7 +200,7 @@ describe("ExchangePanel", () => {
       capabilities: { exchangeMarket: true },
       plan: { available: true, source: "bundled", rows: 10, panelVersion: "0.14.0", generatedAt: "" },
       buyback: { enabled: false, intervalMinutes: 30, exchangeId: "", priceMultiplier: 5, buybackPercent: 60, buybackPriceBasis: "seeded", maxBuys: 500, source: "console", lastRunAt: "", lastRunStatus: "", lastRunDetail: "", nextRunAt: "" },
-      seed: { enabled: false, intervalMinutes: 15, exchangeId: "", priceMultiplier: 5, source: "console", lastRunAt: "", lastRunStatus: "", lastRunDetail: "", nextRunAt: "" }
+      seed: { enabled: false, intervalMinutes: 15, exchangeId: "", priceMultiplier: 5, augmentPricing: "discounted", source: "console", lastRunAt: "", lastRunStatus: "", lastRunDetail: "", nextRunAt: "" }
     });
     renderPanel();
 

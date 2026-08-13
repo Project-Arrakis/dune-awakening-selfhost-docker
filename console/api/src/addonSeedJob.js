@@ -29,10 +29,16 @@ const MAX_RUN_DETAIL_LENGTH = 500;
 const MAX_SEED_PLAN_BYTES = 10 * 1024 * 1024;
 
 // Bot-sold standalone augments are pinned to the bottom 20% of their stat
-// ranges. Buying the augment item is the budget path; the schematic (sold
-// separately, priced higher) keeps the chance of crafting a better roll.
+// ranges: crafting from the schematic keeps the chance of a better roll.
+// Whether those bottom-roll items also undercut their schematics is the
+// schedule's augmentPricing choice ("discounted", the default) or keep the
+// plan's original augment item prices ("original").
 const AUGMENT_TEMPLATE_PATTERN = /^T\d+_Augment_/i;
 const AUGMENT_STAT_ROLL = 0.2;
+
+export function normalizeAugmentPricing(value) {
+  return value === "original" ? "original" : "discounted";
+}
 
 export function normalizeSeedSchedule(payload = {}, previous = {}) {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
@@ -56,6 +62,7 @@ export function normalizeSeedSchedule(payload = {}, previous = {}) {
     intervalMinutes: clampedIntegerField(payload.intervalMinutes ?? previous.intervalMinutes ?? 15, "intervalMinutes", 10, 1440),
     exchangeId,
     priceMultiplier: integerField(payload.priceMultiplier ?? previous.priceMultiplier ?? 5, "priceMultiplier", 1, 100),
+    augmentPricing: normalizeAugmentPricing(payload.augmentPricing ?? previous.augmentPricing),
     // Who owns this schedule: "addon" (bridge-managed; scheduled runs re-verify
     // the addon's approved permissions) or "console" (first-class Market Bot;
     // authorized by RBAC at save time). Deliberately NOT read from the payload —
@@ -202,8 +209,10 @@ function augmentStatRollCounts(config) {
 export function buildMarketSeedSql(plan, schedule) {
   const exchangeId = requireSeedExchangeId(schedule);
   const multiplier = schedule.priceMultiplier;
+  const augmentPricing = normalizeAugmentPricing(schedule.augmentPricing);
+  const augmentSchematicPrices = augmentSchematicPriceMap(plan.rows);
   const valuesSql = plan.rows.map((row) => {
-    const price = roundPrice((row.price / plan.sourceMultiplier) * multiplier);
+    const price = roundPrice((seedRowBasePrice(row, augmentPricing, augmentSchematicPrices) / plan.sourceMultiplier) * multiplier);
     return `(${sqlLiteral(row.templateId)},${row.stackSize},${price},${row.categoryMask},${row.categoryDepth},${row.qualityLevel},${sqlLiteral(row.kind)},${row.listings},${sqlLiteral(row.itemStats)})`;
   }).join(",\n") || "(NULL,1,0,0,0,0,'equippable',0,'{}')";
 
@@ -326,6 +335,29 @@ function requireSeedExchangeId(schedule) {
   const exchangeId = normalizeExchangeId(schedule?.exchangeId);
   if (!exchangeId) throw new Error("Seed schedule exchangeId is invalid.");
   return exchangeId;
+}
+
+function augmentSchematicPriceMap(rows) {
+  const prices = new Map();
+  for (const row of rows) {
+    if (row.kind === "schematic" && AUGMENT_TEMPLATE_PATTERN.test(row.templateId)) {
+      prices.set(`${row.templateId}:${row.qualityLevel}`, row.price);
+    }
+  }
+  return prices;
+}
+
+// "discounted" augment pricing sells the bot's ready-made (bottom-roll)
+// augment items below their patterns: half the matching schematic's price at
+// the same grade, or 1/20 of the item's own plan price when no schematic is
+// listed — the plan's original augment item ladder (19M-37.5M) is 20x the
+// discounted one, so both paths land on the same scale.
+function seedRowBasePrice(row, augmentPricing, augmentSchematicPrices) {
+  if (augmentPricing !== "discounted" || row.kind === "schematic" || !AUGMENT_TEMPLATE_PATTERN.test(row.templateId)) {
+    return row.price;
+  }
+  const schematicPrice = augmentSchematicPrices.get(`${row.templateId}_Schematic:${row.qualityLevel}`);
+  return schematicPrice ? schematicPrice / 2 : row.price / 20;
 }
 
 function itemStatsJson(durCur, durMax, statRolls = null) {
