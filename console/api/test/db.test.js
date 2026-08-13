@@ -17,7 +17,7 @@ import {
   queueGeneratorRefill,
   supportsGeneratorRefillQueue
 } from "../src/duneDb.js";
-import { addCurrency, addFactionReputation, addGuildMember, addIntel, addonLeadershipPlayers, addonOpsHealthFarms, addonOpsHealthPlayers, addonOpsHealthSummary, addonOpsHealthSummaryV2, addSpecializationXp, applyLandsraadMilestonePreset, augmentInventoryItem, augmentNewestPlayerItem, baseGeneratorFuelLevels, baseGenerators, changeDunePassword, completeJourneyNode, completeTutorial, dbStatus, deleteInventoryItem, demoteGuildMember, disbandGuild, exportBaseAsBlueprint, generatorUptimePolicy, giveItemToPlayer, giveItemToStorage, guildMembers, landsraadOverview, listBases, listGuilds, listPlayers, listRoutines, listSpicefieldTypes, listTables, liveMapPlayers, liveMapServices, playerCraftingRecipes, playerCurrency, playerFactions, playerIntel, playerInventory, playerInventoryAll, playerJourney, playerPortalSnapshots, playerPosition, playerProfile, playerProgression, playerResearchItems, playerSolarisCoinTotal, playerVitals, portalGeneratorFuel, portalVehicles, promoteGuildMember, refillBaseGenerators, removeGuildMember, repairVehicleDecay, resetJourneyNode, resetTutorial, routineDefinition, runSql, setLandsraadPlayerContribution, setPlayerFaction, supportsGeneratorRefill, tablePreview, teleportOfflinePlayerToCoords, unlockCraftingRecipe, unlockResearchItem, updateInventoryItem, updateLandsraadRewardTier, updateLandsraadTaskGoal, updateLandsraadTermTaskGoals, updateSpicefieldType, updateTableRow, UnsupportedCapabilityError, _resetPlayerTargetCacheForTests } from "../src/duneDb.js";
+import { addCurrency, addFactionReputation, addGuildMember, addIntel, addonLeadershipPlayers, addonOpsHealthFarms, addonOpsHealthPlayers, addonOpsHealthSummary, addonOpsHealthSummaryV2, addSpecializationXp, applyLandsraadMilestonePreset, augmentInventoryItem, augmentNewestPlayerItem, baseGeneratorFuelLevels, baseGenerators, changeDunePassword, completeJourneyNode, completeTutorial, dbStatus, deleteInventoryItem, demoteGuildMember, disbandGuild, exportBaseAsBlueprint, generatorUptimePolicy, giveItemToPlayer, giveItemToStorage, guildMembers, landsraadOverview, listBases, listGuilds, listPlayers, listRoutines, listSpicefieldTypes, listTables, liveMapPlayers, liveMapServices, playerCraftingRecipes, playerCurrency, playerFactions, playerIntel, playerInventory, playerInventoryAll, playerJourney, playerPortalSnapshots, playerPosition, playerProfile, playerProgression, playerResearchItems, playerSolarisCoinTotal, playerVitals, portalGeneratorFuel, portalVehicles, promoteGuildMember, refillBaseGenerators, removeGuildMember, repairFactionReputation, repairVehicleDecay, resetJourneyNode, resetTutorial, routineDefinition, runSql, setLandsraadPlayerContribution, setPlayerFaction, supportsGeneratorRefill, tablePreview, teleportOfflinePlayerToCoords, unlockCraftingRecipe, unlockResearchItem, updateInventoryItem, updateLandsraadRewardTier, updateLandsraadTaskGoal, updateLandsraadTermTaskGoals, updateSpicefieldType, updateTableRow, UnsupportedCapabilityError, _resetPlayerTargetCacheForTests } from "../src/duneDb.js";
 
 beforeEach(() => {
   _resetPlayerTargetCacheForTests();
@@ -966,6 +966,13 @@ test("player factions lists every known faction, each with its own reputation", 
         assert.deepEqual(values, [91]);
         return { rows: [{ actor_id: 91, account_id: 201, controller_id: 301, player_state_id: 1, online_status: "Offline" }] };
       }
+      if (text.includes("FactionPlayerComponent") && text.includes("from dune.actors")) {
+        assert.deepEqual(values, [301]);
+        return { rows: [{ faction_data: [
+          { Faction: { Name: "Atreides" }, ReputationAmount: 500 },
+          { Faction: { Name: "Harkonnen" }, ReputationAmount: 20 }
+        ] }] };
+      }
       if (text.includes("from dune.factions f")) {
         assert.match(text, /coalesce\(pfr\.reputation_amount, 0\)/);
         assert.match(text, /f\.name <> 'None'/);
@@ -986,6 +993,9 @@ test("player factions lists every known faction, each with its own reputation", 
     ["Harkonnen", "120"],
     ["Smuggler", "75"]
   ]);
+  assert.equal(result.rows.find((row) => row.faction_name === "Atreides").reputation_in_sync, true);
+  assert.equal(result.rows.find((row) => row.faction_name === "Harkonnen").reputation_in_sync, false);
+  assert.equal(result.rows.find((row) => row.faction_name === "Smuggler").reputation_in_sync, undefined);
 });
 
 test("player factions coalesces an untouched faction's reputation to 0 and excludes 'None'", async () => {
@@ -4029,6 +4039,39 @@ test("faction mutation clamps reputation and syncs actor component JSON", async 
   assert.match(result.message, /Current Rank Limit: 0/);
 });
 
+test("faction mutation rejects online players before changing persistent reputation", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    playerRows: [{ actor_id: 123, account_id: 44, controller_id: 55, player_state_id: 5, online_status: "Online" }]
+  });
+  await assert.rejects(() => addFactionReputation(db, 123, { factionId: 1, amount: 50 }), /require the player to be offline/);
+  assert.equal(calls.some((call) => call.text.includes("set_player_faction_reputation")), false);
+});
+
+test("faction repair synchronizes the vendor-facing component without changing reputation", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    playerFactionRows: [{ faction_id: 1 }],
+    factionRows: [{ faction_id: 1, reputation_amount: 11600 }],
+    factionComponentRows: [{ Faction: { Name: "Smuggler" }, ReputationAmount: 75 }]
+  });
+  const result = await repairFactionReputation(db, 123);
+  assert.equal(result.factionId, 1);
+  assert.equal(result.reputations.Atreides, 11600);
+  const componentUpdate = calls.find((call) => call.text.includes("FactionPlayerComponent,m_FactionDataArray"));
+  assert.ok(componentUpdate);
+  assert.match(componentUpdate.text, /jsonb_set\(coalesce\(properties/);
+  assert.equal(JSON.parse(componentUpdate.values[0]).find((entry) => entry.Faction.Name === "Smuggler").ReputationAmount, 75);
+  assert.equal(calls.some((call) => call.text.includes("set_player_faction_reputation")), false);
+});
+
+test("faction repair refuses neutral players", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, { playerFactionRows: [] });
+  await assert.rejects(() => repairFactionReputation(db, 123), /assigned to Atreides or Harkonnen/);
+  assert.equal(calls.some((call) => call.text.includes("FactionPlayerComponent,m_FactionDataArray")), false);
+});
+
 test("player faction assignment uses the game's faction function with the controller id", async () => {
   const calls = [];
   const db = fakeMutationDb(calls, { playerFactionRows: [] });
@@ -4749,13 +4792,14 @@ function fakeMutationDb(calls, fixtures = {}) {
       if (text.includes("from dune.actors a")) return { rows: fixtures.playerRows || [{ actor_id: 123, account_id: 44, controller_id: 55, player_state_id: 5, online_status: "Offline" }] };
       if (text.includes("stats ? 'FAugmentItemStats'")) return { rows: fixtures.augmentRollRows || [] };
       if (text.includes("stats ? 'FAugmentedItemStats'")) return { rows: fixtures.augmentedItemRows || [] };
-      if (/from\s+dune\.player_faction\b/.test(text)) return { rows: fixtures.playerFactionRows || [{ faction_id: 1 }] };
+      if (/from\s+dune\.player_faction\b/.test(text)) return { rows: fixtures.playerFactionRows ?? [{ faction_id: 1 }] };
       if (text.includes("dune.get_solaris_id")) return { rows: [{ currency_id: 0 }] };
       if (text.includes("adjust_player_virtual_currency_balance")) return { rows: [{ ok: true }] };
       if (text.includes("player_virtual_currency_balances")) return { rows: fixtures.balanceRows || [] };
       if (text.includes("select reputation_amount")) return { rows: fixtures.reputationRows || [] };
       if (text.includes("set_player_faction_reputation")) return { rows: [{ ok: true }] };
       if (text.includes("where actor_id = $1 and faction_id in")) return { rows: fixtures.factionRows || [] };
+      if (text.includes("FactionPlayerComponent") && text.includes("from dune.actors") && text.includes("for update")) return { rows: [{ faction_data: fixtures.factionComponentRows || [] }] };
       if (text.includes("jsonb_set") && text.includes("FactionPlayerComponent")) return { rows: [] };
       if (text.includes("m_TechKnowledgePoints") && text.includes("select")) return { rows: fixtures.intelRows || [] };
       if (text.includes("m_TechKnowledgePoints") && text.includes("update")) return { rows: [{ ok: true }] };

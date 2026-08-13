@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { PlayerSummary } from "./PlayerSummary";
 import { playersApi } from "../../api/players";
 
@@ -292,6 +292,28 @@ describe("PlayerSummary", () => {
       expect(await screen.findByText("5,200")).toBeInTheDocument();
       const atreides = screen.getByRole("row", { name: "Atreides reputation" });
       expect(atreides).toHaveTextContent("Atreides5,200 Rep12 Est. Rank4 Story Limit");
+    });
+
+    it("offers the vendor-facing faction repair directly from the mismatched standing", async () => {
+      const onRepairFactionReputation = vi.fn();
+      vi.mocked(playersApi.factions).mockResolvedValue({
+        rows: [{ faction_id: 1, faction_name: "Atreides", reputation_amount: 11600, estimated_rank: 18, reputation_in_sync: false }],
+        capabilities: { factions: true, factionRanks: true }
+      });
+      render(<PlayerSummary {...baseProps} detail={{ player: { character_name: "Aurokon", faction: "Atreides" } }} fallback={{}} onRepairFactionReputation={onRepairFactionReputation} />);
+      const repairButton = await screen.findByRole("button", { name: "Repair Faction" });
+      fireEvent.click(repairButton);
+      expect(onRepairFactionReputation).toHaveBeenCalledOnce();
+      expect(screen.queryByText("Sync Required")).not.toBeInTheDocument();
+    });
+
+    it("explains directly on the repair control when the player must log out first", async () => {
+      vi.mocked(playersApi.factions).mockResolvedValue({
+        rows: [{ faction_id: 1, faction_name: "Atreides", reputation_amount: 11600, estimated_rank: 18, reputation_in_sync: false }],
+        capabilities: { factions: true, factionRanks: true }
+      });
+      render(<PlayerSummary {...baseProps} detail={{ player: { character_name: "Aurokon", faction: "Atreides" } }} fallback={{}} onRepairFactionReputation={vi.fn()} factionRepairDisabled />);
+      expect(await screen.findByRole("button", { name: "Player Must Be Offline" })).toBeDisabled();
     });
 
     it("lists reputation standings under a Faction Standings sub-heading, separate from the alignment", async () => {

@@ -599,6 +599,13 @@ main { padding: 22px; min-width: 0; }
 .summary-faction-metrics > span { white-space: nowrap; }
 .summary-faction-metrics > span + span::before { content: "\00b7"; margin-right: 10px; color: #5e574c; }
 .summary-faction-metrics strong { color: #fff1d4; font-size: 12px; font-weight: 600; }
+.summary-faction-repair-button { width: auto; min-height: 0; padding: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; color: #e3a55f; font: inherit; font-weight: 600; line-height: inherit; text-decoration: underline; text-underline-offset: 2px; }
+.summary-faction-repair-button:hover:not(:disabled), .summary-faction-repair-button:focus-visible { background: transparent; color: #ffd08a; box-shadow: none; }
+.summary-faction-repair-button:disabled { background: transparent; color: #a97932; opacity: 1; cursor: not-allowed; }
+.summary-faction-repair-result { padding-top: 6px; border-top: 1px solid rgba(214, 185, 140, .08); color: #d8f0c8; font-size: 12px; font-weight: 600; line-height: 1.35; }
+.summary-faction-repair-result.danger { color: #ffc9c9; }
+.summary-faction-repair-result.neutral { color: #ffd08a; }
+.summary-faction-repair-result.pending::after { content: ""; display: inline-block; width: 1.2em; animation: pendingDots 1.2s steps(4, end) infinite; }
 .summary-currency { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
 .summary-currency-tile { background: #171a1d; border: 1px solid #302b25; border-radius: 8px; padding: 10px 12px; display: flex; align-items: center; gap: 10px; }
 .summary-currency-icon { color: #c68b4a; flex: 0 0 auto; }
