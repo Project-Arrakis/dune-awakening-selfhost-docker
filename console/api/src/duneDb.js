@@ -4184,10 +4184,14 @@ export async function addIntel(db, id, { amount }) {
     const oldValue = Number(current.rows[0]?.intel || 0);
     const applied = Math.min(delta, Math.max(0, MAX_INTEL_POINTS - oldValue));
     const nextValue = oldValue + applied;
-    await tx.query(`
-      update dune.actors
-      set properties = jsonb_set(properties, '{TechKnowledgePlayerComponent,m_TechKnowledgePoints}', to_jsonb($2::bigint))
-      where id = $1 and properties ? 'TechKnowledgePlayerComponent'`, [player.actorId, nextValue]);
+    // Do not issue a misleading no-op write once the spendable balance is
+    // already full. The response below reports the amount actually applied.
+    if (applied > 0) {
+      await tx.query(`
+        update dune.actors
+        set properties = jsonb_set(properties, '{TechKnowledgePlayerComponent,m_TechKnowledgePoints}', to_jsonb($2::bigint))
+        where id = $1 and properties ? 'TechKnowledgePlayerComponent'`, [player.actorId, nextValue]);
+    }
     return {
       ok: true,
       player,
@@ -4197,9 +4201,11 @@ export async function addIntel(db, id, { amount }) {
       requestedAmount: delta,
       maxValue: MAX_INTEL_POINTS,
       capped: applied < delta,
-      message: applied < delta
-        ? `Intel was updated up to the spendable cap of ${MAX_INTEL_POINTS} and will be loaded when the player next joins.`
-        : "Intel was updated in the database and will be loaded when the player next joins."
+      message: applied === 0
+        ? `No Intel was added because the player is already at the spendable cap of ${MAX_INTEL_POINTS}.`
+        : applied < delta
+          ? `Intel was updated up to the spendable cap of ${MAX_INTEL_POINTS} and will be loaded when the player next joins.`
+          : "Intel was updated in the database and will be loaded when the player next joins."
     };
   });
 }

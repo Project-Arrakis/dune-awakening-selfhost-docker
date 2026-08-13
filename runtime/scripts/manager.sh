@@ -1540,9 +1540,6 @@ edit_userengine_menu() {
         ;;
       6)
         edit_userengine_category_menu "UserEngine Progression / Economy" \
-          "global_xp_multiplier|Global XP Multiplier|float" \
-          "global_fame_multiplier|Global Fame Multiplier|float" \
-          "global_progression_speed_multiplier|Global Progression Speed Multiplier|float" \
           "guild_settings_creation_cost|Guild Creation Cost|int" \
           "sell_order_price_percentage_fee|Sell Order Price Percentage Fee|float" \
           "spice_tax_amount|Spice Tax Amount|float" \
@@ -1551,8 +1548,6 @@ edit_userengine_menu() {
       7)
         edit_userengine_category_menu "UserEngine Harvesting / Crafting" \
           "global_harvest_amount_multiplier|Global Harvest Amount Multiplier|float" \
-          "global_harvest_health_multiplier|Global Harvest Health Multiplier|float" \
-          "cutteray_hem_multiplier_per_node_tier_table|Cutteray Hem Multiplier Per Node Tier Table|float" \
           "minimum_augmentable_item_quality|Minimum Augmentable Item Quality|int" \
           "item_durability_loss_multiplier|Item Durability Loss Multiplier|float" \
           "item_deterioration_rate|Item Deterioration Rate|float"
@@ -1561,7 +1556,6 @@ edit_userengine_menu() {
         edit_userengine_category_menu "UserEngine Survival / Combat" \
           "water_consumption_rate|Water Consumption Rate|float" \
           "water_consumption_in_storm_multiplier|Water Consumption In Storm Multiplier|float" \
-          "global_damage_to_npcs_multiplier|Global Damage To NPCs Multiplier|float" \
           "global_damage_to_players_multiplier|Global Damage To Players Multiplier|float" \
           "global_health_multiplier|Global Health Multiplier|float" \
           "global_building_damage_multiplier|Global Building Damage Multiplier|float" \
@@ -1648,9 +1642,6 @@ edit_usergame_menu() {
         ;;
       3)
         edit_usergame_category_menu "$map" "$partition_id" "UserGame Progression / Economy: $title_suffix" \
-          "global_xp_multiplier|Global XP Multiplier|float" \
-          "global_fame_multiplier|Global Fame Multiplier|float" \
-          "global_progression_speed_multiplier|Global Progression Speed Multiplier|float" \
           "guild_settings_creation_cost|Guild Creation Cost|int" \
           "sell_order_price_percentage_fee|Sell Order Price Percentage Fee|float" \
           "spice_tax_amount|Spice Tax Amount|float" \
@@ -1659,8 +1650,6 @@ edit_usergame_menu() {
       4)
         edit_usergame_category_menu "$map" "$partition_id" "UserGame Harvesting / Crafting: $title_suffix" \
           "global_harvest_amount_multiplier|Global Harvest Amount Multiplier|float" \
-          "global_harvest_health_multiplier|Global Harvest Health Multiplier|float" \
-          "cutteray_hem_multiplier_per_node_tier_table|Cutteray Hem Multiplier Per Node Tier Table|float" \
           "minimum_augmentable_item_quality|Minimum Augmentable Item Quality|int" \
           "item_durability_loss_multiplier|Item Durability Loss Multiplier|float" \
           "item_deterioration_rate|Item Deterioration Rate|float"
@@ -1669,7 +1658,6 @@ edit_usergame_menu() {
         edit_usergame_category_menu "$map" "$partition_id" "UserGame Survival / Combat: $title_suffix" \
           "water_consumption_rate|Water Consumption Rate|float" \
           "water_consumption_in_storm_multiplier|Water Consumption In Storm Multiplier|float" \
-          "global_damage_to_npcs_multiplier|Global Damage To NPCs Multiplier|float" \
           "global_damage_to_players_multiplier|Global Damage To Players Multiplier|float" \
           "global_health_multiplier|Global Health Multiplier|float" \
           "global_building_damage_multiplier|Global Building Damage Multiplier|float" \

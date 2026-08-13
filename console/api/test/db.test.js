@@ -4185,6 +4185,20 @@ test("intel mutation clamps grants to the spendable cap", async () => {
   assert.ok(calls.some((call) => call.text.includes("TechKnowledgePlayerComponent") && call.text.includes("jsonb_set") && call.values[1] === 2779));
 });
 
+test("intel mutation reports a full spendable balance without a no-op update", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    intelRows: [{ intel: 2779 }]
+  });
+  const result = await addIntel(db, 123, { amount: 25 });
+  assert.equal(result.oldValue, 2779);
+  assert.equal(result.newValue, 2779);
+  assert.equal(result.amount, 0);
+  assert.equal(result.capped, true);
+  assert.match(result.message, /already at the spendable cap of 2779/);
+  assert.equal(calls.some((call) => call.text.includes("m_TechKnowledgePoints") && call.text.includes("update")), false);
+});
+
 test("crafting recipe listing uses catalog schematics and player unlock status", async () => {
   const calls = [];
   const db = fakeMutationDb(calls, {

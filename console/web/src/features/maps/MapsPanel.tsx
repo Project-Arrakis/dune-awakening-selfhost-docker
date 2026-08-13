@@ -2285,10 +2285,10 @@ function SettingsCardGrid({ fields, values, onChange, viewMode = "grid", emptyMe
       return <Fragment key={field.id}>
         {(field.clientFile || modified) && <tr className="settings-list-badge-row"><td colSpan={3}>
           {field.clientFile && <span className="badge badge-info settings-list-badge" title={`Also requires updating the client's ${field.clientFile}.`}>Client &quot;{field.clientFile}&quot;</span>}
-          {modified && <ModifiedBadge field={field} label={friendlySettingLabel(field.id, field.key || field.id)} onReset={() => onChange(field.id, field.default ?? "")} />}
+          {modified && <ModifiedBadge field={field} label={friendlySettingLabel(field.id, field.key || field.id, field.label)} onReset={() => onChange(field.id, field.default ?? "")} />}
         </td></tr>}
         <tr>
-          <td><strong>{friendlySettingLabel(field.id, field.key || field.id)}</strong><small>{fieldCategory(field)}</small></td>
+          <td><strong>{friendlySettingLabel(field.id, field.key || field.id, field.label)}</strong><small>{fieldCategory(field)}</small></td>
           <td>{field.key || field.id}</td>
           <td><SettingInput field={field} value={value} inputId={`setting-list-${field.scope}-${field.id}`} onChange={(nextValue) => onChange(field.id, nextValue)} /></td>
         </tr>
@@ -2308,7 +2308,7 @@ function ModifiedBadge({ field, label, onReset }: { field: UserSettingField; lab
 }
 
 function SettingControl({ field, value, onChange }: { field: UserSettingField; value: string; onChange: (value: string) => void }) {
-  const label = friendlySettingLabel(field.id, field.key || field.id);
+  const label = friendlySettingLabel(field.id, field.key || field.id, field.label);
   const inputId = `setting-${field.scope}-${field.id}`;
   const modified = isModifiedFromDefault(field, value);
   return <label className="settings-field" htmlFor={inputId}>
@@ -2439,7 +2439,7 @@ function filterSettingsFields(fields: UserSettingField[], query: string) {
   const needle = String(query || "").trim().toLowerCase();
   if (!needle) return fields;
   return fields.filter((field) => {
-    const label = friendlySettingLabel(field.id, field.key || field.id);
+    const label = friendlySettingLabel(field.id, field.key || field.id, field.label);
     const category = fieldCategory(field);
     const haystack = `${label} ${field.id} ${field.key || ""} ${field.section || ""} ${category}`.toLowerCase();
     return haystack.includes(needle);
@@ -2495,8 +2495,8 @@ function fieldCategory(field: UserSettingField) {
   return field.category || settingsCategory(field.section || field.key || field.id);
 }
 
-function friendlySettingLabel(id: string, fallback: string) {
-  return titleCaseWords(id.replace(/^partition_/, "").replace(/_/g, " ")) || titleCaseWords(fallback);
+function friendlySettingLabel(id: string, fallback: string, explicit = "") {
+  return String(explicit || "").trim() || titleCaseWords(id.replace(/^partition_/, "").replace(/_/g, " ")) || titleCaseWords(fallback);
 }
 
 function normalizeBooleanText(value: string) {
