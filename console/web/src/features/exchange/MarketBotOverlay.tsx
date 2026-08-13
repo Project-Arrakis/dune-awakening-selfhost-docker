@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { X } from "lucide-react";
 import {
   marketBotApi,
+  type MarketAugmentPricing,
   type MarketBotStatus,
   type MarketExchange,
   type MarketPriceBasis
@@ -56,6 +57,7 @@ export function MarketBotOverlay({ onClose, onError, confirmAction }: MarketBotO
   const [seedEnabled, setSeedEnabled] = useState(false);
   const [seedInterval, setSeedInterval] = useState(15);
   const [seedMultiplier, setSeedMultiplier] = useState(5);
+  const [augmentPricing, setAugmentPricing] = useState<MarketAugmentPricing>("discounted");
 
   function applyStatus(next: MarketBotStatus, options: { populateForm?: boolean } = {}) {
     setStatus(next);
@@ -69,6 +71,7 @@ export function MarketBotOverlay({ onClose, onError, confirmAction }: MarketBotO
       setSeedEnabled(Boolean(next.seed.enabled));
       setSeedInterval(next.seed.intervalMinutes);
       setSeedMultiplier(next.seed.priceMultiplier);
+      setAugmentPricing(next.seed.augmentPricing === "original" ? "original" : "discounted");
       setExchangeId((current) => current || next.buyback.exchangeId || next.seed.exchangeId || "");
     }
   }
@@ -136,6 +139,7 @@ export function MarketBotOverlay({ onClose, onError, confirmAction }: MarketBotO
         enabled: seedEnabled,
         intervalMinutes: seedInterval,
         priceMultiplier: seedMultiplier,
+        augmentPricing,
         ...(exchangeId ? { exchangeId } : {})
       });
       return saved.enabled
@@ -258,13 +262,19 @@ export function MarketBotOverlay({ onClose, onError, confirmAction }: MarketBotO
 
             <div className="market-bot-section">
               <strong>Market reseed</strong>
-              <p className="action-help-note">Replaces the bot's own NPC sell listings from the seed plan at the chosen price multiplier. Every run is backup, clear bot listings on that exchange, seed. Player listings are never touched.</p>
+              <p className="action-help-note">Replaces the bot's own NPC sell listings from the seed plan at the chosen price multiplier. Every run is backup, clear bot listings on that exchange, seed. Player listings are never touched. Augment items always seed as bottom-of-range rolls; the augment pricing option chooses whether they undercut their schematics (half the pattern's price) or keep the plan's original prices.</p>
               <div className="market-bot-grid">
                 <label>Interval (minutes)
                   <input aria-label="Seed interval minutes" type="number" min={10} max={1440} value={seedInterval} onChange={(event) => setSeedInterval(Number(event.target.value))} />
                 </label>
                 <label>Price multiplier
                   <input aria-label="Seed price multiplier" type="number" min={1} max={100} value={seedMultiplier} onChange={(event) => setSeedMultiplier(Number(event.target.value))} />
+                </label>
+                <label>Augment pricing
+                  <select aria-label="Augment pricing" value={augmentPricing} onChange={(event) => setAugmentPricing(event.target.value as MarketAugmentPricing)}>
+                    <option value="discounted">Cheaper than patterns</option>
+                    <option value="original">Original plan prices</option>
+                  </select>
                 </label>
               </div>
               <label className="market-bot-toggle">

@@ -6,6 +6,11 @@ import { api, post } from "./client";
 
 export type MarketPriceBasis = "seeded" | "average" | "lowest";
 
+// How the seed run prices standalone augment items (always listed as
+// bottom-of-range rolls): "discounted" undercuts their schematics at half
+// price, "original" keeps the seed plan's own augment item prices.
+export type MarketAugmentPricing = "discounted" | "original";
+
 export type MarketBuybackSchedule = {
   enabled: boolean;
   intervalMinutes: number;
@@ -26,6 +31,7 @@ export type MarketSeedSchedule = {
   intervalMinutes: number;
   exchangeId: string;
   priceMultiplier: number;
+  augmentPricing: MarketAugmentPricing;
   source: "addon" | "console";
   lastRunAt: string;
   lastRunStatus: string;
