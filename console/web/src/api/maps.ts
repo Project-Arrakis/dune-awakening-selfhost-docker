@@ -95,6 +95,7 @@ export type PartitionCombatStateRow = {
   dimensionIndex: number | null;
   databaseLabel: string | null;
   runtimeStatus: PartitionRuntimeStatus;
+  serverDisplayName: string | null;
   configuredState: PartitionCombatState;
   materializedState: PartitionCombatState | null;
   source: string;

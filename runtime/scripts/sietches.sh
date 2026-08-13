@@ -764,6 +764,34 @@ def default_display_name(row):
         return "(unset)"
     return label if label.lower().startswith("sietch ") else f"Sietch {label}"
 
+# The effective Bgd.ServerDisplayName (partition -> map -> global UserEngine.ini,
+# via usersettings.py) is the name a player actually sees in-game, and it already
+# includes any per-partition name set through "sietches set-display" (which writes
+# into this same field). It must win over the legacy sietch-config.json mirror and
+# the DB-label-derived generic name below.
+import subprocess
+server_display_names = {}
+partition_ids = [str(row.get("id")) for row in rows]
+if partition_ids:
+    try:
+        proc = subprocess.run(
+            ["python3", "runtime/scripts/usersettings.py", "partition-engine-values-many", rows[0].get("map"), *partition_ids],
+            capture_output=True, text=True, timeout=10,
+        )
+        if proc.returncode == 0 and proc.stdout.strip():
+            for pid, values in json.loads(proc.stdout).items():
+                name = str((values or {}).get("server_display_name") or "").strip()
+                if name:
+                    server_display_names[pid] = name
+    except Exception:
+        pass
+
+def resolved_display_name(row, cfg):
+    configured = server_display_names.get(str(row.get("id")))
+    if configured:
+        return configured
+    return cfg.get("display_name") or default_display_name(row)
+
 if mode == "--ids":
     for row in rows:
         print(row.get("id"))
@@ -776,7 +804,7 @@ elif mode == "--numbered":
     for idx, row in enumerate(rows, 1):
         pid = str(row.get("id"))
         cfg = partition_config.get(pid, {})
-        display = cfg.get("display_name") or default_display_name(row)
+        display = resolved_display_name(row, cfg)
         password = "(set)" if cfg.get("password") else "(unset)"
         print(f"{idx}) {row.get('map')} Dimension {row.get('dimension', 0)}")
         print(f"   Display Name: {display}")
@@ -785,7 +813,7 @@ elif mode == "--labels":
     for row in rows:
         pid = str(row.get("id"))
         cfg = partition_config.get(pid, {})
-        display = cfg.get("display_name") or default_display_name(row)
+        display = resolved_display_name(row, cfg)
         password = "(set)" if cfg.get("password") else "(unset)"
         print(f"{row.get('map')} Dimension {row.get('dimension', 0)}  Display Name: {display}  Password: {password}")
 else:
@@ -793,7 +821,7 @@ else:
     for row in rows:
         pid = str(row.get("id"))
         cfg = partition_config.get(pid, {})
-        display = cfg.get("display_name") or default_display_name(row)
+        display = resolved_display_name(row, cfg)
         password = "(set)" if cfg.get("password") else "(unset)"
         print(f"{str(row.get('dimension', 0)):<10} {display:<32} {password}")
 PY
@@ -917,15 +945,68 @@ normalize_deepdesert_labels() {
     return 0
   fi
 
+  local dim0_id dim1_id
+  dim0_id="$(psql_value "
+    select partition_id from dune.world_partition
+    where map = 'DeepDesert_1' and dimension_index = 0
+    order by partition_id limit 1;
+  " | tr -d '[:space:]')"
+  dim1_id="$(psql_value "
+    select partition_id from dune.world_partition
+    where map = 'DeepDesert_1' and dimension_index = 1
+    order by partition_id limit 1;
+  " | tr -d '[:space:]')"
+  [ -n "$dim0_id" ] && [ -n "$dim1_id" ] || return 0
+
+  # Resolve each dimension's label from its actual configured UserGame.ini
+  # combat state -- never from dimension_index position, which is positional
+  # metadata only and does not determine which dimension is PvP vs PvE.
+  local states_json
+  states_json="$(python3 runtime/scripts/usersettings.py partition-combat-states DeepDesert_1 "$dim0_id" "$dim1_id" 2>/dev/null || true)"
+  [ -n "$states_json" ] || return 0
+
+  local resolved dim0_label dim1_label
+  resolved="$(printf '%s' "$states_json" | python3 -c '
+import json, sys
+
+data = json.load(sys.stdin)
+expected = sys.argv[1:]
+states = {
+    str(partition.get("partitionId")): partition.get("configuredState")
+    for partition in data.get("partitions", [])
+}
+
+# The canonical short labels are globally unique in world_partition. Only
+# swap them when both requested partitions resolved and form the expected
+# one-PvP/one-PvE pair. UNKNOWN/CONFLICT or duplicate modes must leave the
+# existing labels untouched instead of producing temporary or duplicate
+# labels.
+if set(states) != set(expected):
+    raise SystemExit(1)
+if {states[partition_id] for partition_id in expected} != {"PVP", "PVE"}:
+    raise SystemExit(1)
+
+label = {"PVP": "PvP", "PVE": "PvE"}
+print("|".join(label[states[partition_id]] for partition_id in expected))
+' "$dim0_id" "$dim1_id" 2>/dev/null || true)"
+  IFS='|' read -r dim0_label dim1_label <<< "$resolved"
+  [ -n "$dim0_label" ] && [ -n "$dim1_label" ] || return 0
+
+  # Labels are globally unique. Swap both rows atomically through temporary
+  # partition-specific labels so a failure cannot strand either row with an
+  # internal DualDeepDesert_* label.
   docker exec dune-postgres psql -U postgres -d dune -v ON_ERROR_STOP=1 -c "
+begin;
 update dune.world_partition
-set label = case
-  when dimension_index = 0 then 'PvP'
-  when dimension_index = 1 then 'PvE'
-  else label
+set label = 'DualDeepDesert_' || partition_id::text
+where partition_id in ($dim0_id, $dim1_id);
+update dune.world_partition
+set label = case partition_id
+  when $dim0_id then '$dim0_label'
+  when $dim1_id then '$dim1_label'
 end
-where map = 'DeepDesert_1'
-  and dimension_index in (0, 1);
+where partition_id in ($dim0_id, $dim1_id);
+commit;
 " >/dev/null
 }
 
@@ -1833,8 +1914,28 @@ def default_display_name(partition_row):
         return ""
     return label if label.lower().startswith("sietch ") else f"Sietch {label}"
 
+def effective_display_name(map_name, pid):
+    # The merged Bgd.ServerDisplayName (partition -> map -> global UserEngine.ini)
+    # already reflects any per-partition name set via "sietches set-display", so it
+    # must win over the legacy sietch-config.json mirror and the DB-label fallback.
+    import subprocess
+    try:
+        proc = subprocess.run(
+            ["python3", "runtime/scripts/usersettings.py", "partition-engine-values", map_name, pid],
+            capture_output=True, text=True, timeout=10,
+        )
+        if proc.returncode != 0:
+            return ""
+        for line in proc.stdout.splitlines():
+            key, _, value = line.partition("\t")
+            if key == "server_display_name":
+                return value.strip()
+    except Exception:
+        pass
+    return ""
+
 args = []
-display_name = entry.get("display_name") or default_display_name(row)
+display_name = effective_display_name(sys.argv[4], partition_id) or entry.get("display_name") or default_display_name(row)
 if display_name:
     args.append(f"-ServerDisplayName={ini_quote(display_name)}")
 if entry.get("password"):

@@ -3443,6 +3443,19 @@ def partition_combat_states_command(map_name: str, partition_ids: list[str]) -> 
     return 0
 
 
+def partition_engine_values_many_command(map_name: str, partition_ids: list[str]) -> int:
+    """Resolve effective per-partition engine values (e.g. server_display_name) for
+    several partitions in one process and one profile read path."""
+    profile = read_profile()
+    target_map = canonical_map(map_name)
+    result = {
+        str(partition_id): profile_partition_engine_values(profile, target_map, partition_id)
+        for partition_id in partition_ids
+    }
+    print(json.dumps(result, separators=(",", ":")))
+    return 0
+
+
 def main(argv: list[str]) -> int:
     if len(argv) < 2:
         return 2
@@ -3503,6 +3516,8 @@ def main(argv: list[str]) -> int:
         return partition_combat_states_command(argv[2], argv[3:])
     if command == "partition-engine-values" and len(argv) == 4:
         return print_rows(merged_partition_engine_values(config, canonical_map(argv[2]), argv[3]), PARTITION_ENGINE_FIELDS)
+    if command == "partition-engine-values-many" and len(argv) >= 4:
+        return partition_engine_values_many_command(argv[2], argv[3:])
     if command == "engine-set" and len(argv) == 4:
         return set_field("engine", None, argv[2], argv[3])
     if command == "map-set" and len(argv) == 5:
