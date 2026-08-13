@@ -25,7 +25,7 @@ function statusFixture(overrides: Partial<MarketBotStatus> = {}): MarketBotStatu
       lastRunAt: "", lastRunStatus: "", lastRunDetail: "", nextRunAt: ""
     },
     seed: {
-      enabled: false, intervalMinutes: 15, exchangeId: "", priceMultiplier: 5, source: "console",
+      enabled: false, intervalMinutes: 15, exchangeId: "", priceMultiplier: 5, augmentPricing: "discounted", source: "console",
       lastRunAt: "", lastRunStatus: "", lastRunDetail: "", nextRunAt: ""
     },
     ...overrides
@@ -122,6 +122,27 @@ describe("MarketBotOverlay", () => {
 
     await waitFor(() => expect(props.confirmAction).toHaveBeenCalled());
     expect(marketBotApi.runBuyback).not.toHaveBeenCalled();
+  });
+
+  it("saves the seed schedule with the chosen augment pricing", async () => {
+    vi.mocked(marketBotApi.saveSeedSchedule).mockImplementation(async (schedule) => ({
+      ...statusFixture().seed, ...schedule, exchangeId: String(schedule.exchangeId || "42"), enabled: Boolean(schedule.enabled)
+    }));
+    renderOverlay();
+
+    const pricing = await screen.findByLabelText("Augment pricing");
+    expect(pricing).toHaveValue("discounted");
+    fireEvent.change(pricing, { target: { value: "original" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save reseed schedule" }));
+
+    await waitFor(() => expect(marketBotApi.saveSeedSchedule).toHaveBeenCalledWith({
+      enabled: false,
+      intervalMinutes: 15,
+      priceMultiplier: 5,
+      augmentPricing: "original",
+      exchangeId: "42"
+    }));
+    expect(await screen.findByText(/Reseed schedule saved \(disabled\)\./)).toBeInTheDocument();
   });
 
   it("disables Run reseed now until a seed schedule has a saved exchange", async () => {

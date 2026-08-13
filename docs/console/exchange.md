@@ -93,8 +93,10 @@ Exchange Bot addon drives through the scheduler bridge, now first-class):
   addon's plan copy wins when present) at a configurable price multiplier. Every run
   is **backup → clear the bot's own listings on that exchange → seed**; player
   listings are never touched. Standalone augment items are seeded with their stat
-  rolls pinned to the bottom 20% of their ranges and priced below their schematics,
-  so buying the pattern and crafting for a better roll stays the premium path.
+  rolls pinned to the bottom 20% of their ranges; the schedule's **augment
+  pricing** option sells them either below their schematics (half the pattern's
+  price at the same grade — the default) or at the plan's original prices. Either
+  way, buying the pattern and crafting for a better roll stays the premium path.
 - **Buyback sweeps** buy player sell listings whose per-unit ask is at or below the
   buyback percentage of the chosen **price basis** — seeded NPC price at that
   listing's grade (default), or the live player-market average / lowest ask with
