@@ -1463,9 +1463,9 @@ body.debug .technical-details { display: block; }
 .playerAdmin_boxHeaderLine { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .playerAdmin_boxHeaderLine > p { margin: 0; font-style: italic; color: #ad9f89; flex: 1 1 260px; min-width: 0; }
 .playerAdmin_boxHeaderLine .playerAdmin_filterRow { margin-left: auto; }
-.playerAdmin_box .playerAdmin_section:not(.playerAdmin_quickRewardsSection) > .playerAdmin_actionGroup .playerAdmin_actionRow { display: grid; grid-template-columns: 210px 360px 78px minmax(220px, 1fr); align-items: start; }
+.playerAdmin_box .playerAdmin_section:not(.playerAdmin_quickRewardsSection) > .playerAdmin_actionGroup .playerAdmin_actionRow { display: grid; grid-template-columns: 210px 360px minmax(310px, 1fr); align-items: start; }
 .playerAdmin_quickRewardsSection {
-  grid-template-columns: 300px 360px 78px minmax(220px, 1fr);
+  grid-template-columns: 300px 360px minmax(310px, 1fr);
   column-gap: 12px;
   row-gap: 10px;
   align-items: start;
@@ -1484,8 +1484,10 @@ body.debug .technical-details { display: block; }
 .playerAdmin_quickRewardsSection .playerAdmin_actionLabel { grid-column: 1; }
 .playerAdmin_quickRewardsSection .playerAdmin_actionLabel em { white-space: nowrap; }
 .playerAdmin_quickRewardsSection .playerAdmin_fieldGroup { grid-column: 2; }
-.playerAdmin_quickRewardsSection .playerAdmin_actionGroup button { grid-column: 3; }
-.playerAdmin_quickRewardsSection .inline-action-result-wrap { grid-column: 4; }
+.playerAdmin_quickRewardsSection .playerAdmin_actionFeedback { grid-column: 3; }
+.playerAdmin_actionFeedback { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.playerAdmin_actionFeedback > button { flex: 0 0 78px; width: 78px; padding-left: 10px; padding-right: 10px; }
+.playerAdmin_actionFeedback .inline-action-result-wrap { align-self: center; flex: 1 1 auto; min-width: 0; }
 .playerAdmin_repairRow { display: grid; grid-template-columns: minmax(190px, 220px) max-content minmax(0, 1fr); align-items: center; gap: 10px; }
 .playerAdmin_repairRow + .playerAdmin_repairRow { border-top: 1px solid rgba(214, 185, 140, .14); padding-top: 12px; }
 .playerAdmin_repairRow button { width: auto; }
@@ -1500,7 +1502,6 @@ body.debug .technical-details { display: block; }
 .playerAdmin_actionRow .playerAdmin_fieldGroup { display: grid; grid-template-columns: repeat(auto-fit, minmax(0, 1fr)); gap: 10px; align-items: start; }
 .playerAdmin_actionRow .playerAdmin_fieldGroup input, .playerAdmin_actionRow .playerAdmin_fieldGroup select { width: 100%; max-width: none; min-height: 40px; }
 .playerAdmin_actionRow button, .playerAdmin_buttonRow button { width: auto; min-height: 40px; }
-.playerAdmin_box .playerAdmin_section > .playerAdmin_actionGroup .playerAdmin_actionRow > button { width: 78px; padding-left: 10px; padding-right: 10px; }
 .playerAdmin_actionNote, .action-help-note { margin: 0; color: #cbbd9f; font-size: 15px; font-style: italic; line-height: 1.4; }
 .playerAdmin_actionNote { padding-left: 190px; max-width: 900px; font-style: italic; }
 .action-help-note { max-width: 820px; }
@@ -4152,12 +4153,10 @@ td .inline-action-result-wrap { flex: 1 0 100%; justify-content: flex-start; min
   .landsraad-persistent-actions > div { width: 100%; justify-content: flex-start; }
 
   .playerAdmin_box .playerAdmin_section > .playerAdmin_actionGroup .playerAdmin_actionRow { grid-template-columns: 1fr; }
-  .playerAdmin_box .playerAdmin_section > .playerAdmin_actionGroup .playerAdmin_actionRow > button { width: auto; justify-self: start; }
   .playerAdmin_quickRewardsSection { grid-template-columns: 1fr; }
   .playerAdmin_quickRewardsSection .playerAdmin_actionLabel,
   .playerAdmin_quickRewardsSection .playerAdmin_fieldGroup,
-  .playerAdmin_quickRewardsSection .playerAdmin_actionGroup button,
-  .playerAdmin_quickRewardsSection .inline-action-result-wrap { grid-column: 1; }
+  .playerAdmin_quickRewardsSection .playerAdmin_actionFeedback { grid-column: 1; }
 }
 @media (max-width: 720px) {
   .landsraad-modifier-grid { grid-template-columns: 1fr; }
