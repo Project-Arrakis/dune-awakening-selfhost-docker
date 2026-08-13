@@ -119,6 +119,30 @@ export async function resolvePartitionCombatStatesFromRuntime(config, mapName, p
 }
 
 /**
+ * Resolve the effective, merged `Bgd.ServerDisplayName` for several
+ * partitions with one `usersettings.py` process. This already reflects
+ * partition -> map -> global UserEngine.ini precedence, including any
+ * per-partition name set via `sietches set-display` (which writes into the
+ * same field — see runtime/scripts/sietches.sh `set-display`). Failures are
+ * swallowed to an empty map so a missing/errored name never blocks combat
+ * state resolution; callers fall back to a synthesized name.
+ */
+export async function resolvePartitionDisplayNamesFromRuntime(config, mapName, partitionIds) {
+  const map = validateMapNameForCombatState(mapName);
+  const ids = [...new Set((Array.isArray(partitionIds) ? partitionIds : [])
+    .map((partitionId) => validatePartitionIdForCombatState(partitionId)))];
+  if (!ids.length) return new Map();
+  const result = await runDune(config, ["usersettings", "partition-engine-values-many", map, ...ids], { timeoutMs: 8000, env: config.env });
+  const parsed = JSON.parse(result.stdout || "{}");
+  const byPartition = new Map();
+  for (const id of ids) {
+    const name = String(parsed?.[id]?.server_display_name || "").trim();
+    if (name) byPartition.set(id, name);
+  }
+  return byPartition;
+}
+
+/**
  * Aggregate independently-resolved partition combat states into a single
  * map-level combat state. Mirrors the Python `aggregate_map_combat_state`
  * implementation exactly (both must be kept in sync).
@@ -167,10 +191,18 @@ export async function resolveMapCombatState(config, mapName, partitionRows) {
   const ids = rows.map((row) => String(row.partitionId ?? "").trim()).filter(Boolean);
   let resolvedByPartition = new Map();
   let resolverError = null;
-  try {
-    resolvedByPartition = await resolvePartitionCombatStatesFromRuntime(config, map, ids);
-  } catch (error) {
-    resolverError = error;
+  let displayNameByPartition = new Map();
+  const [combatResult, displayNameResult] = await Promise.allSettled([
+    resolvePartitionCombatStatesFromRuntime(config, map, ids),
+    resolvePartitionDisplayNamesFromRuntime(config, map, ids),
+  ]);
+  if (combatResult.status === "fulfilled") {
+    resolvedByPartition = combatResult.value;
+  } else {
+    resolverError = combatResult.reason;
+  }
+  if (displayNameResult.status === "fulfilled") {
+    displayNameByPartition = displayNameResult.value;
   }
 
   const partitions = rows.map((row) => {
@@ -182,6 +214,7 @@ export async function resolveMapCombatState(config, mapName, partitionRows) {
       dimensionIndex: row.dimensionIndex ?? null,
       databaseLabel: row.databaseLabel ?? null,
       runtimeStatus,
+      serverDisplayName: displayNameByPartition.get(partitionId) || null,
     };
 
     if (!partitionId) {

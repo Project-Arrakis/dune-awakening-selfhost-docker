@@ -26,8 +26,11 @@ Or via unittest discovery:
 """
 from __future__ import annotations
 
+import io
+import json
 import sys
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -248,6 +251,84 @@ class EngineFieldOverridePrecedenceTests(ProfilePathTestCase):
         self.assertEqual(usersettings.profile_engine_values(reloaded)[self.FIELD_ID], "2.0")
         self.assertEqual(usersettings.profile_map_engine_values(reloaded, MAP_NAME)[self.FIELD_ID], "3.0")
         self.assertEqual(usersettings.profile_partition_engine_values(reloaded, MAP_NAME, PARTITION_ID)[self.FIELD_ID], "4.0")
+
+
+class PartitionEngineValuesManyCommandTests(ProfilePathTestCase):
+    """`partition-engine-values-many` backs both sietches.sh's display-name
+    resolution (dimensions()/runtime_args()) and the console API's
+    resolvePartitionDisplayNamesFromRuntime -- one profile read resolving
+    server_display_name (Bgd.ServerDisplayName) for several partitions at
+    once. It must apply the exact same partition -> map -> global precedence
+    as the singular partition-engine-values command, not a simplified or
+    stale copy of it."""
+
+    FIELD_ID = "server_display_name"
+
+    def _spec(self):
+        return usersettings.ENGINE_FIELDS[self.FIELD_ID]
+
+    def _run_command(self, map_name, partition_ids):
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            usersettings.partition_engine_values_many_command(map_name, partition_ids)
+        return json.loads(buffer.getvalue())
+
+    def test_resolves_distinct_partitions_in_one_call(self):
+        # server_display_name is deliberately excluded from SCOPED_ENGINE_FIELDS
+        # (see usersettings.py:516-519), so unlike most engine fields it has no
+        # per-map override tier -- only global (every Sietch in the battlegroup)
+        # and per-partition (the battlegroup editor / "sietches set-display"),
+        # matching the UserEngine.ini comment ("Set the name of every Sietch in
+        # the battlegroup ... use the battlegroup editor instead" for per-Sietch
+        # names). This asserts partition vs. global, not partition vs. map.
+        section, key, _default = self._spec()
+        profile = usersettings.empty_profile()
+        usersettings.profile_set_key(profile, "engine", section, key, "Battlegroup Wide Name")
+        usersettings.profile_set_key(profile, "partition_engine", section, key, "Named Sietch", MAP_NAME, PARTITION_ID)
+        usersettings.write_profile(profile)
+
+        result = self._run_command(MAP_NAME, [PARTITION_ID, OTHER_PARTITION_ID])
+
+        # The partition with its own override wins over the battlegroup-wide name...
+        self.assertEqual(result[PARTITION_ID][self.FIELD_ID], "Named Sietch")
+        # ...while its sibling, with no override of its own, still falls
+        # through to the global name rather than coming back empty.
+        self.assertEqual(result[OTHER_PARTITION_ID][self.FIELD_ID], "Battlegroup Wide Name")
+
+    def test_matches_the_singular_command_for_the_same_partition(self):
+        section, key, _default = self._spec()
+        profile = usersettings.empty_profile()
+        usersettings.profile_set_key(profile, "engine", section, key, "Global Name")
+        usersettings.profile_set_key(profile, "partition_engine", section, key, "Partition Name", MAP_NAME, PARTITION_ID)
+        usersettings.write_profile(profile)
+
+        result = self._run_command(MAP_NAME, [PARTITION_ID, OTHER_PARTITION_ID])
+        reloaded = usersettings.read_profile()
+
+        self.assertEqual(
+            result[PARTITION_ID][self.FIELD_ID],
+            usersettings.profile_partition_engine_values(reloaded, MAP_NAME, PARTITION_ID)[self.FIELD_ID],
+        )
+        self.assertEqual(
+            result[OTHER_PARTITION_ID][self.FIELD_ID],
+            usersettings.profile_partition_engine_values(reloaded, MAP_NAME, OTHER_PARTITION_ID)[self.FIELD_ID],
+        )
+        # Sanity: the sibling with no partition override actually fell through
+        # to the global name, so this isn't trivially true for both sides.
+        self.assertEqual(result[OTHER_PARTITION_ID][self.FIELD_ID], "Global Name")
+
+    def test_a_name_set_via_sietches_set_display_is_visible_in_bulk(self):
+        # `sietches set-display` writes into this exact field via
+        # `usersettings.py partition-engine-set ... server_display_name`
+        # (see runtime/scripts/sietches.sh) -- simulate that write directly
+        # through the same profile API rather than shelling out.
+        section, key, _default = self._spec()
+        profile = usersettings.empty_profile()
+        usersettings.profile_set_key(profile, "partition_engine", section, key, "The Kulon Show", MAP_NAME, PARTITION_ID)
+        usersettings.write_profile(profile)
+
+        result = self._run_command(MAP_NAME, [PARTITION_ID])
+        self.assertEqual(result[PARTITION_ID][self.FIELD_ID], "The Kulon Show")
 
 
 if __name__ == "__main__":
