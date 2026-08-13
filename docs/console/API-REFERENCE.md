@@ -405,7 +405,7 @@ blacklist behaves.
 | GET | `/api/exchange/market/exchanges` | Discover exchanges (BIGINT ids as strings; access-pointed exchanges first) | None |
 | POST | `/api/exchange/market/buyback/probe` | Read-only buyback eligibility count (no backup taken) | body: `exchangeId?`, `priceMultiplier?`, `buybackPercent?`, `maxBuys?` |
 | POST | `/api/exchange/market/buyback/schedule` | Save the buyback schedule (audited, rate-limited) | body: `enabled`, `intervalMinutes`, `exchangeId`, `priceMultiplier`, `buybackPercent`, `buybackPriceBasis`, `maxBuys` |
-| POST | `/api/exchange/market/seed/schedule` | Save the market reseed schedule (audited, rate-limited) | body: `enabled`, `intervalMinutes`, `exchangeId`, `priceMultiplier` |
+| POST | `/api/exchange/market/seed/schedule` | Save the market reseed schedule (audited, rate-limited) | body: `enabled`, `intervalMinutes`, `exchangeId`, `priceMultiplier`, `augmentPricing` (`discounted`\|`original`) |
 | POST | `/api/exchange/market/buyback/run` | Run a buyback sweep now with the saved schedule (probe → backup → sweep) | None |
 | POST | `/api/exchange/market/seed/run` | Run a market reseed now with the saved schedule (backup → clear bot listings → seed) | None |
 

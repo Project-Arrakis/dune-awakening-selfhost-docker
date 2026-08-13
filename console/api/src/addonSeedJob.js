@@ -28,6 +28,18 @@ const PAYMENT_SENTINEL_EXPIRY = 999999999;
 const MAX_RUN_DETAIL_LENGTH = 500;
 const MAX_SEED_PLAN_BYTES = 10 * 1024 * 1024;
 
+// Bot-sold standalone augments are pinned to the bottom 20% of their stat
+// ranges: crafting from the schematic keeps the chance of a better roll.
+// Whether those bottom-roll items also undercut their schematics is the
+// schedule's augmentPricing choice ("discounted", the default) or keep the
+// plan's original augment item prices ("original").
+const AUGMENT_TEMPLATE_PATTERN = /^T\d+_Augment_/i;
+const AUGMENT_STAT_ROLL = 0.2;
+
+export function normalizeAugmentPricing(value) {
+  return value === "original" ? "original" : "discounted";
+}
+
 export function normalizeSeedSchedule(payload = {}, previous = {}) {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
     throw new Error("Seed schedule must be a JSON object.");
@@ -50,6 +62,7 @@ export function normalizeSeedSchedule(payload = {}, previous = {}) {
     intervalMinutes: clampedIntegerField(payload.intervalMinutes ?? previous.intervalMinutes ?? 15, "intervalMinutes", 10, 1440),
     exchangeId,
     priceMultiplier: integerField(payload.priceMultiplier ?? previous.priceMultiplier ?? 5, "priceMultiplier", 1, 100),
+    augmentPricing: normalizeAugmentPricing(payload.augmentPricing ?? previous.augmentPricing),
     // Who owns this schedule: "addon" (bridge-managed; scheduled runs re-verify
     // the addon's approved permissions) or "console" (first-class Market Bot;
     // authorized by RBAC at save time). Deliberately NOT read from the payload —
@@ -126,6 +139,7 @@ export function loadMarketSeedPlan(config, addonId = EDA_EXCHANGE_BOT_ADDON_ID) 
   if (!plan || typeof plan !== "object" || Array.isArray(plan)) throw new Error("Addon market seed plan must be a JSON object.");
   if (!Array.isArray(plan.rows) || !plan.rows.length) throw new Error("Addon market seed plan has no seed rows.");
   const sourceMultiplier = Math.max(1, Number(plan.price_multiplier) || 1);
+  const augmentRolls = augmentStatRollCounts(config);
   const rows = plan.rows.map((row, index) => {
     const templateId = String(row?.template_id ?? "").trim();
     if (!templateId || templateId.length > 200) throw new Error(`Addon market seed plan row ${index + 1} has an invalid template_id.`);
@@ -139,6 +153,9 @@ export function loadMarketSeedPlan(config, addonId = EDA_EXCHANGE_BOT_ADDON_ID) 
     const qualityLevel = clampInteger(row?.quality_level, 0, 0, 5);
     const durMax = clampInteger(row?.durability_max ?? row?.durability_cur ?? 100, 100, 100, 200);
     const durCur = Math.min(clampInteger(row?.durability_cur ?? durMax, durMax, 100, 200), durMax);
+    const statRolls = kind !== "schematic" && AUGMENT_TEMPLATE_PATTERN.test(templateId)
+      ? Array.from({ length: augmentRolls.get(templateId) ?? 1 }, () => AUGMENT_STAT_ROLL)
+      : null;
     return {
       templateId,
       stackSize,
@@ -148,17 +165,54 @@ export function loadMarketSeedPlan(config, addonId = EDA_EXCHANGE_BOT_ADDON_ID) 
       qualityLevel,
       kind,
       listings,
-      itemStats: itemStatsJson(durCur, durMax)
+      itemStats: itemStatsJson(durCur, durMax, statRolls)
     };
   });
   return { sourceMultiplier, rows };
 }
 
+// Stat roll counts per augment template, derived from the bundled
+// runtime/data/augment-compatibility.json the same way duneDb.js
+// augmentRollCount() does: explicit rollCount, else the widest gradeEffects
+// list, else the effectSummary segments. Missing catalog data falls back to a
+// single roll in loadMarketSeedPlan.
+function augmentStatRollCounts(config) {
+  const counts = new Map();
+  let augments = {};
+  try {
+    const parsed = JSON.parse(readFileSync(resolve(config.repoRoot, "runtime/data/augment-compatibility.json"), "utf8"));
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed) && parsed.augments && typeof parsed.augments === "object") {
+      augments = parsed.augments;
+    }
+  } catch {
+    return counts;
+  }
+  for (const [templateId, entry] of Object.entries(augments)) {
+    const explicit = Number(entry?.rollCount ?? entry?.statRollCount);
+    if (Number.isFinite(explicit) && explicit > 0) {
+      counts.set(templateId, Math.trunc(explicit));
+      continue;
+    }
+    const gradeEffects = entry?.gradeEffects && typeof entry.gradeEffects === "object" ? Object.values(entry.gradeEffects) : [];
+    const effectCounts = gradeEffects.filter(Array.isArray).map((effects) => effects.length).filter((count) => count > 0);
+    if (effectCounts.length > 0) {
+      counts.set(templateId, Math.max(...effectCounts));
+      continue;
+    }
+    if (typeof entry?.effectSummary === "string" && entry.effectSummary.trim()) {
+      counts.set(templateId, Math.max(1, entry.effectSummary.split(";").map((part) => part.trim()).filter(Boolean).length));
+    }
+  }
+  return counts;
+}
+
 export function buildMarketSeedSql(plan, schedule) {
   const exchangeId = requireSeedExchangeId(schedule);
   const multiplier = schedule.priceMultiplier;
+  const augmentPricing = normalizeAugmentPricing(schedule.augmentPricing);
+  const augmentSchematicPrices = augmentSchematicPriceMap(plan.rows);
   const valuesSql = plan.rows.map((row) => {
-    const price = roundPrice((row.price / plan.sourceMultiplier) * multiplier);
+    const price = roundPrice((seedRowBasePrice(row, augmentPricing, augmentSchematicPrices) / plan.sourceMultiplier) * multiplier);
     return `(${sqlLiteral(row.templateId)},${row.stackSize},${price},${row.categoryMask},${row.categoryDepth},${row.qualityLevel},${sqlLiteral(row.kind)},${row.listings},${sqlLiteral(row.itemStats)})`;
   }).join(",\n") || "(NULL,1,0,0,0,0,'equippable',0,'{}')";
 
@@ -283,14 +337,41 @@ function requireSeedExchangeId(schedule) {
   return exchangeId;
 }
 
-function itemStatsJson(durCur, durMax) {
-  return JSON.stringify({
+function augmentSchematicPriceMap(rows) {
+  const prices = new Map();
+  for (const row of rows) {
+    if (row.kind === "schematic" && AUGMENT_TEMPLATE_PATTERN.test(row.templateId)) {
+      prices.set(`${row.templateId}:${row.qualityLevel}`, row.price);
+    }
+  }
+  return prices;
+}
+
+// "discounted" augment pricing sells the bot's ready-made (bottom-roll)
+// augment items below their patterns: half the matching schematic's price at
+// the same grade, or 1/20 of the item's own plan price when no schematic is
+// listed — the plan's original augment item ladder (19M-37.5M) is 20x the
+// discounted one, so both paths land on the same scale.
+function seedRowBasePrice(row, augmentPricing, augmentSchematicPrices) {
+  if (augmentPricing !== "discounted" || row.kind === "schematic" || !AUGMENT_TEMPLATE_PATTERN.test(row.templateId)) {
+    return row.price;
+  }
+  const schematicPrice = augmentSchematicPrices.get(`${row.templateId}_Schematic:${row.qualityLevel}`);
+  return schematicPrice ? schematicPrice / 2 : row.price / 20;
+}
+
+function itemStatsJson(durCur, durMax, statRolls = null) {
+  const stats = {
     FItemStackAndDurabilityStats: [[], {
       CurrentDurability: durCur,
       MaxDurability: durMax,
       DecayedMaxDurability: durMax
     }]
-  });
+  };
+  if (Array.isArray(statRolls) && statRolls.length > 0) {
+    stats.FAugmentItemStats = [[], { StatRolls: statRolls, AppliedEffectIndices: [] }];
+  }
+  return JSON.stringify(stats);
 }
 
 function decimalString(value) {

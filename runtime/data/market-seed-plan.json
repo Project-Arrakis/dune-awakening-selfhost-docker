@@ -4,16 +4,16 @@
   "price_multiplier": 5,
   "market_bot_class": "Revy",
   "summary": {
-    "listings": 5874,
-    "unique_rows": 2910,
-    "unique_templates": 1465,
+    "listings": 5800,
+    "unique_rows": 2873,
+    "unique_templates": 1423,
     "price_multiplier": 5,
     "listings_per_grade": 2,
-    "equippable_listings": 2976,
+    "equippable_listings": 2900,
     "schematic_listings": 2464,
     "resource_listings": 198,
     "ammunition_listings": 12,
-    "consumable_listings": 18,
+    "consumable_listings": 20,
     "utility_listings": 194,
     "cartography_listings": 12,
     "resource_units": 96446
@@ -45,7 +45,7 @@
     },
     {
       "category": "16777216 / depth 3",
-      "listings": 66
+      "listings": 64
     },
     {
       "category": "84017152 / depth 2",
@@ -53,7 +53,7 @@
     },
     {
       "category": "256 / depth 3",
-      "listings": 57
+      "listings": 55
     },
     {
       "category": "67371264 / depth 3",
@@ -61,7 +61,7 @@
     },
     {
       "category": "16777472 / depth 3",
-      "listings": 54
+      "listings": 52
     },
     {
       "category": "67108864 / depth 2",
@@ -69,7 +69,7 @@
     },
     {
       "category": "768 / depth 3",
-      "listings": 48
+      "listings": 46
     },
     {
       "category": "67174400 / depth 2",
@@ -77,7 +77,7 @@
     },
     {
       "category": "0 / depth 3",
-      "listings": 47
+      "listings": 45
     },
     {
       "category": "16973824 / depth 3",
@@ -85,19 +85,19 @@
     },
     {
       "category": "1024 / depth 3",
-      "listings": 43
+      "listings": 40
     },
     {
       "category": "131328 / depth 3",
-      "listings": 43
+      "listings": 40
     },
     {
       "category": "512 / depth 3",
-      "listings": 41
+      "listings": 39
     },
     {
       "category": "17301504 / depth 2",
-      "listings": 38
+      "listings": 36
     },
     {
       "category": "16974080 / depth 3",
@@ -105,19 +105,19 @@
     },
     {
       "category": "65792 / depth 3",
-      "listings": 35
-    },
-    {
-      "category": "131072 / depth 3",
-      "listings": 35
-    },
-    {
-      "category": "66304 / depth 3",
       "listings": 33
     },
     {
+      "category": "131072 / depth 3",
+      "listings": 33
+    },
+    {
+      "category": "66304 / depth 3",
+      "listings": 30
+    },
+    {
       "category": "17104896 / depth 2",
-      "listings": 29
+      "listings": 27
     },
     {
       "category": "16975872 / depth 3",
@@ -125,11 +125,11 @@
     },
     {
       "category": "131840 / depth 3",
-      "listings": 27
+      "listings": 25
     },
     {
       "category": "131584 / depth 3",
-      "listings": 27
+      "listings": 25
     },
     {
       "category": "16973824 / depth 2",
@@ -141,7 +141,7 @@
     },
     {
       "category": "16908288 / depth 2",
-      "listings": 26
+      "listings": 24
     },
     {
       "category": "33621760 / depth 3",
@@ -157,15 +157,15 @@
     },
     {
       "category": "66560 / depth 3",
-      "listings": 23
+      "listings": 21
     },
     {
       "category": "65536 / depth 3",
-      "listings": 23
+      "listings": 21
     },
     {
       "category": "66048 / depth 3",
-      "listings": 23
+      "listings": 21
     },
     {
       "category": "17367040 / depth 2",
@@ -173,7 +173,7 @@
     },
     {
       "category": "17235968 / depth 2",
-      "listings": 23
+      "listings": 21
     },
     {
       "category": "17039360 / depth 2",
@@ -281,7 +281,7 @@
     },
     {
       "category": "50725376 / depth 3",
-      "listings": 9
+      "listings": 10
     },
     {
       "category": "33883392 / depth 3",
@@ -401,7 +401,7 @@
     },
     {
       "category": "196608 / depth 2",
-      "listings": 4
+      "listings": 9
     },
     {
       "category": "33882112 / depth 3",
@@ -8358,20 +8358,6 @@
       "durability_max": 145.0
     },
     {
-      "template_id": "Stillsuit_Choam_Unique_Dashed02_Top",
-      "display_name": "Desert Dasher Garment",
-      "kind": "equippable",
-      "stack_size": 1,
-      "price": 600000,
-      "category_mask": 131328,
-      "category_depth": 3,
-      "quality_level": 0,
-      "special_boost": false,
-      "listings": 2,
-      "durability_cur": 110.0,
-      "durability_max": 110.0
-    },
-    {
       "template_id": "Stillsuit_Choam_Unique_Dashed02_Top_Schematic",
       "display_name": "Desert Dasher Garment",
       "kind": "schematic",
@@ -12766,20 +12752,6 @@
       "listings": 2,
       "durability_cur": 200.0,
       "durability_max": 200.0
-    },
-    {
-      "template_id": "UniqueAr_Burst_02",
-      "display_name": "Fila's Regret",
-      "kind": "equippable",
-      "stack_size": 1,
-      "price": 320000,
-      "category_mask": 17301504,
-      "category_depth": 2,
-      "quality_level": 0,
-      "special_boost": false,
-      "listings": 2,
-      "durability_cur": 110.0,
-      "durability_max": 110.0
     },
     {
       "template_id": "UniqueAr_Burst_02_Schematic",
@@ -17990,20 +17962,6 @@
       "durability_max": 145.0
     },
     {
-      "template_id": "Combat_Heavy_Unique_PowerEfficient_Gloves_02",
-      "display_name": "Iri's Gauntlets",
-      "kind": "equippable",
-      "stack_size": 1,
-      "price": 230000,
-      "category_mask": 66304,
-      "category_depth": 3,
-      "quality_level": 0,
-      "special_boost": false,
-      "listings": 2,
-      "durability_cur": 110.0,
-      "durability_max": 110.0
-    },
-    {
       "template_id": "Combat_Heavy_Unique_PowerEfficient_Gloves_02_Schematic",
       "display_name": "Iri's Gauntlets",
       "kind": "schematic",
@@ -20230,202 +20188,6 @@
       "durability_max": 100.0
     },
     {
-      "template_id": "Combat_Choam_Heavy02_Boots",
-      "display_name": "Kirab Heavy Boots",
-      "kind": "equippable",
-      "stack_size": 1,
-      "price": 13000,
-      "category_mask": 66560,
-      "category_depth": 3,
-      "quality_level": 0,
-      "special_boost": false,
-      "listings": 2,
-      "durability_cur": 110.0,
-      "durability_max": 110.0
-    },
-    {
-      "template_id": "Combat_Choam_Heavy02_Gloves",
-      "display_name": "Kirab Heavy Gauntlet",
-      "kind": "equippable",
-      "stack_size": 1,
-      "price": 10000,
-      "category_mask": 66304,
-      "category_depth": 3,
-      "quality_level": 0,
-      "special_boost": false,
-      "listings": 2,
-      "durability_cur": 110.0,
-      "durability_max": 110.0
-    },
-    {
-      "template_id": "Combat_Choam_Heavy02_Helmet",
-      "display_name": "Kirab Heavy Headwrap",
-      "kind": "equippable",
-      "stack_size": 1,
-      "price": 15000,
-      "category_mask": 65536,
-      "category_depth": 3,
-      "quality_level": 0,
-      "special_boost": false,
-      "listings": 2,
-      "durability_cur": 110.0,
-      "durability_max": 110.0
-    },
-    {
-      "template_id": "Combat_Choam_Heavy02_Top",
-      "display_name": "Kirab Heavy Jerkin",
-      "kind": "equippable",
-      "stack_size": 1,
-      "price": 20000,
-      "category_mask": 65792,
-      "category_depth": 3,
-      "quality_level": 0,
-      "special_boost": false,
-      "listings": 2,
-      "durability_cur": 110.0,
-      "durability_max": 110.0
-    },
-    {
-      "template_id": "Combat_Choam_Heavy02_Bottom",
-      "display_name": "Kirab Heavy Pants",
-      "kind": "equippable",
-      "stack_size": 1,
-      "price": 18000,
-      "category_mask": 66048,
-      "category_depth": 3,
-      "quality_level": 0,
-      "special_boost": false,
-      "listings": 2,
-      "durability_cur": 110.0,
-      "durability_max": 110.0
-    },
-    {
-      "template_id": "Combat_Choam_Light02_Boots",
-      "display_name": "Kirab Scout Boots",
-      "kind": "equippable",
-      "stack_size": 1,
-      "price": 8500,
-      "category_mask": 1024,
-      "category_depth": 3,
-      "quality_level": 0,
-      "special_boost": false,
-      "listings": 2,
-      "durability_cur": 110.0,
-      "durability_max": 110.0
-    },
-    {
-      "template_id": "Combat_Choam_Light02_Gloves",
-      "display_name": "Kirab Scout Gloves",
-      "kind": "equippable",
-      "stack_size": 1,
-      "price": 7000,
-      "category_mask": 768,
-      "category_depth": 3,
-      "quality_level": 0,
-      "special_boost": false,
-      "listings": 2,
-      "durability_cur": 110.0,
-      "durability_max": 110.0
-    },
-    {
-      "template_id": "Combat_Choam_Light02_Helmet",
-      "display_name": "Kirab Scout Helmet",
-      "kind": "equippable",
-      "stack_size": 1,
-      "price": 10000,
-      "category_mask": 0,
-      "category_depth": 3,
-      "quality_level": 0,
-      "special_boost": false,
-      "listings": 2,
-      "durability_cur": 110.0,
-      "durability_max": 110.0
-    },
-    {
-      "template_id": "Combat_Choam_Light02_Top",
-      "display_name": "Kirab Scout Jacket",
-      "kind": "equippable",
-      "stack_size": 1,
-      "price": 13000,
-      "category_mask": 256,
-      "category_depth": 3,
-      "quality_level": 0,
-      "special_boost": false,
-      "listings": 2,
-      "durability_cur": 110.0,
-      "durability_max": 110.0
-    },
-    {
-      "template_id": "Combat_Choam_Light02_Bottom",
-      "display_name": "Kirab Scout Pants",
-      "kind": "equippable",
-      "stack_size": 1,
-      "price": 12000,
-      "category_mask": 512,
-      "category_depth": 3,
-      "quality_level": 0,
-      "special_boost": false,
-      "listings": 2,
-      "durability_cur": 110.0,
-      "durability_max": 110.0
-    },
-    {
-      "template_id": "Stillsuit_Choam_02_Top",
-      "display_name": "Kirab Stillsuit Body",
-      "kind": "equippable",
-      "stack_size": 1,
-      "price": 55000,
-      "category_mask": 131328,
-      "category_depth": 3,
-      "quality_level": 0,
-      "special_boost": false,
-      "listings": 2,
-      "durability_cur": 110.0,
-      "durability_max": 110.0
-    },
-    {
-      "template_id": "Stillsuit_Choam_02_Boots",
-      "display_name": "Kirab Stillsuit Boots",
-      "kind": "equippable",
-      "stack_size": 1,
-      "price": 22000,
-      "category_mask": 131840,
-      "category_depth": 3,
-      "quality_level": 0,
-      "special_boost": false,
-      "listings": 2,
-      "durability_cur": 110.0,
-      "durability_max": 110.0
-    },
-    {
-      "template_id": "Stillsuit_Choam_02_Gloves",
-      "display_name": "Kirab Stillsuit Gloves",
-      "kind": "equippable",
-      "stack_size": 1,
-      "price": 22000,
-      "category_mask": 131584,
-      "category_depth": 3,
-      "quality_level": 0,
-      "special_boost": false,
-      "listings": 2,
-      "durability_cur": 110.0,
-      "durability_max": 110.0
-    },
-    {
-      "template_id": "Stillsuit_Choam_02_Mask",
-      "display_name": "Kirab Stillsuit Mask",
-      "kind": "equippable",
-      "stack_size": 1,
-      "price": 28000,
-      "category_mask": 131072,
-      "category_depth": 3,
-      "quality_level": 0,
-      "special_boost": false,
-      "listings": 2,
-      "durability_cur": 110.0,
-      "durability_max": 110.0
-    },
-    {
       "template_id": "MiningTool_2h_Unique_04",
       "display_name": "Kynes's Cutteray",
       "kind": "utility",
@@ -21292,20 +21054,6 @@
       "listings": 2,
       "durability_cur": 165.0,
       "durability_max": 165.0
-    },
-    {
-      "template_id": "SMG_Unique_LargeMag_02",
-      "display_name": "Legion Tattoo",
-      "kind": "equippable",
-      "stack_size": 1,
-      "price": 320000,
-      "category_mask": 17104896,
-      "category_depth": 2,
-      "quality_level": 0,
-      "special_boost": false,
-      "listings": 2,
-      "durability_cur": 110.0,
-      "durability_max": 110.0
     },
     {
       "template_id": "SMG_Unique_LargeMag_02_Schematic",
@@ -22568,6 +22316,20 @@
       "durability_max": 125.0
     },
     {
+      "template_id": "AntiRadiationPill",
+      "display_name": "Iodine Pill",
+      "kind": "consumable",
+      "stack_size": 20,
+      "price": 800,
+      "category_mask": 50725376,
+      "category_depth": 3,
+      "quality_level": 0,
+      "special_boost": false,
+      "listings": 2,
+      "durability_cur": 100.0,
+      "durability_max": 100.0
+    },
+    {
       "template_id": "SpiceAddictionConsumable_02",
       "display_name": "Melange Spiced Beer",
       "kind": "consumable",
@@ -22806,40 +22568,12 @@
       "durability_max": 165.0
     },
     {
-      "template_id": "Combat_Neut_SmugglerDeserterUnique02_Boots",
-      "display_name": "Mendia's Boots",
-      "kind": "equippable",
-      "stack_size": 1,
-      "price": 160000,
-      "category_mask": 1024,
-      "category_depth": 3,
-      "quality_level": 0,
-      "special_boost": false,
-      "listings": 2,
-      "durability_cur": 110.0,
-      "durability_max": 110.0
-    },
-    {
       "template_id": "Combat_Neut_SmugglerDeserterUnique02_Boots_Schematic",
       "display_name": "Mendia's Boots",
       "kind": "schematic",
       "stack_size": 1,
       "price": 38000,
       "category_mask": 327680,
-      "category_depth": 3,
-      "quality_level": 0,
-      "special_boost": false,
-      "listings": 2,
-      "durability_cur": 110.0,
-      "durability_max": 110.0
-    },
-    {
-      "template_id": "Combat_Neut_SmugglerDeserterUnique02_Gloves",
-      "display_name": "Mendia's Gauntlets",
-      "kind": "equippable",
-      "stack_size": 1,
-      "price": 140000,
-      "category_mask": 768,
       "category_depth": 3,
       "quality_level": 0,
       "special_boost": false,
@@ -22862,40 +22596,12 @@
       "durability_max": 110.0
     },
     {
-      "template_id": "Combat_Neut_SmugglerDeserterUnique02_Top",
-      "display_name": "Mendia's Jacket",
-      "kind": "equippable",
-      "stack_size": 1,
-      "price": 260000,
-      "category_mask": 256,
-      "category_depth": 3,
-      "quality_level": 0,
-      "special_boost": false,
-      "listings": 2,
-      "durability_cur": 110.0,
-      "durability_max": 110.0
-    },
-    {
       "template_id": "Combat_Neut_SmugglerDeserterUnique02_Top_Schematic",
       "display_name": "Mendia's Jacket",
       "kind": "schematic",
       "stack_size": 1,
       "price": 38000,
       "category_mask": 327680,
-      "category_depth": 3,
-      "quality_level": 0,
-      "special_boost": false,
-      "listings": 2,
-      "durability_cur": 110.0,
-      "durability_max": 110.0
-    },
-    {
-      "template_id": "Combat_Neut_SmugglerDeserterUnique02_Bottom",
-      "display_name": "Mendia's Pants",
-      "kind": "equippable",
-      "stack_size": 1,
-      "price": 220000,
-      "category_mask": 512,
       "category_depth": 3,
       "quality_level": 0,
       "special_boost": false,
@@ -22918,40 +22624,12 @@
       "durability_max": 110.0
     },
     {
-      "template_id": "Combat_Neut_SmugglerDeserterUnique02_Helmet",
-      "display_name": "Mendia's Wrap",
-      "kind": "equippable",
-      "stack_size": 1,
-      "price": 200000,
-      "category_mask": 0,
-      "category_depth": 3,
-      "quality_level": 0,
-      "special_boost": false,
-      "listings": 2,
-      "durability_cur": 110.0,
-      "durability_max": 110.0
-    },
-    {
       "template_id": "Combat_Neut_SmugglerDeserterUnique02_Helmet_Schematic",
       "display_name": "Mendia's Wrap",
       "kind": "schematic",
       "stack_size": 1,
       "price": 38000,
       "category_mask": 327680,
-      "category_depth": 3,
-      "quality_level": 0,
-      "special_boost": false,
-      "listings": 2,
-      "durability_cur": 110.0,
-      "durability_max": 110.0
-    },
-    {
-      "template_id": "Stillsuit_Unique_Armored_02_Boots",
-      "display_name": "Menol's Stillsuit Boots",
-      "kind": "equippable",
-      "stack_size": 1,
-      "price": 180000,
-      "category_mask": 131840,
       "category_depth": 3,
       "quality_level": 0,
       "special_boost": false,
@@ -22974,20 +22652,6 @@
       "durability_max": 110.0
     },
     {
-      "template_id": "Stillsuit_Unique_Armored_02_Top",
-      "display_name": "Menol's Stillsuit Garment",
-      "kind": "equippable",
-      "stack_size": 1,
-      "price": 410000,
-      "category_mask": 131328,
-      "category_depth": 3,
-      "quality_level": 0,
-      "special_boost": false,
-      "listings": 2,
-      "durability_cur": 110.0,
-      "durability_max": 110.0
-    },
-    {
       "template_id": "Stillsuit_Unique_Armored_02_Top_Schematic",
       "display_name": "Menol's Stillsuit Garment",
       "kind": "schematic",
@@ -23002,40 +22666,12 @@
       "durability_max": 110.0
     },
     {
-      "template_id": "Stillsuit_Unique_Armored_02_Gloves",
-      "display_name": "Menol's Stillsuit Gloves",
-      "kind": "equippable",
-      "stack_size": 1,
-      "price": 160000,
-      "category_mask": 131584,
-      "category_depth": 3,
-      "quality_level": 0,
-      "special_boost": false,
-      "listings": 2,
-      "durability_cur": 110.0,
-      "durability_max": 110.0
-    },
-    {
       "template_id": "Stillsuit_Unique_Armored_02_Gloves_Schematic",
       "display_name": "Menol's Stillsuit Gloves",
       "kind": "schematic",
       "stack_size": 1,
       "price": 38000,
       "category_mask": 328192,
-      "category_depth": 3,
-      "quality_level": 0,
-      "special_boost": false,
-      "listings": 2,
-      "durability_cur": 110.0,
-      "durability_max": 110.0
-    },
-    {
-      "template_id": "Stillsuit_Unique_Armored_02_Mask",
-      "display_name": "Menol's Stillsuit Mask",
-      "kind": "equippable",
-      "stack_size": 1,
-      "price": 220000,
-      "category_mask": 131072,
       "category_depth": 3,
       "quality_level": 0,
       "special_boost": false,
@@ -24346,40 +23982,12 @@
       "durability_max": 180.0
     },
     {
-      "template_id": "Combat_Neut_AtreidesDeserterUnique01_Boots",
-      "display_name": "Oathbreaker Boots",
-      "kind": "equippable",
-      "stack_size": 1,
-      "price": 200000,
-      "category_mask": 66560,
-      "category_depth": 3,
-      "quality_level": 0,
-      "special_boost": false,
-      "listings": 2,
-      "durability_cur": 110.0,
-      "durability_max": 110.0
-    },
-    {
       "template_id": "Schematic_UniqueOathbreakerFeet",
       "display_name": "Oathbreaker Boots",
       "kind": "schematic",
       "stack_size": 1,
       "price": 38000,
       "category_mask": 327936,
-      "category_depth": 3,
-      "quality_level": 0,
-      "special_boost": false,
-      "listings": 2,
-      "durability_cur": 110.0,
-      "durability_max": 110.0
-    },
-    {
-      "template_id": "Combat_Neut_AtreidesDeserterUnique01_Top",
-      "display_name": "Oathbreaker Chestpiece",
-      "kind": "equippable",
-      "stack_size": 1,
-      "price": 250000,
-      "category_mask": 65792,
       "category_depth": 3,
       "quality_level": 0,
       "special_boost": false,
@@ -24402,20 +24010,6 @@
       "durability_max": 110.0
     },
     {
-      "template_id": "Combat_Neut_AtreidesDeserterUnique01_Gloves",
-      "display_name": "Oathbreaker Gauntlets",
-      "kind": "equippable",
-      "stack_size": 1,
-      "price": 160000,
-      "category_mask": 66304,
-      "category_depth": 3,
-      "quality_level": 0,
-      "special_boost": false,
-      "listings": 2,
-      "durability_cur": 110.0,
-      "durability_max": 110.0
-    },
-    {
       "template_id": "Schematic_UniqueOathbreakerHands",
       "display_name": "Oathbreaker Gauntlets",
       "kind": "schematic",
@@ -24430,40 +24024,12 @@
       "durability_max": 110.0
     },
     {
-      "template_id": "Combat_Neut_AtreidesDeserterUnique01_Helmet",
-      "display_name": "Oathbreaker Headwrap",
-      "kind": "equippable",
-      "stack_size": 1,
-      "price": 200000,
-      "category_mask": 65536,
-      "category_depth": 3,
-      "quality_level": 0,
-      "special_boost": false,
-      "listings": 2,
-      "durability_cur": 110.0,
-      "durability_max": 110.0
-    },
-    {
       "template_id": "Schematic_UniqueOathbreakerHead",
       "display_name": "Oathbreaker Headwrap",
       "kind": "schematic",
       "stack_size": 1,
       "price": 38000,
       "category_mask": 327936,
-      "category_depth": 3,
-      "quality_level": 0,
-      "special_boost": false,
-      "listings": 2,
-      "durability_cur": 110.0,
-      "durability_max": 110.0
-    },
-    {
-      "template_id": "Combat_Neut_AtreidesDeserterUnique01_Bottom",
-      "display_name": "Oathbreaker Pants",
-      "kind": "equippable",
-      "stack_size": 1,
-      "price": 200000,
-      "category_mask": 66048,
       "category_depth": 3,
       "quality_level": 0,
       "special_boost": false,
@@ -27760,20 +27326,6 @@
       "listings": 2,
       "durability_cur": 200.0,
       "durability_max": 200.0
-    },
-    {
-      "template_id": "UniqueSword",
-      "display_name": "Pseudo Pulse-Sword",
-      "kind": "equippable",
-      "stack_size": 1,
-      "price": 250000,
-      "category_mask": 16777472,
-      "category_depth": 3,
-      "quality_level": 0,
-      "special_boost": false,
-      "listings": 2,
-      "durability_cur": 110.0,
-      "durability_max": 110.0
     },
     {
       "template_id": "Schematic_UniqueChoamSword",
@@ -32634,20 +32186,6 @@
       "durability_max": 110.0
     },
     {
-      "template_id": "Kindjal_Unique_Blood_02",
-      "display_name": "Scipio's Drinker",
-      "kind": "equippable",
-      "stack_size": 1,
-      "price": 250000,
-      "category_mask": 16777216,
-      "category_depth": 3,
-      "quality_level": 0,
-      "special_boost": false,
-      "listings": 2,
-      "durability_cur": 110.0,
-      "durability_max": 110.0
-    },
-    {
       "template_id": "Kindjal_Unique_Blood_02_Schematic",
       "display_name": "Scipio's Drinker",
       "kind": "schematic",
@@ -34454,20 +33992,6 @@
       "durability_max": 110.0
     },
     {
-      "template_id": "UniqueScattergun1",
-      "display_name": "Shredder",
-      "kind": "equippable",
-      "stack_size": 1,
-      "price": 320000,
-      "category_mask": 17235968,
-      "category_depth": 2,
-      "quality_level": 0,
-      "special_boost": false,
-      "listings": 2,
-      "durability_cur": 110.0,
-      "durability_max": 110.0
-    },
-    {
       "template_id": "Silicone",
       "display_name": "Silicone Block",
       "kind": "resource",
@@ -34984,20 +34508,6 @@
       "listings": 2,
       "durability_cur": 165.0,
       "durability_max": 165.0
-    },
-    {
-      "template_id": "Combat_Light_Unique_WormThreat_Boots_02",
-      "display_name": "Softstep Boots",
-      "kind": "equippable",
-      "stack_size": 1,
-      "price": 220000,
-      "category_mask": 1024,
-      "category_depth": 3,
-      "quality_level": 0,
-      "special_boost": false,
-      "listings": 2,
-      "durability_cur": 110.0,
-      "durability_max": 110.0
     },
     {
       "template_id": "Combat_Light_Unique_WormThreat_Boots_02_Schematic",
@@ -35588,20 +35098,6 @@
       "durability_max": 145.0
     },
     {
-      "template_id": "AtreSmg2",
-      "display_name": "Standard Disruptor M11",
-      "kind": "equippable",
-      "stack_size": 1,
-      "price": 16000,
-      "category_mask": 17104896,
-      "category_depth": 2,
-      "quality_level": 0,
-      "special_boost": false,
-      "listings": 2,
-      "durability_cur": 110.0,
-      "durability_max": 110.0
-    },
-    {
       "template_id": "WindTrapFilter2",
       "display_name": "Standard Filter",
       "kind": "resource",
@@ -35614,76 +35110,6 @@
       "listings": 2,
       "durability_cur": 145.0,
       "durability_max": 145.0
-    },
-    {
-      "template_id": "Scattergun_Prototype",
-      "display_name": "Standard GRDA 44",
-      "kind": "equippable",
-      "stack_size": 1,
-      "price": 17000,
-      "category_mask": 17235968,
-      "category_depth": 2,
-      "quality_level": 0,
-      "special_boost": false,
-      "listings": 2,
-      "durability_cur": 110.0,
-      "durability_max": 110.0
-    },
-    {
-      "template_id": "HarkAr3",
-      "display_name": "Standard Karpov 38",
-      "kind": "equippable",
-      "stack_size": 1,
-      "price": 16000,
-      "category_mask": 17301504,
-      "category_depth": 2,
-      "quality_level": 0,
-      "special_boost": false,
-      "listings": 2,
-      "durability_cur": 110.0,
-      "durability_max": 110.0
-    },
-    {
-      "template_id": "Kindjal_0",
-      "display_name": "Standard Kindjal",
-      "kind": "equippable",
-      "stack_size": 1,
-      "price": 14000,
-      "category_mask": 16777216,
-      "category_depth": 3,
-      "quality_level": 0,
-      "special_boost": false,
-      "listings": 2,
-      "durability_cur": 110.0,
-      "durability_max": 110.0
-    },
-    {
-      "template_id": "ChoamSda3",
-      "display_name": "Standard Maula Pistol",
-      "kind": "equippable",
-      "stack_size": 1,
-      "price": 16000,
-      "category_mask": 16908288,
-      "category_depth": 2,
-      "quality_level": 0,
-      "special_boost": false,
-      "listings": 2,
-      "durability_cur": 110.0,
-      "durability_max": 110.0
-    },
-    {
-      "template_id": "CHOAMSword",
-      "display_name": "Standard Sword",
-      "kind": "equippable",
-      "stack_size": 1,
-      "price": 22000,
-      "category_mask": 16777472,
-      "category_depth": 3,
-      "quality_level": 0,
-      "special_boost": false,
-      "listings": 2,
-      "durability_cur": 110.0,
-      "durability_max": 110.0
     },
     {
       "template_id": "UniqueScattergun_Fire_05",
@@ -36930,6 +36356,76 @@
       "listings": 2,
       "durability_cur": 180.0,
       "durability_max": 180.0
+    },
+    {
+      "template_id": "Radiation_Suit_T6_Unique_Armored",
+      "display_name": "Tactical Radiation Suit",
+      "kind": "equippable",
+      "stack_size": 1,
+      "price": 5500000,
+      "category_mask": 196608,
+      "category_depth": 2,
+      "quality_level": 1,
+      "special_boost": false,
+      "listings": 2,
+      "durability_cur": 184.0,
+      "durability_max": 184.0
+    },
+    {
+      "template_id": "Radiation_Suit_T6_Unique_Armored",
+      "display_name": "Tactical Radiation Suit",
+      "kind": "equippable",
+      "stack_size": 1,
+      "price": 6900000,
+      "category_mask": 196608,
+      "category_depth": 2,
+      "quality_level": 2,
+      "special_boost": false,
+      "listings": 2,
+      "durability_cur": 188.0,
+      "durability_max": 188.0
+    },
+    {
+      "template_id": "Radiation_Suit_T6_Unique_Armored",
+      "display_name": "Tactical Radiation Suit",
+      "kind": "equippable",
+      "stack_size": 1,
+      "price": 8300000,
+      "category_mask": 196608,
+      "category_depth": 2,
+      "quality_level": 3,
+      "special_boost": false,
+      "listings": 2,
+      "durability_cur": 192.0,
+      "durability_max": 192.0
+    },
+    {
+      "template_id": "Radiation_Suit_T6_Unique_Armored",
+      "display_name": "Tactical Radiation Suit",
+      "kind": "equippable",
+      "stack_size": 1,
+      "price": 9600000,
+      "category_mask": 196608,
+      "category_depth": 2,
+      "quality_level": 4,
+      "special_boost": false,
+      "listings": 2,
+      "durability_cur": 196.0,
+      "durability_max": 196.0
+    },
+    {
+      "template_id": "Radiation_Suit_T6_Unique_Armored",
+      "display_name": "Tactical Radiation Suit",
+      "kind": "equippable",
+      "stack_size": 1,
+      "price": 11000000,
+      "category_mask": 196608,
+      "category_depth": 2,
+      "quality_level": 5,
+      "special_boost": false,
+      "listings": 2,
+      "durability_cur": 200.0,
+      "durability_max": 200.0
     },
     {
       "template_id": "Radiation_Suit_T6_Unique_Armored_Schematic",
@@ -40682,20 +40178,6 @@
       "listings": 2,
       "durability_cur": 200.0,
       "durability_max": 200.0
-    },
-    {
-      "template_id": "UniqueSda2",
-      "display_name": "Way of the Wanderer",
-      "kind": "equippable",
-      "stack_size": 1,
-      "price": 320000,
-      "category_mask": 16908288,
-      "category_depth": 2,
-      "quality_level": 0,
-      "special_boost": false,
-      "listings": 2,
-      "durability_cur": 110.0,
-      "durability_max": 110.0
     },
     {
       "template_id": "UniqueSda2_Schematic",
