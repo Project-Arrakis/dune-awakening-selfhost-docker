@@ -152,6 +152,18 @@ test("bundled plan carries the original augment ladder with patterns to discount
   assert.deepEqual([...new Set(itemOnly)], ["T6_Augment_Damage2"]);
 });
 
+test("bundled plan lists the Tactical Radiation Suit at stock and grades 1-5", () => {
+  const plan = JSON.parse(readFileSync(resolve(REPO_ROOT, "runtime/data/market-seed-plan.json"), "utf8"));
+  const rows = plan.rows
+    .filter((row) => row.template_id === "Radiation_Suit_T6_Unique_Armored" && row.kind === "equippable")
+    .sort((a, b) => a.quality_level - b.quality_level);
+  assert.deepEqual(rows.map((row) => row.quality_level), [0, 1, 2, 3, 4, 5]);
+  // T6 grade conventions: durability climbs 180 -> 200 in steps of 4, grade 1
+  // shares the stock price, and higher grades ramp toward ~2x.
+  assert.deepEqual(rows.map((row) => row.durability_cur), [180, 184, 188, 192, 196, 200]);
+  assert.deepEqual(rows.map((row) => row.price), [5500000, 5500000, 6900000, 8300000, 9600000, 11000000]);
+});
+
 test("bundled plan lists two full stacks of iodine pills", () => {
   const plan = JSON.parse(readFileSync(resolve(REPO_ROOT, "runtime/data/market-seed-plan.json"), "utf8"));
   const rows = plan.rows.filter((row) => row.template_id === "AntiRadiationPill");
