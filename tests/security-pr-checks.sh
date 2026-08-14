@@ -50,12 +50,26 @@ fi
 
 printf '\n== ShellCheck ==\n'
 if command -v shellcheck >/dev/null 2>&1; then
-  shellcheck \
+  # -x (follow sourced files): start-postgres.sh sources .env and other
+  # repo scripts, and without -x shellcheck can't resolve them and
+  # reports an SC1091 info-level finding for each -- which still counts
+  # as a non-zero exit and would otherwise abort this whole
+  # security-checks gate under set -euo pipefail. Those sourced files
+  # (.env, runtime/generated/*.env) are optional, runtime-generated,
+  # git-ignored, and genuinely absent in a fresh checkout (including
+  # CI) -- start-postgres.sh itself carries matching
+  # `# shellcheck disable=SC1091` comments on those specific lines.
+  shellcheck -x \
     runtime/scripts/dune \
     runtime/scripts/metrics-stack.sh \
     runtime/scripts/metrics-status.sh \
     tests/metrics-stack-unit.sh \
-    tests/security-pr-checks.sh
+    tests/security-pr-checks.sh \
+    runtime/scripts/lib/secrets.sh \
+    runtime/scripts/start-postgres.sh \
+    runtime/tests/test-postgres-secrets-upgrade-path.sh \
+    runtime/tests/test-secrets-lib.sh \
+    runtime/tests/test-secrets-aead-cross-language.sh
 else
   printf 'SKIP: shellcheck is not installed.\n'
 fi

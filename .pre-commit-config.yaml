@@ -35,10 +35,19 @@ repos:
 
       - id: semgrep
         name: semgrep
+        # Deliberately NOT pass_filenames: false / always_run: true.
+        # Those two settings together mean semgrep receives no file
+        # arguments on every commit and falls back to scanning the
+        # entire repository regardless of what was staged -- any
+        # pre-existing finding anywhere in the repo then blocks every
+        # subsequent commit, even ones that never touch the affected
+        # files. Letting pre-commit's default pass_filenames: true pass
+        # only the staged files restores a fast, scoped local-commit
+        # tier. Full-ruleset, Supply-Chain-aware coverage still runs in
+        # CI via .github/workflows/semgrep.yml on every PR/push/
+        # schedule, unaffected by this change.
         entry: semgrep --error --config p/default
         language: system
-        pass_filenames: false
-        always_run: true
         verbose: false
 
       - id: security-pr-checks
