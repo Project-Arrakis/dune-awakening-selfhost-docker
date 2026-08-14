@@ -9,8 +9,8 @@ fail() {
   exit 1
 }
 
-# Cross-language round-trip proof for the enc:v1:/enc:v2: ciphertext
-# format produced/consumed by runtime/scripts/lib/secrets_aead.py
+# Cross-language round-trip proof for the enc:v2: ciphertext format
+# produced/consumed by runtime/scripts/lib/secrets_aead.py
 # (Python/AESGCM).
 #
 # Why this test exists: a design that merely ASSERTS a given byte
