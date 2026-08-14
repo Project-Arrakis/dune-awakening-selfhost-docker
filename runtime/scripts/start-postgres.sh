@@ -3,9 +3,15 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 
+# The next three sourced files are optional, runtime-generated, git-ignored
+# files that do not exist in a fresh checkout (including CI) -- shellcheck -x
+# cannot resolve them, which is expected, not a real finding.
+# shellcheck disable=SC1091
 [ -f .env ] && . ./.env
+# shellcheck disable=SC1091
 [ -r runtime/generated/battlegroup.env ] && . runtime/generated/battlegroup.env
 
+# shellcheck disable=SC1091
 [ -r runtime/generated/image-tags.env ] && . runtime/generated/image-tags.env
 source runtime/scripts/host-paths.sh
 source runtime/scripts/runtime-env.sh
