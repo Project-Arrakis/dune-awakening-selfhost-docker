@@ -1,5 +1,6 @@
 import { assertIdentifier, intParam, isReadOnlySql, quoteIdentifier, quoteQualified, rowsResult } from "./db.js";
 import { getBridgeRequestSummary } from "./audit.js";
+import { resolvePorts } from "./config.js";
 import { existsSync, readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
@@ -8890,7 +8891,7 @@ export function addonOpsSocSummary() {
 // on cAdvisor's per-container metric quality — a target can be "up"
 // (reachable, scraping successfully) while still only exposing an
 // incomplete/aggregate metric set).
-export async function addonOpsPrometheusHealth(promBaseUrl = process.env.METRICS_PROMETHEUS_URL || `http://127.0.0.1:${process.env.METRICS_PROMETHEUS_PORT || 9090}`) {
+export async function addonOpsPrometheusHealth(promBaseUrl = process.env.METRICS_PROMETHEUS_URL || `http://127.0.0.1:${resolvePorts().metricsPrometheus}`) {
   try {
     const healthRes = await fetch(`${promBaseUrl}/-/healthy`, { signal: AbortSignal.timeout(2000) });
     if (!healthRes.ok) return metricsStackNotRunning();
