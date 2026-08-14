@@ -3,6 +3,44 @@ set -eu
 
 cd "$(dirname "$0")"
 
+reject_root_install() {
+  if [ "$(id -u)" -ne 0 ]; then
+    return
+  fi
+
+  printf '\n%s\n\n' "This project must not be installed as root."
+
+  if [ -n "${SUDO_USER:-}" ] && [ "${SUDO_USER}" != "root" ]; then
+    echo "The installer was started with sudo. Return to the ${SUDO_USER} account and run:"
+    printf '\n  ./install.sh\n\n'
+    echo "Do not put sudo before the installation command. The installer requests administrator access only when required."
+    exit 1
+  fi
+
+  if [ -f /etc/debian_version ]; then
+    echo "Create a regular user with sudo access by running:"
+    cat <<'EOF'
+
+  apt-get update
+  apt-get install -y sudo
+  adduser dune
+  usermod -aG sudo dune
+  su - dune
+
+Then run the installation command again as the new "dune" user.
+Do not put sudo before the installation command.
+EOF
+  else
+    cat <<'EOF'
+Create or use a regular user with administrator access, log in as that user,
+and run the installation command again without putting sudo before it.
+EOF
+  fi
+  exit 1
+}
+
+reject_root_install
+
 . runtime/scripts/compose-project.sh
 
 APP_NAME="Dune Docker Console"

@@ -63,6 +63,8 @@ Keep database and internal admin ports private. Do not expose the Web UI to untr
 
 ## Installation
 
+Run the installer from a regular user account with `sudo` access, not while logged in as `root`. The installer requests administrator access only when required.
+
 Copy and paste this command on a fresh Linux server:
 
 ```sh
