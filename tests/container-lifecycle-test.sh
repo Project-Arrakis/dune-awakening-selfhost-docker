@@ -112,11 +112,11 @@ fi
 echo ""
 echo "7. Custom UID via --user flag"
 CUSTOM_UID=5678
-OUTPUT=$(docker run --rm --user "$CUSTOM_UID:$CUSTOM_UID" -v /tmp:/repo "$IMAGE_NAME" sh -lc 'test "$(id -u)" = 5678; test -r /app/src/server.js; test -r /app/web-dist/index.html; echo OK' 2>&1) || true
+OUTPUT=$(docker run --rm --user "$CUSTOM_UID:$CUSTOM_UID" -v /tmp:/repo "$IMAGE_NAME" sh -lc 'test "$(id -u)" = 5678; test -r /app/src/server.js; test -r /app/web-dist/index.html; test "$HOME" != /; test -n "$DOCKER_CONFIG"; test -w "$HOME"; test -w "$DOCKER_CONFIG"; touch "$DOCKER_CONFIG/config.json"; echo OK' 2>&1) || true
 if echo "$OUTPUT" | grep -q "OK"; then
-  pass "runs as UID $CUSTOM_UID with readable application files"
+  pass "runs as UID $CUSTOM_UID with readable application files and Docker config"
 else
-  fail "custom UID should run with readable application files, got: $OUTPUT"
+  fail "custom UID should have readable application files and writable Docker config, got: $OUTPUT"
 fi
 
 # ── Test 8: Entrypoint passes arguments correctly ──

@@ -53,6 +53,8 @@ RUN chmod +x /usr/local/bin/entrypoint.sh \
     && useradd -m -s /bin/bash dune \
     && mkdir -p /repo /app \
     && chmod 755 /app /repo
+ENV HOME=/tmp/dune-console-home
+ENV DOCKER_CONFIG=/tmp/dune-console-home/.docker
 USER dune
 WORKDIR /repo
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
