@@ -188,7 +188,7 @@ dune_secrets_render_plaintext_file() {
   local mode="${3:-600}"
 
   if [ -e "$path" ] && [ ! -f "$path" ]; then
-    echo "dune secrets: WARNING: $path exists but is not a regular file (this indicates a prior abnormal state -- see issue #259). Removing it automatically." >&2
+    echo "dune secrets: WARNING: $path exists but is not a regular file (this indicates a prior abnormal state, e.g. a leftover directory Docker created at this path during a previous failure). Removing it automatically." >&2
     rm -rf "$path"
   else
     rm -f "$path"
