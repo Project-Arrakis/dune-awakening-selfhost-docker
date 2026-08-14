@@ -15,8 +15,9 @@ Design/Architect, Principal DBA, Principal QA/Test) were dispatched as independe
 against the real diff and real files on disk, each required to verify claims against actual
 command output rather than trust a shared summary. This is the Layer 3 (integration) audit
 required by this account's operating docs before an upstream PR can be opened or a PR marked
-ready — it follows Layer 2 (`docs/security/PR-257-layer2-audit` findings, see PR #257's own
-commit `d37254dc` message) which already found and fixed SEC-1/SEC-2/SEC-3/ARCH-1/ARCH-2/ARCH-3.
+ready — it follows Layer 2 (`docs/security/pr-257-layer2-implementation-audit-2026-08-13.md`,
+originally recorded in commit `d37254dc`'s message and later transcribed into that committed
+findings register) which already found and fixed SEC-1/SEC-2/SEC-3/ARCH-1/ARCH-2/ARCH-3.
 
 ## Findings register
 

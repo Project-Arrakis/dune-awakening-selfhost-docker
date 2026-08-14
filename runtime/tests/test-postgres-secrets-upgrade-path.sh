@@ -172,6 +172,7 @@ strace_log="$test_root/argv-exposure-strace.log"
 # nothing to do with dune_secrets_sync_postgres_password's own
 # behavior. Using an env var keeps the harness itself out of the
 # result the grep below is checking.
+# shellcheck disable=SC2016  # single quotes in the bash -c string below are intentional: $1/$2/$3/$DUNE_TEST_PROBE_PASSWORD must expand inside the nested bash -c, not in this outer shell.
 DUNE_TEST_PROBE_PASSWORD="$probe_password" \
   strace -f -e trace=execve -s 4096 -o "$strace_log" -- \
   bash -c 'source "$1/runtime/scripts/lib/secrets.sh"; dune_secrets_sync_postgres_password "$2" "$3" "$DUNE_TEST_PROBE_PASSWORD"' \

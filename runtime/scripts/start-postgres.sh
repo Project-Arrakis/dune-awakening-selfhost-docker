@@ -182,6 +182,7 @@ mkdir -p runtime/generated
 
   echo "Waiting for Postgres..."
   ready=0
+  # shellcheck disable=SC2034  # loop counter only used to bound retries, not read -- pre-existing, predates this PR
   for i in $(seq 1 60); do
     if docker exec dune-postgres pg_isready -h 127.0.0.1 -p 5432 -U postgres -d dune >/dev/null 2>&1; then
       ready=1

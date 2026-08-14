@@ -25,6 +25,129 @@ nothing about your deployment changes. The superuser password remains the litera
 `postgres`, exactly as before, and your server behaves identically to every prior release
 (Requirement 0 — zero behavior change for operators who don't opt in).
 
+---
+
+## If your server is down and you're reading this in a panic, read this first
+
+You will always be able to get back in, as long as the `dune-postgres` container is running,
+regardless of anything else in this document. There is exactly **one command** you need:
+
+```bash
+source runtime/scripts/lib/secrets.sh
+dune_secrets_sync_postgres_password "dune-postgres" "postgres" "a-new-password-you-choose"
+```
+
+That's it. Full explanation, what to do next, and every other recovery scenario (lost
+identity file, corrupted secret store, etc.) is in **Break-Glass Recovery** below — read it
+in full once things are calm again, but the command above is all you need right now.
+
+**Do not run `docker exec ... psql -c "ALTER USER ..."` by hand.** An earlier version of
+this document recommended exactly that, and it has the same security problem this whole
+feature exists to fix (see the warning in Break-Glass Recovery below for why). Always use
+the `dune_secrets_sync_postgres_password` function shown above instead — it does the same
+thing safely.
+
+---
+
+## Break-Glass Recovery
+
+### The one command (repeated from above, with full context)
+
+```bash
+source runtime/scripts/lib/secrets.sh
+dune_secrets_sync_postgres_password "dune-postgres" "postgres" "a-new-password-you-choose"
+```
+
+Because this fork's `pg_hba.conf` trusts local connections unconditionally, **this always
+works, regardless of what is or isn't stored in the encrypted secrets store, as long as the
+`dune-postgres` container itself is running** — it does not depend on the age/KEK mechanism
+being intact at all. This is the actual, load-bearing break-glass mechanism for this
+feature, not a theoretical one.
+
+**Why not just run `psql -c "ALTER USER ..."` directly?** Because that puts the plaintext
+password into that process's own argv, visible via `/proc/<pid>/cmdline` (or `ps aux`) to
+any other local process for as long as it runs — the exact same class of exposure
+(GHSA-fc89-h24v-6j3x) this entire feature exists to eliminate from `docker inspect`. Using
+`dune_secrets_sync_postgres_password` instead pipes the password over stdin, matching how
+`start-postgres.sh` itself does this internally, and avoids reintroducing that exposure at
+the exact moment — an emergency — where you're least likely to be thinking about it.
+
+After running the command above, re-encrypt and store the new value so future restarts don't
+fight it:
+
+```bash
+source runtime/scripts/lib/secrets.sh
+export DUNE_KEK_FILE=/absolute/path/to/kek.age
+export DUNE_AGE_IDENTITY_FILE=/absolute/path/to/identity.txt
+rm -f runtime/secrets/postgres-superuser-password.enc
+dune_secrets_write_secret "postgres-superuser-password" "a-new-password-you-choose"
+```
+
+**The same shell-history caveat noted for Step 2 (below, in "Enabling this feature") applies
+here** — the plaintext password in both commands above will land in your shell history
+unless you take explicit steps to avoid it.
+
+### If `runtime/secrets/postgres-superuser-password.enc` becomes corrupted or unreadable
+
+As of the current version, `start-postgres.sh` will **refuse to start** with a clear error
+rather than silently generating a replacement password (which would discard whatever was
+actually in use). To recover:
+
+1. Confirm your `DUNE_KEK_FILE`/`DUNE_AGE_IDENTITY_FILE` paths in `.env` are correct and the
+   files exist and are readable.
+2. If those are correct and the `.enc` file itself is genuinely corrupted, you cannot recover
+   the *specific* password that was stored — but you do not need to, because of the "one
+   command" mechanism above.
+
+### If you lose the age identity file entirely
+
+**There is no password-reset mechanism for a lost age identity — this is by design, the same
+way there's no "reset" for a lost SSH private key or a lost disk-encryption key.** If
+`runtime/generated/.dune-age/identity.txt` (or wherever you stored it) is gone, you cannot
+decrypt the KEK, and therefore cannot decrypt `postgres-superuser-password.enc` via this
+mechanism, ever.
+
+**This does not mean your server is unrecoverable.** Because of the local-trust break-glass
+mechanism above, you can always regain database access as long as the container is running,
+by setting a brand-new password directly. Your recovery path is:
+
+1. Use the "one command" above to set a fresh password you control.
+2. Generate a brand-new age identity and KEK (Steps 1-2 of "Enabling this feature" below).
+3. Point `.env` at the new files.
+4. Re-encrypt the new password you just set with `dune_secrets_write_secret`, exactly as
+   shown above.
+5. Restart Postgres and re-verify per Step 5 of "Enabling this feature" below.
+
+You lose nothing except the ability to decrypt whatever the *old*, now-inaccessible password
+was — which doesn't matter, since you're replacing it anyway. Your actual database (roles,
+schemas, game data) is never at risk from losing this identity file; only the *credential*
+protecting access to it is affected, and that credential is always resettable via the
+local-trust mechanism as long as the container itself is up.
+
+**Recommended, before you ever need this**: back up `identity.txt` somewhere durable and
+offline, *before* you finish setup below, not after. Concretely, as an actual first step
+(not just an abstract recommendation): copy the file to a password manager entry (most
+support arbitrary file/note attachments), or to an encrypted USB drive kept physically
+separate from this host. This file is small (~200 bytes) — there is no reason to defer this.
+**Test your backup by actually restoring from it once**, the same way this project's own
+database backups are expected to be restore-tested, not just taken on faith — an unverified
+backup of a permanently-unrecoverable credential is not a real safety net. A dedicated
+QR-code/Shamir-secret-sharing break-glass tool is planned but not yet implemented (see the
+design doc below); until it exists, a manual, restore-tested, offline backup of the raw
+identity file is your only durable protection against permanent loss.
+
+### If you disabled this feature after enabling it, and things seem inconsistent
+
+**Known gap, tracked separately (issue #261), not yet fixed**: unsetting
+`DUNE_KEK_FILE`/`DUNE_AGE_IDENTITY_FILE` after having enabled this feature does **not** revert
+the live database's password back to the hardcoded default. The live password stays whatever
+it was last set to by this mechanism — Postgres, again, does not re-apply
+`POSTGRES_PASSWORD_FILE` on an existing data directory. If you disable this feature and are
+confused about what the current password actually is, use the "one command" above to set a
+known value explicitly, rather than assuming a disable reverted anything.
+
+---
+
 ## Is there a `dune secrets setup` command?
 
 **Not yet.** As of this writing, enabling this feature is a manual, one-time process
@@ -82,11 +205,11 @@ This prints a public key to stdout, e.g. `age1cv9u3ffpk6k7e6vd3m5djceqtvxrrjlyvq
 Save that value — you'll need it in the next step. It is not secret (it's a *public* key);
 you don't need to protect it the way you protect the identity file.
 
-**Before continuing, read the "Break-Glass Recovery" section below and decide now how you
-will back up this identity file.** There is no password-reset mechanism for a lost age
-identity — losing this file means permanently losing the ability to decrypt your stored
-Postgres superuser password via this mechanism (see "What if I lose the identity file?"
-below for what your actual recovery options are in that case).
+**If you have not already read "Break-Glass Recovery" above, do so now, before continuing,
+and back up this identity file before you move on to Step 2.** There is no password-reset
+mechanism for a lost age identity — losing this file means permanently losing the ability
+to decrypt your stored Postgres superuser password via this mechanism (see "If you lose the
+age identity file entirely" above for what your actual recovery options are in that case).
 
 ### Step 2 — Generate and encrypt a KEK (Key-Encryption-Key)
 
@@ -94,10 +217,19 @@ below for what your actual recovery options are in that case).
 source runtime/scripts/lib/secrets.sh
 PUBKEY="age1..."   # the public key age-keygen printed in Step 1
 KEK_HEX="$(dune_secrets_generate_dek)"
-printf '%s' "$KEK_HEX" | age --encrypt -r "$PUBKEY" -o runtime/generated/.dune-age/kek.age
-chmod 600 runtime/generated/.dune-age/kek.age
-unset KEK_HEX   # don't leave this in your shell history/environment longer than necessary
+(umask 077; printf '%s' "$KEK_HEX" | age --encrypt -r "$PUBKEY" -o runtime/generated/.dune-age/kek.age)
+chmod 600 runtime/generated/.dune-age/kek.age  # belt-and-suspenders; umask above already prevents a loose-permission window
+unset KEK_HEX
 ```
+
+**A note on shell history**: the `KEK_HEX=...` line above, and several commands later in
+this document, put secret material directly into a command you type or paste into an
+interactive shell. Unless your shell is configured otherwise (`HISTCONTROL=ignorespace` is
+**not** the default), that line is saved in plaintext in `~/.bash_history` (or equivalent)
+the moment you run it — `unset` only removes it from your current shell's memory, it does
+**not** remove it from history. If this matters for your threat model, either run these
+commands from a script file (not pasted into an interactive prompt) and delete the script
+afterward, or explicitly clear the relevant history entries (`history -d <line>`) once done.
 
 ### Step 3 — Point the environment at your identity and KEK
 
@@ -153,7 +285,14 @@ docker run --rm --network dune-net -e PGPASSWORD="$NEW_PASS" postgres:17 \
 You should see a single row containing `it works`. If instead you get a password
 authentication error, do not assume your server is broken — re-run
 `bash runtime/scripts/start-postgres.sh` once (a transient failure is the most common cause),
-then see "Break-Glass Recovery" if it persists.
+then see "Break-Glass Recovery" below if it persists.
+
+**Do not run this verification command with `set -x`, and do not turn it into a recurring
+systemd timer or cron job that logs its own output.** Both `PGPASSWORD` (a `docker run -e`
+environment value) and any `-c` SQL text are visible via that process's own argv/environment
+for the duration of the command, and `set -x`/systemd's default stdout+stderr-to-journald
+capture will both print/record the value verbatim. Use this command interactively, once, to
+confirm setup worked — it is not meant to be wired into unattended, logged automation.
 
 ---
 
@@ -185,88 +324,6 @@ enabling this feature.
 
 ---
 
-## Break-Glass Recovery
-
-### If `runtime/secrets/postgres-superuser-password.enc` becomes corrupted or unreadable
-
-As of the current version, `start-postgres.sh` will **refuse to start** with a clear error
-rather than silently generating a replacement password (which would discard whatever was
-actually in use). To recover:
-
-1. Confirm your `DUNE_KEK_FILE`/`DUNE_AGE_IDENTITY_FILE` paths in `.env` are correct and the
-   files exist and are readable.
-2. If those are correct and the `.enc` file itself is genuinely corrupted, you cannot recover
-   the *specific* password that was stored — but you do not need to, because of the mechanism
-   in the next section.
-
-### If you need to regain access regardless of what's stored (true break-glass)
-
-Because this fork's `pg_hba.conf` trusts local connections unconditionally, **you always have
-a way back in, independent of the age/KEK mechanism entirely**:
-
-```bash
-docker exec -i dune-postgres psql -h 127.0.0.1 -p 5432 -U postgres -d postgres \
-  -v ON_ERROR_STOP=1 -c "ALTER USER postgres WITH PASSWORD 'a-new-password-you-choose';"
-```
-
-This works regardless of what is or isn't stored in the encrypted secrets store, as long as
-the `dune-postgres` container itself is running. This is the actual, load-bearing break-glass
-mechanism for this feature — not a theoretical one. After running this, re-encrypt and store
-the new value so future restarts don't fight it:
-
-```bash
-source runtime/scripts/lib/secrets.sh
-export DUNE_KEK_FILE=/absolute/path/to/kek.age
-export DUNE_AGE_IDENTITY_FILE=/absolute/path/to/identity.txt
-rm -f runtime/secrets/postgres-superuser-password.enc
-dune_secrets_write_secret "postgres-superuser-password" "a-new-password-you-choose"
-```
-
-### If you lose the age identity file entirely
-
-**There is no password-reset mechanism for a lost age identity — this is by design, the same
-way there's no "reset" for a lost SSH private key or a lost disk-encryption key.** If
-`runtime/generated/.dune-age/identity.txt` (or wherever you stored it) is gone, you cannot
-decrypt the KEK, and therefore cannot decrypt `postgres-superuser-password.enc` via this
-mechanism, ever.
-
-**This does not mean your server is unrecoverable.** Because of the local-trust break-glass
-mechanism above, you can always regain database access as long as the container is running,
-by setting a brand-new password directly. Your recovery path is:
-
-1. Use the `docker exec ... ALTER USER ...` command above to set a fresh password you control.
-2. Generate a brand-new age identity and KEK (Step 1-2 of the install procedure above).
-3. Point `.env` at the new files.
-4. Re-encrypt the new password you just set with `dune_secrets_write_secret`, exactly as
-   shown in the previous section.
-5. Restart Postgres and re-verify per Step 5 above.
-
-You lose nothing except the ability to decrypt whatever the *old*, now-inaccessible password
-was — which doesn't matter, since you're replacing it anyway. Your actual database (roles,
-schemas, game data) is never at risk from losing this identity file; only the *credential*
-protecting access to it is affected, and that credential is always resettable via the
-local-trust mechanism as long as the container itself is up.
-
-**Recommended, before you ever need this:** back up `identity.txt` somewhere durable and
-offline — a password manager, an encrypted USB drive kept physically separate from this host,
-or printed/QR-coded and stored in a safe. Treat it exactly like a private key, because that's
-what it is. A dedicated QR-code/Shamir-secret-sharing break-glass tool is planned but not yet
-implemented (see the design doc below) — until it exists, a manual, offline backup of the raw
-identity file is your only durable protection against permanent loss.
-
-### If you disabled this feature after enabling it, and things seem inconsistent
-
-**Known gap, tracked separately (issue #261), not yet fixed**: unsetting
-`DUNE_KEK_FILE`/`DUNE_AGE_IDENTITY_FILE` after having enabled this feature does **not** revert
-the live database's password back to the hardcoded default. The live password stays whatever
-it was last set to by this mechanism — Postgres, again, does not re-apply
-`POSTGRES_PASSWORD_FILE` on an existing data directory. If you disable this feature and are
-confused about what the current password actually is, use the `docker exec ... ALTER USER
-...` break-glass command above to set a known value explicitly, rather than assuming a
-disable reverted anything.
-
----
-
 ## Where things are stored
 
 | Item | Path | Contents | Back up? |
@@ -288,7 +345,8 @@ database contents itself), and all of them are git-ignored (`runtime/secrets/`,
 - Design document: `~/projects/meta/Arrakis-Project/docs/design/unified-age-secrets-management-l1-design-2026-08-13.md`
   (the full architecture, including the reasoning for choosing age over Vault/Infisical/other
   alternatives, and the eventual `dune secrets setup` CLI design).
+- Layer 2 audit findings register: `docs/security/pr-257-layer2-implementation-audit-2026-08-13.md`
 - Layer 3 audit findings register: `docs/security/pr-257-layer3-integration-audit-2026-08-13.md`
-  (what was independently reviewed and fixed before this feature shipped).
+  (both document what was independently reviewed and fixed before this feature shipped).
 - Issue #128 (umbrella tracking issue), #258, #259, #260, #261 on this repository's GitHub
   Issues for the full incident history behind the "What can go wrong" section above.
