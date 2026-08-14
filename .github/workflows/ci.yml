@@ -90,6 +90,14 @@ jobs:
         # explicitly here so this job cannot silently rely on the runner
         # image's own toolset again.
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends gnupg
+      - uses: actions/setup-node@1d0ff469b7ec7b3cb9d8673fde0c81c44821de2a
+        with:
+          node-version: "22"
+      - name: Install age and cryptography (age-based secrets library tests)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y age
+          python3 -m pip install --break-system-packages cryptography
       - name: Test readiness with configured service ports
         run: bash tests/ready-configured-ports-test.sh
       - name: Test stable farm readiness gating
@@ -140,6 +148,11 @@ jobs:
           runtime/tests/test-compose-project-name-portability.sh
           runtime/tests/test-compose-project-resolution.sh
           runtime/tests/test-container-compose-labels.sh
+      - name: Test age-based secrets library (AEAD primitive, shell seam, cross-language round-trip)
+        run: |
+          python3 -m pytest runtime/scripts/lib/test_secrets_aead.py -v
+          runtime/tests/test-secrets-lib.sh
+          runtime/tests/test-secrets-aead-cross-language.sh
 
   container-lifecycle:
     runs-on: ubuntu-latest
