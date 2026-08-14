@@ -5,6 +5,41 @@ import { networkInterfaces } from "node:os";
 
 export const APP_NAME = "Dune Docker Console";
 
+// Single source of truth for every host-facing port this console cares
+// about. Stock (Instance 1) values are the fallback defaults only --
+// multi-server / single-public-IP deployments (see
+// docs/runtime/MULTI-SERVER-SINGLE-PUBLIC-IP.md) override these via
+// .env. These values MUST stay in sync with
+// runtime/scripts/runtime-env.sh's resolve_*_port() functions -- that
+// file is the shell-side equivalent used by non-Node scripts, and the
+// two must never drift (see issue #266: found 6 places across the
+// codebase that hardcoded these stock values directly instead of
+// reading them from a shared source, breaking multi-server Instance 2+
+// deployments).
+export function resolvePorts(env = process.env) {
+  const clientBase = portValue(env.CLIENT_PORT_BASE, 7777);
+  const igwBase = portValue(env.IGW_PORT_BASE, 7888);
+  return {
+    postgres: portValue(env.POSTGRES_PORT || env.DUNE_DB_PORT || env.PGPORT, 15432),
+    rmqAdmin: portValue(env.RMQ_ADMIN_PORT, 32573),
+    rmqGame: portValue(env.RMQ_GAME_PORT, 31982),
+    rmqGameHttp: portValue(env.RMQ_GAME_HTTP_PORT, 31983),
+    rmqGameLocalHttp: portValue(env.RMQ_GAME_LOCAL_HTTP_PORT, 15672),
+    textRouter: portValue(env.TEXT_ROUTER_PORT, 5059),
+    director: portValue(env.DIRECTOR_PORT, 11717),
+    metricsPrometheus: portValue(env.METRICS_PROMETHEUS_PORT, 9090),
+    clientBase,
+    clientBaseSecondary: clientBase + 1,
+    igwBase,
+    igwBaseSecondary: igwBase + 1
+  };
+}
+
+function portValue(value, fallback) {
+  const parsed = Number(value || fallback);
+  return Number.isInteger(parsed) && parsed > 0 && parsed <= 65535 ? parsed : fallback;
+}
+
 export function loadConfig() {
   const repoRoot = resolve(process.env.DUNE_DOCKER_DIR || process.env.RUNTIME_DIR || process.cwd());
   const generatedDir = resolve(repoRoot, "runtime/generated");
@@ -24,6 +59,7 @@ export function loadConfig() {
     duneScript: resolve(repoRoot, "runtime/scripts/dune"),
     host: resolveAdminBindHost(process.env.ADMIN_BIND_HOST),
     port: Number(process.env.ADMIN_BIND_PORT || 8088),
+    ports: resolvePorts(),
     authDisabled: process.env.ADMIN_AUTH_DISABLED === "1",
     secureCookies: secureCookieEnv === undefined ? process.env.NODE_ENV === "production" : secureCookieEnv === "1",
     allowHostBootstrap: process.env.ALLOW_HOST_BOOTSTRAP === "true",
@@ -233,6 +269,7 @@ export function publicConfig(config) {
     repoRoot: config.repoRoot,
     host: config.host,
     port: config.port,
+    ports: config.ports,
     authDisabled: config.authDisabled,
     adminPasswordEnvManaged: config.adminPasswordEnvManaged,
     secureCookies: config.secureCookies,
