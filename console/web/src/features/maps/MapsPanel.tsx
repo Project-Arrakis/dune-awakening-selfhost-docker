@@ -374,6 +374,7 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
   const [choamSavingKey, setChoamSavingKey] = useState("");
   const [choamResult, setChoamResult] = useState<HomeTaskResult | null>(null);
   const [modifiersOpen, setModifiersOpen] = useState(false);
+  const [modifierSettingsLoaded, setModifierSettingsLoaded] = useState(false);
   const [deferredRestartPending, setDeferredRestartPending] = useState<{ pending: boolean; since?: string; label?: string }>({ pending: false });
   const [clientIniCounts, setClientIniCounts] = useState<{ engine: number | null; game: number | null }>({ engine: null, game: null });
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -665,13 +666,27 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
     const next = await mapsApi.userSettingsSchema();
     setSchema(next);
   }
-  async function loadUserEngine() {
-    const [values, raw] = await Promise.all([mapsApi.userEngine(), mapsApi.rawUserSettings("engine")]);
-    const parsed = parseUserSettingsMap(values.stdout || "");
+  function applyUserEngineValues(stdout: string) {
+    const parsed = parseUserSettingsMap(stdout || "");
     setEngineValues(parsed);
     setEngineDraft(parsed);
+  }
+  async function loadUserEngineValues() {
+    const values = await mapsApi.userEngine();
+    applyUserEngineValues(values.stdout || "");
+  }
+  async function loadUserEngine() {
+    const [values, raw] = await Promise.all([mapsApi.userEngine(), mapsApi.rawUserSettings("engine")]);
+    applyUserEngineValues(values.stdout || "");
     setRawEngine(raw.content || "");
     setRawEngineOriginal(raw.content || "");
+  }
+  async function loadInitialModifierSettings() {
+    // The raw Advanced editor is loaded only when it is opened. Making it part
+    // of this gate would add another command before the normal modifier cards
+    // can be used.
+    await Promise.all([loadSchema(), loadUserEngineValues()]);
+    setModifierSettingsLoaded(true);
   }
   async function loadSelectedEngineSettings(mapName: string, partitionId?: string) {
     if (mapName === "__global__") {
@@ -981,8 +996,10 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
   }
   useEffect(() => {
     run(loadMaps);
-    run(loadSchema);
-    run(loadUserEngine);
+    // Settings have their own readiness path. Live map status can take much
+    // longer (it probes maps, services, readiness, and memory), but none of
+    // that is required to inspect or edit the global UserEngine settings.
+    run(loadInitialModifierSettings);
     run(loadLiveMemory);
     run(loadMemoryBalancer);
     run(() => loadMemorySwap());
@@ -1811,7 +1828,7 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
     downloadText("Engine.ini", result.content || "");
   }
   async function toggleAdvanced() {
-    if (!mapsLoaded) return;
+    if (!modifierSettingsLoaded) return;
     if (advancedOpen) {
       setAdvancedOpen(false);
       return;
@@ -1824,13 +1841,13 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
     setAdvancedOpen(true);
   }
   function toggleModifiers() {
-    if (!mapsLoaded) return;
+    if (!modifierSettingsLoaded) return;
     const nextOpen = !modifiersOpen;
     setModifiersOpen(nextOpen);
     if (nextOpen) setAdvancedOpen(false);
   }
-  const modifiersAvailable = mapsLoaded;
-  const advancedAvailable = mapsLoaded;
+  const modifiersAvailable = modifierSettingsLoaded;
+  const advancedAvailable = modifierSettingsLoaded;
   const runtimeParallelismValue = runtimeSettings?.alwaysOnStartupParallelism ?? 1;
   const runtimeParallelismMax = alwaysOnParallelismLimit(runtimeSettings, hostMemoryProtection, hostMemoryReserveMode, hostMemoryReserve);
   const startupParallelismDirty = Boolean(runtimeSettings) && (Number(startupParallelism) !== runtimeParallelismValue
@@ -2087,7 +2104,7 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
       {mapsResult && mapsResultScope === "modifiers" ? <div className="maps-result-slot"><HomeTaskResultCard result={mapsResult} /></div> : null}
     </div>}
     <div className={`playerAdmin_toggle maps-modifiers-toggle ${modifiersOpen && modifiersAvailable ? "open" : ""}`}>
-      <button className="playerAdmin_toggleHeader" disabled={!modifiersAvailable} aria-label={modifiersOpen && modifiersAvailable ? "Collapse Interactive Modifiers" : "Expand Interactive Modifiers"} onClick={toggleModifiers}>{modifiersOpen && modifiersAvailable ? <ChevronUp size={18} /> : <ChevronDown size={18} />}<span>Interactive Modifiers</span></button>
+      <button className="playerAdmin_toggleHeader" disabled={!modifiersAvailable} title={modifiersAvailable ? undefined : "Modifier settings are loading independently of live map status."} aria-label={modifiersOpen && modifiersAvailable ? "Collapse Interactive Modifiers" : "Expand Interactive Modifiers"} onClick={toggleModifiers}>{modifiersOpen && modifiersAvailable ? <ChevronUp size={18} /> : <ChevronDown size={18} />}<span>Interactive Modifiers</span></button>
       {modifiersOpen && modifiersAvailable && <div className="playerAdmin_toggleBody">
       <div className="settings-tabs-row">
         <div className="settings-tabs" role="tablist" aria-label="Interactive modifier editor">
