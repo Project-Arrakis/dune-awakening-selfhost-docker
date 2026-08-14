@@ -4213,7 +4213,10 @@ h3 { font-size: clamp(1.05rem, .98rem + .35vw, 1.35rem); }
   top: 0;
   align-self: start;
   height: 100dvh;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
 }
 .sidebar-menu-toggle { display: none; }
 
@@ -4327,6 +4330,7 @@ td :where(.service-actions, .action-row, .map-action-buttons) { max-width: 100%;
     width: 100%;
     height: auto;
     min-height: 0;
+    overflow: visible;
     padding: 12px clamp(12px, 3vw, 22px);
     border-right: 0;
     border-bottom: 1px solid var(--border);
