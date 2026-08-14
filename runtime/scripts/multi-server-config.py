@@ -37,6 +37,7 @@ RUNTIME_ENV = ROOT / "runtime" / "scripts" / "runtime-env.sh"
 USERSETTINGS = ROOT / "runtime" / "scripts" / "usersettings.py"
 SPAWN_SERVER = ROOT / "runtime" / "scripts" / "spawn-server.sh"
 ENV_EXAMPLE = ROOT / ".env.example"
+METRICS_COMPOSE = ROOT / "docker-compose.metrics.yml"
 ENV_PATH = ROOT / ".env"
 GENERATED_DIR = ROOT / "runtime" / "generated"
 BACKUP_ROOT = ROOT / "runtime" / "backups"
@@ -69,6 +70,7 @@ class Defaults:
     text_router: int
     director: int
     admin_web: int
+    prometheus: int
 
 
 @dataclass(frozen=True)
@@ -85,6 +87,7 @@ class Profile:
     text_router: int
     director: int
     admin_web: int
+    prometheus: int
 
 
 @dataclass(frozen=True)
@@ -162,6 +165,14 @@ def parse_admin_default() -> int:
     return int(match.group(1))
 
 
+def parse_prometheus_default() -> int:
+    text = read_text(METRICS_COMPOSE)
+    match = re.search(r"METRICS_PROMETHEUS_PORT:-([0-9]+)", text)
+    if not match:
+        raise ConfigError(f"Could not derive METRICS_PROMETHEUS_PORT from {METRICS_COMPOSE}.")
+    return int(match.group(1))
+
+
 def load_defaults() -> Defaults:
     service = parse_service_defaults()
     client, igw = parse_engine_defaults()
@@ -178,6 +189,7 @@ def load_defaults() -> Defaults:
         text_router=service["text_router"],
         director=service["director"],
         admin_web=parse_admin_default(),
+        prometheus=parse_prometheus_default(),
     )
 
 
@@ -198,6 +210,7 @@ def profile_for(instance: int, defaults: Defaults) -> Profile:
         text_router=defaults.text_router + offset,
         director=defaults.director + offset,
         admin_web=defaults.admin_web + offset,
+        prometheus=defaults.prometheus + offset,
     )
     validate_profile(profile)
     return profile
@@ -214,6 +227,7 @@ def allocations(profile: Profile) -> list[Allocation]:
         Allocation(profile.instance, "Text Router TCP", profile.text_router, profile.text_router),
         Allocation(profile.instance, "Director TCP", profile.director, profile.director),
         Allocation(profile.instance, "Admin Web TCP", profile.admin_web, profile.admin_web),
+        Allocation(profile.instance, "Prometheus TCP", profile.prometheus, profile.prometheus),
     ]
 
 
@@ -411,6 +425,7 @@ def profile_env(profile: Profile, public_ip: str, bind_ip: str) -> dict[str, str
         "DIRECTOR_PORT": str(profile.director),
         "ADMIN_BIND_PORT": str(profile.admin_web),
         "ADMIN_WEB_PORT": str(profile.admin_web),
+        "METRICS_PROMETHEUS_PORT": str(profile.prometheus),
         # Retained for console/documentation compatibility. UserEngine is authoritative.
         "CLIENT_PORT_BASE": str(profile.client),
         "IGW_PORT_BASE": str(profile.igw),
@@ -428,6 +443,7 @@ def print_profile(profile: Profile) -> None:
     print(f"  Text Router TCP : {profile.text_router}")
     print(f"  Director TCP    : {profile.director}")
     print(f"  Admin Web TCP   : {profile.admin_web}")
+    print(f"  Prometheus TCP  : {profile.prometheus}")
 
 
 def nat_lines(profile: Profile, bind_ip: str = "<VM_LAN_IP>") -> list[str]:
@@ -519,6 +535,7 @@ def command_verify(args: argparse.Namespace, defaults: Defaults) -> int:
         "DIRECTOR_PORT": str(profile.director),
         "ADMIN_BIND_PORT": str(profile.admin_web),
         "ADMIN_WEB_PORT": str(profile.admin_web),
+        "METRICS_PROMETHEUS_PORT": str(profile.prometheus),
         "CLIENT_PORT_BASE": str(profile.client),
         "IGW_PORT_BASE": str(profile.igw),
     }
