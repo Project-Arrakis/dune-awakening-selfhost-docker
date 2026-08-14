@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
-"""
-Configure one dune-awakening-selfhost-docker VM as part of a multi-server,
-single-public-IPv4 deployment.
+"""Plan, apply, and verify globally non-overlapping multi-server port profiles.
 
-The script intentionally:
-  * derives stock port defaults from the checked-out repository;
-  * applies a deterministic per-instance port profile;
-  * writes service-port overrides to .env;
-  * writes player/IGW port bases through runtime/scripts/usersettings.py;
-  * backs up mutable configuration before changes;
-  * never restarts the game stack automatically.
+This helper is designed for dune-awakening-selfhost-docker deployments where
+multiple isolated VMs share one public IPv4 address. It derives the stock
+single-server defaults from the checked-out repository and applies one uniform
+instance stride to every managed port and port-range base.
+
+Global invariant:
+    No numeric port assigned to any managed service on any generated instance
+    may overlap any other managed port or range, regardless of protocol.
 
 Examples:
     python3 runtime/scripts/multi-server-config.py plan --instances 3
@@ -32,7 +31,6 @@ import tempfile
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable
 
 ROOT = Path(__file__).resolve().parents[2]
 RUNTIME_ENV = ROOT / "runtime" / "scripts" / "runtime-env.sh"
@@ -43,6 +41,11 @@ ENV_PATH = ROOT / ".env"
 GENERATED_DIR = ROOT / "runtime" / "generated"
 BACKUP_ROOT = ROOT / "runtime" / "backups"
 
+# One stride for every port/base is intentional. It makes the allocation model
+# easy to audit and, unlike the earlier mixed-stride model, prevents the VM2
+# player range from overlapping VM1's IGW range.
+INSTANCE_PORT_STRIDE = 1000
+
 SERVICE_DEFAULT_PATTERNS = {
     "postgres": ("POSTGRES_PORT", "resolve_postgres_port"),
     "rmq_admin": ("RMQ_ADMIN_PORT", "resolve_rmq_admin_port"),
@@ -50,24 +53,6 @@ SERVICE_DEFAULT_PATTERNS = {
     "rmq_game_http": ("RMQ_GAME_HTTP_PORT", "resolve_rmq_game_http_port"),
     "text_router": ("TEXT_ROUTER_PORT", "resolve_text_router_port"),
     "director": ("DIRECTOR_PORT", "resolve_director_port"),
-}
-
-# This stride policy intentionally reproduces the proven VM2 profile:
-# CLIENT 7877, IGW 7988, POSTGRES 16432, RMQ ADMIN 33573,
-# RMQ GAME 32982, RMQ GAME HTTP 32983, TEXT ROUTER 5159,
-# DIRECTOR 12717, ADMIN WEB 8090.
-#
-# The policy is an operator convention, not a Funcom protocol requirement.
-DEFAULT_STRIDES = {
-    "client": 100,
-    "igw": 100,
-    "postgres": 1000,
-    "rmq_admin": 1000,
-    "rmq_game": 1000,
-    "rmq_game_http": 1000,
-    "text_router": 100,
-    "director": 1000,
-    "admin_web": 2,
 }
 
 
@@ -100,6 +85,19 @@ class Profile:
     text_router: int
     director: int
     admin_web: int
+
+
+@dataclass(frozen=True)
+class Allocation:
+    instance: int
+    name: str
+    start: int
+    end: int
+
+    @property
+    def label(self) -> str:
+        value = str(self.start) if self.start == self.end else f"{self.start}-{self.end}"
+        return f"VM{self.instance} {self.name} {value}"
 
 
 class ConfigError(RuntimeError):
@@ -149,18 +147,10 @@ def parse_engine_defaults() -> tuple[int, int]:
 
 def parse_pool_offsets() -> tuple[int, int]:
     text = read_text(SPAWN_SERVER)
-    client_offsets = [
-        int(value)
-        for value in re.findall(r"CLIENT_PORT_BASE\s*\+\s*([0-9]+)", text)
-    ]
-    igw_offsets = [
-        int(value)
-        for value in re.findall(r"IGW_PORT_BASE\s*\+\s*([0-9]+)", text)
-    ]
+    client_offsets = [int(v) for v in re.findall(r"CLIENT_PORT_BASE\s*\+\s*([0-9]+)", text)]
+    igw_offsets = [int(v) for v in re.findall(r"IGW_PORT_BASE\s*\+\s*([0-9]+)", text)]
     if not client_offsets or not igw_offsets:
-        raise ConfigError(
-            f"Could not derive dynamic game/IGW pool size from {SPAWN_SERVER}."
-        )
+        raise ConfigError(f"Could not derive dynamic game/IGW pool size from {SPAWN_SERVER}.")
     return max(client_offsets), max(igw_offsets)
 
 
@@ -194,23 +184,41 @@ def load_defaults() -> Defaults:
 def profile_for(instance: int, defaults: Defaults) -> Profile:
     if instance < 1:
         raise ConfigError("Instance number must be 1 or greater.")
-    offset = instance - 1
+    offset = (instance - 1) * INSTANCE_PORT_STRIDE
     profile = Profile(
         instance=instance,
-        client=defaults.client + DEFAULT_STRIDES["client"] * offset,
-        client_end=defaults.client + DEFAULT_STRIDES["client"] * offset + defaults.client_max_offset,
-        igw=defaults.igw + DEFAULT_STRIDES["igw"] * offset,
-        igw_end=defaults.igw + DEFAULT_STRIDES["igw"] * offset + defaults.igw_max_offset,
-        postgres=defaults.postgres + DEFAULT_STRIDES["postgres"] * offset,
-        rmq_admin=defaults.rmq_admin + DEFAULT_STRIDES["rmq_admin"] * offset,
-        rmq_game=defaults.rmq_game + DEFAULT_STRIDES["rmq_game"] * offset,
-        rmq_game_http=defaults.rmq_game_http + DEFAULT_STRIDES["rmq_game_http"] * offset,
-        text_router=defaults.text_router + DEFAULT_STRIDES["text_router"] * offset,
-        director=defaults.director + DEFAULT_STRIDES["director"] * offset,
-        admin_web=defaults.admin_web + DEFAULT_STRIDES["admin_web"] * offset,
+        client=defaults.client + offset,
+        client_end=defaults.client + offset + defaults.client_max_offset,
+        igw=defaults.igw + offset,
+        igw_end=defaults.igw + offset + defaults.igw_max_offset,
+        postgres=defaults.postgres + offset,
+        rmq_admin=defaults.rmq_admin + offset,
+        rmq_game=defaults.rmq_game + offset,
+        rmq_game_http=defaults.rmq_game_http + offset,
+        text_router=defaults.text_router + offset,
+        director=defaults.director + offset,
+        admin_web=defaults.admin_web + offset,
     )
     validate_profile(profile)
     return profile
+
+
+def allocations(profile: Profile) -> list[Allocation]:
+    return [
+        Allocation(profile.instance, "Player/Game UDP", profile.client, profile.client_end),
+        Allocation(profile.instance, "IGW UDP", profile.igw, profile.igw_end),
+        Allocation(profile.instance, "PostgreSQL TCP", profile.postgres, profile.postgres),
+        Allocation(profile.instance, "RMQ Admin TCP", profile.rmq_admin, profile.rmq_admin),
+        Allocation(profile.instance, "RMQ Game TCP", profile.rmq_game, profile.rmq_game),
+        Allocation(profile.instance, "RMQ Game HTTP TCP", profile.rmq_game_http, profile.rmq_game_http),
+        Allocation(profile.instance, "Text Router TCP", profile.text_router, profile.text_router),
+        Allocation(profile.instance, "Director TCP", profile.director, profile.director),
+        Allocation(profile.instance, "Admin Web TCP", profile.admin_web, profile.admin_web),
+    ]
+
+
+def ranges_overlap(a_start: int, a_end: int, b_start: int, b_end: int) -> bool:
+    return max(a_start, b_start) <= min(a_end, b_end)
 
 
 def validate_port(value: int, label: str) -> None:
@@ -218,43 +226,45 @@ def validate_port(value: int, label: str) -> None:
         raise ConfigError(f"{label}={value} is outside the valid port range 1-65535.")
 
 
-def ranges_overlap(a_start: int, a_end: int, b_start: int, b_end: int) -> bool:
-    return max(a_start, b_start) <= min(a_end, b_end)
+def validate_allocations(rows: list[Allocation]) -> None:
+    for row in rows:
+        validate_port(row.start, row.label)
+        validate_port(row.end, row.label)
+        if row.start > row.end:
+            raise ConfigError(f"Invalid range: {row.label}")
+
+    # Deliberately ignore protocol here. The community policy is stricter than
+    # the kernel's TCP/UDP tuple rules: a numeric port belongs to exactly one
+    # managed endpoint anywhere in the generated multi-VM plan.
+    ordered = sorted(rows, key=lambda row: (row.start, row.end, row.instance, row.name))
+    for index, left in enumerate(ordered):
+        for right in ordered[index + 1 :]:
+            if right.start > left.end:
+                break
+            if ranges_overlap(left.start, left.end, right.start, right.end):
+                raise ConfigError(
+                    "Global port collision detected: "
+                    f"{left.label} overlaps {right.label}. "
+                    "Every managed port across every VM must be numerically unique."
+                )
 
 
 def validate_profile(profile: Profile) -> None:
-    for label, value in asdict(profile).items():
-        if label == "instance":
-            continue
-        validate_port(int(value), label)
-    if ranges_overlap(profile.client, profile.client_end, profile.igw, profile.igw_end):
-        raise ConfigError(
-            f"Instance {profile.instance} client range "
-            f"{profile.client}-{profile.client_end} overlaps IGW range "
-            f"{profile.igw}-{profile.igw_end}."
-        )
+    validate_allocations(allocations(profile))
 
 
-def validate_profiles(profiles: Iterable[Profile]) -> None:
-    rows = list(profiles)
-    for profile in rows:
-        validate_profile(profile)
-    for index, left in enumerate(rows):
-        for right in rows[index + 1 :]:
-            if ranges_overlap(
-                left.client, left.client_end, right.client, right.client_end
-            ):
-                raise ConfigError(
-                    f"Public client ranges overlap: instance {left.instance} "
-                    f"{left.client}-{left.client_end} and instance {right.instance} "
-                    f"{right.client}-{right.client_end}."
-                )
-            for field in ("rmq_game", "rmq_game_http", "admin_web"):
-                if getattr(left, field) == getattr(right, field):
-                    raise ConfigError(
-                        f"Instances {left.instance} and {right.instance} share "
-                        f"public endpoint {field}={getattr(left, field)}."
-                    )
+def validate_profiles(profiles: list[Profile]) -> None:
+    rows: list[Allocation] = []
+    for profile in profiles:
+        rows.extend(allocations(profile))
+    validate_allocations(rows)
+
+
+def validate_instance_capacity(instance: int, defaults: Defaults) -> None:
+    # Validate every profile from VM1 through the requested VM. This catches a
+    # collision introduced by the requested instance against any earlier VM.
+    profiles = [profile_for(i, defaults) for i in range(1, instance + 1)]
+    validate_profiles(profiles)
 
 
 def validate_ipv4(value: str, label: str) -> str:
@@ -304,15 +314,10 @@ def atomic_write(path: Path, content: str, mode: int | None = None) -> None:
 
 
 def upsert_env(path: Path, updates: dict[str, str]) -> None:
-    lines = (
-        path.read_text(encoding="utf-8", errors="replace").splitlines()
-        if path.exists()
-        else []
-    )
+    lines = path.read_text(encoding="utf-8", errors="replace").splitlines() if path.exists() else []
     seen: set[str] = set()
     out: list[str] = []
     key_pattern = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=")
-
     for raw in lines:
         match = key_pattern.match(raw)
         if not match:
@@ -326,7 +331,6 @@ def upsert_env(path: Path, updates: dict[str, str]) -> None:
             continue
         out.append(f"{key}={updates[key]}")
         seen.add(key)
-
     missing = [key for key in updates if key not in seen]
     if missing:
         if out and out[-1].strip():
@@ -334,7 +338,6 @@ def upsert_env(path: Path, updates: dict[str, str]) -> None:
         out.append("# Multi-server / single-public-IP instance profile")
         for key in missing:
             out.append(f"{key}={updates[key]}")
-
     atomic_write(path, "\n".join(out).rstrip() + "\n", 0o644)
 
 
@@ -346,12 +349,7 @@ def make_backup() -> Path:
         suffix += 1
         backup_dir = BACKUP_ROOT / f"multi-server-config-{stamp}-{suffix}"
     backup_dir.mkdir(parents=True, exist_ok=False)
-
-    for path in (
-        ENV_PATH,
-        GENERATED_DIR / "usersettings.json",
-        GENERATED_DIR / "gameplay-profile.ini",
-    ):
+    for path in (ENV_PATH, GENERATED_DIR / "usersettings.json", GENERATED_DIR / "gameplay-profile.ini"):
         if not path.exists():
             continue
         relative = path.relative_to(ROOT)
@@ -362,9 +360,8 @@ def make_backup() -> Path:
 
 
 def usersettings_run(*args: str, capture: bool = False) -> subprocess.CompletedProcess[str]:
-    command = [sys.executable, str(USERSETTINGS), *args]
     return subprocess.run(
-        command,
+        [sys.executable, str(USERSETTINGS), *args],
         cwd=ROOT,
         text=True,
         check=True,
@@ -397,8 +394,7 @@ def running_dune_containers() -> list[str]:
     return [
         name.strip()
         for name in result.stdout.splitlines()
-        if name.strip().startswith("dune-")
-        or name.strip() == "redblink-dune-docker-console"
+        if name.strip().startswith("dune-") or name.strip() == "redblink-dune-docker-console"
     ]
 
 
@@ -415,8 +411,7 @@ def profile_env(profile: Profile, public_ip: str, bind_ip: str) -> dict[str, str
         "DIRECTOR_PORT": str(profile.director),
         "ADMIN_BIND_PORT": str(profile.admin_web),
         "ADMIN_WEB_PORT": str(profile.admin_web),
-        # Retained as documentation/console metadata. The authoritative runtime
-        # values are written through usersettings.py below.
+        # Retained for console/documentation compatibility. UserEngine is authoritative.
         "CLIENT_PORT_BASE": str(profile.client),
         "IGW_PORT_BASE": str(profile.igw),
     }
@@ -439,19 +434,19 @@ def nat_lines(profile: Profile, bind_ip: str = "<VM_LAN_IP>") -> list[str]:
     return [
         f"TCP {profile.rmq_game} -> {bind_ip}:{profile.rmq_game}",
         f"TCP {profile.rmq_game_http} -> {bind_ip}:{profile.rmq_game_http}",
-        f"UDP {profile.client}-{profile.client_end} -> "
-        f"{bind_ip}:{profile.client}-{profile.client_end}",
+        f"UDP {profile.client}-{profile.client_end} -> {bind_ip}:{profile.client}-{profile.client_end}",
         f"TCP {profile.admin_web} -> {bind_ip}:{profile.admin_web}  # only if exposing Web Console",
     ]
 
 
 def command_plan(args: argparse.Namespace, defaults: Defaults) -> int:
-    profiles = [profile_for(index, defaults) for index in range(1, args.instances + 1)]
+    profiles = [profile_for(i, defaults) for i in range(1, args.instances + 1)]
     validate_profiles(profiles)
     if args.json:
-        print(json.dumps([asdict(profile) for profile in profiles], indent=2))
+        print(json.dumps({"stride": INSTANCE_PORT_STRIDE, "defaults": asdict(defaults), "profiles": [asdict(p) for p in profiles]}, indent=2))
         return 0
-
+    print(f"Global instance port stride: +{INSTANCE_PORT_STRIDE}")
+    print("Policy: no numeric port may overlap any other managed port across any VM.\n")
     print("Derived repository defaults:")
     print(json.dumps(asdict(defaults), indent=2))
     print()
@@ -461,22 +456,21 @@ def command_plan(args: argparse.Namespace, defaults: Defaults) -> int:
         for line in nat_lines(profile):
             print(f"    {line}")
         print()
+    print("VALIDATION: all generated managed ports are globally non-overlapping.")
     return 0
 
 
 def command_apply(args: argparse.Namespace, defaults: Defaults) -> int:
+    validate_instance_capacity(args.instance, defaults)
     profile = profile_for(args.instance, defaults)
     public_ip = validate_ipv4(args.public_ip, "--public-ip")
     bind_ip = validate_ipv4(args.bind_ip, "--bind-ip")
     active = running_dune_containers()
     if active and not args.allow_running:
-        joined = ", ".join(active)
         raise ConfigError(
-            "Dune containers are running. Stop the stack before changing its "
-            "network identity, or pass --allow-running to stage the changes only. "
-            f"Running: {joined}"
+            "Dune containers are running. Stop the stack before changing its network identity, "
+            "or pass --allow-running to stage changes only. Running: " + ", ".join(active)
         )
-
     updates = profile_env(profile, public_ip, bind_ip)
     if args.dry_run:
         print("DRY RUN - no files will be changed.")
@@ -487,44 +481,35 @@ def command_apply(args: argparse.Namespace, defaults: Defaults) -> int:
         print("\nAuthoritative UserEngine updates:")
         print(f"IGWPort={profile.igw}")
         print(f"Port={profile.client}")
+        print("\nGlobal collision validation: PASS")
         return 0
-
     backup_dir = make_backup()
     upsert_env(ENV_PATH, updates)
-
-    # Set IGW first. With the stock defaults, moving Port first for instance 2
-    # would temporarily overlap the still-default IGW range and usersettings.py
-    # correctly rejects that transient invalid state.
+    # IGW first avoids transient Port-vs-IGW overlap when moving away from defaults.
     usersettings_run("engine-set", "igw_port", str(profile.igw))
     usersettings_run("engine-set", "port", str(profile.client))
     usersettings_run("materialize-current")
-
     print(f"Applied multi-server profile for instance {profile.instance}.")
     print(f"Backup: {backup_dir.relative_to(ROOT)}")
     print_profile(profile)
     print("\nConfigure public NAT/port forwarding:")
     for line in nat_lines(profile, bind_ip):
         print(f"  {line}")
-    print(
-        "\nNo containers were restarted. Restart the Dune stack/maps after "
-        "network/firewall/NAT changes are complete, then run verify and dune doctor."
-    )
+    print("\nNo containers were restarted. Restart after NAT/firewall changes, then run verify and dune doctor.")
     return 0
 
 
-def compare_value(
-    failures: list[str], actual: str | None, expected: str, label: str
-) -> None:
+def compare_value(failures: list[str], actual: str | None, expected: str, label: str) -> None:
     if actual != expected:
         failures.append(f"{label}: expected {expected}, found {actual!r}")
 
 
 def command_verify(args: argparse.Namespace, defaults: Defaults) -> int:
+    validate_instance_capacity(args.instance, defaults)
     profile = profile_for(args.instance, defaults)
     env = env_values(ENV_PATH)
     engine = usersettings_engine_values()
     failures: list[str] = []
-
     expected_env = {
         "POSTGRES_PORT": str(profile.postgres),
         "RMQ_ADMIN_PORT": str(profile.rmq_admin),
@@ -533,44 +518,21 @@ def command_verify(args: argparse.Namespace, defaults: Defaults) -> int:
         "TEXT_ROUTER_PORT": str(profile.text_router),
         "DIRECTOR_PORT": str(profile.director),
         "ADMIN_BIND_PORT": str(profile.admin_web),
+        "ADMIN_WEB_PORT": str(profile.admin_web),
         "CLIENT_PORT_BASE": str(profile.client),
         "IGW_PORT_BASE": str(profile.igw),
     }
     for key, expected in expected_env.items():
         compare_value(failures, env.get(key), expected, f".env {key}")
-
     compare_value(failures, engine.get("port"), str(profile.client), "UserEngine Port")
-    compare_value(
-        failures, engine.get("igw_port"), str(profile.igw), "UserEngine IGWPort"
-    )
-
+    compare_value(failures, engine.get("igw_port"), str(profile.igw), "UserEngine IGWPort")
     if args.public_ip:
-        compare_value(
-            failures,
-            env.get("SERVER_IP"),
-            validate_ipv4(args.public_ip, "--public-ip"),
-            ".env SERVER_IP",
-        )
+        compare_value(failures, env.get("SERVER_IP"), validate_ipv4(args.public_ip, "--public-ip"), ".env SERVER_IP")
     if args.bind_ip:
-        compare_value(
-            failures,
-            env.get("SERVER_BIND_IP"),
-            validate_ipv4(args.bind_ip, "--bind-ip"),
-            ".env SERVER_BIND_IP",
-        )
-
+        compare_value(failures, env.get("SERVER_BIND_IP"), validate_ipv4(args.bind_ip, "--bind-ip"), ".env SERVER_BIND_IP")
+    payload = {"ok": not failures, "instance": profile.instance, "expected": asdict(profile), "failures": failures}
     if args.json:
-        print(
-            json.dumps(
-                {
-                    "ok": not failures,
-                    "instance": profile.instance,
-                    "expected": asdict(profile),
-                    "failures": failures,
-                },
-                indent=2,
-            )
-        )
+        print(json.dumps(payload, indent=2))
     elif failures:
         print("VERIFY: FAILED")
         for failure in failures:
@@ -578,40 +540,29 @@ def command_verify(args: argparse.Namespace, defaults: Defaults) -> int:
     else:
         print("VERIFY: configuration matches expected profile.")
         print_profile(profile)
-
+        print("Global collision validation: PASS")
     return 1 if failures else 0
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description=(
-            "Plan, apply, and verify deterministic multi-server port profiles "
-            "for dune-awakening-selfhost-docker."
-        )
+        description="Plan, apply, and verify globally non-overlapping multi-server port profiles."
     )
     sub = parser.add_subparsers(dest="command", required=True)
-
     plan = sub.add_parser("plan", help="Show profiles for several isolated VMs.")
     plan.add_argument("--instances", type=int, default=2)
     plan.add_argument("--json", action="store_true")
-
     apply = sub.add_parser("apply", help="Apply one profile to the current VM checkout.")
     apply.add_argument("--instance", type=int, required=True)
     apply.add_argument("--public-ip", required=True)
     apply.add_argument("--bind-ip", required=True)
     apply.add_argument("--dry-run", action="store_true")
-    apply.add_argument(
-        "--allow-running",
-        action="store_true",
-        help="Stage changes while containers run; restart is still required.",
-    )
-
+    apply.add_argument("--allow-running", action="store_true", help="Stage changes while containers run; restart is still required.")
     verify = sub.add_parser("verify", help="Verify current config against one profile.")
     verify.add_argument("--instance", type=int, required=True)
     verify.add_argument("--public-ip")
     verify.add_argument("--bind-ip")
     verify.add_argument("--json", action="store_true")
-
     return parser
 
 
