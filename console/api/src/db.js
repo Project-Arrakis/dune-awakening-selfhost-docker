@@ -79,7 +79,7 @@ export function publicDbConfig(config) {
 }
 
 export function redactDbError(error) {
-  return redact(String(error?.message || error)
+  return redact(String(error?.message || "Unexpected error.")
     .replace(/postgres(?:ql)?:\/\/[^@\s]+@/gi, "postgres://<redacted>@")
     .replace(/password=[^&\s]+/gi, "password=<redacted>"));
 }

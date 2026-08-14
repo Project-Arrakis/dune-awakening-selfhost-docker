@@ -3771,7 +3771,7 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
       } catch (error) {
         // Keep the base list usable, but do not misrepresent a failed query as
         // proof that every base has no generators.
-        console.warn(`Base generator data unavailable: ${error?.message || error}`);
+        console.warn(`Base generator data unavailable: ${error?.message || "Unexpected error."}`);
       }
     }
 
@@ -5279,7 +5279,7 @@ function refillCaps(repoRoot) {
   try {
     if (repoRoot && existsSync(overridePath)) overrides = JSON.parse(readFileSync(overridePath, "utf8")) || {};
   } catch (error) {
-    console.warn(`Ignoring unreadable generator refill cap overrides: ${redact(error?.message || error)}`);
+    console.warn(`Ignoring unreadable generator refill cap overrides: ${redact(error?.message || "Unexpected error.")}`);
   }
   const caps = {};
   for (const type of GENERATOR_TYPE_ORDER) {
@@ -6409,7 +6409,7 @@ export function listQueuedGeneratorRefills(repoRoot) {
       return true;
     });
   } catch (error) {
-    console.warn(`Ignoring unreadable pending generator refill queue: ${redact(error?.message || error)}`);
+    console.warn(`Ignoring unreadable pending generator refill queue: ${redact(error?.message || "Unexpected error.")}`);
     return [];
   }
 }
@@ -6662,7 +6662,7 @@ export async function flushGeneratorRefills(db, repoRoot, { now = Date.now } = {
       // update-db.sh inside the very window this flush targets, and three
       // strikes at a few seconds apart would otherwise all land inside one
       // migration and silently discard the operator's request.
-      const message = String(error?.message || error).slice(0, 300);
+      const message = String(error?.message || "Unexpected error.").slice(0, 300);
       const attempts = isTransientFlushError(message) ? entry.attempts : entry.attempts + 1;
       const dropped = attempts >= MAX_REFILL_FLUSH_ATTEMPTS;
       const nextRetryAt = timestamp + pendingRefillRetryDelayMs();
@@ -7369,7 +7369,7 @@ export function listQueuedWaterRefills(repoRoot) {
       return true;
     });
   } catch (error) {
-    console.warn(`Ignoring unreadable pending water refill queue: ${redact(error?.message || error)}`);
+    console.warn(`Ignoring unreadable pending water refill queue: ${redact(error?.message || "Unexpected error.")}`);
     return [];
   }
 }
@@ -7446,7 +7446,7 @@ export async function flushWaterRefills(db, repoRoot, { now = Date.now } = {}) {
         devices: result.devices
       });
     } catch (error) {
-      const message = String(error?.message || error).slice(0, 300);
+      const message = String(error?.message || "Unexpected error.").slice(0, 300);
       const attempts = isTransientFlushError(message) ? entry.attempts : entry.attempts + 1;
       const dropped = attempts >= MAX_REFILL_FLUSH_ATTEMPTS;
       const nextRetryAt = timestamp + pendingRefillRetryDelayMs();

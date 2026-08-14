@@ -111,7 +111,7 @@ export function readAutoRefillWaterState(repoRoot) {
   try {
     return normalizeState(JSON.parse(readFileSync(file, "utf8")));
   } catch (error) {
-    console.warn(`Ignoring unreadable auto-refill water enrollment file: ${redact(error?.message || error)}`);
+    console.warn(`Ignoring unreadable auto-refill water enrollment file: ${redact(error?.message || "Unexpected error.")}`);
     return normalizeState({});
   }
 }
@@ -221,7 +221,7 @@ export function createAutoRefillWaterScheduler(options = {}) {
     try {
       auditImpl(config, null, action, detail);
     } catch (error) {
-      log.error(`Auto-refill water audit failed: ${redact(error?.message || error)}`);
+      log.error(`Auto-refill water audit failed: ${redact(error?.message || "Unexpected error.")}`);
     }
   }
 
@@ -360,7 +360,7 @@ export function createAutoRefillWaterScheduler(options = {}) {
       // entry has left pendingBaseIds and water is still low.
       outcomes.set(key, outcome);
     } catch (error) {
-      const message = String(error?.message || error);
+      const message = String(error?.message || "Unexpected error.");
       // A base that no longer exists would otherwise be retried every day
       // forever. Every other error leaves the enrollment alone.
       if (/was not found/i.test(message)) {
@@ -424,7 +424,7 @@ export function createAutoRefillWaterScheduler(options = {}) {
           new Map(),
           [],
           "fail",
-          redact(String(error?.message || error)).slice(0, MAX_RUN_DETAIL_LENGTH),
+          redact(String(error?.message || "Unexpected error.")).slice(0, MAX_RUN_DETAIL_LENGTH),
           { preserveNextRunAt }
         );
         throw error;

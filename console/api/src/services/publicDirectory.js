@@ -1061,6 +1061,6 @@ function firstValue(...values) {
 }
 
 function safeError(error) {
-  const message = String(error?.name === "AbortError" ? "Public directory request timed out." : error?.message || error);
+  const message = String(error?.name === "AbortError" ? "Public directory request timed out." : error?.message || "Unexpected error.");
   return cleanText(message, 240);
 }

@@ -66,7 +66,7 @@ function commandCheck(name, cmd, args) {
     const out = execFileSync(cmd, args, { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "pipe"] });
     return check(name, "pass", out.split(/\r?\n/)[0]);
   } catch (error) {
-    return check(name, "fail", "Not available or not reachable", String(error.message || error));
+    return check(name, "fail", "Not available or not reachable", String(error?.message || "Unexpected error."));
   }
 }
 
@@ -160,7 +160,7 @@ function dockerSocketCheck() {
     const st = statSync(socket);
     return check("Docker socket", st.isSocket() ? "pass" : "warn", dockerSocketDetail(st));
   } catch (error) {
-    return check("Docker socket", "fail", "Could not inspect Docker socket.", String(error.message || error));
+    return check("Docker socket", "fail", "Could not inspect Docker socket.", String(error?.message || "Unexpected error."));
   }
 }
 
@@ -174,7 +174,7 @@ function dockerSocketDetail(existingStat = null) {
 }
 
 function commandErrorOutput(error) {
-  return String(error?.stderr || error?.stdout || error?.message || error || "").trim();
+  return String(error?.stderr || error?.stdout || error?.message || "Unexpected error.").trim();
 }
 
 function modeString(mode) {
