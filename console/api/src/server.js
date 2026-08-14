@@ -4,7 +4,7 @@ import { totalmem } from "node:os";
 import { spawn } from "node:child_process";
 import { existsSync, writeFileSync, chmodSync, mkdirSync, createReadStream, readFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
-import { loadConfig, publicConfig, parseAllowedIps } from "./config.js";
+import { loadConfig, publicConfig, parseAllowedIps, resolvePorts } from "./config.js";
 import { createAuth, setSessionCookie, clearSessionCookie, json, withSecurityHeaders } from "./auth.js";
 import { createLoginRateLimiter, createMutationRateLimiter } from "./rateLimit.js";
 import { createBridgeRateLimiter } from "./bridgeRateLimit.js";
@@ -1565,8 +1565,15 @@ function apiErrorPayload(error, fallbackStatus = 500) {
 }
 
 function isPostgresUnavailableError(error, rawMessage = "") {
+  // Note: error?.code === "ECONNREFUSED" and the generic "connect
+  // ECONNREFUSED" regex below already catch every real case regardless
+  // of which port Postgres is configured on -- this specific-port regex
+  // is effectively redundant, but is kept (now port-aware instead of
+  // hardcoded to the stock port 15432) for clearer log/error matching on
+  // deployments with a non-default configured Postgres port.
+  const postgresPort = resolvePorts().postgres;
   return error?.code === "ECONNREFUSED"
-    || /ECONNREFUSED.*127\.0\.0\.1:15432/i.test(rawMessage)
+    || new RegExp(`ECONNREFUSED.*127\\.0\\.0\\.1:${postgresPort}`, "i").test(rawMessage)
     || /connect\s+ECONNREFUSED/i.test(rawMessage);
 }
 

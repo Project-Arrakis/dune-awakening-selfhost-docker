@@ -1,5 +1,6 @@
 import pg from "pg";
 import { redact } from "./redact.js";
+import { resolvePorts } from "./config.js";
 
 const { Pool } = pg;
 
@@ -9,7 +10,11 @@ export function discoverDbConfig(env = process.env) {
   }
   return {
     host: env.DUNE_DB_HOST || env.PGHOST || "127.0.0.1",
-    port: Number(env.DUNE_DB_PORT || env.PGPORT || env.POSTGRES_PORT || 15432),
+    // DUNE_DB_PORT/PGPORT take precedence over the shared resolvePorts()
+    // default when set directly (rare, escape-hatch use), otherwise this
+    // matches config.js's ports.postgres exactly -- same fallback (15432),
+    // same POSTGRES_PORT lookup, single source of truth.
+    port: Number(env.DUNE_DB_PORT || env.PGPORT || resolvePorts(env).postgres),
     database: env.DUNE_DB_NAME || env.PGDATABASE || "dune",
     user: env.DUNE_DB_USER || env.PGUSER || "dune",
     password: env.DUNE_DB_PASSWORD || env.PGPASSWORD || "dune",
