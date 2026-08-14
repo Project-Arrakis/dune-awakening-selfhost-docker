@@ -105,9 +105,9 @@ export function isDiscordAdapterRoute(path) {
 }
 
 export async function handleDiscordAdapterRoute({ req, res, path, config, readJson: readJsonBody, json, db, statusProvider, readinessProvider, servicesProvider, populationProvider }) {
-  const safeStatusProvider = typeof statusProvider === "function" ? statusProvider : () => discordStatusProvider(config);
-  const safeReadinessProvider = typeof readinessProvider === "function" ? readinessProvider : () => discordReadinessProvider(config);
-  const safeServicesProvider = typeof servicesProvider === "function" ? servicesProvider : () => discordServicesProvider(config);
+  const safeStatusProvider = typeof statusProvider === "function" ? statusProvider : (opts) => discordStatusProvider(config, opts);
+  const safeReadinessProvider = typeof readinessProvider === "function" ? readinessProvider : (opts) => discordReadinessProvider(config, opts);
+  const safeServicesProvider = typeof servicesProvider === "function" ? servicesProvider : (opts) => discordServicesProvider(config, opts);
   const safePopulationProvider = typeof populationProvider === "function" ? populationProvider : () => defaultPopulationProvider(config);
 
   // Reads the JSON body for a Discord adapter POST route and, when
