@@ -453,7 +453,7 @@ export function createAddonJobScheduler(config, options = {}) {
     try {
       auditImpl(config, null, "addons.scheduled-job", { id: EDA_EXCHANGE_BOT_ADDON_ID, job, trigger, ...detail });
     } catch (error) {
-      log.error(`Addon scheduled job audit failed: ${redact(error?.message || error)}`);
+      log.error(`Addon scheduled job audit failed: ${redact(error?.message || "Unexpected error.")}`);
     }
   }
 
@@ -546,7 +546,7 @@ export function createAddonJobScheduler(config, options = {}) {
       });
     } catch (error) {
       const completedAt = now();
-      const message = redact(String(error?.message || error));
+      const message = redact(String(error?.message || "Unexpected error."));
       nextAllowedAttemptAt = completedAt + failureBackoffMs;
       try { persistBuybackRunCompletion(completedAt, "error", message); } catch { /* best effort */ }
       auditJob("buyback", trigger, { status: "error", exchangeId: schedule.exchangeId, ok: false, error: message });
@@ -573,7 +573,7 @@ export function createAddonJobScheduler(config, options = {}) {
       });
     } catch (error) {
       const completedAt = now();
-      const message = redact(String(error?.message || error));
+      const message = redact(String(error?.message || "Unexpected error."));
       nextAllowedAttemptAt = completedAt + failureBackoffMs;
       try { persistSeedRunCompletion(config, completedAt, "error", message); } catch { /* best effort */ }
       auditJob("seed", trigger, { status: "error", exchangeId: schedule.exchangeId, ok: false, error: message });
@@ -602,7 +602,7 @@ export function createAddonJobScheduler(config, options = {}) {
         });
         return { ...outcome, schedule: readSeedSchedule(config) };
       } catch (error) {
-        const message = redact(String(error?.message || error));
+        const message = redact(String(error?.message || "Unexpected error."));
         try { persistSeedRunCompletion(config, now(), "error", message); } catch { /* best effort */ }
         auditJob("seed", trigger, { status: "error", exchangeId: schedule.exchangeId, ok: false, error: message });
         throw error;
@@ -628,7 +628,7 @@ export function createAddonJobScheduler(config, options = {}) {
       });
       return { ...outcome, schedule: readBuybackSchedule(config) };
     } catch (error) {
-      const message = redact(String(error?.message || error));
+      const message = redact(String(error?.message || "Unexpected error."));
       try { persistBuybackRunCompletion(now(), "error", message); } catch { /* best effort */ }
       auditJob("buyback", trigger, { status: "error", exchangeId: schedule.exchangeId, ok: false, error: message });
       throw error;

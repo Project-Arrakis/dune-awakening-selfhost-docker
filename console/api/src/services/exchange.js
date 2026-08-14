@@ -326,7 +326,7 @@ export function readExchangeConfig(repoRoot) {
       blacklistedOwnerIds: coerceIdList(raw?.blacklistedOwnerIds)
     };
   } catch (error) {
-    console.warn(`Ignoring unreadable exchange config: ${redact(error?.message || error)}`);
+    console.warn(`Ignoring unreadable exchange config: ${redact(error?.message || "Unexpected error.")}`);
     return { includeNpcBroker: true, botOwnerIds: [], blacklistedOwnerIds: [] };
   }
 }
