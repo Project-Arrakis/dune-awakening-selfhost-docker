@@ -2,91 +2,99 @@
 
 **Status:** Current | **Last Updated:** August 2026
 
-This is the maintainer/contributor companion to [`MULTI-SERVER-SINGLE-PUBLIC-IP.md`](MULTI-SERVER-SINGLE-PUBLIC-IP.md). It records the clean upstream submission workflow for the multi-server guide and `multi-server-config.py` helper.
+This is the maintainer/contributor companion to [`MULTI-SERVER-SINGLE-PUBLIC-IP.md`](MULTI-SERVER-SINGLE-PUBLIC-IP.md). It records the clean upstream submission workflow for the multi-server SOP, configuration helper, and the backwards-compatible RabbitMQ host-port change needed to make the complete repo-managed host namespace unique across VMs.
 
-The authoritative upstream repository is:
-
-```text
-Red-Blink/dune-awakening-selfhost-docker
-```
-
-The staging fork is:
-
-```text
-yacketrj/dune-awakening-selfhost-docker
-```
-
-The staging PR is:
+Staging PR:
 
 ```text
 https://github.com/yacketrj/dune-awakening-selfhost-docker/pull/262
 ```
 
+Upstream target:
+
+```text
+Red-Blink/dune-awakening-selfhost-docker
+```
+
 ---
 
-# Critical Port-Policy Requirement
+# Required Port-Policy Invariant
 
-Before submitting upstream, verify that the helper and documentation enforce the same invariant:
+The upstream candidate must enforce:
 
-> **No managed numeric port or range may overlap any other managed numeric port or range across any generated VM, regardless of protocol.**
+> **No repo-managed host-facing/published numeric port or range may overlap another managed host port or range across any generated VM, regardless of protocol.**
 
-The accepted allocation policy uses one uniform per-instance stride:
+Container-internal-only ports are not part of this host/public collision domain.
+
+The standard allocation is:
 
 ```text
 INSTANCE_PORT_STRIDE = 1000
 instance_offset = (instance_number - 1) * 1000
 ```
 
-Every managed scalar port and every game/IGW range base receives the same offset.
+Every managed scalar host port and every Player/Game or IGW range base receives the same offset.
 
-Validated examples:
+## Required three-instance values
 
 | Function | VM1 | VM2 | VM3 |
 |---|---:|---:|---:|
 | Player/Game UDP | `7777-7810` | `8777-8810` | `9777-9810` |
 | IGW UDP | `7888-7921` | `8888-8921` | `9888-9921` |
-| Admin Web TCP | `8088` | `9088` | `10088` |
 | Text Router TCP | `5059` | `6059` | `7059` |
+| Admin Web TCP | `8088` | `9088` | `10088` |
+| Prometheus TCP | `9090` | `10090` | `11090` |
 | Director TCP | `11717` | `12717` | `13717` |
 | PostgreSQL TCP | `15432` | `16432` | `17432` |
+| RMQ Game local HTTP TCP | `15672` | `16672` | `17672` |
 | RMQ Game TCP | `31982` | `32982` | `33982` |
 | RMQ Game HTTP TCP | `31983` | `32983` | `33983` |
 | RMQ Admin TCP | `32573` | `33573` | `34573` |
 
-The earlier mixed-offset VM2 example using `7877` / `7988` is obsolete because VM2 player ports overlapped VM1 IGW ports.
-
-Do not submit documentation or helper code that reintroduces that allocation.
+The obsolete mixed-offset VM2 profile using Player/Game `7877-7910` and IGW `7988-8021` must not appear as active configuration because it overlaps VM1 IGW `7888-7921`.
 
 ---
 
-# Why a Clean Upstream Branch Is Required
+# Why `start-rabbitmq.sh` Is Part of the Upstream Change
 
-The staging fork has diverged from `Red-Blink/main`, including documentation-index content.
-
-Do not blindly retarget the staging branch to upstream if that would carry unrelated fork history.
-
-Use this process:
-
-1. fetch upstream and fork;
-2. branch directly from current `upstream/main`;
-3. copy only the reviewed multi-server deliverables;
-4. update the current upstream documentation index in place;
-5. validate source-derived defaults;
-6. validate global port non-overlap;
-7. inspect the exact diff;
-8. commit and push the clean branch;
-9. open a draft upstream PR with `gh`.
-
----
-
-# Deliverables
-
-Required:
+The audited upstream baseline hard-codes this host-side loopback mapping:
 
 ```text
+127.0.0.1:15672 -> dune-rmq-game:15672
+```
+
+That means every VM uses the same host-side numeric port even though VM namespaces isolate it.
+
+For the strict global host-port policy, the staging branch makes only the **host-side** port configurable:
+
+```env
+RMQ_GAME_LOCAL_HTTP_PORT=15672
+```
+
+Stock behavior remains unchanged because the default is still `15672`.
+
+Multi-server examples become:
+
+```text
+VM1 15672 -> container 15672
+VM2 16672 -> container 15672
+VM3 17672 -> container 15672
+```
+
+No RabbitMQ container protocol or internal management port changes.
+
+---
+
+# Intended Upstream File Scope
+
+Required files:
+
+```text
+.env.example
+docs/README.md
 docs/runtime/MULTI-SERVER-SINGLE-PUBLIC-IP.md
 runtime/scripts/multi-server-config.py
-docs/README.md                    # index entry only
+runtime/scripts/start-rabbitmq.sh
 ```
 
 Optional maintainer companion:
@@ -95,11 +103,11 @@ Optional maintainer companion:
 docs/runtime/MULTI-SERVER-SINGLE-PUBLIC-IP-UPSTREAM-PR.md
 ```
 
-Merging these files must not change existing game/runtime defaults unless the helper is explicitly invoked by an operator.
+No other runtime behavior should change.
 
 ---
 
-# Step 1 - Validate Git and GitHub CLI
+# Step 1 — Validate GitHub CLI and remotes
 
 ```bash
 git --version
@@ -108,14 +116,14 @@ gh auth status
 git remote -v
 ```
 
-Expected remote pattern:
+Recommended remotes:
 
 ```text
 origin    https://github.com/yacketrj/dune-awakening-selfhost-docker.git
 upstream  https://github.com/Red-Blink/dune-awakening-selfhost-docker.git
 ```
 
-If needed:
+Add upstream if needed:
 
 ```bash
 git remote add upstream https://github.com/Red-Blink/dune-awakening-selfhost-docker.git
@@ -123,7 +131,7 @@ git remote add upstream https://github.com/Red-Blink/dune-awakening-selfhost-doc
 
 ---
 
-# Step 2 - Fetch Current Refs
+# Step 2 — Fetch current refs
 
 ```bash
 git fetch --prune upstream
@@ -139,13 +147,13 @@ git log --oneline -5 origin/agent/multi-server-single-public-ip-guide
 
 ---
 
-# Step 3 - Branch from Current Upstream Main
+# Step 3 — Create a clean branch from current upstream
 
 ```bash
 git switch -c docs/multi-server-single-public-ip upstream/main
 ```
 
-Confirm:
+Confirm ancestry:
 
 ```bash
 git merge-base --is-ancestor upstream/main HEAD && \
@@ -154,85 +162,92 @@ git merge-base --is-ancestor upstream/main HEAD && \
 
 ---
 
-# Step 4 - Bring in Only the Reviewed Deliverables
+# Step 4 — Copy only reviewed files from the staging branch
 
 ```bash
 git checkout origin/agent/multi-server-single-public-ip-guide -- \
+  .env.example \
   docs/runtime/MULTI-SERVER-SINGLE-PUBLIC-IP.md \
-  runtime/scripts/multi-server-config.py
+  runtime/scripts/multi-server-config.py \
+  runtime/scripts/start-rabbitmq.sh
 ```
 
-If submitting this companion:
+If including this maintainer companion:
 
 ```bash
 git checkout origin/agent/multi-server-single-public-ip-guide -- \
   docs/runtime/MULTI-SERVER-SINGLE-PUBLIC-IP-UPSTREAM-PR.md
 ```
 
-Do not copy the fork's entire `docs/README.md` over upstream.
+Do **not** replace upstream `docs/README.md` with the fork's copy. Edit the current upstream index in place.
 
 ---
 
-# Step 5 - Add the Documentation Index Entry
+# Step 5 — Add the current upstream documentation-index entry
 
-Edit current upstream `docs/README.md` under the Runtime section.
-
-Suggested entry:
+Under `## Runtime` in `docs/README.md`, add:
 
 ```markdown
-- [MULTI-SERVER-SINGLE-PUBLIC-IP.md](runtime/MULTI-SERVER-SINGLE-PUBLIC-IP.md) — Current. Executive overview and detailed SOP for running multiple isolated Dune battlegroups behind one public IPv4, including globally non-overlapping per-instance port profiles, NAT/hairpin requirements, UserEngine configuration, validation, rollback, and the multi-server configuration helper.
+- [MULTI-SERVER-SINGLE-PUBLIC-IP.md](runtime/MULTI-SERVER-SINGLE-PUBLIC-IP.md) — Current. Executive overview and detailed SOP for running multiple isolated Dune battlegroups behind one public IPv4 with globally non-overlapping host-port profiles, NAT/hairpin validation, UserEngine configuration, rollback, and the multi-server configuration helper.
 ```
 
-A guarded scripted insertion can be used if the expected marker still exists:
-
-```bash
-python3 - <<'PY'
-from pathlib import Path
-
-path = Path("docs/README.md")
-text = path.read_text(encoding="utf-8")
-
-entry = (
-    "- [MULTI-SERVER-SINGLE-PUBLIC-IP.md]"
-    "(runtime/MULTI-SERVER-SINGLE-PUBLIC-IP.md) — Current. "
-    "Executive overview and detailed SOP for running multiple isolated Dune "
-    "battlegroups behind one public IPv4, including globally non-overlapping "
-    "per-instance port profiles, NAT/hairpin requirements, UserEngine "
-    "configuration, validation, rollback, and the multi-server configuration helper.\n"
-)
-
-marker = (
-    "- [E2E-METRICS-TESTING.md](runtime/E2E-METRICS-TESTING.md) — "
-    "Current. End-to-end validation procedure for the metrics stack "
-    "(`runtime/metrics`).\n"
-)
-
-if entry in text:
-    raise SystemExit("Index entry already exists; review manually.")
-if marker not in text:
-    raise SystemExit("Runtime marker changed upstream; edit docs/README.md manually.")
-
-path.write_text(text.replace(marker, marker + entry), encoding="utf-8")
-PY
-```
+Review the surrounding current upstream index rather than assuming an old insertion point still exists.
 
 ---
 
-# Step 6 - Syntax-Check the Helper
+# Step 6 — Syntax checks
+
+Python:
 
 ```bash
 python3 -m py_compile runtime/scripts/multi-server-config.py
 ```
 
----
-
-# Step 7 - Validate the Three-Instance Plan
+RabbitMQ startup script:
 
 ```bash
-python3 runtime/scripts/multi-server-config.py plan --instances 3
+bash -n runtime/scripts/start-rabbitmq.sh
 ```
 
-Required output characteristics:
+Both must exit zero.
+
+---
+
+# Step 7 — Confirm the source-derived defaults
+
+Run:
+
+```bash
+python3 runtime/scripts/multi-server-config.py plan --instances 1
+```
+
+The derived stock host values should include:
+
+```text
+Player/Game UDP          7777-7810
+IGW UDP                  7888-7921
+Text Router TCP          5059
+Admin Web TCP            8088
+Prometheus TCP           9090
+Director TCP             11717
+PostgreSQL TCP           15432
+RMQ Game local HTTP TCP  15672
+RMQ Game TCP             31982
+RMQ Game HTTP TCP        31983
+RMQ Admin TCP            32573
+```
+
+If the helper cannot derive one of these from the current upstream source layout, do not weaken the check merely to make the PR pass. Review the upstream change and update the parser deliberately.
+
+---
+
+# Step 8 — Validate the three-instance plan
+
+```bash
+python3 runtime/scripts/multi-server-config.py plan --instances 3 | tee /tmp/dune-multiserver-plan.txt
+```
+
+Required stride:
 
 ```text
 Global instance port stride: +1000
@@ -241,72 +256,110 @@ Global instance port stride: +1000
 VM2 must include:
 
 ```text
-Player/game UDP : 8777-8810
-IGW UDP         : 8888-8921
-PostgreSQL TCP  : 16432
-RMQ Admin TCP   : 33573
-RMQ Game TCP    : 32982
-RMQ Game HTTP   : 32983
-Text Router TCP : 6059
-Director TCP    : 12717
-Admin Web TCP   : 9088
+Player/game UDP          8777-8810
+IGW UDP                  8888-8921
+Text Router TCP          6059
+Admin Web TCP            9088
+Prometheus TCP           10090
+Director TCP             12717
+PostgreSQL TCP           16432
+RMQ Game local HTTP TCP  16672
+RMQ Game TCP             32982
+RMQ Game HTTP TCP        32983
+RMQ Admin TCP            33573
 ```
 
 VM3 must include:
 
 ```text
-Player/game UDP : 9777-9810
-IGW UDP         : 9888-9921
-PostgreSQL TCP  : 17432
-RMQ Admin TCP   : 34573
-RMQ Game TCP    : 33982
-RMQ Game HTTP   : 33983
-Text Router TCP : 7059
-Director TCP    : 13717
-Admin Web TCP   : 10088
+Player/game UDP          9777-9810
+IGW UDP                  9888-9921
+Text Router TCP          7059
+Admin Web TCP            10088
+Prometheus TCP           11090
+Director TCP             13717
+PostgreSQL TCP           17432
+RMQ Game local HTTP TCP  17672
+RMQ Game TCP             33982
+RMQ Game HTTP TCP        33983
+RMQ Admin TCP            34573
 ```
 
-Required success line:
+Required final result:
 
 ```text
-VALIDATION: all generated managed ports are globally non-overlapping.
+VALIDATION: all generated managed host ports are globally non-overlapping.
 ```
-
-If any collision exists, the helper must exit non-zero.
 
 ---
 
-# Step 8 - Validate the Fail-Closed Limit
+# Step 9 — Verify generated NAT rules include IGW
 
-With the validated source defaults, the uniform `+1000` policy is collision-free through Instance 33 and Instance 34 must fail because a generated port exceeds `65535`.
+The plan must show both UDP ranges for each instance.
 
-Optional checks:
+VM2 example:
+
+```text
+UDP 8777-8810 -> <VM_LAN_IP>:8777-8810  # Player/Game
+UDP 8888-8921 -> <VM_LAN_IP>:8888-8921  # IGW
+TCP 32982 -> <VM_LAN_IP>:32982           # RMQ Game
+TCP 32983 -> <VM_LAN_IP>:32983           # RMQ Game HTTP
+```
+
+Failure to emit IGW is a blocker for this deployment model.
+
+---
+
+# Step 10 — Validate the boundary behavior
+
+At the audited baseline, Instance 33 should still fit and Instance 34 should fail because a generated port exceeds `65535`.
 
 ```bash
-python3 runtime/scripts/multi-server-config.py plan --instances 33 >/tmp/dune-plan-33.txt
+python3 runtime/scripts/multi-server-config.py plan --instances 33 \
+  >/tmp/dune-plan-33.txt
 
-grep -F 'VALIDATION: all generated managed ports are globally non-overlapping.' \
+grep -F \
+  'VALIDATION: all generated managed host ports are globally non-overlapping.' \
   /tmp/dune-plan-33.txt
 ```
 
-Then confirm 34 is rejected:
+Then:
 
 ```bash
 if python3 runtime/scripts/multi-server-config.py plan --instances 34; then
   echo "ERROR: instance 34 unexpectedly passed"
   exit 1
 else
-  echo "PASS: instance 34 rejected"
+  echo "PASS: instance 34 was rejected"
 fi
 ```
 
-This is not a recommendation to operate 33 battlegroups; it is only an allocator boundary test.
+This validates address-space exhaustion only; it does not assert that a physical host can support 33 battlegroups.
 
 ---
 
-# Step 9 - Search for Obsolete Mixed-Offset Values
+# Step 11 — Check the RabbitMQ local host mapping
 
-Before submission, search the deliverables:
+Confirm the host side is configurable and the container side remains fixed:
+
+```bash
+grep -nE \
+  'RMQ_GAME_LOCAL_HTTP_PORT|15672/tcp' \
+  runtime/scripts/start-rabbitmq.sh
+```
+
+Expected design:
+
+```text
+RMQ_GAME_LOCAL_HTTP_PORT defaults to 15672
+127.0.0.1:${RMQ_GAME_LOCAL_HTTP_PORT}:15672/tcp
+```
+
+There must not be an active hard-coded host-side `127.0.0.1:15672:15672/tcp` mapping left.
+
+---
+
+# Step 12 — Search for obsolete active port examples
 
 ```bash
 grep -RniE \
@@ -316,13 +369,11 @@ grep -RniE \
   runtime/scripts/multi-server-config.py || true
 ```
 
-Any matches must be reviewed.
-
-A historical explanation may intentionally mention obsolete values, but no active configuration table, command, or expected-output block may use them.
+Historical text explaining why those values were rejected is acceptable. They must not appear as current VM2 configuration or expected output.
 
 ---
 
-# Step 10 - Review the Exact Diff
+# Step 13 — Review the full diff
 
 ```bash
 git diff --check
@@ -330,26 +381,30 @@ git diff --check
 git status --short
 
 git diff -- \
+  .env.example \
   docs/README.md \
   docs/runtime/MULTI-SERVER-SINGLE-PUBLIC-IP.md \
   docs/runtime/MULTI-SERVER-SINGLE-PUBLIC-IP-UPSTREAM-PR.md \
-  runtime/scripts/multi-server-config.py
+  runtime/scripts/multi-server-config.py \
+  runtime/scripts/start-rabbitmq.sh
 ```
 
-Confirm no unrelated runtime/application changes are present.
+Confirm no unrelated runtime/application change is included.
 
 ---
 
-# Step 11 - Commit
+# Step 14 — Commit
 
 ```bash
 git add \
+  .env.example \
   docs/README.md \
   docs/runtime/MULTI-SERVER-SINGLE-PUBLIC-IP.md \
-  runtime/scripts/multi-server-config.py
+  runtime/scripts/multi-server-config.py \
+  runtime/scripts/start-rabbitmq.sh
 ```
 
-If including this companion:
+If including the maintainer companion:
 
 ```bash
 git add docs/runtime/MULTI-SERVER-SINGLE-PUBLIC-IP-UPSTREAM-PR.md
@@ -363,7 +418,7 @@ git commit -m "docs/runtime: add collision-free multi-server SOP and helper"
 
 ---
 
-# Step 12 - Push the Clean Branch
+# Step 15 — Push the clean branch
 
 ```bash
 git push -u origin docs/multi-server-single-public-ip
@@ -371,51 +426,33 @@ git push -u origin docs/multi-server-single-public-ip
 
 ---
 
-# Step 13 - Create the Upstream Draft PR
+# Step 16 — Create the upstream draft PR
 
-Create the body:
+Create a PR body:
 
 ```bash
 cat >/tmp/multi-server-pr.md <<'EOF'
 ## Summary
 
-Adds a source-driven operator guide and configuration helper for running multiple independent Dune: Awakening battlegroups on isolated VMs behind one shared public IPv4.
+Adds a source-driven operator SOP and configuration helper for running multiple independent Dune: Awakening battlegroups on isolated VMs behind one shared public IPv4.
 
-### Port-allocation invariant
+### Global host-port invariant
 
-The guide and helper enforce a strict global rule: no managed numeric port or range may overlap any other managed port or range across any generated VM, regardless of protocol.
+No repo-managed host-facing/published numeric port or range may overlap another managed host port or range across any generated VM, regardless of protocol.
 
-A uniform `+1000` per-instance stride is applied to every managed port/base.
+The standard profile applies a uniform `+1000` per-instance offset to every managed host port/base.
 
-For example:
+Examples:
 
 - VM1 Player/Game `7777-7810`, IGW `7888-7921`
 - VM2 Player/Game `8777-8810`, IGW `8888-8921`
 - VM3 Player/Game `9777-9810`, IGW `9888-9921`
 
-The helper validates the complete interval set and fails closed on any collision or port above `65535`.
+The allocator also covers PostgreSQL, RMQ Admin, RMQ Game, RMQ Game HTTP, RMQ local-management HTTP, Text Router, Director, Admin Web, and optional Prometheus.
 
-### Documentation
+### Small runtime compatibility change
 
-Adds a detailed SOP covering:
-
-- one-VM-per-battlegroup isolation;
-- source-derived default ports;
-- complete per-instance namespace planning;
-- `.env` service-port configuration;
-- authoritative UserEngine `Port` / `IGWPort` configuration;
-- `SERVER_IP` vs `SERVER_BIND_IP`;
-- player and IGW UDP forwarding;
-- RMQ Game and RMQ Game HTTP forwarding;
-- Web Console exposure;
-- NAT reflection/hairpin validation;
-- host firewall configuration;
-- startup/readiness verification;
-- packet capture;
-- security;
-- rollback;
-- upgrade revalidation;
-- troubleshooting.
+`start-rabbitmq.sh` previously hard-coded host mapping `127.0.0.1:15672:15672` for game RabbitMQ management. This PR makes only the host-side port configurable through `RMQ_GAME_LOCAL_HTTP_PORT`, defaulting to `15672`, so normal single-server behavior is unchanged while multi-VM deployments can assign `16672`, `17672`, etc.
 
 ### Helper
 
@@ -425,13 +462,15 @@ Adds `runtime/scripts/multi-server-config.py` with:
 - `apply`
 - `verify`
 
-The helper derives current defaults from repository source instead of silently assuming historical values remain valid.
+The helper derives defaults from repository source, checks all host-port intervals globally, fails closed on collisions or ports above `65535`, updates `.env`, writes authoritative UserEngine `Port` / `IGWPort`, and prints Player/Game + IGW + RMQ NAT rules.
 
-No existing runtime default is changed merely by merging this PR. The helper changes configuration only when explicitly invoked.
+### Documentation
+
+Adds an executive architecture summary and detailed SOP covering VM isolation, complete port planning, NAT/hairpin behavior, firewalling, validation, packet capture, security, upgrades, and rollback.
 EOF
 ```
 
-Open the PR:
+Open the draft PR:
 
 ```bash
 gh pr create \
@@ -445,7 +484,7 @@ gh pr create \
 
 ---
 
-# Step 14 - Verify the Upstream PR Scope
+# Step 17 — Verify upstream PR scope
 
 ```bash
 gh pr view \
@@ -453,9 +492,7 @@ gh pr view \
   --json number,title,url,isDraft,files
 ```
 
-Expected files should be limited to the intended documentation/helper scope.
-
-Review the patch:
+Then inspect:
 
 ```bash
 gh pr diff --repo Red-Blink/dune-awakening-selfhost-docker
@@ -465,24 +502,29 @@ gh pr diff --repo Red-Blink/dune-awakening-selfhost-docker
 
 # Maintainer Acceptance Checklist
 
-Before marking the upstream PR ready for review:
+Before marking the upstream PR ready:
 
-- [ ] Branch is based on current `Red-Blink/main`.
-- [ ] No unrelated fork history is included.
-- [ ] Python helper compiles.
-- [ ] Three-instance plan succeeds.
-- [ ] VM1, VM2, and VM3 game ranges are non-overlapping.
-- [ ] VM1, VM2, and VM3 IGW ranges are non-overlapping.
-- [ ] Game ranges do not overlap any IGW range on any VM.
-- [ ] No scalar service port overlaps a game or IGW range.
-- [ ] No scalar service port is reused by another managed endpoint.
-- [ ] Collision validation ignores protocol and checks numeric ownership globally.
-- [ ] Instance 34 is rejected at the validated baseline because the generated port space is exhausted.
+- [ ] Clean branch is based on current `Red-Blink/main`.
+- [ ] No unrelated fork history is present.
+- [ ] `python3 -m py_compile runtime/scripts/multi-server-config.py` passes.
+- [ ] `bash -n runtime/scripts/start-rabbitmq.sh` passes.
+- [ ] Three-instance plan passes global collision validation.
+- [ ] Player/Game ranges are unique.
+- [ ] IGW ranges are unique.
+- [ ] No Player/Game range overlaps any IGW range.
+- [ ] No scalar host port falls inside any Player/Game/IGW range.
+- [ ] No scalar host port is reused by another managed endpoint.
+- [ ] RMQ local-management host ports are `15672`, `16672`, `17672` for VM1-3.
+- [ ] Prometheus host ports are `9090`, `10090`, `11090` for VM1-3.
+- [ ] Generated NAT output contains IGW forwarding.
+- [ ] Instance 34 fails at the audited baseline because the host-port space is exhausted.
+- [ ] `.env.example` documents the advanced host-port overrides.
 - [ ] Documentation tables match helper output.
-- [ ] Router/NAT examples match helper output.
 - [ ] UserEngine examples match helper output.
-- [ ] Obsolete mixed-stride values are not used as active configuration.
+- [ ] NAT examples match helper output.
+- [ ] Obsolete mixed-offset values are not active configuration.
+- [ ] Container-internal ports are not confused with host-facing ports.
 - [ ] `git diff --check` passes.
-- [ ] Upstream PR file list is limited to the intended deliverables.
+- [ ] PR file list is limited to intended scope.
 
-The definitive operator behavior remains documented in [`MULTI-SERVER-SINGLE-PUBLIC-IP.md`](MULTI-SERVER-SINGLE-PUBLIC-IP.md).
+The definitive operator SOP remains [`MULTI-SERVER-SINGLE-PUBLIC-IP.md`](MULTI-SERVER-SINGLE-PUBLIC-IP.md).
