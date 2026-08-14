@@ -16,6 +16,11 @@ IMAGE="registry.funcom.com/funcom/self-hosting/seabass-server-rabbitmq:${WORLD_I
 RMQ_ADMIN_PORT="$(resolve_rmq_admin_port)"
 RMQ_GAME_PORT="$(resolve_rmq_game_port)"
 RMQ_GAME_HTTP_PORT="$(resolve_rmq_game_http_port)"
+# Host-side loopback mirror of the game RabbitMQ management endpoint. The
+# container-side management port remains 15672. Keeping the host port
+# configurable lets multi-VM deployments maintain a globally unique host-port
+# namespace while preserving the stock single-server default.
+RMQ_GAME_LOCAL_HTTP_PORT="$(port_env_value RMQ_GAME_LOCAL_HTTP_PORT 15672)"
 
 mkdir -p runtime/rabbitmq-admin/config
 mkdir -p runtime/rabbitmq-game/config
@@ -110,14 +115,13 @@ docker run -d \
   -v "$(host_path "$PWD/runtime/rabbitmq-admin/config/rabbitmq.conf"):/etc/rabbitmq/rabbitmq.conf:ro" \
   -v "$(host_path "$PWD/runtime/rabbitmq-admin/config/enabled_plugins"):/etc/rabbitmq/enabled_plugins:ro" \
   "$IMAGE"
-
 docker run -d \
   "${DUNE_DOCKER_LOG_ARGS[@]}" \
   --name dune-rmq-game \
   --network dune-net \
   --restart unless-stopped \
   -p "${RMQ_GAME_PORT}:5672/tcp" \
-  -p 127.0.0.1:15672:15672/tcp \
+  -p "127.0.0.1:${RMQ_GAME_LOCAL_HTTP_PORT}:15672/tcp" \
   -p "${RMQ_GAME_HTTP_PORT}:15672/tcp" \
   -v "$(host_path "$PWD/runtime/rabbitmq-game/config/rabbitmq.conf"):/etc/rabbitmq/rabbitmq.conf:ro" \
   -v "$(host_path "$PWD/runtime/rabbitmq-game/config/enabled_plugins"):/etc/rabbitmq/enabled_plugins:ro" \
