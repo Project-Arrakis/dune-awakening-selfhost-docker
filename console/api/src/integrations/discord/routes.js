@@ -105,9 +105,9 @@ export function isDiscordAdapterRoute(path) {
 }
 
 export async function handleDiscordAdapterRoute({ req, res, path, config, readJson: readJsonBody, json, db, statusProvider, readinessProvider, servicesProvider, populationProvider }) {
-  const safeStatusProvider = typeof statusProvider === "function" ? statusProvider : () => discordStatusProvider(config);
-  const safeReadinessProvider = typeof readinessProvider === "function" ? readinessProvider : () => discordReadinessProvider(config);
-  const safeServicesProvider = typeof servicesProvider === "function" ? servicesProvider : () => discordServicesProvider(config);
+  const safeStatusProvider = typeof statusProvider === "function" ? statusProvider : (opts) => discordStatusProvider(config, opts);
+  const safeReadinessProvider = typeof readinessProvider === "function" ? readinessProvider : (opts) => discordReadinessProvider(config, opts);
+  const safeServicesProvider = typeof servicesProvider === "function" ? servicesProvider : (opts) => discordServicesProvider(config, opts);
   const safePopulationProvider = typeof populationProvider === "function" ? populationProvider : () => defaultPopulationProvider(config);
 
   // Reads the JSON body for a Discord adapter POST route and, when
@@ -349,12 +349,18 @@ export async function handleDiscordAdapterRoute({ req, res, path, config, readJs
     // own comment for why the match-check and the link happen together in
     // one discordUserId-bound call rather than as two separate routes.
     if (path === DISCORD_ADAPTER_ROUTES.PLAYERS_ACCOUNTS_LINK_STEAM && req.method === "POST") {
-      // Steam linking is disabled pending OAuth binding (security review 2026-08-08).
-      // The current implementation accepts playerControllerId and steamId64List directly
-      // without validating a Discord OAuth token, verifying the Steam connection, or
-      // binding the selected character to an OAuth state. Revisit when bot-side OAuth
-      // can bind the Discord user ↔ Steam identity ↔ target character in one flow.
-      return json(res, 200, { ok: false, status: "disabled", reason: "steam_linking_pending_oauth_binding", message: "Steam linking is temporarily disabled pending a security review. Use /dune data link while your character is online." });
+      // Steam linking enabled — bot-side OAuth binding validates the Discord user
+      // against their Steam connections before calling this endpoint. The bot's
+      // steamLinkServer.js completes a full OAuth2 authorization-code flow and
+      // passes verified SteamIDs, satisfying the original security concern.
+      const body = await readJson(req, { requireActorSignature: true });
+      const actor = validateDiscordActor(body.actor);
+      requireSelfScopedCapability(actor, discordRoleMappingFromEnv(), DISCORD_CAPABILITIES.ACCOUNT_LINK_WRITE);
+      return json(res, 200, await linkAccountViaSteamProvider(db, {
+        discordUserId: actor.userId,
+        playerControllerId: body.playerControllerId,
+        steamId64List: body.steamId64List
+      }));
     }
 
     // Players me

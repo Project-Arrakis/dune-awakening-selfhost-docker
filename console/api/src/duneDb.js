@@ -8723,17 +8723,32 @@ async function ensureConsoleSchema(tx) {
   // Migrate data from the old dune.* tables if they contain rows.
   // Previously this was a destructive DROP; now we copy existing data
   // transactionally so no operator loses link state on upgrade.
-  for (const table of ["discord_player_links", "discord_pending_links",
-                        "discord_account_links", "discord_pending_account_links"]) {
+  // Migrate data from old dune.* tables with type-safe casts.
+  // dune.* tables use bigint for player_controller_id; console.* uses text.
+  const migrations = {
+    discord_player_links:
+      `insert into console.discord_player_links (discord_user_id, player_controller_id, linked_at)
+       select discord_user_id, player_controller_id::text, linked_at from dune.discord_player_links
+       on conflict (discord_user_id) do nothing`,
+    discord_pending_links:
+      `insert into console.discord_pending_links (code, discord_user_id, player_controller_id, character_name, created_at, expires_at)
+       select code, discord_user_id, player_controller_id::text, character_name, created_at, expires_at from dune.discord_pending_links
+       on conflict (code) do nothing`,
+    discord_account_links:
+      `insert into console.discord_account_links (discord_user_id, player_controller_id, is_default, linked_at)
+       select discord_user_id, player_controller_id::text, coalesce(is_default, false), linked_at from dune.discord_account_links
+       on conflict (discord_user_id, player_controller_id) do nothing`,
+    discord_pending_account_links:
+      `insert into console.discord_pending_account_links (code, discord_user_id, player_controller_id, character_name, created_at, expires_at)
+       select code, discord_user_id, player_controller_id::text, character_name, created_at, expires_at from dune.discord_pending_account_links
+       on conflict (code) do nothing`,
+  };
+  for (const [table, sql] of Object.entries(migrations)) {
     const exists = await tx.query(
       `select exists (select 1 from information_schema.tables where table_schema = 'dune' and table_name = $1)`, [table]);
     if (!exists.rows[0]?.exists) continue;
-
-    await tx.query(`insert into console.${table} select * from dune.${table} on conflict do nothing`);
-
-    // Warn but do not drop — the old tables stay until the operator
-    // manually removes them after confirming the migration was successful.
-    console.warn(`Migrated data from dune.${table} to console.${table}. The old dune.* table was NOT dropped — drop it manually after verifying no data loss.`);
+    await tx.query(sql);
+    console.warn(`Migrated data from dune.${table} to console.${table}. The old dune.* table was NOT dropped.`);
   }
 }
 
@@ -8858,8 +8873,10 @@ export async function migrateDiscordAdapterSchema(db) {
       create unique index if not exists discord_pending_account_links_player_uidx
       on console.discord_pending_account_links (player_controller_id)`);
     // Clean up stale link rows where the game character was deleted (M5, #183).
-    await tx.query(`delete from console.discord_account_links where not exists (select 1 from dune.player_state ps where ps.player_controller_id::text = player_controller_id)`);
-    await tx.query(`delete from console.discord_player_links where not exists (select 1 from dune.player_state ps where ps.player_controller_id::text = player_controller_id)`);
+    // Both sides need ::text cast because Postgres resolves the unqualified
+    // outer-table reference against the dune.player_state bigint column first.
+    await tx.query(`delete from console.discord_account_links where not exists (select 1 from dune.player_state ps where ps.player_controller_id::text = player_controller_id::text)`);
+    await tx.query(`delete from console.discord_player_links where not exists (select 1 from dune.player_state ps where ps.player_controller_id::text = player_controller_id::text)`);
   };
   if (typeof db.transaction === "function") return db.transaction(migrate);
   return migrate(db);
