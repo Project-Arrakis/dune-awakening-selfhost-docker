@@ -161,9 +161,12 @@ sh -c '. "$1/runtime/scripts/compose-project.sh"; dune_persist_compose_project_n
 [ "$(stat -c '%Y' "$persist_root/.env")" = "$persist_mtime_before" ] \
   || fail "persisting an unchanged project name touched .env"
 
-grep -q 'chown --reference="\$dune_compose_env_file" "\$dune_compose_tmp_file"' \
+grep -q 'chown "\$dune_compose_ref_owner" "\$dune_compose_tmp_file"' \
   "$repo_root/runtime/scripts/compose-project.sh" \
   || fail "atomic .env replacement does not explicitly preserve ownership"
+if grep -q -- '--reference=' "$repo_root/runtime/scripts/compose-project.sh"; then
+  fail "atomic .env replacement uses a GNU-coreutils-only chmod/chown flag BusyBox does not support"
+fi
 
 compose_json="$(cd "$repo_root" && \
   DUNE_COMPOSE_PROJECT_NAME=legacy-main \
