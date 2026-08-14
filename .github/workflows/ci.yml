@@ -77,6 +77,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+      - name: Install age (for secrets_aead.py cross-language test)
+        run: sudo apt-get update && sudo apt-get install -y age
+      - name: Install Python cryptography package (for secrets_aead.py)
+        run: pip install --user cryptography
       - name: Test readiness with configured service ports
         run: bash tests/ready-configured-ports-test.sh
       - name: Test stable farm readiness gating
@@ -94,6 +98,14 @@ jobs:
         run: python3 runtime/scripts/test_userengine_ini_comments.py
       - name: Test Global/Map/Partition override precedence
         run: python3 runtime/scripts/test_profile_override_precedence.py
+      - name: Test secrets_aead.py AES-256-GCM primitive
+        run: python3 runtime/scripts/lib/test_secrets_aead.py
+      - name: Test secrets_aead.py cross-language (Python/Node) interop
+        run: runtime/tests/test-secrets-aead-cross-language.sh
+      - name: Test secrets.sh library (age-based read/write/fallback)
+        run: runtime/tests/test-secrets-lib.sh
+      - name: Test Postgres secrets upgrade path (issue #260 regression)
+        run: runtime/tests/test-postgres-secrets-upgrade-path.sh
       - name: Test combat-state publishers
         run: |
           runtime/tests/test-deepdesert-combat-state-publication.sh

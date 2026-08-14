@@ -32,3 +32,6 @@ __pycache__/
 *.pyc
 .security-reports/
 runtime/local-static/
+
+# Added by ggshield
+.cache_ggshield

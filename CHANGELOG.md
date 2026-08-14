@@ -43,6 +43,95 @@ Keep a Changelog style, grouped by upstream base version, newest first.
 
 ### Security
 
+- **Age-based secrets management for the Postgres superuser password**
+  (#128, PR #257). GHSA-fc89-h24v-6j3x follow-on: the Postgres superuser
+  password is no longer a hardcoded literal passed via
+  `-e POSTGRES_PASSWORD=...` (visible in full via `docker inspect` to
+  anyone with Docker socket access). When an operator opts in by setting
+  `DUNE_KEK_FILE`/`DUNE_AGE_IDENTITY_FILE` (provisioning those values is
+  currently a manual, documented step — a dedicated `dune secrets setup`
+  CLI command is a separate, not-yet-implemented deliverable, tracked in
+  the design doc's section 11), a real random password is generated,
+  stored age-encrypted at `runtime/secrets/postgres-superuser-password.enc`,
+  and passed to the container via `POSTGRES_PASSWORD_FILE` instead.
+  Strictly opt-in — an operator who has never set those two environment
+  variables sees zero behavior change (Requirement 0). New shared
+  library: `runtime/scripts/lib/secrets.sh`
+  (`dune_secrets_read_secret`/`write_secret`/`backend_configured`/
+  `generate_dek`/`render_plaintext_file`/`sync_postgres_password`) and
+  AEAD primitive `runtime/scripts/lib/secrets_aead.py` (AES-256-GCM,
+  key/plaintext always passed via stdin, never argv — regression-tested
+  against live `/proc/<pid>/cmdline` inspection).
+- **Fixed a real production incident (#258)**: an earlier version of
+  this same feature deleted the password's bind-mounted render file via
+  an `EXIT` trap immediately after `docker run`, which corrupted
+  Docker's own archive-walking logic (`docker cp`, and therefore both
+  the `dune db backup` CLI path and the console's backup UI) for the
+  **entire** `dune-postgres` container for as long as it kept running —
+  confirmed live, not just theorized. Fixed by never deleting the
+  render file while a container could still reference it; stale files
+  are now only cleaned up at the start of the *next* invocation, after
+  the previous container has already been removed.
+- **Fixed a second real production incident (#259)**, caused by the
+  #258 fix itself: a stray non-file (a directory Docker had left behind
+  at the render path under the #258 failure condition) made a naive
+  `rm -f` exit non-zero, aborting `start-postgres.sh` under
+  `set -euo pipefail` *before* `docker run` ever executed — leaving
+  `dune-postgres` (and dependent containers) down. Fixed via a new
+  self-healing helper, `dune_secrets_render_plaintext_file()`, that
+  detects and removes a stray non-file at the target path with a loud
+  warning instead of aborting.
+- **Fixed a real upgrade-path bug (#260)** found and reproduced live
+  against an existing, pre-feature Postgres data directory: Postgres's
+  own entrypoint only applies `POSTGRES_PASSWORD_FILE` during
+  first-time `initdb`, so enabling the age backend on a host with an
+  **existing** installation silently generated a new password that
+  Postgres never actually adopted — leaving the encrypted secrets store
+  holding a value that didn't match what the live database would
+  accept, with no error at the point the bad value was written.
+  Reproduction required verifying over a real Docker network client
+  rather than `docker exec`/`127.0.0.1`, since this fork's
+  `pg_hba.conf` trusts local connections unconditionally and gives a
+  false pass for *any* password over that path. Fixed via
+  `dune_secrets_sync_postgres_password()`: after every container
+  startup where the age backend is configured, the live password is
+  explicitly forced to match the encrypted store's value via
+  `ALTER USER ... WITH PASSWORD ...` over the trusted local connection;
+  the script now exits non-zero with a loud error if this sync fails,
+  rather than silently reporting success with a diverged secret. New
+  regression test: `runtime/tests/test-postgres-secrets-upgrade-path.sh`
+  (real disposable Postgres container + real Docker network, verified
+  to actually catch the regression via revert/restore).
+- **Fixed a CRITICAL finding from this PR's own Requirement 20 Layer 3
+  audit**, caught before merge: the first version of
+  `dune_secrets_sync_postgres_password()` (the #260 fix above) passed
+  the superuser password via `psql -c "ALTER USER ... '...'"`, which
+  put the plaintext password directly into that `psql` process's own
+  argv — visible via `/proc/<pid>/cmdline` on the host **and from
+  inside the container itself**, for the process's entire lifetime.
+  This reproduced the exact GHSA-fc89-h24v-6j3x exposure class this
+  whole PR exists to eliminate, in the very fix meant to close a
+  different bug. Independently reproduced live by two separate audit
+  reviews before being fixed by piping the SQL over stdin instead
+  (matching the same discipline already used by `secrets_aead.py`'s
+  CLI). New deterministic regression test using `strace -f -e
+  trace=execve` to capture real process argv at the moment of
+  `execve(2)` (a `/proc`-polling approach was tried first and found to
+  be an unreliable, racy way to catch this — a real `ALTER USER`
+  completes in well under 200ms).
+- Also from the same Layer 3 audit: `start-postgres.sh` previously
+  suppressed all diagnostics (`2>/dev/null`) when decrypting the stored
+  superuser password failed, silently generating and persisting a
+  brand-new random password even when the real cause was a
+  misconfigured `DUNE_KEK_FILE`/`DUNE_AGE_IDENTITY_FILE` rather than a
+  legitimate first run. Now fails loudly and explicitly in that case,
+  and the operator-facing error messages for both this and the #260
+  sync failure include concrete next steps instead of just an internal
+  issue number.
+- Known follow-up gap, tracked separately and not blocking (#261):
+  disabling the age backend after having enabled it once does not
+  revert the live password back to the hardcoded default, and nothing
+  currently warns an operator about this.
 - Cherry-picked upstream `3ca8c4c` ("fix(backups): preserve env ownership during scheduled
   tasks", upstream v1.3.67) — `.env` is no longer silently rewritten as root-owned when
   a systemd timer triggers Compose project-name resolution. Existing non-root-owned `.env`
