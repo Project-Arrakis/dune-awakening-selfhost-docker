@@ -312,6 +312,7 @@ export function App() {
   const stackRestartLifecycle = useRef<RestartLifecycleState>(createRestartLifecycleState());
   const stackRestartSuccessAnnounced = useRef(false);
   const stackStatusLoadRef = useRef<Promise<HomeLoadResult> | null>(null);
+  const sidebarRef = useRef<HTMLElement | null>(null);
   const [setupState, setSetupState] = useState<SetupState | null>(null);
   const [publicDirectoryStatus, setPublicDirectoryStatus] = useState<PublicDirectoryStatus | null>(null);
   const [setupStateLoaded, setSetupStateLoaded] = useState(false);
@@ -324,6 +325,35 @@ export function App() {
 
   useEffect(() => {
     preloadPlayerAdminIconRailAssets();
+  }, []);
+
+  useEffect(() => {
+    let ticking = false;
+    const syncSidebarScroll = () => {
+      ticking = false;
+      const sidebarEl = sidebarRef.current;
+      if (!sidebarEl) return;
+      const pageMax = document.documentElement.scrollHeight - window.innerHeight;
+      const navOverflow = sidebarEl.scrollHeight - sidebarEl.clientHeight;
+      if (pageMax <= 0 || navOverflow <= 0) {
+        sidebarEl.scrollTop = 0;
+        return;
+      }
+      const progress = Math.min(1, Math.max(0, window.scrollY / pageMax));
+      sidebarEl.scrollTop = progress * navOverflow;
+    };
+    const onScrollOrResize = () => {
+      if (ticking) return;
+      ticking = true;
+      requestAnimationFrame(syncSidebarScroll);
+    };
+    syncSidebarScroll();
+    window.addEventListener("scroll", onScrollOrResize, { passive: true });
+    window.addEventListener("resize", onScrollOrResize);
+    return () => {
+      window.removeEventListener("scroll", onScrollOrResize);
+      window.removeEventListener("resize", onScrollOrResize);
+    };
   }, []);
 
   useEffect(() => {
@@ -652,7 +682,7 @@ export function App() {
 
   return (
     <div className="app-shell">
-      <aside className="sidebar">
+      <aside className="sidebar" ref={sidebarRef}>
         <div className="sidebar-brand">
           <button className="sidebar-home-button" type="button" onClick={() => { setRedeploySetupOpen(false); setTab("Home"); closeMobileNav(); }} title="Open Home">
             <h1>Dune Docker Console</h1>
