@@ -14,9 +14,25 @@ export const APP_NAME = "Dune Docker Console";
 // places across the codebase that hardcoded these stock values directly
 // instead of reading them from a shared source, breaking any deployment
 // running non-default configured ports).
-export function resolvePorts(env = process.env) {
-  const clientBase = portValue(env.CLIENT_PORT_BASE, 7777);
-  const igwBase = portValue(env.IGW_PORT_BASE, 7888);
+export function resolvePorts(env = process.env, repoRoot = process.cwd()) {
+  const enginePorts = readEnginePortsFromProfile(repoRoot);
+  // Player/Game and IGW base ports are authoritative in
+  // runtime/generated/gameplay-profile.ini's [Engine:URL] section
+  // (written via runtime/scripts/usersettings.py engine-set, e.g. by
+  // the Maps UI or multi-server-config.py) -- NOT env vars. .env's
+  // CLIENT_PORT_BASE/IGW_PORT_BASE are documented as
+  // "compatibility/console metadata" only (see
+  // docs/runtime/MULTI-SERVER-SINGLE-PUBLIC-IP.md): a deployment that
+  // changed these via the Maps UI directly, without also re-running
+  // multi-server-config.py, would have a stale .env value while the
+  // real game server already uses the new one -- reading the profile
+  // file first avoids exactly that staleness. .env is kept as a
+  // secondary fallback (useful before the profile file exists at all,
+  // e.g. immediately after multi-server-config.py writes .env but
+  // before its own engine-set call has run), and the stock literal is
+  // the final fallback.
+  const clientBase = enginePorts.port ?? portValue(env.CLIENT_PORT_BASE, 7777);
+  const igwBase = enginePorts.igwPort ?? portValue(env.IGW_PORT_BASE, 7888);
   return {
     postgres: portValue(env.POSTGRES_PORT || env.DUNE_DB_PORT || env.PGPORT, 15432),
     rmqAdmin: portValue(env.RMQ_ADMIN_PORT, 32573),
@@ -30,6 +46,35 @@ export function resolvePorts(env = process.env) {
     clientBaseSecondary: clientBase + 1,
     igwBase,
     igwBaseSecondary: igwBase + 1
+  };
+}
+
+// Reads Port/IGWPort directly from the [Engine:URL] section of
+// runtime/generated/gameplay-profile.ini -- a cheap, synchronous read
+// (no shelling out to usersettings.py, which resolvePorts() cannot
+// afford given it's called from hot paths like server.js's error
+// handler). Returns { port: null, igwPort: null } if the file doesn't
+// exist yet (fresh install, before the first `dune init`/materialize)
+// or doesn't have an [Engine:URL] section -- callers fall back to
+// .env / stock values in that case, exactly matching
+// runtime-env.sh's own resolve_client_port_base()/resolve_igw_port_base()
+// fallback behavior.
+function readEnginePortsFromProfile(repoRoot) {
+  const profilePath = resolve(repoRoot, "runtime/generated/gameplay-profile.ini");
+  if (!existsSync(profilePath)) return { port: null, igwPort: null };
+  let text;
+  try {
+    text = readFileSync(profilePath, "utf8");
+  } catch {
+    return { port: null, igwPort: null };
+  }
+  const sectionMatch = text.match(/^\[Engine:URL\]\s*$([\s\S]*?)(?=^\[|\s*$(?!\n))/m);
+  const sectionText = sectionMatch ? sectionMatch[1] : text;
+  const portMatch = sectionText.match(/^\s*Port\s*=\s*(\d+)\s*$/m);
+  const igwMatch = sectionText.match(/^\s*IGWPort\s*=\s*(\d+)\s*$/m);
+  return {
+    port: portMatch ? Number(portMatch[1]) : null,
+    igwPort: igwMatch ? Number(igwMatch[1]) : null
   };
 }
 
@@ -56,7 +101,7 @@ export function loadConfig() {
     duneScript: resolve(repoRoot, "runtime/scripts/dune"),
     host: resolveAdminBindHost(process.env.ADMIN_BIND_HOST),
     port: Number(process.env.ADMIN_BIND_PORT || 8088),
-    ports: resolvePorts(),
+    ports: resolvePorts(process.env, repoRoot),
     authDisabled: process.env.ADMIN_AUTH_DISABLED === "1",
     secureCookies: secureCookieEnv === undefined ? process.env.NODE_ENV === "production" : secureCookieEnv === "1",
     allowHostBootstrap: process.env.ALLOW_HOST_BOOTSTRAP === "true",

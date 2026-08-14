@@ -12,6 +12,23 @@
 // future response is ever missing the field) -- they must stay in sync
 // with config.js's resolvePorts() defaults, not be treated as this
 // module's own independent source of truth.
+//
+// CALLER CONTRACT (read before adding a new consumer): getServerPorts()/
+// getAdminPort() are read imperatively, not via a React hook/context --
+// a component that calls them gets whatever is cached AT THAT MOMENT,
+// and will NOT automatically re-render if setServerPorts()/setAdminPort()
+// is called again later. Today this is safe because every consumer
+// (PortChecklist, ReadinessTimeline, SetupWizard) only renders after
+// App.tsx's auth/setup-loaded gate has already resolved the same
+// /api/auth/state promise that populates this cache -- see
+// App.tsx's top-level useEffect. That ordering is a real invariant this
+// module depends on, not enforced by the type system: if a future
+// change ever renders one of these components before that gate (e.g. a
+// pre-auth status widget), it will silently show stock defaults with no
+// error. If you add a consumer that needs live updates after mount
+// (e.g. if /api/auth/state is ever re-fetched later in the session),
+// convert this to a React context/hook instead of extending the
+// imperative-read pattern further.
 export interface ServerPorts {
   postgres: number;
   rmqAdmin: number;
