@@ -49,6 +49,7 @@ reference. Everything else is marked **Current** and is expected to stay accurat
 
 - [CONTAINER-HARDENING.md](runtime/CONTAINER-HARDENING.md) — Current. Summary of container hardening changes.
 - [E2E-METRICS-TESTING.md](runtime/E2E-METRICS-TESTING.md) — Current. End-to-end validation procedure for the metrics stack (`runtime/metrics`).
+- [MULTI-SERVER-SINGLE-PUBLIC-IP.md](runtime/MULTI-SERVER-SINGLE-PUBLIC-IP.md) — Current. Definitive operator guide for running multiple isolated Dune battlegroups on one physical host and one public IPv4, including per-VM port profiles, NAT, UserEngine configuration, validation, and troubleshooting.
 
 ## Addons
 
