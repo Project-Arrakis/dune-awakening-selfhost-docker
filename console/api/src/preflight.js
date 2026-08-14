@@ -3,9 +3,10 @@ import { arch, freemem, platform, release, totalmem } from "node:os";
 import { execFileSync } from "node:child_process";
 import { createServer } from "node:net";
 import { resolve } from "node:path";
+import { resolvePorts } from "./config.js";
 
 export async function preflight(config) {
-  const ports = configuredPorts();
+  const ports = configuredPorts(config.ports);
   const checks = [];
   checks.push(check("Operating system", "info", `${platform()} ${release()}`));
   checks.push(check("Architecture", arch() === "x64" ? "pass" : "warn", arch()));
@@ -27,26 +28,27 @@ export async function preflight(config) {
   return { checks, summary: summarize(checks) };
 }
 
-function configuredPorts(env = process.env) {
-  const clientBase = portValue(env.CLIENT_PORT_BASE, 7777);
-  const igwBase = portValue(env.IGW_PORT_BASE, 7888);
+// Accepts a resolved config.ports object (see config.js's resolvePorts())
+// so this module has exactly one source of truth for stock port
+// defaults, shared with every other consumer (db.js, server.js,
+// duneDb.js, and the frontend via publicConfig()). Falls back to
+// resolving from process.env directly only if called without a ports
+// object (kept for backward-compat with any external caller/test that
+// doesn't pass one).
+function configuredPorts(ports) {
+  const resolved = ports || resolvePorts();
   return [
-    portValue(env.POSTGRES_PORT || env.DUNE_DB_PORT || env.PGPORT, 15432),
-    portValue(env.RMQ_GAME_PORT, 31982),
-    portValue(env.RMQ_GAME_HTTP_PORT, 31983),
-    portValue(env.RMQ_ADMIN_PORT, 32573),
-    portValue(env.TEXT_ROUTER_PORT, 5059),
-    clientBase,
-    clientBase + 1,
-    igwBase,
-    igwBase + 1,
-    portValue(env.DIRECTOR_PORT, 11717)
+    resolved.postgres,
+    resolved.rmqGame,
+    resolved.rmqGameHttp,
+    resolved.rmqAdmin,
+    resolved.textRouter,
+    resolved.clientBase,
+    resolved.clientBaseSecondary,
+    resolved.igwBase,
+    resolved.igwBaseSecondary,
+    resolved.director
   ];
-}
-
-function portValue(value, fallback) {
-  const parsed = Number(value || fallback);
-  return Number.isInteger(parsed) && parsed > 0 && parsed <= 65535 ? parsed : fallback;
 }
 
 function check(name, status, message, detail = "") {

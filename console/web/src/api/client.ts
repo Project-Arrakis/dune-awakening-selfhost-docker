@@ -1,3 +1,5 @@
+import { getServerPorts } from "./serverPorts";
+
 export type ApiResult<T = unknown> = Promise<T>;
 
 let csrfToken: string | null = null;
@@ -94,7 +96,14 @@ export function post<T>(path: string, body: unknown = {}) {
 
 export function friendlyApiError(value: unknown) {
   const text = value instanceof Error ? value.message : String(value || "");
-  if (/ECONNREFUSED.*127\.0\.0\.1:15432|connect\s+ECONNREFUSED|Postgres is not running/i.test(text)) return POSTGRES_UNAVAILABLE_MESSAGE;
+  // Note: the generic "connect ECONNREFUSED"/"Postgres is not running"
+  // checks below already catch every real case regardless of which port
+  // Postgres is configured on -- the specific-port check is effectively
+  // redundant, but kept (now port-aware instead of hardcoded to the
+  // Instance-1 stock port 15432) for clearer matching. See issue #266.
+  const postgresPort = getServerPorts().postgres;
+  const postgresRefused = new RegExp(`ECONNREFUSED.*127\\.0\\.0\\.1:${postgresPort}`, "i");
+  if (postgresRefused.test(text) || /connect\s+ECONNREFUSED|Postgres is not running/i.test(text)) return POSTGRES_UNAVAILABLE_MESSAGE;
   if (/Unexpected token|Unexpected end of JSON|is not valid JSON|invalid json|unexpected response/i.test(text)) return "The console found invalid saved data for this page. Refresh the page and try again.";
   return text.replace(/^Error:\s*/i, "").trim() || "Request failed.";
 }
