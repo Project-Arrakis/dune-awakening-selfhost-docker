@@ -5,6 +5,7 @@ import json
 import os
 import re
 import sys
+import tempfile
 from base64 import b64decode
 from pathlib import Path
 
@@ -12,8 +13,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 CONFIG_PATH = Path(os.environ.get("DUNE_USERSETTINGS_CONFIG", str(ROOT / "runtime" / "generated" / "usersettings.json")))
 PROFILE_PATH = Path(os.environ.get("DUNE_GAMEPLAY_PROFILE", str(ROOT / "runtime" / "generated" / "gameplay-profile.ini")))
-SIETCH_CONFIG_PATH = ROOT / "runtime" / "generated" / "sietch-config.json"
+SIETCH_CONFIG_PATH = Path(os.environ.get("DUNE_SIETCH_CONFIG", str(ROOT / "runtime" / "generated" / "sietch-config.json")))
 LANDSRAAD_RESTART_MARKER_PATH = Path(os.environ.get("DUNE_LANDSRAAD_RESTART_MARKER", str(ROOT / "runtime" / "generated" / "landsraad-restart-required")))
+PRIVATE_SETTINGS_MODE = 0o600
 
 BUILDING_SETTINGS_SECTION = "/Script/DuneSandbox.BuildingSettings"
 LANDSRAAD_SETTINGS_SECTION = "/Script/DuneSandbox.LandsraadSettings"
@@ -629,19 +631,49 @@ def load_config() -> dict:
     return config
 
 
-def atomic_write_text(path: Path, content: str, mode: int = 0o664) -> None:
+def atomic_write_text(path: Path, content: str, mode: int = PRIVATE_SETTINGS_MODE) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.parent / f".{path.name}.tmp.{os.getpid()}"
-    tmp_path.write_text(content, encoding="utf-8")
     try:
+        # NamedTemporaryFile creates with 0600, so password-bearing content is
+        # never briefly exposed between creation and chmod.
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.tmp.",
+            delete=False,
+        ) as tmp:
+            tmp.write(content)
+            tmp.flush()
+            os.fsync(tmp.fileno())
+            tmp_path = Path(tmp.name)
         tmp_path.chmod(mode)
-    except OSError:
-        pass
-    tmp_path.replace(path)
-    try:
+        tmp_path.replace(path)
         path.chmod(mode)
-    except OSError:
-        pass
+    finally:
+        if "tmp_path" in locals() and tmp_path.exists():
+            tmp_path.unlink()
+
+
+def secure_managed_settings_permissions() -> None:
+    """Restrict settings files that can contain server credentials.
+
+    The game must consume its login password in clear text, so filesystem
+    access control is the protection boundary. This also upgrades files made
+    by older releases before any command reads or rewrites them.
+    """
+    game_root = Path(os.environ.get("DUNE_USERSETTINGS_GAME_ROOT", str(ROOT / "runtime" / "game")))
+    candidates = [CONFIG_PATH, PROFILE_PATH, SIETCH_CONFIG_PATH]
+    candidates.extend(game_root.glob("*/Saved/UserSettings/UserEngine.ini"))
+    candidates.extend(game_root.glob("*/Saved/UserSettings/UserGame.ini"))
+    for path in candidates:
+        try:
+            if path.is_file():
+                path.chmod(PRIVATE_SETTINGS_MODE)
+        except OSError:
+            # Read-only mounts are still safe to inspect, and the caller will
+            # report a useful error if it later needs to update the file.
+            pass
 
 
 def save_config(config: dict) -> None:
@@ -1706,12 +1738,23 @@ def metadata() -> int:
             "label": FIELD_LABELS.get(field_id, ""),
         }
 
+    # A login password has no public default and is managed by the Sietch
+    # identity controls, not the generic settings editor. Keep it completely
+    # out of stdout instead of relying on an empty placeholder value.
+    public_engine_fields = {
+        key: spec for key, spec in ENGINE_FIELDS.items()
+        if key != "server_login_password"
+    }
+    public_partition_engine_fields = {
+        key: spec for key, spec in PARTITION_ENGINE_FIELDS.items()
+        if key != "server_login_password"
+    }
     payload = {
-        "engine": [row("engine", key, spec) for key, spec in ENGINE_FIELDS.items()],
+        "engine": [row("engine", key, spec) for key, spec in public_engine_fields.items()],
         "mapEngine": [row("mapEngine", key, spec) for key, spec in MAP_ENGINE_FIELDS.items()],
         "game": [row("game", key, spec) for key, spec in MAP_FIELDS.items()],
         "partition": [row("partition", key, spec) for key, spec in PARTITION_FIELDS.items()],
-        "partitionEngine": [row("partitionEngine", key, spec) for key, spec in PARTITION_ENGINE_FIELDS.items()],
+        "partitionEngine": [row("partitionEngine", key, spec) for key, spec in public_partition_engine_fields.items()],
     }
     print(json.dumps(payload, indent=2, sort_keys=True))
     return 0
@@ -3527,6 +3570,7 @@ def main(argv: list[str]) -> int:
     if len(argv) < 2:
         return 2
 
+    secure_managed_settings_permissions()
     command = argv[1]
     config = load_config()
 
