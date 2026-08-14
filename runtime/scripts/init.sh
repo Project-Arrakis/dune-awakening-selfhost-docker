@@ -6,6 +6,7 @@ cd "$(dirname "$0")/../.."
 . runtime/scripts/compose-project.sh
 # shellcheck source=runtime/scripts/env-file.sh
 . runtime/scripts/env-file.sh
+. runtime/scripts/runtime-env.sh
 DUNE_COMPOSE_PROJECT_NAME="$(dune_resolve_compose_project_name "$(pwd -P)")"
 export DUNE_COMPOSE_PROJECT_NAME
 export COMPOSE_PROJECT_NAME="$DUNE_COMPOSE_PROJECT_NAME"
@@ -417,12 +418,23 @@ echo "Server IP:    $SERVER_IP"
 echo "Steam app id: $STEAM_APP_ID"
 echo "Battlegroup:  $BATTLEGROUP_ID"
 if [ "$SERVER_IP_MODE" = "public" ]; then
-  cat <<'EOF'
+  # Read the actual configured ports for this instance rather than
+  # hardcoding stock values -- on a deployment with non-default
+  # configured ports (e.g. RMQ_GAME_PORT, CLIENT_PORT_BASE), this
+  # reminder was previously always wrong regardless of the real
+  # configuration. Also now includes the IGW UDP range, previously
+  # omitted entirely regardless of port values.
+  reminder_rmq_game_port="$(resolve_rmq_game_port)"
+  reminder_rmq_game_http_port="$(resolve_rmq_game_http_port)"
+  reminder_client_port_base="$(resolve_client_port_base)"
+  reminder_igw_port_base="$(resolve_igw_port_base)"
+  cat <<EOF
 
 Public hosting reminder:
-  Open or forward TCP 31982.
-  Open or forward TCP 31983.
-  Open or forward UDP 7777-7810.
+  Open or forward TCP ${reminder_rmq_game_port}.
+  Open or forward TCP ${reminder_rmq_game_http_port}.
+  Open or forward UDP ${reminder_client_port_base}-$((reminder_client_port_base + 33)).
+  Open or forward UDP ${reminder_igw_port_base}-$((reminder_igw_port_base + 33)).
 EOF
 fi
 echo
