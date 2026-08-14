@@ -4,9 +4,9 @@
 
 This document is the operator guide and standard operating procedure (SOP) for running multiple independent `dune-awakening-selfhost-docker` battlegroups on one physical server while sharing one public IPv4 address.
 
-The recommended architecture is **one isolated Linux VM per Dune battlegroup**. A hypervisor such as Proxmox VE, KVM/libvirt, VMware, or Hyper-V provides the isolation boundary; each VM runs its own Docker Engine and its own checkout of this repository.
+The recommended architecture is **one isolated Linux VM per Dune battlegroup**. Proxmox VE is used in the examples, but the same design applies to KVM/libvirt, VMware, Hyper-V, or another hypervisor that provides independent guest network namespaces.
 
-The guide is source-driven. Port defaults, runtime bindings, advertised addresses, and configuration methods are derived from the repository rather than from generic Docker or game-server assumptions.
+The guide is source-driven. Default ports, runtime bindings, advertised addresses, and the authoritative game-port configuration path are derived from the repository rather than from generic Docker assumptions.
 
 > **Validated source baseline**
 >
@@ -14,7 +14,7 @@ The guide is source-driven. Port defaults, runtime bindings, advertised addresse
 > - Upstream `main` commit validated for this guide: `7b7d8f1950a278e6431519841d5408cf04c582fb`
 > - Staging fork: `yacketrj/dune-awakening-selfhost-docker`
 >
-> Re-run the validation steps in this SOP after upgrades. Port defaults and runtime behavior can change.
+> Re-run the validation procedures in this SOP after upgrades. Defaults and runtime behavior can change.
 
 ---
 
@@ -24,18 +24,21 @@ The guide is source-driven. Port defaults, runtime bindings, advertised addresse
 
 A single public IPv4 address can support multiple independent Dune: Awakening self-hosted battlegroups when each battlegroup has:
 
-1. its own isolated VM and LAN address;
+1. its own isolated VM and LAN IPv4 address;
 2. its own Docker daemon and runtime state;
-3. a distinct per-instance service-port profile;
-4. a distinct public player/game UDP range;
-5. distinct RabbitMQ Game and RabbitMQ Game HTTP public ports;
-6. a distinct Admin Web port when the Web Console is reachable from outside the VM;
-7. correct `SERVER_IP` and `SERVER_BIND_IP` values for NAT;
-8. correct UserEngine `Port` and `IGWPort` values;
-9. firewall and NAT rules matching the assigned profile;
-10. working NAT reflection/hairpin behavior when the server must reach services through its own advertised public IP.
+3. its own battlegroup identity and configuration;
+4. a complete per-instance port namespace;
+5. no numeric port overlap with any other managed endpoint on any other VM;
+6. a distinct player/game UDP range;
+7. a distinct IGW UDP range;
+8. distinct RabbitMQ Game and RabbitMQ Game HTTP ports;
+9. a distinct Admin Web port when the Web Console is externally reachable;
+10. correct `SERVER_IP` and `SERVER_BIND_IP` values for NAT;
+11. authoritative UserEngine `Port` and `IGWPort` values matching the assigned instance profile;
+12. router/firewall rules matching the assigned profile;
+13. working NAT reflection/hairpin behavior where a VM must reach services using its own advertised public IPv4.
 
-The physical topology is:
+Recommended topology:
 
 ```text
                               Internet
@@ -44,71 +47,158 @@ The physical topology is:
                                  |
                          Firewall / Router
                                  |
-                  +--------------+--------------+
-                  |                             |
-          Proxmox / Hypervisor Host             |
-                  |                             |
-          +-------+--------+--------------------+
-          |                |                    |
-       DUNE-01          DUNE-02              DUNE-03
-       VM #1            VM #2                VM #3
-   192.168.68.127   192.168.68.128       192.168.68.129
-       Docker           Docker               Docker
-       Stack A          Stack B              Stack C
+                         Proxmox VE Host
+                                 |
+             +-------------------+-------------------+
+             |                   |                   |
+          DUNE-01             DUNE-02             DUNE-03
+          VM #1               VM #2               VM #3
+      192.168.68.127      192.168.68.128      192.168.68.129
+          Docker               Docker               Docker
+          Stack A              Stack B              Stack C
 ```
 
-All VMs may advertise the **same public IPv4**. They are distinguished by protocol and destination port.
+All VMs may advertise the **same public IPv4**. The router directs traffic to the correct VM by destination port and protocol.
 
-## Recommended deployment model
+---
 
-Use **one VM per battlegroup**.
+## Non-negotiable port-allocation rule
 
-Do not treat two checkouts inside one Linux network namespace as equivalent to two VMs. The runtime uses fixed container names, fixed Docker resources, host networking for game processes, and other shared host assumptions. VM isolation avoids those collision classes and is the cleanest community-supported architecture for multi-battlegroup hosting.
+For this guide, a numeric port is treated as globally owned by exactly one managed endpoint in the multi-VM deployment.
 
-## Complete per-instance port namespace
+That rule is intentionally stricter than normal TCP/UDP socket semantics.
 
-This SOP intentionally assigns a unique profile to **every configurable service port listed below**, even where the current upstream runtime binds a service to loopback.
+For example, this guide does **not** permit:
 
-That policy has four benefits:
+```text
+VM1 IGW UDP     7888-7921
+VM2 Game UDP    7877-7910
+```
 
-- every battlegroup has an unambiguous service identity;
-- logs, packet captures, monitoring, and troubleshooting are easier to interpret;
-- tools that consume host ports cannot accidentally target the wrong battlegroup;
-- a future upstream binding change does not immediately introduce duplicate-port assumptions.
+because the ranges overlap numerically at:
 
-A unique port profile does **not** mean every port should be exposed to the Internet. WAN exposure is a separate decision covered later in this SOP.
+```text
+7888-7910
+```
 
-## Standard profiles
+Even though the services are on separate VMs, and even if an operator could technically distinguish some flows by protocol or internal address, the community profile rejects the overlap because:
 
-The following profile reproduces the validated second-server configuration and extends the same offset policy to additional VMs.
+- both ranges may be port-forwarded through the same public IPv4;
+- firewall and NAT configuration becomes ambiguous;
+- packet captures become harder to interpret;
+- observability and runbooks become less deterministic;
+- future upstream binding changes can convert a harmless-looking overlap into a production outage;
+- an authoritative community guide should not rely on accidental isolation to make an overlapping allocation safe.
+
+**Every managed port and every managed range across every VM must be numerically non-overlapping.**
+
+---
+
+## Standard allocation policy: one uniform +1000 stride
+
+The community profile uses the stock upstream single-server values for Instance 1.
+
+For every additional instance:
+
+```text
+instance_offset = (instance_number - 1) * 1000
+```
+
+Every managed port and every managed range base receives that same offset.
+
+Examples:
+
+```text
+VM1 offset = 0
+VM2 offset = 1000
+VM3 offset = 2000
+VM4 offset = 3000
+```
+
+For a scalar port:
+
+```text
+instance_port = stock_port + instance_offset
+```
+
+For player and IGW ranges:
+
+```text
+instance_start = stock_start + instance_offset
+instance_end   = stock_end   + instance_offset
+```
+
+This policy is easy to inspect manually and is enforced by the included `multi-server-config.py` helper.
+
+---
+
+## Collision-free VM1 / VM2 / VM3 profiles
 
 | Function | VM1 / Instance 1 | VM2 / Instance 2 | VM3 / Instance 3 |
 |---|---:|---:|---:|
-| Player/game UDP base | `7777` | `7877` | `7977` |
-| Player/game UDP pool | `7777-7810` | `7877-7910` | `7977-8010` |
-| IGW UDP base | `7888` | `7988` | `8088` |
-| IGW UDP pool | `7888-7921` | `7988-8021` | `8088-8121` |
+| Player/game UDP base | `7777` | `8777` | `9777` |
+| Player/game UDP pool | `7777-7810` | `8777-8810` | `9777-9810` |
+| IGW UDP base | `7888` | `8888` | `9888` |
+| IGW UDP pool | `7888-7921` | `8888-8921` | `9888-9921` |
+| Admin Web TCP | `8088` | `9088` | `10088` |
+| Text Router TCP | `5059` | `6059` | `7059` |
+| Director TCP | `11717` | `12717` | `13717` |
 | PostgreSQL TCP | `15432` | `16432` | `17432` |
-| RMQ Admin TCP | `32573` | `33573` | `34573` |
 | RMQ Game TCP | `31982` | `32982` | `33982` |
 | RMQ Game HTTP TCP | `31983` | `32983` | `33983` |
-| Text Router TCP | `5059` | `5159` | `5259` |
-| Director TCP | `11717` | `12717` | `13717` |
-| Admin Web TCP | `8088` | `8090` | `8092` |
+| RMQ Admin TCP | `32573` | `33573` | `34573` |
 
-The helper script included with this guide derives the stock defaults from the checked-out repository and generates these profiles automatically:
+There are **no numeric overlaps** anywhere in this three-VM profile.
+
+The helper validates the full set before displaying or applying a plan:
 
 ```bash
 python3 runtime/scripts/multi-server-config.py plan --instances 3
 ```
 
-## Configuration sources: do not confuse them
+Expected final line:
 
-There are two different configuration paths.
+```text
+VALIDATION: all generated managed ports are globally non-overlapping.
+```
 
-### Service ports are `.env`-backed
+With the validated current defaults and a `+1000` stride, the helper remains collision-free through Instance 33. Instance 34 is rejected because a generated RMQ Admin port would exceed `65535`.
 
-The current runtime resolves these from environment variables with defaults in [`runtime/scripts/runtime-env.sh`](../../runtime/scripts/runtime-env.sh):
+This is a **port-space observation**, not a recommendation to run 33 battlegroups on one physical host. CPU, RAM, storage IOPS, database load, and game-server scheduling will impose much lower practical limits.
+
+---
+
+## Do not use the earlier mixed-stride example
+
+An earlier example used different offsets for different services, including:
+
+```text
+CLIENT_PORT_BASE=7877
+IGW_PORT_BASE=7988
+POSTGRES_PORT=16432
+RMQ_ADMIN_PORT=33573
+RMQ_GAME_PORT=32982
+RMQ_GAME_HTTP_PORT=32983
+TEXT_ROUTER_PORT=5159
+DIRECTOR_PORT=12717
+ADMIN_WEB_PORT=8090
+```
+
+The service values were individually configurable, but the game/IGW allocation was not globally safe because VM2's player range `7877-7910` overlapped VM1's IGW range `7888-7921`.
+
+This guide supersedes that mixed-stride allocation.
+
+Use the uniform `+1000` profile instead.
+
+---
+
+## Configuration sources: service ports vs game ports
+
+There are two different configuration paths in current upstream.
+
+### `.env`-backed service ports
+
+The current runtime resolves the following through [`runtime/scripts/runtime-env.sh`](../../runtime/scripts/runtime-env.sh):
 
 ```text
 POSTGRES_PORT          15432
@@ -119,11 +209,11 @@ TEXT_ROUTER_PORT       5059
 DIRECTOR_PORT          11717
 ```
 
-The Web Console uses `ADMIN_BIND_PORT`, default `8088`, from [`.env.example`](../../.env.example) and [`docker-compose.web.yml`](../../docker-compose.web.yml).
+The Web Console uses `ADMIN_BIND_PORT`, default `8088`, from [`.env.example`](../../.env.example) and [`docker-compose.web.yml`](../../docker-compose.web.yml). `docker-compose.web.yml` also recognizes `ADMIN_WEB_PORT` as an override alias.
 
-### Player and IGW bases are UserEngine settings
+### UserEngine-backed player and IGW ports
 
-The authoritative game port settings are:
+The authoritative game network settings are:
 
 ```ini
 [URL]
@@ -131,27 +221,43 @@ Port=7777
 IGWPort=7888
 ```
 
-They are defined by [`runtime/defaults/UserEngine.ini`](../../runtime/defaults/UserEngine.ini) and the UserEngine schema in [`runtime/scripts/usersettings.py`](../../runtime/scripts/usersettings.py).
+Sources:
 
-On current upstream, the runtime resolves player/IGW bases through `usersettings.py`, not by trusting a `CLIENT_PORT_BASE=` or `IGW_PORT_BASE=` line in `.env` alone.
+- [`runtime/defaults/UserEngine.ini`](../../runtime/defaults/UserEngine.ini)
+- [`runtime/scripts/usersettings.py`](../../runtime/scripts/usersettings.py)
+- [`runtime/scripts/manager.sh`](../../runtime/scripts/manager.sh)
+
+Current runtime resolution uses `usersettings.py` / UserEngine state for these values.
+
+Therefore an `.env` entry such as:
+
+```env
+CLIENT_PORT_BASE=8777
+IGW_PORT_BASE=8888
+```
+
+is **not by itself sufficient** to make those values authoritative on the validated upstream baseline.
 
 Use either:
 
-- the manager UserEngine editor; or
+- `manager.sh` UserEngine editing; or
 - `usersettings.py engine-set`.
 
-This guide's helper performs both the `.env` work and the authoritative UserEngine updates.
+The included helper performs both the `.env` compatibility updates and authoritative UserEngine writes.
+
+---
 
 ## Public vs bind address
 
-For a NAT-hosted server:
+For a server behind NAT:
 
 ```text
 SERVER_IP       = public WAN IPv4 advertised to players/services
-SERVER_BIND_IP  = VM's local/LAN IPv4 where game sockets bind
+SERVER_BIND_IP  = VM LAN IPv4 where local sockets bind
+SERVER_IP_MODE  = public
 ```
 
-Example:
+Example VM2:
 
 ```env
 SERVER_IP=203.0.113.50
@@ -159,76 +265,76 @@ SERVER_IP_MODE=public
 SERVER_BIND_IP=192.168.68.128
 ```
 
-This behavior is implemented by [`runtime/scripts/runtime-env.sh`](../../runtime/scripts/runtime-env.sh), which preserves the local bind address while using an external-address override for the public advertised address.
+[`runtime/scripts/runtime-env.sh`](../../runtime/scripts/runtime-env.sh) contains the NAT/public-host logic that distinguishes the advertised external address from the local bind address.
 
-## Public endpoint minimum
+---
 
-For normal public game operation, the repository's public-hosting flow explicitly accounts for:
+## Public forwarding set
 
+In a shared-public-IPv4 deployment, assign unique ports to **all** managed services and explicitly forward the endpoints your deployment requires.
+
+For the game/network paths covered by this SOP, plan public mappings for:
+
+- player/game UDP range;
+- IGW UDP range when it is routed/forwarded externally in your deployment;
 - RMQ Game TCP;
 - RMQ Game HTTP TCP;
-- the configured player/game UDP range.
+- Admin Web TCP when direct external Web Console access is intentionally enabled.
 
-See [`runtime/scripts/init.sh`](../../runtime/scripts/init.sh), [`runtime/scripts/doctor.sh`](../../runtime/scripts/doctor.sh), [`runtime/scripts/start-rabbitmq.sh`](../../runtime/scripts/start-rabbitmq.sh), and [`runtime/scripts/start-server-gateway.sh`](../../runtime/scripts/start-server-gateway.sh).
+The current upstream public-hosting path explicitly accounts for RMQ Game, RMQ Game HTTP, and player UDP. See:
 
-The Admin Web port must also be unique when the Web Console is intentionally reachable through the shared public IPv4.
+- [`runtime/scripts/init.sh`](../../runtime/scripts/init.sh)
+- [`runtime/scripts/doctor.sh`](../../runtime/scripts/doctor.sh)
+- [`runtime/scripts/start-rabbitmq.sh`](../../runtime/scripts/start-rabbitmq.sh)
+- [`runtime/scripts/start-server-gateway.sh`](../../runtime/scripts/start-server-gateway.sh)
 
-Do not expose PostgreSQL, RMQ Admin, Text Router, Director, Prometheus, or other control-plane services to the WAN simply because this SOP assigns them unique ports.
+IGW is the server-to-server range defined in UserEngine. If your router/firewall design forwards IGW through the public address, it must use the unique per-instance range in this guide.
 
-## Hairpin NAT / NAT reflection is important
-
-[`runtime/scripts/start-server-gateway.sh`](../../runtime/scripts/start-server-gateway.sh) launches the Server Gateway with:
-
-```text
---RMQGameHostname=$SERVER_IP
---RMQGamePort=<configured RMQ game port>
---RMQGameHttpPort=<configured RMQ game HTTP port>
-```
-
-For a home or datacenter NAT deployment where `SERVER_IP` is the router's public IPv4, the VM may need to reach its own public address and be translated back to itself.
-
-Your router/firewall should therefore support **NAT reflection / hairpin NAT / NAT loopback**, or an equivalent routing design must make those public endpoint tuples reachable from the server-side network.
+PostgreSQL, RMQ Admin, Text Router, and Director are also assigned unique per-instance ports. Current upstream startup scripts bind several of them to loopback; do not assume that a router port forward alone makes a `127.0.0.1` listener externally reachable.
 
 ---
 
 # Detailed Standard Operating Procedure
 
-## SOP scope
+## SOP assumptions
 
 This SOP assumes:
 
-- one physical server or cluster node;
+- one physical Proxmox/KVM/VMware/Hyper-V host;
 - one public IPv4 address;
-- two or more Linux VMs;
+- two or more isolated Linux VMs;
 - one independent Dune battlegroup per VM;
-- a routed or bridged LAN behind a firewall/router;
-- Docker Engine inside each VM;
-- public Internet players.
+- a bridged or routed LAN behind a firewall/router;
+- Docker Engine inside every VM;
+- public Internet players;
+- operator access to the hypervisor, VMs, router/firewall, and repository checkout.
 
-The examples use:
+Examples use:
 
 ```text
-Public IPv4:        203.0.113.50       example only
-DUNE-01 VM:         192.168.68.127
-DUNE-02 VM:         192.168.68.128
-DUNE-03 VM:         192.168.68.129
+Public IPv4:   203.0.113.50      documentation example only
+DUNE-01:       192.168.68.127
+DUNE-02:       192.168.68.128
+DUNE-03:       192.168.68.129
 ```
 
-Replace all example addresses with your actual network values.
+Replace those addresses with your real network values.
 
 ---
 
 ## Phase 0 - Change-control preparation
 
-Before modifying a running deployment:
+Before changing a running deployment:
 
-1. identify each battlegroup and VM;
-2. record the current `.env`;
-3. record current UserEngine values;
-4. record current router/NAT rules;
-5. ensure you have a current VM snapshot or configuration backup;
-6. schedule a maintenance window if players are active;
-7. confirm console access to the hypervisor and router in case remote access is disrupted.
+1. identify every battlegroup and VM;
+2. assign a permanent instance number to each VM;
+3. record current `.env` files;
+4. record current UserEngine `Port` and `IGWPort` values;
+5. record router NAT/port-forward rules;
+6. record VM firewall rules;
+7. take a VM snapshot or equivalent backup where operationally appropriate;
+8. confirm hypervisor console access in case remote networking is disrupted;
+9. schedule a maintenance window if players are active.
 
 On each VM:
 
@@ -238,6 +344,9 @@ cd /path/to/dune-awakening-selfhost-docker
 cp -a .env ".env.pre-multiserver.$(date +%Y%m%d-%H%M%S)" 2>/dev/null || true
 
 python3 runtime/scripts/usersettings.py engine-values
+
+docker ps
+ss -lntup
 ```
 
 Record at minimum:
@@ -247,18 +356,11 @@ port
 igw_port
 ```
 
-Also capture:
-
-```bash
-docker ps
-ss -lntup
-```
-
 ---
 
-## Phase 1 - Validate the checked-out repository defaults
+## Phase 1 - Validate the current repository defaults
 
-Do not assume the defaults in this document are unchanged after an upgrade.
+Do not assume this document's numeric examples remain correct after an upstream update.
 
 Run:
 
@@ -266,60 +368,55 @@ Run:
 python3 runtime/scripts/multi-server-config.py plan --instances 3
 ```
 
-The helper parses the checked-out repository for:
+The helper derives current defaults from the checked-out repository:
 
-- service defaults in `runtime/scripts/runtime-env.sh`;
-- `Port` and `IGWPort` defaults in `runtime/scripts/usersettings.py`;
-- the dynamic pool maximum offset in `runtime/scripts/spawn-server.sh`;
-- the Web Console default in `.env.example`.
+- service defaults from `runtime/scripts/runtime-env.sh`;
+- UserEngine `Port` / `IGWPort` defaults from `runtime/scripts/usersettings.py`;
+- dynamic game and IGW pool maximum offsets from `runtime/scripts/spawn-server.sh`;
+- Admin Web default from `.env.example`.
 
-If those source patterns change, the helper stops instead of silently applying an obsolete profile.
-
-For the validated upstream baseline, the expected first-instance defaults are:
+For the validated baseline, Instance 1 should resolve to:
 
 ```text
-Player/game base   7777
-Player/game pool   7777-7810
-IGW base           7888
-IGW pool           7888-7921
-PostgreSQL         15432/TCP
-RMQ Admin          32573/TCP
-RMQ Game           31982/TCP
-RMQ Game HTTP      31983/TCP
-Text Router        5059/TCP
-Director           11717/TCP
-Admin Web          8088/TCP
+Player/game UDP   7777-7810
+IGW UDP           7888-7921
+PostgreSQL TCP    15432
+RMQ Admin TCP     32573
+RMQ Game TCP      31982
+RMQ Game HTTP     31983
+Text Router TCP   5059
+Director TCP      11717
+Admin Web TCP     8088
 ```
 
-If the helper reports different defaults, stop and review the current source before following hard-coded examples from this document.
+If the helper cannot derive those source patterns, it fails closed rather than silently applying an obsolete port plan.
 
 ---
 
-## Phase 2 - Build the VM isolation layer
+## Phase 2 - Create the VM isolation layer
 
-### 2.1 Create one VM per battlegroup
+Create one VM per battlegroup.
 
-For Proxmox, create separate Linux VMs such as:
+Example:
 
 ```text
-DUNE-01
-DUNE-02
-DUNE-03
+DUNE-01 -> Instance 1 -> 192.168.68.127
+DUNE-02 -> Instance 2 -> 192.168.68.128
+DUNE-03 -> Instance 3 -> 192.168.68.129
 ```
 
 Each VM should have:
 
 - its own virtual NIC;
-- its own static or DHCP-reserved LAN IPv4;
+- its own static or DHCP-reserved IPv4;
 - its own filesystem;
 - its own Docker daemon;
 - its own repository checkout;
-- its own `.env` and `runtime/` state;
-- sufficient CPU and RAM for its intended maps.
+- its own `.env`;
+- its own `runtime/` data;
+- sufficient RAM/CPU/storage for the intended map count.
 
-### 2.2 Use a bridged network where practical
-
-A simple bridged design makes each VM a normal LAN host:
+A bridged Proxmox layout is straightforward:
 
 ```text
 vmbr0
@@ -329,27 +426,11 @@ vmbr0
   +-- DUNE-03 192.168.68.129
 ```
 
-This simplifies port forwarding and troubleshooting compared with adding another NAT layer inside the hypervisor.
-
-### 2.3 Reserve VM addresses
-
-Do not allow the VM addresses to drift after router port forwarding is configured.
-
-Use either:
-
-- static addressing inside the VM; or
-- DHCP reservations keyed to each VM NIC MAC address.
-
-Validate from each VM:
+Validate each VM:
 
 ```bash
 ip -4 addr
 ip route
-```
-
-Then verify Internet egress:
-
-```bash
 curl -4 https://api.ipify.org
 ```
 
@@ -357,47 +438,51 @@ All VMs behind the same router should normally report the same public IPv4.
 
 ---
 
-## Phase 3 - Install one Dune stack per VM
+## Phase 3 - Install one independent Dune stack per VM
 
-On each VM, install the upstream project using its normal installation process.
+Install the upstream project independently in each guest.
 
-Do not clone one already-running VM after it has generated battlegroup-specific state unless you intentionally reset or regenerate all identity/state that should be unique.
+Do not treat two checkouts in one Linux host namespace as equivalent to two VMs. The runtime uses fixed container/resource naming and host networking in important paths; VM isolation avoids those collision classes.
 
-Each VM should have its own checkout, for example:
+Do not clone an already-initialized VM without intentionally regenerating battlegroup-specific identity/state that must be unique.
+
+A typical checkout path might be:
 
 ```text
 /opt/dune-awakening-selfhost-docker
 ```
 
-or an equivalent operator-owned path.
-
-Complete normal first-time initialization for each battlegroup according to the project README and installer.
-
-This SOP does not change Funcom token entitlement or licensing requirements. Use valid self-host credentials as required by Funcom and the upstream project.
+Complete normal project initialization and valid Funcom/self-host authentication for every battlegroup.
 
 ---
 
-## Phase 4 - Assign the instance number
+## Phase 4 - Assign stable instance numbers
 
-Choose a stable instance number for every VM.
+Instance numbers are part of the port namespace.
 
 Example:
 
 ```text
-DUNE-01 -> instance 1
-DUNE-02 -> instance 2
-DUNE-03 -> instance 3
+DUNE-01 = 1
+DUNE-02 = 2
+DUNE-03 = 3
 ```
 
-Do not renumber casually after deployment. The instance number determines the standard port profile.
+Do not renumber casually after NAT rules and monitoring are built.
 
-Generate the plan from any current checkout:
+The instance offset is:
+
+```text
+offset = (instance - 1) * 1000
+```
+
+Generate the authoritative plan:
 
 ```bash
 python3 runtime/scripts/multi-server-config.py plan --instances 3
 ```
 
-For machine-readable automation:
+Machine-readable version:
 
 ```bash
 python3 runtime/scripts/multi-server-config.py plan --instances 3 --json
@@ -405,44 +490,74 @@ python3 runtime/scripts/multi-server-config.py plan --instances 3 --json
 
 ---
 
-## Phase 5 - Stop the stack before changing network identity
+## Phase 5 - Review the complete collision domain
 
-Changing service ports while the old containers remain active makes validation ambiguous and can create transient conflicts.
+Before applying anything, review **all** managed allocations together.
 
-Use the project's normal stop command before applying a production change.
+For three instances the numeric space is:
 
-Then verify no active Dune game/service containers remain unexpectedly:
+```text
+VM1
+  Text Router       5059
+  Game              7777-7810
+  IGW               7888-7921
+  Admin Web         8088
+  Director          11717
+  PostgreSQL        15432
+  RMQ Game          31982
+  RMQ Game HTTP     31983
+  RMQ Admin         32573
+
+VM2
+  Text Router       6059
+  Game              8777-8810
+  IGW               8888-8921
+  Admin Web         9088
+  Director          12717
+  PostgreSQL        16432
+  RMQ Game          32982
+  RMQ Game HTTP     32983
+  RMQ Admin         33573
+
+VM3
+  Text Router       7059
+  Game              9777-9810
+  IGW               9888-9921
+  Admin Web         10088
+  Director          13717
+  PostgreSQL        17432
+  RMQ Game          33982
+  RMQ Game HTTP     33983
+  RMQ Admin         34573
+```
+
+The helper treats every scalar as a one-port interval and checks it against every other scalar/range, regardless of protocol.
+
+If any overlap is found, `plan`, `apply`, and `verify` fail with a collision error.
+
+---
+
+## Phase 6 - Stop the Dune stack before changing ports
+
+Changing ports while containers remain active creates stale listeners and ambiguous validation.
+
+Use the project's normal stop workflow.
+
+Then inspect:
 
 ```bash
 docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
 ```
 
-The helper refuses to apply while Dune containers are running unless `--allow-running` is explicitly supplied.
+The helper refuses to apply a profile when Dune containers are running unless `--allow-running` is supplied.
 
-`--allow-running` should be treated as a staging option only. Running processes retain their old listeners until restarted.
-
----
-
-## Phase 6 - Configure each VM
-
-There are two supported operator workflows in this guide:
-
-1. automated helper - recommended;
-2. manual configuration - useful for auditing or unsupported environments.
+Treat `--allow-running` as a staging-only escape hatch. Running processes continue using old listeners until restarted.
 
 ---
 
-## Phase 6A - Automated configuration with `multi-server-config.py`
+## Phase 7A - Automated configuration: recommended
 
-The helper is located at:
-
-```text
-runtime/scripts/multi-server-config.py
-```
-
-### 6A.1 Dry-run first
-
-For VM2:
+### Dry-run VM2
 
 ```bash
 python3 runtime/scripts/multi-server-config.py apply \
@@ -452,23 +567,27 @@ python3 runtime/scripts/multi-server-config.py apply \
   --dry-run
 ```
 
-Review every value before applying.
-
 Expected VM2 profile:
 
 ```text
-Player/game UDP   7877-7910
-IGW UDP           7988-8021
+Player/game UDP   8777-8810
+IGW UDP           8888-8921
 PostgreSQL TCP    16432
 RMQ Admin TCP     33573
 RMQ Game TCP      32982
 RMQ Game HTTP     32983
-Text Router TCP   5159
+Text Router TCP   6059
 Director TCP      12717
-Admin Web TCP     8090
+Admin Web TCP     9088
 ```
 
-### 6A.2 Apply the profile
+The dry run should also report:
+
+```text
+Global collision validation: PASS
+```
+
+### Apply VM2
 
 ```bash
 python3 runtime/scripts/multi-server-config.py apply \
@@ -477,20 +596,22 @@ python3 runtime/scripts/multi-server-config.py apply \
   --bind-ip 192.168.68.128
 ```
 
-The helper performs the following operations:
+The helper:
 
-1. derives current defaults from repository source;
-2. computes the instance profile;
-3. validates all ports are in range;
-4. validates the player range does not overlap the IGW range;
-5. checks for running Dune containers;
-6. creates a timestamped configuration backup;
-7. updates or adds the relevant `.env` values;
-8. writes `IGWPort` through `usersettings.py`;
-9. writes `Port` through `usersettings.py`;
-10. materializes current runtime UserEngine/UserGame files;
-11. prints the NAT rules required for the public endpoint set;
-12. does **not** restart containers automatically.
+1. derives defaults from the checked-out source;
+2. calculates the profile using the uniform `+1000` stride;
+3. builds the complete allocation set from VM1 through the requested instance;
+4. validates every scalar and range for numeric overlap;
+5. validates all generated ports are between `1` and `65535`;
+6. checks for active Dune containers;
+7. creates a timestamped backup;
+8. updates/inserts managed `.env` keys;
+9. removes duplicate active definitions for managed `.env` keys;
+10. writes authoritative UserEngine `IGWPort`;
+11. writes authoritative UserEngine `Port`;
+12. materializes runtime UserEngine/UserGame files;
+13. prints the corresponding public NAT rules;
+14. does not restart the stack automatically.
 
 Backups are stored under:
 
@@ -498,7 +619,7 @@ Backups are stored under:
 runtime/backups/multi-server-config-<UTC timestamp>/
 ```
 
-The helper backs up any existing:
+Possible backup contents:
 
 ```text
 .env
@@ -506,58 +627,13 @@ runtime/generated/usersettings.json
 runtime/generated/gameplay-profile.ini
 ```
 
-### 6A.3 Why the helper changes IGW first
-
-For VM2, the desired player base is `7877`, while the stock IGW pool begins at `7888`.
-
-If the player base were moved first while IGW were still on its stock value, the temporary configuration could overlap:
-
-```text
-new player pool: 7877-7910
-old IGW pool:    7888-7921
-```
-
-The repository's UserEngine validation is expected to reject an invalid overlap.
-
-The helper therefore changes:
-
-```text
-IGWPort first
-Port second
-```
-
-which avoids the transient invalid state.
-
-### 6A.4 Verify the saved profile
-
-For VM2:
-
-```bash
-python3 runtime/scripts/multi-server-config.py verify \
-  --instance 2 \
-  --public-ip 203.0.113.50 \
-  --bind-ip 192.168.68.128
-```
-
-For automation:
-
-```bash
-python3 runtime/scripts/multi-server-config.py verify \
-  --instance 2 \
-  --public-ip 203.0.113.50 \
-  --bind-ip 192.168.68.128 \
-  --json
-```
-
 ---
 
-## Phase 6B - Manual configuration
+## Phase 7B - Manual configuration
 
-Use this path when auditing the helper or when you need to perform the change without it.
+Manual changes are useful for auditing the helper or for deployments that do not use it.
 
-### 6B.1 VM1
-
-VM1 may use the upstream defaults:
+### VM1 / Instance 1
 
 ```env
 SERVER_IP=203.0.113.50
@@ -573,12 +649,12 @@ DIRECTOR_PORT=11717
 ADMIN_BIND_PORT=8088
 ADMIN_WEB_PORT=8088
 
-# Metadata/documentation compatibility; authoritative game values are UserEngine.
+# Compatibility/console metadata; authoritative game values are UserEngine.
 CLIENT_PORT_BASE=7777
 IGW_PORT_BASE=7888
 ```
 
-Authoritative UserEngine values:
+Authoritative UserEngine:
 
 ```bash
 python3 runtime/scripts/usersettings.py engine-set igw_port 7888
@@ -586,9 +662,7 @@ python3 runtime/scripts/usersettings.py engine-set port 7777
 python3 runtime/scripts/usersettings.py materialize-current
 ```
 
-### 6B.2 VM2
-
-VM2 standard profile:
+### VM2 / Instance 2
 
 ```env
 SERVER_IP=203.0.113.50
@@ -599,27 +673,24 @@ POSTGRES_PORT=16432
 RMQ_ADMIN_PORT=33573
 RMQ_GAME_PORT=32982
 RMQ_GAME_HTTP_PORT=32983
-TEXT_ROUTER_PORT=5159
+TEXT_ROUTER_PORT=6059
 DIRECTOR_PORT=12717
-ADMIN_BIND_PORT=8090
-ADMIN_WEB_PORT=8090
+ADMIN_BIND_PORT=9088
+ADMIN_WEB_PORT=9088
 
-# Metadata/documentation compatibility; authoritative game values are UserEngine.
-CLIENT_PORT_BASE=7877
-IGW_PORT_BASE=7988
+CLIENT_PORT_BASE=8777
+IGW_PORT_BASE=8888
 ```
 
-Then set UserEngine in this order:
+Authoritative UserEngine:
 
 ```bash
-python3 runtime/scripts/usersettings.py engine-set igw_port 7988
-python3 runtime/scripts/usersettings.py engine-set port 7877
+python3 runtime/scripts/usersettings.py engine-set igw_port 8888
+python3 runtime/scripts/usersettings.py engine-set port 8777
 python3 runtime/scripts/usersettings.py materialize-current
 ```
 
-### 6B.3 VM3
-
-VM3 standard profile:
+### VM3 / Instance 3
 
 ```env
 SERVER_IP=203.0.113.50
@@ -630,50 +701,42 @@ POSTGRES_PORT=17432
 RMQ_ADMIN_PORT=34573
 RMQ_GAME_PORT=33982
 RMQ_GAME_HTTP_PORT=33983
-TEXT_ROUTER_PORT=5259
+TEXT_ROUTER_PORT=7059
 DIRECTOR_PORT=13717
-ADMIN_BIND_PORT=8092
-ADMIN_WEB_PORT=8092
+ADMIN_BIND_PORT=10088
+ADMIN_WEB_PORT=10088
 
-CLIENT_PORT_BASE=7977
-IGW_PORT_BASE=8088
+CLIENT_PORT_BASE=9777
+IGW_PORT_BASE=9888
 ```
 
-Then:
+Authoritative UserEngine:
 
 ```bash
-python3 runtime/scripts/usersettings.py engine-set igw_port 8088
-python3 runtime/scripts/usersettings.py engine-set port 7977
+python3 runtime/scripts/usersettings.py engine-set igw_port 9888
+python3 runtime/scripts/usersettings.py engine-set port 9777
 python3 runtime/scripts/usersettings.py materialize-current
 ```
 
-### 6B.4 Do not blindly append duplicate `.env` keys
+### Avoid duplicate `.env` definitions
 
-A command such as:
+Do not blindly append values if keys already exist.
 
-```bash
-cat >> .env <<'EOF'
-...
-EOF
-```
-
-is safe only when those keys do not already exist.
-
-Before manually appending, check:
+Audit first:
 
 ```bash
 grep -nE '^(SERVER_IP|SERVER_IP_MODE|SERVER_BIND_IP|POSTGRES_PORT|RMQ_ADMIN_PORT|RMQ_GAME_PORT|RMQ_GAME_HTTP_PORT|TEXT_ROUTER_PORT|DIRECTOR_PORT|ADMIN_BIND_PORT|ADMIN_WEB_PORT|CLIENT_PORT_BASE|IGW_PORT_BASE)=' .env
 ```
 
-If keys already exist, edit or replace them rather than creating multiple active definitions.
+Edit or replace existing active definitions rather than creating multiple copies.
 
-The helper performs an update-or-insert operation and removes duplicate active definitions for the keys it manages.
+The helper performs an update-or-insert operation automatically.
 
 ---
 
-## Phase 7 - Manager-based UserEngine configuration
+## Phase 8 - Manager-based UserEngine configuration
 
-If you prefer the interactive manager instead of `usersettings.py`, open:
+If you prefer the interactive manager:
 
 ```bash
 runtime/scripts/manager.sh
@@ -688,86 +751,75 @@ Port
 IGWPort
 ```
 
-These menu entries are implemented in [`runtime/scripts/manager.sh`](../../runtime/scripts/manager.sh).
+Source: [`runtime/scripts/manager.sh`](../../runtime/scripts/manager.sh).
 
-For VM2 set:
-
-```text
-Port:    7877
-IGWPort: 7988
-```
-
-For VM3 set:
+Set:
 
 ```text
-Port:    7977
-IGWPort: 8088
+VM1: Port 7777, IGWPort 7888
+VM2: Port 8777, IGWPort 8888
+VM3: Port 9777, IGWPort 9888
 ```
 
-Running map containers keep their previous values until restarted. The manager itself reports that behavior after a UserEngine update.
+Running map containers retain old values until restarted.
 
 ---
 
-## Phase 8 - Configure public NAT / port forwarding
+## Phase 9 - Configure router NAT / port forwarding
 
-### 8.1 Required public game endpoints
+Use **1:1 external-to-internal port translation** wherever possible.
 
-For public hosting, forward the unique instance-specific values for:
-
-- RMQ Game TCP;
-- RMQ Game HTTP TCP;
-- player/game UDP range.
-
-If the Web Console is intentionally exposed publicly, forward its unique Admin Web TCP port as well.
-
-### 8.2 VM1 forwarding
-
-```text
-TCP 31982       -> 192.168.68.127:31982
-TCP 31983       -> 192.168.68.127:31983
-UDP 7777-7810   -> 192.168.68.127:7777-7810
-TCP 8088        -> 192.168.68.127:8088     optional Web Console
-```
-
-### 8.3 VM2 forwarding
-
-```text
-TCP 32982       -> 192.168.68.128:32982
-TCP 32983       -> 192.168.68.128:32983
-UDP 7877-7910   -> 192.168.68.128:7877-7910
-TCP 8090        -> 192.168.68.128:8090     optional Web Console
-```
-
-### 8.4 VM3 forwarding
-
-```text
-TCP 33982       -> 192.168.68.129:33982
-TCP 33983       -> 192.168.68.129:33983
-UDP 7977-8010   -> 192.168.68.129:7977-8010
-TCP 8092        -> 192.168.68.129:8092     optional Web Console
-```
-
-### 8.5 Prefer 1:1 port translation
-
-Use the same external and internal port number wherever possible:
+Do this:
 
 ```text
 PUBLIC:32982 -> VM2:32982
 ```
 
-rather than:
+Avoid unnecessary remapping such as:
 
 ```text
 PUBLIC:32982 -> VM2:31982
 ```
 
-The runtime passes configured port numbers through service registration and game/runtime state. Keeping public and internal ports identical removes an entire class of advertised-port mismatches.
+because runtime registration and troubleshooting are simpler when public and internal port numbers match.
+
+### VM1 forwarding
+
+```text
+UDP 7777-7810   -> 192.168.68.127:7777-7810   Player/Game
+UDP 7888-7921   -> 192.168.68.127:7888-7921   IGW, when externally forwarded
+TCP 31982       -> 192.168.68.127:31982       RMQ Game
+TCP 31983       -> 192.168.68.127:31983       RMQ Game HTTP
+TCP 8088        -> 192.168.68.127:8088        Admin Web, only if intentionally public
+```
+
+### VM2 forwarding
+
+```text
+UDP 8777-8810   -> 192.168.68.128:8777-8810   Player/Game
+UDP 8888-8921   -> 192.168.68.128:8888-8921   IGW, when externally forwarded
+TCP 32982       -> 192.168.68.128:32982       RMQ Game
+TCP 32983       -> 192.168.68.128:32983       RMQ Game HTTP
+TCP 9088        -> 192.168.68.128:9088        Admin Web, only if intentionally public
+```
+
+### VM3 forwarding
+
+```text
+UDP 9777-9810   -> 192.168.68.129:9777-9810   Player/Game
+UDP 9888-9921   -> 192.168.68.129:9888-9921   IGW, when externally forwarded
+TCP 33982       -> 192.168.68.129:33982       RMQ Game
+TCP 33983       -> 192.168.68.129:33983       RMQ Game HTTP
+TCP 10088       -> 192.168.68.129:10088       Admin Web, only if intentionally public
+```
+
+There is no overlap between the three forwarding sets.
 
 ---
 
-## Phase 9 - Do not forward control-plane ports by default
+## Phase 10 - Understand loopback-bound control-plane ports
 
-The standard profile also changes:
+This guide still gives the following a unique per-instance value:
 
 ```text
 PostgreSQL
@@ -776,51 +828,26 @@ Text Router
 Director
 ```
 
-Current upstream starts several of these using `127.0.0.1` host bindings.
+Current upstream startup scripts bind several of these to `127.0.0.1` on the VM host.
 
 Examples:
 
-- PostgreSQL is published as `127.0.0.1:${POSTGRES_PORT}:5432` in [`start-postgres.sh`](../../runtime/scripts/start-postgres.sh).
-- RMQ Admin is published on loopback in [`start-rabbitmq.sh`](../../runtime/scripts/start-rabbitmq.sh).
-- Director is published on loopback in [`start-director.sh`](../../runtime/scripts/start-director.sh).
-- Text Router is published on loopback in [`start-text-router.sh`](../../runtime/scripts/start-text-router.sh).
+- PostgreSQL: [`runtime/scripts/start-postgres.sh`](../../runtime/scripts/start-postgres.sh)
+- RMQ Admin: [`runtime/scripts/start-rabbitmq.sh`](../../runtime/scripts/start-rabbitmq.sh)
+- Text Router: [`runtime/scripts/start-text-router.sh`](../../runtime/scripts/start-text-router.sh)
+- Director: [`runtime/scripts/start-director.sh`](../../runtime/scripts/start-director.sh)
 
-Therefore a normal router port forward to the VM LAN IP does not automatically make those loopback listeners remotely reachable.
+A router forward to `192.168.68.x:<port>` does not automatically expose a process listening only on `127.0.0.1:<port>`.
 
-This SOP still assigns them unique per-instance values for a consistent service namespace, but **do not rebind or publish them to the Internet unless you have a specific, reviewed requirement**.
+The ports are nevertheless unique because the community policy treats the complete service namespace as instance-specific.
 
-PostgreSQL and internal control-plane interfaces should normally remain private.
-
----
-
-## Phase 10 - Web Console access
-
-The Web Console runs with host networking and binds the configured Admin Web port. See [`docker-compose.web.yml`](../../docker-compose.web.yml).
-
-The upstream Compose file also mounts the Docker socket and explicitly warns that the container has broad control over the host Docker daemon.
-
-For that reason, the preferred operational order is:
-
-1. LAN-only access;
-2. VPN access;
-3. authenticated reverse proxy with TLS and strict administrative access controls;
-4. direct public port forwarding only when necessary and explicitly secured.
-
-If direct public forwarding is used, every VM must have a distinct public Admin Web port.
-
-Example:
-
-```text
-203.0.113.50:8088 -> DUNE-01
-203.0.113.50:8090 -> DUNE-02
-203.0.113.50:8092 -> DUNE-03
-```
+Do not rebind PostgreSQL or other control-plane services to the Internet without a reviewed operational requirement.
 
 ---
 
 ## Phase 11 - Configure VM firewall rules
 
-The exact firewall product is operator-specific. The following examples use UFW syntax.
+The exact firewall product is site-specific. These examples use UFW.
 
 ### VM1
 
@@ -828,9 +855,10 @@ The exact firewall product is operator-specific. The following examples use UFW 
 sudo ufw allow 31982/tcp
 sudo ufw allow 31983/tcp
 sudo ufw allow 7777:7810/udp
+sudo ufw allow 7888:7921/udp
 ```
 
-If Web Console access is required from a trusted management subnet:
+If Web Console access is allowed only from a management subnet:
 
 ```bash
 sudo ufw allow from 192.168.68.0/24 to any port 8088 proto tcp
@@ -841,13 +869,14 @@ sudo ufw allow from 192.168.68.0/24 to any port 8088 proto tcp
 ```bash
 sudo ufw allow 32982/tcp
 sudo ufw allow 32983/tcp
-sudo ufw allow 7877:7910/udp
+sudo ufw allow 8777:8810/udp
+sudo ufw allow 8888:8921/udp
 ```
 
-Optional management-only Web Console:
+Management-only Web Console:
 
 ```bash
-sudo ufw allow from 192.168.68.0/24 to any port 8090 proto tcp
+sudo ufw allow from 192.168.68.0/24 to any port 9088 proto tcp
 ```
 
 ### VM3
@@ -855,64 +884,71 @@ sudo ufw allow from 192.168.68.0/24 to any port 8090 proto tcp
 ```bash
 sudo ufw allow 33982/tcp
 sudo ufw allow 33983/tcp
-sudo ufw allow 7977:8010/udp
+sudo ufw allow 9777:9810/udp
+sudo ufw allow 9888:9921/udp
 ```
 
-Optional management-only Web Console:
+Management-only Web Console:
 
 ```bash
-sudo ufw allow from 192.168.68.0/24 to any port 8092 proto tcp
+sudo ufw allow from 192.168.68.0/24 to any port 10088 proto tcp
 ```
 
-Do not add WAN firewall rules for PostgreSQL or other internal control-plane listeners without a defined requirement.
+Do not add WAN rules for PostgreSQL or other internal control-plane listeners without a defined requirement.
 
 ---
 
-## Phase 12 - Validate NAT reflection / hairpin behavior
+## Phase 12 - Validate NAT reflection / hairpin NAT
 
-This is a critical validation for home and SMB router deployments.
+[`runtime/scripts/start-server-gateway.sh`](../../runtime/scripts/start-server-gateway.sh) launches Server Gateway with the advertised `SERVER_IP` plus the configured RMQ Game and RMQ Game HTTP ports.
 
-From VM2, test the public address using VM2's configured public RMQ ports:
+For NAT-hosted environments, each VM may therefore need to reach its own public tuple and be translated back to itself.
 
-```bash
-nc -vz 203.0.113.50 32982
-nc -vz 203.0.113.50 32983
-```
-
-From VM1:
+VM1:
 
 ```bash
 nc -vz 203.0.113.50 31982
 nc -vz 203.0.113.50 31983
 ```
 
-A successful TCP path does not prove application-layer authentication, but it proves that the VM can reach the public tuple and be translated back to the correct internal VM.
+VM2:
 
-If this fails while an external Internet host can connect, investigate:
+```bash
+nc -vz 203.0.113.50 32982
+nc -vz 203.0.113.50 32983
+```
 
-- router NAT reflection / NAT loopback;
-- split routing;
-- local firewall rules;
+VM3:
+
+```bash
+nc -vz 203.0.113.50 33982
+nc -vz 203.0.113.50 33983
+```
+
+If external hosts connect but these local-to-public tests fail, investigate:
+
+- NAT reflection / NAT loopback;
+- split DNS/routing;
 - policy routing;
-- ISP or gateway equipment behavior.
-
-The reason this matters is visible in [`start-server-gateway.sh`](../../runtime/scripts/start-server-gateway.sh): the gateway is given the public `SERVER_IP` together with the configured RMQ Game and RMQ Game HTTP ports.
+- host firewall;
+- router implementation details;
+- double NAT or ISP gateway behavior.
 
 ---
 
 ## Phase 13 - Start the stack
 
-After `.env`, UserEngine, VM firewall, and router/NAT configuration are complete, start the Dune stack using the normal project command.
+After `.env`, UserEngine, VM firewall, and router NAT changes are complete, start the Dune stack using the project's normal command.
 
-Do not validate only one map. The game-port allocator assigns ports across map/server instances, so validation should include the normal always-on maps and any additional configured maps that may allocate dynamic ports.
+Do not validate only a single map. The dynamic allocator can consume additional player and IGW ports as maps/partitions start.
 
 ---
 
-## Phase 14 - Validate configuration state
+## Phase 14 - Verify saved configuration
 
-### 14.1 Run the helper verifier
+### Helper verification
 
-VM2 example:
+VM2:
 
 ```bash
 python3 runtime/scripts/multi-server-config.py verify \
@@ -921,13 +957,20 @@ python3 runtime/scripts/multi-server-config.py verify \
   --bind-ip 192.168.68.128
 ```
 
-### 14.2 Verify `.env`
+Expected:
+
+```text
+VERIFY: configuration matches expected profile.
+Global collision validation: PASS
+```
+
+### Inspect `.env`
 
 ```bash
 grep -E '^(SERVER_IP|SERVER_IP_MODE|SERVER_BIND_IP|POSTGRES_PORT|RMQ_ADMIN_PORT|RMQ_GAME_PORT|RMQ_GAME_HTTP_PORT|TEXT_ROUTER_PORT|DIRECTOR_PORT|ADMIN_BIND_PORT|ADMIN_WEB_PORT|CLIENT_PORT_BASE|IGW_PORT_BASE)=' .env
 ```
 
-VM2 should show:
+VM2 expected:
 
 ```text
 SERVER_IP=203.0.113.50
@@ -937,15 +980,15 @@ POSTGRES_PORT=16432
 RMQ_ADMIN_PORT=33573
 RMQ_GAME_PORT=32982
 RMQ_GAME_HTTP_PORT=32983
-TEXT_ROUTER_PORT=5159
+TEXT_ROUTER_PORT=6059
 DIRECTOR_PORT=12717
-ADMIN_BIND_PORT=8090
-ADMIN_WEB_PORT=8090
-CLIENT_PORT_BASE=7877
-IGW_PORT_BASE=7988
+ADMIN_BIND_PORT=9088
+ADMIN_WEB_PORT=9088
+CLIENT_PORT_BASE=8777
+IGW_PORT_BASE=8888
 ```
 
-### 14.3 Verify authoritative UserEngine values
+### Inspect authoritative UserEngine values
 
 ```bash
 python3 runtime/scripts/usersettings.py engine-values | grep -E '^(port|igw_port)'
@@ -954,244 +997,275 @@ python3 runtime/scripts/usersettings.py engine-values | grep -E '^(port|igw_port
 VM2 expected:
 
 ```text
-port        7877
-igw_port    7988
+port        8777
+igw_port    8888
 ```
 
-### 14.4 Inspect generated UserEngine files
-
-Locate active runtime files:
+### Inspect generated runtime UserEngine files
 
 ```bash
 find runtime/game -path '*/Saved/UserSettings/UserEngine.ini' -print
+
+grep -RniE '^\[URL\]|^Port=|^IGWPort=' \
+  runtime/game/*/Saved/UserSettings/UserEngine.ini
 ```
 
-Inspect their `[URL]` section:
+---
 
-```bash
-grep -RniE '^\[URL\]|^Port=|^IGWPort=' runtime/game/*/Saved/UserSettings/UserEngine.ini
-```
+## Phase 15 - Verify actual sockets and containers
 
-### 14.5 Inspect sockets
+Inspect host listeners:
 
 ```bash
 ss -lntup
 ```
 
-For VM2, look for the configured service ports and active UDP game/IGW listeners.
-
-### 14.6 Inspect containers
+Inspect Docker:
 
 ```bash
 docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
 ```
 
-### 14.7 Run project diagnostics
+On VM2, verify expected listeners/allocations are using the VM2 namespace rather than VM1 defaults.
+
+Pay particular attention to:
+
+```text
+8777-8810 UDP
+8888-8921 UDP
+16432 TCP
+33573 TCP
+32982 TCP
+32983 TCP
+6059 TCP
+12717 TCP
+9088 TCP
+```
+
+Not every port in a dynamic range must be actively listening at all times; usage depends on active map/server allocation.
+
+---
+
+## Phase 16 - Run project diagnostics
+
+Run:
 
 ```bash
 dune doctor
 ```
 
-The current `doctor.sh` resolves the configured service ports and checks key TCP/UDP listeners. It also prints the public-hosting reminder for the configured RMQ ports and UDP game ranges.
-
-Then run the normal readiness check used by your deployment, for example:
+Then the normal readiness check used by your deployment, for example:
 
 ```bash
 dune ready
 ```
 
+The current `doctor.sh` resolves configured service ports and checks important listener/public-host conditions.
+
 ---
 
-## Phase 15 - Validate game and IGW address registration
+## Phase 17 - Validate game and IGW address registration
 
-The runtime deliberately separates player-facing and server-to-server addresses.
+The runtime distinguishes player-facing game addresses from IGW/server-to-server addresses.
 
-[`runtime/scripts/network-addresses.sh`](../../runtime/scripts/network-addresses.sh) reconciles:
+Source:
 
-```text
-game_addr -> advertised/public game address
-igw_addr  -> IGW/local bind address
-```
+- [`runtime/scripts/network-addresses.sh`](../../runtime/scripts/network-addresses.sh)
+- [`runtime/scripts/runtime-env.sh`](../../runtime/scripts/runtime-env.sh)
 
-Check current state:
+Check:
 
 ```bash
 runtime/scripts/network-addresses.sh status
 ```
 
-For a NAT deployment, confirm:
+Confirm:
 
-- game addresses reflect the public advertised IP as intended;
-- IGW addresses reflect the expected local/bind address;
-- game ports match the assigned instance player range;
-- IGW ports match the assigned instance IGW range.
-
-This distinction is why the standard profile can have numerical overlap between another VM's IGW range and a public player range: the VMs are isolated, and IGW is a server-side path rather than the shared public player endpoint set.
+- game addresses use the intended advertised/public IP;
+- local binds use the intended `SERVER_BIND_IP`;
+- player ports belong to the VM's assigned game range;
+- IGW ports belong to the VM's assigned IGW range;
+- no runtime state references another VM's range.
 
 ---
 
-## Phase 16 - External validation
+## Phase 18 - External validation
 
-Validation from inside the LAN is not enough.
+Test from a host genuinely outside the server LAN:
 
-Use a host genuinely outside the server network, such as:
+- cloud VM;
+- mobile hotspot;
+- second ISP/site;
+- trusted remote system.
 
-- a cloud VM;
-- a laptop on a separate Internet connection;
-- a mobile hotspot;
-- another remote site.
-
-Test RMQ TCP reachability:
+TCP checks:
 
 ```bash
+# VM1
 nc -vz 203.0.113.50 31982
 nc -vz 203.0.113.50 31983
+
+# VM2
 nc -vz 203.0.113.50 32982
 nc -vz 203.0.113.50 32983
+
+# VM3
+nc -vz 203.0.113.50 33982
+nc -vz 203.0.113.50 33983
 ```
 
-If Web Console is intentionally public:
+If Admin Web is intentionally public:
 
 ```bash
 curl -I http://203.0.113.50:8088/
-curl -I http://203.0.113.50:8090/
+curl -I http://203.0.113.50:9088/
+curl -I http://203.0.113.50:10088/
 ```
 
-For player UDP, the most authoritative validation is an actual game client discovering, joining, and traveling through the server topology.
-
-Generic UDP probes can be useful for packet capture, but absence of an application response does not necessarily prove a UDP port is closed.
+For UDP, a generic probe does not always receive an application response. The strongest validation is an actual game client discovering, joining, and traveling through the server topology while packet capture confirms the correct destination VM and port range.
 
 ---
 
-## Phase 17 - Packet-capture validation
+## Phase 19 - Packet-capture validation
 
-When troubleshooting, packet captures are often faster than repeatedly changing configuration.
-
-On VM2:
+### VM1
 
 ```bash
-sudo tcpdump -ni any 'tcp port 32982 or tcp port 32983 or udp portrange 7877-7910 or udp portrange 7988-8021'
+sudo tcpdump -ni any \
+  'tcp port 31982 or tcp port 31983 or tcp port 8088 or udp portrange 7777-7810 or udp portrange 7888-7921'
 ```
 
-On VM1:
+### VM2
 
 ```bash
-sudo tcpdump -ni any 'tcp port 31982 or tcp port 31983 or udp portrange 7777-7810 or udp portrange 7888-7921'
+sudo tcpdump -ni any \
+  'tcp port 32982 or tcp port 32983 or tcp port 9088 or udp portrange 8777-8810 or udp portrange 8888-8921'
 ```
 
-Use captures to answer specific questions:
+### VM3
 
-- does Internet traffic reach the correct VM?;
-- does the game process reply?;
-- is a request reaching VM1 when it should reach VM2?;
-- does hairpin traffic leave the VM and return?;
-- are player packets targeting the configured base/range?;
-- are IGW packets using the expected local address and port?;
-- is a firewall dropping traffic before Docker/game processes see it?.
+```bash
+sudo tcpdump -ni any \
+  'tcp port 33982 or tcp port 33983 or tcp port 10088 or udp portrange 9777-9810 or udp portrange 9888-9921'
+```
+
+Packet capture should answer:
+
+- Did the public packet arrive on the intended VM?
+- Did it arrive on the intended unique port?
+- Did the process reply?
+- Is hairpin traffic translated back to the correct VM?
+- Is any traffic unexpectedly using another VM's namespace?
 
 ---
 
-## Phase 18 - Monitoring and observability ports
+## Phase 20 - Web Console security
 
-The repository also contains an optional metrics stack.
+The Web Console runs with host networking and the Compose definition mounts `/var/run/docker.sock`.
 
-For example, [`docker-compose.metrics.yml`](../../docker-compose.metrics.yml) publishes Prometheus on loopback using a configurable port with a default of `9090`.
+Source: [`docker-compose.web.yml`](../../docker-compose.web.yml).
 
-Treat observability as a separate management plane.
+That grants the console broad control over the Docker host.
+
+Preferred access order:
+
+1. LAN-only;
+2. VPN;
+3. authenticated reverse proxy with TLS and strict administrative controls;
+4. direct WAN forwarding only when explicitly required and secured.
+
+If direct public access is used, each VM must use its own unique Admin Web port from the instance profile.
+
+---
+
+## Phase 21 - Monitoring and observability
+
+The optional metrics stack is a separate management plane.
+
+Source: [`docker-compose.metrics.yml`](../../docker-compose.metrics.yml).
+
+Do not merge metrics/dashboard endpoints into the game port plan without documenting them and checking the global collision invariant.
 
 Recommended practice:
 
-- keep Prometheus private;
-- keep exporters private;
-- expose Grafana only through a trusted management path;
-- use VPN, reverse proxy, SSO, or equivalent controls;
-- if multiple VM-local dashboards are exposed through one public IPv4, assign unique public ports or unique reverse-proxy hostnames.
+- Prometheus private;
+- exporters private;
+- Grafana behind VPN/reverse proxy/SSO;
+- unique externally mapped ports or hostnames if multiple dashboards are exposed.
 
-Do not mix the observability port plan with the game's required public endpoint plan.
+If you extend `multi-server-config.py` to manage additional observability ports, add them to the `Allocation` set so the same global collision validator covers them.
 
 ---
 
-## Phase 19 - Security requirements
+## Phase 22 - Security requirements
 
-### 19.1 Do not expose PostgreSQL directly
+### Keep PostgreSQL private
 
-PostgreSQL contains authoritative game state. Keep it bound to loopback/private networking unless a reviewed operational requirement states otherwise.
+PostgreSQL contains authoritative game state. Current upstream publishes it on loopback. Do not expose it directly to the WAN without a strong, reviewed requirement.
 
-### 19.2 Protect the Web Console
-
-The Web Console mounts the Docker socket. Compromise of the console can become compromise of the VM's Docker host.
-
-Use:
-
-- strong authentication;
-- TLS for remote access;
-- restricted source networks;
-- VPN where practical;
-- regular patching;
-- no unnecessary WAN exposure.
-
-### 19.3 Keep secrets out of Git
+### Protect credentials and secrets
 
 Do not commit:
 
 - Funcom self-host tokens;
-- generated secrets;
-- admin passwords;
-- private keys;
-- database credentials.
+- RMQ secrets;
+- database passwords;
+- Web Console credentials;
+- SSH private keys;
+- generated API secrets.
 
-### 19.4 Default-deny inbound policy
+### Use default-deny inbound policy
 
-The ideal public firewall policy allows only the public endpoints actually needed for the instance.
+Only allow the public endpoints actually required by the deployment.
 
-Everything else remains denied or management-network-only.
+A unique per-instance port assignment is not permission to expose every listener.
 
 ---
 
-## Phase 20 - Capacity planning
+## Phase 23 - Capacity planning
 
-Port separation only solves network identity. It does not solve resource contention.
+Port isolation solves network identity only.
 
-For each VM account for:
+Per VM, account for:
 
-- game-server memory reservations;
-- map count;
-- number of Sietch dimensions;
-- Deep Desert configuration;
+- active Sietch count;
+- Deep Desert count;
+- map memory limits;
 - CPU scheduling latency;
-- storage IOPS;
-- PostgreSQL activity;
-- Docker image/cache size;
-- observability overhead;
-- backup activity;
-- host reserve for the hypervisor.
+- PostgreSQL memory/IO;
+- Docker image/cache storage;
+- log growth;
+- metrics overhead;
+- backup/snapshot I/O;
+- hypervisor reserve.
 
-Do not allocate 100% of physical RAM to guest VMs.
+Do not allocate 100% of physical RAM to guests.
 
-Leave sufficient hypervisor and filesystem cache headroom, and avoid CPU overcommit that introduces scheduling jitter into latency-sensitive game processes.
+Avoid CPU overcommit severe enough to introduce scheduling jitter into latency-sensitive game processes.
 
 ---
 
-## Phase 21 - Upgrade procedure
+## Phase 24 - Upgrade procedure
 
-After pulling an upstream update, do not assume the old port model remains valid.
-
-Before restarting production:
+After pulling upstream changes:
 
 ```bash
 git pull
 python3 runtime/scripts/multi-server-config.py plan --instances 3
 ```
 
-The helper is intentionally source-aware. If it can no longer derive the service defaults or pool sizes, treat that as a required review point rather than bypassing the error.
+If the helper can no longer derive defaults or allocation sizes, stop and review source changes.
 
-Then inspect:
+Inspect changes to:
 
 ```bash
 git diff HEAD@{1} -- \
   .env.example \
   docker-compose*.yml \
+  runtime/defaults/UserEngine.ini \
   runtime/scripts/runtime-env.sh \
+  runtime/scripts/usersettings.py \
+  runtime/scripts/manager.sh \
   runtime/scripts/spawn-server.sh \
   runtime/scripts/start-rabbitmq.sh \
   runtime/scripts/start-postgres.sh \
@@ -1199,51 +1273,40 @@ git diff HEAD@{1} -- \
   runtime/scripts/start-director.sh \
   runtime/scripts/start-server-gateway.sh \
   runtime/scripts/network-addresses.sh \
-  runtime/scripts/usersettings.py \
-  runtime/defaults/UserEngine.ini
+  runtime/scripts/init.sh \
+  runtime/scripts/doctor.sh
 ```
 
-Revalidate NAT/firewall rules if any listener, default, or advertised endpoint changes.
+Re-run the global collision plan before production restart.
 
 ---
 
-## Phase 22 - Rollback procedure
+## Phase 25 - Rollback
 
-If the change fails, stop the Dune stack before restoring configuration.
+Stop the stack before restoring old network identity.
 
-When the helper was used, find the most recent backup:
+Find the newest helper backup:
 
 ```bash
 ls -1dt runtime/backups/multi-server-config-* | head
 ```
 
-A backup may contain:
-
-```text
-.env
-runtime/generated/usersettings.json
-runtime/generated/gameplay-profile.ini
-```
-
-Restore only after confirming the backup corresponds to the intended pre-change state.
-
-Example pattern:
+Example:
 
 ```bash
 BACKUP_DIR="runtime/backups/multi-server-config-YYYYMMDDTHHMMSSZ"
-
 cp -a "$BACKUP_DIR/.env" .env
 ```
 
 Restore generated settings files when present, preserving their relative paths.
 
-Then rematerialize:
+Then:
 
 ```bash
 python3 runtime/scripts/usersettings.py materialize-current
 ```
 
-Restore the previous firewall and NAT rules, restart the stack, and run:
+Restore prior firewall/NAT rules, restart the stack, and validate:
 
 ```bash
 dune doctor
@@ -1256,19 +1319,20 @@ dune ready
 
 | Symptom | Likely cause | Checks |
 |---|---|---|
-| VM2 appears in server list but players cannot join | Wrong VM2 UDP NAT range or wrong UserEngine `Port` | `usersettings.py engine-values`, router rules, `tcpdump` |
-| VM2 still listens on `7777` | `.env` changed but authoritative UserEngine `Port` was not changed | `engine-values`, generated `UserEngine.ini` |
-| `engine-set port 7877` fails with overlap | IGW still on default `7888` while new player pool overlaps it | set `igw_port 7988` first |
-| Gateway cannot reach RMQ using public IP | hairpin/NAT reflection missing | `nc` from VM to public RMQ tuple, router NAT settings |
-| VM1 works, VM2 RMQ fails | router still forwards VM2 public port to VM1 or no VM2 rule exists | NAT rule destination, packet capture |
-| Web Console VM2 opens VM1 | same public Admin Web port forwarded twice or reverse proxy target wrong | router/reverse-proxy config |
-| `dune doctor` reports wrong service port | `.env` override missing, duplicate, or not sourced | `grep` `.env`, runtime resolver defaults |
-| game/IGW addresses contain wrong IP | `SERVER_IP`/`SERVER_BIND_IP` incorrect | `network-addresses.sh status` |
-| game sockets try to bind public IP on NAT host | bind/public address configuration or `ip_nonlocal_bind` issue | `dune doctor`, `runtime-env.sh` NAT guard |
-| only LAN clients work | missing public NAT/firewall or advertised public IP wrong | external test, `SERVER_IP`, router rules |
-| second VM starts but dynamic maps fail to allocate ports | player/IGW pool overlap or insufficient free ports | `spawn-server.sh` allocation logs, `ss -lnup` |
-| helper refuses to derive defaults | upstream source layout changed | inspect listed source-of-truth files before updating helper |
-| helper refuses because containers are running | production safety guard | stop stack, or use `--allow-running` only to stage changes |
+| `plan` reports global collision | custom/default values violate global uniqueness | read both allocations named in error; choose a new non-overlapping plan |
+| `plan` fails at high instance number | generated port exceeds `65535` | reduce instance count or design a reviewed custom allocation |
+| VM2 still uses `7777` | `.env` changed but UserEngine `Port` was not | `usersettings.py engine-values`, generated `UserEngine.ini` |
+| VM2 still uses `7888` IGW | `.env` changed but UserEngine `IGWPort` was not | `engine-values`, generated `UserEngine.ini` |
+| VM2 players reach VM1 | stale/incorrect NAT destination | router rules, external test, `tcpdump` on both VMs |
+| VM2 game works but IGW fails | IGW forward/firewall uses old or overlapping range | verify `8888-8921`, router, firewall, packet capture |
+| Gateway cannot reach RMQ through public IP | hairpin/NAT reflection missing | `nc` from VM to public RMQ tuple |
+| Web Console VM2 opens VM1 | wrong public Admin Web forwarding | confirm `9088 -> VM2:9088` |
+| `dune doctor` reports old service port | `.env` override absent/duplicated | grep `.env`, inspect resolver defaults |
+| dynamic map allocation fails | range exhaustion or runtime port still occupied | `ss -lnup`, spawn logs, active map count |
+| helper refuses while containers run | safety guard | stop stack; use `--allow-running` only to stage |
+| helper cannot derive defaults | upstream source layout changed | inspect source-of-truth files before updating helper |
+| only LAN access works | WAN NAT/firewall or advertised IP issue | external packet capture, `SERVER_IP`, router rules |
+| game socket attempts public-IP bind | bind/public NAT configuration issue | `SERVER_BIND_IP`, `dune doctor`, runtime NAT guard |
 
 ---
 
@@ -1276,26 +1340,26 @@ dune ready
 
 ## Player/game `Port`
 
-Default:
+Stock default:
 
 ```text
 7777
 ```
 
-Authoritative sources:
+Sources:
 
 - [`runtime/defaults/UserEngine.ini`](../../runtime/defaults/UserEngine.ini)
 - [`runtime/scripts/usersettings.py`](../../runtime/scripts/usersettings.py)
 - [`runtime/scripts/manager.sh`](../../runtime/scripts/manager.sh)
 - [`runtime/scripts/spawn-server.sh`](../../runtime/scripts/spawn-server.sh)
 
-The UserEngine comments state that `Port` is the starting port used for players and subsequent servers consume the next available ports.
+The UserEngine comments describe `Port` as the starting player-listener port; subsequent servers use the next available ports.
 
-The current dynamic allocator checks through `CLIENT_PORT_BASE + 33`, producing a 34-port pool for the validated baseline.
+At the validated baseline, dynamic allocation checks through base `+33`, producing a 34-port planning pool.
 
 ## IGW `IGWPort`
 
-Default:
+Stock default:
 
 ```text
 7888
@@ -1308,32 +1372,28 @@ Sources:
 - [`runtime/scripts/manager.sh`](../../runtime/scripts/manager.sh)
 - [`runtime/scripts/spawn-server.sh`](../../runtime/scripts/spawn-server.sh)
 
-The UserEngine comments identify this as the starting server-to-server port sequence and require it not to intersect the player `Port` range.
+The UserEngine comments identify IGW as the starting server-to-server port sequence and require the local game and IGW ranges not to intersect.
+
+This community guide additionally requires IGW not to intersect **any other VM's** managed range or scalar port.
 
 ## PostgreSQL
 
-Default host port:
+Stock host port:
 
 ```text
 15432/TCP
 ```
 
-Source:
+Sources:
 
 - [`runtime/scripts/runtime-env.sh`](../../runtime/scripts/runtime-env.sh)
 - [`runtime/scripts/start-postgres.sh`](../../runtime/scripts/start-postgres.sh)
 
-Current host publish:
-
-```text
-127.0.0.1:${POSTGRES_PORT}:5432
-```
-
-Game processes using host networking connect to the configured host port.
+Current startup publishes PostgreSQL on loopback.
 
 ## RMQ Admin
 
-Default:
+Stock:
 
 ```text
 32573/TCP
@@ -1344,11 +1404,11 @@ Sources:
 - [`runtime/scripts/runtime-env.sh`](../../runtime/scripts/runtime-env.sh)
 - [`runtime/scripts/start-rabbitmq.sh`](../../runtime/scripts/start-rabbitmq.sh)
 
-Current publish is loopback-only.
+Current host publish is loopback-only.
 
 ## RMQ Game
 
-Default:
+Stock:
 
 ```text
 31982/TCP
@@ -1360,11 +1420,11 @@ Sources:
 - [`runtime/scripts/start-rabbitmq.sh`](../../runtime/scripts/start-rabbitmq.sh)
 - [`runtime/scripts/start-server-gateway.sh`](../../runtime/scripts/start-server-gateway.sh)
 
-RMQ Game is published on the host and the Server Gateway is launched with the configured public `SERVER_IP` and RMQ Game port.
+RMQ Game is host-published and Server Gateway receives the configured public host/port.
 
 ## RMQ Game HTTP
 
-Default:
+Stock:
 
 ```text
 31983/TCP
@@ -1377,11 +1437,11 @@ Sources:
 - [`runtime/scripts/start-server-gateway.sh`](../../runtime/scripts/start-server-gateway.sh)
 - [`runtime/scripts/init.sh`](../../runtime/scripts/init.sh)
 
-This is a distinct endpoint from RMQ Game and must receive its own per-instance public mapping.
+It is distinct from RMQ Game and receives its own per-instance port.
 
 ## Text Router
 
-Default:
+Stock:
 
 ```text
 5059/TCP
@@ -1392,11 +1452,9 @@ Sources:
 - [`runtime/scripts/runtime-env.sh`](../../runtime/scripts/runtime-env.sh)
 - [`runtime/scripts/start-text-router.sh`](../../runtime/scripts/start-text-router.sh)
 
-The current host publish is loopback-only.
-
 ## Director
 
-Default:
+Stock:
 
 ```text
 11717/TCP
@@ -1408,11 +1466,9 @@ Sources:
 - [`runtime/scripts/start-director.sh`](../../runtime/scripts/start-director.sh)
 - game-server start/spawn scripts
 
-The current host publish is loopback-only, and host-network game processes are launched with the configured Director host port.
-
 ## Admin Web
 
-Default:
+Stock:
 
 ```text
 8088/TCP
@@ -1425,61 +1481,17 @@ Sources:
 - [`docker-compose.web.yml`](../../docker-compose.web.yml)
 - [`console/api/src/config.js`](../../console/api/src/config.js)
 
-`ADMIN_BIND_PORT` is the canonical setting. `docker-compose.web.yml` also recognizes `ADMIN_WEB_PORT` as an override alias. This SOP keeps both aligned in the automated profile.
+`ADMIN_BIND_PORT` is the canonical setting. The Web Compose path also recognizes `ADMIN_WEB_PORT`.
 
 ---
 
-# Why the Full VM2 Port Block Makes Sense
+# Python Configuration Helper
 
-A proven second-instance profile is:
-
-```text
-CLIENT_PORT_BASE=7877
-IGW_PORT_BASE=7988
-POSTGRES_PORT=16432
-RMQ_ADMIN_PORT=33573
-RMQ_GAME_PORT=32982
-RMQ_GAME_HTTP_PORT=32983
-TEXT_ROUTER_PORT=5159
-DIRECTOR_PORT=12717
-ADMIN_WEB_PORT=8090
-```
-
-The important nuance is that current upstream does **not** use `.env` as the authoritative source for the first two game settings.
-
-Therefore the complete implementation is:
-
-```text
-.env / service namespace
-  CLIENT_PORT_BASE=7877          documentation/console compatibility
-  IGW_PORT_BASE=7988             documentation/console compatibility
-  POSTGRES_PORT=16432
-  RMQ_ADMIN_PORT=33573
-  RMQ_GAME_PORT=32982
-  RMQ_GAME_HTTP_PORT=32983
-  TEXT_ROUTER_PORT=5159
-  DIRECTOR_PORT=12717
-  ADMIN_BIND_PORT=8090
-  ADMIN_WEB_PORT=8090
-
-UserEngine / authoritative game network settings
-  Port=7877
-  IGWPort=7988
-```
-
-The included helper applies exactly that model.
-
----
-
-# Automation Helper Reference
-
-## File
+File:
 
 [`runtime/scripts/multi-server-config.py`](../../runtime/scripts/multi-server-config.py)
 
 ## `plan`
-
-Generate standard profiles without modifying files:
 
 ```bash
 python3 runtime/scripts/multi-server-config.py plan --instances 3
@@ -1491,9 +1503,11 @@ JSON:
 python3 runtime/scripts/multi-server-config.py plan --instances 3 --json
 ```
 
-## `apply`
+`plan` does not modify files.
 
-Apply one profile to the current VM:
+It derives defaults, generates profiles, and performs the global collision audit.
+
+## `apply`
 
 ```bash
 python3 runtime/scripts/multi-server-config.py apply \
@@ -1512,6 +1526,8 @@ python3 runtime/scripts/multi-server-config.py apply \
   --dry-run
 ```
 
+`apply` validates every profile from VM1 through the requested instance before changing files.
+
 ## `verify`
 
 ```bash
@@ -1521,107 +1537,47 @@ python3 runtime/scripts/multi-server-config.py verify \
   --bind-ip 192.168.68.128
 ```
 
-## What the helper does not do
+JSON:
 
-The helper does not:
-
-- create VMs;
-- configure Proxmox;
-- configure the router/firewall;
-- modify Funcom credentials;
-- generate or copy secrets;
-- expose internal services;
-- restart the running Dune stack;
-- SSH into other VMs.
-
-It is intentionally a **per-VM configuration primitive**.
-
-That makes it suitable for manual use and for higher-level orchestration through Ansible, SSH, Terraform provisioners, cloud-init, or another operator-controlled system without embedding remote credentials in this repository.
-
----
-
-# Example Three-VM Deployment Checklist
-
-## DUNE-01
-
-```text
-LAN IP:        192.168.68.127
-Instance:      1
-Game:          UDP 7777-7810
-IGW:           UDP 7888-7921
-Postgres:      TCP 15432
-RMQ Admin:     TCP 32573
-RMQ Game:      TCP 31982
-RMQ Game HTTP: TCP 31983
-Text Router:   TCP 5059
-Director:      TCP 11717
-Admin Web:     TCP 8088
+```bash
+python3 runtime/scripts/multi-server-config.py verify \
+  --instance 2 \
+  --public-ip 203.0.113.50 \
+  --bind-ip 192.168.68.128 \
+  --json
 ```
 
-Public forward:
+## Collision enforcement
+
+The helper represents each managed item as an interval:
 
 ```text
-31982/TCP
-31983/TCP
-7777-7810/UDP
-8088/TCP optional
+Player/Game   start-end
+IGW           start-end
+PostgreSQL    port-port
+RMQ Admin     port-port
+RMQ Game      port-port
+RMQ Game HTTP port-port
+Text Router   port-port
+Director      port-port
+Admin Web     port-port
 ```
 
-## DUNE-02
+It then compares the complete interval set across all generated instances.
 
-```text
-LAN IP:        192.168.68.128
-Instance:      2
-Game:          UDP 7877-7910
-IGW:           UDP 7988-8021
-Postgres:      TCP 16432
-RMQ Admin:     TCP 33573
-RMQ Game:      TCP 32982
-RMQ Game HTTP: TCP 32983
-Text Router:   TCP 5159
-Director:      TCP 12717
-Admin Web:     TCP 8090
-```
+Protocol is deliberately ignored for collision purposes.
 
-Public forward:
+Any intersection is rejected.
 
-```text
-32982/TCP
-32983/TCP
-7877-7910/UDP
-8090/TCP optional
-```
+That means a UDP range cannot numerically overlap a TCP scalar either.
 
-## DUNE-03
-
-```text
-LAN IP:        192.168.68.129
-Instance:      3
-Game:          UDP 7977-8010
-IGW:           UDP 8088-8121
-Postgres:      TCP 17432
-RMQ Admin:     TCP 34573
-RMQ Game:      TCP 33982
-RMQ Game HTTP: TCP 33983
-Text Router:   TCP 5259
-Director:      TCP 13717
-Admin Web:     TCP 8092
-```
-
-Public forward:
-
-```text
-33982/TCP
-33983/TCP
-7977-8010/UDP
-8092/TCP optional
-```
+This is intentional and matches the authoritative community policy in this document.
 
 ---
 
 # Source-of-Truth Files
 
-Future maintainers should revalidate this document against these files before changing port guidance:
+Future maintainers should revalidate this guide against:
 
 - [`.env.example`](../../.env.example)
 - [`install.sh`](../../install.sh)
@@ -1649,7 +1605,7 @@ Future maintainers should revalidate this document against these files before ch
 
 # Maintainer Validation Notes
 
-This guide was cross-checked against upstream `Red-Blink/dune-awakening-selfhost-docker` `main` at commit:
+This guide was cross-checked against upstream `Red-Blink/dune-awakening-selfhost-docker` `main` at:
 
 ```text
 7b7d8f1950a278e6431519841d5408cf04c582fb
@@ -1660,12 +1616,20 @@ At that baseline:
 - service defaults are environment-backed through `runtime-env.sh`;
 - `Port` and `IGWPort` are UserEngine-backed through `usersettings.py`;
 - the manager exposes `Port` and `IGWPort` editing;
-- game server containers use host networking;
-- the dynamic player and IGW pools extend through base `+33`;
-- PostgreSQL, RMQ Admin, Text Router, and Director use loopback host publications in their startup scripts;
+- game server processes use host networking in important runtime paths;
+- the dynamic player and IGW planning pools extend through base `+33`;
+- PostgreSQL, RMQ Admin, Text Router, and Director use loopback host publications in current startup scripts;
 - RMQ Game and RMQ Game HTTP are distinct host-published endpoints;
 - Server Gateway receives the advertised `SERVER_IP`, RMQ Game port, and RMQ Game HTTP port;
-- NAT mode distinguishes public advertised address from local bind address;
-- Web Console runs with host networking and supports a configurable Admin Web port.
+- NAT mode distinguishes the public advertised address from the local bind address;
+- Web Console uses host networking and supports a configurable Admin Web port.
 
-If any of those statements stop being true, update this document and the automation helper together.
+The community multi-server policy adds one additional invariant:
+
+> **No managed numeric port or range may overlap another managed numeric port or range anywhere in the generated multi-VM deployment, regardless of protocol.**
+
+If upstream defaults, bindings, or allocator behavior change, update this guide and `multi-server-config.py` together.
+
+For upstream contribution/staging instructions, see:
+
+[`MULTI-SERVER-SINGLE-PUBLIC-IP-UPSTREAM-PR.md`](MULTI-SERVER-SINGLE-PUBLIC-IP-UPSTREAM-PR.md)
