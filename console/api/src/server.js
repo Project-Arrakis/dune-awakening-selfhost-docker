@@ -1560,7 +1560,7 @@ function apiErrorPayload(error, fallbackStatus = 500) {
   const message = redact(friendlyJsonError(rawMessage));
   return {
     status: error?.statusCode || fallbackStatus,
-    body: { error: message, reason: message, details: error?.details || undefined }
+    body: { error: message, reason: message }
   };
 }
 
@@ -1587,7 +1587,7 @@ async function exportJson(res, filename, fn) {
     res.end(JSON.stringify(data, null, 2));
   } catch (error) {
     const status = error.unsupported ? 501 : 500;
-    json(res, status, { supported: false, error: redact(error.message || error), reason: redact(error.message || error), details: error.details || undefined });
+    json(res, status, { supported: false, error: redact(error.message || error), reason: redact(error.message || error) });
   }
 }
 
@@ -3053,7 +3053,7 @@ async function directDbMutation(req, res, action, phrase, fn, meta = {}) {
   } catch (error) {
     const status = error.unsupported ? 501 : 400;
     audit(config, req, action, { ...meta, supported: false, error: redact(error.message || error) });
-    return json(res, status, { supported: false, error: redact(error.message || error), reason: redact(error.message || error), details: error.details || undefined });
+    return json(res, status, { supported: false, error: redact(error.message || error), reason: redact(error.message || error) });
   }
 }
 

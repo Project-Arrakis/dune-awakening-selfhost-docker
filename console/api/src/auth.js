@@ -97,5 +97,15 @@ export function clearSessionCookie(res, config = {}) {
 
 export function json(res, status, body, headers = {}) {
   res.writeHead(status, withSecurityHeaders({ "content-type": "application/json; charset=utf-8", ...headers }));
-  res.end(JSON.stringify(body));
+  res.end(serializeJsonResponse(body));
+}
+
+export function serializeJsonResponse(body) {
+  return JSON.stringify(body, (_key, value) => {
+    // Route handlers must turn expected failures into explicit public strings.
+    // If an Error object reaches this final boundary, never serialize its stack,
+    // message, file paths, SQL, or attached process output to the browser.
+    if (value instanceof Error) return { error: "An internal server error occurred." };
+    return value;
+  });
 }

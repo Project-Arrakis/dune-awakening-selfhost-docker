@@ -312,4 +312,5 @@ test("redacts token-like sensitive values", () => {
   assert.match(output, /<redacted>/);
   assert.doesNotMatch(output, /hunter2/);
   assert.doesNotMatch(output, /eyJaaaaaaaa/);
+  assert.doesNotMatch(output, /runtime\/secrets\/funcom-token\.txt/);
 });

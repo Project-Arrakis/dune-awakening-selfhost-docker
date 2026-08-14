@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createAuth, clearSessionCookie, setSessionCookie, json } from "../src/auth.js";
+import { createAuth, clearSessionCookie, setSessionCookie, json, serializeJsonResponse } from "../src/auth.js";
 
 test("auth creates readable signed sessions", () => {
   const auth = createAuth({ sessionSecret: "secret", adminPassword: "admin", authDisabled: false });
@@ -64,6 +64,18 @@ test("json responses include defensive browser headers", () => {
   assert.equal(res.headers["x-frame-options"], "DENY");
   assert.equal(res.headers["referrer-policy"], "no-referrer");
   assert.match(res.headers["permissions-policy"], /camera=\(\)/);
+});
+
+test("json responses never expose Error stack traces or messages", () => {
+  const error = new Error("database password appeared in internal SQL");
+  error.stack = "/srv/console/src/server.js:123\nsecret stack detail";
+  const output = serializeJsonResponse({ ok: false, failure: error });
+
+  assert.deepEqual(JSON.parse(output), {
+    ok: false,
+    failure: { error: "An internal server error occurred." }
+  });
+  assert.doesNotMatch(output, /database password|server\.js|stack detail/);
 });
 
 function fakeResponse() {
