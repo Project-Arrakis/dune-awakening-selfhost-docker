@@ -8,9 +8,10 @@ import { fileURLToPath } from "node:url";
 
 const repoRoot = resolve(fileURLToPath(new URL("../../../", import.meta.url)));
 const helper = resolve(repoRoot, "runtime/scripts/generated-file-paths.sh");
+const repairFixture = resolve(repoRoot, "console/api/test/fixtures/repair-generated-file-path.sh");
 
 function repair(path) {
-  return spawnSync("bash", ["-c", 'source "$1"; repair_generated_file_path "$2"', "generated-file-path-test", helper, path], {
+  return spawnSync("bash", [repairFixture, helper, path], {
     encoding: "utf8",
   });
 }

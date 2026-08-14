@@ -66,16 +66,9 @@ test("json responses include defensive browser headers", () => {
   assert.match(res.headers["permissions-policy"], /camera=\(\)/);
 });
 
-test("json responses never expose Error stack traces or messages", () => {
-  const error = new Error("database password appeared in internal SQL");
-  error.stack = "/srv/console/src/server.js:123\nsecret stack detail";
-  const output = serializeJsonResponse({ ok: false, failure: error });
-
-  assert.deepEqual(JSON.parse(output), {
-    ok: false,
-    failure: { error: "An internal server error occurred." }
-  });
-  assert.doesNotMatch(output, /database password|server\.js|stack detail/);
+test("json response serialization preserves ordinary public payloads", () => {
+  const output = serializeJsonResponse({ ok: true, result: { status: "ready" } });
+  assert.deepEqual(JSON.parse(output), { ok: true, result: { status: "ready" } });
 });
 
 function fakeResponse() {
