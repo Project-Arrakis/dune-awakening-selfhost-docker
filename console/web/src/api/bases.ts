@@ -309,6 +309,20 @@ export const basesApi = {
   pendingWaterRefills: () => api<PendingRefills>("/api/bases/pending-water-refills"),
   autoRefillWater: () => api<AutoRefillWaterState>("/api/bases/auto-refill-water"),
   setAutoRefillWater: (baseId: string, enabled: boolean) =>
-    post<{ ok: boolean; baseId: number; enabled: boolean; total: number }>(
+    post<{
+      ok: boolean;
+      baseId: number;
+      enabled: boolean;
+      newlyEnabled?: boolean;
+      total: number;
+      initialCheck?: {
+        status: string;
+        detail: string;
+        checked: number;
+        queued: number;
+        alreadyQueued?: number;
+        failures: number;
+      };
+    }>(
       `/api/bases/${encodeURIComponent(baseId)}/auto-refill-water`, { enabled })
 };

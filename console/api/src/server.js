@@ -2934,7 +2934,26 @@ async function baseAutoRefillWaterToggleRoute(req, res, path) {
   try {
     const result = setBaseAutoRefillWater(config.repoRoot, baseId, body.enabled);
     audit(config, req, "bases.auto-refill-water", { baseId, enabled: result.enabled, total: result.total });
-    return json(res, 200, result);
+    if (!result.newlyEnabled) return json(res, 200, result);
+
+    try {
+      const initialCheck = await autoRefillWaterScheduler.scanNow(baseId);
+      return json(res, 200, { ...result, initialCheck });
+    } catch (error) {
+      // Enrollment was saved successfully. Report the failed first check
+      // separately so the UI does not falsely switch the toggle back off; the
+      // normal daily scheduler remains armed and will retry it.
+      return json(res, 200, {
+        ...result,
+        initialCheck: {
+          status: "fail",
+          detail: redact(error?.message || error),
+          checked: 0,
+          queued: 0,
+          failures: 1
+        }
+      });
+    }
   } catch (error) {
     return json(res, 400, { ok: false, error: redact(error?.message || error) });
   }

@@ -1008,6 +1008,65 @@ describe("BasesPanel water refill", () => {
   beforeEach(() => {
     vi.mocked(basesApi.pendingRefills).mockResolvedValue({ supported: true, total: 0, pending: [], byTarget: [] });
     vi.mocked(basesApi.pendingWaterRefills).mockResolvedValue({ supported: true, total: 0, pending: [], byTarget: [] });
+    vi.mocked(basesApi.autoRefillWater).mockResolvedValue({
+      supported: true, thresholdPercent: 50, intervalHours: 24, nextRunAt: "", lastRunAt: "", lastRunStatus: "", lastRunDetail: "", total: 0, bases: []
+    });
+  });
+
+  it("checks water immediately when auto-refill is enabled and reports the queued refill", async () => {
+    vi.mocked(basesApi.list).mockResolvedValue(waterCapableList({ base_id: "4001", name: "Sietch Auto Water" }));
+    vi.mocked(basesApi.autoRefillWater)
+      .mockResolvedValueOnce({
+        supported: true, thresholdPercent: 50, intervalHours: 24, nextRunAt: "", lastRunAt: "", lastRunStatus: "", lastRunDetail: "", total: 0, bases: []
+      })
+      .mockResolvedValue({
+        supported: true,
+        thresholdPercent: 50,
+        intervalHours: 24,
+        nextRunAt: "2026-08-15T12:00:00.000Z",
+        lastRunAt: "2026-08-14T12:00:00.000Z",
+        lastRunStatus: "ok",
+        lastRunDetail: "Checked 1, queued 1",
+        total: 1,
+        bases: [{
+          baseId: 4001,
+          enabledAt: "2026-08-14T12:00:00.000Z",
+          lastCheckedAt: "2026-08-14T12:00:00.000Z",
+          lastQueuedAt: "2026-08-14T12:00:00.000Z",
+          lastLowestPercent: 2.3,
+          consecutiveQueues: 1,
+          stalledAt: ""
+        }]
+      });
+    vi.mocked(basesApi.water).mockResolvedValue({
+      supported: true,
+      baseId: 4001,
+      containers: [{ type: "waterCistern", name: "Water Cistern", count: 1, stored: 23000, capacity: 1000000, percent: 2.3 }]
+    });
+    vi.mocked(basesApi.setAutoRefillWater).mockResolvedValue({
+      ok: true,
+      baseId: 4001,
+      enabled: true,
+      newlyEnabled: true,
+      total: 1,
+      initialCheck: { status: "ok", detail: "Checked 1, queued 1", checked: 1, queued: 1, failures: 0 }
+    });
+
+    const props = renderPanel();
+    await screen.findByText("Sietch Auto Water");
+    fireEvent.click(await screen.findByRole("button", { name: "Show details for Sietch Auto Water" }));
+    fireEvent.click(await screen.findByRole("tab", { name: "Water" }));
+    await screen.findByText("23,000 / 1,000,000");
+
+    fireEvent.click(screen.getByText("Auto-Refill"));
+
+    await waitFor(() => expect(props.confirmAction).toHaveBeenCalledWith(
+      'Turn on water auto-refill for "Sietch Auto Water"?',
+      expect.objectContaining({ warning: expect.stringContaining("checked now, then every 24h") })
+    ));
+    await waitFor(() => expect(basesApi.setAutoRefillWater).toHaveBeenCalledWith("4001", true));
+    expect(await screen.findByText(/A refill is queued for the next map stop or restart/)).toBeInTheDocument();
+    expect(await screen.findByText("ON")).toBeInTheDocument();
   });
 
   // Water isn't part of the row/list data the way generator fuel is --

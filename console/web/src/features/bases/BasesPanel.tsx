@@ -821,7 +821,7 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
         {
           title: "Auto-Refill Water",
           confirmLabel: "Turn On",
-          warning: `Every ${autoRefillWaterIntervalHours}h this base is checked, and a refill is queued if any water container holds less than ${autoRefillWaterThreshold}% of its capacity. Queued refills are written the next time this base's map restarts or stops — auto-refill never restarts a map by itself. Blood is never touched -- only water.`
+          warning: `This base is checked now, then every ${autoRefillWaterIntervalHours}h. A refill is queued if any water container holds less than ${autoRefillWaterThreshold}% of its capacity. Queued refills are written the next time this base's map restarts or stops — auto-refill never restarts a map by itself. Blood is never touched -- only water.`
         }
       );
       if (!confirmed) return;
@@ -851,11 +851,21 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
         return next;
       });
       writeRefillStatus(
-        result.enabled
+        result.enabled && (result.initialCheck?.status === "fail" || Boolean(result.initialCheck?.failures))
+          ? `Water auto-refill is on for "${label}", but the initial check failed: ${result.initialCheck?.detail || "unknown error"}. It will retry automatically.`
+          : result.enabled && (result.initialCheck?.queued || result.initialCheck?.alreadyQueued)
+          ? `Water auto-refill is on for "${label}". A refill is queued for the next map stop or restart.`
+          : result.enabled && result.initialCheck?.checked
+          ? `Water auto-refill is on for "${label}". Checked now; no refill is currently needed.`
+          : result.enabled
           ? `Water auto-refill is on for "${label}". Checked every ${autoRefillWaterIntervalHours}h.`
           : `Water auto-refill is off for "${label}".`,
-        "ok"
+        result.initialCheck?.status === "fail" || result.initialCheck?.failures ? "fail" : "ok"
       );
+      if (result.enabled) {
+        void refreshAutoRefillWater();
+        void refreshPendingWaterRefills();
+      }
     } catch (error) {
       const text = errorText(error);
       writeRefillStatus(text, "fail");
