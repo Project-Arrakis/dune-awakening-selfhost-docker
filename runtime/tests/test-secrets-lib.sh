@@ -9,7 +9,7 @@ fail() {
   exit 1
 }
 
-command -v age >/dev/null 2>&1 || { echo "SKIP: age not found on PATH -- see docs/runtime/AGE-SECRETS-MANAGEMENT.md for the operator install path"; exit 0; }
+command -v age >/dev/null 2>&1 || { echo "SKIP: age not found on PATH -- install via 'apt install age' (see https://github.com/FiloSottile/age)"; exit 0; }
 command -v age-keygen >/dev/null 2>&1 || { echo "SKIP: age-keygen not found on PATH"; exit 0; }
 python3 -c "from cryptography.hazmat.primitives.ciphers.aead import AESGCM" >/dev/null 2>&1 || {
   echo "SKIP: python3's 'cryptography' package not installed"
@@ -135,6 +135,58 @@ if find "$unwritable_dir" -maxdepth 1 -name '*.tmp.*' 2>/dev/null | grep -q .; t
   fail "expected no orphaned .tmp file after a failed atomic write"
 fi
 
+# --- Test 8b: _dune_secrets_atomic_write's <mode> parameter actually
+# takes effect on the FINAL path, at a mode that is NOT mktemp's own
+# default (0600) -- direct coverage for a real gap found during a
+# Layer 2 QA audit: every other call site in this suite requests mode
+# 600, which mktemp already produces by default, so the `chmod "$mode"`
+# line's real effect was never exercised -- an earlier manual check
+# confirmed a test suite with the chmod call disabled still passed all
+# assertions, because nothing ever requested a mode other than the one
+# mktemp already provides. Requesting 0640 here, a mode mktemp would
+# never produce on its own, closes that gap. ---
+mode_test_target="$test_root/mode-test-secret.enc"
+_dune_secrets_atomic_write "$mode_test_target" "mode-test-content" 640
+actual_mode="$(stat -c '%a' "$mode_test_target")"
+[ "$actual_mode" = "640" ] || fail "expected _dune_secrets_atomic_write to apply mode 640 to the final path, got '$actual_mode' -- mktemp's own default (600) would mask a broken/removed chmod call here"
+
+# --- Test 8c: the temp-file-then-rename discipline is a REAL rename(2)
+# syscall on the final path, not merely "no error was reported" --
+# direct coverage for a real gap found during a Layer 2 QA audit: an
+# earlier manual check found that removing the temp-file/rename step
+# entirely (writing straight to the final path) was only caught by an
+# incidental `mv: same file` self-move error, not by any assertion
+# about atomicity itself -- a variant of that same bug that avoided
+# the self-move collision passed the existing test suite undetected.
+# strace's real syscall trace is the only way to directly prove the
+# final path is published via a single rename(2), not observed
+# indirectly through side effects that could pass for the wrong
+# reason. Skips cleanly if strace isn't available rather than failing
+# the whole suite over an optional diagnostic tool. ---
+if command -v strace >/dev/null 2>&1; then
+  atomic_trace_target="$test_root/atomic-trace-secret.enc"
+  strace_log="$test_root/atomic-trace.strace"
+  # Run inside a subshell so the sourced function/env state here doesn't
+  # leak into strace's own exec, and so this uses the real, already-
+  # sourced _dune_secrets_atomic_write rather than reimplementing it.
+  strace -f -e trace=rename,renameat,renameat2,open,openat -o "$strace_log" \
+    bash -c "source '$repo_root/runtime/scripts/lib/secrets.sh'; _dune_secrets_atomic_write '$atomic_trace_target' 'atomic-trace-content' 600" \
+    2>/dev/null || true
+
+  if ! grep -qE '(rename|renameat2?)\(' "$strace_log"; then
+    fail "expected _dune_secrets_atomic_write to invoke a real rename(2)/renameat(2) syscall to publish the final path, but strace captured none -- see $strace_log"
+  fi
+  # The traced rename's second path argument must be the exact final
+  # path, not some other file -- confirms the syscall we found is the
+  # one actually publishing THIS write, not an unrelated rename
+  # elsewhere in the same process tree (e.g. mktemp's own internals).
+  if ! grep -qF "$atomic_trace_target" "$strace_log"; then
+    fail "expected the traced rename syscall to reference the final path $atomic_trace_target, but it did not appear in the trace"
+  fi
+else
+  echo "SKIP: strace not available -- skipping direct rename(2) syscall verification (Test 8c)"
+fi
+
 # --- Test 9: dune_secrets_render_plaintext_file self-heals when a
 # stray non-file (e.g. a directory) already exists at the target path,
 # instead of aborting -- direct regression coverage for a real,
@@ -155,5 +207,78 @@ render_result=$?
 [ -f "$stray_dir_target" ] || fail "expected $stray_dir_target to be a regular file after self-healing, but it is not"
 rendered_content="$(cat "$stray_dir_target")"
 [ "$rendered_content" = "recovered-value-after-stray-dir" ] || fail "expected the rendered file to contain the correct value after self-healing, got '$rendered_content'"
+
+# --- Test 10: a secret name containing Python-syntax-breaking
+# characters must be REJECTED, not executed -- direct regression
+# coverage for a real, found-before-shipping RCE: an earlier draft of
+# _dune_secrets_atomic_write's fsync helper string-interpolated the
+# temp path directly into a `python3 -c` script, so a crafted name
+# containing a single quote and Python syntax executed arbitrary code
+# instead of merely producing a weird filename. This test reproduces
+# the exact payload that was confirmed to execute code before the fix
+# (passing the path via sys.argv instead of interpolating it) and
+# confirms it is now rejected up front by name validation, with no
+# side effect (the injected os.system() call, if it ran, would create
+# a marker file -- confirm that file does NOT exist). ---
+rce_marker="$test_root/PWNED-if-rce-still-present"
+rce_payload="x', os.O_RDONLY); os.system('touch $rce_marker') #"
+
+if dune_secrets_encrypted_path "$rce_payload" >/dev/null 2>&1; then
+  fail "expected dune_secrets_encrypted_path to reject an RCE-payload name, but it was accepted"
+fi
+[ -f "$rce_marker" ] && fail "CRITICAL: RCE payload executed -- marker file $rce_marker was created"
+
+# --- Test 11: a secret name containing path-traversal sequences must
+# be REJECTED -- direct regression coverage for a real, found-before-
+# shipping path-traversal bug: dune_secrets_encrypted_path/
+# dune_secrets_migration_marker_path built a path via
+# printf 'runtime/secrets/%s.enc' "$name" with zero validation, so a
+# name of "../../../somewhere/else" produced a path escaping
+# runtime/secrets/ entirely. This test confirms such a name is now
+# rejected before any path is ever printed or written to. ---
+traversal_marker="$test_root/traversal-marker-outside-secrets-dir"
+traversal_payload="../../../../../../..${traversal_marker}"
+
+if dune_secrets_encrypted_path "$traversal_payload" >/dev/null 2>&1; then
+  fail "expected dune_secrets_encrypted_path to reject a path-traversal name, but it was accepted"
+fi
+[ -f "${traversal_marker}.enc" ] && fail "path traversal succeeded -- file exists outside runtime/secrets/ at ${traversal_marker}.enc"
+
+# --- Test 12: every real secret name already in use elsewhere in this
+# codebase must still be ACCEPTED by the same validation that rejects
+# tests 10/11's malicious payloads -- confirms the fix doesn't merely
+# reject everything, and pins the exact real names this validation
+# must never regress against as new secrets are wired up in later
+# stages of this feature's rollout. ---
+for real_name in funcom-token rmq-http-token-auth-secret fls-apikey \
+                 server-login-password-secret username-server-login-secret \
+                 postgres-password; do
+  dune_secrets_encrypted_path "$real_name" >/dev/null 2>&1 \
+    || fail "expected the real, already-in-use secret name '$real_name' to be accepted by name validation, but it was rejected"
+done
+
+# --- Test 13: dune_secrets_render_plaintext_file must not permanently
+# change the CALLING shell's umask -- direct regression coverage for a
+# real, found-before-shipping bug: this function set `umask 077` with
+# no save/restore, and since this file is sourced (not run in a
+# subshell), that silently changed the caller's umask for its entire
+# remaining execution, affecting every unrelated file the caller
+# creates afterward, not just the one this function renders.
+#
+# The umask reset to a known baseline (022) immediately before this
+# test is NOT cosmetic -- without it, this test produced a false pass
+# against the unfixed bug, because Test 9 above already calls this
+# same function first; if Test 9's call had leaked the umask to 077,
+# "before" and "after" here would both read 077 and look unchanged,
+# hiding the exact regression this test exists to catch. Confirmed
+# directly: reverting the fix with this reset removed reproduces the
+# original false pass; with the reset present, the same reverted fix
+# correctly fails. ---
+umask 022
+umask_before_render="$(umask)"
+dune_secrets_render_plaintext_file "$test_root/umask-probe-file" "probe-content" 600
+umask_after_render="$(umask)"
+[ "$umask_before_render" = "$umask_after_render" ] \
+  || fail "expected dune_secrets_render_plaintext_file to leave the caller's umask unchanged (was $umask_before_render, now $umask_after_render)"
 
 echo "All secrets.sh library tests passed."

@@ -2,8 +2,8 @@
 """AES-256-GCM primitive for age-based secrets management.
 
 Why this exists: `runtime/scripts/lib/secrets.sh`'s shell code needs a
-real AES-256-GCM implementation for the enc:v1:/enc:v2: ciphertext
-format it produces/consumes. Bash has no native AES-GCM primitive, and
+real AES-256-GCM implementation for the enc:v2: ciphertext format it
+produces/consumes. Bash has no native AES-GCM primitive, and
 `openssl enc` cannot do AEAD ciphers at all -- confirmed directly
 (`openssl enc -aes-256-gcm ...` -> "enc: AEAD ciphers not supported"),
 and per `openssl-enc(1)`'s own manual, this is permanent upstream
