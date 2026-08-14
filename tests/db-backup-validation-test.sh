@@ -7,8 +7,18 @@ test_root="$(mktemp -d)"
 trap 'rm -rf "$test_root"' EXIT
 
 bin_dir="$test_root/bin"
-mkdir -p "$bin_dir" "$test_root/runtime/scripts"
+mkdir -p "$bin_dir" "$test_root/runtime/scripts/lib"
 cp runtime/scripts/env-file.sh "$test_root/runtime/scripts/env-file.sh"
+# db.sh now sources runtime-env.sh (needed for resolve_funcom_token, the
+# age-secrets-aware Funcom-token resolver used by its battlegroup-mismatch
+# diagnostic) -- this isolated test tree needs runtime-env.sh's own full
+# dependency chain too, or sourcing it fails with "No such file or
+# directory" in this copy, even though the real repo has every file.
+cp runtime/scripts/runtime-env.sh "$test_root/runtime/scripts/runtime-env.sh"
+cp runtime/scripts/memory-swap-common.sh "$test_root/runtime/scripts/memory-swap-common.sh"
+cp runtime/scripts/compose-project.sh "$test_root/runtime/scripts/compose-project.sh"
+cp runtime/scripts/lib/secrets.sh "$test_root/runtime/scripts/lib/secrets.sh"
+cp runtime/scripts/lib/secrets_aead.py "$test_root/runtime/scripts/lib/secrets_aead.py"
 
 cat > "$bin_dir/docker" <<'EOF'
 #!/usr/bin/env bash

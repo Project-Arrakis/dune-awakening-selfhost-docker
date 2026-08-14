@@ -5,7 +5,7 @@ repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 test_root="$(mktemp -d)"
 trap 'rm -rf "$test_root"' EXIT
 
-mkdir -p "$test_root/project/runtime/scripts" "$test_root/bin"
+mkdir -p "$test_root/project/runtime/scripts/lib" "$test_root/bin"
 cp "$repo_root/runtime/scripts/ready.sh" "$test_root/project/runtime/scripts/ready.sh"
 cp "$repo_root/runtime/scripts/runtime-env.sh" "$test_root/project/runtime/scripts/runtime-env.sh"
 cp "$repo_root/runtime/scripts/env-file.sh" "$test_root/project/runtime/scripts/env-file.sh"
@@ -13,6 +13,12 @@ cp "$repo_root/runtime/scripts/memory-swap-common.sh" "$test_root/project/runtim
 cp "$repo_root/runtime/scripts/compose-project.sh" "$test_root/project/runtime/scripts/compose-project.sh"
 cp "$repo_root/runtime/scripts/fls-signals.sh" "$test_root/project/runtime/scripts/fls-signals.sh"
 cp "$repo_root/runtime/scripts/farm-readiness.sh" "$test_root/project/runtime/scripts/farm-readiness.sh"
+# runtime-env.sh now sources lib/secrets.sh (age-based secrets manager) --
+# this disposable test tree must carry that dependency too, or sourcing
+# runtime-env.sh fails with "No such file or directory" in this isolated
+# copy, even though the real repo has it.
+cp "$repo_root/runtime/scripts/lib/secrets.sh" "$test_root/project/runtime/scripts/lib/secrets.sh"
+cp "$repo_root/runtime/scripts/lib/secrets_aead.py" "$test_root/project/runtime/scripts/lib/secrets_aead.py"
 
 cat > "$test_root/project/.env" <<'EOF'
 POSTGRES_PORT=16432
