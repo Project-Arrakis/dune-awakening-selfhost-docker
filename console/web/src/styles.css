@@ -4212,11 +4212,9 @@ h3 { font-size: clamp(1.05rem, .98rem + .35vw, 1.35rem); }
   position: sticky;
   top: 0;
   align-self: start;
-  height: 100dvh;
-  overflow-x: hidden;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  scrollbar-gutter: stable;
+  min-height: 100dvh;
+  height: auto;
+  overflow: visible;
 }
 .sidebar-menu-toggle { display: none; }
 
