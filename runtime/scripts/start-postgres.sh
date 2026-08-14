@@ -252,8 +252,8 @@ mkdir -p runtime/generated
       echo "     for the underlying database error." >&2
       echo "  3. Back up your data (dune db backup) before troubleshooting" >&2
       echo "     further." >&2
-      echo "  4. If you need help, reference issue #260 in this project's" >&2
-      echo "     GitHub repository." >&2
+      echo "  4. If you need help, see docs/runtime/POSTGRES-AGE-SECRETS.md" >&2
+      echo "     or open an issue in this project's GitHub repository." >&2
       exit 1
     fi
   fi
