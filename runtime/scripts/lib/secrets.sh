@@ -4,22 +4,25 @@ set -euo pipefail
 # Age-based secrets management for dune-awakening-selfhost-docker.
 #
 # Implements envelope encryption (age identity -> KEK -> per-secret DEK)
-# for at-rest secrets. See docs/runtime/AGE-SECRETS-MANAGEMENT.md for the
-# operator-facing design/usage documentation. Key design decisions this
-# file embodies:
+# for at-rest secrets. This is stage 1 (library only, no callers yet)
+# of a multi-PR rollout split out of a larger, rejected upstream PR --
+# operator-facing install/usage documentation will be introduced in a
+# later stage alongside the first real caller, not written upfront for
+# functionality that doesn't exist yet in this narrower scope. Key
+# design decisions this file embodies:
 #
-#   - The enc:v1:/enc:v2: ciphertext format is produced and consumed
-#     via runtime/scripts/lib/secrets_aead.py (Python's AESGCM), not
-#     via `age` or `openssl enc` directly. age's job ends the moment
-#     the KEK is decrypted (load_kek, below) -- it never touches the
-#     enc:v1:/enc:v2: payload itself. This separation is deliberate;
-#     do not "simplify" by routing payload encryption through age
-#     (age's own on-disk format has no relationship to raw AES-GCM
-#     iv+tag+ciphertext framing, and this repo's only other available
-#     crypto tool, `openssl enc`, is permanently incapable of AES-GCM:
-#     confirmed directly via `openssl enc -aes-256-gcm`, which reports
-#     "AEAD ciphers not supported" -- a permanent upstream policy, not
-#     a version gap).
+#   - The ciphertext format (current version: enc:v2:) is produced and
+#     consumed via runtime/scripts/lib/secrets_aead.py (Python's
+#     AESGCM), not via `age` or `openssl enc` directly. age's job ends
+#     the moment the KEK is decrypted (load_kek, below) -- it never
+#     touches the enc:v2: payload itself. This separation is
+#     deliberate; do not "simplify" by routing payload encryption
+#     through age (age's own on-disk format has no relationship to raw
+#     AES-GCM iv+tag+ciphertext framing, and this repo's only other
+#     available crypto tool, `openssl enc`, is permanently incapable of
+#     AES-GCM: confirmed directly via `openssl enc -aes-256-gcm`, which
+#     reports "AEAD ciphers not supported" -- a permanent upstream
+#     policy, not a version gap).
 #   - Any secret WRITE must follow write-temp -> fsync -> atomic-rename
 #     -> write-marker-the-same-way ordering (write_secret, below) so a
 #     process kill mid-write cannot produce a torn state.
@@ -28,18 +31,18 @@ set -euo pipefail
 #     back to the existing flat-file convention (runtime/secrets/*.txt)
 #     whenever DUNE_KEK_FILE/DUNE_AGE_IDENTITY_FILE are not both set --
 #     every existing operator sees zero behavior change unless they
-#     explicitly opt in (see docs/runtime/AGE-SECRETS-MANAGEMENT.md for
-#     the manual opt-in procedure; a dedicated CLI command to automate
-#     this is a natural follow-on, not yet implemented).
+#     explicitly opt in. A dedicated CLI command to automate the manual
+#     opt-in steps is a natural follow-on, not yet implemented.
 #
 # This file is a library, meant to be sourced (like host-paths.sh,
 # runtime-env.sh), not executed directly. It is deliberately
 # credential-agnostic: nothing in this file references any specific
 # secret by name. Per-secret wiring (which script reads which secret,
 # via which resolver) lives in runtime-env.sh and its callers, added
-# incrementally in separate, focused changes rather than all at once --
-# see docs/runtime/AGE-SECRETS-MANAGEMENT.md for the current list of
-# which secrets have been migrated through this library so far.
+# incrementally in separate, focused changes rather than all at once.
+# This library has no callers as of this stage -- see this repo's own
+# issue/PR history for the current status of later stages wiring up
+# individual secrets.
 
 DUNE_SECRETS_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DUNE_SECRETS_AEAD_PY="$DUNE_SECRETS_LIB_DIR/secrets_aead.py"
@@ -151,12 +154,46 @@ _dune_secrets_aead_decrypt() {
   printf '%s\n%s\n' "$key_hex" "$payload_b64" | python3 "$DUNE_SECRETS_AEAD_PY" decrypt
 }
 
+# _dune_secrets_validate_name <name>
+#   Every public function taking a <name> parameter (dune_secrets_encrypted_path,
+#   dune_secrets_migration_marker_path, and therefore write_secret/
+#   read_encrypted/read_secret which call them) MUST validate <name>
+#   through this function before using it to build a filesystem path.
+#
+#   SECURITY: <name> is attacker-influenced the moment any future
+#   caller derives it from anything less than a hardcoded literal --
+#   this library is explicitly designed for many future callers, not
+#   just the ones that exist today. Without this check, a <name> of
+#   e.g. "../../../../tmp/evil" causes dune_secrets_encrypted_path to
+#   print a path escaping runtime/secrets/ entirely, and
+#   _dune_secrets_atomic_write (which has no path-containment check of
+#   its own) will happily write attacker-directed content there.
+#   Confirmed exploitable during a Layer 2 security-hat audit before
+#   this ever shipped. Restricting <name> to a conservative allow-list
+#   (lowercase letters, digits, and hyphens only, matching every real
+#   secret name already in use, e.g. "funcom-token",
+#   "server-login-password-secret") closes both the path-traversal
+#   vector and, as a side effect, blocks the characters (quotes,
+#   parens, semicolons) that made the separate RCE finding in
+#   _dune_secrets_atomic_write's fsync helper exploitable via this same
+#   parameter. Fix that vulnerability too, but keep this check as
+#   defense in depth -- do not rely on one fix alone.
+_dune_secrets_validate_name() {
+  local name="$1"
+  if [[ ! "$name" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
+    echo "dune secrets: rejected invalid secret name '$name' -- must match ^[a-z0-9]+(-[a-z0-9]+)*\$ (lowercase letters, digits, single hyphens between segments; no path separators, dots, or other characters)." >&2
+    return 1
+  fi
+}
+
 # dune_secrets_encrypted_path <name>
 #   Prints the path where <name>'s age-encrypted form would live, e.g.
 #   dune_secrets_encrypted_path funcom-token
 #     -> runtime/secrets/funcom-token.enc
+#   Returns 1 (prints nothing) if <name> fails _dune_secrets_validate_name.
 dune_secrets_encrypted_path() {
   local name="$1"
+  _dune_secrets_validate_name "$name" || return 1
   printf 'runtime/secrets/%s.enc\n' "$name"
 }
 
@@ -164,9 +201,11 @@ dune_secrets_encrypted_path() {
 #   Prints the per-secret migration completion marker path -- one
 #   marker per secret, not one global marker, so a partially-completed
 #   migration batch can be resumed without reprocessing already-
-#   migrated secrets.
+#   migrated secrets. Returns 1 (prints nothing) if <name> fails
+#   _dune_secrets_validate_name.
 dune_secrets_migration_marker_path() {
   local name="$1"
+  _dune_secrets_validate_name "$name" || return 1
   printf 'runtime/generated/.secrets-migrated/%s.done\n' "$name"
 }
 
@@ -204,8 +243,22 @@ dune_secrets_render_plaintext_file() {
   dir="$(dirname "$path")"
   mkdir -p "$dir"
 
+  # SECURITY/CORRECTNESS: umask is process-global, not scoped to this
+  # function or file. An earlier draft set `umask 077` here with no
+  # restore -- since this file is sourced (not executed in a subshell),
+  # that permanently changed the CALLING script's umask for its entire
+  # remaining execution the moment this function was called once,
+  # silently affecting every unrelated file/directory the caller
+  # creates afterward. Confirmed live during a Layer 2 audit before
+  # this ever shipped (a file created after calling this function
+  # unexpectedly inherited mode 600 instead of the caller's own
+  # default). Save and restore the caller's umask explicitly instead.
+  local old_umask
+  old_umask="$(umask)"
   umask 077
   printf '%s' "$content" > "$path"
+  umask "$old_umask"
+
   chmod "$mode" "$path"
 }
 
@@ -235,18 +288,28 @@ _dune_secrets_atomic_write() {
   # fsync the temp file's contents before the rename that publishes it,
   # so a crash between fsync and rename leaves, at worst, an orphaned
   # temp file -- never a final path with truncated/partial content.
-  # dd is used purely as a portable way to invoke fsync(2) on an
-  # existing file descriptor without requiring a compiled helper;
   # `sync` alone is not sufficient (it syncs the whole filesystem's
   # buffers, not specifically this file, and gives no per-file
   # ordering guarantee relative to the following rename).
+  #
+  # SECURITY: $tmp_path is passed as a real argv element (sys.argv[1]),
+  # never interpolated into the Python source string. An earlier draft
+  # of this function built the path directly into the "-c" script text
+  # (e.g. os.open('$tmp_path', ...)) -- a secret `name` (which flows
+  # into $final_path/$tmp_path via callers like dune_secrets_write_secret)
+  # containing a single quote and Python syntax would have executed
+  # arbitrary code in that draft. Confirmed exploitable during a Layer 2
+  # security-hat audit before this ever shipped; fixed here by passing
+  # the path as an argument Python receives as a plain string, never as
+  # code it parses. Never revert to string-interpolating a caller-
+  # influenced value into this (or any) -c script.
   if command -v python3 >/dev/null 2>&1; then
-    python3 -c "
-import os
-fd = os.open('$tmp_path', os.O_RDONLY)
+    python3 -c '
+import os, sys
+fd = os.open(sys.argv[1], os.O_RDONLY)
 os.fsync(fd)
 os.close(fd)
-"
+' "$tmp_path"
   fi
 
   mv -f "$tmp_path" "$final_path"
@@ -273,6 +336,11 @@ dune_secrets_write_secret() {
   local name="$1"
   local plaintext="$2"
 
+  local enc_path
+  if ! enc_path="$(dune_secrets_encrypted_path "$name")"; then
+    return 1
+  fi
+
   local kek
   if ! kek="$(dune_secrets_load_kek)"; then
     echo "dune secrets: cannot write '$name' -- KEK backend not configured or unavailable." >&2
@@ -286,13 +354,17 @@ dune_secrets_write_secret() {
   wrapped_dek="$(_dune_secrets_aead_encrypt "$kek" "$dek")"
   ciphertext="$(_dune_secrets_aead_encrypt "$dek" "$plaintext")"
 
-  local enc_path
-  enc_path="$(dune_secrets_encrypted_path "$name")"
-
   _dune_secrets_atomic_write "$enc_path" "enc:v2:1:${wrapped_dek}:${ciphertext}" 600
 
   local marker_path
-  marker_path="$(dune_secrets_migration_marker_path "$name")"
+  # _dune_secrets_validate_name was already applied above via
+  # dune_secrets_encrypted_path -- $name is known-valid by this point,
+  # so this call cannot fail on the name-validation check specifically,
+  # but its return code is still checked rather than assumed, per the
+  # same discipline as every other call in this function.
+  if ! marker_path="$(dune_secrets_migration_marker_path "$name")"; then
+    return 1
+  fi
   _dune_secrets_atomic_write "$marker_path" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" 600
 }
 
@@ -306,7 +378,7 @@ dune_secrets_read_encrypted() {
   local name="$1"
 
   local enc_path
-  enc_path="$(dune_secrets_encrypted_path "$name")"
+  enc_path="$(dune_secrets_encrypted_path "$name")" || return 1
   [ -r "$enc_path" ] || return 1
 
   local kek
