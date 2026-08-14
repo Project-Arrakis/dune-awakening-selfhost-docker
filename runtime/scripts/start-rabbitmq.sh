@@ -60,7 +60,7 @@ listeners.ssl.default = 5672
 
 ssl_options.cacertfile = /etc/rabbitmq/cacert.pem
 ssl_options.certfile   = /etc/rabbitmq/cert.pem
-ssl_options.keyfile   = /etc/rabbitmq/key.pem
+ssl_options.keyfile    = /etc/rabbitmq/key.pem
 ssl_options.verify     = verify_none
 ssl_options.fail_if_no_peer_cert = false
 
@@ -115,6 +115,7 @@ docker run -d \
   -v "$(host_path "$PWD/runtime/rabbitmq-admin/config/rabbitmq.conf"):/etc/rabbitmq/rabbitmq.conf:ro" \
   -v "$(host_path "$PWD/runtime/rabbitmq-admin/config/enabled_plugins"):/etc/rabbitmq/enabled_plugins:ro" \
   "$IMAGE"
+
 docker run -d \
   "${DUNE_DOCKER_LOG_ARGS[@]}" \
   --name dune-rmq-game \
