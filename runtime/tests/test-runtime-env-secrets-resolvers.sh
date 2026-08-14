@@ -9,7 +9,7 @@ fail() {
   exit 1
 }
 
-command -v age >/dev/null 2>&1 || { echo "SKIP: age not found on PATH -- see docs/runtime/POSTGRES-AGE-SECRETS.md for the operator install path"; exit 0; }
+command -v age >/dev/null 2>&1 || { echo "SKIP: age not found on PATH -- see docs/runtime/AGE-SECRETS-MANAGEMENT.md for the operator install path"; exit 0; }
 command -v age-keygen >/dev/null 2>&1 || { echo "SKIP: age-keygen not found on PATH"; exit 0; }
 python3 -c "from cryptography.hazmat.primitives.ciphers.aead import AESGCM" >/dev/null 2>&1 || {
   echo "SKIP: python3's 'cryptography' package not installed"

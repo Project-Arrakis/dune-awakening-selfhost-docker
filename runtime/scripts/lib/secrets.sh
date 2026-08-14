@@ -5,7 +5,7 @@ set -euo pipefail
 #
 # Implements envelope encryption (age identity -> KEK -> per-secret DEK)
 # for at-rest secrets, starting with the Postgres superuser password.
-# See docs/runtime/POSTGRES-AGE-SECRETS.md for the operator-facing
+# See docs/runtime/AGE-SECRETS-MANAGEMENT.md for the operator-facing
 # design/usage documentation. Key design decisions this file embodies:
 #
 #   - The enc:v1:/enc:v2: ciphertext format is produced and consumed
@@ -30,7 +30,7 @@ set -euo pipefail
 #     back to the existing flat-file convention (runtime/secrets/*.txt)
 #     whenever DUNE_KEK_FILE/DUNE_AGE_IDENTITY_FILE are not both set --
 #     every existing operator sees zero behavior change unless they
-#     explicitly opt in (see docs/runtime/POSTGRES-AGE-SECRETS.md for
+#     explicitly opt in (see docs/runtime/AGE-SECRETS-MANAGEMENT.md for
 #     the manual opt-in procedure; a dedicated CLI command to automate
 #     this is a natural follow-on, not yet implemented).
 #

@@ -64,7 +64,7 @@ docker volume create dune-postgres-data >/dev/null
 # read/generate-and-persist a real random superuser password through
 # that path; otherwise, fall back to the exact previous default value
 # so an operator who has never opted in sees zero behavior change --
-# this remains strictly opt-in (see docs/runtime/POSTGRES-AGE-SECRETS.md).
+# this remains strictly opt-in (see docs/runtime/AGE-SECRETS-MANAGEMENT.md).
 # This whole block (KEK read/generate, render, docker run, cleanup) is
 # wrapped in a dedicated flock so two overlapping invocations of this
 # script (e.g. two concurrent `dune restart` calls) cannot race on the
@@ -219,7 +219,7 @@ mkdir -p runtime/generated
   # `trust`-for-local false-pass trap during verification -- do not
   # "verify" this fix via `docker exec`/127.0.0.1, since password auth
   # is not actually enforced on that path; verify over the real
-  # dune-net network instead (see docs/runtime/POSTGRES-AGE-SECRETS.md
+  # dune-net network instead (see docs/runtime/AGE-SECRETS-MANAGEMENT.md
   # for the exact verification command and why this matters).
   #
   # Fix: explicitly force the live superuser password to match
@@ -250,7 +250,7 @@ mkdir -p runtime/generated
       echo "     for the underlying database error." >&2
       echo "  3. Back up your data (dune db backup) before troubleshooting" >&2
       echo "     further." >&2
-      echo "  4. If you need help, see docs/runtime/POSTGRES-AGE-SECRETS.md" >&2
+      echo "  4. If you need help, see docs/runtime/AGE-SECRETS-MANAGEMENT.md" >&2
       echo "     or open an issue in this project's GitHub repository." >&2
       exit 1
     fi
