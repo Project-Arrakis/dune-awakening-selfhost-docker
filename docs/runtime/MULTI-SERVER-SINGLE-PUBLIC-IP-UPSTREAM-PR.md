@@ -2,7 +2,7 @@
 
 **Status:** Current | **Last Updated:** August 2026
 
-This document is the maintainer/contributor companion to [`MULTI-SERVER-SINGLE-PUBLIC-IP.md`](MULTI-SERVER-SINGLE-PUBLIC-IP.md). It records the staging-PR workflow and the exact GitHub CLI (`gh`) procedure for submitting the multi-server guide and configuration helper upstream without carrying unrelated fork history.
+This is the maintainer/contributor companion to [`MULTI-SERVER-SINGLE-PUBLIC-IP.md`](MULTI-SERVER-SINGLE-PUBLIC-IP.md). It records the clean upstream submission workflow for the multi-server guide and `multi-server-config.py` helper.
 
 The authoritative upstream repository is:
 
@@ -10,7 +10,7 @@ The authoritative upstream repository is:
 Red-Blink/dune-awakening-selfhost-docker
 ```
 
-The staging fork used while preparing this documentation is:
+The staging fork is:
 
 ```text
 yacketrj/dune-awakening-selfhost-docker
@@ -24,128 +24,137 @@ https://github.com/yacketrj/dune-awakening-selfhost-docker/pull/262
 
 ---
 
-# Why a Clean Upstream Branch Is Required
+# Critical Port-Policy Requirement
 
-The staging fork has diverged from upstream `Red-Blink/main`. In particular, the documentation index can differ between the fork and upstream.
+Before submitting upstream, verify that the helper and documentation enforce the same invariant:
 
-Do **not** simply retarget the staging PR to `Red-Blink/main` if the branch contains unrelated fork history or stale upstream files.
+> **No managed numeric port or range may overlap any other managed numeric port or range across any generated VM, regardless of protocol.**
 
-The safe procedure is:
+The accepted allocation policy uses one uniform per-instance stride:
 
-1. fetch current upstream;
-2. create a new branch directly from `upstream/main`;
-3. bring in only the multi-server deliverables;
-4. add the documentation-index entry against the current upstream index;
-5. validate the resulting diff;
-6. push that clean branch to the contributor fork;
-7. open a draft PR against `Red-Blink/main`.
+```text
+INSTANCE_PORT_STRIDE = 1000
+instance_offset = (instance_number - 1) * 1000
+```
 
-This keeps the upstream contribution narrowly scoped and reviewable.
+Every managed scalar port and every game/IGW range base receives the same offset.
+
+Validated examples:
+
+| Function | VM1 | VM2 | VM3 |
+|---|---:|---:|---:|
+| Player/Game UDP | `7777-7810` | `8777-8810` | `9777-9810` |
+| IGW UDP | `7888-7921` | `8888-8921` | `9888-9921` |
+| Admin Web TCP | `8088` | `9088` | `10088` |
+| Text Router TCP | `5059` | `6059` | `7059` |
+| Director TCP | `11717` | `12717` | `13717` |
+| PostgreSQL TCP | `15432` | `16432` | `17432` |
+| RMQ Game TCP | `31982` | `32982` | `33982` |
+| RMQ Game HTTP TCP | `31983` | `32983` | `33983` |
+| RMQ Admin TCP | `32573` | `33573` | `34573` |
+
+The earlier mixed-offset VM2 example using `7877` / `7988` is obsolete because VM2 player ports overlapped VM1 IGW ports.
+
+Do not submit documentation or helper code that reintroduces that allocation.
 
 ---
 
-# Deliverables to Submit Upstream
+# Why a Clean Upstream Branch Is Required
 
-The intended upstream change set consists of:
+The staging fork has diverged from `Red-Blink/main`, including documentation-index content.
+
+Do not blindly retarget the staging branch to upstream if that would carry unrelated fork history.
+
+Use this process:
+
+1. fetch upstream and fork;
+2. branch directly from current `upstream/main`;
+3. copy only the reviewed multi-server deliverables;
+4. update the current upstream documentation index in place;
+5. validate source-derived defaults;
+6. validate global port non-overlap;
+7. inspect the exact diff;
+8. commit and push the clean branch;
+9. open a draft upstream PR with `gh`.
+
+---
+
+# Deliverables
+
+Required:
 
 ```text
 docs/runtime/MULTI-SERVER-SINGLE-PUBLIC-IP.md
 runtime/scripts/multi-server-config.py
-docs/README.md                     # index entry only
+docs/README.md                    # index entry only
 ```
 
-If this companion workflow is also desired upstream, include:
+Optional maintainer companion:
 
 ```text
 docs/runtime/MULTI-SERVER-SINGLE-PUBLIC-IP-UPSTREAM-PR.md
 ```
 
-No existing runtime defaults should be changed merely to publish the documentation/helper.
+Merging these files must not change existing game/runtime defaults unless the helper is explicitly invoked by an operator.
 
 ---
 
-# Prerequisites
-
-Confirm Git and GitHub CLI are available:
+# Step 1 - Validate Git and GitHub CLI
 
 ```bash
 git --version
 gh --version
-```
-
-Confirm GitHub CLI authentication:
-
-```bash
 gh auth status
-```
-
-Confirm repository remotes:
-
-```bash
 git remote -v
 ```
 
-A typical contributor setup is:
+Expected remote pattern:
 
 ```text
 origin    https://github.com/yacketrj/dune-awakening-selfhost-docker.git
 upstream  https://github.com/Red-Blink/dune-awakening-selfhost-docker.git
 ```
 
-If `upstream` does not exist:
+If needed:
 
 ```bash
 git remote add upstream https://github.com/Red-Blink/dune-awakening-selfhost-docker.git
 ```
 
-Verify:
-
-```bash
-git remote -v
-```
-
 ---
 
-# Step 1 - Fetch Both Repositories
+# Step 2 - Fetch Current Refs
 
 ```bash
 git fetch --prune upstream
 git fetch --prune origin
 ```
 
-Inspect current refs:
+Inspect:
 
 ```bash
 git log --oneline -5 upstream/main
 git log --oneline -5 origin/agent/multi-server-single-public-ip-guide
 ```
 
-Do not proceed if `upstream/main` cannot be resolved.
-
 ---
 
-# Step 2 - Create a Clean Branch from Current Upstream Main
-
-Choose a descriptive branch name:
+# Step 3 - Branch from Current Upstream Main
 
 ```bash
 git switch -c docs/multi-server-single-public-ip upstream/main
 ```
 
-Confirm the branch is based on upstream:
+Confirm:
 
 ```bash
-git status
-git merge-base --is-ancestor upstream/main HEAD && echo "based on upstream/main"
+git merge-base --is-ancestor upstream/main HEAD && \
+  echo "branch is based on upstream/main"
 ```
-
-At this point the branch should contain **zero** staging-fork changes.
 
 ---
 
-# Step 3 - Bring in Only the Final Guide and Helper
-
-Copy only the reviewed files from the staging branch:
+# Step 4 - Bring in Only the Reviewed Deliverables
 
 ```bash
 git checkout origin/agent/multi-server-single-public-ip-guide -- \
@@ -153,30 +162,28 @@ git checkout origin/agent/multi-server-single-public-ip-guide -- \
   runtime/scripts/multi-server-config.py
 ```
 
-If including this maintainer workflow upstream as well:
+If submitting this companion:
 
 ```bash
 git checkout origin/agent/multi-server-single-public-ip-guide -- \
   docs/runtime/MULTI-SERVER-SINGLE-PUBLIC-IP-UPSTREAM-PR.md
 ```
 
-Inspect status:
-
-```bash
-git status --short
-```
-
-Expected new files should be visible; unrelated application/runtime files should not be modified.
+Do not copy the fork's entire `docs/README.md` over upstream.
 
 ---
 
-# Step 4 - Add the Documentation Index Entry Against Current Upstream
+# Step 5 - Add the Documentation Index Entry
 
-Do **not** copy the staging fork's entire `docs/README.md` over current upstream.
+Edit current upstream `docs/README.md` under the Runtime section.
 
-Instead, edit the current upstream file and add the guide under the Runtime section.
+Suggested entry:
 
-A safe scripted insertion is:
+```markdown
+- [MULTI-SERVER-SINGLE-PUBLIC-IP.md](runtime/MULTI-SERVER-SINGLE-PUBLIC-IP.md) — Current. Executive overview and detailed SOP for running multiple isolated Dune battlegroups behind one public IPv4, including globally non-overlapping per-instance port profiles, NAT/hairpin requirements, UserEngine configuration, validation, rollback, and the multi-server configuration helper.
+```
+
+A guarded scripted insertion can be used if the expected marker still exists:
 
 ```bash
 python3 - <<'PY'
@@ -188,14 +195,11 @@ text = path.read_text(encoding="utf-8")
 entry = (
     "- [MULTI-SERVER-SINGLE-PUBLIC-IP.md]"
     "(runtime/MULTI-SERVER-SINGLE-PUBLIC-IP.md) — Current. "
-    "Executive overview and detailed SOP for running multiple isolated "
-    "Dune battlegroups behind one public IPv4, including per-instance port "
-    "profiles, NAT/hairpin requirements, UserEngine configuration, validation, "
-    "rollback, and the multi-server configuration helper.\n"
+    "Executive overview and detailed SOP for running multiple isolated Dune "
+    "battlegroups behind one public IPv4, including globally non-overlapping "
+    "per-instance port profiles, NAT/hairpin requirements, UserEngine "
+    "configuration, validation, rollback, and the multi-server configuration helper.\n"
 )
-
-if entry in text:
-    raise SystemExit("Index entry already exists; review manually.")
 
 marker = (
     "- [E2E-METRICS-TESTING.md](runtime/E2E-METRICS-TESTING.md) — "
@@ -203,63 +207,128 @@ marker = (
     "(`runtime/metrics`).\n"
 )
 
+if entry in text:
+    raise SystemExit("Index entry already exists; review manually.")
 if marker not in text:
-    raise SystemExit(
-        "Runtime index insertion marker was not found. "
-        "Upstream docs/README.md has changed; edit it manually instead of guessing."
-    )
+    raise SystemExit("Runtime marker changed upstream; edit docs/README.md manually.")
 
 path.write_text(text.replace(marker, marker + entry), encoding="utf-8")
 PY
 ```
 
-If the marker has changed upstream, stop and edit the Runtime section manually. Do not force a brittle text replacement.
-
 ---
 
-# Step 5 - Validate the Helper
-
-Syntax-check the helper:
+# Step 6 - Syntax-Check the Helper
 
 ```bash
 python3 -m py_compile runtime/scripts/multi-server-config.py
 ```
 
-Generate a three-instance plan:
+---
+
+# Step 7 - Validate the Three-Instance Plan
 
 ```bash
 python3 runtime/scripts/multi-server-config.py plan --instances 3
 ```
 
-At the validated baseline, instance 2 should resolve to:
+Required output characteristics:
 
 ```text
-Player/game UDP base   7877
-IGW UDP base           7988
-PostgreSQL              16432
-RMQ Admin               33573
-RMQ Game                32982
-RMQ Game HTTP           32983
-Text Router              5159
-Director                12717
-Admin Web                8090
+Global instance port stride: +1000
 ```
 
-If the helper refuses to derive current defaults, treat that as evidence that upstream source layout changed. Review and update the helper rather than bypassing its guard.
+VM2 must include:
+
+```text
+Player/game UDP : 8777-8810
+IGW UDP         : 8888-8921
+PostgreSQL TCP  : 16432
+RMQ Admin TCP   : 33573
+RMQ Game TCP    : 32982
+RMQ Game HTTP   : 32983
+Text Router TCP : 6059
+Director TCP    : 12717
+Admin Web TCP   : 9088
+```
+
+VM3 must include:
+
+```text
+Player/game UDP : 9777-9810
+IGW UDP         : 9888-9921
+PostgreSQL TCP  : 17432
+RMQ Admin TCP   : 34573
+RMQ Game TCP    : 33982
+RMQ Game HTTP   : 33983
+Text Router TCP : 7059
+Director TCP    : 13717
+Admin Web TCP   : 10088
+```
+
+Required success line:
+
+```text
+VALIDATION: all generated managed ports are globally non-overlapping.
+```
+
+If any collision exists, the helper must exit non-zero.
 
 ---
 
-# Step 6 - Validate the Documentation Diff
+# Step 8 - Validate the Fail-Closed Limit
 
-Run:
+With the validated source defaults, the uniform `+1000` policy is collision-free through Instance 33 and Instance 34 must fail because a generated port exceeds `65535`.
+
+Optional checks:
+
+```bash
+python3 runtime/scripts/multi-server-config.py plan --instances 33 >/tmp/dune-plan-33.txt
+
+grep -F 'VALIDATION: all generated managed ports are globally non-overlapping.' \
+  /tmp/dune-plan-33.txt
+```
+
+Then confirm 34 is rejected:
+
+```bash
+if python3 runtime/scripts/multi-server-config.py plan --instances 34; then
+  echo "ERROR: instance 34 unexpectedly passed"
+  exit 1
+else
+  echo "PASS: instance 34 rejected"
+fi
+```
+
+This is not a recommendation to operate 33 battlegroups; it is only an allocator boundary test.
+
+---
+
+# Step 9 - Search for Obsolete Mixed-Offset Values
+
+Before submission, search the deliverables:
+
+```bash
+grep -RniE \
+  '7877|7910|7988|8021|5159|8090' \
+  docs/runtime/MULTI-SERVER-SINGLE-PUBLIC-IP.md \
+  docs/runtime/MULTI-SERVER-SINGLE-PUBLIC-IP-UPSTREAM-PR.md \
+  runtime/scripts/multi-server-config.py || true
+```
+
+Any matches must be reviewed.
+
+A historical explanation may intentionally mention obsolete values, but no active configuration table, command, or expected-output block may use them.
+
+---
+
+# Step 10 - Review the Exact Diff
 
 ```bash
 git diff --check
-```
 
-Review the exact change set:
+git status --short
 
-```bash
 git diff -- \
   docs/README.md \
   docs/runtime/MULTI-SERVER-SINGLE-PUBLIC-IP.md \
@@ -267,19 +336,11 @@ git diff -- \
   runtime/scripts/multi-server-config.py
 ```
 
-Confirm no unrelated files are changed:
-
-```bash
-git status --short
-```
-
-A narrow upstream submission should contain only the intended documentation/helper files.
+Confirm no unrelated runtime/application changes are present.
 
 ---
 
-# Step 7 - Commit the Clean Upstream-Based Change
-
-Stage only the intended files:
+# Step 11 - Commit
 
 ```bash
 git add \
@@ -288,142 +349,89 @@ git add \
   runtime/scripts/multi-server-config.py
 ```
 
-If including this workflow:
+If including this companion:
 
 ```bash
 git add docs/runtime/MULTI-SERVER-SINGLE-PUBLIC-IP-UPSTREAM-PR.md
 ```
 
-Verify staged content:
-
-```bash
-git diff --cached --stat
-git diff --cached --check
-```
-
 Commit:
 
 ```bash
-git commit -m "docs/runtime: add multi-server SOP and configuration helper"
+git commit -m "docs/runtime: add collision-free multi-server SOP and helper"
 ```
 
 ---
 
-# Step 8 - Push the Clean Branch to the Contributor Fork
+# Step 12 - Push the Clean Branch
 
 ```bash
 git push -u origin docs/multi-server-single-public-ip
 ```
 
-Verify the remote branch:
-
-```bash
-git ls-remote --heads origin docs/multi-server-single-public-ip
-```
-
 ---
 
-# Step 9 - Create the Upstream Draft PR with `gh`
+# Step 13 - Create the Upstream Draft PR
 
-Create a PR body file:
+Create the body:
 
 ```bash
-cat >/tmp/multi-server-upstream-pr.md <<'EOF'
+cat >/tmp/multi-server-pr.md <<'EOF'
 ## Summary
 
-Adds a source-driven operator/community guide and configuration helper for
-running multiple independent Dune: Awakening battlegroups on one physical host
-while sharing one public IPv4 address.
+Adds a source-driven operator guide and configuration helper for running multiple independent Dune: Awakening battlegroups on isolated VMs behind one shared public IPv4.
+
+### Port-allocation invariant
+
+The guide and helper enforce a strict global rule: no managed numeric port or range may overlap any other managed port or range across any generated VM, regardless of protocol.
+
+A uniform `+1000` per-instance stride is applied to every managed port/base.
+
+For example:
+
+- VM1 Player/Game `7777-7810`, IGW `7888-7921`
+- VM2 Player/Game `8777-8810`, IGW `8888-8921`
+- VM3 Player/Game `9777-9810`, IGW `9888-9921`
+
+The helper validates the complete interval set and fails closed on any collision or port above `65535`.
 
 ### Documentation
 
-Adds `docs/runtime/MULTI-SERVER-SINGLE-PUBLIC-IP.md` with:
+Adds a detailed SOP covering:
 
-- executive architecture summary;
-- detailed step-by-step deployment SOP;
-- one-VM-per-battlegroup isolation model;
-- complete per-instance service-port profiles;
-- public IPv4/NAT architecture;
-- `SERVER_IP` vs `SERVER_BIND_IP` behavior;
-- UserEngine `Port` and `IGWPort` configuration;
-- RMQ Game and RMQ Game HTTP endpoint handling;
+- one-VM-per-battlegroup isolation;
+- source-derived default ports;
+- complete per-instance namespace planning;
+- `.env` service-port configuration;
+- authoritative UserEngine `Port` / `IGWPort` configuration;
+- `SERVER_IP` vs `SERVER_BIND_IP`;
+- player and IGW UDP forwarding;
+- RMQ Game and RMQ Game HTTP forwarding;
+- Web Console exposure;
 - NAT reflection/hairpin validation;
-- firewall and port-forwarding examples;
-- Web Console security guidance;
-- configuration validation and packet-capture procedures;
-- rollback and upgrade procedures;
-- troubleshooting matrix;
-- source-of-truth references.
+- host firewall configuration;
+- startup/readiness verification;
+- packet capture;
+- security;
+- rollback;
+- upgrade revalidation;
+- troubleshooting.
 
-### Automation helper
+### Helper
 
-Adds `runtime/scripts/multi-server-config.py`.
+Adds `runtime/scripts/multi-server-config.py` with:
 
-The helper provides:
+- `plan`
+- `apply`
+- `verify`
 
-- `plan` — derive current source-backed defaults and calculate instance profiles;
-- `apply` — back up and configure one VM's `.env` and UserEngine network values;
-- `verify` — compare saved state against the expected instance profile.
+The helper derives current defaults from repository source instead of silently assuming historical values remain valid.
 
-The helper derives defaults from the checked-out repository and intentionally
-refuses to silently apply a historical profile if the source patterns it relies
-on have changed.
-
-### Important implementation detail
-
-Current runtime behavior makes UserEngine `Port` and `IGWPort` authoritative for
-the player/game and IGW bases. The helper therefore uses
-`runtime/scripts/usersettings.py engine-set` rather than relying on `.env`
-`CLIENT_PORT_BASE` / `IGW_PORT_BASE` alone.
-
-For instance 2 the standard profile is:
-
-```text
-Port / player base      7877
-IGWPort                 7988
-PostgreSQL             16432
-RMQ Admin              33573
-RMQ Game               32982
-RMQ Game HTTP          32983
-Text Router             5159
-Director               12717
-Admin Web               8090
-```
-
-The helper changes `IGWPort` before `Port` to avoid the transient invalid overlap
-that would occur if instance 2's player range were moved while IGW remained on
-the stock `7888` base.
-
-### Public endpoint model
-
-For each instance, the guide assigns unique public mappings for:
-
-- RMQ Game TCP;
-- RMQ Game HTTP TCP;
-- player/game UDP pool;
-- Admin Web TCP when intentionally exposed.
-
-Internal/control-plane services also receive distinct per-instance configured
-ports, but the guide explicitly does not recommend publishing PostgreSQL, RMQ
-Admin, Text Router, Director, or observability backends directly to the WAN.
-
-### Validation
-
-- helper syntax checked;
-- source-backed default derivation exercised;
-- VM1/VM2/VM3 profile generation validated;
-- VM2 exact expected values validated;
-- `.env` update path exercised;
-- authoritative UserEngine update path exercised;
-- backup/verify behavior exercised;
-- public NAT rule rendering exercised.
-
-No existing Dune runtime default is changed merely by merging this PR. The helper
-acts only when explicitly invoked.
+No existing runtime default is changed merely by merging this PR. The helper changes configuration only when explicitly invoked.
 EOF
 ```
 
-Open the upstream draft PR:
+Open the PR:
 
 ```bash
 gh pr create \
@@ -431,91 +439,50 @@ gh pr create \
   --base main \
   --head yacketrj:docs/multi-server-single-public-ip \
   --draft \
-  --title "docs/runtime: add multi-server SOP and configuration helper" \
-  --body-file /tmp/multi-server-upstream-pr.md
+  --title "docs/runtime: add collision-free multi-server SOP and helper" \
+  --body-file /tmp/multi-server-pr.md
 ```
-
-Record the returned PR URL.
 
 ---
 
-# Step 10 - Confirm the Upstream PR Contains Only Intended Changes
-
-After creation:
+# Step 14 - Verify the Upstream PR Scope
 
 ```bash
 gh pr view \
   --repo Red-Blink/dune-awakening-selfhost-docker \
-  --web
+  --json number,title,url,isDraft,files
 ```
 
-CLI inspection:
+Expected files should be limited to the intended documentation/helper scope.
+
+Review the patch:
 
 ```bash
-gh pr view \
-  --repo Red-Blink/dune-awakening-selfhost-docker \
-  --json number,title,state,isDraft,baseRefName,headRefName,files
+gh pr diff --repo Red-Blink/dune-awakening-selfhost-docker
 ```
-
-Review the changed-file list carefully. It should not contain unrelated fork-only commits or stale copies of upstream files.
 
 ---
 
-# Optional: Compare the Clean Branch to Upstream Before Opening the PR
+# Maintainer Acceptance Checklist
 
-```bash
-git diff --stat upstream/main...HEAD
-git log --oneline upstream/main..HEAD
-```
+Before marking the upstream PR ready for review:
 
-The log should normally show only the intentionally created documentation/helper commit(s).
+- [ ] Branch is based on current `Red-Blink/main`.
+- [ ] No unrelated fork history is included.
+- [ ] Python helper compiles.
+- [ ] Three-instance plan succeeds.
+- [ ] VM1, VM2, and VM3 game ranges are non-overlapping.
+- [ ] VM1, VM2, and VM3 IGW ranges are non-overlapping.
+- [ ] Game ranges do not overlap any IGW range on any VM.
+- [ ] No scalar service port overlaps a game or IGW range.
+- [ ] No scalar service port is reused by another managed endpoint.
+- [ ] Collision validation ignores protocol and checks numeric ownership globally.
+- [ ] Instance 34 is rejected at the validated baseline because the generated port space is exhausted.
+- [ ] Documentation tables match helper output.
+- [ ] Router/NAT examples match helper output.
+- [ ] UserEngine examples match helper output.
+- [ ] Obsolete mixed-stride values are not used as active configuration.
+- [ ] `git diff --check` passes.
+- [ ] Upstream PR file list is limited to the intended deliverables.
 
----
-
-# Failure / Recovery Guidance
-
-## Wrong base branch
-
-If the clean branch was accidentally created from fork `main` rather than `upstream/main`, delete/recreate it instead of trying to manually remove unrelated history:
-
-```bash
-git switch main
-git branch -D docs/multi-server-single-public-ip
-git switch -c docs/multi-server-single-public-ip upstream/main
-```
-
-Then repeat the selective file checkout.
-
-## Stale upstream
-
-If upstream advances before PR creation:
-
-```bash
-git fetch upstream
-git rebase upstream/main
-```
-
-Resolve only genuine conflicts. Re-run helper/document validation after rebasing.
-
-## `docs/README.md` conflict
-
-Prefer rebuilding the one-line index change against the current upstream file instead of carrying a stale fork copy through conflict resolution.
-
----
-
-# Maintainer Checklist
-
-Before opening or marking the upstream PR ready for review, confirm:
-
-- [ ] branch is based on current `Red-Blink/main`;
-- [ ] no unrelated fork history is present;
-- [ ] full SOP file is present;
-- [ ] `multi-server-config.py` is present;
-- [ ] docs index entry is present and based on current upstream index;
-- [ ] Python syntax check passes;
-- [ ] `plan --instances 3` succeeds against current source;
-- [ ] VM2 profile still matches the documented policy or documentation/helper were updated together;
-- [ ] `git diff --check` passes;
-- [ ] no secrets, `.env`, generated credentials, or private configuration were added;
-- [ ] PR is opened as draft first;
-- [ ] changed-file list contains only intended contribution files.
+The definitive operator behavior remains documented in [`MULTI-SERVER-SINGLE-PUBLIC-IP.md`](MULTI-SERVER-SINGLE-PUBLIC-IP.md).
