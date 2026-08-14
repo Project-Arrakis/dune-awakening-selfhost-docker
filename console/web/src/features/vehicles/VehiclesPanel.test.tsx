@@ -145,10 +145,10 @@ describe("VehiclesPanel", () => {
     }));
     renderPanel();
 
-    await screen.findByText("Sihaya");
-    // Condition still shows a percent; fuel retains its authoritative raw value.
+    // Wait for this request's distinctive value instead of the cached row
+    // that may be rendered while the panel refreshes in the background.
+    expect(await screen.findByText("61 current")).toBeInTheDocument();
     expect(screen.getByText("92%")).toBeInTheDocument();
-    expect(screen.getByText("61 current")).toBeInTheDocument();
   });
 
   it("labels inferred condition and fuel percentages as Estimated without a tilde", async () => {
@@ -161,8 +161,10 @@ describe("VehiclesPanel", () => {
     }));
     renderPanel();
 
-    expect(await screen.findByText(/92%/)).toHaveTextContent("Estimated");
-    expect(screen.getByText(/61%/)).toHaveTextContent("Estimated");
+    // The panel can render a cached authoritative row first. Wait for the
+    // refreshed response that carries the estimation markers.
+    await waitFor(() => expect(screen.getByText(/92%/)).toHaveTextContent("Estimated"));
+    await waitFor(() => expect(screen.getByText(/61%/)).toHaveTextContent("Estimated"));
     fireEvent.click(screen.getByLabelText("Show components for Sihaya"));
     expect(screen.getByText(/440 \/ 500 · 88% Estimated/)).toBeInTheDocument();
   });
