@@ -5,6 +5,8 @@ cd "$(dirname "$0")/../.."
 
 # shellcheck source=command-auth-token.sh
 source runtime/scripts/command-auth-token.sh
+# shellcheck source=runtime/scripts/runtime-env.sh
+source runtime/scripts/runtime-env.sh
 
 ITEMS_FILE="runtime/data/admin-items.json"
 VEHICLES_FILE="runtime/data/admin-vehicles.json"
@@ -124,8 +126,8 @@ require_catalog_file() {
 }
 
 require_token_file() {
-  if [ ! -s "$TOKEN_FILE" ]; then
-    echo "Missing non-empty Funcom auth token: $TOKEN_FILE" >&2
+  if ! resolve_funcom_token >/dev/null; then
+    echo "Missing non-empty Funcom auth token (checked $TOKEN_FILE and the encrypted secrets store)" >&2
     exit 1
   fi
 }

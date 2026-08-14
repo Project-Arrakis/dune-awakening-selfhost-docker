@@ -6,6 +6,8 @@ cd "$(dirname "$0")/../.."
 . runtime/scripts/compose-project.sh
 # shellcheck source=runtime/scripts/env-file.sh
 . runtime/scripts/env-file.sh
+# shellcheck source=runtime/scripts/lib/secrets.sh
+. runtime/scripts/lib/secrets.sh
 DUNE_COMPOSE_PROJECT_NAME="$(dune_resolve_compose_project_name "$(pwd -P)")"
 export DUNE_COMPOSE_PROJECT_NAME
 export COMPOSE_PROJECT_NAME="$DUNE_COMPOSE_PROJECT_NAME"
@@ -461,6 +463,17 @@ rm -f "$preserved_env"
 set_env_file_value runtime/generated/battlegroup.env BATTLEGROUP_ID "$BATTLEGROUP_ID" 664
 
 printf '%s' "$FUNCOM_TOKEN" > runtime/secrets/funcom-token.txt
+
+# If the age secrets backend is configured, also keep the encrypted
+# form in sync -- otherwise an operator who has already migrated this
+# secret would have a stale encrypted value silently take precedence
+# over the freshly re-entered token above (dune_secrets_read_secret
+# always prefers the encrypted form when present). Never mandatory:
+# this remains strictly opt-in, and init.sh's flat-file write above is
+# unconditional and unaffected either way.
+if dune_secrets_backend_configured; then
+  dune_secrets_write_secret "funcom-token" "$FUNCOM_TOKEN"
+fi
 
 chmod 644 .env
 chmod 600 runtime/secrets/funcom-token.txt

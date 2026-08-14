@@ -6,6 +6,8 @@ ROOT_DIR="$(pwd)"
 HOST_ROOT_DIR="${DUNE_HOST_REPO_ROOT:-$ROOT_DIR}"
 # shellcheck source=runtime/scripts/env-file.sh
 source runtime/scripts/env-file.sh
+# shellcheck source=runtime/scripts/runtime-env.sh
+source runtime/scripts/runtime-env.sh
 
 BACKUP_DIR_DEFAULT="runtime/backups/db"
 AUTO_STATE_FILE="runtime/generated/db-backup.env"
@@ -1061,7 +1063,7 @@ detect_funcom_token_battlegroup_mismatch() {
   previous_battlegroup="$(config_value "$BATTLEGROUP_RESTORE_FILE" PREVIOUS_BATTLEGROUP_ID 2>/dev/null || true)"
   adopted_battlegroup="$(config_value "$BATTLEGROUP_RESTORE_FILE" ADOPTED_BATTLEGROUP_ID 2>/dev/null || true)"
   if [ -n "$previous_battlegroup" ] && [ -n "$adopted_battlegroup" ] && [ "$previous_battlegroup" != "$adopted_battlegroup" ]; then
-    token="$(tr -d '\r\n' < runtime/secrets/funcom-token.txt 2>/dev/null || true)"
+    token="$(resolve_funcom_token 2>/dev/null || true)"
     token_host="$(token_payload_value "$token" HostId 2>/dev/null || true)"
     adopted_host="$(battlegroup_host_id "$adopted_battlegroup" 2>/dev/null || true)"
 

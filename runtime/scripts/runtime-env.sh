@@ -5,6 +5,8 @@ set -euo pipefail
 source runtime/scripts/memory-swap-common.sh
 # shellcheck source=runtime/scripts/env-file.sh
 source runtime/scripts/env-file.sh
+# shellcheck source=runtime/scripts/lib/secrets.sh
+source runtime/scripts/lib/secrets.sh
 
 if [ -z "${DUNE_COMPOSE_PROJECT_NAME:-}" ]; then
   # shellcheck disable=SC1091
@@ -696,14 +698,79 @@ ensure_secret_file() {
 
 resolve_server_login_password_secret() {
   local path="runtime/secrets/server-login-password-secret.txt"
-  ensure_secret_file "$path" 32
-  tr -d '\r\n' < "$path"
+  # Only auto-generate the legacy flat file if the age-encrypted form
+  # isn't already the authoritative source for this specific secret --
+  # otherwise an operator who has migrated this secret and deliberately
+  # removed the flat file (per the documented cleanup-legacy flow)
+  # would have it silently regenerated with a new random value on every
+  # invocation, which the encrypted form would then shadow but never
+  # actually use. A cheap file-existence check ([-e]) is enough here;
+  # dune_secrets_read_secret below is what actually decrypts and
+  # verifies the value, not this check.
+  if ! { dune_secrets_backend_configured && [ -e "$(dune_secrets_encrypted_path "server-login-password-secret")" ]; }; then
+    ensure_secret_file "$path" 32
+  fi
+  dune_secrets_read_secret "server-login-password-secret" "$path"
 }
 
 resolve_username_server_login_secret() {
   local path="runtime/secrets/username-server-login-secret.txt"
-  ensure_secret_file "$path" 32
-  tr -d '\r\n' < "$path"
+  if ! { dune_secrets_backend_configured && [ -e "$(dune_secrets_encrypted_path "username-server-login-secret")" ]; }; then
+    ensure_secret_file "$path" 32
+  fi
+  dune_secrets_read_secret "username-server-login-secret" "$path"
+}
+
+# resolve_funcom_token [token-file-path]
+#   Single shared resolver for the Funcom service token, replacing the
+#   inline TOKEN_FILE="runtime/secrets/funcom-token.txt" + `tr -d` read
+#   pattern previously duplicated across every script that needs this
+#   token. This secret is always operator-provided (via the setup
+#   wizard or `dune init`), never auto-generated -- unlike
+#   fls-apikey.txt below, there is no `ensure_secret_file` call here;
+#   an operator who hasn't provided a token yet gets a clear failure
+#   from dune_secrets_read_secret (non-zero return, nothing printed),
+#   not a silently generated placeholder value.
+resolve_funcom_token() {
+  local path="${1:-runtime/secrets/funcom-token.txt}"
+  dune_secrets_read_secret "funcom-token" "$path"
+}
+
+# resolve_rmq_http_token_auth_secret [secret-file-path]
+#   Single shared resolver for the RabbitMQ HTTP token-auth secret.
+#   Auto-generated (openssl rand -hex 32) by 3 of the 6 existing call
+#   sites if the flat file doesn't exist yet -- preserve that behavior
+#   here using the same "only auto-generate if the encrypted form isn't
+#   already authoritative" guard used by resolve_server_login_password_secret
+#   above (and resolve_fls_apikey just below), so this resolver is a
+#   safe drop-in replacement for every existing call site, including
+#   the 3 that never auto-generated it (they simply never hit the
+#   ensure_secret_file branch, since the file already exists by the
+#   time they run).
+resolve_rmq_http_token_auth_secret() {
+  local path="${1:-runtime/secrets/rmq-http-token-auth-secret.txt}"
+  if ! { dune_secrets_backend_configured && [ -e "$(dune_secrets_encrypted_path "rmq-http-token-auth-secret")" ]; }; then
+    ensure_secret_file "$path" 32
+  fi
+  dune_secrets_read_secret "rmq-http-token-auth-secret" "$path"
+}
+
+# resolve_fls_apikey [secret-file-path]
+#   Single shared resolver for the FLS (Farm Load-balancer Service?)
+#   API key. Unlike the two resolvers above, this secret IS
+#   auto-generated (openssl rand -hex 16) by more than one caller today
+#   if the flat file doesn't exist yet -- preserve that behavior here,
+#   using the same "only auto-generate the flat file if the encrypted
+#   form isn't already authoritative" guard as
+#   resolve_server_login_password_secret above, so this resolver is a
+#   safe drop-in replacement for every existing inline
+#   `ensure`-then-`read` call site.
+resolve_fls_apikey() {
+  local path="${1:-runtime/secrets/fls-apikey.txt}"
+  if ! { dune_secrets_backend_configured && [ -e "$(dune_secrets_encrypted_path "fls-apikey")" ]; }; then
+    ensure_secret_file "$path" 16
+  fi
+  dune_secrets_read_secret "fls-apikey" "$path"
 }
 
 resolve_login_password_skew_seconds() {
@@ -744,16 +811,54 @@ battlegroup_host_id() {
 }
 
 funcom_token_host_id() {
-  local token_file="${1:-runtime/secrets/funcom-token.txt}"
-  [ -s "$token_file" ] || return 1
-  TOKEN_FILE="$token_file" python3 - <<'PY'
+  # Accepts the token VALUE directly (not a file path) so callers can
+  # feed it a value resolved via resolve_funcom_token() (which may come
+  # from the age-encrypted secrets store, not always a flat file) --
+  # deliberately never writes the decrypted token to a temp file just
+  # to parse it. For backward compatibility, if the argument looks
+  # like an existing, readable file path rather than a JWT, read it as
+  # a file first -- this keeps any existing caller that still passes a
+  # path working unchanged.
+  #
+  # The token is piped to python3 via STDIN, never via argv or an
+  # environment variable -- an env var would still be visible via
+  # /proc/<pid>/environ to any other process running as the same user,
+  # which is the same class of exposure this age-secrets feature exists
+  # to eliminate elsewhere (see secrets_aead.py). printf is a shell
+  # builtin, not a separate process, so nothing here ever writes the
+  # token to any process's own argv/environ at any point.
+  # Deliberately using ${1+...} (checks "was an argument passed at
+  # all"), not ${1:-...} (also treats an explicitly-passed empty string
+  # the same as "not passed") -- a caller that resolved a token value
+  # and got an empty string back (e.g. resolve_funcom_token failed)
+  # must NOT silently fall through to re-reading the default flat
+  # file behind the caller's back; that empty string must fail loudly
+  # instead. Confirmed this distinction matters: ${1:-x} with `f ""`
+  # returns "x", not "".
+  local token_or_path
+  if [ $# -ge 1 ]; then
+    token_or_path="$1"
+  else
+    token_or_path="runtime/secrets/funcom-token.txt"
+  fi
+  local token="$token_or_path"
+  if [ -n "$token_or_path" ] && [ -f "$token_or_path" ]; then
+    token="$(tr -d '\r\n' < "$token_or_path")"
+  fi
+  [ -n "$token" ] || return 1
+  # Note: the Python script text itself is passed via -c (a fixed,
+  # non-secret string), NOT a heredoc -- a heredoc would take over
+  # python3's stdin and silently discard the piped token instead of
+  # reading it (confirmed directly: `printf x | python3 - <<'PY' ...`
+  # reads the heredoc body, never the pipe). -c leaves stdin free for
+  # the actual token value piped in below.
+  printf '%s' "$token" | python3 -c '
 import base64
 import json
-import os
-from pathlib import Path
+import sys
 
 try:
-    token = Path(os.environ["TOKEN_FILE"]).read_text().strip()
+    token = sys.stdin.read().strip()
     payload = token.split(".")[1]
     payload += "=" * (-len(payload) % 4)
     data = json.loads(base64.urlsafe_b64decode(payload.encode()).decode())
@@ -763,5 +868,5 @@ try:
     print(str(host_id))
 except Exception:
     raise SystemExit(1)
-PY
+'
 }

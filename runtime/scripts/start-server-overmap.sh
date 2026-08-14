@@ -3,9 +3,12 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 
+# shellcheck disable=SC1091
 [ -f .env ] && . ./.env
+# shellcheck disable=SC1091
 [ -r runtime/generated/battlegroup.env ] && . runtime/generated/battlegroup.env
 
+# shellcheck disable=SC1091
 [ -r runtime/generated/image-tags.env ] && . runtime/generated/image-tags.env
 source runtime/scripts/host-paths.sh
 source runtime/scripts/runtime-env.sh
@@ -13,13 +16,9 @@ source runtime/scripts/image-tags.sh
 source runtime/scripts/sietch-login-password-args.sh
 IMAGE="$(resolve_game_server_image)"
 
-TOKEN_FILE="runtime/secrets/funcom-token.txt"
-RMQ_SECRET_FILE="runtime/secrets/rmq-http-token-auth-secret.txt"
-FLS_APIKEY_FILE="runtime/secrets/fls-apikey.txt"
-
-FUNCOM_TOKEN="$(tr -d '\r\n' < "$TOKEN_FILE")"
-RMQ_HTTP_TOKEN_AUTH_SECRET="$(tr -d '\r\n' < "$RMQ_SECRET_FILE")"
-FLS_APIKEY="$(tr -d '\r\n' < "$FLS_APIKEY_FILE")"
+FUNCOM_TOKEN="$(resolve_funcom_token)" || { echo "Missing Funcom token (checked runtime/secrets/funcom-token.txt and the encrypted secrets store)"; exit 1; }
+RMQ_HTTP_TOKEN_AUTH_SECRET="$(resolve_rmq_http_token_auth_secret)"
+FLS_APIKEY="$(resolve_fls_apikey)"
 
 SERVER_LOGIN_PASSWORD_SECRET="$(resolve_server_login_password_secret)"
 USERNAME_SERVER_LOGIN_SECRET="$(resolve_username_server_login_secret)"

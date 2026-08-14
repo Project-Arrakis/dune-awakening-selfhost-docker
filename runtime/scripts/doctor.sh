@@ -4,7 +4,9 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 ROOT_DIR="$(pwd)"
 HOST_ROOT_DIR="${DUNE_HOST_REPO_ROOT:-$ROOT_DIR}"
+# shellcheck disable=SC1091
 [ -f .env ] && . ./.env
+# shellcheck disable=SC1091
 [ -r runtime/generated/battlegroup.env ] && . runtime/generated/battlegroup.env
 source runtime/scripts/runtime-env.sh
 source runtime/scripts/fls-signals.sh
@@ -371,7 +373,12 @@ fi
 echo
 echo "=== Local files ==="
 check_file .env ".env config" "Run: dune init"
-check_file runtime/secrets/funcom-token.txt "Funcom token file" "Run: dune init, or place the token in runtime/secrets/funcom-token.txt"
+if resolve_funcom_token >/dev/null 2>&1; then
+  ok "Funcom token"
+else
+  fail_msg "Funcom token missing"
+  echo "     Run: dune init, or place the token in runtime/secrets/funcom-token.txt"
+fi
 check_file runtime/generated/battlegroup.env "Battlegroup config" "Run: dune init"
 check_file runtime/generated/image-tags.env "Generated image tags" "Run: dune update install during init, or re-run dune init if this is a fresh install"
 if runtime/scripts/battlegroup-identity.sh check >/dev/null 2>&1; then

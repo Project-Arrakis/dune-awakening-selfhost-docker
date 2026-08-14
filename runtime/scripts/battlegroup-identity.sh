@@ -131,8 +131,9 @@ persist_recovered_identity() {
 }
 
 ensure_identity() {
-  local token_host configured candidate source
-  token_host="$(funcom_token_host_id "$TOKEN_FILE" 2>/dev/null || true)"
+  local token_host configured candidate source funcom_token
+  funcom_token="$(resolve_funcom_token "$TOKEN_FILE" 2>/dev/null || true)"
+  token_host="$(funcom_token_host_id "$funcom_token" 2>/dev/null || true)"
   if [ -z "$token_host" ]; then
     echo "Cannot validate Battlegroup identity: the Funcom token is missing, malformed, or has no HostId." >&2
     return 1
@@ -199,8 +200,9 @@ EOF
 }
 
 check_identity() {
-  local token_host configured
-  token_host="$(funcom_token_host_id "$TOKEN_FILE" 2>/dev/null || true)"
+  local token_host configured funcom_token
+  funcom_token="$(resolve_funcom_token "$TOKEN_FILE" 2>/dev/null || true)"
+  token_host="$(funcom_token_host_id "$funcom_token" 2>/dev/null || true)"
   if [ -z "$token_host" ]; then
     echo "Battlegroup identity check failed: the Funcom token is missing, malformed, or has no HostId." >&2
     return 1

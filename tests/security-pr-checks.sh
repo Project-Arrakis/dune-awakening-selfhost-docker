@@ -69,7 +69,8 @@ if command -v shellcheck >/dev/null 2>&1; then
     runtime/scripts/start-postgres.sh \
     runtime/tests/test-postgres-secrets-upgrade-path.sh \
     runtime/tests/test-secrets-lib.sh \
-    runtime/tests/test-secrets-aead-cross-language.sh
+    runtime/tests/test-secrets-aead-cross-language.sh \
+    runtime/tests/test-runtime-env-secrets-resolvers.sh
 else
   printf 'SKIP: shellcheck is not installed.\n'
 fi
