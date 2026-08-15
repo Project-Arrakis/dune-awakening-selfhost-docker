@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { setupApi, type Check, type Task } from "../api/setup";
+import { setupApi, type Check, type MultiServerPlan, type Task } from "../api/setup";
+import { api } from "../api/client";
 import { PreflightCheckCard } from "./PreflightCheckCard";
 import { SecretInput } from "./SecretInput";
 import { TaskProgress } from "./TaskProgress";
-import { getServerPorts, getAdminPort } from "../api/serverPorts";
+import { getServerPorts, getAdminPort, setServerPorts, setAdminPort, type ServerPorts } from "../api/serverPorts";
 
 type StepId = "welcome" | "host" | "docker" | "runtime" | "identity" | "token" | "discord" | "ports" | "review" | "install" | "finish";
 const firstRunSteps: { id: StepId; label: string }[] = [
@@ -23,6 +24,7 @@ const redeploySteps: { id: StepId; label: string }[] = [
   { id: "identity", label: "Server Identity" },
   { id: "token", label: "Funcom Token" },
   { id: "discord", label: "Discord Auth" },
+  { id: "ports", label: "Ports" },
   { id: "review", label: "Review" },
   { id: "install", label: "Install" },
   { id: "finish", label: "Finish" }
@@ -54,6 +56,18 @@ export function SetupWizard({ initialStep = 0, jumpNonce = 0, mode = "redeploy",
   const [oauthConfig, setOAuthConfig] = useState<OAuthConfig>(defaultOAuthConfig);
   const [oauthSecret, setOAuthSecret] = useState("");
   const [oauthSecretSaved, setOAuthSecretSaved] = useState(false);
+  // "single" (default -- zero extra questions, matches every existing
+  // single-server install) or "multi" -- see issue #277. instanceNumber
+  // is a plain integer 1-33, matching multi-server-config.py's own
+  // documented ceiling. multiServerPlan is the read-only preview shown
+  // before the operator can confirm -- never let them apply a profile
+  // whose actual numbers they haven't seen.
+  const [instanceMode, setInstanceMode] = useState<"single" | "multi">("single");
+  const [instanceNumber, setInstanceNumber] = useState(2);
+  const [multiServerPlan, setMultiServerPlan] = useState<MultiServerPlan | null>(null);
+  const [multiServerPlanError, setMultiServerPlanError] = useState<string | null>(null);
+  const [multiServerApplyConfirmed, setMultiServerApplyConfirmed] = useState(false);
+  const [multiServerTask, setMultiServerTask] = useState<Task | null>(null);
   const onSetupCompleteRef = useRef(onSetupComplete);
 
   useEffect(() => {
@@ -155,6 +169,68 @@ export function SetupWizard({ initialStep = 0, jumpNonce = 0, mode = "redeploy",
     const result = await setupApi.init();
     setTask(result.task);
     void watchInitTask(result.task.id);
+  }
+
+  // Fetches a fresh, real port plan the moment the operator picks
+  // "multi-server" or changes the instance number -- never let the UI
+  // show a stale/guessed plan. instanceMode === "single" clears the plan
+  // entirely so switching back can never accidentally leave a stale
+  // multi-server plan sitting around to be applied by mistake.
+  useEffect(() => {
+    if (instanceMode !== "multi") {
+      setMultiServerPlan(null);
+      setMultiServerPlanError(null);
+      setMultiServerApplyConfirmed(false);
+      return;
+    }
+    let cancelled = false;
+    setMultiServerPlanError(null);
+    setupApi.multiServerPlan(instanceNumber)
+      .then((result) => {
+        if (cancelled) return;
+        setMultiServerPlan(result.plan);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setMultiServerPlan(null);
+        setMultiServerPlanError(error instanceof Error ? error.message : String(error));
+      });
+    setMultiServerApplyConfirmed(false);
+    return () => { cancelled = true; };
+  }, [instanceMode, instanceNumber]);
+
+  async function applyMultiServerProfile() {
+    if (config.SERVER_IP_MODE !== "public") {
+      setMultiServerPlanError("Multi-server port profiles require public hosting mode (see the Server Identity step).");
+      return;
+    }
+    await saveConfig();
+    const result = await setupApi.multiServerApply(instanceNumber, config.SERVER_IP);
+    setMultiServerTask(result.task);
+    void watchMultiServerTask(result.task.id);
+  }
+
+  async function watchMultiServerTask(taskId: string) {
+    let current = (await setupApi.task(taskId)).task;
+    setMultiServerTask(current);
+    while (!["succeeded", "failed", "cancelled"].includes(current.status)) {
+      await new Promise((resolve) => window.setTimeout(resolve, 2500));
+      current = (await setupApi.task(current.id)).task;
+      setMultiServerTask(current);
+    }
+    if (current.status === "succeeded") {
+      // getServerPorts()/getAdminPort() are imperative, mount-time reads
+      // (see serverPorts.ts's own CALLER CONTRACT comment) -- this
+      // component has been mounted since before the apply, so its own
+      // wizardPorts/adminPort snapshot is now stale. Re-fetch and push
+      // the real values back into the shared cache so every later step
+      // (Review, and any panel rendered after this wizard closes)
+      // reflects the ports that are now actually running, not the ones
+      // that were live when this component first mounted.
+      const state = await api<{ config?: { ports?: Partial<ServerPorts>; port?: number } }>("/api/auth/state");
+      setServerPorts(state.config?.ports);
+      setAdminPort(state.config?.port);
+    }
   }
 
   async function watchInitTask(taskId: string) {
@@ -278,6 +354,88 @@ export function SetupWizard({ initialStep = 0, jumpNonce = 0, mode = "redeploy",
         {activeStep === "ports" && <>
           <h2>Ports and Firewall</h2>
           <div className="action-sections">
+            <section className="action-section">
+              <h4>Server Instance</h4>
+              <p>Is this the only Dune server on this network, or one of several sharing infrastructure behind one public IP?</p>
+              <label className="setup-checkbox-row">
+                <input
+                  type="radio"
+                  name="instance-mode"
+                  checked={instanceMode === "single"}
+                  disabled={Boolean(multiServerTask) && multiServerTask?.status !== "failed" && multiServerTask?.status !== "cancelled"}
+                  onChange={() => setInstanceMode("single")}
+                />
+                <span>Single server (most operators)</span>
+              </label>
+              <label className="setup-checkbox-row">
+                <input
+                  type="radio"
+                  name="instance-mode"
+                  checked={instanceMode === "multi"}
+                  disabled={Boolean(multiServerTask) && multiServerTask?.status !== "failed" && multiServerTask?.status !== "cancelled"}
+                  onChange={() => setInstanceMode("multi")}
+                />
+                <span>
+                  Part of a multi-server group -- Instance number:{" "}
+                  <input
+                    type="number"
+                    min={1}
+                    max={33}
+                    value={instanceNumber}
+                    disabled={instanceMode !== "multi"}
+                    onChange={(event) => setInstanceNumber(Math.min(33, Math.max(1, Number(event.target.value) || 1)))}
+                    style={{ width: "4em" }}
+                  />
+                </span>
+              </label>
+              {instanceMode === "multi" && <>
+                {config.SERVER_IP_MODE !== "public" && (
+                  <p className="theme-note">Multi-server port profiles require public hosting mode -- set that on the Server Identity step first.</p>
+                )}
+                {multiServerPlanError && <p className="theme-note">{multiServerPlanError}</p>}
+                {multiServerPlan && (() => {
+                  const profile = multiServerPlan.profiles.at(-1);
+                  if (!profile) return null;
+                  return <>
+                    <p>This will configure Instance {profile.instance}&apos;s ports:</p>
+                    <ul className="requirements">
+                      <li>Player/Game UDP: <strong>{profile.client}-{profile.client_end}</strong></li>
+                      <li>IGW UDP: <strong>{profile.igw}-{profile.igw_end}</strong></li>
+                      <li>RabbitMQ Game: <strong>{profile.rmq_game}</strong> / <strong>{profile.rmq_game_http}</strong></li>
+                      <li>RabbitMQ Admin: <strong>{profile.rmq_admin}</strong></li>
+                      <li>Text Router: <strong>{profile.text_router}</strong></li>
+                      <li>Director: <strong>{profile.director}</strong></li>
+                      <li>PostgreSQL: <strong>{profile.postgres}</strong></li>
+                      <li>Admin Web: <strong>{profile.admin_web}</strong></li>
+                      <li>Prometheus: <strong>{profile.prometheus}</strong></li>
+                    </ul>
+                    <p className="theme-note">
+                      This tool cannot detect other Dune installations on your network. If you have
+                      already used instance number {profile.instance} elsewhere, do NOT proceed --
+                      pick a different number.
+                    </p>
+                    <p className="theme-note">
+                      Applying this stops and restarts every game map. Update your router&apos;s port
+                      forwards to match the numbers above after this completes.
+                    </p>
+                    {!multiServerTask && <>
+                      <label className="setup-checkbox-row">
+                        <input type="checkbox" checked={multiServerApplyConfirmed} onChange={(event) => setMultiServerApplyConfirmed(event.target.checked)} />
+                        <span>I have confirmed instance {profile.instance} is not already used elsewhere on this network.</span>
+                      </label>
+                      <button
+                        type="button"
+                        disabled={!multiServerApplyConfirmed || config.SERVER_IP_MODE !== "public"}
+                        onClick={() => void applyMultiServerProfile()}
+                      >
+                        Apply instance {profile.instance}&apos;s ports
+                      </button>
+                    </>}
+                    {multiServerTask && <TaskProgress task={multiServerTask} />}
+                  </>;
+                })()}
+              </>}
+            </section>
             <section className="action-section success-panel">
               <h4>Public Router Forwarding</h4>
               <p>For a normal public server, forward these ports from your router/firewall to this Docker host:</p>

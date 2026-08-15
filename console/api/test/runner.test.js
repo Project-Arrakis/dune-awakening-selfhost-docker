@@ -176,7 +176,31 @@ test("builds allowlisted command arguments without shell interpolation", () => {
   assert.throws(() => buildDuneArgs("updateAutoEnable", { intervalMinutes: 4 }));
   assert.throws(() => buildDuneArgs("updateAutoEnable", { notifyMinutes: 0 }));
   assert.throws(() => buildDuneArgs("updateAutoEnable", { maxWaitMinutes: -1 }));
+  assert.deepEqual(buildDuneArgs("multiServerPlan", { instances: 2 }), ["multi-server", "plan", "--instances", "2", "--json"]);
+  assert.deepEqual(buildDuneArgs("multiServerPlan"), ["multi-server", "plan", "--instances", "1", "--json"]);
+  assert.deepEqual(
+    buildDuneArgs("multiServerApply", { instance: 2, publicIp: "203.0.113.10", bindIp: "192.168.68.128" }),
+    ["multi-server", "apply", "--instance", "2", "--public-ip", "203.0.113.10", "--bind-ip", "192.168.68.128", "--allow-running"]
+  );
+  assert.deepEqual(
+    buildDuneArgs("multiServerApplyAndRestart", { instance: 3, publicIp: "203.0.113.11", bindIp: "192.168.68.129" }),
+    buildDuneArgs("multiServerApply", { instance: 3, publicIp: "203.0.113.11", bindIp: "192.168.68.129" })
+  );
+  assert.throws(() => buildDuneArgs("multiServerPlan", { instances: 0 }), /Expected integer/);
+  assert.throws(() => buildDuneArgs("multiServerPlan", { instances: 34 }), /Expected integer/);
+  assert.throws(() => buildDuneArgs("multiServerApply", { instance: 0, publicIp: "203.0.113.10", bindIp: "192.168.68.128" }), /Expected integer/);
+  assert.throws(() => buildDuneArgs("multiServerApply", { instance: 2, publicIp: "not-an-ip", bindIp: "192.168.68.128" }), /Public IP must be a valid IPv4 address/);
+  assert.throws(() => buildDuneArgs("multiServerApply", { instance: 2, publicIp: "203.0.113.10", bindIp: "::1" }), /Bind IP must be a valid IPv4 address/);
+  assert.throws(() => buildDuneArgs("multiServerApply", { instance: 2, publicIp: "203.0.113.999", bindIp: "192.168.68.128" }), /Public IP must be a valid IPv4 address/);
   assert.throws(() => buildDuneArgs("unknown"));
+});
+
+test("instance-number apply always stops the stack before writing new ports, and starts it back up after", () => {
+  assert.deepEqual(taskOperations("multiServerApplyAndRestart", { instance: 2, publicIp: "203.0.113.10", bindIp: "192.168.68.128" }), [
+    "stop",
+    "multiServerApply",
+    "start"
+  ]);
 });
 
 test("validates admin catalog wrapper arguments", () => {

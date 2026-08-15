@@ -324,9 +324,50 @@ export function buildDuneArgs(operation, payload = {}) {
       return ["usersettings", "reset-all"];
     case "userSettingsMaterializeCurrent":
       return ["usersettings", "materialize-current"];
+    case "multiServerPlan":
+      return ["multi-server", "plan", "--instances", String(validateInteger(payload.instances ?? 1, 1, 33)), "--json"];
+    case "multiServerApplyAndRestart":
+      // Validates the same payload the composed task sequence's first
+      // real step (multiServerApply) will use -- see tasks.js's
+      // taskOperations() for the actual stop/apply/start sequence. This
+      // case exists only so server.js's task() helper validates the
+      // payload up-front before creating the task, matching the same
+      // pattern userSettingsSaveAndRestart already uses.
+      return buildDuneArgs("multiServerApply", payload);
+    case "multiServerApply":
+      // --allow-running is required here even though the task sequence
+      // (see tasks.js's multiServerApplyAndRestart) always stops the stack
+      // itself before this step runs -- multi-server-config.py's own
+      // running-container check (running_dune_containers()) races against
+      // Docker's own stop timing in a way that isn't safe to assume clears
+      // before this step starts. Passing --allow-running makes this step
+      // idempotent to that timing instead of depending on it.
+      return [
+        "multi-server", "apply",
+        "--instance", String(validateInteger(payload.instance, 1, 33)),
+        "--public-ip", validateIpv4(payload.publicIp, "Public IP"),
+        "--bind-ip", validateIpv4(payload.bindIp, "Bind IP"),
+        "--allow-running"
+      ];
     default:
       throw new Error(`Unsupported operation: ${operation}`);
   }
+}
+
+// Mirrors multi-server-config.py's own validate_ipv4() -- rejects anything
+// that isn't a literal, well-formed IPv4 address (no DNS resolution, no
+// IPv6). Kept intentionally strict and duplicated rather than shared with
+// the Python side: this is argv-building for a subprocess boundary, and a
+// permissive parse here could let a malformed value reach multi-server.py's
+// own argv, which is exactly the kind of injection-adjacent path
+// runner.js's other validate*() functions already guard against.
+function validateIpv4(value, label) {
+  const raw = String(value || "").trim();
+  const parts = raw.split(".");
+  if (parts.length !== 4 || !parts.every((part) => /^\d{1,3}$/.test(part) && Number(part) <= 255)) {
+    throw new Error(`${label} must be a valid IPv4 address`);
+  }
+  return raw;
 }
 
 function encodeJsonArg(value) {

@@ -50,6 +50,7 @@ reference. Everything else is marked **Current** and is expected to stay accurat
 - [CONTAINER-HARDENING.md](runtime/CONTAINER-HARDENING.md) — Current. Summary of container hardening changes.
 - [E2E-METRICS-TESTING.md](runtime/E2E-METRICS-TESTING.md) — Current. End-to-end validation procedure for the metrics stack (`runtime/metrics`).
 - [MULTI-SERVER-SINGLE-PUBLIC-IP.md](runtime/MULTI-SERVER-SINGLE-PUBLIC-IP.md) — Current. Executive overview and detailed SOP for running multiple isolated battlegroups behind one public IPv4, including full per-instance port profiles, NAT/hairpin requirements, UserEngine configuration, validation, rollback, and the `multi-server-config.py` automation helper.
+- [INSTANCE-NUMBER-GUIDED-SETUP.md](runtime/INSTANCE-NUMBER-GUIDED-SETUP.md) — Draft, implemented. Guided `dune init`/console Setup Wizard flow for picking an instance number (derives all ports via `multi-server-config.py`, never asks for an individual port), a real production drift bug this closes, and an explicit, tracked, out-of-scope future requirement for cross-install collision detection.
 
 ## Addons
 

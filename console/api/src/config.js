@@ -352,7 +352,7 @@ function resolveAdminBindHost(value) {
   return detectPrivateIpv4() || "127.0.0.1";
 }
 
-function detectPrivateIpv4() {
+export function detectPrivateIpv4() {
   let interfaces = {};
   try {
     interfaces = networkInterfaces();

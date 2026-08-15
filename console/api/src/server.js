@@ -4,7 +4,7 @@ import { totalmem } from "node:os";
 import { spawn } from "node:child_process";
 import { existsSync, writeFileSync, chmodSync, mkdirSync, createReadStream, readFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
-import { loadConfig, publicConfig, parseAllowedIps, resolvePorts } from "./config.js";
+import { loadConfig, publicConfig, parseAllowedIps, resolvePorts, detectPrivateIpv4 } from "./config.js";
 import { createAuth, setSessionCookie, clearSessionCookie, json, html, withSecurityHeaders, parseCookies, sessionCookieValue } from "./auth.js";
 import { createLoginRateLimiter, createMutationRateLimiter } from "./rateLimit.js";
 import { createBridgeRateLimiter } from "./bridgeRateLimit.js";
@@ -522,6 +522,8 @@ async function handleApi(req, res) {
   if (path === "/api/setup/write-oauth-config" && req.method === "POST") return writeOAuthConfig(req, res);
   if (path === "/api/setup/init" && req.method === "POST") return task(req, res, "setup", "init", {});
   if (path === "/api/setup/tasks") return json(res, 200, { tasks: tasks.list().map(publicTask) });
+  if (path === "/api/setup/multi-server-plan" && req.method === "POST") return multiServerPlanRoute(req, res);
+  if (path === "/api/setup/multi-server-apply" && req.method === "POST") return multiServerApplyRoute(req, res);
   if (path === "/api/public-directory/status") return json(res, 200, publicDirectory.publicState());
   if (path.startsWith("/api/setup/tasks/")) return taskRoute(req, res, path);
 
@@ -3329,6 +3331,74 @@ async function writeConfig(req, res) {
   }
   audit(config, req, "setup.write-config", { keys: Object.keys(body).filter((key) => allowed.includes(key)) });
   return json(res, 200, { ok: true });
+}
+
+// Read-only preview: computes what every instance's ports WOULD be,
+// without touching .env, gameplay-profile.ini, or anything else on disk.
+// This is deliberately a plain command (safeCommand-style), not a task --
+// it cannot fail partway through and cannot leave the repo in a different
+// state than it started in, so it doesn't need the task/audit-trail
+// machinery a real apply does.
+async function multiServerPlanRoute(req, res) {
+  const body = await readJson(req);
+  const instances = Number(body.instances) || 1;
+  const result = await safeCommand("multiServerPlan", { instances });
+  if (result.exitCode !== 0) {
+    return json(res, 400, { error: friendlyMultiServerError(result.stderr) });
+  }
+  try {
+    return json(res, 200, { ok: true, plan: JSON.parse(result.stdout) });
+  } catch {
+    return json(res, 502, { error: "The multi-server planner returned output that could not be read. Check the console logs." });
+  }
+}
+
+// Real apply: rewrites .env's 11 managed host ports, writes the Player/
+// Game and IGW base ports into gameplay-profile.ini via usersettings.py
+// engine-set, and materializes them -- see multi-server-config.py's own
+// command_apply() for the exact sequence, and tasks.js's
+// multiServerApplyAndRestart for why this always stops the stack first.
+// This is a real, disruptive, restart-requiring change (every game map
+// goes down and back up), so it goes through the same task/audit path
+// every other stack-restarting settings change already uses -- never a
+// synchronous, un-confirmed write.
+async function multiServerApplyRoute(req, res) {
+  const body = await readJson(req);
+  // bindIp is deliberately computed server-side, not trusted from the
+  // request body -- it must be THIS host's own LAN interface (the same
+  // detectPrivateIpv4() the admin bind-host "auto" resolver already
+  // uses), which the browser has no way to know. The console's own host
+  // is always the correct bind target since multi-server-config.py
+  // applies to the checkout it's running from, not to a remote VM.
+  const bindIp = detectPrivateIpv4();
+  if (!bindIp) {
+    return json(res, 400, { error: "Could not detect this host's local/LAN IP, which multi-server-config.py requires as the bind address." });
+  }
+  const payload = {
+    instance: body.instance,
+    publicIp: body.publicIp,
+    bindIp
+  };
+  // DUNE_INSTANCE_NUMBER is written here, separately from
+  // multi-server-config.py's own .env writes (which cover the 11
+  // individual port fields, not this one) -- it exists purely so a
+  // later `dune init` run (e.g. after a fresh clone re-applying saved
+  // Web UI setup values) can display which instance this install is,
+  // without needing to reverse-engineer it from the port numbers.
+  updateEnvFileValue("DUNE_INSTANCE_NUMBER", String(payload.instance));
+  audit(config, req, "setup.multi-server-apply", { instance: payload.instance });
+  return task(req, res, "setup", "multiServerApplyAndRestart", payload);
+}
+
+// multi-server-config.py's own ConfigError messages are already written
+// for a human operator (see that file's ConfigError class and its
+// command_apply()/validate_profiles() call sites) -- passed through
+// directly rather than re-wrapped, so a real collision/range/capacity
+// error reaches the console UI verbatim instead of a generic failure.
+function friendlyMultiServerError(stderr) {
+  const text = redact(String(stderr || "")).trim();
+  const match = text.match(/ERROR:\s*(.+)$/m);
+  return match ? match[1] : (text || "The multi-server planner failed for an unknown reason.");
 }
 
 async function publicDirectorySettingsRoute(req, res) {
