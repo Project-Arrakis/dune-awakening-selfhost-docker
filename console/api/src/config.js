@@ -7,41 +7,53 @@ export const APP_NAME = "Dune Docker Console";
 
 // Single source of truth for every host-facing port this console cares
 // about. Stock (Instance 1) values are the fallback defaults only --
-// multi-server / single-public-IP deployments (see
-// docs/runtime/MULTI-SERVER-SINGLE-PUBLIC-IP.md) override these via
-// .env. These values MUST stay in sync with
-// runtime/scripts/runtime-env.sh's resolve_*_port() functions -- that
-// file is the shell-side equivalent used by non-Node scripts, and the
-// two must never drift (see issue #266: found 6 places across the
-// codebase that hardcoded these stock values directly instead of
-// reading them from a shared source, breaking multi-server Instance 2+
-// deployments).
+// multi-server / single-public-IP deployments override these via .env.
+// These values MUST stay in sync with runtime/scripts/runtime-env.sh's
+// resolve_*_port() functions -- that file is the shell-side equivalent
+// used by non-Node scripts, and the two must never drift (see issue
+// #266: found 6 places across the codebase that hardcoded these stock
+// values directly instead of reading them from a shared source,
+// breaking multi-server Instance 2+ deployments).
+//
+// Requirement 20 Layer 3 (integration) audit finding, CRITICAL,
+// independently reproduced before this fix: this comment previously
+// claimed the shell-side resolve_client_port_base()/resolve_igw_port_base()
+// (runtime-env.sh) fall back to .env's CLIENT_PORT_BASE/IGW_PORT_BASE
+// before the profile file exists -- that was never true. Reading
+// runtime-env.sh's usersettings_engine_value() directly: its real
+// fallback chain is gameplay-profile.ini -> runtime/generated/
+// usersettings.json's legacy "engine" config -> the stock literal.
+// .env is NEVER consulted anywhere in that chain. Directly reproduced
+// the divergence this caused: with CLIENT_PORT_BASE=7001 set in .env
+// and no profile file yet, the old Node-side code here returned 7001
+// while the real shell/Python resolver returned stock 7777, so the Web
+// UI could show a port the game server's own startup scripts (which
+// all resolve through runtime-env.sh, not through this file) would
+// never actually bind to. Fixed by matching the real shell/Python
+// fallback chain exactly instead of the previously-assumed (and
+// incorrect) one: profile file -> usersettings.json's legacy engine
+// config -> stock. .env's CLIENT_PORT_BASE/IGW_PORT_BASE are no longer
+// read for these two specific fields (they remain read for every other
+// field in this function, which genuinely are env-var-only with no
+// other source of truth -- confirmed those fields have no equivalent
+// in ENGINE_FIELDS/usersettings.json).
 export function resolvePorts(env = process.env, repoRoot = process.cwd()) {
   const enginePorts = readEnginePortsFromProfile(repoRoot);
-  // Player/Game and IGW base ports are authoritative in
-  // runtime/generated/gameplay-profile.ini's [Engine:URL] section
-  // (written via runtime/scripts/usersettings.py engine-set, e.g. by
-  // the Maps UI or multi-server-config.py) -- NOT env vars. .env's
-  // CLIENT_PORT_BASE/IGW_PORT_BASE are documented as
-  // "compatibility/console metadata" only (see
-  // docs/runtime/MULTI-SERVER-SINGLE-PUBLIC-IP.md): a deployment that
-  // changed these via the Maps UI directly, without also re-running
-  // multi-server-config.py, would have a stale .env value while the
-  // real game server already uses the new one -- reading the profile
-  // file first avoids exactly that staleness. .env is kept as a
-  // secondary fallback (useful before the profile file exists at all,
-  // e.g. immediately after multi-server-config.py writes .env but
-  // before its own engine-set call has run), and the stock literal is
-  // the final fallback. Profile-parsed values are routed through
-  // portValue() too (not just the .env/stock fallback branch) -- a
-  // corrupted/malformed gameplay-profile.ini could otherwise produce an
-  // out-of-range value that bypasses range validation entirely.
+  const legacyEnginePorts = enginePorts.port === null || enginePorts.igwPort === null
+    ? readEnginePortsFromLegacyUsersettings(repoRoot)
+    : { port: null, igwPort: null };
+  // Route profile-parsed values through portValue() too (not just the
+  // legacy/stock fallback branch) -- a corrupted/malformed
+  // gameplay-profile.ini could otherwise produce an out-of-range value
+  // (e.g. Port=0 or a 10-digit garbage number) that bypasses range
+  // validation entirely and flows through to the frontend and the
+  // public-hosting reminder text unvalidated.
   const clientBase = enginePorts.port !== null
-    ? portValue(enginePorts.port, portValue(env.CLIENT_PORT_BASE, 7777))
-    : portValue(env.CLIENT_PORT_BASE, 7777);
+    ? portValue(enginePorts.port, 7777)
+    : (legacyEnginePorts.port !== null ? portValue(legacyEnginePorts.port, 7777) : 7777);
   const igwBase = enginePorts.igwPort !== null
-    ? portValue(enginePorts.igwPort, portValue(env.IGW_PORT_BASE, 7888))
-    : portValue(env.IGW_PORT_BASE, 7888);
+    ? portValue(enginePorts.igwPort, 7888)
+    : (legacyEnginePorts.igwPort !== null ? portValue(legacyEnginePorts.igwPort, 7888) : 7888);
   return {
     postgres: portValue(env.POSTGRES_PORT || env.DUNE_DB_PORT || env.PGPORT, 15432),
     rmqAdmin: portValue(env.RMQ_ADMIN_PORT, 32573),
@@ -65,9 +77,13 @@ export function resolvePorts(env = process.env, repoRoot = process.cwd()) {
 // handler). Returns { port: null, igwPort: null } if the file doesn't
 // exist yet (fresh install, before the first `dune init`/materialize)
 // or doesn't have an [Engine:URL] section -- callers fall back to
-// .env / stock values in that case, exactly matching
-// runtime-env.sh's own resolve_client_port_base()/resolve_igw_port_base()
-// fallback behavior.
+// readEnginePortsFromLegacyUsersettings() / stock values in that case,
+// exactly matching runtime-env.sh's own
+// resolve_client_port_base()/resolve_igw_port_base() fallback behavior
+// (see usersettings_engine_value() in runtime-env.sh, which calls
+// `usersettings.py engine-values` first, then falls back to reading
+// runtime/generated/usersettings.json's legacy "engine" config
+// directly -- .env is never consulted anywhere in that real chain).
 function readEnginePortsFromProfile(repoRoot) {
   const profilePath = resolve(repoRoot, "runtime/generated/gameplay-profile.ini");
   if (!existsSync(profilePath)) return { port: null, igwPort: null };
@@ -89,11 +105,58 @@ function readEnginePortsFromProfile(repoRoot) {
   const normalized = text.replace(/\r\n/g, "\n");
   const sectionMatch = normalized.match(/^\[Engine:URL\]\s*$([\s\S]*?)(?=^\[|\s*$(?!\n))/m);
   const sectionText = sectionMatch ? sectionMatch[1] : normalized;
-  const portMatch = sectionText.match(/^\s*Port\s*=\s*(\d+)\s*$/m);
-  const igwMatch = sectionText.match(/^\s*IGWPort\s*=\s*(\d+)\s*$/m);
+  // Layer 3 audit regression: if a section has a duplicate key (Port=
+  // appearing twice, which usersettings.py's own
+  // _advanced_editor_duplicate_key_warnings() explicitly anticipates and
+  // warns about as a real, reachable state, not a theoretical one), the
+  // LAST occurrence wins -- matching usersettings.py's profile_get_key()/
+  // profile_get_raw_key(), which both iterate reversed(block["lines"])
+  // for exactly this reason (standard INI semantics: a later assignment
+  // overrides an earlier one in the same section). Directly verified via
+  // both implementations against the same duplicate-key fixture -- a
+  // previous first-match approach here disagreed with the real Python
+  // tool the game server itself uses to materialize this file, which
+  // would have shown operators a different port than the one the engine
+  // actually bound to. matchAll() + at(-1) implements "last match" for a
+  // global multiline regex.
+  const portMatches = [...sectionText.matchAll(/^\s*Port\s*=\s*(\d+)\s*$/gm)];
+  const igwMatches = [...sectionText.matchAll(/^\s*IGWPort\s*=\s*(\d+)\s*$/gm)];
   return {
-    port: portMatch ? Number(portMatch[1]) : null,
-    igwPort: igwMatch ? Number(igwMatch[1]) : null
+    port: portMatches.length ? Number(portMatches.at(-1)[1]) : null,
+    igwPort: igwMatches.length ? Number(igwMatches.at(-1)[1]) : null
+  };
+}
+
+// Reads Port/IGWPort from runtime/generated/usersettings.json's legacy
+// "engine" config -- the SECOND step of the real fallback chain used by
+// runtime-env.sh's usersettings_engine_value() (see that function and
+// usersettings.py's load_config()/ENGINE_FIELDS for the authoritative
+// implementation this mirrors). This is genuinely a legacy path: once
+// `dune init`/materialize has run at least once, gameplay-profile.ini
+// exists and this function is never reached for these two fields. It
+// matters only in the narrow fresh-install window before the first
+// materialize call, which is exactly the window a Requirement 20 Layer
+// 3 audit found this file's Node-side resolver handling differently
+// (and incorrectly, relative to the real shell/Python resolver) by
+// falling back to .env instead. usersettings.json's schema is
+// {"engine": {"port": "...", "igw_port": "..."}, ...} -- see
+// usersettings.py's load_config().
+function readEnginePortsFromLegacyUsersettings(repoRoot) {
+  const path = resolve(repoRoot, "runtime/generated/usersettings.json");
+  if (!existsSync(path)) return { port: null, igwPort: null };
+  let parsed;
+  try {
+    parsed = JSON.parse(readFileSync(path, "utf8"));
+  } catch {
+    return { port: null, igwPort: null };
+  }
+  const engine = parsed && typeof parsed === "object" ? parsed.engine : null;
+  if (!engine || typeof engine !== "object") return { port: null, igwPort: null };
+  const rawPort = engine.port;
+  const rawIgwPort = engine.igw_port;
+  return {
+    port: rawPort !== undefined && rawPort !== null && String(rawPort).trim() !== "" ? Number(rawPort) : null,
+    igwPort: rawIgwPort !== undefined && rawIgwPort !== null && String(rawIgwPort).trim() !== "" ? Number(rawIgwPort) : null
   };
 }
 
