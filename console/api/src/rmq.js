@@ -13,6 +13,20 @@ export function validateBroadcastMessage(message) {
   return raw;
 }
 
+export function isValidWhisperIdentity(value) {
+  const raw = String(value || "").trim();
+  return raw.length >= 1 && raw.length <= 180 && !/[\u0000-\u001f\u007f]/.test(raw);
+}
+
+export function isValidHexFlsId(value) {
+  return /^[A-Fa-f0-9]{15,64}$/.test(String(value || "").trim());
+}
+
+export function formatChatBodyMessage(message) {
+  const text = validateBroadcastMessage(message).replace(/\r\n?/g, "\n");
+  return text.split("\n").map((line) => line.trim()).filter(Boolean).join(" ");
+}
+
 export function buildBroadcastCommand({ message, title = "Admin Broadcast", durationSec = 30, texts } = {}) {
   const localizedText = validateLocalizedTexts(texts, message, title);
   const duration = validateInteger(durationSec, 1, 3600, "durationSec");
@@ -69,17 +83,18 @@ export function buildCarePackageWhisperPayload({ recipientFuncomId, recipientCha
   const recipientName = validateWhisperName(recipientCharacterName, "recipient character name");
   const senderId = validateWhisperIdentity(senderFuncomId, "sender Funcom ID");
   const spoofedName = validateOptionalSpoofedName(senderDisplayName);
-  const text = validateBroadcastMessage(message);
+  const text = formatChatBodyMessage(message);
   const id = validateMessageId(messageId || randomUUID());
-  const timestamp = new Date(now).toISOString();
+  const timestamp = formatMapChatTimestamp(now);
   const inner = {
     m_Id: id,
-    m_ChannelType: "ETextChatChannelType::Whispers",
+    m_ChannelType: "Whispers",
     m_SubChannelId: recipientId,
     m_bUseSpoofedUserName: Boolean(spoofedName),
     m_SpoofedUserNameFrom: {
-      m_Id: "",
-      m_DisplayName: spoofedName
+      m_TableId: "",
+      m_Key: "",
+      m_UnlocalizedName: spoofedName
     },
     m_FuncomIdFrom: senderId,
     m_UserNameTo: recipientName,
@@ -91,7 +106,7 @@ export function buildCarePackageWhisperPayload({ recipientFuncomId, recipientCha
         m_FormatArgs: []
       }
     },
-    m_TimeStamp: timestamp,
+    m_Timestamp: timestamp,
     m_OriginLocation: { X: 0, Y: 0, Z: 0 },
     m_HasSeenMessage: false
   };
@@ -99,7 +114,7 @@ export function buildCarePackageWhisperPayload({ recipientFuncomId, recipientCha
     inner,
     outer: {
       Content: JSON.stringify(inner),
-      Type: "ECourierMessageType::TextChat"
+      Type: "TextChat"
     }
   };
 }
@@ -107,7 +122,7 @@ export function buildCarePackageWhisperPayload({ recipientFuncomId, recipientCha
 export function buildMapChatPayload({ senderFuncomId, senderDisplayName = "", message, now = new Date(), messageId } = {}) {
   const senderId = validateWhisperIdentity(senderFuncomId, "sender Funcom ID");
   const spoofedName = validateOptionalSpoofedName(senderDisplayName);
-  const text = validateBroadcastMessage(message);
+  const text = formatChatBodyMessage(message);
   const id = validateMessageId(messageId || randomUUID());
   const timestamp = formatMapChatTimestamp(now);
   const inner = {
@@ -136,6 +151,7 @@ export function buildMapChatPayload({ senderFuncomId, senderDisplayName = "", me
   return {
     inner,
     outer: {
+      // Map chat uses the protocol's lowercase field, unlike whisper envelopes.
       content: JSON.stringify(inner),
       Type: "TextChat"
     }
@@ -171,6 +187,20 @@ export async function publishCarePackageWhisper(config, fields) {
       appId: "fls_backend"
     }
   };
+}
+
+export async function listReadyRabbitQueues(config) {
+  const output = await dockerExec(
+    ["exec", RMQ_CONTAINER, "rabbitmqctl", "-q", "list_queues", "name", "consumers", "state"],
+    config.commandTimeoutMs
+  );
+  const ready = new Set();
+  for (const line of output.stdout.split(/\r?\n/)) {
+    const [name = "", consumersText = "", state = ""] = line.trim().split(/\s+/);
+    const consumers = Number(consumersText);
+    if (name && Number.isInteger(consumers) && consumers > 0 && (!state || state === "running")) ready.add(name);
+  }
+  return ready;
 }
 
 export async function publishMapChat(config, fields) {
@@ -279,7 +309,7 @@ function validateShutdownType(value) {
 
 function validateWhisperIdentity(value, label) {
   const raw = String(value || "").trim();
-  if (/^[A-Za-z0-9_#.@:+/-]{1,180}$/.test(raw)) return raw;
+  if (isValidWhisperIdentity(raw)) return raw;
   throw new Error(`Care Package message whisper cannot be sent: ${label} is unavailable or invalid`);
 }
 
@@ -291,7 +321,7 @@ function validateWhisperName(value, label) {
 
 function validateHexFlsId(value) {
   const raw = String(value || "").trim();
-  if (/^[A-Fa-f0-9]{16,64}$/.test(raw)) return raw;
+  if (isValidHexFlsId(raw)) return raw;
   throw new Error("Care Package message whisper cannot be sent: sender hex FLS ID is unavailable or invalid");
 }
 

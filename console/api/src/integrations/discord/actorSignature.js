@@ -92,19 +92,21 @@ function constantTimeHexEqual(a, b) {
   return timingSafeEqual(bufferA, bufferB);
 }
 
-// Verifies actor authenticity when DUNE_DISCORD_ACTOR_SECRET is configured.
-// Throws a policyError (403) on a missing/invalid/stale signature. No-ops
-// when no secret is configured (see module header for the compatibility
-// rationale) — callers should still log/monitor this state to track
-// migration progress toward mandatory signing.
+// Verifies actor authenticity. When `required` is true (mutation routes:
+// link, verify, unlink, steam-link), the secret MUST be configured and the
+// signature MUST be valid — no fallback. When `required` is false (status
+// routes), behaves as opt-in: no-ops if no secret is configured, verifies
+// if it is. This preserves backward compatibility for read-only routes
+// while closing the confused-deputy gap for identity-binding mutations.
 //
 // `route` must be the exact adapter route path the request was made to
-// (see canonicalActorSignaturePayload() for why). Passing a route lets a
-// captured signed envelope be rejected when replayed against a different
-// route than the one it was issued for.
-export function verifyActorSignature({ actorPayload, headers, config, route = "", now = Math.floor(Date.now() / 1000) }) {
+// (see canonicalActorSignaturePayload() for why).
+export function verifyActorSignature({ actorPayload, headers, config, route = "", required = false, now = Math.floor(Date.now() / 1000) }) {
   const secret = actorSignatureSecret(config);
-  if (!secret) return { verified: false, required: false };
+  if (!secret) {
+    if (required) throw policyError("actor_signing_disabled", "Actor signing is not configured. Mutation routes require DUNE_DISCORD_ACTOR_SECRET.", 403);
+    return { verified: false, required: false };
+  }
 
   const signature = String(headers?.[SIGNATURE_HEADER] || "").trim();
   const timestampRaw = String(headers?.[TIMESTAMP_HEADER] || "").trim();

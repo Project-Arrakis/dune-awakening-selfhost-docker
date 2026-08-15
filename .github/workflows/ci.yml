@@ -79,6 +79,8 @@ jobs:
       - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
       - name: Test readiness with configured service ports
         run: bash tests/ready-configured-ports-test.sh
+      - name: Test stable farm readiness gating
+        run: bash tests/farm-readiness-test.sh
       - name: Test database updater role restoration
         run: bash tests/update-db-role-privilege-test.sh
       - name: Test installer shell portability
@@ -88,6 +90,10 @@ jobs:
           tests/install-docker-progress-test.sh
       - name: Test partition combat-state resolver
         run: python3 runtime/scripts/test_partition_combat_state.py
+      - name: Test UserEngine.ini comment placement
+        run: python3 runtime/scripts/test_userengine_ini_comments.py
+      - name: Test Global/Map/Partition override precedence
+        run: python3 runtime/scripts/test_profile_override_precedence.py
       - name: Test combat-state publishers
         run: |
           runtime/tests/test-deepdesert-combat-state-publication.sh
@@ -97,6 +103,8 @@ jobs:
       - name: Test runtime safety regressions
         run: |
           runtime/tests/test-command-auth-token.sh
+          runtime/tests/test-deepdesert-dual-startup-reconcile.sh
+          runtime/tests/test-deepdesert-dual-selector-cleanup.sh
           runtime/tests/test-director-log-id-normalization.sh
           tests/fls-signals-test.sh
           tests/steamcmd-signals-test.sh

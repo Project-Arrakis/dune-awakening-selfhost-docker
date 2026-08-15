@@ -4,16 +4,19 @@ import { resolveMapCombatState } from "./services/mapCombatState.js";
 import { existsSync, readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
+import { redact } from "./redact.js";
+import { clampInt, writeJsonAtomic } from "./jsonStore.js";
+import { CARE_PACKAGE_SERVER_PERSONA, FUNCOM_GM_PERSONA } from "./systemPersonas.js";
 import {
   craftingRecipeCatalogRows,
   compareJourneyCatalogOrder,
-  factionDisplayName,
   factionIdByName,
   factionTierBumps,
-  journeyCompletionNodeIds,
+  factionDisplayName,
   journeyDepth,
   journeyDisplayName,
   journeyParentId,
+  tagsForJourneyNodeSubtree,
   recipeCategory,
   recipeDisplayName,
   repairTarget,
@@ -22,7 +25,6 @@ import {
   researchProductGroup,
   researchRecipeId,
   researchType,
-  tagsForJourneyNodeSubtree,
   tutorialStatus,
   validateMapName,
   validateRecipeId,
@@ -43,12 +45,21 @@ const VITALITY_HEALTH_TIERS = [
 const BASE_MAX_HEALTH = 150;
 const BASE_MAX_HYDRATION = 100;
 const BASE_MAX_ADDICTION = 10;
+const FIND_FREMEN_JOURNEY_ROOT = "DA_MQ_FindTheFremen";
+const FIND_FREMEN_REWARD_TAG = "Journey.RewardsUnblocked";
+const JOURNEY_RECIPE_REWARDS = new Map([
+  ["DA_MQ_FindTheFremen.FirstTest.FirstQuestion.CompleteFirstTest", "RCP_LeakyStillsuit_Top_Recipe"],
+  ["DA_MQ_FindTheFremen.SecondTest.SecondQuestion.CompleteSecondTest", "RCP_ChoamStaticCompactorRecipe"],
+  ["DA_MQ_FindTheFremen.FourthTest.FourthQuestion.CompleteFourthTest", "RCP_Crysknife_Recipe"],
+  ["DA_MQ_FindTheFremen.FifthTest.FifthQuestion.CompleteFifthTest", "RCP_T4_Structure_Thumper1_Recipe"],
+  ["DA_MQ_FindTheFremen.SeventhTest.SeventhQuestion.CompleteSeventhTest", "RCP_StilltentRecipe"]
+]);
 
 function maxHealthForCombatLevel(combatLevel) {
   return VITALITY_HEALTH_TIERS.reduce((total, tier) => (combatLevel >= tier.level ? total + tier.bonus : total), BASE_MAX_HEALTH);
 }
 const MAX_TABLE_PREVIEW_ROWS = 10000;
-const INVENTORY_EDITABLE_COLUMNS = new Set(["stack_size", "quality_level", "position_index", "current_durability", "max_durability"]);
+const INVENTORY_EDITABLE_COLUMNS = new Set(["stack_size", "quality_level", "position_index", "current_durability"]);
 let craftingRecipeCatalogCache = null;
 let adminItemMetadataCache = null;
 let augmentCompatibilityCache = null;
@@ -67,7 +78,23 @@ export class UnsupportedCapabilityError extends Error {
 export async function dbStatus(db) {
   const result = await db.query("select current_user, current_database(), version()");
   const tables = await db.query("select count(*)::int as count from information_schema.tables where table_schema = 'dune'");
-  return { connected: true, config: db.config, server: result.rows[0], duneTableCount: tables.rows[0]?.count ?? 0, usesDefaultPassword: process.env.DUNE_DB_PASSWORD ? process.env.DUNE_DB_PASSWORD === "dune" : true };
+  const host = String(db.config?.host || "");
+  const loopbackOnly = ["127.0.0.1", "::1", "localhost"].includes(host.toLowerCase());
+  return {
+    connected: true,
+    config: db.config,
+    server: result.rows[0],
+    duneTableCount: tables.rows[0]?.count ?? 0,
+    usesDefaultPassword: process.env.DUNE_DB_PASSWORD ? process.env.DUNE_DB_PASSWORD === "dune" : true,
+    sshTunnelAccess: {
+      available: loopbackOnly && Number.isInteger(Number(db.config?.port)),
+      loopbackOnly,
+      host: loopbackOnly ? host : "",
+      port: loopbackOnly ? Number(db.config.port) : null,
+      database: String(db.config?.database || result.rows[0]?.current_database || "dune"),
+      user: String(db.config?.user || result.rows[0]?.current_user || "dune")
+    }
+  };
 }
 
 export async function changeDunePassword(db, password) {
@@ -79,6 +106,47 @@ export async function changeDunePassword(db, password) {
 export async function listSchemas(db) {
   const result = await db.query("select schema_name from information_schema.schemata order by schema_name");
   return result.rows.map((row) => row.schema_name);
+}
+
+export async function listRoutines(db, schema = "dune", search = "") {
+  assertIdentifier(schema, "schema");
+  const term = String(search || "").trim();
+  if (term.length > 120) throw new Error("Routine search is too long");
+  const result = await db.query(`
+    select p.oid::bigint::text as oid,
+           n.nspname as schema,
+           p.proname as name,
+           case p.prokind when 'p' then 'procedure' else 'function' end as kind,
+           pg_get_function_identity_arguments(p.oid) as arguments,
+           case when p.prokind = 'p' then null else pg_get_function_result(p.oid) end as result_type,
+           l.lanname as language,
+           pg_get_userbyid(p.proowner) as owner,
+           coalesce(obj_description(p.oid, 'pg_proc'), '') as description
+    from pg_proc p
+    join pg_namespace n on n.oid = p.pronamespace
+    join pg_language l on l.oid = p.prolang
+    where n.nspname = $1
+      and p.prokind in ('f', 'p')
+      and ($2 = '' or p.proname ilike '%' || $2 || '%' or pg_get_function_identity_arguments(p.oid) ilike '%' || $2 || '%')
+    order by p.proname, pg_get_function_identity_arguments(p.oid)
+    limit 500`, [schema, term]);
+  return result.rows;
+}
+
+export async function routineDefinition(db, oid) {
+  const safeOid = intParam(oid, "routine oid", 1, 4294967295);
+  const result = await db.query(`
+    select p.oid::bigint::text as oid,
+           n.nspname as schema,
+           p.proname as name,
+           case p.prokind when 'p' then 'procedure' else 'function' end as kind,
+           pg_get_function_identity_arguments(p.oid) as arguments,
+           pg_get_functiondef(p.oid) as definition
+    from pg_proc p
+    join pg_namespace n on n.oid = p.pronamespace
+    where p.oid = $1::oid and p.prokind in ('f', 'p')`, [safeOid]);
+  if (!result.rows[0]) throw new Error("Routine not found");
+  return result.rows[0];
 }
 
 export async function listTables(db, schema = "dune") {
@@ -1125,7 +1193,7 @@ async function pledgeGuildAdminFactionIfNeeded(db, actorId, factionId) {
       from dune.guild_members gm
       join dune.guilds g on g.guild_id = gm.guild_id
       where gm.player_id = $1::bigint
-        and gm.role_id = 100`, [actorId]);
+        and gm.role_id = ${GUILD_LEADER_ROLE_ID}`, [actorId]);
     for (const row of result.rows) {
       if (Number(row.guild_faction) === Number(factionId)) continue;
       await db.query("select dune.pledge_guild_allegiance($1::bigint, $2::bigint, 3::smallint)", [row.guild_id, actorId]);
@@ -1346,7 +1414,11 @@ const PLAYER_SORT_COLUMNS = {
   actor_id: { order: ["actor_id"] }
 };
 
-export async function listPlayers(db, { status = "all", q = "", page = 0, pageSize = 50, sortColumn = "character_name", sortDirection = "asc", includeTotals = true } = {}) {
+// Funcom creates this reserved GM identity in some freshly initialized
+// battlegroups. It is an internal service actor, not an administrable player.
+const INTERNAL_GM_PLAYER_PAWN_ID = FUNCOM_GM_PERSONA.playerPawnId;
+
+export async function listPlayers(db, { status = "all", q = "", page = 0, pageSize = 50, sortColumn = "character_name", sortDirection = "asc", includeTotals = true, bannedFlsIds = [], controllerIds } = {}) {
   if (!(await tableExists(db, "actors")) || !(await tableExists(db, "player_state"))) {
     return { ...unsupported("players", ["dune.actors", "dune.player_state"]), totalCount: 0, totalPlayers: 0 };
   }
@@ -1359,6 +1431,36 @@ export async function listPlayers(db, { status = "all", q = "", page = 0, pageSi
   const pagedOrder = [...sortOrder, ...(sortOrder.includes("actor_id") ? [] : ["actor_id"])]
     .map((column) => `${column} ${safeSortDirection}`).join(", ");
   const playerStateColumns = await columnsFor(db, "player_state");
+  const encryptedAccountColumns = await tableExists(db, "encrypted_accounts")
+    ? await columnsFor(db, "encrypted_accounts")
+    : new Set();
+  const canReadEncryptedAccounts = ["id", "user", "encrypted_funcom_id"]
+    .every((column) => encryptedAccountColumns.has(column)) &&
+    await functionExists(db, "dune.decrypt_user_data(bytea)");
+  const encryptedAccountsJoin = canReadEncryptedAccounts
+    ? `left join dune.encrypted_accounts ea on ea.id = a.owner_account_id
+       left join lateral (
+         select case
+           when ea.encrypted_funcom_id is null then ''
+           else coalesce(dune.decrypt_user_data(ea.encrypted_funcom_id), '')
+         end as funcom_id
+       ) decrypted_account on true`
+    : "";
+  const plainFlsId = "case when trim(coalesce(ac.\"user\", '')) ~ '^[A-Fa-f0-9]{15,64}$' then trim(ac.\"user\") else '' end";
+  const encryptedFlsId = canReadEncryptedAccounts
+    ? "case when trim(coalesce(ea.\"user\", '')) ~ '^[A-Fa-f0-9]{15,64}$' then trim(ea.\"user\") else '' end"
+    : "''";
+  const resolvedFlsId = canReadEncryptedAccounts
+    ? `coalesce(nullif(${plainFlsId}, ''), nullif(${encryptedFlsId}, ''), '')`
+    : plainFlsId;
+  const decryptedFuncomId = canReadEncryptedAccounts
+    ? "coalesce(decrypted_account.funcom_id, '')"
+    : "''";
+  const plainFuncomId = "case when char_length(trim(coalesce(ac.funcom_id, ''))) between 1 and 180 and trim(coalesce(ac.funcom_id, '')) !~ '[[:cntrl:]]' then trim(ac.funcom_id) else '' end";
+  const validDecryptedFuncomId = `case when char_length(trim(${decryptedFuncomId})) between 1 and 180 and trim(${decryptedFuncomId}) !~ '[[:cntrl:]]' then trim(${decryptedFuncomId}) else '' end`;
+  const resolvedFuncomId = canReadEncryptedAccounts
+    ? `coalesce(nullif(${plainFuncomId}, ''), nullif(${validDecryptedFuncomId}, ''), '')`
+    : plainFuncomId;
   const lastSeenSelect = await playerLastSeenSelect(db);
   const loginSessionSelect = playerStateColumns.has("last_login_time")
     ? "coalesce(ps.last_login_time::text, '')"
@@ -1378,10 +1480,11 @@ export async function listPlayers(db, { status = "all", q = "", page = 0, pageSi
     end
   `;
   let baseWhere = "a.class ilike '%PlayerCharacter%'";
-  baseWhere += " and coalesce(ac.\"user\", '') <> 'A5C0DE5E12A00001'";
-  baseWhere += " and coalesce(ac.\"user\", '') <> 'A5C0DE5E12A00002'";
-  baseWhere += " and coalesce(ac.funcom_id, '') <> 'Server#0001'";
-  baseWhere += " and coalesce(ac.funcom_id, '') <> 'MessageOfTheDay#0001'";
+  baseWhere += ` and a.id <> ${INTERNAL_GM_PLAYER_PAWN_ID}::bigint`;
+  baseWhere += ` and ${resolvedFlsId} <> 'A5C0DE5E12A00001'`;
+  baseWhere += ` and ${resolvedFlsId} <> 'A5C0DE5E12A00002'`;
+  baseWhere += ` and ${resolvedFuncomId} <> 'Server#0001'`;
+  baseWhere += ` and ${resolvedFuncomId} <> 'MessageOfTheDay#0001'`;
   baseWhere += " and coalesce(ps.character_name, '') <> 'Server'";
   baseWhere += " and coalesce(ps.character_name, '') <> 'Message of the Day'";
   if (hasOnlineStatus) {
@@ -1389,15 +1492,28 @@ export async function listPlayers(db, { status = "all", q = "", page = 0, pageSi
   }
   baseWhere += currentPawnFilter;
 
-  const values = [];
+  const normalizedBannedFlsIds = [...new Set((Array.isArray(bannedFlsIds) ? bannedFlsIds : [])
+    .map((value) => String(value || "").trim().toLowerCase())
+    .filter((value) => /^[a-f0-9]{15,64}$/.test(value)))]
+    .slice(0, 2000);
+  const values = [normalizedBannedFlsIds];
+  const bannedExpression = `lower(${resolvedFlsId}) = any($1::text[])`;
   let where = baseWhere;
   if (hasOnlineStatus) {
-    if (status === "online") where += " and coalesce(ps.online_status::text, '') = 'Online'";
-    if (status === "offline") where += " and coalesce(ps.online_status::text, '') <> 'Online'";
+    if (status === "online") where += ` and not (${bannedExpression}) and coalesce(ps.online_status::text, '') = 'Online'`;
+    if (status === "offline") where += ` and not (${bannedExpression}) and coalesce(ps.online_status::text, '') <> 'Online'`;
+  }
+  if (status === "banned") where += ` and (${bannedExpression})`;
+  if (controllerIds && controllerIds.length > 0) {
+    values.push(controllerIds.map(String));
+    where += ` and ps.player_controller_id::text = any($${values.length}::text[])`;
   }
   if (q) {
     values.push(`%${q}%`);
-    where += ` and (ps.character_name ilike $${values.length} or ac."user" ilike $${values.length} or a.id::text = $${values.length} or a.owner_account_id::text = $${values.length})`;
+    const fuzzySearchParameter = values.length;
+    values.push(String(q));
+    const exactIdParameter = values.length;
+    where += ` and (ps.character_name ilike $${fuzzySearchParameter} or ${resolvedFlsId} ilike $${fuzzySearchParameter} or a.id::text = $${exactIdParameter} or a.owner_account_id::text = $${exactIdParameter})`;
   }
   values.push(safePageSize, offset);
   const limitParamIndex = values.length - 1;
@@ -1410,16 +1526,20 @@ export async function listPlayers(db, { status = "all", q = "", page = 0, pageSi
              coalesce(a.owner_account_id, 0) as account_id,
              coalesce(ps.character_name, '') as character_name,
              coalesce(ps.player_controller_id, 0) as player_controller_id,
-             coalesce(ac.funcom_id, '') as funcom_id,
-             coalesce(ac."user", '') as fls_id,
+             ${resolvedFuncomId} as funcom_id,
+             ${resolvedFlsId} as fls_id,
              case
-               when nullif(ac."user", '') is not null then ac."user"
+               when nullif(${resolvedFlsId}, '') is not null then ${resolvedFlsId}
                when a.owner_account_id is not null and a.owner_account_id <> 0 then a.owner_account_id::text
                else ''
              end as action_player_id,
              a.class,
              coalesce(a.map, '') as map,
-             ${hasOnlineStatus ? "coalesce(ps.online_status::text, 'Offline')" : "'Offline'"} as online_status,
+             ${hasOnlineStatus ? "coalesce(ps.online_status::text, 'Offline')" : "'Offline'"} as actual_online_status,
+             case when ${bannedExpression} then 'Banned'
+                  else ${hasOnlineStatus ? "coalesce(ps.online_status::text, 'Offline')" : "'Offline'"}
+             end as online_status,
+             (${bannedExpression}) as is_banned,
              ${loginSessionSelect} as login_session,
              ${lastSeenWithOnlineFallback} as last_seen,
              coalesce(nullif(ps.player_controller_id, 0), nullif(a.owner_account_id, 0), a.id) as dedupe_key,
@@ -1432,6 +1552,7 @@ export async function listPlayers(db, { status = "all", q = "", page = 0, pageSi
       from dune.actors a
       left join dune.player_state ps on ps.account_id = a.owner_account_id
       left join dune.accounts ac on ac.id = a.owner_account_id
+      ${encryptedAccountsJoin}
       where ${where}
     ),
     deduped_players as (
@@ -1446,7 +1567,9 @@ export async function listPlayers(db, { status = "all", q = "", page = 0, pageSi
              action_player_id,
              class,
              map,
+             actual_online_status,
              online_status,
+             is_banned,
              login_session,
              last_seen
       from player_rows
@@ -1472,13 +1595,14 @@ export async function listPlayers(db, { status = "all", q = "", page = 0, pageSi
       from dune.actors a
       left join dune.player_state ps on ps.account_id = a.owner_account_id
       left join dune.accounts ac on ac.id = a.owner_account_id
+      ${encryptedAccountsJoin}
       where ${baseWhere}
     )
     select count(distinct dedupe_key)::int as total_players
     from player_rows`) : null;
 
   return {
-    capabilities: { players: true, status, statusFilterApplied: hasOnlineStatus },
+    capabilities: { players: true, status, statusFilterApplied: hasOnlineStatus, banFilterApplied: true },
     totalCount: result.rows[0] ? Number(result.rows[0].total_count) : 0,
     totalPlayers: totalsResult ? (totalsResult.rows[0] ? Number(totalsResult.rows[0].total_players) : 0) : undefined,
     rows: result.rows
@@ -1799,6 +1923,241 @@ export async function guildMembers(db, guildId) {
   return { capabilities: { guildMembers: true }, rows: result.rows };
 }
 
+const GUILD_OFFICER_ROLE_ID = 50;
+const GUILD_LEADER_ROLE_ID = 100;
+const MAX_GUILD_COUNT_PER_PLAYER = 1; // real game invariant -- get_guild_for_player does a bare SELECT INTO with no LIMIT, implying one guild per player
+const DEFAULT_MAX_MEMBERS_PER_GUILD = 32;
+// Verified against dune.guild_handle_actor_delete in the shipped database: the game's own
+// generic database-removal path publishes reason 0 through dune.remove_guild_members.
+const GUILD_REMOVE_REASON_DATABASE_REMOVAL = 0;
+
+// The four guild mutations below hardcode literal guild_id/player_id/role_id/guild_name column
+// names in raw SQL, unlike guildMembers()'s defensive firstExistingColumn() resolution for reads
+// -- because these column names are what dune.promote_guild_member/dune.add_guild_member/
+// dune.remove_guild_members/dune.disband_guild's own PL/pgSQL bodies reference internally, so any
+// schema where those functions exist must already have these exact names. This check still
+// verifies it directly (rather than relying solely on functionExists) so a schema drift a future
+// game patch introduces surfaces as a clean "unsupported" response instead of a raw SQL error.
+async function guildIdentityColumnsExist(db, { members = [] } = {}) {
+  const guildColumns = await columnsFor(db, "guilds");
+  if (!guildColumns.has("guild_id") || !guildColumns.has("guild_name")) return false;
+  if (!members.length) return true;
+  const memberColumns = await columnsFor(db, "guild_members");
+  return members.every((column) => memberColumns.has(column));
+}
+
+async function lockGuildOperations(db) {
+  // Match the lock order used by every shipped guild mutation. Taking the game's advisory
+  // transaction lock before row locks avoids deadlocking with an in-game mutation that already
+  // owns the advisory lock and is waiting for the same guild row.
+  await db.query("select dune.guilds_get_exclusive_operation_lock()");
+}
+
+async function supportsGuildPromotion(db) {
+  return await tableExists(db, "guild_members") && await tableExists(db, "guilds") &&
+    await functionExists(db, "dune.promote_guild_member(bigint,bigint,smallint)") &&
+    await guildIdentityColumnsExist(db, { members: ["guild_id", "player_id", "role_id"] });
+}
+
+// dune.promote_guild_member(guild_id, player_id, new_role) only special-cases new_role = 100
+// (it demotes whoever currently holds it); for any other target role it's a plain role_id
+// update. This lets Promote graduate a Member straight to Officer with no leader side effect,
+// and Officer to Leader (with the automatic leader demotion), using the one real stored
+// procedure -- confirmed by reading its body in .claude/dune_backup.sql before relying on it.
+export async function promoteGuildMember(db, guildId, playerId) {
+  await requireCapability(await supportsGuildPromotion(db), "Guild leadership changes require dune.guild_members, dune.guilds, and dune.promote_guild_member(bigint,bigint,smallint).");
+  const safeGuildId = intParam(guildId, "guild id", 1);
+  const safePlayerId = intParam(playerId, "player id", 1);
+
+  return db.transaction(async (tx) => {
+    await lockGuildOperations(tx);
+    // Lock the guilds row first -- guaranteed to exist if the guild is real, giving concurrent
+    // promote requests for the same guild something to serialize against even before touching
+    // guild_members. Same technique as the inventory-row lock in refillBaseGenerators.
+    const guild = await tx.query("select guild_id, guild_name from dune.guilds where guild_id = $1 for update", [safeGuildId]);
+    if (!guild.rowCount) throw new Error(`Guild ${safeGuildId} was not found.`);
+
+    const member = await tx.query(
+      "select role_id::text as role_id from dune.guild_members where guild_id = $1 and player_id = $2 for update",
+      [safeGuildId, safePlayerId]
+    );
+    if (!member.rowCount) throw new Error(`Player ${safePlayerId} is not a member of guild ${safeGuildId}.`);
+    const currentRole = Number(member.rows[0].role_id);
+    if (currentRole >= GUILD_LEADER_ROLE_ID) {
+      return { ok: true, alreadyLeader: true, guildId: safeGuildId, playerId: safePlayerId };
+    }
+    const nextRole = currentRole >= GUILD_OFFICER_ROLE_ID ? GUILD_LEADER_ROLE_ID : GUILD_OFFICER_ROLE_ID;
+
+    let previousLeaderId = null;
+    if (nextRole === GUILD_LEADER_ROLE_ID) {
+      const previousLeader = await tx.query(
+        "select player_id from dune.guild_members where guild_id = $1 and role_id = $2",
+        [safeGuildId, GUILD_LEADER_ROLE_ID]
+      );
+      previousLeaderId = previousLeader.rows[0]?.player_id ? String(previousLeader.rows[0].player_id) : null;
+    }
+
+    await tx.query("select dune.promote_guild_member($1::bigint, $2::bigint, $3::smallint)", [safeGuildId, safePlayerId, nextRole]);
+
+    return {
+      ok: true,
+      guildId: safeGuildId,
+      guildName: guild.rows[0].guild_name,
+      playerId: safePlayerId,
+      newRoleId: nextRole,
+      previousLeaderId,
+      message: nextRole === GUILD_LEADER_ROLE_ID
+        ? "Leadership was updated in the database. Online players may need to relog before the change appears in-game."
+        : "Rank was updated in the database. Online players may need to relog before the change appears in-game."
+    };
+  });
+}
+
+async function supportsGuildDemotion(db) {
+  return await tableExists(db, "guild_members") && await tableExists(db, "guilds") &&
+    await functionExists(db, "dune.demote_guild_member(bigint,bigint,smallint)") &&
+    await guildIdentityColumnsExist(db, { members: ["guild_id", "player_id", "role_id"] });
+}
+
+// dune.demote_guild_member(guild_id, player_id, new_role) already refuses to demote the guild
+// leader itself (raises "Trying to demote admin. promote a member to admin instead."), and this
+// feature only ever offers Demote on Officer rows (Leader and Member are excluded in the UI), so
+// Demote always targets the plain Member role.
+export async function demoteGuildMember(db, guildId, playerId) {
+  await requireCapability(await supportsGuildDemotion(db), "Guild demotions require dune.guild_members, dune.guilds, and dune.demote_guild_member(bigint,bigint,smallint).");
+  const safeGuildId = intParam(guildId, "guild id", 1);
+  const safePlayerId = intParam(playerId, "player id", 1);
+
+  return db.transaction(async (tx) => {
+    await lockGuildOperations(tx);
+    const guild = await tx.query("select guild_id from dune.guilds where guild_id = $1 for update", [safeGuildId]);
+    if (!guild.rowCount) throw new Error(`Guild ${safeGuildId} was not found.`);
+
+    const member = await tx.query(
+      "select role_id::text as role_id from dune.guild_members where guild_id = $1 and player_id = $2 for update",
+      [safeGuildId, safePlayerId]
+    );
+    if (!member.rowCount) throw new Error(`Player ${safePlayerId} is not a member of guild ${safeGuildId}.`);
+    const currentRole = Number(member.rows[0].role_id);
+    if (currentRole >= GUILD_LEADER_ROLE_ID) {
+      throw new Error("This player is the guild leader. Promote another member to Leader before demoting them.");
+    }
+    if (currentRole < GUILD_OFFICER_ROLE_ID) {
+      throw new Error(`Player ${safePlayerId} is already a Member and cannot be demoted further.`);
+    }
+
+    await tx.query("select dune.demote_guild_member($1::bigint, $2::bigint, $3::smallint)", [safeGuildId, safePlayerId, 1]);
+
+    return { ok: true, guildId: safeGuildId, playerId: safePlayerId };
+  });
+}
+
+async function supportsGuildAdd(db) {
+  return await tableExists(db, "guild_members") && await tableExists(db, "guilds") &&
+    await functionExists(db, "dune.add_guild_member(bigint,bigint,smallint,integer,integer,smallint)") &&
+    await guildIdentityColumnsExist(db);
+}
+
+export async function addGuildMember(db, guildId, playerId, roleId = 1, maxMembersPerGuild = DEFAULT_MAX_MEMBERS_PER_GUILD) {
+  await requireCapability(await supportsGuildAdd(db), "Adding guild members requires dune.guild_members, dune.guilds, and dune.add_guild_member(bigint,bigint,smallint,integer,integer,smallint).");
+  const safeGuildId = intParam(guildId, "guild id", 1);
+  const safeRole = intParam(roleId, "role id", 1, 99); // Add Member never creates a second Leader -- promote is a separate, explicit action
+  const safeMaxMembers = intParam(maxMembersPerGuild, "maximum guild members", 1, 2147483647);
+
+  return db.transaction(async (tx) => {
+    await lockGuildOperations(tx);
+    const guild = await tx.query("select guild_id, guild_name from dune.guilds where guild_id = $1 for update", [safeGuildId]);
+    if (!guild.rowCount) throw new Error(`Guild ${safeGuildId} was not found.`);
+
+    // add_guild_member uses this limit only to decide when invitations should be cleared; it
+    // does not reject an over-capacity insert itself. Enforce the effective server limit while
+    // holding the same guild-row lock that serializes concurrent Console additions.
+    const memberCount = await tx.query("select count(*)::int as count from dune.guild_members where guild_id = $1", [safeGuildId]);
+    const currentMembers = Number(memberCount.rows[0]?.count || 0);
+    if (currentMembers >= safeMaxMembers) {
+      throw new Error(`Guild ${safeGuildId} already has the configured maximum of ${safeMaxMembers} members.`);
+    }
+
+    const player = await resolvePlayerMutationTarget(tx, playerId);
+    try {
+      // dune.add_guild_member(in_player_id, in_guild_id, ...) -- player id comes first,
+      // confirmed against the real function signature in .claude/dune_backup.sql and against
+      // a live restore of it (an earlier version of this code had these two swapped).
+      await tx.query(
+        "select dune.add_guild_member($1::bigint, $2::bigint, $3::smallint, $4::integer, $5::integer, $6::smallint)",
+        [player.controllerId, safeGuildId, safeRole, MAX_GUILD_COUNT_PER_PLAYER, safeMaxMembers, NEUTRAL_GUILD_FACTION_ID]
+      );
+    } catch (error) {
+      if (/Cannot insert more than/.test(error.message)) throw new Error("This player is already in a guild. Remove them from their current guild first.");
+      if (/non existing guild/.test(error.message)) throw new Error(`Guild ${safeGuildId} was not found.`);
+      if (/non compatible/.test(error.message)) throw new Error("This player's faction is not compatible with this guild.");
+      throw error;
+    }
+
+    return { ok: true, guildId: safeGuildId, guildName: guild.rows[0].guild_name, playerId: player.controllerId, roleId: safeRole };
+  });
+}
+
+async function supportsGuildRemove(db) {
+  return await tableExists(db, "guild_members") && await tableExists(db, "guilds") &&
+    await functionExists(db, "dune.remove_guild_members(bigint[],bigint,smallint)") &&
+    await guildIdentityColumnsExist(db, { members: ["guild_id", "player_id", "role_id"] });
+}
+
+export async function removeGuildMember(db, guildId, playerId) {
+  await requireCapability(await supportsGuildRemove(db), "Removing guild members requires dune.guild_members, dune.guilds, and dune.remove_guild_members(bigint[],bigint,smallint).");
+  const safeGuildId = intParam(guildId, "guild id", 1);
+  const safePlayerId = intParam(playerId, "player id", 1);
+
+  return db.transaction(async (tx) => {
+    await lockGuildOperations(tx);
+    const guild = await tx.query("select guild_id from dune.guilds where guild_id = $1 for update", [safeGuildId]);
+    if (!guild.rowCount) throw new Error(`Guild ${safeGuildId} was not found.`);
+
+    const member = await tx.query(
+      "select role_id::text as role_id from dune.guild_members where guild_id = $1 and player_id = $2 for update",
+      [safeGuildId, safePlayerId]
+    );
+    if (!member.rowCount) throw new Error(`Player ${safePlayerId} is not a member of guild ${safeGuildId}.`);
+    if (Number(member.rows[0].role_id) >= GUILD_LEADER_ROLE_ID) {
+      throw new Error("This player is the guild leader. Promote another member to Leader before removing them.");
+    }
+
+    // The leader check above happens inside this same locked transaction (guild row + member
+    // row both FOR UPDATE), so there's no window for a concurrent promote to change leadership
+    // between the check and the delete below.
+    await tx.query("select dune.remove_guild_members($1::bigint[], $2::bigint, $3::smallint)", [[safePlayerId], safeGuildId, GUILD_REMOVE_REASON_DATABASE_REMOVAL]);
+
+    return { ok: true, guildId: safeGuildId, playerId: safePlayerId };
+  });
+}
+
+async function supportsGuildDisband(db) {
+  return await tableExists(db, "guilds") && await tableExists(db, "guild_members") &&
+    await functionExists(db, "dune.disband_guild(bigint)") &&
+    await guildIdentityColumnsExist(db, { members: ["guild_id"] });
+}
+
+export async function disbandGuild(db, guildId) {
+  await requireCapability(await supportsGuildDisband(db), "Disbanding a guild requires dune.guilds and dune.disband_guild(bigint).");
+  const safeGuildId = intParam(guildId, "guild id", 1);
+
+  return db.transaction(async (tx) => {
+    await lockGuildOperations(tx);
+    const guild = await tx.query("select guild_id, guild_name from dune.guilds where guild_id = $1 for update", [safeGuildId]);
+    if (!guild.rowCount) throw new Error(`Guild ${safeGuildId} was not found.`);
+
+    const memberCount = await tx.query("select count(*)::int as count from dune.guild_members where guild_id = $1", [safeGuildId]);
+
+    // dune.disband_guild deletes the guilds row; guild_members rows for this guild go with it via
+    // guild_members_guild_id_fkey (FOREIGN KEY ... REFERENCES dune.guilds ON DELETE CASCADE), so
+    // there is nothing left for us to clean up here.
+    await tx.query("select dune.disband_guild($1::bigint)", [safeGuildId]);
+
+    return { ok: true, guildId: safeGuildId, guildName: guild.rows[0].guild_name, memberCount: memberCount.rows[0]?.count || 0 };
+  });
+}
+
 function firstExistingColumn(columns, names) {
   return names.find((name) => columns.has(name)) || "";
 }
@@ -2077,6 +2436,23 @@ export async function playerVitals(db, id) {
   };
 }
 
+// dune.specialization_keystones_map has no track column; the track is the name prefix
+// (e.g. "Combat_CombatKeystone_SkillPoint4" belongs to the Combat track).
+async function specializationKeystoneCounts(db, controllerId) {
+  const result = await db.query(`
+    select split_part(m.name, '_', 1) as track_type,
+           count(*)::int as total,
+           count(p.player_id)::int as owned
+    from dune.specialization_keystones_map m
+    left join dune.purchased_specialization_keystones p
+      on p.keystone_id = m.id and p.player_id = $1
+    group by 1`, [controllerId]).catch(() => ({ rows: [] }));
+  return new Map((result.rows || []).map((row) => [String(row.track_type || ""), {
+    owned: Number(row.owned) || 0,
+    total: Number(row.total) || 0
+  }]));
+}
+
 export async function playerSpecs(db, id) {
   if (!(await tableExists(db, "specialization_tracks"))) return unsupported("specs", ["dune.specialization_tracks"]);
   const player = await resolvePlayerMutationTarget(db, id);
@@ -2091,22 +2467,29 @@ export async function playerSpecs(db, id) {
     select coalesce((fe.components->'FLevelComponent'->1->>'UnspentSkillPoints')::int,0) unspent_points
     from dune.actor_fgl_entities afe join dune.fgl_entities fe on fe.entity_id=afe.entity_id
     where afe.slot_name='DuneCharacter' and afe.actor_id=$1 limit 1`, [player.actorId]).catch(() => ({ rows: [] }));
+  const keystonesSupported = await tableExists(db, "purchased_specialization_keystones")
+    && await tableExists(db, "specialization_keystones_map");
+  const keystonesByTrack = keystonesSupported ? await specializationKeystoneCounts(db, player.controllerId) : new Map();
   return {
     capabilities: {
       specs: true,
       specializationMutation: await supportsSpecializationLiveRefresh(db),
-      keystones: await tableExists(db, "purchased_specialization_keystones")
+      keystones: keystonesSupported
     },
     player,
     unspentPoints: Number(points.rows[0]?.unspent_points) || 0,
     skillModules: await playerSkillModules(db, player),
     rows: tracks.map((track) => {
       const row = byTrack.get(track);
+      const keystones = keystonesByTrack.get(track) || { owned: 0, total: 0 };
       return {
         player_id: player.controllerId,
         track_type: track,
         xp_amount: row?.xp_amount ?? 0,
-        level: row?.level ?? 0
+        level: row?.level ?? 0,
+        keystone_count: keystones.owned,
+        keystone_total: keystones.total,
+        has_keystone: keystones.total > 0 && keystones.owned >= keystones.total
       };
     })
   };
@@ -2595,6 +2978,430 @@ function permissionRankLabel(rank) {
   return PERMISSION_RANK_LABELS[rank] || `Rank ${rank}`;
 }
 
+const PERMISSION_OWNER_RANK = 1;
+const PERMISSION_EDITABLE_RANKS = new Set([1, 2, 3]);
+// Fallback only. The real cap comes from live server config via
+// parseEffectivePermissionLimit -- matching the shipped DefaultGame.ini's
+// m_MaxPermissionsPerActor=32 under [/Script/DuneSandbox.PermissionSettings].
+const DEFAULT_MAX_PERMISSIONS_PER_ACTOR = 32;
+
+// Base permission editing goes through the game's own stored procedures, never
+// through direct DML on permission_actor_rank. They do three things a hand-
+// written insert would skip: refresh the base marker, delete the player's marker
+// on removal, and pg_notify('permission_notify_channel', ...) -- which the
+// running map server LISTENs on and applies immediately. Verified in-game on a
+// live server: a rank change written this way moved a player between sections in
+// the owner's open Permissions panel with no relog and no restart. Writing the
+// table directly would land the row and leave the running server unaware of it,
+// which is the silently-reverted behaviour this avoids.
+async function supportsBasePermissionEditing(db) {
+  for (const table of ["permission_actor_rank", "permission_actor", "actors", "player_state", "map_names"]) {
+    if (!(await tableExists(db, table))) return false;
+  }
+  return await functionExists(db, "dune.permission_set_player_rank(bigint,bigint,smallint,text)")
+    && await functionExists(db, "dune.permission_remove_player_rank(bigint,bigint)");
+}
+
+export async function basePermissionsSupported(db) {
+  return supportsBasePermissionEditing(db).catch(() => false);
+}
+
+// The base id the Bases table shows is min(buildings.id) for the claim, which is
+// NOT the permission actor id -- on a live server the two differ for every base,
+// by a varying offset. Resolving the actor here (rather than trusting anything
+// client-supplied) is what keeps an edit from landing on a neighbouring base.
+//
+// map_name_id is resolved for the same call: permission_set_player_rank
+// interpolates its map argument into the notify payload unquoted, so it must be
+// the numeric dune.map_names id. Passing the text map name would emit malformed
+// JSON to the game server.
+export async function basePermissionActor(db, baseId) {
+  const target = intParam(baseId, "base id", 1);
+  const result = await db.query(`
+    select a.id::text as actor_id,
+           coalesce(a.map, '') as map,
+           coalesce(mn.map_name_id, 0)::int as map_name_id,
+           coalesce(a.partition_id, 0)::int as partition_id
+    from dune.buildings b
+    left join dune.building_instances bi on bi.building_id = b.id
+    left join dune.actor_fgl_entities afe on afe.entity_id = bi.owner_entity_id
+    left join dune.actors a on a.id = afe.actor_id
+    left join dune.map_names mn on mn.map_name = a.map
+    where b.id = $1
+    -- A base commonly has several building_instances rows ("pieces"), and only
+    -- this one column varies per piece. Without an explicit order, an orphaned
+    -- piece (owner_entity_id null) could beat a sibling piece that resolves
+    -- fine, since the left join no longer filters candidacy down to valid rows
+    -- the way the old inner join did. Prefer a resolved row deterministically.
+    order by (a.id is null) asc, bi.instance_id asc
+    limit 1`, [target]);
+  const row = result.rows[0];
+  if (!row) throw new Error("That base was not found.");
+  // building_instances.owner_entity_id is nullable (ON DELETE SET NULL against
+  // fgl_entities), so the entity link can be broken even though the base row
+  // itself still exists. Left-joining down to actors instead of inner-joining
+  // lets that case surface as its own message rather than the same "not found"
+  // an operator would see for a genuinely deleted base id.
+  if (!row.actor_id) throw new Error("This base has no resolvable owner entity, so permission editing is unavailable for it.");
+  return {
+    baseId: target,
+    actorId: String(row.actor_id),
+    map: String(row.map || ""),
+    mapNameId: Number(row.map_name_id || 0),
+    partitionId: Number(row.partition_id || 0)
+  };
+}
+
+// permission_actor_rank.player_id is a player's player_controller_id, not just
+// any actors row belonging to their account -- one account holds several. The
+// shipped permission_actor_create_or_update_base_marker joins
+// `player_state on player_controller_id = player_id`, and a live A/B confirmed
+// it: a rank row written for a non-canonical actor id was accepted by the
+// procedure and never appeared in game, while the same write against the
+// player_controller_id appeared immediately.
+//
+// The fallback lookup exists so such a phantom row is still shown to the
+// operator rather than silently vanishing from the roster: resolving the name
+// through owner_account_id is how listBases does it, and every actors row of an
+// account maps to the same character name.
+export async function listBasePermissions(db, baseId) {
+  await requireCapability(await supportsBasePermissionEditing(db),
+    "Base permission editing requires dune.permission_actor_rank, dune.map_names, and the dune.permission_set_player_rank/permission_remove_player_rank functions.");
+  const { actorId, map, mapNameId } = await basePermissionActor(db, baseId);
+  const encryptedPlayerStateColumns = await tableExists(db, "encrypted_player_state")
+    ? await columnsFor(db, "encrypted_player_state")
+    : new Set();
+  const hasEncryptedController = encryptedPlayerStateColumns.has("player_controller_id");
+  const canDecryptEncryptedName = hasEncryptedController
+    && encryptedPlayerStateColumns.has("encrypted_character_name")
+    && await functionExists(db, "dune.decrypt_user_data(bytea)");
+  const encryptedJoin = hasEncryptedController
+    ? `left join lateral (
+      select eps.player_controller_id,
+             ${canDecryptEncryptedName ? `case
+               when eps.player_controller_id in (${CARE_PACKAGE_SERVER_PERSONA.playerControllerId}::bigint, ${FUNCOM_GM_PERSONA.playerControllerId}::bigint) then ''::text
+               else dune.decrypt_user_data(eps.encrypted_character_name)
+             end` : "''::text"} as character_name
+      from dune.encrypted_player_state eps
+      where eps.player_controller_id = par.player_id
+      limit 1
+    ) eps on true`
+    : "";
+  const encryptedName = hasEncryptedController ? "eps.character_name" : "''";
+  const encryptedCanonical = hasEncryptedController ? "or eps.player_controller_id is not null" : "";
+  const result = await db.query(`
+    select par.player_id::text as player_id,
+           case
+             when par.player_id = ${CARE_PACKAGE_SERVER_PERSONA.playerControllerId}::bigint then '${CARE_PACKAGE_SERVER_PERSONA.displayName}'
+             when par.player_id = ${FUNCOM_GM_PERSONA.playerControllerId}::bigint then '${FUNCOM_GM_PERSONA.displayName}'
+             else coalesce(ps.character_name, ${encryptedName}, fallback.character_name, '')
+           end as character_name,
+           par.rank::int as rank,
+           (ps.player_controller_id is not null ${encryptedCanonical}) as canonical
+    from dune.permission_actor_rank par
+    left join dune.player_state ps on ps.player_controller_id = par.player_id
+    ${encryptedJoin}
+    left join lateral (
+      select fps.character_name
+      from dune.actors fa
+      join dune.player_state fps on fps.account_id = fa.owner_account_id
+      where fa.id = par.player_id
+      limit 1
+    ) fallback on true
+    where par.permission_actor_id = $1::bigint
+    order by par.rank asc, coalesce(ps.character_name, fallback.character_name, '') asc`, [actorId]);
+  const systemCustodian = await basePermissionSystemCustodian(db);
+  return {
+    baseId: intParam(baseId, "base id", 1),
+    actorId,
+    map,
+    mapNameId,
+    systemCustodian,
+    entries: result.rows.map((row) => ({
+      playerId: String(row.player_id),
+      name: String(row.character_name || ""),
+      rank: Number(row.rank),
+      label: permissionRankLabel(Number(row.rank)),
+      // False means this row names an actor that is not the account's
+      // player_controller_id, so the game ignores it. Surfaced rather than
+      // hidden: it is the one roster state the console can see and the game
+      // client cannot.
+      canonical: row.canonical === true
+    }))
+  };
+}
+
+// System identities stay out of ordinary player search. Prefer the RedBlink
+// Server persona when installed, then fall back to Funcom's reserved GM persona.
+// Both are matched by their stable account/controller/state/pawn tuple rather
+// than their display name: encrypted schemas do not expose a plain name, and a
+// normal character can be named "Server". The legacy name lookup is retained
+// last for installations that created Server before the reserved tuple existed.
+export async function basePermissionSystemCustodian(db) {
+  const personas = [CARE_PACKAGE_SERVER_PERSONA, FUNCOM_GM_PERSONA];
+  const sources = [];
+  for (const table of ["player_state", "encrypted_player_state"]) {
+    if (!(await tableExists(db, table))) continue;
+    const columns = await columnsFor(db, table);
+    if (!columns.has("account_id") || !columns.has("player_controller_id")) continue;
+    sources.push({ table, columns });
+  }
+
+  for (const persona of personas) {
+    for (const source of sources) {
+      const predicates = ["account_id = $1::bigint", "player_controller_id = $2::bigint"];
+      const values = [persona.accountId, persona.playerControllerId];
+      if (source.columns.has("player_state_id")) {
+        values.push(persona.playerStateId);
+        predicates.push(`player_state_id = $${values.length}::bigint`);
+      }
+      if (source.columns.has("player_pawn_id")) {
+        values.push(persona.playerPawnId);
+        predicates.push(`player_pawn_id = $${values.length}::bigint`);
+      }
+      const exact = await db.query(`
+        select player_controller_id::text as player_id
+        from dune.${source.table}
+        where ${predicates.join(" and ")}
+        limit 2`, values);
+      if (exact.rows.length > 1) {
+        return { available: false, reason: `More than one canonical ${persona.displayName} system identity was found; refusing an ambiguous transfer.` };
+      }
+      if (exact.rows.length === 1) {
+        return {
+          available: true,
+          playerId: persona.playerControllerId,
+          name: persona.displayName
+        };
+      }
+    }
+  }
+
+  // Compatibility for an older, manually-created Server persona whose ids do
+  // not use the now-reserved 9000002xx tuple.
+  const playerStateColumns = await columnsFor(db, "player_state");
+  const internalGmPawnFilter = playerStateColumns.has("player_pawn_id")
+    ? `and coalesce(ps.player_pawn_id, 0) <> ${INTERNAL_GM_PLAYER_PAWN_ID}::bigint`
+    : "";
+  const result = await db.query(`
+    select distinct ps.player_controller_id::text as player_id,
+           btrim(ps.character_name) as character_name
+    from dune.player_state ps
+    where coalesce(ps.player_controller_id, 0) > 0
+      and ps.player_controller_id <> ${INTERNAL_GM_PLAYER_PAWN_ID}::bigint
+      ${internalGmPawnFilter}
+      and lower(btrim(coalesce(ps.character_name, ''))) = 'server'
+    order by player_id
+    limit 2`);
+  if (result.rows.length === 0) {
+    return { available: false, reason: "No supported system custodian was found. Expected the RedBlink Server identity or Funcom GM identity." };
+  }
+  if (result.rows.length > 1) {
+    return { available: false, reason: "More than one canonical Server system identity was found; refusing an ambiguous transfer." };
+  }
+  return {
+    available: true,
+    playerId: String(result.rows[0].player_id),
+    name: String(result.rows[0].character_name || "Server")
+  };
+}
+
+// Candidates for the roster picker. Deliberately keyed on player_controller_id
+// rather than reusing listPlayers' actor_id: listPlayers is row-per-pawn, and
+// handing a pawn id to permission_set_player_rank writes a row the game ignores.
+export async function basePermissionCandidates(db, { q = "", limit = 25 } = {}) {
+  await requireCapability(await supportsBasePermissionEditing(db),
+    "Base permission editing requires dune.permission_actor_rank, dune.map_names, and the dune.permission_set_player_rank/permission_remove_player_rank functions.");
+  const safeLimit = intParam(limit, "limit", 1, 100);
+  const playerStateColumns = await columnsFor(db, "player_state");
+  const internalGmPawnFilter = playerStateColumns.has("player_pawn_id")
+    ? `and coalesce(ps.player_pawn_id, 0) <> ${INTERNAL_GM_PLAYER_PAWN_ID}::bigint`
+    : "";
+  const values = [];
+  let filter = "";
+  if (q) {
+    values.push(`%${q}%`);
+    const likeParam = values.length;
+    values.push(q);
+    const idParam = values.length;
+    filter = `and (ps.character_name ilike $${likeParam} or ps.player_controller_id::text = $${idParam})`;
+  }
+  values.push(safeLimit);
+  const result = await db.query(`
+    select distinct ps.player_controller_id::text as player_id,
+           coalesce(ps.character_name, '') as character_name
+    from dune.player_state ps
+    where coalesce(ps.player_controller_id, 0) > 0
+      and ps.player_controller_id <> ${INTERNAL_GM_PLAYER_PAWN_ID}::bigint
+      ${internalGmPawnFilter}
+      and nullif(btrim(coalesce(ps.character_name, '')), '') is not null
+      and ps.character_name not in ('Server', 'Message of the Day')
+      ${filter}
+    order by character_name asc
+    limit $${values.length}`, values);
+  return result.rows.map((row) => ({ playerId: String(row.player_id), name: String(row.character_name || "") }));
+}
+
+function normalizeDesiredPermissions(entries) {
+  if (!Array.isArray(entries)) throw new Error("Permissions must be a list of players and ranks.");
+  const seen = new Set();
+  const desired = entries.map((entry) => {
+    const playerId = String(intParam(entry?.playerId, "player id", 1));
+    const rank = Number(entry?.rank);
+    if (!PERMISSION_EDITABLE_RANKS.has(rank)) {
+      throw new Error(`Rank ${entry?.rank} is not a valid base permission rank.`);
+    }
+    if (seen.has(playerId)) throw new Error("The same player was listed twice.");
+    seen.add(playerId);
+    return { playerId, rank };
+  });
+  const owners = desired.filter((entry) => entry.rank === PERMISSION_OWNER_RANK);
+  if (owners.length !== 1) {
+    throw new Error(owners.length === 0
+      ? "A base must have exactly one Owner. Promote a player to Owner before saving."
+      : `A base can only have one Owner; ${owners.length} were selected.`);
+  }
+  return desired;
+}
+
+// Applies a whole roster in one transaction, built entirely from the shipped
+// procedures. Two invariants the procedures do NOT enforce are enforced here:
+//
+//   - One Owner. permission_set_player_rank is a plain upsert, so setting rank 1
+//     for a second player would simply leave the base with two owners.
+//   - The cap. The procedure never counts rows; the limit comes from live server
+//     config (see parseEffectivePermissionLimit), not a constant.
+//
+// Write order matters even though NOTIFY is only delivered at commit: the marker
+// refresh inside permission_set_player_rank looks up the rank-1 holder with a
+// LIMIT 1, so a moment with two rank-1 rows could stamp the wrong owner onto the
+// base marker. Removals run first, then non-owner ranks, then the Owner last --
+// so at most one rank-1 row exists when the owner write lands.
+async function mutateBasePermissions(db, target, safeMax, desiredRoster) {
+  return db.transaction(async (tx) => {
+    // The shipped procedures reference their tables unqualified and carry no
+    // `SET search_path` of their own; they resolve only because the console
+    // connects as the `dune` role, whose default "$user" path puts the dune
+    // schema first. Every query this file writes is schema-qualified, so setting
+    // it here costs nothing and keeps the feature working if ADMIN_DATABASE_URL
+    // is ever pointed at a differently-named role.
+    await tx.query("set local search_path to dune, public");
+
+    const actor = await basePermissionActor(tx, target);
+    if (!actor.mapNameId) {
+      throw new Error(`This base's map (${actor.map || "unknown"}) has no dune.map_names entry, so the game cannot be notified of the change.`);
+    }
+    // Lock the claim actor row, not the rank rows: a base whose roster is being
+    // fully replaced may have no rank rows to lock, and `for update` over zero
+    // rows serializes nothing. The actors row is guaranteed to exist.
+    const locked = await tx.query("select id from dune.actors where id = $1::bigint for update", [actor.actorId]);
+    if (!locked.rowCount) throw new Error("That base was not found.");
+
+    const existing = await tx.query(
+      "select player_id::text as player_id, rank::int as rank from dune.permission_actor_rank where permission_actor_id = $1::bigint",
+      [actor.actorId]);
+    const currentByPlayer = new Map(existing.rows.map((row) => [String(row.player_id), Number(row.rank)]));
+    const desired = normalizeDesiredPermissions(await desiredRoster(existing.rows, tx));
+    if (desired.length > safeMax) {
+      throw new Error(`This base would hold ${desired.length} permissions, above the configured maximum of ${safeMax}.`);
+    }
+
+    // Every target player must be a real permission holder, i.e. an account's
+    // player_controller_id. Newer servers keep this in encrypted_player_state;
+    // older schemas expose player_state. Anything else writes a row the game
+    // ignores.
+    const canonicalSources = [
+      "select player_controller_id from dune.player_state where player_controller_id = any($1::bigint[])"
+    ];
+    if (await tableExists(tx, "encrypted_player_state")) {
+      const encryptedColumns = await columnsFor(tx, "encrypted_player_state");
+      if (encryptedColumns.has("player_controller_id")) {
+        canonicalSources.push("select player_controller_id from dune.encrypted_player_state where player_controller_id = any($1::bigint[])");
+      }
+    }
+    const canonical = await tx.query(
+      `select distinct player_controller_id::text as player_id from (${canonicalSources.join(" union all ")}) known_players`,
+      [desired.map((entry) => entry.playerId)]);
+    const canonicalIds = new Set(canonical.rows.map((row) => String(row.player_id)));
+    for (const entry of desired) {
+      if (!canonicalIds.has(entry.playerId)) {
+        throw new Error(`Player ${entry.playerId} is not a known player character, so the game would ignore this permission.`);
+      }
+    }
+
+    const desiredByPlayer = new Map(desired.map((entry) => [entry.playerId, entry.rank]));
+    const removed = [...currentByPlayer.keys()].filter((playerId) => !desiredByPlayer.has(playerId));
+    // Unchanged rows are skipped: every write fires a notify, and re-notifying
+    // the game about a rank it already has is pointless traffic.
+    const changed = desired.filter((entry) => currentByPlayer.get(entry.playerId) !== entry.rank);
+
+    for (const playerId of removed) {
+      await tx.query("select dune.permission_remove_player_rank($1::bigint, $2::bigint)", [actor.actorId, playerId]);
+    }
+    for (const entry of changed.filter((row) => row.rank !== PERMISSION_OWNER_RANK)) {
+      await tx.query("select dune.permission_set_player_rank($1::bigint, $2::bigint, $3::smallint, $4::text)",
+        [actor.actorId, entry.playerId, entry.rank, String(actor.mapNameId)]);
+    }
+    for (const entry of changed.filter((row) => row.rank === PERMISSION_OWNER_RANK)) {
+      await tx.query("select dune.permission_set_player_rank($1::bigint, $2::bigint, $3::smallint, $4::text)",
+        [actor.actorId, entry.playerId, entry.rank, String(actor.mapNameId)]);
+    }
+
+    return {
+      ok: true,
+      baseId: target,
+      actorId: actor.actorId,
+      map: actor.map,
+      added: changed.filter((entry) => !currentByPlayer.has(entry.playerId)).length,
+      reranked: changed.filter((entry) => currentByPlayer.has(entry.playerId)).length,
+      removed: removed.length,
+      total: desired.length,
+      // Changes reach a running map server immediately: the procedures notify
+      // permission_notify_channel, which the server LISTENs on. No restart.
+      message: "Permissions were updated. The change applies to the running map immediately."
+    };
+  });
+}
+
+export async function setBasePermissions(db, baseId, entries, maxPermissionsPerActor = DEFAULT_MAX_PERMISSIONS_PER_ACTOR) {
+  await requireCapability(await supportsBasePermissionEditing(db),
+    "Base permission editing requires dune.permission_actor_rank, dune.map_names, and the dune.permission_set_player_rank/permission_remove_player_rank functions.");
+  const target = intParam(baseId, "base id", 1);
+  const safeMax = intParam(maxPermissionsPerActor, "maximum permissions per base", 1, 2147483647);
+  // Validate before opening the transaction too, so malformed input fails
+  // without taking a claim lock. It is normalized again after the lock because
+  // the shared mutation path also accepts a roster built from current state.
+  const desired = normalizeDesiredPermissions(entries);
+  return mutateBasePermissions(db, target, safeMax, async () => desired);
+}
+
+export async function transferBaseToSystemCustodian(db, baseId, maxPermissionsPerActor = DEFAULT_MAX_PERMISSIONS_PER_ACTOR) {
+  await requireCapability(await supportsBasePermissionEditing(db),
+    "Base permission editing requires dune.permission_actor_rank, dune.map_names, and the dune.permission_set_player_rank/permission_remove_player_rank functions.");
+  const target = intParam(baseId, "base id", 1);
+  const safeMax = intParam(maxPermissionsPerActor, "maximum permissions per base", 1, 2147483647);
+  let custodian;
+  const result = await mutateBasePermissions(db, target, safeMax, async (existing, tx) => {
+    custodian = await basePermissionSystemCustodian(tx);
+    if (!custodian.available) throw new Error(custodian.reason);
+    const roster = existing.map((row) => ({
+      playerId: String(row.player_id),
+      rank: Number(row.rank) === PERMISSION_OWNER_RANK ? 2 : Number(row.rank)
+    }));
+    const currentCustodian = roster.find((entry) => entry.playerId === custodian.playerId);
+    if (currentCustodian) currentCustodian.rank = PERMISSION_OWNER_RANK;
+    else roster.push({ playerId: custodian.playerId, rank: PERMISSION_OWNER_RANK });
+    return roster;
+  });
+  return {
+    ...result,
+    systemCustodian: custodian,
+    message: result.reranked === 0 && result.added === 0
+      ? `This base is already owned by the ${custodian.name} system custodian.`
+      : `Ownership was transferred to the ${custodian.name} system custodian. The change applies to the running map immediately.`
+  };
+}
+
 const BASE_SORT_COLUMNS = {
   base_id: { order: ["id"] },
   name: { order: ["lower(coalesce(name, ''))"] },
@@ -2776,8 +3583,36 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
       }
     }
 
+    // Probed here rather than per row so the panel can disable Refill outright
+    // instead of failing on click. These three don't depend on each other, so
+    // they run concurrently rather than as three sequential round-trip chains
+    // on this hot list/search/sort/page endpoint.
+    //
+    // basePermissions: probed the same way and for the same reason as
+    // generatorRefill -- without the shipped permission procedures the panel
+    // hides the editor rather than offering a control that fails on save.
+    //
+    // waterRefill: gated on supportsWaterRefill rather than
+    // supportsGeneratorRefill: water refill needs none of the item-insert
+    // columns the generator capability check requires, so reusing that check
+    // would wrongly hide Refill Water on a schema that has everything water
+    // actually needs.
+    const [generatorRefill, basePermissions, waterRefill] = await Promise.all([
+      supportsGeneratorRefill(db).catch(() => false),
+      supportsBasePermissionEditing(db).catch(() => false),
+      supportsWaterRefill(db).catch(() => false)
+    ]);
+    // Without world_partition the console cannot tell a running map from a
+    // stopped one, so the panel hides the queue entirely and refills stay
+    // immediate. Each check reuses the flag just computed above instead of
+    // re-deriving it, and both run concurrently for the same reason as above.
+    const [generatorRefillQueue, waterRefillQueue] = await Promise.all([
+      generatorRefill ? supportsGeneratorRefillQueue(db, { generatorRefill }).catch(() => false) : Promise.resolve(false),
+      waterRefill ? supportsWaterRefillQueue(db, { waterRefill }).catch(() => false) : Promise.resolve(false)
+    ]);
+
     return {
-      capabilities: { bases: true },
+      capabilities: { bases: true, generatorRefill, generatorRefillQueue, basePermissions, waterRefill, waterRefillQueue },
       totalCount: result.rows[0] ? Number(result.rows[0].total_count) : 0,
       totalBases: totalsResult.rows[0] ? Number(totalsResult.rows[0].total_bases) : 0,
       totalPieces: totalsResult.rows[0] ? Number(totalsResult.rows[0].total_pieces) : 0,
@@ -2808,7 +3643,7 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
       }))
     };
   } catch (error) {
-    return { capabilities: { bases: false }, rows: [], totalCount: 0, totalBases: 0, totalPieces: 0, totalPlaceables: 0, reason: `Base list query is unsupported by this schema: ${error.message}` };
+    return { capabilities: { bases: false, generatorRefill: false }, rows: [], totalCount: 0, totalBases: 0, totalPieces: 0, totalPlaceables: 0, reason: `Base list query is unsupported by this schema: ${error.message}` };
   }
 }
 
@@ -2857,7 +3692,18 @@ export async function exportBaseAsBlueprint(db, id) {
       limit 1
     ) owner on true
     group by pa.actor_name, owner.character_name, a.id, a.class, a.map, a.transform`, [baseId]);
-  if (!baseRow.rows.length) throw new UnsupportedCapabilityError(`Base ${baseId} was not found.`);
+  if (!baseRow.rows.length) {
+    // The query above inner-joins all the way to a resolved actor -- it can't
+    // usefully left-join instead, since a blueprint needs real, resolved piece
+    // data to export. So distinguishing "doesn't exist" from "exists but its
+    // owner-entity link is broken" (building_instances.owner_entity_id is
+    // nullable) takes a cheap follow-up existence check instead, the same
+    // distinction basePermissionActor and baseMapLocation make for their
+    // simpler single-row queries.
+    const exists = await db.query("select 1 from dune.buildings where id = $1", [baseId]);
+    if (exists.rows.length) throw new UnsupportedCapabilityError(`Base ${baseId} has no resolvable owner entity, so it cannot be exported.`);
+    throw new UnsupportedCapabilityError(`Base ${baseId} was not found.`);
+  }
   const base = baseRow.rows[0];
   const anchor = { x: Number(base.x), y: Number(base.y), z: Number(base.z) };
 
@@ -2968,17 +3814,23 @@ export async function listStorage(db) {
              coalesce(max(inv.max_item_count), 0)::int as max_item_count,
              coalesce(max(inv.max_item_volume), 0)::real as max_item_volume,
              coalesce(sum(coalesce(i.volume_override, 0)), 0)::real as current_volume,
-             coalesce(max(ps.character_name), '') as owner_name,
-             'placeable' as type
+             coalesce(max(owner_lat.character_name), '') as owner_name,
+              'placeable' as type
       from dune.placeables p
       left join dune.actors a on a.id = p.id
       left join dune.permission_actor pa on pa.actor_id = p.id
       left join dune.inventories inv on inv.actor_id = p.id
       left join dune.items i on i.inventory_id = inv.id
       left join dune.actor_fgl_entities afe on afe.entity_id = p.owner_entity_id
-      left join dune.permission_actor_rank par on par.permission_actor_id = afe.actor_id
-      left join dune.actors player_a on player_a.id = par.player_id
-      left join dune.player_state ps on ps.account_id = player_a.owner_account_id
+      left join lateral (
+        select ps2.character_name
+        from dune.permission_actor_rank par2
+        join dune.actors player_a2 on player_a2.id = par2.player_id
+        join dune.player_state ps2 on ps2.account_id = player_a2.owner_account_id
+        where par2.permission_actor_id = afe.actor_id
+        order by par2.rank asc, ps2.character_name asc
+        limit 1
+      ) owner_lat on true
       where p.building_type in ('SpiceSilo_Placeable','GenericContainer_Placeable','StorageContainer_Placeable','MediumStorageContainer_Placeable','Developer_StorageContainer_Placeable')
         and p.is_hologram = false and p.owner_entity_id is not null and p.owner_entity_id != 0
       group by p.id, p.building_type, a.map
@@ -3016,18 +3868,23 @@ export async function listStorage(db) {
              coalesce(max(inv.max_item_count), 0)::int as max_item_count,
              coalesce(max(inv.max_item_volume), 0)::real as max_item_volume,
              coalesce(sum(coalesce(i.volume_override, 0)), 0)::real as current_volume,
-             coalesce(max(ps.character_name), '') as owner_name,
-             (array_agg(vm.template_id) filter (where vm.template_id ilike '%inventory%'))[1] as inventory_module_id,
+             coalesce(max(owner_lat.character_name), '') as owner_name,
+             (select vm2.template_id from dune.vehicle_modules vm2 where vm2.vehicle_id = a.id and vm2.template_id ilike '%inventory%' limit 1) as inventory_module_id,
              'vehicle' as type
       from dune.actors a
       join dune.vehicles v on v.id = a.id
       left join dune.permission_actor pa on pa.actor_id = a.id
       left join dune.inventories inv on inv.actor_id = a.id
       left join dune.items i on i.inventory_id = inv.id
-      left join dune.permission_actor_rank par on par.permission_actor_id = a.id
-      left join dune.actors player_a on player_a.id = par.player_id
-      left join dune.player_state ps on ps.account_id = player_a.owner_account_id
-      left join dune.vehicle_modules vm on vm.vehicle_id = a.id
+      left join lateral (
+        select ps2.character_name
+        from dune.permission_actor_rank par2
+        join dune.actors player_a2 on player_a2.id = par2.player_id
+        join dune.player_state ps2 on ps2.account_id = player_a2.owner_account_id
+        where par2.permission_actor_id = a.id
+        order by par2.rank asc, ps2.character_name asc
+        limit 1
+      ) owner_lat on true
       where a.id is not null
       group by a.id, a.map
       order by a.id`);
@@ -3059,7 +3916,38 @@ export async function listStorage(db) {
 }
 
 export async function storageItems(db, id) {
-  return playerInventory(db, id);
+  if (!(await tableExists(db, "items")) || !(await tableExists(db, "inventories"))) return unsupported("storage-items", ["dune.items", "dune.inventories"]);
+
+  const inv = await db.query(`
+    select id, max_item_count, max_item_volume
+    from dune.inventories
+    where actor_id = $1
+    order by id limit 1`, [intParam(id, "storage id", 1)]);
+
+  const invId = inv.rows[0]?.id;
+  if (!invId) return { capabilities: { storageItems: false }, rows: [], reason: "No inventory found for the selected storage" };
+  const maxSlots = Number(inv.rows[0]?.max_item_count) || 0;
+  const maxVolume = Number(inv.rows[0]?.max_item_volume) || 0;
+
+  const result = await db.query(`
+    select i.id,
+           i.template_id,
+           i.stack_size,
+           i.quality_level,
+           i.position_index,
+           i.inventory_id,
+           coalesce((i.stats->'FItemStackAndDurabilityStats'->1->>'CurrentDurability'), null) as current_durability,
+           coalesce(
+             nullif((i.stats->'FItemStackAndDurabilityStats'->1->>'MaxDurability')::numeric, 0),
+             nullif((i.stats->'FItemStackAndDurabilityStats'->1->>'DecayedMaxDurability')::numeric, 0),
+             null
+           ) as max_durability,
+           i.stats
+    from dune.items i
+    where i.inventory_id = $1
+    order by i.position_index, i.id`, [invId]);
+
+  return { capabilities: { storageItems: true }, rows: result.rows, maxSlots, maxVolume };
 }
 
 export async function storageCapabilities(db) {
@@ -3901,7 +4789,7 @@ function portalVehicleDisplayName(type) {
 // the generator burning it — every fuel maps to exactly one duration across all
 // generators — so these constants replace reading the component per generator.
 // Re-verify after game updates; the measurement query lives in
-// docs/generator-fuel-burn-rates.md.
+// docs/console/generator-fuel-burn-rates.md.
 const FUEL_BURN_SECONDS = {
   oil: 60 * 60,                   // measured across 69 populated components
   spicedfuelcell: 90 * 60,        // measured — confirmed 2026-07-26 after the
@@ -3936,30 +4824,38 @@ export function generatorUptimePolicy(now = new Date()) {
 // Display metadata, accepted fuels, and explicit placeable allowlists per
 // generator type. Both mappings are passed into SQL as parameters, so adding a
 // supported type or known alias requires changing this object only.
+// The `refill` block drives refillBaseGenerators: templateId is the cased id
+// written to dune.items (it must appear lower-cased in `fuels`), stackSize is
+// the per-row stack the game accepts, and totalCap bounds the whole device
+// across at most maxStacks rows.
 const GENERATOR_TYPES = {
   fuel: {
     name: "Fuel-Powered Generator",
     fuelName: "Fuel Cell",
     fuels: ["oil"],
-    buildingTypes: ["generator_placeable"]
+    buildingTypes: ["generator_placeable"],
+    refill: { templateId: "Oil", stackSize: 499, maxStacks: 1, totalCap: 499 }
   },
   spice: {
     name: "Spice-Powered Generator",
     fuelName: "Spice-infused Fuel Cell",
     fuels: ["spicedfuelcell"],
-    buildingTypes: ["spicegenerator_placeable"]
+    buildingTypes: ["spicegenerator_placeable"],
+    refill: { templateId: "SpicedFuelCell", stackSize: 499, maxStacks: 1, totalCap: 499 }
   },
   windTurbineOmni: {
     name: "Omnidirectional Wind Turbine",
     fuelName: "Low-grade Lubricant",
     fuels: ["windturbinelubricant1"],
-    buildingTypes: ["windturbineomnidirectional_placeable"]
+    buildingTypes: ["windturbineomnidirectional_placeable"],
+    refill: { templateId: "WindTurbineLubricant1", stackSize: 100, maxStacks: 5, totalCap: 499 }
   },
   windTurbineDirectional: {
     name: "Directional Wind Turbine",
     fuelName: "Industrial-grade Lubricant",
     fuels: ["windturbinelubricant2"],
-    buildingTypes: ["windturbinedirectional_placeable"]
+    buildingTypes: ["windturbinedirectional_placeable"],
+    refill: { templateId: "WindTurbineLubricant2", stackSize: 100, maxStacks: 5, totalCap: 499 }
   }
 };
 
@@ -3974,6 +4870,32 @@ const GENERATOR_BUILDING_TYPE_PAIRS = GENERATOR_TYPE_ORDER.flatMap(
   (type) => GENERATOR_TYPES[type].buildingTypes.map((buildingType) => [type, buildingType])
 );
 const FUEL_TEMPLATE_IDS = Object.keys(FUEL_BURN_SECONDS);
+
+// Operators can retune refill caps per generator type without a rebuild, the
+// same way runtime/data/admin-items.json is layered over the shipped catalog.
+// Values are clamped so a malformed override cannot request a ten-million-item
+// insert, and templateId is never overridable — fuel identity is fixed by the
+// game, not by configuration.
+function refillCaps(repoRoot) {
+  const overridePath = resolve(repoRoot || "", "runtime/data/generator-refill-caps.json");
+  let overrides = {};
+  try {
+    if (repoRoot && existsSync(overridePath)) overrides = JSON.parse(readFileSync(overridePath, "utf8")) || {};
+  } catch (error) {
+    console.warn(`Ignoring unreadable generator refill cap overrides: ${redact(error?.message || error)}`);
+  }
+  const caps = {};
+  for (const type of GENERATOR_TYPE_ORDER) {
+    const defaults = GENERATOR_TYPES[type].refill;
+    const merged = { ...defaults, ...(overrides[type] || {}) };
+    merged.templateId = defaults.templateId;
+    merged.stackSize = clampInt(merged.stackSize, defaults.stackSize, 1, 10000);
+    merged.maxStacks = clampInt(merged.maxStacks, defaults.maxStacks, 1, 50);
+    merged.totalCap = clampInt(merged.totalCap, defaults.totalCap, 1, merged.stackSize * merged.maxStacks);
+    caps[type] = merged;
+  }
+  return caps;
+}
 
 export async function portalGeneratorFuel(db, baseIds, { now = new Date() } = {}) {
   if (!baseIds.length) return new Map();
@@ -4124,7 +5046,7 @@ async function portalGuild(db, identity) {
 
 function portalGuildRole(roleId) {
   const value = Number(roleId);
-  if (value >= 100) return "Leader";
+  if (value >= GUILD_LEADER_ROLE_ID) return "Leader";
   if (value > 1) return "Officer";
   return "Member";
 }
@@ -4135,37 +5057,30 @@ export async function completeJourneyNode(db, id, { nodeId }, journeyTagsData = 
   const safeNodeId = validateJourneyNodeId(nodeId);
   return db.transaction(async (tx) => {
     const player = await resolvePlayerMutationTarget(tx, id);
-    const journeyIdColumn = quoteIdentifier(schema.journeyIdColumn);
-    const journeyIdentityId = playerJourneyIdentity(player, schema.journeyIdColumn);
+    requireOfflinePlayer(player, "Journey changes");
     const tagIdentityId = playerJourneyIdentity(player, schema.tagIdColumn);
     if (isContractNode(safeNodeId, journeyTagsData)) {
       const tags = contractTagsForNode(safeNodeId, journeyTagsData);
+      const removeTags = catalogStrings(journeyTagsData?.contract_remove_tags?.[safeNodeId]);
+      const skills = catalogStrings(journeyTagsData?.contract_skill_grants?.[safeNodeId]);
       const tagResult = await applyDirectJourneyTags(tx, player, tags, "add", schema.tagIdColumn, tagIdentityId);
-      return { ok: true, player, nodeId: safeNodeId, updatedRows: 0, tagsApplied: tags.length, factionBumps: tagResult.factionBumps, contract: true };
+      if (removeTags.length) await applyDirectJourneyTags(tx, player, removeTags, "remove", schema.tagIdColumn, tagIdentityId);
+      const skillsGranted = await mutateContractSkills(tx, player.actorId, skills, "add");
+      const dismissedContracts = await dismissActiveContracts(tx, player.actorId, contractShortNames(safeNodeId, journeyTagsData));
+      const trackedContractCleared = await clearDanglingTrackedContract(tx, player.actorId);
+      return { ok: true, player, nodeId: safeNodeId, updatedRows: 0, tagsApplied: tags.length, tagsRemoved: removeTags.length,
+        factionBumps: tagResult.factionBumps, skillsGranted, dismissedContracts, trackedContractCleared, contract: true,
+        message: "Contract completion was applied and will take effect on the next login." };
     }
-    const completionNodeIds = journeyCompletionNodeIds(safeNodeId, journeyTagsData);
+
+    const journeyIdColumn = quoteIdentifier(schema.journeyIdColumn);
+    const journeyIdentityId = playerJourneyIdentity(player, schema.journeyIdColumn);
     const updated = await tx.query(`
       update dune.journey_story_node
-      set complete_condition_state = 'true'::jsonb,
-          reveal_condition_state = 'true'::jsonb
+      set complete_condition_state = 'true'::jsonb, reveal_condition_state = 'true'::jsonb
       where ${journeyIdColumn} = $1
-        and (story_node_id = any($2::text[]) or story_node_id = $3 or story_node_id like $3 || '.%')`, [journeyIdentityId, completionNodeIds, safeNodeId]);
+        and (story_node_id = $2 or story_node_id like $2 || '.%')`, [journeyIdentityId, safeNodeId]);
     let updatedRows = Number(updated.rowCount || 0);
-    const inserted = await tx.query(`
-      with wanted(story_node_id) as (
-        select unnest($2::text[])
-      )
-      insert into dune.journey_story_node
-        (${journeyIdColumn}, story_node_id, has_pending_reward, complete_condition_state, reveal_condition_state, fail_condition_state, metadata_state, reset_group)
-      select $1, wanted.story_node_id, false, 'true'::jsonb, 'true'::jsonb, '{}'::jsonb, '{}'::jsonb, 'Default'::dune.JourneyStoryResetGroup
-      from wanted
-      where not exists (
-        select 1
-        from dune.journey_story_node existing
-        where existing.${journeyIdColumn} = $1
-          and existing.story_node_id = wanted.story_node_id
-      )`, [journeyIdentityId, completionNodeIds]);
-    updatedRows += Number(inserted.rowCount || 0);
     if (updatedRows === 0) {
       const fallback = await tx.query(`
         insert into dune.journey_story_node
@@ -4174,8 +5089,19 @@ export async function completeJourneyNode(db, id, { nodeId }, journeyTagsData = 
       updatedRows = Number(fallback.rowCount || 1);
     }
     const tags = tagsForJourneyNodeSubtree(safeNodeId, journeyTagsData);
-    const tagResult = await applyDirectJourneyTags(tx, player, tags, "add", schema.tagIdColumn, tagIdentityId);
-    return { ok: true, player, nodeId: safeNodeId, updatedRows, tagsApplied: tags.length, factionBumps: tagResult.factionBumps };
+    if (journeyScopesOverlap(safeNodeId, FIND_FREMEN_JOURNEY_ROOT)) tags.push(FIND_FREMEN_REWARD_TAG);
+    const uniqueTags = [...new Set(tags)];
+    const tagResult = await applyDirectJourneyTags(tx, player, uniqueTags, "add", schema.tagIdColumn, tagIdentityId);
+    let recipesGranted = 0;
+    for (const recipe of journeyRewardRecipes(safeNodeId)) {
+      if (await grantJourneyTechRecipe(tx, player.actorId, recipe)) recipesGranted += 1;
+    }
+    const spiceVisionEnabled = journeyScopesOverlap(safeNodeId, FIND_FREMEN_JOURNEY_ROOT)
+      ? await enableJourneySpiceVision(tx, player.actorId)
+      : false;
+    return { ok: true, player, nodeId: safeNodeId, updatedRows, tagsApplied: uniqueTags.length,
+      factionBumps: tagResult.factionBumps, recipesGranted, spiceVisionEnabled,
+      message: "Journey completion and its known rewards were applied and will take effect on the next login." };
   });
 }
 
@@ -4185,23 +5111,26 @@ export async function resetJourneyNode(db, id, { nodeId }, journeyTagsData = {})
   const safeNodeId = validateJourneyNodeId(nodeId);
   return db.transaction(async (tx) => {
     const player = await resolvePlayerMutationTarget(tx, id);
-    const journeyIdColumn = quoteIdentifier(schema.journeyIdColumn);
-    const journeyIdentityId = playerJourneyIdentity(player, schema.journeyIdColumn);
+    requireOfflinePlayer(player, "Journey changes");
     const tagIdentityId = playerJourneyIdentity(player, schema.tagIdColumn);
     if (isContractNode(safeNodeId, journeyTagsData)) {
       const tags = contractTagsForNode(safeNodeId, journeyTagsData);
+      const skills = catalogStrings(journeyTagsData?.contract_skill_grants?.[safeNodeId]);
       await applyDirectJourneyTags(tx, player, tags, "remove", schema.tagIdColumn, tagIdentityId);
-      return { ok: true, player, nodeId: safeNodeId, updatedRows: 0, tagsRemoved: tags.length, contract: true };
+      const skillsRemoved = await mutateContractSkills(tx, player.actorId, skills, "remove");
+      return { ok: true, player, nodeId: safeNodeId, updatedRows: 0, tagsRemoved: tags.length, skillsRemoved, contract: true,
+        message: "Contract flags were reset for the next login. A contract item already consumed by completion is not recreated." };
     }
+    const journeyIdColumn = quoteIdentifier(schema.journeyIdColumn);
+    const journeyIdentityId = playerJourneyIdentity(player, schema.journeyIdColumn);
     const updated = await tx.query(`
       update dune.journey_story_node
-      set complete_condition_state = 'false'::jsonb,
-          has_pending_reward = false
-      where ${journeyIdColumn} = $1
-        and (story_node_id = $2 or story_node_id like $2 || '.%')`, [journeyIdentityId, safeNodeId]);
+      set complete_condition_state = 'false'::jsonb, has_pending_reward = false
+      where ${journeyIdColumn} = $1 and (story_node_id = $2 or story_node_id like $2 || '.%')`, [journeyIdentityId, safeNodeId]);
     const tags = tagsForJourneyNodeSubtree(safeNodeId, journeyTagsData);
     await applyDirectJourneyTags(tx, player, tags, "remove", schema.tagIdColumn, tagIdentityId);
-    return { ok: true, player, nodeId: safeNodeId, updatedRows: Number(updated.rowCount || 0), tagsRemoved: tags.length };
+    return { ok: true, player, nodeId: safeNodeId, updatedRows: Number(updated.rowCount || 0), tagsRemoved: tags.length,
+      message: "Journey state and mapped tags were reset for the next login. Previously granted rewards are retained." };
   });
 }
 
@@ -4260,6 +5189,9 @@ export async function deleteInventoryItem(db, playerId, itemId) {
 export async function updateInventoryItem(db, playerId, itemId, values) {
   await requireCapability(await supportsInventoryEdit(db), "Inventory edit requires dune.items and dune.inventories.");
   const safeItemId = intParam(itemId, "item id", 1);
+  if (Object.prototype.hasOwnProperty.call(values || {}, "max_durability") && values.max_durability !== null && values.max_durability !== "") {
+    throw new Error("Maximum durability is read-only because it is determined by the item created in-game");
+  }
   const nextValues = Object.fromEntries(Object.entries(values || {}).filter(([key]) => INVENTORY_EDITABLE_COLUMNS.has(key)));
   return db.transaction(async (tx) => {
     const player = await resolvePlayerMutationTarget(tx, playerId);
@@ -4271,16 +5203,17 @@ export async function updateInventoryItem(db, playerId, itemId, values) {
       for update`, [safeItemId, player.actorId]);
     if (!owned.rows[0]) throw new Error("Inventory item was not found in the selected player's directly-owned inventory");
 
-    const hasMax = Object.prototype.hasOwnProperty.call(nextValues, "max_durability") && nextValues.max_durability !== null && nextValues.max_durability !== "";
     const hasCurrent = Object.prototype.hasOwnProperty.call(nextValues, "current_durability") && nextValues.current_durability !== null && nextValues.current_durability !== "";
-    if (hasMax || hasCurrent) {
+    if (hasCurrent) {
       const stats = owned.rows[0].stats || {};
       const durability = { ...(stats.FItemStackAndDurabilityStats?.[1] || {}) };
-      const maxKey = Object.prototype.hasOwnProperty.call(durability, "MaxDurability") ? "MaxDurability" : "DecayedMaxDurability";
-      const nextMax = numberParam(hasMax ? nextValues.max_durability : durability[maxKey], "max durability", 0, 100);
-      const nextCurrent = numberParam(hasCurrent ? nextValues.current_durability : durability.CurrentDurability, "current durability", 0, nextMax);
+      const maxDurability = Number(durability.MaxDurability);
+      const storedMaxValue = Number.isFinite(maxDurability) && maxDurability !== 0
+        ? durability.MaxDurability
+        : durability.DecayedMaxDurability;
+      const storedMax = numberParam(storedMaxValue, "stored max durability", 0);
+      const nextCurrent = numberParam(nextValues.current_durability, "current durability", 0, storedMax);
       durability.CurrentDurability = nextCurrent;
-      durability[maxKey] = nextMax;
       nextValues.stats = { ...stats, FItemStackAndDurabilityStats: [stats.FItemStackAndDurabilityStats?.[0] || [], durability] };
     }
     delete nextValues.current_durability;
@@ -4978,6 +5911,995 @@ export async function fillItemToStorage(db, repoRoot, storageId, { itemName = ""
   });
 }
 
+
+// Every power device at a base, with the inventory its fuel lives in. Claim
+// resolution mirrors portalGeneratorFuel so both agree on which placeables
+// belong to a base, and classification is the same explicit allowlist — an
+// unknown placeable is left out entirely rather than assumed to burn oil.
+export async function removeItemsFromStorage(db, storageId, { itemIds = [] } = {}) {
+  await requireCapability(await supportsInventoryDelete(db), "Storage item removal requires dune.items, dune.inventories, and dune.delete_item(bigint).");
+  const target = intParam(storageId, "storage id", 1);
+  const safeIds = [...new Set((Array.isArray(itemIds) ? itemIds : []).map((id) => intParam(id, "item id", 1)))];
+  if (!safeIds.length) throw new Error("At least one item ID is required");
+
+  return db.transaction(async (tx) => {
+    const storage = await tx.query(`
+      select id, actor_id
+      from dune.inventories
+      where actor_id = $1
+      order by id
+      limit 1
+      for update`, [target]);
+    if (!storage.rows[0]) throw new Error("Storage inventory was not found for the selected storage — if this is a vehicle, it may not have a storage module attached");
+    const inventory = storage.rows[0];
+
+    let removed = 0;
+    for (const itemId of safeIds) {
+      const owned = await tx.query(`
+        select id from dune.items
+        where id = $1 and inventory_id = $2
+        for update`, [itemId, inventory.id]);
+      if (!owned.rows[0]) continue;
+
+      await tx.query("select dune.delete_item($1::bigint)", [itemId]);
+      const stillExists = await tx.query("select exists(select 1 from dune.items where id = $1 and inventory_id = $2) as exists", [itemId, inventory.id]);
+      if (stillExists.rows[0]?.exists) {
+        await tx.query("delete from dune.items where id = $1 and inventory_id = $2", [itemId, inventory.id]);
+      }
+      removed++;
+    }
+
+    return { ok: true, removed, storageId: inventory.actor_id };
+  });
+}
+
+export async function baseGenerators(db, baseId) {
+  const target = intParam(baseId, "base id", 1);
+  const result = await db.query(`
+    with requested_claims as (
+      select distinct b.id, afe.actor_id
+      from dune.buildings b
+      join dune.building_instances bi on bi.building_id = b.id
+      join dune.actor_fgl_entities afe on afe.entity_id = bi.owner_entity_id
+      where b.id = $1
+    ), base_entities as (
+      select distinct rc.id, claim_afe.entity_id as owner_entity_id
+      from requested_claims rc
+      join dune.actor_fgl_entities claim_afe on claim_afe.actor_id = rc.actor_id
+    ), generator_types as (
+      select * from unnest($2::text[], $3::text[]) as t(generator_type, building_type)
+    )
+    select distinct p.id::text as placeable_id,
+      gt.generator_type,
+      inv.id::text as inventory_id,
+      coalesce(inv.max_item_count, 0)::int as max_item_count
+    from base_entities be
+    join dune.placeables p on p.owner_entity_id = be.owner_entity_id
+    join generator_types gt on gt.building_type = lower(p.building_type)
+    left join lateral (
+      select id, max_item_count from dune.inventories where actor_id = p.id order by id limit 1
+    ) inv on true
+    order by placeable_id`, [
+      target,
+      GENERATOR_BUILDING_TYPE_PAIRS.map(([type]) => type),
+      GENERATOR_BUILDING_TYPE_PAIRS.map(([, buildingType]) => buildingType)
+    ]);
+  return result.rows;
+}
+
+// Per-device fuel level for one base, as a fraction of the same cap
+// refillBaseGenerators would fill to. Device discovery goes through
+// baseGenerators so the reading and the write share one allowlist and can never
+// disagree about what counts as a generator.
+//
+// This is deliberately per-device rather than reusing portalGeneratorFuel, which
+// aggregates by (base_id, generator_type): that shape cannot see a single
+// starved device standing among full siblings of the same type, and that device
+// is exactly what an automated refill decision turns on.
+//
+// lowestPercent is null for a base with no recognised devices, not 0 -- "nothing
+// to measure" must not read as "empty" to a caller deciding whether to refill.
+export async function baseGeneratorFuelLevels(db, repoRoot, baseId) {
+  const target = intParam(baseId, "base id", 1);
+  const caps = refillCaps(repoRoot);
+  const devices = await baseGenerators(db, target);
+  const inventoryIds = devices.map((device) => device.inventory_id).filter(Boolean);
+
+  // One grouped read for every device at the base rather than a query per
+  // device: this runs for every enrolled base on each scan.
+  const stocked = new Map();
+  if (inventoryIds.length) {
+    const result = await db.query(`
+      select inventory_id::text as inventory_id,
+        lower(template_id) as template_id,
+        sum(stack_size)::int as units
+      from dune.items
+      where inventory_id = any($1::bigint[])
+      group by 1, 2`, [inventoryIds]);
+    for (const row of result.rows || []) {
+      stocked.set(`${row.inventory_id}:${row.template_id}`, Number(row.units) || 0);
+    }
+  }
+
+  const entries = [];
+  for (const device of devices) {
+    const cap = caps[device.generator_type];
+    if (!cap) continue;
+    // A device with no inventory row cannot hold fuel at all, so it reads as
+    // empty -- the same case refillBaseGenerators reports as "no-inventory".
+    const units = device.inventory_id
+      ? stocked.get(`${device.inventory_id}:${cap.templateId.toLowerCase()}`) || 0
+      : 0;
+    entries.push({
+      placeableId: device.placeable_id,
+      generatorType: device.generator_type,
+      units,
+      cap: cap.totalCap,
+      percent: cap.totalCap > 0 ? Math.round((units / cap.totalCap) * 1000) / 10 : 0
+    });
+  }
+
+  return {
+    baseId: target,
+    deviceCount: entries.length,
+    devices: entries,
+    lowestPercent: entries.length ? Math.min(...entries.map((entry) => entry.percent)) : null
+  };
+}
+
+// Tops every power device at a base up to its configured cap in one
+// transaction: partial stacks are filled before new rows are created, so a
+// device never ends up with more rows than the game would have made itself.
+export async function refillBaseGenerators(db, repoRoot, baseId) {
+  await requireCapability(
+    await supportsGeneratorRefill(db),
+    "Generator refill requires dune.placeables plus compatible dune.inventories and dune.items insert columns."
+  );
+  const target = intParam(baseId, "base id", 1);
+  const caps = refillCaps(repoRoot);
+
+  return db.transaction(async (tx) => {
+    const itemColumns = await columnsFor(tx, "items");
+    const devices = await baseGenerators(tx, target);
+    if (!devices.length) throw new Error("No generators or wind turbines were found at this base");
+
+    const refilled = [];
+    for (const device of devices) {
+      const type = GENERATOR_TYPES[device.generator_type];
+      const cap = caps[device.generator_type];
+      if (!type || !cap) continue;
+      const summary = {
+        placeableId: device.placeable_id,
+        type: device.generator_type,
+        label: type.name,
+        fuelName: type.fuelName
+      };
+      if (!device.inventory_id) {
+        refilled.push({ ...summary, before: 0, after: 0, added: 0, skipped: "no-inventory" });
+        continue;
+      }
+
+      // Lock the inventory row itself before its fuel rows: FOR UPDATE only
+      // locks rows it selects, so a device with zero fuel rows (new, or fully
+      // drained) leaves nothing for a concurrent refill to serialize against.
+      // The inventory row always exists once inventory_id is set, so locking
+      // it first gives concurrent refills of the same device something to
+      // queue behind -- same technique as giveItemToStorage/giveItemToPlayer.
+      await tx.query("select id from dune.inventories where id = $1 for update", [device.inventory_id]);
+
+      // Lock this device's fuel rows so a concurrent refill cannot double-fill it.
+      const existing = await tx.query(`
+        select id, stack_size, position_index
+        from dune.items
+        where inventory_id = $1 and lower(template_id) = lower($2)
+        order by position_index
+        for update`, [device.inventory_id, cap.templateId]);
+
+      const before = existing.rows.reduce((sum, row) => sum + (Number(row.stack_size) || 0), 0);
+      let deficit = Math.max(0, cap.totalCap - before);
+      if (deficit === 0) {
+        refilled.push({ ...summary, before, after: before, added: 0, capped: false });
+        continue;
+      }
+
+      for (const row of existing.rows) {
+        if (deficit === 0) break;
+        const room = cap.stackSize - (Number(row.stack_size) || 0);
+        if (room <= 0) continue;
+        const add = Math.min(room, deficit);
+        await tx.query("update dune.items set stack_size = stack_size + $1 where id = $2", [add, row.id]);
+        deficit -= add;
+      }
+
+      const slotCount = await tx.query(
+        "select count(*)::int as count from dune.items where inventory_id = $1", [device.inventory_id]);
+      let freeSlots = device.max_item_count > 0
+        ? Math.max(0, device.max_item_count - (Number(slotCount.rows[0]?.count) || 0))
+        : Number.MAX_SAFE_INTEGER;
+      let stacksAllowed = Math.max(0, cap.maxStacks - existing.rows.length);
+      const position = await tx.query(
+        "select coalesce(max(position_index), -1)::int + 1 as position_index from dune.items where inventory_id = $1",
+        [device.inventory_id]);
+      let nextPosition = Number(position.rows[0]?.position_index) || 0;
+
+      while (deficit > 0 && stacksAllowed > 0 && freeSlots > 0) {
+        const size = Math.min(cap.stackSize, deficit);
+        const insert = itemInsertShape(
+          ["inventory_id", "template_id", "stack_size", "quality_level", "position_index", "stats"],
+          [device.inventory_id, cap.templateId, size, 0, nextPosition, JSON.stringify({})],
+          itemColumns
+        );
+        await tx.query(`
+          insert into dune.items (${insert.columns.join(", ")})
+          values (${insert.values.map((_, index) => index === 5 ? `$${index + 1}::jsonb` : `$${index + 1}`).join(", ")})`,
+          insert.values);
+        deficit -= size;
+        nextPosition += 1;
+        stacksAllowed -= 1;
+        freeSlots -= 1;
+      }
+
+      const after = cap.totalCap - deficit;
+      refilled.push({ ...summary, before, after, added: after - before, capped: deficit > 0 });
+    }
+
+    return {
+      ok: true,
+      baseId: target,
+      devices: refilled,
+      totalAdded: refilled.reduce((sum, entry) => sum + (entry.added || 0), 0)
+    };
+  });
+}
+
+// Pending-refill queue. A refill written while the base's map has a live game
+// server can be silently overwritten the next time that server flushes its own
+// state to Postgres, so a refill aimed at a running map is recorded here and
+// applied later, in the window where that map is down (see flushGeneratorRefills).
+const PENDING_REFILL_PATH = "runtime/generated/pending-generator-refills.json";
+const MAX_PENDING_REFILLS = 500;
+const MAX_REFILL_FLUSH_ATTEMPTS = 3;
+
+// Backstops for an entry that can never succeed. The attempt limit only counts
+// failures classified as permanent, and that classification is a guess from an
+// error string -- a genuinely permanent fault whose message looks transient
+// (a dropped table reads as `relation ... does not exist`) would otherwise be
+// retried on every tick forever. The age limit bounds the entry's life whatever
+// its errors say, and the retry delay keeps a failing entry from being retried
+// at the full tick rate in the meantime.
+function pendingRefillMaxAgeMs() {
+  return clampInt(process.env.ADMIN_REFILL_MAX_AGE_MS, 7 * 24 * 60 * 60 * 1000, 1, Number.MAX_SAFE_INTEGER);
+}
+function pendingRefillRetryDelayMs() {
+  return clampInt(process.env.ADMIN_REFILL_RETRY_DELAY_MS, 60000, 1, Number.MAX_SAFE_INTEGER);
+}
+
+function pendingRefillFile(repoRoot) {
+  return resolve(repoRoot || "", PENDING_REFILL_PATH);
+}
+
+function normalizePendingRefill(entry) {
+  const baseId = Math.floor(Number(entry?.baseId));
+  if (!Number.isInteger(baseId) || baseId < 1) return null;
+  const partitionId = Math.floor(Number(entry?.partitionId));
+  return {
+    baseId,
+    map: String(entry?.map ?? "").slice(0, 120),
+    partitionId: Number.isInteger(partitionId) && partitionId > 0 ? partitionId : 0,
+    queuedAt: typeof entry?.queuedAt === "string" ? entry.queuedAt.slice(0, 40) : "",
+    attempts: clampInt(entry?.attempts, 0, 0, MAX_REFILL_FLUSH_ATTEMPTS),
+    nextRetryAt: Number.isFinite(Number(entry?.nextRetryAt)) ? Number(entry.nextRetryAt) : 0,
+    lastError: String(entry?.lastError ?? "").slice(0, 300)
+  };
+}
+
+export function listQueuedGeneratorRefills(repoRoot) {
+  const file = pendingRefillFile(repoRoot);
+  if (!existsSync(file)) return [];
+  try {
+    const parsed = JSON.parse(readFileSync(file, "utf8"));
+    if (!Array.isArray(parsed)) return [];
+    // One entry per base, so a double-clicked button cannot queue a base twice.
+    const seen = new Set();
+    return parsed.map(normalizePendingRefill).filter((entry) => {
+      if (!entry || seen.has(entry.baseId)) return false;
+      seen.add(entry.baseId);
+      return true;
+    });
+  } catch (error) {
+    console.warn(`Ignoring unreadable pending generator refill queue: ${redact(error?.message || error)}`);
+    return [];
+  }
+}
+
+// Deliberately synchronous read-modify-write, matching saveBuybackSchedule in
+// addonJobs.js: with no await between read and write, two requests in one
+// console process cannot interleave and drop each other's entry. The temp-file
+// rename covers crash safety.
+function writeQueuedGeneratorRefills(repoRoot, entries) {
+  writeJsonAtomic(pendingRefillFile(repoRoot), entries);
+  return entries;
+}
+
+export function queueGeneratorRefill(repoRoot, { baseId, map = "", partitionId = 0, now = () => new Date() } = {}) {
+  const entry = normalizePendingRefill({ baseId, map, partitionId, queuedAt: now().toISOString() });
+  if (!entry) throw new Error("Invalid base id");
+  const others = listQueuedGeneratorRefills(repoRoot).filter((row) => row.baseId !== entry.baseId);
+  if (others.length >= MAX_PENDING_REFILLS) {
+    throw new Error(`The pending refill queue already holds ${MAX_PENDING_REFILLS} bases. Restart the affected maps to apply them first.`);
+  }
+  writeQueuedGeneratorRefills(repoRoot, [...others, entry]);
+  return entry;
+}
+
+export function cancelQueuedGeneratorRefill(repoRoot, baseId) {
+  const target = intParam(baseId, "base id", 1);
+  const entries = listQueuedGeneratorRefills(repoRoot);
+  const remaining = entries.filter((entry) => entry.baseId !== target);
+  if (remaining.length === entries.length) throw new Error("That base has no queued generator refill.");
+  writeQueuedGeneratorRefills(repoRoot, remaining);
+  return { ok: true, baseId: target, pending: remaining.length };
+}
+
+// How long a partition must stay disconnected before a write to its bases is
+// considered safe. Absence of a connection is ambiguous in a single sample: a
+// restarting map server and a Postgres restart that dropped every connection
+// look identical. A reconnecting game server returns in seconds, a restarting
+// one stays away for minutes, so requiring the gap to persist tells them apart.
+function refillDownDwellMs() {
+  return clampInt(process.env.ADMIN_REFILL_DOWN_DWELL_MS, 30000, 1, Number.MAX_SAFE_INTEGER);
+}
+const partitionDisconnectedSince = new Map();
+
+export function _resetRefillPartitionDwellForTests() {
+  partitionDisconnectedSince.clear();
+}
+
+// Observes which partitions are safe to write to. Returns null when
+// dune.world_partition is absent: without it there is no way to tell a running
+// map from a stopped one, so queueing is not offered at all and refills stay
+// immediate (see supportsGeneratorRefillQueue).
+//
+// Connection state is read straight from pg_stat_activity, matching the
+// "DuneSandbox - <server_id>" application_name a game server connects under.
+// That is the same mechanism as the game's own dune.active_server_ids view, but
+// queried directly: pg_stat_activity is a core catalog view present on every
+// Postgres, so there is no second, weaker code path to fall back to. Testing
+// world_partition.server_id instead would be exactly that weaker path --
+// restartService on an always-on map replaces the container without ever
+// clearing it, so those partitions would read as permanently live and their
+// refills could never flush. This check is also deliberately broader than the
+// view, which additionally requires a farm_state row: a server visible here but
+// missing from farm_state still counts as connected, which errs toward leaving
+// work queued.
+//
+// Two ways a partition becomes safe:
+//   - its server_id is released entirely, which despawn does -- positive
+//     evidence the map is gone, trusted immediately so a despawn/spawn pair
+//     still gets its short window;
+//   - its server_id is still assigned but has had no connection for the whole
+//     dwell period, which covers restartService and stop/start, where the
+//     assignment lingers.
+// Anything else stays unsafe, so a momentary loss of visibility keeps refills
+// queued instead of writing them into a live base.
+export async function observeRefillPartitions(db, { now = Date.now } = {}) {
+  if (!(await tableExists(db, "world_partition"))) return null;
+  const result = await db.query(
+    `select wp.partition_id,
+            nullif(wp.server_id, '') is null as unassigned,
+            exists (
+              select 1 from pg_stat_activity sa
+              where sa.application_name = 'DuneSandbox - ' || nullif(wp.server_id, '')
+            ) as connected
+     from dune.world_partition wp`);
+
+  const timestamp = now();
+  const safe = new Set();
+  const known = new Set();
+  for (const row of result.rows || []) {
+    const partitionId = Number(row.partition_id || 0);
+    if (partitionId <= 0) continue;
+    known.add(partitionId);
+    if (row.connected) {
+      partitionDisconnectedSince.delete(partitionId);
+      continue;
+    }
+    if (row.unassigned) {
+      partitionDisconnectedSince.delete(partitionId);
+      safe.add(partitionId);
+      continue;
+    }
+    const since = partitionDisconnectedSince.get(partitionId) ?? timestamp;
+    partitionDisconnectedSince.set(partitionId, since);
+    if (timestamp - since >= refillDownDwellMs()) safe.add(partitionId);
+  }
+  for (const partitionId of [...partitionDisconnectedSince.keys()]) {
+    if (!known.has(partitionId)) partitionDisconnectedSince.delete(partitionId);
+  }
+  return { safe, known };
+}
+
+// A base outside any known partition is simulated by nothing, so it is always
+// safe; a null observation means the queue is unsupported and writes stay
+// immediate, matching the behaviour before the queue existed.
+function partitionWriteSafe(observed, partitionId) {
+  if (!observed) return true;
+  if (partitionId <= 0) return true;
+  if (!observed.known.has(partitionId)) return true;
+  return observed.safe.has(partitionId);
+}
+
+// generatorRefill accepts an already-known flag so a caller that just
+// computed supportsGeneratorRefill (e.g. listBases) doesn't pay for a second,
+// redundant re-derivation of the same boolean on every call.
+export async function supportsGeneratorRefillQueue(db, { generatorRefill } = {}) {
+  const supported = generatorRefill !== undefined ? generatorRefill : await supportsGeneratorRefill(db);
+  if (!supported) return false;
+  return tableExists(db, "world_partition");
+}
+
+// dune.actors.map and dune.world_partition.map are different namespaces: a base
+// on partition 1 reports the in-game region ("HaggaBasin") while the partition
+// itself is "Survival_1", and partition 8 reports "DeepDesert" against
+// "DeepDesert_1". Only the world_partition name lines up with the restart
+// machinery, so anything choosing a restart target has to resolve it from the
+// partition id rather than from whatever the base's actor row says.
+export async function partitionRestartTargets(db) {
+  if (!(await tableExists(db, "world_partition"))) return new Map();
+  const result = await db.query(
+    "select partition_id, map, coalesce(dimension_index, 0)::int as dimension_index from dune.world_partition");
+  const targets = new Map();
+  for (const row of result.rows || []) {
+    const partitionId = Number(row.partition_id || 0);
+    if (partitionId > 0) targets.set(partitionId, { map: String(row.map || ""), dimensionIndex: Number(row.dimension_index || 0) });
+  }
+  return targets;
+}
+
+// The map and partition a base sits in. Resolved server-side on every request:
+// whether a write is safe must never depend on a client-supplied map name.
+//
+// Left-joined rather than inner-joined so a base whose owner-entity link is
+// broken (building_instances.owner_entity_id is nullable, ON DELETE SET NULL
+// against fgl_entities) is distinguished from a base that never existed --
+// autoRefill.js pattern-matches the "was not found" text specifically to
+// decide whether to un-enroll a base, so the two cases must throw different
+// messages rather than collapse a broken link into "no longer exists".
+// order by prefers a resolved sibling piece the same way basePermissionActor
+// does, so a multi-piece base with one orphaned piece still resolves cleanly.
+export async function baseMapLocation(db, baseId) {
+  const target = intParam(baseId, "base id", 1);
+  const result = await db.query(`
+    select a.id::text as actor_id,
+           coalesce(a.map, '') as map,
+           coalesce(a.partition_id, 0)::int as partition_id
+    from dune.buildings b
+    left join dune.building_instances bi on bi.building_id = b.id
+    left join dune.actor_fgl_entities afe on afe.entity_id = bi.owner_entity_id
+    left join dune.actors a on a.id = afe.actor_id
+    where b.id = $1
+    order by (a.id is null) asc, bi.instance_id asc
+    limit 1`, [target]);
+  const row = result.rows[0];
+  if (!row) throw new Error("That base was not found.");
+  if (!row.actor_id) throw new Error("This base has no resolvable owner entity, so its map location is unavailable.");
+  return { map: String(row.map || ""), partitionId: Number(row.partition_id || 0) };
+}
+
+// One probe for the refill route: where the base lives, and whether its map is
+// live enough that an immediate write would be at risk.
+// `observed` lets a caller looping over many bases in one pass (the auto-refill
+// scan) observe the cluster once and reuse it, instead of every base re-running
+// the same world_partition/pg_stat_activity query.
+export async function baseRefillTarget(db, baseId, { observed } = {}) {
+  const resolvedObserved = observed !== undefined ? observed : await observeRefillPartitions(db);
+  // Check queue support first. With no way to tell a running map from a stopped
+  // one there is nothing to decide, and resolving the base's location would
+  // mean querying dune.actors columns an older schema need not have -- which
+  // would turn an unsupported queue into a broken refill.
+  if (!resolvedObserved) return { map: "", partitionId: 0, queueSupported: false, writeSafeNow: true };
+  const location = await baseMapLocation(db, baseId);
+  return {
+    ...location,
+    queueSupported: true,
+    writeSafeNow: partitionWriteSafe(resolvedObserved, location.partitionId)
+  };
+}
+
+// A database that is restarting, or a schema mid-migration, will succeed on a
+// later tick. Mirrors the filter runBackgroundTick and the death poller already
+// use for the same "the stack is moving, not broken" states.
+function isTransientFlushError(message) {
+  return /connect|ECONNREFUSED|ECONNRESET|terminated|timeout|does not exist|relation|shutting down|starting up|deadlock|too many clients/i.test(message);
+}
+
+// Applies every queued refill whose map is currently down and leaves the rest
+// queued. Driven by a background tick rather than by the restart task runner:
+// stop-all.sh removes the Postgres container along with the game servers, so
+// there is no post-stop moment when the console could still write. The window
+// that does exist is on the way back up (start-all.sh brings Postgres up well
+// before the map servers) plus any single-map despawn, and polling for "this
+// partition has no server" catches both -- including restarts triggered by the
+// scheduler, an IP change, or the CLI, none of which run through the console.
+export async function flushGeneratorRefills(db, repoRoot, { now = Date.now } = {}) {
+  const pending = listQueuedGeneratorRefills(repoRoot);
+  if (!pending.length) return { flushed: [], pending: 0 };
+  const observed = await observeRefillPartitions(db, { now });
+  if (!observed) return { flushed: [], pending: pending.length, unsupported: true };
+
+  const flushed = [];
+  const outcomes = new Map();
+  const timestamp = now();
+  for (const entry of pending) {
+    // Age is checked before write-safety: an expired entry should be cleared
+    // even for a map that never comes down again.
+    const queuedMs = Date.parse(entry.queuedAt);
+    if (Number.isFinite(queuedMs) && timestamp - queuedMs >= pendingRefillMaxAgeMs()) {
+      const message = `Queued for longer than the ${Math.round(pendingRefillMaxAgeMs() / 3600000)}h limit without being applied.`;
+      outcomes.set(entry.baseId, { queuedAt: entry.queuedAt, keep: false });
+      flushed.push({ baseId: entry.baseId, map: entry.map, partitionId: entry.partitionId, ok: false, expired: true, dropped: true, error: message });
+      continue;
+    }
+    if (!partitionWriteSafe(observed, entry.partitionId)) continue;
+    if (entry.nextRetryAt && timestamp < entry.nextRetryAt) continue;
+    try {
+      const result = await refillBaseGenerators(db, repoRoot, entry.baseId);
+      outcomes.set(entry.baseId, { queuedAt: entry.queuedAt, keep: false });
+      flushed.push({
+        baseId: entry.baseId,
+        map: entry.map,
+        partitionId: entry.partitionId,
+        ok: true,
+        totalAdded: result.totalAdded,
+        devices: result.devices
+      });
+    } catch (error) {
+      // A base can be released or deleted while its refill sits queued, so a
+      // failure that will never succeed must not be retried on every tick
+      // forever. Transient failures do not burn an attempt: start-all.sh runs
+      // update-db.sh inside the very window this flush targets, and three
+      // strikes at a few seconds apart would otherwise all land inside one
+      // migration and silently discard the operator's request.
+      const message = String(error?.message || error).slice(0, 300);
+      const attempts = isTransientFlushError(message) ? entry.attempts : entry.attempts + 1;
+      const dropped = attempts >= MAX_REFILL_FLUSH_ATTEMPTS;
+      const nextRetryAt = timestamp + pendingRefillRetryDelayMs();
+      outcomes.set(entry.baseId, { queuedAt: entry.queuedAt, keep: !dropped, attempts, nextRetryAt, lastError: message });
+      flushed.push({ baseId: entry.baseId, map: entry.map, partitionId: entry.partitionId, ok: false, attempts, dropped, error: message });
+    }
+  }
+  const remaining = outcomes.size ? reconcileQueuedGeneratorRefills(repoRoot, outcomes) : pending;
+  return { flushed, pending: remaining.length };
+}
+
+// Applies this flush's outcomes to whatever the queue holds *now*, in one
+// synchronous read-modify-write. The loop above awaits a database transaction
+// per base, and a refill queued or canceled during one of those awaits would be
+// lost if the pre-flush snapshot were written back wholesale.
+//
+// An entry is only touched when its queuedAt still matches the one that was
+// processed, so a base canceled and re-queued mid-flush keeps its new entry.
+// Cancelling a base whose refill is already mid-transaction cannot recall the
+// write; it only stops the entry coming back.
+function reconcileQueuedGeneratorRefills(repoRoot, outcomes) {
+  const next = [];
+  for (const entry of listQueuedGeneratorRefills(repoRoot)) {
+    const outcome = outcomes.get(entry.baseId);
+    if (!outcome || outcome.queuedAt !== entry.queuedAt) {
+      next.push(entry);
+      continue;
+    }
+    if (outcome.keep) next.push({ ...entry, attempts: outcome.attempts, nextRetryAt: outcome.nextRetryAt, lastError: outcome.lastError });
+  }
+  writeQueuedGeneratorRefills(repoRoot, next);
+  return next;
+}
+
+// ---------------------------------------------------------------------------
+// Water
+//
+// Water storage lives somewhere fundamentally different from generator fuel:
+// the fill level is a JSONB scalar on the placeable's own component
+// (FWaterStorageComponent.m_WaterStored), not a stack of discrete inventory
+// items. Blood (Blood Purifier / Improved Blood Purifier only) is different
+// again -- it isn't a component at all, but a Blueprint-class-keyed property
+// on dune.actors.properties (BP_BloodWaterExtractor[_Advanced]_C.m_CurrentAmount).
+// Both mechanisms, every building_type, and every capacity below were
+// confirmed against a live database rather than inferred from display names.
+// ---------------------------------------------------------------------------
+
+const WATER_TYPES = {
+  waterCistern: {
+    name: "Water Cistern",
+    buildingTypes: ["watercistern_placeable"],
+    capacity: 5000
+  },
+  mediumWaterCistern: {
+    name: "Medium Water Cistern",
+    buildingTypes: ["mediumwatercistern_placeable"],
+    capacity: 25000
+  },
+  largeWaterCistern: {
+    name: "Large Water Cistern",
+    buildingTypes: ["largewatercistern_placeable"],
+    capacity: 100000
+  },
+  windtrap: {
+    name: "Windtrap",
+    buildingTypes: ["windtrap_placeable"],
+    capacity: 500
+  },
+  // Displays in-game as "Blood Purifier" / "Improved Blood Purifier" (see
+  // runtime/data/admin-items.json's BloodWaterExtraction[Advanced]_Patent
+  // entries) -- building_type keeps the game's own internal name.
+  bloodWaterExtractor: {
+    name: "Blood Purifier",
+    buildingTypes: ["bloodwaterextractor_placeable"],
+    capacity: 1000,
+    bloodPropertyKey: "BP_BloodWaterExtractor_C",
+    bloodCapacity: 6000
+  },
+  bloodWaterExtractorAdvanced: {
+    name: "Improved Blood Purifier",
+    buildingTypes: ["bloodwaterextractionadvanced_placeable"],
+    capacity: 1000,
+    bloodPropertyKey: "BP_BloodWaterExtractor_Advanced_C",
+    bloodCapacity: 24000
+  }
+};
+
+const WATER_TYPE_ORDER = [
+  "waterCistern", "mediumWaterCistern", "largeWaterCistern",
+  "windtrap", "bloodWaterExtractor", "bloodWaterExtractorAdvanced"
+];
+
+const WATER_BUILDING_TYPE_PAIRS = WATER_TYPE_ORDER.flatMap(
+  (type) => WATER_TYPES[type].buildingTypes.map((buildingType) => [type, buildingType])
+);
+
+function waterTypeParams() {
+  return [
+    WATER_BUILDING_TYPE_PAIRS.map(([type]) => type),
+    WATER_BUILDING_TYPE_PAIRS.map(([, buildingType]) => buildingType)
+  ];
+}
+
+// Every water container at a base, grouped by type -- the Water tab's shape.
+// Mirrors portalGeneratorFuel, but for one base rather than many, and reads
+// levels straight off each placeable's own row rather than an inventory:
+// there is no fuel-cell-style consumable involved.
+export async function baseWater(db, baseId) {
+  const target = intParam(baseId, "base id", 1);
+  const [types, buildingTypes] = waterTypeParams();
+  const bloodKeys = WATER_BUILDING_TYPE_PAIRS.map(([type]) => WATER_TYPES[type].bloodPropertyKey || null);
+  const result = await db.query(`
+    with requested_claims as (
+      select distinct b.id, afe.actor_id
+      from dune.buildings b
+      join dune.building_instances bi on bi.building_id = b.id
+      join dune.actor_fgl_entities afe on afe.entity_id = bi.owner_entity_id
+      where b.id = $1
+    ), base_entities as (
+      select distinct rc.id, claim_afe.entity_id as owner_entity_id
+      from requested_claims rc
+      join dune.actor_fgl_entities claim_afe on claim_afe.actor_id = rc.actor_id
+    ), water_types as (
+      select * from unnest($2::text[], $3::text[], $4::text[]) as t(water_type, building_type, blood_property_key)
+    ), containers as (
+      select p.id as placeable_id, wt.water_type,
+        coalesce(state.stored, 0) as water_stored,
+        case when wt.blood_property_key is not null
+          then (a.properties -> wt.blood_property_key ->> 'm_CurrentAmount')::numeric
+          else null
+        end as blood_stored
+      from base_entities be
+      join dune.placeables p on p.owner_entity_id = be.owner_entity_id
+      join dune.actors a on a.id = p.id
+      join water_types wt on wt.building_type = lower(p.building_type)
+      left join lateral (
+        -- Guarded + limit 1: some water placeables carry a second
+        -- actor_fgl_entities row (slot_name='ContainerInventory') alongside
+        -- the one that actually holds FWaterStorageComponent. An unguarded
+        -- join fans out and double-counts the container -- confirmed live
+        -- against dune2 (a base's Windtrap count read 7 instead of 4).
+        select (fe.components->'FWaterStorageComponent'->1->>'m_WaterStored')::int as stored
+        from dune.actor_fgl_entities afe
+        join dune.fgl_entities fe on fe.entity_id = afe.entity_id
+        where afe.actor_id = p.id and fe.components ? 'FWaterStorageComponent'
+        limit 1
+      ) state on true
+    )
+    select water_type, count(*)::int as container_count,
+      sum(water_stored)::int as water_stored,
+      sum(blood_stored)::numeric as blood_stored
+    from containers group by water_type`, [target, types, buildingTypes, bloodKeys]);
+
+  const containers = result.rows.map((row) => {
+    const type = row.water_type;
+    const spec = WATER_TYPES[type];
+    const count = Number(row.container_count) || 0;
+    const stored = Number(row.water_stored) || 0;
+    const capacity = count * spec.capacity;
+    const entry = {
+      type,
+      name: spec.name,
+      count,
+      stored,
+      capacity,
+      percent: capacity > 0 ? Math.round((stored / capacity) * 1000) / 10 : 0
+    };
+    if (spec.bloodCapacity) {
+      const bloodStored = Math.round(Number(row.blood_stored) || 0);
+      const bloodCapacity = count * spec.bloodCapacity;
+      entry.bloodStored = bloodStored;
+      entry.bloodCapacity = bloodCapacity;
+      entry.bloodPercent = bloodCapacity > 0 ? Math.round((bloodStored / bloodCapacity) * 1000) / 10 : 0;
+    }
+    return entry;
+  }).sort((left, right) => WATER_TYPE_ORDER.indexOf(left.type) - WATER_TYPE_ORDER.indexOf(right.type));
+
+  return { baseId: target, containers };
+}
+
+// Every water device at a base, individually. Refill and the auto-refill scan
+// (like baseGeneratorFuelLevels) need to see and write each one, not just a
+// per-type total -- entity_id is resolved here through the same guarded
+// lateral used by baseWater, so reading and writing can never disagree about
+// which fgl_entities row backs a given placeable.
+export async function baseWaterDevices(db, baseId) {
+  const target = intParam(baseId, "base id", 1);
+  const [types, buildingTypes] = waterTypeParams();
+  const result = await db.query(`
+    with requested_claims as (
+      select distinct b.id, afe.actor_id
+      from dune.buildings b
+      join dune.building_instances bi on bi.building_id = b.id
+      join dune.actor_fgl_entities afe on afe.entity_id = bi.owner_entity_id
+      where b.id = $1
+    ), base_entities as (
+      select distinct rc.id, claim_afe.entity_id as owner_entity_id
+      from requested_claims rc
+      join dune.actor_fgl_entities claim_afe on claim_afe.actor_id = rc.actor_id
+    ), water_types as (
+      select * from unnest($2::text[], $3::text[]) as t(water_type, building_type)
+    )
+    select distinct p.id::text as placeable_id, wt.water_type, entity.entity_id::text as entity_id
+    from base_entities be
+    join dune.placeables p on p.owner_entity_id = be.owner_entity_id
+    join water_types wt on wt.building_type = lower(p.building_type)
+    left join lateral (
+      select afe.entity_id
+      from dune.actor_fgl_entities afe
+      join dune.fgl_entities fe on fe.entity_id = afe.entity_id
+      where afe.actor_id = p.id and fe.components ? 'FWaterStorageComponent'
+      limit 1
+    ) entity on true
+    order by placeable_id`, [target, types, buildingTypes]);
+  return result.rows;
+}
+
+export async function supportsWaterRefill(db) {
+  if (!(await tableExists(db, "placeables"))) return false;
+  if (!(await tableExists(db, "actor_fgl_entities")) || !(await tableExists(db, "fgl_entities"))) return false;
+  const placeableColumns = await columnsFor(db, "placeables");
+  return ["id", "owner_entity_id", "building_type"].every((column) => placeableColumns.has(column));
+}
+
+// Mirrors supportsGeneratorRefillQueue's waterRefill-reuse parameter, for the
+// same reason.
+export async function supportsWaterRefillQueue(db, { waterRefill } = {}) {
+  const supported = waterRefill !== undefined ? waterRefill : await supportsWaterRefill(db);
+  if (!supported) return false;
+  return tableExists(db, "world_partition");
+}
+
+// Tops every water device at a base up to its configured cap, straight into
+// FWaterStorageComponent -- one jsonb_set per device, no stack/slot
+// bookkeeping like generator fuel needs (water is a scalar, not a stack of
+// discrete items). Blood (dune.actors.properties) is never touched here: per
+// user decision it's meant to be gathered in-world, not admin-conjured.
+export async function refillBaseWater(db, baseId) {
+  await requireCapability(await supportsWaterRefill(db),
+    "Water refill requires dune.placeables, dune.actor_fgl_entities, and dune.fgl_entities.");
+  const target = intParam(baseId, "base id", 1);
+  const devices = await baseWaterDevices(db, target);
+  if (!devices.length) throw new Error("No water storage was found at this base");
+
+  return db.transaction(async (tx) => {
+    const refilled = [];
+    for (const device of devices) {
+      const spec = WATER_TYPES[device.water_type];
+      const summary = { placeableId: device.placeable_id, type: device.water_type, label: spec.name };
+      if (!device.entity_id) {
+        refilled.push({ ...summary, before: 0, after: 0, added: 0 });
+        continue;
+      }
+      // Lock the entity row before reading it, so a concurrent refill of the
+      // same device can't race the read-then-write -- same technique
+      // refillBaseGenerators uses for its inventory rows.
+      const current = await tx.query(
+        `select (components->'FWaterStorageComponent'->1->>'m_WaterStored')::int as stored
+         from dune.fgl_entities where entity_id = $1 for update`, [device.entity_id]);
+      const before = Number(current.rows[0]?.stored) || 0;
+      const cap = spec.capacity;
+      if (before >= cap) {
+        refilled.push({ ...summary, before, after: before, added: 0 });
+        continue;
+      }
+      await tx.query(
+        `update dune.fgl_entities
+         set components = jsonb_set(components, '{FWaterStorageComponent,1,m_WaterStored}', to_jsonb($1::int))
+         where entity_id = $2`, [cap, device.entity_id]);
+      refilled.push({ ...summary, before, after: cap, added: cap - before });
+    }
+    return {
+      ok: true,
+      baseId: target,
+      devices: refilled,
+      totalAdded: refilled.reduce((sum, entry) => sum + (entry.added || 0), 0)
+    };
+  });
+}
+
+// Per-device fill percent for one base, as a fraction of the same cap
+// refillBaseWater fills to -- the auto-refill scan's view. Deliberately
+// per-device rather than reusing baseWater's per-type aggregate, for the same
+// reason baseGeneratorFuelLevels doesn't reuse portalGeneratorFuel: a single
+// starved device standing among full siblings of the same type is exactly
+// what an automated refill decision turns on.
+//
+// lowestPercent is null for a base with no recognised devices, not 0 --
+// "nothing to measure" must not read as "empty" to a caller deciding whether
+// to refill.
+export async function baseWaterFuelLevels(db, baseId) {
+  const target = intParam(baseId, "base id", 1);
+  const devices = await baseWaterDevices(db, target);
+  const entityIds = devices.map((device) => device.entity_id).filter(Boolean);
+
+  const stored = new Map();
+  if (entityIds.length) {
+    const result = await db.query(
+      `select entity_id::text as entity_id,
+        (components->'FWaterStorageComponent'->1->>'m_WaterStored')::int as stored
+       from dune.fgl_entities where entity_id = any($1::bigint[])`, [entityIds]);
+    for (const row of result.rows || []) {
+      stored.set(row.entity_id, Number(row.stored) || 0);
+    }
+  }
+
+  const entries = [];
+  for (const device of devices) {
+    const spec = WATER_TYPES[device.water_type];
+    const units = device.entity_id ? (stored.get(device.entity_id) || 0) : 0;
+    entries.push({
+      placeableId: device.placeable_id,
+      waterType: device.water_type,
+      units,
+      cap: spec.capacity,
+      percent: spec.capacity > 0 ? Math.round((units / spec.capacity) * 1000) / 10 : 0
+    });
+  }
+
+  return {
+    baseId: target,
+    deviceCount: entries.length,
+    devices: entries,
+    lowestPercent: entries.length ? Math.min(...entries.map((entry) => entry.percent)) : null
+  };
+}
+
+// Pending water-refill queue. Same reasoning and shape as the generator
+// queue above (a live map can overwrite an immediate write, so a refill
+// aimed at one is recorded here and applied once that map is confirmed
+// down) -- own file, so the two queues can never collide or cross-count.
+const PENDING_WATER_REFILL_PATH = "runtime/generated/pending-water-refills.json";
+
+function pendingWaterRefillFile(repoRoot) {
+  return resolve(repoRoot || "", PENDING_WATER_REFILL_PATH);
+}
+
+export function listQueuedWaterRefills(repoRoot) {
+  const file = pendingWaterRefillFile(repoRoot);
+  if (!existsSync(file)) return [];
+  try {
+    const parsed = JSON.parse(readFileSync(file, "utf8"));
+    if (!Array.isArray(parsed)) return [];
+    const seen = new Set();
+    return parsed.map(normalizePendingRefill).filter((entry) => {
+      if (!entry || seen.has(entry.baseId)) return false;
+      seen.add(entry.baseId);
+      return true;
+    });
+  } catch (error) {
+    console.warn(`Ignoring unreadable pending water refill queue: ${redact(error?.message || error)}`);
+    return [];
+  }
+}
+
+function writeQueuedWaterRefills(repoRoot, entries) {
+  writeJsonAtomic(pendingWaterRefillFile(repoRoot), entries);
+  return entries;
+}
+
+export function queueWaterRefill(repoRoot, { baseId, map = "", partitionId = 0, now = () => new Date() } = {}) {
+  const entry = normalizePendingRefill({ baseId, map, partitionId, queuedAt: now().toISOString() });
+  if (!entry) throw new Error("Invalid base id");
+  const others = listQueuedWaterRefills(repoRoot).filter((row) => row.baseId !== entry.baseId);
+  if (others.length >= MAX_PENDING_REFILLS) {
+    throw new Error(`The pending water refill queue already holds ${MAX_PENDING_REFILLS} bases. Restart the affected maps to apply them first.`);
+  }
+  writeQueuedWaterRefills(repoRoot, [...others, entry]);
+  return entry;
+}
+
+export function cancelQueuedWaterRefill(repoRoot, baseId) {
+  const target = intParam(baseId, "base id", 1);
+  const entries = listQueuedWaterRefills(repoRoot);
+  const remaining = entries.filter((entry) => entry.baseId !== target);
+  if (remaining.length === entries.length) throw new Error("That base has no queued water refill.");
+  writeQueuedWaterRefills(repoRoot, remaining);
+  return { ok: true, baseId: target, pending: remaining.length };
+}
+
+function reconcileQueuedWaterRefills(repoRoot, outcomes) {
+  const next = [];
+  for (const entry of listQueuedWaterRefills(repoRoot)) {
+    const outcome = outcomes.get(entry.baseId);
+    if (!outcome || outcome.queuedAt !== entry.queuedAt) {
+      next.push(entry);
+      continue;
+    }
+    if (outcome.keep) next.push({ ...entry, attempts: outcome.attempts, nextRetryAt: outcome.nextRetryAt, lastError: outcome.lastError });
+  }
+  writeQueuedWaterRefills(repoRoot, next);
+  return next;
+}
+
+// Applies every queued water refill whose map is currently down and leaves
+// the rest queued. Same driver and reasoning as flushGeneratorRefills.
+export async function flushWaterRefills(db, repoRoot, { now = Date.now } = {}) {
+  const pending = listQueuedWaterRefills(repoRoot);
+  if (!pending.length) return { flushed: [], pending: 0 };
+  const observed = await observeRefillPartitions(db, { now });
+  if (!observed) return { flushed: [], pending: pending.length, unsupported: true };
+
+  const flushed = [];
+  const outcomes = new Map();
+  const timestamp = now();
+  for (const entry of pending) {
+    const queuedMs = Date.parse(entry.queuedAt);
+    if (Number.isFinite(queuedMs) && timestamp - queuedMs >= pendingRefillMaxAgeMs()) {
+      const message = `Queued for longer than the ${Math.round(pendingRefillMaxAgeMs() / 3600000)}h limit without being applied.`;
+      outcomes.set(entry.baseId, { queuedAt: entry.queuedAt, keep: false });
+      flushed.push({ baseId: entry.baseId, map: entry.map, partitionId: entry.partitionId, ok: false, expired: true, dropped: true, error: message });
+      continue;
+    }
+    if (!partitionWriteSafe(observed, entry.partitionId)) continue;
+    if (entry.nextRetryAt && timestamp < entry.nextRetryAt) continue;
+    try {
+      const result = await refillBaseWater(db, entry.baseId);
+      outcomes.set(entry.baseId, { queuedAt: entry.queuedAt, keep: false });
+      flushed.push({
+        baseId: entry.baseId,
+        map: entry.map,
+        partitionId: entry.partitionId,
+        ok: true,
+        totalAdded: result.totalAdded,
+        devices: result.devices
+      });
+    } catch (error) {
+      const message = String(error?.message || error).slice(0, 300);
+      const attempts = isTransientFlushError(message) ? entry.attempts : entry.attempts + 1;
+      const dropped = attempts >= MAX_REFILL_FLUSH_ATTEMPTS;
+      const nextRetryAt = timestamp + pendingRefillRetryDelayMs();
+      outcomes.set(entry.baseId, { queuedAt: entry.queuedAt, keep: !dropped, attempts, nextRetryAt, lastError: message });
+      flushed.push({ baseId: entry.baseId, map: entry.map, partitionId: entry.partitionId, ok: false, attempts, dropped, error: message });
+    }
+  }
+  const remaining = outcomes.size ? reconcileQueuedWaterRefills(repoRoot, outcomes) : pending;
+  return { flushed, pending: remaining.length };
+}
+
 export async function giveItemToPlayer(db, playerId, { itemName = "", itemId = "", templateId = "", quantity = 1, quality = 1, augments = [], augmentQuality = 1, allowOnlinePreAugmented = false }) {
   await requireCapability(await supportsPlayerGiveItem(db), "Player give-item requires compatible dune.inventories and dune.items insert columns.");
   const target = intParam(playerId, "player id", 1);
@@ -5311,12 +7233,6 @@ async function supportsTutorials(db) {
     await functionExists(db, "dune.create_or_update_tutorial_entry(bigint,smallint,smallint)");
 }
 
-function validateJourneyNodeId(value) {
-  const nodeId = String(value || "").trim();
-  if (!nodeId || nodeId.length > 500 || /[\r\n]/.test(nodeId)) throw new Error("Journey node ID is invalid");
-  return nodeId;
-}
-
 function journeyGroup(nodeId) {
   const value = String(nodeId || "");
   if (/^DA_(CT|LDR)_/.test(value)) return "contract";
@@ -5361,16 +7277,41 @@ function contractNodeRow(nodeId, contractTags, contractAliases, tagState) {
   };
 }
 
+function validateJourneyNodeId(value) {
+  const nodeId = String(value || "").trim();
+  if (!nodeId || nodeId.length > 500 || /[\r\n]/.test(nodeId)) throw new Error("Journey node ID is invalid");
+  return nodeId;
+}
+
+function catalogStrings(value) {
+  return Array.isArray(value) ? [...new Set(value.map((entry) => String(entry || "").trim()).filter(Boolean))] : [];
+}
+
 function isContractNode(nodeId, journeyTagsData = {}) {
-  const contractTags = journeyTagsData?.contract_tags || {};
-  return Array.isArray(contractTags[nodeId]);
+  return Array.isArray(journeyTagsData?.contract_tags?.[nodeId]);
 }
 
 function contractTagsForNode(nodeId, journeyTagsData = {}) {
-  const contractTags = journeyTagsData?.contract_tags || {};
-  const tags = contractTags[nodeId];
-  if (!Array.isArray(tags) || !tags.length) throw new Error(`Contract ${nodeId} was not found in the game data catalog.`);
-  return tags.map((tag) => String(tag || "").trim()).filter(Boolean);
+  const tags = catalogStrings(journeyTagsData?.contract_tags?.[nodeId]);
+  if (!tags.length) throw new Error(`Contract ${nodeId} was not found in the game data catalog.`);
+  return tags;
+}
+
+function journeyScopesOverlap(left, right) {
+  return left === right || left.startsWith(`${right}.`) || right.startsWith(`${left}.`);
+}
+
+function journeyRewardRecipes(nodeId) {
+  return [...JOURNEY_RECIPE_REWARDS.entries()]
+    .filter(([rewardNode]) => journeyScopesOverlap(nodeId, rewardNode))
+    .map(([, recipe]) => recipe);
+}
+
+function contractShortNames(nodeId, journeyTagsData = {}) {
+  const aliases = Object.entries(journeyTagsData?.contract_aliases || {})
+    .filter(([, fullId]) => fullId === nodeId)
+    .map(([shortName]) => shortName);
+  return [...new Set([...aliases, nodeId.replace(/^DA_CT_/, "")])];
 }
 
 async function applyDirectJourneyTags(db, player, tags, mode, tagColumnName, identityId) {
@@ -5382,14 +7323,9 @@ async function applyDirectJourneyTags(db, player, tags, mode, tagColumnName, ide
   }
   await db.query(`
     insert into dune.player_tags (${tagColumn}, tag)
-    select $1, incoming.tag
-    from unnest($2::text[]) as incoming(tag)
-    where not exists (
-      select 1
-      from dune.player_tags existing
-      where existing.${tagColumn} = $1
-        and existing.tag = incoming.tag
-    )`, [identityId, tags]);
+    select $1, incoming.tag from unnest($2::text[]) as incoming(tag)
+    where not exists (select 1 from dune.player_tags existing
+      where existing.${tagColumn} = $1 and existing.tag = incoming.tag)`, [identityId, tags]);
   return applyJourneyFactionBumps(db, player, tags);
 }
 
@@ -5399,16 +7335,89 @@ async function applyJourneyFactionBumps(db, player, tags) {
   for (const [name, rep] of bumps.entries()) {
     const factionId = factionIdByName(name);
     if (!factionId) continue;
-    const current = await db.query(`
-      select coalesce(reputation_amount, 0) as reputation_amount
-      from dune.player_faction_reputation
-      where actor_id = $1 and faction_id = $2`, [player.controllerId, factionId]);
+    const current = await db.query(`select coalesce(reputation_amount, 0) as reputation_amount
+      from dune.player_faction_reputation where actor_id = $1 and faction_id = $2`, [player.controllerId, factionId]);
     if (Number(current.rows[0]?.reputation_amount || 0) >= rep) continue;
     await db.query("select dune.set_player_faction_reputation($1::bigint, $2::smallint, $3::integer)", [player.controllerId, factionId, rep]);
     factionBumps += 1;
   }
   if (factionBumps > 0) await syncFactionComponent(db, player.controllerId);
   return { factionBumps };
+}
+
+async function grantJourneyTechRecipe(db, actorId, recipeId) {
+  const current = await db.query(`select properties->'TechKnowledgePlayerComponent'->'m_TechKnowledge'->'m_TechKnowledgeData' as items
+    from dune.actors where id = $1 for update`, [actorId]);
+  if (!current.rows.length) return false;
+  const items = Array.isArray(current.rows[0]?.items) ? current.rows[0].items : [];
+  let found = false;
+  let changed = false;
+  const next = items.map((item) => {
+    if (item?.ItemKey !== recipeId) return item;
+    found = true;
+    if (item.UnlockedState === "Purchased" && item.bIsNewEntry === false) return item;
+    changed = true;
+    return { ...item, bIsNewEntry: false, UnlockedState: "Purchased" };
+  });
+  if (!found) {
+    changed = true;
+    next.push({ ItemKey: recipeId, bIsNewEntry: false, UnlockedState: "Purchased" });
+  }
+  if (changed) {
+    await db.query(`update dune.actors set properties = jsonb_set(
+      jsonb_set(jsonb_set(coalesce(properties, '{}'::jsonb), '{TechKnowledgePlayerComponent}', coalesce(properties->'TechKnowledgePlayerComponent', '{}'::jsonb), true),
+        '{TechKnowledgePlayerComponent,m_TechKnowledge}', coalesce(properties#>'{TechKnowledgePlayerComponent,m_TechKnowledge}', '{}'::jsonb), true),
+      '{TechKnowledgePlayerComponent,m_TechKnowledge,m_TechKnowledgeData}', $2::jsonb, true)
+      where id = $1`, [actorId, JSON.stringify(next)]);
+  }
+  return changed;
+}
+
+async function enableJourneySpiceVision(db, actorId) {
+  const result = await db.query(`update dune.fgl_entities fe set components = jsonb_set(
+      jsonb_set(fe.components, '{FSpiceAddictionComponent,1,SystemStatus}', '"FullyEnabled"'::jsonb, true),
+      '{FSpiceAddictionComponent,1,SpiceVisionEnabledStatus}', '"FullyEnabled"'::jsonb, true)
+    where fe.entity_id = (select entity_id from dune.actor_fgl_entities where actor_id = $1 and slot_name = 'DuneCharacter')
+      and fe.components #> '{FSpiceAddictionComponent,1}' is not null
+      and (coalesce(fe.components #>> '{FSpiceAddictionComponent,1,SystemStatus}', '') <> 'FullyEnabled'
+        or coalesce(fe.components #>> '{FSpiceAddictionComponent,1,SpiceVisionEnabledStatus}', '') <> 'FullyEnabled')`, [actorId]);
+  return Number(result.rowCount || 0) > 0;
+}
+
+async function mutateContractSkills(db, actorId, skills, mode) {
+  let changed = 0;
+  for (const skill of skills) {
+    const key = `(TagName="${skill}")`;
+    const result = mode === "add"
+      ? await db.query(`update dune.fgl_entities fe
+          set components = jsonb_set(fe.components, array['FLevelComponent','1','ModuleData',$2], '{"SkillPointsSpent":1}'::jsonb, true)
+          where fe.entity_id = (select entity_id from dune.actor_fgl_entities where actor_id = $1 and slot_name = 'DuneCharacter')
+            and coalesce((fe.components->'FLevelComponent'->1->'ModuleData'->$2->>'SkillPointsSpent')::int, 0) < 1`, [actorId, key])
+      : await db.query(`update dune.fgl_entities fe
+          set components = jsonb_set(fe.components, array['FLevelComponent','1','ModuleData'], (fe.components->'FLevelComponent'->1->'ModuleData') - $2)
+          where fe.entity_id = (select entity_id from dune.actor_fgl_entities where actor_id = $1 and slot_name = 'DuneCharacter')
+            and coalesce((fe.components->'FLevelComponent'->1->'ModuleData'->$2->>'SkillPointsSpent')::int, 0) <= 1`, [actorId, key]);
+    changed += Number(result.rowCount || 0);
+  }
+  return changed;
+}
+
+async function dismissActiveContracts(db, actorId, shortNames) {
+  const result = await db.query(`delete from dune.items i using dune.inventories inv
+    where inv.id = i.inventory_id and inv.actor_id = $1 and inv.inventory_type = 29
+      and i.template_id = 'ContractItem'
+      and i.stats->'FContractItemStats'->1->'ContractName'->>'Name' = any($2::text[])`, [actorId, shortNames]);
+  return Number(result.rowCount || 0);
+}
+
+async function clearDanglingTrackedContract(db, actorId) {
+  const result = await db.query(`update dune.actors a
+    set properties = jsonb_set(a.properties, '{ContractsCoordinatorComponent,m_TrackedContractItemUid}', to_jsonb('!!itm#0'::text), true)
+    where a.id = $1 and a.properties ? 'ContractsCoordinatorComponent'
+      and coalesce(a.properties->'ContractsCoordinatorComponent'->>'m_TrackedContractItemUid', '!!itm#0') <> '!!itm#0'
+      and not exists (select 1 from dune.items item
+        where ('!!itm#' || item.id::text) = a.properties->'ContractsCoordinatorComponent'->>'m_TrackedContractItemUid')`, [actorId]);
+  return Number(result.rowCount || 0) > 0;
 }
 
 function linkedResearchRecipeId(itemKey) {
@@ -5477,6 +7486,15 @@ async function supportsStorageGiveItem(db) {
   const itemColumns = await columnsFor(db, "items");
   return ["id", "actor_id", "max_item_count", "max_item_volume"].every((column) => inventoryColumns.has(column)) &&
     ["inventory_id", "template_id", "stack_size", "quality_level", "position_index", "stats"].every((column) => itemColumns.has(column));
+}
+
+// Refill writes the same items/inventories shape a storage grant does, plus it
+// has to resolve placeables to classify each device.
+export async function supportsGeneratorRefill(db) {
+  if (!(await tableExists(db, "placeables"))) return false;
+  if (!(await supportsStorageGiveItem(db))) return false;
+  const placeableColumns = await columnsFor(db, "placeables");
+  return ["id", "owner_entity_id", "building_type"].every((column) => placeableColumns.has(column));
 }
 
 async function supportsPlayerGiveItem(db) {
@@ -5995,10 +8013,45 @@ const SUPPORTED_SIZES_BY_DISPLAY_MAP = {
 export async function addonOpsResourcesSummary(db, config) {
   if (!(await tableExists(db, "resourcefield_state"))) return emptyResourcesSummary();
 
+  // Load sietch display-name overrides (operator-set via "Save Sietch Settings")
   const deepDesert = await resourcesSectionForDisplayMap(db, config, "DeepDesert");
   const haggaBasin = await resourcesSectionForDisplayMap(db, config, "HaggaBasin");
 
   return { deepDesert, haggaBasin };
+}
+
+function sietchDisplayName(partitionId, databaseLabel, displayMap, dimensionIndex, repoRoot) {
+  // Prefer the operator-set display_name from sietch-config.json.
+  // sietch-config stores under the actual map key (e.g. "Survival_1"),
+  // not the display map name (e.g. "HaggaBasin").
+  const partitionMap = SPICE_MAP_PARTITION_ALIAS[displayMap];
+  if (repoRoot && partitionMap) {
+    try {
+      const cfgPath = resolve(repoRoot, "runtime/generated/sietch-config.json");
+      if (existsSync(cfgPath)) {
+        const cfg = JSON.parse(readFileSync(cfgPath, "utf8"));
+        if (cfg && cfg.maps) {
+          const mapCfg = cfg.maps[partitionMap];
+          if (mapCfg) {
+            const dimCfg = mapCfg.dimensions && mapCfg.dimensions[String(dimensionIndex)];
+            if (dimCfg && dimCfg.display_name) return dimCfg.display_name;
+            if (mapCfg.display_name && String(mapCfg.partition_id) === String(partitionId)) return mapCfg.display_name;
+          }
+        }
+      }
+    } catch { /* file missing or malformed — fall through to label */ }
+  }
+
+  // Fall back to the database_label with "Sietch " prefix for Survival_1
+  const label = (databaseLabel || "").trim();
+  if (label) {
+    if (partitionMap === "Survival_1" && !label.toLowerCase().startsWith("sietch ")) {
+      return `Sietch ${label}`;
+    }
+    return label;
+  }
+
+  return `${displayMap} ${dimensionIndex}`;
 }
 
 // Builds one map's (Deep Desert's or Hagga Basin's) full section: real
@@ -6136,11 +8189,12 @@ async function resourcesSectionForDisplayMap(db, config, displayMap) {
       return {
         partitionId: row.partitionId,
         dimensionIndex: dim,
-        // A real, human display name: prefer world_partition.label (e.g.
-        // "Sietch Abbir"); fall back to a stable, non-fabricated
-        // "<Map> <dimension>" identifier if no label was ever set --
-        // never invent a name.
-        name: row.databaseLabel || `${displayMap} ${dim}`,
+        // Resolve the canonical display name: prefer the operator-set
+        // sietch-config.json display_name (e.g. "Sietch Zahir"), then
+        // fall back to world_partition.label (e.g. "Abbir" → "Sietch
+        // Abbir"), then a stable "<Map> <dim>" identifier — never
+        // invent a name.
+        name: sietchDisplayName(row.partitionId, row.databaseLabel, displayMap, dim, config.repoRoot),
         runtimeStatus: combat?.runtimeStatus || "UNKNOWN",
         // PVP/PVE/CONFLICT/UNKNOWN, normalized uppercase per
         // mapCombatState.js's own contract -- never re-derived here.
@@ -6594,6 +8648,29 @@ export async function addonOpsPrometheusHealth(promBaseUrl = process.env.METRICS
   };
 }
 
+export async function addonOpsContainerHealth() {
+  try {
+    const { execSync } = await import("node:child_process");
+    const raw = execSync(
+      "docker stats --no-stream --format '{{json .}}'",
+      { encoding: "utf8", timeout: 5000, maxBuffer: 1024 * 1024 }
+    );
+    const containers = raw.trim().split("\n").map(l => JSON.parse(l)).map(c => ({
+      name: c.Name || "unknown",
+      cpu: c.CPUPerc || "0%",
+      mem: c.MemUsage ? c.MemUsage.split(" / ")[0] : "0B",
+      memLimit: c.MemUsage ? c.MemUsage.split(" / ")[1] || "" : "",
+      netIO: c.NetIO || "0B",
+      blockIO: c.BlockIO || "0B",
+      status: c.State || "unknown"
+    }));
+    return { containers };
+  } catch {
+    return { containers: [], error: "Docker stats unavailable — is Docker running?" };
+  }
+}
+
+
 function metricsStackNotRunning() {
   return {
     status: "planned",
@@ -6642,13 +8719,22 @@ async function promScalar(promBaseUrl, query) {
 // will discard it.
 async function ensureConsoleSchema(tx) {
   await tx.query("create schema if not exists console");
-  // Drop-if-exists cleanup of the old, incorrectly-placed dune.* copies
-  // from before this fix. Safe because confirmed empty on the only known
-  // deployment; see the migration note above.
-  await tx.query("drop table if exists dune.discord_player_links");
-  await tx.query("drop table if exists dune.discord_pending_links");
-  await tx.query("drop table if exists dune.discord_account_links");
-  await tx.query("drop table if exists dune.discord_pending_account_links");
+
+  // Migrate data from the old dune.* tables if they contain rows.
+  // Previously this was a destructive DROP; now we copy existing data
+  // transactionally so no operator loses link state on upgrade.
+  for (const table of ["discord_player_links", "discord_pending_links",
+                        "discord_account_links", "discord_pending_account_links"]) {
+    const exists = await tx.query(
+      `select exists (select 1 from information_schema.tables where table_schema = 'dune' and table_name = $1)`, [table]);
+    if (!exists.rows[0]?.exists) continue;
+
+    await tx.query(`insert into console.${table} select * from dune.${table} on conflict do nothing`);
+
+    // Warn but do not drop — the old tables stay until the operator
+    // manually removes them after confirming the migration was successful.
+    console.warn(`Migrated data from dune.${table} to console.${table}. The old dune.* table was NOT dropped — drop it manually after verifying no data loss.`);
+  }
 }
 
 export async function migrateDiscordAdapterSchema(db) {
@@ -6771,6 +8857,9 @@ export async function migrateDiscordAdapterSchema(db) {
     await tx.query(`
       create unique index if not exists discord_pending_account_links_player_uidx
       on console.discord_pending_account_links (player_controller_id)`);
+    // Clean up stale link rows where the game character was deleted (M5, #183).
+    await tx.query(`delete from console.discord_account_links where not exists (select 1 from dune.player_state ps where ps.player_controller_id::text = player_controller_id)`);
+    await tx.query(`delete from console.discord_player_links where not exists (select 1 from dune.player_state ps where ps.player_controller_id::text = player_controller_id)`);
   };
   if (typeof db.transaction === "function") return db.transaction(migrate);
   return migrate(db);
@@ -6917,6 +9006,22 @@ export async function getLinkedPlayer(db, discordUserId) {
   return multiAccountResult.rows[0] || null;
 }
 
+export async function getAllLinkedPlayers(db, discordUserId) {
+  const result = await db.query(`
+    select dal.player_controller_id,
+           coalesce(ps.character_name, '') as character_name
+    from console.discord_account_links dal
+    join dune.player_state ps on ps.player_controller_id::text = dal.player_controller_id
+    where dal.discord_user_id = $1
+    union
+    select dpl.player_controller_id,
+           coalesce(ps2.character_name, '') as character_name
+    from console.discord_player_links dpl
+    join dune.player_state ps2 on ps2.player_controller_id::text = dpl.player_controller_id
+    where dpl.discord_user_id = $1`, [String(discordUserId)]);
+  return result.rows;
+}
+
 // Checks the given discord_*_links table (in the console schema — see
 // migrateDiscordAdapterSchema()'s comment for why this project's own
 // state lives there, not in dune) for a row that would conflict with
@@ -6945,6 +9050,7 @@ async function otherTableLinkConflict(tx, table, playerControllerId, discordUser
 
 export async function discordPlayerLink(db, discordUserId, playerControllerId) {
   const link = async (tx) => {
+    await tx.query(`select pg_advisory_xact_lock(hashtext('link:' || $1::text))`, [playerControllerId]);
     const conflict = await tx.query(`
       select discord_user_id
       from console.discord_player_links
@@ -7048,6 +9154,7 @@ export async function listLinkedAccounts(db, discordUserId) {
 // called.
 export async function linkAdditionalAccount(db, discordUserId, playerControllerId) {
   const link = async (tx) => {
+    await tx.query(`select pg_advisory_xact_lock(hashtext('link:' || $1::text))`, [playerControllerId]);
     const conflict = await tx.query(`
       select discord_user_id
       from console.discord_account_links

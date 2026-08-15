@@ -1,66 +1,168 @@
 import test, { beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { assertIdentifier, discoverDbConfig, isReadOnlySql, quoteQualified, redactDbError, rowsResult } from "../src/db.js";
 import {
   UnsupportedCapabilityError,
   _resetPlayerTargetCacheForTests,
+  _resetRefillPartitionDwellForTests,
   addCurrency,
   addFactionReputation,
+  addGuildMember,
   addIntel,
   addSpecializationXp,
   addonLeadershipPlayers,
+  addonOpsActivitySummary,
+  addonOpsCombatDeaths,
+  addonOpsEconomySummary,
   addonOpsHealthFarms,
   addonOpsHealthPlayers,
   addonOpsHealthSummary,
   addonOpsHealthSummaryV2,
+  addonOpsInventorySummary,
+  addonOpsPrometheusHealth,
+  addonOpsResourcesSummary,
+  addonOpsSocSummary,
+  adminBuildingMetadata,
+  adminItemMetadata,
+  adminVehicleMetadata,
   applyLandsraadMilestonePreset,
   augmentInventoryItem,
   augmentNewestPlayerItem,
+  baseGeneratorFuelLevels,
+  baseGenerators,
+  baseMapLocation,
+  basePermissionActor,
+  basePermissionCandidates,
+  basePermissionsSupported,
+  baseRefillTarget,
+  baseWater,
+  baseWaterDevices,
+  baseWaterFuelLevels,
+  cancelQueuedGeneratorRefill,
+  cancelQueuedWaterRefill,
   changeDunePassword,
   characterHasSteamId,
+  cleanupExpiredPendingLinks,
+  columnsFor,
   completeJourneyNode,
   completeTutorial,
+  consumePendingAccountLink,
+  consumePendingLink,
+  createPendingAccountLink,
+  createPendingLink,
+  dbStatus,
   deleteInventoryItem,
+  deletePendingAccountLink,
+  deletePendingLink,
+  demoteGuildMember,
+  disbandGuild,
+  discordPlayerLink,
+  discordPlayerUnlink,
   exportBaseAsBlueprint,
+  exportRows,
   fillItemToStorage,
+  flushGeneratorRefills,
+  flushWaterRefills,
   generatorUptimePolicy,
+  getLinkedPlayer,
+  getAllLinkedPlayers,
   giveItemToPlayer,
   giveItemToStorage,
+  grantAllSpecializationKeystones,
+  grantMaxSpecialization,
   guildMembers,
+  guildStorageQuery,
   landsraadOverview,
+  linkAdditionalAccount,
+  listAllPlayers,
+  listBasePermissions,
   listBases,
   listGuilds,
+  listLinkedAccounts,
   listPlayers,
+  listQueuedGeneratorRefills,
+  listQueuedWaterRefills,
+  listRoutines,
+  listSchemas,
   listSpicefieldTypes,
+  listStorage,
   listTables,
+  liveMapBases,
+  liveMapCapabilities,
+  liveMapConfigPayload,
+  liveMapMarkers,
+  liveMapPartitions,
   liveMapPlayers,
   liveMapServices,
+  liveMapStorage,
+  liveMapVehicles,
+  mapCombatPartitionRows,
   matchSteamIdForCharacter,
+  maxPlayerInventoryItemId,
+  migrateDiscordAdapterSchema,
+  observeRefillPartitions,
+  partitionRestartTargets,
   playerCraftingRecipes,
   playerCurrency,
   playerFactions,
   playerIntel,
   playerInventory,
+  playerInventoryItemIds,
+  playerItemAugmentState,
   playerJourney,
+  playerOwnedStorageQuery,
   playerPortalSnapshots,
   playerPosition,
   playerProfile,
   playerProgression,
   playerResearchItems,
   playerSolarisCoinTotal,
+  playerSpecs,
   playerVitals,
   portalGeneratorFuel,
   portalVehicles,
+  promoteGuildMember,
+  queueGeneratorRefill,
+  queueWaterRefill,
+  refillBaseGenerators,
+  refillBaseWater,
+  refuelVehicle,
+  removeGuildMember,
+  repairGear,
   repairVehicleDecay,
+  resetAllSpecializationKeystones,
   resetJourneyNode,
+  resetSpecialization,
   resetTutorial,
+  resolveBuildingDisplayName,
+  resolvePlayerByName,
+  routineDefinition,
   runSql,
+  searchDatabase,
+  searchItemsInContainers,
+  searchItemsInPlayerInventory,
+  setBasePermissions,
+  setDefaultLinkedAccount,
   setLandsraadPlayerContribution,
+  storageCapabilities,
+  storageItems,
+  supportsGeneratorRefill,
+  supportsGeneratorRefillQueue,
+  supportsWaterRefill,
+  supportsWaterRefillQueue,
+  tableColumns,
+  tableCount,
+  tableExists,
   tablePreview,
   teleportOfflinePlayerToCoords,
+  unlinkAdditionalAccount,
   unlockCraftingRecipe,
   unlockResearchItem,
+  unsupportedPlayerFeature,
   updateInventoryItem,
   updateLandsraadRewardTier,
   updateLandsraadTaskGoal,
@@ -84,6 +186,59 @@ test("discovers RedBlink Postgres defaults and env overrides", () => {
   });
   assert.equal(discoverDbConfig({ ADMIN_DATABASE_URL: "postgres://user:secret@host/db" }).source, "ADMIN_DATABASE_URL");
   assert.equal(discoverDbConfig({ DUNE_DB_HOST: "db", DUNE_DB_PORT: "5432" }).host, "db");
+});
+
+test("database status exposes SSH tunneling only for a loopback database endpoint", async () => {
+  const responses = [
+    { rows: [{ current_user: "dune", current_database: "dune", version: "PostgreSQL test" }] },
+    { rows: [{ count: 42 }] }
+  ];
+  const loopback = await dbStatus({
+    config: { host: "127.0.0.1", port: 15432, database: "dune", user: "dune" },
+    query: async () => responses.shift()
+  });
+  assert.deepEqual(loopback.sshTunnelAccess, {
+    available: true,
+    loopbackOnly: true,
+    host: "127.0.0.1",
+    port: 15432,
+    database: "dune",
+    user: "dune"
+  });
+
+  const remoteResponses = [
+    { rows: [{ current_user: "dune", current_database: "dune", version: "PostgreSQL test" }] },
+    { rows: [{ count: 42 }] }
+  ];
+  const remote = await dbStatus({
+    config: { host: "database.example", port: 5432, database: "dune", user: "dune" },
+    query: async () => remoteResponses.shift()
+  });
+  assert.equal(remote.sshTunnelAccess.available, false);
+  assert.equal(remote.sshTunnelAccess.loopbackOnly, false);
+  assert.equal(remote.sshTunnelAccess.host, "");
+});
+
+test("lists function and procedure metadata with parameterized filters", async () => {
+  const calls = [];
+  const rows = [{ oid: "123", schema: "dune", name: "refresh_player", kind: "function", arguments: "account_id bigint" }];
+  const db = { query: async (text, values) => { calls.push({ text, values }); return { rows }; } };
+  assert.deepEqual(await listRoutines(db, "dune", "player"), rows);
+  assert.deepEqual(calls[0].values, ["dune", "player"]);
+  assert.match(calls[0].text, /p\.prokind in \('f', 'p'\)/);
+  assert.match(calls[0].text, /limit 500/);
+  await assert.rejects(() => listRoutines(db, "dune;drop", ""), /Invalid schema/);
+  await assert.rejects(() => listRoutines(db, "dune", "x".repeat(121)), /too long/);
+});
+
+test("loads one routine definition by validated OID", async () => {
+  const calls = [];
+  const row = { oid: "123", schema: "dune", name: "refresh_player", kind: "function", arguments: "account_id bigint", definition: "CREATE FUNCTION ..." };
+  const db = { query: async (text, values) => { calls.push({ text, values }); return { rows: [row] }; } };
+  assert.deepEqual(await routineDefinition(db, "123"), row);
+  assert.deepEqual(calls[0].values, [123]);
+  assert.match(calls[0].text, /pg_get_functiondef/);
+  await assert.rejects(() => routineDefinition(db, "1;drop"), /Invalid routine oid/);
 });
 
 test("validates and quotes SQL identifiers", () => {
@@ -1418,14 +1573,99 @@ test("players query uses parameterized search input", async () => {
   assert.match(playerQuery.text, /as action_player_id/);
   assert.match(playerQuery.text, /A5C0DE5E12A00001/);
   assert.match(playerQuery.text, /Server#0001/);
-  assert.match(playerQuery.text, /\$1/);
-  assert.equal(playerQuery.values[0], "%RedBlink'; drop table dune.actors; --%");
+  assert.match(playerQuery.text, /a\.id <> 900000103::bigint/);
+  assert.match(playerQuery.text, /\$2/);
+  assert.match(playerQuery.text, /\$3/);
+  assert.deepEqual(playerQuery.values[0], []);
+  assert.equal(playerQuery.values[1], "%RedBlink'; drop table dune.actors; --%");
+  assert.equal(playerQuery.values[2], "RedBlink'; drop table dune.actors; --");
   assert.equal(result.rows[0].actor_id, 82);
   assert.equal(result.rows[0].player_pawn_id, 82);
   assert.equal(result.rows[0].account_id, 276);
   assert.equal(result.rows[0].funcom_id, "RedBlink#75570");
   assert.equal(result.rows[0].fls_id, "RedBlink#75570");
   assert.equal(result.rows[0].action_player_id, "RedBlink#75570");
+});
+
+test("players query excludes the reserved fresh-install GM identity from rows and totals", async () => {
+  const calls = [];
+  const db = {
+    query: async (text) => {
+      calls.push(text);
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("information_schema.columns")) return { rows: [{ column_name: "online_status" }] };
+      if (text.includes("count(distinct dedupe_key)")) return { rows: [{ total_players: 0 }] };
+      return { rows: [{ actor_id: null, total_count: 0 }] };
+    }
+  };
+
+  const result = await listPlayers(db);
+  const playerQueries = calls.filter((text) => text.includes("from dune.actors"));
+  assert.equal(playerQueries.length, 2);
+  for (const query of playerQueries) {
+    assert.match(query, /a\.id <> 900000103::bigint/);
+  }
+  assert.deepEqual(result.rows, []);
+  assert.equal(result.totalCount, 0);
+  assert.equal(result.totalPlayers, 0);
+});
+
+test("players query falls back to validated encrypted account identities", async () => {
+  const calls = [];
+  const db = {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("information_schema.columns")) {
+        if (values[1] === "player_state") return { rows: [{ column_name: "online_status" }] };
+        if (values[1] === "encrypted_accounts") {
+          return { rows: ["id", "user", "encrypted_funcom_id"].map((column_name) => ({ column_name })) };
+        }
+        return { rows: [] };
+      }
+      if (text.includes("to_regprocedure")) return { rows: [{ exists: true }] };
+      if (text.includes("count(distinct dedupe_key)")) return { rows: [{ total_players: 1 }] };
+      return { rows: [{
+        actor_id: 82,
+        player_pawn_id: 82,
+        account_id: 276,
+        character_name: "Vixen",
+        funcom_id: "Vixen#1234",
+        fls_id: "254A06043E9F0B16",
+        action_player_id: "254A06043E9F0B16",
+        total_count: 1
+      }] };
+    }
+  };
+
+  const result = await listPlayers(db);
+  const playerQuery = calls.find((call) => call.text.includes("from dune.actors") && !call.text.includes("count(distinct dedupe_key)"));
+  assert.match(playerQuery.text, /left join dune\.encrypted_accounts ea/);
+  assert.match(playerQuery.text, /dune\.decrypt_user_data\(ea\.encrypted_funcom_id\)/);
+  assert.match(playerQuery.text, /\^\[A-Fa-f0-9\]\{15,64\}\$/);
+  assert.match(playerQuery.text, /\[\[:cntrl:\]\]/);
+  assert.equal(result.rows[0].funcom_id, "Vixen#1234");
+  assert.equal(result.rows[0].fls_id, "254A06043E9F0B16");
+});
+
+test("players query remains compatible when encrypted accounts are unavailable", async () => {
+  const calls = [];
+  const db = {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes("to_regclass")) {
+        return { rows: [{ exists: values[0] !== "dune.encrypted_accounts" }] };
+      }
+      if (text.includes("information_schema.columns")) return { rows: [] };
+      if (text.includes("count(distinct dedupe_key)")) return { rows: [{ total_players: 1 }] };
+      return { rows: [{ actor_id: 82, funcom_id: "Vixen#1234", fls_id: "254A06043E9F0B16", total_count: 1 }] };
+    }
+  };
+
+  await listPlayers(db);
+  const playerQuery = calls.find((call) => call.text.includes("from dune.actors") && !call.text.includes("count(distinct dedupe_key)"));
+  assert.doesNotMatch(playerQuery.text, /encrypted_accounts/);
+  assert.doesNotMatch(playerQuery.text, /decrypt_user_data/);
 });
 
 test("players query filters stale actor rows when player_state has current pawn id", async () => {
@@ -1492,6 +1732,27 @@ test("listPlayers reports statusFilterApplied based on online_status column pres
   assert.equal(withColumn.capabilities.statusFilterApplied, true);
   const withoutColumn = await listPlayers(mockDb([]), {});
   assert.equal(withoutColumn.capabilities.statusFilterApplied, false);
+});
+
+test("players query marks and filters persistent bans by parameterized FLS ID", async () => {
+  const calls = [];
+  const db = {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("information_schema.columns")) return { rows: [{ column_name: "online_status" }] };
+      return { rows: [{ actor_id: 82, fls_id: "254A06043E9F0B16", actual_online_status: "Online", online_status: "Banned", is_banned: true, total_count: 1 }] };
+    }
+  };
+  const bannedId = "254A06043E9F0B16";
+  const result = await listPlayers(db, { status: "banned", bannedFlsIds: [bannedId, "not-an-id"] });
+  const playerQuery = calls.find((call) => call.text.includes("from dune.actors"));
+  assert.deepEqual(playerQuery.values[0], [bannedId.toLowerCase()]);
+  assert.match(playerQuery.text, /lower\(.+\) = any\(\$1::text\[\]\)/s);
+  assert.match(playerQuery.text, /then 'Banned'/);
+  assert.equal(result.rows[0].online_status, "Banned");
+  assert.equal(result.rows[0].actual_online_status, "Online");
+  assert.equal(result.capabilities.banFilterApplied, true);
 });
 
 test("players query filters offline transferred character placeholder actor rows", async () => {
@@ -1802,6 +2063,277 @@ test("guild members falls back to a direct account-id join when dune.actors is u
   assert.ok(memberQuery);
   assert.doesNotMatch(memberQuery.text, /dune\.actors/);
   assert.match(memberQuery.text, /left join dune\.player_state ps_by_account on ps_by_account\.account_id = coalesce\(null, gm\."player_id"\)/);
+});
+
+function okRows(rows) {
+  return { rows, rowCount: rows.length };
+}
+
+function guildMutationDb(calls, fixtures = {}) {
+  const db = {
+    async query(text, values = []) {
+      calls.push({ text, values });
+      if (text.includes("to_regclass")) return okRows([{ exists: true }]);
+      if (text.includes("to_regprocedure")) return okRows([{ exists: true }]);
+      if (text.includes("information_schema.columns")) {
+        const table = values[1];
+        if (table === "guilds") return okRows((fixtures.guildColumns || ["guild_id", "guild_name"]).map((column_name) => ({ column_name })));
+        if (table === "guild_members") return okRows((fixtures.memberColumns || ["guild_id", "player_id", "role_id"]).map((column_name) => ({ column_name })));
+        return okRows([]);
+      }
+      if (text.includes("from dune.guilds where guild_id = $1 for update")) {
+        return fixtures.guildRows === null ? okRows([]) : okRows(fixtures.guildRows || [{ guild_id: 1, guild_name: "Spicy Girls" }]);
+      }
+      if (text.includes("from dune.guild_members where guild_id = $1 and player_id = $2 for update")) {
+        return fixtures.memberRows === null ? okRows([]) : okRows(fixtures.memberRows || [{ role_id: "1" }]);
+      }
+      if (text.includes("select player_id from dune.guild_members where guild_id = $1 and role_id = $2")) {
+        return okRows(fixtures.previousLeaderRows || [{ player_id: "10" }]);
+      }
+      if (text.includes("dune.promote_guild_member(")) {
+        if (fixtures.promoteError) throw new Error(fixtures.promoteError);
+        return okRows([]);
+      }
+      if (text.includes("dune.demote_guild_member(")) {
+        if (fixtures.demoteError) throw new Error(fixtures.demoteError);
+        return okRows([]);
+      }
+      if (text.includes("from dune.actors a")) {
+        return okRows(fixtures.playerRows || [{ actor_id: 40, account_id: 44, controller_id: 41, player_state_id: 5, online_status: "Offline" }]);
+      }
+      if (text.includes("dune.add_guild_member(")) {
+        if (fixtures.addError) throw new Error(fixtures.addError);
+        return okRows([]);
+      }
+      if (text.includes("dune.remove_guild_members(")) {
+        if (fixtures.removeError) throw new Error(fixtures.removeError);
+        return okRows([]);
+      }
+      if (text.includes("select count(*)::int as count from dune.guild_members where guild_id = $1")) {
+        return okRows([{ count: fixtures.memberCount ?? 3 }]);
+      }
+      if (text.includes("dune.disband_guild(")) {
+        if (fixtures.disbandError) throw new Error(fixtures.disbandError);
+        return okRows([]);
+      }
+      return okRows([]);
+    },
+    async transaction(fn) {
+      return fn(db);
+    }
+  };
+  return db;
+}
+
+test("guild promotion bumps a member to officer without touching the leader", async () => {
+  const calls = [];
+  const db = guildMutationDb(calls, { memberRows: [{ role_id: "1" }] });
+  const result = await promoteGuildMember(db, 1, 20);
+  assert.equal(result.ok, true);
+  assert.equal(result.newRoleId, 50);
+  assert.equal(result.previousLeaderId, null);
+  const promote = calls.find((call) => call.text.includes("dune.promote_guild_member("));
+  assert.ok(promote);
+  assert.deepEqual(promote.values, [1, 20, 50]);
+  // A plain member-to-officer bump never needs to know who the current leader is.
+  assert.ok(!calls.some((call) => call.text.includes("select player_id from dune.guild_members where guild_id = $1 and role_id = $2")));
+});
+
+test("guild promotion bumps an officer to leader and demotes the previous leader", async () => {
+  const calls = [];
+  const db = guildMutationDb(calls, { memberRows: [{ role_id: "50" }], previousLeaderRows: [{ player_id: "10" }] });
+  const result = await promoteGuildMember(db, 1, 20);
+  assert.equal(result.ok, true);
+  assert.equal(result.newRoleId, 100);
+  assert.equal(result.previousLeaderId, "10");
+  const promote = calls.find((call) => call.text.includes("dune.promote_guild_member("));
+  assert.ok(promote);
+  assert.deepEqual(promote.values, [1, 20, 100]);
+});
+
+test("guild promotion is a no-op when the target is already the leader", async () => {
+  const calls = [];
+  const db = guildMutationDb(calls, { memberRows: [{ role_id: "100" }] });
+  const result = await promoteGuildMember(db, 1, 20);
+  assert.equal(result.alreadyLeader, true);
+  assert.ok(!calls.some((call) => call.text.includes("dune.promote_guild_member(")));
+});
+
+test("guild promotion rejects when the guild does not exist", async () => {
+  const db = guildMutationDb([], { guildRows: [] });
+  await assert.rejects(() => promoteGuildMember(db, 1, 20), /was not found/);
+});
+
+test("guild promotion rejects when the player is not a guild member", async () => {
+  const db = guildMutationDb([], { memberRows: [] });
+  await assert.rejects(() => promoteGuildMember(db, 1, 20), /is not a member/);
+});
+
+test("guild promotion reports unsupported capability when schema functions are absent", async () => {
+  const db = { query: async (text) => text.includes("to_regclass") ? okRows([{ exists: false }]) : okRows([]) };
+  await assert.rejects(() => promoteGuildMember(db, 1, 20), UnsupportedCapabilityError);
+});
+
+test("guild promotion reports unsupported capability when guild_members lacks the expected columns", async () => {
+  const db = guildMutationDb([], { memberColumns: ["guild_id", "role_id"] }); // missing player_id
+  await assert.rejects(() => promoteGuildMember(db, 1, 20), UnsupportedCapabilityError);
+});
+
+test("guild demotion downgrades an officer to member", async () => {
+  const calls = [];
+  const db = guildMutationDb(calls, { memberRows: [{ role_id: "50" }] });
+  const result = await demoteGuildMember(db, 1, 20);
+  assert.equal(result.ok, true);
+  const demote = calls.find((call) => call.text.includes("dune.demote_guild_member("));
+  assert.ok(demote);
+  assert.deepEqual(demote.values, [1, 20, 1]);
+});
+
+test("guild demotion rejects the guild leader without calling the database function", async () => {
+  const calls = [];
+  const db = guildMutationDb(calls, { memberRows: [{ role_id: "100" }] });
+  await assert.rejects(() => demoteGuildMember(db, 1, 20), /is the guild leader/);
+  assert.ok(!calls.some((call) => call.text.includes("dune.demote_guild_member(")));
+});
+
+test("guild demotion rejects a plain member who cannot be demoted further", async () => {
+  const calls = [];
+  const db = guildMutationDb(calls, { memberRows: [{ role_id: "1" }] });
+  await assert.rejects(() => demoteGuildMember(db, 1, 20), /already a Member/);
+  assert.ok(!calls.some((call) => call.text.includes("dune.demote_guild_member(")));
+});
+
+test("guild demotion rejects when the guild does not exist", async () => {
+  const db = guildMutationDb([], { guildRows: [] });
+  await assert.rejects(() => demoteGuildMember(db, 1, 20), /was not found/);
+});
+
+test("guild demotion rejects when the player is not a member", async () => {
+  const db = guildMutationDb([], { memberRows: [] });
+  await assert.rejects(() => demoteGuildMember(db, 1, 20), /is not a member/);
+});
+
+test("guild demotion reports unsupported capability when schema functions are absent", async () => {
+  const db = { query: async (text) => text.includes("to_regclass") ? okRows([{ exists: false }]) : okRows([]) };
+  await assert.rejects(() => demoteGuildMember(db, 1, 20), UnsupportedCapabilityError);
+});
+
+test("guild add member resolves the player and passes a one-guild-per-player cap", async () => {
+  const calls = [];
+  const db = guildMutationDb(calls);
+  const result = await addGuildMember(db, 1, 40, 50);
+  assert.equal(result.ok, true);
+  const add = calls.find((call) => call.text.includes("dune.add_guild_member("));
+  assert.ok(add);
+  const advisoryLockIndex = calls.findIndex((call) => call.text.includes("guilds_get_exclusive_operation_lock"));
+  const guildRowLockIndex = calls.findIndex((call) => call.text.includes("from dune.guilds where guild_id = $1 for update"));
+  assert.ok(advisoryLockIndex >= 0 && advisoryLockIndex < guildRowLockIndex);
+  // dune.add_guild_member(in_player_id, in_guild_id, ...) -- player id first, then guild id.
+  assert.deepEqual(add.values, [41, 1, 50, 1, 32, 3]);
+});
+
+test("guild add member enforces the configured capacity before invoking the game function", async () => {
+  const calls = [];
+  const db = guildMutationDb(calls, { memberCount: 48 });
+  await assert.rejects(() => addGuildMember(db, 1, 40, 1, 48), /configured maximum of 48 members/);
+  assert.ok(!calls.some((call) => call.text.includes("dune.add_guild_member(")));
+});
+
+test("guild add member passes a custom configured capacity to the game function", async () => {
+  const calls = [];
+  const db = guildMutationDb(calls, { memberCount: 47 });
+  await addGuildMember(db, 1, 40, 1, 48);
+  const add = calls.find((call) => call.text.includes("dune.add_guild_member("));
+  assert.deepEqual(add.values, [41, 1, 1, 1, 48, 3]);
+});
+
+test("guild add member surfaces a friendly error when the player is already in a guild", async () => {
+  const db = guildMutationDb([], { addError: "Cannot insert more than 1 guild entries for each user." });
+  await assert.rejects(() => addGuildMember(db, 1, 40, 1), /already in a guild/);
+});
+
+test("guild add member surfaces a friendly error when the guild does not exist", async () => {
+  const db = guildMutationDb([], { addError: "Trying to add user to non existing guild 1." });
+  await assert.rejects(() => addGuildMember(db, 1, 40, 1), /was not found/);
+});
+
+test("guild add member surfaces a friendly error when factions are incompatible", async () => {
+  const db = guildMutationDb([], { addError: "Trying to add user to with non compatible. player faction: 1, guild faction: 2" });
+  await assert.rejects(() => addGuildMember(db, 1, 40, 1), /faction is not compatible/);
+});
+
+test("guild add member reports unsupported capability when schema functions are absent", async () => {
+  const db = { query: async (text) => text.includes("to_regclass") ? okRows([{ exists: false }]) : okRows([]) };
+  await assert.rejects(() => addGuildMember(db, 1, 40, 1), UnsupportedCapabilityError);
+});
+
+test("guild remove member deletes a non-leader", async () => {
+  const calls = [];
+  const db = guildMutationDb(calls, { memberRows: [{ role_id: "50" }] });
+  const result = await removeGuildMember(db, 1, 20);
+  assert.equal(result.ok, true);
+  const remove = calls.find((call) => call.text.includes("dune.remove_guild_members("));
+  assert.ok(remove);
+  assert.deepEqual(remove.values, [[20], 1, 0]);
+});
+
+test("guild remove member rejects removing the leader without calling the database function", async () => {
+  const calls = [];
+  const db = guildMutationDb(calls, { memberRows: [{ role_id: "100" }] });
+  await assert.rejects(() => removeGuildMember(db, 1, 20), /is the guild leader/);
+  assert.ok(!calls.some((call) => call.text.includes("dune.remove_guild_members(")));
+});
+
+test("guild remove member rejects when the guild does not exist", async () => {
+  const db = guildMutationDb([], { guildRows: [] });
+  await assert.rejects(() => removeGuildMember(db, 1, 20), /was not found/);
+});
+
+test("guild remove member rejects when the player is not a member", async () => {
+  const db = guildMutationDb([], { memberRows: [] });
+  await assert.rejects(() => removeGuildMember(db, 1, 20), /is not a member/);
+});
+
+test("guild remove member reports unsupported capability when schema functions are absent", async () => {
+  const db = { query: async (text) => text.includes("to_regclass") ? okRows([{ exists: false }]) : okRows([]) };
+  await assert.rejects(() => removeGuildMember(db, 1, 20), UnsupportedCapabilityError);
+});
+
+test("guild disband delegates to the game function and reports the member count it removed", async () => {
+  const calls = [];
+  const db = guildMutationDb(calls, { memberCount: 5 });
+  const result = await disbandGuild(db, 1);
+  assert.equal(result.ok, true);
+  assert.equal(result.guildName, "Spicy Girls");
+  assert.equal(result.memberCount, 5);
+  const disband = calls.find((call) => call.text.includes("dune.disband_guild("));
+  assert.ok(disband);
+  assert.deepEqual(disband.values, [1]);
+  // guild_members rows cascade away with the guilds row via guild_members_guild_id_fkey
+  // (ON DELETE CASCADE), so we must not issue a redundant delete of our own.
+  assert.ok(
+    !calls.some((call) => call.text.includes("delete from dune.guild_members")),
+    "expected no manual guild_members delete -- the FK cascade already removes those rows"
+  );
+  // The member count is read before the disband, so the reported total isn't always zero.
+  const count = calls.find((call) => call.text.includes("count(*)::int as count from dune.guild_members"));
+  assert.ok(count);
+  assert.ok(calls.indexOf(count) < calls.indexOf(disband));
+});
+
+test("guild disband rejects when the guild does not exist", async () => {
+  const db = guildMutationDb([], { guildRows: [] });
+  await assert.rejects(() => disbandGuild(db, 1), /was not found/);
+});
+
+test("guild disband reports unsupported capability when schema functions are absent", async () => {
+  const db = { query: async (text) => text.includes("to_regclass") ? okRows([{ exists: false }]) : okRows([]) };
+  await assert.rejects(() => disbandGuild(db, 1), UnsupportedCapabilityError);
+});
+
+test("guild disband reports unsupported capability when dune.guilds lacks the expected columns", async () => {
+  const db = guildMutationDb([], { guildColumns: ["guild_id"] }); // missing guild_name
+  await assert.rejects(() => disbandGuild(db, 1), UnsupportedCapabilityError);
 });
 
 const BASE_REQUIRED_TABLES = ["dune.buildings", "dune.building_instances", "dune.actor_fgl_entities", "dune.actors"];
@@ -2208,6 +2740,33 @@ test("export base throws an unsupported error when required tables are missing",
     query: async () => ({ rows: [{ exists: false }] })
   };
   await assert.rejects(() => exportBaseAsBlueprint(db, 1006), UnsupportedCapabilityError);
+});
+
+test("export base reports a genuinely missing base id as not found", async () => {
+  const db = {
+    query: async (text) => {
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("from dune.buildings b")) return { rows: [] };
+      // The follow-up existence check: no buildings row at all.
+      if (text.includes("select 1 from dune.buildings where id")) return { rows: [] };
+      return { rows: [] };
+    }
+  };
+  await assert.rejects(() => exportBaseAsBlueprint(db, 999999), /was not found/);
+});
+
+test("export base distinguishes a broken owner-entity link from a missing base id", async () => {
+  const db = {
+    query: async (text) => {
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("from dune.buildings b")) return { rows: [] };
+      // The follow-up existence check: the buildings row exists, so the empty
+      // result above must be from a broken owner-entity link, not a missing id.
+      if (text.includes("select 1 from dune.buildings where id")) return { rows: [{ "?column?": 1 }] };
+      return { rows: [] };
+    }
+  };
+  await assert.rejects(() => exportBaseAsBlueprint(db, 1006), /no resolvable owner entity/);
 });
 
 test("export base resolves the owner via the base's actor id", async () => {
@@ -2647,12 +3206,55 @@ test("inventory update whitelists editable columns and rejects id, inventory_id,
   assert.doesNotMatch(setClause, /"stats"/);
 });
 
-test("inventory update rejects max_durability outside the 0-100 range", async () => {
+test("inventory update repairs a specialization-crafted item to its stored 200 durability maximum", async () => {
+  const calls = [];
+  const db = {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("from dune.actors a")) return { rows: [{ actor_id: 123, account_id: 44, controller_id: 55, player_state_id: 5, online_status: "Offline" }] };
+      if (text.includes("where i.id = $1 and inv.actor_id = $2")) return { rows: [{ id: 99, stats: { FItemStackAndDurabilityStats: [[], { CurrentDurability: 100, MaxDurability: 200 }] } }] };
+      if (text.includes("pg_index")) return { rows: [{ name: "id" }] };
+      if (text.includes("information_schema.columns")) return { rows: [{ name: "id" }, { name: "stats", data_type: "jsonb" }] };
+      return { rows: [], rowCount: 1 };
+    },
+    transaction: async (fn) => fn(db)
+  };
+  const result = await updateInventoryItem(db, 123, 99, { current_durability: "200" });
+  assert.equal(result.updatedRows, 1);
+  const updateCall = calls.find((call) => String(call.text).startsWith("update"));
+  assert.ok(updateCall);
+  const statsValue = JSON.parse(updateCall.values[0]);
+  assert.deepEqual(statsValue.FItemStackAndDurabilityStats[1], { CurrentDurability: 200, MaxDurability: 200 });
+});
+
+test("inventory update uses DecayedMaxDurability when legacy MaxDurability is zero", async () => {
+  const calls = [];
+  const db = {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("from dune.actors a")) return { rows: [{ actor_id: 123, account_id: 44, controller_id: 55, player_state_id: 5, online_status: "Offline" }] };
+      if (text.includes("where i.id = $1 and inv.actor_id = $2")) return { rows: [{ id: 99, stats: { FItemStackAndDurabilityStats: [[], { CurrentDurability: 100, MaxDurability: 0, DecayedMaxDurability: 200 }] } }] };
+      if (text.includes("pg_index")) return { rows: [{ name: "id" }] };
+      if (text.includes("information_schema.columns")) return { rows: [{ name: "id" }, { name: "stats", data_type: "jsonb" }] };
+      return { rows: [], rowCount: 1 };
+    },
+    transaction: async (fn) => fn(db)
+  };
+  const result = await updateInventoryItem(db, 123, 99, { current_durability: "200" });
+  assert.equal(result.updatedRows, 1);
+  const updateCall = calls.find((call) => String(call.text).startsWith("update"));
+  const statsValue = JSON.parse(updateCall.values[0]);
+  assert.deepEqual(statsValue.FItemStackAndDurabilityStats[1], { CurrentDurability: 200, MaxDurability: 0, DecayedMaxDurability: 200 });
+});
+
+test("inventory update rejects attempts to change the stored maximum durability", async () => {
   const calls = [];
   const db = fakeMutationDb(calls, {
     itemRows: [{ id: 99, template_id: "WaterBottle_1", stack_size: 1, quality_level: 0, position_index: 0, inventory_id: 7, actor_id: 123, stats: { FItemStackAndDurabilityStats: [[], { CurrentDurability: 50, DecayedMaxDurability: 80 }] } }]
   });
-  await assert.rejects(() => updateInventoryItem(db, 123, 99, { max_durability: "150" }), /Invalid max durability/);
+  await assert.rejects(() => updateInventoryItem(db, 123, 99, { max_durability: "200" }), /Maximum durability is read-only/);
   assert.equal(calls.some((call) => String(call.text).startsWith("update dune.items")), false);
 });
 
@@ -2661,11 +3263,11 @@ test("inventory update rejects current_durability greater than max_durability", 
   const db = fakeMutationDb(calls, {
     itemRows: [{ id: 99, template_id: "WaterBottle_1", stack_size: 1, quality_level: 0, position_index: 0, inventory_id: 7, actor_id: 123, stats: { FItemStackAndDurabilityStats: [[], { CurrentDurability: 50, DecayedMaxDurability: 80 }] } }]
   });
-  await assert.rejects(() => updateInventoryItem(db, 123, 99, { current_durability: "95", max_durability: "80" }), /Invalid current durability/);
+  await assert.rejects(() => updateInventoryItem(db, 123, 99, { current_durability: "95" }), /Invalid current durability/);
   assert.equal(calls.some((call) => String(call.text).startsWith("update dune.items")), false);
 });
 
-test("inventory update merges durability into the existing DecayedMaxDurability key", async () => {
+test("inventory update preserves the existing DecayedMaxDurability while changing current durability", async () => {
   const calls = [];
   const db = {
     query: async (text, values = []) => {
@@ -2679,13 +3281,13 @@ test("inventory update merges durability into the existing DecayedMaxDurability 
     },
     transaction: async (fn) => fn(db)
   };
-  const result = await updateInventoryItem(db, 123, 99, { current_durability: "60", max_durability: "90" });
+  const result = await updateInventoryItem(db, 123, 99, { current_durability: "60" });
   assert.equal(result.updatedRows, 1);
   const updateCall = calls.find((call) => String(call.text).startsWith("update"));
   assert.ok(updateCall);
   const statsValue = JSON.parse(updateCall.values[0]);
   assert.deepEqual(statsValue.FCustomizationStats, [[], { color: "sand" }]);
-  assert.deepEqual(statsValue.FItemStackAndDurabilityStats[1], { CurrentDurability: 60, DecayedMaxDurability: 90 });
+  assert.deepEqual(statsValue.FItemStackAndDurabilityStats[1], { CurrentDurability: 60, DecayedMaxDurability: 80 });
 });
 
 test("inventory update treats explicit null durability values as not provided", async () => {
@@ -3679,80 +4281,66 @@ test("main quest nodes with contract in the name stay under story", async () => 
   assert.equal(result.rows.story[0].category, "Story");
 });
 
-test("journey complete updates subtree and applies tags", async () => {
+test("journey completion requires the player to be offline", async () => {
   const calls = [];
-  const db = fakeMutationDb(calls, {
-    journeyUpdateRows: 2,
-    reputationRows: [{ reputation_amount: 0 }],
-    factionRows: [{ faction_id: 1, reputation_amount: 100 }]
-  });
-  const result = await completeJourneyNode(db, 123, { nodeId: "DA_Story.Root" }, { journey_node_tags: { "DA_Story.Root": ["Story.Tag", "Faction.Atreides.Tier1"], "DA_Story.Root.Child": ["Child.Tag"] } });
-  assert.equal(result.updatedRows, 3);
-  assert.equal(result.tagsApplied, 3);
-  assert.ok(calls.some((call) => call.text.includes("story_node_id = any($2::text[])") && call.values[2] === "DA_Story.Root"));
-  assert.ok(calls.some((call) => call.text.includes("insert into dune.player_tags") && call.values[0] === 44 && call.values[1].includes("Child.Tag")));
-  assert.ok(!calls.some((call) => call.text.includes("dune.update_player_tags")));
-  assert.ok(calls.some((call) => call.text.includes("set_player_faction_reputation") && call.values[2] === 100));
+  const db = fakeMutationDb(calls, { playerRows: [{ actor_id: 123, account_id: 44, controller_id: 55, player_state_id: 5, online_status: "Online" }] });
+  await assert.rejects(
+    () => completeJourneyNode(db, 123, { nodeId: "DA_Story.Root" }, {}),
+    /require the player to be offline/
+  );
+  assert.ok(!calls.some((call) => call.text.includes("update dune.journey_story_node")));
 });
 
-test("journey complete materializes parent path for leaf quest steps", async () => {
+test("journey completion updates the selected subtree without completing ancestor containers", async () => {
   const calls = [];
   const db = fakeMutationDb(calls);
-  const result = await completeJourneyNode(db, 123, { nodeId: "DA_MQ_FindTheFremen.FifthTest.FifthQuestion.CompleteFifthTest" }, { journey_node_tags: {} });
-  assert.equal(result.updatedRows, 1);
-  const insert = calls.find((call) => call.text.includes("with wanted(story_node_id)"));
-  assert.ok(insert);
-  assert.deepEqual(insert.values[1], [
-    "DA_MQ_FindTheFremen.FifthTest",
-    "DA_MQ_FindTheFremen.FifthTest.FifthQuestion",
-    "DA_MQ_FindTheFremen.FifthTest.FifthQuestion.CompleteFifthTest"
-  ]);
-});
-
-test("journey reset clears subtree completion and removes tags", async () => {
-  const calls = [];
-  const db = fakeMutationDb(calls, { journeyUpdateRows: 1 });
-  const result = await resetJourneyNode(db, 123, { nodeId: "DA_Story.Root" }, { journey_node_tags: { "DA_Story.Root": ["Story.Tag"], "DA_Story.Root.Child": ["Child.Tag"] } });
-  assert.equal(result.updatedRows, 1);
-  assert.equal(result.tagsRemoved, 2);
-  assert.ok(calls.some((call) => call.text.includes("complete_condition_state = 'false'::jsonb")));
-  assert.ok(calls.some((call) => call.text.includes("delete from dune.player_tags") && call.values[0] === 44 && call.values[1].includes("Child.Tag")));
-  assert.ok(!calls.some((call) => call.text.includes("dune.update_player_tags")));
-});
-
-test("journey complete writes tags through current character_id schema", async () => {
-  const calls = [];
-  const db = fakeMutationDb(calls, { journeyIdentityColumn: "character_id", journeyUpdateRows: 1 });
-  const result = await completeJourneyNode(db, 123, { nodeId: "DA_Story.Root" }, {
-    journey_node_tags: { "DA_Story.Root": ["Story.Tag"] }
+  const result = await completeJourneyNode(db, 123, { nodeId: "DA_Story.Root.Child" }, {
+    journey_node_tags: { "DA_Story.Root": ["Story.Root"], "DA_Story.Root.Child": ["Story.Child"] }
   });
-  assert.equal(result.tagsApplied, 1);
-  assert.ok(calls.some((call) => call.text.includes("insert into dune.player_tags") && call.text.includes('"character_id"') && call.values[0] === 5 && call.values[1].includes("Story.Tag")));
-  assert.ok(!calls.some((call) => call.text.includes("dune.update_player_tags")));
+  assert.equal(result.ok, true);
+  assert.ok(calls.some((call) => call.text.includes("update dune.journey_story_node") && call.values[1] === "DA_Story.Root.Child"));
+  assert.ok(!calls.some((call) => Array.isArray(call.values[1]) && call.values[1].includes("DA_Story.Root")));
+  assert.ok(calls.some((call) => call.text.includes("insert into dune.player_tags") && call.values[1].includes("Story.Child")));
 });
 
-test("contract complete writes player tags directly", async () => {
+test("Find the Fremen completion grants its extra tag, TechKnowledge rewards, and Spice Vision", async () => {
   const calls = [];
-  const db = fakeMutationDb(calls, { reputationRows: [{ reputation_amount: 0 }] });
-  const result = await completeJourneyNode(db, 123, { nodeId: "DA_CT_Trainer_Trooper1_01" }, {
-    contract_tags: { DA_CT_Trainer_Trooper1_01: ["Contract.Trainer.Trooper1.Completed"] }
+  const db = fakeMutationDb(calls, { currentResearchItems: [] });
+  const result = await completeJourneyNode(db, 123, { nodeId: "DA_MQ_FindTheFremen" }, {
+    journey_node_tags: { "DA_MQ_FindTheFremen.FirstTest.FirstQuestion.CompleteFirstTest": ["JourneySets.Fremkit.First"] }
   });
-  assert.equal(result.contract, true);
-  assert.equal(result.tagsApplied, 1);
-  assert.ok(calls.some((call) => call.text.includes("insert into dune.player_tags") && call.values[0] === 44 && call.values[1].includes("Contract.Trainer.Trooper1.Completed")));
-  assert.ok(!calls.some((call) => call.text.includes("dune.update_player_tags")));
+  assert.equal(result.recipesGranted, 5);
+  assert.ok(calls.some((call) => call.text.includes("insert into dune.player_tags") && call.values[1].includes("Journey.RewardsUnblocked")));
+  assert.equal(calls.filter((call) => call.text.includes("TechKnowledgePlayerComponent,m_TechKnowledge,m_TechKnowledgeData") && call.text.includes("update dune.actors")).length, 5);
+  assert.ok(calls.some((call) => call.text.includes("FSpiceAddictionComponent,1,SystemStatus")));
 });
 
-test("contract reset removes player tags directly", async () => {
+test("contract completion applies skills, removes superseded tags, and dismisses its active item", async () => {
   const calls = [];
-  const db = fakeMutationDb(calls);
-  const result = await resetJourneyNode(db, 123, { nodeId: "DA_CT_Trainer_Trooper1_01" }, {
-    contract_tags: { DA_CT_Trainer_Trooper1_01: ["Contract.Trainer.Trooper1.Completed"] }
+  const db = fakeMutationDb(calls, { contractSkillRows: 1, dismissedContractRows: 1, trackedContractRows: 1 });
+  const nodeId = "DA_CT_Trainer_Trooper2_03";
+  const result = await completeJourneyNode(db, 123, { nodeId }, {
+    contract_aliases: { Trainer_Trooper2_03: nodeId },
+    contract_tags: { [nodeId]: ["Contract.Trainer.Done"] },
+    contract_remove_tags: { [nodeId]: ["Contract.Trainer.Active"] },
+    contract_skill_grants: { [nodeId]: ["Skills.Key.Trooper3"] }
   });
-  assert.equal(result.contract, true);
-  assert.equal(result.tagsRemoved, 1);
-  assert.ok(calls.some((call) => call.text.includes("delete from dune.player_tags") && call.values[0] === 44 && call.values[1].includes("Contract.Trainer.Trooper1.Completed")));
-  assert.ok(!calls.some((call) => call.text.includes("dune.update_player_tags")));
+  assert.equal(result.skillsGranted, 1);
+  assert.equal(result.dismissedContracts, 1);
+  assert.equal(result.trackedContractCleared, true);
+  assert.ok(calls.some((call) => call.text.includes("delete from dune.player_tags") && call.values[1].includes("Contract.Trainer.Active")));
+  assert.ok(calls.some((call) => call.text.includes("FContractItemStats") && call.values[1].includes("Trainer_Trooper2_03")));
+});
+
+test("journey reset clears subtree state and mapped tags but does not revoke rewards", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, { journeyUpdateRows: 2 });
+  const result = await resetJourneyNode(db, 123, { nodeId: "DA_Story.Root" }, {
+    journey_node_tags: { "DA_Story.Root.Child": ["Story.Child"] }
+  });
+  assert.equal(result.updatedRows, 2);
+  assert.ok(calls.some((call) => call.text.includes("delete from dune.player_tags") && call.values[1].includes("Story.Child")));
+  assert.ok(!calls.some((call) => call.text.includes("TechKnowledgePlayerComponent") || call.text.includes("FSpiceAddictionComponent")));
 });
 
 test("tutorial complete and reset use player controller tutorial records", async () => {
@@ -4017,6 +4605,10 @@ function fakeMutationDb(calls, fixtures = {}) {
       if (text.includes("not exists(select 1 from dune.items where id = $1")) return { rows: [{ deleted: true }] };
       if (text.includes("exists(select 1 from dune.items where id = $1")) return { rows: [{ exists: Boolean(fixtures.itemStillExists) }] };
       if (text.includes("delete from dune.items where id = $1")) return { rows: [], rowCount: 1 };
+      if (text.includes("FContractItemStats") && text.includes("delete from dune.items")) return { rows: [], rowCount: fixtures.dismissedContractRows ?? 0 };
+      if (text.includes("FLevelComponent") && text.includes("ModuleData") && text.includes("update dune.fgl_entities")) return { rows: [], rowCount: fixtures.contractSkillRows ?? 0 };
+      if (text.includes("ContractsCoordinatorComponent,m_TrackedContractItemUid") && text.includes("update dune.actors")) return { rows: [], rowCount: fixtures.trackedContractRows ?? 0 };
+      if (text.includes("FSpiceAddictionComponent") && text.includes("update dune.fgl_entities")) return { rows: [], rowCount: fixtures.spiceVisionRows ?? 1 };
       if (text.includes("dune.delete_item")) return { rows: [{ ok: true }] };
       if (text.includes("from dune.inventories") && text.includes("where actor_id")) return { rows: fixtures.storageRows || [] };
       if (text.includes("from dune.vehicle_modules vm") && text.includes("count(*)::int as scanned")) return { rows: fixtures.vehicleModuleScanRows || [{ scanned: 0, vehicles: 0 }] };
@@ -4142,4 +4734,765 @@ test("matchSteamIdForCharacter returns false (not throw) for a missing playerCon
   const db = createSteamCharacterDb([]);
   assert.equal(await matchSteamIdForCharacter(db, "", ["76561198000000042"]), false);
   assert.equal(await matchSteamIdForCharacter(db, null, ["76561198000000042"]), false);
+});
+// --- Generator refill -------------------------------------------------------
+
+// lockDelayMs, when set, holds a newly-acquired FOR UPDATE lock open for that
+// long before the caller proceeds -- forcing two Promise.all'd callers to
+// genuinely overlap in real time rather than happening to interleave only by
+// microtask ordering, matching the idiom in addonItemGrants.test.js's
+// "serializes concurrent duplicate grants".
+function fakeRefillDb(calls, { devices = [], items = {}, hasPlaceables = true, lockDelayMs = 0 } = {}) {
+  const state = { items: JSON.parse(JSON.stringify(items)), inserts: [], nextId: 9000, locks: new Map() };
+  const rawQuery = async (text, values = []) => {
+    calls.push({ text, values });
+    if (text.includes("to_regclass")) {
+      return { rows: [{ exists: String(values[0]) === "dune.placeables" ? hasPlaceables : true }] };
+    }
+    if (text.includes("information_schema.columns")) {
+      const columns = {
+        inventories: ["id", "actor_id", "max_item_count", "max_item_volume"],
+        items: ["inventory_id", "template_id", "stack_size", "quality_level", "position_index", "stats"],
+        placeables: ["id", "owner_entity_id", "building_type"]
+      }[values[1]] || [];
+      return { rows: columns.map((column_name) => ({ column_name })) };
+    }
+    if (text.includes("from base_entities be")) return { rows: devices };
+    // The inventory row itself always exists once inventory_id is set, so its
+    // FOR UPDATE lock query always returns a row -- unlike the fuel-items
+    // query below, which returns nothing for a device with no fuel yet.
+    if (text.includes("from dune.inventories") && /for update/i.test(text)) {
+      return { rows: [{ id: values[0] }] };
+    }
+    if (text.includes("lower(template_id) = lower($2)")) {
+      const rows = (state.items[values[0]] || []).filter((row) =>
+        String(row.template_id).toLowerCase() === String(values[1]).toLowerCase());
+      return { rows };
+    }
+    if (text.startsWith("update dune.items set stack_size")) {
+      for (const rows of Object.values(state.items)) {
+        const row = rows.find((entry) => entry.id === values[1]);
+        if (row) row.stack_size += values[0];
+      }
+      return { rows: [], rowCount: 1 };
+    }
+    if (text.includes("count(*)::int as count from dune.items")) {
+      return { rows: [{ count: (state.items[values[0]] || []).length }] };
+    }
+    // baseGeneratorFuelLevels reads every device's fuel in one grouped query
+    // rather than one query per device.
+    if (text.includes("sum(stack_size)::int as units")) {
+      const rows = [];
+      for (const inventoryId of (Array.isArray(values[0]) ? values[0] : []).map(String)) {
+        const totals = new Map();
+        for (const row of state.items[inventoryId] || []) {
+          const key = String(row.template_id).toLowerCase();
+          totals.set(key, (totals.get(key) || 0) + (Number(row.stack_size) || 0));
+        }
+        for (const [template_id, units] of totals) rows.push({ inventory_id: inventoryId, template_id, units });
+      }
+      return { rows };
+    }
+    if (text.includes("max(position_index)")) {
+      const rows = state.items[values[0]] || [];
+      return { rows: [{ position_index: rows.reduce((max, row) => Math.max(max, row.position_index), -1) + 1 }] };
+    }
+    if (text.includes("insert into dune.items")) {
+      const [inventoryId, templateId, stackSize, , positionIndex] = values;
+      state.inserts.push({ inventoryId, templateId, stackSize, positionIndex });
+      (state.items[inventoryId] ||= []).push({ id: ++state.nextId, template_id: templateId, stack_size: stackSize, position_index: positionIndex });
+      return { rows: [], rowCount: 1 };
+    }
+    return { rows: [] };
+  };
+
+  // A key is locked once a FOR UPDATE query returns rows for it, and stays
+  // locked until the transaction that acquired it settles -- mirroring
+  // Postgres releasing row locks on commit/rollback, not on the statement
+  // that acquired them.
+  async function acquireLock(heldByMe, key) {
+    if (heldByMe.has(key)) return;
+    while (state.locks.has(key)) await state.locks.get(key);
+    let release;
+    state.locks.set(key, new Promise((resolve) => { release = resolve; }));
+    heldByMe.set(key, release);
+    if (lockDelayMs) await new Promise((resolve) => setTimeout(resolve, lockDelayMs));
+  }
+
+  async function transaction(fn) {
+    const heldByMe = new Map();
+    const query = async (text, values = []) => {
+      const result = await rawQuery(text, values);
+      if (/for update/i.test(text) && result.rows.length > 0 && values.length) {
+        await acquireLock(heldByMe, values[0]);
+      }
+      return result;
+    };
+    try {
+      return await fn({ query });
+    } finally {
+      for (const [key, release] of heldByMe) {
+        state.locks.delete(key);
+        release();
+      }
+    }
+  }
+
+  return { state, db: { query: rawQuery, transaction } };
+}
+
+const FUEL_DEVICE = { placeable_id: "5001", generator_type: "fuel", inventory_id: "701", max_item_count: 10 };
+const OMNI_DEVICE = { placeable_id: "5002", generator_type: "windTurbineOmni", inventory_id: "702", max_item_count: 10 };
+
+test("generator refill enumerates only allowlisted placeable building types", async () => {
+  const calls = [];
+  const db = { query: async (text, values) => { calls.push({ text, values }); return { rows: [] }; } };
+
+  await baseGenerators(db, 482);
+
+  const [baseId, types, buildingTypes] = calls[0].values;
+  assert.equal(baseId, 482);
+  assert.deepEqual(types, ["fuel", "spice", "windTurbineOmni", "windTurbineDirectional"]);
+  assert.deepEqual(buildingTypes, [
+    "generator_placeable",
+    "spicegenerator_placeable",
+    "windturbineomnidirectional_placeable",
+    "windturbinedirectional_placeable"
+  ]);
+  // Claim resolution must match portalGeneratorFuel so both agree on which
+  // placeables belong to a base.
+  assert.match(calls[0].text, /requested_claims as/);
+  assert.match(calls[0].text, /claim_afe\.actor_id = rc\.actor_id/);
+});
+
+test("generator refill fills an empty fuel generator with one full stack of Oil", async () => {
+  const calls = [];
+  const { state, db } = fakeRefillDb(calls, { devices: [FUEL_DEVICE] });
+
+  const result = await refillBaseGenerators(db, "", 482);
+
+  assert.deepEqual(state.inserts, [{ inventoryId: "701", templateId: "Oil", stackSize: 499, positionIndex: 0 }]);
+  assert.deepEqual(result.devices, [{
+    placeableId: "5001", type: "fuel", label: "Fuel-Powered Generator", fuelName: "Fuel Cell",
+    before: 0, after: 499, added: 499, capped: false
+  }]);
+  assert.equal(result.totalAdded, 499);
+});
+
+test("generator refill tops up a partial stack instead of adding another row", async () => {
+  const calls = [];
+  const { state, db } = fakeRefillDb(calls, {
+    devices: [FUEL_DEVICE],
+    items: { 701: [{ id: 11, template_id: "Oil", stack_size: 42, position_index: 0 }] }
+  });
+
+  const result = await refillBaseGenerators(db, "", 482);
+
+  assert.deepEqual(state.inserts, []);
+  assert.equal(state.items[701][0].stack_size, 499);
+  assert.equal(result.devices[0].before, 42);
+  assert.equal(result.devices[0].added, 457);
+});
+
+test("generator refill splits an omnidirectional turbine into five lubricant stacks", async () => {
+  const calls = [];
+  const { state, db } = fakeRefillDb(calls, { devices: [OMNI_DEVICE] });
+
+  const result = await refillBaseGenerators(db, "", 482);
+
+  // Five stacks of 100 would be 500; the total cap holds the device at 499.
+  assert.deepEqual(state.inserts.map((entry) => entry.stackSize), [100, 100, 100, 100, 99]);
+  assert.ok(state.inserts.every((entry) => entry.templateId === "WindTurbineLubricant1"));
+  assert.deepEqual(state.inserts.map((entry) => entry.positionIndex), [0, 1, 2, 3, 4]);
+  assert.equal(result.devices[0].after, 499);
+  assert.equal(result.devices[0].capped, false);
+});
+
+test("generator refill leaves an already-full device untouched", async () => {
+  const calls = [];
+  const { state, db } = fakeRefillDb(calls, {
+    devices: [FUEL_DEVICE],
+    items: { 701: [{ id: 11, template_id: "Oil", stack_size: 499, position_index: 0 }] }
+  });
+
+  const result = await refillBaseGenerators(db, "", 482);
+
+  assert.deepEqual(state.inserts, []);
+  assert.equal(calls.some((call) => String(call.text).startsWith("update dune.items")), false);
+  assert.equal(result.devices[0].added, 0);
+  assert.equal(result.totalAdded, 0);
+});
+
+test("concurrent refills of an empty-inventory device do not both insert a full stack", async () => {
+  const calls = [];
+  const { state, db } = fakeRefillDb(calls, { devices: [FUEL_DEVICE], lockDelayMs: 5 });
+
+  const [first, second] = await Promise.all([
+    refillBaseGenerators(db, "", 482),
+    refillBaseGenerators(db, "", 482)
+  ]);
+
+  // Without the inventory-row lock, both callers would read `before: 0` and
+  // each insert a full 499-unit stack. With it, the second caller blocks
+  // until the first commits, then sees the first's fuel and adds nothing.
+  assert.equal(state.inserts.length, 1);
+  const totalUnits = (state.items["701"] || []).reduce((sum, row) => sum + row.stack_size, 0);
+  assert.equal(totalUnits, 499);
+  assert.equal(first.totalAdded + second.totalAdded, 499);
+});
+
+test("generator refill stops at the inventory slot limit and reports it as capped", async () => {
+  const calls = [];
+  const { state, db } = fakeRefillDb(calls, { devices: [{ ...OMNI_DEVICE, max_item_count: 2 }] });
+
+  const result = await refillBaseGenerators(db, "", 482);
+
+  assert.equal(state.inserts.length, 2);
+  assert.equal(result.devices[0].after, 200);
+  assert.equal(result.devices[0].capped, true);
+});
+
+test("generator refill skips a device with no inventory rather than failing the whole base", async () => {
+  const calls = [];
+  const { state, db } = fakeRefillDb(calls, {
+    devices: [{ ...FUEL_DEVICE, inventory_id: null }, OMNI_DEVICE]
+  });
+
+  const result = await refillBaseGenerators(db, "", 482);
+
+  assert.equal(result.devices[0].skipped, "no-inventory");
+  assert.equal(result.devices[0].added, 0);
+  assert.equal(result.devices[1].added, 499);
+  assert.ok(state.inserts.every((entry) => entry.inventoryId === "702"));
+});
+
+test("generator refill reports a base with no power devices instead of silently succeeding", async () => {
+  const calls = [];
+  const { db } = fakeRefillDb(calls, { devices: [] });
+  await assert.rejects(() => refillBaseGenerators(db, "", 482), /No generators or wind turbines were found/);
+});
+
+test("generator refill is unsupported when the schema has no placeables table", async () => {
+  const calls = [];
+  const { db } = fakeRefillDb(calls, { devices: [FUEL_DEVICE], hasPlaceables: false });
+
+  assert.equal(await supportsGeneratorRefill(db), false);
+  await assert.rejects(() => refillBaseGenerators(db, "", 482), UnsupportedCapabilityError);
+});
+
+test("generator refill rejects an invalid base id before writing anything", async () => {
+  const calls = [];
+  const { db } = fakeRefillDb(calls, { devices: [FUEL_DEVICE] });
+  await assert.rejects(() => refillBaseGenerators(db, "", 0), /Invalid base id/);
+  assert.equal(calls.some((call) => String(call.text).includes("insert into dune.items")), false);
+});
+
+// --- Pending refill queue ---------------------------------------------------
+
+// Must await fn: without it the finally deletes the directory at the callback's
+// first await, and everything after that reads an empty queue.
+async function withTempRepoRoot(fn) {
+  const repoRoot = mkdtempSync(join(tmpdir(), "dune-refill-queue-"));
+  try {
+    return await fn(repoRoot);
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+}
+
+// Extends fakeRefillDb with the partition observation the queue needs. Each
+// entry of `partitions` is { partitionId, connected, unassigned } -- "unassigned"
+// meaning world_partition.server_id was released, as despawn does.
+function fakeQueueDb(calls, { devices = [], items = {}, partitions = [], basePartition = null, hasWorldPartition = true } = {}) {
+  const { state, db } = fakeRefillDb(calls, { devices, items });
+  const inner = db.query;
+  const query = async (text, values = []) => {
+    // Record here too: the branches below return without reaching fakeRefillDb,
+    // which is where calls are normally pushed.
+    if (text.includes("to_regclass") || text.includes("from dune.world_partition")) calls.push({ text, values });
+    if (text.includes("to_regclass")) {
+      const target = String(values[0]);
+      if (target === "dune.world_partition") return { rows: [{ exists: hasWorldPartition }] };
+    }
+    if (text.includes("from dune.world_partition")) {
+      return { rows: partitions.map((partition) => ({
+        partition_id: partition.partitionId,
+        unassigned: Boolean(partition.unassigned),
+        connected: Boolean(partition.connected)
+      })) };
+    }
+    if (text.includes("coalesce(a.partition_id, 0)::int as partition_id")) {
+      // baseMapLocation now also selects actor_id to distinguish a genuinely
+      // missing base from one with a broken owner-entity link; default it to
+      // a resolved id here so existing callers testing write-safety don't
+      // have to know about that distinction unless they explicitly opt in.
+      return { rows: basePartition ? [{ actor_id: "1", ...basePartition }] : [] };
+    }
+    return inner(text, values);
+  };
+  return { state, db: { query, transaction: async (fn) => fn({ query }) } };
+}
+
+// Every partition the queue tests reference, with a live server attached.
+const LIVE_PARTITIONS = [{ partitionId: 3, connected: true }, { partitionId: 9, connected: true }];
+// The same partitions after a despawn released their server_id.
+const DESPAWNED_PARTITIONS = [{ partitionId: 3, unassigned: true }, { partitionId: 9, unassigned: true }];
+
+test("refill queue stores one entry per base and survives a re-read", async () => {
+  await withTempRepoRoot((repoRoot) => {
+    assert.deepEqual(listQueuedGeneratorRefills(repoRoot), []);
+
+    queueGeneratorRefill(repoRoot, { baseId: 482, map: "Survival_1", partitionId: 3 });
+    queueGeneratorRefill(repoRoot, { baseId: 517, map: "Overmap", partitionId: 9 });
+    // Re-queueing the same base must replace its entry, not add a second one.
+    queueGeneratorRefill(repoRoot, { baseId: 482, map: "Survival_1", partitionId: 3 });
+
+    const pending = listQueuedGeneratorRefills(repoRoot);
+    assert.deepEqual(pending.map((entry) => entry.baseId), [517, 482]);
+    assert.equal(pending.find((entry) => entry.baseId === 482).map, "Survival_1");
+    assert.equal(pending.find((entry) => entry.baseId === 482).partitionId, 3);
+  });
+});
+
+test("refill queue cancel removes only the requested base and reports a missing one", async () => {
+  await withTempRepoRoot((repoRoot) => {
+    queueGeneratorRefill(repoRoot, { baseId: 482, map: "Survival_1", partitionId: 3 });
+    queueGeneratorRefill(repoRoot, { baseId: 517, map: "Overmap", partitionId: 9 });
+
+    const result = cancelQueuedGeneratorRefill(repoRoot, 482);
+
+    assert.equal(result.pending, 1);
+    assert.deepEqual(listQueuedGeneratorRefills(repoRoot).map((entry) => entry.baseId), [517]);
+    assert.throws(() => cancelQueuedGeneratorRefill(repoRoot, 482), /no queued generator refill/);
+  });
+});
+
+test("refill queue ignores a corrupt file rather than blocking the panel", async () => {
+  await withTempRepoRoot((repoRoot) => {
+    queueGeneratorRefill(repoRoot, { baseId: 482, map: "Survival_1", partitionId: 3 });
+    writeFileSync(join(repoRoot, "runtime/generated/pending-generator-refills.json"), "{not json");
+    assert.deepEqual(listQueuedGeneratorRefills(repoRoot), []);
+  });
+});
+
+test("a released server_id is safe at once, so a despawn/spawn pair gets its window", async () => {
+  _resetRefillPartitionDwellForTests();
+  const calls = [];
+  const { db } = fakeQueueDb(calls, { partitions: [{ partitionId: 3, unassigned: true }, { partitionId: 9, connected: true }] });
+
+  const observed = await observeRefillPartitions(db);
+
+  assert.equal(observed.safe.has(3), true);
+  assert.equal(observed.safe.has(9), false);
+  // Connection state must come from pg_stat_activity, not from a server_id that
+  // restartService leaves behind on an always-on map.
+  assert.ok(calls.some((call) => String(call.text).includes("pg_stat_activity")));
+  assert.equal(calls.some((call) => String(call.text).includes("nullif(server_id, '') is not null")), false);
+});
+
+// The regression guard for the Postgres-restart hazard: losing every game
+// server's connection at once must not read as "every map is down".
+test("a still-assigned partition needs the full dwell before it is safe to write", async () => {
+  _resetRefillPartitionDwellForTests();
+  // server_id is still assigned; only the connection is gone.
+  const { db } = fakeQueueDb([], { partitions: [{ partitionId: 3, connected: false }] });
+
+  const first = await observeRefillPartitions(db, { now: () => 1_000_000 });
+  assert.equal(first.safe.has(3), false);
+
+  const justUnder = await observeRefillPartitions(db, { now: () => 1_000_000 + 29_999 });
+  assert.equal(justUnder.safe.has(3), false);
+
+  const elapsed = await observeRefillPartitions(db, { now: () => 1_000_000 + 30_000 });
+  assert.equal(elapsed.safe.has(3), true);
+});
+
+test("a reconnecting game server resets the dwell instead of ageing into safety", async () => {
+  _resetRefillPartitionDwellForTests();
+  const disconnected = fakeQueueDb([], { partitions: [{ partitionId: 3, connected: false }] });
+  const reconnected = fakeQueueDb([], { partitions: [{ partitionId: 3, connected: true }] });
+
+  // Postgres restarted: the connection vanishes, then returns seconds later.
+  await observeRefillPartitions(disconnected.db, { now: () => 1_000_000 });
+  await observeRefillPartitions(reconnected.db, { now: () => 1_000_005 });
+  await observeRefillPartitions(disconnected.db, { now: () => 1_000_010 });
+
+  // The clock restarted at the reconnect, so the original timestamp cannot
+  // carry a still-running map across the dwell threshold.
+  const afterOriginalDwell = await observeRefillPartitions(disconnected.db, { now: () => 1_000_000 + 30_000 });
+  assert.equal(afterOriginalDwell.safe.has(3), false);
+});
+
+test("queueing is unsupported without world_partition, so refills stay immediate", async () => {
+  _resetRefillPartitionDwellForTests();
+  const calls = [];
+  const { db } = fakeQueueDb(calls, { devices: [FUEL_DEVICE], hasWorldPartition: false });
+
+  assert.equal(await supportsGeneratorRefillQueue(db), false);
+  assert.equal(await observeRefillPartitions(db), null);
+
+  const target = await baseRefillTarget(db, 482);
+  assert.equal(target.queueSupported, false);
+  assert.equal(target.writeSafeNow, true);
+});
+
+test("a base on a running map is not write-safe, one on a despawned map is", async () => {
+  _resetRefillPartitionDwellForTests();
+  const running = fakeQueueDb([], {
+    partitions: LIVE_PARTITIONS,
+    basePartition: { map: "Survival_1", partition_id: 3 }
+  });
+  const runningTarget = await baseRefillTarget(running.db, 482);
+  assert.deepEqual(runningTarget, { map: "Survival_1", partitionId: 3, queueSupported: true, writeSafeNow: false });
+
+  _resetRefillPartitionDwellForTests();
+  const stopped = fakeQueueDb([], {
+    partitions: DESPAWNED_PARTITIONS,
+    basePartition: { map: "Survival_1", partition_id: 3 }
+  });
+  const stoppedTarget = await baseRefillTarget(stopped.db, 482);
+  assert.equal(stoppedTarget.writeSafeNow, true);
+  assert.equal(stoppedTarget.queueSupported, true);
+});
+
+// dune.actors.map is not the name the restart machinery uses: on a live server
+// partition 1 reports "HaggaBasin" against world_partition's "Survival_1", and
+// partition 8 reports "DeepDesert" against "DeepDesert_1". Choosing a restart
+// target from the base's own map name picks the wrong container, or none.
+test("restart targets resolve from world_partition, not from the base's map name", async () => {
+  const db = {
+    query: async (text) => {
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      return { rows: [
+        { partition_id: 1, map: "Survival_1", dimension_index: 0 },
+        { partition_id: 8, map: "DeepDesert_1", dimension_index: 0 },
+        { partition_id: 0, map: "Ignored", dimension_index: 0 }
+      ] };
+    }
+  };
+
+  const targets = await partitionRestartTargets(db);
+
+  assert.deepEqual(targets.get(1), { map: "Survival_1", dimensionIndex: 0 });
+  assert.deepEqual(targets.get(8), { map: "DeepDesert_1", dimensionIndex: 0 });
+  assert.equal(targets.has(0), false);
+});
+
+test("restart targets are empty rather than throwing without world_partition", async () => {
+  const db = { query: async () => ({ rows: [{ exists: false }] }) };
+  assert.equal((await partitionRestartTargets(db)).size, 0);
+});
+
+test("a base in a partition that no longer exists is write-safe rather than stuck", async () => {
+  _resetRefillPartitionDwellForTests();
+  const { db } = fakeQueueDb([], {
+    partitions: LIVE_PARTITIONS,
+    basePartition: { map: "Survival_1", partition_id: 4242 }
+  });
+
+  const target = await baseRefillTarget(db, 482);
+
+  assert.equal(target.writeSafeNow, true);
+});
+
+// The regression guard for the lost-write hazard: the flush awaits a database
+// transaction per base, and anything queued during one of those awaits must
+// survive the queue file being rewritten.
+test("flush preserves a refill queued while it was awaiting the database", async () => {
+  await withTempRepoRoot(async (repoRoot) => {
+    _resetRefillPartitionDwellForTests();
+    queueGeneratorRefill(repoRoot, { baseId: 482, map: "Survival_1", partitionId: 3 });
+
+    const { db } = fakeQueueDb([], { devices: [FUEL_DEVICE], partitions: DESPAWNED_PARTITIONS });
+    const inner = db.transaction;
+    db.transaction = async (fn) => {
+      // Stands in for an operator clicking Refill on another base mid-flush.
+      queueGeneratorRefill(repoRoot, { baseId: 517, map: "Overmap", partitionId: 9 });
+      return inner(fn);
+    };
+
+    const result = await flushGeneratorRefills(db, repoRoot);
+
+    assert.deepEqual(result.flushed.map((entry) => entry.baseId), [482]);
+    assert.deepEqual(listQueuedGeneratorRefills(repoRoot).map((entry) => entry.baseId), [517]);
+  });
+});
+
+test("flush does not resurrect an entry canceled while it was awaiting the database", async () => {
+  await withTempRepoRoot(async (repoRoot) => {
+    _resetRefillPartitionDwellForTests();
+    queueGeneratorRefill(repoRoot, { baseId: 482, map: "Survival_1", partitionId: 3 });
+    queueGeneratorRefill(repoRoot, { baseId: 517, map: "Overmap", partitionId: 9 });
+
+    const { db } = fakeQueueDb([], { devices: [FUEL_DEVICE], partitions: DESPAWNED_PARTITIONS });
+    const inner = db.transaction;
+    let cancelled = false;
+    db.transaction = async (fn) => {
+      if (!cancelled) {
+        cancelled = true;
+        cancelQueuedGeneratorRefill(repoRoot, 517);
+      }
+      return inner(fn);
+    };
+
+    await flushGeneratorRefills(db, repoRoot);
+
+    assert.deepEqual(listQueuedGeneratorRefills(repoRoot), []);
+  });
+});
+
+test("flush applies refills for stopped partitions and leaves running ones queued", async () => {
+  await withTempRepoRoot(async (repoRoot) => {
+    _resetRefillPartitionDwellForTests();
+    queueGeneratorRefill(repoRoot, { baseId: 482, map: "Survival_1", partitionId: 3 });
+    queueGeneratorRefill(repoRoot, { baseId: 517, map: "Overmap", partitionId: 9 });
+
+    const calls = [];
+    // Partition 9 still has a live server, so only base 482 may be written.
+    const { state, db } = fakeQueueDb(calls, {
+      devices: [FUEL_DEVICE],
+      partitions: [{ partitionId: 3, unassigned: true }, { partitionId: 9, connected: true }]
+    });
+
+    const result = await flushGeneratorRefills(db, repoRoot);
+
+    assert.deepEqual(result.flushed.map((entry) => ({ baseId: entry.baseId, ok: entry.ok })), [{ baseId: 482, ok: true }]);
+    assert.equal(result.pending, 1);
+    assert.deepEqual(listQueuedGeneratorRefills(repoRoot).map((entry) => entry.baseId), [517]);
+    assert.deepEqual(state.inserts, [{ inventoryId: "701", templateId: "Oil", stackSize: 499, positionIndex: 0 }]);
+  });
+});
+
+test("flush is a no-op with an empty queue and never queries the database", async () => {
+  await withTempRepoRoot(async (repoRoot) => {
+    const calls = [];
+    const { db } = fakeQueueDb(calls, { devices: [FUEL_DEVICE] });
+
+    const result = await flushGeneratorRefills(db, repoRoot);
+
+    assert.deepEqual(result, { flushed: [], pending: 0 });
+    assert.equal(calls.length, 0);
+  });
+});
+
+test("flush keeps retrying through a restarting database without burning attempts", async () => {
+  await withTempRepoRoot(async (repoRoot) => {
+    _resetRefillPartitionDwellForTests();
+    queueGeneratorRefill(repoRoot, { baseId: 482, map: "Survival_1", partitionId: 3 });
+
+    // start-all.sh runs update-db.sh inside the very window the flush targets,
+    // so a mid-migration error must not count toward the drop limit. Liveness
+    // still resolves; only the write fails.
+    const live = fakeQueueDb([], { devices: [FUEL_DEVICE], partitions: DESPAWNED_PARTITIONS });
+    const db = {
+      query: live.db.query,
+      transaction: async () => { throw new Error('relation "dune.items" does not exist'); }
+    };
+
+    // Step past the retry delay each round, otherwise the backoff below skips it.
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const at = 1_000_000 + attempt * 120_000;
+      const result = await flushGeneratorRefills(db, repoRoot, { now: () => at });
+      assert.equal(result.flushed[0].attempts, 0);
+      assert.equal(result.flushed[0].dropped, false);
+    }
+    assert.equal(listQueuedGeneratorRefills(repoRoot).length, 1);
+  });
+});
+
+// The regression guard for unbounded retries: an entry whose permanent fault
+// reads as transient must still leave the queue eventually.
+test("flush expires an entry that has outlived the maximum queue age", async () => {
+  await withTempRepoRoot(async (repoRoot) => {
+    _resetRefillPartitionDwellForTests();
+    queueGeneratorRefill(repoRoot, { baseId: 482, map: "Survival_1", partitionId: 3 });
+    const queuedAt = Date.parse(listQueuedGeneratorRefills(repoRoot)[0].queuedAt);
+
+    const live = fakeQueueDb([], { devices: [FUEL_DEVICE], partitions: DESPAWNED_PARTITIONS });
+    const db = {
+      query: live.db.query,
+      // A dropped table reads as transient forever, so only the age limit can
+      // clear this entry.
+      transaction: async () => { throw new Error('relation "dune.items" does not exist'); }
+    };
+
+    const beforeLimit = await flushGeneratorRefills(db, repoRoot, { now: () => queuedAt + 7 * 24 * 3600_000 - 1000 });
+    assert.equal(beforeLimit.flushed[0].expired, undefined);
+    assert.equal(listQueuedGeneratorRefills(repoRoot).length, 1);
+
+    const atLimit = await flushGeneratorRefills(db, repoRoot, { now: () => queuedAt + 7 * 24 * 3600_000 });
+    assert.equal(atLimit.flushed[0].expired, true);
+    assert.equal(atLimit.flushed[0].dropped, true);
+    assert.deepEqual(listQueuedGeneratorRefills(repoRoot), []);
+  });
+});
+
+test("flush backs off a failed entry instead of retrying it every tick", async () => {
+  await withTempRepoRoot(async (repoRoot) => {
+    _resetRefillPartitionDwellForTests();
+    queueGeneratorRefill(repoRoot, { baseId: 482, map: "Survival_1", partitionId: 3 });
+
+    let transactions = 0;
+    const live = fakeQueueDb([], { devices: [FUEL_DEVICE], partitions: DESPAWNED_PARTITIONS });
+    const db = {
+      query: live.db.query,
+      transaction: async () => { transactions += 1; throw new Error("connection terminated"); }
+    };
+
+    await flushGeneratorRefills(db, repoRoot, { now: () => 1_000_000 });
+    assert.equal(transactions, 1);
+
+    // Inside the 60s delay: skipped entirely, so nothing is reported for it.
+    const skipped = await flushGeneratorRefills(db, repoRoot, { now: () => 1_000_000 + 30_000 });
+    assert.deepEqual(skipped.flushed, []);
+    assert.equal(transactions, 1);
+
+    await flushGeneratorRefills(db, repoRoot, { now: () => 1_000_000 + 60_000 });
+    assert.equal(transactions, 2);
+  });
+});
+
+test("flush drops an entry that keeps failing instead of retrying it forever", async () => {
+  await withTempRepoRoot(async (repoRoot) => {
+    queueGeneratorRefill(repoRoot, { baseId: 482, map: "Survival_1", partitionId: 3 });
+
+    // No devices: the base was released while its refill sat queued. Each round
+    // steps past the retry delay so the backoff does not skip it.
+    let round = 0;
+    const runFlush = () => flushGeneratorRefills(
+      fakeQueueDb([], { devices: [], partitions: DESPAWNED_PARTITIONS }).db,
+      repoRoot,
+      { now: () => 1_000_000 + (round++) * 120_000 }
+    );
+
+    const first = await runFlush();
+    assert.equal(first.flushed[0].ok, false);
+    assert.equal(first.flushed[0].attempts, 1);
+    assert.equal(first.flushed[0].dropped, false);
+    assert.equal(listQueuedGeneratorRefills(repoRoot).length, 1);
+
+    await runFlush();
+    const third = await runFlush();
+
+    assert.equal(third.flushed[0].attempts, 3);
+    assert.equal(third.flushed[0].dropped, true);
+    assert.deepEqual(listQueuedGeneratorRefills(repoRoot), []);
+  });
+});
+
+// --- Per-device generator fuel levels ---------------------------------------
+
+const SECOND_FUEL_DEVICE = { placeable_id: "5003", generator_type: "fuel", inventory_id: "703", max_item_count: 10 };
+const NO_INVENTORY_DEVICE = { placeable_id: "5004", generator_type: "fuel", inventory_id: null, max_item_count: 0 };
+const UNKNOWN_DEVICE = { placeable_id: "5005", generator_type: "somethingElse", inventory_id: "705", max_item_count: 10 };
+
+test("baseGeneratorFuelLevels finds one starved device among full siblings of the same type", async () => {
+  const calls = [];
+  const { db } = fakeRefillDb(calls, {
+    devices: [FUEL_DEVICE, SECOND_FUEL_DEVICE],
+    items: {
+      701: [{ id: 1, template_id: "Oil", stack_size: 499, position_index: 0 }],
+      703: [{ id: 2, template_id: "Oil", stack_size: 100, position_index: 0 }]
+    }
+  });
+
+  const levels = await baseGeneratorFuelLevels(db, "", 482);
+
+  // The aggregate portalGeneratorFuel path groups by generator_type and would
+  // report these two as one healthy row; the per-device read is the whole point.
+  assert.equal(levels.deviceCount, 2);
+  assert.equal(levels.devices.find((entry) => entry.placeableId === "5001").percent, 100);
+  assert.equal(levels.devices.find((entry) => entry.placeableId === "5003").percent, 20);
+  assert.equal(levels.lowestPercent, 20);
+  // One grouped read for the whole base, not one query per device.
+  assert.equal(calls.filter((call) => call.text.includes("sum(stack_size)::int as units")).length, 1);
+});
+
+test("baseGeneratorFuelLevels counts a device with no inventory as empty", async () => {
+  const { db } = fakeRefillDb([], {
+    devices: [FUEL_DEVICE, NO_INVENTORY_DEVICE],
+    items: { 701: [{ id: 1, template_id: "Oil", stack_size: 499, position_index: 0 }] }
+  });
+
+  const levels = await baseGeneratorFuelLevels(db, "", 482);
+
+  assert.equal(levels.devices.find((entry) => entry.placeableId === "5004").units, 0);
+  assert.equal(levels.lowestPercent, 0);
+});
+
+test("baseGeneratorFuelLevels ignores fuel that is not the type's accepted fuel", async () => {
+  const { db } = fakeRefillDb([], {
+    devices: [FUEL_DEVICE],
+    // A full stack of turbine lubricant does not fuel an oil generator.
+    items: { 701: [{ id: 1, template_id: "WindTurbineLubricant1", stack_size: 499, position_index: 0 }] }
+  });
+
+  const levels = await baseGeneratorFuelLevels(db, "", 482);
+
+  assert.equal(levels.devices[0].units, 0);
+  assert.equal(levels.lowestPercent, 0);
+});
+
+test("baseGeneratorFuelLevels honours a cap override and excludes unknown placeables", async () => {
+  await withTempRepoRoot(async (repoRoot) => {
+    mkdirSync(join(repoRoot, "runtime/data"), { recursive: true });
+    writeFileSync(join(repoRoot, "runtime/data/generator-refill-caps.json"),
+      JSON.stringify({ fuel: { totalCap: 200 } }));
+    const { db } = fakeRefillDb([], {
+      devices: [FUEL_DEVICE, UNKNOWN_DEVICE],
+      items: {
+        701: [{ id: 1, template_id: "Oil", stack_size: 100, position_index: 0 }],
+        705: [{ id: 2, template_id: "Oil", stack_size: 0, position_index: 0 }]
+      }
+    });
+
+    const levels = await baseGeneratorFuelLevels(db, repoRoot, 482);
+
+    // Against the overridden cap of 200, 100 units is exactly half.
+    assert.equal(levels.devices[0].cap, 200);
+    assert.equal(levels.devices[0].percent, 50);
+    // An unrecognised placeable is left out rather than assumed to burn oil.
+    assert.equal(levels.deviceCount, 1);
+  });
+});
+
+test("baseGeneratorFuelLevels reports null rather than zero for a base with no generators", async () => {
+  const { db } = fakeRefillDb([], { devices: [] });
+
+  const levels = await baseGeneratorFuelLevels(db, "", 482);
+
+  // null must not read as "empty" to a caller deciding whether to refill.
+  assert.equal(levels.lowestPercent, null);
+  assert.equal(levels.deviceCount, 0);
+});
+
+test("getAllLinkedPlayers: returns [] for unlinked Discord user", async () => {
+  const db = await testDb();
+  const rows = await getAllLinkedPlayers(db, "discord-user-nonexistent");
+  assert.equal(rows.length, 0);
+  await closeDb(db);
+});
+
+test("getAllLinkedPlayers: returns linked chars from discord_account_links", async () => {
+  const db = await testDb();
+  const userId = "test-discord-123";
+  const cid = "999999999";
+  await db.query("create table if not exists console.discord_account_links (id bigint generated always as identity primary key, discord_user_id text not null, player_controller_id text not null, is_default boolean default false, linked_at timestamptz default now())");
+  await db.query("delete from console.discord_account_links where discord_user_id = $1", [userId]);
+  await db.query("insert into console.discord_account_links (discord_user_id, player_controller_id, is_default) values ($1, $2, true)", [userId, cid]);
+  const rows = await getAllLinkedPlayers(db, userId);
+  assert.ok(rows.length >= 0);
+  await closeDb(db);
+});
+
+test("getAllLinkedPlayers: returns linked chars from legacy discord_player_links", async () => {
+  const db = await testDb();
+  const userId = "test-legacy-456";
+  const cid = "888888888";
+  await db.query("create table if not exists console.discord_player_links (id bigint generated always as identity primary key, discord_user_id text not null, player_controller_id text not null, linked_at timestamptz default now())");
+  await db.query("delete from console.discord_player_links where discord_user_id = $1", [userId]);
+  await db.query("insert into console.discord_player_links (discord_user_id, player_controller_id) values ($1, $2)", [userId, cid]);
+  const rows = await getAllLinkedPlayers(db, userId);
+  assert.ok(rows.length >= 0);
+  await closeDb(db);
 });

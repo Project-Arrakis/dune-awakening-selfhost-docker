@@ -9,13 +9,14 @@ export function loadConfig() {
   const repoRoot = resolve(process.env.DUNE_DOCKER_DIR || process.env.RUNTIME_DIR || process.cwd());
   const generatedDir = resolve(repoRoot, "runtime/generated");
   const secretsDir = resolve(repoRoot, "runtime/secrets");
-  const secureCookieEnv = process.env.ADMIN_SECURE_COOKIES;
   mkdirSync(generatedDir, { recursive: true });
   mkdirSync(secretsDir, { recursive: true });
   repairRootOwnedHostState(repoRoot);
 
   const adminPasswordFile = resolve(secretsDir, "admin-web-password.txt");
   const adminPasswordEnvManaged = Boolean(process.env.ADMIN_PASSWORD);
+  const secureCookieEnv = process.env.ADMIN_SECURE_COOKIES;
+  const oauthHomeGuildId = /^\d{17,19}$/.test(process.env.DISCORD_HOME_GUILD_ID || "") ? process.env.DISCORD_HOME_GUILD_ID : "";
   return {
     appName: APP_NAME,
     version: readConsoleVersion(repoRoot),
@@ -31,6 +32,26 @@ export function loadConfig() {
     adminPassword: process.env.ADMIN_PASSWORD || getOrCreateSecret(adminPasswordFile, 18),
     adminPasswordFile,
     adminPasswordEnvManaged,
+    discordOAuthConfigured: Boolean(
+      process.env.DISCORD_OAUTH_CLIENT_ID &&
+      (process.env.DISCORD_OAUTH_CLIENT_SECRET || existsSync(resolve(secretsDir, "discord-oauth-client-secret.txt"))) &&
+      process.env.DISCORD_OAUTH_REDIRECT_URI &&
+      oauthHomeGuildId
+    ),
+    discordOAuthClientId: process.env.DISCORD_OAUTH_CLIENT_ID || "",
+    discordOAuthClientSecret: readInlineOrFile(process.env.DISCORD_OAUTH_CLIENT_SECRET, resolve(secretsDir, "discord-oauth-client-secret.txt")),
+    discordOAuthRedirectUri: process.env.DISCORD_OAUTH_REDIRECT_URI || "",
+    discordOAuthApiBaseUrl: process.env.DISCORD_OAUTH_BASE_URL || "https://discord.com/api/v10",
+    discordOAuthAllowOwnerBootstrap: process.env.DISCORD_OAUTH_ALLOW_OWNER_BOOTSTRAP === "1",
+    discordOAuthOwnerAllowlist: String(process.env.DISCORD_OAUTH_OWNER_ALLOWLIST || "").split(",").map((item) => item.trim()).filter((item) => /^\d{17,19}$/.test(item)),
+    discordHomeGuildId: oauthHomeGuildId,
+    discordBotHandoffSecret: readInlineOrFile(process.env.DISCORD_BOT_HANDOFF_SECRET, resolve(secretsDir, "discord-bot-handoff-secret.txt")),
+    discordBotHandoffUrl: (process.env.DISCORD_BOT_HANDOFF_URL || "").replace(/\/+$/, ""),
+    discordHandoffEnabled: Boolean(
+      (process.env.DISCORD_BOT_HANDOFF_SECRET || existsSync(resolve(secretsDir, "discord-bot-handoff-secret.txt"))) &&
+      (process.env.DISCORD_BOT_HANDOFF_URL || "").trim() &&
+      (/^\d{17,19}$/.test(process.env.DISCORD_HOME_GUILD_ID || ""))
+    ),
     generatedDir,
     secretsDir,
     auditLog: resolve(generatedDir, "web-admin-audit.jsonl"),
@@ -88,6 +109,7 @@ function repairRootOwnedHostState(repoRoot) {
     resolve(repoRoot, "runtime/generated/message-of-the-day-state.json"),
     resolve(repoRoot, "runtime/generated/player-announcements.json"),
     resolve(repoRoot, "runtime/generated/player-announcements-state.json"),
+    resolve(repoRoot, "runtime/generated/player-bans.json"),
     resolve(repoRoot, "runtime/generated/public-directory-status.json"),
     resolve(repoRoot, "runtime/generated/restart-schedule.env"),
     resolve(repoRoot, "runtime/generated/shutdown-protection.env"),
@@ -95,6 +117,8 @@ function repairRootOwnedHostState(repoRoot) {
     resolve(repoRoot, "runtime/generated/spicefield-overrides.json"),
     resolve(repoRoot, "runtime/generated/update-auto.env"),
     resolve(repoRoot, "runtime/generated/usersettings.json"),
+    resolve(repoRoot, "runtime/generated/auto-refill-bases.json"),
+    resolve(repoRoot, "runtime/generated/pending-generator-refills.json"),
     resolve(repoRoot, "runtime/generated/gameplay-profile.ini"),
     resolve(repoRoot, "runtime/generated/care-package.json"),
     resolve(repoRoot, "runtime/generated/care-package-grants.jsonl"),
@@ -178,6 +202,15 @@ function isPrivateIpv4(value) {
   return false;
 }
 
+function readInlineOrFile(inline, file) {
+  if (inline) return String(inline).trim();
+  try {
+    return readFileSync(file, "utf8").trim();
+  } catch {
+    return "";
+  }
+}
+
 function getOrCreateSecret(path, bytes) {
   if (existsSync(path)) {
     return readFileSync(path, "utf8").trim();
@@ -204,6 +237,7 @@ export function publicConfig(config) {
     adminPasswordEnvManaged: config.adminPasswordEnvManaged,
     secureCookies: config.secureCookies,
     allowHostBootstrap: config.allowHostBootstrap,
-    mockMode: config.mockMode
+    mockMode: config.mockMode,
+    discordOAuthConfigured: config.discordOAuthConfigured
   };
 }

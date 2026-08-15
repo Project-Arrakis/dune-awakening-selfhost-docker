@@ -351,6 +351,22 @@ EOF
     esac
     ;;
 
+  stop-service)
+    case "$target" in
+      survival|survival-1)
+        runtime/scripts/stop-server-survival-1.sh
+        ;;
+      "")
+        echo "Usage: runtime/scripts/dune stop-service <survival>"
+        exit 1
+        ;;
+      *)
+        echo "Unsupported stop-service target: $target"
+        exit 1
+        ;;
+    esac
+    ;;
+
   console|web)
     shift || true
     runtime/scripts/console.sh "$@"

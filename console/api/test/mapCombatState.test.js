@@ -182,6 +182,28 @@ test("resolver: default configuration (no overrides) falls back to legacy flags"
   assert.equal(result.configuredSource, "legacy-flags");
 });
 
+test("resolver: an unlisted partition is PVE once the global selector allow-list is active", async () => {
+  const { config, env } = buildSandbox();
+  writeProfile(env, [
+    "[Global:/Script/DuneSandbox.PvpPveSettings]",
+    "m_bShouldForceEnablePvpOnAllPartitions=False",
+    "+m_PvpEnabledPartitions=40",
+    "[Partition:DeepDesert_1:8:/Script/DuneSandbox.DuneGameMode]",
+    "bPvPEnabled=True",
+    "bServerPVE=False"
+  ]);
+
+  const result = await resolvePartitionCombatStatesFromRuntime(
+    { ...config, env },
+    "DeepDesert_1",
+    ["8", "40"]
+  );
+  assert.equal(result.get("8").configuredState, "PVE");
+  assert.equal(result.get("8").configuredSource, "partition-selector-default");
+  assert.equal(result.get("40").configuredState, "PVP");
+  assert.equal(result.get("40").configuredSource, "partition-pvp-selector");
+});
+
 test("resolver: database labels, dimension index, and display names are not consulted", async () => {
   // The resolver call signature only accepts map + partitionId. There is
   // no parameter through which a label, dimension index, or display name

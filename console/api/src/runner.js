@@ -82,6 +82,10 @@ export function buildDuneArgs(operation, payload = {}) {
   switch (operation) {
     case "restartService":
       return ["restart", validateServiceName(payload.service)];
+    case "restartServiceStop":
+      return ["stop-service", validateServiceName(payload.service)];
+    case "restartServiceStart":
+      return ["restart", validateServiceName(payload.service)];
     case "serverTitle":
       return ["config", "title", validateServerTitle(payload.title), "--yes"];
     case "serverConfig":
@@ -194,6 +198,12 @@ export function buildDuneArgs(operation, payload = {}) {
       return ["true"];
     case "mapsReconcile":
       return ["maps", "reconcile"];
+    case "mapsRespawn":
+      // Composite: taskOperations expands this into mapsDespawn + mapsSpawn, so
+      // these argv never run. The validate call is the point -- it lets the route
+      // reject a bad target before a task is created.
+      validateMapOrPartition(payload.target);
+      return ["true"];
     case "mapsSpawn":
       return ["spawn", validateMapOrPartition(payload.target)];
     case "mapsDespawn":
@@ -234,6 +244,10 @@ export function buildDuneArgs(operation, payload = {}) {
       return ["sietches", "set-settings", validatePartitionId(payload.partitionId), validateDisplayName(payload.displayName), validateSietchPassword(payload.password ?? "")];
     case "sietchesRestart":
       return ["sietches", "restart", validatePartitionId(payload.partitionId)];
+    case "sietchesRestartStop":
+      return ["sietches", "stop-partition", validatePartitionId(payload.partitionId)];
+    case "sietchesRestartStart":
+      return ["sietches", "start-partition", validatePartitionId(payload.partitionId)];
     case "sietchesSync":
       return ["sietches", "sync"];
     case "sietchesValidate":
@@ -258,6 +272,8 @@ export function buildDuneArgs(operation, payload = {}) {
       return ["usersettings", "profile-game-raw"];
     case "userSettingsClientGameIni":
       return payload.map ? (payload.partitionId ? ["usersettings", "client-game-ini", validateMapName(payload.map), validatePartitionId(payload.partitionId)] : ["usersettings", "client-game-ini", validateMapName(payload.map)]) : ["usersettings", "client-game-ini"];
+    case "userSettingsClientEngineIni":
+      return payload.map ? (payload.partitionId ? ["usersettings", "client-engine-ini", validateMapName(payload.map), validatePartitionId(payload.partitionId)] : ["usersettings", "client-engine-ini", validateMapName(payload.map)]) : ["usersettings", "client-engine-ini"];
     case "userSettingsProfileGameWrite":
       return ["usersettings", "profile-game-write-b64", encodeTextArg(payload.content || "")];
     case "userSettingsProfileEngineRaw":
