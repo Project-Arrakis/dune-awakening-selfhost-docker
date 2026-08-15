@@ -17,6 +17,52 @@ SIETCH_CONFIG_PATH = Path(os.environ.get("DUNE_SIETCH_CONFIG", str(ROOT / "runti
 LANDSRAAD_RESTART_MARKER_PATH = Path(os.environ.get("DUNE_LANDSRAAD_RESTART_MARKER", str(ROOT / "runtime" / "generated" / "landsraad-restart-required")))
 PRIVATE_SETTINGS_MODE = 0o600
 
+
+def configured_host_owner() -> tuple[int, int] | None:
+    """Return the non-root account that should own host-managed files."""
+    try:
+        repo_stat = ROOT.stat()
+        if repo_stat.st_uid != 0:
+            return repo_stat.st_uid, repo_stat.st_gid
+    except OSError:
+        pass
+
+    configured: dict[str, str] = {
+        "DUNE_HOST_UID": os.environ.get("DUNE_HOST_UID", "").strip(),
+        "DUNE_HOST_GID": os.environ.get("DUNE_HOST_GID", "").strip(),
+    }
+    env_path = ROOT / ".env"
+    if not all(configured.values()):
+        try:
+            for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+                line = raw_line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                key = key.strip()
+                if key in configured and not configured[key]:
+                    configured[key] = value.strip().strip("\"'")
+        except OSError:
+            pass
+
+    try:
+        uid = int(configured["DUNE_HOST_UID"])
+        gid = int(configured["DUNE_HOST_GID"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if uid <= 0 or gid < 0:
+        return None
+    return uid, gid
+
+
+def apply_host_ownership(path: Path) -> None:
+    """Prevent root maintenance jobs from leaving host files root-owned."""
+    if os.geteuid() != 0:
+        return
+    owner = configured_host_owner()
+    if owner is not None:
+        os.chown(path, *owner)
+
 BUILDING_SETTINGS_SECTION = "/Script/DuneSandbox.BuildingSettings"
 LANDSRAAD_SETTINGS_SECTION = "/Script/DuneSandbox.LandsraadSettings"
 LANDSRAAD_DATA_KEY = "Data"
@@ -648,8 +694,10 @@ def atomic_write_text(path: Path, content: str, mode: int = PRIVATE_SETTINGS_MOD
             os.fsync(tmp.fileno())
             tmp_path = Path(tmp.name)
         tmp_path.chmod(mode)
+        apply_host_ownership(tmp_path)
         tmp_path.replace(path)
         path.chmod(mode)
+        apply_host_ownership(path)
     finally:
         if "tmp_path" in locals() and tmp_path.exists():
             tmp_path.unlink()
