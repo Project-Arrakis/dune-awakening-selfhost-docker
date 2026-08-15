@@ -115,24 +115,39 @@ fi
 # no torn/partial final file) when the target directory cannot be
 # written to -- direct coverage for the atomic-write primitive itself,
 # which was previously only exercised indirectly via
-# dune_secrets_write_secret's happy path in test 2 above. ---
-unwritable_dir="$test_root/unwritable"
-mkdir -p "$unwritable_dir"
-chmod 000 "$unwritable_dir"
-unwritable_target="$unwritable_dir/some-secret.enc"
+# dune_secrets_write_secret's happy path in test 2 above.
+#
+# Skipped when running as root: root bypasses standard filesystem
+# permission checks, so chmod 000 on a directory does not actually
+# block root from writing into it -- confirmed directly (a root-owned
+# `touch` into a chmod 000 directory succeeds). This is not a gap in
+# the assertion itself, only in this specific mechanism's ability to
+# simulate an unwritable directory under root. CI runs as an
+# unprivileged user (GitHub Actions' standard runners use a non-root
+# `runner` account), so this test still provides real coverage there;
+# it is only inert in a root-run environment such as some local dev
+# setups or self-hosted runners. ---
+if [ "$(id -u)" -eq 0 ]; then
+  echo "SKIP (test 8): running as root -- chmod 000 does not block root from writing, so this directory-permission simulation cannot work. This is a real, unprivileged-only test; it is exercised in CI (GitHub Actions runs as a non-root user), just not in this root-run environment."
+else
+  unwritable_dir="$test_root/unwritable"
+  mkdir -p "$unwritable_dir"
+  chmod 000 "$unwritable_dir"
+  unwritable_target="$unwritable_dir/some-secret.enc"
 
-atomic_write_failed=0
-_dune_secrets_atomic_write "$unwritable_target" "should-never-be-written" 600 2>/dev/null || atomic_write_failed=1
+  atomic_write_failed=0
+  _dune_secrets_atomic_write "$unwritable_target" "should-never-be-written" 600 2>/dev/null || atomic_write_failed=1
 
-chmod 755 "$unwritable_dir"  # restore permissions before cleanup's rm -rf runs
+  chmod 755 "$unwritable_dir"  # restore permissions before cleanup's rm -rf runs
 
-[ "$atomic_write_failed" -eq 1 ] || fail "expected _dune_secrets_atomic_write to fail when the target directory is unwritable, but it reported success"
-[ -e "$unwritable_target" ] && fail "expected no final file to exist after a failed atomic write, but $unwritable_target exists"
-# Also confirm no orphaned temp file was left behind in the unwritable
-# directory itself (there shouldn't be one, since mktemp there would
-# also fail -- but confirm explicitly rather than assume).
-if find "$unwritable_dir" -maxdepth 1 -name '*.tmp.*' 2>/dev/null | grep -q .; then
-  fail "expected no orphaned .tmp file after a failed atomic write"
+  [ "$atomic_write_failed" -eq 1 ] || fail "expected _dune_secrets_atomic_write to fail when the target directory is unwritable, but it reported success"
+  [ -e "$unwritable_target" ] && fail "expected no final file to exist after a failed atomic write, but $unwritable_target exists"
+  # Also confirm no orphaned temp file was left behind in the unwritable
+  # directory itself (there shouldn't be one, since mktemp there would
+  # also fail -- but confirm explicitly rather than assume).
+  if find "$unwritable_dir" -maxdepth 1 -name '*.tmp.*' 2>/dev/null | grep -q .; then
+    fail "expected no orphaned .tmp file after a failed atomic write"
+  fi
 fi
 
 # --- Test 8b: _dune_secrets_atomic_write's <mode> parameter actually
