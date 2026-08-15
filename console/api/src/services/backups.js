@@ -12,7 +12,7 @@ export function enrichBackupRows(config, rows) {
     if (/^(automatic|scheduled)$/.test(origin)) return { ...enriched, type: "Automatic Backup" };
     if (/^(restore-safety|restore_safety|restore safety)$/.test(origin)) return { ...enriched, type: "Restore Safety Backup" };
     if (/^(pre-update|pre_update|preupdate)$/.test(origin)) return { ...enriched, type: "Pre-update Backup" };
-    if (/^(destructive-sql|destructive_sql|destructive sql|sql-safety|sql_safety)$/.test(origin)) return { ...enriched, type: "SQL Safety Backup" };
+    if (/^(destructive-sql|destructive_sql|destructive sql|sql-safety|sql_safety|base-delete|base_delete)$/.test(origin)) return { ...enriched, type: "SQL Safety Backup" };
     if (/^(external|imported)$/.test(origin)) return { ...enriched, type: "Imported Backup", source: "External" };
     return enriched;
   });

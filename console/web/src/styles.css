@@ -1721,9 +1721,10 @@ body.debug .technical-details { display: block; }
 .bases-table th:nth-child(10), .bases-table td:nth-child(10) { width: 6%; text-align: center; }
 .bases-table th:nth-child(11), .bases-table td:nth-child(11) { width: 10.5%; }
 /* 96px fit two icon-toggle-buttons (Refill Generators, Download); a third
-   (Refill Water) plus the wider queued-refill pills need more room, so this
-   grew to comfortably fit all three at once, queued or not. */
-.bases-table th.bases-actions-column, .bases-table td.bases-actions-column { width: 148px; }
+   (Refill Water) plus the wider queued-refill pills grew this to 148px to
+   comfortably fit all three at once, queued or not. A fourth (Delete Base)
+   plus its own wider queued-delete pill needs more room again. */
+.bases-table th.bases-actions-column, .bases-table td.bases-actions-column { width: 190px; }
 .bases-table td { max-width: none; white-space: normal; overflow-wrap: anywhere; text-overflow: clip; }
 .bases-name, .bases-ellipsis-cell { display: block; overflow: visible; text-overflow: clip; white-space: normal; overflow-wrap: anywhere; }
 
@@ -1859,6 +1860,10 @@ body.debug .technical-details { display: block; }
 }
 .bases-queue-badge-fuel { background: rgba(198, 139, 74, .18); color: var(--accent); }
 .bases-queue-badge-water { background: rgba(74, 144, 198, .18); color: #7fb2df; }
+/* Danger-toned, unlike the fuel/water badges above: a queued delete is
+   destructive rather than additive, and the row/banner treatment should read
+   as a warning, not just another pending write. */
+.bases-queue-badge-delete { background: rgba(167, 73, 73, .18); color: var(--danger-text); }
 .bases-queued-refill {
   display: inline-flex;
   align-items: center;
@@ -1870,6 +1875,27 @@ body.debug .technical-details { display: block; }
   white-space: nowrap;
 }
 .bases-queued-refill .bases-queued-refill-cancel {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 20px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  min-width: 0;
+}
+/* Mirrors .bases-queued-refill, danger-toned to match .bases-queue-badge-delete. */
+.bases-queued-delete {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 4px;
+  border-radius: 6px;
+  background: rgba(167, 73, 73, .16);
+  color: var(--danger-text);
+  white-space: nowrap;
+}
+.bases-queued-delete .bases-queued-delete-cancel {
   width: 20px;
   height: 20px;
   flex: 0 0 20px;

@@ -69,6 +69,37 @@ export function usePendingWaterRefills(enabled = true) {
   return { pending, refresh };
 }
 
+// Mirrors usePendingRefills for the pending base-delete queue -- same
+// per-resource duplication as the water hook above rather than a
+// parameterized fetcher.
+export function usePendingBaseDeletes(enabled = true) {
+  const [pending, setPending] = useState<PendingRefills | null>(null);
+
+  const refresh = useCallback(async () => {
+    try {
+      const next = await basesApi.pendingDeletes();
+      setPending(next);
+      return next;
+    } catch {
+      return null;
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!enabled) return;
+    let cancelled = false;
+    const tick = () => { if (!cancelled) void refresh(); };
+    tick();
+    const intervalId = window.setInterval(tick, PENDING_REFILL_POLL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [enabled, refresh]);
+
+  return { pending, refresh };
+}
+
 export function pendingRefillCountForPartition(pending: PendingRefills | null, partitionId: number) {
   if (!pending || !partitionId) return 0;
   return pending.pending.filter((entry) => entry.partitionId === partitionId).length;
