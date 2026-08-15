@@ -48,12 +48,25 @@ export function resolvePorts(env = process.env, repoRoot = process.cwd()) {
   // (e.g. Port=0 or a 10-digit garbage number) that bypasses range
   // validation entirely and flows through to the frontend and the
   // public-hosting reminder text unvalidated.
-  const clientBase = enginePorts.port !== null
+  const rawClientBase = enginePorts.port !== null
     ? portValue(enginePorts.port, 7777)
     : (legacyEnginePorts.port !== null ? portValue(legacyEnginePorts.port, 7777) : 7777);
-  const igwBase = enginePorts.igwPort !== null
+  const rawIgwBase = enginePorts.igwPort !== null
     ? portValue(enginePorts.igwPort, 7888)
     : (legacyEnginePorts.igwPort !== null ? portValue(legacyEnginePorts.igwPort, 7888) : 7888);
+  // Upstream review finding: portValue() only range-checks the base
+  // port itself (1-65535), but every Player/Game and IGW base is
+  // actually the start of a 34-slot range (see spawn-server.sh's
+  // game_end=$((CLIENT_PORT_BASE + 33))/igw_end=$((IGW_PORT_BASE + 33)),
+  // covering the maximum 34 world partitions this project supports) --
+  // a base in the valid 1-65535 range can still overflow past 65535
+  // once the +33 offset for the highest partition (or the console's
+  // own +1 "secondary" port, used for the stock 2-partition default) is
+  // applied. A base that would overflow is exactly as unusable as one
+  // that's already out of range, so it falls back to stock the same
+  // way portValue() already does for a directly out-of-range value.
+  const clientBase = rawClientBase + 33 <= 65535 ? rawClientBase : 7777;
+  const igwBase = rawIgwBase + 33 <= 65535 ? rawIgwBase : 7888;
   return {
     postgres: portValue(env.POSTGRES_PORT || env.DUNE_DB_PORT || env.PGPORT, 15432),
     rmqAdmin: portValue(env.RMQ_ADMIN_PORT, 32573),
@@ -104,7 +117,19 @@ function readEnginePortsFromProfile(repoRoot) {
   // for hand-edited/out-of-band files, not the common path.
   const normalized = text.replace(/\r\n/g, "\n");
   const sectionMatch = normalized.match(/^\[Engine:URL\]\s*$([\s\S]*?)(?=^\[|\s*$(?!\n))/m);
-  const sectionText = sectionMatch ? sectionMatch[1] : normalized;
+  // Upstream review finding: if [Engine:URL] is absent entirely (a
+  // stripped-down or hand-edited profile file), this previously fell
+  // back to scanning the WHOLE file for a Port=/IGWPort= match -- which
+  // could silently pick up an unrelated key from a different section
+  // (e.g. [Engine:ConsoleVariables]'s own Port= override, which means
+  // something entirely different) and report it as the real game port.
+  // The real Python tool (usersettings.py's profile_get_key()) only
+  // ever looks inside the named section; if the section doesn't exist,
+  // it returns nothing for that key, not a value from elsewhere in the
+  // file. Match that exactly: no section match -> no port match, fall
+  // through to the legacy usersettings.json / stock fallback chain.
+  if (!sectionMatch) return { port: null, igwPort: null };
+  const sectionText = sectionMatch[1];
   // Layer 3 audit regression: if a section has a duplicate key (Port=
   // appearing twice, which usersettings.py's own
   // _advanced_editor_duplicate_key_warnings() explicitly anticipates and

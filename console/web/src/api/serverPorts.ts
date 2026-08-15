@@ -98,3 +98,34 @@ export function getServerPorts(): ServerPorts {
 export function resetServerPortsForTests() {
   cached = STOCK_DEFAULTS;
 }
+
+// Upstream review finding: the cache above is populated only once, by
+// App.tsx's initial /api/auth/state fetch on mount. If Port/IGWPort is
+// changed later in the same session -- via the Maps UI's raw
+// UserEngine.ini editor, the only console-driven path that can write
+// these two fields (the structured per-field editor deliberately
+// excludes them, see MapsPanel.tsx's engineFields filter) -- the
+// backend's live getter (config.js's `get ports()`) returns the new
+// value on the next request, but this frontend cache does not update
+// until the page is reloaded, showing a stale port in PortChecklist/
+// ReadinessTimeline/SetupWizard with no error or indication anything
+// is wrong. This is a deliberately lightweight fix matching the
+// existing imperative-read pattern (see this file's CALLER CONTRACT
+// comment above) rather than a wholesale React context/hook rewrite --
+// call this once after any save that could plausibly have touched
+// Port/IGWPort, and every consumer picks up the fresh value on its next
+// render (all three current consumers only render post-mount, after
+// this module's cache has already been populated once).
+export async function refreshServerPorts(): Promise<void> {
+  try {
+    const response = await fetch("/api/auth/state", { credentials: "include" });
+    if (!response.ok) return;
+    const state = await response.json() as { config?: { ports?: Partial<ServerPorts>; port?: number } };
+    setServerPorts(state.config?.ports);
+    setAdminPort(state.config?.port);
+  } catch {
+    // A transient fetch failure here must not throw and interrupt the
+    // caller's own save-success flow -- worst case, the cache stays as
+    // stale as it already was; the user can still reload the page.
+  }
+}
