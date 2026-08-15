@@ -109,6 +109,31 @@ class AuthenticationFailureTests(unittest.TestCase):
             secrets_aead.decrypt(VALID_KEY_HEX_A, too_short)
         self.assertEqual(ctx.exception.code, 1)
 
+    def test_aad_roundtrips_correctly_when_matching(self):
+        ciphertext = secrets_aead.encrypt(VALID_KEY_HEX_A, "value", aad="enc:v2:1:my-secret")
+        self.assertEqual(secrets_aead.decrypt(VALID_KEY_HEX_A, ciphertext, aad="enc:v2:1:my-secret"), "value")
+
+    def test_mismatched_aad_is_rejected_like_a_wrong_key(self):
+        # Direct regression coverage for a real upstream review finding:
+        # without AAD, a complete .enc payload copied from one secret's
+        # file over a different secret's file would still authenticate
+        # successfully. Encrypting under one AAD and decrypting under a
+        # different one must fail exactly like a wrong key or tampered
+        # ciphertext would -- not silently succeed.
+        ciphertext = secrets_aead.encrypt(VALID_KEY_HEX_A, "value", aad="enc:v2:1:secret-a")
+        with self.assertRaises(SystemExit) as ctx:
+            secrets_aead.decrypt(VALID_KEY_HEX_A, ciphertext, aad="enc:v2:1:secret-b")
+        self.assertEqual(ctx.exception.code, 1)
+
+    def test_empty_aad_on_decrypt_is_rejected_when_encrypted_with_nonempty_aad(self):
+        # Omitting the AAD entirely on decrypt must not be equivalent to
+        # "any AAD is accepted" -- it must be treated as its own
+        # (mismatching) value and fail like any other AAD mismatch.
+        ciphertext = secrets_aead.encrypt(VALID_KEY_HEX_A, "value", aad="enc:v2:1:secret-a")
+        with self.assertRaises(SystemExit) as ctx:
+            secrets_aead.decrypt(VALID_KEY_HEX_A, ciphertext)
+        self.assertEqual(ctx.exception.code, 1)
+
 
 class KeyValidationTests(unittest.TestCase):
     def test_rejects_key_shorter_than_64_hex_chars(self):
@@ -218,7 +243,7 @@ class CliArgvExposureRegressionTests(unittest.TestCase):
     def test_encrypt_cli_never_exposes_key_or_plaintext_via_proc_cmdline(self):
         secret_key = VALID_KEY_HEX_A
         secret_plaintext = "THIS_MUST_NEVER_APPEAR_IN_PROC_CMDLINE_1234567890"
-        stdin_data = f"{secret_key}\n{secret_plaintext}\n"
+        stdin_data = f"{secret_key}\ntest-aad\n{secret_plaintext}\n"
 
         argv_str, stdout, stderr, returncode = self._spawn_and_capture_argv(stdin_data, "encrypt")
 
@@ -239,8 +264,8 @@ class CliArgvExposureRegressionTests(unittest.TestCase):
 
     def test_decrypt_cli_never_exposes_key_or_payload_via_proc_cmdline(self):
         secret_key = VALID_KEY_HEX_A
-        ciphertext = secrets_aead.encrypt(secret_key, "some-value-to-round-trip")
-        stdin_data = f"{secret_key}\n{ciphertext}\n"
+        ciphertext = secrets_aead.encrypt(secret_key, "some-value-to-round-trip", "test-aad")
+        stdin_data = f"{secret_key}\ntest-aad\n{ciphertext}\n"
 
         argv_str, stdout, stderr, returncode = self._spawn_and_capture_argv(stdin_data, "decrypt")
 

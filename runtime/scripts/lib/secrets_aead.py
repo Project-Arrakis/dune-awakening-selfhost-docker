@@ -22,18 +22,30 @@ iv||tag||ciphertext implementation could never decrypt. The
 cross-language round-trip test (test-secrets-aead-cross-language.sh)
 is what proves this layout, not this docstring.
 
+AAD (associated data): every encrypt/decrypt call takes a third value,
+bound into the AEAD authentication tag but never encrypted itself.
+secrets.sh passes "enc:v2:<secret-name>" here for both the DEK-wrap and
+the payload encryption. This closes a real swap attack: without AAD,
+an attacker (or a corrupted deploy/backup step) who can overwrite one
+secret's .enc file with the exact byte content of a DIFFERENT secret's
+.enc file causes that content to still authenticate successfully under
+the wrong name -- the ciphertext format alone has no way to detect it's
+now living under a different secret. Binding <name> as AAD makes such
+a swap fail the auth tag check, since decrypting name="A" with a
+payload whose AAD says "B" no longer matches.
+
 CLI usage -- secret material via STDIN ONLY, never argv (see CRITICAL
 below):
 
     python3 secrets_aead.py encrypt
-        stdin: <key-hex>\n<plaintext>\n   (plaintext may contain any
-               bytes except a newline -- none of this repo's current
-               secrets need one; revise this protocol first if a
-               future secret does)
+        stdin: <key-hex>\n<aad>\n<plaintext>\n   (plaintext may contain
+               any bytes except a newline -- none of this repo's
+               current secrets need one; revise this protocol first if
+               a future secret does)
         stdout: base64(iv+tag+ct)
 
     python3 secrets_aead.py decrypt
-        stdin: <key-hex>\n<base64-payload>\n
+        stdin: <key-hex>\n<aad>\n<base64-payload>\n
         stdout: plaintext
 
     python3 secrets_aead.py generate-key
@@ -86,8 +98,9 @@ def _parse_key_hex(key_hex: str) -> bytes:
     return key
 
 
-def encrypt(key_hex: str, plaintext: str) -> str:
-    """Encrypts `plaintext` with AES-256-GCM under `key_hex`.
+def encrypt(key_hex: str, plaintext: str, aad: str = "") -> str:
+    """Encrypts `plaintext` with AES-256-GCM under `key_hex`, binding
+    `aad` into the authentication tag (but never encrypting it).
 
     Returns base64(iv || tag || ciphertext).
     A fresh random IV is generated on every call (required for GCM
@@ -97,24 +110,30 @@ def encrypt(key_hex: str, plaintext: str) -> str:
     key = _parse_key_hex(key_hex)
     iv = secrets.token_bytes(IV_BYTES)
     aesgcm = AESGCM(key)
+    aad_bytes = aad.encode("utf-8") if aad else None
     # AESGCM.encrypt() returns ciphertext || tag (tag appended at the
     # END) -- the opposite order from our target iv || tag || ciphertext
     # layout. Split and reorder explicitly; do not assume this matches
     # without the split below.
-    ct_with_tag = aesgcm.encrypt(iv, plaintext.encode("utf-8"), None)
+    ct_with_tag = aesgcm.encrypt(iv, plaintext.encode("utf-8"), aad_bytes)
     ciphertext = ct_with_tag[:-TAG_BYTES]
     tag = ct_with_tag[-TAG_BYTES:]
     payload = iv + tag + ciphertext
     return base64.b64encode(payload).decode("ascii")
 
 
-def decrypt(key_hex: str, payload_b64: str) -> str:
-    """Decrypts a base64(iv||tag||ciphertext) payload with AES-256-GCM.
+def decrypt(key_hex: str, payload_b64: str, aad: str = "") -> str:
+    """Decrypts a base64(iv||tag||ciphertext) payload with AES-256-GCM,
+    requiring `aad` to match the value bound in at encrypt time.
 
-    Raises via _fail() (exit 1) on any auth failure, malformed base64,
-    or truncated payload -- never returns corrupted plaintext.
-    Silently returning garbage on a wrong key/tampered ciphertext
-    would be worse than a loud, immediate failure.
+    Raises via _fail() (exit 1) on any auth failure (including an AAD
+    mismatch), malformed base64, or truncated payload -- never returns
+    corrupted plaintext. Silently returning garbage on a wrong key/
+    tampered ciphertext/wrong AAD would be worse than a loud, immediate
+    failure. A mismatched `aad` (e.g. decrypting under the wrong secret
+    name) fails exactly like a wrong key or tampered ciphertext would --
+    this is what makes a complete-payload swap between two different
+    secrets' .enc files detectable rather than silently authenticating.
     """
     key = _parse_key_hex(key_hex)
     try:
@@ -138,10 +157,11 @@ def decrypt(key_hex: str, payload_b64: str) -> str:
     ct_with_tag = ciphertext + tag
 
     aesgcm = AESGCM(key)
+    aad_bytes = aad.encode("utf-8") if aad else None
     try:
-        plaintext = aesgcm.decrypt(iv, ct_with_tag, None)
+        plaintext = aesgcm.decrypt(iv, ct_with_tag, aad_bytes)
     except InvalidTag:
-        _fail("authentication failed -- wrong key or tampered ciphertext")
+        _fail("authentication failed -- wrong key, tampered ciphertext, or mismatched associated data")
         raise  # unreachable
     return plaintext.decode("utf-8")
 
@@ -155,18 +175,19 @@ def generate_key() -> str:
     return secrets.token_bytes(KEY_BYTES).hex()
 
 
-def _read_two_stdin_lines(subcommand: str) -> tuple[str, str]:
-    """Reads exactly two newline-terminated values from stdin: a
-    key-hex line, then a plaintext-or-payload line. Never reads from
-    argv -- see the module docstring's CRITICAL note for why."""
+def _read_three_stdin_lines(subcommand: str) -> tuple[str, str, str]:
+    """Reads exactly three newline-terminated values from stdin: a
+    key-hex line, an AAD line (may be empty), then a plaintext-or-payload
+    line. Never reads from argv -- see the module docstring's CRITICAL
+    note for why."""
     raw = sys.stdin.read()
     lines = raw.split("\n")
-    if len(lines) < 2 or not lines[0]:
+    if len(lines) < 3 or not lines[0]:
         _fail(
-            f"{subcommand} expects two newline-separated values on stdin "
-            f"(key-hex, then the value) -- got malformed or empty stdin"
+            f"{subcommand} expects three newline-separated values on stdin "
+            f"(key-hex, AAD, then the value) -- got malformed or empty stdin"
         )
-    return lines[0], lines[1]
+    return lines[0], lines[1], lines[2]
 
 
 def main(argv: list[str]) -> int:
@@ -181,13 +202,13 @@ def main(argv: list[str]) -> int:
         return 0
 
     if subcommand == "encrypt":
-        key_hex, plaintext = _read_two_stdin_lines("encrypt")
-        print(encrypt(key_hex, plaintext))
+        key_hex, aad, plaintext = _read_three_stdin_lines("encrypt")
+        print(encrypt(key_hex, plaintext, aad))
         return 0
 
     if subcommand == "decrypt":
-        key_hex, payload_b64 = _read_two_stdin_lines("decrypt")
-        print(decrypt(key_hex, payload_b64))
+        key_hex, aad, payload_b64 = _read_three_stdin_lines("decrypt")
+        print(decrypt(key_hex, payload_b64, aad))
         return 0
 
     _fail(f"unknown subcommand: {subcommand!r} (expected encrypt, decrypt, or generate-key)")
