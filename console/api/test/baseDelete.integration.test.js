@@ -128,8 +128,8 @@ function seedBase(claimActor, buildingActors, placeableActor, entityId, playerId
 
 const SEED = `
   insert into dune.actors (id) values (${PLAYER_ID});
-  insert into dune.permission_actor_rank (permission_actor_id, player_id, rank) values (${CLAIM_ACTOR}, ${PLAYER_ID}, 1);
   ${seedBase(CLAIM_ACTOR, BUILDING_ACTORS, PLACEABLE_ACTOR, ENTITY_ID, PLAYER_ID)}
+  insert into dune.permission_actor_rank (permission_actor_id, player_id, rank) values (${CLAIM_ACTOR}, ${PLAYER_ID}, 1);
   ${seedBase(OTHER_CLAIM_ACTOR, [OTHER_BUILDING_ACTOR], OTHER_PLACEABLE_ACTOR, OTHER_ENTITY_ID, PLAYER_ID)}
   insert into dune.permission_actor_rank (permission_actor_id, player_id, rank) values (${OTHER_CLAIM_ACTOR}, ${PLAYER_ID}, 1);
 `;
