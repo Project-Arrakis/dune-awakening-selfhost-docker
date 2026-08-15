@@ -17,7 +17,9 @@ usage() {
 Usage:
   dune db backup
   dune db backup <output-dir>
+  dune db backup-system [output-dir]
   dune db list
+  dune db list-system [output-dir]
   dune db status
   dune db health
   dune db import <backup-file>
@@ -43,6 +45,43 @@ Usage:
 Backups are written as official-style .backup files with a .backup.yaml sidecar.
 Import accepts official .backup files and older dune-db-*.dump or .sql backups.
 Import requires confirmation and creates a pre-import backup first unless --no-safety-backup is used.
+
+dune db backup-system bundles a fresh database dump together with .env,
+runtime/generated/, and runtime/secrets/ into one encrypted
+dune-system-*.tar.gz.enc archive under runtime/backups/system/ (with a
+matching .yaml sidecar containing no secrets, safe to read/share on its
+own). Every credential is retained -- the Funcom Self-Host Service Token,
+admin console password, RMQ admin credentials, and the sietch join
+password are all included verbatim, not redacted or excluded. The
+archive's only protection is the passphrase you set when creating it,
+encrypted with AES-256 in AEAD (OCB) mode via gpg -- an authenticated
+cipher mode, not just confidentiality: a corrupted or tampered archive
+is rejected outright at decrypt time rather than silently producing
+wrong or manipulated plaintext. You will be prompted for a passphrase
+interactively (entered twice, to catch typos); for non-interactive/cron
+use, set DUNE_SYSTEM_BACKUP_PASSPHRASE in the environment instead. There
+is no way to recover an encrypted system backup without its passphrase --
+store the passphrase somewhere durable and separate from the archive
+itself (a password manager, not the same disk).
+
+The archive is written 600 (owner read/write only) as defense in depth,
+but do not rely on filesystem permissions alone -- treat a copy of this
+archive as equivalent to a copy of your Funcom token the moment it leaves
+this host, unless you are confident in the passphrase's strength.
+
+To decrypt and extract (also printed in the archive's own .yaml sidecar
+and on stdout when the backup is created). Enter the passphrase at the
+prompt -- do not put it directly on the command line, which would expose
+it to any other process on this host via `ps`/`/proc/<pid>/cmdline` for
+as long as gpg is running:
+  read -r -s -p "Passphrase: " p; echo
+  printf '%s' "$p" | gpg --batch --yes --pinentry-mode loopback \
+    --passphrase-fd 0 -d <archive> | gunzip | tar -xf -
+  unset p
+
+There is no automated restore for system backups yet: decrypt/extract as
+above, restore .env / runtime/generated/ / runtime/secrets/ manually, then
+use `dune db restore` for the db/ dump inside it.
 EOF
 }
 
@@ -557,8 +596,409 @@ backup_db() {
   echo "Sidecar:"
   echo "  $sidecar_file"
 
+  LAST_DB_BACKUP_FILE="$backup_file"
+  LAST_DB_BACKUP_SIDECAR_FILE="$sidecar_file"
+
   if [ "${DB_BACKUP_PRUNE_AFTER_SUCCESS:-0}" = "1" ]; then
     prune_old_db_backups "$out_dir" "${DB_AUTO_BACKUP_RETENTION_DAYS:-0}"
+  fi
+}
+
+SYSTEM_BACKUP_DIR_DEFAULT="runtime/backups/system"
+# gpg's --s2k-count accepts 1024..65011712; 65011712 is the maximum
+# allowed value, giving comparable KDF work factor to this backup
+# format's previous PBKDF2 iteration count.
+SYSTEM_BACKUP_S2K_COUNT=65011712
+# Isolated, disposable GNUPGHOME per invocation -- never the operator's
+# own ~/.gnupg. This is symmetric passphrase encryption only (no keys
+# ever created, imported, or retained), but gpg still writes a keybox/
+# trustdb/agent socket into its home directory on first use; using a
+# private, per-invocation directory (removed by the same cleanup path
+# as every other staging artifact) avoids ever touching or depending on
+# an operator's real GnuPG state.
+
+# Ephemeral, process-scoped scratch directories that are fully regenerated
+# on every container start and never carry state worth restoring. Excluded
+# purely to avoid churn/bloat, not for secrecy -- everything else under
+# runtime/generated/ and runtime/secrets/ is retained verbatim. This
+# archive intentionally retains every credential (Funcom token, admin
+# password, RMQ admin creds, sietch join password, etc.) rather than
+# attempting to selectively redact/exclude them -- encryption (below) is
+# the only access control, not field-level redaction, so there is no
+# secret-shaped value this backup can silently miss.
+system_backup_ephemeral_exclude_patterns() {
+  cat <<'EOF'
+dune-fake-k8s-serviceaccount-*
+EOF
+}
+
+# Resolves the passphrase used to encrypt/decrypt a system backup.
+# DUNE_SYSTEM_BACKUP_PASSPHRASE lets automation (cron, CI, systemd timers)
+# supply it non-interactively; an interactive operator is prompted twice
+# (entry + confirmation) so a typo does not silently produce an archive
+# nobody can ever decrypt. Never echoes the passphrase, never logs it.
+resolve_system_backup_passphrase() {
+  local first=""
+  local second=""
+
+  if [ -n "${DUNE_SYSTEM_BACKUP_PASSPHRASE:-}" ]; then
+    printf '%s' "$DUNE_SYSTEM_BACKUP_PASSPHRASE"
+    return 0
+  fi
+
+  if [ ! -t 0 ]; then
+    echo "No passphrase available: not running interactively and DUNE_SYSTEM_BACKUP_PASSPHRASE is not set." >&2
+    return 1
+  fi
+
+  read -r -s -p "Set a passphrase to encrypt this system backup: " first
+  echo >&2
+  [ -n "$first" ] || { echo "Passphrase cannot be empty." >&2; return 1; }
+  read -r -s -p "Confirm passphrase: " second
+  echo >&2
+  if [ "$first" != "$second" ]; then
+    echo "Passphrases did not match. System backup was not created." >&2
+    return 1
+  fi
+  printf '%s' "$first"
+}
+
+# Creates one encrypted system backup archive (.tar.gz.enc) covering:
+#   - a fresh database dump (via backup_db, written directly into out_dir
+#     so the caller's requested output directory is honored end-to-end,
+#     not just for the final archive)
+#   - .env, runtime/generated/, and runtime/secrets/ -- retained verbatim,
+#     including every credential. Nothing is redacted or excluded on the
+#     basis of being a secret; the archive's confidentiality comes
+#     entirely from AES-256-CBC encryption below, gated on the passphrase
+#     the operator supplies.
+# The plaintext tar is never written to disk unencrypted outside a
+# private (mktemp -d, mode 700) staging directory that is removed by an
+# explicit, unconditional cleanup at every single exit path -- this
+# function does not rely on a RETURN/EXIT trap, because `set -e` aborting
+# out of a function does not reliably fire one (verified: an unguarded
+# failing command inside a function called as a plain statement, not as
+# part of an && / || list, skips a `trap ... RETURN` entirely).
+backup_system() {
+  local out_dir="${1:-$SYSTEM_BACKUP_DIR_DEFAULT}"
+  local ts
+  local nonce
+  local stage_dir=""
+  local db_dump_dir=""
+  local db_dump_file=""
+  local db_dump_sidecar=""
+  local archive_id
+  local plain_tar=""
+  local archive_file
+  local sidecar_file
+  local staged_archive=""
+  local staged_sidecar=""
+  local passphrase
+  local gnupg_home=""
+
+  # Every failure path below calls this before returning, so a plaintext
+  # DB dump or staging directory never survives a failed run -- the only
+  # thing this function is ever allowed to leave behind on disk is either
+  # nothing, or a fully-formed encrypted archive. This is called instead
+  # of relying on a RETURN/EXIT trap: `set -e` aborting out of a function
+  # (via an unguarded failing command, called as a plain statement rather
+  # than as part of an && / || list) does not reliably fire a trap set
+  # inside that same function -- verified directly against this exact
+  # pattern before choosing this explicit-cleanup-on-every-path design.
+  backup_system_cleanup_on_failure() {
+    [ -z "$stage_dir" ] || rm -rf -- "$stage_dir"
+    [ -z "$plain_tar" ] || rm -f -- "$plain_tar"
+    [ -z "$staged_archive" ] || rm -f -- "$staged_archive"
+    [ -z "$staged_sidecar" ] || rm -f -- "$staged_sidecar"
+    [ -z "$db_dump_dir" ] || rm -rf -- "$db_dump_dir"
+    [ -z "$gnupg_home" ] || rm -rf -- "$gnupg_home"
+  }
+
+  passphrase="$(resolve_system_backup_passphrase)" || return 1
+
+  require_postgres
+  mkdir -p "$out_dir"
+  chmod 700 "$out_dir" 2>/dev/null || true
+
+  ts="$(date +%Y%m%d-%H%M%S)"
+  nonce="$$-$RANDOM"
+  archive_id="dune-system-$ts-$nonce"
+
+  # backup_db() names its output using only second-resolution timestamps
+  # (shared, unrelated to this feature, load-bearing for `dune db list`'s
+  # naming/validation regex elsewhere in this file -- not something this
+  # function should change). Two backup_db() calls landing in the same
+  # wall-clock second would otherwise compute the IDENTICAL destination
+  # path and silently overwrite each other before backup_system() ever
+  # reads the result back -- independently reproduced: two concurrent
+  # `dune db backup-system` invocations produced two distinct, correctly
+  # unique encrypted archives that both silently contained the SAME
+  # database dump content, with no error or indication anywhere. Giving
+  # backup_db() a private, per-invocation directory (named after this
+  # archive's own already-unique id) makes that collision structurally
+  # impossible: no two invocations can ever share a destination
+  # directory, regardless of what filename backup_db() computes inside it.
+  db_dump_dir="$out_dir/.dune-db-dump-$archive_id"
+  if ! mkdir -p "$db_dump_dir"; then
+    echo "System backup was not created because a database-dump staging directory could not be created." >&2
+    return 1
+  fi
+  chmod 700 "$db_dump_dir" 2>/dev/null || true
+
+  echo "Creating database dump for system backup..."
+  LAST_DB_BACKUP_FILE=""
+  LAST_DB_BACKUP_SIDECAR_FILE=""
+  if ! backup_db "$db_dump_dir"; then
+    backup_system_cleanup_on_failure
+    echo "System backup was not created because the database dump failed." >&2
+    return 1
+  fi
+  db_dump_file="$LAST_DB_BACKUP_FILE"
+  db_dump_sidecar="$LAST_DB_BACKUP_SIDECAR_FILE"
+  if [ -z "$db_dump_file" ] || [ ! -f "$db_dump_file" ]; then
+    backup_system_cleanup_on_failure
+    echo "System backup was not created because the database dump could not be located." >&2
+    return 1
+  fi
+
+  if ! stage_dir="$(mktemp -d)"; then
+    backup_system_cleanup_on_failure
+    echo "System backup was not created because a staging directory could not be created." >&2
+    return 1
+  fi
+  if ! chmod 700 "$stage_dir"; then
+    backup_system_cleanup_on_failure
+    echo "System backup was not created because the staging directory could not be secured." >&2
+    return 1
+  fi
+
+  if ! mkdir -p "$stage_dir/db"; then
+    backup_system_cleanup_on_failure
+    echo "System backup was not created because staging failed." >&2
+    return 1
+  fi
+  if ! cp -a -- "$db_dump_file" "$stage_dir/db/"; then
+    backup_system_cleanup_on_failure
+    echo "System backup was not created because the database dump could not be staged." >&2
+    return 1
+  fi
+  if [ -n "$db_dump_sidecar" ] && [ -f "$db_dump_sidecar" ]; then
+    if ! cp -a -- "$db_dump_sidecar" "$stage_dir/db/"; then
+      backup_system_cleanup_on_failure
+      echo "System backup was not created because the database dump sidecar could not be staged." >&2
+      return 1
+    fi
+  fi
+
+  if [ -f .env ]; then
+    if ! cp -a -- .env "$stage_dir/env"; then
+      backup_system_cleanup_on_failure
+      echo "System backup was not created because .env could not be staged." >&2
+      return 1
+    fi
+  fi
+
+  if [ -d runtime/generated ]; then
+    if ! mkdir -p "$stage_dir/generated"; then
+      backup_system_cleanup_on_failure
+      echo "System backup was not created because staging failed." >&2
+      return 1
+    fi
+    # tar pipe, not rsync: rsync is not installed by install.sh or in the
+    # console container image (confirmed directly against both) -- this
+    # feature must not introduce a dependency that only happens to be
+    # present on a CI runner. tar is already a hard dependency of this
+    # same function (used a few lines below to build the plaintext
+    # archive), so a tar-to-tar pipe reuses a tool this feature already
+    # requires instead of adding a new one. `--exclude` preserves the
+    # same ephemeral-directory exclusion rsync's flag provided.
+    if ! tar -C runtime/generated --exclude='dune-fake-k8s-serviceaccount-*' -cf - . \
+        | tar -C "$stage_dir/generated" -xf -; then
+      backup_system_cleanup_on_failure
+      echo "System backup was not created because runtime/generated/ could not be staged." >&2
+      return 1
+    fi
+  fi
+
+  if [ -d runtime/secrets ]; then
+    if ! mkdir -p "$stage_dir/secrets"; then
+      backup_system_cleanup_on_failure
+      echo "System backup was not created because staging failed." >&2
+      return 1
+    fi
+    if ! tar -C runtime/secrets -cf - . | tar -C "$stage_dir/secrets" -xf -; then
+      backup_system_cleanup_on_failure
+      echo "System backup was not created because runtime/secrets/ could not be staged." >&2
+      return 1
+    fi
+  fi
+
+  if ! plain_tar="$(mktemp)"; then
+    backup_system_cleanup_on_failure
+    echo "System backup was not created because a temporary file could not be created." >&2
+    return 1
+  fi
+  if ! chmod 600 "$plain_tar"; then
+    backup_system_cleanup_on_failure
+    echo "System backup was not created because the temporary archive could not be secured." >&2
+    return 1
+  fi
+  if ! tar -cf "$plain_tar" -C "$stage_dir" .; then
+    backup_system_cleanup_on_failure
+    echo "System backup was not created because the archive could not be written." >&2
+    return 1
+  fi
+  rm -rf -- "$stage_dir"
+  stage_dir=""
+
+  archive_file="$out_dir/$archive_id.tar.gz.enc"
+  sidecar_file="$archive_file.yaml"
+  staged_archive="$archive_file.partial.$$"
+  staged_sidecar="$sidecar_file.partial.$$"
+
+  # --passphrase-fd N, not putting the passphrase in argv: the latter
+  # would make it visible to any co-resident process/user via `ps`/
+  # `/proc/<pid>/cmdline` for the process's lifetime -- the exact
+  # GHSA-fc89-h24v-6j3x exposure class this account's own security
+  # history already flagged and fixed elsewhere (see
+  # docs/security/audit-2026-07-04.md).
+  #
+  # gpg's own AES-256-OCB (--aead-algo OCB --force-aead) is used instead
+  # of openssl's AES-256-CBC: CBC provides confidentiality only, with no
+  # integrity/authenticity check -- a corrupted or maliciously modified
+  # archive silently decrypts to garbage (or worse) with no error.
+  # `openssl enc`'s CLI cannot do any AEAD cipher at all (confirmed
+  # directly: `openssl enc -aes-256-gcm` -> "AEAD ciphers not
+  # supported", a permanent CLI-level policy, not a version gap -- the
+  # same limitation already documented for this repo's secrets library).
+  # gpg's OCB mode is AEAD and rejects tampered/corrupted ciphertext
+  # outright at decrypt time (verified directly: a single flipped byte
+  # anywhere in the ciphertext makes gpg exit non-zero with "WARNING:
+  # encrypted message has been manipulated!" and writes no output file).
+  #
+  # A private, per-invocation GNUPGHOME (never the operator's own
+  # ~/.gnupg) is required because gpg writes a keybox/trustdb into its
+  # home directory even for pure symmetric-passphrase encryption with no
+  # keys ever created or imported.
+  if ! gnupg_home="$(mktemp -d)"; then
+    backup_system_cleanup_on_failure
+    echo "System backup was not created because a private GnuPG home could not be created." >&2
+    return 1
+  fi
+  if ! chmod 700 "$gnupg_home"; then
+    backup_system_cleanup_on_failure
+    echo "System backup was not created because the private GnuPG home could not be secured." >&2
+    return 1
+  fi
+
+  local passphrase_fd
+  if ! exec {passphrase_fd}<<< "$passphrase"; then
+    backup_system_cleanup_on_failure
+    echo "System backup was not created because the passphrase could not be prepared for encryption." >&2
+    return 1
+  fi
+  if ! gzip -c "$plain_tar" | GNUPGHOME="$gnupg_home" gpg --batch --yes \
+      --pinentry-mode loopback --passphrase-fd "$passphrase_fd" \
+      --s2k-digest-algo SHA256 --s2k-count "$SYSTEM_BACKUP_S2K_COUNT" \
+      --symmetric --cipher-algo AES256 --aead-algo OCB --force-aead \
+      -o "$staged_archive"; then
+    exec {passphrase_fd}<&- 2>/dev/null || true
+    backup_system_cleanup_on_failure
+    echo "System backup was not created because encryption failed." >&2
+    return 1
+  fi
+  exec {passphrase_fd}<&-
+  rm -rf -- "$gnupg_home"
+  gnupg_home=""
+  rm -f -- "$plain_tar"
+  plain_tar=""
+
+  if ! {
+    echo "artifact_id: $archive_id"
+    echo "backup_file: $(basename "$archive_file")"
+    echo "created_at: $(date -Iseconds)"
+    echo "backup_origin: ${DB_BACKUP_ORIGIN:-manual}"
+    echo "encryption: aes-256-ocb-gpg-aead"
+    echo "s2k_digest: sha256"
+    echo "s2k_count: $SYSTEM_BACKUP_S2K_COUNT"
+    echo "includes_secrets: true"
+    echo "db_backup_file: $(basename "$db_dump_file")"
+    echo "server_title: $(config_value .env SERVER_TITLE || echo unknown)"
+    echo "server_region: $(config_value .env SERVER_REGION || echo unknown)"
+    echo "battlegroup_id: $(config_value runtime/generated/battlegroup.env BATTLEGROUP_ID || echo unknown)"
+    echo "decrypt_note: >-"
+    echo "  Do not pass the passphrase on the command line -- it would be"
+    echo "  visible to other processes via ps/proc for as long as gpg runs."
+    echo "  Enter it at a prompt instead. gpg will reject this archive"
+    echo "  outright (nonzero exit, no output written) if it has been"
+    echo "  corrupted or tampered with -- this format is authenticated,"
+    echo "  not just encrypted."
+    echo "decrypt_command: |-"
+    echo "  read -r -s -p \"Passphrase: \" p; echo"
+    echo "  printf '%s' \"\$p\" | gpg --batch --yes --pinentry-mode loopback \\"
+    echo "    --passphrase-fd 0 -d $(basename "$archive_file") | gunzip | tar -xf -"
+    echo "  unset p"
+  } > "$staged_sidecar"; then
+    backup_system_cleanup_on_failure
+    echo "System backup was not created because its metadata could not be written." >&2
+    return 1
+  fi
+
+  chmod 600 "$staged_archive" || true
+  chmod 600 "$staged_sidecar" || true
+
+  if ! mv -f -- "$staged_archive" "$archive_file"; then
+    backup_system_cleanup_on_failure
+    echo "System backup was not created because the archive could not be published." >&2
+    return 1
+  fi
+  staged_archive=""
+  if ! mv -f -- "$staged_sidecar" "$sidecar_file"; then
+    rm -f -- "$archive_file"
+    backup_system_cleanup_on_failure
+    echo "System backup was not created because its metadata could not be published." >&2
+    return 1
+  fi
+  staged_sidecar=""
+
+  # The plaintext DB dump that backup_db() wrote into its own private,
+  # per-invocation directory is now safely duplicated, encrypted, inside
+  # the published archive above -- remove that whole directory so nothing
+  # unencrypted survives next to the encrypted archive, defeating the
+  # entire point of encrypting it.
+  rm -rf -- "$db_dump_dir"
+  db_dump_dir=""
+  db_dump_file=""
+  db_dump_sidecar=""
+
+  echo "Encrypted system backup written:"
+  echo "  $archive_file"
+  echo "Sidecar (no secrets, safe to read):"
+  echo "  $sidecar_file"
+  echo
+  echo "This archive includes runtime/secrets/ (Funcom token, admin password, RMQ"
+  echo "admin credentials, etc.) and .env, encrypted with the passphrase you just set."
+  echo "There is no way to recover this archive's contents without that passphrase --"
+  echo "store it somewhere durable (a password manager), separately from the archive."
+  echo
+  echo "To decrypt and extract, enter the passphrase at the prompt -- do not put it"
+  echo "on the command line, which would expose it to other processes on this host."
+  echo "gpg will reject this archive outright (nonzero exit, no output written) if"
+  echo "it has been corrupted or tampered with -- this format is authenticated:"
+  echo "  read -r -s -p \"Passphrase: \" p; echo"
+  echo "  printf '%s' \"\$p\" | gpg --batch --yes --pinentry-mode loopback \\"
+  echo "    --passphrase-fd 0 -d $(basename "$archive_file") | gunzip | tar -xf -"
+  echo "  unset p"
+}
+
+list_system_backups() {
+  local out_dir="${1:-$SYSTEM_BACKUP_DIR_DEFAULT}"
+
+  echo "=== System backups (encrypted) ==="
+  if [ -d "$out_dir" ]; then
+    find "$out_dir" -maxdepth 1 -type f -name '*.tar.gz.enc' -printf '%TY-%Tm-%Td %TH:%TM:%TS  %p\n' 2>/dev/null | sed -E 's/([0-9]{2}:[0-9]{2}:[0-9]{2})\.[0-9]+/\1/' | sort || true
+  else
+    echo "No system backup directory found: $out_dir"
   fi
 }
 
@@ -2013,8 +2453,14 @@ case "$cmd" in
   backup)
     backup_db "${2:-$BACKUP_DIR_DEFAULT}"
     ;;
+  backup-system)
+    backup_system "${2:-$SYSTEM_BACKUP_DIR_DEFAULT}"
+    ;;
   list)
     list_backups "${2:-$BACKUP_DIR_DEFAULT}"
+    ;;
+  list-system)
+    list_system_backups "${2:-$SYSTEM_BACKUP_DIR_DEFAULT}"
     ;;
   status)
     status_db

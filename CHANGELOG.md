@@ -11,6 +11,35 @@ Keep a Changelog style, grouped by upstream base version, newest first.
 
 ### Added
 
+- `dune db backup-system` (#269) — one-command, encrypted system backup
+  covering `.env`, `runtime/generated/`, `runtime/secrets/`, and a fresh
+  database dump, bundled into a single `dune-system-*.tar.gz.enc` archive
+  (with a `.yaml` sidecar that itself contains no secrets, safe to read on
+  its own). Every credential is retained verbatim — the Funcom Self-Host
+  Service Token, admin console password, RMQ admin credentials, and the
+  sietch join password are all included, not redacted or excluded — the
+  archive's only protection is the passphrase supplied when it's created,
+  encrypted with AES-256-CBC + PBKDF2 (600,000 iterations). Prompts for a
+  passphrase interactively (entered twice, to catch typos); set
+  `DUNE_SYSTEM_BACKUP_PASSPHRASE` for non-interactive/cron use. There is no
+  way to recover an archive without its passphrase. The passphrase is never
+  passed on any subprocess's command line (`-pass fd:N` for encryption,
+  `-pass stdin` for the documented decrypt command) to avoid
+  `ps`/`/proc/<pid>/cmdline` exposure. Each invocation's underlying database
+  dump is staged in a private, per-run directory, so two invocations landing
+  in the same second can never cross-contaminate each other's dump content.
+  `dune db list-system` lists written archives. No automated restore yet —
+  decrypt with:
+  ```
+  read -r -s -p "Passphrase: " p; echo
+  printf '%s' "$p" | openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 \
+    -in <archive> -pass stdin | gunzip | tar -xf -
+  unset p
+  ```
+  then restore `.env`/`runtime/generated/`/`runtime/secrets/` manually,
+  then `dune db restore` for the `db/` dump inside. See #272 (deferred
+  age-based passphrase protection) and #274 (no `dune db auto`-equivalent
+  scheduling yet) for tracked follow-ups.
 - Discord OAuth as primary sign-in method on the login page. Password login is
   available as a secondary, collapsible option when OAuth is configured.
 - Local static file mount (`runtime/local-static` → `/app/web-dist/atrium`)
