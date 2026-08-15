@@ -70,18 +70,48 @@ value="$(dune_secrets_read_encrypted "test-secret")"
 [ -f "runtime/secrets/test-secret.enc" ] || fail "expected runtime/secrets/test-secret.enc to exist after write_secret"
 [ -f "runtime/generated/.secrets-migrated/test-secret.done" ] || fail "expected the per-secret migration marker to exist after write_secret"
 
-# --- Test 4: wrong age identity fails to decrypt the KEK, and read_secret falls back to the legacy flat file ---
+# --- Test 4: wrong age identity actually reaches and fails
+# dune_secrets_load_kek's age --decrypt call, and read_secret falls
+# back to the legacy flat file. ---
+#
+# This test previously read a secret name ("legacy-only") whose .enc
+# file did not exist yet at this point in the script (it was only
+# created later, in what is now Test 5) -- dune_secrets_read_encrypted
+# short-circuits on its own `[ -r "$enc_path" ]` check before ever
+# calling dune_secrets_load_kek, so the wrong-identity/age-decrypt
+# failure path this test's name and comment claim to exercise was
+# never actually reached. Confirmed via mutation testing during a
+# Layer 3 integration audit: replacing dune_secrets_load_kek's real
+# `age --decrypt` call with a hardcoded dummy KEK -- a complete
+# identity-verification bypass -- still passed this test (and the
+# entire suite) undetected. Fixed by writing a real secret under the
+# CORRECT identity first, then switching to the wrong identity and
+# reading that same, now-existing secret -- so the .enc file genuinely
+# exists and dune_secrets_load_kek's age --decrypt call is the thing
+# that actually fails.
+wrong_identity_secret_test_target="wrong-identity-secret-test"
+dune_secrets_write_secret "$wrong_identity_secret_test_target" "value-written-under-correct-identity"
+[ -f "runtime/secrets/${wrong_identity_secret_test_target}.enc" ] || fail "expected ${wrong_identity_secret_test_target}.enc to exist before testing the wrong-identity path"
+
 wrong_identity_path="$test_root/wrong-identity.txt"
 age-keygen -o "$wrong_identity_path" >/dev/null 2>&1
 
 mkdir -p runtime/secrets
-printf 'legacy-plaintext-value' > runtime/secrets/legacy-only.txt
+printf 'legacy-plaintext-value' > "runtime/secrets/${wrong_identity_secret_test_target}.txt"
 
 export DUNE_AGE_IDENTITY_FILE="$wrong_identity_path"
 _DUNE_KEK_LOADED=0
 _DUNE_KEK_HEX=""
-fallback_value="$(dune_secrets_read_secret "legacy-only" "runtime/secrets/legacy-only.txt")"
+if dune_secrets_load_kek >/dev/null 2>&1; then
+  fail "expected dune_secrets_load_kek to fail with the wrong age identity against an .enc file written under a different identity, but it succeeded"
+fi
+_DUNE_KEK_LOADED=0
+_DUNE_KEK_HEX=""
+fallback_value="$(dune_secrets_read_secret "$wrong_identity_secret_test_target" "runtime/secrets/${wrong_identity_secret_test_target}.txt")"
 [ "$fallback_value" = "legacy-plaintext-value" ] || fail "expected fallback to the legacy flat file when the age identity is wrong, got '$fallback_value'"
+
+mkdir -p runtime/secrets
+printf 'legacy-plaintext-value' > runtime/secrets/legacy-only.txt
 
 # Restore the correct identity for the remaining tests.
 export DUNE_AGE_IDENTITY_FILE="$identity_path"

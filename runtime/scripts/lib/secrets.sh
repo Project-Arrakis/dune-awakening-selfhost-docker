@@ -268,6 +268,21 @@ dune_secrets_render_plaintext_file() {
 #   where a migration marker exists but the underlying secret file
 #   doesn't, or vice versa. <mode> defaults to 0600 (never
 #   world/group-readable) unless overridden.
+#   Returns 1 (final path untouched, no torn state) if any step fails --
+#   mkdir, mktemp, the content write, chmod, fsync, or the final
+#   rename. Every step's exit status is checked explicitly rather than
+#   assumed to succeed: an earlier draft of this function had none of
+#   these checks, meaning a failure partway through (e.g. a full disk
+#   during the content write, or mktemp failing because $dir doesn't
+#   exist/isn't writable) was silently swallowed -- the function
+#   returned 0 regardless, and callers like dune_secrets_write_secret
+#   had no way to detect that the secret was never actually written.
+#   Confirmed via direct reproduction during a Layer 3 integration
+#   audit: a broken encryption backend caused this function to report
+#   success while writing empty/malformed content to the real secret
+#   path, silently destroying the original plaintext with no signal to
+#   the caller. Fixed by checking every step and cleaning up any
+#   partial temp file on failure.
 _dune_secrets_atomic_write() {
   local final_path="$1"
   local content="$2"
@@ -275,15 +290,29 @@ _dune_secrets_atomic_write() {
 
   local dir
   dir="$(dirname "$final_path")"
-  mkdir -p "$dir"
+  if ! mkdir -p "$dir"; then
+    echo "dune secrets: could not create directory '$dir' for atomic write." >&2
+    return 1
+  fi
 
   local tmp_path
-  tmp_path="$(mktemp "${final_path}.tmp.XXXXXX")"
+  if ! tmp_path="$(mktemp "${final_path}.tmp.XXXXXX")"; then
+    echo "dune secrets: could not create a temporary file for atomic write to '$final_path'." >&2
+    return 1
+  fi
 
   # printf, not echo -- avoids any risk of interpreting backslash
   # sequences or trailing-newline surprises in the secret content.
-  printf '%s' "$content" > "$tmp_path"
-  chmod "$mode" "$tmp_path"
+  if ! printf '%s' "$content" > "$tmp_path"; then
+    echo "dune secrets: could not write content to temporary file for atomic write to '$final_path'." >&2
+    rm -f -- "$tmp_path"
+    return 1
+  fi
+  if ! chmod "$mode" "$tmp_path"; then
+    echo "dune secrets: could not set permissions on temporary file for atomic write to '$final_path'." >&2
+    rm -f -- "$tmp_path"
+    return 1
+  fi
 
   # fsync the temp file's contents before the rename that publishes it,
   # so a crash between fsync and rename leaves, at worst, an orphaned
@@ -304,15 +333,23 @@ _dune_secrets_atomic_write() {
   # code it parses. Never revert to string-interpolating a caller-
   # influenced value into this (or any) -c script.
   if command -v python3 >/dev/null 2>&1; then
-    python3 -c '
+    if ! python3 -c '
 import os, sys
 fd = os.open(sys.argv[1], os.O_RDONLY)
 os.fsync(fd)
 os.close(fd)
-' "$tmp_path"
+' "$tmp_path"; then
+      echo "dune secrets: could not fsync temporary file for atomic write to '$final_path'." >&2
+      rm -f -- "$tmp_path"
+      return 1
+    fi
   fi
 
-  mv -f "$tmp_path" "$final_path"
+  if ! mv -f "$tmp_path" "$final_path"; then
+    echo "dune secrets: could not publish atomic write to '$final_path'." >&2
+    rm -f -- "$tmp_path"
+    return 1
+  fi
 }
 
 # dune_secrets_write_secret <name> <plaintext>
@@ -341,20 +378,57 @@ dune_secrets_write_secret() {
     return 1
   fi
 
-  local kek
-  if ! kek="$(dune_secrets_load_kek)"; then
+  # Call dune_secrets_load_kek as a PLAIN STATEMENT here, not via
+  # $(...) command substitution -- command substitution forks a
+  # subshell, and this function's in-process cache (_DUNE_KEK_HEX/
+  # _DUNE_KEK_LOADED) is a real global that only that forked subshell
+  # would ever see updated; the calling shell's own copy is never
+  # touched, so the cache silently never took effect for any real
+  # caller. Confirmed via direct reproduction during a Layer 3
+  # integration audit: migrating N secrets in one script run
+  # previously cost N full `age --decrypt` invocations instead of the
+  # single decrypt the design intends, with no error, just needless
+  # repeated work. Calling it directly here lets it populate the
+  # actual calling shell's cache; the decrypted value is then read
+  # from that same global rather than re-captured via a second
+  # subshell-forking substitution.
+  if ! dune_secrets_load_kek >/dev/null; then
     echo "dune secrets: cannot write '$name' -- KEK backend not configured or unavailable." >&2
     return 1
   fi
+  local kek="$_DUNE_KEK_HEX"
 
+  # Every step below has its exit status checked explicitly, not
+  # assumed -- confirmed via a Layer 3 integration audit that an
+  # earlier draft of this function silently reported success (return
+  # 0) even when DEK generation or encryption failed, writing an
+  # empty/malformed enc:v2:1:: line to the real secret path and
+  # marking migration complete, while the original plaintext was
+  # never persisted anywhere. That failure mode is exactly what every
+  # check below exists to prevent: a transient failure here (a missing
+  # cryptography package, disk pressure, a future bug in
+  # secrets_aead.py) must abort loudly, not destroy the secret while
+  # claiming success.
   local dek
-  dek="$(dune_secrets_generate_dek)"
+  if ! dek="$(dune_secrets_generate_dek)"; then
+    echo "dune secrets: could not generate a data-encryption key for '$name'." >&2
+    return 1
+  fi
 
   local wrapped_dek ciphertext
-  wrapped_dek="$(_dune_secrets_aead_encrypt "$kek" "$dek")"
-  ciphertext="$(_dune_secrets_aead_encrypt "$dek" "$plaintext")"
+  if ! wrapped_dek="$(_dune_secrets_aead_encrypt "$kek" "$dek")"; then
+    echo "dune secrets: could not wrap the data-encryption key for '$name'." >&2
+    return 1
+  fi
+  if ! ciphertext="$(_dune_secrets_aead_encrypt "$dek" "$plaintext")"; then
+    echo "dune secrets: could not encrypt the value for '$name'." >&2
+    return 1
+  fi
 
-  _dune_secrets_atomic_write "$enc_path" "enc:v2:1:${wrapped_dek}:${ciphertext}" 600
+  if ! _dune_secrets_atomic_write "$enc_path" "enc:v2:1:${wrapped_dek}:${ciphertext}" 600; then
+    echo "dune secrets: could not write the encrypted secret for '$name'." >&2
+    return 1
+  fi
 
   local marker_path
   # _dune_secrets_validate_name was already applied above via
@@ -365,7 +439,10 @@ dune_secrets_write_secret() {
   if ! marker_path="$(dune_secrets_migration_marker_path "$name")"; then
     return 1
   fi
-  _dune_secrets_atomic_write "$marker_path" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" 600
+  if ! _dune_secrets_atomic_write "$marker_path" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" 600; then
+    echo "dune secrets: wrote the encrypted secret for '$name' but could not write its migration marker." >&2
+    return 1
+  fi
 }
 
 # dune_secrets_read_encrypted <name>
@@ -381,8 +458,11 @@ dune_secrets_read_encrypted() {
   enc_path="$(dune_secrets_encrypted_path "$name")" || return 1
   [ -r "$enc_path" ] || return 1
 
-  local kek
-  kek="$(dune_secrets_load_kek)" || return 1
+  # Plain statement, not $(...) -- see the write path's identical
+  # comment above for why command substitution silently defeats the
+  # in-process KEK cache.
+  dune_secrets_load_kek >/dev/null || return 1
+  local kek="$_DUNE_KEK_HEX"
 
   local line
   line="$(cat "$enc_path")"
