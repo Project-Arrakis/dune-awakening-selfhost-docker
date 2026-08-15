@@ -8891,7 +8891,16 @@ export function addonOpsSocSummary() {
 // on cAdvisor's per-container metric quality — a target can be "up"
 // (reachable, scraping successfully) while still only exposing an
 // incomplete/aggregate metric set).
-export async function addonOpsPrometheusHealth(promBaseUrl = process.env.METRICS_PROMETHEUS_URL || `http://127.0.0.1:${resolvePorts().metricsPrometheus}`) {
+export async function addonOpsPrometheusHealth(
+  promBaseUrl,
+  repoRoot = process.env.DUNE_DOCKER_DIR || process.env.RUNTIME_DIR || process.cwd()
+) {
+  // metricsPrometheus is env-var-only today (not profile-file-backed),
+  // so repoRoot doesn't change this specific field's value -- accepted
+  // explicitly anyway so this doesn't rely on process.cwd() coincidentally
+  // matching config.repoRoot the moment a profile-backed field is ever
+  // added here, matching the same fix applied to db.js/server.js.
+  promBaseUrl = promBaseUrl || process.env.METRICS_PROMETHEUS_URL || `http://127.0.0.1:${resolvePorts(process.env, repoRoot).metricsPrometheus}`;
   try {
     const healthRes = await fetch(`${promBaseUrl}/-/healthy`, { signal: AbortSignal.timeout(2000) });
     if (!healthRes.ok) return metricsStackNotRunning();

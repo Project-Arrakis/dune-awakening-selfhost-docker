@@ -1570,8 +1570,12 @@ function isPostgresUnavailableError(error, rawMessage = "") {
   // of which port Postgres is configured on -- this specific-port regex
   // is effectively redundant, but is kept (now port-aware instead of
   // hardcoded to the stock port 15432) for clearer log/error matching on
-  // deployments with a non-default configured Postgres port.
-  const postgresPort = resolvePorts().postgres;
+  // deployments with a non-default configured Postgres port. Pass
+  // config.repoRoot explicitly rather than relying on resolvePorts()'s
+  // process.cwd() default coincidentally matching it -- postgres itself
+  // is env-var-only so this doesn't change behavior today, but avoids
+  // depending on that coincidence for any future profile-backed field.
+  const postgresPort = resolvePorts(process.env, config.repoRoot).postgres;
   return error?.code === "ECONNREFUSED"
     || new RegExp(`ECONNREFUSED.*127\\.0\\.0\\.1:${postgresPort}`, "i").test(rawMessage)
     || /connect\s+ECONNREFUSED/i.test(rawMessage);

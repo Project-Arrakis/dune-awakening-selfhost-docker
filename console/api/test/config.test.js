@@ -139,3 +139,90 @@ test("publicConfig() exposes ports to the frontend", () => {
     rmSync(repoRoot, { recursive: true, force: true });
   }
 });
+
+// Layer 2 audit regression: config.ports is a getter, not a value
+// snapshotted once at loadConfig() time. loadConfig() is only called
+// once at process startup (see server.js's top-level `const config =
+// loadConfig()`), but gameplay-profile.ini can be rewritten by the Maps
+// UI at any point during the process's lifetime without a console
+// restart -- a plain value would silently reintroduce the exact
+// staleness bug this PR's first commit fixed (correct once at boot,
+// stale forever after the first Maps UI port change). This test
+// simulates that exact sequence: load config, THEN write the profile
+// file, and confirms config.ports reflects the new value without
+// calling loadConfig() again.
+test("config.ports re-reads gameplay-profile.ini live, not just at loadConfig() time", () => {
+  const repoRoot = mkdtempSync(join(tmpdir(), "arrakis-config-live-"));
+  const previous = { ...process.env };
+  process.env.DUNE_DOCKER_DIR = repoRoot;
+  try {
+    const config = loadConfig();
+    // No profile file yet -- falls back to stock.
+    assert.equal(config.ports.clientBase, 7777);
+    assert.equal(config.ports.igwBase, 7888);
+
+    // Simulate the Maps UI writing a new port via usersettings.py
+    // engine-set, entirely independent of this already-loaded config
+    // object and without any console restart.
+    mkdirSync(join(repoRoot, "runtime", "generated"), { recursive: true });
+    writeFileSync(
+      join(repoRoot, "runtime", "generated", "gameplay-profile.ini"),
+      "[Engine:URL]\nPort=8001\nIGWPort=8002\n"
+    );
+
+    assert.equal(config.ports.clientBase, 8001, "config.ports must reflect the live profile file, not a boot-time snapshot");
+    assert.equal(config.ports.igwBase, 8002, "config.ports must reflect the live profile file, not a boot-time snapshot");
+
+    // publicConfig() (the /api/auth/state payload) must also see the
+    // live value on every call, not a stale copy from an earlier call.
+    assert.equal(publicConfig(config).ports.clientBase, 8001);
+  } finally {
+    process.env = previous;
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+// Layer 2 audit regression: readEnginePortsFromProfile()'s section-
+// boundary regex relies on multiline `$` to find the end of the
+// [Engine:URL] section. `$` matches before `\n` but not before a `\r`
+// that precedes it, so an unnormalized CRLF file caused the section
+// boundary to be found one line early, silently dropping whichever key
+// (Port or IGWPort) came last in the section. usersettings.py always
+// writes LF-only on this project's Linux hosts, so this guards a
+// narrow but real edge case (hand-edited/out-of-band files).
+test("resolvePorts() parses gameplay-profile.ini correctly with CRLF line endings", () => {
+  const repoRoot = mkdtempSync(join(tmpdir(), "arrakis-config-crlf-"));
+  try {
+    mkdirSync(join(repoRoot, "runtime", "generated"), { recursive: true });
+    writeFileSync(
+      join(repoRoot, "runtime", "generated", "gameplay-profile.ini"),
+      "[Engine:URL]\r\nPort=7777\r\nIGWPort=7888\r\n\r\n[Engine:ConsoleVariables]\r\n"
+    );
+    const ports = resolvePorts({}, repoRoot);
+    assert.equal(ports.clientBase, 7777, "Port must be parsed from a CRLF-encoded profile file");
+    assert.equal(ports.igwBase, 7888, "IGWPort (the last key in the section) must not be silently dropped on CRLF files");
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+// Layer 2 audit regression: a corrupted/malformed gameplay-profile.ini
+// could previously produce an out-of-range port value (e.g. Port=0 or a
+// 10-digit garbage number) that bypassed portValue()'s range validation
+// entirely, since the nullish-coalescing fallback only ran portValue()
+// on the .env/stock branch, never on the profile-file branch.
+test("resolvePorts() ignores an out-of-range Port/IGWPort parsed from a corrupted gameplay-profile.ini", () => {
+  const repoRoot = mkdtempSync(join(tmpdir(), "arrakis-config-corrupt-"));
+  try {
+    mkdirSync(join(repoRoot, "runtime", "generated"), { recursive: true });
+    writeFileSync(
+      join(repoRoot, "runtime", "generated", "gameplay-profile.ini"),
+      "[Engine:URL]\nPort=999999999\nIGWPort=0\n"
+    );
+    const ports = resolvePorts({ CLIENT_PORT_BASE: "7777", IGW_PORT_BASE: "7888" }, repoRoot);
+    assert.equal(ports.clientBase, 7777, "an out-of-range Port must fall back to .env/stock, not pass through unvalidated");
+    assert.equal(ports.igwBase, 7888, "an out-of-range IGWPort must fall back to .env/stock, not pass through unvalidated");
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
