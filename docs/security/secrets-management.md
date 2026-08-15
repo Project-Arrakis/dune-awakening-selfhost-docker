@@ -24,8 +24,18 @@
 | Public directory JSON | `runtime/secrets/public-directory.json` | Plaintext JSON | 600 | Auto-managed | N/A |
 | ACP bot adapter token | `arrakis-control-panel/data/acp.db` | AES-256-GCM encrypted | 600 | Per-guild setup | Manual |
 | ACP Discord bot token | `arrakis-control-panel/.env` | Plaintext env var | 600 | No (operator) | Via Discord portal |
+| System backup passphrase | Not stored anywhere by this project — `DUNE_SYSTEM_BACKUP_PASSPHRASE` (env var, cron/automation) or an interactive prompt | N/A — operator-held only | N/A | No | Operator's own responsibility |
 
-**Total: 10+ secrets in 2 repos, all plaintext files except the bot's SQLite encryption layer.**
+**Total: 10+ secrets in 2 repos, all plaintext files except the bot's SQLite encryption layer, plus one operator-held-only passphrase that this project never stores at all (see 1.3a).**
+
+### 1.2a A Deliberately Different Case: `dune db backup-system`'s Passphrase
+
+Every secret in the table above is something *this project* generates, stores, and is responsible for protecting at rest. `DUNE_SYSTEM_BACKUP_PASSPHRASE` is the opposite: it is a value the **operator** chooses and holds, used only in-process to encrypt/decrypt a `dune db backup-system` archive, and never written to disk by any code in this repo. This is intentional — see #269/#270's PR history for why a two-mode redact/exclude design was replaced with "retain everything, protect with a passphrase" instead.
+
+Two real, disclosed limitations of this design (not fixed by this PR, tracked separately):
+- The passphrase, when set as an environment variable for cron/automation, is visible via `/proc/<pid>/environ` for the lifetime of the `dune db backup-system` process (and any child process that inherits the environment). This is materially better than the same value appearing on a process's command line (`ps`/`/proc/<pid>/cmdline`, which this project's own encryption call deliberately avoids via `-pass fd:N`), but it is not zero exposure — see the account's existing risk framework in §1.3 for why this specific distinction matters.
+- There is currently no `dune db auto`-equivalent command that would generate a correctly-permissioned place to store this passphrase for scheduled/unattended runs (tracked as #274). An operator who copies the existing `dune db auto enable` pattern verbatim (its own `EnvironmentFile`, written `644`) for this passphrase would get a materially weaker permission posture than intended.
+- #272 tracks replacing the raw passphrase with age-based protection of a small, randomly-generated DEK (not the whole archive) once the age-based KEK library (#257 / upstream #153) actually merges — closing both gaps above without requiring the operator to manage a passphrase at all.
 
 ### 1.2 How Secrets Are Loaded Today
 
