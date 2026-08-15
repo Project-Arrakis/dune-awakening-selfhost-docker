@@ -66,6 +66,8 @@ seed_repo_tree() {
   mkdir -p "$root/runtime/scripts" "$root/runtime/generated" "$root/runtime/secrets" \
     "$root/runtime/backups/system"
   cp runtime/scripts/db.sh "$root/runtime/scripts/db.sh"
+  [ ! -f runtime/scripts/env-file.sh ] || cp runtime/scripts/env-file.sh "$root/runtime/scripts/env-file.sh"
+  [ ! -f runtime/scripts/battlegroup-identity.sh ] || cp runtime/scripts/battlegroup-identity.sh "$root/runtime/scripts/battlegroup-identity.sh"
 
   cat > "$root/.env" <<EOF
 SERVER_TITLE="Test Server"
