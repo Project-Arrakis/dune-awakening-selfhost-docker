@@ -4,55 +4,37 @@ set -euo pipefail
 # Age-based secrets management for dune-awakening-selfhost-docker.
 #
 # Implements envelope encryption (age identity -> KEK -> per-secret DEK)
-# for at-rest secrets. This is stage 1 (library only, no callers yet)
-# of a multi-PR rollout split out of a larger, rejected upstream PR --
-# operator-facing install/usage documentation will be introduced in a
-# later stage alongside the first real caller, not written upfront for
-# functionality that doesn't exist yet in this narrower scope. Key
-# design decisions this file embodies:
+# for at-rest secrets. Meant to be sourced (like host-paths.sh,
+# runtime-env.sh), not executed directly. Credential-agnostic: nothing
+# here references any specific secret by name -- per-secret wiring
+# lives in runtime-env.sh and its callers, added incrementally. This
+# is stage 1 (library only, no callers yet) of a multi-PR rollout; see
+# docs/security/secrets-library-eight-hats-findings-register.md for
+# the full audit history behind the design decisions below.
 #
-#   - The ciphertext format (current version: enc:v2:) is produced and
-#     consumed via runtime/scripts/lib/secrets_aead.py (Python's
-#     AESGCM), not via `age` or `openssl enc` directly. age's job ends
-#     the moment the KEK is decrypted (load_kek, below) -- it never
-#     touches the enc:v2: payload itself. This separation is
-#     deliberate; do not "simplify" by routing payload encryption
-#     through age (age's own on-disk format has no relationship to raw
-#     AES-GCM iv+tag+ciphertext framing, and this repo's only other
-#     available crypto tool, `openssl enc`, is permanently incapable of
-#     AES-GCM: confirmed directly via `openssl enc -aes-256-gcm`, which
-#     reports "AEAD ciphers not supported" -- a permanent upstream
-#     policy, not a version gap).
-#   - Any secret WRITE must follow write-temp -> fsync -> atomic-rename
-#     -> write-marker-the-same-way ordering (write_secret, below) so a
-#     process kill mid-write cannot produce a torn state.
-#   - Migration to this mechanism is strictly opt-in, never automatic.
-#     This file's read path (read_secret, below) transparently falls
-#     back to the existing flat-file convention (runtime/secrets/*.txt)
-#     whenever DUNE_KEK_FILE/DUNE_AGE_IDENTITY_FILE are not both set --
-#     every existing operator sees zero behavior change unless they
-#     explicitly opt in. A dedicated CLI command to automate the manual
-#     opt-in steps is a natural follow-on, not yet implemented.
-#
-# This file is a library, meant to be sourced (like host-paths.sh,
-# runtime-env.sh), not executed directly. It is deliberately
-# credential-agnostic: nothing in this file references any specific
-# secret by name. Per-secret wiring (which script reads which secret,
-# via which resolver) lives in runtime-env.sh and its callers, added
-# incrementally in separate, focused changes rather than all at once.
-# This library has no callers as of this stage -- see this repo's own
-# issue/PR history for the current status of later stages wiring up
-# individual secrets.
+# Key design decisions:
+#   - Ciphertext (enc:v2:) is produced/consumed via secrets_aead.py
+#     (Python's AESGCM), not `age`/`openssl enc` directly. `age`'s job
+#     ends once the KEK is decrypted (load_kek, below). `openssl enc`
+#     cannot do AEAD ciphers at all (permanent upstream policy, not a
+#     version gap) and `age`'s own format doesn't match our raw
+#     iv+tag+ciphertext framing -- do not "simplify" by routing
+#     payload encryption through either.
+#   - Every secret WRITE follows write-temp -> fsync -> atomic-rename
+#     -> write-marker (write_secret, below) so a process kill mid-write
+#     cannot produce a torn state.
+#   - Migration is strictly opt-in. read_secret (below) transparently
+#     falls back to the legacy flat-file convention
+#     (runtime/secrets/*.txt) whenever DUNE_KEK_FILE/
+#     DUNE_AGE_IDENTITY_FILE aren't both set -- zero behavior change
+#     for any operator who doesn't opt in.
 
 DUNE_SECRETS_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DUNE_SECRETS_AEAD_PY="$DUNE_SECRETS_LIB_DIR/secrets_aead.py"
 
-# Cache for the decrypted KEK, scoped to this process only. Never
-# written back to disk -- decrypting it fresh on every process
-# invocation is a deliberate design choice, not an oversight: a KEK
-# cached to disk would defeat much of the point of encrypting it in
-# the first place. Bash has no true private module state, so this is
-# a global; callers must not read/write it directly, only through
+# In-process-only cache for the decrypted KEK (deliberately never
+# written to disk). Bash has no private module state, so this is a
+# global; callers must not read/write it directly, only through
 # dune_secrets_* functions below.
 _DUNE_KEK_HEX=""
 _DUNE_KEK_LOADED=0
@@ -70,13 +52,16 @@ dune_secrets_backend_configured() {
 
 # dune_secrets_load_kek
 #   Decrypts the KEK from DUNE_KEK_FILE using DUNE_AGE_IDENTITY_FILE,
-#   caches it in-process (never written to disk), and prints it as a
-#   64-hex-char string to stdout. Returns 1 (and prints nothing) if the
-#   backend isn't configured, the age binary is missing, the identity
-#   is wrong, or the KEK file is corrupted -- a deliberate "fail soft,
-#   let the caller decide" behavior, since a hard failure here would
-#   need to be caught by every single caller individually rather than
-#   centrally.
+#   caches it in-process, and prints it as a 64-hex-char string to
+#   stdout. Returns 1 (prints nothing) if the backend isn't configured,
+#   `age` is missing, the identity is wrong, or the KEK file is
+#   corrupted -- callers decide how to handle failure, not this
+#   function.
+#
+#   MUST be called as a plain statement (not via $(...)) by any caller
+#   that wants the cache to actually work -- command substitution forks
+#   a subshell, so cache writes never propagate back. See
+#   dune_secrets_write_secret below for the call pattern to copy.
 dune_secrets_load_kek() {
   if [ "$_DUNE_KEK_LOADED" -eq 1 ]; then
     if [ -n "$_DUNE_KEK_HEX" ]; then
@@ -130,18 +115,12 @@ dune_secrets_generate_dek() {
 
 # _dune_secrets_aead_encrypt <key-hex> <plaintext>
 # _dune_secrets_aead_decrypt <key-hex> <payload-b64>
-#   Thin wrappers around secrets_aead.py that pass the key and
-#   plaintext/payload via STDIN, never as command-line arguments.
-#
-#   This is load-bearing, not a style choice: passing either value as
-#   argv would make it fully visible to any local user or process able
-#   to read /proc for the entire lifetime of the python3 process, via
-#   /proc/<pid>/cmdline -- the exact vulnerability class
-#   (GHSA-fc89-h24v-6j3x) this whole feature exists to eliminate, just
-#   relocated from Docker's `-e`/`docker inspect` exposure to a CLI
-#   argv exposure. `printf` below is a shell BUILTIN (confirmed via
-#   `type printf`), not a separate process -- so nothing here ever
-#   writes secret material to any process's own argv at any point.
+#   Thin wrappers around secrets_aead.py, passing key and
+#   plaintext/payload via STDIN only -- never as argv (argv would be
+#   visible for the process's lifetime via /proc/<pid>/cmdline, the
+#   same exposure class, GHSA-fc89-h24v-6j3x, this feature exists to
+#   eliminate). `printf` is a shell builtin, not a separate process, so
+#   nothing here ever touches any process's argv.
 _dune_secrets_aead_encrypt() {
   local key_hex="$1"
   local plaintext="$2"
@@ -155,29 +134,21 @@ _dune_secrets_aead_decrypt() {
 }
 
 # _dune_secrets_validate_name <name>
-#   Every public function taking a <name> parameter (dune_secrets_encrypted_path,
+#   Every function taking a <name> parameter (dune_secrets_encrypted_path,
 #   dune_secrets_migration_marker_path, and therefore write_secret/
 #   read_encrypted/read_secret which call them) MUST validate <name>
 #   through this function before using it to build a filesystem path.
 #
 #   SECURITY: <name> is attacker-influenced the moment any future
-#   caller derives it from anything less than a hardcoded literal --
-#   this library is explicitly designed for many future callers, not
-#   just the ones that exist today. Without this check, a <name> of
-#   e.g. "../../../../tmp/evil" causes dune_secrets_encrypted_path to
-#   print a path escaping runtime/secrets/ entirely, and
-#   _dune_secrets_atomic_write (which has no path-containment check of
-#   its own) will happily write attacker-directed content there.
-#   Confirmed exploitable during a Layer 2 security-hat audit before
-#   this ever shipped. Restricting <name> to a conservative allow-list
-#   (lowercase letters, digits, and hyphens only, matching every real
-#   secret name already in use, e.g. "funcom-token",
-#   "server-login-password-secret") closes both the path-traversal
-#   vector and, as a side effect, blocks the characters (quotes,
-#   parens, semicolons) that made the separate RCE finding in
-#   _dune_secrets_atomic_write's fsync helper exploitable via this same
-#   parameter. Fix that vulnerability too, but keep this check as
-#   defense in depth -- do not rely on one fix alone.
+#   caller derives it from less than a hardcoded literal. Restricting
+#   it to a conservative allow-list (lowercase letters, digits, single
+#   hyphens -- matching every real secret name in use, e.g.
+#   "funcom-token") closes both path traversal (a name like
+#   "../../../etc/evil" escaping runtime/secrets/) and, as a side
+#   effect, the RCE vector below (quotes/parens/semicolons in <name>
+#   reaching a subprocess). Keep this as defense in depth even though
+#   the RCE itself is also fixed independently -- do not rely on one
+#   fix alone.
 _dune_secrets_validate_name() {
   local name="$1"
   if [[ ! "$name" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
@@ -210,23 +181,16 @@ dune_secrets_migration_marker_path() {
 }
 
 # dune_secrets_render_plaintext_file <path> <content> [<mode>]
-#   Writes <content> to <path> as a plain (non-atomic-write) file,
-#   intended for short-lived, bind-mount-source renders (e.g. a
-#   container's own credential file convention) -- NOT for the
-#   age-encrypted .enc secret store itself, which must use
-#   _dune_secrets_atomic_write below instead.
+#   Writes <content> to <path> as a plain (non-atomic-write) file, for
+#   short-lived, bind-mount-source renders -- NOT for the age-encrypted
+#   .enc secret store itself, which must use _dune_secrets_atomic_write
+#   below instead.
 #
-#   Defends against a real, reproduced production incident: if <path>
-#   already exists but is NOT a regular file (e.g. a stray directory,
-#   which Docker itself can leave behind at a bind-mount source path
-#   under some failure conditions), a naive
-#   `rm -f` silently fails to remove it and exits non-zero, which
-#   under `set -euo pipefail` aborts the CALLING script before it ever
-#   reaches `docker run` -- causing a real outage of whatever
-#   container depends on this render, confirmed live. This function
-#   instead logs a loud, explicit warning and self-heals via `rm -rf`
-#   for that specific case, so a future caller of this pattern doesn't
-#   need to remember this lesson independently.
+#   Self-heals if <path> already exists but is NOT a regular file (a
+#   stray directory Docker can leave behind at a bind-mount source
+#   under some failure conditions) -- a plain `rm -f` would silently
+#   fail on that and abort the caller under `set -euo pipefail`,
+#   reproduced live as a real production outage.
 dune_secrets_render_plaintext_file() {
   local path="$1"
   local content="$2"
@@ -243,16 +207,10 @@ dune_secrets_render_plaintext_file() {
   dir="$(dirname "$path")"
   mkdir -p "$dir"
 
-  # SECURITY/CORRECTNESS: umask is process-global, not scoped to this
-  # function or file. An earlier draft set `umask 077` here with no
-  # restore -- since this file is sourced (not executed in a subshell),
-  # that permanently changed the CALLING script's umask for its entire
-  # remaining execution the moment this function was called once,
-  # silently affecting every unrelated file/directory the caller
-  # creates afterward. Confirmed live during a Layer 2 audit before
-  # this ever shipped (a file created after calling this function
-  # unexpectedly inherited mode 600 instead of the caller's own
-  # default). Save and restore the caller's umask explicitly instead.
+  # umask is process-global, not scoped to this function. Since this
+  # file is sourced (not run in a subshell), an unrestored `umask 077`
+  # would permanently change the CALLING script's umask for the rest
+  # of its execution -- save and restore explicitly.
   local old_umask
   old_umask="$(umask)"
   umask 077
@@ -264,25 +222,15 @@ dune_secrets_render_plaintext_file() {
 
 # _dune_secrets_atomic_write <final-path> <content> [<mode>]
 #   Writes <content> to <final-path> via write-to-temp -> fsync ->
-#   atomic rename -- the exact discipline needed to avoid a torn state
-#   where a migration marker exists but the underlying secret file
-#   doesn't, or vice versa. <mode> defaults to 0600 (never
-#   world/group-readable) unless overridden.
-#   Returns 1 (final path untouched, no torn state) if any step fails --
-#   mkdir, mktemp, the content write, chmod, fsync, or the final
-#   rename. Every step's exit status is checked explicitly rather than
-#   assumed to succeed: an earlier draft of this function had none of
-#   these checks, meaning a failure partway through (e.g. a full disk
-#   during the content write, or mktemp failing because $dir doesn't
-#   exist/isn't writable) was silently swallowed -- the function
-#   returned 0 regardless, and callers like dune_secrets_write_secret
-#   had no way to detect that the secret was never actually written.
-#   Confirmed via direct reproduction during a Layer 3 integration
-#   audit: a broken encryption backend caused this function to report
-#   success while writing empty/malformed content to the real secret
-#   path, silently destroying the original plaintext with no signal to
-#   the caller. Fixed by checking every step and cleaning up any
-#   partial temp file on failure.
+#   atomic rename, so a torn state (e.g. a migration marker existing
+#   without its secret file, or vice versa) can never occur. <mode>
+#   defaults to 0600.
+#   Returns 1 (final path untouched) if ANY step fails -- mkdir,
+#   mktemp, the content write, chmod, fsync, or the rename. Every
+#   step's exit status is checked explicitly and any partial temp file
+#   is cleaned up on failure; do not relax this to "assume success" --
+#   a prior draft without these checks silently reported success while
+#   destroying the original plaintext on a failed write.
 _dune_secrets_atomic_write() {
   local final_path="$1"
   local content="$2"
@@ -322,16 +270,11 @@ _dune_secrets_atomic_write() {
   # ordering guarantee relative to the following rename).
   #
   # SECURITY: $tmp_path is passed as a real argv element (sys.argv[1]),
-  # never interpolated into the Python source string. An earlier draft
-  # of this function built the path directly into the "-c" script text
-  # (e.g. os.open('$tmp_path', ...)) -- a secret `name` (which flows
-  # into $final_path/$tmp_path via callers like dune_secrets_write_secret)
-  # containing a single quote and Python syntax would have executed
-  # arbitrary code in that draft. Confirmed exploitable during a Layer 2
-  # security-hat audit before this ever shipped; fixed here by passing
-  # the path as an argument Python receives as a plain string, never as
-  # code it parses. Never revert to string-interpolating a caller-
-  # influenced value into this (or any) -c script.
+  # never interpolated into the Python source string -- a secret name
+  # containing a single quote + Python syntax would otherwise execute
+  # arbitrary code (confirmed exploitable in an earlier draft). Never
+  # revert to string-interpolating a caller-influenced value into this
+  # (or any) -c script.
   if command -v python3 >/dev/null 2>&1; then
     if ! python3 -c '
 import os, sys
@@ -378,37 +321,20 @@ dune_secrets_write_secret() {
     return 1
   fi
 
-  # Call dune_secrets_load_kek as a PLAIN STATEMENT here, not via
-  # $(...) command substitution -- command substitution forks a
-  # subshell, and this function's in-process cache (_DUNE_KEK_HEX/
-  # _DUNE_KEK_LOADED) is a real global that only that forked subshell
-  # would ever see updated; the calling shell's own copy is never
-  # touched, so the cache silently never took effect for any real
-  # caller. Confirmed via direct reproduction during a Layer 3
-  # integration audit: migrating N secrets in one script run
-  # previously cost N full `age --decrypt` invocations instead of the
-  # single decrypt the design intends, with no error, just needless
-  # repeated work. Calling it directly here lets it populate the
-  # actual calling shell's cache; the decrypted value is then read
-  # from that same global rather than re-captured via a second
-  # subshell-forking substitution.
+  # Plain statement, not $(...) -- see dune_secrets_load_kek's own
+  # comment above for why command substitution silently defeats the
+  # in-process KEK cache.
   if ! dune_secrets_load_kek >/dev/null; then
     echo "dune secrets: cannot write '$name' -- KEK backend not configured or unavailable." >&2
     return 1
   fi
   local kek="$_DUNE_KEK_HEX"
 
-  # Every step below has its exit status checked explicitly, not
-  # assumed -- confirmed via a Layer 3 integration audit that an
-  # earlier draft of this function silently reported success (return
-  # 0) even when DEK generation or encryption failed, writing an
-  # empty/malformed enc:v2:1:: line to the real secret path and
-  # marking migration complete, while the original plaintext was
-  # never persisted anywhere. That failure mode is exactly what every
-  # check below exists to prevent: a transient failure here (a missing
-  # cryptography package, disk pressure, a future bug in
-  # secrets_aead.py) must abort loudly, not destroy the secret while
-  # claiming success.
+  # Every step below has its exit status checked explicitly -- do not
+  # relax this. A prior draft silently reported success even when DEK
+  # generation or encryption failed, writing a malformed enc:v2:1::
+  # line and discarding the original plaintext with no signal to the
+  # caller.
   local dek
   if ! dek="$(dune_secrets_generate_dek)"; then
     echo "dune secrets: could not generate a data-encryption key for '$name'." >&2
