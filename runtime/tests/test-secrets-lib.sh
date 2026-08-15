@@ -68,8 +68,17 @@ value="$(dune_secrets_read_encrypted "test-secret")"
 [ -f "runtime/generated/.secrets-migrated/test-secret.done" ] || fail "expected the per-secret migration marker to exist after write_secret"
 
 # --- Test 4: wrong age identity actually reaches and fails
-# dune_secrets_load_kek's age --decrypt call, and read_secret falls
-# back to the legacy flat file.
+# dune_secrets_load_kek's age --decrypt call, and read_secret FAILS
+# CLOSED (does NOT fall back to the legacy flat file) once a .enc file
+# already exists for this secret.
+#
+# This is a deliberate behavior change from an earlier version of this
+# library, which fell back to the legacy plaintext file on ANY
+# decryption failure, including one caused by a wrong/corrupted .enc
+# file for an already-migrated secret -- silently returning stale
+# plaintext with no indication anything was wrong, defeating the point
+# of migrating the secret at all. Legacy fallback is now correct only
+# for a secret that has never been migrated (see Test 6 below).
 #
 # The secret must be written under the CORRECT identity first, then
 # read back under the WRONG one -- reading a secret whose .enc file
@@ -96,8 +105,11 @@ if dune_secrets_load_kek >/dev/null 2>&1; then
 fi
 _DUNE_KEK_LOADED=0
 _DUNE_KEK_HEX=""
-fallback_value="$(dune_secrets_read_secret "$wrong_identity_secret_test_target" "runtime/secrets/${wrong_identity_secret_test_target}.txt")"
-[ "$fallback_value" = "legacy-plaintext-value" ] || fail "expected fallback to the legacy flat file when the age identity is wrong, got '$fallback_value'"
+fail_closed_stdout="$test_root/fail-closed-stdout.txt"
+if dune_secrets_read_secret "$wrong_identity_secret_test_target" "runtime/secrets/${wrong_identity_secret_test_target}.txt" >"$fail_closed_stdout" 2>/dev/null; then
+  fail "expected dune_secrets_read_secret to fail closed (non-zero exit) once a .enc file exists but fails to decrypt, but it succeeded"
+fi
+[ ! -s "$fail_closed_stdout" ] || fail "expected no stdout output when failing closed, got '$(cat "$fail_closed_stdout")'"
 
 mkdir -p runtime/secrets
 printf 'legacy-plaintext-value' > runtime/secrets/legacy-only.txt
@@ -270,5 +282,94 @@ dune_secrets_render_plaintext_file "$test_root/umask-probe-file" "probe-content"
 umask_after_render="$(umask)"
 [ "$umask_before_render" = "$umask_after_render" ] \
   || fail "expected dune_secrets_render_plaintext_file to leave the caller's umask unchanged (was $umask_before_render, now $umask_after_render)"
+
+# --- Test 14: dune_secrets_read_secret's KEK cache actually works
+# THROUGH the public function real callers use, not just through the
+# lower-level functions in isolation -- direct regression coverage for
+# a real upstream review finding: dune_secrets_read_secret invoked
+# dune_secrets_read_encrypted via $(...) command substitution, which
+# forks a subshell; that subshell's own cache population never
+# propagated back to the calling shell, so N calls to
+# dune_secrets_read_secret cost N real `age --decrypt` invocations even
+# though the lower-level cache was already correct in isolation. Counts
+# real `age` invocations via a PATH-shadowing wrapper around the real
+# `age` binary, calling dune_secrets_read_secret 5 times in the SAME
+# shell (the realistic scenario: one script instance reading several
+# secrets in sequence). ---
+age_call_counter_dir="$test_root/age-call-counter"
+mkdir -p "$age_call_counter_dir"
+age_call_log="$age_call_counter_dir/calls.log"
+: > "$age_call_log"
+real_age_path="$(command -v age)"
+cat > "$age_call_counter_dir/age" <<EOF
+#!/usr/bin/env bash
+echo "call" >> "$age_call_log"
+exec "$real_age_path" "\$@"
+EOF
+chmod +x "$age_call_counter_dir/age"
+
+_DUNE_KEK_LOADED=0
+_DUNE_KEK_HEX=""
+(
+  export PATH="$age_call_counter_dir:$PATH"
+  for _ in 1 2 3 4 5; do
+    dune_secrets_read_secret "test-secret" "runtime/secrets/test-secret.txt" >/dev/null
+  done
+)
+age_call_count="$(wc -l < "$age_call_log" | tr -d ' ')"
+[ "$age_call_count" -eq 1 ] || fail "expected exactly 1 real 'age' invocation across 5 dune_secrets_read_secret calls in the same shell (KEK cache should make calls 2-5 free), got $age_call_count"
+echo "PASS: dune_secrets_read_secret's KEK cache works through the public function (1 age call for 5 reads)"
+
+# --- Test 15: AAD binding rejects a complete-payload swap between two
+# DIFFERENT secrets' .enc files -- direct regression coverage for a
+# real upstream review finding: without binding the secret name into
+# the AEAD authentication tag, copying secret A's entire, otherwise-
+# valid .enc file content over secret B's .enc path would still
+# authenticate successfully (same KEK, same DEK-wrap format), silently
+# serving A's value under B's name. ---
+_DUNE_KEK_LOADED=0
+_DUNE_KEK_HEX=""
+dune_secrets_write_secret "aad-swap-secret-a" "value-belonging-to-secret-a"
+_DUNE_KEK_LOADED=0
+_DUNE_KEK_HEX=""
+dune_secrets_write_secret "aad-swap-secret-b" "value-belonging-to-secret-b"
+
+# Swap: overwrite B's .enc file with A's complete .enc file content.
+cp "runtime/secrets/aad-swap-secret-a.enc" "runtime/secrets/aad-swap-secret-b.enc"
+
+_DUNE_KEK_LOADED=0
+_DUNE_KEK_HEX=""
+if dune_secrets_read_encrypted "aad-swap-secret-b" >/dev/null 2>&1; then
+  fail "expected reading 'aad-swap-secret-b' after an .enc-file swap with 'aad-swap-secret-a' to fail (AAD mismatch), but it succeeded"
+fi
+echo "PASS: AAD binding rejects a complete-payload swap between two different secrets' .enc files"
+
+# --- Test 16: the parent directory is actually fsync'd after
+# publishing an atomic write, not just the file's own content --
+# direct coverage for a real upstream review finding: fsync'ing only
+# the temp file's content before rename does not guarantee the RENAME
+# itself is durably recorded in the parent directory across a crash;
+# the directory itself must also be fsync'd. Skips cleanly if strace
+# isn't available. ---
+if command -v strace >/dev/null 2>&1; then
+  dir_fsync_target="$test_root/dir-fsync-secret.enc"
+  dir_fsync_strace_log="$test_root/dir-fsync.strace"
+  strace -f -e trace=fsync,fdatasync -o "$dir_fsync_strace_log" \
+    bash -c "source '$repo_root/runtime/scripts/lib/secrets.sh'; _dune_secrets_atomic_write '$dir_fsync_target' 'dir-fsync-content' 600" \
+    2>/dev/null || true
+
+  # Expect at least 2 distinct fsync calls: one for the temp file's
+  # content, one for the parent directory. Counting fsync syscalls
+  # (not just checking >=1) is what actually distinguishes "content
+  # fsync only" from "content fsync AND directory fsync" -- a single
+  # fsync call would satisfy a weaker ">= 1" assertion without
+  # providing the directory-durability guarantee this test exists to
+  # confirm.
+  dir_fsync_call_count="$(grep -cE '(fsync|fdatasync)\(' "$dir_fsync_strace_log" 2>/dev/null || true)"
+  [ "${dir_fsync_call_count:-0}" -ge 2 ] || fail "expected at least 2 fsync/fdatasync syscalls (temp file content + parent directory), got ${dir_fsync_call_count:-0} -- see $dir_fsync_strace_log"
+  echo "PASS: parent directory is fsync'd after publishing an atomic write, not just the file's content"
+else
+  echo "SKIP: strace not available -- skipping direct parent-directory fsync verification (Test 16)"
+fi
 
 echo "All secrets.sh library tests passed."

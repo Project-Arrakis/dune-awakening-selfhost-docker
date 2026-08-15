@@ -8,9 +8,11 @@ set -euo pipefail
 # runtime-env.sh), not executed directly. Credential-agnostic: nothing
 # here references any specific secret by name -- per-secret wiring
 # lives in runtime-env.sh and its callers, added incrementally. This
-# is stage 1 (library only, no callers yet) of a multi-PR rollout; see
-# docs/security/secrets-library-eight-hats-findings-register.md for
-# the full audit history behind the design decisions below.
+# is stage 1 (library only, no callers yet) of a multi-PR rollout. The
+# full internal audit history behind the design decisions below is
+# maintained in this project's own fork-internal tracking (not part of
+# this upstream diff); the design rationale itself is captured inline
+# in the comments below instead of by reference to that external doc.
 #
 # Key design decisions:
 #   - Ciphertext (enc:v2:) is produced/consumed via secrets_aead.py
@@ -113,24 +115,32 @@ dune_secrets_generate_dek() {
   python3 "$DUNE_SECRETS_AEAD_PY" generate-key
 }
 
-# _dune_secrets_aead_encrypt <key-hex> <plaintext>
-# _dune_secrets_aead_decrypt <key-hex> <payload-b64>
-#   Thin wrappers around secrets_aead.py, passing key and
-#   plaintext/payload via STDIN only -- never as argv (argv would be
-#   visible for the process's lifetime via /proc/<pid>/cmdline, the
-#   same exposure class, GHSA-fc89-h24v-6j3x, this feature exists to
-#   eliminate). `printf` is a shell builtin, not a separate process, so
-#   nothing here ever touches any process's argv.
+# _dune_secrets_aead_encrypt <key-hex> <plaintext> <aad>
+# _dune_secrets_aead_decrypt <key-hex> <payload-b64> <aad>
+#   Thin wrappers around secrets_aead.py, passing key, plaintext/payload,
+#   and AAD via STDIN only -- never as argv (argv would be visible for
+#   the process's lifetime via /proc/<pid>/cmdline, the same exposure
+#   class, GHSA-fc89-h24v-6j3x, this feature exists to eliminate).
+#   `printf` is a shell builtin, not a separate process, so nothing here
+#   ever touches any process's argv.
+#
+#   <aad> binds context (secret name + format version) into the AEAD
+#   auth tag without encrypting it -- see secrets_aead.py's own AAD
+#   note for why: without this, a complete .enc file could be copied
+#   over a different secret's .enc file and still authenticate
+#   successfully under the wrong name.
 _dune_secrets_aead_encrypt() {
   local key_hex="$1"
   local plaintext="$2"
-  printf '%s\n%s\n' "$key_hex" "$plaintext" | python3 "$DUNE_SECRETS_AEAD_PY" encrypt
+  local aad="${3:-}"
+  printf '%s\n%s\n%s\n' "$key_hex" "$aad" "$plaintext" | python3 "$DUNE_SECRETS_AEAD_PY" encrypt
 }
 
 _dune_secrets_aead_decrypt() {
   local key_hex="$1"
   local payload_b64="$2"
-  printf '%s\n%s\n' "$key_hex" "$payload_b64" | python3 "$DUNE_SECRETS_AEAD_PY" decrypt
+  local aad="${3:-}"
+  printf '%s\n%s\n%s\n' "$key_hex" "$aad" "$payload_b64" | python3 "$DUNE_SECRETS_AEAD_PY" decrypt
 }
 
 # _dune_secrets_validate_name <name>
@@ -293,6 +303,31 @@ os.close(fd)
     rm -f -- "$tmp_path"
     return 1
   fi
+
+  # Sync the PARENT DIRECTORY's own metadata after the rename, not just
+  # the file's content before it. On most POSIX filesystems, a rename(2)
+  # is only durably recorded in the directory entry once the directory
+  # itself is fsync'd -- without this, a crash immediately after a
+  # successful rename can, on some filesystems/mount options, leave the
+  # directory entry pointing at the OLD (pre-rename) name or nothing at
+  # all after recovery, even though the file's own content (fsync'd
+  # above) survives intact. This is required for the "power-loss
+  # durability" claim in this function's own header comment to actually
+  # hold -- syncing the file's content alone only guarantees the DATA
+  # survives, not that the RENAME that publishes it under its final name
+  # does. Not fatal if it fails (the file itself is still correctly
+  # published; only the directory-entry-durability guarantee weakens),
+  # so this failure is logged, not treated as an atomic-write failure.
+  if command -v python3 >/dev/null 2>&1; then
+    if ! python3 -c '
+import os, sys
+fd = os.open(sys.argv[1], os.O_RDONLY)
+os.fsync(fd)
+os.close(fd)
+' "$dir" 2>/dev/null; then
+      echo "dune secrets: warning: could not fsync parent directory '$dir' after publishing '$final_path' -- the file itself is correctly written, but directory-entry durability across a crash is weaker than intended." >&2
+    fi
+  fi
 }
 
 # dune_secrets_write_secret <name> <plaintext>
@@ -341,12 +376,19 @@ dune_secrets_write_secret() {
     return 1
   fi
 
+  # AAD binds the format version and secret name into both AEAD auth
+  # tags below, without encrypting them -- see _dune_secrets_aead_encrypt's
+  # own comment for why. Must be byte-identical to what
+  # dune_secrets_read_encrypted computes on the read side, or every
+  # legitimately-written secret would fail to decrypt.
+  local aad="enc:v2:1:$name"
+
   local wrapped_dek ciphertext
-  if ! wrapped_dek="$(_dune_secrets_aead_encrypt "$kek" "$dek")"; then
+  if ! wrapped_dek="$(_dune_secrets_aead_encrypt "$kek" "$dek" "$aad")"; then
     echo "dune secrets: could not wrap the data-encryption key for '$name'." >&2
     return 1
   fi
-  if ! ciphertext="$(_dune_secrets_aead_encrypt "$dek" "$plaintext")"; then
+  if ! ciphertext="$(_dune_secrets_aead_encrypt "$dek" "$plaintext" "$aad")"; then
     echo "dune secrets: could not encrypt the value for '$name'." >&2
     return 1
   fi
@@ -399,19 +441,26 @@ dune_secrets_read_encrypted() {
     return 1
   fi
 
-  local rest wrapped_dek ciphertext
+  local rest key_version wrapped_dek ciphertext
   rest="${line#enc:v2:}"
-  rest="${rest#*:}"           # drop the key-version field (currently always "1")
+  key_version="${rest%%:*}"    # currently always "1"
+  rest="${rest#*:}"
   wrapped_dek="${rest%%:*}"
   ciphertext="${rest#*:}"
 
+  # Must be byte-identical to dune_secrets_write_secret's own AAD
+  # construction, using the key_version actually read from this file
+  # (not a hardcoded "1") so a real future key-version bump doesn't
+  # silently break every already-written secret's AAD binding.
+  local aad="enc:v2:${key_version}:$name"
+
   local dek
-  if ! dek="$(_dune_secrets_aead_decrypt "$kek" "$wrapped_dek" 2>/dev/null)"; then
-    echo "dune secrets: failed to unwrap DEK for '$name' -- wrong KEK or corrupted $enc_path." >&2
+  if ! dek="$(_dune_secrets_aead_decrypt "$kek" "$wrapped_dek" "$aad" 2>/dev/null)"; then
+    echo "dune secrets: failed to unwrap DEK for '$name' -- wrong KEK, corrupted $enc_path, or the payload belongs to a different secret." >&2
     return 1
   fi
 
-  _dune_secrets_aead_decrypt "$dek" "$ciphertext"
+  _dune_secrets_aead_decrypt "$dek" "$ciphertext" "$aad"
 }
 
 # dune_secrets_read_secret <name> <legacy-flat-file-path>
@@ -430,23 +479,58 @@ dune_secrets_read_secret() {
   local name="$1"
   local legacy_path="$2"
 
-  local value
+  # Plain statement, called BEFORE dune_secrets_read_encrypted below --
+  # not because this function needs the KEK value itself, but because
+  # dune_secrets_read_encrypted is invoked via $(...) command
+  # substitution a few lines down, which forks a subshell. Populating
+  # the cache here, in the real calling shell, means that subshell
+  # inherits an already-loaded _DUNE_KEK_HEX/_DUNE_KEK_LOADED, so ITS
+  # OWN internal (already-correct) plain-statement call to
+  # dune_secrets_load_kek short-circuits on the cache instead of
+  # invoking `age` again. Without this, every single call to this
+  # function -- the one real callers actually use -- forked a fresh
+  # subshell whose cache population was immediately discarded on exit,
+  # so N calls to read_secret cost N age invocations regardless of the
+  # lower-level caching already being correct in isolation. Confirmed
+  # via the regression test below, which counts real `age` invocations
+  # through THIS function specifically, not just the lower-level ones.
   if dune_secrets_backend_configured; then
+    dune_secrets_load_kek >/dev/null || true
+  fi
+
+  # SECURITY: once this secret has been migrated (its .enc file exists),
+  # a decryption failure (wrong KEK, corrupted ciphertext, mismatched
+  # AAD) must fail CLOSED -- return 1, print nothing -- rather than
+  # silently falling back to whatever plaintext still happens to sit at
+  # <legacy_path>. Falling back here would mean a corrupted or
+  # tampered .enc file is invisible to the caller: the operator sees a
+  # value returned successfully (the stale legacy plaintext) with no
+  # indication anything is wrong, defeating the entire point of
+  # encrypting this secret in the first place. Legacy fallback is only
+  # ever correct for a secret that has genuinely never been migrated
+  # (no .enc file exists yet) -- that is the only case checked below
+  # before falling back.
+  local enc_path=""
+  if dune_secrets_backend_configured; then
+    enc_path="$(dune_secrets_encrypted_path "$name" 2>/dev/null || true)"
+  fi
+
+  local value
+  if [ -n "$enc_path" ] && [ -r "$enc_path" ]; then
     # Deliberately NOT redirecting stderr to /dev/null here (an earlier
     # version of this function did, and it silently swallowed every
     # diagnostic from dune_secrets_load_kek/dune_secrets_read_encrypted
     # -- wrong age identity, corrupted KEK, malformed .enc file --
     # making it impossible for an operator to tell "not migrated yet"
-    # apart from "migrated, but something is actually broken." The one
-    # case that must stay quiet (the .enc file simply not existing yet,
-    # e.g. before `dune secrets setup` has run for this secret) is
-    # handled by dune_secrets_read_encrypted's own `[ -r "$enc_path" ]`
-    # check returning 1 with no message at all -- there is no stderr
-    # output to suppress in that specific case.
+    # apart from "migrated, but something is actually broken."
     if value="$(dune_secrets_read_encrypted "$name")"; then
       printf '%s' "$value"
       return 0
     fi
+    # .enc file exists but failed to decrypt -- fail closed, do NOT
+    # fall through to the legacy plaintext file below.
+    echo "dune secrets: '$name' has a migrated .enc file that failed to decrypt -- refusing to fall back to a potentially stale legacy plaintext file. Fix the KEK/identity or restore the .enc file from backup." >&2
+    return 1
   fi
 
   if [ -r "$legacy_path" ]; then
