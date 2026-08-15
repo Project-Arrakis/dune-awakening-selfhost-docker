@@ -1,13 +1,23 @@
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { statSync } from "node:fs";
-import { runDune, buildDuneArgs } from "./runner.js";
+import { runDune, buildDuneArgs, validateServiceName } from "./runner.js";
 import { liveItemGrantWarning } from "./grantResults.js";
 import { createUpdateCheckCache } from "./services/updateCheckCache.js";
+
+// Operations that leave a map down with the database still reachable, so
+// anything queued for that map can be applied before it comes back up. "stop"
+// is deliberately absent: stop-all.sh removes the Postgres container too, so
+// there is nothing to write to once it finishes. restartServiceStop/
+// sietchesRestartStop (not their Start halves) cover survival/Sietch
+// restarts -- see taskOperations, which splits those into separate stop and
+// start operations so the flush lands between them instead of after both.
+const MAP_DOWN_OPERATIONS = new Set(["mapsDespawn", "restartService", "restartServiceStop", "sietchesRestartStop"]);
 
 export class TaskManager {
   constructor(config, options = {}) {
     this.config = config;
+    this.onMapDown = options.onMapDown || null;
     this.tasks = new Map();
     this.updateCheckCache = options.updateCheckCache || createUpdateCheckCache(config, {
       collect: () => runDune(config, buildDuneArgs("updateCheck"), {
@@ -101,6 +111,7 @@ export class TaskManager {
         const grantWarning = itemGrantTaskWarning(operation, result);
         if (grantWarning) throw Object.assign(new Error(grantWarning), { code: 1, stdout: result.stdout, stderr: result.stderr });
         lastCode = result.code;
+        if (MAP_DOWN_OPERATIONS.has(operation)) await this.flushPendingMapWrites(task, operation);
       }
       if (["updateApply", "updateFixSteamcmd"].includes(task.operation)) {
         this.updateCheckCache.invalidate();
@@ -155,6 +166,29 @@ export class TaskManager {
     task.currentStep = "Update helper started";
     task.finishedAt = new Date().toISOString();
     this.emit(task, "Update helper started. The Web UI may reconnect while the console restarts.");
+  }
+
+  // The background poller in server.js is the general safety net for queued
+  // writes, but a respawn closes its own window -- mapsDespawn is followed
+  // immediately by mapsSpawn -- so flush here rather than hope a tick lands in
+  // between. Never fails the restart: an unreachable database just means the
+  // entries stay queued for the next window.
+  async flushPendingMapWrites(task, operation) {
+    if (!this.onMapDown) return;
+    try {
+      const result = await this.onMapDown(operation);
+      const applied = (result?.flushed || []).filter((entry) => entry.ok);
+      const generators = applied.filter((entry) => entry.refillType !== "water").length;
+      const water = applied.filter((entry) => entry.refillType === "water").length;
+      if (generators) this.append(task, `Applied ${generators} queued generator refill${generators === 1 ? "" : "s"}.`, "stdout");
+      if (water) this.append(task, `Applied ${water} queued water refill${water === 1 ? "" : "s"}.`, "stdout");
+      for (const failure of result?.failures || []) {
+        const label = failure.refillType === "water" ? "water refills" : "generator refills";
+        this.append(task, `Queued ${label} were not applied: ${failure.error || "unknown error"}`, "stderr");
+      }
+    } catch (error) {
+      this.append(task, `Queued generator refills were not applied: ${error?.message || error}`, "stderr");
+    }
   }
 
   append(task, text, stream) {
@@ -274,7 +308,7 @@ function shellQuote(value) {
 }
 
 export function taskTimeoutMs(config, operation) {
-  if (["start", "stop", "restartAll", "restartService", "serverTitle", "serverConfig", "init", "updateApply", "updateFixSteamcmd", "selfUpdateApply", "backupRestore", "storageCleanupImages", "storageCleanupBuildCache", "userSettingsSaveAndRestart", "userSettingsResetAndRestart", "userSettingsRawAndRestart", "mapsApplySettings", "sietchesSetActive", "sietchesRestart", "sietchesReconcile"].includes(operation)) {
+  if (["start", "stop", "restartAll", "restartService", "restartServiceStop", "restartServiceStart", "serverTitle", "serverConfig", "init", "updateApply", "updateFixSteamcmd", "selfUpdateApply", "backupRestore", "storageCleanupImages", "storageCleanupBuildCache", "userSettingsSaveAndRestart", "userSettingsResetAndRestart", "userSettingsRawAndRestart", "mapsApplySettings", "mapsRespawn", "sietchesSetActive", "sietchesRestart", "sietchesRestartStop", "sietchesRestartStart", "sietchesReconcile"].includes(operation)) {
     return Math.max(config.commandTimeoutMs, 30 * 60 * 1000);
   }
   return config.commandTimeoutMs;
@@ -282,6 +316,15 @@ export function taskTimeoutMs(config, operation) {
 
 export function taskOperations(operation, payload = {}) {
   if (operation === "restartAll") return ["stop", "start"];
+  if (operation === "restartService") return restartServiceOperations(payload);
+  // Every Sietch partition is a Survival_1 sub-partition, so this always
+  // splits -- the shell layer resolves primary vs. secondary internally.
+  if (operation === "sietchesRestart") return ["sietchesRestartStop", "sietchesRestartStart"];
+  // The only way to restart a map that is neither Survival_1 nor the Overmap:
+  // those two have managed services, everything else (Deep Desert, the SH_*
+  // hubs) exists only as a spawned partition container. One task so a failed
+  // spawn cannot be mistaken for a completed restart.
+  if (operation === "mapsRespawn") return restartOperations({ restartMode: "respawn", target: payload.target });
   if (operation === "mapsApplySettings") {
     return [
       ...(payload.memoryChanged ? ["memorySetNoRestart"] : []),
@@ -312,10 +355,35 @@ export function taskOperations(operation, payload = {}) {
 function restartOperations(payload = {}) {
   if (payload.restartMode === "none") return [];
   if (payload.restartMode === "stack") return ["stop", "start"];
-  if (payload.restartMode === "service") return ["restartService"];
+  if (payload.restartMode === "service") return restartServiceOperations(payload);
   if (payload.restartMode === "respawn" && payload.mode === "disabled") return [];
   if (payload.restartMode === "respawn") return ["mapsDespawn", "mapsSpawn"];
   return [];
+}
+
+// Survival/Sietches are the only restart targets that host player bases and
+// generators, so only they need the flush window a stop/start split
+// provides -- other services (overmap, gateway, director, text-router)
+// never host bases, so a single combined op is still correct for them. Used
+// both for a direct "Restart Battlegroup" task and for settings-driven
+// restarts routed through restartOperations, so both paths get the fix.
+function restartServiceOperations(payload = {}) {
+  const service = validateServiceName(payload.service);
+  return service === "survival" || service === "survival-1"
+    ? ["restartServiceStop", "restartServiceStart"]
+    : ["restartService"];
+}
+
+const USERSETTINGS_WARNING_PREFIX = "USERSETTINGS_WARNING: ";
+
+// usersettings.py prints one of these lines per Advanced Editor content warning (duplicate
+// keys, PvP/PvE selector overlaps with a toggle, legacy guild-alias overrides) instead of
+// silently dropping the content -- surfaced here as a distinct field so callers can show it
+// without parsing logLines themselves, while logLines keeps the raw line for diagnostics.
+export function taskWarnings(task) {
+  return task.logLines
+    .filter((entry) => entry.line.startsWith(USERSETTINGS_WARNING_PREFIX))
+    .map((entry) => entry.line.slice(USERSETTINGS_WARNING_PREFIX.length));
 }
 
 export function publicTask(task) {
@@ -327,6 +395,7 @@ export function publicTask(task) {
     currentStep: task.currentStep,
     progressMessage: task.progressMessage,
     logLines: task.logLines,
+    warnings: taskWarnings(task),
     startedAt: task.startedAt,
     finishedAt: task.finishedAt,
     exitCode: task.exitCode,

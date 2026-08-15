@@ -20,7 +20,7 @@ type PlayersPanelProps = {
   renderCharacterAdmin: (props: CharacterAdminRenderProps) => ReactNode;
 };
 
-type PlayerStatusFilter = "all" | "online" | "offline";
+type PlayerStatusFilter = "all" | "online" | "offline" | "banned";
 
 const PLAYERS_AUTO_REFRESH_MS = 10_000;
 const PLAYERS_PAGE_SIZES = [25, 50, 100, 200] as const;
@@ -47,6 +47,8 @@ export function PlayersPanel({ onError, renderCharacterAdmin }: PlayersPanelProp
   const [selected, setSelected] = useState<Record<string, unknown> | null>(null);
   const [detail, setDetail] = useState<Record<string, unknown> | null>(null);
   const requestIdRef = useRef(0);
+  const profileRequestIdRef = useRef(0);
+  const selectedPlayerIdRef = useRef("");
   const skipNextSearchReset = useRef(true);
 
   useEffect(() => {
@@ -130,17 +132,57 @@ export function PlayersPanel({ onError, renderCharacterAdmin }: PlayersPanelProp
 
   async function open(row: Record<string, unknown>) {
     const id = String(row.actor_id || row.player_pawn_id || row.id || "");
+    const requestId = ++profileRequestIdRef.current;
+    selectedPlayerIdRef.current = id;
     setSelected(row);
-    setDetail(await playersApi.profile(id));
+    const nextDetail = await playersApi.profile(id);
+    if (profileRequestIdRef.current === requestId && selectedPlayerIdRef.current === id) setDetail(nextDetail);
   }
 
   const dbPlayerId = selected ? String(selected.actor_id || selected.player_pawn_id || selected.id || "") : "";
   const actionPlayerId = selected ? String(selected.action_player_id || selected.funcom_id || selected.fls_id || selected.account_id || "") : "";
+
+  useEffect(() => {
+    if (!dbPlayerId) return undefined;
+    let cancelled = false;
+    let timeoutId: number | undefined;
+
+    const scheduleNext = () => {
+      if (cancelled) return;
+      window.clearTimeout(timeoutId);
+      timeoutId = window.setTimeout(() => { void tick(); }, PLAYERS_AUTO_REFRESH_MS);
+    };
+    const tick = async () => {
+      if (document.visibilityState !== "hidden") {
+        const requestId = ++profileRequestIdRef.current;
+        try {
+          const nextDetail = await playersApi.profile(dbPlayerId);
+          if (!cancelled && profileRequestIdRef.current === requestId && selectedPlayerIdRef.current === dbPlayerId) setDetail(nextDetail);
+        } catch {
+          // Keep the last known profile during a transient database or startup interruption.
+        }
+      }
+      scheduleNext();
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") void tick();
+    };
+
+    scheduleNext();
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeoutId);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [dbPlayerId]);
   const playersEmptyMessage = playerFilter === "online"
     ? "No players are currently online."
     : playerFilter === "offline"
       ? "No offline players were found."
-      : "No players have been found yet.";
+      : playerFilter === "banned"
+        ? "No banned players were found."
+        : "No players have been found yet.";
 
   const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
   const rangeStart = totalCount === 0 ? 0 : page * pageSize + 1;
@@ -174,6 +216,7 @@ export function PlayersPanel({ onError, renderCharacterAdmin }: PlayersPanelProp
               <option value="all">All Players</option>
               <option value="online">Online</option>
               <option value="offline">Offline</option>
+              <option value="banned">Banned</option>
             </select>
           </label>
           <button onClick={() => void load({ q: submittedQ, page, pageSize, status: playerFilter, sortColumn, sortDirection })}>Refresh</button>
@@ -230,15 +273,25 @@ export function PlayersPanel({ onError, renderCharacterAdmin }: PlayersPanelProp
         dbPlayerId,
         actionPlayerId,
         playerName: String(selected.character_name || actionPlayerId || dbPlayerId || "Selected player"),
-        onRefresh: () => { void open(selected); },
-        onClose: () => setSelected(null)
+        onRefresh: () => {
+          void Promise.all([
+            open(selected),
+            load({ q: submittedQ, page, pageSize, status: playerFilter, sortColumn, sortDirection }, { silent: true })
+          ]);
+        },
+        onClose: () => {
+          selectedPlayerIdRef.current = "";
+          profileRequestIdRef.current += 1;
+          setSelected(null);
+          setDetail(null);
+        }
       })}
     </section>
   );
 }
 
 function formatLastOnline(row: Record<string, unknown>) {
-  if (String(row.online_status || "").toLowerCase() === "online") return "Currently Active";
+  if (String(row.actual_online_status || row.online_status || "").toLowerCase() === "online") return "Currently Active";
   const date = parseLastOnline(row.last_seen);
   if (!date) return "Unavailable";
   const absolute = new Intl.DateTimeFormat(undefined, {

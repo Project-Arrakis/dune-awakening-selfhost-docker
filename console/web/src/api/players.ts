@@ -6,7 +6,7 @@ type PlayersListResult = { rows: Record<string, unknown>[]; totalCount: number; 
 const PLAYERS_ALL_PAGE_SIZE = 200;
 
 export const playersApi = {
-  list: (params: { q?: string; page?: number; pageSize?: number; status?: "all" | "online" | "offline"; sortColumn?: string; sortDirection?: "asc" | "desc" } = {}) => {
+  list: (params: { q?: string; page?: number; pageSize?: number; status?: "all" | "online" | "offline" | "banned"; sortColumn?: string; sortDirection?: "asc" | "desc" } = {}) => {
     const search = new URLSearchParams();
     if (params.q) search.set("q", params.q);
     if (params.page !== undefined) search.set("page", String(params.page));
@@ -19,7 +19,7 @@ export const playersApi = {
   },
   // Fetches every matching player (not one UI page) for dropdowns/bulk actions/counts —
   // loops the paginated endpoint since the backend caps a single page at 200 rows.
-  listAll: async (params: { q?: string; status?: "all" | "online" | "offline" } = {}) => {
+  listAll: async (params: { q?: string; status?: "all" | "online" | "offline" | "banned" } = {}) => {
     let page = 0;
     let rows: Record<string, unknown>[] = [];
     let totalCount = 0;
@@ -51,9 +51,7 @@ export const playersApi = {
   events: (playerId: string) => api<Record<string, unknown>>(`/api/players/${encodeURIComponent(playerId)}/events`),
   stats: (playerId: string) => api<Record<string, unknown>>(`/api/players/${encodeURIComponent(playerId)}/stats`),
   history: (playerId: string) => api<Record<string, unknown>>(`/api/players/${encodeURIComponent(playerId)}/history`),
-  giveItem: (playerId: string, body: { itemName: string; quantity: number; durability?: number; quality?: number; grade?: number; augments?: string[]; augmentQuality?: number }) => post<{ task: Task }>(`/api/players/${encodeURIComponent(playerId)}/give-item`, body),
   giveItems: (playerId: string, items: { itemName?: string; itemId?: string; quantity: number; durability?: number; quality?: number; grade?: number; augments?: string[]; augmentQuality?: number }[], options: { historyScope?: string; historyFriendly?: string } = {}) => post<{ ok: boolean; results: Record<string, unknown>[] }>(`/api/players/${encodeURIComponent(playerId)}/give-items`, { items, ...options }),
-  giveTemplate: (playerId: string, template = "scout-ornithopter-mk6") => post<{ task: Task }>(`/api/players/${encodeURIComponent(playerId)}/give-items`, { template }),
   giveItemId: (playerId: string, body: { itemId: string; quantity: number; durability?: number; quality?: number; grade?: number; augments?: string[]; augmentQuality?: number }) => post<{ task: Task }>(`/api/players/${encodeURIComponent(playerId)}/give-item-id`, body),
   addXp: (playerId: string, amount: number) => post<{ task: Task }>(`/api/players/${encodeURIComponent(playerId)}/add-xp`, { amount }),
   setSkillPoints: (playerId: string, points: number) => post<{ task: Task }>(`/api/players/${encodeURIComponent(playerId)}/set-skill-points`, { points }),
@@ -65,6 +63,8 @@ export const playersApi = {
   resetAllSpecializationKeystones: (playerId: string, confirmation: string) => post<{ supported: boolean; result?: Record<string, unknown>; reason?: string }>(`/api/players/${encodeURIComponent(playerId)}/specializations/keystones/reset-all`, { confirmation }),
   refillWater: (playerId: string, amount = 1000000) => post<{ task: Task }>(`/api/players/${encodeURIComponent(playerId)}/refill-water`, { amount }),
   kick: (playerId: string) => post<{ task: Task }>(`/api/players/${encodeURIComponent(playerId)}/kick`),
+  ban: (playerId: string, reason = "") => post<{ ok: boolean; banned: boolean; ban: Record<string, unknown>; enforcement?: Record<string, unknown> }>(`/api/players/${encodeURIComponent(playerId)}/ban`, { confirmation: "BAN PLAYER", reason }),
+  unban: (playerId: string) => api<{ ok: boolean; banned: boolean; wasBanned: boolean }>(`/api/players/${encodeURIComponent(playerId)}/ban`, { method: "DELETE" }),
   repairLoginQueue: (playerId: string, confirmation: string) => post<{ task: Task }>(`/api/players/${encodeURIComponent(playerId)}/repair-login-queue`, { confirmation }),
   teleport: (playerId: string, body: { x: number; y: number; z: number; yaw: number }) => post<{ task: Task }>(`/api/players/${encodeURIComponent(playerId)}/teleport`, body),
   spawnVehicle: (playerId: string, body: { vehicleId: string; template: string; offset: number }) => post<{ task: Task }>(`/api/players/${encodeURIComponent(playerId)}/spawn-vehicle`, body),
@@ -84,7 +84,6 @@ export const playersApi = {
   resetTutorial: (playerId: string, body: { tutorialId: string; confirmation: string }) => post<{ supported: boolean; result?: Record<string, unknown>; reason?: string }>(`/api/players/${encodeURIComponent(playerId)}/tutorials/reset`, body),
   repairGear: (playerId: string, confirmation: string) => post<{ supported: boolean; result?: Record<string, unknown>; reason?: string }>(`/api/players/${encodeURIComponent(playerId)}/repair-gear`, { confirmation }),
   repairVehicleDecay: (playerId: string, body: { thresholdPercent: number; confirmation: string }) => post<{ supported: boolean; result?: Record<string, unknown>; reason?: string }>(`/api/players/${encodeURIComponent(playerId)}/repair-vehicle-decay`, body),
-  refuelVehicle: (playerId: string, body: { vehicleId: string; confirmation: string }) => post<{ supported: boolean; result?: Record<string, unknown>; reason?: string }>(`/api/players/${encodeURIComponent(playerId)}/refuel-vehicle`, body),
   deleteInventoryItem: (playerId: string, itemId: string, confirmation: string) => api<{ supported: boolean; result?: Record<string, unknown>; reason?: string }>(`/api/players/${encodeURIComponent(playerId)}/inventory/${encodeURIComponent(itemId)}`, { method: "DELETE", body: JSON.stringify({ confirmation }) }),
   updateInventoryItem: (playerId: string, itemId: string, values: Record<string, unknown>, confirmation: string) => api<{ supported: boolean; result?: Record<string, unknown>; reason?: string }>(`/api/players/${encodeURIComponent(playerId)}/inventory/${encodeURIComponent(itemId)}`, { method: "PATCH", body: JSON.stringify({ confirmation, values }) }),
   augmentInventoryItem: (playerId: string, itemId: string, augments: string[], augmentQuality: number, confirmation: string) => post<{ supported: boolean; result?: Record<string, unknown>; reason?: string }>(`/api/players/${encodeURIComponent(playerId)}/augment-item`, { itemId, augments, augmentQuality, confirmation })

@@ -1,6 +1,8 @@
 export type ApiResult<T = unknown> = Promise<T>;
 
 let csrfToken: string | null = null;
+export const AUTH_SESSION_EXPIRED_EVENT = "dune-console-auth-session-expired";
+export const AUTH_SESSION_EXPIRED_MESSAGE = "Your browser login session expired. Sign in again to continue.";
 const POSTGRES_UNAVAILABLE_MESSAGE = "Postgres is not running or is restarting. Wait for the database service to come back online, then refresh.";
 const INVALID_RESPONSE_MESSAGE = "The console received invalid data for this page. Refresh the page and try again.";
 
@@ -17,7 +19,6 @@ export async function apiDownload(path: string, options: RequestInit = {}, csrfR
   if (options.body && !(options.body instanceof FormData) && !headers.has("content-type")) headers.set("content-type", "application/json");
   if (csrfToken && !["GET", "HEAD"].includes(options.method || "GET")) headers.set("x-csrf-token", csrfToken);
   const response = await fetch(path, { ...options, headers, credentials: "include" });
-  if ((response.status === 401 || response.status === 403) && !csrfRetried && await refreshCsrfToken()) return apiDownload(path, options, true);
   if (!response.ok) {
     const text = await response.text();
     let message = text || `Request failed: ${response.status}`;
@@ -25,6 +26,11 @@ export async function apiDownload(path: string, options: RequestInit = {}, csrfR
       const data = JSON.parse(text) as { error?: string };
       message = data.error || message;
     } catch {}
+    if (isSessionAuthFailure(response.status, message)) {
+      if (response.status === 403 && !csrfRetried && await refreshCsrfToken()) return apiDownload(path, options, true);
+      announceSessionExpired();
+      throw new Error(AUTH_SESSION_EXPIRED_MESSAGE);
+    }
     throw new Error(friendlyApiError(message));
   }
   return response;
@@ -48,18 +54,25 @@ async function apiRequest<T>(path: string, options: RequestInit = {}, csrfRetrie
     }
   }
   const record = data && typeof data === "object" ? data as Record<string, unknown> : {};
-  if (response.status === 401 || response.status === 403) {
-    const rawError = String(record.error || "");
-    if (/authentication required|csrf token|session expired|login session/i.test(rawError)) {
-      if (response.status === 403 && !csrfRetried && await refreshCsrfToken()) {
-        return apiRequest<T>(path, options, true);
-      }
-      throw new Error("Your browser login session expired. Refresh the page, then sign in again.");
+  if (isSessionAuthFailure(response.status, String(record.error || ""))) {
+    if (response.status === 403 && !csrfRetried && await refreshCsrfToken()) {
+      return apiRequest<T>(path, options, true);
     }
+    announceSessionExpired();
+    throw new Error(AUTH_SESSION_EXPIRED_MESSAGE);
   }
   if (response.ok && invalidJsonResponse) throw new Error(INVALID_RESPONSE_MESSAGE);
   if (!response.ok) throw new Error(friendlyApiError(String(record.error || `Request failed: ${response.status}`)));
   return data as T;
+}
+
+function isSessionAuthFailure(status: number, message: string) {
+  return status === 401 || (status === 403 && /authentication required|csrf token|session expired|login session/i.test(message));
+}
+
+function announceSessionExpired() {
+  csrfToken = null;
+  if (typeof window !== "undefined") window.dispatchEvent(new Event(AUTH_SESSION_EXPIRED_EVENT));
 }
 
 async function refreshCsrfToken() {

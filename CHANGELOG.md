@@ -7,7 +7,39 @@ whatever upstream version is currently checked out, per the versioning
 convention documented in this account's operating docs. Entries are in
 Keep a Changelog style, grouped by upstream base version, newest first.
 
-## Unreleased (on top of upstream v1.3.74)
+## Unreleased (on top of upstream v1.3.79+)
+
+### Added
+
+- Discord OAuth as primary sign-in method on the login page. Password login is
+  available as a secondary, collapsible option when OAuth is configured.
+- Local static file mount (`runtime/local-static` → `/app/web-dist/atrium`)
+  so operators can serve custom pages from the console domain. Directory
+  is gitignored — content is per-deployment and never pushed upstream.
+- Atrium page access control: the `/atrium/` path requires a valid session
+  and checks `ATRIUM_ALLOWED_USER_ID` against the session's Discord user ID.
+  Unauthorized users see a friendly access-denied page.
+- `POST /api/auth/discord/exchange` endpoint — accepts a Discord Bearer
+  access token, validates it, and returns a console session cookie + CSRF.
+  Used by the Atrium page for single-auth flow. Optional user-ID gate via
+  `ATRIUM_ALLOWED_DISCORD_USER_ID` env var.
+- Static file server now resolves directory paths to `index.html`
+  (`/atrium/` → `/atrium/index.html`).
+- RBAC Phase 3 — signed handoff tier resolution (Mechanism B, #135). The console
+  can now resolve a Discord user's effective tier for the configured home guild
+  by calling the ACP bot's `resolve-console-tier` endpoint and verifying the
+  HMAC-signed response. No unsigned tier claim can produce a tiered session.
+  New module: `console/api/src/integrations/discord/handoff.js`. New config keys
+  in `.env.example`: `DISCORD_BOT_HANDOFF_SECRET`, `DISCORD_BOT_HANDOFF_URL`.
+- When the handoff is not configured (no secret, no URL, or no home guild), the
+  OAuth callback falls back to Phase 2's owner-bootstrap gates — zero new
+  required config, no operator breakage (Strict Requirement 0).
+- RBAC Phase 4 — route & panel capability gating. Server-side `rbac.js` enforces
+  tier-based access on every API route (160+ entries, exact + regex patterns);
+  `/api/auth/me` returns per-tier capabilities. Client-side `App.tsx` filters
+  navGroup tabs by capability (UX only — server remains authoritative). 40
+  unit tests covering tier ladder, capability sets, fail-closed session
+  resolution, route pattern matching, and tier-appropriate gating.
 
 ### Security
 
@@ -17,8 +49,20 @@ Keep a Changelog style, grouped by upstream base version, newest first.
   files now have their ownership preserved (`chown --reference`) before the atomic `mv`
   replacement, and when the project name is already correct the function is a no-op
   (no file write at all). Documented as INC-2026-07-27-001.
+- Session cookies now carry the user's tier and ID in the HMAC-signed payload. When
+  the console restarts and in-memory sessions are lost, the synthesized session
+  preserves the original tier instead of defaulting to owner (#157). Legacy cookies
+  (pre-RBAC or plain session-id format) continue to synthesize as owner — backward
+  compatible per Requirement 0.
+- Session cookies (`asc_session`) and OAuth state cookies (`discord_oauth_state`) always
+  include the `Secure` flag by default. Operators running the console locally over plain
+  HTTP can set `ADMIN_SECURE_COOKIES=0` in `.env` to opt out.
 
 ### Fixed
+- **Broadcast enabled via env var** (#214). `discordWritesEnabled()` now checks `DUNE_DISCORD_WRITES_ENABLED=1` instead of hardcoding `false`.
+- **LOGS / MAP_STATE / MAINTENANCE routes now have real handlers** (#211, #213). Three adapter routes caused 8 bot slash commands to 404. LOGS tails container logs; MAP_STATE returns per-map status; MAINTENANCE runs `dune ready`.
+- **Backups + Announcements wired to real data** (#212). `/dune data backups` now runs `dune db list`. `/dune ops announcements` reads from `services/playerAnnouncements.js`. Both previously returned empty stub arrays.
+- **Backups + Announcements wired to real data** (#212). `/dune data backups` now runs `dune db list`. `/dune ops announcements` reads from `services/playerAnnouncements.js`. Both previously returned empty stub arrays.
 
 - Item display names in `playerInventory`, `playerOwnedStorageQuery`, `guildStorageQuery`,
   `searchItemsInContainers`, and `searchItemsInPlayerInventory` now resolve against the
@@ -52,6 +96,20 @@ Keep a Changelog style, grouped by upstream base version, newest first.
 
 ### Added
 
+- Engine reverse-engineering deliverable (issue #148, Phases 1-4): `docs/engine/command-catalog.md`
+  now maps the full Funcom engine admin-command surface (all 861 compiled-in
+  command names, classified by domain; regenerable via
+  `docs/engine/generate-command-catalog.py`). Phase 2 verified the FLS
+  ServerCommand channel is a narrow allowlist (26 live probes rejected "unknown Server
+  Command"; positive-control KickPlayer dispatch proved the probe path) — the 855-command
+  `UDuneServerCommandsCheatManager` cheat-exec table is not reachable over FLS, so no
+  engine-native container-fill command exists. Phase 3 documents the complete FLS
+  transport contract (rabbitmq exchange `heartbeats`/routing `notifications`,
+  `fls_backend` identity, two-hop base64 envelope, per-command parameter contracts).
+  Phase 4 scoped console features to the verified surface (11 of the 13 FLS-VERIFIED
+  commands exposed in the console UI) and filed #149 for the one gap worth a console
+  action (engine-native `ServiceBroadcast` restart-warning is CLI-only today;
+  `SpecializationXP` is already covered by the console's `specialization-max` DB path).
 - Atrium console Storage tab: new "Apply Fills (Restart Survival)" action that restarts the
   survival game server via the existing `POST /api/server/restart-service` endpoint after a
   danger-styled confirmation dialog warning that all connected players will be disconnected.
@@ -69,8 +127,28 @@ Keep a Changelog style, grouped by upstream base version, newest first.
   (`"placeable"` or `"vehicle"`).
 - Added `group` and `volume` fields to 75 items in `runtime/data/admin-items.json`
   (21 refined resources, 54 components) for use by the fill-item endpoint.
+- Console RBAC Phase 2 (issue #151): optional Discord OAuth sign-in for the
+  Web Console. New `GET /api/auth/discord/start` + `/api/auth/discord/callback`
+  routes, `/api/auth/me` identity endpoint, tiered sessions
+  (`owner`/`admin`/`moderator`/`player`) on the existing HMAC session cookie,
+  and a Discord sign-in button on the login screen when configured. Fully
+  opt-in — with no `DISCORD_OAUTH_*`/`DISCORD_HOME_GUILD_ID` env vars set,
+  the console behaves exactly as before (password sign-in, single owner
+  session). Owner-tier bootstrap is fail-closed: requires
+  `DISCORD_OAUTH_ALLOW_OWNER_BOOTSTRAP=1`, home-guild membership, and the
+  user's snowflake in `DISCORD_OAUTH_OWNER_ALLOWLIST`; an empty allowlist
+  denies all Discord owner sessions, with the admin password remaining the
+  owner fallback. `DISCORD_OAUTH_CLIENT_SECRET` may live in
+  `runtime/secrets/discord-oauth-client-secret.txt` (never auto-created).
+  Implemented behind the plan in
+  `docs/security/console-rbac-implementation-and-testing.md` (Phase 2 of 5);
+  role-mapped tiers await Phase 3's signed bot handoff (#135).
 
 ### Fixed
+- **Broadcast enabled via env var** (#214). `discordWritesEnabled()` now checks `DUNE_DISCORD_WRITES_ENABLED=1` instead of hardcoding `false`.
+- **LOGS / MAP_STATE / MAINTENANCE routes now have real handlers** (#211, #213). Three adapter routes caused 8 bot slash commands to 404. LOGS tails container logs; MAP_STATE returns per-map status; MAINTENANCE runs `dune ready`.
+- **Backups + Announcements wired to real data** (#212). `/dune data backups` now runs `dune db list`. `/dune ops announcements` reads from `services/playerAnnouncements.js`. Both previously returned empty stub arrays.
+- **Backups + Announcements wired to real data** (#212). `/dune data backups` now runs `dune db list`. `/dune ops announcements` reads from `services/playerAnnouncements.js`. Both previously returned empty stub arrays.
 
 - Adopted upstream's revert of a Compose `name:` pin that this fork had
   added and upstream correctly reverted: hardcoding a project name

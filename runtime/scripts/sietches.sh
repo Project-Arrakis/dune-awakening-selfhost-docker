@@ -443,7 +443,11 @@ sanitize_positive_integer_arg() {
 }
 
 docker_postgres_running() {
-  docker ps --format '{{.Names}}' 2>/dev/null | grep -qx dune-postgres
+  # Do not use grep -q here. With pipefail enabled it may stop reading after
+  # the first match, give `docker ps` SIGPIPE while it is still writing the
+  # remaining container names, and turn a successful check into a transient
+  # failure. Consume the complete listing while keeping the output silent.
+  docker ps --format '{{.Names}}' 2>/dev/null | grep -x dune-postgres >/dev/null
 }
 
 psql_value() {
@@ -1250,7 +1254,30 @@ restart_sietch_partition_if_running() {
   runtime/scripts/spawn-server.sh "$partition_id" >/dev/null
 }
 
-restart_sietch_partition() {
+sietch_partition_row() {
+  local partition_id="$1"
+  psql_value "
+with ranked as (
+  select
+    partition_id,
+    map,
+    dimension_index,
+    blocked,
+    row_number() over (order by dimension_index, partition_id) as ordinal
+  from dune.world_partition
+  where map = 'Survival_1'
+)
+select dimension_index || '|' || blocked || '|' || ordinal
+from ranked
+where partition_id = ${partition_id}
+limit 1;
+" | tr -d '\r'
+}
+
+# Stops the given Sietch partition's game server, leaving the queued
+# generator-refill flush (console/api's flushPendingMapWrites) a real window
+# to write while the map is down before start_sietch_partition brings it back.
+stop_sietch_partition() {
   local partition_id="$1"
   local row=""
   local dimension_index=""
@@ -1268,22 +1295,7 @@ restart_sietch_partition() {
     return 1
   }
 
-  row="$(psql_value "
-with ranked as (
-  select
-    partition_id,
-    map,
-    dimension_index,
-    blocked,
-    row_number() over (order by dimension_index, partition_id) as ordinal
-  from dune.world_partition
-  where map = 'Survival_1'
-)
-select dimension_index || '|' || blocked || '|' || ordinal
-from ranked
-where partition_id = ${partition_id}
-limit 1;
-" | tr -d '\r')"
+  row="$(sietch_partition_row "$partition_id")"
   [ -n "$row" ] || {
     echo "Partition ${partition_id} is not a Survival_1 Sietch." >&2
     return 1
@@ -1297,7 +1309,49 @@ limit 1;
   fi
 
   if [ "$dimension_index" = "0" ]; then
-    echo "Restarting primary Survival_1 Sietch (partition ${partition_id})..."
+    echo "Stopping primary Survival_1 Sietch (partition ${partition_id})..."
+    runtime/scripts/stop-server-survival-1.sh
+  else
+    container="dune-server-survival-1-${partition_id}"
+    if ! docker ps -a --format '{{.Names}}' | grep -qx "$container"; then
+      echo "Sietch partition ${partition_id} is active but its container is not available to restart." >&2
+      return 1
+    fi
+    echo "Stopping Survival_1 Sietch partition ${partition_id}..."
+    runtime/scripts/despawn-server.sh "$partition_id" --force
+  fi
+}
+
+# Starts the given Sietch partition's game server. Deliberately re-resolves
+# the partition row rather than trusting a value threaded in from
+# stop_sietch_partition -- the two run as separate console/api task
+# operations (separate `dune sietches` process invocations), so there is no
+# in-memory state to thread between them.
+start_sietch_partition() {
+  local partition_id="$1"
+  local row=""
+  local dimension_index=""
+  local blocked=""
+  local ordinal=""
+
+  validate_positive_integer "$partition_id" || {
+    echo "Partition ID must be a positive integer." >&2
+    return 1
+  }
+  docker_postgres_running || {
+    echo "dune-postgres must be running to restart a Sietch." >&2
+    return 1
+  }
+
+  row="$(sietch_partition_row "$partition_id")"
+  [ -n "$row" ] || {
+    echo "Partition ${partition_id} is not a Survival_1 Sietch." >&2
+    return 1
+  }
+  IFS='|' read -r dimension_index blocked ordinal <<<"$row"
+
+  if [ "$dimension_index" = "0" ]; then
+    echo "Starting primary Survival_1 Sietch (partition ${partition_id})..."
     set -a
     [ -f .env ] && . ./.env
     set +a
@@ -1306,18 +1360,18 @@ limit 1;
     runtime/scripts/publish-sietch-overrides.sh restart || true
     runtime/scripts/publish-sietch-overrides.sh once || true
   else
-    container="dune-server-survival-1-${partition_id}"
-    if ! docker ps -a --format '{{.Names}}' | grep -qx "$container"; then
-      echo "Sietch partition ${partition_id} is active but its container is not available to restart." >&2
-      return 1
-    fi
-    echo "Restarting Survival_1 Sietch partition ${partition_id}..."
-    runtime/scripts/despawn-server.sh "$partition_id" --force
+    echo "Starting Survival_1 Sietch partition ${partition_id}..."
     runtime/scripts/spawn-server.sh "$partition_id"
   fi
 
   log_sietch_lifecycle "restart" "partition=${partition_id} dimension=${dimension_index}"
   echo "Sietch partition ${partition_id} restart completed."
+}
+
+restart_sietch_partition() {
+  local partition_id="$1"
+  stop_sietch_partition "$partition_id" || return 1
+  start_sietch_partition "$partition_id"
 }
 
 ensure_map_partitions() {
@@ -2003,6 +2057,16 @@ case "$cmd" in
     [ "$#" -eq 2 ] || { usage; exit 2; }
     partition_id="$(sanitize_positive_integer_arg "$2")"
     restart_sietch_partition "$partition_id"
+    ;;
+  stop-partition)
+    [ "$#" -eq 2 ] || { usage; exit 2; }
+    partition_id="$(sanitize_positive_integer_arg "$2")"
+    stop_sietch_partition "$partition_id"
+    ;;
+  start-partition)
+    [ "$#" -eq 2 ] || { usage; exit 2; }
+    partition_id="$(sanitize_positive_integer_arg "$2")"
+    start_sietch_partition "$partition_id"
     ;;
   sync)
     summary="$(sync_sietch_config_from_db "manual-sync")"

@@ -1,5 +1,7 @@
 # Generated Command Auth Token
 
+**Status:** Historical record — describes the state at branch `security/generated-command-auth-token-fix`. Not maintained. The control it documents is still in force.
+
 Branch: `security/generated-command-auth-token-fix`
 
 > **STATUS (2026-07-25): REVERTED. Do not treat this document as

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { Dispatch, SetStateAction } from "react";
-import { Play, Trash2 } from "lucide-react";
+import { Droplet, Fuel, Play, Trash2 } from "lucide-react";
 import { serverApi, type PerformanceSnapshot } from "../../api/server";
 import { setupApi, type Task } from "../../api/setup";
 import { PortChecklist } from "../../components/PortChecklist";
@@ -10,10 +10,39 @@ import { KeyValueGrid, StatusPill, TechnicalDetails } from "../../components/com
 import { formatDisplayValue, formatUiSentence, friendlyColumnName, stripAnsi, summarizeCommandText, titleCase } from "../../lib/display";
 import { friendlyServiceName } from "../../lib/serviceDisplay";
 import { conciseTaskError, funcomTokenMismatchDetected } from "../../lib/taskDisplay";
-
+import { usePendingRefills, usePendingWaterRefills } from "../../lib/usePendingRefills";
 export type HomeLoadResult = { statusLoaded: boolean; readinessLoaded: boolean; statusError: string; readinessError: string; statusText: string; readinessText: string };
 export type HomeTaskResult = { status: "running" | "succeeded" | "failed" | "stopped"; title: string; message?: string; details?: string };
 export type RestartLifecycleState = { stopObserved: boolean; startObserved: boolean };
+
+// A stop alone leaves refills queued -- stop-all.sh removes the Postgres
+// container too, so there is nothing to write to. Only a restart's start-all.sh
+// step opens a window with Postgres reachable and the map server not yet
+// booted, which the background flush uses. Both battlegroup control rows say so.
+function PendingRefillNote() {
+  const { pending } = usePendingRefills();
+  const { pending: pendingWater } = usePendingWaterRefills();
+  const fuelTotal = pending?.total || 0;
+  const waterTotal = pendingWater?.total || 0;
+  const total = fuelTotal + waterTotal;
+  if (!total) return null;
+  // Split per resource rather than reporting one number: both queues flush on
+  // the same restart, but which one is waiting decides whether an operator
+  // goes looking at generators or at water containers. Same badge vocabulary
+  // as the Bases panel's queue banner.
+  return <p className="action-help-note pending-refill-note">
+    {fuelTotal > 0 && <span className="bases-queue-badge bases-queue-badge-fuel">
+      <Fuel size={13} aria-hidden="true" />{fuelTotal.toLocaleString()} fuel
+    </span>}
+    {waterTotal > 0 && <> <span className="bases-queue-badge bases-queue-badge-water">
+      <Droplet size={13} aria-hidden="true" />{waterTotal.toLocaleString()} water
+    </span></>}
+    {/* Explicit space: the badges are inline elements, so without it the
+        paragraph's text content reads "1 waterrefills queued" to a screen
+        reader and to anyone copying it. The CSS margin is visual only. */}
+    {" "}refill{total === 1 ? "" : "s"} queued across all maps. Restarting the battlegroup applies {total === 1 ? "it" : "them"}; stopping leaves {total === 1 ? "it" : "them"} queued.
+  </p>;
+}
 type ConfirmAction = (message: string, options?: { title?: string; confirmLabel?: string; cancelLabel?: string; danger?: boolean }) => Promise<boolean>;
 type ServerMode = "public" | "local";
 
@@ -48,6 +77,15 @@ export function stackActionPendingResult(action: "start" | "stop" | "restart", p
   if (phase === "confirming") return { status: "running", title: "Finalizing Battlegroup Restart", message: "Services reported ready once. Confirming they stay ready." };
   if (phase === "waiting") return { status: "running", title: "Waiting for Battlegroup Readiness", message: "Restart command finished. Waiting for services to become ready." };
   return { status: "running", title: "Restarting Battlegroup", message: "Stopping services, then starting them again." };
+}
+
+// Readiness is monitored by App so it survives tab changes. Action handlers
+// still report command progress, but an in-flight command callback must never
+// replace a terminal result already published by that monitor. Without this
+// monotonic merge, a late panel callback could turn "Started Successfully"
+// back into "Finalizing Startup" and leave it there after polling stopped.
+export function preserveTerminalStackResult(current: HomeTaskResult | null, next: HomeTaskResult): HomeTaskResult {
+  return current && current.status !== "running" ? current : next;
 }
 
 export function createRestartLifecycleState(): RestartLifecycleState {
@@ -91,20 +129,15 @@ export function HomePanel({ status, readiness, taskResult, setTaskResult, funcom
   const [hasLoaded, setHasLoaded] = useState(Boolean(status || readiness));
   const homeActionRunId = useRef(0);
   const homeActionStartedAt = useRef(0);
-  const homeActionReadyPolls = useRef(0);
   const homeRestartLifecycle = useRef<RestartLifecycleState>(createRestartLifecycleState());
   const refreshRunId = useRef(0);
-  const activeHomeAction = useRef<"start" | "stop" | "restart" | "">(runningAction);
 
   function setHomeAction(action: "start" | "stop" | "restart" | "") {
-    activeHomeAction.current = action;
-    homeActionReadyPolls.current = 0;
     if (action === "restart" || !action) homeRestartLifecycle.current = createRestartLifecycleState();
     setRunningAction(action);
   }
 
   useEffect(() => {
-    activeHomeAction.current = runningAction;
     if (runningAction && homeActionStartedAt.current === 0) homeActionStartedAt.current = Date.now();
     if (!runningAction) homeActionStartedAt.current = 0;
   }, [runningAction]);
@@ -125,32 +158,6 @@ export function HomePanel({ status, readiness, taskResult, setTaskResult, funcom
       if (!isActive() || refreshRunId.current !== runId) return;
       if (result.statusLoaded || result.readinessLoaded) {
         applyHomeLoadResult(result);
-        const statusText = result.statusText || status;
-        const readinessText = result.readinessText || readiness;
-        const loadedState = getHomeServerState(statusText, readinessText);
-        if (runningAction === "restart") homeRestartLifecycle.current = advanceRestartLifecycle(homeRestartLifecycle.current, statusText, readinessText);
-        const restartReady = isRestartLifecycleReady(runningAction, homeRestartLifecycle.current);
-        if (runningAction === "restart" && restartReady) {
-          if (isHomeActionComplete(statusText, readinessText)) setHomeAction("");
-        } else if (runningAction === "start" && isHomeActionComplete(statusText, readinessText)) {
-          homeActionReadyPolls.current += 1;
-          if (homeActionReadyPolls.current >= 2) {
-            setTaskResult({ status: "succeeded", title: "Battlegroup Started Successfully" });
-            setHomeAction("");
-          } else {
-            setTaskResult(stackActionPendingResult(runningAction, "confirming"));
-          }
-        } else if (runningAction === "stop" && loadedState.stopped) {
-          setTaskResult({ status: "stopped", title: "Battlegroup Stopped" });
-          setHomeAction("");
-        } else if (runningAction === "start" || runningAction === "restart") {
-          homeActionReadyPolls.current = 0;
-        }
-        if (taskResult?.status === "failed" && (!/restart/i.test(taskResult.title) || restartReady) && isHomeActionComplete(statusText, readinessText)) {
-          setTaskResult({ status: "succeeded", title: /restart/i.test(taskResult.title) ? "Battlegroup Restarted Successfully" : "Battlegroup Started Successfully" });
-        } else if (taskResult?.status === "failed" && loadedState.stopped && /stop/i.test(taskResult.title)) {
-          setTaskResult({ status: "stopped", title: "Battlegroup Stopped" });
-        }
       } else {
         setLocalError(friendlyHomeStatusError(result.statusError || result.readinessError || "Server status and readiness checks failed."));
       }
@@ -208,32 +215,35 @@ export function HomePanel({ status, readiness, taskResult, setTaskResult, funcom
         setTaskResult({ status: "stopped", title: copy.success, details });
       } else if (action === "restart" && restartReady) {
         keepPolling = true;
-        if (isHomeActionComplete(postLoad?.statusText || status, postLoad?.readinessText || readiness)) setHomeAction("");
+        if (isHomeActionComplete(postLoad?.statusText || status, postLoad?.readinessText || readiness)) {
+          setTaskResult((current) => preserveTerminalStackResult(current, { status: "succeeded", title: copy.success, details }));
+          setHomeAction("");
+        }
       } else if (action === "start" && elapsedMs >= 8000 && postReady) {
         keepPolling = true;
-        setTaskResult({ ...stackActionPendingResult(action, "confirming"), details });
+        setTaskResult((current) => preserveTerminalStackResult(current, { ...stackActionPendingResult(action, "confirming"), details }));
       } else if (final.status !== "succeeded") {
         if ((action === "start" || action === "restart") && (postState.starting || postState.running)) {
           keepPolling = true;
-          setTaskResult({ ...stackActionPendingResult(action), details });
+          setTaskResult((current) => preserveTerminalStackResult(current, { ...stackActionPendingResult(action), details }));
         } else {
-          setTaskResult({ status: "failed", title: copy.failure, details });
+          setTaskResult((current) => preserveTerminalStackResult(current, { status: "failed", title: copy.failure, details }));
         }
       } else if (action === "stop") {
         keepPolling = true;
-        setTaskResult({ ...stackActionPendingResult(action), details });
+        setTaskResult((current) => preserveTerminalStackResult(current, { ...stackActionPendingResult(action), details }));
       } else if (action === "restart" && final.status === "succeeded") {
         keepPolling = true;
-        setTaskResult({ ...stackActionPendingResult(action, "waiting"), details });
+        setTaskResult((current) => preserveTerminalStackResult(current, { ...stackActionPendingResult(action, "waiting"), details }));
       } else if ((action === "start" || action === "restart") && (final.status === "succeeded" || postState.starting || postState.running)) {
         keepPolling = true;
-        setTaskResult(final.status === "succeeded" ? stackActionPendingResult(action, "waiting") : stackActionPendingResult(action));
+        setTaskResult((current) => preserveTerminalStackResult(current, final.status === "succeeded" ? stackActionPendingResult(action, "waiting") : stackActionPendingResult(action)));
       } else {
-        setTaskResult({ status: "failed", title: copy.failure, details });
+        setTaskResult((current) => preserveTerminalStackResult(current, { status: "failed", title: copy.failure, details }));
       }
     } catch (error) {
       if (homeActionRunId.current !== actionRunId) return;
-      setTaskResult({ status: "failed", title: copy.failure, details: error instanceof Error ? error.message : String(error) });
+      setTaskResult((current) => preserveTerminalStackResult(current, { status: "failed", title: copy.failure, details: error instanceof Error ? error.message : String(error) }));
     } finally {
       if (homeActionRunId.current === actionRunId && !keepPolling) setHomeAction("");
     }
@@ -265,47 +275,6 @@ export function HomePanel({ status, readiness, taskResult, setTaskResult, funcom
       window.clearInterval(id);
     };
   }, [status, readiness, funcomTokenResult?.status, funcomTokenResult?.title, funcomTokenResult?.message, setFuncomTokenResult]);
-
-  useEffect(() => {
-    if (!runningAction) return;
-    let active = true;
-    const id = window.setInterval(async () => {
-      const result = await onLoad().catch(() => null);
-      if (!active || !result) return;
-      applyHomeLoadResult(result);
-      const currentAction = activeHomeAction.current;
-      const statusText = result.statusText || status;
-      const readinessText = result.readinessText || readiness;
-      if (currentAction === "restart") homeRestartLifecycle.current = advanceRestartLifecycle(homeRestartLifecycle.current, statusText, readinessText);
-      const restartReady = isRestartLifecycleReady(currentAction, homeRestartLifecycle.current);
-      const elapsedMs = Date.now() - homeActionStartedAt.current;
-      if (currentAction === "stop" && isHomeStopComplete(statusText, readinessText)) {
-        setTaskResult({ status: "stopped", title: "Battlegroup Stopped" });
-        setHomeAction("");
-      } else if (currentAction === "restart" && restartReady) {
-        if (isHomeActionComplete(statusText, readinessText)) setHomeAction("");
-      } else if (currentAction === "start" && elapsedMs >= 8000 && isHomeActionComplete(statusText, readinessText)) {
-        homeActionReadyPolls.current += 1;
-        if (homeActionReadyPolls.current >= 2) {
-          setTaskResult({ status: "succeeded", title: "Battlegroup Started Successfully" });
-          setHomeAction("");
-        } else {
-          setTaskResult(stackActionPendingResult(currentAction, "confirming"));
-        }
-      } else if (currentAction === "start" || currentAction === "restart") {
-        homeActionReadyPolls.current = 0;
-        setTaskResult((current) => {
-          if (current?.status !== "running") return current;
-          const phase = /^Waiting/i.test(current.title) ? "waiting" : "running";
-          return { ...current, ...stackActionPendingResult(currentAction, phase) };
-        });
-      }
-    }, 3000);
-    return () => {
-      active = false;
-      window.clearInterval(id);
-    };
-  }, [runningAction, status, readiness, onLoad, setRunningAction, setTaskResult]);
 
   useEffect(() => {
     if (runningAction || !homeNeedsWarmRefresh(status, readiness)) return;
@@ -416,6 +385,7 @@ export function HomePanel({ status, readiness, taskResult, setTaskResult, funcom
           <button disabled={stopDisabled} onClick={() => runServerAction("stop")}>Stop</button>
           <button disabled={restartDisabled} onClick={() => runServerAction("restart")}>Restart Battlegroup</button>
         </div>
+        <PendingRefillNote />
         {taskResult && <HomeTaskResultCard result={taskResult} />}
         {localError && <p className="error">{localError}</p>}
       </article>
@@ -534,12 +504,10 @@ export function ServerPanel(props: {
   const [doctorError, setDoctorError] = useState("");
   const controlActionRunId = useRef(0);
   const controlActionStartedAt = useRef(0);
-  const controlActionReadyPolls = useRef(0);
   const controlRestartLifecycle = useRef<RestartLifecycleState>(createRestartLifecycleState());
   const serviceRestartRunId = useRef(0);
   const doctorRequestId = useRef(0);
   const { taskResult, setTaskResult, funcomTokenResult, setFuncomTokenResult, runningAction, setRunningAction, confirmAction } = props;
-  const activeControlAction = useRef<"start" | "stop" | "restart" | "">(runningAction);
   const actionRunning = Boolean(runningAction);
   const serviceRestartRunning = serviceRestartResult?.status === "running";
   const titleSaving = titleResult?.status === "running";
@@ -562,8 +530,6 @@ export function ServerPanel(props: {
     try { await action(); } catch (error) { props.onError(error instanceof Error ? error.message : String(error)); }
   }
   function setControlAction(action: "start" | "stop" | "restart" | "") {
-    activeControlAction.current = action;
-    controlActionReadyPolls.current = 0;
     if (action === "restart" || !action) controlRestartLifecycle.current = createRestartLifecycleState();
     setRunningAction(action);
   }
@@ -772,25 +738,28 @@ export function ServerPanel(props: {
         setTaskResult({ status: "stopped", title: copy.success, details });
       } else if (action === "restart" && restartReady) {
         keepPolling = true;
-        if (isHomeActionComplete(statusText, readinessText)) setControlAction("");
+        if (isHomeActionComplete(statusText, readinessText)) {
+          setTaskResult((current) => preserveTerminalStackResult(current, { status: "succeeded", title: copy.success, details }));
+          setControlAction("");
+        }
       } else if (action === "start" && elapsedMs >= 8000 && isHomeActionComplete(statusText, readinessText)) {
         keepPolling = true;
-        setTaskResult({ ...stackActionPendingResult(action, "confirming"), details });
+        setTaskResult((current) => preserveTerminalStackResult(current, { ...stackActionPendingResult(action, "confirming"), details }));
       } else if (final.status !== "succeeded") {
         const postState = getHomeServerState(statusText, readinessText);
         if ((action === "start" || action === "restart") && (postState.starting || postState.running)) {
           keepPolling = true;
-          setTaskResult({ ...stackActionPendingResult(action), details });
+          setTaskResult((current) => preserveTerminalStackResult(current, { ...stackActionPendingResult(action), details }));
         } else {
-          setTaskResult({ status: "failed", title: copy.failure, details });
+          setTaskResult((current) => preserveTerminalStackResult(current, { status: "failed", title: copy.failure, details }));
         }
       } else {
         keepPolling = true;
-        setTaskResult({ ...stackActionPendingResult(action, "waiting"), details });
+        setTaskResult((current) => preserveTerminalStackResult(current, { ...stackActionPendingResult(action, "waiting"), details }));
       }
     } catch (error) {
       if (controlActionRunId.current !== actionRunId) return;
-      setTaskResult({ status: "failed", title: copy.failure, details: error instanceof Error ? error.message : String(error) });
+      setTaskResult((current) => preserveTerminalStackResult(current, { status: "failed", title: copy.failure, details: error instanceof Error ? error.message : String(error) }));
     } finally {
       if (controlActionRunId.current === actionRunId && !keepPolling) setControlAction("");
     }
@@ -870,7 +839,6 @@ export function ServerPanel(props: {
     });
   }, []);
   useEffect(() => {
-    activeControlAction.current = runningAction;
     if (runningAction && controlActionStartedAt.current === 0) controlActionStartedAt.current = Date.now();
     if (!runningAction) controlActionStartedAt.current = 0;
   }, [runningAction]);
@@ -887,45 +855,6 @@ export function ServerPanel(props: {
     if (serverMode === savedServerMode) setServerMode(mode);
     setSavedServerMode(mode);
   }, [props.status, titleSaving, serverMode, savedServerMode]);
-  useEffect(() => {
-    if (!runningAction) return;
-    let active = true;
-    const id = window.setInterval(async () => {
-      const result = await loadControlStatus(true).catch(() => null);
-      if (!active || !result) return;
-      const currentAction = activeControlAction.current;
-      const statusText = result.statusText || props.status;
-      const readinessText = result.readinessText || props.readiness;
-      if (currentAction === "restart") controlRestartLifecycle.current = advanceRestartLifecycle(controlRestartLifecycle.current, statusText, readinessText);
-      const restartReady = isRestartLifecycleReady(currentAction, controlRestartLifecycle.current);
-      const elapsedMs = Date.now() - controlActionStartedAt.current;
-      if (currentAction === "stop" && isHomeStopComplete(statusText, readinessText)) {
-        setTaskResult({ status: "stopped", title: "Battlegroup Stopped" });
-        setControlAction("");
-      } else if (currentAction === "restart" && restartReady) {
-        if (isHomeActionComplete(statusText, readinessText)) setControlAction("");
-      } else if (currentAction === "start" && elapsedMs >= 8000 && isHomeActionComplete(statusText, readinessText)) {
-        controlActionReadyPolls.current += 1;
-        if (controlActionReadyPolls.current >= 2) {
-          setTaskResult({ status: "succeeded", title: "Battlegroup Started Successfully" });
-          setControlAction("");
-        } else {
-          setTaskResult(stackActionPendingResult(currentAction, "confirming"));
-        }
-      } else {
-        if (currentAction === "start" || currentAction === "restart") controlActionReadyPolls.current = 0;
-        setTaskResult((current) => {
-          if (current?.status !== "running") return current;
-          const phase = /^Waiting/i.test(current.title) ? "waiting" : "running";
-          return { ...current, ...stackActionPendingResult(currentAction || "restart", phase) };
-        });
-      }
-    }, 3000);
-    return () => {
-      active = false;
-      window.clearInterval(id);
-    };
-  }, [runningAction, props.status, props.readiness]);
   useEffect(() => {
     if (runningAction || !homeNeedsWarmRefresh(props.status, props.readiness)) return;
     let active = true;
@@ -1055,6 +984,7 @@ export function ServerPanel(props: {
         <button disabled={actionRunning || serviceRestartRunning || titleSaving || funcomTokenSaving || scheduleSaving || serverState.stopped} onClick={() => runServerAction("restart")}>Restart Battlegroup</button>
         <button disabled={actionRunning || serviceRestartRunning || titleSaving || funcomTokenSaving || scheduleSaving} onClick={props.onRedeploy}>Redeploy</button>
       </div>
+      <PendingRefillNote />
       {taskResult && <HomeTaskResultCard result={taskResult} />}
       <div className="action-line restart-service-line">
         <label className="compact-select">Restart Service<select value={service} onChange={(event) => setService(event.target.value)}>
@@ -1092,6 +1022,7 @@ export function ServerPanel(props: {
       />
       {networkBindResult && <HomeTaskResultCard result={networkBindResult} />}
       {storageCleanupResult && <HomeTaskResultCard result={storageCleanupResult} />}
+
     </section>
   );
 }

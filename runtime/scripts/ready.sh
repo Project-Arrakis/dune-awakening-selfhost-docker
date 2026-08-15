@@ -9,6 +9,7 @@ set -a
 set +a
 source runtime/scripts/runtime-env.sh
 source runtime/scripts/fls-signals.sh
+source runtime/scripts/farm-readiness.sh
 
 postgres_port="$(resolve_postgres_port)"
 rmq_admin_port="$(resolve_rmq_admin_port)"
@@ -276,7 +277,14 @@ check_game_server_ready() {
   local label="$2"
   local pattern="${3:-Server farm is READY}"
   local partition_id=""
-  local farm_ready=""
+  local required_reports="0"
+  local logs=""
+
+  if ! is_running "$container"; then
+    mark_fail "$label ready"
+    echo "     $container is not running."
+    return
+  fi
 
   if [[ "$container" =~ -([0-9]+)$ ]]; then
     partition_id="${BASH_REMATCH[1]}"
@@ -286,20 +294,25 @@ check_game_server_ready() {
     partition_id="2"
   fi
 
-  if [ -n "$partition_id" ] && is_running dune-postgres; then
-    farm_ready="$(
-      docker_timeout docker exec dune-postgres psql -U dune -d dune -Atc "
-        select coalesce(fs.ready::text, 'f')
-        from dune.world_partition wp
-        left join dune.farm_state fs on fs.server_id = wp.server_id
-        where wp.partition_id = ${partition_id}
-        limit 1;
-      " 2>/dev/null | tr -d '[:space:]'
-    )"
-    if db_bool_true "$farm_ready"; then
-      mark_ok "$label ready"
-      return
+  if [ "$partition_id" = "1" ]; then
+    required_reports="$farm_ready_survival_reports"
+  fi
+
+  if [ -n "$partition_id" ] && farm_partition_is_ready "$container" "$partition_id" "$required_reports"; then
+    mark_ok "$label ready"
+    return
+  fi
+
+  if [ -n "$partition_id" ]; then
+    logs="$(container_logs "$container")"
+    if logs_have_fatal "$logs"; then
+      mark_fail "$label ready"
+      echo "     $container logged a fatal-looking startup error."
+    else
+      mark_wait "$label warming - finalizing startup"
+      echo "     The map is running, but farm-wide travel/login readiness is not stable yet."
     fi
+    return
   fi
 
   check_log_ready \

@@ -8,6 +8,9 @@ export type UserSettingField = {
   key: string | null;
   default: string;
   type: "boolean" | "integer" | "number" | "text";
+  clientFile: string;
+  category: string;
+  description: string;
 };
 
 export type UserSettingsSchema = {
@@ -25,6 +28,9 @@ export type LiveMapMemoryRow = {
   limitBytes: number;
   percent: number;
   raw: string;
+  swapUsedBytes?: number;
+  swapLimitBytes?: number;
+  swapSupported?: boolean;
 };
 
 export type MemoryBalancerState = {
@@ -127,15 +133,16 @@ export const mapsApi = {
   maps: () => api<{ stdout: string }>("/api/maps"),
   status: () => api<Record<string, { stdout?: string; stderr?: string; exitCode?: number }>>("/api/map/status"),
   mode: (map = "") => api<{ stdout: string }>(`/api/maps/mode${map ? `?map=${encodeURIComponent(map)}` : ""}`),
-  setMode: (body: { map: string; mode: string; confirmation: string }) => post<{ task: Task }>("/api/maps/mode", body),
   saveMapSettings: (body: { map: string; partitionId?: string; mode?: string; memory?: string; modeChanged: boolean; memoryChanged: boolean; running: boolean; confirmation: string }) => post<{ task: Task }>("/api/maps/settings", body),
   runtimeSettings: () => api<MapRuntimeSettings>("/api/maps/runtime-settings"),
   saveRuntimeSettings: (body: { alwaysOnStartupParallelism: number; hostMemoryProtectionEnabled: boolean; hostMemoryReserveGiB: number | null }) => post<MapRuntimeSettings>("/api/maps/runtime-settings", body),
-  reconcile: (confirmation: string) => post<{ task: Task }>("/api/maps/reconcile", { confirmation }),
   spawn: (target: string, confirmation: string) => post<{ task: Task }>("/api/maps/spawn", { target, confirmation }),
   despawn: (target: string, confirmation: string) => post<{ task: Task }>("/api/maps/despawn", { target, confirmation }),
+  // Restart for a map with no managed service (Deep Desert, the SH_* hubs):
+  // despawn then spawn as one task. Always pass a partition id, never a map name
+  // -- spawn-server.sh given a name picks the first unassigned partition.
+  respawn: (partitionId: string, confirmation: string) => post<{ task: Task }>("/api/maps/respawn", { target: partitionId, confirmation }),
   autoscaler: () => api<{ stdout: string }>("/api/maps/autoscaler"),
-  autoscalerAction: (action: string, confirmation: string) => post<{ task: Task }>("/api/maps/autoscaler", { action, confirmation }),
   memory: () => api<{ stdout: string }>("/api/maps/memory"),
   liveMemory: () => api<{ rows: LiveMapMemoryRow[]; sampledAt: string; error?: string }>("/api/maps/memory/live"),
   memoryBalancer: () => api<MemoryBalancerState>("/api/maps/memory/balancer"),
@@ -143,7 +150,6 @@ export const mapsApi = {
   memorySwap: () => api<MemorySwapState>("/api/maps/memory/swap"),
   setMemorySwap: (body: { enabled: boolean; perServerGiB?: number; poolGiB?: number; confirmation: string }) => post<{ task: Task }>("/api/maps/memory/swap", body),
   setMemory: (body: { map: string; memory: string; confirmation: string }) => post<{ task: Task }>("/api/maps/memory", { ...body, action: "set" }),
-  unsetMemory: (body: { map: string; confirmation: string }) => post<{ task: Task }>("/api/maps/memory", { ...body, action: "unset" }),
   spicefields: () => api<{ capabilities?: Record<string, boolean>; rows: SpicefieldTypeRow[]; reason?: string }>("/api/maps/spicefields"),
   updateSpicefield: (typeId: number | string, body: { max_globally_active: number; max_globally_primed: number; is_spawning_active: boolean; global_spawn_weight: number }) =>
     api<{ ok: boolean; updatedRows: number; row: SpicefieldTypeRow }>(`/api/maps/spicefields/${encodeURIComponent(String(typeId))}`, { method: "PATCH", body: JSON.stringify(body) }),
@@ -157,11 +163,10 @@ export const mapsApi = {
   userSettingsSchema: () => api<UserSettingsSchema>("/api/maps/user-settings/schema"),
   userSettingsRestartPending: () => api<{ pending: boolean }>("/api/maps/user-settings/restart-pending"),
   userSettingsValues: (scope: "engine" | "mapEngine" | "partitionEngine" | "global" | "map" | "partition", map?: string, partitionId?: string) => api<{ stdout: string }>(`/api/maps/user-settings/values?scope=${encodeURIComponent(scope)}${map ? `&map=${encodeURIComponent(map)}` : ""}${partitionId ? `&partitionId=${encodeURIComponent(partitionId)}` : ""}`),
-  rawUserSettings: (kind: "engine" | "game" | "profile" | "client-game", map?: string, partitionId?: string) => api<{ content: string }>(`/api/maps/user-settings/raw?kind=${encodeURIComponent(kind)}${map ? `&map=${encodeURIComponent(map)}` : ""}${partitionId ? `&partitionId=${encodeURIComponent(partitionId)}` : ""}`),
+  rawUserSettings: (kind: "engine" | "game" | "profile" | "client-game" | "client-engine", map?: string, partitionId?: string) => api<{ content: string }>(`/api/maps/user-settings/raw?kind=${encodeURIComponent(kind)}${map ? `&map=${encodeURIComponent(map)}` : ""}${partitionId ? `&partitionId=${encodeURIComponent(partitionId)}` : ""}`),
   saveUserSettings: (body: { scope: "engine" | "mapEngine" | "partitionEngine" | "global" | "map" | "partition"; map?: string; partitionId?: string; values: Record<string, string>; restart?: boolean }) => post<{ task: Task }>("/api/maps/user-settings/save", body),
   resetUserSettings: (body: { scope: "engine" | "mapEngine" | "partitionEngine" | "global" | "map" | "partition"; map?: string; partitionId?: string; confirmation: string }) => post<{ task: Task }>("/api/maps/user-settings/reset", body),
   saveRawUserSettings: (body: { scope: "engine" | "game" | "global" | "profile"; map?: string; partitionId?: string; content: string }) => post<{ task: Task }>("/api/maps/user-settings/raw", body),
-  materializeUserSettings: (confirmation: string) => post<{ task: Task }>("/api/maps/user-settings/materialize", { confirmation }),
   sietches: () => api<{ stdout: string }>("/api/sietches"),
   sietchDimensions: (map = "Survival_1", ids = false) => api<{ stdout: string }>(`/api/sietches/dimensions?map=${encodeURIComponent(map)}${ids ? "&ids=1" : ""}`),
   updateSietches: (body: Record<string, unknown>) => post<{ task: Task }>("/api/sietches/update", body),

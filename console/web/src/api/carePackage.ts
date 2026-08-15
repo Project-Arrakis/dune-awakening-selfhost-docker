@@ -43,8 +43,6 @@ export const carePackageApi = {
     if (onlyEligible) params.set("onlyEligible", "1");
     return api<{ config: CarePackageConfig; rows: Record<string, unknown>[] }>(`/api/care-package/eligible${params.size ? `?${params.toString()}` : ""}`);
   },
-  grantEligible: (confirmation: string) => post<Record<string, unknown>>("/api/care-package/grant-eligible", { confirmation }),
-  run: (confirmation = "RUN CARE PACKAGE SCAN") => post<Record<string, unknown>>("/api/care-package/run", { confirmation }),
   grant: (playerId: string, confirmation: string, kitId?: string) => post<Record<string, unknown>>(`/api/care-package/grant/${encodeURIComponent(playerId)}`, { confirmation, kitId }),
   retry: (grantId: string, confirmation: string) => post<Record<string, unknown>>(`/api/care-package/retry/${encodeURIComponent(grantId)}`, { confirmation }),
   clearHistory: (confirmation = "CLEAR GRANT HISTORY") => post<{ ok: boolean; removed: number; rows: Record<string, unknown>[] }>("/api/care-package/history/clear", { confirmation }),

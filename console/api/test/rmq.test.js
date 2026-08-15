@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { buildBroadcastCommand, buildCarePackageWhisperPayload, buildMapChatPayload, buildShutdownBroadcastCommand, commandAuthToken, publishCarePackageWhisper, publishMapChat, validateBroadcastMessage, validateLocalizedTexts, validatePublishLabel } from "../src/rmq.js";
+import { buildBroadcastCommand, buildCarePackageWhisperPayload, buildMapChatPayload, buildShutdownBroadcastCommand, commandAuthToken, formatChatBodyMessage, isValidHexFlsId, isValidWhisperIdentity, listReadyRabbitQueues, publishCarePackageWhisper, publishMapChat, validateBroadcastMessage, validateLocalizedTexts, validatePublishLabel } from "../src/rmq.js";
 
 test("builds verified ServiceBroadcast generic command payload", () => {
   const command = buildBroadcastCommand({ message: "Server event starts soon", durationSec: 45, title: "Event" });
@@ -42,6 +42,23 @@ test("validates broadcast and whisper-style message bounds", () => {
   assert.throws(() => validateLocalizedTexts([{ Key: "en", Title: "Event", Body: "" }]));
 });
 
+test("accepts native variable-width FLS IDs and printable Unicode Funcom IDs", () => {
+  assert.equal(isValidHexFlsId("DCFAB28D07E0F79"), true);
+  assert.equal(isValidHexFlsId("A5C0DE5E12A00001"), true);
+  assert.equal(isValidHexFlsId("12345"), false);
+  assert.equal(isValidWhisperIdentity("❤️  SugarFluff  ❤#42013"), true);
+  assert.equal(isValidWhisperIdentity("bad\u0000identity"), false);
+});
+
+test("collapses multiline chat because Funcom exposes its rich-text wrapper", () => {
+  assert.equal(formatChatBodyMessage("One line"), "One line");
+  assert.equal(
+    formatChatBodyMessage("First line\r\n\r\nThird line"),
+    "First line Third line"
+  );
+  assert.equal(formatChatBodyMessage("First\nSecond").includes("<Chat_Body>"), false);
+});
+
 test("builds shutdown ServiceBroadcast with strict shutdown type", () => {
   const before = Math.floor(Date.now() / 1000) + 10 * 60;
   const command = buildShutdownBroadcastCommand({ shutdownType: "Restart", delayMinutes: 10, frequency: 30, duration: 15 });
@@ -63,20 +80,21 @@ test("builds Care Package private whisper courier payload", () => {
     now: "2026-06-08T12:00:00.000Z",
     messageId: "care-package-test"
   });
-  assert.equal(payload.outer.Type, "ECourierMessageType::TextChat");
+  assert.equal(payload.outer.Type, "TextChat");
   const inner = JSON.parse(payload.outer.Content);
   assert.equal(inner.m_Id, "care-package-test");
-  assert.equal(inner.m_ChannelType, "ETextChatChannelType::Whispers");
+  assert.equal(inner.m_ChannelType, "Whispers");
   assert.equal(inner.m_SubChannelId, "RedBlink#75570");
   assert.equal(inner.m_bUseSpoofedUserName, false);
-  assert.deepEqual(inner.m_SpoofedUserNameFrom, { m_Id: "", m_DisplayName: "" });
+  assert.deepEqual(inner.m_SpoofedUserNameFrom, { m_TableId: "", m_Key: "", m_UnlocalizedName: "" });
   assert.equal(inner.m_FuncomIdFrom, "Server#00000");
   assert.equal(inner.m_UserNameTo, "RedBlink");
   assert.equal(inner.m_Message.m_UnlocalizedMessage, "Welcome");
   assert.equal(inner.m_Message.m_LocalizedMessage.m_TableId, "");
   assert.equal(inner.m_Message.m_LocalizedMessage.m_Key, "");
   assert.deepEqual(inner.m_Message.m_LocalizedMessage.m_FormatArgs, []);
-  assert.equal(inner.m_TimeStamp, "2026-06-08T12:00:00.000Z");
+  assert.equal(inner.m_Timestamp, "2026.06.08-12.00.00");
+  assert.equal(Object.hasOwn(inner, "m_TimeStamp"), false);
   assert.deepEqual(inner.m_OriginLocation, { X: 0, Y: 0, Z: 0 });
   assert.equal(inner.m_HasSeenMessage, false);
 });
@@ -89,6 +107,7 @@ test("builds map chat courier payload", () => {
     messageId: "map-chat-test"
   });
   assert.equal(payload.outer.Type, "TextChat");
+  assert.equal(Object.hasOwn(payload.outer, "Content"), false);
   const inner = JSON.parse(payload.outer.content);
   assert.equal(inner.m_Id, "map-chat-test");
   assert.equal(inner.m_ChannelType, "Map");
@@ -99,6 +118,7 @@ test("builds map chat courier payload", () => {
   assert.equal(inner.m_Message.m_UnlocalizedMessage, "Event starts soon");
   assert.deepEqual(inner.m_Message.m_LocalizedMessage.m_FormatArgs, []);
   assert.equal(inner.m_Timestamp, "2026.06.08-12.34.56");
+  assert.equal(Object.hasOwn(inner, "m_TimeStamp"), false);
   assert.deepEqual(inner.m_OriginLocation, { X: 0, Y: 0, Z: 0 });
   assert.equal(inner.m_HasSeenMessage, false);
 });
@@ -212,6 +232,22 @@ test("publishes Care Package whisper to direct player queue when available", asy
     assert.equal(result.amqp.userId, "A5C0DE5E12A00001");
     assert.equal(result.amqp.senderHexFlsId, "A5C0DE5E12A00001");
     assert.match(calls[0].args.join(" "), /rabbitmqctl eval/);
+  } finally {
+    globalThis.__testSpawn = originalSpawn;
+  }
+});
+
+test("lists only running RabbitMQ queues with active consumers as ready", async () => {
+  const originalSpawn = globalThis.__testSpawn;
+  try {
+    globalThis.__testSpawn = () => fakeSpawn([
+      "READYQUEUE000001_queue\t1\trunning",
+      "WAITINGQUEUE0001_queue\t0\trunning",
+      "STOPPEDQUEUE0001_queue\t2\tstopped",
+      ""
+    ].join("\n"));
+    const ready = await listReadyRabbitQueues({ commandTimeoutMs: 1000 });
+    assert.deepEqual([...ready], ["READYQUEUE000001_queue"]);
   } finally {
     globalThis.__testSpawn = originalSpawn;
   }

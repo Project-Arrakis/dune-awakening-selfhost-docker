@@ -1,6 +1,6 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { publishMapChat, validateBroadcastMessage } from "../rmq.js";
+import { formatChatBodyMessage, publishMapChat } from "../rmq.js";
 import { ensureCarePackageServerPersona } from "../carePackage.js";
 
 const OLD_DEFAULT_JOIN_MESSAGE = "{playerName} has entered the sands of Arrakis.";
@@ -255,7 +255,7 @@ function normalizeSessionTimestamp(value) {
 }
 
 function renderPlayerMessage(template, player) {
-  return validateBroadcastMessage(String(template || "")
+  return formatChatBodyMessage(String(template || "")
     .replaceAll("{playerName}", player.characterName)
     .replaceAll("{mapName}", player.mapName || friendlyMapName(player.map))
     .replaceAll("{map}", player.mapName || friendlyMapName(player.map))
@@ -304,7 +304,7 @@ function normalizeTemplate(value, label, oldDefault, newDefault) {
   const raw = String(value ?? "").trim();
   if (!raw) throw new Error(`${label} is required`);
   if (raw === oldDefault) return newDefault;
-  return validateBroadcastMessage(raw);
+  return formatChatBodyMessage(raw);
 }
 
 function normalizeBoolean(value, field) {

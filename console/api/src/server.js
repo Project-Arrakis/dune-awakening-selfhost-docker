@@ -5,7 +5,7 @@ import { spawn } from "node:child_process";
 import { existsSync, writeFileSync, chmodSync, mkdirSync, createReadStream, readFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { loadConfig, publicConfig, parseAllowedIps } from "./config.js";
-import { createAuth, setSessionCookie, clearSessionCookie, json, withSecurityHeaders } from "./auth.js";
+import { createAuth, setSessionCookie, clearSessionCookie, json, html, withSecurityHeaders, parseCookies, sessionCookieValue } from "./auth.js";
 import { createLoginRateLimiter, createMutationRateLimiter } from "./rateLimit.js";
 import { createBridgeRateLimiter } from "./bridgeRateLimit.js";
 import { buildSelfUpdateHelperDockerArgs, detectDockerSocketGid, TaskManager, publicTask } from "./tasks.js";
@@ -32,6 +32,10 @@ import { updateEnvFileValue as updateEnvValue } from "./services/envFile.js";
 import { funcomAuthMismatchDetected, matchingFuncomAuthLines, saveFuncomTokenValue as writeFuncomToken, validDockerSince } from "./services/funcomAuth.js";
 import { readCharacterTransferSettings, saveCharacterTransferSettings } from "./services/characterTransferSettings.js";
 import { handleDiscordAdapterRoute, isDiscordAdapterRoute } from "./integrations/discord/routes.js";
+import { createPendingStateStore, exchangeDiscordAuthCode, fetchDiscordIdentity, createOAuthTierResolver, buildAuthorizeUrl, oauthStateCookie, clearOAuthStateCookie } from "./integrations/discord/oauth.js";
+import { createHandoff } from "./integrations/discord/handoff.js";
+import { actionForRoute, ROUTE_ACTIONS, NAMESPACES } from "./actions.js";
+import { evaluate, loadPolicies, getAllPolicies, setPolicies, resolveSessionTier, resolveAllowedActions, matchAction } from "./policy.js";
 import { discordAdapterEnabled } from "./integrations/discord/adapter.js";
 import { initializeDiscordAdapterSchema } from "./integrations/discord/schema.js";
 import { liveItemGrantOk, liveItemGrantWarning } from "./grantResults.js";
@@ -46,19 +50,55 @@ import { grantAddonItem } from "./addonItemGrants.js";
 import { EDA_EXCHANGE_BOT_ADDON_ID, ADDON_SCHEDULER_PERMISSION, createAddonJobScheduler, probeBuybackEligibility, readBuybackSchedule, saveBuybackSchedule } from "./addonJobs.js";
 import { createPublicDirectoryReporter, normalizeDiscordInvite, readDirectorySettings } from "./services/publicDirectory.js";
 import { choamTerminalOverview, installChoamTerminals, removeChoamTerminals } from "./services/choamTerminals.js";
+import { autoRefillPublicState, createAutoRefillScheduler, setBaseAutoRefill } from "./services/autoRefill.js";
+import { autoRefillWaterPublicState, createAutoRefillWaterScheduler, setBaseAutoRefillWater } from "./services/autoRefillWater.js";
 import { calculateAlwaysOnHostMemorySafety } from "./services/hostMemorySafety.js";
+import { parseEffectiveGuildMemberLimit } from "./services/guildSettings.js";
+import { parseEffectivePermissionLimit } from "./services/permissionSettings.js";
+import { flushBaseRefillQueues } from "./services/baseRefillFlush.js";
+import { banPlayer, bannedFlsIds, createPlayerBanEnforcer, playerBanFor, unbanPlayer } from "./services/playerBans.js";
 
 const config = loadConfig();
+loadPolicies(config.repoRoot);
 const auth = createAuth(config);
 const loginRateLimiter = createLoginRateLimiter();
 const mutationRateLimiter = createMutationRateLimiter();
 const bridgeRateLimiter = createBridgeRateLimiter();
-const tasks = new TaskManager(config);
+const oauthPendingStates = createPendingStateStore();
+const handoff = createHandoff({
+  secret: config.discordBotHandoffSecret,
+  botUrl: config.discordBotHandoffUrl,
+  homeGuildId: config.discordHomeGuildId
+});
+const resolveOAuthTier = createOAuthTierResolver({
+  bootstrap: {
+    allowOwnerBootstrap: config.discordOAuthAllowOwnerBootstrap,
+    homeGuildId: config.discordHomeGuildId,
+    ownerAllowlist: config.discordOAuthOwnerAllowlist
+  },
+  handoff: handoff.enabled ? handoff : null
+});
+// Deferred db read: db is assigned below and is reassignable on reconnect.
+// Both flush paths go through flushQueuedGeneratorRefills/flushQueuedWaterRefills
+// so a write lands in the audit log no matter which one applied it.
+const tasks = new TaskManager(config, {
+  onMapDown: () => flushBaseRefillQueues({
+    flushGenerators: flushQueuedGeneratorRefills,
+    flushWater: flushQueuedWaterRefills
+  })
+});
 let db = createDb(config);
 const publicDirectory = createPublicDirectoryReporter(config, { getDb: () => db });
 let carePackageAutoRunning = false;
 let carePackageAutoLastRun = 0;
 let carePackageAutoNextAllowedRun = 0;
+// The 5s poll and the restart-task onMapDown hook both call
+// flushQueuedGeneratorRefills and can overlap; refillBaseGenerators only locks
+// existing fuel rows, so an empty generator has nothing to serialize two
+// concurrent inserts against without this guard.
+let generatorRefillFlushRunning = false;
+// Same reasoning as generatorRefillFlushRunning, for the water queue.
+let waterRefillFlushRunning = false;
 let messageOfTheDayAutoRunning = false;
 let messageOfTheDayAutoLastRun = 0;
 let messageOfTheDayAutoNextAllowedRun = 0;
@@ -78,10 +118,48 @@ const addonJobScheduler = createAddonJobScheduler(config, {
   failureBackoffMs: BACKGROUND_SCAN_FAILURE_BACKOFF_MS
 });
 const landsraadMilestoneReconciler = createLandsraadMilestoneReconciler(config, { getDb: () => db });
+const autoRefillScheduler = createAutoRefillScheduler({
+  config,
+  getDb: () => db,
+  duneDb,
+  failureBackoffMs: BACKGROUND_SCAN_FAILURE_BACKOFF_MS
+});
+const autoRefillWaterScheduler = createAutoRefillWaterScheduler({
+  config,
+  getDb: () => db,
+  duneDb,
+  failureBackoffMs: BACKGROUND_SCAN_FAILURE_BACKOFF_MS
+});
+const playerBanEnforcer = createPlayerBanEnforcer({
+  config,
+  getDb: () => db,
+  duneDb,
+  failureBackoffMs: BACKGROUND_SCAN_FAILURE_BACKOFF_MS
+});
 
 process.on("unhandledRejection", (error) => {
   console.error(`Unhandled background rejection: ${redact(error?.message || error)}`);
 });
+
+async function filterForPlayerScope(session, db, data, getter) {
+  const scope = await resolvePlayerScopedIds(session, db);
+  if (!scope.scoped) return data;
+  return data.filter(row => {
+    const id = getter(row);
+    return id && scope.ids.has(String(id));
+  });
+}
+
+async function resolvePlayerScopedIds(session, db) {
+  if (!session || !session.userId) return { scoped: true, ids: new Set() };
+  if (session.tier !== "player") return { scoped: false, ids: new Set() };
+  try {
+    const chars = await duneDb.getAllLinkedPlayers(db, session.userId);
+    return { scoped: true, ids: new Set(chars.map(c => c.player_controller_id)) };
+  } catch {
+    return { scoped: true, ids: new Set() };
+  }
+}
 
 createServer(async (req, res) => {
   if (config.allowedIps.length) {
@@ -95,6 +173,23 @@ createServer(async (req, res) => {
   try {
     if (req.url?.startsWith("/api/")) {
       await handleApi(req, res);
+      return;
+    }
+    if (req.url?.startsWith("/atrium/")) {
+      const allowedUser = String(process.env.ATRIUM_ALLOWED_USER_ID || "").trim();
+      if (allowedUser) {
+        const session = auth.readSession(req);
+        if (!session) {
+          json(res, 401, { error: "Authentication required. Sign in to the console first." });
+          return;
+        }
+        if (session.userId !== allowedUser) {
+          res.writeHead(403, { "Content-Type": "text/html; charset=utf-8" });
+          res.end("<!DOCTYPE html><html><head><meta charset=\"UTF-8\"><title>Access Denied</title><style>body{font-family:-apple-system,sans-serif;background:#0d0f12;color:#f3efe7;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;text-align:center;padding:20px}h1{color:#e8a84c;font-size:1.5rem}p{color:#ad9f89;margin-top:8px}</style></head><body><div><h1>Access Denied</h1><p>This page is restricted. Contact the Discord server administration to request access.</p></div></body></html>");
+          return;
+        }
+      }
+      serveStatic(config, req, res);
       return;
     }
     serveStatic(config, req, res);
@@ -111,6 +206,11 @@ createServer(async (req, res) => {
   if (!config.authDisabled) {
     console.log("Initial admin password is stored in runtime/secrets/admin-web-password.txt");
   }
+  if (process.env.DISCORD_OAUTH_CLIENT_ID && !config.discordOAuthConfigured) {
+    console.warn("Warning: DISCORD_OAUTH_CLIENT_ID is set but Discord OAuth is incomplete.");
+    console.warn("Make sure DISCORD_HOME_GUILD_ID, DISCORD_OAUTH_REDIRECT_URI, and the client secret are all configured.");
+    console.warn("See .env.example for the full list of Discord OAuth environment variables.");
+  }
   scheduleBootAutoStart();
   publicDirectory.start();
   if (discordAdapterEnabled(config)) {
@@ -121,11 +221,16 @@ createServer(async (req, res) => {
 });
 
 setInterval(() => {
+  runBackgroundTick("Player ban enforcement", () => playerBanEnforcer.tick());
   runBackgroundTick("Care Package auto-grant", carePackageAutoTick);
   runBackgroundTick("Message of the Day", messageOfTheDayAutoTick);
   runBackgroundTick("Player announcements", playerAnnouncementsAutoTick);
   runBackgroundTick("Addon scheduled jobs", () => addonJobScheduler.tick());
   runBackgroundTick("Landsraad milestone preset", () => landsraadMilestoneReconciler.tick());
+  // Daily, but gated inside the tick like every other long-period job here.
+  // Costs one small file read when no base is enrolled, and no database query.
+  runBackgroundTick("Bases auto-refill", () => autoRefillScheduler.tick());
+  runBackgroundTick("Bases water auto-refill", () => autoRefillWaterScheduler.tick());
 }, 10000).unref?.();
 
 setInterval(() => {
@@ -138,6 +243,55 @@ setInterval(() => {
 }, deathPoller.intervalMs).unref?.();
 
 if (deathPoller.enabled) deathPoller.init(db, config.repoRoot).catch(() => {});
+
+// Queued generator refills apply while their map is down. This polls instead of
+// hooking the restart tasks because stop-all.sh removes the Postgres container
+// alongside the game servers, so there is no post-stop moment when the console
+// could still write: the window it waits for is a reachable database with no
+// live server on that partition, which start-all.sh opens well before the map
+// servers boot. Polling also covers restarts the console never initiated
+// (scheduler, IP change, CLI). Idle cost is one small file read per tick.
+const generatorRefillFlushIntervalMs = Number(process.env.ADMIN_REFILL_FLUSH_INTERVAL_MS);
+setInterval(() => {
+  // Two independent checks in the same tick rather than two setIntervals: an
+  // idle queue costs one more cheap file read, not a new timer. Each queue's
+  // check must stand alone -- an early return keyed on one queue's length
+  // would silently skip the other whenever only it had pending entries.
+  if (duneDb.listQueuedGeneratorRefills(config.repoRoot).length) {
+    runBackgroundTick("Generator refill flush", () => flushQueuedGeneratorRefills());
+  }
+  if (duneDb.listQueuedWaterRefills(config.repoRoot).length) {
+    runBackgroundTick("Water refill flush", () => flushQueuedWaterRefills());
+  }
+}, Number.isFinite(generatorRefillFlushIntervalMs) && generatorRefillFlushIntervalMs > 0 ? generatorRefillFlushIntervalMs : 5000).unref?.();
+
+// Every queued-refill write goes through here so it is audited whichever path
+// triggered it: the tick above, or the restart task runner's onMapDown hook.
+// These are real writes to player property, so an unaudited one is not acceptable.
+async function flushQueuedGeneratorRefills() {
+  if (generatorRefillFlushRunning) return { flushed: [] };
+  generatorRefillFlushRunning = true;
+  try {
+    const result = await duneDb.flushGeneratorRefills(db, config.repoRoot);
+    for (const entry of result.flushed || []) audit(config, null, "bases.flush-queued-refill", entry);
+    return result;
+  } finally {
+    generatorRefillFlushRunning = false;
+  }
+}
+
+// Same reasoning as flushQueuedGeneratorRefills, for the water queue.
+async function flushQueuedWaterRefills() {
+  if (waterRefillFlushRunning) return { flushed: [] };
+  waterRefillFlushRunning = true;
+  try {
+    const result = await duneDb.flushWaterRefills(db, config.repoRoot);
+    for (const entry of result.flushed || []) audit(config, null, "bases.flush-queued-water-refill", entry);
+    return result;
+  } finally {
+    waterRefillFlushRunning = false;
+  }
+}
 
 function runBackgroundTick(label, fn) {
   Promise.resolve()
@@ -289,6 +443,64 @@ async function handleApi(req, res) {
     audit(config, req, "auth.logout");
     return json(res, 200, { ok: true });
   }
+  if (path === "/api/auth/me") {
+    const session = auth.requireAuth(req, res);
+    if (!session) return;
+    let linkedCharacters = [];
+    if (session.userId) {
+      try { linkedCharacters = await duneDb.getAllLinkedPlayers(db, session.userId) || []; } catch { linkedCharacters = []; }
+    }
+    return json(res, 200, {
+      user: {
+        id: session.userId || "local-admin",
+        username: session.username || "Admin",
+        tier: session.tier || "owner",
+        guildId: session.guildId || ""
+      },
+      linkedCharacters,
+      allowedActions: resolveAllowedActions(session.tier || "owner")
+    });
+  }
+  if (path === "/api/auth/characters" && req.method === "GET") {
+    const session = auth.requireAuth(req, res);
+    if (!session) return;
+    try {
+      const chars = await duneDb.getAllLinkedPlayers(db, session.userId);
+      return json(res, 200, { characters: chars || [] });
+    } catch { return json(res, 200, { characters: [] }); }
+  }
+  if (path === "/api/auth/discord/start" && req.method === "GET") {
+    if (!config.discordOAuthConfigured) {
+      return json(res, 404, { error: "Discord sign-in is not configured for this console. Sign in with the admin password." });
+    }
+    const rate = loginRateLimiter.check(loginRateLimitKey(req));
+    if (!rate.allowed) {
+      return json(res, 429, { error: "Too many sign-in attempts. Please wait a few minutes, then try again." }, { "retry-after": String(rate.retryAfterSeconds) });
+    }
+    const pending = oauthPendingStates.issue();
+    if (!pending) {
+      return json(res, 429, { error: "Too many Discord sign-in sessions in progress. Try again in a moment." });
+    }
+    const { state, challenge } = pending;
+    res.setHeader("Set-Cookie", oauthStateCookie(state, config.secureCookies));
+    const authorizeUrl = buildAuthorizeUrl({ clientId: config.discordOAuthClientId, redirectUri: config.discordOAuthRedirectUri, state, codeChallenge: challenge });
+    res.writeHead(302, { Location: authorizeUrl });
+    res.end();
+    audit(config, sanitizedUrl(req, "/api/auth/discord/start"), "auth.oauth.start", { ok: true });
+    return;
+  }
+  if (path === "/api/auth/discord/exchange" && req.method === "POST") {
+    if (!config.discordOAuthConfigured) {
+      return json(res, 404, { error: "Discord sign-in is not configured for this console." });
+    }
+    return handleDiscordTokenExchange(req, res);
+  }
+  if (path === "/api/auth/discord/callback") {
+    if (!config.discordOAuthConfigured) {
+      return json(res, 404, { error: "Discord sign-in is not configured for this console. Sign in with the admin password." });
+    }
+    return handleOAuthCallback(req, res);
+  }
   if (isDiscordAdapterRoute(path)) {
     return handleDiscordAdapterRoute({ req, res, path, config, readJson, json, db });
   }
@@ -297,10 +509,17 @@ async function handleApi(req, res) {
   if (!session) return;
   req.authSession = session;
 
+  const action = actionForRoute(path, req.method);
+  if (!action || !evaluate(session, action)) {
+    return json(res, 403, { error: "Your account does not have permission to access this resource." });
+  }
+
   if (path === "/api/setup/state") return json(res, 200, await setupState());
   if (path === "/api/setup/preflight" && req.method === "POST") return json(res, 200, await preflight(config));
   if (path === "/api/setup/write-config" && req.method === "POST") return writeConfig(req, res);
   if (path === "/api/setup/save-token" && req.method === "POST") return saveToken(req, res);
+  if (path === "/api/setup/save-oauth-secret" && req.method === "POST") return saveOAuthClientSecret(req, res);
+  if (path === "/api/setup/write-oauth-config" && req.method === "POST") return writeOAuthConfig(req, res);
   if (path === "/api/setup/init" && req.method === "POST") return task(req, res, "setup", "init", {});
   if (path === "/api/setup/tasks") return json(res, 200, { tasks: tasks.list().map(publicTask) });
   if (path === "/api/public-directory/status") return json(res, 200, publicDirectory.publicState());
@@ -383,6 +602,8 @@ async function handleApi(req, res) {
   }
   if (path === "/api/database/status") return dbJson(res, () => duneDb.dbStatus(db));
   if (path === "/api/database/schemas") return dbJson(res, () => duneDb.listSchemas(db));
+  if (path === "/api/database/routines") return dbJson(res, () => duneDb.listRoutines(db, url.searchParams.get("schema") || "dune", url.searchParams.get("q") || ""));
+  if (path.match(/^\/api\/database\/routines\/[^/]+$/)) return dbJson(res, () => duneDb.routineDefinition(db, decodeURIComponent(path.split("/").pop())));
   if (path === "/api/database/tables") return dbJson(res, () => duneDb.listTables(db, url.searchParams.get("schema") || "dune"));
   if (path.match(/^\/api\/database\/tables\/[^/]+\/[^/]+\/columns$/)) return databaseTableRoute(req, res, path, "columns", url);
   if (path.match(/^\/api\/database\/tables\/[^/]+\/[^/]+\/preview$/)) return databaseTableRoute(req, res, path, "preview", url);
@@ -398,21 +619,75 @@ async function handleApi(req, res) {
   if (path === "/api/database/password" && req.method === "POST") return databasePasswordRoute(req, res);
   if (path === "/api/settings/admin-password" && req.method === "POST") return adminPasswordRoute(req, res);
   if (path === "/api/settings/web-port" && req.method === "POST") return webPortRoute(req, res);
+  if (path === "/api/settings/iam/policies" && req.method === "GET") {
+    const policies = getAllPolicies();
+    return json(res, 200, {
+      policies: Object.fromEntries(
+        Object.entries(policies).map(([tier, doc]) => [tier, { version: doc.version, tier: doc.tier, statements: doc.statements }])
+      ),
+      actions: Object.keys(ROUTE_ACTIONS).sort(),
+      actionMap: ROUTE_ACTIONS,
+      namespaces: NAMESPACES
+    });
+  }
+  if (path === "/api/settings/iam/policy" && req.method === "PUT") {
+    const body = await readJson(req);
+    if (!body || !body.tier || !body.statements) return json(res, 400, { error: "tier and statements are required" });
+    const validActions = new Set(Object.values(ROUTE_ACTIONS));
+    for (const stmt of body.statements) {
+      if (!stmt.Effect || !["Allow", "Deny"].includes(stmt.Effect)) return json(res, 400, { error: `Invalid Effect: ${stmt.Effect}` });
+      const actions = Array.isArray(stmt.Action) ? stmt.Action : [stmt.Action];
+      for (const a of actions) {
+        if (a !== "*" && !a.includes("*") && !validActions.has(a)) return json(res, 400, { error: `Unknown action: ${a}` });
+      }
+    }
+    const policies = getAllPolicies();
+    policies[body.tier] = { version: 1, tier: body.tier, statements: body.statements };
+    setPolicies(policies);
+    return json(res, 200, { ok: true, tier: body.tier });
+  }
+  if (path === "/api/settings/iam/policy/test" && req.method === "POST") {
+    const body = await readJson(req);
+    if (!body || !body.statements) return json(res, 400, { error: "statements are required" });
+    const results = {};
+    for (const [route, action] of Object.entries(ROUTE_ACTIONS)) {
+      let allowed = false;
+      for (const stmt of body.statements) {
+        const stmtActions = Array.isArray(stmt.Action) ? stmt.Action : [stmt.Action];
+        for (const pattern of stmtActions) {
+          if (matchAction(pattern, action)) {
+            if (stmt.Effect === "Deny") { allowed = false; break; }
+            if (stmt.Effect === "Allow") allowed = true;
+          }
+        }
+        if (allowed === false && stmt.Effect === "Deny") break;
+      }
+      results[action] = allowed;
+    }
+    return json(res, 200, { results });
+  }
 
-  if (path === "/api/players") return dbJson(res, () => duneDb.listPlayers(db, {
-    q: url.searchParams.get("q") || "",
-    page: url.searchParams.get("page") || 0,
-    pageSize: url.searchParams.get("pageSize") || 50,
-    status: url.searchParams.get("status") || "all",
-    sortColumn: url.searchParams.get("sortColumn") || "character_name",
-    sortDirection: url.searchParams.get("sortDirection") || "asc"
-  }));
+  if (path === "/api/players") return dbJson(res, async () => {
+    const session = auth.readSession(req);
+    const scope = await resolvePlayerScopedIds(session, db);
+    return duneDb.listPlayers(db, {
+      q: url.searchParams.get("q") || "",
+      page: url.searchParams.get("page") || 0,
+      pageSize: url.searchParams.get("pageSize") || 50,
+      status: url.searchParams.get("status") || "all",
+      sortColumn: url.searchParams.get("sortColumn") || "character_name",
+      sortDirection: url.searchParams.get("sortDirection") || "asc",
+      bannedFlsIds: bannedFlsIds(config.repoRoot),
+      controllerIds: scope.scoped ? Array.from(scope.ids) : undefined
+    });
+  });
   if (path === "/api/players/online") return dbJson(res, () => duneDb.listPlayers(db, {
     status: "online",
     page: url.searchParams.get("page") || 0,
-    pageSize: url.searchParams.get("pageSize") || 200
+    pageSize: url.searchParams.get("pageSize") || 200,
+    bannedFlsIds: bannedFlsIds(config.repoRoot)
   }));
-  if (path === "/api/players/search") return dbJson(res, () => duneDb.listPlayers(db, { q: url.searchParams.get("q") || "" }));
+  if (path === "/api/players/search") return dbJson(res, () => duneDb.listPlayers(db, { q: url.searchParams.get("q") || "", bannedFlsIds: bannedFlsIds(config.repoRoot) }));
   if (path === "/api/guilds") return dbJson(res, () => duneDb.listGuilds(db, {
     q: url.searchParams.get("q") || "",
     page: url.searchParams.get("page") || 0,
@@ -420,6 +695,11 @@ async function handleApi(req, res) {
     sortColumn: url.searchParams.get("sortColumn") || "guild_name",
     sortDirection: url.searchParams.get("sortDirection") || "asc"
   }));
+  if (path.match(/^\/api\/guilds\/[^/]+\/members\/[^/]+\/promote$/) && req.method === "POST") return guildPromoteRoute(req, res, path);
+  if (path.match(/^\/api\/guilds\/[^/]+\/members\/[^/]+\/demote$/) && req.method === "POST") return guildDemoteRoute(req, res, path);
+  if (path.match(/^\/api\/guilds\/[^/]+\/members$/) && req.method === "POST") return guildAddMemberRoute(req, res, path);
+  if (path.match(/^\/api\/guilds\/[^/]+\/members\/[^/]+$/) && req.method === "DELETE") return guildRemoveMemberRoute(req, res, path);
+  if (path.match(/^\/api\/guilds\/[^/]+$/) && req.method === "DELETE") return guildDisbandRoute(req, res, path);
   if (path.match(/^\/api\/guilds\/[^/]+\/members$/)) return dbJson(res, () => duneDb.guildMembers(db, decodeURIComponent(path.split("/")[3])));
   if (path === "/api/bases") return dbJson(res, () => duneDb.listBases(db, {
     q: url.searchParams.get("q") || "",
@@ -428,7 +708,22 @@ async function handleApi(req, res) {
     sortColumn: url.searchParams.get("sortColumn") || "name",
     sortDirection: url.searchParams.get("sortDirection") || "asc"
   }));
+  if (path === "/api/bases/pending-refills") return pendingGeneratorRefillsRoute(res);
+  if (path === "/api/bases/auto-refill") return basesAutoRefillStateRoute(res);
+  if (path === "/api/bases/pending-water-refills") return pendingWaterRefillsRoute(res);
+  if (path === "/api/bases/auto-refill-water") return basesAutoRefillWaterStateRoute(res);
   if (path.match(/^\/api\/bases\/[^/]+\/export$/) && req.method === "GET") return baseBlueprintDownloadRoute(req, res, path);
+  if (path.match(/^\/api\/bases\/[^/]+\/refill-generators$/) && req.method === "POST") return baseRefillGeneratorsRoute(req, res, path);
+  if (path.match(/^\/api\/bases\/[^/]+\/queued-refill$/) && req.method === "DELETE") return baseCancelQueuedRefillRoute(req, res, path);
+  if (path.match(/^\/api\/bases\/[^/]+\/auto-refill$/) && req.method === "POST") return baseAutoRefillToggleRoute(req, res, path);
+  if (path.match(/^\/api\/bases\/[^/]+\/water$/) && req.method === "GET") return baseWaterRoute(res, path);
+  if (path.match(/^\/api\/bases\/[^/]+\/refill-water$/) && req.method === "POST") return baseRefillWaterRoute(req, res, path);
+  if (path.match(/^\/api\/bases\/[^/]+\/queued-water-refill$/) && req.method === "DELETE") return baseCancelQueuedWaterRefillRoute(req, res, path);
+  if (path.match(/^\/api\/bases\/[^/]+\/auto-refill-water$/) && req.method === "POST") return baseAutoRefillWaterToggleRoute(req, res, path);
+  if (path === "/api/bases/permission-candidates") return basePermissionCandidatesRoute(res, url);
+  if (path.match(/^\/api\/bases\/[^/]+\/permissions$/) && req.method === "GET") return basePermissionsRoute(res, path);
+  if (path.match(/^\/api\/bases\/[^/]+\/permissions$/) && req.method === "PUT") return baseSetPermissionsRoute(req, res, path);
+  if (path.match(/^\/api\/bases\/[^/]+\/system-custodian$/) && req.method === "POST") return baseSystemCustodianRoute(req, res, path);
   if (path === "/api/admin/items/catalog") return json(res, 200, { rows: listCatalogItems(config.repoRoot, { q: url.searchParams.get("q") || "", limit: url.searchParams.get("limit") || 500 }) });
   if (path === "/api/admin/items/search") return commandJson(res, "adminItemSearch", { q: url.searchParams.get("q") || "" });
   if (path === "/api/admin/items") return commandJson(res, url.searchParams.get("category") ? "adminItemListCategory" : "adminItemList", { category: url.searchParams.get("category") || "" });
@@ -492,6 +787,7 @@ async function handleApi(req, res) {
   if (path.match(/^\/api\/players\/[^/]+\/set-skill-module$/) && req.method === "POST") return playerTask(req, res, path, "adminSetSkillModule");
   if (path.match(/^\/api\/players\/[^/]+\/refill-water$/) && req.method === "POST") return playerTask(req, res, path, "adminRefillWater");
   if (path.match(/^\/api\/players\/[^/]+\/kick$/) && req.method === "POST") return playerTask(req, res, path, "adminKick");
+  if (path.match(/^\/api\/players\/[^/]+\/ban$/)) return playerBanRoute(req, res, path);
   if (path.match(/^\/api\/players\/[^/]+\/repair-login-queue$/) && req.method === "POST") return playerTask(req, res, path, "adminRepairLoginQueue", "REPAIR LOGIN QUEUE");
   if (path === "/api/players/kick-all-online" && req.method === "POST") return confirmedTask(req, res, "admin", "adminKickAllOnline", {}, "KICK ALL ONLINE PLAYERS");
   if (path.match(/^\/api\/players\/[^/]+\/teleport$/) && req.method === "POST") return playerTask(req, res, path, "adminTeleport");
@@ -533,13 +829,14 @@ async function handleApi(req, res) {
   if (path.match(/^\/api\/players\/[^/]+\/events$/)) return dbPlayerUnsupported(res, path, "events");
   if (path.match(/^\/api\/players\/[^/]+\/stats$/)) return dbPlayerUnsupported(res, path, "stats");
   if (path.match(/^\/api\/players\/[^/]+\/history$/)) return dbPlayerUnsupported(res, path, "history");
-  if (path.match(/^\/api\/players\/[^/]+$/)) return dbPlayerRoute(res, path, duneDb.playerProfile);
+  if (path.match(/^\/api\/players\/[^/]+$/)) return playerProfileRoute(res, path);
 
   if (path === "/api/storage") return dbJson(res, () => duneDb.listStorage(db));
   if (path.match(/^\/api\/storage\/[^/]+$/)) return dbJson(res, async () => ({ storage: (await duneDb.listStorage(db)).rows.find((row) => String(row.id) === decodeURIComponent(path.split("/")[3])) || null }));
   if (path.match(/^\/api\/storage\/[^/]+\/items$/)) return dbJson(res, () => duneDb.storageItems(db, decodeURIComponent(path.split("/")[3])));
   if (path.match(/^\/api\/storage\/[^/]+\/give-item$/) && req.method === "POST") return storageGiveItemRoute(req, res, path);
   if (path.match(/^\/api\/storage\/[^/]+\/fill-item$/) && req.method === "POST") return storageFillItemRoute(req, res, path);
+  if (path.match(/^\/api\/storage\/[^/]+\/remove-items$/) && req.method === "POST") return storageRemoveItemsRoute(req, res, path);
   if (path.match(/^\/api\/storage\/[^/]+\/export$/)) return exportJson(res, `storage-${decodeURIComponent(path.split("/")[3])}.json`, () => duneDb.storageItems(db, decodeURIComponent(path.split("/")[3])));
   if (path === "/api/blueprints" && req.method === "GET") return dbJson(res, () => listBlueprints(db));
   if (path === "/api/blueprints/export" && req.method === "POST") return blueprintBulkExportRoute(req, res);
@@ -578,6 +875,9 @@ async function handleApi(req, res) {
   if (path === "/api/maps/reconcile" && req.method === "POST") return confirmedTask(req, res, "maps", "mapsReconcile", {}, "RECONCILE MAPS");
   if (path === "/api/maps/spawn" && req.method === "POST") return confirmedTask(req, res, "maps", "mapsSpawn", {}, "SPAWN MAP");
   if (path === "/api/maps/despawn" && req.method === "POST") return confirmedTask(req, res, "maps", "mapsDespawn", {}, "DESPAWN MAP");
+  // Restart for a map with no managed service: one task that despawns then
+  // respawns its partition. task() audits and validates the target for us.
+  if (path === "/api/maps/respawn" && req.method === "POST") return confirmedTask(req, res, "maps", "mapsRespawn", {}, "RESTART MAP");
   if (path === "/api/maps/autoscaler" && req.method === "POST") return confirmedTask(req, res, "maps", "autoscalerAction", {}, "AUTOSCALER CHANGE");
   if (path === "/api/maps/autoscaler") return commandJson(res, "autoscalerStatus");
   if (path === "/api/maps/memory" && req.method === "POST") return memoryRoute(req, res);
@@ -653,6 +953,12 @@ async function addonBridgeRoute(req, res, path) {
     audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, ok: true });
     return json(res, 200, { ok: true, result });
   }
+  if (action === "ops.location.activity") {
+    // Permanently out of scope — per-player location tracking belongs to the
+    // Console's map UI. The addon handles this gracefully by showing the
+    // Location tab as permanently unavailable.
+    return json(res, 200, { ok: true, status: "planned", reason: "not_implemented" });
+  }
   if (action === "ops.resources.summary") {
     const addon = assertInstalledAddonPermission(config, id, "ops:read");
     const result = await duneDb.addonOpsResourcesSummary(db, config);
@@ -686,6 +992,12 @@ async function addonBridgeRoute(req, res, path) {
   if (action === "ops.health.prometheus") {
     const addon = assertInstalledAddonPermission(config, id, "ops:read");
     const result = await duneDb.addonOpsPrometheusHealth();
+    audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, ok: true });
+    return json(res, 200, { ok: true, result });
+  }
+  if (action === "ops.health.containers") {
+    const addon = assertInstalledAddonPermission(config, id, "ops:read");
+    const result = await duneDb.addonOpsContainerHealth();
     audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, ok: true });
     return json(res, 200, { ok: true, result });
   }
@@ -822,7 +1134,9 @@ function addonContentRoute(req, res, path) {
   res.writeHead(200, withSecurityHeaders({
     "content-type": contentTypeForPath(target),
     "x-frame-options": "SAMEORIGIN",
-    "cache-control": "no-cache, no-store, must-revalidate"
+    "cache-control": "no-cache, no-store, must-revalidate",
+    "pragma": "no-cache",
+    "expires": "0"
   }));
   createReadStream(target).pipe(res);
 }
@@ -1082,7 +1396,9 @@ async function databasePasswordRoute(req, res) {
     return json(res, 400, { error: "Database password changes are unavailable while ADMIN_DATABASE_URL is set. Update the connection URL instead." });
   }
   await duneDb.changeDunePassword(db, password);
-  updateEnvFileValue("DUNE_DB_PASSWORD", password);
+  const pwFile = resolve(config.secretsDir, "dune-db-password.txt");
+  writeFileSync(pwFile, `${password}\n`, { mode: 0o600 });
+  try { chmodSync(pwFile, 0o600); } catch {}
   process.env.DUNE_DB_PASSWORD = password;
   const previousDb = db;
   db = createDb(config);
@@ -1547,15 +1863,17 @@ async function userSettingsSchemaRoute(res) {
 
 async function userSettingsRawRoute(res, url) {
   const kind = String(url.searchParams.get("kind") || "engine");
-  const map = kind === "client-game" ? (url.searchParams.get("map") || "") : (url.searchParams.get("map") || "Survival_1");
+  const map = (kind === "client-game" || kind === "client-engine") ? (url.searchParams.get("map") || "") : (url.searchParams.get("map") || "Survival_1");
   const partitionId = url.searchParams.get("partitionId") || "";
   const operation = kind === "profile"
     ? "userSettingsProfileRaw"
     : kind === "client-game"
       ? "userSettingsClientGameIni"
-      : kind === "engine"
-        ? "userSettingsRawEngine"
-        : "userSettingsRawGame";
+      : kind === "client-engine"
+        ? "userSettingsClientEngineIni"
+        : kind === "engine"
+          ? "userSettingsRawEngine"
+          : "userSettingsRawGame";
   try {
     const result = await runDune(config, buildDuneArgs(operation, { map, partitionId }), { timeoutMs: 8000, redactOutput: false });
     return json(res, 200, { content: result.stdout || "" });
@@ -1724,6 +2042,65 @@ async function playerTask(req, res, path, operation, phrase = "") {
   return task(req, res, "admin", operation, { ...body, playerId });
 }
 
+async function playerIdentityForBan(playerId) {
+  const result = await duneDb.listPlayers(db, { q: String(playerId), page: 0, pageSize: 10, includeTotals: false });
+  const player = (result.rows || []).find((row) => String(row.actor_id) === String(playerId));
+  if (!player) throw Object.assign(new Error("Player not found."), { statusCode: 404 });
+  if (!player.fls_id) throw Object.assign(new Error("This player has no stable FLS account ID yet. Ask them to connect once before banning them."), { statusCode: 409 });
+  return player;
+}
+
+async function playerProfileRoute(res, path) {
+  const playerId = decodeURIComponent(path.split("/")[3]);
+  return dbJson(res, async () => {
+    const profile = await duneDb.playerProfile(db, playerId);
+    const fallbackIdentity = profile.player || {};
+    const identity = fallbackIdentity.fls_id ? fallbackIdentity : await playerIdentityForBan(playerId).catch(() => fallbackIdentity);
+    const ban = playerBanFor(config.repoRoot, identity);
+    profile.player = { ...profile.player, is_banned: Boolean(ban), ban: ban || null };
+    return profile;
+  });
+}
+
+async function playerBanRoute(req, res, path) {
+  if (!["GET", "POST", "DELETE"].includes(req.method || "GET")) return json(res, 405, { error: "Method not allowed" });
+  if (req.method !== "GET" && !applyMutationRateLimit(req, res, `players.${req.method === "POST" ? "ban" : "unban"}`)) return;
+  const playerId = decodeURIComponent(path.split("/")[3]);
+  try {
+    const player = await playerIdentityForBan(playerId);
+    const existing = playerBanFor(config.repoRoot, player);
+    if (req.method === "GET") return json(res, 200, { ok: true, banned: Boolean(existing), ban: existing });
+
+    if (req.method === "DELETE") {
+      const result = unbanPlayer(config.repoRoot, player.fls_id);
+      audit(config, req, "players.unban", { playerId, flsId: player.fls_id, characterName: player.character_name, wasBanned: result.wasBanned });
+      return json(res, 200, { ...result, banned: false });
+    }
+
+    const body = await readJson(req);
+    if (body.confirmation !== "BAN PLAYER") return json(res, 400, { error: "Confirmation phrase required: BAN PLAYER" });
+    const result = banPlayer(config.repoRoot, player, { reason: body.reason });
+    let enforcement = { enforced: false, reason: "offline" };
+    if (String(player.actual_online_status || player.online_status || "").toLowerCase() === "online") {
+      enforcement = await playerBanEnforcer.enforcePlayer(player);
+    }
+    audit(config, req, "players.ban", {
+      playerId,
+      flsId: player.fls_id,
+      accountId: player.account_id,
+      characterName: player.character_name,
+      reason: result.ban.reason,
+      alreadyBanned: result.alreadyBanned,
+      enforcement: enforcement.enforced
+    });
+    return json(res, 200, { ...result, banned: true, enforcement });
+  } catch (error) {
+    const payload = apiErrorPayload(error, 400);
+    audit(config, req, req.method === "DELETE" ? "players.unban" : "players.ban", { playerId, ok: false, error: payload.body.error });
+    return json(res, payload.status, payload.body);
+  }
+}
+
 async function carePackageConfigRoute(req, res) {
   const body = await readJson(req);
   if (body.confirmation !== "SAVE CARE PACKAGE") return json(res, 400, { error: "Confirmation phrase required: SAVE CARE PACKAGE" });
@@ -1878,6 +2255,41 @@ async function playerDbMutation(req, res, path, action, phrase, fn) {
   return directDbMutation(req, res, action, phrase, (body) => fn(playerId, body), { playerId });
 }
 
+async function guildPromoteRoute(req, res, path) {
+  const parts = path.split("/");
+  const guildId = decodeURIComponent(parts[3]);
+  const playerId = decodeURIComponent(parts[5]);
+  return directDbMutation(req, res, "guilds.promote-member", null, () => duneDb.promoteGuildMember(db, guildId, playerId), { guildId, playerId });
+}
+
+async function guildDemoteRoute(req, res, path) {
+  const parts = path.split("/");
+  const guildId = decodeURIComponent(parts[3]);
+  const playerId = decodeURIComponent(parts[5]);
+  return directDbMutation(req, res, "guilds.demote-member", null, () => duneDb.demoteGuildMember(db, guildId, playerId), { guildId, playerId });
+}
+
+async function guildAddMemberRoute(req, res, path) {
+  const guildId = decodeURIComponent(path.split("/")[3]);
+  return directDbMutation(req, res, "guilds.add-member", null, async (body) => {
+    const settings = await runDune(config, buildDuneArgs("userSettingsMapValues", { map: "Survival_1" }), { timeoutMs: 8000 });
+    const maxMembers = parseEffectiveGuildMemberLimit(settings.stdout);
+    return duneDb.addGuildMember(db, guildId, body.playerId, body.roleId, maxMembers);
+  }, { guildId });
+}
+
+async function guildRemoveMemberRoute(req, res, path) {
+  const parts = path.split("/");
+  const guildId = decodeURIComponent(parts[3]);
+  const playerId = decodeURIComponent(parts[5]);
+  return directDbMutation(req, res, "guilds.remove-member", null, () => duneDb.removeGuildMember(db, guildId, playerId), { guildId, playerId });
+}
+
+async function guildDisbandRoute(req, res, path) {
+  const guildId = decodeURIComponent(path.split("/")[3]);
+  return directDbMutation(req, res, "guilds.disband", "DISBAND GUILD", () => duneDb.disbandGuild(db, guildId), { guildId });
+}
+
 async function inventoryDeleteRoute(req, res, path) {
   const parts = path.split("/");
   const playerId = decodeURIComponent(parts[3]);
@@ -1906,6 +2318,13 @@ async function storageFillItemRoute(req, res, path) {
     const resolved = resolveFillableCatalogItem(config.repoRoot, body);
     const itemVolume = resolved.volume || resolveItemVolume(config.repoRoot, resolved.itemId);
     return duneDb.fillItemToStorage(db, config.repoRoot, storageId, { ...body, templateId: resolved.itemId, itemVolume });
+  }, { storageId });
+}
+
+async function storageRemoveItemsRoute(req, res, path) {
+  const storageId = decodeURIComponent(path.split("/")[3]);
+  return directDbMutation(req, res, "storage.remove-items", "REMOVE ITEMS FROM STORAGE", async (body) => {
+    return duneDb.removeItemsFromStorage(db, storageId, body);
   }, { storageId });
 }
 
@@ -1943,6 +2362,259 @@ async function baseBlueprintDownloadRoute(req, res, path) {
   } catch (error) {
     const status = error.unsupported ? 501 : 500;
     return json(res, status, { ok: false, error: redact(error.message || error) });
+  }
+}
+
+async function baseRefillGeneratorsRoute(req, res, path) {
+  const baseId = Number(decodeURIComponent(path.split("/")[3]));
+  if (!Number.isFinite(baseId) || baseId < 1) return json(res, 400, { error: "Invalid base ID" });
+  // No confirmation phrase: refilling is additive and reversible, unlike the
+  // deletes and overwrites that phrase-gate. Still rate limited and audited.
+  return directDbMutation(req, res, "bases.refill-generators", null, async () => {
+    const target = await duneDb.baseRefillTarget(db, baseId);
+    // A live game server rewrites its own copy of a base back to Postgres on a
+    // timer, so refilling a running map now can be overwritten before anyone
+    // sees the fuel. Record it instead and let the flush tick apply it once
+    // that map is down.
+    if (target.queueSupported && !target.writeSafeNow) {
+      const entry = duneDb.queueGeneratorRefill(config.repoRoot, {
+        baseId,
+        map: target.map,
+        partitionId: target.partitionId
+      });
+      return { ok: true, queued: true, ...entry };
+    }
+    return duneDb.refillBaseGenerators(db, config.repoRoot, baseId);
+  }, { baseId });
+}
+
+async function basePermissionsRoute(res, path) {
+  const baseId = Number(decodeURIComponent(path.split("/")[3]));
+  if (!Number.isFinite(baseId) || baseId < 1) return json(res, 400, { error: "Invalid base ID" });
+  try {
+    return json(res, 200, { supported: true, ...(await duneDb.listBasePermissions(db, baseId)) });
+  } catch (error) {
+    const status = error.unsupported ? 501 : 400;
+    return json(res, status, { supported: false, error: redact(error.message || error), reason: redact(error.message || error) });
+  }
+}
+
+async function basePermissionCandidatesRoute(res, url) {
+  try {
+    const rows = await duneDb.basePermissionCandidates(db, {
+      q: url.searchParams.get("q") || "",
+      limit: url.searchParams.get("limit") || 25
+    });
+    return json(res, 200, { supported: true, rows });
+  } catch (error) {
+    const status = error.unsupported ? 501 : 400;
+    return json(res, status, { supported: false, rows: [], error: redact(error.message || error), reason: redact(error.message || error) });
+  }
+}
+
+// No confirmation phrase, matching the guild mutations and the refill route:
+// permissions are reversible from this same editor. Still rate limited and
+// audited -- this writes to player property.
+//
+// The cap is read from live server config on every save rather than baked in,
+// exactly as guildAddMemberRoute resolves the guild member limit. Raising it is
+// then a settings edit, not a release.
+async function baseSetPermissionsRoute(req, res, path) {
+  const baseId = Number(decodeURIComponent(path.split("/")[3]));
+  if (!Number.isFinite(baseId) || baseId < 1) return json(res, 400, { error: "Invalid base ID" });
+  return directDbMutation(req, res, "bases.set-permissions", null, async (body) => {
+    const settings = await runDune(config, buildDuneArgs("userSettingsMapValues", { map: "Survival_1" }), { timeoutMs: 8000 });
+    const maxPermissions = parseEffectivePermissionLimit(settings.stdout);
+    return duneDb.setBasePermissions(db, baseId, body.entries, maxPermissions);
+  }, { baseId });
+}
+
+async function baseSystemCustodianRoute(req, res, path) {
+  const baseId = Number(decodeURIComponent(path.split("/")[3]));
+  if (!Number.isFinite(baseId) || baseId < 1) return json(res, 400, { error: "Invalid base ID" });
+  return directDbMutation(req, res, "bases.transfer-system-custodian", null, async () => {
+    const settings = await runDune(config, buildDuneArgs("userSettingsMapValues", { map: "Survival_1" }), { timeoutMs: 8000 });
+    const maxPermissions = parseEffectivePermissionLimit(settings.stdout);
+    return duneDb.transferBaseToSystemCustodian(db, baseId, maxPermissions);
+  }, { baseId });
+}
+
+async function baseCancelQueuedRefillRoute(req, res, path) {
+  const baseId = Number(decodeURIComponent(path.split("/")[3]));
+  if (!Number.isFinite(baseId) || baseId < 1) return json(res, 400, { error: "Invalid base ID" });
+  return directDbMutation(req, res, "bases.cancel-queued-refill", null,
+    () => duneDb.cancelQueuedGeneratorRefill(config.repoRoot, baseId), { baseId });
+}
+
+// Grouped per (map, partition) so the Bases banner, the Maps panel badges, and
+// the battlegroup buttons all read the same counts from one call. Grouping by
+// map alone is not enough: a Sietch partition of Survival_1 needs its own
+// container restarted, which restarting the map's primary service would not do.
+//
+// Each group also carries the partition's world_partition identity, resolved
+// here rather than stored on the queue entry: the entry's own map name comes
+// from dune.actors and is a different namespace (see partitionRestartTargets),
+// resolving live keeps entries queued before this existed working, and it cannot
+// go stale if a partition is reassigned.
+async function pendingGeneratorRefillsRoute(res) {
+  const pending = duneDb.listQueuedGeneratorRefills(config.repoRoot);
+  // Counts must still render when the database is unreachable -- which is
+  // precisely when a battlegroup is down and the queue matters most.
+  const targets = pending.length
+    ? await duneDb.partitionRestartTargets(db).catch(() => new Map())
+    : new Map();
+  const byTarget = new Map();
+  for (const entry of pending) {
+    const map = entry.map || "Unknown";
+    const key = `${map}|${entry.partitionId}`;
+    const target = targets.get(entry.partitionId);
+    const group = byTarget.get(key) || {
+      map,
+      partitionId: entry.partitionId,
+      partitionMap: target?.map || "",
+      dimensionIndex: target?.dimensionIndex ?? 0,
+      count: 0
+    };
+    group.count += 1;
+    byTarget.set(key, group);
+  }
+  return json(res, 200, {
+    supported: true,
+    total: pending.length,
+    pending,
+    byTarget: [...byTarget.values()].sort((a, b) => a.map.localeCompare(b.map) || a.partitionId - b.partitionId)
+  });
+}
+
+// Enrollment state for the Bases panel's auto-refill toggle. Like the pending
+// counts above, this still answers when the database is unreachable: the
+// enrollment list is a file, and only `supported` needs a live connection.
+async function basesAutoRefillStateRoute(res) {
+  const supported = await duneDb.supportsGeneratorRefillQueue(db).catch(() => false);
+  return json(res, 200, { supported, ...autoRefillPublicState(config.repoRoot) });
+}
+
+// Console-owned configuration rather than a database mutation, so this follows
+// the settings routes (plain handler plus an explicit audit) instead of
+// directDbMutation's confirmation-phrase machinery.
+async function baseAutoRefillToggleRoute(req, res, path) {
+  const baseId = Number(decodeURIComponent(path.split("/")[3]));
+  if (!Number.isFinite(baseId) || baseId < 1) return json(res, 400, { error: "Invalid base ID" });
+  const body = await readJson(req);
+  if (typeof body.enabled !== "boolean") {
+    return json(res, 400, { error: "Auto-refill enabled must be true or false." });
+  }
+  // Checked on the server too, not just hidden in the UI. Without
+  // dune.world_partition a queued refill cannot wait for a safe window, so an
+  // automated refill would write straight into a possibly-live base.
+  if (body.enabled && !(await duneDb.supportsGeneratorRefillQueue(db).catch(() => false))) {
+    return json(res, 501, {
+      error: "Auto-refill needs the pending-refill queue, which requires dune.world_partition on this database."
+    });
+  }
+  try {
+    const result = setBaseAutoRefill(config.repoRoot, baseId, body.enabled);
+    audit(config, req, "bases.auto-refill", { baseId, enabled: result.enabled, total: result.total });
+    return json(res, 200, result);
+  } catch (error) {
+    return json(res, 400, { ok: false, error: redact(error?.message || error) });
+  }
+}
+
+async function baseWaterRoute(res, path) {
+  const baseId = Number(decodeURIComponent(path.split("/")[3]));
+  if (!Number.isFinite(baseId) || baseId < 1) return json(res, 400, { error: "Invalid base ID" });
+  try {
+    return json(res, 200, { supported: true, ...(await duneDb.baseWater(db, baseId)) });
+  } catch (error) {
+    const status = error.unsupported ? 501 : 400;
+    return json(res, status, { supported: false, error: redact(error.message || error), reason: redact(error.message || error) });
+  }
+}
+
+// Mirrors baseRefillGeneratorsRoute: no confirmation phrase (additive and
+// reversible), queued instead of written immediately when the base's map is
+// currently live.
+async function baseRefillWaterRoute(req, res, path) {
+  const baseId = Number(decodeURIComponent(path.split("/")[3]));
+  if (!Number.isFinite(baseId) || baseId < 1) return json(res, 400, { error: "Invalid base ID" });
+  return directDbMutation(req, res, "bases.refill-water", null, async () => {
+    const target = await duneDb.baseRefillTarget(db, baseId);
+    if (target.queueSupported && !target.writeSafeNow) {
+      const entry = duneDb.queueWaterRefill(config.repoRoot, {
+        baseId,
+        map: target.map,
+        partitionId: target.partitionId
+      });
+      return { ok: true, queued: true, ...entry };
+    }
+    return duneDb.refillBaseWater(db, baseId);
+  }, { baseId });
+}
+
+async function baseCancelQueuedWaterRefillRoute(req, res, path) {
+  const baseId = Number(decodeURIComponent(path.split("/")[3]));
+  if (!Number.isFinite(baseId) || baseId < 1) return json(res, 400, { error: "Invalid base ID" });
+  return directDbMutation(req, res, "bases.cancel-queued-water-refill", null,
+    () => duneDb.cancelQueuedWaterRefill(config.repoRoot, baseId), { baseId });
+}
+
+// Mirrors pendingGeneratorRefillsRoute.
+async function pendingWaterRefillsRoute(res) {
+  const pending = duneDb.listQueuedWaterRefills(config.repoRoot);
+  const targets = pending.length
+    ? await duneDb.partitionRestartTargets(db).catch(() => new Map())
+    : new Map();
+  const byTarget = new Map();
+  for (const entry of pending) {
+    const map = entry.map || "Unknown";
+    const key = `${map}|${entry.partitionId}`;
+    const target = targets.get(entry.partitionId);
+    const group = byTarget.get(key) || {
+      map,
+      partitionId: entry.partitionId,
+      partitionMap: target?.map || "",
+      dimensionIndex: target?.dimensionIndex ?? 0,
+      count: 0
+    };
+    group.count += 1;
+    byTarget.set(key, group);
+  }
+  return json(res, 200, {
+    supported: true,
+    total: pending.length,
+    pending,
+    byTarget: [...byTarget.values()].sort((a, b) => a.map.localeCompare(b.map) || a.partitionId - b.partitionId)
+  });
+}
+
+// Mirrors basesAutoRefillStateRoute, gated on supportsWaterRefillQueue rather
+// than supportsGeneratorRefillQueue -- water refill needs none of the
+// item-insert columns the generator capability check requires.
+async function basesAutoRefillWaterStateRoute(res) {
+  const supported = await duneDb.supportsWaterRefillQueue(db).catch(() => false);
+  return json(res, 200, { supported, ...autoRefillWaterPublicState(config.repoRoot) });
+}
+
+// Mirrors baseAutoRefillToggleRoute.
+async function baseAutoRefillWaterToggleRoute(req, res, path) {
+  const baseId = Number(decodeURIComponent(path.split("/")[3]));
+  if (!Number.isFinite(baseId) || baseId < 1) return json(res, 400, { error: "Invalid base ID" });
+  const body = await readJson(req);
+  if (typeof body.enabled !== "boolean") {
+    return json(res, 400, { error: "Auto-refill enabled must be true or false." });
+  }
+  if (body.enabled && !(await duneDb.supportsWaterRefillQueue(db).catch(() => false))) {
+    return json(res, 501, {
+      error: "Auto-refill needs the pending water-refill queue, which requires dune.world_partition on this database."
+    });
+  }
+  try {
+    const result = setBaseAutoRefillWater(config.repoRoot, baseId, body.enabled);
+    audit(config, req, "bases.auto-refill-water", { baseId, enabled: result.enabled, total: result.total });
+    return json(res, 200, result);
+  } catch (error) {
+    return json(res, 400, { ok: false, error: redact(error?.message || error) });
   }
 }
 
@@ -2425,7 +3097,8 @@ function publicDirectorySettings() {
 }
 
 function readSetupConfigValues() {
-  const allowed = ["SERVER_IP", "SERVER_IP_MODE", "SERVER_TITLE", "SERVER_REGION", "SERVER_PROVIDER", "STEAM_APP_ID", "BATTLEGROUP_ID"];
+  const allowed = ["SERVER_IP", "SERVER_IP_MODE", "SERVER_TITLE", "SERVER_REGION", "SERVER_PROVIDER", "STEAM_APP_ID", "BATTLEGROUP_ID",
+    "DISCORD_HOME_GUILD_ID", "DISCORD_OAUTH_CLIENT_ID", "DISCORD_OAUTH_REDIRECT_URI", "DISCORD_OAUTH_ALLOW_OWNER_BOOTSTRAP", "DISCORD_OAUTH_OWNER_ALLOWLIST"];
   const values = {};
   for (const file of [resolve(config.repoRoot, ".env"), resolve(config.generatedDir, "battlegroup.env")]) {
     if (!existsSync(file)) continue;
@@ -2434,6 +3107,9 @@ function readSetupConfigValues() {
       if (!parsed || !allowed.includes(parsed.key) || values[parsed.key] !== undefined) continue;
       values[parsed.key] = parsed.value;
     }
+  }
+  if (existsSync(resolve(config.secretsDir, "discord-oauth-client-secret.txt"))) {
+    values._discordOAuthSecretSaved = "1";
   }
   return values;
 }
@@ -2701,6 +3377,75 @@ async function saveToken(req, res) {
   return json(res, 200, { ok: true });
 }
 
+async function saveOAuthClientSecret(req, res) {
+  const body = await readJson(req);
+  const secret = body.secret;
+  if (!secret || String(secret).length < 20) {
+    return json(res, 400, { error: "Client secret must be at least 20 characters." });
+  }
+  const dir = config.secretsDir;
+  mkdirSync(dir, { recursive: true });
+  const path = resolve(dir, "discord-oauth-client-secret.txt");
+  if (existsSync(path) && readFileSync(path, "utf8").trim().length > 0 && !body.overwrite) {
+    return json(res, 409, { error: "A client secret already exists. Set 'overwrite: true' to replace it." });
+  }
+  try {
+    writeFileSync(path, `${String(secret).trim()}\n`, { mode: 0o600 });
+    chmodSync(path, 0o600);
+  } catch (error) {
+    return json(res, 500, { error: "Failed to save client secret." });
+  }
+  audit(config, req, "setup.save-oauth-secret", { secret: "<redacted>", overwrite: Boolean(body.overwrite) });
+  return json(res, 200, { ok: true });
+}
+
+const DISCORD_SNOWFLAKE_RE = /^\d{17,19}$/;
+
+function validateOAuthWriteConfigKey(key, value) {
+  const v = String(value || "").trim();
+  if (!v) return null;
+  switch (key) {
+    case "DISCORD_HOME_GUILD_ID":
+    case "DISCORD_OAUTH_CLIENT_ID":
+      if (!DISCORD_SNOWFLAKE_RE.test(v)) return `Invalid Discord snowflake for ${key}`;
+      break;
+    case "DISCORD_OAUTH_ALLOW_OWNER_BOOTSTRAP":
+      if (v !== "0" && v !== "1") return `${key} must be "0" or "1"`;
+      break;
+    case "DISCORD_OAUTH_OWNER_ALLOWLIST":
+      if (v) {
+        const items = v.split(",").map((item) => item.trim()).filter(Boolean);
+        if (items.some((item) => !DISCORD_SNOWFLAKE_RE.test(item))) return `${key} must be comma-separated Discord user IDs (17-19 digits each)`;
+      }
+      break;
+    case "DISCORD_OAUTH_REDIRECT_URI":
+      if (!/^https?:\/\/.+/.test(v)) return `${key} must be a valid URL`;
+      break;
+  }
+  return null;
+}
+
+async function writeOAuthConfig(req, res) {
+  const body = await readJson(req);
+  const allowed = [
+    "DISCORD_HOME_GUILD_ID",
+    "DISCORD_OAUTH_CLIENT_ID",
+    "DISCORD_OAUTH_REDIRECT_URI",
+    "DISCORD_OAUTH_ALLOW_OWNER_BOOTSTRAP",
+    "DISCORD_OAUTH_OWNER_ALLOWLIST"
+  ];
+  const changes = [];
+  for (const key of allowed) {
+    if (body[key] === undefined) continue;
+    const error = validateOAuthWriteConfigKey(key, body[key]);
+    if (error) return json(res, 400, { error });
+    updateEnvFileValue(key, String(body[key]));
+    changes.push(key);
+  }
+  audit(config, req, "setup.write-oauth-config", { keys: changes });
+  return json(res, 200, { ok: true, changes });
+}
+
 async function saveServerFuncomToken(req, res) {
   const body = await readJson(req);
   writeFuncomToken(config, body.token);
@@ -2734,6 +3479,111 @@ function mockCommand(operation) {
 
 function loginRateLimitKey(req) {
   return req.socket?.remoteAddress || "unknown";
+}
+
+// Strips query strings before an audit write so the Discord OAuth `code` and
+// `state` params (present in the browser redirect URL) never reach the audit
+// log. server.js's audit() logs req.url verbatim otherwise.
+function sanitizedUrl(req, path) {
+  return { ...req, url: path };
+}
+
+async function handleDiscordTokenExchange(req, res) {
+  const rateKey = loginRateLimitKey(req);
+  const rate = loginRateLimiter.check(rateKey);
+  if (!rate.allowed) {
+    return json(res, 429, { error: "Too many sign-in attempts. Please wait a few minutes, then try again." }, { "retry-after": String(rate.retryAfterSeconds) });
+  }
+
+  const authHeader = (req.headers.authorization || "").trim();
+  if (!authHeader.startsWith("Bearer ") || authHeader.length <= 7) {
+    loginRateLimiter.recordFailure(rateKey);
+    return json(res, 401, { error: "Bearer token required." });
+  }
+  const accessToken = authHeader.slice(7).trim();
+
+  let identity;
+  try {
+    identity = await fetchDiscordIdentity({ accessToken, apiBaseUrl: config.discordOAuthApiBaseUrl });
+  } catch (error) {
+    loginRateLimiter.recordFailure(rateKey);
+    audit(config, req, "auth.oauth.exchange", { ok: false, reason: "identity_fetch_failed" });
+    return json(res, 401, { error: "Discord token validation failed." });
+  }
+
+  const allowedUserId = String(process.env.ATRIUM_ALLOWED_DISCORD_USER_ID || "").trim();
+  if (allowedUserId && identity.userId !== allowedUserId) {
+    loginRateLimiter.recordFailure(rateKey);
+    audit(config, req, "auth.oauth.exchange", { ok: false, reason: "not_authorized", userId: identity.userId });
+    return json(res, 403, { error: "Discord account not authorized for the Atrium exchange." });
+  }
+
+  loginRateLimiter.recordSuccess(rateKey);
+  const session = auth.makeSession({
+    tier: "owner",
+    userId: identity.userId,
+    username: identity.username,
+    guildId: config.discordHomeGuildId
+  });
+
+  res.setHeader("Set-Cookie", sessionCookieValue(session, config));
+  audit(config, req, "auth.oauth.exchange", { ok: true, userId: identity.userId });
+  return json(res, 200, { ok: true, authenticated: true, csrfToken: session.csrf });
+}
+
+function oauthReturnPage() {
+  return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>Sign-in complete</title></head><body><noscript><a href="/">Return to the console</a></noscript><script>window.location.replace("/");</script></body></html>`;
+}
+
+async function handleOAuthCallback(req, res) {
+  const url = new URL(req.url || "", "http://localhost");
+  const code = url.searchParams.get("code") || "";
+  const state = url.searchParams.get("state") || "";
+  const cookieState = parseCookies(req.headers.cookie || "").get("discord_oauth_state") || "";
+  const rateKey = loginRateLimitKey(req);
+  const rate = loginRateLimiter.check(rateKey);
+  if (!rate.allowed) {
+    return json(res, 429, { error: "Too many sign-in attempts. Please wait a few minutes, then try again." }, { "retry-after": String(rate.retryAfterSeconds) });
+  }
+  const consumed = oauthPendingStates.consume(state, cookieState);
+  if (!config.discordOAuthAllowOwnerBootstrap) {
+    loginRateLimiter.recordFailure(rateKey);
+    audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: false, reason: "bootstrap_disabled" });
+    return json(res, 403, { error: "Discord sign-in is enabled but owner bootstrap is disabled. Sign in with the admin password." });
+  }
+  if (!consumed.ok) {
+    loginRateLimiter.recordFailure(rateKey);
+    audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: false, reason: consumed.reason });
+    return json(res, 400, { error: "Discord sign-in could not be completed. The request was invalid or expired — start again." });
+  }
+  let token;
+  let identity;
+  try {
+    token = await exchangeDiscordAuthCode({
+      code,
+      redirectUri: config.discordOAuthRedirectUri,
+      clientId: config.discordOAuthClientId,
+      clientSecret: config.discordOAuthClientSecret,
+      codeVerifier: consumed.verifier,
+      apiBaseUrl: config.discordOAuthApiBaseUrl
+    });
+    identity = await fetchDiscordIdentity({ accessToken: token.access_token, apiBaseUrl: config.discordOAuthApiBaseUrl });
+  } catch (error) {
+    loginRateLimiter.recordFailure(rateKey);
+    audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: false, reason: error.code || "oauth_error" });
+    const status = error.statusCode && error.statusCode >= 400 && error.statusCode < 600 ? error.statusCode : 400;
+    return json(res, status, { error: "Discord sign-in failed. Please try again, or sign in with your password." });
+  }
+  const tier = await resolveOAuthTier(identity);
+  if (!tier) {
+    loginRateLimiter.recordFailure(rateKey);
+    audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: false, reason: "not_authorized" });
+    return json(res, 403, { error: "Discord sign-in succeeded, but this account is not authorized to sign in to this console." });
+  }
+  const session = auth.makeSession({ tier, userId: identity.userId, username: identity.username, guildId: config.discordHomeGuildId });
+  res.setHeader("Set-Cookie", [sessionCookieValue(session, config), clearOAuthStateCookie(config.secureCookies)]);
+  audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: true, tier });
+  return html(res, 200, oauthReturnPage());
 }
 
 function applyMutationRateLimit(req, res, scope) {

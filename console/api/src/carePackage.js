@@ -3,29 +3,14 @@ import { dirname, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { buildDuneArgs, runDune } from "./runner.js";
 import { itemIsSchematic, itemRequiresDatabaseGrant, resolveCatalogItem } from "./adminCatalog.js";
-import { publishCarePackageWhisper } from "./rmq.js";
+import { isValidHexFlsId, publishCarePackageWhisper } from "./rmq.js";
 import { giveItemToPlayer } from "./duneDb.js";
 import { liveItemGrantOk, liveItemGrantWarning } from "./grantResults.js";
+import { CARE_PACKAGE_SERVER_PERSONA, MESSAGE_OF_THE_DAY_PERSONA } from "./systemPersonas.js";
+
+export { MESSAGE_OF_THE_DAY_PERSONA } from "./systemPersonas.js";
 
 const DEFAULT_KIT_ID = "care-package-v1";
-const CARE_PACKAGE_SERVER_PERSONA = {
-  accountId: "9000002",
-  funcomId: "Server#4242",
-  hexFlsId: "5E121CE000000001",
-  displayName: "Server",
-  playerControllerId: "900000201",
-  playerStateId: "900000202",
-  playerPawnId: "900000203"
-};
-export const MESSAGE_OF_THE_DAY_PERSONA = {
-  accountId: "9000003",
-  funcomId: "MOTD#4242",
-  hexFlsId: "5E121CE000000002",
-  displayName: "Message of the Day",
-  playerControllerId: "900000301",
-  playerStateId: "900000302",
-  playerPawnId: "900000303"
-};
 const DEFAULT_KIT = {
   id: DEFAULT_KIT_ID,
   name: "Care Package",
@@ -933,7 +918,7 @@ function validatePlayerTarget(value) {
 
 function resolveWelcomeWhisperRecipient(playerId, body = {}) {
   const funcomId = String(body.funcomId || body.recipientFuncomId || body.flsId || (/^[A-Za-z0-9_.-]+#\d+$/.test(String(playerId || "")) ? playerId : "")).trim();
-  const flsId = String(body.flsId || body.recipientFlsId || (/^[A-Fa-f0-9]{16,64}$/.test(String(playerId || "")) ? playerId : "")).trim();
+  const flsId = String(body.flsId || body.recipientFlsId || (isValidHexFlsId(playerId) ? playerId : "")).trim();
   const characterName = String(body.characterName || body.recipientCharacterName || body.userNameTo || "").trim();
   if (!funcomId) throw new Error("Care Package message whisper cannot be sent: recipient Funcom ID is unavailable");
   if (!characterName) throw new Error("Care Package message whisper cannot be sent: recipient character name is unavailable");
@@ -1050,7 +1035,7 @@ async function resolveSyntheticWhisperPersona(db, persona, label) {
   const row = result.rows?.[0] || {};
   const hexFlsId = String(row.hex_fls_id || "").trim();
   const funcomId = String(row.funcom_id || "").trim();
-  if (!/^[A-Fa-f0-9]{16,64}$/.test(hexFlsId)) throw new Error(`${label} cannot be sent: ${persona.displayName} sender hex FLS ID was not resolved from the database`);
+  if (!isValidHexFlsId(hexFlsId)) throw new Error(`${label} cannot be sent: ${persona.displayName} sender hex FLS ID was not resolved from the database`);
   if (!funcomId) throw new Error(`${label} cannot be sent: ${persona.displayName} sender Funcom ID was not resolved from the database`);
   return {
     ...persona,
