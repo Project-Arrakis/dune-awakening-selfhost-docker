@@ -1,8 +1,8 @@
 # `dune db backup-system` — Requirement 20 Eight Hats Findings Register
 
-**Feature:** `dune db backup-system` (issue #269, PR #270)
+**Feature:** `dune db backup-system` (issue #269, PR #270 / upstream #159)
 **Date:** 2026-08-15
-**Status:** Layer 2 + Layer 3 audits complete for the current design. Layer 1 (design) was conducted informally via direct user consultation rather than a written pre-code design doc — see "Layer 1" section below for why, and what was actually decided.
+**Status:** Layer 2 + Layer 3 (2 internal rounds + 1 external upstream-maintainer round) audits complete for the current design. Layer 1 (design) was conducted informally via direct user consultation rather than a written pre-code design doc — see "Layer 1" section below for why, and what was actually decided.
 
 This document is the evidence artifact Requirement 20 requires: every layer's findings, their severity, and their resolution status, committed under version control rather than left in chat history alone.
 
@@ -64,6 +64,25 @@ No standalone L1 design document was written before code was first drafted. This
 
 ---
 
+## Layer 3 Audit — Round 3 (upstream maintainer review of PR #159)
+
+**Source:** live review comment from the upstream maintainer (`Red-Blink`) on `Red-Blink/dune-awakening-selfhost-docker#159`, 2026-08-15, after Round 1/2's fixes were already merged and CI was green. Not a dispatched eight-hats round — an external, independent review, which is itself exactly the kind of independent verification Requirement 20 exists to eventually be checked against.
+
+### Findings and resolution
+
+| # | Severity | Finding | Resolution |
+|---|---|---|---|
+| 1 | **CRITICAL** | The archive used AES-256-CBC without authentication — confidentiality only, no integrity/tamper detection. A corrupted or maliciously modified archive would silently decrypt to garbage (or worse) with no error. | **Resolved.** Switched to gpg's AES-256-OCB (AEAD), verified against Ubuntu 22.04's shipped GnuPG 2.2.27 (AEAD/OCB support since 2.1.13, 2016) and 24.04's 2.4.4. Passphrase via `--passphrase-fd` (never argv), a private per-invocation `GNUPGHOME` (never the operator's own `~/.gnupg`). Verified directly: a single flipped byte anywhere in the ciphertext is rejected outright (nonzero exit, "WARNING: encrypted message has been manipulated!", zero bytes of output written). New regression test `tampered-archive-rejected`. |
+| 2 | **HIGH** (blocking) | `rsync` was required by the implementation but not installed by `install.sh` or in the console container image (confirmed directly against both) — tests only passed because the GitHub Actions runner happens to ship it, masking a real deployment gap. | **Resolved.** Both `rsync` calls replaced with a `tar`-to-`tar` pipe (`tar` is already a hard dependency of this same function, used a few lines below to build the plaintext archive itself) — reuses an existing dependency instead of adding a new untracked one. `gnupg` (needed for Finding 1's fix) added explicitly to `install.sh` (every supported package manager: apt/dnf/yum/zypper/pacman/apk/xbps) and the console `Dockerfile`. |
+| 3 | MEDIUM | A broad, permanent Gitleaks allowlist entry existed for 4 literal test-fixture strings, unscoped to any path — "construct fixtures dynamically or scope the allowlist to the test path." | **Resolved by removal, not scoping.** Investigated the maintainer's suggested `paths`-based scoping first; empirically confirmed (via direct `gitleaks detect --log-level debug` testing against gitleaks v8.30.1) that a global `[[allowlists]]` entry with `paths` set causes gitleaks to skip the **entire file** at the filesystem-walk stage (`sources/files.go`'s `shouldSkipPath`), not just the specific allowlisted secret within it — a broader, not narrower, exemption than either the original global regex or the maintainer's request. Verified instead that these 4 fixture strings were never actually necessary in the first place: `gitleaks detect` against the real test file, using only the built-in default ruleset with **no** fixture-specific allowlist entry at all, already produces zero findings (the fixtures' variable names, e.g. `SECRET_ADMIN_PASSWORD=`, don't match any built-in rule's keyword+pattern requirements). Removed the entries entirely rather than keeping an unverified "just in case" allowlist. Also migrated the pre-existing `[allowlist]` (singular) to `[[allowlists]]`, required because gitleaks v8.25+ rejects a config containing both forms. |
+| 4 | Suggestion | Test low-disk/interrupted backups, since the implementation duplicates the database and generated state through `/tmp` before encrypting. | **Addressed.** New regression test `disk-full-during-encryption-cleans-up`: wraps `gpg` to simulate an ENOSPC-style failure partway through encryption, confirms zero artifacts (including the private per-invocation `GNUPGHOME` staging directory) survive the failure. |
+
+**Note on Finding 3's investigation:** this is a concrete instance of the same principle already established elsewhere in this project (the secrets-library findings register's Finding 6, and the meta-repo README's #121-123 severity-rating correction) — a plausible-sounding fix (`paths`-scoped allowlist) was tested directly against the real tool's real behavior before being shipped, rather than assumed correct because it matched the reviewer's literal suggestion. The direct test revealed the suggested approach would have been *actively worse* (whole-file exemption) than the thing it was meant to replace, which a solo read of gitleaks' documentation alone did not make obvious — confirmed only by reading `config/config.go`/`detect/detect.go`/`sources/files.go`'s actual source and reproducing the behavior in isolation.
+
+Testing for this round: `tests/db-system-backup-test.sh` 10/10 pass (8 pre-existing + 2 new), `shellcheck -S warning` clean on both changed files, `tests/security-pr-checks.sh` (gitleaks + shellcheck + trivy) clean, `tests/db-backup-validation-test.sh` (unrelated, unaffected) 4/4 pass.
+
+---
+
 ## Outstanding, Unresolved Items
 
 These are explicitly **not** resolved as of this document's writing, and are called out here rather than left implicit:
@@ -75,11 +94,12 @@ These are explicitly **not** resolved as of this document's writing, and are cal
 
 ---
 
-## Verification Summary (both rounds combined)
+## Verification Summary (all three rounds combined)
 
-- `tests/db-system-backup-test.sh`: 8 cases, all passing as of commit `3d682427`.
+- `tests/db-system-backup-test.sh`: 10 cases, all passing as of commit `ebe4d4b5` (8 from Rounds 1/2 + 2 new from Round 3: `tampered-archive-rejected`, `disk-full-during-encryption-cleans-up`).
 - `tests/db-backup-validation-test.sh` (pre-existing, unrelated suite): 4 cases, all passing — confirms zero regression.
-- `shellcheck -S warning runtime/scripts/db.sh`: 4 warnings, all pre-existing and outside this feature's code, confirmed identical to `main`'s own warnings at the same logical locations.
-- `tests/security-pr-checks.sh` (gitleaks + shellcheck + trivy): all pass.
+- `shellcheck -S warning runtime/scripts/db.sh tests/db-system-backup-test.sh`: clean on every line this feature touches (4 pre-existing warnings remain elsewhere in `db.sh`, authored by the upstream maintainer in June, outside this feature's code).
+- `tests/security-pr-checks.sh` (gitleaks + shellcheck + trivy, including the `console/api/Dockerfile` misconfiguration scanner after Round 3's `gnupg` addition): all pass.
 - Two independent mutation-testing exercises (Round 1: disabled a cleanup call; Round 2: reverted the private-directory fix) both confirmed the corresponding regression tests fail when the underlying fix is reverted — the test suite is not passing by construction.
+- Round 3's gitleaks-scoping investigation (Finding 3) was verified empirically against the real tool (v8.30.1), not assumed from documentation alone — see that finding's note above.
 - CI on the PR branch: every check touching this feature's own code is green (`runtime-script-unit`, `security-checks`, CodeQL, Semgrep, `web-tests`, `container-lifecycle`, release validation). The only failing checks (`api-tests`, `Release gate`) are confirmed pre-existing on `main` since 2026-08-11 (issue #245), unrelated to any file this PR touches.
