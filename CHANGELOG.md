@@ -11,19 +11,21 @@ Keep a Changelog style, grouped by upstream base version, newest first.
 
 ### Added
 
-- `dune db backup-full` / `dune db backup-world` (#269) — one-command system
-  backup covering `.env`, `runtime/generated/` (world/sietch config), and a
-  fresh database dump, bundled into a single `dune-system-<scope>-*.tar.gz`
-  with a `.yaml` sidecar. `backup-full` also includes `runtime/secrets/`
-  verbatim (600 permissions; handle like the Funcom token itself).
-  `backup-world` excludes `runtime/secrets/` and redacts the sietch join
-  password that is otherwise stored in plaintext inside
-  `runtime/generated/{sietch-config.json,usersettings.json,gameplay-profile.ini}`,
-  plus other credential-bearing files that live under `runtime/generated/`
-  instead of `runtime/secrets/` (`public-probe.env`, `*-rmq-admin-creds`) —
-  making it safe to share for world/config recovery without exposing
-  operator secrets (640 permissions). `dune db list-system` lists written
-  archives. No automated restore yet — extract with `tar -xzf` and restore
+- `dune db backup-system` (#269) — one-command, encrypted system backup
+  covering `.env`, `runtime/generated/`, `runtime/secrets/`, and a fresh
+  database dump, bundled into a single `dune-system-*.tar.gz.enc` archive
+  (with a `.yaml` sidecar that itself contains no secrets, safe to read on
+  its own). Every credential is retained verbatim — the Funcom Self-Host
+  Service Token, admin console password, RMQ admin credentials, and the
+  sietch join password are all included, not redacted or excluded — the
+  archive's only protection is the passphrase supplied when it's created,
+  encrypted with AES-256-CBC + PBKDF2 (600,000 iterations). Prompts for a
+  passphrase interactively (entered twice, to catch typos); set
+  `DUNE_SYSTEM_BACKUP_PASSPHRASE` for non-interactive/cron use. There is no
+  way to recover an archive without its passphrase. `dune db list-system`
+  lists written archives. No automated restore yet — decrypt with
+  `openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 -in <archive> -pass
+  pass:YOUR_PASSPHRASE | gunzip | tar -xf -`, restore
   `.env`/`runtime/generated/`/`runtime/secrets/` manually, then
   `dune db restore` for the `db/` dump inside.
 - Discord OAuth as primary sign-in method on the login page. Password login is

@@ -16,11 +16,12 @@
     "143064109775060993",
     "abcdefghijklmnopqrstuvwxyzABCDEFG123456",
     # Synthetic secret fixtures planted by tests/db-system-backup-test.sh to
-    # verify a world-scope system backup never leaks them. Not real secrets;
-    # deliberately shaped to look like ones so the test's own leak-detection
-    # grep exercises realistic content (checked 2026-08-15).
-    "s3kr1t-sietch-pw-9f2a",
-    "probe-secret-4c11",
-    "funcom-token-77bb",
-    "rmq-admin-cred-22dd"
+    # verify an encrypted system backup retains every credential correctly
+    # through a real decrypt round-trip, and that the wrong passphrase
+    # never decrypts it. Not real secrets; deliberately shaped to look like
+    # ones so the test exercises realistic content (checked 2026-08-15).
+    "admin-pw-8f2a-real",
+    "sietch-pw-9f2a-real",
+    "funcom-token-77bb-real",
+    "correct-horse-battery-staple-9f2a"
   ]

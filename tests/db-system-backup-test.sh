@@ -51,24 +51,26 @@ esac
 EOF
 chmod +x "$bin_dir/docker"
 
-# A "real" secret value planted in each location a world-scope backup must
-# never leak, so the test fails loudly (not just structurally) if any of
-# them end up unredacted or uncredited-for in the archive.
-SECRET_SIETCH_PASSWORD="s3kr1t-sietch-pw-9f2a"
-SECRET_PROBE_TOKEN="probe-secret-4c11"
-SECRET_FUNCOM_TOKEN="funcom-token-77bb"
-SECRET_RMQ_ADMIN="rmq-admin-cred-22dd"
+# Real secret values planted in every location the archive should retain
+# verbatim (this feature deliberately does NOT redact/exclude anything --
+# encryption is the only access control), so a real round-trip decrypt can
+# assert every one of them survives correctly.
+SECRET_ADMIN_PASSWORD="admin-pw-8f2a-real"
+SECRET_SIETCH_PASSWORD="sietch-pw-9f2a-real"
+SECRET_FUNCOM_TOKEN="funcom-token-77bb-real"
+TEST_PASSPHRASE="correct-horse-battery-staple-9f2a"
 
 seed_repo_tree() {
   local root="$1"
 
   mkdir -p "$root/runtime/scripts" "$root/runtime/generated" "$root/runtime/secrets" \
-    "$root/runtime/backups/db" "$root/runtime/backups/system"
+    "$root/runtime/backups/system"
   cp runtime/scripts/db.sh "$root/runtime/scripts/db.sh"
 
   cat > "$root/.env" <<EOF
 SERVER_TITLE="Test Server"
 SERVER_REGION="Test Region"
+ADMIN_PASSWORD=$SECRET_ADMIN_PASSWORD
 EOF
 
   cat > "$root/runtime/generated/battlegroup.env" <<'EOF'
@@ -79,14 +81,6 @@ EOF
 
   printf '{"sietches":[{"password": "%s"}]}\n' "$SECRET_SIETCH_PASSWORD" \
     > "$root/runtime/generated/sietch-config.json"
-  printf '{"server_login_password": "%s"}\n' "$SECRET_SIETCH_PASSWORD" \
-    > "$root/runtime/generated/usersettings.json"
-  printf 'Bgd.ServerDisplayName="Test Sietch"\nBgd.ServerLoginPassword=%s\n' "$SECRET_SIETCH_PASSWORD" \
-    > "$root/runtime/generated/gameplay-profile.ini"
-  printf 'DUNE_PUBLIC_PROBE_ENABLED=true\nDUNE_PUBLIC_PROBE_SECRET=%s\n' "$SECRET_PROBE_TOKEN" \
-    > "$root/runtime/generated/public-probe.env"
-  printf 'bgd.sh-test.admin\n%s\n' "$SECRET_RMQ_ADMIN" > "$root/runtime/generated/sietch-rmq-admin-creds"
-  printf 'bgd.sh-test.admin\n%s\n' "$SECRET_RMQ_ADMIN" > "$root/runtime/generated/deepdesert-rmq-admin-creds"
 
   mkdir -p "$root/runtime/generated/dune-fake-k8s-serviceaccount-director-12345"
   printf 'fake-token\n' > "$root/runtime/generated/dune-fake-k8s-serviceaccount-director-12345/token"
@@ -95,14 +89,16 @@ EOF
   printf 'admin-web-secret-value\n' > "$root/runtime/secrets/admin-web-password.txt"
 }
 
-extract_archive_for() {
+decrypt_and_extract() {
   local archive="$1"
   local dest="$2"
+  local passphrase="$3"
   mkdir -p "$dest"
-  tar -xzf "$archive" -C "$dest"
+  openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 -in "$archive" -pass "pass:$passphrase" 2>/dev/null \
+    | gunzip 2>/dev/null | tar -xf - -C "$dest" 2>/dev/null
 }
 
-# --- Case 1: backup-full includes secrets verbatim and is 600 -------------
+# --- Case 1: happy path, non-interactive passphrase, full round-trip ------
 
 case1_root="$test_root/case1"
 mkdir -p "$case1_root/work"
@@ -112,193 +108,283 @@ set +e
 (
   cd "$case1_root/work"
   PATH="$bin_dir:$PATH" MOCK_DOCKER_LOG="$case1_root/docker.log" \
-    bash runtime/scripts/db.sh backup-full
+    DUNE_SYSTEM_BACKUP_PASSPHRASE="$TEST_PASSPHRASE" \
+    bash runtime/scripts/db.sh backup-system
 ) > "$case1_root/output.log" 2>&1
 case1_exit=$?
 set -e
 
 if [ "$case1_exit" -ne 0 ]; then
-  echo "FAIL backup-full-happy-path: expected exit 0, got $case1_exit"
+  echo "FAIL happy-path: expected exit 0, got $case1_exit"
   cat "$case1_root/output.log"
   exit 1
 fi
 
-case1_archive="$(find "$case1_root/work/runtime/backups/system" -maxdepth 1 -name 'dune-system-full-*.tar.gz' | head -n1)"
+case1_archive="$(find "$case1_root/work/runtime/backups/system" -maxdepth 1 -name '*.tar.gz.enc' | head -n1)"
 if [ -z "$case1_archive" ] || [ ! -f "$case1_archive" ]; then
-  echo "FAIL backup-full-happy-path: no dune-system-full-*.tar.gz archive was written"
+  echo "FAIL happy-path: no *.tar.gz.enc archive was written"
   cat "$case1_root/output.log"
   exit 1
 fi
 if [ ! -f "$case1_archive.yaml" ]; then
-  echo "FAIL backup-full-happy-path: archive sidecar .yaml is missing"
+  echo "FAIL happy-path: archive sidecar .yaml is missing"
   exit 1
 fi
 
 case1_perms="$(stat -c '%a' "$case1_archive")"
 if [ "$case1_perms" != "600" ]; then
-  echo "FAIL backup-full-happy-path: expected archive mode 600, got $case1_perms"
+  echo "FAIL happy-path: expected archive mode 600, got $case1_perms"
   exit 1
 fi
 
-case1_extract="$test_root/case1-extract"
-extract_archive_for "$case1_archive" "$case1_extract"
+# Decisive check: the archive must not be readable with the wrong passphrase...
+case1_wrong_extract="$test_root/case1-wrong-extract"
+decrypt_and_extract "$case1_archive" "$case1_wrong_extract" "wrong-passphrase-entirely" || true
+if find "$case1_wrong_extract" -type f 2>/dev/null | grep -q .; then
+  echo "FAIL happy-path: archive decrypted successfully with the WRONG passphrase"
+  exit 1
+fi
 
-if [ ! -d "$case1_extract/secrets" ]; then
-  echo "FAIL backup-full-happy-path: archive is missing secrets/ directory"
+# ...but must decrypt cleanly and completely with the right one, retaining
+# every credential verbatim (no redaction -- that is the point of this design).
+case1_extract="$test_root/case1-extract"
+decrypt_and_extract "$case1_archive" "$case1_extract" "$TEST_PASSPHRASE"
+if ! grep -q "$SECRET_ADMIN_PASSWORD" "$case1_extract/env" 2>/dev/null; then
+  echo "FAIL happy-path: ADMIN_PASSWORD did not survive decryption in .env"
+  exit 1
+fi
+if ! grep -q "$SECRET_SIETCH_PASSWORD" "$case1_extract/generated/sietch-config.json" 2>/dev/null; then
+  echo "FAIL happy-path: sietch join password did not survive decryption"
   exit 1
 fi
 if ! grep -q "$SECRET_FUNCOM_TOKEN" "$case1_extract/secrets/funcom-token.txt" 2>/dev/null; then
-  echo "FAIL backup-full-happy-path: funcom-token.txt content missing/altered inside archive"
-  exit 1
-fi
-if ! grep -q "$SECRET_SIETCH_PASSWORD" "$case1_extract/generated/gameplay-profile.ini" 2>/dev/null; then
-  echo "FAIL backup-full-happy-path: full backup must NOT redact the sietch password"
+  echo "FAIL happy-path: Funcom token did not survive decryption"
   exit 1
 fi
 if [ -d "$case1_extract/generated/dune-fake-k8s-serviceaccount-director-12345" ]; then
-  echo "FAIL backup-full-happy-path: ephemeral fake-k8s-serviceaccount dir should be excluded even in full scope"
+  echo "FAIL happy-path: ephemeral fake-k8s-serviceaccount dir should be excluded"
   exit 1
 fi
-if ! grep -q 'includes_secrets: true' "$case1_archive.yaml"; then
-  echo "FAIL backup-full-happy-path: sidecar does not declare includes_secrets: true"
-  exit 1
+if [ ! -f "$case1_extract/db"/dune-db-*.backup ] 2>/dev/null; then
+  if ! find "$case1_extract/db" -name 'dune-db-*.backup' | grep -q .; then
+    echo "FAIL happy-path: no database dump found inside the decrypted archive"
+    exit 1
+  fi
 fi
-echo "PASS backup-full-happy-path"
 
-# --- Case 2: backup-world excludes/redacts every planted secret -----------
+# The sidecar YAML must be readable without the passphrase and must contain
+# no secret material -- it's meant to be safe to read/share on its own.
+if ! grep -q 'includes_secrets: true' "$case1_archive.yaml"; then
+  echo "FAIL happy-path: sidecar does not declare includes_secrets: true"
+  exit 1
+fi
+if grep -q "$SECRET_ADMIN_PASSWORD\|$SECRET_SIETCH_PASSWORD\|$SECRET_FUNCOM_TOKEN" "$case1_archive.yaml"; then
+  echo "FAIL happy-path: sidecar itself leaked a secret value in plaintext"
+  exit 1
+fi
+
+# The intermediate plaintext DB dump backup_db() writes must NOT survive --
+# only the encrypted archive + its sidecar should remain in out_dir.
+case1_plaintext_leftovers="$(find "$case1_root/work/runtime/backups/system" -maxdepth 1 -type f ! -name '*.tar.gz.enc' ! -name '*.tar.gz.enc.yaml')"
+if [ -n "$case1_plaintext_leftovers" ]; then
+  echo "FAIL happy-path: plaintext files were left behind alongside the encrypted archive"
+  printf '%s\n' "$case1_plaintext_leftovers"
+  exit 1
+fi
+echo "PASS happy-path"
+
+# --- Case 2: [output-dir] argument is honored for BOTH the archive AND ----
+# --- the underlying database dump (regression test for a real bug found --
+# --- in review: backup_db() was previously always hardcoded to the       --
+# --- default db backup dir regardless of the caller's requested dir).    -
 
 case2_root="$test_root/case2"
-mkdir -p "$case2_root/work"
+mkdir -p "$case2_root/work" "$case2_root/customdir"
 seed_repo_tree "$case2_root/work"
 
 set +e
 (
   cd "$case2_root/work"
-  PATH="$bin_dir:$PATH" MOCK_DOCKER_LOG="$case2_root/docker.log" \
-    bash runtime/scripts/db.sh backup-world
+  PATH="$bin_dir:$PATH" DUNE_SYSTEM_BACKUP_PASSPHRASE="$TEST_PASSPHRASE" \
+    bash runtime/scripts/db.sh backup-system "$case2_root/customdir"
 ) > "$case2_root/output.log" 2>&1
 case2_exit=$?
 set -e
 
 if [ "$case2_exit" -ne 0 ]; then
-  echo "FAIL backup-world-no-secrets-leak: expected exit 0, got $case2_exit"
+  echo "FAIL output-dir-honored: expected exit 0, got $case2_exit"
   cat "$case2_root/output.log"
   exit 1
 fi
+if ! find "$case2_root/customdir" -maxdepth 1 -name '*.tar.gz.enc' | grep -q .; then
+  echo "FAIL output-dir-honored: encrypted archive was not written to the requested output-dir"
+  exit 1
+fi
+if find "$case2_root/work/runtime/backups/db" -maxdepth 1 -type f 2>/dev/null | grep -q .; then
+  echo "FAIL output-dir-honored: the underlying database dump ignored [output-dir] and used the default dir instead"
+  find "$case2_root/work/runtime/backups/db" -maxdepth 1 -type f -print
+  exit 1
+fi
+echo "PASS output-dir-honored"
 
-case2_archive="$(find "$case2_root/work/runtime/backups/system" -maxdepth 1 -name 'dune-system-world-*.tar.gz' | head -n1)"
-if [ -z "$case2_archive" ] || [ ! -f "$case2_archive" ]; then
-  echo "FAIL backup-world-no-secrets-leak: no dune-system-world-*.tar.gz archive was written"
-  cat "$case2_root/output.log"
-  exit 1
-fi
+# --- Case 3: fails cleanly with postgres down, zero artifacts left -------
 
-case2_perms="$(stat -c '%a' "$case2_archive")"
-if [ "$case2_perms" != "640" ]; then
-  echo "FAIL backup-world-no-secrets-leak: expected archive mode 640, got $case2_perms"
-  exit 1
-fi
+case3_root="$test_root/case3"
+mkdir -p "$case3_root/work"
+seed_repo_tree "$case3_root/work"
 
-case2_extract="$test_root/case2-extract"
-extract_archive_for "$case2_archive" "$case2_extract"
+set +e
+(
+  cd "$case3_root/work"
+  PATH="$bin_dir:$PATH" MOCK_POSTGRES_RUNNING=0 DUNE_SYSTEM_BACKUP_PASSPHRASE="$TEST_PASSPHRASE" \
+    bash runtime/scripts/db.sh backup-system
+) > "$case3_root/output.log" 2>&1
+case3_exit=$?
+set -e
 
-if [ -d "$case2_extract/secrets" ]; then
-  echo "FAIL backup-world-no-secrets-leak: archive must not contain a secrets/ directory"
+if [ "$case3_exit" -eq 0 ]; then
+  echo "FAIL fails-without-postgres: expected non-zero exit when dune-postgres is not running"
+  cat "$case3_root/output.log"
   exit 1
 fi
-if [ -f "$case2_extract/generated/public-probe.env" ]; then
-  echo "FAIL backup-world-no-secrets-leak: public-probe.env (contains a real secret) must be excluded"
+if find "$case3_root/work/runtime/backups/system" -maxdepth 1 -type f | grep -q .; then
+  echo "FAIL fails-without-postgres: a partial/published artifact was left behind"
+  find "$case3_root/work/runtime/backups/system" -maxdepth 1 -type f -print
   exit 1
 fi
-if [ -f "$case2_extract/generated/sietch-rmq-admin-creds" ] || [ -f "$case2_extract/generated/deepdesert-rmq-admin-creds" ]; then
-  echo "FAIL backup-world-no-secrets-leak: *-rmq-admin-creds files must be excluded"
-  exit 1
-fi
-if [ -d "$case2_extract/generated/dune-fake-k8s-serviceaccount-director-12345" ]; then
-  echo "FAIL backup-world-no-secrets-leak: ephemeral fake-k8s-serviceaccount dir must be excluded"
-  exit 1
-fi
+echo "PASS fails-without-postgres"
 
-# The decisive check: none of the four planted secret values may appear
-# ANYWHERE in the extracted tree, not just in the files we know to check.
-if grep -RIl -e "$SECRET_SIETCH_PASSWORD" -e "$SECRET_PROBE_TOKEN" -e "$SECRET_FUNCOM_TOKEN" -e "$SECRET_RMQ_ADMIN" "$case2_extract" 2>/dev/null | grep -q .; then
-  echo "FAIL backup-world-no-secrets-leak: a planted secret value leaked into the world-scope archive"
-  grep -RIl -e "$SECRET_SIETCH_PASSWORD" -e "$SECRET_PROBE_TOKEN" -e "$SECRET_FUNCOM_TOKEN" -e "$SECRET_RMQ_ADMIN" "$case2_extract" 2>/dev/null
-  exit 1
-fi
-
-# The redacted files must still exist with their non-secret fields intact,
-# proving this is real redaction, not a silent drop of the whole file.
-if ! grep -q 'Test Sietch' "$case2_extract/generated/gameplay-profile.ini" 2>/dev/null; then
-  echo "FAIL backup-world-no-secrets-leak: redaction dropped non-secret content from gameplay-profile.ini"
-  exit 1
-fi
-if ! grep -q '\[REDACTED\]' "$case2_extract/generated/gameplay-profile.ini" 2>/dev/null; then
-  echo "FAIL backup-world-no-secrets-leak: gameplay-profile.ini password line was removed instead of redacted"
-  exit 1
-fi
-if ! grep -q '\[REDACTED\]' "$case2_extract/generated/sietch-config.json" 2>/dev/null; then
-  echo "FAIL backup-world-no-secrets-leak: sietch-config.json password field was removed instead of redacted"
-  exit 1
-fi
-if ! grep -q '\[REDACTED\]' "$case2_extract/generated/usersettings.json" 2>/dev/null; then
-  echo "FAIL backup-world-no-secrets-leak: usersettings.json password field was removed instead of redacted"
-  exit 1
-fi
-if ! grep -q 'BATTLEGROUP_ID=sh-test-1234' "$case2_extract/generated/battlegroup.env" 2>/dev/null; then
-  echo "FAIL backup-world-no-secrets-leak: non-secret battlegroup.env content should be preserved verbatim"
-  exit 1
-fi
-if ! grep -q 'includes_secrets: false' "$case2_archive.yaml"; then
-  echo "FAIL backup-world-no-secrets-leak: sidecar does not declare includes_secrets: false"
-  exit 1
-fi
-echo "PASS backup-world-no-secrets-leak"
-
-# --- Case 3: backup-full/backup-world fail cleanly with postgres down -----
-
-for scope_cmd in backup-full backup-world; do
-  case3_root="$test_root/case3-$scope_cmd"
-  mkdir -p "$case3_root/work"
-  seed_repo_tree "$case3_root/work"
-
-  set +e
-  (
-    cd "$case3_root/work"
-    PATH="$bin_dir:$PATH" MOCK_DOCKER_LOG="$case3_root/docker.log" MOCK_POSTGRES_RUNNING=0 \
-      bash runtime/scripts/db.sh "$scope_cmd"
-  ) > "$case3_root/output.log" 2>&1
-  case3_exit=$?
-  set -e
-
-  if [ "$case3_exit" -eq 0 ]; then
-    echo "FAIL $scope_cmd-fails-without-postgres: expected non-zero exit when dune-postgres is not running"
-    cat "$case3_root/output.log"
-    exit 1
-  fi
-  if find "$case3_root/work/runtime/backups/system" -maxdepth 1 -type f | grep -q .; then
-    echo "FAIL $scope_cmd-fails-without-postgres: a partial/published artifact was left behind"
-    find "$case3_root/work/runtime/backups/system" -maxdepth 1 -type f -print
-    exit 1
-  fi
-  echo "PASS $scope_cmd-fails-without-postgres"
-done
-
-# --- Case 4: list-system reports written archives -------------------------
+# --- Case 4: passphrase confirmation mismatch aborts with zero artifacts -
 
 case4_root="$test_root/case4"
 mkdir -p "$case4_root/work"
 seed_repo_tree "$case4_root/work"
 
+set +e
 (
   cd "$case4_root/work"
-  PATH="$bin_dir:$PATH" bash runtime/scripts/db.sh backup-world >/dev/null 2>&1
+  printf 'firstpass\nDIFFERENTpass\n' | PATH="$bin_dir:$PATH" \
+    script -qec "bash runtime/scripts/db.sh backup-system" /dev/null
+) > "$case4_root/output.log" 2>&1
+case4_exit=$?
+set -e
+
+if [ "$case4_exit" -eq 0 ]; then
+  echo "FAIL passphrase-mismatch-aborts: expected non-zero exit on passphrase confirmation mismatch"
+  cat "$case4_root/output.log"
+  exit 1
+fi
+if ! grep -qi 'did not match' "$case4_root/output.log"; then
+  echo "FAIL passphrase-mismatch-aborts: expected a clear 'did not match' message"
+  cat "$case4_root/output.log"
+  exit 1
+fi
+if find "$case4_root/work/runtime/backups/system" -maxdepth 1 -type f | grep -q .; then
+  echo "FAIL passphrase-mismatch-aborts: an artifact was created despite the passphrase mismatch"
+  exit 1
+fi
+echo "PASS passphrase-mismatch-aborts"
+
+# --- Case 5: mid-run failure after the plaintext DB dump has already -----
+# --- been written must clean up BOTH the staging state AND that dump --  --
+# --- regression test for the exact CRITICAL finding from the Layer 3 --  --
+# --- eight-hats review: a `trap ... RETURN` does not reliably fire when --
+# --- `set -e` aborts out of a function, so an unguarded rsync/cp        --
+# --- failure used to leave a plaintext database dump (and, in a         --
+# --- separately-verified worse case, plaintext secrets) sitting on disk.-
+
+case5_root="$test_root/case5"
+mkdir -p "$case5_root/work" "$case5_root/altbin"
+seed_repo_tree "$case5_root/work"
+cp "$bin_dir/docker" "$case5_root/altbin/docker"
+cat > "$case5_root/altbin/rsync" <<'EOF'
+#!/usr/bin/env bash
+for arg in "$@"; do
+  case "$arg" in
+    *secrets/) echo "rsync: simulated I/O error" >&2; exit 23 ;;
+  esac
+done
+exec /usr/bin/rsync "$@"
+EOF
+chmod +x "$case5_root/altbin/rsync"
+
+set +e
+(
+  cd "$case5_root/work"
+  PATH="$case5_root/altbin:$PATH" DUNE_SYSTEM_BACKUP_PASSPHRASE="$TEST_PASSPHRASE" \
+    bash runtime/scripts/db.sh backup-system
+) > "$case5_root/output.log" 2>&1
+case5_exit=$?
+set -e
+
+if [ "$case5_exit" -eq 0 ]; then
+  echo "FAIL cleanup-on-mid-run-failure: expected non-zero exit on simulated rsync failure"
+  cat "$case5_root/output.log"
+  exit 1
+fi
+if find "$case5_root/work/runtime/backups/system" -maxdepth 1 -type f | grep -q .; then
+  echo "FAIL cleanup-on-mid-run-failure: a plaintext database dump (or other artifact) was left behind after a mid-run failure"
+  find "$case5_root/work/runtime/backups/system" -maxdepth 1 -type f -print
+  exit 1
+fi
+# Also confirm no stray temp directory/file anywhere under this run's own
+# staging root still contains the planted Funcom token in plaintext, other
+# than its own original, legitimate seeded location. Deliberately scoped
+# to $case5_root (not all of /tmp) so this check cannot false-positive on
+# the same fixture value legitimately seeded by the other cases in this
+# same test file, running in sibling directories under the shared $test_root.
+case5_leaks="$(grep -rl "$SECRET_FUNCOM_TOKEN" "$case5_root" 2>/dev/null | grep -v "^$case5_root/work/runtime/secrets/funcom-token.txt$" || true)"
+if [ -n "$case5_leaks" ]; then
+  echo "FAIL cleanup-on-mid-run-failure: the Funcom token leaked into a temp file/directory outside its original location"
+  printf '%s\n' "$case5_leaks"
+  exit 1
+fi
+echo "PASS cleanup-on-mid-run-failure"
+
+# --- Case 6: list-system reports written archives -------------------------
+
+case6_root="$test_root/case6"
+mkdir -p "$case6_root/work"
+seed_repo_tree "$case6_root/work"
+
+(
+  cd "$case6_root/work"
+  PATH="$bin_dir:$PATH" DUNE_SYSTEM_BACKUP_PASSPHRASE="$TEST_PASSPHRASE" \
+    bash runtime/scripts/db.sh backup-system >/dev/null 2>&1
 )
 
-case4_output="$(cd "$case4_root/work" && PATH="$bin_dir:$PATH" bash runtime/scripts/db.sh list-system 2>&1)"
-if ! printf '%s' "$case4_output" | grep -q 'dune-system-world-.*\.tar\.gz'; then
-  echo "FAIL list-system-reports-archive: list-system did not report the written world archive"
-  printf '%s\n' "$case4_output"
+case6_output="$(cd "$case6_root/work" && PATH="$bin_dir:$PATH" bash runtime/scripts/db.sh list-system 2>&1)"
+if ! printf '%s' "$case6_output" | grep -q 'dune-system-.*\.tar\.gz\.enc'; then
+  echo "FAIL list-system-reports-archive: list-system did not report the written encrypted archive"
+  printf '%s\n' "$case6_output"
   exit 1
 fi
 echo "PASS list-system-reports-archive"
+
+# --- Case 7: no passphrase available non-interactively fails safely, -----
+# --- before touching Postgres or the filesystem at all --------------------
+
+case7_root="$test_root/case7"
+mkdir -p "$case7_root/work"
+seed_repo_tree "$case7_root/work"
+
+set +e
+(
+  cd "$case7_root/work"
+  PATH="$bin_dir:$PATH" MOCK_DOCKER_LOG="$case7_root/docker.log" \
+    bash runtime/scripts/db.sh backup-system < /dev/null
+) > "$case7_root/output.log" 2>&1
+case7_exit=$?
+set -e
+
+if [ "$case7_exit" -eq 0 ]; then
+  echo "FAIL no-passphrase-available-fails-safely: expected non-zero exit with no TTY and no DUNE_SYSTEM_BACKUP_PASSPHRASE"
+  cat "$case7_root/output.log"
+  exit 1
+fi
+if [ -f "$case7_root/docker.log" ] && grep -q . "$case7_root/docker.log"; then
+  echo "FAIL no-passphrase-available-fails-safely: docker was invoked before a passphrase was resolved"
+  cat "$case7_root/docker.log"
+  exit 1
+fi
+echo "PASS no-passphrase-available-fails-safely"
