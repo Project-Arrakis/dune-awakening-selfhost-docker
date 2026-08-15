@@ -45,6 +45,7 @@ reference. Everything else is marked **Current** and is expected to stay accurat
 - [generator-refill-caps.md](console/generator-refill-caps.md) — Current. Refill-generators endpoint behavior and per-type fuel caps.
 - [base-permissions.md](console/base-permissions.md) — Current. Editing base ownership and sharing: ranks, the config-driven roster cap, and why the change needs no map restart.
 - [base-inventory.md](console/base-inventory.md) — Current. The read-only base Inventory tab: which placeables count as storage, the two inventories every refinery carries, and why the tab cannot write.
+- [base-deletion.md](console/base-deletion.md) — Current. Permanently deleting a base: what "the base" means for enumeration, the pending-delete queue for a live map, the mandatory pre-delete safety backup, and why a pending delete freezes every other mutation on that base.
 - [restart-queue.md](console/restart-queue.md) — Current. The Restart Queue toggle: player-aware countdowns with in-game warnings, the two broadcast variants, concurrency rules, crash recovery, the "Restart later" deferred-restart option, and the join-lock limitation.
 - [exchange.md](console/exchange.md) — Current. The read-only Market Board: aggregated-by-item CHOAM exchange listings, seller resolution, how bot listings are identified, and the bot/blacklist filter config.
 

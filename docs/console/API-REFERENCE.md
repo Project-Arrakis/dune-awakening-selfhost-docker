@@ -265,6 +265,9 @@ When the Restart Queue is enabled, the restart routes above (`/api/server/restar
 | POST | `/api/bases/{baseId}/system-custodian` | Transfer ownership to the Server or detected GM system custodian while preserving the roster; provisions Server when no custodian exists | `baseId` |
 | PUT | `/api/bases/{baseId}/permissions` | Replace a base's permission roster | `baseId`, `entries[]` (`playerId`, `rank`) |
 | GET | `/api/bases/permission-candidates` | Search players eligible to be added to a roster | `q?`, `limit?` |
+| DELETE | `/api/bases/{baseId}` | Permanently delete a base and everything on it (queued instead if the map isn't safely writable right now); takes a full-database safety backup first. Requires `{ confirmation: "DELETE BASE" }` | `baseId` |
+| GET | `/api/bases/pending-deletes` | List queued base deletes, grouped by restart target | None |
+| DELETE | `/api/bases/{baseId}/queued-delete` | Cancel a base's queued delete | `baseId` |
 
 Each `GET /api/bases` row carries `partitionMap` and `dimensionIndex` alongside
 `map` and `partition_id`. `map` is the game's own name (`HaggaBasin`) and cannot
@@ -275,6 +278,15 @@ instance. Both are empty on a schema without `dune.world_partition`.
 `GET /api/bases` reports `capabilities.basePermissions`; the permission routes are
 unavailable when it is false (the schema lacks the required tables or the game's
 `permission_set_player_rank` / `permission_remove_player_rank` procedures).
+
+`GET /api/bases` also reports `capabilities.baseDelete` (the schema has the tables
+and the game's `permission_actor_destroy` / `delete_actors` procedures) and
+`capabilities.baseDeleteQueue` (additionally has `dune.world_partition`, so a
+delete against a live map can be queued instead of written immediately). The
+delete route is unavailable when `baseDelete` is false; without `baseDeleteQueue`
+a delete against a live map is written straight away rather than queued, matching
+the refill routes' behavior on a schema without `world_partition`. See
+[Base deletion](base-deletion.md).
 
 `PUT` takes the whole roster rather than a delta — the server diffs it against
 current state and applies only the difference. `rank` is `1` Owner, `2` Co-Owner,

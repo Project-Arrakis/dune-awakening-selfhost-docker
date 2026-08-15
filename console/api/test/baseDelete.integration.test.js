@@ -1,0 +1,390 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  deleteBaseCompletely,
+  queueBaseDelete,
+  cancelQueuedBaseDelete,
+  listQueuedBaseDeletes,
+  flushBaseDeletes,
+  _resetRefillPartitionDwellForTests
+} from "../src/duneDb.js";
+import { pgTransactionalDb, withIsolatedDatabase } from "../test-support/pgIntegrationDb.js";
+
+// Like basePermissions.integration.test.js, this exercises real PostgreSQL
+// rather than a mocked db: the guarantees that matter here -- the cascade
+// actually removing every row, the transaction actually rolling back
+// atomically, a real FOR UPDATE lock -- are exactly the kind a string-matched
+// mock cannot prove.
+//
+// The claim actor (9001) and the displayed base id (a buildings.id, e.g.
+// 9002) are deliberately different ids, mirroring production where they never
+// match. A second, unrelated base (9101/9102/9103) exists in every test to
+// prove a delete never reaches past its own actor set.
+const CLAIM_ACTOR = 9001;
+const BUILDING_ACTORS = [9002, 9003];
+const PLACEABLE_ACTOR = 9004;
+const ENTITY_ID = 501;
+const PLAYER_ID = 4;
+
+const OTHER_CLAIM_ACTOR = 9101;
+const OTHER_BUILDING_ACTOR = 9102;
+const OTHER_PLACEABLE_ACTOR = 9103;
+const OTHER_ENTITY_ID = 601;
+
+const SCHEMA = `
+  create schema dune;
+
+  create table dune.actors (id bigint primary key, map text, partition_id bigint, owner_account_id bigint);
+  create table dune.map_names (map_name_id smallint primary key, map_name text not null);
+  create table dune.world_partition (partition_id bigint primary key, map text, dimension_index integer default 0, server_id text);
+
+  create table dune.buildings (id bigint primary key references dune.actors(id) on delete cascade);
+  create table dune.building_instances (
+    building_id bigint not null references dune.actors(id) on delete cascade,
+    instance_id integer not null,
+    owner_entity_id bigint
+  );
+  create table dune.actor_fgl_entities (
+    entity_id bigint not null,
+    actor_id bigint not null references dune.actors(id) on delete cascade
+  );
+  create table dune.placeables (
+    id bigint primary key references dune.actors(id) on delete cascade,
+    owner_entity_id bigint,
+    building_type text
+  );
+  create table dune.permission_actor (
+    actor_id bigint primary key references dune.actors(id) on delete cascade,
+    actor_name text
+  );
+  create table dune.permission_actor_rank (
+    permission_actor_id bigint not null references dune.permission_actor(actor_id) on delete cascade,
+    player_id bigint not null references dune.actors(id) on delete cascade,
+    rank smallint not null
+  );
+  -- Deliberately NOT FK-cascaded from actors, matching production: only
+  -- permission_actor_destroy clears these.
+  create table dune.markers (marker_hash_id bigint primary key);
+  create table dune.player_markers (marker_hash_id bigint not null, player_id bigint not null);
+  create table dune.inventories (
+    id bigint primary key,
+    actor_id bigint not null references dune.actors(id) on delete cascade,
+    max_item_count integer not null default 10
+  );
+  create table dune.items (
+    id bigint generated always as identity primary key,
+    inventory_id bigint not null references dune.inventories(id) on delete cascade,
+    template_id text not null,
+    stack_size integer not null default 1
+  );
+  -- No cascade: a row here referencing one of the base's actors forces
+  -- delete_actors to fail mid-transaction, for the atomicity test below.
+  create table dune.other_refs (id bigint primary key, referenced_actor_id bigint references dune.actors(id));
+
+  -- Transcribed from the shipped schema (see the plan/PR notes), not
+  -- reinvented: permission_actor_destroy is the only thing that clears
+  -- markers/player_markers, which do not cascade from actors.
+  create function dune.permission_actor_destroy(in_actor_id bigint)
+  returns void language plpgsql as $$
+  begin
+    delete from permission_actor_rank where permission_actor_id = in_actor_id;
+    delete from permission_actor where actor_id = in_actor_id;
+    delete from markers where marker_hash_id = in_actor_id;
+    delete from player_markers where marker_hash_id = in_actor_id;
+    perform pg_notify('permission_notify_channel', format('destroy#{"ActorId" : %s}', in_actor_id));
+  end $$;
+
+  create function dune.delete_actors(in_ids bigint[])
+  returns void language plpgsql as $$
+  begin
+    delete from actors where id = any(in_ids);
+  end $$;
+`;
+
+function seedBase(claimActor, buildingActors, placeableActor, entityId, playerId) {
+  const buildingRows = buildingActors.map((id, index) => `
+    insert into dune.actors (id, map, partition_id) values (${id}, 'HaggaBasin', 3);
+    insert into dune.buildings (id) values (${id});
+    insert into dune.building_instances (building_id, instance_id, owner_entity_id) values (${id}, ${index}, ${entityId});
+  `).join("\n");
+  return `
+    insert into dune.actors (id, map, partition_id) values (${claimActor}, 'HaggaBasin', 3);
+    insert into dune.actor_fgl_entities (entity_id, actor_id) values (${entityId}, ${claimActor});
+    insert into dune.permission_actor (actor_id, actor_name) values (${claimActor}, 'Test Base ${claimActor}');
+    insert into dune.markers (marker_hash_id) values (${claimActor});
+    insert into dune.player_markers (marker_hash_id, player_id) values (${claimActor}, ${playerId});
+    insert into dune.inventories (id, actor_id) values (${claimActor} * 10, ${claimActor});
+    insert into dune.items (inventory_id, template_id, stack_size) values (${claimActor} * 10, 'Spice', 12);
+    ${buildingRows}
+    insert into dune.actors (id, map, partition_id) values (${placeableActor}, 'HaggaBasin', 3);
+    insert into dune.placeables (id, owner_entity_id, building_type) values (${placeableActor}, ${entityId}, 'storagecontainer_placeable');
+    insert into dune.inventories (id, actor_id) values (${placeableActor} * 10, ${placeableActor});
+    insert into dune.items (inventory_id, template_id, stack_size) values (${placeableActor} * 10, 'Aluminum Ingot', 5);
+  `;
+}
+
+const SEED = `
+  insert into dune.actors (id) values (${PLAYER_ID});
+  insert into dune.permission_actor_rank (permission_actor_id, player_id, rank) values (${CLAIM_ACTOR}, ${PLAYER_ID}, 1);
+  ${seedBase(CLAIM_ACTOR, BUILDING_ACTORS, PLACEABLE_ACTOR, ENTITY_ID, PLAYER_ID)}
+  ${seedBase(OTHER_CLAIM_ACTOR, [OTHER_BUILDING_ACTOR], OTHER_PLACEABLE_ACTOR, OTHER_ENTITY_ID, PLAYER_ID)}
+  insert into dune.permission_actor_rank (permission_actor_id, player_id, rank) values (${OTHER_CLAIM_ACTOR}, ${PLAYER_ID}, 1);
+`;
+
+async function withDatabase(t, run) {
+  return withIsolatedDatabase(t, {
+    namePrefix: "dune_base_delete",
+    unavailableLabel: "the base deletion integration test"
+  }, async (pool) => {
+    await pool.query(SCHEMA);
+    await pool.query(SEED);
+    return run(pool);
+  });
+}
+
+async function actorCount(pool, ids) {
+  const result = await pool.query("select count(*)::int as n from dune.actors where id = any($1::bigint[])", [ids]);
+  return result.rows[0].n;
+}
+
+async function tableCount(pool, table) {
+  const result = await pool.query(`select count(*)::int as n from dune.${table}`);
+  return result.rows[0].n;
+}
+
+test("real PostgreSQL: deleteBaseCompletely enumerates the claim actor, every building, and every placeable, deduplicated", async (t) => {
+  await withDatabase(t, async (pool) => {
+    const db = pgTransactionalDb(pool);
+    const result = await deleteBaseCompletely(db, BUILDING_ACTORS[0]);
+
+    assert.equal(result.ok, true);
+    assert.equal(result.actorId, String(CLAIM_ACTOR));
+    assert.equal(result.deletedBuildingCount, BUILDING_ACTORS.length);
+    assert.equal(result.deletedPlaceableCount, 1);
+    // claim actor + 2 buildings + 1 placeable = 4, not 5 -- a building actor
+    // id must never be counted twice even though it is discovered through
+    // both its own buildings row and its building_instances row.
+    assert.equal(result.deletedActorCount, 4);
+  });
+});
+
+test("real PostgreSQL: deleteBaseCompletely cascades away everything belonging to the base and nothing belonging to another", async (t) => {
+  await withDatabase(t, async (pool) => {
+    const db = pgTransactionalDb(pool);
+    await deleteBaseCompletely(db, BUILDING_ACTORS[0]);
+
+    const deletedIds = [CLAIM_ACTOR, ...BUILDING_ACTORS, PLACEABLE_ACTOR];
+    assert.equal(await actorCount(pool, deletedIds), 0);
+    assert.equal(await tableCount(pool, "buildings"), 1, "the other base's building must survive");
+    assert.equal(await tableCount(pool, "building_instances"), 1);
+    assert.equal(await tableCount(pool, "placeables"), 1);
+    assert.equal(await tableCount(pool, "actor_fgl_entities"), 1);
+    assert.equal(await tableCount(pool, "permission_actor"), 1);
+    assert.equal(await tableCount(pool, "permission_actor_rank"), 1);
+    assert.equal(await tableCount(pool, "inventories"), 2);
+    assert.equal(await tableCount(pool, "items"), 2);
+
+    // markers/player_markers do not cascade from actors in production -- only
+    // permission_actor_destroy's explicit deletes clear them, keyed on the
+    // claim actor id.
+    const markers = await pool.query("select marker_hash_id from dune.markers");
+    assert.deepEqual(markers.rows.map((row) => Number(row.marker_hash_id)), [OTHER_CLAIM_ACTOR]);
+    const playerMarkers = await pool.query("select marker_hash_id from dune.player_markers");
+    assert.deepEqual(playerMarkers.rows.map((row) => Number(row.marker_hash_id)), [OTHER_CLAIM_ACTOR]);
+
+    // The other base's own actors, unrelated to this delete, are untouched.
+    assert.equal(await actorCount(pool, [OTHER_CLAIM_ACTOR, OTHER_BUILDING_ACTOR, OTHER_PLACEABLE_ACTOR]), 3);
+  });
+});
+
+test("real PostgreSQL: deleteBaseCompletely rejects a base id that does not exist", async (t) => {
+  await withDatabase(t, async (pool) => {
+    const db = pgTransactionalDb(pool);
+    await assert.rejects(() => deleteBaseCompletely(db, 424242), /was not found/);
+    // Nothing about the seeded bases should have moved.
+    assert.equal(await actorCount(pool, [CLAIM_ACTOR, OTHER_CLAIM_ACTOR]), 2);
+  });
+});
+
+test("real PostgreSQL: a mid-transaction failure rolls back permission_actor_destroy's work too", async (t) => {
+  await withDatabase(t, async (pool) => {
+    // No cascade on other_refs: deleting one of this base's building actors
+    // now violates a real foreign key, forcing delete_actors to fail after
+    // permission_actor_destroy has already run inside the same transaction.
+    await pool.query("insert into dune.other_refs (id, referenced_actor_id) values (1, $1)", [BUILDING_ACTORS[1]]);
+
+    const db = pgTransactionalDb(pool);
+    await assert.rejects(() => deleteBaseCompletely(db, BUILDING_ACTORS[0]));
+
+    // If the rollback were partial, permission_actor_destroy's deletes (which
+    // ran first) would have stuck even though delete_actors failed after it.
+    assert.equal(await actorCount(pool, [CLAIM_ACTOR, ...BUILDING_ACTORS, PLACEABLE_ACTOR]), 4);
+    assert.equal(await tableCount(pool, "permission_actor"), 2);
+    assert.equal(await tableCount(pool, "permission_actor_rank"), 2);
+    const markers = await pool.query("select marker_hash_id from dune.markers where marker_hash_id = $1", [CLAIM_ACTOR]);
+    assert.equal(markers.rows.length, 1);
+    const playerMarkers = await pool.query("select marker_hash_id from dune.player_markers where marker_hash_id = $1", [CLAIM_ACTOR]);
+    assert.equal(playerMarkers.rows.length, 1);
+  });
+});
+
+// --- Pending delete queue ----------------------------------------------------
+
+async function withTempRepoRoot(fn) {
+  const repoRoot = mkdtempSync(join(tmpdir(), "dune-delete-queue-"));
+  try {
+    return await fn(repoRoot);
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+}
+
+test("delete queue stores one entry per base and cancel reports a missing one", async () => {
+  await withTempRepoRoot((repoRoot) => {
+    assert.deepEqual(listQueuedBaseDeletes(repoRoot), []);
+
+    queueBaseDelete(repoRoot, { baseId: 482, map: "Survival_1", partitionId: 3 });
+    queueBaseDelete(repoRoot, { baseId: 517, map: "Overmap", partitionId: 9 });
+    queueBaseDelete(repoRoot, { baseId: 482, map: "Survival_1", partitionId: 3 });
+
+    const pending = listQueuedBaseDeletes(repoRoot);
+    assert.deepEqual(pending.map((entry) => entry.baseId), [517, 482]);
+
+    const result = cancelQueuedBaseDelete(repoRoot, 482);
+    assert.equal(result.pending, 1);
+    assert.deepEqual(listQueuedBaseDeletes(repoRoot).map((entry) => entry.baseId), [517]);
+    assert.throws(() => cancelQueuedBaseDelete(repoRoot, 482), /has no queued delete/);
+  });
+});
+
+test("real PostgreSQL: flush applies a delete once its partition is confirmed down", async (t) => {
+  await withDatabase(t, async (pool) => {
+    await withTempRepoRoot(async (repoRoot) => {
+      _resetRefillPartitionDwellForTests();
+      // Unassigned server_id is positive evidence the map is gone (what
+      // despawn does), so this is write-safe immediately -- no dwell needed.
+      await pool.query("insert into dune.world_partition (partition_id, map, server_id) values (3, 'Survival_1', null)");
+      queueBaseDelete(repoRoot, { baseId: BUILDING_ACTORS[0], map: "HaggaBasin", partitionId: 3 });
+
+      const db = pgTransactionalDb(pool);
+      const result = await flushBaseDeletes(db, repoRoot);
+
+      assert.deepEqual(result.flushed.map((entry) => ({ baseId: entry.baseId, ok: entry.ok })), [{ baseId: BUILDING_ACTORS[0], ok: true }]);
+      assert.equal(result.pending, 0);
+      assert.deepEqual(listQueuedBaseDeletes(repoRoot), []);
+      assert.equal(await actorCount(pool, [CLAIM_ACTOR]), 0);
+    });
+  });
+});
+
+test("real PostgreSQL: flush leaves a delete queued while its map is still live", async (t) => {
+  await withDatabase(t, async (pool) => {
+    await withTempRepoRoot(async (repoRoot) => {
+      _resetRefillPartitionDwellForTests();
+      // server_id assigned, and nothing is connected under a matching
+      // application_name -- read as live until the dwell elapses.
+      await pool.query("insert into dune.world_partition (partition_id, map, server_id) values (3, 'Survival_1', 'srv-1')");
+      queueBaseDelete(repoRoot, { baseId: BUILDING_ACTORS[0], map: "HaggaBasin", partitionId: 3 });
+
+      const db = pgTransactionalDb(pool);
+      const stillLive = await flushBaseDeletes(db, repoRoot, { now: () => 1_000_000 });
+      assert.deepEqual(stillLive.flushed, []);
+      assert.equal(stillLive.pending, 1);
+      assert.equal(await actorCount(pool, [CLAIM_ACTOR]), 1, "a live-map base must not be deleted");
+
+      const afterDwell = await flushBaseDeletes(db, repoRoot, { now: () => 1_000_000 + 30_000 });
+      assert.equal(afterDwell.flushed[0]?.ok, true);
+      assert.equal(await actorCount(pool, [CLAIM_ACTOR]), 0);
+    });
+  });
+});
+
+test("real PostgreSQL: flush treats a base already gone as success, not a retryable failure", async (t) => {
+  await withDatabase(t, async (pool) => {
+    await withTempRepoRoot(async (repoRoot) => {
+      _resetRefillPartitionDwellForTests();
+      await pool.query("insert into dune.world_partition (partition_id, map, server_id) values (3, 'Survival_1', null)");
+      queueBaseDelete(repoRoot, { baseId: BUILDING_ACTORS[0], map: "HaggaBasin", partitionId: 3 });
+
+      // Stands in for the base's own owner demolishing it while the delete
+      // sits queued -- delete_actors cascades away everything this base has.
+      await pool.query("select dune.delete_actors($1::bigint[])", [[CLAIM_ACTOR, ...BUILDING_ACTORS, PLACEABLE_ACTOR]]);
+
+      const db = pgTransactionalDb(pool);
+      const result = await flushBaseDeletes(db, repoRoot);
+
+      assert.equal(result.flushed[0].ok, true);
+      assert.equal(result.flushed[0].alreadyGone, true);
+      assert.equal(result.flushed[0].attempts, undefined, "a base already gone must not burn an attempt");
+      assert.deepEqual(listQueuedBaseDeletes(repoRoot), []);
+    });
+  });
+});
+
+test("real PostgreSQL: flush drops an entry after three genuine failures and expires one older than the age limit", async (t) => {
+  await withDatabase(t, async (pool) => {
+    await withTempRepoRoot(async (repoRoot) => {
+      _resetRefillPartitionDwellForTests();
+      await pool.query("insert into dune.world_partition (partition_id, map, server_id) values (3, 'Survival_1', null)");
+      queueBaseDelete(repoRoot, { baseId: BUILDING_ACTORS[0], map: "HaggaBasin", partitionId: 3 });
+      const queuedAt = Date.parse(listQueuedBaseDeletes(repoRoot)[0].queuedAt);
+
+      // A real transaction that always fails, matching the plan's mocked
+      // "connection terminated"-style forced failure but proven against a
+      // live pool here: db.transaction is overridden, db.query stays real.
+      const real = pgTransactionalDb(pool);
+      const failingDb = { query: real.query, transaction: async () => { throw new Error("simulated permanent failure"); } };
+
+      let round = 0;
+      const step = () => flushBaseDeletes(failingDb, repoRoot, { now: () => 1_000_000 + (round++) * 120_000 });
+
+      const first = await step();
+      assert.equal(first.flushed[0].ok, false);
+      assert.equal(first.flushed[0].attempts, 1);
+      assert.equal(first.flushed[0].dropped, false);
+
+      const second = await step();
+      assert.equal(second.flushed[0].attempts, 2);
+
+      const third = await step();
+      assert.equal(third.flushed[0].attempts, 3);
+      assert.equal(third.flushed[0].dropped, true);
+      assert.deepEqual(listQueuedBaseDeletes(repoRoot), []);
+
+      // A fresh entry that has simply outlived the age limit is dropped on
+      // that basis alone, independent of the attempt counter above.
+      queueBaseDelete(repoRoot, { baseId: BUILDING_ACTORS[0], map: "HaggaBasin", partitionId: 3 });
+      const requeuedAt = Date.parse(listQueuedBaseDeletes(repoRoot)[0].queuedAt);
+      const expired = await flushBaseDeletes(failingDb, repoRoot, { now: () => requeuedAt + 7 * 24 * 3600_000 });
+      assert.equal(expired.flushed[0].expired, true);
+      assert.deepEqual(listQueuedBaseDeletes(repoRoot), []);
+      assert.ok(queuedAt <= requeuedAt);
+    });
+  });
+});
+
+test("real PostgreSQL: a failed safety backup aborts the whole flush pass, leaving every entry queued", async (t) => {
+  await withDatabase(t, async (pool) => {
+    await withTempRepoRoot(async (repoRoot) => {
+      _resetRefillPartitionDwellForTests();
+      await pool.query("insert into dune.world_partition (partition_id, map, server_id) values (3, 'Survival_1', null)");
+      queueBaseDelete(repoRoot, { baseId: BUILDING_ACTORS[0], map: "HaggaBasin", partitionId: 3 });
+      queueBaseDelete(repoRoot, { baseId: OTHER_BUILDING_ACTOR, map: "HaggaBasin", partitionId: 3 });
+
+      const db = pgTransactionalDb(pool);
+      let backupCalls = 0;
+      const result = await flushBaseDeletes(db, repoRoot, {
+        onBeforeApply: () => { backupCalls += 1; throw new Error("backup destination is full"); }
+      });
+
+      assert.equal(backupCalls, 1, "one failed backup must abort the pass, not be retried per base");
+      assert.equal(result.backupFailed, true);
+      assert.deepEqual(result.flushed, []);
+      assert.equal(listQueuedBaseDeletes(repoRoot).length, 2, "neither base may be deleted without its safety backup");
+      assert.equal(await actorCount(pool, [CLAIM_ACTOR, OTHER_CLAIM_ACTOR]), 2);
+    });
+  });
+});
