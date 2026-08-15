@@ -1,47 +1,35 @@
 #!/usr/bin/env python3
 """AES-256-GCM primitive for age-based secrets management.
 
-Why this exists: `runtime/scripts/lib/secrets.sh`'s shell code needs a
-real AES-256-GCM implementation for the enc:v2: ciphertext format it
-produces/consumes. Bash has no native AES-GCM primitive, and
-`openssl enc` cannot do AEAD ciphers at all -- confirmed directly
-(`openssl enc -aes-256-gcm ...` -> "enc: AEAD ciphers not supported"),
-and per `openssl-enc(1)`'s own manual, this is permanent upstream
-policy, not a version gap. Python's `cryptography` package is the
-chosen mechanism for this specific, narrow job.
+Why this exists: Bash has no native AES-GCM, and `openssl enc` cannot
+do AEAD ciphers at all (permanent upstream policy, confirmed via
+`openssl enc -aes-256-gcm` -> "AEAD ciphers not supported", not a
+version gap) -- so `runtime/scripts/lib/secrets.sh` shells out here
+for the enc:v2: ciphertext format it produces/consumes.
 
-`age` itself is never used here. `age`'s job (decrypting the wrapped
-KEK file) ends before this script is ever invoked -- this script only
-ever receives an already-decrypted 32-byte KEK or DEK as a hex string,
-never touches the age identity or the KEK file directly. Keeping these
-two concerns structurally separate is deliberate: age's own on-disk
-format has no relationship to raw AES-GCM framing, and conflating the
-two would be a real design error.
+`age` is never used here -- it decrypts the wrapped KEK file before
+this script is ever invoked; this script only receives an
+already-decrypted 32-byte KEK/DEK as a hex string. Keeping the two
+concerns separate is deliberate: `age`'s on-disk format doesn't match
+our raw AES-GCM framing.
 
-Byte layout:
-    payload = iv (12 bytes) || tag (16 bytes) || ciphertext
-    stored  = base64(payload)
+Byte layout: payload = iv (12 bytes) || tag (16 bytes) || ciphertext,
+stored as base64(payload). `cryptography`'s AESGCM.encrypt() returns
+ciphertext||tag (tag at the END, the opposite order) -- this module
+explicitly splits/reorders on encrypt and reverses it on decrypt.
+Getting this wrong would silently produce ciphertext a compatible
+iv||tag||ciphertext implementation could never decrypt. The
+cross-language round-trip test (test-secrets-aead-cross-language.sh)
+is what proves this layout, not this docstring.
 
-Python's `cryptography.hazmat.primitives.ciphers.aead.AESGCM.encrypt()`
-returns `ciphertext || tag` (tag appended at the END) -- the OPPOSITE
-order from the target layout above. This module explicitly splits and
-reorders on encrypt, and reverses that reordering on decrypt. Getting
-this wrong would silently produce ciphertext that looks valid but that
-a compatible implementation using the iv||tag||ciphertext ordering
-could never actually decrypt, or vice versa. The cross-language
-round-trip test (test-secrets-aead-cross-language.sh) is what actually
-proves this byte layout is correct and portable, not this docstring --
-read that test if you're modifying this file.
-
-CLI usage: secret material is passed via STDIN, never as a command-line
-argument. This is deliberate and load-bearing, not a style choice --
-see the CRITICAL correction below.
+CLI usage -- secret material via STDIN ONLY, never argv (see CRITICAL
+below):
 
     python3 secrets_aead.py encrypt
-        stdin: <key-hex>\n<plaintext>\n   (plaintext may itself contain
-               any bytes except a newline; if the secret could ever
-               contain a newline, this protocol would need revising --
-               none of this repo's current secrets do)
+        stdin: <key-hex>\n<plaintext>\n   (plaintext may contain any
+               bytes except a newline -- none of this repo's current
+               secrets need one; revise this protocol first if a
+               future secret does)
         stdout: base64(iv+tag+ct)
 
     python3 secrets_aead.py decrypt
@@ -49,32 +37,19 @@ see the CRITICAL correction below.
         stdout: plaintext
 
     python3 secrets_aead.py generate-key
-        no stdin needed
         stdout: a fresh, random 64-hex-char (32-byte) key
 
-    `runtime/scripts/lib/secrets.sh` calls this via a Bash heredoc or
-    `printf '%s\n%s\n' "$key" "$value" | python3 secrets_aead.py ...` --
-    `printf` is a shell BUILTIN, not a separate process, so the secret
-    value is never written to any process's own argv/`/proc/<pid>/cmdline`
-    at any point in that pipeline.
+Exit codes: 0 on success, 1 on any error (bad key length, malformed
+base64, decryption/auth failure, malformed stdin) -- always to
+stderr, never stdout, so `value="$(... | secrets_aead.py decrypt)"`
+never captures an error message as if it were the secret.
 
-Exit codes: 0 on success. 1 on any error (bad key length, malformed
-base64, decryption/auth failure, malformed stdin) -- errors are
-printed to stderr, never to stdout, so a caller doing
-`value="$(... | python3 secrets_aead.py decrypt)"` never accidentally
-captures an error message as if it were the secret.
-
-CRITICAL: taking <key-hex> and <plaintext>/<payload> as plain
-positional argv arguments (`sys.argv[2]`, `sys.argv[3]`) would make
-the KEK, DEK, and plaintext secret values fully visible, for the
-process's entire lifetime, via `/proc/<pid>/cmdline` and `ps aux` to
-any local user or process able to read `/proc` -- the exact
-vulnerability class (GHSA-fc89-h24v-6j3x) this whole age-secrets
-feature exists to eliminate, just relocated from Docker's
-`-e`/`docker inspect` exposure to a `python3` CLI argv exposure. This
-is why the CLI reads secret material from stdin exclusively; do not
-reintroduce a <key-hex>/<plaintext> argv parameter for "usage"
-convenience later without re-reading this paragraph.
+CRITICAL: taking <key-hex>/<plaintext> as plain argv (sys.argv[2/3])
+would make them visible for the process's entire lifetime via
+/proc/<pid>/cmdline and `ps aux` to any local user able to read /proc
+-- the exact exposure class (GHSA-fc89-h24v-6j3x) this feature exists
+to eliminate. Do not reintroduce an argv parameter for "convenience"
+without re-reading this paragraph.
 """
 from __future__ import annotations
 
