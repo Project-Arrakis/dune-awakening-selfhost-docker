@@ -327,3 +327,69 @@ test("publicConfig() exposes ports to the frontend", () => {
     rmSync(repoRoot, { recursive: true, force: true });
   }
 });
+
+// Upstream review finding (PR #157): if [Engine:URL] is absent
+// entirely, the previous implementation fell back to scanning the
+// WHOLE profile file for a Port=/IGWPort= match, which could silently
+// pick up an unrelated key from a different section (here,
+// [Engine:ConsoleVariables]'s own Port= override -- a real key some
+// UE-based configs use for something unrelated to the game server's
+// own bind port) and report it as the real game port. The real Python
+// tool (usersettings.py's profile_get_key()) only ever looks inside the
+// named section; if the section doesn't exist, it returns nothing for
+// that key.
+test("resolvePorts() does not read Port/IGWPort from an unrelated section when [Engine:URL] is missing", () => {
+  const repoRoot = mkdtempSync(join(tmpdir(), "arrakis-config-wrong-section-"));
+  try {
+    mkdirSync(join(repoRoot, "runtime", "generated"), { recursive: true });
+    writeFileSync(
+      join(repoRoot, "runtime", "generated", "gameplay-profile.ini"),
+      "[Engine:ConsoleVariables]\nPort=1234\nIGWPort=1235\n"
+    );
+    const ports = resolvePorts({}, repoRoot);
+    assert.equal(ports.clientBase, 7777, "a Port= key in an unrelated section must not be treated as the real game port");
+    assert.equal(ports.igwBase, 7888, "an IGWPort= key in an unrelated section must not be treated as the real IGW port");
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+// Upstream review finding (PR #157): portValue() only range-checks the
+// base port itself (1-65535), but each base is really the start of a
+// 34-slot range used across the maximum 34 world partitions this
+// project supports (see spawn-server.sh's
+// game_end=$((CLIENT_PORT_BASE + 33))). A base near the top of the
+// valid range can still cause the derived end-of-range port to
+// overflow past 65535, which is exactly as unusable as an
+// already-out-of-range base.
+test("resolvePorts() rejects a Port/IGWPort base whose +33 partition range would exceed 65535", () => {
+  const repoRoot = mkdtempSync(join(tmpdir(), "arrakis-config-overflow-"));
+  try {
+    mkdirSync(join(repoRoot, "runtime", "generated"), { recursive: true });
+    writeFileSync(
+      join(repoRoot, "runtime", "generated", "gameplay-profile.ini"),
+      "[Engine:URL]\nPort=65510\nIGWPort=65520\n"
+    );
+    const ports = resolvePorts({}, repoRoot);
+    assert.equal(ports.clientBase, 7777, "a Port base whose +33 range overflows 65535 must fall back to stock");
+    assert.equal(ports.igwBase, 7888, "an IGWPort base whose +33 range overflows 65535 must fall back to stock");
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test("resolvePorts() accepts a Port/IGWPort base whose +33 partition range exactly reaches 65535", () => {
+  const repoRoot = mkdtempSync(join(tmpdir(), "arrakis-config-boundary-"));
+  try {
+    mkdirSync(join(repoRoot, "runtime", "generated"), { recursive: true });
+    writeFileSync(
+      join(repoRoot, "runtime", "generated", "gameplay-profile.ini"),
+      "[Engine:URL]\nPort=65502\nIGWPort=65502\n"
+    );
+    const ports = resolvePorts({}, repoRoot);
+    assert.equal(ports.clientBase, 65502, "a base whose +33 range lands exactly on 65535 must be accepted");
+    assert.equal(ports.igwBase, 65502, "a base whose +33 range lands exactly on 65535 must be accepted");
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});

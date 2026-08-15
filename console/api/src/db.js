@@ -10,16 +10,22 @@ export function discoverDbConfig(env = process.env, repoRoot = process.cwd()) {
   }
   return {
     host: env.DUNE_DB_HOST || env.PGHOST || "127.0.0.1",
-    // DUNE_DB_PORT/PGPORT take precedence over the shared resolvePorts()
-    // default when set directly (rare, escape-hatch use), otherwise this
-    // matches config.js's ports.postgres exactly -- same fallback (15432),
-    // same POSTGRES_PORT lookup, single source of truth (see issue #266).
-    // postgres is env-var-only (not profile-file-backed), so repoRoot
-    // doesn't affect this specific field today -- passed through
-    // explicitly anyway so this doesn't silently rely on process.cwd()
-    // coincidentally matching config.repoRoot the moment a
-    // profile-backed field is ever added here.
-    port: Number(env.DUNE_DB_PORT || env.PGPORT || resolvePorts(env, repoRoot).postgres),
+    // Upstream review finding (PR #157): this previously preferred
+    // DUNE_DB_PORT/PGPORT over resolvePorts().postgres, while
+    // resolvePorts() itself prefers POSTGRES_PORT over
+    // DUNE_DB_PORT/PGPORT -- if an operator had more than one of these
+    // set to different values (a real, reachable misconfiguration, not
+    // hypothetical), status/preflight (which reads resolvePorts()
+    // directly) could disagree with the actual database connection
+    // (which read this function). Always delegate to resolvePorts()
+    // instead of re-implementing the precedence chain here, so there is
+    // exactly one place this logic can ever drift from itself (see
+    // issue #266). postgres is env-var-only (not profile-file-backed),
+    // so repoRoot doesn't affect this specific field today -- passed
+    // through explicitly anyway so this doesn't silently rely on
+    // process.cwd() coincidentally matching config.repoRoot the moment
+    // a profile-backed field is ever added here.
+    port: resolvePorts(env, repoRoot).postgres,
     database: env.DUNE_DB_NAME || env.PGDATABASE || "dune",
     user: env.DUNE_DB_USER || env.PGUSER || "dune",
     password: env.DUNE_DB_PASSWORD || env.PGPASSWORD || "dune",
