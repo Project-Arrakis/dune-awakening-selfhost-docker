@@ -388,3 +388,134 @@ if [ -f "$case7_root/docker.log" ] && grep -q . "$case7_root/docker.log"; then
   exit 1
 fi
 echo "PASS no-passphrase-available-fails-safely"
+
+# --- Case 8: two concurrent, same-second invocations must never cross- ---
+# --- contaminate each other's database dump content -- regression test  -
+# --- for a real CRITICAL finding from the Layer 2/3 eight-hats review:  -
+# --- backup_db() names its output using only second-resolution          -
+# --- timestamps (shared, pre-existing, load-bearing for `dune db list`'s-
+# --- naming/validation regex elsewhere in this file -- not something    -
+# --- this feature should change). Two backup_db() calls landing in the -
+# --- same wall-clock second previously computed the IDENTICAL           -
+# --- destination path and silently overwrote each other before          -
+# --- backup_system() read the result back -- independently reproduced: -
+# --- two concurrent invocations produced two distinct, correctly unique-
+# --- encrypted archives that BOTH silently contained the SAME database -
+# --- dump content, with no error or indication anywhere. Fixed by      -
+# --- giving backup_db() a private, per-invocation directory.            -
+
+case8_root="$test_root/case8"
+mkdir -p "$case8_root/work-a" "$case8_root/work-b" "$case8_root/altbin"
+seed_repo_tree "$case8_root/work-a"
+seed_repo_tree "$case8_root/work-b"
+
+# A docker mock whose pg_dump output is tagged with a per-invocation
+# marker (via env var), so a decrypted archive's content can be traced
+# back to exactly which invocation actually produced it.
+cat > "$case8_root/altbin/docker" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case "${1:-} ${2:-}" in
+  "ps --format")
+    printf '%s\n' dune-postgres
+    ;;
+  "exec dune-postgres")
+    shift 2
+    case "${1:-}" in
+      psql)
+        printf '%s\n' "${MOCK_PARTITION_COUNT:-30}"
+        ;;
+      pg_dump) ;;
+      pg_restore)
+        cat <<'TOC'
+5; 2615 16385 SCHEMA - dune dune
+212; 1259 16432 TABLE dune world_partition dune
+3872; 0 16432 TABLE DATA dune world_partition dune
+TOC
+        ;;
+      rm) ;;
+    esac
+    ;;
+  "cp dune-postgres:"*)
+    destination="${3:-}"
+    mkdir -p "$(dirname "$destination")"
+    printf 'MARKER=%s\n' "${MOCK_INVOCATION_MARKER:-none}" > "$destination"
+    ;;
+  "cp "*)
+    ;;
+esac
+EOF
+chmod +x "$case8_root/altbin/docker"
+
+PASSPHRASE_A="case8-passphrase-a"
+PASSPHRASE_B="case8-passphrase-b"
+
+(
+  cd "$case8_root/work-a"
+  PATH="$case8_root/altbin:$PATH" MOCK_INVOCATION_MARKER="RUN-A" \
+    DUNE_SYSTEM_BACKUP_PASSPHRASE="$PASSPHRASE_A" \
+    bash runtime/scripts/db.sh backup-system > "$case8_root/output-a.log" 2>&1
+) &
+case8_pid_a=$!
+(
+  cd "$case8_root/work-b"
+  PATH="$case8_root/altbin:$PATH" MOCK_INVOCATION_MARKER="RUN-B" \
+    DUNE_SYSTEM_BACKUP_PASSPHRASE="$PASSPHRASE_B" \
+    bash runtime/scripts/db.sh backup-system > "$case8_root/output-b.log" 2>&1
+) &
+case8_pid_b=$!
+
+set +e
+wait "$case8_pid_a"; case8_exit_a=$?
+wait "$case8_pid_b"; case8_exit_b=$?
+set -e
+
+if [ "$case8_exit_a" -ne 0 ] || [ "$case8_exit_b" -ne 0 ]; then
+  echo "FAIL concurrent-invocations-no-cross-contamination: one or both concurrent runs failed"
+  echo "--- run A output ---"; cat "$case8_root/output-a.log"
+  echo "--- run B output ---"; cat "$case8_root/output-b.log"
+  exit 1
+fi
+
+case8_archive_a="$(find "$case8_root/work-a/runtime/backups/system" -maxdepth 1 -name '*.tar.gz.enc' | head -n1)"
+case8_archive_b="$(find "$case8_root/work-b/runtime/backups/system" -maxdepth 1 -name '*.tar.gz.enc' | head -n1)"
+if [ -z "$case8_archive_a" ] || [ -z "$case8_archive_b" ]; then
+  echo "FAIL concurrent-invocations-no-cross-contamination: one or both archives were not written"
+  exit 1
+fi
+
+case8_extract_a="$test_root/case8-extract-a"
+case8_extract_b="$test_root/case8-extract-b"
+decrypt_and_extract "$case8_archive_a" "$case8_extract_a" "$PASSPHRASE_A"
+decrypt_and_extract "$case8_archive_b" "$case8_extract_b" "$PASSPHRASE_B"
+
+case8_dump_a="$(find "$case8_extract_a/db" -name '*.backup' | head -n1)"
+case8_dump_b="$(find "$case8_extract_b/db" -name '*.backup' | head -n1)"
+if [ -z "$case8_dump_a" ] || [ -z "$case8_dump_b" ]; then
+  echo "FAIL concurrent-invocations-no-cross-contamination: could not find a database dump inside one or both decrypted archives"
+  exit 1
+fi
+
+if ! grep -q "MARKER=RUN-A" "$case8_dump_a" 2>/dev/null; then
+  echo "FAIL concurrent-invocations-no-cross-contamination: run A's archive does not contain run A's own database dump content (cross-contamination)"
+  cat "$case8_dump_a"
+  exit 1
+fi
+if ! grep -q "MARKER=RUN-B" "$case8_dump_b" 2>/dev/null; then
+  echo "FAIL concurrent-invocations-no-cross-contamination: run B's archive does not contain run B's own database dump content (cross-contamination)"
+  cat "$case8_dump_b"
+  exit 1
+fi
+
+# Also confirm no stray per-invocation dump directory (the private
+# staging directory backup_db() writes into) survives in either work
+# tree after a successful run -- only the encrypted archive + sidecar.
+if find "$case8_root/work-a/runtime/backups/system" -maxdepth 1 -type d -name '.dune-db-dump-*' | grep -q .; then
+  echo "FAIL concurrent-invocations-no-cross-contamination: run A left a private dump staging directory behind"
+  exit 1
+fi
+if find "$case8_root/work-b/runtime/backups/system" -maxdepth 1 -type d -name '.dune-db-dump-*' | grep -q .; then
+  echo "FAIL concurrent-invocations-no-cross-contamination: run B left a private dump staging directory behind"
+  exit 1
+fi
+echo "PASS concurrent-invocations-no-cross-contamination"

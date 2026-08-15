@@ -69,9 +69,14 @@ archive as equivalent to a copy of your Funcom token the moment it leaves
 this host, unless you are confident in the passphrase's strength.
 
 To decrypt and extract (also printed in the archive's own .yaml sidecar
-and on stdout when the backup is created):
-  openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 -in <archive> \
-    -pass pass:YOUR_PASSPHRASE | gunzip | tar -xf -
+and on stdout when the backup is created). Enter the passphrase at the
+prompt -- do not put it directly on the command line (-pass pass:...),
+which would expose it to any other process on this host via `ps`/
+/proc/<pid>/cmdline for as long as openssl is running:
+  read -r -s -p "Passphrase: " p; echo
+  printf '%s' "$p" | openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 \
+    -in <archive> -pass stdin | gunzip | tar -xf -
+  unset p
 
 There is no automated restore for system backups yet: decrypt/extract as
 above, restore .env / runtime/generated/ / runtime/secrets/ manually, then
@@ -676,6 +681,7 @@ backup_system() {
   local ts
   local nonce
   local stage_dir=""
+  local db_dump_dir=""
   local db_dump_file=""
   local db_dump_sidecar=""
   local archive_id
@@ -700,8 +706,7 @@ backup_system() {
     [ -z "$plain_tar" ] || rm -f -- "$plain_tar"
     [ -z "$staged_archive" ] || rm -f -- "$staged_archive"
     [ -z "$staged_sidecar" ] || rm -f -- "$staged_sidecar"
-    [ -z "$db_dump_file" ] || rm -f -- "$db_dump_file"
-    [ -z "$db_dump_sidecar" ] || rm -f -- "$db_dump_sidecar"
+    [ -z "$db_dump_dir" ] || rm -rf -- "$db_dump_dir"
   }
 
   passphrase="$(resolve_system_backup_passphrase)" || return 1
@@ -710,10 +715,36 @@ backup_system() {
   mkdir -p "$out_dir"
   chmod 700 "$out_dir" 2>/dev/null || true
 
+  ts="$(date +%Y%m%d-%H%M%S)"
+  nonce="$$-$RANDOM"
+  archive_id="dune-system-$ts-$nonce"
+
+  # backup_db() names its output using only second-resolution timestamps
+  # (shared, unrelated to this feature, load-bearing for `dune db list`'s
+  # naming/validation regex elsewhere in this file -- not something this
+  # function should change). Two backup_db() calls landing in the same
+  # wall-clock second would otherwise compute the IDENTICAL destination
+  # path and silently overwrite each other before backup_system() ever
+  # reads the result back -- independently reproduced: two concurrent
+  # `dune db backup-system` invocations produced two distinct, correctly
+  # unique encrypted archives that both silently contained the SAME
+  # database dump content, with no error or indication anywhere. Giving
+  # backup_db() a private, per-invocation directory (named after this
+  # archive's own already-unique id) makes that collision structurally
+  # impossible: no two invocations can ever share a destination
+  # directory, regardless of what filename backup_db() computes inside it.
+  db_dump_dir="$out_dir/.dune-db-dump-$archive_id"
+  if ! mkdir -p "$db_dump_dir"; then
+    echo "System backup was not created because a database-dump staging directory could not be created." >&2
+    return 1
+  fi
+  chmod 700 "$db_dump_dir" 2>/dev/null || true
+
   echo "Creating database dump for system backup..."
   LAST_DB_BACKUP_FILE=""
   LAST_DB_BACKUP_SIDECAR_FILE=""
-  if ! backup_db "$out_dir"; then
+  if ! backup_db "$db_dump_dir"; then
+    backup_system_cleanup_on_failure
     echo "System backup was not created because the database dump failed." >&2
     return 1
   fi
@@ -724,10 +755,6 @@ backup_system() {
     echo "System backup was not created because the database dump could not be located." >&2
     return 1
   fi
-
-  ts="$(date +%Y%m%d-%H%M%S)"
-  nonce="$$-$RANDOM"
-  archive_id="dune-system-$ts-$nonce"
 
   if ! stage_dir="$(mktemp -d)"; then
     backup_system_cleanup_on_failure
@@ -815,11 +842,27 @@ backup_system() {
   staged_archive="$archive_file.partial.$$"
   staged_sidecar="$sidecar_file.partial.$$"
 
-  if ! gzip -c "$plain_tar" | openssl enc -aes-256-cbc -pbkdf2 -iter "$SYSTEM_BACKUP_PBKDF2_ITER" -salt -pass "pass:$passphrase" -out "$staged_archive"; then
+  # -pass fd:N, not -pass pass:$passphrase: the latter would put the
+  # plaintext passphrase directly into this openssl process's own argv,
+  # visible to any co-resident process/user via `ps`/`/proc/<pid>/cmdline`
+  # for the process's lifetime -- the exact GHSA-fc89-h24v-6j3x exposure
+  # class this account's own security history already flagged and fixed
+  # elsewhere (see docs/security/audit-2026-07-04.md). Independently
+  # verified fd: never appears in argv and round-trips correctly through
+  # this exact gzip | openssl enc pipeline shape before adopting it here.
+  local passphrase_fd
+  if ! exec {passphrase_fd}<<< "$passphrase"; then
+    backup_system_cleanup_on_failure
+    echo "System backup was not created because the passphrase could not be prepared for encryption." >&2
+    return 1
+  fi
+  if ! gzip -c "$plain_tar" | openssl enc -aes-256-cbc -pbkdf2 -iter "$SYSTEM_BACKUP_PBKDF2_ITER" -salt -pass "fd:$passphrase_fd" -out "$staged_archive"; then
+    exec {passphrase_fd}<&- 2>/dev/null || true
     backup_system_cleanup_on_failure
     echo "System backup was not created because encryption failed." >&2
     return 1
   fi
+  exec {passphrase_fd}<&-
   rm -f -- "$plain_tar"
   plain_tar=""
 
@@ -835,7 +878,15 @@ backup_system() {
     echo "server_title: $(config_value .env SERVER_TITLE || echo unknown)"
     echo "server_region: $(config_value .env SERVER_REGION || echo unknown)"
     echo "battlegroup_id: $(config_value runtime/generated/battlegroup.env BATTLEGROUP_ID || echo unknown)"
-    echo "decrypt_command: openssl enc -d -aes-256-cbc -pbkdf2 -iter $SYSTEM_BACKUP_PBKDF2_ITER -in $(basename "$archive_file") -pass pass:YOUR_PASSPHRASE | gunzip | tar -xf -"
+    echo "decrypt_note: >-"
+    echo "  Do not pass the passphrase on the command line (-pass pass:...) --"
+    echo "  it would be visible to other processes via ps/proc for as long as"
+    echo "  openssl runs. Enter it at a prompt instead:"
+    echo "decrypt_command: |-"
+    echo "  read -r -s -p \"Passphrase: \" p; echo"
+    echo "  printf '%s' \"\$p\" | openssl enc -d -aes-256-cbc -pbkdf2 -iter $SYSTEM_BACKUP_PBKDF2_ITER \\"
+    echo "    -in $(basename "$archive_file") -pass stdin | gunzip | tar -xf -"
+    echo "  unset p"
   } > "$staged_sidecar"; then
     backup_system_cleanup_on_failure
     echo "System backup was not created because its metadata could not be written." >&2
@@ -859,15 +910,13 @@ backup_system() {
   fi
   staged_sidecar=""
 
-  # The plaintext DB dump that backup_db() wrote directly into $out_dir is
-  # now safely duplicated, encrypted, inside the published archive above --
-  # remove the unencrypted original so it doesn't sit next to the encrypted
-  # archive defeating the entire point of encrypting it. Clear the
-  # variables first so a failure in this cleanup step doesn't cause
-  # backup_system_cleanup_on_failure (unused past this point, but kept
-  # consistent) to ever reference an already-removed archive_file.
-  rm -f -- "$db_dump_file"
-  [ -z "$db_dump_sidecar" ] || rm -f -- "$db_dump_sidecar"
+  # The plaintext DB dump that backup_db() wrote into its own private,
+  # per-invocation directory is now safely duplicated, encrypted, inside
+  # the published archive above -- remove that whole directory so nothing
+  # unencrypted survives next to the encrypted archive, defeating the
+  # entire point of encrypting it.
+  rm -rf -- "$db_dump_dir"
+  db_dump_dir=""
   db_dump_file=""
   db_dump_sidecar=""
 
@@ -881,8 +930,12 @@ backup_system() {
   echo "There is no way to recover this archive's contents without that passphrase --"
   echo "store it somewhere durable (a password manager), separately from the archive."
   echo
-  echo "To decrypt and extract:"
-  echo "  openssl enc -d -aes-256-cbc -pbkdf2 -iter $SYSTEM_BACKUP_PBKDF2_ITER -in $(basename "$archive_file") -pass pass:YOUR_PASSPHRASE | gunzip | tar -xf -"
+  echo "To decrypt and extract, enter the passphrase at the prompt -- do not put it"
+  echo "on the command line, which would expose it to other processes on this host:"
+  echo "  read -r -s -p \"Passphrase: \" p; echo"
+  echo "  printf '%s' \"\$p\" | openssl enc -d -aes-256-cbc -pbkdf2 -iter $SYSTEM_BACKUP_PBKDF2_ITER \\"
+  echo "    -in $(basename "$archive_file") -pass stdin | gunzip | tar -xf -"
+  echo "  unset p"
 }
 
 list_system_backups() {
