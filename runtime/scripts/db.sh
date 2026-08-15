@@ -54,7 +54,10 @@ own). Every credential is retained -- the Funcom Self-Host Service Token,
 admin console password, RMQ admin credentials, and the sietch join
 password are all included verbatim, not redacted or excluded. The
 archive's only protection is the passphrase you set when creating it,
-encrypted with AES-256-CBC + PBKDF2. You will be prompted for a passphrase
+encrypted with AES-256 in AEAD (OCB) mode via gpg -- an authenticated
+cipher mode, not just confidentiality: a corrupted or tampered archive
+is rejected outright at decrypt time rather than silently producing
+wrong or manipulated plaintext. You will be prompted for a passphrase
 interactively (entered twice, to catch typos); for non-interactive/cron
 use, set DUNE_SYSTEM_BACKUP_PASSPHRASE in the environment instead. There
 is no way to recover an encrypted system backup without its passphrase --
@@ -68,12 +71,12 @@ this host, unless you are confident in the passphrase's strength.
 
 To decrypt and extract (also printed in the archive's own .yaml sidecar
 and on stdout when the backup is created). Enter the passphrase at the
-prompt -- do not put it directly on the command line (-pass pass:...),
-which would expose it to any other process on this host via `ps`/
-/proc/<pid>/cmdline for as long as openssl is running:
+prompt -- do not put it directly on the command line, which would expose
+it to any other process on this host via `ps`/`/proc/<pid>/cmdline` for
+as long as gpg is running:
   read -r -s -p "Passphrase: " p; echo
-  printf '%s' "$p" | openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 \
-    -in <archive> -pass stdin | gunzip | tar -xf -
+  printf '%s' "$p" | gpg --batch --yes --pinentry-mode loopback \
+    --passphrase-fd 0 -d <archive> | gunzip | tar -xf -
   unset p
 
 There is no automated restore for system backups yet: decrypt/extract as
@@ -602,7 +605,17 @@ backup_db() {
 }
 
 SYSTEM_BACKUP_DIR_DEFAULT="runtime/backups/system"
-SYSTEM_BACKUP_PBKDF2_ITER=600000
+# gpg's --s2k-count accepts 1024..65011712; 65011712 is the maximum
+# allowed value, giving comparable KDF work factor to this backup
+# format's previous PBKDF2 iteration count.
+SYSTEM_BACKUP_S2K_COUNT=65011712
+# Isolated, disposable GNUPGHOME per invocation -- never the operator's
+# own ~/.gnupg. This is symmetric passphrase encryption only (no keys
+# ever created, imported, or retained), but gpg still writes a keybox/
+# trustdb/agent socket into its home directory on first use; using a
+# private, per-invocation directory (removed by the same cleanup path
+# as every other staging artifact) avoids ever touching or depending on
+# an operator's real GnuPG state.
 
 # Ephemeral, process-scoped scratch directories that are fully regenerated
 # on every container start and never carry state worth restoring. Excluded
@@ -681,6 +694,7 @@ backup_system() {
   local staged_archive=""
   local staged_sidecar=""
   local passphrase
+  local gnupg_home=""
 
   # Every failure path below calls this before returning, so a plaintext
   # DB dump or staging directory never survives a failed run -- the only
@@ -697,6 +711,7 @@ backup_system() {
     [ -z "$staged_archive" ] || rm -f -- "$staged_archive"
     [ -z "$staged_sidecar" ] || rm -f -- "$staged_sidecar"
     [ -z "$db_dump_dir" ] || rm -rf -- "$db_dump_dir"
+    [ -z "$gnupg_home" ] || rm -rf -- "$gnupg_home"
   }
 
   passphrase="$(resolve_system_backup_passphrase)" || return 1
@@ -789,7 +804,16 @@ backup_system() {
       echo "System backup was not created because staging failed." >&2
       return 1
     fi
-    if ! rsync -a --exclude 'dune-fake-k8s-serviceaccount-*' runtime/generated/ "$stage_dir/generated/"; then
+    # tar pipe, not rsync: rsync is not installed by install.sh or in the
+    # console container image (confirmed directly against both) -- this
+    # feature must not introduce a dependency that only happens to be
+    # present on a CI runner. tar is already a hard dependency of this
+    # same function (used a few lines below to build the plaintext
+    # archive), so a tar-to-tar pipe reuses a tool this feature already
+    # requires instead of adding a new one. `--exclude` preserves the
+    # same ephemeral-directory exclusion rsync's flag provided.
+    if ! tar -C runtime/generated --exclude='dune-fake-k8s-serviceaccount-*' -cf - . \
+        | tar -C "$stage_dir/generated" -xf -; then
       backup_system_cleanup_on_failure
       echo "System backup was not created because runtime/generated/ could not be staged." >&2
       return 1
@@ -802,7 +826,7 @@ backup_system() {
       echo "System backup was not created because staging failed." >&2
       return 1
     fi
-    if ! rsync -a runtime/secrets/ "$stage_dir/secrets/"; then
+    if ! tar -C runtime/secrets -cf - . | tar -C "$stage_dir/secrets" -xf -; then
       backup_system_cleanup_on_failure
       echo "System backup was not created because runtime/secrets/ could not be staged." >&2
       return 1
@@ -832,27 +856,60 @@ backup_system() {
   staged_archive="$archive_file.partial.$$"
   staged_sidecar="$sidecar_file.partial.$$"
 
-  # -pass fd:N, not -pass pass:$passphrase: the latter would put the
-  # plaintext passphrase directly into this openssl process's own argv,
-  # visible to any co-resident process/user via `ps`/`/proc/<pid>/cmdline`
-  # for the process's lifetime -- the exact GHSA-fc89-h24v-6j3x exposure
-  # class this account's own security history already flagged and fixed
-  # elsewhere (see docs/security/audit-2026-07-04.md). Independently
-  # verified fd: never appears in argv and round-trips correctly through
-  # this exact gzip | openssl enc pipeline shape before adopting it here.
+  # --passphrase-fd N, not putting the passphrase in argv: the latter
+  # would make it visible to any co-resident process/user via `ps`/
+  # `/proc/<pid>/cmdline` for the process's lifetime -- the exact
+  # GHSA-fc89-h24v-6j3x exposure class this account's own security
+  # history already flagged and fixed elsewhere (see
+  # docs/security/audit-2026-07-04.md).
+  #
+  # gpg's own AES-256-OCB (--aead-algo OCB --force-aead) is used instead
+  # of openssl's AES-256-CBC: CBC provides confidentiality only, with no
+  # integrity/authenticity check -- a corrupted or maliciously modified
+  # archive silently decrypts to garbage (or worse) with no error.
+  # `openssl enc`'s CLI cannot do any AEAD cipher at all (confirmed
+  # directly: `openssl enc -aes-256-gcm` -> "AEAD ciphers not
+  # supported", a permanent CLI-level policy, not a version gap -- the
+  # same limitation already documented for this repo's secrets library).
+  # gpg's OCB mode is AEAD and rejects tampered/corrupted ciphertext
+  # outright at decrypt time (verified directly: a single flipped byte
+  # anywhere in the ciphertext makes gpg exit non-zero with "WARNING:
+  # encrypted message has been manipulated!" and writes no output file).
+  #
+  # A private, per-invocation GNUPGHOME (never the operator's own
+  # ~/.gnupg) is required because gpg writes a keybox/trustdb into its
+  # home directory even for pure symmetric-passphrase encryption with no
+  # keys ever created or imported.
+  if ! gnupg_home="$(mktemp -d)"; then
+    backup_system_cleanup_on_failure
+    echo "System backup was not created because a private GnuPG home could not be created." >&2
+    return 1
+  fi
+  if ! chmod 700 "$gnupg_home"; then
+    backup_system_cleanup_on_failure
+    echo "System backup was not created because the private GnuPG home could not be secured." >&2
+    return 1
+  fi
+
   local passphrase_fd
   if ! exec {passphrase_fd}<<< "$passphrase"; then
     backup_system_cleanup_on_failure
     echo "System backup was not created because the passphrase could not be prepared for encryption." >&2
     return 1
   fi
-  if ! gzip -c "$plain_tar" | openssl enc -aes-256-cbc -pbkdf2 -iter "$SYSTEM_BACKUP_PBKDF2_ITER" -salt -pass "fd:$passphrase_fd" -out "$staged_archive"; then
+  if ! gzip -c "$plain_tar" | GNUPGHOME="$gnupg_home" gpg --batch --yes \
+      --pinentry-mode loopback --passphrase-fd "$passphrase_fd" \
+      --s2k-digest-algo SHA256 --s2k-count "$SYSTEM_BACKUP_S2K_COUNT" \
+      --symmetric --cipher-algo AES256 --aead-algo OCB --force-aead \
+      -o "$staged_archive"; then
     exec {passphrase_fd}<&- 2>/dev/null || true
     backup_system_cleanup_on_failure
     echo "System backup was not created because encryption failed." >&2
     return 1
   fi
   exec {passphrase_fd}<&-
+  rm -rf -- "$gnupg_home"
+  gnupg_home=""
   rm -f -- "$plain_tar"
   plain_tar=""
 
@@ -861,21 +918,25 @@ backup_system() {
     echo "backup_file: $(basename "$archive_file")"
     echo "created_at: $(date -Iseconds)"
     echo "backup_origin: ${DB_BACKUP_ORIGIN:-manual}"
-    echo "encryption: aes-256-cbc-pbkdf2"
-    echo "pbkdf2_iterations: $SYSTEM_BACKUP_PBKDF2_ITER"
+    echo "encryption: aes-256-ocb-gpg-aead"
+    echo "s2k_digest: sha256"
+    echo "s2k_count: $SYSTEM_BACKUP_S2K_COUNT"
     echo "includes_secrets: true"
     echo "db_backup_file: $(basename "$db_dump_file")"
     echo "server_title: $(config_value .env SERVER_TITLE || echo unknown)"
     echo "server_region: $(config_value .env SERVER_REGION || echo unknown)"
     echo "battlegroup_id: $(config_value runtime/generated/battlegroup.env BATTLEGROUP_ID || echo unknown)"
     echo "decrypt_note: >-"
-    echo "  Do not pass the passphrase on the command line (-pass pass:...) --"
-    echo "  it would be visible to other processes via ps/proc for as long as"
-    echo "  openssl runs. Enter it at a prompt instead:"
+    echo "  Do not pass the passphrase on the command line -- it would be"
+    echo "  visible to other processes via ps/proc for as long as gpg runs."
+    echo "  Enter it at a prompt instead. gpg will reject this archive"
+    echo "  outright (nonzero exit, no output written) if it has been"
+    echo "  corrupted or tampered with -- this format is authenticated,"
+    echo "  not just encrypted."
     echo "decrypt_command: |-"
     echo "  read -r -s -p \"Passphrase: \" p; echo"
-    echo "  printf '%s' \"\$p\" | openssl enc -d -aes-256-cbc -pbkdf2 -iter $SYSTEM_BACKUP_PBKDF2_ITER \\"
-    echo "    -in $(basename "$archive_file") -pass stdin | gunzip | tar -xf -"
+    echo "  printf '%s' \"\$p\" | gpg --batch --yes --pinentry-mode loopback \\"
+    echo "    --passphrase-fd 0 -d $(basename "$archive_file") | gunzip | tar -xf -"
     echo "  unset p"
   } > "$staged_sidecar"; then
     backup_system_cleanup_on_failure
@@ -921,10 +982,12 @@ backup_system() {
   echo "store it somewhere durable (a password manager), separately from the archive."
   echo
   echo "To decrypt and extract, enter the passphrase at the prompt -- do not put it"
-  echo "on the command line, which would expose it to other processes on this host:"
+  echo "on the command line, which would expose it to other processes on this host."
+  echo "gpg will reject this archive outright (nonzero exit, no output written) if"
+  echo "it has been corrupted or tampered with -- this format is authenticated:"
   echo "  read -r -s -p \"Passphrase: \" p; echo"
-  echo "  printf '%s' \"\$p\" | openssl enc -d -aes-256-cbc -pbkdf2 -iter $SYSTEM_BACKUP_PBKDF2_ITER \\"
-  echo "    -in $(basename "$archive_file") -pass stdin | gunzip | tar -xf -"
+  echo "  printf '%s' \"\$p\" | gpg --batch --yes --pinentry-mode loopback \\"
+  echo "    --passphrase-fd 0 -d $(basename "$archive_file") | gunzip | tar -xf -"
   echo "  unset p"
 }
 
