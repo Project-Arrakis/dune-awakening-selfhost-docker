@@ -1,5 +1,13 @@
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
+
+function existsAsFile(path) {
+  try {
+    return statSync(path).isFile();
+  } catch {
+    return false;
+  }
+}
 
 export async function readJsonBody(req, maxBytes) {
   const chunks = [];
@@ -87,5 +95,10 @@ export function safeStaticTarget(staticDir, requestPath) {
   const rel = relative(dist, file);
   const contained = rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
   const safeFile = contained ? file : fallback;
-  return existsSync(safeFile) ? safeFile : fallback;
+  // existsSync alone accepts a directory too (e.g. requestPath "/." resolves
+  // rel to "", which reads as "contained" -- dist itself, a directory, not a
+  // file). serveStatic streams the result with createReadStream().pipe(),
+  // which throws an unhandled EISDIR for a directory target, so this must
+  // require a real file, not merely something on disk at that path.
+  return existsAsFile(safeFile) ? safeFile : fallback;
 }

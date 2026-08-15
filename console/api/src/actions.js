@@ -182,6 +182,7 @@ export const ROUTE_ACTIONS = {
   "GET /api/bases/pending-water-refills":      "bases:read",
   "GET /api/bases/auto-refill-water":          "bases:read",
   "GET /api/bases/permission-candidates":      "bases:read",
+  "GET /api/bases/pending-deletes":            "bases:read",
 
   // --- Storage (read) ---
   "GET /api/storage":                          "storage:read",
