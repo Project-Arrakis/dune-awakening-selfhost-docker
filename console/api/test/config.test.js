@@ -113,12 +113,111 @@ test("resolvePorts() reads Player/Game and IGW base ports from gameplay-profile.
   }
 });
 
-test("resolvePorts() falls back to .env CLIENT_PORT_BASE/IGW_PORT_BASE when gameplay-profile.ini doesn't exist yet", () => {
+// Requirement 20 Layer 3 (integration) audit finding, CRITICAL,
+// independently reproduced: this test previously asserted
+// resolvePorts() falls back to .env's CLIENT_PORT_BASE/IGW_PORT_BASE
+// when gameplay-profile.ini doesn't exist yet -- that passed, but was
+// testing the WRONG behavior. The real shell/Python resolver
+// (runtime-env.sh's usersettings_engine_value(), which every game-server
+// start/stop script actually calls) never reads .env for these two
+// fields at all; its real fallback is runtime/generated/
+// usersettings.json's legacy "engine" config, then the stock literal.
+// Directly reproduced the divergence before this fix: with
+// CLIENT_PORT_BASE=7001 in .env and no profile file, Node returned 7001
+// while the real Python tool returned stock 7777 -- the Web UI could
+// show a port the game server's own startup scripts would never
+// actually bind to. This test now asserts the CORRECT chain: .env is
+// NOT consulted for these two fields; usersettings.json is.
+test("resolvePorts() does NOT fall back to .env CLIENT_PORT_BASE/IGW_PORT_BASE when gameplay-profile.ini doesn't exist yet -- matches the real shell/Python resolver, which never reads .env for these fields", () => {
   const repoRoot = mkdtempSync(join(tmpdir(), "arrakis-config-no-profile-"));
   try {
+    // .env has a configured value, but no profile file and no
+    // usersettings.json exist yet -- the real shell/Python resolver
+    // would return stock defaults here, ignoring .env entirely. Node
+    // must agree.
     const ports = resolvePorts({ CLIENT_PORT_BASE: "8777", IGW_PORT_BASE: "8888" }, repoRoot);
-    assert.equal(ports.clientBase, 8777);
-    assert.equal(ports.igwBase, 8888);
+    assert.equal(ports.clientBase, 7777, ".env's CLIENT_PORT_BASE must NOT be used -- the real shell/Python resolver never reads it for this field");
+    assert.equal(ports.igwBase, 7888, ".env's IGW_PORT_BASE must NOT be used -- the real shell/Python resolver never reads it for this field");
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+// This is the SECOND step of the real fallback chain (profile file ->
+// usersettings.json's legacy engine config -> stock) -- see
+// runtime-env.sh's usersettings_engine_value() and usersettings.py's
+// load_config()/ENGINE_FIELDS for the authoritative implementation this
+// mirrors. usersettings.json is written by `dune init`/materialize
+// before the first gameplay-profile.ini exists, or is read directly by
+// runtime-env.sh's Python fallback when the profile file is missing.
+test("resolvePorts() falls back to runtime/generated/usersettings.json's legacy engine config when gameplay-profile.ini doesn't exist yet", () => {
+  const repoRoot = mkdtempSync(join(tmpdir(), "arrakis-config-legacy-"));
+  try {
+    mkdirSync(join(repoRoot, "runtime", "generated"), { recursive: true });
+    writeFileSync(
+      join(repoRoot, "runtime", "generated", "usersettings.json"),
+      JSON.stringify({ engine: { port: "8001", igw_port: "8002" }, maps: {}, partitions: {} })
+    );
+    const ports = resolvePorts({}, repoRoot);
+    assert.equal(ports.clientBase, 8001);
+    assert.equal(ports.igwBase, 8002);
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test("resolvePorts() falls back to stock values when neither gameplay-profile.ini nor usersettings.json exist", () => {
+  const repoRoot = mkdtempSync(join(tmpdir(), "arrakis-config-nothing-"));
+  try {
+    const ports = resolvePorts({}, repoRoot);
+    assert.equal(ports.clientBase, 7777);
+    assert.equal(ports.igwBase, 7888);
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test("resolvePorts() prefers gameplay-profile.ini over usersettings.json when both exist", () => {
+  const repoRoot = mkdtempSync(join(tmpdir(), "arrakis-config-both-"));
+  try {
+    mkdirSync(join(repoRoot, "runtime", "generated"), { recursive: true });
+    writeFileSync(
+      join(repoRoot, "runtime", "generated", "usersettings.json"),
+      JSON.stringify({ engine: { port: "9001", igw_port: "9002" }, maps: {}, partitions: {} })
+    );
+    writeFileSync(
+      join(repoRoot, "runtime", "generated", "gameplay-profile.ini"),
+      "[Engine:URL]\nPort=8001\nIGWPort=8002\n"
+    );
+    const ports = resolvePorts({}, repoRoot);
+    assert.equal(ports.clientBase, 8001, "gameplay-profile.ini must win over usersettings.json's legacy config");
+    assert.equal(ports.igwBase, 8002, "gameplay-profile.ini must win over usersettings.json's legacy config");
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+// Requirement 20 Layer 3 (integration) audit finding, HIGH: if a
+// section has a duplicate key (Port= appearing twice -- usersettings.py's
+// own _advanced_editor_duplicate_key_warnings() explicitly anticipates
+// this as a real, reachable state), the real Python tool the game
+// server uses to materialize this file (profile_get_key(), which
+// iterates reversed(block["lines"])) takes the LAST occurrence.
+// Directly reproduced the divergence before this fix: Node's
+// first-match regex returned 7777 for a fixture where Python's
+// last-match logic returned 9999 -- the Web UI would have shown a
+// different port than the one the engine actually bound to.
+test("resolvePorts() takes the LAST occurrence of a duplicate Port/IGWPort key, matching usersettings.py's profile_get_key() (reversed iteration)", () => {
+  const repoRoot = mkdtempSync(join(tmpdir(), "arrakis-config-dup-"));
+  try {
+    mkdirSync(join(repoRoot, "runtime", "generated"), { recursive: true });
+    writeFileSync(
+      join(repoRoot, "runtime", "generated", "gameplay-profile.ini"),
+      "[Engine:URL]\nPort=7777\nPort=9999\nIGWPort=8001\nIGWPort=8888\n"
+    );
+    const ports = resolvePorts({}, repoRoot);
+    assert.equal(ports.clientBase, 9999, "the LAST Port= line must win, matching usersettings.py's reversed() iteration");
+    assert.equal(ports.igwBase, 8888, "the LAST IGWPort= line must win, matching usersettings.py's reversed() iteration");
   } finally {
     rmSync(repoRoot, { recursive: true, force: true });
   }
