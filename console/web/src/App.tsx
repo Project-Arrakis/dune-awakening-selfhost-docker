@@ -1,6 +1,7 @@
 import { Fragment, Suspense, lazy, useCallback, useEffect, useRef, useState } from "react";
 import { Archive, Building2, CircleArrowUp, Database, ExternalLink, FileText, Gift, Heart, Home, Landmark, Map as MapIcon, Menu, MessageCircle, PackagePlus, RefreshCw, Server, Settings, Shield, Sparkles, Users, X } from "lucide-react";
 import { api, AUTH_SESSION_EXPIRED_EVENT, AUTH_SESSION_EXPIRED_MESSAGE, post, setCsrfToken } from "./api/client";
+import { setServerPorts, setAdminPort, type ServerPorts } from "./api/serverPorts";
 import { serverApi } from "./api/server";
 import { updatesApi } from "./api/updates";
 import { addonsApi } from "./api/addons";
@@ -313,10 +314,12 @@ export function App() {
   }, [pinnedAddons]);
 
   useEffect(() => {
-    api<{ authenticated: boolean; csrfToken: string | null; config?: { discordOAuthConfigured?: boolean } }>("/api/auth/state").then((state) => {
+    api<{ authenticated: boolean; csrfToken: string | null; config?: { discordOAuthConfigured?: boolean; ports?: Partial<ServerPorts>; port?: number } }>("/api/auth/state").then((state) => {
       setAuth(state.authenticated);
       setCsrfToken(state.csrfToken);
       setDiscordSignInAvailable(Boolean(state.config?.discordOAuthConfigured));
+      setServerPorts(state.config?.ports);
+      setAdminPort(state.config?.port);
     }).catch(() => undefined);
   }, []);
 

@@ -1,3 +1,5 @@
+import { getServerPorts } from "../api/serverPorts";
+
 type PortRow = { name: string; port: string; protocol: string; status: string; detail: string; kind: string };
 
 export function PortChecklist({ text, statusText = "" }: { text: string; statusText?: string }) {
@@ -52,17 +54,22 @@ function parseNetworkWarnings(text: string) {
 
 function friendlyPortName(raw: string, port: string, protocol: string) {
   const key = `${port}/${protocol.toLowerCase()}`;
+  // Built from the actual, resolved ports for this instance (see
+  // api/serverPorts.ts) rather than the Instance-1 stock values, so
+  // multi-server deployments (Instance 2+) still get friendly labels
+  // instead of falling through to the raw, unlabeled port. See #266.
+  const ports = getServerPorts();
   const known: Record<string, string> = {
-    "15432/tcp": "Postgres",
-    "32573/tcp": "RabbitMQ Admin",
-    "31982/tcp": "RabbitMQ Game",
-    "31983/tcp": "RabbitMQ Game HTTP",
-    "5059/tcp": "Text Router",
-    "11717/tcp": "Director",
-    "7777/udp": "Overmap Clients",
-    "7778/udp": "Survival 1 Clients",
-    "7888/udp": "Survival 1 S2S",
-    "7889/udp": "Overmap S2S"
+    [`${ports.postgres}/tcp`]: "Postgres",
+    [`${ports.rmqAdmin}/tcp`]: "RabbitMQ Admin",
+    [`${ports.rmqGame}/tcp`]: "RabbitMQ Game",
+    [`${ports.rmqGameHttp}/tcp`]: "RabbitMQ Game HTTP",
+    [`${ports.textRouter}/tcp`]: "Text Router",
+    [`${ports.director}/tcp`]: "Director",
+    [`${ports.clientBase}/udp`]: "Overmap Clients",
+    [`${ports.clientBaseSecondary}/udp`]: "Survival 1 Clients",
+    [`${ports.igwBase}/udp`]: "Survival 1 S2S",
+    [`${ports.igwBaseSecondary}/udp`]: "Overmap S2S"
   };
   return known[key] || raw.replace(/\bis not listening\b.*$/i, "").replace(/\blistening\b.*$/i, "").replace(/\s+/g, " ").trim();
 }

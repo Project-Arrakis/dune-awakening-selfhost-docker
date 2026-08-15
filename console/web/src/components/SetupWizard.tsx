@@ -3,6 +3,7 @@ import { setupApi, type Check, type Task } from "../api/setup";
 import { PreflightCheckCard } from "./PreflightCheckCard";
 import { SecretInput } from "./SecretInput";
 import { TaskProgress } from "./TaskProgress";
+import { getServerPorts, getAdminPort } from "../api/serverPorts";
 
 type StepId = "welcome" | "host" | "docker" | "runtime" | "identity" | "token" | "discord" | "ports" | "review" | "install" | "finish";
 const firstRunSteps: { id: StepId; label: string }[] = [
@@ -37,6 +38,11 @@ const defaultSetupConfig: SetupConfig = { SERVER_TITLE: "My Dune Server", SERVER
 
 export function SetupWizard({ initialStep = 0, jumpNonce = 0, mode = "redeploy", onSetupComplete }: { initialStep?: number; jumpNonce?: number; mode?: "first-run" | "redeploy"; onSetupComplete?: () => void }) {
   const steps = mode === "first-run" ? firstRunSteps : redeploySteps;
+  // Real, resolved ports for this instance (see api/serverPorts.ts) --
+  // never hardcode Instance-1 stock values here, they'll be wrong on any
+  // multi-server Instance 2+ deployment. See issue #266.
+  const wizardPorts = getServerPorts();
+  const adminPort = getAdminPort();
   const [step, setStep] = useState(initialStep);
   const [maxUnlockedStep, setMaxUnlockedStep] = useState(initialStep);
   const [checks, setChecks] = useState<Check[]>([]);
@@ -276,22 +282,22 @@ export function SetupWizard({ initialStep = 0, jumpNonce = 0, mode = "redeploy",
               <h4>Public Router Forwarding</h4>
               <p>For a normal public server, forward these ports from your router/firewall to this Docker host:</p>
               <ul className="requirements">
-                <li><strong>UDP 7777-7810</strong> for Dune game server traffic.</li>
-                <li><strong>TCP 31982</strong> for RabbitMQ game traffic.</li>
+                <li><strong>UDP {wizardPorts.clientBase}-{wizardPorts.clientBase + 33}</strong> for Dune game server traffic.</li>
+                <li><strong>TCP {wizardPorts.rmqGame}</strong> for RabbitMQ game traffic.</li>
               </ul>
               <p className="muted">This is the port guidance most users need.</p>
             </section>
             <section className="action-section">
               <h4>Admin Panel</h4>
-              <p>Dune Docker Console listens on 8088/tcp by default. Do not expose it publicly. Use LAN access, VPN, SSH tunnel, or a protected reverse proxy.</p>
+              <p>Dune Docker Console listens on {adminPort}/tcp by default. Do not expose it publicly. Use LAN access, VPN, SSH tunnel, or a protected reverse proxy.</p>
             </section>
             <section className="action-section">
               <h4>Game Map Ports</h4>
-              <p>Game UDP ports start at 7777 and increase as maps are started. Overmap commonly uses 7777 and Survival_1 commonly uses 7778. The 7777-7810 range covers normal map growth.</p>
+              <p>Game UDP ports start at {wizardPorts.clientBase} and increase as maps are started. Overmap commonly uses {wizardPorts.clientBase} and Survival_1 commonly uses {wizardPorts.clientBaseSecondary}. The {wizardPorts.clientBase}-{wizardPorts.clientBase + 33} range covers normal map growth.</p>
             </section>
             <section className="action-section">
               <h4>Internal Map Traffic</h4>
-              <p>IGW/S2S UDP ports start at 7888 for map-to-map traffic inside the console. Do not forward these publicly for a normal single-host Docker setup.</p>
+              <p>IGW/S2S UDP ports start at {wizardPorts.igwBase} for map-to-map traffic inside the console. Do not forward these publicly for a normal single-host Docker setup.</p>
             </section>
             <section className="action-section">
               <h4>Do Not Publicly Expose</h4>
@@ -316,9 +322,9 @@ export function SetupWizard({ initialStep = 0, jumpNonce = 0, mode = "redeploy",
             <section className="action-section">
               <h4>Network / Ports</h4>
               <ReviewGrid items={[
-                ["Public Game UDP", "7777-7810/udp"],
-                ["Public RabbitMQ Game", "31982/tcp"],
-                ["Admin Panel", "8088/tcp private only"],
+                ["Public Game UDP", `${wizardPorts.clientBase}-${wizardPorts.clientBase + 33}/udp`],
+                ["Public RabbitMQ Game", `${wizardPorts.rmqGame}/tcp`],
+                ["Admin Panel", `${adminPort}/tcp private only`],
                 ["Internal Services", "Do not expose publicly"]
               ]} />
             </section>

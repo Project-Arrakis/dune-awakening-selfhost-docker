@@ -4,6 +4,7 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 
 . runtime/scripts/compose-project.sh
+. runtime/scripts/runtime-env.sh
 DUNE_COMPOSE_PROJECT_NAME="$(dune_resolve_compose_project_name "$(pwd -P)")"
 export DUNE_COMPOSE_PROJECT_NAME
 export COMPOSE_PROJECT_NAME="$DUNE_COMPOSE_PROJECT_NAME"
@@ -415,12 +416,28 @@ echo "Server IP:    $SERVER_IP"
 echo "Steam app id: $STEAM_APP_ID"
 echo "Battlegroup:  $BATTLEGROUP_ID"
 if [ "$SERVER_IP_MODE" = "public" ]; then
-  cat <<'EOF'
+  # Read the actual configured ports for this instance rather than
+  # hardcoding the Instance-1 stock values -- on a multi-server /
+  # single-public-IP deployment (Instance 2+, see
+  # docs/runtime/MULTI-SERVER-SINGLE-PUBLIC-IP.md) these reminders were
+  # previously always wrong. See issue #266. Deliberately does NOT
+  # include the IGW/S2S UDP range -- the Web Console's own SetupWizard
+  # explicitly tells operators not to forward it publicly for a normal
+  # single-host Docker setup (it's for map-to-map traffic inside the
+  # console, not player-facing), and reminding operators to forward it
+  # here would directly contradict that guidance. Whether IGW ever
+  # needs public forwarding in a genuinely multi-server topology is a
+  # separate, deliberately unresolved question -- see issue
+  # r740-dune-deployment-kit#84.
+  reminder_rmq_game_port="$(resolve_rmq_game_port)"
+  reminder_rmq_game_http_port="$(resolve_rmq_game_http_port)"
+  reminder_client_port_base="$(resolve_client_port_base)"
+  cat <<EOF
 
 Public hosting reminder:
-  Open or forward TCP 31982.
-  Open or forward TCP 31983.
-  Open or forward UDP 7777-7810.
+  Open or forward TCP ${reminder_rmq_game_port}.
+  Open or forward TCP ${reminder_rmq_game_http_port}.
+  Open or forward UDP ${reminder_client_port_base}-$((reminder_client_port_base + 33)).
 EOF
 fi
 echo

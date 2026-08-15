@@ -5,6 +5,7 @@ import { setupApi, type Task } from "../../api/setup";
 import { SecretInput } from "../../components/SecretInput";
 import { InfoTooltip, KeyValueGrid, StatusPill, TechnicalDetails } from "../../components/common/DisplayPrimitives";
 import { firstDefined, formatUiSentence, stripAnsi, summarizeCommandText, titleCase } from "../../lib/display";
+import { refreshServerPorts } from "../../api/serverPorts";
 import { titleCaseWords } from "../players/playerAdminUtils";
 import { pendingRefillCountForMap, pendingRefillCountForPartition, usePendingRefills } from "../../lib/usePendingRefills";
 import type { PendingRefills } from "../../api/bases";
@@ -1540,6 +1541,14 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
       );
       setRawEngineOriginal(rawEngine);
       await loadUserEngine();
+      // The raw UserEngine.ini editor is the only console-driven path
+      // that can change Port/IGWPort (the structured per-field editor
+      // deliberately excludes them -- see engineFields' filter above),
+      // so refresh the frontend's cached port values after every raw
+      // UserEngine save, not just on next page load. See
+      // api/serverPorts.ts's refreshServerPorts() for why this is
+      // needed. (Upstream review finding, PR #157.)
+      await refreshServerPorts();
     } else {
       await runTaskAndRefresh(
         () => mapsApi.saveRawUserSettings({ scope: "global", map: userGameName || "Survival_1", partitionId: effectiveUserGamePartitionId || undefined, content: rawGame }),
