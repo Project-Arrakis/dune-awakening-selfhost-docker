@@ -403,7 +403,24 @@ def upsert_env(path: Path, updates: dict[str, str]) -> None:
         for key in missing:
             out.append(f"{key}={updates[key]}")
 
-    atomic_write(path, "\n".join(out).rstrip() + "\n", 0o644)
+    # Upstream review finding: this previously hardcoded mode 0o644,
+    # bypassing atomic_write()'s own existing-mode-preservation logic
+    # (see its `mode if mode is not None else (existing_mode or 0o644)`
+    # above). .env can legitimately hold real secrets directly
+    # (ADMIN_PASSWORD, DUNE_DB_PASSWORD, DUNE_COMMAND_AUTH_TOKEN,
+    # DUNE_DISCORD_ADAPTER_TOKEN -- that's exactly why each has a
+    # `_FILE` variant as the alternative), so an operator who has
+    # manually tightened .env to 0600 must not have that silently
+    # loosened back to 644 by this tool. Passing None here delegates to
+    # atomic_write()'s existing preserve-mode behavior -- identical to
+    # repair-host-runtime-permissions.sh's own `chmod --reference=.env`
+    # pattern for the same file. A brand-new .env (no prior mode to
+    # preserve) still defaults to 644, matching this project's existing,
+    # already-established convention (see init.sh/manager.sh/memory.sh,
+    # which all explicitly `chmod 644 .env`) -- this fix only stops an
+    # existing, tighter permission from being overwritten, it does not
+    # change the default for a fresh file.
+    atomic_write(path, "\n".join(out).rstrip() + "\n", None)
 
 
 def make_backup() -> Path:
@@ -429,6 +446,29 @@ def make_backup() -> Path:
     return backup_dir
 
 
+def restore_backup(backup_dir: Path) -> None:
+    """Restores .env/usersettings.json/gameplay-profile.ini from a backup
+    directory created by make_backup(). Used by command_apply()'s
+    automatic rollback (see upstream review finding above
+    command_apply()) -- copies whatever make_backup() actually captured
+    back over the live files, and removes a generated file that didn't
+    exist yet at backup time (so a rollback after a fresh-install
+    partial apply doesn't leave a newly-created file behind that wasn't
+    there before this apply started)."""
+    for path in (
+        ENV_PATH,
+        GENERATED_DIR / "usersettings.json",
+        GENERATED_DIR / "gameplay-profile.ini",
+    ):
+        relative = path.relative_to(ROOT)
+        backed_up = backup_dir / relative
+        if backed_up.exists():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(backed_up, path)
+        elif path.exists():
+            path.unlink()
+
+
 def usersettings_run(*args: str, capture: bool = False) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, str(USERSETTINGS), *args],
@@ -451,6 +491,19 @@ def usersettings_engine_values() -> dict[str, str]:
 
 
 def running_dune_containers() -> list[str]:
+    # Upstream review finding: this previously treated ANY failure to
+    # query Docker (daemon unreachable, permission denied on the socket,
+    # `docker` not installed/not on PATH) identically to "nothing is
+    # running," silently allowing command_apply() to proceed and rewrite
+    # .env/UserEngine.ini while the stack may in fact still be fully
+    # live -- a real, reachable misconfiguration-safety gap, not a
+    # theoretical one, since a query failure here gives strictly less
+    # information than a successful empty result, not more. This safety
+    # check must fail closed: if Docker cannot be queried at all, treat
+    # that the same as "yes, something might be running" and require
+    # the operator to either fix the query problem or explicitly pass
+    # --allow-running, rather than silently trusting an unverifiable
+    # "nothing is running" conclusion.
     try:
         result = subprocess.run(
             ["docker", "ps", "--format", "{{.Names}}"],
@@ -459,8 +512,14 @@ def running_dune_containers() -> list[str]:
             check=True,
             capture_output=True,
         )
-    except (OSError, subprocess.CalledProcessError):
-        return []
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise ConfigError(
+            "Could not query Docker to check for running Dune containers "
+            f"(fail-closed safety check): {exc}. Verify Docker is running and "
+            "this user has permission to query it (e.g. `docker ps`), or pass "
+            "--allow-running to proceed anyway once you have manually confirmed "
+            "the stack is stopped."
+        ) from exc
     return [
         name.strip()
         for name in result.stdout.splitlines()
@@ -510,12 +569,26 @@ def print_profile(profile: Profile) -> None:
 
 
 def nat_lines(profile: Profile, bind_ip: str = "<VM_LAN_IP>") -> list[str]:
+    # Upstream review finding: this previously listed the IGW range
+    # alongside the genuinely-forwarded ranges under the "Public NAT /
+    # port-forward plan" heading (see command_plan()), directly
+    # contradicting this project's own documented decision that IGW is
+    # internal map-to-map traffic and must NOT be forwarded publicly
+    # (see docs/runtime/MULTI-SERVER-SINGLE-PUBLIC-IP.md's NAT plan
+    # section, and the live multi-VM testing comment on this PR that
+    # confirmed IGW is intentionally never publicly forwarded on either
+    # test VM). Printing it here under a "port-forward plan" heading
+    # told operators to do the opposite of what the guide says. IGW is
+    # listed as informational only, clearly labeled as such and
+    # deliberately not aimed at the LAN bind_ip the way a real
+    # port-forward target line is, so it can't be copy-pasted directly
+    # into a router's NAT rule table by mistake.
     return [
         f"UDP {profile.client}-{profile.client_end} -> {bind_ip}:{profile.client}-{profile.client_end}  # Player/Game",
-        f"UDP {profile.igw}-{profile.igw_end} -> {bind_ip}:{profile.igw}-{profile.igw_end}  # IGW",
         f"TCP {profile.rmq_game} -> {bind_ip}:{profile.rmq_game}  # RMQ Game",
         f"TCP {profile.rmq_game_http} -> {bind_ip}:{profile.rmq_game_http}  # RMQ Game HTTP",
         f"TCP {profile.admin_web} -> {bind_ip}:{profile.admin_web}  # only if exposing Web Console",
+        f"(informational, do NOT forward) IGW UDP {profile.igw}-{profile.igw_end} is internal map-to-map traffic only",
     ]
 
 
@@ -555,13 +628,20 @@ def command_apply(args: argparse.Namespace, defaults: Defaults) -> int:
     profile = profile_for(args.instance, defaults)
     public_ip = validate_ipv4(args.public_ip, "--public-ip")
     bind_ip = validate_ipv4(args.bind_ip, "--bind-ip")
-    active = running_dune_containers()
-    if active and not args.allow_running:
-        raise ConfigError(
-            "Dune containers are running. Stop the stack before changing its "
-            "network identity, or pass --allow-running to stage the changes only. "
-            "Running: " + ", ".join(active)
-        )
+    # Only query Docker when the safety check can actually gate anything --
+    # if --allow-running is already set, the operator has explicitly
+    # accepted responsibility for verifying the stack is stopped
+    # themselves, so a Docker query failure here (fail-closed above)
+    # must not block the one escape hatch meant to handle exactly that
+    # case.
+    if not args.allow_running:
+        active = running_dune_containers()
+        if active:
+            raise ConfigError(
+                "Dune containers are running. Stop the stack before changing its "
+                "network identity, or pass --allow-running to stage the changes only. "
+                "Running: " + ", ".join(active)
+            )
 
     updates = profile_env(profile, public_ip, bind_ip)
     if args.dry_run:
@@ -577,13 +657,39 @@ def command_apply(args: argparse.Namespace, defaults: Defaults) -> int:
         return 0
 
     backup_dir = make_backup()
-    upsert_env(ENV_PATH, updates)
+    # Upstream review finding: this write sequence was not transactional
+    # -- if .env was updated and a LATER usersettings.py call failed
+    # (e.g. igw_port succeeds but port fails, or materialize-current
+    # fails after both engine-set calls succeed), the host was left in a
+    # real, reachable mixed state: .env pointing at the new profile
+    # while gameplay-profile.ini/usersettings.json still reflected the
+    # old one (or a half-updated one), with no automatic recovery and
+    # only the manually-invoked `dune db restore`-style backup directory
+    # as a recovery path. The existing --allow-running idempotent-retry
+    # story (see the PR's own live-testing evidence: a deliberately
+    # broken engine-set call, followed by a clean retry that repairs the
+    # half-applied state) does show retrying eventually converges, but
+    # an operator has no way to know that's true or safe to do without
+    # already knowing this codebase in detail -- automatic rollback to
+    # the pre-apply backup gives a much stronger, self-explanatory
+    # guarantee: either this command's net effect is the full new
+    # profile, or it's back to exactly what was there before, never
+    # something in between left for the operator to discover later.
+    try:
+        upsert_env(ENV_PATH, updates)
 
-    # Move IGW first so no transient Port-vs-IGW overlap is introduced while
-    # changing away from stock values.
-    usersettings_run("engine-set", "igw_port", str(profile.igw))
-    usersettings_run("engine-set", "port", str(profile.client))
-    usersettings_run("materialize-current")
+        # Move IGW first so no transient Port-vs-IGW overlap is introduced while
+        # changing away from stock values.
+        usersettings_run("engine-set", "igw_port", str(profile.igw))
+        usersettings_run("engine-set", "port", str(profile.client))
+        usersettings_run("materialize-current")
+    except Exception as exc:
+        restore_backup(backup_dir)
+        raise ConfigError(
+            f"Apply failed partway through and was rolled back to the pre-apply "
+            f"state (backup: {backup_dir.relative_to(ROOT)}). No partial changes "
+            f"were left in place. Original error: {exc}"
+        ) from exc
 
     print(f"Applied multi-server profile for instance {profile.instance}.")
     print(f"Backup: {backup_dir.relative_to(ROOT)}")
