@@ -186,22 +186,7 @@ The following inventory represents the audited single-instance host-facing confi
 | RMQ Game HTTP | `31983` | TCP | Host-published game RabbitMQ HTTP/management endpoint |
 | RMQ Admin | `32573` | TCP | Host loopback publish to admin RMQ `5672` |
 
-Primary implementation sources:
-
-- [`.env.example`](../../.env.example)
-- [`runtime/defaults/UserEngine.ini`](../../runtime/defaults/UserEngine.ini)
-- [`runtime/scripts/runtime-env.sh`](../../runtime/scripts/runtime-env.sh)
-- [`runtime/scripts/usersettings.py`](../../runtime/scripts/usersettings.py)
-- [`runtime/scripts/manager.sh`](../../runtime/scripts/manager.sh)
-- [`runtime/scripts/spawn-server.sh`](../../runtime/scripts/spawn-server.sh)
-- [`runtime/scripts/start-postgres.sh`](../../runtime/scripts/start-postgres.sh)
-- [`runtime/scripts/start-rabbitmq.sh`](../../runtime/scripts/start-rabbitmq.sh)
-- [`runtime/scripts/start-text-router.sh`](../../runtime/scripts/start-text-router.sh)
-- [`runtime/scripts/start-director.sh`](../../runtime/scripts/start-director.sh)
-- [`docker-compose.web.yml`](../../docker-compose.web.yml)
-- [`docker-compose.metrics.yml`](../../docker-compose.metrics.yml)
-
-The public-probe Compose configuration was also reviewed. It does not add a fixed host-published port in the audited baseline.
+See the "Source-of-Truth Reference" table near the end of this document for exactly which file governs each behavior above. The public-probe Compose configuration was also reviewed; it does not add a fixed host-published port in the audited baseline.
 
 ---
 
@@ -626,164 +611,29 @@ runtime/backups/multi-server-config-<UTC timestamp>/
 
 ---
 
-## Phase 7B — Manual configuration
+## Phase 7B — Manual configuration (advanced, not recommended)
 
-### VM1 / Instance 1
-
-```env
-SERVER_IP=203.0.113.50
-SERVER_IP_MODE=public
-SERVER_BIND_IP=192.168.68.127
-
-POSTGRES_PORT=15432
-RMQ_ADMIN_PORT=32573
-RMQ_GAME_PORT=31982
-RMQ_GAME_HTTP_PORT=31983
-RMQ_GAME_LOCAL_HTTP_PORT=15672
-TEXT_ROUTER_PORT=5059
-DIRECTOR_PORT=11717
-ADMIN_BIND_PORT=8088
-ADMIN_WEB_PORT=8088
-METRICS_PROMETHEUS_PORT=9090
-
-# Compatibility/console metadata; UserEngine is authoritative.
-CLIENT_PORT_BASE=7777
-IGW_PORT_BASE=7888
-```
-
-Authoritative UserEngine:
+Use the automated helper (Phase 7A) unless you have a specific reason to configure a VM by hand. Manual configuration must set every field in the same "Collision-Free Standard Profiles" table above -- the `.env` keys (`SERVER_IP`, `SERVER_IP_MODE`, `SERVER_BIND_IP`, plus the 11 managed port keys from the "Configuration Sources" section) *and* the authoritative UserEngine values, which are separate and easy to forget:
 
 ```bash
-python3 runtime/scripts/usersettings.py engine-set igw_port 7888
-python3 runtime/scripts/usersettings.py engine-set port 7777
+python3 runtime/scripts/usersettings.py engine-set igw_port <IGW value from the profile table>
+python3 runtime/scripts/usersettings.py engine-set port <Player/Game value from the profile table>
 python3 runtime/scripts/usersettings.py materialize-current
 ```
 
-### VM2 / Instance 2
-
-```env
-SERVER_IP=203.0.113.50
-SERVER_IP_MODE=public
-SERVER_BIND_IP=192.168.68.128
-
-POSTGRES_PORT=16432
-RMQ_ADMIN_PORT=33573
-RMQ_GAME_PORT=32982
-RMQ_GAME_HTTP_PORT=32983
-RMQ_GAME_LOCAL_HTTP_PORT=16672
-TEXT_ROUTER_PORT=6059
-DIRECTOR_PORT=12717
-ADMIN_BIND_PORT=9088
-ADMIN_WEB_PORT=9088
-METRICS_PROMETHEUS_PORT=10090
-
-CLIENT_PORT_BASE=8777
-IGW_PORT_BASE=8888
-```
-
-Authoritative UserEngine:
-
-```bash
-python3 runtime/scripts/usersettings.py engine-set igw_port 8888
-python3 runtime/scripts/usersettings.py engine-set port 8777
-python3 runtime/scripts/usersettings.py materialize-current
-```
-
-### VM3 / Instance 3
-
-```env
-SERVER_IP=203.0.113.50
-SERVER_IP_MODE=public
-SERVER_BIND_IP=192.168.68.129
-
-POSTGRES_PORT=17432
-RMQ_ADMIN_PORT=34573
-RMQ_GAME_PORT=33982
-RMQ_GAME_HTTP_PORT=33983
-RMQ_GAME_LOCAL_HTTP_PORT=17672
-TEXT_ROUTER_PORT=7059
-DIRECTOR_PORT=13717
-ADMIN_BIND_PORT=10088
-ADMIN_WEB_PORT=10088
-METRICS_PROMETHEUS_PORT=11090
-
-CLIENT_PORT_BASE=9777
-IGW_PORT_BASE=9888
-```
-
-Authoritative UserEngine:
-
-```bash
-python3 runtime/scripts/usersettings.py engine-set igw_port 9888
-python3 runtime/scripts/usersettings.py engine-set port 9777
-python3 runtime/scripts/usersettings.py materialize-current
-```
-
-### Do not blindly append duplicate `.env` keys
-
-Audit first:
+Before editing `.env` by hand, audit for an existing definition rather than appending a duplicate:
 
 ```bash
 grep -nE '^(SERVER_IP|SERVER_IP_MODE|SERVER_BIND_IP|POSTGRES_PORT|RMQ_ADMIN_PORT|RMQ_GAME_PORT|RMQ_GAME_HTTP_PORT|RMQ_GAME_LOCAL_HTTP_PORT|TEXT_ROUTER_PORT|DIRECTOR_PORT|ADMIN_BIND_PORT|ADMIN_WEB_PORT|METRICS_PROMETHEUS_PORT|CLIENT_PORT_BASE|IGW_PORT_BASE)=' .env
 ```
 
-If a key already exists, edit or replace it rather than appending a second active definition.
-
----
-
-## Phase 8 — Manager-based UserEngine configuration
-
-If you prefer the interactive manager:
-
-```bash
-runtime/scripts/manager.sh
-```
-
-Navigate to the UserEngine global-default editor and set:
-
-```text
-VM1: Port 7777 / IGWPort 7888
-VM2: Port 8777 / IGWPort 8888
-VM3: Port 9777 / IGWPort 9888
-```
-
-Running map containers retain the prior values until restarted.
+The interactive manager (`runtime/scripts/manager.sh`, UserEngine global-default editor) can also set `Port`/`IGWPort` directly if you prefer a menu over the two `engine-set` commands above. Running map containers retain the prior values until restarted either way.
 
 ---
 
 ## Phase 9 — Configure router/NAT forwarding
 
-Create 1:1 mappings using the exact instance profile.
-
-### VM1
-
-```text
-UDP 7777-7810 -> 192.168.68.127:7777-7810
-UDP 7888-7921 -> 192.168.68.127:7888-7921
-TCP 31982     -> 192.168.68.127:31982
-TCP 31983     -> 192.168.68.127:31983
-TCP 8088      -> 192.168.68.127:8088      optional Admin Web
-```
-
-### VM2
-
-```text
-UDP 8777-8810 -> 192.168.68.128:8777-8810
-UDP 8888-8921 -> 192.168.68.128:8888-8921
-TCP 32982     -> 192.168.68.128:32982
-TCP 32983     -> 192.168.68.128:32983
-TCP 9088      -> 192.168.68.128:9088      optional Admin Web
-```
-
-### VM3
-
-```text
-UDP 9777-9810 -> 192.168.68.129:9777-9810
-UDP 9888-9921 -> 192.168.68.129:9888-9921
-TCP 33982     -> 192.168.68.129:33982
-TCP 33983     -> 192.168.68.129:33983
-TCP 10088     -> 192.168.68.129:10088     optional Admin Web
-```
+Create 1:1 mappings using the exact instance profile from the "Public NAT / Port-Forwarding Plan" table above (VM1/VM2/VM3 examples already shown there -- do not duplicate them per-VM here).
 
 Do not expose PostgreSQL, RMQ Admin, RMQ local HTTP, Text Router, Director, or Prometheus merely because they have unique host ports. Unique allocation and WAN exposure are separate decisions.
 
@@ -791,34 +641,23 @@ Do not expose PostgreSQL, RMQ Admin, RMQ local HTTP, Text Router, Director, or P
 
 ## Phase 10 — Configure VM firewall rules
 
-Example UFW rules follow the externally forwarded set.
-
-### VM1
+Example UFW rules follow the externally forwarded set, one VM at a time using that VM's own profile from the "Collision-Free Standard Profiles" table:
 
 ```bash
+# VM1
 sudo ufw allow 31982/tcp
 sudo ufw allow 31983/tcp
 sudo ufw allow 7777:7810/udp
 sudo ufw allow 7888:7921/udp
-```
 
-### VM2
-
-```bash
+# VM2 (same pattern, VM2's own port values)
 sudo ufw allow 32982/tcp
 sudo ufw allow 32983/tcp
 sudo ufw allow 8777:8810/udp
 sudo ufw allow 8888:8921/udp
 ```
 
-### VM3
-
-```bash
-sudo ufw allow 33982/tcp
-sudo ufw allow 33983/tcp
-sudo ufw allow 9777:9810/udp
-sudo ufw allow 9888:9921/udp
-```
+Every additional VM follows the identical pattern with that instance's own values.
 
 For Admin Web, prefer management-subnet restrictions rather than unrestricted WAN rules:
 
@@ -1046,27 +885,14 @@ For UDP, actual game discovery/join/travel is the strongest functional validatio
 
 ---
 
-## Phase 21 — Packet-capture validation
+## Phase 21 — Packet-capture validation (optional, advanced)
 
-### VM1
-
-```bash
-sudo tcpdump -ni any \
-  'tcp port 31982 or tcp port 31983 or tcp port 8088 or udp portrange 7777-7810 or udp portrange 7888-7921'
-```
-
-### VM2
+If Phase 20's external connectivity checks fail or are ambiguous, capture on the affected VM using that VM's own port profile:
 
 ```bash
+# Example for VM2 -- substitute the target VM's own values from its profile
 sudo tcpdump -ni any \
   'tcp port 32982 or tcp port 32983 or tcp port 9088 or udp portrange 8777-8810 or udp portrange 8888-8921'
-```
-
-### VM3
-
-```bash
-sudo tcpdump -ni any \
-  'tcp port 33982 or tcp port 33983 or tcp port 10088 or udp portrange 9777-9810 or udp portrange 9888-9921'
 ```
 
 Use packet capture to determine:
@@ -1155,24 +981,7 @@ If an OS service must be public, assign it a public port that does not intersect
 
 ## Phase 26 — Capacity planning
 
-Port isolation solves addressing, not compute contention.
-
-Plan for:
-
-- number of Sietches;
-- number of Deep Desert instances;
-- game-server memory limits;
-- CPU scheduling latency;
-- PostgreSQL memory and storage IOPS;
-- Docker image/cache space;
-- log growth;
-- metrics overhead;
-- backup/snapshot I/O;
-- hypervisor reserve.
-
-Do not allocate 100% of physical RAM to guests.
-
-Avoid CPU overcommit severe enough to introduce scheduling jitter into latency-sensitive game processes.
+Port isolation (this document's subject) solves addressing, not compute contention. Sizing each VM's CPU/RAM/storage for its own map/Sietch count is a normal hypervisor capacity-planning exercise, outside this SOP's scope.
 
 ---
 
@@ -1387,7 +1196,3 @@ Before publishing or submitting this guide upstream:
 - [ ] Container-internal ports are clearly distinguished from host-facing ports.
 - [ ] Site-wide non-Dune public ports are reviewed separately.
 - [ ] `git diff --check` passes on the upstream candidate branch.
-
-For clean upstream staging and the `gh` workflow, see:
-
-[`MULTI-SERVER-SINGLE-PUBLIC-IP-UPSTREAM-PR.md`](MULTI-SERVER-SINGLE-PUBLIC-IP-UPSTREAM-PR.md)
