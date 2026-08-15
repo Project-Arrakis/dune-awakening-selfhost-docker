@@ -54,6 +54,18 @@ Deletes are audited as `bases.delete`; queued flushes as
 `directDbMutation` helper (`"DELETE BASE"`, matching `"DISBAND GUILD"`'s
 precedent) and are rate limited.
 
+`DELETE /api/bases/:baseId` requires its own IAM action, `bases:delete`
+(`console/api/src/actions.js`) — deliberately separate from `bases:mutate`,
+the shared bucket every other base mutation (refills, permission edits,
+cancelling a queued refill or delete) falls into. Those are all reversible;
+this one isn't, so a custom policy can grant routine base management without
+also granting the ability to permanently delete one. The shipped `owner`/
+`admin` default policies grant `bases:*`, which already covers `bases:delete`
+via wildcard, so this changes nothing about default access — it only makes
+narrower, hand-authored policies (via `PUT /api/settings/iam/policy`)
+possible. `DELETE /api/bases/:baseId/queued-delete` (cancelling) stays under
+`bases:mutate`, same as cancelling a queued refill.
+
 ## Why deletes are queued for a live map
 
 This schema has no live-notify path for structural changes — the same fact
