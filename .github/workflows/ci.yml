@@ -94,10 +94,17 @@ jobs:
         with:
           node-version: "22"
       - name: Install age and cryptography (age-based secrets library tests)
+        # BUG FIX: previously assumed pytest ships as part of the runner
+        # image's default Python toolchain (it does not -- confirmed
+        # directly on this exact CI: "No module named pytest", failing
+        # the whole job). Every other Python dependency this same step
+        # needs (cryptography) was already installed explicitly; pytest
+        # needed the same treatment instead of being an implicit,
+        # undocumented assumption about the runner image's contents.
         run: |
           sudo apt-get update
           sudo apt-get install -y age
-          python3 -m pip install --break-system-packages cryptography
+          python3 -m pip install --break-system-packages cryptography pytest
       - name: Test readiness with configured service ports
         run: bash tests/ready-configured-ports-test.sh
       - name: Test stable farm readiness gating
