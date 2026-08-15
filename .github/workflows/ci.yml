@@ -114,6 +114,7 @@ jobs:
           tests/always-on-memory-safety-test.sh
           tests/autoscaler-browser-heal-safety-test.sh
           tests/db-backup-validation-test.sh
+          tests/db-system-backup-test.sh
       - name: Test Compose project-name portability
         run: |
           runtime/tests/test-compose-project-name-portability.sh

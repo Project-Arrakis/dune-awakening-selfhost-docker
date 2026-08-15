@@ -49,7 +49,7 @@ Each secret is loaded independently. There's no unified secret store, no key hie
 | Local file access by other processes | 600 permissions | Any process running as the `dune` user can read all secrets |
 | Accidental git commit | `.gitignore` excludes `runtime/secrets/` | One misconfigured `.gitignore` and all secrets leak |
 | Docker container mount exposure | Secrets directory bind-mounted into containers | Every container can read every secret — no per-container scoping |
-| Backup exposure | `dune db backup` tars secrets directory | Backups contain plaintext secrets; no encryption-at-rest in backups |
+| Backup exposure | `dune db backup` only dumps the database and never touches `runtime/secrets/`; the separate `dune db backup-full` command does tar `runtime/secrets/` (by design, for full-system recovery), while `dune db backup-world` excludes it and redacts the sietch join password | `backup-full` archives contain plaintext secrets; no encryption-at-rest in backups |
 | Operator error (terminal history) | None | Typing `cat admin-web-password.txt` exposes the secret in terminal |
 | Log exposure | Manual discipline | A misconfigured log statement could dump a secret value |
 | Secret rotation | None | No rotation schedule, no rotation tooling, no version tracking |
@@ -395,7 +395,7 @@ key-value secrets.
 The age identity (`~/.age/dune-server.key`) IS the master key. It must be:
 1. Backed up to a secure, offline location (encrypted USB, password manager)
 2. Never committed to git
-3. Never included in database backups (`dune db backup` excludes `runtime/secrets/` today — same for `.age/`)
+3. Never included in database backups (`dune db backup` and `dune db backup-world` both exclude `runtime/secrets/` today — same for `.age/`; only the explicit `dune db backup-full` command includes it, by design)
 
 If the key is lost, all secrets are unrecoverable — the console cannot decrypt the vault and cannot start. This is the same failure mode as today (if you lose `runtime/secrets/`, you lose all secrets), but with one additional decryption step.
 

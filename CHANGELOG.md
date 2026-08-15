@@ -11,6 +11,21 @@ Keep a Changelog style, grouped by upstream base version, newest first.
 
 ### Added
 
+- `dune db backup-full` / `dune db backup-world` (#269) — one-command system
+  backup covering `.env`, `runtime/generated/` (world/sietch config), and a
+  fresh database dump, bundled into a single `dune-system-<scope>-*.tar.gz`
+  with a `.yaml` sidecar. `backup-full` also includes `runtime/secrets/`
+  verbatim (600 permissions; handle like the Funcom token itself).
+  `backup-world` excludes `runtime/secrets/` and redacts the sietch join
+  password that is otherwise stored in plaintext inside
+  `runtime/generated/{sietch-config.json,usersettings.json,gameplay-profile.ini}`,
+  plus other credential-bearing files that live under `runtime/generated/`
+  instead of `runtime/secrets/` (`public-probe.env`, `*-rmq-admin-creds`) —
+  making it safe to share for world/config recovery without exposing
+  operator secrets (640 permissions). `dune db list-system` lists written
+  archives. No automated restore yet — extract with `tar -xzf` and restore
+  `.env`/`runtime/generated/`/`runtime/secrets/` manually, then
+  `dune db restore` for the `db/` dump inside.
 - Discord OAuth as primary sign-in method on the login page. Password login is
   available as a secondary, collapsible option when OAuth is configured.
 - Local static file mount (`runtime/local-static` → `/app/web-dist/atrium`)

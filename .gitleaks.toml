@@ -14,5 +14,13 @@
     "Nu6VmPWUMvdPMeB7qErr",
     "123456789012345678",
     "143064109775060993",
-    "abcdefghijklmnopqrstuvwxyzABCDEFG123456"
+    "abcdefghijklmnopqrstuvwxyzABCDEFG123456",
+    # Synthetic secret fixtures planted by tests/db-system-backup-test.sh to
+    # verify a world-scope system backup never leaks them. Not real secrets;
+    # deliberately shaped to look like ones so the test's own leak-detection
+    # grep exercises realistic content (checked 2026-08-15).
+    "s3kr1t-sietch-pw-9f2a",
+    "probe-secret-4c11",
+    "funcom-token-77bb",
+    "rmq-admin-cred-22dd"
   ]
