@@ -532,9 +532,11 @@ range A = start..end
 scalar  = port..port
 ```
 
-and compares every interval against every other interval across all generated VMs.
+and compares every interval against every other interval **within this one `plan`/`apply` invocation** -- i.e. across the set of VMs the `--instances`/`--instance` argument actually generates for this specific command run, not against any other, already-deployed VM elsewhere on your network.
 
 Protocol is deliberately ignored for collision purposes.
+
+> **This tool cannot detect a real collision against a machine it isn't currently generating a profile for.** `plan --instances 3`'s "Global collision validation: PASS" only means VM1/VM2/VM3's own generated ports don't collide with each other in that one run -- it says nothing about whether instance 2 is already in use on some other, already-configured VM you didn't include in this invocation. `verify` has the same limitation in the other direction: it only checks the *local* machine's own `.env`/UserEngine values against what instance N *should* look like; it has no visibility into any other machine's configuration either. There is currently no mechanism in this tool that can see across separate VMs -- if you have already used a given instance number elsewhere, re-running `plan`/`apply`/`verify` for that same number will not warn you. Keep your own authoritative record (e.g. a simple spreadsheet or this document's own allocation table, filled in per VM as you provision it) of which instance number is assigned to which VM.
 
 ---
 
@@ -548,9 +550,11 @@ Use the project's normal stop workflow, then inspect:
 docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
 ```
 
-The helper refuses to apply while Dune containers are running unless `--allow-running` is supplied.
+The helper refuses to apply while Dune game/database containers are running unless `--allow-running` is supplied. The console, orchestrator, and public-probe containers are excluded from this check -- none of the three hold a host-facing port this tool rewrites, so leaving them running is never actually unsafe.
 
-Treat `--allow-running` as a staging-only override. A restart is still required for running processes to adopt the new listeners.
+> **In practice, `--allow-running` is required for this documented flow to work at all, not an edge case.** `docker ps` shown above will still list the console container itself after a normal `dune stop` (it's management tooling, not part of "the stack" this phase means) -- since you are almost always using the console (or a shell on the same host it's running on) to reach this tool in the first place, plan on passing `--allow-running` every time you follow this phase, immediately after stopping the game/database containers, not only when you hit the refusal message.
+
+Treat `--allow-running` as a staging-only override for the *game/database* containers specifically. A restart is still required for running processes to adopt the new listeners.
 
 ---
 
