@@ -80,8 +80,14 @@ const SCHEMA = `
     template_id text not null,
     stack_size integer not null default 1
   );
-  -- No cascade: a row here referencing one of the base's actors forces
-  -- delete_actors to fail mid-transaction, for the atomicity test below.
+  -- Synthetic fixture, not a modeled production constraint: a full audit of
+  -- every FK referencing dune.actors in the real schema (55 constraints,
+  -- verified against a restored production dump) found every one is
+  -- ON DELETE CASCADE or SET NULL -- none RESTRICT/NO ACTION, so this exact
+  -- failure trigger cannot occur against real data. It exists purely to
+  -- force a deterministic mid-transaction failure so the atomicity test
+  -- below can prove db.transaction's real rollback guarantee -- that
+  -- guarantee is what's under test, not this table.
   create table dune.other_refs (id bigint primary key, referenced_actor_id bigint references dune.actors(id));
 
   -- Transcribed from the shipped schema (see the plan/PR notes), not
@@ -211,9 +217,11 @@ test("real PostgreSQL: deleteBaseCompletely rejects a base id that does not exis
 
 test("real PostgreSQL: a mid-transaction failure rolls back permission_actor_destroy's work too", async (t) => {
   await withDatabase(t, async (pool) => {
-    // No cascade on other_refs: deleting one of this base's building actors
-    // now violates a real foreign key, forcing delete_actors to fail after
-    // permission_actor_destroy has already run inside the same transaction.
+    // other_refs is synthetic (see its CREATE TABLE comment) -- no real FK
+    // on dune.actors would actually reject a delete this way. It's a
+    // deliberate, controlled trigger for a real failure, so the transaction
+    // genuinely has something to roll back rather than never getting far
+    // enough to test the guarantee at all.
     await pool.query("insert into dune.other_refs (id, referenced_actor_id) values (1, $1)", [BUILDING_ACTORS[1]]);
 
     const db = pgTransactionalDb(pool);

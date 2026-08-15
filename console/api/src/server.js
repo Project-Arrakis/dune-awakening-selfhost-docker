@@ -2712,26 +2712,43 @@ async function baseDeleteRoute(req, res, path) {
   const baseId = Number(decodeURIComponent(path.split("/")[3]));
   if (!Number.isFinite(baseId) || baseId < 1) return json(res, 400, { error: "Invalid base ID" });
   return directDbMutation(req, res, "bases.delete", "DELETE BASE", async () => {
-    const target = await duneDb.baseRefillTarget(db, baseId);
-    // Same hazard as a refill: a live game server can rewrite its own copy of
-    // this base back to Postgres before the delete is ever seen. Queue it
-    // instead and let the flush tick apply it once that map is down.
-    if (target.queueSupported && !target.writeSafeNow) {
-      cancelPendingRefillsForBase(baseId);
-      const entry = duneDb.queueBaseDelete(config.repoRoot, {
-        baseId,
-        map: target.map,
-        partitionId: target.partitionId
-      });
-      return { ok: true, queued: true, ...entry };
+    // Reserve the lock synchronously, before the first await: baseDeletePending
+    // is a file read, and every other mutation route checks it before doing
+    // any of its own work, so a request for this same base landing between
+    // "resolve write-safety" and "record the queue entry" below would
+    // otherwise read the queue as empty and slip through. This placeholder
+    // (map/partitionId unresolved yet) closes that gap immediately; it is
+    // either replaced with the real entry (queued path) or removed in the
+    // finally below (immediate path, success or failure).
+    duneDb.queueBaseDelete(config.repoRoot, { baseId, map: "", partitionId: 0 });
+    let queued = false;
+    try {
+      const target = await duneDb.baseRefillTarget(db, baseId);
+      // Same hazard as a refill: a live game server can rewrite its own copy
+      // of this base back to Postgres before the delete is ever seen. Queue
+      // it instead and let the flush tick apply it once that map is down.
+      if (target.queueSupported && !target.writeSafeNow) {
+        cancelPendingRefillsForBase(baseId);
+        const entry = duneDb.queueBaseDelete(config.repoRoot, {
+          baseId,
+          map: target.map,
+          partitionId: target.partitionId
+        });
+        queued = true;
+        return { ok: true, queued: true, ...entry };
+      }
+      // Mandatory safety backup before any delete SQL runs, exactly like the
+      // raw "Database Query" tool already does for any destructive query --
+      // see databaseQuery below. If this throws, deleteBaseCompletely is
+      // never called and nothing is touched.
+      await runDune(config, buildDuneArgs("backupCreate"), { env: { DB_BACKUP_ORIGIN: "base-delete" } });
+      const result = await duneDb.deleteBaseCompletely(db, baseId);
+      return { ...result, backupCreated: true };
+    } finally {
+      if (!queued) {
+        try { duneDb.cancelQueuedBaseDelete(config.repoRoot, baseId); } catch {}
+      }
     }
-    // Mandatory safety backup before any delete SQL runs, exactly like the
-    // raw "Database Query" tool already does for any destructive query --
-    // see databaseQuery below. If this throws, deleteBaseCompletely is never
-    // called and nothing is touched.
-    await runDune(config, buildDuneArgs("backupCreate"), { env: { DB_BACKUP_ORIGIN: "base-delete" } });
-    const result = await duneDb.deleteBaseCompletely(db, baseId);
-    return { ...result, backupCreated: true };
   }, { baseId });
 }
 
