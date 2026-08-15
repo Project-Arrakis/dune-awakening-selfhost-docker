@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { isAbsolute, relative, resolve } from "node:path";
 
 export async function readJsonBody(req, maxBytes) {
   const chunks = [];
@@ -77,6 +77,15 @@ export function safeStaticTarget(staticDir, requestPath) {
   const normalizedPath = requestPath === "/" ? "/index.html" : requestPath;
   const file = resolve(dist, `.${normalizedPath}`);
   const fallback = resolve(dist, "index.html");
-  const safeFile = file.startsWith(`${dist}/`) ? file : fallback;
+  // path.relative, not a `${dist}/` string prefix: the prefix check always
+  // failed on Windows, where resolve() joins with backslashes, so every
+  // asset request silently fell back to index.html outside a Linux
+  // container. relative() is also the more correct traversal check in
+  // general -- a prefix match alone would wrongly accept a sibling
+  // directory that merely starts with the same characters (e.g. "dist-evil"
+  // under a dist without a prefix check's needed trailing separator).
+  const rel = relative(dist, file);
+  const contained = rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+  const safeFile = contained ? file : fallback;
   return existsSync(safeFile) ? safeFile : fallback;
 }
