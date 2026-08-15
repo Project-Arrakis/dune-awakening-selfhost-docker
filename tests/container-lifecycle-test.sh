@@ -300,6 +300,27 @@ else
   fail "Docker storage controls are incomplete: ${missing_log_args:-storage cleanup test failed}"
 fi
 
+echo ""
+echo "19. Root maintenance writes preserve host ownership"
+HOST_OWNER_ROOT="$TEST_DIR/host-owner"
+mkdir -p "$HOST_OWNER_ROOT"
+set_fixture_ownership "$HOST_OWNER_ROOT" "$(id -u)" "$(id -g)" 755
+OUTPUT=$(docker run --rm \
+  --user 0:0 \
+  --entrypoint bash \
+  -e "EXPECTED_UID=$(id -u)" \
+  -e "EXPECTED_GID=$(id -g)" \
+  -v "$REPO_ROOT:/repo:ro" \
+  -v "$HOST_OWNER_ROOT:/fixture" \
+  "$IMAGE_NAME" \
+  -lc 'cd /fixture; touch publisher-state; source /repo/runtime/scripts/host-file-ownership.sh; dune_set_host_path_owner publisher-state; DUNE_USERSETTINGS_CONFIG=/fixture/usersettings.json python3 -c '\''import importlib.util; from pathlib import Path; spec = importlib.util.spec_from_file_location("usersettings", "/repo/runtime/scripts/usersettings.py"); module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module); module.atomic_write_text(Path("/fixture/UserGame.ini"), "[test]\n")'\''; test "$(stat -c %u:%g publisher-state)" = "$EXPECTED_UID:$EXPECTED_GID"; test "$(stat -c %u:%g UserGame.ini)" = "$EXPECTED_UID:$EXPECTED_GID"; echo OK' 2>&1) || true
+if echo "$OUTPUT" | grep -q "OK"; then
+  pass "shell and Python root writers restore the installation owner's UID/GID"
+else
+  fail "root maintenance writers left host files with the wrong owner"
+  echo "    output: $OUTPUT"
+fi
+
 docker rmi "$IMAGE_NAME" 2>/dev/null || true
 docker rmi "dune-orch-test:lifecycle" 2>/dev/null || true
 
