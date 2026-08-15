@@ -48,6 +48,24 @@ ENV_PATH = ROOT / ".env"
 GENERATED_DIR = ROOT / "runtime" / "generated"
 BACKUP_ROOT = ROOT / "runtime" / "backups"
 
+# Always-on management/tooling containers that never hold a host-facing port
+# this tool rewrites (confirmed directly against docker-compose.yml,
+# docker-compose.web.yml, and docker-compose.public-probe.yml -- none of the
+# three publish any port at all). apply()'s running-container safety check
+# exists to prevent changing a host's network identity while something is
+# actively using the OLD ports; these three do not use any port apply()
+# changes, so leaving them running is never actually unsafe. Excluding them
+# here matters in practice, not just in theory: the console itself is what
+# an operator almost always uses to reach a shell on this host in the first
+# place, so without this exclusion the documented "stop the stack, then
+# apply" procedure fails every single time (confirmed via a live,
+# reproduced test against a real deployment -- see issue #283).
+NON_BLOCKING_MANAGEMENT_CONTAINERS = frozenset({
+    "dune-orchestrator",
+    "redblink-dune-docker-console",
+    "dune-public-probe",
+})
+
 # A single stride for every host port/base is intentional. It makes allocations
 # easy to audit and prevents cross-instance Game/IGW/service collisions.
 INSTANCE_PORT_STRIDE = 1000
@@ -446,8 +464,11 @@ def running_dune_containers() -> list[str]:
     return [
         name.strip()
         for name in result.stdout.splitlines()
-        if name.strip().startswith("dune-")
-        or name.strip() == "redblink-dune-docker-console"
+        if (
+            name.strip().startswith("dune-")
+            or name.strip() == "redblink-dune-docker-console"
+        )
+        and name.strip() not in NON_BLOCKING_MANAGEMENT_CONTAINERS
     ]
 
 
