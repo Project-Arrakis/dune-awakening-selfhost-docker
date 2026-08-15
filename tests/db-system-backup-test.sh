@@ -96,8 +96,13 @@ decrypt_and_extract() {
   local dest="$2"
   local passphrase="$3"
   mkdir -p "$dest"
-  openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 -in "$archive" -pass "pass:$passphrase" 2>/dev/null \
+  local gnupg_home
+  gnupg_home="$(mktemp -d)"
+  printf '%s' "$passphrase" \
+    | GNUPGHOME="$gnupg_home" gpg --batch --yes --pinentry-mode loopback \
+        --passphrase-fd 0 -d "$archive" 2>/dev/null \
     | gunzip 2>/dev/null | tar -xf - -C "$dest" 2>/dev/null
+  rm -rf -- "$gnupg_home"
 }
 
 # --- Case 1: happy path, non-interactive passphrase, full round-trip ------
@@ -167,11 +172,9 @@ if [ -d "$case1_extract/generated/dune-fake-k8s-serviceaccount-director-12345" ]
   echo "FAIL happy-path: ephemeral fake-k8s-serviceaccount dir should be excluded"
   exit 1
 fi
-if [ ! -f "$case1_extract/db"/dune-db-*.backup ] 2>/dev/null; then
-  if ! find "$case1_extract/db" -name 'dune-db-*.backup' | grep -q .; then
-    echo "FAIL happy-path: no database dump found inside the decrypted archive"
-    exit 1
-  fi
+if ! find "$case1_extract/db" -name 'dune-db-*.backup' | grep -q .; then
+  echo "FAIL happy-path: no database dump found inside the decrypted archive"
+  exit 1
 fi
 
 # The sidecar YAML must be readable without the passphrase and must contain
@@ -291,7 +294,7 @@ echo "PASS passphrase-mismatch-aborts"
 # --- been written must clean up BOTH the staging state AND that dump --  --
 # --- regression test for the exact CRITICAL finding from the Layer 3 --  --
 # --- eight-hats review: a `trap ... RETURN` does not reliably fire when --
-# --- `set -e` aborts out of a function, so an unguarded rsync/cp        --
+# --- `set -e` aborts out of a function, so an unguarded tar/cp          --
 # --- failure used to leave a plaintext database dump (and, in a         --
 # --- separately-verified worse case, plaintext secrets) sitting on disk.-
 
@@ -299,16 +302,25 @@ case5_root="$test_root/case5"
 mkdir -p "$case5_root/work" "$case5_root/altbin"
 seed_repo_tree "$case5_root/work"
 cp "$bin_dir/docker" "$case5_root/altbin/docker"
-cat > "$case5_root/altbin/rsync" <<'EOF'
+# Wraps the real tar, failing only the specific invocation that packs
+# runtime/secrets/ (identified by its -C argument) -- every other tar
+# call (packing runtime/generated/, the plaintext DB dump, the final
+# plaintext archive, or unpacking on the receiving end of either pipe)
+# must still succeed, so this failure injection is realistic and narrow,
+# not a blanket "tar always fails" stub.
+cat > "$case5_root/altbin/tar" <<'EOF'
 #!/usr/bin/env bash
+prev=""
 for arg in "$@"; do
-  case "$arg" in
-    *secrets/) echo "rsync: simulated I/O error" >&2; exit 23 ;;
-  esac
+  if [ "$prev" = "-C" ] && [ "$arg" = "runtime/secrets" ]; then
+    echo "tar: simulated I/O error packing runtime/secrets/" >&2
+    exit 23
+  fi
+  prev="$arg"
 done
-exec /usr/bin/rsync "$@"
+exec /usr/bin/tar "$@"
 EOF
-chmod +x "$case5_root/altbin/rsync"
+chmod +x "$case5_root/altbin/tar"
 
 set +e
 (
@@ -521,3 +533,133 @@ if find "$case8_root/work-b/runtime/backups/system" -maxdepth 1 -type d -name '.
   exit 1
 fi
 echo "PASS concurrent-invocations-no-cross-contamination"
+
+# --- Case 9: a tampered/corrupted encrypted archive must be REJECTED
+# outright at decrypt time (nonzero exit, no output written), not
+# silently accepted or partially extracted -- direct regression coverage
+# for the exact upstream review finding that switched this feature from
+# AES-256-CBC (confidentiality only, no integrity check) to gpg's
+# AES-256-OCB (AEAD): a corrupted ciphertext must be detected and
+# rejected, not silently decrypted to garbage or manipulated plaintext.
+
+case9_root="$test_root/case9"
+mkdir -p "$case9_root/work"
+seed_repo_tree "$case9_root/work"
+
+set +e
+(
+  cd "$case9_root/work"
+  PATH="$bin_dir:$PATH" DUNE_SYSTEM_BACKUP_PASSPHRASE="$TEST_PASSPHRASE" \
+    bash runtime/scripts/db.sh backup-system
+) > "$case9_root/output.log" 2>&1
+case9_exit=$?
+set -e
+
+if [ "$case9_exit" -ne 0 ]; then
+  echo "FAIL tampered-archive-rejected: setup (creating the archive to tamper with) failed"
+  cat "$case9_root/output.log"
+  exit 1
+fi
+
+case9_archive="$(find "$case9_root/work/runtime/backups/system" -maxdepth 1 -name '*.tar.gz.enc' | head -n1)"
+if [ -z "$case9_archive" ]; then
+  echo "FAIL tampered-archive-rejected: no archive was created to tamper with"
+  exit 1
+fi
+
+# Flip a single byte roughly in the middle of the ciphertext -- anywhere
+# in an AEAD payload's ciphertext or auth tag must be detected, not just
+# the boundary bytes.
+case9_tampered="$test_root/case9-tampered.tar.gz.enc"
+cp "$case9_archive" "$case9_tampered"
+python3 -c "
+import sys
+path = sys.argv[1]
+with open(path, 'r+b') as f:
+    data = bytearray(f.read())
+    mid = len(data) // 2
+    data[mid] ^= 0xFF
+    f.seek(0)
+    f.write(bytes(data))
+" "$case9_tampered"
+
+case9_extract="$test_root/case9-extract"
+mkdir -p "$case9_extract"
+case9_gnupg_home="$(mktemp -d)"
+set +e
+printf '%s' "$TEST_PASSPHRASE" \
+  | GNUPGHOME="$case9_gnupg_home" gpg --batch --yes --pinentry-mode loopback \
+      --passphrase-fd 0 -o "$test_root/case9-decrypted.tar.gz" -d "$case9_tampered" \
+  > "$case9_root/decrypt.log" 2>&1
+case9_decrypt_exit=$?
+set -e
+rm -rf -- "$case9_gnupg_home"
+
+if [ "$case9_decrypt_exit" -eq 0 ]; then
+  echo "FAIL tampered-archive-rejected: gpg accepted a tampered archive (exit 0) instead of rejecting it"
+  cat "$case9_root/decrypt.log"
+  exit 1
+fi
+if [ -f "$test_root/case9-decrypted.tar.gz" ]; then
+  echo "FAIL tampered-archive-rejected: gpg wrote output for a tampered archive instead of refusing to write anything"
+  exit 1
+fi
+if ! grep -qi 'manipulated\|checksum\|bad session key\|decryption failed' "$case9_root/decrypt.log"; then
+  echo "FAIL tampered-archive-rejected: expected a clear tamper/corruption rejection message from gpg"
+  cat "$case9_root/decrypt.log"
+  exit 1
+fi
+echo "PASS tampered-archive-rejected"
+
+# --- Case 10: a simulated disk-full/interrupted failure DURING gpg
+# encryption itself (not before it, which cases 3/4/5 already cover) must
+# leave zero artifacts behind -- direct coverage for the upstream review
+# suggestion to test low-disk/interrupted backups given this feature
+# duplicates the database and generated state through /tmp before
+# encrypting. Wraps gpg to fail partway through, simulating ENOSPC.
+
+case10_root="$test_root/case10"
+mkdir -p "$case10_root/work" "$case10_root/altbin"
+seed_repo_tree "$case10_root/work"
+cp "$bin_dir/docker" "$case10_root/altbin/docker"
+cat > "$case10_root/altbin/gpg" <<'EOF'
+#!/usr/bin/env bash
+echo "gpg: simulated disk-full failure (ENOSPC) during encryption" >&2
+exit 1
+EOF
+chmod +x "$case10_root/altbin/gpg"
+
+set +e
+(
+  cd "$case10_root/work"
+  PATH="$case10_root/altbin:$bin_dir:$PATH" DUNE_SYSTEM_BACKUP_PASSPHRASE="$TEST_PASSPHRASE" \
+    bash runtime/scripts/db.sh backup-system
+) > "$case10_root/output.log" 2>&1
+case10_exit=$?
+set -e
+
+if [ "$case10_exit" -eq 0 ]; then
+  echo "FAIL disk-full-during-encryption-cleans-up: expected non-zero exit when gpg fails mid-encryption"
+  cat "$case10_root/output.log"
+  exit 1
+fi
+if find "$case10_root/work/runtime/backups/system" -maxdepth 1 -type f | grep -q .; then
+  echo "FAIL disk-full-during-encryption-cleans-up: an artifact was left behind after a simulated gpg failure"
+  find "$case10_root/work/runtime/backups/system" -maxdepth 1 -type f -print
+  exit 1
+fi
+# Also confirm the private, per-invocation GNUPGHOME directory created for
+# this run does not survive -- it would otherwise accumulate one leaked
+# temp directory per failed backup attempt.
+case10_leaked_gnupg_home=""
+while IFS= read -r -d '' case10_tmp_dir; do
+  if [ -f "$case10_tmp_dir/pubring.kbx" ]; then
+    case10_leaked_gnupg_home="$case10_tmp_dir"
+    break
+  fi
+done < <(find "$test_root" -maxdepth 1 -type d -name 'tmp.*' -print0 2>/dev/null)
+if [ -n "$case10_leaked_gnupg_home" ]; then
+  echo "FAIL disk-full-during-encryption-cleans-up: a GNUPGHOME staging directory was left behind at $case10_leaked_gnupg_home"
+  exit 1
+fi
+echo "PASS disk-full-during-encryption-cleans-up"

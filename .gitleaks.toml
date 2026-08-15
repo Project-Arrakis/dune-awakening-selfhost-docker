@@ -8,17 +8,24 @@
 [extend]
   useDefault = true
 
-[allowlist]
+# [allowlist] (singular) is deprecated as of gitleaks v8.25.0+ and cannot
+# coexist with [[allowlists]] in the same config (confirmed directly:
+# gitleaks refuses to load a config with both, "[allowlist] is deprecated,
+# it cannot be used alongside [[allowlists]]") -- migrated to [[allowlists]].
+[[allowlists]]
   description = "Known command-auth fallback shared by game server"
   regexes = [
     "Nu6VmPWUMvdPMeB7qErr",
-    # Synthetic secret fixtures planted by tests/db-system-backup-test.sh to
-    # verify an encrypted system backup retains every credential correctly
-    # through a real decrypt round-trip, and that the wrong passphrase
-    # never decrypts it. Not real secrets; deliberately shaped to look like
-    # ones so the test exercises realistic content (checked 2026-08-15).
-    "admin-pw-8f2a-real",
-    "sietch-pw-9f2a-real",
-    "funcom-token-77bb-real",
-    "correct-horse-battery-staple-9f2a"
   ]
+
+# NOTE: tests/db-system-backup-test.sh's synthetic secret fixtures
+# (admin-pw-8f2a-real, etc.) do NOT need an allowlist entry here --
+# confirmed directly: `gitleaks detect --source
+# tests/db-system-backup-test.sh` with the built-in default rules (and no
+# fixture-specific allowlist at all) already produces zero findings, since
+# these fixtures' variable names (SECRET_ADMIN_PASSWORD=, TEST_PASSPHRASE=)
+# don't match any built-in rule's keyword+pattern requirements. A broad,
+# permanent, repo-wide allowlist entry for these exact literal strings was
+# added defensively in an earlier revision without verifying this -- an
+# unverified assumption, not a fact, per this account's own review
+# discipline. Removed rather than kept "just in case."
