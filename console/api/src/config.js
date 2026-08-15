@@ -16,9 +16,32 @@ export const APP_NAME = "Dune Docker Console";
 // codebase that hardcoded these stock values directly instead of
 // reading them from a shared source, breaking multi-server Instance 2+
 // deployments).
-export function resolvePorts(env = process.env) {
-  const clientBase = portValue(env.CLIENT_PORT_BASE, 7777);
-  const igwBase = portValue(env.IGW_PORT_BASE, 7888);
+export function resolvePorts(env = process.env, repoRoot = process.cwd()) {
+  const enginePorts = readEnginePortsFromProfile(repoRoot);
+  // Player/Game and IGW base ports are authoritative in
+  // runtime/generated/gameplay-profile.ini's [Engine:URL] section
+  // (written via runtime/scripts/usersettings.py engine-set, e.g. by
+  // the Maps UI or multi-server-config.py) -- NOT env vars. .env's
+  // CLIENT_PORT_BASE/IGW_PORT_BASE are documented as
+  // "compatibility/console metadata" only (see
+  // docs/runtime/MULTI-SERVER-SINGLE-PUBLIC-IP.md): a deployment that
+  // changed these via the Maps UI directly, without also re-running
+  // multi-server-config.py, would have a stale .env value while the
+  // real game server already uses the new one -- reading the profile
+  // file first avoids exactly that staleness. .env is kept as a
+  // secondary fallback (useful before the profile file exists at all,
+  // e.g. immediately after multi-server-config.py writes .env but
+  // before its own engine-set call has run), and the stock literal is
+  // the final fallback. Profile-parsed values are routed through
+  // portValue() too (not just the .env/stock fallback branch) -- a
+  // corrupted/malformed gameplay-profile.ini could otherwise produce an
+  // out-of-range value that bypasses range validation entirely.
+  const clientBase = enginePorts.port !== null
+    ? portValue(enginePorts.port, portValue(env.CLIENT_PORT_BASE, 7777))
+    : portValue(env.CLIENT_PORT_BASE, 7777);
+  const igwBase = enginePorts.igwPort !== null
+    ? portValue(enginePorts.igwPort, portValue(env.IGW_PORT_BASE, 7888))
+    : portValue(env.IGW_PORT_BASE, 7888);
   return {
     postgres: portValue(env.POSTGRES_PORT || env.DUNE_DB_PORT || env.PGPORT, 15432),
     rmqAdmin: portValue(env.RMQ_ADMIN_PORT, 32573),
@@ -32,6 +55,45 @@ export function resolvePorts(env = process.env) {
     clientBaseSecondary: clientBase + 1,
     igwBase,
     igwBaseSecondary: igwBase + 1
+  };
+}
+
+// Reads Port/IGWPort directly from the [Engine:URL] section of
+// runtime/generated/gameplay-profile.ini -- a cheap, synchronous read
+// (no shelling out to usersettings.py, which resolvePorts() cannot
+// afford given it's called from hot paths like server.js's error
+// handler). Returns { port: null, igwPort: null } if the file doesn't
+// exist yet (fresh install, before the first `dune init`/materialize)
+// or doesn't have an [Engine:URL] section -- callers fall back to
+// .env / stock values in that case, exactly matching
+// runtime-env.sh's own resolve_client_port_base()/resolve_igw_port_base()
+// fallback behavior.
+function readEnginePortsFromProfile(repoRoot) {
+  const profilePath = resolve(repoRoot, "runtime/generated/gameplay-profile.ini");
+  if (!existsSync(profilePath)) return { port: null, igwPort: null };
+  let text;
+  try {
+    text = readFileSync(profilePath, "utf8");
+  } catch {
+    return { port: null, igwPort: null };
+  }
+  // Normalize CRLF -> LF before parsing. The section-boundary regex
+  // below relies on `$` (multiline) matching end-of-line -- `$` matches
+  // before `\n` but not before a `\r` that precedes it, so an
+  // unnormalized CRLF file causes the lookahead to treat the position
+  // right before the trailing `\r` as the section boundary, silently
+  // truncating the section one line early and dropping whichever key
+  // (Port or IGWPort) comes last. usersettings.py always writes LF-only
+  // on this project's Linux hosts, so this is a defensive normalization
+  // for hand-edited/out-of-band files, not the common path.
+  const normalized = text.replace(/\r\n/g, "\n");
+  const sectionMatch = normalized.match(/^\[Engine:URL\]\s*$([\s\S]*?)(?=^\[|\s*$(?!\n))/m);
+  const sectionText = sectionMatch ? sectionMatch[1] : normalized;
+  const portMatch = sectionText.match(/^\s*Port\s*=\s*(\d+)\s*$/m);
+  const igwMatch = sectionText.match(/^\s*IGWPort\s*=\s*(\d+)\s*$/m);
+  return {
+    port: portMatch ? Number(portMatch[1]) : null,
+    igwPort: igwMatch ? Number(igwMatch[1]) : null
   };
 }
 
@@ -59,7 +121,22 @@ export function loadConfig() {
     duneScript: resolve(repoRoot, "runtime/scripts/dune"),
     host: resolveAdminBindHost(process.env.ADMIN_BIND_HOST),
     port: Number(process.env.ADMIN_BIND_PORT || 8088),
-    ports: resolvePorts(),
+    // A getter, not a plain value: config is loaded once at process
+    // startup and lives for the life of the process (see server.js's
+    // top-level `const config = loadConfig()`), but clientBase/igwBase
+    // are backed by runtime/generated/gameplay-profile.ini, which the
+    // Maps UI can rewrite at any time without restarting the console
+    // (see userSettingsRawWriteRoute in server.js). A plain value here
+    // would silently re-introduce the exact staleness bug resolvePorts()
+    // was written to fix -- correct once at boot, stale forever after
+    // the first Maps UI port change. Re-resolving on every read keeps
+    // every consumer (publicConfig() -> /api/auth/state, preflight.js)
+    // live-accurate without requiring a console restart. resolvePorts()
+    // is a cheap sync file read (see readEnginePortsFromProfile()), safe
+    // to call on every request.
+    get ports() {
+      return resolvePorts(process.env, repoRoot);
+    },
     authDisabled: process.env.ADMIN_AUTH_DISABLED === "1",
     secureCookies: secureCookieEnv === undefined ? process.env.NODE_ENV === "production" : secureCookieEnv === "1",
     allowHostBootstrap: process.env.ALLOW_HOST_BOOTSTRAP === "true",
