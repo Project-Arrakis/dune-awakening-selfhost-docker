@@ -762,6 +762,38 @@ def read_profile_text() -> str:
     return serialize_profile(seed_profile_from_legacy_config())
 
 
+def preflight_persisted_settings() -> int:
+    """Validate the saved source of truth without silently seeding defaults."""
+    if PROFILE_PATH.exists():
+        try:
+            profile = parse_profile_text(PROFILE_PATH.read_text(encoding="utf-8", errors="replace"))
+        except OSError as error:
+            print(f"Gameplay settings profile is not readable: {error}", file=sys.stderr)
+            return 1
+    elif CONFIG_PATH.exists():
+        try:
+            config = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            print(f"Legacy gameplay settings are not readable: {error}", file=sys.stderr)
+            return 1
+        if not isinstance(config, dict):
+            print("Legacy gameplay settings must contain a JSON object.", file=sys.stderr)
+            return 1
+        profile = seed_profile_from_legacy_config()
+    else:
+        print("No persisted gameplay settings source was found.", file=sys.stderr)
+        print("Refusing a scheduled restart instead of starting maps with defaults.", file=sys.stderr)
+        return 1
+
+    try:
+        validate_profile_port_ranges(profile)
+    except (TypeError, ValueError) as error:
+        print(f"Gameplay settings validation failed: {error}", file=sys.stderr)
+        return 1
+    print("Gameplay settings preflight passed.")
+    return 0
+
+
 def write_profile(profile: dict) -> None:
     strip_retired_usergame_profile_lines(profile)
     prune_empty_profile_sections(profile)
@@ -3659,6 +3691,8 @@ def main(argv: list[str]) -> int:
         return profile_engine_write_encoded(argv[2])
     if command == "profile-selftest":
         return profile_selftest()
+    if command == "preflight":
+        return preflight_persisted_settings()
     if command == "engine-values":
         return print_rows(merged_engine_values(config), ENGINE_FIELDS)
     if command == "map-engine-values" and len(argv) == 3:
