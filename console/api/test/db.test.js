@@ -17,7 +17,7 @@ import {
   queueGeneratorRefill,
   supportsGeneratorRefillQueue
 } from "../src/duneDb.js";
-import { addCurrency, addFactionReputation, addGuildMember, addIntel, addonLeadershipPlayers, addonOpsHealthFarms, addonOpsHealthPlayers, addonOpsHealthSummary, addonOpsHealthSummaryV2, addSpecializationXp, applyLandsraadMilestonePreset, augmentInventoryItem, augmentNewestPlayerItem, baseGeneratorFuelLevels, baseGenerators, changeDunePassword, completeJourneyNode, completeTutorial, dbStatus, deleteInventoryItem, demoteGuildMember, disbandGuild, exportBaseAsBlueprint, generatorUptimePolicy, giveItemToPlayer, giveItemToStorage, guildMembers, landsraadOverview, listBases, listGuilds, listPlayers, listRoutines, listSpicefieldTypes, listTables, liveMapPlayers, liveMapServices, playerBuildingUnlockState, playerCraftingRecipes, playerCurrency, playerFactions, playerIntel, playerInventory, playerInventoryAll, playerJourney, playerPortalSnapshots, playerPosition, playerProfile, playerProgression, playerResearchItems, playerSolarisCoinTotal, playerVitals, portalGeneratorFuel, portalVehicles, promoteGuildMember, refillBaseGenerators, removeGuildMember, repairFactionReputation, repairVehicleDecay, resetJourneyNode, resetTutorial, routineDefinition, runSql, setLandsraadPlayerContribution, setPlayerFaction, supportsGeneratorRefill, tablePreview, teleportOfflinePlayerToCoords, unlockCraftingRecipe, unlockResearchItem, updateInventoryItem, updateLandsraadRewardTier, updateLandsraadTaskGoal, updateLandsraadTermTaskGoals, updateSpicefieldType, updateTableRow, UnsupportedCapabilityError, _resetPlayerTargetCacheForTests } from "../src/duneDb.js";
+import { addCurrency, addFactionReputation, addGuildMember, addIntel, addonLeadershipPlayers, addonOpsHealthFarms, addonOpsHealthPlayers, addonOpsHealthSummary, addonOpsHealthSummaryV2, addSpecializationXp, applyLandsraadMilestonePreset, augmentInventoryItem, augmentNewestPlayerItem, baseGeneratorFuelLevels, baseGenerators, baseIsBackedUp, changeDunePassword, completeJourneyNode, completeTutorial, dbStatus, deleteInventoryItem, demoteGuildMember, disbandGuild, exportBaseAsBlueprint, generatorUptimePolicy, giveItemToPlayer, giveItemToStorage, guildMembers, landsraadOverview, listBases, listGuilds, listPlayers, listRoutines, listSpicefieldTypes, listTables, liveMapPlayers, liveMapServices, playerBuildingUnlockState, playerCraftingRecipes, playerCurrency, playerFactions, playerIntel, playerInventory, playerInventoryAll, playerJourney, playerPortalSnapshots, playerPosition, playerProfile, playerProgression, playerResearchItems, playerSolarisCoinTotal, playerVitals, portalGeneratorFuel, portalVehicles, promoteGuildMember, refillBaseGenerators, removeGuildMember, repairFactionReputation, repairVehicleDecay, resetJourneyNode, resetTutorial, routineDefinition, runSql, setLandsraadPlayerContribution, setPlayerFaction, supportsGeneratorRefill, tablePreview, teleportOfflinePlayerToCoords, unlockCraftingRecipe, unlockResearchItem, updateInventoryItem, updateLandsraadRewardTier, updateLandsraadTaskGoal, updateLandsraadTermTaskGoals, updateSpicefieldType, updateTableRow, UnsupportedCapabilityError, _resetPlayerTargetCacheForTests } from "../src/duneDb.js";
 
 beforeEach(() => {
   _resetPlayerTargetCacheForTests();
@@ -2594,6 +2594,78 @@ test("list bases omits the partition join when world_partition is absent", async
   const paged = calls.find((call) => call.text.includes("from paged p"));
   assert.ok(!paged.text.includes("dune.world_partition"), "must not join a table this schema does not have");
   assert.match(paged.text, /'' as partition_map/);
+});
+
+// The base-backup tool ("pick up base") only deletes permission_actor/
+// permission_actor_rank and registers the base's actor ids in
+// dune.base_backup_linked_actors -- it leaves buildings/building_instances/
+// placeables fully intact, so without this exclusion a picked-up base would
+// keep showing up as an ordinary, ownerless base.
+test("list bases excludes unclaimed, backup-linked bases when base_backup_linked_actors exists", async () => {
+  const calls = [];
+  const db = {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes("to_regclass")) {
+        const name = String(values[0] || "");
+        return { rows: [{ exists: BASE_REQUIRED_TABLES.includes(name) || name === "dune.base_backup_linked_actors" }] };
+      }
+      if (text.includes("total_bases")) return { rows: [{ total_bases: "0", total_pieces: "0", total_placeables: "0" }] };
+      return { rows: [] };
+    }
+  };
+
+  await listBases(db, { includeGenerators: false });
+
+  const paged = calls.find((call) => call.text.includes("from matched"));
+  assert.match(
+    paged.text,
+    /not \(pa\.actor_id is null and exists \(select 1 from dune\.base_backup_linked_actors bbla where bbla\.actor_id = a\.id\)\)/
+  );
+  const totals = calls.find((call) => call.text.includes("valid_claims"));
+  assert.match(
+    totals.text,
+    /not \(pa\.actor_id is null and exists \(select 1 from dune\.base_backup_linked_actors bbla where bbla\.actor_id = a\.id\)\)/,
+    "totals must apply the same exclusion so total_bases/total_pieces/total_placeables agree with the paged rows"
+  );
+});
+
+test("list bases omits the backup exclusion when base_backup_linked_actors is absent", async () => {
+  const calls = [];
+  const db = {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes("to_regclass")) {
+        return { rows: [{ exists: BASE_REQUIRED_TABLES.includes(String(values[0] || "")) }] };
+      }
+      if (text.includes("total_bases")) return { rows: [{ total_bases: "0", total_pieces: "0", total_placeables: "0" }] };
+      return { rows: [] };
+    }
+  };
+
+  await listBases(db, { includeGenerators: false });
+
+  const paged = calls.find((call) => call.text.includes("from matched"));
+  assert.ok(!paged.text.includes("base_backup_linked_actors"), "must not reference a table this schema does not have");
+  const totals = calls.find((call) => call.text.includes("valid_claims"));
+  assert.ok(!totals.text.includes("base_backup_linked_actors"));
+});
+
+// The SQL path itself (unclaimed AND backup-linked) is proven against real
+// PostgreSQL in baseBackup.integration.test.js. This covers only the fast
+// path a mocked db can prove cheaply: a schema without the optional table
+// skips the query entirely rather than referencing a table that isn't there.
+test("baseIsBackedUp short-circuits to false without querying when base_backup_linked_actors is absent", async () => {
+  const calls = [];
+  const db = {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes("to_regclass")) return { rows: [{ exists: false }] };
+      throw new Error("must not query further once the capability check reports absent");
+    }
+  };
+  assert.equal(await baseIsBackedUp(db, 3452), false);
+  assert.equal(calls.length, 1, "only the to_regclass capability probe should run");
 });
 
 test("list bases groups multiple internal building records under one claim actor", async () => {

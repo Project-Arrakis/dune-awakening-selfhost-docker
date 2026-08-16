@@ -182,6 +182,7 @@ export const ROUTE_ACTIONS = {
   "GET /api/bases/pending-water-refills":      "bases:read",
   "GET /api/bases/auto-refill-water":          "bases:read",
   "GET /api/bases/permission-candidates":      "bases:read",
+  "GET /api/bases/pending-deletes":            "bases:read",
 
   // --- Storage (read) ---
   "GET /api/storage":                          "storage:read",
@@ -375,6 +376,26 @@ export const REGEX_ACTIONS_BY_METHOD = {
   "PATCH /api/database/tables/": "database:mutate",
 };
 
+// ---- Parameterized route actions (regex, not prefix) ----
+//
+// REGEX_ACTIONS_BY_METHOD only tests a startsWith prefix, which cannot tell
+// "/api/bases/{id}" (the base itself) apart from "/api/bases/{id}/queued-
+// delete" (a sub-resource under it) — both start with the same
+// "/api/bases/" prefix, since the variable segment comes before, not after,
+// the part that would distinguish them. Routes that need that distinction
+// go here instead, tested as a real regex before the prefix fallback.
+export const REGEX_ACTIONS_BY_METHOD_PATTERN = [
+  // DELETE /api/bases/{baseId} — the actual, irreversible base delete.
+  // Deliberately its own action rather than the shared bases:mutate bucket
+  // every other base mutation uses (refills, permission edits, cancelling
+  // a queued refill/delete) — those are all reversible; this is not, so an
+  // operator's policy should be able to grant one without the other. Every
+  // other bases DELETE route (queued-refill, queued-water-refill, queued-
+  // delete — all cancellations) still falls through to the
+  // "DELETE /api/bases/" prefix rule above, unaffected.
+  { method: "DELETE", pattern: /^\/api\/bases\/[^/]+$/, action: "bases:delete" }
+];
+
 // ---- Action resolution ----
 //
 // Returns the action string for a given route path and HTTP method.
@@ -387,6 +408,13 @@ export function actionForRoute(path, method) {
 
   // Exact match
   if (ROUTE_ACTIONS.hasOwnProperty(exactKey)) return ROUTE_ACTIONS[exactKey];
+
+  // Parameterized pattern match (checked before the prefix fallback below,
+  // so a route needing a real regex to distinguish itself from a sibling
+  // sub-resource wins over the coarser startsWith bucket).
+  for (const { method: m, pattern, action } of REGEX_ACTIONS_BY_METHOD_PATTERN) {
+    if (routeMethod === m && pattern.test(path)) return action;
+  }
 
   // Method-aware regex match (ordered first — more specific)
   for (const [key, action] of Object.entries(REGEX_ACTIONS_BY_METHOD)) {
