@@ -58,6 +58,7 @@ import { calculateAlwaysOnHostMemorySafety } from "./services/hostMemorySafety.j
 import { parseEffectiveGuildMemberLimit } from "./services/guildSettings.js";
 import { parseEffectivePermissionLimit } from "./services/permissionSettings.js";
 import { flushBaseRefillQueues } from "./services/baseRefillFlush.js";
+import { verifyBaseBackupState } from "./services/baseBackupSafety.js";
 import { banPlayer, bannedFlsIds, createPlayerBanEnforcer, playerBanFor, unbanPlayer } from "./services/playerBans.js";
 import { findPlayerForLiveAction, playerIsOnlineForLiveAction } from "./playerLiveActions.js";
 
@@ -73,7 +74,8 @@ const bridgeRateLimiter = createBridgeRateLimiter();
 const tasks = new TaskManager(config, {
   onMapDown: () => flushBaseRefillQueues({
     flushGenerators: flushQueuedGeneratorRefills,
-    flushWater: flushQueuedWaterRefills
+    flushWater: flushQueuedWaterRefills,
+    flushDeletes: flushQueuedBaseDeletes
   })
 });
 let db = createDb(config);
@@ -88,6 +90,8 @@ let carePackageAutoNextAllowedRun = 0;
 let generatorRefillFlushRunning = false;
 // Same reasoning as generatorRefillFlushRunning, for the water queue.
 let waterRefillFlushRunning = false;
+// Same reasoning as generatorRefillFlushRunning, for the pending-delete queue.
+let baseDeleteFlushRunning = false;
 let messageOfTheDayAutoRunning = false;
 let messageOfTheDayAutoLastRun = 0;
 let messageOfTheDayAutoNextAllowedRun = 0;
@@ -214,6 +218,9 @@ setInterval(() => {
   if (duneDb.listQueuedWaterRefills(config.repoRoot).length) {
     runBackgroundTick("Water refill flush", () => flushQueuedWaterRefills());
   }
+  if (duneDb.listQueuedBaseDeletes(config.repoRoot).length) {
+    runBackgroundTick("Base delete flush", () => flushQueuedBaseDeletes());
+  }
 }, Number.isFinite(generatorRefillFlushIntervalMs) && generatorRefillFlushIntervalMs > 0 ? generatorRefillFlushIntervalMs : 5000).unref?.();
 
 // Every queued-refill write goes through here so it is audited whichever path
@@ -241,6 +248,32 @@ async function flushQueuedWaterRefills() {
     return result;
   } finally {
     waterRefillFlushRunning = false;
+  }
+}
+
+// Same guard reasoning as flushQueuedGeneratorRefills. The one full-database
+// safety backup for this pass happens inside flushBaseDeletes's onBeforeApply
+// hook -- lazily, at most once, immediately before the first entry that is
+// actually about to be deleted, not merely because the queue is non-empty.
+async function flushQueuedBaseDeletes() {
+  if (baseDeleteFlushRunning) return { flushed: [] };
+  baseDeleteFlushRunning = true;
+  try {
+    const result = await duneDb.flushBaseDeletes(db, config.repoRoot, {
+      // Matches databaseQuery's explicit mock-mode guard: this runs as a
+      // background tick, not through directDbMutation, so it is not skipped
+      // for free the way a request-time delete's backup call is.
+      onBeforeApply: config.mockMode
+        ? undefined
+        : () => runDune(config, buildDuneArgs("backupCreate"), { env: { DB_BACKUP_ORIGIN: "base-delete" } })
+    });
+    for (const entry of result.flushed || []) audit(config, null, "bases.flush-queued-delete", entry);
+    if (result.backupFailed) {
+      audit(config, null, "bases.flush-queued-delete-backup-failed", { error: result.error, pending: result.pending });
+    }
+    return result;
+  } finally {
+    baseDeleteFlushRunning = false;
   }
 }
 
@@ -572,6 +605,7 @@ async function handleApi(req, res) {
   if (path === "/api/bases/auto-refill") return basesAutoRefillStateRoute(res);
   if (path === "/api/bases/pending-water-refills") return pendingWaterRefillsRoute(res);
   if (path === "/api/bases/auto-refill-water") return basesAutoRefillWaterStateRoute(res);
+  if (path === "/api/bases/pending-deletes") return pendingBaseDeletesRoute(res);
   if (path.match(/^\/api\/bases\/[^/]+\/export$/) && req.method === "GET") return baseBlueprintDownloadRoute(req, res, path);
   if (path.match(/^\/api\/bases\/[^/]+\/refill-generators$/) && req.method === "POST") return baseRefillGeneratorsRoute(req, res, path);
   if (path.match(/^\/api\/bases\/[^/]+\/queued-refill$/) && req.method === "DELETE") return baseCancelQueuedRefillRoute(req, res, path);
@@ -585,6 +619,8 @@ async function handleApi(req, res) {
   if (path.match(/^\/api\/bases\/[^/]+\/permissions$/) && req.method === "GET") return basePermissionsRoute(res, path);
   if (path.match(/^\/api\/bases\/[^/]+\/permissions$/) && req.method === "PUT") return baseSetPermissionsRoute(req, res, path);
   if (path.match(/^\/api\/bases\/[^/]+\/system-custodian$/) && req.method === "POST") return baseSystemCustodianRoute(req, res, path);
+  if (path.match(/^\/api\/bases\/[^/]+\/queued-delete$/) && req.method === "DELETE") return baseCancelQueuedDeleteRoute(req, res, path);
+  if (path.match(/^\/api\/bases\/[^/]+$/) && req.method === "DELETE") return baseDeleteRoute(req, res, path);
   if (path === "/api/vehicles") return dbJson(res, () => duneDb.listVehicles(db, {
     q: url.searchParams.get("q") || "",
     page: url.searchParams.get("page") || 0,
@@ -2665,9 +2701,122 @@ async function baseBlueprintDownloadRoute(req, res, path) {
   }
 }
 
+// A base with a delete queued is frozen from every other write: the hazard a
+// queued delete exists to avoid (a live server overwriting the write before
+// the flush) applies just as much to a refill or permission edit racing that
+// same delete, and reasoning about ordering between independent queues is
+// worse than "a base marked for deletion does not change in the meantime."
+function baseDeletePending(baseId) {
+  return duneDb.listQueuedBaseDeletes(config.repoRoot).some((entry) => entry.baseId === baseId);
+}
+
+const BASE_DELETE_PENDING_MESSAGE = "This base has a pending delete queued and cannot be modified. Cancel the delete first.";
+
+// A backed-up base (picked up via the game's base-backup tool) is excluded
+// from listBases -- see duneDb.baseIsBackedUp -- because it has no owner and
+// its structural rows are only awaiting redeploy or eventual cleanup. A
+// direct route call (or a stale bookmarked base id) must not be able to
+// modify it just because it slipped past the panel's own filtering.
+async function baseBackedUp(baseId) {
+  return verifyBaseBackupState(duneDb, db, baseId);
+}
+
+const BASE_BACKED_UP_MESSAGE = "This base was picked up into a backup and is no longer claimed. It cannot be modified until the player redeploys it.";
+
+// Refilling fuel/water moments before deleting the base is pointless and
+// pollutes the audit log with writes about to be destroyed anyway. Best
+// effort: a base with nothing queued throws, which is fine to swallow here.
+function cancelPendingRefillsForBase(baseId) {
+  try { duneDb.cancelQueuedGeneratorRefill(config.repoRoot, baseId); } catch {}
+  try { duneDb.cancelQueuedWaterRefill(config.repoRoot, baseId); } catch {}
+}
+
+async function baseDeleteRoute(req, res, path) {
+  const baseId = Number(decodeURIComponent(path.split("/")[3]));
+  if (!Number.isFinite(baseId) || baseId < 1) return json(res, 400, { error: "Invalid base ID" });
+  if (await baseBackedUp(baseId)) return json(res, 409, { error: BASE_BACKED_UP_MESSAGE });
+  return directDbMutation(req, res, "bases.delete", "DELETE BASE", async () => {
+    // Reserve the lock synchronously, before the first await: baseDeletePending
+    // is a file read, and every other mutation route checks it before doing
+    // any of its own work, so a request for this same base landing between
+    // "resolve write-safety" and "record the queue entry" below would
+    // otherwise read the queue as empty and slip through. This placeholder
+    // (map/partitionId unresolved yet) closes that gap immediately; it is
+    // either replaced with the real entry (queued path) or removed in the
+    // finally below (immediate path, success or failure).
+    duneDb.queueBaseDelete(config.repoRoot, { baseId, map: "", partitionId: 0 });
+    let queued = false;
+    try {
+      const target = await duneDb.baseRefillTarget(db, baseId);
+      // Same hazard as a refill: a live game server can rewrite its own copy
+      // of this base back to Postgres before the delete is ever seen. Queue
+      // it instead and let the flush tick apply it once that map is down.
+      if (target.queueSupported && !target.writeSafeNow) {
+        cancelPendingRefillsForBase(baseId);
+        const entry = duneDb.queueBaseDelete(config.repoRoot, {
+          baseId,
+          map: target.map,
+          partitionId: target.partitionId
+        });
+        queued = true;
+        return { ok: true, queued: true, ...entry };
+      }
+      // Mandatory safety backup before any delete SQL runs, exactly like the
+      // raw "Database Query" tool already does for any destructive query --
+      // see databaseQuery below. If this throws, deleteBaseCompletely is
+      // never called and nothing is touched.
+      await runDune(config, buildDuneArgs("backupCreate"), { env: { DB_BACKUP_ORIGIN: "base-delete" } });
+      const result = await duneDb.deleteBaseCompletely(db, baseId);
+      return { ...result, backupCreated: true };
+    } finally {
+      if (!queued) {
+        try { duneDb.cancelQueuedBaseDelete(config.repoRoot, baseId); } catch {}
+      }
+    }
+  }, { baseId });
+}
+
+async function baseCancelQueuedDeleteRoute(req, res, path) {
+  const baseId = Number(decodeURIComponent(path.split("/")[3]));
+  if (!Number.isFinite(baseId) || baseId < 1) return json(res, 400, { error: "Invalid base ID" });
+  return directDbMutation(req, res, "bases.cancel-queued-delete", null,
+    () => duneDb.cancelQueuedBaseDelete(config.repoRoot, baseId), { baseId });
+}
+
+// Mirrors pendingGeneratorRefillsRoute.
+async function pendingBaseDeletesRoute(res) {
+  const pending = duneDb.listQueuedBaseDeletes(config.repoRoot);
+  const targets = pending.length
+    ? await duneDb.partitionRestartTargets(db).catch(() => new Map())
+    : new Map();
+  const byTarget = new Map();
+  for (const entry of pending) {
+    const map = entry.map || "Unknown";
+    const key = `${map}|${entry.partitionId}`;
+    const target = targets.get(entry.partitionId);
+    const group = byTarget.get(key) || {
+      map,
+      partitionId: entry.partitionId,
+      partitionMap: target?.map || "",
+      dimensionIndex: target?.dimensionIndex ?? 0,
+      count: 0
+    };
+    group.count += 1;
+    byTarget.set(key, group);
+  }
+  return json(res, 200, {
+    supported: true,
+    total: pending.length,
+    pending,
+    byTarget: [...byTarget.values()].sort((a, b) => a.map.localeCompare(b.map) || a.partitionId - b.partitionId)
+  });
+}
+
 async function baseRefillGeneratorsRoute(req, res, path) {
   const baseId = Number(decodeURIComponent(path.split("/")[3]));
   if (!Number.isFinite(baseId) || baseId < 1) return json(res, 400, { error: "Invalid base ID" });
+  if (baseDeletePending(baseId)) return json(res, 409, { error: BASE_DELETE_PENDING_MESSAGE });
+  if (await baseBackedUp(baseId)) return json(res, 409, { error: BASE_BACKED_UP_MESSAGE });
   // No confirmation phrase: refilling is additive and reversible, unlike the
   // deletes and overwrites that phrase-gate. Still rate limited and audited.
   return directDbMutation(req, res, "bases.refill-generators", null, async () => {
@@ -2722,6 +2871,8 @@ async function basePermissionCandidatesRoute(res, url) {
 async function baseSetPermissionsRoute(req, res, path) {
   const baseId = Number(decodeURIComponent(path.split("/")[3]));
   if (!Number.isFinite(baseId) || baseId < 1) return json(res, 400, { error: "Invalid base ID" });
+  if (baseDeletePending(baseId)) return json(res, 409, { error: BASE_DELETE_PENDING_MESSAGE });
+  if (await baseBackedUp(baseId)) return json(res, 409, { error: BASE_BACKED_UP_MESSAGE });
   return directDbMutation(req, res, "bases.set-permissions", null, async (body) => {
     const settings = await runDune(config, buildDuneArgs("userSettingsMapValues", { map: "Survival_1" }), { timeoutMs: 8000 });
     const maxPermissions = parseEffectivePermissionLimit(settings.stdout);
@@ -2732,6 +2883,8 @@ async function baseSetPermissionsRoute(req, res, path) {
 async function baseSystemCustodianRoute(req, res, path) {
   const baseId = Number(decodeURIComponent(path.split("/")[3]));
   if (!Number.isFinite(baseId) || baseId < 1) return json(res, 400, { error: "Invalid base ID" });
+  if (baseDeletePending(baseId)) return json(res, 409, { error: BASE_DELETE_PENDING_MESSAGE });
+  if (await baseBackedUp(baseId)) return json(res, 409, { error: BASE_BACKED_UP_MESSAGE });
   return directDbMutation(req, res, "bases.transfer-system-custodian", null, async () => {
     const settings = await runDune(config, buildDuneArgs("userSettingsMapValues", { map: "Survival_1" }), { timeoutMs: 8000 });
     const maxPermissions = parseEffectivePermissionLimit(settings.stdout);
@@ -2806,6 +2959,10 @@ async function baseAutoRefillToggleRoute(req, res, path) {
   if (typeof body.enabled !== "boolean") {
     return json(res, 400, { error: "Auto-refill enabled must be true or false." });
   }
+  // Only enabling is blocked -- turning auto-refill off is harmless and does
+  // not race a pending delete the way a new automated write would.
+  if (body.enabled && baseDeletePending(baseId)) return json(res, 409, { error: BASE_DELETE_PENDING_MESSAGE });
+  if (body.enabled && await baseBackedUp(baseId)) return json(res, 409, { error: BASE_BACKED_UP_MESSAGE });
   // Checked on the server too, not just hidden in the UI. Without
   // dune.world_partition a queued refill cannot wait for a safe window, so an
   // automated refill would write straight into a possibly-live base.
@@ -2871,6 +3028,8 @@ async function baseInventoryRoute(res, path) {
 async function baseRefillWaterRoute(req, res, path) {
   const baseId = Number(decodeURIComponent(path.split("/")[3]));
   if (!Number.isFinite(baseId) || baseId < 1) return json(res, 400, { error: "Invalid base ID" });
+  if (baseDeletePending(baseId)) return json(res, 409, { error: BASE_DELETE_PENDING_MESSAGE });
+  if (await baseBackedUp(baseId)) return json(res, 409, { error: BASE_BACKED_UP_MESSAGE });
   return directDbMutation(req, res, "bases.refill-water", null, async () => {
     const target = await duneDb.baseRefillTarget(db, baseId);
     if (target.queueSupported && !target.writeSafeNow) {
@@ -2937,6 +3096,9 @@ async function baseAutoRefillWaterToggleRoute(req, res, path) {
   if (typeof body.enabled !== "boolean") {
     return json(res, 400, { error: "Auto-refill enabled must be true or false." });
   }
+  // Only enabling is blocked -- see baseAutoRefillToggleRoute.
+  if (body.enabled && baseDeletePending(baseId)) return json(res, 409, { error: BASE_DELETE_PENDING_MESSAGE });
+  if (body.enabled && await baseBackedUp(baseId)) return json(res, 409, { error: BASE_BACKED_UP_MESSAGE });
   if (body.enabled && !(await duneDb.supportsWaterRefillQueue(db).catch(() => false))) {
     return json(res, 501, {
       error: "Auto-refill needs the pending water-refill queue, which requires dune.world_partition on this database."
@@ -3060,7 +3222,9 @@ async function directDbMutation(req, res, action, phrase, fn, meta = {}) {
   try {
     const result = config.mockMode ? { ok: true, mock: true } : await fn(body);
     audit(config, req, action, { ...meta, supported: true, result });
-    return json(res, 200, { supported: true, backupCreated: false, result });
+    // Every caller before base deletion leaves result.backupCreated unset, so
+    // this defaults to false exactly as it did when the field was hardcoded.
+    return json(res, 200, { supported: true, backupCreated: Boolean(result?.backupCreated), result });
   } catch (error) {
     const status = error.unsupported ? 501 : 400;
     audit(config, req, action, { ...meta, supported: false, error: redact(error?.message || "Unexpected error.") });

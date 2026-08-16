@@ -55,4 +55,12 @@ fi
 grep -Fq 'Review the installer output above for the cause.' install.sh \
   || fail "Docker installation failure does not direct users to the streamed error"
 
+# The encrypted full-state backup command requires gpg. The fast path must not
+# skip dependency installation merely because the older basic tools exist, and
+# the post-install validation must report a missing gpg executable clearly.
+grep -Fq '&& command -v gpg >/dev/null 2>&1' install.sh \
+  || fail "installer dependency fast path does not require gpg"
+grep -Fq 'for required_tool in curl bash tar openssl gpg; do' install.sh \
+  || fail "installer post-install validation does not verify gpg"
+
 echo "PASS: installer rejects root safely and Docker installation progress remains visible"

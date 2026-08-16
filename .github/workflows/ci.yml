@@ -77,6 +77,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+      - name: Install gnupg for db-system-backup-test.sh (AEAD archive encryption)
+        # BUG FIX: previously relied on rsync/openssl being present
+        # implicitly on the GitHub runner image, which masked that neither
+        # was installed by install.sh or in the console container image --
+        # confirmed directly on this exact point by an upstream reviewer.
+        # gnupg ships gpg, used for AES-256-OCB (AEAD) archive encryption;
+        # openssl's own `enc` CLI cannot do any AEAD cipher at all. Install
+        # explicitly here so this job cannot silently rely on the runner
+        # image's own toolset again.
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends gnupg
       - name: Test readiness with configured service ports
         run: bash tests/ready-configured-ports-test.sh
       - name: Test stable farm readiness gating
@@ -120,6 +130,7 @@ jobs:
           tests/autoscaler-igw-socket-health-test.sh
           tests/db-backup-validation-test.sh
           tests/battlegroup-identity-test.sh
+          tests/db-system-backup-test.sh
       - name: Test Compose project-name portability
         run: |
           runtime/tests/test-compose-project-name-portability.sh

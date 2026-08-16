@@ -1721,9 +1721,20 @@ body.debug .technical-details { display: block; }
 .bases-table th:nth-child(10), .bases-table td:nth-child(10) { width: 6%; text-align: center; }
 .bases-table th:nth-child(11), .bases-table td:nth-child(11) { width: 10.5%; }
 /* 96px fit two icon-toggle-buttons (Refill Generators, Download); a third
-   (Refill Water) plus the wider queued-refill pills need more room, so this
-   grew to comfortably fit all three at once, queued or not. */
-.bases-table th.bases-actions-column, .bases-table td.bases-actions-column { width: 148px; }
+   (Refill Water) plus the wider queued-refill pills grew this to 148px to
+   comfortably fit all three at once, queued or not. A fourth (Delete Base)
+   plus its own wider queued-delete pill needs more room again -- and this
+   time the worst case is not "one queued slot" but "all three of Refill
+   Generators/Refill Water/Delete queued at once on the same base" (nothing
+   stops an operator queuing a fuel refill, then a water refill, then a
+   delete for the same live-map base). That's 3 pills (~46px each) + the
+   Download button (38px) + 3 gaps (6px) = 194px of content, against a
+   178px box at the old 190px width with 12px of cell padding -- exactly
+   the gap this measured and fixed live: the pills had no flex-shrink:0,
+   so the overflow silently squashed their icons instead of clipping.
+   230px leaves real margin above the 194px+12px=206px worst case, not
+   another zero-margin fit. */
+.bases-table th.bases-actions-column, .bases-table td.bases-actions-column { width: 230px; }
 .bases-table td { max-width: none; white-space: normal; overflow-wrap: anywhere; text-overflow: clip; }
 .bases-name, .bases-ellipsis-cell { display: block; overflow: visible; text-overflow: clip; white-space: normal; overflow-wrap: anywhere; }
 
@@ -1859,6 +1870,10 @@ body.debug .technical-details { display: block; }
 }
 .bases-queue-badge-fuel { background: rgba(198, 139, 74, .18); color: var(--accent); }
 .bases-queue-badge-water { background: rgba(74, 144, 198, .18); color: #7fb2df; }
+/* Danger-toned, unlike the fuel/water badges above: a queued delete is
+   destructive rather than additive, and the row/banner treatment should read
+   as a warning, not just another pending write. */
+.bases-queue-badge-delete { background: rgba(167, 73, 73, .18); color: var(--danger-text); }
 .bases-queued-refill {
   display: inline-flex;
   align-items: center;
@@ -1868,8 +1883,38 @@ body.debug .technical-details { display: block; }
   background: rgba(255, 208, 138, .12);
   color: var(--title);
   white-space: nowrap;
+  /* As an item of the parent .icon-toggle-group, this defaults to
+     shrinkable -- unlike .icon-toggle-button's flex: 0 0 38px, nothing
+     stopped the group from squashing this pill (and its child icon)
+     instead of the row simply needing more width. Pin it so a future
+     width miscalculation overflows visibly rather than silently
+     distorting the icon. */
+  flex-shrink: 0;
 }
 .bases-queued-refill .bases-queued-refill-cancel {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 20px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  min-width: 0;
+}
+/* Mirrors .bases-queued-refill, danger-toned to match .bases-queue-badge-delete. */
+.bases-queued-delete {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 4px;
+  border-radius: 6px;
+  background: rgba(167, 73, 73, .16);
+  color: var(--danger-text);
+  white-space: nowrap;
+  /* See .bases-queued-refill's comment. */
+  flex-shrink: 0;
+}
+.bases-queued-delete .bases-queued-delete-cancel {
   width: 20px;
   height: 20px;
   flex: 0 0 20px;
