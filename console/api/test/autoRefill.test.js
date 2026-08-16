@@ -11,7 +11,7 @@ import {
   setBaseAutoRefill,
   writeAutoRefillState
 } from "../src/services/autoRefill.js";
-import { listQueuedGeneratorRefills, queueGeneratorRefill } from "../src/duneDb.js";
+import { listQueuedBaseDeletes, listQueuedGeneratorRefills, queueGeneratorRefill } from "../src/duneDb.js";
 
 // Must await fn: without it the finally deletes the directory at the callback's
 // first await, and everything after that reads an empty enrollment.
@@ -92,7 +92,12 @@ function fakeDuneDb({
       return null;
     },
     queueGeneratorRefill,
-    listQueuedGeneratorRefills
+    listQueuedGeneratorRefills,
+    // Real queue-file read, like listQueuedGeneratorRefills above: no test
+    // here queues a delete, so this always resolves empty, but going through
+    // the real function keeps the fake honest about that rather than
+    // asserting it via a hardcoded stub.
+    listQueuedBaseDeletes
   };
 }
 

@@ -11,7 +11,7 @@ import {
   setBaseAutoRefillWater,
   writeAutoRefillWaterState
 } from "../src/services/autoRefillWater.js";
-import { listQueuedWaterRefills, queueWaterRefill } from "../src/duneDb.js";
+import { listQueuedBaseDeletes, listQueuedWaterRefills, queueWaterRefill } from "../src/duneDb.js";
 
 // Mirrors autoRefill.test.js exactly, retargeted at the water auto-refill
 // subsystem -- same enrollment/scheduler mechanics, own files, own env vars.
@@ -74,7 +74,10 @@ function fakeDuneDb({
       return null;
     },
     queueWaterRefill,
-    listQueuedWaterRefills
+    listQueuedWaterRefills,
+    // See autoRefill.test.js's fakeDuneDb: real queue-file read, always empty
+    // here since no test queues a delete.
+    listQueuedBaseDeletes
   };
 }
 

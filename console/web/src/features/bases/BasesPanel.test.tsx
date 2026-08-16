@@ -11,6 +11,9 @@ vi.mock("../../api/bases", () => ({
     refillGenerators: vi.fn(),
     cancelQueuedRefill: vi.fn(),
     pendingRefills: vi.fn(),
+    deleteBase: vi.fn(),
+    cancelQueuedDelete: vi.fn(),
+    pendingDeletes: vi.fn(),
     autoRefill: vi.fn(),
     setAutoRefill: vi.fn(),
     permissions: vi.fn(),
@@ -353,6 +356,168 @@ describe("BasesPanel generator refill", () => {
     const refill = await awaitFreshRows("Sietch Unknown");
     expect(refill).toBeDisabled();
     expect(refill).toHaveAttribute("title", "Generator data is unavailable for this base");
+  });
+});
+
+describe("BasesPanel base deletion", () => {
+  function listResponse(capabilities: Record<string, unknown>, row: Record<string, unknown>) {
+    return {
+      capabilities,
+      totalCount: 1,
+      totalBases: 1,
+      totalPieces: 10,
+      totalPlaceables: 4,
+      rows: [{ ...commonRow, ...row }]
+    };
+  }
+
+  const deletableBase = {
+    base_id: "2101",
+    name: "Sietch Delete",
+    generatorDataAvailable: true,
+    generatorCount: 1,
+    generators: [
+      { type: "fuel", name: "Fuel-Powered Generator", fuelName: "Fuel Cell", fuelCells: 1, generatorCount: 1, runtimeSeconds: 0 }
+    ]
+  };
+
+  beforeEach(() => {
+    vi.mocked(basesApi.pendingDeletes).mockResolvedValue({ supported: true, total: 0, pending: [], byTarget: [] });
+  });
+
+  async function awaitFreshRows(baseName: string) {
+    await screen.findByText(baseName);
+    return screen.getByRole("button", { name: "Delete Base" });
+  }
+
+  it("hides the Delete Base action when the schema does not support it", async () => {
+    vi.mocked(basesApi.list).mockResolvedValue(listResponse({ bases: true }, { ...deletableBase, base_id: "2100", name: "Sietch NoDelete" }));
+
+    renderPanel();
+    await screen.findByText("Sietch NoDelete");
+
+    expect(screen.queryByRole("button", { name: "Delete Base" })).not.toBeInTheDocument();
+  });
+
+  it("confirms with the piece/placeable counts and deletes immediately when the map is already write-safe", async () => {
+    vi.mocked(basesApi.list).mockResolvedValue(listResponse({ bases: true, baseDelete: true, baseDeleteQueue: false }, deletableBase));
+    vi.mocked(basesApi.deleteBase).mockResolvedValue({
+      supported: true,
+      backupCreated: true,
+      result: { ok: true, baseId: 2101, deletedActorCount: 5, deletedBuildingCount: 3, deletedPlaceableCount: 1 }
+    });
+
+    const props = renderPanel();
+    const deleteButton = await awaitFreshRows("Sietch Delete");
+    expect(deleteButton).toBeEnabled();
+
+    fireEvent.click(deleteButton);
+
+    await waitFor(() => expect(props.confirmAction).toHaveBeenCalledWith(
+      'Delete "Sietch Delete"? This permanently deletes the base and everything built or stored in it.',
+      {
+        title: "Delete Base",
+        confirmLabel: "Delete",
+        danger: true,
+        details: [
+          { label: "Building Pieces", value: "10", tone: "danger" },
+          { label: "Placeables", value: "4", tone: "danger" }
+        ],
+        // No queue capability on this schema, so the warning must promise an
+        // immediate write, not a queued one.
+        warning: expect.stringContaining("straight to the database")
+      }
+    ));
+    await waitFor(() => expect(basesApi.deleteBase).toHaveBeenCalledWith("2101"));
+    expect(await screen.findByText('"Sietch Delete" was deleted.')).toBeInTheDocument();
+    // The row is gone, so the list is refetched rather than patched locally.
+    expect(vi.mocked(basesApi.list).mock.calls.length).toBeGreaterThan(1);
+  });
+
+  it("does not delete when the confirm dialog is declined", async () => {
+    vi.mocked(basesApi.list).mockResolvedValue(listResponse(
+      { bases: true, baseDelete: true, baseDeleteQueue: false },
+      { ...deletableBase, base_id: "2102", name: "Sietch Declined Delete" }
+    ));
+
+    renderPanel({ confirmAction: vi.fn().mockResolvedValue(false) });
+    fireEvent.click(await awaitFreshRows("Sietch Declined Delete"));
+
+    await waitFor(() => expect(basesApi.deleteBase).not.toHaveBeenCalled());
+  });
+
+  it("queues the delete when the map is live and warns that it will apply on the next restart", async () => {
+    vi.mocked(basesApi.list).mockResolvedValue(listResponse(
+      { bases: true, baseDelete: true, baseDeleteQueue: true },
+      { ...deletableBase, base_id: "2103", name: "Sietch Queue Delete" }
+    ));
+    vi.mocked(basesApi.deleteBase).mockResolvedValue({
+      supported: true,
+      backupCreated: false,
+      result: { ok: true, queued: true, baseId: 2103, map: "HaggaBasin", partitionId: 3 }
+    });
+
+    const props = renderPanel();
+    fireEvent.click(await awaitFreshRows("Sietch Queue Delete"));
+
+    await waitFor(() => expect(props.confirmAction).toHaveBeenCalledWith(
+      'Delete "Sietch Queue Delete"? This permanently deletes the base and everything built or stored in it.',
+      expect.objectContaining({ warning: expect.stringContaining("queued and applied") })
+    ));
+    await waitFor(() => expect(basesApi.deleteBase).toHaveBeenCalledWith("2103"));
+    expect(await screen.findByText(/is queued and applies when this map next restarts or stops/)).toBeInTheDocument();
+    expect(basesApi.pendingDeletes).toHaveBeenCalled();
+  });
+
+  it("shows the queued-delete pill, blocks refills on that row, and cancels through basesApi.cancelQueuedDelete", async () => {
+    vi.mocked(basesApi.list).mockResolvedValue(listResponse(
+      { bases: true, baseDelete: true, baseDeleteQueue: true, generatorRefill: true },
+      { ...deletableBase, base_id: "2104", name: "Sietch Pending Delete" }
+    ));
+    vi.mocked(basesApi.pendingDeletes).mockResolvedValue({
+      supported: true,
+      total: 1,
+      pending: [{ baseId: 2104, map: "HaggaBasin", partitionId: 3, queuedAt: new Date().toISOString(), attempts: 0, lastError: "" }],
+      byTarget: [{ map: "HaggaBasin", partitionId: 3, partitionMap: "Survival_1", dimensionIndex: 0, count: 1 }]
+    });
+
+    renderPanel();
+    await screen.findByText("Sietch Pending Delete");
+
+    expect(await screen.findByRole("button", { name: "Cancel Queued Delete" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Delete Base" })).not.toBeInTheDocument();
+
+    // Server-side, this base rejects every other mutation while its delete is
+    // pending -- the row must not offer a control that would just 409.
+    const refill = screen.getByRole("button", { name: "Refill Generators" });
+    expect(refill).toBeDisabled();
+    expect(refill).toHaveAttribute("title", "Blocked while a delete is queued for this base");
+  });
+
+  it("cancelling the queued delete calls the API and refreshes the pending list", async () => {
+    vi.mocked(basesApi.list).mockResolvedValue(listResponse(
+      { bases: true, baseDelete: true, baseDeleteQueue: true },
+      { ...deletableBase, base_id: "2105", name: "Sietch Cancel Delete" }
+    ));
+    vi.mocked(basesApi.pendingDeletes).mockResolvedValue({
+      supported: true,
+      total: 1,
+      pending: [{ baseId: 2105, map: "HaggaBasin", partitionId: 3, queuedAt: new Date().toISOString(), attempts: 0, lastError: "" }],
+      byTarget: [{ map: "HaggaBasin", partitionId: 3, partitionMap: "Survival_1", dimensionIndex: 0, count: 1 }]
+    });
+    vi.mocked(basesApi.cancelQueuedDelete).mockResolvedValue({ supported: true, result: { ok: true, baseId: 2105, pending: 0 } });
+
+    const props = renderPanel();
+    await screen.findByText("Sietch Cancel Delete");
+
+    fireEvent.click(await screen.findByRole("button", { name: "Cancel Queued Delete" }));
+
+    await waitFor(() => expect(props.confirmAction).toHaveBeenCalledWith(
+      'Cancel the queued delete for "Sietch Cancel Delete"?',
+      { title: "Cancel Queued Delete", confirmLabel: "Cancel Delete" }
+    ));
+    await waitFor(() => expect(basesApi.cancelQueuedDelete).toHaveBeenCalledWith("2105"));
+    expect(await screen.findByText('Queued delete for "Sietch Cancel Delete" was canceled.')).toBeInTheDocument();
   });
 });
 

@@ -3246,6 +3246,31 @@ export async function basePermissionActor(db, baseId) {
   };
 }
 
+// The base-backup tool ("pick up base") only deletes permission_actor/
+// permission_actor_rank and registers the base's actor ids in
+// base_backup_linked_actors -- see listBases' matching exclusion. That keeps
+// a picked-up base out of the panel, but a caller hitting a route directly
+// (or a stale bookmarked base id) would otherwise still be able to mutate
+// it. Every mutation route checks this before writing, the same way each
+// already checks the pending-delete lock.
+export async function baseIsBackedUp(db, baseId) {
+  const target = intParam(baseId, "base id", 1);
+  if (!(await tableExists(db, "base_backup_linked_actors"))) return false;
+  const result = await db.query(`
+    select exists (
+      select 1
+      from dune.buildings b
+      join dune.building_instances bi on bi.building_id = b.id
+      join dune.actor_fgl_entities afe on afe.entity_id = bi.owner_entity_id
+      join dune.actors a on a.id = afe.actor_id
+      left join dune.permission_actor pa on pa.actor_id = a.id
+      where b.id = $1
+        and pa.actor_id is null
+        and exists (select 1 from dune.base_backup_linked_actors bbla where bbla.actor_id = a.id)
+    ) as backed_up`, [target]);
+  return Boolean(result.rows[0]?.backed_up);
+}
+
 // permission_actor_rank.player_id is a player's player_controller_id, not just
 // any actors row belonging to their account -- one account holds several. The
 // shipped permission_actor_create_or_update_base_marker joins
@@ -3634,13 +3659,28 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
   const requiredTables = ["buildings", "building_instances", "actor_fgl_entities", "actors"];
   // One round-trip each and none of them depends on another, so probe them
   // together rather than five times in series before any real work starts.
-  const [required, hasWorldPartition] = await Promise.all([
+  const [required, hasWorldPartition, hasBaseBackups] = await Promise.all([
     Promise.all(requiredTables.map((table) => tableExists(db, table))),
-    tableExists(db, "world_partition")
+    tableExists(db, "world_partition"),
+    tableExists(db, "base_backup_linked_actors")
   ]);
   if (required.some((exists) => !exists)) {
     return { ...unsupported("bases", requiredTables.map((t) => `dune.${t}`)), totalCount: 0, totalBases: 0, totalPieces: 0, totalPlaceables: 0 };
   }
+  // The base-backup tool ("pick up base") does not move or delete any of a
+  // base's rows -- it only deletes permission_actor/permission_actor_rank
+  // (unclaiming it) and registers its actor ids in base_backup_linked_actors
+  // so it can be redeployed later. Left un-filtered, a picked-up base still
+  // has every buildings/building_instances/placeables row intact and would
+  // show up here as an ordinary, ownerless base. Both signals are required
+  // -- unclaimed AND backup-linked -- rather than either alone: "unclaimed"
+  // by itself would also hide a base that legitimately has no owner for some
+  // other reason, and "backup-linked" by itself would hide a base again once
+  // redeployed if the game doesn't clean up old linked-actor rows on redeploy
+  // (unconfirmed either way). A base satisfying both is unambiguous.
+  const backupExclusion = hasBaseBackups
+    ? "and not (pa.actor_id is null and exists (select 1 from dune.base_backup_linked_actors bbla where bbla.actor_id = a.id))"
+    : "";
   // A base's own a.map is the game's map name ("HaggaBasin"), which cannot tell
   // two instances of it apart. world_partition resolves the partition to the
   // name the rest of the console uses ("Survival_1") plus its dimension --
@@ -3733,6 +3773,7 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
         left join dune.permission_actor pa on pa.actor_id = a.id
         ${matchedOwnerJoin}
         where a.transform is not null
+        ${backupExclusion}
         group by a.id, a.class, pa.actor_name, ${matchedGroupByOwner}a.map, a.partition_id, a.transform
         ${having}
       ),
@@ -3779,7 +3820,9 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
         join dune.building_instances bi on bi.building_id = b.id
         join dune.actor_fgl_entities afe on afe.entity_id = bi.owner_entity_id
         join dune.actors a on a.id = afe.actor_id
+        left join dune.permission_actor pa on pa.actor_id = a.id
         where a.transform is not null
+        ${backupExclusion}
       )
       select (select count(*) from valid_claims)::int as total_bases,
              (select count(*) from dune.building_instances bi join dune.actor_fgl_entities afe on afe.entity_id = bi.owner_entity_id join valid_claims vc on vc.actor_id = afe.actor_id)::int as total_pieces,
@@ -3814,22 +3857,24 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
     // columns the generator capability check requires, so reusing that check
     // would wrongly hide Refill Water on a schema that has everything water
     // actually needs.
-    const [generatorRefill, basePermissions, waterRefill] = await Promise.all([
+    const [generatorRefill, basePermissions, waterRefill, baseDelete] = await Promise.all([
       supportsGeneratorRefill(db).catch(() => false),
       supportsBasePermissionEditing(db).catch(() => false),
-      supportsWaterRefill(db).catch(() => false)
+      supportsWaterRefill(db).catch(() => false),
+      supportsBaseDelete(db).catch(() => false)
     ]);
     // Without world_partition the console cannot tell a running map from a
-    // stopped one, so the panel hides the queue entirely and refills stay
-    // immediate. Each check reuses the flag just computed above instead of
-    // re-deriving it, and both run concurrently for the same reason as above.
-    const [generatorRefillQueue, waterRefillQueue] = await Promise.all([
+    // stopped one, so the panel hides the queue entirely and refills/deletes
+    // stay immediate. Each check reuses the flag just computed above instead
+    // of re-deriving it, and all run concurrently for the same reason as above.
+    const [generatorRefillQueue, waterRefillQueue, baseDeleteQueue] = await Promise.all([
       generatorRefill ? supportsGeneratorRefillQueue(db, { generatorRefill }).catch(() => false) : Promise.resolve(false),
-      waterRefill ? supportsWaterRefillQueue(db, { waterRefill }).catch(() => false) : Promise.resolve(false)
+      waterRefill ? supportsWaterRefillQueue(db, { waterRefill }).catch(() => false) : Promise.resolve(false),
+      baseDelete ? supportsBaseDeleteQueue(db, { baseDelete }).catch(() => false) : Promise.resolve(false)
     ]);
 
     return {
-      capabilities: { bases: true, generatorRefill, generatorRefillQueue, basePermissions, waterRefill, waterRefillQueue },
+      capabilities: { bases: true, generatorRefill, generatorRefillQueue, basePermissions, waterRefill, waterRefillQueue, baseDelete, baseDeleteQueue },
       totalCount: result.rows[0] ? Number(result.rows[0].total_count) : 0,
       totalBases: totalsResult.rows[0] ? Number(totalsResult.rows[0].total_bases) : 0,
       totalPieces: totalsResult.rows[0] ? Number(totalsResult.rows[0].total_pieces) : 0,
@@ -3868,6 +3913,108 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
 
 function quaternionYawDegrees(qz, qw) {
   return (2 * Math.atan2(Number(qz) || 0, Number(qw) || 0)) * (180 / Math.PI);
+}
+
+// Gates base deletion the same way supportsBasePermissionEditing gates
+// permission edits. This repo has no migrations directory and never issues
+// CREATE FUNCTION anywhere (every write path composes the game's own shipped
+// procedures), so a self-hosted server missing these tables/functions cannot
+// have a delete proc added for it -- it is simply unsupported.
+async function supportsBaseDelete(db) {
+  for (const table of ["buildings", "building_instances", "actor_fgl_entities", "placeables", "actors"]) {
+    if (!(await tableExists(db, table))) return false;
+  }
+  return await functionExists(db, "dune.permission_actor_destroy(bigint)")
+    && await functionExists(db, "dune.delete_actors(bigint[])");
+}
+
+// Mirrors supportsGeneratorRefillQueue: without dune.world_partition there is
+// no way to tell a running map from a stopped one, so the panel hides the
+// queue and deletes stay immediate rather than offering a control that
+// silently risks a live server resurrecting the deleted rows.
+export async function supportsBaseDeleteQueue(db, { baseDelete } = {}) {
+  const supported = baseDelete !== undefined ? baseDelete : await supportsBaseDelete(db);
+  if (!supported) return false;
+  return tableExists(db, "world_partition");
+}
+
+// Every dune.actors row a full base delete must remove: the claim actor
+// itself, every building's actor id (dune.buildings.id IS an actors.id, the
+// same fact exportBaseAsBlueprint's piece query below relies on), and every
+// placeable's actor id via its own owner_entity_id chain -- a separate FK
+// path from building_instances', so it needs its own query. Deleting this
+// full set is what lets the declared ON DELETE CASCADE foreign keys clean up
+// buildings/building_instances/placeables/inventories/items on their own.
+async function baseDeletionActorIds(db, baseId) {
+  const actor = await basePermissionActor(db, baseId);
+  const buildingRows = await db.query(`
+    select distinct bi.building_id
+    from dune.building_instances bi
+    join dune.actor_fgl_entities afe on afe.entity_id = bi.owner_entity_id
+    where afe.actor_id = $1::bigint`, [actor.actorId]);
+  const placeableRows = await db.query(`
+    select distinct p.id
+    from dune.placeables p
+    join dune.actor_fgl_entities afe on afe.entity_id = p.owner_entity_id
+    where afe.actor_id = $1::bigint`, [actor.actorId]);
+  const ids = new Set([
+    actor.actorId,
+    ...buildingRows.rows.map((row) => String(row.building_id)),
+    ...placeableRows.rows.map((row) => String(row.id))
+  ]);
+  return {
+    actor,
+    actorIds: [...ids],
+    buildingCount: buildingRows.rowCount,
+    placeableCount: placeableRows.rowCount
+  };
+}
+
+// Permanently deletes a base and everything on it. A destructive, irreversible
+// operation, so every statement here must succeed together or not at all --
+// db.transaction already rolls back on any thrown error (see db.js), so this
+// is a straightforward wrap rather than new plumbing, made an explicit,
+// tested guarantee here because unlike most callers of db.transaction, a
+// partial failure of this one cannot be retried against player-recoverable
+// state. The caller (server.js) is responsible for the mandatory pre-delete
+// safety backup -- kept out of this file, which never shells out to the
+// `dune` CLI the way runner.js's backupCreate does.
+export async function deleteBaseCompletely(db, baseId) {
+  await requireCapability(await supportsBaseDelete(db),
+    "Base deletion requires dune.buildings, building_instances, actor_fgl_entities, placeables, actors, and the dune.permission_actor_destroy(bigint)/delete_actors(bigint[]) functions.");
+  const target = intParam(baseId, "base id", 1);
+  return db.transaction(async (tx) => {
+    await tx.query("set local search_path to dune, public");
+    // Re-enumerated inside the transaction, not reused from an earlier
+    // read: never trust a snapshot from when the confirm dialog opened or
+    // the delete was queued, the same discipline the refill queue already
+    // applies to amounts.
+    const { actor, actorIds, buildingCount, placeableCount } = await baseDeletionActorIds(tx, target);
+    // Lock the claim actor row, not a maybe-empty child row -- same reasoning
+    // as mutateBasePermissions: it is guaranteed to exist, and `for update`
+    // over zero rows would serialize nothing.
+    const locked = await tx.query("select id from dune.actors where id = $1::bigint for update", [actor.actorId]);
+    if (!locked.rowCount) throw new Error("That base was not found.");
+    // permission_actor_destroy first: it is the only thing that clears
+    // markers/player_markers, which are keyed on the claim actor id but not
+    // FK-cascaded from actors (only from map_names). Its permission_actor/
+    // permission_actor_rank deletes are redundant with the cascade that
+    // follows, but a DELETE matching zero rows is a harmless no-op.
+    await tx.query("select dune.permission_actor_destroy($1::bigint)", [actor.actorId]);
+    // Cascades away buildings, building_instances, placeables, inventories,
+    // and items via their declared ON DELETE CASCADE foreign keys.
+    await tx.query("select dune.delete_actors($1::bigint[])", [actorIds]);
+    return {
+      ok: true,
+      baseId: target,
+      actorId: actor.actorId,
+      map: actor.map,
+      partitionId: actor.partitionId,
+      deletedActorCount: actorIds.length,
+      deletedBuildingCount: buildingCount,
+      deletedPlaceableCount: placeableCount
+    };
+  });
 }
 
 export async function exportBaseAsBlueprint(db, id) {
@@ -6768,6 +6915,187 @@ function reconcileQueuedGeneratorRefills(repoRoot, outcomes) {
     if (outcome.keep) next.push({ ...entry, attempts: outcome.attempts, nextRetryAt: outcome.nextRetryAt, lastError: outcome.lastError });
   }
   writeQueuedGeneratorRefills(repoRoot, next);
+  return next;
+}
+
+// ---------------------------------------------------------------------------
+// Base deletion
+//
+// Permanently removes a base and everything on it. Like a refill, a delete
+// aimed at a live map's rows can be silently overwritten the next time that
+// map flushes its own state back to Postgres, so this reuses the exact same
+// pending-queue/write-safety machinery as the generator refill queue above --
+// see baseRefillTarget, observeRefillPartitions, partitionWriteSafe,
+// isTransientFlushError. It diverges from that queue in two ways, both noted
+// where they happen: a vanished base is success, not a retryable failure, and
+// the mandatory pre-delete safety backup is the caller's responsibility (kept
+// out of this file -- it shells out to the `dune` CLI, which duneDb.js never
+// does; see flushBaseDeletes's onBeforeApply and server.js's baseDeleteRoute).
+
+const PENDING_BASE_DELETE_PATH = "runtime/generated/pending-base-deletes.json";
+// Lower than MAX_PENDING_REFILLS: a large backlog of pending deletes is
+// itself a signal worth surfacing early, not silently absorbing.
+const MAX_PENDING_BASE_DELETES = 200;
+const MAX_DELETE_FLUSH_ATTEMPTS = 3;
+
+function pendingBaseDeleteMaxAgeMs() {
+  return clampInt(process.env.ADMIN_BASE_DELETE_MAX_AGE_MS, 7 * 24 * 60 * 60 * 1000, 1, Number.MAX_SAFE_INTEGER);
+}
+function pendingBaseDeleteRetryDelayMs() {
+  return clampInt(process.env.ADMIN_BASE_DELETE_RETRY_DELAY_MS, 60000, 1, Number.MAX_SAFE_INTEGER);
+}
+
+function pendingBaseDeleteFile(repoRoot) {
+  return resolve(repoRoot || "", PENDING_BASE_DELETE_PATH);
+}
+
+// Intent only, like normalizePendingRefill -- no captured actor-id list, so
+// flushBaseDeletes re-enumerates fresh at flush time rather than trusting
+// what existed when the delete was requested.
+function normalizePendingBaseDelete(entry) {
+  const baseId = Math.floor(Number(entry?.baseId));
+  if (!Number.isInteger(baseId) || baseId < 1) return null;
+  const partitionId = Math.floor(Number(entry?.partitionId));
+  return {
+    baseId,
+    map: String(entry?.map ?? "").slice(0, 120),
+    partitionId: Number.isInteger(partitionId) && partitionId > 0 ? partitionId : 0,
+    queuedAt: typeof entry?.queuedAt === "string" ? entry.queuedAt.slice(0, 40) : "",
+    attempts: clampInt(entry?.attempts, 0, 0, MAX_DELETE_FLUSH_ATTEMPTS),
+    nextRetryAt: Number.isFinite(Number(entry?.nextRetryAt)) ? Number(entry.nextRetryAt) : 0,
+    lastError: String(entry?.lastError ?? "").slice(0, 300)
+  };
+}
+
+export function listQueuedBaseDeletes(repoRoot) {
+  const file = pendingBaseDeleteFile(repoRoot);
+  if (!existsSync(file)) return [];
+  try {
+    const parsed = JSON.parse(readFileSync(file, "utf8"));
+    if (!Array.isArray(parsed)) return [];
+    // One entry per base, so a double-clicked button cannot queue it twice.
+    const seen = new Set();
+    return parsed.map(normalizePendingBaseDelete).filter((entry) => {
+      if (!entry || seen.has(entry.baseId)) return false;
+      seen.add(entry.baseId);
+      return true;
+    });
+  } catch (error) {
+    console.warn(`Ignoring unreadable pending base delete queue: ${redact(error?.message || "Unexpected error.")}`);
+    return [];
+  }
+}
+
+// Deliberately synchronous read-modify-write, matching writeQueuedGeneratorRefills.
+function writeQueuedBaseDeletes(repoRoot, entries) {
+  writeJsonAtomic(pendingBaseDeleteFile(repoRoot), entries);
+  return entries;
+}
+
+export function queueBaseDelete(repoRoot, { baseId, map = "", partitionId = 0, now = () => new Date() } = {}) {
+  const entry = normalizePendingBaseDelete({ baseId, map, partitionId, queuedAt: now().toISOString() });
+  if (!entry) throw new Error("Invalid base id");
+  const others = listQueuedBaseDeletes(repoRoot).filter((row) => row.baseId !== entry.baseId);
+  if (others.length >= MAX_PENDING_BASE_DELETES) {
+    throw new Error(`The pending delete queue already holds ${MAX_PENDING_BASE_DELETES} bases. Restart the affected maps to apply them first.`);
+  }
+  writeQueuedBaseDeletes(repoRoot, [...others, entry]);
+  return entry;
+}
+
+export function cancelQueuedBaseDelete(repoRoot, baseId) {
+  const target = intParam(baseId, "base id", 1);
+  const entries = listQueuedBaseDeletes(repoRoot);
+  const remaining = entries.filter((entry) => entry.baseId !== target);
+  if (remaining.length === entries.length) throw new Error("That base has no queued delete.");
+  writeQueuedBaseDeletes(repoRoot, remaining);
+  return { ok: true, baseId: target, pending: remaining.length };
+}
+
+// basePermissionActor and baseMapLocation both throw one of these two
+// messages for a base that was demolished or never existed, so a flush
+// hitting either has already achieved what the queued delete wanted.
+// Retrying would either spam a false failure or, worse, wait out the attempt
+// limit before dropping an entry that was already done.
+function baseDeleteAlreadyGone(message) {
+  return /was not found|no resolvable owner entity/i.test(message);
+}
+
+// Mirrors flushGeneratorRefills, with two divergences:
+//   - deleteBaseCompletely replaces refillBaseGenerators, since there is
+//     nothing to recompute an "amount" for -- one delete, not a top-up;
+//   - onBeforeApply runs at most once per pass, immediately before the first
+//     entry that is actually about to be deleted (not merely queued): a full
+//     database backup is not cheap, and several bases can flush in the same
+//     pass (e.g. a whole battlegroup restart), so one backup covers the whole
+//     batch instead of one per base. If it throws, the entire pass aborts --
+//     a failed safety backup is not about any one base, and deleting others
+//     without it would defeat the point just the same. Every entry stays
+//     queued and is retried, backup included, on the next tick.
+export async function flushBaseDeletes(db, repoRoot, { now = Date.now, onBeforeApply } = {}) {
+  const pending = listQueuedBaseDeletes(repoRoot);
+  if (!pending.length) return { flushed: [], pending: 0 };
+  const observed = await observeRefillPartitions(db, { now });
+  if (!observed) return { flushed: [], pending: pending.length, unsupported: true };
+
+  const flushed = [];
+  const outcomes = new Map();
+  const timestamp = now();
+  let backedUp = false;
+  for (const entry of pending) {
+    // Age is checked before write-safety: an expired entry should be cleared
+    // even for a map that never comes down again.
+    const queuedMs = Date.parse(entry.queuedAt);
+    if (Number.isFinite(queuedMs) && timestamp - queuedMs >= pendingBaseDeleteMaxAgeMs()) {
+      const message = `Queued for longer than the ${Math.round(pendingBaseDeleteMaxAgeMs() / 3600000)}h limit without being applied.`;
+      outcomes.set(entry.baseId, { queuedAt: entry.queuedAt, keep: false });
+      flushed.push({ baseId: entry.baseId, map: entry.map, partitionId: entry.partitionId, ok: false, expired: true, dropped: true, error: message });
+      continue;
+    }
+    if (!partitionWriteSafe(observed, entry.partitionId)) continue;
+    if (entry.nextRetryAt && timestamp < entry.nextRetryAt) continue;
+    if (!backedUp && onBeforeApply) {
+      try {
+        await onBeforeApply();
+        backedUp = true;
+      } catch (error) {
+        return { flushed: [], pending: pending.length, backupFailed: true, error: String(error?.message || "Unexpected error.").slice(0, 300) };
+      }
+    }
+    try {
+      const result = await deleteBaseCompletely(db, entry.baseId);
+      outcomes.set(entry.baseId, { queuedAt: entry.queuedAt, keep: false });
+      flushed.push({ baseId: entry.baseId, map: entry.map, partitionId: entry.partitionId, ok: true, ...result });
+    } catch (error) {
+      const message = String(error?.message || "Unexpected error.").slice(0, 300);
+      if (baseDeleteAlreadyGone(message)) {
+        outcomes.set(entry.baseId, { queuedAt: entry.queuedAt, keep: false });
+        flushed.push({ baseId: entry.baseId, map: entry.map, partitionId: entry.partitionId, ok: true, alreadyGone: true });
+        continue;
+      }
+      const attempts = isTransientFlushError(message) ? entry.attempts : entry.attempts + 1;
+      const dropped = attempts >= MAX_DELETE_FLUSH_ATTEMPTS;
+      const nextRetryAt = timestamp + pendingBaseDeleteRetryDelayMs();
+      outcomes.set(entry.baseId, { queuedAt: entry.queuedAt, keep: !dropped, attempts, nextRetryAt, lastError: message });
+      flushed.push({ baseId: entry.baseId, map: entry.map, partitionId: entry.partitionId, ok: false, attempts, dropped, error: message });
+    }
+  }
+  const remaining = outcomes.size ? reconcileQueuedBaseDeletes(repoRoot, outcomes) : pending;
+  return { flushed, pending: remaining.length };
+}
+
+// Mirrors reconcileQueuedGeneratorRefills.
+function reconcileQueuedBaseDeletes(repoRoot, outcomes) {
+  const next = [];
+  for (const entry of listQueuedBaseDeletes(repoRoot)) {
+    const outcome = outcomes.get(entry.baseId);
+    if (!outcome || outcome.queuedAt !== entry.queuedAt) {
+      next.push(entry);
+      continue;
+    }
+    if (outcome.keep) next.push({ ...entry, attempts: outcome.attempts, nextRetryAt: outcome.nextRetryAt, lastError: outcome.lastError });
+  }
+  writeQueuedBaseDeletes(repoRoot, next);
   return next;
 }
 
