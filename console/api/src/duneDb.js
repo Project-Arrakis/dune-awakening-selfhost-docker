@@ -3221,6 +3221,31 @@ export async function basePermissionActor(db, baseId) {
   };
 }
 
+// The base-backup tool ("pick up base") only deletes permission_actor/
+// permission_actor_rank and registers the base's actor ids in
+// base_backup_linked_actors -- see listBases' matching exclusion. That keeps
+// a picked-up base out of the panel, but a caller hitting a route directly
+// (or a stale bookmarked base id) would otherwise still be able to mutate
+// it. Every mutation route checks this before writing, the same way each
+// already checks the pending-delete lock.
+export async function baseIsBackedUp(db, baseId) {
+  const target = intParam(baseId, "base id", 1);
+  if (!(await tableExists(db, "base_backup_linked_actors"))) return false;
+  const result = await db.query(`
+    select exists (
+      select 1
+      from dune.buildings b
+      join dune.building_instances bi on bi.building_id = b.id
+      join dune.actor_fgl_entities afe on afe.entity_id = bi.owner_entity_id
+      join dune.actors a on a.id = afe.actor_id
+      left join dune.permission_actor pa on pa.actor_id = a.id
+      where b.id = $1
+        and pa.actor_id is null
+        and exists (select 1 from dune.base_backup_linked_actors bbla where bbla.actor_id = a.id)
+    ) as backed_up`, [target]);
+  return Boolean(result.rows[0]?.backed_up);
+}
+
 // permission_actor_rank.player_id is a player's player_controller_id, not just
 // any actors row belonging to their account -- one account holds several. The
 // shipped permission_actor_create_or_update_base_marker joins

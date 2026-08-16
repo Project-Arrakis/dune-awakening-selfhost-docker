@@ -2700,6 +2700,17 @@ function baseDeletePending(baseId) {
 
 const BASE_DELETE_PENDING_MESSAGE = "This base has a pending delete queued and cannot be modified. Cancel the delete first.";
 
+// A backed-up base (picked up via the game's base-backup tool) is excluded
+// from listBases -- see duneDb.baseIsBackedUp -- because it has no owner and
+// its structural rows are only awaiting redeploy or eventual cleanup. A
+// direct route call (or a stale bookmarked base id) must not be able to
+// modify it just because it slipped past the panel's own filtering.
+async function baseBackedUp(baseId) {
+  return duneDb.baseIsBackedUp(db, baseId).catch(() => false);
+}
+
+const BASE_BACKED_UP_MESSAGE = "This base was picked up into a backup and is no longer claimed. It cannot be modified until the player redeploys it.";
+
 // Refilling fuel/water moments before deleting the base is pointless and
 // pollutes the audit log with writes about to be destroyed anyway. Best
 // effort: a base with nothing queued throws, which is fine to swallow here.
@@ -2711,6 +2722,7 @@ function cancelPendingRefillsForBase(baseId) {
 async function baseDeleteRoute(req, res, path) {
   const baseId = Number(decodeURIComponent(path.split("/")[3]));
   if (!Number.isFinite(baseId) || baseId < 1) return json(res, 400, { error: "Invalid base ID" });
+  if (await baseBackedUp(baseId)) return json(res, 409, { error: BASE_BACKED_UP_MESSAGE });
   return directDbMutation(req, res, "bases.delete", "DELETE BASE", async () => {
     // Reserve the lock synchronously, before the first await: baseDeletePending
     // is a file read, and every other mutation route checks it before doing
@@ -2792,6 +2804,7 @@ async function baseRefillGeneratorsRoute(req, res, path) {
   const baseId = Number(decodeURIComponent(path.split("/")[3]));
   if (!Number.isFinite(baseId) || baseId < 1) return json(res, 400, { error: "Invalid base ID" });
   if (baseDeletePending(baseId)) return json(res, 409, { error: BASE_DELETE_PENDING_MESSAGE });
+  if (await baseBackedUp(baseId)) return json(res, 409, { error: BASE_BACKED_UP_MESSAGE });
   // No confirmation phrase: refilling is additive and reversible, unlike the
   // deletes and overwrites that phrase-gate. Still rate limited and audited.
   return directDbMutation(req, res, "bases.refill-generators", null, async () => {
@@ -2847,6 +2860,7 @@ async function baseSetPermissionsRoute(req, res, path) {
   const baseId = Number(decodeURIComponent(path.split("/")[3]));
   if (!Number.isFinite(baseId) || baseId < 1) return json(res, 400, { error: "Invalid base ID" });
   if (baseDeletePending(baseId)) return json(res, 409, { error: BASE_DELETE_PENDING_MESSAGE });
+  if (await baseBackedUp(baseId)) return json(res, 409, { error: BASE_BACKED_UP_MESSAGE });
   return directDbMutation(req, res, "bases.set-permissions", null, async (body) => {
     const settings = await runDune(config, buildDuneArgs("userSettingsMapValues", { map: "Survival_1" }), { timeoutMs: 8000 });
     const maxPermissions = parseEffectivePermissionLimit(settings.stdout);
@@ -2858,6 +2872,7 @@ async function baseSystemCustodianRoute(req, res, path) {
   const baseId = Number(decodeURIComponent(path.split("/")[3]));
   if (!Number.isFinite(baseId) || baseId < 1) return json(res, 400, { error: "Invalid base ID" });
   if (baseDeletePending(baseId)) return json(res, 409, { error: BASE_DELETE_PENDING_MESSAGE });
+  if (await baseBackedUp(baseId)) return json(res, 409, { error: BASE_BACKED_UP_MESSAGE });
   return directDbMutation(req, res, "bases.transfer-system-custodian", null, async () => {
     const settings = await runDune(config, buildDuneArgs("userSettingsMapValues", { map: "Survival_1" }), { timeoutMs: 8000 });
     const maxPermissions = parseEffectivePermissionLimit(settings.stdout);
@@ -2935,6 +2950,7 @@ async function baseAutoRefillToggleRoute(req, res, path) {
   // Only enabling is blocked -- turning auto-refill off is harmless and does
   // not race a pending delete the way a new automated write would.
   if (body.enabled && baseDeletePending(baseId)) return json(res, 409, { error: BASE_DELETE_PENDING_MESSAGE });
+  if (body.enabled && await baseBackedUp(baseId)) return json(res, 409, { error: BASE_BACKED_UP_MESSAGE });
   // Checked on the server too, not just hidden in the UI. Without
   // dune.world_partition a queued refill cannot wait for a safe window, so an
   // automated refill would write straight into a possibly-live base.
@@ -3001,6 +3017,7 @@ async function baseRefillWaterRoute(req, res, path) {
   const baseId = Number(decodeURIComponent(path.split("/")[3]));
   if (!Number.isFinite(baseId) || baseId < 1) return json(res, 400, { error: "Invalid base ID" });
   if (baseDeletePending(baseId)) return json(res, 409, { error: BASE_DELETE_PENDING_MESSAGE });
+  if (await baseBackedUp(baseId)) return json(res, 409, { error: BASE_BACKED_UP_MESSAGE });
   return directDbMutation(req, res, "bases.refill-water", null, async () => {
     const target = await duneDb.baseRefillTarget(db, baseId);
     if (target.queueSupported && !target.writeSafeNow) {
@@ -3069,6 +3086,7 @@ async function baseAutoRefillWaterToggleRoute(req, res, path) {
   }
   // Only enabling is blocked -- see baseAutoRefillToggleRoute.
   if (body.enabled && baseDeletePending(baseId)) return json(res, 409, { error: BASE_DELETE_PENDING_MESSAGE });
+  if (body.enabled && await baseBackedUp(baseId)) return json(res, 409, { error: BASE_BACKED_UP_MESSAGE });
   if (body.enabled && !(await duneDb.supportsWaterRefillQueue(db).catch(() => false))) {
     return json(res, 501, {
       error: "Auto-refill needs the pending water-refill queue, which requires dune.world_partition on this database."
