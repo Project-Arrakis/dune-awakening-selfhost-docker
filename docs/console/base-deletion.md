@@ -139,6 +139,11 @@ In the Bases panel, a base with a pending delete shows a danger-toned pill
 / Refill Water buttons gray out with a tooltip explaining why, rather than
 offering a control that would just be rejected.
 
+A separate, unrelated freeze applies to a base picked up via the game's own
+base-backup tool: it is excluded from the panel entirely rather than shown
+frozen, and every mutation route (including this one) rejects it with `409`.
+See [base-backups.md](base-backups.md).
+
 ## Response shape
 
 ```

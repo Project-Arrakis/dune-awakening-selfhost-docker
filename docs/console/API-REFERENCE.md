@@ -269,6 +269,11 @@ When the Restart Queue is enabled, the restart routes above (`/api/server/restar
 | GET | `/api/bases/pending-deletes` | List queued base deletes, grouped by restart target | None |
 | DELETE | `/api/bases/{baseId}/queued-delete` | Cancel a base's queued delete | `baseId` |
 
+`GET /api/bases` excludes a base that has been picked up via the game's own
+base-backup tool (unclaimed and registered in `dune.base_backup_linked_actors`
+— see [base-backups.md](base-backups.md)), and every mutation route below
+rejects one with **409** for the same reason.
+
 Each `GET /api/bases` row carries `partitionMap` and `dimensionIndex` alongside
 `map` and `partition_id`. `map` is the game's own name (`HaggaBasin`) and cannot
 distinguish two instances of one map; `partitionMap` is the name the rest of the
