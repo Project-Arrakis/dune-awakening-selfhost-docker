@@ -36,6 +36,23 @@ test("discovers RedBlink Postgres defaults and env overrides", () => {
   assert.equal(discoverDbConfig({ DUNE_DB_HOST: "db", DUNE_DB_PORT: "5432" }).host, "db");
 });
 
+// Upstream review finding: discoverDbConfig() previously implemented
+// its own precedence (DUNE_DB_PORT || PGPORT || resolvePorts().postgres),
+// which disagreed with resolvePorts()'s own precedence
+// (POSTGRES_PORT || DUNE_DB_PORT || PGPORT) whenever an operator had
+// more than one of these set to different values -- status/preflight
+// (which reads resolvePorts() directly) could then disagree with the
+// actual database connection (which read this function), a real,
+// silent split-brain misconfiguration. discoverDbConfig() must now
+// always delegate to resolvePorts() for this field so there is exactly
+// one place this precedence logic can ever drift from itself.
+test("discoverDbConfig()'s postgres port precedence matches resolvePorts() exactly, even when multiple port env vars conflict", () => {
+  const conflicting = { POSTGRES_PORT: "16432", DUNE_DB_PORT: "17432", PGPORT: "18432" };
+  assert.equal(discoverDbConfig(conflicting).port, 16432, "POSTGRES_PORT must win, matching resolvePorts()'s precedence exactly");
+  assert.equal(discoverDbConfig({ DUNE_DB_PORT: "17432", PGPORT: "18432" }).port, 17432, "DUNE_DB_PORT must win over PGPORT when POSTGRES_PORT is unset");
+  assert.equal(discoverDbConfig({ PGPORT: "18432" }).port, 18432, "PGPORT must be used when neither POSTGRES_PORT nor DUNE_DB_PORT is set");
+});
+
 test("database status exposes SSH tunneling only for a loopback database endpoint", async () => {
   const responses = [
     { rows: [{ current_user: "dune", current_database: "dune", version: "PostgreSQL test" }] },
