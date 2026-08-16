@@ -130,7 +130,7 @@ export async function opsSocProvider(config, db) {
 // requires for opsLocationProvider (which, unlike this one, has no real
 // data source planned at all — see that provider's own comment).
 export async function opsPrometheusProvider(config, db) {
-  const result = await addonOpsPrometheusHealth();
+  const result = await addonOpsPrometheusHealth(undefined, config?.repoRoot);
   return { ok: true, result };
 }
 
