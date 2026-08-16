@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { evaluate, matchAction, setPolicies } from "../src/policy.js";
+import { evaluate, matchAction, resolveAllowedActions, setPolicies } from "../src/policy.js";
 
 test("policy matching supports exact and namespace wildcards", () => {
   assert.equal(matchAction("players:read", "players:read"), true);
@@ -47,6 +47,36 @@ test("bases:delete can be withheld independently of bases:mutate", () => {
   // existing installs keep exactly the access they already had.
   const wildcardPolicies = { admin: { version: 1, tier: "admin", statements: [{ Effect: "Allow", Action: "bases:*" }] } };
   assert.equal(evaluate({ tier: "admin" }, "bases:delete", wildcardPolicies), true);
+});
+
+// resolveAllowedActions has no caller yet (planned for a future policy-editor
+// UI), but it must already surface every action actionForRoute can resolve,
+// not just the ones with an exact ROUTE_ACTIONS entry -- bases:delete only
+// exists via the REGEX_ACTIONS_BY_METHOD_PATTERN tier (see actions.js), so
+// this is the case an implementation reading ROUTE_ACTIONS alone would miss.
+test("resolveAllowedActions surfaces an action that only exists via the regex-pattern resolution tier", () => {
+  const policies = {
+    owner: { version: 1, tier: "owner", statements: [{ Effect: "Allow", Action: "*" }] },
+    moderator: {
+      version: 1,
+      tier: "moderator",
+      statements: [
+        { Effect: "Allow", Action: ["bases:read", "bases:mutate"] },
+        { Effect: "Deny", Action: "bases:delete" }
+      ]
+    },
+    admin: { version: 1, tier: "admin", statements: [{ Effect: "Allow", Action: "bases:*" }] }
+  };
+  assert.equal(setPolicies(policies).ok, true);
+
+  const moderatorActions = resolveAllowedActions("moderator");
+  assert.ok(moderatorActions.includes("bases:mutate"));
+  assert.ok(!moderatorActions.includes("bases:delete"), "bases:delete is explicitly denied for moderator");
+
+  // Confirms the wildcard-covered case reaches an action with no exact
+  // ROUTE_ACTIONS entry at all -- not just an explicit grant/deny of it.
+  const adminActions = resolveAllowedActions("admin");
+  assert.ok(adminActions.includes("bases:delete"));
 });
 
 test("policy updates validate documents and preserve owner recovery access", () => {
