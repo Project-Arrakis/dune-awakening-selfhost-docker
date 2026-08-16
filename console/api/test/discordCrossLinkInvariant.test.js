@@ -21,6 +21,17 @@ function createCrossTableDb() {
     state,
     transaction: (fn) => fn(db),
     async query(text, values = []) {
+      // Issue #245 fix: discordPlayerLink()/linkAdditionalAccount() now take
+      // a per-character advisory lock as the very first statement in their
+      // transaction (see duneDb.js's pg_advisory_xact_lock() calls, added
+      // for the same cross-table-conflict fix this file's own header
+      // comment describes) -- this mock never modeled a real lock (single
+      // in-process mock, no real concurrency to guard against), so it's a
+      // safe, inert no-op here. Must be checked before every other branch
+      // below since it really is the first query issued.
+      if (text.includes("pg_advisory_xact_lock")) {
+        return { rows: [], rowCount: 0 };
+      }
       // discordPlayerLink(): own-table conflict check
       if (text.includes("from console.discord_player_links") && text.includes("for update")) {
         const conflict = state.singleLink && state.singleLink.playerControllerId === values[0] && state.singleLink.discordUserId !== values[1];
