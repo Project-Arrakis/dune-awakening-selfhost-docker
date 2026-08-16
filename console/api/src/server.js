@@ -58,6 +58,7 @@ import { calculateAlwaysOnHostMemorySafety } from "./services/hostMemorySafety.j
 import { parseEffectiveGuildMemberLimit } from "./services/guildSettings.js";
 import { parseEffectivePermissionLimit } from "./services/permissionSettings.js";
 import { flushBaseRefillQueues } from "./services/baseRefillFlush.js";
+import { verifyBaseBackupState } from "./services/baseBackupSafety.js";
 import { banPlayer, bannedFlsIds, createPlayerBanEnforcer, playerBanFor, unbanPlayer } from "./services/playerBans.js";
 import { findPlayerForLiveAction, playerIsOnlineForLiveAction } from "./playerLiveActions.js";
 
@@ -2706,7 +2707,7 @@ const BASE_DELETE_PENDING_MESSAGE = "This base has a pending delete queued and c
 // direct route call (or a stale bookmarked base id) must not be able to
 // modify it just because it slipped past the panel's own filtering.
 async function baseBackedUp(baseId) {
-  return duneDb.baseIsBackedUp(db, baseId).catch(() => false);
+  return verifyBaseBackupState(duneDb, db, baseId);
 }
 
 const BASE_BACKED_UP_MESSAGE = "This base was picked up into a backup and is no longer claimed. It cannot be modified until the player redeploys it.";
