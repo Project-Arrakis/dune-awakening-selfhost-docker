@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Boxes, ChevronDown, ChevronUp, Download, Droplet, Fuel, Users, X, Zap } from "lucide-react";
+import { Boxes, ChevronDown, ChevronUp, Download, Droplet, Fuel, Trash2, Users, X, Zap } from "lucide-react";
 import { BaseInventoryTab } from "./BaseInventoryTab";
 import { BasePermissionsTab } from "./BasePermissionsTab";
 import { BaseWaterTab } from "./BaseWaterTab";
@@ -12,7 +12,7 @@ import { serverApi } from "../../api/server";
 import { setupApi, type Task } from "../../api/setup";
 import { apiDownload } from "../../api/client";
 import { DataTable, type SortDirection } from "../../components/common/DataTable";
-import { pendingRefillCountForPartition, usePendingRefills, usePendingWaterRefills } from "../../lib/usePendingRefills";
+import { pendingRefillCountForPartition, usePendingBaseDeletes, usePendingRefills, usePendingWaterRefills } from "../../lib/usePendingRefills";
 import { runGatedRestart, serviceRestartTarget, type RestartGate } from "../server/restartQueueGuard";
 
 type BasesPanelProps = {
@@ -371,12 +371,16 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
   const [canEditPermissions, setCanEditPermissions] = useState(false);
   const [canRefillWater, setCanRefillWater] = useState(false);
   const [canQueueWater, setCanQueueWater] = useState(false);
+  const [canDeleteBase, setCanDeleteBase] = useState(false);
+  const [canQueueDelete, setCanQueueDelete] = useState(false);
   // Which tab the expanded row is showing. Power is the default so expanding a
   // row behaves exactly as it did before this feature existed.
   const [expandedTab, setExpandedTab] = useState<"power" | "water" | "inventory" | "permissions">("power");
   const [cancelingId, setCancelingId] = useState("");
   const [cancelingWaterId, setCancelingWaterId] = useState("");
   const [refillingWaterId, setRefillingWaterId] = useState("");
+  const [deletingId, setDeletingId] = useState("");
+  const [cancelingDeleteId, setCancelingDeleteId] = useState("");
   // Bumped after an immediate (non-queued) water refill so an already-open
   // Water tab knows to refetch -- it fetches its own data independently of
   // the bases list/row, so nothing else tells it a refill just landed.
@@ -406,6 +410,7 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
   const skipNextSearchReset = useRef(true);
   const { pending: pendingRefills, refresh: refreshPendingRefills } = usePendingRefills(canQueue);
   const { pending: pendingWaterRefills, refresh: refreshPendingWaterRefills } = usePendingWaterRefills(canQueueWater);
+  const { pending: pendingBaseDeletes, refresh: refreshPendingBaseDeletes } = usePendingBaseDeletes(canQueueDelete);
   const previousPendingTotal = useRef<number | null>(null);
 
   useEffect(() => {
@@ -438,6 +443,8 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
       setCanEditPermissions(Boolean(result.capabilities?.basePermissions));
       setCanRefillWater(Boolean(result.capabilities?.waterRefill));
       setCanQueueWater(Boolean(result.capabilities?.waterRefillQueue));
+      setCanDeleteBase(Boolean(result.capabilities?.baseDelete));
+      setCanQueueDelete(Boolean(result.capabilities?.baseDeleteQueue));
       setTotalCount(result.totalCount || 0);
       setTotalBases(result.totalBases || 0);
       setTotalPieces(result.totalPieces || 0);
@@ -713,6 +720,77 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
     }
   }
 
+  // No blueprint-export mention in this dialog: base deletion is permanent
+  // and irreversible from the operator's perspective, but a full database
+  // "SQL Safety Backup" is taken automatically and unconditionally before any
+  // delete SQL runs -- see basesApi.deleteBase and docs/console/base-deletion.md.
+  async function handleDeleteBase(base: BaseRow) {
+    const id = String(base.base_id);
+    const label = base.name || `base ${id}`;
+    const confirmed = await confirmAction(
+      `Delete "${label}"? This permanently deletes the base and everything built or stored in it.`,
+      {
+        title: "Delete Base",
+        confirmLabel: "Delete",
+        danger: true,
+        details: [
+          { label: "Building Pieces", value: base.piece_count.toLocaleString(), tone: "danger" },
+          { label: "Placeables", value: base.placeable_count.toLocaleString(), tone: "danger" }
+        ],
+        warning: canQueueDelete
+          ? "A full database backup is taken automatically before the delete runs. If this base's map is running, the delete is queued and applied the next time that map restarts or stops, so a live server cannot overwrite it. If the map is already down, it is deleted now."
+          : "A full database backup is taken automatically before the delete runs, straight to the database. A running game server may not reflect the removal in-game until the map server restarts."
+      }
+    );
+    if (!confirmed) return;
+    onError("");
+    setDeletingId(id);
+    try {
+      const response = await basesApi.deleteBase(id);
+      if (response.result?.queued) {
+        writeRefillStatus(`Delete for "${label}" is queued and applies when this map next restarts or stops.`, "ok");
+        await refreshPendingBaseDeletes();
+      } else {
+        writeRefillStatus(`"${label}" was deleted.`, "ok");
+        // The row is gone: collapse it if it was the one expanded, then
+        // reload the list rather than try to splice one row out locally --
+        // the module cache still holds pre-delete counts for this view.
+        setExpandedBaseId((current) => current === id ? null : current);
+        basesCache = null;
+        await load({ q: submittedQ, page, pageSize, sortColumn, sortDirection });
+      }
+    } catch (error) {
+      const text = errorText(error);
+      writeRefillStatus(text, "fail");
+      onError(text);
+    } finally {
+      setDeletingId("");
+    }
+  }
+
+  async function handleCancelQueuedDelete(base: BaseRow) {
+    const id = String(base.base_id);
+    const label = base.name || `base ${id}`;
+    const confirmed = await confirmAction(`Cancel the queued delete for "${label}"?`, {
+      title: "Cancel Queued Delete",
+      confirmLabel: "Cancel Delete"
+    });
+    if (!confirmed) return;
+    onError("");
+    setCancelingDeleteId(id);
+    try {
+      await basesApi.cancelQueuedDelete(id);
+      writeRefillStatus(`Queued delete for "${label}" was canceled.`, "ok");
+      await refreshPendingBaseDeletes();
+    } catch (error) {
+      const text = errorText(error);
+      writeRefillStatus(text, "fail");
+      onError(text);
+    } finally {
+      setCancelingDeleteId("");
+    }
+  }
+
   const refreshAutoRefill = useCallback(async () => {
     try {
       const state = await basesApi.autoRefill();
@@ -880,13 +958,14 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
   // flushQueuedGeneratorRefills and flushQueuedWaterRefills unconditionally --
   // so one restart call covers a target with fuel, water, or both queued, and
   // the combined banner below only needs a single handler rather than two.
-  async function handleRestartForCombinedQueue(group: { map: string; partitionId: number; partitionMap: string; dimensionIndex: number; fuelCount: number; waterCount: number }) {
+  async function handleRestartForCombinedQueue(group: { map: string; partitionId: number; partitionMap: string; dimensionIndex: number; fuelCount: number; waterCount: number; deleteCount: number }) {
     const target = queueRestartTarget(group.partitionMap, group.partitionId, group.dimensionIndex);
     if (target.kind === "none") return;
     const key = `${group.map}|${group.partitionId}`;
     const parts = [];
     if (group.fuelCount) parts.push(`${group.fuelCount} queued generator refill${group.fuelCount === 1 ? "" : "s"}`);
     if (group.waterCount) parts.push(`${group.waterCount} queued water refill${group.waterCount === 1 ? "" : "s"}`);
+    if (group.deleteCount) parts.push(`${group.deleteCount} queued base delete${group.deleteCount === 1 ? "" : "s"}`);
     onError("");
     const label = group.partitionMap || group.map;
     // Route through the restart queue: when it is enabled and players are online
@@ -916,19 +995,22 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
       // Report what the restart actually did. Without this the running line
       // stands forever and a failed restart reads as a successful one.
       const finished = await waitForTask(startedTask);
-      const [refreshedFuel, refreshedWater] = await Promise.all([refreshPendingRefills(), refreshPendingWaterRefills()]);
+      const [refreshedFuel, refreshedWater, refreshedDeletes] = await Promise.all([
+        refreshPendingRefills(), refreshPendingWaterRefills(), refreshPendingBaseDeletes()
+      ]);
       if (finished.status === "succeeded") {
         // The flush races the restart's own write-safety window, so a
-        // succeeded task does not guarantee the refill actually landed --
-        // check both queues rather than assume.
+        // succeeded task does not guarantee the refill/delete actually
+        // landed -- check every queue rather than assume.
         const stillQueued = Boolean(
           pendingRefillCountForPartition(refreshedFuel, group.partitionId)
           || pendingRefillCountForPartition(refreshedWater, group.partitionId)
+          || pendingRefillCountForPartition(refreshedDeletes, group.partitionId)
         );
         writeRefillStatus(
           stillQueued
-            ? `${label} restarted. Its refills are still queued and will apply once the map is confirmed down.`
-            : `${label} restarted. Any refills queued for it have been applied.`,
+            ? `${label} restarted. Its queued refills and deletes are still queued and will apply once the map is confirmed down.`
+            : `${label} restarted. Any refills and deletes queued for it have been applied.`,
           "ok"
         );
       } else {
@@ -1017,18 +1099,27 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
   const autoRefillWaterUnrecoverable = autoRefillWaterUnavailable && autoRefillWaterBases.size === 0;
   const stalledWaterBaseIds = new Set([...autoRefillWaterBases.entries()].filter(([, entry]) => entry.stalledAt).map(([baseId]) => baseId));
 
-  // Combined queue banner: one box covering both queues. Merge byTarget rows
-  // keyed on map|partitionId -- restarting a target already flushes
+  // Mirrors the block above, for the pending base-delete queue.
+  const pendingDeleteTotal = pendingBaseDeletes?.total || 0;
+  const queuedDeleteBaseIds = new Set((pendingBaseDeletes?.pending || []).map((entry) => String(entry.baseId)));
+  const staleQueuedDeletes = (pendingBaseDeletes?.pending || []).filter((entry) => {
+    const queuedAt = Date.parse(entry.queuedAt);
+    return Number.isFinite(queuedAt) && Date.now() - queuedAt > STALE_QUEUED_REFILL_MS;
+  });
+  const staleDeleteTargetKeys = new Set(staleQueuedDeletes.map((entry) => `${entry.map || "Unknown"}|${entry.partitionId}`));
+
+  // Combined queue banner: one box covering all three queues. Merge byTarget
+  // rows keyed on map|partitionId -- restarting a target already flushes
   // whichever queue(s) are waiting on it (see handleRestartForCombinedQueue),
-  // so one restart button per target is correct even though the fuel/water
-  // counts come from two separate endpoints.
-  type CombinedQueueTarget = { map: string; partitionId: number; partitionMap: string; dimensionIndex: number; fuelCount: number; waterCount: number };
+  // so one restart button per target is correct even though the fuel/water/
+  // delete counts come from three separate endpoints.
+  type CombinedQueueTarget = { map: string; partitionId: number; partitionMap: string; dimensionIndex: number; fuelCount: number; waterCount: number; deleteCount: number };
   const combinedQueueTargets: CombinedQueueTarget[] = (() => {
     const byKey = new Map<string, CombinedQueueTarget>();
     for (const group of pendingRefills?.byTarget || []) {
       byKey.set(`${group.map}|${group.partitionId}`, {
         map: group.map, partitionId: group.partitionId, partitionMap: group.partitionMap, dimensionIndex: group.dimensionIndex,
-        fuelCount: group.count, waterCount: 0
+        fuelCount: group.count, waterCount: 0, deleteCount: 0
       });
     }
     for (const group of pendingWaterRefills?.byTarget || []) {
@@ -1037,17 +1128,33 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
       if (existing) existing.waterCount = group.count;
       else byKey.set(key, {
         map: group.map, partitionId: group.partitionId, partitionMap: group.partitionMap, dimensionIndex: group.dimensionIndex,
-        fuelCount: 0, waterCount: group.count
+        fuelCount: 0, waterCount: group.count, deleteCount: 0
+      });
+    }
+    for (const group of pendingBaseDeletes?.byTarget || []) {
+      const key = `${group.map}|${group.partitionId}`;
+      const existing = byKey.get(key);
+      if (existing) existing.deleteCount = group.count;
+      else byKey.set(key, {
+        map: group.map, partitionId: group.partitionId, partitionMap: group.partitionMap, dimensionIndex: group.dimensionIndex,
+        fuelCount: 0, waterCount: 0, deleteCount: group.count
       });
     }
     return [...byKey.values()];
   })();
-  const combinedQueueTotal = pendingTotal + pendingWaterTotal;
+  const combinedQueueTotal = pendingTotal + pendingWaterTotal + pendingDeleteTotal;
+  // The banner's own heading names only the kinds of writes actually queued,
+  // so "Refills queued" stays exactly as it read before this feature existed
+  // when there is nothing to delete, rather than a permanently generic label.
+  const combinedQueueHeadingParts = [
+    ...(pendingTotal > 0 || pendingWaterTotal > 0 ? ["Refills"] : []),
+    ...(pendingDeleteTotal > 0 ? ["Deletes"] : [])
+  ];
   // Whether any stale entry actually has a restart button in the list above. A
   // group whose partition does not resolve renders "Restart this map from the
   // Maps tab" instead, so pointing at a button that is not there would be wrong.
-  const combinedStaleTargetKeys = new Set([...staleTargetKeys, ...staleWaterTargetKeys]);
-  const combinedStaleCount = staleQueued.length + staleQueuedWater.length;
+  const combinedStaleTargetKeys = new Set([...staleTargetKeys, ...staleWaterTargetKeys, ...staleDeleteTargetKeys]);
+  const combinedStaleCount = staleQueued.length + staleQueuedWater.length + staleQueuedDeletes.length;
   const combinedStaleHasRestartButton = combinedQueueTargets.some((group) =>
     combinedStaleTargetKeys.has(`${group.map}|${group.partitionId}`)
     && queueRestartTarget(group.partitionMap, group.partitionId, group.dimensionIndex).kind !== "none");
@@ -1126,12 +1233,15 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
           {/* Explicit spaces around the badges: they are inline elements, so
               without them the text content reads "Refills queued2 fuel1 water"
               to a screen reader and to anyone copying it. */}
-          Refills queued
+          {combinedQueueHeadingParts.join(" and ")} queued
           {pendingTotal > 0 && <> <span className="bases-queue-badge bases-queue-badge-fuel">
             <Fuel size={13} aria-hidden="true" />{pendingTotal.toLocaleString()} fuel
           </span></>}
           {pendingWaterTotal > 0 && <> <span className="bases-queue-badge bases-queue-badge-water">
             <Droplet size={13} aria-hidden="true" />{pendingWaterTotal.toLocaleString()} water
+          </span></>}
+          {pendingDeleteTotal > 0 && <> <span className="bases-queue-badge bases-queue-badge-delete">
+            <Trash2 size={13} aria-hidden="true" />{pendingDeleteTotal.toLocaleString()} delete{pendingDeleteTotal === 1 ? "" : "s"}
           </span></>}
         </p>
         <p className="action-help-note">
@@ -1156,6 +1266,9 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
               </span>}
               {group.waterCount > 0 && <span className="bases-queue-badge bases-queue-badge-water">
                 <Droplet size={13} aria-hidden="true" />{group.waterCount.toLocaleString()}
+              </span>}
+              {group.deleteCount > 0 && <span className="bases-queue-badge bases-queue-badge-delete">
+                <Trash2 size={13} aria-hidden="true" />{group.deleteCount.toLocaleString()}
               </span>}
               {target.kind === "none"
                 ? <span className="muted">Restart this map from the Maps tab</span>
@@ -1238,6 +1351,13 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
             : autoRefillWaterStalled ? `Water auto-refill has stalled after ${autoRefillWaterEntryForRow?.consecutiveQueues || 3} refills that did not raise the water. Click to refill now.`
             : autoRefillWaterOn ? `Water auto-refill is on — checked every ${autoRefillWaterIntervalHours}h below ${autoRefillWaterThreshold}%. Click to refill now.`
             : "Refill Water";
+          // A base with a delete queued is frozen server-side (see
+          // baseDeletePending in server.js): the refill buttons would just 409,
+          // so they gray out here instead of offering a control that fails on
+          // click. Blueprint export is deliberately left enabled -- it is not
+          // part of that lock, and exporting before an imminent delete is
+          // exactly the kind of thing an operator might still want to do.
+          const deletePending = queuedDeleteBaseIds.has(id);
           return <span className="icon-toggle-group">
             {/* The actions column is a fixed width, so the queued state stays a
                 compact glyph pill rather than a text label: the banner above
@@ -1255,9 +1375,9 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
                 </span>
               : <button
                   className={`icon-toggle-button${autoRefillStalled ? " bases-auto-refill-stalled-icon" : autoRefillOn ? " bases-auto-refill-on" : ""}`}
-                  title={refillTitle}
+                  title={deletePending ? "Blocked while a delete is queued for this base" : refillTitle}
                   aria-label={autoRefillStalled ? "Refill Generators (auto-refill stalled)" : autoRefillOn ? "Refill Generators (auto-refill on)" : "Refill Generators"}
-                  disabled={!refillable || refillingId === id}
+                  disabled={deletePending || !refillable || refillingId === id}
                   onClick={(event) => { event.stopPropagation(); void handleRefillGenerators(base); }}
                 ><Fuel size={16} /></button>}
             {queuedWaterBaseIds.has(id)
@@ -1273,12 +1393,30 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
                 </span>
               : <button
                   className={`icon-toggle-button${autoRefillWaterStalled ? " bases-auto-refill-stalled-icon" : autoRefillWaterOn ? " bases-auto-refill-on" : ""}`}
-                  title={refillWaterTitle}
+                  title={deletePending ? "Blocked while a delete is queued for this base" : refillWaterTitle}
                   aria-label={autoRefillWaterStalled ? "Refill Water (auto-refill stalled)" : autoRefillWaterOn ? "Refill Water (auto-refill on)" : "Refill Water"}
-                  disabled={!canRefillWater || refillingWaterId === id}
+                  disabled={deletePending || !canRefillWater || refillingWaterId === id}
                   onClick={(event) => { event.stopPropagation(); void handleRefillWater(base); }}
                 ><Droplet size={16} /></button>}
             <button className="icon-toggle-button" title="Download Base as Blueprint" aria-label="Download Base as Blueprint" disabled={downloadingId === id} onClick={(event) => { event.stopPropagation(); void handleDownloadBlueprint(base); }}><Download size={16} /></button>
+            {canDeleteBase && (deletePending
+              ? <span className="bases-queued-delete" title="Delete queued — applies when this map next restarts or stops">
+                  <Trash2 size={16} aria-label="Delete queued for this base" />
+                  <button
+                    className="icon-toggle-button bases-queued-delete-cancel"
+                    title="Cancel Queued Delete"
+                    aria-label="Cancel Queued Delete"
+                    disabled={cancelingDeleteId === id}
+                    onClick={(event) => { event.stopPropagation(); void handleCancelQueuedDelete(base); }}
+                  ><X size={14} /></button>
+                </span>
+              : <button
+                  className="icon-toggle-button danger"
+                  title="Delete Base"
+                  aria-label="Delete Base"
+                  disabled={deletingId === id}
+                  onClick={(event) => { event.stopPropagation(); void handleDeleteBase(base); }}
+                ><Trash2 size={16} /></button>)}
           </span>;
         }}
         secondaryActionPosition="start"

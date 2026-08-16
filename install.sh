@@ -84,24 +84,29 @@ has_openrc() {
 }
 
 install_basic_tools() {
+  # gnupg/gnupg2/gpg2 (package name varies by distro) is required by
+  # `dune db backup-system`'s authenticated (AEAD/OCB) archive encryption
+  # -- openssl's own `enc` CLI cannot do any AEAD cipher at all (confirmed
+  # directly: `openssl enc -aes-256-gcm` -> "AEAD ciphers not supported",
+  # a permanent CLI-level policy, not a version gap).
   if command -v apt-get >/dev/null 2>&1; then
     need_sudo apt-get update
-    need_sudo apt-get install -y ca-certificates curl bash tar openssl python3
+    need_sudo apt-get install -y ca-certificates curl bash tar openssl python3 gnupg
   elif command -v dnf >/dev/null 2>&1; then
-    need_sudo dnf install -y ca-certificates curl bash tar openssl python3
+    need_sudo dnf install -y ca-certificates curl bash tar openssl python3 gnupg2
   elif command -v yum >/dev/null 2>&1; then
-    need_sudo yum install -y ca-certificates curl bash tar openssl python3
+    need_sudo yum install -y ca-certificates curl bash tar openssl python3 gnupg2
   elif command -v zypper >/dev/null 2>&1; then
-    need_sudo zypper --non-interactive install ca-certificates curl bash tar openssl python3
+    need_sudo zypper --non-interactive install ca-certificates curl bash tar openssl python3 gpg2
   elif command -v pacman >/dev/null 2>&1; then
-    need_sudo pacman -Sy --noconfirm ca-certificates curl bash tar openssl python
+    need_sudo pacman -Sy --noconfirm ca-certificates curl bash tar openssl python gnupg
   elif command -v apk >/dev/null 2>&1; then
-    need_sudo apk add --no-cache ca-certificates curl bash tar openssl python3
+    need_sudo apk add --no-cache ca-certificates curl bash tar openssl python3 gnupg
   elif command -v xbps-install >/dev/null 2>&1; then
-    need_sudo xbps-install -Sy ca-certificates curl bash tar openssl python3
+    need_sudo xbps-install -Sy ca-certificates curl bash tar openssl python3 gnupg2
   else
     echo "This installer could not detect a supported package manager." >&2
-    echo "Install curl, bash, tar, openssl, and python3, then run it again." >&2
+    echo "Install curl, bash, tar, openssl, python3, and gnupg (gpg), then run it again." >&2
     exit 1
   fi
 }
@@ -111,13 +116,14 @@ ensure_basic_tools() {
     && command -v bash >/dev/null 2>&1 \
     && command -v tar >/dev/null 2>&1 \
     && command -v openssl >/dev/null 2>&1 \
+    && command -v gpg >/dev/null 2>&1 \
     && { command -v python3 >/dev/null 2>&1 || command -v python >/dev/null 2>&1; }; then
     return
   fi
   install_basic_tools
 
   missing_tools=""
-  for required_tool in curl bash tar openssl; do
+  for required_tool in curl bash tar openssl gpg; do
     if ! command -v "$required_tool" >/dev/null 2>&1; then
       missing_tools="${missing_tools}${missing_tools:+, }${required_tool}"
     fi

@@ -240,7 +240,12 @@ export function createAutoRefillScheduler(options = {}) {
   }
 
   async function scanBase(baseId, threshold, context) {
-    const { enrollment, pendingBaseIds, outcomes, removed, failures, counters } = context;
+    const { enrollment, pendingBaseIds, pendingDeleteBaseIds, outcomes, removed, failures, counters } = context;
+    // A base marked for deletion is frozen from every other write (see
+    // baseDeletePending in server.js) -- skip it entirely rather than queue a
+    // refill that a 409 would just reject, or reset its stall tracking based
+    // on a scan that never really evaluated its fuel.
+    if (pendingDeleteBaseIds.has(baseId)) return;
     const key = String(baseId);
     const db = getDb();
     const previous = enrollment[key] || {};
@@ -361,6 +366,8 @@ export function createAutoRefillScheduler(options = {}) {
       enrollment,
       // Read once per scan: which bases already have an unflushed queue entry.
       pendingBaseIds: new Set(duneDb.listQueuedGeneratorRefills(config.repoRoot).map((entry) => entry.baseId)),
+      // Read once per scan: which bases have a delete queued and are frozen.
+      pendingDeleteBaseIds: new Set(duneDb.listQueuedBaseDeletes(config.repoRoot).map((entry) => entry.baseId)),
       // Observed once per scan and reused by every base's baseRefillTarget call
       // below, rather than every base re-running the same world_partition scan.
       observed: await duneDb.observeRefillPartitions(getDb()),

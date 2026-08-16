@@ -258,6 +258,33 @@ export const basesApi = {
     api<{ supported: boolean; result?: { ok: boolean; baseId: number; pending: number }; reason?: string }>(
       `/api/bases/${encodeURIComponent(baseId)}/queued-refill`, { method: "DELETE" }),
   pendingRefills: () => api<PendingRefills>("/api/bases/pending-refills"),
+  // Permanently deletes the base and everything on it. Like the refills
+  // above, a delete for a map that is currently running comes back as
+  // `result.queued`: it is deferred to the next time that map is down, and a
+  // full database backup happens automatically, immediately before the
+  // delete actually runs (at request time here, or at flush time for a
+  // queued one) -- never before, never skipped.
+  deleteBase: (baseId: string) =>
+    api<{
+      supported: boolean;
+      backupCreated: boolean;
+      result?: {
+        ok: boolean;
+        baseId: number;
+        queued?: boolean;
+        map?: string;
+        partitionId?: number;
+        actorId?: string;
+        deletedActorCount?: number;
+        deletedBuildingCount?: number;
+        deletedPlaceableCount?: number;
+      };
+      reason?: string;
+    }>(`/api/bases/${encodeURIComponent(baseId)}`, { method: "DELETE", body: JSON.stringify({ confirmation: "DELETE BASE" }) }),
+  cancelQueuedDelete: (baseId: string) =>
+    api<{ supported: boolean; result?: { ok: boolean; baseId: number; pending: number }; reason?: string }>(
+      `/api/bases/${encodeURIComponent(baseId)}/queued-delete`, { method: "DELETE" }),
+  pendingDeletes: () => api<PendingRefills>("/api/bases/pending-deletes"),
   autoRefill: () => api<AutoRefillState>("/api/bases/auto-refill"),
   setAutoRefill: (baseId: string, enabled: boolean) =>
     post<{ ok: boolean; baseId: number; enabled: boolean; total: number }>(
