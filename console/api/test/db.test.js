@@ -5,6 +5,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { assertIdentifier, discoverDbConfig, isReadOnlySql, quoteQualified, redactDbError, rowsResult } from "../src/db.js";
+import { pgTransactionalDb, withIsolatedDatabase } from "../test-support/pgIntegrationDb.js";
 import {
   UnsupportedCapabilityError,
   _resetPlayerTargetCacheForTests,
@@ -5466,33 +5467,85 @@ test("baseGeneratorFuelLevels reports null rather than zero for a base with no g
   assert.equal(levels.deviceCount, 0);
 });
 
-test("getAllLinkedPlayers: returns [] for unlinked Discord user", async () => {
-  const db = await testDb();
-  const rows = await getAllLinkedPlayers(db, "discord-user-nonexistent");
-  assert.equal(rows.length, 0);
-  await closeDb(db);
+// Issue #245 fix: all three tests below previously called `testDb()`/
+// `closeDb()`, which do not exist anywhere in this codebase (a real,
+// simple ReferenceError, confirmed via a full-tree grep for either
+// identifier's definition). discoverDbConfig()'s own defaults
+// (host/port/user/password/database) already match CI's real Postgres
+// service exactly (see .github/workflows/ci.yml's postgres:17-alpine
+// service on 15432/dune/dune/dune) -- this repo already has an
+// established, working pattern for exactly this kind of real-Postgres
+// integration test (test-support/pgIntegrationDb.js's
+// withIsolatedDatabase()/pgTransactionalDb(), used successfully by
+// basePermissions.integration.test.js, generatorRefill.integration.test.js,
+// and refillBaseWater.integration.test.js), so these three tests now use
+// that instead of inventing a new, one-off helper. Also fixed a secondary
+// issue: the original two "linked chars" tests never inserted a matching
+// dune.player_state row for getAllLinkedPlayers()'s inner join to find,
+// so their `rows.length >= 0` assertions were tautologies that would
+// have passed regardless of correctness -- both now insert a real
+// player_state row and assert the actual expected row content.
+test("real PostgreSQL getAllLinkedPlayers: returns [] for an unlinked Discord user", async (t) => {
+  await withIsolatedDatabase(t, {
+    namePrefix: "dune_get_all_linked_players",
+    unavailableLabel: "the getAllLinkedPlayers test",
+    createFailLabel: "the getAllLinkedPlayers test"
+  }, async (pool) => {
+    await pool.query(`
+      create schema dune;
+      create schema console;
+      create table dune.player_state (player_controller_id text primary key, character_name text);
+      create table console.discord_account_links (id bigint generated always as identity primary key, discord_user_id text not null, player_controller_id text not null, is_default boolean default false, linked_at timestamptz default now());
+      create table console.discord_player_links (id bigint generated always as identity primary key, discord_user_id text not null, player_controller_id text not null, linked_at timestamptz default now());
+    `);
+    const db = pgTransactionalDb(pool);
+    const rows = await getAllLinkedPlayers(db, "discord-user-nonexistent");
+    assert.deepEqual(rows, []);
+  });
 });
 
-test("getAllLinkedPlayers: returns linked chars from discord_account_links", async () => {
-  const db = await testDb();
-  const userId = "test-discord-123";
-  const cid = "999999999";
-  await db.query("create table if not exists console.discord_account_links (id bigint generated always as identity primary key, discord_user_id text not null, player_controller_id text not null, is_default boolean default false, linked_at timestamptz default now())");
-  await db.query("delete from console.discord_account_links where discord_user_id = $1", [userId]);
-  await db.query("insert into console.discord_account_links (discord_user_id, player_controller_id, is_default) values ($1, $2, true)", [userId, cid]);
-  const rows = await getAllLinkedPlayers(db, userId);
-  assert.ok(rows.length >= 0);
-  await closeDb(db);
+test("real PostgreSQL getAllLinkedPlayers: returns the linked character from discord_account_links", async (t) => {
+  await withIsolatedDatabase(t, {
+    namePrefix: "dune_get_all_linked_players",
+    unavailableLabel: "the getAllLinkedPlayers test",
+    createFailLabel: "the getAllLinkedPlayers test"
+  }, async (pool) => {
+    const userId = "test-discord-123";
+    const cid = "999999999";
+    await pool.query(`
+      create schema dune;
+      create schema console;
+      create table dune.player_state (player_controller_id text primary key, character_name text);
+      create table console.discord_account_links (id bigint generated always as identity primary key, discord_user_id text not null, player_controller_id text not null, is_default boolean default false, linked_at timestamptz default now());
+      create table console.discord_player_links (id bigint generated always as identity primary key, discord_user_id text not null, player_controller_id text not null, linked_at timestamptz default now());
+    `);
+    await pool.query("insert into dune.player_state (player_controller_id, character_name) values ($1, $2)", [cid, "Chani"]);
+    await pool.query("insert into console.discord_account_links (discord_user_id, player_controller_id, is_default) values ($1, $2, true)", [userId, cid]);
+    const db = pgTransactionalDb(pool);
+    const rows = await getAllLinkedPlayers(db, userId);
+    assert.deepEqual(rows, [{ player_controller_id: cid, character_name: "Chani" }]);
+  });
 });
 
-test("getAllLinkedPlayers: returns linked chars from legacy discord_player_links", async () => {
-  const db = await testDb();
-  const userId = "test-legacy-456";
-  const cid = "888888888";
-  await db.query("create table if not exists console.discord_player_links (id bigint generated always as identity primary key, discord_user_id text not null, player_controller_id text not null, linked_at timestamptz default now())");
-  await db.query("delete from console.discord_player_links where discord_user_id = $1", [userId]);
-  await db.query("insert into console.discord_player_links (discord_user_id, player_controller_id) values ($1, $2)", [userId, cid]);
-  const rows = await getAllLinkedPlayers(db, userId);
-  assert.ok(rows.length >= 0);
-  await closeDb(db);
+test("real PostgreSQL getAllLinkedPlayers: returns the linked character from the legacy discord_player_links table", async (t) => {
+  await withIsolatedDatabase(t, {
+    namePrefix: "dune_get_all_linked_players",
+    unavailableLabel: "the getAllLinkedPlayers test",
+    createFailLabel: "the getAllLinkedPlayers test"
+  }, async (pool) => {
+    const userId = "test-legacy-456";
+    const cid = "888888888";
+    await pool.query(`
+      create schema dune;
+      create schema console;
+      create table dune.player_state (player_controller_id text primary key, character_name text);
+      create table console.discord_account_links (id bigint generated always as identity primary key, discord_user_id text not null, player_controller_id text not null, is_default boolean default false, linked_at timestamptz default now());
+      create table console.discord_player_links (id bigint generated always as identity primary key, discord_user_id text not null, player_controller_id text not null, linked_at timestamptz default now());
+    `);
+    await pool.query("insert into dune.player_state (player_controller_id, character_name) values ($1, $2)", [cid, "Paul"]);
+    await pool.query("insert into console.discord_player_links (discord_user_id, player_controller_id) values ($1, $2)", [userId, cid]);
+    const db = pgTransactionalDb(pool);
+    const rows = await getAllLinkedPlayers(db, userId);
+    assert.deepEqual(rows, [{ player_controller_id: cid, character_name: "Paul" }]);
+  });
 });
