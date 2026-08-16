@@ -319,9 +319,15 @@ test("real PostgreSQL: flush treats a base already gone as success, not a retrya
 
       // Stands in for the base's own owner demolishing it while the delete
       // sits queued -- delete_actors cascades away everything this base has.
-      await pool.query("select dune.delete_actors($1::bigint[])", [[CLAIM_ACTOR, ...BUILDING_ACTORS, PLACEABLE_ACTOR]]);
-
       const db = pgTransactionalDb(pool);
+      await db.transaction(async (tx) => {
+        // The shipped function uses unqualified Dune table names. Production
+        // establishes this transaction-local path before calling it, so the
+        // fixture must reproduce that contract as well.
+        await tx.query("set local search_path to dune, public");
+        await tx.query("select dune.delete_actors($1::bigint[])", [[CLAIM_ACTOR, ...BUILDING_ACTORS, PLACEABLE_ACTOR]]);
+      });
+
       const result = await flushBaseDeletes(db, repoRoot);
 
       assert.equal(result.flushed[0].ok, true);
