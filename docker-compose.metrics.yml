@@ -85,6 +85,15 @@ services:
       - "--web.listen-address=:9093"
     volumes:
       - ./runtime/metrics/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      # yacketrj/arrakis-control-panel#167: shared secret sent as this
+      # receiver's Authorization: Bearer header (see alertmanager.yml's
+      # discord-relay receiver). Must match the bot's own
+      # DUNE_ALERT_RELAY_TOKEN/_FILE exactly. See
+      # docs/runtime/METRICS-ALERTMANAGER-DISCORD-RELAY.md for setup --
+      # this file does not exist until an operator creates it, which is
+      # deliberate: Alertmanager fails closed (refuses to start) rather
+      # than silently sending unauthenticated requests if it's missing.
+      - ./runtime/secrets/alert-relay-token.txt:/etc/alertmanager/secrets/alert-relay-token.txt:ro
       - dune-alertmanager-data:/alertmanager
 
   # ── Grafana: dashboards (DevOps / NOC / SOC) ──

@@ -89,6 +89,13 @@ case "${1:-}" in
           echo "services: {}"
           exit 0
         fi
+        # Support: docker compose -f docker-compose.metrics.yml up -d
+        # (and restart's down/up pair) -- ensure_alert_relay_token()
+        # regression tests below need `start`/`restart` to succeed
+        # without a real Docker daemon.
+        if [ "${3:-}" = "up" ] || [ "${3:-}" = "down" ]; then
+          exit 0
+        fi
         ;;
     esac
     echo "unexpected docker compose args: $*" >&2
@@ -221,6 +228,62 @@ assert_command_fails "$missing_output" "validator fails when required target is 
 show_output_block "missing-target validator output" "$missing_output"
 assert_contains "$missing_output" "Missing required jobs: dune-node" "validator names missing required target"
 assert_contains "$missing_output" "FAIL: metrics validation failed." "validator prints failure summary"
+
+# yacketrj/arrakis-control-panel#167: `dune metrics start`/`restart` must
+# auto-provision runtime/secrets/alert-relay-token.txt (bind-mounted into
+# the dune-alertmanager container, see docker-compose.metrics.yml) rather
+# than fail because the bind-mount target doesn't exist -- an existing
+# operator upgrading to this change must not have their metrics stack
+# suddenly refuse to start. This test runs against this real repo
+# checkout's own runtime/secrets/ (the same way this file's other tests
+# already run `metrics-stack.sh validate` against the real checkout), so
+# it must clean up its own generated file afterward regardless of pass
+# or fail -- extending the existing tmpdir cleanup trap to do so.
+alert_relay_token_file="runtime/secrets/alert-relay-token.txt"
+alert_relay_token_preexisted=0
+[ -f "$alert_relay_token_file" ] && alert_relay_token_preexisted=1
+cleanup_alert_relay_token() {
+  if [ "$alert_relay_token_preexisted" = "0" ]; then
+    rm -f "$alert_relay_token_file"
+  fi
+}
+trap 'cleanup_alert_relay_token; rm -rf "$tmpdir"' EXIT
+
+if [ "$alert_relay_token_preexisted" = "1" ]; then
+  note "skipping alert-relay-token auto-provision test: $alert_relay_token_file already exists in this checkout (not overwriting a real operator secret)"
+else
+  note "running alert-relay-token auto-provision test"
+  start_output="$tmpdir/start.out"
+  METRICS_PROMETHEUS_PORT=9090 bash runtime/scripts/metrics-stack.sh start >"$start_output" 2>&1 || true
+  show_output_block "start command output" "$start_output"
+  if [ -s "$alert_relay_token_file" ]; then
+    ok "runtime/secrets/alert-relay-token.txt was auto-created by 'dune metrics start'"
+  else
+    fail "runtime/secrets/alert-relay-token.txt was auto-created by 'dune metrics start'"
+  fi
+  actual_mode="$(stat -c '%a' "$alert_relay_token_file" 2>/dev/null || stat -f '%Lp' "$alert_relay_token_file" 2>/dev/null || echo unknown)"
+  if [ "$actual_mode" = "600" ]; then
+    ok "alert-relay-token.txt is created with mode 600"
+  else
+    fail "alert-relay-token.txt is created with mode 600 (got: $actual_mode)"
+  fi
+  token_size="$(wc -c <"$alert_relay_token_file" | tr -d '[:space:]')"
+  if [ "$token_size" = "65" ]; then
+    ok "alert-relay-token.txt contains a 32-byte hex token plus trailing newline (65 bytes)"
+  else
+    fail "alert-relay-token.txt contains a 32-byte hex token plus trailing newline (65 bytes, got: $token_size)"
+  fi
+
+  note "running idempotency check: a second start must not regenerate the token"
+  first_token="$(cat "$alert_relay_token_file")"
+  METRICS_PROMETHEUS_PORT=9090 bash runtime/scripts/metrics-stack.sh start >/dev/null 2>&1 || true
+  second_token="$(cat "$alert_relay_token_file")"
+  if [ "$first_token" = "$second_token" ]; then
+    ok "a second 'dune metrics start' does not regenerate an already-existing token"
+  else
+    fail "a second 'dune metrics start' does not regenerate an already-existing token"
+  fi
+fi
 
 echo "1..$test_no"
 note "metrics-stack unit tests completed"
