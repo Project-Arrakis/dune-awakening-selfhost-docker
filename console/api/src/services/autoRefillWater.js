@@ -257,7 +257,11 @@ export function createAutoRefillWaterScheduler(options = {}) {
   }
 
   async function scanBase(baseId, threshold, context) {
-    const { enrollment, pendingBaseIds, outcomes, removed, failures, counters } = context;
+    const { enrollment, pendingBaseIds, pendingDeleteBaseIds, outcomes, removed, failures, counters } = context;
+    // See autoRefill.js's scanBase: a base marked for deletion is frozen from
+    // every other write, so skip it rather than queue a refill that would
+    // just be rejected.
+    if (pendingDeleteBaseIds.has(baseId)) return;
     const key = String(baseId);
     const db = getDb();
     const previous = enrollment[key] || {};
@@ -379,6 +383,7 @@ export function createAutoRefillWaterScheduler(options = {}) {
       enrollment,
       // Read once per scan: which bases already have an unflushed queue entry.
       pendingBaseIds: new Set(duneDb.listQueuedWaterRefills(config.repoRoot).map((entry) => entry.baseId)),
+      pendingDeleteBaseIds: new Set(duneDb.listQueuedBaseDeletes(config.repoRoot).map((entry) => entry.baseId)),
       // Observed once per scan and reused by every base's baseRefillTarget call
       // below, rather than every base re-running the same world_partition scan.
       observed: await duneDb.observeRefillPartitions(getDb()),

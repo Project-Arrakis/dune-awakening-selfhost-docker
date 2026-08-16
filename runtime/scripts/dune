@@ -499,7 +499,9 @@ Usage:
   dune shutdown-protection [enable|disable|remove|status]
   dune network [status|fix]
   dune db backup [output-dir]
+  dune db backup-system [output-dir]
   dune db list
+  dune db list-system [output-dir]
   dune db status
   dune db health
   dune db import <backup-file>
