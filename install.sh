@@ -3,6 +3,44 @@ set -eu
 
 cd "$(dirname "$0")"
 
+reject_root_install() {
+  if [ "$(id -u)" -ne 0 ]; then
+    return
+  fi
+
+  printf '\n%s\n\n' "This project must not be installed as root."
+
+  if [ -n "${SUDO_USER:-}" ] && [ "${SUDO_USER}" != "root" ]; then
+    echo "The installer was started with sudo. Return to the ${SUDO_USER} account and run:"
+    printf '\n  ./install.sh\n\n'
+    echo "Do not put sudo before the installation command. The installer requests administrator access only when required."
+    exit 1
+  fi
+
+  if [ -f /etc/debian_version ]; then
+    echo "Create a regular user with sudo access by running:"
+    cat <<'EOF'
+
+  apt-get update
+  apt-get install -y sudo
+  adduser dune
+  usermod -aG sudo dune
+  su - dune
+
+Then run the installation command again as the new "dune" user.
+Do not put sudo before the installation command.
+EOF
+  else
+    cat <<'EOF'
+Create or use a regular user with administrator access, log in as that user,
+and run the installation command again without putting sudo before it.
+EOF
+  fi
+  exit 1
+}
+
+reject_root_install
+
 . runtime/scripts/compose-project.sh
 
 APP_NAME="Dune Docker Console"
@@ -364,6 +402,18 @@ existing_web_port() {
   fi
 }
 
+existing_console_uses_port() {
+  checked_port="$1"
+  container_port=""
+
+  if ! $DOCKER_CMD inspect -f '{{.State.Running}}' redblink-dune-docker-console 2>/dev/null | grep -qx true; then
+    return 1
+  fi
+  container_port="$($DOCKER_CMD inspect -f '{{range .Config.Env}}{{println .}}{{end}}' redblink-dune-docker-console 2>/dev/null \
+    | awk -F= '$1 == "ADMIN_BIND_PORT" { print $2; exit }' || true)"
+  [ "$container_port" = "$checked_port" ]
+}
+
 default_host_uid() {
   printf '%s' "${SUDO_UID:-$(id -u)}"
 }
@@ -407,8 +457,8 @@ persist_console_runtime_env() {
 
 migrate_existing_ownership() {
   ownership_repo_root="${DUNE_HOST_REPO_ROOT:-$(pwd -P)}"
-  ownership_target_uid="${DUNE_HOST_UID:-0}"
-  ownership_target_gid="${DUNE_HOST_GID:-0}"
+  ownership_target_uid="${DUNE_HOST_UID:-$(default_host_uid)}"
+  ownership_target_gid="${DUNE_HOST_GID:-$(default_host_gid)}"
   ownership_env_file="${ownership_repo_root}/.env"
 
   if [ "$ownership_target_uid" = "0" ]; then
@@ -423,7 +473,7 @@ migrate_existing_ownership() {
     return
   fi
 
-  if ! find "$ownership_repo_root" -maxdepth 1 -user root -print -quit 2>/dev/null | grep -q .; then
+  if ! find "$ownership_repo_root" -xdev \( -user root -o -group root \) -print -quit 2>/dev/null | grep -q .; then
     return
   fi
 
@@ -443,7 +493,8 @@ migrate_existing_ownership() {
 choose_web_port() {
   chosen_port=""
   port_prompt=""
-  default_web_port="${ADMIN_BIND_PORT:-$(existing_web_port)}"
+  persisted_web_port="$(existing_web_port)"
+  default_web_port="${ADMIN_BIND_PORT:-$persisted_web_port}"
   default_web_port="${default_web_port:-8088}"
   if ! is_valid_port "$default_web_port"; then
     default_web_port="8088"
@@ -456,6 +507,13 @@ choose_web_port() {
     fi
     WEB_PORT="$ADMIN_BIND_PORT"
     persist_web_port
+    return
+  fi
+
+  if is_valid_port "$persisted_web_port" && existing_console_uses_port "$persisted_web_port"; then
+    WEB_PORT="$persisted_web_port"
+    persist_web_port
+    echo "Existing Dune Docker Console detected. Reusing Web UI port $WEB_PORT."
     return
   fi
 
@@ -598,6 +656,7 @@ start_docker
 ensure_docker_group_access
 ensure_compose
 install_cli_command
+migrate_existing_ownership
 choose_web_port
 start_console
 show_finish

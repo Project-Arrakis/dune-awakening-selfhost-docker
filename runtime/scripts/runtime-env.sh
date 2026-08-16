@@ -5,6 +5,8 @@ set -euo pipefail
 source runtime/scripts/memory-swap-common.sh
 # shellcheck source=runtime/scripts/env-file.sh
 source runtime/scripts/env-file.sh
+# shellcheck source=runtime/scripts/host-file-ownership.sh
+source runtime/scripts/host-file-ownership.sh
 
 if [ -z "${DUNE_COMPOSE_PROJECT_NAME:-}" ]; then
   # shellcheck disable=SC1091
@@ -460,7 +462,7 @@ resolve_rmq_admin_host() {
 ensure_host_latency_tuned() {
   local stamp="runtime/generated/host-latency-tune.stamp"
   local interval="${DUNE_HOST_LATENCY_TUNE_INTERVAL_SECONDS:-300}"
-  local now last elapsed
+  local now last elapsed latency_log
 
   [ "${DUNE_HOST_LATENCY_TUNE:-1}" = "1" ] || return 0
   [ -x runtime/scripts/host-latency-tune.sh ] || return 0
@@ -473,10 +475,17 @@ ensure_host_latency_tuned() {
     [ "$elapsed" -lt "$interval" ] && return 0
   fi
 
-  if timeout --kill-after=2s "${DUNE_HOST_LATENCY_TUNE_TIMEOUT_SECONDS:-30}s" runtime/scripts/host-latency-tune.sh >/tmp/dune-host-latency-tune.log 2>&1; then
+  latency_log="$(mktemp "${TMPDIR:-/tmp}/dune-host-latency-tune.XXXXXX.log")" || {
+    echo "WARN could not create a temporary host latency tuning log; continuing startup." >&2
+    return 0
+  }
+  if timeout --kill-after=2s "${DUNE_HOST_LATENCY_TUNE_TIMEOUT_SECONDS:-30}s" runtime/scripts/host-latency-tune.sh >"$latency_log" 2>&1; then
+    rm -f "$latency_log"
     printf '%s\n' "$now" >"$stamp"
+    dune_set_host_path_owner "$stamp"
   else
-    echo "WARN host latency tuning did not complete; continuing startup. See /tmp/dune-host-latency-tune.log" >&2
+    dune_set_host_path_owner "$latency_log"
+    echo "WARN host latency tuning did not complete; continuing startup. See $latency_log" >&2
   fi
 }
 

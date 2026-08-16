@@ -144,7 +144,7 @@ export async function runPlayerAnnouncementScan(config, players, context = {}) {
       }
     } catch (error) {
       failed += 1;
-      results.push({ ok: false, type: event.type, player: event.player.characterName, error: String(error.message || error) });
+      results.push({ ok: false, type: event.type, player: event.player.characterName, error: String(error?.message || "Unexpected error.") });
     }
   }
 

@@ -11,11 +11,11 @@ import { serializeEditableDbValue, parseEditableDbValue } from "../../lib/dbValu
 import { copyText } from "../../lib/clipboard";
 import { DatabaseSchemaBrowser } from "./DatabaseSchemaBrowser";
 import { JsonValueEditor } from "./JsonValueEditor";
+import { loadDatabaseRestartTaskId, persistDatabaseRestartTaskId } from "./databaseRestartState";
 
 type HomeTaskResult = { status: "running" | "succeeded" | "failed" | "stopped"; title: string; message?: string; details?: string };
 type DatabasePasswordState = { taskId?: string; result: HomeTaskResult | null };
 
-const DATABASE_PASSWORD_STATE_KEY = "arrakis.databasePasswordState";
 const DATABASE_PREVIEW_PAGE_SIZES = [100, 200, 500] as const;
 const DATABASE_PREVIEW_DEFAULT_PAGE_SIZE = 100;
 
@@ -101,24 +101,14 @@ function buildColumnFilterTree(query: string): ColumnFilterTree | null {
 }
 
 function loadDatabasePasswordState(): DatabasePasswordState {
-  if (typeof window === "undefined") return { result: null };
-  try {
-    const raw = window.localStorage.getItem(DATABASE_PASSWORD_STATE_KEY);
-    if (!raw) return { result: null };
-    const parsed = JSON.parse(raw) as DatabasePasswordState;
-    return parsed && parsed.result ? parsed : { result: null };
-  } catch {
-    return { result: null };
-  }
+  const taskId = loadDatabaseRestartTaskId();
+  return taskId
+    ? { taskId, result: { status: "running", title: "Restarting Server..." } }
+    : { result: null };
 }
 
 function persistDatabasePasswordState(state: DatabasePasswordState) {
-  if (typeof window === "undefined") return;
-  if (!state.result) {
-    window.localStorage.removeItem(DATABASE_PASSWORD_STATE_KEY);
-    return;
-  }
-  window.localStorage.setItem(DATABASE_PASSWORD_STATE_KEY, JSON.stringify(state));
+  persistDatabaseRestartTaskId(state.result?.status === "running" ? state.taskId : undefined);
 }
 
 async function pollDatabasePasswordRestart(

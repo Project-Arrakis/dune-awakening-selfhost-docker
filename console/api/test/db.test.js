@@ -36,6 +36,23 @@ test("discovers RedBlink Postgres defaults and env overrides", () => {
   assert.equal(discoverDbConfig({ DUNE_DB_HOST: "db", DUNE_DB_PORT: "5432" }).host, "db");
 });
 
+// Upstream review finding: discoverDbConfig() previously implemented
+// its own precedence (DUNE_DB_PORT || PGPORT || resolvePorts().postgres),
+// which disagreed with resolvePorts()'s own precedence
+// (POSTGRES_PORT || DUNE_DB_PORT || PGPORT) whenever an operator had
+// more than one of these set to different values -- status/preflight
+// (which reads resolvePorts() directly) could then disagree with the
+// actual database connection (which read this function), a real,
+// silent split-brain misconfiguration. discoverDbConfig() must now
+// always delegate to resolvePorts() for this field so there is exactly
+// one place this precedence logic can ever drift from itself.
+test("discoverDbConfig()'s postgres port precedence matches resolvePorts() exactly, even when multiple port env vars conflict", () => {
+  const conflicting = { POSTGRES_PORT: "16432", DUNE_DB_PORT: "17432", PGPORT: "18432" };
+  assert.equal(discoverDbConfig(conflicting).port, 16432, "POSTGRES_PORT must win, matching resolvePorts()'s precedence exactly");
+  assert.equal(discoverDbConfig({ DUNE_DB_PORT: "17432", PGPORT: "18432" }).port, 17432, "DUNE_DB_PORT must win over PGPORT when POSTGRES_PORT is unset");
+  assert.equal(discoverDbConfig({ PGPORT: "18432" }).port, 18432, "PGPORT must be used when neither POSTGRES_PORT nor DUNE_DB_PORT is set");
+});
+
 test("database status exposes SSH tunneling only for a loopback database endpoint", async () => {
   const responses = [
     { rows: [{ current_user: "dune", current_database: "dune", version: "PostgreSQL test" }] },
@@ -1027,6 +1044,12 @@ test("player factions reports reputation-estimated rank and an unfinished-story 
   const db = {
     query: async (text, values = []) => {
       if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("information_schema.columns")) {
+        const columns = values[1] === "journey_story_node"
+          ? ["character_id", "story_node_id", "complete_condition_state"]
+          : values[1] === "player_tags" ? ["character_id", "tag"] : [];
+        return { rows: columns.map((column_name) => ({ column_name })) };
+      }
       if (text.includes("from dune.actors a") && text.includes("left join dune.player_state ps")) {
         return { rows: [{ actor_id: 91, account_id: 201, controller_id: 301, player_state_id: 44, online_status: "Offline" }] };
       }
@@ -1040,6 +1063,7 @@ test("player factions reports reputation-estimated rank and an unfinished-story 
           { tag: "Faction.Atreides.Tier4" }
         ] };
       }
+      if (text.includes("from dune.journey_story_node")) return { rows: [] };
       return { rows: [] };
     }
   };
@@ -1047,6 +1071,41 @@ test("player factions reports reputation-estimated rank and an unfinished-story 
   assert.equal(result.rows[0].estimated_rank, 12);
   assert.equal(result.rows[0].current_rank_limit, 4);
   assert.equal(result.rows[0].rank_limited_by_progression, true);
+});
+
+test("player factions offers repair when completed onboarding earned missing Tier 5 progression", async () => {
+  const db = {
+    query: async (text, values = []) => {
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("information_schema.columns")) {
+        const columns = values[1] === "journey_story_node"
+          ? ["character_id", "story_node_id", "complete_condition_state"]
+          : values[1] === "player_tags" ? ["character_id", "tag"] : [];
+        return { rows: columns.map((column_name) => ({ column_name })) };
+      }
+      if (text.includes("from dune.actors a") && text.includes("left join dune.player_state ps")) {
+        return { rows: [{ actor_id: 91, account_id: 201, controller_id: 301, player_state_id: 44, online_status: "Offline" }] };
+      }
+      if (text.includes("FactionPlayerComponent") && text.includes("from dune.actors")) {
+        return { rows: [{ faction_data: [{ Faction: { Name: "Atreides" }, ReputationAmount: 12474 }] }] };
+      }
+      if (text.includes("from dune.factions f")) {
+        return { rows: [{ faction_id: 1, faction_name: "Atreides", reputation_amount: "12474" }] };
+      }
+      if (/from\s+dune\.player_faction\b/.test(text)) return { rows: [{ faction_id: 1 }] };
+      if (text.includes("from dune.player_tags")) return { rows: [{ tag: "Faction.Atreides.Tier2" }] };
+      if (text.includes("from dune.journey_story_node")) return { rows: [
+        { story_node_id: "DA_FQ_ClimbTheRanks.Rank5To20.CompleteLandsraadMission.CompleteOnboardingJourney1" },
+        { story_node_id: "DA_FQ_ClimbTheRanks.Rank5To20.CraftAugmentation.CompleteOnboardingJourney2" }
+      ] };
+      return { rows: [] };
+    }
+  };
+  const result = await playerFactions(db, "91");
+  assert.equal(result.rows[0].reputation_in_sync, true);
+  assert.equal(result.rows[0].current_rank_limit, 2);
+  assert.equal(result.rows[0].progression_repair_available, true);
+  assert.equal(result.rows[0].progression_repair_target, 5);
 });
 
 test("player progression computes level from XP and reports skill points", async () => {
@@ -4065,6 +4124,34 @@ test("faction repair synchronizes the vendor-facing component without changing r
   assert.equal(calls.some((call) => call.text.includes("set_player_faction_reputation")), false);
 });
 
+test("faction repair restores earned Tier 5 progression when both onboarding objectives are complete", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    journeyIdentityColumn: "character_id",
+    playerFactionRows: [{ faction_id: 1 }],
+    factionRows: [{ faction_id: 1, reputation_amount: 12474 }],
+    playerTagRows: [{ tag: "Faction.Atreides.Tier2" }],
+    journeyStateRows: [
+      { story_node_id: "DA_FQ_ClimbTheRanks.Rank5To20.CompleteLandsraadMission.CompleteOnboardingJourney1" },
+      { story_node_id: "DA_FQ_ClimbTheRanks.Rank5To20.CraftAugmentation.CompleteOnboardingJourney2" }
+    ]
+  });
+  const result = await repairFactionReputation(db, 123);
+  assert.deepEqual(result.progressionTagsAdded, [
+    "Faction.Atreides.Tier0",
+    "Faction.Atreides.Tier1",
+    "Faction.Atreides.Tier3",
+    "Faction.Atreides.Tier4",
+    "Faction.Atreides.Tier5"
+  ]);
+  assert.equal(result.progressionTierBefore, 2);
+  assert.equal(result.progressionTierAfter, 5);
+  const tagInsert = calls.find((call) => call.text.includes("insert into dune.player_tags"));
+  assert.ok(tagInsert);
+  assert.deepEqual(tagInsert.values, [5, result.progressionTagsAdded]);
+  assert.match(result.message, /Tier 2 through Tier 5/);
+});
+
 test("faction repair refuses neutral players", async () => {
   const calls = [];
   const db = fakeMutationDb(calls, { playerFactionRows: [] });
@@ -4834,7 +4921,8 @@ function fakeMutationDb(calls, fixtures = {}) {
       if (text.includes("set_player_faction_reputation")) return { rows: [{ ok: true }] };
       if (text.includes("where actor_id = $1 and faction_id in")) return { rows: fixtures.factionRows || [] };
       if (text.includes("FactionPlayerComponent") && text.includes("from dune.actors") && text.includes("for update")) return { rows: [{ faction_data: fixtures.factionComponentRows || [] }] };
-      if (text.includes("jsonb_set") && text.includes("FactionPlayerComponent")) return { rows: [] };
+      if (text.includes("jsonb_set") && text.includes("FactionPlayerComponent")) return { rows: [{ id: 55 }], rowCount: 1 };
+      if (text.includes("insert into dune.player_tags")) return { rows: (values[1] || []).map((tag) => ({ tag })), rowCount: (values[1] || []).length };
       if (text.includes("m_TechKnowledgePoints") && text.includes("select")) return { rows: fixtures.intelRows || [] };
       if (text.includes("m_TechKnowledgePoints") && text.includes("update")) return { rows: [{ ok: true }] };
       if (text.includes("not (i.id = any($3::bigint[]))")) return { rows: fixtures.newItemRows || [] };

@@ -1,5 +1,6 @@
 import { assertIdentifier, intParam, isReadOnlySql, quoteIdentifier, quoteQualified, rowsResult } from "./db.js";
 import { getBridgeRequestSummary } from "./audit.js";
+import { resolvePorts } from "./config.js";
 import { existsSync, readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
@@ -12,6 +13,7 @@ import {
   compareJourneyCatalogOrder,
   factionIdByName,
   factionProgressionRankLimit,
+  factionProgressionRepairPlan,
   factionReputationEstimatedRank,
   factionTierBumps,
   factionDisplayName,
@@ -2457,7 +2459,7 @@ export async function playerSolarisCoinTotal(db, id) {
   return { capabilities: { solarisCoin: true }, total: Number(result.rows[0]?.total || 0) };
 }
 
-export async function playerFactions(db, id) {
+export async function playerFactions(db, id, journeyTagsData = {}) {
   if (!(await tableExists(db, "player_faction_reputation"))) return unsupported("factions", ["dune.player_faction_reputation"]);
   const hasFactions = await tableExists(db, "factions");
   const player = await resolvePlayerMutationTargetCached(db, id);
@@ -2480,15 +2482,33 @@ export async function playerFactions(db, id) {
         from dune.player_faction_reputation pfr
         where pfr.actor_id = $1
         order by pfr.faction_id`, [player.controllerId]);
-  const hasPlayerTags = await tableExists(db, "player_tags");
+  let alignedFactionId = null;
+  if (await tableExists(db, "player_faction")) {
+    const alignment = await db.query("select faction_id from dune.player_faction where actor_id = $1", [player.controllerId]);
+    alignedFactionId = alignment.rows[0] ? Number(alignment.rows[0].faction_id) : null;
+  }
+  const progressionSchema = await journeyIdentitySchema(db);
+  const hasPlayerTags = Boolean(progressionSchema);
   let playerTags = [];
-  if (hasPlayerTags && player.playerStateId) {
+  let completedFactionNodes = [];
+  if (progressionSchema) {
+    const tagIdColumn = quoteIdentifier(progressionSchema.tagIdColumn);
+    const journeyIdColumn = quoteIdentifier(progressionSchema.journeyIdColumn);
+    const tagIdentityId = playerJourneyIdentity(player, progressionSchema.tagIdColumn);
+    const journeyIdentityId = playerJourneyIdentity(player, progressionSchema.journeyIdColumn);
     const tags = await db.query(`
       select tag
       from dune.player_tags
-      where character_id = $1
-        and tag like 'Faction.%'`, [player.playerStateId]);
+      where ${tagIdColumn} = $1
+        and tag like 'Faction.%'`, [tagIdentityId]);
     playerTags = tags.rows.map((row) => String(row.tag || ""));
+    const nodes = await db.query(`
+      select story_node_id
+      from dune.journey_story_node
+      where ${journeyIdColumn} = $1
+        and complete_condition_state = 'true'::jsonb
+        and story_node_id like 'DA_FQ_ClimbTheRanks.%'`, [journeyIdentityId]);
+    completedFactionNodes = nodes.rows.map((row) => String(row.story_node_id || ""));
   }
   const rows = result.rows.map((row) => {
     const factionId = Number(row.faction_id);
@@ -2500,13 +2520,18 @@ export async function playerFactions(db, id) {
     const estimatedRank = factionReputationEstimatedRank(row.reputation_amount);
     const progressionLimit = hasPlayerTags ? factionProgressionRankLimit(playerTags, factionName) : null;
     const rankLimited = progressionLimit !== null && estimatedRank > progressionLimit;
+    const progressionRepair = hasPlayerTags && factionId === alignedFactionId
+      ? factionProgressionRepairPlan(playerTags, factionName, completedFactionNodes, journeyTagsData)
+      : { missingTags: [], earnedTier: 0 };
     return {
       ...row,
       component_reputation_amount: componentValue ?? null,
       reputation_in_sync: reputationInSync,
       estimated_rank: estimatedRank,
       current_rank_limit: rankLimited ? progressionLimit : null,
-      rank_limited_by_progression: rankLimited
+      rank_limited_by_progression: rankLimited,
+      progression_repair_available: progressionRepair.missingTags.length > 0,
+      progression_repair_target: progressionRepair.missingTags.length > 0 ? progressionRepair.earnedTier : null
     };
   });
   return { capabilities: { factions: true, factionNames: hasFactions, factionRanks: true }, player, rows };
@@ -3771,7 +3796,7 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
       } catch (error) {
         // Keep the base list usable, but do not misrepresent a failed query as
         // proof that every base has no generators.
-        console.warn(`Base generator data unavailable: ${error?.message || error}`);
+        console.warn(`Base generator data unavailable: ${error?.message || "Unexpected error."}`);
       }
     }
 
@@ -4042,7 +4067,44 @@ export async function addCurrency(db, id, { currencyId = 0, amount }) {
   });
 }
 
-export async function addFactionReputation(db, id, { factionId, amount }) {
+async function restoreEarnedFactionProgression(db, player, factionId, journeyTagsData = {}) {
+  const empty = { tagsAdded: [], tierBefore: null, tierAfter: null };
+  if (factionId !== 1 && factionId !== 2) return empty;
+  const progressionSchema = await journeyIdentitySchema(db);
+  if (!progressionSchema) return empty;
+  const factionName = factionId === 1 ? "Atreides" : "Harkonnen";
+  const tagIdColumn = quoteIdentifier(progressionSchema.tagIdColumn);
+  const journeyIdColumn = quoteIdentifier(progressionSchema.journeyIdColumn);
+  const tagIdentityId = playerJourneyIdentity(player, progressionSchema.tagIdColumn);
+  const journeyIdentityId = playerJourneyIdentity(player, progressionSchema.journeyIdColumn);
+  const tags = await db.query(`select tag from dune.player_tags where ${tagIdColumn} = $1`, [tagIdentityId]);
+  const existingTags = tags.rows.map((row) => String(row.tag || ""));
+  const nodes = await db.query(`
+    select story_node_id
+    from dune.journey_story_node
+    where ${journeyIdColumn} = $1
+      and complete_condition_state = 'true'::jsonb
+      and story_node_id like 'DA_FQ_ClimbTheRanks.%'`, [journeyIdentityId]);
+  const completedNodeIds = nodes.rows.map((row) => String(row.story_node_id || ""));
+  const plan = factionProgressionRepairPlan(existingTags, factionName, completedNodeIds, journeyTagsData);
+  if (plan.missingTags.length) {
+    const inserted = await db.query(`
+      insert into dune.player_tags (${tagIdColumn}, tag)
+      select $1, incoming.tag
+      from unnest($2::text[]) as incoming(tag)
+      where not exists (
+        select 1 from dune.player_tags existing
+        where existing.${tagIdColumn} = $1 and existing.tag = incoming.tag
+      )
+      returning tag`, [tagIdentityId, plan.missingTags]);
+    const insertedTags = new Set(inserted.rows.map((row) => String(row.tag || "")));
+    const notInserted = plan.missingTags.filter((tag) => !insertedTags.has(tag));
+    if (notInserted.length) throw new Error(`Faction progression repair could not verify tag(s): ${notInserted.join(", ")}`);
+  }
+  return { tagsAdded: plan.missingTags, tierBefore: plan.currentTier, tierAfter: plan.earnedTier };
+}
+
+export async function addFactionReputation(db, id, { factionId, amount }, journeyTagsData = {}) {
   await requireCapability(await supportsFactionMutation(db), "Faction reputation mutation requires dune.player_faction_reputation, dune.actors.properties, and dune.set_player_faction_reputation(bigint,smallint,integer).");
   const faction = intParam(factionId, "faction id", 1, 32767);
   const delta = intParam(amount, "faction reputation amount", -12474, 12474);
@@ -4057,16 +4119,20 @@ export async function addFactionReputation(db, id, { factionId, amount }) {
     const oldValue = Number(current.rows[0]?.reputation_amount || 0);
     const nextValue = Math.max(0, Math.min(12474, oldValue + delta));
     await tx.query("select dune.set_player_faction_reputation($1::bigint, $2::smallint, $3::integer)", [player.controllerId, faction, nextValue]);
+    const progressionRepair = await restoreEarnedFactionProgression(tx, player, faction, journeyTagsData);
     if (faction === 1 || faction === 2) await syncFactionComponent(tx, player.controllerId);
     const estimatedRank = faction === 1 || faction === 2 ? factionReputationEstimatedRank(nextValue) : null;
     let currentRankLimit = null;
-    if (estimatedRank !== null && player.playerStateId && await tableExists(tx, "player_tags")) {
+    const progressionSchema = estimatedRank !== null ? await journeyIdentitySchema(tx) : null;
+    if (estimatedRank !== null && progressionSchema) {
       const factionName = faction === 1 ? "Atreides" : "Harkonnen";
+      const tagIdColumn = quoteIdentifier(progressionSchema.tagIdColumn);
+      const tagIdentityId = playerJourneyIdentity(player, progressionSchema.tagIdColumn);
       const tags = await tx.query(`
         select tag
         from dune.player_tags
-        where character_id = $1
-          and tag like $2`, [player.playerStateId, `Faction.${factionName}.Tier%`]);
+        where ${tagIdColumn} = $1
+          and tag like $2`, [tagIdentityId, `Faction.${factionName}.Tier%`]);
       const progressionLimit = factionProgressionRankLimit(tags.rows.map((row) => row.tag), factionName);
       if (progressionLimit !== null && estimatedRank > progressionLimit) currentRankLimit = progressionLimit;
     }
@@ -4084,12 +4150,13 @@ export async function addFactionReputation(db, id, { factionId, amount }) {
       newValue: nextValue,
       estimatedRank,
       currentRankLimit,
+      progressionTagsAdded: progressionRepair.tagsAdded,
       message: `Faction reputation and vendor access were synchronized at ${nextValue}.${rankMessage} They will be loaded when the player next joins.`
     };
   });
 }
 
-export async function repairFactionReputation(db, id) {
+export async function repairFactionReputation(db, id, journeyTagsData = {}) {
   await requireCapability(await supportsFactionMutation(db) && await tableExists(db, "player_faction"), "Faction reputation repair requires dune.player_faction_reputation, dune.player_faction, dune.actors.properties, and dune.set_player_faction_reputation(bigint,smallint,integer).");
   return db.transaction(async (tx) => {
     const player = await resolvePlayerMutationTarget(tx, id);
@@ -4103,13 +4170,20 @@ export async function repairFactionReputation(db, id) {
     if (factionId !== 1 && factionId !== 2) {
       throw new Error("Faction reputation repair requires the player to be assigned to Atreides or Harkonnen first.");
     }
+    const progressionRepair = await restoreEarnedFactionProgression(tx, player, factionId, journeyTagsData);
     const payload = await syncFactionComponent(tx, player.controllerId);
+    const progressionMessage = progressionRepair.tagsAdded.length
+      ? ` Restored earned faction story progression from Tier ${progressionRepair.tierBefore} through Tier ${progressionRepair.tierAfter}.`
+      : " No missing earned faction story progression was detected.";
     return {
       ok: true,
       player,
       factionId,
       reputations: Object.fromEntries(payload.map((entry) => [entry.Faction.Name, entry.ReputationAmount])),
-      message: "Faction reputation and vendor access were synchronized. The player can log in now."
+      progressionTagsAdded: progressionRepair.tagsAdded,
+      progressionTierBefore: progressionRepair.tierBefore,
+      progressionTierAfter: progressionRepair.tierAfter,
+      message: `Faction reputation was synchronized.${progressionMessage} The player can log in now.`
     };
   });
 }
@@ -5279,7 +5353,7 @@ function refillCaps(repoRoot) {
   try {
     if (repoRoot && existsSync(overridePath)) overrides = JSON.parse(readFileSync(overridePath, "utf8")) || {};
   } catch (error) {
-    console.warn(`Ignoring unreadable generator refill cap overrides: ${redact(error?.message || error)}`);
+    console.warn(`Ignoring unreadable generator refill cap overrides: ${redact(error?.message || "Unexpected error.")}`);
   }
   const caps = {};
   for (const type of GENERATOR_TYPE_ORDER) {
@@ -6409,7 +6483,7 @@ export function listQueuedGeneratorRefills(repoRoot) {
       return true;
     });
   } catch (error) {
-    console.warn(`Ignoring unreadable pending generator refill queue: ${redact(error?.message || error)}`);
+    console.warn(`Ignoring unreadable pending generator refill queue: ${redact(error?.message || "Unexpected error.")}`);
     return [];
   }
 }
@@ -6662,7 +6736,7 @@ export async function flushGeneratorRefills(db, repoRoot, { now = Date.now } = {
       // update-db.sh inside the very window this flush targets, and three
       // strikes at a few seconds apart would otherwise all land inside one
       // migration and silently discard the operator's request.
-      const message = String(error?.message || error).slice(0, 300);
+      const message = String(error?.message || "Unexpected error.").slice(0, 300);
       const attempts = isTransientFlushError(message) ? entry.attempts : entry.attempts + 1;
       const dropped = attempts >= MAX_REFILL_FLUSH_ATTEMPTS;
       const nextRetryAt = timestamp + pendingRefillRetryDelayMs();
@@ -7369,7 +7443,7 @@ export function listQueuedWaterRefills(repoRoot) {
       return true;
     });
   } catch (error) {
-    console.warn(`Ignoring unreadable pending water refill queue: ${redact(error?.message || error)}`);
+    console.warn(`Ignoring unreadable pending water refill queue: ${redact(error?.message || "Unexpected error.")}`);
     return [];
   }
 }
@@ -7446,7 +7520,7 @@ export async function flushWaterRefills(db, repoRoot, { now = Date.now } = {}) {
         devices: result.devices
       });
     } catch (error) {
-      const message = String(error?.message || error).slice(0, 300);
+      const message = String(error?.message || "Unexpected error.").slice(0, 300);
       const attempts = isTransientFlushError(message) ? entry.attempts : entry.attempts + 1;
       const dropped = attempts >= MAX_REFILL_FLUSH_ATTEMPTS;
       const nextRetryAt = timestamp + pendingRefillRetryDelayMs();
@@ -8180,12 +8254,14 @@ async function syncFactionComponent(db, actorId) {
     { Faction: { Name: "Harkonnen" }, timestamp, ReputationAmount: reps.get(2) || 0 },
     ...existing.filter((entry) => !["Atreides", "Harkonnen"].includes(String(entry?.Faction?.Name || "")))
   ];
-  await db.query(`
+  const updated = await db.query(`
     update dune.actors
     set properties = jsonb_set(
       jsonb_set(coalesce(properties, '{}'::jsonb), '{FactionPlayerComponent}', coalesce(properties->'FactionPlayerComponent', '{}'::jsonb), true),
       '{FactionPlayerComponent,m_FactionDataArray}', $1::jsonb, true)
-    where id = $2`, [JSON.stringify(payload), actorId]);
+    where id = $2
+    returning id`, [JSON.stringify(payload), actorId]);
+  if (updated.rowCount === 0) throw new Error(`Faction component actor ${actorId} was not found.`);
   return payload;
 }
 
@@ -8890,7 +8966,16 @@ export function addonOpsSocSummary() {
 // on cAdvisor's per-container metric quality — a target can be "up"
 // (reachable, scraping successfully) while still only exposing an
 // incomplete/aggregate metric set).
-export async function addonOpsPrometheusHealth(promBaseUrl = process.env.METRICS_PROMETHEUS_URL || `http://127.0.0.1:${process.env.METRICS_PROMETHEUS_PORT || 9090}`) {
+export async function addonOpsPrometheusHealth(
+  promBaseUrl,
+  repoRoot = process.env.DUNE_DOCKER_DIR || process.env.RUNTIME_DIR || process.cwd()
+) {
+  // metricsPrometheus is env-var-only today (not profile-file-backed),
+  // so repoRoot doesn't change this specific field's value -- accepted
+  // explicitly anyway so this doesn't rely on process.cwd() coincidentally
+  // matching config.repoRoot the moment a profile-backed field is ever
+  // added here, matching the same fix applied to db.js/server.js.
+  promBaseUrl = promBaseUrl || process.env.METRICS_PROMETHEUS_URL || `http://127.0.0.1:${resolvePorts(process.env, repoRoot).metricsPrometheus}`;
   try {
     const healthRes = await fetch(`${promBaseUrl}/-/healthy`, { signal: AbortSignal.timeout(2000) });
     if (!healthRes.ok) return metricsStackNotRunning();
