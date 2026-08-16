@@ -2537,6 +2537,61 @@ test("list bases omits the partition join when world_partition is absent", async
   assert.match(paged.text, /'' as partition_map/);
 });
 
+// The base-backup tool ("pick up base") only deletes permission_actor/
+// permission_actor_rank and registers the base's actor ids in
+// dune.base_backup_linked_actors -- it leaves buildings/building_instances/
+// placeables fully intact, so without this exclusion a picked-up base would
+// keep showing up as an ordinary, ownerless base.
+test("list bases excludes unclaimed, backup-linked bases when base_backup_linked_actors exists", async () => {
+  const calls = [];
+  const db = {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes("to_regclass")) {
+        const name = String(values[0] || "");
+        return { rows: [{ exists: BASE_REQUIRED_TABLES.includes(name) || name === "dune.base_backup_linked_actors" }] };
+      }
+      if (text.includes("total_bases")) return { rows: [{ total_bases: "0", total_pieces: "0", total_placeables: "0" }] };
+      return { rows: [] };
+    }
+  };
+
+  await listBases(db, { includeGenerators: false });
+
+  const paged = calls.find((call) => call.text.includes("from matched"));
+  assert.match(
+    paged.text,
+    /not \(pa\.actor_id is null and exists \(select 1 from dune\.base_backup_linked_actors bbla where bbla\.actor_id = a\.id\)\)/
+  );
+  const totals = calls.find((call) => call.text.includes("valid_claims"));
+  assert.match(
+    totals.text,
+    /not \(pa\.actor_id is null and exists \(select 1 from dune\.base_backup_linked_actors bbla where bbla\.actor_id = a\.id\)\)/,
+    "totals must apply the same exclusion so total_bases/total_pieces/total_placeables agree with the paged rows"
+  );
+});
+
+test("list bases omits the backup exclusion when base_backup_linked_actors is absent", async () => {
+  const calls = [];
+  const db = {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes("to_regclass")) {
+        return { rows: [{ exists: BASE_REQUIRED_TABLES.includes(String(values[0] || "")) }] };
+      }
+      if (text.includes("total_bases")) return { rows: [{ total_bases: "0", total_pieces: "0", total_placeables: "0" }] };
+      return { rows: [] };
+    }
+  };
+
+  await listBases(db, { includeGenerators: false });
+
+  const paged = calls.find((call) => call.text.includes("from matched"));
+  assert.ok(!paged.text.includes("base_backup_linked_actors"), "must not reference a table this schema does not have");
+  const totals = calls.find((call) => call.text.includes("valid_claims"));
+  assert.ok(!totals.text.includes("base_backup_linked_actors"));
+});
+
 test("list bases groups multiple internal building records under one claim actor", async () => {
   const calls = [];
   const db = {

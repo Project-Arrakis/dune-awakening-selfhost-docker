@@ -3609,13 +3609,28 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
   const requiredTables = ["buildings", "building_instances", "actor_fgl_entities", "actors"];
   // One round-trip each and none of them depends on another, so probe them
   // together rather than five times in series before any real work starts.
-  const [required, hasWorldPartition] = await Promise.all([
+  const [required, hasWorldPartition, hasBaseBackups] = await Promise.all([
     Promise.all(requiredTables.map((table) => tableExists(db, table))),
-    tableExists(db, "world_partition")
+    tableExists(db, "world_partition"),
+    tableExists(db, "base_backup_linked_actors")
   ]);
   if (required.some((exists) => !exists)) {
     return { ...unsupported("bases", requiredTables.map((t) => `dune.${t}`)), totalCount: 0, totalBases: 0, totalPieces: 0, totalPlaceables: 0 };
   }
+  // The base-backup tool ("pick up base") does not move or delete any of a
+  // base's rows -- it only deletes permission_actor/permission_actor_rank
+  // (unclaiming it) and registers its actor ids in base_backup_linked_actors
+  // so it can be redeployed later. Left un-filtered, a picked-up base still
+  // has every buildings/building_instances/placeables row intact and would
+  // show up here as an ordinary, ownerless base. Both signals are required
+  // -- unclaimed AND backup-linked -- rather than either alone: "unclaimed"
+  // by itself would also hide a base that legitimately has no owner for some
+  // other reason, and "backup-linked" by itself would hide a base again once
+  // redeployed if the game doesn't clean up old linked-actor rows on redeploy
+  // (unconfirmed either way). A base satisfying both is unambiguous.
+  const backupExclusion = hasBaseBackups
+    ? "and not (pa.actor_id is null and exists (select 1 from dune.base_backup_linked_actors bbla where bbla.actor_id = a.id))"
+    : "";
   // A base's own a.map is the game's map name ("HaggaBasin"), which cannot tell
   // two instances of it apart. world_partition resolves the partition to the
   // name the rest of the console uses ("Survival_1") plus its dimension --
@@ -3708,6 +3723,7 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
         left join dune.permission_actor pa on pa.actor_id = a.id
         ${matchedOwnerJoin}
         where a.transform is not null
+        ${backupExclusion}
         group by a.id, a.class, pa.actor_name, ${matchedGroupByOwner}a.map, a.partition_id, a.transform
         ${having}
       ),
@@ -3754,7 +3770,9 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
         join dune.building_instances bi on bi.building_id = b.id
         join dune.actor_fgl_entities afe on afe.entity_id = bi.owner_entity_id
         join dune.actors a on a.id = afe.actor_id
+        left join dune.permission_actor pa on pa.actor_id = a.id
         where a.transform is not null
+        ${backupExclusion}
       )
       select (select count(*) from valid_claims)::int as total_bases,
              (select count(*) from dune.building_instances bi join dune.actor_fgl_entities afe on afe.entity_id = bi.owner_entity_id join valid_claims vc on vc.actor_id = afe.actor_id)::int as total_pieces,
