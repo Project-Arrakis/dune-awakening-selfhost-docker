@@ -47,6 +47,7 @@ reference. Everything else is marked **Current** and is expected to stay accurat
 - [base-inventory.md](console/base-inventory.md) — Current. The read-only base Inventory tab: which placeables count as storage, the two inventories every refinery carries, and why the tab cannot write.
 - [base-deletion.md](console/base-deletion.md) — Current. Permanently deleting a base: what "the base" means for enumeration, the pending-delete queue for a live map, the mandatory pre-delete safety backup, and why a pending delete freezes every other mutation on that base.
 - [base-backups.md](console/base-backups.md) — Current. What the game's own "pick up base" tool actually does in the database, why the Bases panel excludes a picked-up base, and why every mutation route rejects one too.
+- [database-backups.md](console/database-backups.md) — Current. Safe database restore behavior when the backup and current deployment use different Battlegroup IDs.
 - [restart-queue.md](console/restart-queue.md) — Current. The Restart Queue toggle: player-aware countdowns with in-game warnings, the two broadcast variants, concurrency rules, crash recovery, the "Restart later" deferred-restart option, and the join-lock limitation.
 - [exchange.md](console/exchange.md) — Current. The read-only Market Board: aggregated-by-item CHOAM exchange listings, seller resolution, how bot listings are identified, and the bot/blacklist filter config.
 

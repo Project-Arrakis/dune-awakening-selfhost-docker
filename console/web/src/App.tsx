@@ -84,6 +84,32 @@ function confirmDialog(message: string, options: Partial<Omit<ConfirmDialogReque
   });
 }
 
+type BackupIdentityChoice = "adopt-backup" | "keep-current" | "cancel";
+
+function chooseBackupIdentity(meta: { backup: string; currentBattlegroupId: string; backupBattlegroupId: string }): Promise<BackupIdentityChoice> {
+  return new Promise((resolve) => {
+    if (!openConfirmDialog) {
+      resolve("cancel");
+      return;
+    }
+    openConfirmDialog({
+      title: "Choose Battlegroup Identity",
+      message: "This backup belongs to a different Battlegroup. Adopt the backup identity when moving the same server to new hardware. Keep the current identity only when intentionally importing data into this different server.",
+      confirmLabel: "Adopt Backup ID",
+      tertiaryLabel: "Keep Current ID",
+      cancelLabel: "Cancel Restore",
+      danger: true,
+      warning: "Choosing the wrong identity can make restored characters unavailable in game. Adoption will be blocked unless the current Funcom token matches the backup Battlegroup.",
+      details: [
+        { label: "Backup", value: meta.backup, tone: "accent" },
+        { label: "Current ID", value: meta.currentBattlegroupId, tone: "danger" },
+        { label: "Backup ID", value: meta.backupBattlegroupId, tone: "success" }
+      ],
+      resolve: (outcome) => resolve(outcome === "confirm" ? "adopt-backup" : outcome === "tertiary" ? "keep-current" : "cancel")
+    });
+  });
+}
+
 // The single confirmation dialog for a gated restart. Always shown (it is the
 // sole confirm for the action): when the queue is off, or on with nobody
 // online, it is a plain confirm that the restart runs now; when the queue is on
@@ -752,6 +778,7 @@ export function App() {
             setBackupRestoreTask={setBackupRestoreTask}
             onError={setError}
             confirmAction={confirmDialog}
+            chooseBackupIdentity={chooseBackupIdentity}
             waitForTask={waitForTaskSilently}
             waitForTaskWithUpdates={waitForTaskWithUpdates}
             withTimeout={withTimeout}

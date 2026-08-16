@@ -506,6 +506,8 @@ Usage:
   dune db health
   dune db import <backup-file>
   dune db restore <backup-file>
+  dune db restore <backup-file> --adopt-backup-battlegroup
+  dune db restore <backup-file> --keep-current-battlegroup
   dune db delete <backup-file>
   dune db delete --all
   dune db auto enable <HH:MM> [retention-days]

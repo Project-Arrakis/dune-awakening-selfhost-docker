@@ -183,6 +183,7 @@ test("20 Database: backup creation route is allowlisted", () => {
 
 test("21 Database: restore validates the backup and disables duplicate safety backups", () => {
   assert.deepEqual(buildDuneArgs("backupRestore", { backup: "dune-db-test.backup" }), ["db", "restore", "dune-db-test.backup", "--no-safety-backup"]);
+  assert.deepEqual(buildDuneArgs("backupRestore", { backup: "dune-db-test.backup", identityMode: "adopt-backup" }), ["db", "restore", "dune-db-test.backup", "--no-safety-backup", "--adopt-backup-battlegroup"]);
   assert.throws(() => buildDuneArgs("backupRestore", { backup: "../unsafe.backup" }));
 });
 
@@ -253,6 +254,7 @@ test("36 Web UI: map mode write executes through the task runner", async () => {
 });
 test("37 Web UI: backup restore executes through the task runner", async () => {
   await assertWebWrite("backupRestore", { backup: "dune-db-test.backup" }, ["db", "restore", "dune-db-test.backup", "--no-safety-backup"]);
+  await assertWebWrite("backupRestore", { backup: "dune-db-test.backup", identityMode: "keep-current" }, ["db", "restore", "dune-db-test.backup", "--no-safety-backup", "--keep-current-battlegroup"]);
 });
 test("38 Web UI: memory write executes through the task runner", async () => {
   await assertWebWrite("memorySet", { map: "DeepDesert_1", memory: "8g" }, ["memory", "set", "DeepDesert_1", "8g"]);
