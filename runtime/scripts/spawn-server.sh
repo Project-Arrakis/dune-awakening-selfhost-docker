@@ -537,7 +537,7 @@ echo "  igw port:   $IGW_PORT"
 echo "  container:  $CONTAINER_NAME"
 echo
 
-mkdir -p "runtime/game/$safe_name/Saved"
+runtime/scripts/repair-map-settings-permissions.sh "$safe_name"
 mkdir -p runtime/game/artifacts
 mkdir -p "$FAKE_K8S_SERVICEACCOUNT_DIR"
 mkdir -p runtime/container

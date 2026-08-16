@@ -316,6 +316,21 @@ test("43 Upgrade: orchestrator repairs every writable volume before dropping pri
   assert.match(entrypoint, /exec gosu dune/);
 });
 
+test("43b Dynamic map spawn repairs drifted settings ownership before materializing INI files", () => {
+  const spawn = source("runtime/scripts/spawn-server.sh");
+  const repair = source("runtime/scripts/repair-map-settings-permissions.sh");
+  const repairCall = 'runtime/scripts/repair-map-settings-permissions.sh "$safe_name"';
+  const materializeCall = 'python3 runtime/scripts/usersettings.py materialize';
+
+  assert.ok(spawn.includes(repairCall), "dynamic map spawn must repair its settings directory");
+  assert.ok(spawn.indexOf(repairCall) < spawn.indexOf(materializeCall), "repair must precede INI materialization");
+  assert.match(repair, /mkdir -p "\$settings_dir".*\[ -w "\$settings_dir" \]/s);
+  assert.match(repair, /Refusing to repair settings ownership while the map is running/);
+  assert.match(repair, /-v "\$host_game_root:\/game"/);
+  assert.match(repair, /find "\$settings" -xdev/);
+  assert.doesNotMatch(repair, /find \/game -xdev/);
+});
+
 test("44 Upgrade: root-run publishers do not create Python caches in the checkout", () => {
   for (const path of [
     "runtime/scripts/publish-sietch-overrides.sh",
