@@ -109,7 +109,13 @@ export function buildDuneArgs(operation, payload = {}) {
       return ["logs", validateServiceName(payload.service)];
     case "backupRestore":
       {
-        return ["db", "restore", validateBackupName(payload.backup), "--no-safety-backup"];
+        const args = ["db", "restore", validateBackupName(payload.backup), "--no-safety-backup"];
+        if (payload.identityMode !== undefined) {
+          if (payload.identityMode === "adopt-backup") args.push("--adopt-backup-battlegroup");
+          else if (payload.identityMode === "keep-current") args.push("--keep-current-battlegroup");
+          else throw new Error("Unsupported backup Battlegroup identity choice");
+        }
+        return args;
       }
     case "backupDelete":
       return ["db", "delete", validateBackupName(payload.backup)];

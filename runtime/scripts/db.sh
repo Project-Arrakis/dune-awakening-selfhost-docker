@@ -26,6 +26,8 @@ Usage:
   dune db health
   dune db import <backup-file>
   dune db restore <backup-file>
+  dune db restore <backup-file> --adopt-backup-battlegroup
+  dune db restore <backup-file> --keep-current-battlegroup
   dune db restore <backup-file> --no-safety-backup
   dune db restore <backup-file> --transfer OLD=NEW
   dune db restore <backup-file> --transfer-file <plan.tsv>
@@ -47,6 +49,10 @@ Usage:
 Backups are written as official-style .backup files with a .backup.yaml sidecar.
 Import accepts official .backup files and older dune-db-*.dump or .sql backups.
 Import requires confirmation and creates a pre-import backup first unless --no-safety-backup is used.
+When the backup and current Battlegroup IDs differ, import requires an explicit
+choice to adopt the backup identity or keep the current identity. Adopting is
+the normal choice when moving the same server to new hardware; keeping the
+current identity is for intentionally importing data into a different server.
 
 dune db backup-system bundles a fresh database dump together with .env,
 runtime/generated/, and runtime/secrets/ into one encrypted
@@ -239,20 +245,105 @@ current_battlegroup_id() {
   config_value runtime/generated/battlegroup.env BATTLEGROUP_ID || true
 }
 
-backup_is_external() {
+backup_battlegroup_id() {
   local backup_file="$1"
-  local origin=""
-  local imported_from=""
+  local value=""
 
-  origin="$(backup_metadata_value "$backup_file" backup_origin || true)"
-  [ -n "$origin" ] || origin="$(backup_metadata_value "$backup_file" origin || true)"
-  imported_from="$(backup_metadata_value "$backup_file" imported_from_battlegroup_id || true)"
+  value="$(backup_metadata_value "$backup_file" imported_from_battlegroup_id || true)"
+  [ -n "$value" ] || value="$(backup_metadata_value "$backup_file" battlegroup_id || true)"
+  printf '%s\n' "$value"
+}
 
-  case "$(printf '%s' "$origin" | tr '[:upper:]' '[:lower:]')" in
-    external|imported) return 0 ;;
+validate_backup_battlegroup_token() {
+  local backup_id="$1"
+  local token=""
+  local token_host=""
+  local backup_host=""
+
+  if ! printf '%s' "$backup_id" | grep -Eq '^sh-[A-Za-z0-9]+-[A-Za-z0-9]+$'; then
+    echo "Restore stopped: backup metadata contains an invalid Battlegroup ID: $backup_id" >&2
+    return 1
+  fi
+
+  token="$(tr -d '\r\n' < runtime/secrets/funcom-token.txt 2>/dev/null || true)"
+  token_host="$(token_payload_value "$token" HostId 2>/dev/null || true)"
+  backup_host="$(battlegroup_host_id "$backup_id" 2>/dev/null || true)"
+  if [ -z "$token_host" ]; then
+    echo "Restore stopped: the current Funcom token could not be validated." >&2
+    echo "Save the token that belongs to the backup Battlegroup, then retry the restore." >&2
+    return 1
+  fi
+  if [ -z "$backup_host" ] || [ "$(printf '%s' "$token_host" | tr '[:upper:]' '[:lower:]')" != "$(printf '%s' "$backup_host" | tr '[:upper:]' '[:lower:]')" ]; then
+    echo "Restore stopped: the current Funcom token does not belong to backup Battlegroup $backup_id." >&2
+    echo "Save the matching token before adopting the backup identity." >&2
+    return 1
+  fi
+}
+
+choose_import_battlegroup_action() {
+  local backup_file="$1"
+  local requested_action="${2:-}"
+  local backup_id=""
+  local current_id=""
+  local answer=""
+
+  IMPORT_BATTLEGROUP_ACTION="keep-current"
+  backup_id="$(backup_battlegroup_id "$backup_file")"
+  current_id="$(current_battlegroup_id)"
+
+  if [ -z "$backup_id" ] || [ "$backup_id" = "unknown" ]; then
+    if [ "$requested_action" = "adopt-backup" ]; then
+      echo "Restore stopped: backup metadata has no usable Battlegroup ID to adopt." >&2
+      echo "Use --keep-current-battlegroup only if this backup is intentionally being imported into the current server." >&2
+      return 1
+    fi
+    echo "Battlegroup identity: backup metadata has no usable Battlegroup ID; keeping the current identity."
+    return 0
+  fi
+  if [ -z "$current_id" ] || [ "$current_id" = "unknown" ]; then
+    echo "Restore stopped: the current Docker Battlegroup ID is unavailable, so identity continuity cannot be verified." >&2
+    return 1
+  fi
+  if [ "$backup_id" = "$current_id" ]; then
+    echo "Battlegroup identity: backup already matches $current_id."
+    IMPORT_BATTLEGROUP_ACTION="matching"
+    return 0
+  fi
+
+  echo "Battlegroup identity mismatch detected:"
+  echo "  Current Docker Battlegroup: $current_id"
+  echo "  Backup Battlegroup:        $backup_id"
+
+  if [ -z "$requested_action" ]; then
+    if [ "${DUNE_DB_ASSUME_YES:-0}" = "1" ]; then
+      echo "Restore stopped before making changes: choose --adopt-backup-battlegroup or --keep-current-battlegroup." >&2
+      return 1
+    fi
+    echo "Adopt the backup identity when moving the same server to new hardware."
+    echo "Keep the current identity only when intentionally importing data into a different server."
+    read -r -p "Identity choice: [a]dopt backup / [k]eep current / [c]ancel: " answer
+    case "$answer" in
+      a|A|adopt|ADOPT) requested_action="adopt-backup" ;;
+      k|K|keep|KEEP) requested_action="keep-current" ;;
+      *) echo "Import cancelled."; return 1 ;;
+    esac
+  fi
+
+  case "$requested_action" in
+    adopt-backup)
+      validate_backup_battlegroup_token "$backup_id" || return 1
+      IMPORT_BATTLEGROUP_ACTION="adopt-backup"
+      echo "Battlegroup identity: the matching Funcom token was verified; the backup identity will be adopted."
+      ;;
+    keep-current)
+      IMPORT_BATTLEGROUP_ACTION="keep-current"
+      echo "WARNING: keeping $current_id. Characters associated with $backup_id may not appear in game."
+      ;;
+    *)
+      echo "Unknown Battlegroup identity choice: $requested_action" >&2
+      return 1
+      ;;
   esac
-
-  [ -n "$imported_from" ] && [ "$imported_from" != "unknown" ]
 }
 
 backup_is_automatic() {
@@ -1552,6 +1643,7 @@ import_db() {
   local transfer_args=()
   local transfer_plan=""
   local transfer_file=""
+  local battlegroup_action=""
   local arg
 
   while [ "$#" -gt 0 ]; do
@@ -1568,7 +1660,13 @@ import_db() {
         shift 2
         ;;
       --adopt-backup-battlegroup)
-        echo "--adopt-backup-battlegroup is no longer needed. External backup restores adopt the backup battlegroup automatically when needed."
+        [ -z "$battlegroup_action" ] || { echo "Choose only one Battlegroup identity option."; exit 2; }
+        battlegroup_action="adopt-backup"
+        shift
+        ;;
+      --keep-current-battlegroup)
+        [ -z "$battlegroup_action" ] || { echo "Choose only one Battlegroup identity option."; exit 2; }
+        battlegroup_action="keep-current"
         shift
         ;;
       --no-safety-backup)
@@ -1620,6 +1718,8 @@ import_db() {
       ;;
   esac
 
+  choose_import_battlegroup_action "$backup_file" "$battlegroup_action" || exit 1
+
   identity_snapshot="$(capture_current_account_identities)"
 
   echo "WARNING: importing a database backup replaces current battlegroup database state."
@@ -1641,7 +1741,7 @@ import_db() {
   if [ "$create_safety_backup" = "1" ]; then
     DB_BACKUP_ORIGIN=restore-safety backup_db "$BACKUP_DIR_DEFAULT"
   fi
-  if backup_is_external "$backup_file"; then
+  if [ "$IMPORT_BATTLEGROUP_ACTION" = "adopt-backup" ]; then
     adopt_backup_battlegroup_id "$backup_file"
   fi
 

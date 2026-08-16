@@ -24,7 +24,7 @@ import { assertInstalledAddonPermission, fetchCommunityAddons, installCommunityA
 import { performanceSnapshot as collectPerformanceSnapshot } from "./services/performance.js";
 import { serveStatic, contentTypeForPath } from "./http/staticFiles.js";
 import { discoverServices } from "./services/serviceDiscovery.js";
-import { createBackupDownloadArchive, enrichBackupRows, nextImportedBackupName, normalizeImportedBackupMetadata, validBackupDownloadName } from "./services/backups.js";
+import { createBackupDownloadArchive, enrichBackupRows, nextImportedBackupName, normalizeImportedBackupMetadata, readCurrentBattlegroupId, validBackupDownloadName } from "./services/backups.js";
 import { createMemoryBalancer } from "./services/memoryBalancer.js";
 import { collectContainerHealth } from "./services/containerHealth.js";
 import { parseMemorySwapStatus } from "./services/memorySwap.js";
@@ -518,7 +518,7 @@ async function handleApi(req, res) {
   if (path === "/api/backups/delete-all" && req.method === "POST") return task(req, res, "backup", "backupDeleteAll", {});
   if (path === "/api/backups/restore" && req.method === "POST") {
     const body = await readJson(req);
-    return task(req, res, "backup", "backupRestore", { backup: body.backup });
+    return task(req, res, "backup", "backupRestore", { backup: body.backup, identityMode: body.identityMode });
   }
   if (path.match(/^\/api\/backups\/[^/]+\/download$/) && req.method === "GET") {
     const backup = decodeURIComponent(path.split("/").at(-2));
@@ -1181,9 +1181,10 @@ async function safeCommandJson(res, operation, payload = {}) {
 }
 
 async function backupsListRoute(res) {
-  if (config.mockMode) return json(res, 200, { ...mockCommand("backupList"), rows: [] });
+  const currentBattlegroupId = readCurrentBattlegroupId(config) || "Unknown";
+  if (config.mockMode) return json(res, 200, { ...mockCommand("backupList"), currentBattlegroupId, rows: [] });
   const result = await runDune(config, buildDuneArgs("backupList"));
-  return json(res, 200, { operation: "backupList", stdout: result.stdout, stderr: result.stderr, exitCode: result.code, rows: enrichBackupRows(config, parseBackupListRows(result.stdout)) });
+  return json(res, 200, { operation: "backupList", stdout: result.stdout, stderr: result.stderr, exitCode: result.code, currentBattlegroupId, rows: enrichBackupRows(config, parseBackupListRows(result.stdout)) });
 }
 
 async function externalBackupImportRoute(req, res) {
