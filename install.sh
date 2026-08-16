@@ -116,13 +116,14 @@ ensure_basic_tools() {
     && command -v bash >/dev/null 2>&1 \
     && command -v tar >/dev/null 2>&1 \
     && command -v openssl >/dev/null 2>&1 \
+    && command -v gpg >/dev/null 2>&1 \
     && { command -v python3 >/dev/null 2>&1 || command -v python >/dev/null 2>&1; }; then
     return
   fi
   install_basic_tools
 
   missing_tools=""
-  for required_tool in curl bash tar openssl; do
+  for required_tool in curl bash tar openssl gpg; do
     if ! command -v "$required_tool" >/dev/null 2>&1; then
       missing_tools="${missing_tools}${missing_tools:+, }${required_tool}"
     fi
