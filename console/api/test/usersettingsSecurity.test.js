@@ -60,3 +60,19 @@ test("usersettings keeps password-bearing files private and metadata secret-free
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("gameplay settings preflight refuses to invent defaults when no persisted source exists", () => {
+  const root = mkdtempSync(join(tmpdir(), "dune-usersettings-preflight-"));
+  const generated = join(root, "generated");
+  mkdirSync(generated, { recursive: true });
+  const result = runUsersettings(["preflight"], {
+    DUNE_USERSETTINGS_CONFIG: join(generated, "usersettings.json"),
+    DUNE_GAMEPLAY_PROFILE: join(generated, "gameplay-profile.ini"),
+    DUNE_USERSETTINGS_GAME_ROOT: join(root, "game"),
+    DUNE_SIETCH_CONFIG: join(generated, "sietch-config.json")
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /No persisted gameplay settings source was found/);
+  rmSync(root, { recursive: true, force: true });
+});
