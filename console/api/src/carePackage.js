@@ -236,7 +236,7 @@ export async function grantEligibleCarePackages(config, players = [], body = {},
         onlineStatus: player.online_status
       }, context));
     } catch (error) {
-      const row = failedGrant(config, kit, player, error.message || String(error), "bulk");
+      const row = failedGrant(config, kit, player, error?.message || "Unexpected error.", "bulk");
       results.push(row);
     }
   }
@@ -286,7 +286,7 @@ export async function runCarePackageAutoScan(config, players = [], source = "aut
         }, context));
         if (kit.grantWhen === "last_seen") pendingChanged = clearPendingReturn(pendingReturns, kit, rule, player) || pendingChanged;
       } catch (error) {
-        results.push(failedGrant(config, kit, player, error.message || String(error), source));
+        results.push(failedGrant(config, kit, player, error?.message || "Unexpected error.", source));
       }
     }
   }
@@ -367,7 +367,7 @@ export async function grantCarePackage(config, playerId, body = {}, context = {}
         exitCode: result.code
       });
     } catch (error) {
-      results.push({ ok: false, operation: "carePackageWelcomeWhisper", error: error.message || String(error) });
+      results.push({ ok: false, operation: "carePackageWelcomeWhisper", error: error?.message || "Unexpected error." });
     }
   }
   for (const item of kit.items) {
@@ -419,7 +419,7 @@ export async function grantCarePackage(config, playerId, body = {}, context = {}
         });
       }
     } catch (error) {
-      results.push({ ok: false, item, error: error.message || String(error) });
+      results.push({ ok: false, item, error: error?.message || "Unexpected error." });
     }
   }
   if (kit.xp > 0) {
@@ -429,7 +429,7 @@ export async function grantCarePackage(config, playerId, body = {}, context = {}
       const result = config.mockMode ? { code: 0, stdout: "mock package xp grant\n", stderr: "" } : await runDune(config, command);
       results.push({ ok: true, operation: "adminAddXp", amount: kit.xp, stdout: result.stdout, stderr: result.stderr, exitCode: result.code });
     } catch (error) {
-      results.push({ ok: false, operation: "adminAddXp", amount: kit.xp, error: error.message || String(error) });
+      results.push({ ok: false, operation: "adminAddXp", amount: kit.xp, error: error?.message || "Unexpected error." });
     }
   }
   const aggregate = summarizeActionResults(results);
@@ -1082,7 +1082,7 @@ async function upsertDuneRow(db, table, entries, conflictColumn, rawSqlValues = 
       values
     );
   } catch (error) {
-    if (!/no unique or exclusion constraint matching the ON CONFLICT specification/i.test(String(error.message || error))) throw error;
+    if (!/no unique or exclusion constraint matching the ON CONFLICT specification/i.test(String(error?.message || "Unexpected error."))) throw error;
     const conflictIndex = columns.indexOf(conflictColumn);
     if (conflictIndex < 0) throw error;
     const assignments = entries

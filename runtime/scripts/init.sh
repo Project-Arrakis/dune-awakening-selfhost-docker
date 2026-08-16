@@ -6,6 +6,7 @@ cd "$(dirname "$0")/../.."
 . runtime/scripts/compose-project.sh
 # shellcheck source=runtime/scripts/env-file.sh
 . runtime/scripts/env-file.sh
+. runtime/scripts/runtime-env.sh
 DUNE_COMPOSE_PROJECT_NAME="$(dune_resolve_compose_project_name "$(pwd -P)")"
 export DUNE_COMPOSE_PROJECT_NAME
 export COMPOSE_PROJECT_NAME="$DUNE_COMPOSE_PROJECT_NAME"
@@ -417,12 +418,34 @@ echo "Server IP:    $SERVER_IP"
 echo "Steam app id: $STEAM_APP_ID"
 echo "Battlegroup:  $BATTLEGROUP_ID"
 if [ "$SERVER_IP_MODE" = "public" ]; then
-  cat <<'EOF'
+  # Read the actual configured ports for this instance rather than
+  # hardcoding stock values -- on a deployment with non-default
+  # configured ports (e.g. RMQ_GAME_PORT, CLIENT_PORT_BASE), this
+  # reminder was previously always wrong regardless of the real
+  # configuration.
+  #
+  # Deliberately does NOT mention the IGW UDP range: per the Web
+  # Console's own setup wizard (console/web/src/components/
+  # SetupWizard.tsx, "Internal Map Traffic" section, unchanged by this
+  # fix) IGW/S2S traffic is internal map-to-map traffic and should NOT
+  # be forwarded publicly for a normal single-host Docker setup, which
+  # is exactly the deployment shape this script's own reminder covers
+  # (it has no concept of a multi-server/multi-VM topology). Adding an
+  # IGW-forward instruction here would directly contradict that
+  # existing, deliberate guidance -- see
+  # r740-dune-deployment-kit#84 for the open question of whether IGW
+  # ever needs public forwarding in a genuinely multi-server topology;
+  # that is a separate, unresolved question this single-host reminder
+  # should not preempt an answer to.
+  reminder_rmq_game_port="$(resolve_rmq_game_port)"
+  reminder_rmq_game_http_port="$(resolve_rmq_game_http_port)"
+  reminder_client_port_base="$(resolve_client_port_base)"
+  cat <<EOF
 
 Public hosting reminder:
-  Open or forward TCP 31982.
-  Open or forward TCP 31983.
-  Open or forward UDP 7777-7810.
+  Open or forward TCP ${reminder_rmq_game_port}.
+  Open or forward TCP ${reminder_rmq_game_http_port}.
+  Open or forward UDP ${reminder_client_port_base}-$((reminder_client_port_base + 33)).
 EOF
 fi
 echo

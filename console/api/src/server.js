@@ -4,7 +4,7 @@ import { totalmem } from "node:os";
 import { spawn } from "node:child_process";
 import { existsSync, writeFileSync, chmodSync, mkdirSync, createReadStream, readFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
-import { loadConfig, publicConfig, parseAllowedIps } from "./config.js";
+import { loadConfig, publicConfig, parseAllowedIps, resolvePorts } from "./config.js";
 import { createAuth, setSessionCookie, clearSessionCookie, json, withSecurityHeaders } from "./auth.js";
 import { createLoginRateLimiter, createMutationRateLimiter } from "./rateLimit.js";
 import { createBridgeRateLimiter } from "./bridgeRateLimit.js";
@@ -129,7 +129,7 @@ const playerBanEnforcer = createPlayerBanEnforcer({
 });
 
 process.on("unhandledRejection", (error) => {
-  console.error(`Unhandled background rejection: ${redact(error?.message || error)}`);
+  console.error(`Unhandled background rejection: ${redact(error?.message || "Unexpected error.")}`);
 });
 
 createServer(async (req, res) => {
@@ -165,7 +165,7 @@ createServer(async (req, res) => {
   publicDirectory.start();
   if (discordAdapterEnabled(config)) {
     initializeDiscordAdapterSchema(db).catch((error) => {
-      console.warn(`Discord adapter schema initialization failed: ${redact(error?.message || error)}`);
+      console.warn(`Discord adapter schema initialization failed: ${redact(error?.message || "Unexpected error.")}`);
     });
   }
 });
@@ -248,7 +248,7 @@ function runBackgroundTick(label, fn) {
   Promise.resolve()
     .then(fn)
     .catch((error) => {
-      const message = String(error?.message || error);
+      const message = String(error?.message || "Unexpected error.");
       if (/connect|database|relation|container|rabbitmq|docker|ECONNREFUSED|ECONNRESET|Connection terminated/i.test(message)) return;
       console.error(`${label} background task failed: ${redact(message)}`);
     });
@@ -285,7 +285,7 @@ async function maybeAutoStartStackOnBoot() {
     "dune-server-overmap"
   ];
   const names = await dockerPsNames().catch((error) => {
-    console.error(`Boot auto-start skipped: ${redact(error.message || error)}`);
+    console.error(`Boot auto-start skipped: ${redact(error?.message || "Unexpected error.")}`);
     return [];
   });
   if (mainContainers.some((name) => names.includes(name))) return;
@@ -298,7 +298,7 @@ async function maybeAutoStartStackOnBoot() {
   });
   child.stdout.on("data", (chunk) => process.stdout.write(`[boot-autostart] ${redact(chunk.toString())}`));
   child.stderr.on("data", (chunk) => process.stderr.write(`[boot-autostart] ${redact(chunk.toString())}`));
-  child.on("error", (error) => console.error(`Boot auto-start failed: ${redact(error.message || error)}`));
+  child.on("error", (error) => console.error(`Boot auto-start failed: ${redact(error?.message || "Unexpected error.")}`));
   child.on("close", (code) => {
     if (code === 0) console.log("Boot auto-start completed.");
     else if (code === 2) console.log("Boot auto-start skipped because manual stop is active for this Linux boot.");
@@ -664,8 +664,8 @@ async function handleApi(req, res) {
   if (path.match(/^\/api\/players\/[^/]+\/clean-inventory$/) && req.method === "POST") return playerTask(req, res, path, "adminCleanInventory", "CLEAN INVENTORY");
   if (path.match(/^\/api\/players\/[^/]+\/reset-progression$/) && req.method === "POST") return playerTask(req, res, path, "adminResetProgression", "RESET PROGRESSION");
   if (path.match(/^\/api\/players\/[^/]+\/add-currency$/) && req.method === "POST") return playerDbMutation(req, res, path, "players.add-currency", "ADD CURRENCY", (playerId, body) => duneDb.addCurrency(db, playerId, body));
-  if (path.match(/^\/api\/players\/[^/]+\/add-faction-reputation$/) && req.method === "POST") return playerDbMutation(req, res, path, "players.add-faction-reputation", "ADD FACTION REPUTATION", (playerId, body) => duneDb.addFactionReputation(db, playerId, body));
-  if (path.match(/^\/api\/players\/[^/]+\/repair-faction-reputation$/) && req.method === "POST") return playerDbMutation(req, res, path, "players.repair-faction-reputation", "REPAIR FACTION REPUTATION", (playerId) => duneDb.repairFactionReputation(db, playerId));
+  if (path.match(/^\/api\/players\/[^/]+\/add-faction-reputation$/) && req.method === "POST") return playerDbMutation(req, res, path, "players.add-faction-reputation", "ADD FACTION REPUTATION", (playerId, body) => duneDb.addFactionReputation(db, playerId, body, journeyTagsData));
+  if (path.match(/^\/api\/players\/[^/]+\/repair-faction-reputation$/) && req.method === "POST") return playerDbMutation(req, res, path, "players.repair-faction-reputation", "REPAIR FACTION REPUTATION", (playerId) => duneDb.repairFactionReputation(db, playerId, journeyTagsData));
   if (path.match(/^\/api\/players\/[^/]+\/faction$/) && req.method === "POST") return playerDbMutation(req, res, path, "players.assign-faction", "CHANGE PLAYER FACTION", (playerId, body) => duneDb.setPlayerFaction(db, playerId, body));
   if (path.match(/^\/api\/players\/[^/]+\/add-intel$/) && req.method === "POST") return playerDbMutation(req, res, path, "players.add-intel", "ADD INTEL", (playerId, body) => duneDb.addIntel(db, playerId, body));
   if (path.match(/^\/api\/players\/[^/]+\/specializations\/add-xp$/) && req.method === "POST") return playerDbMutation(req, res, path, "players.specializations.add-xp", "ADD SPECIALIZATION XP", (playerId, body) => duneDb.addSpecializationXp(db, playerId, body));
@@ -693,7 +693,7 @@ async function handleApi(req, res) {
   if (path.match(/^\/api\/players\/[^/]+\/vehicles$/) && req.method === "GET") return dbPlayerRoute(res, path, (database, playerId) => duneDb.listVehicles(database, { playerId, pageSize: 200 }));
   if (path.match(/^\/api\/players\/[^/]+\/currency$/)) return dbPlayerRoute(res, path, duneDb.playerCurrency);
   if (path.match(/^\/api\/players\/[^/]+\/solaris-coin$/)) return dbPlayerRoute(res, path, duneDb.playerSolarisCoinTotal);
-  if (path.match(/^\/api\/players\/[^/]+\/factions$/)) return dbPlayerRoute(res, path, duneDb.playerFactions);
+  if (path.match(/^\/api\/players\/[^/]+\/factions$/)) return dbPlayerRoute(res, path, (database, playerId) => duneDb.playerFactions(database, playerId, journeyTagsData));
   if (path.match(/^\/api\/players\/[^/]+\/intel$/)) return dbPlayerRoute(res, path, duneDb.playerIntel);
   if (path.match(/^\/api\/players\/[^/]+\/specs$/)) return dbPlayerRoute(res, path, duneDb.playerSpecs);
   if (path.match(/^\/api\/players\/[^/]+\/position$/)) return dbPlayerRoute(res, path, duneDb.playerPosition);
@@ -909,8 +909,8 @@ async function addonBridgeRoute(req, res, path) {
       });
       return json(res, 200, { ok: true, result });
     } catch (error) {
-      audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, requestId: String(body.requestId || ""), ok: false, error: redact(error.message || error) });
-      return json(res, 400, { ok: false, error: redact(error.message || error) });
+      audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, requestId: String(body.requestId || ""), ok: false, error: redact(error?.message || "Unexpected error.") });
+      return json(res, 400, { ok: false, error: redact(error?.message || "Unexpected error.") });
     }
   }
   if (action.startsWith("scheduler.")) return addonSchedulerBridgeAction(req, res, id, action, body);
@@ -963,8 +963,8 @@ async function addonSchedulerBridgeAction(req, res, id, action, body) {
       audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, enabled: result.enabled, intervalMinutes: result.intervalMinutes, exchangeId: result.exchangeId, buybackPercent: result.buybackPercent, maxBuys: result.maxBuys, ok: true });
       return json(res, 200, { ok: true, result });
     } catch (error) {
-      audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, ok: false, error: redact(error.message || error) });
-      return json(res, 400, { ok: false, error: redact(error.message || error) });
+      audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, ok: false, error: redact(error?.message || "Unexpected error.") });
+      return json(res, 400, { ok: false, error: redact(error?.message || "Unexpected error.") });
     }
   }
   if (action === "scheduler.probe") {
@@ -974,8 +974,8 @@ async function addonSchedulerBridgeAction(req, res, id, action, body) {
       audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, eligible: result.eligible, exchangeId: result.exchangeId, ok: true });
       return json(res, 200, { ok: true, result });
     } catch (error) {
-      audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, ok: false, error: redact(error.message || error) });
-      return json(res, 400, { ok: false, error: redact(error.message || error) });
+      audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, ok: false, error: redact(error?.message || "Unexpected error.") });
+      return json(res, 400, { ok: false, error: redact(error?.message || "Unexpected error.") });
     }
   }
   if (action === "scheduler.run") {
@@ -986,8 +986,8 @@ async function addonSchedulerBridgeAction(req, res, id, action, body) {
       audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, status: result.status, eligible: result.eligible, purchased: result.purchased, ok: true });
       return json(res, 200, { ok: true, result });
     } catch (error) {
-      audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, ok: false, error: redact(error.message || error) });
-      return json(res, 400, { ok: false, error: redact(error.message || error) });
+      audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, ok: false, error: redact(error?.message || "Unexpected error.") });
+      return json(res, 400, { ok: false, error: redact(error?.message || "Unexpected error.") });
     }
   }
   if (action === "scheduler.seed.schedule.get") {
@@ -1007,8 +1007,8 @@ async function addonSchedulerBridgeAction(req, res, id, action, body) {
       audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, enabled: result.enabled, intervalMinutes: result.intervalMinutes, exchangeId: result.exchangeId, priceMultiplier: result.priceMultiplier, ok: true });
       return json(res, 200, { ok: true, result });
     } catch (error) {
-      audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, ok: false, error: redact(error.message || error) });
-      return json(res, 400, { ok: false, error: redact(error.message || error) });
+      audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, ok: false, error: redact(error?.message || "Unexpected error.") });
+      return json(res, 400, { ok: false, error: redact(error?.message || "Unexpected error.") });
     }
   }
   if (action === "scheduler.seed.run") {
@@ -1019,8 +1019,8 @@ async function addonSchedulerBridgeAction(req, res, id, action, body) {
       audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, status: result.status, listingCount: result.listingCount, ok: true });
       return json(res, 200, { ok: true, result });
     } catch (error) {
-      audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, ok: false, error: redact(error.message || error) });
-      return json(res, 400, { ok: false, error: redact(error.message || error) });
+      audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, ok: false, error: redact(error?.message || "Unexpected error.") });
+      return json(res, 400, { ok: false, error: redact(error?.message || "Unexpected error.") });
     }
   }
   audit(config, req, "addons.bridge", { id, action, ok: false, reason: "Unsupported addon action" });
@@ -1086,7 +1086,7 @@ async function liveMapTeleportPlayerRoute(req, res) {
     try {
       buildDuneArgs("adminTeleport", payload);
     } catch (error) {
-      return json(res, 400, { error: redact(error.message || error) });
+      return json(res, 400, { error: redact(error?.message || "Unexpected error.") });
     }
     if (!applyMutationRateLimit(req, res, "live-map.teleport.live")) return;
     audit(config, req, "live-map.teleport.live", { playerId, x: payload.x, y: payload.y, z: payload.z, partitionId: payload.partitionId });
@@ -1098,7 +1098,7 @@ async function liveMapTeleportPlayerRoute(req, res) {
     audit(config, req, "live-map.teleport.offline", { playerId, supported: result.supported, x: payload.x, y: payload.y, z: payload.z, partitionId: payload.partitionId });
     return json(res, 200, { path: "offline", ...result });
   } catch (error) {
-    audit(config, req, "live-map.teleport.offline", { playerId, supported: false, error: redact(error.message || error) });
+    audit(config, req, "live-map.teleport.offline", { playerId, supported: false, error: redact(error?.message || "Unexpected error.") });
     const payload = apiErrorPayload(error, 400);
     return json(res, payload.status, payload.body);
   }
@@ -1284,7 +1284,7 @@ async function marketBuybackProbeRoute(req, res) {
     audit(config, req, "exchange.market", { op: "buyback-probe", eligible: result.eligible, exchangeId: result.exchangeId, ok: true });
     return json(res, 200, result);
   } catch (error) {
-    audit(config, req, "exchange.market", { op: "buyback-probe", ok: false, error: redact(error.message || error) });
+    audit(config, req, "exchange.market", { op: "buyback-probe", ok: false, error: redact(error?.message || "Unexpected error.") });
     const payload = apiErrorPayload(error, 400);
     return json(res, payload.status, payload.body);
   }
@@ -1299,7 +1299,7 @@ async function marketScheduleSaveRoute(req, res, job) {
     audit(config, req, "exchange.market", { op: `${job}-schedule`, enabled: result.enabled, intervalMinutes: result.intervalMinutes, exchangeId: result.exchangeId, ok: true });
     return json(res, 200, result);
   } catch (error) {
-    audit(config, req, "exchange.market", { op: `${job}-schedule`, ok: false, error: redact(error.message || error) });
+    audit(config, req, "exchange.market", { op: `${job}-schedule`, ok: false, error: redact(error?.message || "Unexpected error.") });
     const payload = apiErrorPayload(error, 400);
     return json(res, payload.status, payload.body);
   }
@@ -1312,7 +1312,7 @@ async function marketRunNowRoute(req, res, job) {
     audit(config, req, "exchange.market", { op: `${job}-run`, status: result.status, purchased: result.purchased, listingCount: result.listingCount, ok: true });
     return json(res, 200, result);
   } catch (error) {
-    audit(config, req, "exchange.market", { op: `${job}-run`, ok: false, error: redact(error.message || error) });
+    audit(config, req, "exchange.market", { op: `${job}-run`, ok: false, error: redact(error?.message || "Unexpected error.") });
     const payload = apiErrorPayload(error, 400);
     return json(res, payload.status, payload.body);
   }
@@ -1324,7 +1324,7 @@ async function safeCommand(operation, payload = {}) {
     const result = await runDune(config, args);
     return { operation, stdout: result.stdout, stderr: result.stderr, exitCode: result.code };
   } catch (error) {
-    return { operation, stdout: redact(error.stdout || ""), stderr: redact(error.stderr || error.message || error), exitCode: error.code || 1 };
+    return { operation, stdout: redact(error.stdout || ""), stderr: redact(error.stderr || error?.message || "Unexpected error."), exitCode: error.code || 1 };
   }
 }
 
@@ -1550,7 +1550,7 @@ async function dbJson(res, fn) {
 }
 
 function apiErrorPayload(error, fallbackStatus = 500) {
-  const rawMessage = String(error?.message || error || "");
+  const rawMessage = String(error?.message || "Unexpected error.");
   if (isPostgresUnavailableError(error, rawMessage)) {
     return {
       status: 503,
@@ -1560,13 +1560,24 @@ function apiErrorPayload(error, fallbackStatus = 500) {
   const message = redact(friendlyJsonError(rawMessage));
   return {
     status: error?.statusCode || fallbackStatus,
-    body: { error: message, reason: message, details: error?.details || undefined }
+    body: { error: message, reason: message }
   };
 }
 
 function isPostgresUnavailableError(error, rawMessage = "") {
+  // Note: error?.code === "ECONNREFUSED" and the generic "connect
+  // ECONNREFUSED" regex below already catch every real case regardless
+  // of which port Postgres is configured on -- this specific-port regex
+  // is effectively redundant, but is kept (now port-aware instead of
+  // hardcoded to the stock port 15432) for clearer log/error matching on
+  // deployments with a non-default configured Postgres port. Pass
+  // config.repoRoot explicitly rather than relying on resolvePorts()'s
+  // process.cwd() default coincidentally matching it -- postgres itself
+  // is env-var-only so this doesn't change behavior today, but avoids
+  // depending on that coincidence for any future profile-backed field.
+  const postgresPort = resolvePorts(process.env, config.repoRoot).postgres;
   return error?.code === "ECONNREFUSED"
-    || /ECONNREFUSED.*127\.0\.0\.1:15432/i.test(rawMessage)
+    || new RegExp(`ECONNREFUSED.*127\\.0\\.0\\.1:${postgresPort}`, "i").test(rawMessage)
     || /connect\s+ECONNREFUSED/i.test(rawMessage);
 }
 
@@ -1587,7 +1598,7 @@ async function exportJson(res, filename, fn) {
     res.end(JSON.stringify(data, null, 2));
   } catch (error) {
     const status = error.unsupported ? 501 : 500;
-    json(res, status, { supported: false, error: redact(error.message || error), reason: redact(error.message || error), details: error.details || undefined });
+    json(res, status, { supported: false, error: redact(error?.message || "Unexpected error."), reason: redact(error?.message || "Unexpected error.") });
   }
 }
 
@@ -1624,7 +1635,7 @@ async function task(req, res, type, operation, payload) {
   try {
     buildDuneArgs(operation, payload);
   } catch (error) {
-    return json(res, 400, { error: redact(error.message || error) });
+    return json(res, 400, { error: redact(error?.message || "Unexpected error.") });
   }
   if (await maybeQueueRestart(req, res, type, operation, payload)) return;
   audit(config, req, `task.${operation}`, payload);
@@ -1740,7 +1751,7 @@ async function executeRestartEntry(entry) {
     tasks.create(entry.type || "server", entry.operation, entry.payload || {});
     restartQueue.removeEntry(config, entry.id);
   } catch (error) {
-    console.error(`Restart queue execution failed for ${entry.operation}: ${redact(error.message || error)}`);
+    console.error(`Restart queue execution failed for ${entry.operation}: ${redact(error?.message || "Unexpected error.")}`);
   }
 }
 
@@ -1794,7 +1805,7 @@ async function restartQueueAutoTick() {
         } catch (error) {
           // Leave the mark unrecorded so the next tick retries it. Infra errors
           // (RabbitMQ/container down) are expected transiently during a restart.
-          const message = String(error?.message || error);
+          const message = String(error?.message || "Unexpected error.");
           if (!/publish|rabbitmq|docker|container|ECONNREFUSED|ECONNRESET/i.test(message)) {
             console.error(`Restart queue warning failed: ${redact(message)}`);
           }
@@ -1881,7 +1892,7 @@ async function restartQueueSaveRoute(req, res) {
     });
     return json(res, 200, { ok: true, ...result, state: restartQueue.publicState(config) });
   } catch (error) {
-    return json(res, 400, { error: redact(error.message || error) });
+    return json(res, 400, { error: redact(error?.message || "Unexpected error.") });
   }
 }
 
@@ -1915,7 +1926,7 @@ async function characterTransferSettingsRoute(req, res) {
     audit(config, req, "admin.character-transfer-settings.save", { restoreDefaults: Boolean(body.restoreDefaults), settings: result.settings });
     return json(res, 202, { ok: true, settings: result.settings, path: result.path, task: tasks.create("server", "restartService", payload) });
   } catch (error) {
-    return json(res, error.statusCode || 500, { error: redact(error.message || error) });
+    return json(res, error.statusCode || 500, { error: redact(error?.message || "Unexpected error.") });
   }
 }
 
@@ -1951,8 +1962,8 @@ async function messageOfTheDayRoute(req, res) {
       }
     });
   } catch (error) {
-    audit(config, req, "admin.message-of-the-day.save", { supported: false, error: redact(error.message || error) });
-    return json(res, error.statusCode || 400, { error: redact(error.message || error) });
+    audit(config, req, "admin.message-of-the-day.save", { supported: false, error: redact(error?.message || "Unexpected error.") });
+    return json(res, error.statusCode || 400, { error: redact(error?.message || "Unexpected error.") });
   }
 }
 
@@ -1977,8 +1988,8 @@ async function playerAnnouncementsRoute(req, res) {
     });
     return json(res, 200, { ok: true, ...result });
   } catch (error) {
-    audit(config, req, "admin.player-announcements.save", { supported: false, error: redact(error.message || error) });
-    return json(res, error.statusCode || 400, { error: redact(error.message || error) });
+    audit(config, req, "admin.player-announcements.save", { supported: false, error: redact(error?.message || "Unexpected error.") });
+    return json(res, error.statusCode || 400, { error: redact(error?.message || "Unexpected error.") });
   }
 }
 
@@ -2001,7 +2012,7 @@ async function landsraadRoute(req, res, action) {
     audit(config, req, `admin.landsraad.${action}`, { ...body, ok: true });
     return json(res, 200, result);
   } catch (error) {
-    audit(config, req, `admin.landsraad.${action}`, { ...body, ok: false, error: redact(error.message || error) });
+    audit(config, req, `admin.landsraad.${action}`, { ...body, ok: false, error: redact(error?.message || "Unexpected error.") });
     const payload = apiErrorPayload(error, error.unsupported ? 501 : 400);
     return json(res, payload.status, { supported: false, ...payload.body });
   }
@@ -2038,7 +2049,7 @@ async function memorySwapStatusRoute(res) {
     const result = await runDune(config, buildDuneArgs("memorySwapStatus"), { timeoutMs: 15000 });
     return json(res, 200, parseMemorySwapStatus(result.stdout));
   } catch (error) {
-    return json(res, 500, { error: redact(error.message || error) });
+    return json(res, 500, { error: redact(error?.message || "Unexpected error.") });
   }
 }
 
@@ -2106,7 +2117,7 @@ async function userSettingsSchemaRoute(res) {
     const result = await runDune(config, buildDuneArgs("userSettingsMetadata"), { timeoutMs: 8000 });
     return json(res, 200, JSON.parse(result.stdout || "{}"));
   } catch (error) {
-    return json(res, 500, { error: redact(error.message || error) });
+    return json(res, 500, { error: redact(error?.message || "Unexpected error.") });
   }
 }
 
@@ -2127,7 +2138,7 @@ async function userSettingsRawRoute(res, url) {
     const result = await runDune(config, buildDuneArgs(operation, { map, partitionId }), { timeoutMs: 8000, redactOutput: false });
     return json(res, 200, { content: result.stdout || "" });
   } catch (error) {
-    return json(res, 500, { error: redact(error.message || error) });
+    return json(res, 500, { error: redact(error?.message || "Unexpected error.") });
   }
 }
 
@@ -2150,7 +2161,7 @@ async function userSettingsValuesRoute(res, url) {
     const result = await runDune(config, buildDuneArgs(operation, { map, partitionId }), { timeoutMs: 8000 });
     return json(res, 200, { stdout: result.stdout || "" });
   } catch (error) {
-    return json(res, 500, { error: redact(error.message || error) });
+    return json(res, 500, { error: redact(error?.message || "Unexpected error.") });
   }
 }
 
@@ -2267,7 +2278,7 @@ async function liveMapMemoryRoute(res) {
     const snapshot = await memoryBalancer.readLiveSnapshot();
     return json(res, 200, { rows: snapshot.rows, sampledAt: snapshot.sampledAt });
   } catch (error) {
-    return json(res, 200, { rows: [], sampledAt: new Date().toISOString(), error: redact(error.message || error) });
+    return json(res, 200, { rows: [], sampledAt: new Date().toISOString(), error: redact(error?.message || "Unexpected error.") });
   }
 }
 
@@ -2416,8 +2427,8 @@ async function carePackageConfigRoute(req, res) {
     audit(config, req, "care-package.config", { supported: true, enabled: saved.enabled, version: saved.version, itemCount: saved.items.length, xp: saved.xp });
     return json(res, 200, saved);
   } catch (error) {
-    audit(config, req, "care-package.config", { supported: false, error: redact(error.message || error) });
-    return json(res, 400, { error: redact(error.message || error) });
+    audit(config, req, "care-package.config", { supported: false, error: redact(error?.message || "Unexpected error.") });
+    return json(res, 400, { error: redact(error?.message || "Unexpected error.") });
   }
 }
 
@@ -2430,7 +2441,7 @@ async function carePackageEnableRoute(req, res, enabled) {
     audit(config, req, enabled ? "care-package.enable" : "care-package.disable", { supported: true, version: saved.version });
     return json(res, 200, saved);
   } catch (error) {
-    return json(res, 400, { error: redact(error.message || error) });
+    return json(res, 400, { error: redact(error?.message || "Unexpected error.") });
   }
 }
 
@@ -2443,7 +2454,7 @@ async function carePackageGrantRoute(req, res, path) {
     audit(config, req, "care-package.grant", { supported: true, playerId, ok: result.ok, grantId: result.id });
     return json(res, result.ok ? 200 : 207, result);
   } catch (error) {
-    audit(config, req, "care-package.grant", { supported: false, playerId, error: redact(error.message || error) });
+    audit(config, req, "care-package.grant", { supported: false, playerId, error: redact(error?.message || "Unexpected error.") });
     const payload = apiErrorPayload(error, 400);
     return json(res, payload.status, payload.body);
   }
@@ -2472,7 +2483,7 @@ async function carePackageGrantEligibleRoute(req, res) {
     audit(config, req, "care-package.grant-eligible", { supported: true, granted: result.granted, skipped: result.skipped, failed: result.failed });
     return json(res, result.failed ? 207 : 200, result);
   } catch (error) {
-    audit(config, req, "care-package.grant-eligible", { supported: false, error: redact(error.message || error) });
+    audit(config, req, "care-package.grant-eligible", { supported: false, error: redact(error?.message || "Unexpected error.") });
     const payload = apiErrorPayload(error, 400);
     return json(res, payload.status, payload.body);
   }
@@ -2488,7 +2499,7 @@ async function carePackageRunRoute(req, res) {
     audit(config, req, "care-package.run", { supported: true, ...result, results: undefined });
     return json(res, result.failed ? 207 : 200, result);
   } catch (error) {
-    audit(config, req, "care-package.run", { supported: false, error: redact(error.message || error) });
+    audit(config, req, "care-package.run", { supported: false, error: redact(error?.message || "Unexpected error.") });
     const payload = apiErrorPayload(error, 400);
     return json(res, payload.status, payload.body);
   }
@@ -2501,7 +2512,7 @@ async function carePackageRetryRoute(req, res, path) {
     audit(config, req, "care-package.retry", { supported: true, grantId, ok: result.ok, retryGrantId: result.id });
     return json(res, result.ok ? 200 : 207, result);
   } catch (error) {
-    audit(config, req, "care-package.retry", { supported: false, grantId, error: redact(error.message || error) });
+    audit(config, req, "care-package.retry", { supported: false, grantId, error: redact(error?.message || "Unexpected error.") });
     const payload = apiErrorPayload(error, 400);
     return json(res, payload.status, payload.body);
   }
@@ -2516,8 +2527,8 @@ async function carePackageClearHistoryRoute(req, res) {
     audit(config, req, "care-package.history-clear", { supported: true, removed: result.removed });
     return json(res, 200, result);
   } catch (error) {
-    audit(config, req, "care-package.history-clear", { supported: false, error: redact(error.message || error) });
-    return json(res, 400, { error: redact(error.message || error) });
+    audit(config, req, "care-package.history-clear", { supported: false, error: redact(error?.message || "Unexpected error.") });
+    return json(res, 400, { error: redact(error?.message || "Unexpected error.") });
   }
 }
 
@@ -2635,7 +2646,7 @@ async function blueprintExportRoute(req, res, path) {
     writeJsonAttachment(res, data, filename);
   } catch (error) {
     const status = error.unsupported ? 501 : 500;
-    return json(res, status, { ok: false, error: redact(error.message || error) });
+    return json(res, status, { ok: false, error: redact(error?.message || "Unexpected error.") });
   }
 }
 
@@ -2650,7 +2661,7 @@ async function baseBlueprintDownloadRoute(req, res, path) {
     writeJsonAttachment(res, data, filename);
   } catch (error) {
     const status = error.unsupported ? 501 : 500;
-    return json(res, status, { ok: false, error: redact(error.message || error) });
+    return json(res, status, { ok: false, error: redact(error?.message || "Unexpected error.") });
   }
 }
 
@@ -2684,7 +2695,7 @@ async function basePermissionsRoute(res, path) {
     return json(res, 200, { supported: true, ...(await duneDb.listBasePermissions(db, baseId)) });
   } catch (error) {
     const status = error.unsupported ? 501 : 400;
-    return json(res, status, { supported: false, error: redact(error.message || error), reason: redact(error.message || error) });
+    return json(res, status, { supported: false, error: redact(error?.message || "Unexpected error."), reason: redact(error?.message || "Unexpected error.") });
   }
 }
 
@@ -2697,7 +2708,7 @@ async function basePermissionCandidatesRoute(res, url) {
     return json(res, 200, { supported: true, rows });
   } catch (error) {
     const status = error.unsupported ? 501 : 400;
-    return json(res, status, { supported: false, rows: [], error: redact(error.message || error), reason: redact(error.message || error) });
+    return json(res, status, { supported: false, rows: [], error: redact(error?.message || "Unexpected error."), reason: redact(error?.message || "Unexpected error.") });
   }
 }
 
@@ -2808,7 +2819,7 @@ async function baseAutoRefillToggleRoute(req, res, path) {
     audit(config, req, "bases.auto-refill", { baseId, enabled: result.enabled, total: result.total });
     return json(res, 200, result);
   } catch (error) {
-    return json(res, 400, { ok: false, error: redact(error?.message || error) });
+    return json(res, 400, { ok: false, error: redact(error?.message || "Unexpected error.") });
   }
 }
 
@@ -2826,7 +2837,7 @@ async function baseWaterRoute(res, path) {
     // Retry always has something it could fix.
     return json(res, 200, await duneDb.baseWater(db, baseId));
   } catch (error) {
-    return json(res, 500, { supported: false, error: redact(error.message || error), reason: redact(error.message || error) });
+    return json(res, 500, { supported: false, error: redact(error?.message || "Unexpected error."), reason: redact(error?.message || "Unexpected error.") });
   }
 }
 
@@ -2850,7 +2861,7 @@ async function baseInventoryRoute(res, path) {
     // Nothing reaching here is the caller's fault: the id is already validated
     // and an unsupported schema returns a 200 above, so what is left is a query
     // or connection failure.
-    return json(res, 500, { supported: false, error: redact(error.message || error), reason: redact(error.message || error) });
+    return json(res, 500, { supported: false, error: redact(error?.message || "Unexpected error."), reason: redact(error?.message || "Unexpected error.") });
   }
 }
 
@@ -2934,9 +2945,28 @@ async function baseAutoRefillWaterToggleRoute(req, res, path) {
   try {
     const result = setBaseAutoRefillWater(config.repoRoot, baseId, body.enabled);
     audit(config, req, "bases.auto-refill-water", { baseId, enabled: result.enabled, total: result.total });
-    return json(res, 200, result);
+    if (!result.newlyEnabled) return json(res, 200, result);
+
+    try {
+      const initialCheck = await autoRefillWaterScheduler.scanNow(baseId);
+      return json(res, 200, { ...result, initialCheck });
+    } catch (error) {
+      // Enrollment was saved successfully. Report the failed first check
+      // separately so the UI does not falsely switch the toggle back off; the
+      // normal daily scheduler remains armed and will retry it.
+      return json(res, 200, {
+        ...result,
+        initialCheck: {
+          status: "fail",
+          detail: redact(error?.message || "Unexpected error."),
+          checked: 0,
+          queued: 0,
+          failures: 1
+        }
+      });
+    }
   } catch (error) {
-    return json(res, 400, { ok: false, error: redact(error?.message || error) });
+    return json(res, 400, { ok: false, error: redact(error?.message || "Unexpected error.") });
   }
 }
 
@@ -2969,7 +2999,7 @@ async function blueprintBulkExportRoute(req, res) {
     res.end(archive);
   } catch (error) {
     const status = error.unsupported ? 501 : 500;
-    return json(res, status, { ok: false, error: redact(error.message || error) });
+    return json(res, status, { ok: false, error: redact(error?.message || "Unexpected error.") });
   }
 }
 
@@ -2998,8 +3028,8 @@ async function blueprintImportRoute(req, res) {
     audit(config, req, "blueprints.import", { playerPawnId, result });
     return json(res, 200, result);
   } catch (error) {
-    if (error.unsupported) return json(res, 501, { supported: false, error: redact(error.message || error) });
-    return json(res, 500, { ok: false, error: redact(error.message || error) });
+    if (error.unsupported) return json(res, 501, { supported: false, error: redact(error?.message || "Unexpected error.") });
+    return json(res, 500, { ok: false, error: redact(error?.message || "Unexpected error.") });
   }
 }
 
@@ -3016,8 +3046,8 @@ async function blueprintsDeleteRoute(req, res, path) {
     audit(config, req, "blueprints.delete", { blueprintId: id, result });
     return json(res, result.ok ? 200 : 404, result);
   } catch (error) {
-    if (error.unsupported) return json(res, 501, { supported: false, error: redact(error.message || error) });
-    return json(res, 500, { ok: false, error: redact(error.message || error) });
+    if (error.unsupported) return json(res, 501, { supported: false, error: redact(error?.message || "Unexpected error.") });
+    return json(res, 500, { ok: false, error: redact(error?.message || "Unexpected error.") });
   }
 }
 
@@ -3033,8 +3063,8 @@ async function directDbMutation(req, res, action, phrase, fn, meta = {}) {
     return json(res, 200, { supported: true, backupCreated: false, result });
   } catch (error) {
     const status = error.unsupported ? 501 : 400;
-    audit(config, req, action, { ...meta, supported: false, error: redact(error.message || error) });
-    return json(res, status, { supported: false, error: redact(error.message || error), reason: redact(error.message || error), details: error.details || undefined });
+    audit(config, req, action, { ...meta, supported: false, error: redact(error?.message || "Unexpected error.") });
+    return json(res, status, { supported: false, error: redact(error?.message || "Unexpected error."), reason: redact(error?.message || "Unexpected error.") });
   }
 }
 
@@ -3054,7 +3084,7 @@ async function giveItemsRoute(req, res, path) {
     try {
       results.push({ index, ...(await grantPlayerItem(playerId, item, target)) });
     } catch (error) {
-      results.push({ index, ok: false, item, error: redact(error.message || error) });
+      results.push({ index, ok: false, item, error: redact(error?.message || "Unexpected error.") });
     }
   }
   const ok = results.every((result) => result.ok);
@@ -3087,8 +3117,8 @@ async function giveSingleItemRoute(req, res, path, operation) {
     audit(config, req, operation === "adminGiveItemId" ? "players.give-item-id" : "players.give-item", { playerId, ok: result.ok, result });
     return json(res, result.ok ? 200 : 207, result);
   } catch (error) {
-    audit(config, req, operation === "adminGiveItemId" ? "players.give-item-id" : "players.give-item", { playerId, ok: false, error: redact(error.message || error) });
-    return json(res, 400, { ok: false, error: redact(error.message || error) });
+    audit(config, req, operation === "adminGiveItemId" ? "players.give-item-id" : "players.give-item", { playerId, ok: false, error: redact(error?.message || "Unexpected error.") });
+    return json(res, 400, { ok: false, error: redact(error?.message || "Unexpected error.") });
   }
 }
 
@@ -3139,8 +3169,8 @@ async function buildingUnlockGrantRoute(req, res, path) {
     audit(config, req, "players.building-unlocks.grant", { playerId, itemId: resolved.itemId, status, ok: result.ok });
     return json(res, result.ok ? 200 : 207, { ok: result.ok, status, item: resolved, result });
   } catch (error) {
-    audit(config, req, "players.building-unlocks.grant", { playerId, itemId: body.itemId, ok: false, error: redact(error.message || error) });
-    return json(res, 400, { ok: false, error: redact(error.message || error) });
+    audit(config, req, "players.building-unlocks.grant", { playerId, itemId: body.itemId, ok: false, error: redact(error?.message || "Unexpected error.") });
+    return json(res, 400, { ok: false, error: redact(error?.message || "Unexpected error.") });
   }
 }
 
@@ -3221,7 +3251,7 @@ async function augmentNewestPlayerItemWithRetry(actorId, templateId, options) {
       lastError = new Error(`${templateId} augment patch was overwritten or incomplete; retrying`);
     } catch (error) {
       lastError = error;
-      if (!/new inventory row was not found/i.test(String(error?.message || error))) throw error;
+      if (!/new inventory row was not found/i.test(String(error?.message || "Unexpected error."))) throw error;
     }
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 500));
   }
@@ -3250,9 +3280,9 @@ async function broadcastRoute(req, res) {
     recordAdminHistory(config, { command: "web-broadcast", target: "all", friendly: body.title || "Broadcast", path: "rmq:heartbeats/notifications", result: "published", message });
     return json(res, 200, { supported: true, ok: true, stdout: result.stdout, stderr: result.stderr, note: "Broadcast was published to RabbitMQ." });
   } catch (error) {
-    audit(config, req, "admin.broadcast", { supported: false, error: redact(error.message || error) });
+    audit(config, req, "admin.broadcast", { supported: false, error: redact(error?.message || "Unexpected error.") });
     recordAdminHistory(config, { command: "web-broadcast", target: "all", friendly: body.title || "Broadcast", path: "rmq:heartbeats/notifications", result: "blocked", message });
-    return json(res, 400, { supported: false, error: redact(error.message || error), reason: redact(error.message || error) });
+    return json(res, 400, { supported: false, error: redact(error?.message || "Unexpected error."), reason: redact(error?.message || "Unexpected error.") });
   }
 }
 
@@ -3279,7 +3309,7 @@ async function mapChatRoute(req, res) {
     recordAdminHistory(config, { command: "web-map-chat", target, friendly: "Map Chat", path: "rmq:chat.map", result: "published", message });
     return json(res, 200, { supported: true, ok: true, stdout: result.stdout, stderr: result.stderr || "", note: `Map chat message was sent to ${recipients.length} online player${recipients.length === 1 ? "" : "s"}.`, recipients: recipients.length });
   } catch (error) {
-    const reason = redact(String(error.message || error).replaceAll("Care Package message whisper", "Map chat"));
+    const reason = redact(String(error?.message || "Unexpected error.").replaceAll("Care Package message whisper", "Map chat"));
     audit(config, req, "admin.map-chat", { supported: false, error: reason });
     recordAdminHistory(config, { command: "web-map-chat", target: `${mapName}.${dimension}`, friendly: "Map Chat", path: "rmq:chat.map", result: "blocked", message });
     return json(res, 400, { supported: false, error: reason, reason });
@@ -3352,9 +3382,9 @@ async function shutdownBroadcastRoute(req, res) {
     recordAdminHistory(config, { command: "web-shutdown-broadcast", target: "all", friendly: "Shutdown broadcast publish test", path: "rmq:heartbeats/notifications", result: "published", message: `${body.shutdownType || "Restart"} in ${body.delayMinutes || 15} minutes` });
     return json(res, 200, { supported: true, ok: true, stdout: result.stdout, stderr: result.stderr, note: "Shutdown broadcast publish succeeded, but in-game visibility is unverified." });
   } catch (error) {
-    audit(config, req, "admin.broadcast-shutdown", { supported: false, error: redact(error.message || error) });
+    audit(config, req, "admin.broadcast-shutdown", { supported: false, error: redact(error?.message || "Unexpected error.") });
     recordAdminHistory(config, { command: "web-shutdown-broadcast", target: "all", friendly: "Shutdown broadcast publish test", path: "rmq:heartbeats/notifications", result: "blocked", message: `${body.shutdownType || "Restart"} in ${body.delayMinutes || 15} minutes` });
-    return json(res, 400, { supported: false, error: redact(error.message || error), reason: redact(error.message || error) });
+    return json(res, 400, { supported: false, error: redact(error?.message || "Unexpected error."), reason: redact(error?.message || "Unexpected error.") });
   }
 }
 
@@ -3386,7 +3416,7 @@ async function logsRoute(req, res, path) {
       });
       res.end(result.stdout || result.stderr || "");
     } catch (error) {
-      json(res, 500, { error: redact(error.stdout || error.message || error) });
+      json(res, 500, { error: redact(error.stdout || error?.message || "Unexpected error.") });
     }
     return;
   }
@@ -3581,7 +3611,7 @@ async function carePackageAutoTick() {
   try {
     kit = carePackageConfig(config);
   } catch (error) {
-    console.error(`Care Package auto-grant config read failed: ${redact(error.message || error)}`);
+    console.error(`Care Package auto-grant config read failed: ${redact(error?.message || "Unexpected error.")}`);
     return;
   }
   const hasEnabledRule = Array.isArray(kit.autoGrantRules) && kit.autoGrantRules.some((rule) => rule.enabled);
@@ -3603,7 +3633,7 @@ async function carePackageAutoTick() {
     carePackageAutoNextAllowedRun = 0;
   } catch (error) {
     carePackageAutoNextAllowedRun = Date.now() + BACKGROUND_SCAN_FAILURE_BACKOFF_MS;
-    console.error(`Care Package auto-grant scan failed: ${redact(error.message || error)}`);
+    console.error(`Care Package auto-grant scan failed: ${redact(error?.message || "Unexpected error.")}`);
   } finally {
     carePackageAutoRunning = false;
   }
@@ -3618,7 +3648,7 @@ async function messageOfTheDayAutoTick() {
     settings = readMessageOfTheDay(config).settings;
   } catch (error) {
     messageOfTheDayAutoNextAllowedRun = Date.now() + BACKGROUND_SCAN_FAILURE_BACKOFF_MS;
-    console.error(`Message of the Day config read failed: ${redact(error.message || error)}`);
+    console.error(`Message of the Day config read failed: ${redact(error?.message || "Unexpected error.")}`);
     return;
   }
   if (!settings.enabled || !String(settings.message || "").trim()) return;
@@ -3635,7 +3665,7 @@ async function messageOfTheDayAutoTick() {
     messageOfTheDayAutoNextAllowedRun = 0;
   } catch (error) {
     messageOfTheDayAutoNextAllowedRun = Date.now() + BACKGROUND_SCAN_FAILURE_BACKOFF_MS;
-    const message = String(error.message || error);
+    const message = String(error?.message || "Unexpected error.");
     try {
       recordMessageOfTheDayScanFailure(config, error);
     } catch (statusError) {
@@ -3656,7 +3686,7 @@ async function playerAnnouncementsAutoTick() {
     settings = readPlayerAnnouncements(config).settings;
   } catch (error) {
     playerAnnouncementsAutoNextAllowedRun = Date.now() + BACKGROUND_SCAN_FAILURE_BACKOFF_MS;
-    console.error(`Player announcement config read failed: ${redact(error.message || error)}`);
+    console.error(`Player announcement config read failed: ${redact(error?.message || "Unexpected error.")}`);
     return;
   }
   if (!settings.joinEnabled && !settings.leaveEnabled) return;
@@ -3673,7 +3703,7 @@ async function playerAnnouncementsAutoTick() {
     playerAnnouncementsAutoNextAllowedRun = 0;
   } catch (error) {
     playerAnnouncementsAutoNextAllowedRun = Date.now() + BACKGROUND_SCAN_FAILURE_BACKOFF_MS;
-    const message = String(error.message || error);
+    const message = String(error?.message || "Unexpected error.");
     if (/connect|database|relation|container|rabbitmq|docker|ECONNREFUSED/i.test(message)) return;
     console.error(`Player announcement scan failed: ${redact(message)}`);
   } finally {
@@ -3745,7 +3775,7 @@ async function publicDirectoryClaimRoute(req, res) {
       message: "Listing Claimed Successfully"
     });
   } catch (error) {
-    return json(res, 400, { error: error instanceof Error ? error.message : String(error) });
+    return json(res, 400, { error: error?.message || "Unexpected error." });
   }
 }
 
@@ -3766,8 +3796,8 @@ async function saveServerFuncomToken(req, res) {
 async function funcomTokenCheckRoute(req, res, url) {
   const since = validDockerSince(url.searchParams.get("since")) || "5m";
   const logs = await Promise.all([
-    runDockerLogs("director", { since, tail: 600, timeoutMs: 10000 }).catch((error) => ({ stdout: "", stderr: error.message || String(error) })),
-    runDockerLogs("gateway", { since, tail: 600, timeoutMs: 10000 }).catch((error) => ({ stdout: "", stderr: error.message || String(error) }))
+    runDockerLogs("director", { since, tail: 600, timeoutMs: 10000 }).catch((error) => ({ stdout: "", stderr: error?.message || "Unexpected error." })),
+    runDockerLogs("gateway", { since, tail: 600, timeoutMs: 10000 }).catch((error) => ({ stdout: "", stderr: error?.message || "Unexpected error." }))
   ]);
   const text = logs.map((result) => `${result.stdout || ""}\n${result.stderr || ""}`).join("\n");
   const mismatch = funcomAuthMismatchDetected(text);

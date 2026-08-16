@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createAuth, clearSessionCookie, setSessionCookie, json } from "../src/auth.js";
+import { createAuth, clearSessionCookie, setSessionCookie, json, serializeJsonResponse } from "../src/auth.js";
 
 test("auth creates readable signed sessions", () => {
   const auth = createAuth({ sessionSecret: "secret", adminPassword: "admin", authDisabled: false });
@@ -64,6 +64,11 @@ test("json responses include defensive browser headers", () => {
   assert.equal(res.headers["x-frame-options"], "DENY");
   assert.equal(res.headers["referrer-policy"], "no-referrer");
   assert.match(res.headers["permissions-policy"], /camera=\(\)/);
+});
+
+test("json response serialization preserves ordinary public payloads", () => {
+  const output = serializeJsonResponse({ ok: true, result: { status: "ready" } });
+  assert.deepEqual(JSON.parse(output), { ok: true, result: { status: "ready" } });
 });
 
 function fakeResponse() {

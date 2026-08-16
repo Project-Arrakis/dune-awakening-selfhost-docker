@@ -35,6 +35,10 @@ const SPECIALIZATION_CUMULATIVE_XP_BY_LEVEL = [
 ];
 
 const FACTION_TIER_THRESHOLDS = [0, 99, 249, 499, 999, 1999, 2224, 2524, 2899, 3349, 3874, 4474, 5149, 5899, 6724, 7624, 8599, 9649, 10774, 11974, 12474];
+const FACTION_REPUTATION_PROMOTION_NODES = [
+  "DA_FQ_ClimbTheRanks.Rank5To20.CompleteLandsraadMission.CompleteOnboardingJourney1",
+  "DA_FQ_ClimbTheRanks.Rank5To20.CraftAugmentation.CompleteOnboardingJourney2"
+];
 
 const RECIPE_DISPLAY_ALIASES = new Map([
   ["AssaultRifleRecipe", "Karpov 38"]
@@ -218,6 +222,47 @@ export function factionProgressionRankLimit(tags, factionName) {
     if (match) limit = Math.max(limit, Number(match[1]));
   }
   return limit >= 5 ? null : limit;
+}
+
+export function factionProgressionRepairPlan(tags, factionName, completedNodeIds = [], journeyTagsData = {}) {
+  const name = String(factionName || "").trim();
+  if (!/^(Atreides|Harkonnen)$/.test(name)) return { earnedTier: 0, currentTier: 0, missingTags: [], evidenceNodeIds: [] };
+  const currentTags = new Set((tags || []).map((tag) => String(tag || "")));
+  const completed = new Set((completedNodeIds || []).map((nodeId) => String(nodeId || "")));
+  const tierPattern = new RegExp(`^Faction\\.${name}\\.Tier([0-5])$`);
+  let currentTier = 0;
+  for (const tag of currentTags) {
+    const match = tierPattern.exec(tag);
+    if (match) currentTier = Math.max(currentTier, Number(match[1]));
+  }
+
+  let earnedTier = currentTier;
+  const evidenceNodeIds = [];
+  for (const [nodeId, nodeTags] of Object.entries(journeyTagsData?.journey_node_tags || {})) {
+    if (!completed.has(nodeId)) continue;
+    for (const tag of nodeTags || []) {
+      const match = tierPattern.exec(String(tag || ""));
+      if (!match) continue;
+      earnedTier = Math.max(earnedTier, Number(match[1]));
+      evidenceNodeIds.push(nodeId);
+    }
+  }
+
+  // These are the two completed onboarding objectives that the game uses after
+  // the faction storyline to enable reputation-driven promotion beyond Rank 5.
+  // Requiring both lets repair restore the Tier 5 side effect without completing
+  // story content on behalf of a player who has not actually earned it.
+  if (FACTION_REPUTATION_PROMOTION_NODES.every((nodeId) => completed.has(nodeId))) {
+    earnedTier = Math.max(earnedTier, 5);
+    evidenceNodeIds.push(...FACTION_REPUTATION_PROMOTION_NODES);
+  }
+
+  const missingTags = [];
+  for (let tier = 0; tier <= earnedTier; tier += 1) {
+    const tag = `Faction.${name}.Tier${tier}`;
+    if (!currentTags.has(tag)) missingTags.push(tag);
+  }
+  return { earnedTier, currentTier, missingTags, evidenceNodeIds: [...new Set(evidenceNodeIds)] };
 }
 
 export function factionIdByName(name) {

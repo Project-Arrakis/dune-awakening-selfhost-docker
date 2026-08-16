@@ -237,10 +237,12 @@ test("directory snapshot uses compact database aggregates and local metadata", a
       ready: true,
       playersOnline: 4,
       capacity: 120,
+      capacityConfirmed: true,
       version: "2036754",
       installationKey: readDirectoryInstallationKey(files.repoRoot),
       previousInstallationKey: "",
       sietches: 2,
+      sietchesConfirmed: true,
       discordInvite: "https://discord.gg/Test_Code",
       publicMetadata: {
         modifiers: {},
@@ -270,6 +272,68 @@ test("configured Sietch capacity respects custom caps and active dimensions", ()
       "ShouldUpdatePlayerCountOnFls=false"
     ].join("\n"));
     assert.equal(readConfiguredCapacity(files.repoRoot, 3), 135);
+  } finally {
+    files.cleanup();
+  }
+});
+
+test("missing or incomplete director configuration is not reported as a real 60-player capacity", () => {
+  const files = fixture();
+  try {
+    const path = join(files.repoRoot, "runtime", "director", "config", "director_config.ini");
+    rmSync(path);
+    assert.equal(readConfiguredCapacity(files.repoRoot, 3), null);
+
+    writeFileSync(path, [
+      "[Server]",
+      "PlayerHardCap=60",
+      "ShouldUpdatePlayerCountOnFls=false",
+      "[Survival_1]"
+    ].join("\n"));
+    assert.equal(readConfiguredCapacity(files.repoRoot, 3), null);
+  } finally {
+    files.cleanup();
+  }
+});
+
+test("reporter retains confirmed capacity and Sietch count through a temporary configuration gap", async () => {
+  const files = fixture();
+  const payloads = [];
+  const reporterOptions = {
+    db: fakeDb(),
+    getBattlegroupRunning: () => true,
+    fetchImpl: async (url, options) => {
+      if (url.endsWith("/heartbeat")) payloads.push(JSON.parse(options.body));
+      if (url.endsWith("/claim-status")) return response({ ok: true, claimed: false });
+      return response({ ok: true, nextHeartbeatSeconds: 60, listingClaimed: false });
+    },
+    setTimeoutFn: () => ({ unref() {} })
+  };
+  const config = {
+    repoRoot: files.repoRoot,
+    generatedDir: files.generatedDir,
+    secretsDir: files.secretsDir
+  };
+
+  try {
+    const firstReporter = createPublicDirectoryReporter(config, reporterOptions);
+    await firstReporter.tick();
+    assert.equal(payloads.at(-1).capacity, 120);
+    assert.equal(payloads.at(-1).sietches, 2);
+
+    rmSync(join(files.repoRoot, "runtime", "director", "config", "director_config.ini"));
+    rmSync(join(files.generatedDir, "sietch-config.json"));
+
+    const restartedReporter = createPublicDirectoryReporter(config, {
+      ...reporterOptions,
+      db: null,
+      getBattlegroupRunning: () => false
+    });
+    await restartedReporter.tick();
+
+    assert.equal(payloads.at(-1).capacity, 120);
+    assert.equal(payloads.at(-1).sietches, 2);
+    assert.equal(payloads.at(-1).running, false);
   } finally {
     files.cleanup();
   }

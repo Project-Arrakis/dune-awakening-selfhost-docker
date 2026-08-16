@@ -307,6 +307,18 @@ describe("PlayerSummary", () => {
       expect(screen.queryByText("Sync Required")).not.toBeInTheDocument();
     });
 
+    it("offers faction repair when earned story progression is missing but reputation is synchronized", async () => {
+      const onRepairFactionReputation = vi.fn();
+      vi.mocked(playersApi.factions).mockResolvedValue({
+        rows: [{ faction_id: 1, faction_name: "Atreides", reputation_amount: 12474, estimated_rank: 20, current_rank_limit: 2, rank_limited_by_progression: true, reputation_in_sync: true, progression_repair_available: true, progression_repair_target: 5 }],
+        capabilities: { factions: true, factionRanks: true }
+      });
+      render(<PlayerSummary {...baseProps} detail={{ player: { character_name: "Aurokon", faction: "Atreides" } }} fallback={{}} onRepairFactionReputation={onRepairFactionReputation} />);
+      const repairButton = await screen.findByRole("button", { name: "Repair Faction" });
+      fireEvent.click(repairButton);
+      expect(onRepairFactionReputation).toHaveBeenCalledOnce();
+    });
+
     it("explains directly on the repair control when the player must log out first", async () => {
       vi.mocked(playersApi.factions).mockResolvedValue({
         rows: [{ faction_id: 1, faction_name: "Atreides", reputation_amount: 11600, estimated_rank: 18, reputation_in_sync: false }],

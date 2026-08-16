@@ -13,7 +13,7 @@ const currencyIcon = (label: string): LucideIcon => {
 };
 
 type CurrencyRow = { currency_id: number; balance: number; label?: string };
-type FactionRow = { faction_id: number; faction_name?: string; reputation_amount: number; component_reputation_amount?: number | null; reputation_in_sync?: boolean; estimated_rank?: number; current_rank_limit?: number | null; rank_limited_by_progression?: boolean };
+type FactionRow = { faction_id: number; faction_name?: string; reputation_amount: number; component_reputation_amount?: number | null; reputation_in_sync?: boolean; estimated_rank?: number; current_rank_limit?: number | null; rank_limited_by_progression?: boolean; progression_repair_available?: boolean; progression_repair_target?: number | null };
 type FactionRepairResult = { tone: "success" | "danger" | "neutral"; text: string; pending?: boolean };
 type Progression = { level?: number; xp?: number; totalSkillPoints?: number; unspentSkillPoints?: number };
 type Vitals = { currentHealth: number | null; maxHealth: number; maxHealthEstimated: boolean; hydration: number | null; maxHydration: number; spiceAddictionLevel: number | null; maxSpiceAddictionLevel: number };
@@ -196,12 +196,12 @@ export function PlayerSummary({
                 {row.estimated_rank !== undefined && <span><strong>{row.estimated_rank}</strong> Est. Rank</span>}
                 {row.rank_limited_by_progression && row.current_rank_limit !== null && row.current_rank_limit !== undefined
                   && <span><strong>{row.current_rank_limit}</strong> Story Limit</span>}
-                {row.reputation_in_sync === false && onRepairFactionReputation && <span className="summary-faction-repair-action">
+                {(row.reputation_in_sync === false || row.progression_repair_available) && onRepairFactionReputation && <span className="summary-faction-repair-action">
                   <button
                     type="button"
                     className="summary-faction-repair-button"
                     disabled={factionRepairDisabled || factionRepairResult?.pending}
-                    title={factionRepairDisabled ? "The player must be fully offline before faction reputation can be repaired." : "Synchronize faction reputation with faction vendors."}
+                    title={factionRepairDisabled ? "The player must be fully offline before their faction state can be repaired." : "Restore earned faction progression and synchronize reputation."}
                     onClick={() => void onRepairFactionReputation()}
                   >{factionRepairResult?.pending ? "Repairing…" : factionRepairDisabled ? "Player Must Be Offline" : "Repair Faction"}</button>
                 </span>}

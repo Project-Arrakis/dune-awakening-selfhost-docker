@@ -7,6 +7,7 @@ import { setupApi, type Task } from "../../api/setup";
 import { SecretInput } from "../../components/SecretInput";
 import { InfoTooltip, KeyValueGrid, StatusPill, TechnicalDetails } from "../../components/common/DisplayPrimitives";
 import { firstDefined, formatUiSentence, stripAnsi, summarizeCommandText, titleCase } from "../../lib/display";
+import { refreshServerPorts } from "../../api/serverPorts";
 import { titleCaseWords } from "../players/playerAdminUtils";
 import { pendingRefillCountForMap, pendingRefillCountForPartition, usePendingRefills } from "../../lib/usePendingRefills";
 import type { PendingRefills } from "../../api/bases";
@@ -374,6 +375,7 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
   const [choamSavingKey, setChoamSavingKey] = useState("");
   const [choamResult, setChoamResult] = useState<HomeTaskResult | null>(null);
   const [modifiersOpen, setModifiersOpen] = useState(false);
+  const [modifierSettingsLoaded, setModifierSettingsLoaded] = useState(false);
   const [deferredRestartPending, setDeferredRestartPending] = useState<{ pending: boolean; since?: string; label?: string }>({ pending: false });
   const [clientIniCounts, setClientIniCounts] = useState<{ engine: number | null; game: number | null }>({ engine: null, game: null });
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -665,13 +667,27 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
     const next = await mapsApi.userSettingsSchema();
     setSchema(next);
   }
-  async function loadUserEngine() {
-    const [values, raw] = await Promise.all([mapsApi.userEngine(), mapsApi.rawUserSettings("engine")]);
-    const parsed = parseUserSettingsMap(values.stdout || "");
+  function applyUserEngineValues(stdout: string) {
+    const parsed = parseUserSettingsMap(stdout || "");
     setEngineValues(parsed);
     setEngineDraft(parsed);
+  }
+  async function loadUserEngineValues() {
+    const values = await mapsApi.userEngine();
+    applyUserEngineValues(values.stdout || "");
+  }
+  async function loadUserEngine() {
+    const [values, raw] = await Promise.all([mapsApi.userEngine(), mapsApi.rawUserSettings("engine")]);
+    applyUserEngineValues(values.stdout || "");
     setRawEngine(raw.content || "");
     setRawEngineOriginal(raw.content || "");
+  }
+  async function loadInitialModifierSettings() {
+    // The raw Advanced editor is loaded only when it is opened. Making it part
+    // of this gate would add another command before the normal modifier cards
+    // can be used.
+    await Promise.all([loadSchema(), loadUserEngineValues()]);
+    setModifierSettingsLoaded(true);
   }
   async function loadSelectedEngineSettings(mapName: string, partitionId?: string) {
     if (mapName === "__global__") {
@@ -981,8 +997,10 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
   }
   useEffect(() => {
     run(loadMaps);
-    run(loadSchema);
-    run(loadUserEngine);
+    // Settings have their own readiness path. Live map status can take much
+    // longer (it probes maps, services, readiness, and memory), but none of
+    // that is required to inspect or edit the global UserEngine settings.
+    run(loadInitialModifierSettings);
     run(loadLiveMemory);
     run(loadMemoryBalancer);
     run(() => loadMemorySwap());
@@ -991,6 +1009,7 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
     run(loadSietches);
     run(loadSpicefields);
     void loadCombatState("DeepDesert_1").catch(() => {});
+    void loadCombatState("Survival_1").catch(() => {});
     void refreshDeferredRestartPending();
   }, []);
   useEffect(() => {
@@ -1111,6 +1130,7 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
       void refreshMapRuntime().catch(() => {});
       void loadSietches({ preserveDrafts: true }).catch(() => {});
       void loadCombatState("DeepDesert_1").catch(() => {});
+      void loadCombatState("Survival_1").catch(() => {});
     }, MAP_RUNTIME_REFRESH_MS);
     return () => window.clearInterval(id);
   }, []);
@@ -1121,6 +1141,7 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
       void loadLiveMemory().catch(() => {});
       void loadSietches({ preserveDrafts: true }).catch(() => {});
       void loadCombatState("DeepDesert_1").catch(() => {});
+      void loadCombatState("Survival_1").catch(() => {});
     };
     window.addEventListener("focus", refreshVisibleMaps);
     document.addEventListener("visibilitychange", refreshVisibleMaps);
@@ -1704,6 +1725,14 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
       );
       setRawEngineOriginal(rawEngine);
       await loadUserEngine();
+      // The raw UserEngine.ini editor is the only console-driven path
+      // that can change Port/IGWPort (the structured per-field editor
+      // deliberately excludes them -- see engineFields' filter above),
+      // so refresh the frontend's cached port values after every raw
+      // UserEngine save, not just on next page load. See
+      // api/serverPorts.ts's refreshServerPorts() for why this is
+      // needed.
+      await refreshServerPorts();
     } else {
       await runTaskAndRefresh(
         () => mapsApi.saveRawUserSettings({ scope: "global", map: userGameName || "Survival_1", partitionId: effectiveUserGamePartitionId || undefined, content: rawGame, immediate: choice === "immediate", deferRestart: choice === "manual" }),
@@ -1811,7 +1840,7 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
     downloadText("Engine.ini", result.content || "");
   }
   async function toggleAdvanced() {
-    if (!mapsLoaded) return;
+    if (!modifierSettingsLoaded) return;
     if (advancedOpen) {
       setAdvancedOpen(false);
       return;
@@ -1824,13 +1853,13 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
     setAdvancedOpen(true);
   }
   function toggleModifiers() {
-    if (!mapsLoaded) return;
+    if (!modifierSettingsLoaded) return;
     const nextOpen = !modifiersOpen;
     setModifiersOpen(nextOpen);
     if (nextOpen) setAdvancedOpen(false);
   }
-  const modifiersAvailable = mapsLoaded;
-  const advancedAvailable = mapsLoaded;
+  const modifiersAvailable = modifierSettingsLoaded;
+  const advancedAvailable = modifierSettingsLoaded;
   const runtimeParallelismValue = runtimeSettings?.alwaysOnStartupParallelism ?? 1;
   const runtimeParallelismMax = alwaysOnParallelismLimit(runtimeSettings, hostMemoryProtection, hostMemoryReserveMode, hostMemoryReserve);
   const startupParallelismDirty = Boolean(runtimeSettings) && (Number(startupParallelism) !== runtimeParallelismValue
@@ -1916,6 +1945,9 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
         const primaryDeepDesertName = isDeepDesertRow && primaryDeepDesertPartition
           ? deepDesertPartitionName(primaryDeepDesertPartition, primaryDeepDesertCombatRow)
           : undefined;
+        const primarySietchCombatRow = isSurvivalRow && primarySurvivalSietch
+          ? combatStateByMap["Survival_1"]?.partitions.find((partition) => partition.partitionId === primarySurvivalSietch.partitionId) || null
+          : null;
         const baseStatus = isDeepDesertRow && deepDesertDualConfiguring
           ? "Configuring"
           : isDeepDesertRow && primaryDeepDesertPartition ? partitionStatusById.get(String(primaryDeepDesertPartition.partitionId || "")) || String(primaryDeepDesertPartition.status || row.status || "Not Available")
@@ -1933,7 +1965,7 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
         const rowSietchRestartResultActive = Boolean(rowResultActive && mapsResult && mapsResultScope === "maps" && isSietchRestartResult(mapsResult));
         const rowForceDespawnResultActive = Boolean(rowResultActive && mapsResult && mapsResultScope === "maps" && isForceDespawnResult(mapsResult) && !isDeepDesertDualResult(mapsResult));
         const rowForceSpawnResultActive = Boolean(rowResultActive && mapsResult && mapsResultScope === "maps" && isForceSpawnResult(mapsResult));
-        return <Fragment key={rowName}><tr><td><MapDisplayName mapId={rowName} instanceName={isDeepDesertRow ? primaryDeepDesertName : undefined} sietch={isSurvivalRow ? primarySurvivalSietch : null} draft={isSurvivalRow ? primaryDraft : undefined} /></td><td><MapRuntimeStatus value={displayStatus} detail={row.statusDetail} /></td><td>{String(row.mode || "Not Available")}</td><td><MemoryUsageBar row={memoryRow} fallback={liveMemoryFallback(row)} configuredLimit={row.memory} swapEnabled={Boolean(memorySwap?.enabled)} /></td><td className="actions-column"><button className="stable-action-button" onClick={() => selectMap(row)}>{isSelected ? "Close" : "Edit"}</button></td></tr>
+        return <Fragment key={rowName}><tr><td><MapDisplayName mapId={rowName} instanceName={isDeepDesertRow ? primaryDeepDesertName : undefined} sietch={isSurvivalRow ? primarySurvivalSietch : null} draft={isSurvivalRow ? primaryDraft : undefined} combatState={isSurvivalRow ? primarySietchCombatRow?.configuredState || "UNKNOWN" : undefined} combatRestartRequired={Boolean(primarySietchCombatRow?.configurationDrift)} /></td><td><MapRuntimeStatus value={displayStatus} detail={row.statusDetail} /></td><td>{String(row.mode || "Not Available")}</td><td><MemoryUsageBar row={memoryRow} fallback={liveMemoryFallback(row)} configuredLimit={row.memory} swapEnabled={Boolean(memorySwap?.enabled)} /></td><td className="actions-column"><button className="stable-action-button" onClick={() => selectMap(row)}>{isSelected ? "Close" : "Edit"}</button></td></tr>
           {isSelected && <tr className="inline-edit-row" key={`${rowName}-edit`}><td colSpan={5}>
             <section className="inline-edit-panel">
               <div className="panel-title"><h4>Edit {isDeepDesertRow && primaryDeepDesertName ? primaryDeepDesertName : rowName}</h4></div>
@@ -2048,7 +2080,8 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
             const childResultActive = mapsResultTarget === childTarget;
             const childMapSettingsResultActive = Boolean(childResultActive && mapsResult && mapsResultScope === "maps" && isMapSettingsResult(mapsResult));
             const childSietchRestartResultActive = Boolean(childResultActive && mapsResult && mapsResultScope === "maps" && isSietchRestartResult(mapsResult));
-            return <Fragment key={`sietch-${sietch.partitionId}`}><tr className="sietch-child-row"><td><MapDisplayName mapId="Survival_1" sietch={sietch} draft={draft} /><span className="sietch-child-meta">Partition {sietch.partitionId} / Dimension {sietch.dimension}</span></td><td><MapRuntimeStatus value={childStatus} /></td><td>Sietch</td><td>{sietch.active ? <MemoryUsageBar row={childMemoryRow} fallback={liveMemoryFallback(row)} configuredLimit={sietchMemory} swapEnabled={Boolean(memorySwap?.enabled)} /> : <span className="muted">Unallocated</span>}</td><td className="actions-column"><button className="stable-action-button" onClick={() => selectSietch(sietch)}>{childSelected ? "Close" : "Edit"}</button></td></tr>
+            const childCombatRow = combatStateByMap["Survival_1"]?.partitions.find((partition) => partition.partitionId === sietch.partitionId) || null;
+            return <Fragment key={`sietch-${sietch.partitionId}`}><tr className="sietch-child-row"><td><MapDisplayName mapId="Survival_1" sietch={sietch} draft={draft} combatState={childCombatRow?.configuredState || "UNKNOWN"} combatRestartRequired={Boolean(childCombatRow?.configurationDrift)} /><span className="sietch-child-meta">Partition {sietch.partitionId} / Dimension {sietch.dimension}{childCombatRow?.configurationDrift ? " / Restart required to apply saved PvP-PvE settings" : ""}</span></td><td><MapRuntimeStatus value={childStatus} /></td><td>Sietch</td><td>{sietch.active ? <MemoryUsageBar row={childMemoryRow} fallback={liveMemoryFallback(row)} configuredLimit={sietchMemory} swapEnabled={Boolean(memorySwap?.enabled)} /> : <span className="muted">Unallocated</span>}</td><td className="actions-column"><button className="stable-action-button" onClick={() => selectSietch(sietch)}>{childSelected ? "Close" : "Edit"}</button></td></tr>
               {childSelected && <tr className="inline-edit-row"><td colSpan={5}><section className="inline-edit-panel">
                 <div className="panel-title"><h4>Edit {sietch.displayName}</h4></div>
                 <KeyValueGrid items={[["Partition", sietch.partitionId], ["Dimension", sietch.dimension], ["Status", childStatus], ["Memory", sietchMemory], ["Password", sietch.passwordSet ? "Set" : "Not Set"]]} />
@@ -2087,7 +2120,7 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
       {mapsResult && mapsResultScope === "modifiers" ? <div className="maps-result-slot"><HomeTaskResultCard result={mapsResult} /></div> : null}
     </div>}
     <div className={`playerAdmin_toggle maps-modifiers-toggle ${modifiersOpen && modifiersAvailable ? "open" : ""}`}>
-      <button className="playerAdmin_toggleHeader" disabled={!modifiersAvailable} aria-label={modifiersOpen && modifiersAvailable ? "Collapse Interactive Modifiers" : "Expand Interactive Modifiers"} onClick={toggleModifiers}>{modifiersOpen && modifiersAvailable ? <ChevronUp size={18} /> : <ChevronDown size={18} />}<span>Interactive Modifiers</span></button>
+      <button className="playerAdmin_toggleHeader" disabled={!modifiersAvailable} title={modifiersAvailable ? undefined : "Modifier settings are loading independently of live map status."} aria-label={modifiersOpen && modifiersAvailable ? "Collapse Interactive Modifiers" : "Expand Interactive Modifiers"} onClick={toggleModifiers}>{modifiersOpen && modifiersAvailable ? <ChevronUp size={18} /> : <ChevronDown size={18} />}<span>Interactive Modifiers</span></button>
       {modifiersOpen && modifiersAvailable && <div className="playerAdmin_toggleBody">
       <div className="settings-tabs-row">
         <div className="settings-tabs" role="tablist" aria-label="Interactive modifier editor">
@@ -2387,15 +2420,28 @@ function sietchTargetDisplayName(row: SietchRow, draftDisplayName?: string) {
   return defaultSietchName(row) || row.displayName || `partition ${row.partitionId}`;
 }
 
-function MapDisplayName({ mapId, instanceName, sietch, draft }: { mapId: string; instanceName?: string; sietch?: SietchRow | null; draft?: { password: string } }) {
+function MapDisplayName({ mapId, instanceName, sietch, draft, combatState, combatRestartRequired = false }: { mapId: string; instanceName?: string; sietch?: SietchRow | null; draft?: { password: string }; combatState?: PartitionCombatStateRow["configuredState"]; combatRestartRequired?: boolean }) {
   const passwordSet = sietchHasPassword(sietch, draft);
   const friendlyName = friendlyMapName(mapId);
   const instanceLabel = String(instanceName || sietch?.displayName || "").trim();
   const rawLabel = instanceLabel ? `${mapId}: ${instanceLabel}` : mapId;
+  const combatBadge = combatState ? <CombatStatusBadge state={combatState} restartRequired={combatRestartRequired} /> : null;
   return <span className="map-display-name">
-    <span className="map-display-name-primary">{passwordSet && <Lock size={15} aria-label="Password set" />}<strong>{friendlyName}</strong></span>
-    {hasFriendlyMapName(mapId) && <small className="map-display-name-id">{rawLabel}</small>}
+    <span className="map-display-name-primary">{passwordSet && <Lock size={15} aria-label="Password set" />}<strong>{friendlyName}</strong>{!hasFriendlyMapName(mapId) ? combatBadge : null}</span>
+    {hasFriendlyMapName(mapId) && <span className="map-display-name-details"><small className="map-display-name-id">{rawLabel}</small>{combatBadge}</span>}
   </span>;
+}
+
+export function CombatStatusBadge({ state, restartRequired = false }: { state: PartitionCombatStateRow["configuredState"]; restartRequired?: boolean }) {
+  const normalized = state === "PVP" || state === "PVE" || state === "CONFLICT" ? state : "UNKNOWN";
+  const label = normalized === "PVP" ? "PvP" : normalized === "PVE" ? "PvE" : normalized === "CONFLICT" ? "Conflict" : "Unknown";
+  const detail = normalized === "UNKNOWN"
+    ? "The effective combat setting could not be determined."
+    : normalized === "CONFLICT"
+      ? "The effective PvP/PvE settings conflict."
+      : `Effective combat setting: ${label}.`;
+  const title = restartRequired ? `${detail} Restart required to apply the saved setting.` : detail;
+  return <span className={`combat-status-badge combat-status-${normalized.toLowerCase()}`} title={title} aria-label={`${label} combat status`}>{label}</span>;
 }
 
 export function MapRuntimeStatus({ value, detail }: { value: unknown; detail?: unknown }) {
