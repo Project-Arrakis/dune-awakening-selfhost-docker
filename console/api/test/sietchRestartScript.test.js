@@ -27,6 +27,7 @@ function runFixture(row, args) {
   mkdirSync(bin, { recursive: true });
   copyFileSync(join(repoRoot, "runtime/scripts/sietches.sh"), join(scripts, "sietches.sh"));
   copyFileSync(join(repoRoot, "runtime/scripts/sietch-name.sh"), join(scripts, "sietch-name.sh"));
+  copyFileSync(join(repoRoot, "runtime/scripts/host-file-ownership.sh"), join(scripts, "host-file-ownership.sh"));
   writeFileSync(join(generated, "sietch-config.json"), '{"maps":{"Survival_1":{"active_dimensions":2}},"partitions":{}}\n');
   writeFileSync(calls, "");
 
@@ -162,6 +163,39 @@ test("scaling down removes inactive Sietch rows before publishing topology", () 
   assert.ok(deleteAt >= 0, "missing inactive partition deletion");
   assert.ok(refreshAt > deleteAt, "topology publication must run after inactive partitions are removed");
   assert.match(reconcileSource, /ranked\.ord > \$target\s+and ranked\.server_id = ''/);
+  assert.match(reconcileSource, /\[ "\$target_explicit" = "1" \]/);
+  assert.match(
+    reconcileSource,
+    /while \[ "\$target_explicit" = "1" \] && \[ "\$assigned_count" -gt "\$target" \]/,
+  );
+});
+
+test("Sietch config preflight rejects invalid state without replacing it with defaults", () => {
+  const fixture = mkdtempSync(join(tmpdir(), "dune-sietch-preflight-"));
+  const scripts = join(fixture, "runtime", "scripts");
+  const generated = join(fixture, "runtime", "generated");
+  mkdirSync(scripts, { recursive: true });
+  mkdirSync(generated, { recursive: true });
+  for (const name of ["sietches.sh", "sietch-name.sh", "host-file-ownership.sh"]) {
+    copyFileSync(join(repoRoot, "runtime/scripts", name), join(scripts, name));
+  }
+  const config = join(generated, "sietch-config.json");
+  writeFileSync(config, '{"maps":{"Survival_1":{"active_dimensions":3}}, BROKEN\n');
+
+  const result = spawnSync("bash", ["runtime/scripts/sietches.sh", "preflight"], {
+    cwd: fixture,
+    encoding: "utf8"
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Invalid Sietch configuration/);
+  assert.equal(readFileSync(config, "utf8"), '{"maps":{"Survival_1":{"active_dimensions":3}}, BROKEN\n');
+  rmSync(fixture, { recursive: true, force: true });
+});
+
+test("Sietch config handling fails closed instead of synthesizing defaults for unreadable state", () => {
+  assert.doesNotMatch(sietchesSource, /content='\{[\s\S]*?"maps": \{\}[\s\S]*?mv -f "\$tmp" "\$CONFIG_FILE"/);
+  assert.match(sietchesSource, /Refusing to replace it with defaults because that could remove active Sietches/);
 });
 
 test("Sietch publisher generations supersede loops across PID namespaces", () => {
