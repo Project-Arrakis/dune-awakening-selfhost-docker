@@ -2601,6 +2601,12 @@ test("list bases omits the partition join when world_partition is absent", async
 // dune.base_backup_linked_actors -- it leaves buildings/building_instances/
 // placeables fully intact, so without this exclusion a picked-up base would
 // keep showing up as an ordinary, ownerless base.
+//
+// Both query strings are asserted because the paged rows and the totals are
+// two separate round trips that must describe the same candidate set. They
+// are emitted from one baseCandidateSource() helper in duneDb.js, so this is
+// now a regression test on that helper reaching both call sites rather than a
+// guard against hand-copied clauses drifting apart.
 test("list bases excludes unclaimed, backup-linked bases when base_backup_linked_actors exists", async () => {
   const calls = [];
   const db = {

@@ -3681,6 +3681,24 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
   const backupExclusion = hasBaseBackups
     ? "and not (pa.actor_id is null and exists (select 1 from dune.base_backup_linked_actors bbla where bbla.actor_id = a.id))"
     : "";
+  // What counts as a base, defined once. The paged query (`matched`) and the
+  // totals query (`valid_claims`) run in separate round trips but must agree
+  // exactly on the candidate set -- if they diverge, total_bases/total_pieces/
+  // total_placeables silently stop describing the rows actually being listed.
+  // Emitting both from here makes that divergence unrepresentable rather than
+  // merely tested for. `extraJoin` is the one sanctioned variation: `matched`
+  // needs the owner LATERAL joined before its group-by when searching or
+  // sorting by owner, and that join cannot affect which rows qualify (it is a
+  // LEFT JOIN LATERAL ... ON TRUE returning at most one row).
+  const baseCandidateSource = (extraJoin = "") => `
+        from dune.buildings b
+        join dune.building_instances bi on bi.building_id = b.id
+        join dune.actor_fgl_entities afe on afe.entity_id = bi.owner_entity_id
+        join dune.actors a on a.id = afe.actor_id
+        left join dune.permission_actor pa on pa.actor_id = a.id
+        ${extraJoin}
+        where a.transform is not null
+        ${backupExclusion}`;
   // A base's own a.map is the game's map name ("HaggaBasin"), which cannot tell
   // two instances of it apart. world_partition resolves the partition to the
   // name the rest of the console uses ("Survival_1") plus its dimension --
@@ -3766,14 +3784,7 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
                coalesce(a.partition_id, 0) as partition_id,
                a.transform,
                ${matchedSortSelect}
-        from dune.buildings b
-        join dune.building_instances bi on bi.building_id = b.id
-        join dune.actor_fgl_entities afe on afe.entity_id = bi.owner_entity_id
-        join dune.actors a on a.id = afe.actor_id
-        left join dune.permission_actor pa on pa.actor_id = a.id
-        ${matchedOwnerJoin}
-        where a.transform is not null
-        ${backupExclusion}
+        ${baseCandidateSource(matchedOwnerJoin)}
         group by a.id, a.class, pa.actor_name, ${matchedGroupByOwner}a.map, a.partition_id, a.transform
         ${having}
       ),
@@ -3816,13 +3827,7 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
     const totalsResult = await db.query(`
       with valid_claims as (
         select distinct a.id as actor_id
-        from dune.buildings b
-        join dune.building_instances bi on bi.building_id = b.id
-        join dune.actor_fgl_entities afe on afe.entity_id = bi.owner_entity_id
-        join dune.actors a on a.id = afe.actor_id
-        left join dune.permission_actor pa on pa.actor_id = a.id
-        where a.transform is not null
-        ${backupExclusion}
+        ${baseCandidateSource()}
       )
       select (select count(*) from valid_claims)::int as total_bases,
              (select count(*) from dune.building_instances bi join dune.actor_fgl_entities afe on afe.entity_id = bi.owner_entity_id join valid_claims vc on vc.actor_id = afe.actor_id)::int as total_pieces,
