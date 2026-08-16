@@ -61,6 +61,35 @@ ensure_network() {
   docker network create dune-net >/dev/null 2>&1 || true
 }
 
+# yacketrj/arrakis-control-panel#167: Alertmanager's discord-relay
+# receiver sends this file's contents as its Authorization: Bearer
+# header (see alertmanager.yml). Auto-generate on first use, matching
+# this repo's own established pattern for other cross-process shared
+# secrets (see start-director.sh's RMQ_SECRET_FILE/FLS_APIKEY_FILE
+# handling) -- an existing deployment upgrading to this change must not
+# have `dune metrics start`/`restart` suddenly fail because a bind-mount
+# target doesn't exist yet. Alertmanager starts working immediately with
+# a real, random secret; the operator still needs to copy this same
+# value into the bot's own DUNE_ALERT_RELAY_TOKEN/_FILE config (see
+# docs/runtime/METRICS-ALERTMANAGER-DISCORD-RELAY.md) for the bot to
+# actually enforce it -- until then, the bot's own opt-in/backward-
+# compatible design (arrakis-control-panel#167) means alerting keeps
+# working unauthenticated (with a warning logged bot-side) rather than
+# breaking.
+ensure_alert_relay_token() {
+  local token_file="runtime/secrets/alert-relay-token.txt"
+  if [ ! -s "$token_file" ]; then
+    mkdir -p runtime/secrets
+    openssl rand -hex 32 > "$token_file"
+    chmod 600 "$token_file"
+    echo "Generated $token_file (Alertmanager -> Discord relay auth token)."
+    echo "Copy its contents into the bot's DUNE_ALERT_RELAY_TOKEN (or point"
+    echo "DUNE_ALERT_RELAY_TOKEN_FILE at a copy of this file) to enforce"
+    echo "authentication end-to-end. See"
+    echo "docs/runtime/METRICS-ALERTMANAGER-DISCORD-RELAY.md."
+  fi
+}
+
 print_url() {
   echo "Prometheus: http://127.0.0.1:${prometheus_port}"
 }
@@ -346,6 +375,7 @@ case "$command_name" in
     require_docker
     ensure_compose_file
     ensure_network
+    ensure_alert_relay_token
     echo "Starting Dune metrics stack..."
     compose up -d
     wait_for_prometheus_targets || true
@@ -364,6 +394,7 @@ case "$command_name" in
     require_docker
     ensure_compose_file
     ensure_network
+    ensure_alert_relay_token
     echo "Restarting Dune metrics stack..."
     compose down
     compose up -d
