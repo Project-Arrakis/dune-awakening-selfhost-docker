@@ -78,6 +78,25 @@ test("pins a single bottom-20% roll when the augment catalog is missing", () => 
   }
 });
 
+test("rejects augment schematic grades with no matching augmentation item", () => {
+  const plan = {
+    ...SEED_PLAN,
+    rows: [
+      ...SEED_PLAN.rows,
+      { template_id: "T6_Augment_Armor1_Schematic", display_name: "Concussive Dampening", kind: "schematic", stack_size: 1, price: 1900000, category_mask: 3, category_depth: 2, quality_level: 1, listings: 2, durability_cur: 184, durability_max: 184 }
+    ]
+  };
+  const repoRoot = makeRepoRoot({ plan });
+  try {
+    assert.throws(
+      () => loadMarketSeedPlan({ repoRoot }),
+      /unsupported augment schematic grade: T6_Augment_Armor1_Schematic quality 1/
+    );
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
 test("seed SQL embeds the pinned augment roll payload", () => {
   const repoRoot = makeRepoRoot();
   try {
@@ -220,10 +239,31 @@ test("bundled plan: the three categories cover exactly the ranked rows", () => {
       assert.equal(resolved, 1, `${row.template_id} grade 0 must keep the base multiplier`);
     }
   }
-  assert.equal(counts[2], 908, "augment items and augment schematics");
+  assert.equal(counts[2], 775, "augment items and supported augment schematics");
   assert.equal(counts[3], 435, "ranked armor including stillsuits and radiation suits");
   assert.equal(counts[5], 400, "ranked weapons");
-  assert.equal(counts[1], plan.rows.length - 908 - 435 - 400, "everything else keeps the base multiplier");
+  assert.equal(counts[1], plan.rows.length - 775 - 435 - 400, "everything else keeps the base multiplier");
+});
+
+test("bundled plan lists augment schematics only at supported item grades", () => {
+  const plan = JSON.parse(readFileSync(resolve(REPO_ROOT, "runtime/data/market-seed-plan.json"), "utf8"));
+  const itemGrades = new Set(plan.rows
+    .filter((row) => row.kind === "equippable" && /^T\d+_Augment_/i.test(row.template_id))
+    .map((row) => `${row.template_id}\0${row.quality_level}`));
+  const patterns = plan.rows.filter((row) => row.kind === "schematic" && /^T\d+_Augment_/i.test(row.template_id));
+
+  for (const row of patterns) {
+    const itemTemplateId = row.template_id.replace(/_Schematic$/, "");
+    assert.ok(
+      itemGrades.has(`${itemTemplateId}\0${row.quality_level}`),
+      `${row.template_id} quality ${row.quality_level} must have a matching augmentation item`
+    );
+  }
+
+  const shieldBreakerGrades = patterns
+    .filter((row) => row.template_id === "T6_Augment_smg3_Schematic")
+    .map((row) => row.quality_level);
+  assert.deepEqual(shieldBreakerGrades, [2, 3, 4, 5]);
 });
 
 test("seed schedule normalizes the augment pricing choice", () => {
