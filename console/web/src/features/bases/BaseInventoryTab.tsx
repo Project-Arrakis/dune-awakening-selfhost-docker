@@ -85,7 +85,11 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
   const [slots, setSlots] = useState<BaseContainerSlots | null>(null);
   const [slotsLoading, setSlotsLoading] = useState(false);
   const [slotsError, setSlotsError] = useState("");
-  const [contentsView, setContentsView] = useState<ContentsView>("list");
+  // Grid by default: the overlay's job is "what is actually in this box", and
+  // the slot layout answers that at a glance. List is a click away, and is
+  // still the automatic fallback for a container whose slots carry no usable
+  // position_index or whose capacity is unusable.
+  const [contentsView, setContentsView] = useState<ContentsView>("grid");
   const [deletingItemId, setDeletingItemId] = useState("");
   const [deleteNotice, setDeleteNotice] = useState("");
   // Separate from slotsError on purpose: that one means "the slots could not
@@ -442,7 +446,19 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
                             {item.containers.map((holder) => (
                               <div key={holder.placeableId}>
                                 <span>{containerLabel(holder)}</span>
-                                <span>{holder.quantity.toLocaleString()}</span>
+                                <span className="bases-inventory-breakdown-actions">
+                                  {holder.quantity.toLocaleString()}
+                                  {/* Same label and icon as the container
+                                      cards': one action, one name for it,
+                                      wherever a container is listed. */}
+                                  <button
+                                    className="bases-inventory-view-contents compact"
+                                    onClick={() => setContentsFor(holder.placeableId)}
+                                  >
+                                    <Boxes size={13} aria-hidden="true" />
+                                    View Contents
+                                  </button>
+                                </span>
                               </div>
                             ))}
                           </div>}
@@ -602,6 +618,12 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
             {slots.reason || "That container is no longer at this base."}
           </p>}
 
+          {/* One scroll container around every inventory, and the only part of
+              the modal that grows. The per-inventory wrapper below cannot own
+              the scrolling: an intermediate block with no height of its own
+              breaks the constraint chain, and the list inside then renders at
+              its full natural height straight over the controls beneath it. */}
+          <div className="bases-inventory-contents-scroll">
           {!slotsLoading && !slotsError && slots?.found && slots.inventories.map((inventory) => {
             const { cells, overflow } = layoutSlots(inventory);
             // Grid needs real slot positions and a sane capacity; without
@@ -676,6 +698,8 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
               </div>
             );
           })}
+
+          </div>
 
           {selectedSlot && <div className="bases-inventory-slot-detail">
             <CatalogItemThumb item={{ id: selectedSlot.templateId, itemId: selectedSlot.templateId, name: selectedSlot.name, image: itemImage(selectedSlot.templateId) }} />

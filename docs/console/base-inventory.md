@@ -180,6 +180,28 @@ a container. `currentDurability`/`maxDurability` come out of the `stats` jsonb u
 column is a parse-time error rather than a null, so a schema without them would 500 a container that used
 to open. They come back null instead, and the grid view is withheld.
 
+### The contents overlay
+
+Opened by **View Contents**, either on a container card or on any container listed under an expanded
+item in the Items view — the same overlay, reached either way.
+
+It offers two views, and **opens on Grid**:
+
+- **Grid** lays the container out at its real capacity, one cell per slot, with empty slots marked by a
+  plus. It is the closest thing to the in-game container and answers "what is in this box" at a glance.
+  Empty cells are `aria-hidden` and non-interactive; the plus is decorative, drawn as two positioned
+  bars rather than a `+` glyph, since a glyph centres on its line box rather than its ink.
+- **List** is one row per slot with its slot number, quantity and a delete button. It sorts and scans
+  better on a full 100-slot container, and is the automatic fallback whenever the grid is withheld.
+
+Selecting a slot — a grid cell or an item name in the list — moves its controls into a strip below,
+carrying the item, its slot, an amount field defaulting to the whole stack, and the delete button.
+One strip rather than a control per row: a packed 100-slot container would otherwise render a hundred
+quantity inputs.
+
+Every inventory shares a single scroll region, so a placeable backing two inventories does not get two
+independent scrollbars.
+
 ### position_index is not trustworthy
 
 `dune.items` has no unique constraint on `(inventory_id, position_index)`, and nothing bounds the value by
@@ -194,3 +216,6 @@ an item the delete control cannot reach is the worst outcome available:
 
 The grid is also withheld when capacity is 0, above a 200-cell cap, or when every `positionIndex` is null;
 the list stands in and can still delete.
+
+A stack of exactly 1 shows no quantity badge in the grid — the badge is gated on `quantity > 1`, so a
+single item renders as a bare icon.
