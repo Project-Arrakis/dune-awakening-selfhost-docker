@@ -707,12 +707,14 @@ ensure_secret_file() {
 
 # resolve_server_login_password_secret / resolve_username_server_login_secret
 #
-# Stage 2 of the age-based secrets library rollout (docs/design/
-# secrets-stage2-server-login-l1-design-2026-08-17.md). Strictly
-# opt-in: an operator who never sets DUNE_KEK_FILE/DUNE_AGE_IDENTITY_FILE
-# sees the exact same behavior as before this stage existed -- read the
-# plain runtime/secrets/*.txt file, generating it via ensure_secret_file
-# if absent.
+# Stage 2 of the age-based secrets library rollout -- wires these two
+# secrets to optional age-based at-rest encryption (see
+# runtime/scripts/lib/secrets.sh's own header comment for the key
+# hierarchy and on-disk format). Strictly opt-in: an operator who
+# never sets DUNE_KEK_FILE/DUNE_AGE_IDENTITY_FILE sees the exact
+# same behavior as before this stage existed -- read the plain
+# runtime/secrets/*.txt file, generating it via ensure_secret_file if
+# absent.
 #
 # Once the age backend IS configured, dune_secrets_read_secret (the
 # library's own generic "any script reads a secret" seam) is the SOLE
@@ -720,9 +722,9 @@ ensure_secret_file() {
 # whether it's readable -- this function does not independently
 # re-derive that determination.
 #
-# Fixed 2026-08-17 (Requirement 20 Layer 2 audit, CRITICAL): an earlier
-# version of this function duplicated the enc-file-or-marker "is this
-# migrated" check itself, then called dune_secrets_read_secret only
+# Fixed 2026-08-17 (found during implementation review, CRITICAL): an
+# earlier version of this function duplicated the enc-file-or-marker
+# "is this migrated" check itself, then called dune_secrets_read_secret only
 # once it had already decided "migrated." That duplication was
 # harmless on its own, but dune_secrets_read_secret's OWN internal
 # fail-closed logic at the time only checked .enc-file readability,
@@ -761,8 +763,8 @@ _resolve_stage2_secret() {
       printf '%s' "$value"
       return 0
     fi
-    # NOTE on a real bug found and fixed here (Requirement 20 Layer 2
-    # audit): an earlier version of this used
+    # NOTE on a real bug found and fixed here during implementation
+    # review: an earlier version of this used
     #   if value="$(dune_secrets_read_secret ...)"; then ... fi
     #   rc=$?
     # which looks correct but is NOT: bash's `$?` after a completed
