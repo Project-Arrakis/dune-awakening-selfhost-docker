@@ -21,11 +21,14 @@ function statusFixture(overrides: Partial<MarketBotStatus> = {}): MarketBotStatu
     plan: { available: true, source: "bundled", rows: 2910, panelVersion: "0.14.0", generatedAt: "2026-08-01T00:00:00+00:00" },
     buyback: {
       enabled: false, intervalMinutes: 30, exchangeId: "42", priceMultiplier: 5,
+      augmentMultiplier: 1, rankedArmorMultiplier: 1, rankedWeaponMultiplier: 1,
       buybackPercent: 60, buybackPriceBasis: "seeded", maxBuys: 500, source: "console",
       lastRunAt: "", lastRunStatus: "", lastRunDetail: "", nextRunAt: ""
     },
     seed: {
-      enabled: false, intervalMinutes: 15, exchangeId: "", priceMultiplier: 5, augmentPricing: "discounted", source: "console",
+      enabled: false, intervalMinutes: 15, exchangeId: "", priceMultiplier: 5,
+      augmentMultiplier: 1, rankedArmorMultiplier: 1, rankedWeaponMultiplier: 1,
+      augmentPricing: "discounted", source: "console",
       lastRunAt: "", lastRunStatus: "", lastRunDetail: "", nextRunAt: ""
     },
     ...overrides
@@ -83,6 +86,9 @@ describe("MarketBotOverlay", () => {
       enabled: true,
       intervalMinutes: 30,
       priceMultiplier: 5,
+      augmentMultiplier: 1,
+      rankedArmorMultiplier: 1,
+      rankedWeaponMultiplier: 1,
       buybackPercent: 70,
       buybackPriceBasis: "lowest",
       maxBuys: 250,
@@ -92,13 +98,22 @@ describe("MarketBotOverlay", () => {
   });
 
   it("probes eligibility read-only and reports the count", async () => {
-    vi.mocked(marketBotApi.probeBuyback).mockResolvedValue({ eligible: 7, exchangeId: "42", priceMultiplier: 5, buybackPercent: 60, maxBuys: 500 });
+    vi.mocked(marketBotApi.probeBuyback).mockResolvedValue({
+      eligible: 7, exchangeId: "42", priceMultiplier: 5,
+      augmentMultiplier: 1, rankedArmorMultiplier: 2, rankedWeaponMultiplier: 1,
+      buybackPercent: 60, maxBuys: 500
+    });
     renderOverlay();
 
-    fireEvent.click(await screen.findByRole("button", { name: "Probe eligibility" }));
+    const armorMultiplier = await screen.findByLabelText("Buyback ranked armor multiplier");
+    expect(armorMultiplier).toHaveValue(1);
+    fireEvent.change(armorMultiplier, { target: { value: "2" } });
+    fireEvent.click(screen.getByRole("button", { name: "Probe eligibility" }));
 
     await waitFor(() => expect(marketBotApi.probeBuyback).toHaveBeenCalledWith({
-      exchangeId: "42", priceMultiplier: 5, buybackPercent: 60, maxBuys: 500
+      exchangeId: "42", priceMultiplier: 5,
+      augmentMultiplier: 1, rankedArmorMultiplier: 2, rankedWeaponMultiplier: 1,
+      buybackPercent: 60, maxBuys: 500
     }));
     expect(await screen.findByText(/7 eligible player listing\(s\) on exchange 42 at 60%/)).toBeInTheDocument();
   });
@@ -139,10 +154,41 @@ describe("MarketBotOverlay", () => {
       enabled: false,
       intervalMinutes: 15,
       priceMultiplier: 5,
+      augmentMultiplier: 1,
+      rankedArmorMultiplier: 1,
+      rankedWeaponMultiplier: 1,
       augmentPricing: "original",
       exchangeId: "42"
     }));
     expect(await screen.findByText(/Reseed schedule saved \(disabled\)\./)).toBeInTheDocument();
+  });
+
+  it("populates saved category multipliers and saves edited ones with the reseed schedule", async () => {
+    vi.mocked(marketBotApi.status).mockResolvedValue(statusFixture({
+      seed: { ...statusFixture().seed, augmentMultiplier: 2 }
+    }));
+    vi.mocked(marketBotApi.saveSeedSchedule).mockImplementation(async (schedule) => ({
+      ...statusFixture().seed, ...schedule, exchangeId: String(schedule.exchangeId || "42"), enabled: Boolean(schedule.enabled)
+    }));
+    renderOverlay();
+
+    const augment = await screen.findByLabelText("Seed augment multiplier");
+    expect(augment).toHaveValue(2);
+    fireEvent.change(augment, { target: { value: "2.5" } });
+    fireEvent.change(screen.getByLabelText("Seed ranked armor multiplier"), { target: { value: "3" } });
+    fireEvent.change(screen.getByLabelText("Seed ranked weapon multiplier"), { target: { value: "1.5" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save reseed schedule" }));
+
+    await waitFor(() => expect(marketBotApi.saveSeedSchedule).toHaveBeenCalledWith({
+      enabled: false,
+      intervalMinutes: 15,
+      priceMultiplier: 5,
+      augmentMultiplier: 2.5,
+      rankedArmorMultiplier: 3,
+      rankedWeaponMultiplier: 1.5,
+      augmentPricing: "discounted",
+      exchangeId: "42"
+    }));
   });
 
   it("disables Run reseed now until a seed schedule has a saved exchange", async () => {

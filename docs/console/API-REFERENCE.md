@@ -420,11 +420,19 @@ blacklist behaves.
 |--------|-------|-------------|------------|
 | GET | `/api/exchange/market` | Market Bot status: seed-plan availability and both schedules | None |
 | GET | `/api/exchange/market/exchanges` | Discover exchanges (BIGINT ids as strings; access-pointed exchanges first) | None |
-| POST | `/api/exchange/market/buyback/probe` | Read-only buyback eligibility count (no backup taken) | body: `exchangeId?`, `priceMultiplier?`, `buybackPercent?`, `maxBuys?` |
-| POST | `/api/exchange/market/buyback/schedule` | Save the buyback schedule (audited, rate-limited) | body: `enabled`, `intervalMinutes`, `exchangeId`, `priceMultiplier`, `buybackPercent`, `buybackPriceBasis`, `maxBuys` |
-| POST | `/api/exchange/market/seed/schedule` | Save the market reseed schedule (audited, rate-limited) | body: `enabled`, `intervalMinutes`, `exchangeId`, `priceMultiplier`, `augmentPricing` (`discounted`\|`original`) |
+| POST | `/api/exchange/market/buyback/probe` | Read-only buyback eligibility count (no backup taken) | body: `exchangeId?`, `priceMultiplier?`, `augmentMultiplier?`, `rankedArmorMultiplier?`, `rankedWeaponMultiplier?`, `buybackPercent?`, `maxBuys?` |
+| POST | `/api/exchange/market/buyback/schedule` | Save the buyback schedule (audited, rate-limited) | body: `enabled`, `intervalMinutes`, `exchangeId`, `priceMultiplier`, `augmentMultiplier`, `rankedArmorMultiplier`, `rankedWeaponMultiplier`, `buybackPercent`, `buybackPriceBasis`, `maxBuys` |
+| POST | `/api/exchange/market/seed/schedule` | Save the market reseed schedule (audited, rate-limited) | body: `enabled`, `intervalMinutes`, `exchangeId`, `priceMultiplier`, `augmentMultiplier`, `rankedArmorMultiplier`, `rankedWeaponMultiplier`, `augmentPricing` (`discounted`\|`original`) |
 | POST | `/api/exchange/market/buyback/run` | Run a buyback sweep now with the saved schedule (probe → backup → sweep) | None |
 | POST | `/api/exchange/market/seed/run` | Run a market reseed now with the saved schedule (backup → clear bot listings → seed) | None |
+
+The three category multipliers (`augmentMultiplier`, `rankedArmorMultiplier`,
+`rankedWeaponMultiplier`) accept 1–5 (up to two decimals, default 1 = no change)
+and scale prices on top of the base `priceMultiplier` for augments & augment
+schematics, ranked (grade 1–5) armor including stillsuits, and ranked weapons
+respectively. On the seed schedule they raise the seeded sell prices; on the
+buyback schedule they reprice the reconstructed "seeded" price basis the same
+way, so `buybackPercent` keeps meaning a percentage of the real market price.
 
 Unlike the board above, these routes **do write the game database** (through the
 same engine as the EDA Exchange Bot addon's scheduler: `addonJobs.js` /
