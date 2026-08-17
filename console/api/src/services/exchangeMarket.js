@@ -9,12 +9,9 @@ import {
 } from "../addonJobs.js";
 
 // First-class Market Bot for the CHOAM exchange: the same seed/buyback engine
-// the EDA Exchange Bot addon drives through the bridge (addonJobs.js /
-// addonSeedJob.js), surfaced as console-native routes and managed from the
-// Exchange panel. Schedules saved here are marked source:"console", so the
-// scheduler runs them without requiring the addon to be installed; the seed
-// plan resolves to an installed addon copy first, then the bundled
-// runtime/data/market-seed-plan.json.
+// originally introduced for the EDA Exchange Bot addon (addonJobs.js /
+// addonSeedJob.js), now surfaced and managed entirely by the Exchange panel.
+// Schedules are source:"console" and the bundled seed plan is authoritative.
 const REQUIRED_TABLES = ["dune_exchange_orders", "dune_exchange_sell_orders", "dune_exchange_accesspoints", "items", "actors"];
 
 // The plan file is ~1.2 MB of JSON; cache the parsed summary by path + mtime

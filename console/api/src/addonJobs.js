@@ -1,13 +1,13 @@
-// Server-side scheduled jobs for installed addons.
+// Server-side scheduled jobs for the native Market Bot, retained in this
+// module to keep the original engine API stable during the EDA retirement.
 //
-// The first (and currently only) job is the EDA Exchange Bot buyback sweep.
-// The addon's browser page can only automate while its iframe stays open, so
-// the console API process runs the same loop unattended: a read-only
+// The engine began as the EDA Exchange Bot buyback sweep. The console API now
+// owns and runs the loop unattended: a read-only
 // eligibility probe every interval, and a buyback sweep (preceded by a
 // database backup) only when eligible player listings exist.
 //
 // No SQL from the addon iframe is ever persisted or replayed. The SQL below
-// is built server-side from the addon's bundled web/market-seed-plan.json and
+// is built server-side from the console-bundled market-seed-plan.json and
 // a strictly validated schedule config, following the typed-action precedent
 // of admin.items.grant.
 
@@ -24,11 +24,15 @@ import {
   writeSeedSchedule,
   persistSeedRunCompletion,
   executeSeedRun,
+  normalizeCategoryMultipliers,
   normalizeScheduleSource,
-  resolveMarketSeedPlanPath
+  resolveMarketSeedPlanPath,
+  legacySeedSchedulePath,
+  seedSchedulePath,
+  seedRowCategoryMultiplier
 } from "./addonSeedJob.js";
 
-export { readSeedSchedule, normalizeSeedSchedule, saveSeedSchedule, normalizeScheduleSource, resolveMarketSeedPlanPath, loadMarketSeedPlan } from "./addonSeedJob.js";
+export { CATEGORY_MULTIPLIER_FIELDS, readSeedSchedule, normalizeSeedSchedule, saveSeedSchedule, normalizeCategoryMultipliers, normalizeScheduleSource, resolveMarketSeedPlanPath, legacySeedSchedulePath, seedSchedulePath, loadMarketSeedPlan, seedRowCategoryMultiplier } from "./addonSeedJob.js";
 
 export const EDA_EXCHANGE_BOT_ADDON_ID = "eda-exchange-bot";
 export const ADDON_SCHEDULER_PERMISSION = "scheduler:server";
@@ -91,6 +95,10 @@ export function normalizeBuybackSchedule(payload = {}, previous = {}) {
     intervalMinutes: clampedIntegerField(payload.intervalMinutes ?? previous.intervalMinutes ?? 30, "intervalMinutes", 10, 1440),
     exchangeId,
     priceMultiplier: integerField(payload.priceMultiplier ?? previous.priceMultiplier ?? 5, "priceMultiplier", 1, 100),
+    // Category multipliers mirror the seed schedule's: keep them in sync so
+    // the reconstructed "seeded" price basis matches what the market actually
+    // sells at (buybackPercent then means percent of the real market price).
+    ...normalizeCategoryMultipliers(payload, previous, "Buyback schedule"),
     buybackPercent: integerField(payload.buybackPercent ?? previous.buybackPercent ?? 60, "buybackPercent", 1, 100),
     buybackPriceBasis: normalizeBuybackPriceBasis(payload.buybackPriceBasis ?? previous.buybackPriceBasis ?? "seeded"),
     maxBuys: integerField(payload.maxBuys ?? previous.maxBuys ?? 500, "maxBuys", 1, 5000),
@@ -106,7 +114,9 @@ export function normalizeBuybackSchedule(payload = {}, previous = {}) {
 }
 
 export function readBuybackSchedule(config) {
-  const path = buybackSchedulePath(config);
+  const corePath = buybackSchedulePath(config);
+  const legacyPath = legacyBuybackSchedulePath(config);
+  const path = existsSync(corePath) ? corePath : legacyPath;
   let raw = {};
   if (existsSync(path)) {
     try {
@@ -149,8 +159,8 @@ export function saveBuybackSchedule(config, payload = {}, { now = () => Date.now
 }
 
 export function loadBuybackSeedPlan(config, addonId = EDA_EXCHANGE_BOT_ADDON_ID) {
-  // Same resolution as the seed job: installed addon copy first (assumed
-  // newest), then the console-bundled runtime/data/market-seed-plan.json.
+  // The console-bundled plan is authoritative. An installed addon copy is a
+  // compatibility fallback for deployments upgrading from older releases.
   const path = resolveMarketSeedPlanPath(config, addonId);
   if (!path) throw new Error("No market seed plan found: neither the bundled runtime/data/market-seed-plan.json nor an installed addon copy exists.");
   const text = readFileSync(path, "utf8");
@@ -169,7 +179,12 @@ export function loadBuybackSeedPlan(config, addonId = EDA_EXCHANGE_BOT_ADDON_ID)
     if (!templateId || templateId.length > 200) throw new Error(`Addon market seed plan row ${index + 1} has an invalid template_id.`);
     const price = Number(row?.price);
     if (!Number.isFinite(price) || price <= 0) throw new Error(`Addon market seed plan row ${index + 1} has an invalid price.`);
-    return { templateId, price, qualityLevel: clampInteger(row?.quality_level, 0, 0, 5) };
+    return {
+      templateId,
+      price,
+      qualityLevel: clampInteger(row?.quality_level, 0, 0, 5),
+      categoryMask: Math.trunc(Number(row?.category_mask) || 0)
+    };
   });
   return { sourceMultiplier, rows };
 }
@@ -208,10 +223,13 @@ const BUYBACK_PLAYER_SELL_SQL = "COALESCE(o.is_npc_order, FALSE) = FALSE AND (b.
 // Buyback plan: one exact cap per (template, grade), scaled from each bundled
 // seed row. Seed prices use stepped rounding, so reconstructing higher grades
 // from a grade-0 base can differ from the actual configured market price.
-export function buybackPlanValuesSql(plan, { priceMultiplier, buybackPercent }) {
+// The schedule's category multipliers reprice each row the same way the seed
+// run does, so the "seeded" basis tracks the boosted market.
+export function buybackPlanValuesSql(plan, schedule) {
+  const { priceMultiplier, buybackPercent } = schedule;
   const maxPrice = new Map();
   for (const row of plan.rows) {
-    const repriced = roundPrice((row.price / plan.sourceMultiplier) * priceMultiplier);
+    const repriced = roundPrice((row.price / plan.sourceMultiplier) * priceMultiplier * seedRowCategoryMultiplier(row, schedule));
     const key = `${row.templateId}\0${row.qualityLevel}`;
     maxPrice.set(key, Math.max(maxPrice.get(key) || 0, repriced));
   }
@@ -339,16 +357,20 @@ export function buildBuybackEligibilitySql(plan, schedule) {
 bot AS (
     SELECT id AS owner_id FROM dune.actors WHERE class = 'Revy' LIMIT 1
 )
-SELECT COUNT(*)::text AS eligible_orders
+SELECT
+  COUNT(*)::text AS player_sell_orders,
+  COUNT(*) FILTER (WHERE p.template_id IS NOT NULL)::text AS known_player_sell_orders,
+  COUNT(*) FILTER (WHERE p.template_id IS NOT NULL AND ${BUYBACK_ELIGIBLE_PREDICATE})::text AS eligible_orders,
+  COUNT(*) FILTER (WHERE p.template_id IS NOT NULL AND o.item_price > 0 AND ${BUYBACK_STACK_SQL} > 0 AND o.item_price > p.max_unit_price)::text AS above_threshold_sell_orders,
+  COUNT(*) FILTER (WHERE p.template_id IS NULL)::text AS unknown_template_sell_orders,
+  COUNT(*) FILTER (WHERE p.template_id IS NOT NULL AND (COALESCE(o.item_price, 0) <= 0 OR ${BUYBACK_STACK_SQL} <= 0))::text AS invalid_price_or_stack_sell_orders
 FROM dune.dune_exchange_orders o
 JOIN dune.dune_exchange_sell_orders s ON s.order_id = o.id
 LEFT JOIN dune.items i ON i.id = o.item_id
 ${BUYBACK_PLAN_LATERAL}
 LEFT JOIN bot b ON TRUE
 WHERE o.exchange_id = ${exchangeId}
-  AND ${BUYBACK_PLAYER_SELL_SQL}
-  AND p.template_id IS NOT NULL
-  AND ${BUYBACK_ELIGIBLE_PREDICATE};`;
+  AND ${BUYBACK_PLAYER_SELL_SQL};`;
 }
 
 export function buildBuybackSql(plan, schedule) {
@@ -405,19 +427,44 @@ export async function probeBuybackEligibility(config, db, overrides = {}) {
   const schedule = normalizeBuybackSchedule({
     exchangeId: overrides.exchangeId,
     priceMultiplier: overrides.priceMultiplier,
+    augmentMultiplier: overrides.augmentMultiplier,
+    rankedArmorMultiplier: overrides.rankedArmorMultiplier,
+    rankedWeaponMultiplier: overrides.rankedWeaponMultiplier,
     buybackPercent: overrides.buybackPercent,
+    buybackPriceBasis: overrides.buybackPriceBasis,
     maxBuys: overrides.maxBuys
   }, saved);
   if (!schedule.exchangeId) throw new Error("An exchangeId is required to probe buyback eligibility.");
   const plan = loadBuybackSeedPlan(config);
   const result = await runSql(db, buildBuybackEligibilitySql(plan, schedule), false);
+  const diagnostics = buybackDiagnostics(result?.rows?.[0]);
   return {
-    eligible: eligibleCount(result),
+    ...diagnostics,
     exchangeId: schedule.exchangeId,
     priceMultiplier: schedule.priceMultiplier,
+    augmentMultiplier: schedule.augmentMultiplier,
+    rankedArmorMultiplier: schedule.rankedArmorMultiplier,
+    rankedWeaponMultiplier: schedule.rankedWeaponMultiplier,
     buybackPercent: schedule.buybackPercent,
+    buybackPriceBasis: schedule.buybackPriceBasis,
     maxBuys: schedule.maxBuys
   };
+}
+
+function buybackDiagnostics(row = {}) {
+  return {
+    playerListings: diagnosticCount(row.player_sell_orders),
+    knownListings: diagnosticCount(row.known_player_sell_orders),
+    eligible: diagnosticCount(row.eligible_orders),
+    aboveThreshold: diagnosticCount(row.above_threshold_sell_orders),
+    unknownTemplate: diagnosticCount(row.unknown_template_sell_orders),
+    invalidPriceOrStack: diagnosticCount(row.invalid_price_or_stack_sell_orders)
+  };
+}
+
+function diagnosticCount(value) {
+  const count = Number(value || 0);
+  return Number.isFinite(count) && count > 0 ? Math.trunc(count) : 0;
 }
 
 export function createAddonJobScheduler(config, options = {}) {
@@ -658,7 +705,7 @@ async function executeBuybackRun(config, db, schedule, { runDuneImpl }) {
     throw new Error("Exchange buyback requires database transaction support.");
   }
   if (!config.mockMode) {
-    await runDuneImpl(config, buildDuneArgs("backupCreate"), { env: { DB_BACKUP_ORIGIN: `addon-${EDA_EXCHANGE_BOT_ADDON_ID}` } });
+    await runDuneImpl(config, buildDuneArgs("backupCreate"), { env: { DB_BACKUP_ORIGIN: "market-bot-buyback" } });
   }
   // Keep the entire sweep on one checked-out client. createDb.transaction()
   // guarantees ROLLBACK before releasing that client if any statement fails,
@@ -697,7 +744,11 @@ function requireScheduleExchangeId(schedule) {
   return exchangeId;
 }
 
-function buybackSchedulePath(config) {
+export function buybackSchedulePath(config) {
+  return resolve(config.repoRoot, "runtime/generated/market-bot", "buyback.json");
+}
+
+export function legacyBuybackSchedulePath(config) {
   return resolve(config.repoRoot, "runtime/addons/jobs", EDA_EXCHANGE_BOT_ADDON_ID, "buyback.json");
 }
 
