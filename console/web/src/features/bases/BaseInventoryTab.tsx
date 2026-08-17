@@ -80,8 +80,7 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
   const [contentsFor, setContentsFor] = useState("");
   const [showAllItems, setShowAllItems] = useState(false);
   const closeContentsRef = useRef<HTMLButtonElement>(null);
-  // Slots for the open container only, fetched on open. List is the default so
-  // the modal opens on the denser, sortable view; grid is a deliberate switch.
+  // Slots for the open container only, fetched on open.
   const [slots, setSlots] = useState<BaseContainerSlots | null>(null);
   const [slotsLoading, setSlotsLoading] = useState(false);
   const [slotsError, setSlotsError] = useState("");
@@ -243,6 +242,11 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
 
   useEffect(() => {
     if (!contentsFor) {
+      // Invalidates a request that was still in flight when the overlay
+      // closed, the same way opening a different container does -- closing
+      // is itself a reason the response no longer matters, even though
+      // nothing currently renders slots while contentsFor is empty.
+      slotsRequestIdRef.current += 1;
       setSlots(null);
       setSlotsError("");
       setDeleteNotice("");
@@ -263,7 +267,13 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
     if (!openContainer) return undefined;
     closeContentsRef.current?.focus();
     function closeOnEscape(event: KeyboardEvent) {
-      if (event.key === "Escape") setContentsFor("");
+      if (event.key !== "Escape") return;
+      // ConfirmDialog listens on window too, so a single Escape reached both
+      // and cancelling a delete confirmation also tore down the overlay behind
+      // it, losing the operator's place. When a second modal is stacked on
+      // top, let it take the key and leave this one open.
+      if (document.querySelectorAll(".confirm-modal").length > 1) return;
+      setContentsFor("");
     }
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
@@ -315,6 +325,13 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
         throw new Error(response.error || response.reason || "The item could not be deleted.");
       }
       setDeleteNotice(result.message);
+      // A whole-slot delete removes the slot entirely, so the vanished-slot
+      // effect below clears amount once the refetch lands. A partial delete
+      // leaves the same slot selected with a smaller stack, and that effect
+      // does not fire for it -- left alone, the stale (larger) amount would
+      // exceed the new quantity on the very next render and immediately show
+      // the "enter an amount" error on what was actually a successful delete.
+      if (result.partial) setAmount(String(result.removed.remaining));
       // Refetch both: the slot list for this container, and the tab totals,
       // group counts and rollup, all of which the delete just invalidated.
       await Promise.all([loadSlots(contentsFor), load()]);
@@ -649,6 +666,11 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
                         key={slot.itemId}
                         className={`bases-inventory-slot-cell${selectedSlotId === slot.itemId ? " selected" : ""}`}
                         aria-pressed={selectedSlotId === slot.itemId}
+                        // Without the explicit label the quantity badge below
+                        // becomes the accessible name, so a filled cell
+                        // announced as a bare number and the title fallback
+                        // never applied.
+                        aria-label={`${slot.name} ×${slot.quantity.toLocaleString()}, slot ${index}`}
                         title={`${slot.name} ×${slot.quantity.toLocaleString()} (slot ${index})`}
                         onClick={() => { setSelectedSlotId(slot.itemId); setAmount(String(slot.quantity)); }}
                       >
