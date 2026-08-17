@@ -198,8 +198,12 @@ check_always_on_memory_safety() {
   [[ "$configured" =~ ^[1-9][0-9]*$ ]] || configured=1
 
   if [ "${DUNE_ALWAYS_ON_HOST_MEMORY_SAFETY:-1}" = "0" ]; then
-    warn_msg "Always-on host-memory startup protection is disabled"
-    echo "     Remove DUNE_ALWAYS_ON_HOST_MEMORY_SAFETY=0 to restore automatic protection."
+    if [ "$configured" -gt "${recommended:-1}" ]; then
+      warn_msg "Always-on host-memory startup protection is disabled while startup parallelism $configured exceeds this host's safe value ${recommended:-1}"
+      echo "     Reduce DUNE_ALWAYS_ON_STARTUP_PARALLELISM to ${recommended:-1}, or remove DUNE_ALWAYS_ON_HOST_MEMORY_SAFETY=0 to restore automatic protection. Host: ${total:-?} GiB RAM, ${available:-?} GiB available, ${swap_free:-?} GiB swap free, ${reserve:-?} GiB protected reserve."
+    else
+      info_msg "Always-on host-memory startup protection is disabled by configuration; startup parallelism $configured is within this host's safe value ${recommended:-1}"
+    fi
   elif [ "$configured" -gt "${recommended:-1}" ]; then
     warn_msg "Always-on startup parallelism $configured exceeds this host's safe value ${recommended:-1}"
     echo "     Runtime startup is automatically limited to ${recommended:-1}. Host: ${total:-?} GiB RAM, ${available:-?} GiB available, ${swap_free:-?} GiB swap free, ${reserve:-?} GiB protected reserve."

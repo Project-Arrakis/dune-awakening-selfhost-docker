@@ -135,6 +135,8 @@ When the Restart Queue is enabled, the restart routes above (`/api/server/restar
 | GET | `/api/players/online` | List currently online players | `page?`, `pageSize?` |
 | GET | `/api/players/search` | Search players by name/ID | `q` (required, query param) |
 
+Player rows include `total_playtime_seconds`. The console samples `player_state.online_status` every 10 seconds and persists completed session time in `dune.console_player_playtime`; the currently active session is included from `last_login_time`. Tracking begins when this console version first runs, so time from older completed sessions cannot be reconstructed.
+
 ### Player Profile & Data
 
 | Method | Route | Description | Parameters |
@@ -260,7 +262,9 @@ When the Restart Queue is enabled, the restart routes above (`/api/server/restar
 | DELETE | `/api/bases/{baseId}/queued-water-refill` | Cancel a base's queued water refill | `baseId` |
 | GET | `/api/bases/auto-refill-water` | Get per-base water auto-refill enrollment state | None |
 | POST | `/api/bases/{baseId}/auto-refill-water` | Enable/disable water auto-refill for a base | `baseId`, `enabled` |
-| GET | `/api/bases/{baseId}/inventory` | Get a base's stored items, rolled up by item template and by container (storage, refining, crafting, other). Read-only | `baseId` |
+| GET | `/api/bases/{baseId}/inventory` | Get a base's stored items, rolled up by item template and by container (storage, refining, crafting, other). Merged per template, not per slot | `baseId` |
+| GET | `/api/bases/{baseId}/containers/{placeableId}` | Get one container's inventories and their individual slots (item id, slot number, quantity, quality, durability), plus `deleteSafety`. Answers `found: false` when that container is not at the base | `baseId`, `placeableId` |
+| DELETE | `/api/bases/{baseId}/containers/{placeableId}/items/{itemId}` | Delete an item from a plain Storage container, or part of its stack with `count`. Refused unless the owning map is verifiably and safely stopped; Crafting and Refining contents are read-only. Requires `{ confirmation: "DELETE ITEM" }` | `baseId`, `placeableId`, `itemId`, `count?` |
 | GET | `/api/bases/{baseId}/permissions` | Get a base's permission roster (Owner, Co-Owners, Associates) | `baseId` |
 | POST | `/api/bases/{baseId}/system-custodian` | Transfer ownership to the Server or detected GM system custodian while preserving the roster; provisions Server when no custodian exists | `baseId` |
 | PUT | `/api/bases/{baseId}/permissions` | Replace a base's permission roster | `baseId`, `entries[]` (`playerId`, `rank`) |
@@ -273,6 +277,12 @@ When the Restart Queue is enabled, the restart routes above (`/api/server/restar
 base-backup tool (unclaimed and registered in `dune.base_backup_linked_actors`
 — see [base-backups.md](base-backups.md)), and every mutation route below
 rejects one with **409** for the same reason.
+
+A base that is unclaimed for any *other* reason still lists, and `GET
+/api/bases/{baseId}/permissions` still reads it, reporting `claimed: false`. The
+two permission mutation routes reject it with **400** rather than letting the
+write fail `permission_actor_rank`'s foreign key — see
+[base-permissions.md](base-permissions.md).
 
 Each `GET /api/bases` row carries `partitionMap` and `dimensionIndex` alongside
 `map` and `partition_id`. `map` is the game's own name (`HaggaBasin`) and cannot
@@ -306,8 +316,18 @@ generator refill routes above. See [base-permissions.md](base-permissions.md).
 `GET /api/bases/{baseId}/inventory` covers storage containers plus refinery,
 fabricator, and other inventories (recycler, repair station, the base's own
 Sub-Fief console); generator and windtrap fuel belong to the refill and water
-routes above. It is read-only — inventory writes have no path to a running
-map. See [base-inventory.md](base-inventory.md).
+routes above. Its `containers[].items[]` is merged per item template, not per
+slot — `GET /api/bases/{baseId}/containers/{placeableId}` is the per-slot view,
+fetched one container at a time because slots roughly triple the response.
+
+`DELETE /api/bases/{baseId}/containers/{placeableId}/items/{itemId}` is refused
+unless `baseRefillTarget` can verify that the owning map is safely stopped. An
+unknown state fails closed, and the route repeats the check immediately before
+the write. Only plain Storage contents are mutable; Crafting and Refining remain
+read-only because active jobs can reference their item rows. The same allowlist
+that keeps fuel inventories out of the read keeps them out of the delete. It
+needs `bases:delete-item`, not `bases:mutate`. See
+[base-inventory.md](base-inventory.md).
 
 Both `GET /api/bases/{baseId}/water` and `GET /api/bases/{baseId}/inventory`
 answer **200 with `supported: false` and a `reason`** when the detected schema
@@ -420,19 +440,25 @@ blacklist behaves.
 |--------|-------|-------------|------------|
 | GET | `/api/exchange/market` | Market Bot status: seed-plan availability and both schedules | None |
 | GET | `/api/exchange/market/exchanges` | Discover exchanges (BIGINT ids as strings; access-pointed exchanges first) | None |
-| POST | `/api/exchange/market/buyback/probe` | Read-only buyback eligibility count (no backup taken) | body: `exchangeId?`, `priceMultiplier?`, `buybackPercent?`, `maxBuys?` |
-| POST | `/api/exchange/market/buyback/schedule` | Save the buyback schedule (audited, rate-limited) | body: `enabled`, `intervalMinutes`, `exchangeId`, `priceMultiplier`, `buybackPercent`, `buybackPriceBasis`, `maxBuys` |
-| POST | `/api/exchange/market/seed/schedule` | Save the market reseed schedule (audited, rate-limited) | body: `enabled`, `intervalMinutes`, `exchangeId`, `priceMultiplier`, `augmentPricing` (`discounted`\|`original`) |
+| POST | `/api/exchange/market/buyback/probe` | Read-only buyback diagnostics: total, recognized, eligible, above-threshold, unknown-template, and invalid price/stack listing counts (no backup taken) | body: `exchangeId?`, `priceMultiplier?`, `augmentMultiplier?`, `rankedArmorMultiplier?`, `rankedWeaponMultiplier?`, `buybackPercent?`, `buybackPriceBasis?`, `maxBuys?` |
+| POST | `/api/exchange/market/buyback/schedule` | Save the buyback schedule (audited, rate-limited) | body: `enabled`, `intervalMinutes`, `exchangeId`, `priceMultiplier`, `augmentMultiplier`, `rankedArmorMultiplier`, `rankedWeaponMultiplier`, `buybackPercent`, `buybackPriceBasis`, `maxBuys` |
+| POST | `/api/exchange/market/seed/schedule` | Save the market reseed schedule (audited, rate-limited) | body: `enabled`, `intervalMinutes`, `exchangeId`, `priceMultiplier`, `augmentMultiplier`, `rankedArmorMultiplier`, `rankedWeaponMultiplier`, `augmentPricing` (`discounted`\|`original`) |
 | POST | `/api/exchange/market/buyback/run` | Run a buyback sweep now with the saved schedule (probe → backup → sweep) | None |
 | POST | `/api/exchange/market/seed/run` | Run a market reseed now with the saved schedule (backup → clear bot listings → seed) | None |
 
-Unlike the board above, these routes **do write the game database** (through the
-same engine as the EDA Exchange Bot addon's scheduler: `addonJobs.js` /
-`addonSeedJob.js`). Reads and the probe require `exchange:market`; mutations
+The three category multipliers (`augmentMultiplier`, `rankedArmorMultiplier`,
+`rankedWeaponMultiplier`) accept 1–5 (up to two decimals, default 1 = no change)
+and scale prices on top of the base `priceMultiplier` for augments & augment
+schematics, ranked (grade 1–5) armor including stillsuits, and ranked weapons
+respectively. On the seed schedule they raise the seeded sell prices; on the
+buyback schedule they reprice the reconstructed "seeded" price basis the same
+way, so `buybackPercent` keeps meaning a percentage of the real market price.
+
+Unlike the board above, these routes **do write the game database** through the
+native Market Bot engine (`addonJobs.js` / `addonSeedJob.js`). Reads and the probe require `exchange:market`; mutations
 require `exchange:market-write` (the admin tier's `exchange:*` covers both).
 Schedules saved here are marked `source: "console"`, run unattended inside the
-console API process, and do not require the addon to be installed; the seed plan
-resolves to an installed EDA Exchange Bot addon copy first, then the bundled
+console API process, and do not require an addon; the seed plan is the bundled
 `runtime/data/market-seed-plan.json`. Every write is preceded by a database
 backup, and buyback runs probe eligibility read-only first so idle intervals
 never take a backup. See [exchange.md](exchange.md#market-bot) for behavior
@@ -650,6 +676,10 @@ See [blueprints.md](blueprints.md) for the full import/export design.
 | DELETE | `/api/addons/installed/{id}` | Remove addon | `id` |
 | POST | `/api/addons/installed/{id}/bridge` | Addon bridge API | `id`, `action`, payload varies |
 | GET | `/api/addons/installed/{id}/content/{path}` | Get addon content file | `id`, `path` |
+
+### Hardware Status Bridge
+
+`server.hardware.status` requires approved `server:status` addon permission and returns the core-owned hardware snapshot documented in [Addon Hardware Status Bridge](../addons/hardware-status.md). Addon packages are never permitted to execute their own telemetry scripts.
 
 ---
 

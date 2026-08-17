@@ -120,6 +120,17 @@ export function intParam(value, label, min = 0, max = Number.MAX_SAFE_INTEGER) {
   return n;
 }
 
+// PostgreSQL bigint identifiers must stay as decimal strings. Converting one
+// to Number first silently rounds values above Number.MAX_SAFE_INTEGER and can
+// make a destructive request target a different row.
+export function bigintParam(value, label, min = 1n, max = 9223372036854775807n) {
+  const raw = String(value ?? "").trim();
+  if (!/^[0-9]+$/.test(raw)) throw new Error(`Invalid ${label}`);
+  const n = BigInt(raw);
+  if (n < min || n > max) throw new Error(`Invalid ${label}`);
+  return n.toString();
+}
+
 export function isReadOnlySql(query) {
   const stripped = String(query || "")
     .replace(/\/\*[\s\S]*?\*\//g, " ")

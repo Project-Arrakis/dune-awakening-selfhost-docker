@@ -94,5 +94,7 @@ test("RabbitMQ and Director guard every generated file bind path", () => {
   }
   assert.match(rabbitmq, /repair_generated_file_path "\$generated_file"/);
   assert.match(director, /repair_generated_file_path runtime\/director\/config\/director_config\.ini/);
+  assert.match(director, /DIRECTOR_CAPACITY_SNAPSHOT="runtime\/generated\/director-capacity\.ini"/);
+  assert.match(director, /\^\(PlayerHardCap\|ShouldUpdatePlayerCountOnFls\)=/);
   assert.doesNotMatch(director, /rm -rf runtime\/director\/config\/director_config\.ini/);
 });

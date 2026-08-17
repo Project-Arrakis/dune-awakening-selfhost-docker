@@ -4,7 +4,24 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { assertInstalledAddonPermission, compareAddonVersions, fetchCommunityAddons, installedAddonContentPath, listInstalledAddons, normalizeAddonManifest, normalizeAddonPermissions, normalizeAddonProvenance, normalizeCommunityAddonManifest, normalizeCommunityAddonsIndex, removeInstalledAddon, setInstalledAddonEnabled, syncInstalledAddonLifecycle, updateCommunityAddon, validateZipEntries } from "../src/addons.js";
+import { assertInstalledAddonPermission, compareAddonVersions, fetchCommunityAddons, installCommunityAddon, installedAddonContentPath, listInstalledAddons, normalizeAddonManifest, normalizeAddonPermissions, normalizeAddonProvenance, normalizeCommunityAddonManifest, normalizeCommunityAddonsIndex, removeInstalledAddon, setInstalledAddonEnabled, syncInstalledAddonLifecycle, updateCommunityAddon, validateZipEntries } from "../src/addons.js";
+
+test("blocks install and update of EDA after Market Bot becomes core", async () => {
+  const repoRoot = mkdtempSync(join(tmpdir(), "dune-retired-addon-"));
+  try {
+    const config = { repoRoot };
+    await assert.rejects(
+      installCommunityAddon(config, "eda-exchange-bot", {}, async () => { throw new Error("fetch should not run"); }),
+      /retired.*built into the console/i
+    );
+    await assert.rejects(
+      updateCommunityAddon(config, "eda-exchange-bot", {}, async () => { throw new Error("fetch should not run"); }),
+      /retired.*built into the console/i
+    );
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
 
 test("normalizes community addons index summaries", () => {
   const result = normalizeCommunityAddonsIndex({

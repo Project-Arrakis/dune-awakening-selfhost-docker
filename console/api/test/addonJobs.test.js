@@ -39,12 +39,12 @@ function makeRepoRoot(plan = SAMPLE_PLAN) {
 }
 
 function schedulePath(repoRoot) {
-  return join(repoRoot, "runtime/addons/jobs", EDA_EXCHANGE_BOT_ADDON_ID, "buyback.json");
+  return join(repoRoot, "runtime/generated/market-bot/buyback.json");
 }
 
 // Fake db: the first statement of the eligibility probe is WITH, the sweep
 // starts with its first temp table; capability support queries get empty rows.
-function fakeDb({ eligible = "0", sweepRow = null, onQuery = null } = {}) {
+function fakeDb({ eligible = "0", probeRow = null, sweepRow = null, onQuery = null } = {}) {
   const probes = [];
   const sweeps = [];
   const db = {
@@ -57,9 +57,20 @@ function fakeDb({ eligible = "0", sweepRow = null, onQuery = null } = {}) {
         if (intercepted) return intercepted;
       }
       const text = String(sql).trim();
-      if (/^WITH market_buy_plan/.test(text)) {
+      if (/^WITH /.test(text)) {
         probes.push(sql);
-        return { rows: [{ eligible_orders: String(eligible) }], fields: [{ name: "eligible_orders" }], rowCount: 1, command: "SELECT" };
+        return {
+          rows: [{
+            player_sell_orders: String(eligible),
+            known_player_sell_orders: String(eligible),
+            eligible_orders: String(eligible),
+            above_threshold_sell_orders: "0",
+            unknown_template_sell_orders: "0",
+            invalid_price_or_stack_sell_orders: "0",
+            ...(probeRow || {})
+          }],
+          fields: [{ name: "eligible_orders" }], rowCount: 1, command: "SELECT"
+        };
       }
       if (/^CREATE TEMP TABLE market_buy_plan/.test(text)) {
         sweeps.push(sql);
@@ -134,6 +145,11 @@ test("normalizes schedule fields with clamped interval and strict ranges", () =>
     [defaults.enabled, defaults.intervalMinutes, defaults.exchangeId, defaults.priceMultiplier, defaults.buybackPercent, defaults.maxBuys],
     [false, 30, "", 5, 60, 500]
   );
+  assert.deepEqual(
+    [defaults.augmentMultiplier, defaults.rankedArmorMultiplier, defaults.rankedWeaponMultiplier],
+    [1, 1, 1],
+    "category multipliers default to a neutral 1x"
+  );
 
   assert.throws(() => normalizeBuybackSchedule({ enabled: true }), /requires an exchangeId/);
   assert.throws(() => normalizeBuybackSchedule({ enabled: "yes" }), /must be true or false/);
@@ -143,6 +159,24 @@ test("normalizes schedule fields with clamped interval and strict ranges", () =>
   assert.throws(() => normalizeBuybackSchedule({ priceMultiplier: 0 }), /priceMultiplier/);
   assert.throws(() => normalizeBuybackSchedule({ buybackPercent: 101 }), /buybackPercent/);
   assert.throws(() => normalizeBuybackSchedule({ maxBuys: 5001 }), /maxBuys/);
+});
+
+test("normalizes category multipliers within 1-5x and keeps stored values on partial saves", () => {
+  const schedule = normalizeBuybackSchedule({ augmentMultiplier: 2.5, rankedArmorMultiplier: 5, rankedWeaponMultiplier: 1.339 });
+  assert.deepEqual(
+    [schedule.augmentMultiplier, schedule.rankedArmorMultiplier, schedule.rankedWeaponMultiplier],
+    [2.5, 5, 1.34],
+    "multipliers accept decimals and round to two places"
+  );
+
+  // Saves that omit the fields (for example through the addon bridge) keep
+  // the stored values instead of resetting to 1x.
+  const kept = normalizeBuybackSchedule({ buybackPercent: 55 }, schedule);
+  assert.deepEqual([kept.augmentMultiplier, kept.rankedArmorMultiplier, kept.rankedWeaponMultiplier], [2.5, 5, 1.34]);
+
+  assert.throws(() => normalizeBuybackSchedule({ augmentMultiplier: 0.5 }), /augmentMultiplier must be a number from 1 to 5/);
+  assert.throws(() => normalizeBuybackSchedule({ rankedArmorMultiplier: 6 }), /rankedArmorMultiplier must be a number from 1 to 5/);
+  assert.throws(() => normalizeBuybackSchedule({ rankedWeaponMultiplier: "big" }), /rankedWeaponMultiplier must be a number from 1 to 5/);
 });
 
 test("persists the schedule atomically with owner-only permissions and survives reload", () => {
@@ -210,6 +244,48 @@ test("builds buyback SQL server-side from the bundled seed plan", () => {
   }
 });
 
+test("buyback caps reprice ranked categories the same way the seed run does", () => {
+  // Realistic masks: high byte 0 = armor, 1 = weapons, 4 = augments.
+  const plan = {
+    price_multiplier: 5,
+    rows: [
+      { template_id: "Combat_Heavy_Unique_Top_06", kind: "equippable", price: 8000000, category_mask: 65792, quality_level: 3 },
+      { template_id: "Combat_Heavy_Unique_Top_06", kind: "equippable", price: 5500000, category_mask: 65792, quality_level: 0 },
+      { template_id: "UniqueDualBlades_6", kind: "equippable", price: 9600000, category_mask: 16777216, quality_level: 4 },
+      { template_id: "T6_Augment_Armor1", kind: "equippable", price: 28000000, category_mask: 67239936, quality_level: 3 },
+      { template_id: "WaterBottle", kind: "resource", price: 1000, category_mask: 84017152, quality_level: 0 }
+    ]
+  };
+  const repoRoot = makeRepoRoot(plan);
+  const config = { repoRoot, mockMode: false };
+  try {
+    const loaded = loadBuybackSeedPlan(config);
+    const schedule = normalizeBuybackSchedule({
+      enabled: true,
+      exchangeId: "77",
+      priceMultiplier: 5,
+      augmentMultiplier: 2,
+      rankedArmorMultiplier: 3,
+      rankedWeaponMultiplier: 1.5,
+      buybackPercent: 50,
+      maxBuys: 100
+    });
+    // Seeded basis per row: armor grade 3 8M -> 24M, grade 0 stays 5.5M,
+    // weapon grade 4 9.6M -> 14.4M, augment 28M -> 56M, resource unchanged;
+    // caps are 50% of that basis.
+    assert.equal(
+      buybackPlanValuesSql(loaded, schedule),
+      "('Combat_Heavy_Unique_Top_06',0,2750000),\n" +
+      "('Combat_Heavy_Unique_Top_06',3,12000000),\n" +
+      "('T6_Augment_Armor1',3,28000000),\n" +
+      "('UniqueDualBlades_6',4,7200000),\n" +
+      "('WaterBottle',0,500)"
+    );
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
 test("rejects missing or malformed bundled seed plans", () => {
   const missing = makeRepoRoot(null);
   const malformed = makeRepoRoot({ price_multiplier: 5, rows: [{ template_id: "", price: 10 }] });
@@ -222,19 +298,48 @@ test("rejects missing or malformed bundled seed plans", () => {
   }
 });
 
-test("probe runs the read-only eligibility query without touching backups", async () => {
+test("probe reports why player listings are ineligible without touching backups", async () => {
   const repoRoot = makeRepoRoot();
   const config = { repoRoot, mockMode: false };
   try {
     saveBuybackSchedule(config, { exchangeId: "42", buybackPercent: 70 });
-    const db = fakeDb({ eligible: "3" });
+    const db = fakeDb({
+      eligible: "3",
+      probeRow: {
+        player_sell_orders: "12",
+        known_player_sell_orders: "9",
+        above_threshold_sell_orders: "5",
+        unknown_template_sell_orders: "3",
+        invalid_price_or_stack_sell_orders: "1"
+      }
+    });
     const result = await probeBuybackEligibility(config, db, {});
-    assert.deepEqual(result, { eligible: 3, exchangeId: "42", priceMultiplier: 5, buybackPercent: 70, maxBuys: 500 });
+    assert.deepEqual(result, {
+      eligible: 3,
+      playerListings: 12,
+      knownListings: 9,
+      aboveThreshold: 5,
+      unknownTemplate: 3,
+      invalidPriceOrStack: 1,
+      exchangeId: "42",
+      priceMultiplier: 5,
+      augmentMultiplier: 1,
+      rankedArmorMultiplier: 1,
+      rankedWeaponMultiplier: 1,
+      buybackPercent: 70,
+      buybackPriceBasis: "seeded",
+      maxBuys: 500
+    });
     assert.equal(db.probes.length, 1);
     assert.equal(db.sweeps.length, 0);
+    assert.match(db.probes[0], /player_sell_orders/);
+    assert.match(db.probes[0], /above_threshold_sell_orders/);
+    assert.match(db.probes[0], /unknown_template_sell_orders/);
+    assert.ok(isReadOnlySql(db.probes[0]), "diagnostic probe remains read-only");
 
-    const overridden = await probeBuybackEligibility(config, db, { exchangeId: "99", buybackPercent: 10 });
+    const overridden = await probeBuybackEligibility(config, db, { exchangeId: "99", buybackPercent: 10, buybackPriceBasis: "lowest" });
     assert.equal(overridden.exchangeId, "99");
+    assert.equal(overridden.buybackPriceBasis, "lowest");
     assert.match(db.probes[1], /o\.exchange_id = 99\b/);
 
     await assert.rejects(() => probeBuybackEligibility({ repoRoot: makeRepoRoot() }, db, {}), /exchangeId is required/);
@@ -307,7 +412,7 @@ test("eligible run takes exactly one backup before the sweep and audits the resu
     assert.match(db.sweeps[0], /LIMIT 50 FOR UPDATE OF o, s SKIP LOCKED/);
     assert.equal(backups.length, 1, "eligible run takes exactly one backup");
     assert.deepEqual(backups[0].args, ["db", "backup"]);
-    assert.equal(backups[0].env.DB_BACKUP_ORIGIN, "addon-eda-exchange-bot");
+    assert.equal(backups[0].env.DB_BACKUP_ORIGIN, "market-bot-buyback");
     assert.deepEqual(permissionChecks, ["database:read", "database:write", "scheduler:server"], "installed/enabled/approved is verified on every run");
 
     const persisted = readBuybackSchedule(config);
