@@ -8746,9 +8746,14 @@ function metricsStackNotRunning() {
   };
 }
 
-async function promScalar(promBaseUrl, query) {
+// Exported (was module-private) so console/api/test/postgresHealth.test.js
+// and rabbitmqHealth.test.js can exercise the exact same PromQL-query
+// helper addonOpsPrometheusHealth() already uses, via dependency
+// injection (a fake fetchImpl), rather than duplicating this parsing
+// logic in a second, untested copy.
+export async function promScalar(promBaseUrl, query, fetchImpl = fetch) {
   try {
-    const res = await fetch(`${promBaseUrl}/api/v1/query?${new URLSearchParams({ query })}`, { signal: AbortSignal.timeout(3000) });
+    const res = await fetchImpl(`${promBaseUrl}/api/v1/query?${new URLSearchParams({ query })}`, { signal: AbortSignal.timeout(3000) });
     const body = await res.json();
     const value = body?.data?.result?.[0]?.value?.[1];
     const num = Number(value);
@@ -8756,6 +8761,98 @@ async function promScalar(promBaseUrl, query) {
   } catch {
     return null;
   }
+}
+
+// Sibling to promScalar() for queries that are naturally per-instance
+// (e.g. RabbitMQ's two brokers, admin + game) rather than a single
+// reducible number -- returns the raw `data.result` vector (each entry's
+// `.metric` labels + `.value[1]` as a string, matching Prometheus's own
+// instant-query response shape) instead of collapsing to result[0].
+export async function promVector(promBaseUrl, query, fetchImpl = fetch) {
+  try {
+    const res = await fetchImpl(`${promBaseUrl}/api/v1/query?${new URLSearchParams({ query })}`, { signal: AbortSignal.timeout(3000) });
+    const body = await res.json();
+    return body?.data?.result || [];
+  } catch {
+    return [];
+  }
+}
+
+// addonOpsPostgresHealth: Postgres connection/cache/deadlock health via
+// the already-deployed, already-scraped dune-postgres-exporter
+// (docker-compose.metrics.yml) -- part of the same opt-in metrics stack
+// as addonOpsPrometheusHealth(), so it reuses the identical
+// metricsStackNotRunning() short-circuit (same operator action,
+// `dune metrics start`, brings both up together). See
+// dune-ops-observability-addon#133's L1 design doc
+// (docs/design/noc-overview-rebuild-l1-design-2026-08-17.md) for the
+// full design and the real PromQL these queries are lifted directly
+// from (runtime/metrics/rules/postgres.yml's own alert expressions --
+// deliberately reusing the exact same queries the alerting rules use,
+// not inventing parallel ones, so a UI reading "18/100 connections"
+// and an Alertmanager warning about high connections are always
+// describing the identical underlying number).
+export async function addonOpsPostgresHealth(promBaseUrl = process.env.METRICS_PROMETHEUS_URL || `http://127.0.0.1:${process.env.METRICS_PROMETHEUS_PORT || 9090}`, fetchImpl = fetch) {
+  const up = await promScalar(promBaseUrl, "pg_up", fetchImpl);
+  if (up === null) return metricsStackNotRunning();
+
+  const activeConnections = await promScalar(promBaseUrl, "sum(pg_stat_activity_count)", fetchImpl);
+  const maxConnections = await promScalar(promBaseUrl, "sum(pg_settings_max_connections)", fetchImpl);
+  const cacheHitRatioPercent = await promScalar(
+    promBaseUrl,
+    '100 * (pg_stat_database_blks_hit{datname="dune"} / (pg_stat_database_blks_hit{datname="dune"} + pg_stat_database_blks_read{datname="dune"}))',
+    fetchImpl
+  );
+  const deadlocksLast5m = await promScalar(promBaseUrl, 'increase(pg_stat_database_deadlocks{datname="dune"}[5m])', fetchImpl);
+
+  return {
+    up: up === 1,
+    connections: {
+      active: activeConnections,
+      max: maxConnections
+    },
+    cacheHitRatioPercent: cacheHitRatioPercent === null ? null : Math.round(cacheHitRatioPercent * 10) / 10,
+    deadlocksLast5m: deadlocksLast5m === null ? null : Math.round(deadlocksLast5m)
+  };
+}
+
+// addonOpsRabbitmqHealth: RabbitMQ queue depth/memory/fd health for both
+// broker instances (admin + game) via the already-enabled
+// rabbitmq_prometheus plugin (runtime/scripts/start-rabbitmq.sh already
+// enables it on both instances today) -- NEVER rabbitmqctl eval or the
+// management API's queue-contents endpoints, per
+// dune-ops-observability-addon#133's L1 design doc, Finding H-4: the
+// game RMQ instance's ports are exposed on all interfaces (not
+// 127.0.0.1-scoped), so a new, broader query surface against it would
+// be a real, avoidable network-exposure increase; this stays entirely
+// on the existing, already-loopback-scoped Prometheus scrape path.
+// PromQL lifted directly from runtime/metrics/rules/rabbitmq.yml's own
+// alert expressions, same rationale as addonOpsPostgresHealth() above.
+export async function addonOpsRabbitmqHealth(promBaseUrl = process.env.METRICS_PROMETHEUS_URL || `http://127.0.0.1:${process.env.METRICS_PROMETHEUS_PORT || 9090}`, fetchImpl = fetch) {
+  const up = await promScalar(promBaseUrl, "min(rabbitmq_up)", fetchImpl);
+  if (up === null) return metricsStackNotRunning();
+
+  const instanceVector = await promVector(promBaseUrl, "rabbitmq_up", fetchImpl);
+  const instances = instanceVector.map((entry) => ({
+    name: entry.metric?.service || entry.metric?.job || "unknown",
+    up: Number(entry.value?.[1]) === 1
+  }));
+
+  const queueReady = await promScalar(promBaseUrl, "sum(rabbitmq_queue_messages_ready)", fetchImpl);
+  const queueUnacked = await promScalar(promBaseUrl, "sum(rabbitmq_queue_messages_unacked)", fetchImpl);
+  const queueDepth = queueReady === null && queueUnacked === null
+    ? null
+    : (queueReady || 0) + (queueUnacked || 0);
+  const memPercent = await promScalar(promBaseUrl, "100 * max(rabbitmq_process_resident_memory_bytes / rabbitmq_resident_memory_limit_bytes)", fetchImpl);
+  const fdPercent = await promScalar(promBaseUrl, "100 * max(rabbitmq_process_open_fds / rabbitmq_process_max_fds)", fetchImpl);
+
+  return {
+    up: up === 1,
+    instances,
+    queueDepth,
+    memPercent: memPercent === null ? null : Math.round(memPercent * 10) / 10,
+    fdPercent: fdPercent === null ? null : Math.round(fdPercent * 10) / 10
+  };
 }
 // All Discord-linking state lives in a dedicated `console` schema, NOT
 // in `dune` — the `dune` schema belongs entirely to the game server
