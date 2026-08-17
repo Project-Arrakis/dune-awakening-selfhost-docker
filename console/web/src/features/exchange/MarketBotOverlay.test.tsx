@@ -100,8 +100,10 @@ describe("MarketBotOverlay", () => {
   it("probes eligibility read-only and reports the count", async () => {
     vi.mocked(marketBotApi.probeBuyback).mockResolvedValue({
       eligible: 7, exchangeId: "42", priceMultiplier: 5,
+      playerListings: 20, knownListings: 17, aboveThreshold: 8,
+      unknownTemplate: 3, invalidPriceOrStack: 2,
       augmentMultiplier: 1, rankedArmorMultiplier: 2, rankedWeaponMultiplier: 1,
-      buybackPercent: 60, maxBuys: 500
+      buybackPercent: 60, buybackPriceBasis: "seeded", maxBuys: 500
     });
     renderOverlay();
 
@@ -113,9 +115,17 @@ describe("MarketBotOverlay", () => {
     await waitFor(() => expect(marketBotApi.probeBuyback).toHaveBeenCalledWith({
       exchangeId: "42", priceMultiplier: 5,
       augmentMultiplier: 1, rankedArmorMultiplier: 2, rankedWeaponMultiplier: 1,
-      buybackPercent: 60, maxBuys: 500
+      buybackPercent: 60, buybackPriceBasis: "seeded", maxBuys: 500
     }));
     expect(await screen.findByText(/7 eligible player listing\(s\) on exchange 42 at 60%/)).toBeInTheDocument();
+    const diagnostics = screen.getByLabelText("Buyback diagnostics");
+    expect(diagnostics).toHaveTextContent("Why listings were not bought");
+    expect(diagnostics).toHaveTextContent("Player listings checked20");
+    expect(diagnostics).toHaveTextContent("Recognized in seed plan17");
+    expect(diagnostics).toHaveTextContent("Above price threshold8");
+    expect(diagnostics).toHaveTextContent("Waiting beyond sweep limit0");
+    expect(diagnostics).toHaveTextContent("Unknown template3");
+    expect(diagnostics).toHaveTextContent("Invalid price or empty stack2");
   });
 
   it("confirms before running a sweep and reports the result", async () => {

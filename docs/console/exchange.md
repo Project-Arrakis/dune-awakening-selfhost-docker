@@ -118,6 +118,9 @@ Exchange Bot addon drives through the scheduler bridge, now first-class):
   payment entries, and concurrent sweeps are safe at the database level
   (`FOR UPDATE ... SKIP LOCKED`). Every run probes eligibility with a read-only
   query first and only takes a backup + sweeps when something qualifies.
+  **Probe eligibility** can be run on demand without a backup and explains the
+  result with counts for eligible listings, asks above the price threshold,
+  templates missing from the seed plan, and invalid-price or empty-stack rows.
 - **Schedules** run unattended inside the console API process (no browser page needs
   to stay open) and survive restarts. They are console-owned and authorized by RBAC
   at save time. Seed and buyback share one running lock, so they can never write the

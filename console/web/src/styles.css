@@ -2215,6 +2215,13 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 .market-bot-actions button { width: auto; min-width: 0; }
 .market-bot-actions .danger { background: rgba(200, 77, 63, .15); border-color: rgba(200, 77, 63, .6); color: #ffd6d1; }
 .market-bot-notice { border: 1px solid rgba(99, 181, 127, .5); background: rgba(30, 76, 48, .35); color: #d8f0c8; border-radius: 8px; padding: 8px 10px; margin: 10px 0 0; font-size: 13px; }
+.market-bot-diagnostics { margin-top: 12px; padding: 12px; border: 1px solid rgba(214, 185, 140, .28); border-radius: 8px; background: rgba(25, 20, 15, .36); }
+.market-bot-diagnostics > strong { color: #f0ddba; }
+.market-bot-diagnostics > p { margin: 4px 0 10px; }
+.market-bot-diagnostics dl { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; margin: 0; }
+.market-bot-diagnostics dl > div { padding: 8px; border-radius: 6px; background: rgba(255, 255, 255, .035); }
+.market-bot-diagnostics dt { color: #c9bda7; font-size: 12px; }
+.market-bot-diagnostics dd { margin: 2px 0 0; color: #fff3dd; font-size: 18px; font-weight: 700; }
 
 .stable-action-button { min-width: 72px; }
 .map-action-buttons { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; }

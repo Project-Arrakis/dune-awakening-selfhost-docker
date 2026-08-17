@@ -438,7 +438,7 @@ blacklist behaves.
 |--------|-------|-------------|------------|
 | GET | `/api/exchange/market` | Market Bot status: seed-plan availability and both schedules | None |
 | GET | `/api/exchange/market/exchanges` | Discover exchanges (BIGINT ids as strings; access-pointed exchanges first) | None |
-| POST | `/api/exchange/market/buyback/probe` | Read-only buyback eligibility count (no backup taken) | body: `exchangeId?`, `priceMultiplier?`, `augmentMultiplier?`, `rankedArmorMultiplier?`, `rankedWeaponMultiplier?`, `buybackPercent?`, `maxBuys?` |
+| POST | `/api/exchange/market/buyback/probe` | Read-only buyback diagnostics: total, recognized, eligible, above-threshold, unknown-template, and invalid price/stack listing counts (no backup taken) | body: `exchangeId?`, `priceMultiplier?`, `augmentMultiplier?`, `rankedArmorMultiplier?`, `rankedWeaponMultiplier?`, `buybackPercent?`, `buybackPriceBasis?`, `maxBuys?` |
 | POST | `/api/exchange/market/buyback/schedule` | Save the buyback schedule (audited, rate-limited) | body: `enabled`, `intervalMinutes`, `exchangeId`, `priceMultiplier`, `augmentMultiplier`, `rankedArmorMultiplier`, `rankedWeaponMultiplier`, `buybackPercent`, `buybackPriceBasis`, `maxBuys` |
 | POST | `/api/exchange/market/seed/schedule` | Save the market reseed schedule (audited, rate-limited) | body: `enabled`, `intervalMinutes`, `exchangeId`, `priceMultiplier`, `augmentMultiplier`, `rankedArmorMultiplier`, `rankedWeaponMultiplier`, `augmentPricing` (`discounted`\|`original`) |
 | POST | `/api/exchange/market/buyback/run` | Run a buyback sweep now with the saved schedule (probe → backup → sweep) | None |

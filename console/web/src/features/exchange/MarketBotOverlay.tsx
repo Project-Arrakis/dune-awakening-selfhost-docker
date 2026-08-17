@@ -6,7 +6,8 @@ import {
   type MarketBotStatus,
   type MarketCategoryMultipliers,
   type MarketExchange,
-  type MarketPriceBasis
+  type MarketPriceBasis,
+  type MarketProbeResult
 } from "../../api/marketBot";
 
 // Console-managed NPC market bot (EDA Exchange Bot engine, first-class):
@@ -94,6 +95,7 @@ export function MarketBotOverlay({ onClose, onError, confirmAction }: MarketBotO
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState("");
   const [notice, setNotice] = useState("");
+  const [probeResult, setProbeResult] = useState<MarketProbeResult | null>(null);
 
   const [exchangeId, setExchangeId] = useState("");
   const [buybackEnabled, setBuybackEnabled] = useState(false);
@@ -209,8 +211,10 @@ export function MarketBotOverlay({ onClose, onError, confirmAction }: MarketBotO
         priceMultiplier: buybackMultiplier,
         ...buybackCategoryMultipliers,
         buybackPercent,
+        buybackPriceBasis: buybackBasis,
         maxBuys
       });
+      setProbeResult(result);
       return `${result.eligible.toLocaleString()} eligible player listing(s) on exchange ${result.exchangeId} at ${result.buybackPercent}% (read-only; no backup taken).`;
     });
   }
@@ -314,6 +318,21 @@ export function MarketBotOverlay({ onClose, onError, confirmAction }: MarketBotO
                 <button onClick={() => void probe()} disabled={Boolean(busy)}>{busy === "probe" ? "Probing…" : "Probe eligibility"}</button>
                 <button className="danger" onClick={() => void runBuybackNow()} disabled={Boolean(busy) || !savedBuybackExchange}>{busy === "run-buyback" ? "Running…" : "Run sweep now"}</button>
               </div>
+              {probeResult && (
+                <div className="market-bot-diagnostics" aria-label="Buyback diagnostics">
+                  <strong>Why listings were not bought</strong>
+                  <p className="muted">Read-only probe for exchange {probeResult.exchangeId} at the {probeResult.buybackPercent}% threshold using the {probeResult.buybackPriceBasis} price basis.</p>
+                  <dl>
+                    <div><dt>Player listings checked</dt><dd>{probeResult.playerListings.toLocaleString()}</dd></div>
+                    <div><dt>Recognized in seed plan</dt><dd>{probeResult.knownListings.toLocaleString()}</dd></div>
+                    <div><dt>Eligible to buy</dt><dd>{probeResult.eligible.toLocaleString()}</dd></div>
+                    <div><dt>Waiting beyond sweep limit</dt><dd>{Math.max(0, probeResult.eligible - probeResult.maxBuys).toLocaleString()}</dd></div>
+                    <div><dt>Above price threshold</dt><dd>{probeResult.aboveThreshold.toLocaleString()}</dd></div>
+                    <div><dt>Unknown template</dt><dd>{probeResult.unknownTemplate.toLocaleString()}</dd></div>
+                    <div><dt>Invalid price or empty stack</dt><dd>{probeResult.invalidPriceOrStack.toLocaleString()}</dd></div>
+                  </dl>
+                </div>
+              )}
             </div>
 
             <div className="market-bot-section">
