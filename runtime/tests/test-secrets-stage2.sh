@@ -168,6 +168,54 @@ set -e
 rm -f /tmp/cleanup-out.$$
 echo "PASS: Test 7 (cleanup-legacy adversarial case)"
 
+# --- Test 7b (CRITICAL fix, Requirement 20 Layer 2 audit finding C-1):
+# permission-drift scenario -- the .enc file exists but is NOT
+# readable by the current user (marker IS readable). Both `dune
+# secrets verify` and the resolver must fail closed here, NOT silently
+# report success/fall back to legacy -- this is the exact bug an
+# earlier version of dune_secrets_read_secret had: it only checked
+# .enc-file readability, so an unreadable-but-present .enc file was
+# indistinguishable from "never migrated," silently returning stale
+# legacy plaintext with exit 0. `cleanup-legacy`'s own "re-verify
+# immediately before deleting" step used the same silently-succeeding
+# call, meaning it could delete the last good (legacy) copy while the
+# real .enc file sat there broken and unreadable. This test only runs
+# meaningfully as a genuinely unprivileged user -- root bypasses
+# `chmod` readability restrictions entirely, so this reproduction is
+# skipped when running as root (the exact same, already-documented
+# constraint test-secrets-lib.sh's own Test 8 already accepts). Real
+# CI (GitHub Actions) runs as a non-root user, where this test is
+# fully meaningful.
+if [ "$(id -u)" = "0" ]; then
+  echo "SKIP: Test 7b (running as root -- chmod 000 does not block root from reading, so this permission-drift simulation cannot work; exercised in CI, which runs non-root)"
+else
+  # Fresh migrate to get back to a known-good, uncorrupted state.
+  rm -f runtime/secrets/server-login-password-secret.enc
+  bash runtime/scripts/secrets-cli.sh migrate server-login-password-secret >/dev/null
+  chmod 000 runtime/secrets/server-login-password-secret.enc
+  set +e
+  verify_out="$(bash runtime/scripts/secrets-cli.sh verify server-login-password-secret 2>&1)"
+  verify_rc=$?
+  set -e
+  chmod 600 runtime/secrets/server-login-password-secret.enc
+  [ "$verify_rc" != "0" ] || fail "Test 7b: verify reported success against an unreadable .enc file (marker present) -- CRITICAL fail-closed regression"
+  if printf '%s' "$verify_out" | grep -qi "^server-login-password-secret: OK"; then
+    fail "Test 7b: verify printed OK against an unreadable .enc file"
+  fi
+  echo "PASS: Test 7b (verify fails closed on an unreadable-but-present .enc file, marker notwithstanding)"
+
+  chmod 000 runtime/secrets/server-login-password-secret.enc
+  set +e
+  bash runtime/scripts/secrets-cli.sh cleanup-legacy server-login-password-secret >/tmp/cleanup7b-out.$$ 2>&1
+  cleanup7b_rc=$?
+  set -e
+  chmod 600 runtime/secrets/server-login-password-secret.enc
+  [ "$cleanup7b_rc" != "0" ] || fail "Test 7b: cleanup-legacy succeeded against an unreadable .enc file -- would have deleted the last good copy"
+  [ -f runtime/secrets/server-login-password-secret.txt ] || fail "Test 7b: legacy file was deleted despite the .enc file being unreadable"
+  rm -f /tmp/cleanup7b-out.$$
+  echo "PASS: Test 7b (cleanup-legacy refuses when the .enc file is unreadable, even though the marker is present)"
+fi
+
 # --- Test 8 (Deliverable #8): migrate is idempotent-in-effect on a
 # second run -- always re-encrypts from the source plaintext, never
 # double-wraps ---
