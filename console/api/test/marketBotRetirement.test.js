@@ -49,6 +49,49 @@ test("initializes healthy core state when EDA was already uninstalled", () => {
   }
 });
 
+test("migrates enabled legacy schedules after EDA was already uninstalled", () => {
+  const repoRoot = makeRepo();
+  try {
+    const target = paths(repoRoot);
+    writeJson(join(target.legacy, "buyback.json"), {
+      enabled: true,
+      exchangeId: "5",
+      intervalMinutes: 15,
+      buybackPercent: 60,
+      source: "console",
+      nextRunAt: "2026-08-17T12:47:58.244Z"
+    });
+    writeJson(join(target.legacy, "seed.json"), {
+      enabled: true,
+      exchangeId: "5",
+      intervalMinutes: 15,
+      priceMultiplier: 5,
+      source: "console",
+      nextRunAt: "2026-08-17T12:45:45.549Z"
+    });
+
+    const result = retireLegacyEdaExchangeBot({ repoRoot }, { now: () => new Date("2026-08-17T12:40:00.000Z") });
+
+    assert.equal(result.addonRemoved, true);
+    assert.equal(existsSync(target.installed), false);
+    assert.equal(existsSync(target.legacy), false);
+    assert.deepEqual(
+      [readJson(join(target.core, "buyback.json")).enabled, readJson(join(target.core, "buyback.json")).nextRunAt],
+      [true, "2026-08-17T12:47:58.244Z"]
+    );
+    assert.deepEqual(
+      [readJson(join(target.core, "seed.json")).enabled, readJson(join(target.core, "seed.json")).nextRunAt],
+      [true, "2026-08-17T12:45:45.549Z"]
+    );
+    assert.equal(readJson(join(target.core, "eda-retirement.json")).legacyAddonFound, false);
+    assert.equal(readJson(join(target.core, "eda-retirement.json")).legacySchedulesFound, true);
+    assert.equal(existsSync(join(repoRoot, result.backupDir, "jobs/buyback.json")), true);
+    assert.equal(existsSync(join(repoRoot, result.backupDir, "jobs/seed.json")), true);
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
 test("backs up and migrates installed EDA schedules before removal", () => {
   const repoRoot = makeRepo();
   try {

@@ -233,7 +233,26 @@ export function loadMarketSeedPlan(config, addonId = EDA_EXCHANGE_BOT_ADDON_ID) 
       itemStats: itemStatsJson(durCur, durMax, statRolls)
     };
   });
+  validateAugmentSchematicGrades(rows);
   return { sourceMultiplier, rows };
+}
+
+// Augment patterns inherit their craftable grade from the corresponding
+// augmentation item. Seeding a pattern at a grade the item does not support
+// makes the game render sentinel recipe costs (for example 9,999 materials)
+// and leaves the purchased schematic unusable.
+function validateAugmentSchematicGrades(rows) {
+  const augmentItemGrades = new Set(rows
+    .filter((row) => row.kind === "equippable" && AUGMENT_TEMPLATE_PATTERN.test(row.templateId))
+    .map((row) => `${row.templateId}\0${row.qualityLevel}`));
+
+  for (const row of rows) {
+    if (row.kind !== "schematic" || !AUGMENT_TEMPLATE_PATTERN.test(row.templateId) || !row.templateId.endsWith("_Schematic")) continue;
+    const itemTemplateId = row.templateId.slice(0, -"_Schematic".length);
+    if (!augmentItemGrades.has(`${itemTemplateId}\0${row.qualityLevel}`)) {
+      throw new Error(`Addon market seed plan has unsupported augment schematic grade: ${row.templateId} quality ${row.qualityLevel} has no matching augmentation item.`);
+    }
+  }
 }
 
 // Stat roll counts per augment template, derived from the bundled
