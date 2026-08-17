@@ -7,6 +7,8 @@ source runtime/scripts/memory-swap-common.sh
 source runtime/scripts/env-file.sh
 # shellcheck source=runtime/scripts/host-file-ownership.sh
 source runtime/scripts/host-file-ownership.sh
+# shellcheck source=runtime/scripts/lib/secrets.sh
+source runtime/scripts/lib/secrets.sh
 
 if [ -z "${DUNE_COMPOSE_PROJECT_NAME:-}" ]; then
   # shellcheck disable=SC1091
@@ -703,16 +705,73 @@ ensure_secret_file() {
   fi
 }
 
+# resolve_server_login_password_secret / resolve_username_server_login_secret
+#
+# Stage 2 of the age-based secrets library rollout (docs/design/
+# secrets-stage2-server-login-l1-design-2026-08-17.md). Strictly
+# opt-in: an operator who never sets DUNE_KEK_FILE/DUNE_AGE_IDENTITY_FILE
+# sees the exact same behavior as before this stage existed -- read the
+# plain runtime/secrets/*.txt file, generating it via ensure_secret_file
+# if absent.
+#
+# Once the age backend IS configured, migration state is determined by
+# checking for either of two independent, readable artifacts -- not
+# existence alone, and not either one in isolation:
+#   - the encrypted secret itself (dune_secrets_encrypted_path)
+#   - its per-secret migration marker (dune_secrets_migration_marker_path)
+# Using -r (readable), not -e (exists), matters: it must match the
+# exact predicate dune_secrets_read_secret uses internally, or the two
+# functions can disagree about "is this migrated" the moment a .enc
+# file exists but isn't readable by the current user (permission
+# drift after a restore, a chmod bug, a root-owned file left behind by
+# a container) -- which would otherwise silently fall through to
+# ensure_secret_file's *legacy* read path while still "believing" this
+# secret is protected. Checking the marker as a second, independent
+# signal means a lost/corrupted .enc file alone (after cleanup-legacy
+# has already removed the legacy fallback) still forces the fail-loud
+# branch below instead of silently minting a brand-new, unexpected
+# secret with zero diagnostic.
+#
+# Once either signal is present and readable, a decryption failure is
+# a hard stop (non-zero return propagated to the caller, which runs
+# under `set -euo pipefail` in every real launcher script) -- never a
+# silent fall-through to generating a new legacy secret. That would
+# desync this process's login credential from whatever the game
+# binary/operator already expects, which is a worse failure mode than
+# simply refusing to start.
+_resolve_stage2_secret() {
+  local name="$1"
+  local legacy_path="runtime/secrets/${name}.txt"
+
+  if dune_secrets_backend_configured; then
+    local enc_path marker_path migrated=0
+    enc_path="$(dune_secrets_encrypted_path "$name" 2>/dev/null || true)"
+    marker_path="$(dune_secrets_migration_marker_path "$name" 2>/dev/null || true)"
+    if [ -n "$enc_path" ] && [ -r "$enc_path" ]; then
+      migrated=1
+    elif [ -n "$marker_path" ] && [ -r "$marker_path" ]; then
+      migrated=1
+    fi
+
+    if [ "$migrated" = "1" ]; then
+      dune_secrets_read_secret "$name" "$legacy_path"
+      return $?
+    fi
+    # Backend configured but this specific secret was never migrated
+    # yet (neither signal present) -- fall through to legacy behavior
+    # below, exactly as before this stage existed.
+  fi
+
+  ensure_secret_file "$legacy_path" 32
+  tr -d '\r\n' < "$legacy_path"
+}
+
 resolve_server_login_password_secret() {
-  local path="runtime/secrets/server-login-password-secret.txt"
-  ensure_secret_file "$path" 32
-  tr -d '\r\n' < "$path"
+  _resolve_stage2_secret "server-login-password-secret"
 }
 
 resolve_username_server_login_secret() {
-  local path="runtime/secrets/username-server-login-secret.txt"
-  ensure_secret_file "$path" 32
-  tr -d '\r\n' < "$path"
+  _resolve_stage2_secret "username-server-login-secret"
 }
 
 resolve_login_password_skew_seconds() {
