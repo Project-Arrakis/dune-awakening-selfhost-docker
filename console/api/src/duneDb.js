@@ -1,4 +1,4 @@
-import { assertIdentifier, intParam, isReadOnlySql, quoteIdentifier, quoteQualified, rowsResult } from "./db.js";
+import { assertIdentifier, bigintParam, intParam, isReadOnlySql, quoteIdentifier, quoteQualified, rowsResult } from "./db.js";
 import { getBridgeRequestSummary } from "./audit.js";
 import { resolvePorts } from "./config.js";
 import { existsSync, readFileSync } from "node:fs";
@@ -3725,6 +3725,24 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
   const backupExclusion = hasBaseBackups
     ? "and not (pa.actor_id is null and exists (select 1 from dune.base_backup_linked_actors bbla where bbla.actor_id = a.id))"
     : "";
+  // What counts as a base, defined once. The paged query (`matched`) and the
+  // totals query (`valid_claims`) run in separate round trips but must agree
+  // exactly on the candidate set -- if they diverge, total_bases/total_pieces/
+  // total_placeables silently stop describing the rows actually being listed.
+  // Emitting both from here makes that divergence unrepresentable rather than
+  // merely tested for. `extraJoin` is the one sanctioned variation: `matched`
+  // needs the owner LATERAL joined before its group-by when searching or
+  // sorting by owner, and that join cannot affect which rows qualify (it is a
+  // LEFT JOIN LATERAL ... ON TRUE returning at most one row).
+  const baseCandidateSource = (extraJoin = "") => `
+        from dune.buildings b
+        join dune.building_instances bi on bi.building_id = b.id
+        join dune.actor_fgl_entities afe on afe.entity_id = bi.owner_entity_id
+        join dune.actors a on a.id = afe.actor_id
+        left join dune.permission_actor pa on pa.actor_id = a.id
+        ${extraJoin}
+        where a.transform is not null
+        ${backupExclusion}`;
   // A base's own a.map is the game's map name ("HaggaBasin"), which cannot tell
   // two instances of it apart. world_partition resolves the partition to the
   // name the rest of the console uses ("Survival_1") plus its dimension --
@@ -3810,14 +3828,7 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
                coalesce(a.partition_id, 0) as partition_id,
                a.transform,
                ${matchedSortSelect}
-        from dune.buildings b
-        join dune.building_instances bi on bi.building_id = b.id
-        join dune.actor_fgl_entities afe on afe.entity_id = bi.owner_entity_id
-        join dune.actors a on a.id = afe.actor_id
-        left join dune.permission_actor pa on pa.actor_id = a.id
-        ${matchedOwnerJoin}
-        where a.transform is not null
-        ${backupExclusion}
+        ${baseCandidateSource(matchedOwnerJoin)}
         group by a.id, a.class, pa.actor_name, ${matchedGroupByOwner}a.map, a.partition_id, a.transform
         ${having}
       ),
@@ -3860,13 +3871,7 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
     const totalsResult = await db.query(`
       with valid_claims as (
         select distinct a.id as actor_id
-        from dune.buildings b
-        join dune.building_instances bi on bi.building_id = b.id
-        join dune.actor_fgl_entities afe on afe.entity_id = bi.owner_entity_id
-        join dune.actors a on a.id = afe.actor_id
-        left join dune.permission_actor pa on pa.actor_id = a.id
-        where a.transform is not null
-        ${backupExclusion}
+        ${baseCandidateSource()}
       )
       select (select count(*) from valid_claims)::int as total_bases,
              (select count(*) from dune.building_instances bi join dune.actor_fgl_entities afe on afe.entity_id = bi.owner_entity_id join valid_claims vc on vc.actor_id = afe.actor_id)::int as total_pieces,
@@ -7792,6 +7797,307 @@ export async function baseInventory(db, baseId, { repoRoot = "" } = {}) {
   };
 }
 
+// The per-slot view of ONE container, kept off baseInventory deliberately.
+// Slots roughly triple that response (238KB -> 656KB on the largest base in the
+// reference dump, +176%) and it loads on every base expand and auto-refresh,
+// while the contents modal only ever shows a single container. So slots are
+// fetched per container, on open.
+//
+// baseInventory's items[] stays template-merged and is unchanged: it backs the
+// "N distinct" label and the search filter, both of which mean distinct
+// templates rather than stacks. This is the per-slot truth beside it.
+//
+// Slots hang off an inventory rather than the container because max_item_count
+// is summed across every inventory a placeable backs while position_index is
+// scoped to one of them -- two inventories would both have a slot 0.
+export async function baseContainerSlots(db, baseId, placeableId) {
+  const target = intParam(baseId, "base id", 1);
+  const container = intParam(placeableId, "container id", 1);
+  // Same relations baseInventory probes, minus permission_actor: this query
+  // does not resolve display names, so it must not fail on a schema that lacks
+  // that table when baseInventory already reported the container.
+  const required = [
+    "buildings", "building_instances", "actor_fgl_entities",
+    "placeables", "inventories", "items"
+  ];
+  const present = await Promise.all(required.map((table) => tableExists(db, table)));
+  const missing = required.filter((_, index) => !present[index]);
+  if (missing.length) {
+    return {
+      supported: false,
+      reason: `Unsupported by detected schema. Missing required table(s): ${missing.map((table) => `dune.${table}`).join(", ")}`,
+      baseId: target,
+      placeableId: String(container),
+      inventories: []
+    };
+  }
+
+  // Probed rather than assumed: a missing column is a parse-time error, not a
+  // null, so selecting position_index against a schema without it would 500 a
+  // container that used to open. Slots still come back; only the grid degrades,
+  // and the frontend falls back to the list when positionIndex is null.
+  const itemColumns = await columnsFor(db, "items");
+  const hasPositionIndex = itemColumns.has("position_index");
+  const hasStats = itemColumns.has("stats");
+  const slotSelect = [
+    hasPositionIndex ? "i.position_index" : "null::bigint as position_index",
+    itemColumns.has("quality_level") ? "i.quality_level" : "0::bigint as quality_level",
+    // Lifted verbatim from INVENTORY_ITEM_SELECT so the two paths cannot
+    // disagree about where durability lives.
+    hasStats
+      ? "coalesce((i.stats->'FItemStackAndDurabilityStats'->1->>'CurrentDurability'), null) as current_durability"
+      : "null::text as current_durability",
+    hasStats
+      ? `coalesce(
+             nullif((i.stats->'FItemStackAndDurabilityStats'->1->>'MaxDurability')::numeric, 0),
+             nullif((i.stats->'FItemStackAndDurabilityStats'->1->>'DecayedMaxDurability')::numeric, 0),
+             null
+           ) as max_durability`
+      : "null::numeric as max_durability"
+  ].join(",\n           ");
+  const slotOrder = hasPositionIndex ? "i.position_index nulls last, i.id" : "i.id";
+  const [groups, buildingTypes, typeNames] = baseInventoryTypeParams();
+
+  // The claim-resolution CTEs are baseInventory's, narrowed to one placeable.
+  // Keeping the inventory_types join and is_hologram/max_item_count filters is
+  // load-bearing, not tidiness: they are what stops this reaching generator and
+  // windtrap fuel, which the Power and Water tabs own.
+  const result = await db.query(`
+    with requested_claims as (
+      select distinct b.id, afe.actor_id
+      from dune.buildings b
+      join dune.building_instances bi on bi.building_id = b.id
+      join dune.actor_fgl_entities afe on afe.entity_id = bi.owner_entity_id
+      where b.id = $1
+    ), base_entities as (
+      select distinct rc.id, claim_afe.entity_id as owner_entity_id
+      from requested_claims rc
+      join dune.actor_fgl_entities claim_afe on claim_afe.actor_id = rc.actor_id
+    ), inventory_types as (
+      select * from unnest($2::text[], $3::text[], $4::text[]) as t(group_key, building_type, type_name)
+    ), containers as (
+      select distinct p.id as placeable_id, inv.id as inventory_id,
+             it.group_key, it.type_name, inv.max_item_count
+      from base_entities be
+      join dune.placeables p on p.owner_entity_id = be.owner_entity_id
+      join inventory_types it on it.building_type = lower(p.building_type)
+      join dune.inventories inv on inv.actor_id = p.id and inv.max_item_count >= 0
+      where p.is_hologram = false and p.id = $5
+    )
+    select c.inventory_id::text as inventory_id,
+           c.group_key, c.type_name, c.max_item_count,
+           i.id::text as item_id, i.template_id, i.stack_size,
+           ${slotSelect}
+    from containers c
+    left join dune.items i on i.inventory_id = c.inventory_id
+    order by c.inventory_id, ${slotOrder}`, [target, groups, buildingTypes, typeNames, container]);
+
+  if (!result.rows.length) {
+    return {
+      supported: true,
+      found: false,
+      reason: "That container was not found at the selected base.",
+      baseId: target,
+      placeableId: String(container),
+      inventories: []
+    };
+  }
+
+  const itemMetadata = adminItemMetadata();
+  const inventoriesById = new Map();
+  for (const row of result.rows) {
+    const inventoryId = String(row.inventory_id);
+    let inventory = inventoriesById.get(inventoryId);
+    if (!inventory) {
+      inventory = {
+        inventoryId,
+        maxSlots: Math.max(0, Number(row.max_item_count) || 0),
+        usedSlots: 0,
+        slots: []
+      };
+      inventoriesById.set(inventoryId, inventory);
+    }
+    // The left join emits one all-null item row for an empty inventory, which
+    // still needs its entry above so the grid can render empty slots.
+    const templateId = String(row.template_id || "");
+    if (!templateId) continue;
+    inventory.usedSlots += 1;
+    inventory.slots.push({
+      itemId: String(row.item_id),
+      templateId,
+      name: itemMetadata.get(templateId)?.name || templateId,
+      positionIndex: row.position_index === null || row.position_index === undefined
+        ? null
+        : Number(row.position_index),
+      quantity: Number(row.stack_size) || 0,
+      qualityLevel: Number(row.quality_level) || 0,
+      currentDurability: row.current_durability === null || row.current_durability === undefined
+        ? null
+        : Number(row.current_durability),
+      maxDurability: row.max_durability === null || row.max_durability === undefined
+        ? null
+        : Number(row.max_durability)
+    });
+  }
+
+  const inventories = [...inventoriesById.values()];
+  return {
+    supported: true,
+    found: true,
+    baseId: target,
+    placeableId: String(container),
+    typeName: result.rows[0].type_name,
+    group: result.rows[0].group_key,
+    maxSlots: inventories.reduce((total, inventory) => total + inventory.maxSlots, 0),
+    usedSlots: inventories.reduce((total, inventory) => total + inventory.usedSlots, 0),
+    inventories
+  };
+}
+
+// Deletes one stored item, or part of its stack, from a base container.
+//
+// Ownership is the whole job here. The query re-resolves the base's claim from
+// scratch rather than trusting the placeable id the caller sent, and keeps
+// baseInventory's inventory_types join plus the is_hologram / max_item_count
+// filters: together they prove the item sits in an allowlisted container at the
+// requested base, which is what stops this reaching a generator or windtrap
+// fuel inventory that the Power and Water tabs own. Deliberately NOT the
+// giveItemToStorage shape, which only checks that some inventory exists for an
+// actor and picks one arbitrarily.
+//
+// There is no live-sync path for inventory (no pg_notify channel, no triggers
+// on dune.items), so the API route refuses this operation unless it can verify
+// that the owning map is safely down. This lower layer also restricts deletion
+// to plain storage: crafting/refining inventories can have active jobs that
+// reference these rows, and deleting an allocated ingredient can corrupt that
+// job even while the map is stopped.
+export async function deleteBaseContainerItem(db, baseId, placeableId, itemId, { count = null } = {}) {
+  await requireCapability(
+    await supportsBaseContainerItemDelete(db),
+    "Container item delete requires dune.buildings, dune.building_instances, dune.actor_fgl_entities, dune.placeables, dune.inventories, dune.items, and dune.delete_item(bigint)."
+  );
+  const target = intParam(baseId, "base id", 1);
+  const container = intParam(placeableId, "container id", 1);
+  const safeItemId = bigintParam(itemId, "item id");
+  const requestedCount = count === null || count === undefined ? null : intParam(count, "count", 1);
+  const [groups, buildingTypes, typeNames] = baseInventoryTypeParams();
+
+  return db.transaction(async (tx) => {
+    // for update OF i, inv -- not a bare `for update`. Postgres cannot lock a
+    // CTE reference, so naming the real relations is required, not stylistic.
+    // inv is locked as well as i because locking only the item row locks
+    // nothing when the row is already gone; the inventory row is the parent
+    // guaranteed to exist for as long as the container does.
+    const found = await tx.query(`
+      with requested_claims as (
+        select distinct b.id, afe.actor_id
+        from dune.buildings b
+        join dune.building_instances bi on bi.building_id = b.id
+        join dune.actor_fgl_entities afe on afe.entity_id = bi.owner_entity_id
+        where b.id = $1
+      ), base_entities as (
+        select distinct rc.id, claim_afe.entity_id as owner_entity_id
+        from requested_claims rc
+        join dune.actor_fgl_entities claim_afe on claim_afe.actor_id = rc.actor_id
+      ), inventory_types as (
+        select * from unnest($2::text[], $3::text[], $4::text[]) as t(group_key, building_type, type_name)
+      ), containers as (
+        select distinct p.id as placeable_id, inv.id as inventory_id,
+               it.group_key, it.type_name
+        from base_entities be
+        join dune.placeables p on p.owner_entity_id = be.owner_entity_id
+        join inventory_types it on it.building_type = lower(p.building_type)
+        join dune.inventories inv on inv.actor_id = p.id and inv.max_item_count >= 0
+        where p.is_hologram = false and p.id = $5
+      )
+      select i.id::text as item_id, i.template_id, i.stack_size, i.inventory_id,
+             c.placeable_id::text as placeable_id, c.group_key, c.type_name
+      from containers c
+      join dune.items i on i.inventory_id = c.inventory_id
+      join dune.inventories inv on inv.id = i.inventory_id
+      where i.id = $6
+      for update of i, inv`, [target, groups, buildingTypes, typeNames, container, safeItemId]);
+
+    const item = found.rows[0];
+    if (!item) throw new Error("That item was not found in a storage container at the selected base.");
+    if (item.group_key !== "storage") {
+      throw new Error("Items can only be deleted from Storage containers. Crafting and Refining contents are read-only to protect active jobs.");
+    }
+
+    const stackSize = Number(item.stack_size) || 0;
+    const inventoryId = item.inventory_id;
+    const label = item.template_id || "Item";
+
+    // An explicit count larger than the stack is refused rather than rounded
+    // down to "delete it all". The two are not the same request, and the gap
+    // between them is a real race: the caller saw 500, asked for 400, and the
+    // stack has since dropped to 300 -- widening that into destroying all 300
+    // would remove more than was ever agreed to. Only an omitted count means
+    // "the whole slot".
+    if (requestedCount !== null && requestedCount > stackSize) {
+      throw new Error(`Cannot remove ${requestedCount}: the stack holds ${stackSize}. It may have changed since this view was loaded.`);
+    }
+    const partial = requestedCount !== null && requestedCount < stackSize;
+
+    if (partial) {
+      // Refused rather than widened: silently deleting the whole stack because
+      // the schema cannot do a partial removal would destroy more than asked.
+      await requireCapability(
+        await supportsPartialStackDelete(db),
+        "Removing part of a stack requires dune.delete_inventory_item(bigint,bigint)."
+      );
+      // The shipped procedure returns NULL instead of raising when the count
+      // exceeds the stack, so a null result is a failure, not a no-op success.
+      const applied = await tx.query(
+        "select dune.delete_inventory_item($1::bigint, $2::bigint) as result",
+        [safeItemId, requestedCount]
+      );
+      if (applied.rows[0]?.result === null || applied.rows[0]?.result === undefined) {
+        throw new Error("Partial stack removal was rejected by the database. The requested count may exceed the stack.");
+      }
+      const after = await tx.query("select stack_size from dune.items where id = $1 and inventory_id = $2", [safeItemId, inventoryId]);
+      const remaining = after.rows[0] ? Number(after.rows[0].stack_size) || 0 : 0;
+      if (remaining !== stackSize - requestedCount) {
+        throw new Error("Partial stack removal did not change the stack by the requested amount.");
+      }
+      return {
+        ok: true,
+        baseId: target,
+        placeableId: item.placeable_id,
+        inventoryId: String(inventoryId),
+        typeName: item.type_name,
+        group: item.group_key,
+        partial: true,
+        removed: { itemId: item.item_id, templateId: item.template_id, count: requestedCount, remaining },
+        message: `Removed ${requestedCount} of ${label} from the database, leaving ${remaining}.`
+      };
+    }
+
+    // Whole slot. Same verify -> raw-delete fallback -> verify shape as
+    // deleteInventoryItem: the shipped procedure is preferred for its item
+    // tracking log, but the row disappearing is what actually matters.
+    await tx.query("select dune.delete_item($1::bigint)", [safeItemId]);
+    const stillExists = await tx.query("select exists(select 1 from dune.items where id = $1 and inventory_id = $2) as exists", [safeItemId, inventoryId]);
+    if (stillExists.rows[0]?.exists) {
+      await tx.query("delete from dune.items where id = $1 and inventory_id = $2", [safeItemId, inventoryId]);
+    }
+    const deleted = await tx.query("select not exists(select 1 from dune.items where id = $1 and inventory_id = $2) as deleted", [safeItemId, inventoryId]);
+    if (!deleted.rows[0]?.deleted) throw new Error("Stored item delete did not remove the item from the database.");
+
+    return {
+      ok: true,
+      baseId: target,
+      placeableId: item.placeable_id,
+      inventoryId: String(inventoryId),
+      typeName: item.type_name,
+      group: item.group_key,
+      partial: false,
+      removed: { itemId: item.item_id, templateId: item.template_id, count: stackSize, remaining: 0 },
+      message: `${label} was deleted from the database.`
+    };
+  });
+}
+
 // Pending water-refill queue. Same reasoning and shape as the generator
 // queue above (a live map can overwrite an immediate write, so a refill
 // aimed at one is recorded here and applied once that map is confirmed
@@ -8488,6 +8794,27 @@ async function supportsInventoryDelete(db) {
 
 async function supportsInventoryEdit(db) {
   return await tableExists(db, "items") && await tableExists(db, "inventories");
+}
+
+// Every relation deleteBaseContainerItem's ownership query names, not just the
+// two it writes through. Postgres resolves a relation at parse time, so a
+// missing buildings raises exactly as hard as a missing items -- a partial
+// probe would report the capability as present and then fail on use.
+// dune.delete_inventory_item is probed separately: it is only needed for a
+// partial-stack delete, and a schema without it should still allow whole-slot
+// deletes rather than losing the feature entirely.
+async function supportsBaseContainerItemDelete(db) {
+  const required = [
+    "buildings", "building_instances", "actor_fgl_entities",
+    "placeables", "inventories", "items"
+  ];
+  const present = await Promise.all(required.map((table) => tableExists(db, table)));
+  if (present.some((exists) => !exists)) return false;
+  return functionExists(db, "dune.delete_item(bigint)");
+}
+
+async function supportsPartialStackDelete(db) {
+  return functionExists(db, "dune.delete_inventory_item(bigint,bigint)");
 }
 
 async function supportsStorageGiveItem(db) {

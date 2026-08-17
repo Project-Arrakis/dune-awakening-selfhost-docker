@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { assertIdentifier, discoverDbConfig, isReadOnlySql, quoteQualified, redactDbError, rowsResult } from "../src/db.js";
+import { assertIdentifier, bigintParam, discoverDbConfig, isReadOnlySql, quoteQualified, redactDbError, rowsResult } from "../src/db.js";
 import {
   _resetRefillPartitionDwellForTests,
   baseRefillTarget,
@@ -17,10 +17,17 @@ import {
   queueGeneratorRefill,
   supportsGeneratorRefillQueue
 } from "../src/duneDb.js";
-import { addCurrency, addFactionReputation, addGuildMember, addIntel, addonLeadershipPlayers, addonOpsHealthFarms, addonOpsHealthPlayers, addonOpsHealthSummary, addonOpsHealthSummaryV2, addSpecializationXp, applyLandsraadMilestonePreset, augmentInventoryItem, augmentNewestPlayerItem, baseGeneratorFuelLevels, baseGenerators, baseIsBackedUp, changeDunePassword, completeJourneyNode, completeTutorial, dbStatus, deleteInventoryItem, demoteGuildMember, disbandGuild, exportBaseAsBlueprint, generatorUptimePolicy, giveItemToPlayer, giveItemToStorage, guildMembers, landsraadOverview, listBases, listGuilds, listPlayers, listRoutines, listSpicefieldTypes, listTables, liveMapPlayers, liveMapServices, playerBuildingUnlockState, playerCraftingRecipes, playerCurrency, playerFactions, playerIntel, playerInventory, playerInventoryAll, playerJourney, playerPortalSnapshots, playerPosition, playerProfile, playerProgression, playerResearchItems, playerSolarisCoinTotal, playerVitals, portalGeneratorFuel, portalVehicles, promoteGuildMember, refillBaseGenerators, removeGuildMember, repairFactionReputation, repairVehicleDecay, resetJourneyNode, resetTutorial, routineDefinition, runSql, setLandsraadPlayerContribution, setPlayerFaction, supportsGeneratorRefill, tablePreview, teleportOfflinePlayerToCoords, unlockCraftingRecipe, unlockResearchItem, updateInventoryItem, updateLandsraadRewardTier, updateLandsraadTaskGoal, updateLandsraadTermTaskGoals, updateSpicefieldType, updateTableRow, UnsupportedCapabilityError, _resetPlayerTargetCacheForTests } from "../src/duneDb.js";
+import { addCurrency, addFactionReputation, addGuildMember, addIntel, addonLeadershipPlayers, addonOpsHealthFarms, addonOpsHealthPlayers, addonOpsHealthSummary, addonOpsHealthSummaryV2, addSpecializationXp, applyLandsraadMilestonePreset, augmentInventoryItem, augmentNewestPlayerItem, baseContainerSlots, baseGeneratorFuelLevels, baseGenerators, baseIsBackedUp, changeDunePassword, completeJourneyNode, completeTutorial, dbStatus, deleteBaseContainerItem, deleteInventoryItem, demoteGuildMember, disbandGuild, exportBaseAsBlueprint, generatorUptimePolicy, giveItemToPlayer, giveItemToStorage, guildMembers, landsraadOverview, listBases, listGuilds, listPlayers, listRoutines, listSpicefieldTypes, listTables, liveMapPlayers, liveMapServices, playerBuildingUnlockState, playerCraftingRecipes, playerCurrency, playerFactions, playerIntel, playerInventory, playerInventoryAll, playerJourney, playerPortalSnapshots, playerPosition, playerProfile, playerProgression, playerResearchItems, playerSolarisCoinTotal, playerVitals, portalGeneratorFuel, portalVehicles, promoteGuildMember, refillBaseGenerators, removeGuildMember, repairFactionReputation, repairVehicleDecay, resetJourneyNode, resetTutorial, routineDefinition, runSql, setLandsraadPlayerContribution, setPlayerFaction, supportsGeneratorRefill, tablePreview, teleportOfflinePlayerToCoords, unlockCraftingRecipe, unlockResearchItem, updateInventoryItem, updateLandsraadRewardTier, updateLandsraadTaskGoal, updateLandsraadTermTaskGoals, updateSpicefieldType, updateTableRow, UnsupportedCapabilityError, _resetPlayerTargetCacheForTests } from "../src/duneDb.js";
 
 beforeEach(() => {
   _resetPlayerTargetCacheForTests();
+});
+
+test("bigint parameters preserve identifiers beyond JavaScript's safe integer range", () => {
+  assert.equal(bigintParam("9007199254740993", "item id"), "9007199254740993");
+  assert.equal(bigintParam("9223372036854775807", "item id"), "9223372036854775807");
+  assert.throws(() => bigintParam("9223372036854775808", "item id"), /Invalid item id/);
+  assert.throws(() => bigintParam("1.5", "item id"), /Invalid item id/);
 });
 
 test("discovers RedBlink Postgres defaults and env overrides", () => {
@@ -2601,6 +2608,12 @@ test("list bases omits the partition join when world_partition is absent", async
 // dune.base_backup_linked_actors -- it leaves buildings/building_instances/
 // placeables fully intact, so without this exclusion a picked-up base would
 // keep showing up as an ordinary, ownerless base.
+//
+// Both query strings are asserted because the paged rows and the totals are
+// two separate round trips that must describe the same candidate set. They
+// are emitted from one baseCandidateSource() helper in duneDb.js, so this is
+// now a regression test on that helper reaching both call sites rather than a
+// guard against hand-copied clauses drifting apart.
 test("list bases excludes unclaimed, backup-linked bases when base_backup_linked_actors exists", async () => {
   const calls = [];
   const db = {
@@ -3457,6 +3470,288 @@ test("inventory delete rejects rows not owned by the selected player", async () 
   const db = fakeMutationDb(calls, { itemRows: [] });
   await assert.rejects(() => deleteInventoryItem(db, 123, 99), /selected player's directly-owned inventory/);
   assert.equal(calls.some((call) => call.text.includes("dune.delete_item")), false);
+});
+
+// Container-item delete. The ownership query is the whole safety story here --
+// it is what keeps a delete inside an allowlisted container at the requested
+// base, and out of the generator/windtrap fuel inventories the Power and Water
+// tabs own -- so most of these assert on it rather than on the happy path.
+function fakeContainerDeleteDb(calls, fixtures = {}) {
+  const {
+    itemRows = [],
+    partialResult = 1,
+    remainingAfterPartial = null,
+    procedures = true,
+    deleteLeavesRow = false
+  } = fixtures;
+  const run = async (text, values = []) => {
+    calls.push({ text, values });
+    if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+    if (text.includes("to_regprocedure")) return { rows: [{ exists: procedures }] };
+    if (text.includes("requested_claims")) return { rows: itemRows };
+    if (text.includes("dune.delete_inventory_item")) return { rows: [{ result: partialResult }] };
+    if (text.includes("select stack_size from dune.items")) {
+      return { rows: remainingAfterPartial === null ? [] : [{ stack_size: remainingAfterPartial }] };
+    }
+    if (text.includes("as exists")) return { rows: [{ exists: deleteLeavesRow }] };
+    if (text.includes("as deleted")) return { rows: [{ deleted: !deleteLeavesRow }] };
+    return { rows: [] };
+  };
+  return { query: run, transaction: async (fn) => fn({ query: run }) };
+}
+
+const CONTAINER_ITEM_ROW = {
+  item_id: "99", template_id: "ScrapMetal", stack_size: 500, inventory_id: 7,
+  placeable_id: "42", group_key: "storage", type_name: "Small Storage Container"
+};
+
+test("container item delete verifies base ownership before calling dune.delete_item", async () => {
+  const calls = [];
+  const db = fakeContainerDeleteDb(calls, { itemRows: [CONTAINER_ITEM_ROW] });
+  const result = await deleteBaseContainerItem(db, 16836, 42, 99);
+  assert.equal(result.ok, true);
+  assert.equal(result.partial, false);
+  assert.equal(result.removed.count, 500);
+  const ownership = calls.find((call) => call.text.includes("requested_claims"));
+  assert.ok(ownership, "ownership query ran");
+  // The base id, the placeable and the item all constrain the lookup -- an
+  // item id alone must never be enough to reach a row.
+  assert.equal(ownership.values[0], 16836);
+  assert.equal(ownership.values[4], 42);
+  assert.equal(ownership.values[5], "99");
+  assert.ok(calls.some((call) => call.text.includes("dune.delete_item($1::bigint)") && call.values[0] === "99"));
+});
+
+test("container item delete locks the item and its inventory rather than the CTE", async () => {
+  const calls = [];
+  const db = fakeContainerDeleteDb(calls, { itemRows: [CONTAINER_ITEM_ROW] });
+  await deleteBaseContainerItem(db, 16836, 42, 99);
+  const ownership = calls.find((call) => call.text.includes("requested_claims"));
+  // `for update of i, inv`, not a bare `for update`: Postgres cannot lock a CTE
+  // reference, and locking only the item row locks nothing once it is gone.
+  assert.match(ownership.text, /for update of i, inv/);
+});
+
+test("container item delete keeps the container allowlist and hologram filters in the ownership query", async () => {
+  const calls = [];
+  const db = fakeContainerDeleteDb(calls, { itemRows: [CONTAINER_ITEM_ROW] });
+  await deleteBaseContainerItem(db, 16836, 42, 99);
+  const ownership = calls.find((call) => call.text.includes("requested_claims"));
+  // Dropping either of these would let a delete reach a generator or windtrap
+  // fuel inventory, which this route must never touch.
+  assert.match(ownership.text, /join inventory_types it on it\.building_type = lower\(p\.building_type\)/);
+  assert.match(ownership.text, /p\.is_hologram = false/);
+  assert.match(ownership.text, /inv\.max_item_count >= 0/);
+});
+
+test("container item delete rejects an item that is not in a container at the selected base", async () => {
+  const calls = [];
+  const db = fakeContainerDeleteDb(calls, { itemRows: [] });
+  await assert.rejects(() => deleteBaseContainerItem(db, 16836, 42, 99), /not found in a storage container/);
+  assert.equal(calls.some((call) => call.text.includes("dune.delete_item")), false);
+  assert.equal(calls.some((call) => call.text.includes("dune.delete_inventory_item")), false);
+});
+
+test("container item delete keeps crafting and refining inventories read-only", async () => {
+  const calls = [];
+  const db = fakeContainerDeleteDb(calls, {
+    itemRows: [{ ...CONTAINER_ITEM_ROW, group_key: "refining", type_name: "Small Ore Refinery" }]
+  });
+  await assert.rejects(
+    () => deleteBaseContainerItem(db, 16836, 42, 99),
+    /only be deleted from Storage containers/
+  );
+  assert.equal(calls.some((call) => call.text.includes("dune.delete_item")), false);
+  assert.equal(calls.some((call) => call.text.includes("dune.delete_inventory_item")), false);
+});
+
+test("container item delete refuses a count larger than the stack instead of clearing the slot", async () => {
+  const calls = [];
+  const db = fakeContainerDeleteDb(calls, { itemRows: [CONTAINER_ITEM_ROW] });
+  // The dangerous case: a stack that shrank between the read and the delete.
+  // Rounding 999 down to "all 500" would destroy more than was asked for.
+  await assert.rejects(
+    () => deleteBaseContainerItem(db, 16836, 42, 99, { count: 999 }),
+    /Cannot remove 999: the stack holds 500/
+  );
+  assert.equal(calls.some((call) => call.text.includes("dune.delete_item")), false);
+  assert.equal(calls.some((call) => call.text.includes("dune.delete_inventory_item")), false);
+});
+
+test("container item delete routes a partial removal through dune.delete_inventory_item", async () => {
+  const calls = [];
+  const db = fakeContainerDeleteDb(calls, { itemRows: [CONTAINER_ITEM_ROW], remainingAfterPartial: 350 });
+  const result = await deleteBaseContainerItem(db, 16836, 42, 99, { count: 150 });
+  assert.equal(result.partial, true);
+  assert.equal(result.removed.count, 150);
+  assert.equal(result.removed.remaining, 350);
+  assert.ok(calls.some((call) => call.text.includes("dune.delete_inventory_item") && call.values[0] === "99" && call.values[1] === 150));
+  // A partial removal must not also fire the whole-slot delete.
+  assert.equal(calls.some((call) => call.text.includes("dune.delete_item($1::bigint)")), false);
+});
+
+test("a count equal to the whole stack clears the slot rather than decrementing it", async () => {
+  const calls = [];
+  const db = fakeContainerDeleteDb(calls, { itemRows: [CONTAINER_ITEM_ROW] });
+  const result = await deleteBaseContainerItem(db, 16836, 42, 99, { count: 500 });
+  assert.equal(result.partial, false);
+  assert.ok(calls.some((call) => call.text.includes("dune.delete_item($1::bigint)")));
+  assert.equal(calls.some((call) => call.text.includes("dune.delete_inventory_item")), false);
+});
+
+test("container item delete treats a null from dune.delete_inventory_item as a failure", async () => {
+  const calls = [];
+  // The shipped procedure returns NULL rather than raising when the count
+  // exceeds the stack, so a null result must not read as success.
+  const db = fakeContainerDeleteDb(calls, { itemRows: [CONTAINER_ITEM_ROW], partialResult: null });
+  await assert.rejects(() => deleteBaseContainerItem(db, 16836, 42, 99, { count: 150 }), /rejected by the database/);
+});
+
+test("container item delete raises when the stack did not change by the requested amount", async () => {
+  const calls = [];
+  const db = fakeContainerDeleteDb(calls, { itemRows: [CONTAINER_ITEM_ROW], remainingAfterPartial: 500 });
+  await assert.rejects(() => deleteBaseContainerItem(db, 16836, 42, 99, { count: 150 }), /did not change the stack/);
+});
+
+test("container item delete raises when dune.delete_item leaves the row behind", async () => {
+  const calls = [];
+  const db = fakeContainerDeleteDb(calls, { itemRows: [CONTAINER_ITEM_ROW], deleteLeavesRow: true });
+  await assert.rejects(() => deleteBaseContainerItem(db, 16836, 42, 99), /did not remove the item/);
+  // The raw fallback delete is attempted before giving up.
+  assert.ok(calls.some((call) => call.text.includes("delete from dune.items where id = $1")));
+});
+
+test("container item delete refuses a partial removal when the schema lacks the procedure", async () => {
+  const calls = [];
+  const db = fakeContainerDeleteDb(calls, { itemRows: [CONTAINER_ITEM_ROW], procedures: false });
+  // Capability failure, not a silent widening to a whole-slot delete.
+  await assert.rejects(() => deleteBaseContainerItem(db, 16836, 42, 99, { count: 150 }));
+  assert.equal(calls.some((call) => call.text.includes("dune.delete_item($1::bigint)")), false);
+});
+
+// baseContainerSlots: the per-slot read the contents overlay and its delete
+// both rest on. Deliberately separate from baseInventory, whose items[] stays
+// template-merged.
+function fakeContainerSlotsDb(calls, fixtures = {}) {
+  const { rows = [], itemColumns = ["id", "inventory_id", "stack_size", "position_index", "template_id", "stats", "quality_level"] } = fixtures;
+  return {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("information_schema.columns")) {
+        return { rows: itemColumns.map((column_name) => ({ column_name })) };
+      }
+      if (text.includes("requested_claims")) return { rows };
+      return { rows: [] };
+    }
+  };
+}
+
+const SLOT_ROW = {
+  inventory_id: "77", group_key: "storage", type_name: "Storage Container", max_item_count: 45,
+  quality_level: 0, current_durability: null, max_durability: null
+};
+
+test("baseContainerSlots keeps two stacks of one template apart instead of merging them", async () => {
+  const calls = [];
+  const db = fakeContainerSlotsDb(calls, {
+    rows: [
+      { ...SLOT_ROW, item_id: "1", template_id: "ScrapMetal", stack_size: 500, position_index: 0 },
+      { ...SLOT_ROW, item_id: "2", template_id: "MagnetiteOre", stack_size: 200, position_index: 1 },
+      { ...SLOT_ROW, item_id: "3", template_id: "ScrapMetal", stack_size: 400, position_index: 2 }
+    ]
+  });
+  const result = await baseContainerSlots(db, 16836, 40001);
+
+  assert.equal(result.found, true);
+  assert.equal(result.usedSlots, 3);
+  assert.equal(result.maxSlots, 45);
+  const slots = result.inventories[0].slots;
+  assert.equal(slots.length, 3);
+  // The whole point: the merged items[] would report one ScrapMetal of 900.
+  assert.deepEqual(slots.filter((slot) => slot.templateId === "ScrapMetal").map((slot) => slot.quantity), [500, 400]);
+  assert.deepEqual(slots.map((slot) => slot.positionIndex), [0, 1, 2]);
+  assert.deepEqual(slots.map((slot) => slot.itemId), ["1", "2", "3"]);
+});
+
+test("baseContainerSlots groups slots per inventory rather than flat on the container", async () => {
+  const calls = [];
+  // A placeable can back more than one inventory. maxSlots is their sum while
+  // position_index is scoped to one, so a flat array would collide two slot 0s.
+  const db = fakeContainerSlotsDb(calls, {
+    rows: [
+      { ...SLOT_ROW, inventory_id: "77", max_item_count: 5, item_id: "1", template_id: "MagnetiteOre", stack_size: 10, position_index: 0 },
+      { ...SLOT_ROW, inventory_id: "78", max_item_count: 10, item_id: "2", template_id: "AluminiumBar", stack_size: 20, position_index: 0 }
+    ]
+  });
+  const result = await baseContainerSlots(db, 16836, 40001);
+
+  assert.equal(result.inventories.length, 2);
+  assert.equal(result.maxSlots, 15);
+  assert.deepEqual(result.inventories.map((inventory) => inventory.slots.length), [1, 1]);
+  // Both really are slot 0 -- of different inventories.
+  assert.deepEqual(result.inventories.map((inventory) => inventory.slots[0].positionIndex), [0, 0]);
+});
+
+test("baseContainerSlots keeps an empty inventory so the grid can render its empty slots", async () => {
+  const calls = [];
+  // The LEFT JOIN emits one all-null item row for an empty container.
+  const db = fakeContainerSlotsDb(calls, {
+    rows: [{ ...SLOT_ROW, item_id: null, template_id: null, stack_size: null, position_index: null }]
+  });
+  const result = await baseContainerSlots(db, 16836, 40001);
+
+  assert.equal(result.found, true);
+  assert.equal(result.usedSlots, 0);
+  assert.equal(result.inventories.length, 1);
+  assert.equal(result.inventories[0].maxSlots, 45);
+  assert.deepEqual(result.inventories[0].slots, []);
+});
+
+test("baseContainerSlots answers found:false for a container that is not at the base", async () => {
+  const calls = [];
+  const db = fakeContainerSlotsDb(calls, { rows: [] });
+  const result = await baseContainerSlots(db, 16836, 999999);
+  // An ownership answer, not an error -- and the same shape the route returns
+  // 200 with.
+  assert.equal(result.supported, true);
+  assert.equal(result.found, false);
+  assert.deepEqual(result.inventories, []);
+});
+
+test("baseContainerSlots degrades rather than failing when dune.items lacks the per-slot columns", async () => {
+  const calls = [];
+  // A missing column is a parse-time error, not a null, so an older schema
+  // would 500 a container that used to open if these were assumed.
+  const db = fakeContainerSlotsDb(calls, {
+    itemColumns: ["id", "inventory_id", "stack_size", "template_id"],
+    rows: [{ ...SLOT_ROW, item_id: "1", template_id: "ScrapMetal", stack_size: 500, position_index: null }]
+  });
+  const result = await baseContainerSlots(db, 16836, 40001);
+
+  assert.equal(result.inventories[0].slots[0].positionIndex, null);
+  const query = calls.find((call) => call.text.includes("requested_claims"));
+  // The literals stand in for the absent columns; nothing references them.
+  assert.match(query.text, /null::bigint as position_index/);
+  assert.ok(!query.text.includes("i.position_index"), "must not select a column this schema lacks");
+  assert.match(query.text, /null::numeric as max_durability/);
+});
+
+test("baseContainerSlots scopes to the base and keeps the container allowlist filters", async () => {
+  const calls = [];
+  const db = fakeContainerSlotsDb(calls, { rows: [] });
+  await baseContainerSlots(db, 16836, 40001);
+  const query = calls.find((call) => call.text.includes("requested_claims"));
+
+  // Dropping any of these would let the overlay reach a generator or windtrap
+  // fuel inventory that the Power and Water tabs own.
+  assert.match(query.text, /join inventory_types it on it\.building_type = lower\(p\.building_type\)/);
+  assert.match(query.text, /p\.is_hologram = false/);
+  assert.match(query.text, /inv\.max_item_count >= 0/);
+  assert.equal(query.values[0], 16836);
+  assert.equal(query.values[4], 40001);
+  // Slot order, not template order -- the overlay renders a row per slot.
+  assert.match(query.text, /order by c\.inventory_id, i\.position_index nulls last, i\.id/);
 });
 
 test("inventory update rejects rows not owned by the selected player", async () => {
