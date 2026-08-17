@@ -3141,6 +3141,31 @@ export async function liveMapVehicles(db, map = "") {
 export async function liveMapStorage(db, map = "") {
   if (!(await tableExists(db, "actors")) || !(await tableExists(db, "placeables"))) return unsupportedMap("storage", ["dune.actors", "dune.placeables"]);
   const hasWorldPartition = await tableExists(db, "world_partition");
+  // Picking up a base leaves every placeable and transform at its old location.
+  // Link the storage actor back to its backup group, then require that group's
+  // claim actor to still be unclaimed. The second signal keeps a stale backup
+  // link from hiding storage after the player redeploys the base.
+  const storedBaseTables = await Promise.all([
+    "base_backup_linked_actors",
+    "actor_fgl_entities",
+    "building_instances",
+    "permission_actor"
+  ].map((table) => tableExists(db, table)));
+  const storedBaseExclusion = storedBaseTables.every(Boolean) ? `
+        and not exists (
+          select 1
+          from dune.base_backup_linked_actors storage_link
+          where storage_link.actor_id = p.id
+            and exists (
+              select 1
+              from dune.base_backup_linked_actors claim_link
+              join dune.actor_fgl_entities claim_entity on claim_entity.actor_id = claim_link.actor_id
+              join dune.building_instances claim_building on claim_building.owner_entity_id = claim_entity.entity_id
+              left join dune.permission_actor claim_permission on claim_permission.actor_id = claim_link.actor_id
+              where claim_link.id = storage_link.id
+                and claim_permission.actor_id is null
+            )
+        )` : "";
   const values = [];
   const where = mapFilterClause(map, values, "a");
   const partitionWhere = validActorPartitionClause(hasWorldPartition, "a");
@@ -3162,7 +3187,7 @@ export async function liveMapStorage(db, map = "") {
       left join dune.inventories inv on inv.actor_id = p.id
       left join dune.items i on i.inventory_id = inv.id
       where p.building_type in ('SpiceSilo_Placeable','GenericContainer_Placeable','StorageContainer_Placeable','MediumStorageContainer_Placeable','Developer_StorageContainer_Placeable')
-        and a.transform is not null ${partitionWhere} ${where}
+        and a.transform is not null ${partitionWhere} ${where} ${storedBaseExclusion}
       group by p.id, p.building_type, a.map, a.partition_id, a.transform
       order by a.map, a.partition_id, p.id`, values);
     return { capabilities: { storage: true }, rows: result.rows.map(normalizeMarker) };
@@ -3174,6 +3199,12 @@ export async function liveMapStorage(db, map = "") {
 export async function liveMapBases(db, map = "") {
   if (!(await tableExists(db, "actors")) || !(await tableExists(db, "buildings"))) return unsupportedMap("bases", ["dune.actors", "dune.buildings"]);
   const hasWorldPartition = await tableExists(db, "world_partition");
+  const hasBaseBackups = await tableExists(db, "base_backup_linked_actors");
+  // Mirror listBases: neither an ownerless base nor an old backup link alone
+  // is enough to hide a marker. Together they identify a currently stored base.
+  const storedBaseExclusion = hasBaseBackups
+    ? "and not (pa.actor_id is null and exists (select 1 from dune.base_backup_linked_actors backup_link where backup_link.actor_id = a.id))"
+    : "";
   const values = [];
   const where = mapFilterClause(map, values, "a");
   const partitionWhere = validActorPartitionClause(hasWorldPartition, "a");
@@ -3193,7 +3224,7 @@ export async function liveMapBases(db, map = "") {
       join dune.actor_fgl_entities afe on afe.entity_id = bi.owner_entity_id
       join dune.actors a on a.id = afe.actor_id
       left join dune.permission_actor pa on pa.actor_id = a.id
-      where a.transform is not null ${partitionWhere} ${where}
+      where a.transform is not null ${partitionWhere} ${where} ${storedBaseExclusion}
       group by b.id, pa.actor_name, a.id, a.map, a.partition_id, a.class, a.transform
       order by a.map, a.partition_id, b.id`, values);
     return { capabilities: { bases: true }, rows: result.rows.map(normalizeMarker) };

@@ -18,7 +18,7 @@ import {
   supportsGeneratorRefillQueue
 } from "../src/duneDb.js";
 import { addCurrency, addFactionReputation, addGuildMember, addIntel, addonLeadershipPlayers, addonOpsHealthFarms, addonOpsHealthPlayers, addonOpsHealthSummary, addonOpsHealthSummaryV2, addSpecializationXp, applyLandsraadMilestonePreset, augmentInventoryItem, augmentNewestPlayerItem, baseContainerSlots, baseGeneratorFuelLevels, baseGenerators, baseIsBackedUp, changeDunePassword, completeJourneyNode, completeTutorial, dbStatus, deleteBaseContainerItem, deleteInventoryItem, demoteGuildMember, disbandGuild, exportBaseAsBlueprint, generatorUptimePolicy, giveItemToPlayer, giveItemToStorage, guildMembers, landsraadOverview, listBases, listGuilds, listPlayers, listRoutines, listSpicefieldTypes, listTables, liveMapPlayers, liveMapServices, playerBuildingUnlockState, playerCraftingRecipes, playerCurrency, playerFactions, playerIntel, playerInventory, playerInventoryAll, playerJourney, playerPortalSnapshots, playerPosition, playerProfile, playerProgression, playerResearchItems, playerSolarisCoinTotal, playerVitals, portalGeneratorFuel, portalVehicles, promoteGuildMember, refillBaseGenerators, removeGuildMember, repairFactionReputation, repairVehicleDecay, resetJourneyNode, resetTutorial, routineDefinition, runSql, setLandsraadPlayerContribution, setPlayerFaction, supportsGeneratorRefill, tablePreview, teleportOfflinePlayerToCoords, unlockCraftingRecipe, unlockResearchItem, updateInventoryItem, updateLandsraadRewardTier, updateLandsraadTaskGoal, updateLandsraadTermTaskGoals, updateSpicefieldType, updateTableRow, UnsupportedCapabilityError, _resetPlayerTargetCacheForTests } from "../src/duneDb.js";
-import { listStorage, liveMapStorage, trackPlayerPlaytime } from "../src/duneDb.js";
+import { listStorage, liveMapBases, liveMapStorage, trackPlayerPlaytime } from "../src/duneDb.js";
 
 beforeEach(() => {
   _resetPlayerTargetCacheForTests();
@@ -3424,6 +3424,59 @@ test("live map player markers validate map filter and use parameterized transfor
   assert.match(markerQuery.text, /a\.map = \$1/);
   assert.deepEqual(markerQuery.values, ["Survival_1"]);
   await assert.rejects(() => liveMapPlayers(db, "bad;map"), /Invalid map name/);
+});
+
+test("live map hides stored base and storage markers while preserving redeployed bases", async () => {
+  const calls = [];
+  const db = {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      return { rows: [] };
+    }
+  };
+
+  await liveMapBases(db, "DeepDesert");
+  await liveMapStorage(db, "DeepDesert");
+
+  const bases = calls.find((call) => call.text.includes("from dune.buildings b"));
+  assert.ok(bases);
+  assert.match(
+    bases.text,
+    /not \(pa\.actor_id is null and exists \(select 1 from dune\.base_backup_linked_actors backup_link where backup_link\.actor_id = a\.id\)\)/,
+    "a base marker must be hidden only while it is both unclaimed and backup-linked"
+  );
+
+  const storage = calls.find((call) => call.text.includes("from dune.placeables p"));
+  assert.ok(storage);
+  assert.match(storage.text, /storage_link\.actor_id = p\.id/);
+  assert.match(storage.text, /claim_link\.id = storage_link\.id/);
+  assert.match(storage.text, /claim_permission\.actor_id is null/);
+  assert.match(
+    storage.text,
+    /left join dune\.permission_actor claim_permission/,
+    "a stale backup link must not hide storage after the base is claimed again"
+  );
+});
+
+test("live map omits stored-base filters when the optional backup schema is unavailable", async () => {
+  const calls = [];
+  const required = new Set(["dune.actors", "dune.buildings", "dune.placeables"]);
+  const db = {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes("to_regclass")) return { rows: [{ exists: required.has(String(values[0] || "")) }] };
+      return { rows: [] };
+    }
+  };
+
+  await liveMapBases(db);
+  await liveMapStorage(db);
+
+  const bases = calls.find((call) => call.text.includes("from dune.buildings b"));
+  const storage = calls.find((call) => call.text.includes("from dune.placeables p"));
+  assert.ok(!bases.text.includes("base_backup_linked_actors"));
+  assert.ok(!storage.text.includes("base_backup_linked_actors"));
 });
 
 test("player position exposes numeric coordinates for Use Current Position", async () => {
