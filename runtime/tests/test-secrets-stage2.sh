@@ -126,6 +126,8 @@ echo "PASS: Test 2 (plaintext migration)"
 # fail, or that call's non-zero exit aborts this entire test script
 # under the reinstated `set -e`, even inside a `(...)` subshell.
 (
+  # Deliberately scoped to this subshell only (SC2030).
+  # shellcheck disable=SC2030
   export DUNE_AGE_IDENTITY_FILE="$wrong_identity_path"
   # shellcheck disable=SC1091
   source runtime/scripts/runtime-env.sh
@@ -178,6 +180,10 @@ mkdir -p runtime/secrets runtime/generated
   resolve_server_login_password_secret >/dev/null
 )
 export DUNE_KEK_FILE="$kek_path"
+# Intentional: re-establishing the outer scope's env vars after the
+# subshell above deliberately unset them for its own isolated
+# fresh-install test (SC2031).
+# shellcheck disable=SC2031
 export DUNE_AGE_IDENTITY_FILE="$identity_path"
 bash runtime/scripts/secrets-cli.sh migrate server-login-password-secret >/dev/null
 first_enc="$(cat runtime/secrets/server-login-password-secret.enc)"
