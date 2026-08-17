@@ -55,6 +55,40 @@ request.
 - **The roster cap**, read from live server config (see below).
 - **Ranks limited to 1–3**, no duplicate players.
 - **Every player id must be a `player_controller_id`** (see below).
+- **The base must be claimed** (see below).
+
+## An unclaimed base is refused, not attempted
+
+`permission_actor_rank.permission_actor_id` carries a foreign key against
+`dune.permission_actor(actor_id)`. The actor id every write uses is resolved from
+`buildings → building_instances → actor_fgl_entities → actors`, which says
+nothing about whether that actor is *claimed* — an unclaimed base keeps every one
+of those rows and has no `permission_actor` row at all.
+
+Both mutation routes therefore check for that row, inside the transaction and
+after taking the claim lock, and refuse with *"This base is not claimed…"*.
+Without the check the write reached `permission_set_player_rank` and failed the
+constraint, surfacing raw PostgreSQL text
+(`violates foreign key constraint permission_actor_rank_permission_actor_id_fkey`)
+to the operator.
+
+`GET` still succeeds on such a base — the roster is simply empty, and seeing that
+is how the state gets diagnosed — and returns `claimed: false` plus
+`unclaimedReason`. The tab uses those to disable Save, Transfer, the rank
+controls and the remove buttons, rather than offering controls whose only
+outcome is an error. This matters most for **Transfer to Custodian**: an
+unclaimed base renders "No Owner set", which is exactly the state that button
+exists to resolve, making it the shortest path into the failure.
+
+The pickup ("backed-up") case is caught earlier and separately, by
+`baseIsBackedUp` in `server.js`, which returns a 409 naming the base-backup tool.
+That check requires *both* signals — unclaimed **and** registered in
+`base_backup_linked_actors` — so a base that is unclaimed for any other reason
+falls through to this one.
+
+The game's own pickup path does not take the claim lock, so a pickup landing
+mid-edit can still reach the constraint. That race is what the foreign key is
+for; the check removes the steady-state case, which is the one operators hit.
 
 ## System custodian
 

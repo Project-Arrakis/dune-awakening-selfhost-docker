@@ -274,6 +274,12 @@ base-backup tool (unclaimed and registered in `dune.base_backup_linked_actors`
 — see [base-backups.md](base-backups.md)), and every mutation route below
 rejects one with **409** for the same reason.
 
+A base that is unclaimed for any *other* reason still lists, and `GET
+/api/bases/{baseId}/permissions` still reads it, reporting `claimed: false`. The
+two permission mutation routes reject it with **400** rather than letting the
+write fail `permission_actor_rank`'s foreign key — see
+[base-permissions.md](base-permissions.md).
+
 Each `GET /api/bases` row carries `partitionMap` and `dimensionIndex` alongside
 `map` and `partition_id`. `map` is the game's own name (`HaggaBasin`) and cannot
 distinguish two instances of one map; `partitionMap` is the name the rest of the
