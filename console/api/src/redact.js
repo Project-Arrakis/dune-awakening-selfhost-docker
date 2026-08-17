@@ -16,7 +16,7 @@ export function redact(value) {
       return "<redacted>";
     });
   }
-  return output.replaceAll("runtime/secrets/<redacted>", "runtime/secrets/<redacted>");
+  return output;
 }
 
 export function redactLines(lines) {

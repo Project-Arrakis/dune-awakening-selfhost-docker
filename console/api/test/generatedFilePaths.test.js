@@ -8,11 +8,11 @@ import { fileURLToPath } from "node:url";
 
 const repoRoot = resolve(fileURLToPath(new URL("../../../", import.meta.url)));
 const helper = resolve(repoRoot, "runtime/scripts/generated-file-paths.sh");
+const repairFixture = resolve(repoRoot, "console/api/test/fixtures/repair-generated-file-path.sh");
 
 function repair(path) {
-  return spawnSync("bash", ["-c", `source ${JSON.stringify(helper)}; repair_generated_file_path "$TARGET"`], {
+  return spawnSync("bash", [repairFixture, helper, path], {
     encoding: "utf8",
-    env: { ...process.env, TARGET: path },
   });
 }
 
@@ -41,6 +41,21 @@ test("generated file repair leaves an existing regular file unchanged", () => {
     assert.equal(result.status, 0, result.stderr);
     assert.equal(result.stdout, "");
     assert.equal(readFileSync(target, "utf8"), "keep this configuration\n");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("generated file repair treats shell metacharacters as literal path characters", () => {
+  const root = mkdtempSync(resolve(tmpdir(), "dune-generated-path-"));
+  const target = resolve(root, "rabbitmq; echo should-not-run");
+  mkdirSync(target);
+
+  try {
+    const result = repair(target);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(existsSync(target), false);
+    assert.doesNotMatch(result.stdout, /^should-not-run$/m);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

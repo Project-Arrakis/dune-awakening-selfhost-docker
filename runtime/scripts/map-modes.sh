@@ -92,6 +92,18 @@ protected_map() {
   esac
 }
 
+# Funcom resets some short-lived activity maps inside a still-running server
+# process after the last player leaves.  CB_Overland_S_06 (Smuggler's Run)
+# does not reliably reinitialize vehicle permissions on that path.  Funcom's
+# Hyper-V deployment avoids it by deallocating the pod and allocating a fresh
+# one for the next visit, so keep this map demand-driven in Docker as well.
+requires_fresh_process() {
+  case "$1" in
+    CB_Overland_S_06) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 canonical_map() {
   local input="$1"
   if ! docker ps --format '{{.Names}}' 2>/dev/null | grep -qx dune-postgres; then
@@ -150,6 +162,16 @@ else:
 PY
 }
 
+effective_mode_for_map() {
+  local map="$1" mode
+  mode="$(mode_for_map "$map")"
+  if requires_fresh_process "$map" && [ "$mode" != "disabled" ]; then
+    printf '%s\n' dynamic
+  else
+    printf '%s\n' "$mode"
+  fi
+}
+
 last_change_epoch() {
   local map="$1"
   ensure_state_file
@@ -188,6 +210,12 @@ set_mode() {
     *) echo "Mode must be dynamic, always-on, overmap-active, or disabled."; exit 2 ;;
   esac
 
+  if requires_fresh_process "$canonical" && [ "$mode" != "dynamic" ] && [ "$mode" != "disabled" ]; then
+    echo "$canonical must use Dynamic mode so each empty Smuggler's Run instance is deallocated before its next use." >&2
+    echo "Always On and Overmap Active can reuse Funcom's reset world with stale vehicle permissions." >&2
+    exit 1
+  fi
+
   ensure_state_file
   python3 - "$STATE_FILE" "$canonical" "$mode" <<'PY'
 import json
@@ -221,6 +249,8 @@ PY
     despawn_map "$canonical"
   elif [ "$mode" = "overmap-active" ]; then
     echo "Map will spawn while Overmap has active players and despawn after ${GRACE_SECONDS}s idle."
+  elif requires_fresh_process "$canonical"; then
+    echo "Map will allocate on player demand and deallocate as soon as it becomes empty."
   else
     echo "Map remains running if already active. It is eligible for normal despawn after ${GRACE_SECONDS}s."
   fi
@@ -242,7 +272,7 @@ list_maps() {
     order by min(wp.partition_id);
   " | while IFS='|' read -r map partitions assigned partition_id; do
     [ -n "${map:-}" ] || continue
-    mode="$(mode_for_map "$map")"
+    mode="$(effective_mode_for_map "$map")"
     printf '%-28s Current: %-14s Partitions: %-3s Assigned: %s' "$map" "$mode" "$partitions" "$assigned"
     if [ "$mode" = "always-on" ] && [ "${assigned:-0}" -eq 0 ]; then
       memory_status="$(runtime/scripts/host-memory-safety.sh map-status "$map" "$partition_id" 2>/dev/null || true)"
@@ -267,7 +297,7 @@ show_mode() {
     return 0
   fi
   map="$(canonical_map "$map")"
-  printf '%s\t%s\n' "$map" "$(mode_for_map "$map")"
+  printf '%s\t%s\n' "$map" "$(effective_mode_for_map "$map")"
 }
 
 structured_status_field() {
@@ -657,8 +687,8 @@ reconcile_selected() {
     [ -n "$map" ] || continue
     map="$(canonical_map "$map")"
     protected_map "$map" && continue
-    if [ "$(mode_for_map "$map")" != "always-on" ]; then
-      echo "SKIP always-on reconcile map=$map mode=$(mode_for_map "$map")"
+    if [ "$(effective_mode_for_map "$map")" != "always-on" ]; then
+      echo "SKIP always-on reconcile map=$map mode=$(effective_mode_for_map "$map")"
       continue
     fi
     maps+=("$map")
@@ -702,15 +732,19 @@ case "$cmd" in
   reconcile) shift || true; with_reconcile_lock "$@" ;;
   is-always-on)
     map="$(canonical_map "${2:-}")"
-    [ "$(mode_for_map "$map")" = "always-on" ]
+    [ "$(effective_mode_for_map "$map")" = "always-on" ]
     ;;
   is-overmap-active)
     map="$(canonical_map "${2:-}")"
-    [ "$(mode_for_map "$map")" = "overmap-active" ]
+    [ "$(effective_mode_for_map "$map")" = "overmap-active" ]
     ;;
   is-disabled)
     map="$(canonical_map "${2:-}")"
-    [ "$(mode_for_map "$map")" = "disabled" ]
+    [ "$(effective_mode_for_map "$map")" = "disabled" ]
+    ;;
+  requires-fresh-process)
+    map="$(canonical_map "${2:-}")"
+    requires_fresh_process "$map"
     ;;
   grace-remaining)
     map="$(canonical_map "${2:-}")"

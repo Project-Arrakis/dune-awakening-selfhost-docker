@@ -18,6 +18,7 @@ export function parseMemorySwapStatus(stdout = "") {
     physicalMemoryGiB: integer("physical_memory_gib"),
     safeAvailableDiskGiB: integer("safe_available_disk_gib"),
     swappiness: values.swappiness || "unknown",
+    configuredSwappiness: Math.min(100, integer("configured_swappiness", 10)),
     swapFile: values.swap_file || "/var/lib/dune-awakening/swapfile"
   };
 }

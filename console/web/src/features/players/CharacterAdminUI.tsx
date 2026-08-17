@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { Brain, ChevronDown, ChevronUp, Hammer, Map as MapIcon, Microscope, ScrollText, ShieldCheck, Star, UserRound } from "lucide-react";
+import { Brain, Building2, Car, ChevronDown, ChevronUp, Hammer, Map as MapIcon, Microscope, ScrollText, ShieldCheck, Star, UserRound } from "lucide-react";
 import { adminApi } from "../../api/admin";
 import { playersApi } from "../../api/players";
 import type { Task } from "../../api/setup";
 import { compareTableValues, DataTable, useResizableColumns, useSortableRows, useSortState } from "../../components/common/DataTable";
+import { InfoTooltip } from "../../components/common/DisplayPrimitives";
 import { InlineActionResult } from "../../components/common/InlineActionResult";
 import { AugmentDropdown } from "../../components/common/AugmentDropdown";
 import { ItemCatalogSelector, ItemGradeSelect, PackageItemPreview, catalogItemId, catalogItemMinimumGrade, catalogItemName, grantItemDurability, itemGrade, normalizeItemGrade, type CatalogItem } from "../../components/common/ItemCatalog";
@@ -11,11 +12,14 @@ import { firstDefined, formatCell } from "../../lib/display";
 import { augmentLimitForItem, filterAugmentsForItem, formatAugmentOptions } from "../../lib/augmentEligibility";
 import { PlayerCategoryIconRail } from "./PlayerCategoryIconRail";
 import { PlayerDetailTab } from "./PlayerDetailTab";
+import { PlayerFactionAssignment } from "./PlayerFactionAssignment";
 import { PlayerSummary } from "./PlayerSummary";
+import { PlayerVehiclesTab } from "./PlayerVehiclesTab";
 import { SpecializationTab } from "./SpecializationTab";
 import { journeyActionsAvailable } from "./journeySafety";
-import { adminTaskFailureDetail, friendlyCraftingSource, friendlyInlineError, friendlyVehicleName, friendlyVehicleTemplateName, parseSkillModuleRows, parseVehicleCatalog, playerAdmin_bulkItemFailure, playerAdmin_friendlyFailure, playerAdmin_taskFailureMessage, playerAssignedFaction, titleCaseWords, vehicleSpawnDistanceLabel, vehicleSpawnOffsetUnits } from "./playerAdminUtils";
+import { adminTaskFailureDetail, friendlyCraftingSource, friendlyInlineError, friendlyVehicleName, friendlyVehicleTemplateName, parseSkillModuleRows, parseVehicleCatalog, playerAdmin_bulkItemFailure, playerAdmin_friendlyFailure, playerAdmin_taskFailureMessage, playerAssignedFaction, splitInventoryByGroup, titleCaseWords, vehicleSpawnDistanceLabel, vehicleSpawnOffsetUnits } from "./playerAdminUtils";
 import { BlueprintsPanel } from "../blueprints/BlueprintsPanel";
+import { BuildingUnlocksTab } from "./BuildingUnlocksTab";
 
 type CraftingRecipeRow = { recipeId: string; displayName: string; category: string; source: string; qualityLevel: number; unlocked: boolean };
 type ResearchItemRow = { itemKey: string; displayName: string; category: string; productGroup: string; type: string; unlockedState: string; unlocked: boolean; isNew: boolean; recipeId: string; recipeUnlocked: boolean; researchPurchased: boolean; actionable: boolean; needsRecipeRepair: boolean };
@@ -58,16 +62,19 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
     { label: "Character", icon: UserRound },
     { label: "Crafting", icon: Hammer },
     { label: "Research", icon: Microscope },
+    { label: "Building Sets", icon: Building2 },
     { label: "Skills", icon: Brain },
     { label: "Specialization", icon: Star },
     { label: "Journey", icon: MapIcon },
     { label: "Blueprints", icon: ScrollText },
+    { label: "Vehicles", icon: Car },
     { label: "Admin", icon: ShieldCheck }
   ];
   const [playerAdmin_activeTab, playerAdmin_setActiveTab] = useState("Character");
   const [playerAdmin_openToggles, playerAdmin_setOpenToggles] = useState<Record<string, boolean>>({ quick_rewards: true });
   const [playerAdmin_inventoryData, playerAdmin_setInventoryData] = useState<Record<string, unknown> | null>(null);
   const [playerAdmin_inventoryFilter, playerAdmin_setInventoryFilter] = useState("");
+  const [playerAdmin_inventoryGroup, playerAdmin_setInventoryGroup] = useState<"backpack" | "character" | "loadout" | "schematics">("backpack");
   const [playerAdmin_craftingCategory, playerAdmin_setCraftingCategory] = useState("Essentials");
   const [playerAdmin_craftingFilter, playerAdmin_setCraftingFilter] = useState("");
   const [playerAdmin_researchCategory, playerAdmin_setResearchCategory] = useState("");
@@ -79,6 +86,7 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
   const [playerAdmin_currencyAmount, playerAdmin_setCurrencyAmount] = useState("100");
   const [playerAdmin_intelAmount, playerAdmin_setIntelAmount] = useState("100");
   const [playerAdmin_factionAmount, playerAdmin_setFactionAmount] = useState("100");
+  const [playerAdmin_summaryRefreshKey, playerAdmin_setSummaryRefreshKey] = useState(0);
   const [playerAdmin_selectedItem, playerAdmin_setSelectedItem] = useState<CatalogItem | null>(null);
   const [playerAdmin_itemName, playerAdmin_setItemName] = useState("");
   const [playerAdmin_itemId, playerAdmin_setItemId] = useState("");
@@ -130,6 +138,7 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
     }, playerAdmin_augmentCatalog));
   }, [playerAdmin_itemName, playerAdmin_itemId, playerAdmin_selectedItem?.category, playerAdmin_selectedItem?.source, playerAdmin_augmentCatalog]);
   const playerAdmin_profile = (detail?.player && typeof detail.player === "object" ? detail.player : fallback) as Record<string, unknown>;
+  const playerAdmin_capabilities = (detail?.capabilities && typeof detail.capabilities === "object" ? detail.capabilities : {}) as Record<string, unknown>;
   const playerAdmin_faction = playerAssignedFaction(playerAdmin_profile.faction, playerAdmin_profile.faction_assigned);
   const playerAdmin_craftingCategories = ["Essentials", "Water Discipline", "Combat", "Construction", "Exploration", "Vehicles"];
   const playerAdmin_isOnline = String(firstDefined(playerAdmin_profile.actual_online_status, playerAdmin_profile.online_status, fallback.actual_online_status, fallback.online_status) || "").toLowerCase() === "online";
@@ -185,9 +194,15 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
     const final = await waitForTask(response.task);
     if (final.status === "succeeded") {
       onRefresh();
+      playerAdmin_setSummaryRefreshKey((current) => current + 1);
       return { ok: true };
     }
     else throw new Error(adminTaskFailureDetail(final) || playerAdmin_taskFailureMessage(final));
+  }
+  async function playerAdmin_withSummaryRefresh<T>(action: () => Promise<T>) {
+    const response = await action();
+    playerAdmin_setSummaryRefreshKey((current) => current + 1);
+    return response;
   }
   async function playerAdmin_runAction(key: string, pendingText: string, action: () => Promise<unknown>, successText: string, log: { actionType: string; target: string; amount: string }, successTone: "success" | "danger" = "success", failureText?: string | ((error: unknown) => string)) {
     onError("");
@@ -202,6 +217,13 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
       playerAdmin_showResult(key, message, "danger");
       playerAdmin_addLog(log.actionType, log.target, log.amount, `Failed: ${message}`);
     }
+  }
+  async function playerAdmin_repairFactionReputation() {
+    if (!(await confirmAction(`Repair earned faction progression and synchronize reputation for ${playerName}? The player must be offline.`))) return;
+    await playerAdmin_runAction("repairFactionReputation", `Repairing ${playerName}'s faction state`, async () => {
+      const response = await playerAdmin_withSummaryRefresh(() => playersApi.repairFactionReputation(dbPlayerId, "REPAIR FACTION REPUTATION"));
+      return { message: String(response.result?.message || `${playerName}'s earned faction progression and reputation were repaired. Relog required.`) };
+    }, `${playerName}'s earned faction progression and reputation were repaired. Relog required.`, { actionType: "Repair Faction", target: playerName, amount: "1" });
   }
   function playerAdmin_chooseItem(item: CatalogItem | null) {
     playerAdmin_setSelectedItem(item);
@@ -453,6 +475,7 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
     return playerAdmin_skillChanges[key] ?? playerAdmin_skillBaselineRank(school, card);
   }
   function playerAdmin_setSkillValue(school: string, card: SkillCard, rank: number) {
+    if (!playerAdmin_canRunLiveAction) return;
     const module = playerAdmin_findSkillModule(school, card);
     const key = module?.id || playerAdmin_skillKey(school, card.name);
     const maxRank = playerAdmin_skillMaxRank(school, card);
@@ -468,6 +491,11 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
   async function playerAdmin_saveSkillChanges() {
     const entries = Object.entries(playerAdmin_skillChanges);
     if (!entries.length) return;
+    if (!playerAdmin_canRunLiveAction) {
+      playerAdmin_setSkillChanges({});
+      playerAdmin_showResult("skillSave", "The player must be online to change skills. Unsaved changes were discarded.", "danger");
+      return;
+    }
     onError("");
     playerAdmin_showResult("skillSave", `Saving ${entries.length} skill change${entries.length === 1 ? "" : "s"} for ${playerName}`, "neutral", true);
     try {
@@ -656,6 +684,9 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
     playerAdmin_setSkillChanges({});
     playerAdmin_setSkillBaselineError("");
   }, [actionPlayerId]);
+  useEffect(() => {
+    if (!playerAdmin_canRunLiveAction) playerAdmin_setSkillChanges({});
+  }, [playerAdmin_canRunLiveAction]);
   useEffect(() => () => { if (playerAdmin_resultTimer.current) window.clearTimeout(playerAdmin_resultTimer.current); }, []);
   const playerAdmin_table = (playerAdmin_columns: string[], playerAdmin_rows: Record<string, string>[]) => (
     <div className="playerAdmin_tableWrap">
@@ -685,7 +716,8 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
           {Array.from({ length: maxRank }, (_, index) => {
             const rank = index + 1;
             const active = rank <= value;
-            return <button key={rank} type="button" className={active ? "active" : ""} disabled={!module || playerAdmin_actionResult?.pending} title={module ? `Set ${playerAdmin_item.name} to ${value === rank ? 0 : rank}` : "Skill module ID was not found"} onClick={() => playerAdmin_setSkillValue(playerAdmin_school, playerAdmin_item, value === rank ? 0 : rank)} aria-label={`Set ${playerAdmin_item.name} rank ${value === rank ? 0 : rank}`} />;
+            const disabledReason = !module ? "Skill module ID was not found" : !playerAdmin_canRunLiveAction ? "The player must be online to change skills" : "";
+            return <button key={rank} type="button" className={active ? "active" : ""} disabled={Boolean(disabledReason) || playerAdmin_actionResult?.pending} title={disabledReason || `Set ${playerAdmin_item.name} to ${value === rank ? 0 : rank}`} onClick={() => playerAdmin_setSkillValue(playerAdmin_school, playerAdmin_item, value === rank ? 0 : rank)} aria-label={`Set ${playerAdmin_item.name} rank ${value === rank ? 0 : rank}`} />;
           })}
         </div>
         <code>{module?.id || "Module ID not found"}</code>
@@ -697,8 +729,10 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
       <div className="playerAdmin_actionRow">
         <span className="playerAdmin_actionLabel">{playerAdmin_label}{playerAdmin_note && <em>{playerAdmin_note}</em>}</span>
         <span className="playerAdmin_fieldGroup">{playerAdmin_input}</span>
-        <button disabled={playerAdmin_disabled || playerAdmin_actionResult?.pending} onClick={playerAdmin_onClick}>{playerAdmin_buttonLabel}</button>
-        <InlineActionResult result={playerAdmin_actionResult} resultKey={playerAdmin_key} />
+        <span className="playerAdmin_actionFeedback">
+          <button disabled={playerAdmin_disabled || playerAdmin_actionResult?.pending} onClick={playerAdmin_onClick}>{playerAdmin_buttonLabel}</button>
+          <InlineActionResult result={playerAdmin_actionResult} resultKey={playerAdmin_key} />
+        </span>
       </div>
     </div>
   );
@@ -768,13 +802,21 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
   };
   const playerAdmin_filteredJourneyEntryCount = playerAdmin_filteredJourneyRows.story.length + playerAdmin_filteredJourneyRows.contract.length + playerAdmin_filteredJourneyRows.codex.length + playerAdmin_filteredJourneyRows.tutorial.length;
   const playerAdmin_inventoryAllRows = Array.isArray(playerAdmin_inventoryData?.rows) ? playerAdmin_inventoryData.rows as Record<string, unknown>[] : [];
+  const { backpack: playerAdmin_backpackRows, character: playerAdmin_characterGearRows, loadout: playerAdmin_loadoutRows, schematics: playerAdmin_schematicRows } = splitInventoryByGroup(playerAdmin_inventoryAllRows);
+  const playerAdmin_inventoryGroupRows = playerAdmin_inventoryGroup === "character"
+    ? playerAdmin_characterGearRows
+    : playerAdmin_inventoryGroup === "loadout"
+      ? playerAdmin_loadoutRows
+      : playerAdmin_inventoryGroup === "schematics"
+        ? playerAdmin_schematicRows
+        : playerAdmin_backpackRows;
   const playerAdmin_inventoryFilterTerms = playerAdmin_inventoryFilter.toLowerCase().split(/\s+/).map((term) => term.trim()).filter(Boolean);
   const playerAdmin_filteredInventoryRows = playerAdmin_inventoryFilterTerms.length
-    ? playerAdmin_inventoryAllRows.filter((row) => {
-        const haystack = [row.template_id, row.id, row.inventory_id, row.position_index].map((value) => String(value ?? "")).join(" ").toLowerCase();
+    ? playerAdmin_inventoryGroupRows.filter((row) => {
+        const haystack = [row.item_name, row.template_id, row.id, row.position_index].map((value) => String(value ?? "")).join(" ").toLowerCase();
         return playerAdmin_inventoryFilterTerms.every((term) => haystack.includes(term));
       })
-    : playerAdmin_inventoryAllRows;
+    : playerAdmin_inventoryGroupRows;
   const playerAdmin_vehicleIds = Object.keys(playerAdmin_vehicleCatalog).sort((a, b) => friendlyVehicleName(a).localeCompare(friendlyVehicleName(b)));
   const playerAdmin_selectedTemplates = [...(playerAdmin_vehicleCatalog[playerAdmin_vehicleId] || [])].sort((a, b) => friendlyVehicleTemplateName(a).localeCompare(friendlyVehicleTemplateName(b)));
   const playerAdmin_starterSkillPresets: Record<string, StarterSkillPreset> = {
@@ -1018,7 +1060,7 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
   return (
     <section className="playerAdmin_container" aria-label="Player admin layout">
       <div className="playerAdmin_header"><h3>Player Summary</h3><button onClick={onClose}>Close</button></div>
-      <PlayerSummary detail={detail} fallback={fallback} dbPlayerId={dbPlayerId} actionPlayerId={actionPlayerId} />
+      <PlayerSummary detail={detail} fallback={fallback} dbPlayerId={dbPlayerId} actionPlayerId={actionPlayerId} refreshKey={playerAdmin_summaryRefreshKey} onRepairFactionReputation={playerAdmin_repairFactionReputation} factionRepairDisabled={!dbPlayerId || playerAdmin_isOnline} factionRepairResult={playerAdmin_actionResult?.key === "repairFactionReputation" ? playerAdmin_actionResult : null} />
       <div className="playerAdmin_tabs" role="tablist" aria-label="Player admin tabs">{playerAdmin_tabs.map((playerAdmin_tab) => {
         const TabIcon = playerAdmin_tab.icon;
         return <button key={playerAdmin_tab.label} className={playerAdmin_activeTab === playerAdmin_tab.label ? "active" : ""} onClick={() => playerAdmin_setActiveTab(playerAdmin_tab.label)}><TabIcon size={17} aria-hidden="true" /><span>{playerAdmin_tab.label}</span></button>;
@@ -1035,9 +1077,9 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
               </div>
           </div>
           {playerAdmin_actionRow("xp", "Give XP", <input type="number" min="1" value={playerAdmin_xpAmount} onChange={(event) => playerAdmin_setXpAmount(event.target.value)} />, "Give", () => playerAdmin_runAction("xp", `Giving ${Number(playerAdmin_xpAmount) || 0} XP to ${playerName}`, () => playerAdmin_runTask(() => playersApi.addXp(actionPlayerId, Number(playerAdmin_xpAmount) || 0)), `${playerName} received ${Number(playerAdmin_xpAmount) || 0} XP.`, { actionType: "Give XP", target: playerName, amount: String(Number(playerAdmin_xpAmount) || 0) }), !playerAdmin_canRunLiveAction, "The player must be online.")}
-          {playerAdmin_actionRow("currency", "Give Currency", <><select value={playerAdmin_currencyType} onChange={(event) => playerAdmin_setCurrencyType(event.target.value)}><option>Solari Credit</option><option>Scrip</option></select><input type="number" min="1" value={playerAdmin_currencyAmount} onChange={(event) => playerAdmin_setCurrencyAmount(event.target.value)} /></>, "Give", () => playerAdmin_runAction("currency", `Giving ${Number(playerAdmin_currencyAmount) || 0} ${playerAdmin_currencyType} to ${playerName}`, () => playersApi.addCurrency(dbPlayerId, { currencyId: playerAdmin_currencyType === "Scrip" ? 1 : 0, amount: Number(playerAdmin_currencyAmount) || 0, confirmation: "ADD CURRENCY" }), `${playerName}'s ${playerAdmin_currencyType} was updated. Relog required.`, { actionType: `Give ${playerAdmin_currencyType}`, target: playerName, amount: String(Number(playerAdmin_currencyAmount) || 0) }), !dbPlayerId, "A relog is required to see the change.")}
-          {playerAdmin_actionRow("intel", "Give Intel", <input type="number" min="1" value={playerAdmin_intelAmount} onChange={(event) => playerAdmin_setIntelAmount(event.target.value)} />, "Give", () => playerAdmin_runAction("intel", `Giving ${Number(playerAdmin_intelAmount) || 0} Intel to ${playerName}`, () => playersApi.addIntel(dbPlayerId, { amount: Number(playerAdmin_intelAmount) || 0, confirmation: "ADD INTEL" }), `${playerName}'s Intel was updated and will load on next join.`, { actionType: "Give Intel", target: playerName, amount: String(Number(playerAdmin_intelAmount) || 0) }), !dbPlayerId || playerAdmin_isOnline, "The player must be offline for this database edit.")}
-          {playerAdmin_faction && playerAdmin_actionRow("faction", "Give Faction Reputation", <input type="number" min="1" max="12474" value={playerAdmin_factionAmount} onChange={(event) => playerAdmin_setFactionAmount(event.target.value)} />, "Give", () => playerAdmin_runAction("faction", `Giving ${Number(playerAdmin_factionAmount) || 0} ${playerAdmin_faction.name} reputation to ${playerName}`, () => playersApi.addFactionReputation(dbPlayerId, { factionId: playerAdmin_faction.id, amount: Number(playerAdmin_factionAmount) || 0, confirmation: "ADD FACTION REPUTATION" }), `${playerName}'s faction reputation was updated. Relog required.`, { actionType: "Give Faction Reputation", target: playerAdmin_faction.name, amount: String(Number(playerAdmin_factionAmount) || 0) }), !dbPlayerId, "A relog is required to see the change.")}
+          {playerAdmin_actionRow("currency", "Give Currency", <><select value={playerAdmin_currencyType} onChange={(event) => playerAdmin_setCurrencyType(event.target.value)}><option>Solari Credit</option><option>Scrip</option></select><input type="number" min="1" value={playerAdmin_currencyAmount} onChange={(event) => playerAdmin_setCurrencyAmount(event.target.value)} /></>, "Give", () => playerAdmin_runAction("currency", `Giving ${Number(playerAdmin_currencyAmount) || 0} ${playerAdmin_currencyType} to ${playerName}`, () => playerAdmin_withSummaryRefresh(() => playersApi.addCurrency(dbPlayerId, { currencyId: playerAdmin_currencyType === "Scrip" ? 1 : 0, amount: Number(playerAdmin_currencyAmount) || 0, confirmation: "ADD CURRENCY" })), `${playerName}'s ${playerAdmin_currencyType} was updated. Relog required.`, { actionType: `Give ${playerAdmin_currencyType}`, target: playerName, amount: String(Number(playerAdmin_currencyAmount) || 0) }), !dbPlayerId, "A relog is required to see the change.")}
+          {playerAdmin_actionRow("intel", <span className="playerAdmin_labelWithInfo"><span>Give Intel</span><InfoTooltip id="give-intel-help" label="About Give Intel">Adds available Intel while the player is offline and never exceeds the game&apos;s spendable cap. It does not purchase or unlock Research entries. The player should join after the grant before spending it.</InfoTooltip></span>, <input type="number" min="1" value={playerAdmin_intelAmount} onChange={(event) => playerAdmin_setIntelAmount(event.target.value)} />, "Give", () => playerAdmin_runAction("intel", `Giving ${Number(playerAdmin_intelAmount) || 0} Intel to ${playerName}`, () => playerAdmin_withSummaryRefresh(() => playersApi.addIntel(dbPlayerId, { amount: Number(playerAdmin_intelAmount) || 0, confirmation: "ADD INTEL" })), `${playerName}'s Intel was updated and will load on next join.`, { actionType: "Give Intel", target: playerName, amount: String(Number(playerAdmin_intelAmount) || 0) }), !dbPlayerId || playerAdmin_isOnline, "The player must be offline for this database edit.")}
+          {playerAdmin_faction && playerAdmin_actionRow("faction", <span className="playerAdmin_labelWithInfo"><span>Give Faction Reputation</span><InfoTooltip id="faction-reputation-help" label="About Faction Reputation">Faction Reputation affects rank, but Ranks 1–5 also require faction story progression. The player must be offline so the reputation used by vendors can be updated safely.</InfoTooltip></span>, <input type="number" min="1" max="12474" value={playerAdmin_factionAmount} onChange={(event) => playerAdmin_setFactionAmount(event.target.value)} />, "Give", () => playerAdmin_runAction("faction", `Giving ${Number(playerAdmin_factionAmount) || 0} ${playerAdmin_faction.name} reputation to ${playerName}`, () => playerAdmin_withSummaryRefresh(() => playersApi.addFactionReputation(dbPlayerId, { factionId: playerAdmin_faction.id, amount: Number(playerAdmin_factionAmount) || 0, confirmation: "ADD FACTION REPUTATION" })), `${playerName}'s faction reputation and vendor access were synchronized. Estimated rank may be limited by unfinished faction story progression.`, { actionType: "Give Faction Reputation", target: playerAdmin_faction.name, amount: String(Number(playerAdmin_factionAmount) || 0) }), !dbPlayerId || playerAdmin_isOnline, "The player must be offline for this database edit.")}
         </div>)}
          <div className={`playerAdmin_toggle ${playerAdmin_openToggles.give_items ? "open" : ""}`}><button className="playerAdmin_toggleHeader" onClick={() => playerAdmin_toggle("give_items")}>{playerAdmin_openToggles.give_items ? <ChevronUp size={18} /> : <ChevronDown size={18} />}<span>Give Items</span></button>{playerAdmin_openToggles.give_items && <div className="playerAdmin_toggleBody"><div className="playerAdmin_section"><ItemCatalogSelector selected={playerAdmin_selectedItem} onSelect={playerAdmin_chooseItem} /><div className="playerAdmin_itemActionStack"><div className="playerAdmin_itemInputLine"><span className="playerAdmin_actionLabel playerAdmin_itemSelectedLabel">Selected Item</span><label className="playerAdmin_itemNumberField">Quantity<input className="package-item-quantity-input" type="number" min="1" value={playerAdmin_quantity} onChange={(event) => playerAdmin_setQuantity(event.target.value)} /></label><label className="playerAdmin_itemNumberField">Grade<ItemGradeSelect value={playerAdmin_grade} minGrade={catalogItemMinimumGrade(playerAdmin_selectedItem)} onChange={playerAdmin_setGrade} /></label>{playerAdmin_filteredAugments.length > 0 && <><div className="playerAdmin_itemNumberField"><span>Augments</span><AugmentDropdown options={playerAdmin_displayAugments} value={playerAdmin_selectedAugments} maxSelected={playerAdmin_augmentLimit(playerAdmin_itemName, playerAdmin_itemId, playerAdmin_selectedItem?.category, playerAdmin_selectedItem?.source)} onChange={(selected) => playerAdmin_setSelectedAugments(selected.slice(0, playerAdmin_augmentLimit(playerAdmin_itemName, playerAdmin_itemId, playerAdmin_selectedItem?.category, playerAdmin_selectedItem?.source)))} /></div><label className="playerAdmin_itemNumberField">Aug. Grade<ItemGradeSelect value={playerAdmin_augmentGradeValue} minGrade={1} disabled={playerAdmin_selectedAugments.length === 0} emptyWhenDisabled onChange={playerAdmin_setAugmentGradeValue} /></label></>}<div className="playerAdmin_actionRow playerAdmin_itemActionRow"><button disabled={!playerAdmin_canGiveSelectedItems || playerAdmin_actionResult?.pending} onClick={() => void playerAdmin_giveMultipleItems()}>{playerAdmin_multiList.length ? "Give Package" : "Give Item"}</button><button disabled={!playerAdmin_selectedItem} onClick={playerAdmin_addSelectedItem}>Add Item</button><InlineActionResult result={playerAdmin_actionResult} resultKey="giveMultiple" /></div></div><p className="action-help-note">Grade 0 items and Grade 0 physical schematics use the live grant path and require the player to be online. Item Grades 1-5, ranked schematics, standalone augments, and pre-augmented items use database grants; relog after granting to an online player.</p></div>
           {playerAdmin_multiList.length ? <div className="table-wrap package-items-table playerAdmin_itemsTable"><table><thead><tr><th>Preview</th><th>Item Name</th><th>Item ID</th><th>Quantity</th><th>Grade</th><th>Augments</th><th>Aug. Grade</th><th>Actions</th></tr></thead><tbody>{playerAdmin_multiList.map((item, index) => {
@@ -1045,7 +1087,7 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
             return <tr key={`${item.itemName || item.itemId}-${index}`}><td><PackageItemPreview item={item} /></td><td>{catalogItemName(item)}</td><td>{catalogItemId(item)}</td><td>{editing ? <input className="package-item-quantity-input" type="number" min="1" value={playerAdmin_itemEditDraft.quantity} onChange={(event) => playerAdmin_setItemEditDraft({ ...playerAdmin_itemEditDraft, quantity: event.target.value })} /> : item.quantity}</td><td>{editing ? <ItemGradeSelect value={playerAdmin_itemEditDraft.grade} minGrade={catalogItemMinimumGrade(item)} onChange={(grade) => playerAdmin_setItemEditDraft({ ...playerAdmin_itemEditDraft, grade })} /> : itemGrade(item)}</td><td style={{ fontSize: "11px" }}><span className="package-augment-summary">{(item.augments && item.augments.length > 0) ? item.augments.map((augId) => { const found = playerAdmin_augmentCatalog.find((a) => a.id === augId); return found ? found.name : augId; }).join(", ") : "—"}</span></td><td>{item.augments?.length ? (editing ? <ItemGradeSelect value={playerAdmin_itemEditDraft.augmentGrade} minGrade={1} onChange={(augmentGrade) => playerAdmin_setItemEditDraft({ ...playerAdmin_itemEditDraft, augmentGrade })} /> : (item.augmentQuality ?? 1)) : "—"}</td><td className="package-actions-cell"><div className="service-actions">{editing ? <><button onClick={() => playerAdmin_saveQueuedItem(index)}>Save</button><button onClick={() => playerAdmin_setItemEditIndex(null)}>Cancel</button></> : <button onClick={() => playerAdmin_editQueuedItem(index)}>Edit</button>}<button className="danger" onClick={() => playerAdmin_setMultiList(playerAdmin_multiList.filter((_, itemIndex) => itemIndex !== index))}>Remove</button></div></td></tr>;
           })}</tbody></table></div> : null}
         </div></div>}</div>
-        {playerAdmin_toggleBox("character_inventory", `Inventory (${playerAdmin_filteredInventoryRows.length}${playerAdmin_inventoryFilterTerms.length ? `/${playerAdmin_inventoryAllRows.length}` : ""})`, <><div className="playerAdmin_boxHeaderLine playerAdmin_filterHeaderLine"><p>A relog is required to see the change.</p><div className="playerAdmin_filterToolsRow"><input className="playerAdmin_filterTextInput" value={playerAdmin_inventoryFilter} onChange={(event) => playerAdmin_setInventoryFilter(event.target.value)} placeholder="Filter by item ID or template" aria-label="Filter Inventory" />{playerAdmin_inventoryFilter && <button type="button" onClick={() => playerAdmin_setInventoryFilter("")}>Clear</button>}</div></div><PlayerDetailTab playerId={dbPlayerId} data={playerAdmin_inventoryData} rows={playerAdmin_filteredInventoryRows} emptyMessage={playerAdmin_inventoryFilterTerms.length ? "No inventory items match this filter." : "No inventory items were found."} onReload={playerAdmin_loadInventoryRows} onError={onError} confirmAction={confirmAction} formatMutationResult={formatMutationResult} playerIsOnline={playerAdmin_isOnline} onActionLog={(actionType, target, amount, notes) => playerAdmin_addLog(actionType, target, amount, notes)} /></>)}
+        {playerAdmin_toggleBox("character_inventory", `Inventory (${playerAdmin_inventoryAllRows.length})`, <><div className="playerAdmin_invGroupTabs" role="group" aria-label="Inventory type"><button type="button" className={`playerAdmin_invGroupTab ${playerAdmin_inventoryGroup === "backpack" ? "active" : ""}`} aria-pressed={playerAdmin_inventoryGroup === "backpack"} onClick={() => playerAdmin_setInventoryGroup("backpack")}>Backpack <span className="playerAdmin_invGroupCount">{playerAdmin_backpackRows.length}</span></button><button type="button" className={`playerAdmin_invGroupTab ${playerAdmin_inventoryGroup === "character" ? "active" : ""}`} aria-pressed={playerAdmin_inventoryGroup === "character"} onClick={() => playerAdmin_setInventoryGroup("character")}>Character <span className="playerAdmin_invGroupCount">{playerAdmin_characterGearRows.length}</span></button><button type="button" className={`playerAdmin_invGroupTab ${playerAdmin_inventoryGroup === "loadout" ? "active" : ""}`} aria-pressed={playerAdmin_inventoryGroup === "loadout"} onClick={() => playerAdmin_setInventoryGroup("loadout")}>Loadout <span className="playerAdmin_invGroupCount">{playerAdmin_loadoutRows.length}</span></button><button type="button" className={`playerAdmin_invGroupTab ${playerAdmin_inventoryGroup === "schematics" ? "active" : ""}`} aria-pressed={playerAdmin_inventoryGroup === "schematics"} onClick={() => playerAdmin_setInventoryGroup("schematics")}>Unique schematics <span className="playerAdmin_invGroupCount">{playerAdmin_schematicRows.length}</span></button></div><div className="playerAdmin_boxHeaderLine playerAdmin_filterHeaderLine"><p>A relog is required to see the change.</p><div className="playerAdmin_filterToolsRow">{playerAdmin_inventoryFilterTerms.length ? <span className="playerAdmin_note">{playerAdmin_filteredInventoryRows.length} of {playerAdmin_inventoryGroupRows.length}</span> : null}<input className="playerAdmin_filterTextInput" value={playerAdmin_inventoryFilter} onChange={(event) => playerAdmin_setInventoryFilter(event.target.value)} placeholder="Filter by name, item ID, or template" aria-label="Filter Inventory" />{playerAdmin_inventoryFilter && <button type="button" onClick={() => playerAdmin_setInventoryFilter("")}>Clear</button>}</div></div><PlayerDetailTab playerId={dbPlayerId} data={playerAdmin_inventoryData} rows={playerAdmin_filteredInventoryRows} variant={playerAdmin_inventoryGroup === "schematics" ? "schematics" : "standard"} emptyMessage={playerAdmin_inventoryFilterTerms.length ? "No inventory items match this filter." : "No inventory items were found."} onReload={playerAdmin_loadInventoryRows} onError={onError} confirmAction={confirmAction} formatMutationResult={formatMutationResult} playerIsOnline={playerAdmin_isOnline} onActionLog={(actionType, target, amount, notes) => playerAdmin_addLog(actionType, target, amount, notes)} /></>)}
         {playerAdmin_toggleBox("character_log", "Character Action Log", <div className="playerAdmin_logSection">{playerAdmin_characterLog.length > 0 && <div className="action-row admin-history-actions"><button onClick={() => playerAdmin_setCharacterLog([])}>Clear</button></div>}{playerAdmin_characterLog.length ? playerAdmin_table(["Date / Time", "Admin", "Action Type", "Target", "Amount", "Notes"], playerAdmin_characterLog) : <p>No character actions have been recorded in this layout yet.</p>}</div>)}
       </div>}
       {playerAdmin_activeTab === "Crafting" && (
@@ -1106,6 +1148,7 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
           </section>
         </div>
       )}
+      {playerAdmin_activeTab === "Building Sets" && <BuildingUnlocksTab dbPlayerId={dbPlayerId} playerName={playerName} confirmAction={confirmAction} onActionLog={playerAdmin_addLog} />}
       {playerAdmin_activeTab === "Skills" && (
         <div className="playerAdmin_content">
           <section className="playerAdmin_box">
@@ -1115,7 +1158,7 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
           <section className="playerAdmin_box">
             <h4>Skill Browser</h4>
             <div className="playerAdmin_boxHeaderLine">
-              <p>Use Restore Starter Skills after a progression reset leaves the starting tree locked.</p>
+              <p>{playerAdmin_canRunLiveAction ? "Use Restore Starter Skills after a progression reset leaves the starting tree locked." : "The player must be online to change skills or restore starter skills."}</p>
               <div className="playerAdmin_filterRow playerAdmin_filterRowRight">
                 <span className="playerAdmin_note">{playerAdmin_skillChangeCount} Unsaved Change{playerAdmin_skillChangeCount === 1 ? "" : "s"}</span>
                 <button disabled={!playerAdmin_canRunLiveAction || !playerAdmin_starterSkillPreset || playerAdmin_actionResult?.pending} onClick={() => playerAdmin_restoreStarterSkills()}>Restore Starter Skills</button>
@@ -1157,7 +1200,8 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
       )}
       {playerAdmin_activeTab === "Journey" && <div className="playerAdmin_content"><section className="playerAdmin_box"><h4>Journey Browser</h4><div className="playerAdmin_boxHeaderLine playerAdmin_filterHeaderLine"><p>Journey changes require the player to be fully offline and take effect on the next login. Reset keeps rewards already granted and cannot recreate a consumed Contract item.</p><div className="playerAdmin_filterToolsRow"><input className="playerAdmin_filterTextInput" value={playerAdmin_journeyFilter} onChange={(event) => playerAdmin_setJourneyFilter(event.target.value)} placeholder="Filter by name, ID, status, or dependency" aria-label="Filter Journey Browser" />{playerAdmin_journeyFilter && <button type="button" onClick={() => playerAdmin_setJourneyFilter("")}>Clear</button>}<span className="playerAdmin_note">{playerAdmin_journeyFilterTerms.length ? `${playerAdmin_filteredJourneyEntryCount} of ${playerAdmin_journeyEntryCount}` : playerAdmin_journeyEntryCount} Journey Entr{(playerAdmin_journeyFilterTerms.length ? playerAdmin_filteredJourneyEntryCount : playerAdmin_journeyEntryCount) === 1 ? "y" : "ies"} Detected</span></div></div>{playerAdmin_journeyError && <p className="playerAdmin_note danger">{playerAdmin_journeyError}</p>}{playerAdmin_toggleBox("journey_story", `Story (${playerAdmin_filteredJourneyRows.story.length}${playerAdmin_journeyFilterTerms.length ? `/${playerAdmin_journeyRows.story.length}` : ""})`, playerAdmin_journeyTable(playerAdmin_filteredJourneyRows.story, playerAdmin_journeyFilterTerms.length ? "No story entries match this filter." : "No story entries were found.", playerAdmin_journeySortStory, playerAdmin_journeyResizeStory))}{playerAdmin_toggleBox("journey_contract", `Contracts (${playerAdmin_filteredJourneyRows.contract.length}${playerAdmin_journeyFilterTerms.length ? `/${playerAdmin_journeyRows.contract.length}` : ""})`, playerAdmin_journeyTable(playerAdmin_filteredJourneyRows.contract, playerAdmin_journeyFilterTerms.length ? "No contract entries match this filter." : "No contract entries were found.", playerAdmin_journeySortContract, playerAdmin_journeyResizeContract))}{playerAdmin_toggleBox("journey_codex", `Codex (${playerAdmin_filteredJourneyRows.codex.length}${playerAdmin_journeyFilterTerms.length ? `/${playerAdmin_journeyRows.codex.length}` : ""})`, playerAdmin_journeyTable(playerAdmin_filteredJourneyRows.codex, playerAdmin_journeyFilterTerms.length ? "No codex entries match this filter." : "No codex entries were found.", playerAdmin_journeySortCodex, playerAdmin_journeyResizeCodex))}{playerAdmin_toggleBox("journey_tutorial", `Tutorial (${playerAdmin_filteredJourneyRows.tutorial.length}${playerAdmin_journeyFilterTerms.length ? `/${playerAdmin_journeyRows.tutorial.length}` : ""})`, playerAdmin_journeyTable(playerAdmin_filteredJourneyRows.tutorial, playerAdmin_journeyFilterTerms.length ? "No tutorial entries match this filter." : "No tutorial entries were found.", playerAdmin_journeySortTutorial, playerAdmin_journeyResizeTutorial))}</section></div>}
       {playerAdmin_activeTab === "Blueprints" && <div className="playerAdmin_content"><section className="playerAdmin_box"><h4>Blueprints</h4><BlueprintsPanel dbPlayerId={dbPlayerId} playerName={playerName} onError={onError} confirmAction={confirmAction} /></section></div>}
-      {playerAdmin_activeTab === "Admin" && <div className="playerAdmin_content"><section className="playerAdmin_box"><h4>Player Admin Actions</h4><p>Use this area for player maintenance and high-impact admin actions. Some actions require the player to be online, while database repairs require the player to be offline.</p><div className="playerAdmin_section playerAdmin_repairSection"><h5>Repair</h5><div className="playerAdmin_repairRow"><span className="playerAdmin_repairLabel"><span>Repair Gear</span><em>{playerAdmin_isOnline ? "The player must be offline." : "Equipped and carried gear durability. Relog required."}</em></span><button disabled={!dbPlayerId || playerAdmin_isOnline || playerAdmin_actionResult?.pending} onClick={async () => {
+      {playerAdmin_activeTab === "Vehicles" && <PlayerVehiclesTab playerId={dbPlayerId} playerName={playerName} />}
+      {playerAdmin_activeTab === "Admin" && <div className="playerAdmin_content"><section className="playerAdmin_box"><h4>Player Admin Actions</h4><p>Use this area for player maintenance and high-impact admin actions. Some actions require the player to be online, while database repairs require the player to be offline.</p><PlayerFactionAssignment playerId={dbPlayerId} playerName={playerName} currentFaction={String(playerAdmin_profile.faction || "Neutral")} guild={playerAdmin_profile.guild} supported={playerAdmin_capabilities.assignFaction === true} confirmAction={confirmAction} onRefresh={() => { onRefresh(); playerAdmin_setSummaryRefreshKey((current) => current + 1); }} onActionLog={(actionType, target, amount, notes) => playerAdmin_addLog(actionType, target, amount, notes)} /><div className="playerAdmin_section playerAdmin_repairSection"><h5>Repair</h5><div className="playerAdmin_repairRow"><span className="playerAdmin_repairLabel"><span>Repair Faction</span><em>{playerAdmin_isOnline ? "The player must be offline." : "Restores earned story progression and synchronizes reputation. Relog required."}</em></span><button disabled={!dbPlayerId || playerAdmin_isOnline || playerAdmin_actionResult?.pending} onClick={() => void playerAdmin_repairFactionReputation()}>Repair Faction</button><InlineActionResult result={playerAdmin_actionResult} resultKey="repairFactionReputation" /></div><div className="playerAdmin_repairRow"><span className="playerAdmin_repairLabel"><span>Repair Gear</span><em>{playerAdmin_isOnline ? "The player must be offline." : "Equipped and carried gear durability. Relog required."}</em></span><button disabled={!dbPlayerId || playerAdmin_isOnline || playerAdmin_actionResult?.pending} onClick={async () => {
         if (!(await confirmAction(`Repair gear for ${playerName}? The player must be offline and should relog after this.`))) return;
         void playerAdmin_runAction("repairGear", `Repairing ${playerName}'s gear`, async () => {
           const response = await playersApi.repairGear(dbPlayerId, "REPAIR GEAR");

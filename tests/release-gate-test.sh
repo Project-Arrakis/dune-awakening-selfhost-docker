@@ -87,6 +87,8 @@ for required in \
   orchestrator/dune_orchestrator.py \
   orchestrator/entrypoint.sh \
   runtime/scripts/compose-project.sh \
+  runtime/scripts/env-file.sh \
+  runtime/scripts/battlegroup-identity.sh \
   runtime/scripts/dune \
   runtime/scripts/self-update.sh
 do

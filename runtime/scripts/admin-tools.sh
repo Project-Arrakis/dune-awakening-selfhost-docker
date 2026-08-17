@@ -1490,7 +1490,7 @@ grant_item() {
   local durability="${5:-1.0}"
   local quality="${6:-0}"
   local original_player_id item_json item_id item_name item_category item_source inner_json
-  local verify_account_id before_count after_count
+  local verify_account_id before_count after_count expected_count verified_quantity
   local status_row status_rc online_status online_map error_text
 
   if [ -z "$player_id" ] || [ -z "$item_value" ]; then
@@ -1574,8 +1574,9 @@ grant_item() {
   audit_admin_action "AddItemToInventory" "$(redact_fls "$player_id")" "$item_name x$quantity" "$inner_json" "$ADMIN_COMMAND_PATH" "published"
   after_count="$(player_item_stack_count "$verify_account_id" "$item_id")"
   if [ -n "${before_count:-}" ] && [ -n "${after_count:-}" ]; then
+    expected_count="$((before_count + quantity))"
     for _ in 1 2 3 4 5 6 7 8 9 10; do
-      [ "$after_count" -gt "$before_count" ] && break
+      [ "$after_count" -ge "$expected_count" ] && break
       sleep 1
       after_count="$(player_item_stack_count "$verify_account_id" "$item_id")"
       [ -n "${after_count:-}" ] || break
@@ -1584,8 +1585,12 @@ grant_item() {
   echo "Grant item command published."
 
   if [ -n "${before_count:-}" ] && [ -n "${after_count:-}" ]; then
-    if [ "$after_count" -gt "$before_count" ]; then
-      echo "Verified inventory stack increased: $item_name ($before_count -> $after_count)."
+    verified_quantity="$((after_count - before_count))"
+    if [ "$verified_quantity" -ge "$quantity" ]; then
+      echo "Verified full inventory grant: $item_name x$quantity ($before_count -> $after_count)."
+    elif [ "$verified_quantity" -gt 0 ]; then
+      echo "WARNING: inventory grant was incomplete: requested $quantity, verified $verified_quantity for $item_name ($before_count -> $after_count)." >&2
+      echo "The game server accepted only part of the live grant. The missing quantity was not retried because retrying could duplicate delivered items." >&2
     else
       echo "WARNING: publish succeeded, but the player's inventory stack did not increase for $item_name." >&2
       echo "The game server may reject this template for AddItemToInventory, or the player may need to relog/refresh inventory." >&2
@@ -1740,7 +1745,7 @@ publish_player_command() {
 
   inner_json="$(build_passthrough_json "$command_id" "PlayerId=$resolved_player=string" "$@")"
   case "$command_id" in
-    AwardXP|UpdateAllWaterFillables|SpawnVehicleAt) require_online=1 ;;
+    AwardXP|SkillsSetUnspentSkillPoints|SkillsSetModuleLevel|UpdateAllWaterFillables|SpawnVehicleAt) require_online=1 ;;
   esac
 
   if [ "${DUNE_ADMIN_DRY_RUN:-0}" = "1" ]; then

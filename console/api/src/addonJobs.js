@@ -18,6 +18,17 @@ import { assertInstalledAddonPermission } from "./addons.js";
 import { runSql } from "./duneDb.js";
 import { audit } from "./audit.js";
 import { redact } from "./redact.js";
+import {
+  readSeedSchedule,
+  saveSeedSchedule,
+  writeSeedSchedule,
+  persistSeedRunCompletion,
+  executeSeedRun,
+  normalizeScheduleSource,
+  resolveMarketSeedPlanPath
+} from "./addonSeedJob.js";
+
+export { readSeedSchedule, normalizeSeedSchedule, saveSeedSchedule, normalizeScheduleSource, resolveMarketSeedPlanPath, loadMarketSeedPlan } from "./addonSeedJob.js";
 
 export const EDA_EXCHANGE_BOT_ADDON_ID = "eda-exchange-bot";
 export const ADDON_SCHEDULER_PERMISSION = "scheduler:server";
@@ -56,6 +67,12 @@ export function normalizeExchangeId(value) {
   return raw;
 }
 
+function normalizeBuybackPriceBasis(value) {
+  const text = String(value || "seeded").trim().toLowerCase();
+  if (text === "average" || text === "lowest") return text;
+  return "seeded";
+}
+
 export function normalizeBuybackSchedule(payload = {}, previous = {}) {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new Error("Buyback schedule must be a JSON object.");
   const enabled = payload.enabled === undefined ? Boolean(previous.enabled) : payload.enabled;
@@ -75,7 +92,12 @@ export function normalizeBuybackSchedule(payload = {}, previous = {}) {
     exchangeId,
     priceMultiplier: integerField(payload.priceMultiplier ?? previous.priceMultiplier ?? 5, "priceMultiplier", 1, 100),
     buybackPercent: integerField(payload.buybackPercent ?? previous.buybackPercent ?? 60, "buybackPercent", 1, 100),
+    buybackPriceBasis: normalizeBuybackPriceBasis(payload.buybackPriceBasis ?? previous.buybackPriceBasis ?? "seeded"),
     maxBuys: integerField(payload.maxBuys ?? previous.maxBuys ?? 500, "maxBuys", 1, 5000),
+    // Never read from the payload: only the save-path options can set this
+    // (see saveBuybackSchedule), so a bridge payload cannot mark a schedule
+    // console-sourced and skip the addon permission re-checks.
+    source: normalizeScheduleSource(previous.source),
     lastRunAt: isoField(previous.lastRunAt),
     lastRunStatus: String(previous.lastRunStatus ?? "").slice(0, 40),
     lastRunDetail: String(previous.lastRunDetail ?? "").slice(0, MAX_RUN_DETAIL_LENGTH),
@@ -109,9 +131,10 @@ export function readBuybackSchedule(config) {
 // process they cannot interleave and clobber each other's fields; the atomic
 // temp-file rename covers crash safety. Multiple console processes sharing one
 // repoRoot are not a supported deployment for runtime/ state files.
-export function saveBuybackSchedule(config, payload = {}, { now = () => Date.now() } = {}) {
+export function saveBuybackSchedule(config, payload = {}, { now = () => Date.now(), source } = {}) {
   const previous = readBuybackSchedule(config);
   const next = normalizeBuybackSchedule(payload, previous);
+  if (source !== undefined) next.source = normalizeScheduleSource(source);
   if (!next.enabled) {
     next.nextRunAt = "";
   } else if (!previous.enabled || next.intervalMinutes !== previous.intervalMinutes || !previous.nextRunAt) {
@@ -126,8 +149,10 @@ export function saveBuybackSchedule(config, payload = {}, { now = () => Date.now
 }
 
 export function loadBuybackSeedPlan(config, addonId = EDA_EXCHANGE_BOT_ADDON_ID) {
-  const path = resolve(config.repoRoot, "runtime/addons/installed", addonId, "web", "market-seed-plan.json");
-  if (!existsSync(path)) throw new Error(`Installed addon ${addonId} does not include web/market-seed-plan.json.`);
+  // Same resolution as the seed job: installed addon copy first (assumed
+  // newest), then the console-bundled runtime/data/market-seed-plan.json.
+  const path = resolveMarketSeedPlanPath(config, addonId);
+  if (!path) throw new Error("No market seed plan found: neither the bundled runtime/data/market-seed-plan.json nor an installed addon copy exists.");
   const text = readFileSync(path, "utf8");
   if (text.length > MAX_SEED_PLAN_BYTES) throw new Error("Addon market seed plan is too large.");
   let plan;
@@ -174,6 +199,12 @@ const BUYBACK_PLAN_LATERAL = `LEFT JOIN LATERAL (
         LIMIT 1
     ) p ON TRUE`;
 
+function buybackLiveBasisAggregateSql(priceBasis) {
+  return priceBasis === "lowest" ? "MIN(o.item_price)" : "AVG(o.item_price)";
+}
+
+const BUYBACK_PLAYER_SELL_SQL = "COALESCE(o.is_npc_order, FALSE) = FALSE AND (b.owner_id IS NULL OR o.owner_id IS DISTINCT FROM b.owner_id)";
+
 // Buyback plan: one exact cap per (template, grade), scaled from each bundled
 // seed row. Seed prices use stepped rounding, so reconstructing higher grades
 // from a grade-0 base can differ from the actual configured market price.
@@ -198,16 +229,113 @@ export function buybackPlanValuesSql(plan, { priceMultiplier, buybackPercent }) 
     .join(",\n");
 }
 
+function buybackMarketPlanCteSql(plan, schedule) {
+  const exchangeId = requireScheduleExchangeId(schedule);
+  const valuesSql = buybackPlanValuesSql(plan, schedule) || "(NULL::text,NULL::bigint,NULL::bigint)";
+  const priceBasis = normalizeBuybackPriceBasis(schedule.buybackPriceBasis);
+  if (priceBasis === "seeded") {
+    return `market_buy_plan(template_id, quality_level, max_unit_price) AS (
+    VALUES
+${valuesSql}
+)`;
+  }
+  const threshold = schedule.buybackPercent;
+  const aggregate = buybackLiveBasisAggregateSql(priceBasis);
+  return `seed_buy_caps(template_id, quality_level, max_unit_price) AS (
+    VALUES
+${valuesSql}
+),
+live_buy_basis AS (
+    SELECT o.template_id,
+           ${BUYBACK_ORDER_GRADE_SQL} AS quality_level,
+           ${aggregate} AS basis_price
+    FROM dune.dune_exchange_orders o
+    JOIN dune.dune_exchange_sell_orders s ON s.order_id = o.id
+    LEFT JOIN dune.items i ON i.id = o.item_id
+    LEFT JOIN (SELECT id AS owner_id FROM dune.actors WHERE class = 'Revy' LIMIT 1) b ON TRUE
+    WHERE o.exchange_id = ${exchangeId}
+      AND ${BUYBACK_PLAYER_SELL_SQL}
+      AND o.item_price > 0
+      AND ${BUYBACK_STACK_SQL} > 0
+      AND EXISTS (SELECT 1 FROM seed_buy_caps sc WHERE sc.template_id IS NOT NULL AND sc.template_id = o.template_id)
+    GROUP BY o.template_id, ${BUYBACK_ORDER_GRADE_SQL}
+),
+live_buy_caps AS (
+    SELECT template_id,
+           quality_level,
+           GREATEST(1, FLOOR((basis_price * ${threshold} + 99) / 100))::bigint AS max_unit_price
+    FROM live_buy_basis
+),
+market_buy_plan AS (
+    SELECT template_id, quality_level, max_unit_price FROM live_buy_caps
+    UNION ALL
+    SELECT s.template_id, s.quality_level, s.max_unit_price
+    FROM seed_buy_caps s
+    WHERE s.template_id IS NOT NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM live_buy_caps l
+        WHERE l.template_id = s.template_id AND l.quality_level = s.quality_level
+      )
+)`;
+}
+
+function buybackPlanPopulateSql(plan, schedule) {
+  const exchangeId = requireScheduleExchangeId(schedule);
+  const valuesSql = buybackPlanValuesSql(plan, schedule);
+  const priceBasis = normalizeBuybackPriceBasis(schedule.buybackPriceBasis);
+  if (priceBasis === "seeded") {
+    if (!valuesSql) return `-- buyback plan empty: no seeded caps\n`;
+    return `INSERT INTO market_buy_plan (template_id, quality_level, max_unit_price) VALUES
+${valuesSql};`;
+  }
+  const seedValues = valuesSql || "(NULL::text,NULL::bigint,NULL::bigint)";
+  const threshold = schedule.buybackPercent;
+  const aggregate = buybackLiveBasisAggregateSql(priceBasis);
+  return `INSERT INTO market_buy_plan (template_id, quality_level, max_unit_price)
+SELECT template_id, quality_level, max_unit_price FROM (
+    WITH seed_buy_caps(template_id, quality_level, max_unit_price) AS (
+        VALUES
+${seedValues}
+    ),
+    live_buy_basis AS (
+        SELECT o.template_id,
+               ${BUYBACK_ORDER_GRADE_SQL} AS quality_level,
+               ${aggregate} AS basis_price
+        FROM dune.dune_exchange_orders o
+        JOIN dune.dune_exchange_sell_orders s ON s.order_id = o.id
+        LEFT JOIN dune.items i ON i.id = o.item_id
+        LEFT JOIN (SELECT id AS owner_id FROM dune.actors WHERE class = 'Revy' LIMIT 1) b ON TRUE
+        WHERE o.exchange_id = ${exchangeId}
+          AND ${BUYBACK_PLAYER_SELL_SQL}
+          AND o.item_price > 0
+          AND ${BUYBACK_STACK_SQL} > 0
+          AND EXISTS (SELECT 1 FROM seed_buy_caps sc WHERE sc.template_id IS NOT NULL AND sc.template_id = o.template_id)
+        GROUP BY o.template_id, ${BUYBACK_ORDER_GRADE_SQL}
+    ),
+    live_buy_caps AS (
+        SELECT template_id,
+               quality_level,
+               GREATEST(1, FLOOR((basis_price * ${threshold} + 99) / 100))::bigint AS max_unit_price
+        FROM live_buy_basis
+    )
+    SELECT template_id, quality_level, max_unit_price FROM live_buy_caps
+    UNION ALL
+    SELECT s.template_id, s.quality_level, s.max_unit_price
+    FROM seed_buy_caps s
+    WHERE s.template_id IS NOT NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM live_buy_caps l
+        WHERE l.template_id = s.template_id AND l.quality_level = s.quality_level
+      )
+) plan_rows;`;
+}
+
 // Read-only eligibility probe. This runs without a backup, so idle scheduled
 // ticks are cheap; the write sweep only runs when this finds at least one
 // player listing at or below the threshold.
 export function buildBuybackEligibilitySql(plan, schedule) {
   const exchangeId = requireScheduleExchangeId(schedule);
-  const valuesSql = buybackPlanValuesSql(plan, schedule);
-  return `WITH market_buy_plan(template_id, quality_level, max_unit_price) AS (
-    VALUES
-${valuesSql}
-),
+  return `WITH ${buybackMarketPlanCteSql(plan, schedule)},
 bot AS (
     SELECT id AS owner_id FROM dune.actors WHERE class = 'Revy' LIMIT 1
 )
@@ -218,8 +346,7 @@ LEFT JOIN dune.items i ON i.id = o.item_id
 ${BUYBACK_PLAN_LATERAL}
 LEFT JOIN bot b ON TRUE
 WHERE o.exchange_id = ${exchangeId}
-  AND o.is_npc_order = FALSE
-  AND (b.owner_id IS NULL OR o.owner_id <> b.owner_id)
+  AND ${BUYBACK_PLAYER_SELL_SQL}
   AND p.template_id IS NOT NULL
   AND ${BUYBACK_ELIGIBLE_PREDICATE};`;
 }
@@ -228,12 +355,11 @@ export function buildBuybackSql(plan, schedule) {
   const exchangeId = requireScheduleExchangeId(schedule);
   const threshold = schedule.buybackPercent;
   const maxBuys = schedule.maxBuys;
-  const valuesSql = buybackPlanValuesSql(plan, schedule);
+  const planInsert = buybackPlanPopulateSql(plan, schedule);
   return `CREATE TEMP TABLE market_buy_plan (template_id TEXT NOT NULL, quality_level BIGINT NOT NULL, max_unit_price BIGINT NOT NULL, PRIMARY KEY (template_id, quality_level)) ON COMMIT DROP;
 CREATE TEMP TABLE market_buy_result (purchased INTEGER NOT NULL, total_units BIGINT NOT NULL, total_solari BIGINT NOT NULL, threshold_percent INTEGER NOT NULL, max_buys INTEGER NOT NULL) ON COMMIT DROP;
 CREATE TEMP TABLE market_buy_diagnostics (player_sell_orders BIGINT NOT NULL, known_player_sell_orders BIGINT NOT NULL, eligible_player_sell_orders BIGINT NOT NULL, above_threshold_sell_orders BIGINT NOT NULL, unknown_template_sell_orders BIGINT NOT NULL) ON COMMIT DROP;
-INSERT INTO market_buy_plan (template_id, quality_level, max_unit_price) VALUES
-${valuesSql};
+${planInsert}
 DO $$
 DECLARE
     v_owner_id BIGINT; v_partition_id BIGINT; v_log_order_id BIGINT; v_balance BIGINT; v_purchased INTEGER := 0; v_units BIGINT := 0; v_solari BIGINT := 0; rec RECORD;
@@ -251,12 +377,12 @@ BEGIN
     IF v_balance < 1000000000000 THEN
         PERFORM dune.dune_exchange_modify_user_solari_balance(v_owner_id, 9000000000000 - v_balance);
     END IF;
-    INSERT INTO market_buy_diagnostics SELECT COUNT(*), COUNT(*) FILTER (WHERE p.template_id IS NOT NULL), COUNT(*) FILTER (WHERE p.template_id IS NOT NULL AND ${BUYBACK_ELIGIBLE_PREDICATE}), COUNT(*) FILTER (WHERE p.template_id IS NOT NULL AND o.item_price > 0 AND ${BUYBACK_STACK_SQL} > 0 AND o.item_price > p.max_unit_price), COUNT(*) FILTER (WHERE p.template_id IS NULL) FROM dune.dune_exchange_orders o JOIN dune.dune_exchange_sell_orders s ON s.order_id = o.id LEFT JOIN dune.items i ON i.id = o.item_id ${BUYBACK_PLAN_LATERAL} WHERE o.exchange_id = ${exchangeId} AND o.is_npc_order = FALSE AND o.owner_id <> v_owner_id;
+    INSERT INTO market_buy_diagnostics SELECT COUNT(*), COUNT(*) FILTER (WHERE p.template_id IS NOT NULL), COUNT(*) FILTER (WHERE p.template_id IS NOT NULL AND ${BUYBACK_ELIGIBLE_PREDICATE}), COUNT(*) FILTER (WHERE p.template_id IS NOT NULL AND o.item_price > 0 AND ${BUYBACK_STACK_SQL} > 0 AND o.item_price > p.max_unit_price), COUNT(*) FILTER (WHERE p.template_id IS NULL) FROM dune.dune_exchange_orders o JOIN dune.dune_exchange_sell_orders s ON s.order_id = o.id LEFT JOIN dune.items i ON i.id = o.item_id ${BUYBACK_PLAN_LATERAL} WHERE o.exchange_id = ${exchangeId} AND COALESCE(o.is_npc_order, FALSE) = FALSE AND o.owner_id IS DISTINCT FROM v_owner_id;
     -- FOR UPDATE OF o, s SKIP LOCKED is the database-level concurrency guard:
     -- a scheduled sweep racing a manual browser sweep locks the selected order
     -- rows, so concurrent sweeps skip anything already claimed and rows
     -- deleted by a committed sweep drop out of the re-checked result.
-    FOR rec IN SELECT o.id AS order_id, o.exchange_id, o.access_point_id, o.owner_id AS seller_actor_id, o.template_id, o.item_price, o.item_id, ${BUYBACK_STACK_SQL} AS actual_stack, p.max_unit_price FROM dune.dune_exchange_orders o JOIN dune.dune_exchange_sell_orders s ON s.order_id = o.id LEFT JOIN dune.items i ON i.id = o.item_id ${BUYBACK_PLAN_LATERAL} WHERE o.exchange_id = ${exchangeId} AND o.is_npc_order = FALSE AND o.owner_id <> v_owner_id AND ${BUYBACK_ELIGIBLE_PREDICATE} ORDER BY o.item_price ASC, o.id ASC LIMIT ${maxBuys} FOR UPDATE OF o, s SKIP LOCKED LOOP
+    FOR rec IN SELECT o.id AS order_id, o.exchange_id, o.access_point_id, o.owner_id AS seller_actor_id, o.template_id, o.item_price, o.item_id, ${BUYBACK_STACK_SQL} AS actual_stack, p.max_unit_price FROM dune.dune_exchange_orders o JOIN dune.dune_exchange_sell_orders s ON s.order_id = o.id LEFT JOIN dune.items i ON i.id = o.item_id ${BUYBACK_PLAN_LATERAL} WHERE o.exchange_id = ${exchangeId} AND COALESCE(o.is_npc_order, FALSE) = FALSE AND o.owner_id IS DISTINCT FROM v_owner_id AND ${BUYBACK_ELIGIBLE_PREDICATE} ORDER BY o.item_price ASC, o.id ASC LIMIT ${maxBuys} FOR UPDATE OF o, s SKIP LOCKED LOOP
         -- Seller "Take Solari" payment entry. item_price stays the per-unit
         -- price (the game multiplies by stack_size itself) and expiration is
         -- the never-expires sentinel so the game server's expire proc cannot
@@ -306,119 +432,205 @@ export function createAddonJobScheduler(config, options = {}) {
     log = console
   } = options;
 
-  // Module-level style guards, scoped to the single scheduler instance the
-  // server creates (same role as carePackageAutoRunning in server.js).
+  // Shared lock across buyback and seed so the two jobs never write together.
   let running = false;
   let nextAllowedAttemptAt = 0;
-  let armedForThisProcess = false;
+  let buybackArmedForThisProcess = false;
+  let seedArmedForThisProcess = false;
 
-  function persistRunCompletion(completedAtMs, status, detail) {
-    // Re-read before writing so a schedule.set that landed while the run was
-    // in flight (new interval, disabled, new exchange) is not clobbered.
-    // Synchronous read-modify-write: see the note on saveBuybackSchedule.
+  function persistBuybackRunCompletion(completedAtMs, status, detail) {
     const current = readBuybackSchedule(config);
     writeBuybackSchedule(config, {
       ...current,
       lastRunAt: new Date(completedAtMs).toISOString(),
       lastRunStatus: status,
       lastRunDetail: String(detail || "").slice(0, MAX_RUN_DETAIL_LENGTH),
-      // Re-arm from completion time, not run start, so a sweep that outlasts
-      // the interval cannot trigger back-to-back runs.
       nextRunAt: current.enabled ? new Date(completedAtMs + current.intervalMinutes * 60000).toISOString() : ""
     });
   }
 
-  function auditRun(trigger, detail) {
+  function auditJob(job, trigger, detail) {
     try {
-      auditImpl(config, null, "addons.scheduled-job", { id: EDA_EXCHANGE_BOT_ADDON_ID, job: "buyback", trigger, ...detail });
+      auditImpl(config, null, "addons.scheduled-job", { id: EDA_EXCHANGE_BOT_ADDON_ID, job, trigger, ...detail });
     } catch (error) {
-      log.error(`Addon scheduled job audit failed: ${redact(error?.message || error)}`);
+      log.error(`Addon scheduled job audit failed: ${redact(error?.message || "Unexpected error.")}`);
     }
+  }
+
+  function consumeMutationSlot(startedAt) {
+    if (!mutationLimiter) return true;
+    const limit = mutationLimiter.check(ADDON_SCHEDULED_RUN_RATE_SCOPE);
+    if (!limit.allowed) {
+      nextAllowedAttemptAt = startedAt + failureBackoffMs;
+      return false;
+    }
+    mutationLimiter.record(ADDON_SCHEDULED_RUN_RATE_SCOPE);
+    return true;
+  }
+
+  // Returns: "ran" | "deferred" | "idle"
+  function prepareDueSchedule(schedule, armedRef, writeFn, startedAt) {
+    if (!schedule.enabled) {
+      armedRef.value = false;
+      return "idle";
+    }
+    const dueAtMs = Date.parse(schedule.nextRunAt || "") || 0;
+    if (!armedRef.value) {
+      armedRef.value = true;
+      if (!dueAtMs || dueAtMs <= startedAt) {
+        // Restart recovery: recompute nextRunAt one interval out instead of
+        // firing a write immediately at boot.
+        writeFn(config, { ...schedule, nextRunAt: new Date(startedAt + schedule.intervalMinutes * 60000).toISOString() });
+        return "deferred";
+      }
+    }
+    if (!dueAtMs) {
+      writeFn(config, { ...schedule, nextRunAt: new Date(startedAt + schedule.intervalMinutes * 60000).toISOString() });
+      return "deferred";
+    }
+    if (startedAt < dueAtMs) return "idle";
+    return "due";
   }
 
   async function tick() {
     if (running) return;
     const startedAt = now();
     if (startedAt < nextAllowedAttemptAt) return;
-    const schedule = readBuybackSchedule(config);
-    if (!schedule.enabled) {
-      armedForThisProcess = false;
+
+    const seedArmed = { value: seedArmedForThisProcess };
+    const seedState = prepareDueSchedule(readSeedSchedule(config), seedArmed, writeSeedSchedule, startedAt);
+    seedArmedForThisProcess = seedArmed.value;
+    if (seedState === "due") {
+      if (!consumeMutationSlot(startedAt)) return;
+      await runSeedJob("schedule", readSeedSchedule(config));
       return;
     }
-    const dueAtMs = Date.parse(schedule.nextRunAt || "") || 0;
-    if (!armedForThisProcess) {
-      armedForThisProcess = true;
-      if (!dueAtMs || dueAtMs <= startedAt) {
-        // Restart recovery: the console was down (or never armed) when the
-        // run came due. Recompute nextRunAt one interval out instead of
-        // firing a write immediately at boot.
-        writeBuybackSchedule(config, { ...schedule, nextRunAt: new Date(startedAt + schedule.intervalMinutes * 60000).toISOString() });
-        return;
-      }
-    }
-    if (!dueAtMs) {
-      writeBuybackSchedule(config, { ...schedule, nextRunAt: new Date(startedAt + schedule.intervalMinutes * 60000).toISOString() });
-      return;
-    }
-    if (startedAt < dueAtMs) return;
 
-    if (mutationLimiter) {
-      // Scheduled runs have no session or client IP, so they consume a
-      // dedicated mutation rate-limit scope instead of a session:ip key.
-      const limit = mutationLimiter.check(ADDON_SCHEDULED_RUN_RATE_SCOPE);
-      if (!limit.allowed) {
-        nextAllowedAttemptAt = startedAt + failureBackoffMs;
-        return;
-      }
-      mutationLimiter.record(ADDON_SCHEDULED_RUN_RATE_SCOPE);
+    const buybackArmed = { value: buybackArmedForThisProcess };
+    const buybackState = prepareDueSchedule(readBuybackSchedule(config), buybackArmed, writeBuybackSchedule, startedAt);
+    buybackArmedForThisProcess = buybackArmed.value;
+    if (buybackState === "due") {
+      if (!consumeMutationSlot(startedAt)) return;
+      await runBuybackJob("schedule", readBuybackSchedule(config));
     }
+  }
 
+  // Addon-sourced schedules re-verify the addon's approved permissions on
+  // every scheduled run (the owner can revoke them at any time). A schedule
+  // saved from the console's own Market Bot UI ("console" source) was
+  // authorized by RBAC at save time and does not require the addon to be
+  // installed at all, so the addon permission re-check is skipped.
+  function assertScheduleRunAllowed(schedule) {
+    if (schedule?.source === "console") return;
+    assertPermission(config, EDA_EXCHANGE_BOT_ADDON_ID, "database:read");
+    assertPermission(config, EDA_EXCHANGE_BOT_ADDON_ID, "database:write");
+    assertPermission(config, EDA_EXCHANGE_BOT_ADDON_ID, ADDON_SCHEDULER_PERMISSION);
+  }
+
+  async function runBuybackJob(trigger, schedule) {
     running = true;
     try {
-      // Verified on every run so uninstalling, disabling, blocking, or
-      // revoking a permission stops scheduled writes immediately.
-      assertPermission(config, EDA_EXCHANGE_BOT_ADDON_ID, "database:read");
-      assertPermission(config, EDA_EXCHANGE_BOT_ADDON_ID, "database:write");
-      assertPermission(config, EDA_EXCHANGE_BOT_ADDON_ID, ADDON_SCHEDULER_PERMISSION);
+      assertScheduleRunAllowed(schedule);
       const outcome = await executeBuybackRun(config, getDb(), schedule, { runDuneImpl });
       const completedAt = now();
-      persistRunCompletion(completedAt, outcome.status, outcome.detail);
+      persistBuybackRunCompletion(completedAt, outcome.status, outcome.detail);
       nextAllowedAttemptAt = 0;
-      auditRun("schedule", { status: outcome.status, eligible: outcome.eligible, purchased: outcome.purchased, totalUnits: outcome.totalUnits, totalSolari: outcome.totalSolari, exchangeId: schedule.exchangeId, ok: true });
+      auditJob("buyback", trigger, {
+        status: outcome.status,
+        eligible: outcome.eligible,
+        purchased: outcome.purchased,
+        totalUnits: outcome.totalUnits,
+        totalSolari: outcome.totalSolari,
+        exchangeId: schedule.exchangeId,
+        ok: true
+      });
     } catch (error) {
       const completedAt = now();
-      const message = redact(String(error?.message || error));
+      const message = redact(String(error?.message || "Unexpected error."));
       nextAllowedAttemptAt = completedAt + failureBackoffMs;
-      try {
-        persistRunCompletion(completedAt, "error", message);
-      } catch {
-        // Status persistence is best effort on failure paths.
-      }
-      auditRun("schedule", { status: "error", exchangeId: schedule.exchangeId, ok: false, error: message });
-      log.error(`Addon scheduled buyback run failed: ${message}`);
+      try { persistBuybackRunCompletion(completedAt, "error", message); } catch { /* best effort */ }
+      auditJob("buyback", trigger, { status: "error", exchangeId: schedule.exchangeId, ok: false, error: message });
+      if (trigger === "schedule") log.error(`Addon scheduled buyback run failed: ${message}`);
+      else throw error;
     } finally {
       running = false;
     }
   }
 
-  async function runNow({ trigger = "manual" } = {}) {
-    if (running) throw new Error("An exchange buyback run is already in progress.");
+  async function runSeedJob(trigger, schedule) {
+    running = true;
+    try {
+      assertScheduleRunAllowed(schedule);
+      const outcome = await executeSeedRun(config, getDb(), schedule, { runDuneImpl, buildDuneArgs, runSql });
+      const completedAt = now();
+      persistSeedRunCompletion(config, completedAt, outcome.status, outcome.detail);
+      nextAllowedAttemptAt = 0;
+      auditJob("seed", trigger, {
+        status: outcome.status,
+        listingCount: outcome.listingCount,
+        exchangeId: schedule.exchangeId,
+        ok: true
+      });
+    } catch (error) {
+      const completedAt = now();
+      const message = redact(String(error?.message || "Unexpected error."));
+      nextAllowedAttemptAt = completedAt + failureBackoffMs;
+      try { persistSeedRunCompletion(config, completedAt, "error", message); } catch { /* best effort */ }
+      auditJob("seed", trigger, { status: "error", exchangeId: schedule.exchangeId, ok: false, error: message });
+      log.error(`Addon scheduled seed run failed: ${message}`);
+    } finally {
+      running = false;
+    }
+  }
+
+  async function runNow({ trigger = "manual", job = "buyback" } = {}) {
+    if (running) throw new Error("An exchange scheduled job is already in progress.");
+    if (job === "seed") {
+      const schedule = readSeedSchedule(config);
+      if (!schedule.exchangeId) throw new Error("Save a seed schedule with an exchangeId before running a manual reseed.");
+      // Manual runs are gated by database:write on the bridge; scheduler:server
+      // is only required to leave the unattended schedule enabled.
+      running = true;
+      try {
+        const outcome = await executeSeedRun(config, getDb(), schedule, { runDuneImpl, buildDuneArgs, runSql });
+        persistSeedRunCompletion(config, now(), outcome.status, outcome.detail);
+        auditJob("seed", trigger, {
+          status: outcome.status,
+          listingCount: outcome.listingCount,
+          exchangeId: schedule.exchangeId,
+          ok: true
+        });
+        return { ...outcome, schedule: readSeedSchedule(config) };
+      } catch (error) {
+        const message = redact(String(error?.message || "Unexpected error."));
+        try { persistSeedRunCompletion(config, now(), "error", message); } catch { /* best effort */ }
+        auditJob("seed", trigger, { status: "error", exchangeId: schedule.exchangeId, ok: false, error: message });
+        throw error;
+      } finally {
+        running = false;
+      }
+    }
     const schedule = readBuybackSchedule(config);
     if (!schedule.exchangeId) throw new Error("Save a schedule with an exchangeId before running a manual buyback sweep.");
+    // runBuybackJob swallows schedule errors into log; for manual, rethrow via dedicated path.
     running = true;
     try {
       const outcome = await executeBuybackRun(config, getDb(), schedule, { runDuneImpl });
-      persistRunCompletion(now(), outcome.status, outcome.detail);
-      auditRun(trigger, { status: outcome.status, eligible: outcome.eligible, purchased: outcome.purchased, totalUnits: outcome.totalUnits, totalSolari: outcome.totalSolari, exchangeId: schedule.exchangeId, ok: true });
+      persistBuybackRunCompletion(now(), outcome.status, outcome.detail);
+      auditJob("buyback", trigger, {
+        status: outcome.status,
+        eligible: outcome.eligible,
+        purchased: outcome.purchased,
+        totalUnits: outcome.totalUnits,
+        totalSolari: outcome.totalSolari,
+        exchangeId: schedule.exchangeId,
+        ok: true
+      });
       return { ...outcome, schedule: readBuybackSchedule(config) };
     } catch (error) {
-      const message = redact(String(error?.message || error));
-      try {
-        persistRunCompletion(now(), "error", message);
-      } catch {
-        // Status persistence is best effort on failure paths.
-      }
-      auditRun(trigger, { status: "error", exchangeId: schedule.exchangeId, ok: false, error: message });
+      const message = redact(String(error?.message || "Unexpected error."));
+      try { persistBuybackRunCompletion(now(), "error", message); } catch { /* best effort */ }
+      auditJob("buyback", trigger, { status: "error", exchangeId: schedule.exchangeId, ok: false, error: message });
       throw error;
     } finally {
       running = false;

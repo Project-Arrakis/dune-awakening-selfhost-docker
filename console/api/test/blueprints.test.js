@@ -256,6 +256,34 @@ test("import blueprint inserts placeables with 6-element transform", async () =>
   assert.match(String(placeables[0].transform), /-149/);
 });
 
+test("import blueprint repairs the legacy live-export placeable rotation axis", async () => {
+  const { db, placeables } = fakeBlueprintDb([]);
+  await importBlueprint(db, 123, {
+    placeables: [
+      { building_type: "LargeWaterCistern_Placeable", x: 10, y: 20, z: 30, rx: 0, ry: 0, rz: 170 },
+      { building_type: "Generator_Placeable", x: 40, y: 50, z: 60, rx: 0, ry: 0, rz: -10 }
+    ]
+  });
+  assert.deepEqual(placeables.map((row) => row.transform), [
+    "{10,20,30,0,170,0}",
+    "{40,50,60,0,-10,0}"
+  ]);
+});
+
+test("import blueprint preserves native placeable rotation axes", async () => {
+  const { db, placeables } = fakeBlueprintDb([]);
+  await importBlueprint(db, 123, {
+    placeables: [
+      { building_type: "LargeWaterCistern_Placeable", x: 10, y: 20, z: 30, rx: 0, ry: 90, rz: 0 },
+      { building_type: "Choam_LightWall_Placeable", x: 40, y: 50, z: 60, rx: 5, ry: -90, rz: 2 }
+    ]
+  });
+  assert.deepEqual(placeables.map((row) => row.transform), [
+    "{10,20,30,0,90,0}",
+    "{40,50,60,5,-90,2}"
+  ]);
+});
+
 test("import blueprint inserts pentashields with scale", async () => {
   const { db, pentashields } = fakeBlueprintDb([]);
   await importBlueprint(db, 123, { pentashields: [SAMPLE_PENTASHIELD] });

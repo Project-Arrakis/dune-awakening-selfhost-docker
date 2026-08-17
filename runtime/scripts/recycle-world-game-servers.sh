@@ -10,8 +10,7 @@ cd "$(dirname "$0")/../.."
 source runtime/scripts/image-tags.sh
 
 ACTION="${1:-remove-stale}"
-WORLD_IMAGE_TAG="$(resolve_world_image_tag)"
-TARGET_IMAGE="registry.funcom.com/funcom/self-hosting/seabass-server:${WORLD_IMAGE_TAG}"
+TARGET_IMAGE="$(resolve_game_server_image)"
 SERVER_ID_MAP_FILE="runtime/generated/autoscaler-server-ids.tsv"
 
 psql_value() {
@@ -105,7 +104,7 @@ remove_stale() {
   done < <(docker ps -a --format '{{.Names}}\t{{.Image}}')
 
   if [ "$found" -eq 0 ]; then
-    echo "No stale world server containers found for tag $WORLD_IMAGE_TAG."
+    echo "No stale world server containers found for image $TARGET_IMAGE."
   fi
 }
 

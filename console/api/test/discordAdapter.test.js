@@ -61,6 +61,7 @@ test("reports adapter health with isolated link-state writes", async () => {
     "/api/integrations/discord/logs",
     "/api/integrations/discord/maintenance",
     "/api/integrations/discord/map-state",
+    "/api/integrations/discord/backups/list",
     "/api/integrations/discord/ops/activity",
     "/api/integrations/discord/ops/combat",
     "/api/integrations/discord/ops/economy",
@@ -105,11 +106,17 @@ test("reports adapter health with isolated link-state writes", async () => {
   assert.ok(result.liveRoutes.includes("/api/integrations/discord/ops/soc"));
   assert.ok(result.liveRoutes.includes("/api/integrations/discord/ops/inventory"));
   assert.ok(result.liveRoutes.includes("/api/integrations/discord/ops/prometheus"));
+  assert.ok(!result.plannedRoutes.includes("/api/integrations/discord/logs"));
+  assert.ok(!result.plannedRoutes.includes("/api/integrations/discord/ops/activity"));
 });
 
-test("forces writes disabled even if environment attempts to enable them", () => {
+test("keeps writes disabled by default and accepts explicit opt-in values", () => {
+  delete process.env.DUNE_DISCORD_WRITES_ENABLED;
+  assert.equal(discordWritesEnabled({}), false);
+  process.env.DUNE_DISCORD_WRITES_ENABLED = "1";
+  assert.equal(discordWritesEnabled({}), true);
   process.env.DUNE_DISCORD_WRITES_ENABLED = "true";
-  assert.equal(discordWritesEnabled({ discordWritesEnabled: true }), false);
+  assert.equal(discordWritesEnabled({}), true);
 });
 
 test("exposes only allowlisted adapter route names", () => {
@@ -278,6 +285,29 @@ test("adapter routes respond through mounted HTTP server path", async () => {
   const mockReadiness = async () => ({ ready: true, overall: "READY", issues: [] });
   const mockServices = async () => ({ overall: "OK", services: [{ name: "Database", status: "up" }] });
   const mockPopulation = async () => ({ onlinePlayers: 8, totalPlayers: 128, aggregate: true, detailsSuppressed: true });
+  const commandCalls = [];
+  const mockCommandRunner = async (_config, args) => {
+    commandCalls.push(args);
+    if (args.join(" ") === "db list") {
+      return { code: 0, stdout: "2026-08-09 12:34 dune-db-test-20260809-123400.backup\n", stderr: "" };
+    }
+    if (args.join(" ") === "maps list") {
+      return { code: 0, stdout: "Hagga Basin  running\nDeep Desert  running\n", stderr: "" };
+    }
+    if (args.join(" ") === "ready") {
+      return { code: 0, stdout: "Overall: READY\n", stderr: "" };
+    }
+    throw new Error(`Unexpected command: ${args.join(" ")}`);
+  };
+  const mockDockerLogs = async (service, options) => ({
+    code: 0,
+    stdout: `${service} ready on 127.0.0.1:7778\n`,
+    stderr: "",
+    options
+  });
+  const mockAnnouncements = async () => ({
+    settings: { joinEnabled: true, joinMessage: "Welcome {playerName}", leaveEnabled: false, leaveMessage: "Goodbye {playerName}" }
+  });
 
   try {
     await new Promise((resolve, reject) => {
@@ -295,7 +325,10 @@ test("adapter routes respond through mounted HTTP server path", async () => {
           statusProvider: mockStatus,
           readinessProvider: mockReadiness,
           servicesProvider: mockServices,
-          populationProvider: mockPopulation
+          populationProvider: mockPopulation,
+          commandRunner: mockCommandRunner,
+          dockerLogsRunner: mockDockerLogs,
+          announcementsProvider: mockAnnouncements
         });
       });
       const auth = { authorization: "Bearer server-test-token" };
@@ -325,6 +358,33 @@ test("adapter routes respond through mounted HTTP server path", async () => {
           // Population
           const pop = await (await fetch(`${base}/api/integrations/discord/population`, { method: "POST", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify({ actor: actor(["role-moderator"]) }) })).json();
           assert.equal(pop.ok, true);
+
+          const maintenance = await (await fetch(`${base}/api/integrations/discord/maintenance`, { method: "POST", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify({ actor: actor(["role-observer"]) }) })).json();
+          assert.equal(maintenance.ok, true);
+          assert.match(maintenance.output, /READY/);
+
+          const logs = await (await fetch(`${base}/api/integrations/discord/logs`, { method: "POST", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify({ actor: actor(["role-admin"]), service: "survival" }) })).json();
+          assert.equal(logs.ok, true);
+          assert.equal(logs.service, "survival");
+          assert.equal(logs.lines.length, 1);
+          assert.doesNotMatch(logs.lines[0], /127\.0\.0\.1/);
+
+          const blockedLogs = await fetch(`${base}/api/integrations/discord/logs`, { method: "POST", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify({ actor: actor(["role-moderator"]), service: "survival" }) });
+          assert.equal(blockedLogs.status, 403);
+
+          const mapState = await (await fetch(`${base}/api/integrations/discord/map-state`, { method: "POST", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify({ actor: actor(["role-moderator"]) }) })).json();
+          assert.equal(mapState.ok, true);
+          assert.deepEqual(mapState.maps, ["Hagga Basin  running", "Deep Desert  running"]);
+
+          const backups = await (await fetch(`${base}/api/integrations/discord/backups/list`, { headers: auth })).json();
+          assert.equal(backups.ok, true);
+          assert.equal(backups.backups[0].name, "dune-db-test-20260809-123400.backup");
+
+          const announcements = await (await fetch(`${base}/api/integrations/discord/announcements`, { method: "POST", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify({ actor: actor(["role-moderator"]) }) })).json();
+          assert.equal(announcements.ok, true);
+          assert.equal(announcements.announcements.settings.joinEnabled, true);
+
+          assert.deepEqual(commandCalls, [["ready"], ["maps", "list"], ["db", "list"]]);
 
           // Existing version route remains live after adding player routes
           const version = await (await fetch(`${base}/api/integrations/discord/version`, { headers: auth })).json();
@@ -1045,7 +1105,16 @@ test("ops/activity, ops/inventory, ops/soc, and ops/prometheus routes return rea
       server.listen(async () => {
         try {
           const base = `http://127.0.0.1:${server.address().port}`;
-          const observerActor = actor(["role-observer"]);
+          // OPS_* capabilities are deliberately admin/owner only, not
+          // granted to moderator or observer (see policy.js's
+          // CAPABILITY_BY_TIER and discordPolicy.test.js's "OPS
+          // capabilities are granted only to admin and owner tiers") --
+          // an observer- or moderator-tier actor is correctly rejected by
+          // requireDiscordCapability() now that the opsRoutes dispatch in
+          // routes.js actually enforces it (merged from upstream during
+          // #279's reconciliation; this test previously exercised these
+          // routes with no real authorization gate in place at all).
+          const observerActor = actor(["role-admin"]);
 
           const activityResponse = await fetch(`${base}/api/integrations/discord/ops/activity`, {
             method: "POST",
@@ -1112,20 +1181,24 @@ test("ops/activity, ops/inventory, ops/soc, and ops/prometheus routes return rea
           assert.equal(prometheusBody.result.status, "planned");
           assert.equal(prometheusBody.result.reason, "metrics_stack_not_running", "must report the specific reason, distinct from a generically unimplemented route");
 
-          // A route with no backing query (or an unresolved privacy
-          // consideration, for location — which is intentionally,
-          // permanently out of scope for this addon) is untouched and
-          // still returns its placeholder shape through the same
-          // dispatch path.
+          // ops/location is intentionally, permanently out of scope for
+          // this addon (per-player location tracking already belongs to
+          // the Console's own map UI — decided 2026-07-24) and, unlike
+          // the other OPS routes, is not wired into opsRoutes' dispatch
+          // table at all (no capability defined for it, since it will
+          // never return real data) -- the route correctly 404s through
+          // the same dispatch path every other unrecognized route does,
+          // rather than a fake 200 placeholder response. Confirmed via
+          // discordAdapterHealth()'s own plannedRoutes/liveRoutes split
+          // (tested separately, above) that this is reported accurately
+          // to callers who ask about capability, without ever needing a
+          // live HTTP round-trip to a route that can never do anything.
           const locationResponse = await fetch(`${base}/api/integrations/discord/ops/location`, {
             method: "POST",
             headers: { ...auth, "content-type": "application/json" },
             body: JSON.stringify({ actor: observerActor })
           });
-          assert.equal(locationResponse.status, 200);
-          const locationBody = await locationResponse.json();
-          assert.equal(locationBody.ok, true);
-          assert.equal(locationBody.status, "planned");
+          assert.equal(locationResponse.status, 404);
 
           server.close();
           resolve();

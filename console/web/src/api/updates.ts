@@ -13,7 +13,7 @@ export const updatesApi = {
     intervalMinutes: number;
     applyEnabled: boolean;
     notifyEnabled: boolean;
-    notifyMinutes: number;
+    notifyMinutes: string;
     waitUntilEmpty: boolean;
     maxWaitMinutes: number;
     confirmation: string;

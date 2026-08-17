@@ -5,6 +5,7 @@ import json
 import os
 import re
 import sys
+import tempfile
 from base64 import b64decode
 from pathlib import Path
 
@@ -12,8 +13,55 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 CONFIG_PATH = Path(os.environ.get("DUNE_USERSETTINGS_CONFIG", str(ROOT / "runtime" / "generated" / "usersettings.json")))
 PROFILE_PATH = Path(os.environ.get("DUNE_GAMEPLAY_PROFILE", str(ROOT / "runtime" / "generated" / "gameplay-profile.ini")))
-SIETCH_CONFIG_PATH = ROOT / "runtime" / "generated" / "sietch-config.json"
+SIETCH_CONFIG_PATH = Path(os.environ.get("DUNE_SIETCH_CONFIG", str(ROOT / "runtime" / "generated" / "sietch-config.json")))
 LANDSRAAD_RESTART_MARKER_PATH = Path(os.environ.get("DUNE_LANDSRAAD_RESTART_MARKER", str(ROOT / "runtime" / "generated" / "landsraad-restart-required")))
+PRIVATE_SETTINGS_MODE = 0o600
+
+
+def configured_host_owner() -> tuple[int, int] | None:
+    """Return the non-root account that should own host-managed files."""
+    try:
+        repo_stat = ROOT.stat()
+        if repo_stat.st_uid != 0:
+            return repo_stat.st_uid, repo_stat.st_gid
+    except OSError:
+        pass
+
+    configured: dict[str, str] = {
+        "DUNE_HOST_UID": os.environ.get("DUNE_HOST_UID", "").strip(),
+        "DUNE_HOST_GID": os.environ.get("DUNE_HOST_GID", "").strip(),
+    }
+    env_path = ROOT / ".env"
+    if not all(configured.values()):
+        try:
+            for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+                line = raw_line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                key = key.strip()
+                if key in configured and not configured[key]:
+                    configured[key] = value.strip().strip("\"'")
+        except OSError:
+            pass
+
+    try:
+        uid = int(configured["DUNE_HOST_UID"])
+        gid = int(configured["DUNE_HOST_GID"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if uid <= 0 or gid < 0:
+        return None
+    return uid, gid
+
+
+def apply_host_ownership(path: Path) -> None:
+    """Prevent root maintenance jobs from leaving host files root-owned."""
+    if os.geteuid() != 0:
+        return
+    owner = configured_host_owner()
+    if owner is not None:
+        os.chown(path, *owner)
 
 BUILDING_SETTINGS_SECTION = "/Script/DuneSandbox.BuildingSettings"
 LANDSRAAD_SETTINGS_SECTION = "/Script/DuneSandbox.LandsraadSettings"
@@ -42,10 +90,12 @@ LANDSRAAD_DATA_FIELDS = {
     "landsraad_task_goal_amount": ("m_TaskGoalAmount", "56000", "integer", 1, 2147483647),
     "landsraad_control_points_per_cycle": ("m_ControlPointsPerCycle", "2", "integer", 0, 1000000),
 }
-UNSAFE_STAKING_EXTENSION_KEYS = {
-    "m_StakingUnitVerticalExtensionDefaultTimes",
-    "m_StakingUnitExtensionDefaultTimes",
+STAKING_EXTENSION_ARRAY_LENGTH = 10
+STAKING_EXTENSION_FIELDS = {
+    "staking_unit_vertical_extension_default_times": "m_StakingUnitVerticalExtensionDefaultTimes",
+    "staking_unit_extension_default_times": "m_StakingUnitExtensionDefaultTimes",
 }
+UNSAFE_STAKING_EXTENSION_KEYS = set(STAKING_EXTENSION_FIELDS.values())
 # Engine fields whose UI is a True/False boolean but whose ini value must be
 # literal "1"/"0" (the game only accepts numeric 0/1 for these, not True/False).
 # Without this the console renders them as a free-text box you type "1" into,
@@ -70,11 +120,29 @@ def normalize_engine_field_value(field_id: str, value: str) -> str:
 
 
 FIELD_TYPE_OVERRIDES = {
+    "staking_unit_vertical_extension_default_times": "number",
+    "staking_unit_extension_default_times": "number",
     # Empty default (no override) would otherwise infer as "text" -- this holds a
     # float number of seconds, so force the numeric input/validation.
     "deathstill_conversion_time_override": "number",
     # Derived rather than listed so the select and the 1/0 conversion cannot drift.
     **{field_id: "boolean" for field_id in NUMERIC_BOOLEAN_ENGINE_FIELDS},
+}
+
+# UserGame properties that older community catalogues presented as numeric
+# modifiers, but which the current Funcom server build cannot consume in the
+# advertised form. Keep the exact section/key pairs reserved so an old saved
+# profile cannot continue leaking them into generated server or client INIs as
+# unknown passthrough lines after the controls are removed from MAP_FIELDS.
+RETIRED_USERGAME_FIELDS = {
+    "global_xp_multiplier": ("/Script/DuneSandbox.DuneGameMode", "m_GlobalXPMultiplier", "1.0"),
+    "global_fame_multiplier": ("/Script/DuneSandbox.DuneGameMode", "m_GlobalFameMultiplier", "1.0"),
+    "global_progression_speed_multiplier": ("/Script/DuneSandbox.DuneGameMode", "m_GlobalProgressionSpeedMultiplier", "1.0"),
+    "global_harvest_health_multiplier": ("/Script/DuneSandbox.DuneGameMode", "m_GlobalHarvestHealthMultiplier", "1.0"),
+    # Funcom does have a property with this name, but it is an asset-table
+    # reference inside m_MiningSettings, not a scalar DuneGameMode multiplier.
+    "cutteray_hem_multiplier_per_node_tier_table": ("/Script/DuneSandbox.DuneGameMode", "CutterayHemMultiplierPerNodeTierTable", "1.0"),
+    "global_damage_to_npcs_multiplier": ("/Script/DuneSandbox.DuneGameMode", "m_GlobalDamageToNpcsMultiplier", "1.0"),
 }
 
 ENGINE_FIELDS = {
@@ -223,12 +291,16 @@ ENGINE_FIELD_CATEGORIES = {
 # Free-text field descriptions shown in the console UI. Only populated for
 # fields as they're documented; metadata() falls back to "" for the rest.
 FIELD_DESCRIPTIONS = {
+    "staking_unit_vertical_extension_default_times": "Seconds required for every vertical Staking Unit extension level (0.1-604800). Leave empty to use Funcom's progressively longer defaults.",
+    "staking_unit_extension_default_times": "Seconds required for every horizontal Staking Unit extension level (0.1-604800). Leave empty to use Funcom's progressively longer defaults.",
     "server_display_name": "Display name shown for this server instance. Used as the Dimension name when the server is a Dimension server.",
     "server_login_password": "Password players must enter to join. Leave empty for no password.",
     "mining_output_multiplier": "Multiplier applied to personal mining output for all players.",
     "vehicle_mining_output_multiplier": "Multiplier applied to vehicle mining output for all players.",
     "pvp_resource_multiplier": "Multiplier applied to resource yield inside PvP zones.",
-    "vehicle_durability_damage_multiplier": "Multiplier applied to durability damage taken by vehicles.",
+    "vehicle_durability_damage_multiplier": "Multiplier applied to durability damage taken by vehicles. Valid range 0-10; 0 = damage off.",
+    "sandworm_invulnerability_on_exit": "Seconds of invulnerability granted to a vehicle after a player exits it near a sandworm.",
+    "sandworm_invulnerability_on_restart": "Seconds of invulnerability granted to vehicles after a server restart, to prevent immediate sandworm attacks.",
     "sandstorm_enabled": "Toggles sandstorm spawning. 1 = ON (default), 0 = OFF.",
     "sandstorm_treasure_enabled": "Toggles sandstorm treasure spawning. 1 = ON (default), 0 = OFF.",
     "sun_exposure_enabled": "Toggles whether players take sun exposure/heat damage. True/1 = ON (default), False/0 = OFF.",
@@ -246,9 +318,22 @@ FIELD_DESCRIPTIONS = {
     "water_consumption_in_storm_multiplier": "Additional water drain during sandstorms.",
     "players_drop_loot_on_defeat": "Whether a player drops loot when downed/defeated (not a full death).",
     "players_drop_loot_on_death": "Whether a player drops their inventory as loot when killed (PvP looting).",
+    "base_backup_tool_time_restriction_seconds": "Cooldown before the Base Backup tool can be used again on the same base, in seconds. Funcom's default is 604800 (7 days).",
     "deathstill_conversion_time_override": "Overrides how long it takes to process a body in a Deathstill. Value is the length of the cycle in seconds.",
     "double_difficulty_loot_enabled": "Gives double loot when the encounter difficulty is above 0. Field-confirmed with dungeon loot.",
     "regenerate_per_player_loot_enabled": "Whether per-player loot is regenerated each time a player interacts with a loot container. Field-confirmed. Enabling this can make a single container farmable indefinitely.",
+    "restart_server_on_coriolis_cycle_end": "Requests that Funcom restart the current map server process when its own Coriolis cycle ends. Docker restarts an exited map container automatically. This does not queue a Console battlegroup restart or send restart warnings.",
+    "max_landclaim_segments": "Maximum number of land-claim segments (flags) a player may own.",
+    "building_blueprint_max_extensions": "Maximum number of times a blueprinted building can be extended.",
+    "base_backup_max_extensions": "Maximum number of times a Base Backup can be extended.",
+    "building_restriction_limits_enabled": "Enforces building restriction limits (e.g. disallowing construction inside dungeons/restricted areas).",
+    "force_pvp_all_partitions": "If enabled, forces PvP on for every map partition regardless of each partition's individual PvP/PvE setting.",
+    "security_zones_enabled": "Master toggle for Security Zones. Disable to allow PvP and combat abilities everywhere on the map (no safe zones).",
+    "coriolis_auto_spawn_enabled": "Whether Coriolis storms spawn automatically on their normal cycle.",
+}
+
+FIELD_LABELS = {
+    "restart_server_on_coriolis_cycle_end": "Restart Map Process At Coriolis Cycle End",
 }
 
 # Maps a field id to the client-side ini filename it also must be applied to
@@ -267,6 +352,7 @@ CLIENT_FILE_REQUIRED = {
     "water_consumption_in_storm_multiplier": "Game.ini",
     "players_drop_loot_on_defeat": "Game.ini",
     "players_drop_loot_on_death": "Game.ini",
+    "base_backup_tool_time_restriction_seconds": "Game.ini",
 }
 
 MAP_FIELDS = {
@@ -324,10 +410,10 @@ MAP_FIELDS = {
     "forced_coriolis_world_seed": ("/Script/DuneSandbox.CoriolisSubsystem", "m_ForcedCoriolisWorldSeed", "-1"),
     "restart_server_on_coriolis_cycle_end": ("/Script/DuneSandbox.CoriolisSubsystem", "m_bShouldRestartServerOnCycleEnd", "True"),
     "coriolis_db_wipe_enabled": ("/Script/DuneSandbox.CoriolisSubsystem", "m_bIsDbWipeEnabled", "True"),
-    "max_landclaim_segments": (BUILDING_SETTINGS_SECTION, "m_MaxNumLandclaimSegments", "24"),
-    "building_blueprint_max_extensions": (BUILDING_SETTINGS_SECTION, "m_BuildingBlueprintMaxExtensions", "16"),
-    "base_backup_max_extensions": (BUILDING_SETTINGS_SECTION, "m_BaseBackupMaxExtensions", "40"),
-    "base_backup_tool_time_restriction_seconds": (BUILDING_SETTINGS_SECTION, "m_BaseBackupToolTimeRestrictionInSeconds", "10"),
+    "max_landclaim_segments": (BUILDING_SETTINGS_SECTION, "m_MaxNumLandclaimSegments", "6"),
+    "building_blueprint_max_extensions": (BUILDING_SETTINGS_SECTION, "m_BuildingBlueprintMaxExtensions", "4"),
+    "base_backup_max_extensions": (BUILDING_SETTINGS_SECTION, "m_BaseBackupMaxExtensions", "8"),
+    "base_backup_tool_time_restriction_seconds": (BUILDING_SETTINGS_SECTION, "m_BaseBackupToolTimeRestrictionInSeconds", "604800"),
     "building_restriction_limits_enabled": (BUILDING_SETTINGS_SECTION, "m_bBuildingRestrictionLimitsEnabled", "True"),
     "mitigate_all_sandstorm_damage": (BUILDING_SETTINGS_SECTION, "m_bMitigateAllSandstormDamage", "False"),
     "fallback_default_building_health": (BUILDING_SETTINGS_SECTION, "m_FallbackDefaultBuildingHealth", "5000.000000"),
@@ -343,6 +429,11 @@ MAP_FIELDS = {
     "free_rotate_max": (BUILDING_SETTINGS_SECTION, "m_FreeRotateMax", "90.000000"),
     "sand_buildup_placeables_sheltered_target_value": (BUILDING_SETTINGS_SECTION, "m_SandBuildUpPlaceablesShelteredTargetValue", "0.1"),
     "sand_buildup_placeables_unsheltered_target_value": (BUILDING_SETTINGS_SECTION, "m_SandBuildUpPlaceablesUnShelteredTargetValue", "0.3"),
+    # These are native ten-element arrays. The scalar stored in the editable
+    # profile is expanded into a complete duplicate-preserving array during
+    # compilation; it must never be emitted directly as a one-element array.
+    "staking_unit_vertical_extension_default_times": (BUILDING_SETTINGS_SECTION, "m_StakingUnitVerticalExtensionDefaultTimes", ""),
+    "staking_unit_extension_default_times": (BUILDING_SETTINGS_SECTION, "m_StakingUnitExtensionDefaultTimes", ""),
     "building_near_server_borders_enabled": (BUILDING_SETTINGS_SECTION, "m_bEnableBuildingNearServerBorders", "False"),
     "min_buildable_distance_from_server_border": (BUILDING_SETTINGS_SECTION, "m_bMinBuildableDistanceFromServerBorder", "1000.000000"),
     "can_remove_buildables_with_no_owner": (BUILDING_SETTINGS_SECTION, "m_bCanRemoveBuildablesWithNoOwner", "True"),
@@ -356,16 +447,11 @@ MAP_FIELDS = {
     "npcs_drop_loot_on_death": ("/Script/DuneSandbox.DuneSandboxGameModeBase", "m_bShouldNpcDropLootOnDeath", "True"),
     "drop_amount_on_defeat": ("/Script/DuneSandbox.DuneSandboxGameModeBase", "m_DropAmountOnDefeat", "0.4"),
     "armor_mitigation_constant": ("/Script/DuneSandbox.DuneGameState", "m_ArmorMitigationConstant", "500"),
-    "global_xp_multiplier": ("/Script/DuneSandbox.DuneGameMode", "m_GlobalXPMultiplier", "1.0"),
-    "global_fame_multiplier": ("/Script/DuneSandbox.DuneGameMode", "m_GlobalFameMultiplier", "1.0"),
-    "global_progression_speed_multiplier": ("/Script/DuneSandbox.DuneGameMode", "m_GlobalProgressionSpeedMultiplier", "1.0"),
     "guild_creation_cost": ("/Script/DuneSandbox.DuneGameMode", "m_GuildCreationCost", "1000"),
     "sell_order_price_percentage_fee": ("/Script/DuneSandbox.DuneGameMode", "SellOrderPricePercentageFee", "2.0"),
     "spice_tax_amount": ("/Script/DuneSandbox.DuneGameMode", "SpiceTaxAmount", "0.1"),
     "spice_tax_interval": ("/Script/DuneSandbox.DuneGameMode", "SpiceTaxInterval", "3600"),
     "global_harvest_amount_multiplier": ("/Script/DuneSandbox.DuneGameMode", "m_GlobalHarvestAmountMultiplier", "1.0"),
-    "global_harvest_health_multiplier": ("/Script/DuneSandbox.DuneGameMode", "m_GlobalHarvestHealthMultiplier", "1.0"),
-    "cutteray_hem_multiplier_per_node_tier_table": ("/Script/DuneSandbox.DuneGameMode", "CutterayHemMultiplierPerNodeTierTable", "1.0"),
     "minimum_augmentable_item_quality": ("/Script/DuneSandbox.DuneGameMode", "m_MinimumAugmentableItemQuality", "0"),
     "item_durability_loss_multiplier": ("/Script/DuneSandbox.DuneGameMode", "m_ItemDurabilityLossMultiplier", "1.0"),
     "legacy_pvp_enabled": ("/Script/DuneSandbox.DuneGameMode", "bPvPEnabled", "False"),
@@ -373,7 +459,6 @@ MAP_FIELDS = {
     "hydration_enabled": ("/Script/DuneSandbox.HydrationSubsystem", "m_bHydrationEnabled", "True"),
     "water_consumption_rate": ("/Script/DuneSandbox.DuneGameMode", "m_WaterConsumptionRate", "1.0"),
     "water_consumption_in_storm_multiplier": ("/Script/DuneSandbox.DuneGameMode", "m_WaterConsumptionInStormMultiplier", "4.0"),
-    "global_damage_to_npcs_multiplier": ("/Script/DuneSandbox.DuneGameMode", "m_GlobalDamageToNpcsMultiplier", "1.0"),
     "global_damage_to_players_multiplier": ("/Script/DuneSandbox.DuneGameMode", "m_GlobalDamageToPlayersMultiplier", "1.0"),
     "global_health_multiplier": ("/Script/DuneSandbox.DuneGameMode", "m_GlobalHealthMultiplier", "1.0"),
     "global_building_damage_multiplier": ("/Script/DuneSandbox.DuneGameMode", "m_GlobalBuildingDamageMultiplier", "1.0"),
@@ -592,19 +677,51 @@ def load_config() -> dict:
     return config
 
 
-def atomic_write_text(path: Path, content: str, mode: int = 0o664) -> None:
+def atomic_write_text(path: Path, content: str, mode: int = PRIVATE_SETTINGS_MODE) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.parent / f".{path.name}.tmp.{os.getpid()}"
-    tmp_path.write_text(content, encoding="utf-8")
     try:
+        # NamedTemporaryFile creates with 0600, so password-bearing content is
+        # never briefly exposed between creation and chmod.
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.tmp.",
+            delete=False,
+        ) as tmp:
+            tmp.write(content)
+            tmp.flush()
+            os.fsync(tmp.fileno())
+            tmp_path = Path(tmp.name)
         tmp_path.chmod(mode)
-    except OSError:
-        pass
-    tmp_path.replace(path)
-    try:
+        apply_host_ownership(tmp_path)
+        tmp_path.replace(path)
         path.chmod(mode)
-    except OSError:
-        pass
+        apply_host_ownership(path)
+    finally:
+        if "tmp_path" in locals() and tmp_path.exists():
+            tmp_path.unlink()
+
+
+def secure_managed_settings_permissions() -> None:
+    """Restrict settings files that can contain server credentials.
+
+    The game must consume its login password in clear text, so filesystem
+    access control is the protection boundary. This also upgrades files made
+    by older releases before any command reads or rewrites them.
+    """
+    game_root = Path(os.environ.get("DUNE_USERSETTINGS_GAME_ROOT", str(ROOT / "runtime" / "game")))
+    candidates = [CONFIG_PATH, PROFILE_PATH, SIETCH_CONFIG_PATH]
+    candidates.extend(game_root.glob("*/Saved/UserSettings/UserEngine.ini"))
+    candidates.extend(game_root.glob("*/Saved/UserSettings/UserGame.ini"))
+    for path in candidates:
+        try:
+            if path.is_file():
+                path.chmod(PRIVATE_SETTINGS_MODE)
+        except OSError:
+            # Read-only mounts are still safe to inspect, and the caller will
+            # report a useful error if it later needs to update the file.
+            pass
 
 
 def save_config(config: dict) -> None:
@@ -645,7 +762,40 @@ def read_profile_text() -> str:
     return serialize_profile(seed_profile_from_legacy_config())
 
 
+def preflight_persisted_settings() -> int:
+    """Validate the saved source of truth without silently seeding defaults."""
+    if PROFILE_PATH.exists():
+        try:
+            profile = parse_profile_text(PROFILE_PATH.read_text(encoding="utf-8", errors="replace"))
+        except OSError as error:
+            print(f"Gameplay settings profile is not readable: {error}", file=sys.stderr)
+            return 1
+    elif CONFIG_PATH.exists():
+        try:
+            config = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            print(f"Legacy gameplay settings are not readable: {error}", file=sys.stderr)
+            return 1
+        if not isinstance(config, dict):
+            print("Legacy gameplay settings must contain a JSON object.", file=sys.stderr)
+            return 1
+        profile = seed_profile_from_legacy_config()
+    else:
+        print("No persisted gameplay settings source was found.", file=sys.stderr)
+        print("Refusing a scheduled restart instead of starting maps with defaults.", file=sys.stderr)
+        return 1
+
+    try:
+        validate_profile_port_ranges(profile)
+    except (TypeError, ValueError) as error:
+        print(f"Gameplay settings validation failed: {error}", file=sys.stderr)
+        return 1
+    print("Gameplay settings preflight passed.")
+    return 0
+
+
 def write_profile(profile: dict) -> None:
+    strip_retired_usergame_profile_lines(profile)
     prune_empty_profile_sections(profile)
     atomic_write_text(PROFILE_PATH, serialize_profile(profile))
 
@@ -672,6 +822,26 @@ def prune_empty_profile_sections(profile: dict) -> None:
         section for section in profile.get("sections", [])
         if any(str(line).strip() for line in section.get("lines", []))
     ]
+
+
+def strip_retired_usergame_profile_lines(profile: dict) -> None:
+    """Remove retired catalogue keys from UserGame-family profile blocks.
+
+    Engine-family blocks are deliberately ignored: a custom ConsoleVariable
+    with the same text is a different namespace and must remain untouched.
+    """
+    retired = known_keys_by_section(RETIRED_USERGAME_FIELDS)
+    for block in profile.get("sections", []):
+        if block.get("scope") in ENGINE_PROFILE_SCOPES:
+            continue
+        section = str(block.get("ini_section", ""))
+        keys = retired.get(section, set())
+        if not keys:
+            continue
+        block["lines"] = [
+            raw for raw in block.get("lines", [])
+            if not ((parsed := split_ini_assignment(raw)) and parsed[1] in keys)
+        ]
 
 
 def sorted_profile_sections(sections: list[dict]) -> list[dict]:
@@ -759,7 +929,7 @@ def split_ini_assignment(line: str) -> tuple[str, str, str] | None:
     left, right = stripped.split("=", 1)
     left = left.strip()
     prefix = ""
-    if left.startswith(("+", "-", ".")):
+    if left.startswith(("+", "-", ".", "!")):
         prefix = left[0]
         left = left[1:]
     return prefix, left.strip(), right.strip()
@@ -966,12 +1136,12 @@ def profile_remove_key(profile: dict, scope: str, section: str, key: str, map_na
 
 
 def strip_unsafe_staking_extension_lines(lines: list[str]) -> list[str]:
-    """Keep the engine's packaged staking arrays intact.
+    """Remove raw staking-array fragments before rebuilding a complete array.
 
     Older releases exposed these array properties as scalar integer settings and
     emitted '-' directives for every packaged value. That can leave the arrays
-    empty and crash the native server when a Staking Unit is deployed. Ignore
-    legacy profile entries instead of materializing them into runtime configs.
+    empty and crash the native server when a Staking Unit is deployed. Never
+    materialize those legacy fragments directly into runtime configs.
     """
     safe: list[str] = []
     for raw in lines:
@@ -980,6 +1150,28 @@ def strip_unsafe_staking_extension_lines(lines: list[str]) -> list[str]:
             continue
         safe.append(raw)
     return safe
+
+
+def normalize_staking_extension_seconds(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if not re.fullmatch(r"(?:\d+(?:\.\d*)?|\.\d+)", text):
+        raise SystemExit("Staking Unit extension time must be a number of seconds.")
+    seconds = float(text)
+    if seconds < 0.1 or seconds > 604800:
+        raise SystemExit("Staking Unit extension time must be between 0.1 and 604800 seconds.")
+    return f"{seconds:.6f}"
+
+
+def append_safe_staking_extension_arrays(section_lines: dict[str, list[str]], values: dict[str, str]) -> None:
+    for field_id, key in STAKING_EXTENSION_FIELDS.items():
+        value = normalize_staking_extension_seconds(values.get(field_id, ""))
+        if not value:
+            continue
+        entries = section_lines.setdefault(BUILDING_SETTINGS_SECTION, [])
+        entries.append(f"!{key}=ClearArray")
+        entries.extend(f".{key}={value}" for _ in range(STAKING_EXTENSION_ARRAY_LENGTH))
 
 
 def mirror_legacy_guild_profile_field(profile: dict, scope: str, map_name: str, partition_id: str, field_id: str, value: str) -> None:
@@ -1337,6 +1529,35 @@ def set_profile_field(profile: dict, scope: str, map_name: str, partition_id: st
                 profile_set_key(profile, "partition_engine", spec[0], spec[1], normalize_engine_field_value(field_id, value), target_map, target_partition)
         return
 
+    if field_id in STAKING_EXTENSION_FIELDS:
+        if scope not in {"global", "map", "partition"}:
+            raise SystemExit("Staking Unit extension time must use global, map, or partition scope.")
+        normalized = normalize_staking_extension_seconds(value)
+        target_map = canonical_map(map_name or "Survival_1") if scope != "global" else ""
+        target_partition = str(partition_id or "").strip() if scope == "partition" else ""
+        if scope == "partition" and not target_partition:
+            raise SystemExit("Partition save requires a partition id.")
+        key = STAKING_EXTENSION_FIELDS[field_id]
+        profile_remove_key(
+            profile,
+            scope,
+            BUILDING_SETTINGS_SECTION,
+            key,
+            target_map,
+            target_partition,
+        )
+        if normalized:
+            profile_set_key(
+                profile,
+                scope,
+                BUILDING_SETTINGS_SECTION,
+                key,
+                normalized,
+                target_map,
+                target_partition,
+            )
+        return
+
     if scope == "global":
         if field_id in GLOBAL_ARRAY_FIELD_IDS:
             partition_value = str(value or "").strip()
@@ -1594,14 +1815,26 @@ def metadata() -> int:
             "clientFile": CLIENT_FILE_REQUIRED.get(field_id, ""),
             "category": ENGINE_FIELD_CATEGORIES.get(field_id, ""),
             "description": FIELD_DESCRIPTIONS.get(field_id, ""),
+            "label": FIELD_LABELS.get(field_id, ""),
         }
 
+    # A login password has no public default and is managed by the Sietch
+    # identity controls, not the generic settings editor. Keep it completely
+    # out of stdout instead of relying on an empty placeholder value.
+    public_engine_fields = {
+        key: spec for key, spec in ENGINE_FIELDS.items()
+        if key != "server_login_password"
+    }
+    public_partition_engine_fields = {
+        key: spec for key, spec in PARTITION_ENGINE_FIELDS.items()
+        if key != "server_login_password"
+    }
     payload = {
-        "engine": [row("engine", key, spec) for key, spec in ENGINE_FIELDS.items()],
+        "engine": [row("engine", key, spec) for key, spec in public_engine_fields.items()],
         "mapEngine": [row("mapEngine", key, spec) for key, spec in MAP_ENGINE_FIELDS.items()],
         "game": [row("game", key, spec) for key, spec in MAP_FIELDS.items()],
         "partition": [row("partition", key, spec) for key, spec in PARTITION_FIELDS.items()],
-        "partitionEngine": [row("partitionEngine", key, spec) for key, spec in PARTITION_ENGINE_FIELDS.items()],
+        "partitionEngine": [row("partitionEngine", key, spec) for key, spec in public_partition_engine_fields.items()],
     }
     print(json.dumps(payload, indent=2, sort_keys=True))
     return 0
@@ -1941,6 +2174,8 @@ def compiled_usergame_ini(profile: dict, map_name: str, partition_id: str | None
         section, key, default = spec
         if not section or not key:
             continue
+        if field_id in STAKING_EXTENSION_FIELDS:
+            continue
         value = values.get(field_id, default)
         # Same rule as UserEngine: defaults are left out so the game uses its own.
         if not field_value_is_default(field_id, str(value), default):
@@ -1953,7 +2188,10 @@ def compiled_usergame_ini(profile: dict, map_name: str, partition_id: str | None
     scopes = [("global", "", ""), ("map", target_map, "")]
     if target_partition:
         scopes.append(("partition", target_map, target_partition))
-    known = known_keys_by_section(MAP_FIELDS)
+    # Treat retired controls as known-but-not-emitted. This suppresses stale
+    # lines from profiles written by older releases without allowing unrelated
+    # custom Advanced-editor values to be dropped.
+    known = known_keys_by_section({**MAP_FIELDS, **RETIRED_USERGAME_FIELDS})
     known.setdefault("/Script/DuneSandbox.PvpPveSettings", set()).update({"m_PvpEnabledPartitions", "m_PveEnabledPartitions"})
     append_profile_unknown_lines(section_lines, profile, scopes, known)
     pvp_pve_section = "/Script/DuneSandbox.PvpPveSettings"
@@ -1973,6 +2211,7 @@ def compiled_usergame_ini(profile: dict, map_name: str, partition_id: str | None
         section_lines[BUILDING_SETTINGS_SECTION] = strip_unsafe_staking_extension_lines(
             section_lines[BUILDING_SETTINGS_SECTION]
         )
+    append_safe_staking_extension_arrays(section_lines, values)
     return render_ini_sections(section_lines, [
         "; UserGame.ini managed by Docker.",
         "; Edit this single file for all map and partition UserGame settings.",
@@ -1985,6 +2224,7 @@ def client_game_ini(profile: dict, map_name: str, partition_id: str | None = Non
     target_partition = str(partition_id or "")
     section_lines: dict[str, list[str]] = {}
     replace_indexes: dict[tuple[str, str, str], int] = {}
+    retired = known_keys_by_section(RETIRED_USERGAME_FIELDS)
 
     def block_applies(block: dict) -> bool:
         scope = block.get("scope")
@@ -2009,6 +2249,8 @@ def client_game_ini(profile: dict, map_name: str, partition_id: str | None = Non
                 entries.append(raw)
                 continue
             prefix, key, _ = parsed
+            if key in retired.get(section, set()):
+                continue
             if key.startswith("Bgd."):
                 continue
             if prefix:
@@ -2026,6 +2268,13 @@ def client_game_ini(profile: dict, map_name: str, partition_id: str | None = Non
         section_lines[BUILDING_SETTINGS_SECTION] = strip_unsafe_staking_extension_lines(
             section_lines[BUILDING_SETTINGS_SECTION]
         )
+    if target_map and target_partition:
+        staking_values = profile_partition_values(profile, target_map, target_partition)
+    elif target_map:
+        staking_values = profile_map_values(profile, target_map)
+    else:
+        staking_values = profile_global_values(profile)
+    append_safe_staking_extension_arrays(section_lines, staking_values)
 
     target_label = "global UserGame" if not target_map else target_map if not target_partition else f"{target_map} partition {target_partition}"
     return render_ini_sections(section_lines, [
@@ -2222,6 +2471,7 @@ def profile_write_encoded(encoded_content: str) -> int:
 
 def profile_game_text() -> str:
     profile = read_profile()
+    strip_retired_usergame_profile_lines(profile)
     game_profile = {
         "preamble": [
             "; UserGame.ini managed by Docker.",
@@ -2612,6 +2862,7 @@ def profile_selftest() -> int:
     text = """; keep me
 [Global:/Script/DuneSandbox.DuneGameMode]
 m_GlobalXPMultiplier=1.0
+m_DefaultReconnectGracePeriodSeconds=300
 m_MaxGuildMembersAllowed=5
 UnknownGlobal=abc
 
@@ -2625,6 +2876,7 @@ m_MaxGuildMembersAllowed=32
 
 [Map:Survival_1:/Script/DuneSandbox.DuneGameMode]
 m_GlobalXPMultiplier=2.0
+m_DefaultReconnectGracePeriodSeconds=600
 
 [Map:Survival_1:/Script/DuneSandbox.PvpPveSettings]
 +m_PvpEnabledPartitions=15
@@ -2658,7 +2910,7 @@ Dune.GlobalVehicleMiningOutputMultiplier=10
     reparsed = parse_profile_text(serialized)
     if "UnknownGlobal=abc" not in serialized or "UnknownEngine=xyz" not in serialized:
         raise SystemExit("Profile round trip dropped unknown keys.")
-    if profile_map_values(reparsed, "Survival_1")["global_xp_multiplier"] != "2.0":
+    if profile_map_values(reparsed, "Survival_1")["default_reconnect_grace_period_seconds"] != "600":
         raise SystemExit("Map override did not win over global profile value.")
     if profile_partition_engine_values(reparsed, "Survival_1", "3").get("server_login_password") != "legacy-password":
         raise SystemExit("Legacy partition password did not feed scoped UserEngine values.")
@@ -2682,8 +2934,12 @@ Dune.GlobalVehicleMiningOutputMultiplier=10
         raise SystemExit("Legacy guild member limit was not mirrored to GuildSettings.")
     if "UnknownGlobal=abc" not in compiled_game or "CustomPartitionKey=True" not in compiled_game:
         raise SystemExit("Compiled UserGame dropped unknown profile lines.")
+    if "m_GlobalXPMultiplier=" in compiled_game:
+        raise SystemExit("Retired unsupported UserGame field leaked into compiled runtime INI.")
     if "UnknownEngine=xyz" not in compiled_engine:
         raise SystemExit("Compiled UserEngine dropped unknown profile lines.")
+    if ENGINE_FIELDS["deathstill_conversion_time_override"][2] != "" or "Deathstill.ConversionTimeOverride=" in compiled_engine:
+        raise SystemExit("Unconfirmed Deathstill conversion default was emitted as a server override.")
     # Sandstorm.Enabled was never set at global scope, so it sits at its schema
     # default there (1) -- compiled_userengine_ini() only writes non-default values
     # (see field_value_is_default()), so it must be OMITTED from the global ini
@@ -2704,8 +2960,10 @@ Dune.GlobalVehicleMiningOutputMultiplier=10
     client_game = client_game_ini(reparsed, "Survival_1", "3")
     if "[Global:" in client_game or "[Map:" in client_game or "[Partition:" in client_game:
         raise SystemExit("Client Game.ini export contains scoped Docker profile headers.")
-    if "m_GlobalXPMultiplier=2.0" not in client_game or "UnknownGlobal=abc" not in client_game or "CustomPartitionKey=True" not in client_game:
+    if "m_DefaultReconnectGracePeriodSeconds=600" not in client_game or "UnknownGlobal=abc" not in client_game or "CustomPartitionKey=True" not in client_game:
         raise SystemExit("Client Game.ini export dropped applicable saved UserGame values.")
+    if "m_GlobalXPMultiplier=" in client_game:
+        raise SystemExit("Retired unsupported UserGame field leaked into client Game.ini export.")
     if "m_MaxNumLandclaimSegments=" in client_game:
         raise SystemExit("Client Game.ini export included unsaved UserGame defaults.")
     profile_set_key(reparsed, "global", "ConsoleVariables", "Bgd.ServerDisplayName", quote_ini_string("Do Not Export"))
@@ -2715,7 +2973,7 @@ Dune.GlobalVehicleMiningOutputMultiplier=10
         raise SystemExit("Client Game.ini export included BGD identity values.")
     if profile_engine_values(reparsed)["vehicle_mining_output_multiplier"] != "10":
         raise SystemExit("Plain UserEngine raw section did not feed interactive engine values.")
-    profile_set_key(reparsed, "global", "/Script/DuneSandbox.DuneGameMode", "m_GlobalFameMultiplier", "3.0")
+    profile_set_key(reparsed, "global", "/Script/DuneSandbox.DuneGameMode", "m_DefaultReconnectGracePeriodSeconds", "900")
     if "UnknownGlobal=abc" not in serialize_profile(reparsed):
         raise SystemExit("Interactive profile update dropped unknown keys.")
     profile_set_key(reparsed, "global", "/Script/DuneSandbox.BuildingSettings", "m_BaseBackupToolTimeRestrictionInSeconds", "60")
@@ -2723,6 +2981,10 @@ Dune.GlobalVehicleMiningOutputMultiplier=10
         raise SystemExit("Base backup tool time restriction did not feed interactive map values.")
     if "m_BaseBackupToolTimeRestrictionInSeconds=60" not in compiled_usergame_ini(reparsed, "Survival_1", "3"):
         raise SystemExit("Base backup tool time restriction did not compile from interactive profile update.")
+    if "m_BaseBackupToolTimeRestrictionInSeconds=60" not in client_game_ini(reparsed, "Survival_1", "3"):
+        raise SystemExit("Base backup tool time restriction did not carry into the client Game.ini export.")
+    if CLIENT_FILE_REQUIRED.get("base_backup_tool_time_restriction_seconds") != "Game.ini":
+        raise SystemExit("Base backup tool time restriction is not flagged as requiring a client Game.ini update.")
     if profile_map_values(reparsed, "Survival_1")["building_restriction_limits_enabled"] != "True":
         raise SystemExit("Building restriction limits did not default to enabled when unset.")
     profile_set_key(reparsed, "global", BUILDING_SETTINGS_SECTION, "m_bBuildingRestrictionLimitsEnabled", "False")
@@ -2787,15 +3049,15 @@ Dune.GlobalVehicleMiningOutputMultiplier=10
         "free_rotate_max": "90.000000",
         "default_repair_cost_multiplier": "0.25",
         "pickup_total_durability_reduction": "0.0",
-        "base_backup_tool_time_restriction_seconds": "10",
+        "base_backup_tool_time_restriction_seconds": "604800",
         "fallback_default_building_health": "5000.000000",
         "fallback_default_placeable_health": "1000.000000",
         "building_destabilization_system_enabled": "False",
         "sand_buildup_placeables_sheltered_target_value": "0.1",
         "sand_buildup_placeables_unsheltered_target_value": "0.3",
-        "max_landclaim_segments": "24",
-        "building_blueprint_max_extensions": "16",
-        "base_backup_max_extensions": "40",
+        "max_landclaim_segments": "6",
+        "building_blueprint_max_extensions": "4",
+        "base_backup_max_extensions": "8",
         "building_restriction_limits_enabled": "True",
     }
     for field_id, expected in expected_building_defaults.items():
@@ -2803,15 +3065,43 @@ Dune.GlobalVehicleMiningOutputMultiplier=10
             raise SystemExit(f"Building modifier default is incorrect for {field_id}.")
     legacy_staking = parse_profile_text(
         f"[Global:{BUILDING_SETTINGS_SECTION}]\n"
-        "m_StakingUnitExtensionDefaultTimes=1\n"
+        "m_StakingUnitExtensionDefaultTimes=2\n"
         "-m_StakingUnitExtensionDefaultTimes=60.000000\n"
+        "m_StakingUnitVerticalExtensionDefaultTimes=3\n"
         "+m_StakingUnitVerticalExtensionDefaultTimes=120.000000\n"
     )
     compiled_staking = compiled_usergame_ini(legacy_staking, "Survival_1")
     client_staking = client_game_ini(legacy_staking, "Survival_1")
-    for unsafe_key in UNSAFE_STAKING_EXTENSION_KEYS:
-        if unsafe_key in compiled_staking or unsafe_key in client_staking:
-            raise SystemExit(f"Unsafe legacy staking override was materialized: {unsafe_key}")
+    expected_staking_values = {
+        "m_StakingUnitExtensionDefaultTimes": "2.000000",
+        "m_StakingUnitVerticalExtensionDefaultTimes": "3.000000",
+    }
+    for rendered in (compiled_staking, client_staking):
+        rendered_lines = rendered.splitlines()
+        for key, expected in expected_staking_values.items():
+            if rendered_lines.count(f"!{key}=ClearArray") != 1:
+                raise SystemExit(f"Safe staking array did not clear the packaged values exactly once: {key}")
+            if rendered_lines.count(f".{key}={expected}") != STAKING_EXTENSION_ARRAY_LENGTH:
+                raise SystemExit(f"Safe staking array did not preserve all extension levels: {key}")
+            if any(line.startswith((f"{key}=", f"+{key}=", f"-{key}=")) for line in rendered_lines):
+                raise SystemExit(f"Unsafe legacy staking array syntax was materialized: {key}")
+    cleaned_staking = parse_profile_text(
+        f"[Global:{BUILDING_SETTINGS_SECTION}]\n"
+        "m_StakingUnitExtensionDefaultTimes=1\n"
+        "-m_StakingUnitExtensionDefaultTimes=60.000000\n"
+        ".m_StakingUnitExtensionDefaultTimes=120.000000\n"
+    )
+    set_profile_field(cleaned_staking, "global", "", "", "staking_unit_extension_default_times", "2")
+    cleaned_lines = cleaned_staking["sections"][0]["lines"]
+    if cleaned_lines != ["m_StakingUnitExtensionDefaultTimes=2.000000"]:
+        raise SystemExit("Saving a staking duration did not clean legacy array fragments from the editable profile.")
+    for invalid_staking_value in ("0", "nan", "604801"):
+        try:
+            normalize_staking_extension_seconds(invalid_staking_value)
+        except SystemExit:
+            pass
+        else:
+            raise SystemExit(f"Invalid staking duration was accepted: {invalid_staking_value}")
     if any(key in compiled_usergame_ini(parse_profile_text(""), "Survival_1") for key in UNSAFE_STAKING_EXTENSION_KEYS):
         raise SystemExit("Fresh UserGame compilation overrides the packaged staking arrays.")
     if infer_runtime_target(Path("/tmp/runtime/game/survival-1-34/Saved")) != ("Survival_1", "34"):
@@ -3343,10 +3633,24 @@ def partition_combat_states_command(map_name: str, partition_ids: list[str]) -> 
     return 0
 
 
+def partition_engine_values_many_command(map_name: str, partition_ids: list[str]) -> int:
+    """Resolve effective per-partition engine values (e.g. server_display_name) for
+    several partitions in one process and one profile read path."""
+    profile = read_profile()
+    target_map = canonical_map(map_name)
+    result = {
+        str(partition_id): profile_partition_engine_values(profile, target_map, partition_id)
+        for partition_id in partition_ids
+    }
+    print(json.dumps(result, separators=(",", ":")))
+    return 0
+
+
 def main(argv: list[str]) -> int:
     if len(argv) < 2:
         return 2
 
+    secure_managed_settings_permissions()
     command = argv[1]
     config = load_config()
 
@@ -3387,6 +3691,8 @@ def main(argv: list[str]) -> int:
         return profile_engine_write_encoded(argv[2])
     if command == "profile-selftest":
         return profile_selftest()
+    if command == "preflight":
+        return preflight_persisted_settings()
     if command == "engine-values":
         return print_rows(merged_engine_values(config), ENGINE_FIELDS)
     if command == "map-engine-values" and len(argv) == 3:
@@ -3403,6 +3709,8 @@ def main(argv: list[str]) -> int:
         return partition_combat_states_command(argv[2], argv[3:])
     if command == "partition-engine-values" and len(argv) == 4:
         return print_rows(merged_partition_engine_values(config, canonical_map(argv[2]), argv[3]), PARTITION_ENGINE_FIELDS)
+    if command == "partition-engine-values-many" and len(argv) >= 4:
+        return partition_engine_values_many_command(argv[2], argv[3:])
     if command == "engine-set" and len(argv) == 4:
         return set_field("engine", None, argv[2], argv[3])
     if command == "map-set" and len(argv) == 5:

@@ -37,6 +37,24 @@ afterEach(() => {
 });
 
 describe("PlayersPanel persistent bans", () => {
+  it("expands the player list until a player detail is opened", async () => {
+    render(<PlayersPanel
+      onError={vi.fn()}
+      renderCharacterAdmin={({ onClose }) => <button onClick={onClose}>Close player detail</button>}
+    />);
+
+    const tableWrap = await screen.findByRole("region", { name: "Scrollable data table" });
+    expect(tableWrap).toHaveClass("players-table-wrap-expanded");
+    expect(tableWrap).not.toHaveClass("players-table-wrap-compact");
+
+    fireEvent.click(screen.getByText("Vixen"));
+    await waitFor(() => expect(tableWrap).toHaveClass("players-table-wrap-compact"));
+    expect(tableWrap).not.toHaveClass("players-table-wrap-expanded");
+
+    fireEvent.click(screen.getByRole("button", { name: "Close player detail" }));
+    await waitFor(() => expect(tableWrap).toHaveClass("players-table-wrap-expanded"));
+  });
+
   it("renders banned status and requests the banned filter", async () => {
     render(<PlayersPanel onError={vi.fn()} renderCharacterAdmin={() => null} />);
 

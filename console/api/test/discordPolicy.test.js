@@ -114,3 +114,33 @@ test("requireSelfScopedCapability allows any recognized principal to use ACCOUNT
     (error) => error.code === "not_authorized" && error.statusCode === 403
   );
 });
+
+// OPS_* capabilities are deliberately admin/owner only -- unlike most other
+// *_READ capabilities, moderator does NOT get them (see policy.js's
+// CAPABILITY_BY_TIER comment). Ported from upstream during #279's
+// reconciliation; caught a real bug where the merge had initially added
+// these to moderator's Set, following the surrounding *_READ pattern
+// without checking upstream's actual, deliberate, narrower tier design.
+test("OPS capabilities are granted only to admin and owner tiers", () => {
+  const opsCapabilities = Object.entries(DISCORD_CAPABILITIES)
+    .filter(([name]) => name.startsWith("OPS_"))
+    .map(([, capability]) => capability);
+
+  assert.equal(opsCapabilities.length, 7);
+  for (const capability of opsCapabilities) {
+    assert.equal(discordActorCan(actor(["role-observer"]), mapping, capability), false);
+    assert.equal(discordActorCan(actor(["role-moderator"]), mapping, capability), false);
+    assert.equal(discordActorCan(actor(["role-admin"]), mapping, capability), true);
+    assert.equal(discordActorCan(actor(["role-owner"]), mapping, capability), true);
+  }
+});
+
+test("OPS capability enforcement fails closed for unprivileged actors", () => {
+  assert.throws(
+    () => requireDiscordCapability(actor(["role-moderator"]), mapping, DISCORD_CAPABILITIES.OPS_ACTIVITY_READ),
+    (error) => error.code === "not_authorized" && error.statusCode === 403
+  );
+  assert.doesNotThrow(() =>
+    requireDiscordCapability(actor(["role-admin"]), mapping, DISCORD_CAPABILITIES.OPS_ACTIVITY_READ)
+  );
+});

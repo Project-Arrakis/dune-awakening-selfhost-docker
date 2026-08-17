@@ -63,9 +63,9 @@ const PUBLIC_MODIFIER_SETTINGS = new Map([
   publicModifier("/Script/DuneSandbox.SandStormConfig", "m_bCoriolisTriggerShiftingSands", "Coriolis Shifting Sands", "False", "boolean"),
   publicModifier("/Script/DuneSandbox.CoriolisSubsystem", "m_CycleDurationInDays", "Coriolis Cycle", "7", "days"),
   publicModifier("/Script/DuneSandbox.CoriolisSubsystem", "m_bIsDbWipeEnabled", "Coriolis Database Wipe", "True", "boolean"),
-  publicModifier("/Script/DuneSandbox.BuildingSettings", "m_MaxNumLandclaimSegments", "Landclaim Segments", "24", "number"),
-  publicModifier("/Script/DuneSandbox.BuildingSettings", "m_BuildingBlueprintMaxExtensions", "Blueprint Extensions", "16", "number"),
-  publicModifier("/Script/DuneSandbox.BuildingSettings", "m_BaseBackupMaxExtensions", "Base Backup Extensions", "40", "number"),
+  publicModifier("/Script/DuneSandbox.BuildingSettings", "m_MaxNumLandclaimSegments", "Landclaim Segments", "6", "number"),
+  publicModifier("/Script/DuneSandbox.BuildingSettings", "m_BuildingBlueprintMaxExtensions", "Blueprint Extensions", "4", "number"),
+  publicModifier("/Script/DuneSandbox.BuildingSettings", "m_BaseBackupMaxExtensions", "Base Backup Extensions", "8", "number"),
   publicModifier("/Script/DuneSandbox.BuildingSettings", "m_bBuildingRestrictionLimitsEnabled", "Building Restriction Limits", "True", "boolean"),
   publicModifier("/Script/DuneSandbox.BuildingSettings", "m_bMitigateAllSandstormDamage", "Building Sandstorm Protection", "False", "boolean"),
   publicModifier("/Script/DuneSandbox.BuildingSettings", "m_PickupTotalDurabilityPercentageReduction", "Building Pickup Durability Loss", "0.0", "ratioPercent"),
@@ -84,19 +84,14 @@ const PUBLIC_MODIFIER_SETTINGS = new Map([
   publicModifier("/Script/DuneSandbox.DuneSandboxGameModeBase", "m_bShouldPlayersLoseItemsOnDeath", "Lose Items On Death", "True", "boolean"),
   publicModifier("/Script/DuneSandbox.DuneSandboxGameModeBase", "m_bShouldNpcDropLootOnDeath", "NPC Loot Drops", "True", "boolean"),
   publicModifier("/Script/DuneSandbox.DuneSandboxGameModeBase", "m_DropAmountOnDefeat", "Defeat Loot Drop", "0.4", "ratioPercent"),
-  publicModifier("/Script/DuneSandbox.DuneGameMode", "m_GlobalXPMultiplier", "XP Multiplier", "1.0", "multiplier"),
-  publicModifier("/Script/DuneSandbox.DuneGameMode", "m_GlobalFameMultiplier", "Fame Multiplier", "1.0", "multiplier"),
-  publicModifier("/Script/DuneSandbox.DuneGameMode", "m_GlobalProgressionSpeedMultiplier", "Progression Speed", "1.0", "multiplier"),
   publicModifier("/Script/DuneSandbox.DuneGameMode", "m_GuildCreationCost", "Guild Creation Cost", "1000", "number"),
   publicModifier("/Script/DuneSandbox.DuneGameMode", "SellOrderPricePercentageFee", "Exchange Sell Fee", "2.0", "percent"),
   publicModifier("/Script/DuneSandbox.DuneGameMode", "SpiceTaxAmount", "Spice Tax Amount", "0.1", "number"),
   publicModifier("/Script/DuneSandbox.DuneGameMode", "SpiceTaxInterval", "Spice Tax Interval", "3600", "duration"),
   publicModifier("/Script/DuneSandbox.DuneGameMode", "m_GlobalHarvestAmountMultiplier", "Harvest Amount", "1.0", "multiplier"),
-  publicModifier("/Script/DuneSandbox.DuneGameMode", "m_GlobalHarvestHealthMultiplier", "Resource Health", "1.0", "multiplier"),
   publicModifier("/Script/DuneSandbox.DuneGameMode", "m_ItemDurabilityLossMultiplier", "Item Durability Loss", "1.0", "multiplier"),
   publicModifier("/Script/DuneSandbox.DuneGameMode", "m_WaterConsumptionRate", "Water Consumption", "1.0", "multiplier"),
   publicModifier("/Script/DuneSandbox.DuneGameMode", "m_WaterConsumptionInStormMultiplier", "Storm Water Consumption", "4.0", "multiplier"),
-  publicModifier("/Script/DuneSandbox.DuneGameMode", "m_GlobalDamageToNpcsMultiplier", "Damage To NPCs", "1.0", "multiplier"),
   publicModifier("/Script/DuneSandbox.DuneGameMode", "m_GlobalDamageToPlayersMultiplier", "Damage To Players", "1.0", "multiplier"),
   publicModifier("/Script/DuneSandbox.DuneGameMode", "m_GlobalHealthMultiplier", "Player Health", "1.0", "multiplier"),
   publicModifier("/Script/DuneSandbox.DuneGameMode", "m_GlobalBuildingDamageMultiplier", "Building Damage", "1.0", "multiplier"),
@@ -160,6 +155,11 @@ export function createPublicDirectoryReporter(config, options = {}) {
     process.env.DUNE_PUBLIC_DIRECTORY_URL ||
     DEFAULT_BASE_URL
   ).replace(/\/+$/, "");
+  const presenceBaseUrl = String(
+    options.presenceBaseUrl ||
+    process.env.DUNE_SERVER_PRESENCE_URL ||
+    baseUrl.replace(/\/servers$/, "/server-presence")
+  ).replace(/\/+$/, "");
   const claimBaseUrl = String(
     options.claimBaseUrl ||
     process.env.DUNE_PUBLIC_DIRECTORY_CLAIM_URL ||
@@ -194,6 +194,12 @@ export function createPublicDirectoryReporter(config, options = {}) {
       const settings = readDirectorySettings(config.repoRoot);
       if (!settings.enabled || settings.mode !== "public") {
         await removeRemoteListing(settings);
+        const identity = readIdentity(identityPath);
+        if (settings.anonymousCountEnabled) {
+          await reportAnonymousPresence(settings, identity || getOrCreateIdentity(identityPath));
+        } else if (identity) {
+          await removeRemotePresence(identity);
+        }
         failureCount = 0;
         schedule(DEFAULT_HEARTBEAT_SECONDS * 1000);
         return;
@@ -201,7 +207,9 @@ export function createPublicDirectoryReporter(config, options = {}) {
 
       const identity = getOrCreateIdentity(identityPath);
       const snapshot = await collectDirectorySnapshot(config, getDb(), settings, {
-        running: await getBattlegroupRunning()
+        running: await getBattlegroupRunning(),
+        lastConfirmedCapacity: state.lastConfirmedCapacity,
+        lastConfirmedSietches: state.lastConfirmedSietches
       });
       const payload = buildHeartbeatPayload(identity, snapshot);
       const attemptedAt = new Date(now()).toISOString();
@@ -215,7 +223,13 @@ export function createPublicDirectoryReporter(config, options = {}) {
         lastSuccessAt: state.lastSuccessAt || null,
         nextHeartbeatAt: null,
         error: null,
-        listingClaimed: state.listingClaimed === true
+        listingClaimed: state.listingClaimed === true,
+        lastConfirmedCapacity: snapshot.capacityConfirmed
+          ? snapshot.capacity
+          : state.lastConfirmedCapacity,
+        lastConfirmedSietches: snapshot.sietchesConfirmed
+          ? snapshot.sietches
+          : state.lastConfirmedSietches
       });
 
       const receipt = await requestJson(fetchImpl, `${baseUrl}/heartbeat`, {
@@ -308,7 +322,13 @@ export function createPublicDirectoryReporter(config, options = {}) {
         listingClaimed,
         probeEndpoint: probe?.signalingUrl || null,
         probeState,
-        probeError
+        probeError,
+        lastConfirmedCapacity: snapshot.capacityConfirmed
+          ? snapshot.capacity
+          : state.lastConfirmedCapacity,
+        lastConfirmedSietches: snapshot.sietchesConfirmed
+          ? snapshot.sietches
+          : state.lastConfirmedSietches
       });
       schedule(heartbeatSeconds * 1000);
     } catch (error) {
@@ -359,8 +379,54 @@ export function createPublicDirectoryReporter(config, options = {}) {
       error: null,
       probeEndpoint: null,
       probeState: "disabled",
-      probeError: null
+      probeError: null,
+      lastConfirmedCapacity: state.lastConfirmedCapacity,
+      lastConfirmedSietches: state.lastConfirmedSietches
     });
+  }
+
+  async function reportAnonymousPresence(settings, identity) {
+    const attemptedAt = new Date(now()).toISOString();
+    const receipt = await requestJson(fetchImpl, `${presenceBaseUrl}/heartbeat`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        serverId: identity.serverId,
+        secret: identity.secret,
+        installationKey: readDirectoryInstallationKey(config.repoRoot) || undefined,
+        visibility: settings.mode === "public" ? "unlisted_public" : "local",
+        running: await getBattlegroupRunning(),
+        version: readGameBuild(config.repoRoot) || undefined
+      })
+    });
+    const heartbeatSeconds = clampInteger(
+      receipt.nextHeartbeatSeconds,
+      30,
+      15 * 60,
+      DEFAULT_HEARTBEAT_SECONDS
+    );
+    writeState({
+      ...state,
+      enabled: settings.enabled,
+      mode: settings.mode,
+      state: "anonymous-reporting",
+      serverId: identity.serverId,
+      remoteListed: false,
+      lastAttemptAt: attemptedAt,
+      lastSuccessAt: attemptedAt,
+      nextHeartbeatAt: new Date(now() + heartbeatSeconds * 1000).toISOString(),
+      error: null
+    });
+  }
+
+  async function removeRemotePresence(identity) {
+    const response = await fetchImpl(`${presenceBaseUrl}/${encodeURIComponent(identity.serverId)}`, {
+      method: "DELETE",
+      headers: { authorization: `Bearer ${identity.secret}` }
+    });
+    if (!response.ok && response.status !== 404) {
+      throw new Error(`Directory presence removal failed with HTTP ${response.status}.`);
+    }
   }
 
   async function verifyClaim(code) {
@@ -409,6 +475,10 @@ export function createPublicDirectoryReporter(config, options = {}) {
 export function readDirectorySettings(repoRoot, env = process.env) {
   const fileEnv = readEnvFile(resolve(repoRoot, ".env"));
   const rawEnabled = firstValue(fileEnv.DUNE_PUBLIC_DIRECTORY_ENABLED, env.DUNE_PUBLIC_DIRECTORY_ENABLED);
+  const rawAnonymousCountEnabled = firstValue(
+    fileEnv.DUNE_ANONYMOUS_SERVER_COUNT_ENABLED,
+    env.DUNE_ANONYMOUS_SERVER_COUNT_ENABLED
+  );
   const mode = String(firstValue(fileEnv.SERVER_IP_MODE, env.SERVER_IP_MODE, "local")).trim().toLowerCase();
   const discordInvite = normalizeDiscordInvite(firstValue(
     fileEnv.DUNE_PUBLIC_DIRECTORY_DISCORD_INVITE,
@@ -417,6 +487,9 @@ export function readDirectorySettings(repoRoot, env = process.env) {
   ));
   return {
     enabled: rawEnabled === undefined ? true : !/^(0|false|no|off|disabled)$/i.test(String(rawEnabled).trim()),
+    anonymousCountEnabled: rawAnonymousCountEnabled === undefined
+      ? true
+      : !/^(0|false|no|off|disabled)$/i.test(String(rawAnonymousCountEnabled).trim()),
     mode,
     title: cleanText(firstValue(fileEnv.SERVER_TITLE, env.SERVER_TITLE, ""), 120),
     region: normalizeRegion(firstValue(fileEnv.SERVER_REGION, env.SERVER_REGION, "")),
@@ -443,6 +516,7 @@ export async function collectDirectorySnapshot(
   let playersOnline = 0;
   let ready = false;
   let sietches = readConfiguredSietches(config.repoRoot);
+  let sietchesConfirmed = Number.isInteger(sietches) && sietches > 0;
 
   if (running && db) {
     try {
@@ -486,6 +560,7 @@ export async function collectDirectorySnapshot(
           from dune.world_partition
           where lower(map) = 'survival_1'`);
         sietches = Number(result.rows?.[0]?.sietches || 0);
+        sietchesConfirmed = Number.isInteger(sietches) && sietches > 0;
       }
       playersOnline = Math.max(farmPlayers, playerRows);
     } catch {
@@ -494,7 +569,26 @@ export async function collectDirectorySnapshot(
     }
   }
 
-  const capacity = readConfiguredCapacity(config.repoRoot, sietches);
+  if (!sietchesConfirmed) {
+    const cachedSietches = Number(options.lastConfirmedSietches);
+    if (Number.isInteger(cachedSietches) && cachedSietches > 0 && cachedSietches <= 1000) {
+      sietches = cachedSietches;
+    } else {
+      throw new Error("Public directory reporting is waiting for a confirmed Sietch count.");
+    }
+  }
+
+  const configuredCapacity = readConfiguredCapacity(config.repoRoot, sietches);
+  const capacityConfirmed = configuredCapacity !== null && sietchesConfirmed;
+  let capacity = configuredCapacity;
+  if (capacity === null) {
+    const cachedCapacity = Number(options.lastConfirmedCapacity);
+    if (Number.isInteger(cachedCapacity) && cachedCapacity > 0 && cachedCapacity <= 10000) {
+      capacity = cachedCapacity;
+    } else {
+      throw new Error("Public directory reporting is waiting for a confirmed player capacity.");
+    }
+  }
   const publicMetadata = await collectPublicMetadata(config.repoRoot, db);
   return {
     name: settings.title,
@@ -503,10 +597,12 @@ export async function collectDirectorySnapshot(
     ready,
     playersOnline: Math.min(Math.max(0, playersOnline), capacity),
     capacity,
+    capacityConfirmed,
     version,
     installationKey,
     previousInstallationKey,
     sietches: clampInteger(sietches, 0, 1000, 0),
+    sietchesConfirmed,
     discordInvite: settings.discordInvite || "",
     publicMetadata
   };
@@ -714,8 +810,12 @@ async function runningContainerNames() {
 
 export function readConfiguredCapacity(repoRoot, configuredSietches = readConfiguredSietches(repoRoot)) {
   const path = resolve(repoRoot, "runtime/director/config/director_config.ini");
-  if (!existsSync(path)) return 60;
-  const lines = readFileSync(path, "utf8").split(/\r?\n/);
+  let lines;
+  try {
+    lines = readFileSync(path, "utf8").split(/\r?\n/);
+  } catch {
+    return null;
+  }
   let section = "";
   let defaultCap = 60;
   let defaultUpdates = true;
@@ -759,7 +859,7 @@ export function readConfiguredCapacity(repoRoot, configuredSietches = readConfig
     }
   }
   flush();
-  return clampInteger(total || defaultCap, 1, 10000, 60);
+  return total > 0 ? clampInteger(total, 1, 10000, null) : null;
 }
 
 export function readGameBuild(repoRoot) {
@@ -794,9 +894,10 @@ function directoryKeyForBattlegroup(value) {
 function readConfiguredSietches(repoRoot) {
   try {
     const value = JSON.parse(readFileSync(resolve(repoRoot, "runtime/generated/sietch-config.json"), "utf8"));
-    return Number(value?.maps?.Survival_1?.active_dimensions || 0);
+    const count = Number(value?.maps?.Survival_1?.active_dimensions);
+    return Number.isInteger(count) && count > 0 && count <= 1000 ? count : null;
   } catch {
-    return 0;
+    return null;
   }
 }
 
@@ -864,7 +965,9 @@ function readStatus(path) {
       error: safeStatusText(value.error, 240),
       probeEndpoint: normalizeSignalingUrl(value.probeEndpoint),
       probeState: safeStatusText(value.probeState, 30),
-      probeError: safeStatusText(value.probeError, 240)
+      probeError: safeStatusText(value.probeError, 240),
+      lastConfirmedCapacity: safeStatusInteger(value.lastConfirmedCapacity, 1, 10000),
+      lastConfirmedSietches: safeStatusInteger(value.lastConfirmedSietches, 1, 1000)
     };
   } catch {
     return {};
@@ -999,11 +1102,16 @@ function safeStatusText(value, maxLength) {
   return cleanText(value, maxLength) || null;
 }
 
+function safeStatusInteger(value, min, max) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed >= min && parsed <= max ? parsed : undefined;
+}
+
 function firstValue(...values) {
   return values.find((value) => value !== undefined && value !== null && String(value).trim() !== "");
 }
 
 function safeError(error) {
-  const message = String(error?.name === "AbortError" ? "Public directory request timed out." : error?.message || error);
+  const message = String(error?.name === "AbortError" ? "Public directory request timed out." : error?.message || "Unexpected error.");
   return cleanText(message, 240);
 }

@@ -109,7 +109,13 @@ export function buildDuneArgs(operation, payload = {}) {
       return ["logs", validateServiceName(payload.service)];
     case "backupRestore":
       {
-        return ["db", "restore", validateBackupName(payload.backup), "--no-safety-backup"];
+        const args = ["db", "restore", validateBackupName(payload.backup), "--no-safety-backup"];
+        if (payload.identityMode !== undefined) {
+          if (payload.identityMode === "adopt-backup") args.push("--adopt-backup-battlegroup");
+          else if (payload.identityMode === "keep-current") args.push("--keep-current-battlegroup");
+          else throw new Error("Unsupported backup Battlegroup identity choice");
+        }
+        return args;
       }
     case "backupDelete":
       return ["db", "delete", validateBackupName(payload.backup)];
@@ -132,7 +138,7 @@ export function buildDuneArgs(operation, payload = {}) {
         String(validateInteger(payload.intervalMinutes ?? 60, 5, 1440)),
         payload.applyEnabled === false ? "0" : "1",
         payload.notifyEnabled === false ? "0" : "1",
-        String(validateInteger(payload.notifyMinutes ?? 15, 1, 1440)),
+        validateMinuteCheckpoints(payload.notifyMinutes ?? "15,10,5,1"),
         payload.waitUntilEmpty ? "1" : "0",
         String(validateInteger(payload.maxWaitMinutes ?? 360, 0, 10080))
       ];
@@ -223,7 +229,13 @@ export function buildDuneArgs(operation, payload = {}) {
     case "memoryUnset":
       return ["memory", "unset", validateMemoryTarget(memoryTarget(payload))];
     case "memorySwapEnable":
-      return ["memory-swap", "enable", String(validateInteger(payload.perServerGiB ?? 2, 1, 16)), String(validateInteger(payload.poolGiB, 0, 32))];
+      return [
+        "memory-swap",
+        "enable",
+        String(validateInteger(payload.perServerGiB ?? 2, 1, 16)),
+        String(validateInteger(payload.poolGiB, 0, 32)),
+        String(validateInteger(payload.swappiness ?? 10, 0, 100))
+      ];
     case "memorySwapDisable":
       return ["memory-swap", "disable"];
     case "sietchesShow":
@@ -520,6 +532,16 @@ function validateInteger(value, min, max) {
   const n = Number(value);
   if (!Number.isInteger(n) || n < min || n > max) throw new Error(`Expected integer ${min}-${max}`);
   return n;
+}
+
+function validateMinuteCheckpoints(value) {
+  const raw = Array.isArray(value) ? value : String(value ?? "").split(/[\s,]+/).filter(Boolean);
+  if (!raw.length || raw.length > 12) throw new Error("Expected 1-12 warning times between 1 and 1440 minutes");
+  const values = raw.map((item) => validateInteger(item, 1, 1440));
+  if (new Set(values).size !== values.length || values.some((minutes, index) => index > 0 && minutes >= values[index - 1])) {
+    throw new Error("Warning times must be unique and ordered from largest to smallest");
+  }
+  return values.join(",");
 }
 
 function validateNumber(value, min, max) {

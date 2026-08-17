@@ -1,7 +1,9 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { basesApi, type AutoRefillBase } from "../../api/bases";
+import { mapsApi } from "../../api/maps";
 import { BasesPanel } from "./BasesPanel";
+import { invalidateInstanceNames } from "../maps/instanceNames";
 
 vi.mock("../../api/bases", () => ({
   basesApi: {
@@ -9,6 +11,9 @@ vi.mock("../../api/bases", () => ({
     refillGenerators: vi.fn(),
     cancelQueuedRefill: vi.fn(),
     pendingRefills: vi.fn(),
+    deleteBase: vi.fn(),
+    cancelQueuedDelete: vi.fn(),
+    pendingDeletes: vi.fn(),
     autoRefill: vi.fn(),
     setAutoRefill: vi.fn(),
     permissions: vi.fn(),
@@ -20,7 +25,8 @@ vi.mock("../../api/bases", () => ({
     cancelQueuedWaterRefill: vi.fn(),
     pendingWaterRefills: vi.fn(),
     autoRefillWater: vi.fn(),
-    setAutoRefillWater: vi.fn()
+    setAutoRefillWater: vi.fn(),
+    inventory: vi.fn()
   }
 }));
 
@@ -28,10 +34,19 @@ vi.mock("../../api/client", () => ({
   apiDownload: vi.fn()
 }));
 
+vi.mock("../../api/maps", () => ({
+  mapsApi: {
+    sietchDimensions: vi.fn(),
+    restartSietch: vi.fn(),
+    respawn: vi.fn()
+  }
+}));
+
 function renderPanel(overrides: Partial<Parameters<typeof BasesPanel>[0]> = {}) {
   const props = {
     onError: vi.fn(),
     confirmAction: vi.fn().mockResolvedValue(true),
+    restartGate: vi.fn().mockResolvedValue("immediate"),
     formatMutationResult: vi.fn().mockReturnValue("Action completed."),
     ...overrides
   };
@@ -57,6 +72,10 @@ const commonRow = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Instance names are cached at module scope so remounting the panel does not
+  // respawn the CLI. That cache outlives a single test, so a case asserting a
+  // cold lookup would otherwise read the previous case's resolved names.
+  invalidateInstanceNames();
 });
 
 describe("BasesPanel generator details", () => {
@@ -118,7 +137,7 @@ describe("BasesPanel generator details", () => {
 
     expect(screen.getByText("Fuel-Powered Generator")).toBeInTheDocument();
     expect(screen.getByText("Spice-Powered Generator")).toBeInTheDocument();
-    expect(document.querySelectorAll(".bases-generator-group")).toHaveLength(2);
+    expect(document.querySelectorAll(".bases-card")).toHaveLength(2);
     expect(screen.getAllByText("Fuel Queued")).toHaveLength(2);
     expect(screen.getByText("1 Fuel Cell")).toBeInTheDocument();
     expect(screen.getByText("2 Spice-infused Fuel Cells")).toBeInTheDocument();
@@ -337,6 +356,168 @@ describe("BasesPanel generator refill", () => {
     const refill = await awaitFreshRows("Sietch Unknown");
     expect(refill).toBeDisabled();
     expect(refill).toHaveAttribute("title", "Generator data is unavailable for this base");
+  });
+});
+
+describe("BasesPanel base deletion", () => {
+  function listResponse(capabilities: Record<string, unknown>, row: Record<string, unknown>) {
+    return {
+      capabilities,
+      totalCount: 1,
+      totalBases: 1,
+      totalPieces: 10,
+      totalPlaceables: 4,
+      rows: [{ ...commonRow, ...row }]
+    };
+  }
+
+  const deletableBase = {
+    base_id: "2101",
+    name: "Sietch Delete",
+    generatorDataAvailable: true,
+    generatorCount: 1,
+    generators: [
+      { type: "fuel", name: "Fuel-Powered Generator", fuelName: "Fuel Cell", fuelCells: 1, generatorCount: 1, runtimeSeconds: 0 }
+    ]
+  };
+
+  beforeEach(() => {
+    vi.mocked(basesApi.pendingDeletes).mockResolvedValue({ supported: true, total: 0, pending: [], byTarget: [] });
+  });
+
+  async function awaitFreshRows(baseName: string) {
+    await screen.findByText(baseName);
+    return screen.getByRole("button", { name: "Delete Base" });
+  }
+
+  it("hides the Delete Base action when the schema does not support it", async () => {
+    vi.mocked(basesApi.list).mockResolvedValue(listResponse({ bases: true }, { ...deletableBase, base_id: "2100", name: "Sietch NoDelete" }));
+
+    renderPanel();
+    await screen.findByText("Sietch NoDelete");
+
+    expect(screen.queryByRole("button", { name: "Delete Base" })).not.toBeInTheDocument();
+  });
+
+  it("confirms with the piece/placeable counts and deletes immediately when the map is already write-safe", async () => {
+    vi.mocked(basesApi.list).mockResolvedValue(listResponse({ bases: true, baseDelete: true, baseDeleteQueue: false }, deletableBase));
+    vi.mocked(basesApi.deleteBase).mockResolvedValue({
+      supported: true,
+      backupCreated: true,
+      result: { ok: true, baseId: 2101, deletedActorCount: 5, deletedBuildingCount: 3, deletedPlaceableCount: 1 }
+    });
+
+    const props = renderPanel();
+    const deleteButton = await awaitFreshRows("Sietch Delete");
+    expect(deleteButton).toBeEnabled();
+
+    fireEvent.click(deleteButton);
+
+    await waitFor(() => expect(props.confirmAction).toHaveBeenCalledWith(
+      'Delete "Sietch Delete"? This permanently deletes the base and everything built or stored in it.',
+      {
+        title: "Delete Base",
+        confirmLabel: "Delete",
+        danger: true,
+        details: [
+          { label: "Building Pieces", value: "10", tone: "danger" },
+          { label: "Placeables", value: "4", tone: "danger" }
+        ],
+        // No queue capability on this schema, so the warning must promise an
+        // immediate write, not a queued one.
+        warning: expect.stringContaining("straight to the database")
+      }
+    ));
+    await waitFor(() => expect(basesApi.deleteBase).toHaveBeenCalledWith("2101"));
+    expect(await screen.findByText('"Sietch Delete" was deleted.')).toBeInTheDocument();
+    // The row is gone, so the list is refetched rather than patched locally.
+    expect(vi.mocked(basesApi.list).mock.calls.length).toBeGreaterThan(1);
+  });
+
+  it("does not delete when the confirm dialog is declined", async () => {
+    vi.mocked(basesApi.list).mockResolvedValue(listResponse(
+      { bases: true, baseDelete: true, baseDeleteQueue: false },
+      { ...deletableBase, base_id: "2102", name: "Sietch Declined Delete" }
+    ));
+
+    renderPanel({ confirmAction: vi.fn().mockResolvedValue(false) });
+    fireEvent.click(await awaitFreshRows("Sietch Declined Delete"));
+
+    await waitFor(() => expect(basesApi.deleteBase).not.toHaveBeenCalled());
+  });
+
+  it("queues the delete when the map is live and warns that it will apply on the next restart", async () => {
+    vi.mocked(basesApi.list).mockResolvedValue(listResponse(
+      { bases: true, baseDelete: true, baseDeleteQueue: true },
+      { ...deletableBase, base_id: "2103", name: "Sietch Queue Delete" }
+    ));
+    vi.mocked(basesApi.deleteBase).mockResolvedValue({
+      supported: true,
+      backupCreated: false,
+      result: { ok: true, queued: true, baseId: 2103, map: "HaggaBasin", partitionId: 3 }
+    });
+
+    const props = renderPanel();
+    fireEvent.click(await awaitFreshRows("Sietch Queue Delete"));
+
+    await waitFor(() => expect(props.confirmAction).toHaveBeenCalledWith(
+      'Delete "Sietch Queue Delete"? This permanently deletes the base and everything built or stored in it.',
+      expect.objectContaining({ warning: expect.stringContaining("queued and applied") })
+    ));
+    await waitFor(() => expect(basesApi.deleteBase).toHaveBeenCalledWith("2103"));
+    expect(await screen.findByText(/is queued and applies when this map next restarts or stops/)).toBeInTheDocument();
+    expect(basesApi.pendingDeletes).toHaveBeenCalled();
+  });
+
+  it("shows the queued-delete pill, blocks refills on that row, and cancels through basesApi.cancelQueuedDelete", async () => {
+    vi.mocked(basesApi.list).mockResolvedValue(listResponse(
+      { bases: true, baseDelete: true, baseDeleteQueue: true, generatorRefill: true },
+      { ...deletableBase, base_id: "2104", name: "Sietch Pending Delete" }
+    ));
+    vi.mocked(basesApi.pendingDeletes).mockResolvedValue({
+      supported: true,
+      total: 1,
+      pending: [{ baseId: 2104, map: "HaggaBasin", partitionId: 3, queuedAt: new Date().toISOString(), attempts: 0, lastError: "" }],
+      byTarget: [{ map: "HaggaBasin", partitionId: 3, partitionMap: "Survival_1", dimensionIndex: 0, count: 1 }]
+    });
+
+    renderPanel();
+    await screen.findByText("Sietch Pending Delete");
+
+    expect(await screen.findByRole("button", { name: "Cancel Queued Delete" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Delete Base" })).not.toBeInTheDocument();
+
+    // Server-side, this base rejects every other mutation while its delete is
+    // pending -- the row must not offer a control that would just 409.
+    const refill = screen.getByRole("button", { name: "Refill Generators" });
+    expect(refill).toBeDisabled();
+    expect(refill).toHaveAttribute("title", "Blocked while a delete is queued for this base");
+  });
+
+  it("cancelling the queued delete calls the API and refreshes the pending list", async () => {
+    vi.mocked(basesApi.list).mockResolvedValue(listResponse(
+      { bases: true, baseDelete: true, baseDeleteQueue: true },
+      { ...deletableBase, base_id: "2105", name: "Sietch Cancel Delete" }
+    ));
+    vi.mocked(basesApi.pendingDeletes).mockResolvedValue({
+      supported: true,
+      total: 1,
+      pending: [{ baseId: 2105, map: "HaggaBasin", partitionId: 3, queuedAt: new Date().toISOString(), attempts: 0, lastError: "" }],
+      byTarget: [{ map: "HaggaBasin", partitionId: 3, partitionMap: "Survival_1", dimensionIndex: 0, count: 1 }]
+    });
+    vi.mocked(basesApi.cancelQueuedDelete).mockResolvedValue({ supported: true, result: { ok: true, baseId: 2105, pending: 0 } });
+
+    const props = renderPanel();
+    await screen.findByText("Sietch Cancel Delete");
+
+    fireEvent.click(await screen.findByRole("button", { name: "Cancel Queued Delete" }));
+
+    await waitFor(() => expect(props.confirmAction).toHaveBeenCalledWith(
+      'Cancel the queued delete for "Sietch Cancel Delete"?',
+      { title: "Cancel Queued Delete", confirmLabel: "Cancel Delete" }
+    ));
+    await waitFor(() => expect(basesApi.cancelQueuedDelete).toHaveBeenCalledWith("2105"));
+    expect(await screen.findByText('Queued delete for "Sietch Cancel Delete" was canceled.')).toBeInTheDocument();
   });
 });
 
@@ -713,7 +894,48 @@ describe("BasesPanel permissions editing", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Show details for Sietch One" }));
     expect(screen.getByRole("tab", { name: "Power" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Water" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Inventory" })).toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: "Sub-Fief Permissions" })).not.toBeInTheDocument();
+  });
+
+  // Inventory sits between Water and Permissions, and is ungated the way Water
+  // is: the backend response, not the tab's absence, reports an unreadable
+  // schema.
+  it("opens the Inventory tab and loads that base's stored items", async () => {
+    mockList(false);
+    vi.mocked(basesApi.inventory).mockResolvedValue({
+      supported: true,
+      baseId: 1006,
+      groups: [
+        { key: "storage", name: "Storage", containerCount: 1, itemCount: 1000 },
+        { key: "refining", name: "Refining", containerCount: 0, itemCount: 0 },
+        { key: "crafting", name: "Crafting", containerCount: 0, itemCount: 0 },
+        { key: "other", name: "Other", containerCount: 0, itemCount: 0 }
+      ],
+      containers: [{
+        placeableId: "40001", name: "Vault", typeName: "Storage Container", group: "storage",
+        usedSlots: 1, maxSlots: 45, itemCount: 1000,
+        items: [{ templateId: "Stone", name: "Granite Stone", quantity: 1000 }]
+      }],
+      items: [{
+        templateId: "Stone", name: "Granite Stone", image: "/images/items/image-unavailable.png",
+        category: "resources", quantity: 1000, containerCount: 1,
+        containers: [{ placeableId: "40001", name: "Vault", typeName: "Storage Container", group: "storage", quantity: 1000 }]
+      }],
+      totals: { items: 1000, distinct: 1, containers: 1, usedSlots: 1, maxSlots: 45 }
+    } as never);
+
+    renderPanel();
+    fireEvent.click(await screen.findByRole("button", { name: "Show details for Sietch One" }));
+
+    const tabs = screen.getAllByRole("tab").map((tab) => tab.getAttribute("aria-label") || tab.textContent);
+    expect(tabs).toEqual(["Power", "Water", "Inventory"]);
+
+    fireEvent.click(screen.getByRole("tab", { name: "Inventory" }));
+    // The tab opens on the container cards, not the item rollup.
+    expect(await screen.findByText("Vault")).toBeInTheDocument();
+    expect(document.querySelectorAll(".bases-inventory-cards .bases-card")).toHaveLength(1);
+    await waitFor(() => expect(basesApi.inventory).toHaveBeenCalledWith("1006"));
   });
 
   // A base with no generators had no expand chevron before this feature. It
@@ -846,6 +1068,40 @@ describe("BasesPanel permissions editing", () => {
     expect(screen.getByText(/No supported system custodian/)).toBeInTheDocument();
   });
 
+  it("offers to create Server while transferring when no service has provisioned it", async () => {
+    mockList(true);
+    vi.mocked(basesApi.permissions).mockResolvedValue({
+      supported: true,
+      baseId: 1006,
+      actorId: "1004",
+      map: "DeepDesert",
+      mapNameId: 7,
+      systemCustodian: {
+        available: false,
+        canCreate: true,
+        playerId: "900000201",
+        name: "Server",
+        reason: "The reserved Server identity will be created when ownership is transferred."
+      },
+      entries: [{ playerId: "4", name: "DarkShark", rank: 1, label: "Owner", canonical: true }]
+    });
+    vi.mocked(basesApi.transferToSystemCustodian).mockResolvedValue({
+      supported: true,
+      result: { ok: true, baseId: 1006, actorId: "1004", map: "DeepDesert", added: 1, reranked: 1, removed: 0, total: 2, message: "Ownership was transferred to the Server system custodian." }
+    });
+    const props = renderPanel();
+    await openPermissionsTab();
+    const transfer = await screen.findByRole("button", { name: "Transfer to Server" });
+    expect(transfer).toBeEnabled();
+    expect(screen.getByText(/will be created when ownership is transferred/)).toBeInTheDocument();
+    fireEvent.click(transfer);
+    await waitFor(() => expect(props.confirmAction).toHaveBeenCalledWith(
+      expect.stringContaining("reserved Server identity"),
+      expect.objectContaining({ title: "Transfer to Server Custodian" })
+    ));
+    await waitFor(() => expect(basesApi.transferToSystemCustodian).toHaveBeenCalledWith("1006"));
+  });
+
   it("uses the detected GM identity when Server is not present", async () => {
     mockList(true);
     vi.mocked(basesApi.permissions).mockResolvedValue({
@@ -917,6 +1173,65 @@ describe("BasesPanel water refill", () => {
   beforeEach(() => {
     vi.mocked(basesApi.pendingRefills).mockResolvedValue({ supported: true, total: 0, pending: [], byTarget: [] });
     vi.mocked(basesApi.pendingWaterRefills).mockResolvedValue({ supported: true, total: 0, pending: [], byTarget: [] });
+    vi.mocked(basesApi.autoRefillWater).mockResolvedValue({
+      supported: true, thresholdPercent: 50, intervalHours: 24, nextRunAt: "", lastRunAt: "", lastRunStatus: "", lastRunDetail: "", total: 0, bases: []
+    });
+  });
+
+  it("checks water immediately when auto-refill is enabled and reports the queued refill", async () => {
+    vi.mocked(basesApi.list).mockResolvedValue(waterCapableList({ base_id: "4001", name: "Sietch Auto Water" }));
+    vi.mocked(basesApi.autoRefillWater)
+      .mockResolvedValueOnce({
+        supported: true, thresholdPercent: 50, intervalHours: 24, nextRunAt: "", lastRunAt: "", lastRunStatus: "", lastRunDetail: "", total: 0, bases: []
+      })
+      .mockResolvedValue({
+        supported: true,
+        thresholdPercent: 50,
+        intervalHours: 24,
+        nextRunAt: "2026-08-15T12:00:00.000Z",
+        lastRunAt: "2026-08-14T12:00:00.000Z",
+        lastRunStatus: "ok",
+        lastRunDetail: "Checked 1, queued 1",
+        total: 1,
+        bases: [{
+          baseId: 4001,
+          enabledAt: "2026-08-14T12:00:00.000Z",
+          lastCheckedAt: "2026-08-14T12:00:00.000Z",
+          lastQueuedAt: "2026-08-14T12:00:00.000Z",
+          lastLowestPercent: 2.3,
+          consecutiveQueues: 1,
+          stalledAt: ""
+        }]
+      });
+    vi.mocked(basesApi.water).mockResolvedValue({
+      supported: true,
+      baseId: 4001,
+      containers: [{ type: "waterCistern", name: "Water Cistern", count: 1, stored: 23000, capacity: 1000000, percent: 2.3 }]
+    });
+    vi.mocked(basesApi.setAutoRefillWater).mockResolvedValue({
+      ok: true,
+      baseId: 4001,
+      enabled: true,
+      newlyEnabled: true,
+      total: 1,
+      initialCheck: { status: "ok", detail: "Checked 1, queued 1", checked: 1, queued: 1, failures: 0 }
+    });
+
+    const props = renderPanel();
+    await screen.findByText("Sietch Auto Water");
+    fireEvent.click(await screen.findByRole("button", { name: "Show details for Sietch Auto Water" }));
+    fireEvent.click(await screen.findByRole("tab", { name: "Water" }));
+    await screen.findByText("23,000 / 1,000,000");
+
+    fireEvent.click(screen.getByText("Auto-Refill"));
+
+    await waitFor(() => expect(props.confirmAction).toHaveBeenCalledWith(
+      'Turn on water auto-refill for "Sietch Auto Water"?',
+      expect.objectContaining({ warning: expect.stringContaining("checked now, then every 24h") })
+    ));
+    await waitFor(() => expect(basesApi.setAutoRefillWater).toHaveBeenCalledWith("4001", true));
+    expect(await screen.findByText(/A refill is queued for the next map stop or restart/)).toBeInTheDocument();
+    expect(await screen.findByText("ON")).toBeInTheDocument();
   });
 
   // Water isn't part of the row/list data the way generator fuel is --
@@ -928,19 +1243,19 @@ describe("BasesPanel water refill", () => {
     vi.mocked(basesApi.water)
       .mockResolvedValueOnce({
         supported: true,
-        baseId: 4002,
+        baseId: 1006,
         containers: [{ type: "waterCistern", name: "Water Cistern", count: 1, stored: 1250, capacity: 5000, percent: 25 }]
       })
       .mockResolvedValueOnce({
         supported: true,
-        baseId: 4002,
+        baseId: 1006,
         containers: [{ type: "waterCistern", name: "Water Cistern", count: 1, stored: 5000, capacity: 5000, percent: 100 }]
       });
     vi.mocked(basesApi.refillWater).mockResolvedValue({
       supported: true,
       result: {
         ok: true,
-        baseId: 4002,
+        baseId: 1006,
         totalAdded: 3750,
         devices: [{ placeableId: "9101", type: "waterCistern", label: "Water Cistern", before: 1250, after: 5000, added: 3750 }]
       }
@@ -986,6 +1301,33 @@ describe("BasesPanel water refill", () => {
     // update instead (covered by basesApi.pendingWaterRefills below).
     await waitFor(() => expect(basesApi.pendingWaterRefills).toHaveBeenCalled());
     expect(vi.mocked(basesApi.water).mock.calls.length).toBe(1);
+  });
+
+  // A schema that cannot back the tab is a settled answer, not a transient
+  // failure: it arrives as a 200 carrying supported:false, so it must not be
+  // rendered in the error style with a Retry that could only fail identically.
+  it("states the reason with no Retry when the schema cannot back the Water tab", async () => {
+    vi.mocked(basesApi.list).mockResolvedValue(waterCapableList({ base_id: "4004", name: "Sietch Unsupported" }));
+    vi.mocked(basesApi.water).mockResolvedValue({
+      supported: false,
+      reason: "Unsupported by detected schema. Missing required table(s): dune.placeables",
+      baseId: 4004,
+      containers: []
+    });
+
+    renderPanel();
+    await screen.findByText("Sietch Unsupported");
+    fireEvent.click(await screen.findByRole("button", { name: "Show details for Sietch Unsupported" }));
+    fireEvent.click(await screen.findByRole("tab", { name: "Water" }));
+
+    const notice = await screen.findByText(/Missing required table\(s\): dune\.placeables/);
+    expect(notice).toHaveAttribute("role", "status");
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+    // Not the empty-base wording either -- "no water storage" would read as a
+    // fact about this base rather than about the database.
+    expect(screen.queryByText("No water storage at this base.")).not.toBeInTheDocument();
+    // Auto-refill acts on the very devices this schema cannot describe.
+    expect(screen.queryByRole("checkbox", { name: /Auto-Refill/ })).not.toBeInTheDocument();
   });
 });
 
@@ -1091,5 +1433,139 @@ describe("BasesPanel combined fuel/water queue and stalled banners", () => {
     expect(screen.getByText("1 fuel")).toBeInTheDocument();
     expect(screen.getByText("1 water")).toBeInTheDocument();
     expect(document.querySelectorAll(".bases-pending-refills")).toHaveLength(1);
+  });
+});
+
+describe("BasesPanel map column", () => {
+  // Verbatim `dune sietches dimensions DeepDesert_1` output from the live
+  // server, paired with its `--ids` output: two instances of one map, which is
+  // exactly the case the map name alone cannot distinguish.
+  const DEEP_DESERT_TABLE = [
+    "DIMENSION  DISPLAY NAME                     PASSWORD",
+    "0          Deep Desert PvP                  (unset)",
+    "1          Deep Desert PvE                  (unset)"
+  ].join("\n");
+  const DEEP_DESERT_IDS = "8\n59\n";
+
+  function mockTwoDeepDesertBases() {
+    vi.mocked(basesApi.list).mockResolvedValue({
+      capabilities: { bases: true },
+      totalCount: 2,
+      totalBases: 2,
+      totalPieces: 20,
+      totalPlaceables: 8,
+      rows: [
+        { ...commonRow, base_id: "5001", name: "PvP Outpost", map: "DeepDesert", partition_id: 8, partitionMap: "DeepDesert_1", dimensionIndex: 0, generatorDataAvailable: false, generatorCount: 0 },
+        { ...commonRow, base_id: "5002", name: "PvE Outpost", map: "DeepDesert", partition_id: 59, partitionMap: "DeepDesert_1", dimensionIndex: 1, generatorDataAvailable: false, generatorCount: 0 }
+      ]
+    } as never);
+  }
+
+  function mapCells() {
+    return [...document.querySelectorAll(".bases-map-cell")].map((cell) => ({
+      map: cell.querySelector(".bases-map-name")?.textContent,
+      instance: cell.querySelector(".bases-map-instance")?.textContent
+    }));
+  }
+
+  it("renders the friendly map name and upgrades the partition to its instance name", async () => {
+    mockTwoDeepDesertBases();
+    vi.mocked(mapsApi.sietchDimensions).mockImplementation((_map?: string, ids?: boolean) =>
+      Promise.resolve({ stdout: ids ? DEEP_DESERT_IDS : DEEP_DESERT_TABLE }) as never);
+
+    renderPanel();
+    expect(await screen.findByText("PvP Outpost")).toBeInTheDocument();
+
+    // "DeepDesert" is the game's internal name; the column shows the real one,
+    // keeping the raw value in the title for anyone matching against the DB.
+    await waitFor(() => expect(mapCells()).toEqual([
+      { map: "Deep Desert", instance: "Deep Desert PvP" },
+      { map: "Deep Desert", instance: "Deep Desert PvE" }
+    ]));
+    expect(document.querySelector(".bases-map-name")).toHaveAttribute("title", "DeepDesert");
+    // One pair of requests for the single distinct partition map, not per row.
+    expect(vi.mocked(mapsApi.sietchDimensions).mock.calls.map((call) => call[0])).toEqual(["DeepDesert_1", "DeepDesert_1"]);
+  });
+
+  it("falls back to the partition number when the instance names cannot be read", async () => {
+    // These endpoints shell out to the runtime CLI and are absent on a
+    // console-only install. The rows must still identify their instance.
+    mockTwoDeepDesertBases();
+    vi.mocked(mapsApi.sietchDimensions).mockRejectedValue(new Error("spawn runtime/scripts/dune ENOENT"));
+
+    renderPanel();
+    expect(await screen.findByText("PvP Outpost")).toBeInTheDocument();
+
+    expect(mapCells()).toEqual([
+      { map: "Deep Desert", instance: "Partition 8" },
+      { map: "Deep Desert", instance: "Partition 59" }
+    ]);
+  });
+
+  // Two bases on two different maps, which is what makes the id keyspace
+  // matter: a partition number is only unique once its map is fixed.
+  function mockOneBasePerMap() {
+    vi.mocked(basesApi.list).mockResolvedValue({
+      capabilities: { bases: true },
+      totalCount: 2,
+      totalBases: 2,
+      totalPieces: 20,
+      totalPlaceables: 8,
+      rows: [
+        { ...commonRow, base_id: "5001", name: "Basin Hold", map: "HaggaBasin", partition_id: 1, partitionMap: "Survival_1", dimensionIndex: 0, generatorDataAvailable: false, generatorCount: 0 },
+        { ...commonRow, base_id: "5002", name: "PvP Outpost", map: "DeepDesert", partition_id: 8, partitionMap: "DeepDesert_1", dimensionIndex: 0, generatorDataAvailable: false, generatorCount: 0 }
+      ]
+    } as never);
+  }
+
+  // Both assertions below are negative -- an instance name must NOT appear --
+  // so they need a sync point that does not depend on one arriving. A
+  // module-level cache means the panel mounts with the previous test's rows and
+  // fires this effect twice, so the call count is not usable either; wait for
+  // the call the current rows triggered, then drain the resolve pass.
+  async function settleInstanceNames(map: string) {
+    await waitFor(() => expect(vi.mocked(mapsApi.sietchDimensions)).toHaveBeenCalledWith(map, true));
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+  }
+
+  // The dimension table lists rows 0 and 1 while --ids comes back empty, so
+  // parseSietchRows keys those rows by dimension index. Pooled into one map
+  // across every partition map, DeepDesert_1's dimension 1 then answers the
+  // lookup for Survival_1's partition 1 and labels the Hagga Basin base
+  // "Deep Desert PvE".
+  it("does not label a base with another map's instance when partition ids are missing", async () => {
+    mockOneBasePerMap();
+    vi.mocked(mapsApi.sietchDimensions).mockImplementation((map?: string, ids?: boolean) =>
+      Promise.resolve({ stdout: map === "DeepDesert_1" && !ids ? DEEP_DESERT_TABLE : "" }) as never);
+
+    renderPanel();
+    expect(await screen.findByText("Basin Hold")).toBeInTheDocument();
+    await settleInstanceNames("Survival_1");
+
+    expect(mapCells()).toEqual([
+      // Never "Deep Desert PvE": that name is keyed by a dimension index, and
+      // this base is on a different map entirely.
+      { map: "Hagga Basin", instance: "Partition 1" },
+      { map: "Deep Desert", instance: "Partition 8" }
+    ]);
+  });
+
+  // commandJson answers 200 with an empty stdout when the CLI exits non-zero,
+  // so the failure is only visible in exitCode.
+  it("keeps the partition fallback when the CLI reports a non-zero exit", async () => {
+    mockTwoDeepDesertBases();
+    // Plausible stdout, but the command failed -- trusting it would publish
+    // instance names read from a stale or partial table.
+    vi.mocked(mapsApi.sietchDimensions).mockImplementation((_map?: string, ids?: boolean) =>
+      Promise.resolve({ stdout: ids ? DEEP_DESERT_IDS : DEEP_DESERT_TABLE, exitCode: 1 }) as never);
+
+    renderPanel();
+    expect(await screen.findByText("PvP Outpost")).toBeInTheDocument();
+    await settleInstanceNames("DeepDesert_1");
+
+    expect(mapCells()).toEqual([
+      { map: "Deep Desert", instance: "Partition 8" },
+      { map: "Deep Desert", instance: "Partition 59" }
+    ]);
   });
 });

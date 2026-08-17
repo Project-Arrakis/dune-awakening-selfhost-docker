@@ -15,6 +15,7 @@ function combatRow(overrides: Partial<PartitionCombatStateRow> = {}): PartitionC
     dimensionIndex: 0,
     databaseLabel: "DeepDesert_0",
     runtimeStatus: "RUNNING",
+    serverDisplayName: null,
     configuredState: "PVE",
     materializedState: "PVE",
     source: "legacy-flags",
@@ -103,6 +104,34 @@ describe("deepDesertPartitionName", () => {
     const name = deepDesertPartitionName(
       { label: "DeepDesert_0", dimension: 0 },
       combatRow({ partitionId: "8", dimensionIndex: 0, configuredState: "PVP" })
+    );
+    expect(name).toBe("Deep Desert 1 (PvP)");
+  });
+
+  // Regression coverage for surfacing the operator-configured Bgd.ServerDisplayName
+  // (effective partition -> map -> global UserEngine.ini value) ahead of the
+  // synthesized "Deep Desert N (PvP/PvE)" text. Previously this name was resolved
+  // by neither the Bases page nor the Maps page.
+  it("prefers a configured server display name over the synthesized PvP/PvE text", () => {
+    const name = deepDesertPartitionName(
+      { label: "", dimension: 0 },
+      combatRow({ configuredState: "PVE", serverDisplayName: "My Arrakis" })
+    );
+    expect(name).toBe("My Arrakis");
+  });
+
+  it("falls back to the synthesized name when no display name is configured", () => {
+    const name = deepDesertPartitionName(
+      { label: "", dimension: 0 },
+      combatRow({ configuredState: "PVE", serverDisplayName: null })
+    );
+    expect(name).toBe("Deep Desert 1 (PvE)");
+  });
+
+  it("ignores a blank/whitespace-only configured display name", () => {
+    const name = deepDesertPartitionName(
+      { label: "", dimension: 0 },
+      combatRow({ configuredState: "PVP", serverDisplayName: "   " })
     );
     expect(name).toBe("Deep Desert 1 (PvP)");
   });

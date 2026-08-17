@@ -213,7 +213,13 @@ test("system custodian detection prefers the reserved Server identity", async ()
     playerId: "900000201",
     name: "Server"
   });
-  assert.match((await basePermissionSystemCustodian(createDb({ custodians: [], systemIdentities: [] }))).reason, /No supported system custodian/);
+  assert.deepEqual(await basePermissionSystemCustodian(createDb({ custodians: [], systemIdentities: [] })), {
+    available: false,
+    canCreate: true,
+    playerId: "900000201",
+    name: "Server",
+    reason: "The reserved Server identity will be created when ownership is transferred."
+  });
   assert.match((await basePermissionSystemCustodian(createDb({
     systemIdentities: [
       { table: "player_state", accountId: "9000002", playerId: "900000201" },
@@ -244,10 +250,10 @@ test("transferBaseToSystemCustodian preserves access, demotes the owner, and pro
   assert.match(result.message, /Server system custodian/);
 });
 
-test("transferBaseToSystemCustodian refuses a missing or ambiguous Server identity", async () => {
+test("transferBaseToSystemCustodian requires provisioning for a missing Server and refuses ambiguity", async () => {
   await assert.rejects(
     () => transferBaseToSystemCustodian(createDb({ custodians: [], systemIdentities: [] }), BASE_ID),
-    /No supported system custodian/);
+    /will be created when ownership is transferred/);
   await assert.rejects(
     () => transferBaseToSystemCustodian(createDb({ systemIdentities: [
       { table: "player_state", accountId: "9000002", playerId: "900000201" },

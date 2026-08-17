@@ -4,6 +4,11 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 
 INTERVAL="${DUNE_AUTOSCALER_INTERVAL:-5}"
+DEMAND_INTERVAL="${DUNE_AUTOSCALER_DEMAND_INTERVAL:-2}"
+if ! [[ "$DEMAND_INTERVAL" =~ ^[1-9][0-9]*$ ]]; then
+  echo "Invalid DUNE_AUTOSCALER_DEMAND_INTERVAL; using 2 seconds." >&2
+  DEMAND_INTERVAL=2
+fi
 SINCE="${DUNE_AUTOSCALER_LOG_SINCE:-30s}"
 NAMED_DESTINATION_SINCE="${DUNE_AUTOSCALER_NAMED_DESTINATION_LOG_SINCE:-10m}"
 IDLE_SECONDS="${DUNE_AUTOSCALER_IDLE_SECONDS:-300}"
@@ -20,6 +25,7 @@ SIETCH_TOPOLOGY_MAINTENANCE_FILE="${DUNE_SIETCH_TOPOLOGY_MAINTENANCE_FILE:-runti
 SIETCH_TOPOLOGY_HEAL_GRACE_SECONDS="${DUNE_SIETCH_TOPOLOGY_HEAL_GRACE_SECONDS:-600}"
 DIRECTOR_HEAL_STALE_SECONDS="${DUNE_AUTOSCALER_DIRECTOR_HEAL_STALE_SECONDS:-15}"
 DIRECTOR_HEAL_COOLDOWN_SECONDS="${DUNE_AUTOSCALER_DIRECTOR_HEAL_COOLDOWN_SECONDS:-300}"
+DIRECTOR_HEAL_REPUBLISH_GRACE_SECONDS="${DUNE_AUTOSCALER_DIRECTOR_HEAL_REPUBLISH_GRACE_SECONDS:-45}"
 DIRECTOR_CORE_READY_GRACE_SECONDS="${DUNE_AUTOSCALER_DIRECTOR_CORE_READY_GRACE_SECONDS:-120}"
 DYNAMIC_READY_HEAL_STALE_SECONDS="${DUNE_AUTOSCALER_DYNAMIC_READY_HEAL_STALE_SECONDS:-20}"
 DIRECTOR_BROWSER_SCAN_SECONDS="${DUNE_AUTOSCALER_DIRECTOR_BROWSER_SCAN_SECONDS:-30}"
@@ -31,6 +37,10 @@ IGWO_UNAVAILABLE_SCAN_SECONDS="${DUNE_AUTOSCALER_IGWO_UNAVAILABLE_SCAN_SECONDS:-
 IGWO_UNAVAILABLE_COOLDOWN_SECONDS="${DUNE_AUTOSCALER_IGWO_UNAVAILABLE_COOLDOWN_SECONDS:-60}"
 STALE_SERVER_STATE_SCAN_SECONDS="${DUNE_AUTOSCALER_STALE_SERVER_STATE_SCAN_SECONDS:-15}"
 STALE_SERVER_STATE_COOLDOWN_SECONDS="${DUNE_AUTOSCALER_STALE_SERVER_STATE_COOLDOWN_SECONDS:-45}"
+IGW_SOCKET_HEALTH_SCAN_SECONDS="${DUNE_AUTOSCALER_IGW_SOCKET_HEALTH_SCAN_SECONDS:-10}"
+IGW_SOCKET_STALL_SECONDS="${DUNE_AUTOSCALER_IGW_SOCKET_STALL_SECONDS:-30}"
+IGW_SOCKET_RX_QUEUE_THRESHOLD="${DUNE_AUTOSCALER_IGW_SOCKET_RX_QUEUE_THRESHOLD:-1048576}"
+IGW_SOCKET_RECOVERY_COOLDOWN_SECONDS="${DUNE_AUTOSCALER_IGW_SOCKET_RECOVERY_COOLDOWN_SECONDS:-600}"
 AUTOSCALER_STARTED_AT="$(date +%s)"
 
 mkdir -p "$(dirname "$STATE_FILE")"
@@ -45,9 +55,11 @@ touch "$DIRECTOR_HEAL_FILE"
 echo "=== Dune Docker autoscaler ==="
 echo "Watching Director travel queues and idle dynamic servers."
 echo "Interval: ${INTERVAL}s"
+echo "Travel demand interval: ${DEMAND_INTERVAL}s"
 echo "Log window: ${SINCE}"
 echo "Named destination log window: ${NAMED_DESTINATION_SINCE}"
 echo "Idle despawn grace: ${IDLE_SECONDS}s"
+echo "Fresh-process maps: immediate deallocation once empty"
 echo "Dynamic mode-change grace: ${DESPAWN_GRACE_SECONDS}s"
 echo "Travel grace: ${TRAVEL_GRACE_SECONDS}s"
 echo "Director browser heal scan: ${DIRECTOR_BROWSER_SCAN_SECONDS}s"
@@ -55,6 +67,7 @@ echo "Dynamic ready heal scan: ${DYNAMIC_READY_HEAL_SCAN_SECONDS}s"
 echo "Chat exchange repair scan: ${CHAT_EXCHANGE_REPAIR_SECONDS}s"
 echo "IGWO unavailable heal scan: ${IGWO_UNAVAILABLE_SCAN_SECONDS}s"
 echo "Stale server-state heal scan: ${STALE_SERVER_STATE_SCAN_SECONDS}s"
+echo "IGW socket health scan: ${IGW_SOCKET_HEALTH_SCAN_SECONDS}s"
 echo "State file: ${STATE_FILE}"
 echo
 
@@ -502,10 +515,13 @@ remember_map_demand() {
   local tmp
 
   [ -n "$map" ] || return 0
-  tmp="$(mktemp)"
-  awk -F '\t' -v map="$map" '$1 != map { print }' "$DEMAND_FILE" > "$tmp"
-  printf '%s\t%s\n' "$map" "$ts" >> "$tmp"
-  mv "$tmp" "$DEMAND_FILE"
+  (
+    flock -x 9
+    tmp="$(mktemp)"
+    awk -F '\t' -v map="$map" '$1 != map { print }' "$DEMAND_FILE" > "$tmp"
+    printf '%s\t%s\n' "$map" "$ts" >> "$tmp"
+    mv "$tmp" "$DEMAND_FILE"
+  ) 9>"${DEMAND_FILE}.lock"
 }
 
 forget_map_demand() {
@@ -549,10 +565,13 @@ remember_demand_event() {
   local tmp
 
   [ -n "$event_id" ] || return 0
-  tmp="$(mktemp)"
-  awk -F '\t' -v now="$ts" '$3 && now - $3 < 600 { print }' "$DEMAND_EVENT_FILE" > "$tmp"
-  printf '%s\t%s\t%s\n' "$event_id" "$map" "$ts" >> "$tmp"
-  mv "$tmp" "$DEMAND_EVENT_FILE"
+  (
+    flock -x 9
+    tmp="$(mktemp)"
+    awk -F '\t' -v now="$ts" '$3 && now - $3 < 600 { print }' "$DEMAND_EVENT_FILE" > "$tmp"
+    printf '%s\t%s\t%s\n' "$event_id" "$map" "$ts" >> "$tmp"
+    mv "$tmp" "$DEMAND_EVENT_FILE"
+  ) 9>"${DEMAND_EVENT_FILE}.lock"
 }
 
 hub_container_for_map() {
@@ -1226,6 +1245,191 @@ map_has_active_presence() {
   [ "$(map_effective_player_count "$map" | tr -d '[:space:]')" != "0" ]
 }
 
+igw_receive_queue_bytes() {
+  local container="$1"
+  local port="$2"
+  local port_hex rx_hex total=0
+
+  [[ "$port" =~ ^[0-9]+$ ]] || return 1
+  port_hex="$(printf '%04X' "$port")"
+
+  while IFS= read -r rx_hex; do
+    [ -n "$rx_hex" ] || continue
+    rx_hex="${rx_hex^^}"
+    [[ "$rx_hex" =~ ^[0-9A-F]+$ ]] || continue
+    total=$((total + 16#$rx_hex))
+  done < <(
+    timeout --kill-after=1s 5s docker exec "$container" sh -c \
+      'cat /proc/net/udp /proc/net/udp6 2>/dev/null' 2>/dev/null \
+      | awk -v port="$port_hex" '
+          $2 ~ (":" port "$") {
+            split($5, queue, ":")
+            print queue[2]
+          }
+        '
+  )
+
+  printf '%s\n' "$total"
+}
+
+core_map_igw_port() {
+  local map="$1"
+  local safe="${map//\'/\'\'}"
+
+  psql_value "
+    select coalesce(igw_port::text, '')
+    from dune.farm_state
+    where map = '$safe'
+      and coalesce(alive, false) = true
+      and igw_port is not null
+    order by ready desc, server_id
+    limit 1;
+  " | tr -d '\r[:space:]'
+}
+
+core_map_is_reported_ready() {
+  local map="$1"
+  local safe="${map//\'/\'\'}"
+
+  [ "$(psql_value "
+    select count(*)
+    from dune.farm_state
+    where map = '$safe'
+      and coalesce(alive, false) = true
+      and coalesce(ready, false) = true;
+  " | tr -d '\r[:space:]')" != "0" ]
+}
+
+recover_deadlocked_core_map() {
+  local map="$1"
+  local container partition
+
+  case "$map" in
+    Survival_1)
+      container="dune-server-survival-1"
+      partition="1"
+      runtime/scripts/start-server-survival-1.sh >/dev/null 2>&1
+      ;;
+    Overmap)
+      container="dune-server-overmap"
+      partition="2"
+      runtime/scripts/start-server-overmap.sh >/dev/null 2>&1
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+
+  wait_for_core_map_ready "$container" "$partition" || return 1
+  publish_state_for_map "$map"
+}
+
+wait_for_core_map_ready() {
+  local container="$1"
+  local partition="$2"
+  local started_at attempt logs
+
+  started_at="$(docker inspect -f '{{.State.StartedAt}}' "$container" 2>/dev/null || true)"
+  [ -n "$started_at" ] || return 1
+
+  for attempt in $(seq 1 90); do
+    logs="$(timeout --kill-after=1s 8s docker logs --since "$started_at" --tail 5000 "$container" 2>&1 || true)"
+    if grep -Eq "Server farm is READY .*partition ${partition}([,[:space:]]|$)" <<<"$logs"; then
+      return 0
+    fi
+    if ! docker inspect -f '{{.State.Running}}' "$container" 2>/dev/null | grep -qx true; then
+      return 1
+    fi
+    sleep 2
+  done
+
+  return 1
+}
+
+scan_core_igw_socket_health() {
+  local now container map port queue first_seen age last_recovery players
+  local first_key recovery_key
+
+  director_heal_due igw_socket_health "$IGW_SOCKET_HEALTH_SCAN_SECONDS" || return 0
+  now="$(date +%s)"
+
+  while IFS='|' read -r container map; do
+    first_key="igw-stall:${map}"
+    recovery_key="igw-recovery:${map}"
+
+    if ! docker inspect -f '{{.State.Running}}' "$container" 2>/dev/null | grep -qx true; then
+      director_heal_clear "$first_key"
+      continue
+    fi
+
+    # A large queue is expected while a core map is still loading and cannot
+    # consume normal S2S traffic yet. Only a map that has already advertised
+    # itself as ready can regress into the deadlock this watchdog repairs.
+    if ! core_map_is_reported_ready "$map"; then
+      director_heal_clear "$first_key"
+      continue
+    fi
+
+    port="$(core_map_igw_port "$map" 2>/dev/null || true)"
+    if ! [[ "$port" =~ ^[0-9]+$ ]]; then
+      director_heal_clear "$first_key"
+      continue
+    fi
+
+    queue="$(igw_receive_queue_bytes "$container" "$port" 2>/dev/null || true)"
+    if ! [[ "$queue" =~ ^[0-9]+$ ]] || [ "$queue" -lt "$IGW_SOCKET_RX_QUEUE_THRESHOLD" ]; then
+      director_heal_clear "$first_key"
+      continue
+    fi
+
+    first_seen="$(director_heal_get "$first_key" 2>/dev/null || true)"
+    if ! [[ "$first_seen" =~ ^[0-9]+$ ]]; then
+      echo "WARN IGW receive queue stalled map=$map port=$port bytes=$queue action=confirm"
+      director_heal_set "$first_key" "$now"
+      continue
+    fi
+
+    age=$((now - first_seen))
+    if [ "$age" -lt "$IGW_SOCKET_STALL_SECONDS" ]; then
+      continue
+    fi
+
+    last_recovery="$(director_heal_get "$recovery_key" 2>/dev/null || true)"
+    if [[ "$last_recovery" =~ ^[0-9]+$ ]] && [ $((now - last_recovery)) -lt "$IGW_SOCKET_RECOVERY_COOLDOWN_SECONDS" ]; then
+      continue
+    fi
+
+    players="$(map_effective_player_count "$map" 2>/dev/null | tr -d '[:space:]' || true)"
+    [[ "$players" =~ ^[0-9]+$ ]] || players="unknown"
+    echo "HEAL deadlocked core map=$map port=$port rx_queue_bytes=$queue stalled_seconds=$age players=$players action=map-restart"
+    director_heal_set "$recovery_key" "$now"
+    director_heal_clear "$first_key"
+    if ! recover_deadlocked_core_map "$map"; then
+      echo "ERROR failed to recover deadlocked core map=$map"
+    fi
+  done <<'EOF'
+dune-server-survival-1|Survival_1
+dune-server-overmap|Overmap
+EOF
+}
+
+battlegroup_effective_player_count() {
+  psql_value "
+    select count(*)
+    from dune.player_state ps
+    where
+      ps.online_status <> 'Offline'
+      or (
+        ps.reconnect_grace_period_end is not null
+        and ps.reconnect_grace_period_end > (current_timestamp at time zone 'UTC')
+      )
+      or (
+        ps.last_avatar_activity is not null
+        and ps.last_avatar_activity > (current_timestamp - make_interval(secs => ${IDLE_SECONDS}))
+      );
+  "
+}
+
 map_is_always_on() {
   local map="$1"
   runtime/scripts/map-modes.sh is-always-on "$map" >/dev/null 2>&1
@@ -1245,6 +1449,23 @@ map_is_dynamic() {
   local map="$1" mode
   mode="$(runtime/scripts/map-modes.sh mode "$map" 2>/dev/null | awk '{ print $2 }' || true)"
   [ "$mode" = "dynamic" ]
+}
+
+map_requires_fresh_process() {
+  local map="$1"
+  runtime/scripts/map-modes.sh requires-fresh-process "$map" >/dev/null 2>&1
+}
+
+idle_seconds_for_map() {
+  local map="$1"
+  if map_requires_fresh_process "$map"; then
+    # Hyper-V scales this activity down once it has no players.  Keep inbound
+    # travel/reconnect protection in handle_idle_row, but add no idle timer
+    # after those state checks say the process is genuinely empty.
+    printf '0\n'
+  else
+    printf '%s\n' "$IDLE_SECONDS"
+  fi
 }
 
 overmap_active_maps() {
@@ -1483,10 +1704,18 @@ handle_idle_row() {
       ;;
   esac
 
-  local key
+  local key idle_seconds
   key="$(state_key "$map" "$server_id")"
+  idle_seconds="$(idle_seconds_for_map "$map")"
 
   if [ "$connected_players" != "0" ] || [ "$effective_players" != "0" ] || ! [[ "${ready,,}" =~ ^(t|true|1|yes|y)$ ]] || ! [[ "${alive,,}" =~ ^(t|true|1|yes|y)$ ]]; then
+    # Once the destination has observed its player, the inbound allocation
+    # hold has served its purpose.  Clearing it here lets a later transition
+    # to genuinely empty scale down immediately instead of waiting out the
+    # original travel grace period.
+    if map_requires_fresh_process "$map" && { [ "$connected_players" != "0" ] || [ "$effective_players" != "0" ]; }; then
+      forget_map_demand "$map"
+    fi
     clear_idle_since "$key"
     return 0
   fi
@@ -1496,11 +1725,13 @@ handle_idle_row() {
     return 0
   fi
 
-  local remaining
-  remaining="$(map_dynamic_grace_remaining "$map" | tr -d '[:space:]')"
-  if [ "${remaining:-0}" -gt 0 ] 2>/dev/null; then
-    clear_idle_since "$key"
-    return 0
+  if ! map_requires_fresh_process "$map"; then
+    local remaining
+    remaining="$(map_dynamic_grace_remaining "$map" | tr -d '[:space:]')"
+    if [ "${remaining:-0}" -gt 0 ] 2>/dev/null; then
+      clear_idle_since "$key"
+      return 0
+    fi
   fi
 
   if map_is_overmap_active "$map" && map_has_active_presence "Overmap"; then
@@ -1517,10 +1748,10 @@ handle_idle_row() {
     since="$now"
     age=0
     set_idle_since "$key" "$since"
-    echo "IDLE map=$map server=$server_id players=0 effective=0 grace=${IDLE_SECONDS}s"
+    echo "IDLE map=$map server=$server_id players=0 effective=0 grace=${idle_seconds}s"
   fi
 
-  if [ "$age" -ge "$IDLE_SECONDS" ]; then
+  if [ "$age" -ge "$idle_seconds" ]; then
     echo "DESPAWN idle map=$map server=$server_id idle=${age}s"
     runtime/scripts/despawn-server.sh "$map" || true
     clear_idle_since "$key"
@@ -1745,6 +1976,15 @@ PY
 }
 
 scan_idle_servers() {
+  local scope="${1:-standard}"
+  local map_filter
+
+  case "$scope" in
+    fresh-process) map_filter="and fs.map = 'CB_Overland_S_06'" ;;
+    standard) map_filter="and fs.map <> 'CB_Overland_S_06'" ;;
+    *) echo "WARN invalid idle scan scope: $scope" >&2; return 1 ;;
+  esac
+
   docker exec dune-postgres psql -U postgres -d dune -At -F '|' -c "
     select
       fs.map,
@@ -1784,12 +2024,23 @@ scan_idle_servers() {
         )
     ) ep on true
     where fs.map not in ('Survival_1', 'Overmap')
+      $map_filter
       and coalesce(fs.server_id, '') <> ''
     order by map;
   " | while IFS='|' read -r map server_id connected_players effective_players ready alive; do
     [ -z "${map:-}" ] && continue
     remember_server_id_map "$map" "$server_id"
     handle_idle_row "$map" "$server_id" "$connected_players" "$effective_players" "$ready" "$alive"
+  done
+}
+
+# Hyper-V scales short-lived activity pods independently of unrelated
+# battlegroup maintenance.  Do the same for fresh-process-only Docker maps so
+# neither allocation nor empty deallocation waits behind a recovery command.
+follow_fresh_process_lifecycle() {
+  while true; do
+    scan_idle_servers fresh-process || echo "WARN fresh-process lifecycle scan failed; retrying"
+    sleep "$DEMAND_INTERVAL"
   done
 }
 
@@ -1933,9 +2184,9 @@ classical_pattern = re.compile(
     r"Processing travel queue for ClassicalInstancing group ([A-Za-z0-9_]+) "
     r"\(servers: \[[^\]]*\], num: ([0-9]+)\)"
 )
-dimension_request_pattern = re.compile(
+request_pattern = re.compile(
     r"Received travel request for ([0-9]+) player\(s\) to ([A-Za-z0-9_]+) "
-    r"\(instancingMode=Dimension\)"
+    r"\(instancingMode=(?:ClassicalInstancing|Dimension)\)"
 )
 
 seen = set()
@@ -1947,8 +2198,13 @@ for line in sys.stdin:
         num = int(match.group(2))
         if map_name == "DeepDesert_1":
             continue
+        # Smugglers Run is handled from its original request below. Repeated
+        # queue summaries can arrive after the player is already connected and
+        # must not recreate a completed inbound-travel hold.
+        if map_name == "CB_Overland_S_06":
+            continue
     else:
-        match = dimension_request_pattern.search(line)
+        match = request_pattern.search(line)
         if not match:
             continue
         num = int(match.group(1))
@@ -1971,6 +2227,16 @@ for line in sys.stdin:
     [ -n "${map:-}" ] || continue
     handle_demand "$map" "$num" "$event_id"
   done <<< "$demand_rows"
+}
+
+# Allocation demand must not wait behind maintenance scans that may publish
+# network state or run bounded recovery commands.  Hyper-V has a dedicated
+# allocator watching this queue; keep the Docker equivalent independent too.
+follow_director_travel_demand() {
+  while true; do
+    scan_travel_demand || echo "WARN travel demand scan failed; retrying"
+    sleep "$DEMAND_INTERVAL"
+  done
 }
 
 scan_igwo_unavailable_maps() {
@@ -2234,6 +2500,7 @@ EOF
 
 scan_director_browser_state() {
   local rows ready_count capacity now first_seen core_ready_since last_restart age since_restart
+  local republish_at republish_age online_players restart_deferred restart_pending
 
   director_heal_due browser_state "$DIRECTOR_BROWSER_SCAN_SECONDS" || return 0
 
@@ -2244,6 +2511,8 @@ scan_director_browser_state() {
   if ! core_maps_ready_for_browser_heal; then
     director_heal_clear stale_since
     director_heal_clear core_ready_since
+    director_heal_clear browser_republish_at
+    director_heal_clear browser_restart_deferred
     return 0
   fi
 
@@ -2251,6 +2520,8 @@ scan_director_browser_state() {
   if [ $((now - AUTOSCALER_STARTED_AT)) -lt "$DIRECTOR_CORE_READY_GRACE_SECONDS" ]; then
     director_heal_clear stale_since
     director_heal_clear core_ready_since
+    director_heal_clear browser_republish_at
+    director_heal_clear browser_restart_deferred
     return 0
   fi
   if core_ready_since="$(director_heal_get core_ready_since 2>/dev/null)"; then
@@ -2261,6 +2532,8 @@ scan_director_browser_state() {
   fi
   if [ "$age" -lt "$DIRECTOR_CORE_READY_GRACE_SECONDS" ]; then
     director_heal_clear stale_since
+    director_heal_clear browser_republish_at
+    director_heal_clear browser_restart_deferred
     return 0
   fi
 
@@ -2272,6 +2545,8 @@ scan_director_browser_state() {
     marker_age=$(( $(date +%s) - marker_mtime ))
     if [ "$marker_age" -ge 0 ] && [ "$marker_age" -lt "$SIETCH_TOPOLOGY_HEAL_GRACE_SECONDS" ]; then
       director_heal_clear stale_since
+      director_heal_clear browser_republish_at
+      director_heal_clear browser_restart_deferred
       return 0
     fi
     rm -f "$SIETCH_TOPOLOGY_MAINTENANCE_FILE" 2>/dev/null || true
@@ -2281,12 +2556,17 @@ scan_director_browser_state() {
   ready_count="$(printf '%s\n' "$rows" | sed '/^$/d' | wc -l | tr -d '[:space:]')"
   [ "${ready_count:-0}" -ge 2 ] || {
     director_heal_clear stale_since
+    director_heal_clear browser_republish_at
+    director_heal_clear browser_restart_deferred
     return 0
   }
 
   capacity="$(director_latest_capacity 2>/dev/null || true)"
   if [ "${capacity:-}" != "0" ] && director_logs_contain_live_ids "$rows"; then
     director_heal_clear stale_since
+    director_heal_clear browser_republish_at
+    director_heal_clear browser_restart_deferred
+    director_heal_clear browser_restart_pending
     return 0
   fi
 
@@ -2301,6 +2581,25 @@ scan_director_browser_state() {
     return 0
   fi
 
+  # A stale FLS/browser declaration is often recoverable by republishing the
+  # authoritative state already held by the running core maps. Try that first
+  # and give Director time to confirm it before recreating any container.
+  # This keeps transient Funcom publication stalls invisible to connected
+  # players and reserves the disruptive recovery for a confirmed failure.
+  if republish_at="$(director_heal_get browser_republish_at 2>/dev/null)"; then
+    republish_age=$((now - republish_at))
+    if [ "$republish_age" -lt "$DIRECTOR_HEAL_REPUBLISH_GRACE_SECONDS" ]; then
+      return 0
+    fi
+  else
+    echo "HEAL director stale browser state action=republish capacity=${capacity:-unknown} ready_maps=$ready_count"
+    publish_state_for_map Survival_1
+    publish_state_for_map Overmap
+    publish_state_for_map DeepDesert_1
+    director_heal_set browser_republish_at "$now"
+    return 0
+  fi
+
   if last_restart="$(director_heal_get last_restart 2>/dev/null)"; then
     since_restart=$((now - last_restart))
     if [ "$since_restart" -lt "$DIRECTOR_HEAL_COOLDOWN_SECONDS" ]; then
@@ -2308,26 +2607,51 @@ scan_director_browser_state() {
     fi
   fi
 
-  echo "HEAL director stale browser state capacity=${capacity:-unknown} ready_maps=$ready_count"
+  # One automatic restart is enough while people are connected. If that
+  # restart did not restore publication, preserve their sessions and leave a
+  # clear diagnostic instead of repeatedly recycling Survival_1. Track this
+  # recovery incident separately from the general restart cooldown so an old,
+  # successful recovery never prevents the first restart of a new incident.
+  restart_pending="$(director_heal_get browser_restart_pending 2>/dev/null || true)"
+  if [ -n "$restart_pending" ]; then
+    online_players="$(battlegroup_effective_player_count 2>/dev/null | tr -d '[:space:]' || true)"
+    if ! [[ "$online_players" =~ ^[0-9]+$ ]]; then
+      online_players="unknown"
+    fi
+    if [ "$online_players" = "unknown" ] || [ "$online_players" -gt 0 ]; then
+      restart_deferred="$(director_heal_get browser_restart_deferred 2>/dev/null || true)"
+      if [ -z "$restart_deferred" ]; then
+        echo "DEFER director stale browser state action=restart online_players=$online_players previous_restart_at=$restart_pending"
+        director_heal_set browser_restart_deferred "$now"
+      fi
+      return 0
+    fi
+  fi
+
+  echo "HEAL director stale browser state action=restart capacity=${capacity:-unknown} ready_maps=$ready_count republish_age=$republish_age"
   runtime/scripts/restart-director.sh >/dev/null 2>&1 || {
     echo "ERROR failed to restart director during stale browser state heal"
     return 0
   }
   director_heal_set last_restart "$now"
+  director_heal_set browser_restart_pending "$now"
   director_heal_clear stale_since
+  director_heal_clear browser_republish_at
+  director_heal_clear browser_restart_deferred
 }
 
 follow_director_hagga_handoffs &
+follow_director_travel_demand &
+follow_fresh_process_lifecycle &
 reconcile_always_on_maps
-scan_travel_demand
 repair_chat_exchanges_due
 
 while true; do
   reconcile_always_on_maps
   scan_deepdesert_loading_responses
   ensure_overmap_travel_maps_prewarmed
-  scan_travel_demand
   repair_chat_exchanges_due
+  scan_core_igw_socket_health
   scan_igwo_unavailable_maps
   scan_stale_server_state
   scan_unscoped_stale_server_state

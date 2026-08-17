@@ -9,6 +9,8 @@ mkdir -p "$test_root/project/runtime/scripts" "$test_root/bin" "$test_root/state
 cp "$repo_root/runtime/scripts/update.sh" "$test_root/project/runtime/scripts/update.sh"
 cp "$repo_root/runtime/scripts/doctor.sh" "$test_root/project/runtime/scripts/doctor.sh"
 cp "$repo_root/runtime/scripts/runtime-env.sh" "$test_root/project/runtime/scripts/runtime-env.sh"
+cp "$repo_root/runtime/scripts/host-file-ownership.sh" "$test_root/project/runtime/scripts/host-file-ownership.sh"
+cp "$repo_root/runtime/scripts/env-file.sh" "$test_root/project/runtime/scripts/env-file.sh"
 cp "$repo_root/runtime/scripts/memory-swap-common.sh" "$test_root/project/runtime/scripts/memory-swap-common.sh"
 cp "$repo_root/runtime/scripts/compose-project.sh" "$test_root/project/runtime/scripts/compose-project.sh"
 cp "$repo_root/runtime/scripts/steamcmd-signals.sh" "$test_root/project/runtime/scripts/steamcmd-signals.sh"
@@ -100,7 +102,7 @@ grep -Fq "WARN Auto-update service ExecStart points outside the current checkout
 
 output="$(run_status "$test_root/project" legacy)"
 grep -Fq "WARN Auto-update service uses the legacy update command from the current checkout." <<<"$output"
-grep -Fq "Repair: dune update auto enable 60 1 1 15 0 360" <<<"$output"
+grep -Fq "Repair: dune update auto enable 60 1 1 15,10,5,1 0 360" <<<"$output"
 
 set +e
 doctor_output="$(
@@ -113,7 +115,7 @@ doctor_output="$(
 )"
 set -e
 grep -Fq "WARN Auto-update timer uses the legacy update command from the current checkout" <<<"$doctor_output"
-grep -Fq "Repair: dune update auto enable 60 1 1 15 0 360" <<<"$doctor_output"
+grep -Fq "Repair: dune update auto enable 60 1 1 15,10,5,1 0 360" <<<"$doctor_output"
 
 output="$(run_status "$test_root/project")"
 if grep -q '^WARN ' <<<"$output"; then
@@ -128,10 +130,22 @@ repair_output="$(
     MOCK_WORKDIR="$test_root/project" \
     DUNE_HOST_REPO_ROOT="$test_root/project" \
     DUNE_AUTO_UPDATE_STATE_FILE="$state_file" \
-    bash runtime/scripts/update.sh auto enable 60 1 1 15 0 360
+    bash runtime/scripts/update.sh auto enable 60 1 1 20,10,5,1 0 360
 )"
 grep -Fq "Host runtime state is not writable; repairing host-managed runtime ownership..." <<<"$repair_output"
 grep -Fq "Host runtime ownership repaired." <<<"$repair_output"
 grep -Fq "DUNE_AUTO_UPDATE_ENABLED=1" "$state_file"
+grep -Fq "DUNE_AUTO_UPDATE_NOTIFY_MINUTES=20,10,5,1" "$state_file"
+
+if (
+  cd "$test_root/project"
+  PATH="$test_root/bin:$PATH" \
+    DUNE_HOST_REPO_ROOT="$test_root/project" \
+    DUNE_AUTO_UPDATE_STATE_FILE="$state_file" \
+    bash runtime/scripts/update.sh auto enable 60 1 1 15,40,10,5 0 360
+) >/dev/null 2>&1; then
+  echo "Out-of-order automatic-update warning times were unexpectedly accepted." >&2
+  exit 1
+fi
 
 echo "auto-update status detects disabled, legacy, and stale systemd timers and repairs state ownership"

@@ -46,6 +46,13 @@ if ! [[ "$TARGET_UID" =~ ^[0-9]+$ && "$TARGET_GID" =~ ^[0-9]+$ ]]; then
   exit 1
 fi
 
+if ! docker image inspect "$IMAGE" >/dev/null 2>&1 \
+  && [ "$IMAGE" = "dune-orchestrator:dev" ] \
+  && [ -f orchestrator/Dockerfile ]; then
+  echo "Runtime permission helper image is missing; rebuilding $IMAGE..."
+  docker build --tag "$IMAGE" orchestrator
+fi
+
 if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
   echo "Cannot repair host runtime permissions: Docker image not found: $IMAGE" >&2
   echo "Build or start the orchestrator, then retry." >&2

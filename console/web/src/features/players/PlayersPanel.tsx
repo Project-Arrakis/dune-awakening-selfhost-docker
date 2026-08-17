@@ -49,6 +49,7 @@ export function PlayersPanel({ onError, renderCharacterAdmin }: PlayersPanelProp
   const requestIdRef = useRef(0);
   const profileRequestIdRef = useRef(0);
   const selectedPlayerIdRef = useRef("");
+  const playerDetailRef = useRef<HTMLDivElement>(null);
   const skipNextSearchReset = useRef(true);
 
   useEffect(() => {
@@ -141,6 +142,14 @@ export function PlayersPanel({ onError, renderCharacterAdmin }: PlayersPanelProp
 
   const dbPlayerId = selected ? String(selected.actor_id || selected.player_pawn_id || selected.id || "") : "";
   const actionPlayerId = selected ? String(selected.action_player_id || selected.funcom_id || selected.fls_id || selected.account_id || "") : "";
+
+  useEffect(() => {
+    if (!dbPlayerId) return undefined;
+    const frame = window.requestAnimationFrame(() => {
+      playerDetailRef.current?.scrollIntoView?.({ behavior: "smooth", block: "start" });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [dbPlayerId]);
 
   useEffect(() => {
     if (!dbPlayerId) return undefined;
@@ -238,6 +247,7 @@ export function PlayersPanel({ onError, renderCharacterAdmin }: PlayersPanelProp
         columns={["actor_id", "character_name", "last_seen", "online_status", "map", "fls_id"]}
         columnLabels={{ actor_id: "DB Player ID" }}
         tableClassName="players-table"
+        wrapClassName={`players-table-wrap ${selected ? "players-table-wrap-compact" : "players-table-wrap-expanded"}`}
         onRowClick={open}
         emptyMessage={playersEmptyMessage}
         sortColumn={sortColumn}
@@ -267,25 +277,29 @@ export function PlayersPanel({ onError, renderCharacterAdmin }: PlayersPanelProp
           <button disabled={!hasNextPage} onClick={() => setPage(totalPages - 1)}>Last</button>
         </div>
       </div>
-      {selected && renderCharacterAdmin({
-        detail,
-        fallback: selected,
-        dbPlayerId,
-        actionPlayerId,
-        playerName: String(selected.character_name || actionPlayerId || dbPlayerId || "Selected player"),
-        onRefresh: () => {
-          void Promise.all([
-            open(selected),
-            load({ q: submittedQ, page, pageSize, status: playerFilter, sortColumn, sortDirection }, { silent: true })
-          ]);
-        },
-        onClose: () => {
-          selectedPlayerIdRef.current = "";
-          profileRequestIdRef.current += 1;
-          setSelected(null);
-          setDetail(null);
-        }
-      })}
+      {selected && (
+        <div ref={playerDetailRef} className="players-detail-anchor">
+          {renderCharacterAdmin({
+            detail,
+            fallback: selected,
+            dbPlayerId,
+            actionPlayerId,
+            playerName: String(selected.character_name || actionPlayerId || dbPlayerId || "Selected player"),
+            onRefresh: () => {
+              void Promise.all([
+                open(selected),
+                load({ q: submittedQ, page, pageSize, status: playerFilter, sortColumn, sortDirection }, { silent: true })
+              ]);
+            },
+            onClose: () => {
+              selectedPlayerIdRef.current = "";
+              profileRequestIdRef.current += 1;
+              setSelected(null);
+              setDetail(null);
+            }
+          })}
+        </div>
+      )}
     </section>
   );
 }

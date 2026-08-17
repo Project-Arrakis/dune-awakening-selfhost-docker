@@ -203,8 +203,16 @@ dune_persist_compose_project_name() {
     # Scheduled systemd helpers can run as root. Preserve both mode and
     # ownership before the atomic replacement so a root-created temporary file
     # cannot turn the operator's .env into root-owned state.
-    if ! chmod --reference="$dune_compose_env_file" "$dune_compose_tmp_file" \
-      || ! chown --reference="$dune_compose_env_file" "$dune_compose_tmp_file"; then
+    # The GNU-coreutils "reference file" chmod/chown flag fails on BusyBox
+    # (Alpine), so derive the mode/owner via `stat` instead.
+    dune_compose_ref_mode="$(stat -c '%a' "$dune_compose_env_file" 2>/dev/null || true)"
+    dune_compose_ref_owner="$(stat -c '%u:%g' "$dune_compose_env_file" 2>/dev/null || true)"
+    if [ -z "$dune_compose_ref_mode" ] || [ -z "$dune_compose_ref_owner" ]; then
+      rm -f "$dune_compose_tmp_file"
+      return 1
+    fi
+    if ! chmod "$dune_compose_ref_mode" "$dune_compose_tmp_file" \
+      || ! chown "$dune_compose_ref_owner" "$dune_compose_tmp_file"; then
       rm -f "$dune_compose_tmp_file"
       return 1
     fi
