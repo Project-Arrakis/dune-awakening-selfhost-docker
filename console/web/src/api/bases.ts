@@ -397,7 +397,16 @@ export const basesApi = {
         partial: boolean;
         typeName: string;
         group: BaseInventoryGroupKey;
-        removed: { itemId: string; templateId: string; count: number; remaining: number };
+        removed: {
+          itemId: string;
+          templateId: string;
+          count: number;
+          remaining: number;
+          positionIndex: number | null;
+          qualityLevel: number;
+          currentDurability: number | null;
+          maxDurability: number | null;
+        };
         message: string;
         deleteSafety: BaseContainerDeleteSafety;
       };
