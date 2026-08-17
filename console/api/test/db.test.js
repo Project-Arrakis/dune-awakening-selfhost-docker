@@ -3609,6 +3609,131 @@ test("container item delete refuses a partial removal when the schema lacks the 
   assert.equal(calls.some((call) => call.text.includes("dune.delete_item($1::bigint)")), false);
 });
 
+// baseContainerSlots: the per-slot read the contents overlay and its delete
+// both rest on. Deliberately separate from baseInventory, whose items[] stays
+// template-merged.
+function fakeContainerSlotsDb(calls, fixtures = {}) {
+  const { rows = [], itemColumns = ["id", "inventory_id", "stack_size", "position_index", "template_id", "stats", "quality_level"] } = fixtures;
+  return {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("information_schema.columns")) {
+        return { rows: itemColumns.map((column_name) => ({ column_name })) };
+      }
+      if (text.includes("requested_claims")) return { rows };
+      return { rows: [] };
+    }
+  };
+}
+
+const SLOT_ROW = {
+  inventory_id: "77", group_key: "storage", type_name: "Storage Container", max_item_count: 45,
+  quality_level: 0, current_durability: null, max_durability: null
+};
+
+test("baseContainerSlots keeps two stacks of one template apart instead of merging them", async () => {
+  const calls = [];
+  const db = fakeContainerSlotsDb(calls, {
+    rows: [
+      { ...SLOT_ROW, item_id: "1", template_id: "ScrapMetal", stack_size: 500, position_index: 0 },
+      { ...SLOT_ROW, item_id: "2", template_id: "MagnetiteOre", stack_size: 200, position_index: 1 },
+      { ...SLOT_ROW, item_id: "3", template_id: "ScrapMetal", stack_size: 400, position_index: 2 }
+    ]
+  });
+  const result = await baseContainerSlots(db, 16836, 40001);
+
+  assert.equal(result.found, true);
+  assert.equal(result.usedSlots, 3);
+  assert.equal(result.maxSlots, 45);
+  const slots = result.inventories[0].slots;
+  assert.equal(slots.length, 3);
+  // The whole point: the merged items[] would report one ScrapMetal of 900.
+  assert.deepEqual(slots.filter((slot) => slot.templateId === "ScrapMetal").map((slot) => slot.quantity), [500, 400]);
+  assert.deepEqual(slots.map((slot) => slot.positionIndex), [0, 1, 2]);
+  assert.deepEqual(slots.map((slot) => slot.itemId), ["1", "2", "3"]);
+});
+
+test("baseContainerSlots groups slots per inventory rather than flat on the container", async () => {
+  const calls = [];
+  // A placeable can back more than one inventory. maxSlots is their sum while
+  // position_index is scoped to one, so a flat array would collide two slot 0s.
+  const db = fakeContainerSlotsDb(calls, {
+    rows: [
+      { ...SLOT_ROW, inventory_id: "77", max_item_count: 5, item_id: "1", template_id: "MagnetiteOre", stack_size: 10, position_index: 0 },
+      { ...SLOT_ROW, inventory_id: "78", max_item_count: 10, item_id: "2", template_id: "AluminiumBar", stack_size: 20, position_index: 0 }
+    ]
+  });
+  const result = await baseContainerSlots(db, 16836, 40001);
+
+  assert.equal(result.inventories.length, 2);
+  assert.equal(result.maxSlots, 15);
+  assert.deepEqual(result.inventories.map((inventory) => inventory.slots.length), [1, 1]);
+  // Both really are slot 0 -- of different inventories.
+  assert.deepEqual(result.inventories.map((inventory) => inventory.slots[0].positionIndex), [0, 0]);
+});
+
+test("baseContainerSlots keeps an empty inventory so the grid can render its empty slots", async () => {
+  const calls = [];
+  // The LEFT JOIN emits one all-null item row for an empty container.
+  const db = fakeContainerSlotsDb(calls, {
+    rows: [{ ...SLOT_ROW, item_id: null, template_id: null, stack_size: null, position_index: null }]
+  });
+  const result = await baseContainerSlots(db, 16836, 40001);
+
+  assert.equal(result.found, true);
+  assert.equal(result.usedSlots, 0);
+  assert.equal(result.inventories.length, 1);
+  assert.equal(result.inventories[0].maxSlots, 45);
+  assert.deepEqual(result.inventories[0].slots, []);
+});
+
+test("baseContainerSlots answers found:false for a container that is not at the base", async () => {
+  const calls = [];
+  const db = fakeContainerSlotsDb(calls, { rows: [] });
+  const result = await baseContainerSlots(db, 16836, 999999);
+  // An ownership answer, not an error -- and the same shape the route returns
+  // 200 with.
+  assert.equal(result.supported, true);
+  assert.equal(result.found, false);
+  assert.deepEqual(result.inventories, []);
+});
+
+test("baseContainerSlots degrades rather than failing when dune.items lacks the per-slot columns", async () => {
+  const calls = [];
+  // A missing column is a parse-time error, not a null, so an older schema
+  // would 500 a container that used to open if these were assumed.
+  const db = fakeContainerSlotsDb(calls, {
+    itemColumns: ["id", "inventory_id", "stack_size", "template_id"],
+    rows: [{ ...SLOT_ROW, item_id: "1", template_id: "ScrapMetal", stack_size: 500, position_index: null }]
+  });
+  const result = await baseContainerSlots(db, 16836, 40001);
+
+  assert.equal(result.inventories[0].slots[0].positionIndex, null);
+  const query = calls.find((call) => call.text.includes("requested_claims"));
+  // The literals stand in for the absent columns; nothing references them.
+  assert.match(query.text, /null::bigint as position_index/);
+  assert.ok(!query.text.includes("i.position_index"), "must not select a column this schema lacks");
+  assert.match(query.text, /null::numeric as max_durability/);
+});
+
+test("baseContainerSlots scopes to the base and keeps the container allowlist filters", async () => {
+  const calls = [];
+  const db = fakeContainerSlotsDb(calls, { rows: [] });
+  await baseContainerSlots(db, 16836, 40001);
+  const query = calls.find((call) => call.text.includes("requested_claims"));
+
+  // Dropping any of these would let the overlay reach a generator or windtrap
+  // fuel inventory that the Power and Water tabs own.
+  assert.match(query.text, /join inventory_types it on it\.building_type = lower\(p\.building_type\)/);
+  assert.match(query.text, /p\.is_hologram = false/);
+  assert.match(query.text, /inv\.max_item_count >= 0/);
+  assert.equal(query.values[0], 16836);
+  assert.equal(query.values[4], 40001);
+  // Slot order, not template order -- the overlay renders a row per slot.
+  assert.match(query.text, /order by c\.inventory_id, i\.position_index nulls last, i\.id/);
+});
+
 test("inventory update rejects rows not owned by the selected player", async () => {
   const calls = [];
   const db = fakeMutationDb(calls, { itemRows: [] });
