@@ -19,6 +19,7 @@ import {
   isBattlegroupRunning,
   normalizeDiscordInvite,
   readConfiguredCapacity,
+  recoverRunningDirectorCapacity,
   readDirectoryInstallationKey,
   readPreviousDirectoryInstallationKey,
   readPublicModifiers,
@@ -291,6 +292,81 @@ test("missing or incomplete director configuration is not reported as a real 60-
       "[Survival_1]"
     ].join("\n"));
     assert.equal(readConfiguredCapacity(files.repoRoot, 3), null);
+  } finally {
+    files.cleanup();
+  }
+});
+
+test("capacity falls back to the persisted secret-free Director snapshot", () => {
+  const files = fixture();
+  try {
+    rmSync(join(files.repoRoot, "runtime", "director", "config", "director_config.ini"));
+    writeFileSync(join(files.generatedDir, "director-capacity.ini"), [
+      "[Server]",
+      "PlayerHardCap=40",
+      "ShouldUpdatePlayerCountOnFls=false",
+      "[Survival_1]",
+      "PlayerHardCap=55",
+      "ShouldUpdatePlayerCountOnFls=true"
+    ].join("\n"));
+    assert.equal(readConfiguredCapacity(files.repoRoot, 3), 165);
+  } finally {
+    files.cleanup();
+  }
+});
+
+test("capacity recovers from a running Director and persists only filtered fields", async () => {
+  const files = fixture();
+  const calls = [];
+  try {
+    rmSync(join(files.repoRoot, "runtime", "director", "config", "director_config.ini"));
+    const capacity = await recoverRunningDirectorCapacity(files.repoRoot, 2, async (file, args) => {
+      calls.push({ file, args });
+      return [
+        "[Server]",
+        "PlayerHardCap=40",
+        "ShouldUpdatePlayerCountOnFls=false",
+        "[Survival_1]",
+        "PlayerHardCap=60",
+        "ShouldUpdatePlayerCountOnFls=true"
+      ].join("\n");
+    });
+    assert.equal(capacity, 120);
+    assert.equal(calls[0].file, "docker");
+    assert.deepEqual(calls[0].args.slice(0, 3), ["exec", "dune-director", "awk"]);
+    const snapshotPath = join(files.generatedDir, "director-capacity.ini");
+    assert.equal(readConfiguredCapacity(files.repoRoot, 2), 120);
+    assert.equal(statSync(snapshotPath).mode & 0o777, 0o600);
+    assert.doesNotMatch(readFileSync(snapshotPath, "utf8"), /Secret|Password|Token/i);
+  } finally {
+    files.cleanup();
+  }
+});
+
+test("reporter recovers a missing capacity source without suppressing the heartbeat", async () => {
+  const files = fixture();
+  const payloads = [];
+  try {
+    rmSync(join(files.repoRoot, "runtime", "director", "config", "director_config.ini"));
+    const reporter = createPublicDirectoryReporter({
+      repoRoot: files.repoRoot,
+      generatedDir: files.generatedDir,
+      secretsDir: files.secretsDir
+    }, {
+      db: fakeDb(),
+      getBattlegroupRunning: () => true,
+      recoverRunningDirectorCapacity: async (_repoRoot, sietches) => 60 * sietches,
+      fetchImpl: async (url, options) => {
+        if (url.endsWith("/heartbeat")) payloads.push(JSON.parse(options.body));
+        if (url.endsWith("/claim-status")) return response({ ok: true, claimed: false });
+        return response({ ok: true, nextHeartbeatSeconds: 60 });
+      },
+      setTimeoutFn: () => ({ unref() {} })
+    });
+    await reporter.tick();
+    assert.equal(payloads.length, 1);
+    assert.equal(payloads[0].capacity, 120);
+    assert.equal(reporter.publicState().state, "online");
   } finally {
     files.cleanup();
   }
