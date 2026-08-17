@@ -8,6 +8,7 @@ import {
   ADDON_SCHEDULED_RUN_RATE_SCOPE,
   EDA_EXCHANGE_BOT_ADDON_ID,
   BUYBACK_LOG_RETENTION_MS,
+  BUYBACK_LOG_CLEANUP_INTERVAL_MS,
   applyDryRunMaxBuysRanking,
   applySweepLeftoverRanking,
   appendBuybackLogBatch,
@@ -258,10 +259,13 @@ test("builds buyback SQL server-side from the bundled seed plan", () => {
     assert.match(classifySql, /AS result_code/);
     assert.match(classifySql, /COALESCE\(o\.item_price, 0\) <= 0/, "NULL asks are invalid, not eligible");
     assert.match(classifySql, /eligible_band AS/, "eligible listings take the cap first");
-    assert.match(classifySql, /UNION ALL/, "skip reasons fill remaining cap in separate top-N bands");
-    assert.match(classifySql, /LIMIT GREATEST\(0, 1000 -/, "later bands only fill leftover cap");
+    assert.match(classifySql, /skip_band AS/, "ineligible listings share one leftover top-N band");
+    assert.match(classifySql, /UNION ALL/, "skip reasons fill remaining cap after eligible rows");
+    assert.match(classifySql, /LIMIT GREATEST\(0, 1000 -/, "the skip band only fills leftover cap");
+    assert.match(classifySql, /IS NOT TRUE/, "NULL asks stay in the skip band (NOT unknown would drop them)");
     assert.match(classifySql, /price too high/);
     assert.match(classifySql, /no reference price/);
+    assert.doesNotMatch(classifySql, /above_cap_band/, "skip reasons are not four extra listing scans");
     assert.doesNotMatch(classifySql, /\b(?:BEGIN|COMMIT)\s*;/i);
 
     const sweepSql = buildBuybackSql(plan, schedule);
@@ -286,6 +290,7 @@ test("builds buyback SQL server-side from the bundled seed plan", () => {
     assert.match(sweepSql, /o\.exchange_id = 77\b/);
     assert.match(sweepSql, /CREATE TEMP TABLE market_buy_log/);
     assert.match(sweepSql, /buyback_log/);
+    assert.doesNotMatch(sweepSql, /market_buy_diagnostics/, "the write transaction does not recount every player listing");
     assert.doesNotMatch(sweepSql, /\b(?:BEGIN|COMMIT)\s*;/i, "transaction ownership stays with the database wrapper");
 
     assert.throws(() => buildBuybackSql(plan, { ...schedule, exchangeId: "77; DROP TABLE dune.items" }), /exchangeId is invalid/);
@@ -697,7 +702,16 @@ test("idle buyback runs persist a dry-run classify batch with skip reasons", asy
       { order_id: "12", template_id: "UnknownThing", quality_level: "0", item_price: "10", stack_size: "1", max_unit_price: "0", result_code: "2", result_label: "no reference price", detail: "template not in seed plan" },
       { order_id: "13", template_id: "WaterBottle", quality_level: "0", item_price: "900", stack_size: "4", max_unit_price: "600", result_code: "1", result_label: "price too high", detail: "ask 900 > cap 600" }
     ];
-    const db = fakeDb({ eligible: "0", classifyRows });
+    const db = fakeDb({
+      eligible: "0",
+      probeRow: {
+        player_sell_orders: "3",
+        known_player_sell_orders: "2",
+        above_threshold_sell_orders: "1",
+        unknown_template_sell_orders: "1"
+      },
+      classifyRows
+    });
     const { scheduler, backups, state } = makeScheduler(config, { db });
     saveBuybackSchedule(config, { enabled: true, exchangeId: "42", intervalMinutes: 10, maxBuys: 500 }, { now: () => state.clock });
     await scheduler.tick();
@@ -716,6 +730,31 @@ test("idle buyback runs persist a dry-run classify batch with skip reasons", asy
     assert.equal(log.batches[0].entries[0].displayName, "Sword");
     assert.deepEqual(log.batches[0].entries.map((entry) => entry.resultHex), ["0x0", "0x1", "0x2"]);
     assert.match(log.batches[0].entries[1].detail, /ask 900 > cap 600/);
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test("idle buyback with no player listings skips classify but still logs an empty batch", async () => {
+  const repoRoot = makeRepoRoot();
+  const config = { repoRoot, mockMode: false };
+  try {
+    const db = fakeDb({ eligible: "0" });
+    const { scheduler, backups, state } = makeScheduler(config, { db });
+    saveBuybackSchedule(config, { enabled: true, exchangeId: "42", intervalMinutes: 10 }, { now: () => state.clock });
+    await scheduler.tick();
+    state.clock += 10 * 60000;
+    await scheduler.tick();
+
+    assert.equal(db.probes.length, 1);
+    assert.equal(db.classifies.length, 0, "empty exchange does not run a second listing scan");
+    assert.equal(db.sweeps.length, 0);
+    assert.equal(backups.length, 0);
+    const log = readBuybackLog(config);
+    assert.equal(log.batches.length, 1);
+    assert.equal(log.batches[0].source, "Scheduled buyback");
+    assert.equal(log.batches[0].entries.length, 0);
+    assert.match(log.batches[0].note, /nothing purchased/);
   } finally {
     rmSync(repoRoot, { recursive: true, force: true });
   }
@@ -820,6 +859,9 @@ test("appending a buyback log batch drops batches older than five days", () => {
       now: nowMs
     });
     assert.deepEqual(readBuybackLog(config, { now: nowMs }).batches.map((batch) => batch.source), ["Buyback sweep", "kept"]);
+    const raw = readFileSync(buybackLogPath(config), "utf8");
+    assert.equal(raw.endsWith("\n"), true);
+    assert.equal(raw.trimEnd().includes("\n"), false, "sweep log is compact JSON to keep hourly parse cheap");
   } finally {
     rmSync(repoRoot, { recursive: true, force: true });
   }
@@ -839,6 +881,40 @@ test("scheduler tick prunes expired buyback log batches even when buyback is dis
     await scheduler.tick();
     assert.equal(db.probes.length, 0);
     assert.deepEqual(readBuybackLog(config, { now: state.clock }).batches.map((batch) => batch.source), ["fresh"]);
+    assert.deepEqual(JSON.parse(readFileSync(buybackLogPath(config), "utf8")).batches.map((batch) => batch.source), ["fresh"]);
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test("scheduler tick does not re-parse the buyback log on every 10s tick", async () => {
+  const repoRoot = makeRepoRoot();
+  const config = { repoRoot, mockMode: false };
+  try {
+    const db = fakeDb();
+    const { scheduler, state } = makeScheduler(config, { db });
+    saveBuybackSchedule(config, { enabled: false, exchangeId: "42" }, { now: () => state.clock });
+    writeBuybackLogBatches(config, [
+      { source: "expired", at: new Date(state.clock - BUYBACK_LOG_RETENTION_MS - 1000).toISOString(), entries: [] },
+      { source: "fresh", at: new Date(state.clock).toISOString(), entries: [] }
+    ]);
+    await scheduler.tick();
+    assert.deepEqual(JSON.parse(readFileSync(buybackLogPath(config), "utf8")).batches.map((batch) => batch.source), ["fresh"]);
+
+    writeBuybackLogBatches(config, [
+      { source: "expired-again", at: new Date(state.clock - BUYBACK_LOG_RETENTION_MS - 1000).toISOString(), entries: [] },
+      { source: "fresh", at: new Date(state.clock).toISOString(), entries: [] }
+    ]);
+    state.clock += 10 * 1000;
+    await scheduler.tick();
+    assert.deepEqual(
+      JSON.parse(readFileSync(buybackLogPath(config), "utf8")).batches.map((batch) => batch.source),
+      ["expired-again", "fresh"],
+      "cleanup is throttled inside the hourly window"
+    );
+
+    state.clock += BUYBACK_LOG_CLEANUP_INTERVAL_MS;
+    await scheduler.tick();
     assert.deepEqual(JSON.parse(readFileSync(buybackLogPath(config), "utf8")).batches.map((batch) => batch.source), ["fresh"]);
   } finally {
     rmSync(repoRoot, { recursive: true, force: true });
