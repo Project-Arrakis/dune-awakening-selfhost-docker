@@ -61,6 +61,7 @@ reference. Everything else is marked **Current** and is expected to stay accurat
 
 - [addon-item-grants.md](addons/addon-item-grants.md) — Current. The `admin:grant-items` permissioned addon item grant flow.
 - [addon-scheduled-jobs.md](addons/addon-scheduled-jobs.md) — Current. Market Bot scheduler and EDA retirement compatibility.
+- [hardware-status.md](addons/hardware-status.md) — Current. Permissioned, core-owned host telemetry for addon dashboards.
 
 ## Discord Integrations
 
