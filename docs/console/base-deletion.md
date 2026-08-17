@@ -75,7 +75,7 @@ but consent, since base inventory shipped read-only and no existing
 ## Why deletes are queued for a live map
 
 This schema has no live-notify path for structural changes — the same fact
-[Base inventory](base-inventory.md#why-read-only) documents for reads: zero
+[Base inventory](base-inventory.md#why-deletion-requires-a-stopped-map) documents for reads: zero
 triggers on `dune.buildings`/`dune.building_instances`/`dune.placeables`, and
 no `pg_notify` channel for a structural despawn. A running map server
 periodically flushes its own in-memory copy of a base back to Postgres, so a
