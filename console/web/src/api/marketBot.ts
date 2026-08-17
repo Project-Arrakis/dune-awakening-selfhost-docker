@@ -124,6 +124,7 @@ export type MarketBuybackLog = {
   batches: MarketBuybackLogBatch[];
   entries?: MarketBuybackLogEntry[];
   exchangeId?: string;
+  removed?: number;
 };
 
 export const marketBotApi = {

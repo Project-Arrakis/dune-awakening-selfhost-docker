@@ -47,7 +47,7 @@ import { exportBlueprint, importBlueprint, listBlueprints, deleteBlueprint } fro
 import { createZipArchive } from "./services/zipArchive.js";
 import { resolveMapCombatState } from "./services/mapCombatState.js";
 import { grantAddonItem } from "./addonItemGrants.js";
-import { EDA_EXCHANGE_BOT_ADDON_ID, ADDON_SCHEDULER_PERMISSION, createAddonJobScheduler, probeBuybackEligibility, refreshBuybackLog, readBuybackLog, clearBuybackLog, readBuybackSchedule, saveBuybackSchedule, readSeedSchedule, saveSeedSchedule } from "./addonJobs.js";
+import { EDA_EXCHANGE_BOT_ADDON_ID, ADDON_SCHEDULER_PERMISSION, createAddonJobScheduler, probeBuybackEligibility, refreshBuybackLog, cleanupBuybackLog, clearBuybackLog, readBuybackSchedule, saveBuybackSchedule, readSeedSchedule, saveSeedSchedule } from "./addonJobs.js";
 import { createPublicDirectoryReporter, normalizeDiscordInvite, readDirectorySettings } from "./services/publicDirectory.js";
 import { choamTerminalOverview, installChoamTerminals, removeChoamTerminals } from "./services/choamTerminals.js";
 import { exchangeStats, listExchangeItems, listExchangeListings, readExchangeConfig, saveExchangeConfig } from "./services/exchange.js";
@@ -1361,7 +1361,7 @@ async function marketBuybackProbeRoute(req, res) {
 
 async function marketBuybackLogRoute(req, res) {
   try {
-    return json(res, 200, readBuybackLog(config));
+    return json(res, 200, cleanupBuybackLog(config));
   } catch (error) {
     const payload = apiErrorPayload(error, 400);
     return json(res, payload.status, payload.body);

@@ -128,7 +128,8 @@ Exchange Bot addon drives through the scheduler bridge, now first-class):
   append a batch, including idle ticks that classify listings without buying.
   **Refresh log (dry-run)** classifies the current exchange without a write.
   Batches are stored in `runtime/generated/market-bot/buyback-log.json` (20 most
-  recent).
+  recent, dropped after 5 days). The scheduler tick prunes expired batches even
+  when buyback is disabled.
 - **Schedules** run unattended inside the console API process (no browser page needs
   to stay open) and survive restarts. They are console-owned and authorized by RBAC
   at save time. Seed and buyback share one running lock, so they can never write the

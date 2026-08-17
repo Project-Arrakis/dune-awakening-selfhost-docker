@@ -7,11 +7,15 @@ import { isReadOnlySql } from "../src/db.js";
 import {
   ADDON_SCHEDULED_RUN_RATE_SCOPE,
   EDA_EXCHANGE_BOT_ADDON_ID,
+  BUYBACK_LOG_RETENTION_MS,
   applyDryRunMaxBuysRanking,
+  appendBuybackLogBatch,
   buildBuybackClassifySql,
   buildBuybackEligibilitySql,
   buildBuybackSql,
+  buybackLogPath,
   buybackPlanValuesSql,
+  cleanupBuybackLog,
   clearBuybackLog,
   createAddonJobScheduler,
   loadBuybackSeedPlan,
@@ -46,6 +50,12 @@ function makeRepoRoot(plan = SAMPLE_PLAN) {
 
 function schedulePath(repoRoot) {
   return join(repoRoot, "runtime/generated/market-bot/buyback.json");
+}
+
+function writeBuybackLogBatches(config, batches) {
+  const path = buybackLogPath(config);
+  mkdirSync(join(config.repoRoot, "runtime/generated/market-bot"), { recursive: true });
+  writeFileSync(path, `${JSON.stringify({ batches }, null, 2)}\n`);
 }
 
 // Fake db: eligibility probes are WITH ... AS eligible_orders, classify
@@ -744,6 +754,83 @@ test("dry-run refresh ranks leftover eligible listings as max buys and can be cl
     assert.equal(refreshed.batches[0].source, "Dry-run classify");
     assert.equal(clearBuybackLog(config).batches.length, 0);
     assert.equal(readBuybackLog(config).batches.length, 0);
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test("buyback log cleanup drops batches older than five days and keeps the rest", () => {
+  const repoRoot = makeRepoRoot();
+  const config = { repoRoot };
+  const nowMs = Date.parse("2026-08-17T12:00:00.000Z");
+  try {
+    writeBuybackLogBatches(config, [
+      { source: "fresh", at: new Date(nowMs - BUYBACK_LOG_RETENTION_MS).toISOString(), entries: [] },
+      { source: "expired", at: new Date(nowMs - BUYBACK_LOG_RETENTION_MS - 1).toISOString(), entries: [] },
+      { source: "unparseable", at: "not-a-date", entries: [] },
+      { source: "yesterday", at: new Date(nowMs - 24 * 60 * 60 * 1000).toISOString(), entries: [] }
+    ]);
+    const cleaned = cleanupBuybackLog(config, { now: nowMs });
+    assert.equal(cleaned.removed, 2);
+    assert.deepEqual(cleaned.batches.map((batch) => batch.source), ["fresh", "yesterday"]);
+    assert.deepEqual(readBuybackLog(config, { now: nowMs }).batches.map((batch) => batch.source), ["fresh", "yesterday"]);
+    assert.deepEqual(JSON.parse(readFileSync(buybackLogPath(config), "utf8")).batches.map((batch) => batch.source), ["fresh", "yesterday"]);
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test("buyback log cleanup does not rewrite the file when every batch is still fresh", () => {
+  const repoRoot = makeRepoRoot();
+  const config = { repoRoot };
+  const nowMs = Date.parse("2026-08-17T12:00:00.000Z");
+  try {
+    const path = buybackLogPath(config);
+    mkdirSync(join(config.repoRoot, "runtime/generated/market-bot"), { recursive: true });
+    const payload = JSON.stringify({ batches: [{ source: "fresh", at: new Date(nowMs).toISOString(), entries: [] }] });
+    writeFileSync(path, payload);
+    assert.equal(cleanupBuybackLog(config, { now: nowMs }).removed, 0);
+    assert.equal(readFileSync(path, "utf8"), payload);
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test("appending a buyback log batch drops batches older than five days", () => {
+  const repoRoot = makeRepoRoot();
+  const config = { repoRoot };
+  const nowMs = Date.parse("2026-08-17T12:00:00.000Z");
+  try {
+    writeBuybackLogBatches(config, [
+      { source: "expired", at: new Date(nowMs - BUYBACK_LOG_RETENTION_MS - 1000).toISOString(), entries: [] },
+      { source: "kept", at: new Date(nowMs - 60 * 60 * 1000).toISOString(), entries: [] }
+    ]);
+    appendBuybackLogBatch(config, [{ order_id: "1", template_id: "Sword", result_code: 0, result_label: "success" }], {
+      source: "Buyback sweep",
+      exchangeId: "42",
+      now: nowMs
+    });
+    assert.deepEqual(readBuybackLog(config, { now: nowMs }).batches.map((batch) => batch.source), ["Buyback sweep", "kept"]);
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test("scheduler tick prunes expired buyback log batches even when buyback is disabled", async () => {
+  const repoRoot = makeRepoRoot();
+  const config = { repoRoot, mockMode: false };
+  try {
+    const db = fakeDb();
+    const { scheduler, state } = makeScheduler(config, { db });
+    saveBuybackSchedule(config, { enabled: false, exchangeId: "42" }, { now: () => state.clock });
+    writeBuybackLogBatches(config, [
+      { source: "expired", at: new Date(state.clock - BUYBACK_LOG_RETENTION_MS - 1000).toISOString(), entries: [] },
+      { source: "fresh", at: new Date(state.clock).toISOString(), entries: [] }
+    ]);
+    await scheduler.tick();
+    assert.equal(db.probes.length, 0);
+    assert.deepEqual(readBuybackLog(config, { now: state.clock }).batches.map((batch) => batch.source), ["fresh"]);
+    assert.deepEqual(JSON.parse(readFileSync(buybackLogPath(config), "utf8")).batches.map((batch) => batch.source), ["fresh"]);
   } finally {
     rmSync(repoRoot, { recursive: true, force: true });
   }
