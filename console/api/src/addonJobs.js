@@ -434,29 +434,89 @@ WHERE o.exchange_id = ${exchangeId}
   AND ${BUYBACK_PLAYER_SELL_SQL};`;
 }
 
-// Read-only per-listing classification for the Buyback Sweep Log dry-run.
-export function buildBuybackClassifySql(plan, schedule) {
-  const exchangeId = requireScheduleExchangeId(schedule);
-  return `WITH ${buybackMarketPlanCteSql(plan, schedule)},
-bot AS (
-    SELECT id AS owner_id FROM dune.actors WHERE class = 'Revy' LIMIT 1
-)
-SELECT
-    o.id::text AS order_id,
-    o.template_id,
+function buybackClassifySelectSql() {
+  return `o.id::text AS order_id,
+    COALESCE(o.template_id, '') AS template_id,
     (${BUYBACK_ORDER_GRADE_SQL})::text AS quality_level,
     COALESCE(o.item_price, 0)::text AS item_price,
     (${BUYBACK_STACK_SQL})::text AS stack_size,
     COALESCE(p.max_unit_price, 0)::text AS max_unit_price,
     (${BUYBACK_RESULT_CODE_SQL})::text AS result_code,
     ${BUYBACK_RESULT_LABEL_SQL} AS result_label,
-    ${BUYBACK_RESULT_DETAIL_SQL} AS detail
-FROM ${BUYBACK_ORDERS_JOIN_SQL}
+    ${BUYBACK_RESULT_DETAIL_SQL} AS detail`;
+}
+
+function buybackClassifyFromSql(exchangeId) {
+  return `FROM ${BUYBACK_ORDERS_JOIN_SQL}
 LEFT JOIN bot b ON TRUE
 WHERE o.exchange_id = ${exchangeId}
-  AND ${BUYBACK_PLAYER_SELL_SQL}
-ORDER BY (${BUYBACK_RESULT_CODE_SQL}) ASC, o.item_price ASC NULLS LAST, o.id ASC
-LIMIT ${MAX_BUYBACK_LOG_ENTRIES};`;
+  AND ${BUYBACK_PLAYER_SELL_SQL}`;
+}
+
+// Read-only per-listing classification for the Buyback Sweep Log dry-run.
+// Each skip reason is its own top-N band so Postgres keeps a heap of at most
+// MAX_BUYBACK_LOG_ENTRIES instead of sorting every player listing, then the
+// remaining budget fills cheaper skip bands. Eligible rows always win the cap.
+export function buildBuybackClassifySql(plan, schedule) {
+  const exchangeId = requireScheduleExchangeId(schedule);
+  const cap = MAX_BUYBACK_LOG_ENTRIES;
+  const selectSql = buybackClassifySelectSql();
+  const fromSql = buybackClassifyFromSql(exchangeId);
+  return `WITH ${buybackMarketPlanCteSql(plan, schedule)},
+bot AS (
+    SELECT id AS owner_id FROM dune.actors WHERE class = 'Revy' LIMIT 1
+),
+eligible_band AS (
+    SELECT ${selectSql}
+    ${fromSql}
+      AND ${BUYBACK_ELIGIBLE_PREDICATE}
+    ORDER BY o.item_price ASC NULLS LAST, o.id ASC
+    LIMIT ${cap}
+),
+n0 AS (SELECT COUNT(*)::int AS n FROM eligible_band),
+above_cap_band AS (
+    SELECT ${selectSql}
+    ${fromSql}
+      AND p.template_id IS NOT NULL
+      AND COALESCE(o.item_price, 0) > 0
+      AND ${BUYBACK_STACK_SQL} > 0
+      AND o.item_price > p.max_unit_price
+    ORDER BY o.item_price ASC NULLS LAST, o.id ASC
+    LIMIT GREATEST(0, ${cap} - (SELECT n FROM n0))
+),
+n1 AS (SELECT (SELECT n FROM n0) + COUNT(*)::int AS n FROM above_cap_band),
+unknown_band AS (
+    SELECT ${selectSql}
+    ${fromSql}
+      AND p.template_id IS NULL
+    ORDER BY o.item_price ASC NULLS LAST, o.id ASC
+    LIMIT GREATEST(0, ${cap} - (SELECT n FROM n1))
+),
+n2 AS (SELECT (SELECT n FROM n1) + COUNT(*)::int AS n FROM unknown_band),
+invalid_price_band AS (
+    SELECT ${selectSql}
+    ${fromSql}
+      AND p.template_id IS NOT NULL
+      AND COALESCE(o.item_price, 0) <= 0
+    ORDER BY o.item_price ASC NULLS LAST, o.id ASC
+    LIMIT GREATEST(0, ${cap} - (SELECT n FROM n2))
+),
+n3 AS (SELECT (SELECT n FROM n2) + COUNT(*)::int AS n FROM invalid_price_band),
+invalid_stack_band AS (
+    SELECT ${selectSql}
+    ${fromSql}
+      AND p.template_id IS NOT NULL
+      AND COALESCE(o.item_price, 0) > 0
+      AND ${BUYBACK_STACK_SQL} <= 0
+    ORDER BY o.item_price ASC NULLS LAST, o.id ASC
+    LIMIT GREATEST(0, ${cap} - (SELECT n FROM n3))
+)
+SELECT * FROM eligible_band
+UNION ALL SELECT * FROM above_cap_band
+UNION ALL SELECT * FROM unknown_band
+UNION ALL SELECT * FROM invalid_price_band
+UNION ALL SELECT * FROM invalid_stack_band
+ORDER BY result_code::int ASC, item_price::bigint ASC, order_id ASC;`;
 }
 
 export function buildBuybackSql(plan, schedule) {
@@ -496,10 +556,6 @@ BEGIN
     IF v_balance < 1000000000000 THEN
         PERFORM dune.dune_exchange_modify_user_solari_balance(v_owner_id, 9000000000000 - v_balance);
     END IF;
-    INSERT INTO market_buy_log (order_id, template_id, quality_level, item_price, stack_size, max_unit_price, result_code, result_label, detail)
-    SELECT o.id, COALESCE(o.template_id, ''), ${BUYBACK_ORDER_GRADE_SQL}, COALESCE(o.item_price, 0), ${BUYBACK_STACK_SQL}, p.max_unit_price, ${BUYBACK_RESULT_CODE_SQL}, ${BUYBACK_RESULT_LABEL_SQL}, ${BUYBACK_RESULT_DETAIL_SQL}
-    FROM ${BUYBACK_ORDERS_JOIN_SQL}
-    WHERE o.exchange_id = ${exchangeId} AND ${BUYBACK_SWEEP_PLAYER_SQL};
     INSERT INTO market_buy_diagnostics
     SELECT COUNT(*),
            COUNT(*) FILTER (WHERE p.template_id IS NOT NULL),
@@ -513,7 +569,8 @@ BEGIN
     -- rows, so concurrent sweeps skip anything already claimed and rows
     -- deleted by a committed sweep drop out of the re-checked result.
     FOR rec IN
-        SELECT o.id AS order_id, o.exchange_id, o.access_point_id, o.owner_id AS seller_actor_id, o.template_id, o.item_price, o.item_id, ${BUYBACK_STACK_SQL} AS actual_stack, p.max_unit_price
+        SELECT o.id AS order_id, o.exchange_id, o.access_point_id, o.owner_id AS seller_actor_id, o.template_id, o.item_price, o.item_id,
+               ${BUYBACK_ORDER_GRADE_SQL} AS quality_level, ${BUYBACK_STACK_SQL} AS actual_stack, p.max_unit_price
         FROM ${BUYBACK_ORDERS_JOIN_SQL}
         WHERE o.exchange_id = ${exchangeId} AND ${BUYBACK_SWEEP_PLAYER_SQL} AND ${BUYBACK_ELIGIBLE_PREDICATE}
         ORDER BY o.item_price ASC, o.id ASC
@@ -529,34 +586,27 @@ BEGIN
         DELETE FROM dune.dune_exchange_sell_orders WHERE order_id = rec.order_id;
         DELETE FROM dune.dune_exchange_orders WHERE id = rec.order_id;
         IF rec.item_id IS NOT NULL THEN DELETE FROM dune.items WHERE id = rec.item_id; END IF;
-        UPDATE market_buy_log SET result_code = 0, result_label = 'success', detail = 'bought stack ' || rec.actual_stack::text || ' at ' || rec.item_price::text || '/unit (cap ' || rec.max_unit_price::text || ')' WHERE order_id = rec.order_id;
+        INSERT INTO market_buy_log (order_id, template_id, quality_level, item_price, stack_size, max_unit_price, result_code, result_label, detail)
+        VALUES (rec.order_id, COALESCE(rec.template_id, ''), rec.quality_level, COALESCE(rec.item_price, 0), rec.actual_stack, rec.max_unit_price, 0, 'success', 'bought stack ' || rec.actual_stack::text || ' at ' || rec.item_price::text || '/unit (cap ' || rec.max_unit_price::text || ')');
         v_purchased := v_purchased + 1; v_units := v_units + rec.actual_stack; v_solari := v_solari + (rec.item_price * rec.actual_stack);
     END LOOP;
-    -- Remaining eligible rows: rank by the same price/id order the FOR loop
-    -- uses. Ranks past Max Buys were never selected (0x5). Ranks within the
-    -- limit that we did not buy were SKIP LOCKED or taken concurrently (0x6).
-    UPDATE market_buy_log l
-    SET result_code = CASE WHEN r.rn > ${maxBuys} THEN 5 ELSE 6 END,
-        result_label = CASE WHEN r.rn > ${maxBuys} THEN 'max buys limit' ELSE 'skipped locked' END,
-        detail = CASE
-            WHEN r.rn > ${maxBuys} THEN 'eligible but past Max Buys Per Sweep (' || ${maxBuys}::text || ')'
-            ELSE 'eligible but locked by a concurrent sweep'
-        END
-    FROM (
-        SELECT order_id, ROW_NUMBER() OVER (ORDER BY item_price ASC, order_id ASC) AS rn
-        FROM market_buy_log
-        WHERE result_label IN ('eligible', 'success')
-    ) r
-    WHERE l.order_id = r.order_id AND l.result_label = 'eligible';
+    -- Leftover eligible rows only (still on the board, not purchased). Skip
+    -- dumps stay on the read-only classify path so this write transaction does
+    -- not copy the whole exchange into a temp table. 0x5 vs 0x6 is applied in
+    -- JS from purchased-before-this-row, which matches SKIP LOCKED substitution.
+    INSERT INTO market_buy_log (order_id, template_id, quality_level, item_price, stack_size, max_unit_price, result_code, result_label, detail)
+    SELECT o.id, COALESCE(o.template_id, ''), ${BUYBACK_ORDER_GRADE_SQL}, COALESCE(o.item_price, 0), ${BUYBACK_STACK_SQL}, p.max_unit_price, 0, 'eligible', ${BUYBACK_RESULT_DETAIL_SQL}
+    FROM ${BUYBACK_ORDERS_JOIN_SQL}
+    WHERE o.exchange_id = ${exchangeId}
+      AND ${BUYBACK_SWEEP_PLAYER_SQL}
+      AND ${BUYBACK_ELIGIBLE_PREDICATE}
+      AND NOT EXISTS (SELECT 1 FROM market_buy_log l WHERE l.order_id = o.id)
+    ORDER BY o.item_price ASC, o.id ASC
+    LIMIT ${MAX_BUYBACK_LOG_ENTRIES};
     INSERT INTO market_buy_result (purchased, total_units, total_solari, threshold_percent, max_buys) VALUES (v_purchased, v_units, v_solari, ${threshold}, ${maxBuys});
 END $$;
 SELECT r.purchased, r.total_units, r.total_solari, r.threshold_percent, r.max_buys, d.player_sell_orders, d.known_player_sell_orders, d.eligible_player_sell_orders, d.above_threshold_sell_orders, d.unknown_template_sell_orders,
-       (SELECT COALESCE(jsonb_agg(${BUYBACK_LOG_JSON_SQL} ORDER BY l.result_code ASC, l.item_price ASC, l.order_id ASC), '[]'::jsonb)
-        FROM (
-            SELECT * FROM market_buy_log
-            ORDER BY result_code ASC, item_price ASC, order_id ASC
-            LIMIT ${MAX_BUYBACK_LOG_ENTRIES}
-        ) l)::text AS buyback_log
+       (SELECT COALESCE(jsonb_agg(${BUYBACK_LOG_JSON_SQL} ORDER BY l.item_price ASC, l.order_id ASC), '[]'::jsonb) FROM market_buy_log l)::text AS buyback_log
 FROM market_buy_result r CROSS JOIN market_buy_diagnostics d;`;
 }
 
@@ -946,7 +996,11 @@ function persistSweepBuybackLog(config, row, schedule, names, source) {
   try {
     const logRows = extractBuybackLogRows(row);
     if (!logRows) return;
-    appendBuybackLogBatch(config, logRows.map((entry) => normalizeBuybackLogEntry(entry, names)), {
+    const entries = applySweepLeftoverRanking(
+      logRows.map((entry) => normalizeBuybackLogEntry(entry, names)),
+      schedule.maxBuys
+    );
+    appendBuybackLogBatch(config, entries, {
       source,
       exchangeId: schedule.exchangeId,
       schedule
@@ -1066,6 +1120,23 @@ function compareLogEntries(left, right) {
   return compareLogOrder(left, right);
 }
 
+function markBuybackLeftover(entry, code, maxBuys) {
+  if (code === 5) {
+    return normalizeBuybackLogEntry({
+      ...entry,
+      resultCode: 5,
+      resultLabel: "max buys limit",
+      detail: `eligible but past Max Buys Per Sweep (${maxBuys})`
+    });
+  }
+  return normalizeBuybackLogEntry({
+    ...entry,
+    resultCode: 6,
+    resultLabel: "skipped locked",
+    detail: "eligible but locked by a concurrent sweep"
+  });
+}
+
 export function applyDryRunMaxBuysRanking(entries, maxBuys) {
   const max = Math.max(1, Number(maxBuys) || 1);
   const eligible = entries
@@ -1077,12 +1148,35 @@ export function applyDryRunMaxBuysRanking(entries, maxBuys) {
     .map((entry) => {
       if (entry.resultCode !== 0 || entry.resultLabel !== "eligible") return entry;
       if ((rank.get(entry.orderId) || Number.POSITIVE_INFINITY) <= max) return entry;
-      return normalizeBuybackLogEntry({
-        ...entry,
-        resultCode: 5,
-        resultLabel: "max buys limit",
-        detail: `eligible but past Max Buys Per Sweep (${max})`
-      });
+      return markBuybackLeftover(entry, 5, max);
+    })
+    .sort(compareLogEntries);
+}
+
+// Write-sweep leftover ranking. Walk purchased + still-eligible rows in the
+// same price/id order as FOR UPDATE SKIP LOCKED. For each leftover eligible
+// row, count how many purchases happened before it:
+//   boughtBefore < maxBuys → the loop was still filling, so this row was locked (0x6)
+//   boughtBefore >= maxBuys → the loop had already filled, so this row is past Max Buys (0x5)
+export function applySweepLeftoverRanking(entries, maxBuys) {
+  const max = Math.max(1, Number(maxBuys) || 1);
+  const considered = entries
+    .filter((entry) => entry.resultLabel === "success" || (entry.resultCode === 0 && entry.resultLabel === "eligible"))
+    .slice()
+    .sort(compareLogOrder);
+  const leftover = new Map();
+  let boughtBefore = 0;
+  for (const entry of considered) {
+    if (entry.resultLabel === "success") {
+      boughtBefore += 1;
+      continue;
+    }
+    leftover.set(entry.orderId, boughtBefore >= max ? 5 : 6);
+  }
+  return entries
+    .map((entry) => {
+      const code = leftover.get(entry.orderId);
+      return code == null ? entry : markBuybackLeftover(entry, code, max);
     })
     .sort(compareLogEntries);
 }

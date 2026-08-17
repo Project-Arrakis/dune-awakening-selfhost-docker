@@ -15,9 +15,9 @@ The scheduler ticks with the console's other background tasks. A due buyback run
 2. Takes a database backup only when eligible player listings exist
    (`DB_BACKUP_ORIGIN=market-bot-buyback`).
 3. Runs the buyback in a transaction and re-arms from completion time.
-4. Appends a Buyback Sweep Log batch for every listing considered (purchased or
-   skipped, with the skip reason). Idle ticks still classify listings without a
-   backup so the log explains why nothing was bought.
+4. Appends a Buyback Sweep Log batch of purchases and leftover eligible
+   listings (`0x5` Max Buys / `0x6` skipped locked). Idle ticks still classify
+   skip reasons without a backup so the log explains why nothing was bought.
 
 A due reseed always takes a backup (`DB_BACKUP_ORIGIN=market-bot-seed`), clears
 only the bot's listings on the selected exchange, and writes the bundled seed
