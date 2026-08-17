@@ -1416,8 +1416,110 @@ const PLAYER_SORT_COLUMNS = {
   online_status: { order: ["online_status"] },
   map: { order: ["lower(coalesce(map, ''))"] },
   last_seen: { order: ["last_seen"] },
+  total_playtime_seconds: { order: ["total_playtime_seconds"] },
   actor_id: { order: ["actor_id"] }
 };
+
+const playerPlaytimeMigrations = new WeakMap();
+
+export function migratePlayerPlaytimeSchema(db) {
+  if (!playerPlaytimeMigrations.has(db)) {
+    const migrate = async (tx) => {
+      await tx.query(`
+        create table if not exists dune.console_player_playtime (
+          account_id bigint primary key,
+          total_seconds bigint not null default 0,
+          session_started_at timestamp with time zone,
+          session_login_at timestamp with time zone,
+          last_observed_at timestamp with time zone,
+          updated_at timestamp with time zone not null default current_timestamp,
+          constraint console_player_playtime_total_nonnegative check (total_seconds >= 0)
+        )`);
+    };
+    const promise = Promise.resolve(typeof db.transaction === "function" ? db.transaction(migrate) : migrate(db))
+      .catch((error) => {
+        playerPlaytimeMigrations.delete(db);
+        throw error;
+      });
+    playerPlaytimeMigrations.set(db, promise);
+  }
+  return playerPlaytimeMigrations.get(db);
+}
+
+// The game exposes current presence and the current session's login timestamp,
+// but no lifetime counter. Keep completed seconds in a console-owned table and
+// retain the active session separately so the UI can include time elapsed since
+// the last poll. A session that ends while the console is down is capped at its
+// last observation instead of inventing playtime during the outage.
+export async function trackPlayerPlaytime(db) {
+  if (!(await tableExists(db, "player_state"))) return { supported: false };
+  const playerStateColumns = await columnsFor(db, "player_state");
+  if (!["account_id", "online_status"].every((column) => playerStateColumns.has(column))) {
+    return { supported: false };
+  }
+  await migratePlayerPlaytimeSchema(db);
+  const sessionLoginSelect = playerStateColumns.has("last_login_time")
+    ? "ps.last_login_time"
+    : "null::timestamp with time zone";
+  return db.query(`
+    with currently_online as (
+      select distinct on (ps.account_id)
+             ps.account_id,
+             ${sessionLoginSelect} as session_login_at
+      from dune.player_state ps
+      where ps.account_id is not null
+        and ps.account_id <> 0
+        and coalesce(ps.online_status::text, '') = 'Online'
+      order by ps.account_id, ${sessionLoginSelect} desc nulls last
+    ),
+    closed_sessions as (
+      update dune.console_player_playtime tracked
+      set total_seconds = tracked.total_seconds + greatest(0, floor(extract(epoch from
+            coalesce(tracked.last_observed_at, tracked.session_started_at) - tracked.session_started_at)))::bigint,
+          session_started_at = null,
+          session_login_at = null,
+          updated_at = current_timestamp
+      where tracked.session_started_at is not null
+        and not exists (select 1 from currently_online online where online.account_id = tracked.account_id)
+      returning tracked.account_id
+    )
+    insert into dune.console_player_playtime (
+      account_id, total_seconds, session_started_at, session_login_at, last_observed_at, updated_at
+    )
+    select online.account_id,
+           0,
+           coalesce(online.session_login_at, current_timestamp),
+           online.session_login_at,
+           current_timestamp,
+           current_timestamp
+    from currently_online online
+    on conflict (account_id) do update
+    set total_seconds = dune.console_player_playtime.total_seconds +
+          case
+            when dune.console_player_playtime.session_started_at is not null
+             and excluded.session_login_at is not null
+             and dune.console_player_playtime.session_login_at is distinct from excluded.session_login_at
+              then greatest(0, floor(extract(epoch from
+                   coalesce(dune.console_player_playtime.last_observed_at, dune.console_player_playtime.session_started_at)
+                   - dune.console_player_playtime.session_started_at)))::bigint
+            else 0
+          end,
+        session_started_at = case
+          when dune.console_player_playtime.session_started_at is not null
+           and (excluded.session_login_at is null
+             or dune.console_player_playtime.session_login_at is not distinct from excluded.session_login_at)
+            then dune.console_player_playtime.session_started_at
+          else excluded.session_started_at
+        end,
+        session_login_at = case
+          when dune.console_player_playtime.session_started_at is not null
+           and excluded.session_login_at is null
+            then dune.console_player_playtime.session_login_at
+          else excluded.session_login_at
+        end,
+        last_observed_at = current_timestamp,
+        updated_at = current_timestamp`);
+}
 
 // Funcom creates this reserved GM identity in some freshly initialized
 // battlegroups. It is an internal service actor, not an administrable player.
@@ -1473,6 +1575,21 @@ export async function listPlayers(db, { status = "all", q = "", page = 0, pageSi
     ? `coalesce(nullif(${plainFuncomId}, ''), nullif(${validDecryptedFuncomId}, ''), '')`
     : plainFuncomId;
   const lastSeenSelect = await playerLastSeenSelect(db);
+  const hasOnlineStatus = playerStateColumns.has("online_status");
+  const hasPlayerPlaytime = await tableExists(db, "console_player_playtime");
+  const playerPlaytimeJoin = hasPlayerPlaytime
+    ? "left join dune.console_player_playtime player_playtime on player_playtime.account_id = a.owner_account_id"
+    : "";
+  const totalPlaytimeSelect = hasPlayerPlaytime
+    ? `greatest(0, coalesce(player_playtime.total_seconds, 0) +
+         case when player_playtime.session_started_at is not null
+           then floor(extract(epoch from
+             (case when ${hasOnlineStatus ? "coalesce(ps.online_status::text, '') = 'Online'" : "false"}
+               then current_timestamp
+               else coalesce(player_playtime.last_observed_at, player_playtime.session_started_at)
+              end) - player_playtime.session_started_at))::bigint
+           else 0 end)`
+    : "0::bigint";
   const loginSessionSelect = playerStateColumns.has("last_login_time")
     ? "coalesce(ps.last_login_time::text, '')"
     : "''";
@@ -1482,7 +1599,6 @@ export async function listPlayers(db, { status = "all", q = "", page = 0, pageSi
   const currentPawnPriority = playerStateColumns.has("player_pawn_id")
     ? "when ps.player_pawn_id = a.id then 0"
     : "when false then 0";
-  const hasOnlineStatus = playerStateColumns.has("online_status");
   const lastSeenWithOnlineFallback = `
     case
       when ${hasOnlineStatus ? "coalesce(ps.online_status::text, '') = 'Online'" : "false"}
@@ -1549,6 +1665,7 @@ export async function listPlayers(db, { status = "all", q = "", page = 0, pageSi
              (${bannedExpression}) as is_banned,
              ${loginSessionSelect} as login_session,
              ${lastSeenWithOnlineFallback} as last_seen,
+             ${totalPlaytimeSelect} as total_playtime_seconds,
              coalesce(nullif(ps.player_controller_id, 0), nullif(a.owner_account_id, 0), a.id) as dedupe_key,
              case
                ${currentPawnPriority}
@@ -1559,6 +1676,7 @@ export async function listPlayers(db, { status = "all", q = "", page = 0, pageSi
       from dune.actors a
       left join dune.player_state ps on ps.account_id = a.owner_account_id
       left join dune.accounts ac on ac.id = a.owner_account_id
+      ${playerPlaytimeJoin}
       ${encryptedAccountsJoin}
       where ${where}
     ),
@@ -1578,7 +1696,8 @@ export async function listPlayers(db, { status = "all", q = "", page = 0, pageSi
              online_status,
              is_banned,
              login_session,
-             last_seen
+             last_seen,
+             total_playtime_seconds
       from player_rows
       order by dedupe_key, row_priority, online_priority, actor_id desc
     ),
@@ -3042,7 +3161,7 @@ export async function liveMapStorage(db, map = "") {
       left join dune.permission_actor pa on pa.actor_id = p.id
       left join dune.inventories inv on inv.actor_id = p.id
       left join dune.items i on i.inventory_id = inv.id
-      where p.building_type in ('SpiceSilo_Placeable','GenericContainer_Placeable','StorageContainer_Placeable','MediumStorageContainer_Placeable')
+      where p.building_type in ('SpiceSilo_Placeable','GenericContainer_Placeable','StorageContainer_Placeable','MediumStorageContainer_Placeable','Developer_StorageContainer_Placeable')
         and a.transform is not null ${partitionWhere} ${where}
       group by p.id, p.building_type, a.map, a.partition_id, a.transform
       order by a.map, a.partition_id, p.id`, values);
@@ -4216,7 +4335,7 @@ export async function listStorage(db) {
     left join dune.permission_actor_rank par on par.permission_actor_id = afe.actor_id
     left join dune.actors player_a on player_a.id = par.player_id
     left join dune.player_state ps on ps.account_id = player_a.owner_account_id
-    where p.building_type in ('SpiceSilo_Placeable','GenericContainer_Placeable','StorageContainer_Placeable','MediumStorageContainer_Placeable')
+    where p.building_type in ('SpiceSilo_Placeable','GenericContainer_Placeable','StorageContainer_Placeable','MediumStorageContainer_Placeable','Developer_StorageContainer_Placeable')
       and p.is_hologram = false and p.owner_entity_id is not null and p.owner_entity_id != 0
     group by p.id, p.building_type, a.map
     order by p.id`);
@@ -7511,6 +7630,7 @@ const BASE_INVENTORY_TYPES = {
     buildingTypes: {
       storagecontainer_placeable: "Storage Container",
       mediumstoragecontainer_placeable: "Medium Storage Container",
+      developer_storagecontainer_placeable: "Developer Storage Container",
       genericcontainer_placeable: "Chest",
       // Two building types display as the same building. SpiceSilo is the
       // legacy name every live placement still carries (48 of them on the

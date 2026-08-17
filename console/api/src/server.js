@@ -187,10 +187,12 @@ createServer(async (req, res) => {
       console.warn(`Discord adapter schema initialization failed: ${redact(error?.message || "Unexpected error.")}`);
     });
   }
+  runBackgroundTick("Player playtime tracker", () => duneDb.trackPlayerPlaytime(db));
 });
 
 setInterval(() => {
   runBackgroundTick("Player ban enforcement", () => playerBanEnforcer.tick());
+  runBackgroundTick("Player playtime tracker", () => duneDb.trackPlayerPlaytime(db));
   runBackgroundTick("Care Package auto-grant", carePackageAutoTick);
   runBackgroundTick("Message of the Day", messageOfTheDayAutoTick);
   runBackgroundTick("Player announcements", playerAnnouncementsAutoTick);

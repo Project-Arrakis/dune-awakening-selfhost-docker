@@ -135,6 +135,8 @@ When the Restart Queue is enabled, the restart routes above (`/api/server/restar
 | GET | `/api/players/online` | List currently online players | `page?`, `pageSize?` |
 | GET | `/api/players/search` | Search players by name/ID | `q` (required, query param) |
 
+Player rows include `total_playtime_seconds`. The console samples `player_state.online_status` every 10 seconds and persists completed session time in `dune.console_player_playtime`; the currently active session is included from `last_login_time`. Tracking begins when this console version first runs, so time from older completed sessions cannot be reconstructed.
+
 ### Player Profile & Data
 
 | Method | Route | Description | Parameters |
