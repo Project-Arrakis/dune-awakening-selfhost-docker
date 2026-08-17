@@ -81,6 +81,7 @@ fi
 docker run -d \
   "${DUNE_DOCKER_LOG_ARGS[@]}" \
   --name dune-text-router \
+  --label "com.docker.compose.project=${DUNE_COMPOSE_PROJECT_NAME}" \
   --network dune-net \
   --restart unless-stopped \
   -p "127.0.0.1:${TEXT_ROUTER_PORT}:5059/tcp" \
