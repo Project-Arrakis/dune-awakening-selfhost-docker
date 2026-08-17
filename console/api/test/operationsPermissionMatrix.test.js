@@ -183,6 +183,7 @@ test("20 Database: backup creation route is allowlisted", () => {
 
 test("21 Database: restore validates the backup and disables duplicate safety backups", () => {
   assert.deepEqual(buildDuneArgs("backupRestore", { backup: "dune-db-test.backup" }), ["db", "restore", "dune-db-test.backup", "--no-safety-backup"]);
+  assert.deepEqual(buildDuneArgs("backupRestore", { backup: "dune-db-test.backup", identityMode: "adopt-backup" }), ["db", "restore", "dune-db-test.backup", "--no-safety-backup", "--adopt-backup-battlegroup"]);
   assert.throws(() => buildDuneArgs("backupRestore", { backup: "../unsafe.backup" }));
 });
 
@@ -253,6 +254,7 @@ test("36 Web UI: map mode write executes through the task runner", async () => {
 });
 test("37 Web UI: backup restore executes through the task runner", async () => {
   await assertWebWrite("backupRestore", { backup: "dune-db-test.backup" }, ["db", "restore", "dune-db-test.backup", "--no-safety-backup"]);
+  await assertWebWrite("backupRestore", { backup: "dune-db-test.backup", identityMode: "keep-current" }, ["db", "restore", "dune-db-test.backup", "--no-safety-backup", "--keep-current-battlegroup"]);
 });
 test("38 Web UI: memory write executes through the task runner", async () => {
   await assertWebWrite("memorySet", { map: "DeepDesert_1", memory: "8g" }, ["memory", "set", "DeepDesert_1", "8g"]);
@@ -268,7 +270,9 @@ test("40 Web UI: sietch write executes through the task runner", async () => {
   await assertWebWrite("sietchesRestart", { partitionId: 31 }, ["sietches", "start-partition", "31"]);
 });
 test("40b Web UI: memory swap changes execute through validated task arguments", async () => {
-  await assertWebWrite("memorySwapEnable", { perServerGiB: 2, poolGiB: 8 }, ["memory-swap", "enable", "2", "8"]);
+  await assertWebWrite("memorySwapEnable", { perServerGiB: 2, poolGiB: 8, swappiness: 25 }, ["memory-swap", "enable", "2", "8", "25"]);
+  assert.throws(() => buildDuneArgs("memorySwapEnable", { perServerGiB: 2, poolGiB: 8, swappiness: -1 }), /integer/);
+  assert.throws(() => buildDuneArgs("memorySwapEnable", { perServerGiB: 2, poolGiB: 8, swappiness: 101 }), /integer/);
   await assertWebWrite("memorySwapDisable", {}, ["memory-swap", "disable"]);
 });
 
@@ -312,6 +316,21 @@ test("43 Upgrade: orchestrator repairs every writable volume before dropping pri
   }
   assert.match(entrypoint, /chown -R dune:dune/);
   assert.match(entrypoint, /exec gosu dune/);
+});
+
+test("43b Dynamic map spawn repairs drifted settings ownership before materializing INI files", () => {
+  const spawn = source("runtime/scripts/spawn-server.sh");
+  const repair = source("runtime/scripts/repair-map-settings-permissions.sh");
+  const repairCall = 'runtime/scripts/repair-map-settings-permissions.sh "$safe_name"';
+  const materializeCall = 'python3 runtime/scripts/usersettings.py materialize';
+
+  assert.ok(spawn.includes(repairCall), "dynamic map spawn must repair its settings directory");
+  assert.ok(spawn.indexOf(repairCall) < spawn.indexOf(materializeCall), "repair must precede INI materialization");
+  assert.match(repair, /mkdir -p "\$settings_dir".*\[ -w "\$settings_dir" \]/s);
+  assert.match(repair, /Refusing to repair settings ownership while the map is running/);
+  assert.match(repair, /-v "\$host_game_root:\/game"/);
+  assert.match(repair, /find "\$settings" -xdev/);
+  assert.doesNotMatch(repair, /find \/game -xdev/);
 });
 
 test("44 Upgrade: root-run publishers do not create Python caches in the checkout", () => {

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { Readable } from "node:stream";
@@ -213,6 +213,24 @@ test("safeStaticTarget path traversal with encoded sequences", () => {
     writeFileSync(resolve(dir, "index.html"), "safe");
     assert.equal(safeStaticTarget(dir, "/..%2F..%2Fetc/passwd"), resolve(dir, "index.html"));
     assert.equal(safeStaticTarget(dir, "/%2e%2e/%2e%2e/etc/passwd"), resolve(dir, "index.html"));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// Regression guard: "/." resolves to the static root itself, a directory,
+// not a file. The containment check alone reads that as "contained" (it is
+// dist, after all), so without also requiring a real file the function
+// returned the raw directory path -- which serveStatic's
+// createReadStream().pipe() would throw an unhandled EISDIR on.
+test("safeStaticTarget falls back to index.html rather than returning a directory", () => {
+  const dir = mkdtempSync(join(tmpdir(), "arrakis-static4-"));
+  try {
+    writeFileSync(resolve(dir, "index.html"), "safe");
+    mkdirSync(resolve(dir, "assets"));
+    assert.equal(safeStaticTarget(dir, "/."), resolve(dir, "index.html"));
+    assert.equal(safeStaticTarget(dir, "/assets"), resolve(dir, "index.html"));
+    assert.equal(safeStaticTarget(dir, "/assets/"), resolve(dir, "index.html"));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

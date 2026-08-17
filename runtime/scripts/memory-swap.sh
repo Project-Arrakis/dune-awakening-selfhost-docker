@@ -47,13 +47,14 @@ recommended_pool_gib() {
 }
 
 host_helper() {
-  local action="$1" pool="${2:-}" image host_root
+  local action="$1" image host_root
+  shift
   if [ "$(id -u)" -eq 0 ] && [ -x runtime/scripts/memory-swap-host.sh ]; then
-    runtime/scripts/memory-swap-host.sh "$action" ${pool:+"$pool"}
+    runtime/scripts/memory-swap-host.sh "$action" "$@"
     return
   fi
   if command -v sudo >/dev/null 2>&1 && [ -t 0 ] && sudo -v; then
-    sudo runtime/scripts/memory-swap-host.sh "$action" ${pool:+"$pool"}
+    sudo runtime/scripts/memory-swap-host.sh "$action" "$@"
     return
   fi
   command -v docker >/dev/null 2>&1 || { echo "Docker is required to manage host swap from the Console." >&2; exit 1; }
@@ -63,7 +64,7 @@ host_helper() {
   docker run --rm --user 0:0 --privileged --pid=host --network=host \
     -v /:/host \
     --entrypoint chroot \
-    "$image" /host "$host_root/runtime/scripts/memory-swap-host.sh" "$action" ${pool:+"$pool"}
+    "$image" /host "$host_root/runtime/scripts/memory-swap-host.sh" "$action" "$@"
 }
 
 apply_container_allowance() {
@@ -90,10 +91,11 @@ apply_container_allowance() {
 }
 
 show_status() {
-  local enabled allowance pool running existing total_mem free_kib total_kib managed_kib reserve_kib safe_available recommendation count swappiness
+  local enabled allowance pool configured_swappiness running existing total_mem free_kib total_kib managed_kib reserve_kib safe_available recommendation count swappiness
   enabled="$(env_value DUNE_MEMORY_SWAP_ENABLED)"; enabled="${enabled:-0}"
   allowance="$(env_value DUNE_MEMORY_SWAP_PER_SERVER_GIB)"; allowance="${allowance:-2}"
   pool="$(env_value DUNE_MEMORY_SWAP_POOL_GIB)"; pool="${pool:-0}"
+  configured_swappiness="$(env_value DUNE_MEMORY_SWAP_SWAPPINESS)"; configured_swappiness="${configured_swappiness:-10}"
   running="$(awk -v file="$HOST_SWAP_FILE" 'NR > 1 && $1 == file { print 1; found = 1 } END { if (!found) print 0 }' /proc/swaps 2>/dev/null)"
   existing="$(existing_non_project_swap_gib)"
   total_mem="$(awk '/^MemTotal:/ { printf "%d", int(($2 + 1048575) / 1048576) }' /proc/meminfo)"
@@ -115,25 +117,27 @@ existing_swap_gib=$existing
 physical_memory_gib=$total_mem
 safe_available_disk_gib=$safe_available
 swappiness=$swappiness
+configured_swappiness=$configured_swappiness
 swap_file=$HOST_SWAP_FILE
 EOF
 }
 
 enable_swap() {
-  local allowance="${1:-2}" pool="${2:-}"
+  local allowance="${1:-2}" pool="${2:-}" swappiness="${3:-10}"
   if ! printf '%s' "$allowance" | grep -Eq '^[1-9][0-9]*$' || [ "$allowance" -gt 16 ]; then echo "Per-server swap must be 1-16 GiB." >&2; exit 2; fi
   [ -n "$pool" ] || pool="$(recommended_pool_gib "$allowance")"
   if ! printf '%s' "$pool" | grep -Eq '^[0-9]+$' || [ "$pool" -gt 32 ]; then echo "Host swap pool must be 0-32 GiB." >&2; exit 2; fi
-  if [ "$pool" -gt 0 ]; then
-    host_helper enable "$pool"
-  else
+  if ! printf '%s' "$swappiness" | grep -Eq '^[0-9]+$' || [ "$swappiness" -gt 100 ]; then echo "Swappiness must be 0-100." >&2; exit 2; fi
+  host_helper enable "$pool" "$swappiness"
+  if [ "$pool" -eq 0 ]; then
     echo "Existing administrator-managed host swap is sufficient; no project swap file is required."
   fi
   set_env_value DUNE_MEMORY_SWAP_ENABLED 1
   set_env_value DUNE_MEMORY_SWAP_PER_SERVER_GIB "$allowance"
   set_env_value DUNE_MEMORY_SWAP_POOL_GIB "$pool"
+  set_env_value DUNE_MEMORY_SWAP_SWAPPINESS "$swappiness"
   apply_container_allowance "$allowance"
-  echo "Each running, newly started, or rebalanced world server may use up to ${allowance} GiB of emergency swap."
+  echo "Each running, newly started, or rebalanced world server may use up to ${allowance} GiB of emergency swap. Host swappiness is ${swappiness}."
 }
 
 disable_swap() {
@@ -142,11 +146,12 @@ disable_swap() {
   set_env_value DUNE_MEMORY_SWAP_ENABLED 0
   set_env_value DUNE_MEMORY_SWAP_PER_SERVER_GIB 0
   set_env_value DUNE_MEMORY_SWAP_POOL_GIB 0
+  set_env_value DUNE_MEMORY_SWAP_SWAPPINESS 10
 }
 
 case "${1:-status}" in
   status) show_status ;;
-  enable) enable_swap "${2:-2}" "${3:-}" ;;
+  enable) enable_swap "${2:-2}" "${3:-}" "${4:-10}" ;;
   disable) disable_swap ;;
-  *) echo "Usage: dune memory-swap status | enable [per-server-gib] [pool-gib] | disable" >&2; exit 2 ;;
+  *) echo "Usage: dune memory-swap status | enable [per-server-gib] [pool-gib] [swappiness] | disable" >&2; exit 2 ;;
 esac

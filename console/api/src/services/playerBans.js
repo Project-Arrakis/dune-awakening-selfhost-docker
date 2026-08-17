@@ -75,7 +75,7 @@ export function readPlayerBanState(repoRoot) {
   try {
     return normalizeState(JSON.parse(readFileSync(file, "utf8")));
   } catch (error) {
-    console.warn(`Ignoring unreadable player ban registry: ${redact(error?.message || error)}`);
+    console.warn(`Ignoring unreadable player ban registry: ${redact(error?.message || "Unexpected error.")}`);
     return normalizeState({});
   }
 }
@@ -194,7 +194,7 @@ export function createPlayerBanEnforcer(options = {}) {
           if (result.enforced) enforced += 1;
         } catch (error) {
           failed += 1;
-          log.error(`Player ban enforcement failed for ${ban.flsId.slice(0, 4)}…: ${redact(error?.message || error)}`);
+          log.error(`Player ban enforcement failed for ${ban.flsId.slice(0, 4)}…: ${redact(error?.message || "Unexpected error.")}`);
         }
       }
       return { ok: failed === 0, enforced, failed };

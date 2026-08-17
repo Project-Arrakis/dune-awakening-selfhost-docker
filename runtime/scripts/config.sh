@@ -69,43 +69,11 @@ current_server_title() {
   printf '%s' "unknown"
 }
 
-set_env_file_value() {
-  local file="$1"
-  local key="$2"
-  local value="$3"
-  local mode="${4:-644}"
-  local tmp
-
-  mkdir -p "$(dirname "$file")"
-  touch "$file"
-  tmp="$(mktemp)"
-
-  awk -F= -v key="$key" -v value="$value" '
-    BEGIN { found = 0 }
-    $1 == key {
-      gsub(/"/, "\\\"", value)
-      print key "=\"" value "\""
-      found = 1
-      next
-    }
-    { print }
-    END {
-      if (!found) {
-        gsub(/"/, "\\\"", value)
-        print key "=\"" value "\""
-      }
-    }
-  ' "$file" > "$tmp"
-
-  mv "$tmp" "$file"
-  chmod "$mode" "$file" 2>/dev/null || true
-}
-
 set_env_value() {
   local key="$1"
   local value="$2"
 
-  set_env_file_value .env "$key" "$value" 644
+  set_env_file_value .env "$key" "$value" 644 quoted
 }
 
 set_generated_env_value() {
@@ -113,7 +81,7 @@ set_generated_env_value() {
   local value="$2"
 
   [ -f runtime/generated/battlegroup.env ] || return 0
-  set_env_file_value runtime/generated/battlegroup.env "$key" "$value" 664
+  set_env_file_value runtime/generated/battlegroup.env "$key" "$value" 664 quoted
 }
 
 normalize_server_mode() {

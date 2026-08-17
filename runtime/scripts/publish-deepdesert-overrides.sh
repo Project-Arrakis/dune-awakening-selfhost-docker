@@ -5,6 +5,7 @@ set -euo pipefail
 export PYTHONDONTWRITEBYTECODE="${PYTHONDONTWRITEBYTECODE:-1}"
 
 cd "$(dirname "$0")/../.."
+source runtime/scripts/host-file-ownership.sh
 
 PID_FILE="runtime/generated/deepdesert-overrides.pid"
 LOG_FILE="runtime/generated/deepdesert-overrides.log"
@@ -61,6 +62,7 @@ stop_loop_processes() {
 write_live_pidfile() {
   mkdir -p "$(dirname "$PID_FILE")"
   printf '%s\n' "$$" >"$PID_FILE"
+  dune_set_host_path_owner "$PID_FILE"
 }
 
 clear_stale_pidfile() {
@@ -92,12 +94,14 @@ prepare_runtime_generated_files() {
     current_log="runtime/generated/deepdesert-overrides-$$.log"
   fi
   : >"$current_log"
+  dune_set_host_path_owner "$current_log"
 
   LOG_FILE="$current_log"
   if [ -e "$LOG_POINTER_FILE" ] && [ ! -w "$LOG_POINTER_FILE" ]; then
     rm -f "$LOG_POINTER_FILE" 2>/dev/null || true
   fi
   printf '%s\n' "$LOG_FILE" >"$LOG_POINTER_FILE" 2>/dev/null || true
+  dune_set_host_path_owner "$LOG_POINTER_FILE"
 }
 
 ensure_text_router_log() {
@@ -110,6 +114,7 @@ ensure_text_router_log() {
     [ -n "$log" ] || exit 1
     tail -n "$1" "$log"
   ' sh "$tail_lines" > "$TEXT_ROUTER_LOG"
+  dune_set_host_path_owner "$TEXT_ROUTER_LOG"
 }
 
 load_rmq_admin_creds() {
@@ -172,6 +177,7 @@ PY
   cache_tmp="${RMQ_CREDS_FILE}.tmp.$$"
   if { printf '%s\n' "$creds" >"$cache_tmp" \
       && chmod 600 "$cache_tmp" \
+      && dune_set_host_path_owner "$cache_tmp" \
       && mv -f "$cache_tmp" "$RMQ_CREDS_FILE"; } 2>/dev/null; then
     :
   else

@@ -15,6 +15,11 @@ ENV NODE_ENV=production
 # Runtime tools required by RedBlink dune scripts when the web admin runs in a container.
 # We install small OS tools through apt, then install Docker CLI + Compose plugin
 # as standalone binaries to avoid pulling the heavy docker.io Debian package.
+# gnupg (gpg) is required by `dune db backup-system`'s authenticated
+# (AEAD/OCB) archive encryption when the backup is triggered from the
+# Web Console rather than a host shell -- confirmed this was NOT already
+# present in this image, which would make that command fail here even
+# though it worked on a real host with gnupg installed via install.sh.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         iproute2 \
@@ -24,6 +29,7 @@ RUN apt-get update \
         unzip \
         procps \
         netcat-openbsd \
+        gnupg \
     && rm -rf /var/lib/apt/lists/* \
     && arch="$(dpkg --print-architecture)" \
     && case "$arch" in \
@@ -53,6 +59,8 @@ RUN chmod +x /usr/local/bin/entrypoint.sh \
     && useradd -m -s /bin/bash dune \
     && mkdir -p /repo /app \
     && chmod 755 /app /repo
+ENV HOME=/tmp/dune-console-home
+ENV DOCKER_CONFIG=/tmp/dune-console-home/.docker
 USER dune
 WORKDIR /repo
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

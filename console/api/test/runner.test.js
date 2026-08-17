@@ -66,20 +66,23 @@ test("builds allowlisted command arguments without shell interpolation", () => {
   assert.deepEqual(buildDuneArgs("restartServiceStart", { service: "survival" }), ["restart", "survival"]);
   assert.deepEqual(buildDuneArgs("logs", { service: "gateway" }), ["logs", "gateway"]);
   assert.deepEqual(buildDuneArgs("backupRestore", { backup: "dune-db-test.backup" }), ["db", "restore", "dune-db-test.backup", "--no-safety-backup"]);
+  assert.deepEqual(buildDuneArgs("backupRestore", { backup: "dune-db-test.backup", identityMode: "adopt-backup" }), ["db", "restore", "dune-db-test.backup", "--no-safety-backup", "--adopt-backup-battlegroup"]);
+  assert.deepEqual(buildDuneArgs("backupRestore", { backup: "dune-db-test.backup", identityMode: "keep-current" }), ["db", "restore", "dune-db-test.backup", "--no-safety-backup", "--keep-current-battlegroup"]);
+  assert.throws(() => buildDuneArgs("backupRestore", { backup: "dune-db-test.backup", identityMode: "automatic" }), /Unsupported backup Battlegroup identity choice/);
   assert.deepEqual(buildDuneArgs("backupDelete", { backup: "dune-db-test.backup" }), ["db", "delete", "dune-db-test.backup"]);
   assert.deepEqual(buildDuneArgs("backupDeleteAll"), ["db", "delete", "--all"]);
   assert.deepEqual(buildDuneArgs("adminAddXp", { playerId: "FLS_TEST", amount: 1000 }), ["admin", "award-xp", "FLS_TEST", "1000"]);
   assert.deepEqual(buildDuneArgs("updateApply"), ["update", "--yes"]);
   assert.deepEqual(buildDuneArgs("updateAutoStatus"), ["update", "auto", "status"]);
-  assert.deepEqual(buildDuneArgs("updateAutoEnable"), ["update", "auto", "enable", "60", "1", "1", "15", "0", "360"]);
+  assert.deepEqual(buildDuneArgs("updateAutoEnable"), ["update", "auto", "enable", "60", "1", "1", "15,10,5,1", "0", "360"]);
   assert.deepEqual(buildDuneArgs("updateAutoEnable", {
     intervalMinutes: 30,
     applyEnabled: true,
     notifyEnabled: true,
-    notifyMinutes: 10,
+    notifyMinutes: "10, 5, 1",
     waitUntilEmpty: true,
     maxWaitMinutes: 240
-  }), ["update", "auto", "enable", "30", "1", "1", "10", "1", "240"]);
+  }), ["update", "auto", "enable", "30", "1", "1", "10,5,1", "1", "240"]);
   assert.deepEqual(buildDuneArgs("updateAutoDisable"), ["update", "auto", "disable"]);
   assert.deepEqual(buildDuneArgs("selfUpdateApply"), ["self-update", "install", "latest"]);
   assert.deepEqual(buildDuneArgs("backupAutoStatus"), ["db", "auto", "status"]);
@@ -175,6 +178,9 @@ test("builds allowlisted command arguments without shell interpolation", () => {
   assert.throws(() => buildDuneArgs("backupAutoRetention", { retentionDays: -1 }));
   assert.throws(() => buildDuneArgs("updateAutoEnable", { intervalMinutes: 4 }));
   assert.throws(() => buildDuneArgs("updateAutoEnable", { notifyMinutes: 0 }));
+  assert.throws(() => buildDuneArgs("updateAutoEnable", { notifyMinutes: "15,bad,1" }));
+  assert.throws(() => buildDuneArgs("updateAutoEnable", { notifyMinutes: "15,40,10,5" }));
+  assert.throws(() => buildDuneArgs("updateAutoEnable", { notifyMinutes: "15,10,10,5" }));
   assert.throws(() => buildDuneArgs("updateAutoEnable", { maxWaitMinutes: -1 }));
   assert.throws(() => buildDuneArgs("unknown"));
 });
@@ -309,4 +315,5 @@ test("redacts token-like sensitive values", () => {
   assert.match(output, /<redacted>/);
   assert.doesNotMatch(output, /hunter2/);
   assert.doesNotMatch(output, /eyJaaaaaaaa/);
+  assert.doesNotMatch(output, /runtime\/secrets\/funcom-token\.txt/);
 });

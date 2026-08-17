@@ -3,6 +3,7 @@ import { adminApi, type LandsraadMilestonePreset, type LandsraadOverview, type L
 import { mapsApi } from "../../api/maps";
 import { playersApi } from "../../api/players";
 import { serverApi } from "../../api/server";
+import { runGatedRestart, type RestartGate } from "../server/restartQueueGuard";
 import { setupApi, type Task } from "../../api/setup";
 import { DataTable } from "../../components/common/DataTable";
 import { InlineActionResult, type InlineActionResultState } from "../../components/common/InlineActionResult";
@@ -14,6 +15,7 @@ type ConfirmAction = (message: string, options?: { title?: string; confirmLabel?
 type LandsraadAdminSectionProps = {
   confirmAction: ConfirmAction;
   onError: (text: string) => void;
+  restartGate: RestartGate;
 };
 
 type PersistentField = {
@@ -53,7 +55,7 @@ const PERSISTENT_FIELDS: PersistentField[] = [
   { id: "landsraad_highscore_guilds", label: "Guilds In Highscore List", group: "Voting", min: 1, max: 100, step: 1 }
 ];
 
-export function LandsraadPanel({ confirmAction, onError }: LandsraadAdminSectionProps) {
+export function LandsraadPanel({ confirmAction, onError, restartGate }: LandsraadAdminSectionProps) {
   const [loading, setLoading] = useState(false);
   const [overview, setOverview] = useState<LandsraadOverview | null>(null);
   const [players, setPlayers] = useState<Record<string, unknown>[]>([]);
@@ -161,7 +163,10 @@ export function LandsraadPanel({ confirmAction, onError }: LandsraadAdminSection
     onError("");
     try {
       const values = Object.fromEntries(changedFields.map((field) => [field.id, persistentStoredValue(field, persistentDraft[field.id])]));
+      // restart: false is never captured by the restart queue, so a task is
+      // always returned; guard only to satisfy the widened response type.
       const response = await mapsApi.saveUserSettings({ scope: "global", values, restart: false });
+      if (!response.task) throw new Error("Saving the modifiers did not start a task.");
       const final = await waitForTask(response.task);
       if (final.status !== "succeeded") throw new Error(conciseTaskError(final));
       await loadPersistentRules();
@@ -175,11 +180,18 @@ export function LandsraadPanel({ confirmAction, onError }: LandsraadAdminSection
   }
 
   async function restartForPersistentRules() {
-    if (!(await confirmAction("Restart the battlegroup now to apply the saved Landsraad modifiers?", { title: "Apply Landsraad Modifiers", confirmLabel: "Restart Battlegroup" }))) return;
     if (resultTimer.current) window.clearTimeout(resultTimer.current);
     setResult({ key: "persistent-rules", text: "Restarting Battlegroup", tone: "neutral", pending: true });
     try {
-      const final = await waitForTask((await serverApi.restart()).task);
+      const gated = await runGatedRestart({ restartGate, label: "battlegroup", dispatch: (opts) => serverApi.restart(opts) });
+      if (gated.outcome === "cancelled") { setResult(null); return; }
+      if (gated.outcome === "queued") {
+        setResult({ key: "persistent-rules", text: "Restart Queued", tone: "success" });
+        resultTimer.current = window.setTimeout(() => setResult(null), 4500);
+        return;
+      }
+      if (!gated.task) { setResult(null); return; }
+      const final = await waitForTask(gated.task);
       if (final.status !== "succeeded") throw new Error(conciseTaskError(final));
       setPersistentRestartPending(false);
       setResult({ key: "persistent-rules", text: "Modifiers Applied", tone: "success" });

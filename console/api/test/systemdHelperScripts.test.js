@@ -32,12 +32,15 @@ test("host systemd helpers explicitly run as root", () => {
 test("scheduled restart jobs run as the host checkout owner", () => {
   const source = readFileSync(resolve(repoRoot, "runtime/scripts/restart-schedule.sh"), "utf8");
 
-  assert.match(source, /HOST_SERVICE_UID="\$\{DUNE_HOST_UID:-\$\(stat -c '%u' "\$ROOT_DIR"\)\}"/);
-  assert.match(source, /HOST_SERVICE_GID="\$\{DUNE_HOST_GID:-\$\(stat -c '%g' "\$ROOT_DIR"\)\}"/);
+  assert.match(source, /source runtime\/scripts\/host-file-ownership\.sh/);
+  assert.match(source, /read -r HOST_SERVICE_UID HOST_SERVICE_GID <<< "\$\(dune_resolve_host_owner\)"/);
   assert.equal(source.match(/^User=\$HOST_SERVICE_UID$/gm)?.length, 2);
   assert.equal(source.match(/^Group=\$HOST_SERVICE_GID$/gm)?.length, 2);
   assert.equal(source.match(/^User=\$\{DUNE_HOST_SERVICE_UID\}$/gm)?.length, 2);
   assert.equal(source.match(/^Group=\$\{DUNE_HOST_SERVICE_GID\}$/gm)?.length, 2);
+  assert.match(source, /reexec_scheduled_job_as_install_owner/);
+  assert.match(source, /exec setpriv[\s\S]*?--reuid="\$target_user"[\s\S]*?--init-groups/);
+  assert.match(source, /runtime\/scripts\/sietches\.sh preflight[\s\S]*?usersettings\.py preflight[\s\S]*?usersettings\.py materialize-current[\s\S]*?runtime\/scripts\/stop-all\.sh/);
 });
 
 test("shell self-update helper uses host ownership and Docker socket group", () => {

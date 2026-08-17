@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { backupsApi } from "../../api/backups";
+import { backupIdentityDiffers, backupsApi } from "../../api/backups";
 import type { Task } from "../../api/setup";
 import { DataTable } from "../../components/common/DataTable";
 import { KeyValueGrid, StatusPill, TechnicalDetails } from "../../components/common/DisplayPrimitives";
@@ -8,6 +8,7 @@ import { conciseTaskError, funcomTokenMismatchDetected } from "../../lib/taskDis
 
 type BackupResult = { status: "running" | "succeeded" | "failed"; title: string; message?: string; details?: string; tone?: "danger" | "attention" };
 type ConfirmAction = (message: string, options?: { title?: string; confirmLabel?: string; cancelLabel?: string; danger?: boolean; details?: { label: string; value: string; tone?: "accent" | "success" | "danger" }[] }) => Promise<boolean>;
+type BackupIdentityChoice = "adopt-backup" | "keep-current" | "cancel";
 type CommandStatus = { status: string; reason?: string };
 
 type BackupsPanelProps = {
@@ -15,6 +16,7 @@ type BackupsPanelProps = {
   setBackupRestoreTask: (task: Task | null) => void;
   onError: (text: string) => void;
   confirmAction: ConfirmAction;
+  chooseBackupIdentity: (meta: { backup: string; currentBattlegroupId: string; backupBattlegroupId: string }) => Promise<BackupIdentityChoice>;
   waitForTask: (task: Task) => Promise<Task>;
   waitForTaskWithUpdates: (task: Task, onUpdate: (task: Task) => void) => Promise<Task>;
   withTimeout: <T>(promise: Promise<T>, timeoutMs: number, message: string) => Promise<T>;
@@ -34,8 +36,9 @@ function formatResultMessage(value: unknown) {
   return formatUiSentence(value, false);
 }
 
-export function BackupsPanel({ backupRestoreTask, setBackupRestoreTask, onError, confirmAction, waitForTask, waitForTaskWithUpdates, withTimeout, toHourMinuteTime, sanitizeTimeInput, isValidHourMinuteTime, commandStatusSummary, taskTechnicalDetails, isTerminalTask }: BackupsPanelProps) {
+export function BackupsPanel({ backupRestoreTask, setBackupRestoreTask, onError, confirmAction, chooseBackupIdentity, waitForTask, waitForTaskWithUpdates, withTimeout, toHourMinuteTime, sanitizeTimeInput, isValidHourMinuteTime, commandStatusSummary, taskTechnicalDetails, isTerminalTask }: BackupsPanelProps) {
   const [rows, setRows] = useState<Record<string, unknown>[]>([]);
+  const [currentBattlegroupId, setCurrentBattlegroupId] = useState("Unknown");
   const [backupsLoading, setBackupsLoading] = useState(true);
   const [autoBackup, setAutoBackup] = useState<{ stdout?: string; stderr?: string; exitCode?: number } | null>(null);
   const [autoEnabled, setAutoEnabled] = useState(false);
@@ -79,6 +82,7 @@ export function BackupsPanel({ backupRestoreTask, setBackupRestoreTask, onError,
     backupsRefreshRef.current = (async () => {
       const result = await withTimeout(backupsApi.list(), 60000, "Loading backups timed out.");
       setRows(result.rows?.length ? result.rows : parseBackupRows(result.stdout || ""));
+      setCurrentBattlegroupId(String(result.currentBattlegroupId || "Unknown"));
       try {
         await withTimeout(refreshAutoBackup(), 60000, "Loading automatic backup status timed out.");
       } catch (error) {
@@ -223,14 +227,23 @@ export function BackupsPanel({ backupRestoreTask, setBackupRestoreTask, onError,
       {backupRestoreTask ? <BackupResultCard result={backupRestoreTaskResult(backupRestoreTask)} /> : backupResult && <BackupResultCard result={backupResult} />}
       {rows.length ? <DataTable rows={rows} columns={["backupName", "battlegroupId", "created", "size", "type", "source"]} action={(row) => <div className="service-actions">
         <button className="icon-action restore-action" title="Restore" aria-label="Restore backup" disabled={Boolean(busyAction)} onClick={(event) => { event.stopPropagation(); run(async () => {
-          const sourceText = /^external$/i.test(String(row.source || "")) ? " External backups will be matched to the backup battlegroup automatically when needed." : "";
-          if (!(await confirmAction(`The current battlegroup database will be replaced.${sourceText}`, {
+          const backup = String(row.backupName || row.name || "Selected backup");
+          const backupBattlegroupId = String(row.battlegroupId || "Unknown");
+          const identityMismatch = backupIdentityDiffers(currentBattlegroupId, backupBattlegroupId);
+          let identityMode: BackupIdentityChoice = "keep-current";
+          if (identityMismatch) {
+            identityMode = await chooseBackupIdentity({ backup, currentBattlegroupId, backupBattlegroupId });
+            if (identityMode === "cancel") return;
+          } else if (!(await confirmAction("The current Battlegroup database will be replaced.", {
             title: "Restore Backup",
             confirmLabel: "Restore",
             danger: true,
-            details: [{ label: "Backup", value: String(row.backupName || row.name || "Selected backup"), tone: "accent" }]
+            details: [
+              { label: "Backup", value: backup, tone: "accent" },
+              { label: "Battlegroup", value: backupBattlegroupId === "Unknown" ? "Identity unavailable; current ID will be kept" : backupBattlegroupId, tone: backupBattlegroupId === "Unknown" ? "danger" : "success" }
+            ]
           }))) return;
-          await runBackupTask("restore", () => backupsApi.restore(String(row.name)), "Restore Completed", "Backup Restore Failed");
+          await runBackupTask("restore", () => backupsApi.restore(String(row.name), identityMode), "Restore Completed", "Backup Restore Failed");
         }); }}><img src="/images/icons/backup-restore.png" alt="" /></button>
         <a className="button-link icon-action download-action" title="Download" aria-label="Download backup" href={backupsApi.downloadUrl(String(row.name))} onClick={(event) => event.stopPropagation()}><img src="/images/icons/backup-download.png" alt="" /></a>
         <button className="icon-action danger" title="Delete" aria-label="Delete backup" disabled={Boolean(busyAction)} onClick={(event) => { event.stopPropagation(); run(async () => {

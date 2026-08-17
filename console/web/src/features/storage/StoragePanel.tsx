@@ -98,7 +98,24 @@ export function StoragePanel({ onError, confirmAction, formatMutationResult, wai
       if (!(await confirmAction("Restart the Survival server to apply pending fills? All connected players will be disconnected for a few minutes.", { title: "Restart Survival Server", confirmLabel: "Restart Survival", danger: true }))) return;
       setRestartRunning(true);
       setRestartStatus("Restarting the Survival server...");
-      const final = await waitForTask((await serverApi.restartService("survival")).task);
+      const dispatched = await serverApi.restartService("survival");
+      // restartService() may queue the restart instead of dispatching it
+      // immediately (the restart-queue/gating feature merged from upstream
+      // during #279's reconciliation) -- .task is only present for an
+      // immediate dispatch. This button does not yet use restartGate/
+      // runGatedRestart the way Server Control's/Services'/Bases' restart
+      // actions do (see restartQueueGuard.ts), so a queued response is
+      // surfaced as a status message rather than the full gating dialog
+      // those panels show. Tracked as a follow-up to give this button the
+      // same restartGate treatment.
+      if (!dispatched.task) {
+        setRestartRunning(false);
+        setRestartStatus(dispatched.queued
+          ? "Restart was queued instead of applied immediately (players are currently online). Check the Server Control tab to manage the queued restart."
+          : "Restart could not be dispatched. Check the Server Control tab for details.");
+        return;
+      }
+      const final = await waitForTask(dispatched.task);
       setRestartRunning(false);
       if (final.status === "succeeded") {
         setRestartStatus("Restart completed. Container fills are now visible in-game.");

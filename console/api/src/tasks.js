@@ -187,7 +187,7 @@ export class TaskManager {
         this.append(task, `Queued ${label} were not applied: ${failure.error || "unknown error"}`, "stderr");
       }
     } catch (error) {
-      this.append(task, `Queued generator refills were not applied: ${error?.message || error}`, "stderr");
+      this.append(task, `Queued generator refills were not applied: ${error?.message || "Unexpected error."}`, "stderr");
     }
   }
 

@@ -39,9 +39,9 @@ fi
 source runtime/scripts/host-paths.sh
 source runtime/scripts/runtime-env.sh
 source runtime/scripts/image-tags.sh
+source runtime/scripts/sietch-login-password-args.sh
 
-WORLD_IMAGE_TAG="$(resolve_world_image_tag)"
-IMAGE="registry.funcom.com/funcom/self-hosting/seabass-server:${WORLD_IMAGE_TAG}"
+IMAGE="$(resolve_game_server_image)"
 
 TOKEN_FILE="runtime/secrets/funcom-token.txt"
 RMQ_SECRET_FILE="runtime/secrets/rmq-http-token-auth-secret.txt"
@@ -403,6 +403,16 @@ release_port_reservation "$CONTAINER_NAME"
 MEMORY="$(effective_memory_for_map "$MAP_NAME" "$PARTITION_ID")"
 mapfile -t SIETCH_RUNTIME_ARGS < <(runtime/scripts/sietches.sh runtime-args "$MAP_NAME" "$PARTITION_ID" 2>/dev/null || true)
 mapfile -t LOG_RUNTIME_ARGS < <(full_stdout_log_args)
+
+# GHSA-fc89-h24v-6j3x (issue #252): move ServerLoginPassword/ServerPassword
+# from docker run positional arguments to environment variables -- see
+# sietch-login-password-args.sh for the full rationale and the shared
+# implementation used identically by all three launcher scripts.
+declare -a SIETCH_LOGIN_PASSWORD_ARGS
+declare -a SIETCH_RUNTIME_ARGS_FILTERED
+sietch_login_password_docker_args SIETCH_RUNTIME_ARGS SIETCH_LOGIN_PASSWORD_ARGS SIETCH_RUNTIME_ARGS_FILTERED
+SIETCH_RUNTIME_ARGS=("${SIETCH_RUNTIME_ARGS_FILTERED[@]}")
+
 if [ "$MAP_NAME" = "Survival_1" ]; then
   if [ "$DIMENSION_INDEX" -eq 0 ]; then
     SERVER_INDEX=1
@@ -527,7 +537,7 @@ echo "  igw port:   $IGW_PORT"
 echo "  container:  $CONTAINER_NAME"
 echo
 
-mkdir -p "runtime/game/$safe_name/Saved"
+runtime/scripts/repair-map-settings-permissions.sh "$safe_name"
 mkdir -p runtime/game/artifacts
 mkdir -p "$FAKE_K8S_SERVICEACCOUNT_DIR"
 mkdir -p runtime/container
@@ -610,6 +620,7 @@ docker run -d \
   -e "AuthenticationConfiguration__BackendLoginConfiguration__ServerLoginSecret=$SERVER_LOGIN_PASSWORD_SECRET" \
   -e "AuthenticationConfiguration__BackendLoginConfiguration__ChecksumSecret=$SERVER_LOGIN_PASSWORD_SECRET" \
   -e "fls-apikey=$FLS_APIKEY" \
+  "${SIETCH_LOGIN_PASSWORD_ARGS[@]}" \
   "$IMAGE" \
   /opt/dune-local/run-server.sh \
   "$MAP_NAME" \

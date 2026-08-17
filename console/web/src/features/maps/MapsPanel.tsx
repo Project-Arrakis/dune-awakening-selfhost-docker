@@ -1,14 +1,32 @@
 import { Fragment, useEffect, useRef, useState } from "react";
 import { AlertTriangle, ChevronDown, ChevronUp, Download, Fuel, Grid2X2, Info, List, Lock, RotateCcw } from "lucide-react";
 import { mapsApi, type ChoamTerminalOverview, type ChoamTradeCenter, type LiveMapMemoryRow, type MapCombatStateResult, type MapRuntimeSettings, type MemoryBalancerState, type MemorySwapState, type PartitionCombatStateRow, type SpicefieldTypeRow, type UserSettingField, type UserSettingsSchema } from "../../api/maps";
+import { runGatedRestart, type RestartGate, type RestartGateChoice } from "../server/restartQueueGuard";
+import { serverApi, type RestartQueueTarget } from "../../api/server";
 import { setupApi, type Task } from "../../api/setup";
 import { SecretInput } from "../../components/SecretInput";
 import { InfoTooltip, KeyValueGrid, StatusPill, TechnicalDetails } from "../../components/common/DisplayPrimitives";
 import { firstDefined, formatUiSentence, stripAnsi, summarizeCommandText, titleCase } from "../../lib/display";
+import { refreshServerPorts } from "../../api/serverPorts";
 import { titleCaseWords } from "../players/playerAdminUtils";
 import { pendingRefillCountForMap, pendingRefillCountForPartition, usePendingRefills } from "../../lib/usePendingRefills";
 import type { PendingRefills } from "../../api/bases";
 import { friendlyMapName, hasFriendlyMapName } from "./mapNames";
+import { invalidateInstanceNames } from "./instanceNames";
+// Re-exported so existing importers (and MapsPanel.sietchNames.test.ts) keep working.
+export { parseSietchRows, type SietchRow } from "./sietchRows";
+import {
+  SIETCH_PASSWORD_MASK,
+  blockedSietchEdits,
+  isSietchWriteTarget,
+  parseSietchRows,
+  reconcileSietchDrafts,
+  reconcileSietchPasswordTouched,
+  sietchDraftChanges,
+  sietchPasswordDraftChanged,
+  writableSietchEdits,
+  type SietchRow
+} from "./sietchRows";
 
 // Taking a partition down is when any generator refill queued for a base on it
 // gets written, so every control that does so says what is waiting on it.
@@ -23,6 +41,8 @@ function PendingRefillBadge({ count }: { count: number }) {
 type HomeTaskResult = { status: "running" | "succeeded" | "failed" | "stopped"; title: string; message?: string; details?: string; warnings?: string[] };
 type MapsResultScope = "maps" | "modifiers";
 type MapsTaskQueueState = { phase: "queued" | "running"; title: string };
+type MapsTaskResponse = { task?: Task; queued?: boolean; invalidatesInstanceNamesOnSuccess?: boolean };
+type MapsTaskAction = { label: string; run: () => Promise<MapsTaskResponse> };
 type MapsTaskOptions = {
   memoryUpdates?: Array<{ map: string; partitionId?: string; memory: string }>;
   resultScope?: MapsResultScope;
@@ -35,6 +55,11 @@ type MapsTaskSequenceOptions = {
   memoryUpdates?: Array<{ map: string; partitionId?: string; memory: string }>;
   resultScope?: MapsResultScope;
   resultTarget?: string;
+  // Partitions this sequence writes sietch name/password for. The refresh at
+  // the end reloads every row, so without this it replaced every draft --
+  // discarding pending edits on rows the save never touched. Omit it when the
+  // sequence writes no sietch fields at all; then nothing is discarded.
+  writtenPartitionIds?: string[];
 };
 type PersistedMapsTask = { taskId?: string; result: HomeTaskResult | null; runningTitle?: string; successTitle?: string; resultScope?: MapsResultScope };
 type SpicefieldDraft = { maxActive: string; maxPrimed: string; spawningActive: boolean; spawnWeight: string };
@@ -50,7 +75,8 @@ type ConfirmAction = (message: string, options?: { title?: string; confirmLabel?
 type MapsPanelProps = {
   onError: (text: string) => void;
   confirmAction: ConfirmAction;
-  confirmSettingsRestart: (kind: "UserEngine" | "UserGame") => Promise<boolean>;
+  restartGate: RestartGate;
+  confirmSettingsRestart: (kind: "UserEngine" | "UserGame", target?: RestartQueueTarget) => Promise<RestartGateChoice>;
   waitForTaskWithUpdates: (task: Task, onUpdate: (task: Task) => void) => Promise<Task>;
   taskTechnicalDetails: (task: Task) => string;
 };
@@ -118,6 +144,20 @@ function isSietchRestartResult(result: HomeTaskResult | null) {
 
 function mapResultTarget(map: string, partitionId = "") {
   return partitionId ? `map:${map}:${partitionId}` : `map:${map}`;
+}
+
+// Mirrors server.js's restartPayload: "engine"/"mapEngine"/"partitionEngine"
+// (UserEngine.ini is one shared file, not per-map -- "mapEngine"/
+// "partitionEngine" just scope the editor's view/edit to one map or
+// partition for convenience) plus "global"/"profile" all restart every game
+// service (stack-wide), so the restart-queue online check for those must
+// stay battlegroup-wide (undefined target) rather than being scoped to
+// whatever map happens to be selected in the editor.
+function settingsRestartTarget(scope: string, map?: string, partitionId?: string): RestartQueueTarget | undefined {
+  if (scope === "engine" || scope === "mapEngine" || scope === "partitionEngine" || scope === "global" || scope === "profile") return undefined;
+  if (partitionId) return { partitionId };
+  if (map) return { map };
+  return undefined;
 }
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
@@ -263,7 +303,18 @@ function alwaysOnParallelismLimit(settings: MapRuntimeSettings | null, protectio
   return Math.max(1, Math.min(16, Math.floor((physical - reserve) / 16)));
 }
 
-export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, waitForTaskWithUpdates, taskTechnicalDetails }: MapsPanelProps) {
+// Every sietch mutation goes through here so the Bases panel's cached instance
+// names cannot outlive a rename. Routed through one wrapper rather than five
+// call sites because a missed one is invisible until someone notices a stale
+// label on another tab.
+function updateSietches(body: Record<string, unknown>) {
+  return mapsApi.updateSietches(body).then((result) => {
+    invalidateInstanceNames();
+    return { ...result, invalidatesInstanceNamesOnSuccess: true };
+  });
+}
+
+export function MapsPanel({ onError, confirmAction, restartGate, confirmSettingsRestart, waitForTaskWithUpdates, taskTechnicalDetails }: MapsPanelProps) {
   const [mapsText, setMapsText] = useState("");
   const [memoryText, setMemoryText] = useState("");
   const [serversText, setServersText] = useState("");
@@ -287,6 +338,7 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
   const [memorySwapMode, setMemorySwapMode] = useState<"low" | "automatic" | "custom">("automatic");
   const [memorySwapAllowance, setMemorySwapAllowance] = useState("2");
   const [memorySwapPool, setMemorySwapPool] = useState("4");
+  const [memorySwapSwappiness, setMemorySwapSwappiness] = useState("10");
   const [memorySwapResult, setMemorySwapResult] = useState<HomeTaskResult | null>(null);
   const [runtimeSettings, setRuntimeSettings] = useState<MapRuntimeSettings | null>(null);
   const [startupParallelism, setStartupParallelism] = useState("1");
@@ -323,6 +375,8 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
   const [choamSavingKey, setChoamSavingKey] = useState("");
   const [choamResult, setChoamResult] = useState<HomeTaskResult | null>(null);
   const [modifiersOpen, setModifiersOpen] = useState(false);
+  const [modifierSettingsLoaded, setModifierSettingsLoaded] = useState(false);
+  const [deferredRestartPending, setDeferredRestartPending] = useState<{ pending: boolean; since?: string; label?: string }>({ pending: false });
   const [clientIniCounts, setClientIniCounts] = useState<{ engine: number | null; game: number | null }>({ engine: null, game: null });
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [startupSettingsOpen, setStartupSettingsOpen] = useState(false);
@@ -381,13 +435,24 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
     mapsTaskQueueRef.current = queuedTask.then(() => undefined, () => undefined);
     await queuedTask;
   }
-  async function runTaskAndRefresh(action: () => Promise<{ task: Task }>, runningTitle = "Applying Map Changes", successTitle = "Map Changes Applied", options: MapsTaskOptions = {}) {
+  async function runTaskAndRefresh(action: () => Promise<{ task?: Task; queued?: boolean }>, runningTitle = "Applying Map Changes", successTitle = "Map Changes Applied", options: MapsTaskOptions = {}) {
     await enqueueMapsTask(options.resultTarget || "", runningTitle, () => runTaskAndRefreshNow(action, runningTitle, successTitle, options));
   }
-  async function runTaskAndRefreshNow(action: () => Promise<{ task: Task }>, runningTitle: string, successTitle: string, options: MapsTaskOptions) {
+  async function runTaskAndRefreshNow(action: () => Promise<{ task?: Task; queued?: boolean }>, runningTitle: string, successTitle: string, options: MapsTaskOptions) {
     const resultScope = options.resultScope || "maps";
     const resultTarget = options.resultTarget || "";
     const response = await action();
+    if (!response.task) {
+      // Gated by the restart queue: this save-and-restart was captured into a
+      // countdown, so the change applies when it fires. Manage it under
+      // Admin Tools -> Restart Queue.
+      setMapsResultScope(resultScope);
+      setMapsResultTarget(resultTarget);
+      setMapsResult({ status: "succeeded", title: successTitle, message: "Restart queued. These changes apply when the countdown completes — manage it under Admin Tools → Restart Queue." });
+      persistMapsTask(null);
+      await loadMaps();
+      return;
+    }
     const started: HomeTaskResult = { status: "running", title: runningTitle };
     setMapsResultScope(resultScope);
     setMapsResultTarget(resultTarget);
@@ -441,11 +506,11 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
     await loadUserEngine();
     if (userGameMapName) await loadSelectedSettings(userGameMapName, userGamePartitionId);
   }
-  async function runTaskSequenceAndRefresh(actions: Array<{ label: string; run: () => Promise<{ task: Task }> }>, runningTitle = "Applying Map Changes", successTitle = "Map Changes Applied", options: MapsTaskSequenceOptions = {}) {
+  async function runTaskSequenceAndRefresh(actions: MapsTaskAction[], runningTitle = "Applying Map Changes", successTitle = "Map Changes Applied", options: MapsTaskSequenceOptions = {}) {
     if (!actions.length) return;
     await enqueueMapsTask(options.resultTarget || "", runningTitle, () => runTaskSequenceAndRefreshNow(actions, runningTitle, successTitle, options));
   }
-  async function runTaskSequenceAndRefreshNow(actions: Array<{ label: string; run: () => Promise<{ task: Task }> }>, runningTitle: string, successTitle: string, options: MapsTaskSequenceOptions) {
+  async function runTaskSequenceAndRefreshNow(actions: MapsTaskAction[], runningTitle: string, successTitle: string, options: MapsTaskSequenceOptions) {
     const resultScope = options.resultScope || "maps";
     const resultTarget = options.resultTarget || "";
     const savingMessage = "Saving settings.";
@@ -466,6 +531,16 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
         persistMapsTask({ result: { status: "running", title: runningTitle, message: progressMessage }, runningTitle, successTitle, resultScope });
       }
       const response = await action.run();
+      if (!response.task) {
+        // Restart-queue gated (a save-and-restart step captured into a
+        // countdown): the remaining change applies when it fires.
+        setMapsResultScope(resultScope);
+        setMapsResultTarget(resultTarget);
+        setMapsResult({ status: "succeeded", title: successTitle, message: "Restart queued. The remaining changes apply when the countdown completes — manage it under Admin Tools → Restart Queue.", warnings: collectedWarnings.length ? collectedWarnings : undefined });
+        persistMapsTask(null);
+        await loadMaps();
+        return;
+      }
       if (!handedOffToWarming) {
         persistMapsTask({ taskId: response.task.id, result: { status: "running", title: runningTitle, message: progressMessage }, runningTitle, successTitle, resultScope });
       }
@@ -488,7 +563,9 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
             persistMapsTask(null);
             void refreshMapRuntime().catch(() => undefined);
             void loadLiveMemory().catch(() => undefined);
-            void loadSietches().catch(() => undefined);
+            // Handoff means the writes were accepted, so the written rows can
+            // take the server's values -- but only those rows.
+            void loadSietches({ writtenPartitionIds: options.writtenPartitionIds || [] }).catch(() => undefined);
           }
           return;
         }
@@ -505,6 +582,12 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
         setMapsResult(nextProgress);
         persistMapsTask({ taskId: task.id, result: nextProgress, runningTitle, successTitle, resultScope });
       });
+      if (final.status === "succeeded" && response.invalidatesInstanceNamesOnSuccess) {
+        // The first invalidation happens when the task is accepted so stale
+        // names are not served during the write. Repeat it after completion:
+        // a lookup made while the task was running may have read the old name.
+        invalidateInstanceNames();
+      }
       if (final?.warnings?.length) collectedWarnings.push(...final.warnings);
       if (final.status !== "succeeded") break;
     }
@@ -521,7 +604,12 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
     persistMapsTask(null);
     await loadMaps();
     if (next.status === "succeeded") applyOptimisticMemoryUpdates(options.memoryUpdates);
-    await loadSietches();
+    // This runs after the loop breaks on failure too, so a failed save used to
+    // wipe the drafts along with showing the error. Only a succeeded sequence
+    // may discard anything, and then only the partitions it wrote.
+    await loadSietches({
+      writtenPartitionIds: next.status === "succeeded" ? (options.writtenPartitionIds || []) : []
+    });
   }
   async function loadMaps() {
     if (mapsLoadRef.current) return mapsLoadRef.current;
@@ -579,13 +667,27 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
     const next = await mapsApi.userSettingsSchema();
     setSchema(next);
   }
-  async function loadUserEngine() {
-    const [values, raw] = await Promise.all([mapsApi.userEngine(), mapsApi.rawUserSettings("engine")]);
-    const parsed = parseUserSettingsMap(values.stdout || "");
+  function applyUserEngineValues(stdout: string) {
+    const parsed = parseUserSettingsMap(stdout || "");
     setEngineValues(parsed);
     setEngineDraft(parsed);
+  }
+  async function loadUserEngineValues() {
+    const values = await mapsApi.userEngine();
+    applyUserEngineValues(values.stdout || "");
+  }
+  async function loadUserEngine() {
+    const [values, raw] = await Promise.all([mapsApi.userEngine(), mapsApi.rawUserSettings("engine")]);
+    applyUserEngineValues(values.stdout || "");
     setRawEngine(raw.content || "");
     setRawEngineOriginal(raw.content || "");
+  }
+  async function loadInitialModifierSettings() {
+    // The raw Advanced editor is loaded only when it is opened. Making it part
+    // of this gate would add another command before the normal modifier cards
+    // can be used.
+    await Promise.all([loadSchema(), loadUserEngineValues()]);
+    setModifierSettingsLoaded(true);
   }
   async function loadSelectedEngineSettings(mapName: string, partitionId?: string) {
     if (mapName === "__global__") {
@@ -606,12 +708,24 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
     setRawGame(raw.content || "");
     setRawGameOriginal(raw.content || "");
   }
-  async function loadSietches(options: { preserveDrafts?: boolean } = {}) {
+  // Three draft policies, deliberately distinct:
+  //   preserveDrafts      -- background polling; whatever is on screen wins.
+  //   writtenPartitionIds -- after a save; only the partitions actually written
+  //                          take the server's values, everything else stays
+  //                          pending (see reconcileSietchDrafts).
+  //   neither             -- full reset, for a mount or an explicit refresh
+  //                          where there is nothing pending to protect.
+  async function loadSietches(options: { preserveDrafts?: boolean; writtenPartitionIds?: string[] } = {}) {
     const [list, dimensions, ids] = await Promise.all([mapsApi.sietches(), mapsApi.sietchDimensions("Survival_1"), mapsApi.sietchDimensions("Survival_1", true)]);
+    // A non-zero exit still answers 200 with empty stdout, so a failed command
+    // is only visible in exitCode. Discard its output rather than parsing
+    // whatever it managed to print.
+    const dimensionsText = dimensions.exitCode ? "" : (dimensions.stdout || "");
+    const idsText = ids.exitCode ? "" : (ids.stdout || "");
     setSietchesText(list.stdout || "");
-    setSietchDimensionsText(dimensions.stdout || "");
-    setSietchDimensionIdsText(ids.stdout || "");
-    const rows = parseSietchRows(dimensions.stdout || list.stdout || "", ids.stdout || "");
+    setSietchDimensionsText(dimensionsText);
+    setSietchDimensionIdsText(idsText);
+    const rows = parseSietchRows(dimensionsText || list.stdout || "", idsText);
     const drafts = Object.fromEntries(rows.map((row) => [row.partitionId, { displayName: row.displayName, password: row.password }]));
     if (rows.length) {
       if (!options.preserveDrafts) {
@@ -619,6 +733,13 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
       }
       if (options.preserveDrafts) {
         setSietchDrafts((current) => ({ ...drafts, ...current }));
+      } else if (options.writtenPartitionIds) {
+        // Functional updates on purpose: a save is long enough for the operator
+        // to type into another row while it runs, and the closure this ran from
+        // would not see that edit.
+        const written = options.writtenPartitionIds;
+        setSietchDrafts((current) => reconcileSietchDrafts(rows, current, written));
+        setSietchPasswordTouched((current) => reconcileSietchPasswordTouched(current, written));
       } else {
         setSietchDrafts(drafts);
         setSietchPasswordTouched({});
@@ -661,10 +782,17 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
     const status = await mapsApi.memorySwap();
     setMemorySwap(status);
     if (!preserveDraft) {
-      const mode = status.perServerGiB === 1 ? "low" : status.perServerGiB === 2 ? "automatic" : "custom";
+      const usesStandardSwappiness = status.configuredSwappiness === 10;
+      const usesRecommendedPool = status.poolGiB === status.recommendedPoolGiB;
+      const mode = usesStandardSwappiness && usesRecommendedPool && status.perServerGiB === 1
+        ? "low"
+        : usesStandardSwappiness && usesRecommendedPool && status.perServerGiB === 2
+          ? "automatic"
+          : "custom";
       setMemorySwapMode(mode);
       setMemorySwapAllowance(String(status.perServerGiB || 2));
       setMemorySwapPool(String(status.poolGiB || status.recommendedPoolGiB || 1));
+      setMemorySwapSwappiness(String(status.configuredSwappiness ?? 10));
     }
   }
   async function loadRuntimeSettings() {
@@ -775,12 +903,13 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
     const allowance = memorySwapMode === "low" ? 1 : memorySwapMode === "automatic" ? 2 : Number(memorySwapAllowance);
     const automaticPool = Math.max(0, Math.min(32, allowance * (memorySwap?.worldServerCount || 2) - (memorySwap?.existingSwapGiB || 0)));
     const pool = memorySwapMode === "custom" ? Number(memorySwapPool) : automaticPool;
-    return { allowance, pool };
+    const swappiness = memorySwapMode === "custom" ? Number(memorySwapSwappiness) : 10;
+    return { allowance, pool, swappiness };
   }
   async function saveMemorySwap(enabled: boolean) {
-    const { allowance, pool } = selectedSwapValues();
-    if (enabled && (!Number.isInteger(allowance) || allowance < 1 || allowance > 16 || !Number.isInteger(pool) || pool < 0 || pool > 32)) {
-      setMemorySwapResult({ status: "failed", title: "Memory Swap Not Saved", message: "Use 1-16 GB per running map and a 0-32 GB managed swap file." });
+    const { allowance, pool, swappiness } = selectedSwapValues();
+    if (enabled && (!Number.isInteger(allowance) || allowance < 1 || allowance > 16 || !Number.isInteger(pool) || pool < 0 || pool > 32 || !Number.isInteger(swappiness) || swappiness < 0 || swappiness > 100)) {
+      setMemorySwapResult({ status: "failed", title: "Memory Swap Not Saved", message: "Use 1-16 GB per running map, a 0-32 GB managed swap file, and swappiness from 0-100." });
       return;
     }
     if (enabled && memorySwap && pool > memorySwap.safeAvailableDiskGiB) {
@@ -789,8 +918,8 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
     }
     const existingSwapIsSufficient = enabled && pool === 0 && (memorySwap?.existingSwapGiB || 0) > 0;
     const enableMessage = existingSwapIsSufficient
-      ? `Use the existing ${memorySwap?.existingSwapGiB || 0} GB of host swap with up to ${allowance} GB available to each running map? No additional managed swap file will be created.`
-      : `Enable ${pool} GB of managed swap with up to ${allowance} GB available to each running map?`;
+      ? `Use the existing ${memorySwap?.existingSwapGiB || 0} GB of host swap with up to ${allowance} GB available to each running map and host swappiness ${swappiness}? No additional managed swap file will be created.`
+      : `Enable ${pool} GB of managed swap with up to ${allowance} GB available to each running map and host swappiness ${swappiness}?`;
     const confirmed = await confirmAction(enabled ? enableMessage : "Disable custom swap limits and remove the Console-managed Memory Swap file? Existing host swap remains available through Docker's default behavior.", {
       title: enabled ? "Enable Memory Swap" : "Disable Memory Swap",
       confirmLabel: enabled ? "Enable Memory Swap" : "Disable Memory Swap",
@@ -799,6 +928,7 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
         ...(existingSwapIsSufficient ? [{ label: "Existing Host Swap", value: `${memorySwap?.existingSwapGiB || 0} GB` }] : []),
         { label: "Additional Managed Swap", value: pool === 0 ? "Not needed (0 GB)" : `${pool} GB` },
         { label: "Per Running Map", value: `${allowance} GB` },
+        { label: "Host Swappiness", value: String(swappiness) },
         { label: "Disk Safety Reserve", value: "At least 25 GB or 10%" }
       ] : undefined
     });
@@ -806,7 +936,7 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
     setMemorySwapSaving(true);
     setMemorySwapResult({ status: "running", title: enabled ? "Enabling Memory Swap..." : "Disabling Memory Swap..." });
     try {
-      const response = await mapsApi.setMemorySwap({ enabled, perServerGiB: allowance, poolGiB: pool, confirmation: enabled ? "ENABLE MEMORY SWAP" : "DISABLE MEMORY SWAP" });
+      const response = await mapsApi.setMemorySwap({ enabled, perServerGiB: allowance, poolGiB: pool, swappiness, confirmation: enabled ? "ENABLE MEMORY SWAP" : "DISABLE MEMORY SWAP" });
       const final = await waitForTaskWithUpdates(response.task, (current) => setMemorySwapResult({ status: "running", title: enabled ? "Enabling Memory Swap..." : "Disabling Memory Swap...", details: taskTechnicalDetails(current) }));
       if (final.status !== "succeeded") throw new Error(taskTechnicalDetails(final) || final.errorMessage || "Memory Swap operation failed.");
       await loadMemorySwap();
@@ -867,16 +997,21 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
   }
   useEffect(() => {
     run(loadMaps);
-    run(loadSchema);
-    run(loadUserEngine);
+    // Settings have their own readiness path. Live map status can take much
+    // longer (it probes maps, services, readiness, and memory), but none of
+    // that is required to inspect or edit the global UserEngine settings.
+    run(loadInitialModifierSettings);
     run(loadLiveMemory);
     run(loadMemoryBalancer);
     run(() => loadMemorySwap());
     run(loadRuntimeSettings);
+    // Full reset is right here: this is the mount, so there is nothing pending.
     run(loadSietches);
     run(loadSpicefields);
     void loadCombatState("Survival_1").catch(() => {});
     void loadCombatState("DeepDesert_1").catch(() => {});
+    void loadCombatState("Survival_1").catch(() => {});
+    void refreshDeferredRestartPending();
   }, []);
   useEffect(() => {
     const persisted = loadPersistedMapsTask();
@@ -913,6 +1048,9 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
       setMapsResult(next);
       persistMapsTask(null);
       await loadMaps();
+      // A task resumed from a previous mount: the persisted record carries no
+      // written-partition set, so there is nothing to reconcile against and a
+      // full reset is the only honest option.
       await loadSietches();
     })().catch((error) => {
       if (isMissingPersistedTaskError(error)) {
@@ -994,6 +1132,7 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
       void loadSietches({ preserveDrafts: true }).catch(() => {});
       void loadCombatState("Survival_1").catch(() => {});
       void loadCombatState("DeepDesert_1").catch(() => {});
+      void loadCombatState("Survival_1").catch(() => {});
     }, MAP_RUNTIME_REFRESH_MS);
     return () => window.clearInterval(id);
   }, []);
@@ -1005,6 +1144,7 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
       void loadSietches({ preserveDrafts: true }).catch(() => {});
       void loadCombatState("Survival_1").catch(() => {});
       void loadCombatState("DeepDesert_1").catch(() => {});
+      void loadCombatState("Survival_1").catch(() => {});
     };
     window.addEventListener("focus", refreshVisibleMaps);
     document.addEventListener("visibilitychange", refreshVisibleMaps);
@@ -1105,11 +1245,6 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
   const activeSietchesDirty = activeSietches !== currentActiveSietches;
   const primarySietchDraft = primarySurvivalSietch ? sietchDrafts[primarySurvivalSietch.partitionId] || { displayName: primarySurvivalSietch.displayName, password: primarySurvivalSietch.password } : null;
   const primarySietchDirty = Boolean(primarySurvivalSietch && primarySietchDraft && (primarySietchDraft.displayName !== primarySurvivalSietch.displayName || sietchPasswordDraftChanged(primarySurvivalSietch, primarySietchDraft, Boolean(sietchPasswordTouched[primarySurvivalSietch.partitionId]))));
-  const sietchesDirty = activeSietchesDirty || partitionOptions.some((sietch) => {
-    const draft = sietchDrafts[sietch.partitionId] || { displayName: sietch.displayName, password: sietch.password };
-    const passwordTouched = Boolean(sietchPasswordTouched[sietch.partitionId]);
-    return draft.displayName !== sietch.displayName || sietchPasswordDraftChanged(sietch, draft, passwordTouched);
-  });
   const rawEngineDirty = normalizeRawIniContent(rawEngine) !== normalizeRawIniContent(rawEngineOriginal);
   const rawGameDirty = normalizeRawIniContent(rawGame) !== normalizeRawIniContent(rawGameOriginal);
   const modifierDirtySummary = [
@@ -1201,22 +1336,46 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
     setSelectedEngineCategory("");
     void loadSelectedEngineSettings(target.map, target.partitionId || undefined).catch((error) => onError(error instanceof Error ? error.message : String(error)));
   }
+  async function refreshDeferredRestartPending() {
+    try {
+      setDeferredRestartPending(await mapsApi.deferredRestartPending());
+    } catch {
+      // Leave the previous state -- a transient fetch failure shouldn't
+      // flip a real pending indicator off.
+    }
+  }
+  async function restartBattlegroupForDeferredSettings() {
+    const gated = await runGatedRestart({ restartGate, label: "battlegroup", dispatch: (opts) => serverApi.restart(opts) });
+    if (gated.outcome === "cancelled") return;
+    if (gated.outcome === "queued") {
+      setMapsResultScope("modifiers");
+      setMapsResult({ status: "succeeded", title: "Restart Queued", message: "Battlegroup restart queued — see the Restart Queue panel in Admin Tools." });
+      return;
+    }
+    if (!gated.task) return;
+    await waitForTaskWithUpdates(gated.task, () => {});
+    await refreshDeferredRestartPending();
+  }
   async function saveEngine() {
-    if (!(await confirmSettingsRestart("UserEngine"))) return;
     const isGlobal = engineMapName === "__global__";
     const scope = isGlobal ? "engine" : enginePartitionId ? "partitionEngine" : "mapEngine";
+    const choice = await confirmSettingsRestart("UserEngine", settingsRestartTarget(scope, engineMapName, enginePartitionId));
+    if (choice === "cancel") return;
     await runTaskAndRefresh(
       () => mapsApi.saveUserSettings({
         scope,
         map: isGlobal ? undefined : engineMapName,
         partitionId: isGlobal ? undefined : enginePartitionId || undefined,
-        values: valuesForDirtyFields(engineValues, engineDraft, engineFields)
+        values: valuesForDirtyFields(engineValues, engineDraft, engineFields),
+        immediate: choice === "immediate",
+        deferRestart: choice === "manual"
       }),
       "Saving UserEngine changes",
       "UserEngine Saved",
       { resultScope: "modifiers", restartAcceptedMessage: "Changes saved successfully. The maps are restarting and should be back up soon." }
     );
     await loadSelectedEngineSettings(engineMapName, enginePartitionId || undefined);
+    await refreshDeferredRestartPending();
   }
   async function saveSelectedMapSettings(row: Record<string, unknown>) {
     const rowName = String(row.map || "");
@@ -1231,8 +1390,14 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
     const activeSietchesDecreased = activeChanged && Number.isFinite(requestedActiveSietches) && requestedActiveSietches < currentActiveCount;
     const primaryChanged = rowName === "Survival_1" && primarySietchDirty;
     if (!modeChanged && !memoryChanged && !activeChanged && !primaryChanged) return;
+    // This save carries the primary sietch's name and password alongside the
+    // map settings, so it refuses on the same terms as the sietch Save.
+    if (rowName === "Survival_1" && primarySurvivalSietch
+      && blockedSietchEdits(survivalSietchRows, sietchDrafts, sietchPasswordTouched, primarySurvivalSietch.partitionId).length) {
+      return onError(SIETCH_PARTITION_IDS_UNREADABLE);
+    }
     const running = mapRuntimeNeedsLiveApply(row.status);
-    const actions: Array<{ label: string; run: () => Promise<{ task: Task }> }> = [];
+    const actions: MapsTaskAction[] = [];
     if (modeChanged || memoryChanged) {
       actions.push({
         label: `Saving ${rowName}${partitionId ? ` partition ${partitionId}` : ""} map settings`,
@@ -1274,54 +1439,59 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
         {
           saveAcceptedMessage: successMessage,
           memoryUpdates: memoryChanged ? [{ map: rowName, memory: memoryCliValue(memory) }] : [],
-          resultTarget: mapResultTarget(rowName)
+          resultTarget: mapResultTarget(rowName),
+          // This form only carries the primary sietch's fields, so that is the
+          // only partition whose draft the refresh may replace.
+          writtenPartitionIds: rowName === "Survival_1" && primarySurvivalSietch
+            ? writableSietchEdits(survivalSietchRows, sietchDrafts, sietchPasswordTouched, primarySurvivalSietch.partitionId)
+              .map((sietch) => sietch.partitionId)
+            : []
         }
       );
     }
   }
   function survivalSietchActions({ includeActive, includePartitions, partitionId }: { includeActive: boolean; includePartitions: boolean; partitionId?: string }) {
-    const actions: Array<{ label: string; run: () => Promise<{ task: Task }> }> = [];
-    let activeAction: { label: string; run: () => Promise<{ task: Task }> } | null = null;
+    const actions: MapsTaskAction[] = [];
+    let activeAction: MapsTaskAction | null = null;
     if (includeActive && activeSietches && activeSietchesDirty) {
       const requestedActive = Number(activeSietches);
       const currentActive = Number(currentActiveSietches) || survivalSietchRows.length;
       if (requestedActive > survivalSietchRows.length) {
         actions.push({
           label: `Creating ${requestedActive} available sietch dimensions`,
-          run: () => mapsApi.updateSietches({ action: "set-max", map: "Survival_1", count: requestedActive, confirmation: "UPDATE SIETCHES" })
+          run: () => updateSietches({ action: "set-max", map: "Survival_1", count: requestedActive, confirmation: "UPDATE SIETCHES" })
         });
       }
       activeAction = {
         label: requestedActive < currentActive
           ? `Despawning extra sietch${currentActive - requestedActive === 1 ? "" : "es"} and setting active sietches to ${requestedActive}`
           : `Activating ${requestedActive} sietch${requestedActive === 1 ? "" : "es"}`,
-        run: () => mapsApi.updateSietches({ action: "set-active", map: "Survival_1", count: requestedActive, confirmation: "UPDATE SIETCHES" })
+        run: () => updateSietches({ action: "set-active", map: "Survival_1", count: requestedActive, confirmation: "UPDATE SIETCHES" })
       };
     }
     if (includePartitions) {
-      for (const sietch of survivalSietchRows) {
-        if (partitionId && sietch.partitionId !== partitionId) continue;
-        const draft = sietchDrafts[sietch.partitionId] || { displayName: sietch.displayName, password: sietch.password };
-        const nameChanged = draft.displayName !== sietch.displayName;
-        const passwordChanged = sietchPasswordDraftChanged(sietch, draft, Boolean(sietchPasswordTouched[sietch.partitionId]));
+      // The same helper the post-save refresh uses to decide which drafts it
+      // may discard, so the two can never disagree about what was written.
+      for (const sietch of writableSietchEdits(survivalSietchRows, sietchDrafts, sietchPasswordTouched, partitionId)) {
+        const { draft, nameChanged, passwordChanged } = sietchDraftChanges(sietch, sietchDrafts, sietchPasswordTouched);
         const targetName = sietchTargetDisplayName(sietch, draft.displayName);
         if (nameChanged && passwordChanged) {
           actions.push({
             label: `Saving settings for ${targetName}`,
-            run: () => mapsApi.updateSietches({ action: "set-settings", partitionId: sietch.partitionId, displayName: draft.displayName, password: draft.password, confirmation: "UPDATE SIETCHES" })
+            run: () => updateSietches({ action: "set-settings", partitionId: sietch.partitionId, displayName: draft.displayName, password: draft.password, confirmation: "UPDATE SIETCHES" })
           });
           continue;
         }
         if (nameChanged) {
           actions.push({
             label: `Saving name for ${targetName}`,
-            run: () => mapsApi.updateSietches({ action: "set-display", partitionId: sietch.partitionId, displayName: draft.displayName, confirmation: "UPDATE SIETCHES" })
+            run: () => updateSietches({ action: "set-display", partitionId: sietch.partitionId, displayName: draft.displayName, confirmation: "UPDATE SIETCHES" })
           });
         }
         if (passwordChanged) {
           actions.push({
             label: `Saving password for ${targetName}`,
-            run: () => mapsApi.updateSietches({ action: "set-password", partitionId: sietch.partitionId, password: draft.password, confirmation: "UPDATE SIETCHES" })
+            run: () => updateSietches({ action: "set-password", partitionId: sietch.partitionId, password: draft.password, confirmation: "UPDATE SIETCHES" })
           });
         }
       }
@@ -1329,25 +1499,14 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
     if (activeAction) actions.push(activeAction);
     return actions;
   }
-  async function saveSurvivalSietches() {
-    const actions = survivalSietchActions({ includeActive: true, includePartitions: true });
-    if (!actions.length) return;
-    if (await confirmAction(`Save ${actions.length} Survival_1 Sietch change${actions.length === 1 ? "" : "s"}?`)) {
-      const activeChanged = Boolean(activeSietches && activeSietchesDirty);
-      await runTaskSequenceAndRefresh(actions, "Saving Sietch Changes", "Sietches Saved", {
-        saveAcceptedMessage: activeChanged
-          ? "Sietch changes saved successfully. The sietch is starting and may take a few minutes to appear in-game after it is running."
-          : "Sietch settings saved successfully. Changes may take a short time to appear in-game."
-      });
-    }
-  }
   async function saveSietchSettings(sietch: SietchRow) {
+    if (!isSietchWriteTarget(sietch)) return onError(SIETCH_PARTITION_IDS_UNREADABLE);
     const parent = mapRows.find((row) => String(row.map || "") === "Survival_1") || {};
     const draft = sietchDrafts[sietch.partitionId] || { displayName: sietch.displayName, password: sietch.password };
     const originalMemory = memoryInputValue(partitionMemoryValue(memoryText, sietch.partitionId, String(parent.memory || "")));
     const memoryChanged = memory !== originalMemory;
     const running = mapRuntimeNeedsLiveApply(parent.status);
-    const actions: Array<{ label: string; run: () => Promise<{ task: Task }> }> = [];
+    const actions: MapsTaskAction[] = [];
     if (memoryChanged) {
       actions.push({
         label: `Saving RAM for ${sietch.displayName}`,
@@ -1383,24 +1542,41 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
       await runTaskSequenceAndRefresh(actions, `Saving ${sietchTargetDisplayName(sietch, draft.displayName)} Settings`, "Sietch Saved", {
         saveAcceptedMessage: successMessage,
         memoryUpdates: memoryChanged ? [{ map: "Survival_1", partitionId: sietch.partitionId, memory: memoryCliValue(memory) }] : [],
-        resultTarget: mapResultTarget("Survival_1", sietch.partitionId)
+        resultTarget: mapResultTarget("Survival_1", sietch.partitionId),
+        // Derived from sietchActions' own source, so a pending edit on any
+        // other row -- including a fallback row the guard refused -- survives
+        // this save's refresh.
+        writtenPartitionIds: writableSietchEdits(survivalSietchRows, sietchDrafts, sietchPasswordTouched, sietch.partitionId)
+          .map((row) => row.partitionId)
       });
     }
   }
   async function restartSietch(sietch: SietchRow, resultTarget: string) {
     if (!sietch.active) return;
+    if (!isSietchWriteTarget(sietch)) return onError(SIETCH_PARTITION_IDS_UNREADABLE);
     const label = sietch.displayName || `Partition ${sietch.partitionId}`;
-    if (!(await confirmAction(`Restart ${label}?`, {
-      title: "Restart Sietch",
-      confirmLabel: "Restart",
+    const gated = await runGatedRestart({
+      restartGate,
+      label,
+      note: "Players in this Sietch will be disconnected. Other Sietches will remain running.",
       details: [
         { label: "Sietch", value: label },
-        { label: "Partition", value: sietch.partitionId },
-        { label: "Impact", value: "Players in this Sietch will be disconnected. Other Sietches will remain running.", tone: "danger" }
-      ]
-    }))) return;
+        { label: "Partition", value: sietch.partitionId }
+      ],
+      target: { partitionId: sietch.partitionId },
+      dispatch: (opts) => mapsApi.restartSietch(sietch.partitionId, { ...opts, label })
+    });
+    if (gated.outcome === "cancelled") return;
+    if (gated.outcome === "queued") {
+      setMapsResultScope("maps");
+      setMapsResultTarget(resultTarget);
+      setMapsResult({ status: "succeeded", title: "Restart Queued", message: `${label} restart queued — see the Restart Queue panel in Admin Tools.` });
+      return;
+    }
+    if (!gated.task) return;
+    const task = gated.task;
     await runTaskAndRefresh(
-      () => mapsApi.restartSietch(sietch.partitionId),
+      () => Promise.resolve({ task }),
       `Restarting ${label}`,
       `${label} Restarted`,
       { resultTarget }
@@ -1490,12 +1666,17 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
     if (!rowName || rowName === "Survival_1" || rowName === "Overmap") return;
     const partitionId = String(row.partitionId || row.partition || "").trim();
     if (!partitionId) return;
-    const confirmed = await confirmAction(`Restart ${rowName}?`, {
-      confirmLabel: "Restart",
-      cancelLabel: "Cancel"
-    });
-    if (!confirmed) return;
-    await runTaskAndRefresh(() => mapsApi.respawn(partitionId, "RESTART MAP"), `Restarting ${rowName}`, `${rowName} Restarted`, { resultTarget: mapResultTarget(rowName) });
+    const gated = await runGatedRestart({ restartGate, label: rowName, target: { partitionId }, dispatch: (opts) => mapsApi.respawn(partitionId, "RESTART MAP", { ...opts, label: rowName }) });
+    if (gated.outcome === "cancelled") return;
+    if (gated.outcome === "queued") {
+      setMapsResultScope("maps");
+      setMapsResultTarget(mapResultTarget(rowName));
+      setMapsResult({ status: "succeeded", title: "Restart Queued", message: `${rowName} restart queued — see the Restart Queue panel in Admin Tools.` });
+      return;
+    }
+    if (!gated.task) return;
+    const task = gated.task;
+    await runTaskAndRefresh(() => Promise.resolve({ task }), `Restarting ${rowName}`, `${rowName} Restarted`, { resultTarget: mapResultTarget(rowName) });
   }
   async function forceDespawnDeepDesertPartition(row: Record<string, unknown>) {
     const partitionId = String(row.partitionId || "").trim();
@@ -1513,23 +1694,30 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
   }
   async function saveGame() {
     if (!userGameName) return;
-    if (!(await confirmSettingsRestart("UserGame"))) return;
     const scope = isUserGameGlobal ? "global" : effectiveUserGamePartitionId ? "partition" : "map";
     const map = isUserGameGlobal ? "Survival_1" : userGameName;
     const partitionId = isUserGameGlobal ? undefined : effectiveUserGamePartitionId || undefined;
+    const choice = await confirmSettingsRestart("UserGame", settingsRestartTarget(scope, map, partitionId));
+    if (choice === "cancel") return;
     await runTaskAndRefresh(
-      () => mapsApi.saveUserSettings({ scope, map, partitionId, values: valuesForDirtyFields(gameValues, gameDraft, userGameFields) }),
+      () => mapsApi.saveUserSettings({ scope, map, partitionId, values: valuesForDirtyFields(gameValues, gameDraft, userGameFields), immediate: choice === "immediate", deferRestart: choice === "manual" }),
       `Saving ${isUserGameGlobal ? "Global" : userGameName} UserGame changes`,
       "UserGame Saved",
       { resultScope: "modifiers", restartAcceptedMessage: "Changes saved successfully. The maps are restarting and should be back up soon." }
     );
     await loadSelectedSettings(userGameName, partitionId);
+    await refreshDeferredRestartPending();
   }
   async function saveRaw(kind: "engine" | "game") {
-    if (!(await confirmSettingsRestart(kind === "engine" ? "UserEngine" : "UserGame"))) return;
+    // Raw UserEngine.ini is always the stack-wide profile; raw UserGame.ini
+    // here always saves as the global profile too (scope: "global" below),
+    // even though a specific map is selected for editing convenience -- so
+    // neither has a map/partition to scope the online check to.
+    const choice = await confirmSettingsRestart(kind === "engine" ? "UserEngine" : "UserGame");
+    if (choice === "cancel") return;
     if (kind === "engine") {
       await runTaskAndRefresh(
-        () => mapsApi.saveRawUserSettings({ scope: "engine", content: rawEngine }),
+        () => mapsApi.saveRawUserSettings({ scope: "engine", content: rawEngine, immediate: choice === "immediate", deferRestart: choice === "manual" }),
         "Saving UserEngine changes",
         "UserEngine Saved",
         {
@@ -1540,9 +1728,17 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
       );
       setRawEngineOriginal(rawEngine);
       await loadUserEngine();
+      // The raw UserEngine.ini editor is the only console-driven path
+      // that can change Port/IGWPort (the structured per-field editor
+      // deliberately excludes them -- see engineFields' filter above),
+      // so refresh the frontend's cached port values after every raw
+      // UserEngine save, not just on next page load. See
+      // api/serverPorts.ts's refreshServerPorts() for why this is
+      // needed.
+      await refreshServerPorts();
     } else {
       await runTaskAndRefresh(
-        () => mapsApi.saveRawUserSettings({ scope: "global", map: userGameName || "Survival_1", partitionId: effectiveUserGamePartitionId || undefined, content: rawGame }),
+        () => mapsApi.saveRawUserSettings({ scope: "global", map: userGameName || "Survival_1", partitionId: effectiveUserGamePartitionId || undefined, content: rawGame, immediate: choice === "immediate", deferRestart: choice === "manual" }),
         "Saving UserGame changes",
         "UserGame Saved",
         {
@@ -1554,6 +1750,7 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
       setRawGameOriginal(rawGame);
       if (userGameName) await loadSelectedSettings(userGameName, effectiveUserGamePartitionId || undefined);
     }
+    await refreshDeferredRestartPending();
   }
   async function restoreRawGameDefaults() {
     if (userGameName) {
@@ -1646,7 +1843,7 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
     downloadText("Engine.ini", result.content || "");
   }
   async function toggleAdvanced() {
-    if (!mapsLoaded) return;
+    if (!modifierSettingsLoaded) return;
     if (advancedOpen) {
       setAdvancedOpen(false);
       return;
@@ -1659,13 +1856,13 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
     setAdvancedOpen(true);
   }
   function toggleModifiers() {
-    if (!mapsLoaded) return;
+    if (!modifierSettingsLoaded) return;
     const nextOpen = !modifiersOpen;
     setModifiersOpen(nextOpen);
     if (nextOpen) setAdvancedOpen(false);
   }
-  const modifiersAvailable = mapsLoaded;
-  const advancedAvailable = mapsLoaded;
+  const modifiersAvailable = modifierSettingsLoaded;
+  const advancedAvailable = modifierSettingsLoaded;
   const runtimeParallelismValue = runtimeSettings?.alwaysOnStartupParallelism ?? 1;
   const runtimeParallelismMax = alwaysOnParallelismLimit(runtimeSettings, hostMemoryProtection, hostMemoryReserveMode, hostMemoryReserve);
   const startupParallelismDirty = Boolean(runtimeSettings) && (Number(startupParallelism) !== runtimeParallelismValue
@@ -1678,7 +1875,7 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
     {memorySwap?.enabled ? <div className="memory-swap-panel">
       <div className="memory-swap-summary">
         <div className="memory-swap-copy"><strong>Emergency Swap Settings</strong><span>{memorySwap.hostPoolActive ? `${memorySwap.poolGiB} GB Managed Swap Active · ${memorySwap.perServerGiB} GB per Running Map` : `Existing Host Swap Active · ${memorySwap.perServerGiB} GB per Running Map`}</span></div>
-        <div className="memory-swap-metrics"><span><strong>{memorySwap.physicalMemoryGiB} GB</strong> RAM</span><span><strong>{memorySwap.existingSwapGiB} GB</strong> Existing Swap</span><span><strong>{memorySwap.safeAvailableDiskGiB} GB</strong> Safe Disk Available</span></div>
+        <div className="memory-swap-metrics"><span><strong>{memorySwap.physicalMemoryGiB} GB</strong> RAM</span><span><strong>{memorySwap.existingSwapGiB} GB</strong> Existing Swap</span><span><strong>{memorySwap.safeAvailableDiskGiB} GB</strong> Safe Disk Available</span><span><strong>{memorySwap.swappiness}</strong> Host Swappiness</span></div>
       </div>
       <div className={`memory-swap-controls ${memorySwapMode === "custom" ? "custom" : "standard"}`}>
         <label className="memory-swap-mode-field">Mode<select value={memorySwapMode} disabled={memorySwapSaving} onChange={(event) => {
@@ -1690,6 +1887,7 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
         {memorySwapMode === "custom" ? <div className="memory-swap-custom-fields">
           <label><span className="memory-swap-label-with-help">Per Running Map<InfoTooltip id="memory-swap-per-map-help" label="About the per-running-map allowance">Each active map or Sietch runs in its own game-server container. This is the maximum emergency swap each one may use; it is not a limit for the whole physical server.</InfoTooltip></span><span className="memory-swap-number-field"><input type="number" min="1" max="16" value={memorySwapAllowance} onChange={(event) => setMemorySwapAllowance(event.target.value)} /><span>GB</span></span></label>
           <label><span className="memory-swap-label-with-help">Managed Swap<InfoTooltip id="memory-swap-pool-help" label="About managed swap">This is the additional host swap file created and managed by the Console. Existing host swap is counted first, so this can be 0 GB when the host already has enough swap.</InfoTooltip></span><span className="memory-swap-number-field"><input type="number" min="0" max="32" value={memorySwapPool} onChange={(event) => setMemorySwapPool(event.target.value)} /><span>GB</span></span></label>
+          <label><span className="memory-swap-label-with-help">Swappiness<InfoTooltip id="memory-swap-swappiness-help" label="About host swappiness">Controls how readily Linux considers swapping. This is a host-wide kernel setting, not a per-container value. The default is 10.</InfoTooltip></span><span className="memory-swap-number-field"><input type="number" min="0" max="100" value={memorySwapSwappiness} onChange={(event) => setMemorySwapSwappiness(event.target.value)} /><span>0-100</span></span></label>
         </div> : null}
         <button className="memory-swap-apply" disabled={memorySwapSaving} onClick={() => run(() => saveMemorySwap(true))}>{memorySwapSaving ? "Applying..." : "Apply Swap Settings"}</button>
       </div>
@@ -1738,6 +1936,7 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
         const rowName = String(row.map || "");
         const isSurvivalRow = rowName === "Survival_1";
         const isDeepDesertRow = /^DeepDesert_/i.test(rowName);
+        const requiresFreshProcess = isFreshProcessMap(rowName);
         const isSelected = selectedMapName === rowName && (!(isSurvivalRow || isDeepDesertRow) || !selectedPartitionId);
         const mapSettingsDirty = isSelected && ((modeDraft !== modeInputValue(String(row.mode || "")) && String(row.mode) !== "Core Map") || memory !== memoryInputValue(String(row.memory || "")) || (isSurvivalRow && (activeSietchesDirty || primarySietchDirty)));
         const primaryDraft = primarySurvivalSietch ? sietchDrafts[primarySurvivalSietch.partitionId] || { displayName: primarySurvivalSietch.displayName, password: primarySurvivalSietch.password } : undefined;
@@ -1749,6 +1948,9 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
         const primaryDeepDesertName = isDeepDesertRow && primaryDeepDesertPartition
           ? deepDesertPartitionName(primaryDeepDesertPartition, primaryDeepDesertCombatRow)
           : undefined;
+        const primarySietchCombatRow = isSurvivalRow && primarySurvivalSietch
+          ? combatStateByMap["Survival_1"]?.partitions.find((partition) => partition.partitionId === primarySurvivalSietch.partitionId) || null
+          : null;
         const baseStatus = isDeepDesertRow && deepDesertDualConfiguring
           ? "Configuring"
           : isDeepDesertRow && primaryDeepDesertPartition ? partitionStatusById.get(String(primaryDeepDesertPartition.partitionId || "")) || String(primaryDeepDesertPartition.status || row.status || "Not Available")
@@ -1766,14 +1968,16 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
         const rowSietchRestartResultActive = Boolean(rowResultActive && mapsResult && mapsResultScope === "maps" && isSietchRestartResult(mapsResult));
         const rowForceDespawnResultActive = Boolean(rowResultActive && mapsResult && mapsResultScope === "maps" && isForceDespawnResult(mapsResult) && !isDeepDesertDualResult(mapsResult));
         const rowForceSpawnResultActive = Boolean(rowResultActive && mapsResult && mapsResultScope === "maps" && isForceSpawnResult(mapsResult));
-        return <Fragment key={rowName}><tr><td><MapDisplayName mapId={rowName} instanceName={isDeepDesertRow ? primaryDeepDesertName : undefined} sietch={isSurvivalRow ? primarySurvivalSietch : null} draft={isSurvivalRow ? primaryDraft : undefined} /></td><td><MapRuntimeStatus value={displayStatus} detail={row.statusDetail} /></td><td>{String(row.mode || "Not Available")}</td><td><MemoryUsageBar row={memoryRow} fallback={liveMemoryFallback(row)} configuredLimit={row.memory} swapEnabled={Boolean(memorySwap?.enabled)} /></td><td className="actions-column"><button className="stable-action-button" onClick={() => selectMap(row)}>{isSelected ? "Close" : "Edit"}</button></td></tr>
+        return <Fragment key={rowName}><tr><td><MapDisplayName mapId={rowName} instanceName={isDeepDesertRow ? primaryDeepDesertName : undefined} sietch={isSurvivalRow ? primarySurvivalSietch : null} draft={isSurvivalRow ? primaryDraft : undefined} combatState={isSurvivalRow ? primarySietchCombatRow?.configuredState || "UNKNOWN" : undefined} combatRestartRequired={Boolean(primarySietchCombatRow?.configurationDrift)} /></td><td><MapRuntimeStatus value={displayStatus} detail={row.statusDetail} /></td><td>{String(row.mode || "Not Available")}</td><td><MemoryUsageBar row={memoryRow} fallback={liveMemoryFallback(row)} configuredLimit={row.memory} swapEnabled={Boolean(memorySwap?.enabled)} /></td><td className="actions-column"><button className="stable-action-button" onClick={() => selectMap(row)}>{isSelected ? "Close" : "Edit"}</button></td></tr>
           {isSelected && <tr className="inline-edit-row" key={`${rowName}-edit`}><td colSpan={5}>
             <section className="inline-edit-panel">
               <div className="panel-title"><h4>Edit {isDeepDesertRow && primaryDeepDesertName ? primaryDeepDesertName : rowName}</h4></div>
               <KeyValueGrid items={[["Status", displayStatus], ["Mode", row.mode], ["Memory", row.memory], ["Dimensions", row.dimensions], ...(isSurvivalRow && primarySurvivalSietch ? [["Password", primarySurvivalSietch.passwordSet ? "Set" : "Not Set"] as [string, unknown]] : [])]} />
-              {isVehicleDeployMap(rowName) && <p className="muted">Vehicle-deploy Overland maps use Overmap Active instead of Always On by default to avoid vehicle ownership restore races during startup.</p>}
+              {requiresFreshProcess
+                ? <p className="muted">Smuggler&apos;s Run stays Dynamic so its instance is retired as soon as it becomes empty and the next visit starts with fresh vehicle permissions.</p>
+                : isVehicleDeployMap(rowName) && <p className="muted">Vehicle-deploy Overland maps use Overmap Active instead of Always On by default to avoid vehicle ownership restore races during startup.</p>}
               <div className="action-line">
-                <label className="compact-select">Mode<select value={modeDraft} disabled={String(row.mode) === "Core Map"} onChange={(event) => setModeDraft(event.target.value)}><option value="dynamic">Dynamic</option><option value="always-on">Always On</option><option value="overmap-active">Overmap Active</option><option value="disabled">Disabled</option></select></label>
+                <label className="compact-select">Mode<select value={modeDraft} disabled={String(row.mode) === "Core Map"} onChange={(event) => setModeDraft(event.target.value)}><option value="dynamic">Dynamic</option>{!requiresFreshProcess && <option value="always-on">Always On</option>}{!requiresFreshProcess && <option value="overmap-active">Overmap Active</option>}<option value="disabled">Disabled</option></select></label>
                 <label className="memory-number-field">Memory<input type="number" min="0.01" step="0.01" inputMode="decimal" value={memory} onChange={(event) => setMemory(event.target.value)} placeholder="8" /></label>
                 <span className="unit-label">GB</span>
                 {isSurvivalRow && <label className="memory-number-field">Active Sietches<input type="number" min="1" max="64" step="1" value={activeSietches} onChange={(event) => setActiveSietches(event.target.value)} /></label>}
@@ -1879,7 +2083,8 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
             const childResultActive = mapsResultTarget === childTarget;
             const childMapSettingsResultActive = Boolean(childResultActive && mapsResult && mapsResultScope === "maps" && isMapSettingsResult(mapsResult));
             const childSietchRestartResultActive = Boolean(childResultActive && mapsResult && mapsResultScope === "maps" && isSietchRestartResult(mapsResult));
-            return <Fragment key={`sietch-${sietch.partitionId}`}><tr className="sietch-child-row"><td><MapDisplayName mapId="Survival_1" sietch={sietch} draft={draft} /><span className="sietch-child-meta">Partition {sietch.partitionId} / Dimension {sietch.dimension}</span></td><td><MapRuntimeStatus value={childStatus} /></td><td>Sietch</td><td>{sietch.active ? <MemoryUsageBar row={childMemoryRow} fallback={liveMemoryFallback(row)} configuredLimit={sietchMemory} swapEnabled={Boolean(memorySwap?.enabled)} /> : <span className="muted">Unallocated</span>}</td><td className="actions-column"><button className="stable-action-button" onClick={() => selectSietch(sietch)}>{childSelected ? "Close" : "Edit"}</button></td></tr>
+            const childCombatRow = combatStateByMap["Survival_1"]?.partitions.find((partition) => partition.partitionId === sietch.partitionId) || null;
+            return <Fragment key={`sietch-${sietch.partitionId}`}><tr className="sietch-child-row"><td><MapDisplayName mapId="Survival_1" sietch={sietch} draft={draft} combatState={childCombatRow?.configuredState || "UNKNOWN"} combatRestartRequired={Boolean(childCombatRow?.configurationDrift)} /><span className="sietch-child-meta">Partition {sietch.partitionId} / Dimension {sietch.dimension}{childCombatRow?.configurationDrift ? " / Restart required to apply saved PvP-PvE settings" : ""}</span></td><td><MapRuntimeStatus value={childStatus} /></td><td>Sietch</td><td>{sietch.active ? <MemoryUsageBar row={childMemoryRow} fallback={liveMemoryFallback(row)} configuredLimit={sietchMemory} swapEnabled={Boolean(memorySwap?.enabled)} /> : <span className="muted">Unallocated</span>}</td><td className="actions-column"><button className="stable-action-button" onClick={() => selectSietch(sietch)}>{childSelected ? "Close" : "Edit"}</button></td></tr>
               {childSelected && <tr className="inline-edit-row"><td colSpan={5}><section className="inline-edit-panel">
                 <div className="panel-title"><h4>Edit {sietch.displayName}</h4></div>
                 <KeyValueGrid items={[["Partition", sietch.partitionId], ["Dimension", sietch.dimension], ["Status", childStatus], ["Memory", sietchMemory], ["Password", sietch.passwordSet ? "Set" : "Not Set"]]} />
@@ -1908,12 +2113,17 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
       {loadError && mapRows.length ? <p className="danger-note">Some map data could not be refreshed: {loadError}</p> : null}
       {memoryError && <p className="danger-note">Live memory could not be read: {memoryError}</p>}
     </section>
-    {(modifierDirtySummary || (mapsResult && mapsResultScope === "modifiers")) && <div className="maps-modifier-status-slot">
+    {(modifierDirtySummary || (mapsResult && mapsResultScope === "modifiers") || deferredRestartPending.pending) && <div className="maps-modifier-status-slot">
       {modifierDirtySummary && <p className="dirty-note">Unsaved changes: {modifierDirtySummary}</p>}
+      {deferredRestartPending.pending && <div className="maps-deferred-restart-banner">
+        <span className="badge badge-warn">Pending Restart</span>
+        <span className="muted">{deferredRestartPending.label || "Settings"} saved — apply at the next battlegroup restart.</span>
+        <button className="secondary" onClick={() => run(restartBattlegroupForDeferredSettings)}>Restart Battlegroup</button>
+      </div>}
       {mapsResult && mapsResultScope === "modifiers" ? <div className="maps-result-slot"><HomeTaskResultCard result={mapsResult} /></div> : null}
     </div>}
     <div className={`playerAdmin_toggle maps-modifiers-toggle ${modifiersOpen && modifiersAvailable ? "open" : ""}`}>
-      <button className="playerAdmin_toggleHeader" disabled={!modifiersAvailable} aria-label={modifiersOpen && modifiersAvailable ? "Collapse Interactive Modifiers" : "Expand Interactive Modifiers"} onClick={toggleModifiers}>{modifiersOpen && modifiersAvailable ? <ChevronUp size={18} /> : <ChevronDown size={18} />}<span>Interactive Modifiers</span></button>
+      <button className="playerAdmin_toggleHeader" disabled={!modifiersAvailable} title={modifiersAvailable ? undefined : "Modifier settings are loading independently of live map status."} aria-label={modifiersOpen && modifiersAvailable ? "Collapse Interactive Modifiers" : "Expand Interactive Modifiers"} onClick={toggleModifiers}>{modifiersOpen && modifiersAvailable ? <ChevronUp size={18} /> : <ChevronDown size={18} />}<span>Interactive Modifiers</span></button>
       {modifiersOpen && modifiersAvailable && <div className="playerAdmin_toggleBody">
       <div className="settings-tabs-row">
         <div className="settings-tabs" role="tablist" aria-label="Interactive modifier editor">
@@ -1989,7 +2199,7 @@ export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, wait
   </section>;
 }
 
-function SpicefieldsEditor({
+export function SpicefieldsEditor({
   rows,
   allRows,
   drafts,
@@ -2024,15 +2234,15 @@ function SpicefieldsEditor({
     {allRows.length && !rows.length ? <div className="empty">No spice fields match this filter.</div> : null}
     {rows.length ? <div className="settings-list-wrap spicefields-table-wrap"><table className="settings-list-table spicefields-table">
       <thead><tr>
-        <th>Map</th>
-        <th>Type</th>
-        <th>Dimension</th>
-        <th>Live</th>
-        <th>Max Active</th>
-        <th>Max Primed</th>
-        <th>Spawning</th>
-        <th>Weight</th>
-        <th>Actions</th>
+        <th scope="col">Map</th>
+        <th scope="col">Type</th>
+        <th scope="col">Dimension</th>
+        <th scope="col">Live</th>
+        <th scope="col">Max Active</th>
+        <th scope="col">Max Primed</th>
+        <th scope="col">Spawning</th>
+        <th scope="col">Weight</th>
+        <th scope="col">Actions</th>
       </tr></thead>
       <tbody>{rows.map((row) => {
         const id = String(row.spicefield_type_id);
@@ -2040,15 +2250,15 @@ function SpicefieldsEditor({
         const dirty = spicefieldDraftDirty(row, draft);
         const saving = savingId === id;
         return <tr key={id}>
-          <td><strong>{row.map_name}</strong><small>ID {row.spicefield_type_id}</small></td>
-          <td>{row.field_type}</td>
-          <td>{row.dimension_index}</td>
-          <td><span>{row.current_globally_active ?? 0} active</span><small>{row.current_globally_primed ?? 0} primed</small></td>
-          <td><input type="number" min="0" step="1" value={draft.maxActive} onChange={(event) => onDraftChange(id, { ...draft, maxActive: event.target.value })} /></td>
-          <td><input type="number" min="0" step="1" value={draft.maxPrimed} onChange={(event) => onDraftChange(id, { ...draft, maxPrimed: event.target.value })} /></td>
-          <td><select value={draft.spawningActive ? "true" : "false"} onChange={(event) => onDraftChange(id, { ...draft, spawningActive: event.target.value === "true" })}><option value="true">Enabled</option><option value="false">Disabled</option></select></td>
-          <td><input type="number" min="0" step="any" value={draft.spawnWeight} onChange={(event) => onDraftChange(id, { ...draft, spawnWeight: event.target.value })} /></td>
-          <td><div className="action-row spicefield-row-actions"><button disabled={!dirty || saving} onClick={() => onSave(row)}>{saving ? "Saving..." : "Save"}</button><button disabled={!dirty || saving} onClick={() => onDiscard(row)}>Discard</button></div></td>
+          <td data-label="Map"><strong>{row.map_name}</strong><small>ID {row.spicefield_type_id}</small></td>
+          <td data-label="Type">{row.field_type}</td>
+          <td data-label="Dimension">{row.dimension_index}</td>
+          <td data-label="Live"><span>{row.current_globally_active ?? 0} active</span><small>{row.current_globally_primed ?? 0} primed</small></td>
+          <td data-label="Max Active"><input aria-label={`${row.map_name} Max Active`} type="number" min="0" step="1" value={draft.maxActive} onChange={(event) => onDraftChange(id, { ...draft, maxActive: event.target.value })} /></td>
+          <td data-label="Max Primed"><input aria-label={`${row.map_name} Max Primed`} type="number" min="0" step="1" value={draft.maxPrimed} onChange={(event) => onDraftChange(id, { ...draft, maxPrimed: event.target.value })} /></td>
+          <td data-label="Spawning"><select aria-label={`${row.map_name} Spawning`} value={draft.spawningActive ? "true" : "false"} onChange={(event) => onDraftChange(id, { ...draft, spawningActive: event.target.value === "true" })}><option value="true">Enabled</option><option value="false">Disabled</option></select></td>
+          <td data-label="Weight"><input aria-label={`${row.map_name} Weight`} type="number" min="0" step="any" value={draft.spawnWeight} onChange={(event) => onDraftChange(id, { ...draft, spawnWeight: event.target.value })} /></td>
+          <td data-label="Actions"><div className="action-row spicefield-row-actions"><button disabled={!dirty || saving} onClick={() => onSave(row)}>{saving ? "Saving..." : "Save"}</button><button disabled={!dirty || saving} onClick={() => onDiscard(row)}>Discard</button></div></td>
         </tr>;
       })}</tbody>
     </table></div> : null}
@@ -2111,10 +2321,10 @@ function SettingsCardGrid({ fields, values, onChange, viewMode = "grid", emptyMe
       return <Fragment key={field.id}>
         {(field.clientFile || modified) && <tr className="settings-list-badge-row"><td colSpan={3}>
           {field.clientFile && <span className="badge badge-info settings-list-badge" title={`Also requires updating the client's ${field.clientFile}.`}>Client &quot;{field.clientFile}&quot;</span>}
-          {modified && <ModifiedBadge field={field} label={friendlySettingLabel(field.id, field.key || field.id)} onReset={() => onChange(field.id, field.default ?? "")} />}
+          {modified && <ModifiedBadge field={field} label={friendlySettingLabel(field.id, field.key || field.id, field.label)} onReset={() => onChange(field.id, field.default ?? "")} />}
         </td></tr>}
         <tr>
-          <td><strong>{friendlySettingLabel(field.id, field.key || field.id)}</strong><small>{fieldCategory(field)}</small></td>
+          <td><strong>{friendlySettingLabel(field.id, field.key || field.id, field.label)}</strong><small>{fieldCategory(field)}</small></td>
           <td>{field.key || field.id}</td>
           <td><SettingInput field={field} value={value} inputId={`setting-list-${field.scope}-${field.id}`} onChange={(nextValue) => onChange(field.id, nextValue)} /></td>
         </tr>
@@ -2134,7 +2344,7 @@ function ModifiedBadge({ field, label, onReset }: { field: UserSettingField; lab
 }
 
 function SettingControl({ field, value, onChange }: { field: UserSettingField; value: string; onChange: (value: string) => void }) {
-  const label = friendlySettingLabel(field.id, field.key || field.id);
+  const label = friendlySettingLabel(field.id, field.key || field.id, field.label);
   const inputId = `setting-${field.scope}-${field.id}`;
   const modified = isModifiedFromDefault(field, value);
   return <label className="settings-field" htmlFor={inputId}>
@@ -2191,12 +2401,6 @@ export function MemoryUsageBar({ row, fallback, configuredLimit, swapEnabled = f
   </div>;
 }
 
-function sietchPasswordDraftChanged(row: SietchRow, draft: { password: string }, touched = false) {
-  if (!touched) return false;
-  if (row.passwordSet) return draft.password !== SIETCH_PASSWORD_MASK;
-  return Boolean(draft.password);
-}
-
 function sietchHasPassword(row: SietchRow | null | undefined, draft?: { password: string }) {
   return Boolean(row?.passwordSet || row?.password || (draft?.password && draft.password !== SIETCH_PASSWORD_MASK));
 }
@@ -2219,15 +2423,28 @@ function sietchTargetDisplayName(row: SietchRow, draftDisplayName?: string) {
   return defaultSietchName(row) || row.displayName || `partition ${row.partitionId}`;
 }
 
-function MapDisplayName({ mapId, instanceName, sietch, draft }: { mapId: string; instanceName?: string; sietch?: SietchRow | null; draft?: { password: string } }) {
+function MapDisplayName({ mapId, instanceName, sietch, draft, combatState, combatRestartRequired = false }: { mapId: string; instanceName?: string; sietch?: SietchRow | null; draft?: { password: string }; combatState?: PartitionCombatStateRow["configuredState"]; combatRestartRequired?: boolean }) {
   const passwordSet = sietchHasPassword(sietch, draft);
   const friendlyName = friendlyMapName(mapId);
   const instanceLabel = String(instanceName || sietch?.displayName || "").trim();
   const rawLabel = instanceLabel ? `${mapId}: ${instanceLabel}` : mapId;
+  const combatBadge = combatState ? <CombatStatusBadge state={combatState} restartRequired={combatRestartRequired} /> : null;
   return <span className="map-display-name">
-    <span className="map-display-name-primary">{passwordSet && <Lock size={15} aria-label="Password set" />}<strong>{friendlyName}</strong></span>
-    {hasFriendlyMapName(mapId) && <small className="map-display-name-id">{rawLabel}</small>}
+    <span className="map-display-name-primary">{passwordSet && <Lock size={15} aria-label="Password set" />}<strong>{friendlyName}</strong>{!hasFriendlyMapName(mapId) ? combatBadge : null}</span>
+    {hasFriendlyMapName(mapId) && <span className="map-display-name-details"><small className="map-display-name-id">{rawLabel}</small>{combatBadge}</span>}
   </span>;
+}
+
+export function CombatStatusBadge({ state, restartRequired = false }: { state: PartitionCombatStateRow["configuredState"]; restartRequired?: boolean }) {
+  const normalized = state === "PVP" || state === "PVE" || state === "CONFLICT" ? state : "UNKNOWN";
+  const label = normalized === "PVP" ? "PvP" : normalized === "PVE" ? "PvE" : normalized === "CONFLICT" ? "Conflict" : "Unknown";
+  const detail = normalized === "UNKNOWN"
+    ? "The effective combat setting could not be determined."
+    : normalized === "CONFLICT"
+      ? "The effective PvP/PvE settings conflict."
+      : `Effective combat setting: ${label}.`;
+  const title = restartRequired ? `${detail} Restart required to apply the saved setting.` : detail;
+  return <span className={`combat-status-badge combat-status-${normalized.toLowerCase()}`} title={title} aria-label={`${label} combat status`}>{label}</span>;
 }
 
 export function MapRuntimeStatus({ value, detail }: { value: unknown; detail?: unknown }) {
@@ -2271,7 +2488,7 @@ function filterSettingsFields(fields: UserSettingField[], query: string) {
   const needle = String(query || "").trim().toLowerCase();
   if (!needle) return fields;
   return fields.filter((field) => {
-    const label = friendlySettingLabel(field.id, field.key || field.id);
+    const label = friendlySettingLabel(field.id, field.key || field.id, field.label);
     const category = fieldCategory(field);
     const haystack = `${label} ${field.id} ${field.key || ""} ${field.section || ""} ${category}`.toLowerCase();
     return haystack.includes(needle);
@@ -2327,8 +2544,8 @@ function fieldCategory(field: UserSettingField) {
   return field.category || settingsCategory(field.section || field.key || field.id);
 }
 
-function friendlySettingLabel(id: string, fallback: string) {
-  return titleCaseWords(id.replace(/^partition_/, "").replace(/_/g, " ")) || titleCaseWords(fallback);
+function friendlySettingLabel(id: string, fallback: string, explicit = "") {
+  return String(explicit || "").trim() || titleCaseWords(id.replace(/^partition_/, "").replace(/_/g, " ")) || titleCaseWords(fallback);
 }
 
 function normalizeBooleanText(value: string) {
@@ -2394,41 +2611,11 @@ export function valuesForDirtyFields(original: Record<string, string>, draft: Re
     .map((field) => [field.id, String(draft[field.id] ?? field.default ?? "")]));
 }
 
-type SietchRow = { partitionId: string; dimension: string; displayName: string; password: string; passwordSet: boolean; active: boolean };
-const SIETCH_PASSWORD_MASK = "********";
 
-export function parseSietchRows(text: string, idsText = ""): SietchRow[] {
-  const rows: SietchRow[] = [];
-  const ids = idsText.split(/\r?\n/).map((line) => line.trim()).filter((line) => /^\d+$/.test(line));
-  let dimensionIndex = 0;
-  for (const line of text.split(/\r?\n/)) {
-    if (/^\s*DIMENSION\b/i.test(line)) continue;
-    const tableMatch = line.match(/^\s*(\d+)\s+(.+?)\s+(\((?:un)?set\))\s*$/i);
-    if (tableMatch) {
-      const dimension = tableMatch[1];
-      const partitionId = ids[dimensionIndex] || dimension;
-      const displayName = tableMatch[2].trim();
-      const passwordSet = /^\(set\)$/i.test(tableMatch[3]);
-      rows.push({ partitionId, dimension, displayName, password: "", passwordSet, active: true });
-      dimensionIndex += 1;
-      continue;
-    }
-    const partitionMatch = line.match(/\b(?:partition|id)\s*[:=]?\s*(\d+)\b/i) || line.match(/^\s*(\d+)\s+/);
-    if (!partitionMatch) continue;
-    const dimension = partitionMatch[1];
-    const partitionId = ids[dimensionIndex] || partitionMatch[1];
-    const displayName = (line.match(/\b(?:display|name)\s*[:=]\s*([^|,\t]+)/i)?.[1] || line.match(/\bSietch\s+([A-Za-z0-9 _-]+)/i)?.[0] || `Sietch ${partitionId}`).trim();
-    const passwordValue = (line.match(/\bpassword\s*[:=]\s*([^|,\t]+)/i)?.[1] || line.match(/\((?:un)?set\)\s*$/i)?.[0] || "").trim();
-    const passwordSet = /\(set\)|\bset\b|true|yes/i.test(passwordValue) || /\(set\)\s*$/i.test(line);
-    const password = /\(set\)|\(unset\)|\bset\b|\bunset\b/i.test(passwordValue) ? "" : passwordValue;
-    const active = !/\binactive|disabled|stopped\b/i.test(line);
-    rows.push({ partitionId, dimension, displayName, password, passwordSet: passwordSet || Boolean(password), active });
-    dimensionIndex += 1;
-  }
-  const unique = new globalThis.Map<string, SietchRow>();
-  for (const row of rows) unique.set(row.partitionId, row);
-  return [...unique.values()].sort((a, b) => Number(a.dimension) - Number(b.dimension));
-}
+// Shown instead of writing when isSietchWriteTarget rejects a row, so a
+// refused Restart or Save says why rather than appearing to do nothing.
+const SIETCH_PARTITION_IDS_UNREADABLE =
+  "Sietch partition IDs could not be read from the server, so this change cannot be applied to the right Sietch. Reload the Maps tab and try again.";
 
 function memoryForMap(rows: LiveMapMemoryRow[], map: string, row?: Record<string, unknown>) {
   const normalized = normalizeMapKey(map);
@@ -2494,7 +2681,14 @@ function partitionMemoryValue(memoryText: string, partitionId: string, fallback:
 // This function must NOT infer PvP/PvE from `row.dimension` — dimension
 // index is positional metadata only and does not determine combat state
 // (see the "Dual Deep Desert" resolver contract).
+//
+// `combatRow.serverDisplayName`, when present, is the effective, merged
+// Bgd.ServerDisplayName (partition -> map -> global UserEngine.ini) — the
+// name a player actually sees in-game. It takes precedence over the
+// synthesized "Deep Desert N (PvP/PvE)" text below.
 export function deepDesertPartitionName(row: Record<string, unknown>, combatRow?: PartitionCombatStateRow | null) {
+  const configuredName = String(combatRow?.serverDisplayName || "").trim();
+  if (configuredName) return configuredName;
   const dimension = Number(row.dimension);
   const suffix = Number.isFinite(dimension) ? ` ${dimension + 1}` : "";
   if (combatRow) {
@@ -2875,6 +3069,10 @@ function friendlyMapMode(value: string) {
 
 function isVehicleDeployMap(value: string) {
   return /^CB_Overland_/i.test(String(value || "").trim());
+}
+
+function isFreshProcessMap(value: string) {
+  return String(value || "").trim() === "CB_Overland_S_06";
 }
 
 function modeInputValue(value: string) {

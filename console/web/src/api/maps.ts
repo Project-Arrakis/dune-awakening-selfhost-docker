@@ -1,5 +1,6 @@
 import { api, post } from "./client";
 import type { Task } from "./setup";
+import type { RestartDispatchResponse } from "./server";
 
 export type UserSettingField = {
   scope: "engine" | "mapEngine" | "partitionEngine" | "game" | "partition";
@@ -11,6 +12,7 @@ export type UserSettingField = {
   clientFile: string;
   category: string;
   description: string;
+  label?: string;
 };
 
 export type UserSettingsSchema = {
@@ -53,6 +55,7 @@ export type MemorySwapState = {
   physicalMemoryGiB: number;
   safeAvailableDiskGiB: number;
   swappiness: string;
+  configuredSwappiness: number;
   swapFile: string;
 };
 
@@ -93,6 +96,7 @@ export type PartitionCombatStateRow = {
   dimensionIndex: number | null;
   databaseLabel: string | null;
   runtimeStatus: PartitionRuntimeStatus;
+  serverDisplayName: string | null;
   configuredState: PartitionCombatState;
   materializedState: PartitionCombatState | null;
   source: string;
@@ -141,14 +145,14 @@ export const mapsApi = {
   // Restart for a map with no managed service (Deep Desert, the SH_* hubs):
   // despawn then spawn as one task. Always pass a partition id, never a map name
   // -- spawn-server.sh given a name picks the first unassigned partition.
-  respawn: (partitionId: string, confirmation: string) => post<{ task: Task }>("/api/maps/respawn", { target: partitionId, confirmation }),
+  respawn: (partitionId: string, confirmation: string, opts?: { immediate?: boolean; label?: string }) => post<RestartDispatchResponse>(`/api/maps/respawn${opts?.immediate ? "?restartQueue=immediate" : ""}`, { target: partitionId, confirmation, restartLabel: opts?.label }),
   autoscaler: () => api<{ stdout: string }>("/api/maps/autoscaler"),
   memory: () => api<{ stdout: string }>("/api/maps/memory"),
   liveMemory: () => api<{ rows: LiveMapMemoryRow[]; sampledAt: string; error?: string }>("/api/maps/memory/live"),
   memoryBalancer: () => api<MemoryBalancerState>("/api/maps/memory/balancer"),
   setMemoryBalancer: (enabled: boolean) => post<MemoryBalancerState>("/api/maps/memory/balancer", { enabled }),
   memorySwap: () => api<MemorySwapState>("/api/maps/memory/swap"),
-  setMemorySwap: (body: { enabled: boolean; perServerGiB?: number; poolGiB?: number; confirmation: string }) => post<{ task: Task }>("/api/maps/memory/swap", body),
+  setMemorySwap: (body: { enabled: boolean; perServerGiB?: number; poolGiB?: number; swappiness?: number; confirmation: string }) => post<{ task: Task }>("/api/maps/memory/swap", body),
   setMemory: (body: { map: string; memory: string; confirmation: string }) => post<{ task: Task }>("/api/maps/memory", { ...body, action: "set" }),
   spicefields: () => api<{ capabilities?: Record<string, boolean>; rows: SpicefieldTypeRow[]; reason?: string }>("/api/maps/spicefields"),
   updateSpicefield: (typeId: number | string, body: { max_globally_active: number; max_globally_primed: number; is_spawning_active: boolean; global_spawn_weight: number }) =>
@@ -162,15 +166,25 @@ export const mapsApi = {
   userGame: (map: string, partitionId?: string) => api<{ stdout: string; stderr?: string; exitCode?: number }>(`/api/maps/usergame?map=${encodeURIComponent(map)}${partitionId ? `&partitionId=${encodeURIComponent(partitionId)}` : ""}`),
   userSettingsSchema: () => api<UserSettingsSchema>("/api/maps/user-settings/schema"),
   userSettingsRestartPending: () => api<{ pending: boolean }>("/api/maps/user-settings/restart-pending"),
+  // Generic "Restart later" pending indicator (see maps.ts's saveUserSettings/
+  // resetUserSettings/saveRawUserSettings deferRestart field) -- distinct
+  // from userSettingsRestartPending above, which only covers Landsraad fields.
+  deferredRestartPending: () => api<{ pending: boolean; since?: string; label?: string }>("/api/maps/user-settings/deferred-pending"),
   userSettingsValues: (scope: "engine" | "mapEngine" | "partitionEngine" | "global" | "map" | "partition", map?: string, partitionId?: string) => api<{ stdout: string }>(`/api/maps/user-settings/values?scope=${encodeURIComponent(scope)}${map ? `&map=${encodeURIComponent(map)}` : ""}${partitionId ? `&partitionId=${encodeURIComponent(partitionId)}` : ""}`),
   rawUserSettings: (kind: "engine" | "game" | "profile" | "client-game" | "client-engine", map?: string, partitionId?: string) => api<{ content: string }>(`/api/maps/user-settings/raw?kind=${encodeURIComponent(kind)}${map ? `&map=${encodeURIComponent(map)}` : ""}${partitionId ? `&partitionId=${encodeURIComponent(partitionId)}` : ""}`),
-  saveUserSettings: (body: { scope: "engine" | "mapEngine" | "partitionEngine" | "global" | "map" | "partition"; map?: string; partitionId?: string; values: Record<string, string>; restart?: boolean }) => post<{ task: Task }>("/api/maps/user-settings/save", body),
-  resetUserSettings: (body: { scope: "engine" | "mapEngine" | "partitionEngine" | "global" | "map" | "partition"; map?: string; partitionId?: string; confirmation: string }) => post<{ task: Task }>("/api/maps/user-settings/reset", body),
-  saveRawUserSettings: (body: { scope: "engine" | "game" | "global" | "profile"; map?: string; partitionId?: string; content: string }) => post<{ task: Task }>("/api/maps/user-settings/raw", body),
+  saveUserSettings: ({ immediate, ...body }: { scope: "engine" | "mapEngine" | "partitionEngine" | "global" | "map" | "partition"; map?: string; partitionId?: string; values: Record<string, string>; restart?: boolean; immediate?: boolean; deferRestart?: boolean }) =>
+    post<RestartDispatchResponse>(`/api/maps/user-settings/save${immediate ? "?restartQueue=immediate" : ""}`, body),
+  resetUserSettings: ({ immediate, ...body }: { scope: "engine" | "mapEngine" | "partitionEngine" | "global" | "map" | "partition"; map?: string; partitionId?: string; confirmation: string; immediate?: boolean; deferRestart?: boolean }) =>
+    post<RestartDispatchResponse>(`/api/maps/user-settings/reset${immediate ? "?restartQueue=immediate" : ""}`, body),
+  saveRawUserSettings: ({ immediate, ...body }: { scope: "engine" | "game" | "global" | "profile"; map?: string; partitionId?: string; content: string; immediate?: boolean; deferRestart?: boolean }) =>
+    post<RestartDispatchResponse>(`/api/maps/user-settings/raw${immediate ? "?restartQueue=immediate" : ""}`, body),
   sietches: () => api<{ stdout: string }>("/api/sietches"),
-  sietchDimensions: (map = "Survival_1", ids = false) => api<{ stdout: string }>(`/api/sietches/dimensions?map=${encodeURIComponent(map)}${ids ? "&ids=1" : ""}`),
+  // exitCode is surfaced because commandJson answers 200 even when the CLI
+  // fails: a caller that only reads stdout cannot tell "no sietches" from
+  // "the command did not run".
+  sietchDimensions: (map = "Survival_1", ids = false) => api<{ stdout: string; exitCode?: number }>(`/api/sietches/dimensions?map=${encodeURIComponent(map)}${ids ? "&ids=1" : ""}`),
   updateSietches: (body: Record<string, unknown>) => post<{ task: Task }>("/api/sietches/update", body),
-  restartSietch: (partitionId: string) => post<{ task: Task }>("/api/sietches/update", { action: "restart", partitionId, confirmation: "RESTART SIETCH" }),
+  restartSietch: (partitionId: string, opts?: { immediate?: boolean; label?: string }) => post<RestartDispatchResponse>(`/api/sietches/update${opts?.immediate ? "?restartQueue=immediate" : ""}`, { action: "restart", partitionId, confirmation: "RESTART SIETCH", restartLabel: opts?.label }),
   deepdesert: () => api<{ stdout: string }>("/api/deepdesert"),
   updateDeepdesert: (body: { action: string; confirmation: string }) => post<{ task: Task }>("/api/deepdesert/update", body),
   combatState: (map: string) => api<MapCombatStateResult>(`/api/maps/combat-state?map=${encodeURIComponent(map)}`)
