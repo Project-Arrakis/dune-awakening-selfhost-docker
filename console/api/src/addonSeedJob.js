@@ -1,7 +1,7 @@
-// Server-side scheduled market reseed for the EDA Exchange Bot.
+// Server-side scheduled market reseed for the native Market Bot.
 //
 // Mirrors the buyback job in addonJobs.js: typed schedule parameters only,
-// SQL built server-side from the addon's bundled web/market-seed-plan.json,
+// SQL built server-side from the console-bundled market-seed-plan.json,
 // RedBlink backup before every write, and a shared running lock with buyback
 // so the two jobs never mutate the exchange at the same time.
 //
@@ -40,6 +40,68 @@ export function normalizeAugmentPricing(value) {
   return value === "original" ? "original" : "discounted";
 }
 
+// Per-category price multipliers layered on top of the schedule's base
+// priceMultiplier, so an operator can price hard-to-get gear above the rest
+// of the market. Three categories are recognized:
+//   - augments and augment schematics (matched by template, like the augment
+//     pricing logic above, so both features always agree on what an augment is);
+//   - ranked armor: worn gear at grades 1-5, including stillsuits and
+//     radiation suits;
+//   - ranked weapons: weapons at grades 1-5.
+// Armor and weapons are identified by the exchange's own taxonomy: the high
+// byte of category_mask holds the top-level category (0 = armor/garments,
+// 1 = weapons). Every other row — and grade-0 stock of the same gear — keeps
+// the base multiplier alone.
+const CATEGORY_MASK_TOP_LEVEL_DIVISOR = 0x1000000;
+const ARMOR_TOP_LEVEL_CATEGORY = 0;
+const WEAPON_TOP_LEVEL_CATEGORY = 1;
+const MIN_RANKED_QUALITY_LEVEL = 1;
+const CATEGORY_MULTIPLIER_MIN = 1;
+const CATEGORY_MULTIPLIER_MAX = 5;
+export const CATEGORY_MULTIPLIER_FIELDS = ["augmentMultiplier", "rankedArmorMultiplier", "rankedWeaponMultiplier"];
+const CATEGORY_MULTIPLIER_LABELS = {
+  augmentMultiplier: "augments",
+  rankedArmorMultiplier: "ranked armor",
+  rankedWeaponMultiplier: "ranked weapons"
+};
+
+export function normalizeCategoryMultipliers(payload = {}, previous = {}, scheduleLabel = "Schedule") {
+  const multipliers = {};
+  for (const field of CATEGORY_MULTIPLIER_FIELDS) {
+    multipliers[field] = categoryMultiplierField(payload?.[field] ?? previous?.[field] ?? 1, field, scheduleLabel);
+  }
+  return multipliers;
+}
+
+// Accepts 1-5x with up to two decimals (e.g. 1.5); out-of-range values are
+// rejected rather than clamped so a typo cannot quietly reprice the market.
+function categoryMultiplierField(value, name, scheduleLabel) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < CATEGORY_MULTIPLIER_MIN || number > CATEGORY_MULTIPLIER_MAX) {
+    throw new Error(`${scheduleLabel} ${name} must be a number from ${CATEGORY_MULTIPLIER_MIN} to ${CATEGORY_MULTIPLIER_MAX}.`);
+  }
+  return Math.round(number * 100) / 100;
+}
+
+export function seedRowCategoryMultiplier(row, multipliers = {}) {
+  if (AUGMENT_TEMPLATE_PATTERN.test(row.templateId)) return multipliers.augmentMultiplier ?? 1;
+  if (row.qualityLevel >= MIN_RANKED_QUALITY_LEVEL) {
+    const topLevelCategory = Math.floor(row.categoryMask / CATEGORY_MASK_TOP_LEVEL_DIVISOR);
+    if (topLevelCategory === ARMOR_TOP_LEVEL_CATEGORY) return multipliers.rankedArmorMultiplier ?? 1;
+    if (topLevelCategory === WEAPON_TOP_LEVEL_CATEGORY) return multipliers.rankedWeaponMultiplier ?? 1;
+  }
+  return 1;
+}
+
+// Human-readable suffix for run details: ", augments 3x, ranked armor 1.5x"
+// listing only the categories that differ from the neutral 1x.
+export function describeCategoryMultipliers(multipliers = {}) {
+  const parts = CATEGORY_MULTIPLIER_FIELDS
+    .filter((field) => (multipliers[field] ?? 1) !== 1)
+    .map((field) => `${CATEGORY_MULTIPLIER_LABELS[field]} ${multipliers[field]}x`);
+  return parts.length ? `, ${parts.join(", ")}` : "";
+}
+
 export function normalizeSeedSchedule(payload = {}, previous = {}) {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
     throw new Error("Seed schedule must be a JSON object.");
@@ -62,6 +124,7 @@ export function normalizeSeedSchedule(payload = {}, previous = {}) {
     intervalMinutes: clampedIntegerField(payload.intervalMinutes ?? previous.intervalMinutes ?? 15, "intervalMinutes", 10, 1440),
     exchangeId,
     priceMultiplier: integerField(payload.priceMultiplier ?? previous.priceMultiplier ?? 5, "priceMultiplier", 1, 100),
+    ...normalizeCategoryMultipliers(payload, previous, "Seed schedule"),
     augmentPricing: normalizeAugmentPricing(payload.augmentPricing ?? previous.augmentPricing),
     // Who owns this schedule: "addon" (bridge-managed; scheduled runs re-verify
     // the addon's approved permissions) or "console" (first-class Market Bot;
@@ -81,7 +144,9 @@ export function normalizeScheduleSource(value) {
 }
 
 export function readSeedSchedule(config) {
-  const path = seedSchedulePath(config);
+  const corePath = seedSchedulePath(config);
+  const legacyPath = legacySeedSchedulePath(config);
+  const path = existsSync(corePath) ? corePath : legacyPath;
   let raw = {};
   if (existsSync(path)) {
     try {
@@ -113,15 +178,15 @@ export function saveSeedSchedule(config, payload = {}, { now = () => Date.now(),
   return next;
 }
 
-// The plan ships with the console (runtime/data/market-seed-plan.json), so the
-// first-class Market Bot works with no addon installed. An installed EDA
-// Exchange Bot addon's bundled plan still wins when present: operators receive
-// catalog updates through addon releases, so the addon copy is assumed newer.
+// The plan ships with the console (runtime/data/market-seed-plan.json) and is
+// authoritative now that Market Bot is first-class. The legacy addon copy is
+// only a fallback for an incomplete/older installation; it must never override
+// a newer plan delivered with the console.
 export function resolveMarketSeedPlanPath(config, addonId = EDA_EXCHANGE_BOT_ADDON_ID) {
-  const addonPath = resolve(config.repoRoot, "runtime/addons/installed", addonId, "web", "market-seed-plan.json");
-  if (existsSync(addonPath)) return addonPath;
   const bundledPath = resolve(config.repoRoot, "runtime/data/market-seed-plan.json");
   if (existsSync(bundledPath)) return bundledPath;
+  const addonPath = resolve(config.repoRoot, "runtime/addons/installed", addonId, "web", "market-seed-plan.json");
+  if (existsSync(addonPath)) return addonPath;
   return null;
 }
 
@@ -168,7 +233,26 @@ export function loadMarketSeedPlan(config, addonId = EDA_EXCHANGE_BOT_ADDON_ID) 
       itemStats: itemStatsJson(durCur, durMax, statRolls)
     };
   });
+  validateAugmentSchematicGrades(rows);
   return { sourceMultiplier, rows };
+}
+
+// Augment patterns inherit their craftable grade from the corresponding
+// augmentation item. Seeding a pattern at a grade the item does not support
+// makes the game render sentinel recipe costs (for example 9,999 materials)
+// and leaves the purchased schematic unusable.
+function validateAugmentSchematicGrades(rows) {
+  const augmentItemGrades = new Set(rows
+    .filter((row) => row.kind === "equippable" && AUGMENT_TEMPLATE_PATTERN.test(row.templateId))
+    .map((row) => `${row.templateId}\0${row.qualityLevel}`));
+
+  for (const row of rows) {
+    if (row.kind !== "schematic" || !AUGMENT_TEMPLATE_PATTERN.test(row.templateId) || !row.templateId.endsWith("_Schematic")) continue;
+    const itemTemplateId = row.templateId.slice(0, -"_Schematic".length);
+    if (!augmentItemGrades.has(`${itemTemplateId}\0${row.qualityLevel}`)) {
+      throw new Error(`Addon market seed plan has unsupported augment schematic grade: ${row.templateId} quality ${row.qualityLevel} has no matching augmentation item.`);
+    }
+  }
 }
 
 // Stat roll counts per augment template, derived from the bundled
@@ -212,7 +296,10 @@ export function buildMarketSeedSql(plan, schedule) {
   const augmentPricing = normalizeAugmentPricing(schedule.augmentPricing);
   const augmentSchematicPrices = augmentSchematicPriceMap(plan.rows);
   const valuesSql = plan.rows.map((row) => {
-    const price = roundPrice((seedRowBasePrice(row, augmentPricing, augmentSchematicPrices) / plan.sourceMultiplier) * multiplier);
+    // Price pipeline: plan price (with the augment pricing choice applied),
+    // normalized back to the plan's own 1x scale, then the schedule's base
+    // multiplier and the row's category multiplier, rounded to clean steps.
+    const price = roundPrice((seedRowBasePrice(row, augmentPricing, augmentSchematicPrices) / plan.sourceMultiplier) * multiplier * seedRowCategoryMultiplier(row, schedule));
     return `(${sqlLiteral(row.templateId)},${row.stackSize},${price},${row.categoryMask},${row.categoryDepth},${row.qualityLevel},${sqlLiteral(row.kind)},${row.listings},${sqlLiteral(row.itemStats)})`;
   }).join(",\n") || "(NULL,1,0,0,0,0,'equippable',0,'{}')";
 
@@ -291,7 +378,7 @@ export async function executeSeedRun(config, db, schedule, { runDuneImpl, buildD
     throw new Error("Exchange seed requires database transaction support.");
   }
   if (!config.mockMode) {
-    await runDuneImpl(config, buildDuneArgs("backupCreate"), { env: { DB_BACKUP_ORIGIN: `addon-${EDA_EXCHANGE_BOT_ADDON_ID}` } });
+    await runDuneImpl(config, buildDuneArgs("backupCreate"), { env: { DB_BACKUP_ORIGIN: "market-bot-seed" } });
   }
   const result = await db.transaction((tx) => runSql(tx, buildMarketSeedSql(plan, schedule), true));
   const row = result?.rows?.[0] || {};
@@ -304,7 +391,7 @@ export async function executeSeedRun(config, db, schedule, { runDuneImpl, buildD
     resourceListings: decimalString(row.resource_listings),
     priceMultiplier: schedule.priceMultiplier,
     exchangeId: schedule.exchangeId,
-    detail: `Seeded ${listingCount} listings on exchange ${schedule.exchangeId} at ${schedule.priceMultiplier}x (bot listings cleared first).`
+    detail: `Seeded ${listingCount} listings on exchange ${schedule.exchangeId} at ${schedule.priceMultiplier}x${describeCategoryMultipliers(schedule)} (bot listings cleared first).`
   };
 }
 
@@ -328,6 +415,10 @@ export function persistSeedRunCompletion(config, completedAtMs, status, detail) 
 }
 
 export function seedSchedulePath(config) {
+  return resolve(config.repoRoot, "runtime/generated/market-bot", "seed.json");
+}
+
+export function legacySeedSchedulePath(config) {
   return resolve(config.repoRoot, "runtime/addons/jobs", EDA_EXCHANGE_BOT_ADDON_ID, "seed.json");
 }
 

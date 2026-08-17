@@ -393,7 +393,16 @@ export const REGEX_ACTIONS_BY_METHOD_PATTERN = [
   // other bases DELETE route (queued-refill, queued-water-refill, queued-
   // delete — all cancellations) still falls through to the
   // "DELETE /api/bases/" prefix rule above, unaffected.
-  { method: "DELETE", pattern: /^\/api\/bases\/[^/]+$/, action: "bases:delete" }
+  { method: "DELETE", pattern: /^\/api\/bases\/[^/]+$/, action: "bases:delete" },
+  // DELETE /api/bases/{baseId}/containers/{placeableId}/items/{itemId} —
+  // destroying one stored item. Its own action for a different reason than
+  // bases:delete above: not blast radius, but consent. Base inventory shipped
+  // read-only, so an operator whose hand-authored policy grants bases:mutate
+  // agreed to refills and permission edits and could not have agreed to item
+  // destruction — folding this into that bucket would silently widen every
+  // existing narrow policy. The shipped owner/admin policies grant bases:*,
+  // so default access is unchanged.
+  { method: "DELETE", pattern: /^\/api\/bases\/[^/]+\/containers\/[^/]+\/items\/[^/]+$/, action: "bases:delete-item" }
 ];
 
 // ---- Action resolution ----

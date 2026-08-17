@@ -459,6 +459,12 @@ backup_current_stack() {
     --exclude='./runtime/game' \
     --exclude='./runtime/logs' \
     --exclude='./runtime/text-router' \
+    --exclude='./runtime/rabbitmq-admin' \
+    --exclude='./runtime/rabbitmq-game' \
+    --exclude='./runtime/postgres' \
+    --exclude='./runtime/director' \
+    --exclude='./runtime/server-gateway' \
+    --exclude='./runtime/fake-k8s-serviceaccount' \
     --exclude='./work' \
     .
 
@@ -540,6 +546,7 @@ backup_local_state() {
     runtime/generated/battlegroup.env \
     runtime/generated/db-backup.env \
     runtime/generated/director-character-transfer.ini \
+    runtime/generated/director-capacity.ini \
     runtime/generated/director-deepdesert-dual.ini \
     runtime/generated/ip-change-restart.env \
     runtime/generated/landsraad-milestones.json \
@@ -678,6 +685,7 @@ restore_local_state_after_install() {
   restore_local_state_file_if_needed "$backup_dir" runtime/generated/battlegroup.env
   restore_local_state_file_if_needed "$backup_dir" runtime/generated/db-backup.env
   restore_local_state_file_if_needed "$backup_dir" runtime/generated/director-character-transfer.ini
+  restore_local_state_file_if_needed "$backup_dir" runtime/generated/director-capacity.ini
   restore_local_state_file_if_needed "$backup_dir" runtime/generated/director-deepdesert-dual.ini
   restore_local_state_file_if_needed "$backup_dir" runtime/generated/ip-change-restart.env
   restore_local_state_file_if_needed "$backup_dir" runtime/generated/landsraad-milestones.json
@@ -827,6 +835,7 @@ restore_local_state_ownership() {
     runtime/generated/battlegroup.env \
     runtime/generated/db-backup.env \
     runtime/generated/director-character-transfer.ini \
+    runtime/generated/director-capacity.ini \
     runtime/generated/director-deepdesert-dual.ini \
     runtime/generated/ip-change-restart.env \
     runtime/generated/landsraad-milestones.json \
