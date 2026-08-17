@@ -6,7 +6,8 @@
 // eligibility probe every interval, and a buyback sweep (preceded by a
 // database backup) only when eligible player listings exist. Every considered
 // player listing is classified into the Buyback Sweep Log (purchased or skipped
-// with the mismatch reason), including idle ticks that buy nothing.
+// with the mismatch reason), including idle ticks that buy nothing. Sweep log
+// batches older than five days are pruned on every scheduler tick.
 //
 // No SQL from the addon iframe is ever persisted or replayed. The SQL below
 // is built server-side from the console-bundled market-seed-plan.json and
@@ -68,6 +69,7 @@ const MAX_RUN_DETAIL_LENGTH = 500;
 const MAX_SEED_PLAN_BYTES = 10 * 1024 * 1024;
 const MAX_BUYBACK_LOG_BATCHES = 20;
 const MAX_BUYBACK_LOG_ENTRIES = 1000;
+export const BUYBACK_LOG_RETENTION_MS = 5 * 24 * 60 * 60 * 1000;
 
 // Per-listing buyback outcomes shown in the Market Bot sweep log. 0x0 is a
 // purchase on a write sweep, or "eligible" on a dry-run. 0x1–0x4 are criteria
@@ -685,6 +687,11 @@ export function createAddonJobScheduler(config, options = {}) {
   async function tick() {
     if (running) return;
     const startedAt = now();
+    try {
+      cleanupBuybackLog(config, { now: startedAt });
+    } catch (error) {
+      log.error(`Buyback sweep log cleanup failed: ${redact(error?.message || "Unexpected error.")}`);
+    }
     if (startedAt < nextAllowedAttemptAt) return;
 
     const seedArmed = { value: seedArmedForThisProcess };
@@ -1026,16 +1033,39 @@ function summarizeBuybackLogBatch(entries) {
   return Array.from(counts.entries()).map(([hex, count]) => `${hex}×${count}`).join(", ");
 }
 
-export function readBuybackLog(config) {
+function loadBuybackLogBatches(config) {
   const path = buybackLogPath(config);
-  if (!existsSync(path)) return { batches: [] };
+  if (!existsSync(path)) return [];
   try {
     const parsed = JSON.parse(readFileSync(path, "utf8"));
     const batches = Array.isArray(parsed?.batches) ? parsed.batches : Array.isArray(parsed) ? parsed : [];
-    return { batches: batches.filter((batch) => batch && typeof batch === "object").slice(0, MAX_BUYBACK_LOG_BATCHES) };
+    return batches.filter((batch) => batch && typeof batch === "object");
   } catch {
-    return { batches: [] };
+    return [];
   }
+}
+
+function buybackLogBatchIsFresh(batch, nowMs) {
+  const atMs = Date.parse(batch?.at || "");
+  if (!Number.isFinite(atMs)) return false;
+  return nowMs - atMs <= BUYBACK_LOG_RETENTION_MS;
+}
+
+export function retainBuybackLogBatches(batches, nowMs = Date.now()) {
+  return (batches || []).filter((batch) => buybackLogBatchIsFresh(batch, nowMs)).slice(0, MAX_BUYBACK_LOG_BATCHES);
+}
+
+export function readBuybackLog(config, { now: nowMs = Date.now() } = {}) {
+  return { batches: retainBuybackLogBatches(loadBuybackLogBatches(config), nowMs) };
+}
+
+export function cleanupBuybackLog(config, { now: nowMs = Date.now() } = {}) {
+  const loaded = loadBuybackLogBatches(config);
+  const batches = retainBuybackLogBatches(loaded, nowMs);
+  if (loaded.length !== batches.length) {
+    writeJsonAtomic(buybackLogPath(config), { batches });
+  }
+  return { batches, removed: loaded.length - batches.length };
 }
 
 export function clearBuybackLog(config) {
@@ -1043,7 +1073,7 @@ export function clearBuybackLog(config) {
   return { batches: [] };
 }
 
-export function appendBuybackLogBatch(config, entries, { source, exchangeId, note = "", schedule = {} } = {}) {
+export function appendBuybackLogBatch(config, entries, { source, exchangeId, note = "", schedule = {}, now: nowMs = Date.now() } = {}) {
   const names = new Map();
   const normalized = (entries || []).map((row) => normalizeBuybackLogEntry(row, names)).filter((row) => row.orderId || row.templateId);
   const stored = normalized.slice(0, MAX_BUYBACK_LOG_ENTRIES);
@@ -1052,7 +1082,7 @@ export function appendBuybackLogBatch(config, entries, { source, exchangeId, not
   const batch = {
     source: String(source || "Buyback"),
     exchangeId: String(exchangeId || ""),
-    at: new Date().toISOString(),
+    at: new Date(nowMs).toISOString(),
     note: [note, extraNote].filter(Boolean).join(" — "),
     summary: `${normalized.length} listing(s); ${summarizeBuybackLogBatch(normalized) || "none"}`,
     buybackPercent: schedule.buybackPercent ?? null,
@@ -1061,8 +1091,8 @@ export function appendBuybackLogBatch(config, entries, { source, exchangeId, not
     ...(truncatedFrom ? { truncatedFrom } : {}),
     entries: stored
   };
-  const current = readBuybackLog(config);
-  writeJsonAtomic(buybackLogPath(config), { batches: [batch, ...current.batches].slice(0, MAX_BUYBACK_LOG_BATCHES) });
+  const current = retainBuybackLogBatches(loadBuybackLogBatches(config), nowMs);
+  writeJsonAtomic(buybackLogPath(config), { batches: [batch, ...current].slice(0, MAX_BUYBACK_LOG_BATCHES) });
   return batch;
 }
 

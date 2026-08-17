@@ -35,9 +35,11 @@ The console stores owner-only, atomically written schedules at:
 
 - `runtime/generated/market-bot/buyback.json`
 - `runtime/generated/market-bot/seed.json`
-- `runtime/generated/market-bot/buyback-log.json` (sweep log batches)
+- `runtime/generated/market-bot/buyback-log.json` (sweep log batches; kept for
+  5 days, 20 most recent). The scheduler tick removes expired batches even when
+  buyback is disabled.
 
-Both are `source: "console"`. If the console was down when a run came due, it
+The schedules are `source: "console"`. If the console was down when a run came due, it
 recomputes `nextRunAt` one interval out at boot instead of immediately writing to
 the database.
 

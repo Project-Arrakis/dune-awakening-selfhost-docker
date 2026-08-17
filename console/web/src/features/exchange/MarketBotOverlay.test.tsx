@@ -259,6 +259,7 @@ describe("MarketBotOverlay", () => {
     expect(screen.getByText("bought stack 10 at 100/unit (cap 600)")).toBeInTheDocument();
     expect(screen.getByText("ask 900 > cap 600")).toBeInTheDocument();
     expect(screen.getByText("Water Bottle")).toBeInTheDocument();
+    expect(screen.getByText(/older than 5 days/)).toBeInTheDocument();
   });
 
   it("refreshes the log with a dry-run classify and can clear it", async () => {
