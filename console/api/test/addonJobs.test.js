@@ -28,7 +28,8 @@ import {
   readBuybackLog,
   readBuybackSchedule,
   refreshBuybackLog,
-  saveBuybackSchedule
+  saveBuybackSchedule,
+  selectStoredBuybackLogEntries
 } from "../src/addonJobs.js";
 
 const SAMPLE_PLAN = {
@@ -265,6 +266,7 @@ test("builds buyback SQL server-side from the bundled seed plan", () => {
     assert.match(classifySql, /IS NOT TRUE/, "NULL asks stay in the skip band (NOT unknown would drop them)");
     assert.match(classifySql, /price too high/);
     assert.match(classifySql, /no reference price/);
+    assert.match(classifySql, /order_id::bigint ASC/, "final order uses numeric ids, not text sort");
     assert.doesNotMatch(classifySql, /above_cap_band/, "skip reasons are not four extra listing scans");
     assert.doesNotMatch(classifySql, /\b(?:BEGIN|COMMIT)\s*;/i);
 
@@ -283,6 +285,8 @@ test("builds buyback SQL server-side from the bundled seed plan", () => {
     assert.match(sweepSql, /COALESCE\(rec\.template_id, ''\)/);
     assert.match(sweepSql, /'order_id', l\.order_id::text/, "BIGINT ids stay decimal strings in JSON");
     assert.match(sweepSql, /result_label, detail\)\s*VALUES \(rec\.order_id/, "purchases are logged in the loop, not by copying the whole exchange first");
+    assert.match(sweepSql, /CREATE TEMP TABLE market_buy_claim_snapshot/, "leftovers are limited to pre-claim eligible ids");
+    assert.match(sweepSql, /EXISTS \(SELECT 1 FROM market_buy_claim_snapshot/, "post-claim newcomers are not labeled skipped locked");
     assert.match(sweepSql, /AND NOT EXISTS \(SELECT 1 FROM market_buy_log/, "leftover log rows are remaining eligible listings only");
     assert.doesNotMatch(sweepSql, /ROW_NUMBER\(\)/, "0x5 vs 0x6 is ranked in JS from purchases-before-this-row");
     assert.doesNotMatch(sweepSql, /to_jsonb\(l\)/, "row-to-json would emit BIGINT as a JSON number");
@@ -955,14 +959,14 @@ test("dry-run refresh ranks leftover eligible listings as max buys and can be cl
     assert.equal(refreshed.entries[1].resultLabel, "max buys limit");
     assert.equal(refreshed.batches.length, 1);
     assert.equal(refreshed.batches[0].source, "Dry-run classify");
-    assert.equal(clearBuybackLog(config).batches.length, 0);
+    assert.equal((await clearBuybackLog(config)).batches.length, 0);
     assert.equal(readBuybackLog(config).batches.length, 0);
   } finally {
     rmSync(repoRoot, { recursive: true, force: true });
   }
 });
 
-test("buyback log cleanup drops batches older than five days and keeps the rest", () => {
+test("buyback log cleanup drops batches older than five days and keeps the rest", async () => {
   const repoRoot = makeRepoRoot();
   const config = { repoRoot };
   const nowMs = Date.parse("2026-08-17T12:00:00.000Z");
@@ -973,7 +977,7 @@ test("buyback log cleanup drops batches older than five days and keeps the rest"
       { source: "unparseable", at: "not-a-date", entries: [] },
       { source: "yesterday", at: new Date(nowMs - 24 * 60 * 60 * 1000).toISOString(), entries: [] }
     ]);
-    const cleaned = cleanupBuybackLog(config, { now: nowMs });
+    const cleaned = await cleanupBuybackLog(config, { now: nowMs });
     assert.equal(cleaned.removed, 2);
     assert.deepEqual(cleaned.batches.map((batch) => batch.source), ["fresh", "yesterday"]);
     assert.deepEqual(readBuybackLog(config, { now: nowMs }).batches.map((batch) => batch.source), ["fresh", "yesterday"]);
@@ -983,7 +987,7 @@ test("buyback log cleanup drops batches older than five days and keeps the rest"
   }
 });
 
-test("buyback log cleanup does not rewrite the file when every batch is still fresh", () => {
+test("buyback log cleanup does not rewrite the file when every batch is still fresh", async () => {
   const repoRoot = makeRepoRoot();
   const config = { repoRoot };
   const nowMs = Date.parse("2026-08-17T12:00:00.000Z");
@@ -992,14 +996,14 @@ test("buyback log cleanup does not rewrite the file when every batch is still fr
     mkdirSync(join(config.repoRoot, "runtime/generated/market-bot"), { recursive: true });
     const payload = JSON.stringify({ batches: [{ source: "fresh", at: new Date(nowMs).toISOString(), entries: [] }] });
     writeFileSync(path, payload);
-    assert.equal(cleanupBuybackLog(config, { now: nowMs }).removed, 0);
+    assert.equal((await cleanupBuybackLog(config, { now: nowMs })).removed, 0);
     assert.equal(readFileSync(path, "utf8"), payload);
   } finally {
     rmSync(repoRoot, { recursive: true, force: true });
   }
 });
 
-test("appending a buyback log batch drops batches older than five days", () => {
+test("appending a buyback log batch drops batches older than five days", async () => {
   const repoRoot = makeRepoRoot();
   const config = { repoRoot };
   const nowMs = Date.parse("2026-08-17T12:00:00.000Z");
@@ -1008,7 +1012,7 @@ test("appending a buyback log batch drops batches older than five days", () => {
       { source: "expired", at: new Date(nowMs - BUYBACK_LOG_RETENTION_MS - 1000).toISOString(), entries: [] },
       { source: "kept", at: new Date(nowMs - 60 * 60 * 1000).toISOString(), entries: [] }
     ]);
-    appendBuybackLogBatch(config, [{ order_id: "1", template_id: "Sword", result_code: 0, result_label: "success" }], {
+    await appendBuybackLogBatch(config, [{ order_id: "1", template_id: "Sword", result_code: 0, result_label: "success" }], {
       source: "Buyback sweep",
       exchangeId: "42",
       now: nowMs
@@ -1119,6 +1123,104 @@ test("normalizeBuybackLogEntry prefers the seed-plan name for that template grad
   ]);
   assert.equal(normalizeBuybackLogEntry({ order_id: "1", template_id: "Sword", quality_level: "2", result_code: 0 }, names).displayName, "Sword Schematic");
   assert.equal(normalizeBuybackLogEntry({ order_id: "2", template_id: "Sword", quality_level: "0", result_code: 0 }, names).displayName, "Sword");
+});
+
+test("idle buyback with unchanged skip buckets skips classify until buckets change", async () => {
+  const repoRoot = makeRepoRoot();
+  const config = { repoRoot, mockMode: false };
+  try {
+    const classifyRows = [
+      { order_id: "13", template_id: "WaterBottle", quality_level: "0", item_price: "900", stack_size: "4", max_unit_price: "600", result_code: "1", result_label: "price too high", detail: "ask 900 > cap 600" }
+    ];
+    const probeRow = {
+      player_sell_orders: "2",
+      known_player_sell_orders: "2",
+      above_threshold_sell_orders: "2",
+      unknown_template_sell_orders: "0"
+    };
+    const db = fakeDb({ eligible: "0", probeRow, classifyRows });
+    const { scheduler, state } = makeScheduler(config, { db });
+    saveBuybackSchedule(config, { enabled: true, exchangeId: "42", intervalMinutes: 10 }, { now: () => state.clock });
+    await scheduler.tick();
+    state.clock += 10 * 60000;
+    await scheduler.tick();
+    assert.equal(db.classifies.length, 1);
+    assert.equal(readBuybackLog(config).batches.length, 1);
+
+    state.clock += 10 * 60000;
+    await scheduler.tick();
+    assert.equal(db.classifies.length, 1, "unchanged overpriced board does not re-scan within the idle classify window");
+    assert.equal(readBuybackLog(config).batches.length, 1);
+
+    probeRow.player_sell_orders = "5";
+    probeRow.above_threshold_sell_orders = "5";
+    state.clock += 10 * 60000;
+    await scheduler.tick();
+    assert.equal(db.classifies.length, 2, "probe bucket changes force a fresh classify");
+    assert.equal(readBuybackLog(config).batches.length, 2);
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test("selectStoredBuybackLogEntries reserves leftover slots when purchases fill the cap", () => {
+  const purchases = Array.from({ length: 800 }, (_, index) => normalizeBuybackLogEntry({
+    order_id: String(index + 1),
+    template_id: "WaterBottle",
+    item_price: String(index + 1),
+    result_code: 0,
+    result_label: "success"
+  }));
+  const leftovers = Array.from({ length: 400 }, (_, index) => normalizeBuybackLogEntry({
+    order_id: String(1000 + index),
+    template_id: "Sword",
+    item_price: String(1000 + index),
+    result_code: 5,
+    result_label: "max buys limit"
+  }));
+  const stored = selectStoredBuybackLogEntries([...purchases, ...leftovers], 1000);
+  assert.equal(stored.length, 1000);
+  assert.equal(stored.filter((entry) => entry.resultLabel === "success").length, 600, "leftovers fit under half the cap, so purchases keep the rest");
+  assert.equal(stored.filter((entry) => entry.resultCode === 5).length, 400, "all leftovers are kept when they fit the reserved share");
+
+  const manyLeftovers = Array.from({ length: 900 }, (_, index) => normalizeBuybackLogEntry({
+    order_id: String(2000 + index),
+    template_id: "Sword",
+    item_price: String(2000 + index),
+    result_code: 6,
+    result_label: "skipped locked"
+  }));
+  const balanced = selectStoredBuybackLogEntries([...purchases, ...manyLeftovers], 1000);
+  assert.equal(balanced.filter((entry) => entry.resultLabel === "success").length, 500);
+  assert.equal(balanced.filter((entry) => entry.resultCode === 6).length, 500);
+});
+
+test("clear during an in-flight dry-run refresh wins and skips the append", async () => {
+  const repoRoot = makeRepoRoot();
+  const config = { repoRoot, mockMode: false };
+  try {
+    saveBuybackSchedule(config, { exchangeId: "42", maxBuys: 1 });
+    let releaseClassify;
+    const gate = new Promise((resolve) => { releaseClassify = resolve; });
+    const db = fakeDb({
+      classifyRows: [
+        { order_id: "31", template_id: "WaterBottle", quality_level: "0", item_price: "10", stack_size: "2", max_unit_price: "600", result_code: "0", result_label: "eligible", detail: "ask 10" }
+      ],
+      onQuery: async (sql) => {
+        if (/\bAS result_code\b/.test(String(sql))) await gate;
+        return null;
+      }
+    });
+    const refreshPromise = refreshBuybackLog(config, db, {});
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal((await clearBuybackLog(config)).batches.length, 0);
+    releaseClassify();
+    const refreshed = await refreshPromise;
+    assert.equal(refreshed.clearedDuringRefresh, true);
+    assert.equal(readBuybackLog(config).batches.length, 0);
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
 });
 
 test("readBuybackLog hides expired batches without rewriting the file", () => {

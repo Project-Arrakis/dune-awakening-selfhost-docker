@@ -125,7 +125,7 @@ function BuybackSweepLog({
   return (
     <div className="market-bot-section market-bot-log-section">
       <strong>Buyback Sweep Log</strong>
-      <p className="action-help-note">Purchases and leftover eligible listings are recorded on a write sweep (<code>0x0</code>, <code>0x5</code> Max Buys, <code>0x6</code> skipped locked). Idle ticks and <strong>Refresh log (dry-run)</strong> also classify skip reasons (<code>0x1</code>–<code>0x4</code>), capped at 1000 rows so a busy exchange cannot dump the whole board. Batches older than 5 days are removed automatically (up to 20 recent batches are kept).</p>
+      <p className="action-help-note">Purchases and leftover eligible listings are recorded on a write sweep (<code>0x0</code>, <code>0x5</code> Max Buys, <code>0x6</code> skipped locked). Idle ticks with player listings and <strong>Refresh log (dry-run)</strong> also classify eligible rows (<code>0x0</code>), Max Buys leftovers (<code>0x5</code>), and skip reasons (<code>0x1</code>–<code>0x4</code>); dry-run never emits <code>0x6</code>. Results are capped at 1000 stored rows (leftovers keep a reserved share). Batches older than 5 days are removed automatically (up to 20 recent batches are kept).</p>
       <div className="confirm-modal-actions market-bot-actions">
         <button onClick={onRefresh} disabled={Boolean(busy)}>{busy === "refresh-log" ? "Refreshing…" : "Refresh log (dry-run)"}</button>
         <button onClick={onClear} disabled={Boolean(busy) || !batches.length}>{busy === "clear-log" ? "Clearing…" : "Clear log"}</button>

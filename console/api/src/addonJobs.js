@@ -7,8 +7,9 @@
 // database backup) only when eligible player listings exist. Every considered
 // player listing is classified into the Buyback Sweep Log (purchased or skipped
 // with the mismatch reason). Idle ticks with player listings still classify skip
-// reasons; an empty exchange skips that second query. Sweep log batches older
-// than five days are pruned at most hourly (append already drops expired rows).
+// reasons when probe buckets change or at most hourly; an empty exchange skips
+// that second query. Sweep log batches older than five days are pruned at most
+// hourly (append already drops expired rows).
 //
 // No SQL from the addon iframe is ever persisted or replayed. The SQL below
 // is built server-side from the console-bundled market-seed-plan.json and
@@ -72,6 +73,9 @@ const MAX_BUYBACK_LOG_BATCHES = 20;
 const MAX_BUYBACK_LOG_ENTRIES = 1000;
 export const BUYBACK_LOG_RETENTION_MS = 5 * 24 * 60 * 60 * 1000;
 export const BUYBACK_LOG_CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
+// Idle ticks on a busy overpriced board still probe every interval; re-run the
+// heavier classify dump at most hourly unless probe skip buckets change.
+export const BUYBACK_IDLE_CLASSIFY_INTERVAL_MS = 60 * 60 * 1000;
 
 // Per-listing buyback outcomes shown in the Market Bot sweep log. 0x0 is a
 // purchase on a write sweep, or "eligible" on a dry-run. 0x1–0x4 are criteria
@@ -487,7 +491,7 @@ skip_band AS (
 )
 SELECT * FROM eligible_band
 UNION ALL SELECT * FROM skip_band
-ORDER BY result_code::int ASC, item_price::bigint ASC, order_id ASC;`;
+ORDER BY result_code::int ASC, item_price::bigint ASC, order_id::bigint ASC;`;
 }
 
 export function buildBuybackSql(plan, schedule) {
@@ -497,6 +501,7 @@ export function buildBuybackSql(plan, schedule) {
   const planInsert = buybackPlanPopulateSql(plan, schedule);
   return `CREATE TEMP TABLE market_buy_plan (template_id TEXT NOT NULL, quality_level BIGINT NOT NULL, max_unit_price BIGINT NOT NULL, PRIMARY KEY (template_id, quality_level)) ON COMMIT DROP;
 CREATE TEMP TABLE market_buy_result (purchased INTEGER NOT NULL, total_units BIGINT NOT NULL, total_solari BIGINT NOT NULL, threshold_percent INTEGER NOT NULL, max_buys INTEGER NOT NULL) ON COMMIT DROP;
+CREATE TEMP TABLE market_buy_claim_snapshot (order_id BIGINT NOT NULL PRIMARY KEY) ON COMMIT DROP;
 CREATE TEMP TABLE market_buy_log (
     order_id BIGINT NOT NULL PRIMARY KEY,
     template_id TEXT NOT NULL,
@@ -526,6 +531,15 @@ BEGIN
     IF v_balance < 1000000000000 THEN
         PERFORM dune.dune_exchange_modify_user_solari_balance(v_owner_id, 9000000000000 - v_balance);
     END IF;
+    -- Snapshot eligible ids before the claim loop. Under READ COMMITTED the
+    -- leftover SELECT would otherwise see post-claim newcomers and label them
+    -- 0x6 (skipped locked) even though they were never locked.
+    INSERT INTO market_buy_claim_snapshot (order_id)
+    SELECT o.id
+    FROM ${BUYBACK_ORDERS_JOIN_SQL}
+    WHERE o.exchange_id = ${exchangeId} AND ${BUYBACK_SWEEP_PLAYER_SQL} AND ${BUYBACK_ELIGIBLE_PREDICATE}
+    ORDER BY o.item_price ASC, o.id ASC
+    LIMIT ${maxBuys + MAX_BUYBACK_LOG_ENTRIES};
     -- FOR UPDATE OF o, s SKIP LOCKED is the database-level concurrency guard:
     -- a scheduled sweep racing a manual browser sweep locks the selected order
     -- rows, so concurrent sweeps skip anything already claimed and rows
@@ -552,16 +566,17 @@ BEGIN
         VALUES (rec.order_id, COALESCE(rec.template_id, ''), rec.quality_level, COALESCE(rec.item_price, 0), rec.actual_stack, rec.max_unit_price, 0, 'success', 'bought stack ' || rec.actual_stack::text || ' at ' || rec.item_price::text || '/unit (cap ' || rec.max_unit_price::text || ')');
         v_purchased := v_purchased + 1; v_units := v_units + rec.actual_stack; v_solari := v_solari + (rec.item_price * rec.actual_stack);
     END LOOP;
-    -- Leftover eligible rows only (still on the board, not purchased). Skip
-    -- dumps stay on the read-only classify path so this write transaction does
-    -- not copy the whole exchange into a temp table. 0x5 vs 0x6 is applied in
-    -- JS from purchased-before-this-row, which matches SKIP LOCKED substitution.
+    -- Leftover eligible rows only from the pre-claim snapshot (still on the
+    -- board, not purchased). Skip dumps stay on the read-only classify path so
+    -- this write transaction does not copy the whole exchange into a temp
+    -- table. 0x5 vs 0x6 is applied in JS from purchased-before-this-row.
     INSERT INTO market_buy_log (order_id, template_id, quality_level, item_price, stack_size, max_unit_price, result_code, result_label, detail)
     SELECT o.id, COALESCE(o.template_id, ''), ${BUYBACK_ORDER_GRADE_SQL}, COALESCE(o.item_price, 0), ${BUYBACK_STACK_SQL}, p.max_unit_price, 0, 'eligible', ${BUYBACK_RESULT_DETAIL_SQL}
     FROM ${BUYBACK_ORDERS_JOIN_SQL}
     WHERE o.exchange_id = ${exchangeId}
       AND ${BUYBACK_SWEEP_PLAYER_SQL}
       AND ${BUYBACK_ELIGIBLE_PREDICATE}
+      AND EXISTS (SELECT 1 FROM market_buy_claim_snapshot s WHERE s.order_id = o.id)
       AND NOT EXISTS (SELECT 1 FROM market_buy_log l WHERE l.order_id = o.id)
     ORDER BY o.item_price ASC, o.id ASC
     LIMIT ${MAX_BUYBACK_LOG_ENTRIES};
@@ -640,14 +655,21 @@ export async function classifyBuybackListings(config, db, overrides = {}) {
 }
 
 export async function refreshBuybackLog(config, db, overrides = {}) {
+  const epoch = buybackLogEpoch(config);
   const classified = await classifyBuybackListings(config, db, overrides);
-  appendBuybackLogBatch(config, classified.entries, {
-    source: "Dry-run classify",
-    exchangeId: classified.exchangeId,
-    note: "read-only; nothing purchased",
-    schedule: classified.schedule
+  return withBuybackLogLock(config, () => {
+    // A clear that landed during classify wins: do not resurrect wiped batches.
+    if (buybackLogEpoch(config) !== epoch) {
+      return { ...classified, ...readBuybackLogUnlocked(config), clearedDuringRefresh: true };
+    }
+    appendBuybackLogBatchUnlocked(config, classified.entries, {
+      source: "Dry-run classify",
+      exchangeId: classified.exchangeId,
+      note: "read-only; nothing purchased",
+      schedule: classified.schedule
+    });
+    return { ...classified, ...readBuybackLogUnlocked(config) };
   });
-  return { ...classified, ...readBuybackLog(config) };
 }
 
 function buybackDiagnostics(row = {}) {
@@ -744,7 +766,7 @@ export function createAddonJobScheduler(config, options = {}) {
     const startedAt = now();
     if (startedAt - lastBuybackLogCleanupAt >= BUYBACK_LOG_CLEANUP_INTERVAL_MS) {
       try {
-        cleanupBuybackLog(config, { now: startedAt });
+        await cleanupBuybackLog(config, { now: startedAt });
         lastBuybackLogCleanupAt = startedAt;
       } catch (error) {
         log.error(`Buyback sweep log cleanup failed: ${redact(error?.message || "Unexpected error.")}`);
@@ -903,7 +925,7 @@ async function executeBuybackRun(config, db, schedule, { runDuneImpl, trigger = 
   const diagnostics = buybackDiagnostics(probe?.rows?.[0]);
   const eligible = diagnostics.eligible;
   if (eligible <= 0) {
-    await persistIdleBuybackLog(config, db, plan, schedule, names, source, diagnostics.playerListings);
+    await persistIdleBuybackLog(config, db, plan, schedule, names, source, diagnostics);
     return {
       status: "idle",
       eligible: 0,
@@ -930,7 +952,7 @@ async function executeBuybackRun(config, db, schedule, { runDuneImpl, trigger = 
   const purchased = Number(row.purchased || 0);
   const totalUnits = decimalString(row.total_units);
   const totalSolari = decimalString(row.total_solari);
-  persistSweepBuybackLog(config, row, schedule, names, source);
+  await persistSweepBuybackLog(config, row, schedule, names, source);
   return {
     status: "swept",
     eligible,
@@ -941,30 +963,40 @@ async function executeBuybackRun(config, db, schedule, { runDuneImpl, trigger = 
   };
 }
 
-async function persistIdleBuybackLog(config, db, plan, schedule, names, source, playerListings = 0) {
+async function persistIdleBuybackLog(config, db, plan, schedule, names, source, diagnostics = {}) {
   try {
+    const playerListings = diagnostics.playerListings || 0;
     let entries = [];
     // The eligibility probe already scanned player sells. An empty exchange
     // has nothing to classify; skip reasons still need the listing query.
     if (playerListings > 0) {
+      const state = idleClassifyState(config);
+      const key = idleClassifyFingerprint(schedule.exchangeId, diagnostics);
+      const nowMs = Date.now();
+      const due = key !== state.key || nowMs - state.at >= BUYBACK_IDLE_CLASSIFY_INTERVAL_MS;
+      if (!due) return;
       const result = await runSql(db, buildBuybackClassifySql(plan, schedule), false);
       entries = applyDryRunMaxBuysRanking(
         (result?.rows || []).map((row) => normalizeBuybackLogEntry(row, names)),
         schedule.maxBuys
       );
+      state.key = key;
+      state.at = nowMs;
     }
-    appendBuybackLogBatch(config, entries, {
-      source,
-      exchangeId: schedule.exchangeId,
-      note: "read-only; nothing purchased",
-      schedule
+    await withBuybackLogLock(config, () => {
+      appendBuybackLogBatchUnlocked(config, entries, {
+        source,
+        exchangeId: schedule.exchangeId,
+        note: "read-only; nothing purchased",
+        schedule
+      });
     });
   } catch {
     // Classification is best-effort; an idle tick must still complete.
   }
 }
 
-function persistSweepBuybackLog(config, row, schedule, names, source) {
+async function persistSweepBuybackLog(config, row, schedule, names, source) {
   try {
     const logRows = extractBuybackLogRows(row);
     if (!logRows) return;
@@ -972,10 +1004,12 @@ function persistSweepBuybackLog(config, row, schedule, names, source) {
       logRows.map((entry) => normalizeBuybackLogEntry(entry, names)),
       schedule.maxBuys
     );
-    appendBuybackLogBatch(config, entries, {
-      source,
-      exchangeId: schedule.exchangeId,
-      schedule
+    await withBuybackLogLock(config, () => {
+      appendBuybackLogBatchUnlocked(config, entries, {
+        source,
+        exchangeId: schedule.exchangeId,
+        schedule
+      });
     });
   } catch {
     // Logging must never fail a completed sweep.
@@ -1157,6 +1191,20 @@ function summarizeBuybackLogBatch(entries) {
   return Array.from(counts.entries()).map(([hex, count]) => `${hex}×${count}`).join(", ");
 }
 
+// When a write sweep returns more than MAX_BUYBACK_LOG_ENTRIES rows, keep a
+// fair share of leftovers (0x5/0x6) instead of filling the cap with 0x0 only.
+export function selectStoredBuybackLogEntries(entries, cap = MAX_BUYBACK_LOG_ENTRIES) {
+  const limit = Math.max(1, Math.floor(Number(cap)) || MAX_BUYBACK_LOG_ENTRIES);
+  const list = Array.isArray(entries) ? entries : [];
+  if (list.length <= limit) return list.slice();
+  const purchases = list.filter((entry) => entry.resultLabel === "success");
+  const others = list.filter((entry) => entry.resultLabel !== "success");
+  const reservedOthers = Math.min(others.length, Math.floor(limit / 2));
+  const successSlots = Math.min(purchases.length, limit - reservedOthers);
+  const otherSlots = Math.min(others.length, limit - successSlots);
+  return [...purchases.slice(0, successSlots), ...others.slice(0, otherSlots)].sort(compareLogEntries);
+}
+
 function loadBuybackLogBatches(config) {
   const path = buybackLogPath(config);
   if (!existsSync(path)) return [];
@@ -1179,32 +1227,69 @@ export function retainBuybackLogBatches(batches, nowMs = Date.now()) {
   return (batches || []).filter((batch) => buybackLogBatchIsFresh(batch, nowMs)).slice(0, MAX_BUYBACK_LOG_BATCHES);
 }
 
-export function readBuybackLog(config, { now: nowMs = Date.now() } = {}) {
-  return { batches: retainBuybackLogBatches(loadBuybackLogBatches(config), nowMs) };
+const buybackLogLocks = new Map();
+const buybackLogEpochs = new Map();
+const idleClassifyByRepo = new Map();
+
+function buybackLogScope(config) {
+  return String(config?.repoRoot || "");
+}
+
+function buybackLogEpoch(config) {
+  return buybackLogEpochs.get(buybackLogScope(config)) || 0;
+}
+
+function bumpBuybackLogEpoch(config) {
+  const scope = buybackLogScope(config);
+  const next = (buybackLogEpochs.get(scope) || 0) + 1;
+  buybackLogEpochs.set(scope, next);
+  return next;
+}
+
+function withBuybackLogLock(config, fn) {
+  const scope = buybackLogScope(config);
+  const previous = buybackLogLocks.get(scope) || Promise.resolve();
+  const run = previous.catch(() => {}).then(() => fn());
+  buybackLogLocks.set(scope, run.then(() => {}, () => {}));
+  return run;
+}
+
+function idleClassifyState(config) {
+  const scope = buybackLogScope(config);
+  let state = idleClassifyByRepo.get(scope);
+  if (!state) {
+    state = { at: 0, key: "" };
+    idleClassifyByRepo.set(scope, state);
+  }
+  return state;
+}
+
+function idleClassifyFingerprint(exchangeId, diagnostics = {}) {
+  return [
+    String(exchangeId || ""),
+    diagnostics.playerListings || 0,
+    diagnostics.aboveThreshold || 0,
+    diagnostics.unknownTemplate || 0,
+    diagnostics.invalidPriceOrStack || 0
+  ].join(":");
 }
 
 function writeBuybackLogFile(config, value) {
   writeJsonAtomic(buybackLogPath(config), value, 0o600, { pretty: false });
 }
 
-export function cleanupBuybackLog(config, { now: nowMs = Date.now() } = {}) {
-  const loaded = loadBuybackLogBatches(config);
-  const batches = retainBuybackLogBatches(loaded, nowMs);
-  if (loaded.length !== batches.length) {
-    writeBuybackLogFile(config, { batches });
-  }
-  return { batches, removed: loaded.length - batches.length };
+function readBuybackLogUnlocked(config, nowMs = Date.now()) {
+  return { batches: retainBuybackLogBatches(loadBuybackLogBatches(config), nowMs) };
 }
 
-export function clearBuybackLog(config) {
-  writeBuybackLogFile(config, { batches: [] });
-  return { batches: [] };
+export function readBuybackLog(config, { now: nowMs = Date.now() } = {}) {
+  return readBuybackLogUnlocked(config, nowMs);
 }
 
-export function appendBuybackLogBatch(config, entries, { source, exchangeId, note = "", schedule = {}, now: nowMs = Date.now() } = {}) {
+function appendBuybackLogBatchUnlocked(config, entries, { source, exchangeId, note = "", schedule = {}, now: nowMs = Date.now() } = {}) {
   const names = new Map();
   const normalized = (entries || []).map((row) => normalizeBuybackLogEntry(row, names)).filter((row) => row.orderId || row.templateId);
-  const stored = normalized.slice(0, MAX_BUYBACK_LOG_ENTRIES);
+  const stored = selectStoredBuybackLogEntries(normalized, MAX_BUYBACK_LOG_ENTRIES);
   const truncatedFrom = normalized.length > stored.length ? normalized.length : 0;
   const extraNote = truncatedFrom ? `showing ${stored.length} of ${truncatedFrom} listings` : "";
   const batch = {
@@ -1222,6 +1307,29 @@ export function appendBuybackLogBatch(config, entries, { source, exchangeId, not
   const current = retainBuybackLogBatches(loadBuybackLogBatches(config), nowMs);
   writeBuybackLogFile(config, { batches: [batch, ...current].slice(0, MAX_BUYBACK_LOG_BATCHES) });
   return batch;
+}
+
+export function appendBuybackLogBatch(config, entries, options = {}) {
+  return withBuybackLogLock(config, () => appendBuybackLogBatchUnlocked(config, entries, options));
+}
+
+export function cleanupBuybackLog(config, { now: nowMs = Date.now() } = {}) {
+  return withBuybackLogLock(config, () => {
+    const loaded = loadBuybackLogBatches(config);
+    const batches = retainBuybackLogBatches(loaded, nowMs);
+    if (loaded.length !== batches.length) {
+      writeBuybackLogFile(config, { batches });
+    }
+    return { batches, removed: loaded.length - batches.length };
+  });
+}
+
+export function clearBuybackLog(config) {
+  return withBuybackLogLock(config, () => {
+    bumpBuybackLogEpoch(config);
+    writeBuybackLogFile(config, { batches: [] });
+    return { batches: [] };
+  });
 }
 
 function extractBuybackLogRows(row = {}) {

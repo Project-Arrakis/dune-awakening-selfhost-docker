@@ -1369,6 +1369,7 @@ async function marketBuybackLogRoute(req, res) {
 }
 
 async function marketBuybackLogRefreshRoute(req, res) {
+  if (!applyMutationRateLimit(req, res, "exchange.market.buyback.log")) return;
   const body = await readJson(req);
   try {
     const result = await refreshBuybackLog(config, db, body && typeof body === "object" ? body : {});
@@ -1382,8 +1383,9 @@ async function marketBuybackLogRefreshRoute(req, res) {
 }
 
 async function marketBuybackLogClearRoute(req, res) {
+  if (!applyMutationRateLimit(req, res, "exchange.market.buyback.log-clear")) return;
   try {
-    const result = clearBuybackLog(config);
+    const result = await clearBuybackLog(config);
     audit(config, req, "exchange.market", { op: "buyback-log-clear", ok: true });
     return json(res, 200, result);
   } catch (error) {
