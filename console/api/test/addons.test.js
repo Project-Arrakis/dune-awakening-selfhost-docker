@@ -89,6 +89,158 @@ test("fetches and validates community addons with injected fetch", async () => {
   });
 });
 
+test("uses the authenticated GitHub contents API for raw catalog files", async () => {
+  const previousToken = process.env.DUNE_SELF_UPDATE_TOKEN;
+  process.env.DUNE_SELF_UPDATE_TOKEN = "catalog-test-token";
+  const requests = [];
+  const fetchImpl = async (url, options) => {
+    requests.push({ url: String(url), options });
+    return {
+      ok: true,
+      status: 200,
+      headers: { get: (name) => name.toLowerCase() === "etag" ? '"catalog-v1"' : "" },
+      json: async () => ({ schemaVersion: 1, addons: [] })
+    };
+  };
+  try {
+    await fetchCommunityAddons(fetchImpl);
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].url, "https://api.github.com/repos/Red-Blink/dune-docker-addons/contents/index.json?ref=main");
+    assert.equal(requests[0].options.headers.authorization, "Bearer catalog-test-token");
+    assert.equal(requests[0].options.headers.accept, "application/vnd.github.raw+json");
+    assert.equal(requests[0].options.headers["x-github-api-version"], "2022-11-28");
+    assert.equal(requests[0].options.headers["user-agent"], "redblink-dune-docker-console");
+  } finally {
+    if (previousToken === undefined) delete process.env.DUNE_SELF_UPDATE_TOKEN;
+    else process.env.DUNE_SELF_UPDATE_TOKEN = previousToken;
+  }
+});
+
+test("deduplicates concurrent community catalog reads and caches validated results", async () => {
+  let requestCount = 0;
+  const fetchImpl = async () => {
+    requestCount += 1;
+    await Promise.resolve();
+    return {
+      ok: true,
+      status: 200,
+      headers: { get: () => "" },
+      json: async () => ({ schemaVersion: 1, updatedAt: "2026-08-17T00:00:00Z", addons: [] })
+    };
+  };
+  const [first, second] = await Promise.all([
+    fetchCommunityAddons(fetchImpl, "https://example.test/index.json"),
+    fetchCommunityAddons(fetchImpl, "https://example.test/index.json")
+  ]);
+  const third = await fetchCommunityAddons(fetchImpl, "https://example.test/index.json");
+  assert.equal(requestCount, 1);
+  assert.deepEqual(second, first);
+  assert.deepEqual(third, first);
+});
+
+test("revalidates the catalog with ETags and serves validated stale data on HTTP 429", async () => {
+  const originalNow = Date.now;
+  let now = 1_800_000_000_000;
+  let mode = "fresh";
+  const requests = [];
+  Date.now = () => now;
+  const fetchImpl = async (_url, options) => {
+    requests.push(options);
+    if (mode === "not-modified") {
+      return { ok: false, status: 304, headers: { get: () => "" } };
+    }
+    if (mode === "limited") {
+      return {
+        ok: false,
+        status: 429,
+        headers: { get: (name) => name.toLowerCase() === "retry-after" ? "120" : "" }
+      };
+    }
+    return {
+      ok: true,
+      status: 200,
+      headers: { get: (name) => name.toLowerCase() === "etag" ? '"catalog-v1"' : "" },
+      json: async () => ({ schemaVersion: 1, updatedAt: "2026-08-17T00:00:00Z", addons: [] })
+    };
+  };
+  try {
+    const fresh = await fetchCommunityAddons(fetchImpl, "https://example.test/index.json");
+    now += 5 * 60 * 1000 + 1;
+    mode = "not-modified";
+    const revalidated = await fetchCommunityAddons(fetchImpl, "https://example.test/index.json");
+    assert.equal(requests[1].headers["if-none-match"], '"catalog-v1"');
+    assert.deepEqual(revalidated, fresh);
+
+    now += 5 * 60 * 1000 + 1;
+    mode = "limited";
+    const stale = await fetchCommunityAddons(fetchImpl, "https://example.test/index.json");
+    assert.deepEqual(stale, fresh);
+    assert.equal(requests.length, 3);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("never sends the GitHub token to addon release downloads", async () => {
+  const previousToken = process.env.DUNE_SELF_UPDATE_TOKEN;
+  process.env.DUNE_SELF_UPDATE_TOKEN = "catalog-test-token";
+  const repoRoot = mkdtempSync(join(tmpdir(), "dune-addon-token-scope-"));
+  const archive = Buffer.from("verified addon archive");
+  const sha256 = createHash("sha256").update(archive).digest("hex");
+  const requests = [];
+  const fetchImpl = async (url, options = {}) => {
+    const text = String(url);
+    requests.push({ url: text, options });
+    if (text.endsWith(".zip")) return { ok: true, status: 200, headers: { get: () => "" }, arrayBuffer: async () => archive };
+    if (text.includes("/contents/addons/demo-addon.json")) {
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => "" },
+        json: async () => ({
+          id: "demo-addon",
+          name: "Demo Addon",
+          version: "1.0.0",
+          type: "ui",
+          sourceUrl: "https://github.com/example/demo-addon",
+          downloadUrl: "https://github.com/example/demo-addon/releases/download/v1.0.0/demo-addon.zip",
+          sha256,
+          permissions: []
+        })
+      };
+    }
+    return {
+      ok: true,
+      status: 200,
+      headers: { get: () => "" },
+      json: async () => ({
+        schemaVersion: 1,
+        addons: [{
+          id: "demo-addon",
+          name: "Demo Addon",
+          version: "1.0.0",
+          sourceUrl: "https://github.com/example/demo-addon",
+          permissions: [],
+          manifestUrl: "https://raw.githubusercontent.com/example/demo-addon/main/addons/demo-addon.json"
+        }]
+      })
+    };
+  };
+  try {
+    await installCommunityAddon({ repoRoot }, "demo-addon", { approvedPermissions: [] }, fetchImpl, addonArchiveRunner("demo-addon", "1.0.0", []));
+    const githubApiRequests = requests.filter((request) => request.url.startsWith("https://api.github.com/"));
+    const downloadRequest = requests.find((request) => request.url.endsWith(".zip"));
+    assert(githubApiRequests.length >= 2);
+    assert(githubApiRequests.every((request) => request.options.headers.authorization === "Bearer catalog-test-token"));
+    assert(downloadRequest);
+    assert.equal(downloadRequest.options.headers.authorization, undefined);
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+    if (previousToken === undefined) delete process.env.DUNE_SELF_UPDATE_TOKEN;
+    else process.env.DUNE_SELF_UPDATE_TOKEN = previousToken;
+  }
+});
+
 test("enriches community addon permissions from manifest when index omits them", async () => {
   const result = await fetchCommunityAddons(async (url) => ({
     ok: true,
