@@ -20,6 +20,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { ROUTE_ACTIONS } from "./actions.js";
+import { writeJsonAtomic } from "./jsonStore.js";
 
 // ---- Policy evaluation ----
 
@@ -45,9 +46,6 @@ export function matchAction(pattern, action) {
 }
 
 export function evaluate(session, action, policies = null) {
-  // Owner always passes — optimization, not a policy rule
-  if (session && session.tier === "owner") return true;
-
   // No action to check — public route
   if (!action) return true;
 
@@ -94,7 +92,7 @@ export function loadPolicies(repoRoot = null) {
     try {
       const raw = readFileSync(filePath, "utf8");
       const parsed = JSON.parse(raw);
-      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      if (validPolicyStore(parsed)) {
         _policies = parsed;
         return;
       }
@@ -137,9 +135,32 @@ export function getAllPolicies(policies = null) {
   return { ...store };
 }
 
-export function setPolicies(docs) {
+export function setPolicies(docs, repoRoot = null) {
+  if (!validPolicyStore(docs)) {
+    return { ok: false, error: "Policies must contain valid tier documents and Allow/Deny statements." };
+  }
+  if (!evaluate({ tier: "owner" }, "settings:write", docs)) {
+    return { ok: false, error: "The owner policy must retain settings:write access." };
+  }
   _policies = docs;
   _allowedActions = {};
+  if (repoRoot) writeJsonAtomic(resolve(repoRoot, "runtime/generated/iam-policies.json"), docs, 0o600);
+  return { ok: true, policies: getAllPolicies() };
+}
+
+function validPolicyStore(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const tiers = Object.keys(value);
+  if (!tiers.length || tiers.some((tier) => !["owner", "admin", "moderator", "player", "observer"].includes(tier))) return false;
+  return tiers.every((tier) => {
+    const document = value[tier];
+    if (!document || document.tier !== tier || !Array.isArray(document.statements)) return false;
+    return document.statements.every((statement) => {
+      if (!statement || !["Allow", "Deny"].includes(statement.Effect)) return false;
+      const actions = Array.isArray(statement.Action) ? statement.Action : [statement.Action];
+      return actions.length > 0 && actions.every((action) => typeof action === "string" && action.trim().length > 0);
+    });
+  });
 }
 
 // ---- Default policies (mirror the CAPABILITY_BY_TIER ladder) ----
@@ -170,6 +191,8 @@ const DEFAULT_POLICIES = {
         "bases:*",
         "storage:*",
         "blueprints:*",
+        "vehicles:*",
+        "exchange:*",
         "maps:*",
         "sietches:*",
         "deepdesert:*",
@@ -200,6 +223,8 @@ const DEFAULT_POLICIES = {
         "bases:read",
         "storage:read",
         "blueprints:read",
+        "vehicles:read",
+        "exchange:read",
         "logs:*",
         "landsraad:read",
         "admin:broadcast",
@@ -221,6 +246,8 @@ const DEFAULT_POLICIES = {
         "bases:read",
         "storage:read",
         "blueprints:read",
+        "vehicles:read",
+        "exchange:read",
         "landsraad:read",
       ]},
     ]
@@ -239,6 +266,8 @@ const DEFAULT_POLICIES = {
         "bases:read",
         "storage:read",
         "blueprints:read",
+        "vehicles:read",
+        "exchange:read",
         "landsraad:read",
       ]},
     ]

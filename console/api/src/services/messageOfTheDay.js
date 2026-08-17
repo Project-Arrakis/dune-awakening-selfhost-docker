@@ -122,7 +122,7 @@ export async function runMessageOfTheDayScan(config, players, context = {}) {
       };
     } catch (error) {
       failed += 1;
-      results.push({ player: player.characterName, ok: false, error: String(error.message || error) });
+      results.push({ player: player.characterName, ok: false, error: String(error?.message || "Unexpected error.") });
     }
   }
 
@@ -144,7 +144,7 @@ export function recordMessageOfTheDayScanFailure(config, error, now = new Date()
   const status = normalizeStatus({
     ...state.status,
     lastScanAt: now.toISOString(),
-    lastScanError: redact(String(error?.message || error || "Unknown scan failure"))
+    lastScanError: redact(String(error?.message || "Unexpected error." || "Unknown scan failure"))
   });
   writeJson(statePath(config), { delivered: state.delivered || {}, status }, 0o600);
   return status;

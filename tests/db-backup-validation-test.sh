@@ -7,7 +7,8 @@ test_root="$(mktemp -d)"
 trap 'rm -rf "$test_root"' EXIT
 
 bin_dir="$test_root/bin"
-mkdir -p "$bin_dir"
+mkdir -p "$bin_dir" "$test_root/runtime/scripts"
+cp runtime/scripts/env-file.sh "$test_root/runtime/scripts/env-file.sh"
 
 cat > "$bin_dir/docker" <<'EOF'
 #!/usr/bin/env bash
@@ -131,3 +132,105 @@ if grep -Eq 'drop database|start-all|stop-all' "$restore_root/docker.log"; then
   exit 1
 fi
 echo "PASS invalid-restore-aborts-before-database-changes"
+
+identity_root="$test_root/identity-choice"
+mkdir -p "$identity_root/runtime/scripts" "$identity_root/runtime/generated" "$identity_root/runtime/secrets"
+cp runtime/scripts/db.sh runtime/scripts/env-file.sh "$identity_root/runtime/scripts/"
+printf '%s\n' mock-valid-archive > "$identity_root/manual.backup"
+cat > "$identity_root/manual.backup.yaml" <<'EOF'
+backup_origin: manual
+battlegroup_id: sh-bbbbbbbbbbbbbbbb-original
+EOF
+printf 'BATTLEGROUP_ID=sh-aaaaaaaaaaaaaaaa-current\n' > "$identity_root/runtime/generated/battlegroup.env"
+
+set +e
+(
+  cd "$identity_root"
+  PATH="$bin_dir:$PATH" \
+    MOCK_DOCKER_LOG="$identity_root/no-choice-docker.log" \
+    MOCK_ARCHIVE_VALID=1 \
+    DUNE_DB_ASSUME_YES=1 \
+    bash runtime/scripts/db.sh restore "$identity_root/manual.backup" --no-safety-backup
+) > "$identity_root/no-choice.log" 2>&1
+no_choice_exit=$?
+set -e
+[ "$no_choice_exit" -ne 0 ] || fail "mismatched manual backup restored without an explicit identity choice"
+grep -Fq 'choose --adopt-backup-battlegroup or --keep-current-battlegroup' "$identity_root/no-choice.log" \
+  || fail "mismatched manual backup did not explain the required identity choice"
+if grep -Eq 'drop database|create database|rm -f dune-server' "$identity_root/no-choice-docker.log"; then
+  fail "identity-choice failure allowed destructive restore work"
+fi
+echo "PASS manual-backup-mismatch-fails-before-changes-without-explicit-choice"
+
+TOKEN_HOST_ID="aaaaaaaaaaaaaaaa" python3 - "$identity_root/runtime/secrets/funcom-token.txt" <<'PY'
+import base64
+import json
+import os
+import sys
+
+payload = base64.urlsafe_b64encode(json.dumps({"HostId": os.environ["TOKEN_HOST_ID"]}).encode()).decode().rstrip("=")
+with open(sys.argv[1], "w", encoding="utf-8") as handle:
+    handle.write(f"header.{payload}.signature\n")
+PY
+
+set +e
+(
+  cd "$identity_root"
+  PATH="$bin_dir:$PATH" \
+    MOCK_DOCKER_LOG="$identity_root/wrong-token-docker.log" \
+    MOCK_ARCHIVE_VALID=1 \
+    DUNE_DB_ASSUME_YES=1 \
+    bash runtime/scripts/db.sh restore "$identity_root/manual.backup" --no-safety-backup --adopt-backup-battlegroup
+) > "$identity_root/wrong-token.log" 2>&1
+wrong_token_exit=$?
+set -e
+[ "$wrong_token_exit" -ne 0 ] || fail "backup Battlegroup adoption accepted an incompatible Funcom token"
+grep -Fq 'current Funcom token does not belong to backup Battlegroup' "$identity_root/wrong-token.log" \
+  || fail "incompatible-token rejection was not explained"
+if grep -Eq 'drop database|create database|rm -f dune-server' "$identity_root/wrong-token-docker.log"; then
+  fail "token-validation failure allowed destructive restore work"
+fi
+echo "PASS backup-adoption-rejects-incompatible-token-before-changes"
+
+TOKEN_HOST_ID="bbbbbbbbbbbbbbbb" python3 - "$identity_root/runtime/secrets/funcom-token.txt" <<'PY'
+import base64
+import json
+import os
+import sys
+
+payload = base64.urlsafe_b64encode(json.dumps({"HostId": os.environ["TOKEN_HOST_ID"]}).encode()).decode().rstrip("=")
+with open(sys.argv[1], "w", encoding="utf-8") as handle:
+    handle.write(f"header.{payload}.signature\n")
+PY
+printf 'BATTLEGROUP_ID=sh-aaaaaaaaaaaaaaaa-current\nSERVER_TITLE="Identity Test"\n' > "$identity_root/runtime/generated/battlegroup.env"
+printf 'y\nn\n' | (
+  cd "$identity_root"
+  PATH="$bin_dir:$PATH" \
+    MOCK_DOCKER_LOG="$identity_root/adopt-docker.log" \
+    MOCK_ARCHIVE_VALID=1 \
+    bash runtime/scripts/db.sh restore "$identity_root/manual.backup" --no-safety-backup --adopt-backup-battlegroup
+) > "$identity_root/adopt.log" 2>&1
+grep -Fq 'BATTLEGROUP_ID=sh-bbbbbbbbbbbbbbbb-original' "$identity_root/runtime/generated/battlegroup.env" \
+  || fail "explicit adoption did not preserve the backup Battlegroup identity"
+grep -Fq 'PREVIOUS_BATTLEGROUP_ID=sh-aaaaaaaaaaaaaaaa-current' "$identity_root/runtime/generated/battlegroup-restore-point.env" \
+  || fail "explicit adoption did not create a rollback point"
+grep -Fq 'Database import finished.' "$identity_root/adopt.log" \
+  || fail "compatible explicit adoption did not finish the mocked restore"
+echo "PASS compatible-explicit-adoption-preserves-identity-and-rollback"
+
+rm -f "$identity_root/runtime/generated/battlegroup-restore-point.env"
+printf 'BATTLEGROUP_ID=sh-aaaaaaaaaaaaaaaa-current\nSERVER_TITLE="Identity Test"\n' > "$identity_root/runtime/generated/battlegroup.env"
+printf 'y\nn\n' | (
+  cd "$identity_root"
+  PATH="$bin_dir:$PATH" \
+    MOCK_DOCKER_LOG="$identity_root/keep-docker.log" \
+    MOCK_ARCHIVE_VALID=1 \
+    bash runtime/scripts/db.sh restore "$identity_root/manual.backup" --no-safety-backup --keep-current-battlegroup
+) > "$identity_root/keep.log" 2>&1
+grep -Fq 'BATTLEGROUP_ID=sh-aaaaaaaaaaaaaaaa-current' "$identity_root/runtime/generated/battlegroup.env" \
+  || fail "explicit keep-current restore changed the current Battlegroup identity"
+[ ! -e "$identity_root/runtime/generated/battlegroup-restore-point.env" ] \
+  || fail "keep-current restore created an adoption rollback point"
+grep -Fq 'Characters associated with sh-bbbbbbbbbbbbbbbb-original may not appear in game.' "$identity_root/keep.log" \
+  || fail "keep-current restore did not warn about character visibility"
+echo "PASS explicit-keep-current-preserves-current-identity"

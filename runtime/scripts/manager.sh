@@ -684,29 +684,22 @@ EOF
 }
 
 persist_runtime_identity_snapshot() {
-  local battlegroup_id server_title server_region server_ip existing_battlegroup_id
+  local battlegroup_id server_title server_region server_ip
 
-  battlegroup_id="$(resolve_battlegroup_id 2>/dev/null || true)"
+  if ! runtime/scripts/battlegroup-identity.sh ensure; then
+    echo "Cannot save the runtime identity snapshot until the Battlegroup ID is repaired." >&2
+    return 1
+  fi
+  battlegroup_id="$(resolve_battlegroup_id)"
   server_title="$(resolve_server_title 2>/dev/null || true)"
   server_region="$(resolve_server_region 2>/dev/null || true)"
   server_ip="$(resolve_server_ip 2>/dev/null || true)"
-  existing_battlegroup_id="$(config_value runtime/generated/battlegroup.env BATTLEGROUP_ID 2>/dev/null || true)"
-
-  if { [ -z "$battlegroup_id" ] || [ "$battlegroup_id" = "unknown" ] || [ "$battlegroup_id" = "dune-docker" ]; } \
-    && [ -n "$existing_battlegroup_id" ] \
-    && [ "$existing_battlegroup_id" != "unknown" ] \
-    && [ "$existing_battlegroup_id" != "dune-docker" ]; then
-    battlegroup_id="$existing_battlegroup_id"
-  fi
 
   mkdir -p runtime/generated
-  {
-    printf 'BATTLEGROUP_ID=%q\n' "${battlegroup_id:-dune-docker}"
-    printf 'SERVER_TITLE=%q\n' "${server_title:-My Dune Server}"
-    printf 'SERVER_REGION=%q\n' "${server_region:-Europe}"
-    printf 'SERVER_IP=%q\n' "${server_ip:-auto}"
-  } > runtime/generated/battlegroup.env
-  chmod 664 runtime/generated/battlegroup.env 2>/dev/null || true
+  set_env_file_value runtime/generated/battlegroup.env BATTLEGROUP_ID "$battlegroup_id" 664
+  set_env_file_value runtime/generated/battlegroup.env SERVER_TITLE "${server_title:-My Dune Server}" 664 quoted
+  set_env_file_value runtime/generated/battlegroup.env SERVER_REGION "${server_region:-Europe}" 664 quoted
+  set_env_file_value runtime/generated/battlegroup.env SERVER_IP "${server_ip:-auto}" 664
 }
 
 show_config_summary() {
@@ -1547,9 +1540,6 @@ edit_userengine_menu() {
         ;;
       6)
         edit_userengine_category_menu "UserEngine Progression / Economy" \
-          "global_xp_multiplier|Global XP Multiplier|float" \
-          "global_fame_multiplier|Global Fame Multiplier|float" \
-          "global_progression_speed_multiplier|Global Progression Speed Multiplier|float" \
           "guild_settings_creation_cost|Guild Creation Cost|int" \
           "sell_order_price_percentage_fee|Sell Order Price Percentage Fee|float" \
           "spice_tax_amount|Spice Tax Amount|float" \
@@ -1558,8 +1548,6 @@ edit_userengine_menu() {
       7)
         edit_userengine_category_menu "UserEngine Harvesting / Crafting" \
           "global_harvest_amount_multiplier|Global Harvest Amount Multiplier|float" \
-          "global_harvest_health_multiplier|Global Harvest Health Multiplier|float" \
-          "cutteray_hem_multiplier_per_node_tier_table|Cutteray Hem Multiplier Per Node Tier Table|float" \
           "minimum_augmentable_item_quality|Minimum Augmentable Item Quality|int" \
           "item_durability_loss_multiplier|Item Durability Loss Multiplier|float" \
           "item_deterioration_rate|Item Deterioration Rate|float"
@@ -1568,7 +1556,6 @@ edit_userengine_menu() {
         edit_userengine_category_menu "UserEngine Survival / Combat" \
           "water_consumption_rate|Water Consumption Rate|float" \
           "water_consumption_in_storm_multiplier|Water Consumption In Storm Multiplier|float" \
-          "global_damage_to_npcs_multiplier|Global Damage To NPCs Multiplier|float" \
           "global_damage_to_players_multiplier|Global Damage To Players Multiplier|float" \
           "global_health_multiplier|Global Health Multiplier|float" \
           "global_building_damage_multiplier|Global Building Damage Multiplier|float" \
@@ -1655,9 +1642,6 @@ edit_usergame_menu() {
         ;;
       3)
         edit_usergame_category_menu "$map" "$partition_id" "UserGame Progression / Economy: $title_suffix" \
-          "global_xp_multiplier|Global XP Multiplier|float" \
-          "global_fame_multiplier|Global Fame Multiplier|float" \
-          "global_progression_speed_multiplier|Global Progression Speed Multiplier|float" \
           "guild_settings_creation_cost|Guild Creation Cost|int" \
           "sell_order_price_percentage_fee|Sell Order Price Percentage Fee|float" \
           "spice_tax_amount|Spice Tax Amount|float" \
@@ -1666,8 +1650,6 @@ edit_usergame_menu() {
       4)
         edit_usergame_category_menu "$map" "$partition_id" "UserGame Harvesting / Crafting: $title_suffix" \
           "global_harvest_amount_multiplier|Global Harvest Amount Multiplier|float" \
-          "global_harvest_health_multiplier|Global Harvest Health Multiplier|float" \
-          "cutteray_hem_multiplier_per_node_tier_table|Cutteray Hem Multiplier Per Node Tier Table|float" \
           "minimum_augmentable_item_quality|Minimum Augmentable Item Quality|int" \
           "item_durability_loss_multiplier|Item Durability Loss Multiplier|float" \
           "item_deterioration_rate|Item Deterioration Rate|float"
@@ -1676,7 +1658,6 @@ edit_usergame_menu() {
         edit_usergame_category_menu "$map" "$partition_id" "UserGame Survival / Combat: $title_suffix" \
           "water_consumption_rate|Water Consumption Rate|float" \
           "water_consumption_in_storm_multiplier|Water Consumption In Storm Multiplier|float" \
-          "global_damage_to_npcs_multiplier|Global Damage To NPCs Multiplier|float" \
           "global_damage_to_players_multiplier|Global Damage To Players Multiplier|float" \
           "global_health_multiplier|Global Health Multiplier|float" \
           "global_building_damage_multiplier|Global Building Damage Multiplier|float" \

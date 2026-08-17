@@ -254,7 +254,7 @@ class ProfileEngineTextTests(unittest.TestCase):
 
     def test_usergame_shaped_paste_is_rejected_with_clear_error(self):
         usersettings.write_profile(usersettings.empty_profile())
-        bad_raw = "[Global:/Script/DuneSandbox.DuneGameMode]\nm_GlobalXPMultiplier=1.0\n"
+        bad_raw = "[Global:/Script/DuneSandbox.DuneGameMode]\nm_DefaultReconnectGracePeriodSeconds=300\n"
         with self.assertRaises(SystemExit):
             usersettings.profile_engine_write_encoded(self._encode(bad_raw))
 

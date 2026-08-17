@@ -177,7 +177,7 @@ export function createMemoryBalancer(config) {
     for (const [container, limitBytes] of restoreTargets.entries()) {
       if (limitBytes > 0) {
         await dockerUpdateMemoryLimit(config, container, limitBytes).catch((error) => {
-          state.lastError = redact(error.message || error);
+          state.lastError = redact(error?.message || "Unexpected error.");
         });
       }
     }
@@ -220,7 +220,7 @@ export function createMemoryBalancer(config) {
       state.lastError = "";
       state.updatedAt = new Date().toISOString();
     } catch (error) {
-      state.lastError = redact(error.message || error);
+      state.lastError = redact(error?.message || "Unexpected error.");
       state.lastMessage = "Memory Balancer could not rebalance memory.";
       state.updatedAt = new Date().toISOString();
     } finally {

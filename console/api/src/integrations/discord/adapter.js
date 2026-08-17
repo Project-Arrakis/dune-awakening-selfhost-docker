@@ -66,6 +66,7 @@ export const DISCORD_LIVE_ADAPTER_ROUTES = Object.freeze([
   DISCORD_ADAPTER_ROUTES.LOGS,
   DISCORD_ADAPTER_ROUTES.MAP_STATE,
   DISCORD_ADAPTER_ROUTES.MAINTENANCE,
+  DISCORD_ADAPTER_ROUTES.BACKUPS_LIST,
   DISCORD_ADAPTER_ROUTES.BROADCAST,
   DISCORD_ADAPTER_ROUTES.ANNOUNCEMENTS,
   DISCORD_ADAPTER_ROUTES.PLAYERS_LINK,
@@ -98,8 +99,9 @@ export function discordAdapterEnabled(config) {
   return process.env.DUNE_DISCORD_ADAPTER_ENABLED === "true" || config?.discordAdapterEnabled === true;
 }
 
-export function discordWritesEnabled(_config) {
-  return process.env.DUNE_DISCORD_WRITES_ENABLED === "1";
+export function discordWritesEnabled(config) {
+  const value = process.env.DUNE_DISCORD_WRITES_ENABLED ?? config?.discordWritesEnabled;
+  return value === true || value === 1 || /^(?:1|true)$/i.test(String(value || "").trim());
 }
 
 export function discordRoleMappingFromEnv(env = process.env) {
@@ -133,7 +135,7 @@ export async function discordAdapterHealth(config) {
     readOnly: false,
     gameDataWritesEnabled: false,
     adapterDataWrites: ["player-link", "account-link"],
-    writesEnabled: false,
+    writesEnabled: discordWritesEnabled(config),
     routes: DISCORD_LIVE_ADAPTER_ROUTES,
     liveRoutes: DISCORD_LIVE_ADAPTER_ROUTES,
     plannedRoutes: DISCORD_PLANNED_ADAPTER_ROUTES,

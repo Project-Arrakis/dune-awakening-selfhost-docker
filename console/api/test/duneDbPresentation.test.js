@@ -3,6 +3,9 @@ import test from "node:test";
 import {
   factionDisplayName,
   factionIdByName,
+  factionProgressionRankLimit,
+  factionProgressionRepairPlan,
+  factionReputationEstimatedRank,
   factionTierBumps,
   craftingRecipeCatalogRows,
   compareJourneyCatalogOrder,
@@ -53,7 +56,9 @@ test("display helpers normalize game identifiers", () => {
     DA_MQ_NPEAutocompleted: "The Fall of the Proteus"
   }), "The Fall of the Proteus");
   assert.equal(recipeDisplayName("Buggy_TreadWheel_Recipe"), "Buggy Tread Wheel");
+  assert.equal(recipeDisplayName("AssaultRifleRecipe"), "Karpov 38");
   assert.equal(researchDisplayName("RCP_SandbikeEnginePatent"), "Sandbike Engine");
+  assert.equal(researchDisplayName("RCP_AssaultRifleRecipe"), "Karpov 38");
 });
 
 test("journey tree helpers resolve parents, depth, and subtree tags", () => {
@@ -140,6 +145,29 @@ test("faction and repair helpers keep mutation math predictable", () => {
   assert.equal(factionIdByName("Atreides"), 1);
   assert.equal(factionIdByName("Unknown"), 0);
   assert.deepEqual([...factionTierBumps(["Faction.Atreides.Tier2", "Faction.Harkonnen.Tier0"])], [["Atreides", 250]]);
+  assert.equal(factionReputationEstimatedRank(0), 0);
+  assert.equal(factionReputationEstimatedRank(99), 0);
+  assert.equal(factionReputationEstimatedRank(100), 1);
+  assert.equal(factionReputationEstimatedRank(5200), 12);
+  assert.equal(factionReputationEstimatedRank(12474), 20);
+  assert.equal(factionProgressionRankLimit(["Faction.Atreides.Tier0", "Faction.Atreides.Tier4"], "Atreides"), 4);
+  assert.equal(factionProgressionRankLimit(["Faction.Atreides.Tier5"], "Atreides"), null);
+  assert.deepEqual(factionProgressionRepairPlan(
+    ["Faction.Atreides.Tier2"],
+    "Atreides",
+    [
+      "DA_FQ_ClimbTheRanks.Rank5To20.CompleteLandsraadMission.CompleteOnboardingJourney1",
+      "DA_FQ_ClimbTheRanks.Rank5To20.CraftAugmentation.CompleteOnboardingJourney2"
+    ]
+  ), {
+    earnedTier: 5,
+    currentTier: 2,
+    missingTags: ["Faction.Atreides.Tier0", "Faction.Atreides.Tier1", "Faction.Atreides.Tier3", "Faction.Atreides.Tier4", "Faction.Atreides.Tier5"],
+    evidenceNodeIds: [
+      "DA_FQ_ClimbTheRanks.Rank5To20.CompleteLandsraadMission.CompleteOnboardingJourney1",
+      "DA_FQ_ClimbTheRanks.Rank5To20.CraftAugmentation.CompleteOnboardingJourney2"
+    ]
+  });
   assert.equal(repairTarget({ MaxDurability: 100, CurrentDurability: 40, DecayedDurability: 10 }), 100);
   assert.equal(repairTarget({ MaxDurability: 100, CurrentDurability: 100, DecayedDurability: 100 }), 0);
   assert.equal(tutorialStatus(2), "Complete");

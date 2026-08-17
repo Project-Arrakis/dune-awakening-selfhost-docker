@@ -107,6 +107,78 @@ export type AutoRefillWaterState = {
   bases: AutoRefillWaterBase[];
 };
 
+// Storage containers plus the refining, crafting, and other inventories
+// (recycler, repair station, the base's own Sub-Fief console) at a base.
+// Generator and windtrap fuel is deliberately absent -- the Power and Water
+// tabs own it.
+export type BaseInventoryGroupKey = "storage" | "refining" | "crafting" | "other";
+
+export type BaseInventoryGroup = {
+  key: BaseInventoryGroupKey;
+  name: string;
+  containerCount: number;
+  itemCount: number;
+};
+
+// One item template's total inside one container. NOT a stack: the backend
+// merges every dune.items row of the same template, so a container with 8
+// occupied slots holding 3 templates yields 3 of these. Stack count is
+// usedSlots.
+export type BaseInventoryEntry = {
+  templateId: string;
+  name: string;
+  quantity: number;
+};
+
+export type BaseInventoryContainer = {
+  placeableId: string;
+  // Empty until a player renames the placeable in-game: the game stores
+  // '##' || building_type as the default, which the backend strips.
+  name: string;
+  typeName: string;
+  group: BaseInventoryGroupKey;
+  usedSlots: number;
+  maxSlots: number;
+  itemCount: number;
+  items: BaseInventoryEntry[];
+};
+
+// How much of one item a single container holds. `name` is the container's,
+// not the item's -- the item is the parent -- and is empty for a placeable the
+// player has never renamed, same as BaseInventoryContainer.name.
+export type BaseInventoryHolder = {
+  placeableId: string;
+  name: string;
+  typeName: string;
+  group: BaseInventoryGroupKey;
+  quantity: number;
+};
+
+export type BaseInventoryItem = {
+  templateId: string;
+  // Falls back to templateId for anything missing from admin-items.json.
+  name: string;
+  image: string;
+  category: string;
+  quantity: number;
+  containerCount: number;
+  containers: BaseInventoryHolder[];
+};
+
+export type BaseInventory = {
+  // False when the database lacks dune.placeables/inventories/items. That is a
+  // 200 carrying `reason`, not an error status -- a schema that cannot support
+  // the tab is a settled answer, and retrying it would never change.
+  supported: boolean;
+  baseId: number;
+  groups: BaseInventoryGroup[];
+  containers: BaseInventoryContainer[];
+  items: BaseInventoryItem[];
+  totals: { items: number; distinct: number; containers: number; usedSlots: number; maxSlots: number };
+  // Only set alongside supported: false.
+  reason?: string;
+};
+
 // rank 1/2/3 = Owner/Co-Owner/Associate, confirmed in both directions against a
 // live server: the game's own Permissions panel writes exactly these values.
 // The 5/4/3 badges the game UI shows beside those labels are decoration, not
@@ -132,6 +204,7 @@ export type BasePermissions = {
   mapNameId: number;
   systemCustodian?: {
     available: boolean;
+    canCreate?: boolean;
     playerId?: string;
     name?: string;
     reason?: string;
@@ -185,6 +258,33 @@ export const basesApi = {
     api<{ supported: boolean; result?: { ok: boolean; baseId: number; pending: number }; reason?: string }>(
       `/api/bases/${encodeURIComponent(baseId)}/queued-refill`, { method: "DELETE" }),
   pendingRefills: () => api<PendingRefills>("/api/bases/pending-refills"),
+  // Permanently deletes the base and everything on it. Like the refills
+  // above, a delete for a map that is currently running comes back as
+  // `result.queued`: it is deferred to the next time that map is down, and a
+  // full database backup happens automatically, immediately before the
+  // delete actually runs (at request time here, or at flush time for a
+  // queued one) -- never before, never skipped.
+  deleteBase: (baseId: string) =>
+    api<{
+      supported: boolean;
+      backupCreated: boolean;
+      result?: {
+        ok: boolean;
+        baseId: number;
+        queued?: boolean;
+        map?: string;
+        partitionId?: number;
+        actorId?: string;
+        deletedActorCount?: number;
+        deletedBuildingCount?: number;
+        deletedPlaceableCount?: number;
+      };
+      reason?: string;
+    }>(`/api/bases/${encodeURIComponent(baseId)}`, { method: "DELETE", body: JSON.stringify({ confirmation: "DELETE BASE" }) }),
+  cancelQueuedDelete: (baseId: string) =>
+    api<{ supported: boolean; result?: { ok: boolean; baseId: number; pending: number }; reason?: string }>(
+      `/api/bases/${encodeURIComponent(baseId)}/queued-delete`, { method: "DELETE" }),
+  pendingDeletes: () => api<PendingRefills>("/api/bases/pending-deletes"),
   autoRefill: () => api<AutoRefillState>("/api/bases/auto-refill"),
   setAutoRefill: (baseId: string, enabled: boolean) =>
     post<{ ok: boolean; baseId: number; enabled: boolean; total: number }>(
@@ -210,6 +310,10 @@ export const basesApi = {
   },
   water: (baseId: string) =>
     api<BaseWater>(`/api/bases/${encodeURIComponent(baseId)}/water`),
+  // Read-only. One response backs both the item rollup and the container
+  // cards, so switching between them never refetches.
+  inventory: (baseId: string) =>
+    api<BaseInventory>(`/api/bases/${encodeURIComponent(baseId)}/inventory`),
   // A refill for a map that is currently running comes back as
   // `result.queued`: the write is deferred to the next time that map is down.
   refillWater: (baseId: string) =>
@@ -232,6 +336,20 @@ export const basesApi = {
   pendingWaterRefills: () => api<PendingRefills>("/api/bases/pending-water-refills"),
   autoRefillWater: () => api<AutoRefillWaterState>("/api/bases/auto-refill-water"),
   setAutoRefillWater: (baseId: string, enabled: boolean) =>
-    post<{ ok: boolean; baseId: number; enabled: boolean; total: number }>(
+    post<{
+      ok: boolean;
+      baseId: number;
+      enabled: boolean;
+      newlyEnabled?: boolean;
+      total: number;
+      initialCheck?: {
+        status: string;
+        detail: string;
+        checked: number;
+        queued: number;
+        alreadyQueued?: number;
+        failures: number;
+      };
+    }>(
       `/api/bases/${encodeURIComponent(baseId)}/auto-refill-water`, { enabled })
 };

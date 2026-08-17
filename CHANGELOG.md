@@ -7,7 +7,53 @@ whatever upstream version is currently checked out, per the versioning
 convention documented in this account's operating docs. Entries are in
 Keep a Changelog style, grouped by upstream base version, newest first.
 
-## Unreleased (on top of upstream v1.3.79+)
+## Unreleased (on top of upstream v1.3.88)
+
+### Changed
+
+- Merged `upstream/main` into this fork's `main` (issue #279), resolving 198
+  commits of divergence and 23 real file conflicts (auth/policy/RBAC/Discord
+  adapter surface). Notable outcomes:
+  - Adopted upstream's opaque session-cookie design (`auth.js`) in place of
+    this fork's own cookie-embedded-tier design. The fork's design allowed a
+    signature-valid cookie whose session had no matching in-memory entry to
+    be "resurrected" with the tier/identity embedded in the cookie itself --
+    confirmed exploitable (anyone holding `sessionSecret` could forge an
+    arbitrary-tier, including owner, session for an id that was never issued)
+    and confirmed to defeat session revocation entirely (a tier downgrade or
+    password rotation had no effect, since any Map eviction re-synthesized
+    the original tier from the cookie). See CRITICAL issue #309.
+  - Adopted upstream's `policy.js` (validated policy documents, atomic
+    persistence to `runtime/generated/iam-policies.json`, an explicit
+    owner-lockout guard on `settings:write`) in place of this fork's version,
+    which had none of the three and could not actually persist a policy
+    change across a restart.
+  - Adopted upstream's path-traversal fix in `httpSafety.js`'s
+    `safeStaticTarget()` (real `path.relative()` containment check; the
+    fork's own string-prefix check silently broke static asset serving on
+    Windows and could be tricked by a sibling directory sharing a prefix).
+  - Found and fixed 4 Discord adapter routes (`ANNOUNCEMENTS`, `MAINTENANCE`,
+    `LOGS`, `MAP_STATE`) that had no authorization capability check at all in
+    this fork -- upstream's independent implementation of the same routes
+    correctly gates all four. See issue #315.
+  - Kept this fork's own `duneDb.js` container-health implementation
+    (`addonOpsContainerHealth()`) over upstream's `services/containerHealth.js`
+    -- confirmed via live testing (issue #246) that `docker stats` has no
+    `--filter` flag; upstream's version passes one anyway and does not work.
+  - Kept this fork's own self-scoped-capability design
+    (`SELF_SCOPED_CAPABILITIES`/`requireSelfScopedCapability()` in
+    `integrations/discord/policy.js`, FINDING-LINK-2) -- upstream has no
+    equivalent fix and still tier-gates `PLAYER_LINK_WRITE`.
+  - Corrected a merge-introduced bug where `OPS_*` Discord capabilities were
+    initially added to the `moderator` tier following the surrounding
+    `*_READ` pattern, before upstream's own test
+    (`discordPolicy.test.js`, "OPS capabilities are granted only to admin and
+    owner tiers") caught that this is deliberately admin/owner only.
+  - All 23 conflicts resolved with real test verification at each step
+    (1312/1313 `console/api` tests passing -- the 1 failure is a
+    known-good local-`HEAD`-vs-working-tree artifact of the merge being
+    uncommitted at test time, not a real regression; full `console/web`
+    TypeScript build + Vite bundle succeeds).
 
 ### Added
 

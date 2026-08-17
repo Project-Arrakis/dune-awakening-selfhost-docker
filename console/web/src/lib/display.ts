@@ -76,6 +76,7 @@ export function friendlyColumnName(value: string) {
     skillModule: "Skill Module",
     maxLevel: "Max Level",
     itemName: "Item Name",
+    item_name: "Item Name",
     itemId: "Item ID",
     stack_size: "Quantity",
     quantity: "Quantity",

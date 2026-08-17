@@ -77,6 +77,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+      - name: Install gnupg for db-system-backup-test.sh (AEAD archive encryption)
+        # BUG FIX: previously relied on rsync/openssl being present
+        # implicitly on the GitHub runner image, which masked that neither
+        # was installed by install.sh or in the console container image --
+        # confirmed directly on this exact point by an upstream reviewer.
+        # gnupg ships gpg, used for AES-256-OCB (AEAD) archive encryption;
+        # openssl's own `enc` CLI cannot do any AEAD cipher at all. Install
+        # explicitly here so this job cannot silently rely on the runner
+        # image's own toolset again.
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends gnupg
       - name: Test readiness with configured service ports
         run: bash tests/ready-configured-ports-test.sh
       - name: Test stable farm readiness gating
@@ -94,6 +104,8 @@ jobs:
         run: python3 runtime/scripts/test_userengine_ini_comments.py
       - name: Test Global/Map/Partition override precedence
         run: python3 runtime/scripts/test_profile_override_precedence.py
+      - name: Test multi-server config helper
+        run: python3 runtime/scripts/test_multi_server_config.py
       - name: Test combat-state publishers
         run: |
           runtime/tests/test-deepdesert-combat-state-publication.sh
@@ -103,17 +115,22 @@ jobs:
       - name: Test runtime safety regressions
         run: |
           runtime/tests/test-command-auth-token.sh
+          runtime/tests/test-bind-ip-resolution.sh
           runtime/tests/test-deepdesert-dual-startup-reconcile.sh
           runtime/tests/test-deepdesert-dual-selector-cleanup.sh
           runtime/tests/test-director-log-id-normalization.sh
           tests/fls-signals-test.sh
           tests/steamcmd-signals-test.sh
           tests/storage-cleanup-test.sh
+          tests/runtime-permission-helper-rebuild-test.sh
           tests/update-systemd-timer-health-test.sh
           tests/memory-status-effective-defaults-test.sh
           tests/always-on-memory-safety-test.sh
           tests/autoscaler-browser-heal-safety-test.sh
+          tests/autoscaler-igw-socket-health-test.sh
           tests/db-backup-validation-test.sh
+          tests/battlegroup-identity-test.sh
+          tests/db-system-backup-test.sh
       - name: Test Compose project-name portability
         run: |
           runtime/tests/test-compose-project-name-portability.sh
