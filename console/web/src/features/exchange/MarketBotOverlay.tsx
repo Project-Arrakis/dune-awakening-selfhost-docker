@@ -4,6 +4,7 @@ import {
   marketBotApi,
   type MarketAugmentPricing,
   type MarketBotStatus,
+  type MarketCategoryMultipliers,
   type MarketExchange,
   type MarketPriceBasis
 } from "../../api/marketBot";
@@ -22,6 +23,53 @@ type MarketBotOverlayProps = {
 
 function errorText(error: unknown) {
   return error instanceof Error ? error.message : String(error);
+}
+
+// Per-category price multipliers (1-5x) layered on top of the base price
+// multiplier. Rendered identically in the buyback and reseed sections; the
+// aria labels are prefixed with the section so both stay addressable.
+const CATEGORY_MULTIPLIER_FIELDS: Array<{ key: keyof MarketCategoryMultipliers; label: string }> = [
+  { key: "augmentMultiplier", label: "Augment multiplier" },
+  { key: "rankedArmorMultiplier", label: "Ranked armor multiplier" },
+  { key: "rankedWeaponMultiplier", label: "Ranked weapon multiplier" }
+];
+
+function defaultCategoryMultipliers(): MarketCategoryMultipliers {
+  return { augmentMultiplier: 1, rankedArmorMultiplier: 1, rankedWeaponMultiplier: 1 };
+}
+
+function categoryMultipliersFrom(schedule: Partial<MarketCategoryMultipliers>): MarketCategoryMultipliers {
+  return {
+    augmentMultiplier: schedule.augmentMultiplier ?? 1,
+    rankedArmorMultiplier: schedule.rankedArmorMultiplier ?? 1,
+    rankedWeaponMultiplier: schedule.rankedWeaponMultiplier ?? 1
+  };
+}
+
+type CategoryMultiplierInputsProps = {
+  section: "Buyback" | "Seed";
+  values: MarketCategoryMultipliers;
+  onChange: (next: MarketCategoryMultipliers) => void;
+};
+
+function CategoryMultiplierInputs({ section, values, onChange }: CategoryMultiplierInputsProps) {
+  return (
+    <>
+      {CATEGORY_MULTIPLIER_FIELDS.map(({ key, label }) => (
+        <label key={key}>{label}
+          <input
+            aria-label={`${section} ${label.toLowerCase()}`}
+            type="number"
+            min={1}
+            max={5}
+            step={0.5}
+            value={values[key]}
+            onChange={(event) => onChange({ ...values, [key]: Number(event.target.value) })}
+          />
+        </label>
+      ))}
+    </>
+  );
 }
 
 function exchangeLabel(exchange: MarketExchange) {
@@ -51,12 +99,14 @@ export function MarketBotOverlay({ onClose, onError, confirmAction }: MarketBotO
   const [buybackEnabled, setBuybackEnabled] = useState(false);
   const [buybackInterval, setBuybackInterval] = useState(30);
   const [buybackMultiplier, setBuybackMultiplier] = useState(5);
+  const [buybackCategoryMultipliers, setBuybackCategoryMultipliers] = useState(defaultCategoryMultipliers);
   const [buybackPercent, setBuybackPercent] = useState(60);
   const [buybackBasis, setBuybackBasis] = useState<MarketPriceBasis>("seeded");
   const [maxBuys, setMaxBuys] = useState(500);
   const [seedEnabled, setSeedEnabled] = useState(false);
   const [seedInterval, setSeedInterval] = useState(15);
   const [seedMultiplier, setSeedMultiplier] = useState(5);
+  const [seedCategoryMultipliers, setSeedCategoryMultipliers] = useState(defaultCategoryMultipliers);
   const [augmentPricing, setAugmentPricing] = useState<MarketAugmentPricing>("discounted");
 
   function applyStatus(next: MarketBotStatus, options: { populateForm?: boolean } = {}) {
@@ -65,12 +115,14 @@ export function MarketBotOverlay({ onClose, onError, confirmAction }: MarketBotO
       setBuybackEnabled(Boolean(next.buyback.enabled));
       setBuybackInterval(next.buyback.intervalMinutes);
       setBuybackMultiplier(next.buyback.priceMultiplier);
+      setBuybackCategoryMultipliers(categoryMultipliersFrom(next.buyback));
       setBuybackPercent(next.buyback.buybackPercent);
       setBuybackBasis(next.buyback.buybackPriceBasis || "seeded");
       setMaxBuys(next.buyback.maxBuys);
       setSeedEnabled(Boolean(next.seed.enabled));
       setSeedInterval(next.seed.intervalMinutes);
       setSeedMultiplier(next.seed.priceMultiplier);
+      setSeedCategoryMultipliers(categoryMultipliersFrom(next.seed));
       setAugmentPricing(next.seed.augmentPricing === "original" ? "original" : "discounted");
       setExchangeId((current) => current || next.buyback.exchangeId || next.seed.exchangeId || "");
     }
@@ -122,6 +174,7 @@ export function MarketBotOverlay({ onClose, onError, confirmAction }: MarketBotO
         enabled: buybackEnabled,
         intervalMinutes: buybackInterval,
         priceMultiplier: buybackMultiplier,
+        ...buybackCategoryMultipliers,
         buybackPercent,
         buybackPriceBasis: buybackBasis,
         maxBuys,
@@ -139,6 +192,7 @@ export function MarketBotOverlay({ onClose, onError, confirmAction }: MarketBotO
         enabled: seedEnabled,
         intervalMinutes: seedInterval,
         priceMultiplier: seedMultiplier,
+        ...seedCategoryMultipliers,
         augmentPricing,
         ...(exchangeId ? { exchangeId } : {})
       });
@@ -153,6 +207,7 @@ export function MarketBotOverlay({ onClose, onError, confirmAction }: MarketBotO
       const result = await marketBotApi.probeBuyback({
         ...(exchangeId ? { exchangeId } : {}),
         priceMultiplier: buybackMultiplier,
+        ...buybackCategoryMultipliers,
         buybackPercent,
         maxBuys
       });
@@ -226,7 +281,7 @@ export function MarketBotOverlay({ onClose, onError, confirmAction }: MarketBotO
 
             <div className="market-bot-section">
               <strong>Buyback sweeps</strong>
-              <p className="action-help-note">Buys player sell listings whose per-unit ask is at or below the buyback percentage of the price basis (seeded NPC price at that grade, or live market average / lowest with seeded fallback). Whole listed stacks are bought in one pass. Every run probes eligibility read-only first and only backs up + sweeps when something qualifies.</p>
+              <p className="action-help-note">Buys player sell listings whose per-unit ask is at or below the buyback percentage of the price basis (seeded NPC price at that grade, or live market average / lowest with seeded fallback). Whole listed stacks are bought in one pass. Every run probes eligibility read-only first and only backs up + sweeps when something qualifies. The category multipliers reprice the seeded basis the same way the reseed does — keep them matched with the reseed section so the buyback percentage tracks the real market prices.</p>
               <div className="market-bot-grid">
                 <label>Interval (minutes)
                   <input aria-label="Buyback interval minutes" type="number" min={10} max={1440} value={buybackInterval} onChange={(event) => setBuybackInterval(Number(event.target.value))} />
@@ -234,6 +289,7 @@ export function MarketBotOverlay({ onClose, onError, confirmAction }: MarketBotO
                 <label>Price multiplier
                   <input aria-label="Buyback price multiplier" type="number" min={1} max={100} value={buybackMultiplier} onChange={(event) => setBuybackMultiplier(Number(event.target.value))} />
                 </label>
+                <CategoryMultiplierInputs section="Buyback" values={buybackCategoryMultipliers} onChange={setBuybackCategoryMultipliers} />
                 <label>Buyback percent
                   <input aria-label="Buyback percent" type="number" min={1} max={100} value={buybackPercent} onChange={(event) => setBuybackPercent(Number(event.target.value))} />
                 </label>
@@ -263,6 +319,7 @@ export function MarketBotOverlay({ onClose, onError, confirmAction }: MarketBotO
             <div className="market-bot-section">
               <strong>Market reseed</strong>
               <p className="action-help-note">Replaces the bot's own NPC sell listings from the seed plan at the chosen price multiplier. Every run is backup, clear bot listings on that exchange, seed. Player listings are never touched. Augment items always seed as bottom-of-range rolls; the augment pricing option chooses whether they undercut their schematics (half the pattern's price) or keep the plan's original prices.</p>
+              <p className="action-help-note">Category multipliers (1-5x, 1 = no change) additionally scale the seeded prices of augments &amp; augment schematics, ranked (grade 1-5) armor including stillsuits, and ranked weapons — on top of the base price multiplier. Grade-0 stock and everything else keeps the base multiplier alone.</p>
               <div className="market-bot-grid">
                 <label>Interval (minutes)
                   <input aria-label="Seed interval minutes" type="number" min={10} max={1440} value={seedInterval} onChange={(event) => setSeedInterval(Number(event.target.value))} />
@@ -270,6 +327,7 @@ export function MarketBotOverlay({ onClose, onError, confirmAction }: MarketBotO
                 <label>Price multiplier
                   <input aria-label="Seed price multiplier" type="number" min={1} max={100} value={seedMultiplier} onChange={(event) => setSeedMultiplier(Number(event.target.value))} />
                 </label>
+                <CategoryMultiplierInputs section="Seed" values={seedCategoryMultipliers} onChange={setSeedCategoryMultipliers} />
                 <label>Augment pricing
                   <select aria-label="Augment pricing" value={augmentPricing} onChange={(event) => setAugmentPricing(event.target.value as MarketAugmentPricing)}>
                     <option value="discounted">Cheaper than patterns</option>

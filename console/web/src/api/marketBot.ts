@@ -11,7 +11,16 @@ export type MarketPriceBasis = "seeded" | "average" | "lowest";
 // price, "original" keeps the seed plan's own augment item prices.
 export type MarketAugmentPricing = "discounted" | "original";
 
-export type MarketBuybackSchedule = {
+// Per-category price multipliers (1-5x, 1 = no change) layered on top of the
+// schedule's base priceMultiplier: augments & augment schematics, ranked
+// (grade 1-5) armor, and ranked weapons.
+export type MarketCategoryMultipliers = {
+  augmentMultiplier: number;
+  rankedArmorMultiplier: number;
+  rankedWeaponMultiplier: number;
+};
+
+export type MarketBuybackSchedule = MarketCategoryMultipliers & {
   enabled: boolean;
   intervalMinutes: number;
   exchangeId: string;
@@ -26,7 +35,7 @@ export type MarketBuybackSchedule = {
   nextRunAt: string;
 };
 
-export type MarketSeedSchedule = {
+export type MarketSeedSchedule = MarketCategoryMultipliers & {
   enabled: boolean;
   intervalMinutes: number;
   exchangeId: string;
@@ -56,7 +65,7 @@ export type MarketExchange = {
   playerOrders: number;
 };
 
-export type MarketProbeResult = {
+export type MarketProbeResult = MarketCategoryMultipliers & {
   eligible: number;
   exchangeId: string;
   priceMultiplier: number;
@@ -81,7 +90,7 @@ export type MarketRunResult = {
 export const marketBotApi = {
   status: () => api<MarketBotStatus>("/api/exchange/market"),
   exchanges: () => api<{ rows: MarketExchange[]; capabilities: { exchangeMarket?: boolean } }>("/api/exchange/market/exchanges"),
-  probeBuyback: (overrides: Partial<{ exchangeId: string; priceMultiplier: number; buybackPercent: number; maxBuys: number }> = {}) =>
+  probeBuyback: (overrides: Partial<{ exchangeId: string; priceMultiplier: number; buybackPercent: number; maxBuys: number } & MarketCategoryMultipliers> = {}) =>
     post<MarketProbeResult>("/api/exchange/market/buyback/probe", overrides),
   saveBuybackSchedule: (schedule: Partial<MarketBuybackSchedule>) => post<MarketBuybackSchedule>("/api/exchange/market/buyback/schedule", schedule),
   saveSeedSchedule: (schedule: Partial<MarketSeedSchedule>) => post<MarketSeedSchedule>("/api/exchange/market/seed/schedule", schedule),
