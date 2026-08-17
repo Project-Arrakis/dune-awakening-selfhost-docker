@@ -1,4 +1,4 @@
-import { assertIdentifier, intParam, isReadOnlySql, quoteIdentifier, quoteQualified, rowsResult } from "./db.js";
+import { assertIdentifier, bigintParam, intParam, isReadOnlySql, quoteIdentifier, quoteQualified, rowsResult } from "./db.js";
 import { getBridgeRequestSummary } from "./audit.js";
 import { resolvePorts } from "./config.js";
 import { existsSync, readFileSync } from "node:fs";
@@ -7922,11 +7922,11 @@ export async function baseContainerSlots(db, baseId, placeableId) {
 // actor and picks one arbitrarily.
 //
 // There is no live-sync path for inventory (no pg_notify channel, no triggers
-// on dune.items) and, worse, a running map server periodically flushes its
-// in-memory copy of a base back to Postgres -- so a delete against a live map
-// can be resurrected on the next autosave. The write still happens immediately;
-// the caller is responsible for surfacing that risk, and baseRefillTarget is
-// what tells it whether this base's map is currently running.
+// on dune.items), so the API route refuses this operation unless it can verify
+// that the owning map is safely down. This lower layer also restricts deletion
+// to plain storage: crafting/refining inventories can have active jobs that
+// reference these rows, and deleting an allocated ingredient can corrupt that
+// job even while the map is stopped.
 export async function deleteBaseContainerItem(db, baseId, placeableId, itemId, { count = null } = {}) {
   await requireCapability(
     await supportsBaseContainerItemDelete(db),
@@ -7934,7 +7934,7 @@ export async function deleteBaseContainerItem(db, baseId, placeableId, itemId, {
   );
   const target = intParam(baseId, "base id", 1);
   const container = intParam(placeableId, "container id", 1);
-  const safeItemId = intParam(itemId, "item id", 1);
+  const safeItemId = bigintParam(itemId, "item id");
   const requestedCount = count === null || count === undefined ? null : intParam(count, "count", 1);
   const [groups, buildingTypes, typeNames] = baseInventoryTypeParams();
 
@@ -7976,6 +7976,9 @@ export async function deleteBaseContainerItem(db, baseId, placeableId, itemId, {
 
     const item = found.rows[0];
     if (!item) throw new Error("That item was not found in a storage container at the selected base.");
+    if (item.group_key !== "storage") {
+      throw new Error("Items can only be deleted from Storage containers. Crafting and Refining contents are read-only to protect active jobs.");
+    }
 
     const stackSize = Number(item.stack_size) || 0;
     const inventoryId = item.inventory_id;

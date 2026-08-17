@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { assertIdentifier, discoverDbConfig, isReadOnlySql, quoteQualified, redactDbError, rowsResult } from "../src/db.js";
+import { assertIdentifier, bigintParam, discoverDbConfig, isReadOnlySql, quoteQualified, redactDbError, rowsResult } from "../src/db.js";
 import {
   _resetRefillPartitionDwellForTests,
   baseRefillTarget,
@@ -21,6 +21,13 @@ import { addCurrency, addFactionReputation, addGuildMember, addIntel, addonLeade
 
 beforeEach(() => {
   _resetPlayerTargetCacheForTests();
+});
+
+test("bigint parameters preserve identifiers beyond JavaScript's safe integer range", () => {
+  assert.equal(bigintParam("9007199254740993", "item id"), "9007199254740993");
+  assert.equal(bigintParam("9223372036854775807", "item id"), "9223372036854775807");
+  assert.throws(() => bigintParam("9223372036854775808", "item id"), /Invalid item id/);
+  assert.throws(() => bigintParam("1.5", "item id"), /Invalid item id/);
 });
 
 test("discovers RedBlink Postgres defaults and env overrides", () => {
@@ -3511,8 +3518,8 @@ test("container item delete verifies base ownership before calling dune.delete_i
   // item id alone must never be enough to reach a row.
   assert.equal(ownership.values[0], 16836);
   assert.equal(ownership.values[4], 42);
-  assert.equal(ownership.values[5], 99);
-  assert.ok(calls.some((call) => call.text.includes("dune.delete_item($1::bigint)") && call.values[0] === 99));
+  assert.equal(ownership.values[5], "99");
+  assert.ok(calls.some((call) => call.text.includes("dune.delete_item($1::bigint)") && call.values[0] === "99"));
 });
 
 test("container item delete locks the item and its inventory rather than the CTE", async () => {
@@ -3545,6 +3552,19 @@ test("container item delete rejects an item that is not in a container at the se
   assert.equal(calls.some((call) => call.text.includes("dune.delete_inventory_item")), false);
 });
 
+test("container item delete keeps crafting and refining inventories read-only", async () => {
+  const calls = [];
+  const db = fakeContainerDeleteDb(calls, {
+    itemRows: [{ ...CONTAINER_ITEM_ROW, group_key: "refining", type_name: "Small Ore Refinery" }]
+  });
+  await assert.rejects(
+    () => deleteBaseContainerItem(db, 16836, 42, 99),
+    /only be deleted from Storage containers/
+  );
+  assert.equal(calls.some((call) => call.text.includes("dune.delete_item")), false);
+  assert.equal(calls.some((call) => call.text.includes("dune.delete_inventory_item")), false);
+});
+
 test("container item delete refuses a count larger than the stack instead of clearing the slot", async () => {
   const calls = [];
   const db = fakeContainerDeleteDb(calls, { itemRows: [CONTAINER_ITEM_ROW] });
@@ -3565,7 +3585,7 @@ test("container item delete routes a partial removal through dune.delete_invento
   assert.equal(result.partial, true);
   assert.equal(result.removed.count, 150);
   assert.equal(result.removed.remaining, 350);
-  assert.ok(calls.some((call) => call.text.includes("dune.delete_inventory_item") && call.values[0] === 99 && call.values[1] === 150));
+  assert.ok(calls.some((call) => call.text.includes("dune.delete_inventory_item") && call.values[0] === "99" && call.values[1] === 150));
   // A partial removal must not also fire the whole-slot delete.
   assert.equal(calls.some((call) => call.text.includes("dune.delete_item($1::bigint)")), false);
 });

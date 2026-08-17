@@ -207,6 +207,12 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
     && Number.isInteger(amountNumber)
     && amountNumber >= 1
     && amountNumber <= (selectedSlot?.quantity ?? 0);
+  const deleteAllowed = slots?.group === "storage" && slots?.deleteSafety?.safe === true;
+  const deleteUnavailableReason = slots?.found && !deleteAllowed
+    ? slots.group !== "storage"
+      ? "Item deletion is available only for Storage containers. Crafting and Refining contents are read-only to protect active jobs."
+      : slots.deleteSafety?.reason || "Item deletion is unavailable for this container."
+    : "";
 
   // A slot that vanished (deleted, or moved by a player between refetches)
   // must not leave a stale strip pointing at an id the server no longer has.
@@ -269,7 +275,13 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
     setShowAllItems(false);
   }
 
-  async function deleteSlot(slot: BaseInventorySlot, amount: number, containerName: string, group?: BaseInventoryGroupKey) {
+  async function deleteSlot(slot: BaseInventorySlot, amount: number, containerName: string) {
+    if (!deleteAllowed) {
+      const text = deleteUnavailableReason || "Item deletion is unavailable for this container.";
+      setDeleteError(text);
+      onError(text);
+      return;
+    }
     const whole = amount >= slot.quantity;
     const confirmed = await confirmAction(
       whole ? "Delete this item from the container?" : "Remove part of this stack?",
@@ -277,11 +289,6 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
         title: whole ? "Delete Stored Item" : "Remove From Stack",
         confirmLabel: whole ? "Delete" : "Remove",
         danger: true,
-        // Refineries and fabricators hold live crafting state -- the game's own
-        // crafting routine consumes allocated ingredients from these same rows.
-        warning: group && group !== "storage"
-          ? "This container feeds crafting. Removing items a recipe has already reserved may leave that job referencing an item that no longer exists."
-          : undefined,
         details: [
           { label: "Base", value: baseName },
           { label: "Container", value: containerName, tone: "accent" },
@@ -307,15 +314,7 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
       if (!response.supported || !result?.ok) {
         throw new Error(response.error || response.reason || "The item could not be deleted.");
       }
-      // Stated per delete rather than once up front: whether the change can be
-      // undone by the map server depends on that map's state right now, and
-      // `known: false` means the console cannot tell -- never say "safe".
-      const live = result.live;
-      setDeleteNotice(live.known
-        ? live.running
-          ? `${result.message} ${live.map || "This base's map"}${live.partitionId ? ` · Partition ${live.partitionId}` : ""} is running, so the server may restore it on its next autosave. Restart that map to make the change stick.`
-          : `${result.message} That map is down, so the change will stick.`
-        : `${result.message} The console cannot tell whether this base's map is running, so it may be restored on the next autosave.`);
+      setDeleteNotice(result.message);
       // Refetch both: the slot list for this container, and the tab totals,
       // group counts and rollup, all of which the delete just invalidated.
       await Promise.all([loadSlots(contentsFor), load()]);
@@ -357,13 +356,11 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
         {/* Stated before the data rather than after it: it governs how to read
             everything below, and at the foot of a 27-card list it was never
             seen. */}
-        {/* The read-only caveat is gone but the sync caveat is not: these are
-            database rows, and a running map server keeps its own copy. The
-            per-delete result says whether THIS base's map is running; this
-            line only sets the expectation. */}
+        {/* These are database rows and a running map keeps its own copy, so
+            destructive controls remain disabled until the backend verifies a
+            safe stopped-map window. */}
         <p className="bases-inventory-note muted">
-          A database snapshot, not a live view. Items can be deleted from a container's contents,
-          but a running map server may restore a deleted item on its next autosave.
+          A database snapshot, not a live view. Stored items can be deleted only while their map is safely stopped.
         </p>
 
         {/* summary-stats/summary-stat are the app's stat tiles, shared with
@@ -613,6 +610,9 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
           </p>}
           {deleteNotice && <p className="bases-inventory-delete-notice" role="status">{deleteNotice}</p>}
           {deleteError && <p className="bases-inventory-amount-error" role="alert">{deleteError}</p>}
+          {deleteUnavailableReason && <p className="bases-inventory-amount-error" role="status">
+            {deleteUnavailableReason}
+          </p>}
 
           {!slotsLoading && !slotsError && slots && slots.found === false && <p className="muted" role="status">
             {slots.reason || "That container is no longer at this base."}
@@ -689,8 +689,8 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
                         className="icon-toggle-button danger"
                         title="Delete this stack"
                         aria-label={`Delete ${slot.name} from slot ${slot.positionIndex ?? "unknown"}`}
-                        disabled={deletingItemId === slot.itemId}
-                        onClick={() => void deleteSlot(slot, slot.quantity, containerLabel(openContainer), slots.group)}
+                        disabled={!deleteAllowed || deletingItemId === slot.itemId}
+                        onClick={() => void deleteSlot(slot, slot.quantity, containerLabel(openContainer))}
                       ><Trash2 size={15} /></button>
                     </div>
                   ))}
@@ -726,8 +726,8 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
             </label>
             <button
               className="danger"
-              disabled={!amountValid || deletingItemId === selectedSlot.itemId}
-              onClick={() => void deleteSlot(selectedSlot, Number(amount), containerLabel(openContainer), slots?.group)}
+              disabled={!deleteAllowed || !amountValid || deletingItemId === selectedSlot.itemId}
+              onClick={() => void deleteSlot(selectedSlot, Number(amount), containerLabel(openContainer))}
             >{Number(amount) >= selectedSlot.quantity ? "Delete stack" : `Remove ${Number(amount).toLocaleString()}`}</button>
           </div>}
           {selectedSlot && !amountValid && <p className="bases-inventory-amount-error" role="alert">

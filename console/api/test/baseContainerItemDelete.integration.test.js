@@ -231,6 +231,21 @@ test("real PostgreSQL: deleting a whole slot removes that row and nothing else",
   });
 });
 
+test("real PostgreSQL: deleting preserves a bigint item id beyond Number.MAX_SAFE_INTEGER", async (t) => {
+  await withDatabase(t, async (pool) => {
+    const db = pgTransactionalDb(pool);
+    const largeId = "9007199254740993";
+    await pool.query(`
+      insert into dune.items (id, inventory_id, template_id, stack_size, position_index)
+      overriding system value values ($1, $2, 'SpiceMelange', 12, 4)
+    `, [largeId, CHEST * 10]);
+
+    const result = await deleteBaseContainerItem(db, BUILDING_ACTOR, CHEST, largeId);
+    assert.equal(result.removed.itemId, largeId);
+    assert.equal((await pool.query("select id from dune.items where id = $1", [largeId])).rowCount, 0);
+  });
+});
+
 test("real PostgreSQL: an item in another base's container cannot be deleted through this base", async (t) => {
   await withDatabase(t, async (pool) => {
     const db = pgTransactionalDb(pool);

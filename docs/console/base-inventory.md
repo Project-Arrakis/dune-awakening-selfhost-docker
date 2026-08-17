@@ -102,10 +102,10 @@ The shipped `owner`/`admin` policies grant `bases:*`, so default access is uncha
 Both of the usual base preconditions apply: a base with a queued delete, or one picked up via the game's
 base-backup tool, rejects this with `409`.
 
-## Why writes are immediate, and what that costs
+## Why deletion requires a stopped map
 
-Unlike a base delete or a generator refill, an item delete is **not** queued behind the map going down. It
-is written immediately, and the response says whether that was safe.
+An item delete is **not** queued: a specific inventory row may move, merge, or disappear before a deferred
+operation runs. Instead, the route refuses the write until it can verify that the owning map is safely down.
 
 The reason a queue exists at all still holds here:
 
@@ -113,24 +113,18 @@ The reason a queue exists at all still holds here:
 - There are zero triggers on `dune.items`, `dune.inventories`, `dune.buildings`, `dune.placeables`.
 - The RMQ command bus has no per-item edit or delete. `AddItemToInventory` addresses items by *template name*; every id here is a row id.
 
-So a delete cannot reach a running map without a relog or a map restart, and — the sharper problem — a
-running map server periodically flushes its own in-memory copy of a base back to Postgres, so the deleted
-row can be **resurrected** on the next autosave. That is the same race
-[base deletion](base-deletion.md#why-deletes-are-queued-for-a-live-map) queues to avoid.
+So a running map can neither miss the delete nor resurrect the row on its next autosave. The container GET
+returns `deleteSafety`; the overlay disables deletion and explains why when the map is running or its state
+cannot be verified. The DELETE route then repeats the check immediately before changing the database, so a
+stale or hand-built request cannot bypass the UI.
 
-Rather than queue, the route resolves `baseRefillTarget()` after the write and returns `live`:
+Deletion is limited to plain **Storage** containers. Refinery and fabricator inventories are visible but
+read-only because the game's crafting state can reference their item rows; removing a reserved ingredient
+can leave an active job pointing at an item that no longer exists.
 
-| `live` | What the overlay says |
-|---|---|
-| `known: true, running: false` | Deleted; that map is down, so the change will stick. |
-| `known: true, running: true` | Deleted, but the named map is running and may restore it on its next autosave. |
-| `known: false` | Deleted; the console **cannot tell** whether the map is running. |
-
-`known: false` is the case worth care: `baseRefillTarget` reports `writeSafeNow: true` when it has no
-`world_partition` to check against, meaning "cannot tell" rather than "safe". It is never rendered as safe.
-
-The queue machinery remains available if immediate writes prove too surprising in practice; the decision
-was deliberate, not a limitation.
+Item identifiers remain decimal strings from the URL through the PostgreSQL query. They are `bigint` values,
+and converting one to JavaScript `Number` could round an id above `Number.MAX_SAFE_INTEGER` into a different
+row — unacceptable for a destructive operation.
 
 ## Response shape
 
