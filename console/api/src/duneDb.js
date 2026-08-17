@@ -7979,9 +7979,14 @@ export async function baseContainerSlots(db, baseId, placeableId) {
   const [groups, buildingTypes, typeNames] = baseInventoryTypeParams();
 
   // The claim-resolution CTEs are baseInventory's, narrowed to one placeable.
-  // Keeping the inventory_types join and is_hologram/max_item_count filters is
-  // load-bearing, not tidiness: they are what stops this reaching generator and
-  // windtrap fuel, which the Power and Water tabs own.
+  // The inventory_types join is load-bearing, not tidiness: it is what keeps
+  // this off generator and windtrap fuel, which the Power and Water tabs own
+  // -- both carry max_item_count = 5, so the >= 0 filter admits them same as
+  // any storage container, and only the allowlist join excludes them.
+  // is_hologram/max_item_count >= 0 are kept for the other reason baseInventory
+  // has them: a hologram preview and a refinery's second (uncapped) inventory
+  // are not real storage, so both would otherwise double-count or divide by a
+  // negative capacity.
   const result = await db.query(`
     with requested_claims as (
       select distinct b.id, afe.actor_id
@@ -8102,12 +8107,45 @@ export async function deleteBaseContainerItem(db, baseId, placeableId, itemId, {
   const requestedCount = count === null || count === undefined ? null : intParam(count, "count", 1);
   const [groups, buildingTypes, typeNames] = baseInventoryTypeParams();
 
+  // Column-probed the same way baseContainerSlots reads them: a missing
+  // column is a parse-time error, not a null, so a schema without these would
+  // fail a delete that used to work. They exist only to enrich the audit
+  // record (below) with what was actually destroyed -- quality and durability
+  // in particular, since without them a destroyed pristine legendary logs
+  // identically to a broken common of the same template.
+  const itemColumns = await columnsFor(db, "items");
+  const hasPositionIndex = itemColumns.has("position_index");
+  const hasStats = itemColumns.has("stats");
+  const stateSelect = [
+    hasPositionIndex ? "i.position_index" : "null::bigint as position_index",
+    itemColumns.has("quality_level") ? "i.quality_level" : "0::bigint as quality_level",
+    hasStats
+      ? "coalesce((i.stats->'FItemStackAndDurabilityStats'->1->>'CurrentDurability'), null) as current_durability"
+      : "null::text as current_durability",
+    hasStats
+      ? `coalesce(
+             nullif((i.stats->'FItemStackAndDurabilityStats'->1->>'MaxDurability')::numeric, 0),
+             nullif((i.stats->'FItemStackAndDurabilityStats'->1->>'DecayedMaxDurability')::numeric, 0),
+             null
+           ) as max_durability`
+      : "null::numeric as max_durability"
+  ].join(",\n           ");
+
   return db.transaction(async (tx) => {
+    // Same reason mutateBasePermissions and deleteBaseCompletely set it: the
+    // shipped procedures reference their tables unqualified and carry no
+    // `SET search_path` of their own (pg_proc.proconfig is null for both
+    // dune.delete_item and dune.delete_inventory_item), so they resolve only
+    // because the console connects as the `dune` role. Against any other role
+    // they raise `relation "items" does not exist`, which aborts the
+    // transaction before the raw-delete fallback below can run.
+    await tx.query("set local search_path to dune, public");
+
     // for update OF i, inv -- not a bare `for update`. Postgres cannot lock a
     // CTE reference, so naming the real relations is required, not stylistic.
-    // inv is locked as well as i because locking only the item row locks
-    // nothing when the row is already gone; the inventory row is the parent
-    // guaranteed to exist for as long as the container does.
+    // Note inv is reached by an inner join through i, so when the item row is
+    // already gone neither relation is locked -- the zero-row result falls to
+    // the "not found" throw below, which is the intended outcome.
     const found = await tx.query(`
       with requested_claims as (
         select distinct b.id, afe.actor_id
@@ -8131,7 +8169,8 @@ export async function deleteBaseContainerItem(db, baseId, placeableId, itemId, {
         where p.is_hologram = false and p.id = $5
       )
       select i.id::text as item_id, i.template_id, i.stack_size, i.inventory_id,
-             c.placeable_id::text as placeable_id, c.group_key, c.type_name
+             c.placeable_id::text as placeable_id, c.group_key, c.type_name,
+             ${stateSelect}
       from containers c
       join dune.items i on i.inventory_id = c.inventory_id
       join dune.inventories inv on inv.id = i.inventory_id
@@ -8147,6 +8186,17 @@ export async function deleteBaseContainerItem(db, baseId, placeableId, itemId, {
     const stackSize = Number(item.stack_size) || 0;
     const inventoryId = item.inventory_id;
     const label = item.template_id || "Item";
+    // Captured before the delete, since the row -- and the state that came
+    // with it -- is gone once the delete succeeds.
+    const destroyedState = {
+      positionIndex: item.position_index === null || item.position_index === undefined
+        ? null : Number(item.position_index),
+      qualityLevel: Number(item.quality_level) || 0,
+      currentDurability: item.current_durability === null || item.current_durability === undefined
+        ? null : Number(item.current_durability),
+      maxDurability: item.max_durability === null || item.max_durability === undefined
+        ? null : Number(item.max_durability)
+    };
 
     // An explicit count larger than the stack is refused rather than rounded
     // down to "delete it all". The two are not the same request, and the gap
@@ -8188,7 +8238,7 @@ export async function deleteBaseContainerItem(db, baseId, placeableId, itemId, {
         typeName: item.type_name,
         group: item.group_key,
         partial: true,
-        removed: { itemId: item.item_id, templateId: item.template_id, count: requestedCount, remaining },
+        removed: { itemId: item.item_id, templateId: item.template_id, count: requestedCount, remaining, ...destroyedState },
         message: `Removed ${requestedCount} of ${label} from the database, leaving ${remaining}.`
       };
     }
@@ -8212,7 +8262,7 @@ export async function deleteBaseContainerItem(db, baseId, placeableId, itemId, {
       typeName: item.type_name,
       group: item.group_key,
       partial: false,
-      removed: { itemId: item.item_id, templateId: item.template_id, count: stackSize, remaining: 0 },
+      removed: { itemId: item.item_id, templateId: item.template_id, count: stackSize, remaining: 0, ...destroyedState },
       message: `${label} was deleted from the database.`
     };
   });
