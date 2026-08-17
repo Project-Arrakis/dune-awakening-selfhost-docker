@@ -166,6 +166,50 @@ async function itemAt(pool, inventoryId, positionIndex) {
   return rows.find((row) => Number(row.position_index) === positionIndex);
 }
 
+// Confirms the delete's ownership query is genuinely blocked on the held row
+// lock via Postgres's own wait-state, instead of inferring "still waiting"
+// from a fixed timer. `requested_claims` is the CTE name unique to
+// deleteBaseContainerItem's ownership query -- baseContainerSlots names it
+// too, but that query never takes FOR UPDATE, so it can't be the blocked one.
+// A timer proves nothing about WHY a promise hasn't settled, and this test
+// used to be the only one in the file that held two connections open for a
+// fixed 1200ms regardless of how quickly the block was real -- the most
+// likely reason it was the one seen to hit the teardown race documented in
+// pgIntegrationDb.js's header (see retryOnTransientDisconnect below). Polling
+// removes that fixed hold time: the common case resolves in well under
+// 100ms, same as every other test in this file.
+async function waitUntilBlockedOnLock(pool, { timeoutMs = 3000, pollMs = 50 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const { rows } = await pool.query(`
+      select 1 from pg_stat_activity
+      where datname = current_database()
+        and wait_event_type = 'Lock'
+        and query ilike '%requested_claims%'
+      limit 1`);
+    if (rows.length) return true;
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
+  }
+  return false;
+}
+
+// pgIntegrationDb.js's own header documents a confirmed, external race: its
+// teardown issues a best-effort pg_terminate_backend against any connection
+// its pool.end() missed, and under load that can hit a connection a test
+// still needed, surfacing as this exact server-generated error text. A
+// single retry re-runs the WHOLE test body against a brand-new isolated
+// database and a brand-new lock scenario, so it cannot mask a real locking
+// bug -- if deleteBaseContainerItem's locking were actually broken, the
+// retry would fail identically, not intermittently.
+async function retryOnTransientDisconnect(fn) {
+  try {
+    return await fn();
+  } catch (error) {
+    if (!/terminating connection due to administrator command/.test(error?.message || "")) throw error;
+    return await fn();
+  }
+}
+
 test("real PostgreSQL: baseContainerSlots returns one entry per slot, keeping two stacks of one template apart", async (t) => {
   await withDatabase(t, async (pool) => {
     const db = pgTransactionalDb(pool);
@@ -308,7 +352,7 @@ test("real PostgreSQL: a count above the stack is refused and leaves the stack u
 });
 
 test("real PostgreSQL: the delete waits on a row another transaction holds locked", async (t) => {
-  await withDatabase(t, async (pool) => {
+  await retryOnTransientDisconnect(() => withDatabase(t, async (pool) => {
     const db = pgTransactionalDb(pool);
     const target = await itemAt(pool, CHEST * 10, 0);
     const holder = await pool.connect();
@@ -319,8 +363,8 @@ test("real PostgreSQL: the delete waits on a row another transaction holds locke
       await holder.query("select id from dune.items where id = $1 for update", [target.id]);
 
       // The delete must block rather than racing the other transaction.
-      // Racing it against a timer shows that without needing a
-      // statement_timeout.
+      // waitUntilBlockedOnLock confirms that via Postgres's own wait-state
+      // rather than a fixed timer.
       //
       // What this does and does not prove, checked by removing the clause and
       // re-running: it does NOT isolate `for update of i, inv` specifically,
@@ -332,11 +376,9 @@ test("real PostgreSQL: the delete waits on a row another transaction holds locke
       const deleting = deleteBaseContainerItem(db, BUILDING_ACTOR, CHEST, target.id)
         .then((value) => { settled = true; return value; },
               (error) => { settled = true; throw error; });
-      const raced = await Promise.race([
-        deleting.then(() => "completed", () => "failed"),
-        new Promise((resolve) => setTimeout(() => resolve("still waiting"), 1200))
-      ]);
-      assert.equal(raced, "still waiting", "the delete must wait on the locked row");
+
+      const blocked = await waitUntilBlockedOnLock(pool);
+      assert.equal(blocked, true, "the delete must be genuinely blocked on the locked row, not just slow");
       assert.equal(settled, false);
       assert.equal(Number((await itemAt(pool, CHEST * 10, 0)).stack_size), 500, "nothing removed while blocked");
 
@@ -350,7 +392,7 @@ test("real PostgreSQL: the delete waits on a row another transaction holds locke
       await holder.query("rollback").catch(() => {});
       holder.release();
     }
-  });
+  }));
 });
 
 test("real PostgreSQL: a failed post-write verification rolls the whole delete back", async (t) => {
