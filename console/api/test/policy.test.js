@@ -119,3 +119,27 @@ test("policy updates validate documents and preserve owner recovery access", () 
   assert.equal(setPolicies({ owner: { tier: "owner", statements: [{ Effect: "Maybe", Action: "*" }] } }).ok, false);
   assert.equal(setPolicies({ owner: { tier: "owner", statements: [{ Effect: "Deny", Action: "settings:write" }] } }).ok, false);
 });
+
+// secrets:read (Stage 2 Secrets Status Panel, issue #318/#320) is
+// deliberately admin+-only, matching the sensitivity precedent already
+// set for backups:*. This proves the boundary is actually enforced by
+// the policy engine, not just documented as excluded in a design doc --
+// per the Requirement 20 Layer 1 audit's own QA-3 finding, a design
+// stating a tier boundary is not the same as a test confirming it holds.
+// Uses an explicit policies object passed directly to evaluate() (not
+// setPolicies(), which mutates shared module state across tests) so this
+// test is self-contained and independent of execution order relative to
+// the other tests in this file, matching this exact admin-tier
+// statement list from policy.js's own DEFAULT_POLICIES.admin.
+test("secrets:read is granted to admin but denied to moderator, player, and observer by default", () => {
+  const policies = {
+    admin: { version: 1, tier: "admin", statements: [{ Effect: "Allow", Action: ["secrets:read", "backups:*"] }] },
+    moderator: { version: 1, tier: "moderator", statements: [{ Effect: "Allow", Action: ["server:read", "logs:*"] }] },
+    player: { version: 1, tier: "player", statements: [{ Effect: "Allow", Action: ["server:read"] }] },
+    observer: { version: 1, tier: "observer", statements: [{ Effect: "Allow", Action: ["server:read"] }] }
+  };
+  assert.equal(evaluate({ tier: "admin" }, "secrets:read", policies), true);
+  assert.equal(evaluate({ tier: "moderator" }, "secrets:read", policies), false);
+  assert.equal(evaluate({ tier: "player" }, "secrets:read", policies), false);
+  assert.equal(evaluate({ tier: "observer" }, "secrets:read", policies), false);
+});

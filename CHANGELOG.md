@@ -57,6 +57,31 @@ Keep a Changelog style, grouped by upstream base version, newest first.
 
 ### Added
 
+- Web console: read-only Secrets Status Panel (issue #318/#320), mounted
+  under the "Access Control" tab alongside the IAM Policy Editor. Shows
+  migration state (`backend not configured` / `not migrated` / `migrated` /
+  `migrated but unreadable-or-broken`) for the two secrets Stage 2 of the
+  age-based secrets library wires (`server-login-password-secret`,
+  `username-server-login-secret`) — mirrors the existing precedent set by
+  issue #276 for `dune db backup-system`: no secret value is ever exposed,
+  and no `migrate`/`verify`/`cleanup-legacy` action is exposed through the
+  browser (both remain deliberately CLI-only). Gated behind a new
+  `secrets:read` IAM action, admin+ tier only.
+  - **Operators with a customized, already-persisted IAM policy
+    (`runtime/generated/iam-policies.json`) must manually add
+    `"secrets:read"` to their admin tier's statement list to see this
+    panel** — the new default action does not retroactively merge into an
+    already-saved custom policy document (fails closed: a 403, not a
+    silent grant).
+  - **Requires two new, optional environment variables and a new,
+    optional read-only bind mount** if you want the panel to reflect real
+    migration state (rather than showing "Backend not configured"
+    unconditionally): set `DUNE_KEK_FILE` and `DUNE_AGE_IDENTITY_DIR` in
+    your `.env` (see the updated `.env.example` for the exact format).
+    Operators who haven't opted into Stage 2's age-based secrets at all
+    need no changes — the panel simply shows "Backend not configured" for
+    both secrets, matching the CLI's own zero-behavior-change-when-
+    unconfigured guarantee.
 - Two new addon-bridge test suites closing a real, previously-untested gap
   (#308): `console/api/test/bridgeActionContract.test.js` asserts every
   `ops.*` addon-bridge action's real handler function (called directly, no

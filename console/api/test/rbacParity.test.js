@@ -137,7 +137,7 @@ test("parity: all IAM actions reference known namespaces", () => {
     "setup", "server", "logs", "backups", "database", "updates", "settings",
     "players", "guilds", "bases", "maps", "sietches", "deepdesert", "admin",
     "landsraad", "addons", "carepackage", "storage", "blueprints", "vehicles",
-    "exchange"
+    "exchange", "secrets"
   ]);
   for (const action of Object.values(ROUTE_ACTIONS)) {
     if (typeof action !== "string") continue;
@@ -151,7 +151,7 @@ test("parity: all REGEX_ACTIONS entries reference known namespaces", () => {
     "setup", "server", "logs", "backups", "database", "updates", "settings",
     "players", "guilds", "bases", "maps", "sietches", "deepdesert", "admin",
     "landsraad", "addons", "carepackage", "storage", "blueprints", "vehicles",
-    "exchange"
+    "exchange", "secrets"
   ]);
   for (const [, action] of REGEX_ACTIONS) {
     if (typeof action !== "string") continue;

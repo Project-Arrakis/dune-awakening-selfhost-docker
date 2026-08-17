@@ -50,6 +50,7 @@ export const NAMESPACES = {
   BLUEPRINTS:  "blueprints",
   VEHICLES:    "vehicles",
   EXCHANGE:    "exchange",
+  SECRETS:     "secrets",
 };
 
 // ---- Actions: route → action mapping ----
@@ -113,6 +114,9 @@ export const ROUTE_ACTIONS = {
   "POST /api/backups/auto":                    "backups:write-config",
   "POST /api/backups/delete-all":              "backups:delete",
   "POST /api/backups/import-external":         "backups:import",
+
+  // --- Secrets (Stage 2, issue #318/#320 -- read-only migration-status display only) ---
+  "GET /api/secrets/status":                   "secrets:read",
 
   // --- Database ---
   "GET /api/database/status":                  "database:read",

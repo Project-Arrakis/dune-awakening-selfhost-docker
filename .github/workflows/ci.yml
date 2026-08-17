@@ -161,6 +161,7 @@ jobs:
           runtime/tests/test-secrets-lib.sh
           runtime/tests/test-secrets-aead-cross-language.sh
           runtime/tests/test-secrets-stage2.sh
+          runtime/tests/test-secrets-status-panel-parity.sh
 
   container-lifecycle:
     runs-on: ubuntu-latest

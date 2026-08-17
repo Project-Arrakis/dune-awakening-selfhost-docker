@@ -76,10 +76,52 @@ services:
       DISCORD_OWNER_ROLE_IDS: "${DISCORD_OWNER_ROLE_IDS:-}"
       DUNE_PUBLIC_DIRECTORY_URL: "${DUNE_PUBLIC_DIRECTORY_URL:-}"
       DUNE_PUBLIC_DIRECTORY_CLAIM_URL: "${DUNE_PUBLIC_DIRECTORY_CLAIM_URL:-}"
+      # Age-based secrets library (Stage 2, issue #318) -- optional, only
+      # meaningful once an operator has run `dune secrets migrate` at
+      # least once via the CLI. Passed through so the web console's
+      # Secrets Status Panel (issue #320) can report accurate migration
+      # state; see the read-only ~/.config/dune bind mount below for why
+      # the env var alone isn't sufficient (the age identity file itself
+      # lives outside /repo).
+      DUNE_KEK_FILE: "${DUNE_KEK_FILE:-}"
+      DUNE_AGE_IDENTITY_FILE: "${DUNE_AGE_IDENTITY_FILE:-}"
     volumes:
       - "${DUNE_HOST_REPO_ROOT:-.}:/repo"
       - ./runtime/local-static:/app/web-dist/atrium:ro
       - /etc/localtime:/etc/localtime:ro
+      # Age-based secrets library (Stage 2, issue #318): the age identity
+      # file deliberately lives outside the repo (~/.config/dune, per
+      # unified-age-secrets-management-l1-design-2026-08-13.md §5.1) so it
+      # survives a repo re-clone/git-clean/dune-update -- the wrapped KEK
+      # itself stays in-repo (runtime/secrets/kek.age) and is already
+      # covered by the /repo mount above. Mounted read-only -- the
+      # Secrets Status Panel (issue #320) only ever needs to check
+      # existence/readability through this mount, never to write or
+      # decrypt via it.
+      #
+      # A new, explicit DUNE_AGE_IDENTITY_DIR variable rather than
+      # deriving from $HOME: this container already overrides its own
+      # HOME to /tmp/dune-console-home (numeric host UIDs don't always
+      # have a passwd entry in the image), and the operator's real host
+      # $HOME is not reliably the same value across every invocation
+      # context (systemd, sudo, cron) that might start this compose
+      # stack -- an explicit path avoids that ambiguity.
+      #
+      # Default fallback is "." (this compose file's own directory, i.e.
+      # the repo root, already guaranteed to exist) rather than an
+      # arbitrary nonexistent path -- confirmed via a live test (real
+      # `docker compose up` against a throwaway service definition,
+      # 2026-08-17) that Compose silently CREATES a nonexistent bind-mount
+      # source directory on the host rather than skipping the mount, and
+      # that leaving the variable completely unset breaks container
+      # startup entirely ("invalid spec: empty section between colons").
+      # Neither behavior is an acceptable no-op for operators who haven't
+      # configured age-based secrets. "." avoids both: it always exists,
+      # and mounting the already-mounted repo root to a second, unused
+      # path is inert (no new exposure -- /repo already covers this
+      # content) until an operator explicitly sets DUNE_AGE_IDENTITY_DIR
+      # to their real ~/.config/dune path.
+      - "${DUNE_AGE_IDENTITY_DIR:-.}:/dune-age-identity:ro"
       # WARNING: mounting the Docker socket gives this container broad control
       # over the host Docker daemon. Expose the web admin only to trusted admins.
       - /var/run/docker.sock:/var/run/docker.sock

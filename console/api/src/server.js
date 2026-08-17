@@ -25,6 +25,7 @@ import { hardwareStatusSnapshot, performanceSnapshot as collectPerformanceSnapsh
 import { serveStatic, contentTypeForPath } from "./http/staticFiles.js";
 import { discoverServices } from "./services/serviceDiscovery.js";
 import { createBackupDownloadArchive, enrichBackupRows, nextImportedBackupName, normalizeImportedBackupMetadata, readCurrentBattlegroupId, validBackupDownloadName } from "./services/backups.js";
+import { allSecretStates } from "./services/secretsStatus.js";
 import { createMemoryBalancer } from "./services/memoryBalancer.js";
 import { parseMemorySwapStatus } from "./services/memorySwap.js";
 import { createDeathPoller } from "./deathPoller.js";
@@ -662,6 +663,7 @@ async function handleApi(req, res) {
     const backup = decodeURIComponent(path.split("/").pop());
     return task(req, res, "backup", "backupDelete", { backup });
   }
+  if (path === "/api/secrets/status") return secretsStatusRoute(res);
   if (path === "/api/database/status") return dbJson(res, () => duneDb.dbStatus(db));
   if (path === "/api/database/schemas") return dbJson(res, () => duneDb.listSchemas(db));
   if (path === "/api/database/routines") return dbJson(res, () => duneDb.listRoutines(db, url.searchParams.get("schema") || "dune", url.searchParams.get("q") || ""));
@@ -1457,6 +1459,18 @@ async function backupAutoStatusRoute(res) {
   if (config.mockMode) return json(res, 200, { ...mockCommand("backupAutoStatus"), status: { ok: true, enabled: false, backupTime: "05:00", intervalHours: "", retentionDays: "0", retentionLabel: "No Retention Limit", timer: "" } });
   const result = await safeCommand("backupAutoStatus");
   return json(res, 200, { ...result, status: parseBackupAutoStatus(result) });
+}
+
+// Read-only, no-side-effect status check for Stage 2's 2 wired secrets
+// (issue #318/#320). No audit() call, matching the same precedent every
+// other pure-read route in this file follows (e.g. backupAutoStatusRoute
+// above) -- only mutations are audited in this codebase. Relies on
+// handleApi's own outer catch + redact() for any uncaught exception; see
+// secretsStatus.js's own isReadable() comment for why that function's
+// try/catch is itself security-load-bearing, not just a convenience.
+function secretsStatusRoute(res) {
+  const secrets = allSecretStates(config.repoRoot);
+  return json(res, 200, { secrets });
 }
 
 async function structuredVehiclesRoute(res) {

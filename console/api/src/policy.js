@@ -195,6 +195,7 @@ const DEFAULT_POLICIES = {
         "server:*",
         "logs:*",
         "backups:*",
+        "secrets:read",
         "database:read",
         "database:query",
         "database:export",

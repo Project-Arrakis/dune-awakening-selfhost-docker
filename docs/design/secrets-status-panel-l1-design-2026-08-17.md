@@ -52,22 +52,27 @@ Reimplementing the **4-state existence/readability check only** (not the decrypt
 
 **Net effect if unfixed:** the panel would report "Backend not configured" permanently for every real operator, including ones who have genuinely completed the CLI migration flow — not an edge case, the modal path for the feature's actual intended audience.
 
-**Resolved implementation:**
+**Resolved implementation** (`[R2]` revised again after live-testing on `dune-dev`, 2026-08-17, exposed a second bug in the first draft of this fix — see the note below):
+
 1. Add both variables to `docker-compose.web.yml`'s `environment:` block, matching the existing allowlist convention exactly:
    ```yaml
    DUNE_KEK_FILE: "${DUNE_KEK_FILE:-}"
    DUNE_AGE_IDENTITY_FILE: "${DUNE_AGE_IDENTITY_FILE:-}"
    ```
-2. Add a new **read-only** volume mount for the identity directory, since the identity file lives outside `/repo`:
+2. Add a new **read-only, explicitly-opt-in** volume mount for the identity directory, since the identity file lives outside `/repo`:
    ```yaml
    volumes:
      - "${DUNE_HOST_REPO_ROOT:-.}:/repo"
-     - "${HOME:-/root}/.config/dune:/root/.config/dune:ro"
+     - "${DUNE_AGE_IDENTITY_DIR:-.}:/dune-age-identity:ro"
    ```
-   Mounted read-only because the console process only ever needs to check readability/existence for this panel — it must never write to or delete the identity file. (If a future `verify` panel action is added per §6 Open Question 1, the same read-only mount is sufficient — `age --decrypt` only reads the identity file, never writes it.)
-3. Add both new variables to `.env.example` with a comment explaining they're optional and only meaningful once an operator has run the Stage 2 CLI migration (`dune secrets migrate`) at least once.
+   **A new, explicit `DUNE_AGE_IDENTITY_DIR` variable, not `$HOME`**: this container already overrides its own `HOME` to `/tmp/dune-console-home` (numeric host UIDs don't always have a passwd entry in the image, per the existing comment on that override), and an operator's real host `$HOME` is not reliably the same value across every invocation context (systemd, sudo, cron) that might start this compose stack — an explicit variable avoids that ambiguity entirely rather than trying to derive it.
 
-**Why read-only, and why this doesn't expand this design's own stated blast radius:** the container already runs with `network_mode: host` and a Docker-socket mount (per issue #121's existing, tracked architectural concern) — a read-only bind mount of one additional config directory does not meaningfully change that container's already-broad trust boundary, and the mounted file is a wrapped/encrypted identity key, not a plaintext secret value itself (the age identity's *own* protection is the operator's host-account permissions, unchanged by this mount). This fix is scoped exactly to what's needed for `secretState()`'s existence/readability check — no decrypt operation happens through this mount in this revision (§1's scope explicitly excludes `verify`).
+   **The `:-.` fallback (not a placeholder nonexistent path) was chosen only after a real bug in an earlier draft of this fix was caught by live-testing, not just reasoning about it**: an initial version of this fix defaulted to a made-up nonexistent path when `DUNE_AGE_IDENTITY_DIR` was unset, on the theory that a nonexistent bind-mount source would be a harmless no-op for operators who haven't configured age-based secrets. **This was tested directly against real Docker Compose on `dune-dev` and found to be wrong**: Compose silently *creates* a nonexistent bind-mount source directory on the host filesystem rather than skipping the mount (confirmed: a throwaway `docker compose up` with `${VAR:-/nonexistent-test-path}:/mounted:ro` and `VAR` unset produced a real, empty `/nonexistent-test-path` directory at the host filesystem root after the container started). A second attempt (leaving the variable entirely unset, no fallback at all) was also tested and found to **break container startup entirely** (`invalid spec: :/mounted:ro: empty section between colons`) — not a graceful no-op, a hard failure of the whole console. The `.` fallback (the compose file's own directory, i.e. the repo root, already guaranteed to exist) was tested and confirmed to produce neither failure mode: with the variable unset, the container starts normally with a harmless, redundant read-only mount of already-mounted repo content at an unused path (`/dune-age-identity`); with the variable set to a real directory, the real identity file is correctly visible and readable inside the container at that same path. Both cases verified via real `docker compose up`/`down` cycles against disposable test services, not simulated.
+
+   Mounted read-only because the console process only ever needs to check readability/existence for this panel — it must never write to or delete the identity file. (If a future `verify` panel action is added per §6 Open Question 1, the same read-only mount is sufficient — `age --decrypt` only reads the identity file, never writes it.)
+3. Add `DUNE_AGE_IDENTITY_DIR` (and the existing `DUNE_KEK_FILE`) to `.env.example` with a comment explaining they're optional and only meaningful once an operator has run the Stage 2 CLI migration (`dune secrets migrate`) at least once, and that `DUNE_AGE_IDENTITY_DIR` should point at the **directory containing** the identity file (typically `~/.config/dune`), not the file itself.
+
+**Why read-only, and why this doesn't expand this design's own stated blast radius:** the container already runs with `network_mode: host` and a Docker-socket mount (per issue #121's existing, tracked architectural concern) — a read-only bind mount of one additional, operator-opted-in config directory does not meaningfully change that container's already-broad trust boundary, and the mounted file is a wrapped/encrypted identity key, not a plaintext secret value itself (the age identity's *own* protection is the operator's host-account file permissions, unchanged by this mount). This fix is scoped exactly to what's needed for `secretState()`'s existence/readability check — no decrypt operation happens through this mount in this revision (§1's scope explicitly excludes `verify`).
 
 **This fix must land in the same PR as the panel itself** — a panel that reports the container's own broken visibility as "backend not configured" with no path to becoming otherwise would be actively misleading, worse than not building the panel at all.
 
