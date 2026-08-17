@@ -11,6 +11,20 @@ Keep a Changelog style, grouped by upstream base version, newest first.
 
 ### Added
 
+- Two new addon-bridge actions, `ops.health.postgres` and `ops.health.rabbitmq`
+  (`addonOpsPostgresHealth()`/`addonOpsRabbitmqHealth()` in `duneDb.js`), for
+  the `dune-ops-observability` addon's per-container metrics grid rebuild
+  (addon repo issue #133). Both are pure PromQL reads against the
+  already-deployed, already-scraped `dune-postgres-exporter`/
+  `rabbitmq_prometheus`-plugin metrics (part of the existing opt-in
+  `dune metrics start` stack — no new container, exporter, port, or secret).
+  Queries are lifted directly from `runtime/metrics/rules/postgres.yml`'s and
+  `rabbitmq.yml`'s own alert expressions, not invented separately, so a UI
+  number and an Alertmanager warning always describe the identical
+  underlying query. `promScalar()` gained an injectable `fetchImpl` parameter
+  (defaults to the real `fetch`) and a new sibling `promVector()` for
+  naturally per-instance queries (RabbitMQ's two brokers) — both exported
+  for direct unit testing without a live Prometheus instance.
 - Discord OAuth as primary sign-in method on the login page. Password login is
   available as a secondary, collapsible option when OAuth is configured.
 - Local static file mount (`runtime/local-static` → `/app/web-dist/atrium`)
