@@ -7,15 +7,21 @@ import { isReadOnlySql } from "../src/db.js";
 import {
   ADDON_SCHEDULED_RUN_RATE_SCOPE,
   EDA_EXCHANGE_BOT_ADDON_ID,
+  applyDryRunMaxBuysRanking,
+  buildBuybackClassifySql,
   buildBuybackEligibilitySql,
   buildBuybackSql,
   buybackPlanValuesSql,
+  clearBuybackLog,
   createAddonJobScheduler,
   loadBuybackSeedPlan,
+  normalizeBuybackLogEntry,
   normalizeBuybackSchedule,
   normalizeExchangeId,
   probeBuybackEligibility,
+  readBuybackLog,
   readBuybackSchedule,
+  refreshBuybackLog,
   saveBuybackSchedule
 } from "../src/addonJobs.js";
 
@@ -42,13 +48,16 @@ function schedulePath(repoRoot) {
   return join(repoRoot, "runtime/generated/market-bot/buyback.json");
 }
 
-// Fake db: the first statement of the eligibility probe is WITH, the sweep
-// starts with its first temp table; capability support queries get empty rows.
-function fakeDb({ eligible = "0", probeRow = null, sweepRow = null, onQuery = null } = {}) {
+// Fake db: eligibility probes are WITH ... AS eligible_orders, classify
+// queries are WITH ... AS result_code, and the sweep starts with its first
+// temp table. Capability support queries get empty rows.
+function fakeDb({ eligible = "0", probeRow = null, sweepRow = null, classifyRows = [], onQuery = null } = {}) {
   const probes = [];
+  const classifies = [];
   const sweeps = [];
   const db = {
     probes,
+    classifies,
     sweeps,
     transactions: 0,
     query: async (sql) => {
@@ -57,6 +66,15 @@ function fakeDb({ eligible = "0", probeRow = null, sweepRow = null, onQuery = nu
         if (intercepted) return intercepted;
       }
       const text = String(sql).trim();
+      if (/^WITH /.test(text) && /\bAS result_code\b/.test(text)) {
+        classifies.push(sql);
+        return {
+          rows: classifyRows,
+          fields: [{ name: "result_code" }],
+          rowCount: classifyRows.length,
+          command: "SELECT"
+        };
+      }
       if (/^WITH /.test(text)) {
         probes.push(sql);
         return {
@@ -224,6 +242,13 @@ test("builds buyback SQL server-side from the bundled seed plan", () => {
     assert.match(eligibilitySql, /o\.exchange_id = 77\b/);
     assert.match(eligibilitySql, /eligible_orders/);
 
+    const classifySql = buildBuybackClassifySql(plan, schedule);
+    assert.ok(isReadOnlySql(classifySql), "classify query must be read-only SQL");
+    assert.match(classifySql, /AS result_code/);
+    assert.match(classifySql, /price too high/);
+    assert.match(classifySql, /no reference price/);
+    assert.doesNotMatch(classifySql, /\b(?:BEGIN|COMMIT)\s*;/i);
+
     const sweepSql = buildBuybackSql(plan, schedule);
     assert.ok(!isReadOnlySql(sweepSql), "sweep is a write");
     assert.match(sweepSql, /FOR UPDATE OF o, s SKIP LOCKED/);
@@ -236,6 +261,10 @@ test("builds buyback SQL server-side from the bundled seed plan", () => {
     assert.match(sweepSql, /o\.item_price > 0 AND GREATEST\(/, "non-positive prices and empty stacks are rejected");
     assert.doesNotMatch(sweepSql, /FLOOR\(p\.max_unit_price \*/, "exact grade caps are not multiplied a second time");
     assert.match(sweepSql, /o\.exchange_id = 77\b/);
+    assert.match(sweepSql, /CREATE TEMP TABLE market_buy_log/);
+    assert.match(sweepSql, /buyback_log/);
+    assert.match(sweepSql, /max buys limit/);
+    assert.match(sweepSql, /skipped locked/);
     assert.doesNotMatch(sweepSql, /\b(?:BEGIN|COMMIT)\s*;/i, "transaction ownership stays with the database wrapper");
 
     assert.throws(() => buildBuybackSql(plan, { ...schedule, exchangeId: "77; DROP TABLE dune.items" }), /exchangeId is invalid/);
@@ -368,7 +397,7 @@ test("tick waits for the armed time, skips the backup when idle, and re-arms fro
     // Simulate a probe that takes 2 minutes so re-arm-from-completion is visible.
     let bumpClock = () => {};
     const slowDb = fakeDb({ eligible: "0", onQuery: async (sql) => {
-      if (/^WITH market_buy_plan/.test(String(sql).trim())) bumpClock();
+      if (/\bAS eligible_orders\b/.test(String(sql))) bumpClock();
       return null;
     } });
     const slow = makeScheduler(config, { db: slowDb });
@@ -471,7 +500,7 @@ test("concurrent ticks and manual runs are guarded by the running flag", async (
     let releaseProbe;
     const gate = new Promise((resolve) => { releaseProbe = resolve; });
     const db = fakeDb({ eligible: "0", onQuery: async (sql) => {
-      if (/^WITH market_buy_plan/.test(String(sql).trim())) await gate;
+      if (/\bAS eligible_orders\b/.test(String(sql))) await gate;
       return null;
     } });
     const { scheduler, state } = makeScheduler(config, { db });
@@ -618,7 +647,7 @@ test("disabling mid-run is respected when the run completes", async () => {
   const config = { repoRoot, mockMode: false };
   try {
     const db = fakeDb({ eligible: "0", onQuery: async (sql) => {
-      if (/^WITH market_buy_plan/.test(String(sql).trim())) {
+      if (/\bAS eligible_orders\b/.test(String(sql))) {
         saveBuybackSchedule(config, { enabled: false });
       }
       return null;
@@ -636,4 +665,97 @@ test("disabling mid-run is respected when the run completes", async () => {
   } finally {
     rmSync(repoRoot, { recursive: true, force: true });
   }
+});
+
+test("idle buyback runs persist a dry-run classify batch with skip reasons", async () => {
+  const repoRoot = makeRepoRoot();
+  const config = { repoRoot, mockMode: false };
+  try {
+    const classifyRows = [
+      { order_id: "11", template_id: "Sword", quality_level: "0", item_price: "500", stack_size: "1", max_unit_price: "1200", result_code: "0", result_label: "eligible", detail: "ask 500/unit <= cap 1200" },
+      { order_id: "12", template_id: "UnknownThing", quality_level: "0", item_price: "10", stack_size: "1", max_unit_price: "0", result_code: "2", result_label: "no reference price", detail: "template not in seed plan" },
+      { order_id: "13", template_id: "WaterBottle", quality_level: "0", item_price: "900", stack_size: "4", max_unit_price: "600", result_code: "1", result_label: "price too high", detail: "ask 900 > cap 600" }
+    ];
+    const db = fakeDb({ eligible: "0", classifyRows });
+    const { scheduler, backups, state } = makeScheduler(config, { db });
+    saveBuybackSchedule(config, { enabled: true, exchangeId: "42", intervalMinutes: 10, maxBuys: 500 }, { now: () => state.clock });
+    await scheduler.tick();
+    state.clock += 10 * 60000;
+    await scheduler.tick();
+
+    assert.equal(db.probes.length, 1);
+    assert.equal(db.classifies.length, 1);
+    assert.equal(db.sweeps.length, 0);
+    assert.equal(backups.length, 0);
+    const log = readBuybackLog(config);
+    assert.equal(log.batches.length, 1);
+    assert.equal(log.batches[0].source, "Scheduled buyback");
+    assert.equal(log.batches[0].exchangeId, "42");
+    assert.match(log.batches[0].note, /nothing purchased/);
+    assert.equal(log.batches[0].entries[0].displayName, "Sword");
+    assert.equal(log.batches[0].entries[0].resultHex, "0x0");
+    assert.equal(log.batches[0].entries[1].resultHex, "0x2");
+    assert.equal(log.batches[0].entries[2].resultHex, "0x1");
+    assert.match(log.batches[0].entries[2].detail, /ask 900 > cap 600/);
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test("a write sweep persists purchased and leftover listings from buyback_log", async () => {
+  const repoRoot = makeRepoRoot();
+  const config = { repoRoot, mockMode: false };
+  try {
+    const buybackLog = JSON.stringify([
+      { order_id: "21", template_id: "WaterBottle", result_code: 0, result_label: "success", item_price: "100", stack_size: "10", max_unit_price: "600", quality_level: 0, detail: "bought stack 10 at 100/unit (cap 600)" },
+      { order_id: "22", template_id: "Sword", result_code: 5, result_label: "max buys limit", item_price: "200", stack_size: "1", max_unit_price: "1200", quality_level: 0, detail: "eligible but past Max Buys Per Sweep (1)" }
+    ]);
+    const db = fakeDb({ eligible: "2", sweepRow: { purchased: "1", total_units: "10", total_solari: "1000", buyback_log: buybackLog } });
+    const { scheduler } = makeScheduler(config, { db });
+    saveBuybackSchedule(config, { enabled: false, exchangeId: "42", maxBuys: 1 });
+    const result = await scheduler.runNow({ trigger: "console" });
+    assert.equal(result.status, "swept");
+    const log = readBuybackLog(config);
+    assert.equal(log.batches[0].source, "Buyback sweep");
+    assert.equal(log.batches[0].entries[0].resultHex, "0x0");
+    assert.equal(log.batches[0].entries[0].resultLabel, "success");
+    assert.equal(log.batches[0].entries[1].resultHex, "0x5");
+    assert.equal(log.batches[0].entries[0].displayName, "Water Bottle");
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test("dry-run refresh ranks leftover eligible listings as max buys and can be cleared", async () => {
+  const repoRoot = makeRepoRoot();
+  const config = { repoRoot, mockMode: false };
+  try {
+    saveBuybackSchedule(config, { exchangeId: "42", maxBuys: 1 });
+    const classifyRows = [
+      { order_id: "31", template_id: "WaterBottle", quality_level: "0", item_price: "10", stack_size: "2", max_unit_price: "600", result_code: "0", result_label: "eligible", detail: "ask 10" },
+      { order_id: "32", template_id: "Sword", quality_level: "0", item_price: "20", stack_size: "1", max_unit_price: "1200", result_code: "0", result_label: "eligible", detail: "ask 20" }
+    ];
+    const db = fakeDb({ classifyRows });
+    const refreshed = await refreshBuybackLog(config, db, {});
+    assert.equal(refreshed.entries[0].resultHex, "0x0");
+    assert.equal(refreshed.entries[1].resultHex, "0x5");
+    assert.equal(refreshed.entries[1].resultLabel, "max buys limit");
+    assert.equal(refreshed.batches.length, 1);
+    assert.equal(refreshed.batches[0].source, "Dry-run classify");
+    assert.equal(clearBuybackLog(config).batches.length, 0);
+    assert.equal(readBuybackLog(config).batches.length, 0);
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test("applyDryRunMaxBuysRanking keeps cheaper eligible listings and marks the rest 0x5", () => {
+  const ranked = applyDryRunMaxBuysRanking([
+    normalizeBuybackLogEntry({ order_id: "2", template_id: "B", item_price: "50", result_code: 0, result_label: "eligible" }),
+    normalizeBuybackLogEntry({ order_id: "1", template_id: "A", item_price: "10", result_code: 0, result_label: "eligible" }),
+    normalizeBuybackLogEntry({ order_id: "3", template_id: "C", item_price: "5", result_code: 1, result_label: "price too high" })
+  ], 1);
+  assert.equal(ranked.find((row) => row.orderId === "1").resultCode, 0);
+  assert.equal(ranked.find((row) => row.orderId === "2").resultCode, 5);
+  assert.equal(ranked.find((row) => row.orderId === "3").resultCode, 1);
 });

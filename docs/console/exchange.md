@@ -121,6 +121,14 @@ Exchange Bot addon drives through the scheduler bridge, now first-class):
   **Probe eligibility** can be run on demand without a backup and explains the
   result with counts for eligible listings, asks above the price threshold,
   templates missing from the seed plan, and invalid-price or empty-stack rows.
+- **Buyback Sweep Log** records every player sell listing the bot considers.
+  Purchases are `0x0` / success; skipped listings keep the mismatch (`0x1` price
+  too high, `0x2` no reference price, `0x3` invalid price, `0x4` invalid stack,
+  `0x5` past Max Buys, `0x6` skipped locked). Manual and scheduled sweeps both
+  append a batch, including idle ticks that classify listings without buying.
+  **Refresh log (dry-run)** classifies the current exchange without a write.
+  Batches are stored in `runtime/generated/market-bot/buyback-log.json` (20 most
+  recent).
 - **Schedules** run unattended inside the console API process (no browser page needs
   to stay open) and survive restarts. They are console-owned and authorized by RBAC
   at save time. Seed and buyback share one running lock, so they can never write the
@@ -137,7 +145,7 @@ already uninstalled, the console creates clean disabled Market Bot schedules; ga
 database listings are not changed. A malformed legacy schedule postpones removal
 instead of discarding it, and an interrupted cleanup is retried on the next startup.
 
-Reads and the eligibility probe require the `exchange:market` action; schedule saves
+Reads, the eligibility probe, and the sweep log require the `exchange:market` action; schedule saves
 and run-now require `exchange:market-write`. Neither is granted to the viewer tiers
 that receive `exchange:read`, so by default only the admin tier (`exchange:*`) sees
 the Market Bot button at all. All mutations are rate-limited and audited.
