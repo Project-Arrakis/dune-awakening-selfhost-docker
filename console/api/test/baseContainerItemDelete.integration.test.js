@@ -36,9 +36,17 @@ const SCHEMA = `
     instance_id integer not null,
     owner_entity_id bigint
   );
+  -- Both columns are nullable in production and carry a third NOT NULL column,
+  -- plus two UNIQUE constraints. The uniques matter here: entity_id being
+  -- unique is what makes the placeables -> base_entities join single-valued,
+  -- so declaring them keeps the ownership-isolation tests honest rather than
+  -- passing because the fixture happens not to contain a duplicate.
   create table dune.actor_fgl_entities (
-    entity_id bigint not null,
-    actor_id bigint not null references dune.actors(id) on delete cascade
+    entity_id bigint,
+    actor_id bigint references dune.actors(id) on delete cascade,
+    slot_name text not null default '',
+    constraint actor_fgl_entities_entity_id_key unique (entity_id),
+    constraint actor_fgl_no_slot_duplication unique (actor_id, slot_name)
   );
   create table dune.placeables (
     id bigint primary key references dune.actors(id) on delete cascade,
@@ -50,23 +58,38 @@ const SCHEMA = `
     actor_id bigint primary key references dune.actors(id) on delete cascade,
     actor_name text
   );
+  -- actor_id is nullable in production, guarded by a CHECK that at least one
+  -- of the four owner columns is set: an inventory can belong to an exchange,
+  -- an item or a vehicle module instead of an actor. max_item_count is
+  -- nullable with no default. Declaring the loose production shape is what
+  -- lets the max_item_count >= 0 filter be exercised against a NULL.
   create table dune.inventories (
     id bigint primary key,
-    actor_id bigint not null references dune.actors(id) on delete cascade,
-    max_item_count integer not null default 10
+    actor_id bigint references dune.actors(id) on delete cascade,
+    exchange_id bigint,
+    item_id bigint,
+    vehicle_module_id bigint,
+    max_item_count integer,
+    constraint valid_fkey check (actor_id is not null or exchange_id is not null
+      or item_id is not null or vehicle_module_id is not null)
   );
   -- The production constraints, not a convenient subset: position_index is NOT
   -- NULL with a >= 0 check and has NO unique constraint against
   -- (inventory_id, position_index), which is exactly why the grid has to cope
   -- with duplicates. stack_size > 0 is why a partial removal to zero must go
   -- through delete_item rather than an UPDATE.
+  -- stats has NO default in production, so every insert must supply it; a
+  -- default here would let a seed omit it and pass a test production would
+  -- reject. id uses a sequence default rather than GENERATED ALWAYS, which
+  -- would refuse the explicit ids production accepts.
+  create sequence dune.items_id_seq;
   create table dune.items (
-    id bigint generated always as identity primary key,
+    id bigint primary key default nextval('dune.items_id_seq'),
     inventory_id bigint references dune.inventories(id) on delete cascade,
     stack_size bigint not null,
     position_index bigint not null,
     template_id text not null,
-    stats jsonb not null default '{}'::jsonb,
+    stats jsonb not null,
     quality_level bigint not null default 0,
     constraint items_position_index_check check (position_index >= 0),
     constraint items_stack_size_check check (stack_size > 0)
@@ -131,16 +154,16 @@ const SEED = `
     insert into dune.placeables (id, owner_entity_id, building_type) values (${GENERATOR}, ${ENTITY_ID}, 'oilgenerator_placeable');
     insert into dune.inventories (id, actor_id, max_item_count) values (${GENERATOR} * 10, ${GENERATOR}, 4);
   `)}
-  insert into dune.items (inventory_id, template_id, stack_size, position_index) values
-    (${CHEST} * 10, 'ScrapMetal', 500, 0),
-    (${CHEST} * 10, 'MagnetiteOre', 200, 1),
-    (${CHEST} * 10, 'ScrapMetal', 400, 2);
-  insert into dune.items (inventory_id, template_id, stack_size, position_index) values
-    (${GENERATOR} * 10, 'Oil', 900, 0);
+  insert into dune.items (inventory_id, template_id, stack_size, position_index, stats) values
+    (${CHEST} * 10, 'ScrapMetal', 500, 0, '{}'::jsonb),
+    (${CHEST} * 10, 'MagnetiteOre', 200, 1, '{}'::jsonb),
+    (${CHEST} * 10, 'ScrapMetal', 400, 2, '{}'::jsonb);
+  insert into dune.items (inventory_id, template_id, stack_size, position_index, stats) values
+    (${GENERATOR} * 10, 'Oil', 900, 0, '{}'::jsonb);
 
   ${seedBase(OTHER_CLAIM_ACTOR, OTHER_BUILDING_ACTOR, OTHER_ENTITY_ID, OTHER_CHEST)}
-  insert into dune.items (inventory_id, template_id, stack_size, position_index) values
-    (${OTHER_CHEST} * 10, 'Spice', 77, 0);
+  insert into dune.items (inventory_id, template_id, stack_size, position_index, stats) values
+    (${OTHER_CHEST} * 10, 'Spice', 77, 0, '{}'::jsonb);
 `;
 
 async function withDatabase(t, run) {
@@ -164,6 +187,50 @@ async function itemsIn(pool, inventoryId) {
 async function itemAt(pool, inventoryId, positionIndex) {
   const rows = await itemsIn(pool, inventoryId);
   return rows.find((row) => Number(row.position_index) === positionIndex);
+}
+
+// Confirms the delete's ownership query is genuinely blocked on the held row
+// lock via Postgres's own wait-state, instead of inferring "still waiting"
+// from a fixed timer. `requested_claims` is the CTE name unique to
+// deleteBaseContainerItem's ownership query -- baseContainerSlots names it
+// too, but that query never takes FOR UPDATE, so it can't be the blocked one.
+// A timer proves nothing about WHY a promise hasn't settled, and this test
+// used to be the only one in the file that held two connections open for a
+// fixed 1200ms regardless of how quickly the block was real -- the most
+// likely reason it was the one seen to hit the teardown race documented in
+// pgIntegrationDb.js's header (see retryOnTransientDisconnect below). Polling
+// removes that fixed hold time: the common case resolves in well under
+// 100ms, same as every other test in this file.
+async function waitUntilBlockedOnLock(pool, { timeoutMs = 3000, pollMs = 50 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const { rows } = await pool.query(`
+      select 1 from pg_stat_activity
+      where datname = current_database()
+        and wait_event_type = 'Lock'
+        and query ilike '%requested_claims%'
+      limit 1`);
+    if (rows.length) return true;
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
+  }
+  return false;
+}
+
+// pgIntegrationDb.js's own header documents a confirmed, external race: its
+// teardown issues a best-effort pg_terminate_backend against any connection
+// its pool.end() missed, and under load that can hit a connection a test
+// still needed, surfacing as this exact server-generated error text. A
+// single retry re-runs the WHOLE test body against a brand-new isolated
+// database and a brand-new lock scenario, so it cannot mask a real locking
+// bug -- if deleteBaseContainerItem's locking were actually broken, the
+// retry would fail identically, not intermittently.
+async function retryOnTransientDisconnect(fn) {
+  try {
+    return await fn();
+  } catch (error) {
+    if (!/terminating connection due to administrator command/.test(error?.message || "")) throw error;
+    return await fn();
+  }
 }
 
 test("real PostgreSQL: baseContainerSlots returns one entry per slot, keeping two stacks of one template apart", async (t) => {
@@ -236,8 +303,8 @@ test("real PostgreSQL: deleting preserves a bigint item id beyond Number.MAX_SAF
     const db = pgTransactionalDb(pool);
     const largeId = "9007199254740993";
     await pool.query(`
-      insert into dune.items (id, inventory_id, template_id, stack_size, position_index)
-      overriding system value values ($1, $2, 'SpiceMelange', 12, 4)
+      insert into dune.items (id, inventory_id, template_id, stack_size, position_index, stats)
+      values ($1, $2, 'SpiceMelange', 12, 4, '{}'::jsonb)
     `, [largeId, CHEST * 10]);
 
     const result = await deleteBaseContainerItem(db, BUILDING_ACTOR, CHEST, largeId);
@@ -308,7 +375,7 @@ test("real PostgreSQL: a count above the stack is refused and leaves the stack u
 });
 
 test("real PostgreSQL: the delete waits on a row another transaction holds locked", async (t) => {
-  await withDatabase(t, async (pool) => {
+  await retryOnTransientDisconnect(() => withDatabase(t, async (pool) => {
     const db = pgTransactionalDb(pool);
     const target = await itemAt(pool, CHEST * 10, 0);
     const holder = await pool.connect();
@@ -319,8 +386,8 @@ test("real PostgreSQL: the delete waits on a row another transaction holds locke
       await holder.query("select id from dune.items where id = $1 for update", [target.id]);
 
       // The delete must block rather than racing the other transaction.
-      // Racing it against a timer shows that without needing a
-      // statement_timeout.
+      // waitUntilBlockedOnLock confirms that via Postgres's own wait-state
+      // rather than a fixed timer.
       //
       // What this does and does not prove, checked by removing the clause and
       // re-running: it does NOT isolate `for update of i, inv` specifically,
@@ -332,11 +399,9 @@ test("real PostgreSQL: the delete waits on a row another transaction holds locke
       const deleting = deleteBaseContainerItem(db, BUILDING_ACTOR, CHEST, target.id)
         .then((value) => { settled = true; return value; },
               (error) => { settled = true; throw error; });
-      const raced = await Promise.race([
-        deleting.then(() => "completed", () => "failed"),
-        new Promise((resolve) => setTimeout(() => resolve("still waiting"), 1200))
-      ]);
-      assert.equal(raced, "still waiting", "the delete must wait on the locked row");
+
+      const blocked = await waitUntilBlockedOnLock(pool);
+      assert.equal(blocked, true, "the delete must be genuinely blocked on the locked row, not just slow");
       assert.equal(settled, false);
       assert.equal(Number((await itemAt(pool, CHEST * 10, 0)).stack_size), 500, "nothing removed while blocked");
 
@@ -350,7 +415,7 @@ test("real PostgreSQL: the delete waits on a row another transaction holds locke
       await holder.query("rollback").catch(() => {});
       holder.release();
     }
-  });
+  }));
 });
 
 test("real PostgreSQL: a failed post-write verification rolls the whole delete back", async (t) => {
@@ -380,5 +445,27 @@ test("real PostgreSQL: a failed post-write verification rolls the whole delete b
     const after = await itemAt(pool, CHEST * 10, 0);
     assert.equal(Number(after.stack_size), 500, "the interfered-with write must have rolled back");
     assert.equal((await itemsIn(pool, CHEST * 10)).length, 3);
+  });
+});
+
+test("real PostgreSQL: the audit result carries the destroyed item's quality and durability", async (t) => {
+  await withDatabase(t, async (pool) => {
+    const db = pgTransactionalDb(pool);
+    // Without these, a destroyed pristine legendary and a destroyed broken
+    // common of the same template log identically -- this is the fixture that
+    // would tell them apart.
+    const seeded = await pool.query(`
+      insert into dune.items (inventory_id, template_id, stack_size, position_index, quality_level, stats)
+      values ($1, 'Ornithopter_Rudder', 1, 5, 3,
+        '{"FItemStackAndDurabilityStats": [[], {"CurrentDurability": "812", "MaxDurability": "1000"}]}'::jsonb)
+      returning id
+    `, [CHEST * 10]);
+    const itemId = seeded.rows[0].id;
+
+    const result = await deleteBaseContainerItem(db, BUILDING_ACTOR, CHEST, itemId);
+    assert.equal(result.removed.positionIndex, 5);
+    assert.equal(result.removed.qualityLevel, 3);
+    assert.equal(result.removed.currentDurability, 812);
+    assert.equal(result.removed.maxDurability, 1000);
   });
 });

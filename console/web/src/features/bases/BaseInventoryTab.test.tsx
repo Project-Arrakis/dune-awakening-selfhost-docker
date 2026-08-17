@@ -642,6 +642,7 @@ describe("BaseInventoryTab", () => {
     fireEvent.click(screen.getByRole("button", { name: /Remove 150/ }));
     await waitFor(() => expect(basesApi.deleteContainerItem).toHaveBeenCalled());
     expect(vi.mocked(basesApi.deleteContainerItem).mock.calls[0][4]).toBe(150);
+    await waitFor(() => expect(input.value).toBe("450"));
   });
 
   it("keeps crafting and refining contents read-only", async () => {
