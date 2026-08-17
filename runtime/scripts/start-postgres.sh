@@ -44,6 +44,7 @@ docker volume create dune-postgres-data >/dev/null
 docker run -d \
   "${DUNE_DOCKER_LOG_ARGS[@]}" \
   --name dune-postgres \
+  --label "com.docker.compose.project=${DUNE_COMPOSE_PROJECT_NAME}" \
   --network dune-net \
   --restart unless-stopped \
   -p "127.0.0.1:${POSTGRES_PORT}:5432" \

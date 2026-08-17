@@ -54,6 +54,7 @@ ensure_host_latency_tuned
 docker run -d \
   "${DUNE_DOCKER_LOG_ARGS[@]}" \
   --name dune-server-gateway \
+  --label "com.docker.compose.project=${DUNE_COMPOSE_PROJECT_NAME}" \
   --network dune-net \
   --restart unless-stopped \
   -v "$(host_path "$PWD/runtime/server-gateway/config"):/etc/app/conf.d:ro" \

@@ -104,6 +104,7 @@ docker rm -f dune-rmq-admin dune-rmq-game 2>/dev/null || true
 docker run -d \
   "${DUNE_DOCKER_LOG_ARGS[@]}" \
   --name dune-rmq-admin \
+  --label "com.docker.compose.project=${DUNE_COMPOSE_PROJECT_NAME}" \
   --network dune-net \
   --restart unless-stopped \
   -p "127.0.0.1:${RMQ_ADMIN_PORT}:5672" \
@@ -114,6 +115,7 @@ docker run -d \
 docker run -d \
   "${DUNE_DOCKER_LOG_ARGS[@]}" \
   --name dune-rmq-game \
+  --label "com.docker.compose.project=${DUNE_COMPOSE_PROJECT_NAME}" \
   --network dune-net \
   --restart unless-stopped \
   -p "${RMQ_GAME_PORT}:5672/tcp" \
