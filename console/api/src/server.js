@@ -612,6 +612,8 @@ async function handleApi(req, res) {
   if (path.match(/^\/api\/bases\/[^/]+\/auto-refill$/) && req.method === "POST") return baseAutoRefillToggleRoute(req, res, path);
   if (path.match(/^\/api\/bases\/[^/]+\/water$/) && req.method === "GET") return baseWaterRoute(res, path);
   if (path.match(/^\/api\/bases\/[^/]+\/inventory$/) && req.method === "GET") return baseInventoryRoute(res, path);
+  if (path.match(/^\/api\/bases\/[^/]+\/containers\/[^/]+$/) && req.method === "GET") return baseContainerSlotsRoute(res, path);
+  if (path.match(/^\/api\/bases\/[^/]+\/containers\/[^/]+\/items\/[^/]+$/) && req.method === "DELETE") return baseContainerItemDeleteRoute(req, res, path);
   if (path.match(/^\/api\/bases\/[^/]+\/refill-water$/) && req.method === "POST") return baseRefillWaterRoute(req, res, path);
   if (path.match(/^\/api\/bases\/[^/]+\/queued-water-refill$/) && req.method === "DELETE") return baseCancelQueuedWaterRefillRoute(req, res, path);
   if (path.match(/^\/api\/bases\/[^/]+\/auto-refill-water$/) && req.method === "POST") return baseAutoRefillWaterToggleRoute(req, res, path);
@@ -3021,6 +3023,64 @@ async function baseInventoryRoute(res, path) {
     // or connection failure.
     return json(res, 500, { supported: false, error: redact(error?.message || "Unexpected error."), reason: redact(error?.message || "Unexpected error.") });
   }
+}
+
+// One container's slots, fetched when the contents modal opens rather than
+// folded into baseInventoryRoute -- see baseContainerSlots for why (slots
+// roughly triple that response, on a tab that loads per base expand).
+async function baseContainerSlotsRoute(res, path) {
+  const parts = path.split("/");
+  const baseId = Number(decodeURIComponent(parts[3]));
+  const placeableId = Number(decodeURIComponent(parts[5]));
+  // Same intParam-matching validation baseInventoryRoute uses, for both ids.
+  for (const id of [baseId, placeableId]) {
+    if (!Number.isInteger(id) || id < 1 || id > Number.MAX_SAFE_INTEGER) {
+      return json(res, 400, { error: "Invalid base or container ID" });
+    }
+  }
+  try {
+    return json(res, 200, await duneDb.baseContainerSlots(db, baseId, placeableId));
+  } catch (error) {
+    return json(res, 500, { supported: false, error: redact(error?.message || "Unexpected error."), reason: redact(error?.message || "Unexpected error.") });
+  }
+}
+
+// Phrase-gated, unlike the refills above: this destroys a player's stored item
+// and there is no undo short of a database restore.
+//
+// Deliberately NOT queued the way a refill or a base delete is. The write goes
+// through immediately even when the base's map is running; baseRefillTarget is
+// consulted only to tell the caller whether this base is currently exposed to
+// the autosave-resurrection race, so the UI can say so instead of pretending
+// the delete is final. queueSupported false means "cannot tell", not "safe".
+async function baseContainerItemDeleteRoute(req, res, path) {
+  const parts = path.split("/");
+  const baseId = Number(decodeURIComponent(parts[3]));
+  const placeableId = Number(decodeURIComponent(parts[5]));
+  const itemId = Number(decodeURIComponent(parts[7]));
+  for (const id of [baseId, placeableId, itemId]) {
+    if (!Number.isInteger(id) || id < 1 || id > Number.MAX_SAFE_INTEGER) {
+      return json(res, 400, { error: "Invalid base, container, or item ID" });
+    }
+  }
+  if (baseDeletePending(baseId)) return json(res, 409, { error: BASE_DELETE_PENDING_MESSAGE });
+  if (await baseBackedUp(baseId)) return json(res, 409, { error: BASE_BACKED_UP_MESSAGE });
+  return directDbMutation(req, res, "bases.container-item-delete", "DELETE ITEM", async (body) => {
+    const count = body?.count === undefined || body?.count === null ? null : Number(body.count);
+    const result = await duneDb.deleteBaseContainerItem(db, baseId, placeableId, itemId, { count });
+    // Resolved after the write, not before: the delete is not conditional on
+    // it, and a failure to resolve the map must not fail the delete itself.
+    let live = { known: false, running: false, map: "", partitionId: 0 };
+    try {
+      const target = await duneDb.baseRefillTarget(db, baseId);
+      live = target.queueSupported
+        ? { known: true, running: !target.writeSafeNow, map: target.map, partitionId: target.partitionId }
+        : { known: false, running: false, map: target.map || "", partitionId: target.partitionId || 0 };
+    } catch {
+      // Leave live.known false -- the UI then warns that it cannot tell.
+    }
+    return { ...result, live };
+  }, { baseId, placeableId, itemId });
 }
 
 // Mirrors baseRefillGeneratorsRoute: no confirmation phrase (additive and
