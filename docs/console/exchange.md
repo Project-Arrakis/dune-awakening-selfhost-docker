@@ -97,14 +97,28 @@ Exchange Bot addon drives through the scheduler bridge, now first-class):
   pricing** option sells them either below their schematics (half the pattern's
   price at the same grade — the default) or at the plan's original prices. Either
   way, buying the pattern and crafting for a better roll stays the premium path.
+- **Category multipliers** (1–5x, default 1 = no change) additionally scale the
+  seeded prices of three endgame categories on top of the base price multiplier:
+  **augments & augment schematics** (matched by template, so the augment pricing
+  discount and the multiplier always agree on what an augment is), **ranked
+  armor** (worn gear at grades 1–5, including stillsuits and radiation suits),
+  and **ranked weapons** (grades 1–5). Armor and weapons are identified by the
+  exchange's own taxonomy — the top-level category in the high byte of
+  `category_mask` (0 = armor/garments, 1 = weapons) — so grade-0 stock of the
+  same gear and every other catalog row keep the base multiplier alone. The
+  multiplier is applied before the usual stepped price rounding, and relative
+  pricing within a category is preserved (a discounted augment item stays at
+  half its pattern's price when both are boosted).
 - **Buyback sweeps** buy player sell listings whose per-unit ask is at or below the
   buyback percentage of the chosen **price basis** — seeded NPC price at that
   listing's grade (default), or the live player-market average / lowest ask with
-  seeded fallback. Whole listed stacks are bought in one pass, sellers are paid
-  through never-expiring "Take Solari" payment entries, and concurrent sweeps are
-  safe at the database level (`FOR UPDATE ... SKIP LOCKED`). Every run probes
-  eligibility with a read-only query first and only takes a backup + sweeps when
-  something qualifies.
+  seeded fallback. The buyback schedule carries its own copy of the category
+  multipliers: keep them matched with the reseed schedule so the reconstructed
+  seeded basis tracks what the market actually sells at. Whole listed stacks are
+  bought in one pass, sellers are paid through never-expiring "Take Solari"
+  payment entries, and concurrent sweeps are safe at the database level
+  (`FOR UPDATE ... SKIP LOCKED`). Every run probes eligibility with a read-only
+  query first and only takes a backup + sweeps when something qualifies.
 - **Schedules** run unattended inside the console API process (no browser page needs
   to stay open) and survive restarts. Schedules saved from this UI are
   `source: "console"`: they are authorized by RBAC at save time and do not require
