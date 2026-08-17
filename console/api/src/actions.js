@@ -166,7 +166,7 @@ export const ROUTE_ACTIONS = {
   "GET /api/exchange/market/buyback/log":      "exchange:market",
   "POST /api/exchange/market/buyback/probe":   "exchange:market",
   "POST /api/exchange/market/buyback/log":     "exchange:market",
-  "POST /api/exchange/market/buyback/log/clear": "exchange:market",
+  "POST /api/exchange/market/buyback/log/clear": "exchange:market-write",
   "POST /api/exchange/market/buyback/schedule": "exchange:market-write",
   "POST /api/exchange/market/seed/schedule":   "exchange:market-write",
   "POST /api/exchange/market/buyback/run":     "exchange:market-write",
