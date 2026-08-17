@@ -1,16 +1,48 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Boxes, ChevronDown, ChevronRight, X } from "lucide-react";
+import { Boxes, ChevronDown, ChevronRight, LayoutGrid, List, Trash2, TriangleAlert, X } from "lucide-react";
+import { CatalogItemThumb } from "../../components/common/ItemCatalog";
 import {
   basesApi,
+  type BaseContainerSlots,
   type BaseInventory,
   type BaseInventoryContainer,
   type BaseInventoryGroupKey,
-  type BaseInventoryItem
+  type BaseInventoryItem,
+  type BaseInventorySlot
 } from "../../api/bases";
 
 type BaseInventoryTabProps = {
   baseId: string;
+  baseName: string;
+  onError: (message: string) => void;
+  // Shape copied from BasePermissionsTab, which is what BasesPanel actually
+  // passes -- it carries `warning`, which the non-storage delete needs.
+  confirmAction: (message: string, options?: { title?: string; confirmLabel?: string; warning?: string; danger?: boolean; details?: { label: string; value: string; tone?: "accent" | "success" | "danger" }[] }) => Promise<boolean>;
 };
+
+// Guards a corrupt or absurd max_item_count from rendering tens of thousands
+// of cells. Above this the modal stays in list mode.
+const GRID_CELL_CAP = 200;
+
+type ContentsView = "list" | "grid";
+
+// Lays one inventory's slots into a fixed grid. position_index has no unique
+// constraint in the schema and is not validated against max_item_count, so all
+// three of "sparse", "two slots claim the same index" and "index past the end"
+// are reachable. Anything that cannot be placed goes to `overflow` and is
+// rendered below the grid -- never dropped, because an item the delete button
+// cannot reach is the worst outcome here.
+function layoutSlots(inventory: { maxSlots: number; slots: BaseInventorySlot[] }) {
+  const size = Math.min(Math.max(0, inventory.maxSlots), GRID_CELL_CAP);
+  const cells: (BaseInventorySlot | null)[] = new Array(size).fill(null);
+  const overflow: BaseInventorySlot[] = [];
+  for (const slot of inventory.slots) {
+    const at = slot.positionIndex;
+    if (at !== null && Number.isInteger(at) && at >= 0 && at < size && cells[at] === null) cells[at] = slot;
+    else overflow.push(slot);
+  }
+  return { cells, overflow };
+}
 
 // The rollup is capped so the tab cannot blow out the height of an already
 // expanded table row; "Show all" lifts it.
@@ -29,7 +61,7 @@ function containerLabel(container: { name: string; typeName: string; placeableId
   return container.name || `${container.typeName} #${container.placeableId}`;
 }
 
-export function BaseInventoryTab({ baseId }: BaseInventoryTabProps) {
+export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: BaseInventoryTabProps) {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [data, setData] = useState<BaseInventory | null>(null);
@@ -48,6 +80,25 @@ export function BaseInventoryTab({ baseId }: BaseInventoryTabProps) {
   const [contentsFor, setContentsFor] = useState("");
   const [showAllItems, setShowAllItems] = useState(false);
   const closeContentsRef = useRef<HTMLButtonElement>(null);
+  // Slots for the open container only, fetched on open. List is the default so
+  // the modal opens on the denser, sortable view; grid is a deliberate switch.
+  const [slots, setSlots] = useState<BaseContainerSlots | null>(null);
+  const [slotsLoading, setSlotsLoading] = useState(false);
+  const [slotsError, setSlotsError] = useState("");
+  const [contentsView, setContentsView] = useState<ContentsView>("list");
+  const [deletingItemId, setDeletingItemId] = useState("");
+  const [deleteNotice, setDeleteNotice] = useState("");
+  // Separate from slotsError on purpose: that one means "the slots could not
+  // be loaded" and hides the list behind a Retry. A delete that failed leaves
+  // the list perfectly valid, so blanking it would lose the operator's place
+  // over an error about one row.
+  const [deleteError, setDeleteError] = useState("");
+  // Selecting a slot moves its controls into one strip below the list/grid
+  // rather than repeating a quantity input on every row -- a packed 100-slot
+  // container would otherwise render a hundred of them.
+  const [selectedSlotId, setSelectedSlotId] = useState("");
+  const [amount, setAmount] = useState("");
+  const slotsRequestIdRef = useRef(0);
 
   // Only the newest request may write state. StrictMode double-invokes this
   // effect, so two requests really are open at once here, and whichever settles
@@ -133,6 +184,69 @@ export function BaseInventoryTab({ baseId }: BaseInventoryTabProps) {
   const itemImage = (templateId: string) =>
     imagesByTemplate.get(templateId) || "/images/items/image-unavailable.png";
 
+  // Re-resolved from the current slots rather than held as an object, so a
+  // refetch after a partial delete updates the strip's quantity instead of
+  // leaving it showing the pre-delete stack.
+  const selectedSlot = useMemo(() => {
+    if (!selectedSlotId || !slots?.inventories) return null;
+    for (const inventory of slots.inventories) {
+      const found = inventory.slots.find((slot) => slot.itemId === selectedSlotId);
+      if (found) return found;
+    }
+    return null;
+  }, [selectedSlotId, slots]);
+
+  // The server rejects an over-count rather than clearing the slot, so this is
+  // a courtesy check, not the guard.
+  const amountNumber = Number(amount);
+  const amountValid = Boolean(selectedSlot)
+    && Number.isInteger(amountNumber)
+    && amountNumber >= 1
+    && amountNumber <= (selectedSlot?.quantity ?? 0);
+
+  // A slot that vanished (deleted, or moved by a player between refetches)
+  // must not leave a stale strip pointing at an id the server no longer has.
+  useEffect(() => {
+    if (selectedSlotId && slots && !selectedSlot) {
+      setSelectedSlotId("");
+      setAmount("");
+    }
+  }, [selectedSlotId, slots, selectedSlot]);
+
+  // Same newest-request-wins guard as load(): reopening a different container
+  // before the first response lands must not paint the wrong container's slots.
+  const loadSlots = useCallback(async (placeableId: string) => {
+    const requestId = ++slotsRequestIdRef.current;
+    setSlotsLoading(true);
+    setSlotsError("");
+    try {
+      const result = await basesApi.containerSlots(baseId, placeableId);
+      if (slotsRequestIdRef.current !== requestId) return;
+      setSlots(result);
+    } catch (error) {
+      if (slotsRequestIdRef.current !== requestId) return;
+      setSlotsError(errorText(error));
+    } finally {
+      if (slotsRequestIdRef.current === requestId) setSlotsLoading(false);
+    }
+  }, [baseId]);
+
+  useEffect(() => {
+    if (!contentsFor) {
+      setSlots(null);
+      setSlotsError("");
+      setDeleteNotice("");
+      setDeleteError("");
+      setSelectedSlotId("");
+      setAmount("");
+      return;
+    }
+    setSelectedSlotId("");
+    setAmount("");
+    setDeleteError("");
+    void loadSlots(contentsFor);
+  }, [contentsFor, loadSlots]);
+
   // Matches ConfirmDialog: Escape closes, and focus moves to the close button
   // so the overlay is reachable without a mouse.
   useEffect(() => {
@@ -149,6 +263,65 @@ export function BaseInventoryTab({ baseId }: BaseInventoryTabProps) {
     setSubmittedQ(next);
     setExpandedItem("");
     setShowAllItems(false);
+  }
+
+  async function deleteSlot(slot: BaseInventorySlot, amount: number, containerName: string, group?: BaseInventoryGroupKey) {
+    const whole = amount >= slot.quantity;
+    const confirmed = await confirmAction(
+      whole ? "Delete this item from the container?" : "Remove part of this stack?",
+      {
+        title: whole ? "Delete Stored Item" : "Remove From Stack",
+        confirmLabel: whole ? "Delete" : "Remove",
+        danger: true,
+        // Refineries and fabricators hold live crafting state -- the game's own
+        // crafting routine consumes allocated ingredients from these same rows.
+        warning: group && group !== "storage"
+          ? "This container feeds crafting. Removing items a recipe has already reserved may leave that job referencing an item that no longer exists."
+          : undefined,
+        details: [
+          { label: "Base", value: baseName },
+          { label: "Container", value: containerName, tone: "accent" },
+          { label: "Slot", value: slot.positionIndex === null ? "—" : `#${slot.positionIndex}` },
+          {
+            label: whole ? "Item" : "Removing",
+            value: whole
+              ? `${slot.name} ×${slot.quantity.toLocaleString()}`
+              : `${amount.toLocaleString()} of ${slot.quantity.toLocaleString()} ${slot.name}`,
+            tone: "danger"
+          }
+        ]
+      }
+    );
+    if (!confirmed) return;
+    setDeletingItemId(slot.itemId);
+    setDeleteNotice("");
+    setDeleteError("");
+    try {
+      const response = await basesApi.deleteContainerItem(
+        baseId, contentsFor, slot.itemId, "DELETE ITEM", whole ? undefined : amount);
+      const result = response.result;
+      if (!response.supported || !result?.ok) {
+        throw new Error(response.error || response.reason || "The item could not be deleted.");
+      }
+      // Stated per delete rather than once up front: whether the change can be
+      // undone by the map server depends on that map's state right now, and
+      // `known: false` means the console cannot tell -- never say "safe".
+      const live = result.live;
+      setDeleteNotice(live.known
+        ? live.running
+          ? `${result.message} ${live.map || "This base's map"}${live.partitionId ? ` · Partition ${live.partitionId}` : ""} is running, so the server may restore it on its next autosave. Restart that map to make the change stick.`
+          : `${result.message} That map is down, so the change will stick.`
+        : `${result.message} The console cannot tell whether this base's map is running, so it may be restored on the next autosave.`);
+      // Refetch both: the slot list for this container, and the tab totals,
+      // group counts and rollup, all of which the delete just invalidated.
+      await Promise.all([loadSlots(contentsFor), load()]);
+    } catch (error) {
+      const text = errorText(error);
+      setDeleteError(text);
+      onError(text);
+    } finally {
+      setDeletingItemId("");
+    }
   }
 
   if (loading) {
@@ -180,8 +353,13 @@ export function BaseInventoryTab({ baseId }: BaseInventoryTabProps) {
         {/* Stated before the data rather than after it: it governs how to read
             everything below, and at the foot of a 27-card list it was never
             seen. */}
+        {/* The read-only caveat is gone but the sync caveat is not: these are
+            database rows, and a running map server keeps its own copy. The
+            per-delete result says whether THIS base's map is running; this
+            line only sets the expectation. */}
         <p className="bases-inventory-note muted">
-          Read-only. Base inventory has no live-sync path, so the console cannot write items here.
+          A database snapshot, not a live view. Items can be deleted from a container's contents,
+          but a running map server may restore a deleted item on its next autosave.
         </p>
 
         {/* summary-stats/summary-stat are the app's stat tiles, shared with
@@ -385,26 +563,152 @@ export function BaseInventoryTab({ baseId }: BaseInventoryTabProps) {
                   : `#${openContainer.placeableId}`}
               </p>
             </div>
-            <button ref={closeContentsRef} className="icon-action" aria-label="Close contents" onClick={() => setContentsFor("")}>
-              <X size={18} />
-            </button>
+            <div className="bases-inventory-contents-head-actions">
+              <div className="bases-inventory-views" role="group" aria-label="Contents view">
+                <button
+                  className={`bases-inventory-view${contentsView === "list" ? " active" : ""}`}
+                  aria-pressed={contentsView === "list"}
+                  onClick={() => setContentsView("list")}
+                ><List size={14} aria-hidden="true" /> List</button>
+                <button
+                  className={`bases-inventory-view${contentsView === "grid" ? " active" : ""}`}
+                  aria-pressed={contentsView === "grid"}
+                  onClick={() => setContentsView("grid")}
+                ><LayoutGrid size={14} aria-hidden="true" /> Grid</button>
+              </div>
+              <button ref={closeContentsRef} className="icon-action" aria-label="Close contents" onClick={() => setContentsFor("")}>
+                <X size={18} />
+              </button>
+            </div>
           </div>
 
           <dl className="bases-inventory-contents-summary">
             <div><dt>Slots Used</dt><dd>{openContainer.usedSlots.toLocaleString()} / {openContainer.maxSlots.toLocaleString()}</dd></div>
             <div><dt>Items</dt><dd>{openContainer.itemCount.toLocaleString()}</dd></div>
+            {/* Distinct templates, not stacks -- the count below the list is
+                the stack count, and the two differ whenever a template
+                occupies more than one slot. */}
             <div><dt>Distinct</dt><dd>{openContainer.items.length.toLocaleString()}</dd></div>
           </dl>
 
-          <div className="bases-inventory-contents-list">
-            {openContainer.items.map((stack) => (
-              <div className="bases-inventory-contents-row" key={stack.templateId}>
-                <img src={itemImage(stack.templateId)} alt="" aria-hidden="true" />
-                <span className="bases-inventory-contents-name" title={stack.templateId}>{stack.name}</span>
-                <span className="bases-inventory-contents-qty">{stack.quantity.toLocaleString()}</span>
+          {slotsLoading && <p className="muted" role="status">Loading slots…</p>}
+          {slotsError && <p className="bases-permissions-error" role="alert">
+            {slotsError} <button onClick={() => void loadSlots(contentsFor)}>Retry</button>
+          </p>}
+          {deleteNotice && <p className="bases-inventory-delete-notice" role="status">{deleteNotice}</p>}
+          {deleteError && <p className="bases-inventory-amount-error" role="alert">{deleteError}</p>}
+
+          {!slotsLoading && !slotsError && slots && slots.found === false && <p className="muted" role="status">
+            {slots.reason || "That container is no longer at this base."}
+          </p>}
+
+          {!slotsLoading && !slotsError && slots?.found && slots.inventories.map((inventory) => {
+            const { cells, overflow } = layoutSlots(inventory);
+            // Grid needs real slot positions and a sane capacity; without
+            // either it would be a wall of empty cells, so it is not offered.
+            const gridUsable = inventory.maxSlots > 0
+              && inventory.maxSlots <= GRID_CELL_CAP
+              && inventory.slots.some((slot) => slot.positionIndex !== null);
+            const showGrid = contentsView === "grid" && gridUsable;
+            const rows = showGrid ? overflow : inventory.slots;
+            return (
+              <div className="bases-inventory-slots" key={inventory.inventoryId}>
+                {slots.inventories.length > 1 && <p className="bases-inventory-card-subtitle">
+                  Inventory #{inventory.inventoryId} · {inventory.usedSlots.toLocaleString()} / {inventory.maxSlots.toLocaleString()} slots
+                </p>}
+
+                {showGrid && <div
+                  className="bases-inventory-slot-grid"
+                  role="group"
+                  aria-label={`${inventory.usedSlots} of ${inventory.maxSlots} slots used`}
+                >
+                  {cells.map((slot, index) => slot
+                    ? <button
+                        key={slot.itemId}
+                        className={`bases-inventory-slot-cell${selectedSlotId === slot.itemId ? " selected" : ""}`}
+                        aria-pressed={selectedSlotId === slot.itemId}
+                        title={`${slot.name} ×${slot.quantity.toLocaleString()} (slot ${index})`}
+                        onClick={() => { setSelectedSlotId(slot.itemId); setAmount(String(slot.quantity)); }}
+                      >
+                        <CatalogItemThumb item={{ id: slot.templateId, itemId: slot.templateId, name: slot.name, image: itemImage(slot.templateId) }} small />
+                        {slot.quantity > 1 && <span className="bases-inventory-slot-qty">{slot.quantity.toLocaleString()}</span>}
+                      </button>
+                    : <span className="bases-inventory-slot-cell empty" key={`empty-${index}`} aria-hidden="true" />)}
+                </div>}
+
+                {showGrid && overflow.length > 0 && <p className="muted bases-inventory-slot-overflow-note">
+                  {/* position_index has no unique constraint and is not bounded
+                      by max_item_count, so a slot can duplicate another or sit
+                      past the end of the grid. Listed rather than dropped. */}
+                  {overflow.length.toLocaleString()} {overflow.length === 1 ? "item has" : "items have"} no place in the grid — a duplicate or out-of-range slot number.
+                </p>}
+
+                {rows.length > 0 && <div className="bases-inventory-contents-list">
+                  {!showGrid && <div className="bases-inventory-contents-row head">
+                    <span /><span>Item</span><span>Slot</span><span>Qty</span><span />
+                  </div>}
+                  {rows.map((slot) => (
+                    <div
+                      className={`bases-inventory-contents-row${selectedSlotId === slot.itemId ? " selected" : ""}`}
+                      key={slot.itemId}
+                    >
+                      <CatalogItemThumb item={{ id: slot.templateId, itemId: slot.templateId, name: slot.name, image: itemImage(slot.templateId) }} small />
+                      <button
+                        className="bases-inventory-contents-name"
+                        title={slot.templateId}
+                        aria-pressed={selectedSlotId === slot.itemId}
+                        onClick={() => { setSelectedSlotId(slot.itemId); setAmount(String(slot.quantity)); }}
+                      >{slot.name}</button>
+                      <span className="bases-inventory-contents-slot muted">
+                        {slot.positionIndex === null ? "—" : `#${slot.positionIndex}`}
+                      </span>
+                      <span className="bases-inventory-contents-qty">{slot.quantity.toLocaleString()}</span>
+                      <button
+                        className="icon-toggle-button danger"
+                        title="Delete this stack"
+                        aria-label={`Delete ${slot.name} from slot ${slot.positionIndex ?? "unknown"}`}
+                        disabled={deletingItemId === slot.itemId}
+                        onClick={() => void deleteSlot(slot, slot.quantity, containerLabel(openContainer), slots.group)}
+                      ><Trash2 size={15} /></button>
+                    </div>
+                  ))}
+                </div>}
               </div>
-            ))}
-          </div>
+            );
+          })}
+
+          {selectedSlot && <div className="bases-inventory-slot-detail">
+            <CatalogItemThumb item={{ id: selectedSlot.templateId, itemId: selectedSlot.templateId, name: selectedSlot.name, image: itemImage(selectedSlot.templateId) }} />
+            <div className="bases-inventory-slot-detail-body">
+              <strong>{selectedSlot.name}</strong>
+              <span className="muted">
+                {selectedSlot.positionIndex === null ? "Unplaced" : `Slot #${selectedSlot.positionIndex}`}
+                {" · "}{selectedSlot.quantity.toLocaleString()} held
+                {selectedSlot.currentDurability !== null && selectedSlot.maxDurability
+                  ? ` · ${Math.round((selectedSlot.currentDurability / selectedSlot.maxDurability) * 100)}% durability`
+                  : ""}
+              </span>
+            </div>
+            <label className="bases-inventory-slot-amount">
+              <span>Remove</span>
+              <input
+                type="number"
+                min={1}
+                max={selectedSlot.quantity}
+                value={amount}
+                aria-label={`Amount of ${selectedSlot.name} to remove`}
+                onChange={(event) => setAmount(event.target.value)}
+              />
+            </label>
+            <button
+              className="danger"
+              disabled={!amountValid || deletingItemId === selectedSlot.itemId}
+              onClick={() => void deleteSlot(selectedSlot, Number(amount), containerLabel(openContainer), slots?.group)}
+            >{Number(amount) >= selectedSlot.quantity ? "Delete stack" : `Remove ${Number(amount).toLocaleString()}`}</button>
+          </div>}
+          {selectedSlot && !amountValid && <p className="bases-inventory-amount-error" role="alert">
+            Enter an amount between 1 and {selectedSlot.quantity.toLocaleString()}.
+          </p>}
 
           <div className="confirm-modal-actions">
             <button onClick={() => setContentsFor("")}>Close</button>

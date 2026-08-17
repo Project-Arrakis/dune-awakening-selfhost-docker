@@ -1,8 +1,10 @@
 # Base Inventory
 
-The **Inventory** tab on an expanded base row (Bases panel → expand a base → Power / Water / Inventory / Sub-Fief Permissions) lists everything stored at that base. It is read-only.
+The **Inventory** tab on an expanded base row (Bases panel → expand a base → Power / Water / Inventory / Sub-Fief Permissions) lists everything stored at that base. Reads are a snapshot; a container's contents can be opened per slot and individual items deleted.
 
-Backed by `GET /api/bases/{baseId}/inventory` → `duneDb.baseInventory()`.
+Backed by `GET /api/bases/{baseId}/inventory` → `duneDb.baseInventory()`, plus
+`GET /api/bases/{baseId}/containers/{placeableId}` → `duneDb.baseContainerSlots()` for one container's
+slots and `DELETE …/containers/{placeableId}/items/{itemId}` to remove one.
 
 ## What counts as base inventory
 
@@ -68,15 +70,67 @@ Every label was ultimately read off the in-game build menu. Two would have been 
 
 `SpiceRefinery_Placeable` is plain "Spice Refinery"; Medium and Large are separate buildables, unlike the size-prefixed ore refineries.
 
-## Why read-only
+## Deleting a stored item
 
-Base inventory writes have no live-sync path:
+A container's contents overlay can delete a whole stack, or part of one. Backed by
+`DELETE /api/bases/{baseId}/containers/{placeableId}/items/{itemId}` → `duneDb.deleteBaseContainerItem()`,
+body `{ confirmation: "DELETE ITEM", count? }`. Omit `count` to clear the slot; pass a smaller number to
+remove part of the stack. Whole-slot removal goes through the shipped `dune.delete_item(bigint)`, partial
+through `dune.delete_inventory_item(bigint, bigint)`.
+
+**A count larger than the stack is refused, not rounded down.** "Remove 400" and "remove everything" are
+different requests, and the gap between them is a real race: the operator saw 500, asked for 400, and the
+stack has since dropped to 300. Widening that into destroying all 300 would remove more than was ever
+agreed to. The overlay is a snapshot, so this case is reachable in normal use.
+
+**Ownership is re-resolved, never trusted.** The delete re-runs this page's claim CTEs from the base id
+rather than believing the `placeableId` it was handed, and keeps the `inventory_types` allowlist join plus
+`is_hologram = false` and `max_item_count >= 0`. That allowlist is what stops a delete reaching the
+generator and windtrap fuel inventories the Power and Water tabs own — a placeable outside
+`BASE_INVENTORY_TYPES` answers "not found" even when it genuinely belongs to the base.
+
+The row lock is `for update of i, inv`, not a bare `for update`: Postgres cannot lock a CTE reference, and
+locking only the item row locks nothing once that row is gone.
+
+`DELETE …/items/{itemId}` requires its own IAM action, **`bases:delete-item`**, separate from the
+`bases:mutate` bucket every other base mutation falls into. The reason differs from
+[`bases:delete`](base-deletion.md)'s: not blast radius, but consent. This tab shipped read-only, so an
+operator whose hand-authored policy grants `bases:mutate` agreed to refills and permission edits and could
+not have agreed to item destruction — folding this in would silently widen every existing narrow policy.
+The shipped `owner`/`admin` policies grant `bases:*`, so default access is unchanged.
+
+Both of the usual base preconditions apply: a base with a queued delete, or one picked up via the game's
+base-backup tool, rejects this with `409`.
+
+## Why writes are immediate, and what that costs
+
+Unlike a base delete or a generator refill, an item delete is **not** queued behind the map going down. It
+is written immediately, and the response says whether that was safe.
+
+The reason a queue exists at all still holds here:
 
 - No `pg_notify` routine covers inventory or buildings. The game's 8 notify channels are guild, landsraad, party, permission, taxation, faction, vehicle_recovery, player_info.
 - There are zero triggers on `dune.items`, `dune.inventories`, `dune.buildings`, `dune.placeables`.
 - The RMQ command bus has no per-item edit or delete. `AddItemToInventory` addresses items by *template name*; every id here is a row id.
 
-So an edit could not reach a running map without a relog or a map restart. The tab states this inline rather than offering writes that would silently not apply.
+So a delete cannot reach a running map without a relog or a map restart, and — the sharper problem — a
+running map server periodically flushes its own in-memory copy of a base back to Postgres, so the deleted
+row can be **resurrected** on the next autosave. That is the same race
+[base deletion](base-deletion.md#why-deletes-are-queued-for-a-live-map) queues to avoid.
+
+Rather than queue, the route resolves `baseRefillTarget()` after the write and returns `live`:
+
+| `live` | What the overlay says |
+|---|---|
+| `known: true, running: false` | Deleted; that map is down, so the change will stick. |
+| `known: true, running: true` | Deleted, but the named map is running and may restore it on its next autosave. |
+| `known: false` | Deleted; the console **cannot tell** whether the map is running. |
+
+`known: false` is the case worth care: `baseRefillTarget` reports `writeSafeNow: true` when it has no
+`world_partition` to check against, meaning "cannot tell" rather than "safe". It is never rendered as safe.
+
+The queue machinery remains available if immediate writes prove too surprising in practice; the decision
+was deliberate, not a limitation.
 
 ## Response shape
 
@@ -95,3 +149,48 @@ One response backs both views, so switching between Items and Containers never r
 `usedSlots` counts item *rows* — one stack occupies one slot — while `quantity` sums `stack_size`. Capacity is summed once per inventory, not per item row, since every row repeats its inventory's `max_item_count`.
 
 **A container's `items[]` is not its stacks.** Rows sharing a template are merged into one entry, so `items.length` is the number of distinct templates and is **≤ `usedSlots`**. On the reference base, Chem Storage fills 8 slots with 3 templates, and 5 of 17 containers disagree the same way. The UI therefore says "3 distinct", never "3 stacks" — the stack count is `usedSlots`, already shown as Slots Used. The type is named `BaseInventoryEntry` rather than `…Stack` for the same reason.
+
+This merge is deliberate and stays: `items[]` is what backs the "N distinct" label and the container search
+filter, both of which genuinely mean distinct templates. The per-slot truth lives in a second response.
+
+## Per-container slots
+
+```
+GET /api/bases/{baseId}/containers/{placeableId}
+{ supported, found, baseId, placeableId, typeName, group, maxSlots, usedSlots,
+  inventories: [{ inventoryId, maxSlots, usedSlots,
+                  slots: [{ itemId, templateId, name, positionIndex, quantity,
+                            qualityLevel, currentDurability, maxDurability }] }] }
+```
+
+**Fetched per container, not with the tab.** Folding slots into `baseInventory` tripled that response —
+238 KB to 656 KB on the largest base in the reference dump, +176% — on a tab that loads on every base
+expand and auto-refresh, while the overlay only ever shows one container. One container is under a
+kilobyte.
+
+**Slots hang off an inventory, not the container.** A placeable can back more than one surviving inventory:
+`container.maxSlots` is their sum, while `position_index` is scoped to a single inventory. A flat
+per-container array would collide two slot 0s on anything with two inventories.
+
+`itemId` is `dune.items.id` — the delete target, and the only stable key, since `templateId` repeats within
+a container. `currentDurability`/`maxDurability` come out of the `stats` jsonb using the same expression as
+`INVENTORY_ITEM_SELECT`, so the two paths cannot disagree about where durability lives.
+
+`positionIndex`, `qualityLevel` and the durability pair are all **column-probed**, not assumed: a missing
+column is a parse-time error rather than a null, so a schema without them would 500 a container that used
+to open. They come back null instead, and the grid view is withheld.
+
+### position_index is not trustworthy
+
+`dune.items` has no unique constraint on `(inventory_id, position_index)`, and nothing bounds the value by
+`max_item_count`. All three of these are reachable, and the grid handles each rather than dropping a slot —
+an item the delete control cannot reach is the worst outcome available:
+
+| Case | Handling |
+|---|---|
+| Sparse / non-contiguous | Empty cells. This is the in-game look and the point of the view. |
+| Two slots claim one index | First by `(positionIndex, itemId)` takes the cell; the other is listed as unplaced. |
+| Index ≥ `maxSlots` | Listed as unplaced beneath the grid. |
+
+The grid is also withheld when capacity is 0, above a 200-cell cap, or when every `positionIndex` is null;
+the list stands in and can still delete.

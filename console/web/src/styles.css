@@ -2926,9 +2926,12 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
   align-content: start;
   padding-right: 10px;
 }
+/* Five columns now: icon, name, slot number, quantity, delete. The slot
+   number is what makes two rows of the same template distinguishable, which
+   is the whole point of the per-slot view. */
 .bases-inventory-contents-row {
   display: grid;
-  grid-template-columns: 24px minmax(0, 1fr) auto;
+  grid-template-columns: 24px minmax(0, 1fr) 48px auto 30px;
   gap: 10px;
   align-items: center;
   padding: 7px 2px;
@@ -2936,10 +2939,71 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
   font-size: 13px;
 }
 .bases-inventory-contents-row:last-child { border-bottom: 0; }
+.bases-inventory-contents-row.head { color: var(--muted-warm); font-size: 12px; border-bottom-color: var(--border-strong); }
+.bases-inventory-contents-row.selected { background: var(--surface-raised); }
 .bases-inventory-contents-row img { width: 24px; height: 24px; object-fit: contain; border-radius: 4px; background: #25201b; }
-.bases-inventory-contents-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bases-inventory-contents-name {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  background: none; border: 0; padding: 0; text-align: left; color: inherit; font: inherit; cursor: pointer;
+}
+.bases-inventory-contents-slot { font-variant-numeric: tabular-nums; font-size: 12px; }
 .bases-inventory-contents-qty { color: var(--muted-warm); font-variant-numeric: tabular-nums; }
 .bases-inventory-note { margin: 0; font-size: 12px; }
+
+/* The in-game-style slot grid. auto-fill rather than a fixed column count so
+   a 10-slot container and a 100-slot one both fill the modal width, and the
+   cells stay square via aspect-ratio instead of a hardcoded height. */
+.bases-inventory-slot-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(46px, 1fr));
+  gap: 5px;
+  margin-bottom: 10px;
+}
+.bases-inventory-slot-cell {
+  position: relative;
+  aspect-ratio: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #221b12;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0;
+  cursor: pointer;
+}
+/* Dashed and dimmer so an empty slot reads as absence at a glance rather than
+   as an item that failed to load. */
+.bases-inventory-slot-cell.empty { background: #1b1610; border-style: dashed; cursor: default; }
+.bases-inventory-slot-cell.selected { border-color: var(--danger); }
+.bases-inventory-slot-cell img { width: 62%; height: 62%; object-fit: contain; }
+.bases-inventory-slot-qty {
+  position: absolute; right: 3px; bottom: 1px;
+  font-size: 11px; font-variant-numeric: tabular-nums;
+  text-shadow: 0 1px 2px #000;
+}
+.bases-inventory-slot-overflow-note { margin: 0 0 8px; font-size: 12px; }
+.bases-inventory-slots + .bases-inventory-slots { margin-top: 12px; }
+
+/* One control strip for the selected slot instead of a quantity input on
+   every row -- a packed 100-slot container would render a hundred of them. */
+.bases-inventory-slot-detail {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) auto auto;
+  gap: 10px;
+  align-items: center;
+  margin-top: 10px;
+  padding: 9px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+}
+.bases-inventory-slot-detail img { width: 34px; height: 34px; object-fit: contain; }
+.bases-inventory-slot-detail-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; font-size: 13px; }
+.bases-inventory-slot-detail-body span { font-size: 12px; }
+.bases-inventory-slot-amount { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+.bases-inventory-slot-amount input { width: 90px; }
+.bases-inventory-amount-error { margin: 6px 0 0; font-size: 12px; color: var(--danger); }
+.bases-inventory-delete-notice { margin: 0 0 8px; font-size: 12px; color: var(--muted-warm); }
+.bases-inventory-contents-head-actions { display: flex; align-items: center; gap: 8px; }
 
 /* Permissions is a single reading column with the Revert/Save bar full-bleed
    beneath it. The inset padding lives on .bases-permissions-content rather than

@@ -143,6 +143,64 @@ export type BaseInventoryContainer = {
   items: BaseInventoryEntry[];
 };
 
+// One occupied slot -- a real dune.items row, unlike BaseInventoryEntry above.
+// This is what the contents modal renders and what a delete addresses.
+export type BaseInventorySlot = {
+  // dune.items.id. Globally unique, so it is the React key and the delete
+  // target; templateId is not unique within a container.
+  itemId: string;
+  templateId: string;
+  name: string;
+  // 0-based slot within its inventory. Null when the schema lacks the column,
+  // in which case the grid view is not offered. There is no unique constraint
+  // on (inventory_id, position_index), so duplicates and values beyond
+  // maxSlots are both possible and must not be dropped when laying out a grid.
+  positionIndex: number | null;
+  quantity: number;
+  qualityLevel: number;
+  currentDurability: number | null;
+  maxDurability: number | null;
+};
+
+// Slots hang off an inventory rather than the container because a placeable can
+// back more than one: the container's maxSlots is their sum, while
+// positionIndex is scoped to a single inventory, so two of them would both
+// have a slot 0.
+export type BaseContainerInventory = {
+  inventoryId: string;
+  maxSlots: number;
+  usedSlots: number;
+  slots: BaseInventorySlot[];
+};
+
+// Fetched per container when the contents modal opens, not folded into
+// BaseInventory: slots roughly triple that response on a tab that loads on
+// every base expand, while the modal only ever shows one container.
+export type BaseContainerSlots = {
+  supported: boolean;
+  // False when the container is not at this base -- an ownership answer, not
+  // an error, and the same 200-with-a-reason shape used elsewhere here.
+  found?: boolean;
+  baseId: number;
+  placeableId: string;
+  typeName?: string;
+  group?: BaseInventoryGroupKey;
+  maxSlots?: number;
+  usedSlots?: number;
+  inventories: BaseContainerInventory[];
+  reason?: string;
+};
+
+// Whether this base's map is running, resolved after the delete lands. The
+// write is immediate either way; this only decides how the result is worded.
+// `known: false` means the console cannot tell -- never render it as "safe".
+export type BaseContainerDeleteLive = {
+  known: boolean;
+  running: boolean;
+  map: string;
+  partitionId: number;
+};
+
 // How much of one item a single container holds. `name` is the container's,
 // not the item's -- the item is the parent -- and is empty for a placeable the
 // player has never renamed, same as BaseInventoryContainer.name.
@@ -314,6 +372,32 @@ export const basesApi = {
   // cards, so switching between them never refetches.
   inventory: (baseId: string) =>
     api<BaseInventory>(`/api/bases/${encodeURIComponent(baseId)}/inventory`),
+  // One container's slots, fetched when the contents modal opens. Kept off
+  // inventory() above so the base tab does not carry every slot at the base.
+  containerSlots: (baseId: string, placeableId: string) =>
+    api<BaseContainerSlots>(
+      `/api/bases/${encodeURIComponent(baseId)}/containers/${encodeURIComponent(placeableId)}`),
+  // Destroys a stored item. `count` omitted removes the whole slot; a count
+  // below the stack removes part of it. A count ABOVE the stack is rejected by
+  // the server rather than clearing the slot -- the stack may have shrunk since
+  // this view loaded, and widening that into "delete it all" would remove more
+  // than was asked for.
+  deleteContainerItem: (baseId: string, placeableId: string, itemId: string, confirmation: string, count?: number) =>
+    api<{
+      supported: boolean;
+      result?: {
+        ok: boolean;
+        partial: boolean;
+        typeName: string;
+        group: BaseInventoryGroupKey;
+        removed: { itemId: string; templateId: string; count: number; remaining: number };
+        message: string;
+        live: BaseContainerDeleteLive;
+      };
+      error?: string;
+      reason?: string;
+    }>(`/api/bases/${encodeURIComponent(baseId)}/containers/${encodeURIComponent(placeableId)}/items/${encodeURIComponent(itemId)}`,
+      { method: "DELETE", body: JSON.stringify(count === undefined ? { confirmation } : { confirmation, count }) }),
   // A refill for a map that is currently running comes back as
   // `result.queued`: the write is deferred to the next time that map is down.
   refillWater: (baseId: string) =>
