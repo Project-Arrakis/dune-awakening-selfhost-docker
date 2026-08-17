@@ -3246,6 +3246,35 @@ export async function basePermissionActor(db, baseId) {
   };
 }
 
+// permission_actor_rank.permission_actor_id carries a foreign key against
+// dune.permission_actor(actor_id), and basePermissionActor resolves its id from
+// the buildings -> building_instances -> actor_fgl_entities -> actors chain,
+// which says nothing about whether that actor is claimed. An unclaimed base has
+// every structural row intact and no permission_actor row, so handing its actor
+// id to permission_set_player_rank fails the FK inside the shipped procedure --
+// surfacing as a raw "violates foreign key constraint
+// permission_actor_rank_permission_actor_id_fkey" with no indication of what an
+// operator did wrong.
+//
+// Checked here rather than by widening basePermissionActor's own query: that
+// resolution is shared with the base-delete path, whose supportsBaseDelete
+// probes buildings/building_instances/actor_fgl_entities/placeables/actors but
+// not permission_actor. Joining the table into the shared query would break
+// deletion on a schema that lacks it. Both callers of this helper already gate
+// on supportsBasePermissionEditing, which does probe permission_actor.
+async function basePermissionActorClaimed(db, actorId) {
+  const result = await db.query(
+    "select exists (select 1 from dune.permission_actor where actor_id = $1::bigint) as claimed",
+    [actorId]);
+  return Boolean(result.rows[0]?.claimed);
+}
+
+// Deliberately distinct from BASE_BACKED_UP_MESSAGE in server.js: that one names
+// the base-backup tool, which is only one of the ways a base ends up unclaimed.
+// This covers the general case, including a base whose permission_actor row went
+// away without a base_backup_linked_actors entry to explain it.
+const BASE_UNCLAIMED_MESSAGE = "This base is not claimed -- it has no dune.permission_actor row, so the game has nothing to attach permissions to. A player must claim or redeploy it first.";
+
 // The base-backup tool ("pick up base") only deletes permission_actor/
 // permission_actor_rank and registers the base's actor ids in
 // base_backup_linked_actors -- see listBases' matching exclusion. That keeps
@@ -3287,6 +3316,11 @@ export async function listBasePermissions(db, baseId) {
   await requireCapability(await supportsBasePermissionEditing(db),
     "Base permission editing requires dune.permission_actor_rank, dune.map_names, and the dune.permission_set_player_rank/permission_remove_player_rank functions.");
   const { actorId, map, mapNameId } = await basePermissionActor(db, baseId);
+  // Reading an unclaimed base still succeeds -- the roster is simply empty, and
+  // seeing that is how an operator diagnoses the base in the first place. The
+  // flag rides along so the editor can disable the writes that would fail
+  // instead of offering controls that end in an FK error.
+  const claimed = await basePermissionActorClaimed(db, actorId);
   const encryptedPlayerStateColumns = await tableExists(db, "encrypted_player_state")
     ? await columnsFor(db, "encrypted_player_state")
     : new Set();
@@ -3335,6 +3369,8 @@ export async function listBasePermissions(db, baseId) {
     actorId,
     map,
     mapNameId,
+    claimed,
+    unclaimedReason: claimed ? "" : BASE_UNCLAIMED_MESSAGE,
     systemCustodian,
     entries: result.rows.map((row) => ({
       playerId: String(row.player_id),
@@ -3521,6 +3557,14 @@ async function mutateBasePermissions(db, target, safeMax, desiredRoster) {
     // rows serializes nothing. The actors row is guaranteed to exist.
     const locked = await tx.query("select id from dune.actors where id = $1::bigint for update", [actor.actorId]);
     if (!locked.rowCount) throw new Error("That base was not found.");
+
+    // After the lock, not before: this is the last read the transaction can make
+    // before it starts calling the procedures. The game's own pickup path does
+    // not take this lock, so a pickup landing mid-edit can still slip past and
+    // hit the FK -- that race is what the constraint is for. What this removes
+    // is the far more common steady-state case, an unclaimed base sitting in the
+    // panel that every route currently accepts a write for.
+    if (!(await basePermissionActorClaimed(tx, actor.actorId))) throw new Error(BASE_UNCLAIMED_MESSAGE);
 
     const existing = await tx.query(
       "select player_id::text as player_id, rank::int as rank from dune.permission_actor_rank where permission_actor_id = $1::bigint",

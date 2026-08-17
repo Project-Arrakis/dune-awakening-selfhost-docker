@@ -202,6 +202,12 @@ export type BasePermissions = {
   actorId: string;
   map: string;
   mapNameId: number;
+  // False when the base has no dune.permission_actor row -- unclaimed, so the
+  // permission table's foreign key rejects every write against it. Optional so
+  // an older API that does not send it is read as claimed, which is the
+  // behaviour that existed before the flag rather than a new lockout.
+  claimed?: boolean;
+  unclaimedReason?: string;
   systemCustodian?: {
     available: boolean;
     canCreate?: boolean;
