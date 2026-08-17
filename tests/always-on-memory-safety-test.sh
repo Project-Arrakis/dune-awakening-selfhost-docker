@@ -70,6 +70,47 @@ write_meminfo $((64 * 1024 * 1024)) $((40 * 1024 * 1024)) $((8 * 1024 * 1024))
 run_safety check-map DeepDesert_1 31
 run_throttled 401
 
+# Doctor treats an intentional override as informational while the configured
+# startup load fits the host, but still warns when it exceeds the safe value.
+doctor_root="$test_root/doctor-project"
+mkdir -p "$doctor_root/runtime" "$doctor_root/bin"
+cp -a "$repo_root/runtime/scripts" "$doctor_root/runtime/"
+cat > "$doctor_root/bin/docker" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+cat > "$doctor_root/bin/systemctl" <<'EOF'
+#!/usr/bin/env bash
+[ "${1:-}" = "show" ] && printf 'not-found\n'
+exit 0
+EOF
+cat > "$doctor_root/bin/ss" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$doctor_root/bin/docker" "$doctor_root/bin/systemctl" "$doctor_root/bin/ss"
+
+cat > "$doctor_root/.env" <<'EOF'
+DUNE_ALWAYS_ON_HOST_MEMORY_SAFETY=0
+DUNE_ALWAYS_ON_STARTUP_PARALLELISM=1
+EOF
+doctor_output="$({
+  cd "$doctor_root"
+  PATH="$doctor_root/bin:$PATH" DUNE_HOST_MEMORY_MEMINFO_FILE="$meminfo" bash runtime/scripts/doctor.sh
+} 2>&1 || true)"
+grep -Fq 'INFO Always-on host-memory startup protection is disabled by configuration; startup parallelism 1 is within this host' <<<"$doctor_output"
+if grep -Fq 'WARN Always-on host-memory startup protection is disabled' <<<"$doctor_output"; then
+  echo "safe intentional memory override was reported as a warning" >&2
+  exit 1
+fi
+
+sed -i 's/DUNE_ALWAYS_ON_STARTUP_PARALLELISM=1/DUNE_ALWAYS_ON_STARTUP_PARALLELISM=4/' "$doctor_root/.env"
+doctor_output="$({
+  cd "$doctor_root"
+  PATH="$doctor_root/bin:$PATH" DUNE_HOST_MEMORY_MEMINFO_FILE="$meminfo" bash runtime/scripts/doctor.sh
+} 2>&1 || true)"
+grep -Fq "WARN Always-on host-memory startup protection is disabled while startup parallelism 4 exceeds this host's safe value 3" <<<"$doctor_output"
+
 write_meminfo $((30 * 1024 * 1024)) $((12 * 1024 * 1024)) $((32 * 1024 * 1024))
 if reset_wait="$(run_throttled 402 2>&1)"; then exit 1; fi
 grep -Fq 'WAIT always-on' <<<"$reset_wait"
