@@ -299,6 +299,161 @@ test("builds buyback SQL server-side from the bundled seed plan", () => {
   }
 });
 
+test("a commodity stack is bought whole and counts as one Max Buys purchase", () => {
+  // Exchange sell orders are atomic: the bot either takes the whole listing
+  // or leaves it. Max Buys therefore limits listings per sweep, not units.
+  const repoRoot = makeRepoRoot();
+  const config = { repoRoot, mockMode: false };
+  try {
+    const plan = loadBuybackSeedPlan(config);
+    const schedule = normalizeBuybackSchedule({
+      enabled: true,
+      exchangeId: "42",
+      priceMultiplier: 5,
+      buybackPercent: 60,
+      maxBuys: 3
+    });
+    const sweepSql = buildBuybackSql(plan, schedule);
+
+    assert.match(
+      sweepSql,
+      /GREATEST\(COALESCE\(i\.stack_size, 0\), COALESCE\(s\.initial_stack_size, 0\)\) AS actual_stack/,
+      "stale item.stack_size=1 must not shrink a commodity sell order"
+    );
+    assert.match(
+      sweepSql,
+      /item_price <= p\.max_unit_price/,
+      "eligibility compares the per-unit ask to the cap, not stack total"
+    );
+    assert.match(
+      sweepSql,
+      /solari_balance = solari_balance - \(rec\.item_price \* rec\.actual_stack\)/,
+      "seller is paid ask × whole stack"
+    );
+    assert.match(
+      sweepSql,
+      /INSERT INTO dune\.dune_exchange_fulfilled_orders \(order_id, source_order_id, completion_type, stack_size, original_order_id\) VALUES \(v_log_order_id, NULL, 4, rec\.actual_stack, rec\.order_id\)/,
+      "Take Solari payment entry carries the full stack size"
+    );
+    assert.match(sweepSql, /DELETE FROM dune\.dune_exchange_sell_orders WHERE order_id = rec\.order_id/);
+    assert.match(sweepSql, /DELETE FROM dune\.dune_exchange_orders WHERE id = rec\.order_id/);
+    assert.match(sweepSql, /IF rec\.item_id IS NOT NULL THEN DELETE FROM dune\.items WHERE id = rec\.item_id/);
+    assert.match(
+      sweepSql,
+      /v_purchased := v_purchased \+ 1; v_units := v_units \+ rec\.actual_stack; v_solari := v_solari \+ \(rec\.item_price \* rec\.actual_stack\)/,
+      "one listing = one purchase; units and solari still track the full stack"
+    );
+    assert.match(sweepSql, /LIMIT 3 FOR UPDATE OF o, s SKIP LOCKED/, "Max Buys caps listings claimed this sweep");
+
+    // Dry-run ranking: a 500-unit commodity stack and a 1-unit sword each
+    // consume one Max Buys slot when Max Buys is 1.
+    const ranked = applyDryRunMaxBuysRanking([
+      normalizeBuybackLogEntry({
+        order_id: "100",
+        template_id: "WaterBottle",
+        item_price: "50",
+        stack_size: "500",
+        max_unit_price: "600",
+        result_code: 0,
+        result_label: "eligible"
+      }),
+      normalizeBuybackLogEntry({
+        order_id: "101",
+        template_id: "Sword",
+        item_price: "100",
+        stack_size: "1",
+        max_unit_price: "1200",
+        result_code: 0,
+        result_label: "eligible"
+      })
+    ], 1);
+    assert.equal(ranked.find((row) => row.orderId === "100").resultCode, 0, "cheapest listing is bought (whole stack)");
+    assert.equal(ranked.find((row) => row.orderId === "100").stackSize, "500");
+    assert.equal(ranked.find((row) => row.orderId === "101").resultCode, 5, "second listing is past Max Buys, not past a unit budget");
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test("admin buyback rules set exchange, caps, basis, and Max Buys as intended", () => {
+  const repoRoot = makeRepoRoot();
+  const config = { repoRoot, mockMode: false };
+  try {
+    const plan = loadBuybackSeedPlan(config);
+
+    // WaterBottle seed price 1000 at plan multiplier 5 → basis 1000 when
+    // schedule priceMultiplier is 5; 60% buyback → cap 600. Lower percent or
+    // higher market multiplier must change the cap the admin expects.
+    assert.equal(
+      buybackPlanValuesSql(plan, normalizeBuybackSchedule({ exchangeId: "1", priceMultiplier: 5, buybackPercent: 60 })),
+      "('O''Brien',0,60),\n('Sword',0,1200),\n('Sword',2,1500),\n('WaterBottle',0,600)"
+    );
+    assert.equal(
+      buybackPlanValuesSql(plan, normalizeBuybackSchedule({ exchangeId: "1", priceMultiplier: 5, buybackPercent: 30 })),
+      "('O''Brien',0,30),\n('Sword',0,600),\n('Sword',2,750),\n('WaterBottle',0,300)",
+      "buybackPercent scales the per-unit cap"
+    );
+    assert.equal(
+      buybackPlanValuesSql(plan, normalizeBuybackSchedule({ exchangeId: "1", priceMultiplier: 10, buybackPercent: 60 })),
+      "('O''Brien',0,120),\n('Sword',0,2400),\n('Sword',2,3000),\n('WaterBottle',0,1200)",
+      "priceMultiplier reprices the seeded basis before the percent"
+    );
+
+    const seeded = buildBuybackEligibilitySql(plan, normalizeBuybackSchedule({
+      exchangeId: "99",
+      buybackPercent: 60,
+      buybackPriceBasis: "seeded",
+      maxBuys: 10
+    }));
+    assert.match(seeded, /o\.exchange_id = 99\b/, "only the configured exchange is probed");
+    assert.match(seeded, /VALUES\n\('O''Brien',0,60\)/, "seeded basis embeds the percent caps");
+    assert.doesNotMatch(seeded, /live_buy_basis/, "seeded basis does not average live asks");
+    assert.match(seeded, /o\.item_price <= p\.max_unit_price/, "eligible = ask at or under the admin cap");
+    assert.match(seeded, /o\.item_price > p\.max_unit_price/, "above-threshold counts use the same cap");
+    assert.match(seeded, /p\.template_id IS NULL/, "unknown templates are counted, not bought");
+    assert.match(seeded, /COALESCE\(o\.item_price, 0\) <= 0 OR GREATEST/, "invalid price/stack rows are counted");
+
+    const lowest = buildBuybackEligibilitySql(plan, normalizeBuybackSchedule({
+      exchangeId: "99",
+      buybackPercent: 50,
+      buybackPriceBasis: "lowest"
+    }));
+    assert.match(lowest, /MIN\(o\.item_price\)/, "lowest basis uses the cheapest live ask per grade");
+    assert.match(lowest, /FLOOR\(\(basis_price \* 50 \+ 99\) \/ 100\)/, "live caps still apply buybackPercent");
+    assert.match(lowest, /live_buy_caps/, "live basis still falls back to seeded caps for quiet grades");
+
+    const average = buildBuybackEligibilitySql(plan, normalizeBuybackSchedule({
+      exchangeId: "99",
+      buybackPercent: 40,
+      buybackPriceBasis: "average"
+    }));
+    assert.match(average, /AVG\(o\.item_price\)/, "average basis uses the mean live ask");
+    assert.match(average, /FLOOR\(\(basis_price \* 40 \+ 99\) \/ 100\)/);
+
+    const sweepSql = buildBuybackSql(plan, normalizeBuybackSchedule({
+      exchangeId: "55",
+      buybackPercent: 70,
+      maxBuys: 12
+    }));
+    assert.match(sweepSql, /o\.exchange_id = 55\b/);
+    assert.match(sweepSql, /LIMIT 12 FOR UPDATE OF o, s SKIP LOCKED/, "Max Buys is the loop claim limit");
+    assert.match(sweepSql, /VALUES \(v_purchased, v_units, v_solari, 70, 12\)/, "result row records the admin percent and Max Buys");
+
+    const classifySql = buildBuybackClassifySql(plan, normalizeBuybackSchedule({ exchangeId: "55", buybackPercent: 60 }));
+    assert.match(classifySql, /WHEN p\.template_id IS NULL THEN 2/);
+    assert.match(classifySql, /WHEN COALESCE\(o\.item_price, 0\) <= 0 THEN 3/);
+    assert.match(classifySql, /WHEN GREATEST\(COALESCE\(i\.stack_size, 0\), COALESCE\(s\.initial_stack_size, 0\)\) <= 0 THEN 4/);
+    assert.match(classifySql, /WHEN o\.item_price > p\.max_unit_price THEN 1/);
+    assert.match(classifySql, /ELSE 0/);
+
+    assert.equal(normalizeBuybackSchedule({ buybackPriceBasis: "lowest" }).buybackPriceBasis, "lowest");
+    assert.equal(normalizeBuybackSchedule({ buybackPriceBasis: "average" }).buybackPriceBasis, "average");
+    assert.equal(normalizeBuybackSchedule({ buybackPriceBasis: "weird" }).buybackPriceBasis, "seeded", "unknown basis falls back to seeded");
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
 test("buyback caps reprice ranked categories the same way the seed run does", () => {
   // Realistic masks: high byte 0 = armor, 1 = weapons, 4 = augments.
   const plan = {
