@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { EDA_EXCHANGE_BOT_ADDON_ID, buildMarketSeedSql, loadMarketSeedPlan, normalizeSeedSchedule } from "../src/addonSeedJob.js";
+import { EDA_EXCHANGE_BOT_ADDON_ID, buildMarketSeedSql, loadMarketSeedPlan, normalizeSeedSchedule, seedRowCategoryMultiplier } from "../src/addonSeedJob.js";
 
 const REPO_ROOT = resolve(import.meta.dirname, "../../..");
 
@@ -120,6 +120,110 @@ test("original augment pricing keeps the plan's augment item prices", () => {
   } finally {
     rmSync(repoRoot, { recursive: true, force: true });
   }
+});
+
+// Realistic category masks: the exchange stores its top-level category in the
+// mask's high byte (0 = armor/garments, 1 = weapons, 4 = augments).
+const CATEGORY_PLAN = {
+  panel_version: "test",
+  price_multiplier: 5,
+  rows: [
+    { template_id: "Combat_Heavy_Unique_Top_06", display_name: "Bulwark Chest", kind: "equippable", stack_size: 1, price: 8000000, category_mask: 65792, category_depth: 3, quality_level: 3, listings: 1, durability_cur: 192, durability_max: 192 },
+    { template_id: "Combat_Heavy_Unique_Top_06", display_name: "Bulwark Chest", kind: "equippable", stack_size: 1, price: 5500000, category_mask: 65792, category_depth: 3, quality_level: 0, listings: 1, durability_cur: 180, durability_max: 180 },
+    { template_id: "Combat_Heavy_Unique_Top_06_Schematic", display_name: "Bulwark Chest", kind: "schematic", stack_size: 1, price: 700000, category_mask: 327936, category_depth: 3, quality_level: 2, listings: 1, durability_cur: 100, durability_max: 100 },
+    { template_id: "UniqueDualBlades_6", display_name: "Burning Blades", kind: "equippable", stack_size: 1, price: 9600000, category_mask: 16777216, category_depth: 3, quality_level: 4, listings: 1, durability_cur: 196, durability_max: 196 },
+    { template_id: "T6_Augment_Armor1", display_name: "Concussive Dampening", kind: "equippable", stack_size: 1, price: 28000000, category_mask: 67239936, category_depth: 2, quality_level: 3, listings: 1, durability_cur: 192, durability_max: 192 },
+    { template_id: "T6_Augment_Armor1_Schematic", display_name: "Concussive Dampening", kind: "schematic", stack_size: 1, price: 2800000, category_mask: 67371520, category_depth: 3, quality_level: 3, listings: 1, durability_cur: 100, durability_max: 100 },
+    { template_id: "WaterBottle", display_name: "Water Bottle", kind: "resource", stack_size: 10, price: 1000, category_mask: 84017152, category_depth: 2, quality_level: 0, listings: 1 }
+  ]
+};
+
+test("category multipliers scale seeded prices on top of the base multiplier", () => {
+  const repoRoot = makeRepoRoot({ plan: CATEGORY_PLAN });
+  try {
+    const plan = loadMarketSeedPlan({ repoRoot });
+    const sql = buildMarketSeedSql(plan, {
+      enabled: true,
+      exchangeId: "7",
+      priceMultiplier: 5,
+      augmentMultiplier: 2,
+      rankedArmorMultiplier: 3,
+      rankedWeaponMultiplier: 1.5
+    });
+    // Ranked armor grade 3: 8M base -> 3x = 24M.
+    assert.match(sql, /'Combat_Heavy_Unique_Top_06',1,24000000,/);
+    // Grade-0 stock of the same armor keeps the base multiplier alone.
+    assert.match(sql, /'Combat_Heavy_Unique_Top_06',1,5500000,/);
+    // Ranked armor schematics belong to the armor category too: 700k -> 2.1M.
+    assert.match(sql, /'Combat_Heavy_Unique_Top_06_Schematic',1,2100000,/);
+    // Ranked weapon grade 4 at a fractional 1.5x: 9.6M -> 14.4M.
+    assert.match(sql, /'UniqueDualBlades_6',1,14400000,/);
+    // Discounted augment item (half its 2.8M pattern = 1.4M) then 2x = 2.8M,
+    // and the pattern itself doubles to 5.6M — the augment multiplier
+    // preserves the "patterns cost twice the bottom-roll item" relationship.
+    assert.match(sql, /'T6_Augment_Armor1',1,2800000,/);
+    assert.match(sql, /'T6_Augment_Armor1_Schematic',1,5600000,/);
+    // Rows outside the three categories are untouched.
+    assert.match(sql, /'WaterBottle',10,1000,/);
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test("seed rows resolve their category multiplier by augment template and exchange category", () => {
+  const multipliers = { augmentMultiplier: 2, rankedArmorMultiplier: 3, rankedWeaponMultiplier: 4 };
+  // Augments and augment schematics match by template, whatever the mask.
+  assert.equal(seedRowCategoryMultiplier({ templateId: "T6_Augment_Melee4", qualityLevel: 2, categoryMask: 67239936 }, multipliers), 2);
+  assert.equal(seedRowCategoryMultiplier({ templateId: "T6_Augment_Melee4_Schematic", qualityLevel: 1, categoryMask: 67371520 }, multipliers), 2);
+  // Ranked armor: mask high byte 0 at grade >= 1, including stillsuits.
+  assert.equal(seedRowCategoryMultiplier({ templateId: "Stillsuit_Unique_Armored_06_Mask", qualityLevel: 1, categoryMask: 131072 }, multipliers), 3);
+  // Grade-0 stock keeps the base multiplier.
+  assert.equal(seedRowCategoryMultiplier({ templateId: "Stillsuit_Unique_Armored_06_Mask", qualityLevel: 0, categoryMask: 131072 }, multipliers), 1);
+  // Ranked weapons: mask high byte 1.
+  assert.equal(seedRowCategoryMultiplier({ templateId: "UniqueDualBlades_6", qualityLevel: 5, categoryMask: 16777216 }, multipliers), 4);
+  // Ranked rows in other top-level categories (for example vehicles) are untouched.
+  assert.equal(seedRowCategoryMultiplier({ templateId: "Sandbike_Treads_Mk6", qualityLevel: 2, categoryMask: 33554432 }, multipliers), 1);
+  // Schedules without the fields behave as a neutral 1x.
+  assert.equal(seedRowCategoryMultiplier({ templateId: "UniqueDualBlades_6", qualityLevel: 5, categoryMask: 16777216 }, {}), 1);
+});
+
+test("seed schedule normalizes category multipliers within 1-5x", () => {
+  const defaults = normalizeSeedSchedule({});
+  assert.deepEqual([defaults.augmentMultiplier, defaults.rankedArmorMultiplier, defaults.rankedWeaponMultiplier], [1, 1, 1]);
+
+  const set = normalizeSeedSchedule({ augmentMultiplier: 2.5, rankedArmorMultiplier: 5, rankedWeaponMultiplier: 1.339 });
+  assert.deepEqual([set.augmentMultiplier, set.rankedArmorMultiplier, set.rankedWeaponMultiplier], [2.5, 5, 1.34]);
+
+  // Saves that omit the fields (for example through the addon bridge) keep the stored values.
+  const kept = normalizeSeedSchedule({ intervalMinutes: 20 }, set);
+  assert.deepEqual([kept.augmentMultiplier, kept.rankedArmorMultiplier, kept.rankedWeaponMultiplier], [2.5, 5, 1.34]);
+
+  assert.throws(() => normalizeSeedSchedule({ augmentMultiplier: 0.5 }), /Seed schedule augmentMultiplier must be a number from 1 to 5/);
+  assert.throws(() => normalizeSeedSchedule({ rankedArmorMultiplier: 6 }), /rankedArmorMultiplier must be a number from 1 to 5/);
+  assert.throws(() => normalizeSeedSchedule({ rankedWeaponMultiplier: "big" }), /rankedWeaponMultiplier must be a number from 1 to 5/);
+});
+
+test("bundled plan: the three categories cover exactly the ranked rows", () => {
+  const plan = JSON.parse(readFileSync(resolve(REPO_ROOT, "runtime/data/market-seed-plan.json"), "utf8"));
+  // Distinct primes make the resolved category unambiguous.
+  const multipliers = { augmentMultiplier: 2, rankedArmorMultiplier: 3, rankedWeaponMultiplier: 5 };
+  const counts = { 1: 0, 2: 0, 3: 0, 5: 0 };
+  for (const row of plan.rows) {
+    const resolved = seedRowCategoryMultiplier(
+      { templateId: row.template_id, qualityLevel: row.quality_level, categoryMask: row.category_mask },
+      multipliers
+    );
+    counts[resolved] += 1;
+    if (row.quality_level >= 1) {
+      assert.notEqual(resolved, 1, `${row.template_id} grade ${row.quality_level} must belong to a category`);
+    } else if (!/^T\d+_Augment_/i.test(row.template_id)) {
+      assert.equal(resolved, 1, `${row.template_id} grade 0 must keep the base multiplier`);
+    }
+  }
+  assert.equal(counts[2], 908, "augment items and augment schematics");
+  assert.equal(counts[3], 435, "ranked armor including stillsuits and radiation suits");
+  assert.equal(counts[5], 400, "ranked weapons");
+  assert.equal(counts[1], plan.rows.length - 908 - 435 - 400, "everything else keeps the base multiplier");
 });
 
 test("seed schedule normalizes the augment pricing choice", () => {
