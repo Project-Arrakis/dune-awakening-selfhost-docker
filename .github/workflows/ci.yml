@@ -118,6 +118,7 @@ jobs:
         run: |
           runtime/tests/test-compose-project-name-portability.sh
           runtime/tests/test-compose-project-resolution.sh
+          runtime/tests/test-container-compose-labels.sh
 
   container-lifecycle:
     runs-on: ubuntu-latest
