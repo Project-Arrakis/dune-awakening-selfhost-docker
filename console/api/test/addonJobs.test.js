@@ -255,6 +255,8 @@ test("builds buyback SQL server-side from the bundled seed plan", () => {
     const classifySql = buildBuybackClassifySql(plan, schedule);
     assert.ok(isReadOnlySql(classifySql), "classify query must be read-only SQL");
     assert.match(classifySql, /AS result_code/);
+    assert.match(classifySql, /COALESCE\(o\.item_price, 0\) <= 0/, "NULL asks are invalid, not eligible");
+    assert.match(classifySql, /LIMIT 1000/, "classify is capped so idle ticks cannot pull the whole exchange");
     assert.match(classifySql, /price too high/);
     assert.match(classifySql, /no reference price/);
     assert.doesNotMatch(classifySql, /\b(?:BEGIN|COMMIT)\s*;/i);
@@ -265,10 +267,15 @@ test("builds buyback SQL server-side from the bundled seed plan", () => {
     assert.match(sweepSql, /LIMIT 250 FOR UPDATE/);
     assert.match(sweepSql, /999999999/, "payment entries use the never-expires sentinel");
     assert.match(sweepSql, /PRIMARY KEY \(template_id, quality_level\)/, "the plan preserves exact per-grade caps");
+    assert.match(sweepSql, /order_id BIGINT NOT NULL PRIMARY KEY/);
     assert.match(sweepSql, /GREATEST\(COALESCE\(i\.stack_size, 0\), COALESCE\(s\.initial_stack_size, 0\)\) AS actual_stack/, "the entire listed stack is purchased");
     assert.match(sweepSql, /LEAST\(GREATEST\(COALESCE\(o\.quality_level, 0\), COALESCE\(i\.quality_level, 0\), 0\), 5\)/, "grade can come from the order or backing item");
     assert.match(sweepSql, /LEFT JOIN LATERAL \(/, "unseeded grades use the conservative fallback lookup");
     assert.match(sweepSql, /o\.item_price > 0 AND GREATEST\(/, "non-positive prices and empty stacks are rejected");
+    assert.match(sweepSql, /COALESCE\(o\.item_price, 0\)/, "NULL asks cannot abort the NOT NULL log insert");
+    assert.match(sweepSql, /COALESCE\(o\.template_id, ''\)/);
+    assert.match(sweepSql, /'order_id', l\.order_id::text/, "BIGINT ids stay decimal strings in JSON");
+    assert.doesNotMatch(sweepSql, /to_jsonb\(l\)/, "row-to-json would emit BIGINT as a JSON number");
     assert.doesNotMatch(sweepSql, /FLOOR\(p\.max_unit_price \*/, "exact grade caps are not multiplied a second time");
     assert.match(sweepSql, /o\.exchange_id = 77\b/);
     assert.match(sweepSql, /CREATE TEMP TABLE market_buy_log/);
@@ -703,10 +710,8 @@ test("idle buyback runs persist a dry-run classify batch with skip reasons", asy
     assert.equal(log.batches[0].exchangeId, "42");
     assert.match(log.batches[0].note, /nothing purchased/);
     assert.equal(log.batches[0].entries[0].displayName, "Sword");
-    assert.equal(log.batches[0].entries[0].resultHex, "0x0");
-    assert.equal(log.batches[0].entries[1].resultHex, "0x2");
-    assert.equal(log.batches[0].entries[2].resultHex, "0x1");
-    assert.match(log.batches[0].entries[2].detail, /ask 900 > cap 600/);
+    assert.deepEqual(log.batches[0].entries.map((entry) => entry.resultHex), ["0x0", "0x1", "0x2"]);
+    assert.match(log.batches[0].entries[1].detail, /ask 900 > cap 600/);
   } finally {
     rmSync(repoRoot, { recursive: true, force: true });
   }
@@ -845,4 +850,36 @@ test("applyDryRunMaxBuysRanking keeps cheaper eligible listings and marks the re
   assert.equal(ranked.find((row) => row.orderId === "1").resultCode, 0);
   assert.equal(ranked.find((row) => row.orderId === "2").resultCode, 5);
   assert.equal(ranked.find((row) => row.orderId === "3").resultCode, 1);
+  assert.deepEqual(ranked.map((row) => row.resultCode), [0, 1, 5], "after ranking, rows follow result_code then price like the sweep json_agg");
+});
+
+test("normalizeBuybackLogEntry prefers the seed-plan name for that template grade", () => {
+  const names = new Map([
+    ["Sword\u00000", "Sword"],
+    ["Sword\u00002", "Sword Schematic"],
+    ["Sword", "Sword"]
+  ]);
+  assert.equal(normalizeBuybackLogEntry({ order_id: "1", template_id: "Sword", quality_level: "2", result_code: 0 }, names).displayName, "Sword Schematic");
+  assert.equal(normalizeBuybackLogEntry({ order_id: "2", template_id: "Sword", quality_level: "0", result_code: 0 }, names).displayName, "Sword");
+});
+
+test("readBuybackLog hides expired batches without rewriting the file", () => {
+  const repoRoot = makeRepoRoot();
+  const config = { repoRoot };
+  const nowMs = Date.parse("2026-08-17T12:00:00.000Z");
+  try {
+    const path = buybackLogPath(config);
+    mkdirSync(join(config.repoRoot, "runtime/generated/market-bot"), { recursive: true });
+    const payload = JSON.stringify({
+      batches: [
+        { source: "expired", at: new Date(nowMs - BUYBACK_LOG_RETENTION_MS - 1).toISOString(), entries: [] },
+        { source: "fresh", at: new Date(nowMs).toISOString(), entries: [] }
+      ]
+    });
+    writeFileSync(path, payload);
+    assert.deepEqual(readBuybackLog(config, { now: nowMs }).batches.map((batch) => batch.source), ["fresh"]);
+    assert.equal(readFileSync(path, "utf8"), payload);
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
 });

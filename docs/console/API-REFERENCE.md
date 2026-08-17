@@ -441,7 +441,7 @@ blacklist behaves.
 | GET | `/api/exchange/market` | Market Bot status: seed-plan availability and both schedules | None |
 | GET | `/api/exchange/market/exchanges` | Discover exchanges (BIGINT ids as strings; access-pointed exchanges first) | None |
 | POST | `/api/exchange/market/buyback/probe` | Read-only buyback diagnostics: total, recognized, eligible, above-threshold, unknown-template, and invalid price/stack listing counts (no backup taken) | body: `exchangeId?`, `priceMultiplier?`, `augmentMultiplier?`, `rankedArmorMultiplier?`, `rankedWeaponMultiplier?`, `buybackPercent?`, `buybackPriceBasis?`, `maxBuys?` |
-| GET | `/api/exchange/market/buyback/log` | Stored Buyback Sweep Log batches (purchased and skipped listings with reasons). Batches older than 5 days are removed. | None |
+| GET | `/api/exchange/market/buyback/log` | Stored Buyback Sweep Log batches (purchased and skipped listings with reasons). Batches older than 5 days are omitted; the scheduler tick deletes them from disk. | None |
 | POST | `/api/exchange/market/buyback/log` | Read-only dry-run classify of every player sell listing; appends a log batch (no backup taken) | body: same optional overrides as the probe |
 | POST | `/api/exchange/market/buyback/log/clear` | Clear stored Buyback Sweep Log batches | None |
 | POST | `/api/exchange/market/buyback/schedule` | Save the buyback schedule (audited, rate-limited) | body: `enabled`, `intervalMinutes`, `exchangeId`, `priceMultiplier`, `augmentMultiplier`, `rankedArmorMultiplier`, `rankedWeaponMultiplier`, `buybackPercent`, `buybackPriceBasis`, `maxBuys` |

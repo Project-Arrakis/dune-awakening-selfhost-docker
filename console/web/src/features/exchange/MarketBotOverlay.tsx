@@ -247,12 +247,18 @@ export function MarketBotOverlay({ onClose, onError, confirmAction }: MarketBotO
   }, [onError]);
 
   useEffect(() => {
+    let cancelled = false;
     const timer = window.setInterval(() => {
       void marketBotApi.buybackLog()
-        .then((log) => setLogBatches(log.batches || []))
+        .then((log) => {
+          if (!cancelled) setLogBatches(log.batches || []);
+        })
         .catch(() => { /* keep the last successful log view */ });
     }, 15000);
-    return () => window.clearInterval(timer);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
   }, []);
 
   async function refreshStatus() {
