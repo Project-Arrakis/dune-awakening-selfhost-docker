@@ -18,6 +18,7 @@ import {
   supportsGeneratorRefillQueue
 } from "../src/duneDb.js";
 import { addCurrency, addFactionReputation, addGuildMember, addIntel, addonLeadershipPlayers, addonOpsHealthFarms, addonOpsHealthPlayers, addonOpsHealthSummary, addonOpsHealthSummaryV2, addSpecializationXp, applyLandsraadMilestonePreset, augmentInventoryItem, augmentNewestPlayerItem, baseContainerSlots, baseGeneratorFuelLevels, baseGenerators, baseIsBackedUp, changeDunePassword, completeJourneyNode, completeTutorial, dbStatus, deleteBaseContainerItem, deleteInventoryItem, demoteGuildMember, disbandGuild, exportBaseAsBlueprint, generatorUptimePolicy, giveItemToPlayer, giveItemToStorage, guildMembers, landsraadOverview, listBases, listGuilds, listPlayers, listRoutines, listSpicefieldTypes, listTables, liveMapPlayers, liveMapServices, playerBuildingUnlockState, playerCraftingRecipes, playerCurrency, playerFactions, playerIntel, playerInventory, playerInventoryAll, playerJourney, playerPortalSnapshots, playerPosition, playerProfile, playerProgression, playerResearchItems, playerSolarisCoinTotal, playerVitals, portalGeneratorFuel, portalVehicles, promoteGuildMember, refillBaseGenerators, removeGuildMember, repairFactionReputation, repairVehicleDecay, resetJourneyNode, resetTutorial, routineDefinition, runSql, setLandsraadPlayerContribution, setPlayerFaction, supportsGeneratorRefill, tablePreview, teleportOfflinePlayerToCoords, unlockCraftingRecipe, unlockResearchItem, updateInventoryItem, updateLandsraadRewardTier, updateLandsraadTaskGoal, updateLandsraadTermTaskGoals, updateSpicefieldType, updateTableRow, UnsupportedCapabilityError, _resetPlayerTargetCacheForTests } from "../src/duneDb.js";
+import { listStorage, liveMapStorage, trackPlayerPlaytime } from "../src/duneDb.js";
 
 beforeEach(() => {
   _resetPlayerTargetCacheForTests();
@@ -1521,6 +1522,8 @@ test("players query uses parameterized search input", async () => {
   assert.match(playerQuery.text, /as player_pawn_id/);
   assert.match(playerQuery.text, /as funcom_id/);
   assert.match(playerQuery.text, /as action_player_id/);
+  assert.match(playerQuery.text, /left join dune\.console_player_playtime/);
+  assert.match(playerQuery.text, /as total_playtime_seconds/);
   assert.match(playerQuery.text, /A5C0DE5E12A00001/);
   assert.match(playerQuery.text, /Server#0001/);
   assert.match(playerQuery.text, /a\.id <> 900000103::bigint/);
@@ -1535,6 +1538,69 @@ test("players query uses parameterized search input", async () => {
   assert.equal(result.rows[0].funcom_id, "RedBlink#75570");
   assert.equal(result.rows[0].fls_id, "RedBlink#75570");
   assert.equal(result.rows[0].action_player_id, "RedBlink#75570");
+});
+
+test("playtime tracker persists active sessions and closes players no longer online", async () => {
+  const calls = [];
+  const run = async (text, values = []) => {
+    calls.push({ text, values });
+    if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+    if (text.includes("information_schema.columns")) {
+      return { rows: ["account_id", "online_status", "last_login_time"].map((column_name) => ({ column_name })) };
+    }
+    return { rows: [] };
+  };
+  const db = { query: run, transaction: async (fn) => fn({ query: run }) };
+
+  await trackPlayerPlaytime(db);
+
+  assert.ok(calls.some((call) => call.text.includes("create table if not exists dune.console_player_playtime")));
+  const tick = calls.find((call) => call.text.includes("with currently_online as"));
+  assert.ok(tick);
+  assert.match(tick.text, /closed_sessions as/);
+  assert.match(tick.text, /not exists \(select 1 from currently_online/);
+  assert.match(tick.text, /on conflict \(account_id\) do update/);
+  assert.match(tick.text, /ps\.last_login_time as session_login_at/);
+});
+
+test("playtime tracker remains compatible without a session login timestamp", async () => {
+  const calls = [];
+  const db = {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("information_schema.columns")) {
+        return { rows: ["account_id", "online_status"].map((column_name) => ({ column_name })) };
+      }
+      return { rows: [] };
+    }
+  };
+
+  await trackPlayerPlaytime(db);
+  const tick = calls.find((call) => call.text.includes("with currently_online as"));
+  assert.match(tick.text, /null::timestamp with time zone as session_login_at/);
+});
+
+test("storage discovery includes verified developer storage containers", async () => {
+  const calls = [];
+  const db = {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("to_regprocedure")) return { rows: [{ exists: false }] };
+      if (text.includes("information_schema.columns")) return { rows: [] };
+      return { rows: [] };
+    }
+  };
+
+  await listStorage(db);
+  await liveMapStorage(db);
+
+  const storageQueries = calls.filter((call) => call.text.includes("p.building_type in"));
+  assert.equal(storageQueries.length, 2);
+  for (const query of storageQueries) {
+    assert.match(query.text, /Developer_StorageContainer_Placeable/);
+  }
 });
 
 test("players query excludes the reserved fresh-install GM identity from rows and totals", async () => {

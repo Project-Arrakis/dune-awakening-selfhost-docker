@@ -12,7 +12,7 @@ Classification is an explicit `building_type` allowlist in `BASE_INVENTORY_TYPES
 
 | Group | `building_type` (lowercased) → label |
 |---|---|
-| Storage | `storagecontainer` → Storage Container · `mediumstoragecontainer`† → Medium Storage Container (100 slots) · `genericcontainer` → **Chest** · `spicesilo` and `smallstoragecontainer`† → **Small Storage Container** |
+| Storage | `storagecontainer` → Storage Container · `mediumstoragecontainer`† → Medium Storage Container (100 slots) · `developer_storagecontainer` → Developer Storage Container · `genericcontainer` → **Chest** · `spicesilo` and `smallstoragecontainer`† → **Small Storage Container** |
 | Refining | `smallorerefinery` · `mediumorerefinery` · `largeorerefinery`† · `smallchemicalrefinery` · `mediumchemicalrefinery` → matching names; `spicerefinery` → Spice Refinery · `mediumspicerefinery`† · `largespicerefinery`† |
 | Crafting | `fabricator` → Fabricator · `survivalfabricator` · `vehiclesfabricator` · `weaponsfabricator` · `wearablesfabricator` → Garment Fabricator · plus `advancedsurvivalfabricator`†, `advancedvehiclefabricator`† (singular), `advancedweaponsfabricator`†, `advancedwearablesfabricator`† → Advanced … |
 | Other | `recycler` → Recycler · `repairstation` → Repair Station · `totem_small` → **Sub-Fief Console** · `totem` → **Advanced Sub-Fief** |
@@ -28,6 +28,8 @@ docker exec dune-server-survival-1 bash -c 'cat /home/dune/server/DuneSandbox/Co
 ```
 
 That is what caught `AdvancedVehicleFabricator_Placeable` being **singular** while its own base building, `VehiclesFabricator_Placeable`, is plural. The reverse does not hold: the extraction is lossy — `SpiceSilo_Placeable`, `SmallOreRefinery_Placeable` and `Fabricator_Placeable` all fail to appear despite being live on the same server, and a handful of results come back truncated at compression boundaries (`MediumorageContainer_Placeable`, `RepairSta_Placeable`). Presence is proof; absence is not.
+
+`Developer_StorageContainer_Placeable` was verified from a live server database (9 placements). It is included explicitly in the Storage page, Live Map storage markers, and this base inventory allowlist; it is not inferred from `inventory_type`.
 
 `SpiceSilo_Placeable` and `SmallStorageContainer_Placeable` are both listed and both labelled "Small Storage Container": the former is the legacy name every live placement still carries (48 on production against 0 of the latter), the latter is the asset name shipped in the paks. Anything not listed is omitted rather than bucketed, matching the allowlist reasoning in `portalGeneratorFuel`'s `generator_spec` CTE — an unrecognised placeable must not acquire a group and report an invented fill level.
 

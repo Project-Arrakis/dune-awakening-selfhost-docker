@@ -18,7 +18,8 @@ const bannedPlayer = {
   online_status: "Banned",
   is_banned: true,
   map: "Survival_1",
-  fls_id: "254A06043E9F0B16"
+  fls_id: "254A06043E9F0B16",
+  total_playtime_seconds: 3665
 };
 
 beforeEach(() => {
@@ -60,6 +61,9 @@ describe("PlayersPanel persistent bans", () => {
 
     expect(await screen.findByText("Banned", { selector: ".player-status-cell span" })).toBeInTheDocument();
     expect(screen.getByText("Currently Active")).toBeInTheDocument();
+    expect(screen.getByText("1h 1m")).toBeInTheDocument();
+    const headers = screen.getAllByRole("columnheader").map((header) => header.textContent?.replace(/[ ↑↓]/g, ""));
+    expect(headers.indexOf("TotalPlaytime")).toBe(headers.indexOf("LastOnline") + 1);
     const filter = screen.getByLabelText("Filter");
     expect(screen.getByRole("option", { name: "Banned" })).toBeInTheDocument();
     fireEvent.change(filter, { target: { value: "banned" } });
