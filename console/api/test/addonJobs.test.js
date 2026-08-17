@@ -44,7 +44,7 @@ function schedulePath(repoRoot) {
 
 // Fake db: the first statement of the eligibility probe is WITH, the sweep
 // starts with its first temp table; capability support queries get empty rows.
-function fakeDb({ eligible = "0", sweepRow = null, onQuery = null } = {}) {
+function fakeDb({ eligible = "0", probeRow = null, sweepRow = null, onQuery = null } = {}) {
   const probes = [];
   const sweeps = [];
   const db = {
@@ -57,9 +57,20 @@ function fakeDb({ eligible = "0", sweepRow = null, onQuery = null } = {}) {
         if (intercepted) return intercepted;
       }
       const text = String(sql).trim();
-      if (/^WITH market_buy_plan/.test(text)) {
+      if (/^WITH /.test(text)) {
         probes.push(sql);
-        return { rows: [{ eligible_orders: String(eligible) }], fields: [{ name: "eligible_orders" }], rowCount: 1, command: "SELECT" };
+        return {
+          rows: [{
+            player_sell_orders: String(eligible),
+            known_player_sell_orders: String(eligible),
+            eligible_orders: String(eligible),
+            above_threshold_sell_orders: "0",
+            unknown_template_sell_orders: "0",
+            invalid_price_or_stack_sell_orders: "0",
+            ...(probeRow || {})
+          }],
+          fields: [{ name: "eligible_orders" }], rowCount: 1, command: "SELECT"
+        };
       }
       if (/^CREATE TEMP TABLE market_buy_plan/.test(text)) {
         sweeps.push(sql);
@@ -287,28 +298,48 @@ test("rejects missing or malformed bundled seed plans", () => {
   }
 });
 
-test("probe runs the read-only eligibility query without touching backups", async () => {
+test("probe reports why player listings are ineligible without touching backups", async () => {
   const repoRoot = makeRepoRoot();
   const config = { repoRoot, mockMode: false };
   try {
     saveBuybackSchedule(config, { exchangeId: "42", buybackPercent: 70 });
-    const db = fakeDb({ eligible: "3" });
+    const db = fakeDb({
+      eligible: "3",
+      probeRow: {
+        player_sell_orders: "12",
+        known_player_sell_orders: "9",
+        above_threshold_sell_orders: "5",
+        unknown_template_sell_orders: "3",
+        invalid_price_or_stack_sell_orders: "1"
+      }
+    });
     const result = await probeBuybackEligibility(config, db, {});
     assert.deepEqual(result, {
       eligible: 3,
+      playerListings: 12,
+      knownListings: 9,
+      aboveThreshold: 5,
+      unknownTemplate: 3,
+      invalidPriceOrStack: 1,
       exchangeId: "42",
       priceMultiplier: 5,
       augmentMultiplier: 1,
       rankedArmorMultiplier: 1,
       rankedWeaponMultiplier: 1,
       buybackPercent: 70,
+      buybackPriceBasis: "seeded",
       maxBuys: 500
     });
     assert.equal(db.probes.length, 1);
     assert.equal(db.sweeps.length, 0);
+    assert.match(db.probes[0], /player_sell_orders/);
+    assert.match(db.probes[0], /above_threshold_sell_orders/);
+    assert.match(db.probes[0], /unknown_template_sell_orders/);
+    assert.ok(isReadOnlySql(db.probes[0]), "diagnostic probe remains read-only");
 
-    const overridden = await probeBuybackEligibility(config, db, { exchangeId: "99", buybackPercent: 10 });
+    const overridden = await probeBuybackEligibility(config, db, { exchangeId: "99", buybackPercent: 10, buybackPriceBasis: "lowest" });
     assert.equal(overridden.exchangeId, "99");
+    assert.equal(overridden.buybackPriceBasis, "lowest");
     assert.match(db.probes[1], /o\.exchange_id = 99\b/);
 
     await assert.rejects(() => probeBuybackEligibility({ repoRoot: makeRepoRoot() }, db, {}), /exchangeId is required/);

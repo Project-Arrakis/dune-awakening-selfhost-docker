@@ -67,9 +67,15 @@ export type MarketExchange = {
 
 export type MarketProbeResult = MarketCategoryMultipliers & {
   eligible: number;
+  playerListings: number;
+  knownListings: number;
+  aboveThreshold: number;
+  unknownTemplate: number;
+  invalidPriceOrStack: number;
   exchangeId: string;
   priceMultiplier: number;
   buybackPercent: number;
+  buybackPriceBasis: MarketPriceBasis;
   maxBuys: number;
 };
 
@@ -90,7 +96,7 @@ export type MarketRunResult = {
 export const marketBotApi = {
   status: () => api<MarketBotStatus>("/api/exchange/market"),
   exchanges: () => api<{ rows: MarketExchange[]; capabilities: { exchangeMarket?: boolean } }>("/api/exchange/market/exchanges"),
-  probeBuyback: (overrides: Partial<{ exchangeId: string; priceMultiplier: number; buybackPercent: number; maxBuys: number } & MarketCategoryMultipliers> = {}) =>
+  probeBuyback: (overrides: Partial<{ exchangeId: string; priceMultiplier: number; buybackPercent: number; buybackPriceBasis: MarketPriceBasis; maxBuys: number } & MarketCategoryMultipliers> = {}) =>
     post<MarketProbeResult>("/api/exchange/market/buyback/probe", overrides),
   saveBuybackSchedule: (schedule: Partial<MarketBuybackSchedule>) => post<MarketBuybackSchedule>("/api/exchange/market/buyback/schedule", schedule),
   saveSeedSchedule: (schedule: Partial<MarketSeedSchedule>) => post<MarketSeedSchedule>("/api/exchange/market/seed/schedule", schedule),

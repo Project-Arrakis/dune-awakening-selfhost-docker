@@ -357,16 +357,20 @@ export function buildBuybackEligibilitySql(plan, schedule) {
 bot AS (
     SELECT id AS owner_id FROM dune.actors WHERE class = 'Revy' LIMIT 1
 )
-SELECT COUNT(*)::text AS eligible_orders
+SELECT
+  COUNT(*)::text AS player_sell_orders,
+  COUNT(*) FILTER (WHERE p.template_id IS NOT NULL)::text AS known_player_sell_orders,
+  COUNT(*) FILTER (WHERE p.template_id IS NOT NULL AND ${BUYBACK_ELIGIBLE_PREDICATE})::text AS eligible_orders,
+  COUNT(*) FILTER (WHERE p.template_id IS NOT NULL AND o.item_price > 0 AND ${BUYBACK_STACK_SQL} > 0 AND o.item_price > p.max_unit_price)::text AS above_threshold_sell_orders,
+  COUNT(*) FILTER (WHERE p.template_id IS NULL)::text AS unknown_template_sell_orders,
+  COUNT(*) FILTER (WHERE p.template_id IS NOT NULL AND (COALESCE(o.item_price, 0) <= 0 OR ${BUYBACK_STACK_SQL} <= 0))::text AS invalid_price_or_stack_sell_orders
 FROM dune.dune_exchange_orders o
 JOIN dune.dune_exchange_sell_orders s ON s.order_id = o.id
 LEFT JOIN dune.items i ON i.id = o.item_id
 ${BUYBACK_PLAN_LATERAL}
 LEFT JOIN bot b ON TRUE
 WHERE o.exchange_id = ${exchangeId}
-  AND ${BUYBACK_PLAYER_SELL_SQL}
-  AND p.template_id IS NOT NULL
-  AND ${BUYBACK_ELIGIBLE_PREDICATE};`;
+  AND ${BUYBACK_PLAYER_SELL_SQL};`;
 }
 
 export function buildBuybackSql(plan, schedule) {
@@ -427,21 +431,40 @@ export async function probeBuybackEligibility(config, db, overrides = {}) {
     rankedArmorMultiplier: overrides.rankedArmorMultiplier,
     rankedWeaponMultiplier: overrides.rankedWeaponMultiplier,
     buybackPercent: overrides.buybackPercent,
+    buybackPriceBasis: overrides.buybackPriceBasis,
     maxBuys: overrides.maxBuys
   }, saved);
   if (!schedule.exchangeId) throw new Error("An exchangeId is required to probe buyback eligibility.");
   const plan = loadBuybackSeedPlan(config);
   const result = await runSql(db, buildBuybackEligibilitySql(plan, schedule), false);
+  const diagnostics = buybackDiagnostics(result?.rows?.[0]);
   return {
-    eligible: eligibleCount(result),
+    ...diagnostics,
     exchangeId: schedule.exchangeId,
     priceMultiplier: schedule.priceMultiplier,
     augmentMultiplier: schedule.augmentMultiplier,
     rankedArmorMultiplier: schedule.rankedArmorMultiplier,
     rankedWeaponMultiplier: schedule.rankedWeaponMultiplier,
     buybackPercent: schedule.buybackPercent,
+    buybackPriceBasis: schedule.buybackPriceBasis,
     maxBuys: schedule.maxBuys
   };
+}
+
+function buybackDiagnostics(row = {}) {
+  return {
+    playerListings: diagnosticCount(row.player_sell_orders),
+    knownListings: diagnosticCount(row.known_player_sell_orders),
+    eligible: diagnosticCount(row.eligible_orders),
+    aboveThreshold: diagnosticCount(row.above_threshold_sell_orders),
+    unknownTemplate: diagnosticCount(row.unknown_template_sell_orders),
+    invalidPriceOrStack: diagnosticCount(row.invalid_price_or_stack_sell_orders)
+  };
+}
+
+function diagnosticCount(value) {
+  const count = Number(value || 0);
+  return Number.isFinite(count) && count > 0 ? Math.trunc(count) : 0;
 }
 
 export function createAddonJobScheduler(config, options = {}) {
