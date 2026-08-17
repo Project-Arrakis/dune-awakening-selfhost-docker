@@ -8648,23 +8648,88 @@ export async function addonOpsPrometheusHealth(promBaseUrl = process.env.METRICS
   };
 }
 
-export async function addonOpsContainerHealth() {
-  try {
-    const { execSync } = await import("node:child_process");
-    const raw = execSync(
-      "docker stats --no-stream --format '{{json .}}'",
-      { encoding: "utf8", timeout: 5000, maxBuffer: 1024 * 1024 }
-    );
-    const containers = raw.trim().split("\n").map(l => JSON.parse(l)).map(c => ({
-      name: c.Name || "unknown",
+// Parses newline-delimited `docker ... --format '{{json .}}'` output into
+// an array of parsed row objects. Exported for direct unit testing.
+export function parseDockerJsonLines(output) {
+  return String(output || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => JSON.parse(line));
+}
+
+// Merges `docker stats` output with `docker ps` output (real container
+// status -- docker stats's own status field is unreliable) into the shape
+// the dune-ops-observability addon's NOC Infra tab already expects
+// (name/cpu/mem/memLimit/netIO/blockIO/status). Exported for direct unit
+// testing without needing to mock child_process.
+export function mergeContainerHealth(statsOutput, statusOutput) {
+  const statuses = new Map(
+    parseDockerJsonLines(statusOutput).map((row) => [
+      String(row.Names || row.Name || "").trim(),
+      String(row.Status || "unknown")
+    ])
+  );
+  return parseDockerJsonLines(statsOutput).map((c) => {
+    const name = String(c.Name || "unknown").trim();
+    return {
+      name,
       cpu: c.CPUPerc || "0%",
       mem: c.MemUsage ? c.MemUsage.split(" / ")[0] : "0B",
       memLimit: c.MemUsage ? c.MemUsage.split(" / ")[1] || "" : "",
       netIO: c.NetIO || "0B",
       blockIO: c.BlockIO || "0B",
-      status: c.State || "unknown"
-    }));
-    return { containers };
+      status: statuses.get(name) || "unknown"
+    };
+  });
+}
+
+function execFileText(command, args) {
+  return new Promise((resolvePromise, rejectPromise) => {
+    // Lazy import keeps this module's top-level import list unchanged for
+    // every other export in this large file; child_process is only ever
+    // needed by this one function.
+    import("node:child_process").then(({ execFile }) => {
+      execFile(command, args, { encoding: "utf8", timeout: 5000, maxBuffer: 1024 * 1024 }, (error, stdout) => {
+        if (error) rejectPromise(error);
+        else resolvePromise(stdout);
+      });
+    }, rejectPromise);
+  });
+}
+
+export async function addonOpsContainerHealth(options = {}) {
+  // Scoped to this deployment's own Compose project only -- an earlier
+  // version had no --filter at all, exposing resource stats for every
+  // container on the host (including unrelated projects) to any addon
+  // with ops:read. Also uses execFile (non-blocking, no shell) instead of
+  // the earlier execSync, which blocked the whole Console API's event
+  // loop for the duration of the docker stats call. See issue #240.
+  //
+  // `docker stats` has no --filter flag (confirmed via `docker stats
+  // --help` against a live deployment -- only `docker ps` supports label
+  // filters; see issue #246, found during the live-deployment test this
+  // fix's own PR requires). The scoping is therefore done in two steps:
+  // resolve this project's container names via a filtered `docker ps`
+  // first, then pass those names positionally to `docker stats`.
+  const projectName = String(
+    options.projectName ?? process.env.DUNE_COMPOSE_PROJECT_NAME ?? process.env.COMPOSE_PROJECT_NAME ?? ""
+  ).trim();
+  if (!projectName) {
+    return { containers: [], error: "The Dune Compose project name is not configured." };
+  }
+  const run = options.run || execFileText;
+  const filter = `label=com.docker.compose.project=${projectName}`;
+  try {
+    const statusOutput = await run("docker", ["ps", "--filter", filter, "--format", "{{json .}}"]);
+    const names = parseDockerJsonLines(statusOutput)
+      .map((row) => String(row.Names || row.Name || "").trim())
+      .filter(Boolean);
+    if (names.length === 0) {
+      return { containers: [] };
+    }
+    const statsOutput = await run("docker", ["stats", "--no-stream", "--format", "{{json .}}", ...names]);
+    return { containers: mergeContainerHealth(statsOutput, statusOutput) };
   } catch {
     return { containers: [], error: "Docker stats unavailable — is Docker running?" };
   }
