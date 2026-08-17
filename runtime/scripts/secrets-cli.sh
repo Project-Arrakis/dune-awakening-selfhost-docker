@@ -73,7 +73,7 @@ _dune_secrets_require_stage2_name() {
       return 0
       ;;
     *)
-      echo "dune secrets: '$name' is not in scope for this stage. Only server-login-password-secret and username-server-login-secret are wired so far (PostgreSQL, Funcom, and RabbitMQ secrets are explicitly out of scope -- see docs/design/secrets-stage2-server-login-l1-design-2026-08-17.md)." >&2
+      echo "dune secrets: '$name' is not in scope for this stage. Only server-login-password-secret and username-server-login-secret are wired so far (PostgreSQL, Funcom, and RabbitMQ secrets are explicitly out of scope -- see docs/security/secrets-management.md for what this feature covers)." >&2
       return 1
       ;;
   esac
@@ -189,15 +189,27 @@ cmd_verify() {
 }
 
 cmd_migrate() {
-  local name="${1:-}"
-  local dry_run=0
-  shift || true
-  while [ $# -gt 0 ]; do
-    case "$1" in
+  # Accepts --dry-run in either position (before or after <name>) --
+  # an earlier version required it strictly after the name, matching
+  # the design doc's own usage-string ordering, but that's a
+  # plausible, easy operator mistake (most CLI tools accept flags in
+  # either position) with a confusing "unknown option" error pointing
+  # at the *name* itself if guessed wrong. Collect all positional args
+  # and flags in one pass instead of assuming position.
+  local name="" dry_run=0
+  local arg
+  for arg in "$@"; do
+    case "$arg" in
       --dry-run) dry_run=1 ;;
-      *) echo "dune secrets migrate: unknown option '$1'" >&2; return 2 ;;
+      --*) echo "dune secrets migrate: unknown option '$arg'" >&2; return 2 ;;
+      *)
+        if [ -n "$name" ]; then
+          echo "dune secrets migrate: unexpected extra argument '$arg'" >&2
+          return 2
+        fi
+        name="$arg"
+        ;;
     esac
-    shift
   done
 
   if [ -z "$name" ]; then
