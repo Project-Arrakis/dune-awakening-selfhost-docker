@@ -58,7 +58,7 @@ export function UpdatesPanel({
   const [autoGameIntervalMinutes, setAutoGameIntervalMinutes] = useState("60");
   const [autoGameApplyEnabled, setAutoGameApplyEnabled] = useState(true);
   const [autoGameNotifyEnabled, setAutoGameNotifyEnabled] = useState(true);
-  const [autoGameNotifyMinutes, setAutoGameNotifyMinutes] = useState("15");
+  const [autoGameNotifyMinutes, setAutoGameNotifyMinutes] = useState("15, 10, 5, 1");
   const [autoGameWaitUntilEmpty, setAutoGameWaitUntilEmpty] = useState(false);
   const [autoGameMaxWaitMinutes, setAutoGameMaxWaitMinutes] = useState("360");
   const [autoGameResult, setAutoGameResult] = useState<HomeTaskResult | null>(null);
@@ -141,7 +141,7 @@ export function UpdatesPanel({
       if (values.check_interval_minutes) setAutoGameIntervalMinutes(values.check_interval_minutes);
       if (values.apply_updates) setAutoGameApplyEnabled(/^(1|true|yes|enabled)$/i.test(values.apply_updates));
       if (values.notify_players) setAutoGameNotifyEnabled(/^(1|true|yes|enabled)$/i.test(values.notify_players));
-      if (values.notify_minutes) setAutoGameNotifyMinutes(values.notify_minutes);
+      if (values.notify_minutes) setAutoGameNotifyMinutes(formatAutoGameCheckpoints(values.notify_minutes));
       if (values.wait_until_empty) setAutoGameWaitUntilEmpty(/^(1|true|yes|enabled)$/i.test(values.wait_until_empty));
       if (values.max_wait_minutes) setAutoGameMaxWaitMinutes(values.max_wait_minutes);
     } finally {
@@ -151,14 +151,14 @@ export function UpdatesPanel({
 
   async function saveAutoGame(nextEnabled = autoGameEnabled) {
     const intervalMinutes = validateAutoGameInteger(autoGameIntervalMinutes, 5, 1440);
-    const notifyMinutes = validateAutoGameInteger(autoGameNotifyMinutes, 1, 1440);
+    const notifyMinutes = parseAutoGameCheckpoints(autoGameNotifyMinutes);
     const maxWaitMinutes = validateAutoGameInteger(autoGameMaxWaitMinutes, 0, 10080);
-    if (nextEnabled && (!intervalMinutes || !notifyMinutes || maxWaitMinutes === null)) {
-      setAutoGameResult({ status: "failed", title: "Auto Updates Save Failed", message: "Check interval, notice, and max wait values must be valid whole minutes." });
+    if (nextEnabled && (!intervalMinutes || !notifyMinutes.length || maxWaitMinutes === null)) {
+      setAutoGameResult({ status: "failed", title: "Auto Updates Save Failed", message: "Warning times must contain 1 to 12 unique values from largest to smallest, for example 15, 10, 5, 1. Each value must be between 1 and 1440 minutes." });
       return;
     }
     setAutoGameIntervalMinutes(String(intervalMinutes || 60));
-    setAutoGameNotifyMinutes(String(notifyMinutes || 15));
+    setAutoGameNotifyMinutes(notifyMinutes.length ? notifyMinutes.join(", ") : "15, 10, 5, 1");
     setAutoGameMaxWaitMinutes(String(maxWaitMinutes ?? 360));
     setAutoGameResult({ status: "running", title: "Saving Auto Updates" });
     const requestedEnabled = nextEnabled;
@@ -169,7 +169,7 @@ export function UpdatesPanel({
         intervalMinutes: intervalMinutes || 60,
         applyEnabled: autoGameApplyEnabled,
         notifyEnabled: autoGameNotifyEnabled,
-        notifyMinutes: notifyMinutes || 15,
+        notifyMinutes: notifyMinutes.length ? notifyMinutes.join(",") : "15,10,5,1",
         waitUntilEmpty: autoGameWaitUntilEmpty,
         maxWaitMinutes: maxWaitMinutes ?? 360,
         confirmation: "SAVE AUTO GAME UPDATES"
@@ -360,7 +360,7 @@ export function UpdatesPanel({
           ["Current Status", autoGameStatusLabel],
           ["Check Interval", `Every ${autoGameValues.check_interval_minutes || autoGameIntervalMinutes} minutes`],
           ["Apply Updates", enabledLabel(autoGameValues.apply_updates, autoGameApplyEnabled)],
-          ["Player Notice", enabledLabel(autoGameValues.notify_players, autoGameNotifyEnabled, `${autoGameValues.notify_minutes || autoGameNotifyMinutes} minutes`)],
+          ["Player Notice", enabledLabel(autoGameValues.notify_players, autoGameNotifyEnabled, `${formatAutoGameCheckpoints(autoGameValues.notify_minutes || autoGameNotifyMinutes)} Min`)],
           ["Empty Server Policy", enabledLabel(autoGameValues.wait_until_empty, autoGameWaitUntilEmpty, `max ${autoGameValues.max_wait_minutes || autoGameMaxWaitMinutes} minutes`)],
           ["Timer", autoGameDisplayTimerLabel]
         ]} />
@@ -377,7 +377,8 @@ export function UpdatesPanel({
           <section className="auto-update-policy-group">
             <h5>Player Notice</h5>
             <label className="auto-update-settings-row auto-update-settings-boolean-row"><span>Warn players before restart</span><strong>{autoGameNotifyEnabled ? "Enabled" : "Disabled"}</strong><input type="checkbox" disabled={autoGameSaving} checked={autoGameNotifyEnabled} onChange={(event) => setAutoGameNotifyEnabled(event.target.checked)} /></label>
-            <label className={`auto-update-settings-row ${autoGameNotifyEnabled ? "" : "is-disabled"}`}><span>Warning time</span><span className="number-unit-field"><input type="number" min="1" max="1440" step="1" disabled={autoGameSaving || !autoGameNotifyEnabled} value={autoGameNotifyMinutes} onChange={(event) => setAutoGameNotifyMinutes(event.target.value)} /><em>min</em></span><span className="auto-update-settings-spacer" /></label>
+            <label className={`auto-update-settings-row ${autoGameNotifyEnabled ? "" : "is-disabled"}`}><span>Warning Times (Min)</span><input type="text" disabled={autoGameSaving || !autoGameNotifyEnabled} value={autoGameNotifyMinutes} onChange={(event) => setAutoGameNotifyMinutes(event.target.value)} placeholder="15, 10, 5, 1" /><span className="auto-update-settings-spacer" /></label>
+            <p className="muted auto-update-setting-help">Enter unique times from largest to smallest, separated by commas. Example: 15, 10, 5, 1.</p>
           </section>
           <section className="auto-update-policy-group">
             <h5>Empty Server Policy</h5>
@@ -402,6 +403,21 @@ function validateAutoGameInteger(value: string, min: number, max: number) {
   const n = Number(value);
   if (!Number.isInteger(n) || n < min || n > max) return null;
   return n;
+}
+
+function parseAutoGameCheckpoints(value: string): number[] {
+  const raw = value.split(/[\s,]+/).filter(Boolean);
+  if (!raw.length || raw.length > 12) return [];
+  const parsed = raw.map((item) => Number(item));
+  if (parsed.some((minutes) => !Number.isInteger(minutes) || minutes < 1 || minutes > 1440)) return [];
+  if (new Set(parsed).size !== parsed.length) return [];
+  if (parsed.some((minutes, index) => index > 0 && minutes >= parsed[index - 1])) return [];
+  return parsed;
+}
+
+function formatAutoGameCheckpoints(value: string): string {
+  const parsed = parseAutoGameCheckpoints(value);
+  return parsed.length ? parsed.join(", ") : value;
 }
 
 function enabledLabel(rawValue: string | undefined, fallback: boolean, detail = "") {

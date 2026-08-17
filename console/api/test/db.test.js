@@ -1,4 +1,5 @@
 import test, { beforeEach } from "node:test";
+import { listVehicles, portalVehicleDisplayName } from "../src/duneDb.js";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -35,6 +36,7 @@ import {
   augmentNewestPlayerItem,
   baseGeneratorFuelLevels,
   baseGenerators,
+  baseIsBackedUp,
   baseMapLocation,
   basePermissionActor,
   basePermissionCandidates,
@@ -107,11 +109,13 @@ import {
   migrateDiscordAdapterSchema,
   observeRefillPartitions,
   partitionRestartTargets,
+  playerBuildingUnlockState,
   playerCraftingRecipes,
   playerCurrency,
   playerFactions,
   playerIntel,
   playerInventory,
+  playerInventoryAll,
   playerInventoryItemIds,
   playerItemAugmentState,
   playerJourney,
@@ -133,6 +137,7 @@ import {
   refillBaseWater,
   refuelVehicle,
   removeGuildMember,
+  repairFactionReputation,
   repairGear,
   repairVehicleDecay,
   resetAllSpecializationKeystones,
@@ -149,6 +154,7 @@ import {
   setBasePermissions,
   setDefaultLinkedAccount,
   setLandsraadPlayerContribution,
+  setPlayerFaction,
   storageCapabilities,
   storageItems,
   supportsGeneratorRefill,
@@ -187,6 +193,23 @@ test("discovers RedBlink Postgres defaults and env overrides", () => {
   });
   assert.equal(discoverDbConfig({ ADMIN_DATABASE_URL: "postgres://user:secret@host/db" }).source, "ADMIN_DATABASE_URL");
   assert.equal(discoverDbConfig({ DUNE_DB_HOST: "db", DUNE_DB_PORT: "5432" }).host, "db");
+});
+
+// Upstream review finding: discoverDbConfig() previously implemented
+// its own precedence (DUNE_DB_PORT || PGPORT || resolvePorts().postgres),
+// which disagreed with resolvePorts()'s own precedence
+// (POSTGRES_PORT || DUNE_DB_PORT || PGPORT) whenever an operator had
+// more than one of these set to different values -- status/preflight
+// (which reads resolvePorts() directly) could then disagree with the
+// actual database connection (which read this function), a real,
+// silent split-brain misconfiguration. discoverDbConfig() must now
+// always delegate to resolvePorts() for this field so there is exactly
+// one place this precedence logic can ever drift from itself.
+test("discoverDbConfig()'s postgres port precedence matches resolvePorts() exactly, even when multiple port env vars conflict", () => {
+  const conflicting = { POSTGRES_PORT: "16432", DUNE_DB_PORT: "17432", PGPORT: "18432" };
+  assert.equal(discoverDbConfig(conflicting).port, 16432, "POSTGRES_PORT must win, matching resolvePorts()'s precedence exactly");
+  assert.equal(discoverDbConfig({ DUNE_DB_PORT: "17432", PGPORT: "18432" }).port, 17432, "DUNE_DB_PORT must win over PGPORT when POSTGRES_PORT is unset");
+  assert.equal(discoverDbConfig({ PGPORT: "18432" }).port, 18432, "PGPORT must be used when neither POSTGRES_PORT nor DUNE_DB_PORT is set");
 });
 
 test("database status exposes SSH tunneling only for a loopback database endpoint", async () => {
@@ -1119,6 +1142,13 @@ test("player factions lists every known faction, each with its own reputation", 
         assert.deepEqual(values, [91]);
         return { rows: [{ actor_id: 91, account_id: 201, controller_id: 301, player_state_id: 1, online_status: "Offline" }] };
       }
+      if (text.includes("FactionPlayerComponent") && text.includes("from dune.actors")) {
+        assert.deepEqual(values, [301]);
+        return { rows: [{ faction_data: [
+          { Faction: { Name: "Atreides" }, ReputationAmount: 500 },
+          { Faction: { Name: "Harkonnen" }, ReputationAmount: 20 }
+        ] }] };
+      }
       if (text.includes("from dune.factions f")) {
         assert.match(text, /coalesce\(pfr\.reputation_amount, 0\)/);
         assert.match(text, /f\.name <> 'None'/);
@@ -1139,6 +1169,9 @@ test("player factions lists every known faction, each with its own reputation", 
     ["Harkonnen", "120"],
     ["Smuggler", "75"]
   ]);
+  assert.equal(result.rows.find((row) => row.faction_name === "Atreides").reputation_in_sync, true);
+  assert.equal(result.rows.find((row) => row.faction_name === "Harkonnen").reputation_in_sync, false);
+  assert.equal(result.rows.find((row) => row.faction_name === "Smuggler").reputation_in_sync, undefined);
 });
 
 test("player factions coalesces an untouched faction's reputation to 0 and excludes 'None'", async () => {
@@ -1164,6 +1197,74 @@ test("player factions coalesces an untouched faction's reputation to 0 and exclu
   assert.deepEqual(result.rows.map((row) => row.faction_name), ["Atreides", "Harkonnen", "Smuggler"]);
   assert.equal(result.rows.find((row) => row.faction_name === "Harkonnen").reputation_amount, "0");
   assert.equal(result.rows.some((row) => row.faction_name === "None"), false);
+});
+
+test("player factions reports reputation-estimated rank and an unfinished-story limit", async () => {
+  const db = {
+    query: async (text, values = []) => {
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("information_schema.columns")) {
+        const columns = values[1] === "journey_story_node"
+          ? ["character_id", "story_node_id", "complete_condition_state"]
+          : values[1] === "player_tags" ? ["character_id", "tag"] : [];
+        return { rows: columns.map((column_name) => ({ column_name })) };
+      }
+      if (text.includes("from dune.actors a") && text.includes("left join dune.player_state ps")) {
+        return { rows: [{ actor_id: 91, account_id: 201, controller_id: 301, player_state_id: 44, online_status: "Offline" }] };
+      }
+      if (text.includes("from dune.factions f")) {
+        return { rows: [{ faction_id: 1, faction_name: "Atreides", reputation_amount: "5200" }] };
+      }
+      if (text.includes("from dune.player_tags")) {
+        assert.deepEqual(values, [44]);
+        return { rows: [
+          { tag: "Faction.Atreides.Tier0" },
+          { tag: "Faction.Atreides.Tier4" }
+        ] };
+      }
+      if (text.includes("from dune.journey_story_node")) return { rows: [] };
+      return { rows: [] };
+    }
+  };
+  const result = await playerFactions(db, "91");
+  assert.equal(result.rows[0].estimated_rank, 12);
+  assert.equal(result.rows[0].current_rank_limit, 4);
+  assert.equal(result.rows[0].rank_limited_by_progression, true);
+});
+
+test("player factions offers repair when completed onboarding earned missing Tier 5 progression", async () => {
+  const db = {
+    query: async (text, values = []) => {
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("information_schema.columns")) {
+        const columns = values[1] === "journey_story_node"
+          ? ["character_id", "story_node_id", "complete_condition_state"]
+          : values[1] === "player_tags" ? ["character_id", "tag"] : [];
+        return { rows: columns.map((column_name) => ({ column_name })) };
+      }
+      if (text.includes("from dune.actors a") && text.includes("left join dune.player_state ps")) {
+        return { rows: [{ actor_id: 91, account_id: 201, controller_id: 301, player_state_id: 44, online_status: "Offline" }] };
+      }
+      if (text.includes("FactionPlayerComponent") && text.includes("from dune.actors")) {
+        return { rows: [{ faction_data: [{ Faction: { Name: "Atreides" }, ReputationAmount: 12474 }] }] };
+      }
+      if (text.includes("from dune.factions f")) {
+        return { rows: [{ faction_id: 1, faction_name: "Atreides", reputation_amount: "12474" }] };
+      }
+      if (/from\s+dune\.player_faction\b/.test(text)) return { rows: [{ faction_id: 1 }] };
+      if (text.includes("from dune.player_tags")) return { rows: [{ tag: "Faction.Atreides.Tier2" }] };
+      if (text.includes("from dune.journey_story_node")) return { rows: [
+        { story_node_id: "DA_FQ_ClimbTheRanks.Rank5To20.CompleteLandsraadMission.CompleteOnboardingJourney1" },
+        { story_node_id: "DA_FQ_ClimbTheRanks.Rank5To20.CraftAugmentation.CompleteOnboardingJourney2" }
+      ] };
+      return { rows: [] };
+    }
+  };
+  const result = await playerFactions(db, "91");
+  assert.equal(result.rows[0].reputation_in_sync, true);
+  assert.equal(result.rows[0].current_rank_limit, 2);
+  assert.equal(result.rows[0].progression_repair_available, true);
+  assert.equal(result.rows[0].progression_repair_target, 5);
 });
 
 test("player progression computes level from XP and reports skill points", async () => {
@@ -1719,6 +1820,226 @@ test("listPlayers preserves the filtered total when the requested page is empty"
   assert.equal(result.totalCount, 12);
   assert.equal(result.totalPlayers, 12);
   assert.deepEqual(result.rows, []);
+});
+
+test("listVehicles returns vehicles with mapped modules and shared_with", async () => {
+  const db = {
+    query: async (text) => {
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("total_vehicles")) return { rows: [{ total_vehicles: 3 }] };
+      if (text.includes("module_durability")) return { rows: [{
+        id: "5001",
+        name: "Sihaya",
+        type: "Sandbike",
+        owner: "Duncan_Idaho",
+        condition_percent: 92,
+        current_fuel: "61",
+        max_fuel: "100",
+        fuel_percent: 61,
+        map: "HaggaBasin",
+        partition_id: 1,
+        x: "1", y: "2", z: "3",
+        total_count: 3,
+        modules: [{ templateId: "GeneratorModule", condition: "440", maxCondition: "500", conditionPercent: 88 }],
+        shared_with: [{ name: "Gurney_H", rank: 2 }]
+      }] };
+      return { rows: [] };
+    }
+  };
+  const result = await listVehicles(db, { page: 0, pageSize: 50 });
+  assert.equal(result.capabilities.vehicles, true);
+  assert.equal(result.totalCount, 3);
+  assert.equal(result.totalVehicles, 3);
+  assert.equal(result.rows.length, 1);
+  assert.equal(result.rows[0].name, "Sihaya");
+  assert.equal(result.rows[0].type, "Sandbike");
+  assert.equal(result.rows[0].owner, "Duncan_Idaho");
+  assert.equal(result.rows[0].partition_id, 1);
+  assert.deepEqual(result.rows[0].shared_with, [{ name: "Gurney_H", rank: 2, label: "Co-Owner" }]);
+  assert.equal(result.rows[0].modules.length, 1);
+  assert.equal(typeof result.rows[0].modules[0].name, "string");
+  assert.equal(result.rows[0].total_count, undefined);
+});
+
+test("listVehicles filters a player's owned and shared vehicles and labels access", async () => {
+  const calls = [];
+  const db = {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("coalesce(ps.player_controller_id")) return { rows: [{ actor_id: 42, account_id: 77, controller_id: 88, player_state_id: 99, online_status: "Offline" }] };
+      if (text.includes("total_vehicles")) return { rows: [{ total_vehicles: 12 }] };
+      if (text.includes("module_durability")) return { rows: [{
+        id: "5001", name: "Sihaya", type: "Sandbike", owner: "Duncan_Idaho", relationship: "Co-Owner",
+        condition_percent: 92, current_fuel: null, max_fuel: null, fuel_percent: null,
+        map: "HaggaBasin", partition_id: 1, x: null, y: null, z: null,
+        total_count: 1, modules: [], shared_with: []
+      }] };
+      return { rows: [] };
+    }
+  };
+
+  const result = await listVehicles(db, { playerId: "42", pageSize: 200 });
+  const mainQuery = calls.find((call) => call.text.includes("module_durability"));
+  assert.equal(result.totalCount, 1);
+  assert.equal(result.rows[0].relationship, "Co-Owner");
+  assert.deepEqual(mainQuery.values.slice(0, 2), [77, 88]);
+  assert.match(mainQuery.text, /vc\.owner_account_id=\$1 or viewer\.rank is not null/);
+  assert.match(mainQuery.text, /par\.player_id=\$2/);
+});
+
+test("listVehicles resolves positional locomotion module names from the catalog", async () => {
+  const db = {
+    query: async (text) => {
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("total_vehicles")) return { rows: [{ total_vehicles: 1 }] };
+      if (text.includes("module_durability")) return { rows: [{
+        id: "1", name: "Buggy", type: "Buggy", owner: "", condition_percent: 100,
+        current_fuel: null, max_fuel: null, fuel_percent: null,
+        map: "HaggaBasin", partition_id: 1, x: null, y: null, z: null,
+        total_count: 1, shared_with: [],
+        modules: [
+          { templateId: "BuggyLocomotionBackLeft_5", condition: 100, maxCondition: 100, conditionPercent: 100 },
+          { templateId: "SandbikeLocomotionBackCenter_2", condition: 50, maxCondition: 100, conditionPercent: 50 },
+          { templateId: "OrnithopterMediumLocomotionCenterRight_5", condition: 90, maxCondition: 100, conditionPercent: 90 }
+        ]
+      }] };
+      return { rows: [] };
+    }
+  };
+  const result = await listVehicles(db, {});
+  const names = result.rows[0].modules.map((module) => module.name);
+  // Positional ids have no direct catalog entry; the base vehicle+tier name is
+  // resolved and the mounting position appended — no raw template ids leak through.
+  assert.deepEqual(names, [
+    "Buggy Tread Mk5 (Back Left)",
+    "Sandbike Tread Mk2 (Back Center)",
+    "Assault Ornithopter Wing Mk5 (Center Right)"
+  ]);
+});
+
+test("listVehicles labels a vehicle with its nearest-marker sub-region", async () => {
+  const db = {
+    query: async (text) => {
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("total_vehicles")) return { rows: [{ total_vehicles: 1 }] };
+      if (text.includes("from dune.map_names where map_name")) return { rows: [{ map_name_id: 11 }] };
+      if (text.includes("cross join lateral") && text.includes("dune.markers")) {
+        return { rows: [{ id: "5001", area_id: 3 }] };
+      }
+      if (text.includes("module_durability")) return { rows: [{
+        id: "5001", name: "Sihaya", type: "Sandbike", owner: "", condition_percent: 90,
+        current_fuel: null, max_fuel: null, fuel_percent: null,
+        map: "HaggaBasin", partition_id: 1, x: "323137", y: "-24360", z: "0",
+        total_count: 1, shared_with: [], modules: []
+      }] };
+      return { rows: [] };
+    }
+  };
+  const result = await listVehicles(db, {});
+  // area_id 3 resolves to "Hagga Rift" via runtime/data/hagga-regions.json.
+  assert.equal(result.rows[0].region, "Hagga Rift");
+});
+
+test("listVehicles returns unsupported when a required table is missing", async () => {
+  const db = {
+    query: async (text, values = []) => {
+      if (text.includes("to_regclass")) {
+        return { rows: [{ exists: !String(values[0] || "").includes("vehicle_modules") }] };
+      }
+      return { rows: [] };
+    }
+  };
+  const result = await listVehicles(db, {});
+  assert.equal(result.capabilities.vehicles, false);
+  assert.equal(result.totalCount, 0);
+  assert.equal(result.totalVehicles, 0);
+  assert.deepEqual(result.rows, []);
+  assert.match(result.reason, /vehicle_modules/);
+});
+
+test("listVehicles preserves the filtered total when the requested page is empty", async () => {
+  const db = {
+    query: async (text) => {
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("total_vehicles")) return { rows: [{ total_vehicles: 9 }] };
+      // Out-of-range page: the LATERAL yields an all-NULL placeholder row, but
+      // total_count still comes from the separate totals CTE.
+      if (text.includes("module_durability")) return { rows: [{ id: null, total_count: 9, shared_with: null, modules: null }] };
+      return { rows: [] };
+    }
+  };
+  const result = await listVehicles(db, { page: 5, pageSize: 5 });
+  assert.equal(result.totalCount, 9);
+  assert.equal(result.totalVehicles, 9);
+  assert.deepEqual(result.rows, []);
+});
+
+test("listVehicles parameterizes the search term", async () => {
+  const calls = [];
+  const db = {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("total_vehicles")) return { rows: [{ total_vehicles: 0 }] };
+      if (text.includes("module_durability")) return { rows: [] };
+      return { rows: [] };
+    }
+  };
+  const injection = "Sihaya'; drop table dune.vehicles; --";
+  await listVehicles(db, { q: injection });
+  const mainQuery = calls.find((call) => call.text.includes("module_durability"));
+  assert.ok(mainQuery.values.includes(`%${injection}%`));
+  assert.ok(mainQuery.values.includes(injection));
+  assert.ok(!mainQuery.text.includes(injection));
+  assert.match(mainQuery.text, /ilike \$\d/);
+});
+
+test("vehicle pages and player portal share conservative health calculations", async () => {
+  const listCalls = [];
+  const listDb = {
+    query: async (text, values = []) => {
+      listCalls.push({ text, values });
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("total_vehicles")) return { rows: [{ total_vehicles: 0 }] };
+      return { rows: [] };
+    }
+  };
+  await listVehicles(listDb, {});
+  const listQuery = listCalls.find((call) => call.text.includes("module_observed"));
+
+  const portalCalls = [];
+  await portalVehicles({ query: async (text, values = []) => { portalCalls.push({ text, values }); return { rows: [] }; } }, [42]);
+  const portalQuery = portalCalls[0];
+
+  for (const query of [listQuery, portalQuery]) {
+    assert.match(query.text, /count\(own_current\) over\(partition by template_id\)/);
+    assert.match(query.text, /case when current_samples >= 2 then observed_max else null end/);
+    assert.match(query.text, /own_current current_durability/);
+    assert.doesNotMatch(query.text, /coalesce\([^\n]*own_current[^\n]*,\s*0\)/);
+    assert.match(query.text, /count\(current_fuel\)::int fuel_samples/);
+  }
+  assert.match(portalQuery.text, /min\(case when vm\.current_durability is not null/);
+  assert.match(listQuery.text, /min\(case when md\.current_durability is not null/);
+  assert.match(listQuery.text, /'conditionPercent', case when md\.current_durability is not null/);
+});
+
+test("portalVehicleDisplayName maps known classes and passes unmapped ones through", () => {
+  // Real class strings carry a path/prefix; the substring match still resolves.
+  assert.equal(portalVehicleDisplayName("DA_Vehicle_LightOrnithopter_C"), "Scout Ornithopter");
+  assert.equal(portalVehicleDisplayName("MediumOrnithopter"), "Assault Ornithopter");
+  assert.equal(portalVehicleDisplayName("TransportOrnithopter"), "Carrier Ornithopter");
+  assert.equal(portalVehicleDisplayName("SandCrawler"), "Sandcrawler");
+  assert.equal(portalVehicleDisplayName("Sandbike_T3"), "Sandbike");
+  assert.equal(portalVehicleDisplayName("AssaultBuggy"), "Buggy");
+  assert.equal(portalVehicleDisplayName("AssaultTank"), "Battle Tank");
+  // First substring match wins: "transportornithopter" contains "ornithopter"
+  // but must resolve to Carrier, not fall through.
+  assert.equal(portalVehicleDisplayName("TransportOrnithopterHeavy"), "Carrier Ornithopter");
+  // Unmapped class passes through unchanged; empty resolves to the generic label.
+  assert.equal(portalVehicleDisplayName("Skiff"), "Skiff");
+  assert.equal(portalVehicleDisplayName(""), "Vehicle");
+  assert.equal(portalVehicleDisplayName(null), "Vehicle");
 });
 
 test("listPlayers reports statusFilterApplied based on online_status column presence", async () => {
@@ -2373,8 +2694,137 @@ test("list bases returns rows with piece and placeable counts and a total count"
   assert.equal(result.totalPieces, 700);
   assert.equal(result.totalPlaceables, 140);
   assert.deepEqual(result.rows, [
-    { base_id: "1006", name: "Sietch One", base_type: "Sub-Fief", owner_name: "Leader One", map: "TheDeepDesert", partition_id: 8, x: 100, y: 200, z: 30, piece_count: 589, placeable_count: 126, shared_with: [{ name: "Ally Two", rank: 2, label: "Co-Owner" }], generatorDataAvailable: true, generatorCount: 0, fuelCells: 0, generatorRuntimeSeconds: 0, generatorUptimeMultiplier: 1, generatorUptimeEventLabel: "", generatorUptimeEventEndsAt: "", generatorUnstockedCount: 0, generatorAllUnstocked: false, generators: [] }
+    // partitionMap/dimensionIndex are empty here because this fake db reports
+    // no dune.world_partition -- the guarded branch, not a missing value.
+    { base_id: "1006", name: "Sietch One", base_type: "Sub-Fief", owner_name: "Leader One", map: "TheDeepDesert", partition_id: 8, partitionMap: "", dimensionIndex: 0, x: 100, y: 200, z: 30, piece_count: 589, placeable_count: 126, shared_with: [{ name: "Ally Two", rank: 2, label: "Co-Owner" }], generatorDataAvailable: true, generatorCount: 0, fuelCells: 0, generatorRuntimeSeconds: 0, generatorUptimeMultiplier: 1, generatorUptimeEventLabel: "", generatorUptimeEventEndsAt: "", generatorUnstockedCount: 0, generatorAllUnstocked: false, generators: [] }
   ]);
+});
+
+test("list bases resolves each base's partition to its map instance", async () => {
+  // Two bases on one game map but different partitions -- the case a.map alone
+  // cannot distinguish, and the reason partitionMap/dimensionIndex exist.
+  const calls = [];
+  const db = {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes("to_regclass")) {
+        const name = String(values[0] || "");
+        return { rows: [{ exists: BASE_REQUIRED_TABLES.includes(name) || name === "dune.world_partition" }] };
+      }
+      if (text.includes("total_bases")) {
+        return { rows: [{ total_bases: "2", total_pieces: "20", total_placeables: "8" }] };
+      }
+      if (text.includes("from paged p")) {
+        return { rows: [
+          { base_id: "5001", name: "PvP Outpost", base_type: "Sub-Fief", owner_name: "A", map: "DeepDesert", partition_id: "8", partition_map: "DeepDesert_1", dimension_index: "0", x: "1", y: "2", z: "3", total_count: "2", piece_count: "10", placeable_count: "4", shared_with: [] },
+          { base_id: "5002", name: "PvE Outpost", base_type: "Sub-Fief", owner_name: "B", map: "DeepDesert", partition_id: "59", partition_map: "DeepDesert_1", dimension_index: "1", x: "4", y: "5", z: "6", total_count: "2", piece_count: "10", placeable_count: "4", shared_with: [] }
+        ] };
+      }
+      return { rows: [] };
+    }
+  };
+
+  const result = await listBases(db, { includeGenerators: false });
+
+  assert.deepEqual(result.rows.map((row) => [row.base_id, row.map, row.partition_id, row.partitionMap, row.dimensionIndex]), [
+    ["5001", "DeepDesert", 8, "DeepDesert_1", 0],
+    ["5002", "DeepDesert", 59, "DeepDesert_1", 1]
+  ]);
+  // The join is only emitted when the optional table is present.
+  const paged = calls.find((call) => call.text.includes("from paged p"));
+  assert.match(paged.text, /left join dune\.world_partition wp on wp\.partition_id = p\.partition_id/);
+});
+
+test("list bases omits the partition join when world_partition is absent", async () => {
+  const calls = [];
+  const db = {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes("to_regclass")) {
+        return { rows: [{ exists: BASE_REQUIRED_TABLES.includes(String(values[0] || "")) }] };
+      }
+      if (text.includes("total_bases")) return { rows: [{ total_bases: "0", total_pieces: "0", total_placeables: "0" }] };
+      return { rows: [] };
+    }
+  };
+
+  await listBases(db, { includeGenerators: false });
+
+  const paged = calls.find((call) => call.text.includes("from paged p"));
+  assert.ok(!paged.text.includes("dune.world_partition"), "must not join a table this schema does not have");
+  assert.match(paged.text, /'' as partition_map/);
+});
+
+// The base-backup tool ("pick up base") only deletes permission_actor/
+// permission_actor_rank and registers the base's actor ids in
+// dune.base_backup_linked_actors -- it leaves buildings/building_instances/
+// placeables fully intact, so without this exclusion a picked-up base would
+// keep showing up as an ordinary, ownerless base.
+test("list bases excludes unclaimed, backup-linked bases when base_backup_linked_actors exists", async () => {
+  const calls = [];
+  const db = {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes("to_regclass")) {
+        const name = String(values[0] || "");
+        return { rows: [{ exists: BASE_REQUIRED_TABLES.includes(name) || name === "dune.base_backup_linked_actors" }] };
+      }
+      if (text.includes("total_bases")) return { rows: [{ total_bases: "0", total_pieces: "0", total_placeables: "0" }] };
+      return { rows: [] };
+    }
+  };
+
+  await listBases(db, { includeGenerators: false });
+
+  const paged = calls.find((call) => call.text.includes("from matched"));
+  assert.match(
+    paged.text,
+    /not \(pa\.actor_id is null and exists \(select 1 from dune\.base_backup_linked_actors bbla where bbla\.actor_id = a\.id\)\)/
+  );
+  const totals = calls.find((call) => call.text.includes("valid_claims"));
+  assert.match(
+    totals.text,
+    /not \(pa\.actor_id is null and exists \(select 1 from dune\.base_backup_linked_actors bbla where bbla\.actor_id = a\.id\)\)/,
+    "totals must apply the same exclusion so total_bases/total_pieces/total_placeables agree with the paged rows"
+  );
+});
+
+test("list bases omits the backup exclusion when base_backup_linked_actors is absent", async () => {
+  const calls = [];
+  const db = {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes("to_regclass")) {
+        return { rows: [{ exists: BASE_REQUIRED_TABLES.includes(String(values[0] || "")) }] };
+      }
+      if (text.includes("total_bases")) return { rows: [{ total_bases: "0", total_pieces: "0", total_placeables: "0" }] };
+      return { rows: [] };
+    }
+  };
+
+  await listBases(db, { includeGenerators: false });
+
+  const paged = calls.find((call) => call.text.includes("from matched"));
+  assert.ok(!paged.text.includes("base_backup_linked_actors"), "must not reference a table this schema does not have");
+  const totals = calls.find((call) => call.text.includes("valid_claims"));
+  assert.ok(!totals.text.includes("base_backup_linked_actors"));
+});
+
+// The SQL path itself (unclaimed AND backup-linked) is proven against real
+// PostgreSQL in baseBackup.integration.test.js. This covers only the fast
+// path a mocked db can prove cheaply: a schema without the optional table
+// skips the query entirely rather than referencing a table that isn't there.
+test("baseIsBackedUp short-circuits to false without querying when base_backup_linked_actors is absent", async () => {
+  const calls = [];
+  const db = {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes("to_regclass")) return { rows: [{ exists: false }] };
+      throw new Error("must not query further once the capability check reports absent");
+    }
+  };
+  assert.equal(await baseIsBackedUp(db, 3452), false);
+  assert.equal(calls.length, 1, "only the to_regclass capability probe should run");
 });
 
 test("list bases groups multiple internal building records under one claim actor", async () => {
@@ -2845,11 +3295,11 @@ test("export base returns instances and placeables in blueprint-importable relat
   assert.equal(placeable.placeable_id, 2582);
   assert.equal(placeable.building_type, "Hark_Deco_Plate_02_Placeable");
   assert.equal(placeable.rx, 0);
-  assert.equal(placeable.ry, 0);
+  assert.equal(placeable.rz, 0);
   assert.ok(Math.abs(placeable.x - (placeablePos.x - anchor.x)) < 1e-6);
   const expectedPlaceableRotation = 2 * Math.atan2(placeablePos.qz, placeablePos.qw) * (180 / Math.PI);
-  assert.equal(placeable.rz, expectedPlaceableRotation);
-  assert.ok(Math.abs(placeable.rz - 20) < 1);
+  assert.equal(placeable.ry, expectedPlaceableRotation);
+  assert.ok(Math.abs(placeable.ry - 20) < 1);
 });
 
 test("export base combines claim partitions, deduplicates shared placeables, and remaps colliding instance IDs", async () => {
@@ -3113,6 +3563,41 @@ test("player inventory enriches rows with catalog category and source for augmen
   assert.equal(result.rows[0].template_id, "SmugDmr5");
   assert.equal(result.rows[0].category, "weapons");
   assert.equal(result.rows[0].source, "Weapons");
+});
+
+test("player inventory (all containers) queries every player-carried type and tags rows with inventory_type", async () => {
+  const calls = [];
+  const db = {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("order by id limit 1")) return { rows: [{ max_item_count: 50, max_item_volume: 300 }] };
+      if (text.includes("from dune.items i")) return { rows: [
+        { id: 1, template_id: "WaterBottle_1", stack_size: 1, quality_level: 0, position_index: 0, inventory_id: 7, inventory_type: 0, current_durability: null, max_durability: null, stats: {} },
+        { id: 2, template_id: "Armor_Chest_T4", stack_size: 1, quality_level: 4, position_index: 0, inventory_id: 9, inventory_type: 15, current_durability: "210", max_durability: "300", stats: {} }
+      ] };
+      return { rows: [] };
+    }
+  };
+  const result = await playerInventoryAll(db, 123);
+  const itemsCall = calls.find((call) => call.text.includes("from dune.items i"));
+  assert.ok(itemsCall);
+  assert.match(itemsCall.text, /inv2\.inventory_type = any\(\$2::int\[\]\)/);
+  assert.match(itemsCall.text, /order by inv2\.inventory_type, i\.template_id/);
+  assert.deepEqual(itemsCall.values[1], [0, 1, 15, 30]);
+  assert.equal(result.maxSlots, 50);
+  assert.equal(result.maxVolume, 300);
+  assert.equal(result.rows.length, 2);
+  assert.equal(result.rows[0].inventory_type, 0);
+  assert.equal(result.rows[1].inventory_type, 15);
+  assert.deepEqual(result.rows[1].augments, []);
+});
+
+test("player inventory (all containers) reports unsupported when inventory tables are missing", async () => {
+  const db = { query: async () => ({ rows: [{ exists: false }] }) };
+  const result = await playerInventoryAll(db, 123);
+  assert.equal(result.capabilities.inventory, false);
+  assert.match(result.reason, /dune\.items|dune\.inventories/);
 });
 
 test("inventory delete verifies ownership before calling dune.delete_item", async () => {
@@ -3900,6 +4385,102 @@ test("faction mutation clamps reputation and syncs actor component JSON", async 
   assert.equal(result.newValue, 12474);
   assert.ok(calls.some((call) => call.text.includes("set_player_faction_reputation") && call.values[2] === 12474));
   assert.ok(calls.some((call) => call.text.includes("FactionPlayerComponent,m_FactionDataArray")));
+  assert.equal(result.estimatedRank, 20);
+  assert.equal(result.currentRankLimit, 0);
+  assert.match(result.message, /Estimated Rank: 20/);
+  assert.match(result.message, /Current Rank Limit: 0/);
+});
+
+test("faction mutation rejects online players before changing persistent reputation", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    playerRows: [{ actor_id: 123, account_id: 44, controller_id: 55, player_state_id: 5, online_status: "Online" }]
+  });
+  await assert.rejects(() => addFactionReputation(db, 123, { factionId: 1, amount: 50 }), /require the player to be offline/);
+  assert.equal(calls.some((call) => call.text.includes("set_player_faction_reputation")), false);
+});
+
+test("faction repair synchronizes the vendor-facing component without changing reputation", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    playerFactionRows: [{ faction_id: 1 }],
+    factionRows: [{ faction_id: 1, reputation_amount: 11600 }],
+    factionComponentRows: [{ Faction: { Name: "Smuggler" }, ReputationAmount: 75 }]
+  });
+  const result = await repairFactionReputation(db, 123);
+  assert.equal(result.factionId, 1);
+  assert.equal(result.reputations.Atreides, 11600);
+  const componentUpdate = calls.find((call) => call.text.includes("FactionPlayerComponent,m_FactionDataArray"));
+  assert.ok(componentUpdate);
+  assert.match(componentUpdate.text, /jsonb_set\(coalesce\(properties/);
+  assert.equal(JSON.parse(componentUpdate.values[0]).find((entry) => entry.Faction.Name === "Smuggler").ReputationAmount, 75);
+  assert.equal(calls.some((call) => call.text.includes("set_player_faction_reputation")), false);
+});
+
+test("faction repair restores earned Tier 5 progression when both onboarding objectives are complete", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    journeyIdentityColumn: "character_id",
+    playerFactionRows: [{ faction_id: 1 }],
+    factionRows: [{ faction_id: 1, reputation_amount: 12474 }],
+    playerTagRows: [{ tag: "Faction.Atreides.Tier2" }],
+    journeyStateRows: [
+      { story_node_id: "DA_FQ_ClimbTheRanks.Rank5To20.CompleteLandsraadMission.CompleteOnboardingJourney1" },
+      { story_node_id: "DA_FQ_ClimbTheRanks.Rank5To20.CraftAugmentation.CompleteOnboardingJourney2" }
+    ]
+  });
+  const result = await repairFactionReputation(db, 123);
+  assert.deepEqual(result.progressionTagsAdded, [
+    "Faction.Atreides.Tier0",
+    "Faction.Atreides.Tier1",
+    "Faction.Atreides.Tier3",
+    "Faction.Atreides.Tier4",
+    "Faction.Atreides.Tier5"
+  ]);
+  assert.equal(result.progressionTierBefore, 2);
+  assert.equal(result.progressionTierAfter, 5);
+  const tagInsert = calls.find((call) => call.text.includes("insert into dune.player_tags"));
+  assert.ok(tagInsert);
+  assert.deepEqual(tagInsert.values, [5, result.progressionTagsAdded]);
+  assert.match(result.message, /Tier 2 through Tier 5/);
+});
+
+test("faction repair refuses neutral players", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, { playerFactionRows: [] });
+  await assert.rejects(() => repairFactionReputation(db, 123), /assigned to Atreides or Harkonnen/);
+  assert.equal(calls.some((call) => call.text.includes("FactionPlayerComponent,m_FactionDataArray")), false);
+});
+
+test("player faction assignment uses the game's faction function with the controller id", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, { playerFactionRows: [] });
+
+  const result = await setPlayerFaction(db, 123, { factionId: 1 });
+
+  assert.equal(result.changed, true);
+  assert.equal(result.oldFaction, "Neutral");
+  assert.equal(result.faction, "Atreides");
+  const change = calls.find((call) => call.text.includes("dune.change_player_faction"));
+  assert.deepEqual(change.values, [55, 1]);
+});
+
+test("player faction assignment removes the personal assignment by selecting Neutral", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, { playerFactionRows: [{ faction_id: 2 }] });
+
+  const result = await setPlayerFaction(db, 123, { factionId: 3 });
+
+  assert.equal(result.changed, true);
+  assert.equal(result.oldFaction, "Harkonnen");
+  assert.equal(result.faction, "Neutral");
+  const change = calls.find((call) => call.text.includes("dune.change_player_faction"));
+  assert.deepEqual(change.values, [55, 3]);
+});
+
+test("player faction assignment rejects non-playable faction ids", async () => {
+  const db = fakeMutationDb([]);
+  await assert.rejects(() => setPlayerFaction(db, 123, { factionId: 4 }), /invalid faction id/i);
 });
 
 test("specialization XP mutation updates fractional level from the XP curve", async () => {
@@ -3982,6 +4563,20 @@ test("intel mutation clamps grants to the spendable cap", async () => {
   assert.equal(result.maxValue, 2779);
   assert.equal(result.capped, true);
   assert.ok(calls.some((call) => call.text.includes("TechKnowledgePlayerComponent") && call.text.includes("jsonb_set") && call.values[1] === 2779));
+});
+
+test("intel mutation reports a full spendable balance without a no-op update", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    intelRows: [{ intel: 2779 }]
+  });
+  const result = await addIntel(db, 123, { amount: 25 });
+  assert.equal(result.oldValue, 2779);
+  assert.equal(result.newValue, 2779);
+  assert.equal(result.amount, 0);
+  assert.equal(result.capped, true);
+  assert.match(result.message, /already at the spendable cap of 2779/);
+  assert.equal(calls.some((call) => call.text.includes("m_TechKnowledgePoints") && call.text.includes("update")), false);
 });
 
 test("crafting recipe listing uses catalog schematics and player unlock status", async () => {
@@ -4073,6 +4668,22 @@ test("research listing exposes purchased entries whose build recipe needs repair
   assert.equal(result.rows[1].unlocked, true);
   assert.equal(result.rows[1].actionable, false);
   assert.equal(result.rows[1].needsRecipeRepair, false);
+});
+
+test("building unlock state reads owned progression and pending patent tokens without changing either", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    buildingProgressionRows: [{
+      learned_building_sets: ["BasicLighting", "MTX_Neut_StrategyTable_Patent"],
+      new_buildable_pieces: ["ChoamShelterSet", "BasicLighting"]
+    }],
+    pendingBuildingUnlockRows: [{ template_id: "Windtrap_Patent" }]
+  });
+  const result = await playerBuildingUnlockState(db, 123);
+  assert.equal(result.capabilities.buildingUnlockOwnership, true);
+  assert.deepEqual(result.owned, ["BasicLighting", "MTX_Neut_StrategyTable_Patent", "ChoamShelterSet"]);
+  assert.deepEqual(result.pending, ["Windtrap_Patent"]);
+  assert.equal(calls.some((call) => /^\s*(update|insert|delete)\b/i.test(call.text)), false);
 });
 
 test("research unlock updates TechKnowledge and materializes verified recipe", async () => {
@@ -4558,6 +5169,8 @@ function fakeMutationDb(calls, fixtures = {}) {
         const table = values[1];
         const names = table === "inventories"
           ? ["id", "actor_id", "max_item_count", "max_item_volume", "inventory_type"]
+          : table === "building_progression"
+            ? ["character_id", "learned_building_sets", "new_buildable_pieces"]
           : table === "actors"
             ? ["id", "class", "owner_account_id", "properties"]
             : table === "vehicle_modules"
@@ -4570,6 +5183,8 @@ function fakeMutationDb(calls, fixtures = {}) {
         return { rows: names.map((column_name) => ({ column_name })) };
       }
       if (text.includes("TechKnowledgePlayerComponent") && text.includes("all_research")) return { rows: fixtures.researchListRows || [] };
+      if (text.includes("from dune.building_progression") && text.includes("learned_building_sets")) return { rows: fixtures.buildingProgressionRows || [] };
+      if (text.includes("join dune.items") && text.includes("distinct i.template_id")) return { rows: fixtures.pendingBuildingUnlockRows || [] };
       if (text.includes("TechKnowledgePlayerComponent") && text.includes("select exists")) return { rows: [{ exists: Boolean(fixtures.researchExists) }] };
       if (text.includes("TechKnowledgePlayerComponent") && text.includes("m_TechKnowledgeData") && text.includes("for update")) return { rows: fixtures.currentResearchItems === null ? [] : [{ items: fixtures.currentResearchItems || [] }] };
       if (text.includes("TechKnowledgePlayerComponent,m_TechKnowledge,m_TechKnowledgeData") && text.includes("update dune.actors")) return { rows: [{ ok: true }] };
@@ -4591,14 +5206,16 @@ function fakeMutationDb(calls, fixtures = {}) {
       if (text.includes("from dune.actors a")) return { rows: fixtures.playerRows || [{ actor_id: 123, account_id: 44, controller_id: 55, player_state_id: 5, online_status: "Offline" }] };
       if (text.includes("stats ? 'FAugmentItemStats'")) return { rows: fixtures.augmentRollRows || [] };
       if (text.includes("stats ? 'FAugmentedItemStats'")) return { rows: fixtures.augmentedItemRows || [] };
-      if (/from\s+dune\.player_faction\b/.test(text)) return { rows: fixtures.playerFactionRows || [{ faction_id: 1 }] };
+      if (/from\s+dune\.player_faction\b/.test(text)) return { rows: fixtures.playerFactionRows ?? [{ faction_id: 1 }] };
       if (text.includes("dune.get_solaris_id")) return { rows: [{ currency_id: 0 }] };
       if (text.includes("adjust_player_virtual_currency_balance")) return { rows: [{ ok: true }] };
       if (text.includes("player_virtual_currency_balances")) return { rows: fixtures.balanceRows || [] };
       if (text.includes("select reputation_amount")) return { rows: fixtures.reputationRows || [] };
       if (text.includes("set_player_faction_reputation")) return { rows: [{ ok: true }] };
       if (text.includes("where actor_id = $1 and faction_id in")) return { rows: fixtures.factionRows || [] };
-      if (text.includes("jsonb_set") && text.includes("FactionPlayerComponent")) return { rows: [] };
+      if (text.includes("FactionPlayerComponent") && text.includes("from dune.actors") && text.includes("for update")) return { rows: [{ faction_data: fixtures.factionComponentRows || [] }] };
+      if (text.includes("jsonb_set") && text.includes("FactionPlayerComponent")) return { rows: [{ id: 55 }], rowCount: 1 };
+      if (text.includes("insert into dune.player_tags")) return { rows: (values[1] || []).map((tag) => ({ tag })), rowCount: (values[1] || []).length };
       if (text.includes("m_TechKnowledgePoints") && text.includes("select")) return { rows: fixtures.intelRows || [] };
       if (text.includes("m_TechKnowledgePoints") && text.includes("update")) return { rows: [{ ok: true }] };
       if (text.includes("not (i.id = any($3::bigint[]))")) return { rows: fixtures.newItemRows || [] };

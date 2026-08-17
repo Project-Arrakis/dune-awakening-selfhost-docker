@@ -5,42 +5,6 @@ cd "$(dirname "$0")/../.."
 
 . runtime/scripts/runtime-env.sh
 
-set_env_file_value() {
-  local file="$1"
-  local key="$2"
-  local value="$3"
-  local mode="${4:-644}"
-  local dir tmp
-
-  dir="$(dirname "$file")"
-  mkdir -p "$dir"
-
-  if [ -e "$file" ] && [ ! -w "$file" ]; then
-    echo "Cannot update $file because it is not writable by $(id -un)." >&2
-    echo "Repair ownership from the repo root, then retry:" >&2
-    echo "  sudo chown \"\$USER:\$USER\" $file" >&2
-    echo "  chmod u+rw $file" >&2
-    return 13
-  fi
-
-  touch "$file"
-  tmp="$(mktemp "$dir/.${key}.XXXXXX")"
-  awk -F= -v key="$key" -v value="$value" '
-    BEGIN { found = 0 }
-    $1 == key {
-      print key "=" value
-      found = 1
-      next
-    }
-    { print }
-    END {
-      if (!found) print key "=" value
-    }
-  ' "$file" > "$tmp"
-  mv "$tmp" "$file"
-  chmod "$mode" "$file" 2>/dev/null || true
-}
-
 sync_public_ip_on_start() {
   local mode current configured generated
 

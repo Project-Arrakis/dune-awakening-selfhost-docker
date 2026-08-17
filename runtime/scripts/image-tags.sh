@@ -24,6 +24,15 @@ resolve_world_image_tag() {
   fi
 }
 
+resolve_game_server_image() {
+  if [ -n "${DUNE_GAME_SERVER_IMAGE:-}" ]; then
+    printf '%s' "$DUNE_GAME_SERVER_IMAGE"
+    return 0
+  fi
+
+  printf 'registry.funcom.com/funcom/self-hosting/seabass-server:%s' "$(resolve_world_image_tag)"
+}
+
 resolve_postgres_image_tag() {
   if [ -n "${DUNE_POSTGRES_IMAGE_TAG:-}" ]; then
     printf '%s' "$DUNE_POSTGRES_IMAGE_TAG"

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { PlayerSummary } from "./PlayerSummary";
 import { playersApi } from "../../api/players";
 
@@ -232,6 +232,28 @@ describe("PlayerSummary", () => {
   });
 
   describe("Faction Reputation", () => {
+    it("reloads reputation immediately when its refresh key changes", async () => {
+      vi.mocked(playersApi.factions)
+        .mockResolvedValueOnce({
+          rows: [{ faction_id: 1, faction_name: "Atreides", reputation_amount: 500 }],
+          capabilities: { factions: true }
+        })
+        .mockResolvedValue({
+          rows: [{ faction_id: 1, faction_name: "Atreides", reputation_amount: 5200 }],
+          capabilities: { factions: true }
+        });
+      const detail = { player: { character_name: "Benny Jesserette", faction: "Atreides" } };
+      const { rerender } = render(
+        <PlayerSummary {...baseProps} detail={detail} fallback={{}} refreshKey={0} />
+      );
+
+      expect(await screen.findByText("500")).toBeInTheDocument();
+      rerender(<PlayerSummary {...baseProps} detail={detail} fallback={{}} refreshKey={1} />);
+
+      expect(await screen.findByText("5,200")).toBeInTheDocument();
+      expect(playersApi.factions).toHaveBeenCalledTimes(2);
+    });
+
     it("renders each faction's reputation amount, distinct from the Faction row", async () => {
       vi.mocked(playersApi.factions).mockResolvedValue({
         rows: [
@@ -255,7 +277,58 @@ describe("PlayerSummary", () => {
       });
     });
 
-    it("lists reputation standings under a Reputation sub-heading, separate from the alignment", async () => {
+    it("shows estimated faction rank and a story progression limit when applicable", async () => {
+      vi.mocked(playersApi.factions).mockResolvedValue({
+        rows: [{ faction_id: 1, faction_name: "Atreides", reputation_amount: 5200, estimated_rank: 12, current_rank_limit: 4, rank_limited_by_progression: true }],
+        capabilities: { factions: true, factionRanks: true }
+      });
+      render(
+        <PlayerSummary
+          {...baseProps}
+          detail={{ player: { character_name: "Benny Jesserette", faction: "Atreides" } }}
+          fallback={{}}
+        />
+      );
+      expect(await screen.findByText("5,200")).toBeInTheDocument();
+      const atreides = screen.getByRole("row", { name: "Atreides reputation" });
+      expect(atreides).toHaveTextContent("Atreides5,200 Rep12 Est. Rank4 Story Limit");
+    });
+
+    it("offers the vendor-facing faction repair directly from the mismatched standing", async () => {
+      const onRepairFactionReputation = vi.fn();
+      vi.mocked(playersApi.factions).mockResolvedValue({
+        rows: [{ faction_id: 1, faction_name: "Atreides", reputation_amount: 11600, estimated_rank: 18, reputation_in_sync: false }],
+        capabilities: { factions: true, factionRanks: true }
+      });
+      render(<PlayerSummary {...baseProps} detail={{ player: { character_name: "Aurokon", faction: "Atreides" } }} fallback={{}} onRepairFactionReputation={onRepairFactionReputation} />);
+      const repairButton = await screen.findByRole("button", { name: "Repair Faction" });
+      fireEvent.click(repairButton);
+      expect(onRepairFactionReputation).toHaveBeenCalledOnce();
+      expect(screen.queryByText("Sync Required")).not.toBeInTheDocument();
+    });
+
+    it("offers faction repair when earned story progression is missing but reputation is synchronized", async () => {
+      const onRepairFactionReputation = vi.fn();
+      vi.mocked(playersApi.factions).mockResolvedValue({
+        rows: [{ faction_id: 1, faction_name: "Atreides", reputation_amount: 12474, estimated_rank: 20, current_rank_limit: 2, rank_limited_by_progression: true, reputation_in_sync: true, progression_repair_available: true, progression_repair_target: 5 }],
+        capabilities: { factions: true, factionRanks: true }
+      });
+      render(<PlayerSummary {...baseProps} detail={{ player: { character_name: "Aurokon", faction: "Atreides" } }} fallback={{}} onRepairFactionReputation={onRepairFactionReputation} />);
+      const repairButton = await screen.findByRole("button", { name: "Repair Faction" });
+      fireEvent.click(repairButton);
+      expect(onRepairFactionReputation).toHaveBeenCalledOnce();
+    });
+
+    it("explains directly on the repair control when the player must log out first", async () => {
+      vi.mocked(playersApi.factions).mockResolvedValue({
+        rows: [{ faction_id: 1, faction_name: "Atreides", reputation_amount: 11600, estimated_rank: 18, reputation_in_sync: false }],
+        capabilities: { factions: true, factionRanks: true }
+      });
+      render(<PlayerSummary {...baseProps} detail={{ player: { character_name: "Aurokon", faction: "Atreides" } }} fallback={{}} onRepairFactionReputation={vi.fn()} factionRepairDisabled />);
+      expect(await screen.findByRole("button", { name: "Player Must Be Offline" })).toBeDisabled();
+    });
+
+    it("lists reputation standings under a Faction Standings sub-heading, separate from the alignment", async () => {
       vi.mocked(playersApi.factions).mockResolvedValue({
         rows: [{ faction_id: 1, faction_name: "Atreides", reputation_amount: 500 }],
         capabilities: { factions: true }
@@ -268,9 +341,9 @@ describe("PlayerSummary", () => {
         />
       );
       await waitFor(() => {
-        expect(screen.getByText("Reputation")).toBeInTheDocument();
+        expect(screen.getByText("Faction Standings")).toBeInTheDocument();
       });
-      const block = screen.getByText("Reputation").closest(".summary-block");
+      const block = screen.getByText("Faction Standings").closest(".summary-block");
       expect(block).not.toBeNull();
       expect(block?.textContent).toContain("Alignment");
       expect(block?.textContent).toContain("Harkonnen");
@@ -278,7 +351,7 @@ describe("PlayerSummary", () => {
       expect(block?.textContent).toContain("500");
     });
 
-    it("keeps the Reputation sub-heading visible even when the player has no standings", async () => {
+    it("keeps the Faction Standings sub-heading visible even when the player has no standings", async () => {
       vi.mocked(playersApi.factions).mockResolvedValue({ rows: [], capabilities: { factions: true } });
       render(
         <PlayerSummary
@@ -288,11 +361,11 @@ describe("PlayerSummary", () => {
         />
       );
       await waitFor(() => {
-        expect(screen.getByText("Reputation")).toBeInTheDocument();
+        expect(screen.getByText("Faction Standings")).toBeInTheDocument();
       });
     });
 
-    it("hides the Reputation sub-heading when the factions capability is unsupported", async () => {
+    it("hides the Faction Standings sub-heading when the factions capability is unsupported", async () => {
       vi.mocked(playersApi.factions).mockResolvedValue({ rows: [], capabilities: {} });
       render(
         <PlayerSummary
@@ -304,7 +377,7 @@ describe("PlayerSummary", () => {
       await waitFor(() => {
         expect(screen.getByText("Alignment")).toBeInTheDocument();
       });
-      expect(screen.queryByText("Reputation")).not.toBeInTheDocument();
+        expect(screen.queryByText("Faction Standings")).not.toBeInTheDocument();
     });
   });
 

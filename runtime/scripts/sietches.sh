@@ -5,6 +5,8 @@ cd "$(dirname "$0")/../.."
 
 # shellcheck source=runtime/scripts/sietch-name.sh
 source runtime/scripts/sietch-name.sh
+# shellcheck source=runtime/scripts/host-file-ownership.sh
+source runtime/scripts/host-file-ownership.sh
 
 PARTITION_CATALOG="runtime/generated/partition-catalog.json"
 SERVER_CATALOG="runtime/generated/server-catalog.json"
@@ -16,6 +18,7 @@ set_config_permissions() {
   # nobody. Keep generated state readable by the host/admin user after writes.
   chmod a+r "$CONFIG_FILE" 2>/dev/null || true
   chmod u+w "$CONFIG_FILE" 2>/dev/null || true
+  dune_set_host_path_owner "$CONFIG_FILE"
 }
 
 log_sietch_lifecycle() {
@@ -377,6 +380,7 @@ Usage:
   dune sietches set-password <partition-id> [password]
   dune sietches set-settings <partition-id> <display-name> <password>
   dune sietches restart <partition-id>
+  dune sietches preflight
   dune sietches sync
   dune sietches validate
   dune sietches reconcile <map-name>
@@ -403,35 +407,82 @@ require_catalog() {
 }
 
 ensure_config() {
-  local content tmp
-
   mkdir -p runtime/generated
   if [ ! -f "$CONFIG_FILE" ]; then
     printf '{\n  "maps": {},\n  "partitions": {}\n}\n' > "$CONFIG_FILE"
+    set_config_permissions
   fi
 
-  if [ ! -r "$CONFIG_FILE" ] || [ ! -w "$CONFIG_FILE" ]; then
-    content='{
-  "maps": {},
-  "partitions": {}
-}
-'
-    if [ -r "$CONFIG_FILE" ]; then
-      content="$(cat "$CONFIG_FILE")"
-      case "$content" in
-        *$'\n') ;;
-        *) content="${content}"$'\n' ;;
-      esac
-    fi
-
-    tmp="${CONFIG_FILE}.tmp.$$"
-    printf '%s' "$content" > "$tmp"
-    mv -f "$tmp" "$CONFIG_FILE"
+  if [ ! -r "$CONFIG_FILE" ]; then
+    echo "Sietch configuration is not readable: $CONFIG_FILE" >&2
+    echo "Refusing to replace it with defaults because that could remove active Sietches." >&2
+    return 1
+  fi
+  if [ ! -w "$CONFIG_FILE" ]; then
+    chmod u+w "$CONFIG_FILE" 2>/dev/null || true
+  fi
+  if [ ! -w "$CONFIG_FILE" ]; then
+    echo "Sietch configuration is not writable: $CONFIG_FILE" >&2
+    echo "Repair runtime ownership before changing or reconciling Sietches." >&2
+    return 1
   fi
 
   normalize_config_defaults
   prune_orphan_partition_config
   set_config_permissions
+}
+
+validate_persisted_config() {
+  [ -f "$CONFIG_FILE" ] || {
+    echo "Sietch configuration is missing: $CONFIG_FILE" >&2
+    echo "Refusing a scheduled restart because the active Sietch target cannot be verified." >&2
+    return 1
+  }
+  [ -r "$CONFIG_FILE" ] || {
+    echo "Sietch configuration is not readable: $CONFIG_FILE" >&2
+    echo "Refusing a scheduled restart because the active Sietch target cannot be verified." >&2
+    return 1
+  }
+
+  python3 - "$CONFIG_FILE" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+try:
+    config = json.loads(path.read_text(encoding="utf-8"))
+except (OSError, json.JSONDecodeError) as error:
+    print(f"Invalid Sietch configuration: {error}", file=sys.stderr)
+    raise SystemExit(1)
+
+if not isinstance(config, dict) or not isinstance(config.get("maps", {}), dict):
+    print("Invalid Sietch configuration: maps must be an object.", file=sys.stderr)
+    raise SystemExit(1)
+
+for map_name in ("Survival_1", "DeepDesert_1"):
+    entry = config.get("maps", {}).get(map_name, {})
+    if not isinstance(entry, dict):
+        print(f"Invalid Sietch configuration: {map_name} must be an object.", file=sys.stderr)
+        raise SystemExit(1)
+    values = {}
+    for key in ("active_dimensions", "max_dimensions"):
+        if key not in entry:
+            continue
+        try:
+            values[key] = int(entry[key])
+        except (TypeError, ValueError):
+            print(f"Invalid Sietch configuration: {map_name}.{key} must be a positive integer.", file=sys.stderr)
+            raise SystemExit(1)
+        if values[key] < 1:
+            print(f"Invalid Sietch configuration: {map_name}.{key} must be a positive integer.", file=sys.stderr)
+            raise SystemExit(1)
+    if values.get("active_dimensions", 1) > values.get("max_dimensions", values.get("active_dimensions", 1)):
+        print(f"Invalid Sietch configuration: {map_name} active dimensions exceed max dimensions.", file=sys.stderr)
+        raise SystemExit(1)
+
+print("Sietch configuration preflight passed.")
+PY
 }
 
 validate_positive_integer() {
@@ -764,6 +815,34 @@ def default_display_name(row):
         return "(unset)"
     return label if label.lower().startswith("sietch ") else f"Sietch {label}"
 
+# The effective Bgd.ServerDisplayName (partition -> map -> global UserEngine.ini,
+# via usersettings.py) is the name a player actually sees in-game, and it already
+# includes any per-partition name set through "sietches set-display" (which writes
+# into this same field). It must win over the legacy sietch-config.json mirror and
+# the DB-label-derived generic name below.
+import subprocess
+server_display_names = {}
+partition_ids = [str(row.get("id")) for row in rows]
+if partition_ids:
+    try:
+        proc = subprocess.run(
+            ["python3", "runtime/scripts/usersettings.py", "partition-engine-values-many", rows[0].get("map"), *partition_ids],
+            capture_output=True, text=True, timeout=10,
+        )
+        if proc.returncode == 0 and proc.stdout.strip():
+            for pid, values in json.loads(proc.stdout).items():
+                name = str((values or {}).get("server_display_name") or "").strip()
+                if name:
+                    server_display_names[pid] = name
+    except Exception:
+        pass
+
+def resolved_display_name(row, cfg):
+    configured = server_display_names.get(str(row.get("id")))
+    if configured:
+        return configured
+    return cfg.get("display_name") or default_display_name(row)
+
 if mode == "--ids":
     for row in rows:
         print(row.get("id"))
@@ -776,7 +855,7 @@ elif mode == "--numbered":
     for idx, row in enumerate(rows, 1):
         pid = str(row.get("id"))
         cfg = partition_config.get(pid, {})
-        display = cfg.get("display_name") or default_display_name(row)
+        display = resolved_display_name(row, cfg)
         password = "(set)" if cfg.get("password") else "(unset)"
         print(f"{idx}) {row.get('map')} Dimension {row.get('dimension', 0)}")
         print(f"   Display Name: {display}")
@@ -785,7 +864,7 @@ elif mode == "--labels":
     for row in rows:
         pid = str(row.get("id"))
         cfg = partition_config.get(pid, {})
-        display = cfg.get("display_name") or default_display_name(row)
+        display = resolved_display_name(row, cfg)
         password = "(set)" if cfg.get("password") else "(unset)"
         print(f"{row.get('map')} Dimension {row.get('dimension', 0)}  Display Name: {display}  Password: {password}")
 else:
@@ -793,7 +872,7 @@ else:
     for row in rows:
         pid = str(row.get("id"))
         cfg = partition_config.get(pid, {})
-        display = cfg.get("display_name") or default_display_name(row)
+        display = resolved_display_name(row, cfg)
         password = "(set)" if cfg.get("password") else "(unset)"
         print(f"{str(row.get('dimension', 0)):<10} {display:<32} {password}")
 PY
@@ -917,15 +996,68 @@ normalize_deepdesert_labels() {
     return 0
   fi
 
+  local dim0_id dim1_id
+  dim0_id="$(psql_value "
+    select partition_id from dune.world_partition
+    where map = 'DeepDesert_1' and dimension_index = 0
+    order by partition_id limit 1;
+  " | tr -d '[:space:]')"
+  dim1_id="$(psql_value "
+    select partition_id from dune.world_partition
+    where map = 'DeepDesert_1' and dimension_index = 1
+    order by partition_id limit 1;
+  " | tr -d '[:space:]')"
+  [ -n "$dim0_id" ] && [ -n "$dim1_id" ] || return 0
+
+  # Resolve each dimension's label from its actual configured UserGame.ini
+  # combat state -- never from dimension_index position, which is positional
+  # metadata only and does not determine which dimension is PvP vs PvE.
+  local states_json
+  states_json="$(python3 runtime/scripts/usersettings.py partition-combat-states DeepDesert_1 "$dim0_id" "$dim1_id" 2>/dev/null || true)"
+  [ -n "$states_json" ] || return 0
+
+  local resolved dim0_label dim1_label
+  resolved="$(printf '%s' "$states_json" | python3 -c '
+import json, sys
+
+data = json.load(sys.stdin)
+expected = sys.argv[1:]
+states = {
+    str(partition.get("partitionId")): partition.get("configuredState")
+    for partition in data.get("partitions", [])
+}
+
+# The canonical short labels are globally unique in world_partition. Only
+# swap them when both requested partitions resolved and form the expected
+# one-PvP/one-PvE pair. UNKNOWN/CONFLICT or duplicate modes must leave the
+# existing labels untouched instead of producing temporary or duplicate
+# labels.
+if set(states) != set(expected):
+    raise SystemExit(1)
+if {states[partition_id] for partition_id in expected} != {"PVP", "PVE"}:
+    raise SystemExit(1)
+
+label = {"PVP": "PvP", "PVE": "PvE"}
+print("|".join(label[states[partition_id]] for partition_id in expected))
+' "$dim0_id" "$dim1_id" 2>/dev/null || true)"
+  IFS='|' read -r dim0_label dim1_label <<< "$resolved"
+  [ -n "$dim0_label" ] && [ -n "$dim1_label" ] || return 0
+
+  # Labels are globally unique. Swap both rows atomically through temporary
+  # partition-specific labels so a failure cannot strand either row with an
+  # internal DualDeepDesert_* label.
   docker exec dune-postgres psql -U postgres -d dune -v ON_ERROR_STOP=1 -c "
+begin;
 update dune.world_partition
-set label = case
-  when dimension_index = 0 then 'PvP'
-  when dimension_index = 1 then 'PvE'
-  else label
+set label = 'DualDeepDesert_' || partition_id::text
+where partition_id in ($dim0_id, $dim1_id);
+update dune.world_partition
+set label = case partition_id
+  when $dim0_id then '$dim0_label'
+  when $dim1_id then '$dim1_label'
 end
-where map = 'DeepDesert_1'
-  and dimension_index in (0, 1);
+where partition_id in ($dim0_id, $dim1_id);
+commit;
 " >/dev/null
 }
 
@@ -1445,7 +1577,7 @@ select dune.update_partition_labels(true);
 
 reconcile_map_dimensions() {
   local map="$1"
-  local safe_map target available base_partition assigned_count initial_assigned_count
+  local safe_map target target_state target_explicit available base_partition assigned_count initial_assigned_count
   local topology_changed=0
 
   ensure_config
@@ -1462,7 +1594,7 @@ reconcile_map_dimensions() {
   }
 
   safe_map="${map//'/'''}"
-  target="$(python3 - "$map" <<'PY'
+  target_state="$(python3 - "$map" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -1473,10 +1605,15 @@ if not config_path.exists():
     print("1")
     raise SystemExit
 config = json.loads(config_path.read_text())
-print(int(config.get("maps", {}).get(target, {}).get("active_dimensions") or 1))
+entry = config.get("maps", {}).get(target, {})
+value = int(entry.get("active_dimensions") or 1)
+explicit = str(entry.get("active_dimensions_explicit", False)).strip().lower() in {"1", "true", "yes", "on"}
+print(f"{value}\t{1 if explicit else 0}")
 PY
 )"
+  IFS=$'\t' read -r target target_explicit <<< "$target_state"
   validate_positive_integer "$target" || target=1
+  [ "$target_explicit" = "1" ] || target_explicit=0
   if [ "$target" -le 0 ] 2>/dev/null; then
     return 0
   fi
@@ -1541,7 +1678,10 @@ PY
       topology_changed=1
     done
 
-    while [ "$assigned_count" -gt "$target" ]; do
+    # Only a target explicitly saved by the user may remove a running
+    # dimension. A recovered/default target is useful for additions, but must
+    # never be allowed to collapse an existing multi-Sietch topology.
+    while [ "$target_explicit" = "1" ] && [ "$assigned_count" -gt "$target" ]; do
       remove_row="$(psql_value "
         select partition_id || '|' || coalesce(server_id, '')
         from dune.world_partition
@@ -1576,7 +1716,7 @@ where previous_server_partition_id = $remove_partition
       topology_changed=1
     done
 
-    if docker exec dune-postgres psql -U postgres -d dune -Atc "
+    if [ "$target_explicit" = "1" ] && docker exec dune-postgres psql -U postgres -d dune -Atc "
 with ranked as (
   select
     partition_id,
@@ -1593,7 +1733,8 @@ where ord > $target
       topology_changed=1
     fi
 
-    docker exec dune-postgres psql -U postgres -d dune -v ON_ERROR_STOP=1 -c "
+    if [ "$target_explicit" = "1" ]; then
+      docker exec dune-postgres psql -U postgres -d dune -v ON_ERROR_STOP=1 -c "
 set search_path = dune, public;
 
 with ranked as (
@@ -1612,8 +1753,11 @@ where wp.partition_id = ranked.partition_id
 
 select dune.update_partition_labels(true);
 " >/dev/null
-    if [ "$map" = "DeepDesert_1" ]; then
-      normalize_deepdesert_labels
+      if [ "$map" = "DeepDesert_1" ]; then
+        normalize_deepdesert_labels
+      fi
+    else
+      echo "Preserving inactive $map partition rows because the active target was not explicitly saved."
     fi
   else
     docker exec dune-postgres psql -U postgres -d dune -v ON_ERROR_STOP=1 -c "
@@ -1833,8 +1977,28 @@ def default_display_name(partition_row):
         return ""
     return label if label.lower().startswith("sietch ") else f"Sietch {label}"
 
+def effective_display_name(map_name, pid):
+    # The merged Bgd.ServerDisplayName (partition -> map -> global UserEngine.ini)
+    # already reflects any per-partition name set via "sietches set-display", so it
+    # must win over the legacy sietch-config.json mirror and the DB-label fallback.
+    import subprocess
+    try:
+        proc = subprocess.run(
+            ["python3", "runtime/scripts/usersettings.py", "partition-engine-values", map_name, pid],
+            capture_output=True, text=True, timeout=10,
+        )
+        if proc.returncode != 0:
+            return ""
+        for line in proc.stdout.splitlines():
+            key, _, value = line.partition("\t")
+            if key == "server_display_name":
+                return value.strip()
+    except Exception:
+        pass
+    return ""
+
 args = []
-display_name = entry.get("display_name") or default_display_name(row)
+display_name = effective_display_name(sys.argv[4], partition_id) or entry.get("display_name") or default_display_name(row)
 if display_name:
     args.append(f"-ServerDisplayName={ini_quote(display_name)}")
 if entry.get("password"):
@@ -2076,6 +2240,9 @@ case "$cmd" in
     ;;
   validate|check)
     validate_sietch_state
+    ;;
+  preflight)
+    validate_persisted_config
     ;;
   runtime-args)
     [ "$#" -eq 3 ] || { usage; exit 2; }

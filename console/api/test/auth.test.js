@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createAuth, clearSessionCookie, setSessionCookie, json } from "../src/auth.js";
+import { createHmac } from "node:crypto";
+import { createAuth, clearSessionCookie, setSessionCookie, json, serializeJsonResponse } from "../src/auth.js";
 
 test("auth creates readable signed sessions", () => {
   const auth = createAuth({ sessionSecret: "secret", adminPassword: "admin", authDisabled: false });
@@ -9,6 +10,22 @@ test("auth creates readable signed sessions", () => {
   assert.equal(auth.readSession(req)?.id, session.id);
   assert.equal(auth.passwordMatches("admin"), true);
   assert.equal(auth.passwordMatches("wrong"), false);
+});
+
+test("auth keeps tier and identity in the server-side session while the cookie remains opaque", () => {
+  const auth = createAuth({ sessionSecret: "secret", adminPassword: "admin", authDisabled: false });
+  const session = auth.makeSession({ tier: "moderator", userId: "123", username: "Tester" });
+  assert.equal(session.cookie.split(".")[0], session.id);
+  assert.equal(auth.readSession({ headers: { cookie: `asc_session=${encodeURIComponent(session.cookie)}` } })?.tier, "moderator");
+
+});
+
+test("auth uses the injected clock for session expiry", () => {
+  let currentTime = 1_700_000_000_000;
+  const auth = createAuth({ sessionSecret: "secret", adminPassword: "admin", authDisabled: false, now: () => currentTime });
+  const session = auth.makeSession();
+  currentTime += 12 * 60 * 60 * 1000 + 1;
+  assert.equal(auth.readSession({ headers: { cookie: `asc_session=${encodeURIComponent(session.cookie)}` } }), null);
 });
 
 test("auth rejects state-changing requests without CSRF token", () => {
@@ -68,37 +85,27 @@ test("auth rejects an expired session", () => {
   assert.equal(auth.readSession(req), null);
 });
 
-test("legacy signed cookie without a live session synthesizes an owner-tier session (upgrade path)", () => {
-  // Strict Requirement 0: a cookie minted by a pre-RBAC build (or a cookie
-  // surviving a restart) must not lock the operator out. The HMAC proves
-  // the cookie is genuine; the missing Map entry gets a fresh owner session.
-  const secret = "shared-secret";
-  const legacyAuth = createAuth({ sessionSecret: secret, adminPassword: "admin", authDisabled: false });
-  const legacy = legacyAuth.makeSession(); // would have been the old format: same shape
-  const cookieValue = legacy.cookie;
-
-  const freshAuth = createAuth({ sessionSecret: secret, adminPassword: "admin", authDisabled: false });
-  const req = { headers: { cookie: `asc_session=${encodeURIComponent(cookieValue)}` } };
-  const session = freshAuth.readSession(req);
-  assert.ok(session, "signature-valid legacy cookie must not be rejected");
-  assert.equal(session.tier, "owner");
-  assert.equal(session.id, legacy.id);
-});
-
-test("legacy cookie synthesized session can authenticate via its fresh CSRF token", () => {
-  const secret = "another-secret";
-  const legacyAuth = createAuth({ sessionSecret: secret, adminPassword: "admin", authDisabled: false });
-  const legacy = legacyAuth.makeSession();
-  const freshAuth = createAuth({ sessionSecret: secret, adminPassword: "admin", authDisabled: false });
-
-  // The browser always does /api/auth/state first, which returns the
-  // synthesized session's CSRF token (moved by requireAuth→readSession).
-  const read = freshAuth.readSession({ headers: { cookie: `asc_session=${encodeURIComponent(legacy.cookie)}` } });
-  assert.ok(read, "signature-valid legacy cookie must establish a session");
-  const res = fakeResponse();
-  const authed = freshAuth.requireAuth({ method: "POST", headers: { cookie: `asc_session=${encodeURIComponent(legacy.cookie)}`, "x-csrf-token": read.csrf } }, res);
-  assert.equal(authed?.tier, "owner");
-  assert.equal(res.status, null);
+// A signature-valid cookie whose session id is no longer in the in-memory
+// Map (e.g. after a restart) MUST be rejected outright, not resurrected
+// with tier/identity synthesized from the cookie itself. See CRITICAL
+// issue #309: the fork's earlier "upgrade path" behavior (a since-deleted
+// test previously here) allowed anyone holding sessionSecret to forge an
+// arbitrary-tier session for an id that was never actually issued, and
+// made session revocation (tier downgrade, password rotation, #139)
+// impossible, since any Map eviction re-synthesized the original tier.
+test("a signature-valid cookie with no matching in-memory session is rejected, not resurrected", () => {
+  const auth = createAuth({ sessionSecret: "shared-secret", adminPassword: "admin", authDisabled: false });
+  // Simulates an attacker who has obtained sessionSecret (e.g. a leaked
+  // runtime/secrets/admin-web-session-secret.txt) forging a brand-new,
+  // never-issued session id -- or, equivalently, a legitimately-issued
+  // session id whose Map entry no longer exists (server restart, explicit
+  // revocation). Either way, the signature alone proves nothing about
+  // tier/identity in this design; only an actual Map entry does.
+  const forgedId = "forged-id-that-was-never-issued";
+  const forgedSignature = createHmac("sha256", "shared-secret").update(forgedId).digest("base64url");
+  const forgedCookie = `${forgedId}.${forgedSignature}`;
+  const req = { headers: { cookie: `asc_session=${encodeURIComponent(forgedCookie)}` } };
+  assert.equal(auth.readSession(req), null);
 });
 
 test("makeSession defaults to owner tier and carries identity fields", () => {
@@ -162,6 +169,11 @@ test("constant-time HMAC comparison rejects mismatched signatures", () => {
   const [, sigB] = otherSession.cookie.split(".");
   const tamperedCookie = `${idA}.${sigB}`;
   assert.equal(auth.readSession({ headers: { cookie: `asc_session=${encodeURIComponent(tamperedCookie)}` } }), null);
+});
+
+test("json response serialization preserves ordinary public payloads", () => {
+  const output = serializeJsonResponse({ ok: true, result: { status: "ready" } });
+  assert.deepEqual(JSON.parse(output), { ok: true, result: { status: "ready" } });
 });
 
 function fakeResponse() {

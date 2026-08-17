@@ -1,27 +1,32 @@
 import { redact } from "../redact.js";
 
-// A map restart must not begin its start/spawn half until both refill queues
-// have finished using the brief write-safe window. Promise.allSettled is
-// deliberate: if one queue fails, we still wait for the other rather than
-// returning early while it is writing to PostgreSQL.
-export async function flushBaseRefillQueues({ flushGenerators, flushWater }) {
-  const [generatorResult, waterResult] = await Promise.allSettled([
-    Promise.resolve().then(flushGenerators),
-    Promise.resolve().then(flushWater)
-  ]);
+// A map restart must not begin its start/spawn half until every queue has
+// finished using the brief write-safe window. Promise.allSettled is
+// deliberate: if one queue fails, we still wait for the others rather than
+// returning early while one of them is writing to PostgreSQL.
+//
+// flushDeletes is optional and additive: existing callers that pass only
+// flushGenerators/flushWater are unaffected, since an undefined third leg is
+// simply skipped rather than awaited.
+export async function flushBaseRefillQueues({ flushGenerators, flushWater, flushDeletes }) {
+  const jobs = [Promise.resolve().then(flushGenerators), Promise.resolve().then(flushWater)];
+  const labels = ["generator", "water"];
+  if (flushDeletes) {
+    jobs.push(Promise.resolve().then(flushDeletes));
+    labels.push("delete");
+  }
+  const results = await Promise.allSettled(jobs);
 
   const flushed = [];
   const failures = [];
-  if (generatorResult.status === "fulfilled") {
-    flushed.push(...(generatorResult.value?.flushed || []).map((entry) => ({ ...entry, refillType: "generator" })));
-  } else {
-    failures.push({ refillType: "generator", error: redact(String(generatorResult.reason?.message || generatorResult.reason)) });
-  }
-  if (waterResult.status === "fulfilled") {
-    flushed.push(...(waterResult.value?.flushed || []).map((entry) => ({ ...entry, refillType: "water" })));
-  } else {
-    failures.push({ refillType: "water", error: redact(String(waterResult.reason?.message || waterResult.reason)) });
-  }
+  results.forEach((result, index) => {
+    const refillType = labels[index];
+    if (result.status === "fulfilled") {
+      flushed.push(...(result.value?.flushed || []).map((entry) => ({ ...entry, refillType })));
+    } else {
+      failures.push({ refillType, error: redact(String(result.reason?.message || result.reason)) });
+    }
+  });
 
   return { flushed, failures };
 }

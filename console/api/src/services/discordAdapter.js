@@ -186,7 +186,7 @@ function discordSafeError(error) {
   return {
     ok: false,
     code: String(error.code || "discord_adapter_error"),
-    error: redact(error.message || error)
+    error: redact(error?.message || "Unexpected error.")
   };
 }
 

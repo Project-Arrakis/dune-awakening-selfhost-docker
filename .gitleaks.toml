@@ -8,7 +8,11 @@
 [extend]
   useDefault = true
 
-[allowlist]
+# [allowlist] (singular) is deprecated as of gitleaks v8.25.0+ and cannot
+# coexist with [[allowlists]] in the same config (confirmed directly:
+# gitleaks refuses to load a config with both, "[allowlist] is deprecated,
+# it cannot be used alongside [[allowlists]]") -- migrated to [[allowlists]].
+[[allowlists]]
   description = "Verified placeholders / synthetic fixtures (checked 2026-08-06)"
   regexes = [
     "Nu6VmPWUMvdPMeB7qErr",
@@ -16,3 +20,15 @@
     "143064109775060993",
     "abcdefghijklmnopqrstuvwxyzABCDEFG123456"
   ]
+
+# NOTE: tests/db-system-backup-test.sh's synthetic secret fixtures
+# (admin-pw-8f2a-real, etc.) do NOT need an allowlist entry here --
+# confirmed directly: `gitleaks detect --source
+# tests/db-system-backup-test.sh` with the built-in default rules (and no
+# fixture-specific allowlist at all) already produces zero findings, since
+# these fixtures' variable names (SECRET_ADMIN_PASSWORD=, TEST_PASSPHRASE=)
+# don't match any built-in rule's keyword+pattern requirements. A broad,
+# permanent, repo-wide allowlist entry for these exact literal strings was
+# added defensively in an earlier revision without verifying this -- an
+# unverified assumption, not a fact, per this account's own review
+# discipline. Removed rather than kept "just in case."

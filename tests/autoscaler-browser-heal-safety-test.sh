@@ -12,6 +12,7 @@ grep -Fq 'dune-server-survival-1|1' "$script"
 grep -Fq 'dune-server-overmap|2' "$script"
 grep -Fq 'Server farm is READY .*partition ${partition}' "$script"
 grep -Fq 'DIRECTOR_CORE_READY_GRACE_SECONDS="${DUNE_AUTOSCALER_DIRECTOR_CORE_READY_GRACE_SECONDS:-120}"' "$script"
+grep -Fq 'DIRECTOR_HEAL_REPUBLISH_GRACE_SECONDS="${DUNE_AUTOSCALER_DIRECTOR_HEAL_REPUBLISH_GRACE_SECONDS:-45}"' "$script"
 grep -Fq "AUTOSCALER_STARTED_AT=\"\$(date +%s)\"" "$script"
 grep -Fq "docker logs --since \"\$started_at\" --tail 5000 \"\$container\"" "$script"
 
@@ -25,9 +26,25 @@ core_gate = text.index("if ! core_maps_ready_for_browser_heal; then", scan)
 startup_grace = text.index('now - AUTOSCALER_STARTED_AT', core_gate)
 core_grace = text.index('if [ "$age" -lt "$DIRECTOR_CORE_READY_GRACE_SECONDS" ]; then', core_gate)
 stale_eval = text.index('rows="$(director_live_server_rows)"', scan)
+republish = text.index('action=republish', stale_eval)
 restart = text.index('echo "HEAL director stale browser state', scan)
+restart = text.index('action=restart', restart)
 
-assert core_gate < startup_grace < core_grace < stale_eval < restart
+assert core_gate < startup_grace < core_grace < stale_eval < republish < restart
+
+scan_end = text.index("follow_director_hagga_handoffs", scan)
+scan_body = text[scan:scan_end]
+assert "publish_state_for_map Survival_1" in scan_body
+assert "publish_state_for_map Overmap" in scan_body
+assert "publish_state_for_map DeepDesert_1" in scan_body
+assert 'republish_age\" -lt \"$DIRECTOR_HEAL_REPUBLISH_GRACE_SECONDS' in scan_body
+assert "battlegroup_effective_player_count" in scan_body
+assert "browser_restart_deferred" in scan_body
+assert "browser_restart_pending" in scan_body
+assert 'director_heal_set browser_restart_pending "$now"' in scan_body
+assert "director_heal_clear browser_restart_pending" in scan_body
+assert 'online_players="unknown"' in scan_body
+assert scan_body.index("action=republish") < scan_body.index("restart-director.sh")
 
 core_ready = text.index("core_maps_ready_for_browser_heal()")
 core_ready_end = text.index("scan_director_browser_state()", core_ready)
