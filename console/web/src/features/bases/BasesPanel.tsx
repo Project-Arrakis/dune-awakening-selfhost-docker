@@ -1614,7 +1614,12 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
                   </div>
                 : expandedTab === "inventory"
                 ? <div role="tabpanel" id={`bases-panel-inventory-${id}`} aria-labelledby={`bases-tab-inventory-${id}`}>
-                    <BaseInventoryTab baseId={id} />
+                    <BaseInventoryTab
+                      baseId={id}
+                      baseName={String(base.name || `base ${id}`)}
+                      confirmAction={confirmAction}
+                      onError={onError}
+                    />
                   </div>
                 : <div role="tabpanel" id={`bases-panel-permissions-${id}`} aria-labelledby={`bases-tab-permissions-${id}`}>
                     <BasePermissionsTab

@@ -2821,15 +2821,17 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
    rather than trailing 400px away at the far right. Its 22px + the 8px gap put
    the item name at 40px from the row edge, which is where the expanded
    breakdown indents to. */
+/* Header, row, icon and breakdown scale together rather than the row font
+   alone -- bumping one leaves the block looking mismatched. */
 .bases-inventory-item-head,
 .bases-inventory-item-row {
   display: grid;
-  grid-template-columns: 22px minmax(0, 1fr) 90px 92px;
+  grid-template-columns: 26px minmax(0, 1fr) 100px 100px;
   gap: 8px;
   align-items: center;
   text-align: left;
 }
-.bases-inventory-item-head { padding: 6px 10px; color: var(--muted); font-size: 11px; border-bottom: 1px solid var(--border); }
+.bases-inventory-item-head { padding: 7px 12px; color: var(--muted); font-size: 12px; border-bottom: 1px solid var(--border); }
 .bases-inventory-item-head > span:nth-child(3), .bases-inventory-item-head > span:nth-child(4) { text-align: right; }
 .bases-inventory-item-row {
   width: 100%;
@@ -2838,16 +2840,16 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
   border-radius: 0;
   background: transparent;
   color: var(--text);
-  font-size: 13px;
-  padding: 9px 10px;
+  font-size: 15px;
+  padding: 11px 12px;
 }
 .bases-inventory-item-row:hover { border-color: var(--border); background: var(--panel-muted); }
 .bases-inventory-item-name { display: flex; align-items: center; gap: 8px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.bases-inventory-item-name img { width: 22px; height: 22px; flex: 0 0 22px; object-fit: contain; border-radius: 4px; background: #25201b; }
+.bases-inventory-item-name img { width: 26px; height: 26px; flex: 0 0 26px; object-fit: contain; border-radius: 4px; background: #25201b; }
 .bases-inventory-qty, .bases-inventory-count { text-align: right; }
 .bases-inventory-count { color: var(--muted); }
-.bases-inventory-breakdown { background: var(--panel-muted); padding: 6px 10px 9px 40px; border-bottom: 1px solid var(--border); }
-.bases-inventory-breakdown > div { display: flex; justify-content: space-between; gap: 12px; color: var(--muted-warm); font-size: 12px; padding: 4px 0; }
+.bases-inventory-breakdown { background: var(--panel-muted); padding: 7px 12px 11px 46px; border-bottom: 1px solid var(--border); }
+.bases-inventory-breakdown > div { display: flex; justify-content: space-between; align-items: center; gap: 12px; color: var(--muted-warm); font-size: 13px; padding: 5px 0; }
 .bases-inventory-show-all { width: 100%; margin-top: 10px; background: transparent; border-color: transparent; color: var(--muted-warm); font-size: 12px; }
 .bases-inventory-show-all:hover { border-color: var(--border-strong); }
 
@@ -2888,15 +2890,41 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
   color: #f7e7c7;
 }
 .bases-inventory-view-contents .muted { font-size: 11.5px; }
+/* Smaller inside the item breakdown, where it repeats once per container and
+   sits on a 12px row -- the card's full-size button would dominate it. */
+.bases-inventory-view-contents.compact { padding: 4px 9px; gap: 5px; font-size: 12px; }
+.bases-inventory-breakdown-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
 
 /* Taller and wider than .confirm-modal's 440px: this is a scrolling list, not
    a sentence and two buttons. */
+/* Flex column rather than .confirm-modal's grid: this modal's children are
+   conditional (loading, load error, delete notice, delete error, the detail
+   strip), and a fixed grid-template-rows assigns the growing row by position,
+   so any one of them appearing shifted the scroll region onto the wrong
+   child. In a flex column only the scroll container grows and the rest size
+   themselves, whatever is present. */
 .bases-inventory-contents-modal {
   width: min(560px, calc(100vw - 32px));
   max-height: min(72vh, 720px);
-  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  display: flex;
+  flex-direction: column;
   padding-left: 24px;
   padding-right: 24px;
+}
+/* min-height: 0 is load-bearing -- a flex item defaults to min-content, which
+   for a long list is its full height, and it would overflow the modal
+   instead of scrolling. */
+.bases-inventory-contents-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+  padding-right: 10px;
 }
 .bases-inventory-contents-modal .confirm-modal-title { align-items: start; }
 .bases-inventory-contents-modal .confirm-modal-title > div { min-width: 0; }
@@ -2918,17 +2946,19 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
    12px when the scrollbar appears. The padding-right then holds the quantity
    column clear of that track -- without it the numbers sit under the
    scrollbar, which is exactly where they are hardest to read. */
+/* Scrolling moved up to .bases-inventory-contents-scroll, which wraps every
+   inventory -- a per-inventory scroll area would give a two-inventory
+   refinery two independent scrollbars. */
 .bases-inventory-contents-list {
-  min-height: 0;
-  overflow-y: auto;
-  scrollbar-gutter: stable;
   display: grid;
   align-content: start;
-  padding-right: 10px;
 }
+/* Five columns now: icon, name, slot number, quantity, delete. The slot
+   number is what makes two rows of the same template distinguishable, which
+   is the whole point of the per-slot view. */
 .bases-inventory-contents-row {
   display: grid;
-  grid-template-columns: 24px minmax(0, 1fr) auto;
+  grid-template-columns: 40px minmax(0, 1fr) 48px auto 30px;
   gap: 10px;
   align-items: center;
   padding: 7px 2px;
@@ -2936,10 +2966,132 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
   font-size: 13px;
 }
 .bases-inventory-contents-row:last-child { border-bottom: 0; }
-.bases-inventory-contents-row img { width: 24px; height: 24px; object-fit: contain; border-radius: 4px; background: #25201b; }
-.bases-inventory-contents-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bases-inventory-contents-row.head { color: var(--muted-warm); font-size: 12px; border-bottom-color: var(--border-strong); }
+.bases-inventory-contents-row.selected { background: var(--surface-raised); }
+/* The third and last CatalogItemThumb in this tab, and the one that has to be
+   sized here too: .small is a 42px box, which overflowed the old 24px column
+   and ran under the item name. The other two are handled at
+   .bases-inventory-slot-cell and .bases-inventory-slot-detail -- if a fourth
+   is ever added, it needs a rule as well or it will overflow the same way. */
+.bases-inventory-contents-row .catalog-item-preview {
+  width: 40px;
+  height: 40px;
+  flex-basis: 40px;
+  margin-inline: 0;
+}
+.bases-inventory-contents-row img { width: 100%; height: 100%; object-fit: contain; border-radius: 4px; background: #25201b; }
+/* justify-content, not just text-align: the global button rule makes every
+   button an inline-flex centred box, so text-align alone left the item names
+   centred in their column. */
+.bases-inventory-contents-name {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  display: block; text-align: left; justify-content: flex-start;
+  background: none; border: 0; padding: 0; color: inherit; font: inherit; cursor: pointer;
+}
+.bases-inventory-contents-name:hover { border-color: transparent; color: var(--accent); }
+.bases-inventory-contents-slot { font-variant-numeric: tabular-nums; font-size: 12px; }
 .bases-inventory-contents-qty { color: var(--muted-warm); font-variant-numeric: tabular-nums; }
 .bases-inventory-note { margin: 0; font-size: 12px; }
+
+/* The in-game-style slot grid. auto-fill rather than a fixed column count so
+   a 10-slot container and a 100-slot one both fill the modal width, and the
+   cells stay square via aspect-ratio instead of a hardcoded height. */
+.bases-inventory-slot-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(68px, 1fr));
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.bases-inventory-slot-cell {
+  position: relative;
+  aspect-ratio: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #221b12;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0;
+  cursor: pointer;
+}
+/* Dashed and dimmer so an empty slot reads as absence at a glance rather than
+   as an item that failed to load. */
+.bases-inventory-slot-cell.empty { background: #1b1610; border-style: dashed; cursor: default; }
+/* Purely decorative, matching the game's own empty slot. Pseudo-elements
+   rather than markup: the cell is already aria-hidden and non-interactive, so
+   nothing should announce a "+" to a screen reader or suggest it can be
+   clicked -- there is no add-item action here yet.
+   Drawn as two bars rather than typed as a "+" glyph. A glyph is centred by
+   its line box, not by its ink, and the plus in this font sits above that
+   centre -- it read as noticeably high in the slot. Two absolutely positioned
+   bars are centred geometrically, and being percentage-sized they track the
+   tile, which auto-fill grows from its 68px minimum to fill the row. */
+.bases-inventory-slot-cell.empty::before,
+.bases-inventory-slot-cell.empty::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background: #6b5b44;
+  border-radius: 1px;
+}
+.bases-inventory-slot-cell.empty::before { width: 52%; height: 2px; }
+.bases-inventory-slot-cell.empty::after { width: 2px; height: 52%; }
+.bases-inventory-slot-cell.selected { border-color: var(--danger); }
+/* CatalogItemThumb carries its own bordered, backgrounded box (72px by
+   default, 42px as .small). In a slot the cell IS the frame, so its chrome is
+   stripped and it fills the cell -- otherwise every tile draws a box inside a
+   box, which is what made the icons read as inset rather than seated. */
+.bases-inventory-slot-cell .catalog-item-preview {
+  width: 100%;
+  height: 100%;
+  flex-basis: auto;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  margin-inline: 0;
+}
+.bases-inventory-slot-cell img { width: 78%; height: 78%; object-fit: contain; }
+.bases-inventory-slot-qty {
+  position: absolute; right: 4px; bottom: 2px;
+  font-size: 12px; font-variant-numeric: tabular-nums;
+  /* Two shadows, not one: quantities sit over the icon itself, and a single
+     offset shadow disappears against a light-coloured item. */
+  text-shadow: 0 1px 2px #000, 0 0 3px #000;
+}
+.bases-inventory-slot-overflow-note { margin: 0 0 8px; font-size: 12px; }
+.bases-inventory-slots + .bases-inventory-slots { margin-top: 12px; }
+
+/* One control strip for the selected slot instead of a quantity input on
+   every row -- a packed 100-slot container would render a hundred of them. */
+.bases-inventory-slot-detail {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr) auto auto;
+  gap: 12px;
+  align-items: center;
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+}
+/* The WRAPPER has to be sized, not just the img inside it: CatalogItemThumb
+   defaults to a 72px box, which overflowed this column and put the item name
+   on top of the picture. */
+.bases-inventory-slot-detail .catalog-item-preview {
+  width: 48px;
+  height: 48px;
+  flex-basis: 48px;
+  margin-inline: 0;
+}
+.bases-inventory-slot-detail img { width: 100%; height: 100%; object-fit: contain; }
+.bases-inventory-slot-detail-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; font-size: 13px; }
+.bases-inventory-slot-detail-body span { font-size: 12px; }
+.bases-inventory-slot-amount { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+.bases-inventory-slot-amount input { width: 90px; }
+.bases-inventory-amount-error { margin: 6px 0 0; font-size: 12px; color: var(--danger); }
+.bases-inventory-delete-notice { margin: 0 0 8px; font-size: 12px; color: var(--muted-warm); }
+.bases-inventory-contents-head-actions { display: flex; align-items: center; gap: 8px; }
 
 /* Permissions is a single reading column with the Revert/Save bar full-bleed
    beneath it. The inset padding lives on .bases-permissions-content rather than

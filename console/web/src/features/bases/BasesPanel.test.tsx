@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { basesApi, type AutoRefillBase } from "../../api/bases";
 import { mapsApi } from "../../api/maps";
@@ -26,7 +26,9 @@ vi.mock("../../api/bases", () => ({
     pendingWaterRefills: vi.fn(),
     autoRefillWater: vi.fn(),
     setAutoRefillWater: vi.fn(),
-    inventory: vi.fn()
+    inventory: vi.fn(),
+    containerSlots: vi.fn(),
+    deleteContainerItem: vi.fn()
   }
 }));
 
@@ -936,6 +938,73 @@ describe("BasesPanel permissions editing", () => {
     expect(await screen.findByText("Vault")).toBeInTheDocument();
     expect(document.querySelectorAll(".bases-inventory-cards .bases-card")).toHaveLength(1);
     await waitFor(() => expect(basesApi.inventory).toHaveBeenCalledWith("1006"));
+  });
+
+  // BaseInventoryTab reaches confirmAction/onError/baseName only through this
+  // panel. Types prove the props are passed at all; this proves the values are
+  // the right ones, which is what a delete confirmation actually shows the
+  // operator before destroying something.
+  it("wires the inventory tab's delete through to the panel's confirm and base name", async () => {
+    mockList(false);
+    vi.mocked(basesApi.inventory).mockResolvedValue({
+      supported: true,
+      baseId: 1006,
+      groups: [
+        { key: "storage", name: "Storage", containerCount: 1, itemCount: 500 },
+        { key: "refining", name: "Refining", containerCount: 0, itemCount: 0 },
+        { key: "crafting", name: "Crafting", containerCount: 0, itemCount: 0 },
+        { key: "other", name: "Other", containerCount: 0, itemCount: 0 }
+      ],
+      containers: [{
+        placeableId: "40001", name: "Vault", typeName: "Storage Container", group: "storage",
+        usedSlots: 1, maxSlots: 45, itemCount: 500,
+        items: [{ templateId: "Stone", name: "Granite Stone", quantity: 500 }]
+      }],
+      items: [{
+        templateId: "Stone", name: "Granite Stone", image: "/images/items/image-unavailable.png",
+        category: "resources", quantity: 500, containerCount: 1,
+        containers: [{ placeableId: "40001", name: "Vault", typeName: "Storage Container", group: "storage", quantity: 500 }]
+      }],
+      totals: { items: 500, distinct: 1, containers: 1, usedSlots: 1, maxSlots: 45 }
+    } as never);
+    vi.mocked(basesApi.containerSlots).mockResolvedValue({
+      supported: true, found: true, baseId: 1006, placeableId: "40001",
+      typeName: "Storage Container", group: "storage", maxSlots: 45, usedSlots: 1,
+      deleteSafety: { safe: true, known: true, map: "HaggaBasin", partitionId: 1, reason: "" },
+      inventories: [{
+        inventoryId: "9001", maxSlots: 45, usedSlots: 1,
+        slots: [{ itemId: "501", templateId: "Stone", name: "Granite Stone", positionIndex: 0, quantity: 500, qualityLevel: 0, currentDurability: null, maxDurability: null }]
+      }]
+    } as never);
+    vi.mocked(basesApi.deleteContainerItem).mockResolvedValue({
+      supported: true,
+      result: {
+        ok: true, partial: false, typeName: "Storage Container", group: "storage",
+        removed: { itemId: "501", templateId: "Stone", count: 500, remaining: 0 },
+        message: "Stone was deleted from the database.",
+        deleteSafety: { safe: true, known: true, map: "HaggaBasin", partitionId: 1, reason: "" }
+      }
+    } as never);
+
+    const props = renderPanel();
+    fireEvent.click(await screen.findByRole("button", { name: "Show details for Sietch One" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Inventory" }));
+    expect(await screen.findByText("Vault")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /View Contents/ }));
+    await waitFor(() => expect(basesApi.containerSlots).toHaveBeenCalledWith("1006", "40001"));
+    // The overlay opens on grid; the per-row delete button lives in the list.
+    await waitFor(() => expect(document.querySelectorAll(".bases-inventory-slot-cell").length).toBeGreaterThan(0));
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: /List/ }));
+
+    fireEvent.click(await screen.findByRole("button", { name: /^Delete Granite Stone/ }));
+    await waitFor(() => expect(props.confirmAction).toHaveBeenCalled());
+    // The panel's own confirm, carrying the panel's own base name -- not a
+    // placeholder and not the base id.
+    const options = vi.mocked(props.confirmAction).mock.calls[0][1] as { details?: { label: string; value: string }[] };
+    expect(options.details?.find((detail) => detail.label === "Base")?.value).toBe("Sietch One");
+    await waitFor(() => expect(basesApi.deleteContainerItem)
+      .toHaveBeenCalledWith("1006", "40001", "501", "DELETE ITEM", undefined));
   });
 
   // A base with no generators had no expand chevron before this feature. It

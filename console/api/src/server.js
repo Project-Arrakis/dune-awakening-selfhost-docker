@@ -612,6 +612,8 @@ async function handleApi(req, res) {
   if (path.match(/^\/api\/bases\/[^/]+\/auto-refill$/) && req.method === "POST") return baseAutoRefillToggleRoute(req, res, path);
   if (path.match(/^\/api\/bases\/[^/]+\/water$/) && req.method === "GET") return baseWaterRoute(res, path);
   if (path.match(/^\/api\/bases\/[^/]+\/inventory$/) && req.method === "GET") return baseInventoryRoute(res, path);
+  if (path.match(/^\/api\/bases\/[^/]+\/containers\/[^/]+$/) && req.method === "GET") return baseContainerSlotsRoute(res, path);
+  if (path.match(/^\/api\/bases\/[^/]+\/containers\/[^/]+\/items\/[^/]+$/) && req.method === "DELETE") return baseContainerItemDeleteRoute(req, res, path);
   if (path.match(/^\/api\/bases\/[^/]+\/refill-water$/) && req.method === "POST") return baseRefillWaterRoute(req, res, path);
   if (path.match(/^\/api\/bases\/[^/]+\/queued-water-refill$/) && req.method === "DELETE") return baseCancelQueuedWaterRefillRoute(req, res, path);
   if (path.match(/^\/api\/bases\/[^/]+\/auto-refill-water$/) && req.method === "POST") return baseAutoRefillWaterToggleRoute(req, res, path);
@@ -3021,6 +3023,107 @@ async function baseInventoryRoute(res, path) {
     // or connection failure.
     return json(res, 500, { supported: false, error: redact(error?.message || "Unexpected error."), reason: redact(error?.message || "Unexpected error.") });
   }
+}
+
+// One container's slots, fetched when the contents modal opens rather than
+// folded into baseInventoryRoute -- see baseContainerSlots for why (slots
+// roughly triple that response, on a tab that loads per base expand).
+async function baseContainerSlotsRoute(res, path) {
+  const parts = path.split("/");
+  const baseId = Number(decodeURIComponent(parts[3]));
+  const placeableId = Number(decodeURIComponent(parts[5]));
+  // Same intParam-matching validation baseInventoryRoute uses, for both ids.
+  for (const id of [baseId, placeableId]) {
+    if (!Number.isInteger(id) || id < 1 || id > Number.MAX_SAFE_INTEGER) {
+      return json(res, 400, { error: "Invalid base or container ID" });
+    }
+  }
+  try {
+    const slots = await duneDb.baseContainerSlots(db, baseId, placeableId);
+    return json(res, 200, { ...slots, deleteSafety: await baseContainerDeleteSafety(baseId, slots.group) });
+  } catch (error) {
+    return json(res, 500, { supported: false, error: redact(error?.message || "Unexpected error."), reason: redact(error?.message || "Unexpected error.") });
+  }
+}
+
+async function baseContainerDeleteSafety(baseId, group = "storage") {
+  if (group && group !== "storage") {
+    return {
+      safe: false,
+      known: true,
+      map: "",
+      partitionId: 0,
+      reason: "Item deletion is available only for Storage containers. Crafting and Refining contents are read-only to protect active jobs."
+    };
+  }
+  try {
+    const target = await duneDb.baseRefillTarget(db, baseId);
+    if (!target.queueSupported) {
+      return {
+        safe: false,
+        known: false,
+        map: target.map || "",
+        partitionId: target.partitionId || 0,
+        reason: "The console cannot verify that this base's map is safely stopped, so item deletion is disabled."
+      };
+    }
+    if (!target.writeSafeNow) {
+      const location = `${target.map || "This base's map"}${target.partitionId ? ` · Partition ${target.partitionId}` : ""}`;
+      return {
+        safe: false,
+        known: true,
+        map: target.map || "",
+        partitionId: target.partitionId || 0,
+        reason: `${location} is running. Stop that map before deleting stored items.`
+      };
+    }
+    return {
+      safe: true,
+      known: true,
+      map: target.map || "",
+      partitionId: target.partitionId || 0,
+      reason: ""
+    };
+  } catch {
+    return {
+      safe: false,
+      known: false,
+      map: "",
+      partitionId: 0,
+      reason: "The console could not verify that this base's map is safely stopped, so item deletion is disabled."
+    };
+  }
+}
+
+// Phrase-gated, unlike the refills above: this destroys a player's stored item
+// and there is no undo short of a database restore.
+//
+// Deliberately not queued: inventory rows can change before a deferred delete
+// is applied. Instead, deletion is allowed only when the owning map is known to
+// be safely down. The safety check is repeated here immediately before the
+// write; disabling the UI alone is never a security or consistency boundary.
+async function baseContainerItemDeleteRoute(req, res, path) {
+  const parts = path.split("/");
+  const baseId = Number(decodeURIComponent(parts[3]));
+  const placeableId = Number(decodeURIComponent(parts[5]));
+  const itemId = decodeURIComponent(parts[7]);
+  for (const id of [baseId, placeableId]) {
+    if (!Number.isInteger(id) || id < 1 || id > Number.MAX_SAFE_INTEGER) {
+      return json(res, 400, { error: "Invalid base, container, or item ID" });
+    }
+  }
+  if (!/^[1-9][0-9]*$/.test(itemId) || BigInt(itemId) > 9223372036854775807n) {
+    return json(res, 400, { error: "Invalid base, container, or item ID" });
+  }
+  if (baseDeletePending(baseId)) return json(res, 409, { error: BASE_DELETE_PENDING_MESSAGE });
+  if (await baseBackedUp(baseId)) return json(res, 409, { error: BASE_BACKED_UP_MESSAGE });
+  return directDbMutation(req, res, "bases.container-item-delete", "DELETE ITEM", async (body) => {
+    const count = body?.count === undefined || body?.count === null ? null : Number(body.count);
+    const safety = await baseContainerDeleteSafety(baseId);
+    if (!safety.safe) throw new Error(safety.reason);
+    const result = await duneDb.deleteBaseContainerItem(db, baseId, placeableId, itemId, { count });
+    return { ...result, deleteSafety: safety };
+  }, { baseId, placeableId, itemId });
 }
 
 // Mirrors baseRefillGeneratorsRoute: no confirmation phrase (additive and

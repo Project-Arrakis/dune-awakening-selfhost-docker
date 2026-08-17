@@ -66,6 +66,12 @@ narrower, hand-authored policies (via `PUT /api/settings/iam/policy`)
 possible. `DELETE /api/bases/:baseId/queued-delete` (cancelling) stays under
 `bases:mutate`, same as cancelling a queued refill.
 
+`bases:delete-item` is the other carve-out from that bucket — deleting one
+stored item out of a container. Its reasoning is different: not blast radius,
+but consent, since base inventory shipped read-only and no existing
+`bases:mutate` grant could have anticipated item destruction. See
+[base-inventory.md](base-inventory.md#deleting-a-stored-item).
+
 ## Why deletes are queued for a live map
 
 This schema has no live-notify path for structural changes — the same fact
