@@ -9,6 +9,7 @@ import {
   EDA_EXCHANGE_BOT_ADDON_ID,
   BUYBACK_LOG_RETENTION_MS,
   applyDryRunMaxBuysRanking,
+  applySweepLeftoverRanking,
   appendBuybackLogBatch,
   buildBuybackClassifySql,
   buildBuybackEligibilitySql,
@@ -256,7 +257,9 @@ test("builds buyback SQL server-side from the bundled seed plan", () => {
     assert.ok(isReadOnlySql(classifySql), "classify query must be read-only SQL");
     assert.match(classifySql, /AS result_code/);
     assert.match(classifySql, /COALESCE\(o\.item_price, 0\) <= 0/, "NULL asks are invalid, not eligible");
-    assert.match(classifySql, /LIMIT 1000/, "classify is capped so idle ticks cannot pull the whole exchange");
+    assert.match(classifySql, /eligible_band AS/, "eligible listings take the cap first");
+    assert.match(classifySql, /UNION ALL/, "skip reasons fill remaining cap in separate top-N bands");
+    assert.match(classifySql, /LIMIT GREATEST\(0, 1000 -/, "later bands only fill leftover cap");
     assert.match(classifySql, /price too high/);
     assert.match(classifySql, /no reference price/);
     assert.doesNotMatch(classifySql, /\b(?:BEGIN|COMMIT)\s*;/i);
@@ -273,15 +276,16 @@ test("builds buyback SQL server-side from the bundled seed plan", () => {
     assert.match(sweepSql, /LEFT JOIN LATERAL \(/, "unseeded grades use the conservative fallback lookup");
     assert.match(sweepSql, /o\.item_price > 0 AND GREATEST\(/, "non-positive prices and empty stacks are rejected");
     assert.match(sweepSql, /COALESCE\(o\.item_price, 0\)/, "NULL asks cannot abort the NOT NULL log insert");
-    assert.match(sweepSql, /COALESCE\(o\.template_id, ''\)/);
+    assert.match(sweepSql, /COALESCE\(rec\.template_id, ''\)/);
     assert.match(sweepSql, /'order_id', l\.order_id::text/, "BIGINT ids stay decimal strings in JSON");
+    assert.match(sweepSql, /result_label, detail\)\s*VALUES \(rec\.order_id/, "purchases are logged in the loop, not by copying the whole exchange first");
+    assert.match(sweepSql, /AND NOT EXISTS \(SELECT 1 FROM market_buy_log/, "leftover log rows are remaining eligible listings only");
+    assert.doesNotMatch(sweepSql, /ROW_NUMBER\(\)/, "0x5 vs 0x6 is ranked in JS from purchases-before-this-row");
     assert.doesNotMatch(sweepSql, /to_jsonb\(l\)/, "row-to-json would emit BIGINT as a JSON number");
     assert.doesNotMatch(sweepSql, /FLOOR\(p\.max_unit_price \*/, "exact grade caps are not multiplied a second time");
     assert.match(sweepSql, /o\.exchange_id = 77\b/);
     assert.match(sweepSql, /CREATE TEMP TABLE market_buy_log/);
     assert.match(sweepSql, /buyback_log/);
-    assert.match(sweepSql, /max buys limit/);
-    assert.match(sweepSql, /skipped locked/);
     assert.doesNotMatch(sweepSql, /\b(?:BEGIN|COMMIT)\s*;/i, "transaction ownership stays with the database wrapper");
 
     assert.throws(() => buildBuybackSql(plan, { ...schedule, exchangeId: "77; DROP TABLE dune.items" }), /exchangeId is invalid/);
@@ -723,7 +727,7 @@ test("a write sweep persists purchased and leftover listings from buyback_log", 
   try {
     const buybackLog = JSON.stringify([
       { order_id: "21", template_id: "WaterBottle", result_code: 0, result_label: "success", item_price: "100", stack_size: "10", max_unit_price: "600", quality_level: 0, detail: "bought stack 10 at 100/unit (cap 600)" },
-      { order_id: "22", template_id: "Sword", result_code: 5, result_label: "max buys limit", item_price: "200", stack_size: "1", max_unit_price: "1200", quality_level: 0, detail: "eligible but past Max Buys Per Sweep (1)" }
+      { order_id: "22", template_id: "Sword", result_code: 0, result_label: "eligible", item_price: "200", stack_size: "1", max_unit_price: "1200", quality_level: 0, detail: "ask 200/unit <= cap 1200" }
     ]);
     const db = fakeDb({ eligible: "2", sweepRow: { purchased: "1", total_units: "10", total_solari: "1000", buyback_log: buybackLog } });
     const { scheduler } = makeScheduler(config, { db });
@@ -839,6 +843,29 @@ test("scheduler tick prunes expired buyback log batches even when buyback is dis
   } finally {
     rmSync(repoRoot, { recursive: true, force: true });
   }
+});
+
+test("applySweepLeftoverRanking marks in-window unbought rows as skipped locked", () => {
+  const ranked = applySweepLeftoverRanking([
+    normalizeBuybackLogEntry({ order_id: "1", template_id: "A", item_price: "10", result_code: 0, result_label: "eligible" }),
+    normalizeBuybackLogEntry({ order_id: "2", template_id: "B", item_price: "20", result_code: 0, result_label: "success" }),
+    normalizeBuybackLogEntry({ order_id: "3", template_id: "C", item_price: "30", result_code: 0, result_label: "eligible" }),
+    normalizeBuybackLogEntry({ order_id: "4", template_id: "D", item_price: "40", result_code: 0, result_label: "success" })
+  ], 2);
+  assert.equal(ranked.find((row) => row.orderId === "1").resultCode, 6, "cheaper locked row was in the fill window");
+  assert.equal(ranked.find((row) => row.orderId === "2").resultCode, 0);
+  assert.equal(ranked.find((row) => row.orderId === "3").resultCode, 6, "locked after one purchase, still filling maxBuys=2");
+  assert.equal(ranked.find((row) => row.orderId === "4").resultCode, 0);
+});
+
+test("applySweepLeftoverRanking marks rows past a filled maxBuys as 0x5", () => {
+  const ranked = applySweepLeftoverRanking([
+    normalizeBuybackLogEntry({ order_id: "1", template_id: "A", item_price: "10", result_code: 0, result_label: "success" }),
+    normalizeBuybackLogEntry({ order_id: "2", template_id: "B", item_price: "20", result_code: 0, result_label: "success" }),
+    normalizeBuybackLogEntry({ order_id: "3", template_id: "C", item_price: "30", result_code: 0, result_label: "eligible" })
+  ], 2);
+  assert.equal(ranked.find((row) => row.orderId === "3").resultCode, 5);
+  assert.equal(ranked.find((row) => row.orderId === "3").resultLabel, "max buys limit");
 });
 
 test("applyDryRunMaxBuysRanking keeps cheaper eligible listings and marks the rest 0x5", () => {
