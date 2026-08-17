@@ -216,7 +216,7 @@ describe("MarketBotOverlay", () => {
     }));
     renderOverlay();
 
-    expect(await screen.findByText(/No market seed plan is available/)).toBeInTheDocument();
+    expect(await screen.findByText(/bundled market seed plan is missing/)).toBeInTheDocument();
     expect(screen.queryByText("Buyback sweeps")).not.toBeInTheDocument();
   });
 });

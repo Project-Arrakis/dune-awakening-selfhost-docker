@@ -60,7 +60,7 @@ reference. Everything else is marked **Current** and is expected to stay accurat
 ## Addons
 
 - [addon-item-grants.md](addons/addon-item-grants.md) — Current. The `admin:grant-items` permissioned addon item grant flow.
-- [addon-scheduled-jobs.md](addons/addon-scheduled-jobs.md) — Current. Server-side scheduled addon jobs (EDA Exchange Bot buyback sweep).
+- [addon-scheduled-jobs.md](addons/addon-scheduled-jobs.md) — Current. Market Bot scheduler and EDA retirement compatibility.
 
 ## Discord Integrations
 

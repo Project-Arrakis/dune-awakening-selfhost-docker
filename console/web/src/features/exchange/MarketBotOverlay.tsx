@@ -261,12 +261,12 @@ export function MarketBotOverlay({ onClose, onError, confirmAction }: MarketBotO
         </p>
         {loading && <p className="muted">Loading…</p>}
         {!loading && !supported && <p className="muted">{status?.reason || "The Market Bot is unsupported by the detected database schema."}</p>}
-        {!loading && supported && !planReady && <p className="muted">No market seed plan is available. Reinstall the console (bundled plan) or install the EDA Exchange Bot addon.</p>}
+        {!loading && supported && !planReady && <p className="muted">The bundled market seed plan is missing. Repair or reinstall the console release.</p>}
         {!loading && supported && planReady && status && (
           <>
             <p className="muted">
               Seed plan: {status.plan.rows.toLocaleString()} rows
-              {status.plan.panelVersion ? ` (v${status.plan.panelVersion})` : ""} from the {status.plan.source === "addon" ? "installed addon" : "bundled console copy"}.
+              {status.plan.panelVersion ? ` (v${status.plan.panelVersion})` : ""} from the bundled console copy.
             </p>
             <label className="compact-select market-bot-exchange">
               Exchange

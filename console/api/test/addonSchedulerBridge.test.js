@@ -1,29 +1,16 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-// Route-level coverage for addonSchedulerBridgeAction in server.js: boots the
-// real API in mock mode (auth disabled, no Postgres needed for the branches
-// exercised here) against a temp repo root with the addon installed.
+// Route-level coverage for EDA retirement in server.js: boot the real API in
+// mock mode against a temp repo that still has the old addon installed.
 
 const API_ROOT = resolve(import.meta.dirname, "..");
 const PORT = 20000 + (process.pid % 20000);
 const BASE = `http://127.0.0.1:${PORT}`;
-
-const SEED_PLAN = {
-  panel_version: "test",
-  price_multiplier: 5,
-  rows: [{ template_id: "WaterBottle", kind: "resource", stack_size: 10, price: 1000, category_mask: 1, category_depth: 1, quality_level: 0, listings: 4 }]
-};
-
-function writeAddonState(repoRoot, approvedPermissions) {
-  writeFileSync(join(repoRoot, "runtime/addons/state.json"), JSON.stringify({
-    "eda-exchange-bot": { enabled: true, approvedPermissions }
-  }));
-}
 
 function makeRepoRoot() {
   const repoRoot = mkdtempSync(join(tmpdir(), "dune-scheduler-http-"));
@@ -39,8 +26,9 @@ function makeRepoRoot() {
     entry: { path: "web/index.html" },
     permissions: ["database:read", "database:write", "scheduler:server"]
   }));
-  writeFileSync(join(addonDir, "web/market-seed-plan.json"), JSON.stringify(SEED_PLAN));
-  writeAddonState(repoRoot, ["database:read", "database:write", "scheduler:server"]);
+  writeFileSync(join(repoRoot, "runtime/addons/state.json"), JSON.stringify({
+    "eda-exchange-bot": { enabled: true, approvedPermissions: ["database:read", "database:write", "scheduler:server"] }
+  }));
   return repoRoot;
 }
 
@@ -93,7 +81,7 @@ async function bridge(addonId, body) {
   return { status: response.status, body: await response.json() };
 }
 
-test("scheduler bridge actions over HTTP", async (t) => {
+test("retired EDA bridge over HTTP", async (t) => {
   const repoRoot = makeRepoRoot();
   const { child, ready } = startServer(repoRoot);
   try {
@@ -105,77 +93,18 @@ test("scheduler bridge actions over HTTP", async (t) => {
       assert.match(body.error, /not supported for this addon/);
     });
 
-    await t.test("rejects unknown scheduler actions", async () => {
-      const { status, body } = await bridge("eda-exchange-bot", { action: "scheduler.everything" });
-      assert.equal(status, 400);
-      assert.match(body.error, /Unsupported addon action/);
-    });
-
-    await t.test("schedule.get returns validated defaults", async () => {
+    await t.test("returns 410 and directs operators to native Market Bot", async () => {
       const { status, body } = await bridge("eda-exchange-bot", { action: "scheduler.schedule.get" });
-      assert.equal(status, 200);
-      assert.equal(body.ok, true);
-      assert.deepEqual(
-        [body.result.enabled, body.result.intervalMinutes, body.result.exchangeId, body.result.buybackPercent, body.result.maxBuys],
-        [false, 30, "", 60, 500]
-      );
+      assert.equal(status, 410);
+      assert.match(body.error, /retired.*Exchange > Market Bot/i);
     });
 
-    await t.test("schedule.set validates fields", async () => {
-      const { status, body } = await bridge("eda-exchange-bot", {
-        action: "scheduler.schedule.set",
-        schedule: { exchangeId: "9223372036854775808" }
-      });
-      assert.equal(status, 400);
-      assert.equal(body.ok, false);
-      assert.match(body.error, /exchangeId must be a positive whole number/);
-    });
-
-    await t.test("enabling requires the scheduler:server approval", async () => {
-      writeAddonState(repoRoot, ["database:read", "database:write"]);
-      const denied = await bridge("eda-exchange-bot", {
-        action: "scheduler.schedule.set",
-        schedule: { enabled: true, exchangeId: "42" }
-      });
-      assert.notEqual(denied.status, 200);
-      assert.match(denied.body.error, /not approved for scheduler:server/);
-
-      writeAddonState(repoRoot, ["database:read", "database:write", "scheduler:server"]);
-      const approved = await bridge("eda-exchange-bot", {
-        action: "scheduler.schedule.set",
-        schedule: { enabled: true, exchangeId: "42", intervalMinutes: 15 }
-      });
-      assert.equal(approved.status, 200);
-      assert.equal(approved.body.result.enabled, true);
-      assert.equal(approved.body.result.exchangeId, "42");
-      assert.ok(approved.body.result.nextRunAt, "enabling arms nextRunAt");
-    });
-
-    await t.test("saves that leave the schedule enabled re-check scheduler:server after revocation", async () => {
-      writeAddonState(repoRoot, ["database:read", "database:write"]);
-      const revoked = await bridge("eda-exchange-bot", {
-        action: "scheduler.schedule.set",
-        schedule: { intervalMinutes: 60 }
-      });
-      assert.notEqual(revoked.status, 200, "field update omitting `enabled` on an enabled schedule still needs scheduler:server");
-      assert.match(revoked.body.error, /not approved for scheduler:server/);
-
-      const disabled = await bridge("eda-exchange-bot", {
-        action: "scheduler.schedule.set",
-        schedule: { enabled: false }
-      });
-      assert.equal(disabled.status, 200, "explicitly disabling only needs database:write");
-      assert.equal(disabled.body.result.enabled, false);
-      assert.equal(disabled.body.result.nextRunAt, "");
-      writeAddonState(repoRoot, ["database:read", "database:write", "scheduler:server"]);
-    });
-
-    await t.test("scheduler.run reports a missing exchangeId without touching the database", async () => {
-      rmSync(join(repoRoot, "runtime/addons/jobs/eda-exchange-bot/buyback.json"), { force: true });
-      const { status, body } = await bridge("eda-exchange-bot", { action: "scheduler.run" });
-      assert.equal(status, 400);
-      assert.equal(body.ok, false);
-      assert.match(body.error, /Save a schedule with an exchangeId/);
+    await t.test("removes the addon and initializes disabled core schedules", () => {
+      assert.equal(existsSync(join(repoRoot, "runtime/addons/installed/eda-exchange-bot")), false);
+      const buyback = JSON.parse(readFileSync(join(repoRoot, "runtime/generated/market-bot/buyback.json"), "utf8"));
+      const seed = JSON.parse(readFileSync(join(repoRoot, "runtime/generated/market-bot/seed.json"), "utf8"));
+      assert.deepEqual([buyback.enabled, buyback.source], [false, "console"]);
+      assert.deepEqual([seed.enabled, seed.source], [false, "console"]);
     });
   } finally {
     child.kill("SIGTERM");

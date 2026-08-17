@@ -39,7 +39,7 @@ function makeRepoRoot(plan = SAMPLE_PLAN) {
 }
 
 function schedulePath(repoRoot) {
-  return join(repoRoot, "runtime/addons/jobs", EDA_EXCHANGE_BOT_ADDON_ID, "buyback.json");
+  return join(repoRoot, "runtime/generated/market-bot/buyback.json");
 }
 
 // Fake db: the first statement of the eligibility probe is WITH, the sweep
@@ -381,7 +381,7 @@ test("eligible run takes exactly one backup before the sweep and audits the resu
     assert.match(db.sweeps[0], /LIMIT 50 FOR UPDATE OF o, s SKIP LOCKED/);
     assert.equal(backups.length, 1, "eligible run takes exactly one backup");
     assert.deepEqual(backups[0].args, ["db", "backup"]);
-    assert.equal(backups[0].env.DB_BACKUP_ORIGIN, "addon-eda-exchange-bot");
+    assert.equal(backups[0].env.DB_BACKUP_ORIGIN, "market-bot-buyback");
     assert.deepEqual(permissionChecks, ["database:read", "database:write", "scheduler:server"], "installed/enabled/approved is verified on every run");
 
     const persisted = readBuybackSchedule(config);
