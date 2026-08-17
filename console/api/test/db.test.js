@@ -3601,12 +3601,16 @@ function fakeContainerDeleteDb(calls, fixtures = {}) {
     partialResult = 1,
     remainingAfterPartial = null,
     procedures = true,
-    deleteLeavesRow = false
+    deleteLeavesRow = false,
+    itemColumns = ["id", "inventory_id", "stack_size", "position_index", "template_id", "stats", "quality_level"]
   } = fixtures;
   const run = async (text, values = []) => {
     calls.push({ text, values });
     if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
     if (text.includes("to_regprocedure")) return { rows: [{ exists: procedures }] };
+    if (text.includes("information_schema.columns")) {
+      return { rows: itemColumns.map((column_name) => ({ column_name })) };
+    }
     if (text.includes("requested_claims")) return { rows: itemRows };
     if (text.includes("dune.delete_inventory_item")) return { rows: [{ result: partialResult }] };
     if (text.includes("select stack_size from dune.items")) {
@@ -3621,7 +3625,8 @@ function fakeContainerDeleteDb(calls, fixtures = {}) {
 
 const CONTAINER_ITEM_ROW = {
   item_id: "99", template_id: "ScrapMetal", stack_size: 500, inventory_id: 7,
-  placeable_id: "42", group_key: "storage", type_name: "Small Storage Container"
+  placeable_id: "42", group_key: "storage", type_name: "Small Storage Container",
+  position_index: 3, quality_level: 2, current_durability: "45", max_durability: 90
 };
 
 test("container item delete verifies base ownership before calling dune.delete_item", async () => {
@@ -3746,6 +3751,40 @@ test("container item delete refuses a partial removal when the schema lacks the 
   // Capability failure, not a silent widening to a whole-slot delete.
   await assert.rejects(() => deleteBaseContainerItem(db, 16836, 42, 99, { count: 150 }));
   assert.equal(calls.some((call) => call.text.includes("dune.delete_item($1::bigint)")), false);
+});
+
+test("container item delete records what was destroyed in the audit result", async () => {
+  const calls = [];
+  const db = fakeContainerDeleteDb(calls, { itemRows: [CONTAINER_ITEM_ROW] });
+  const result = await deleteBaseContainerItem(db, 16836, 42, 99);
+  // Without these, a destroyed pristine legendary logs identically to a
+  // broken common of the same template -- the audit trail for the console's
+  // first irreversible per-item destruction needs to distinguish them.
+  assert.equal(result.removed.positionIndex, 3);
+  assert.equal(result.removed.qualityLevel, 2);
+  assert.equal(result.removed.currentDurability, 45);
+  assert.equal(result.removed.maxDurability, 90);
+});
+
+test("container item delete degrades to null state fields on a schema without them, rather than failing", async () => {
+  const calls = [];
+  // A schema lacking these columns cannot select them, so the row the real
+  // query would return has no such keys either -- the fake db does not parse
+  // SQL, so this fixture has to omit them itself to match.
+  const { position_index, quality_level, current_durability, max_durability, ...bareItemRow } = CONTAINER_ITEM_ROW;
+  const db = fakeContainerDeleteDb(calls, {
+    itemRows: [bareItemRow],
+    itemColumns: ["id", "inventory_id", "stack_size", "template_id"]
+  });
+  const result = await deleteBaseContainerItem(db, 16836, 42, 99);
+  assert.equal(result.ok, true);
+  assert.equal(result.removed.positionIndex, null);
+  assert.equal(result.removed.qualityLevel, 0);
+  assert.equal(result.removed.currentDurability, null);
+  assert.equal(result.removed.maxDurability, null);
+  const query = calls.find((call) => call.text.includes("requested_claims"));
+  assert.match(query.text, /null::bigint as position_index/);
+  assert.ok(!query.text.includes("i.position_index"), "must not select a column this schema lacks");
 });
 
 // baseContainerSlots: the per-slot read the contents overlay and its delete
