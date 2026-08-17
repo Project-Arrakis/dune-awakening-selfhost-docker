@@ -3,8 +3,14 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 
-# dune secrets -- Stage 2 of the age-based secrets library rollout.
-# See docs/design/secrets-stage2-server-login-l1-design-2026-08-17.md.
+# dune secrets -- Stage 2 of the age-based secrets library rollout:
+# wires the two lowest-blast-radius secrets (server-login-password-secret,
+# username-server-login-secret) to optional age-based at-rest encryption.
+# Strictly opt-in -- set DUNE_KEK_FILE and DUNE_AGE_IDENTITY_FILE to a
+# generated age identity/wrapped key to use it (see runtime/scripts/lib/
+# secrets.sh's own header comment for the exact key-hierarchy and file
+# format); do nothing and every existing flat-file secret continues to
+# work exactly as before this stage existed.
 #
 # Deliberately named secrets-cli.sh, NOT secrets.sh, to avoid a
 # basename collision with the library itself at
@@ -73,7 +79,7 @@ _dune_secrets_require_stage2_name() {
       return 0
       ;;
     *)
-      echo "dune secrets: '$name' is not in scope for this stage. Only server-login-password-secret and username-server-login-secret are wired so far (PostgreSQL, Funcom, and RabbitMQ secrets are explicitly out of scope -- see docs/security/secrets-management.md for what this feature covers)." >&2
+      echo "dune secrets: '$name' is not in scope for this stage. Only server-login-password-secret and username-server-login-secret are wired so far -- PostgreSQL, Funcom, and RabbitMQ secrets are explicitly out of scope for now." >&2
       return 1
       ;;
   esac
@@ -136,7 +142,7 @@ cmd_status() {
     case "$state" in
       backend-not-configured)
         echo "$name: backend not configured"
-        echo "  Next: set DUNE_KEK_FILE and DUNE_AGE_IDENTITY_FILE -- see docs/security/secrets-management.md"
+        echo "  Next: generate an age identity + KEK, then set DUNE_KEK_FILE and DUNE_AGE_IDENTITY_FILE (see runtime/scripts/lib/secrets.sh's header comment for the exact steps and file format)"
         ;;
       not-migrated)
         echo "$name: not migrated (legacy plaintext)"

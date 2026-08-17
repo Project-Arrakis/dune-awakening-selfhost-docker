@@ -15,8 +15,8 @@ cp "$repo_root/runtime/scripts/memory-swap-common.sh" "$test_root/project/runtim
 cp "$repo_root/runtime/scripts/compose-project.sh" "$test_root/project/runtime/scripts/compose-project.sh"
 cp "$repo_root/runtime/scripts/steamcmd-signals.sh" "$test_root/project/runtime/scripts/steamcmd-signals.sh"
 cp "$repo_root/runtime/scripts/fls-signals.sh" "$test_root/project/runtime/scripts/fls-signals.sh"
-# runtime-env.sh sources this as of Stage 2 of the secrets library
-# rollout (docs/design/secrets-stage2-server-login-l1-design-2026-08-17.md)
+# runtime-env.sh sources this as of the age-based secrets library
+# Stage 2 rollout
 cp "$repo_root/runtime/scripts/lib/secrets.sh" "$test_root/project/runtime/scripts/lib/secrets.sh"
 cp "$repo_root/runtime/scripts/lib/secrets_aead.py" "$test_root/project/runtime/scripts/lib/secrets_aead.py"
 

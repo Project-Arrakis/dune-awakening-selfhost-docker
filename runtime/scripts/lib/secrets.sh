@@ -511,9 +511,9 @@ dune_secrets_read_secret() {
   # for a secret that has genuinely never been migrated at all.
   #
   # "Migrated" is determined by TWO independent, readable signals, not
-  # just .enc-file readability alone (fixed 2026-08-17, Requirement 20
-  # Layer 2 audit, Stage 2 of the secrets-stage2-server-login design):
-  # the .enc file itself, OR its per-secret migration marker
+  # just .enc-file readability alone (fixed 2026-08-17, found during
+  # implementation review of the first real credential wired to this
+  # library): the .enc file itself, OR its per-secret migration marker
   # (dune_secrets_migration_marker_path). This belt-and-suspenders
   # check matters because the earlier version of this function only
   # consulted .enc-file readability -- if that file existed but was

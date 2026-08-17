@@ -59,9 +59,9 @@ SECRET_ADMIN_PASSWORD="admin-pw-8f2a-real"
 SECRET_SIETCH_PASSWORD="sietch-pw-9f2a-real"
 SECRET_FUNCOM_TOKEN="funcom-token-77bb-real"
 TEST_PASSPHRASE="correct-horse-battery-staple-9f2a"
-# Stage 2 (docs/design/secrets-stage2-server-login-l1-design-2026-08-17.md
-# §5/§9 deliverable #4): a placeholder enc:v2: payload and its migration
-# marker, seeded to prove db backup-system's existing verbatim tar of
+# Stage 2 of the age-based secrets library: a placeholder enc:v2:
+# payload and its migration marker, seeded to prove db backup-system's
+# existing verbatim tar of
 # runtime/secrets/ (and, separately, runtime/generated/) already covers
 # both artifact types this stage introduces -- not just plain .txt
 # secrets. Not real ciphertext (no age/KEK setup in this test file, which

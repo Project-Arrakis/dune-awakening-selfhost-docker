@@ -16,17 +16,16 @@ python3 -c "from cryptography.hazmat.primitives.ciphers.aead import AESGCM" >/de
 }
 
 # Regression coverage for Stage 2 of the age-based secrets library
-# rollout (docs/design/secrets-stage2-server-login-l1-design-2026-08-17.md):
-# the two modified resolver functions in runtime-env.sh
+# rollout: the two modified resolver functions in runtime-env.sh
 # (resolve_server_login_password_secret / resolve_username_server_login_secret)
 # and the CLI wrapper in secrets-cli.sh. Follows the exact same
 # self-contained pattern as test-secrets-lib.sh -- generates its own
 # throwaway age identity/KEK inside a disposable temp directory, never
 # touching this repo's actual runtime/secrets/ or any live deployment.
-# This is a deliberate design decision (§6 Open Question 2 of the
-# design doc): a manual/documentation-only testing bridge was
-# considered and rejected as unnecessary once it was confirmed CI
-# already has everything needed for this to be fully automated.
+# This is a deliberate choice: a manual/documentation-only testing
+# bridge was considered and rejected as unnecessary once it was
+# confirmed CI already has everything needed for this to be fully
+# automated.
 
 test_root="$(mktemp -d)"
 cleanup() {
@@ -168,7 +167,7 @@ set -e
 rm -f /tmp/cleanup-out.$$
 echo "PASS: Test 7 (cleanup-legacy adversarial case)"
 
-# --- Test 7b (CRITICAL fix, Requirement 20 Layer 2 audit finding C-1):
+# --- Test 7b (CRITICAL fix found during implementation review):
 # permission-drift scenario -- the .enc file exists but is NOT
 # readable by the current user (marker IS readable). Both `dune
 # secrets verify` and the resolver must fail closed here, NOT silently
@@ -254,10 +253,10 @@ if echo "$status_out" | grep -qE '[0-9a-f]{20,}'; then
 fi
 echo "PASS: Test (status never prints a secret value)"
 
-# --- Test: dune secrets migrate rejects an out-of-scope name (CRITICAL
-# fix from the Layer 1 audit -- Postgres/Funcom/RMQ must never be
-# reachable through this stage's CLI, even though the library's own
-# generic name-validator would accept the string) ---
+# --- Test: dune secrets migrate rejects an out-of-scope name --
+# Postgres/Funcom/RMQ must never be reachable through this stage's
+# CLI, even though the library's own generic name-validator would
+# accept the string ---
 set +e
 bash runtime/scripts/secrets-cli.sh migrate postgres-password >/tmp/scope-out.$$ 2>&1
 scope_rc=$?
