@@ -63,7 +63,10 @@ jobs:
         run: npm ci
         working-directory: console/api
       - name: Run console API tests
-        run: node --test test/*.test.js
+        # Several integration suites create and remove isolated PostgreSQL
+        # databases. Keep test files serial in CI so one suite cannot terminate
+        # another suite's connection during database cleanup.
+        run: node --test --test-concurrency=1 test/*.test.js
         working-directory: console/api
 
   metrics-unit:
@@ -122,6 +125,7 @@ jobs:
           tests/fls-signals-test.sh
           tests/steamcmd-signals-test.sh
           tests/storage-cleanup-test.sh
+          tests/fake-k8s-serviceaccount-cleanup-test.sh
           tests/runtime-permission-helper-rebuild-test.sh
           tests/update-systemd-timer-health-test.sh
           tests/memory-status-effective-defaults-test.sh

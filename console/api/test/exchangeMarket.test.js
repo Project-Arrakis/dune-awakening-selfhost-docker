@@ -61,14 +61,14 @@ test("seed plan resolves to the bundled console copy when no addon is installed"
   }
 });
 
-test("an installed addon's plan copy wins over the bundled one", () => {
+test("the bundled core plan wins over a stale installed addon copy", () => {
   const addonPlan = { ...SAMPLE_PLAN, panel_version: "0.15.0-addon", rows: [...SAMPLE_PLAN.rows, { template_id: "Extra", price: 100, quality_level: 0 }] };
   const repoRoot = makeRepoRoot({ addonPlan });
   try {
     const config = { repoRoot };
-    assert.match(resolveMarketSeedPlanPath(config), /runtime\/addons\/installed/);
-    assert.equal(marketSeedPlanSummary(config).source, "addon");
-    assert.equal(marketSeedPlanSummary(config).panelVersion, "0.15.0-addon");
+    assert.match(resolveMarketSeedPlanPath(config), /runtime\/data\/market-seed-plan\.json$/);
+    assert.equal(marketSeedPlanSummary(config).source, "bundled");
+    assert.equal(marketSeedPlanSummary(config).panelVersion, "0.14.0-test");
   } finally {
     rmSync(repoRoot, { recursive: true, force: true });
   }

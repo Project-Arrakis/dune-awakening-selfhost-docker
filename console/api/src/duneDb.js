@@ -1,4 +1,4 @@
-import { assertIdentifier, intParam, isReadOnlySql, quoteIdentifier, quoteQualified, rowsResult } from "./db.js";
+import { assertIdentifier, bigintParam, intParam, isReadOnlySql, quoteIdentifier, quoteQualified, rowsResult } from "./db.js";
 import { getBridgeRequestSummary } from "./audit.js";
 import { resolveMapCombatState } from "./services/mapCombatState.js";
 import { resolvePorts } from "./config.js";
@@ -1417,8 +1417,110 @@ const PLAYER_SORT_COLUMNS = {
   online_status: { order: ["online_status"] },
   map: { order: ["lower(coalesce(map, ''))"] },
   last_seen: { order: ["last_seen"] },
+  total_playtime_seconds: { order: ["total_playtime_seconds"] },
   actor_id: { order: ["actor_id"] }
 };
+
+const playerPlaytimeMigrations = new WeakMap();
+
+export function migratePlayerPlaytimeSchema(db) {
+  if (!playerPlaytimeMigrations.has(db)) {
+    const migrate = async (tx) => {
+      await tx.query(`
+        create table if not exists dune.console_player_playtime (
+          account_id bigint primary key,
+          total_seconds bigint not null default 0,
+          session_started_at timestamp with time zone,
+          session_login_at timestamp with time zone,
+          last_observed_at timestamp with time zone,
+          updated_at timestamp with time zone not null default current_timestamp,
+          constraint console_player_playtime_total_nonnegative check (total_seconds >= 0)
+        )`);
+    };
+    const promise = Promise.resolve(typeof db.transaction === "function" ? db.transaction(migrate) : migrate(db))
+      .catch((error) => {
+        playerPlaytimeMigrations.delete(db);
+        throw error;
+      });
+    playerPlaytimeMigrations.set(db, promise);
+  }
+  return playerPlaytimeMigrations.get(db);
+}
+
+// The game exposes current presence and the current session's login timestamp,
+// but no lifetime counter. Keep completed seconds in a console-owned table and
+// retain the active session separately so the UI can include time elapsed since
+// the last poll. A session that ends while the console is down is capped at its
+// last observation instead of inventing playtime during the outage.
+export async function trackPlayerPlaytime(db) {
+  if (!(await tableExists(db, "player_state"))) return { supported: false };
+  const playerStateColumns = await columnsFor(db, "player_state");
+  if (!["account_id", "online_status"].every((column) => playerStateColumns.has(column))) {
+    return { supported: false };
+  }
+  await migratePlayerPlaytimeSchema(db);
+  const sessionLoginSelect = playerStateColumns.has("last_login_time")
+    ? "ps.last_login_time"
+    : "null::timestamp with time zone";
+  return db.query(`
+    with currently_online as (
+      select distinct on (ps.account_id)
+             ps.account_id,
+             ${sessionLoginSelect} as session_login_at
+      from dune.player_state ps
+      where ps.account_id is not null
+        and ps.account_id <> 0
+        and coalesce(ps.online_status::text, '') = 'Online'
+      order by ps.account_id, ${sessionLoginSelect} desc nulls last
+    ),
+    closed_sessions as (
+      update dune.console_player_playtime tracked
+      set total_seconds = tracked.total_seconds + greatest(0, floor(extract(epoch from
+            coalesce(tracked.last_observed_at, tracked.session_started_at) - tracked.session_started_at)))::bigint,
+          session_started_at = null,
+          session_login_at = null,
+          updated_at = current_timestamp
+      where tracked.session_started_at is not null
+        and not exists (select 1 from currently_online online where online.account_id = tracked.account_id)
+      returning tracked.account_id
+    )
+    insert into dune.console_player_playtime (
+      account_id, total_seconds, session_started_at, session_login_at, last_observed_at, updated_at
+    )
+    select online.account_id,
+           0,
+           coalesce(online.session_login_at, current_timestamp),
+           online.session_login_at,
+           current_timestamp,
+           current_timestamp
+    from currently_online online
+    on conflict (account_id) do update
+    set total_seconds = dune.console_player_playtime.total_seconds +
+          case
+            when dune.console_player_playtime.session_started_at is not null
+             and excluded.session_login_at is not null
+             and dune.console_player_playtime.session_login_at is distinct from excluded.session_login_at
+              then greatest(0, floor(extract(epoch from
+                   coalesce(dune.console_player_playtime.last_observed_at, dune.console_player_playtime.session_started_at)
+                   - dune.console_player_playtime.session_started_at)))::bigint
+            else 0
+          end,
+        session_started_at = case
+          when dune.console_player_playtime.session_started_at is not null
+           and (excluded.session_login_at is null
+             or dune.console_player_playtime.session_login_at is not distinct from excluded.session_login_at)
+            then dune.console_player_playtime.session_started_at
+          else excluded.session_started_at
+        end,
+        session_login_at = case
+          when dune.console_player_playtime.session_started_at is not null
+           and excluded.session_login_at is null
+            then dune.console_player_playtime.session_login_at
+          else excluded.session_login_at
+        end,
+        last_observed_at = current_timestamp,
+        updated_at = current_timestamp`);
+}
 
 // Funcom creates this reserved GM identity in some freshly initialized
 // battlegroups. It is an internal service actor, not an administrable player.
@@ -1474,6 +1576,21 @@ export async function listPlayers(db, { status = "all", q = "", page = 0, pageSi
     ? `coalesce(nullif(${plainFuncomId}, ''), nullif(${validDecryptedFuncomId}, ''), '')`
     : plainFuncomId;
   const lastSeenSelect = await playerLastSeenSelect(db);
+  const hasOnlineStatus = playerStateColumns.has("online_status");
+  const hasPlayerPlaytime = await tableExists(db, "console_player_playtime");
+  const playerPlaytimeJoin = hasPlayerPlaytime
+    ? "left join dune.console_player_playtime player_playtime on player_playtime.account_id = a.owner_account_id"
+    : "";
+  const totalPlaytimeSelect = hasPlayerPlaytime
+    ? `greatest(0, coalesce(player_playtime.total_seconds, 0) +
+         case when player_playtime.session_started_at is not null
+           then floor(extract(epoch from
+             (case when ${hasOnlineStatus ? "coalesce(ps.online_status::text, '') = 'Online'" : "false"}
+               then current_timestamp
+               else coalesce(player_playtime.last_observed_at, player_playtime.session_started_at)
+              end) - player_playtime.session_started_at))::bigint
+           else 0 end)`
+    : "0::bigint";
   const loginSessionSelect = playerStateColumns.has("last_login_time")
     ? "coalesce(ps.last_login_time::text, '')"
     : "''";
@@ -1483,7 +1600,6 @@ export async function listPlayers(db, { status = "all", q = "", page = 0, pageSi
   const currentPawnPriority = playerStateColumns.has("player_pawn_id")
     ? "when ps.player_pawn_id = a.id then 0"
     : "when false then 0";
-  const hasOnlineStatus = playerStateColumns.has("online_status");
   const lastSeenWithOnlineFallback = `
     case
       when ${hasOnlineStatus ? "coalesce(ps.online_status::text, '') = 'Online'" : "false"}
@@ -1554,6 +1670,7 @@ export async function listPlayers(db, { status = "all", q = "", page = 0, pageSi
              (${bannedExpression}) as is_banned,
              ${loginSessionSelect} as login_session,
              ${lastSeenWithOnlineFallback} as last_seen,
+             ${totalPlaytimeSelect} as total_playtime_seconds,
              coalesce(nullif(ps.player_controller_id, 0), nullif(a.owner_account_id, 0), a.id) as dedupe_key,
              case
                ${currentPawnPriority}
@@ -1564,6 +1681,7 @@ export async function listPlayers(db, { status = "all", q = "", page = 0, pageSi
       from dune.actors a
       left join dune.player_state ps on ps.account_id = a.owner_account_id
       left join dune.accounts ac on ac.id = a.owner_account_id
+      ${playerPlaytimeJoin}
       ${encryptedAccountsJoin}
       where ${where}
     ),
@@ -1583,7 +1701,8 @@ export async function listPlayers(db, { status = "all", q = "", page = 0, pageSi
              online_status,
              is_banned,
              login_session,
-             last_seen
+             last_seen,
+             total_playtime_seconds
       from player_rows
       order by dedupe_key, row_priority, online_priority, actor_id desc
     ),
@@ -3251,6 +3370,35 @@ export async function basePermissionActor(db, baseId) {
   };
 }
 
+// permission_actor_rank.permission_actor_id carries a foreign key against
+// dune.permission_actor(actor_id), and basePermissionActor resolves its id from
+// the buildings -> building_instances -> actor_fgl_entities -> actors chain,
+// which says nothing about whether that actor is claimed. An unclaimed base has
+// every structural row intact and no permission_actor row, so handing its actor
+// id to permission_set_player_rank fails the FK inside the shipped procedure --
+// surfacing as a raw "violates foreign key constraint
+// permission_actor_rank_permission_actor_id_fkey" with no indication of what an
+// operator did wrong.
+//
+// Checked here rather than by widening basePermissionActor's own query: that
+// resolution is shared with the base-delete path, whose supportsBaseDelete
+// probes buildings/building_instances/actor_fgl_entities/placeables/actors but
+// not permission_actor. Joining the table into the shared query would break
+// deletion on a schema that lacks it. Both callers of this helper already gate
+// on supportsBasePermissionEditing, which does probe permission_actor.
+async function basePermissionActorClaimed(db, actorId) {
+  const result = await db.query(
+    "select exists (select 1 from dune.permission_actor where actor_id = $1::bigint) as claimed",
+    [actorId]);
+  return Boolean(result.rows[0]?.claimed);
+}
+
+// Deliberately distinct from BASE_BACKED_UP_MESSAGE in server.js: that one names
+// the base-backup tool, which is only one of the ways a base ends up unclaimed.
+// This covers the general case, including a base whose permission_actor row went
+// away without a base_backup_linked_actors entry to explain it.
+const BASE_UNCLAIMED_MESSAGE = "This base is not claimed -- it has no dune.permission_actor row, so the game has nothing to attach permissions to. A player must claim or redeploy it first.";
+
 // The base-backup tool ("pick up base") only deletes permission_actor/
 // permission_actor_rank and registers the base's actor ids in
 // base_backup_linked_actors -- see listBases' matching exclusion. That keeps
@@ -3292,6 +3440,11 @@ export async function listBasePermissions(db, baseId) {
   await requireCapability(await supportsBasePermissionEditing(db),
     "Base permission editing requires dune.permission_actor_rank, dune.map_names, and the dune.permission_set_player_rank/permission_remove_player_rank functions.");
   const { actorId, map, mapNameId } = await basePermissionActor(db, baseId);
+  // Reading an unclaimed base still succeeds -- the roster is simply empty, and
+  // seeing that is how an operator diagnoses the base in the first place. The
+  // flag rides along so the editor can disable the writes that would fail
+  // instead of offering controls that end in an FK error.
+  const claimed = await basePermissionActorClaimed(db, actorId);
   const encryptedPlayerStateColumns = await tableExists(db, "encrypted_player_state")
     ? await columnsFor(db, "encrypted_player_state")
     : new Set();
@@ -3340,6 +3493,8 @@ export async function listBasePermissions(db, baseId) {
     actorId,
     map,
     mapNameId,
+    claimed,
+    unclaimedReason: claimed ? "" : BASE_UNCLAIMED_MESSAGE,
     systemCustodian,
     entries: result.rows.map((row) => ({
       playerId: String(row.player_id),
@@ -3527,6 +3682,14 @@ async function mutateBasePermissions(db, target, safeMax, desiredRoster) {
     const locked = await tx.query("select id from dune.actors where id = $1::bigint for update", [actor.actorId]);
     if (!locked.rowCount) throw new Error("That base was not found.");
 
+    // After the lock, not before: this is the last read the transaction can make
+    // before it starts calling the procedures. The game's own pickup path does
+    // not take this lock, so a pickup landing mid-edit can still slip past and
+    // hit the FK -- that race is what the constraint is for. What this removes
+    // is the far more common steady-state case, an unclaimed base sitting in the
+    // panel that every route currently accepts a write for.
+    if (!(await basePermissionActorClaimed(tx, actor.actorId))) throw new Error(BASE_UNCLAIMED_MESSAGE);
+
     const existing = await tx.query(
       "select player_id::text as player_id, rank::int as rank from dune.permission_actor_rank where permission_actor_id = $1::bigint",
       [actor.actorId]);
@@ -3686,6 +3849,24 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
   const backupExclusion = hasBaseBackups
     ? "and not (pa.actor_id is null and exists (select 1 from dune.base_backup_linked_actors bbla where bbla.actor_id = a.id))"
     : "";
+  // What counts as a base, defined once. The paged query (`matched`) and the
+  // totals query (`valid_claims`) run in separate round trips but must agree
+  // exactly on the candidate set -- if they diverge, total_bases/total_pieces/
+  // total_placeables silently stop describing the rows actually being listed.
+  // Emitting both from here makes that divergence unrepresentable rather than
+  // merely tested for. `extraJoin` is the one sanctioned variation: `matched`
+  // needs the owner LATERAL joined before its group-by when searching or
+  // sorting by owner, and that join cannot affect which rows qualify (it is a
+  // LEFT JOIN LATERAL ... ON TRUE returning at most one row).
+  const baseCandidateSource = (extraJoin = "") => `
+        from dune.buildings b
+        join dune.building_instances bi on bi.building_id = b.id
+        join dune.actor_fgl_entities afe on afe.entity_id = bi.owner_entity_id
+        join dune.actors a on a.id = afe.actor_id
+        left join dune.permission_actor pa on pa.actor_id = a.id
+        ${extraJoin}
+        where a.transform is not null
+        ${backupExclusion}`;
   // A base's own a.map is the game's map name ("HaggaBasin"), which cannot tell
   // two instances of it apart. world_partition resolves the partition to the
   // name the rest of the console uses ("Survival_1") plus its dimension --
@@ -3771,14 +3952,7 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
                coalesce(a.partition_id, 0) as partition_id,
                a.transform,
                ${matchedSortSelect}
-        from dune.buildings b
-        join dune.building_instances bi on bi.building_id = b.id
-        join dune.actor_fgl_entities afe on afe.entity_id = bi.owner_entity_id
-        join dune.actors a on a.id = afe.actor_id
-        left join dune.permission_actor pa on pa.actor_id = a.id
-        ${matchedOwnerJoin}
-        where a.transform is not null
-        ${backupExclusion}
+        ${baseCandidateSource(matchedOwnerJoin)}
         group by a.id, a.class, pa.actor_name, ${matchedGroupByOwner}a.map, a.partition_id, a.transform
         ${having}
       ),
@@ -3821,13 +3995,7 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
     const totalsResult = await db.query(`
       with valid_claims as (
         select distinct a.id as actor_id
-        from dune.buildings b
-        join dune.building_instances bi on bi.building_id = b.id
-        join dune.actor_fgl_entities afe on afe.entity_id = bi.owner_entity_id
-        join dune.actors a on a.id = afe.actor_id
-        left join dune.permission_actor pa on pa.actor_id = a.id
-        where a.transform is not null
-        ${backupExclusion}
+        ${baseCandidateSource()}
       )
       select (select count(*) from valid_claims)::int as total_bases,
              (select count(*) from dune.building_instances bi join dune.actor_fgl_entities afe on afe.entity_id = bi.owner_entity_id join valid_claims vc on vc.actor_id = afe.actor_id)::int as total_pieces,
@@ -7945,6 +8113,7 @@ const BASE_INVENTORY_TYPES = {
     buildingTypes: {
       storagecontainer_placeable: "Storage Container",
       mediumstoragecontainer_placeable: "Medium Storage Container",
+      developer_storagecontainer_placeable: "Developer Storage Container",
       genericcontainer_placeable: "Chest",
       // Two building types display as the same building. SpiceSilo is the
       // legacy name every live placement still carries (48 of them on the
@@ -8229,6 +8398,307 @@ export async function baseInventory(db, baseId, { repoRoot = "" } = {}) {
       maxSlots: containers.reduce((total, container) => total + container.maxSlots, 0)
     }
   };
+}
+
+// The per-slot view of ONE container, kept off baseInventory deliberately.
+// Slots roughly triple that response (238KB -> 656KB on the largest base in the
+// reference dump, +176%) and it loads on every base expand and auto-refresh,
+// while the contents modal only ever shows a single container. So slots are
+// fetched per container, on open.
+//
+// baseInventory's items[] stays template-merged and is unchanged: it backs the
+// "N distinct" label and the search filter, both of which mean distinct
+// templates rather than stacks. This is the per-slot truth beside it.
+//
+// Slots hang off an inventory rather than the container because max_item_count
+// is summed across every inventory a placeable backs while position_index is
+// scoped to one of them -- two inventories would both have a slot 0.
+export async function baseContainerSlots(db, baseId, placeableId) {
+  const target = intParam(baseId, "base id", 1);
+  const container = intParam(placeableId, "container id", 1);
+  // Same relations baseInventory probes, minus permission_actor: this query
+  // does not resolve display names, so it must not fail on a schema that lacks
+  // that table when baseInventory already reported the container.
+  const required = [
+    "buildings", "building_instances", "actor_fgl_entities",
+    "placeables", "inventories", "items"
+  ];
+  const present = await Promise.all(required.map((table) => tableExists(db, table)));
+  const missing = required.filter((_, index) => !present[index]);
+  if (missing.length) {
+    return {
+      supported: false,
+      reason: `Unsupported by detected schema. Missing required table(s): ${missing.map((table) => `dune.${table}`).join(", ")}`,
+      baseId: target,
+      placeableId: String(container),
+      inventories: []
+    };
+  }
+
+  // Probed rather than assumed: a missing column is a parse-time error, not a
+  // null, so selecting position_index against a schema without it would 500 a
+  // container that used to open. Slots still come back; only the grid degrades,
+  // and the frontend falls back to the list when positionIndex is null.
+  const itemColumns = await columnsFor(db, "items");
+  const hasPositionIndex = itemColumns.has("position_index");
+  const hasStats = itemColumns.has("stats");
+  const slotSelect = [
+    hasPositionIndex ? "i.position_index" : "null::bigint as position_index",
+    itemColumns.has("quality_level") ? "i.quality_level" : "0::bigint as quality_level",
+    // Lifted verbatim from INVENTORY_ITEM_SELECT so the two paths cannot
+    // disagree about where durability lives.
+    hasStats
+      ? "coalesce((i.stats->'FItemStackAndDurabilityStats'->1->>'CurrentDurability'), null) as current_durability"
+      : "null::text as current_durability",
+    hasStats
+      ? `coalesce(
+             nullif((i.stats->'FItemStackAndDurabilityStats'->1->>'MaxDurability')::numeric, 0),
+             nullif((i.stats->'FItemStackAndDurabilityStats'->1->>'DecayedMaxDurability')::numeric, 0),
+             null
+           ) as max_durability`
+      : "null::numeric as max_durability"
+  ].join(",\n           ");
+  const slotOrder = hasPositionIndex ? "i.position_index nulls last, i.id" : "i.id";
+  const [groups, buildingTypes, typeNames] = baseInventoryTypeParams();
+
+  // The claim-resolution CTEs are baseInventory's, narrowed to one placeable.
+  // Keeping the inventory_types join and is_hologram/max_item_count filters is
+  // load-bearing, not tidiness: they are what stops this reaching generator and
+  // windtrap fuel, which the Power and Water tabs own.
+  const result = await db.query(`
+    with requested_claims as (
+      select distinct b.id, afe.actor_id
+      from dune.buildings b
+      join dune.building_instances bi on bi.building_id = b.id
+      join dune.actor_fgl_entities afe on afe.entity_id = bi.owner_entity_id
+      where b.id = $1
+    ), base_entities as (
+      select distinct rc.id, claim_afe.entity_id as owner_entity_id
+      from requested_claims rc
+      join dune.actor_fgl_entities claim_afe on claim_afe.actor_id = rc.actor_id
+    ), inventory_types as (
+      select * from unnest($2::text[], $3::text[], $4::text[]) as t(group_key, building_type, type_name)
+    ), containers as (
+      select distinct p.id as placeable_id, inv.id as inventory_id,
+             it.group_key, it.type_name, inv.max_item_count
+      from base_entities be
+      join dune.placeables p on p.owner_entity_id = be.owner_entity_id
+      join inventory_types it on it.building_type = lower(p.building_type)
+      join dune.inventories inv on inv.actor_id = p.id and inv.max_item_count >= 0
+      where p.is_hologram = false and p.id = $5
+    )
+    select c.inventory_id::text as inventory_id,
+           c.group_key, c.type_name, c.max_item_count,
+           i.id::text as item_id, i.template_id, i.stack_size,
+           ${slotSelect}
+    from containers c
+    left join dune.items i on i.inventory_id = c.inventory_id
+    order by c.inventory_id, ${slotOrder}`, [target, groups, buildingTypes, typeNames, container]);
+
+  if (!result.rows.length) {
+    return {
+      supported: true,
+      found: false,
+      reason: "That container was not found at the selected base.",
+      baseId: target,
+      placeableId: String(container),
+      inventories: []
+    };
+  }
+
+  const itemMetadata = adminItemMetadata();
+  const inventoriesById = new Map();
+  for (const row of result.rows) {
+    const inventoryId = String(row.inventory_id);
+    let inventory = inventoriesById.get(inventoryId);
+    if (!inventory) {
+      inventory = {
+        inventoryId,
+        maxSlots: Math.max(0, Number(row.max_item_count) || 0),
+        usedSlots: 0,
+        slots: []
+      };
+      inventoriesById.set(inventoryId, inventory);
+    }
+    // The left join emits one all-null item row for an empty inventory, which
+    // still needs its entry above so the grid can render empty slots.
+    const templateId = String(row.template_id || "");
+    if (!templateId) continue;
+    inventory.usedSlots += 1;
+    inventory.slots.push({
+      itemId: String(row.item_id),
+      templateId,
+      name: itemMetadata.get(templateId)?.name || templateId,
+      positionIndex: row.position_index === null || row.position_index === undefined
+        ? null
+        : Number(row.position_index),
+      quantity: Number(row.stack_size) || 0,
+      qualityLevel: Number(row.quality_level) || 0,
+      currentDurability: row.current_durability === null || row.current_durability === undefined
+        ? null
+        : Number(row.current_durability),
+      maxDurability: row.max_durability === null || row.max_durability === undefined
+        ? null
+        : Number(row.max_durability)
+    });
+  }
+
+  const inventories = [...inventoriesById.values()];
+  return {
+    supported: true,
+    found: true,
+    baseId: target,
+    placeableId: String(container),
+    typeName: result.rows[0].type_name,
+    group: result.rows[0].group_key,
+    maxSlots: inventories.reduce((total, inventory) => total + inventory.maxSlots, 0),
+    usedSlots: inventories.reduce((total, inventory) => total + inventory.usedSlots, 0),
+    inventories
+  };
+}
+
+// Deletes one stored item, or part of its stack, from a base container.
+//
+// Ownership is the whole job here. The query re-resolves the base's claim from
+// scratch rather than trusting the placeable id the caller sent, and keeps
+// baseInventory's inventory_types join plus the is_hologram / max_item_count
+// filters: together they prove the item sits in an allowlisted container at the
+// requested base, which is what stops this reaching a generator or windtrap
+// fuel inventory that the Power and Water tabs own. Deliberately NOT the
+// giveItemToStorage shape, which only checks that some inventory exists for an
+// actor and picks one arbitrarily.
+//
+// There is no live-sync path for inventory (no pg_notify channel, no triggers
+// on dune.items), so the API route refuses this operation unless it can verify
+// that the owning map is safely down. This lower layer also restricts deletion
+// to plain storage: crafting/refining inventories can have active jobs that
+// reference these rows, and deleting an allocated ingredient can corrupt that
+// job even while the map is stopped.
+export async function deleteBaseContainerItem(db, baseId, placeableId, itemId, { count = null } = {}) {
+  await requireCapability(
+    await supportsBaseContainerItemDelete(db),
+    "Container item delete requires dune.buildings, dune.building_instances, dune.actor_fgl_entities, dune.placeables, dune.inventories, dune.items, and dune.delete_item(bigint)."
+  );
+  const target = intParam(baseId, "base id", 1);
+  const container = intParam(placeableId, "container id", 1);
+  const safeItemId = bigintParam(itemId, "item id");
+  const requestedCount = count === null || count === undefined ? null : intParam(count, "count", 1);
+  const [groups, buildingTypes, typeNames] = baseInventoryTypeParams();
+
+  return db.transaction(async (tx) => {
+    // for update OF i, inv -- not a bare `for update`. Postgres cannot lock a
+    // CTE reference, so naming the real relations is required, not stylistic.
+    // inv is locked as well as i because locking only the item row locks
+    // nothing when the row is already gone; the inventory row is the parent
+    // guaranteed to exist for as long as the container does.
+    const found = await tx.query(`
+      with requested_claims as (
+        select distinct b.id, afe.actor_id
+        from dune.buildings b
+        join dune.building_instances bi on bi.building_id = b.id
+        join dune.actor_fgl_entities afe on afe.entity_id = bi.owner_entity_id
+        where b.id = $1
+      ), base_entities as (
+        select distinct rc.id, claim_afe.entity_id as owner_entity_id
+        from requested_claims rc
+        join dune.actor_fgl_entities claim_afe on claim_afe.actor_id = rc.actor_id
+      ), inventory_types as (
+        select * from unnest($2::text[], $3::text[], $4::text[]) as t(group_key, building_type, type_name)
+      ), containers as (
+        select distinct p.id as placeable_id, inv.id as inventory_id,
+               it.group_key, it.type_name
+        from base_entities be
+        join dune.placeables p on p.owner_entity_id = be.owner_entity_id
+        join inventory_types it on it.building_type = lower(p.building_type)
+        join dune.inventories inv on inv.actor_id = p.id and inv.max_item_count >= 0
+        where p.is_hologram = false and p.id = $5
+      )
+      select i.id::text as item_id, i.template_id, i.stack_size, i.inventory_id,
+             c.placeable_id::text as placeable_id, c.group_key, c.type_name
+      from containers c
+      join dune.items i on i.inventory_id = c.inventory_id
+      join dune.inventories inv on inv.id = i.inventory_id
+      where i.id = $6
+      for update of i, inv`, [target, groups, buildingTypes, typeNames, container, safeItemId]);
+
+    const item = found.rows[0];
+    if (!item) throw new Error("That item was not found in a storage container at the selected base.");
+    if (item.group_key !== "storage") {
+      throw new Error("Items can only be deleted from Storage containers. Crafting and Refining contents are read-only to protect active jobs.");
+    }
+
+    const stackSize = Number(item.stack_size) || 0;
+    const inventoryId = item.inventory_id;
+    const label = item.template_id || "Item";
+
+    // An explicit count larger than the stack is refused rather than rounded
+    // down to "delete it all". The two are not the same request, and the gap
+    // between them is a real race: the caller saw 500, asked for 400, and the
+    // stack has since dropped to 300 -- widening that into destroying all 300
+    // would remove more than was ever agreed to. Only an omitted count means
+    // "the whole slot".
+    if (requestedCount !== null && requestedCount > stackSize) {
+      throw new Error(`Cannot remove ${requestedCount}: the stack holds ${stackSize}. It may have changed since this view was loaded.`);
+    }
+    const partial = requestedCount !== null && requestedCount < stackSize;
+
+    if (partial) {
+      // Refused rather than widened: silently deleting the whole stack because
+      // the schema cannot do a partial removal would destroy more than asked.
+      await requireCapability(
+        await supportsPartialStackDelete(db),
+        "Removing part of a stack requires dune.delete_inventory_item(bigint,bigint)."
+      );
+      // The shipped procedure returns NULL instead of raising when the count
+      // exceeds the stack, so a null result is a failure, not a no-op success.
+      const applied = await tx.query(
+        "select dune.delete_inventory_item($1::bigint, $2::bigint) as result",
+        [safeItemId, requestedCount]
+      );
+      if (applied.rows[0]?.result === null || applied.rows[0]?.result === undefined) {
+        throw new Error("Partial stack removal was rejected by the database. The requested count may exceed the stack.");
+      }
+      const after = await tx.query("select stack_size from dune.items where id = $1 and inventory_id = $2", [safeItemId, inventoryId]);
+      const remaining = after.rows[0] ? Number(after.rows[0].stack_size) || 0 : 0;
+      if (remaining !== stackSize - requestedCount) {
+        throw new Error("Partial stack removal did not change the stack by the requested amount.");
+      }
+      return {
+        ok: true,
+        baseId: target,
+        placeableId: item.placeable_id,
+        inventoryId: String(inventoryId),
+        typeName: item.type_name,
+        group: item.group_key,
+        partial: true,
+        removed: { itemId: item.item_id, templateId: item.template_id, count: requestedCount, remaining },
+        message: `Removed ${requestedCount} of ${label} from the database, leaving ${remaining}.`
+      };
+    }
+
+    // Whole slot. Same verify -> raw-delete fallback -> verify shape as
+    // deleteInventoryItem: the shipped procedure is preferred for its item
+    // tracking log, but the row disappearing is what actually matters.
+    await tx.query("select dune.delete_item($1::bigint)", [safeItemId]);
+    const stillExists = await tx.query("select exists(select 1 from dune.items where id = $1 and inventory_id = $2) as exists", [safeItemId, inventoryId]);
+    if (stillExists.rows[0]?.exists) {
+      await tx.query("delete from dune.items where id = $1 and inventory_id = $2", [safeItemId, inventoryId]);
+    }
+    const deleted = await tx.query("select not exists(select 1 from dune.items where id = $1 and inventory_id = $2) as deleted", [safeItemId, inventoryId]);
+    if (!deleted.rows[0]?.deleted) throw new Error("Stored item delete did not remove the item from the database.");
+
+    return {
+      ok: true,
+      baseId: target,
+      placeableId: item.placeable_id,
+      inventoryId: String(inventoryId),
+      typeName: item.type_name,
+      group: item.group_key,
+      partial: false,
+      removed: { itemId: item.item_id, templateId: item.template_id, count: stackSize, remaining: 0 },
+      message: `${label} was deleted from the database.`
+    };
+  });
 }
 
 // Pending water-refill queue. Same reasoning and shape as the generator
@@ -8927,6 +9397,27 @@ async function supportsInventoryDelete(db) {
 
 async function supportsInventoryEdit(db) {
   return await tableExists(db, "items") && await tableExists(db, "inventories");
+}
+
+// Every relation deleteBaseContainerItem's ownership query names, not just the
+// two it writes through. Postgres resolves a relation at parse time, so a
+// missing buildings raises exactly as hard as a missing items -- a partial
+// probe would report the capability as present and then fail on use.
+// dune.delete_inventory_item is probed separately: it is only needed for a
+// partial-stack delete, and a schema without it should still allow whole-slot
+// deletes rather than losing the feature entirely.
+async function supportsBaseContainerItemDelete(db) {
+  const required = [
+    "buildings", "building_instances", "actor_fgl_entities",
+    "placeables", "inventories", "items"
+  ];
+  const present = await Promise.all(required.map((table) => tableExists(db, table)));
+  if (present.some((exists) => !exists)) return false;
+  return functionExists(db, "dune.delete_item(bigint)");
+}
+
+async function supportsPartialStackDelete(db) {
+  return functionExists(db, "dune.delete_inventory_item(bigint,bigint)");
 }
 
 async function supportsStorageGiveItem(db) {

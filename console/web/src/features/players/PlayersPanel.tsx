@@ -244,7 +244,7 @@ export function PlayersPanel({ onError, renderCharacterAdmin }: PlayersPanelProp
       </div>
       <DataTable
         rows={rows}
-        columns={["actor_id", "character_name", "last_seen", "online_status", "map", "fls_id"]}
+        columns={["actor_id", "character_name", "last_seen", "total_playtime_seconds", "online_status", "map", "fls_id"]}
         columnLabels={{ actor_id: "DB Player ID" }}
         tableClassName="players-table"
         wrapClassName={`players-table-wrap ${selected ? "players-table-wrap-compact" : "players-table-wrap-expanded"}`}
@@ -258,6 +258,7 @@ export function PlayersPanel({ onError, renderCharacterAdmin }: PlayersPanelProp
         renderCell={(row, col) => {
           if (col === "online_status") return <PlayerStatusCell value={row[col]} />;
           if (col === "last_seen") return formatLastOnline(row);
+          if (col === "total_playtime_seconds") return formatTotalPlaytime(row[col]);
           return formatCell(row[col]);
         }}
       />
@@ -316,6 +317,15 @@ function formatLastOnline(row: Record<string, unknown>) {
     minute: "2-digit"
   }).format(date);
   return `${absolute} (${formatAgo(date)} ago)`;
+}
+
+export function formatTotalPlaytime(value: unknown) {
+  const seconds = Math.max(0, Math.floor(Number(value) || 0));
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  if (hours > 0) return `${hours.toLocaleString()}h ${minutes}m`;
+  if (minutes > 0) return `${minutes}m`;
+  return seconds > 0 ? "< 1m" : "0m";
 }
 
 function parseLastOnline(value: unknown) {

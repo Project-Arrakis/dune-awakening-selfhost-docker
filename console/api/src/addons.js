@@ -11,6 +11,9 @@ const ADDON_ID_PATTERN = /^[a-z0-9][a-z0-9-]{1,63}$/;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/i;
 const ADDON_LIFECYCLE_STATES = new Set(["active", "deprecated", "unsupported", "removed", "blocked"]);
 const INSTALL_BLOCKED_LIFECYCLES = new Set(["unsupported", "removed", "blocked"]);
+const RETIRED_CORE_ADDONS = new Map([
+  ["eda-exchange-bot", "EDA Exchange Bot has been retired because Market Bot is now built into the console under Exchange."]
+]);
 const ALLOWED_ADDON_PERMISSIONS = new Set([
   "players:read",
   "ops:read",
@@ -137,6 +140,7 @@ export async function installCommunityAddon(config, addonId, options = {}, fetch
   }
   const requestedId = stringField(addonId, "id");
   if (!ADDON_ID_PATTERN.test(requestedId)) throw new Error("Invalid addon id.");
+  assertAddonNotReplacedByCore(requestedId);
   const destination = resolve(addonsInstalledRoot(config), requestedId);
   if (existsSync(destination)) throw new Error(`${requestedId} is already installed. Use Update when a newer catalog version is available.`);
 
@@ -178,6 +182,7 @@ export async function updateCommunityAddon(config, addonId, options = {}, fetchI
   }
   const requestedId = stringField(addonId, "id");
   if (!ADDON_ID_PATTERN.test(requestedId)) throw new Error("Invalid addon id.");
+  assertAddonNotReplacedByCore(requestedId);
   const installedRoot = addonsInstalledRoot(config);
   const destination = resolve(installedRoot, requestedId);
   const installedManifestPath = resolve(destination, "addon.json");
@@ -599,6 +604,11 @@ function assertCommunityAddonInstallable(addon) {
   if (INSTALL_BLOCKED_LIFECYCLES.has(lifecycle)) {
     throw new Error(`${addon.name || addon.id} cannot be installed because its community status is ${formatLifecycleLabel(lifecycle)}.`);
   }
+}
+
+function assertAddonNotReplacedByCore(id) {
+  const message = RETIRED_CORE_ADDONS.get(id);
+  if (message) throw new Error(message);
 }
 
 function assertInstalledAddonRunnable(id, state = {}) {

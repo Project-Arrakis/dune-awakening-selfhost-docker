@@ -19,7 +19,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { ROUTE_ACTIONS } from "./actions.js";
+import { ROUTE_ACTIONS, REGEX_ACTIONS, REGEX_ACTIONS_BY_METHOD, REGEX_ACTIONS_BY_METHOD_PATTERN } from "./actions.js";
 import { writeJsonAtomic } from "./jsonStore.js";
 
 // ---- Policy evaluation ----
@@ -107,11 +107,24 @@ export function loadPolicies(repoRoot = null) {
 
 let _allowedActions = {};
 
+// A parameterized route (e.g. DELETE /api/bases/{baseId}) has no exact
+// ROUTE_ACTIONS entry -- actionForRoute resolves it through one of three
+// other tiers instead (see actions.js). bases:delete is the reason this
+// enumerates all four: it exists only in REGEX_ACTIONS_BY_METHOD_PATTERN, so
+// a version of this that only read ROUTE_ACTIONS would never surface it.
+function allKnownActions() {
+  const actions = new Set(Object.values(ROUTE_ACTIONS));
+  for (const [, action] of REGEX_ACTIONS) actions.add(action);
+  for (const action of Object.values(REGEX_ACTIONS_BY_METHOD)) actions.add(action);
+  for (const { action } of REGEX_ACTIONS_BY_METHOD_PATTERN) actions.add(action);
+  return actions;
+}
+
 export function resolveAllowedActions(tier) {
   if (!tier) return [];
   if (_allowedActions[tier]) return _allowedActions[tier];
 
-  const allActions = new Set(Object.values(ROUTE_ACTIONS));
+  const allActions = allKnownActions();
   const mockSession = { tier };
   const allowed = [];
 

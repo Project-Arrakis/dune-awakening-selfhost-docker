@@ -1,12 +1,14 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { StrictMode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { basesApi, type BaseInventory } from "../../api/bases";
+import { basesApi, type BaseContainerSlots, type BaseInventory } from "../../api/bases";
 import { BaseInventoryTab } from "./BaseInventoryTab";
 
 vi.mock("../../api/bases", () => ({
   basesApi: {
-    inventory: vi.fn()
+    inventory: vi.fn(),
+    containerSlots: vi.fn(),
+    deleteContainerItem: vi.fn()
   }
 }));
 
@@ -67,12 +69,74 @@ const PAYLOAD: BaseInventory = {
   totals: { items: 1660, distinct: 3, containers: 3, usedSlots: 4, maxSlots: 60 }
 };
 
+// The Vault's slots. Deliberately two stacks of the SAME template: that is the
+// case the merged items[] collapses into one line and the per-slot view must
+// keep apart.
+const SLOTS: BaseContainerSlots = {
+  supported: true,
+  found: true,
+  baseId: 1006,
+  placeableId: "40001",
+  typeName: "Storage Container",
+  group: "storage",
+  maxSlots: 45,
+  usedSlots: 3,
+  deleteSafety: { safe: true, known: true, map: "HaggaBasin", partitionId: 1, reason: "" },
+  inventories: [
+    {
+      inventoryId: "9001",
+      maxSlots: 45,
+      usedSlots: 3,
+      slots: [
+        { itemId: "501", templateId: "Stone", name: "Granite Stone", positionIndex: 0, quantity: 600, qualityLevel: 0, currentDurability: null, maxDurability: null },
+        { itemId: "502", templateId: "MagnetiteOre", name: "Iron Ore", positionIndex: 1, quantity: 200, qualityLevel: 0, currentDurability: null, maxDurability: null },
+        { itemId: "503", templateId: "Stone", name: "Granite Stone", positionIndex: 2, quantity: 400, qualityLevel: 0, currentDurability: null, maxDurability: null }
+      ]
+    }
+  ]
+};
+
 function mockInventory(payload: BaseInventory = PAYLOAD) {
   vi.mocked(basesApi.inventory).mockResolvedValue(payload as never);
 }
 
+function mockSlots(payload: BaseContainerSlots = SLOTS) {
+  vi.mocked(basesApi.containerSlots).mockResolvedValue(payload as never);
+}
+
+// Typed with the real signature rather than inferred from `async () => true`,
+// so assertions can reach the options argument (the crafting warning) instead
+// of indexing into an empty tuple.
+type ConfirmOptions = {
+  title?: string;
+  confirmLabel?: string;
+  warning?: string;
+  danger?: boolean;
+  details?: { label: string; value: string; tone?: "accent" | "success" | "danger" }[];
+};
+const confirmAction = vi.fn(async (_message: string, _options?: ConfirmOptions) => true);
+const onError = vi.fn();
+
 function renderTab() {
-  render(<BaseInventoryTab baseId="1006" />);
+  render(<BaseInventoryTab baseId="1006" baseName="Test Base" confirmAction={confirmAction} onError={onError} />);
+}
+
+// Opens the Vault's contents overlay and waits for its slots to land. Finds
+// the card by name rather than taking the first: the cards sort on their
+// rendered label, so "Small Storage Container #40002" precedes "Vault".
+//
+// The overlay opens on GRID, so this waits for cells, then switches to list
+// for the tests that assert on rows. Tests about the grid itself call
+// openVaultContents({ stayOnGrid: true }).
+async function openVaultContents({ stayOnGrid = false } = {}) {
+  const vault = [...document.querySelectorAll(".bases-inventory-cards .bases-card")]
+    .find((card) => card.textContent?.includes("Vault")) as HTMLElement;
+  fireEvent.click(within(vault).getByRole("button", { name: /View Contents/ }));
+  await waitFor(() => expect(screen.getByRole("dialog")).toBeTruthy());
+  await waitFor(() => expect(document.querySelectorAll(".bases-inventory-slot-cell").length).toBeGreaterThan(0));
+  if (stayOnGrid) return;
+  fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: /List/ }));
+  await waitFor(() => expect(document.querySelectorAll(".bases-inventory-contents-row:not(.head)").length).toBeGreaterThan(0));
 }
 
 // The totals row is the single "the tab has loaded" signal every test needs.
@@ -107,6 +171,10 @@ function total(label: string) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  confirmAction.mockResolvedValue(true);
+  // Every test that opens the contents overlay needs slots; the ones that
+  // don't are unaffected by the default.
+  mockSlots();
 });
 
 describe("BaseInventoryTab", () => {
@@ -349,11 +417,19 @@ describe("BaseInventoryTab", () => {
 
     const dialog = open();
     expect(dialog.getAttribute("aria-modal")).toBe("true");
-    // Header identifies the container, body lists every stack with quantities.
+    // Header identifies the container, body lists every SLOT with quantities.
+    // Slots arrive in their own request, so the body fills in after the open.
     expect(within(dialog).getByRole("heading", { name: "Vault" })).toBeTruthy();
     expect(dialog.textContent).toContain("Storage Container · #40001");
-    expect(within(dialog).getByText("Granite Stone")).toBeTruthy();
-    expect(within(dialog).getByText("1,000")).toBeTruthy();
+    // The overlay opens on grid, where names live in tile tooltips rather than
+    // as text; switch to list to read them.
+    await waitFor(() => expect(document.querySelectorAll(".bases-inventory-slot-cell").length).toBeGreaterThan(0));
+    fireEvent.click(within(dialog).getByRole("button", { name: /List/ }));
+    await waitFor(() => expect(within(dialog).getAllByText("Granite Stone").length).toBe(2));
+    // Two stacks of one template stay apart at their own quantities rather
+    // than merging into the 1,000 the rollup reports.
+    expect(within(dialog).getByText("600")).toBeTruthy();
+    expect(within(dialog).getByText("400")).toBeTruthy();
     expect(within(dialog).getByText("Iron Ore")).toBeTruthy();
     expect(within(dialog).getByText("200")).toBeTruthy();
     // Not the other containers' contents.
@@ -402,10 +478,227 @@ describe("BaseInventoryTab", () => {
 
     fireEvent.click(within(cards().find((c) => c.textContent?.includes("Vault")) as HTMLElement)
       .getByRole("button", { name: /View Contents/ }));
+    // Wait for the slots request, and read names from the list view -- the
+    // grid the overlay opens on keeps them in tooltips.
+    await waitFor(() => expect(document.querySelectorAll(".bases-inventory-slot-cell").length).toBeGreaterThan(0));
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: /List/ }));
+    await waitFor(() => expect(screen.getByRole("dialog").textContent).toContain("Granite Stone"));
     fireEvent.click(screen.getByRole("button", { name: /Refining/ }));
 
     expect(screen.getByRole("dialog")).toBeTruthy();
     expect(screen.getByRole("dialog").textContent).toContain("Granite Stone");
+  });
+
+  it("fetches slots per container rather than with the tab", async () => {
+    mockInventory();
+    renderTab();
+    await loaded();
+    // The base tab must not carry every slot at the base -- that tripled the
+    // response on large bases -- so nothing is requested until a container
+    // is actually opened.
+    expect(basesApi.containerSlots).not.toHaveBeenCalled();
+    await openVaultContents();
+    expect(basesApi.containerSlots).toHaveBeenCalledWith("1006", "40001");
+  });
+
+  it("shows each slot separately with its own slot number", async () => {
+    mockInventory();
+    renderTab();
+    await loaded();
+    await openVaultContents();
+
+    const rows = [...document.querySelectorAll(".bases-inventory-contents-row:not(.head)")];
+    expect(rows.length).toBe(3);
+    // The two Granite Stone stacks are only distinguishable by slot number.
+    expect(rows[0].textContent).toContain("#0");
+    expect(rows[2].textContent).toContain("#2");
+  });
+
+  it("switches to a grid that renders every empty slot", async () => {
+    mockInventory();
+    renderTab();
+    await loaded();
+    await openVaultContents();
+
+    fireEvent.click(screen.getByRole("button", { name: /Grid/ }));
+    await waitFor(() => expect(document.querySelector(".bases-inventory-slot-grid")).toBeTruthy());
+    // 45 capacity: 3 filled, 42 empty.
+    expect(document.querySelectorAll(".bases-inventory-slot-cell").length).toBe(45);
+    expect(document.querySelectorAll(".bases-inventory-slot-cell.empty").length).toBe(42);
+  });
+
+  it("keeps a duplicate or out-of-range slot reachable instead of dropping it", async () => {
+    mockInventory();
+    // position_index has no unique constraint and is not bounded by
+    // max_item_count, so both of these are reachable in real data. An item the
+    // delete button cannot reach is the worst outcome, so neither may vanish.
+    mockSlots({
+      ...SLOTS,
+      inventories: [{
+        inventoryId: "9001", maxSlots: 4, usedSlots: 3,
+        slots: [
+          { itemId: "601", templateId: "Stone", name: "Granite Stone", positionIndex: 1, quantity: 10, qualityLevel: 0, currentDurability: null, maxDurability: null },
+          { itemId: "602", templateId: "MagnetiteOre", name: "Iron Ore", positionIndex: 1, quantity: 20, qualityLevel: 0, currentDurability: null, maxDurability: null },
+          { itemId: "603", templateId: "SpiceSand", name: "Spice Sand", positionIndex: 99, quantity: 30, qualityLevel: 0, currentDurability: null, maxDurability: null }
+        ]
+      }]
+    });
+    renderTab();
+    await loaded();
+    await openVaultContents();
+    fireEvent.click(screen.getByRole("button", { name: /Grid/ }));
+
+    await waitFor(() => expect(document.querySelector(".bases-inventory-slot-overflow-note")).toBeTruthy());
+    // One wins the cell; the duplicate and the out-of-range one are listed below.
+    const overflow = [...document.querySelectorAll(".bases-inventory-contents-row:not(.head)")];
+    expect(overflow.length).toBe(2);
+    const dialog = screen.getByRole("dialog");
+    expect(dialog.textContent).toContain("Iron Ore");
+    expect(dialog.textContent).toContain("Spice Sand");
+  });
+
+  it("deletes a whole stack and refetches both the slots and the tab", async () => {
+    mockInventory();
+    vi.mocked(basesApi.deleteContainerItem).mockResolvedValue({
+      supported: true,
+      result: {
+        ok: true, partial: false, typeName: "Storage Container", group: "storage",
+        removed: { itemId: "501", templateId: "Stone", count: 600, remaining: 0 },
+        message: "Stone was deleted from the database.",
+        deleteSafety: { safe: true, known: true, map: "HaggaBasin", partitionId: 1, reason: "" }
+      }
+    } as never);
+    renderTab();
+    await loaded();
+    await openVaultContents();
+
+    fireEvent.click(screen.getAllByRole("button", { name: /^Delete Granite Stone/ })[0]);
+    await waitFor(() => expect(basesApi.deleteContainerItem).toHaveBeenCalled());
+    // Whole-slot delete sends no count at all -- an explicit count equal to the
+    // stack would be a different request shape.
+    expect(vi.mocked(basesApi.deleteContainerItem).mock.calls[0].slice(0, 4))
+      .toEqual(["1006", "40001", "501", "DELETE ITEM"]);
+    expect(vi.mocked(basesApi.deleteContainerItem).mock.calls[0][4]).toBeUndefined();
+    // Totals, group counts and the rollup are all derived, so the tab reloads too.
+    await waitFor(() => expect(vi.mocked(basesApi.inventory).mock.calls.length).toBeGreaterThan(1));
+  });
+
+  it("does not call the API when the confirmation is declined", async () => {
+    mockInventory();
+    confirmAction.mockResolvedValue(false);
+    renderTab();
+    await loaded();
+    await openVaultContents();
+
+    fireEvent.click(screen.getAllByRole("button", { name: /^Delete Granite Stone/ })[0]);
+    await waitFor(() => expect(confirmAction).toHaveBeenCalled());
+    expect(basesApi.deleteContainerItem).not.toHaveBeenCalled();
+  });
+
+  it("disables deletion when the map is running or its state cannot be verified", async () => {
+    mockInventory();
+    mockSlots({
+      ...SLOTS,
+      deleteSafety: {
+        safe: false, known: true, map: "HaggaBasin", partitionId: 68,
+        reason: "HaggaBasin · Partition 68 is running. Stop that map before deleting stored items."
+      }
+    });
+    renderTab();
+    await loaded();
+    await openVaultContents();
+    const button = screen.getAllByRole("button", { name: /^Delete Granite Stone/ })[0] as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    expect(screen.getByText(/HaggaBasin · Partition 68 is running/i)).toBeTruthy();
+    expect(confirmAction).not.toHaveBeenCalled();
+    expect(basesApi.deleteContainerItem).not.toHaveBeenCalled();
+  });
+
+  it("sends a count for a partial removal and rejects an amount above the stack", async () => {
+    mockInventory();
+    vi.mocked(basesApi.deleteContainerItem).mockResolvedValue({
+      supported: true,
+      result: {
+        ok: true, partial: true, typeName: "Storage Container", group: "storage",
+        removed: { itemId: "501", templateId: "Stone", count: 150, remaining: 450 },
+        message: "Removed 150 of Stone from the database, leaving 450.",
+        deleteSafety: { safe: true, known: true, map: "HaggaBasin", partitionId: 1, reason: "" }
+      }
+    } as never);
+    renderTab();
+    await loaded();
+    await openVaultContents();
+
+    // Selecting a slot moves its controls into the strip below the list.
+    fireEvent.click(screen.getAllByRole("button", { name: "Granite Stone" })[0]);
+    await waitFor(() => expect(document.querySelector(".bases-inventory-slot-detail")).toBeTruthy());
+    const input = screen.getByLabelText(/Amount of Granite Stone/) as HTMLInputElement;
+
+    // Above the stack: blocked in the UI as well as on the server.
+    fireEvent.change(input, { target: { value: "9999" } });
+    await waitFor(() => expect(document.querySelector(".bases-inventory-amount-error")).toBeTruthy());
+
+    fireEvent.change(input, { target: { value: "150" } });
+    fireEvent.click(screen.getByRole("button", { name: /Remove 150/ }));
+    await waitFor(() => expect(basesApi.deleteContainerItem).toHaveBeenCalled());
+    expect(vi.mocked(basesApi.deleteContainerItem).mock.calls[0][4]).toBe(150);
+  });
+
+  it("keeps crafting and refining contents read-only", async () => {
+    mockInventory();
+    // The game's own crafting routine consumes allocated ingredients from
+    // these same rows, so removing one mid-craft can leave a recipe pointing
+    // at an item that no longer exists. This warning is the only thing
+    // standing between an operator and that, so it is worth pinning.
+    mockSlots({
+      ...SLOTS,
+      placeableId: "40003",
+      typeName: "Small Ore Refinery",
+      group: "refining",
+      inventories: [{
+        inventoryId: "9003", maxSlots: 5, usedSlots: 1,
+        slots: [{ itemId: "701", templateId: "MagnetiteOre", name: "Iron Ore", positionIndex: 0, quantity: 420, qualityLevel: 0, currentDurability: null, maxDurability: null }]
+      }]
+    });
+    renderTab();
+    await loaded();
+
+    const refinery = [...document.querySelectorAll(".bases-inventory-cards .bases-card")]
+      .find((card) => card.textContent?.includes("Small Ore Refinery")) as HTMLElement;
+    fireEvent.click(within(refinery).getByRole("button", { name: /View Contents/ }));
+    await waitFor(() => expect(document.querySelectorAll(".bases-inventory-slot-cell").length).toBeGreaterThan(0));
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: /List/ }));
+    await waitFor(() => expect(document.querySelectorAll(".bases-inventory-contents-row:not(.head)").length).toBe(1));
+
+    const deleteButton = screen.getByRole("button", { name: /^Delete Iron Ore/ }) as HTMLButtonElement;
+    expect(deleteButton.disabled).toBe(true);
+    expect(screen.getByText(/available only for Storage containers/i)).toBeTruthy();
+    expect(confirmAction).not.toHaveBeenCalled();
+    expect(basesApi.deleteContainerItem).not.toHaveBeenCalled();
+  });
+
+  it("does not warn about crafting for a plain storage container", async () => {
+    mockInventory();
+    renderTab();
+    await loaded();
+    await openVaultContents();
+
+    fireEvent.click(screen.getAllByRole("button", { name: /^Delete Granite Stone/ })[0]);
+    await waitFor(() => expect(confirmAction).toHaveBeenCalled());
+    // A chest holds no live game state, so the extra warning would be noise.
+    expect(confirmAction.mock.calls[0][1]?.warning).toBeUndefined();
+  });
+
+  it("reports a failed delete through onError and leaves the slot listed", async () => {
+    mockInventory();
+    vi.mocked(basesApi.deleteContainerItem).mockRejectedValue(new Error("database is unreachable"));
+    renderTab();
+    await loaded();
+    await openVaultContents();
+
+    fireEvent.click(screen.getAllByRole("button", { name: /^Delete Granite Stone/ })[0]);
+    await waitFor(() => expect(onError).toHaveBeenCalledWith("database is unreachable"));
+    expect([...document.querySelectorAll(".bases-inventory-contents-row:not(.head)")].length).toBe(3);
   });
 
   // StrictMode double-invokes the load effect, so two requests are genuinely
@@ -418,7 +711,7 @@ describe("BaseInventoryTab", () => {
       gates.push({ resolve, reject });
     }) as never);
 
-    render(<StrictMode><BaseInventoryTab baseId="1006" /></StrictMode>);
+    render(<StrictMode><BaseInventoryTab baseId="1006" baseName="Test Base" confirmAction={confirmAction} onError={onError} /></StrictMode>);
     await waitFor(() => expect(gates.length).toBe(2));
 
     // Newest request wins the tab...

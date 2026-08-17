@@ -113,6 +113,9 @@ test("archive self-update replaces project files and preserves local state", asy
   writeFileSync(join(installDir, "runtime", "generated", "director-deepdesert-dual.ini"), "[DeepDesert_1]\nNumExtraServers=1\nMinServers=0\n");
   writeFileSync(join(installDir, "runtime", "generated", "public-directory-status.json"), "{\"state\":\"online\"}\n");
   writeFileSync(join(installDir, "runtime", "generated", "public-probe.env"), "DUNE_PUBLIC_PROBE_ENABLED=true\nDUNE_PUBLIC_PROBE_ADDRESS=203.0.113.42\nDUNE_PUBLIC_PROBE_ENDPOINT=https://203.0.113.42\n");
+  writeFileSync(join(installDir, "runtime", "generated", "director-capacity.ini"), "[Survival_1]\nPlayerHardCap=60\nShouldUpdatePlayerCountOnFls=true\n");
+  mkdirSync(join(installDir, "runtime", "director", "config"), { recursive: true });
+  writeFileSync(join(installDir, "runtime", "director", "config", "director_config.ini"), "live Director configuration\n");
   writeFileSync(join(installDir, "runtime", "secrets", "funcom-token.txt"), "test-token\n");
   writeFileSync(join(installDir, "runtime", "secrets", "public-directory.json"), "{\"serverId\":\"11111111-1111-4111-8111-111111111111\",\"secret\":\"abcdefghijklmnopqrstuvwxyz123456\"}\n");
   mkdirSync(join(installDir, "runtime", "addons", "installed", "example"), { recursive: true });
@@ -205,6 +208,8 @@ exit 0
     assert.equal(readFileSync(join(installDir, "runtime", "generated", "director-deepdesert-dual.ini"), "utf8"), "[DeepDesert_1]\nNumExtraServers=1\nMinServers=0\n");
     assert.equal(readFileSync(join(installDir, "runtime", "generated", "public-directory-status.json"), "utf8"), "{\"state\":\"online\"}\n");
     assert.equal(readFileSync(join(installDir, "runtime", "generated", "public-probe.env"), "utf8"), "DUNE_PUBLIC_PROBE_ENABLED=true\nDUNE_PUBLIC_PROBE_ADDRESS=203.0.113.42\nDUNE_PUBLIC_PROBE_ENDPOINT=https://203.0.113.42\n");
+    assert.equal(readFileSync(join(installDir, "runtime", "generated", "director-capacity.ini"), "utf8"), "[Survival_1]\nPlayerHardCap=60\nShouldUpdatePlayerCountOnFls=true\n");
+    assert.equal(readFileSync(join(installDir, "runtime", "director", "config", "director_config.ini"), "utf8"), "live Director configuration\n");
     assert.equal(readFileSync(join(installDir, "runtime", "secrets", "funcom-token.txt"), "utf8"), "test-token\n");
     assert.equal(readFileSync(join(installDir, "runtime", "secrets", "public-directory.json"), "utf8"), "{\"serverId\":\"11111111-1111-4111-8111-111111111111\",\"secret\":\"abcdefghijklmnopqrstuvwxyz123456\"}\n");
     assert.equal(readFileSync(join(installDir, "runtime", "addons", "installed", "example", "state.txt"), "utf8"), "preserved addon\n");
