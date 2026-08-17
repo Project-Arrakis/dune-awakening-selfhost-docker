@@ -7,16 +7,29 @@ import { isReadOnlySql } from "../src/db.js";
 import {
   ADDON_SCHEDULED_RUN_RATE_SCOPE,
   EDA_EXCHANGE_BOT_ADDON_ID,
+  BUYBACK_LOG_RETENTION_MS,
+  BUYBACK_LOG_CLEANUP_INTERVAL_MS,
+  applyDryRunMaxBuysRanking,
+  applySweepLeftoverRanking,
+  appendBuybackLogBatch,
+  buildBuybackClassifySql,
   buildBuybackEligibilitySql,
   buildBuybackSql,
+  buybackLogPath,
   buybackPlanValuesSql,
+  cleanupBuybackLog,
+  clearBuybackLog,
   createAddonJobScheduler,
   loadBuybackSeedPlan,
+  normalizeBuybackLogEntry,
   normalizeBuybackSchedule,
   normalizeExchangeId,
   probeBuybackEligibility,
+  readBuybackLog,
   readBuybackSchedule,
-  saveBuybackSchedule
+  refreshBuybackLog,
+  saveBuybackSchedule,
+  selectStoredBuybackLogEntries
 } from "../src/addonJobs.js";
 
 const SAMPLE_PLAN = {
@@ -42,13 +55,22 @@ function schedulePath(repoRoot) {
   return join(repoRoot, "runtime/generated/market-bot/buyback.json");
 }
 
-// Fake db: the first statement of the eligibility probe is WITH, the sweep
-// starts with its first temp table; capability support queries get empty rows.
-function fakeDb({ eligible = "0", probeRow = null, sweepRow = null, onQuery = null } = {}) {
+function writeBuybackLogBatches(config, batches) {
+  const path = buybackLogPath(config);
+  mkdirSync(join(config.repoRoot, "runtime/generated/market-bot"), { recursive: true });
+  writeFileSync(path, `${JSON.stringify({ batches }, null, 2)}\n`);
+}
+
+// Fake db: eligibility probes are WITH ... AS eligible_orders, classify
+// queries are WITH ... AS result_code, and the sweep starts with its first
+// temp table. Capability support queries get empty rows.
+function fakeDb({ eligible = "0", probeRow = null, sweepRow = null, classifyRows = [], onQuery = null } = {}) {
   const probes = [];
+  const classifies = [];
   const sweeps = [];
   const db = {
     probes,
+    classifies,
     sweeps,
     transactions: 0,
     query: async (sql) => {
@@ -57,6 +79,15 @@ function fakeDb({ eligible = "0", probeRow = null, sweepRow = null, onQuery = nu
         if (intercepted) return intercepted;
       }
       const text = String(sql).trim();
+      if (/^WITH /.test(text) && /\bAS result_code\b/.test(text)) {
+        classifies.push(sql);
+        return {
+          rows: classifyRows,
+          fields: [{ name: "result_code" }],
+          rowCount: classifyRows.length,
+          command: "SELECT"
+        };
+      }
       if (/^WITH /.test(text)) {
         probes.push(sql);
         return {
@@ -224,21 +255,204 @@ test("builds buyback SQL server-side from the bundled seed plan", () => {
     assert.match(eligibilitySql, /o\.exchange_id = 77\b/);
     assert.match(eligibilitySql, /eligible_orders/);
 
+    const classifySql = buildBuybackClassifySql(plan, schedule);
+    assert.ok(isReadOnlySql(classifySql), "classify query must be read-only SQL");
+    assert.match(classifySql, /AS result_code/);
+    assert.match(classifySql, /COALESCE\(o\.item_price, 0\) <= 0/, "NULL asks are invalid, not eligible");
+    assert.match(classifySql, /eligible_band AS/, "eligible listings take the cap first");
+    assert.match(classifySql, /skip_band AS/, "ineligible listings share one leftover top-N band");
+    assert.match(classifySql, /UNION ALL/, "skip reasons fill remaining cap after eligible rows");
+    assert.match(classifySql, /LIMIT GREATEST\(0, 1000 -/, "the skip band only fills leftover cap");
+    assert.match(classifySql, /IS NOT TRUE/, "NULL asks stay in the skip band (NOT unknown would drop them)");
+    assert.match(classifySql, /price too high/);
+    assert.match(classifySql, /no reference price/);
+    assert.match(classifySql, /order_id::bigint ASC/, "final order uses numeric ids, not text sort");
+    assert.doesNotMatch(classifySql, /above_cap_band/, "skip reasons are not four extra listing scans");
+    assert.doesNotMatch(classifySql, /\b(?:BEGIN|COMMIT)\s*;/i);
+
     const sweepSql = buildBuybackSql(plan, schedule);
     assert.ok(!isReadOnlySql(sweepSql), "sweep is a write");
     assert.match(sweepSql, /FOR UPDATE OF o, s SKIP LOCKED/);
     assert.match(sweepSql, /LIMIT 250 FOR UPDATE/);
     assert.match(sweepSql, /999999999/, "payment entries use the never-expires sentinel");
     assert.match(sweepSql, /PRIMARY KEY \(template_id, quality_level\)/, "the plan preserves exact per-grade caps");
+    assert.match(sweepSql, /order_id BIGINT NOT NULL PRIMARY KEY/);
     assert.match(sweepSql, /GREATEST\(COALESCE\(i\.stack_size, 0\), COALESCE\(s\.initial_stack_size, 0\)\) AS actual_stack/, "the entire listed stack is purchased");
     assert.match(sweepSql, /LEAST\(GREATEST\(COALESCE\(o\.quality_level, 0\), COALESCE\(i\.quality_level, 0\), 0\), 5\)/, "grade can come from the order or backing item");
     assert.match(sweepSql, /LEFT JOIN LATERAL \(/, "unseeded grades use the conservative fallback lookup");
     assert.match(sweepSql, /o\.item_price > 0 AND GREATEST\(/, "non-positive prices and empty stacks are rejected");
+    assert.match(sweepSql, /COALESCE\(o\.item_price, 0\)/, "NULL asks cannot abort the NOT NULL log insert");
+    assert.match(sweepSql, /COALESCE\(rec\.template_id, ''\)/);
+    assert.match(sweepSql, /'order_id', l\.order_id::text/, "BIGINT ids stay decimal strings in JSON");
+    assert.match(sweepSql, /result_label, detail\)\s*VALUES \(rec\.order_id/, "purchases are logged in the loop, not by copying the whole exchange first");
+    assert.match(sweepSql, /CREATE TEMP TABLE market_buy_claim_snapshot/, "leftovers are limited to pre-claim eligible ids");
+    assert.match(sweepSql, /EXISTS \(SELECT 1 FROM market_buy_claim_snapshot/, "post-claim newcomers are not labeled skipped locked");
+    assert.match(sweepSql, /AND NOT EXISTS \(SELECT 1 FROM market_buy_log/, "leftover log rows are remaining eligible listings only");
+    assert.doesNotMatch(sweepSql, /ROW_NUMBER\(\)/, "0x5 vs 0x6 is ranked in JS from purchases-before-this-row");
+    assert.doesNotMatch(sweepSql, /to_jsonb\(l\)/, "row-to-json would emit BIGINT as a JSON number");
     assert.doesNotMatch(sweepSql, /FLOOR\(p\.max_unit_price \*/, "exact grade caps are not multiplied a second time");
     assert.match(sweepSql, /o\.exchange_id = 77\b/);
+    assert.match(sweepSql, /CREATE TEMP TABLE market_buy_log/);
+    assert.match(sweepSql, /buyback_log/);
+    assert.doesNotMatch(sweepSql, /market_buy_diagnostics/, "the write transaction does not recount every player listing");
     assert.doesNotMatch(sweepSql, /\b(?:BEGIN|COMMIT)\s*;/i, "transaction ownership stays with the database wrapper");
 
     assert.throws(() => buildBuybackSql(plan, { ...schedule, exchangeId: "77; DROP TABLE dune.items" }), /exchangeId is invalid/);
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test("a commodity stack is bought whole and counts as one Max Buys purchase", () => {
+  // Exchange sell orders are atomic: the bot either takes the whole listing
+  // or leaves it. Max Buys therefore limits listings per sweep, not units.
+  const repoRoot = makeRepoRoot();
+  const config = { repoRoot, mockMode: false };
+  try {
+    const plan = loadBuybackSeedPlan(config);
+    const schedule = normalizeBuybackSchedule({
+      enabled: true,
+      exchangeId: "42",
+      priceMultiplier: 5,
+      buybackPercent: 60,
+      maxBuys: 3
+    });
+    const sweepSql = buildBuybackSql(plan, schedule);
+
+    assert.match(
+      sweepSql,
+      /GREATEST\(COALESCE\(i\.stack_size, 0\), COALESCE\(s\.initial_stack_size, 0\)\) AS actual_stack/,
+      "stale item.stack_size=1 must not shrink a commodity sell order"
+    );
+    assert.match(
+      sweepSql,
+      /item_price <= p\.max_unit_price/,
+      "eligibility compares the per-unit ask to the cap, not stack total"
+    );
+    assert.match(
+      sweepSql,
+      /solari_balance = solari_balance - \(rec\.item_price \* rec\.actual_stack\)/,
+      "seller is paid ask × whole stack"
+    );
+    assert.match(
+      sweepSql,
+      /INSERT INTO dune\.dune_exchange_fulfilled_orders \(order_id, source_order_id, completion_type, stack_size, original_order_id\) VALUES \(v_log_order_id, NULL, 4, rec\.actual_stack, rec\.order_id\)/,
+      "Take Solari payment entry carries the full stack size"
+    );
+    assert.match(sweepSql, /DELETE FROM dune\.dune_exchange_sell_orders WHERE order_id = rec\.order_id/);
+    assert.match(sweepSql, /DELETE FROM dune\.dune_exchange_orders WHERE id = rec\.order_id/);
+    assert.match(sweepSql, /IF rec\.item_id IS NOT NULL THEN DELETE FROM dune\.items WHERE id = rec\.item_id/);
+    assert.match(
+      sweepSql,
+      /v_purchased := v_purchased \+ 1; v_units := v_units \+ rec\.actual_stack; v_solari := v_solari \+ \(rec\.item_price \* rec\.actual_stack\)/,
+      "one listing = one purchase; units and solari still track the full stack"
+    );
+    assert.match(sweepSql, /LIMIT 3 FOR UPDATE OF o, s SKIP LOCKED/, "Max Buys caps listings claimed this sweep");
+
+    // Dry-run ranking: a 500-unit commodity stack and a 1-unit sword each
+    // consume one Max Buys slot when Max Buys is 1.
+    const ranked = applyDryRunMaxBuysRanking([
+      normalizeBuybackLogEntry({
+        order_id: "100",
+        template_id: "WaterBottle",
+        item_price: "50",
+        stack_size: "500",
+        max_unit_price: "600",
+        result_code: 0,
+        result_label: "eligible"
+      }),
+      normalizeBuybackLogEntry({
+        order_id: "101",
+        template_id: "Sword",
+        item_price: "100",
+        stack_size: "1",
+        max_unit_price: "1200",
+        result_code: 0,
+        result_label: "eligible"
+      })
+    ], 1);
+    assert.equal(ranked.find((row) => row.orderId === "100").resultCode, 0, "cheapest listing is bought (whole stack)");
+    assert.equal(ranked.find((row) => row.orderId === "100").stackSize, "500");
+    assert.equal(ranked.find((row) => row.orderId === "101").resultCode, 5, "second listing is past Max Buys, not past a unit budget");
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test("admin buyback rules set exchange, caps, basis, and Max Buys as intended", () => {
+  const repoRoot = makeRepoRoot();
+  const config = { repoRoot, mockMode: false };
+  try {
+    const plan = loadBuybackSeedPlan(config);
+
+    // WaterBottle seed price 1000 at plan multiplier 5 → basis 1000 when
+    // schedule priceMultiplier is 5; 60% buyback → cap 600. Lower percent or
+    // higher market multiplier must change the cap the admin expects.
+    assert.equal(
+      buybackPlanValuesSql(plan, normalizeBuybackSchedule({ exchangeId: "1", priceMultiplier: 5, buybackPercent: 60 })),
+      "('O''Brien',0,60),\n('Sword',0,1200),\n('Sword',2,1500),\n('WaterBottle',0,600)"
+    );
+    assert.equal(
+      buybackPlanValuesSql(plan, normalizeBuybackSchedule({ exchangeId: "1", priceMultiplier: 5, buybackPercent: 30 })),
+      "('O''Brien',0,30),\n('Sword',0,600),\n('Sword',2,750),\n('WaterBottle',0,300)",
+      "buybackPercent scales the per-unit cap"
+    );
+    assert.equal(
+      buybackPlanValuesSql(plan, normalizeBuybackSchedule({ exchangeId: "1", priceMultiplier: 10, buybackPercent: 60 })),
+      "('O''Brien',0,120),\n('Sword',0,2400),\n('Sword',2,3000),\n('WaterBottle',0,1200)",
+      "priceMultiplier reprices the seeded basis before the percent"
+    );
+
+    const seeded = buildBuybackEligibilitySql(plan, normalizeBuybackSchedule({
+      exchangeId: "99",
+      buybackPercent: 60,
+      buybackPriceBasis: "seeded",
+      maxBuys: 10
+    }));
+    assert.match(seeded, /o\.exchange_id = 99\b/, "only the configured exchange is probed");
+    assert.match(seeded, /VALUES\n\('O''Brien',0,60\)/, "seeded basis embeds the percent caps");
+    assert.doesNotMatch(seeded, /live_buy_basis/, "seeded basis does not average live asks");
+    assert.match(seeded, /o\.item_price <= p\.max_unit_price/, "eligible = ask at or under the admin cap");
+    assert.match(seeded, /o\.item_price > p\.max_unit_price/, "above-threshold counts use the same cap");
+    assert.match(seeded, /p\.template_id IS NULL/, "unknown templates are counted, not bought");
+    assert.match(seeded, /COALESCE\(o\.item_price, 0\) <= 0 OR GREATEST/, "invalid price/stack rows are counted");
+
+    const lowest = buildBuybackEligibilitySql(plan, normalizeBuybackSchedule({
+      exchangeId: "99",
+      buybackPercent: 50,
+      buybackPriceBasis: "lowest"
+    }));
+    assert.match(lowest, /MIN\(o\.item_price\)/, "lowest basis uses the cheapest live ask per grade");
+    assert.match(lowest, /FLOOR\(\(basis_price \* 50 \+ 99\) \/ 100\)/, "live caps still apply buybackPercent");
+    assert.match(lowest, /live_buy_caps/, "live basis still falls back to seeded caps for quiet grades");
+
+    const average = buildBuybackEligibilitySql(plan, normalizeBuybackSchedule({
+      exchangeId: "99",
+      buybackPercent: 40,
+      buybackPriceBasis: "average"
+    }));
+    assert.match(average, /AVG\(o\.item_price\)/, "average basis uses the mean live ask");
+    assert.match(average, /FLOOR\(\(basis_price \* 40 \+ 99\) \/ 100\)/);
+
+    const sweepSql = buildBuybackSql(plan, normalizeBuybackSchedule({
+      exchangeId: "55",
+      buybackPercent: 70,
+      maxBuys: 12
+    }));
+    assert.match(sweepSql, /o\.exchange_id = 55\b/);
+    assert.match(sweepSql, /LIMIT 12 FOR UPDATE OF o, s SKIP LOCKED/, "Max Buys is the loop claim limit");
+    assert.match(sweepSql, /VALUES \(v_purchased, v_units, v_solari, 70, 12\)/, "result row records the admin percent and Max Buys");
+
+    const classifySql = buildBuybackClassifySql(plan, normalizeBuybackSchedule({ exchangeId: "55", buybackPercent: 60 }));
+    assert.match(classifySql, /WHEN p\.template_id IS NULL THEN 2/);
+    assert.match(classifySql, /WHEN COALESCE\(o\.item_price, 0\) <= 0 THEN 3/);
+    assert.match(classifySql, /WHEN GREATEST\(COALESCE\(i\.stack_size, 0\), COALESCE\(s\.initial_stack_size, 0\)\) <= 0 THEN 4/);
+    assert.match(classifySql, /WHEN o\.item_price > p\.max_unit_price THEN 1/);
+    assert.match(classifySql, /ELSE 0/);
+
+    assert.equal(normalizeBuybackSchedule({ buybackPriceBasis: "lowest" }).buybackPriceBasis, "lowest");
+    assert.equal(normalizeBuybackSchedule({ buybackPriceBasis: "average" }).buybackPriceBasis, "average");
+    assert.equal(normalizeBuybackSchedule({ buybackPriceBasis: "weird" }).buybackPriceBasis, "seeded", "unknown basis falls back to seeded");
   } finally {
     rmSync(repoRoot, { recursive: true, force: true });
   }
@@ -368,7 +582,7 @@ test("tick waits for the armed time, skips the backup when idle, and re-arms fro
     // Simulate a probe that takes 2 minutes so re-arm-from-completion is visible.
     let bumpClock = () => {};
     const slowDb = fakeDb({ eligible: "0", onQuery: async (sql) => {
-      if (/^WITH market_buy_plan/.test(String(sql).trim())) bumpClock();
+      if (/\bAS eligible_orders\b/.test(String(sql))) bumpClock();
       return null;
     } });
     const slow = makeScheduler(config, { db: slowDb });
@@ -471,7 +685,7 @@ test("concurrent ticks and manual runs are guarded by the running flag", async (
     let releaseProbe;
     const gate = new Promise((resolve) => { releaseProbe = resolve; });
     const db = fakeDb({ eligible: "0", onQuery: async (sql) => {
-      if (/^WITH market_buy_plan/.test(String(sql).trim())) await gate;
+      if (/\bAS eligible_orders\b/.test(String(sql))) await gate;
       return null;
     } });
     const { scheduler, state } = makeScheduler(config, { db });
@@ -618,7 +832,7 @@ test("disabling mid-run is respected when the run completes", async () => {
   const config = { repoRoot, mockMode: false };
   try {
     const db = fakeDb({ eligible: "0", onQuery: async (sql) => {
-      if (/^WITH market_buy_plan/.test(String(sql).trim())) {
+      if (/\bAS eligible_orders\b/.test(String(sql))) {
         saveBuybackSchedule(config, { enabled: false });
       }
       return null;
@@ -633,6 +847,398 @@ test("disabling mid-run is respected when the run completes", async () => {
     assert.equal(persisted.enabled, false);
     assert.equal(persisted.nextRunAt, "", "completion does not re-arm a schedule disabled mid-run");
     assert.equal(persisted.lastRunStatus, "idle");
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test("idle buyback runs persist a dry-run classify batch with skip reasons", async () => {
+  const repoRoot = makeRepoRoot();
+  const config = { repoRoot, mockMode: false };
+  try {
+    const classifyRows = [
+      { order_id: "11", template_id: "Sword", quality_level: "0", item_price: "500", stack_size: "1", max_unit_price: "1200", result_code: "0", result_label: "eligible", detail: "ask 500/unit <= cap 1200" },
+      { order_id: "12", template_id: "UnknownThing", quality_level: "0", item_price: "10", stack_size: "1", max_unit_price: "0", result_code: "2", result_label: "no reference price", detail: "template not in seed plan" },
+      { order_id: "13", template_id: "WaterBottle", quality_level: "0", item_price: "900", stack_size: "4", max_unit_price: "600", result_code: "1", result_label: "price too high", detail: "ask 900 > cap 600" }
+    ];
+    const db = fakeDb({
+      eligible: "0",
+      probeRow: {
+        player_sell_orders: "3",
+        known_player_sell_orders: "2",
+        above_threshold_sell_orders: "1",
+        unknown_template_sell_orders: "1"
+      },
+      classifyRows
+    });
+    const { scheduler, backups, state } = makeScheduler(config, { db });
+    saveBuybackSchedule(config, { enabled: true, exchangeId: "42", intervalMinutes: 10, maxBuys: 500 }, { now: () => state.clock });
+    await scheduler.tick();
+    state.clock += 10 * 60000;
+    await scheduler.tick();
+
+    assert.equal(db.probes.length, 1);
+    assert.equal(db.classifies.length, 1);
+    assert.equal(db.sweeps.length, 0);
+    assert.equal(backups.length, 0);
+    const log = readBuybackLog(config);
+    assert.equal(log.batches.length, 1);
+    assert.equal(log.batches[0].source, "Scheduled buyback");
+    assert.equal(log.batches[0].exchangeId, "42");
+    assert.match(log.batches[0].note, /nothing purchased/);
+    assert.equal(log.batches[0].entries[0].displayName, "Sword");
+    assert.deepEqual(log.batches[0].entries.map((entry) => entry.resultHex), ["0x0", "0x1", "0x2"]);
+    assert.match(log.batches[0].entries[1].detail, /ask 900 > cap 600/);
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test("idle buyback with no player listings skips classify but still logs an empty batch", async () => {
+  const repoRoot = makeRepoRoot();
+  const config = { repoRoot, mockMode: false };
+  try {
+    const db = fakeDb({ eligible: "0" });
+    const { scheduler, backups, state } = makeScheduler(config, { db });
+    saveBuybackSchedule(config, { enabled: true, exchangeId: "42", intervalMinutes: 10 }, { now: () => state.clock });
+    await scheduler.tick();
+    state.clock += 10 * 60000;
+    await scheduler.tick();
+
+    assert.equal(db.probes.length, 1);
+    assert.equal(db.classifies.length, 0, "empty exchange does not run a second listing scan");
+    assert.equal(db.sweeps.length, 0);
+    assert.equal(backups.length, 0);
+    const log = readBuybackLog(config);
+    assert.equal(log.batches.length, 1);
+    assert.equal(log.batches[0].source, "Scheduled buyback");
+    assert.equal(log.batches[0].entries.length, 0);
+    assert.match(log.batches[0].note, /nothing purchased/);
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test("a write sweep persists purchased and leftover listings from buyback_log", async () => {
+  const repoRoot = makeRepoRoot();
+  const config = { repoRoot, mockMode: false };
+  try {
+    const buybackLog = JSON.stringify([
+      { order_id: "21", template_id: "WaterBottle", result_code: 0, result_label: "success", item_price: "100", stack_size: "10", max_unit_price: "600", quality_level: 0, detail: "bought stack 10 at 100/unit (cap 600)" },
+      { order_id: "22", template_id: "Sword", result_code: 0, result_label: "eligible", item_price: "200", stack_size: "1", max_unit_price: "1200", quality_level: 0, detail: "ask 200/unit <= cap 1200" }
+    ]);
+    const db = fakeDb({ eligible: "2", sweepRow: { purchased: "1", total_units: "10", total_solari: "1000", buyback_log: buybackLog } });
+    const { scheduler } = makeScheduler(config, { db });
+    saveBuybackSchedule(config, { enabled: false, exchangeId: "42", maxBuys: 1 });
+    const result = await scheduler.runNow({ trigger: "console" });
+    assert.equal(result.status, "swept");
+    const log = readBuybackLog(config);
+    assert.equal(log.batches[0].source, "Buyback sweep");
+    assert.equal(log.batches[0].entries[0].resultHex, "0x0");
+    assert.equal(log.batches[0].entries[0].resultLabel, "success");
+    assert.equal(log.batches[0].entries[1].resultHex, "0x5");
+    assert.equal(log.batches[0].entries[0].displayName, "Water Bottle");
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test("dry-run refresh ranks leftover eligible listings as max buys and can be cleared", async () => {
+  const repoRoot = makeRepoRoot();
+  const config = { repoRoot, mockMode: false };
+  try {
+    saveBuybackSchedule(config, { exchangeId: "42", maxBuys: 1 });
+    const classifyRows = [
+      { order_id: "31", template_id: "WaterBottle", quality_level: "0", item_price: "10", stack_size: "2", max_unit_price: "600", result_code: "0", result_label: "eligible", detail: "ask 10" },
+      { order_id: "32", template_id: "Sword", quality_level: "0", item_price: "20", stack_size: "1", max_unit_price: "1200", result_code: "0", result_label: "eligible", detail: "ask 20" }
+    ];
+    const db = fakeDb({ classifyRows });
+    const refreshed = await refreshBuybackLog(config, db, {});
+    assert.equal(refreshed.entries[0].resultHex, "0x0");
+    assert.equal(refreshed.entries[1].resultHex, "0x5");
+    assert.equal(refreshed.entries[1].resultLabel, "max buys limit");
+    assert.equal(refreshed.batches.length, 1);
+    assert.equal(refreshed.batches[0].source, "Dry-run classify");
+    assert.equal((await clearBuybackLog(config)).batches.length, 0);
+    assert.equal(readBuybackLog(config).batches.length, 0);
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test("buyback log cleanup drops batches older than five days and keeps the rest", async () => {
+  const repoRoot = makeRepoRoot();
+  const config = { repoRoot };
+  const nowMs = Date.parse("2026-08-17T12:00:00.000Z");
+  try {
+    writeBuybackLogBatches(config, [
+      { source: "fresh", at: new Date(nowMs - BUYBACK_LOG_RETENTION_MS).toISOString(), entries: [] },
+      { source: "expired", at: new Date(nowMs - BUYBACK_LOG_RETENTION_MS - 1).toISOString(), entries: [] },
+      { source: "unparseable", at: "not-a-date", entries: [] },
+      { source: "yesterday", at: new Date(nowMs - 24 * 60 * 60 * 1000).toISOString(), entries: [] }
+    ]);
+    const cleaned = await cleanupBuybackLog(config, { now: nowMs });
+    assert.equal(cleaned.removed, 2);
+    assert.deepEqual(cleaned.batches.map((batch) => batch.source), ["fresh", "yesterday"]);
+    assert.deepEqual(readBuybackLog(config, { now: nowMs }).batches.map((batch) => batch.source), ["fresh", "yesterday"]);
+    assert.deepEqual(JSON.parse(readFileSync(buybackLogPath(config), "utf8")).batches.map((batch) => batch.source), ["fresh", "yesterday"]);
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test("buyback log cleanup does not rewrite the file when every batch is still fresh", async () => {
+  const repoRoot = makeRepoRoot();
+  const config = { repoRoot };
+  const nowMs = Date.parse("2026-08-17T12:00:00.000Z");
+  try {
+    const path = buybackLogPath(config);
+    mkdirSync(join(config.repoRoot, "runtime/generated/market-bot"), { recursive: true });
+    const payload = JSON.stringify({ batches: [{ source: "fresh", at: new Date(nowMs).toISOString(), entries: [] }] });
+    writeFileSync(path, payload);
+    assert.equal((await cleanupBuybackLog(config, { now: nowMs })).removed, 0);
+    assert.equal(readFileSync(path, "utf8"), payload);
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test("appending a buyback log batch drops batches older than five days", async () => {
+  const repoRoot = makeRepoRoot();
+  const config = { repoRoot };
+  const nowMs = Date.parse("2026-08-17T12:00:00.000Z");
+  try {
+    writeBuybackLogBatches(config, [
+      { source: "expired", at: new Date(nowMs - BUYBACK_LOG_RETENTION_MS - 1000).toISOString(), entries: [] },
+      { source: "kept", at: new Date(nowMs - 60 * 60 * 1000).toISOString(), entries: [] }
+    ]);
+    await appendBuybackLogBatch(config, [{ order_id: "1", template_id: "Sword", result_code: 0, result_label: "success" }], {
+      source: "Buyback sweep",
+      exchangeId: "42",
+      now: nowMs
+    });
+    assert.deepEqual(readBuybackLog(config, { now: nowMs }).batches.map((batch) => batch.source), ["Buyback sweep", "kept"]);
+    const raw = readFileSync(buybackLogPath(config), "utf8");
+    assert.equal(raw.endsWith("\n"), true);
+    assert.equal(raw.trimEnd().includes("\n"), false, "sweep log is compact JSON to keep hourly parse cheap");
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test("scheduler tick prunes expired buyback log batches even when buyback is disabled", async () => {
+  const repoRoot = makeRepoRoot();
+  const config = { repoRoot, mockMode: false };
+  try {
+    const db = fakeDb();
+    const { scheduler, state } = makeScheduler(config, { db });
+    saveBuybackSchedule(config, { enabled: false, exchangeId: "42" }, { now: () => state.clock });
+    writeBuybackLogBatches(config, [
+      { source: "expired", at: new Date(state.clock - BUYBACK_LOG_RETENTION_MS - 1000).toISOString(), entries: [] },
+      { source: "fresh", at: new Date(state.clock).toISOString(), entries: [] }
+    ]);
+    await scheduler.tick();
+    assert.equal(db.probes.length, 0);
+    assert.deepEqual(readBuybackLog(config, { now: state.clock }).batches.map((batch) => batch.source), ["fresh"]);
+    assert.deepEqual(JSON.parse(readFileSync(buybackLogPath(config), "utf8")).batches.map((batch) => batch.source), ["fresh"]);
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test("scheduler tick does not re-parse the buyback log on every 10s tick", async () => {
+  const repoRoot = makeRepoRoot();
+  const config = { repoRoot, mockMode: false };
+  try {
+    const db = fakeDb();
+    const { scheduler, state } = makeScheduler(config, { db });
+    saveBuybackSchedule(config, { enabled: false, exchangeId: "42" }, { now: () => state.clock });
+    writeBuybackLogBatches(config, [
+      { source: "expired", at: new Date(state.clock - BUYBACK_LOG_RETENTION_MS - 1000).toISOString(), entries: [] },
+      { source: "fresh", at: new Date(state.clock).toISOString(), entries: [] }
+    ]);
+    await scheduler.tick();
+    assert.deepEqual(JSON.parse(readFileSync(buybackLogPath(config), "utf8")).batches.map((batch) => batch.source), ["fresh"]);
+
+    writeBuybackLogBatches(config, [
+      { source: "expired-again", at: new Date(state.clock - BUYBACK_LOG_RETENTION_MS - 1000).toISOString(), entries: [] },
+      { source: "fresh", at: new Date(state.clock).toISOString(), entries: [] }
+    ]);
+    state.clock += 10 * 1000;
+    await scheduler.tick();
+    assert.deepEqual(
+      JSON.parse(readFileSync(buybackLogPath(config), "utf8")).batches.map((batch) => batch.source),
+      ["expired-again", "fresh"],
+      "cleanup is throttled inside the hourly window"
+    );
+
+    state.clock += BUYBACK_LOG_CLEANUP_INTERVAL_MS;
+    await scheduler.tick();
+    assert.deepEqual(JSON.parse(readFileSync(buybackLogPath(config), "utf8")).batches.map((batch) => batch.source), ["fresh"]);
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test("applySweepLeftoverRanking marks in-window unbought rows as skipped locked", () => {
+  const ranked = applySweepLeftoverRanking([
+    normalizeBuybackLogEntry({ order_id: "1", template_id: "A", item_price: "10", result_code: 0, result_label: "eligible" }),
+    normalizeBuybackLogEntry({ order_id: "2", template_id: "B", item_price: "20", result_code: 0, result_label: "success" }),
+    normalizeBuybackLogEntry({ order_id: "3", template_id: "C", item_price: "30", result_code: 0, result_label: "eligible" }),
+    normalizeBuybackLogEntry({ order_id: "4", template_id: "D", item_price: "40", result_code: 0, result_label: "success" })
+  ], 2);
+  assert.equal(ranked.find((row) => row.orderId === "1").resultCode, 6, "cheaper locked row was in the fill window");
+  assert.equal(ranked.find((row) => row.orderId === "2").resultCode, 0);
+  assert.equal(ranked.find((row) => row.orderId === "3").resultCode, 6, "locked after one purchase, still filling maxBuys=2");
+  assert.equal(ranked.find((row) => row.orderId === "4").resultCode, 0);
+});
+
+test("applySweepLeftoverRanking marks rows past a filled maxBuys as 0x5", () => {
+  const ranked = applySweepLeftoverRanking([
+    normalizeBuybackLogEntry({ order_id: "1", template_id: "A", item_price: "10", result_code: 0, result_label: "success" }),
+    normalizeBuybackLogEntry({ order_id: "2", template_id: "B", item_price: "20", result_code: 0, result_label: "success" }),
+    normalizeBuybackLogEntry({ order_id: "3", template_id: "C", item_price: "30", result_code: 0, result_label: "eligible" })
+  ], 2);
+  assert.equal(ranked.find((row) => row.orderId === "3").resultCode, 5);
+  assert.equal(ranked.find((row) => row.orderId === "3").resultLabel, "max buys limit");
+});
+
+test("applyDryRunMaxBuysRanking keeps cheaper eligible listings and marks the rest 0x5", () => {
+  const ranked = applyDryRunMaxBuysRanking([
+    normalizeBuybackLogEntry({ order_id: "2", template_id: "B", item_price: "50", result_code: 0, result_label: "eligible" }),
+    normalizeBuybackLogEntry({ order_id: "1", template_id: "A", item_price: "10", result_code: 0, result_label: "eligible" }),
+    normalizeBuybackLogEntry({ order_id: "3", template_id: "C", item_price: "5", result_code: 1, result_label: "price too high" })
+  ], 1);
+  assert.equal(ranked.find((row) => row.orderId === "1").resultCode, 0);
+  assert.equal(ranked.find((row) => row.orderId === "2").resultCode, 5);
+  assert.equal(ranked.find((row) => row.orderId === "3").resultCode, 1);
+  assert.deepEqual(ranked.map((row) => row.resultCode), [0, 1, 5], "after ranking, rows follow result_code then price like the sweep json_agg");
+});
+
+test("normalizeBuybackLogEntry prefers the seed-plan name for that template grade", () => {
+  const names = new Map([
+    ["Sword\u00000", "Sword"],
+    ["Sword\u00002", "Sword Schematic"],
+    ["Sword", "Sword"]
+  ]);
+  assert.equal(normalizeBuybackLogEntry({ order_id: "1", template_id: "Sword", quality_level: "2", result_code: 0 }, names).displayName, "Sword Schematic");
+  assert.equal(normalizeBuybackLogEntry({ order_id: "2", template_id: "Sword", quality_level: "0", result_code: 0 }, names).displayName, "Sword");
+});
+
+test("idle buyback with unchanged skip buckets skips classify until buckets change", async () => {
+  const repoRoot = makeRepoRoot();
+  const config = { repoRoot, mockMode: false };
+  try {
+    const classifyRows = [
+      { order_id: "13", template_id: "WaterBottle", quality_level: "0", item_price: "900", stack_size: "4", max_unit_price: "600", result_code: "1", result_label: "price too high", detail: "ask 900 > cap 600" }
+    ];
+    const probeRow = {
+      player_sell_orders: "2",
+      known_player_sell_orders: "2",
+      above_threshold_sell_orders: "2",
+      unknown_template_sell_orders: "0"
+    };
+    const db = fakeDb({ eligible: "0", probeRow, classifyRows });
+    const { scheduler, state } = makeScheduler(config, { db });
+    saveBuybackSchedule(config, { enabled: true, exchangeId: "42", intervalMinutes: 10 }, { now: () => state.clock });
+    await scheduler.tick();
+    state.clock += 10 * 60000;
+    await scheduler.tick();
+    assert.equal(db.classifies.length, 1);
+    assert.equal(readBuybackLog(config).batches.length, 1);
+
+    state.clock += 10 * 60000;
+    await scheduler.tick();
+    assert.equal(db.classifies.length, 1, "unchanged overpriced board does not re-scan within the idle classify window");
+    assert.equal(readBuybackLog(config).batches.length, 1);
+
+    probeRow.player_sell_orders = "5";
+    probeRow.above_threshold_sell_orders = "5";
+    state.clock += 10 * 60000;
+    await scheduler.tick();
+    assert.equal(db.classifies.length, 2, "probe bucket changes force a fresh classify");
+    assert.equal(readBuybackLog(config).batches.length, 2);
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test("selectStoredBuybackLogEntries reserves leftover slots when purchases fill the cap", () => {
+  const purchases = Array.from({ length: 800 }, (_, index) => normalizeBuybackLogEntry({
+    order_id: String(index + 1),
+    template_id: "WaterBottle",
+    item_price: String(index + 1),
+    result_code: 0,
+    result_label: "success"
+  }));
+  const leftovers = Array.from({ length: 400 }, (_, index) => normalizeBuybackLogEntry({
+    order_id: String(1000 + index),
+    template_id: "Sword",
+    item_price: String(1000 + index),
+    result_code: 5,
+    result_label: "max buys limit"
+  }));
+  const stored = selectStoredBuybackLogEntries([...purchases, ...leftovers], 1000);
+  assert.equal(stored.length, 1000);
+  assert.equal(stored.filter((entry) => entry.resultLabel === "success").length, 600, "leftovers fit under half the cap, so purchases keep the rest");
+  assert.equal(stored.filter((entry) => entry.resultCode === 5).length, 400, "all leftovers are kept when they fit the reserved share");
+
+  const manyLeftovers = Array.from({ length: 900 }, (_, index) => normalizeBuybackLogEntry({
+    order_id: String(2000 + index),
+    template_id: "Sword",
+    item_price: String(2000 + index),
+    result_code: 6,
+    result_label: "skipped locked"
+  }));
+  const balanced = selectStoredBuybackLogEntries([...purchases, ...manyLeftovers], 1000);
+  assert.equal(balanced.filter((entry) => entry.resultLabel === "success").length, 500);
+  assert.equal(balanced.filter((entry) => entry.resultCode === 6).length, 500);
+});
+
+test("clear during an in-flight dry-run refresh wins and skips the append", async () => {
+  const repoRoot = makeRepoRoot();
+  const config = { repoRoot, mockMode: false };
+  try {
+    saveBuybackSchedule(config, { exchangeId: "42", maxBuys: 1 });
+    let releaseClassify;
+    const gate = new Promise((resolve) => { releaseClassify = resolve; });
+    const db = fakeDb({
+      classifyRows: [
+        { order_id: "31", template_id: "WaterBottle", quality_level: "0", item_price: "10", stack_size: "2", max_unit_price: "600", result_code: "0", result_label: "eligible", detail: "ask 10" }
+      ],
+      onQuery: async (sql) => {
+        if (/\bAS result_code\b/.test(String(sql))) await gate;
+        return null;
+      }
+    });
+    const refreshPromise = refreshBuybackLog(config, db, {});
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal((await clearBuybackLog(config)).batches.length, 0);
+    releaseClassify();
+    const refreshed = await refreshPromise;
+    assert.equal(refreshed.clearedDuringRefresh, true);
+    assert.equal(readBuybackLog(config).batches.length, 0);
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test("readBuybackLog hides expired batches without rewriting the file", () => {
+  const repoRoot = makeRepoRoot();
+  const config = { repoRoot };
+  const nowMs = Date.parse("2026-08-17T12:00:00.000Z");
+  try {
+    const path = buybackLogPath(config);
+    mkdirSync(join(config.repoRoot, "runtime/generated/market-bot"), { recursive: true });
+    const payload = JSON.stringify({
+      batches: [
+        { source: "expired", at: new Date(nowMs - BUYBACK_LOG_RETENTION_MS - 1).toISOString(), entries: [] },
+        { source: "fresh", at: new Date(nowMs).toISOString(), entries: [] }
+      ]
+    });
+    writeFileSync(path, payload);
+    assert.deepEqual(readBuybackLog(config, { now: nowMs }).batches.map((batch) => batch.source), ["fresh"]);
+    assert.equal(readFileSync(path, "utf8"), payload);
   } finally {
     rmSync(repoRoot, { recursive: true, force: true });
   }

@@ -15,6 +15,11 @@ The scheduler ticks with the console's other background tasks. A due buyback run
 2. Takes a database backup only when eligible player listings exist
    (`DB_BACKUP_ORIGIN=market-bot-buyback`).
 3. Runs the buyback in a transaction and re-arms from completion time.
+4. Appends a Buyback Sweep Log batch of purchases and leftover eligible
+   listings (`0x5` Max Buys / `0x6` skipped locked). Idle ticks with player
+   listings still classify skip reasons without a backup so the log explains
+   why nothing was bought, but an unchanged overpriced board reuses that dump
+   at most hourly. An empty exchange skips that second query.
 
 A due reseed always takes a backup (`DB_BACKUP_ORIGIN=market-bot-seed`), clears
 only the bot's listings on the selected exchange, and writes the bundled seed
@@ -32,8 +37,11 @@ The console stores owner-only, atomically written schedules at:
 
 - `runtime/generated/market-bot/buyback.json`
 - `runtime/generated/market-bot/seed.json`
+- `runtime/generated/market-bot/buyback-log.json` (sweep log batches; kept for
+  5 days, 20 most recent). The scheduler prunes expired batches at most hourly,
+  even when buyback is disabled. Appends also drop expired batches.
 
-Both are `source: "console"`. If the console was down when a run came due, it
+The schedules are `source: "console"`. If the console was down when a run came due, it
 recomputes `nextRunAt` one interval out at boot instead of immediately writing to
 the database.
 
