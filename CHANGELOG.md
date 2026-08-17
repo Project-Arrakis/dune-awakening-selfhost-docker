@@ -57,6 +57,24 @@ Keep a Changelog style, grouped by upstream base version, newest first.
 
 ### Added
 
+- Two new addon-bridge test suites closing a real, previously-untested gap
+  (#308): `console/api/test/bridgeActionContract.test.js` asserts every
+  `ops.*` addon-bridge action's real handler function (called directly, no
+  HTTP) returns a response shape carrying its own unique discriminator field
+  and none of the other actions' — the exact class of dispatcher-wiring bug
+  (e.g. an `if`-chain reordering) that could silently route one action's real
+  call to a different action's response shape without a hard crash.
+  `console/api/test/bridgeActionDispatch.test.js` spawns the real
+  `src/server.js` and asserts every documented `ops.*` action responds 200
+  over the actual HTTP bridge route individually — this is the test that
+  would have caught the real 2026-08-10 `containerHealth` incident (a missing
+  `if (` causing a hard `SyntaxError` at module-import time), confirmed by
+  directly reproducing that exact syntax error against current code and
+  observing this new test fail with a clear, isolated signal instead of the
+  original incident's opaque, unrelated-looking timeout. Both tests are
+  complementary, not redundant — verified each independently by intentionally
+  breaking the corresponding defect class and confirming a real failure, then
+  restoring.
 - Two new addon-bridge actions, `ops.health.postgres` and `ops.health.rabbitmq`
   (`addonOpsPostgresHealth()`/`addonOpsRabbitmqHealth()` in `duneDb.js`), for
   the `dune-ops-observability` addon's per-container metrics grid rebuild
