@@ -498,38 +498,69 @@ dune_secrets_read_secret() {
     dune_secrets_load_kek >/dev/null || true
   fi
 
-  # SECURITY: once this secret has been migrated (its .enc file exists),
-  # a decryption failure (wrong KEK, corrupted ciphertext, mismatched
-  # AAD) must fail CLOSED -- return 1, print nothing -- rather than
-  # silently falling back to whatever plaintext still happens to sit at
-  # <legacy_path>. Falling back here would mean a corrupted or
-  # tampered .enc file is invisible to the caller: the operator sees a
-  # value returned successfully (the stale legacy plaintext) with no
-  # indication anything is wrong, defeating the entire point of
-  # encrypting this secret in the first place. Legacy fallback is only
-  # ever correct for a secret that has genuinely never been migrated
-  # (no .enc file exists yet) -- that is the only case checked below
-  # before falling back.
-  local enc_path=""
+  # SECURITY: once this secret has been migrated, a decryption failure
+  # (wrong KEK, corrupted ciphertext, mismatched AAD, or the .enc file
+  # simply being unreadable) must fail CLOSED -- return 1, print
+  # nothing -- rather than silently falling back to whatever plaintext
+  # still happens to sit at <legacy_path>. Falling back here would
+  # mean a corrupted, tampered, or permission-drifted .enc file is
+  # invisible to the caller: the operator sees a value returned
+  # successfully (the stale legacy plaintext) with no indication
+  # anything is wrong, defeating the entire point of encrypting this
+  # secret in the first place. Legacy fallback is only ever correct
+  # for a secret that has genuinely never been migrated at all.
+  #
+  # "Migrated" is determined by TWO independent, readable signals, not
+  # just .enc-file readability alone (fixed 2026-08-17, Requirement 20
+  # Layer 2 audit, Stage 2 of the secrets-stage2-server-login design):
+  # the .enc file itself, OR its per-secret migration marker
+  # (dune_secrets_migration_marker_path). This belt-and-suspenders
+  # check matters because the earlier version of this function only
+  # consulted .enc-file readability -- if that file existed but was
+  # NOT readable (permission drift after a restore, a chmod bug, a
+  # root-owned file left by a container), this function fell straight
+  # through to the legacy-file branch below and returned success,
+  # completely defeating the fail-closed guarantee: `dune secrets
+  # verify` reported "OK" on an unreadable/corrupted .enc file, and
+  # `cleanup-legacy`'s own "re-verify immediately before deleting"
+  # step used this exact function and would delete the last good
+  # (legacy) copy while the .enc file silently sat there broken.
+  # Checking the marker as a second, independent signal closes this:
+  # if EITHER artifact is present and readable, this secret has
+  # migration history and a decrypt failure must be a hard stop, never
+  # a silent fallback. This is also the single source of truth for
+  # "is this secret migrated" -- callers (e.g. runtime-env.sh's
+  # resolvers, secrets-cli.sh's status/verify/cleanup-legacy commands)
+  # must not reimplement this determination themselves; they should
+  # rely on this function's own return value/fail-closed behavior
+  # rather than duplicating the enc-or-marker check independently.
+  local enc_path="" marker_path="" migrated=0
   if dune_secrets_backend_configured; then
     enc_path="$(dune_secrets_encrypted_path "$name" 2>/dev/null || true)"
+    marker_path="$(dune_secrets_migration_marker_path "$name" 2>/dev/null || true)"
+    if [ -n "$enc_path" ] && [ -r "$enc_path" ]; then
+      migrated=1
+    elif [ -n "$marker_path" ] && [ -r "$marker_path" ]; then
+      migrated=1
+    fi
   fi
 
   local value
-  if [ -n "$enc_path" ] && [ -r "$enc_path" ]; then
+  if [ "$migrated" = "1" ]; then
     # Deliberately NOT redirecting stderr to /dev/null here (an earlier
     # version of this function did, and it silently swallowed every
     # diagnostic from dune_secrets_load_kek/dune_secrets_read_encrypted
     # -- wrong age identity, corrupted KEK, malformed .enc file --
     # making it impossible for an operator to tell "not migrated yet"
     # apart from "migrated, but something is actually broken."
-    if value="$(dune_secrets_read_encrypted "$name")"; then
+    if [ -n "$enc_path" ] && [ -r "$enc_path" ] && value="$(dune_secrets_read_encrypted "$name")"; then
       printf '%s' "$value"
       return 0
     fi
-    # .enc file exists but failed to decrypt -- fail closed, do NOT
-    # fall through to the legacy plaintext file below.
-    echo "dune secrets: '$name' has a migrated .enc file that failed to decrypt -- refusing to fall back to a potentially stale legacy plaintext file. Fix the KEK/identity or restore the .enc file from backup." >&2
+    # Migrated (by either signal) but the .enc file is missing,
+    # unreadable, or failed to decrypt -- fail closed, do NOT fall
+    # through to the legacy plaintext file below.
+    echo "dune secrets: '$name' is migrated (per its .enc file or migration marker) but the encrypted form could not be read/decrypted -- refusing to fall back to a potentially stale legacy plaintext file. Fix the KEK/identity, check file permissions, or restore the .enc file from backup." >&2
     return 1
   fi
 
