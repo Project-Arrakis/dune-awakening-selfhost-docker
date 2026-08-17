@@ -37,6 +37,14 @@ const ENTITY_ID = 5001;
 const MAP_NAME = "DeepDesert";
 const MAP_NAME_ID = 7;
 
+// A second base carrying every structural row the actor resolution walks and no
+// dune.permission_actor row -- an unclaimed base, which the Bases panel lists
+// like any other because listBases only hides the ones that are *also*
+// registered in base_backup_linked_actors.
+const UNCLAIMED_BASE_ID = 2006;
+const UNCLAIMED_ACTOR_ID = 2004;
+const UNCLAIMED_ENTITY_ID = 6001;
+
 const SCHEMA = `
   create schema dune;
 
@@ -49,7 +57,17 @@ const SCHEMA = `
   create table dune.actors (id bigint primary key, map text, partition_id bigint, owner_account_id bigint);
   create table dune.map_names (map_name_id smallint primary key, map_name text not null);
   create table dune.permission_actor (actor_id bigint primary key, actor_name text);
-  create table dune.permission_actor_rank (permission_actor_id bigint not null, player_id bigint not null, rank smallint not null);
+  -- The foreign key is production's, transcribed from the shipped schema the
+  -- same way the procedure bodies below are, and matching the one
+  -- baseDelete.integration.test.js already declares. Without it this file
+  -- silently accepted a rank row for an unclaimed base -- the exact write that
+  -- fails against a real server with
+  -- "violates foreign key constraint permission_actor_rank_permission_actor_id_fkey".
+  create table dune.permission_actor_rank (
+    permission_actor_id bigint not null references dune.permission_actor(actor_id) on delete cascade,
+    player_id bigint not null,
+    rank smallint not null
+  );
   create table dune.player_state (account_id bigint, player_controller_id bigint, player_pawn_id bigint, character_name text);
   create table dune.encrypted_player_state (
     account_id bigint,
@@ -100,6 +118,12 @@ const SEED = `
   insert into dune.map_names (map_name_id, map_name) values (${MAP_NAME_ID}, '${MAP_NAME}');
   insert into dune.permission_actor (actor_id, actor_name) values (${ACTOR_ID}, 'DD Test');
 
+  insert into dune.buildings (id) values (${UNCLAIMED_BASE_ID});
+  insert into dune.building_instances (building_id, instance_id, owner_entity_id) values (${UNCLAIMED_BASE_ID}, 0, ${UNCLAIMED_ENTITY_ID});
+  insert into dune.actor_fgl_entities (entity_id, actor_id) values (${UNCLAIMED_ENTITY_ID}, ${UNCLAIMED_ACTOR_ID});
+  insert into dune.actors (id, map, partition_id, owner_account_id) values (${UNCLAIMED_ACTOR_ID}, '${MAP_NAME}', 8, null);
+  -- Deliberately no dune.permission_actor row for ${UNCLAIMED_ACTOR_ID}.
+
   -- Account 2 owns three actor rows; only player_controller_id 4 is a real
   -- permission holder. Ids 5 and 6 exist to prove they are rejected.
   insert into dune.actors (id, owner_account_id) values (4, 2), (5, 2), (6, 2), (23, 6), (29, 8);
@@ -135,6 +159,57 @@ async function ranks(pool) {
     [ACTOR_ID]);
   return result.rows.map((row) => ({ playerId: row.player_id, rank: row.rank }));
 }
+
+// The regression this file was extended for. Every one of these assertions is
+// one only a real database can make: a mock has no foreign key to violate, and
+// the mocked suite proves the guard fires without proving there is anything to
+// guard against.
+test("real PostgreSQL: an unclaimed base is refused rather than violating the permission_actor foreign key", async (t) => {
+  await withDatabase(t, async (pool) => {
+    const db = pgTransactionalDb(pool);
+
+    // First, the constraint really is there and really does reject this write.
+    // Without this the guard below could be passing against a schema that would
+    // have accepted the row anyway -- which is exactly how the bug shipped.
+    await assert.rejects(
+      () => pool.query(
+        "insert into dune.permission_actor_rank (permission_actor_id, player_id, rank) values ($1, 4, $2)",
+        [UNCLAIMED_ACTOR_ID, OWNER_RANK]),
+      /permission_actor_rank_permission_actor_id_fkey/);
+
+    await assert.rejects(
+      () => setBasePermissions(db, UNCLAIMED_BASE_ID, [{ playerId: "4", rank: OWNER_RANK }], 32),
+      /not claimed/);
+    await assert.rejects(
+      () => transferBaseToSystemCustodian(db, UNCLAIMED_BASE_ID, 32),
+      /not claimed/);
+
+    // The rejection must be ours, not PostgreSQL's: an FK error escaping here
+    // would still leave the operator reading constraint names.
+    await assert.rejects(
+      () => setBasePermissions(db, UNCLAIMED_BASE_ID, [{ playerId: "4", rank: OWNER_RANK }], 32),
+      (error) => !/foreign key|fkey/i.test(error.message));
+
+    const written = await pool.query(
+      "select count(*)::int as count from dune.permission_actor_rank where permission_actor_id = $1",
+      [UNCLAIMED_ACTOR_ID]);
+    assert.equal(written.rows[0].count, 0);
+  });
+});
+
+test("real PostgreSQL: an unclaimed base still reads, flagged, so the editor can explain itself", async (t) => {
+  await withDatabase(t, async (pool) => {
+    const db = pgTransactionalDb(pool);
+    const unclaimed = await listBasePermissions(db, UNCLAIMED_BASE_ID);
+    assert.equal(unclaimed.claimed, false);
+    assert.match(unclaimed.unclaimedReason, /not claimed/);
+    assert.deepEqual(unclaimed.entries, []);
+
+    const claimed = await listBasePermissions(db, BASE_ID);
+    assert.equal(claimed.claimed, true);
+    assert.equal(claimed.unclaimedReason, "");
+  });
+});
 
 test("real PostgreSQL: a roster save writes through the shipped procedures with the right argument order", async (t) => {
   await withDatabase(t, async (pool) => {

@@ -261,7 +261,7 @@ When the Restart Queue is enabled, the restart routes above (`/api/server/restar
 | GET | `/api/bases/auto-refill-water` | Get per-base water auto-refill enrollment state | None |
 | POST | `/api/bases/{baseId}/auto-refill-water` | Enable/disable water auto-refill for a base | `baseId`, `enabled` |
 | GET | `/api/bases/{baseId}/inventory` | Get a base's stored items, rolled up by item template and by container (storage, refining, crafting, other). Read-only | `baseId` |
-| GET | `/api/bases/{baseId}/permissions` | Get a base's permission roster (Owner, Co-Owners, Associates) | `baseId` |
+| GET | `/api/bases/{baseId}/permissions` | Get a base's permission roster (Owner, Co-Owners, Associates). Also returns `claimed` and, when false, `unclaimedReason` | `baseId` |
 | POST | `/api/bases/{baseId}/system-custodian` | Transfer ownership to the Server or detected GM system custodian while preserving the roster; provisions Server when no custodian exists | `baseId` |
 | PUT | `/api/bases/{baseId}/permissions` | Replace a base's permission roster | `baseId`, `entries[]` (`playerId`, `rank`) |
 | GET | `/api/bases/permission-candidates` | Search players eligible to be added to a roster | `q?`, `limit?` |
@@ -273,6 +273,12 @@ When the Restart Queue is enabled, the restart routes above (`/api/server/restar
 base-backup tool (unclaimed and registered in `dune.base_backup_linked_actors`
 — see [base-backups.md](base-backups.md)), and every mutation route below
 rejects one with **409** for the same reason.
+
+A base that is unclaimed for any *other* reason still lists, and `GET
+/api/bases/{baseId}/permissions` still reads it, reporting `claimed: false`. The
+two permission mutation routes reject it with **400** rather than letting the
+write fail `permission_actor_rank`'s foreign key — see
+[base-permissions.md](base-permissions.md).
 
 Each `GET /api/bases` row carries `partitionMap` and `dimensionIndex` alongside
 `map` and `partition_id`. `map` is the game's own name (`HaggaBasin`) and cannot
