@@ -18,7 +18,11 @@ function entry(playerId: string, name: string, rank: BasePermissionRank, canonic
   return { playerId, name, rank, label: "", canonical };
 }
 
-function mockRoster(entries: BasePermissionEntry[], systemCustodian?: SystemCustodian) {
+function mockRoster(
+  entries: BasePermissionEntry[],
+  systemCustodian?: SystemCustodian,
+  claim: { claimed?: boolean; unclaimedReason?: string } = {}
+) {
   vi.mocked(basesApi.permissions).mockResolvedValue({
     supported: true,
     baseId: 1006,
@@ -26,7 +30,8 @@ function mockRoster(entries: BasePermissionEntry[], systemCustodian?: SystemCust
     map: "DeepDesert",
     mapNameId: 7,
     systemCustodian,
-    entries
+    entries,
+    ...claim
   } as never);
 }
 
@@ -212,6 +217,50 @@ describe("BasePermissionsTab ownerless state", () => {
     fireEvent.click(screen.getByRole("radio", { name: "Associate for Yaida" }));
     await waitFor(() => expect(screen.getByRole("button", { name: "Revert" })).toBeEnabled());
     expect(screen.getByRole("button", { name: "Save changes" })).toBeDisabled();
+  });
+});
+
+// An unclaimed base has no dune.permission_actor row, so every rank write
+// against it fails the permission_actor_rank foreign key. On screen it is
+// indistinguishable from an ordinary ownerless base, and Transfer -- the
+// control that exists to resolve ownerlessness -- was the shortest path to a
+// raw PostgreSQL constraint error.
+describe("BasePermissionsTab unclaimed base", () => {
+  const UNCLAIMED = "This base is not claimed -- it has no dune.permission_actor row.";
+
+  it("explains the unclaimed state and blocks every write, Transfer included", async () => {
+    mockRoster([], { available: true, playerId: "900000201", name: "Server" }, {
+      claimed: false,
+      unclaimedReason: UNCLAIMED
+    });
+    renderTab();
+
+    expect(await screen.findByText(UNCLAIMED)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Transfer to Server" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Save changes" })).toBeDisabled();
+    // The generic "set an Owner" prompt would describe an action that cannot be
+    // completed here, so the reason that can be acted on stands alone.
+    expect(screen.queryByText(/This base has no Owner/)).not.toBeInTheDocument();
+  });
+
+  it("leaves the roster read-only rather than letting edits accumulate", async () => {
+    mockRoster(DEFAULT_ROSTER, undefined, { claimed: false, unclaimedReason: UNCLAIMED });
+    renderTab();
+
+    await screen.findByText(UNCLAIMED);
+    expect(screen.getByRole("radio", { name: "Associate for Yaida" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Remove Yaida" })).toBeDisabled();
+  });
+
+  // An API that predates the flag omits it. Reading that as unclaimed would
+  // disable editing on every base it serves.
+  it("treats a missing flag as claimed", async () => {
+    mockRoster(DEFAULT_ROSTER);
+    renderTab();
+
+    await screen.findByText("DarkShark", { selector: ".bases-permissions-owner-name" });
+    expect(screen.getByRole("radio", { name: "Associate for Yaida" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Remove Yaida" })).toBeEnabled();
   });
 });
 
