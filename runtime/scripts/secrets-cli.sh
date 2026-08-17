@@ -21,9 +21,9 @@ cd "$(dirname "$0")/../.."
 # _dune_secrets_require_stage2_name's own comment for why a broader
 # allow-list would be a real scope violation, not just tidiness.
 
-# shellcheck source=runtime/scripts/lib/secrets.sh
+# shellcheck disable=SC1091
 source runtime/scripts/lib/secrets.sh
-# shellcheck source=runtime/scripts/runtime-env.sh
+# shellcheck disable=SC1091
 source runtime/scripts/runtime-env.sh
 
 usage() {
