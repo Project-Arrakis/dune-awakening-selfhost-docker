@@ -677,6 +677,10 @@ See [blueprints.md](blueprints.md) for the full import/export design.
 | POST | `/api/addons/installed/{id}/bridge` | Addon bridge API | `id`, `action`, payload varies |
 | GET | `/api/addons/installed/{id}/content/{path}` | Get addon content file | `id`, `path` |
 
+### Hardware Status Bridge
+
+`server.hardware.status` requires approved `server:status` addon permission and returns the core-owned hardware snapshot documented in [Addon Hardware Status Bridge](../addons/hardware-status.md). Addon packages are never permitted to execute their own telemetry scripts.
+
 ---
 
 ## Logs & Monitoring

@@ -21,7 +21,7 @@ import { clearCarePackageHistory, enableCarePackage, ensureCarePackageServerPers
 import { readJsonBody, readMultipartForm } from "./httpSafety.js";
 import { parseBackupAutoStatus, parseBackupListRows } from "./statusParsers.js";
 import { assertInstalledAddonPermission, fetchCommunityAddons, installCommunityAddon, installedAddonContentPath, listInstalledAddons, removeInstalledAddon, setInstalledAddonEnabled, syncInstalledAddonLifecycle, updateCommunityAddon } from "./addons.js";
-import { performanceSnapshot as collectPerformanceSnapshot } from "./services/performance.js";
+import { hardwareStatusSnapshot, performanceSnapshot as collectPerformanceSnapshot } from "./services/performance.js";
 import { serveStatic, contentTypeForPath } from "./http/staticFiles.js";
 import { discoverServices } from "./services/serviceDiscovery.js";
 import { createBackupDownloadArchive, enrichBackupRows, nextImportedBackupName, normalizeImportedBackupMetadata, readCurrentBattlegroupId, validBackupDownloadName } from "./services/backups.js";
@@ -948,6 +948,12 @@ async function addonBridgeRoute(req, res, path) {
     const ok = !result.error;
     audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, ok });
     return json(res, 200, { ok, result });
+  }
+  if (action === "server.hardware.status") {
+    const addon = assertInstalledAddonPermission(config, id, "server:status");
+    const result = await hardwareStatusSnapshot();
+    audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, sensorCount: result.temperatures.length, ok: true });
+    return json(res, 200, { ok: true, result });
   }
   if (action === "admin.items.grant") {
     const addon = assertInstalledAddonPermission(config, id, "admin:grant-items");
