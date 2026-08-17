@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { basesApi, type AutoRefillBase } from "../../api/bases";
 import { mapsApi } from "../../api/maps";
@@ -992,6 +992,9 @@ describe("BasesPanel permissions editing", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /View Contents/ }));
     await waitFor(() => expect(basesApi.containerSlots).toHaveBeenCalledWith("1006", "40001"));
+    // The overlay opens on grid; the per-row delete button lives in the list.
+    await waitFor(() => expect(document.querySelectorAll(".bases-inventory-slot-cell").length).toBeGreaterThan(0));
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: /List/ }));
 
     fireEvent.click(await screen.findByRole("button", { name: /^Delete Granite Stone/ }));
     await waitFor(() => expect(props.confirmAction).toHaveBeenCalled());

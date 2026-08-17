@@ -123,11 +123,18 @@ function renderTab() {
 // Opens the Vault's contents overlay and waits for its slots to land. Finds
 // the card by name rather than taking the first: the cards sort on their
 // rendered label, so "Small Storage Container #40002" precedes "Vault".
-async function openVaultContents() {
+//
+// The overlay opens on GRID, so this waits for cells, then switches to list
+// for the tests that assert on rows. Tests about the grid itself call
+// openVaultContents({ stayOnGrid: true }).
+async function openVaultContents({ stayOnGrid = false } = {}) {
   const vault = [...document.querySelectorAll(".bases-inventory-cards .bases-card")]
     .find((card) => card.textContent?.includes("Vault")) as HTMLElement;
   fireEvent.click(within(vault).getByRole("button", { name: /View Contents/ }));
   await waitFor(() => expect(screen.getByRole("dialog")).toBeTruthy());
+  await waitFor(() => expect(document.querySelectorAll(".bases-inventory-slot-cell").length).toBeGreaterThan(0));
+  if (stayOnGrid) return;
+  fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: /List/ }));
   await waitFor(() => expect(document.querySelectorAll(".bases-inventory-contents-row:not(.head)").length).toBeGreaterThan(0));
 }
 
@@ -413,6 +420,10 @@ describe("BaseInventoryTab", () => {
     // Slots arrive in their own request, so the body fills in after the open.
     expect(within(dialog).getByRole("heading", { name: "Vault" })).toBeTruthy();
     expect(dialog.textContent).toContain("Storage Container · #40001");
+    // The overlay opens on grid, where names live in tile tooltips rather than
+    // as text; switch to list to read them.
+    await waitFor(() => expect(document.querySelectorAll(".bases-inventory-slot-cell").length).toBeGreaterThan(0));
+    fireEvent.click(within(dialog).getByRole("button", { name: /List/ }));
     await waitFor(() => expect(within(dialog).getAllByText("Granite Stone").length).toBe(2));
     // Two stacks of one template stay apart at their own quantities rather
     // than merging into the 1,000 the rollup reports.
@@ -466,8 +477,10 @@ describe("BaseInventoryTab", () => {
 
     fireEvent.click(within(cards().find((c) => c.textContent?.includes("Vault")) as HTMLElement)
       .getByRole("button", { name: /View Contents/ }));
-    // Wait for the slots request before filtering, so this tests the filter
-    // rather than racing the fetch.
+    // Wait for the slots request, and read names from the list view -- the
+    // grid the overlay opens on keeps them in tooltips.
+    await waitFor(() => expect(document.querySelectorAll(".bases-inventory-slot-cell").length).toBeGreaterThan(0));
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: /List/ }));
     await waitFor(() => expect(screen.getByRole("dialog").textContent).toContain("Granite Stone"));
     fireEvent.click(screen.getByRole("button", { name: /Refining/ }));
 
@@ -666,6 +679,8 @@ describe("BaseInventoryTab", () => {
     const refinery = [...document.querySelectorAll(".bases-inventory-cards .bases-card")]
       .find((card) => card.textContent?.includes("Small Ore Refinery")) as HTMLElement;
     fireEvent.click(within(refinery).getByRole("button", { name: /View Contents/ }));
+    await waitFor(() => expect(document.querySelectorAll(".bases-inventory-slot-cell").length).toBeGreaterThan(0));
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: /List/ }));
     await waitFor(() => expect(document.querySelectorAll(".bases-inventory-contents-row:not(.head)").length).toBe(1));
 
     fireEvent.click(screen.getByRole("button", { name: /^Delete Iron Ore/ }));
