@@ -194,6 +194,19 @@ if [ -s runtime/generated/director-deepdesert-dual.ini ]; then
   cat runtime/generated/director-deepdesert-dual.ini >> runtime/director/config/director_config.ini
 fi
 
+# Keep the public directory's capacity source independent from the live
+# Director bind mount. Self-updates and Console rebuilds can safely retain this
+# secret-free snapshot without copying Director authentication material.
+DIRECTOR_CAPACITY_SNAPSHOT="runtime/generated/director-capacity.ini"
+repair_generated_file_path "$DIRECTOR_CAPACITY_SNAPSHOT"
+capacity_snapshot_tmp="$(mktemp runtime/generated/.director-capacity.ini.tmp.XXXXXX)"
+awk '
+  /^\[[^]]+\]$/ { print; next }
+  /^(PlayerHardCap|ShouldUpdatePlayerCountOnFls)=/ { print }
+' runtime/director/config/director_config.ini > "$capacity_snapshot_tmp"
+chmod 600 "$capacity_snapshot_tmp"
+mv -f "$capacity_snapshot_tmp" "$DIRECTOR_CAPACITY_SNAPSHOT"
+
 cat >> runtime/director/config/director_config.ini <<EOF
 
 [AuthenticationConfiguration]

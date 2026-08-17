@@ -15,6 +15,8 @@ const DEFAULT_BASE_URL = "https://dunedocker.app/api/v1/servers";
 const DEFAULT_HEARTBEAT_SECONDS = 30;
 const MAX_BACKOFF_SECONDS = 15 * 60;
 const REQUEST_TIMEOUT_MS = 10000;
+const DIRECTOR_CONFIG_PATH = "/Tools/Battlegroups/Director/BattlegroupDirector/director_config.ini";
+const DIRECTOR_CAPACITY_AWK = "/^\\[[^]]+\\]$/ { print; next } /^(PlayerHardCap|ShouldUpdatePlayerCountOnFls)=/ { print }";
 const BATTLEGROUP_CORE_CONTAINERS = new Set([
   "dune-director",
   "dune-server-gateway",
@@ -209,7 +211,8 @@ export function createPublicDirectoryReporter(config, options = {}) {
       const snapshot = await collectDirectorySnapshot(config, getDb(), settings, {
         running: await getBattlegroupRunning(),
         lastConfirmedCapacity: state.lastConfirmedCapacity,
-        lastConfirmedSietches: state.lastConfirmedSietches
+        lastConfirmedSietches: state.lastConfirmedSietches,
+        recoverRunningDirectorCapacity: options.recoverRunningDirectorCapacity
       });
       const payload = buildHeartbeatPayload(identity, snapshot);
       const attemptedAt = new Date(now()).toISOString();
@@ -578,7 +581,15 @@ export async function collectDirectorySnapshot(
     }
   }
 
-  const configuredCapacity = readConfiguredCapacity(config.repoRoot, sietches);
+  let configuredCapacity = readConfiguredCapacity(config.repoRoot, sietches);
+  if (configuredCapacity === null && running) {
+    const recoverCapacity = options.recoverRunningDirectorCapacity || recoverRunningDirectorCapacity;
+    try {
+      configuredCapacity = await recoverCapacity(config.repoRoot, sietches);
+    } catch {
+      configuredCapacity = null;
+    }
+  }
   const capacityConfirmed = configuredCapacity !== null && sietchesConfirmed;
   let capacity = configuredCapacity;
   if (capacity === null) {
@@ -809,13 +820,48 @@ async function runningContainerNames() {
 }
 
 export function readConfiguredCapacity(repoRoot, configuredSietches = readConfiguredSietches(repoRoot)) {
-  const path = resolve(repoRoot, "runtime/director/config/director_config.ini");
-  let lines;
-  try {
-    lines = readFileSync(path, "utf8").split(/\r?\n/);
-  } catch {
-    return null;
+  const paths = [
+    resolve(repoRoot, "runtime/director/config/director_config.ini"),
+    resolve(repoRoot, "runtime/generated/director-capacity.ini")
+  ];
+  for (const path of paths) {
+    try {
+      const capacity = configuredCapacityFromText(readFileSync(path, "utf8"), configuredSietches);
+      if (capacity !== null) return capacity;
+    } catch {}
   }
+  return null;
+}
+
+export async function recoverRunningDirectorCapacity(
+  repoRoot,
+  configuredSietches = readConfiguredSietches(repoRoot),
+  runCommand = execFileOutput
+) {
+  const output = await runCommand("docker", [
+    "exec",
+    "dune-director",
+    "awk",
+    DIRECTOR_CAPACITY_AWK,
+    DIRECTOR_CONFIG_PATH
+  ], {
+    encoding: "utf8",
+    timeout: 5000,
+    stdio: ["ignore", "pipe", "ignore"]
+  });
+  const capacity = configuredCapacityFromText(output, configuredSietches);
+  if (capacity === null) return null;
+
+  writeTextAtomic(
+    resolve(repoRoot, "runtime/generated/director-capacity.ini"),
+    `${output.trim()}\n`,
+    0o600
+  );
+  return capacity;
+}
+
+function configuredCapacityFromText(text, configuredSietches) {
+  const lines = String(text || "").split(/\r?\n/);
   let section = "";
   let defaultCap = 60;
   let defaultUpdates = true;
@@ -1082,6 +1128,15 @@ function writeJsonAtomic(path, value, mode) {
   mkdirSync(dirname(path), { recursive: true });
   const temporaryPath = `${path}.${process.pid}.tmp`;
   writeFileSync(temporaryPath, `${JSON.stringify(value, null, 2)}\n`, { mode });
+  chmodSync(temporaryPath, mode);
+  renameSync(temporaryPath, path);
+  try { chmodSync(path, mode); } catch {}
+}
+
+function writeTextAtomic(path, value, mode) {
+  mkdirSync(dirname(path), { recursive: true });
+  const temporaryPath = `${path}.${process.pid}.tmp`;
+  writeFileSync(temporaryPath, value, { mode });
   chmodSync(temporaryPath, mode);
   renameSync(temporaryPath, path);
   try { chmodSync(path, mode); } catch {}
