@@ -7,9 +7,10 @@ export function clampInt(value, fallback, min, max) {
   return Math.min(Math.max(n, min), max);
 }
 
-export function writeJsonAtomic(file, value, mode = 0o600) {
+export function writeJsonAtomic(file, value, mode = 0o600, { pretty = true } = {}) {
   mkdirSync(dirname(file), { recursive: true });
   const temporaryPath = `${file}.${process.pid}.tmp`;
-  writeFileSync(temporaryPath, `${JSON.stringify(value, null, 2)}\n`, { mode });
+  const json = pretty ? JSON.stringify(value, null, 2) : JSON.stringify(value);
+  writeFileSync(temporaryPath, `${json}\n`, { mode });
   renameSync(temporaryPath, file);
 }
