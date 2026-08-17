@@ -103,7 +103,17 @@ function mockSlots(payload: BaseContainerSlots = SLOTS) {
   vi.mocked(basesApi.containerSlots).mockResolvedValue(payload as never);
 }
 
-const confirmAction = vi.fn(async () => true);
+// Typed with the real signature rather than inferred from `async () => true`,
+// so assertions can reach the options argument (the crafting warning) instead
+// of indexing into an empty tuple.
+type ConfirmOptions = {
+  title?: string;
+  confirmLabel?: string;
+  warning?: string;
+  danger?: boolean;
+  details?: { label: string; value: string; tone?: "accent" | "success" | "danger" }[];
+};
+const confirmAction = vi.fn(async (_message: string, _options?: ConfirmOptions) => true);
 const onError = vi.fn();
 
 function renderTab() {
@@ -632,6 +642,47 @@ describe("BaseInventoryTab", () => {
     fireEvent.click(screen.getByRole("button", { name: /Remove 150/ }));
     await waitFor(() => expect(basesApi.deleteContainerItem).toHaveBeenCalled());
     expect(vi.mocked(basesApi.deleteContainerItem).mock.calls[0][4]).toBe(150);
+  });
+
+  it("warns about live crafting state when the container is not plain storage", async () => {
+    mockInventory();
+    // The game's own crafting routine consumes allocated ingredients from
+    // these same rows, so removing one mid-craft can leave a recipe pointing
+    // at an item that no longer exists. This warning is the only thing
+    // standing between an operator and that, so it is worth pinning.
+    mockSlots({
+      ...SLOTS,
+      placeableId: "40003",
+      typeName: "Small Ore Refinery",
+      group: "refining",
+      inventories: [{
+        inventoryId: "9003", maxSlots: 5, usedSlots: 1,
+        slots: [{ itemId: "701", templateId: "MagnetiteOre", name: "Iron Ore", positionIndex: 0, quantity: 420, qualityLevel: 0, currentDurability: null, maxDurability: null }]
+      }]
+    });
+    renderTab();
+    await loaded();
+
+    const refinery = [...document.querySelectorAll(".bases-inventory-cards .bases-card")]
+      .find((card) => card.textContent?.includes("Small Ore Refinery")) as HTMLElement;
+    fireEvent.click(within(refinery).getByRole("button", { name: /View Contents/ }));
+    await waitFor(() => expect(document.querySelectorAll(".bases-inventory-contents-row:not(.head)").length).toBe(1));
+
+    fireEvent.click(screen.getByRole("button", { name: /^Delete Iron Ore/ }));
+    await waitFor(() => expect(confirmAction).toHaveBeenCalled());
+    expect(confirmAction.mock.calls[0][1]?.warning).toMatch(/feeds crafting/i);
+  });
+
+  it("does not warn about crafting for a plain storage container", async () => {
+    mockInventory();
+    renderTab();
+    await loaded();
+    await openVaultContents();
+
+    fireEvent.click(screen.getAllByRole("button", { name: /^Delete Granite Stone/ })[0]);
+    await waitFor(() => expect(confirmAction).toHaveBeenCalled());
+    // A chest holds no live game state, so the extra warning would be noise.
+    expect(confirmAction.mock.calls[0][1]?.warning).toBeUndefined();
   });
 
   it("reports a failed delete through onError and leaves the slot listed", async () => {
