@@ -11,6 +11,7 @@ source runtime/scripts/host-paths.sh
 source runtime/scripts/runtime-env.sh
 source runtime/scripts/image-tags.sh
 source runtime/scripts/generated-file-paths.sh
+source runtime/scripts/fake-k8s-serviceaccount.sh
 WORLD_IMAGE_TAG="$(resolve_world_image_tag)"
 IMAGE="registry.funcom.com/funcom/self-hosting/seabass-server-bg-director:${WORLD_IMAGE_TAG}"
 DIRECTOR_PORT="$(resolve_director_port)"
@@ -47,11 +48,7 @@ SERVER_REGION="$(resolve_server_region)"
 SERVER_IP="$(resolve_server_ip)"
 BATTLEGROUP_ID="$(resolve_battlegroup_id)"
 DUNE_DB_PASSWORD="${DUNE_DB_PASSWORD:-dune}"
-if [ -n "${DUNE_FAKE_K8S_SERVICEACCOUNT_DIR:-}" ]; then
-  FAKE_K8S_SERVICEACCOUNT_DIR="$DUNE_FAKE_K8S_SERVICEACCOUNT_DIR"
-else
-  FAKE_K8S_SERVICEACCOUNT_DIR="$PWD/runtime/generated/dune-fake-k8s-serviceaccount-director-$$"
-fi
+FAKE_K8S_SERVICEACCOUNT_DIR="$(fake_k8s_serviceaccount_dir director)"
 
 
 mkdir -p runtime/director/config
@@ -257,19 +254,7 @@ UsernameServerLoginSecret="$USERNAME_SERVER_LOGIN_SECRET"
 ServerLoginPasswordSecret="$SERVER_LOGIN_PASSWORD_SECRET"
 EOF
 
-cat > "$FAKE_K8S_SERVICEACCOUNT_DIR/namespace" <<'EOF'
-funcom-seabass-dune-docker
-EOF
-
-cat > "$FAKE_K8S_SERVICEACCOUNT_DIR/token" <<'EOF'
-fake-token
-EOF
-
-# Same intentional trick as TextRouter for now:
-# invalid CA makes IGWO init fail non-fatally instead of trying to call a missing API server.
-: > "$FAKE_K8S_SERVICEACCOUNT_DIR/ca.crt"
-
-chmod -R 755 "$FAKE_K8S_SERVICEACCOUNT_DIR"
+prepare_fake_k8s_serviceaccount "$FAKE_K8S_SERVICEACCOUNT_DIR" funcom-seabass-dune-docker
 chmod 755 runtime/director/config
 chmod 600 runtime/director/config/director_config.ini
 
@@ -352,6 +337,8 @@ docker run -d \
   --RMQGamePort=5672 \
   --RMQAdminHostname=dune-rmq-admin \
   --RMQAdminPort=5672
+
+prune_legacy_fake_k8s_serviceaccounts
 
 sleep 12
 

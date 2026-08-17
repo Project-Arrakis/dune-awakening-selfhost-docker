@@ -40,6 +40,7 @@ source runtime/scripts/host-paths.sh
 source runtime/scripts/runtime-env.sh
 source runtime/scripts/image-tags.sh
 source runtime/scripts/sietch-login-password-args.sh
+source runtime/scripts/fake-k8s-serviceaccount.sh
 
 IMAGE="$(resolve_game_server_image)"
 
@@ -387,11 +388,7 @@ fi
 safe_name="$(echo "$MAP_NAME-$PARTITION_ID" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g; s/--*/-/g; s/^-//; s/-$//')"
 CONTAINER_NAME="dune-server-${safe_name}"
 
-if [ -n "${DUNE_FAKE_K8S_SERVICEACCOUNT_DIR:-}" ]; then
-  FAKE_K8S_SERVICEACCOUNT_DIR="$DUNE_FAKE_K8S_SERVICEACCOUNT_DIR"
-else
-  FAKE_K8S_SERVICEACCOUNT_DIR="$PWD/runtime/generated/dune-fake-k8s-serviceaccount-${safe_name}-$$"
-fi
+FAKE_K8S_SERVICEACCOUNT_DIR="$(fake_k8s_serviceaccount_dir "$safe_name")"
 
 ensure_runtime_state_file "$PORT_LOCK_FILE" "spawn port reservation lock"
 exec 9>"$PORT_LOCK_FILE"
@@ -539,20 +536,11 @@ echo
 
 runtime/scripts/repair-map-settings-permissions.sh "$safe_name"
 mkdir -p runtime/game/artifacts
-mkdir -p "$FAKE_K8S_SERVICEACCOUNT_DIR"
 mkdir -p runtime/container
 python3 runtime/scripts/usersettings.py materialize "$MAP_NAME" "$PWD/runtime/game/$safe_name/Saved" "$PARTITION_ID"
 purge_stale_farm_rows_for_map "$MAP_NAME"
 runtime/scripts/network-addresses.sh reconcile >/dev/null 2>&1 || true
-
-cat > "$FAKE_K8S_SERVICEACCOUNT_DIR/namespace" <<EOF
-funcom-seabass-$BATTLEGROUP_ID
-EOF
-cat > "$FAKE_K8S_SERVICEACCOUNT_DIR/token" <<'EOF'
-fake-token
-EOF
-: > "$FAKE_K8S_SERVICEACCOUNT_DIR/ca.crt"
-chmod -R 755 "$FAKE_K8S_SERVICEACCOUNT_DIR"
+prepare_fake_k8s_serviceaccount "$FAKE_K8S_SERVICEACCOUNT_DIR" "funcom-seabass-$BATTLEGROUP_ID"
 
 docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
 ensure_host_latency_tuned
@@ -642,6 +630,8 @@ docker run -d \
   "--RMQAdminPort=${RMQ_ADMIN_PORT}" \
   "${SIETCH_RUNTIME_ARGS[@]}" \
   "${LOG_RUNTIME_ARGS[@]}"
+
+prune_legacy_fake_k8s_serviceaccounts
 
 sleep 5
 
