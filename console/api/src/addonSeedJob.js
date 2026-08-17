@@ -1,7 +1,7 @@
-// Server-side scheduled market reseed for the EDA Exchange Bot.
+// Server-side scheduled market reseed for the native Market Bot.
 //
 // Mirrors the buyback job in addonJobs.js: typed schedule parameters only,
-// SQL built server-side from the addon's bundled web/market-seed-plan.json,
+// SQL built server-side from the console-bundled market-seed-plan.json,
 // RedBlink backup before every write, and a shared running lock with buyback
 // so the two jobs never mutate the exchange at the same time.
 //
@@ -144,7 +144,9 @@ export function normalizeScheduleSource(value) {
 }
 
 export function readSeedSchedule(config) {
-  const path = seedSchedulePath(config);
+  const corePath = seedSchedulePath(config);
+  const legacyPath = legacySeedSchedulePath(config);
+  const path = existsSync(corePath) ? corePath : legacyPath;
   let raw = {};
   if (existsSync(path)) {
     try {
@@ -176,15 +178,15 @@ export function saveSeedSchedule(config, payload = {}, { now = () => Date.now(),
   return next;
 }
 
-// The plan ships with the console (runtime/data/market-seed-plan.json), so the
-// first-class Market Bot works with no addon installed. An installed EDA
-// Exchange Bot addon's bundled plan still wins when present: operators receive
-// catalog updates through addon releases, so the addon copy is assumed newer.
+// The plan ships with the console (runtime/data/market-seed-plan.json) and is
+// authoritative now that Market Bot is first-class. The legacy addon copy is
+// only a fallback for an incomplete/older installation; it must never override
+// a newer plan delivered with the console.
 export function resolveMarketSeedPlanPath(config, addonId = EDA_EXCHANGE_BOT_ADDON_ID) {
-  const addonPath = resolve(config.repoRoot, "runtime/addons/installed", addonId, "web", "market-seed-plan.json");
-  if (existsSync(addonPath)) return addonPath;
   const bundledPath = resolve(config.repoRoot, "runtime/data/market-seed-plan.json");
   if (existsSync(bundledPath)) return bundledPath;
+  const addonPath = resolve(config.repoRoot, "runtime/addons/installed", addonId, "web", "market-seed-plan.json");
+  if (existsSync(addonPath)) return addonPath;
   return null;
 }
 
@@ -357,7 +359,7 @@ export async function executeSeedRun(config, db, schedule, { runDuneImpl, buildD
     throw new Error("Exchange seed requires database transaction support.");
   }
   if (!config.mockMode) {
-    await runDuneImpl(config, buildDuneArgs("backupCreate"), { env: { DB_BACKUP_ORIGIN: `addon-${EDA_EXCHANGE_BOT_ADDON_ID}` } });
+    await runDuneImpl(config, buildDuneArgs("backupCreate"), { env: { DB_BACKUP_ORIGIN: "market-bot-seed" } });
   }
   const result = await db.transaction((tx) => runSql(tx, buildMarketSeedSql(plan, schedule), true));
   const row = result?.rows?.[0] || {};
@@ -394,6 +396,10 @@ export function persistSeedRunCompletion(config, completedAtMs, status, detail) 
 }
 
 export function seedSchedulePath(config) {
+  return resolve(config.repoRoot, "runtime/generated/market-bot", "seed.json");
+}
+
+export function legacySeedSchedulePath(config) {
   return resolve(config.repoRoot, "runtime/addons/jobs", EDA_EXCHANGE_BOT_ADDON_ID, "seed.json");
 }
 

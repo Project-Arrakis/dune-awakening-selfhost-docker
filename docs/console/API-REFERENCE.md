@@ -452,13 +452,11 @@ respectively. On the seed schedule they raise the seeded sell prices; on the
 buyback schedule they reprice the reconstructed "seeded" price basis the same
 way, so `buybackPercent` keeps meaning a percentage of the real market price.
 
-Unlike the board above, these routes **do write the game database** (through the
-same engine as the EDA Exchange Bot addon's scheduler: `addonJobs.js` /
-`addonSeedJob.js`). Reads and the probe require `exchange:market`; mutations
+Unlike the board above, these routes **do write the game database** through the
+native Market Bot engine (`addonJobs.js` / `addonSeedJob.js`). Reads and the probe require `exchange:market`; mutations
 require `exchange:market-write` (the admin tier's `exchange:*` covers both).
 Schedules saved here are marked `source: "console"`, run unattended inside the
-console API process, and do not require the addon to be installed; the seed plan
-resolves to an installed EDA Exchange Bot addon copy first, then the bundled
+console API process, and do not require an addon; the seed plan is the bundled
 `runtime/data/market-seed-plan.json`. Every write is preceded by a database
 backup, and buyback runs probe eligibility read-only first so idle intervals
 never take a backup. See [exchange.md](exchange.md#market-bot) for behavior

@@ -61,8 +61,23 @@ import { flushBaseRefillQueues } from "./services/baseRefillFlush.js";
 import { verifyBaseBackupState } from "./services/baseBackupSafety.js";
 import { banPlayer, bannedFlsIds, createPlayerBanEnforcer, playerBanFor, unbanPlayer } from "./services/playerBans.js";
 import { findPlayerForLiveAction, playerIsOnlineForLiveAction } from "./playerLiveActions.js";
+import { retireLegacyEdaExchangeBot } from "./services/marketBotRetirement.js";
 
 const config = loadConfig();
+let edaRetirement = { retired: false, addonRemoved: false, migrated: false, changed: false, backupDir: "", cleanupError: "" };
+try {
+  edaRetirement = retireLegacyEdaExchangeBot(config);
+  if (edaRetirement.changed) {
+    console.log(`EDA Exchange Bot retirement complete; Market Bot is managed under Exchange.${edaRetirement.backupDir ? ` Backup: ${edaRetirement.backupDir}` : ""}`);
+  }
+  if (edaRetirement.cleanupError) {
+    console.warn(`EDA Exchange Bot cleanup will be retried at next startup: ${redact(edaRetirement.cleanupError)}`);
+  }
+} catch (error) {
+  // A bad legacy schedule must not be silently discarded. Keep the old addon
+  // bridge available for this process and retry the migration next startup.
+  console.warn(`EDA Exchange Bot retirement deferred: ${redact(error?.message || "Unexpected error.")}`);
+}
 loadPolicies(config.repoRoot);
 const auth = createAuth(config);
 const loginRateLimiter = createLoginRateLimiter();
@@ -872,6 +887,10 @@ async function handleApi(req, res) {
 
 async function addonBridgeRoute(req, res, path) {
   const id = decodeURIComponent(path.split("/").at(-2));
+  if (id === EDA_EXCHANGE_BOT_ADDON_ID && edaRetirement.retired) {
+    audit(config, req, "addons.bridge", { id, ok: false, reason: "Addon retired; use native Market Bot" });
+    return json(res, 410, { error: "EDA Exchange Bot has been retired. Use Exchange > Market Bot in the console." });
+  }
   const clientIp = (req.socket.remoteAddress || "unknown").replace(/^::ffff:/, "");
   const key = `${id}:${clientIp}`;
   const limit = bridgeRateLimiter.check(key);

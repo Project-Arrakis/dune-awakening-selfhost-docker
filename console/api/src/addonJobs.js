@@ -1,13 +1,13 @@
-// Server-side scheduled jobs for installed addons.
+// Server-side scheduled jobs for the native Market Bot, retained in this
+// module to keep the original engine API stable during the EDA retirement.
 //
-// The first (and currently only) job is the EDA Exchange Bot buyback sweep.
-// The addon's browser page can only automate while its iframe stays open, so
-// the console API process runs the same loop unattended: a read-only
+// The engine began as the EDA Exchange Bot buyback sweep. The console API now
+// owns and runs the loop unattended: a read-only
 // eligibility probe every interval, and a buyback sweep (preceded by a
 // database backup) only when eligible player listings exist.
 //
 // No SQL from the addon iframe is ever persisted or replayed. The SQL below
-// is built server-side from the addon's bundled web/market-seed-plan.json and
+// is built server-side from the console-bundled market-seed-plan.json and
 // a strictly validated schedule config, following the typed-action precedent
 // of admin.items.grant.
 
@@ -27,10 +27,12 @@ import {
   normalizeCategoryMultipliers,
   normalizeScheduleSource,
   resolveMarketSeedPlanPath,
+  legacySeedSchedulePath,
+  seedSchedulePath,
   seedRowCategoryMultiplier
 } from "./addonSeedJob.js";
 
-export { CATEGORY_MULTIPLIER_FIELDS, readSeedSchedule, normalizeSeedSchedule, saveSeedSchedule, normalizeCategoryMultipliers, normalizeScheduleSource, resolveMarketSeedPlanPath, loadMarketSeedPlan, seedRowCategoryMultiplier } from "./addonSeedJob.js";
+export { CATEGORY_MULTIPLIER_FIELDS, readSeedSchedule, normalizeSeedSchedule, saveSeedSchedule, normalizeCategoryMultipliers, normalizeScheduleSource, resolveMarketSeedPlanPath, legacySeedSchedulePath, seedSchedulePath, loadMarketSeedPlan, seedRowCategoryMultiplier } from "./addonSeedJob.js";
 
 export const EDA_EXCHANGE_BOT_ADDON_ID = "eda-exchange-bot";
 export const ADDON_SCHEDULER_PERMISSION = "scheduler:server";
@@ -112,7 +114,9 @@ export function normalizeBuybackSchedule(payload = {}, previous = {}) {
 }
 
 export function readBuybackSchedule(config) {
-  const path = buybackSchedulePath(config);
+  const corePath = buybackSchedulePath(config);
+  const legacyPath = legacyBuybackSchedulePath(config);
+  const path = existsSync(corePath) ? corePath : legacyPath;
   let raw = {};
   if (existsSync(path)) {
     try {
@@ -155,8 +159,8 @@ export function saveBuybackSchedule(config, payload = {}, { now = () => Date.now
 }
 
 export function loadBuybackSeedPlan(config, addonId = EDA_EXCHANGE_BOT_ADDON_ID) {
-  // Same resolution as the seed job: installed addon copy first (assumed
-  // newest), then the console-bundled runtime/data/market-seed-plan.json.
+  // The console-bundled plan is authoritative. An installed addon copy is a
+  // compatibility fallback for deployments upgrading from older releases.
   const path = resolveMarketSeedPlanPath(config, addonId);
   if (!path) throw new Error("No market seed plan found: neither the bundled runtime/data/market-seed-plan.json nor an installed addon copy exists.");
   const text = readFileSync(path, "utf8");
@@ -678,7 +682,7 @@ async function executeBuybackRun(config, db, schedule, { runDuneImpl }) {
     throw new Error("Exchange buyback requires database transaction support.");
   }
   if (!config.mockMode) {
-    await runDuneImpl(config, buildDuneArgs("backupCreate"), { env: { DB_BACKUP_ORIGIN: `addon-${EDA_EXCHANGE_BOT_ADDON_ID}` } });
+    await runDuneImpl(config, buildDuneArgs("backupCreate"), { env: { DB_BACKUP_ORIGIN: "market-bot-buyback" } });
   }
   // Keep the entire sweep on one checked-out client. createDb.transaction()
   // guarantees ROLLBACK before releasing that client if any statement fails,
@@ -717,7 +721,11 @@ function requireScheduleExchangeId(schedule) {
   return exchangeId;
 }
 
-function buybackSchedulePath(config) {
+export function buybackSchedulePath(config) {
+  return resolve(config.repoRoot, "runtime/generated/market-bot", "buyback.json");
+}
+
+export function legacyBuybackSchedulePath(config) {
   return resolve(config.repoRoot, "runtime/addons/jobs", EDA_EXCHANGE_BOT_ADDON_ID, "buyback.json");
 }
 
