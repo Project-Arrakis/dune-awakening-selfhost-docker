@@ -970,6 +970,7 @@ describe("BasesPanel permissions editing", () => {
     vi.mocked(basesApi.containerSlots).mockResolvedValue({
       supported: true, found: true, baseId: 1006, placeableId: "40001",
       typeName: "Storage Container", group: "storage", maxSlots: 45, usedSlots: 1,
+      deleteSafety: { safe: true, known: true, map: "HaggaBasin", partitionId: 1, reason: "" },
       inventories: [{
         inventoryId: "9001", maxSlots: 45, usedSlots: 1,
         slots: [{ itemId: "501", templateId: "Stone", name: "Granite Stone", positionIndex: 0, quantity: 500, qualityLevel: 0, currentDurability: null, maxDurability: null }]
@@ -981,7 +982,7 @@ describe("BasesPanel permissions editing", () => {
         ok: true, partial: false, typeName: "Storage Container", group: "storage",
         removed: { itemId: "501", templateId: "Stone", count: 500, remaining: 0 },
         message: "Stone was deleted from the database.",
-        live: { known: true, running: false, map: "HaggaBasin", partitionId: 1 }
+        deleteSafety: { safe: true, known: true, map: "HaggaBasin", partitionId: 1, reason: "" }
       }
     } as never);
 

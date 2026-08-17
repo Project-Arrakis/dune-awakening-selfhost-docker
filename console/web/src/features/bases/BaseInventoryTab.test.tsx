@@ -81,6 +81,7 @@ const SLOTS: BaseContainerSlots = {
   group: "storage",
   maxSlots: 45,
   usedSlots: 3,
+  deleteSafety: { safe: true, known: true, map: "HaggaBasin", partitionId: 1, reason: "" },
   inventories: [
     {
       inventoryId: "9001",
@@ -564,7 +565,7 @@ describe("BaseInventoryTab", () => {
         ok: true, partial: false, typeName: "Storage Container", group: "storage",
         removed: { itemId: "501", templateId: "Stone", count: 600, remaining: 0 },
         message: "Stone was deleted from the database.",
-        live: { known: true, running: false, map: "HaggaBasin", partitionId: 1 }
+        deleteSafety: { safe: true, known: true, map: "HaggaBasin", partitionId: 1, reason: "" }
       }
     } as never);
     renderTab();
@@ -594,37 +595,23 @@ describe("BaseInventoryTab", () => {
     expect(basesApi.deleteContainerItem).not.toHaveBeenCalled();
   });
 
-  it("warns that a running map may restore the item, and never calls an unknown map safe", async () => {
+  it("disables deletion when the map is running or its state cannot be verified", async () => {
     mockInventory();
-    const respondWith = (live: { known: boolean; running: boolean; map: string; partitionId: number }) =>
-      vi.mocked(basesApi.deleteContainerItem).mockResolvedValue({
-        supported: true,
-        result: {
-          ok: true, partial: false, typeName: "Storage Container", group: "storage",
-          removed: { itemId: "501", templateId: "Stone", count: 600, remaining: 0 },
-          message: "Stone was deleted from the database.",
-          live
-        }
-      } as never);
-
-    respondWith({ known: true, running: true, map: "HaggaBasin", partitionId: 68 });
+    mockSlots({
+      ...SLOTS,
+      deleteSafety: {
+        safe: false, known: true, map: "HaggaBasin", partitionId: 68,
+        reason: "HaggaBasin · Partition 68 is running. Stop that map before deleting stored items."
+      }
+    });
     renderTab();
     await loaded();
     await openVaultContents();
-    fireEvent.click(screen.getAllByRole("button", { name: /^Delete Granite Stone/ })[0]);
-    await waitFor(() => expect(document.querySelector(".bases-inventory-delete-notice")).toBeTruthy());
-    const running = document.querySelector(".bases-inventory-delete-notice")?.textContent || "";
-    expect(running).toContain("HaggaBasin");
-    expect(running).toMatch(/autosave/i);
-
-    // known:false means "cannot tell" -- it must not read as safe.
-    respondWith({ known: false, running: false, map: "", partitionId: 0 });
-    fireEvent.click(screen.getAllByRole("button", { name: /^Delete Granite Stone/ })[0]);
-    await waitFor(() => {
-      const text = document.querySelector(".bases-inventory-delete-notice")?.textContent || "";
-      expect(text).toMatch(/cannot tell/i);
-    });
-    expect(document.querySelector(".bases-inventory-delete-notice")?.textContent).not.toMatch(/will stick/i);
+    const button = screen.getAllByRole("button", { name: /^Delete Granite Stone/ })[0] as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    expect(screen.getByText(/HaggaBasin · Partition 68 is running/i)).toBeTruthy();
+    expect(confirmAction).not.toHaveBeenCalled();
+    expect(basesApi.deleteContainerItem).not.toHaveBeenCalled();
   });
 
   it("sends a count for a partial removal and rejects an amount above the stack", async () => {
@@ -635,7 +622,7 @@ describe("BaseInventoryTab", () => {
         ok: true, partial: true, typeName: "Storage Container", group: "storage",
         removed: { itemId: "501", templateId: "Stone", count: 150, remaining: 450 },
         message: "Removed 150 of Stone from the database, leaving 450.",
-        live: { known: true, running: false, map: "HaggaBasin", partitionId: 1 }
+        deleteSafety: { safe: true, known: true, map: "HaggaBasin", partitionId: 1, reason: "" }
       }
     } as never);
     renderTab();
@@ -657,7 +644,7 @@ describe("BaseInventoryTab", () => {
     expect(vi.mocked(basesApi.deleteContainerItem).mock.calls[0][4]).toBe(150);
   });
 
-  it("warns about live crafting state when the container is not plain storage", async () => {
+  it("keeps crafting and refining contents read-only", async () => {
     mockInventory();
     // The game's own crafting routine consumes allocated ingredients from
     // these same rows, so removing one mid-craft can leave a recipe pointing
@@ -683,9 +670,11 @@ describe("BaseInventoryTab", () => {
     fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: /List/ }));
     await waitFor(() => expect(document.querySelectorAll(".bases-inventory-contents-row:not(.head)").length).toBe(1));
 
-    fireEvent.click(screen.getByRole("button", { name: /^Delete Iron Ore/ }));
-    await waitFor(() => expect(confirmAction).toHaveBeenCalled());
-    expect(confirmAction.mock.calls[0][1]?.warning).toMatch(/feeds crafting/i);
+    const deleteButton = screen.getByRole("button", { name: /^Delete Iron Ore/ }) as HTMLButtonElement;
+    expect(deleteButton.disabled).toBe(true);
+    expect(screen.getByText(/available only for Storage containers/i)).toBeTruthy();
+    expect(confirmAction).not.toHaveBeenCalled();
+    expect(basesApi.deleteContainerItem).not.toHaveBeenCalled();
   });
 
   it("does not warn about crafting for a plain storage container", async () => {

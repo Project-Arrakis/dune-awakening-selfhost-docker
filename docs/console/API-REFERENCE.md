@@ -261,8 +261,8 @@ When the Restart Queue is enabled, the restart routes above (`/api/server/restar
 | GET | `/api/bases/auto-refill-water` | Get per-base water auto-refill enrollment state | None |
 | POST | `/api/bases/{baseId}/auto-refill-water` | Enable/disable water auto-refill for a base | `baseId`, `enabled` |
 | GET | `/api/bases/{baseId}/inventory` | Get a base's stored items, rolled up by item template and by container (storage, refining, crafting, other). Merged per template, not per slot | `baseId` |
-| GET | `/api/bases/{baseId}/containers/{placeableId}` | Get one container's inventories and their individual slots (item id, slot number, quantity, quality, durability). Answers `found: false` when that container is not at the base | `baseId`, `placeableId` |
-| DELETE | `/api/bases/{baseId}/containers/{placeableId}/items/{itemId}` | Delete a stored item, or part of its stack with `count`. Written immediately -- a running map may restore it on its next autosave, and the response's `live` says whether that applies. Requires `{ confirmation: "DELETE ITEM" }` | `baseId`, `placeableId`, `itemId`, `count?` |
+| GET | `/api/bases/{baseId}/containers/{placeableId}` | Get one container's inventories and their individual slots (item id, slot number, quantity, quality, durability), plus `deleteSafety`. Answers `found: false` when that container is not at the base | `baseId`, `placeableId` |
+| DELETE | `/api/bases/{baseId}/containers/{placeableId}/items/{itemId}` | Delete an item from a plain Storage container, or part of its stack with `count`. Refused unless the owning map is verifiably and safely stopped; Crafting and Refining contents are read-only. Requires `{ confirmation: "DELETE ITEM" }` | `baseId`, `placeableId`, `itemId`, `count?` |
 | GET | `/api/bases/{baseId}/permissions` | Get a base's permission roster (Owner, Co-Owners, Associates) | `baseId` |
 | POST | `/api/bases/{baseId}/system-custodian` | Transfer ownership to the Server or detected GM system custodian while preserving the roster; provisions Server when no custodian exists | `baseId` |
 | PUT | `/api/bases/{baseId}/permissions` | Replace a base's permission roster | `baseId`, `entries[]` (`playerId`, `rank`) |
@@ -312,12 +312,13 @@ routes above. Its `containers[].items[]` is merged per item template, not per
 slot — `GET /api/bases/{baseId}/containers/{placeableId}` is the per-slot view,
 fetched one container at a time because slots roughly triple the response.
 
-`DELETE /api/bases/{baseId}/containers/{placeableId}/items/{itemId}` is written
-immediately rather than queued, and a running map can restore the row on its
-next autosave; the response's `live` reports whether that applies, with
-`known: false` meaning the console cannot tell rather than that it is safe. The
-same allowlist that keeps fuel inventories out of the read keeps them out of the
-delete. It needs `bases:delete-item`, not `bases:mutate`. See
+`DELETE /api/bases/{baseId}/containers/{placeableId}/items/{itemId}` is refused
+unless `baseRefillTarget` can verify that the owning map is safely stopped. An
+unknown state fails closed, and the route repeats the check immediately before
+the write. Only plain Storage contents are mutable; Crafting and Refining remain
+read-only because active jobs can reference their item rows. The same allowlist
+that keeps fuel inventories out of the read keeps them out of the delete. It
+needs `bases:delete-item`, not `bases:mutate`. See
 [base-inventory.md](base-inventory.md).
 
 Both `GET /api/bases/{baseId}/water` and `GET /api/bases/{baseId}/inventory`

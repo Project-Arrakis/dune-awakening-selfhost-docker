@@ -189,16 +189,17 @@ export type BaseContainerSlots = {
   usedSlots?: number;
   inventories: BaseContainerInventory[];
   reason?: string;
+  deleteSafety?: BaseContainerDeleteSafety;
 };
 
-// Whether this base's map is running, resolved after the delete lands. The
-// write is immediate either way; this only decides how the result is worded.
-// `known: false` means the console cannot tell -- never render it as "safe".
-export type BaseContainerDeleteLive = {
+// Item deletion is deliberately fail-closed: only plain storage on a map that
+// the backend can verify is safely down may be changed.
+export type BaseContainerDeleteSafety = {
+  safe: boolean;
   known: boolean;
-  running: boolean;
   map: string;
   partitionId: number;
+  reason: string;
 };
 
 // How much of one item a single container holds. `name` is the container's,
@@ -392,7 +393,7 @@ export const basesApi = {
         group: BaseInventoryGroupKey;
         removed: { itemId: string; templateId: string; count: number; remaining: number };
         message: string;
-        live: BaseContainerDeleteLive;
+        deleteSafety: BaseContainerDeleteSafety;
       };
       error?: string;
       reason?: string;

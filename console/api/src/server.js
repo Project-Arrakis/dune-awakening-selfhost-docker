@@ -3039,47 +3039,90 @@ async function baseContainerSlotsRoute(res, path) {
     }
   }
   try {
-    return json(res, 200, await duneDb.baseContainerSlots(db, baseId, placeableId));
+    const slots = await duneDb.baseContainerSlots(db, baseId, placeableId);
+    return json(res, 200, { ...slots, deleteSafety: await baseContainerDeleteSafety(baseId, slots.group) });
   } catch (error) {
     return json(res, 500, { supported: false, error: redact(error?.message || "Unexpected error."), reason: redact(error?.message || "Unexpected error.") });
+  }
+}
+
+async function baseContainerDeleteSafety(baseId, group = "storage") {
+  if (group && group !== "storage") {
+    return {
+      safe: false,
+      known: true,
+      map: "",
+      partitionId: 0,
+      reason: "Item deletion is available only for Storage containers. Crafting and Refining contents are read-only to protect active jobs."
+    };
+  }
+  try {
+    const target = await duneDb.baseRefillTarget(db, baseId);
+    if (!target.queueSupported) {
+      return {
+        safe: false,
+        known: false,
+        map: target.map || "",
+        partitionId: target.partitionId || 0,
+        reason: "The console cannot verify that this base's map is safely stopped, so item deletion is disabled."
+      };
+    }
+    if (!target.writeSafeNow) {
+      const location = `${target.map || "This base's map"}${target.partitionId ? ` · Partition ${target.partitionId}` : ""}`;
+      return {
+        safe: false,
+        known: true,
+        map: target.map || "",
+        partitionId: target.partitionId || 0,
+        reason: `${location} is running. Stop that map before deleting stored items.`
+      };
+    }
+    return {
+      safe: true,
+      known: true,
+      map: target.map || "",
+      partitionId: target.partitionId || 0,
+      reason: ""
+    };
+  } catch {
+    return {
+      safe: false,
+      known: false,
+      map: "",
+      partitionId: 0,
+      reason: "The console could not verify that this base's map is safely stopped, so item deletion is disabled."
+    };
   }
 }
 
 // Phrase-gated, unlike the refills above: this destroys a player's stored item
 // and there is no undo short of a database restore.
 //
-// Deliberately NOT queued the way a refill or a base delete is. The write goes
-// through immediately even when the base's map is running; baseRefillTarget is
-// consulted only to tell the caller whether this base is currently exposed to
-// the autosave-resurrection race, so the UI can say so instead of pretending
-// the delete is final. queueSupported false means "cannot tell", not "safe".
+// Deliberately not queued: inventory rows can change before a deferred delete
+// is applied. Instead, deletion is allowed only when the owning map is known to
+// be safely down. The safety check is repeated here immediately before the
+// write; disabling the UI alone is never a security or consistency boundary.
 async function baseContainerItemDeleteRoute(req, res, path) {
   const parts = path.split("/");
   const baseId = Number(decodeURIComponent(parts[3]));
   const placeableId = Number(decodeURIComponent(parts[5]));
-  const itemId = Number(decodeURIComponent(parts[7]));
-  for (const id of [baseId, placeableId, itemId]) {
+  const itemId = decodeURIComponent(parts[7]);
+  for (const id of [baseId, placeableId]) {
     if (!Number.isInteger(id) || id < 1 || id > Number.MAX_SAFE_INTEGER) {
       return json(res, 400, { error: "Invalid base, container, or item ID" });
     }
+  }
+  if (!/^[1-9][0-9]*$/.test(itemId) || BigInt(itemId) > 9223372036854775807n) {
+    return json(res, 400, { error: "Invalid base, container, or item ID" });
   }
   if (baseDeletePending(baseId)) return json(res, 409, { error: BASE_DELETE_PENDING_MESSAGE });
   if (await baseBackedUp(baseId)) return json(res, 409, { error: BASE_BACKED_UP_MESSAGE });
   return directDbMutation(req, res, "bases.container-item-delete", "DELETE ITEM", async (body) => {
     const count = body?.count === undefined || body?.count === null ? null : Number(body.count);
+    const safety = await baseContainerDeleteSafety(baseId);
+    if (!safety.safe) throw new Error(safety.reason);
     const result = await duneDb.deleteBaseContainerItem(db, baseId, placeableId, itemId, { count });
-    // Resolved after the write, not before: the delete is not conditional on
-    // it, and a failure to resolve the map must not fail the delete itself.
-    let live = { known: false, running: false, map: "", partitionId: 0 };
-    try {
-      const target = await duneDb.baseRefillTarget(db, baseId);
-      live = target.queueSupported
-        ? { known: true, running: !target.writeSafeNow, map: target.map, partitionId: target.partitionId }
-        : { known: false, running: false, map: target.map || "", partitionId: target.partitionId || 0 };
-    } catch {
-      // Leave live.known false -- the UI then warns that it cannot tell.
-    }
-    return { ...result, live };
+    return { ...result, deleteSafety: safety };
   }, { baseId, placeableId, itemId });
 }
 
