@@ -90,6 +90,32 @@ ensure_alert_relay_token() {
   fi
 }
 
+# Mirrors ensure_alert_relay_token()'s exact pattern for the same reason:
+# docker-compose.metrics.yml's GF_SECURITY_ADMIN_PASSWORD:
+# ${METRICS_GRAFANA_PASSWORD:-admin} has shipped with a static, checked-in
+# "admin" fallback since this stack was introduced -- no generation
+# mechanism existed at all (dune-ops-observability-addon#103,
+# dune-awakening-selfhost-docker#307). Idempotent ([ ! -s "$password_file" ]
+# guard) for the same upgrade-safety reason as the relay token: an
+# existing deployment's next `dune metrics start`/`restart` must not
+# regenerate (and therefore change) an already-working password.
+# Exported into the process environment (not written into .env) so
+# `compose up -d`'s Docker Compose variable interpolation picks it up
+# for GF_SECURITY_ADMIN_PASSWORD without any docker-compose.metrics.yml
+# change -- the existing ${METRICS_GRAFANA_PASSWORD:-admin} fallback
+# syntax already does the right thing once a real value is exported.
+ensure_grafana_password() {
+  local password_file="runtime/secrets/grafana-admin-password.txt"
+  if [ ! -s "$password_file" ]; then
+    mkdir -p runtime/secrets
+    openssl rand -hex 16 > "$password_file"
+    chmod 600 "$password_file"
+    echo "Generated $password_file (Grafana admin password)."
+  fi
+  METRICS_GRAFANA_PASSWORD="$(tr -d '\r\n' < "$password_file")"
+  export METRICS_GRAFANA_PASSWORD
+}
+
 print_url() {
   echo "Prometheus: http://127.0.0.1:${prometheus_port}"
 }
@@ -376,6 +402,7 @@ case "$command_name" in
     ensure_compose_file
     ensure_network
     ensure_alert_relay_token
+    ensure_grafana_password
     echo "Starting Dune metrics stack..."
     compose up -d
     wait_for_prometheus_targets || true
@@ -395,6 +422,7 @@ case "$command_name" in
     ensure_compose_file
     ensure_network
     ensure_alert_relay_token
+    ensure_grafana_password
     echo "Restarting Dune metrics stack..."
     compose down
     compose up -d
