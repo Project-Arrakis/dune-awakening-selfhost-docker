@@ -436,7 +436,9 @@ export function actionForRoute(path, method) {
     if (path.startsWith(prefix)) return action;
   }
 
-  // Unknown route — return null (server.js handles untracked routes
-  // gracefully by allowing owner-tier and denying all others)
+  // Unknown route — return null. server.js's `!action || !evaluate(...)`
+  // check fails CLOSED on null: every tier, owner included, gets denied
+  // rather than allowed. A new route is invisible to every policy until it is
+  // added here, not silently open to the top tier.
   return null;
 }

@@ -53,6 +53,36 @@ export function pgTransactionalDb(pool) {
   };
 }
 
+// pool.end() resolving does NOT mean every client has actually disconnected
+// from the server. Traced into pg-pool's own source: a client already idle in
+// the pool at the moment .end() is called takes a different internal path
+// than a busy one -- it is spliced out of the pool's bookkeeping array
+// SYNCHRONOUSLY, before its socket-level disconnect (the async Postgres
+// Terminate message + TCP close) has actually completed, so .end()'s promise
+// can resolve in under 1ms while the connection is still fully live on the
+// server. Confirmed empirically against a real server: pg_stat_activity still
+// listed the connection in 6 of 8 iterations immediately after .end()
+// resolved. Calling pg_terminate_backend at that instant risks racing the
+// connection's own in-flight, entirely normal disconnect -- which is exactly
+// what the "terminating connection due to administrator command" errors seen
+// in this suite turned out to be: our own best-effort cleanup killing a
+// connection that was already on its way out, mid-query, from the KILLED
+// connection's point of view. Polling for the natural disconnect first, and
+// reaching for pg_terminate_backend only once that has genuinely run out,
+// keeps the safety net for a truly stuck connection without risking it firing
+// on an ordinary one.
+async function waitUntilDisconnected(admin, database, { timeoutMs = 2000, pollMs = 25 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const { rows } = await admin.query(
+      "select 1 from pg_stat_activity where datname = $1 and pid <> pg_backend_pid() limit 1",
+      [database]);
+    if (!rows.length) return true;
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
+  }
+  return false;
+}
+
 async function withDdlLock(admin, fn) {
   await admin.query("select pg_advisory_lock($1)", [DDL_LOCK_KEY]);
   try {
@@ -94,11 +124,24 @@ export async function withIsolatedDatabase(t, { namePrefix, unavailableLabel, cr
     return await run(pool, database);
   } finally {
     await pool?.end().catch(() => {});
-    // Best-effort: catches any connection the pool's own end() missed.
-    await admin.query(
-      "select pg_terminate_backend(pid) from pg_stat_activity where datname = $1 and pid <> pg_backend_pid()",
-      [database]
-    ).catch(() => {});
+    // Give already-idle-at-end-time clients their grace period to finish
+    // disconnecting on their own before ever reaching for
+    // pg_terminate_backend -- see waitUntilDisconnected's comment. Only a
+    // connection still listed after that genuine timeout is treated as
+    // actually stuck.
+    const clearedNaturally = await waitUntilDisconnected(admin, database).catch(() => false);
+    if (!clearedNaturally) {
+      // Best-effort: catches any connection that is genuinely stuck rather
+      // than merely mid-disconnect.
+      await admin.query(
+        "select pg_terminate_backend(pid) from pg_stat_activity where datname = $1 and pid <> pg_backend_pid()",
+        [database]
+      ).catch(() => {});
+      // pg_terminate_backend's SIGTERM is itself processed asynchronously by
+      // the target backend -- DROP DATABASE right after can still fail with
+      // "database is being accessed by other users" without this.
+      await waitUntilDisconnected(admin, database, { timeoutMs: 1000 }).catch(() => {});
+    }
     await withDdlLock(admin, () => admin.query(`drop database if exists "${database}"`).catch(() => {}));
     await admin.end().catch(() => {});
   }

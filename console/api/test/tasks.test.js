@@ -120,7 +120,7 @@ test("web self-update helper mounts the host repo path", () => {
     hostUid: "1000",
     hostGid: "1000",
     dockerSocketGid: "988",
-    extraEnv: ["ADMIN_BIND_PORT=8089"],
+    extraEnv: ["ADMIN_BIND_PORT=8089", "DUNE_SELF_UPDATE_TOKEN"],
     command: "runtime/scripts/dune self-update install latest"
   });
 
@@ -133,6 +133,7 @@ test("web self-update helper mounts the host repo path", () => {
   assert(args.includes("DUNE_HOST_GID=1000"));
   assert(args.includes("DOCKER_SOCKET_GID=988"));
   assert(args.includes("ADMIN_BIND_PORT=8089"));
+  assert(args.includes("DUNE_SELF_UPDATE_TOKEN"));
   assert(!args.includes("/repo:/repo"));
 });
 

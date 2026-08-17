@@ -2930,7 +2930,13 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
    themselves, whatever is present. */
 .bases-inventory-contents-modal {
   width: min(560px, calc(100vw - 32px));
-  max-height: min(72vh, 720px);
+  /* No max-height override here: the shared `.confirm-modal { max-height:
+     calc(100dvh - clamp(20px, 6vw, 48px)); overflow: auto }` rule further
+     down this file already applies to every confirm-modal, including this
+     one, at equal specificity and later in the cascade -- an override here
+     would be dead on arrival. That rule is the more correct one anyway (a
+     real viewport-safe cap vs this modal's own fixed 72vh/720px guess), so
+     this modal just inherits it like every other one. */
   display: flex;
   flex-direction: column;
   padding-left: 24px;
@@ -2973,12 +2979,19 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
   display: grid;
   align-content: start;
 }
-/* Five columns now: icon, name, slot number, quantity, delete. The slot
-   number is what makes two rows of the same template distinguishable, which
-   is the whole point of the per-slot view. */
+/* Five columns: icon, name, slot number, quantity, delete. The slot number is
+   what makes two rows of the same template distinguishable, which is the whole
+   point of the per-slot view.
+   Every track is fixed except the name. Each row is its own grid, so an `auto`
+   track sizes against that row's content alone -- quantities of different
+   digit-widths gave every row a different column layout and left the header
+   labels aligned with nothing. The delete track is 38px because
+   .icon-toggle-button is `width: 38px; flex: 0 0 38px`; as a grid item its
+   flex-basis cannot shrink it, so a narrower track was overflowed, not
+   respected. */
 .bases-inventory-contents-row {
   display: grid;
-  grid-template-columns: 40px minmax(0, 1fr) 48px auto 30px;
+  grid-template-columns: 40px minmax(0, 1fr) 48px 64px 38px;
   gap: 10px;
   align-items: center;
   padding: 7px 2px;
@@ -2987,7 +3000,13 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 }
 .bases-inventory-contents-row:last-child { border-bottom: 0; }
 .bases-inventory-contents-row.head { color: var(--muted-warm); font-size: 12px; border-bottom-color: var(--border-strong); }
-.bases-inventory-contents-row.selected { background: var(--surface-raised); }
+/* --surface-raised was never defined, so selection had no visible effect at
+   all. The inset rule carries the state on its own if the background shift
+   alone reads as too subtle against the modal's own panel colour. */
+.bases-inventory-contents-row.selected {
+  background: var(--panel-muted);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
 /* The third and last CatalogItemThumb in this tab, and the one that has to be
    sized here too: .small is a 42px box, which overflowed the old 24px column
    and ran under the item name. The other two are handled at
@@ -3010,7 +3029,10 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 }
 .bases-inventory-contents-name:hover { border-color: transparent; color: var(--accent); }
 .bases-inventory-contents-slot { font-variant-numeric: tabular-nums; font-size: 12px; }
-.bases-inventory-contents-qty { color: var(--muted-warm); font-variant-numeric: tabular-nums; }
+/* Right-aligned so digits line up down the column now that the track is a
+   fixed width -- ragged-left numbers in a fixed track read as misaligned. */
+.bases-inventory-contents-qty { color: var(--muted-warm); font-variant-numeric: tabular-nums; text-align: right; }
+.bases-inventory-contents-row.head > span:nth-child(4) { text-align: right; }
 .bases-inventory-note { margin: 0; font-size: 12px; }
 
 /* The in-game-style slot grid. auto-fill rather than a fixed column count so
@@ -3094,6 +3116,18 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
   padding: 10px 12px;
   border: 1px solid var(--border-strong);
   border-radius: 6px;
+}
+/* Below this the two `auto` control tracks take their content width and the
+   1fr body is squeezed to 0, leaving an armed Delete button with nothing
+   naming what it deletes. Wrapping to two rows keeps the identity visible;
+   the app already ships a 430px breakpoint, so this range is in scope. */
+@media (max-width: 600px) {
+  .bases-inventory-slot-detail {
+    grid-template-columns: 48px minmax(0, 1fr);
+    row-gap: 10px;
+  }
+  .bases-inventory-slot-amount,
+  .bases-inventory-slot-detail > button { grid-column: 2; justify-self: start; }
 }
 /* The WRAPPER has to be sized, not just the img inside it: CatalogItemThumb
    defaults to a 72px box, which overflowed this column and put the item name
