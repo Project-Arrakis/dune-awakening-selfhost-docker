@@ -1,15 +1,25 @@
 import pg from "pg";
 import { redact } from "./redact.js";
+import { resolvePorts } from "./config.js";
 
 const { Pool } = pg;
 
-export function discoverDbConfig(env = process.env) {
+export function discoverDbConfig(env = process.env, repoRoot = process.cwd()) {
   if (env.ADMIN_DATABASE_URL) {
     return { connectionString: env.ADMIN_DATABASE_URL, source: "ADMIN_DATABASE_URL" };
   }
   return {
     host: env.DUNE_DB_HOST || env.PGHOST || "127.0.0.1",
-    port: Number(env.DUNE_DB_PORT || env.PGPORT || env.POSTGRES_PORT || 15432),
+    // DUNE_DB_PORT/PGPORT take precedence over the shared resolvePorts()
+    // default when set directly (rare, escape-hatch use), otherwise this
+    // matches config.js's ports.postgres exactly -- same fallback (15432),
+    // same POSTGRES_PORT lookup, single source of truth (see issue #266).
+    // postgres is env-var-only (not profile-file-backed), so repoRoot
+    // doesn't affect this specific field today -- passed through
+    // explicitly anyway so this doesn't silently rely on process.cwd()
+    // coincidentally matching config.repoRoot the moment a
+    // profile-backed field is ever added here.
+    port: Number(env.DUNE_DB_PORT || env.PGPORT || resolvePorts(env, repoRoot).postgres),
     database: env.DUNE_DB_NAME || env.PGDATABASE || "dune",
     user: env.DUNE_DB_USER || env.PGUSER || "dune",
     password: env.DUNE_DB_PASSWORD || env.PGPASSWORD || "dune",
@@ -18,7 +28,7 @@ export function discoverDbConfig(env = process.env) {
 }
 
 export function createDb(config) {
-  const dbConfig = discoverDbConfig();
+  const dbConfig = discoverDbConfig(process.env, config?.repoRoot);
   const pool = new Pool({
     ...dbConfig,
     max: Number(process.env.ADMIN_DB_POOL_SIZE || 5),

@@ -4,6 +4,7 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 
 . runtime/scripts/compose-project.sh
+. runtime/scripts/runtime-env.sh
 DUNE_COMPOSE_PROJECT_NAME="$(dune_resolve_compose_project_name "$(pwd -P)")"
 export DUNE_COMPOSE_PROJECT_NAME
 export COMPOSE_PROJECT_NAME="$DUNE_COMPOSE_PROJECT_NAME"
@@ -60,6 +61,106 @@ prompt_default() {
     value="$default"
   fi
   printf '%s' "$value"
+}
+
+# Asks whether this install is part of a multi-server group sharing one
+# public IP, and if so, which instance number, then applies the derived
+# port profile via the same runtime/scripts/multi-server-config.py the
+# console's Setup Wizard uses (see issue #277) -- never asks the operator
+# to type an individual port number by hand. Sets INSTANCE_NUMBER for the
+# setup summary below; leaves every port at its stock default (and
+# INSTANCE_NUMBER empty) when the operator picks "single server", which
+# is the default and requires zero additional input -- this must never
+# add friction to the common, single-server case.
+prompt_instance_number() {
+  INSTANCE_NUMBER=""
+
+  echo
+  echo "Is this the only Dune server on this network, or one of several sharing infrastructure?"
+  echo "  1) Single server (default -- most operators want this)"
+  echo "  2) Part of a multi-server group behind one public IP"
+  echo
+
+  local group_choice=""
+  read -r -p "Choice [1]: " group_choice
+  if [ -z "$group_choice" ] || [ "$group_choice" = "1" ]; then
+    return
+  fi
+  if [ "$group_choice" != "2" ]; then
+    echo "Invalid choice. Continuing as a single server."
+    return
+  fi
+
+  local instance=""
+  while [ -z "$instance" ]; do
+    read -r -p "Instance number for this server (1 = first/primary, 2 = second, etc.) [1]: " instance
+    [ -z "$instance" ] && instance="1"
+    if ! printf '%s' "$instance" | grep -Eq '^[0-9]+$' || [ "$instance" -lt 1 ] || [ "$instance" -gt 33 ]; then
+      echo "Enter a whole number from 1 to 33."
+      instance=""
+    fi
+  done
+
+  if [ "$SERVER_IP_MODE" != "public" ]; then
+    echo
+    echo "Multi-server port profiles are only supported in public mode right now (see #277)."
+    echo "Continuing with stock ports for a single, local/LAN server."
+    return
+  fi
+
+  local plan_json
+  if ! plan_json="$(python3 runtime/scripts/multi-server-config.py plan --instances "$instance" --json 2>&1)"; then
+    echo "Could not compute the port plan for instance $instance:" >&2
+    echo "$plan_json" >&2
+    exit 1
+  fi
+
+  local profile_json
+  profile_json="$(printf '%s' "$plan_json" | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+profile = data['profiles'][-1]
+for key, value in profile.items():
+    print(f'{key}={value}')
+")"
+
+  echo
+  echo "This will configure Instance $instance's ports:"
+  echo "$profile_json" | while IFS='=' read -r key value; do
+    echo "  $key: $value"
+  done
+  echo
+  echo "These will not collide with any other instance number's ports -- but this tool"
+  echo "cannot detect other Dune installations on your network. If you have already"
+  echo "used instance number $instance elsewhere, do NOT proceed -- pick a different number."
+  echo
+
+  local confirm=""
+  read -r -p "Continue with instance $instance? [Y/n]: " confirm
+  case "$confirm" in
+    ""|[Yy]|[Yy][Ee][Ss]) ;;
+    *)
+      echo "Cancelled. Continuing as a single server."
+      return
+      ;;
+  esac
+
+  local bind_ip
+  bind_ip="$(detect_lan_ip || true)"
+  if [ -z "$bind_ip" ]; then
+    echo "Could not detect this host's local/LAN IP, which is required as the multi-server bind address."
+    exit 1
+  fi
+
+  echo
+  echo "Applying instance $instance's port profile (backs up .env/UserEngine config first)..."
+  if ! python3 runtime/scripts/multi-server-config.py apply --instance "$instance" --public-ip "$SERVER_IP" --bind-ip "$bind_ip" --allow-running; then
+    echo "Applying the instance $instance port profile failed. See the error above." >&2
+    exit 1
+  fi
+
+  INSTANCE_NUMBER="$instance"
+  echo "Instance $instance configured."
 }
 
 detect_public_ip() {
@@ -290,6 +391,12 @@ if [ "${DUNE_INIT_ASSUME_YES:-0}" = "1" ]; then
   SERVER_IP="${SERVER_IP:-auto}"
   SERVER_IP_MODE="${SERVER_IP_MODE:-public}"
   STEAM_APP_ID="${STEAM_APP_ID:-4754530}"
+  # The console's Setup Wizard already applied any instance-number port
+  # profile eagerly (POST /api/setup/multi-server-apply, see issue #277)
+  # before ever calling dune init -- .env already has the resulting
+  # ports by the time this runs. INSTANCE_NUMBER here is display-only,
+  # for the setup summary below.
+  INSTANCE_NUMBER="${DUNE_INSTANCE_NUMBER:-}"
 
   if [ ! -f runtime/secrets/funcom-token.txt ]; then
     echo "Funcom token was not found. Open the Web UI setup wizard and paste your token before deploying."
@@ -386,6 +493,8 @@ else
 
   echo "Selected player-facing IP: $SERVER_IP ($SERVER_IP_MODE)"
 
+  prompt_instance_number
+
   # Funcom self-host server Steam app id. This is selected automatically, not prompted.
   STEAM_APP_ID="${STEAM_APP_ID:-4754530}"
   echo "Steam app id: $STEAM_APP_ID"
@@ -412,15 +521,32 @@ echo "Server title: $SERVER_TITLE"
 echo "Region:       $SERVER_REGION"
 echo "Hosting mode: $SERVER_IP_MODE"
 echo "Server IP:    $SERVER_IP"
+[ -n "${INSTANCE_NUMBER:-}" ] && echo "Instance:     $INSTANCE_NUMBER"
 echo "Steam app id: $STEAM_APP_ID"
 echo "Battlegroup:  $BATTLEGROUP_ID"
 if [ "$SERVER_IP_MODE" = "public" ]; then
-  cat <<'EOF'
+  # Read the actual configured ports for this instance rather than
+  # hardcoding the Instance-1 stock values -- on a multi-server /
+  # single-public-IP deployment (Instance 2+, see
+  # docs/runtime/MULTI-SERVER-SINGLE-PUBLIC-IP.md) these reminders were
+  # previously always wrong. See issue #266. Deliberately does NOT
+  # include the IGW/S2S UDP range -- the Web Console's own SetupWizard
+  # explicitly tells operators not to forward it publicly for a normal
+  # single-host Docker setup (it's for map-to-map traffic inside the
+  # console, not player-facing), and reminding operators to forward it
+  # here would directly contradict that guidance. Whether IGW ever
+  # needs public forwarding in a genuinely multi-server topology is a
+  # separate, deliberately unresolved question -- see issue
+  # r740-dune-deployment-kit#84.
+  reminder_rmq_game_port="$(resolve_rmq_game_port)"
+  reminder_rmq_game_http_port="$(resolve_rmq_game_http_port)"
+  reminder_client_port_base="$(resolve_client_port_base)"
+  cat <<EOF
 
 Public hosting reminder:
-  Open or forward TCP 31982.
-  Open or forward TCP 31983.
-  Open or forward UDP 7777-7810.
+  Open or forward TCP ${reminder_rmq_game_port}.
+  Open or forward TCP ${reminder_rmq_game_http_port}.
+  Open or forward UDP ${reminder_client_port_base}-$((reminder_client_port_base + 33)).
 EOF
 fi
 echo

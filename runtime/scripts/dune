@@ -438,6 +438,11 @@ EOF
     runtime/scripts/config.sh "$@"
     ;;
 
+  multi-server)
+    shift || true
+    python3 runtime/scripts/multi-server-config.py "$@"
+    ;;
+
   memory)
     shift || true
     runtime/scripts/memory.sh "$@"

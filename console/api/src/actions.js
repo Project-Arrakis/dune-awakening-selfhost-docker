@@ -67,6 +67,8 @@ export const ROUTE_ACTIONS = {
   "POST /api/setup/save-oauth-secret":         "setup:write",
   "POST /api/setup/save-token":                "setup:write",
   "POST /api/setup/init":                      "setup:write",
+  "POST /api/setup/multi-server-plan":         "setup:read",
+  "POST /api/setup/multi-server-apply":        "setup:write",
   "GET /api/public-directory/status":          "setup:read",
 
   // --- Server ---

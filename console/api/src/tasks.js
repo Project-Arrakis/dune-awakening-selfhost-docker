@@ -308,7 +308,7 @@ function shellQuote(value) {
 }
 
 export function taskTimeoutMs(config, operation) {
-  if (["start", "stop", "restartAll", "restartService", "restartServiceStop", "restartServiceStart", "serverTitle", "serverConfig", "init", "updateApply", "updateFixSteamcmd", "selfUpdateApply", "backupRestore", "storageCleanupImages", "storageCleanupBuildCache", "userSettingsSaveAndRestart", "userSettingsResetAndRestart", "userSettingsRawAndRestart", "mapsApplySettings", "mapsRespawn", "sietchesSetActive", "sietchesRestart", "sietchesRestartStop", "sietchesRestartStart", "sietchesReconcile"].includes(operation)) {
+  if (["start", "stop", "restartAll", "restartService", "restartServiceStop", "restartServiceStart", "serverTitle", "serverConfig", "init", "updateApply", "updateFixSteamcmd", "selfUpdateApply", "backupRestore", "storageCleanupImages", "storageCleanupBuildCache", "userSettingsSaveAndRestart", "userSettingsResetAndRestart", "userSettingsRawAndRestart", "mapsApplySettings", "mapsRespawn", "sietchesSetActive", "sietchesRestart", "sietchesRestartStop", "sietchesRestartStart", "sietchesReconcile", "multiServerApplyAndRestart"].includes(operation)) {
     return Math.max(config.commandTimeoutMs, 30 * 60 * 1000);
   }
   return config.commandTimeoutMs;
@@ -349,6 +349,18 @@ export function taskOperations(operation, payload = {}) {
     const rawOperation = payload.scope === "profile" ? "userSettingsProfileWrite" : payload.scope === "engine" ? "userSettingsRawEngineWrite" : "userSettingsRawGameWrite";
     return [rawOperation, "userSettingsMaterializeCurrent", ...restartOperations(payload)];
   }
+  // Instance-number changes rewrite every service's host port (Postgres,
+  // RMQ, Text Router, Director, Admin Web, Prometheus, plus the Player/
+  // Game and IGW ranges) via multi-server-config.py apply. The stack must
+  // be fully stopped first -- both because multi-server-config.py's own
+  // apply refuses partial application against a live stack by default
+  // (see --allow-running's docstring), and because every one of those
+  // ports is read once at container start (docker-compose.yml's env
+  // interpolation, not a live reload) -- restarting the console alone
+  // (like a normal settings save) would leave every OTHER container
+  // still bound to its old ports. This always needs the full "stop" then
+  // "start" pair, never a partial/service-scoped restart.
+  if (operation === "multiServerApplyAndRestart") return ["stop", "multiServerApply", "start"];
   return [operation];
 }
 
