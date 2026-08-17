@@ -121,6 +121,22 @@ Exchange Bot addon drives through the scheduler bridge, now first-class):
   **Probe eligibility** can be run on demand without a backup and explains the
   result with counts for eligible listings, asks above the price threshold,
   templates missing from the seed plan, and invalid-price or empty-stack rows.
+- **Buyback Sweep Log** records what the bot did with player sell listings.
+  Purchases are `0x0` / success. On a write sweep, leftover eligible listings
+  are `0x5` (past Max Buys) or `0x6` (SKIP LOCKED / concurrent sweep), ranked
+  from how many purchases happened before that row — so a cheaper locked
+  listing is not mislabeled as Max Buys when the loop filled with later rows.
+  Idle ticks with player listings and **Refresh log (dry-run)** also classify
+  eligible rows (`0x0`), Max Buys leftovers (`0x5`), and skip reasons (`0x1`
+  price too high, `0x2` no reference price, `0x3` invalid price, `0x4` invalid
+  stack). Dry-run never emits `0x6`. Eligible listings take a top-N cap of
+  1000, then leftover budget fills skip reasons; stored batches reserve room
+  for leftovers so Max Buys / skipped-locked rows are not crowded out by
+  purchases. An empty exchange skips classify. Idle classify on an unchanged
+  overpriced board is throttled to at most hourly. Batches are stored in
+  `runtime/generated/market-bot/buyback-log.json` (20 most recent, dropped
+  after 5 days). The scheduler prunes expired batches at most hourly even when
+  buyback is disabled.
 - **Schedules** run unattended inside the console API process (no browser page needs
   to stay open) and survive restarts. They are console-owned and authorized by RBAC
   at save time. Seed and buyback share one running lock, so they can never write the
@@ -137,8 +153,8 @@ already uninstalled, the console creates clean disabled Market Bot schedules; ga
 database listings are not changed. A malformed legacy schedule postpones removal
 instead of discarding it, and an interrupted cleanup is retried on the next startup.
 
-Reads and the eligibility probe require the `exchange:market` action; schedule saves
-and run-now require `exchange:market-write`. Neither is granted to the viewer tiers
+Reads, the eligibility probe, and dry-run log refresh require the `exchange:market` action; schedule saves,
+run-now, and log clear require `exchange:market-write`. Neither is granted to the viewer tiers
 that receive `exchange:read`, so by default only the admin tier (`exchange:*`) sees
 the Market Bot button at all. All mutations are rate-limited and audited.
 

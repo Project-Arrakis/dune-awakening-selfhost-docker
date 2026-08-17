@@ -4,6 +4,7 @@ import {
   marketBotApi,
   type MarketAugmentPricing,
   type MarketBotStatus,
+  type MarketBuybackLogBatch,
   type MarketCategoryMultipliers,
   type MarketExchange,
   type MarketPriceBasis,
@@ -89,6 +90,97 @@ function runSummary(schedule: { lastRunAt: string; lastRunStatus: string; lastRu
   return parts.length ? parts.join(" | ") : "No runs yet.";
 }
 
+function buybackOverrides(exchangeId: string, priceMultiplier: number, category: MarketCategoryMultipliers, buybackPercent: number, buybackPriceBasis: MarketPriceBasis, maxBuys: number) {
+  return {
+    ...(exchangeId ? { exchangeId } : {}),
+    priceMultiplier,
+    ...category,
+    buybackPercent,
+    buybackPriceBasis,
+    maxBuys
+  };
+}
+
+function logExchangeLabel(batch: MarketBuybackLogBatch) {
+  return batch.exchangeId ? `Exchange ${batch.exchangeId}` : "Exchange unknown";
+}
+
+function formatLogTime(value: string) {
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? new Date(parsed).toLocaleString() : value;
+}
+
+function BuybackSweepLog({
+  batches,
+  busy,
+  onRefresh,
+  onClear
+}: {
+  batches: MarketBuybackLogBatch[];
+  busy: string;
+  onRefresh: () => void;
+  onClear: () => void;
+}) {
+  const latest = batches[0];
+  return (
+    <div className="market-bot-section market-bot-log-section">
+      <strong>Buyback Sweep Log</strong>
+      <p className="action-help-note">Purchases and leftover eligible listings are recorded on a write sweep (<code>0x0</code>, <code>0x5</code> Max Buys, <code>0x6</code> skipped locked). Idle ticks with player listings and <strong>Refresh log (dry-run)</strong> also classify eligible rows (<code>0x0</code>), Max Buys leftovers (<code>0x5</code>), and skip reasons (<code>0x1</code>–<code>0x4</code>); dry-run never emits <code>0x6</code>. Results are capped at 1000 stored rows (leftovers keep a reserved share). Batches older than 5 days are removed automatically (up to 20 recent batches are kept).</p>
+      <div className="confirm-modal-actions market-bot-actions">
+        <button onClick={onRefresh} disabled={Boolean(busy)}>{busy === "refresh-log" ? "Refreshing…" : "Refresh log (dry-run)"}</button>
+        <button onClick={onClear} disabled={Boolean(busy) || !batches.length}>{busy === "clear-log" ? "Clearing…" : "Clear log"}</button>
+      </div>
+      <p className="muted">Codes: <code>0x0</code> bought / eligible, <code>0x1</code> price too high, <code>0x2</code> no reference price, <code>0x3</code> invalid price, <code>0x4</code> invalid stack, <code>0x5</code> max buys limit, <code>0x6</code> skipped locked.</p>
+      <p className="muted" role="status">
+        {batches.length
+          ? `${batches.length} log batch(es) stored. Latest: ${latest.source} on ${logExchangeLabel(latest)} at ${formatLogTime(latest.at)} — ${latest.summary || `${latest.entries?.length || 0} listings`}.`
+          : "No buyback sweep attempts logged yet."}
+      </p>
+      <div className="market-bot-log" aria-label="Buyback sweep log">
+        {!batches.length && <p className="muted market-bot-log-empty">Run a buyback sweep or Refresh log (dry-run) to classify player sell listings.</p>}
+        {batches.map((batch, index) => (
+          <div className="market-bot-log-batch" key={`${batch.at}-${batch.exchangeId}-${index}`}>
+            <h4>{batch.source} <span className="badge">{logExchangeLabel(batch)}</span> <span className="muted">{formatLogTime(batch.at)}</span></h4>
+            <p className="muted">{batch.summary}{batch.note ? ` — ${batch.note}` : ""}</p>
+            <table>
+              <thead>
+                <tr>
+                  <th>Code</th>
+                  <th>Result</th>
+                  <th>Item</th>
+                  <th>Grade</th>
+                  <th>Ask/unit</th>
+                  <th>Stack</th>
+                  <th>Cap</th>
+                  <th>Order</th>
+                  <th>Detail</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(batch.entries || []).length ? batch.entries.map((entry) => (
+                  <tr key={`${entry.orderId}-${entry.resultHex}`} className={entry.resultCode === 0 ? "ok" : "skip"}>
+                    <td><code>{entry.resultHex}</code></td>
+                    <td>{entry.resultLabel}</td>
+                    <td>{entry.displayName || entry.templateId}</td>
+                    <td>{entry.qualityLevel}</td>
+                    <td>{entry.itemPrice}</td>
+                    <td>{entry.stackSize}</td>
+                    <td>{entry.maxUnitPrice || "—"}</td>
+                    <td>{entry.orderId}</td>
+                    <td>{entry.detail}</td>
+                  </tr>
+                )) : (
+                  <tr><td colSpan={9} className="muted">No player sell listings on this exchange.</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export function MarketBotOverlay({ onClose, onError, confirmAction }: MarketBotOverlayProps) {
   const [status, setStatus] = useState<MarketBotStatus | null>(null);
   const [exchanges, setExchanges] = useState<MarketExchange[]>([]);
@@ -96,6 +188,7 @@ export function MarketBotOverlay({ onClose, onError, confirmAction }: MarketBotO
   const [busy, setBusy] = useState("");
   const [notice, setNotice] = useState("");
   const [probeResult, setProbeResult] = useState<MarketProbeResult | null>(null);
+  const [logBatches, setLogBatches] = useState<MarketBuybackLogBatch[]>([]);
 
   const [exchangeId, setExchangeId] = useState("");
   const [buybackEnabled, setBuybackEnabled] = useState(false);
@@ -132,12 +225,17 @@ export function MarketBotOverlay({ onClose, onError, confirmAction }: MarketBotO
 
   useEffect(() => {
     let cancelled = false;
-    void Promise.all([marketBotApi.status(), marketBotApi.exchanges()])
-      .then(([nextStatus, exchangeList]) => {
+    void Promise.all([
+      marketBotApi.status(),
+      marketBotApi.exchanges(),
+      marketBotApi.buybackLog().catch(() => ({ batches: [] as MarketBuybackLogBatch[] }))
+    ])
+      .then(([nextStatus, exchangeList, log]) => {
         if (cancelled) return;
         applyStatus(nextStatus, { populateForm: true });
         setExchanges(exchangeList.rows || []);
         setExchangeId((current) => current || exchangeList.rows?.[0]?.exchangeId || "");
+        setLogBatches(log.batches || []);
         setLoading(false);
       })
       .catch((error) => {
@@ -148,9 +246,32 @@ export function MarketBotOverlay({ onClose, onError, confirmAction }: MarketBotO
     return () => { cancelled = true; };
   }, [onError]);
 
+  useEffect(() => {
+    let cancelled = false;
+    const timer = window.setInterval(() => {
+      void marketBotApi.buybackLog()
+        .then((log) => {
+          if (!cancelled) setLogBatches(log.batches || []);
+        })
+        .catch(() => { /* keep the last successful log view */ });
+    }, 15000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, []);
+
   async function refreshStatus() {
     try {
       applyStatus(await marketBotApi.status());
+    } catch {
+      // Non-fatal: the action that triggered the refresh already reported.
+    }
+  }
+
+  async function refreshLog() {
+    try {
+      setLogBatches((await marketBotApi.buybackLog()).batches || []);
     } catch {
       // Non-fatal: the action that triggered the refresh already reported.
     }
@@ -163,6 +284,7 @@ export function MarketBotOverlay({ onClose, onError, confirmAction }: MarketBotO
     try {
       setNotice(await action());
       await refreshStatus();
+      await refreshLog();
     } catch (error) {
       onError(errorText(error));
     } finally {
@@ -206,14 +328,7 @@ export function MarketBotOverlay({ onClose, onError, confirmAction }: MarketBotO
 
   function probe() {
     return run("probe", async () => {
-      const result = await marketBotApi.probeBuyback({
-        ...(exchangeId ? { exchangeId } : {}),
-        priceMultiplier: buybackMultiplier,
-        ...buybackCategoryMultipliers,
-        buybackPercent,
-        buybackPriceBasis: buybackBasis,
-        maxBuys
-      });
+      const result = await marketBotApi.probeBuyback(buybackOverrides(exchangeId, buybackMultiplier, buybackCategoryMultipliers, buybackPercent, buybackBasis, maxBuys));
       setProbeResult(result);
       return `${result.eligible.toLocaleString()} eligible player listing(s) on exchange ${result.exchangeId} at ${result.buybackPercent}% (read-only; no backup taken).`;
     });
@@ -231,6 +346,22 @@ export function MarketBotOverlay({ onClose, onError, confirmAction }: MarketBotO
         return `Sweep finished: bought ${result.purchased ?? 0} listing(s), ${result.totalUnits ?? "0"} units for ${result.totalSolari ?? "0"} Solari.`;
       }
       return result.detail || "Nothing eligible; no backup was taken.";
+    });
+  }
+
+  function refreshLogDryRun() {
+    return run("refresh-log", async () => {
+      const result = await marketBotApi.refreshBuybackLog(buybackOverrides(exchangeId, buybackMultiplier, buybackCategoryMultipliers, buybackPercent, buybackBasis, maxBuys));
+      setLogBatches(result.batches || []);
+      const count = result.entries?.length ?? result.batches?.[0]?.entries?.length ?? 0;
+      return `Buyback log refreshed: ${count.toLocaleString()} player sell listing(s) classified on exchange ${result.exchangeId || exchangeId} (dry-run).`;
+    });
+  }
+
+  function clearLog() {
+    return run("clear-log", async () => {
+      setLogBatches((await marketBotApi.clearBuybackLog()).batches || []);
+      return "Buyback sweep log cleared.";
     });
   }
 
@@ -267,7 +398,8 @@ export function MarketBotOverlay({ onClose, onError, confirmAction }: MarketBotO
         {!loading && !supported && <p className="muted">{status?.reason || "The Market Bot is unsupported by the detected database schema."}</p>}
         {!loading && supported && !planReady && <p className="muted">The bundled market seed plan is missing. Repair or reinstall the console release.</p>}
         {!loading && supported && planReady && status && (
-          <>
+          <div className="market-bot-layout">
+            <div>
             <p className="muted">
               Seed plan: {status.plan.rows.toLocaleString()} rows
               {status.plan.panelVersion ? ` (v${status.plan.panelVersion})` : ""} from the bundled console copy.
@@ -366,7 +498,14 @@ export function MarketBotOverlay({ onClose, onError, confirmAction }: MarketBotO
             </div>
 
             {notice && <p className="market-bot-notice" role="status">{notice}</p>}
-          </>
+            </div>
+            <BuybackSweepLog
+              batches={logBatches}
+              busy={busy}
+              onRefresh={() => void refreshLogDryRun()}
+              onClear={() => void clearLog()}
+            />
+          </div>
         )}
         <div className="confirm-modal-actions">
           <button onClick={onClose} disabled={Boolean(busy)}>Close</button>

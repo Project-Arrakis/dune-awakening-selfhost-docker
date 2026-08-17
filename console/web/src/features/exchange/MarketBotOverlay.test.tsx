@@ -8,6 +8,9 @@ vi.mock("../../api/marketBot", () => ({
     status: vi.fn(),
     exchanges: vi.fn(),
     probeBuyback: vi.fn(),
+    buybackLog: vi.fn(),
+    refreshBuybackLog: vi.fn(),
+    clearBuybackLog: vi.fn(),
     saveBuybackSchedule: vi.fn(),
     saveSeedSchedule: vi.fn(),
     runBuyback: vi.fn(),
@@ -53,6 +56,9 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(marketBotApi.status).mockResolvedValue(statusFixture());
   vi.mocked(marketBotApi.exchanges).mockResolvedValue(EXCHANGES);
+  vi.mocked(marketBotApi.buybackLog).mockResolvedValue({ batches: [] });
+  vi.mocked(marketBotApi.refreshBuybackLog).mockResolvedValue({ batches: [] });
+  vi.mocked(marketBotApi.clearBuybackLog).mockResolvedValue({ batches: [] });
 });
 
 describe("MarketBotOverlay", () => {
@@ -228,5 +234,68 @@ describe("MarketBotOverlay", () => {
 
     expect(await screen.findByText(/bundled market seed plan is missing/)).toBeInTheDocument();
     expect(screen.queryByText("Buyback sweeps")).not.toBeInTheDocument();
+  });
+
+  it("shows stored sweep log batches with purchase and skip reasons", async () => {
+    vi.mocked(marketBotApi.buybackLog).mockResolvedValue({
+      batches: [{
+        source: "Buyback sweep",
+        exchangeId: "42",
+        at: "2026-08-17T12:00:00.000Z",
+        note: "",
+        summary: "2 listing(s); 0x0×1, 0x1×1",
+        entries: [
+          { orderId: "11", templateId: "WaterBottle", displayName: "Water Bottle", qualityLevel: "0", itemPrice: "100", stackSize: "10", maxUnitPrice: "600", resultCode: 0, resultHex: "0x0", resultLabel: "success", detail: "bought stack 10 at 100/unit (cap 600)" },
+          { orderId: "12", templateId: "Sword", displayName: "Sword", qualityLevel: "0", itemPrice: "900", stackSize: "1", maxUnitPrice: "600", resultCode: 1, resultHex: "0x1", resultLabel: "price too high", detail: "ask 900 > cap 600" }
+        ]
+      }]
+    });
+    renderOverlay();
+
+    expect(await screen.findByLabelText("Buyback sweep log")).toBeInTheDocument();
+    expect(screen.getByText("Buyback Sweep Log")).toBeInTheDocument();
+    expect(screen.getByText("success")).toBeInTheDocument();
+    expect(screen.getByText("price too high")).toBeInTheDocument();
+    expect(screen.getByText("bought stack 10 at 100/unit (cap 600)")).toBeInTheDocument();
+    expect(screen.getByText("ask 900 > cap 600")).toBeInTheDocument();
+    expect(screen.getByText("Water Bottle")).toBeInTheDocument();
+    expect(screen.getByText(/older than 5 days/)).toBeInTheDocument();
+  });
+
+  it("refreshes the log with a dry-run classify and can clear it", async () => {
+    const dryRun = {
+      exchangeId: "42",
+      entries: [{ orderId: "9", templateId: "Sword", displayName: "Sword", qualityLevel: "0", itemPrice: "50", stackSize: "1", maxUnitPrice: "1200", resultCode: 0, resultHex: "0x0", resultLabel: "eligible", detail: "ask 50/unit <= cap 1200" }],
+      batches: [{
+        source: "Dry-run classify",
+        exchangeId: "42",
+        at: "2026-08-17T12:01:00.000Z",
+        note: "read-only; nothing purchased",
+        summary: "1 listing(s); 0x0×1",
+        entries: [{ orderId: "9", templateId: "Sword", displayName: "Sword", qualityLevel: "0", itemPrice: "50", stackSize: "1", maxUnitPrice: "1200", resultCode: 0, resultHex: "0x0", resultLabel: "eligible", detail: "ask 50/unit <= cap 1200" }]
+      }]
+    };
+    vi.mocked(marketBotApi.refreshBuybackLog).mockImplementation(async () => {
+      vi.mocked(marketBotApi.buybackLog).mockResolvedValue({ batches: dryRun.batches });
+      return dryRun;
+    });
+    vi.mocked(marketBotApi.clearBuybackLog).mockImplementation(async () => {
+      vi.mocked(marketBotApi.buybackLog).mockResolvedValue({ batches: [] });
+      return { batches: [] };
+    });
+    renderOverlay();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Refresh log (dry-run)" }));
+    await waitFor(() => expect(marketBotApi.refreshBuybackLog).toHaveBeenCalledWith({
+      exchangeId: "42", priceMultiplier: 5,
+      augmentMultiplier: 1, rankedArmorMultiplier: 1, rankedWeaponMultiplier: 1,
+      buybackPercent: 60, buybackPriceBasis: "seeded", maxBuys: 500
+    }));
+    expect(await screen.findByText(/1 player sell listing\(s\) classified on exchange 42/)).toBeInTheDocument();
+    expect(screen.getByText("eligible")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Clear log" }));
+    await waitFor(() => expect(marketBotApi.clearBuybackLog).toHaveBeenCalled());
+    expect(await screen.findByText("Buyback sweep log cleared.")).toBeInTheDocument();
   });
 });
