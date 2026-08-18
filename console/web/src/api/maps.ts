@@ -13,6 +13,8 @@ export type UserSettingField = {
   category: string;
   description: string;
   label?: string;
+  minimum?: number | null;
+  maximum?: number | null;
 };
 
 export type UserSettingsSchema = {

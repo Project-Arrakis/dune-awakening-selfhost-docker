@@ -34,6 +34,7 @@ const PERSISTENT_FIELDS: PersistentField[] = [
   { id: "landsraad_enabled", label: "Landsraad System", group: "Cycle", type: "boolean" },
   { id: "landsraad_cycle_duration_seconds", label: "Cycle Duration", group: "Cycle", scale: 86400, suffix: "Days", min: 1, max: 365, step: 0.25 },
   { id: "landsraad_voting_period_seconds", label: "Voting Period", group: "Cycle", scale: 3600, suffix: "Hours", min: 1 / 60, max: 1680, step: 0.25 },
+  { id: "landsraad_voting_start_before_coriolis_seconds", label: "Voting Starts Before Coriolis", group: "Cycle", scale: 3600, suffix: "Hours (default 33)", min: 0, max: 1680, step: 0.25 },
   { id: "landsraad_suspended_period_seconds", label: "Suspended Period", group: "Cycle", scale: 60, suffix: "Minutes", min: 0, max: 10080, step: 1 },
   { id: "landsraad_term_retention_weeks", label: "Term History Retention", group: "Cycle", suffix: "Weeks", min: 1, max: 52, step: 1 },
   { id: "landsraad_contracts_per_voting_block", label: "Contracts Per Voting Block", group: "Contracts", min: 1, max: 100, step: 1 },
