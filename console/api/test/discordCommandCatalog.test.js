@@ -118,7 +118,7 @@ test("DISCORD_ADAPTER_ROUTES.CATALOG is not itself in DISCORD_LIVE_ADAPTER_ROUTE
   assert.ok(!DISCORD_LIVE_ADAPTER_ROUTES.includes(DISCORD_ADAPTER_ROUTES.CATALOG));
 });
 
-test("routes with routeEnforcesCapability: false are exactly the known, documented exceptions (backups/list, version)", () => {
+test("routes with routeEnforcesCapability: false are exactly the known, documented exceptions (health, backups/list, version)", () => {
   const catalog = buildCommandCatalog();
   const unenforced = [];
   for (const group of catalog.groups) {
@@ -126,7 +126,12 @@ test("routes with routeEnforcesCapability: false are exactly the known, document
       if (!subcommand.routeEnforcesCapability) unenforced.push(subcommand.route);
     }
   }
+  // HEALTH added by an L3 integration audit (issue tracked in PR #171) --
+  // discordAdapterHealth() never calls requireDiscordCapability(), so it
+  // was already unenforced in practice; this entry's routeEnforcesCapability
+  // had incorrectly defaulted to true because no explicit override was set.
   assert.deepEqual(unenforced.sort(), [
+    DISCORD_ADAPTER_ROUTES.HEALTH,
     DISCORD_ADAPTER_ROUTES.BACKUPS_LIST,
     DISCORD_ADAPTER_ROUTES.VERSION
   ].sort());

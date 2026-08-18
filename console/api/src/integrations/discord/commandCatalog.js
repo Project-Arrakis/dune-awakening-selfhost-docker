@@ -55,7 +55,17 @@ const COMMAND_METADATA = Object.freeze({
   [DISCORD_ADAPTER_ROUTES.HEALTH]: {
     group: "server", subcommand: "health",
     description: "Check the console Discord adapter.",
+    // HEALTH has no requireDiscordCapability() call -- discordAdapterHealth()
+    // (adapter.js) never checks a capability, identical in enforcement
+    // posture to BACKUPS_LIST/VERSION below. Recorded as STATUS_READ for
+    // display purposes (matching the bot's own health command's stated
+    // minimum role), but routeEnforcesCapability: false makes clear that
+    // is not actually enforced by this specific route -- found by an L3
+    // integration audit (Red-Blink/dune-awakening-selfhost-docker#171)
+    // that independently re-derived every route's real enforcement from
+    // routes.js/adapter.js rather than trusting this table's own claims.
     capability: DISCORD_CAPABILITIES.STATUS_READ,
+    routeEnforcesCapability: false,
     params: []
   },
   [DISCORD_ADAPTER_ROUTES.STATUS]: {
