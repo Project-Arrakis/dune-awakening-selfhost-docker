@@ -29,6 +29,7 @@ import {
   readBuybackSchedule,
   refreshBuybackLog,
   saveBuybackSchedule,
+  saveSeedSchedule,
   selectStoredBuybackLogEntries
 } from "../src/addonJobs.js";
 
@@ -474,16 +475,19 @@ test("buyback caps reprice ranked categories the same way the seed run does", ()
   const config = { repoRoot, mockMode: false };
   try {
     const loaded = loadBuybackSeedPlan(config);
-    const schedule = normalizeBuybackSchedule({
-      enabled: true,
-      exchangeId: "77",
-      priceMultiplier: 5,
-      augmentMultiplier: 2,
-      rankedArmorMultiplier: 3,
-      rankedWeaponMultiplier: 1.5,
-      buybackPercent: 50,
-      maxBuys: 100
-    });
+    const schedule = {
+      ...normalizeBuybackSchedule({
+        enabled: true,
+        exchangeId: "77",
+        priceMultiplier: 5,
+        augmentMultiplier: 2,
+        rankedArmorMultiplier: 3,
+        rankedWeaponMultiplier: 1.5,
+        buybackPercent: 50,
+        maxBuys: 100
+      }),
+      augmentPricing: "original"
+    };
     // Seeded basis per row: armor grade 3 8M -> 24M, grade 0 stays 5.5M,
     // weapon grade 4 9.6M -> 14.4M, augment 28M -> 56M, resource unchanged;
     // caps are 50% of that basis.
@@ -495,6 +499,64 @@ test("buyback caps reprice ranked categories the same way the seed run does", ()
       "('UniqueDualBlades_6',4,7200000),\n" +
       "('WaterBottle',0,500)"
     );
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test("buyback seeded caps follow reseed discounted augment pricing", () => {
+  const plan = {
+    price_multiplier: 5,
+    rows: [
+      { template_id: "T6_Augment_Armor3", kind: "equippable", price: 37500000, category_mask: 67108864, quality_level: 5 },
+      { template_id: "T6_Augment_Armor3_Schematic", kind: "schematic", price: 3800000, category_mask: 67371008, quality_level: 5 },
+      { template_id: "WaterBottle", kind: "resource", price: 1000, category_mask: 1, quality_level: 0 }
+    ]
+  };
+  const repoRoot = makeRepoRoot(plan);
+  const config = { repoRoot, mockMode: false };
+  try {
+    const loaded = loadBuybackSeedPlan(config);
+    const base = normalizeBuybackSchedule({
+      exchangeId: "1",
+      priceMultiplier: 5,
+      augmentMultiplier: 1,
+      buybackPercent: 60
+    });
+    const discounted = { ...base, augmentPricing: "discounted" };
+    assert.match(buybackPlanValuesSql(loaded, discounted), /\('T6_Augment_Armor3',5,1140000\)/);
+    assert.match(buybackPlanValuesSql(loaded, discounted), /\('T6_Augment_Armor3_Schematic',5,2280000\)/);
+    assert.match(buybackPlanValuesSql(loaded, discounted), /\('WaterBottle',0,600\)/);
+
+    const original = { ...base, augmentPricing: "original" };
+    assert.match(buybackPlanValuesSql(loaded, original), /\('T6_Augment_Armor3',5,22500000\)/);
+    assert.match(buybackPlanValuesSql(loaded, original), /\('T6_Augment_Armor3_Schematic',5,2280000\)/);
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test("probe buyback SQL inherits reseed augmentPricing for seeded caps", async () => {
+  const plan = {
+    price_multiplier: 5,
+    rows: [
+      { template_id: "T6_Augment_Armor3", kind: "equippable", price: 37500000, category_mask: 67108864, quality_level: 5 },
+      { template_id: "T6_Augment_Armor3_Schematic", kind: "schematic", price: 3800000, category_mask: 67371008, quality_level: 5 }
+    ]
+  };
+  const repoRoot = makeRepoRoot(plan);
+  const config = { repoRoot, mockMode: false };
+  try {
+    saveBuybackSchedule(config, { exchangeId: "42", priceMultiplier: 5, augmentMultiplier: 1, buybackPercent: 60 });
+    saveSeedSchedule(config, { enabled: false, exchangeId: "42", augmentPricing: "original" });
+    const db = fakeDb({ eligible: "0" });
+    await probeBuybackEligibility(config, db, {});
+    assert.match(db.probes[0], /\('T6_Augment_Armor3',5,22500000\)/, "original reseed keeps the 37.5M item ladder");
+
+    saveSeedSchedule(config, { enabled: false, exchangeId: "42", augmentPricing: "discounted" });
+    await probeBuybackEligibility(config, db, {});
+    assert.match(db.probes[1], /\('T6_Augment_Armor3',5,1140000\)/, "discounted reseed uses half the schematic");
+    assert.match(db.probes[1], /\('T6_Augment_Armor3_Schematic',5,2280000\)/);
   } finally {
     rmSync(repoRoot, { recursive: true, force: true });
   }

@@ -108,12 +108,21 @@ Exchange Bot addon drives through the scheduler bridge, now first-class):
   multiplier is applied before the usual stepped price rounding, and relative
   pricing within a category is preserved (a discounted augment item stays at
   half its pattern's price when both are boosted).
+- **Commodity stacks** let the operator set how many full listings of selected
+  base-useful commodities each reseed writes (1–20, default 2 — the bundled
+  plan's `listings_per_grade`). Units per stack stay at the plan maximum, so
+  10 Fuel Cell stacks is 5,000 units. The allowlist is power fuels and
+  lubricants, windtrap filters, spice (melange, residue, flour sand, spice
+  sand), refining ingots, building materials, schematic pattern fragments, and
+  iodine pills. Everything else keeps the plan default. Buyback caps are
+  per-unit and do not change.
 - **Buyback sweeps** buy player sell listings whose per-unit ask is at or below the
   buyback percentage of the chosen **price basis** — seeded NPC price at that
   listing's grade (default), or the live player-market average / lowest ask with
-  seeded fallback. The buyback schedule carries its own copy of the category
-  multipliers: keep them matched with the reseed schedule so the reconstructed
-  seeded basis tracks what the market actually sells at. Whole listed stacks are
+  seeded fallback. The buyback schedule carries its own category multipliers
+  (they may differ from reseed on purpose). The reconstructed seeded basis still
+  uses the **reseed** schedule's augment pricing (discounted vs original) so
+  ready-made augment caps track what the bot actually lists. Whole listed stacks are
   bought in one pass, sellers are paid through never-expiring "Take Solari"
   payment entries, and concurrent sweeps are safe at the database level
   (`FOR UPDATE ... SKIP LOCKED`). Every run probes eligibility with a read-only

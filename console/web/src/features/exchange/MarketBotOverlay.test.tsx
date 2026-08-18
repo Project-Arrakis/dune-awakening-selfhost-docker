@@ -32,6 +32,7 @@ function statusFixture(overrides: Partial<MarketBotStatus> = {}): MarketBotStatu
       enabled: false, intervalMinutes: 15, exchangeId: "", priceMultiplier: 5,
       augmentMultiplier: 1, rankedArmorMultiplier: 1, rankedWeaponMultiplier: 1,
       augmentPricing: "discounted", source: "console",
+      commodityStacks: {},
       lastRunAt: "", lastRunStatus: "", lastRunDetail: "", nextRunAt: ""
     },
     ...overrides
@@ -174,6 +175,7 @@ describe("MarketBotOverlay", () => {
       rankedArmorMultiplier: 1,
       rankedWeaponMultiplier: 1,
       augmentPricing: "original",
+      commodityStacks: {},
       exchangeId: "42"
     }));
     expect(await screen.findByText(/Reseed schedule saved \(disabled\)\./)).toBeInTheDocument();
@@ -203,6 +205,44 @@ describe("MarketBotOverlay", () => {
       rankedArmorMultiplier: 3,
       rankedWeaponMultiplier: 1.5,
       augmentPricing: "discounted",
+      commodityStacks: {},
+      exchangeId: "42"
+    }));
+  });
+
+  it("saves commodity stack counts from the reseed section", async () => {
+    vi.mocked(marketBotApi.status).mockResolvedValue(statusFixture({
+      commodityStackCatalog: [
+        { templateId: "Oil", label: "Fuel Cell", group: "power", stackSize: 500 },
+        { templateId: "AntiRadiationPill", label: "Iodine Pill", group: "survival", stackSize: 20 }
+      ],
+      commodityStackGroups: [
+        { id: "power", label: "Power" },
+        { id: "survival", label: "Survival" }
+      ],
+      seed: { ...statusFixture().seed, commodityStacks: { Oil: 2, AntiRadiationPill: 2 } }
+    }));
+    vi.mocked(marketBotApi.saveSeedSchedule).mockImplementation(async (schedule) => ({
+      ...statusFixture().seed, ...schedule, exchangeId: String(schedule.exchangeId || "42"), enabled: Boolean(schedule.enabled)
+    }));
+    renderOverlay();
+
+    const fuel = await screen.findByLabelText("Fuel Cell stacks");
+    expect(fuel).toHaveValue(2);
+    expect(screen.queryByText("10 × 500 = 5,000 units")).not.toBeInTheDocument();
+    fireEvent.change(fuel, { target: { value: "10" } });
+    expect(screen.getByText("10 × 500 = 5,000 units")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Save reseed schedule" }));
+
+    await waitFor(() => expect(marketBotApi.saveSeedSchedule).toHaveBeenCalledWith({
+      enabled: false,
+      intervalMinutes: 15,
+      priceMultiplier: 5,
+      augmentMultiplier: 1,
+      rankedArmorMultiplier: 1,
+      rankedWeaponMultiplier: 1,
+      augmentPricing: "discounted",
+      commodityStacks: { Oil: 10, AntiRadiationPill: 2 },
       exchangeId: "42"
     }));
   });

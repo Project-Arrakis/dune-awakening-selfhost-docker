@@ -32,13 +32,14 @@ import {
   executeSeedRun,
   normalizeCategoryMultipliers,
   normalizeScheduleSource,
+  normalizeAugmentPricing,
   resolveMarketSeedPlanPath,
   legacySeedSchedulePath,
   seedSchedulePath,
-  seedRowCategoryMultiplier
+  createListedMarketUnitPrice
 } from "./addonSeedJob.js";
 
-export { CATEGORY_MULTIPLIER_FIELDS, readSeedSchedule, normalizeSeedSchedule, saveSeedSchedule, normalizeCategoryMultipliers, normalizeScheduleSource, resolveMarketSeedPlanPath, legacySeedSchedulePath, seedSchedulePath, loadMarketSeedPlan, seedRowCategoryMultiplier } from "./addonSeedJob.js";
+export { CATEGORY_MULTIPLIER_FIELDS, COMMODITY_STACK_CATALOG, COMMODITY_STACK_GROUPS, COMMODITY_STACK_MIN, COMMODITY_STACK_MAX, COMMODITY_STACK_DEFAULT, readSeedSchedule, normalizeSeedSchedule, saveSeedSchedule, normalizeCategoryMultipliers, normalizeCommodityStacks, normalizeScheduleSource, resolveMarketSeedPlanPath, legacySeedSchedulePath, seedSchedulePath, loadMarketSeedPlan, seedRowCategoryMultiplier, seedRowListingCount, createListedMarketUnitPrice, listedMarketUnitPrice, normalizeAugmentPricing } from "./addonSeedJob.js";
 
 export const EDA_EXCHANGE_BOT_ADDON_ID = "eda-exchange-bot";
 export const ADDON_SCHEDULER_PERMISSION = "scheduler:server";
@@ -210,7 +211,8 @@ export function loadBuybackSeedPlan(config, addonId = EDA_EXCHANGE_BOT_ADDON_ID)
       displayName: String(row?.display_name || "").trim(),
       price,
       qualityLevel: clampInteger(row?.quality_level, 0, 0, 5),
-      categoryMask: Math.trunc(Number(row?.category_mask) || 0)
+      categoryMask: Math.trunc(Number(row?.category_mask) || 0),
+      kind: String(row?.kind || "equippable").slice(0, 40)
     };
   });
   return { sourceMultiplier, rows };
@@ -298,12 +300,15 @@ const BUYBACK_PLAYER_SELL_SQL = "COALESCE(o.is_npc_order, FALSE) = FALSE AND (b.
 // seed row. Seed prices use stepped rounding, so reconstructing higher grades
 // from a grade-0 base can differ from the actual configured market price.
 // The schedule's category multipliers reprice each row the same way the seed
-// run does, so the "seeded" basis tracks the boosted market.
+// run does, so the "seeded" basis tracks the boosted market. Ready-made
+// augment items also use the reseed schedule's augmentPricing (discounted vs
+// original) so 60% of seeded means 60% of what the bot actually lists.
 export function buybackPlanValuesSql(plan, schedule) {
-  const { priceMultiplier, buybackPercent } = schedule;
+  const { buybackPercent } = schedule;
   const maxPrice = new Map();
+  const listedUnitPrice = createListedMarketUnitPrice(plan, schedule);
   for (const row of plan.rows) {
-    const repriced = roundPrice((row.price / plan.sourceMultiplier) * priceMultiplier * seedRowCategoryMultiplier(row, schedule));
+    const repriced = listedUnitPrice(row);
     const key = `${row.templateId}\0${row.qualityLevel}`;
     maxPrice.set(key, Math.max(maxPrice.get(key) || 0, repriced));
   }
@@ -587,9 +592,16 @@ SELECT r.purchased, r.total_units, r.total_solari, r.threshold_percent, r.max_bu
 FROM market_buy_result r;`;
 }
 
+function withReseedAugmentPricing(config, schedule) {
+  return {
+    ...schedule,
+    augmentPricing: normalizeAugmentPricing(readSeedSchedule(config).augmentPricing)
+  };
+}
+
 export async function probeBuybackEligibility(config, db, overrides = {}) {
   const saved = readBuybackSchedule(config);
-  const schedule = normalizeBuybackSchedule({
+  const schedule = withReseedAugmentPricing(config, normalizeBuybackSchedule({
     exchangeId: overrides.exchangeId,
     priceMultiplier: overrides.priceMultiplier,
     augmentMultiplier: overrides.augmentMultiplier,
@@ -598,7 +610,7 @@ export async function probeBuybackEligibility(config, db, overrides = {}) {
     buybackPercent: overrides.buybackPercent,
     buybackPriceBasis: overrides.buybackPriceBasis,
     maxBuys: overrides.maxBuys
-  }, saved);
+  }, saved));
   if (!schedule.exchangeId) throw new Error("An exchangeId is required to probe buyback eligibility.");
   const plan = loadBuybackSeedPlan(config);
   const result = await runSql(db, buildBuybackEligibilitySql(plan, schedule), false);
@@ -631,7 +643,7 @@ function buybackScheduleOverrides(overrides = {}) {
 
 export async function classifyBuybackListings(config, db, overrides = {}) {
   const saved = readBuybackSchedule(config);
-  const schedule = normalizeBuybackSchedule(buybackScheduleOverrides(overrides), saved);
+  const schedule = withReseedAugmentPricing(config, normalizeBuybackSchedule(buybackScheduleOverrides(overrides), saved));
   if (!schedule.exchangeId) throw new Error("An exchangeId is required to classify buyback listings.");
   const plan = loadBuybackSeedPlan(config);
   const result = await runSql(db, buildBuybackClassifySql(plan, schedule), false);
@@ -921,11 +933,12 @@ async function executeBuybackRun(config, db, schedule, { runDuneImpl, trigger = 
   const plan = loadBuybackSeedPlan(config);
   const names = seedPlanDisplayNames(plan);
   const source = trigger === "schedule" ? "Scheduled buyback" : "Buyback sweep";
-  const probe = await runSql(db, buildBuybackEligibilitySql(plan, schedule), false);
+  const priced = withReseedAugmentPricing(config, schedule);
+  const probe = await runSql(db, buildBuybackEligibilitySql(plan, priced), false);
   const diagnostics = buybackDiagnostics(probe?.rows?.[0]);
   const eligible = diagnostics.eligible;
   if (eligible <= 0) {
-    await persistIdleBuybackLog(config, db, plan, schedule, names, source, diagnostics);
+    await persistIdleBuybackLog(config, db, plan, priced, names, source, diagnostics);
     return {
       status: "idle",
       eligible: 0,
@@ -944,7 +957,7 @@ async function executeBuybackRun(config, db, schedule, { runDuneImpl, trigger = 
   // Keep the entire sweep on one checked-out client. createDb.transaction()
   // guarantees ROLLBACK before releasing that client if any statement fails,
   // preventing an aborted transaction from being returned to the pool.
-  const sweep = await db.transaction((tx) => runSql(tx, buildBuybackSql(plan, schedule), true));
+  const sweep = await db.transaction((tx) => runSql(tx, buildBuybackSql(plan, priced), true));
   const row = sweep?.rows?.[0] || {};
   // purchased is a plain INTEGER bounded by maxBuys; the unit/solari totals
   // are BIGINT sums, so they stay decimal strings end-to-end like exchange
@@ -952,7 +965,7 @@ async function executeBuybackRun(config, db, schedule, { runDuneImpl, trigger = 
   const purchased = Number(row.purchased || 0);
   const totalUnits = decimalString(row.total_units);
   const totalSolari = decimalString(row.total_solari);
-  await persistSweepBuybackLog(config, db, plan, row, schedule, names, source);
+  await persistSweepBuybackLog(config, db, plan, row, priced, names, source);
   return {
     status: "swept",
     eligible,
@@ -1369,16 +1382,6 @@ function extractBuybackLogRows(row = {}) {
 
 function sqlLiteral(value) {
   return "'" + String(value ?? "").replaceAll("'", "''") + "'";
-}
-
-function roundPrice(value) {
-  const number = Math.max(1, Number(value) || 1);
-  let step = 1;
-  if (number >= 1000000) step = 10000;
-  else if (number >= 100000) step = 1000;
-  else if (number >= 10000) step = 100;
-  else if (number >= 1000) step = 10;
-  return Math.max(1, Math.round(number / step) * step);
 }
 
 function clampInteger(value, fallback, min, max) {

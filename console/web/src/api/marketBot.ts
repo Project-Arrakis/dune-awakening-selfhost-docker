@@ -35,12 +35,25 @@ export type MarketBuybackSchedule = MarketCategoryMultipliers & {
   nextRunAt: string;
 };
 
+export type CommodityStackItem = {
+  templateId: string;
+  label: string;
+  group: string;
+  stackSize: number;
+};
+
+export type CommodityStackGroup = {
+  id: string;
+  label: string;
+};
+
 export type MarketSeedSchedule = MarketCategoryMultipliers & {
   enabled: boolean;
   intervalMinutes: number;
   exchangeId: string;
   priceMultiplier: number;
   augmentPricing: MarketAugmentPricing;
+  commodityStacks: Record<string, number>;
   source: "addon" | "console";
   lastRunAt: string;
   lastRunStatus: string;
@@ -53,6 +66,8 @@ export type MarketBotStatus = {
   plan: { available: boolean; source: "addon" | "bundled" | null; rows: number; panelVersion: string; generatedAt: string };
   buyback: MarketBuybackSchedule;
   seed: MarketSeedSchedule;
+  commodityStackCatalog?: CommodityStackItem[];
+  commodityStackGroups?: CommodityStackGroup[];
   reason?: string;
 };
 
