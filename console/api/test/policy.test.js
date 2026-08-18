@@ -84,6 +84,11 @@ test("the container item delete route resolves to bases:delete-item without shad
   assert.equal(actionForRoute("/api/bases/5/containers/9", "GET"), "bases:read");
 });
 
+test("persisting a refreshed buyback log requires market write permission", () => {
+  assert.equal(actionForRoute("/api/exchange/market/buyback/log", "GET"), "exchange:market");
+  assert.equal(actionForRoute("/api/exchange/market/buyback/log", "POST"), "exchange:market-write");
+});
+
 // resolveAllowedActions has no caller yet (planned for a future policy-editor
 // UI), but it must already surface every action actionForRoute can resolve,
 // not just the ones with an exact ROUTE_ACTIONS entry -- bases:delete only

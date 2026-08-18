@@ -952,7 +952,7 @@ async function executeBuybackRun(config, db, schedule, { runDuneImpl, trigger = 
   const purchased = Number(row.purchased || 0);
   const totalUnits = decimalString(row.total_units);
   const totalSolari = decimalString(row.total_solari);
-  await persistSweepBuybackLog(config, row, schedule, names, source);
+  await persistSweepBuybackLog(config, db, plan, row, schedule, names, source);
   return {
     status: "swept",
     eligible,
@@ -996,18 +996,33 @@ async function persistIdleBuybackLog(config, db, plan, schedule, names, source, 
   }
 }
 
-async function persistSweepBuybackLog(config, row, schedule, names, source) {
+async function persistSweepBuybackLog(config, db, plan, row, schedule, names, source) {
+  // The write transaction returns purchased rows and eligible rows that lost
+  // the claim race/max-buys cutoff. It intentionally does not copy every
+  // rejected listing into a transaction-local table. Classify the remaining
+  // board read-only after commit so the normal sweep log also explains price,
+  // template, and invalid-value skips without widening the write transaction.
+  const transactionRows = extractBuybackLogRows(row) || [];
+  let remainingRows = [];
   try {
-    const logRows = extractBuybackLogRows(row);
-    if (!logRows) return;
-    const entries = applySweepLeftoverRanking(
-      logRows.map((entry) => normalizeBuybackLogEntry(entry, names)),
-      schedule.maxBuys
-    );
+    const classified = await runSql(db, buildBuybackClassifySql(plan, schedule), false);
+    remainingRows = classified?.rows || [];
+  } catch {
+    // Preserve the completed sweep's purchase log even if best-effort
+    // post-commit classification is temporarily unavailable.
+  }
+
+  try {
+    const purchased = transactionRows
+      .map((entry) => normalizeBuybackLogEntry(entry, names))
+      .filter((entry) => entry.resultLabel === "success");
+    const remaining = remainingRows.map((entry) => normalizeBuybackLogEntry(entry, names));
+    const entries = applySweepLeftoverRanking([...purchased, ...remaining], schedule.maxBuys);
     await withBuybackLogLock(config, () => {
       appendBuybackLogBatchUnlocked(config, entries, {
         source,
         exchangeId: schedule.exchangeId,
+        note: remainingRows.length ? "post-sweep read-only classification included" : "post-sweep classification unavailable or empty",
         schedule
       });
     });
