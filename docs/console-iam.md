@@ -11,33 +11,58 @@ The Web Console applies an IAM action to every authenticated API route. Public a
 
 Session tier and identity stay in the in-memory session store; they are not placed in the browser cookie. A Console process restart invalidates existing sessions, matching the previous session lifecycle and preventing stale role claims from surviving a restart.
 
-## Policies
+## Policies and roles
 
-The default policies preserve full owner access and provide conservative defaults for future admin, moderator, player, and observer sessions. Password logins and `ADMIN_AUTH_DISABLED=1` create owner sessions, so existing Console installations keep their current behavior.
+The default policies preserve full owner access and provide conservative defaults for the built-in admin, moderator, player, and observer tiers. Password logins and `ADMIN_AUTH_DISABLED=1` create owner sessions, so existing Console installations keep their current behavior.
 
-Policy documents use this shape:
+Since schema v2 (see `docs/design/console-custom-iam-roles-l1-design-2026-08-17.md` for the full design and its audit trail), the Console mirrors AWS IAM's own editing model: a **tier/role** attaches zero or more independently-named, versioned **policies**, in addition to keeping one optional inline policy of its own. This replaces the earlier model where a tier's policy was a single embedded document with no identity, no version history, and no reuse across tiers.
+
+The on-disk store (`runtime/generated/iam-policies.json`) uses this shape:
 
 ```json
 {
-  "owner": {
-    "version": 1,
-    "tier": "owner",
-    "statements": [
-      { "Effect": "Allow", "Action": "*" }
-    ]
+  "schemaVersion": 2,
+  "tiers": {
+    "owner": { "inline": { "statements": [{ "Effect": "Allow", "Action": "*" }] }, "attached": [] },
+    "event-mod": { "inline": null, "attached": ["<policyId>"] }
+  },
+  "policies": {
+    "<policyId>": {
+      "name": "read-only-metrics",
+      "managed": false,
+      "defaultVersionId": "v1",
+      "versions": {
+        "v1": { "statements": [{ "Effect": "Allow", "Action": "server:read" }], "createdAt": "2026-08-18T00:00:00.000Z", "createdBy": "owner" }
+      }
+    }
   }
 }
 ```
 
-`Action` may be one string or an array. Exact actions, namespace wildcards such as `players:*`, and `*` are supported. Explicit Deny statements override Allow statements for every tier, including owner.
+`Action` may be one string or an array. Exact actions, namespace wildcards such as `players:*`, and `*` are supported. A tier's effective permissions are the union of its own inline statements plus every attached policy's **default** version's statements; attachment order does not affect the result, since an explicit Deny anywhere in the aggregate always wins over an Allow, exactly as within a single document today. An operator upgrading from a pre-schema-v2 install needs no manual action — the store is migrated transparently on the next Console start, tier-by-tier (a single malformed tier does not discard the rest), with byte-identical evaluation results for every tier/action combination that existed before the upgrade.
 
-The policy API is owner-only under the default policy:
+**Built-in tiers stay fully owner-editable** — mirroring AWS's managed-policy concept only as a `managed: true` label for clarity, not as a read-only enforcement difference, since making the 5 shipped tiers read-only would remove an existing, already-used capability.
 
-- `GET /api/settings/iam/policies` returns the active policy store.
-- `PUT /api/settings/iam/policy` validates and atomically saves the complete policy store to `runtime/generated/iam-policies.json`.
-- `POST /api/settings/iam/policy/test` evaluates an action for a tier without changing policy.
+**Resource bounds**: 50 named policies, 20 custom tiers (the 5 built-in tiers are exempt from this cap and cannot be deleted), 5 versions per named policy. These are owner-only, human-paced limits, not expected to be reached in normal use.
 
-Updates that remove the owner's `settings:write` access are rejected so the local-password recovery path remains available.
+The policy API is owner-only under the default policy (gated on the `settings:write` action — see "Authorization flow" above; there is no separate identity check):
+
+- `GET /api/settings/iam/policies` returns every tier and every named policy's **default version only** (not full version history, to keep this response small regardless of how many versions a policy has accumulated).
+- `GET /api/settings/iam/policies/{policyId}` returns one policy's full version history.
+- `POST /api/settings/iam/policies` creates a new named policy.
+- `PUT /api/settings/iam/policies/{policyId}` edits a policy, creating a new version and making it the default.
+- `POST /api/settings/iam/policies/{policyId}/rollback` sets an existing version as the default without creating a new one.
+- `DELETE /api/settings/iam/policies/{policyId}/versions/{versionId}` deletes a specific non-default version (the default version cannot be deleted directly — roll back to a different version first).
+- `DELETE /api/settings/iam/policies/{policyId}` deletes a policy, only if it is not currently attached to any tier.
+- `POST /api/settings/iam/tiers` creates a new tier/role.
+- `PUT /api/settings/iam/tiers/{tier}/inline` sets or replaces a tier's own inline policy.
+- `PUT /api/settings/iam/tiers/{tier}/attach` / `.../detach` attach or detach a named policy from a tier.
+- `PUT /api/settings/iam/policy` (legacy, still supported) validates and atomically saves a flat per-tier statement map, matching the pre-schema-v2 contract — existing callers of this route are unaffected.
+- `POST /api/settings/iam/policy/test` (Policy Simulator) evaluates either a draft statement set (`{"mode": "draft", "statements": [...]}`) or a tier's real, current, fully-aggregated permissions (`{"mode": "tier", "tier": "moderator"}`) without changing policy.
+
+**Every mutating write is rejected if it would remove the owner tier's aggregate `settings:write` access** — including through an attached policy's edit, rollback, or detachment, not only a direct edit to the owner tier itself — so the local-password recovery path remains available. All 7 mutating operations funnel through a single internal choke point specifically so this guard cannot be bypassed by any one of them individually; see the `CONCURRENCY INVARIANT` comment above `applyMutation()` in `policy.js` before making any of that code path asynchronous.
+
+Restoring a backup of `iam-policies.json` taken before the schema v2 upgrade shipped works with no special procedure — the same transparent migration that runs on every Console start also applies to a restored legacy-shape backup.
 
 ## Route maintenance
 
@@ -49,3 +74,5 @@ node --test test/rbacParity.test.js test/policy.test.js test/auth.test.js
 ```
 
 Parameterized routes use the method-aware and prefix mappings at the bottom of `actions.js`. Prefer exact mappings whenever the route has a fixed path.
+
+`rbacParity.test.js`'s route extractor recognizes routes declared via `path === "literal"`, `path.startsWith("prefix")`, template-literal paths, **and** `path.match(/regex/)` (added when the IAM policy/role routes were implemented — the extractor previously had no branch for regex-declared routes at all, meaning it was silently not checking roughly half of `server.js`'s real route surface, not just the new ones). A new regex-dispatched route with no matching entry in `REGEX_ACTIONS_BY_METHOD_PATTERN` will fail this test.
