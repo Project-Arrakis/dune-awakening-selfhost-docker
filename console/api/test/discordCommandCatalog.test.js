@@ -131,3 +131,20 @@ test("routes with routeEnforcesCapability: false are exactly the known, document
     DISCORD_ADAPTER_ROUTES.VERSION
   ].sort());
 });
+
+// Found by an independent Layer 2 re-audit of this same catalog on the
+// author's fork (yacketrj/dune-awakening-selfhost-docker#342): one entry's
+// description was accidentally copy-pasted verbatim from an unrelated
+// route describing a similarly-named but functionally different command.
+// A future editor of COMMAND_METADATA copy-pasting an entry as a starting
+// point and forgetting to update its description text would reproduce this
+// silently -- this test catches that class of mistake generically, not
+// just the one specific instance that was found.
+test("no two catalog entries share a verbatim-identical description (would indicate an accidentally copy-pasted/borrowed description)", () => {
+  const catalog = buildCommandCatalog();
+  const allSubcommands = catalog.groups.flatMap((group) => group.subcommands);
+  const descriptions = allSubcommands.map((s) => s.description);
+  const uniqueDescriptions = new Set(descriptions);
+  assert.equal(uniqueDescriptions.size, descriptions.length,
+    "two catalog entries share an identical description -- verify neither was accidentally copy-pasted from an unrelated route");
+});
