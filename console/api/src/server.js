@@ -3,9 +3,9 @@ import { createServer as createNetServer } from "node:net";
 import { totalmem } from "node:os";
 import { spawn } from "node:child_process";
 import { existsSync, writeFileSync, chmodSync, mkdirSync, createReadStream, readFileSync } from "node:fs";
-import { basename, join, resolve } from "node:path";
-import { loadConfig, publicConfig, parseAllowedIps } from "./config.js";
-import { createAuth, setSessionCookie, clearSessionCookie, json, html, withSecurityHeaders, parseCookies, sessionCookieValue } from "./auth.js";
+import { basename, dirname, join, resolve } from "node:path";
+import { loadConfig, publicConfig, parseAllowedIps, resolvePorts } from "./config.js";
+import { createAuth, setSessionCookie, clearSessionCookie, json, withSecurityHeaders, parseCookies } from "./auth.js";
 import { createLoginRateLimiter, createMutationRateLimiter } from "./rateLimit.js";
 import { createBridgeRateLimiter } from "./bridgeRateLimit.js";
 import { buildSelfUpdateHelperDockerArgs, detectDockerSocketGid, TaskManager, publicTask } from "./tasks.js";
@@ -15,16 +15,16 @@ import { createDb, quoteIdentifier } from "./db.js";
 import * as duneDb from "./duneDb.js";
 import { audit, recordAdminHistory } from "./audit.js";
 import { redact } from "./redact.js";
-import { itemIsRankedSchematic, itemIsSchematic, itemRequiresDatabaseGrant, listCatalogItems, resolveCatalogItem, resolveFillableCatalogItem, resolveItemVolume } from "./adminCatalog.js";
+import { buildingUnlockStatus, isBuildingUnlockItem, itemIsRankedSchematic, itemIsSchematic, itemRequiresDatabaseGrant, listBuildingUnlockItems, listCatalogItems, resolveCatalogItem, resolveFillableCatalogItem, resolveItemVolume } from "./adminCatalog.js";
 import { buildBroadcastCommand, buildShutdownBroadcastCommand, publishMapChat, publishServerCommand } from "./rmq.js";
 import { clearCarePackageHistory, enableCarePackage, ensureCarePackageServerPersona, grantEligibleCarePackages, grantCarePackage, retryCarePackageGrant, runCarePackageAutoScan, saveCarePackageConfig, carePackageCapabilities, carePackageConfig, carePackageEligiblePlayers, carePackageHistory } from "./carePackage.js";
 import { readJsonBody, readMultipartForm } from "./httpSafety.js";
 import { parseBackupAutoStatus, parseBackupListRows } from "./statusParsers.js";
 import { assertInstalledAddonPermission, fetchCommunityAddons, installCommunityAddon, installedAddonContentPath, listInstalledAddons, removeInstalledAddon, setInstalledAddonEnabled, syncInstalledAddonLifecycle, updateCommunityAddon } from "./addons.js";
-import { performanceSnapshot as collectPerformanceSnapshot } from "./services/performance.js";
+import { hardwareStatusSnapshot, performanceSnapshot as collectPerformanceSnapshot } from "./services/performance.js";
 import { serveStatic, contentTypeForPath } from "./http/staticFiles.js";
 import { discoverServices } from "./services/serviceDiscovery.js";
-import { createBackupDownloadArchive, enrichBackupRows, nextImportedBackupName, normalizeImportedBackupMetadata, validBackupDownloadName } from "./services/backups.js";
+import { createBackupDownloadArchive, enrichBackupRows, nextImportedBackupName, normalizeImportedBackupMetadata, readCurrentBattlegroupId, validBackupDownloadName } from "./services/backups.js";
 import { createMemoryBalancer } from "./services/memoryBalancer.js";
 import { parseMemorySwapStatus } from "./services/memorySwap.js";
 import { createDeathPoller } from "./deathPoller.js";
@@ -35,30 +35,50 @@ import { handleDiscordAdapterRoute, isDiscordAdapterRoute } from "./integrations
 import { createPendingStateStore, exchangeDiscordAuthCode, fetchDiscordIdentity, createOAuthTierResolver, buildAuthorizeUrl, oauthStateCookie, clearOAuthStateCookie } from "./integrations/discord/oauth.js";
 import { createHandoff } from "./integrations/discord/handoff.js";
 import { actionForRoute, ROUTE_ACTIONS, NAMESPACES } from "./actions.js";
-import { evaluate, loadPolicies, getAllPolicies, setPolicies, resolveSessionTier, resolveAllowedActions, matchAction } from "./policy.js";
+import { evaluate, loadPolicies, getAllPolicies, setPolicies, resolveAllowedActions } from "./policy.js";
 import { discordAdapterEnabled } from "./integrations/discord/adapter.js";
 import { initializeDiscordAdapterSchema } from "./integrations/discord/schema.js";
 import { liveItemGrantOk, liveItemGrantWarning } from "./grantResults.js";
 import { primeMessageOfTheDayOnlineState, readMessageOfTheDay, recordMessageOfTheDayScanFailure, restoreMessageOfTheDay, runMessageOfTheDayScan, saveMessageOfTheDay } from "./services/messageOfTheDay.js";
 import { primePlayerAnnouncementOnlineState, readPlayerAnnouncements, restorePlayerAnnouncements, runPlayerAnnouncementScan, savePlayerAnnouncements } from "./services/playerAnnouncements.js";
+import * as restartQueue from "./services/restartQueue.js";
 import { persistSpicefieldOverride } from "./services/spicefieldOverrides.js";
 import { applySavedLandsraadMilestonePreset, createLandsraadMilestoneReconciler, readLandsraadMilestonePreset, saveLandsraadMilestonePreset } from "./services/landsraadMilestones.js";
 import { exportBlueprint, importBlueprint, listBlueprints, deleteBlueprint } from "./blueprints.js";
 import { createZipArchive } from "./services/zipArchive.js";
 import { resolveMapCombatState } from "./services/mapCombatState.js";
 import { grantAddonItem } from "./addonItemGrants.js";
-import { EDA_EXCHANGE_BOT_ADDON_ID, ADDON_SCHEDULER_PERMISSION, createAddonJobScheduler, probeBuybackEligibility, readBuybackSchedule, saveBuybackSchedule } from "./addonJobs.js";
+import { EDA_EXCHANGE_BOT_ADDON_ID, ADDON_SCHEDULER_PERMISSION, createAddonJobScheduler, probeBuybackEligibility, readBuybackSchedule, saveBuybackSchedule, readSeedSchedule, saveSeedSchedule } from "./addonJobs.js";
 import { createPublicDirectoryReporter, normalizeDiscordInvite, readDirectorySettings } from "./services/publicDirectory.js";
 import { choamTerminalOverview, installChoamTerminals, removeChoamTerminals } from "./services/choamTerminals.js";
+import { exchangeStats, listExchangeItems, listExchangeListings, readExchangeConfig, saveExchangeConfig } from "./services/exchange.js";
+import { listMarketExchanges, marketBotStatus, saveMarketBuybackSchedule, saveMarketSeedSchedule } from "./services/exchangeMarket.js";
 import { autoRefillPublicState, createAutoRefillScheduler, setBaseAutoRefill } from "./services/autoRefill.js";
 import { autoRefillWaterPublicState, createAutoRefillWaterScheduler, setBaseAutoRefillWater } from "./services/autoRefillWater.js";
 import { calculateAlwaysOnHostMemorySafety } from "./services/hostMemorySafety.js";
 import { parseEffectiveGuildMemberLimit } from "./services/guildSettings.js";
 import { parseEffectivePermissionLimit } from "./services/permissionSettings.js";
 import { flushBaseRefillQueues } from "./services/baseRefillFlush.js";
+import { verifyBaseBackupState } from "./services/baseBackupSafety.js";
 import { banPlayer, bannedFlsIds, createPlayerBanEnforcer, playerBanFor, unbanPlayer } from "./services/playerBans.js";
+import { findPlayerForLiveAction, playerIsOnlineForLiveAction } from "./playerLiveActions.js";
+import { retireLegacyEdaExchangeBot } from "./services/marketBotRetirement.js";
 
 const config = loadConfig();
+let edaRetirement = { retired: false, addonRemoved: false, migrated: false, changed: false, backupDir: "", cleanupError: "" };
+try {
+  edaRetirement = retireLegacyEdaExchangeBot(config);
+  if (edaRetirement.changed) {
+    console.log(`EDA Exchange Bot retirement complete; Market Bot is managed under Exchange.${edaRetirement.backupDir ? ` Backup: ${edaRetirement.backupDir}` : ""}`);
+  }
+  if (edaRetirement.cleanupError) {
+    console.warn(`EDA Exchange Bot cleanup will be retried at next startup: ${redact(edaRetirement.cleanupError)}`);
+  }
+} catch (error) {
+  // A bad legacy schedule must not be silently discarded. Keep the old addon
+  // bridge available for this process and retry the migration next startup.
+  console.warn(`EDA Exchange Bot retirement deferred: ${redact(error?.message || "Unexpected error.")}`);
+}
 loadPolicies(config.repoRoot);
 const auth = createAuth(config);
 const loginRateLimiter = createLoginRateLimiter();
@@ -84,7 +104,8 @@ const resolveOAuthTier = createOAuthTierResolver({
 const tasks = new TaskManager(config, {
   onMapDown: () => flushBaseRefillQueues({
     flushGenerators: flushQueuedGeneratorRefills,
-    flushWater: flushQueuedWaterRefills
+    flushWater: flushQueuedWaterRefills,
+    flushDeletes: flushQueuedBaseDeletes
   })
 });
 let db = createDb(config);
@@ -99,12 +120,16 @@ let carePackageAutoNextAllowedRun = 0;
 let generatorRefillFlushRunning = false;
 // Same reasoning as generatorRefillFlushRunning, for the water queue.
 let waterRefillFlushRunning = false;
+// Same reasoning as generatorRefillFlushRunning, for the pending-delete queue.
+let baseDeleteFlushRunning = false;
 let messageOfTheDayAutoRunning = false;
 let messageOfTheDayAutoLastRun = 0;
 let messageOfTheDayAutoNextAllowedRun = 0;
 let playerAnnouncementsAutoRunning = false;
 let playerAnnouncementsAutoLastRun = 0;
 let playerAnnouncementsAutoNextAllowedRun = 0;
+let restartQueueAutoRunning = false;
+let restartQueueAutoLastRun = 0;
 const journeyTagsData = loadJourneyTagsData();
 const memoryBalancer = createMemoryBalancer(config);
 const deathPoller = createDeathPoller(config);
@@ -138,7 +163,7 @@ const playerBanEnforcer = createPlayerBanEnforcer({
 });
 
 process.on("unhandledRejection", (error) => {
-  console.error(`Unhandled background rejection: ${redact(error?.message || error)}`);
+  console.error(`Unhandled background rejection: ${redact(error?.message || "Unexpected error.")}`);
 });
 
 async function filterForPlayerScope(session, db, data, getter) {
@@ -212,16 +237,19 @@ createServer(async (req, res) => {
     console.warn("See .env.example for the full list of Discord OAuth environment variables.");
   }
   scheduleBootAutoStart();
+  recoverRestartQueue();
   publicDirectory.start();
   if (discordAdapterEnabled(config)) {
     initializeDiscordAdapterSchema(db).catch((error) => {
-      console.warn(`Discord adapter schema initialization failed: ${redact(error?.message || error)}`);
+      console.warn(`Discord adapter schema initialization failed: ${redact(error?.message || "Unexpected error.")}`);
     });
   }
+  runBackgroundTick("Player playtime tracker", () => duneDb.trackPlayerPlaytime(db));
 });
 
 setInterval(() => {
   runBackgroundTick("Player ban enforcement", () => playerBanEnforcer.tick());
+  runBackgroundTick("Player playtime tracker", () => duneDb.trackPlayerPlaytime(db));
   runBackgroundTick("Care Package auto-grant", carePackageAutoTick);
   runBackgroundTick("Message of the Day", messageOfTheDayAutoTick);
   runBackgroundTick("Player announcements", playerAnnouncementsAutoTick);
@@ -231,6 +259,7 @@ setInterval(() => {
   // Costs one small file read when no base is enrolled, and no database query.
   runBackgroundTick("Bases auto-refill", () => autoRefillScheduler.tick());
   runBackgroundTick("Bases water auto-refill", () => autoRefillWaterScheduler.tick());
+  runBackgroundTick("Restart queue", restartQueueAutoTick);
 }, 10000).unref?.();
 
 setInterval(() => {
@@ -263,6 +292,9 @@ setInterval(() => {
   if (duneDb.listQueuedWaterRefills(config.repoRoot).length) {
     runBackgroundTick("Water refill flush", () => flushQueuedWaterRefills());
   }
+  if (duneDb.listQueuedBaseDeletes(config.repoRoot).length) {
+    runBackgroundTick("Base delete flush", () => flushQueuedBaseDeletes());
+  }
 }, Number.isFinite(generatorRefillFlushIntervalMs) && generatorRefillFlushIntervalMs > 0 ? generatorRefillFlushIntervalMs : 5000).unref?.();
 
 // Every queued-refill write goes through here so it is audited whichever path
@@ -293,11 +325,37 @@ async function flushQueuedWaterRefills() {
   }
 }
 
+// Same guard reasoning as flushQueuedGeneratorRefills. The one full-database
+// safety backup for this pass happens inside flushBaseDeletes's onBeforeApply
+// hook -- lazily, at most once, immediately before the first entry that is
+// actually about to be deleted, not merely because the queue is non-empty.
+async function flushQueuedBaseDeletes() {
+  if (baseDeleteFlushRunning) return { flushed: [] };
+  baseDeleteFlushRunning = true;
+  try {
+    const result = await duneDb.flushBaseDeletes(db, config.repoRoot, {
+      // Matches databaseQuery's explicit mock-mode guard: this runs as a
+      // background tick, not through directDbMutation, so it is not skipped
+      // for free the way a request-time delete's backup call is.
+      onBeforeApply: config.mockMode
+        ? undefined
+        : () => runDune(config, buildDuneArgs("backupCreate"), { env: { DB_BACKUP_ORIGIN: "base-delete" } })
+    });
+    for (const entry of result.flushed || []) audit(config, null, "bases.flush-queued-delete", entry);
+    if (result.backupFailed) {
+      audit(config, null, "bases.flush-queued-delete-backup-failed", { error: result.error, pending: result.pending });
+    }
+    return result;
+  } finally {
+    baseDeleteFlushRunning = false;
+  }
+}
+
 function runBackgroundTick(label, fn) {
   Promise.resolve()
     .then(fn)
     .catch((error) => {
-      const message = String(error?.message || error);
+      const message = String(error?.message || "Unexpected error.");
       if (/connect|database|relation|container|rabbitmq|docker|ECONNREFUSED|ECONNRESET|Connection terminated/i.test(message)) return;
       console.error(`${label} background task failed: ${redact(message)}`);
     });
@@ -334,7 +392,7 @@ async function maybeAutoStartStackOnBoot() {
     "dune-server-overmap"
   ];
   const names = await dockerPsNames().catch((error) => {
-    console.error(`Boot auto-start skipped: ${redact(error.message || error)}`);
+    console.error(`Boot auto-start skipped: ${redact(error?.message || "Unexpected error.")}`);
     return [];
   });
   if (mainContainers.some((name) => names.includes(name))) return;
@@ -347,7 +405,7 @@ async function maybeAutoStartStackOnBoot() {
   });
   child.stdout.on("data", (chunk) => process.stdout.write(`[boot-autostart] ${redact(chunk.toString())}`));
   child.stderr.on("data", (chunk) => process.stderr.write(`[boot-autostart] ${redact(chunk.toString())}`));
-  child.on("error", (error) => console.error(`Boot auto-start failed: ${redact(error.message || error)}`));
+  child.on("error", (error) => console.error(`Boot auto-start failed: ${redact(error?.message || "Unexpected error.")}`));
   child.on("close", (code) => {
     if (code === 0) console.log("Boot auto-start completed.");
     else if (code === 2) console.log("Boot auto-start skipped because manual stop is active for this Linux boot.");
@@ -558,6 +616,10 @@ async function handleApi(req, res) {
     if (body.mode !== undefined) payload.mode = body.mode;
     return task(req, res, "server", "serverConfig", payload);
   }
+  if (path === "/api/server/restart-queue/cancel" && req.method === "POST") return restartQueueCancelRoute(req, res);
+  if (path === "/api/server/restart-queue/restart-now" && req.method === "POST") return restartQueueRestartNowRoute(req, res);
+  if (path === "/api/server/restart-queue" && req.method === "POST") return restartQueueSaveRoute(req, res);
+  if (path === "/api/server/restart-queue") return restartQueueStatusRoute(req, res, url);
   if (path === "/api/server/restart-schedule" && req.method === "POST") return restartScheduleRoute(req, res);
   if (path === "/api/server/restart-schedule") return safeCommandJson(res, "restartScheduleStatus");
   if (path === "/api/server/ip-change-restart" && req.method === "POST") return ipChangeRestartRoute(req, res);
@@ -590,7 +652,7 @@ async function handleApi(req, res) {
   if (path === "/api/backups/delete-all" && req.method === "POST") return task(req, res, "backup", "backupDeleteAll", {});
   if (path === "/api/backups/restore" && req.method === "POST") {
     const body = await readJson(req);
-    return task(req, res, "backup", "backupRestore", { backup: body.backup });
+    return task(req, res, "backup", "backupRestore", { backup: body.backup, identityMode: body.identityMode });
   }
   if (path.match(/^\/api\/backups\/[^/]+\/download$/) && req.method === "GET") {
     const backup = decodeURIComponent(path.split("/").at(-2));
@@ -622,9 +684,7 @@ async function handleApi(req, res) {
   if (path === "/api/settings/iam/policies" && req.method === "GET") {
     const policies = getAllPolicies();
     return json(res, 200, {
-      policies: Object.fromEntries(
-        Object.entries(policies).map(([tier, doc]) => [tier, { version: doc.version, tier: doc.tier, statements: doc.statements }])
-      ),
+      policies,
       actions: Object.keys(ROUTE_ACTIONS).sort(),
       actionMap: ROUTE_ACTIONS,
       namespaces: NAMESPACES
@@ -632,39 +692,17 @@ async function handleApi(req, res) {
   }
   if (path === "/api/settings/iam/policy" && req.method === "PUT") {
     const body = await readJson(req);
-    if (!body || !body.tier || !body.statements) return json(res, 400, { error: "tier and statements are required" });
-    const validActions = new Set(Object.values(ROUTE_ACTIONS));
-    for (const stmt of body.statements) {
-      if (!stmt.Effect || !["Allow", "Deny"].includes(stmt.Effect)) return json(res, 400, { error: `Invalid Effect: ${stmt.Effect}` });
-      const actions = Array.isArray(stmt.Action) ? stmt.Action : [stmt.Action];
-      for (const a of actions) {
-        if (a !== "*" && !a.includes("*") && !validActions.has(a)) return json(res, 400, { error: `Unknown action: ${a}` });
-      }
-    }
-    const policies = getAllPolicies();
-    policies[body.tier] = { version: 1, tier: body.tier, statements: body.statements };
-    setPolicies(policies);
-    return json(res, 200, { ok: true, tier: body.tier });
+    const result = setPolicies(body, config.repoRoot);
+    if (!result.ok) return json(res, 400, result);
+    audit(config, req, "iam.policy-set", { tiers: Object.keys(body) });
+    return json(res, 200, result);
   }
   if (path === "/api/settings/iam/policy/test" && req.method === "POST") {
     const body = await readJson(req);
-    if (!body || !body.statements) return json(res, 400, { error: "statements are required" });
-    const results = {};
-    for (const [route, action] of Object.entries(ROUTE_ACTIONS)) {
-      let allowed = false;
-      for (const stmt of body.statements) {
-        const stmtActions = Array.isArray(stmt.Action) ? stmt.Action : [stmt.Action];
-        for (const pattern of stmtActions) {
-          if (matchAction(pattern, action)) {
-            if (stmt.Effect === "Deny") { allowed = false; break; }
-            if (stmt.Effect === "Allow") allowed = true;
-          }
-        }
-        if (allowed === false && stmt.Effect === "Deny") break;
-      }
-      results[action] = allowed;
-    }
-    return json(res, 200, { results });
+    const testAction = String(body?.action || "").trim();
+    const testTier = String(body?.tier || "").trim();
+    if (!testAction || !testTier) return json(res, 400, { error: "Both action and tier are required." });
+    return json(res, 200, { action: testAction, tier: testTier, allowed: evaluate({ tier: testTier }, testAction) });
   }
 
   if (path === "/api/players") return dbJson(res, async () => {
@@ -712,11 +750,15 @@ async function handleApi(req, res) {
   if (path === "/api/bases/auto-refill") return basesAutoRefillStateRoute(res);
   if (path === "/api/bases/pending-water-refills") return pendingWaterRefillsRoute(res);
   if (path === "/api/bases/auto-refill-water") return basesAutoRefillWaterStateRoute(res);
+  if (path === "/api/bases/pending-deletes") return pendingBaseDeletesRoute(res);
   if (path.match(/^\/api\/bases\/[^/]+\/export$/) && req.method === "GET") return baseBlueprintDownloadRoute(req, res, path);
   if (path.match(/^\/api\/bases\/[^/]+\/refill-generators$/) && req.method === "POST") return baseRefillGeneratorsRoute(req, res, path);
   if (path.match(/^\/api\/bases\/[^/]+\/queued-refill$/) && req.method === "DELETE") return baseCancelQueuedRefillRoute(req, res, path);
   if (path.match(/^\/api\/bases\/[^/]+\/auto-refill$/) && req.method === "POST") return baseAutoRefillToggleRoute(req, res, path);
   if (path.match(/^\/api\/bases\/[^/]+\/water$/) && req.method === "GET") return baseWaterRoute(res, path);
+  if (path.match(/^\/api\/bases\/[^/]+\/inventory$/) && req.method === "GET") return baseInventoryRoute(res, path);
+  if (path.match(/^\/api\/bases\/[^/]+\/containers\/[^/]+$/) && req.method === "GET") return baseContainerSlotsRoute(res, path);
+  if (path.match(/^\/api\/bases\/[^/]+\/containers\/[^/]+\/items\/[^/]+$/) && req.method === "DELETE") return baseContainerItemDeleteRoute(req, res, path);
   if (path.match(/^\/api\/bases\/[^/]+\/refill-water$/) && req.method === "POST") return baseRefillWaterRoute(req, res, path);
   if (path.match(/^\/api\/bases\/[^/]+\/queued-water-refill$/) && req.method === "DELETE") return baseCancelQueuedWaterRefillRoute(req, res, path);
   if (path.match(/^\/api\/bases\/[^/]+\/auto-refill-water$/) && req.method === "POST") return baseAutoRefillWaterToggleRoute(req, res, path);
@@ -724,6 +766,15 @@ async function handleApi(req, res) {
   if (path.match(/^\/api\/bases\/[^/]+\/permissions$/) && req.method === "GET") return basePermissionsRoute(res, path);
   if (path.match(/^\/api\/bases\/[^/]+\/permissions$/) && req.method === "PUT") return baseSetPermissionsRoute(req, res, path);
   if (path.match(/^\/api\/bases\/[^/]+\/system-custodian$/) && req.method === "POST") return baseSystemCustodianRoute(req, res, path);
+  if (path.match(/^\/api\/bases\/[^/]+\/queued-delete$/) && req.method === "DELETE") return baseCancelQueuedDeleteRoute(req, res, path);
+  if (path.match(/^\/api\/bases\/[^/]+$/) && req.method === "DELETE") return baseDeleteRoute(req, res, path);
+  if (path === "/api/vehicles") return dbJson(res, () => duneDb.listVehicles(db, {
+    q: url.searchParams.get("q") || "",
+    page: url.searchParams.get("page") || 0,
+    pageSize: url.searchParams.get("pageSize") || 50,
+    sortColumn: url.searchParams.get("sortColumn") || "name",
+    sortDirection: url.searchParams.get("sortDirection") || "asc"
+  }));
   if (path === "/api/admin/items/catalog") return json(res, 200, { rows: listCatalogItems(config.repoRoot, { q: url.searchParams.get("q") || "", limit: url.searchParams.get("limit") || 500 }) });
   if (path === "/api/admin/items/search") return commandJson(res, "adminItemSearch", { q: url.searchParams.get("q") || "" });
   if (path === "/api/admin/items") return commandJson(res, url.searchParams.get("category") ? "adminItemListCategory" : "adminItemList", { category: url.searchParams.get("category") || "" });
@@ -782,6 +833,7 @@ async function handleApi(req, res) {
   if (path.match(/^\/api\/players\/[^/]+\/give-item$/) && req.method === "POST") return giveSingleItemRoute(req, res, path, "adminGiveItem");
   if (path.match(/^\/api\/players\/[^/]+\/give-items$/) && req.method === "POST") return giveItemsRoute(req, res, path);
   if (path.match(/^\/api\/players\/[^/]+\/give-item-id$/) && req.method === "POST") return giveSingleItemRoute(req, res, path, "adminGiveItemId");
+  if (path.match(/^\/api\/players\/[^/]+\/building-unlocks\/grant$/) && req.method === "POST") return buildingUnlockGrantRoute(req, res, path);
   if (path.match(/^\/api\/players\/[^/]+\/add-xp$/) && req.method === "POST") return playerTask(req, res, path, "adminAddXp");
   if (path.match(/^\/api\/players\/[^/]+\/set-skill-points$/) && req.method === "POST") return playerTask(req, res, path, "adminSetSkillPoints");
   if (path.match(/^\/api\/players\/[^/]+\/set-skill-module$/) && req.method === "POST") return playerTask(req, res, path, "adminSetSkillModule");
@@ -795,7 +847,9 @@ async function handleApi(req, res) {
   if (path.match(/^\/api\/players\/[^/]+\/clean-inventory$/) && req.method === "POST") return playerTask(req, res, path, "adminCleanInventory", "CLEAN INVENTORY");
   if (path.match(/^\/api\/players\/[^/]+\/reset-progression$/) && req.method === "POST") return playerTask(req, res, path, "adminResetProgression", "RESET PROGRESSION");
   if (path.match(/^\/api\/players\/[^/]+\/add-currency$/) && req.method === "POST") return playerDbMutation(req, res, path, "players.add-currency", "ADD CURRENCY", (playerId, body) => duneDb.addCurrency(db, playerId, body));
-  if (path.match(/^\/api\/players\/[^/]+\/add-faction-reputation$/) && req.method === "POST") return playerDbMutation(req, res, path, "players.add-faction-reputation", "ADD FACTION REPUTATION", (playerId, body) => duneDb.addFactionReputation(db, playerId, body));
+  if (path.match(/^\/api\/players\/[^/]+\/add-faction-reputation$/) && req.method === "POST") return playerDbMutation(req, res, path, "players.add-faction-reputation", "ADD FACTION REPUTATION", (playerId, body) => duneDb.addFactionReputation(db, playerId, body, journeyTagsData));
+  if (path.match(/^\/api\/players\/[^/]+\/repair-faction-reputation$/) && req.method === "POST") return playerDbMutation(req, res, path, "players.repair-faction-reputation", "REPAIR FACTION REPUTATION", (playerId) => duneDb.repairFactionReputation(db, playerId, journeyTagsData));
+  if (path.match(/^\/api\/players\/[^/]+\/faction$/) && req.method === "POST") return playerDbMutation(req, res, path, "players.assign-faction", "CHANGE PLAYER FACTION", (playerId, body) => duneDb.setPlayerFaction(db, playerId, body));
   if (path.match(/^\/api\/players\/[^/]+\/add-intel$/) && req.method === "POST") return playerDbMutation(req, res, path, "players.add-intel", "ADD INTEL", (playerId, body) => duneDb.addIntel(db, playerId, body));
   if (path.match(/^\/api\/players\/[^/]+\/specializations\/add-xp$/) && req.method === "POST") return playerDbMutation(req, res, path, "players.specializations.add-xp", "ADD SPECIALIZATION XP", (playerId, body) => duneDb.addSpecializationXp(db, playerId, body));
   if (path.match(/^\/api\/players\/[^/]+\/specializations\/grant-max$/) && req.method === "POST") return playerDbMutation(req, res, path, "players.specializations.grant-max", "GRANT MAX SPECIALIZATION", (playerId, body) => duneDb.grantMaxSpecialization(db, playerId, body));
@@ -816,11 +870,13 @@ async function handleApi(req, res) {
   if (path.match(/^\/api\/players\/[^/]+\/inventory\/[^/]+$/) && req.method === "PATCH") return inventoryUpdateRoute(req, res, path);
   if (path.match(/^\/api\/players\/[^/]+\/crafting-recipes$/)) return dbPlayerRoute(res, path, duneDb.playerCraftingRecipes);
   if (path.match(/^\/api\/players\/[^/]+\/research-items$/)) return dbPlayerRoute(res, path, duneDb.playerResearchItems);
+  if (path.match(/^\/api\/players\/[^/]+\/building-unlocks$/) && req.method === "GET") return buildingUnlocksRoute(res, path);
   if (path.match(/^\/api\/players\/[^/]+\/journey$/)) return dbPlayerRoute(res, path, (database, playerId) => duneDb.playerJourney(database, playerId, journeyTagsData));
-  if (path.match(/^\/api\/players\/[^/]+\/inventory$/)) return dbPlayerRoute(res, path, duneDb.playerInventory);
+  if (path.match(/^\/api\/players\/[^/]+\/inventory$/)) return dbPlayerRoute(res, path, duneDb.playerInventoryAll);
+  if (path.match(/^\/api\/players\/[^/]+\/vehicles$/) && req.method === "GET") return dbPlayerRoute(res, path, (database, playerId) => duneDb.listVehicles(database, { playerId, pageSize: 200 }));
   if (path.match(/^\/api\/players\/[^/]+\/currency$/)) return dbPlayerRoute(res, path, duneDb.playerCurrency);
   if (path.match(/^\/api\/players\/[^/]+\/solaris-coin$/)) return dbPlayerRoute(res, path, duneDb.playerSolarisCoinTotal);
-  if (path.match(/^\/api\/players\/[^/]+\/factions$/)) return dbPlayerRoute(res, path, duneDb.playerFactions);
+  if (path.match(/^\/api\/players\/[^/]+\/factions$/)) return dbPlayerRoute(res, path, (database, playerId) => duneDb.playerFactions(database, playerId, journeyTagsData));
   if (path.match(/^\/api\/players\/[^/]+\/intel$/)) return dbPlayerRoute(res, path, duneDb.playerIntel);
   if (path.match(/^\/api\/players\/[^/]+\/specs$/)) return dbPlayerRoute(res, path, duneDb.playerSpecs);
   if (path.match(/^\/api\/players\/[^/]+\/position$/)) return dbPlayerRoute(res, path, duneDb.playerPosition);
@@ -893,8 +949,49 @@ async function handleApi(req, res) {
   if (path === "/api/maps/choam-terminals" && req.method === "POST") return mapsChoamTerminalInstallRoute(req, res);
   if (path === "/api/maps/choam-terminals" && req.method === "DELETE") return mapsChoamTerminalRemoveRoute(req, res);
   if (path === "/api/maps/choam-terminals") return dbJson(res, () => choamTerminalOverview(db));
+  if (path === "/api/exchange/items") return dbJson(res, () => {
+    const exchangeConfig = readExchangeConfig(config.repoRoot);
+    return listExchangeItems(db, {
+      q: url.searchParams.get("q") || "",
+      page: url.searchParams.get("page") || 0,
+      pageSize: url.searchParams.get("pageSize") || 50,
+      sortColumn: url.searchParams.get("sortColumn") || "display_name",
+      sortDirection: url.searchParams.get("sortDirection") || "asc",
+      owner: url.searchParams.get("owner") || "all",
+      category: url.searchParams.get("category") || "",
+      botOwnerIds: exchangeConfig.botOwnerIds,
+      blacklist: exchangeConfig.blacklistedOwnerIds,
+      includeNpcBroker: exchangeConfig.includeNpcBroker,
+      repoRoot: config.repoRoot
+    });
+  });
+  if (path === "/api/exchange/listings") return dbJson(res, () => {
+    const exchangeConfig = readExchangeConfig(config.repoRoot);
+    return listExchangeListings(db, {
+      templateId: url.searchParams.get("templateId") || "",
+      qualityLevel: url.searchParams.get("quality") || "",
+      owner: url.searchParams.get("owner") || "all",
+      botOwnerIds: exchangeConfig.botOwnerIds,
+      blacklist: exchangeConfig.blacklistedOwnerIds,
+      includeNpcBroker: exchangeConfig.includeNpcBroker
+    });
+  });
+  if (path === "/api/exchange/stats") return dbJson(res, () => {
+    const exchangeConfig = readExchangeConfig(config.repoRoot);
+    return exchangeStats(db, { botOwnerIds: exchangeConfig.botOwnerIds, blacklist: exchangeConfig.blacklistedOwnerIds, includeNpcBroker: exchangeConfig.includeNpcBroker });
+  });
+  if (path === "/api/exchange/config" && req.method === "GET") return json(res, 200, readExchangeConfig(config.repoRoot));
+  if (path === "/api/exchange/config" && req.method === "POST") return exchangeConfigSaveRoute(req, res);
+  if (path === "/api/exchange/market" && req.method === "GET") return dbJson(res, () => marketBotStatus(config, db));
+  if (path === "/api/exchange/market/exchanges" && req.method === "GET") return dbJson(res, () => listMarketExchanges(db));
+  if (path === "/api/exchange/market/buyback/probe" && req.method === "POST") return marketBuybackProbeRoute(req, res);
+  if (path === "/api/exchange/market/buyback/schedule" && req.method === "POST") return marketScheduleSaveRoute(req, res, "buyback");
+  if (path === "/api/exchange/market/seed/schedule" && req.method === "POST") return marketScheduleSaveRoute(req, res, "seed");
+  if (path === "/api/exchange/market/buyback/run" && req.method === "POST") return marketRunNowRoute(req, res, "buyback");
+  if (path === "/api/exchange/market/seed/run" && req.method === "POST") return marketRunNowRoute(req, res, "seed");
   if (path === "/api/maps/user-settings/schema") return userSettingsSchemaRoute(res);
   if (path === "/api/maps/user-settings/restart-pending") return json(res, 200, { pending: existsSync(resolve(config.repoRoot, "runtime/generated/landsraad-restart-required")) });
+  if (path === "/api/maps/user-settings/deferred-pending") return json(res, 200, readDeferredRestartPending(config));
   if (path === "/api/maps/user-settings/values") return userSettingsValuesRoute(res, url);
   if (path === "/api/maps/user-settings/raw" && req.method === "POST") return userSettingsRawWriteRoute(req, res);
   if (path === "/api/maps/user-settings/raw") return userSettingsRawRoute(res, url);
@@ -922,6 +1019,10 @@ async function handleApi(req, res) {
 
 async function addonBridgeRoute(req, res, path) {
   const id = decodeURIComponent(path.split("/").at(-2));
+  if (id === EDA_EXCHANGE_BOT_ADDON_ID && edaRetirement.retired) {
+    audit(config, req, "addons.bridge", { id, ok: false, reason: "Addon retired; use native Market Bot" });
+    return json(res, 410, { error: "EDA Exchange Bot has been retired. Use Exchange > Market Bot in the console." });
+  }
   const clientIp = (req.socket.remoteAddress || "unknown").replace(/^::ffff:/, "");
   const key = `${id}:${clientIp}`;
   const limit = bridgeRateLimiter.check(key);
@@ -996,9 +1097,35 @@ async function addonBridgeRoute(req, res, path) {
     return json(res, 200, { ok: true, result });
   }
   if (action === "ops.health.containers") {
+    // duneDb.addonOpsContainerHealth() (not services/containerHealth.js's
+    // collectContainerHealth(), an independent upstream implementation of
+    // the same feature) -- confirmed via live testing (issue #246) that
+    // `docker stats` has no --filter flag; only `docker ps` supports
+    // label filters. collectContainerHealth() passes --filter directly to
+    // `docker stats`, which does not work. See addonOpsContainerHealth()'s
+    // own comment in duneDb.js for the full verified detail.
     const addon = assertInstalledAddonPermission(config, id, "ops:read");
     const result = await duneDb.addonOpsContainerHealth();
+    const ok = !result.error;
+    audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, ok });
+    return json(res, 200, { ok, result });
+  }
+  if (action === "ops.health.postgres") {
+    const addon = assertInstalledAddonPermission(config, id, "ops:read");
+    const result = await duneDb.addonOpsPostgresHealth();
     audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, ok: true });
+    return json(res, 200, { ok: true, result });
+  }
+  if (action === "ops.health.rabbitmq") {
+    const addon = assertInstalledAddonPermission(config, id, "ops:read");
+    const result = await duneDb.addonOpsRabbitmqHealth();
+    audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, ok: true });
+    return json(res, 200, { ok: true, result });
+  }
+  if (action === "server.hardware.status") {
+    const addon = assertInstalledAddonPermission(config, id, "server:status");
+    const result = await hardwareStatusSnapshot();
+    audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, sensorCount: result.temperatures.length, ok: true });
     return json(res, 200, { ok: true, result });
   }
   if (action === "admin.items.grant") {
@@ -1020,8 +1147,8 @@ async function addonBridgeRoute(req, res, path) {
       });
       return json(res, 200, { ok: true, result });
     } catch (error) {
-      audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, requestId: String(body.requestId || ""), ok: false, error: redact(error.message || error) });
-      return json(res, 400, { ok: false, error: redact(error.message || error) });
+      audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, requestId: String(body.requestId || ""), ok: false, error: redact(error?.message || "Unexpected error.") });
+      return json(res, 400, { ok: false, error: redact(error?.message || "Unexpected error.") });
     }
   }
   if (action.startsWith("scheduler.")) return addonSchedulerBridgeAction(req, res, id, action, body);
@@ -1068,12 +1195,14 @@ async function addonSchedulerBridgeAction(req, res, id, action, body) {
     if (leavesEnabled) assertInstalledAddonPermission(config, id, ADDON_SCHEDULER_PERMISSION);
     if (!applyMutationRateLimit(req, res, `addon:${id}:scheduler.schedule.set`)) return;
     try {
-      const result = saveBuybackSchedule(config, payload);
+      // Bridge saves always mark the schedule addon-sourced, so scheduled runs
+      // keep re-verifying the addon's approved permissions.
+      const result = saveBuybackSchedule(config, payload, { source: "addon" });
       audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, enabled: result.enabled, intervalMinutes: result.intervalMinutes, exchangeId: result.exchangeId, buybackPercent: result.buybackPercent, maxBuys: result.maxBuys, ok: true });
       return json(res, 200, { ok: true, result });
     } catch (error) {
-      audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, ok: false, error: redact(error.message || error) });
-      return json(res, 400, { ok: false, error: redact(error.message || error) });
+      audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, ok: false, error: redact(error?.message || "Unexpected error.") });
+      return json(res, 400, { ok: false, error: redact(error?.message || "Unexpected error.") });
     }
   }
   if (action === "scheduler.probe") {
@@ -1083,8 +1212,8 @@ async function addonSchedulerBridgeAction(req, res, id, action, body) {
       audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, eligible: result.eligible, exchangeId: result.exchangeId, ok: true });
       return json(res, 200, { ok: true, result });
     } catch (error) {
-      audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, ok: false, error: redact(error.message || error) });
-      return json(res, 400, { ok: false, error: redact(error.message || error) });
+      audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, ok: false, error: redact(error?.message || "Unexpected error.") });
+      return json(res, 400, { ok: false, error: redact(error?.message || "Unexpected error.") });
     }
   }
   if (action === "scheduler.run") {
@@ -1095,8 +1224,41 @@ async function addonSchedulerBridgeAction(req, res, id, action, body) {
       audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, status: result.status, eligible: result.eligible, purchased: result.purchased, ok: true });
       return json(res, 200, { ok: true, result });
     } catch (error) {
-      audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, ok: false, error: redact(error.message || error) });
-      return json(res, 400, { ok: false, error: redact(error.message || error) });
+      audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, ok: false, error: redact(error?.message || "Unexpected error.") });
+      return json(res, 400, { ok: false, error: redact(error?.message || "Unexpected error.") });
+    }
+  }
+  if (action === "scheduler.seed.schedule.get") {
+    const addon = assertInstalledAddonPermission(config, id, "database:read");
+    const result = readSeedSchedule(config);
+    audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, ok: true });
+    return json(res, 200, { ok: true, result });
+  }
+  if (action === "scheduler.seed.schedule.set") {
+    const payload = body.schedule && typeof body.schedule === "object" ? body.schedule : body;
+    const addon = assertInstalledAddonPermission(config, id, "database:write");
+    const leavesEnabled = payload.enabled === undefined ? readSeedSchedule(config).enabled : payload.enabled === true;
+    if (leavesEnabled) assertInstalledAddonPermission(config, id, ADDON_SCHEDULER_PERMISSION);
+    if (!applyMutationRateLimit(req, res, `addon:${id}:scheduler.seed.schedule.set`)) return;
+    try {
+      const result = saveSeedSchedule(config, payload, { source: "addon" });
+      audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, enabled: result.enabled, intervalMinutes: result.intervalMinutes, exchangeId: result.exchangeId, priceMultiplier: result.priceMultiplier, ok: true });
+      return json(res, 200, { ok: true, result });
+    } catch (error) {
+      audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, ok: false, error: redact(error?.message || "Unexpected error.") });
+      return json(res, 400, { ok: false, error: redact(error?.message || "Unexpected error.") });
+    }
+  }
+  if (action === "scheduler.seed.run") {
+    const addon = assertInstalledAddonPermission(config, id, "database:write");
+    if (!applyMutationRateLimit(req, res, `addon:${id}:scheduler.seed.run`)) return;
+    try {
+      const result = await addonJobScheduler.runNow({ trigger: "manual", job: "seed" });
+      audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, status: result.status, listingCount: result.listingCount, ok: true });
+      return json(res, 200, { ok: true, result });
+    } catch (error) {
+      audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, ok: false, error: redact(error?.message || "Unexpected error.") });
+      return json(res, 400, { ok: false, error: redact(error?.message || "Unexpected error.") });
     }
   }
   audit(config, req, "addons.bridge", { id, action, ok: false, reason: "Unsupported addon action" });
@@ -1174,7 +1336,7 @@ async function liveMapTeleportPlayerRoute(req, res) {
     try {
       buildDuneArgs("adminTeleport", payload);
     } catch (error) {
-      return json(res, 400, { error: redact(error.message || error) });
+      return json(res, 400, { error: redact(error?.message || "Unexpected error.") });
     }
     if (!applyMutationRateLimit(req, res, "live-map.teleport.live")) return;
     audit(config, req, "live-map.teleport.live", { playerId, x: payload.x, y: payload.y, z: payload.z, partitionId: payload.partitionId });
@@ -1186,7 +1348,7 @@ async function liveMapTeleportPlayerRoute(req, res) {
     audit(config, req, "live-map.teleport.offline", { playerId, supported: result.supported, x: payload.x, y: payload.y, z: payload.z, partitionId: payload.partitionId });
     return json(res, 200, { path: "offline", ...result });
   } catch (error) {
-    audit(config, req, "live-map.teleport.offline", { playerId, supported: false, error: redact(error.message || error) });
+    audit(config, req, "live-map.teleport.offline", { playerId, supported: false, error: redact(error?.message || "Unexpected error.") });
     const payload = apiErrorPayload(error, 400);
     return json(res, payload.status, payload.body);
   }
@@ -1233,9 +1395,10 @@ async function safeCommandJson(res, operation, payload = {}) {
 }
 
 async function backupsListRoute(res) {
-  if (config.mockMode) return json(res, 200, { ...mockCommand("backupList"), rows: [] });
+  const currentBattlegroupId = readCurrentBattlegroupId(config) || "Unknown";
+  if (config.mockMode) return json(res, 200, { ...mockCommand("backupList"), currentBattlegroupId, rows: [] });
   const result = await runDune(config, buildDuneArgs("backupList"));
-  return json(res, 200, { operation: "backupList", stdout: result.stdout, stderr: result.stderr, exitCode: result.code, rows: enrichBackupRows(config, parseBackupListRows(result.stdout)) });
+  return json(res, 200, { operation: "backupList", stdout: result.stdout, stderr: result.stderr, exitCode: result.code, currentBattlegroupId, rows: enrichBackupRows(config, parseBackupListRows(result.stdout)) });
 }
 
 async function externalBackupImportRoute(req, res) {
@@ -1342,13 +1505,77 @@ async function mapsChoamTerminalRemoveRoute(req, res) {
   return dbJson(res, () => removeChoamTerminals(db, body));
 }
 
+async function exchangeConfigSaveRoute(req, res) {
+  const body = await readJson(req);
+  if (!applyMutationRateLimit(req, res, "exchange.config")) return;
+  audit(config, req, "exchange.config", {
+    botOwnerIds: Array.isArray(body?.botOwnerIds) ? body.botOwnerIds.length : 0,
+    blacklistedOwnerIds: Array.isArray(body?.blacklistedOwnerIds) ? body.blacklistedOwnerIds.length : 0
+  });
+  try {
+    return json(res, 200, saveExchangeConfig(config.repoRoot, body));
+  } catch (error) {
+    const payload = apiErrorPayload(error, 400);
+    return json(res, payload.status, { supported: false, ...payload.body });
+  }
+}
+
+// ---- First-class Market Bot (console-managed seed/buyback) ----
+//
+// Same engine as the EDA Exchange Bot addon's scheduler bridge, but managed
+// natively: schedules saved here are source:"console" (no installed addon or
+// addon permission approval required — authorization is the RBAC action on
+// these routes), and manual runs reuse the shared addonJobScheduler so a
+// console-triggered sweep can never overlap an addon-scheduled one.
+
+async function marketBuybackProbeRoute(req, res) {
+  const body = await readJson(req);
+  try {
+    const result = await probeBuybackEligibility(config, db, body && typeof body === "object" ? body : {});
+    audit(config, req, "exchange.market", { op: "buyback-probe", eligible: result.eligible, exchangeId: result.exchangeId, ok: true });
+    return json(res, 200, result);
+  } catch (error) {
+    audit(config, req, "exchange.market", { op: "buyback-probe", ok: false, error: redact(error?.message || "Unexpected error.") });
+    const payload = apiErrorPayload(error, 400);
+    return json(res, payload.status, payload.body);
+  }
+}
+
+async function marketScheduleSaveRoute(req, res, job) {
+  const body = await readJson(req);
+  if (!applyMutationRateLimit(req, res, `exchange.market.${job}.schedule`)) return;
+  const payload = body?.schedule && typeof body.schedule === "object" ? body.schedule : (body || {});
+  try {
+    const result = job === "seed" ? saveMarketSeedSchedule(config, payload) : saveMarketBuybackSchedule(config, payload);
+    audit(config, req, "exchange.market", { op: `${job}-schedule`, enabled: result.enabled, intervalMinutes: result.intervalMinutes, exchangeId: result.exchangeId, ok: true });
+    return json(res, 200, result);
+  } catch (error) {
+    audit(config, req, "exchange.market", { op: `${job}-schedule`, ok: false, error: redact(error?.message || "Unexpected error.") });
+    const payload = apiErrorPayload(error, 400);
+    return json(res, payload.status, payload.body);
+  }
+}
+
+async function marketRunNowRoute(req, res, job) {
+  if (!applyMutationRateLimit(req, res, `exchange.market.${job}.run`)) return;
+  try {
+    const result = await addonJobScheduler.runNow({ trigger: "console", job });
+    audit(config, req, "exchange.market", { op: `${job}-run`, status: result.status, purchased: result.purchased, listingCount: result.listingCount, ok: true });
+    return json(res, 200, result);
+  } catch (error) {
+    audit(config, req, "exchange.market", { op: `${job}-run`, ok: false, error: redact(error?.message || "Unexpected error.") });
+    const payload = apiErrorPayload(error, 400);
+    return json(res, payload.status, payload.body);
+  }
+}
+
 async function safeCommand(operation, payload = {}) {
   try {
     const args = buildDuneArgs(operation, payload);
     const result = await runDune(config, args);
     return { operation, stdout: result.stdout, stderr: result.stderr, exitCode: result.code };
   } catch (error) {
-    return { operation, stdout: redact(error.stdout || ""), stderr: redact(error.stderr || error.message || error), exitCode: error.code || 1 };
+    return { operation, stdout: redact(error.stdout || ""), stderr: redact(error.stderr || error?.message || "Unexpected error."), exitCode: error.code || 1 };
   }
 }
 
@@ -1576,7 +1803,7 @@ async function dbJson(res, fn) {
 }
 
 function apiErrorPayload(error, fallbackStatus = 500) {
-  const rawMessage = String(error?.message || error || "");
+  const rawMessage = String(error?.message || "Unexpected error.");
   if (isPostgresUnavailableError(error, rawMessage)) {
     return {
       status: 503,
@@ -1586,13 +1813,24 @@ function apiErrorPayload(error, fallbackStatus = 500) {
   const message = redact(friendlyJsonError(rawMessage));
   return {
     status: error?.statusCode || fallbackStatus,
-    body: { error: message, reason: message, details: error?.details || undefined }
+    body: { error: message, reason: message }
   };
 }
 
 function isPostgresUnavailableError(error, rawMessage = "") {
+  // Note: error?.code === "ECONNREFUSED" and the generic "connect
+  // ECONNREFUSED" regex below already catch every real case regardless
+  // of which port Postgres is configured on -- this specific-port regex
+  // is effectively redundant, but is kept (now port-aware instead of
+  // hardcoded to the stock port 15432) for clearer log/error matching on
+  // deployments with a non-default configured Postgres port. Pass
+  // config.repoRoot explicitly rather than relying on resolvePorts()'s
+  // process.cwd() default coincidentally matching it -- postgres itself
+  // is env-var-only so this doesn't change behavior today, but avoids
+  // depending on that coincidence for any future profile-backed field.
+  const postgresPort = resolvePorts(process.env, config.repoRoot).postgres;
   return error?.code === "ECONNREFUSED"
-    || /ECONNREFUSED.*127\.0\.0\.1:15432/i.test(rawMessage)
+    || new RegExp(`ECONNREFUSED.*127\\.0\\.0\\.1:${postgresPort}`, "i").test(rawMessage)
     || /connect\s+ECONNREFUSED/i.test(rawMessage);
 }
 
@@ -1613,7 +1851,7 @@ async function exportJson(res, filename, fn) {
     res.end(JSON.stringify(data, null, 2));
   } catch (error) {
     const status = error.unsupported ? 501 : 500;
-    json(res, status, { supported: false, error: redact(error.message || error), reason: redact(error.message || error), details: error.details || undefined });
+    json(res, status, { supported: false, error: redact(error?.message || "Unexpected error."), reason: redact(error?.message || "Unexpected error.") });
   }
 }
 
@@ -1650,10 +1888,285 @@ async function task(req, res, type, operation, payload) {
   try {
     buildDuneArgs(operation, payload);
   } catch (error) {
-    return json(res, 400, { error: redact(error.message || error) });
+    return json(res, 400, { error: redact(error?.message || "Unexpected error.") });
   }
+  if (await maybeQueueRestart(req, res, type, operation, payload)) return;
   audit(config, req, `task.${operation}`, payload);
   return json(res, 202, { task: tasks.create(type, operation, payload) });
+}
+
+// Restart Queue gate. When the queue is enabled and real players are online, a
+// console-triggered restart becomes a countdown instead of running immediately.
+// Returns true when it has already sent the HTTP response (queued or rejected),
+// false to let the caller restart as normal. An explicit `?restartQueue=immediate`
+// override, a disabled queue, an empty battlegroup, or an undeterminable online
+// count all fall through to an immediate restart. The countdown processor
+// dispatches via tasks.create() directly, so it never re-enters this gate.
+async function maybeQueueRestart(req, res, type, operation, payload) {
+  const classification = restartQueue.classifyRestart(operation, payload);
+  if (!classification) return false;
+  let settings;
+  try {
+    settings = restartQueue.readSettings(config);
+  } catch {
+    return false;
+  }
+  if (!settings.enabled) return false;
+  if (restartQueueImmediateRequested(req)) {
+    audit(config, req, "restart-queue.override-immediate", { operation, target: classification.target });
+    return false;
+  }
+  let online = 0;
+  let battlegroupOnline = null;
+  try {
+    const scoped = await scopedOnlineCount(classification);
+    online = scoped.online;
+    battlegroupOnline = scoped.battlegroupOnline;
+  } catch {
+    // If we cannot read the online count the database is usually down or
+    // restarting -- there are no players to protect, so let the restart proceed.
+    return false;
+  }
+  if (online <= 0) return false;
+
+  const decision = restartQueue.canQueue(restartQueue.readState(config).entries, classification.target, classification.mapKey);
+  if (!decision.ok) {
+    json(res, 409, { queued: false, error: decision.reason, state: restartQueue.publicState(config) });
+    return true;
+  }
+  const entry = restartQueue.appendEntry(config, {
+    target: classification.target,
+    type,
+    operation,
+    payload,
+    mapKey: classification.mapKey,
+    mapLabel: classification.mapLabel,
+    partitionId: classification.partitionId,
+    map: classification.map,
+    requestedBy: "web-admin",
+    countdownMinutes: settings.defaultCountdownMinutes,
+    now: Date.now()
+  });
+  audit(config, req, "restart-queue.enqueue", { operation, target: classification.target, mapLabel: classification.mapLabel, entryId: entry.id, online, battlegroupOnline });
+  recordAdminHistory(config, {
+    command: "web-restart-queue",
+    target: classification.target === "battlegroup" ? "battlegroup" : classification.mapLabel,
+    friendly: "Restart Queue",
+    path: "runtime/generated/restart-queue-state.json",
+    result: "queued",
+    message: classification.target !== "battlegroup" && battlegroupOnline !== null && battlegroupOnline !== online
+      ? `${settings.defaultCountdownMinutes}-minute countdown (${online} online on this map, ${battlegroupOnline} in the battlegroup)`
+      : `${settings.defaultCountdownMinutes}-minute countdown (${online} online)`
+  });
+  json(res, 202, { queued: true, online, battlegroupOnline, entryId: entry.id, state: restartQueue.publicState(config) });
+  return true;
+}
+
+// Online count for a restart decision, scoped to the actual target: a
+// battlegroup restart affects everyone, but a map/sietch restart only affects
+// players on that partition, so it must not be gated (or auto-run) by who
+// happens to be online elsewhere. Always also returns the battlegroup-wide
+// figure so callers can surface both ("2 online on this map, 5 in the
+// battlegroup") -- for a battlegroup classification the two are the same
+// query. Falls back to the battlegroup count when the target's map/partition
+// can't be resolved, so an unresolvable target never silently reports 0.
+async function scopedOnlineCount(classification) {
+  const battlegroup = await duneDb.countOnlinePlayers(db);
+  const battlegroupOnline = battlegroup.supported ? battlegroup.online : null;
+  if (classification.target === "battlegroup") {
+    return { online: battlegroupOnline ?? 0, battlegroupOnline };
+  }
+  const scoped = await duneDb.countOnlinePlayersForTarget(db, { partitionId: classification.partitionId, map: classification.map });
+  return { online: scoped.supported ? scoped.online : (battlegroupOnline ?? 0), battlegroupOnline };
+}
+
+function restartQueueImmediateRequested(req) {
+  try {
+    const parsed = new URL(req.url, "http://localhost");
+    const value = String(
+      parsed.searchParams.get("restartQueue") || parsed.searchParams.get("queueMode") || parsed.searchParams.get("immediate") || ""
+    ).toLowerCase();
+    return value === "immediate" || value === "1" || value === "true";
+  } catch {
+    return false;
+  }
+}
+
+// Dispatch an entry's underlying restart. Flips the write-ahead `restarting`
+// marker and persists BEFORE dispatch so a mid-restart console bounce (a
+// battlegroup restart takes the console container with it) never re-fires it on
+// boot, then removes the entry so the section returns to idle.
+async function executeRestartEntry(entry) {
+  if (!entry) return;
+  try {
+    restartQueue.markEntryRestarting(config, entry.id);
+    audit(config, null, "restart-queue.execute", { operation: entry.operation, target: entry.target, mapLabel: entry.mapLabel, entryId: entry.id });
+    tasks.create(entry.type || "server", entry.operation, entry.payload || {});
+    restartQueue.removeEntry(config, entry.id);
+  } catch (error) {
+    console.error(`Restart queue execution failed for ${entry.operation}: ${redact(error?.message || "Unexpected error.")}`);
+  }
+}
+
+async function restartQueueAutoTick() {
+  if (restartQueueAutoRunning) return;
+  const now = Date.now();
+  if (now - restartQueueAutoLastRun < 5000) return;
+  let state;
+  try {
+    state = restartQueue.readState(config);
+  } catch {
+    return;
+  }
+  if (!state.entries.length) return;
+  restartQueueAutoRunning = true;
+  restartQueueAutoLastRun = now;
+  try {
+    const settings = restartQueue.readSettings(config);
+    let battlegroupOnline = null;
+    try {
+      const count = await duneDb.countOnlinePlayers(db);
+      battlegroupOnline = count.supported ? count.online : null;
+    } catch {
+      battlegroupOnline = null;
+    }
+    for (const entry of state.entries) {
+      if (entry.status !== "counting") continue;
+      // Battlegroup entries were already scoped to everyone by the query above.
+      // A map entry must only look at players on that specific partition --
+      // otherwise a map with nobody on it would keep counting down just
+      // because players are online elsewhere in the battlegroup, and (worse)
+      // a map WITH players would auto-execute the moment the battlegroup as a
+      // whole happened to read zero.
+      let online = battlegroupOnline;
+      if (entry.target !== "battlegroup") {
+        try {
+          const scoped = await duneDb.countOnlinePlayersForTarget(db, { partitionId: entry.partitionId, map: entry.map });
+          online = scoped.supported ? scoped.online : battlegroupOnline;
+        } catch {
+          online = battlegroupOnline;
+        }
+      }
+      if (online === 0) {
+        await executeRestartEntry(entry);
+        continue;
+      }
+      for (const mark of restartQueue.checkpointsDue(entry, settings.broadcastCheckpoints, now)) {
+        try {
+          await restartQueue.sendWarning(config, entry, mark, settings);
+          restartQueue.recordCheckpointSent(config, entry.id, mark);
+        } catch (error) {
+          // Leave the mark unrecorded so the next tick retries it. Infra errors
+          // (RabbitMQ/container down) are expected transiently during a restart.
+          const message = String(error?.message || "Unexpected error.");
+          if (!/publish|rabbitmq|docker|container|ECONNREFUSED|ECONNRESET/i.test(message)) {
+            console.error(`Restart queue warning failed: ${redact(message)}`);
+          }
+        }
+      }
+      if (Date.now() >= entry.restartAt) await executeRestartEntry(entry);
+    }
+  } finally {
+    restartQueueAutoRunning = false;
+  }
+}
+
+// One-time boot reconciliation of the persisted queue. See restartQueue.recover.
+function recoverRestartQueue() {
+  let state;
+  try {
+    state = restartQueue.readState(config);
+  } catch {
+    return;
+  }
+  if (!state.entries.length) return;
+  const settings = restartQueue.readSettings(config);
+  const result = restartQueue.recover(state, Date.now(), settings.recoveryGraceMinutes);
+  restartQueue.writeState(config, result.keep);
+  for (const entry of result.cleared) audit(config, null, "restart-queue.recovered-cleared", { entryId: entry.id, operation: entry.operation });
+  for (const entry of result.discarded) audit(config, null, "restart-queue.recovered-discarded", { entryId: entry.id, operation: entry.operation });
+  for (const entry of result.executeNow) void executeRestartEntry(entry);
+  if (result.resume.length) console.log(`Restart queue resumed ${result.resume.length} countdown(s) after boot.`);
+}
+
+// `partitionId`/`map` scope `playersOnline` to a specific restart target (the
+// interception dialog passes these before the admin has committed to a
+// restart, so it can show "2 online on this map" instead of the battlegroup
+// figure). `battlegroupPlayersOnline` is always the unscoped count -- for a
+// battlegroup-wide request the two are identical -- so the UI can show both
+// when they differ.
+async function restartQueueStatusRoute(req, res, url) {
+  const settings = restartQueue.readSettings(config);
+  let online = null;
+  let battlegroupOnline = null;
+  let supported = true;
+  try {
+    const count = await duneDb.countOnlinePlayers(db);
+    battlegroupOnline = count.supported ? count.online : null;
+    supported = count.supported;
+    online = battlegroupOnline;
+  } catch {
+    online = null;
+    battlegroupOnline = null;
+    supported = false;
+  }
+  const partitionId = Number(url?.searchParams?.get("partitionId") || 0);
+  const map = String(url?.searchParams?.get("map") || "").trim();
+  if (partitionId > 0 || map) {
+    try {
+      const scoped = await duneDb.countOnlinePlayersForTarget(db, { partitionId, map });
+      if (scoped.supported) online = scoped.online;
+    } catch {
+      // Keep the battlegroup-wide fallback already assigned above.
+    }
+  }
+  return json(res, 200, {
+    settings,
+    defaults: restartQueue.defaultSettings(),
+    state: restartQueue.publicState(config),
+    playersOnline: online,
+    battlegroupPlayersOnline: battlegroupOnline,
+    playersOnlineSupported: supported
+  });
+}
+
+async function restartQueueSaveRoute(req, res) {
+  const body = await readJson(req);
+  try {
+    const result = restartQueue.saveSettings(config, body);
+    audit(config, req, "restart-queue.save", { enabled: result.settings.enabled, defaultCountdownMinutes: result.settings.defaultCountdownMinutes });
+    recordAdminHistory(config, {
+      command: "web-restart-queue",
+      target: "server",
+      friendly: "Restart Queue",
+      path: "runtime/generated/restart-queue.json",
+      result: "saved",
+      message: result.settings.enabled ? "enabled" : "disabled"
+    });
+    return json(res, 200, { ok: true, ...result, state: restartQueue.publicState(config) });
+  } catch (error) {
+    return json(res, 400, { error: redact(error?.message || "Unexpected error.") });
+  }
+}
+
+async function restartQueueCancelRoute(req, res) {
+  const body = await readJson(req);
+  const id = String(body.id || "").trim();
+  if (!id) return json(res, 400, { error: "A queue entry id is required." });
+  restartQueue.removeEntry(config, id);
+  audit(config, req, "restart-queue.cancel", { entryId: id });
+  return json(res, 200, { ok: true, state: restartQueue.publicState(config) });
+}
+
+async function restartQueueRestartNowRoute(req, res) {
+  const body = await readJson(req);
+  const id = String(body.id || "").trim();
+  if (!id) return json(res, 400, { error: "A queue entry id is required." });
+  const entry = restartQueue.readState(config).entries.find((candidate) => candidate.id === id);
+  if (!entry) return json(res, 404, { error: "That restart is no longer queued." });
+  audit(config, req, "restart-queue.restart-now", { entryId: id });
+  await executeRestartEntry(entry);
+  return json(res, 200, { ok: true, state: restartQueue.publicState(config) });
 }
 
 async function characterTransferSettingsRoute(req, res) {
@@ -1666,7 +2179,7 @@ async function characterTransferSettingsRoute(req, res) {
     audit(config, req, "admin.character-transfer-settings.save", { restoreDefaults: Boolean(body.restoreDefaults), settings: result.settings });
     return json(res, 202, { ok: true, settings: result.settings, path: result.path, task: tasks.create("server", "restartService", payload) });
   } catch (error) {
-    return json(res, error.statusCode || 500, { error: redact(error.message || error) });
+    return json(res, error.statusCode || 500, { error: redact(error?.message || "Unexpected error.") });
   }
 }
 
@@ -1702,8 +2215,8 @@ async function messageOfTheDayRoute(req, res) {
       }
     });
   } catch (error) {
-    audit(config, req, "admin.message-of-the-day.save", { supported: false, error: redact(error.message || error) });
-    return json(res, error.statusCode || 400, { error: redact(error.message || error) });
+    audit(config, req, "admin.message-of-the-day.save", { supported: false, error: redact(error?.message || "Unexpected error.") });
+    return json(res, error.statusCode || 400, { error: redact(error?.message || "Unexpected error.") });
   }
 }
 
@@ -1728,8 +2241,8 @@ async function playerAnnouncementsRoute(req, res) {
     });
     return json(res, 200, { ok: true, ...result });
   } catch (error) {
-    audit(config, req, "admin.player-announcements.save", { supported: false, error: redact(error.message || error) });
-    return json(res, error.statusCode || 400, { error: redact(error.message || error) });
+    audit(config, req, "admin.player-announcements.save", { supported: false, error: redact(error?.message || "Unexpected error.") });
+    return json(res, error.statusCode || 400, { error: redact(error?.message || "Unexpected error.") });
   }
 }
 
@@ -1752,7 +2265,7 @@ async function landsraadRoute(req, res, action) {
     audit(config, req, `admin.landsraad.${action}`, { ...body, ok: true });
     return json(res, 200, result);
   } catch (error) {
-    audit(config, req, `admin.landsraad.${action}`, { ...body, ok: false, error: redact(error.message || error) });
+    audit(config, req, `admin.landsraad.${action}`, { ...body, ok: false, error: redact(error?.message || "Unexpected error.") });
     const payload = apiErrorPayload(error, error.unsupported ? 501 : 400);
     return json(res, payload.status, { supported: false, ...payload.body });
   }
@@ -1789,7 +2302,7 @@ async function memorySwapStatusRoute(res) {
     const result = await runDune(config, buildDuneArgs("memorySwapStatus"), { timeoutMs: 15000 });
     return json(res, 200, parseMemorySwapStatus(result.stdout));
   } catch (error) {
-    return json(res, 500, { error: redact(error.message || error) });
+    return json(res, 500, { error: redact(error?.message || "Unexpected error.") });
   }
 }
 
@@ -1799,7 +2312,7 @@ async function memorySwapRoute(req, res) {
   const phrase = enabled ? "ENABLE MEMORY SWAP" : "DISABLE MEMORY SWAP";
   if (body.confirmation !== phrase) return json(res, 400, { error: `Confirmation phrase required: ${phrase}` });
   const operation = enabled ? "memorySwapEnable" : "memorySwapDisable";
-  audit(config, req, "maps.memory.swap", { enabled, perServerGiB: body.perServerGiB, poolGiB: body.poolGiB });
+  audit(config, req, "maps.memory.swap", { enabled, perServerGiB: body.perServerGiB, poolGiB: body.poolGiB, swappiness: body.swappiness });
   return task(req, res, "maps", operation, body);
 }
 
@@ -1857,7 +2370,7 @@ async function userSettingsSchemaRoute(res) {
     const result = await runDune(config, buildDuneArgs("userSettingsMetadata"), { timeoutMs: 8000 });
     return json(res, 200, JSON.parse(result.stdout || "{}"));
   } catch (error) {
-    return json(res, 500, { error: redact(error.message || error) });
+    return json(res, 500, { error: redact(error?.message || "Unexpected error.") });
   }
 }
 
@@ -1878,7 +2391,7 @@ async function userSettingsRawRoute(res, url) {
     const result = await runDune(config, buildDuneArgs(operation, { map, partitionId }), { timeoutMs: 8000, redactOutput: false });
     return json(res, 200, { content: result.stdout || "" });
   } catch (error) {
-    return json(res, 500, { error: redact(error.message || error) });
+    return json(res, 500, { error: redact(error?.message || "Unexpected error.") });
   }
 }
 
@@ -1901,7 +2414,7 @@ async function userSettingsValuesRoute(res, url) {
     const result = await runDune(config, buildDuneArgs(operation, { map, partitionId }), { timeoutMs: 8000 });
     return json(res, 200, { stdout: result.stdout || "" });
   } catch (error) {
-    return json(res, 500, { error: redact(error.message || error) });
+    return json(res, 500, { error: redact(error?.message || "Unexpected error.") });
   }
 }
 
@@ -1909,6 +2422,8 @@ async function userSettingsSaveRoute(req, res) {
   const body = await readJson(req);
   const payload = userSettingsTaskPayload(body);
   audit(config, req, "maps.user-settings.save", { scope: payload.scope, map: payload.map, partitionId: payload.partitionId, restartMode: payload.restartMode });
+  if (body.deferRestart === true) markDeferredRestartPending(config, deferredRestartLabel(payload));
+  if (await maybeQueueRestart(req, res, "maps", "userSettingsSaveAndRestart", payload)) return;
   return json(res, 202, { task: tasks.create("maps", "userSettingsSaveAndRestart", payload) });
 }
 
@@ -1917,6 +2432,8 @@ async function userSettingsResetRoute(req, res) {
   if (body.confirmation !== "RESTORE MAP DEFAULTS") return json(res, 400, { error: "Confirmation phrase required: RESTORE MAP DEFAULTS" });
   const payload = userSettingsTaskPayload({ ...body, values: {} });
   audit(config, req, "maps.user-settings.reset", { scope: payload.scope, map: payload.map, partitionId: payload.partitionId, restartMode: payload.restartMode });
+  if (body.deferRestart === true) markDeferredRestartPending(config, deferredRestartLabel(payload));
+  if (await maybeQueueRestart(req, res, "maps", "userSettingsResetAndRestart", payload)) return;
   return json(res, 202, { task: tasks.create("maps", "userSettingsResetAndRestart", payload) });
 }
 
@@ -1924,6 +2441,8 @@ async function userSettingsRawWriteRoute(req, res) {
   const body = await readJson(req);
   const payload = userSettingsTaskPayload({ ...body, values: {}, content: String(body.content || "") });
   audit(config, req, "maps.user-settings.raw-write", { scope: payload.scope, map: payload.map, partitionId: payload.partitionId, restartMode: payload.restartMode });
+  if (body.deferRestart === true) markDeferredRestartPending(config, deferredRestartLabel(payload));
+  if (await maybeQueueRestart(req, res, "maps", "userSettingsRawAndRestart", payload)) return;
   return json(res, 202, { task: tasks.create("maps", "userSettingsRawAndRestart", payload) });
 }
 
@@ -1932,7 +2451,16 @@ function userSettingsTaskPayload(body) {
   const map = String(body.map || "Survival_1");
   const partitionId = String(body.partitionId || "").trim();
   const values = body.values && typeof body.values === "object" && !Array.isArray(body.values) ? body.values : {};
-  const restart = body.restart === false ? { restartMode: "none", restartLabel: "saved configuration" } : restartPayload(scope, map, partitionId);
+  // "Restart later": the admin chose to save (and fully materialize to disk)
+  // without restarting yet -- distinct from restart:false, which means the
+  // change never needed a restart at all. Both end up restartMode:"none" for
+  // the task executor, but only this one marks the deferred-restart-pending
+  // indicator (see markDeferredRestartPending below).
+  const restart = body.restart === false
+    ? { restartMode: "none", restartLabel: "saved configuration" }
+    : body.deferRestart === true
+      ? { restartMode: "none", restartLabel: "deferred until the next battlegroup restart" }
+      : restartPayload(scope, map, partitionId);
   return {
     scope,
     map,
@@ -1943,10 +2471,47 @@ function userSettingsTaskPayload(body) {
   };
 }
 
+// Marker for the generic "settings saved, restart deferred" indicator (Maps
+// -> Interactive Modifiers/Advanced). Mirrors the Landsraad-specific
+// `landsraad-restart-required` file (set by usersettings.py, read at
+// server.js:736) but is written here in Node since it applies to any
+// UserEngine/UserGame save, not just Landsraad fields. One flag, not one per
+// scope/map -- a second deferred save just overwrites since/label.
+function deferredRestartPendingPath(config) {
+  return resolve(config.repoRoot, "runtime/generated/settings-restart-pending.json");
+}
+
+function markDeferredRestartPending(config, label) {
+  const path = deferredRestartPendingPath(config);
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, JSON.stringify({ pending: true, since: new Date().toISOString(), label }, null, 2));
+}
+
+function readDeferredRestartPending(config) {
+  try {
+    const parsed = JSON.parse(readFileSync(deferredRestartPendingPath(config), "utf8"));
+    if (!parsed?.pending) return { pending: false };
+    return { pending: true, since: String(parsed.since || ""), label: String(parsed.label || "") };
+  } catch {
+    return { pending: false };
+  }
+}
+
+function deferredRestartLabel(payload) {
+  if (payload.scope === "engine" || payload.scope === "mapEngine" || payload.scope === "partitionEngine") return "UserEngine settings";
+  if (payload.scope === "global" || payload.scope === "profile") return "UserGame settings";
+  return payload.map ? `UserGame settings (${payload.map})` : "UserGame settings";
+}
+
+// UserEngine.ini (unlike UserGame.ini) is not per-map: every scope that edits
+// it -- "engine" (global), and "mapEngine"/"partitionEngine" (the same file,
+// just viewed/edited scoped to one map or partition for convenience) -- has
+// to restart every game service to actually apply, not just the map that
+// happened to be selected in the editor.
 function restartPayload(scope, map, partitionId) {
-  if (scope === "profile") return { restartMode: "stack", restartLabel: "all game services" };
-  if (scope === "engine") return { restartMode: "stack", restartLabel: "all game services" };
-  if (scope === "global") return { restartMode: "stack", restartLabel: "all game services" };
+  if (scope === "profile" || scope === "engine" || scope === "mapEngine" || scope === "partitionEngine" || scope === "global") {
+    return { restartMode: "stack", restartLabel: "all game services" };
+  }
   const normalizedMap = String(map || "").toLowerCase();
   const normalizedPartition = String(partitionId || "").trim();
   if (normalizedMap === "survival_1" && (!normalizedPartition || normalizedPartition === "1")) {
@@ -1966,7 +2531,7 @@ async function liveMapMemoryRoute(res) {
     const snapshot = await memoryBalancer.readLiveSnapshot();
     return json(res, 200, { rows: snapshot.rows, sampledAt: snapshot.sampledAt });
   } catch (error) {
-    return json(res, 200, { rows: [], sampledAt: new Date().toISOString(), error: redact(error.message || error) });
+    return json(res, 200, { rows: [], sampledAt: new Date().toISOString(), error: redact(error?.message || "Unexpected error.") });
   }
 }
 
@@ -2039,6 +2604,12 @@ async function playerTask(req, res, path, operation, phrase = "") {
   }
   if (!applyMutationRateLimit(req, res, `players.${operation}`)) return;
   const playerId = decodeURIComponent(path.split("/")[3]);
+  if (["adminSetSkillPoints", "adminSetSkillModule"].includes(operation)) {
+    const player = await resolvePlayerGrantTarget(playerId);
+    if (!player.online) {
+      return json(res, 409, { error: "The player must be online to change skills." });
+    }
+  }
   return task(req, res, "admin", operation, { ...body, playerId });
 }
 
@@ -2109,8 +2680,8 @@ async function carePackageConfigRoute(req, res) {
     audit(config, req, "care-package.config", { supported: true, enabled: saved.enabled, version: saved.version, itemCount: saved.items.length, xp: saved.xp });
     return json(res, 200, saved);
   } catch (error) {
-    audit(config, req, "care-package.config", { supported: false, error: redact(error.message || error) });
-    return json(res, 400, { error: redact(error.message || error) });
+    audit(config, req, "care-package.config", { supported: false, error: redact(error?.message || "Unexpected error.") });
+    return json(res, 400, { error: redact(error?.message || "Unexpected error.") });
   }
 }
 
@@ -2123,7 +2694,7 @@ async function carePackageEnableRoute(req, res, enabled) {
     audit(config, req, enabled ? "care-package.enable" : "care-package.disable", { supported: true, version: saved.version });
     return json(res, 200, saved);
   } catch (error) {
-    return json(res, 400, { error: redact(error.message || error) });
+    return json(res, 400, { error: redact(error?.message || "Unexpected error.") });
   }
 }
 
@@ -2136,7 +2707,7 @@ async function carePackageGrantRoute(req, res, path) {
     audit(config, req, "care-package.grant", { supported: true, playerId, ok: result.ok, grantId: result.id });
     return json(res, result.ok ? 200 : 207, result);
   } catch (error) {
-    audit(config, req, "care-package.grant", { supported: false, playerId, error: redact(error.message || error) });
+    audit(config, req, "care-package.grant", { supported: false, playerId, error: redact(error?.message || "Unexpected error.") });
     const payload = apiErrorPayload(error, 400);
     return json(res, payload.status, payload.body);
   }
@@ -2165,7 +2736,7 @@ async function carePackageGrantEligibleRoute(req, res) {
     audit(config, req, "care-package.grant-eligible", { supported: true, granted: result.granted, skipped: result.skipped, failed: result.failed });
     return json(res, result.failed ? 207 : 200, result);
   } catch (error) {
-    audit(config, req, "care-package.grant-eligible", { supported: false, error: redact(error.message || error) });
+    audit(config, req, "care-package.grant-eligible", { supported: false, error: redact(error?.message || "Unexpected error.") });
     const payload = apiErrorPayload(error, 400);
     return json(res, payload.status, payload.body);
   }
@@ -2181,7 +2752,7 @@ async function carePackageRunRoute(req, res) {
     audit(config, req, "care-package.run", { supported: true, ...result, results: undefined });
     return json(res, result.failed ? 207 : 200, result);
   } catch (error) {
-    audit(config, req, "care-package.run", { supported: false, error: redact(error.message || error) });
+    audit(config, req, "care-package.run", { supported: false, error: redact(error?.message || "Unexpected error.") });
     const payload = apiErrorPayload(error, 400);
     return json(res, payload.status, payload.body);
   }
@@ -2194,7 +2765,7 @@ async function carePackageRetryRoute(req, res, path) {
     audit(config, req, "care-package.retry", { supported: true, grantId, ok: result.ok, retryGrantId: result.id });
     return json(res, result.ok ? 200 : 207, result);
   } catch (error) {
-    audit(config, req, "care-package.retry", { supported: false, grantId, error: redact(error.message || error) });
+    audit(config, req, "care-package.retry", { supported: false, grantId, error: redact(error?.message || "Unexpected error.") });
     const payload = apiErrorPayload(error, 400);
     return json(res, payload.status, payload.body);
   }
@@ -2209,8 +2780,8 @@ async function carePackageClearHistoryRoute(req, res) {
     audit(config, req, "care-package.history-clear", { supported: true, removed: result.removed });
     return json(res, 200, result);
   } catch (error) {
-    audit(config, req, "care-package.history-clear", { supported: false, error: redact(error.message || error) });
-    return json(res, 400, { error: redact(error.message || error) });
+    audit(config, req, "care-package.history-clear", { supported: false, error: redact(error?.message || "Unexpected error.") });
+    return json(res, 400, { error: redact(error?.message || "Unexpected error.") });
   }
 }
 
@@ -2233,14 +2804,12 @@ async function resolveCarePackagePlayerIdentity(playerId) {
 async function resolvePlayerGrantTarget(playerId) {
   const players = await duneDb.listAllPlayers(db, {}).catch(() => ({ rows: [] }));
   const rows = players.rows || [];
-  const target = String(playerId || "").toLowerCase();
-  const player = rows.find((row) => [row.action_player_id, row.funcom_id, row.fls_id, row.account_id, row.actor_id, row.player_pawn_id]
-    .some((value) => String(value || "").toLowerCase() === target));
+  const player = findPlayerForLiveAction(rows, playerId);
   return {
     actionId: String(player?.action_player_id || player?.funcom_id || player?.fls_id || playerId || ""),
     actorId: String(player?.actor_id || player?.player_pawn_id || (/^\d+$/.test(String(playerId || "")) ? playerId : "") || ""),
     characterName: player?.character_name || "",
-    online: String(player?.online_status || "").toLowerCase() === "online"
+    online: playerIsOnlineForLiveAction(player)
   };
 }
 
@@ -2346,7 +2915,7 @@ async function blueprintExportRoute(req, res, path) {
     writeJsonAttachment(res, data, filename);
   } catch (error) {
     const status = error.unsupported ? 501 : 500;
-    return json(res, status, { ok: false, error: redact(error.message || error) });
+    return json(res, status, { ok: false, error: redact(error?.message || "Unexpected error.") });
   }
 }
 
@@ -2361,13 +2930,126 @@ async function baseBlueprintDownloadRoute(req, res, path) {
     writeJsonAttachment(res, data, filename);
   } catch (error) {
     const status = error.unsupported ? 501 : 500;
-    return json(res, status, { ok: false, error: redact(error.message || error) });
+    return json(res, status, { ok: false, error: redact(error?.message || "Unexpected error.") });
   }
+}
+
+// A base with a delete queued is frozen from every other write: the hazard a
+// queued delete exists to avoid (a live server overwriting the write before
+// the flush) applies just as much to a refill or permission edit racing that
+// same delete, and reasoning about ordering between independent queues is
+// worse than "a base marked for deletion does not change in the meantime."
+function baseDeletePending(baseId) {
+  return duneDb.listQueuedBaseDeletes(config.repoRoot).some((entry) => entry.baseId === baseId);
+}
+
+const BASE_DELETE_PENDING_MESSAGE = "This base has a pending delete queued and cannot be modified. Cancel the delete first.";
+
+// A backed-up base (picked up via the game's base-backup tool) is excluded
+// from listBases -- see duneDb.baseIsBackedUp -- because it has no owner and
+// its structural rows are only awaiting redeploy or eventual cleanup. A
+// direct route call (or a stale bookmarked base id) must not be able to
+// modify it just because it slipped past the panel's own filtering.
+async function baseBackedUp(baseId) {
+  return verifyBaseBackupState(duneDb, db, baseId);
+}
+
+const BASE_BACKED_UP_MESSAGE = "This base was picked up into a backup and is no longer claimed. It cannot be modified until the player redeploys it.";
+
+// Refilling fuel/water moments before deleting the base is pointless and
+// pollutes the audit log with writes about to be destroyed anyway. Best
+// effort: a base with nothing queued throws, which is fine to swallow here.
+function cancelPendingRefillsForBase(baseId) {
+  try { duneDb.cancelQueuedGeneratorRefill(config.repoRoot, baseId); } catch {}
+  try { duneDb.cancelQueuedWaterRefill(config.repoRoot, baseId); } catch {}
+}
+
+async function baseDeleteRoute(req, res, path) {
+  const baseId = Number(decodeURIComponent(path.split("/")[3]));
+  if (!Number.isFinite(baseId) || baseId < 1) return json(res, 400, { error: "Invalid base ID" });
+  if (await baseBackedUp(baseId)) return json(res, 409, { error: BASE_BACKED_UP_MESSAGE });
+  return directDbMutation(req, res, "bases.delete", "DELETE BASE", async () => {
+    // Reserve the lock synchronously, before the first await: baseDeletePending
+    // is a file read, and every other mutation route checks it before doing
+    // any of its own work, so a request for this same base landing between
+    // "resolve write-safety" and "record the queue entry" below would
+    // otherwise read the queue as empty and slip through. This placeholder
+    // (map/partitionId unresolved yet) closes that gap immediately; it is
+    // either replaced with the real entry (queued path) or removed in the
+    // finally below (immediate path, success or failure).
+    duneDb.queueBaseDelete(config.repoRoot, { baseId, map: "", partitionId: 0 });
+    let queued = false;
+    try {
+      const target = await duneDb.baseRefillTarget(db, baseId);
+      // Same hazard as a refill: a live game server can rewrite its own copy
+      // of this base back to Postgres before the delete is ever seen. Queue
+      // it instead and let the flush tick apply it once that map is down.
+      if (target.queueSupported && !target.writeSafeNow) {
+        cancelPendingRefillsForBase(baseId);
+        const entry = duneDb.queueBaseDelete(config.repoRoot, {
+          baseId,
+          map: target.map,
+          partitionId: target.partitionId
+        });
+        queued = true;
+        return { ok: true, queued: true, ...entry };
+      }
+      // Mandatory safety backup before any delete SQL runs, exactly like the
+      // raw "Database Query" tool already does for any destructive query --
+      // see databaseQuery below. If this throws, deleteBaseCompletely is
+      // never called and nothing is touched.
+      await runDune(config, buildDuneArgs("backupCreate"), { env: { DB_BACKUP_ORIGIN: "base-delete" } });
+      const result = await duneDb.deleteBaseCompletely(db, baseId);
+      return { ...result, backupCreated: true };
+    } finally {
+      if (!queued) {
+        try { duneDb.cancelQueuedBaseDelete(config.repoRoot, baseId); } catch {}
+      }
+    }
+  }, { baseId });
+}
+
+async function baseCancelQueuedDeleteRoute(req, res, path) {
+  const baseId = Number(decodeURIComponent(path.split("/")[3]));
+  if (!Number.isFinite(baseId) || baseId < 1) return json(res, 400, { error: "Invalid base ID" });
+  return directDbMutation(req, res, "bases.cancel-queued-delete", null,
+    () => duneDb.cancelQueuedBaseDelete(config.repoRoot, baseId), { baseId });
+}
+
+// Mirrors pendingGeneratorRefillsRoute.
+async function pendingBaseDeletesRoute(res) {
+  const pending = duneDb.listQueuedBaseDeletes(config.repoRoot);
+  const targets = pending.length
+    ? await duneDb.partitionRestartTargets(db).catch(() => new Map())
+    : new Map();
+  const byTarget = new Map();
+  for (const entry of pending) {
+    const map = entry.map || "Unknown";
+    const key = `${map}|${entry.partitionId}`;
+    const target = targets.get(entry.partitionId);
+    const group = byTarget.get(key) || {
+      map,
+      partitionId: entry.partitionId,
+      partitionMap: target?.map || "",
+      dimensionIndex: target?.dimensionIndex ?? 0,
+      count: 0
+    };
+    group.count += 1;
+    byTarget.set(key, group);
+  }
+  return json(res, 200, {
+    supported: true,
+    total: pending.length,
+    pending,
+    byTarget: [...byTarget.values()].sort((a, b) => a.map.localeCompare(b.map) || a.partitionId - b.partitionId)
+  });
 }
 
 async function baseRefillGeneratorsRoute(req, res, path) {
   const baseId = Number(decodeURIComponent(path.split("/")[3]));
   if (!Number.isFinite(baseId) || baseId < 1) return json(res, 400, { error: "Invalid base ID" });
+  if (baseDeletePending(baseId)) return json(res, 409, { error: BASE_DELETE_PENDING_MESSAGE });
+  if (await baseBackedUp(baseId)) return json(res, 409, { error: BASE_BACKED_UP_MESSAGE });
   // No confirmation phrase: refilling is additive and reversible, unlike the
   // deletes and overwrites that phrase-gate. Still rate limited and audited.
   return directDbMutation(req, res, "bases.refill-generators", null, async () => {
@@ -2395,7 +3077,7 @@ async function basePermissionsRoute(res, path) {
     return json(res, 200, { supported: true, ...(await duneDb.listBasePermissions(db, baseId)) });
   } catch (error) {
     const status = error.unsupported ? 501 : 400;
-    return json(res, status, { supported: false, error: redact(error.message || error), reason: redact(error.message || error) });
+    return json(res, status, { supported: false, error: redact(error?.message || "Unexpected error."), reason: redact(error?.message || "Unexpected error.") });
   }
 }
 
@@ -2408,7 +3090,7 @@ async function basePermissionCandidatesRoute(res, url) {
     return json(res, 200, { supported: true, rows });
   } catch (error) {
     const status = error.unsupported ? 501 : 400;
-    return json(res, status, { supported: false, rows: [], error: redact(error.message || error), reason: redact(error.message || error) });
+    return json(res, status, { supported: false, rows: [], error: redact(error?.message || "Unexpected error."), reason: redact(error?.message || "Unexpected error.") });
   }
 }
 
@@ -2422,6 +3104,8 @@ async function basePermissionCandidatesRoute(res, url) {
 async function baseSetPermissionsRoute(req, res, path) {
   const baseId = Number(decodeURIComponent(path.split("/")[3]));
   if (!Number.isFinite(baseId) || baseId < 1) return json(res, 400, { error: "Invalid base ID" });
+  if (baseDeletePending(baseId)) return json(res, 409, { error: BASE_DELETE_PENDING_MESSAGE });
+  if (await baseBackedUp(baseId)) return json(res, 409, { error: BASE_BACKED_UP_MESSAGE });
   return directDbMutation(req, res, "bases.set-permissions", null, async (body) => {
     const settings = await runDune(config, buildDuneArgs("userSettingsMapValues", { map: "Survival_1" }), { timeoutMs: 8000 });
     const maxPermissions = parseEffectivePermissionLimit(settings.stdout);
@@ -2432,9 +3116,13 @@ async function baseSetPermissionsRoute(req, res, path) {
 async function baseSystemCustodianRoute(req, res, path) {
   const baseId = Number(decodeURIComponent(path.split("/")[3]));
   if (!Number.isFinite(baseId) || baseId < 1) return json(res, 400, { error: "Invalid base ID" });
+  if (baseDeletePending(baseId)) return json(res, 409, { error: BASE_DELETE_PENDING_MESSAGE });
+  if (await baseBackedUp(baseId)) return json(res, 409, { error: BASE_BACKED_UP_MESSAGE });
   return directDbMutation(req, res, "bases.transfer-system-custodian", null, async () => {
     const settings = await runDune(config, buildDuneArgs("userSettingsMapValues", { map: "Survival_1" }), { timeoutMs: 8000 });
     const maxPermissions = parseEffectivePermissionLimit(settings.stdout);
+    const custodian = await duneDb.basePermissionSystemCustodian(db);
+    if (custodian.canCreate) await ensureCarePackageServerPersona(db);
     return duneDb.transferBaseToSystemCustodian(db, baseId, maxPermissions);
   }, { baseId });
 }
@@ -2504,6 +3192,10 @@ async function baseAutoRefillToggleRoute(req, res, path) {
   if (typeof body.enabled !== "boolean") {
     return json(res, 400, { error: "Auto-refill enabled must be true or false." });
   }
+  // Only enabling is blocked -- turning auto-refill off is harmless and does
+  // not race a pending delete the way a new automated write would.
+  if (body.enabled && baseDeletePending(baseId)) return json(res, 409, { error: BASE_DELETE_PENDING_MESSAGE });
+  if (body.enabled && await baseBackedUp(baseId)) return json(res, 409, { error: BASE_BACKED_UP_MESSAGE });
   // Checked on the server too, not just hidden in the UI. Without
   // dune.world_partition a queued refill cannot wait for a safe window, so an
   // automated refill would write straight into a possibly-live base.
@@ -2517,19 +3209,151 @@ async function baseAutoRefillToggleRoute(req, res, path) {
     audit(config, req, "bases.auto-refill", { baseId, enabled: result.enabled, total: result.total });
     return json(res, 200, result);
   } catch (error) {
-    return json(res, 400, { ok: false, error: redact(error?.message || error) });
+    return json(res, 400, { ok: false, error: redact(error?.message || "Unexpected error.") });
   }
 }
 
 async function baseWaterRoute(res, path) {
   const baseId = Number(decodeURIComponent(path.split("/")[3]));
-  if (!Number.isFinite(baseId) || baseId < 1) return json(res, 400, { error: "Invalid base ID" });
-  try {
-    return json(res, 200, { supported: true, ...(await duneDb.baseWater(db, baseId)) });
-  } catch (error) {
-    const status = error.unsupported ? 501 : 400;
-    return json(res, status, { supported: false, error: redact(error.message || error), reason: redact(error.message || error) });
+  // Same reasoning as baseInventoryRoute: match intParam so bad input stays a
+  // 400 and the catch is left to genuine failures.
+  if (!Number.isInteger(baseId) || baseId < 1 || baseId > Number.MAX_SAFE_INTEGER) {
+    return json(res, 400, { error: "Invalid base ID" });
   }
+  try {
+    // A schema that cannot back this comes through as a 200 carrying
+    // supported:false, the same capability shape listBases and baseInventory
+    // use -- so an error status here means only a real failure, and the tab's
+    // Retry always has something it could fix.
+    return json(res, 200, await duneDb.baseWater(db, baseId));
+  } catch (error) {
+    return json(res, 500, { supported: false, error: redact(error?.message || "Unexpected error."), reason: redact(error?.message || "Unexpected error.") });
+  }
+}
+
+// Read-only, so no directDbMutation wrapper and no confirmation phrase.
+// repoRoot is passed through only to resolve each item's catalog icon.
+async function baseInventoryRoute(res, path) {
+  const baseId = Number(decodeURIComponent(path.split("/")[3]));
+  // Matches intParam's contract rather than just isFinite: 4.5 and 1e20 both
+  // clear a finite/>=1 check and then throw inside baseInventory. Rejecting
+  // them here keeps bad client input on 400 and leaves the catch below for
+  // failures that are genuinely ours.
+  if (!Number.isInteger(baseId) || baseId < 1 || baseId > Number.MAX_SAFE_INTEGER) {
+    return json(res, 400, { error: "Invalid base ID" });
+  }
+  try {
+    // A schema without the inventory tables comes back as a 200 carrying
+    // supported:false, the same capability shape listBases uses -- only a real
+    // failure is an error status, so the tab's retry always means something.
+    return json(res, 200, await duneDb.baseInventory(db, baseId, { repoRoot: config.repoRoot }));
+  } catch (error) {
+    // Nothing reaching here is the caller's fault: the id is already validated
+    // and an unsupported schema returns a 200 above, so what is left is a query
+    // or connection failure.
+    return json(res, 500, { supported: false, error: redact(error?.message || "Unexpected error."), reason: redact(error?.message || "Unexpected error.") });
+  }
+}
+
+// One container's slots, fetched when the contents modal opens rather than
+// folded into baseInventoryRoute -- see baseContainerSlots for why (slots
+// roughly triple that response, on a tab that loads per base expand).
+async function baseContainerSlotsRoute(res, path) {
+  const parts = path.split("/");
+  const baseId = Number(decodeURIComponent(parts[3]));
+  const placeableId = Number(decodeURIComponent(parts[5]));
+  // Same intParam-matching validation baseInventoryRoute uses, for both ids.
+  for (const id of [baseId, placeableId]) {
+    if (!Number.isInteger(id) || id < 1 || id > Number.MAX_SAFE_INTEGER) {
+      return json(res, 400, { error: "Invalid base or container ID" });
+    }
+  }
+  try {
+    const slots = await duneDb.baseContainerSlots(db, baseId, placeableId);
+    return json(res, 200, { ...slots, deleteSafety: await baseContainerDeleteSafety(baseId, slots.group) });
+  } catch (error) {
+    return json(res, 500, { supported: false, error: redact(error?.message || "Unexpected error."), reason: redact(error?.message || "Unexpected error.") });
+  }
+}
+
+async function baseContainerDeleteSafety(baseId, group = "storage") {
+  if (group && group !== "storage") {
+    return {
+      safe: false,
+      known: true,
+      map: "",
+      partitionId: 0,
+      reason: "Item deletion is available only for Storage containers. Crafting and Refining contents are read-only to protect active jobs."
+    };
+  }
+  try {
+    const target = await duneDb.baseRefillTarget(db, baseId);
+    if (!target.queueSupported) {
+      return {
+        safe: false,
+        known: false,
+        map: target.map || "",
+        partitionId: target.partitionId || 0,
+        reason: "The console cannot verify that this base's map is safely stopped, so item deletion is disabled."
+      };
+    }
+    if (!target.writeSafeNow) {
+      const location = `${target.map || "This base's map"}${target.partitionId ? ` · Partition ${target.partitionId}` : ""}`;
+      return {
+        safe: false,
+        known: true,
+        map: target.map || "",
+        partitionId: target.partitionId || 0,
+        reason: `${location} is running. Stop that map before deleting stored items.`
+      };
+    }
+    return {
+      safe: true,
+      known: true,
+      map: target.map || "",
+      partitionId: target.partitionId || 0,
+      reason: ""
+    };
+  } catch {
+    return {
+      safe: false,
+      known: false,
+      map: "",
+      partitionId: 0,
+      reason: "The console could not verify that this base's map is safely stopped, so item deletion is disabled."
+    };
+  }
+}
+
+// Phrase-gated, unlike the refills above: this destroys a player's stored item
+// and there is no undo short of a database restore.
+//
+// Deliberately not queued: inventory rows can change before a deferred delete
+// is applied. Instead, deletion is allowed only when the owning map is known to
+// be safely down. The safety check is repeated here immediately before the
+// write; disabling the UI alone is never a security or consistency boundary.
+async function baseContainerItemDeleteRoute(req, res, path) {
+  const parts = path.split("/");
+  const baseId = Number(decodeURIComponent(parts[3]));
+  const placeableId = Number(decodeURIComponent(parts[5]));
+  const itemId = decodeURIComponent(parts[7]);
+  for (const id of [baseId, placeableId]) {
+    if (!Number.isInteger(id) || id < 1 || id > Number.MAX_SAFE_INTEGER) {
+      return json(res, 400, { error: "Invalid base, container, or item ID" });
+    }
+  }
+  if (!/^[1-9][0-9]*$/.test(itemId) || BigInt(itemId) > 9223372036854775807n) {
+    return json(res, 400, { error: "Invalid base, container, or item ID" });
+  }
+  if (baseDeletePending(baseId)) return json(res, 409, { error: BASE_DELETE_PENDING_MESSAGE });
+  if (await baseBackedUp(baseId)) return json(res, 409, { error: BASE_BACKED_UP_MESSAGE });
+  return directDbMutation(req, res, "bases.container-item-delete", "DELETE ITEM", async (body) => {
+    const count = body?.count === undefined || body?.count === null ? null : Number(body.count);
+    const safety = await baseContainerDeleteSafety(baseId);
+    if (!safety.safe) throw new Error(safety.reason);
+    const result = await duneDb.deleteBaseContainerItem(db, baseId, placeableId, itemId, { count });
+    return { ...result, deleteSafety: safety };
+  }, { baseId, placeableId, itemId });
 }
 
 // Mirrors baseRefillGeneratorsRoute: no confirmation phrase (additive and
@@ -2538,6 +3362,8 @@ async function baseWaterRoute(res, path) {
 async function baseRefillWaterRoute(req, res, path) {
   const baseId = Number(decodeURIComponent(path.split("/")[3]));
   if (!Number.isFinite(baseId) || baseId < 1) return json(res, 400, { error: "Invalid base ID" });
+  if (baseDeletePending(baseId)) return json(res, 409, { error: BASE_DELETE_PENDING_MESSAGE });
+  if (await baseBackedUp(baseId)) return json(res, 409, { error: BASE_BACKED_UP_MESSAGE });
   return directDbMutation(req, res, "bases.refill-water", null, async () => {
     const target = await duneDb.baseRefillTarget(db, baseId);
     if (target.queueSupported && !target.writeSafeNow) {
@@ -2604,6 +3430,9 @@ async function baseAutoRefillWaterToggleRoute(req, res, path) {
   if (typeof body.enabled !== "boolean") {
     return json(res, 400, { error: "Auto-refill enabled must be true or false." });
   }
+  // Only enabling is blocked -- see baseAutoRefillToggleRoute.
+  if (body.enabled && baseDeletePending(baseId)) return json(res, 409, { error: BASE_DELETE_PENDING_MESSAGE });
+  if (body.enabled && await baseBackedUp(baseId)) return json(res, 409, { error: BASE_BACKED_UP_MESSAGE });
   if (body.enabled && !(await duneDb.supportsWaterRefillQueue(db).catch(() => false))) {
     return json(res, 501, {
       error: "Auto-refill needs the pending water-refill queue, which requires dune.world_partition on this database."
@@ -2612,9 +3441,28 @@ async function baseAutoRefillWaterToggleRoute(req, res, path) {
   try {
     const result = setBaseAutoRefillWater(config.repoRoot, baseId, body.enabled);
     audit(config, req, "bases.auto-refill-water", { baseId, enabled: result.enabled, total: result.total });
-    return json(res, 200, result);
+    if (!result.newlyEnabled) return json(res, 200, result);
+
+    try {
+      const initialCheck = await autoRefillWaterScheduler.scanNow(baseId);
+      return json(res, 200, { ...result, initialCheck });
+    } catch (error) {
+      // Enrollment was saved successfully. Report the failed first check
+      // separately so the UI does not falsely switch the toggle back off; the
+      // normal daily scheduler remains armed and will retry it.
+      return json(res, 200, {
+        ...result,
+        initialCheck: {
+          status: "fail",
+          detail: redact(error?.message || "Unexpected error."),
+          checked: 0,
+          queued: 0,
+          failures: 1
+        }
+      });
+    }
   } catch (error) {
-    return json(res, 400, { ok: false, error: redact(error?.message || error) });
+    return json(res, 400, { ok: false, error: redact(error?.message || "Unexpected error.") });
   }
 }
 
@@ -2647,7 +3495,7 @@ async function blueprintBulkExportRoute(req, res) {
     res.end(archive);
   } catch (error) {
     const status = error.unsupported ? 501 : 500;
-    return json(res, status, { ok: false, error: redact(error.message || error) });
+    return json(res, status, { ok: false, error: redact(error?.message || "Unexpected error.") });
   }
 }
 
@@ -2676,8 +3524,8 @@ async function blueprintImportRoute(req, res) {
     audit(config, req, "blueprints.import", { playerPawnId, result });
     return json(res, 200, result);
   } catch (error) {
-    if (error.unsupported) return json(res, 501, { supported: false, error: redact(error.message || error) });
-    return json(res, 500, { ok: false, error: redact(error.message || error) });
+    if (error.unsupported) return json(res, 501, { supported: false, error: redact(error?.message || "Unexpected error.") });
+    return json(res, 500, { ok: false, error: redact(error?.message || "Unexpected error.") });
   }
 }
 
@@ -2694,8 +3542,8 @@ async function blueprintsDeleteRoute(req, res, path) {
     audit(config, req, "blueprints.delete", { blueprintId: id, result });
     return json(res, result.ok ? 200 : 404, result);
   } catch (error) {
-    if (error.unsupported) return json(res, 501, { supported: false, error: redact(error.message || error) });
-    return json(res, 500, { ok: false, error: redact(error.message || error) });
+    if (error.unsupported) return json(res, 501, { supported: false, error: redact(error?.message || "Unexpected error.") });
+    return json(res, 500, { ok: false, error: redact(error?.message || "Unexpected error.") });
   }
 }
 
@@ -2708,11 +3556,13 @@ async function directDbMutation(req, res, action, phrase, fn, meta = {}) {
   try {
     const result = config.mockMode ? { ok: true, mock: true } : await fn(body);
     audit(config, req, action, { ...meta, supported: true, result });
-    return json(res, 200, { supported: true, backupCreated: false, result });
+    // Every caller before base deletion leaves result.backupCreated unset, so
+    // this defaults to false exactly as it did when the field was hardcoded.
+    return json(res, 200, { supported: true, backupCreated: Boolean(result?.backupCreated), result });
   } catch (error) {
     const status = error.unsupported ? 501 : 400;
-    audit(config, req, action, { ...meta, supported: false, error: redact(error.message || error) });
-    return json(res, status, { supported: false, error: redact(error.message || error), reason: redact(error.message || error), details: error.details || undefined });
+    audit(config, req, action, { ...meta, supported: false, error: redact(error?.message || "Unexpected error.") });
+    return json(res, status, { supported: false, error: redact(error?.message || "Unexpected error."), reason: redact(error?.message || "Unexpected error.") });
   }
 }
 
@@ -2732,7 +3582,7 @@ async function giveItemsRoute(req, res, path) {
     try {
       results.push({ index, ...(await grantPlayerItem(playerId, item, target)) });
     } catch (error) {
-      results.push({ index, ok: false, item, error: redact(error.message || error) });
+      results.push({ index, ok: false, item, error: redact(error?.message || "Unexpected error.") });
     }
   }
   const ok = results.every((result) => result.ok);
@@ -2765,8 +3615,60 @@ async function giveSingleItemRoute(req, res, path, operation) {
     audit(config, req, operation === "adminGiveItemId" ? "players.give-item-id" : "players.give-item", { playerId, ok: result.ok, result });
     return json(res, result.ok ? 200 : 207, result);
   } catch (error) {
-    audit(config, req, operation === "adminGiveItemId" ? "players.give-item-id" : "players.give-item", { playerId, ok: false, error: redact(error.message || error) });
-    return json(res, 400, { ok: false, error: redact(error.message || error) });
+    audit(config, req, operation === "adminGiveItemId" ? "players.give-item-id" : "players.give-item", { playerId, ok: false, error: redact(error?.message || "Unexpected error.") });
+    return json(res, 400, { ok: false, error: redact(error?.message || "Unexpected error.") });
+  }
+}
+
+function buildingUnlocksRoute(res, path) {
+  const playerId = decodeURIComponent(path.split("/")[3]);
+  return dbJson(res, async () => {
+    const state = await duneDb.playerBuildingUnlockState(db, playerId);
+    const supported = Boolean(state.capabilities?.buildingUnlockOwnership);
+    return {
+      capabilities: state.capabilities,
+      rows: listBuildingUnlockItems(config.repoRoot).map((item) => ({
+        ...item,
+        status: buildingUnlockStatus(item.itemId, { ...state, supported })
+      }))
+    };
+  });
+}
+
+async function buildingUnlockGrantRoute(req, res, path) {
+  const playerId = decodeURIComponent(path.split("/")[3]);
+  const body = await readJson(req);
+  if (body.confirmation !== "GRANT BUILDING UNLOCK") return json(res, 400, { error: "Confirmation phrase mismatch" });
+  if (!applyMutationRateLimit(req, res, "players.building-unlocks.grant")) return;
+
+  try {
+    const resolved = resolveCatalogItem(config.repoRoot, { itemId: body.itemId });
+    if (!isBuildingUnlockItem(resolved)) throw new Error("Select a verified entry from the Building Sets catalog.");
+    const target = await resolvePlayerGrantTarget(playerId);
+    if (!config.mockMode && !target.actorId) throw new Error("A database actor ID is required to verify building-set ownership.");
+
+    if (target.actorId) {
+      const state = await duneDb.playerBuildingUnlockState(db, target.actorId);
+      if (!state.capabilities?.buildingUnlockOwnership) {
+        throw new Error("This game database cannot verify building-set ownership, so the grant was not attempted.");
+      }
+      const status = buildingUnlockStatus(resolved.itemId, {
+        ...state,
+        supported: true
+      });
+      if (status === "Owned" || status === "Pending") {
+        audit(config, req, "players.building-unlocks.grant", { playerId, itemId: resolved.itemId, status, ok: true, noOp: true });
+        return json(res, 200, { ok: true, status, alreadyOwned: status === "Owned", alreadyPending: status === "Pending", item: resolved });
+      }
+    }
+
+    const result = await grantPlayerItem(playerId, { itemId: resolved.itemId, quantity: 1 }, target);
+    const status = result.ok ? (target.online ? "Processing" : "Pending") : "Available";
+    audit(config, req, "players.building-unlocks.grant", { playerId, itemId: resolved.itemId, status, ok: result.ok });
+    return json(res, result.ok ? 200 : 207, { ok: result.ok, status, item: resolved, result });
+  } catch (error) {
+    audit(config, req, "players.building-unlocks.grant", { playerId, itemId: body.itemId, ok: false, error: redact(error?.message || "Unexpected error.") });
+    return json(res, 400, { ok: false, error: redact(error?.message || "Unexpected error.") });
   }
 }
 
@@ -2847,7 +3749,7 @@ async function augmentNewestPlayerItemWithRetry(actorId, templateId, options) {
       lastError = new Error(`${templateId} augment patch was overwritten or incomplete; retrying`);
     } catch (error) {
       lastError = error;
-      if (!/new inventory row was not found/i.test(String(error?.message || error))) throw error;
+      if (!/new inventory row was not found/i.test(String(error?.message || "Unexpected error."))) throw error;
     }
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 500));
   }
@@ -2876,9 +3778,9 @@ async function broadcastRoute(req, res) {
     recordAdminHistory(config, { command: "web-broadcast", target: "all", friendly: body.title || "Broadcast", path: "rmq:heartbeats/notifications", result: "published", message });
     return json(res, 200, { supported: true, ok: true, stdout: result.stdout, stderr: result.stderr, note: "Broadcast was published to RabbitMQ." });
   } catch (error) {
-    audit(config, req, "admin.broadcast", { supported: false, error: redact(error.message || error) });
+    audit(config, req, "admin.broadcast", { supported: false, error: redact(error?.message || "Unexpected error.") });
     recordAdminHistory(config, { command: "web-broadcast", target: "all", friendly: body.title || "Broadcast", path: "rmq:heartbeats/notifications", result: "blocked", message });
-    return json(res, 400, { supported: false, error: redact(error.message || error), reason: redact(error.message || error) });
+    return json(res, 400, { supported: false, error: redact(error?.message || "Unexpected error."), reason: redact(error?.message || "Unexpected error.") });
   }
 }
 
@@ -2905,7 +3807,7 @@ async function mapChatRoute(req, res) {
     recordAdminHistory(config, { command: "web-map-chat", target, friendly: "Map Chat", path: "rmq:chat.map", result: "published", message });
     return json(res, 200, { supported: true, ok: true, stdout: result.stdout, stderr: result.stderr || "", note: `Map chat message was sent to ${recipients.length} online player${recipients.length === 1 ? "" : "s"}.`, recipients: recipients.length });
   } catch (error) {
-    const reason = redact(String(error.message || error).replaceAll("Care Package message whisper", "Map chat"));
+    const reason = redact(String(error?.message || "Unexpected error.").replaceAll("Care Package message whisper", "Map chat"));
     audit(config, req, "admin.map-chat", { supported: false, error: reason });
     recordAdminHistory(config, { command: "web-map-chat", target: `${mapName}.${dimension}`, friendly: "Map Chat", path: "rmq:chat.map", result: "blocked", message });
     return json(res, 400, { supported: false, error: reason, reason });
@@ -2978,9 +3880,9 @@ async function shutdownBroadcastRoute(req, res) {
     recordAdminHistory(config, { command: "web-shutdown-broadcast", target: "all", friendly: "Shutdown broadcast publish test", path: "rmq:heartbeats/notifications", result: "published", message: `${body.shutdownType || "Restart"} in ${body.delayMinutes || 15} minutes` });
     return json(res, 200, { supported: true, ok: true, stdout: result.stdout, stderr: result.stderr, note: "Shutdown broadcast publish succeeded, but in-game visibility is unverified." });
   } catch (error) {
-    audit(config, req, "admin.broadcast-shutdown", { supported: false, error: redact(error.message || error) });
+    audit(config, req, "admin.broadcast-shutdown", { supported: false, error: redact(error?.message || "Unexpected error.") });
     recordAdminHistory(config, { command: "web-shutdown-broadcast", target: "all", friendly: "Shutdown broadcast publish test", path: "rmq:heartbeats/notifications", result: "blocked", message: `${body.shutdownType || "Restart"} in ${body.delayMinutes || 15} minutes` });
-    return json(res, 400, { supported: false, error: redact(error.message || error), reason: redact(error.message || error) });
+    return json(res, 400, { supported: false, error: redact(error?.message || "Unexpected error."), reason: redact(error?.message || "Unexpected error.") });
   }
 }
 
@@ -3012,7 +3914,7 @@ async function logsRoute(req, res, path) {
       });
       res.end(result.stdout || result.stderr || "");
     } catch (error) {
-      json(res, 500, { error: redact(error.stdout || error.message || error) });
+      json(res, 500, { error: redact(error.stdout || error?.message || "Unexpected error.") });
     }
     return;
   }
@@ -3085,6 +3987,7 @@ function publicDirectorySettings() {
   return {
     available: settings.mode === "public",
     enabled: settings.mode === "public" && settings.enabled,
+    anonymousCountEnabled: settings.anonymousCountEnabled,
     discordInvite: settings.discordInvite,
     mode: settings.mode,
     state: reporter.state || (settings.mode === "public" ? "pending" : "local-only"),
@@ -3210,7 +4113,7 @@ async function carePackageAutoTick() {
   try {
     kit = carePackageConfig(config);
   } catch (error) {
-    console.error(`Care Package auto-grant config read failed: ${redact(error.message || error)}`);
+    console.error(`Care Package auto-grant config read failed: ${redact(error?.message || "Unexpected error.")}`);
     return;
   }
   const hasEnabledRule = Array.isArray(kit.autoGrantRules) && kit.autoGrantRules.some((rule) => rule.enabled);
@@ -3232,7 +4135,7 @@ async function carePackageAutoTick() {
     carePackageAutoNextAllowedRun = 0;
   } catch (error) {
     carePackageAutoNextAllowedRun = Date.now() + BACKGROUND_SCAN_FAILURE_BACKOFF_MS;
-    console.error(`Care Package auto-grant scan failed: ${redact(error.message || error)}`);
+    console.error(`Care Package auto-grant scan failed: ${redact(error?.message || "Unexpected error.")}`);
   } finally {
     carePackageAutoRunning = false;
   }
@@ -3247,7 +4150,7 @@ async function messageOfTheDayAutoTick() {
     settings = readMessageOfTheDay(config).settings;
   } catch (error) {
     messageOfTheDayAutoNextAllowedRun = Date.now() + BACKGROUND_SCAN_FAILURE_BACKOFF_MS;
-    console.error(`Message of the Day config read failed: ${redact(error.message || error)}`);
+    console.error(`Message of the Day config read failed: ${redact(error?.message || "Unexpected error.")}`);
     return;
   }
   if (!settings.enabled || !String(settings.message || "").trim()) return;
@@ -3264,7 +4167,7 @@ async function messageOfTheDayAutoTick() {
     messageOfTheDayAutoNextAllowedRun = 0;
   } catch (error) {
     messageOfTheDayAutoNextAllowedRun = Date.now() + BACKGROUND_SCAN_FAILURE_BACKOFF_MS;
-    const message = String(error.message || error);
+    const message = String(error?.message || "Unexpected error.");
     try {
       recordMessageOfTheDayScanFailure(config, error);
     } catch (statusError) {
@@ -3285,7 +4188,7 @@ async function playerAnnouncementsAutoTick() {
     settings = readPlayerAnnouncements(config).settings;
   } catch (error) {
     playerAnnouncementsAutoNextAllowedRun = Date.now() + BACKGROUND_SCAN_FAILURE_BACKOFF_MS;
-    console.error(`Player announcement config read failed: ${redact(error.message || error)}`);
+    console.error(`Player announcement config read failed: ${redact(error?.message || "Unexpected error.")}`);
     return;
   }
   if (!settings.joinEnabled && !settings.leaveEnabled) return;
@@ -3302,7 +4205,7 @@ async function playerAnnouncementsAutoTick() {
     playerAnnouncementsAutoNextAllowedRun = 0;
   } catch (error) {
     playerAnnouncementsAutoNextAllowedRun = Date.now() + BACKGROUND_SCAN_FAILURE_BACKOFF_MS;
-    const message = String(error.message || error);
+    const message = String(error?.message || "Unexpected error.");
     if (/connect|database|relation|container|rabbitmq|docker|ECONNREFUSED/i.test(message)) return;
     console.error(`Player announcement scan failed: ${redact(message)}`);
   } finally {
@@ -3324,14 +4227,18 @@ async function publicDirectorySettingsRoute(req, res) {
   const body = await readJson(req);
   const hasEnabled = Object.hasOwn(body, "enabled");
   const hasDiscordInvite = Object.hasOwn(body, "discordInvite");
-  if (!hasEnabled && !hasDiscordInvite) {
+  const hasAnonymousCountEnabled = Object.hasOwn(body, "anonymousCountEnabled");
+  if (!hasEnabled && !hasDiscordInvite && !hasAnonymousCountEnabled) {
     return json(res, 400, { error: "No public listing setting was provided." });
   }
   if (hasEnabled && typeof body.enabled !== "boolean") {
     return json(res, 400, { error: "Server listing enabled must be true or false." });
   }
+  if (hasAnonymousCountEnabled && typeof body.anonymousCountEnabled !== "boolean") {
+    return json(res, 400, { error: "Anonymous server count enabled must be true or false." });
+  }
   const current = readDirectorySettings(config.repoRoot);
-  if (current.mode !== "public") {
+  if ((hasEnabled || hasDiscordInvite) && current.mode !== "public") {
     return json(res, 409, { error: "Server listing is available only when the server is running in public mode." });
   }
   let discordInvite = current.discordInvite;
@@ -3345,8 +4252,12 @@ async function publicDirectorySettingsRoute(req, res) {
   if (hasEnabled) {
     updateEnvFileValue("DUNE_PUBLIC_DIRECTORY_ENABLED", body.enabled ? "true" : "false");
   }
+  if (hasAnonymousCountEnabled) {
+    updateEnvFileValue("DUNE_ANONYMOUS_SERVER_COUNT_ENABLED", body.anonymousCountEnabled ? "true" : "false");
+  }
   audit(config, req, "settings.public-directory", {
     enabled: hasEnabled ? body.enabled : current.enabled,
+    anonymousCountEnabled: hasAnonymousCountEnabled ? body.anonymousCountEnabled : current.anonymousCountEnabled,
     discordInviteConfigured: Boolean(discordInvite)
   });
   await publicDirectory.tick();
@@ -3366,7 +4277,7 @@ async function publicDirectoryClaimRoute(req, res) {
       message: "Listing Claimed Successfully"
     });
   } catch (error) {
-    return json(res, 400, { error: error instanceof Error ? error.message : String(error) });
+    return json(res, 400, { error: error?.message || "Unexpected error." });
   }
 }
 
@@ -3456,8 +4367,8 @@ async function saveServerFuncomToken(req, res) {
 async function funcomTokenCheckRoute(req, res, url) {
   const since = validDockerSince(url.searchParams.get("since")) || "5m";
   const logs = await Promise.all([
-    runDockerLogs("director", { since, tail: 600, timeoutMs: 10000 }).catch((error) => ({ stdout: "", stderr: error.message || String(error) })),
-    runDockerLogs("gateway", { since, tail: 600, timeoutMs: 10000 }).catch((error) => ({ stdout: "", stderr: error.message || String(error) }))
+    runDockerLogs("director", { since, tail: 600, timeoutMs: 10000 }).catch((error) => ({ stdout: "", stderr: error?.message || "Unexpected error." })),
+    runDockerLogs("gateway", { since, tail: 600, timeoutMs: 10000 }).catch((error) => ({ stdout: "", stderr: error?.message || "Unexpected error." }))
   ]);
   const text = logs.map((result) => `${result.stdout || ""}\n${result.stderr || ""}`).join("\n");
   const mismatch = funcomAuthMismatchDetected(text);
@@ -3526,13 +4437,32 @@ async function handleDiscordTokenExchange(req, res) {
     guildId: config.discordHomeGuildId
   });
 
-  res.setHeader("Set-Cookie", sessionCookieValue(session, config));
+  setSessionCookie(res, session, config);
   audit(config, req, "auth.oauth.exchange", { ok: true, userId: identity.userId });
   return json(res, 200, { ok: true, authenticated: true, csrfToken: session.csrf });
 }
 
 function oauthReturnPage() {
   return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>Sign-in complete</title></head><body><noscript><a href="/">Return to the console</a></noscript><script>window.location.replace("/");</script></body></html>`;
+}
+
+// html/sessionCookieValue: local helpers for the OAuth callback route,
+// which needs to set two cookies in one response (the session cookie AND
+// clearOAuthStateCookie) and render a raw HTML redirect page -- neither
+// need is shared with any other route. auth.js's exported html()/
+// sessionCookieValue() were removed upstream (fix 6dc988ab, "preserve
+// opaque sessions") since upstream has no route that needs them; kept
+// here, scoped to server.js, mirroring setSessionCookie()'s own cookie
+// string exactly, rather than re-adding them to auth.js's public surface
+// for this one caller.
+function html(res, status, body, headers = {}) {
+  res.writeHead(status, withSecurityHeaders({ "content-type": "text/html; charset=utf-8", ...headers }));
+  res.end(body);
+}
+
+function sessionCookieValue(session, config = {}) {
+  const secure = config.secureCookies ? "; Secure" : "";
+  return `asc_session=${encodeURIComponent(session.cookie)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=43200${secure}`;
 }
 
 async function handleOAuthCallback(req, res) {

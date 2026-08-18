@@ -11,7 +11,7 @@ import {
   setBaseAutoRefillWater,
   writeAutoRefillWaterState
 } from "../src/services/autoRefillWater.js";
-import { listQueuedWaterRefills, queueWaterRefill } from "../src/duneDb.js";
+import { listQueuedBaseDeletes, listQueuedWaterRefills, queueWaterRefill } from "../src/duneDb.js";
 
 // Mirrors autoRefill.test.js exactly, retargeted at the water auto-refill
 // subsystem -- same enrollment/scheduler mechanics, own files, own env vars.
@@ -74,7 +74,10 @@ function fakeDuneDb({
       return null;
     },
     queueWaterRefill,
-    listQueuedWaterRefills
+    listQueuedWaterRefills,
+    // See autoRefill.test.js's fakeDuneDb: real queue-file read, always empty
+    // here since no test queues a delete.
+    listQueuedBaseDeletes
   };
 }
 
@@ -122,6 +125,7 @@ test("water auto-refill enrollment round-trips and is idempotent in both directi
     clock.advance(HOUR_MS);
     const again = setBaseAutoRefillWater(repoRoot, 482, true, { now: clock.now, env: TEST_ENV });
     assert.equal(again.total, 1);
+    assert.equal(again.newlyEnabled, false);
     assert.equal(readAutoRefillWaterState(repoRoot).bases["482"].enabledAt, enabledAt);
     assert.equal(isAutoRefillWaterEnabled(repoRoot, 482), true);
 
@@ -227,6 +231,48 @@ test("a water scan that is not yet due is a no-op", async () => {
     await scheduler.tick();
 
     assert.deepEqual(duneDb.calls, []);
+    assert.deepEqual(listQueuedWaterRefills(repoRoot), []);
+  });
+});
+
+test("scanNow checks a newly enabled base immediately and preserves the daily schedule", async () => {
+  await withTempRepoRoot(async (repoRoot) => {
+    const clock = makeClock();
+    const enrollment = setBaseAutoRefillWater(repoRoot, 482, true, { now: clock.now, env: TEST_ENV });
+    assert.equal(enrollment.newlyEnabled, true);
+    const nextRunAt = readAutoRefillWaterState(repoRoot).nextRunAt;
+    const duneDb = fakeDuneDb({
+      levels: { 482: { lowestPercent: 2.3 } },
+      target: { map: "DeepDesert", partitionId: 8, queueSupported: true, writeSafeNow: false }
+    });
+    const { scheduler } = makeScheduler(repoRoot, duneDb, clock);
+
+    const result = await scheduler.scanNow(482);
+
+    assert.equal(result.status, "ok");
+    assert.equal(result.checked, 1);
+    assert.equal(result.queued, 1);
+    assert.deepEqual(listQueuedWaterRefills(repoRoot).map((entry) => ({ baseId: entry.baseId, map: entry.map, partitionId: entry.partitionId })), [
+      { baseId: 482, map: "DeepDesert", partitionId: 8 }
+    ]);
+    const state = readAutoRefillWaterState(repoRoot);
+    assert.equal(state.nextRunAt, nextRunAt);
+    assert.equal(state.bases["482"].lastLowestPercent, 2.3);
+    assert.notEqual(state.bases["482"].lastCheckedAt, "");
+  });
+});
+
+test("scanNow reports a healthy newly enabled base without queueing it", async () => {
+  await withTempRepoRoot(async (repoRoot) => {
+    const clock = makeClock();
+    setBaseAutoRefillWater(repoRoot, 482, true, { now: clock.now, env: TEST_ENV });
+    const duneDb = fakeDuneDb({ levels: { 482: { lowestPercent: 75 } } });
+    const { scheduler } = makeScheduler(repoRoot, duneDb, clock);
+
+    const result = await scheduler.scanNow(482);
+
+    assert.equal(result.checked, 1);
+    assert.equal(result.queued, 0);
     assert.deepEqual(listQueuedWaterRefills(repoRoot), []);
   });
 });

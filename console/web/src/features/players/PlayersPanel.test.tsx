@@ -18,7 +18,8 @@ const bannedPlayer = {
   online_status: "Banned",
   is_banned: true,
   map: "Survival_1",
-  fls_id: "254A06043E9F0B16"
+  fls_id: "254A06043E9F0B16",
+  total_playtime_seconds: 3665
 };
 
 beforeEach(() => {
@@ -37,11 +38,32 @@ afterEach(() => {
 });
 
 describe("PlayersPanel persistent bans", () => {
+  it("expands the player list until a player detail is opened", async () => {
+    render(<PlayersPanel
+      onError={vi.fn()}
+      renderCharacterAdmin={({ onClose }) => <button onClick={onClose}>Close player detail</button>}
+    />);
+
+    const tableWrap = await screen.findByRole("region", { name: "Scrollable data table" });
+    expect(tableWrap).toHaveClass("players-table-wrap-expanded");
+    expect(tableWrap).not.toHaveClass("players-table-wrap-compact");
+
+    fireEvent.click(screen.getByText("Vixen"));
+    await waitFor(() => expect(tableWrap).toHaveClass("players-table-wrap-compact"));
+    expect(tableWrap).not.toHaveClass("players-table-wrap-expanded");
+
+    fireEvent.click(screen.getByRole("button", { name: "Close player detail" }));
+    await waitFor(() => expect(tableWrap).toHaveClass("players-table-wrap-expanded"));
+  });
+
   it("renders banned status and requests the banned filter", async () => {
     render(<PlayersPanel onError={vi.fn()} renderCharacterAdmin={() => null} />);
 
     expect(await screen.findByText("Banned", { selector: ".player-status-cell span" })).toBeInTheDocument();
     expect(screen.getByText("Currently Active")).toBeInTheDocument();
+    expect(screen.getByText("1h 1m")).toBeInTheDocument();
+    const headers = screen.getAllByRole("columnheader").map((header) => header.textContent?.replace(/[ ↑↓]/g, ""));
+    expect(headers.indexOf("TotalPlaytime")).toBe(headers.indexOf("LastOnline") + 1);
     const filter = screen.getByLabelText("Filter");
     expect(screen.getByRole("option", { name: "Banned" })).toBeInTheDocument();
     fireEvent.change(filter, { target: { value: "banned" } });

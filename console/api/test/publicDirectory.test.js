@@ -19,6 +19,7 @@ import {
   isBattlegroupRunning,
   normalizeDiscordInvite,
   readConfiguredCapacity,
+  recoverRunningDirectorCapacity,
   readDirectoryInstallationKey,
   readPreviousDirectoryInstallationKey,
   readPublicModifiers,
@@ -40,7 +41,6 @@ test("public modifier reporting is allowlisted and omits defaults and secrets", 
       "Sandstorm.Enabled=0",
       "",
       "[Partition:Survival_1:1:/Script/DuneSandbox.DuneGameMode]",
-      "m_GlobalXPMultiplier=3.5",
       "m_WaterConsumptionRate=0.5",
       "m_DefaultReconnectGracePeriodSeconds=600",
       "",
@@ -54,7 +54,6 @@ test("public modifier reporting is allowlisted and omits defaults and secrets", 
     assert.deepEqual(readPublicModifiers(path), {
       "Mining Output": "7.77x",
       Sandstorms: "Disabled",
-      "XP Multiplier": "3.5x",
       "Water Consumption": "0.5x",
       "Reconnect Grace Period": "10 minutes",
       "Building Restriction Limits": "Disabled",
@@ -65,7 +64,7 @@ test("public modifier reporting is allowlisted and omits defaults and secrets", 
   }
 });
 
-test("public modifier reporting preserves differing map values without exposing map internals", () => {
+test("public modifier reporting ignores retired unsupported modifiers", () => {
   const files = fixture();
   const path = join(files.generatedDir, "gameplay-profile.ini");
   try {
@@ -79,9 +78,7 @@ test("public modifier reporting preserves differing map values without exposing 
       "[Partition:Survival_1:3:/Script/DuneSandbox.DuneGameMode]",
       "m_GlobalXPMultiplier=1.000000"
     ].join("\n"));
-    assert.deepEqual(readPublicModifiers(path), {
-      "XP Multiplier": "Varies: 2x, 3x"
-    });
+    assert.deepEqual(readPublicModifiers(path), {});
   } finally {
     files.cleanup();
   }
@@ -197,13 +194,15 @@ test("directory settings default public servers on and normalize test regions", 
   try {
     assert.deepEqual(readDirectorySettings(files.repoRoot, {}), {
       enabled: true,
+      anonymousCountEnabled: true,
       mode: "public",
       title: "Test Sietch",
       region: "Europe",
       discordInvite: "https://discord.gg/Test_Code"
     });
-    writeFileSync(join(files.repoRoot, ".env"), "SERVER_IP_MODE=public\nDUNE_PUBLIC_DIRECTORY_ENABLED=false\n");
+    writeFileSync(join(files.repoRoot, ".env"), "SERVER_IP_MODE=public\nDUNE_PUBLIC_DIRECTORY_ENABLED=false\nDUNE_ANONYMOUS_SERVER_COUNT_ENABLED=false\n");
     assert.equal(readDirectorySettings(files.repoRoot, {}).enabled, false);
+    assert.equal(readDirectorySettings(files.repoRoot, {}).anonymousCountEnabled, false);
   } finally {
     files.cleanup();
   }
@@ -239,10 +238,12 @@ test("directory snapshot uses compact database aggregates and local metadata", a
       ready: true,
       playersOnline: 4,
       capacity: 120,
+      capacityConfirmed: true,
       version: "2036754",
       installationKey: readDirectoryInstallationKey(files.repoRoot),
       previousInstallationKey: "",
       sietches: 2,
+      sietchesConfirmed: true,
       discordInvite: "https://discord.gg/Test_Code",
       publicMetadata: {
         modifiers: {},
@@ -272,6 +273,143 @@ test("configured Sietch capacity respects custom caps and active dimensions", ()
       "ShouldUpdatePlayerCountOnFls=false"
     ].join("\n"));
     assert.equal(readConfiguredCapacity(files.repoRoot, 3), 135);
+  } finally {
+    files.cleanup();
+  }
+});
+
+test("missing or incomplete director configuration is not reported as a real 60-player capacity", () => {
+  const files = fixture();
+  try {
+    const path = join(files.repoRoot, "runtime", "director", "config", "director_config.ini");
+    rmSync(path);
+    assert.equal(readConfiguredCapacity(files.repoRoot, 3), null);
+
+    writeFileSync(path, [
+      "[Server]",
+      "PlayerHardCap=60",
+      "ShouldUpdatePlayerCountOnFls=false",
+      "[Survival_1]"
+    ].join("\n"));
+    assert.equal(readConfiguredCapacity(files.repoRoot, 3), null);
+  } finally {
+    files.cleanup();
+  }
+});
+
+test("capacity falls back to the persisted secret-free Director snapshot", () => {
+  const files = fixture();
+  try {
+    rmSync(join(files.repoRoot, "runtime", "director", "config", "director_config.ini"));
+    writeFileSync(join(files.generatedDir, "director-capacity.ini"), [
+      "[Server]",
+      "PlayerHardCap=40",
+      "ShouldUpdatePlayerCountOnFls=false",
+      "[Survival_1]",
+      "PlayerHardCap=55",
+      "ShouldUpdatePlayerCountOnFls=true"
+    ].join("\n"));
+    assert.equal(readConfiguredCapacity(files.repoRoot, 3), 165);
+  } finally {
+    files.cleanup();
+  }
+});
+
+test("capacity recovers from a running Director and persists only filtered fields", async () => {
+  const files = fixture();
+  const calls = [];
+  try {
+    rmSync(join(files.repoRoot, "runtime", "director", "config", "director_config.ini"));
+    const capacity = await recoverRunningDirectorCapacity(files.repoRoot, 2, async (file, args) => {
+      calls.push({ file, args });
+      return [
+        "[Server]",
+        "PlayerHardCap=40",
+        "ShouldUpdatePlayerCountOnFls=false",
+        "[Survival_1]",
+        "PlayerHardCap=60",
+        "ShouldUpdatePlayerCountOnFls=true"
+      ].join("\n");
+    });
+    assert.equal(capacity, 120);
+    assert.equal(calls[0].file, "docker");
+    assert.deepEqual(calls[0].args.slice(0, 3), ["exec", "dune-director", "awk"]);
+    const snapshotPath = join(files.generatedDir, "director-capacity.ini");
+    assert.equal(readConfiguredCapacity(files.repoRoot, 2), 120);
+    assert.equal(statSync(snapshotPath).mode & 0o777, 0o600);
+    assert.doesNotMatch(readFileSync(snapshotPath, "utf8"), /Secret|Password|Token/i);
+  } finally {
+    files.cleanup();
+  }
+});
+
+test("reporter recovers a missing capacity source without suppressing the heartbeat", async () => {
+  const files = fixture();
+  const payloads = [];
+  try {
+    rmSync(join(files.repoRoot, "runtime", "director", "config", "director_config.ini"));
+    const reporter = createPublicDirectoryReporter({
+      repoRoot: files.repoRoot,
+      generatedDir: files.generatedDir,
+      secretsDir: files.secretsDir
+    }, {
+      db: fakeDb(),
+      getBattlegroupRunning: () => true,
+      recoverRunningDirectorCapacity: async (_repoRoot, sietches) => 60 * sietches,
+      fetchImpl: async (url, options) => {
+        if (url.endsWith("/heartbeat")) payloads.push(JSON.parse(options.body));
+        if (url.endsWith("/claim-status")) return response({ ok: true, claimed: false });
+        return response({ ok: true, nextHeartbeatSeconds: 60 });
+      },
+      setTimeoutFn: () => ({ unref() {} })
+    });
+    await reporter.tick();
+    assert.equal(payloads.length, 1);
+    assert.equal(payloads[0].capacity, 120);
+    assert.equal(reporter.publicState().state, "online");
+  } finally {
+    files.cleanup();
+  }
+});
+
+test("reporter retains confirmed capacity and Sietch count through a temporary configuration gap", async () => {
+  const files = fixture();
+  const payloads = [];
+  const reporterOptions = {
+    db: fakeDb(),
+    getBattlegroupRunning: () => true,
+    fetchImpl: async (url, options) => {
+      if (url.endsWith("/heartbeat")) payloads.push(JSON.parse(options.body));
+      if (url.endsWith("/claim-status")) return response({ ok: true, claimed: false });
+      return response({ ok: true, nextHeartbeatSeconds: 60, listingClaimed: false });
+    },
+    setTimeoutFn: () => ({ unref() {} })
+  };
+  const config = {
+    repoRoot: files.repoRoot,
+    generatedDir: files.generatedDir,
+    secretsDir: files.secretsDir
+  };
+
+  try {
+    const firstReporter = createPublicDirectoryReporter(config, reporterOptions);
+    await firstReporter.tick();
+    assert.equal(payloads.at(-1).capacity, 120);
+    assert.equal(payloads.at(-1).sietches, 2);
+
+    rmSync(join(files.repoRoot, "runtime", "director", "config", "director_config.ini"));
+    rmSync(join(files.generatedDir, "sietch-config.json"));
+
+    const restartedReporter = createPublicDirectoryReporter(config, {
+      ...reporterOptions,
+      db: null,
+      getBattlegroupRunning: () => false
+    });
+    await restartedReporter.tick();
+
+    assert.equal(payloads.at(-1).capacity, 120);
+    assert.equal(payloads.at(-1).sietches, 2);
+    assert.equal(payloads.at(-1).running, false);
   } finally {
     files.cleanup();
   }
@@ -687,7 +825,7 @@ test("an immediate UI-triggered heartbeat replaces the scheduled timer", async (
   }
 });
 
-test("reporter removes a previous listing after switching to local mode", async () => {
+test("reporter removes a previous listing and reports anonymous presence after switching to local mode", async () => {
   const files = fixture();
   const identityPath = join(files.secretsDir, "public-directory.json");
   const statusPath = join(files.generatedDir, "public-directory-status.json");
@@ -703,6 +841,7 @@ test("reporter removes a previous listing after switching to local mode", async 
     }, {
       db: fakeDb(),
       baseUrl: "https://directory.test/api/v1/servers",
+      getBattlegroupRunning: () => false,
       fetchImpl: async (url, options) => {
         requests.push({ url, options });
         return response({ ok: true });
@@ -712,11 +851,21 @@ test("reporter removes a previous listing after switching to local mode", async 
 
     await reporter.tick();
 
-    assert.equal(requests.length, 1);
+    assert.equal(requests.length, 2);
     assert.equal(requests[0].options.method, "DELETE");
     assert.equal(requests[0].url, `https://directory.test/api/v1/servers/${identity.serverId}`);
     assert.equal(requests[0].options.headers.authorization, `Bearer ${identity.secret}`);
-    assert.equal(reporter.publicState().state, "local-only");
+    assert.equal(requests[1].options.method, "POST");
+    assert.equal(requests[1].url, "https://directory.test/api/v1/server-presence/heartbeat");
+    assert.deepEqual(JSON.parse(requests[1].options.body), {
+      serverId: identity.serverId,
+      secret: identity.secret,
+      installationKey: readDirectoryInstallationKey(files.repoRoot),
+      visibility: "local",
+      running: false,
+      version: "2036754"
+    });
+    assert.equal(reporter.publicState().state, "anonymous-reporting");
     assert.equal(reporter.publicState().remoteListed, false);
   } finally {
     files.cleanup();

@@ -51,3 +51,42 @@ test("a failed queue does not stop the hook waiting for the other queue", async 
   assert.deepEqual(result.flushed, [{ baseId: 33, ok: true, refillType: "water" }]);
   assert.deepEqual(result.failures, [{ refillType: "generator", error: "generator database unavailable" }]);
 });
+
+test("flushDeletes is optional and additive alongside the two refill queues", async () => {
+  const result = await flushBaseRefillQueues({
+    flushGenerators: async () => ({ flushed: [{ baseId: 1, ok: true }] }),
+    flushWater: async () => ({ flushed: [{ baseId: 2, ok: true }] }),
+    flushDeletes: async () => ({ flushed: [{ baseId: 3, ok: true }] })
+  });
+  assert.deepEqual(result.flushed, [
+    { baseId: 1, ok: true, refillType: "generator" },
+    { baseId: 2, ok: true, refillType: "water" },
+    { baseId: 3, ok: true, refillType: "delete" }
+  ]);
+  assert.deepEqual(result.failures, []);
+});
+
+test("omitting flushDeletes behaves exactly as before this leg existed", async () => {
+  const result = await flushBaseRefillQueues({
+    flushGenerators: async () => ({ flushed: [{ baseId: 1, ok: true }] }),
+    flushWater: async () => ({ flushed: [{ baseId: 2, ok: true }] })
+  });
+  assert.deepEqual(result.flushed, [
+    { baseId: 1, ok: true, refillType: "generator" },
+    { baseId: 2, ok: true, refillType: "water" }
+  ]);
+  assert.deepEqual(result.failures, []);
+});
+
+test("a failed delete flush does not stop the hook waiting for the other queues", async () => {
+  const result = await flushBaseRefillQueues({
+    flushGenerators: async () => ({ flushed: [{ baseId: 1, ok: true }] }),
+    flushWater: async () => ({ flushed: [{ baseId: 2, ok: true }] }),
+    flushDeletes: async () => { throw new Error("delete queue database unavailable"); }
+  });
+  assert.deepEqual(result.flushed, [
+    { baseId: 1, ok: true, refillType: "generator" },
+    { baseId: 2, ok: true, refillType: "water" }
+  ]);
+  assert.deepEqual(result.failures, [{ refillType: "delete", error: "delete queue database unavailable" }]);
+});

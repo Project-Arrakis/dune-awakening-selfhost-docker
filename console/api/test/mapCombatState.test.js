@@ -9,6 +9,7 @@ import {
   resolveRuntimeStatus,
   resolvePartitionCombatStateFromRuntime,
   resolvePartitionCombatStatesFromRuntime,
+  resolvePartitionDisplayNamesFromRuntime,
   resolveMapCombatState,
   PARTITION_COMBAT_STATES,
   MAP_COMBAT_STATES
@@ -316,4 +317,61 @@ test("resolveMapCombatState treats a partition with no partition id as UNKNOWN w
   ]);
   assert.equal(result.partitions[0].configuredState, "UNKNOWN");
   assert.equal(result.mapState, "UNKNOWN");
+});
+
+// ─── Effective Bgd.ServerDisplayName resolution ────────────────────────────
+//
+// server_display_name has no per-map override tier (see usersettings.py
+// SCOPED_ENGINE_FIELDS / MAP_ENGINE_FIELDS / PARTITION_ENGINE_FIELDS) -- only
+// global (every Sietch in the battlegroup) and per-partition (the
+// battlegroup editor / "sietches set-display", which writes into this same
+// field -- see runtime/scripts/sietches.sh `set-display`).
+
+test("resolvePartitionDisplayNamesFromRuntime: a partition override wins over the global battlegroup name", async () => {
+  const { config, env } = buildSandbox();
+  writeProfile(env, [
+    "[Engine:ConsoleVariables]",
+    'Bgd.ServerDisplayName="Battlegroup Wide Name"',
+    "[PartitionEngine:DeepDesert_1:8:ConsoleVariables]",
+    'Bgd.ServerDisplayName="Named Sietch"'
+  ]);
+
+  const result = await resolvePartitionDisplayNamesFromRuntime({ ...config, env }, "DeepDesert_1", ["8", "9"]);
+  assert.equal(result.get("8"), "Named Sietch");
+  assert.equal(result.get("9"), "Battlegroup Wide Name");
+});
+
+test("resolvePartitionDisplayNamesFromRuntime: no configured name anywhere resolves to an empty map", async () => {
+  const { config, env } = buildSandbox();
+  writeProfile(env, []);
+
+  const result = await resolvePartitionDisplayNamesFromRuntime({ ...config, env }, "DeepDesert_1", ["8"]);
+  assert.equal(result.has("8"), false);
+});
+
+test("resolveMapCombatState surfaces serverDisplayName per partition alongside combat state", async () => {
+  const { config, env } = buildSandbox();
+  writeProfile(env, [
+    "[Partition:DeepDesert_1:8:/Script/DuneSandbox.PvpPveSettings]",
+    "+m_PveEnabledPartitions=8",
+    "[Partition:DeepDesert_1:9:/Script/DuneSandbox.PvpPveSettings]",
+    "+m_PvpEnabledPartitions=9",
+    "[PartitionEngine:DeepDesert_1:8:ConsoleVariables]",
+    'Bgd.ServerDisplayName="My Arrakis"'
+  ]);
+
+  const result = await resolveMapCombatState({ ...config, env }, "DeepDesert_1", [
+    { partitionId: "8", dimensionIndex: 0, databaseLabel: "PvP" },
+    { partitionId: "9", dimensionIndex: 1, databaseLabel: "PvE" }
+  ]);
+
+  const partitionEight = result.partitions.find((p) => p.partitionId === "8");
+  const partitionNine = result.partitions.find((p) => p.partitionId === "9");
+  // The configured display name takes precedence regardless of the (here
+  // deliberately stale/swapped) databaseLabel -- combat state and display
+  // name are resolved independently, neither one from the other.
+  assert.equal(partitionEight.serverDisplayName, "My Arrakis");
+  assert.equal(partitionEight.configuredState, "PVE");
+  assert.equal(partitionNine.serverDisplayName, null);
+  assert.equal(partitionNine.configuredState, "PVP");
 });

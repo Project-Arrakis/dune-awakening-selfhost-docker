@@ -47,7 +47,16 @@ export const DISCORD_ADAPTER_ROUTES = Object.freeze({
   VERSION: "/api/integrations/discord/version",
   SERVERS: "/api/integrations/discord/servers",
   PORTS: "/api/integrations/discord/ports",
-  DB: "/api/integrations/discord/db"
+  DB: "/api/integrations/discord/db",
+  // CATALOG is deliberately NOT added to DISCORD_LIVE_ADAPTER_ROUTES below.
+  // It is metadata ABOUT the live routes, not itself one of them -- adding
+  // it there would require commandCatalog.js's COMMAND_METADATA to have an
+  // entry describing itself, which is circular and not meaningful (a
+  // catalog entry for "the catalog"). Its own liveness/auth is handled
+  // directly by its route.js dispatch entry (bearer-token auth only, same
+  // as HEALTH) rather than the capability/tier system, since it is
+  // read-only metadata about route shape, not game or player data.
+  CATALOG: "/api/integrations/discord/catalog"
 });
 
 export const DISCORD_LIVE_ADAPTER_ROUTES = Object.freeze([
@@ -66,6 +75,7 @@ export const DISCORD_LIVE_ADAPTER_ROUTES = Object.freeze([
   DISCORD_ADAPTER_ROUTES.LOGS,
   DISCORD_ADAPTER_ROUTES.MAP_STATE,
   DISCORD_ADAPTER_ROUTES.MAINTENANCE,
+  DISCORD_ADAPTER_ROUTES.BACKUPS_LIST,
   DISCORD_ADAPTER_ROUTES.BROADCAST,
   DISCORD_ADAPTER_ROUTES.ANNOUNCEMENTS,
   DISCORD_ADAPTER_ROUTES.PLAYERS_LINK,
@@ -98,8 +108,9 @@ export function discordAdapterEnabled(config) {
   return process.env.DUNE_DISCORD_ADAPTER_ENABLED === "true" || config?.discordAdapterEnabled === true;
 }
 
-export function discordWritesEnabled(_config) {
-  return process.env.DUNE_DISCORD_WRITES_ENABLED === "1";
+export function discordWritesEnabled(config) {
+  const value = process.env.DUNE_DISCORD_WRITES_ENABLED ?? config?.discordWritesEnabled;
+  return value === true || value === 1 || /^(?:1|true)$/i.test(String(value || "").trim());
 }
 
 export function discordRoleMappingFromEnv(env = process.env) {
@@ -124,6 +135,13 @@ export function validateDiscordActor(actorPayload) {
   return normalizeDiscordActor(actorPayload);
 }
 
+// Bumped only when the command-catalog contract itself changes in a way
+// that could break an older bot's assumptions (e.g. a field is removed or
+// its meaning changes) -- NOT bumped for ordinary route additions, which
+// are additive and always safe for a bot that doesn't yet know about them.
+// See commandCatalog.js (issue #337) and docs/rfc-command-discovery.md §3.4.
+export const DISCORD_CATALOG_PROTOCOL_VERSION = 1;
+
 export async function discordAdapterHealth(config) {
   return {
     ok: true,
@@ -133,11 +151,12 @@ export async function discordAdapterHealth(config) {
     readOnly: false,
     gameDataWritesEnabled: false,
     adapterDataWrites: ["player-link", "account-link"],
-    writesEnabled: false,
+    writesEnabled: discordWritesEnabled(config),
     routes: DISCORD_LIVE_ADAPTER_ROUTES,
     liveRoutes: DISCORD_LIVE_ADAPTER_ROUTES,
     plannedRoutes: DISCORD_PLANNED_ADAPTER_ROUTES,
-    rolePolicy: discordRolePolicyHealth()
+    rolePolicy: discordRolePolicyHealth(),
+    protocolVersion: DISCORD_CATALOG_PROTOCOL_VERSION
   };
 }
 

@@ -1,19 +1,24 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ChevronDown, ChevronUp, Download, Droplet, Fuel, Users, X, Zap } from "lucide-react";
+import { Boxes, ChevronDown, ChevronUp, Download, Droplet, Fuel, Trash2, Users, X, Zap } from "lucide-react";
+import { BaseInventoryTab } from "./BaseInventoryTab";
 import { BasePermissionsTab } from "./BasePermissionsTab";
 import { BaseWaterTab } from "./BaseWaterTab";
 import { basesApi, type AutoRefillBase, type AutoRefillWaterBase, type RefillDeviceResult, type RefillWaterDeviceResult } from "../../api/bases";
+import { friendlyMapName } from "../maps/mapNames";
 import { mapsApi } from "../../api/maps";
+import { cachedInstanceNames, resolveInstanceNames } from "../maps/instanceNames";
 import { InfoTooltip } from "../../components/common/DisplayPrimitives";
 import { serverApi } from "../../api/server";
 import { setupApi, type Task } from "../../api/setup";
 import { apiDownload } from "../../api/client";
 import { DataTable, type SortDirection } from "../../components/common/DataTable";
-import { pendingRefillCountForPartition, usePendingRefills, usePendingWaterRefills } from "../../lib/usePendingRefills";
+import { pendingRefillCountForPartition, usePendingBaseDeletes, usePendingRefills, usePendingWaterRefills } from "../../lib/usePendingRefills";
+import { runGatedRestart, serviceRestartTarget, type RestartGate } from "../server/restartQueueGuard";
 
 type BasesPanelProps = {
   onError: (text: string) => void;
   confirmAction: (message: string, options?: { title?: string; confirmLabel?: string; warning?: string; danger?: boolean; details?: { label: string; value: string; tone?: "accent" | "success" | "danger" }[] }) => Promise<boolean>;
+  restartGate: RestartGate;
   formatMutationResult: (result: unknown) => string;
 };
 
@@ -260,7 +265,26 @@ function withCoordinates(row: Record<string, unknown>): BaseRow {
 // Columns narrow enough to ellipsize; a title keeps the full value readable.
 const TOOLTIP_COLUMNS = new Set(["base_type", "owner_name", "coordinates"]);
 
-function renderBaseCell(row: Record<string, unknown>, column: string) {
+function renderBaseCell(row: Record<string, unknown>, column: string, instanceNames?: Map<string, string>) {
+  if (column === "map") {
+    const mapId = String(row.map || "");
+    if (!mapId) return <span className="muted">—</span>;
+    const partitionId = String(row.partition_id || "");
+    // Looked up under the same map-scoped key the effect writes: a bare
+    // partition number is only unique once the map it belongs to is fixed.
+    const partitionMap = String(row.partitionMap || "").trim();
+    // The instance name if it has arrived, otherwise the partition number.
+    // Something identifying always renders, because two instances of one map
+    // are otherwise indistinguishable in this column.
+    const instance = (partitionId && partitionMap && instanceNames?.get(`${partitionMap}:${partitionId}`))
+      || (partitionId ? `Partition ${partitionId}` : "");
+    return (
+      <span className="bases-map-cell">
+        <span className="bases-map-name" title={mapId}>{friendlyMapName(mapId)}</span>
+        {instance && <span className="bases-map-instance" title={`Partition ${partitionId}`}>{instance}</span>}
+      </span>
+    );
+  }
   if (column === "name") {
     const name = String(row.name || "");
     return name ? <span className="bases-name" title={name}>{name}</span> : "—";
@@ -315,7 +339,7 @@ function renderBaseCell(row: Record<string, unknown>, column: string) {
   );
 }
 
-export function BasesPanel({ onError, confirmAction, formatMutationResult }: BasesPanelProps) {
+export function BasesPanel({ onError, confirmAction, restartGate, formatMutationResult }: BasesPanelProps) {
   const [q, setQ] = useState(() => basesCache?.q ?? "");
   const [submittedQ, setSubmittedQ] = useState(() => basesCache?.q ?? "");
   const [page, setPage] = useState(() => basesCache?.page ?? 0);
@@ -323,6 +347,14 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
   const [sortColumn, setSortColumn] = useState(() => basesCache?.sortColumn ?? "name");
   const [sortDirection, setSortDirection] = useState<SortDirection>(() => basesCache?.sortDirection ?? "asc");
   const [rows, setRows] = useState<BaseRow[]>(() => basesCache?.rows ?? []);
+  // partition id -> operator-chosen instance name ("Deep Desert PvE", "Sietch
+  // Abbir"). Loaded after the table renders, never blocking it: the names come
+  // from a CLI-backed endpoint, and the partition number alone already
+  // distinguishes instances if that call is slow or fails outright.
+  const [instanceNames, setInstanceNames] = useState<Map<string, string>>(new Map());
+  // Bumped by the same refresh cycle that reloads the rows, so a stale TTL is
+  // re-checked on the panel's own schedule rather than only on remount.
+  const [instanceNamesTick, setInstanceNamesTick] = useState(0);
   const [totalCount, setTotalCount] = useState(() => basesCache?.totalCount ?? 0);
   const [totalBases, setTotalBases] = useState(() => basesCache?.totalBases ?? 0);
   const [totalPieces, setTotalPieces] = useState(() => basesCache?.totalPieces ?? 0);
@@ -339,12 +371,16 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
   const [canEditPermissions, setCanEditPermissions] = useState(false);
   const [canRefillWater, setCanRefillWater] = useState(false);
   const [canQueueWater, setCanQueueWater] = useState(false);
+  const [canDeleteBase, setCanDeleteBase] = useState(false);
+  const [canQueueDelete, setCanQueueDelete] = useState(false);
   // Which tab the expanded row is showing. Power is the default so expanding a
   // row behaves exactly as it did before this feature existed.
-  const [expandedTab, setExpandedTab] = useState<"power" | "water" | "permissions">("power");
+  const [expandedTab, setExpandedTab] = useState<"power" | "water" | "inventory" | "permissions">("power");
   const [cancelingId, setCancelingId] = useState("");
   const [cancelingWaterId, setCancelingWaterId] = useState("");
   const [refillingWaterId, setRefillingWaterId] = useState("");
+  const [deletingId, setDeletingId] = useState("");
+  const [cancelingDeleteId, setCancelingDeleteId] = useState("");
   // Bumped after an immediate (non-queued) water refill so an already-open
   // Water tab knows to refetch -- it fetches its own data independently of
   // the bases list/row, so nothing else tells it a refill just landed.
@@ -374,6 +410,7 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
   const skipNextSearchReset = useRef(true);
   const { pending: pendingRefills, refresh: refreshPendingRefills } = usePendingRefills(canQueue);
   const { pending: pendingWaterRefills, refresh: refreshPendingWaterRefills } = usePendingWaterRefills(canQueueWater);
+  const { pending: pendingBaseDeletes, refresh: refreshPendingBaseDeletes } = usePendingBaseDeletes(canQueueDelete);
   const previousPendingTotal = useRef<number | null>(null);
 
   useEffect(() => {
@@ -406,6 +443,8 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
       setCanEditPermissions(Boolean(result.capabilities?.basePermissions));
       setCanRefillWater(Boolean(result.capabilities?.waterRefill));
       setCanQueueWater(Boolean(result.capabilities?.waterRefillQueue));
+      setCanDeleteBase(Boolean(result.capabilities?.baseDelete));
+      setCanQueueDelete(Boolean(result.capabilities?.baseDeleteQueue));
       setTotalCount(result.totalCount || 0);
       setTotalBases(result.totalBases || 0);
       setTotalPieces(result.totalPieces || 0);
@@ -423,6 +462,11 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
         totalPlaceables: result.totalPlaceables || 0,
         lastFetchedAt: Date.now()
       };
+      // Re-run the instance-name effect on the same cycle. Its own dependency
+      // (the set of partition maps) does not change when a sietch is renamed
+      // elsewhere, so without this the TTL would only ever be re-checked on a
+      // remount.
+      setInstanceNamesTick((tick) => tick + 1);
     } catch (error) {
       if (requestIdRef.current === requestId && !options.silent) onError(errorText(error));
     } finally {
@@ -473,6 +517,30 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }, [submittedQ, page, pageSize, sortColumn, sortDirection, load]);
+
+  // Upgrade "Partition 59" to "Deep Desert PvE" once the names arrive. One
+  // request pair per distinct partition map on the page (the dimension table
+  // plus its partition ids, which pair up by row order), fired after the table
+  // is already on screen. Failures are swallowed on purpose -- these endpoints
+  // shell out to the runtime CLI and are absent on a console-only install, and
+  // a missing instance name must never take the base list down with it.
+  const partitionMapsKey = [...new Set(rows
+    .map((row) => String(row.partitionMap || "").trim())
+    .filter(Boolean))].sort().join(",");
+  useEffect(() => {
+    const maps = partitionMapsKey ? partitionMapsKey.split(",") : [];
+    if (!maps.length) return undefined;
+    const cached = cachedInstanceNames(maps);
+    if (cached) {
+      setInstanceNames(cached);
+      return undefined;
+    }
+    let cancelled = false;
+    void resolveInstanceNames(maps).then((resolved) => {
+      if (!cancelled && resolved) setInstanceNames(resolved);
+    });
+    return () => { cancelled = true; };
+  }, [partitionMapsKey, instanceNamesTick]);
 
   // A background flush drains the queue whenever a map goes down, which can
   // happen without anyone touching this panel. When the count drops, the fuel
@@ -652,6 +720,77 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
     }
   }
 
+  // No blueprint-export mention in this dialog: base deletion is permanent
+  // and irreversible from the operator's perspective, but a full database
+  // "SQL Safety Backup" is taken automatically and unconditionally before any
+  // delete SQL runs -- see basesApi.deleteBase and docs/console/base-deletion.md.
+  async function handleDeleteBase(base: BaseRow) {
+    const id = String(base.base_id);
+    const label = base.name || `base ${id}`;
+    const confirmed = await confirmAction(
+      `Delete "${label}"? This permanently deletes the base and everything built or stored in it.`,
+      {
+        title: "Delete Base",
+        confirmLabel: "Delete",
+        danger: true,
+        details: [
+          { label: "Building Pieces", value: base.piece_count.toLocaleString(), tone: "danger" },
+          { label: "Placeables", value: base.placeable_count.toLocaleString(), tone: "danger" }
+        ],
+        warning: canQueueDelete
+          ? "A full database backup is taken automatically before the delete runs. If this base's map is running, the delete is queued and applied the next time that map restarts or stops, so a live server cannot overwrite it. If the map is already down, it is deleted now."
+          : "A full database backup is taken automatically before the delete runs, straight to the database. A running game server may not reflect the removal in-game until the map server restarts."
+      }
+    );
+    if (!confirmed) return;
+    onError("");
+    setDeletingId(id);
+    try {
+      const response = await basesApi.deleteBase(id);
+      if (response.result?.queued) {
+        writeRefillStatus(`Delete for "${label}" is queued and applies when this map next restarts or stops.`, "ok");
+        await refreshPendingBaseDeletes();
+      } else {
+        writeRefillStatus(`"${label}" was deleted.`, "ok");
+        // The row is gone: collapse it if it was the one expanded, then
+        // reload the list rather than try to splice one row out locally --
+        // the module cache still holds pre-delete counts for this view.
+        setExpandedBaseId((current) => current === id ? null : current);
+        basesCache = null;
+        await load({ q: submittedQ, page, pageSize, sortColumn, sortDirection });
+      }
+    } catch (error) {
+      const text = errorText(error);
+      writeRefillStatus(text, "fail");
+      onError(text);
+    } finally {
+      setDeletingId("");
+    }
+  }
+
+  async function handleCancelQueuedDelete(base: BaseRow) {
+    const id = String(base.base_id);
+    const label = base.name || `base ${id}`;
+    const confirmed = await confirmAction(`Cancel the queued delete for "${label}"?`, {
+      title: "Cancel Queued Delete",
+      confirmLabel: "Cancel Delete"
+    });
+    if (!confirmed) return;
+    onError("");
+    setCancelingDeleteId(id);
+    try {
+      await basesApi.cancelQueuedDelete(id);
+      writeRefillStatus(`Queued delete for "${label}" was canceled.`, "ok");
+      await refreshPendingBaseDeletes();
+    } catch (error) {
+      const text = errorText(error);
+      writeRefillStatus(text, "fail");
+      onError(text);
+    } finally {
+      setCancelingDeleteId("");
+    }
+  }
+
   const refreshAutoRefill = useCallback(async () => {
     try {
       const state = await basesApi.autoRefill();
@@ -760,7 +899,7 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
         {
           title: "Auto-Refill Water",
           confirmLabel: "Turn On",
-          warning: `Every ${autoRefillWaterIntervalHours}h this base is checked, and a refill is queued if any water container holds less than ${autoRefillWaterThreshold}% of its capacity. Queued refills are written the next time this base's map restarts or stops — auto-refill never restarts a map by itself. Blood is never touched -- only water.`
+          warning: `This base is checked now, then every ${autoRefillWaterIntervalHours}h. A refill is queued if any water container holds less than ${autoRefillWaterThreshold}% of its capacity. Queued refills are written the next time this base's map restarts or stops — auto-refill never restarts a map by itself. Blood is never touched -- only water.`
         }
       );
       if (!confirmed) return;
@@ -790,11 +929,21 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
         return next;
       });
       writeRefillStatus(
-        result.enabled
+        result.enabled && (result.initialCheck?.status === "fail" || Boolean(result.initialCheck?.failures))
+          ? `Water auto-refill is on for "${label}", but the initial check failed: ${result.initialCheck?.detail || "unknown error"}. It will retry automatically.`
+          : result.enabled && (result.initialCheck?.queued || result.initialCheck?.alreadyQueued)
+          ? `Water auto-refill is on for "${label}". A refill is queued for the next map stop or restart.`
+          : result.enabled && result.initialCheck?.checked
+          ? `Water auto-refill is on for "${label}". Checked now; no refill is currently needed.`
+          : result.enabled
           ? `Water auto-refill is on for "${label}". Checked every ${autoRefillWaterIntervalHours}h.`
           : `Water auto-refill is off for "${label}".`,
-        "ok"
+        result.initialCheck?.status === "fail" || result.initialCheck?.failures ? "fail" : "ok"
       );
+      if (result.enabled) {
+        void refreshAutoRefillWater();
+        void refreshPendingWaterRefills();
+      }
     } catch (error) {
       const text = errorText(error);
       writeRefillStatus(text, "fail");
@@ -809,47 +958,59 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
   // flushQueuedGeneratorRefills and flushQueuedWaterRefills unconditionally --
   // so one restart call covers a target with fuel, water, or both queued, and
   // the combined banner below only needs a single handler rather than two.
-  async function handleRestartForCombinedQueue(group: { map: string; partitionId: number; partitionMap: string; dimensionIndex: number; fuelCount: number; waterCount: number }) {
+  async function handleRestartForCombinedQueue(group: { map: string; partitionId: number; partitionMap: string; dimensionIndex: number; fuelCount: number; waterCount: number; deleteCount: number }) {
     const target = queueRestartTarget(group.partitionMap, group.partitionId, group.dimensionIndex);
     if (target.kind === "none") return;
     const key = `${group.map}|${group.partitionId}`;
     const parts = [];
     if (group.fuelCount) parts.push(`${group.fuelCount} queued generator refill${group.fuelCount === 1 ? "" : "s"}`);
     if (group.waterCount) parts.push(`${group.waterCount} queued water refill${group.waterCount === 1 ? "" : "s"}`);
-    const confirmed = await confirmAction(
-      `${target.label} now to apply ${parts.join(" and ")}?`,
-      {
-        title: "Restart Map",
-        confirmLabel: "Restart",
-        warning: "Players on this map are disconnected while it restarts."
-      }
-    );
-    if (!confirmed) return;
+    if (group.deleteCount) parts.push(`${group.deleteCount} queued base delete${group.deleteCount === 1 ? "" : "s"}`);
     onError("");
-    writeRestartingTarget(key, true);
     const label = group.partitionMap || group.map;
+    // Route through the restart queue: when it is enabled and players are online
+    // this becomes a countdown (the queued refills apply when the map finally
+    // goes down) rather than an immediate restart. The guard shows the single
+    // confirmation, carrying the refill context and disconnect warning.
+    const gated = await runGatedRestart({
+      restartGate,
+      label,
+      note: `Applies ${parts.join(" and ")}. Players on this map are disconnected while it restarts.`,
+      target: target.kind === "sietch" || target.kind === "respawn" ? { partitionId: target.partitionId } : serviceRestartTarget(target.service),
+      dispatch: (opts) => target.kind === "sietch" ? mapsApi.restartSietch(String(target.partitionId), { ...opts, label })
+        : target.kind === "respawn" ? mapsApi.respawn(String(target.partitionId), "RESTART MAP", { ...opts, label })
+        : serverApi.restartService(target.service, opts)
+    });
+    if (gated.outcome === "cancelled") return;
+    if (gated.outcome === "queued") {
+      writeRefillStatus(`${label} restart queued. Its queued refills apply once the countdown completes and the map is down.`, "ok");
+      return;
+    }
+    if (!gated.task) return;
+    const startedTask = gated.task;
+    writeRestartingTarget(key, true);
     try {
       // No trailing period: the running state appends animated dots.
       writeRefillStatus(`Restarting ${label}, its queued refills apply while it is down`, "running");
-      const started = target.kind === "sietch" ? await mapsApi.restartSietch(String(target.partitionId))
-        : target.kind === "respawn" ? await mapsApi.respawn(String(target.partitionId), "RESTART MAP")
-        : await serverApi.restartService(target.service);
       // Report what the restart actually did. Without this the running line
       // stands forever and a failed restart reads as a successful one.
-      const finished = await waitForTask(started.task);
-      const [refreshedFuel, refreshedWater] = await Promise.all([refreshPendingRefills(), refreshPendingWaterRefills()]);
+      const finished = await waitForTask(startedTask);
+      const [refreshedFuel, refreshedWater, refreshedDeletes] = await Promise.all([
+        refreshPendingRefills(), refreshPendingWaterRefills(), refreshPendingBaseDeletes()
+      ]);
       if (finished.status === "succeeded") {
         // The flush races the restart's own write-safety window, so a
-        // succeeded task does not guarantee the refill actually landed --
-        // check both queues rather than assume.
+        // succeeded task does not guarantee the refill/delete actually
+        // landed -- check every queue rather than assume.
         const stillQueued = Boolean(
           pendingRefillCountForPartition(refreshedFuel, group.partitionId)
           || pendingRefillCountForPartition(refreshedWater, group.partitionId)
+          || pendingRefillCountForPartition(refreshedDeletes, group.partitionId)
         );
         writeRefillStatus(
           stillQueued
-            ? `${label} restarted. Its refills are still queued and will apply once the map is confirmed down.`
-            : `${label} restarted. Any refills queued for it have been applied.`,
+            ? `${label} restarted. Its queued refills and deletes are still queued and will apply once the map is confirmed down.`
+            : `${label} restarted. Any refills and deletes queued for it have been applied.`,
           "ok"
         );
       } else {
@@ -938,18 +1099,27 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
   const autoRefillWaterUnrecoverable = autoRefillWaterUnavailable && autoRefillWaterBases.size === 0;
   const stalledWaterBaseIds = new Set([...autoRefillWaterBases.entries()].filter(([, entry]) => entry.stalledAt).map(([baseId]) => baseId));
 
-  // Combined queue banner: one box covering both queues. Merge byTarget rows
-  // keyed on map|partitionId -- restarting a target already flushes
+  // Mirrors the block above, for the pending base-delete queue.
+  const pendingDeleteTotal = pendingBaseDeletes?.total || 0;
+  const queuedDeleteBaseIds = new Set((pendingBaseDeletes?.pending || []).map((entry) => String(entry.baseId)));
+  const staleQueuedDeletes = (pendingBaseDeletes?.pending || []).filter((entry) => {
+    const queuedAt = Date.parse(entry.queuedAt);
+    return Number.isFinite(queuedAt) && Date.now() - queuedAt > STALE_QUEUED_REFILL_MS;
+  });
+  const staleDeleteTargetKeys = new Set(staleQueuedDeletes.map((entry) => `${entry.map || "Unknown"}|${entry.partitionId}`));
+
+  // Combined queue banner: one box covering all three queues. Merge byTarget
+  // rows keyed on map|partitionId -- restarting a target already flushes
   // whichever queue(s) are waiting on it (see handleRestartForCombinedQueue),
-  // so one restart button per target is correct even though the fuel/water
-  // counts come from two separate endpoints.
-  type CombinedQueueTarget = { map: string; partitionId: number; partitionMap: string; dimensionIndex: number; fuelCount: number; waterCount: number };
+  // so one restart button per target is correct even though the fuel/water/
+  // delete counts come from three separate endpoints.
+  type CombinedQueueTarget = { map: string; partitionId: number; partitionMap: string; dimensionIndex: number; fuelCount: number; waterCount: number; deleteCount: number };
   const combinedQueueTargets: CombinedQueueTarget[] = (() => {
     const byKey = new Map<string, CombinedQueueTarget>();
     for (const group of pendingRefills?.byTarget || []) {
       byKey.set(`${group.map}|${group.partitionId}`, {
         map: group.map, partitionId: group.partitionId, partitionMap: group.partitionMap, dimensionIndex: group.dimensionIndex,
-        fuelCount: group.count, waterCount: 0
+        fuelCount: group.count, waterCount: 0, deleteCount: 0
       });
     }
     for (const group of pendingWaterRefills?.byTarget || []) {
@@ -958,17 +1128,33 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
       if (existing) existing.waterCount = group.count;
       else byKey.set(key, {
         map: group.map, partitionId: group.partitionId, partitionMap: group.partitionMap, dimensionIndex: group.dimensionIndex,
-        fuelCount: 0, waterCount: group.count
+        fuelCount: 0, waterCount: group.count, deleteCount: 0
+      });
+    }
+    for (const group of pendingBaseDeletes?.byTarget || []) {
+      const key = `${group.map}|${group.partitionId}`;
+      const existing = byKey.get(key);
+      if (existing) existing.deleteCount = group.count;
+      else byKey.set(key, {
+        map: group.map, partitionId: group.partitionId, partitionMap: group.partitionMap, dimensionIndex: group.dimensionIndex,
+        fuelCount: 0, waterCount: 0, deleteCount: group.count
       });
     }
     return [...byKey.values()];
   })();
-  const combinedQueueTotal = pendingTotal + pendingWaterTotal;
+  const combinedQueueTotal = pendingTotal + pendingWaterTotal + pendingDeleteTotal;
+  // The banner's own heading names only the kinds of writes actually queued,
+  // so "Refills queued" stays exactly as it read before this feature existed
+  // when there is nothing to delete, rather than a permanently generic label.
+  const combinedQueueHeadingParts = [
+    ...(pendingTotal > 0 || pendingWaterTotal > 0 ? ["Refills"] : []),
+    ...(pendingDeleteTotal > 0 ? ["Deletes"] : [])
+  ];
   // Whether any stale entry actually has a restart button in the list above. A
   // group whose partition does not resolve renders "Restart this map from the
   // Maps tab" instead, so pointing at a button that is not there would be wrong.
-  const combinedStaleTargetKeys = new Set([...staleTargetKeys, ...staleWaterTargetKeys]);
-  const combinedStaleCount = staleQueued.length + staleQueuedWater.length;
+  const combinedStaleTargetKeys = new Set([...staleTargetKeys, ...staleWaterTargetKeys, ...staleDeleteTargetKeys]);
+  const combinedStaleCount = staleQueued.length + staleQueuedWater.length + staleQueuedDeletes.length;
   const combinedStaleHasRestartButton = combinedQueueTargets.some((group) =>
     combinedStaleTargetKeys.has(`${group.map}|${group.partitionId}`)
     && queueRestartTarget(group.partitionMap, group.partitionId, group.dimensionIndex).kind !== "none");
@@ -1047,12 +1233,15 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
           {/* Explicit spaces around the badges: they are inline elements, so
               without them the text content reads "Refills queued2 fuel1 water"
               to a screen reader and to anyone copying it. */}
-          Refills queued
+          {combinedQueueHeadingParts.join(" and ")} queued
           {pendingTotal > 0 && <> <span className="bases-queue-badge bases-queue-badge-fuel">
             <Fuel size={13} aria-hidden="true" />{pendingTotal.toLocaleString()} fuel
           </span></>}
           {pendingWaterTotal > 0 && <> <span className="bases-queue-badge bases-queue-badge-water">
             <Droplet size={13} aria-hidden="true" />{pendingWaterTotal.toLocaleString()} water
+          </span></>}
+          {pendingDeleteTotal > 0 && <> <span className="bases-queue-badge bases-queue-badge-delete">
+            <Trash2 size={13} aria-hidden="true" />{pendingDeleteTotal.toLocaleString()} delete{pendingDeleteTotal === 1 ? "" : "s"}
           </span></>}
         </p>
         <p className="action-help-note">
@@ -1077,6 +1266,9 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
               </span>}
               {group.waterCount > 0 && <span className="bases-queue-badge bases-queue-badge-water">
                 <Droplet size={13} aria-hidden="true" />{group.waterCount.toLocaleString()}
+              </span>}
+              {group.deleteCount > 0 && <span className="bases-queue-badge bases-queue-badge-delete">
+                <Trash2 size={13} aria-hidden="true" />{group.deleteCount.toLocaleString()}
               </span>}
               {target.kind === "none"
                 ? <span className="muted">Restart this map from the Maps tab</span>
@@ -1129,7 +1321,7 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
         wrapClassName="bases-table-wrap"
         headerTitles
         actionClassName="actions-column bases-actions-column"
-        renderCell={renderBaseCell}
+        renderCell={(row, column) => renderBaseCell(row, column, instanceNames)}
         action={(row) => {
           const base = row as BaseRow;
           const id = String(base.base_id);
@@ -1159,6 +1351,13 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
             : autoRefillWaterStalled ? `Water auto-refill has stalled after ${autoRefillWaterEntryForRow?.consecutiveQueues || 3} refills that did not raise the water. Click to refill now.`
             : autoRefillWaterOn ? `Water auto-refill is on — checked every ${autoRefillWaterIntervalHours}h below ${autoRefillWaterThreshold}%. Click to refill now.`
             : "Refill Water";
+          // A base with a delete queued is frozen server-side (see
+          // baseDeletePending in server.js): the refill buttons would just 409,
+          // so they gray out here instead of offering a control that fails on
+          // click. Blueprint export is deliberately left enabled -- it is not
+          // part of that lock, and exporting before an imminent delete is
+          // exactly the kind of thing an operator might still want to do.
+          const deletePending = queuedDeleteBaseIds.has(id);
           return <span className="icon-toggle-group">
             {/* The actions column is a fixed width, so the queued state stays a
                 compact glyph pill rather than a text label: the banner above
@@ -1176,9 +1375,9 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
                 </span>
               : <button
                   className={`icon-toggle-button${autoRefillStalled ? " bases-auto-refill-stalled-icon" : autoRefillOn ? " bases-auto-refill-on" : ""}`}
-                  title={refillTitle}
+                  title={deletePending ? "Blocked while a delete is queued for this base" : refillTitle}
                   aria-label={autoRefillStalled ? "Refill Generators (auto-refill stalled)" : autoRefillOn ? "Refill Generators (auto-refill on)" : "Refill Generators"}
-                  disabled={!refillable || refillingId === id}
+                  disabled={deletePending || !refillable || refillingId === id}
                   onClick={(event) => { event.stopPropagation(); void handleRefillGenerators(base); }}
                 ><Fuel size={16} /></button>}
             {queuedWaterBaseIds.has(id)
@@ -1194,12 +1393,30 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
                 </span>
               : <button
                   className={`icon-toggle-button${autoRefillWaterStalled ? " bases-auto-refill-stalled-icon" : autoRefillWaterOn ? " bases-auto-refill-on" : ""}`}
-                  title={refillWaterTitle}
+                  title={deletePending ? "Blocked while a delete is queued for this base" : refillWaterTitle}
                   aria-label={autoRefillWaterStalled ? "Refill Water (auto-refill stalled)" : autoRefillWaterOn ? "Refill Water (auto-refill on)" : "Refill Water"}
-                  disabled={!canRefillWater || refillingWaterId === id}
+                  disabled={deletePending || !canRefillWater || refillingWaterId === id}
                   onClick={(event) => { event.stopPropagation(); void handleRefillWater(base); }}
                 ><Droplet size={16} /></button>}
             <button className="icon-toggle-button" title="Download Base as Blueprint" aria-label="Download Base as Blueprint" disabled={downloadingId === id} onClick={(event) => { event.stopPropagation(); void handleDownloadBlueprint(base); }}><Download size={16} /></button>
+            {canDeleteBase && (deletePending
+              ? <span className="bases-queued-delete" title="Delete queued — applies when this map next restarts or stops">
+                  <Trash2 size={16} aria-label="Delete queued for this base" />
+                  <button
+                    className="icon-toggle-button bases-queued-delete-cancel"
+                    title="Cancel Queued Delete"
+                    aria-label="Cancel Queued Delete"
+                    disabled={cancelingDeleteId === id}
+                    onClick={(event) => { event.stopPropagation(); void handleCancelQueuedDelete(base); }}
+                  ><X size={14} /></button>
+                </span>
+              : <button
+                  className="icon-toggle-button danger"
+                  title="Delete Base"
+                  aria-label="Delete Base"
+                  disabled={deletingId === id}
+                  onClick={(event) => { event.stopPropagation(); void handleDeleteBase(base); }}
+                ><Trash2 size={16} /></button>)}
           </span>;
         }}
         secondaryActionPosition="start"
@@ -1252,7 +1469,7 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
             + (autoRefillEntry && !lastChecked ? " Not checked yet." : "")
             + (autoRefillUnavailable ? " Last known state — the latest read failed." : "");
           return (
-            <div className="bases-generator-breakdown">
+            <div className="bases-tab-body">
               {/* Hidden entirely without the queue capability: automating a
                   refill that cannot wait for a safe window would write into a
                   possibly-live base, which is the hazard the queue prevents. */}
@@ -1291,11 +1508,11 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
               <p className="bases-generator-reserve-note" role="note">
                 {QUEUED_RESERVE_EXPLANATION}
               </p>
-              <div className="bases-generator-cards">
+              <div className="bases-card-grid">
               {generators.map((generator, index) => (
-                <div className="bases-generator-group" key={`${generator.type}-${index}`}>
-                  <div className="bases-generator-group-title">{generator.name}</div>
-                  <dl className="bases-generator-stats">
+                <div className="bases-card" key={`${generator.type}-${index}`}>
+                  <div className="bases-card-title">{generator.name}</div>
+                  <dl className="bases-card-stats">
                     <dt>Generators</dt>
                     <dd>{generator.generatorCount.toLocaleString()}</dd>
                     <dt>Fuel Queued</dt>
@@ -1350,6 +1567,14 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
                   className={`bases-expanded-tab${expandedTab === "water" ? " active" : ""}`}
                   onClick={() => setExpandedTab("water")}
                 ><Droplet size={15} aria-hidden="true" />Water</button>
+                <button
+                  role="tab"
+                  id={`bases-tab-inventory-${id}`}
+                  aria-selected={expandedTab === "inventory"}
+                  aria-controls={`bases-panel-inventory-${id}`}
+                  className={`bases-expanded-tab${expandedTab === "inventory" ? " active" : ""}`}
+                  onClick={() => setExpandedTab("inventory")}
+                ><Boxes size={15} aria-hidden="true" />Inventory</button>
                 {canEditPermissions && <button
                   role="tab"
                   id={`bases-tab-permissions-${id}`}
@@ -1385,6 +1610,15 @@ export function BasesPanel({ onError, confirmAction, formatMutationResult }: Bas
                         onToggle: (enabled) => { void handleToggleAutoRefillWater(base, enabled); },
                         onRetry: () => { void refreshAutoRefillWater(); }
                       }}
+                    />
+                  </div>
+                : expandedTab === "inventory"
+                ? <div role="tabpanel" id={`bases-panel-inventory-${id}`} aria-labelledby={`bases-tab-inventory-${id}`}>
+                    <BaseInventoryTab
+                      baseId={id}
+                      baseName={String(base.name || `base ${id}`)}
+                      confirmAction={confirmAction}
+                      onError={onError}
                     />
                   </div>
                 : <div role="tabpanel" id={`bases-panel-permissions-${id}`} aria-labelledby={`bases-tab-permissions-${id}`}>

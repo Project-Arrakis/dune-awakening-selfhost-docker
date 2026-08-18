@@ -48,6 +48,8 @@ export const NAMESPACES = {
   CAREPACKAGE: "carepackage",
   STORAGE:     "storage",
   BLUEPRINTS:  "blueprints",
+  VEHICLES:    "vehicles",
+  EXCHANGE:    "exchange",
 };
 
 // ---- Actions: route → action mapping ----
@@ -80,10 +82,13 @@ export const ROUTE_ACTIONS = {
   "GET /api/server/restart-schedule":          "server:read",
   "GET /api/server/ip-change-restart":         "server:read",
   "GET /api/server/shutdown-protection":       "server:read",
+  "GET /api/server/restart-queue":             "server:read",
   "POST /api/server/start":                    "server:start",
   "POST /api/server/stop":                     "server:stop",
   "POST /api/server/restart":                  "server:restart",
   "POST /api/server/restart-service":          "server:restart-service",
+  "POST /api/server/restart-queue/cancel":     "server:restart",
+  "POST /api/server/restart-queue/restart-now":"server:restart",
   "POST /api/server/network-bind/fix":         "server:network-fix",
   "POST /api/server/storage/cleanup-images":   "server:storage-cleanup",
   "POST /api/server/storage/cleanup-build-cache":"server:storage-cleanup",
@@ -95,6 +100,7 @@ export const ROUTE_ACTIONS = {
   "POST /api/server/ip-change-restart/check":  "server:write-config",
   "POST /api/server/shutdown-protection":      "server:write-config",
   "POST /api/server/shutdown-protection/remove":"server:write-config",
+  "POST /api/server/restart-queue":            "server:write-config",
 
   // --- Logs ---
   "GET /api/logs/services":                    "logs:read",
@@ -144,6 +150,25 @@ export const ROUTE_ACTIONS = {
   "GET /api/players/online":                   "players:read",
   "GET /api/players/search":                   "players:read",
 
+  // --- Vehicles ---
+  "GET /api/vehicles":                         "vehicles:read",
+
+  // --- Exchange (Market Board) — read-only board + console-local filter config ---
+  "GET /api/exchange/items":                   "exchange:read",
+  "GET /api/exchange/listings":                "exchange:read",
+  "GET /api/exchange/stats":                   "exchange:read",
+  "GET /api/exchange/config":                  "exchange:read",
+  "POST /api/exchange/config":                 "exchange:write-config",
+
+  // --- Exchange Market Bot — console-managed NPC seeding / buyback (game-DB writes) ---
+  "GET /api/exchange/market":                  "exchange:market",
+  "GET /api/exchange/market/exchanges":        "exchange:market",
+  "POST /api/exchange/market/buyback/probe":   "exchange:market",
+  "POST /api/exchange/market/buyback/schedule": "exchange:market-write",
+  "POST /api/exchange/market/seed/schedule":   "exchange:market-write",
+  "POST /api/exchange/market/buyback/run":     "exchange:market-write",
+  "POST /api/exchange/market/seed/run":        "exchange:market-write",
+
   // --- Players (mutations) ---
   "POST /api/players/kick-all-online":         "players:kick-all",
 
@@ -157,6 +182,7 @@ export const ROUTE_ACTIONS = {
   "GET /api/bases/pending-water-refills":      "bases:read",
   "GET /api/bases/auto-refill-water":          "bases:read",
   "GET /api/bases/permission-candidates":      "bases:read",
+  "GET /api/bases/pending-deletes":            "bases:read",
 
   // --- Storage (read) ---
   "GET /api/storage":                          "storage:read",
@@ -238,6 +264,7 @@ export const ROUTE_ACTIONS = {
   "GET /api/maps/choam-terminals":             "maps:read",
   "GET /api/maps/user-settings/schema":        "maps:read",
   "GET /api/maps/user-settings/restart-pending":"maps:read",
+  "GET /api/maps/user-settings/deferred-pending":"maps:read",
   "GET /api/maps/user-settings/values":        "maps:read",
   "GET /api/maps/user-settings/raw":           "maps:read",
   "GET /api/maps/userengine":                  "maps:read",
@@ -349,6 +376,35 @@ export const REGEX_ACTIONS_BY_METHOD = {
   "PATCH /api/database/tables/": "database:mutate",
 };
 
+// ---- Parameterized route actions (regex, not prefix) ----
+//
+// REGEX_ACTIONS_BY_METHOD only tests a startsWith prefix, which cannot tell
+// "/api/bases/{id}" (the base itself) apart from "/api/bases/{id}/queued-
+// delete" (a sub-resource under it) — both start with the same
+// "/api/bases/" prefix, since the variable segment comes before, not after,
+// the part that would distinguish them. Routes that need that distinction
+// go here instead, tested as a real regex before the prefix fallback.
+export const REGEX_ACTIONS_BY_METHOD_PATTERN = [
+  // DELETE /api/bases/{baseId} — the actual, irreversible base delete.
+  // Deliberately its own action rather than the shared bases:mutate bucket
+  // every other base mutation uses (refills, permission edits, cancelling
+  // a queued refill/delete) — those are all reversible; this is not, so an
+  // operator's policy should be able to grant one without the other. Every
+  // other bases DELETE route (queued-refill, queued-water-refill, queued-
+  // delete — all cancellations) still falls through to the
+  // "DELETE /api/bases/" prefix rule above, unaffected.
+  { method: "DELETE", pattern: /^\/api\/bases\/[^/]+$/, action: "bases:delete" },
+  // DELETE /api/bases/{baseId}/containers/{placeableId}/items/{itemId} —
+  // destroying one stored item. Its own action for a different reason than
+  // bases:delete above: not blast radius, but consent. Base inventory shipped
+  // read-only, so an operator whose hand-authored policy grants bases:mutate
+  // agreed to refills and permission edits and could not have agreed to item
+  // destruction — folding this into that bucket would silently widen every
+  // existing narrow policy. The shipped owner/admin policies grant bases:*,
+  // so default access is unchanged.
+  { method: "DELETE", pattern: /^\/api\/bases\/[^/]+\/containers\/[^/]+\/items\/[^/]+$/, action: "bases:delete-item" }
+];
+
 // ---- Action resolution ----
 //
 // Returns the action string for a given route path and HTTP method.
@@ -362,6 +418,13 @@ export function actionForRoute(path, method) {
   // Exact match
   if (ROUTE_ACTIONS.hasOwnProperty(exactKey)) return ROUTE_ACTIONS[exactKey];
 
+  // Parameterized pattern match (checked before the prefix fallback below,
+  // so a route needing a real regex to distinguish itself from a sibling
+  // sub-resource wins over the coarser startsWith bucket).
+  for (const { method: m, pattern, action } of REGEX_ACTIONS_BY_METHOD_PATTERN) {
+    if (routeMethod === m && pattern.test(path)) return action;
+  }
+
   // Method-aware regex match (ordered first — more specific)
   for (const [key, action] of Object.entries(REGEX_ACTIONS_BY_METHOD)) {
     const [m, prefix] = key.split(" ", 2);
@@ -373,7 +436,9 @@ export function actionForRoute(path, method) {
     if (path.startsWith(prefix)) return action;
   }
 
-  // Unknown route — return null (server.js handles untracked routes
-  // gracefully by allowing owner-tier and denying all others)
+  // Unknown route — return null. server.js's `!action || !evaluate(...)`
+  // check fails CLOSED on null: every tier, owner included, gets denied
+  // rather than allowed. A new route is invisible to every policy until it is
+  // added here, not silently open to the top tier.
   return null;
 }

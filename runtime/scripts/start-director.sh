@@ -11,6 +11,7 @@ source runtime/scripts/host-paths.sh
 source runtime/scripts/runtime-env.sh
 source runtime/scripts/image-tags.sh
 source runtime/scripts/generated-file-paths.sh
+source runtime/scripts/fake-k8s-serviceaccount.sh
 WORLD_IMAGE_TAG="$(resolve_world_image_tag)"
 IMAGE="registry.funcom.com/funcom/self-hosting/seabass-server-bg-director:${WORLD_IMAGE_TAG}"
 DIRECTOR_PORT="$(resolve_director_port)"
@@ -47,11 +48,7 @@ SERVER_REGION="$(resolve_server_region)"
 SERVER_IP="$(resolve_server_ip)"
 BATTLEGROUP_ID="$(resolve_battlegroup_id)"
 DUNE_DB_PASSWORD="${DUNE_DB_PASSWORD:-dune}"
-if [ -n "${DUNE_FAKE_K8S_SERVICEACCOUNT_DIR:-}" ]; then
-  FAKE_K8S_SERVICEACCOUNT_DIR="$DUNE_FAKE_K8S_SERVICEACCOUNT_DIR"
-else
-  FAKE_K8S_SERVICEACCOUNT_DIR="$PWD/runtime/generated/dune-fake-k8s-serviceaccount-director-$$"
-fi
+FAKE_K8S_SERVICEACCOUNT_DIR="$(fake_k8s_serviceaccount_dir director)"
 
 
 mkdir -p runtime/director/config
@@ -194,6 +191,19 @@ if [ -s runtime/generated/director-deepdesert-dual.ini ]; then
   cat runtime/generated/director-deepdesert-dual.ini >> runtime/director/config/director_config.ini
 fi
 
+# Keep the public directory's capacity source independent from the live
+# Director bind mount. Self-updates and Console rebuilds can safely retain this
+# secret-free snapshot without copying Director authentication material.
+DIRECTOR_CAPACITY_SNAPSHOT="runtime/generated/director-capacity.ini"
+repair_generated_file_path "$DIRECTOR_CAPACITY_SNAPSHOT"
+capacity_snapshot_tmp="$(mktemp runtime/generated/.director-capacity.ini.tmp.XXXXXX)"
+awk '
+  /^\[[^]]+\]$/ { print; next }
+  /^(PlayerHardCap|ShouldUpdatePlayerCountOnFls)=/ { print }
+' runtime/director/config/director_config.ini > "$capacity_snapshot_tmp"
+chmod 600 "$capacity_snapshot_tmp"
+mv -f "$capacity_snapshot_tmp" "$DIRECTOR_CAPACITY_SNAPSHOT"
+
 cat >> runtime/director/config/director_config.ini <<EOF
 
 [AuthenticationConfiguration]
@@ -244,19 +254,7 @@ UsernameServerLoginSecret="$USERNAME_SERVER_LOGIN_SECRET"
 ServerLoginPasswordSecret="$SERVER_LOGIN_PASSWORD_SECRET"
 EOF
 
-cat > "$FAKE_K8S_SERVICEACCOUNT_DIR/namespace" <<'EOF'
-funcom-seabass-dune-docker
-EOF
-
-cat > "$FAKE_K8S_SERVICEACCOUNT_DIR/token" <<'EOF'
-fake-token
-EOF
-
-# Same intentional trick as TextRouter for now:
-# invalid CA makes IGWO init fail non-fatally instead of trying to call a missing API server.
-: > "$FAKE_K8S_SERVICEACCOUNT_DIR/ca.crt"
-
-chmod -R 755 "$FAKE_K8S_SERVICEACCOUNT_DIR"
+prepare_fake_k8s_serviceaccount "$FAKE_K8S_SERVICEACCOUNT_DIR" funcom-seabass-dune-docker
 chmod 755 runtime/director/config
 chmod 600 runtime/director/config/director_config.ini
 
@@ -271,6 +269,7 @@ docker rm -f dune-director 2>/dev/null || true
 docker run -d \
   "${DUNE_DOCKER_LOG_ARGS[@]}" \
   --name dune-director \
+  --label "com.docker.compose.project=${DUNE_COMPOSE_PROJECT_NAME}" \
   --network dune-net \
   --restart unless-stopped \
   -p "127.0.0.1:${DIRECTOR_PORT}:11717/tcp" \
@@ -339,6 +338,8 @@ docker run -d \
   --RMQGamePort=5672 \
   --RMQAdminHostname=dune-rmq-admin \
   --RMQAdminPort=5672
+
+prune_legacy_fake_k8s_serviceaccounts
 
 sleep 12
 

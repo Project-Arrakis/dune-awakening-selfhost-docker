@@ -22,3 +22,29 @@ receivers:
     webhook_configs:
       - url: 'https://acp-setup.darkdante.org/api/alerts/relay'
         send_resolved: true
+        # yacketrj/arrakis-control-panel#167: this endpoint had zero
+        # authentication -- anyone who discovered the publicly-routable
+        # URL above could inject spoofed alert payloads. The bot now
+        # validates this Bearer token against DUNE_ALERT_RELAY_TOKEN
+        # (or _FILE), matching exactly the credential this
+        # credentials_file must contain. See
+        # runtime/secrets/alert-relay-token.txt.example and
+        # docs/runtime/METRICS-ALERTMANAGER-DISCORD-RELAY.md for setup.
+        #
+        # Deliberately NOT required for this file to be valid YAML
+        # without the secret existing yet -- if
+        # runtime/secrets/alert-relay-token.txt doesn't exist,
+        # Alertmanager fails to start with a clear "no such file"
+        # error at container startup (visible in `docker logs
+        # dune-alertmanager`), not a silent unauthenticated fallback.
+        # This is the correct fail-closed behavior on THIS side: an
+        # operator who hasn't provisioned the secret yet should notice
+        # immediately that alerting isn't running, not have it running
+        # unauthenticated. The bot side (arrakis-control-panel#167)
+        # separately still accepts unauthenticated requests with a
+        # warning if its own token is unset, to avoid breaking a bot
+        # operator who isn't running this specific fork/Alertmanager
+        # setup at all.
+        http_config:
+          authorization:
+            credentials_file: /etc/alertmanager/secrets/alert-relay-token.txt

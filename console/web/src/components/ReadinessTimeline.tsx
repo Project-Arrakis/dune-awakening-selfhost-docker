@@ -1,3 +1,5 @@
+import { getServerPorts } from "../api/serverPorts";
+
 type CheckRow = {
   name: string;
   detail: string;
@@ -166,17 +168,23 @@ function detailForReady(raw: string, name: string, status: string) {
 
 function friendlyListenerName(name: string, port: string, protocol: string) {
   const key = `${port}/${protocol.toLowerCase()}`;
+  // Built from the actual, resolved ports for this instance (see
+  // api/serverPorts.ts) rather than the Instance-1 stock values, so
+  // deployments running non-default configured ports still get
+  // friendly labels instead of falling through to the raw, unlabeled
+  // port.
+  const ports = getServerPorts();
   const known: Record<string, string> = {
-    "15432/tcp": "Postgres localhost",
-    "32573/tcp": "RabbitMQ Admin",
-    "31982/tcp": "RabbitMQ Game",
-    "31983/tcp": "RabbitMQ Game HTTP",
-    "5059/tcp": "Text Router",
-    "11717/tcp": "Director",
-    "7777/udp": "Overmap clients",
-    "7778/udp": "Survival 1 clients",
-    "7888/udp": "Survival 1 S2S",
-    "7889/udp": "Overmap S2S"
+    [`${ports.postgres}/tcp`]: "Postgres localhost",
+    [`${ports.rmqAdmin}/tcp`]: "RabbitMQ Admin",
+    [`${ports.rmqGame}/tcp`]: "RabbitMQ Game",
+    [`${ports.rmqGameHttp}/tcp`]: "RabbitMQ Game HTTP",
+    [`${ports.textRouter}/tcp`]: "Text Router",
+    [`${ports.director}/tcp`]: "Director",
+    [`${ports.clientBase}/udp`]: "Overmap clients",
+    [`${ports.clientBaseSecondary}/udp`]: "Survival 1 clients",
+    [`${ports.igwBase}/udp`]: "Survival 1 S2S",
+    [`${ports.igwBaseSecondary}/udp`]: "Overmap S2S"
   };
   return known[key] || friendlyName(name);
 }

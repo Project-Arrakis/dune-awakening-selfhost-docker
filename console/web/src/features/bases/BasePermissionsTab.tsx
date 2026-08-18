@@ -154,12 +154,13 @@ function RankSegments({ entry, baseId, disabled, onChange }: {
 // own card instead of being one row among many. The custodian transfer lives
 // here too -- it only ever changes the Owner, and as a section of its own it
 // was the loudest thing on the tab despite being a rare action.
-function OwnerHeroCard({ owner, isCustodian, systemCustodian, saving, dirty, onTransfer }: {
+function OwnerHeroCard({ owner, isCustodian, systemCustodian, saving, dirty, unclaimed, onTransfer }: {
   owner: DraftEntry | undefined;
   isCustodian: boolean;
-  systemCustodian: { available: boolean; playerId?: string; name?: string; reason?: string };
+  systemCustodian: { available: boolean; canCreate?: boolean; playerId?: string; name?: string; reason?: string };
   saving: boolean;
   dirty: boolean;
+  unclaimed: string;
   onTransfer: () => void;
 }) {
   const custodianName = systemCustodian.name || "Custodian";
@@ -174,17 +175,22 @@ function OwnerHeroCard({ owner, isCustodian, systemCustodian, saving, dirty, onT
       </div>
       <button
         className="warning"
-        // Still enabled on an ownerless base: that state arrives from the
-        // server with a clean draft, so parking ownership on the custodian is
-        // the fastest legitimate way out of it.
-        disabled={!systemCustodian.available || ownedByCustodian || saving || dirty}
-        title={dirty
+        // Still enabled on an ownerless base that is *claimed*: that state
+        // arrives from the server with a clean draft, so parking ownership on
+        // the custodian is the fastest legitimate way out of it. An unclaimed
+        // base looks identical on screen -- "No Owner set" -- but has no
+        // permission_actor row for the rank write to reference, so this button
+        // was the shortest path to a raw foreign-key error and is blocked.
+        disabled={(!systemCustodian.available && !systemCustodian.canCreate) || ownedByCustodian || saving || dirty || Boolean(unclaimed)}
+        title={unclaimed
+          ? unclaimed
+          : dirty
           ? "Save or revert roster changes first"
           : ownedByCustodian
           ? `This base is already owned by the ${systemCustodian.name || "detected"} system custodian`
           : `Park ownership on the reserved ${systemCustodian.name || "detected"} system identity, preserving the current permission roster`}
         onClick={onTransfer}
-      >{ownedByCustodian ? `Owned by ${custodianName}` : systemCustodian.available ? `Transfer to ${custodianName}` : "Transfer to Custodian"}</button>
+      >{ownedByCustodian ? `Owned by ${custodianName}` : (systemCustodian.available || systemCustodian.canCreate) ? `Transfer to ${custodianName}` : "Transfer to Custodian"}</button>
       {!systemCustodian.available && systemCustodian.reason &&
         <p className="bases-permissions-error bases-permissions-owner-note">{systemCustodian.reason}</p>}
     </div>
@@ -204,7 +210,11 @@ export function BasePermissionsTab({ baseId, baseName, onSaved, confirmAction }:
   const [searching, setSearching] = useState(false);
   const [searched, setSearched] = useState(false);
   const [addRank, setAddRank] = useState<BasePermissionRank>(ASSOCIATE_RANK);
-  const [systemCustodian, setSystemCustodian] = useState<{ available: boolean; playerId?: string; name?: string; reason?: string }>({ available: false });
+  const [systemCustodian, setSystemCustodian] = useState<{ available: boolean; canCreate?: boolean; playerId?: string; name?: string; reason?: string }>({ available: false });
+  // The server's explanation when the base has no permission_actor row, empty
+  // otherwise. A string rather than a boolean so the banner and every disabled
+  // control's tooltip read back the same sentence the API chose.
+  const [unclaimed, setUnclaimed] = useState("");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -214,6 +224,12 @@ export function BasePermissionsTab({ baseId, baseName, onSaved, confirmAction }:
       const entries = toDraft(result.entries || []);
       setSaved(entries);
       setDraft(entries);
+      // Only an explicit false locks the tab down. An API that predates the
+      // flag omits it, and reading that as unclaimed would disable editing on
+      // every base it serves.
+      setUnclaimed(result.claimed === false
+        ? result.unclaimedReason || "This base is not claimed, so its permissions cannot be edited."
+        : "");
       setSystemCustodian(result.systemCustodian || { available: false, reason: "System custodian detection is unavailable." });
     } catch (error) {
       setLoadError(errorText(error));
@@ -317,7 +333,7 @@ export function BasePermissionsTab({ baseId, baseName, onSaved, confirmAction }:
   }
 
   async function transferToSystemCustodian() {
-    if (!systemCustodian.available || !systemCustodian.playerId) return;
+    if ((!systemCustodian.available && !systemCustodian.canCreate) || !systemCustodian.playerId) return;
     const custodianName = systemCustodian.name || "System";
     const confirmed = await confirmAction(
       `Transfer this base to the reserved ${custodianName} identity? Existing access entries will be preserved and the current Owner will become a Co-Owner.`,
@@ -388,6 +404,7 @@ export function BasePermissionsTab({ baseId, baseName, onSaved, confirmAction }:
             systemCustodian={systemCustodian}
             saving={saving}
             dirty={dirty}
+            unclaimed={unclaimed}
             onTransfer={() => void transferToSystemCustodian()}
           />
         </div>
@@ -418,8 +435,8 @@ export function BasePermissionsTab({ baseId, baseName, onSaved, confirmAction }:
                   <span>{candidate.name}</span>
                   <button
                     className="icon-toggle-button"
-                    disabled={alreadyOnRoster.has(candidate.playerId) || saving}
-                    title={alreadyOnRoster.has(candidate.playerId) ? "Already on this base" : `Add ${candidate.name} as ${RANK_LABELS[addRank]}`}
+                    disabled={alreadyOnRoster.has(candidate.playerId) || saving || Boolean(unclaimed)}
+                    title={unclaimed || (alreadyOnRoster.has(candidate.playerId) ? "Already on this base" : `Add ${candidate.name} as ${RANK_LABELS[addRank]}`)}
                     aria-label={`Add ${candidate.name}`}
                     onClick={() => addCandidate(candidate)}
                   ><Plus size={15} /></button>
@@ -433,8 +450,8 @@ export function BasePermissionsTab({ baseId, baseName, onSaved, confirmAction }:
             <button disabled={!dirty || saving} onClick={() => setDraft(saved)}>Revert</button>
             <button
               className="update-action"
-              disabled={!dirty || !owner || saving}
-              title={`Save permissions for ${baseName}`}
+              disabled={!dirty || !owner || saving || Boolean(unclaimed)}
+              title={unclaimed || `Save permissions for ${baseName}`}
               onClick={() => void save()}
             >{saving ? "Saving…" : "Save changes"}</button>
           </div>
@@ -443,11 +460,15 @@ export function BasePermissionsTab({ baseId, baseName, onSaved, confirmAction }:
         {/* Do not reserve an empty message area. Warnings and results appear
             only when they have useful information, matching the compact action
             layouts elsewhere in the console. */}
-        {(dirty || !owner || status) && <div className="bases-permissions-banner-slot">
+        {(dirty || !owner || unclaimed || status) && <div className="bases-permissions-banner-slot">
           {dirty && <p className="confirm-modal-warning bases-permissions-warning" role="status">
             Saving writes to the live database and notifies the running map server. An online player may need to reopen the base's panel to see the change.
           </p>}
-          {!owner && <p className="bases-permissions-error" role="alert">
+          {unclaimed && <p className="bases-permissions-error" role="alert">{unclaimed}</p>}
+          {/* Suppressed on an unclaimed base: it has no Owner either, but
+              "set one before saving" describes an action that cannot be
+              completed there and would bury the reason that can. */}
+          {!owner && !unclaimed && <p className="bases-permissions-error" role="alert">
             This base has no Owner. Set one before saving.
           </p>}
           {status && <p
@@ -479,13 +500,13 @@ export function BasePermissionsTab({ baseId, baseName, onSaved, confirmAction }:
               <RankSegments
                 entry={entry}
                 baseId={baseId}
-                disabled={saving}
+                disabled={saving || Boolean(unclaimed)}
                 onChange={(rank) => changeRank(entry.playerId, rank)}
               />
               <button
                 className="icon-toggle-button bases-permissions-remove"
-                disabled={saving}
-                title={`Remove ${entry.name || entry.playerId}`}
+                disabled={saving || Boolean(unclaimed)}
+                title={unclaimed || `Remove ${entry.name || entry.playerId}`}
                 aria-label={`Remove ${entry.name || entry.playerId}`}
                 onClick={() => removeEntry(entry.playerId)}
               ><Trash2 size={15} /></button>

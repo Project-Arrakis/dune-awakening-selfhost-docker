@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { serverApi } from "../../api/server";
 import type { Task } from "../../api/setup";
+import { runGatedRestart, serviceRestartTarget, type RestartGate } from "../server/restartQueueGuard";
 import { friendlyServiceName } from "../../lib/serviceDisplay";
 
 type ConfirmAction = (message: string, options?: { title?: string; confirmLabel?: string; cancelLabel?: string; danger?: boolean }) => Promise<boolean>;
@@ -12,9 +13,10 @@ type ServicesPanelProps = {
   openLogs: (service: string) => void;
   onError: (text: string) => void;
   confirmAction: ConfirmAction;
+  restartGate: RestartGate;
 };
 
-export function ServicesPanel({ services, setServices, setTask, openLogs, onError, confirmAction }: ServicesPanelProps) {
+export function ServicesPanel({ services, setServices, setTask, openLogs, onError, restartGate }: ServicesPanelProps) {
   const rows = parseServiceRows(services);
   async function load() {
     onError("");
@@ -23,7 +25,10 @@ export function ServicesPanel({ services, setServices, setTask, openLogs, onErro
   async function restart(service: string) {
     onError("");
     try {
-      if (await confirmAction(`Restart ${service}?`)) setTask((await serverApi.restartService(service)).task);
+      const gated = await runGatedRestart({ restartGate, label: friendlyServiceName(service), target: serviceRestartTarget(service), dispatch: (opts) => serverApi.restartService(service, opts) });
+      if (gated.outcome === "cancelled") return;
+      if (gated.outcome === "queued") { onError("Restart queued — see the Restart Queue panel in Admin Tools."); return; }
+      if (gated.task) setTask(gated.task);
     } catch (error) {
       onError(error instanceof Error ? error.message : String(error));
     }

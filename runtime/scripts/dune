@@ -311,10 +311,11 @@ EOF
         runtime/scripts/spicefield-overrides.sh apply || true
         runtime/scripts/publish-sietch-overrides.sh restart || true
         runtime/scripts/publish-sietch-overrides.sh once || true
+        mkdir -p runtime/generated
         (
           export DUNE_SKIP_SURVIVAL_DIRECTOR_REFRESH=1
           exec runtime/scripts/deferred-reconcile.sh
-        ) >/tmp/dune-deferred-reconcile.log 2>&1 &
+        ) >runtime/generated/deferred-reconcile.log 2>&1 &
         ;;
       overmap)
         set -a; [ -f .env ] && . ./.env; set +a
@@ -498,11 +499,15 @@ Usage:
   dune shutdown-protection [enable|disable|remove|status]
   dune network [status|fix]
   dune db backup [output-dir]
+  dune db backup-system [output-dir]
   dune db list
+  dune db list-system [output-dir]
   dune db status
   dune db health
   dune db import <backup-file>
   dune db restore <backup-file>
+  dune db restore <backup-file> --adopt-backup-battlegroup
+  dune db restore <backup-file> --keep-current-battlegroup
   dune db delete <backup-file>
   dune db delete --all
   dune db auto enable <HH:MM> [retention-days]
@@ -523,7 +528,9 @@ Usage:
   dune admin repair-login-queue <player-fls-id|queue-name> [--yes] [--force]
   dune config title ["New Server Name"]
   dune memory status
-  dune memory-swap [status|enable|disable]
+  dune memory-swap status
+  dune memory-swap enable [per-server-gib] [pool-gib] [swappiness]
+  dune memory-swap disable
   dune memory list-maps
   dune memory set <map-name> <memory>
   dune memory unset <map-name>

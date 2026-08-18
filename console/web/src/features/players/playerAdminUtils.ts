@@ -17,6 +17,27 @@ export function playerAssignedFaction(value: unknown, assigned: unknown) {
   return PLAYER_FACTIONS[String(value || "").trim().toLowerCase()] || null;
 }
 
+export type InventoryGroup = "backpack" | "character" | "loadout" | "schematics";
+
+// The /inventory endpoint returns the player-carried containers the console shows:
+// backpack (inventory_type 0), worn character gear (1 = armor/clothing), loadout
+// (15 = weapons/tools), and unique-gear schematics (30). Emote containers are already
+// excluded server-side, so every returned row lands in exactly one of these tabs.
+export function splitInventoryByGroup(rows: Record<string, unknown>[]) {
+  const backpack: Record<string, unknown>[] = [];
+  const character: Record<string, unknown>[] = [];
+  const loadout: Record<string, unknown>[] = [];
+  const schematics: Record<string, unknown>[] = [];
+  for (const row of rows) {
+    const type = Number(row.inventory_type);
+    if (type === 1) character.push(row);
+    else if (type === 15) loadout.push(row);
+    else if (type === 30) schematics.push(row);
+    else backpack.push(row);
+  }
+  return { backpack, character, loadout, schematics };
+}
+
 export function vehicleSpawnOffsetUnits(vehicleId: string) {
   return /ornithopter/i.test(String(vehicleId || "")) ? FLYING_VEHICLE_SPAWN_OFFSET_UNITS : VEHICLE_SPAWN_OFFSET_UNITS;
 }

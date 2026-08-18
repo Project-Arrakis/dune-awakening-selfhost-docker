@@ -44,16 +44,24 @@ reference. Everything else is marked **Current** and is expected to stay accurat
 - [generator-fuel-burn-rates.md](console/generator-fuel-burn-rates.md) — Current. Per-generator fuel burn constants and where they live in code.
 - [generator-refill-caps.md](console/generator-refill-caps.md) — Current. Refill-generators endpoint behavior and per-type fuel caps.
 - [base-permissions.md](console/base-permissions.md) — Current. Editing base ownership and sharing: ranks, the config-driven roster cap, and why the change needs no map restart.
+- [base-inventory.md](console/base-inventory.md) — Current. The base Inventory tab: which placeables count as storage, the two inventories every refinery carries, per-slot container contents, and the stopped-map safety boundary for deleting stored items.
+- [base-deletion.md](console/base-deletion.md) — Current. Permanently deleting a base: what "the base" means for enumeration, the pending-delete queue for a live map, the mandatory pre-delete safety backup, and why a pending delete freezes every other mutation on that base.
+- [base-backups.md](console/base-backups.md) — Current. What the game's own "pick up base" tool actually does in the database, why the Bases panel excludes a picked-up base, and why every mutation route rejects one too.
+- [database-backups.md](console/database-backups.md) — Current. Safe database restore behavior when the backup and current deployment use different Battlegroup IDs.
+- [restart-queue.md](console/restart-queue.md) — Current. The Restart Queue toggle: player-aware countdowns with in-game warnings, the two broadcast variants, concurrency rules, crash recovery, the "Restart later" deferred-restart option, and the join-lock limitation.
+- [exchange.md](console/exchange.md) — Current. The read-only Market Board: aggregated-by-item CHOAM exchange listings, seller resolution, how bot listings are identified, and the bot/blacklist filter config.
 
 ## Runtime (`runtime/`)
 
 - [CONTAINER-HARDENING.md](runtime/CONTAINER-HARDENING.md) — Current. Summary of container hardening changes.
 - [E2E-METRICS-TESTING.md](runtime/E2E-METRICS-TESTING.md) — Current. End-to-end validation procedure for the metrics stack (`runtime/metrics`).
+- [MULTI-SERVER-SINGLE-PUBLIC-IP.md](runtime/MULTI-SERVER-SINGLE-PUBLIC-IP.md) — Current. Executive overview and detailed SOP for running multiple isolated battlegroups behind one public IPv4, including full per-instance port profiles, NAT/hairpin requirements, UserEngine configuration, validation, rollback, and the `multi-server-config.py` automation helper.
 
 ## Addons
 
 - [addon-item-grants.md](addons/addon-item-grants.md) — Current. The `admin:grant-items` permissioned addon item grant flow.
-- [addon-scheduled-jobs.md](addons/addon-scheduled-jobs.md) — Current. Server-side scheduled addon jobs (EDA Exchange Bot buyback sweep).
+- [addon-scheduled-jobs.md](addons/addon-scheduled-jobs.md) — Current. Market Bot scheduler and EDA retirement compatibility.
+- [hardware-status.md](addons/hardware-status.md) — Current. Permissioned, core-owned host telemetry for addon dashboards.
 
 ## Discord Integrations
 

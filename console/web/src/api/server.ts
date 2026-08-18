@@ -10,6 +10,76 @@ export type PerformanceSnapshot = {
   sampledAt: string;
 };
 
+export type RestartMessageTemplate = { title: string; body: string };
+
+export type RestartMessages = { battlegroup: RestartMessageTemplate; map: RestartMessageTemplate };
+
+export type RestartQueueSettings = {
+  enabled: boolean;
+  defaultCountdownMinutes: number;
+  broadcastCheckpoints: number[];
+  broadcastDurationSec: number;
+  recoveryGraceMinutes: number;
+  messages: RestartMessages;
+};
+
+export type RestartQueueEntry = {
+  id: string;
+  status: "counting" | "restarting";
+  target: "battlegroup" | "map" | "service";
+  mapLabel: string;
+  requestedBy: string;
+  startedAt: string;
+  restartAt: number;
+  countdownMinutes: number;
+  remainingSeconds: number;
+  sentCheckpoints: number[];
+};
+
+export type RestartQueueState = { entries: RestartQueueEntry[] };
+
+export type RestartQueueResponse = {
+  settings: RestartQueueSettings;
+  defaults: RestartQueueSettings;
+  state: RestartQueueState;
+  // Scoped to `target` when one was passed to restartQueue(); otherwise the
+  // same as battlegroupPlayersOnline.
+  playersOnline: number | null;
+  // Always battlegroup-wide, so a scoped query can still show "X on this map,
+  // Y in the battlegroup" for context.
+  battlegroupPlayersOnline: number | null;
+  playersOnlineSupported: boolean;
+};
+
+export type RestartQueueTarget = { partitionId?: string | number; map?: string };
+
+// The backend now merges a partial body onto the currently persisted
+// settings (see restartQueue.js saveSettings), so every field here is
+// optional -- a caller sends only what it actually changed (e.g. the
+// messages editor sends only `messages`).
+export type SaveRestartQueueBody = {
+  enabled?: boolean;
+  defaultCountdownMinutes?: number;
+  broadcastCheckpoints?: number[] | string;
+  broadcastDurationSec?: number;
+  recoveryGraceMinutes?: number;
+  messages?: RestartMessages;
+};
+
+// A gated restart endpoint returns the normal { task } when it runs, or
+// { queued: true, ... } when the Restart Queue captured it into a countdown.
+export type RestartDispatchResponse = {
+  task?: Task;
+  queued?: boolean;
+  online?: number;
+  entryId?: string;
+  state?: RestartQueueState;
+};
+
+function immediateQuery(immediate?: boolean) {
+  return immediate ? "?restartQueue=immediate" : "";
+}
+
 export const serverApi = {
   status: () => api<{ stdout: string }>("/api/server/status"),
   performance: () => api<PerformanceSnapshot>("/api/server/performance"),
@@ -22,13 +92,23 @@ export const serverApi = {
   cleanupDockerBuildCache: () => post<{ task: Task }>("/api/server/storage/cleanup-build-cache", { confirmation: "CLEAN DOCKER BUILD CACHE" }),
   start: () => post<{ task: Task }>("/api/server/start"),
   stop: () => post<{ task: Task }>("/api/server/stop"),
-  restart: () => post<{ task: Task }>("/api/server/restart"),
-  restartService: (service: string) => post<{ task: Task }>("/api/server/restart-service", { service }),
+  restart: (opts?: { immediate?: boolean }) => post<RestartDispatchResponse>(`/api/server/restart${immediateQuery(opts?.immediate)}`),
+  restartService: (service: string, opts?: { immediate?: boolean }) => post<RestartDispatchResponse>(`/api/server/restart-service${immediateQuery(opts?.immediate)}`, { service }),
   saveConfig: (body: { title?: string; mode?: "public" | "local" }) => post<{ task: Task }>("/api/server/config", body),
   saveFuncomToken: (token: string) => post<{ task: Task }>("/api/server/funcom-token", { token }),
   checkFuncomToken: (since: string) => api<{ ok: boolean; mismatch: boolean; checkedSince: string; details?: string }>(`/api/server/funcom-token/check?since=${encodeURIComponent(since)}`),
   restartSchedule: () => api<{ stdout: string; stderr?: string; exitCode?: number }>("/api/server/restart-schedule"),
   saveRestartSchedule: (body: { enabled: boolean; time: string; notifyMinutes?: number }) => post<{ task: Task }>("/api/server/restart-schedule", body),
+  restartQueue: (target?: RestartQueueTarget) => {
+    const params = new URLSearchParams();
+    if (target?.partitionId) params.set("partitionId", String(target.partitionId));
+    if (target?.map) params.set("map", target.map);
+    const query = params.toString();
+    return api<RestartQueueResponse>(`/api/server/restart-queue${query ? `?${query}` : ""}`);
+  },
+  saveRestartQueue: (body: SaveRestartQueueBody) => post<{ ok: boolean; settings: RestartQueueSettings; defaults: RestartQueueSettings; state: RestartQueueState }>("/api/server/restart-queue", body),
+  cancelRestartQueue: (body: { id: string }) => post<{ ok: boolean; state: RestartQueueState }>("/api/server/restart-queue/cancel", body),
+  restartQueueRestartNow: (body: { id: string }) => post<{ ok: boolean; state: RestartQueueState }>("/api/server/restart-queue/restart-now", body),
   ipChangeRestart: () => api<{ stdout: string; stderr?: string; exitCode?: number }>("/api/server/ip-change-restart"),
   saveIpChangeRestart: (body: { enabled: boolean; intervalMinutes?: number; notifyMinutes?: number }) => post<{ task: Task }>("/api/server/ip-change-restart", body),
   checkIpChangeRestartNow: () => post<{ task: Task }>("/api/server/ip-change-restart/check"),

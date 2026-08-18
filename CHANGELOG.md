@@ -7,10 +7,88 @@ whatever upstream version is currently checked out, per the versioning
 convention documented in this account's operating docs. Entries are in
 Keep a Changelog style, grouped by upstream base version, newest first.
 
-## Unreleased (on top of upstream v1.3.79+)
+## Unreleased (on top of upstream v1.3.88)
+
+### Changed
+
+- Merged `upstream/main` into this fork's `main` (issue #279), resolving 198
+  commits of divergence and 23 real file conflicts (auth/policy/RBAC/Discord
+  adapter surface). Notable outcomes:
+  - Adopted upstream's opaque session-cookie design (`auth.js`) in place of
+    this fork's own cookie-embedded-tier design. The fork's design allowed a
+    signature-valid cookie whose session had no matching in-memory entry to
+    be "resurrected" with the tier/identity embedded in the cookie itself --
+    confirmed exploitable (anyone holding `sessionSecret` could forge an
+    arbitrary-tier, including owner, session for an id that was never issued)
+    and confirmed to defeat session revocation entirely (a tier downgrade or
+    password rotation had no effect, since any Map eviction re-synthesized
+    the original tier from the cookie). See CRITICAL issue #309.
+  - Adopted upstream's `policy.js` (validated policy documents, atomic
+    persistence to `runtime/generated/iam-policies.json`, an explicit
+    owner-lockout guard on `settings:write`) in place of this fork's version,
+    which had none of the three and could not actually persist a policy
+    change across a restart.
+  - Adopted upstream's path-traversal fix in `httpSafety.js`'s
+    `safeStaticTarget()` (real `path.relative()` containment check; the
+    fork's own string-prefix check silently broke static asset serving on
+    Windows and could be tricked by a sibling directory sharing a prefix).
+  - Found and fixed 4 Discord adapter routes (`ANNOUNCEMENTS`, `MAINTENANCE`,
+    `LOGS`, `MAP_STATE`) that had no authorization capability check at all in
+    this fork -- upstream's independent implementation of the same routes
+    correctly gates all four. See issue #315.
+  - Kept this fork's own `duneDb.js` container-health implementation
+    (`addonOpsContainerHealth()`) over upstream's `services/containerHealth.js`
+    -- confirmed via live testing (issue #246) that `docker stats` has no
+    `--filter` flag; upstream's version passes one anyway and does not work.
+  - Kept this fork's own self-scoped-capability design
+    (`SELF_SCOPED_CAPABILITIES`/`requireSelfScopedCapability()` in
+    `integrations/discord/policy.js`, FINDING-LINK-2) -- upstream has no
+    equivalent fix and still tier-gates `PLAYER_LINK_WRITE`.
+  - Corrected a merge-introduced bug where `OPS_*` Discord capabilities were
+    initially added to the `moderator` tier following the surrounding
+    `*_READ` pattern, before upstream's own test
+    (`discordPolicy.test.js`, "OPS capabilities are granted only to admin and
+    owner tiers") caught that this is deliberately admin/owner only.
+  - All 23 conflicts resolved with real test verification at each step
+    (1312/1313 `console/api` tests passing -- the 1 failure is a
+    known-good local-`HEAD`-vs-working-tree artifact of the merge being
+    uncommitted at test time, not a real regression; full `console/web`
+    TypeScript build + Vite bundle succeeds).
 
 ### Added
 
+- Two new addon-bridge test suites closing a real, previously-untested gap
+  (#308): `console/api/test/bridgeActionContract.test.js` asserts every
+  `ops.*` addon-bridge action's real handler function (called directly, no
+  HTTP) returns a response shape carrying its own unique discriminator field
+  and none of the other actions' — the exact class of dispatcher-wiring bug
+  (e.g. an `if`-chain reordering) that could silently route one action's real
+  call to a different action's response shape without a hard crash.
+  `console/api/test/bridgeActionDispatch.test.js` spawns the real
+  `src/server.js` and asserts every documented `ops.*` action responds 200
+  over the actual HTTP bridge route individually — this is the test that
+  would have caught the real 2026-08-10 `containerHealth` incident (a missing
+  `if (` causing a hard `SyntaxError` at module-import time), confirmed by
+  directly reproducing that exact syntax error against current code and
+  observing this new test fail with a clear, isolated signal instead of the
+  original incident's opaque, unrelated-looking timeout. Both tests are
+  complementary, not redundant — verified each independently by intentionally
+  breaking the corresponding defect class and confirming a real failure, then
+  restoring.
+- Two new addon-bridge actions, `ops.health.postgres` and `ops.health.rabbitmq`
+  (`addonOpsPostgresHealth()`/`addonOpsRabbitmqHealth()` in `duneDb.js`), for
+  the `dune-ops-observability` addon's per-container metrics grid rebuild
+  (addon repo issue #133). Both are pure PromQL reads against the
+  already-deployed, already-scraped `dune-postgres-exporter`/
+  `rabbitmq_prometheus`-plugin metrics (part of the existing opt-in
+  `dune metrics start` stack — no new container, exporter, port, or secret).
+  Queries are lifted directly from `runtime/metrics/rules/postgres.yml`'s and
+  `rabbitmq.yml`'s own alert expressions, not invented separately, so a UI
+  number and an Alertmanager warning always describe the identical
+  underlying query. `promScalar()` gained an injectable `fetchImpl` parameter
+  (defaults to the real `fetch`) and a new sibling `promVector()` for
+  naturally per-instance queries (RabbitMQ's two brokers) — both exported
+  for direct unit testing without a live Prometheus instance.
 - Discord OAuth as primary sign-in method on the login page. Password login is
   available as a secondary, collapsible option when OAuth is configured.
 - Local static file mount (`runtime/local-static` → `/app/web-dist/atrium`)
@@ -40,6 +118,24 @@ Keep a Changelog style, grouped by upstream base version, newest first.
   navGroup tabs by capability (UX only — server remains authoritative). 40
   unit tests covering tier ladder, capability sets, fail-closed session
   resolution, route pattern matching, and tier-appropriate gating.
+- `GET /api/integrations/discord/catalog` — Discord command catalog endpoint,
+  Phase 1 of the automated command-discovery design
+  (`docs/rfc-command-discovery.md`, issue #337). Returns a machine-readable
+  catalog (names, descriptions, capabilities, minimum role tier, param shape)
+  for every live Discord adapter route, composed from the existing
+  `DISCORD_LIVE_ADAPTER_ROUTES`/`DISCORD_CAPABILITIES` tables rather than a
+  second hand-maintained copy. `buildCommandCatalog()` asserts full,
+  bidirectional coverage against the live-route list and throws on drift —
+  intended to replace the bot repo's (`arrakis-control-panel`) manually
+  reconciled route classification, which has required five separate
+  corrections to date. Bearer-token auth only, matching `/health` (read-only
+  route metadata, not game or player data). `/health` also gains a new
+  `protocolVersion` field for future version-negotiation. New
+  `policy.js` export: `minTierForCapability()`, so this and any future
+  consumer can derive a capability's minimum tier from the real
+  `CAPABILITY_BY_TIER` table instead of hand-maintaining a parallel one.
+  Phases 2-4 (bot-side generator, bot runtime consumption, dynamic
+  refresh/autocomplete) are separate, future work — not included here.
 
 ### Security
 
@@ -57,8 +153,10 @@ Keep a Changelog style, grouped by upstream base version, newest first.
 - Session cookies (`asc_session`) and OAuth state cookies (`discord_oauth_state`) always
   include the `Secure` flag by default. Operators running the console locally over plain
   HTTP can set `ADMIN_SECURE_COOKIES=0` in `.env` to opt out.
+- **Grafana admin password is now auto-generated on first `dune metrics start`/`restart`, replacing the static, checked-in `admin`/`admin` default** (#307). `GF_SECURITY_ADMIN_PASSWORD` previously had no generation mechanism at all, unlike every other cross-process secret in this repo (RMQ, alert-relay token, FLS API key all use `openssl rand -hex`). New `ensure_grafana_password()` in `runtime/scripts/metrics-stack.sh` mirrors the existing `ensure_alert_relay_token()` pattern exactly: `openssl rand -hex 16` on first use, written to `runtime/secrets/grafana-admin-password.txt` with `chmod 600`, exported as `METRICS_GRAFANA_PASSWORD` so Docker Compose's existing `${METRICS_GRAFANA_PASSWORD:-admin}` fallback picks up the real value transparently — no `docker-compose.metrics.yml` change needed. Idempotent (`[ ! -s "$password_file" ]` guard): an existing deployment's next `dune metrics start`/`restart` gets a real password generated silently, with zero risk of locking out an operator who already changed it manually (their existing `.env`-set `METRICS_GRAFANA_PASSWORD`, if any, still wins per Docker Compose's own env-var precedence). 5 new tests in `tests/metrics-stack-unit.sh`, mirroring the existing alert-relay-token test block exactly (auto-provision, mode 600, correct byte length, not the literal string `"admin"`, and idempotency across a second `start`).
 
 ### Fixed
+- **Every raw `docker run`-managed container now carries an explicit `com.docker.compose.project` label** (#246). `dune-postgres`, `dune-rmq-admin`, `dune-rmq-game`, `dune-director`, `dune-text-router`, and every `dune-server-*` game instance are started by this repo's own orchestration scripts (`start-postgres.sh`, `start-rabbitmq.sh`, `start-director.sh`, `start-text-router.sh`, `start-server-gateway.sh`, `start-server-overmap.sh`, `start-server-survival-1.sh`, `spawn-server.sh`), not `docker-compose.*.yml` — so they previously had no Compose project label at all (`dune-postgres` had the *wrong* one, `postgres`, inherited from an unrelated Compose invocation on the same host). This made them invisible to any bridge action scoped by that label, including `ops.health.containers` (#240/#244) — an operator or addon querying per-container health would see only the Compose-managed side-services (console, metrics stack), never the actual game server, database, or message broker containers, with no indication anything was missing. Every affected script now passes `--label "com.docker.compose.project=${DUNE_COMPOSE_PROJECT_NAME}"` (already resolved and exported by `runtime-env.sh`, which every one of these scripts already sources). Zero-risk on upgrade: every script already `docker rm -f`s and recreates its container on every start, so the label takes effect the next time each container naturally restarts — no separate migration step, no change to any running container until then. New static test `runtime/tests/test-container-compose-labels.sh`, wired into CI, verifies every raw-`docker run` container's invocation carries this label.
 - **Broadcast enabled via env var** (#214). `discordWritesEnabled()` now checks `DUNE_DISCORD_WRITES_ENABLED=1` instead of hardcoding `false`.
 - **LOGS / MAP_STATE / MAINTENANCE routes now have real handlers** (#211, #213). Three adapter routes caused 8 bot slash commands to 404. LOGS tails container logs; MAP_STATE returns per-map status; MAINTENANCE runs `dune ready`.
 - **Backups + Announcements wired to real data** (#212). `/dune data backups` now runs `dune db list`. `/dune ops announcements` reads from `services/playerAnnouncements.js`. Both previously returned empty stub arrays.
