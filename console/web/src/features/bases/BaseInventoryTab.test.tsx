@@ -3,6 +3,14 @@ import { StrictMode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { basesApi, type BaseContainerSlots, type BaseInventory } from "../../api/bases";
 import { BaseInventoryTab } from "./BaseInventoryTab";
+// Only this file needs the real cascade: jsdom applies no CSS at all unless a
+// stylesheet is actually imported, so the column-hiding, header/body-split
+// and control-sizing assertions below would otherwise silently check nothing
+// against real rules. jsdom has no layout engine, so this only reaches
+// declared computed-style facts (display, position, explicit height/padding/
+// colour) -- not actual pixel geometry (rendered widths, "does the header
+// visually stay put while scrolling"), which stays a live-browser check.
+import "../../styles.css";
 
 vi.mock("../../api/bases", () => ({
   basesApi: {
@@ -1083,6 +1091,106 @@ describe("BaseInventoryTab", () => {
     // than present and empty.
     await pickCatalogItem("ScrapMetal");
     expect(addPanel()!.textContent).not.toMatch(/Aug\. Grade/);
+  });
+
+  // This repo has repeatedly shipped CSS-cascade regressions in exactly this
+  // shape (fixed-width columns not accounting for a narrower container,
+  // position: sticky silently failing inside another sticky ancestor) --
+  // each was only caught by a live-browser check, with nothing in CI to
+  // reproduce it. jsdom has no layout engine, so these assertions reach
+  // computed-style FACTS (display, position, explicit height/padding/colour)
+  // that the real styles.css rule declares -- not actual rendered pixel
+  // geometry (does a column really fit, does the header really stay put
+  // while scrolling), which stays a live-browser check; see the CSS
+  // comments this pins for the reasoning and the live measurements taken
+  // when each was written.
+  it("keeps the CSS-cascade fixes for this panel's narrow catalog table intact", async () => {
+    mockInventory();
+    renderTab();
+    await loaded();
+    await openVaultContents();
+    await openAddPanel();
+    const panel = addPanel()!;
+    const toggle = panel.querySelector(".catalog-view-toggle")!;
+    fireEvent.click(within(toggle as HTMLElement).getByRole("button", { name: /List view/i }));
+    await waitFor(() => expect(panel.querySelector(".catalog-item-table")).toBeTruthy());
+
+    // Item ID and Source dropped to fit this panel's ~500px width; Item Name
+    // and Category stay. Regresses to crushed, character-wrapped columns if
+    // this display:none is ever lost.
+    const headers = [...panel.querySelectorAll(".catalog-item-table thead th")];
+    const byText = (text: string) => headers.find((th) => th.textContent?.trim() === text)!;
+    expect(getComputedStyle(byText("Item ID")).display).toBe("none");
+    expect(getComputedStyle(byText("Source")).display).toBe("none");
+    expect(getComputedStyle(byText("Item Name")).display).not.toBe("none");
+    expect(getComputedStyle(byText("Category")).display).toBe("table-cell");
+
+    // The header/body split that replaced position: sticky (which measurably
+    // did not hold in this nesting -- see the CSS comment above these rules).
+    // thead as a non-growing flex item and tbody as the sole scrolling region
+    // is the mechanism that keeps the header out of the scrolled content
+    // altogether; regressing any one of these reopens the drifting-header bug.
+    const picker = panel.querySelector(".catalog-item-picker")!;
+    const table = panel.querySelector(".catalog-item-table")!;
+    const thead = panel.querySelector(".catalog-item-table thead")!;
+    const tbody = panel.querySelector(".catalog-item-table tbody")!;
+    expect(getComputedStyle(picker).display).toBe("flex");
+    expect(getComputedStyle(table).display).toBe("flex");
+    expect(getComputedStyle(thead).display).toBe("block");
+    expect(getComputedStyle(thead).flexGrow).toBe("0");
+    expect(getComputedStyle(tbody).display).toBe("block");
+    expect(getComputedStyle(tbody).flexGrow).toBe("1");
+    expect(getComputedStyle(tbody).overflowY).toBe("auto");
+
+    // Grade -- a native <select> -- needs an explicit height to match the
+    // <input> siblings; a browser rendering quirk means identical padding
+    // alone leaves it 2px taller (measured live: 41px vs 43px).
+    const grade = panel.querySelector(".bases-inventory-add-field .package-item-durability-input")!;
+    expect(getComputedStyle(grade).height).toBe("41px");
+  });
+
+  it("scopes the augment dropdown's control styling to this panel, not other panels using the same component", async () => {
+    // AugmentDropdown ships its own padding/border/background that only
+    // matches this panel's plain inputs once overridden here -- and only
+    // here, not in Player give-items, which still uses the component's
+    // stock styling. Exercised as a standalone fixture rather than through
+    // the full add flow: the mocked catalog in this file has no
+    // augment-category item, so the real interactive path never mounts
+    // AugmentDropdown -- this instead pins the CSS selector itself
+    // (specificity and scoping), independent of that mock gap.
+    const scoped = document.createElement("div");
+    scoped.className = "bases-inventory-add-panel";
+    scoped.innerHTML = '<div class="augment-dropdown-control"></div>';
+    document.body.appendChild(scoped);
+
+    const unscoped = document.createElement("div");
+    unscoped.innerHTML = '<div class="augment-dropdown-control"></div>';
+    document.body.appendChild(unscoped);
+
+    try {
+      const inPanel = getComputedStyle(scoped.querySelector(".augment-dropdown-control")!);
+      const outsidePanel = getComputedStyle(unscoped.querySelector(".augment-dropdown-control")!);
+
+      // border-color isn't asserted here: the rule sets it via var(--border-
+      // strong), and jsdom's getComputedStyle does not resolve CSS custom
+      // properties (confirmed empirically -- a literal value on the same rule
+      // applies correctly, but the var() one silently falls through to the
+      // unscoped default). Real-browser border-color was measured live by the
+      // reviewer at rgb(77, 64, 50), matching --border-strong.
+      expect(inPanel.padding).toBe("10px 12px");
+      expect(inPanel.backgroundColor).toBe("rgb(21, 23, 25)");
+
+      // Same class, no .bases-inventory-add-panel ancestor: must fall back to
+      // the component's own stock styling, proving the override cannot leak.
+      expect(outsidePanel.padding).not.toBe("10px 12px");
+      expect(outsidePanel.backgroundColor).not.toBe("rgb(21, 23, 25)");
+    } finally {
+      // Raw DOM nodes, not React-rendered -- the file's afterEach(cleanup())
+      // only unmounts React trees, so these would otherwise leak into every
+      // later test's queries for the rest of the file.
+      scoped.remove();
+      unscoped.remove();
+    }
   });
 
   it("keeps the add panel and the slot-detail strip mutually exclusive", async () => {
