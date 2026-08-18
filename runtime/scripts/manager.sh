@@ -1631,6 +1631,12 @@ edit_usergame_menu() {
       2)
         edit_usergame_category_menu "$map" "$partition_id" "UserGame Storms / Building: $title_suffix" \
           "coriolis_auto_spawn_enabled|Coriolis Storm Enabled|bool" \
+          "coriolis_cycle_start_year|Coriolis Cycle Start Year|int" \
+          "coriolis_cycle_start_month|Coriolis Cycle Start Month|int" \
+          "coriolis_cycle_start_day|Coriolis Cycle Start Day|int" \
+          "coriolis_cycle_start_hour|Coriolis Cycle Start Hour|int" \
+          "coriolis_cycle_start_minute|Coriolis Cycle Start Minute|int" \
+          "coriolis_cycle_start_seed_index|Coriolis Cycle Start Seed Index|int" \
           "storm_cycle_duration|Storm Cycle Duration|int" \
           "storm_duration|Storm Duration|int" \
           "storm_warning_duration|Storm Warning Duration|int" \
