@@ -159,17 +159,30 @@ export const NAMESPACE_ORDER = [
   "settings", "updates", "setup", "public-directory",
 ];
 
+// CRITICAL fix (Layer 2 audit finding C1, Architect hat): `actionMap` is
+// `{ "GET /api/server/status": "server:read", ... }` -- HTTP-route keys
+// mapped to IAM-action-string values. `nsFromAction()`/`humanLabel()`
+// both expect an HTTP-route-shaped string (they split on "/api/"). This
+// function MUST group over `Object.keys(actionMap)` (the HTTP routes),
+// never `Object.values(actionMap)` (the IAM action strings) -- an
+// earlier version of this function iterated the values instead, which
+// silently broke both namespace grouping (everything fell into "other",
+// since `"server:read".split("/api/")[1]` is `undefined`) and the
+// checkbox grid's `allowed.has(action)` lookup (which is keyed by the
+// same HTTP-route strings `resolvedAllowedActions()` above already
+// correctly uses via `Object.keys(actionMap)`). Verified with a real
+// component-render regression test in IamPermissionGrid.test.tsx.
 export function groupActionsByNamespace(actionMap: Record<string, string>): Record<string, string[]> {
   const groups: Record<string, string[]> = {};
   for (const ns of NAMESPACE_ORDER) groups[ns] = [];
   const other: string[] = [];
-  for (const action of new Set(Object.values(actionMap))) {
-    if (typeof action !== "string") continue;
-    const ns = nsFromAction(action);
+  for (const catalogAction of new Set(Object.keys(actionMap))) {
+    if (typeof catalogAction !== "string") continue;
+    const ns = nsFromAction(catalogAction);
     if (groups[ns]) {
-      groups[ns].push(action);
+      groups[ns].push(catalogAction);
     } else {
-      other.push(action);
+      other.push(catalogAction);
     }
   }
   for (const ns of Object.keys(groups)) groups[ns].sort();

@@ -144,6 +144,92 @@ describe("IamPoliciesView: delete-while-attached error surfacing (L1 audit findi
   });
 });
 
+describe("IamPoliciesView: delete-confirmation state is scoped to the selected policy (Layer 2 audit finding C1)", () => {
+  it("does not leave a delete confirmation armed for policy B after arming it for policy A and switching selection", async () => {
+    const catalogWithTwoPolicies = {
+      ...BASE_CATALOG,
+      policies: {
+        "pol-a": { name: "policy-a", managed: false, defaultVersionId: "v1", statements: [], versionCount: 1, attachedTo: [] },
+        "pol-b": { name: "policy-b", managed: false, defaultVersionId: "v1", statements: [], versionCount: 1, attachedTo: [] }
+      }
+    };
+    mockRoute((path) => {
+      if (path === "/api/settings/iam/policies") return catalogWithTwoPolicies;
+      if (path === "/api/auth/me") return { user: { tier: "owner" } };
+      if (path === "/api/settings/iam/policies/pol-a") {
+        return { policyId: "pol-a", name: "policy-a", managed: false, defaultVersionId: "v1", versions: { v1: { statements: [], createdAt: "2026-01-01T00:00:00.000Z", createdBy: "owner" } }, attachedTo: [] };
+      }
+      if (path === "/api/settings/iam/policies/pol-b") {
+        return { policyId: "pol-b", name: "policy-b", managed: false, defaultVersionId: "v1", versions: { v1: { statements: [], createdAt: "2026-01-01T00:00:00.000Z", createdBy: "owner" } }, attachedTo: [] };
+      }
+      return undefined;
+    });
+
+    render(<IamPolicyEditor />);
+    await waitFor(() => expect(screen.getByText("Policies (2)")).toBeTruthy());
+    fireEvent.click(screen.getByText("Policies (2)"));
+
+    // Select policy A and arm its delete confirmation.
+    await waitFor(() => expect(screen.getByText("policy-a")).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: /policy-a/ }));
+    await waitFor(() => expect(screen.getByText("Delete Policy")).toBeTruthy());
+    fireEvent.click(screen.getByText("Delete Policy"));
+    await waitFor(() => expect(screen.getByText("Confirm Delete")).toBeTruthy());
+
+    // Switch to policy B WITHOUT clicking Cancel first -- per the L2 audit
+    // finding, the previous implementation left the "Confirm Delete"
+    // button armed and pointed at whatever selectedPolicyId had become,
+    // which could delete the WRONG policy. The fix must reset the confirm
+    // state on every selection change.
+    fireEvent.click(screen.getByRole("button", { name: /policy-b/ }));
+    await waitFor(() => expect(screen.getByRole("heading", { name: "policy-b" })).toBeTruthy());
+
+    expect(screen.queryByText("Confirm Delete")).toBeNull();
+    expect(screen.getByText("Delete Policy")).toBeTruthy(); // back to the un-armed state
+  });
+
+  it("clears stale detail content immediately on selection change, before the new fetch resolves", async () => {
+    let resolveB: ((value: unknown) => void) | undefined;
+    const catalogWithTwoPolicies = {
+      ...BASE_CATALOG,
+      policies: {
+        "pol-a": { name: "policy-a", managed: false, defaultVersionId: "v1", statements: [], versionCount: 1, attachedTo: [] },
+        "pol-b": { name: "policy-b", managed: false, defaultVersionId: "v1", statements: [], versionCount: 1, attachedTo: [] }
+      }
+    };
+    mockRoute((path) => {
+      if (path === "/api/settings/iam/policies") return catalogWithTwoPolicies;
+      if (path === "/api/auth/me") return { user: { tier: "owner" } };
+      if (path === "/api/settings/iam/policies/pol-a") {
+        return { policyId: "pol-a", name: "policy-a", managed: false, defaultVersionId: "v1", versions: { v1: { statements: [], createdAt: "2026-01-01T00:00:00.000Z", createdBy: "owner" } }, attachedTo: [] };
+      }
+      if (path === "/api/settings/iam/policies/pol-b") {
+        // Deliberately never resolves within this test -- simulates a
+        // slow network so we can assert on the intermediate render.
+        return new Promise((resolve) => { resolveB = resolve; });
+      }
+      return undefined;
+    });
+
+    render(<IamPolicyEditor />);
+    await waitFor(() => expect(screen.getByText("Policies (2)")).toBeTruthy());
+    fireEvent.click(screen.getByText("Policies (2)"));
+    await waitFor(() => expect(screen.getByText("policy-a")).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: /policy-a/ }));
+    await waitFor(() => expect(screen.getByRole("heading", { name: "policy-a" })).toBeTruthy());
+
+    fireEvent.click(screen.getByRole("button", { name: /policy-b/ }));
+    // Immediately after clicking B, while B's fetch is still pending,
+    // policy-a's detail heading must NOT still be on screen -- it must
+    // show the loading state instead, not stale content.
+    expect(screen.queryByRole("heading", { name: "policy-a" })).toBeNull();
+    expect(screen.getByText("Loading policy...")).toBeTruthy();
+
+    resolveB?.({ policyId: "pol-b", name: "policy-b", managed: false, defaultVersionId: "v1", versions: { v1: { statements: [], createdAt: "2026-01-01T00:00:00.000Z", createdBy: "owner" } }, attachedTo: [] });
+    await waitFor(() => expect(screen.getByRole("heading", { name: "policy-b" })).toBeTruthy());
+  });
+});
+
 describe("IamPoliciesView: version cap proactive disclosure (L1 audit finding L1-M8)", () => {
   it("shows a persistent N/5 version count, not only a reactive error at the 6th attempt", async () => {
     const catalogWithPolicy = {

@@ -75,6 +75,53 @@ export const MAX_POLICY_VERSIONS = 5;
 
 const BUILT_IN_TIER_NAMES = new Set(["owner", "admin", "moderator", "player", "observer"]);
 
+// SECURITY: Object.prototype pollution guard (Layer 2 audit finding
+// NEW-1, Security hat -- CRITICAL, not part of the original L1 design).
+//
+// `tiers` and `policies` are plain JS object literals keyed by
+// caller-supplied strings (`tierName` from a URL path segment,
+// `policyId` from a URL path segment or request body). For a plain
+// object, `obj["__proto__"]` does NOT return `undefined` for a
+// non-existent key -- it returns the REAL, LIVE `Object.prototype`
+// object via the inherited accessor, which is truthy and, critically,
+// a real object whose own properties CAN be mutated
+// (`obj["__proto__"].someField = x` sets `Object.prototype.someField`
+// globally, for the entire Node process, silently and invisibly in any
+// persisted JSON, since JSON.stringify/Object.keys never enumerate
+// inherited properties). This was confirmed reachable over a real,
+// shipped HTTP route (`PUT /api/settings/iam/tiers/__proto__/inline`)
+// by any session holding `settings:write` (owner by default).
+//
+// Fix: reject any tierName/policyId matching this reserved-key
+// blocklist BEFORE it is ever used as a bracket-access key anywhere in
+// this file -- not just in `createTier()` (which already had a shape
+// check via RESERVED_TIER_NAME_PATTERN, but that pattern does NOT
+// reject "constructor" or "prototype", both of which are valid
+// lowercase-only strings that also resolve to real, dangerous
+// Object.prototype-chain values). This check is intentionally
+// case-insensitive and covers all three canonical prototype-pollution
+// vectors, matching the same class of guard used by lodash's
+// `_.set`/`_.merge` CVE fixes for this exact bug class.
+const DANGEROUS_OBJECT_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+
+function isDangerousKey(key) {
+  return typeof key !== "string" || DANGEROUS_OBJECT_KEYS.has(key.toLowerCase());
+}
+
+// Structural defense-in-depth, applied everywhere a tiers/policies key
+// is looked up or checked for existence -- Object.hasOwn() never
+// traverses the prototype chain, so `Object.hasOwn(tiers, "__proto__")`
+// correctly returns `false` (there is no OWN "__proto__" property on a
+// plain object literal) even though `tiers["__proto__"]` would return a
+// truthy value. Using this instead of a bare truthy check closes this
+// vulnerability class structurally, independent of the explicit
+// isDangerousKey() blocklist above -- the blocklist gives an immediate,
+// clear rejection error; hasOwnKey() ensures correctness even for any
+// dangerous key the blocklist did not anticipate.
+function hasOwnKey(obj, key) {
+  return typeof key === "string" && Object.hasOwn(obj, key);
+}
+
 // ---- Policy evaluation ----
 
 export function matchAction(pattern, action) {
@@ -126,8 +173,16 @@ export function aggregateStatements(tierRecord, policies) {
   }
 
   for (const policyId of tierRecord.attached || []) {
-    const policy = policies[policyId];
-    const version = policy && policy.versions ? policy.versions[policy.defaultVersionId] : null;
+    // hasOwnKey(), not a bare `policies[policyId]` truthy check -- see
+    // the Object.prototype pollution guard comment near the top of this
+    // file. A dangling reference already fails closed below regardless;
+    // this additionally ensures a dangerous key (which would otherwise
+    // resolve to a truthy Object.prototype-chain value) is treated
+    // exactly like any other dangling reference, not specially trusted.
+    const policy = hasOwnKey(policies, policyId) ? policies[policyId] : null;
+    const version = policy && policy.versions && hasOwnKey(policy.versions, policy.defaultVersionId)
+      ? policy.versions[policy.defaultVersionId]
+      : null;
     if (!policy || !version || !Array.isArray(version.statements)) {
       // Dangling/unresolvable reference -- fail closed (see comment above).
       statements.push({ Effect: "Deny", Action: WILDCARD });
@@ -147,7 +202,8 @@ export function evaluate(session, action, policies = null) {
   if (!tier) return false;
 
   const store = policies || _policies || wrapDefaultPolicies();
-  const tierRecord = store.tiers ? store.tiers[tier] : store[tier];
+  const tiersMap = store.tiers || store;
+  const tierRecord = hasOwnKey(tiersMap, tier) ? tiersMap[tier] : undefined;
 
   // Legacy (pre-schema-v2) shape support: a bare { tier: {statements} }
   // document, as used throughout this file's own test fixtures and any
@@ -185,7 +241,7 @@ export function resolveSessionTier(session, policies = null) {
   if (!tier) return "";
   const store = policies || _policies || wrapDefaultPolicies();
   const tiers = store.schemaVersion === 2 ? store.tiers : store;
-  return tiers && tiers[tier] ? tier : "";
+  return tiers && hasOwnKey(tiers, tier) ? tier : "";
 }
 
 // ---- Policy store ----
@@ -242,21 +298,47 @@ export function migrateIfLegacyShape(parsed) {
   const tiers = {};
   const failedTiers = [];
   for (const [tierName, doc] of Object.entries(parsed)) {
+    // Dangerous-key rejection (Layer 2 audit finding NEW-1). Found during
+    // that audit's regression-test work: assigning `tiers[tierName] = {...}`
+    // for tierName === "__proto__"/"constructor"/"prototype" does NOT
+    // pollute Object.prototype (a whole-value bracket assignment through
+    // an inherited key is safe -- only a subsequent PROPERTY MUTATION on
+    // the already-looked-up value, e.g. `tiers[tierName].inline = x`,
+    // would), but it also means the key silently vanishes from `tiers`'s
+    // own enumerable keys with no error signal at all, which is its own,
+    // separate correctness problem (a caller has no way to know their
+    // "__proto__"-named tier was silently discarded rather than
+    // migrated). Treat it exactly like any other malformed tier entry --
+    // explicit, logged, salvage-the-rest -- rather than a silent no-op.
+    if (isDangerousKey(tierName)) {
+      failedTiers.push(tierName);
+      continue;
+    }
     if (!doc || doc.tier !== tierName || !Array.isArray(doc.statements)) {
       failedTiers.push(tierName);
       continue; // salvage every other tier; do not abort the whole migration
     }
-    tiers[tierName] = { inline: { statements: doc.statements }, attached: [] };
+    // deepCopyStatements(), not `doc.statements` by reference -- this
+    // function is called by setPolicies() directly on a caller-supplied
+    // request body (as well as by loadPolicies() on freshly-parsed file
+    // content, where the distinction doesn't matter) -- see the
+    // deep-copy-on-ingest fix comment near deepCopyStore() above.
+    tiers[tierName] = { inline: { statements: deepCopyStatements(doc.statements) }, attached: [] };
   }
 
   if (failedTiers.length) {
     console.warn(redact(
       `IAM policy migration: ${failedTiers.length} tier document(s) failed ` +
-      `validation and were ${failedTiers.filter((t) => DEFAULT_POLICIES[t]).length ? "reset to defaults" : "dropped"} ` +
+      `validation and were ${failedTiers.filter((t) => hasOwnKey(DEFAULT_POLICIES, t)).length ? "reset to defaults" : "dropped"} ` +
       `during migration to schema v2: ${failedTiers.join(", ")}`
     ));
     for (const tierName of failedTiers) {
-      if (DEFAULT_POLICIES[tierName]) {
+      // hasOwnKey(), not a bare truthy check -- see the Object.prototype
+      // pollution guard comment near the top of this file. A dangerous
+      // key (e.g. "__proto__") must never be treated as "found in
+      // DEFAULT_POLICIES" just because bracket access on it resolves to
+      // the inherited Object.prototype value.
+      if (hasOwnKey(DEFAULT_POLICIES, tierName)) {
         tiers[tierName] = { inline: { statements: DEFAULT_POLICIES[tierName].statements }, attached: [] };
       }
       // else: unrecognized custom tier name with malformed data -- dropped,
@@ -327,7 +409,8 @@ export function _resetPolicyStoreForTests() {
 
 export function getPolicy(tier, policies = null) {
   const store = policies || _policies || wrapDefaultPolicies();
-  return store.tiers ? store.tiers[tier] || null : store[tier] || null;
+  const tiersMap = store.tiers || store;
+  return hasOwnKey(tiersMap, tier) ? tiersMap[tier] : null;
 }
 
 // Returns the full store (tiers + policies), matching the pre-schema-v2
@@ -340,11 +423,26 @@ export function getPolicy(tier, policies = null) {
 // short-changed by a summarization decision made for one specific route.
 export function getAllPolicies(policies = null) {
   const store = policies || _policies || wrapDefaultPolicies();
-  return {
-    schemaVersion: 2,
-    tiers: { ...(store.tiers || {}) },
-    policies: { ...(store.policies || {}) }
-  };
+  // deepCopyStore(), not a shallow `{ ...store.tiers }`/`{ ...store.policies }`
+  // spread -- fixes a real bug found during the Layer 2 audit (DBA hat):
+  // a shallow spread only copies the top-level tier/policy wrapper
+  // objects; every nested statement object (and its Action array, when
+  // Action is an array) remained the SAME reference as the live internal
+  // `_policies` state. Any caller that mutated a statement/Action array
+  // obtained from this function -- including 3 server.js route handlers
+  // and applyMutation() itself -- could silently corrupt live policy
+  // state with zero validation, zero error, zero audit trail. This
+  // function must return a genuinely independent snapshot, matching
+  // this file's own doc comment above it ("returns the true, complete
+  // in-memory state... so any other future caller... isn't short-
+  // changed") -- that guarantee was previously false for anything nested
+  // one level deeper than the tier/policy wrapper.
+  //
+  // deepCopyStore() requires a `{tiers, policies}`-shaped object with no
+  // missing keys; `store.tiers || store` / `store.policies || {}` below
+  // handle the legacy (pre-schema-v2) shape some test fixtures still
+  // pass in directly as the `policies` override argument.
+  return deepCopyStore({ tiers: store.tiers || store, policies: store.policies || {} });
 }
 
 // ---- Referential integrity + shape validation ----
@@ -372,7 +470,9 @@ function validPolicyObject(policy) {
 
   // Referential integrity (L1 audit finding L1-C3, DBA hat): defaultVersionId
   // must resolve to a real entry in this policy's own versions map.
-  if (!policy.versions[policy.defaultVersionId]) return false;
+  // hasOwnKey(), not a bare truthy check -- see the prototype-pollution
+  // guard comment near the top of this file (Layer 2 audit finding NEW-1).
+  if (!hasOwnKey(policy.versions, policy.defaultVersionId)) return false;
 
   return Object.values(policy.versions).every((version) => {
     if (!isPlainObject(version)) return false;
@@ -396,7 +496,11 @@ function validTierRecord(tierRecord, policyIds) {
   // it, since at validation time (as opposed to the resolution-time gap
   // aggregateStatements()'s fail-closed guard exists for) a dangling
   // reference indicates file corruption, not a normal runtime state.
-  return tierRecord.attached.every((policyId) => typeof policyId === "string" && policyIds.has(policyId));
+  // Also rejects any dangerous key (Layer 2 audit finding NEW-1) --
+  // "__proto__"/"constructor"/"prototype" can never be a legitimate
+  // policyId (real ones are randomUUID()s), so a store containing one
+  // is itself malformed/corrupted, not a state worth tolerating.
+  return tierRecord.attached.every((policyId) => typeof policyId === "string" && !isDangerousKey(policyId) && policyIds.has(policyId));
 }
 
 // Replaces the pre-schema-v2 validPolicyStore(): validates the
@@ -415,13 +519,20 @@ function validPolicyStore(value) {
   const tierNames = Object.keys(value.tiers);
   if (!tierNames.length) return false;
   if (!tierNames.includes("owner")) return false;
-  if (!tierNames.every((tier) => RESERVED_TIER_NAME_PATTERN.test(tier))) return false;
+  // RESERVED_TIER_NAME_PATTERN alone is NOT sufficient here (Layer 2
+  // audit finding NEW-1) -- "constructor" and "prototype" are both
+  // valid, lowercase-only strings that satisfy the pattern but resolve
+  // to real Object.prototype-chain values when used as a bracket-access
+  // key on a plain object. Explicit isDangerousKey() rejection closes
+  // this at the one place every persisted/loaded store passes through.
+  if (!tierNames.every((tier) => !isDangerousKey(tier) && RESERVED_TIER_NAME_PATTERN.test(tier))) return false;
 
   const customTierCount = tierNames.filter((t) => !BUILT_IN_TIER_NAMES.has(t)).length;
   if (customTierCount > MAX_CUSTOM_TIERS) return false;
 
   const policyIds = new Set(Object.keys(value.policies));
   if (policyIds.size > MAX_NAMED_POLICIES) return false;
+  if (Array.from(policyIds).some((id) => isDangerousKey(id))) return false;
 
   if (!tierNames.every((tier) => validTierRecord(value.tiers[tier], policyIds))) return false;
   if (!Object.values(value.policies).every((policy) => validPolicyObject(policy))) return false;
@@ -497,12 +608,35 @@ function applyMutation(mutatorFn) {
   return { ok: true, policies: getAllPolicies() };
 }
 
+// Deep-copies a statement list, including each statement's own Action
+// field -- fixes a real bug found during the Layer 2 audit (DBA hat,
+// finding "deepCopyStore is not a true deep copy"): the previous version
+// of deepCopyStore() only spread the OUTER statements array
+// (`[...v.statements]`), leaving each individual statement object --
+// and, when Action is an array, that Action array too -- as the SAME
+// object reference shared between every "copy" ever produced from a
+// given source. A caller that later mutated a statement/Action array
+// returned by getAllPolicies() (used by 3 server.js route handlers) or
+// held from a previous applyMutation() call could silently corrupt live
+// internal `_policies` state with no validation, no error, no audit
+// trail -- exactly the kind of silent-corruption bug a DBA's "every
+// mutation is copy-on-write, validated, then atomically swapped in"
+// mental model is supposed to rule out. Confirmed via direct execution
+// that the fix below closes this (see the deep-copy regression test in
+// policy.test.js).
+function deepCopyStatements(statements) {
+  return statements.map((stmt) => ({
+    ...stmt,
+    Action: Array.isArray(stmt.Action) ? [...stmt.Action] : stmt.Action
+  }));
+}
+
 function deepCopyStore(store) {
   return {
     schemaVersion: 2,
     tiers: Object.fromEntries(Object.entries(store.tiers).map(([name, rec]) => [
       name,
-      { inline: rec.inline ? { statements: [...rec.inline.statements] } : null, attached: [...rec.attached] }
+      { inline: rec.inline ? { statements: deepCopyStatements(rec.inline.statements) } : null, attached: [...rec.attached] }
     ])),
     policies: Object.fromEntries(Object.entries(store.policies).map(([id, policy]) => [
       id,
@@ -512,7 +646,7 @@ function deepCopyStore(store) {
         defaultVersionId: policy.defaultVersionId,
         versions: Object.fromEntries(Object.entries(policy.versions).map(([vid, v]) => [
           vid,
-          { statements: [...v.statements], createdAt: v.createdAt, createdBy: v.createdBy }
+          { statements: deepCopyStatements(v.statements), createdAt: v.createdAt, createdBy: v.createdBy }
         ]))
       }
     ]))
@@ -549,9 +683,14 @@ export function setPolicies(docs, repoRoot = null) {
     // route was never designed to know about).
     const next = deepCopyStore(current);
     for (const [tierName, tierRecord] of Object.entries(migrated.tiers)) {
+      // Dangerous-key rejection (Layer 2 audit finding NEW-1) -- this
+      // route accepts a caller-supplied tier-name map directly (the
+      // legacy flat-shape contract), so the same guard applied to every
+      // other mutation entry point below applies here too.
+      if (isDangerousKey(tierName)) return { error: `Invalid tier name: "${tierName}".` };
       next.tiers[tierName] = {
         inline: tierRecord.inline,
-        attached: next.tiers[tierName] ? next.tiers[tierName].attached : []
+        attached: hasOwnKey(next.tiers, tierName) ? next.tiers[tierName].attached : []
       };
     }
     return next;
@@ -587,11 +726,19 @@ export function createPolicy({ name, statements }, actorTier, repoRoot = null) {
       return { error: `Cannot create another named policy -- the limit of ${MAX_NAMED_POLICIES} named policies has been reached. Delete an unused policy first.` };
     }
     const next = deepCopyStore(current);
+    // deepCopyStatements(), not the caller's own `statements` array by
+    // reference -- see the deepCopyStore()/deep-copy-on-ingest fix
+    // comment above (Layer 2 audit finding, DBA hat). `statements`
+    // here originates from a parsed HTTP request body (server.js's
+    // readJson(req)); storing it by reference would let any code that
+    // ever retains a reference to that parsed body (a future logging/
+    // audit hook, a retry buffer) silently corrupt live internal state
+    // by mutating it after this call returns.
     next.policies[policyId] = {
       name: name.trim(),
       managed: false,
       defaultVersionId: versionId,
-      versions: { [versionId]: { statements, createdAt: new Date().toISOString(), createdBy: actorTier || "owner" } }
+      versions: { [versionId]: { statements: deepCopyStatements(statements), createdAt: new Date().toISOString(), createdBy: actorTier || "owner" } }
     };
     return next;
   });
@@ -601,14 +748,32 @@ export function createPolicy({ name, statements }, actorTier, repoRoot = null) {
   return result.ok ? { ok: true, policyId, defaultVersionId: versionId } : result;
 }
 
+// Shared, explicit, up-front guard for every function below that takes a
+// caller-supplied policyId/tierName -- rejects a dangerous key (Layer 2
+// audit finding NEW-1) BEFORE it is ever used as a bracket-access key
+// anywhere in the mutator, since the pollution happens synchronously
+// during the mutator itself, before applyMutation()'s post-mutation
+// validPolicyStore() check ever runs. This is the primary fix; the
+// hasOwnKey()/isDangerousKey() guards elsewhere in this file are
+// defense-in-depth for paths this function doesn't cover (e.g. reading
+// an already-persisted, potentially-corrupted file).
+function rejectDangerousIdentifier(value, label) {
+  if (typeof value !== "string" || !value || isDangerousKey(value)) {
+    return { ok: false, error: `Invalid ${label}.` };
+  }
+  return null;
+}
+
 export function editPolicy(policyId, { statements }, actorTier, repoRoot = null) {
+  const idError = rejectDangerousIdentifier(policyId, "policy ID");
+  if (idError) return idError;
   if (!validStatementList(statements)) {
     return { ok: false, error: "statements must be a non-empty, valid Allow/Deny statement list." };
   }
 
   const result = applyMutation((current) => {
+    if (!hasOwnKey(current.policies, policyId)) return { error: "No such policy." };
     const policy = current.policies[policyId];
-    if (!policy) return { error: "No such policy." };
 
     const versionCount = Object.keys(policy.versions).length;
     if (versionCount >= MAX_POLICY_VERSIONS) {
@@ -634,25 +799,30 @@ export function editPolicy(policyId, { statements }, actorTier, repoRoot = null)
     // can be deleted while v1 and v3 remain, and versionCount+1 would
     // then collide with the still-existing v3. Monotonic-highest-plus-one
     // is collision-safe regardless of deletion history.
-    const highestSeq = Object.keys(current.policies[policyId].versions)
+    const highestSeq = Object.keys(policy.versions)
       .map((vid) => Number(vid.replace(/^v/, "")) || 0)
       .reduce((max, n) => Math.max(max, n), 0);
     const newVersionId = `v${highestSeq + 1}`;
-    next.policies[policyId].versions[newVersionId] = { statements, createdAt: new Date().toISOString(), createdBy: actorTier || "owner" };
+    // deepCopyStatements(), not the caller's own array by reference --
+    // same reasoning as createPolicy() above.
+    next.policies[policyId].versions[newVersionId] = { statements: deepCopyStatements(statements), createdAt: new Date().toISOString(), createdBy: actorTier || "owner" };
     next.policies[policyId].defaultVersionId = newVersionId;
     return next;
   });
 
   if (result.error && !result.ok) return { ok: false, error: result.error };
   if (repoRoot && result.ok) persist(repoRoot);
-  return result.ok ? { ok: true, defaultVersionId: _policies.policies[policyId]?.defaultVersionId } : result;
+  return result.ok ? { ok: true, defaultVersionId: hasOwnKey(_policies.policies, policyId) ? _policies.policies[policyId].defaultVersionId : undefined } : result;
 }
 
 export function rollbackPolicy(policyId, versionId, repoRoot = null) {
+  const idError = rejectDangerousIdentifier(policyId, "policy ID") || rejectDangerousIdentifier(versionId, "version ID");
+  if (idError) return idError;
+
   const result = applyMutation((current) => {
+    if (!hasOwnKey(current.policies, policyId)) return { error: "No such policy." };
     const policy = current.policies[policyId];
-    if (!policy) return { error: "No such policy." };
-    if (!policy.versions[versionId]) return { error: "No such version on this policy." };
+    if (!hasOwnKey(policy.versions, versionId)) return { error: "No such version on this policy." };
 
     const next = deepCopyStore(current);
     next.policies[policyId].defaultVersionId = versionId;
@@ -665,10 +835,13 @@ export function rollbackPolicy(policyId, versionId, repoRoot = null) {
 }
 
 export function deletePolicyVersion(policyId, versionId, repoRoot = null) {
+  const idError = rejectDangerousIdentifier(policyId, "policy ID") || rejectDangerousIdentifier(versionId, "version ID");
+  if (idError) return idError;
+
   const result = applyMutation((current) => {
+    if (!hasOwnKey(current.policies, policyId)) return { error: "No such policy." };
     const policy = current.policies[policyId];
-    if (!policy) return { error: "No such policy." };
-    if (!policy.versions[versionId]) return { error: "No such version on this policy." };
+    if (!hasOwnKey(policy.versions, versionId)) return { error: "No such version on this policy." };
     if (policy.defaultVersionId === versionId) {
       return { error: "Cannot delete the default version. Roll back to a different version first, then delete this one." };
     }
@@ -684,9 +857,11 @@ export function deletePolicyVersion(policyId, versionId, repoRoot = null) {
 }
 
 export function deletePolicy(policyId, repoRoot = null) {
+  const idError = rejectDangerousIdentifier(policyId, "policy ID");
+  if (idError) return idError;
+
   const result = applyMutation((current) => {
-    const policy = current.policies[policyId];
-    if (!policy) return { error: "No such policy." };
+    if (!hasOwnKey(current.policies, policyId)) return { error: "No such policy." };
 
     const attachingTiers = Object.entries(current.tiers)
       .filter(([, rec]) => rec.attached.includes(policyId))
@@ -708,12 +883,16 @@ export function deletePolicy(policyId, repoRoot = null) {
 // ---- Tiers / roles (§4.3) ----
 
 export function createTier(tierName, repoRoot = null) {
-  if (typeof tierName !== "string" || !RESERVED_TIER_NAME_PATTERN.test(tierName)) {
+  // isDangerousKey() check folded directly into the existing shape
+  // validation below (RESERVED_TIER_NAME_PATTERN alone does not reject
+  // "constructor"/"prototype" -- see the guard comment near the top of
+  // this file, Layer 2 audit finding NEW-1).
+  if (typeof tierName !== "string" || isDangerousKey(tierName) || !RESERVED_TIER_NAME_PATTERN.test(tierName)) {
     return { ok: false, error: "Tier name must be lowercase, 2-32 characters, letters/digits/hyphens/underscores only." };
   }
 
   const result = applyMutation((current) => {
-    if (current.tiers[tierName]) return { error: "A tier with this name already exists." };
+    if (hasOwnKey(current.tiers, tierName)) return { error: "A tier with this name already exists." };
     const customCount = Object.keys(current.tiers).filter((t) => !BUILT_IN_TIER_NAMES.has(t)).length;
     if (customCount >= MAX_CUSTOM_TIERS) {
       return { error: `Cannot create another custom tier -- the limit of ${MAX_CUSTOM_TIERS} custom tiers has been reached.` };
@@ -729,14 +908,18 @@ export function createTier(tierName, repoRoot = null) {
 }
 
 export function setTierInline(tierName, statements, repoRoot = null) {
+  const idError = rejectDangerousIdentifier(tierName, "tier name");
+  if (idError) return idError;
   if (!validStatementList(statements)) {
     return { ok: false, error: "statements must be a non-empty, valid Allow/Deny statement list." };
   }
 
   const result = applyMutation((current) => {
-    if (!current.tiers[tierName]) return { error: "No such tier." };
+    if (!hasOwnKey(current.tiers, tierName)) return { error: "No such tier." };
     const next = deepCopyStore(current);
-    next.tiers[tierName].inline = { statements };
+    // deepCopyStatements(), not the caller's own array by reference --
+    // same reasoning as createPolicy()/editPolicy() above.
+    next.tiers[tierName].inline = { statements: deepCopyStatements(statements) };
     return next;
   });
 
@@ -746,9 +929,12 @@ export function setTierInline(tierName, statements, repoRoot = null) {
 }
 
 export function attachPolicy(tierName, policyId, repoRoot = null) {
+  const idError = rejectDangerousIdentifier(tierName, "tier name") || rejectDangerousIdentifier(policyId, "policy ID");
+  if (idError) return idError;
+
   const result = applyMutation((current) => {
-    if (!current.tiers[tierName]) return { error: "No such tier." };
-    if (!current.policies[policyId]) return { error: "No such policy." };
+    if (!hasOwnKey(current.tiers, tierName)) return { error: "No such tier." };
+    if (!hasOwnKey(current.policies, policyId)) return { error: "No such policy." };
     if (current.tiers[tierName].attached.includes(policyId)) {
       return current; // idempotent -- already attached, nothing to change
     }
@@ -763,8 +949,11 @@ export function attachPolicy(tierName, policyId, repoRoot = null) {
 }
 
 export function detachPolicy(tierName, policyId, repoRoot = null) {
+  const idError = rejectDangerousIdentifier(tierName, "tier name") || rejectDangerousIdentifier(policyId, "policy ID");
+  if (idError) return idError;
+
   const result = applyMutation((current) => {
-    if (!current.tiers[tierName]) return { error: "No such tier." };
+    if (!hasOwnKey(current.tiers, tierName)) return { error: "No such tier." };
     const next = deepCopyStore(current);
     next.tiers[tierName].attached = next.tiers[tierName].attached.filter((id) => id !== policyId);
     return next;

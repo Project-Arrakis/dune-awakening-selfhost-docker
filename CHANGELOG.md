@@ -36,10 +36,25 @@ Keep a Changelog style, grouped by upstream base version, newest first.
   where the `observer` tier was missing from the hardcoded tier list)
   and a standalone **Policies** view (named-policy list, version
   history with "set default"/"delete" per version, create/edit/delete),
-  matching real AWS IAM's own console structure. Every mutating action's
+  matching real AWS IAM's own console structure.   Every mutating action's
   real, specific backend rejection message (e.g. which tiers block a
   policy delete, or that an edit would lock out the owner) is now
   surfaced verbatim in the UI rather than a generic failure string.
+
+### Fixed
+
+- Console IAM implementation: a Layer 2 (implementation-phase) eight-hats
+  audit against the shipped code (not the design) found and fixed 4
+  CRITICAL and 5 HIGH real bugs before this feature left draft, including
+  an `Object.prototype` pollution vulnerability reachable by any
+  `settings:write`-holding session via an unsanitized tier/policy-ID URL
+  path segment, a completely non-functional permission checkbox grid (a
+  key/value-direction bug in the namespace-grouping helper), a
+  delete-confirmation UI state that wasn't scoped to the selected object
+  (could delete the wrong policy), and a shallow-copy bug in the policy
+  store's mutation path that could silently corrupt live state. Full
+  findings register: `docs/design/console-custom-iam-roles-l1-design-2026-08-17.md`
+  §10.
 
 ### Changed
 

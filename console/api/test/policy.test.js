@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import test, { beforeEach } from "node:test";
+import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { actionForRoute } from "../src/actions.js";
 import {
   evaluate, matchAction, resolveAllowedActions, setPolicies,
@@ -562,4 +565,257 @@ test("concurrent-shaped mutations on the same policy never produce a lost update
     }
   }
   assert.equal(anyInconsistent, false, "owner must retain settings:write after any interleaving of the two racing rollbacks -- a failure here means the synchronous-mutation-path invariant was broken");
+});
+
+// Layer 2 audit finding GRC-C1 (GRC hat, independently confirmed by the
+// QA hat): the test above races two mutations that are each
+// INDEPENDENTLY, unconditionally rejected/accepted by applyMutation()'s
+// own outcome-based guard regardless of execution order -- it is a
+// tautology that would still pass 100/100 even if a real `await` were
+// introduced into applyMutation() (verified: the audit reproduced this
+// exact regression in an isolated worktree and confirmed the test above
+// did NOT catch it). This test is the fix: it directly asserts the
+// structural invariant the whole safety argument actually depends on --
+// that no function reachable from applyMutation() is an async function
+// and that none of the mutation exports return a Promise -- rather than
+// inferring it indirectly from an outcome that happens to be timing-
+// independent by construction. If a future change ever adds `await`
+// anywhere in this path, THIS test fails immediately, deterministically,
+// with no dependence on timing, iteration count, or scenario construction.
+test("concurrency invariant: every mutation export and applyMutation() itself are synchronous, not async functions (L1-H1, real regression test per Layer 2 audit finding GRC-C1)", () => {
+  const mutationExports = { setPolicies, createPolicy, editPolicy, rollbackPolicy, deletePolicyVersion, deletePolicy, createTier, setTierInline, attachPolicy, detachPolicy };
+  for (const [name, fn] of Object.entries(mutationExports)) {
+    assert.equal(fn.constructor.name, "Function", `${name} must be a synchronous function, not async -- an AsyncFunction here would silently reintroduce the L1-H1 concurrency race this invariant exists to prevent`);
+  }
+
+  // Independently confirm none of them return a thenable/Promise for a
+  // representative no-op-ish call (belt-and-suspenders against a
+  // function that is syntactically non-async but manually returns a
+  // Promise, which would defeat the invariant just as effectively).
+  _resetPolicyStoreForTests();
+  const probe = createTier("concurrency-probe-tier");
+  assert.equal(typeof probe.then, "undefined", "createTier's return value must not be thenable");
+  const probe2 = setTierInline("concurrency-probe-tier", [{ Effect: "Allow", Action: "server:read" }]);
+  assert.equal(typeof probe2.then, "undefined", "setTierInline's return value must not be thenable");
+});
+
+// ---- Object.prototype pollution guard (Layer 2 audit finding NEW-1,
+// Security hat -- CRITICAL) ----
+//
+// Every mutation function that takes a caller-supplied tierName/policyId
+// must reject "__proto__"/"constructor"/"prototype" (case-insensitively)
+// before ever using that value as a bracket-access key -- otherwise
+// `store.tiers[tierName].inline = {...}` on `tierName === "__proto__"`
+// mutates the REAL, LIVE, process-global Object.prototype, silently and
+// invisibly (JSON.stringify never enumerates inherited properties), for
+// any session holding settings:write (owner by default). This was
+// confirmed reachable over a real, shipped HTTP route
+// (PUT /api/settings/iam/tiers/__proto__/inline) during the Layer 2
+// implementation audit.
+test("Object.prototype pollution guard: every mutation function rejects __proto__/constructor/prototype (case-insensitive) without polluting the prototype chain", () => {
+  const dangerousKeys = ["__proto__", "constructor", "prototype", "__PROTO__", "Constructor", "PROTOTYPE"];
+  const before = { proto: Object.getOwnPropertyNames(Object.prototype).length };
+
+  for (const key of dangerousKeys) {
+    _resetPolicyStoreForTests();
+    assert.equal(createTier(key).ok, false, `createTier(${JSON.stringify(key)}) must be rejected`);
+    assert.equal(setTierInline(key, [{ Effect: "Allow", Action: "server:read" }]).ok, false, `setTierInline(${JSON.stringify(key)}) must be rejected`);
+    assert.equal(attachPolicy(key, "11111111-1111-1111-1111-111111111111").ok, false, `attachPolicy(tier=${JSON.stringify(key)}) must be rejected`);
+    assert.equal(attachPolicy("owner", key).ok, false, `attachPolicy(policyId=${JSON.stringify(key)}) must be rejected`);
+    assert.equal(detachPolicy(key, "11111111-1111-1111-1111-111111111111").ok, false, `detachPolicy(tier=${JSON.stringify(key)}) must be rejected`);
+    assert.equal(editPolicy(key, { statements: [{ Effect: "Allow", Action: "server:read" }] }, "owner").ok, false, `editPolicy(${JSON.stringify(key)}) must be rejected`);
+    assert.equal(rollbackPolicy(key, "v1").ok, false, `rollbackPolicy(policyId=${JSON.stringify(key)}) must be rejected`);
+    assert.equal(deletePolicyVersion(key, "v1").ok, false, `deletePolicyVersion(policyId=${JSON.stringify(key)}) must be rejected`);
+    assert.equal(deletePolicy(key).ok, false, `deletePolicy(${JSON.stringify(key)}) must be rejected`);
+  }
+
+  // The definitive check: Object.prototype itself must be byte-for-byte
+  // unchanged after every one of the above attempts across every
+  // dangerous key variant -- not just "the calls returned ok:false."
+  const after = { proto: Object.getOwnPropertyNames(Object.prototype).length };
+  assert.deepEqual(after, before, "Object.prototype must have zero new own properties after every dangerous-key mutation attempt");
+  assert.equal(Object.prototype.inline, undefined, "Object.prototype.inline must never be set");
+  assert.equal(Object.prototype.attached, undefined, "Object.prototype.attached must never be set");
+  assert.equal(({}).inline, undefined, "a fresh plain object anywhere else in the process must be unaffected");
+});
+
+test("setPolicies (legacy route) drops a dangerous tier-name key from the incoming document instead of migrating/persisting it, and never pollutes Object.prototype", () => {
+  _resetPolicyStoreForTests();
+  // A `{ __proto__: {...} }` OBJECT LITERAL sets the prototype rather
+  // than creating an own enumerable key -- JSON.parse() does NOT apply
+  // that special-casing (confirmed: JSON.parse('{"__proto__":{}}') DOES
+  // produce a real own "__proto__" property), and server.js's real
+  // request body always arrives via JSON.parse (readJson(req)), so this
+  // test constructs the malicious payload the same way a real HTTP
+  // request body would, not via a literal (which would not actually
+  // exercise the code path this guard covers).
+  //
+  // Confirmed by direct execution during implementation: a bare
+  // `tiers[tierName] = {...}` (whole-value reassignment through an
+  // inherited/dangerous key) does NOT itself pollute Object.prototype --
+  // only a subsequent PROPERTY MUTATION on the already-looked-up value
+  // (`tiers[tierName].inline = x`, the shape setTierInline used before
+  // its own fix) does. So this route's correct, safe behavior is not
+  // "reject the whole request" but "silently-but-EXPLICITLY drop the
+  // dangerous tier and salvage every other, legitimate tier" -- exactly
+  // the same per-tier salvage discipline migrateIfLegacyShape() already
+  // applies to any other malformed tier entry (L1-H5), extended to
+  // treat a dangerous key as one more kind of malformed entry rather
+  // than a special, silently-vanishing case with no log signal at all.
+  const maliciousBody = JSON.parse(
+    '{"owner":{"tier":"owner","statements":[{"Effect":"Allow","Action":"*"}]},' +
+    '"__proto__":{"tier":"__proto__","statements":[{"Effect":"Allow","Action":"pwned"}]}}'
+  );
+  assert.ok(Object.hasOwn(maliciousBody, "__proto__"), "sanity: the constructed payload must have a real own __proto__ property, matching what JSON.parse produces from a real request body");
+
+  const result = setPolicies(maliciousBody);
+  assert.equal(result.ok, true, "the request as a whole succeeds -- only the dangerous tier is dropped, per the same per-tier salvage discipline as any other malformed tier");
+  assert.ok(!Object.hasOwn(result.policies.tiers, "__proto__"), "the dangerous key must never appear as an own property of the resulting tiers map");
+  assert.equal(Object.prototype.inline, undefined);
+  assert.equal(({}).inline, undefined, "a fresh plain object anywhere else in the process must be unaffected");
+});
+
+// ---- Deep-copy correctness (Layer 2 audit finding, DBA hat -- HIGH) ----
+//
+// deepCopyStore()'s original implementation only spread the OUTER
+// statements array per tier/version -- each individual statement object,
+// and its Action array when Action is an array, was the SAME object
+// reference shared across every "copy". A caller that later mutated a
+// statement/Action array obtained from getAllPolicies() (used by 3
+// server.js route handlers) could silently corrupt live internal
+// _policies state with no error, no validation trip, no audit trail.
+// These tests assert reference-INEQUALITY, not just value-equality --
+// the class of assertion the DBA hat found completely absent from the
+// pre-existing 33 tests.
+test("getAllPolicies() snapshots do not share statement/Action array references across separate calls", () => {
+  _resetPolicyStoreForTests();
+  const snap1 = getAllPolicies();
+  const snap2 = getAllPolicies();
+  assert.notEqual(snap1.tiers.admin.inline.statements[0], snap2.tiers.admin.inline.statements[0], "statement objects must not be the same reference across snapshots");
+  assert.notEqual(snap1.tiers.admin.inline.statements[0].Action, snap2.tiers.admin.inline.statements[0].Action, "Action arrays must not be the same reference across snapshots");
+});
+
+test("mutating a statement's Action array from one getAllPolicies() snapshot does not corrupt the live internal store or a later snapshot", () => {
+  _resetPolicyStoreForTests();
+  const snap1 = getAllPolicies();
+  const beforeMutationLiveCheck = evaluate({ tier: "admin" }, "database:mutate"); // false by default (admin denies this)
+
+  // In-place mutation of a nested Action array obtained from a snapshot --
+  // exactly the DBA hat's demonstrated bug scenario.
+  if (Array.isArray(snap1.tiers.admin.inline.statements[0].Action)) {
+    snap1.tiers.admin.inline.statements[0].Action.push("database:mutate-INJECTED");
+  }
+
+  const snap2 = getAllPolicies();
+  assert.ok(!snap2.tiers.admin.inline.statements[0].Action.includes("database:mutate-INJECTED"), "a later snapshot must not see the mutation made to an earlier snapshot's nested array");
+  assert.equal(evaluate({ tier: "admin" }, "database:mutate"), beforeMutationLiveCheck, "live evaluation must be completely unaffected by mutating a previously-returned snapshot's nested array");
+});
+
+test("createPolicy/editPolicy/setTierInline do not store the caller's own statements array by reference -- mutating the caller's array after the call does not affect the persisted policy", () => {
+  _resetPolicyStoreForTests();
+  const callerStatements = [{ Effect: "Allow", Action: ["server:read"] }];
+  const created = createPolicy({ name: "ingest-copy-test", statements: callerStatements }, "owner");
+  assert.equal(created.ok, true);
+
+  // Mutate the caller's own array/objects AFTER the call returns --
+  // simulates a future logging/audit hook or retry buffer that retains
+  // a reference to the original request body and touches it later.
+  callerStatements[0].Action.push("settings:write-INJECTED");
+  callerStatements.push({ Effect: "Allow", Action: ["*"] });
+
+  const stored = getAllPolicies().policies[created.policyId].versions.v1.statements;
+  assert.equal(stored.length, 1, "the stored statement list must not grow when the caller's original array is mutated afterward");
+  assert.ok(!stored[0].Action.includes("settings:write-INJECTED"), "the stored statement's Action array must not reflect a post-call mutation of the caller's original array");
+
+  // Same check for setTierInline.
+  const tierStatements = [{ Effect: "Allow", Action: ["server:read"] }];
+  assert.equal(createTier("ingest-copy-tier").ok, true);
+  assert.equal(setTierInline("ingest-copy-tier", tierStatements).ok, true);
+  tierStatements[0].Action.push("settings:write-INJECTED");
+  const storedTierStatements = getAllPolicies().tiers["ingest-copy-tier"].inline.statements;
+  assert.ok(!storedTierStatements[0].Action.includes("settings:write-INJECTED"), "setTierInline must not store the caller's array by reference either");
+});
+
+// ---- Version-ID collision regression (Layer 2 audit finding, QA hat --
+// HIGH: the highestSeq+1 fix had a manual, untracked verification script
+// but zero committed regression coverage) ----
+test("editPolicy assigns a collision-free version ID after a middle version is deleted (highestSeq+1, not versionCount+1)", () => {
+  _resetPolicyStoreForTests();
+  const created = createPolicy({ name: "collision-test", statements: [{ Effect: "Allow", Action: "server:read" }] }, "owner");
+  const { policyId } = created;
+  // Create v2, v3, v4, v5 (v1 already exists from createPolicy).
+  for (let i = 2; i <= 5; i++) {
+    assert.equal(editPolicy(policyId, { statements: [{ Effect: "Allow", Action: `server:action-${i}` }] }, "owner").ok, true);
+  }
+  assert.deepEqual(Object.keys(getAllPolicies().policies[policyId].versions).sort(), ["v1", "v2", "v3", "v4", "v5"]);
+
+  // Roll back to v3 (making it default, so it's deletable-adjacent) and
+  // delete the middle version v3... actually delete a genuinely
+  // non-default middle version: roll back to v1 first so v3 is safely
+  // non-default, then delete v3.
+  assert.equal(rollbackPolicy(policyId, "v1").ok, true);
+  assert.equal(deletePolicyVersion(policyId, "v3").ok, true);
+  assert.deepEqual(Object.keys(getAllPolicies().policies[policyId].versions).sort(), ["v1", "v2", "v4", "v5"]);
+
+  // versionCount is now 4 (v1,v2,v4,v5) -- a naive versionCount+1 scheme
+  // would produce "v5", COLLIDING with the still-existing v5. The
+  // highestSeq+1 scheme must produce "v6" instead.
+  assert.equal(rollbackPolicy(policyId, "v5").ok, true); // roll forward so the next edit doesn't hit the owner-lockout guard unrelatedly
+  const edited = editPolicy(policyId, { statements: [{ Effect: "Allow", Action: "server:action-new" }] }, "owner");
+  assert.equal(edited.ok, true);
+  assert.equal(edited.defaultVersionId, "v6", "must be v6 (highestSeq+1), not v5 (versionCount+1), to avoid colliding with the still-existing v5");
+  assert.deepEqual(Object.keys(getAllPolicies().policies[policyId].versions).sort(), ["v1", "v2", "v4", "v5", "v6"]);
+  // Confirm no data was lost/overwritten -- v5's original statements are intact.
+  assert.deepEqual(getAllPolicies().policies[policyId].versions.v5.statements, [{ Effect: "Allow", Action: "server:action-5" }]);
+});
+
+// ---- persist() 0o600 file-permission regression coverage (Layer 2
+// audit finding, Cloud Security hat -- HIGH: this write path was
+// correct in the code but had ZERO automated test coverage -- every
+// pre-existing test calls every mutation function with repoRoot=null,
+// so persist()'s actual writeJsonAtomic(..., 0o600) call was never
+// exercised by `node --test` at all) ----
+test("persist() writes iam-policies.json with real 0o600 permissions on disk, for every mutation entry point that accepts a repoRoot", () => {
+  const repoRoot = mkdtempSync(join(tmpdir(), "dune-iam-persist-"));
+  try {
+    _resetPolicyStoreForTests();
+    const filePath = join(repoRoot, "runtime", "generated", "iam-policies.json");
+
+    // setTierInline is a representative, already-exercised mutation --
+    // confirms the choke point's persist(repoRoot) call actually reaches
+    // disk with the correct content and mode, not just that the
+    // in-memory result is correct (every other test in this file never
+    // passes a real repoRoot at all).
+    const result = setTierInline("owner", [{ Effect: "Allow", Action: "*" }], repoRoot);
+    assert.equal(result.ok, true);
+
+    const mode = statSync(filePath).mode & 0o777;
+    assert.equal(mode, 0o600, `expected file mode 0600, got ${mode.toString(8)}`);
+
+    const onDisk = JSON.parse(readFileSync(filePath, "utf8"));
+    assert.equal(onDisk.schemaVersion, 2);
+    assert.deepEqual(onDisk.tiers.owner.inline.statements, [{ Effect: "Allow", Action: "*" }]);
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test("persist() preserves 0o600 across every mutating export, not just setTierInline", () => {
+  const repoRoot = mkdtempSync(join(tmpdir(), "dune-iam-persist-all-"));
+  try {
+    _resetPolicyStoreForTests();
+    const filePath = join(repoRoot, "runtime", "generated", "iam-policies.json");
+
+    assert.equal(createTier("perm-check-tier", repoRoot).ok, true);
+    assert.equal((statSync(filePath).mode & 0o777), 0o600);
+
+    const created = createPolicy({ name: "perm-check-policy", statements: [{ Effect: "Allow", Action: "server:read" }] }, "owner", repoRoot);
+    assert.equal(created.ok, true);
+    assert.equal((statSync(filePath).mode & 0o777), 0o600);
+
+    assert.equal(attachPolicy("perm-check-tier", created.policyId, repoRoot).ok, true);
+    assert.equal((statSync(filePath).mode & 0o777), 0o600);
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
 });

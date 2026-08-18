@@ -64,6 +64,17 @@ The policy API is owner-only under the default policy (gated on the `settings:wr
 
 Restoring a backup of `iam-policies.json` taken before the schema v2 upgrade shipped works with no special procedure — the same transparent migration that runs on every Console start also applies to a restored legacy-shape backup.
 
+## Web UI
+
+The Console's "Access Control" settings panel (`console/web/src/features/settings/IamPolicyEditor.tsx`) presents two linked views, matching the split above between tiers/roles and named policies:
+
+- **Roles** (`IamRolesView.tsx`) — a per-tier picker, dynamically derived from the live catalog (never a hardcoded tier list), showing that tier's own inline policy (Permissions checkbox grid or raw JSON), an Attached Policies tab (attach/detach picker), and a Test tab (the Policy Simulator in `mode: "tier"`). An owner-only "New Role" action creates a custom tier.
+- **Policies** (`IamPoliciesView.tsx`) — a standalone list of named policies, independent of any tier, with create/edit/version-history (including "Set as default" and delete-a-non-default-version) and a confirmed, owner-only whole-policy delete action.
+- **Policy Simulator** (`IamPolicySimulator.tsx`) — shared by both views' Test tabs; supports `mode: "draft"` (an unsaved statement set) and `mode: "tier"` (a real tier's current, fully-aggregated permissions).
+- **`IamPermissionGrid.tsx`** — the checkbox-per-permission grid, extracted so both views share one implementation. It renders and toggles permissions keyed by the catalog's HTTP-route strings (`actionMap`'s keys, e.g. `"GET /api/server/status"`), not the underlying IAM action strings (`actionMap`'s values, e.g. `"server:read"`) — the two are easy to confuse and a prior implementation bug (now fixed and regression-tested) grouped/matched by the wrong one, which silently made every checkbox appear unchecked and broke namespace grouping entirely.
+
+Every mutating action's backend rejection message (e.g. which tiers block a policy delete, or the specific owner-lockout reason) is surfaced verbatim in the UI, not replaced with a generic failure string — see `errorText()` in `iamTypes.ts`.
+
 ## Route maintenance
 
 When adding an authenticated API route, add its method/path mapping to `actions.js` in the same change and run:

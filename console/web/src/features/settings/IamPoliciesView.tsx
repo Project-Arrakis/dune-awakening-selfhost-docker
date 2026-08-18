@@ -44,8 +44,31 @@ export function IamPoliciesView({ catalog, onCatalogChange, actorTierIsOwner }: 
   const [confirmingDeletePolicy, setConfirmingDeletePolicy] = useState(false);
   const [confirmingDeleteVersion, setConfirmingDeleteVersion] = useState<string | null>(null);
 
+  // Fetch counter, not just a boolean `cancelled` flag, so a manual Retry
+  // click (which re-runs this same fetch logic outside the effect) can't
+  // race with an in-flight effect-triggered fetch from a since-abandoned
+  // selection and win by arriving later -- see loadDetail() below.
+  const [fetchToken, setFetchToken] = useState(0);
+
   useEffect(() => {
-    if (!selectedPolicyId) { setDetail(null); return; }
+    // CRITICAL fix (Layer 2 audit finding C1, UI hat): every piece of
+    // per-policy UI state -- not just `detail` -- MUST reset synchronously
+    // the moment `selectedPolicyId` changes, before the new fetch even
+    // starts. The previous version left `detail` (stale content) and both
+    // delete-confirmation flags untouched across a selection change,
+    // which the audit proved lets an armed "Confirm Delete" for policy A
+    // silently end up deleting policy B if the owner switches selection
+    // without explicitly clicking Cancel first. Clearing `detail`
+    // immediately also fixes a separate finding (H2): the detail pane no
+    // longer renders the PREVIOUS policy's name/versions while the new
+    // one is still loading.
+    setDetail(null);
+    setConfirmingDeletePolicy(false);
+    setConfirmingDeleteVersion(null);
+    setJsonError("");
+    setActionError("");
+    setSaved(false);
+    if (!selectedPolicyId) return;
     let cancelled = false;
     setLoadError("");
     api<PolicyDetail>(`/api/settings/iam/policies/${encodeURIComponent(selectedPolicyId)}`).then((data) => {
@@ -53,11 +76,10 @@ export function IamPoliciesView({ catalog, onCatalogChange, actorTierIsOwner }: 
       setDetail(data);
       const defaultVersion = data.versions[data.defaultVersionId];
       setJsonText(JSON.stringify(defaultVersion?.statements || [], null, 2));
-      setJsonError("");
-      setActionError("");
     }).catch((error) => { if (!cancelled) setLoadError(errorText(error, "Failed to load this policy.")); });
     return () => { cancelled = true; };
-  }, [selectedPolicyId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedPolicyId, fetchToken]);
 
   async function refreshDetail() {
     if (!selectedPolicyId) return;
@@ -214,7 +236,12 @@ export function IamPoliciesView({ catalog, onCatalogChange, actorTierIsOwner }: 
 
       <div className="iam-policy-detail-pane">
         {!selectedPolicyId && <p className="iam-empty-hint">Select a policy on the left, or create one, to view and edit its statements and version history.</p>}
-        {selectedPolicyId && loadError && <p className="iam-json-error">{loadError}</p>}
+        {selectedPolicyId && loadError && (
+          <div className="iam-editor-error">
+            <p className="iam-json-error">{loadError}</p>
+            <button onClick={() => setFetchToken((t) => t + 1)}>Retry</button>
+          </div>
+        )}
         {selectedPolicyId && !loadError && !detail && <p className="iam-editor-loading">Loading policy...</p>}
         {selectedPolicyId && detail && (
           <>
