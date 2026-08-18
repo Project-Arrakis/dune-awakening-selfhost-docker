@@ -118,6 +118,24 @@ Keep a Changelog style, grouped by upstream base version, newest first.
   navGroup tabs by capability (UX only — server remains authoritative). 40
   unit tests covering tier ladder, capability sets, fail-closed session
   resolution, route pattern matching, and tier-appropriate gating.
+- `GET /api/integrations/discord/catalog` — Discord command catalog endpoint,
+  Phase 1 of the automated command-discovery design
+  (`docs/rfc-command-discovery.md`, issue #337). Returns a machine-readable
+  catalog (names, descriptions, capabilities, minimum role tier, param shape)
+  for every live Discord adapter route, composed from the existing
+  `DISCORD_LIVE_ADAPTER_ROUTES`/`DISCORD_CAPABILITIES` tables rather than a
+  second hand-maintained copy. `buildCommandCatalog()` asserts full,
+  bidirectional coverage against the live-route list and throws on drift —
+  intended to replace the bot repo's (`arrakis-control-panel`) manually
+  reconciled route classification, which has required five separate
+  corrections to date. Bearer-token auth only, matching `/health` (read-only
+  route metadata, not game or player data). `/health` also gains a new
+  `protocolVersion` field for future version-negotiation. New
+  `policy.js` export: `minTierForCapability()`, so this and any future
+  consumer can derive a capability's minimum tier from the real
+  `CAPABILITY_BY_TIER` table instead of hand-maintaining a parallel one.
+  Phases 2-4 (bot-side generator, bot runtime consumption, dynamic
+  refresh/autocomplete) are separate, future work — not included here.
 
 ### Security
 
