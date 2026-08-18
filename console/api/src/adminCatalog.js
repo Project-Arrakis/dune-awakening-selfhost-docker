@@ -32,7 +32,9 @@ export function listCatalogItems(repoRoot, { q = "", limit = 500 } = {}) {
     // Patent tokens are progression unlocks, not ordinary inventory items.
     // They have their own player-aware browser so a grant can show whether the
     // game has consumed the token, still has it pending, or already owns it.
-    .filter((item) => !isBuildingUnlockItem(item))
+    // Developer Storage Container is the exception: admins also use its token
+    // as a grantable utility item in Give Items and Care Packages.
+    .filter((item) => !isBuildingUnlockItem(item) || isSharedCatalogBuildingItem(item))
     .filter((item) => {
       if (!term) return true;
       return String(item.id || "").toLowerCase().includes(term) ||
@@ -41,6 +43,10 @@ export function listCatalogItems(repoRoot, { q = "", limit = 500 } = {}) {
     })
     .slice(0, max)
     .map((item) => normalizeItem(item, repoRoot));
+}
+
+function isSharedCatalogBuildingItem(item = {}) {
+  return String(item.id || "") === "Developer_Storage_Container_Patent";
 }
 
 export function isBuildingUnlockItem(item = {}) {
