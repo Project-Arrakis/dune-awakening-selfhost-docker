@@ -93,6 +93,24 @@ export function discordActorCan(actor, mapping, capability) {
   return CAPABILITY_BY_TIER[discordActorTier(actor, mapping)].has(normalizedCapability);
 }
 
+// Returns the lowest tier in DISCORD_ROLE_TIERS order that grants the given
+// capability per CAPABILITY_BY_TIER, or null if no tier grants it.
+//
+// Added so commandCatalog.js can derive its per-command minimum
+// tier directly from this file's real, single source of truth instead of
+// hand-maintaining a second, parallel table that could silently drift the
+// moment a capability is added or moved between tiers here. Any caller
+// needing "what's the minimum tier for capability X" should use this
+// function rather than re-deriving CAPABILITY_BY_TIER's shape elsewhere.
+export function minTierForCapability(capability) {
+  const normalizedCapability = requiredString(capability, "capability");
+  if (!Object.values(DISCORD_CAPABILITIES).includes(normalizedCapability)) throw policyError("invalid_capability", `Unsupported Discord capability: ${normalizedCapability}`);
+  for (const tier of DISCORD_ROLE_TIERS) {
+    if (CAPABILITY_BY_TIER[tier]?.has(normalizedCapability)) return tier;
+  }
+  return null;
+}
+
 export function requireDiscordCapability(actor, mapping, capability) {
   requireExperimentalReadOnlyCapability(capability);
   if (!discordActorCan(actor, mapping, capability)) {
