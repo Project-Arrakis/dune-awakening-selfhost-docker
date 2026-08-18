@@ -163,7 +163,10 @@ export const ROUTE_ACTIONS = {
   // --- Exchange Market Bot — console-managed NPC seeding / buyback (game-DB writes) ---
   "GET /api/exchange/market":                  "exchange:market",
   "GET /api/exchange/market/exchanges":        "exchange:market",
+  "GET /api/exchange/market/buyback/log":      "exchange:market",
   "POST /api/exchange/market/buyback/probe":   "exchange:market",
+  "POST /api/exchange/market/buyback/log":     "exchange:market-write",
+  "POST /api/exchange/market/buyback/log/clear": "exchange:market-write",
   "POST /api/exchange/market/buyback/schedule": "exchange:market-write",
   "POST /api/exchange/market/seed/schedule":   "exchange:market-write",
   "POST /api/exchange/market/buyback/run":     "exchange:market-write",
