@@ -126,12 +126,17 @@ _DUNE_KEK_HEX=""
 preferred_value="$(dune_secrets_read_secret "legacy-only" "runtime/secrets/legacy-only.txt")"
 [ "$preferred_value" = "age-encrypted-takes-precedence" ] || fail "expected the age-encrypted value to take precedence over the legacy file, got '$preferred_value'"
 
-# --- Test 6: backend not configured at all falls back to the legacy file, unconditionally ---
+# --- Test 6: an unconfigured, never-migrated secret keeps legacy behavior,
+# while a migrated secret fails closed if backend configuration is lost ---
+printf 'never-migrated-value' > runtime/secrets/never-migrated.txt
 unset DUNE_KEK_FILE DUNE_AGE_IDENTITY_FILE
 _DUNE_KEK_LOADED=0
 _DUNE_KEK_HEX=""
-unconfigured_value="$(dune_secrets_read_secret "legacy-only" "runtime/secrets/legacy-only.txt")"
-[ "$unconfigured_value" = "legacy-plaintext-value" ] || fail "expected the legacy file when the backend is entirely unconfigured, got '$unconfigured_value'"
+unconfigured_value="$(dune_secrets_read_secret "never-migrated" "runtime/secrets/never-migrated.txt")"
+[ "$unconfigured_value" = "never-migrated-value" ] || fail "expected legacy behavior for a never-migrated secret, got '$unconfigured_value'"
+if dune_secrets_read_secret "legacy-only" "runtime/secrets/legacy-only.txt" >/dev/null 2>&1; then
+  fail "expected a migrated secret to fail closed when backend configuration is lost"
+fi
 
 # --- Test 7: reading a secret with neither an .enc file nor a legacy file fails (non-zero exit), not an empty-string success ---
 export DUNE_KEK_FILE="$kek_path"

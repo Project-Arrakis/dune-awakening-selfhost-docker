@@ -716,87 +716,25 @@ ensure_secret_file() {
 # runtime/secrets/*.txt file, generating it via ensure_secret_file if
 # absent.
 #
-# Once the age backend IS configured, dune_secrets_read_secret (the
-# library's own generic "any script reads a secret" seam) is the SOLE
-# source of truth for whether this secret is migrated and, if so,
-# whether it's readable -- this function does not independently
-# re-derive that determination.
-#
-# Fixed 2026-08-17 (found during implementation review, CRITICAL): an
-# earlier version of this function duplicated the enc-file-or-marker
-# "is this migrated" check itself, then called dune_secrets_read_secret only
-# once it had already decided "migrated." That duplication was
-# harmless on its own, but dune_secrets_read_secret's OWN internal
-# fail-closed logic at the time only checked .enc-file readability,
-# not the marker -- so if the .enc file existed but was unreadable
-# (permission drift, a chmod bug, a root-owned file left by a
-# container), dune_secrets_read_secret silently fell back to the
-# legacy plaintext file and returned success, even though THIS
-# function's own outer check had correctly identified the secret as
-# migrated via the marker. `dune secrets verify` reported "OK" on a
-# broken .enc file, and `cleanup-legacy`'s "re-verify immediately
-# before deleting" step used the same silently-succeeding call,
-# meaning it could delete the last good (legacy) copy while the .enc
-# file sat there broken. Fixed at the source: dune_secrets_read_secret
-# itself now checks both signals (see its own comment in
-# runtime/scripts/lib/secrets.sh), so every caller -- this function,
-# secrets-cli.sh's status/verify/cleanup-legacy commands -- gets the
-# same correct, single-source-of-truth behavior instead of each
-# maintaining its own copy of the same logic (which is exactly how
-# this class of bug happened: two copies, one of them stale).
-#
-# A decryption failure once migrated is a hard stop (non-zero return
-# propagated to the caller, which runs under `set -euo pipefail` in
-# every real launcher script) -- never a silent fall-through to
-# generating a new legacy secret. That would desync this process's
-# login credential from whatever the game binary/operator already
-# expects, which is a worse failure mode than simply refusing to
-# start.
+# dune_secrets_read_secret is the source of truth for migration state.
+# It is called even when backend variables are unset because migration
+# artifacts may outlive configuration (for example after a restore or
+# environment-file mistake). Any such migrated-but-broken state fails
+# closed; plaintext is generated only when there is no migration history
+# and no legacy value on a genuinely fresh install.
 _resolve_stage2_secret() {
   local name="$1"
   local legacy_path="runtime/secrets/${name}.txt"
 
-  if dune_secrets_backend_configured; then
-    local value rc=0
-    value="$(dune_secrets_read_secret "$name" "$legacy_path")" || rc=$?
-    if [ "$rc" = "0" ]; then
-      printf '%s' "$value"
-      return 0
-    fi
-    # NOTE on a real bug found and fixed here during implementation
-    # review: an earlier version of this used
-    #   if value="$(dune_secrets_read_secret ...)"; then ... fi
-    #   rc=$?
-    # which looks correct but is NOT: bash's `$?` after a completed
-    # `if` statement reflects the exit status of the last command
-    # actually EXECUTED inside whichever branch ran, not the `if`
-    # condition's own status. When the condition is false and the
-    # `then` block's body never runs, nothing executes inside the
-    # `if`, so `$?` after the `fi` was bash's default-empty-branch
-    # value (0) -- silently discarding the real failure and making
-    # this entire hard-stop mechanism a no-op that always returned
-    # success. Verified via a live reproduction against a real wrong
-    # age identity: the old code printed the correct fail-closed error
-    # message from dune_secrets_read_secret to stderr, then still
-    # returned exit 0. Fixed by capturing `rc` via `|| rc=$?` directly
-    # on the assignment statement itself, which is unambiguous.
-    # dune_secrets_read_secret only returns non-zero here in two
-    # cases: (a) this secret is migrated but unreadable/broken -- a
-    # hard stop, must propagate, must NOT fall through to
-    # ensure_secret_file below, or we'd silently mint a brand-new
-    # secret while a real, migrated one exists; (b) neither the .enc
-    # form nor the legacy file exists at all yet -- which cannot
-    # happen here since ensure_secret_file below always creates the
-    # legacy file on first call, so case (b) only occurs on a
-    # genuinely fresh install with the backend configured before any
-    # secret has ever been generated. Distinguish the two: only fall
-    # through if the legacy file doesn't exist yet (fresh install);
-    # otherwise this is case (a) and must propagate the failure.
-    if [ ! -e "$legacy_path" ]; then
-      : # fresh install, backend configured, nothing generated yet -- fall through
-    else
-      return "$rc"
-    fi
+  local value rc=0
+  value="$(dune_secrets_read_secret "$name" "$legacy_path")" || rc=$?
+  if [ "$rc" = "0" ]; then
+    printf '%s' "$value"
+    return 0
+  fi
+
+  if dune_secrets_has_migration_artifacts "$name"; then
+    return "$rc"
   fi
 
   ensure_secret_file "$legacy_path" 32

@@ -25,11 +25,11 @@ set -euo pipefail
 #   - Every secret WRITE follows write-temp -> fsync -> atomic-rename
 #     -> write-marker (write_secret, below) so a process kill mid-write
 #     cannot produce a torn state.
-#   - Migration is strictly opt-in. read_secret (below) transparently
-#     falls back to the legacy flat-file convention
-#     (runtime/secrets/*.txt) whenever DUNE_KEK_FILE/
-#     DUNE_AGE_IDENTITY_FILE aren't both set -- zero behavior change
-#     for any operator who doesn't opt in.
+#   - Migration is strictly opt-in. Before migration, read_secret
+#     transparently falls back to the legacy flat-file convention.
+#     Once an encrypted file or migration marker exists, that artifact
+#     is authoritative even if backend configuration is later lost:
+#     reads fail closed and never recreate/fall back to plaintext.
 
 DUNE_SECRETS_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DUNE_SECRETS_AEAD_PY="$DUNE_SECRETS_LIB_DIR/secrets_aead.py"
@@ -50,6 +50,18 @@ _DUNE_KEK_LOADED=0
 #   below for the version that does this fallback automatically.
 dune_secrets_backend_configured() {
   [ -n "${DUNE_KEK_FILE:-}" ] && [ -n "${DUNE_AGE_IDENTITY_FILE:-}" ]
+}
+
+dune_secrets_require_backend_tools() {
+  if ! command -v age >/dev/null 2>&1; then
+    echo "dune secrets: age is required for encrypted secrets. Install the optional dependencies documented in docs/security/age-secrets.md." >&2
+    return 1
+  fi
+  if ! command -v python3 >/dev/null 2>&1 \
+    || ! python3 -c 'from cryptography.hazmat.primitives.ciphers.aead import AESGCM' >/dev/null 2>&1; then
+    echo "dune secrets: Python 3 with the cryptography package is required for encrypted secrets. See docs/security/age-secrets.md." >&2
+    return 1
+  fi
 }
 
 # dune_secrets_load_kek
@@ -79,10 +91,7 @@ dune_secrets_load_kek() {
     return 1
   fi
 
-  if ! command -v age >/dev/null 2>&1; then
-    echo "dune secrets: age binary not found on PATH -- cannot decrypt DUNE_KEK_FILE. Install with: apt install age (see https://github.com/FiloSottile/age)." >&2
-    return 1
-  fi
+  dune_secrets_require_backend_tools || return 1
 
   if [ ! -r "$DUNE_KEK_FILE" ]; then
     echo "dune secrets: DUNE_KEK_FILE ($DUNE_KEK_FILE) does not exist or is not readable." >&2
@@ -188,6 +197,21 @@ dune_secrets_migration_marker_path() {
   local name="$1"
   _dune_secrets_validate_name "$name" || return 1
   printf 'runtime/generated/.secrets-migrated/%s.done\n' "$name"
+}
+
+# dune_secrets_has_migration_artifacts <name>
+#   Returns 0 when an encrypted payload or migration marker exists.
+#   This check deliberately does not depend on backend configuration or
+#   readability: lost environment variables and permission drift are
+#   failure states after migration, not permission to return to plaintext.
+#   -L also catches dangling symlinks, which must not make migration
+#   history disappear merely because their targets are unavailable.
+dune_secrets_has_migration_artifacts() {
+  local name="$1"
+  local enc_path marker_path
+  enc_path="$(dune_secrets_encrypted_path "$name")" || return 1
+  marker_path="$(dune_secrets_migration_marker_path "$name")" || return 1
+  [ -e "$enc_path" ] || [ -L "$enc_path" ] || [ -e "$marker_path" ] || [ -L "$marker_path" ]
 }
 
 # dune_secrets_render_plaintext_file <path> <content> [<mode>]
@@ -465,19 +489,33 @@ dune_secrets_read_encrypted() {
 
 # dune_secrets_read_secret <name> <legacy-flat-file-path>
 #   The generic "any script reads a secret" seam. Tries the
-#   age-encrypted form first; if the backend isn't configured, the
-#   .enc file doesn't exist yet, or decryption fails for any reason,
-#   transparently falls back to reading <legacy-flat-file-path>
-#   exactly as every script already does today (cat | tr -d '\r\n')
-#   -- so an operator who never opts into this mechanism sees zero
-#   behavior change, forever, by design (strictly opt-in, never
-#   automatic).
+#   age-encrypted form first. A never-migrated secret transparently
+#   falls back to <legacy-flat-file-path>, preserving existing installs.
+#   Once either migration artifact exists, any missing configuration,
+#   unreadable file, or decryption failure is a hard error.
 #
 #   Prints the secret value to stdout. Returns 1 if neither the
 #   encrypted form nor the legacy flat file could be read.
 dune_secrets_read_secret() {
   local name="$1"
   local legacy_path="$2"
+
+  local enc_path marker_path
+  enc_path="$(dune_secrets_encrypted_path "$name")" || return 1
+  marker_path="$(dune_secrets_migration_marker_path "$name")" || return 1
+
+  # Determine migration history independently of configuration and file
+  # readability. Both can be lost after a successful migration; neither
+  # condition may authorize plaintext fallback.
+  local migrated=0
+  if dune_secrets_has_migration_artifacts "$name"; then
+    migrated=1
+  fi
+
+  if [ "$migrated" = "1" ] && ! dune_secrets_backend_configured; then
+    echo "dune secrets: '$name' has migration artifacts but DUNE_KEK_FILE and DUNE_AGE_IDENTITY_FILE are not both configured -- refusing plaintext fallback." >&2
+    return 1
+  fi
 
   # Plain statement, called BEFORE dune_secrets_read_encrypted below --
   # not because this function needs the KEK value itself, but because
@@ -510,41 +548,6 @@ dune_secrets_read_secret() {
   # secret in the first place. Legacy fallback is only ever correct
   # for a secret that has genuinely never been migrated at all.
   #
-  # "Migrated" is determined by TWO independent, readable signals, not
-  # just .enc-file readability alone (fixed 2026-08-17, found during
-  # implementation review of the first real credential wired to this
-  # library): the .enc file itself, OR its per-secret migration marker
-  # (dune_secrets_migration_marker_path). This belt-and-suspenders
-  # check matters because the earlier version of this function only
-  # consulted .enc-file readability -- if that file existed but was
-  # NOT readable (permission drift after a restore, a chmod bug, a
-  # root-owned file left by a container), this function fell straight
-  # through to the legacy-file branch below and returned success,
-  # completely defeating the fail-closed guarantee: `dune secrets
-  # verify` reported "OK" on an unreadable/corrupted .enc file, and
-  # `cleanup-legacy`'s own "re-verify immediately before deleting"
-  # step used this exact function and would delete the last good
-  # (legacy) copy while the .enc file silently sat there broken.
-  # Checking the marker as a second, independent signal closes this:
-  # if EITHER artifact is present and readable, this secret has
-  # migration history and a decrypt failure must be a hard stop, never
-  # a silent fallback. This is also the single source of truth for
-  # "is this secret migrated" -- callers (e.g. runtime-env.sh's
-  # resolvers, secrets-cli.sh's status/verify/cleanup-legacy commands)
-  # must not reimplement this determination themselves; they should
-  # rely on this function's own return value/fail-closed behavior
-  # rather than duplicating the enc-or-marker check independently.
-  local enc_path="" marker_path="" migrated=0
-  if dune_secrets_backend_configured; then
-    enc_path="$(dune_secrets_encrypted_path "$name" 2>/dev/null || true)"
-    marker_path="$(dune_secrets_migration_marker_path "$name" 2>/dev/null || true)"
-    if [ -n "$enc_path" ] && [ -r "$enc_path" ]; then
-      migrated=1
-    elif [ -n "$marker_path" ] && [ -r "$marker_path" ]; then
-      migrated=1
-    fi
-  fi
-
   local value
   if [ "$migrated" = "1" ]; then
     # Deliberately NOT redirecting stderr to /dev/null here (an earlier
@@ -553,14 +556,14 @@ dune_secrets_read_secret() {
     # -- wrong age identity, corrupted KEK, malformed .enc file --
     # making it impossible for an operator to tell "not migrated yet"
     # apart from "migrated, but something is actually broken."
-    if [ -n "$enc_path" ] && [ -r "$enc_path" ] && value="$(dune_secrets_read_encrypted "$name")"; then
+    if [ -r "$enc_path" ] && value="$(dune_secrets_read_encrypted "$name")"; then
       printf '%s' "$value"
       return 0
     fi
     # Migrated (by either signal) but the .enc file is missing,
     # unreadable, or failed to decrypt -- fail closed, do NOT fall
     # through to the legacy plaintext file below.
-    echo "dune secrets: '$name' is migrated (per its .enc file or migration marker) but the encrypted form could not be read/decrypted -- refusing to fall back to a potentially stale legacy plaintext file. Fix the KEK/identity, check file permissions, or restore the .enc file from backup." >&2
+    echo "dune secrets: '$name' is migrated but the encrypted form could not be read/decrypted -- refusing plaintext fallback. Fix the KEK/identity, check file permissions, or restore the .enc file from backup." >&2
     return 1
   fi
 

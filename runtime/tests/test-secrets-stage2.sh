@@ -137,6 +137,58 @@ echo "PASS: Test 2 (plaintext migration)"
 )
 echo "PASS: Test 3 (missing/incorrect age identity is a hard stop)"
 
+# --- Regression: migration history is based on artifact existence, not
+# readability. If both signals suffer permission drift while a stale
+# plaintext still exists, the resolver must fail instead of returning it.
+if [ "$(id -u)" = "0" ]; then
+  echo "SKIP: Test 3b (root bypasses chmod 000; exercised by non-root CI)"
+else
+  marker_path="runtime/generated/.secrets-migrated/server-login-password-secret.done"
+  chmod 000 runtime/secrets/server-login-password-secret.enc "$marker_path"
+  set +e
+  (
+    # shellcheck disable=SC1091
+    source runtime/scripts/runtime-env.sh
+    resolve_server_login_password_secret >/dev/null 2>/dev/null
+  )
+  unreadable_rc=$?
+  set -e
+  # shellcheck disable=SC2031
+  chmod 600 runtime/secrets/server-login-password-secret.enc "$marker_path"
+  [ "$unreadable_rc" != "0" ] || fail "Test 3b: resolver fell back to plaintext when both migration artifacts were unreadable"
+  echo "PASS: Test 3b (both unreadable migration artifacts fail closed)"
+fi
+
+# --- Regression: cleanup removes the legacy file, so its absence cannot
+# distinguish a migrated secret from a fresh install. A wrong identity or
+# lost backend configuration must not mint a replacement plaintext secret.
+bash runtime/scripts/secrets-cli.sh cleanup-legacy server-login-password-secret >/dev/null
+[ ! -e runtime/secrets/server-login-password-secret.txt ] || fail "Test 3c: cleanup did not remove the legacy file"
+(
+  # shellcheck disable=SC2030,SC2031
+  export DUNE_AGE_IDENTITY_FILE="$wrong_identity_path"
+  # shellcheck disable=SC1091
+  source runtime/scripts/runtime-env.sh
+  set +e
+  resolve_server_login_password_secret >/dev/null 2>/dev/null
+  rc=$?
+  [ "$rc" != "0" ] || fail "Test 3c: resolver succeeded after cleanup with a wrong identity"
+  [ ! -e runtime/secrets/server-login-password-secret.txt ] || fail "Test 3c: resolver generated replacement plaintext after decryption failure"
+)
+(
+  unset DUNE_KEK_FILE DUNE_AGE_IDENTITY_FILE
+  # shellcheck disable=SC1091
+  source runtime/scripts/runtime-env.sh
+  set +e
+  resolve_server_login_password_secret >/dev/null 2>/dev/null
+  rc=$?
+  [ "$rc" != "0" ] || fail "Test 3c: resolver succeeded after migration with backend configuration missing"
+  [ ! -e runtime/secrets/server-login-password-secret.txt ] || fail "Test 3c: resolver generated plaintext after backend configuration was lost"
+)
+printf '%s\n' "$expected_value" > runtime/secrets/server-login-password-secret.txt
+chmod 600 runtime/secrets/server-login-password-secret.txt
+echo "PASS: Test 3c (post-cleanup failures never recreate plaintext)"
+
 # --- Test 5 (Deliverable #5): recovery and rollback -- deleting the
 # .enc file returns the resolver to the original legacy value,
 # unchanged, not a newly-generated one ---
