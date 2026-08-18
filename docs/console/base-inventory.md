@@ -291,8 +291,22 @@ neither is a separate code path with its own, looser safety check.
 helper that runs the same claim-CTE/allowlist/`is_hologram`/`max_item_count >= 0` resolution the single-item
 delete uses, explicitly *not* the unscoped, actor_id-only lookup Give/Fill use internally (that shape has no
 group filter and could otherwise reach a Refining/Crafting inventory). Ownership is checked once, the
-resulting inventory row locked (`for update of inv`) for the duration of the whole batch, then each
-requested item is looked up and deleted individually inside that same lock.
+resulting inventory row locked (`for update of inv`) for the duration of the whole batch.
+
+**The batch itself is resolved and verified with a fixed, small number of set-based round-trips, not one
+pair of round-trips per item.** Found during PR #349's own Layer 3 audit (DBA and Security hats
+independently, issue #352, HIGH severity): the original version of both functions looped per item — a
+`select … for update`, the `dune.delete_item(bigint)` call, an `exists` check, and a conditional fallback
+`delete` — worst case ~800 sequential statements for a 200-item batch, all while the container's inventory
+row lock was held for the entire duration, blocking any concurrent Give/Fill/Delete against the *same*
+container for that whole window. `dune.delete_item(bigint)` is a shipped stored procedure taking exactly
+one id, so the N calls to it are irreducible — but everything around those N calls is now batched: one
+set-based `select … where id = any($1::bigint[]) and inventory_id = $2 for update` resolves the whole
+requested set at once (Delete Selected) or the whole container at once (Delete All), and one set-based
+`select`/fallback `delete` pair (shared by both functions as `finishDeletingLockedItems()`) verifies and
+cleans up every row `dune.delete_item` left behind, instead of one pair per row. Round-trips drop from
+~4N to ~N+2 for a batch of N items — a 200-item Delete Selected now costs ~202 statements instead of ~800,
+and the container is only locked for that shorter window.
 
 **If a storage-group container is ever found to back more than one qualifying inventory, both functions
 refuse to guess and throw, rather than silently picking one and leaving items behind in the other.** This
@@ -318,6 +332,17 @@ actually found (`"N of M requested item(s) were deleted from the database"`). De
 list fresh inside the same transaction that deletes them, so "all" always means everything actually present
 at the moment the container's row is locked, never a possibly-stale list the overlay fetched moments
 earlier.
+
+**Each entry in `removed[]` carries the same audit-detail fields the single-item delete's own
+`destroyedState` does** — `positionIndex`, `qualityLevel`, `currentDurability`, `maxDurability` — not just
+`itemId`/`templateId`/`count`. Found missing during PR #349's own Layer 3 audit (issue #350): without
+these, a bulk-destroyed pristine legendary logs in the admin audit trail identically to a bulk-destroyed
+broken common of the same template, which matters most for exactly this feature (bulk, irreversible,
+multi-item destruction). Both bulk functions select these columns with the same column-probed fragment
+`deleteBaseContainerItem` already uses (`auditDetailSelectFragment()`), so a schema missing
+`position_index`/`quality_level`/`stats` degrades every field to `null`/`0` rather than failing the delete —
+it never re-queries for them separately, and it never fails a batch just because a field is unavailable on
+a given schema.
 
 **`Developer_StorageContainer_Placeable` is not special-cased by any of this.** It is already in the
 Storage group's building-type allowlist (see the table near the top of this doc) and is already reachable

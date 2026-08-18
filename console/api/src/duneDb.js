@@ -8993,6 +8993,102 @@ async function resolveOwnedStorageContainer(tx, baseId, placeableId) {
 // arbitrarily with no group filter -- that shape must never be reused here,
 // since it could otherwise reach a Refining/Crafting inventory this
 // function is specifically scoped to avoid.
+
+// The same column-probed audit-detail SELECT fragment deleteBaseContainerItem
+// builds inline, factored out so deleteMultipleBaseContainerItems and
+// deleteAllBaseContainerItems (issue #350) can select the same
+// position_index/quality_level/durability fields without duplicating the
+// probe logic a third time. A missing column degrades to a null/0 literal
+// rather than failing the query, matching every other column-probed read in
+// this file.
+async function auditDetailSelectFragment(tx) {
+  const itemColumns = await columnsFor(tx, "items");
+  const hasStats = itemColumns.has("stats");
+  return [
+    itemColumns.has("position_index") ? "position_index" : "null::bigint as position_index",
+    itemColumns.has("quality_level") ? "quality_level" : "0::bigint as quality_level",
+    hasStats
+      ? "coalesce((stats->'FItemStackAndDurabilityStats'->1->>'CurrentDurability'), null) as current_durability"
+      : "null::text as current_durability",
+    hasStats
+      ? `coalesce(
+             nullif((stats->'FItemStackAndDurabilityStats'->1->>'MaxDurability')::numeric, 0),
+             nullif((stats->'FItemStackAndDurabilityStats'->1->>'DecayedMaxDurability')::numeric, 0),
+             null
+           ) as max_durability`
+      : "null::numeric as max_durability"
+  ].join(",\n           ");
+}
+
+// Shared by deleteMultipleBaseContainerItems/deleteAllBaseContainerItems.
+// Found during PR #349's own Layer 3 audit (DBA and Security hats,
+// independently, issue #352): the original version of both functions did a
+// per-item loop of 4 sequential round-trips (select-for-update,
+// dune.delete_item call, an exists check, a conditional fallback delete),
+// worst case ~800 sequential statements for a 200-item batch, all while
+// resolveOwnedStorageContainer's `for update of inv` lock was held for the
+// full duration -- blocking any concurrent give/fill/delete against the
+// SAME container for that whole window, with no overall transaction
+// timeout (ADMIN_DB_STATEMENT_TIMEOUT_MS/ADMIN_DB_QUERY_TIMEOUT_MS bound
+// each individual statement, not the cumulative transaction).
+//
+// dune.delete_item(bigint) is a shipped stored procedure taking exactly one
+// id -- it cannot be batched into a single set-based call, so the N calls
+// to it are irreducible. Everything AROUND those N calls is now set-based
+// instead of per-item: this function takes the rows the CALLER already
+// selected-for-update (deleteMultipleBaseContainerItems selects by id list;
+// deleteAllBaseContainerItems selects the whole inventory) -- it does not
+// re-select or re-lock them itself, and verifies/cleans up every row in one
+// pair of set-based statements after the delete_item loop, not one pair per
+// row. Round-trips drop from ~4N to ~N+2 for a batch of N items.
+async function finishDeletingLockedItems(tx, inventoryId, rows) {
+  if (!rows.length) return [];
+  const ids = rows.map((row) => row.item_id);
+
+  // dune.delete_item is a per-row shipped procedure -- this loop is the one
+  // part of the batch that genuinely cannot be reduced to a single
+  // statement. It performs no other DB round-trip; the "did it actually
+  // delete" verification below is checked once, for every row together.
+  for (const id of ids) {
+    await tx.query("select dune.delete_item($1::bigint)", [id]);
+  }
+
+  // One set-based check replaces N individual exists() calls: which of the
+  // rows dune.delete_item was just asked to remove are still present.
+  const stillPresent = await tx.query(
+    "select id::text as item_id from dune.items where id = any($1::bigint[]) and inventory_id = $2",
+    [ids, inventoryId]
+  );
+  if (stillPresent.rows.length) {
+    // Same raw-delete fallback the single-item delete uses, now applied to
+    // every row the procedure left behind in one statement instead of one
+    // per row.
+    await tx.query(
+      "delete from dune.items where id = any($1::bigint[]) and inventory_id = $2",
+      [stillPresent.rows.map((row) => row.item_id), inventoryId]
+    );
+  }
+
+  // Same audit-detail fields deleteBaseContainerItem's own destroyedState
+  // captures (issue #350, found during PR #349's Layer 3 audit): without
+  // these, a bulk-destroyed pristine legendary logs identically to a
+  // bulk-destroyed broken common of the same template. The caller's own
+  // SELECT is column-probed the same way baseContainerSlots/
+  // deleteBaseContainerItem already are, so a schema missing these columns
+  // degrades to null fields rather than failing the whole batch -- this
+  // function only ever reads whatever fields the caller's row actually
+  // carries, it does not re-query for them.
+  return rows.map((row) => ({
+    itemId: row.item_id,
+    templateId: row.template_id,
+    count: Number(row.stack_size) || 0,
+    positionIndex: row.position_index === null || row.position_index === undefined ? null : Number(row.position_index),
+    qualityLevel: Number(row.quality_level) || 0,
+    currentDurability: row.current_durability === null || row.current_durability === undefined ? null : Number(row.current_durability),
+    maxDurability: row.max_durability === null || row.max_durability === undefined ? null : Number(row.max_durability)
+  }));
+}
+
 export async function deleteMultipleBaseContainerItems(db, baseId, placeableId, itemIds) {
   await requireCapability(
     await supportsBaseContainerItemDelete(db),
@@ -9008,23 +9104,19 @@ export async function deleteMultipleBaseContainerItems(db, baseId, placeableId, 
     await tx.query("set local search_path to dune, public");
     const resolved = await resolveOwnedStorageContainer(tx, target, container);
 
-    const removed = [];
-    for (const itemId of safeIds) {
-      const item = await tx.query(`
-        select id::text as item_id, template_id, stack_size
-        from dune.items
-        where id = $1 and inventory_id = $2
-        for update`, [itemId, resolved.inventory_id]);
-      const row = item.rows[0];
-      if (!row) continue; // Already gone or never belonged to this container -- skipped, not an error, matching removeItemsFromStorage's existing skip-on-miss behavior.
+    // One set-based select-for-update resolves every id this batch actually
+    // owns, replacing the N individual `select ... for update` calls the
+    // original version made. An id not found here (already gone, or never
+    // belonged to this inventory) is silently excluded -- skipped, not an
+    // error, matching this function's existing skip-on-miss behavior.
+    const auditDetail = await auditDetailSelectFragment(tx);
+    const found = await tx.query(`
+      select id::text as item_id, template_id, stack_size, ${auditDetail}
+      from dune.items
+      where id = any($1::bigint[]) and inventory_id = $2
+      for update`, [safeIds, resolved.inventory_id]);
 
-      await tx.query("select dune.delete_item($1::bigint)", [itemId]);
-      const stillExists = await tx.query("select exists(select 1 from dune.items where id = $1 and inventory_id = $2) as exists", [itemId, resolved.inventory_id]);
-      if (stillExists.rows[0]?.exists) {
-        await tx.query("delete from dune.items where id = $1 and inventory_id = $2", [itemId, resolved.inventory_id]);
-      }
-      removed.push({ itemId: row.item_id, templateId: row.template_id, count: Number(row.stack_size) || 0 });
-    }
+    const removed = await finishDeletingLockedItems(tx, resolved.inventory_id, found.rows);
 
     return {
       ok: true,
@@ -9060,22 +9152,14 @@ export async function deleteAllBaseContainerItems(db, baseId, placeableId) {
     await tx.query("set local search_path to dune, public");
     const resolved = await resolveOwnedStorageContainer(tx, target, container);
 
+    const auditDetail = await auditDetailSelectFragment(tx);
     const items = await tx.query(`
-      select id::text as item_id, template_id, stack_size
+      select id::text as item_id, template_id, stack_size, ${auditDetail}
       from dune.items
       where inventory_id = $1
       for update`, [resolved.inventory_id]);
 
-    const removed = [];
-    for (const row of items.rows) {
-      const itemId = row.item_id;
-      await tx.query("select dune.delete_item($1::bigint)", [itemId]);
-      const stillExists = await tx.query("select exists(select 1 from dune.items where id = $1 and inventory_id = $2) as exists", [itemId, resolved.inventory_id]);
-      if (stillExists.rows[0]?.exists) {
-        await tx.query("delete from dune.items where id = $1 and inventory_id = $2", [itemId, resolved.inventory_id]);
-      }
-      removed.push({ itemId: row.item_id, templateId: row.template_id, count: Number(row.stack_size) || 0 });
-    }
+    const removed = await finishDeletingLockedItems(tx, resolved.inventory_id, items.rows);
 
     return {
       ok: true,

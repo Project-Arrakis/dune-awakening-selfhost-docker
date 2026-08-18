@@ -3965,31 +3965,52 @@ function fakeBulkContainerDeleteDb(calls, fixtures = {}) {
   const {
     containerRows = [OWNED_STORAGE_CONTAINER_ROW],
     itemRows = [],
-    deleteLeavesRow = false
+    // Ids that survive the dune.delete_item call and must fall back to a
+    // raw `delete from dune.items` -- mirrors deleteLeavesRow's old,
+    // single-item meaning, now expressed as a set since the verification
+    // query is set-based (finishDeletingLockedItems, duneDb.js).
+    idsLeftAfterDeleteItem = [],
+    // Mirrors fakeContainerDeleteDb's itemColumns fixture: which dune.items
+    // columns this fake schema has, probed by auditDetailSelectFragment
+    // (issue #350) the same way deleteBaseContainerItem's own stateSelect
+    // is. Defaults to the full set so existing tests that don't care about
+    // audit-detail fields keep getting populated values.
+    itemColumns = ["id", "inventory_id", "stack_size", "position_index", "template_id", "stats", "quality_level"]
   } = fixtures;
   const run = async (text, values = []) => {
     calls.push({ text, values });
     if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
     if (text.includes("to_regprocedure")) return { rows: [{ exists: true }] };
     if (text.includes("information_schema.columns")) {
-      return { rows: ["id", "inventory_id", "stack_size", "template_id"].map((column_name) => ({ column_name })) };
+      return { rows: itemColumns.map((column_name) => ({ column_name })) };
     }
     // Ownership resolution: resolveOwnedStorageContainer's own query, which
     // selects placeable_id/inventory_id/group_key/type_name and locks `inv`,
     // not `requested_claims` -- distinguished from the single-item-lookup
     // query below by column list, since both share the requested_claims CTE.
     if (text.includes("requested_claims") && text.includes("for update of inv")) return { rows: containerRows };
-    // Single-item lookup inside deleteMultipleBaseContainerItems's loop.
-    if (text.includes("select id::text as item_id, template_id, stack_size") && text.includes("where id = $1 and inventory_id = $2")) {
-      const itemId = String(values[0]);
-      const match = itemRows.find((row) => String(row.item_id) === itemId);
-      return { rows: match ? [match] : [] };
+    // Set-based item lookup inside deleteMultipleBaseContainerItems --
+    // `where id = any($1::bigint[]) and inventory_id = $2`. Distinguished
+    // from the verification query below (finishDeletingLockedItems) by the
+    // `for update` clause, which only the initial lookup carries.
+    if (text.includes("select id::text as item_id, template_id, stack_size") && text.includes("where id = any($1::bigint[]) and inventory_id = $2") && text.includes("for update")) {
+      const ids = new Set((values[0] || []).map((id) => String(id)));
+      return { rows: itemRows.filter((row) => ids.has(String(row.item_id))) };
     }
     // Full-container listing inside deleteAllBaseContainerItems.
     if (text.includes("select id::text as item_id, template_id, stack_size") && text.includes("where inventory_id = $1")) {
       return { rows: itemRows };
     }
-    if (text.includes("as exists")) return { rows: [{ exists: deleteLeavesRow }] };
+    // finishDeletingLockedItems's set-based "still present after
+    // dune.delete_item" check -- `select id::text as item_id from
+    // dune.items where id = any($1::bigint[]) and inventory_id = $2`, no
+    // `for update` and no stack_size/template_id in the column list, which
+    // is what distinguishes it from the lookup query above.
+    if (text.includes("select id::text as item_id from dune.items where id = any($1::bigint[]) and inventory_id = $2")) {
+      const requested = new Set((values[0] || []).map((id) => String(id)));
+      const left = idsLeftAfterDeleteItem.map((id) => String(id)).filter((id) => requested.has(id));
+      return { rows: left.map((item_id) => ({ item_id })) };
+    }
     return { rows: [] };
   };
   return { query: run, transaction: async (fn) => fn({ query: run }) };
@@ -4013,6 +4034,118 @@ test("delete-multiple verifies ownership once, then deletes only the requested i
   assert.ok(calls.some((call) => call.text.includes("dune.delete_item($1::bigint)") && call.values[0] === "99"));
   assert.ok(calls.some((call) => call.text.includes("dune.delete_item($1::bigint)") && call.values[0] === "100"));
   assert.equal(calls.some((call) => call.text.includes("dune.delete_item($1::bigint)") && call.values[0] === "101"), false);
+});
+
+// Found during PR #349's own Layer 3 audit (issue #352, DBA + Security
+// hats, HIGH severity): the original version of this function did 4
+// sequential round-trips PER item (select-for-update, delete_item call, an
+// exists check, a conditional fallback delete) -- worst case ~800
+// statements for a 200-item batch, all while the container's row lock was
+// held, blocking any concurrent give/fill/delete against the SAME
+// container for the whole duration. Fixed to resolve/verify the whole
+// batch in a small, fixed number of set-based round-trips instead of one
+// pair per item. This test proves the fixed shape directly by counting
+// calls, not just asserting the end result is correct.
+test("delete-multiple resolves and verifies the whole batch in O(1) round-trips, not one pair per item", async () => {
+  const calls = [];
+  const itemRows = Array.from({ length: 50 }, (_, index) => ({
+    item_id: String(100 + index), template_id: "ScrapMetal", stack_size: 1
+  }));
+  const db = fakeBulkContainerDeleteDb(calls, { itemRows });
+  const result = await deleteMultipleBaseContainerItems(db, 16836, 42, itemRows.map((row) => Number(row.item_id)));
+  assert.equal(result.removed.length, 50);
+
+  // Exactly one ownership resolution, one set-based item lookup, one
+  // set-based "still present" verification -- the only per-item cost left
+  // is the irreducible dune.delete_item call itself (50, one per item).
+  const ownershipCalls = calls.filter((call) => call.text.includes("requested_claims") && call.text.includes("for update of inv"));
+  const lookupCalls = calls.filter((call) => call.text.includes("where id = any($1::bigint[]) and inventory_id = $2") && call.text.includes("for update"));
+  const verifyCalls = calls.filter((call) => call.text.includes("select id::text as item_id from dune.items where id = any($1::bigint[]) and inventory_id = $2"));
+  const deleteItemCalls = calls.filter((call) => call.text.includes("dune.delete_item($1::bigint)"));
+  assert.equal(ownershipCalls.length, 1);
+  assert.equal(lookupCalls.length, 1);
+  assert.equal(verifyCalls.length, 1);
+  assert.equal(deleteItemCalls.length, 50, "one delete_item call per item is unavoidable -- it is a shipped, single-argument procedure");
+  // Every call that is NOT a per-item dune.delete_item call is fixed
+  // overhead (ownership resolution, the batch lookup, the batch
+  // verification, plus schema-capability probes that run once regardless
+  // of batch size) -- it must not scale with the number of items. The old,
+  // per-item-loop shape would have made this scale linearly (4 extra calls
+  // per item instead of 0).
+  const nonDeleteItemCalls = calls.length - deleteItemCalls.length;
+  assert.equal(nonDeleteItemCalls, calls.length - 50);
+  assert.ok(nonDeleteItemCalls < 15, `fixed overhead should be small and batch-size-independent, got ${nonDeleteItemCalls} calls for a 50-item batch`);
+});
+
+// Locks in the raw-delete fallback for the SET-based verification path --
+// mirrors the single-item delete's own "the shipped procedure is preferred
+// for its item tracking log, but the row disappearing is what actually
+// matters" behavior, now applied per-batch instead of per-item.
+test("delete-multiple falls back to a raw delete for any row dune.delete_item leaves behind", async () => {
+  const calls = [];
+  const db = fakeBulkContainerDeleteDb(calls, {
+    itemRows: [
+      { item_id: "99", template_id: "ScrapMetal", stack_size: 500 },
+      { item_id: "100", template_id: "AzuriteOre", stack_size: 20 }
+    ],
+    idsLeftAfterDeleteItem: [100]
+  });
+  const result = await deleteMultipleBaseContainerItems(db, 16836, 42, [99, 100]);
+  assert.equal(result.removed.length, 2, "both items are still reported removed -- the fallback delete is what makes that true");
+  const fallbackDelete = calls.find((call) => call.text.includes("delete from dune.items where id = any($1::bigint[]) and inventory_id = $2"));
+  assert.ok(fallbackDelete, "must fall back to a raw delete for item 100, which the procedure left behind");
+  assert.deepEqual(fallbackDelete.values[0], ["100"], "the fallback must target only the row(s) still present, not the whole batch");
+});
+
+// Same audit-detail fields deleteBaseContainerItem's own destroyedState
+// captures (issue #350, found during PR #349's Layer 3 audit): without
+// these, a bulk-destroyed pristine legendary logs identically to a
+// bulk-destroyed broken common of the same template.
+test("delete-multiple records what was destroyed for every item in the batch, not just id/template/count", async () => {
+  const calls = [];
+  const db = fakeBulkContainerDeleteDb(calls, {
+    itemRows: [
+      {
+        item_id: "99", template_id: "ScrapMetal", stack_size: 500,
+        position_index: 3, quality_level: 2, current_durability: "45", max_durability: 90
+      },
+      {
+        item_id: "100", template_id: "AzuriteOre", stack_size: 20,
+        position_index: 5, quality_level: 1, current_durability: "10", max_durability: 10
+      }
+    ]
+  });
+  const result = await deleteMultipleBaseContainerItems(db, 16836, 42, [99, 100]);
+  assert.equal(result.removed.length, 2);
+  assert.deepEqual(result.removed[0], {
+    itemId: "99", templateId: "ScrapMetal", count: 500,
+    positionIndex: 3, qualityLevel: 2, currentDurability: 45, maxDurability: 90
+  });
+  assert.deepEqual(result.removed[1], {
+    itemId: "100", templateId: "AzuriteOre", count: 20,
+    positionIndex: 5, qualityLevel: 1, currentDurability: 10, maxDurability: 10
+  });
+});
+
+// Mirrors "container item delete degrades to null state fields on a schema
+// without them" for the single-item path -- a schema missing
+// position_index/quality_level/stats must degrade the batch delete's audit
+// fields to null/0, not fail the whole batch.
+test("delete-multiple degrades audit-detail fields to null/0 on a schema without them, rather than failing", async () => {
+  const calls = [];
+  const db = fakeBulkContainerDeleteDb(calls, {
+    itemRows: [{ item_id: "99", template_id: "ScrapMetal", stack_size: 500 }],
+    itemColumns: ["id", "inventory_id", "stack_size", "template_id"]
+  });
+  const result = await deleteMultipleBaseContainerItems(db, 16836, 42, [99]);
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.removed[0], {
+    itemId: "99", templateId: "ScrapMetal", count: 500,
+    positionIndex: null, qualityLevel: 0, currentDurability: null, maxDurability: null
+  });
+  const lookupCall = calls.find((call) => call.text.includes("where id = any($1::bigint[]) and inventory_id = $2") && call.text.includes("for update"));
+  assert.match(lookupCall.text, /null::bigint as position_index/);
+  assert.match(lookupCall.text, /0::bigint as quality_level/);
 });
 
 test("delete-multiple rejects an empty item list", async () => {
@@ -4108,6 +4241,42 @@ test("delete-all deletes every item currently in the container, read fresh insid
   assert.equal(result.message, "3 item(s) were deleted from the database.");
   const deleteCalls = calls.filter((call) => call.text.includes("dune.delete_item($1::bigint)"));
   assert.equal(deleteCalls.length, 3);
+});
+
+// Same fix as deleteMultipleBaseContainerItems (issue #352) -- verification
+// after the dune.delete_item loop is one set-based call, not one per item.
+test("delete-all verifies the whole container in one set-based call after the delete_item loop, not one per item", async () => {
+  const calls = [];
+  const itemRows = Array.from({ length: 40 }, (_, index) => ({
+    item_id: String(200 + index), template_id: "PlantFiber", stack_size: 1
+  }));
+  const db = fakeBulkContainerDeleteDb(calls, { itemRows });
+  const result = await deleteAllBaseContainerItems(db, 16836, 42);
+  assert.equal(result.removed.length, 40);
+  const verifyCalls = calls.filter((call) => call.text.includes("select id::text as item_id from dune.items where id = any($1::bigint[]) and inventory_id = $2"));
+  const deleteItemCalls = calls.filter((call) => call.text.includes("dune.delete_item($1::bigint)"));
+  assert.equal(verifyCalls.length, 1, "one set-based verification for the whole container, not one per item");
+  assert.equal(deleteItemCalls.length, 40, "one delete_item call per item is unavoidable -- it is a shipped, single-argument procedure");
+});
+
+// Same audit-detail fields as the delete-multiple path (issue #350) --
+// deleteAllBaseContainerItems shares finishDeletingLockedItems with
+// deleteMultipleBaseContainerItems, so this locks in that the shared
+// helper's fields actually reach the caller for BOTH bulk paths, not just
+// the one exercised above.
+test("delete-all records what was destroyed for every item, including audit-detail fields", async () => {
+  const calls = [];
+  const db = fakeBulkContainerDeleteDb(calls, {
+    itemRows: [{
+      item_id: "99", template_id: "ScrapMetal", stack_size: 500,
+      position_index: 3, quality_level: 2, current_durability: "45", max_durability: 90
+    }]
+  });
+  const result = await deleteAllBaseContainerItems(db, 16836, 42);
+  assert.deepEqual(result.removed[0], {
+    itemId: "99", templateId: "ScrapMetal", count: 500,
+    positionIndex: 3, qualityLevel: 2, currentDurability: 45, maxDurability: 90
+  });
 });
 
 test("delete-all reports an already-empty container distinctly rather than as a no-op deletion", async () => {
