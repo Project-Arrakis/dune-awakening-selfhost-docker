@@ -5083,6 +5083,254 @@ td :where(.service-actions, .action-row, .map-action-buttons) { max-width: 100%;
 
 .iam-editor-loading { padding: 2rem; text-align: center; }
 
+/* ── AWS-mirrored policy/role editor: top-level Roles/Policies split ── */
+/* See docs/design/console-custom-iam-roles-l1-design-2026-08-17.md §4.7. */
+
+.iam-top-view-tabs {
+  display: flex;
+  gap: 0;
+  margin-bottom: 1.25rem;
+  border: 1px solid var(--border-color, #333);
+  border-radius: 6px;
+  overflow: hidden;
+  width: fit-content;
+}
+
+.iam-top-view-tabs button {
+  padding: .5rem 1.25rem;
+  border: none;
+  background: var(--bg-secondary, #1a1a2e);
+  color: var(--text-muted, #888);
+  cursor: pointer;
+  font-size: .85rem;
+  font-weight: 600;
+  border-right: 1px solid var(--border-color, #333);
+  transition: background .15s, color .15s;
+}
+
+.iam-top-view-tabs button:last-child { border-right: none; }
+.iam-top-view-tabs button:hover { color: var(--text-color, #ccc); }
+
+.iam-top-view-tabs button.active {
+  background: var(--accent-color, #d4a853);
+  color: #111;
+}
+
+/* Roles view: new-role creation row */
+
+.iam-new-role-row {
+  display: flex;
+  gap: .5rem;
+  margin-bottom: 1rem;
+}
+
+.iam-new-role-row input {
+  flex: 1;
+  max-width: 260px;
+  padding: .5rem .75rem;
+  background: var(--bg-primary, #0d0d1a);
+  border: 1px solid var(--border-color, #444);
+  border-radius: 4px;
+  color: var(--text-color, #ccc);
+  font-size: .82rem;
+}
+
+/* Roles view: attached-policies tab */
+
+.iam-attached-policies {
+  display: flex;
+  gap: 1.5rem;
+  flex-wrap: wrap;
+}
+
+.iam-attached-list, .iam-attach-picker {
+  flex: 1;
+  min-width: 260px;
+}
+
+.iam-attached-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: .5rem .75rem;
+  border: 1px solid var(--border-color, #2a2a3a);
+  border-radius: 4px;
+  margin-bottom: .4rem;
+  font-size: .85rem;
+}
+
+.iam-attach-picker input {
+  width: 100%;
+  padding: .5rem .75rem;
+  background: var(--bg-primary, #0d0d1a);
+  border: 1px solid var(--border-color, #444);
+  border-radius: 4px;
+  color: var(--text-color, #ccc);
+  font-size: .82rem;
+  margin-bottom: .5rem;
+}
+
+.iam-attach-picker ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 16rem;
+  overflow-y: auto;
+  border: 1px solid var(--border-color, #2a2a3a);
+  border-radius: 4px;
+}
+
+.iam-attach-picker li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: .5rem .75rem;
+  border-bottom: 1px solid var(--border-color, #222);
+  font-size: .85rem;
+}
+
+.iam-attach-picker li:last-child { border-bottom: none; }
+
+/* Policies view: two-pane list + detail layout */
+
+.iam-policies-view {
+  display: flex;
+  gap: 1.5rem;
+  align-items: flex-start;
+}
+
+.iam-policies-list-pane {
+  width: 260px;
+  flex-shrink: 0;
+}
+
+.iam-policies-list-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: .82rem;
+  font-weight: 600;
+  color: var(--text-color, #ccc);
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  margin-bottom: .5rem;
+}
+
+.iam-policy-create-row {
+  display: flex;
+  gap: .4rem;
+  margin-bottom: .75rem;
+}
+
+.iam-policy-create-row input {
+  flex: 1;
+  padding: .4rem .6rem;
+  background: var(--bg-primary, #0d0d1a);
+  border: 1px solid var(--border-color, #444);
+  border-radius: 4px;
+  color: var(--text-color, #ccc);
+  font-size: .78rem;
+  min-width: 0;
+}
+
+.iam-policies-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--border-color, #2a2a3a);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.iam-policies-list li { border-bottom: 1px solid var(--border-color, #222); }
+.iam-policies-list li:last-child { border-bottom: none; }
+
+.iam-policies-list li button {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  width: 100%;
+  padding: .6rem .8rem;
+  border: none;
+  background: var(--bg-secondary, #1a1a2e);
+  color: var(--text-color, #ccc);
+  cursor: pointer;
+  text-align: left;
+  transition: background .1s;
+}
+
+.iam-policies-list li button:hover { background: var(--bg-hover, #1e1e32); }
+.iam-policies-list li.active button { background: var(--accent-color, #d4a853); color: #111; }
+
+.iam-policy-list-name { font-size: .88rem; font-weight: 600; }
+.iam-policy-list-meta { font-size: .72rem; color: inherit; opacity: .7; margin-top: .15rem; }
+
+.iam-managed-badge {
+  display: inline-block;
+  font-size: .65rem;
+  text-transform: uppercase;
+  letter-spacing: .03em;
+  background: var(--bg-primary, #0d0d1a);
+  color: var(--text-muted, #888);
+  padding: .05rem .35rem;
+  border-radius: 3px;
+  margin-top: .2rem;
+}
+
+.iam-policy-detail-pane { flex: 1; min-width: 0; }
+
+.iam-policy-detail-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: .75rem;
+}
+
+.iam-policy-detail-header h4 { margin: 0; font-size: 1rem; }
+
+.iam-confirm-inline {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  font-size: .8rem;
+}
+
+/* Version history list (Policies view) */
+
+.iam-version-list {
+  border: 1px solid var(--border-color, #2a2a3a);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.iam-version-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: .6rem .85rem;
+  border-bottom: 1px solid var(--border-color, #222);
+}
+
+.iam-version-row:last-child { border-bottom: none; }
+.iam-version-row.is-default { background: rgba(212, 168, 83, .06); }
+
+.iam-version-info { display: flex; align-items: baseline; gap: .5rem; flex-wrap: wrap; }
+.iam-version-id { font-family: ui-monospace, SFMono-Regular, monospace; font-weight: 600; }
+
+.iam-default-badge {
+  font-size: .65rem;
+  text-transform: uppercase;
+  background: var(--accent-color, #d4a853);
+  color: #111;
+  padding: .05rem .4rem;
+  border-radius: 3px;
+}
+
+.iam-version-meta { font-size: .78rem; color: var(--text-muted, #888); }
+
+.iam-version-actions { display: flex; gap: .4rem; }
+.iam-version-actions button { font-size: .78rem; padding: .3rem .6rem; }
+
 /* ── Player Link Prompt ── */
 .link-prompt {
   padding: 3rem 1.5rem;

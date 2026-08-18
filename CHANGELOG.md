@@ -30,8 +30,16 @@ Keep a Changelog style, grouped by upstream base version, newest first.
   combination (see the L1 design doc's §6/§9 for the full upgrade-path
   and Layer 1 eight-hats audit evidence:
   `docs/design/console-custom-iam-roles-l1-design-2026-08-17.md`).
-  Backend/API implementation only in this change; Web UI (Policies/Roles
-  views) is a tracked follow-up on the same issue.
+  Web UI: the single-editor "Access Control" panel is now split into a
+  **Roles** view (per-tier inline policy + attached named policies,
+  attach/detach picker, dynamic tier list -- fixes a pre-existing bug
+  where the `observer` tier was missing from the hardcoded tier list)
+  and a standalone **Policies** view (named-policy list, version
+  history with "set default"/"delete" per version, create/edit/delete),
+  matching real AWS IAM's own console structure. Every mutating action's
+  real, specific backend rejection message (e.g. which tiers block a
+  policy delete, or that an edit would lock out the owner) is now
+  surfaced verbatim in the UI rather than a generic failure string.
 
 ### Changed
 
