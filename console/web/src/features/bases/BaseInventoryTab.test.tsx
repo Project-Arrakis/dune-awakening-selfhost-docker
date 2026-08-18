@@ -8,7 +8,23 @@ vi.mock("../../api/bases", () => ({
   basesApi: {
     inventory: vi.fn(),
     containerSlots: vi.fn(),
-    deleteContainerItem: vi.fn()
+    deleteContainerItem: vi.fn(),
+    addContainerItem: vi.fn()
+  }
+}));
+
+// The add panel mounts ItemCatalogSelector, which fetches the full item
+// catalog, and separately loads the augment subset. Neither is what these
+// tests are about, so both resolve empty -- the item is selected by driving
+// the selector's own input instead.
+vi.mock("../../api/admin", () => ({
+  adminApi: {
+    itemCatalog: vi.fn(async () => ({
+      rows: [
+        { itemId: "ScrapMetal", id: "ScrapMetal", name: "Scrap Metal", category: "resource", source: "Resources" },
+        { itemId: "UniqueSword_05", id: "UniqueSword_05", name: "Karpov 38", category: "weapon", source: "Weapons" }
+      ]
+    }))
   }
 }));
 
@@ -82,15 +98,16 @@ const SLOTS: BaseContainerSlots = {
   maxSlots: 45,
   usedSlots: 3,
   deleteSafety: { safe: true, known: true, map: "HaggaBasin", partitionId: 1, reason: "" },
+  addSafety: { safe: true, known: true, map: "HaggaBasin", partitionId: 1, reason: "" },
   inventories: [
     {
       inventoryId: "9001",
       maxSlots: 45,
       usedSlots: 3,
       slots: [
-        { itemId: "501", templateId: "Stone", name: "Granite Stone", positionIndex: 0, quantity: 600, qualityLevel: 0, currentDurability: null, maxDurability: null },
-        { itemId: "502", templateId: "MagnetiteOre", name: "Iron Ore", positionIndex: 1, quantity: 200, qualityLevel: 0, currentDurability: null, maxDurability: null },
-        { itemId: "503", templateId: "Stone", name: "Granite Stone", positionIndex: 2, quantity: 400, qualityLevel: 0, currentDurability: null, maxDurability: null }
+        { itemId: "501", templateId: "Stone", name: "Granite Stone", positionIndex: 0, quantity: 600, qualityLevel: 0, currentDurability: null, maxDurability: null, augments: [] },
+        { itemId: "502", templateId: "MagnetiteOre", name: "Iron Ore", positionIndex: 1, quantity: 200, qualityLevel: 0, currentDurability: null, maxDurability: null, augments: [] },
+        { itemId: "503", templateId: "Stone", name: "Granite Stone", positionIndex: 2, quantity: 400, qualityLevel: 0, currentDurability: null, maxDurability: null, augments: [] }
       ]
     }
   ]
@@ -135,6 +152,14 @@ async function openVaultContents({ stayOnGrid = false } = {}) {
   await waitFor(() => expect(screen.getByRole("dialog")).toBeTruthy());
   await waitFor(() => expect(document.querySelectorAll(".bases-inventory-slot-cell").length).toBeGreaterThan(0));
   if (stayOnGrid) return;
+  fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: /List/ }));
+  await waitFor(() => expect(document.querySelectorAll(".bases-inventory-contents-row:not(.head)").length).toBeGreaterThan(0));
+}
+
+// Add Item lives only in list view (grid's empty cells are its own
+// affordance there), so a test asserting on the button from a grid-view start
+// has to switch first.
+async function switchToList() {
   fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: /List/ }));
   await waitFor(() => expect(document.querySelectorAll(".bases-inventory-contents-row:not(.head)").length).toBeGreaterThan(0));
 }
@@ -537,9 +562,9 @@ describe("BaseInventoryTab", () => {
       inventories: [{
         inventoryId: "9001", maxSlots: 4, usedSlots: 3,
         slots: [
-          { itemId: "601", templateId: "Stone", name: "Granite Stone", positionIndex: 1, quantity: 10, qualityLevel: 0, currentDurability: null, maxDurability: null },
-          { itemId: "602", templateId: "MagnetiteOre", name: "Iron Ore", positionIndex: 1, quantity: 20, qualityLevel: 0, currentDurability: null, maxDurability: null },
-          { itemId: "603", templateId: "SpiceSand", name: "Spice Sand", positionIndex: 99, quantity: 30, qualityLevel: 0, currentDurability: null, maxDurability: null }
+          { itemId: "601", templateId: "Stone", name: "Granite Stone", positionIndex: 1, quantity: 10, qualityLevel: 0, currentDurability: null, maxDurability: null, augments: [] },
+          { itemId: "602", templateId: "MagnetiteOre", name: "Iron Ore", positionIndex: 1, quantity: 20, qualityLevel: 0, currentDurability: null, maxDurability: null, augments: [] },
+          { itemId: "603", templateId: "SpiceSand", name: "Spice Sand", positionIndex: 99, quantity: 30, qualityLevel: 0, currentDurability: null, maxDurability: null, augments: [] }
         ]
       }]
     });
@@ -602,6 +627,12 @@ describe("BaseInventoryTab", () => {
       deleteSafety: {
         safe: false, known: true, map: "HaggaBasin", partitionId: 68,
         reason: "HaggaBasin · Partition 68 is running. Stop that map before deleting stored items."
+      },
+      // Both gates resolve from one liveness probe, so in practice they always
+      // arrive together -- only the wording differs.
+      addSafety: {
+        safe: false, known: true, map: "HaggaBasin", partitionId: 68,
+        reason: "HaggaBasin · Partition 68 is running. Stop that map before adding stored items."
       }
     });
     renderTab();
@@ -645,6 +676,41 @@ describe("BaseInventoryTab", () => {
     await waitFor(() => expect(input.value).toBe("450"));
   });
 
+  it("shows grade on every slot, and an augments line only on a slot that has any", async () => {
+    mockInventory();
+    mockSlots({
+      ...SLOTS,
+      inventories: [{
+        inventoryId: "9001",
+        maxSlots: 45,
+        usedSlots: 2,
+        slots: [
+          { itemId: "501", templateId: "Stone", name: "Granite Stone", positionIndex: 0, quantity: 600, qualityLevel: 0, currentDurability: null, maxDurability: null, augments: [] },
+          {
+            itemId: "504", templateId: "UniqueSword_05", name: "Replica Pulse-sword", positionIndex: 1, quantity: 1,
+            qualityLevel: 3, currentDurability: 100, maxDurability: 100,
+            augments: [{ templateId: "T6_Augment_Melee1", name: "Blade Sharpener", qualityLevel: 2 }]
+          }
+        ]
+      }]
+    });
+    renderTab();
+    await loaded();
+    await openVaultContents();
+
+    fireEvent.click(screen.getByRole("button", { name: "Granite Stone" }));
+    await waitFor(() => expect(document.querySelector(".bases-inventory-slot-detail")).toBeTruthy());
+    const stoneDetail = document.querySelector(".bases-inventory-slot-detail-body") as HTMLElement;
+    expect(within(stoneDetail).getByText(/Grade 0/)).toBeTruthy();
+    expect(within(stoneDetail).queryByText(/Augments:/)).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Replica Pulse-sword" }));
+    await waitFor(() => expect(screen.getByText(/Grade 3/)).toBeTruthy());
+    const swordDetail = document.querySelector(".bases-inventory-slot-detail-body") as HTMLElement;
+    expect(within(swordDetail).getByText(/100% durability/)).toBeTruthy();
+    expect(within(swordDetail).getByText("Augments: Blade Sharpener (Grade 2)")).toBeTruthy();
+  });
+
   it("keeps crafting and refining contents read-only", async () => {
     mockInventory();
     // The game's own crafting routine consumes allocated ingredients from
@@ -658,7 +724,7 @@ describe("BaseInventoryTab", () => {
       group: "refining",
       inventories: [{
         inventoryId: "9003", maxSlots: 5, usedSlots: 1,
-        slots: [{ itemId: "701", templateId: "MagnetiteOre", name: "Iron Ore", positionIndex: 0, quantity: 420, qualityLevel: 0, currentDurability: null, maxDurability: null }]
+        slots: [{ itemId: "701", templateId: "MagnetiteOre", name: "Iron Ore", positionIndex: 0, quantity: 420, qualityLevel: 0, currentDurability: null, maxDurability: null, augments: [] }]
       }]
     });
     renderTab();
@@ -734,5 +800,341 @@ describe("BaseInventoryTab", () => {
 
     const vault = cards().find((card) => card.textContent?.includes("Vault"));
     expect(within(vault as HTMLElement).getByText("2 / 45")).toBeTruthy();
+  });
+
+  // ---- Adding an item ----
+
+  const addButton = () => screen.getByRole("button", { name: /Add Item/ }) as HTMLButtonElement;
+  const addPanel = () => document.querySelector(".bases-inventory-add-panel");
+  const emptyCells = () => [...document.querySelectorAll(".bases-inventory-slot-cell.empty")] as HTMLButtonElement[];
+
+  // Picks a catalog option by template id. Not by index: the selector sorts on
+  // the rendered name, so "Karpov 38" precedes "Scrap Metal" and an index
+  // would silently select the wrong item. Not by accessible name either --
+  // that comes from catalogItemName, which is not what this file is testing.
+  async function pickCatalogItem(templateId = "ScrapMetal") {
+    await waitFor(() => expect(document.querySelectorAll(".catalog-item-option").length).toBeGreaterThan(0));
+    const option = [...document.querySelectorAll(".catalog-item-option")]
+      .find((element) => element.textContent?.includes(templateId));
+    expect(option).toBeTruthy();
+    fireEvent.click(option as Element);
+  }
+
+  async function openAddPanel() {
+    fireEvent.click(addButton());
+    await waitFor(() => expect(addPanel()).toBeTruthy());
+  }
+
+  function mockAddSuccess() {
+    vi.mocked(basesApi.addContainerItem).mockResolvedValue({
+      supported: true,
+      result: {
+        ok: true, inventoryId: "9001", typeName: "Storage Container", group: "storage",
+        added: { itemId: "999", templateId: "ScrapMetal", quantity: 25, qualityLevel: 0, positionIndex: 3 },
+        capacity: { usedSlots: 4, maxSlots: 45 },
+        message: "ScrapMetal x25 was added to Storage Container in slot #3.",
+        addSafety: { safe: true, known: true, map: "HaggaBasin", partitionId: 1, reason: "" }
+      }
+    } as never);
+  }
+
+  it("opens the add panel from the list-view footer button", async () => {
+    mockInventory();
+    renderTab();
+    await loaded();
+    // List view enumerates occupied slots only, so it has no empty cell to
+    // click -- the footer button is the only add affordance here, which is
+    // precisely why it exists (and why it is absent from grid view).
+    await openVaultContents();
+    expect(emptyCells().length).toBe(0);
+    await openAddPanel();
+    expect(addPanel()).toBeTruthy();
+  });
+
+  it("does not offer Add Item in grid view", async () => {
+    mockInventory();
+    renderTab();
+    await loaded();
+    // Grid's own empty cells already open the panel; a second, redundant
+    // control in the footer would just be noise there.
+    await openVaultContents({ stayOnGrid: true });
+    expect(screen.queryByRole("button", { name: /Add Item/ })).toBeNull();
+    await switchToList();
+    expect(screen.getByRole("button", { name: /Add Item/ })).toBeTruthy();
+  });
+
+  it("has no Back to slots button, and hides the footer's Add Item and Close while the add panel is open", async () => {
+    mockInventory();
+    renderTab();
+    await loaded();
+    await openVaultContents();
+
+    // Both live in the footer already, via Cancel and the header's X --
+    // repeating either at the top of the panel would be redundant.
+    await openAddPanel();
+    expect(screen.queryByRole("button", { name: /Back to slots/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Close" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Add Item/ })).toBeNull();
+    // The overlay itself must still be closable from this state.
+    expect(screen.getByRole("button", { name: "Close contents" })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Close" })).toBeTruthy());
+    expect(screen.getByRole("button", { name: /^Add Item/ })).toBeTruthy();
+  });
+
+  it("opens the add panel from an empty grid cell without claiming a slot number", async () => {
+    mockInventory();
+    renderTab();
+    await loaded();
+    await openVaultContents({ stayOnGrid: true });
+
+    const cell = emptyCells()[0];
+    expect(cell).toBeTruthy();
+    // Placement is not chooseable: the server always appends to the next free
+    // index, so nothing on this control may promise a specific slot.
+    const label = cell.getAttribute("aria-label") || "";
+    expect(label).toBe("Add an item to this container");
+    expect(label).not.toMatch(/slot\s*#?\d/i);
+    expect(cell.getAttribute("title") || "").not.toMatch(/slot\s*#?\d/i);
+    // Kept out of the tab order -- 42 empty cells would otherwise sit between
+    // the grid and the controls below it.
+    expect(cell.tabIndex).toBe(-1);
+
+    fireEvent.click(cell);
+    await waitFor(() => expect(addPanel()).toBeTruthy());
+  });
+
+  it("states the placement rule in the add panel", async () => {
+    mockInventory();
+    renderTab();
+    await loaded();
+    await openVaultContents();
+    await openAddPanel();
+    // Regression guard on both contracts the backend keeps.
+    expect(addPanel()!.textContent).toMatch(/next free slot/i);
+    expect(addPanel()!.textContent).toMatch(/never topped up/i);
+  });
+
+  it("disables adding when the map is running or its state cannot be verified", async () => {
+    mockInventory();
+    mockSlots({
+      ...SLOTS,
+      addSafety: {
+        safe: false, known: false, map: "", partitionId: 0,
+        reason: "The console cannot verify that this base's map is safely stopped, so adding items is disabled."
+      }
+    });
+    renderTab();
+    await loaded();
+    await openVaultContents({ stayOnGrid: true });
+
+    expect(emptyCells().every((cell) => cell.disabled)).toBe(true);
+    expect(screen.getByText(/cannot verify that this base's map is safely stopped, so adding items is disabled/i)).toBeTruthy();
+    await switchToList();
+    expect(addButton().disabled).toBe(true);
+    expect(basesApi.addContainerItem).not.toHaveBeenCalled();
+  });
+
+  it("keeps crafting and refining contents read-only for adding too", async () => {
+    mockInventory();
+    mockSlots({
+      ...SLOTS,
+      group: "refining",
+      typeName: "Ore Refinery",
+      // The server refuses on the group before it ever looks at the map.
+      addSafety: {
+        safe: false, known: true, map: "", partitionId: 0,
+        reason: "Adding items is available only for Storage containers. Crafting and Refining contents are read-only to protect active jobs."
+      }
+    });
+    renderTab();
+    await loaded();
+    await openVaultContents({ stayOnGrid: true });
+
+    expect(screen.getByText(/only for Storage containers/i)).toBeTruthy();
+    await switchToList();
+    expect(addButton().disabled).toBe(true);
+  });
+
+  it("refuses to add to a container with no free slots", async () => {
+    // Capacity comes from the container, not from the safety gate: a stopped
+    // map and a plain storage box can still be full.
+    mockInventory({
+      ...PAYLOAD,
+      containers: PAYLOAD.containers.map((container) =>
+        container.placeableId === "40001" ? { ...container, usedSlots: 45, maxSlots: 45 } : container)
+    });
+    renderTab();
+    await loaded();
+    await openVaultContents({ stayOnGrid: true });
+
+    expect(emptyCells().every((cell) => cell.disabled)).toBe(true);
+    await switchToList();
+    expect(addButton().disabled).toBe(true);
+    expect(addButton().title).toMatch(/full \(45 \/ 45 slots\)/i);
+    expect(basesApi.addContainerItem).not.toHaveBeenCalled();
+  });
+
+  it("adds an item and refetches both the slots and the tab", async () => {
+    mockInventory();
+    mockAddSuccess();
+    renderTab();
+    await loaded();
+    await openVaultContents();
+    const slotLoads = vi.mocked(basesApi.containerSlots).mock.calls.length;
+    const tabLoads = vi.mocked(basesApi.inventory).mock.calls.length;
+
+    await openAddPanel();
+    await pickCatalogItem();
+    fireEvent.change(screen.getByLabelText(/Quantity to add/i), { target: { value: "25" } });
+    fireEvent.click(screen.getByRole("button", { name: /Add to container/i }));
+
+    await waitFor(() => expect(basesApi.addContainerItem).toHaveBeenCalled());
+    const call = vi.mocked(basesApi.addContainerItem).mock.calls[0];
+    expect(call[0]).toBe("1006");
+    expect(call[1]).toBe("40001");
+    expect(call[2]).toMatchObject({ itemId: "ScrapMetal", quantity: 25, quality: 0 });
+    // The phrase is deliberately distinct from GIVE ITEM TO STORAGE.
+    expect(call[3]).toBe("ADD ITEM TO CONTAINER");
+
+    // Both are invalidated by an add: this container's slots, and the tab's
+    // totals, group counts and rollup.
+    await waitFor(() => expect(vi.mocked(basesApi.containerSlots).mock.calls.length).toBeGreaterThan(slotLoads));
+    await waitFor(() => expect(vi.mocked(basesApi.inventory).mock.calls.length).toBeGreaterThan(tabLoads));
+  });
+
+  it("tells the operator the slot was not chosen when confirming", async () => {
+    mockInventory();
+    mockAddSuccess();
+    renderTab();
+    await loaded();
+    await openVaultContents();
+    await openAddPanel();
+    await pickCatalogItem();
+    fireEvent.click(screen.getByRole("button", { name: /Add to container/i }));
+
+    await waitFor(() => expect(confirmAction).toHaveBeenCalled());
+    const details = confirmAction.mock.calls.at(-1)?.[1]?.details || [];
+    const slot = details.find((detail) => detail.label === "Slot");
+    // The last place the placement promise is made, and it has to stay honest.
+    expect(slot?.value).toBe("Next free slot");
+    expect(slot?.value).not.toMatch(/#\d/);
+  });
+
+  it("does not call the add API when the confirmation is declined", async () => {
+    mockInventory();
+    confirmAction.mockResolvedValue(false);
+    renderTab();
+    await loaded();
+    await openVaultContents();
+    await openAddPanel();
+    await pickCatalogItem();
+    fireEvent.click(screen.getByRole("button", { name: /Add to container/i }));
+
+    await waitFor(() => expect(confirmAction).toHaveBeenCalled());
+    expect(basesApi.addContainerItem).not.toHaveBeenCalled();
+  });
+
+  it("surfaces an add failure without blanking the slot list", async () => {
+    mockInventory();
+    vi.mocked(basesApi.addContainerItem).mockRejectedValue(new Error("This container is full: 45 of 45 slots are used."));
+    renderTab();
+    await loaded();
+    await openVaultContents();
+    await openAddPanel();
+    await pickCatalogItem();
+    fireEvent.click(screen.getByRole("button", { name: /Add to container/i }));
+
+    await waitFor(() => expect(onError).toHaveBeenCalledWith(expect.stringMatching(/45 of 45/)));
+    // The panel closes back to the slots, which are still intact -- a failed
+    // add must not hide them behind a Retry the way a failed load does.
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+    expect(screen.getByText(/45 of 45/)).toBeTruthy();
+  });
+
+  it("rejects a quantity outside the server's own bounds before calling the API", async () => {
+    mockInventory();
+    renderTab();
+    await loaded();
+    await openVaultContents();
+    await openAddPanel();
+    await pickCatalogItem();
+    const input = screen.getByLabelText(/Quantity to add/i);
+
+    for (const value of ["0", "1000001", "1.5"]) {
+      fireEvent.change(input, { target: { value } });
+      await waitFor(() => expect(document.querySelector(".bases-inventory-amount-error")).toBeTruthy());
+      expect((screen.getByRole("button", { name: /Add to container/i }) as HTMLButtonElement).disabled).toBe(true);
+    }
+    fireEvent.change(input, { target: { value: "25" } });
+    await waitFor(() => expect((screen.getByRole("button", { name: /Add to container/i }) as HTMLButtonElement).disabled).toBe(false));
+    expect(basesApi.addContainerItem).not.toHaveBeenCalled();
+  });
+
+  it("offers augments only for an item that can take them", async () => {
+    mockInventory();
+    renderTab();
+    await loaded();
+    await openVaultContents();
+    await openAddPanel();
+
+    // A resource cannot be augmented, so the control is absent entirely rather
+    // than present and empty.
+    await pickCatalogItem("ScrapMetal");
+    expect(addPanel()!.textContent).not.toMatch(/Aug\. Grade/);
+  });
+
+  it("keeps the add panel and the slot-detail strip mutually exclusive", async () => {
+    mockInventory();
+    renderTab();
+    await loaded();
+    await openVaultContents();
+
+    // Selecting a slot arms the delete strip.
+    fireEvent.click(screen.getAllByRole("button", { name: "Granite Stone" })[0]);
+    await waitFor(() => expect(document.querySelector(".bases-inventory-slot-detail")).toBeTruthy());
+
+    // Opening the add panel replaces the slot region and clears that strip --
+    // two modes of one dialog, not two panels stacked in it. The strip is keyed
+    // to an existing occupied slot and cannot represent an add.
+    await openAddPanel();
+    expect(document.querySelector(".bases-inventory-slot-detail")).toBeNull();
+    expect(document.querySelector(".bases-inventory-contents-scroll")).toBeNull();
+
+    // Cancel restores the slots with nothing selected. No separate "back"
+    // control -- it would just duplicate what Cancel already does.
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(addPanel()).toBeNull());
+    expect(document.querySelector(".bases-inventory-contents-scroll")).toBeTruthy();
+    expect(document.querySelector(".bases-inventory-slot-detail")).toBeNull();
+  });
+
+  it("clears the add panel when the overlay is reopened", async () => {
+    mockInventory();
+    renderTab();
+    await loaded();
+    await openVaultContents();
+    await openAddPanel();
+    await pickCatalogItem();
+
+    // The footer's Close is hidden while the add panel is open (see the
+    // "does not show Close or the footer Add Item while the add panel is
+    // open" test); the header's X is what still closes the whole overlay
+    // from this state.
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Close contents" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+    // Reopened directly rather than via openVaultContents: contentsView is
+    // sticky, so the overlay comes back in list mode and has no grid cells for
+    // that helper to wait on.
+    const vault = [...document.querySelectorAll(".bases-inventory-cards .bases-card")]
+      .find((card) => card.textContent?.includes("Vault")) as HTMLElement;
+    fireEvent.click(within(vault).getByRole("button", { name: /View Contents/ }));
+    await waitFor(() => expect(screen.getByRole("dialog")).toBeTruthy());
+
+    // A half-filled form must not carry over: the capacity, the gate and the
+    // confirm dialog's Container line all change with the container.
+    expect(addPanel()).toBeNull();
   });
 });
