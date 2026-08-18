@@ -47,7 +47,7 @@ import { exportBlueprint, importBlueprint, listBlueprints, deleteBlueprint } fro
 import { createZipArchive } from "./services/zipArchive.js";
 import { resolveMapCombatState } from "./services/mapCombatState.js";
 import { grantAddonItem } from "./addonItemGrants.js";
-import { EDA_EXCHANGE_BOT_ADDON_ID, ADDON_SCHEDULER_PERMISSION, createAddonJobScheduler, probeBuybackEligibility, readBuybackSchedule, saveBuybackSchedule, readSeedSchedule, saveSeedSchedule } from "./addonJobs.js";
+import { EDA_EXCHANGE_BOT_ADDON_ID, ADDON_SCHEDULER_PERMISSION, createAddonJobScheduler, probeBuybackEligibility, refreshBuybackLog, readBuybackLog, clearBuybackLog, readBuybackSchedule, saveBuybackSchedule, readSeedSchedule, saveSeedSchedule } from "./addonJobs.js";
 import { createPublicDirectoryReporter, normalizeDiscordInvite, readDirectorySettings } from "./services/publicDirectory.js";
 import { choamTerminalOverview, installChoamTerminals, removeChoamTerminals } from "./services/choamTerminals.js";
 import { exchangeStats, listExchangeItems, listExchangeListings, readExchangeConfig, saveExchangeConfig } from "./services/exchange.js";
@@ -856,6 +856,9 @@ async function handleApi(req, res) {
   if (path === "/api/exchange/market" && req.method === "GET") return dbJson(res, () => marketBotStatus(config, db));
   if (path === "/api/exchange/market/exchanges" && req.method === "GET") return dbJson(res, () => listMarketExchanges(db));
   if (path === "/api/exchange/market/buyback/probe" && req.method === "POST") return marketBuybackProbeRoute(req, res);
+  if (path === "/api/exchange/market/buyback/log" && req.method === "GET") return marketBuybackLogRoute(req, res);
+  if (path === "/api/exchange/market/buyback/log" && req.method === "POST") return marketBuybackLogRefreshRoute(req, res);
+  if (path === "/api/exchange/market/buyback/log/clear" && req.method === "POST") return marketBuybackLogClearRoute(req, res);
   if (path === "/api/exchange/market/buyback/schedule" && req.method === "POST") return marketScheduleSaveRoute(req, res, "buyback");
   if (path === "/api/exchange/market/seed/schedule" && req.method === "POST") return marketScheduleSaveRoute(req, res, "seed");
   if (path === "/api/exchange/market/buyback/run" && req.method === "POST") return marketRunNowRoute(req, res, "buyback");
@@ -1352,6 +1355,42 @@ async function marketBuybackProbeRoute(req, res) {
     return json(res, 200, result);
   } catch (error) {
     audit(config, req, "exchange.market", { op: "buyback-probe", ok: false, error: redact(error?.message || "Unexpected error.") });
+    const payload = apiErrorPayload(error, 400);
+    return json(res, payload.status, payload.body);
+  }
+}
+
+async function marketBuybackLogRoute(req, res) {
+  try {
+    return json(res, 200, readBuybackLog(config));
+  } catch (error) {
+    const payload = apiErrorPayload(error, 400);
+    return json(res, payload.status, payload.body);
+  }
+}
+
+async function marketBuybackLogRefreshRoute(req, res) {
+  if (!applyMutationRateLimit(req, res, "exchange.market.buyback.log")) return;
+  const body = await readJson(req);
+  try {
+    const result = await refreshBuybackLog(config, db, body && typeof body === "object" ? body : {});
+    audit(config, req, "exchange.market", { op: "buyback-log", listings: result.entries?.length || 0, exchangeId: result.exchangeId, ok: true });
+    return json(res, 200, result);
+  } catch (error) {
+    audit(config, req, "exchange.market", { op: "buyback-log", ok: false, error: redact(error?.message || "Unexpected error.") });
+    const payload = apiErrorPayload(error, 400);
+    return json(res, payload.status, payload.body);
+  }
+}
+
+async function marketBuybackLogClearRoute(req, res) {
+  if (!applyMutationRateLimit(req, res, "exchange.market.buyback.log-clear")) return;
+  try {
+    const result = await clearBuybackLog(config);
+    audit(config, req, "exchange.market", { op: "buyback-log-clear", ok: true });
+    return json(res, 200, result);
+  } catch (error) {
+    audit(config, req, "exchange.market", { op: "buyback-log-clear", ok: false, error: redact(error?.message || "Unexpected error.") });
     const payload = apiErrorPayload(error, 400);
     return json(res, payload.status, payload.body);
   }

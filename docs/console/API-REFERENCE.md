@@ -446,6 +446,9 @@ blacklist behaves.
 | GET | `/api/exchange/market` | Market Bot status: seed-plan availability and both schedules | None |
 | GET | `/api/exchange/market/exchanges` | Discover exchanges (BIGINT ids as strings; access-pointed exchanges first) | None |
 | POST | `/api/exchange/market/buyback/probe` | Read-only buyback diagnostics: total, recognized, eligible, above-threshold, unknown-template, and invalid price/stack listing counts (no backup taken) | body: `exchangeId?`, `priceMultiplier?`, `augmentMultiplier?`, `rankedArmorMultiplier?`, `rankedWeaponMultiplier?`, `buybackPercent?`, `buybackPriceBasis?`, `maxBuys?` |
+| GET | `/api/exchange/market/buyback/log` | Stored Buyback Sweep Log batches (purchased and skipped listings with reasons). Batches older than 5 days are omitted; the scheduler deletes them from disk at most hourly. | None |
+| POST | `/api/exchange/market/buyback/log` | Read-only dry-run classify of player sell listings (eligible first, then skip reasons; capped at 1000 stored rows with leftovers reserved); appends a log batch (no backup taken). Rate-limited. | body: same optional overrides as the probe |
+| POST | `/api/exchange/market/buyback/log/clear` | Clear stored Buyback Sweep Log batches. Requires `exchange:market-write`. Rate-limited. | None |
 | POST | `/api/exchange/market/buyback/schedule` | Save the buyback schedule (audited, rate-limited) | body: `enabled`, `intervalMinutes`, `exchangeId`, `priceMultiplier`, `augmentMultiplier`, `rankedArmorMultiplier`, `rankedWeaponMultiplier`, `buybackPercent`, `buybackPriceBasis`, `maxBuys` |
 | POST | `/api/exchange/market/seed/schedule` | Save the market reseed schedule (audited, rate-limited) | body: `enabled`, `intervalMinutes`, `exchangeId`, `priceMultiplier`, `augmentMultiplier`, `rankedArmorMultiplier`, `rankedWeaponMultiplier`, `augmentPricing` (`discounted`\|`original`) |
 | POST | `/api/exchange/market/buyback/run` | Run a buyback sweep now with the saved schedule (probe → backup → sweep) | None |
@@ -460,8 +463,9 @@ buyback schedule they reprice the reconstructed "seeded" price basis the same
 way, so `buybackPercent` keeps meaning a percentage of the real market price.
 
 Unlike the board above, these routes **do write the game database** through the
-native Market Bot engine (`addonJobs.js` / `addonSeedJob.js`). Reads and the probe require `exchange:market`; mutations
-require `exchange:market-write` (the admin tier's `exchange:*` covers both).
+native Market Bot engine (`addonJobs.js` / `addonSeedJob.js`). Reads, the probe, and
+dry-run log refresh require `exchange:market`; schedule saves, run-now, and log
+clear require `exchange:market-write` (the admin tier's `exchange:*` covers both).
 Schedules saved here are marked `source: "console"`, run unattended inside the
 console API process, and do not require an addon; the seed plan is the bundled
 `runtime/data/market-seed-plan.json`. Every write is preceded by a database
