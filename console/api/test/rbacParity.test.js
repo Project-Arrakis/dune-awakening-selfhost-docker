@@ -188,8 +188,8 @@ test("parity: base container give/fill/bulk-delete routes resolve to their own n
   assert.equal(actionForRoute("/api/bases/12858/containers/42/give-item", "POST"), "bases:give-item");
   assert.equal(actionForRoute("/api/bases/12858/containers/42/give-items", "POST"), "bases:give-item");
   assert.equal(actionForRoute("/api/bases/12858/containers/42/fill-item", "POST"), "bases:fill-item");
-  assert.equal(actionForRoute("/api/bases/12858/containers/42/items", "DELETE"), "bases:delete-items");
-  assert.equal(actionForRoute("/api/bases/12858/containers/42/all-items", "DELETE"), "bases:delete-items");
+  assert.equal(actionForRoute("/api/bases/12858/containers/42/items", "DELETE"), "bases:bulk-delete-items");
+  assert.equal(actionForRoute("/api/bases/12858/containers/42/all-items", "DELETE"), "bases:bulk-delete-items");
   // The existing single-item delete route must be unaffected by these new
   // sibling routes/regexes.
   assert.equal(actionForRoute("/api/bases/12858/containers/42/items/99", "DELETE"), "bases:delete-item");

@@ -65,10 +65,11 @@ Keep a Changelog style, grouped by upstream base version, newest first.
   `deleteAllBaseContainerItems`) plus a parity fix: `giveItemToStorage` now
   enforces the same volume cap `fillItemToStorage` already did (previously
   give-item checked only slot count, never volume). Three new, narrow RBAC
-  actions — `bases:give-item`, `bases:fill-item`, `bases:delete-items` —
-  follow the existing `bases:delete-item` precedent (own action, not folded
-  into `bases:mutate`, so an operator's existing policy grant is never
-  silently widened); default access is unchanged (owner `*`, admin
+  actions — `bases:give-item`, `bases:fill-item`, `bases:bulk-delete-items`
+  (renamed from `bases:delete-items`, issue #351 — see the follow-up entry
+  below) — follow the existing `bases:delete-item` precedent (own action,
+  not folded into `bases:mutate`, so an operator's existing policy grant is
+  never silently widened); default access is unchanged (owner `*`, admin
   `bases:*`). Scoped to Storage-group containers only — Refining/Crafting
   remain read-only, and the two new bulk-delete functions re-verify
   ownership through the same claim-CTE `deleteBaseContainerItem` already
@@ -130,6 +131,24 @@ Keep a Changelog style, grouped by upstream base version, newest first.
   new shared `auditDetailSelectFragment()` helper -- so a bulk-destroyed
   pristine legendary no longer logs identically to a bulk-destroyed broken
   common of the same template in the admin audit trail (issue #350).
+- **`bases:delete-items` renamed to `bases:bulk-delete-items`** (issue #351,
+  security-labeled, found during PR #349's own Layer 3 audit, Architect
+  hat). `policy.js`'s `matchAction()` supports a `"prefix-*"` wildcard style
+  where `"bases:delete-item*"` matches any action starting with that
+  string -- including the old `bases:delete-items`, since it shared that
+  exact string prefix with `bases:delete-item`. A hand-authored policy using
+  that wildcard style near `bases:delete-item` (e.g. intending "just
+  delete-item, with room to grow") would have silently and non-obviously
+  also granted bulk/delete-all destruction, defeating the whole point of
+  keeping the two as separate actions. STRIDE: Elevation of Privilege
+  (latent -- no shipped default policy used this wildcard style against
+  this action pair, so this was never exploitable against any policy this
+  project ships; the rename closes the gap before any operator's
+  hand-authored policy could hit it). `bases:bulk-delete-items` shares no
+  string prefix with `bases:delete-item`, so no `-*` wildcard pattern can
+  match both. This action was still unreleased when the rename happened, so
+  it is a zero-migration-impact rename, not a breaking change for any
+  operator's existing policy.
 - Raw resources are now a fillable/giveable item category. `FILLABLE_GROUPS`
   in `adminCatalog.js` gains `raw_resource` alongside the existing
   `refined_resource`/`component`. 19 items in `runtime/data/admin-items.json`

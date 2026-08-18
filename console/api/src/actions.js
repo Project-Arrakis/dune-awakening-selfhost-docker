@@ -409,8 +409,22 @@ export const REGEX_ACTIONS_BY_METHOD_PATTERN = [
   // same narrow action so a policy granting bases:delete-item does not
   // silently also grant bulk/delete-all destruction (and vice versa) without
   // being written that way on purpose.
-  { method: "DELETE", pattern: /^\/api\/bases\/[^/]+\/containers\/[^/]+\/items$/, action: "bases:delete-items" },
-  { method: "DELETE", pattern: /^\/api\/bases\/[^/]+\/containers\/[^/]+\/all-items$/, action: "bases:delete-items" },
+  //
+  // Named bases:bulk-delete-items rather than the more obvious
+  // bases:delete-items deliberately (issue #351, found during PR #349's own
+  // Layer 3 audit, Architect hat): policy.js's matchAction() supports a
+  // "prefix-*" wildcard style where "bases:delete-item*" matches ANY action
+  // starting with that string, including "bases:delete-items" -- so a
+  // hand-authored policy using that wildcard style near bases:delete-item
+  // (e.g. intending "just delete-item, with room to grow") would have
+  // silently and non-obviously also granted bulk/delete-all destruction.
+  // bases:bulk-delete-items shares no string prefix with bases:delete-item,
+  // so no "-*" wildcard pattern can match both. No shipped default policy
+  // used the old name (this action was still unreleased when found), so this
+  // is a rename with zero migration impact, not a breaking change for any
+  // operator's existing hand-authored policy.
+  { method: "DELETE", pattern: /^\/api\/bases\/[^/]+\/containers\/[^/]+\/items$/, action: "bases:bulk-delete-items" },
+  { method: "DELETE", pattern: /^\/api\/bases\/[^/]+\/containers\/[^/]+\/all-items$/, action: "bases:bulk-delete-items" },
   // POST /api/bases/{baseId}/containers/{placeableId}/give-item(s) and
   // fill-item — adding items to a Storage-group container. Own actions for
   // the same reason bases:delete-item is its own action: base inventory
