@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { EDA_EXCHANGE_BOT_ADDON_ID, buildMarketSeedSql, loadMarketSeedPlan, normalizeSeedSchedule, seedRowCategoryMultiplier, seedRowListingCount, COMMODITY_STACK_CATALOG, COMMODITY_STACK_DEFAULT, COMMODITY_STACK_MAX } from "../src/addonSeedJob.js";
+import { EDA_EXCHANGE_BOT_ADDON_ID, buildMarketSeedSql, createListedMarketUnitPrice, loadMarketSeedPlan, normalizeSeedSchedule, seedRowCategoryMultiplier, seedRowListingCount, COMMODITY_STACK_CATALOG, COMMODITY_STACK_DEFAULT, COMMODITY_STACK_MAX } from "../src/addonSeedJob.js";
 
 const REPO_ROOT = resolve(import.meta.dirname, "../../..");
 
@@ -136,6 +136,24 @@ test("original augment pricing keeps the plan's augment item prices", () => {
     assert.match(sql, /'T6_Augment_Armor1_Schematic',1,2800000,/);
     // The stat roll pin is not a pricing choice: it applies in both modes.
     assert.match(sql, /"StatRolls":\[0\.2,0\.2\]/);
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test("plan-scoped market pricing reuses one schematic index across rows", () => {
+  const repoRoot = makeRepoRoot();
+  try {
+    const plan = loadMarketSeedPlan({ repoRoot });
+    const listedUnitPrice = createListedMarketUnitPrice(plan, {
+      priceMultiplier: 5,
+      augmentPricing: "discounted"
+    });
+    const byTemplate = new Map(plan.rows.map((row) => [row.templateId, row]));
+    assert.equal(listedUnitPrice(byTemplate.get("T6_Augment_Armor1")), 1400000);
+    assert.equal(listedUnitPrice(byTemplate.get("T6_Augment_Mystery1")), 950000);
+    assert.equal(listedUnitPrice(byTemplate.get("T6_Augment_Armor1_Schematic")), 2800000);
+    assert.equal(listedUnitPrice(byTemplate.get("Sword")), 2000);
   } finally {
     rmSync(repoRoot, { recursive: true, force: true });
   }
