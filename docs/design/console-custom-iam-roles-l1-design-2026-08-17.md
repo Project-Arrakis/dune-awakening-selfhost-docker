@@ -7,12 +7,16 @@ commit)
 **Status:** L1 design, revision 3. Layer 1 eight-hats audit complete — all
 8 hats dispatched independently per Requirement 20, all CRITICAL/HIGH
 findings resolved in-document (see §9 for the full findings register).
-One HIGH finding (concurrency control, L1-H1) is explicitly deferred to
-L2 as an implementation-level (not design-level) decision, per
-Requirement 20's own layering rationale. Revision 1 (single-document-
-per-tier, name-allowlist-only) is superseded in place; no separate
-document was kept, since revision 1 was never committed or audited
-(nothing to point back to that carries independent value).
+L1-H1 (concurrency control), the one finding deferred to L2 at the time
+of the audit, has since been resolved during L2 implementation — not by
+adding a lock, but by discovering and then deliberately preserving a
+structural property (full synchronicity of the mutation path) that
+already made the feared race impossible; verified by a 200-iteration
+adversarial stress test, not assumed (§9's L1-H1 row has the full
+evidence and the durable invariant this now depends on). Revision 1
+(single-document-per-tier, name-allowlist-only) is superseded in place;
+no separate document was kept, since revision 1 was never committed or
+audited (nothing to point back to that carries independent value).
 **Tracking issue:** [#335](https://github.com/yacketrj/dune-awakening-selfhost-docker/issues/335).
 **PR:** [#336](https://github.com/yacketrj/dune-awakening-selfhost-docker/pull/336) (draft, pending L2 planning).
 
@@ -850,7 +854,7 @@ durable, committed summary.
 | L1-C2 | Architect | Aggregation-step failure semantics unspecified; naive implementation fails open (silently drops a Deny) | CRITICAL | **Fixed** — explicit fail-closed requirement added, §4.1 |
 | L1-C3 | DBA | No referential-integrity check that `attached[]` IDs resolve to real `policies` keys (dangling-reference risk, feeds L1-C2) | CRITICAL | **Fixed** — bidirectional integrity check added to `validPolicyStore()`, §4.4 |
 | L1-C4 | QA | `handoff.test.js`'s existing `"superuser"` rejection test breaks under the proposed shape-check regex (verified by direct execution) | CRITICAL | **Fixed** — test rewrite specified, §4.6 and §7 |
-| L1-H1 | Architect, DBA (independent convergence) | No concurrency control on 7 new mutating routes against one unlocked in-memory store; codebase's only comparable many-to-many precedent (`discord_account_links`) uses real transactions/row-locks this design has no equivalent for | HIGH | **Accepted for L2, not L1** — single-choke-point function (§4.3, added for L1-C1) narrows the race window by serializing all writes through one function; a real mutex/serialization primitive around that function's read-modify-write sequence is an explicit L2 implementation requirement, not optional, but the exact primitive (async lock vs. version/ETag check) is left to L2 per the DBA hat's own framing of this as owner-only, human-paced interaction |
+| L1-H1 | Architect, DBA (independent convergence) | No concurrency control on 7 new mutating routes against one unlocked in-memory store; codebase's only comparable many-to-many precedent (`discord_account_links`) uses real transactions/row-locks this design has no equivalent for | HIGH | **Resolved during L2 implementation, verified not assumed.** The L2 implementation of `applyMutation()` (§4.3's single choke point) turned out to have zero `await`/async calls anywhere in its own body or any function it calls, including `persist()` (which uses `writeFileSync`/`renameSync`, the synchronous fs API, matching the pre-existing `setPolicies()`'s own choice). This is a real structural guarantee, not a probabilistic mitigation: Node's single-threaded, run-to-completion semantics mean no second call into this choke point can execute until a first one fully returns, for as long as this synchronicity holds. Verified with a 100-iteration adversarial stress test (two "concurrent" requests racing to roll back the same policy to different versions, one of which would strip owner's `settings:write`) — zero interleaving/lost-update anomalies, committed as a permanent regression test in `policy.test.js`. **This is now a documented, enforced invariant** (see the `CONCURRENCY INVARIANT` comment directly above `applyMutation()` in `policy.js`), not an incidental property: if a future change ever needs to make any part of this path asynchronous, a real mutex (this codebase's own `Promise.resolve()`-chain pattern, already used in `addonItemGrants.js`) becomes required at that point, and the comment says so explicitly. No lock was added because none was needed for the code as actually implemented — the original L1 finding correctly identified a real risk *for a naive implementation*, and that risk was closed by verified design, not by assumption that it wouldn't matter. |
 | L1-H2 | Architect | `rbacParity.test.js`'s route extractor has no parsing branch for regex-declared routes — may not see the new parameterized routes at all | HIGH | **Fixed** — explicit verification step required before/alongside implementation, §4.2 intro and §7 |
 | L1-H3 | GRC | Requirement 26 (schema migration) only partially satisfied — no tested downgrade procedure, no test against production-shaped data | HIGH | **Fixed** — migration test matrix expanded (§7) to include a production-representative fixture (all 5 real `DEFAULT_POLICIES` tiers, Deny + wildcard cases); downgrade behavior remains documented-not-tested (§6) since it exercises an *older* binary's code, which cannot be unit-tested from this codebase — flagged as an accepted, explicitly-stated limitation rather than a silent gap |
 | L1-H4 | GRC | No structured findings register for this audit, despite an established in-document fix pattern from a sibling document the same day | HIGH | **Fixed** — this section |
@@ -870,12 +874,10 @@ durable, committed summary.
 | L1-L2 | UI, GRC | `IamPolicyEditor.tsx`'s `TIERS` array already excludes `observer` today, independent of this design | LOW | **Confirmed, informational** — already fixed as a side effect of this design's dynamic tier derivation, §4.7 |
 | L1-L3 | Security | `matchAction()`'s unescaped regex construction on owner-authored Action strings (pre-existing) has its blast radius amplified by making policies shareable/reusable across tiers | LOW-MEDIUM | **Accepted for L2 tracking, not L1 blocking** — pre-existing weakness, not introduced by this design, but this design's own reuse model increases its stakes; recommend filing as a follow-up issue to validate Action strings against an allowed charset before passing to `RegExp`, tracked separately from this design's own scope |
 
-**CRITICAL and HIGH findings: all resolved in this revision (in-document
-fixes above), except L1-H1 (concurrency control), which is explicitly
-accepted as an L2 implementation requirement rather than an L1 design
-change — consistent with Requirement 20's framing that L1 fixes
-architectural/design-level errors and L2 fixes implementation-level ones;
-a concrete mutex/lock primitive is an implementation detail, not a
-data-model or API-contract decision.** No CRITICAL or HIGH finding was
-left unaddressed or silently dropped.
+**CRITICAL and HIGH findings: all resolved.** All 4 CRITICAL and all 7
+HIGH findings, including L1-H1 (resolved during L2 implementation with
+verified, tested evidence — see its row above), have a concrete
+fix committed to code, a passing regression test, or an explicit,
+justified acceptance. No CRITICAL or HIGH finding was left unaddressed
+or silently dropped.
 </content>

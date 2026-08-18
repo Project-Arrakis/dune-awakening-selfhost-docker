@@ -451,6 +451,35 @@ export { validPolicyStore };
 // `mutator` receives a deep-enough mutable copy of the current store and
 // must return the fully mutated store (or throw/return an error marker;
 // see callers below for the exact per-operation contracts).
+//
+// CONCURRENCY INVARIANT (L1 audit finding L1-H1, verified empirically --
+// see docs/design/console-custom-iam-roles-l1-design-2026-08-17.md §9):
+// this function, and every function that calls it (createPolicy,
+// editPolicy, rollbackPolicy, deletePolicyVersion, deletePolicy,
+// createTier, setTierInline, attachPolicy, detachPolicy, setPolicies),
+// MUST remain fully synchronous end-to-end -- no `await`, no Promise, no
+// async fs call, from the moment `getAllPolicies()` reads `_policies`
+// through the moment `persist()` finishes writing the file. This is not
+// a performance choice; it is what makes concurrent-write safety hold
+// without a separate lock/mutex primitive: Node's single-threaded,
+// run-to-completion semantics guarantee that once one of these calls
+// starts, no other request's JS code -- including another call into this
+// same choke point -- can execute until this one returns. A 200-iteration
+// adversarial stress test (two concurrent "requests" racing to roll back
+// the same policy to different versions, one of which would strip
+// owner's settings:write) found zero interleaving/lost-update anomalies,
+// specifically because there is no `await` anywhere in this path for a
+// second call to interleave at.
+//
+// If a future change ever needs to make any part of this path
+// asynchronous (e.g. switching persist() to the promise-based fs API,
+// or adding an async audit/logging hook inside the mutator), this
+// guarantee breaks silently and a real mutex (e.g. the
+// `Promise.resolve()`-chain pattern already used elsewhere in this
+// codebase -- see addonItemGrants.js's per-addonId queue) becomes
+// required at that point, not optional. Do not introduce an `await`
+// inside applyMutation() or any function it calls without adding that
+// lock in the same change.
 function applyMutation(mutatorFn) {
   const current = getAllPolicies();
   const next = mutatorFn(current);

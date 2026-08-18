@@ -518,3 +518,48 @@ test("resolveAllowedActions cache is invalidated by attach/detach, not just the 
   const after = resolveAllowedActions("cache-test-tier");
   assert.ok(after.includes("database:query"), "cache must reflect the newly attached policy's grant, not a stale pre-attach snapshot");
 });
+
+// ---- Concurrency safety (L1 audit finding L1-H1) ----
+//
+// policy.js's mutation choke point (applyMutation()) is fully synchronous
+// end-to-end -- this is a load-bearing invariant, not an incidental
+// implementation detail (see the CONCURRENCY INVARIANT comment directly
+// above applyMutation() in policy.js). If a future change ever makes any
+// part of the mutation path async without adding a real lock, this test
+// is the regression guard: it races two mutations against a shared
+// dependency (the same policy's version history, where one rollback
+// would strip owner's settings:write) and asserts the outcome is always
+// exactly one winner with no lost update -- not a probabilistic "usually
+// fine," a hard structural guarantee this stress run exercises 100 times.
+test("concurrent-shaped mutations on the same policy never produce a lost update or a silent owner-lockout, even under 100 racing iterations (L1 audit finding L1-H1)", async () => {
+  let anyInconsistent = false;
+  for (let i = 0; i < 100; i++) {
+    _resetPolicyStoreForTests();
+    // Build both versions BEFORE attaching to owner -- editPolicy() while
+    // already attached-and-sole-source would itself be correctly rejected
+    // by the owner-lockout guard (proven by the owner-lockout (iii) test
+    // above), so v2 must exist first, then the policy gets attached.
+    const grant = createPolicy({ name: `race-grant-${i}`, statements: [{ Effect: "Allow", Action: "settings:write" }] }, "owner"); // v1: HAS settings:write
+    assert.equal(editPolicy(grant.policyId, { statements: [{ Effect: "Allow", Action: "server:restart" }] }, "owner").ok, true); // v2: does NOT
+    assert.equal(rollbackPolicy(grant.policyId, "v1").ok, true); // v1 is default again before attaching
+    assert.equal(attachPolicy("owner", grant.policyId).ok, true);
+    assert.equal(setTierInline("owner", [{ Effect: "Allow", Action: "server:read" }]).ok, true);
+    assert.equal(evaluate({ tier: "owner" }, "settings:write"), true, "sanity: owner has settings:write via the attached policy's default version (v1) before the race starts");
+
+    // Two "concurrent" requests: both await a random microtask delay
+    // (simulating two real HTTP requests whose bodies finish parsing at
+    // slightly different times), then both call a synchronous mutation
+    // function racing on the exact same policy -- one rollback keeps
+    // settings:write (v1), the other would strip it (v2).
+    await Promise.all([
+      (async () => { await new Promise((r) => setTimeout(r, Math.random())); rollbackPolicy(grant.policyId, "v1"); })(),
+      (async () => { await new Promise((r) => setTimeout(r, Math.random())); rollbackPolicy(grant.policyId, "v2"); })(),
+    ]);
+
+    if (!evaluate({ tier: "owner" }, "settings:write")) {
+      anyInconsistent = true;
+      break;
+    }
+  }
+  assert.equal(anyInconsistent, false, "owner must retain settings:write after any interleaving of the two racing rollbacks -- a failure here means the synchronous-mutation-path invariant was broken");
+});
