@@ -7,8 +7,9 @@ import {
   discordAdapterEnabled, discordAdapterErrorResponse, discordAdapterHealth,
   discordAdapterPopulation, discordAdapterReadiness, discordAdapterServices,
   discordAdapterStatus, discordWritesEnabled, DISCORD_ADAPTER_ROUTES, DISCORD_PLANNED_ADAPTER_ROUTES,
-  validateDiscordActor, discordRoleMappingFromEnv
+  DISCORD_CATALOG_PROTOCOL_VERSION, validateDiscordActor, discordRoleMappingFromEnv
 } from "./adapter.js";
+import { buildCommandCatalog } from "./commandCatalog.js";
 import { discordActorTier, policyError, requireDiscordCapability, DISCORD_CAPABILITIES } from "./policy.js";
 import { discordStatusProvider } from "./statusProvider.js";
 import { discordReadinessProvider, discordServicesProvider } from "./readOnlyProviders.js";
@@ -132,6 +133,16 @@ export async function handleDiscordAdapterRoute({
 
     if (path === DISCORD_ADAPTER_ROUTES.HEALTH && req.method === "GET") {
       return json(res, 200, await discordAdapterHealth(config));
+    }
+
+    // Command catalog (Phase 1 of docs/rfc-command-discovery.md).
+    // Bearer-token auth only (requireDiscordBotToken() above, matching
+    // HEALTH) -- no actor signature, no per-capability check: this is
+    // read-only metadata about route/command shape, not game or player
+    // data, so it does not need per-actor tier enforcement the way an
+    // actual data route does.
+    if (path === DISCORD_ADAPTER_ROUTES.CATALOG && req.method === "GET") {
+      return json(res, 200, { ok: true, protocolVersion: DISCORD_CATALOG_PROTOCOL_VERSION, catalog: buildCommandCatalog() });
     }
 
     if (path === DISCORD_ADAPTER_ROUTES.STATUS && req.method === "POST") {

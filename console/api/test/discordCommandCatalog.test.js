@@ -1,0 +1,133 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { DISCORD_ADAPTER_ROUTES, DISCORD_LIVE_ADAPTER_ROUTES } from "../src/integrations/discord/adapter.js";
+import { DISCORD_ROLE_TIERS } from "../src/integrations/discord/policy.js";
+import { buildCommandCatalog, CATALOG_VERSION } from "../src/integrations/discord/commandCatalog.js";
+
+test("catalog has an entry for every live route, and no entry for a non-live route", () => {
+  const catalog = buildCommandCatalog();
+  const routesInCatalog = new Set();
+  for (const group of catalog.groups) {
+    for (const subcommand of group.subcommands) {
+      assert.ok(subcommand.route, `subcommand ${group.name}.${subcommand.name} is missing a route`);
+      routesInCatalog.add(subcommand.route);
+    }
+  }
+
+  const liveSet = new Set(DISCORD_LIVE_ADAPTER_ROUTES);
+  assert.deepEqual([...routesInCatalog].sort(), [...liveSet].sort(),
+    "catalog route set must exactly match DISCORD_LIVE_ADAPTER_ROUTES -- this is the drift-detection assertion this file exists to add");
+});
+
+test("catalog throws when a live route is genuinely missing metadata (real simulated drift)", () => {
+  // Genuinely reproduces the drift scenario: a route that IS in the live
+  // list but has NO corresponding metadata entry. buildCommandCatalog()'s
+  // optional liveRoutes/metadata parameters exist specifically so this test
+  // can inject a deliberately mismatched pair without touching the real,
+  // frozen production data -- see buildCommandCatalog()'s own comment.
+  const fakeLiveRoutes = [DISCORD_ADAPTER_ROUTES.HEALTH, "/api/integrations/discord/not-a-real-route"];
+  const fakeMetadata = {
+    [DISCORD_ADAPTER_ROUTES.HEALTH]: { group: "server", subcommand: "health", description: "x", capability: null, params: [] }
+    // deliberately no entry for "/api/integrations/discord/not-a-real-route"
+  };
+  assert.throws(
+    () => buildCommandCatalog(fakeLiveRoutes, fakeMetadata),
+    /1 live route\(s\) missing catalog metadata: \/api\/integrations\/discord\/not-a-real-route/
+  );
+});
+
+test("catalog throws when a metadata entry references a route no longer live (real simulated staleness)", () => {
+  // The inverse drift scenario: a route was retired from the live list but
+  // its metadata entry was left behind. Also genuinely reproduced, not
+  // just asserted by reading the code.
+  const fakeLiveRoutes = [DISCORD_ADAPTER_ROUTES.HEALTH];
+  const fakeMetadata = {
+    [DISCORD_ADAPTER_ROUTES.HEALTH]: { group: "server", subcommand: "health", description: "x", capability: null, params: [] },
+    "/api/integrations/discord/retired-route": { group: "server", subcommand: "retired", description: "x", capability: null, params: [] }
+  };
+  assert.throws(
+    () => buildCommandCatalog(fakeLiveRoutes, fakeMetadata),
+    /1 catalog entry\(ies\) reference route\(s\) no longer in DISCORD_LIVE_ADAPTER_ROUTES: \/api\/integrations\/discord\/retired-route/
+  );
+});
+
+test("catalog does not throw with the real, current, consistent production data", () => {
+  assert.doesNotThrow(() => buildCommandCatalog());
+});
+
+test("production catalog is memoized -- repeated zero-argument calls return the identical cached object", () => {
+  const first = buildCommandCatalog();
+  const second = buildCommandCatalog();
+  assert.strictEqual(first, second, "two zero-argument calls should return the same cached object, not recompute");
+});
+
+test("injected test data is never cached across calls, even with the same shape as production", () => {
+  const fakeLiveRoutes = [DISCORD_ADAPTER_ROUTES.HEALTH];
+  const fakeMetadata = { [DISCORD_ADAPTER_ROUTES.HEALTH]: { group: "server", subcommand: "health", description: "x", capability: null, params: [] } };
+  const first = buildCommandCatalog(fakeLiveRoutes, fakeMetadata);
+  const second = buildCommandCatalog(fakeLiveRoutes, fakeMetadata);
+  assert.notStrictEqual(first, second, "injected-data calls must recompute every time, never share the production cache or each other's result");
+  // Also confirms the production cache itself is unaffected by injected calls.
+  const prod = buildCommandCatalog();
+  assert.ok(prod.groups.length > 1, "production catalog must still have its real, full group set, not the 1-route fake data");
+});
+
+test("every catalog subcommand has a minTier drawn from the real DISCORD_ROLE_TIERS list, or null for capability: null routes", () => {
+  const catalog = buildCommandCatalog();
+  for (const group of catalog.groups) {
+    for (const subcommand of group.subcommands) {
+      if (subcommand.capability === null) {
+        assert.equal(subcommand.minTier, null, `${group.name}.${subcommand.name} has capability: null but a non-null minTier`);
+        continue;
+      }
+      assert.ok(DISCORD_ROLE_TIERS.includes(subcommand.minTier),
+        `${group.name}.${subcommand.name}'s minTier "${subcommand.minTier}" is not a real tier in DISCORD_ROLE_TIERS`);
+    }
+  }
+});
+
+test("every catalog subcommand's route is a real member of DISCORD_ADAPTER_ROUTES (no typo'd/invented route strings)", () => {
+  const catalog = buildCommandCatalog();
+  const realRoutes = new Set(Object.values(DISCORD_ADAPTER_ROUTES));
+  for (const group of catalog.groups) {
+    for (const subcommand of group.subcommands) {
+      assert.ok(realRoutes.has(subcommand.route),
+        `${group.name}.${subcommand.name}'s route "${subcommand.route}" is not a real DISCORD_ADAPTER_ROUTES value`);
+    }
+  }
+});
+
+test("broadcast is the only subcommand requiring DUNE_DISCORD_WRITES_ENABLED", () => {
+  const catalog = buildCommandCatalog();
+  const writeGated = [];
+  for (const group of catalog.groups) {
+    for (const subcommand of group.subcommands) {
+      if (subcommand.requiresWritesEnabled) writeGated.push(`${group.name}.${subcommand.name}`);
+    }
+  }
+  assert.deepEqual(writeGated, ["admin.broadcast"]);
+});
+
+test("catalog version matches the exported CATALOG_VERSION constant", () => {
+  const catalog = buildCommandCatalog();
+  assert.equal(catalog.version, CATALOG_VERSION);
+  assert.equal(typeof CATALOG_VERSION, "number");
+});
+
+test("DISCORD_ADAPTER_ROUTES.CATALOG is not itself in DISCORD_LIVE_ADAPTER_ROUTES (metadata about routes, not a data route)", () => {
+  assert.ok(!DISCORD_LIVE_ADAPTER_ROUTES.includes(DISCORD_ADAPTER_ROUTES.CATALOG));
+});
+
+test("routes with routeEnforcesCapability: false are exactly the known, documented exceptions (backups/list, version)", () => {
+  const catalog = buildCommandCatalog();
+  const unenforced = [];
+  for (const group of catalog.groups) {
+    for (const subcommand of group.subcommands) {
+      if (!subcommand.routeEnforcesCapability) unenforced.push(subcommand.route);
+    }
+  }
+  assert.deepEqual(unenforced.sort(), [
+    DISCORD_ADAPTER_ROUTES.BACKUPS_LIST,
+    DISCORD_ADAPTER_ROUTES.VERSION
+  ].sort());
+});
