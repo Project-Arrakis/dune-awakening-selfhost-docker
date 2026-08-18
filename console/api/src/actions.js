@@ -131,6 +131,7 @@ export const ROUTE_ACTIONS = {
   "POST /api/updates/fix-steamcmd":            "updates:fix",
   "POST /api/updates/check-stack":             "updates:check",
   "POST /api/updates/apply-stack":             "updates:apply",
+  "GET /api/updates/stack-progress":            "updates:read",
   "POST /api/updates/auto-game":               "updates:write-config",
   "POST /api/updates/repair-runtime":          "updates:repair",
 

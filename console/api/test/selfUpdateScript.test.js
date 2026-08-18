@@ -187,6 +187,8 @@ exit 0
         PATH: `${fakeBin}:${process.env.PATH}`,
         DUNE_SELF_UPDATE_API_BASE: `http://127.0.0.1:${address.port}`,
         DUNE_SELF_UPDATE_REPO: "Red-Blink/dune-awakening-selfhost-docker",
+        DUNE_SELF_UPDATE_RUN_ID: "123e4567-e89b-42d3-a456-426614174000",
+        DUNE_SELF_UPDATE_BUILD_TIMEOUT_SECONDS: "60",
         NO_PROXY: "127.0.0.1,localhost",
         no_proxy: "127.0.0.1,localhost"
       }
@@ -216,6 +218,10 @@ exit 0
     assert(existsSync(join(installDir, "runtime", "backups", "self-update")));
     assert(readdirSync(join(installDir, "runtime", "backups", "self-update")).length > 0);
     assert.ok(result.stdout.includes(`Installed stack version: ${version}`));
+    const updateStatus = readFileSync(join(installDir, "runtime", "generated", "self-update-status", "123e4567-e89b-42d3-a456-426614174000.env"), "utf8");
+    assert.match(updateStatus, /^state=succeeded$/m);
+    assert.match(updateStatus, /^stage=complete$/m);
+    assert.match(updateStatus, /^percent=100$/m);
     assert.deepEqual(requests, [
       `/repos/Red-Blink/dune-awakening-selfhost-docker/releases/tags/${version}`,
       "/candidate.tar.gz"
@@ -225,6 +231,67 @@ exit 0
     if (existsSync(pythonCacheDir)) chmodSync(pythonCacheDir, 0o755);
     server.closeAllConnections();
     await new Promise((resolveClose) => server.close(resolveClose));
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("self-update refuses a concurrent install and records a durable busy result", async () => {
+  const root = mkdtempSync(join(tmpdir(), "arrakis-self-update-lock-"));
+  const runId = "123e4567-e89b-42d3-a456-426614174001";
+  mkdirSync(join(root, "runtime", "scripts"), { recursive: true });
+  mkdirSync(join(root, "runtime", "generated"), { recursive: true });
+  copyFileSync(join(repoRoot, "runtime", "scripts", "self-update.sh"), join(root, "runtime", "scripts", "self-update.sh"));
+  copyFileSync(join(repoRoot, "runtime", "scripts", "compose-project.sh"), join(root, "runtime", "scripts", "compose-project.sh"));
+  writeFileSync(join(root, "VERSION"), "v0.0.1\n");
+
+  const holder = spawn("flock", [join(root, "runtime", "generated", "self-update.lock"), "sleep", "10"], { stdio: "ignore" });
+  try {
+    await new Promise((resolveWait) => setTimeout(resolveWait, 100));
+    const result = await runProcess("bash", ["runtime/scripts/self-update.sh", "install", "v0.0.2"], {
+      cwd: root,
+      env: { ...process.env, DUNE_SELF_UPDATE_RUN_ID: runId }
+    });
+    assert.equal(result.status, 75, result.stderr || result.stdout);
+    assert.match(result.stderr, /Another console update is already running/);
+    const status = readFileSync(join(root, "runtime", "generated", "self-update-status", `${runId}.env`), "utf8");
+    assert.match(status, /^state=failed$/m);
+    assert.match(status, /^stage=busy$/m);
+  } finally {
+    holder.kill("SIGKILL");
+    await new Promise((resolveClose) => holder.once("close", resolveClose));
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("web console rebuild stops at the configured build timeout", async () => {
+  const root = mkdtempSync(join(tmpdir(), "arrakis-self-update-timeout-"));
+  const fakeBin = join(root, "bin");
+  const runId = "123e4567-e89b-42d3-a456-426614174002";
+  mkdirSync(join(root, "runtime", "scripts"), { recursive: true });
+  mkdirSync(join(root, "runtime", "generated"), { recursive: true });
+  mkdirSync(fakeBin);
+  copyFileSync(join(repoRoot, "runtime", "scripts", "self-update.sh"), join(root, "runtime", "scripts", "self-update.sh"));
+  copyFileSync(join(repoRoot, "runtime", "scripts", "compose-project.sh"), join(root, "runtime", "scripts", "compose-project.sh"));
+  writeFileSync(join(root, "VERSION"), "v0.0.1\n");
+  writeFileSync(join(root, "docker-compose.web.yml"), "services: {}\n");
+  writeFileSync(join(fakeBin, "docker"), "#!/usr/bin/env bash\nexit 0\n", { mode: 0o700 });
+  writeFileSync(join(fakeBin, "timeout"), "#!/usr/bin/env bash\nexit 124\n", { mode: 0o700 });
+
+  try {
+    const result = await runProcess("bash", ["runtime/scripts/self-update.sh", "rebuild-web-console", "redblink-dune-docker-console"], {
+      cwd: root,
+      env: {
+        ...process.env,
+        PATH: `${fakeBin}:${process.env.PATH}`,
+        DUNE_SELF_UPDATE_RUN_ID: runId,
+        DUNE_SELF_UPDATE_BUILD_TIMEOUT_SECONDS: "60"
+      }
+    });
+    assert.equal(result.status, 124, result.stderr || result.stdout);
+    assert.match(result.stderr, /build timed out after 60 seconds/);
+    const status = readFileSync(join(root, "runtime", "generated", "self-update-status", `${runId}.env`), "utf8");
+    assert.match(status, /^state=failed$/m);
+  } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });

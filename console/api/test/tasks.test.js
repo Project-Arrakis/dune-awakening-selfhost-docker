@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { appendFileSync, chmodSync, mkdtempSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildSelfUpdateHelperDockerArgs, publicTask, taskWarnings, TaskManager, taskTimeoutMs } from "../src/tasks.js";
+import { buildSelfUpdateHelperDockerArgs, cleanupStaleSelfUpdateHelpers, publicTask, selfUpdateHelperAgeMs, taskWarnings, TaskManager, taskTimeoutMs } from "../src/tasks.js";
 
 test("task manager creates and completes allowlisted dune tasks", async () => {
   const dir = mkdtempSync(join(tmpdir(), "arrakis-task-"));
@@ -120,7 +120,7 @@ test("web self-update helper mounts the host repo path", () => {
     hostUid: "1000",
     hostGid: "1000",
     dockerSocketGid: "988",
-    extraEnv: ["ADMIN_BIND_PORT=8089", "DUNE_SELF_UPDATE_TOKEN"],
+    extraEnv: ["ADMIN_BIND_PORT=8089", "DUNE_SELF_UPDATE_TOKEN", "DUNE_SELF_UPDATE_RUN_ID=123e4567-e89b-42d3-a456-426614174000"],
     command: "runtime/scripts/dune self-update install latest"
   });
 
@@ -134,7 +134,72 @@ test("web self-update helper mounts the host repo path", () => {
   assert(args.includes("DOCKER_SOCKET_GID=988"));
   assert(args.includes("ADMIN_BIND_PORT=8089"));
   assert(args.includes("DUNE_SELF_UPDATE_TOKEN"));
+  assert(args.includes("DUNE_SELF_UPDATE_RUN_ID=123e4567-e89b-42d3-a456-426614174000"));
+  assert(args.includes("io.github.red-blink.dune-selfhost.role=self-update-helper"));
   assert(!args.includes("/repo:/repo"));
+});
+
+test("self-update helper age recognizes both current and legacy helper names", () => {
+  const now = 2_000_000_000_000;
+  assert.equal(selfUpdateHelperAgeMs("dune-web-self-update-1999999880000", now), 120_000);
+  assert.equal(selfUpdateHelperAgeMs("dune-console-self-update-1999999700", now), 300_000);
+  assert.equal(selfUpdateHelperAgeMs("redblink-dune-docker-console", now), 0);
+});
+
+test("self-update helper cleanup removes stale or stopped helpers and blocks a live one", async () => {
+  const now = Date.now();
+  const stale = `dune-web-self-update-${now - 3_000_000}`;
+  const stopped = `dune-web-self-update-${now - 10_000}`;
+  const active = `dune-web-self-update-${now}`;
+  const calls = [];
+  await cleanupStaleSelfUpdateHelpers("/repo", async (args) => {
+    calls.push(args);
+    if (args[0] === "ps") return { code: 0, stdout: `${stale}\trunning\n${stopped}\texited\n`, stderr: "" };
+    return { code: 0, stdout: "", stderr: "" };
+  });
+  assert.deepEqual(calls[1], ["rm", "-f", stale, stopped]);
+
+  await assert.rejects(cleanupStaleSelfUpdateHelpers("/repo", async () => ({
+    code: 0,
+    stdout: `${active}\trunning\n`,
+    stderr: ""
+  })), /Another console update is already running/);
+});
+
+test("detached self-update stays running until durable helper status completes it", async () => {
+  const previousProject = process.env.DUNE_COMPOSE_PROJECT_NAME;
+  process.env.DUNE_COMPOSE_PROJECT_NAME = "dune-test";
+  const calls = [];
+  const manager = new TaskManager({
+    repoRoot: "/repo",
+    hostRepoRoot: "/host/repo",
+    taskRetention: 20,
+    commandTimeoutMs: 5000
+  }, {
+    runDockerCommand: async (args) => {
+      calls.push(args);
+      if (args[0] === "ps") return { code: 0, stdout: "", stderr: "" };
+      return { code: 0, stdout: "helper-id\n", stderr: "" };
+    }
+  });
+
+  try {
+    const created = manager.create("updates", "selfUpdateApply", {});
+    let current = manager.get(created.id);
+    for (let attempt = 0; attempt < 100 && current?.currentStep !== "Update helper running"; attempt += 1) {
+      await new Promise((resolveWait) => setTimeout(resolveWait, 5));
+      current = manager.get(created.id);
+    }
+    assert.equal(current?.status, "running");
+    assert.equal(current?.finishedAt, null);
+    assert.match(current?.progressMessage || "", /helper is running/i);
+    assert.equal(calls[0][0], "ps");
+    assert(calls[1].includes(`DUNE_SELF_UPDATE_RUN_ID=${created.id}`));
+    assert(calls[1].includes("DUNE_SELF_UPDATE_BUILD_TIMEOUT_SECONDS=1800"));
+  } finally {
+    if (previousProject === undefined) delete process.env.DUNE_COMPOSE_PROJECT_NAME;
+    else process.env.DUNE_COMPOSE_PROJECT_NAME = previousProject;
+  }
 });
 
 test("repeated updateCheck tasks within the cache window reuse one SteamCMD invocation", async () => {
