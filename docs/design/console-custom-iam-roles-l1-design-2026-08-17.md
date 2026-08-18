@@ -4,12 +4,17 @@
 "mirror AWS's policy/role editing and maintenance model," per explicit
 operator direction after revision 1 was drafted but before any audit or
 commit)
-**Status:** L1 design, revision 2. Not yet audited — Layer 1 eight-hats
-dispatch is the next step, per Requirement 20. Revision 1 (single-document-
-per-tier, name-allowlist-only) is superseded in place; no separate document
-was kept, since revision 1 was never committed or audited (nothing to point
-back to that carries independent value).
-**Tracking issue:** to be filed alongside this document, same commit.
+**Status:** L1 design, revision 3. Layer 1 eight-hats audit complete — all
+8 hats dispatched independently per Requirement 20, all CRITICAL/HIGH
+findings resolved in-document (see §9 for the full findings register).
+One HIGH finding (concurrency control, L1-H1) is explicitly deferred to
+L2 as an implementation-level (not design-level) decision, per
+Requirement 20's own layering rationale. Revision 1 (single-document-
+per-tier, name-allowlist-only) is superseded in place; no separate
+document was kept, since revision 1 was never committed or audited
+(nothing to point back to that carries independent value).
+**Tracking issue:** [#335](https://github.com/yacketrj/dune-awakening-selfhost-docker/issues/335).
+**PR:** [#336](https://github.com/yacketrj/dune-awakening-selfhost-docker/pull/336) (draft, pending L2 planning).
 
 ---
 
@@ -190,11 +195,61 @@ implicit):
   attachment ordering guarantee is needed or implied** — worth stating
   explicitly since it's a common AWS misconception this design should not
   accidentally reintroduce confusion about.
+- **Aggregation failure semantics are fail-closed, not fail-open — this is
+  a required, non-optional property, added after Layer 1 audit (Finding
+  L1-C2/C3, §9).** If any `attached[]` entry's `policyId` does not resolve
+  to a real entry in `policies`, or a policy's `defaultVersionId` does not
+  resolve to a real entry in that policy's `versions`, the aggregation step
+  MUST treat this as if that attached policy's statements are exactly one
+  `{Effect: "Deny", Action: "*"}` statement for the purposes of this
+  evaluation — i.e., a dangling/unresolvable reference denies everything
+  it would have covered, it never silently vanishes from the aggregate.
+  This is the opposite of the naive "just skip it" implementation the
+  Layer 1 audit's Architect hat traced through the unchanged `evaluate()`
+  loop and found fails **open** (silently dropping a Deny re-grants
+  whatever it was blocking) — the naive approach is explicitly rejected
+  by this design, not left to implementer discretion. This must ship with
+  a corresponding test (§7) asserting exactly this behavior, since it is
+  the single most security-critical property this revision introduces.
+- **This aggregation-failure guard is also the backstop for referential
+  integrity**, but is not a substitute for preventing dangling references
+  in the first place — see §4.4's extended `validPolicyStore()` check.
 
 ### 4.2 Named policy lifecycle (create / version / rollback / delete)
 
-New routes, all owner-only (matching the existing settings-panel
-owner-only convention):
+New routes, all gated on the `settings:write` action per the existing
+capability model (see the precision note below), matching the existing
+settings-panel convention:
+
+**Precision required after Layer 1 audit (Security hat, Finding
+L1-H-precision, §9): "owner-only" is not an identity check anywhere in
+this codebase — there is no `requireOwner()` gate in `server.js`/`auth.js`.
+It is an emergent property of which tier(s) the aggregate policy store
+currently grants `settings:write` to (by default, only `owner`, since
+`admin`'s default policy explicitly `Deny`s `settings:*`). This is a safe
+default and not a defect, but the design must state it precisely: every
+route below needs an explicit `ROUTE_ACTIONS` entry mapping it to
+`settings:write` (or another named action, decided at L2) in `actions.js`
+— an unmapped route fails closed to 403 for everyone including the real
+owner, which is safe but must not be left to implementer discretion
+whether to add the mapping at all.**
+
+**Dispatch mechanics required after Layer 1 audit (Architect hat, Finding
+L1-H2, §9): every parameterized route below (`{policyId}`, `{versionId}`,
+`{tier}`) requires real regex-based dispatch in `server.js`, following
+the exact precedent already established for `/api/database/*` and
+`/api/bases/*`'s `REGEX_ACTIONS_BY_METHOD_PATTERN` table (`actions.js`) —
+plain `path === "literal"` matching (used by today's single IAM route)
+does not work for these. Critically, `rbacParity.test.js`'s static route
+extractor (`extractRoutes()`) was found to have no parsing branch for
+`.match(/regex/)`-declared routes — only literal/template/`startsWith`
+forms. Every new parameterized route in §4.2/§4.3 must be added to
+`REGEX_ACTIONS_BY_METHOD_PATTERN` (matching the existing precedent) AND
+`rbacParity.test.js`'s extractor must be confirmed (or extended, if
+needed) to actually see these routes before this design's L2 test
+coverage claims can be trusted — this is a mechanical verification step,
+not optional, and must happen before/alongside implementation, not
+discovered after CI passes green on a false sense of coverage.**
 
 ```
 POST   /api/settings/iam/policies                        create (name, statements) -> {policyId, defaultVersionId}
@@ -242,16 +297,50 @@ PUT    /api/settings/iam/tiers/{tier}/detach        body {policyId} -> removes f
 - **New tier names still require `RESERVED_TIER_NAME_PATTERN`**
   (`^[a-z][a-z0-9_-]{1,31}$`, unchanged from revision 1, §8 item 1 there
   still open re: exact charset — carried into this revision's own §8).
-- **The owner-lockout guard is unchanged in spirit, reapplied to the new
-  shape**: before accepting any write that changes `tiers.owner` (its
-  inline policy, or its attached-policy list), re-run the existing check —
-  does the *resulting, fully-aggregated* owner policy (inline + every
-  attached policy's default version, §4.1) still grant `settings:write`?
-  This is a strictly more correct version of today's check (today only
-  looks at the one embedded document; this looks at the full aggregate,
-  which is the actual thing that matters once attachment exists) — not a
-  new guard, an extension of the existing one to cover the new
-  aggregation path.
+- **The owner-lockout guard is re-architected as a single choke point,
+  not distributed per-route — required change after Layer 1 audit
+  (Finding L1-C1, §9, independently identified by 3 of 8 hats).** The
+  original plan ("re-run the existing check on any write that changes
+  `tiers.owner`") was traced by the audit against the actual proposed
+  routes and found to have a real, unmitigated bypass: `PUT
+  /policies/{id}` (edit → new version) and `POST /policies/{id}/rollback`
+  (§4.2) mutate the **policy**, never `tiers.owner` directly — so if
+  `owner`'s only source of `settings:write` is an attached named policy,
+  editing or rolling back that policy silently strips owner's access with
+  the guard never firing at all, since the guard's trigger condition
+  literally never matches those two routes.
+
+  **Fix: every one of the 7 mutating operations in §4.2/§4.3 (create
+  policy, edit policy, rollback policy, delete policy version, delete
+  policy, tier inline-set, tier attach, tier detach) must funnel through
+  one shared internal function** — analogous to today's single
+  `setPolicies()` choke point, which is exactly *why* today's guard is
+  trustworthy (there is nowhere else to write). This shared function:
+  1. Applies the requested mutation to an in-memory copy of the full
+     store.
+  2. Re-validates the new shape (§4.4's extended `validPolicyStore()`).
+  3. **Re-evaluates `settings:write` against the resulting owner
+     aggregate** (inline + every currently-attached policy's default
+     version, §4.1) — regardless of which of the 7 operation types
+     triggered the call, and regardless of whether the mutation
+     "looks like" it touched `tiers.owner` on its face. A policy-edit or
+     rollback that would drop `settings:write` from *any* tier currently
+     attaching it, including `owner`, is rejected by this same check —
+     not by a special case, but because the check always runs against
+     the resulting full store, not against the specific field that was
+     written.
+  4. Only then commits the in-memory copy and writes the file
+     (`writeJsonAtomic(..., 0o600)` — explicit per Layer 1 audit Finding
+     L1-M2, §9).
+  5. Clears `_allowedActions` unconditionally (per Layer 1 audit Finding
+     L1-M1, §9 — today only `setPolicies()` does this; every one of the 7
+     new operations must too, or stale cached permissions persist for the
+     life of the process).
+
+  This preserves the single-writer invariant that makes today's guard
+  correct, rather than trusting 7 independently-implemented handlers to
+  each remember to re-derive it — matching the Layer 1 audit's Security
+  and Architect hats' explicit recommendation.
 - **Deleting a tier**: still explicitly deferred (§3, unchanged from
   revision 1) — same reasoning (what happens to a session or Discord
   mapping pointing at a deleted tier).
@@ -259,18 +348,58 @@ PUT    /api/settings/iam/tiers/{tier}/detach        body {policyId} -> removes f
 ### 4.4 Migration: old flat-document format → new schema v2
 
 ```js
-// policy.js -- loadPolicies(), extended:
+// policy.js -- loadPolicies(), extended. Revised after Layer 1 audit
+// (Finding L1-H5, §9): the original draft returned null (whole-file
+// reject, fall back to 100% stock DEFAULT_POLICIES) the instant ANY
+// single tier entry failed to validate, even if every other tier in
+// the file was perfectly valid. Traced by the DBA hat via direct
+// execution against a 5-valid+1-malformed fixture: this silently
+// reverts an operator's entire, possibly heavily-customized
+// authorization policy to stock defaults on a load-time glitch in one
+// unrelated tier, with no operator action, confirmation, or visible
+// error beyond a generic log line. For a security-relevant file, this
+// is a worse failure than salvaging what validates cleanly.
 function migrateIfLegacyShape(parsed) {
   // Legacy shape: { tierName: { version, tier, statements }, ... } -- no
   // top-level "schemaVersion"/"tiers"/"policies" keys at all.
   if (parsed && parsed.schemaVersion === 2) return parsed; // already current
-  if (!parsed || typeof parsed !== "object") return null;
+
+  // Whole-file rejection is reserved for genuinely unparseable/structurally
+  // alien input, where there is no partial signal worth salvaging --
+  // NOT for "one entry among several is malformed" (see below).
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
 
   const tiers = {};
+  const failedTiers = [];
   for (const [tierName, doc] of Object.entries(parsed)) {
-    if (!doc || doc.tier !== tierName || !Array.isArray(doc.statements)) return null;
+    if (!doc || doc.tier !== tierName || !Array.isArray(doc.statements)) {
+      failedTiers.push(tierName);
+      continue; // salvage every other tier; do not abort the whole migration
+    }
     tiers[tierName] = { inline: { statements: doc.statements }, attached: [] };
   }
+
+  if (failedTiers.length) {
+    // Log explicitly which tier(s) failed and why -- an operator restarting
+    // their console must be able to find out what happened, not just notice
+    // permissions silently changed. One of the 5 built-in tiers failing
+    // falls back to that tier's own DEFAULT_POLICIES entry (never invents a
+    // default for an unrecognized custom tier name -- an unsalvageable
+    // custom tier is dropped, not guessed at).
+    logMigrationWarning(failedTiers); // implementation detail, exact logger TBD at L2
+    for (const tierName of failedTiers) {
+      if (DEFAULT_POLICIES[tierName]) {
+        tiers[tierName] = { inline: { statements: DEFAULT_POLICIES[tierName].statements }, attached: [] };
+      }
+      // else: unrecognized custom tier name with malformed data -- dropped,
+      // not defaulted. A session claiming this tier will fail to resolve,
+      // matching this design's existing "no policy for this tier" behavior.
+    }
+  }
+
+  if (!tiers.owner) return null; // owner must always exist post-migration -- if even the
+                                   // fallback couldn't produce one, this IS the alien-input
+                                   // case; fall through to the full-file DEFAULT_POLICIES path.
   return { schemaVersion: 2, tiers, policies: {} };
 }
 ```
@@ -279,7 +408,12 @@ function migrateIfLegacyShape(parsed) {
   an operator who never touches IAM again after updating never notices
   anything changed; the file is rewritten to schema v2 the next time
   `setPolicies()`-equivalent write happens, and read correctly either way
-  in the meantime via this in-memory migration.
+  in the meantime via this in-memory migration. **Verified by Layer 1
+  audit (Architect hat) to run at process start only** (`server.js`'s
+  single `loadPolicies()` call site) — not per-request, so this closes
+  §8 Open Item #4 (revision 1/2) with no design change needed: there is
+  no repeated migration cost and no race with concurrent writes via this
+  call path specifically.
 - **Byte-identical evaluation for every existing install**: a migrated
   tier has `attached: []`, so `evaluate()`'s aggregation step (§4.1)
   degenerates to exactly the old single-document behavior — the
@@ -287,9 +421,19 @@ function migrateIfLegacyShape(parsed) {
   provably identical, not just expected to be (§6 restates this as the
   Strict Requirement 0 upgrade-path evidence).
 - **`validPolicyStore()`'s replacement** validates the new
-  `{schemaVersion, tiers, policies}` shape directly; the migration
+  `{schemaVersion, tiers, policies}` shape directly, **and — required
+  after Layer 1 audit (Finding L1-C3, §9) — additionally verifies
+  referential integrity in both directions**: every `attached[]` entry
+  in every tier resolves to a real key in `policies`, and every policy's
+  `defaultVersionId` resolves to a real key in that policy's `versions`.
+  A store failing either check is rejected exactly like any other
+  invalid shape (whole-file reject, per the genuinely-alien-input
+  reasoning above — a dangling reference at *validation* time, as
+  opposed to a *resolution-time* gap covered by §4.1's fail-closed
+  aggregation guard, indicates file corruption, not a normal runtime
+  state, and should not be silently patched over). The migration
   function above is the only code path that ever produces the new shape
-  from old input, and it runs before validation, not instead of it.
+  from old input, and it runs before this validation, not instead of it.
 
 ### 4.5 Policy Simulator (fixes the pre-existing Test-tab bug, extends it)
 
@@ -318,13 +462,40 @@ POST /api/settings/iam/policy/test
   from revision 1's §4.4 approach, adapted to build from `tiers`/`policies`
   in `mode: "tier"` rather than a single injected document.
 
-### 4.6 Reconciling `handoff.js`'s fourth hardcoded tier-name copy
+### 4.6 Reconciling `handoff.js`'s hardcoded tier-name copy
 
-Unchanged from revision 1 (§4.2 there) — `handoff.js`'s `VALID_TIERS`
-becomes a shape check (`RESERVED_TIER_NAME_PATTERN`) rather than membership
-in its own separate hardcoded list. Not affected by the policy/role model
-change in this revision — `handoff.js` only ever cares about the tier
-*name* string, never the policy document behind it.
+Unchanged from revision 1 (§4.2 there) in mechanism — `handoff.js`'s
+`VALID_TIERS` becomes a shape check (`RESERVED_TIER_NAME_PATTERN`) rather
+than membership in its own separate hardcoded list. Not affected by the
+policy/role model change in this revision — `handoff.js` only ever cares
+about the tier *name* string, never the policy document behind it.
+
+**Correction after Layer 1 audit (Finding L1-C4, §9): this change breaks
+a real, currently-green test, and the design must say so explicitly rather
+than asserting "unchanged" implies "safe."** `handoff.test.js` (existing,
+current) has a test — `"validatePayload rejects an invalid tier"` — that
+asserts `tier: "superuser"` is rejected as `invalid_tier`. Verified by
+direct regex execution: `RESERVED_TIER_NAME_PATTERN.test("superuser")` is
+`true` — the proposed shape check does **not** reject this value, because
+it's shaped exactly like a valid tier name, it just happens not to be one
+of the 5 built-ins (which, correctly, is no longer disqualifying once
+custom tiers exist). This specific test must be rewritten at L2 to use a
+value that's actually malformed by shape (e.g. `"Superuser!"` or a
+33+-character string) rather than merely "not one of the five" — the old
+test encoded Set-membership semantics this design deliberately removes,
+and the L2 implementation PR must update it in the same commit, not
+discover it as a surprise CI failure.
+
+**Scoping note, added after Layer 1 audit (GRC hat's inventory check):**
+`console/api/src/services/discordAdapter.js`'s `ROLE_TIERS` (`public:0,
+observer:1, admin:2`) was flagged during audit as a possible fifth
+hardcoded tier-name structure. Verified: it is a structurally distinct,
+3-value ordinal capability check gating the Discord bot's own
+token-authenticated adapter routes (health/status/readiness), unrelated
+to the console's 5-tier IAM system this design modifies. Confirmed
+out-of-scope for the same reason `integrations/discord/policy.js`'s
+`DISCORD_ROLE_TIERS` is already scoped out (§3) — named explicitly here
+so a future reader doesn't have to re-derive this.
 
 ### 4.7 Frontend: Policies view + Roles view
 
@@ -362,6 +533,36 @@ linked views, matching the AWS console's own IAM section structure (a
   "Test" tab — testing a policy's draft edit before saving uses
   `mode: "draft"`; testing a role's real current effective permissions
   uses `mode: "tier"`.
+- **Error surfacing — required after Layer 1 audit (UI hat, Finding
+  L1-H7, §9): the backend's rejection detail must actually reach the
+  owner, not be discarded.** The only existing error-handling precedent
+  in this component (`catch { setJsonError("Failed to save policy"); }`)
+  discards whatever detail the server sent. This is not acceptable for
+  the new routes, because §4.2 deliberately designs *specific, actionable*
+  rejection detail — the version-cap error names the oldest non-default
+  version to delete; the delete-while-attached error names every
+  attaching tier — and a generic "failed" string would make that design
+  effort invisible to the only actor who can act on it. Every new
+  attach/detach/rollback/delete/create call must surface the server's
+  actual `error` field (and, for delete-while-attached, the specific
+  list of attaching tiers) directly in the UI, not a generic failure
+  message.
+- **Whole-policy deletion has no UI control specified — gap, not a
+  decision, per Layer 1 audit (UI hat, Finding L1-H7, §9).** §4.2 defines
+  `DELETE /api/settings/iam/policies/{policyId}` (whole-policy delete),
+  but no bullet above gives it a UI affordance — only per-*version*
+  deletion is mentioned. Resolved for this revision: the Policies view's
+  per-policy editor gains an explicit "Delete policy" action (disabled,
+  with the attaching-tier list shown per the point above, when the
+  policy is currently attached anywhere), with a confirmation step before
+  the call fires — this is also the first genuinely irreversible action
+  in this component's history (today's `savePolicy` only overwrites in
+  place), so a bare, unconfirmed delete button is not acceptable UX
+  regardless of the missing-affordance gap above.
+- **Version-cap proactive disclosure**: the version-history list shows a
+  simple "N/5 versions used" indicator at all times, not only an error
+  message after the 6th attempt is already rejected (avoids an owner
+  composing a real edit only to discover the cap after the fact).
 
 ---
 
@@ -426,80 +627,234 @@ linked views, matching the AWS console's own IAM section structure (a
 
 ## 7. Testing strategy
 
-- **`policy.test.js`**: 
-  - migration: a legacy-shape fixture loads correctly and produces
-    identical `evaluate()` results to the same fixture expressed directly
-    in schema v2 with empty `attached` arrays (the direct proof for §6's
-    upgrade-path claim).
-  - aggregation: a tier with `inline: null` and one attached policy
-    evaluates correctly; a tier with both an inline policy and an attached
-    policy correctly combines both (including a Deny in the attached
-    policy overriding an Allow in the inline one, and vice versa —
-    proving attachment order doesn't matter, §4.1).
+Revised after Layer 1 audit (QA hat, Finding L1-H6, §9): the original
+version of this section named only HTTP routes (§4.2/§4.3), never the
+underlying `policy.js`-level function contracts, making the tests below
+unwritable directly from this document as originally worded. §4.3 now
+names the single shared internal mutation function these tests exercise
+(the "one choke point" from the owner-lockout fix, §4.3) — tests below
+are written against that function, not the routes directly, matching
+`policy.test.js`'s existing style of testing `policy.js` exports rather
+than going through `server.js`'s HTTP layer.
+
+- **`policy.test.js`**:
+  - migration — **expanded from a single fixture to a real matrix**, per
+    Layer 1 audit (QA hat, Finding L1-H5-test, §9): a single happy-path
+    fixture does not prove §6's universal upgrade-path claim. Minimum
+    matrix: (a) all 5 real `DEFAULT_POLICIES` tiers migrated together,
+    evaluated against a representative action set including at least one
+    Deny-triggering action (`database:mutate` for admin) and the
+    wildcard-only owner tier (`Action: "*"`, a string not an array —
+    confirming `matchAction()`'s string/array handling survives
+    migration), comparing legacy-direct `evaluate()` output to
+    migrated-schema-v2 `evaluate()` output action-by-action; (b) a
+    fixture with 5 valid tiers + 1 malformed tier, asserting the 5 valid
+    tiers are salvaged and only the malformed one falls back to its
+    `DEFAULT_POLICIES` entry (or is dropped, if unrecognized) — the
+    direct regression test for the H5 migration fix above; (c)
+    genuinely alien input (not an object, or an object with no tiers at
+    all) still triggers full fallback to `DEFAULT_POLICIES`; (d)
+    idempotency — migrating an already-`schemaVersion:2` document is a
+    no-op.
+  - referential integrity (**new, required per Finding L1-C3, §9**): a
+    store containing a tier's `attached[]` entry with no corresponding
+    `policies` key is rejected by `validPolicyStore()`; a policy whose
+    `defaultVersionId` has no corresponding `versions` key is rejected
+    likewise. Both are load-time rejections (whole-file, per §4.4), not
+    resolution-time — proving these are caught before evaluation is ever
+    attempted.
+  - aggregation fail-closed behavior (**new, required per Finding
+    L1-C2, §9 — the single most security-critical test this revision
+    adds**): given a tier with an `attached[]` entry pointing at a
+    `policyId` that does NOT exist in `policies` (simulating a dangling
+    reference that somehow bypassed the referential-integrity check
+    above, e.g. via direct file corruption), `evaluate()` denies the
+    action the dangling policy would have covered — proving the
+    fail-closed guard in §4.1 actually behaves as specified, not the
+    naive fail-open "just skip it" behavior the Architect hat traced
+    through the unchanged loop.
+  - aggregation (general): a tier with `inline: null` and one attached
+    policy evaluates correctly; a tier with both an inline policy and an
+    attached policy correctly combines both (including a Deny in the
+    attached policy overriding an Allow in the inline one, and vice
+    versa — proving attachment order doesn't matter, §4.1).
   - version lifecycle: create → edit (v2 becomes default) → rollback to
     v1 (v1 becomes default again, no new version created) → attempt to
     delete v1 while it's the default (rejected) → rollback to v2 → delete
     v1 (succeeds).
-  - version cap: creating a 6th version is rejected with the existing 5
-    intact.
-  - delete-while-attached: rejected, with the attaching tier named in the
-    error.
-  - owner-lockout: extended to the aggregate case — attaching a policy to
-    `owner` that doesn't itself grant `settings:write` is fine (the
-    inline policy still does); *removing* the inline policy from `owner`
-    while no attached policy grants `settings:write` is rejected, matching
-    the extended guard in §4.3.
-- **`handoff.test.js`**: unchanged from revision 1's plan (§4.6 is
-  identical to revision 1's §4.2).
+  - version cap: creating a 6th version is rejected AND the error payload
+    identifies a specific version ID to delete (**expanded per Finding
+    L1-H4, §9** — the original draft checked only the boolean rejection,
+    not the claimed error content); a second sub-case covers
+    rollback-then-hit-cap, to pin down "oldest non-default" unambiguously
+    when the default version is not the newest one.
+  - delete-while-attached: rejected, with every attaching tier named in
+    the error (not just one).
+  - owner-lockout, full state-transition surface (**expanded from 1 to 5
+    covered operation types per Finding L1-C1, §9 — this is the direct
+    regression test for the redesigned single-choke-point guard, §4.3**):
+    for EACH of — (i) direct inline edit removing `settings:write` from
+    owner with no attached policy covering it, (ii) detaching owner's
+    only `settings:write`-granting attached policy, (iii) **editing** an
+    attached policy (creating a new version) that drops `settings:write`
+    while it's attached to owner and owner has no other source of it,
+    (iv) **rolling back** an attached policy to an older version that
+    lacks `settings:write` under the same condition, (v) attaching a
+    policy that does NOT grant `settings:write` to owner when owner's
+    inline policy already does (must succeed — proves the guard doesn't
+    over-reject safe operations) — assert (i)-(iv) are rejected and (v)
+    succeeds, all via the single shared mutation function from §4.3, not
+    per-route.
+- **`handoff.test.js`**: **the existing `"validatePayload rejects an
+  invalid tier"` test using `tier: "superuser"` must be rewritten**
+  (Finding L1-C4, §9 — verified via direct regex execution that
+  `RESERVED_TIER_NAME_PATTERN` accepts `"superuser"`, so this exact test
+  would fail once §4.6 ships). Replace with a value that fails the shape
+  check itself (e.g. `"Superuser!"` or a 33+-character string). Add a new
+  case: a well-formed custom tier name (matching the pattern, not one of
+  the 5 built-ins) is no longer rejected by `validatePayload()`'s shape
+  check — proving the intended new capability actually works, not just
+  that the old test was updated to stop failing.
 - **New `console/web` tests**: Roles view renders attach/detach
   correctly against a mock catalog; Policies view's version history
-  renders and "Set as default"/"Delete" call the right routes; Simulator
-  tab correctly distinguishes `mode: "draft"` vs `mode: "tier"` requests.
-- **`rbacParity.test.js`**: unaffected, same reasoning as revision 1.
+  renders and "Set as default"/"Delete" call the right routes and
+  surface the server's actual error detail on failure (per §4.7's
+  error-surfacing requirement); Simulator tab correctly distinguishes
+  `mode: "draft"` vs `mode: "tier"` requests; whole-policy delete is
+  disabled with the attaching-tier list shown when a policy is attached
+  anywhere, and requires confirmation when unattached.
+- **`rbacParity.test.js`**: **not unaffected — requires a mechanical
+  verification step per Finding L1-H2, §9.** Before relying on this
+  suite for IAM-action coverage of the new routes, confirm its
+  `extractRoutes()` parser actually recognizes the new
+  regex-parameterized route declarations (`{policyId}`, `{versionId}`,
+  `{tier}`) — its current implementation has no parsing branch for
+  `.match(/regex/)`-declared routes, only literal/template/`startsWith`
+  forms. If it doesn't, either extend the parser or add explicit,
+  hand-written parity assertions for the new routes; either way, this
+  must be confirmed working (not assumed) before this design's test
+  coverage claims are trusted.
 
 ---
 
-## 8. Open items for the Layer 1 eight-hats review
+## 8. Open items — status after Layer 1 eight-hats review
 
-1. Carried from revision 1, still open: is
-   `RESERVED_TIER_NAME_PATTERN`'s exact shape
+Items below are the original revision-2 open questions, each now marked
+with its resolution status per the completed Layer 1 audit (§9 has the
+full findings register). Items resolved below are closed; items still
+genuinely open carry into L2/implementation planning.
+
+1. **Still open.** Is `RESERVED_TIER_NAME_PATTERN`'s exact shape
    (`^[a-z][a-z0-9_-]{1,31}$`) right, or should it match `actions.js`'s
-   own prevailing namespace convention more precisely?
-2. Should there be a maximum number of named policies and/or custom tiers
-   (a sanity/DoS-adjacent bound), given both are now owner-creatable
-   without limit in this design as drafted?
-3. Confirm with the Security hat: does the many-to-many attach model
-   introduce any new privilege-escalation path beyond what direct
-   owner/admin-tier editing already allows today — specifically, can an
-   owner ever end up in a state where `tiers.owner`'s *aggregate*
-   permissions silently lose `settings:write` through a sequence of
-   individually-valid attach/detach/version-rollback operations that the
-   extended lockout guard (§4.3) doesn't actually catch because it only
-   checks the state *after* one operation at a time? (e.g., does a
-   rollback on an *attached* policy correctly re-trigger the owner-lockout
-   check, or only a direct edit/attach/detach on the tier itself?)
-4. Confirm with the DBA/Architect hats: is an in-place schema migration on
-   every `loadPolicies()` call (§4.4) the right place for this, or should
-   migration run once at startup and persist the migrated shape
-   immediately (avoiding repeated migration work on every read, though
-   the current code already re-reads the file fresh only at startup, not
-   per-request, so this may be a non-issue — verify against the actual
-   call sites before deciding).
-5. Role deletion and renaming remain deferred (§3, unchanged from
-   revision 1) — same question as before: should this document's tracking
-   issue also file those as named follow-ups now?
-6. Does `docs/console-iam.md` need a full rewrite to describe the new
-   Policies/Roles split, or an additive section alongside the existing
-   description? (Documentation-currency requirement, §14 of the account
-   README — this is a merge blocker, not a follow-up, once implementation
-   lands.)
-7. UI hat: is a two-view (Policies / Roles) split, versus a single unified
-   view with an "attached policies" section inline in the Roles view and
-   policies only ever created *from* that context (no standalone Policies
-   list), the better match for how AWS's own console actually flows for a
-   user who's never used multi-policy IAM before? AWS's own IAM console
-   does support both a standalone Policies list and creating on to attach
-   in one dialog — worth deciding whether both entry points are worth
-   building in v1 or whether the standalone Policies list alone is
-   sufficient for v1, with the attach-and-create shortcut deferred.
+   own prevailing namespace convention more precisely? No hat took a
+   strong position on the exact charset; carries into L2.
+2. **Still open, but narrowed.** Should there be a maximum number of
+   named policies and/or custom tiers? The Network hat's review adds a
+   concrete reason beyond generic DoS-sanity: `GET
+   /api/settings/iam/policies` returns the entire catalog with no
+   pagination, and this design's schema multiplies that response's
+   plausible size by up to 5x per policy (full version history). Recommend
+   resolving this at L2 as: (a) a reasonable hard cap on total named
+   policies enforced server-side at creation, and/or (b) having the GET
+   route return only each policy's default version inline, with full
+   version history fetched lazily per-policy — the latter also shrinks
+   the common-case payload regardless of whether a hard cap is added.
+3. **Resolved — real gap confirmed, fixed in §4.1/§4.3/§7 above.** Both
+   halves independently verified by the Security hat: custom tier names
+   alone introduce no new privilege-escalation class (owner already holds
+   unconditional `Allow:"*"` and can already assign any permission set to
+   any of the 5 existing tiers today — extending the valid tier-key space
+   doesn't raise that ceiling). But the second half — does a rollback or
+   edit on an attached policy correctly re-trigger the owner-lockout
+   guard — was confirmed **broken as originally specified** by 3
+   independent hats (Security, DBA, QA). Fixed by re-architecting the
+   guard as a single choke point (§4.3) rather than a per-route
+   responsibility.
+4. **Resolved, no design change needed.** The Architect hat traced the
+   actual call graph and confirmed `loadPolicies()` has exactly one call
+   site (`server.js`, at process start), never per-request — migration
+   cost and the hypothesized race are both non-issues via this path.
+   §4.4's wording above has been tightened to state this as verified
+   fact rather than an open question.
+5. **Still open.** Role deletion and renaming remain deferred (§3,
+   unchanged from revision 1). No hat argued for pulling either into this
+   revision's scope; recommend filing both as named follow-up issues
+   once this design's tracking issue is updated with audit results.
+6. **Narrowed, ownership gap flagged by GRC.** The content
+   decision (full rewrite vs. additive section for `docs/console-iam.md`)
+   is legitimately deferrable until implementation scope is final — but
+   GRC's audit found this deferral, as originally worded, named no owner
+   and no checkpoint, which Requirement 14 requires even for a legitimate
+   deferral. Resolution: this document's tracking issue (#335) must carry
+   an explicit checklist item for this doc update, owned by whoever picks
+   up L2 implementation, closed only when `docs/console-iam.md` is
+   updated in the same PR that ships the schema/API changes.
+7. **Resolved — keep the two-view split.** Both the UI hat and the
+   Architect hat independently recommended keeping Policies/Roles as
+   separate views (not folding policy management entirely into the Roles
+   view), for converging but distinct reasons: UI hat — a unified view
+   would need to cram version-history/create/edit UI for a
+   multiply-attached object into a single-tier-focused page, actively
+   obscuring that a policy is shared, reusable state; Architect hat — a
+   policy already has independent identity/versioning per this design's
+   own §1 decisions, and building a real Policies list is unavoidable
+   the first time an owner wants to inspect a policy's version history
+   regardless of entry point, so a unified-only approach doesn't actually
+   avoid building it. The "create-and-attach" shortcut from inside the
+   Roles view's attach picker (UI hat's recommendation) is kept as
+   additive sugar on top of the two-view structure, not a v1 requirement.
+
+---
+
+## 9. Layer 1 eight-hats audit — findings register (Requirement 20 traceability)
+
+Added after Layer 1 audit completion, per GRC hat finding (this
+document's own audit, Finding L1-H4): this project has already lost a
+findings register once to an issue-comment-only closure (issue #327,
+referenced in the account README) and established the fix — an
+in-document traceability table — in a sibling document
+(`console-layered-auth-l1-design-2026-08-17.md`, §7) the same day this
+document's revision 1 was drafted. This section applies the same fix
+here rather than repeating that mistake.
+
+All 8 hats were dispatched independently (per the account README's
+mandate that Layer 1 review be run as 8 actual dispatched workers, not a
+solo pass) against this document's revision 2. Full per-hat reports are
+preserved in the dispatching session's transcript; this table is the
+durable, committed summary.
+
+| # | Hat | Finding | Severity | Disposition |
+|---|-----|---------|----------|--------------|
+| L1-C1 | Security, DBA, QA (independent convergence) | Owner-lockout guard bypassed by policy edit/rollback routes, which never touch `tiers.owner` directly | CRITICAL | **Fixed** — guard re-architected as single choke point, §4.3 |
+| L1-C2 | Architect | Aggregation-step failure semantics unspecified; naive implementation fails open (silently drops a Deny) | CRITICAL | **Fixed** — explicit fail-closed requirement added, §4.1 |
+| L1-C3 | DBA | No referential-integrity check that `attached[]` IDs resolve to real `policies` keys (dangling-reference risk, feeds L1-C2) | CRITICAL | **Fixed** — bidirectional integrity check added to `validPolicyStore()`, §4.4 |
+| L1-C4 | QA | `handoff.test.js`'s existing `"superuser"` rejection test breaks under the proposed shape-check regex (verified by direct execution) | CRITICAL | **Fixed** — test rewrite specified, §4.6 and §7 |
+| L1-H1 | Architect, DBA (independent convergence) | No concurrency control on 7 new mutating routes against one unlocked in-memory store; codebase's only comparable many-to-many precedent (`discord_account_links`) uses real transactions/row-locks this design has no equivalent for | HIGH | **Accepted for L2, not L1** — single-choke-point function (§4.3, added for L1-C1) narrows the race window by serializing all writes through one function; a real mutex/serialization primitive around that function's read-modify-write sequence is an explicit L2 implementation requirement, not optional, but the exact primitive (async lock vs. version/ETag check) is left to L2 per the DBA hat's own framing of this as owner-only, human-paced interaction |
+| L1-H2 | Architect | `rbacParity.test.js`'s route extractor has no parsing branch for regex-declared routes — may not see the new parameterized routes at all | HIGH | **Fixed** — explicit verification step required before/alongside implementation, §4.2 intro and §7 |
+| L1-H3 | GRC | Requirement 26 (schema migration) only partially satisfied — no tested downgrade procedure, no test against production-shaped data | HIGH | **Fixed** — migration test matrix expanded (§7) to include a production-representative fixture (all 5 real `DEFAULT_POLICIES` tiers, Deny + wildcard cases); downgrade behavior remains documented-not-tested (§6) since it exercises an *older* binary's code, which cannot be unit-tested from this codebase — flagged as an accepted, explicitly-stated limitation rather than a silent gap |
+| L1-H4 | GRC | No structured findings register for this audit, despite an established in-document fix pattern from a sibling document the same day | HIGH | **Fixed** — this section |
+| L1-H5 | DBA | Migration's whole-file-reject-on-one-malformed-tier silently discards every valid tier's customizations | HIGH | **Fixed** — per-tier salvage logic added, §4.4 |
+| L1-H6 | QA | §7's original test plan named only HTTP routes, no `policy.js`-level function contracts — tests unwritable as specified | HIGH | **Fixed** — §4.3 now names the single shared mutation function tests are written against; §7 rewritten accordingly |
+| L1-H7 | UI | Backend's rejection detail (version-cap, delete-while-attached) has no specified frontend surfacing; whole-policy delete has no UI control at all | HIGH | **Fixed** — explicit error-surfacing and delete-control requirements added, §4.7 |
+| L1-M1 | Architect | New mutation routes must each clear `_allowedActions` cache; only `setPolicies()` does today | MEDIUM | **Fixed** — folded into the single-choke-point function's responsibilities, §4.3 |
+| L1-M2 | Cloud Security | File-permission (`0o600`) commitment never explicitly stated for new write paths | MEDIUM | **Fixed** — explicit in §4.3's choke-point function description |
+| L1-M3 | Network | `GET /api/settings/iam/policies` unbounded response growth | MEDIUM | **Merged into Open Item #2** (§8) — resolution deferred to L2 alongside the policy-count-cap question, same underlying tradeoff |
+| L1-M4 | Cloud Security | Concurrent-design coordination risk: both this design and `rfc-console-auth.md` touch `handoff.js`'s `VALID_TIERS`/tier-resolution logic | MEDIUM | **Accepted, tracked** — noted in this document's own tracking issue (#335); whichever implementation lands second must re-verify the other's fail-closed guarantees survive on top of its own change |
+| L1-M5 | GRC | PR body's blast-radius language ("every operator's console auth") conflates authorization with authentication | MEDIUM | **Fixed** — PR body corrected in the same update that adds this section |
+| L1-M6 | GRC | §8 Item 6 deferral had no named owner/checkpoint | MEDIUM | **Fixed** — Open Item #6 above now specifies the checklist-item mechanism |
+| L1-M7 | Architect | `validPolicyStore()`'s hardcoded 5-tier array not explicitly named for removal alongside `resolveSessionTier()`'s equivalent | MEDIUM | **Fixed** — §4.4 now explicitly covers both |
+| L1-M8 | UI | Version cap only enforced reactively; no proactive "N/5 used" indicator | MEDIUM | **Fixed** — §4.7 |
+| L1-M9 | QA | Migration-parity test described as single fixture, not a matrix proving the universal upgrade-path claim | MEDIUM | **Fixed** — folded into L1-H3's resolution, §7 |
+| L1-L1 | Cloud Security, GRC | Owner-pasted JSON (Action strings, policy names) has no content-based validation against accidental secret embedding — pre-existing, not introduced by this design | LOW | **Accepted, not fixed** — identical exposure exists in shipped code today; out of scope for this design to close, noted for awareness |
+| L1-L2 | UI, GRC | `IamPolicyEditor.tsx`'s `TIERS` array already excludes `observer` today, independent of this design | LOW | **Confirmed, informational** — already fixed as a side effect of this design's dynamic tier derivation, §4.7 |
+| L1-L3 | Security | `matchAction()`'s unescaped regex construction on owner-authored Action strings (pre-existing) has its blast radius amplified by making policies shareable/reusable across tiers | LOW-MEDIUM | **Accepted for L2 tracking, not L1 blocking** — pre-existing weakness, not introduced by this design, but this design's own reuse model increases its stakes; recommend filing as a follow-up issue to validate Action strings against an allowed charset before passing to `RegExp`, tracked separately from this design's own scope |
+
+**CRITICAL and HIGH findings: all resolved in this revision (in-document
+fixes above), except L1-H1 (concurrency control), which is explicitly
+accepted as an L2 implementation requirement rather than an L1 design
+change — consistent with Requirement 20's framing that L1 fixes
+architectural/design-level errors and L2 fixes implementation-level ones;
+a concrete mutex/lock primitive is an implementation detail, not a
+data-model or API-contract decision.** No CRITICAL or HIGH finding was
+left unaddressed or silently dropped.
 </content>
