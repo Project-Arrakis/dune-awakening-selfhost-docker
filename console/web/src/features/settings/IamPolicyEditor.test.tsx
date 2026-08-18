@@ -264,3 +264,37 @@ describe("IamPoliciesView: version cap proactive disclosure (L1 audit finding L1
     await waitFor(() => expect(screen.getByText("Versions (3/5)")).toBeTruthy());
   });
 });
+
+describe("IamRolesView: Policy Simulator does not show stale results after switching tiers (Layer 3 audit finding L3-H6)", () => {
+  it("clears the previous tier's Test results when switching to a different tier while remaining on the Test tab", async () => {
+    mockRoute((path, options) => {
+      if (path === "/api/settings/iam/policies") return BASE_CATALOG;
+      if (path === "/api/auth/me") return { user: { tier: "owner" } };
+      if (path === "/api/settings/iam/policy/test" && options?.method === "POST") {
+        const body = JSON.parse(options.body as string);
+        // Distinct, easily-distinguishable results per tier so a stale
+        // render is unambiguous.
+        return { results: body.tier === "admin" ? { "server:restart": true } : { "server:restart": false } };
+      }
+      return undefined;
+    });
+
+    render(<IamPolicyEditor />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Admin" })).toBeTruthy());
+
+    fireEvent.click(screen.getByRole("button", { name: "Admin" }));
+    fireEvent.click(screen.getByText("Test"));
+    fireEvent.click(screen.getByText("Run test"));
+    await waitFor(() => expect(screen.getByText("1 allowed")).toBeTruthy());
+
+    // Switch tiers WITHOUT leaving the Test tab -- per the L3 finding,
+    // the previous tier's result table must not still be shown.
+    fireEvent.click(screen.getByRole("button", { name: "Moderator" }));
+
+    // The stale "1 allowed" summary from Admin's run must be gone; the
+    // fresh, unrun state ("Run test" button, no results table) must be
+    // shown instead, proving the component instance was reset, not reused.
+    expect(screen.queryByText("1 allowed")).toBeNull();
+    expect(screen.getByText("Run test")).toBeTruthy();
+  });
+});

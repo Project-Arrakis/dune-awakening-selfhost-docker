@@ -710,7 +710,7 @@ async function handleApi(req, res) {
   }
   if (path === "/api/settings/iam/policy" && req.method === "PUT") {
     const body = await readJson(req);
-    const result = setPolicies(body, config.repoRoot);
+    const result = setPolicies(body, session.tier, config.repoRoot);
     if (!result.ok) return json(res, 400, result);
     audit(config, req, "iam.policy-set", { tiers: Object.keys(body) });
     return json(res, 200, result);
@@ -785,7 +785,7 @@ async function handleApi(req, res) {
   if (path.match(/^\/api\/settings\/iam\/policies\/[^/]+\/rollback$/) && req.method === "POST") {
     const policyId = decodeURIComponent(path.split("/")[5]);
     const body = await readJson(req);
-    const result = rollbackPolicy(policyId, body?.versionId, config.repoRoot);
+    const result = rollbackPolicy(policyId, body?.versionId, session.tier, config.repoRoot);
     if (!result.ok) return json(res, 400, result);
     audit(config, req, "iam.policy-rollback", { policyId, versionId: body?.versionId });
     return json(res, 200, result);
@@ -818,7 +818,7 @@ async function handleApi(req, res) {
   if (path.match(/^\/api\/settings\/iam\/tiers\/[^/]+\/inline$/) && req.method === "PUT") {
     const tierName = decodeURIComponent(path.split("/")[5]);
     const body = await readJson(req);
-    const result = setTierInline(tierName, body?.statements, config.repoRoot);
+    const result = setTierInline(tierName, body?.statements, session.tier, config.repoRoot);
     if (!result.ok) return json(res, 400, result);
     audit(config, req, "iam.tier-inline-set", { tier: tierName });
     return json(res, 200, result);
@@ -826,7 +826,7 @@ async function handleApi(req, res) {
   if (path.match(/^\/api\/settings\/iam\/tiers\/[^/]+\/attach$/) && req.method === "PUT") {
     const tierName = decodeURIComponent(path.split("/")[5]);
     const body = await readJson(req);
-    const result = attachPolicy(tierName, body?.policyId, config.repoRoot);
+    const result = attachPolicy(tierName, body?.policyId, session.tier, config.repoRoot);
     if (!result.ok) return json(res, 400, result);
     audit(config, req, "iam.tier-attach", { tier: tierName, policyId: body?.policyId });
     return json(res, 200, result);

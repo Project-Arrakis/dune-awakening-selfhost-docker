@@ -786,7 +786,7 @@ test("persist() writes iam-policies.json with real 0o600 permissions on disk, fo
     // disk with the correct content and mode, not just that the
     // in-memory result is correct (every other test in this file never
     // passes a real repoRoot at all).
-    const result = setTierInline("owner", [{ Effect: "Allow", Action: "*" }], repoRoot);
+    const result = setTierInline("owner", [{ Effect: "Allow", Action: "*" }], "owner", repoRoot);
     assert.equal(result.ok, true);
 
     const mode = statSync(filePath).mode & 0o777;
@@ -813,9 +813,127 @@ test("persist() preserves 0o600 across every mutating export, not just setTierIn
     assert.equal(created.ok, true);
     assert.equal((statSync(filePath).mode & 0o777), 0o600);
 
-    assert.equal(attachPolicy("perm-check-tier", created.policyId, repoRoot).ok, true);
+    assert.equal(attachPolicy("perm-check-tier", created.policyId, "owner", repoRoot).ok, true);
     assert.equal((statSync(filePath).mode & 0o777), 0o600);
   } finally {
     rmSync(repoRoot, { recursive: true, force: true });
   }
+});
+
+// ---- Privilege-ceiling / no-amplification invariant (Layer 3 audit
+// finding, Security hat -- CRITICAL, verified live over real HTTP during
+// the audit before being fixed here) ----
+//
+// A tier granted ONLY settings:write could previously mint a brand-new
+// Allow:"*" policy and attach it to its own tier (or, even more
+// directly, overwrite its own inline policy with the same statement),
+// reaching full owner-equivalent access in a single authenticated
+// session. settings:write was never intended to be transitively
+// equivalent to full owner status. These tests reproduce the exact
+// attack sequence found during the audit and confirm it is now rejected,
+// while confirming legitimate, non-escalating operations (owner granting
+// broader access; a tier narrowing its own permissions) still work.
+
+test("privilege ceiling: a tier holding ONLY settings:write cannot attach a new policy that grants itself an action it doesn't already have (the exact escalation sequence found during the Layer 3 audit)", () => {
+  _resetPolicyStoreForTests();
+  assert.equal(createTier("helper").ok, true);
+  const grant = createPolicy({ name: "helper-grant", statements: [{ Effect: "Allow", Action: "settings:write" }] }, "owner");
+  assert.equal(attachPolicy("helper", grant.policyId, "owner").ok, true);
+  assert.equal(evaluate({ tier: "helper" }, "settings:write"), true, "sanity: helper genuinely holds settings:write before the escalation attempt");
+  assert.equal(evaluate({ tier: "helper" }, "server:restart"), false, "sanity: helper does NOT hold server:restart before the escalation attempt");
+
+  // Step 1: the "helper"-tier session (NOT owner) mints a new policy
+  // granting unconditional Allow:"*" -- this alone is harmless (an
+  // unattached policy grants nothing).
+  const godPolicy = createPolicy({ name: "self-escalation-attempt", statements: [{ Effect: "Allow", Action: "*" }] }, "helper");
+  assert.equal(godPolicy.ok, true);
+
+  // Step 2: the SAME "helper"-tier session attempts to attach that
+  // policy to its OWN tier -- this is the actual escalation step, and
+  // must be rejected.
+  const attachAttempt = attachPolicy("helper", godPolicy.policyId, "helper");
+  assert.equal(attachAttempt.ok, false);
+  assert.match(attachAttempt.error, /does not currently hold/);
+
+  // Confirm the rejection actually held -- no privilege was gained.
+  assert.equal(evaluate({ tier: "helper" }, "server:restart"), false, "helper must NOT have gained server:restart after the rejected attach");
+  assert.equal(evaluate({ tier: "helper" }, "settings:write"), true, "helper's original, legitimate grant must be unaffected by the rejected attempt");
+});
+
+test("privilege ceiling: the more direct variant -- a tier overwriting its OWN inline policy to grant itself something it doesn't have -- is also rejected, with no attach step needed", () => {
+  _resetPolicyStoreForTests();
+  assert.equal(createTier("helper2").ok, true);
+  const grant = createPolicy({ name: "helper2-grant", statements: [{ Effect: "Allow", Action: "settings:write" }] }, "owner");
+  assert.equal(attachPolicy("helper2", grant.policyId, "owner").ok, true);
+  assert.equal(evaluate({ tier: "helper2" }, "settings:write"), true);
+
+  const directAttempt = setTierInline("helper2", [{ Effect: "Allow", Action: "*" }], "helper2");
+  assert.equal(directAttempt.ok, false);
+  assert.match(directAttempt.error, /does not currently hold/);
+  assert.equal(evaluate({ tier: "helper2" }, "server:restart"), false);
+});
+
+test("privilege ceiling: rolling back an attached policy to a version that would grant the acting tier something new is also rejected", () => {
+  _resetPolicyStoreForTests();
+  assert.equal(createTier("helper3").ok, true);
+  const grant = createPolicy({ name: "helper3-grant", statements: [{ Effect: "Allow", Action: "settings:write" }] }, "owner");
+  const { policyId } = grant;
+  // v2 grants settings:write AND server:restart -- broader than v1.
+  assert.equal(editPolicy(policyId, { statements: [{ Effect: "Allow", Action: ["settings:write", "server:restart"] }] }, "owner").ok, true);
+  // Roll back to v1 (narrower) before attaching, so helper3 starts narrow.
+  assert.equal(rollbackPolicy(policyId, "v1", "owner").ok, true);
+  assert.equal(attachPolicy("helper3", policyId, "owner").ok, true);
+  assert.equal(evaluate({ tier: "helper3" }, "server:restart"), false, "sanity: helper3 does not have server:restart yet (v1 is default)");
+
+  // helper3's own session attempts to roll forward to v2 (broader) --
+  // must be rejected, since v2 would grant server:restart, which
+  // helper3's own session doesn't currently hold.
+  const rollForwardAttempt = rollbackPolicy(policyId, "v2", "helper3");
+  assert.equal(rollForwardAttempt.ok, false);
+  assert.match(rollForwardAttempt.error, /does not currently hold/);
+  assert.equal(evaluate({ tier: "helper3" }, "server:restart"), false);
+});
+
+test("privilege ceiling: legitimate, non-escalating operations are NOT blocked -- owner granting broader access, and a tier narrowing its own permissions, both still work", () => {
+  _resetPolicyStoreForTests();
+  // Owner granting admin broader access -- owner's own ceiling is
+  // Allow:"*", so this must succeed exactly as before this fix.
+  const ownerGrant = setTierInline("admin", [{ Effect: "Allow", Action: "*" }], "owner");
+  assert.equal(ownerGrant.ok, true);
+  assert.equal(evaluate({ tier: "admin" }, "settings:write"), true);
+
+  // A tier narrowing its OWN permissions (removing something, adding
+  // nothing new) must never be blocked by a "no amplification" check --
+  // there is no amplification here at all.
+  assert.equal(createTier("helper4").ok, true);
+  const grant = createPolicy({ name: "helper4-grant", statements: [{ Effect: "Allow", Action: ["settings:write", "server:read"] }] }, "owner");
+  assert.equal(attachPolicy("helper4", grant.policyId, "owner").ok, true);
+  const narrowAttempt = setTierInline("helper4", [], "helper4");
+  assert.equal(narrowAttempt.ok, true, "narrowing (removing an inline grant, adding nothing) must never be rejected as an escalation");
+});
+
+test("privilege ceiling: the legacy setPolicies() route is also subject to the same check when an actorTier is supplied", () => {
+  _resetPolicyStoreForTests();
+  assert.equal(createTier("helper5").ok, true);
+  const grant = createPolicy({ name: "helper5-grant", statements: [{ Effect: "Allow", Action: "settings:write" }] }, "owner");
+  assert.equal(attachPolicy("helper5", grant.policyId, "owner").ok, true);
+
+  // A "helper5"-acting session attempts to use the legacy wholesale-
+  // replace route to grant its own tier full access via its inline
+  // policy -- must be rejected on the same grounds. (migrateIfLegacyShape
+  // requires an "owner" key to be present in the document at all -- an
+  // unrelated, valid owner entry is included here purely to satisfy that
+  // shape requirement, not because owner is the tier under test.)
+  const escalationPayload = {
+    owner: { tier: "owner", statements: [{ Effect: "Allow", Action: "*" }] },
+    helper5: { tier: "helper5", statements: [{ Effect: "Allow", Action: "*" }] }
+  };
+  const legacyEscalation = setPolicies(escalationPayload, "helper5");
+  assert.equal(legacyEscalation.ok, false);
+  assert.match(legacyEscalation.error, /does not currently hold/);
+
+  // The same call with actorTier="owner" (or omitted, defaulting to no
+  // check) must still work -- confirms this isn't a blanket rejection.
+  const legitimateChange = setPolicies(escalationPayload, "owner");
+  assert.equal(legitimateChange.ok, true);
 });

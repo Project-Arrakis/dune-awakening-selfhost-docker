@@ -4822,12 +4822,14 @@ td :where(.service-actions, .action-row, .map-action-buttons) { max-width: 100%;
 
 .iam-tier-selector {
   display: flex;
+  flex-wrap: wrap;
   gap: 0;
   margin-bottom: 1.25rem;
   border: 1px solid var(--border-color, #333);
   border-radius: 6px;
   overflow: hidden;
   width: fit-content;
+  max-width: 100%;
 }
 
 .iam-tier-btn {
@@ -4839,10 +4841,20 @@ td :where(.service-actions, .action-row, .map-action-buttons) { max-width: 100%;
   font-size: .82rem;
   text-transform: capitalize;
   border-right: 1px solid var(--border-color, #333);
+  /* Wrapped rows need a bottom border too, since border-right alone
+     (sufficient for the original single-row layout) creates no visual
+     separator between stacked rows once flex-wrap is in play -- fixes
+     L3-H7 (Layer 3 audit, UI hat): with MAX_CUSTOM_TIERS=20 plus 5
+     built-in tiers, up to 25 buttons can exist here, which the
+     original un-wrapped, overflow:hidden layout silently clipped with
+     no way to reach the rest. Harmless no-op for installs with few
+     enough tiers to fit on one row (nothing to visually separate). */
+  border-bottom: 1px solid var(--border-color, #333);
   transition: background .15s, color .15s;
 }
 
 .iam-tier-btn:last-child { border-right: none; }
+.iam-tier-selector > .iam-tier-btn:last-child { border-bottom: none; }
 .iam-tier-btn:hover { color: var(--text-color, #ccc); }
 
 .iam-tier-btn.active {

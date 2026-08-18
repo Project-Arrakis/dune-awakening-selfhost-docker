@@ -324,7 +324,10 @@ export function IamPoliciesView({ catalog, onCatalogChange, actorTierIsOwner }: 
               </div>
             )}
 
-            {editorTab === "test" && <IamPolicySimulator mode="draft" draftStatements={validateStatementsJson(jsonText).statements || []} />}
+            {/* key={selectedPolicyId}: same fix as IamRolesView.tsx, same
+                finding (L3-H6) -- switching policies while on the Test
+                tab must not show the previous policy's stale results. */}
+            {editorTab === "test" && <IamPolicySimulator key={selectedPolicyId} mode="draft" draftStatements={validateStatementsJson(jsonText).statements || []} />}
 
             {actionError && <p className="iam-json-error" style={{ marginTop: "0.75rem" }}>{actionError}</p>}
             {(editorTab === "builder" || editorTab === "json") && (

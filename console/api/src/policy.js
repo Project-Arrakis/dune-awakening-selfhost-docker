@@ -591,7 +591,69 @@ export { validPolicyStore };
 // required at that point, not optional. Do not introduce an `await`
 // inside applyMutation() or any function it calls without adding that
 // lock in the same change.
-function applyMutation(mutatorFn) {
+// Computes every action currently allowed for `tier` under `store` --
+// exhaustive, not sampled, since this feeds a security decision
+// (privilege-ceiling enforcement, below) rather than a UI hint.
+function allowedActionsForStore(tier, store) {
+  const allowed = new Set();
+  for (const action of allKnownActionsSet()) {
+    if (evaluate({ tier }, action, store)) allowed.add(action);
+  }
+  return allowed;
+}
+
+// SECURITY: privilege-ceiling / "no amplification" invariant (Layer 3
+// audit finding, Security hat -- CRITICAL, not part of the L1/L2 design
+// or either earlier audit). Verified reproducible over real HTTP during
+// the Layer 3 audit: a custom tier granted ONLY `settings:write` could
+// mint a brand-new `{Effect:"Allow",Action:"*"}` policy, attach it to
+// its own tier (or, even more directly, call setTierInline on its own
+// tier with the same statement -- no attach needed), and thereby reach
+// full, unconditional owner-equivalent access in a single authenticated
+// session, in two HTTP calls. `settings:write` was never intended to be
+// transitively equivalent to full owner status -- this closes that gap
+// structurally, not via a hardcoded identity check (which would
+// contradict this design's own pure-capability model and its explicit
+// goal of mirroring real AWS IAM).
+//
+// This mirrors a well-established real-world IAM concept: holding
+// iam:CreatePolicy/iam:AttachRolePolicy in AWS does not, by itself, let
+// a principal grant a permission it does not itself already hold --
+// AWS enforces this via its own permissions-boundary/policy-simulation
+// logic at policy-attachment time. The equivalent here: before
+// committing ANY mutation that could increase what a tier is allowed to
+// do, compare that tier's aggregate permission set immediately before
+// and immediately after the mutation (both evaluated through the exact
+// same evaluate()/aggregateStatements() path used for real
+// authorization decisions, not a separate approximation). Any
+// newly-granted action that the ACTING SESSION's own tier did not
+// already, independently hold (under the store as it existed BEFORE
+// this mutation) causes the whole mutation to be rejected.
+//
+// Deliberately NOT applied to createPolicy() (an unattached policy
+// grants nothing to any tier until attached -- harmless on its own),
+// createTier() (an empty tier grants nothing), detachPolicy(),
+// deletePolicy(), or deletePolicyVersion() (all three can only ever
+// REMOVE a grant, never add one) -- only to the operations that can
+// actually increase a tier's aggregate: editPolicy, rollbackPolicy,
+// setTierInline, attachPolicy, and the legacy setPolicies() route.
+function detectPrivilegeEscalation(preStore, postStore, affectedTiers, actorTier) {
+  if (!actorTier || !affectedTiers || !affectedTiers.length) return null;
+  const actorCeiling = allowedActionsForStore(actorTier, preStore);
+  for (const tierName of affectedTiers) {
+    if (!hasOwnKey(postStore.tiers, tierName)) continue; // tier no longer exists post-mutation -- nothing to compare
+    const before = allowedActionsForStore(tierName, preStore);
+    const after = allowedActionsForStore(tierName, postStore);
+    for (const action of after) {
+      if (!before.has(action) && !actorCeiling.has(action)) {
+        return `This change would grant tier "${tierName}" the "${action}" permission, which your own session does not currently hold. You cannot grant a permission you do not already have.`;
+      }
+    }
+  }
+  return null;
+}
+
+function applyMutation(mutatorFn, { actorTier = null, affectedTiers = null } = {}) {
   const current = getAllPolicies();
   const next = mutatorFn(current);
   if (next && next.error) return next; // mutator reported a domain-specific rejection
@@ -599,6 +661,12 @@ function applyMutation(mutatorFn) {
   if (!validPolicyStore(next)) {
     return { ok: false, error: "The resulting policy store is invalid." };
   }
+
+  const escalationError = detectPrivilegeEscalation(current, next, affectedTiers, actorTier);
+  if (escalationError) {
+    return { ok: false, error: escalationError };
+  }
+
   if (!evaluate({ tier: "owner" }, "settings:write", next)) {
     return { ok: false, error: "This change would remove the owner tier's settings:write access, including through its attached policies. Rejected to prevent lockout." };
   }
@@ -669,7 +737,7 @@ function persist(repoRoot) {
 // shape keep working, per the L1 audit's QA hat finding (L1-M-contract)
 // that this codebase's existing tests exercise setPolicies() with the
 // legacy shape.
-export function setPolicies(docs, repoRoot = null) {
+export function setPolicies(docs, actorTier = null, repoRoot = null) {
   const migrated = migrateIfLegacyShape(docs) || (docs && docs.schemaVersion === 2 ? docs : null);
   if (!migrated) {
     return { ok: false, error: "Policies must contain valid tier documents and Allow/Deny statements." };
@@ -694,7 +762,7 @@ export function setPolicies(docs, repoRoot = null) {
       };
     }
     return next;
-  });
+  }, { actorTier, affectedTiers: Object.keys(migrated.tiers) });
 
   if (result.ok) persist(repoRoot);
   return result;
@@ -808,6 +876,14 @@ export function editPolicy(policyId, { statements }, actorTier, repoRoot = null)
     next.policies[policyId].versions[newVersionId] = { statements: deepCopyStatements(statements), createdAt: new Date().toISOString(), createdBy: actorTier || "owner" };
     next.policies[policyId].defaultVersionId = newVersionId;
     return next;
+  }, {
+    actorTier,
+    // Every tier currently attaching this policy is potentially affected
+    // by this edit's new version (privilege-ceiling check, see
+    // detectPrivilegeEscalation() above) -- a tier's own inline policy is
+    // untouched by this call, only its aggregate via this one attached
+    // policy.
+    affectedTiers: Object.entries(getAllPolicies().tiers).filter(([, rec]) => rec.attached.includes(policyId)).map(([name]) => name)
   });
 
   if (result.error && !result.ok) return { ok: false, error: result.error };
@@ -815,7 +891,7 @@ export function editPolicy(policyId, { statements }, actorTier, repoRoot = null)
   return result.ok ? { ok: true, defaultVersionId: hasOwnKey(_policies.policies, policyId) ? _policies.policies[policyId].defaultVersionId : undefined } : result;
 }
 
-export function rollbackPolicy(policyId, versionId, repoRoot = null) {
+export function rollbackPolicy(policyId, versionId, actorTier = null, repoRoot = null) {
   const idError = rejectDangerousIdentifier(policyId, "policy ID") || rejectDangerousIdentifier(versionId, "version ID");
   if (idError) return idError;
 
@@ -827,6 +903,9 @@ export function rollbackPolicy(policyId, versionId, repoRoot = null) {
     const next = deepCopyStore(current);
     next.policies[policyId].defaultVersionId = versionId;
     return next;
+  }, {
+    actorTier,
+    affectedTiers: Object.entries(getAllPolicies().tiers).filter(([, rec]) => rec.attached.includes(policyId)).map(([name]) => name)
   });
 
   if (result.error && !result.ok) return { ok: false, error: result.error };
@@ -907,7 +986,7 @@ export function createTier(tierName, repoRoot = null) {
   return result;
 }
 
-export function setTierInline(tierName, statements, repoRoot = null) {
+export function setTierInline(tierName, statements, actorTier = null, repoRoot = null) {
   const idError = rejectDangerousIdentifier(tierName, "tier name");
   if (idError) return idError;
   if (!validStatementList(statements)) {
@@ -921,14 +1000,14 @@ export function setTierInline(tierName, statements, repoRoot = null) {
     // same reasoning as createPolicy()/editPolicy() above.
     next.tiers[tierName].inline = { statements: deepCopyStatements(statements) };
     return next;
-  });
+  }, { actorTier, affectedTiers: [tierName] });
 
   if (result.error && !result.ok) return { ok: false, error: result.error };
   if (repoRoot && result.ok) persist(repoRoot);
   return result;
 }
 
-export function attachPolicy(tierName, policyId, repoRoot = null) {
+export function attachPolicy(tierName, policyId, actorTier = null, repoRoot = null) {
   const idError = rejectDangerousIdentifier(tierName, "tier name") || rejectDangerousIdentifier(policyId, "policy ID");
   if (idError) return idError;
 
@@ -941,7 +1020,7 @@ export function attachPolicy(tierName, policyId, repoRoot = null) {
     const next = deepCopyStore(current);
     next.tiers[tierName].attached.push(policyId);
     return next;
-  });
+  }, { actorTier, affectedTiers: [tierName] });
 
   if (result.error && !result.ok) return { ok: false, error: result.error };
   if (repoRoot && result.ok) persist(repoRoot);

@@ -43,18 +43,45 @@ Keep a Changelog style, grouped by upstream base version, newest first.
 
 ### Fixed
 
-- Console IAM implementation: a Layer 2 (implementation-phase) eight-hats
-  audit against the shipped code (not the design) found and fixed 4
-  CRITICAL and 5 HIGH real bugs before this feature left draft, including
-  an `Object.prototype` pollution vulnerability reachable by any
-  `settings:write`-holding session via an unsanitized tier/policy-ID URL
-  path segment, a completely non-functional permission checkbox grid (a
-  key/value-direction bug in the namespace-grouping helper), a
-  delete-confirmation UI state that wasn't scoped to the selected object
-  (could delete the wrong policy), and a shallow-copy bug in the policy
-  store's mutation path that could silently corrupt live state. Full
-  findings register: `docs/design/console-custom-iam-roles-l1-design-2026-08-17.md`
-  §10.
+- Console IAM implementation: a full three-layer eight-hats audit
+  (design, implementation, and integration -- Requirement 20) found and
+  fixed real bugs at every layer before this feature left draft,
+  including an `Object.prototype` pollution vulnerability, a completely
+  non-functional permission checkbox grid, a delete-confirmation UI
+  state that wasn't scoped to the selected object, a shallow-copy bug in
+  the policy store's mutation path, and -- found only at the integration
+  (Layer 3) layer, verified live over real HTTP -- a genuine privilege-
+  escalation path: a tier granted *only* `settings:write` could mint a
+  new unconditional-Allow policy and attach it to itself, reaching full
+  owner-equivalent access. This is now closed with a real, engine-level
+  privilege-ceiling check (no session can grant any tier a permission
+  the acting session doesn't already independently hold), not a
+  hardcoded identity check -- preserving the pure capability-based model
+  this design otherwise uses throughout. **Exact severity counts and
+  every individual finding's citation and disposition are recorded in
+  full, and are the single source of truth for this claim, in
+  `docs/design/console-custom-iam-roles-l1-design-2026-08-17.md` §9
+  (Layer 1), §10 (Layer 2), and §11 (Layer 3) -- this CHANGELOG entry
+  intentionally does not restate specific counts, since an earlier
+  version of this entry cited a count that silently drifted out of sync
+  with those tables (a real instance of exactly the class of doc-drift
+  Requirement 14 exists to prevent, caught and corrected during the
+  Layer 3 audit).**
+
+- **Downgrade behavior (Strict Requirement 0):** an operator who
+  installs this feature, creates custom tiers/named policies, and then
+  reverts to an older console binary will see the console silently fall
+  back to the 5 built-in tiers' hardcoded default policies -- the older
+  binary does not understand the new on-disk schema and cannot read the
+  custom tiers/policies, but **the underlying `iam-policies.json` file
+  itself is not modified or deleted by the older binary** (confirmed:
+  older code only ever reads this file, never writes it, in this
+  scenario). Re-upgrading to a version that understands the new schema
+  restores the custom tiers/policies exactly as they were, with no data
+  loss. This is a known, accepted, and now test-verified (round-trip
+  file-integrity test, see the design doc's §12) downgrade behavior --
+  not a defect -- documented here per this project's own Strict
+  Requirement 0 upgrade/downgrade-path disclosure standard.
 
 ### Changed
 

@@ -242,7 +242,14 @@ export function IamRolesView({ catalog, onCatalogChange, actorTierIsOwner }: Pro
             </div>
           )}
 
-          {editorTab === "test" && <IamPolicySimulator mode="tier" tier={selectedTier} />}
+          {/* key={selectedTier} forces a fresh component instance (and
+              fresh results/error state) on every tier switch -- fixes a
+              real Layer 3 audit finding (L3-H6, UI hat): without a key,
+              switching tiers while remaining on the Test tab left the
+              PREVIOUS tier's stale simulator results on screen, since
+              React reuses the same component instance across prop
+              changes at a stable tree position by default. */}
+          {editorTab === "test" && <IamPolicySimulator key={selectedTier} mode="tier" tier={selectedTier} />}
 
           {actionError && <p className="iam-json-error" style={{ marginTop: "0.75rem" }}>{actionError}</p>}
 
