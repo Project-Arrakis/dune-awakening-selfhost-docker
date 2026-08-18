@@ -16,8 +16,18 @@
 // replays within the window.
 
 import { createHmac, timingSafeEqual } from "node:crypto";
+import { RESERVED_TIER_NAME_PATTERN } from "../../policy.js";
 
-const VALID_TIERS = new Set(["owner", "admin", "moderator", "player", "observer"]);
+// Shape-only validation, shared pattern with policy.js's tier-name rule
+// (L1 design §4.6). Replaces a fixed 5-name allowlist: the actual
+// authorization decision -- does this tier name correspond to a real,
+// currently-defined policy -- happens downstream in resolveSessionTier()
+// once the payload reaches the console. This function's job is only to
+// reject a value that couldn't possibly be a valid tier name by shape
+// (empty, malformed, too long) before it reaches that check, not to
+// enumerate every currently-valid tier name (which would require this
+// file to import the live policy store, an unnecessary coupling for a
+// module whose only real job is verifying an HMAC-signed payload).
 const USER_SNOWFLAKE_RE = /^\d{17,19}$/;
 const MAX_HANDOFF_AGE_MS = 30_000;
 const HTTP_TIMEOUT_MS = 5_000;
@@ -50,7 +60,7 @@ export function validatePayload(payload) {
   const { userId, guildId, tier, ts } = payload || {};
   if (typeof userId !== "string" || !USER_SNOWFLAKE_RE.test(userId)) return { ok: false, reason: "invalid_user_id" };
   if (typeof guildId !== "string" || !USER_SNOWFLAKE_RE.test(guildId)) return { ok: false, reason: "invalid_guild_id" };
-  if (typeof tier !== "string" || !VALID_TIERS.has(tier)) return { ok: false, reason: "invalid_tier" };
+  if (typeof tier !== "string" || !RESERVED_TIER_NAME_PATTERN.test(tier)) return { ok: false, reason: "invalid_tier" };
   if (typeof ts !== "number" || !Number.isFinite(ts) || ts <= 0) return { ok: false, reason: "invalid_timestamp" };
   return { ok: true, payload };
 }

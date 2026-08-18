@@ -35,7 +35,7 @@ import { handleDiscordAdapterRoute, isDiscordAdapterRoute } from "./integrations
 import { createPendingStateStore, exchangeDiscordAuthCode, fetchDiscordIdentity, createOAuthTierResolver, buildAuthorizeUrl, oauthStateCookie, clearOAuthStateCookie } from "./integrations/discord/oauth.js";
 import { createHandoff } from "./integrations/discord/handoff.js";
 import { actionForRoute, ROUTE_ACTIONS, NAMESPACES } from "./actions.js";
-import { evaluate, loadPolicies, getAllPolicies, setPolicies, resolveAllowedActions } from "./policy.js";
+import { evaluate, loadPolicies, getAllPolicies, setPolicies, resolveAllowedActions, allKnownActions, createPolicy, editPolicy, rollbackPolicy, deletePolicyVersion, deletePolicy, createTier, setTierInline, attachPolicy, detachPolicy } from "./policy.js";
 import { discordAdapterEnabled } from "./integrations/discord/adapter.js";
 import { initializeDiscordAdapterSchema } from "./integrations/discord/schema.js";
 import { liveItemGrantOk, liveItemGrantWarning } from "./grantResults.js";
@@ -682,9 +682,27 @@ async function handleApi(req, res) {
   if (path === "/api/settings/admin-password" && req.method === "POST") return adminPasswordRoute(req, res);
   if (path === "/api/settings/web-port" && req.method === "POST") return webPortRoute(req, res);
   if (path === "/api/settings/iam/policies" && req.method === "GET") {
-    const policies = getAllPolicies();
+    // §8 item 2 (resolved): returns each policy's DEFAULT version's
+    // statements only, not the full versions map -- keeps the common-case
+    // catalog payload small regardless of how many versions any individual
+    // policy has accumulated. Full version history is fetched lazily, only
+    // when actually needed, via GET /api/settings/iam/policies/{policyId}
+    // below.
+    const store = getAllPolicies();
+    const policiesSummary = Object.fromEntries(Object.entries(store.policies).map(([id, policy]) => [
+      id,
+      {
+        name: policy.name,
+        managed: policy.managed,
+        defaultVersionId: policy.defaultVersionId,
+        statements: policy.versions[policy.defaultVersionId]?.statements || [],
+        versionCount: Object.keys(policy.versions).length,
+        attachedTo: Object.entries(store.tiers).filter(([, rec]) => rec.attached.includes(id)).map(([name]) => name)
+      }
+    ]));
     return json(res, 200, {
-      policies,
+      tiers: store.tiers,
+      policies: policiesSummary,
       actions: Object.keys(ROUTE_ACTIONS).sort(),
       actionMap: ROUTE_ACTIONS,
       namespaces: NAMESPACES
@@ -698,11 +716,128 @@ async function handleApi(req, res) {
     return json(res, 200, result);
   }
   if (path === "/api/settings/iam/policy/test" && req.method === "POST") {
+    // Policy Simulator (§4.5): two modes. "draft" tests an unsaved
+    // statement set in isolation (the direct successor of the pre-existing
+    // action+tier single-check shape, generalized to a full statement
+    // list, matching what IamPolicyEditor.tsx has always actually sent).
+    // "tier" tests a REAL tier's current, full aggregate (inline + every
+    // attached policy's default version) -- the new capability this
+    // revision adds, since testing only a tier's inline document would give
+    // an incomplete answer the moment any policy is attached to it.
     const body = await readJson(req);
-    const testAction = String(body?.action || "").trim();
-    const testTier = String(body?.tier || "").trim();
-    if (!testAction || !testTier) return json(res, 400, { error: "Both action and tier are required." });
-    return json(res, 200, { action: testAction, tier: testTier, allowed: evaluate({ tier: testTier }, testAction) });
+    const mode = String(body?.mode || "draft");
+
+    if (mode === "tier") {
+      const tierName = String(body?.tier || "").trim();
+      if (!tierName) return json(res, 400, { error: "tier is required for mode=\"tier\"." });
+      const store = getAllPolicies();
+      if (!store.tiers[tierName]) return json(res, 400, { error: "No such tier." });
+      const results = {};
+      for (const action of allKnownActions()) {
+        results[action] = evaluate({ tier: tierName }, action, store);
+      }
+      return json(res, 200, { results });
+    }
+
+    if (!Array.isArray(body?.statements)) return json(res, 400, { error: "A statements array is required." });
+    const mockStore = {
+      schemaVersion: 2,
+      tiers: { __test__: { inline: { statements: body.statements }, attached: [] } },
+      policies: {}
+    };
+    const results = {};
+    for (const action of allKnownActions()) {
+      results[action] = evaluate({ tier: "__test__" }, action, mockStore);
+    }
+    return json(res, 200, { results });
+  }
+
+  // ---- Named policy lifecycle (§4.2) ----
+  if (path === "/api/settings/iam/policies" && req.method === "POST") {
+    const body = await readJson(req);
+    const result = createPolicy({ name: body?.name, statements: body?.statements }, session.tier, config.repoRoot);
+    if (!result.ok) return json(res, 400, result);
+    audit(config, req, "iam.policy-create", { policyId: result.policyId, name: body?.name });
+    return json(res, 200, result);
+  }
+  if (path.match(/^\/api\/settings\/iam\/policies\/[^/]+$/) && req.method === "GET") {
+    const policyId = decodeURIComponent(path.split("/").pop());
+    const store = getAllPolicies();
+    const policy = store.policies[policyId];
+    if (!policy) return json(res, 404, { error: "No such policy." });
+    return json(res, 200, {
+      policyId,
+      name: policy.name,
+      managed: policy.managed,
+      defaultVersionId: policy.defaultVersionId,
+      versions: policy.versions,
+      attachedTo: Object.entries(store.tiers).filter(([, rec]) => rec.attached.includes(policyId)).map(([name]) => name)
+    });
+  }
+  if (path.match(/^\/api\/settings\/iam\/policies\/[^/]+$/) && req.method === "PUT") {
+    const policyId = decodeURIComponent(path.split("/").pop());
+    const body = await readJson(req);
+    const result = editPolicy(policyId, { statements: body?.statements }, session.tier, config.repoRoot);
+    if (!result.ok) return json(res, 400, result);
+    audit(config, req, "iam.policy-edit", { policyId });
+    return json(res, 200, result);
+  }
+  if (path.match(/^\/api\/settings\/iam\/policies\/[^/]+\/rollback$/) && req.method === "POST") {
+    const policyId = decodeURIComponent(path.split("/")[5]);
+    const body = await readJson(req);
+    const result = rollbackPolicy(policyId, body?.versionId, config.repoRoot);
+    if (!result.ok) return json(res, 400, result);
+    audit(config, req, "iam.policy-rollback", { policyId, versionId: body?.versionId });
+    return json(res, 200, result);
+  }
+  if (path.match(/^\/api\/settings\/iam\/policies\/[^/]+\/versions\/[^/]+$/) && req.method === "DELETE") {
+    const segments = path.split("/");
+    const policyId = decodeURIComponent(segments[5]);
+    const versionId = decodeURIComponent(segments[7]);
+    const result = deletePolicyVersion(policyId, versionId, config.repoRoot);
+    if (!result.ok) return json(res, 400, result);
+    audit(config, req, "iam.policy-version-delete", { policyId, versionId });
+    return json(res, 200, result);
+  }
+  if (path.match(/^\/api\/settings\/iam\/policies\/[^/]+$/) && req.method === "DELETE") {
+    const policyId = decodeURIComponent(path.split("/").pop());
+    const result = deletePolicy(policyId, config.repoRoot);
+    if (!result.ok) return json(res, 400, result);
+    audit(config, req, "iam.policy-delete", { policyId });
+    return json(res, 200, result);
+  }
+
+  // ---- Tiers / roles: inline policy + attach/detach (§4.3) ----
+  if (path === "/api/settings/iam/tiers" && req.method === "POST") {
+    const body = await readJson(req);
+    const result = createTier(body?.tier, config.repoRoot);
+    if (!result.ok) return json(res, 400, result);
+    audit(config, req, "iam.tier-create", { tier: body?.tier });
+    return json(res, 200, result);
+  }
+  if (path.match(/^\/api\/settings\/iam\/tiers\/[^/]+\/inline$/) && req.method === "PUT") {
+    const tierName = decodeURIComponent(path.split("/")[5]);
+    const body = await readJson(req);
+    const result = setTierInline(tierName, body?.statements, config.repoRoot);
+    if (!result.ok) return json(res, 400, result);
+    audit(config, req, "iam.tier-inline-set", { tier: tierName });
+    return json(res, 200, result);
+  }
+  if (path.match(/^\/api\/settings\/iam\/tiers\/[^/]+\/attach$/) && req.method === "PUT") {
+    const tierName = decodeURIComponent(path.split("/")[5]);
+    const body = await readJson(req);
+    const result = attachPolicy(tierName, body?.policyId, config.repoRoot);
+    if (!result.ok) return json(res, 400, result);
+    audit(config, req, "iam.tier-attach", { tier: tierName, policyId: body?.policyId });
+    return json(res, 200, result);
+  }
+  if (path.match(/^\/api\/settings\/iam\/tiers\/[^/]+\/detach$/) && req.method === "PUT") {
+    const tierName = decodeURIComponent(path.split("/")[5]);
+    const body = await readJson(req);
+    const result = detachPolicy(tierName, body?.policyId, config.repoRoot);
+    if (!result.ok) return json(res, 400, result);
+    audit(config, req, "iam.tier-detach", { tier: tierName, policyId: body?.policyId });
+    return json(res, 200, result);
   }
 
   if (path === "/api/players") return dbJson(res, async () => {

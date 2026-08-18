@@ -9,6 +9,30 @@ Keep a Changelog style, grouped by upstream base version, newest first.
 
 ## Unreleased (on top of upstream v1.3.88)
 
+### Added
+
+- Console IAM (`console/api/src/policy.js`): AWS-mirrored policy/role
+  editing and maintenance model (issue #335). Named, reusable, versioned
+  `Policy` objects (up to 5 versions each, explicit rollback) can now be
+  attached to zero or more tiers/roles, in addition to each tier's
+  existing single inline policy. Owner-defined custom tiers (beyond the
+  5 built-in `owner`/`admin`/`moderator`/`player`/`observer`) can now be
+  created, up to a 20-custom-tier / 50-named-policy cap. New API surface:
+  `POST/GET/PUT/DELETE /api/settings/iam/policies[/{id}[/rollback|/versions/{vid}]]`,
+  `POST /api/settings/iam/tiers`,
+  `PUT /api/settings/iam/tiers/{tier}/{inline|attach|detach}`.
+  Fixes a pre-existing, non-functional "Test" tab in the IAM Web UI by
+  correcting its request/response contract mismatch and extending it
+  into a real Policy Simulator (draft-statement mode + real-tier-
+  aggregate mode). Backward-compatible: existing installs' `iam-
+  policies.json` is transparently migrated to the new schema on load,
+  with byte-identical evaluation for every pre-existing tier/action
+  combination (see the L1 design doc's §6/§9 for the full upgrade-path
+  and Layer 1 eight-hats audit evidence:
+  `docs/design/console-custom-iam-roles-l1-design-2026-08-17.md`).
+  Backend/API implementation only in this change; Web UI (Policies/Roles
+  views) is a tracked follow-up on the same issue.
+
 ### Changed
 
 - Merged `upstream/main` into this fork's `main` (issue #279), resolving 198
