@@ -111,9 +111,10 @@ Exchange Bot addon drives through the scheduler bridge, now first-class):
 - **Buyback sweeps** buy player sell listings whose per-unit ask is at or below the
   buyback percentage of the chosen **price basis** — seeded NPC price at that
   listing's grade (default), or the live player-market average / lowest ask with
-  seeded fallback. The buyback schedule carries its own copy of the category
-  multipliers: keep them matched with the reseed schedule so the reconstructed
-  seeded basis tracks what the market actually sells at. Whole listed stacks are
+  seeded fallback. The buyback schedule carries its own category multipliers
+  (they may differ from reseed on purpose). The reconstructed seeded basis still
+  uses the **reseed** schedule's augment pricing (discounted vs original) so
+  ready-made augment caps track what the bot actually lists. Whole listed stacks are
   bought in one pass, sellers are paid through never-expiring "Take Solari"
   payment entries, and concurrent sweeps are safe at the database level
   (`FOR UPDATE ... SKIP LOCKED`). Every run probes eligibility with a read-only

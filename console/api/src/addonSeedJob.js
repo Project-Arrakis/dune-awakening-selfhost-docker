@@ -293,13 +293,11 @@ function augmentStatRollCounts(config) {
 export function buildMarketSeedSql(plan, schedule) {
   const exchangeId = requireSeedExchangeId(schedule);
   const multiplier = schedule.priceMultiplier;
-  const augmentPricing = normalizeAugmentPricing(schedule.augmentPricing);
-  const augmentSchematicPrices = augmentSchematicPriceMap(plan.rows);
   const valuesSql = plan.rows.map((row) => {
     // Price pipeline: plan price (with the augment pricing choice applied),
     // normalized back to the plan's own 1x scale, then the schedule's base
     // multiplier and the row's category multiplier, rounded to clean steps.
-    const price = roundPrice((seedRowBasePrice(row, augmentPricing, augmentSchematicPrices) / plan.sourceMultiplier) * multiplier * seedRowCategoryMultiplier(row, schedule));
+    const price = listedMarketUnitPrice(plan, row, schedule);
     return `(${sqlLiteral(row.templateId)},${row.stackSize},${price},${row.categoryMask},${row.categoryDepth},${row.qualityLevel},${sqlLiteral(row.kind)},${row.listings},${sqlLiteral(row.itemStats)})`;
   }).join(",\n") || "(NULL,1,0,0,0,0,'equippable',0,'{}')";
 
@@ -428,10 +426,14 @@ function requireSeedExchangeId(schedule) {
   return exchangeId;
 }
 
+function isAugmentSchematicRow(row) {
+  return row.kind === "schematic" || String(row.templateId || "").endsWith("_Schematic");
+}
+
 function augmentSchematicPriceMap(rows) {
   const prices = new Map();
   for (const row of rows) {
-    if (row.kind === "schematic" && AUGMENT_TEMPLATE_PATTERN.test(row.templateId)) {
+    if (isAugmentSchematicRow(row) && AUGMENT_TEMPLATE_PATTERN.test(row.templateId)) {
       prices.set(`${row.templateId}:${row.qualityLevel}`, row.price);
     }
   }
@@ -443,12 +445,23 @@ function augmentSchematicPriceMap(rows) {
 // the same grade, or 1/20 of the item's own plan price when no schematic is
 // listed — the plan's original augment item ladder (19M-37.5M) is 20x the
 // discounted one, so both paths land on the same scale.
-function seedRowBasePrice(row, augmentPricing, augmentSchematicPrices) {
-  if (augmentPricing !== "discounted" || row.kind === "schematic" || !AUGMENT_TEMPLATE_PATTERN.test(row.templateId)) {
+export function seedRowBasePrice(row, augmentPricing, augmentSchematicPrices) {
+  if (augmentPricing !== "discounted" || isAugmentSchematicRow(row) || !AUGMENT_TEMPLATE_PATTERN.test(row.templateId)) {
     return row.price;
   }
   const schematicPrice = augmentSchematicPrices.get(`${row.templateId}_Schematic:${row.qualityLevel}`);
   return schematicPrice ? schematicPrice / 2 : row.price / 20;
+}
+
+// Shared by reseed SQL and buyback's seeded price basis so "60% of seeded"
+// tracks what the bot actually lists after augmentPricing + multipliers.
+export function listedMarketUnitPrice(plan, row, schedule) {
+  const schematicPrices = augmentSchematicPriceMap(plan.rows || []);
+  const base = seedRowBasePrice(row, normalizeAugmentPricing(schedule?.augmentPricing), schematicPrices);
+  const source = Math.max(1, Number(plan.sourceMultiplier) || 1);
+  const multiplier = Number(schedule?.priceMultiplier);
+  const priceMultiplier = Number.isFinite(multiplier) && multiplier > 0 ? multiplier : 1;
+  return roundPrice((base / source) * priceMultiplier * seedRowCategoryMultiplier(row, schedule));
 }
 
 function itemStatsJson(durCur, durMax, statRolls = null) {
