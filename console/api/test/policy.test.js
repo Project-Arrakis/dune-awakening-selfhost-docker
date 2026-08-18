@@ -73,6 +73,43 @@ test("bases:delete-item can be withheld independently of bases:mutate", () => {
   assert.equal(evaluate({ tier: "admin" }, "bases:delete-item", policies), true);
 });
 
+// Same argument as the delete above, read in the other direction: a
+// bases:mutate grant predates any ability to put items into a base at all, so
+// it cannot be read as consent to fabricate them.
+test("bases:add-item can be withheld independently of bases:mutate", () => {
+  const policies = {
+    owner: { version: 1, tier: "owner", statements: [{ Effect: "Allow", Action: "*" }] },
+    moderator: {
+      version: 1,
+      tier: "moderator",
+      statements: [{ Effect: "Allow", Action: ["bases:read", "bases:mutate", "bases:delete-item"] }]
+    },
+    admin: { version: 1, tier: "admin", statements: [{ Effect: "Allow", Action: "bases:*" }] }
+  };
+  assert.equal(setPolicies(policies).ok, true);
+  // Even a policy that already grants the sibling destructive action does not
+  // carry creation with it -- the two are independently grantable.
+  assert.equal(evaluate({ tier: "moderator" }, "bases:delete-item", policies), true);
+  assert.equal(evaluate({ tier: "moderator" }, "bases:add-item", policies), false);
+  assert.equal(evaluate({ tier: "admin" }, "bases:add-item", policies), true);
+});
+
+// This assertion is the only real gate on the new route's IAM entry.
+// rbacParity's extractRoutes cannot see a `path.match(...) && req.method`
+// route, and an unmatched POST under /api/bases/ falls through to the
+// bases:mutate prefix rule -- so a missing pattern entry would be silently
+// permissive rather than failing closed.
+test("the container item add route resolves to bases:add-item without shadowing its neighbours", () => {
+  assert.equal(actionForRoute("/api/bases/5/containers/9/items", "POST"), "bases:add-item");
+  // Every other base POST keeps the shared mutate bucket.
+  assert.equal(actionForRoute("/api/bases/5/refill-generators", "POST"), "bases:mutate");
+  assert.equal(actionForRoute("/api/bases/5/refill-water", "POST"), "bases:mutate");
+  assert.equal(actionForRoute("/api/bases/5/permissions", "PUT"), "bases:mutate");
+  // The sibling delete is unaffected: its path carries a trailing item id, so
+  // the two patterns cannot match the same request.
+  assert.equal(actionForRoute("/api/bases/5/containers/9/items/77", "DELETE"), "bases:delete-item");
+});
+
 test("the container item delete route resolves to bases:delete-item without shadowing its neighbours", () => {
   assert.equal(actionForRoute("/api/bases/5/containers/9/items/77", "DELETE"), "bases:delete-item");
   // The base delete and the cancellation routes must keep their own actions --
