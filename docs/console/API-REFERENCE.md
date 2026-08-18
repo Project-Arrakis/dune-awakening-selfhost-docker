@@ -443,14 +443,14 @@ blacklist behaves.
 
 | Method | Route | Description | Parameters |
 |--------|-------|-------------|------------|
-| GET | `/api/exchange/market` | Market Bot status: seed-plan availability and both schedules | None |
+| GET | `/api/exchange/market` | Market Bot status: seed-plan availability, both schedules, and the commodity-stack catalog | None |
 | GET | `/api/exchange/market/exchanges` | Discover exchanges (BIGINT ids as strings; access-pointed exchanges first) | None |
 | POST | `/api/exchange/market/buyback/probe` | Read-only buyback diagnostics: total, recognized, eligible, above-threshold, unknown-template, and invalid price/stack listing counts (no backup taken) | body: `exchangeId?`, `priceMultiplier?`, `augmentMultiplier?`, `rankedArmorMultiplier?`, `rankedWeaponMultiplier?`, `buybackPercent?`, `buybackPriceBasis?`, `maxBuys?` |
 | GET | `/api/exchange/market/buyback/log` | Stored Buyback Sweep Log batches (purchased and skipped listings with reasons). Batches older than 5 days are omitted; the scheduler deletes them from disk at most hourly. | None |
 | POST | `/api/exchange/market/buyback/log` | Read-only dry-run classify of player sell listings (eligible first, then skip reasons; capped at 1000 stored rows with leftovers reserved); appends a log batch (no backup taken). Rate-limited. | body: same optional overrides as the probe |
 | POST | `/api/exchange/market/buyback/log/clear` | Clear stored Buyback Sweep Log batches. Requires `exchange:market-write`. Rate-limited. | None |
 | POST | `/api/exchange/market/buyback/schedule` | Save the buyback schedule (audited, rate-limited) | body: `enabled`, `intervalMinutes`, `exchangeId`, `priceMultiplier`, `augmentMultiplier`, `rankedArmorMultiplier`, `rankedWeaponMultiplier`, `buybackPercent`, `buybackPriceBasis`, `maxBuys` |
-| POST | `/api/exchange/market/seed/schedule` | Save the market reseed schedule (audited, rate-limited) | body: `enabled`, `intervalMinutes`, `exchangeId`, `priceMultiplier`, `augmentMultiplier`, `rankedArmorMultiplier`, `rankedWeaponMultiplier`, `augmentPricing` (`discounted`\|`original`) |
+| POST | `/api/exchange/market/seed/schedule` | Save the market reseed schedule (audited, rate-limited) | body: `enabled`, `intervalMinutes`, `exchangeId`, `priceMultiplier`, `augmentMultiplier`, `rankedArmorMultiplier`, `rankedWeaponMultiplier`, `augmentPricing` (`discounted`\|`original`), `commodityStacks` (object of templateId → 1–20 listing counts for allowlisted commodities) |
 | POST | `/api/exchange/market/buyback/run` | Run a buyback sweep now with the saved schedule (probe → backup → sweep) | None |
 | POST | `/api/exchange/market/seed/run` | Run a market reseed now with the saved schedule (backup → clear bot listings → seed) | None |
 
@@ -459,8 +459,16 @@ The three category multipliers (`augmentMultiplier`, `rankedArmorMultiplier`,
 and scale prices on top of the base `priceMultiplier` for augments & augment
 schematics, ranked (grade 1–5) armor including stillsuits, and ranked weapons
 respectively. On the seed schedule they raise the seeded sell prices; on the
-buyback schedule they reprice the reconstructed "seeded" price basis the same
-way, so `buybackPercent` keeps meaning a percentage of the real market price.
+buyback schedule they reprice the reconstructed "seeded" price basis. Ready-made
+augment item caps also follow the reseed schedule's `augmentPricing`
+(`discounted` vs `original`) so `buybackPercent` is a percentage of what the bot
+actually lists, even when the two schedules use different augment multipliers.
+
+The seed schedule's `commodityStacks` map overrides how many full stacks of
+allowlisted commodities a reseed lists (1–20, default 2). Unknown template ids
+are ignored. Units per stack stay at the plan `stack_size`. The catalog of
+editable items is returned on `GET /api/exchange/market` as
+`commodityStackCatalog` / `commodityStackGroups`.
 
 Unlike the board above, these routes **do write the game database** through the
 native Market Bot engine (`addonJobs.js` / `addonSeedJob.js`). Reads, the probe, and

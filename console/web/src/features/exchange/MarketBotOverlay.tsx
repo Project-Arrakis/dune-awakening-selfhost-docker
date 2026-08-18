@@ -6,6 +6,8 @@ import {
   type MarketBotStatus,
   type MarketBuybackLogBatch,
   type MarketCategoryMultipliers,
+  type CommodityStackGroup,
+  type CommodityStackItem,
   type MarketExchange,
   type MarketPriceBasis,
   type MarketProbeResult
@@ -46,6 +48,72 @@ function categoryMultipliersFrom(schedule: Partial<MarketCategoryMultipliers>): 
     rankedArmorMultiplier: schedule.rankedArmorMultiplier ?? 1,
     rankedWeaponMultiplier: schedule.rankedWeaponMultiplier ?? 1
   };
+}
+
+const COMMODITY_STACK_MIN = 1;
+const COMMODITY_STACK_MAX = 20;
+const COMMODITY_STACK_DEFAULT = 2;
+
+function commodityStacksFrom(saved: Record<string, number> | undefined, catalog: CommodityStackItem[]): Record<string, number> {
+  const next: Record<string, number> = {};
+  for (const item of catalog) {
+    const value = saved?.[item.templateId];
+    next[item.templateId] = Number.isInteger(value) ? Number(value) : COMMODITY_STACK_DEFAULT;
+  }
+  return next;
+}
+
+function catalogGroups(catalog: CommodityStackItem[], groups: CommodityStackGroup[]): CommodityStackGroup[] {
+  if (groups.length) {
+    return groups.filter((group) => catalog.some((item) => item.group === group.id));
+  }
+  const seen = new Set<string>();
+  const derived: CommodityStackGroup[] = [];
+  for (const item of catalog) {
+    if (seen.has(item.group)) continue;
+    seen.add(item.group);
+    derived.push({ id: item.group, label: item.group });
+  }
+  return derived;
+}
+
+type CommodityStackInputsProps = {
+  catalog: CommodityStackItem[];
+  groups: CommodityStackGroup[];
+  values: Record<string, number>;
+  onChange: (next: Record<string, number>) => void;
+};
+
+function CommodityStackInputs({ catalog, groups, values, onChange }: CommodityStackInputsProps) {
+  if (!catalog.length) return null;
+  return (
+    <div className="market-bot-commodity-stacks">
+      {catalogGroups(catalog, groups).map((group) => (
+        <div key={group.id} className="market-bot-commodity-group">
+          <strong>{group.label}</strong>
+          <div className="market-bot-commodity-grid">
+            {catalog.filter((item) => item.group === group.id).map((item) => {
+              const stacks = values[item.templateId] ?? COMMODITY_STACK_DEFAULT;
+              const units = stacks * item.stackSize;
+              return (
+                <label key={item.templateId}>{item.label}
+                  <input
+                    aria-label={`${item.label} stacks`}
+                    type="number"
+                    min={COMMODITY_STACK_MIN}
+                    max={COMMODITY_STACK_MAX}
+                    value={stacks}
+                    onChange={(event) => onChange({ ...values, [item.templateId]: Number(event.target.value) })}
+                  />
+                  <span className="stack-hint">{stacks} × {item.stackSize.toLocaleString()} = {units.toLocaleString()} units</span>
+                </label>
+              );
+            })}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
 }
 
 type CategoryMultiplierInputsProps = {
@@ -203,9 +271,16 @@ export function MarketBotOverlay({ onClose, onError, confirmAction }: MarketBotO
   const [seedMultiplier, setSeedMultiplier] = useState(5);
   const [seedCategoryMultipliers, setSeedCategoryMultipliers] = useState(defaultCategoryMultipliers);
   const [augmentPricing, setAugmentPricing] = useState<MarketAugmentPricing>("discounted");
+  const [commodityCatalog, setCommodityCatalog] = useState<CommodityStackItem[]>([]);
+  const [commodityGroups, setCommodityGroups] = useState<CommodityStackGroup[]>([]);
+  const [commodityStacks, setCommodityStacks] = useState<Record<string, number>>({});
 
   function applyStatus(next: MarketBotStatus, options: { populateForm?: boolean } = {}) {
     setStatus(next);
+    const catalog = next.commodityStackCatalog || [];
+    const groups = next.commodityStackGroups || [];
+    setCommodityCatalog(catalog);
+    setCommodityGroups(groups);
     if (options.populateForm) {
       setBuybackEnabled(Boolean(next.buyback.enabled));
       setBuybackInterval(next.buyback.intervalMinutes);
@@ -219,6 +294,7 @@ export function MarketBotOverlay({ onClose, onError, confirmAction }: MarketBotO
       setSeedMultiplier(next.seed.priceMultiplier);
       setSeedCategoryMultipliers(categoryMultipliersFrom(next.seed));
       setAugmentPricing(next.seed.augmentPricing === "original" ? "original" : "discounted");
+      setCommodityStacks(commodityStacksFrom(next.seed.commodityStacks, catalog));
       setExchangeId((current) => current || next.buyback.exchangeId || next.seed.exchangeId || "");
     }
   }
@@ -318,6 +394,7 @@ export function MarketBotOverlay({ onClose, onError, confirmAction }: MarketBotO
         priceMultiplier: seedMultiplier,
         ...seedCategoryMultipliers,
         augmentPricing,
+        commodityStacks,
         ...(exchangeId ? { exchangeId } : {})
       });
       return saved.enabled
@@ -417,7 +494,7 @@ export function MarketBotOverlay({ onClose, onError, confirmAction }: MarketBotO
 
             <div className="market-bot-section">
               <strong>Buyback sweeps</strong>
-              <p className="action-help-note">Buys player sell listings whose per-unit ask is at or below the buyback percentage of the price basis (seeded NPC price at that grade, or live market average / lowest with seeded fallback). Whole listed stacks are bought in one pass. Every run probes eligibility read-only first and only backs up + sweeps when something qualifies. The category multipliers reprice the seeded basis the same way the reseed does — keep them matched with the reseed section so the buyback percentage tracks the real market prices.</p>
+              <p className="action-help-note">Buys player sell listings whose per-unit ask is at or below the buyback percentage of the price basis (seeded NPC price at that grade, or live market average / lowest with seeded fallback). Whole listed stacks are bought in one pass. Every run probes eligibility read-only first and only backs up + sweeps when something qualifies. The seeded basis uses this section's category multipliers and the reseed section's augment pricing (discounted vs original), so 60% of seeded tracks what the bot actually lists for ready-made augments. Category multipliers can still differ from reseed on purpose.</p>
               <div className="market-bot-grid">
                 <label>Interval (minutes)
                   <input aria-label="Buyback interval minutes" type="number" min={10} max={1440} value={buybackInterval} onChange={(event) => setBuybackInterval(Number(event.target.value))} />
@@ -471,6 +548,7 @@ export function MarketBotOverlay({ onClose, onError, confirmAction }: MarketBotO
               <strong>Market reseed</strong>
               <p className="action-help-note">Replaces the bot's own NPC sell listings from the seed plan at the chosen price multiplier. Every run is backup, clear bot listings on that exchange, seed. Player listings are never touched. Augment items always seed as bottom-of-range rolls; the augment pricing option chooses whether they undercut their schematics (half the pattern's price) or keep the plan's original prices.</p>
               <p className="action-help-note">Category multipliers (1-5x, 1 = no change) additionally scale the seeded prices of augments &amp; augment schematics, ranked (grade 1-5) armor including stillsuits, and ranked weapons — on top of the base price multiplier. Grade-0 stock and everything else keeps the base multiplier alone.</p>
+              <p className="action-help-note">Number of stacks is how many full listings of that commodity each reseed writes. Units per stack stay at the plan maximum (so 10 fuel-cell stacks is 5,000 units). Unlisted commodities keep the plan default of 2 stacks.</p>
               <div className="market-bot-grid">
                 <label>Interval (minutes)
                   <input aria-label="Seed interval minutes" type="number" min={10} max={1440} value={seedInterval} onChange={(event) => setSeedInterval(Number(event.target.value))} />
@@ -486,6 +564,7 @@ export function MarketBotOverlay({ onClose, onError, confirmAction }: MarketBotO
                   </select>
                 </label>
               </div>
+              <CommodityStackInputs catalog={commodityCatalog} groups={commodityGroups} values={commodityStacks} onChange={setCommodityStacks} />
               <label className="market-bot-toggle">
                 <input aria-label="Run reseed on a schedule" type="checkbox" checked={seedEnabled} onChange={(event) => setSeedEnabled(event.target.checked)} />
                 Run market reseed on a schedule (unattended)
