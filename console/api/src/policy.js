@@ -1,30 +1,184 @@
-// Console IAM — AWS IAM-style policy evaluation engine.
+// Console IAM — AWS IAM-style policy evaluation engine, with AWS-mirrored
+// policy/role editing and maintenance (named, versioned, reusable Policy
+// objects; roles/tiers attach zero or more, plus one optional inline
+// policy of their own).
 //
 // Implements: Deny > Allow > default Deny with wildcard matching.
 // Policies are loaded from runtime/generated/iam-policies.json at
 // startup; if the file is missing or invalid, hardcoded defaults
 // (equivalent to the current CAPABILITY_BY_TIER model) are used.
 //
-// Policy document format (per tier):
-//   { "version": 1, "tier": "moderator",
-//     "statements": [
-//       { "Effect": "Deny",  "Action": ["players:reset-progression"] },
-//       { "Effect": "Allow", "Action": ["players:*", "server:read"] }
-//     ]}
+// Schema v2 store shape:
+//   {
+//     "schemaVersion": 2,
+//     "tiers": {
+//       "owner": { "inline": { "statements": [...] } | null, "attached": ["<policyId>", ...] },
+//       ...
+//     },
+//     "policies": {
+//       "<policyId>": {
+//         "name": "read-only-metrics",
+//         "managed": false,
+//         "defaultVersionId": "v2",
+//         "versions": {
+//           "v1": { "statements": [...], "createdAt": "...", "createdBy": "owner" },
+//           "v2": { "statements": [...], "createdAt": "...", "createdBy": "owner" }
+//         }
+//       }
+//     }
+//   }
 //
-// Evaluation: for each statement in order,
-//   if action matches statement AND Effect=Deny  → DENY immediately
-//   if action matches statement AND Effect=Allow → mark ALLOWED
-//   if no statement matched                        → DENY (default)
+// Statement format (unchanged from the pre-schema-v2 engine):
+//   { "Effect": "Deny",  "Action": ["players:reset-progression"] }
+//   { "Effect": "Allow", "Action": ["players:*", "server:read"] }
+//
+// Evaluation: for each statement in order (across the tier's inline
+// policy, if any, followed by every attached policy's DEFAULT version,
+// concatenated -- attachment order does not affect the result, since an
+// explicit Deny anywhere always wins per the loop below),
+//   if action matches statement AND Effect=Deny  -> DENY immediately
+//   if action matches statement AND Effect=Allow -> mark ALLOWED
+//   if no statement matched                        -> DENY (default)
+//
+// See docs/design/console-custom-iam-roles-l1-design-2026-08-17.md for
+// the full L1 design and its Layer 1 eight-hats audit findings register
+// (§9) -- several of the invariants enforced below (fail-closed
+// aggregation, referential integrity, the single mutation choke point)
+// exist specifically because that audit found a naive implementation of
+// this exact file would violate them.
 
 import { existsSync, readFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { ROUTE_ACTIONS, REGEX_ACTIONS, REGEX_ACTIONS_BY_METHOD, REGEX_ACTIONS_BY_METHOD_PATTERN } from "./actions.js";
 import { writeJsonAtomic } from "./jsonStore.js";
+import { redact } from "./redact.js";
+
+// ---- Constants ----
+
+export const WILDCARD = "*";
+
+// Tier/role names are slug-like identifiers (closer to this project's own
+// branch/addon-naming conventions than to actions.js's fixed, hand-curated
+// namespace enum) -- lowercase, 2-32 chars, hyphens/underscores allowed.
+// Decided explicitly during the Layer 1 design review (§8 item 1); no hat
+// raised a security or consistency objection to this shape.
+export const RESERVED_TIER_NAME_PATTERN = /^[a-z][a-z0-9_-]{1,31}$/;
+
+// Resource bounds, decided during the Layer 1 design review (§8 item 2) in
+// response to the Network hat's finding that GET .../policies' response
+// size was otherwise unbounded. Owner-only, human-paced feature -- these
+// are generous-for-real-usage-but-bounded numbers, not a tight limit.
+export const MAX_NAMED_POLICIES = 50;
+export const MAX_CUSTOM_TIERS = 20;
+export const MAX_POLICY_VERSIONS = 5;
+
+const BUILT_IN_TIER_NAMES = new Set(["owner", "admin", "moderator", "player", "observer"]);
+
+// SECURITY: Object.prototype pollution guard (Layer 2 audit finding
+// NEW-1, Security hat -- CRITICAL, not part of the original L1 design).
+//
+// `tiers` and `policies` are plain JS object literals keyed by
+// caller-supplied strings (`tierName` from a URL path segment,
+// `policyId` from a URL path segment or request body). For a plain
+// object, `obj["__proto__"]` does NOT return `undefined` for a
+// non-existent key -- it returns the REAL, LIVE `Object.prototype`
+// object via the inherited accessor, which is truthy and, critically,
+// a real object whose own properties CAN be mutated
+// (`obj["__proto__"].someField = x` sets `Object.prototype.someField`
+// globally, for the entire Node process, silently and invisibly in any
+// persisted JSON, since JSON.stringify/Object.keys never enumerate
+// inherited properties). This was confirmed reachable over a real,
+// shipped HTTP route (`PUT /api/settings/iam/tiers/__proto__/inline`)
+// by any session holding `settings:write` (owner by default).
+//
+// Fix: reject any tierName/policyId matching this reserved-key
+// blocklist BEFORE it is ever used as a bracket-access key anywhere in
+// this file -- not just in `createTier()` (which already had a shape
+// check via RESERVED_TIER_NAME_PATTERN, but that pattern does NOT
+// reject "constructor" or "prototype", both of which are valid
+// lowercase-only strings that also resolve to real, dangerous
+// Object.prototype-chain values). This check is intentionally
+// case-insensitive and covers all three canonical prototype-pollution
+// vectors, matching the same class of guard used by lodash's
+// `_.set`/`_.merge` CVE fixes for this exact bug class.
+const DANGEROUS_OBJECT_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+
+function isDangerousKey(key) {
+  return typeof key !== "string" || DANGEROUS_OBJECT_KEYS.has(key.toLowerCase());
+}
+
+// Structural defense-in-depth, applied everywhere a tiers/policies key
+// is looked up or checked for existence -- Object.hasOwn() never
+// traverses the prototype chain, so `Object.hasOwn(tiers, "__proto__")`
+// correctly returns `false` (there is no OWN "__proto__" property on a
+// plain object literal) even though `tiers["__proto__"]` would return a
+// truthy value. Using this instead of a bare truthy check closes this
+// vulnerability class structurally, independent of the explicit
+// isDangerousKey() blocklist above -- the blocklist gives an immediate,
+// clear rejection error; hasOwnKey() ensures correctness even for any
+// dangerous key the blocklist did not anticipate.
+function hasOwnKey(obj, key) {
+  return typeof key === "string" && Object.hasOwn(obj, key);
+}
 
 // ---- Policy evaluation ----
 
-export const WILDCARD = "*";
+// SECURITY (Layer 3 re-audit, Architect hat -- CRITICAL, independently
+// confirmed by `semgrep --config auto` as a blocking
+// javascript.lang.security.audit.detect-non-literal-regexp finding):
+// the fallback path below previously built a regex from a
+// caller-supplied pattern string (`new RegExp("^" + pattern.replace(/\*/g,
+// ".*") + "$")`) with only `*` escaped -- every other regex
+// metacharacter in the pattern (`.`, `+`, `(`, `)`, `[`, `]`, `{`, `}`,
+// `|`, `^`, `$`, `\`) was passed through unescaped, and multiple
+// sequential `.*` segments (one per `*` in a pattern like
+// `"foo*bar*baz*qux"`) can cause polynomial-time catastrophic
+// backtracking against a non-matching action string. This was always a
+// theoretical hardening gap, but became LOAD-BEARING for availability
+// once `allowedActionsForStore()` (added for the privilege-ceiling
+// check in detectPrivilegeEscalation()) started calling evaluate() --
+// and therefore this function -- against every known action on EVERY
+// privilege-ceiling-checked mutation: a single malformed/wildcard-dense
+// Action string in a stored policy could hang the entire single-
+// threaded event loop, not just one tier's check, for the lifetime of
+// the process (recoverable only by a file edit + restart).
+//
+// Fixed by replacing the regex entirely with a deterministic,
+// backtracking-free two-pointer glob matcher (the standard algorithm
+// used specifically to eliminate ReDoS risk when matching
+// caller-controlled wildcard patterns) -- worst-case
+// O(pattern.length * action.length) with no exponential/catastrophic
+// case possible, and no regex metacharacter injection risk since no
+// regex is ever constructed from the pattern at all.
+function globMatchNoBacktrack(pattern, str) {
+  let patternIndex = 0;
+  let strIndex = 0;
+  let lastStarIndex = -1;
+  let strIndexAtLastStar = 0;
+
+  while (strIndex < str.length) {
+    if (patternIndex < pattern.length && pattern[patternIndex] === str[strIndex]) {
+      patternIndex++;
+      strIndex++;
+    } else if (patternIndex < pattern.length && pattern[patternIndex] === "*") {
+      lastStarIndex = patternIndex;
+      strIndexAtLastStar = strIndex;
+      patternIndex++;
+    } else if (lastStarIndex !== -1) {
+      patternIndex = lastStarIndex + 1;
+      strIndexAtLastStar++;
+      strIndex = strIndexAtLastStar;
+    } else {
+      return false;
+    }
+  }
+
+  while (patternIndex < pattern.length && pattern[patternIndex] === "*") {
+    patternIndex++;
+  }
+  return patternIndex === pattern.length;
+}
 
 export function matchAction(pattern, action) {
   if (pattern === WILDCARD) return true;
@@ -39,25 +193,89 @@ export function matchAction(pattern, action) {
   // Exact match or wildcard segment
   if (pattern === action) return true;
   if (pattern.includes("*")) {
-    const regex = new RegExp("^" + pattern.replace(/\*/g, ".*") + "$");
-    return regex.test(action);
+    return globMatchNoBacktrack(pattern, action);
   }
   return false;
+}
+
+// Aggregates a tier's inline statements with every attached policy's
+// DEFAULT version's statements, per the L1 design's §4.1. This is the
+// single place "what statements apply to this tier" is computed, used by
+// both evaluate() and the owner-lockout guard in the mutation choke point
+// below -- both must see the exact same aggregate, or the lockout guard
+// could pass/fail on a different view of reality than evaluate() itself.
+//
+// Fail-closed requirement (L1 audit finding L1-C2, Architect hat): if an
+// attached policyId does not resolve to a real policy, or a policy's
+// defaultVersionId does not resolve to a real version, that reference
+// contributes an implicit `{Effect: "Deny", Action: "*"}` statement to
+// the aggregate rather than silently contributing nothing. A naive
+// "just skip it" implementation was traced by the audit to fail OPEN
+// (silently dropping a Deny re-grants whatever it was blocking) -- this
+// is the opposite, deliberate behavior. In steady-state operation this
+// branch should never be reached at all, because validPolicyStore()'s
+// referential-integrity check (added per L1-C3) rejects a store with a
+// dangling reference before it is ever loaded -- this is a defense-in-
+// depth backstop for a state validPolicyStore() failed to catch (e.g.
+// direct file corruption bypassing normal load), not the primary
+// integrity mechanism.
+export function aggregateStatements(tierRecord, policies) {
+  const statements = [];
+  if (!tierRecord) return statements;
+
+  if (tierRecord.inline && Array.isArray(tierRecord.inline.statements)) {
+    statements.push(...tierRecord.inline.statements);
+  }
+
+  for (const policyId of tierRecord.attached || []) {
+    // hasOwnKey(), not a bare `policies[policyId]` truthy check -- see
+    // the Object.prototype pollution guard comment near the top of this
+    // file. A dangling reference already fails closed below regardless;
+    // this additionally ensures a dangerous key (which would otherwise
+    // resolve to a truthy Object.prototype-chain value) is treated
+    // exactly like any other dangling reference, not specially trusted.
+    const policy = hasOwnKey(policies, policyId) ? policies[policyId] : null;
+    const version = policy && policy.versions && hasOwnKey(policy.versions, policy.defaultVersionId)
+      ? policy.versions[policy.defaultVersionId]
+      : null;
+    if (!policy || !version || !Array.isArray(version.statements)) {
+      // Dangling/unresolvable reference -- fail closed (see comment above).
+      statements.push({ Effect: "Deny", Action: WILDCARD });
+      continue;
+    }
+    statements.push(...version.statements);
+  }
+
+  return statements;
 }
 
 export function evaluate(session, action, policies = null) {
   // No action to check — public route
   if (!action) return true;
 
-  const tier = resolveSessionTier(session);
+  const tier = resolveSessionTier(session, policies);
   if (!tier) return false;
 
-  const policy = getPolicy(tier, policies);
-  if (!policy) return false;
+  const store = policies || _policies || wrapDefaultPolicies();
+  const tiersMap = store.tiers || store;
+  const tierRecord = hasOwnKey(tiersMap, tier) ? tiersMap[tier] : undefined;
+
+  // Legacy (pre-schema-v2) shape support: a bare { tier: {statements} }
+  // document, as used throughout this file's own test fixtures and any
+  // caller that hasn't migrated a passed-in `policies` override to the v2
+  // shape. Treated as a tier with only an inline policy and nothing
+  // attached -- byte-identical to today's evaluation for that shape.
+  const effectiveTierRecord = store.schemaVersion === 2
+    ? tierRecord
+    : (tierRecord ? { inline: { statements: tierRecord.statements || [] }, attached: [] } : null);
+
+  if (!effectiveTierRecord) return false;
+
+  const effectivePolicies = store.schemaVersion === 2 ? (store.policies || {}) : {};
+  const statements = aggregateStatements(effectiveTierRecord, effectivePolicies);
 
   let allowed = false;
-
-  for (const stmt of policy.statements || []) {
+  for (const stmt of statements) {
     const actions = Array.isArray(stmt.Action) ? stmt.Action : [stmt.Action];
     const effect = stmt.Effect;
 
@@ -72,11 +290,13 @@ export function evaluate(session, action, policies = null) {
   return allowed;
 }
 
-export function resolveSessionTier(session) {
+export function resolveSessionTier(session, policies = null) {
   if (!session) return "";
   const tier = typeof session.tier === "string" ? session.tier : "";
-  const VALID_TIERS = new Set(["owner", "admin", "moderator", "player", "observer"]);
-  return VALID_TIERS.has(tier) ? tier : "";
+  if (!tier) return "";
+  const store = policies || _policies || wrapDefaultPolicies();
+  const tiers = store.schemaVersion === 2 ? store.tiers : store;
+  return tiers && hasOwnKey(tiers, tier) ? tier : "";
 }
 
 // ---- Policy store ----
@@ -92,8 +312,9 @@ export function loadPolicies(repoRoot = null) {
     try {
       const raw = readFileSync(filePath, "utf8");
       const parsed = JSON.parse(raw);
-      if (validPolicyStore(parsed)) {
-        _policies = parsed;
+      const migrated = migrateIfLegacyShape(parsed);
+      if (migrated && validPolicyStore(migrated)) {
+        _policies = migrated;
         return;
       }
     } catch {
@@ -102,7 +323,90 @@ export function loadPolicies(repoRoot = null) {
   }
 
   // Hardcoded fallback defaults
-  _policies = DEFAULT_POLICIES;
+  _policies = wrapDefaultPolicies();
+}
+
+// Migrates a legacy (pre-schema-v2) flat `{ tierName: {tier, statements} }`
+// store into schema v2. Runs on every loadPolicies() call, which -- per
+// the L1 audit's Architect hat, verified directly against the real call
+// graph -- happens exactly once per process start (server.js's single
+// `loadPolicies(config.repoRoot)` call site), never per-request. This
+// closes the design's own §8 Open Item #4 with no further action needed:
+// there is no repeated migration cost and no race with concurrent writes
+// via this call path specifically.
+//
+// Per-tier salvage (L1 audit finding L1-H5, DBA hat, verified by direct
+// execution against the original whole-file-reject draft): a single
+// malformed tier entry no longer discards every other, individually-valid
+// tier's customizations. Only a genuinely malformed tier is dropped (or
+// defaulted, if it's one of the 5 built-ins); every tier that validates
+// cleanly survives migration untouched.
+export function migrateIfLegacyShape(parsed) {
+  if (parsed && parsed.schemaVersion === 2) return parsed; // already current
+
+  // Whole-file rejection is reserved for genuinely unparseable/structurally
+  // alien input (not an object, or an array) -- there is no partial signal
+  // worth salvaging in that case. This is NOT the same code path as "one
+  // tier among several is malformed" (handled below).
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+
+  const tiers = {};
+  const failedTiers = [];
+  for (const [tierName, doc] of Object.entries(parsed)) {
+    // Dangerous-key rejection (Layer 2 audit finding NEW-1). Found during
+    // that audit's regression-test work: assigning `tiers[tierName] = {...}`
+    // for tierName === "__proto__"/"constructor"/"prototype" does NOT
+    // pollute Object.prototype (a whole-value bracket assignment through
+    // an inherited key is safe -- only a subsequent PROPERTY MUTATION on
+    // the already-looked-up value, e.g. `tiers[tierName].inline = x`,
+    // would), but it also means the key silently vanishes from `tiers`'s
+    // own enumerable keys with no error signal at all, which is its own,
+    // separate correctness problem (a caller has no way to know their
+    // "__proto__"-named tier was silently discarded rather than
+    // migrated). Treat it exactly like any other malformed tier entry --
+    // explicit, logged, salvage-the-rest -- rather than a silent no-op.
+    if (isDangerousKey(tierName)) {
+      failedTiers.push(tierName);
+      continue;
+    }
+    if (!doc || doc.tier !== tierName || !Array.isArray(doc.statements)) {
+      failedTiers.push(tierName);
+      continue; // salvage every other tier; do not abort the whole migration
+    }
+    // deepCopyStatements(), not `doc.statements` by reference -- this
+    // function is called by setPolicies() directly on a caller-supplied
+    // request body (as well as by loadPolicies() on freshly-parsed file
+    // content, where the distinction doesn't matter) -- see the
+    // deep-copy-on-ingest fix comment near deepCopyStore() above.
+    tiers[tierName] = { inline: { statements: deepCopyStatements(doc.statements) }, attached: [] };
+  }
+
+  if (failedTiers.length) {
+    console.warn(redact(
+      `IAM policy migration: ${failedTiers.length} tier document(s) failed ` +
+      `validation and were ${failedTiers.filter((t) => hasOwnKey(DEFAULT_POLICIES, t)).length ? "reset to defaults" : "dropped"} ` +
+      `during migration to schema v2: ${failedTiers.join(", ")}`
+    ));
+    for (const tierName of failedTiers) {
+      // hasOwnKey(), not a bare truthy check -- see the Object.prototype
+      // pollution guard comment near the top of this file. A dangerous
+      // key (e.g. "__proto__") must never be treated as "found in
+      // DEFAULT_POLICIES" just because bracket access on it resolves to
+      // the inherited Object.prototype value.
+      if (hasOwnKey(DEFAULT_POLICIES, tierName)) {
+        tiers[tierName] = { inline: { statements: DEFAULT_POLICIES[tierName].statements }, attached: [] };
+      }
+      // else: unrecognized custom tier name with malformed data -- dropped,
+      // not defaulted. A session claiming this tier will fail to resolve,
+      // matching this design's existing "no policy for this tier" behavior.
+    }
+  }
+
+  if (!tiers.owner) return null; // owner must always exist post-migration -- if even
+                                   // the fallback couldn't produce one, this IS the
+                                   // alien-input case; caller falls through to full
+                                   // DEFAULT_POLICIES.
+  return { schemaVersion: 2, tiers, policies: {} };
 }
 
 let _allowedActions = {};
@@ -112,7 +416,7 @@ let _allowedActions = {};
 // other tiers instead (see actions.js). bases:delete is the reason this
 // enumerates all four: it exists only in REGEX_ACTIONS_BY_METHOD_PATTERN, so
 // a version of this that only read ROUTE_ACTIONS would never surface it.
-function allKnownActions() {
+function allKnownActionsSet() {
   const actions = new Set(Object.values(ROUTE_ACTIONS));
   for (const [, action] of REGEX_ACTIONS) actions.add(action);
   for (const action of Object.values(REGEX_ACTIONS_BY_METHOD)) actions.add(action);
@@ -120,11 +424,17 @@ function allKnownActions() {
   return actions;
 }
 
+// Exported (per the L1 design's §4.5) so server.js's Policy Simulator
+// route can reuse this enumeration rather than duplicating it.
+export function allKnownActions() {
+  return allKnownActionsSet();
+}
+
 export function resolveAllowedActions(tier) {
   if (!tier) return [];
   if (_allowedActions[tier]) return _allowedActions[tier];
 
-  const allActions = allKnownActions();
+  const allActions = allKnownActionsSet();
   const mockSession = { tier };
   const allowed = [];
 
@@ -138,42 +448,721 @@ export function resolveAllowedActions(tier) {
   return allowed;
 }
 
-export function getPolicy(tier, policies = null) {
-  const store = policies || _policies || DEFAULT_POLICIES;
-  return store[tier] || null;
-}
-
-export function getAllPolicies(policies = null) {
-  const store = policies || _policies || DEFAULT_POLICIES;
-  return { ...store };
-}
-
-export function setPolicies(docs, repoRoot = null) {
-  if (!validPolicyStore(docs)) {
-    return { ok: false, error: "Policies must contain valid tier documents and Allow/Deny statements." };
-  }
-  if (!evaluate({ tier: "owner" }, "settings:write", docs)) {
-    return { ok: false, error: "The owner policy must retain settings:write access." };
-  }
-  _policies = docs;
+function invalidateAllowedActionsCache() {
   _allowedActions = {};
-  if (repoRoot) writeJsonAtomic(resolve(repoRoot, "runtime/generated/iam-policies.json"), docs, 0o600);
+}
+
+// Matches this codebase's existing `_resetXForTests()` convention (see
+// duneDb.js's `_resetPlayerTargetCacheForTests`) -- resets the in-memory
+// store to the wrapped hardcoded defaults, discarding any custom
+// tiers/policies a previous test created. Test-only; not called anywhere
+// in production code paths.
+export function _resetPolicyStoreForTests() {
+  _policies = wrapDefaultPolicies();
+  _allowedActions = {};
+}
+
+export function getPolicy(tier, policies = null) {
+  const store = policies || _policies || wrapDefaultPolicies();
+  const tiersMap = store.tiers || store;
+  return hasOwnKey(tiersMap, tier) ? tiersMap[tier] : null;
+}
+
+// Returns the full store (tiers + policies), matching the pre-schema-v2
+// return shape's role as "the whole thing" for GET .../iam/policies. The
+// L1 design's §8 item 2 resolution (list route returns default-version-
+// only) is implemented in server.js's route handler, not here -- this
+// function returns the true, complete in-memory state; summarization for
+// the list response is the caller's job, so any other future caller that
+// needs the full detail (e.g. the Policy Simulator's `mode: "tier"`) isn't
+// short-changed by a summarization decision made for one specific route.
+export function getAllPolicies(policies = null) {
+  const store = policies || _policies || wrapDefaultPolicies();
+  // deepCopyStore(), not a shallow `{ ...store.tiers }`/`{ ...store.policies }`
+  // spread -- fixes a real bug found during the Layer 2 audit (DBA hat):
+  // a shallow spread only copies the top-level tier/policy wrapper
+  // objects; every nested statement object (and its Action array, when
+  // Action is an array) remained the SAME reference as the live internal
+  // `_policies` state. Any caller that mutated a statement/Action array
+  // obtained from this function -- including 3 server.js route handlers
+  // and applyMutation() itself -- could silently corrupt live policy
+  // state with zero validation, zero error, zero audit trail. This
+  // function must return a genuinely independent snapshot, matching
+  // this file's own doc comment above it ("returns the true, complete
+  // in-memory state... so any other future caller... isn't short-
+  // changed") -- that guarantee was previously false for anything nested
+  // one level deeper than the tier/policy wrapper.
+  //
+  // deepCopyStore() requires a `{tiers, policies}`-shaped object with no
+  // missing keys; `store.tiers || store` / `store.policies || {}` below
+  // handle the legacy (pre-schema-v2) shape some test fixtures still
+  // pass in directly as the `policies` override argument.
+  return deepCopyStore({ tiers: store.tiers || store, policies: store.policies || {} });
+}
+
+// ---- Referential integrity + shape validation ----
+
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function validStatementList(statements) {
+  if (!Array.isArray(statements)) return false;
+  return statements.every((statement) => {
+    if (!statement || !["Allow", "Deny"].includes(statement.Effect)) return false;
+    const actions = Array.isArray(statement.Action) ? statement.Action : [statement.Action];
+    return actions.length > 0 && actions.every((action) => typeof action === "string" && action.trim().length > 0);
+  });
+}
+
+function validPolicyObject(policy) {
+  if (!isPlainObject(policy)) return false;
+  if (typeof policy.name !== "string" || !policy.name.trim()) return false;
+  if (typeof policy.managed !== "boolean") return false;
+  if (typeof policy.defaultVersionId !== "string" || !policy.defaultVersionId) return false;
+  if (!isPlainObject(policy.versions) || !Object.keys(policy.versions).length) return false;
+  if (Object.keys(policy.versions).length > MAX_POLICY_VERSIONS) return false;
+
+  // Referential integrity (L1 audit finding L1-C3, DBA hat): defaultVersionId
+  // must resolve to a real entry in this policy's own versions map.
+  // hasOwnKey(), not a bare truthy check -- see the prototype-pollution
+  // guard comment near the top of this file (Layer 2 audit finding NEW-1).
+  if (!hasOwnKey(policy.versions, policy.defaultVersionId)) return false;
+
+  return Object.values(policy.versions).every((version) => {
+    if (!isPlainObject(version)) return false;
+    if (typeof version.createdAt !== "string" || !version.createdAt) return false;
+    if (typeof version.createdBy !== "string" || !version.createdBy) return false;
+    return validStatementList(version.statements);
+  });
+}
+
+function validTierRecord(tierRecord, policyIds) {
+  if (!isPlainObject(tierRecord)) return false;
+  if (tierRecord.inline !== null) {
+    if (!isPlainObject(tierRecord.inline) || !validStatementList(tierRecord.inline.statements)) return false;
+  }
+  if (!Array.isArray(tierRecord.attached)) return false;
+
+  // Referential integrity (L1 audit finding L1-C3, DBA hat): every
+  // attached policyId must resolve to a real entry in the top-level
+  // policies map. A dangling reference here is treated the same as any
+  // other invalid shape -- reject the whole store, do not silently patch
+  // it, since at validation time (as opposed to the resolution-time gap
+  // aggregateStatements()'s fail-closed guard exists for) a dangling
+  // reference indicates file corruption, not a normal runtime state.
+  // Also rejects any dangerous key (Layer 2 audit finding NEW-1) --
+  // "__proto__"/"constructor"/"prototype" can never be a legitimate
+  // policyId (real ones are randomUUID()s), so a store containing one
+  // is itself malformed/corrupted, not a state worth tolerating.
+  return tierRecord.attached.every((policyId) => typeof policyId === "string" && !isDangerousKey(policyId) && policyIds.has(policyId));
+}
+
+// Replaces the pre-schema-v2 validPolicyStore(): validates the
+// {schemaVersion, tiers, policies} shape directly, including bidirectional
+// referential integrity between tiers[].attached and the policies map
+// (L1 audit finding L1-C3). "owner" remains the one tier name that must
+// always exist -- not specially validated beyond presence, but relied
+// upon by setPolicies()'s existing lockout check, which this validator
+// does not duplicate.
+function validPolicyStore(value) {
+  if (!isPlainObject(value)) return false;
+  if (value.schemaVersion !== 2) return false;
+  if (!isPlainObject(value.tiers)) return false;
+  if (!isPlainObject(value.policies)) return false;
+
+  const tierNames = Object.keys(value.tiers);
+  if (!tierNames.length) return false;
+  if (!tierNames.includes("owner")) return false;
+  // RESERVED_TIER_NAME_PATTERN alone is NOT sufficient here (Layer 2
+  // audit finding NEW-1) -- "constructor" and "prototype" are both
+  // valid, lowercase-only strings that satisfy the pattern but resolve
+  // to real Object.prototype-chain values when used as a bracket-access
+  // key on a plain object. Explicit isDangerousKey() rejection closes
+  // this at the one place every persisted/loaded store passes through.
+  if (!tierNames.every((tier) => !isDangerousKey(tier) && RESERVED_TIER_NAME_PATTERN.test(tier))) return false;
+
+  const customTierCount = tierNames.filter((t) => !BUILT_IN_TIER_NAMES.has(t)).length;
+  if (customTierCount > MAX_CUSTOM_TIERS) return false;
+
+  const policyIds = new Set(Object.keys(value.policies));
+  if (policyIds.size > MAX_NAMED_POLICIES) return false;
+  if (Array.from(policyIds).some((id) => isDangerousKey(id))) return false;
+
+  if (!tierNames.every((tier) => validTierRecord(value.tiers[tier], policyIds))) return false;
+  if (!Object.values(value.policies).every((policy) => validPolicyObject(policy))) return false;
+
+  return true;
+}
+
+// Exported for the mutation choke point below and for direct testing.
+export { validPolicyStore };
+
+// ---- Single mutation choke point (L1 audit finding L1-C1) ----
+//
+// EVERY mutating operation on the policy store -- creating/editing/rolling
+// back/deleting a named policy, creating a tier, setting a tier's inline
+// policy, attaching/detaching a policy -- MUST go through applyMutation().
+// This is not a style preference: the L1 audit (independently, via
+// Security, DBA, and QA hats) found that a per-route-reimplemented
+// owner-lockout guard has a real, provable bypass, because a policy edit
+// or rollback never touches `tiers.owner` directly even when it changes
+// owner's effective aggregate. Funneling every mutation through one
+// function that re-validates the RESULTING store's shape, referential
+// integrity, and owner's settings:write aggregate -- regardless of which
+// specific field changed -- closes that gap structurally rather than
+// trusting each of 7 independently-implemented handlers to remember to
+// re-derive it.
+//
+// `mutator` receives a deep-enough mutable copy of the current store and
+// must return the fully mutated store (or throw/return an error marker;
+// see callers below for the exact per-operation contracts).
+//
+// CONCURRENCY INVARIANT (L1 audit finding L1-H1, verified empirically --
+// see docs/design/console-custom-iam-roles-l1-design-2026-08-17.md §9):
+// this function, and every function that calls it (createPolicy,
+// editPolicy, rollbackPolicy, deletePolicyVersion, deletePolicy,
+// createTier, setTierInline, attachPolicy, detachPolicy, setPolicies),
+// MUST remain fully synchronous end-to-end -- no `await`, no Promise, no
+// async fs call, from the moment `getAllPolicies()` reads `_policies`
+// through the moment `persist()` finishes writing the file. This is not
+// a performance choice; it is what makes concurrent-write safety hold
+// without a separate lock/mutex primitive: Node's single-threaded,
+// run-to-completion semantics guarantee that once one of these calls
+// starts, no other request's JS code -- including another call into this
+// same choke point -- can execute until this one returns. A 200-iteration
+// adversarial stress test (two concurrent "requests" racing to roll back
+// the same policy to different versions, one of which would strip
+// owner's settings:write) found zero interleaving/lost-update anomalies,
+// specifically because there is no `await` anywhere in this path for a
+// second call to interleave at.
+//
+// If a future change ever needs to make any part of this path
+// asynchronous (e.g. switching persist() to the promise-based fs API,
+// or adding an async audit/logging hook inside the mutator), this
+// guarantee breaks silently and a real mutex (e.g. the
+// `Promise.resolve()`-chain pattern already used elsewhere in this
+// codebase -- see addonItemGrants.js's per-addonId queue) becomes
+// required at that point, not optional. Do not introduce an `await`
+// inside applyMutation() or any function it calls without adding that
+// lock in the same change.
+// Computes every action currently allowed for `tier` under `store` --
+// exhaustive, not sampled, since this feeds a security decision
+// (privilege-ceiling enforcement, below) rather than a UI hint.
+function allowedActionsForStore(tier, store) {
+  const allowed = new Set();
+  for (const action of allKnownActionsSet()) {
+    if (evaluate({ tier }, action, store)) allowed.add(action);
+  }
+  return allowed;
+}
+
+// SECURITY: privilege-ceiling / "no amplification, no unbounded
+// third-party tampering" invariant (originally added as a Layer 3 audit
+// finding -- Security hat, CRITICAL -- then found INCOMPLETE by a
+// SECOND Layer 3 re-audit dispatched after this account's README/
+// AGENTS.md were themselves updated: the original version below only
+// ever checked for GAINS the acting session's own tier didn't already
+// hold. It had NO check at all for LOSSES -- meaning a tier holding
+// only `settings:write` (the design's own stated "intended use case"
+// for this action) could call `setTierInline(anyOtherTier, [])` and
+// silently zero out the built-in `admin` or `moderator` tier's entire
+// permission set, with zero relationship to that tier, zero owner
+// approval, and zero rejection. Independently reproduced by two hats
+// (Architect, Security) via two different code paths in the same
+// re-audit pass: direct setTierInline() overwrite, and editPolicy() on
+// a policy shared with an unrelated tier (a GRANT to a stranger tier,
+// which the original gain-only check permitted because the actor's own
+// ceiling happened to already include the granted action).
+//
+// FIXED (this revision) with a single, symmetric rule replacing the
+// gain-only check:
+//
+//   For the tier the acting session's session.tier IS: only new GAINS
+//   beyond the actor's own pre-mutation ceiling are blocked (unchanged
+//   from the original design -- self-narrowing is always safe and must
+//   never be blocked, proven by the existing "legitimate narrowing"
+//   regression test).
+//
+//   For every OTHER tier affected by this mutation: the actor may only
+//   change (grant OR revoke) an action that is ALSO within the actor's
+//   OWN current ceiling. This mirrors AWS IAM's real permissions-
+//   boundary model for delegated administration -- a scoped IAM admin
+//   can manage other principals' policies, but only within their own
+//   boundary, in both directions (grant and revoke). An owner's ceiling
+//   is unconditional `Allow:"*"`, so this imposes zero new restriction
+//   on owner; a narrowly-scoped `settings:write`-only tier (this
+//   design's own documented "intended use case", see
+//   docs/console-iam.md's Security Considerations section) can no
+//   longer touch ANY other tier's permissions at all, since its own
+//   ceiling is just {settings:write} -- exactly the intended, narrow
+//   scope for that configuration. A genuinely broader IAM-admin tier
+//   (e.g. one also holding `players:*`) can still manage other tiers'
+//   `players:*`-namespaced grants, matching real AWS delegated-admin
+//   semantics, not a hardcoded identity check.
+//
+// Deliberately NOT applied to createPolicy() (an unattached policy
+// grants nothing to any tier until attached -- harmless on its own),
+// createTier() (an empty tier grants nothing), deletePolicy() (rejects
+// with an error if ANY tier is still attached -- see its own guard --
+// so it can only ever delete an already-unattached policy, which by
+// definition affects zero live tiers' aggregates), or
+// deletePolicyVersion() (rejects deleting the DEFAULT version -- see
+// its own guard -- and evaluate()/aggregateStatements() only ever read
+// a policy's defaultVersionId version, so deleting a non-default
+// version cannot change any tier's live aggregate either). All four
+// exclusions above are verified structurally safe by each function's
+// own pre-existing guard, not merely assumed.
+//
+// detachPolicy() is DIFFERENT and is now WIRED IN (previously excluded
+// under the same "removal is always safe" assumption the other three
+// legitimately satisfy -- detachPolicy() does not: it has no guard
+// preventing removal of a THIRD PARTY tier's attached policy, so it
+// was the one real gap. Fixed by threading actorTier/affectedTiers
+// through to applyMutation(), identical to attachPolicy()/
+// setTierInline() above).
+function detectPrivilegeEscalation(preStore, postStore, affectedTiers, actorTier) {
+  if (!actorTier || !affectedTiers || !affectedTiers.length) return null;
+  const actorCeiling = allowedActionsForStore(actorTier, preStore);
+  for (const tierName of affectedTiers) {
+    if (!hasOwnKey(postStore.tiers, tierName)) continue; // tier no longer exists post-mutation -- nothing to compare
+    const before = allowedActionsForStore(tierName, preStore);
+    const after = allowedActionsForStore(tierName, postStore);
+
+    if (tierName === actorTier) {
+      // Self-modification: only new gains beyond the actor's own
+      // pre-mutation ceiling are blocked. Self-narrowing (removing your
+      // own access) is always safe and must never be rejected here --
+      // verified by the existing "legitimate narrowing" test.
+      for (const action of after) {
+        if (!before.has(action) && !actorCeiling.has(action)) {
+          return `This change would grant tier "${tierName}" the "${action}" permission, which your own session does not currently hold. You cannot grant a permission you do not already have.`;
+        }
+      }
+      continue;
+    }
+
+    // A different tier is affected: every action whose membership
+    // CHANGES (gained OR lost) must be within the actor's own current
+    // ceiling -- closes both the "neuter an unrelated tier" attack
+    // (a loss the actor doesn't hold) and the "grant a stranger tier
+    // something via a shared policy" attack (a gain that happens to be
+    // within the actor's ceiling is still fine, matching AWS's own
+    // accepted transitive-delegation behavior -- only a change the
+    // actor could NOT also make to themselves is rejected).
+    const changed = new Set([...before, ...after].filter((action) => before.has(action) !== after.has(action)));
+    for (const action of changed) {
+      if (!actorCeiling.has(action)) {
+        const direction = after.has(action) ? "grant" : "revoke";
+        return `This change would ${direction} tier "${tierName}" the "${action}" permission, which your own session does not currently hold. You cannot modify another tier's access to a permission you do not already have yourself.`;
+      }
+    }
+  }
+  return null;
+}
+
+function applyMutation(mutatorFn, { actorTier = null, affectedTiers = null } = {}) {
+  const current = getAllPolicies();
+  const next = mutatorFn(current);
+  if (next && next.error) return next; // mutator reported a domain-specific rejection
+
+  if (!validPolicyStore(next)) {
+    return { ok: false, error: "The resulting policy store is invalid." };
+  }
+
+  const escalationError = detectPrivilegeEscalation(current, next, affectedTiers, actorTier);
+  if (escalationError) {
+    return { ok: false, error: escalationError };
+  }
+
+  if (!evaluate({ tier: "owner" }, "settings:write", next)) {
+    return { ok: false, error: "This change would remove the owner tier's settings:write access, including through its attached policies. Rejected to prevent lockout." };
+  }
+
+  _policies = next;
+  invalidateAllowedActionsCache();
   return { ok: true, policies: getAllPolicies() };
 }
 
-function validPolicyStore(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  const tiers = Object.keys(value);
-  if (!tiers.length || tiers.some((tier) => !["owner", "admin", "moderator", "player", "observer"].includes(tier))) return false;
-  return tiers.every((tier) => {
-    const document = value[tier];
-    if (!document || document.tier !== tier || !Array.isArray(document.statements)) return false;
-    return document.statements.every((statement) => {
-      if (!statement || !["Allow", "Deny"].includes(statement.Effect)) return false;
-      const actions = Array.isArray(statement.Action) ? statement.Action : [statement.Action];
-      return actions.length > 0 && actions.every((action) => typeof action === "string" && action.trim().length > 0);
-    });
+// Deep-copies a statement list, including each statement's own Action
+// field -- fixes a real bug found during the Layer 2 audit (DBA hat,
+// finding "deepCopyStore is not a true deep copy"): the previous version
+// of deepCopyStore() only spread the OUTER statements array
+// (`[...v.statements]`), leaving each individual statement object --
+// and, when Action is an array, that Action array too -- as the SAME
+// object reference shared between every "copy" ever produced from a
+// given source. A caller that later mutated a statement/Action array
+// returned by getAllPolicies() (used by 3 server.js route handlers) or
+// held from a previous applyMutation() call could silently corrupt live
+// internal `_policies` state with no validation, no error, no audit
+// trail -- exactly the kind of silent-corruption bug a DBA's "every
+// mutation is copy-on-write, validated, then atomically swapped in"
+// mental model is supposed to rule out. Confirmed via direct execution
+// that the fix below closes this (see the deep-copy regression test in
+// policy.test.js).
+function deepCopyStatements(statements) {
+  return statements.map((stmt) => ({
+    ...stmt,
+    Action: Array.isArray(stmt.Action) ? [...stmt.Action] : stmt.Action
+  }));
+}
+
+function deepCopyStore(store) {
+  return {
+    schemaVersion: 2,
+    tiers: Object.fromEntries(Object.entries(store.tiers).map(([name, rec]) => [
+      name,
+      { inline: rec.inline ? { statements: deepCopyStatements(rec.inline.statements) } : null, attached: [...rec.attached] }
+    ])),
+    policies: Object.fromEntries(Object.entries(store.policies).map(([id, policy]) => [
+      id,
+      {
+        name: policy.name,
+        managed: policy.managed,
+        defaultVersionId: policy.defaultVersionId,
+        versions: Object.fromEntries(Object.entries(policy.versions).map(([vid, v]) => [
+          vid,
+          { statements: deepCopyStatements(v.statements), createdAt: v.createdAt, createdBy: v.createdBy }
+        ]))
+      }
+    ]))
+  };
+}
+
+function persist(repoRoot) {
+  if (repoRoot) writeJsonAtomic(resolve(repoRoot, "runtime/generated/iam-policies.json"), _policies, 0o600);
+}
+
+// ---- Legacy single-route entry point (kept for the existing PUT
+// /api/settings/iam/policy route's backward-compatible shape) ----
+//
+// Accepts EITHER a legacy flat `{tierName: {tier, statements}}` document
+// (auto-migrated) OR an already-schema-v2 `{schemaVersion, tiers, policies}`
+// document, replacing the tiers' inline policies wholesale. This is the
+// direct successor of the pre-schema-v2 setPolicies() and is what today's
+// single IAM route (`PUT /api/settings/iam/policy`) continues to call --
+// preserved so existing tests/API-clients using the legacy per-tier-map
+// shape keep working, per the L1 audit's QA hat finding (L1-M-contract)
+// that this codebase's existing tests exercise setPolicies() with the
+// legacy shape.
+export function setPolicies(docs, actorTier = null, repoRoot = null) {
+  const migrated = migrateIfLegacyShape(docs) || (docs && docs.schemaVersion === 2 ? docs : null);
+  if (!migrated) {
+    return { ok: false, error: "Policies must contain valid tier documents and Allow/Deny statements." };
+  }
+
+  const result = applyMutation((current) => {
+    // Wholesale-replace tiers' inline policies with whatever was supplied,
+    // preserving any already-attached policies for tiers not mentioned in
+    // the incoming document (matches the pre-schema-v2 behavior of a full
+    // per-tier-map replace, extended to not silently drop attachments this
+    // route was never designed to know about).
+    const next = deepCopyStore(current);
+    for (const [tierName, tierRecord] of Object.entries(migrated.tiers)) {
+      // Dangerous-key rejection (Layer 2 audit finding NEW-1) -- this
+      // route accepts a caller-supplied tier-name map directly (the
+      // legacy flat-shape contract), so the same guard applied to every
+      // other mutation entry point below applies here too.
+      if (isDangerousKey(tierName)) return { error: `Invalid tier name: "${tierName}".` };
+      next.tiers[tierName] = {
+        inline: tierRecord.inline,
+        attached: hasOwnKey(next.tiers, tierName) ? next.tiers[tierName].attached : []
+      };
+    }
+    return next;
+  }, { actorTier, affectedTiers: Object.keys(migrated.tiers) });
+
+  if (result.ok) persist(repoRoot);
+  return result;
+}
+
+// ---- Named policy lifecycle (§4.2) ----
+
+export function createPolicy({ name, statements }, actorTier, repoRoot = null) {
+  if (typeof name !== "string" || !name.trim()) {
+    return { ok: false, error: "A policy name is required." };
+  }
+  if (!validStatementList(statements)) {
+    return { ok: false, error: "statements must be a non-empty, valid Allow/Deny statement list." };
+  }
+
+  // Generated up front rather than inside the mutator, so the ID is known
+  // to this function without needing to search the committed store for it
+  // afterward -- randomUUID() collision odds are astronomically low, and
+  // even a collision would be caught deterministically as a validation
+  // failure (an already-existing key silently overwritten would still
+  // satisfy validPolicyStore(), so this is a correctness note, not a
+  // safety-relevant one: the store is owner-only, human-paced, and a
+  // UUIDv4 collision here is not a realistic operational concern).
+  const policyId = randomUUID();
+  const versionId = "v1";
+
+  const result = applyMutation((current) => {
+    if (Object.keys(current.policies).length >= MAX_NAMED_POLICIES) {
+      return { error: `Cannot create another named policy -- the limit of ${MAX_NAMED_POLICIES} named policies has been reached. Delete an unused policy first.` };
+    }
+    const next = deepCopyStore(current);
+    // deepCopyStatements(), not the caller's own `statements` array by
+    // reference -- see the deepCopyStore()/deep-copy-on-ingest fix
+    // comment above (Layer 2 audit finding, DBA hat). `statements`
+    // here originates from a parsed HTTP request body (server.js's
+    // readJson(req)); storing it by reference would let any code that
+    // ever retains a reference to that parsed body (a future logging/
+    // audit hook, a retry buffer) silently corrupt live internal state
+    // by mutating it after this call returns.
+    next.policies[policyId] = {
+      name: name.trim(),
+      managed: false,
+      defaultVersionId: versionId,
+      versions: { [versionId]: { statements: deepCopyStatements(statements), createdAt: new Date().toISOString(), createdBy: actorTier || "owner" } }
+    };
+    return next;
   });
+
+  if (result.error && !result.ok) return { ok: false, error: result.error };
+  if (repoRoot && result.ok) persist(repoRoot);
+  return result.ok ? { ok: true, policyId, defaultVersionId: versionId } : result;
+}
+
+// Shared, explicit, up-front guard for every function below that takes a
+// caller-supplied policyId/tierName -- rejects a dangerous key (Layer 2
+// audit finding NEW-1) BEFORE it is ever used as a bracket-access key
+// anywhere in the mutator, since the pollution happens synchronously
+// during the mutator itself, before applyMutation()'s post-mutation
+// validPolicyStore() check ever runs. This is the primary fix; the
+// hasOwnKey()/isDangerousKey() guards elsewhere in this file are
+// defense-in-depth for paths this function doesn't cover (e.g. reading
+// an already-persisted, potentially-corrupted file).
+function rejectDangerousIdentifier(value, label) {
+  if (typeof value !== "string" || !value || isDangerousKey(value)) {
+    return { ok: false, error: `Invalid ${label}.` };
+  }
+  return null;
+}
+
+export function editPolicy(policyId, { statements }, actorTier, repoRoot = null) {
+  const idError = rejectDangerousIdentifier(policyId, "policy ID");
+  if (idError) return idError;
+  if (!validStatementList(statements)) {
+    return { ok: false, error: "statements must be a non-empty, valid Allow/Deny statement list." };
+  }
+
+  const result = applyMutation((current) => {
+    if (!hasOwnKey(current.policies, policyId)) return { error: "No such policy." };
+    const policy = current.policies[policyId];
+
+    const versionCount = Object.keys(policy.versions).length;
+    if (versionCount >= MAX_POLICY_VERSIONS) {
+      // Name the oldest NON-DEFAULT version, per the L1 design's §4.2 UX
+      // requirement (and §7's test coverage for this exact error content,
+      // added per L1 audit finding L1-H4, QA hat). "Oldest" is unambiguous
+      // even after a rollback: it is the version with the earliest
+      // createdAt among all versions that are not the current default --
+      // not simply the numerically-first version ID, since a rollback can
+      // make an old version the current default again.
+      const oldestNonDefault = Object.entries(policy.versions)
+        .filter(([vid]) => vid !== policy.defaultVersionId)
+        .sort(([, a], [, b]) => a.createdAt.localeCompare(b.createdAt))[0];
+      const oldestId = oldestNonDefault ? oldestNonDefault[0] : null;
+      return {
+        error: `This policy already has the maximum of ${MAX_POLICY_VERSIONS} versions. Delete version "${oldestId}" (the oldest non-default version) before creating a new one.`
+      };
+    }
+
+    const next = deepCopyStore(current);
+    // Derived from the highest existing numeric suffix, not
+    // Object.keys(...).length + 1 -- a version in the middle (e.g. v2)
+    // can be deleted while v1 and v3 remain, and versionCount+1 would
+    // then collide with the still-existing v3. Monotonic-highest-plus-one
+    // is collision-safe regardless of deletion history.
+    const highestSeq = Object.keys(policy.versions)
+      .map((vid) => Number(vid.replace(/^v/, "")) || 0)
+      .reduce((max, n) => Math.max(max, n), 0);
+    const newVersionId = `v${highestSeq + 1}`;
+    // deepCopyStatements(), not the caller's own array by reference --
+    // same reasoning as createPolicy() above.
+    next.policies[policyId].versions[newVersionId] = { statements: deepCopyStatements(statements), createdAt: new Date().toISOString(), createdBy: actorTier || "owner" };
+    next.policies[policyId].defaultVersionId = newVersionId;
+    return next;
+  }, {
+    actorTier,
+    // Every tier currently attaching this policy is potentially affected
+    // by this edit's new version (privilege-ceiling check, see
+    // detectPrivilegeEscalation() above) -- a tier's own inline policy is
+    // untouched by this call, only its aggregate via this one attached
+    // policy.
+    affectedTiers: Object.entries(getAllPolicies().tiers).filter(([, rec]) => rec.attached.includes(policyId)).map(([name]) => name)
+  });
+
+  if (result.error && !result.ok) return { ok: false, error: result.error };
+  if (repoRoot && result.ok) persist(repoRoot);
+  return result.ok ? { ok: true, defaultVersionId: hasOwnKey(_policies.policies, policyId) ? _policies.policies[policyId].defaultVersionId : undefined } : result;
+}
+
+export function rollbackPolicy(policyId, versionId, actorTier = null, repoRoot = null) {
+  const idError = rejectDangerousIdentifier(policyId, "policy ID") || rejectDangerousIdentifier(versionId, "version ID");
+  if (idError) return idError;
+
+  const result = applyMutation((current) => {
+    if (!hasOwnKey(current.policies, policyId)) return { error: "No such policy." };
+    const policy = current.policies[policyId];
+    if (!hasOwnKey(policy.versions, versionId)) return { error: "No such version on this policy." };
+
+    const next = deepCopyStore(current);
+    next.policies[policyId].defaultVersionId = versionId;
+    return next;
+  }, {
+    actorTier,
+    affectedTiers: Object.entries(getAllPolicies().tiers).filter(([, rec]) => rec.attached.includes(policyId)).map(([name]) => name)
+  });
+
+  if (result.error && !result.ok) return { ok: false, error: result.error };
+  if (repoRoot && result.ok) persist(repoRoot);
+  return result;
+}
+
+export function deletePolicyVersion(policyId, versionId, repoRoot = null) {
+  const idError = rejectDangerousIdentifier(policyId, "policy ID") || rejectDangerousIdentifier(versionId, "version ID");
+  if (idError) return idError;
+
+  const result = applyMutation((current) => {
+    if (!hasOwnKey(current.policies, policyId)) return { error: "No such policy." };
+    const policy = current.policies[policyId];
+    if (!hasOwnKey(policy.versions, versionId)) return { error: "No such version on this policy." };
+    if (policy.defaultVersionId === versionId) {
+      return { error: "Cannot delete the default version. Roll back to a different version first, then delete this one." };
+    }
+
+    const next = deepCopyStore(current);
+    delete next.policies[policyId].versions[versionId];
+    return next;
+  });
+
+  if (result.error && !result.ok) return { ok: false, error: result.error };
+  if (repoRoot && result.ok) persist(repoRoot);
+  return result;
+}
+
+export function deletePolicy(policyId, repoRoot = null) {
+  const idError = rejectDangerousIdentifier(policyId, "policy ID");
+  if (idError) return idError;
+
+  const result = applyMutation((current) => {
+    if (!hasOwnKey(current.policies, policyId)) return { error: "No such policy." };
+
+    const attachingTiers = Object.entries(current.tiers)
+      .filter(([, rec]) => rec.attached.includes(policyId))
+      .map(([name]) => name);
+    if (attachingTiers.length) {
+      return { error: `Cannot delete this policy -- it is attached to: ${attachingTiers.join(", ")}. Detach it from every tier first.` };
+    }
+
+    const next = deepCopyStore(current);
+    delete next.policies[policyId];
+    return next;
+  });
+
+  if (result.error && !result.ok) return { ok: false, error: result.error };
+  if (repoRoot && result.ok) persist(repoRoot);
+  return result;
+}
+
+// ---- Tiers / roles (§4.3) ----
+
+export function createTier(tierName, repoRoot = null) {
+  // isDangerousKey() check folded directly into the existing shape
+  // validation below (RESERVED_TIER_NAME_PATTERN alone does not reject
+  // "constructor"/"prototype" -- see the guard comment near the top of
+  // this file, Layer 2 audit finding NEW-1).
+  if (typeof tierName !== "string" || isDangerousKey(tierName) || !RESERVED_TIER_NAME_PATTERN.test(tierName)) {
+    return { ok: false, error: "Tier name must be lowercase, 2-32 characters, letters/digits/hyphens/underscores only." };
+  }
+
+  const result = applyMutation((current) => {
+    if (hasOwnKey(current.tiers, tierName)) return { error: "A tier with this name already exists." };
+    const customCount = Object.keys(current.tiers).filter((t) => !BUILT_IN_TIER_NAMES.has(t)).length;
+    if (customCount >= MAX_CUSTOM_TIERS) {
+      return { error: `Cannot create another custom tier -- the limit of ${MAX_CUSTOM_TIERS} custom tiers has been reached.` };
+    }
+    const next = deepCopyStore(current);
+    next.tiers[tierName] = { inline: null, attached: [] };
+    return next;
+  });
+
+  if (result.error && !result.ok) return { ok: false, error: result.error };
+  if (repoRoot && result.ok) persist(repoRoot);
+  return result;
+}
+
+export function setTierInline(tierName, statements, actorTier = null, repoRoot = null) {
+  const idError = rejectDangerousIdentifier(tierName, "tier name");
+  if (idError) return idError;
+  if (!validStatementList(statements)) {
+    return { ok: false, error: "statements must be a non-empty, valid Allow/Deny statement list." };
+  }
+
+  const result = applyMutation((current) => {
+    if (!hasOwnKey(current.tiers, tierName)) return { error: "No such tier." };
+    const next = deepCopyStore(current);
+    // deepCopyStatements(), not the caller's own array by reference --
+    // same reasoning as createPolicy()/editPolicy() above.
+    next.tiers[tierName].inline = { statements: deepCopyStatements(statements) };
+    return next;
+  }, { actorTier, affectedTiers: [tierName] });
+
+  if (result.error && !result.ok) return { ok: false, error: result.error };
+  if (repoRoot && result.ok) persist(repoRoot);
+  return result;
+}
+
+export function attachPolicy(tierName, policyId, actorTier = null, repoRoot = null) {
+  const idError = rejectDangerousIdentifier(tierName, "tier name") || rejectDangerousIdentifier(policyId, "policy ID");
+  if (idError) return idError;
+
+  const result = applyMutation((current) => {
+    if (!hasOwnKey(current.tiers, tierName)) return { error: "No such tier." };
+    if (!hasOwnKey(current.policies, policyId)) return { error: "No such policy." };
+    if (current.tiers[tierName].attached.includes(policyId)) {
+      return current; // idempotent -- already attached, nothing to change
+    }
+    const next = deepCopyStore(current);
+    next.tiers[tierName].attached.push(policyId);
+    return next;
+  }, { actorTier, affectedTiers: [tierName] });
+
+  if (result.error && !result.ok) return { ok: false, error: result.error };
+  if (repoRoot && result.ok) persist(repoRoot);
+  return result;
+}
+
+export function detachPolicy(tierName, policyId, actorTier = null, repoRoot = null) {
+  const idError = rejectDangerousIdentifier(tierName, "tier name") || rejectDangerousIdentifier(policyId, "policy ID");
+  if (idError) return idError;
+
+  const result = applyMutation((current) => {
+    if (!hasOwnKey(current.tiers, tierName)) return { error: "No such tier." };
+    const next = deepCopyStore(current);
+    next.tiers[tierName].attached = next.tiers[tierName].attached.filter((id) => id !== policyId);
+    return next;
+  }, {
+    // SECURITY (Layer 3 re-audit, Security hat -- HIGH): detachPolicy()
+    // previously had NO actorTier/affectedTiers wiring at all, meaning
+    // the privilege-ceiling check above never ran for this route. A
+    // settings:write-only tier could detach ANY policy from ANY other
+    // tier -- including a built-in admin/moderator tier's attached
+    // policy -- silently stripping that tier's access with zero
+    // relationship, zero owner approval, zero rejection. Fixed by
+    // threading actorTier through identically to attachPolicy()/
+    // setTierInline() above; the ceiling check's "any CHANGED action
+    // (grant OR revoke) on a third-party tier must be within the
+    // actor's own ceiling" rule applies symmetrically to this removal.
+    actorTier,
+    affectedTiers: [tierName]
+  });
+
+  if (result.error && !result.ok) return { ok: false, error: result.error };
+  if (repoRoot && result.ok) persist(repoRoot);
+  return result;
 }
 
 // ---- Default policies (mirror the CAPABILITY_BY_TIER ladder) ----
@@ -286,3 +1275,11 @@ const DEFAULT_POLICIES = {
     ]
   },
 };
+
+function wrapDefaultPolicies() {
+  const tiers = {};
+  for (const [tierName, doc] of Object.entries(DEFAULT_POLICIES)) {
+    tiers[tierName] = { inline: { statements: doc.statements }, attached: [] };
+  }
+  return { schemaVersion: 2, tiers, policies: {} };
+}

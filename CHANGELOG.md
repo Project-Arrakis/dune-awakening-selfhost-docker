@@ -9,6 +9,110 @@ Keep a Changelog style, grouped by upstream base version, newest first.
 
 ## Unreleased (on top of upstream v1.3.88)
 
+### Added
+
+- Console IAM (`console/api/src/policy.js`): AWS-mirrored policy/role
+  editing and maintenance model (issue #335). Named, reusable, versioned
+  `Policy` objects (up to 5 versions each, explicit rollback) can now be
+  attached to zero or more tiers/roles, in addition to each tier's
+  existing single inline policy. Owner-defined custom tiers (beyond the
+  5 built-in `owner`/`admin`/`moderator`/`player`/`observer`) can now be
+  created, up to a 20-custom-tier / 50-named-policy cap. New API surface:
+  `POST/GET/PUT/DELETE /api/settings/iam/policies[/{id}[/rollback|/versions/{vid}]]`,
+  `POST /api/settings/iam/tiers`,
+  `PUT /api/settings/iam/tiers/{tier}/{inline|attach|detach}`.
+  Fixes a pre-existing, non-functional "Test" tab in the IAM Web UI by
+  correcting its request/response contract mismatch and extending it
+  into a real Policy Simulator (draft-statement mode + real-tier-
+  aggregate mode). Backward-compatible: existing installs' `iam-
+  policies.json` is transparently migrated to the new schema on load,
+  with byte-identical evaluation for every pre-existing tier/action
+  combination (see the L1 design doc's §6/§9 for the full upgrade-path
+  and Layer 1 eight-hats audit evidence:
+  `docs/design/console-custom-iam-roles-l1-design-2026-08-17.md`).
+  Web UI: the single-editor "Access Control" panel is now split into a
+  **Roles** view (per-tier inline policy + attached named policies,
+  attach/detach picker, dynamic tier list -- fixes a pre-existing bug
+  where the `observer` tier was missing from the hardcoded tier list)
+  and a standalone **Policies** view (named-policy list, version
+  history with "set default"/"delete" per version, create/edit/delete),
+  matching real AWS IAM's own console structure.   Every mutating action's
+  real, specific backend rejection message (e.g. which tiers block a
+  policy delete, or that an edit would lock out the owner) is now
+  surfaced verbatim in the UI rather than a generic failure string.
+
+### Fixed
+
+- Console IAM implementation: a full three-layer eight-hats audit
+  (design, implementation, and integration -- Requirement 20) found and
+  fixed real bugs at every layer before this feature left draft,
+  including an `Object.prototype` pollution vulnerability, a completely
+  non-functional permission checkbox grid, a delete-confirmation UI
+  state that wasn't scoped to the selected object, a shallow-copy bug in
+  the policy store's mutation path, and -- found only at the integration
+  (Layer 3) layer, verified live over real HTTP -- a genuine privilege-
+  escalation path: a tier granted *only* `settings:write` could mint a
+  new unconditional-Allow policy and attach it to itself, reaching full
+  owner-equivalent access. This is now closed with a real, engine-level
+  privilege-ceiling check (no session can grant any tier a permission
+  the acting session doesn't already independently hold), not a
+  hardcoded identity check -- preserving the pure capability-based model
+  this design otherwise uses throughout. **Exact severity counts and
+  every individual finding's citation and disposition are recorded in
+  full, and are the single source of truth for this claim, in
+  `docs/design/console-custom-iam-roles-l1-design-2026-08-17.md` §9
+  (Layer 1), §10 (Layer 2), and §11 (Layer 3) -- this CHANGELOG entry
+  intentionally does not restate specific counts, since an earlier
+  version of this entry cited a count that silently drifted out of sync
+  with those tables (a real instance of exactly the class of doc-drift
+  Requirement 14 exists to prevent, caught and corrected during the
+  Layer 3 audit).** A second Layer 3 re-audit subsequently found the
+  first pass's privilege-ceiling fix was itself incomplete (it only
+  checked for newly-*granted* permissions, with no check at all for a
+  third-party tier's permissions being silently *revoked* or otherwise
+  tampered with) -- fixed with a symmetric check covering both
+  directions, plus closing a related gap where `detachPolicy()` had no
+  privilege-ceiling wiring at all, plus a pre-existing unbounded-regex
+  construction (`matchAction()`) that had become load-bearing for
+  availability -- replaced with a backtracking-free glob matcher. A
+  third pass fixed a real UI navigation dead-end (a `settings:write`-only
+  tier could never reach the Access Control tab at all, due to a
+  copy-paste artifact gating it on `server:*` instead), a matching
+  component-level gate mismatch, implemented the 6 previously-missing
+  operator-scenario tests (clean install, upgrade, 3 broken-upgrade
+  sub-scenarios, downgrade round-trip) via the real file-based
+  `loadPolicies()` entry point, added a genuine, honestly-provenanced
+  Requirement 26 migration fixture (after independently discovering the
+  original fixture-gap finding's own premise -- that real, operator-
+  customized production data existed on a specific live install -- was
+  itself factually incorrect), and closed a missing test-coverage gap on
+  the Policies view's half of an earlier stale-results UI fix. **This
+  feature is not yet considered fully resolved for exactly one reason,
+  by explicit operator scope decision, not an oversight**: no real
+  end-to-end deployment/restart test has been performed against a live
+  console install yet (blocked on unrelated pre-existing prerequisites --
+  a missing backup and an unexplained container restart on the specific
+  install slated for that test). See §11 of the design doc for the
+  current, corrected findings register. Do not treat this CHANGELOG
+  entry as a claim that live E2E validation has occurred; the design
+  doc's own findings register is the single source of truth for current
+  status, per this entry's own stated convention above.
+
+- **Downgrade behavior (Strict Requirement 0):** an operator who
+  installs this feature, creates custom tiers/named policies, and then
+  reverts to an older console binary will see the console silently fall
+  back to the 5 built-in tiers' hardcoded default policies -- the older
+  binary does not understand the new on-disk schema and cannot read the
+  custom tiers/policies, but **the underlying `iam-policies.json` file
+  itself is not modified or deleted by the older binary** (confirmed:
+  older code only ever reads this file, never writes it, in this
+  scenario). Re-upgrading to a version that understands the new schema
+  restores the custom tiers/policies exactly as they were, with no data
+  loss. This is a known, accepted, and now test-verified (round-trip
+  file-integrity test, see the design doc's §12) downgrade behavior --
+  not a defect -- documented here per this project's own Strict
+  Requirement 0 upgrade/downgrade-path disclosure standard.
+
 ### Changed
 
 - Merged `upstream/main` into this fork's `main` (issue #279), resolving 198

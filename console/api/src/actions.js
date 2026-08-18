@@ -140,8 +140,10 @@ export const ROUTE_ACTIONS = {
   "POST /api/settings/admin-password":         "settings:change-password",
   "POST /api/settings/web-port":               "settings:change-port",
   "GET /api/settings/iam/policies":            "settings:read",
+  "POST /api/settings/iam/policies":           "settings:write",
   "PUT /api/settings/iam/policy":              "settings:write",
   "POST /api/settings/iam/policy/test":        "settings:read",
+  "POST /api/settings/iam/tiers":              "settings:write",
   "POST /api/settings/public-directory":       "settings:write",
   "POST /api/settings/public-directory/claim": "settings:write",
 
@@ -402,7 +404,25 @@ export const REGEX_ACTIONS_BY_METHOD_PATTERN = [
   // destruction — folding this into that bucket would silently widen every
   // existing narrow policy. The shipped owner/admin policies grant bases:*,
   // so default access is unchanged.
-  { method: "DELETE", pattern: /^\/api\/bases\/[^/]+\/containers\/[^/]+\/items\/[^/]+$/, action: "bases:delete-item" }
+  { method: "DELETE", pattern: /^\/api\/bases\/[^/]+\/containers\/[^/]+\/items\/[^/]+$/, action: "bases:delete-item" },
+
+  // --- Console IAM: AWS-mirrored named policy lifecycle + tier attach/detach ---
+  // (docs/design/console-custom-iam-roles-l1-design-2026-08-17.md §4.2/§4.3).
+  // All gated on settings:write except the single-policy GET, which is a
+  // read. Added here (not ROUTE_ACTIONS) because every one of these has a
+  // {policyId}/{versionId}/{tier} path segment -- REGEX_ACTIONS_BY_METHOD's
+  // plain startsWith prefix cannot tell "/api/settings/iam/policies/{id}"
+  // (a specific policy) apart from "/api/settings/iam/policies/{id}/rollback"
+  // (a sub-action on it) any more than "/api/bases/{id}" could be told apart
+  // from "/api/bases/{id}/queued-delete" above -- same reason, same fix.
+  { method: "GET", pattern: /^\/api\/settings\/iam\/policies\/[^/]+$/, action: "settings:read" },
+  { method: "PUT", pattern: /^\/api\/settings\/iam\/policies\/[^/]+$/, action: "settings:write" },
+  { method: "POST", pattern: /^\/api\/settings\/iam\/policies\/[^/]+\/rollback$/, action: "settings:write" },
+  { method: "DELETE", pattern: /^\/api\/settings\/iam\/policies\/[^/]+\/versions\/[^/]+$/, action: "settings:write" },
+  { method: "DELETE", pattern: /^\/api\/settings\/iam\/policies\/[^/]+$/, action: "settings:write" },
+  { method: "PUT", pattern: /^\/api\/settings\/iam\/tiers\/[^/]+\/inline$/, action: "settings:write" },
+  { method: "PUT", pattern: /^\/api\/settings\/iam\/tiers\/[^/]+\/attach$/, action: "settings:write" },
+  { method: "PUT", pattern: /^\/api\/settings\/iam\/tiers\/[^/]+\/detach$/, action: "settings:write" }
 ];
 
 // ---- Action resolution ----

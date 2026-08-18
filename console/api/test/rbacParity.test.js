@@ -72,7 +72,46 @@ function extractRoutes(source) {
     routes.push({ path: prefix.endsWith("/") ? prefix : prefix + "/", method: "*", isPrefix: true });
   }
 
+  // Also match `path.match(/regex/)` patterns (added per L1 audit finding
+  // L1-H2 -- Architect hat found this extractor previously had NO branch
+  // for regex-declared routes at all, meaning every regex-dispatched route
+  // in server.js -- there are ~100 of them, e.g. /api/bases/{id},
+  // /api/guilds/{id}/members -- was silently invisible to this parity
+  // test's coverage check, not just the new IAM routes this design adds.
+  // Each matched regex source is converted into one concrete, coverable
+  // synthetic path by substituting every capture/character-class
+  // placeholder ([^/]+, (...), .+) with a literal placeholder segment, so
+  // isCovered() below can run it through the real actionForRoute()/regex
+  // tables exactly as a live request path would be.
+  const matchRegexRegex = /path\.match\(\/(.*?)\/\)\s*(?:&&\s*req\.method\s*===\s*"([^"]+)")?/g;
+  while ((match = matchRegexRegex.exec(body)) !== null) {
+    const regexSource = match[1];
+    const method = match[2] || "*";
+    const syntheticPath = regexSourceToSyntheticPath(regexSource);
+    if (syntheticPath) routes.push({ path: syntheticPath, method });
+  }
+
   return routes;
+}
+
+// Converts a server.js route regex's source (e.g.
+// "^\/api\/bases\/[^/]+\/containers\/[^/]+$") into one concrete path this
+// test can actually feed through actionForRoute()/the regex tables, by
+// replacing every placeholder segment with the literal string "x" (an
+// arbitrary value satisfying [^/]+, (...), or .+ -- what the placeholder
+// actually contains does not matter for coverage-checking purposes, only
+// that the resulting path has the right number/shape of segments to match
+// against actionForRoute()'s own REGEX_ACTIONS_BY_METHOD_PATTERN table).
+function regexSourceToSyntheticPath(regexSource) {
+  let path = regexSource
+    .replace(/^\^/, "")
+    .replace(/\$$/, "")
+    .replace(/\\\//g, "/")
+    .replace(/\(\[\^\/\]\+\)/g, "x")   // ([^/]+) -- captured
+    .replace(/\[\^\/\]\+/g, "x")        // [^/]+ -- uncaptured
+    .replace(/\.\+/g, "x");             // .+ -- catch-all (e.g. content/.+)
+  if (path.includes("[") || path.includes("(") || path.includes("+")) return null; // unrecognized construct -- skip rather than guess
+  return path;
 }
 
 const ALL_METHODS = ["GET", "POST", "PUT", "DELETE", "PATCH"];

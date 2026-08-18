@@ -80,17 +80,43 @@ test("validatePayload rejects a missing guildId", () => {
   assert.equal(result.reason, "invalid_guild_id");
 });
 
-test("validatePayload rejects an invalid tier", () => {
-  const result = validatePayload({ userId: "143064109775060993", guildId: "143064109775060993", tier: "superuser", ts: 1700000000000 });
+// Rewritten per L1 audit finding L1-C4 (QA hat, verified by direct regex
+// execution): this test previously asserted tier: "superuser" is rejected,
+// which encoded the OLD fixed-5-name Set-membership semantics. Under the
+// AWS-mirrored policy/role model (design §4.6), validatePayload() checks
+// shape only (RESERVED_TIER_NAME_PATTERN) -- "superuser" is shaped exactly
+// like a valid tier name, it just isn't one of the 5 built-ins, which is no
+// longer disqualifying once custom tiers can exist. The old test would
+// fail as written against the new implementation; replaced with a value
+// that is genuinely malformed BY SHAPE (uppercase/punctuation), which the
+// pattern correctly still rejects regardless of the tier-name model.
+test("validatePayload rejects a tier name that is malformed by shape", () => {
+  const result = validatePayload({ userId: "143064109775060993", guildId: "143064109775060993", tier: "Superuser!", ts: 1700000000000 });
   assert.equal(result.ok, false);
   assert.equal(result.reason, "invalid_tier");
 });
 
-test("validatePayload accepts all valid tier values", () => {
+test("validatePayload rejects a tier name that is too long (over 32 chars)", () => {
+  const result = validatePayload({ userId: "143064109775060993", guildId: "143064109775060993", tier: "x".repeat(33), ts: 1700000000000 });
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, "invalid_tier");
+});
+
+test("validatePayload accepts all 5 built-in tier values", () => {
   for (const tier of ["owner", "admin", "moderator", "player", "observer"]) {
     const result = validatePayload({ userId: "143064109775060993", guildId: "143064109775060993", tier, ts: 1700000000000 });
     assert.equal(result.ok, true, `tier ${tier} should be valid`);
   }
+});
+
+// New capability this design adds (L1 design §4.6): a well-formed CUSTOM
+// tier name -- not one of the 5 built-ins -- is no longer rejected by
+// validatePayload()'s shape check. Proves the intended new capability
+// actually works, not just that the old test was updated to stop failing.
+test("validatePayload accepts a well-formed custom (non-built-in) tier name", () => {
+  const result = validatePayload({ userId: "143064109775060993", guildId: "143064109775060993", tier: "event-mod", ts: 1700000000000 });
+  assert.equal(result.ok, true);
+  assert.equal(result.payload.tier, "event-mod");
 });
 
 test("validatePayload rejects a missing timestamp", () => {
