@@ -124,7 +124,15 @@ export function validateDiscordActor(actorPayload) {
 // its meaning changes) -- NOT bumped for ordinary route additions, which
 // are additive and always safe for a bot that doesn't yet know about them.
 // See commandCatalog.js and docs/rfc-command-discovery.md §3.4.
-export const DISCORD_CATALOG_PROTOCOL_VERSION = 1;
+//
+// Bumped 1 -> 2 alongside commandCatalog.js's own CATALOG_VERSION: a
+// subcommand's `route` (a single string) became `routes` (an array),
+// needed to correctly represent 3 (group, subcommand) pairs that
+// genuinely fan out to two backing adapter routes each (upstream PR #171
+// review). No live consumer exists yet to break (Phase 2/3 bot-side
+// generator is still unimplemented), so this is forward hygiene per this
+// comment's own stated policy, not a fix for an active breakage.
+export const DISCORD_CATALOG_PROTOCOL_VERSION = 2;
 
 export async function discordAdapterHealth(config) {
   return {
