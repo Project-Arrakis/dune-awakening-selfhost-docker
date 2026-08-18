@@ -124,6 +124,62 @@ function hasOwnKey(obj, key) {
 
 // ---- Policy evaluation ----
 
+// SECURITY (Layer 3 re-audit, Architect hat -- CRITICAL, independently
+// confirmed by `semgrep --config auto` as a blocking
+// javascript.lang.security.audit.detect-non-literal-regexp finding):
+// the fallback path below previously built a regex from a
+// caller-supplied pattern string (`new RegExp("^" + pattern.replace(/\*/g,
+// ".*") + "$")`) with only `*` escaped -- every other regex
+// metacharacter in the pattern (`.`, `+`, `(`, `)`, `[`, `]`, `{`, `}`,
+// `|`, `^`, `$`, `\`) was passed through unescaped, and multiple
+// sequential `.*` segments (one per `*` in a pattern like
+// `"foo*bar*baz*qux"`) can cause polynomial-time catastrophic
+// backtracking against a non-matching action string. This was always a
+// theoretical hardening gap, but became LOAD-BEARING for availability
+// once `allowedActionsForStore()` (added for the privilege-ceiling
+// check in detectPrivilegeEscalation()) started calling evaluate() --
+// and therefore this function -- against every known action on EVERY
+// privilege-ceiling-checked mutation: a single malformed/wildcard-dense
+// Action string in a stored policy could hang the entire single-
+// threaded event loop, not just one tier's check, for the lifetime of
+// the process (recoverable only by a file edit + restart).
+//
+// Fixed by replacing the regex entirely with a deterministic,
+// backtracking-free two-pointer glob matcher (the standard algorithm
+// used specifically to eliminate ReDoS risk when matching
+// caller-controlled wildcard patterns) -- worst-case
+// O(pattern.length * action.length) with no exponential/catastrophic
+// case possible, and no regex metacharacter injection risk since no
+// regex is ever constructed from the pattern at all.
+function globMatchNoBacktrack(pattern, str) {
+  let patternIndex = 0;
+  let strIndex = 0;
+  let lastStarIndex = -1;
+  let strIndexAtLastStar = 0;
+
+  while (strIndex < str.length) {
+    if (patternIndex < pattern.length && pattern[patternIndex] === str[strIndex]) {
+      patternIndex++;
+      strIndex++;
+    } else if (patternIndex < pattern.length && pattern[patternIndex] === "*") {
+      lastStarIndex = patternIndex;
+      strIndexAtLastStar = strIndex;
+      patternIndex++;
+    } else if (lastStarIndex !== -1) {
+      patternIndex = lastStarIndex + 1;
+      strIndexAtLastStar++;
+      strIndex = strIndexAtLastStar;
+    } else {
+      return false;
+    }
+  }
+
+  while (patternIndex < pattern.length && pattern[patternIndex] === "*") {
+    patternIndex++;
+  }
+  return patternIndex === pattern.length;
+}
+
 export function matchAction(pattern, action) {
   if (pattern === WILDCARD) return true;
   if (pattern.endsWith(":*")) {
@@ -137,8 +193,7 @@ export function matchAction(pattern, action) {
   // Exact match or wildcard segment
   if (pattern === action) return true;
   if (pattern.includes("*")) {
-    const regex = new RegExp("^" + pattern.replace(/\*/g, ".*") + "$");
-    return regex.test(action);
+    return globMatchNoBacktrack(pattern, action);
   }
   return false;
 }
@@ -602,41 +657,70 @@ function allowedActionsForStore(tier, store) {
   return allowed;
 }
 
-// SECURITY: privilege-ceiling / "no amplification" invariant (Layer 3
-// audit finding, Security hat -- CRITICAL, not part of the L1/L2 design
-// or either earlier audit). Verified reproducible over real HTTP during
-// the Layer 3 audit: a custom tier granted ONLY `settings:write` could
-// mint a brand-new `{Effect:"Allow",Action:"*"}` policy, attach it to
-// its own tier (or, even more directly, call setTierInline on its own
-// tier with the same statement -- no attach needed), and thereby reach
-// full, unconditional owner-equivalent access in a single authenticated
-// session, in two HTTP calls. `settings:write` was never intended to be
-// transitively equivalent to full owner status -- this closes that gap
-// structurally, not via a hardcoded identity check (which would
-// contradict this design's own pure-capability model and its explicit
-// goal of mirroring real AWS IAM).
+// SECURITY: privilege-ceiling / "no amplification, no unbounded
+// third-party tampering" invariant (originally added as a Layer 3 audit
+// finding -- Security hat, CRITICAL -- then found INCOMPLETE by a
+// SECOND Layer 3 re-audit dispatched after this account's README/
+// AGENTS.md were themselves updated: the original version below only
+// ever checked for GAINS the acting session's own tier didn't already
+// hold. It had NO check at all for LOSSES -- meaning a tier holding
+// only `settings:write` (the design's own stated "intended use case"
+// for this action) could call `setTierInline(anyOtherTier, [])` and
+// silently zero out the built-in `admin` or `moderator` tier's entire
+// permission set, with zero relationship to that tier, zero owner
+// approval, and zero rejection. Independently reproduced by two hats
+// (Architect, Security) via two different code paths in the same
+// re-audit pass: direct setTierInline() overwrite, and editPolicy() on
+// a policy shared with an unrelated tier (a GRANT to a stranger tier,
+// which the original gain-only check permitted because the actor's own
+// ceiling happened to already include the granted action).
 //
-// This mirrors a well-established real-world IAM concept: holding
-// iam:CreatePolicy/iam:AttachRolePolicy in AWS does not, by itself, let
-// a principal grant a permission it does not itself already hold --
-// AWS enforces this via its own permissions-boundary/policy-simulation
-// logic at policy-attachment time. The equivalent here: before
-// committing ANY mutation that could increase what a tier is allowed to
-// do, compare that tier's aggregate permission set immediately before
-// and immediately after the mutation (both evaluated through the exact
-// same evaluate()/aggregateStatements() path used for real
-// authorization decisions, not a separate approximation). Any
-// newly-granted action that the ACTING SESSION's own tier did not
-// already, independently hold (under the store as it existed BEFORE
-// this mutation) causes the whole mutation to be rejected.
+// FIXED (this revision) with a single, symmetric rule replacing the
+// gain-only check:
+//
+//   For the tier the acting session's session.tier IS: only new GAINS
+//   beyond the actor's own pre-mutation ceiling are blocked (unchanged
+//   from the original design -- self-narrowing is always safe and must
+//   never be blocked, proven by the existing "legitimate narrowing"
+//   regression test).
+//
+//   For every OTHER tier affected by this mutation: the actor may only
+//   change (grant OR revoke) an action that is ALSO within the actor's
+//   OWN current ceiling. This mirrors AWS IAM's real permissions-
+//   boundary model for delegated administration -- a scoped IAM admin
+//   can manage other principals' policies, but only within their own
+//   boundary, in both directions (grant and revoke). An owner's ceiling
+//   is unconditional `Allow:"*"`, so this imposes zero new restriction
+//   on owner; a narrowly-scoped `settings:write`-only tier (this
+//   design's own documented "intended use case", see
+//   docs/console-iam.md's Security Considerations section) can no
+//   longer touch ANY other tier's permissions at all, since its own
+//   ceiling is just {settings:write} -- exactly the intended, narrow
+//   scope for that configuration. A genuinely broader IAM-admin tier
+//   (e.g. one also holding `players:*`) can still manage other tiers'
+//   `players:*`-namespaced grants, matching real AWS delegated-admin
+//   semantics, not a hardcoded identity check.
 //
 // Deliberately NOT applied to createPolicy() (an unattached policy
 // grants nothing to any tier until attached -- harmless on its own),
-// createTier() (an empty tier grants nothing), detachPolicy(),
-// deletePolicy(), or deletePolicyVersion() (all three can only ever
-// REMOVE a grant, never add one) -- only to the operations that can
-// actually increase a tier's aggregate: editPolicy, rollbackPolicy,
-// setTierInline, attachPolicy, and the legacy setPolicies() route.
+// createTier() (an empty tier grants nothing), deletePolicy() (rejects
+// with an error if ANY tier is still attached -- see its own guard --
+// so it can only ever delete an already-unattached policy, which by
+// definition affects zero live tiers' aggregates), or
+// deletePolicyVersion() (rejects deleting the DEFAULT version -- see
+// its own guard -- and evaluate()/aggregateStatements() only ever read
+// a policy's defaultVersionId version, so deleting a non-default
+// version cannot change any tier's live aggregate either). All four
+// exclusions above are verified structurally safe by each function's
+// own pre-existing guard, not merely assumed.
+//
+// detachPolicy() is DIFFERENT and is now WIRED IN (previously excluded
+// under the same "removal is always safe" assumption the other three
+// legitimately satisfy -- detachPolicy() does not: it has no guard
+// preventing removal of a THIRD PARTY tier's attached policy, so it
+// was the one real gap. Fixed by threading actorTier/affectedTiers
+// through to applyMutation(), identical to attachPolicy()/
+// setTierInline() above).
 function detectPrivilegeEscalation(preStore, postStore, affectedTiers, actorTier) {
   if (!actorTier || !affectedTiers || !affectedTiers.length) return null;
   const actorCeiling = allowedActionsForStore(actorTier, preStore);
@@ -644,9 +728,33 @@ function detectPrivilegeEscalation(preStore, postStore, affectedTiers, actorTier
     if (!hasOwnKey(postStore.tiers, tierName)) continue; // tier no longer exists post-mutation -- nothing to compare
     const before = allowedActionsForStore(tierName, preStore);
     const after = allowedActionsForStore(tierName, postStore);
-    for (const action of after) {
-      if (!before.has(action) && !actorCeiling.has(action)) {
-        return `This change would grant tier "${tierName}" the "${action}" permission, which your own session does not currently hold. You cannot grant a permission you do not already have.`;
+
+    if (tierName === actorTier) {
+      // Self-modification: only new gains beyond the actor's own
+      // pre-mutation ceiling are blocked. Self-narrowing (removing your
+      // own access) is always safe and must never be rejected here --
+      // verified by the existing "legitimate narrowing" test.
+      for (const action of after) {
+        if (!before.has(action) && !actorCeiling.has(action)) {
+          return `This change would grant tier "${tierName}" the "${action}" permission, which your own session does not currently hold. You cannot grant a permission you do not already have.`;
+        }
+      }
+      continue;
+    }
+
+    // A different tier is affected: every action whose membership
+    // CHANGES (gained OR lost) must be within the actor's own current
+    // ceiling -- closes both the "neuter an unrelated tier" attack
+    // (a loss the actor doesn't hold) and the "grant a stranger tier
+    // something via a shared policy" attack (a gain that happens to be
+    // within the actor's ceiling is still fine, matching AWS's own
+    // accepted transitive-delegation behavior -- only a change the
+    // actor could NOT also make to themselves is rejected).
+    const changed = new Set([...before, ...after].filter((action) => before.has(action) !== after.has(action)));
+    for (const action of changed) {
+      if (!actorCeiling.has(action)) {
+        const direction = after.has(action) ? "grant" : "revoke";
+        return `This change would ${direction} tier "${tierName}" the "${action}" permission, which your own session does not currently hold. You cannot modify another tier's access to a permission you do not already have yourself.`;
       }
     }
   }
@@ -1027,7 +1135,7 @@ export function attachPolicy(tierName, policyId, actorTier = null, repoRoot = nu
   return result;
 }
 
-export function detachPolicy(tierName, policyId, repoRoot = null) {
+export function detachPolicy(tierName, policyId, actorTier = null, repoRoot = null) {
   const idError = rejectDangerousIdentifier(tierName, "tier name") || rejectDangerousIdentifier(policyId, "policy ID");
   if (idError) return idError;
 
@@ -1036,6 +1144,20 @@ export function detachPolicy(tierName, policyId, repoRoot = null) {
     const next = deepCopyStore(current);
     next.tiers[tierName].attached = next.tiers[tierName].attached.filter((id) => id !== policyId);
     return next;
+  }, {
+    // SECURITY (Layer 3 re-audit, Security hat -- HIGH): detachPolicy()
+    // previously had NO actorTier/affectedTiers wiring at all, meaning
+    // the privilege-ceiling check above never ran for this route. A
+    // settings:write-only tier could detach ANY policy from ANY other
+    // tier -- including a built-in admin/moderator tier's attached
+    // policy -- silently stripping that tier's access with zero
+    // relationship, zero owner approval, zero rejection. Fixed by
+    // threading actorTier through identically to attachPolicy()/
+    // setTierInline() above; the ceiling check's "any CHANGED action
+    // (grant OR revoke) on a third-party tier must be within the
+    // actor's own ceiling" rule applies symmetrically to this removal.
+    actorTier,
+    affectedTiers: [tierName]
   });
 
   if (result.error && !result.ok) return { ok: false, error: result.error };

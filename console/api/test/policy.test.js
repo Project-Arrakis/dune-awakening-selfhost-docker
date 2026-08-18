@@ -29,6 +29,62 @@ test("policy matching supports exact and namespace wildcards", () => {
   assert.equal(matchAction("players:*", "server:read"), false);
 });
 
+// ---- matchAction() glob fallback: ReDoS elimination (Layer 3 re-audit,
+// Architect hat -- CRITICAL, independently confirmed by
+// `semgrep --config auto`'s detect-non-literal-regexp finding) ----
+//
+// The previous implementation built `new RegExp("^" + pattern.replace(/\*/g,
+// ".*") + "$")` from a caller-supplied pattern string, escaping only `*`
+// -- every other regex metacharacter (`.`, `+`, `(`, etc.) was passed
+// through unescaped, and multiple `*` segments could cause catastrophic
+// backtracking. Replaced with a deterministic, backtracking-free
+// two-pointer glob matcher (globMatchNoBacktrack). These tests confirm
+// (a) correctness parity with the old regex-based behavior for the
+// legitimate multi-wildcard case this fallback exists for, (b) that
+// literal regex metacharacters in a pattern are treated as LITERAL
+// characters, not regex syntax (the old implementation's actual,
+// silent bug), and (c) that a deliberately pathological multi-wildcard
+// pattern against a long non-matching action string returns well
+// within a tight time bound, not hanging the process.
+test("matchAction() glob fallback: multi-wildcard patterns still match correctly (parity with the old regex-based behavior)", () => {
+  assert.equal(matchAction("foo*bar*baz", "foo-XXX-bar-YYY-baz"), true);
+  assert.equal(matchAction("foo*bar*baz", "foo-bar-nope"), false);
+  assert.equal(matchAction("a*b*c*d", "aXXbXXcXXd"), true);
+  assert.equal(matchAction("a*b*c*d", "aXXbXXcXX"), false, "missing the final literal segment must not match");
+  assert.equal(matchAction("*:read", "players:read"), true);
+  assert.equal(matchAction("*:read", "players:write"), false);
+});
+
+test("matchAction() glob fallback: regex metacharacters in a pattern are treated as LITERAL characters, not regex syntax (fixes a real, silent bug in the previous regex-based implementation)", () => {
+  // "server.restart" as a literal pattern (a "." in an action namespace
+  // is not itself meaningful in this codebase's convention, but a
+  // pattern containing one must never be silently interpreted as
+  // "server<any single char>restart" by accident).
+  assert.equal(matchAction("server.restart*", "server.restart"), true);
+  assert.equal(matchAction("server.restart*", "serverXrestart"), false, "a literal '.' in the pattern must NOT match an arbitrary character, unlike raw regex '.' semantics");
+  // "(" / ")" / "+" are regex-special but must be treated as literal
+  // text when they appear in a pattern.
+  assert.equal(matchAction("foo(bar)+*", "foo(bar)+baz"), true);
+  assert.equal(matchAction("foo(bar)+*", "foobarbaz"), false, "unescaped regex metacharacters must not be interpreted as regex syntax");
+});
+
+test("matchAction() glob fallback: a deliberately pathological multi-wildcard pattern against a long non-matching string does not hang -- confirms the ReDoS fix is real, not just a claim", () => {
+  // This exact shape (many sequential wildcard segments) is the
+  // canonical catastrophic-backtracking trigger for a naive
+  // regex-based glob implementation matched against a string with no
+  // valid match -- under the OLD implementation, this specific
+  // combination is expected to take an exponential, multi-second (or
+  // longer) amount of time on a non-matching input of this length. The
+  // new matcher must resolve it in well under a second regardless.
+  const pathologicalPattern = "a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*!";
+  const nonMatchingInput = "a".repeat(40) + "b"; // ends in 'b', never matches the trailing literal '!'
+  const start = Date.now();
+  const result = matchAction(pathologicalPattern, nonMatchingInput);
+  const elapsedMs = Date.now() - start;
+  assert.equal(result, false);
+  assert.ok(elapsedMs < 500, `matchAction() took ${elapsedMs}ms against a pathological pattern -- expected well under 500ms with the backtracking-free matcher`);
+});
+
 test("explicit deny overrides allow, including for owner", () => {
   const policies = {
     owner: {
@@ -936,4 +992,144 @@ test("privilege ceiling: the legacy setPolicies() route is also subject to the s
   // check) must still work -- confirms this isn't a blanket rejection.
   const legitimateChange = setPolicies(escalationPayload, "owner");
   assert.equal(legitimateChange.ok, true);
+});
+
+// ---- Cross-tier neutering / stranger-grant invariant (SECOND Layer 3
+// re-audit, Security + Architect hats -- CRITICAL, found INCOMPLETE in
+// the gain-only version of detectPrivilegeEscalation() above) ----
+//
+// The six tests above only ever exercise the ACTOR modifying its OWN
+// tier. None of them would have caught this: the original check had NO
+// examination of LOSSES on a THIRD-PARTY tier at all, so a tier holding
+// only settings:write -- exactly this design's own documented "intended
+// use case" -- could silently zero out or arbitrarily modify a
+// completely unrelated tier's permissions, including a built-in
+// admin/moderator tier, with no relationship required and no rejection.
+// These tests reproduce both real reproduction vectors found during that
+// re-audit (direct setTierInline() overwrite of a stranger tier, and
+// editPolicy() on a policy shared with an unrelated tier) and confirm
+// the symmetric fix rejects both while still allowing an actor with a
+// genuinely broad-enough ceiling to manage another tier within that
+// ceiling, matching AWS's real delegated-admin/permissions-boundary
+// model.
+
+test("cross-tier neutering: a tier holding ONLY settings:write cannot call setTierInline on an UNRELATED tier to strip its permissions (direct overwrite vector)", () => {
+  _resetPolicyStoreForTests();
+  assert.equal(createTier("helper6").ok, true);
+  const grant = createPolicy({ name: "helper6-grant", statements: [{ Effect: "Allow", Action: "settings:write" }] }, "owner");
+  assert.equal(attachPolicy("helper6", grant.policyId, "owner").ok, true);
+
+  // A real, unrelated built-in tier with real permissions to lose.
+  assert.equal(evaluate({ tier: "moderator" }, "server:read"), true, "sanity: moderator holds server:read before the attack");
+
+  // "helper6"-acting session (settings:write only, no relationship to
+  // moderator) attempts to zero out moderator's entire inline policy.
+  const attack = setTierInline("moderator", [], "helper6");
+  assert.equal(attack.ok, false, "a settings:write-only tier must not be able to strip an unrelated tier's permissions");
+  assert.match(attack.error, /revoke/);
+  assert.match(attack.error, /moderator/);
+
+  // Confirm moderator's permissions are genuinely unaffected.
+  assert.equal(evaluate({ tier: "moderator" }, "server:read"), true, "moderator must retain server:read after the rejected attack");
+});
+
+test("cross-tier neutering: a tier holding ONLY settings:write cannot use editPolicy on a policy shared with an unrelated tier to strip that tier's grant (indirect vector, no setTierInline call needed)", () => {
+  _resetPolicyStoreForTests();
+  assert.equal(createTier("helper7").ok, true);
+  assert.equal(createTier("victim").ok, true);
+
+  const writeGrant = createPolicy({ name: "helper7-grant", statements: [{ Effect: "Allow", Action: "settings:write" }] }, "owner");
+  assert.equal(attachPolicy("helper7", writeGrant.policyId, "owner").ok, true);
+
+  // A policy shared between "helper7" and "victim" -- editing it affects
+  // BOTH tiers' aggregates, even though helper7 has no business touching
+  // victim's access.
+  const sharedPolicy = createPolicy({ name: "shared-with-victim", statements: [{ Effect: "Allow", Action: "server:restart" }] }, "owner");
+  assert.equal(attachPolicy("victim", sharedPolicy.policyId, "owner").ok, true);
+  assert.equal(evaluate({ tier: "victim" }, "server:restart"), true, "sanity: victim holds server:restart via the shared policy");
+
+  // helper7's session edits the SHARED policy to drop server:restart --
+  // this never calls setTierInline on victim at all, but still affects
+  // victim's aggregate through the shared attachment.
+  const attack = editPolicy(sharedPolicy.policyId, { statements: [] }, "helper7");
+  assert.equal(attack.ok, false, "editing a policy shared with an unrelated tier must not silently strip that tier's access");
+  assert.match(attack.error, /revoke/);
+  assert.match(attack.error, /victim/);
+
+  assert.equal(evaluate({ tier: "victim" }, "server:restart"), true, "victim must retain server:restart after the rejected edit");
+});
+
+test("cross-tier neutering: a tier holding ONLY settings:write cannot use editPolicy on a policy shared with an unrelated tier to GRANT that tier something new either (stranger-grant vector)", () => {
+  _resetPolicyStoreForTests();
+  assert.equal(createTier("helper8").ok, true);
+  assert.equal(createTier("stranger").ok, true);
+
+  const writeGrant = createPolicy({ name: "helper8-grant", statements: [{ Effect: "Allow", Action: "settings:write" }] }, "owner");
+  assert.equal(attachPolicy("helper8", writeGrant.policyId, "owner").ok, true);
+
+  const sharedPolicy = createPolicy({ name: "shared-with-stranger", statements: [{ Effect: "Allow", Action: "server:read" }] }, "owner");
+  assert.equal(attachPolicy("stranger", sharedPolicy.policyId, "owner").ok, true);
+  assert.equal(evaluate({ tier: "stranger" }, "server:restart"), false, "sanity: stranger does not hold server:restart yet");
+
+  // helper8 (settings:write only) tries to expand the shared policy to
+  // grant server:restart -- helper8 doesn't hold server:restart itself,
+  // so this must be rejected exactly like the self-escalation case, even
+  // though the tier being granted the new action isn't helper8 itself.
+  const attack = editPolicy(sharedPolicy.policyId, { statements: [{ Effect: "Allow", Action: ["server:read", "server:restart"] }] }, "helper8");
+  assert.equal(attack.ok, false, "granting an unrelated tier a permission the actor doesn't hold must be rejected, not just self-grants");
+  assert.match(attack.error, /grant/);
+  assert.equal(evaluate({ tier: "stranger" }, "server:restart"), false);
+});
+
+test("cross-tier management: a genuinely broad tier (holding players:* itself) MAY manage another tier's players:* grants -- the ceiling check is a boundary, not a blanket ban on managing other tiers", () => {
+  _resetPolicyStoreForTests();
+  assert.equal(createTier("scoped-admin").ok, true);
+  const broadGrant = createPolicy({ name: "scoped-admin-grant", statements: [{ Effect: "Allow", Action: ["settings:write", "players:*"] }] }, "owner");
+  assert.equal(attachPolicy("scoped-admin", broadGrant.policyId, "owner").ok, true);
+
+  assert.equal(createTier("managed").ok, true);
+  const managedResult = setTierInline("managed", [{ Effect: "Allow", Action: "players:kick" }], "scoped-admin");
+  assert.equal(managedResult.ok, true, "a tier whose own ceiling includes players:* may grant another tier a players:* action, matching AWS delegated-admin semantics");
+  assert.equal(evaluate({ tier: "managed" }, "players:kick"), true);
+
+  // But the SAME scoped-admin tier still cannot touch an action outside
+  // its own ceiling on that other tier.
+  const outOfScope = setTierInline("managed", [{ Effect: "Allow", Action: ["players:kick", "server:restart"] }], "scoped-admin");
+  assert.equal(outOfScope.ok, false, "scoped-admin's own ceiling does not include server:restart, so it cannot grant that to any other tier either");
+});
+
+test("detachPolicy(): now subject to the privilege-ceiling check -- a tier holding ONLY settings:write cannot detach a policy from an unrelated tier to strip its access (previously had NO actorTier wiring at all)", () => {
+  _resetPolicyStoreForTests();
+  assert.equal(createTier("helper9").ok, true);
+  const writeGrant = createPolicy({ name: "helper9-grant", statements: [{ Effect: "Allow", Action: "settings:write" }] }, "owner");
+  assert.equal(attachPolicy("helper9", writeGrant.policyId, "owner").ok, true);
+
+  assert.equal(createTier("victim2").ok, true);
+  const victimGrant = createPolicy({ name: "victim2-grant", statements: [{ Effect: "Allow", Action: "server:restart" }] }, "owner");
+  assert.equal(attachPolicy("victim2", victimGrant.policyId, "owner").ok, true);
+  assert.equal(evaluate({ tier: "victim2" }, "server:restart"), true, "sanity: victim2 holds server:restart before the attack");
+
+  // helper9 (settings:write only, no relationship to victim2) attempts
+  // to detach victim2's policy directly.
+  const attack = detachPolicy("victim2", victimGrant.policyId, "helper9");
+  assert.equal(attack.ok, false, "a settings:write-only tier must not be able to detach an unrelated tier's policy");
+  assert.match(attack.error, /revoke/);
+  assert.equal(evaluate({ tier: "victim2" }, "server:restart"), true, "victim2 must retain server:restart after the rejected detach");
+
+  // Owner (unconditional ceiling) performing the identical detach must
+  // still succeed -- confirms this isn't a blanket rejection of detach.
+  const legitimateDetach = detachPolicy("victim2", victimGrant.policyId, "owner");
+  assert.equal(legitimateDetach.ok, true);
+  assert.equal(evaluate({ tier: "victim2" }, "server:restart"), false);
+});
+
+test("detachPolicy(): a tier detaching a policy from ITS OWN tier (self-narrowing) is never blocked, even with no relationship to any other tier", () => {
+  _resetPolicyStoreForTests();
+  assert.equal(createTier("helper10").ok, true);
+  const grant = createPolicy({ name: "helper10-grant", statements: [{ Effect: "Allow", Action: ["settings:write", "server:read"] }] }, "owner");
+  assert.equal(attachPolicy("helper10", grant.policyId, "owner").ok, true);
+
+  const selfDetach = detachPolicy("helper10", grant.policyId, "helper10");
+  assert.equal(selfDetach.ok, true, "a tier removing its own attached policy is self-narrowing and must never be rejected");
+  assert.equal(evaluate({ tier: "helper10" }, "server:read"), false);
 });

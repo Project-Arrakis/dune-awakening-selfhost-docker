@@ -66,7 +66,21 @@ Keep a Changelog style, grouped by upstream base version, newest first.
   version of this entry cited a count that silently drifted out of sync
   with those tables (a real instance of exactly the class of doc-drift
   Requirement 14 exists to prevent, caught and corrected during the
-  Layer 3 audit).**
+  Layer 3 audit).** A second Layer 3 re-audit subsequently found the
+  first pass's privilege-ceiling fix was itself incomplete (it only
+  checked for newly-*granted* permissions, with no check at all for a
+  third-party tier's permissions being silently *revoked* or otherwise
+  tampered with) -- fixed with a symmetric check covering both
+  directions, plus closing a related gap where `detachPolicy()` had no
+  privilege-ceiling wiring at all. **This feature is not yet considered
+  fully resolved** -- see §11 of the design doc for the current,
+  corrected findings register, including at least one still-open
+  CRITICAL (a pre-existing unbounded-regex construction now made
+  load-bearing for availability by this feature) and several still-open
+  HIGH findings. Do not treat this CHANGELOG entry as a claim that the
+  feature is complete; the design doc's own findings register is the
+  single source of truth for current status, per this entry's own
+  stated convention above.
 
 - **Downgrade behavior (Strict Requirement 0):** an operator who
   installs this feature, creates custom tiers/named policies, and then

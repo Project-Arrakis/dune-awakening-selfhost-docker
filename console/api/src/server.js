@@ -834,7 +834,7 @@ async function handleApi(req, res) {
   if (path.match(/^\/api\/settings\/iam\/tiers\/[^/]+\/detach$/) && req.method === "PUT") {
     const tierName = decodeURIComponent(path.split("/")[5]);
     const body = await readJson(req);
-    const result = detachPolicy(tierName, body?.policyId, config.repoRoot);
+    const result = detachPolicy(tierName, body?.policyId, session.tier, config.repoRoot);
     if (!result.ok) return json(res, 400, result);
     audit(config, req, "iam.tier-detach", { tier: tierName, policyId: body?.policyId });
     return json(res, 200, result);
