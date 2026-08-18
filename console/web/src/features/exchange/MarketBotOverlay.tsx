@@ -417,7 +417,7 @@ export function MarketBotOverlay({ onClose, onError, confirmAction }: MarketBotO
 
             <div className="market-bot-section">
               <strong>Buyback sweeps</strong>
-              <p className="action-help-note">Buys player sell listings whose per-unit ask is at or below the buyback percentage of the price basis (seeded NPC price at that grade, or live market average / lowest with seeded fallback). Whole listed stacks are bought in one pass. Every run probes eligibility read-only first and only backs up + sweeps when something qualifies. The category multipliers reprice the seeded basis the same way the reseed does — keep them matched with the reseed section so the buyback percentage tracks the real market prices.</p>
+              <p className="action-help-note">Buys player sell listings whose per-unit ask is at or below the buyback percentage of the price basis (seeded NPC price at that grade, or live market average / lowest with seeded fallback). Whole listed stacks are bought in one pass. Every run probes eligibility read-only first and only backs up + sweeps when something qualifies. The seeded basis uses this section's category multipliers and the reseed section's augment pricing (discounted vs original), so 60% of seeded tracks what the bot actually lists for ready-made augments. Category multipliers can still differ from reseed on purpose.</p>
               <div className="market-bot-grid">
                 <label>Interval (minutes)
                   <input aria-label="Buyback interval minutes" type="number" min={10} max={1440} value={buybackInterval} onChange={(event) => setBuybackInterval(Number(event.target.value))} />
