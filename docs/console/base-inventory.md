@@ -264,6 +264,11 @@ It offers two views, and **opens on Grid**:
   repeat it: its empty cells are already the add affordance, and a second control doing the same thing
   would be redundant.
 
+**The footer's Add Item and Close are both hidden while the add panel is open**, not merely disabled — the
+panel's own "Add to container" / Cancel row is the effective footer in that state, and repeating Close next
+to Cancel (which already returns to the slot view) would be a second, redundant way to leave. The overlay
+itself is still closable from here: the header's `×` and Escape both work throughout.
+
 Selecting a slot — a grid cell or an item name in the list — moves its controls into a strip below,
 carrying the item, its slot, grade and durability, an amount field defaulting to the whole stack, and the
 delete button. A second line lists the item's augments with their own per-augment grade, present only on a
@@ -277,6 +282,17 @@ pushed the dialog's own actions off screen. Swapping keeps the height envelope i
 add panel and the slot-detail strip are therefore two modes of one dialog, not two panels: opening either
 closes the other, and the strip is keyed to an existing occupied slot so it could not represent an add
 anyway. Both are cleared when the overlay is closed or a different container is opened.
+
+The panel itself: a header (title, live "N / M slots used" count), a permanent note stating the two
+contracts the backend enforces ("appends to the next free slot… never topped up"), the catalog picker, then
+a controls row of Quantity, Grade, and — only for an item category that can carry them — Augments plus its
+own Aug. Grade, all sized to match (the shared `AugmentDropdown` component ships its own slightly different
+padding/border/background by default, overridden here to line up; a native `<select>` also renders a couple
+px taller than a plain `<input>` at identical padding, a browser quirk fixed with an explicit height rather
+than chased through padding). The catalog picker's own list view is narrower here than in its full-page
+uses elsewhere (Care Package, Player give-items): Item ID and Source are dropped to fit, leaving Preview,
+Item Name and Category — the dropped fields are still shown once an item is picked, in the panel's own
+selected-item summary.
 
 Every inventory shares a single scroll region, so a placeable backing two inventories does not get two
 independent scrollbars.
