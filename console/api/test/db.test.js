@@ -3984,11 +3984,23 @@ function fakeBulkContainerDeleteDb(calls, fixtures = {}) {
     if (text.includes("information_schema.columns")) {
       return { rows: itemColumns.map((column_name) => ({ column_name })) };
     }
-    // Ownership resolution: resolveOwnedStorageContainer's own query, which
-    // selects placeable_id/inventory_id/group_key/type_name and locks `inv`,
-    // not `requested_claims` -- distinguished from the single-item-lookup
-    // query below by column list, since both share the requested_claims CTE.
-    if (text.includes("requested_claims") && text.includes("for update of inv")) return { rows: containerRows };
+    // Ownership resolution: resolveOwnedStorageContainer's own query.
+    // Anchored on its actual, structurally unique final SELECT column list
+    // (issue #354, MEDIUM severity, found during PR #349's own Layer 3
+    // audit, QA hat) rather than the bare substrings "requested_claims" and
+    // "for update of inv" this matcher used previously -- both substrings
+    // are shared with other queries/comments in duneDb.js (every base-
+    // container query builds on the same requested_claims CTE, and a
+    // hypothetical future query could easily contain both short fragments
+    // together without being this one), so a future addition elsewhere in
+    // the file could have silently been treated as "the ownership query" by
+    // this mock, producing an incorrect-but-passing green test for an
+    // unrelated code path. This exact column list
+    // ("c.placeable_id::text as placeable_id, c.inventory_id") only ever
+    // appears in resolveOwnedStorageContainer's own final SELECT.
+    if (text.includes("select c.placeable_id::text as placeable_id, c.inventory_id") && text.includes("for update of inv")) {
+      return { rows: containerRows };
+    }
     // Set-based item lookup inside deleteMultipleBaseContainerItems --
     // `where id = any($1::bigint[]) and inventory_id = $2`. Distinguished
     // from the verification query below (finishDeletingLockedItems) by the
@@ -4028,7 +4040,7 @@ test("delete-multiple verifies ownership once, then deletes only the requested i
   assert.equal(result.ok, true);
   assert.equal(result.removed.length, 2, "item 101 does not exist in this container and is skipped, not errored");
   assert.equal(result.message, "2 of 3 requested item(s) were deleted from the database.");
-  const ownershipCalls = calls.filter((call) => call.text.includes("requested_claims") && call.text.includes("for update of inv"));
+  const ownershipCalls = calls.filter((call) => call.text.includes("select c.placeable_id::text as placeable_id, c.inventory_id") && call.text.includes("for update of inv"));
   assert.equal(ownershipCalls.length, 1, "ownership resolved once per batch, not once per item");
   // bigintParam returns a numeric string, not a native bigint.
   assert.ok(calls.some((call) => call.text.includes("dune.delete_item($1::bigint)") && call.values[0] === "99"));
@@ -4058,7 +4070,7 @@ test("delete-multiple resolves and verifies the whole batch in O(1) round-trips,
   // Exactly one ownership resolution, one set-based item lookup, one
   // set-based "still present" verification -- the only per-item cost left
   // is the irreducible dune.delete_item call itself (50, one per item).
-  const ownershipCalls = calls.filter((call) => call.text.includes("requested_claims") && call.text.includes("for update of inv"));
+  const ownershipCalls = calls.filter((call) => call.text.includes("select c.placeable_id::text as placeable_id, c.inventory_id") && call.text.includes("for update of inv"));
   const lookupCalls = calls.filter((call) => call.text.includes("where id = any($1::bigint[]) and inventory_id = $2") && call.text.includes("for update"));
   const verifyCalls = calls.filter((call) => call.text.includes("select id::text as item_id from dune.items where id = any($1::bigint[]) and inventory_id = $2"));
   const deleteItemCalls = calls.filter((call) => call.text.includes("dune.delete_item($1::bigint)"));

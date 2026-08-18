@@ -279,6 +279,19 @@ Keep a Changelog style, grouped by upstream base version, newest first.
   entire feature was unreleased and unmerged when this was found and fixed
   in the same branch, so there is no affected shipped version and no
   upgrade/migration concern.
+- `fakeBulkContainerDeleteDb`'s ownership-query mock matcher in `db.test.js`
+  (issue #354, MEDIUM severity, found during PR #349's own Layer 3 audit,
+  QA hat) was anchored on the bare substrings `"requested_claims"` and
+  `"for update of inv"` -- both shared with other queries/comments
+  elsewhere in `duneDb.js`, so a future addition containing both fragments
+  together could have silently been treated as `resolveOwnedStorageContainer`'s
+  own query by this mock, producing an incorrect-but-passing green test for
+  an unrelated code path. Never actually produced a false positive, but
+  re-anchored on the query's real, structurally unique final `SELECT`
+  column list (`"select c.placeable_id::text as placeable_id, c.inventory_id"`)
+  to close the latent fragility, consistent with how the sibling single-item-
+  lookup matcher in the same file already anchors on a full column-list
+  string rather than a short clause fragment.
 
 ### Security
 
