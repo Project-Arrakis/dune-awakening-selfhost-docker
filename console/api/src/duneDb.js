@@ -8983,6 +8983,20 @@ export async function deleteBaseContainerItem(db, baseId, placeableId, itemId, {
 // rows[0] pick.
 async function resolveOwnedStorageContainer(tx, baseId, placeableId) {
   const [groups, buildingTypes, typeNames] = baseInventoryTypeParams();
+  // Found during the real-HTTP integration tests added for issue #353: this
+  // query 500'd on every real invocation with "FOR UPDATE is not allowed
+  // with DISTINCT clause" -- Postgres flatly rejects combining SELECT
+  // DISTINCT with FOR UPDATE in the same query, a restriction no mocked
+  // test in this file's own db.test.js suite could ever catch, since the
+  // fake db's query() never actually parses SQL. Every mutation function
+  // that calls resolveOwnedStorageContainer (deleteMultipleBaseContainerItems,
+  // deleteAllBaseContainerItems, and -- through baseContainerOwnedStorageId's
+  // own baseContainerSlots call in server.js -- give/give-multiple/fill as
+  // well, transitively) was broken against a real database from the moment
+  // this function was introduced. Fixed by resolving the DISTINCT candidate
+  // set in a CTE first, then joining back to the real dune.inventories row
+  // to take the lock -- FOR UPDATE only ever applies to that final,
+  // non-DISTINCT join, which Postgres allows.
   const found = await tx.query(`
     with requested_claims as (
       select distinct b.id, afe.actor_id
@@ -8996,15 +9010,20 @@ async function resolveOwnedStorageContainer(tx, baseId, placeableId) {
       join dune.actor_fgl_entities claim_afe on claim_afe.actor_id = rc.actor_id
     ), inventory_types as (
       select * from unnest($2::text[], $3::text[], $4::text[]) as t(group_key, building_type, type_name)
+    ), candidates as (
+      select distinct p.id as placeable_id, inv.id as inventory_id,
+             it.group_key, it.type_name
+      from base_entities be
+      join dune.placeables p on p.owner_entity_id = be.owner_entity_id
+      join inventory_types it on it.building_type = lower(p.building_type)
+      join dune.inventories inv on inv.actor_id = p.id and inv.max_item_count >= 0
+      where p.is_hologram = false and p.id = $5
     )
-    select distinct p.id::text as placeable_id, inv.id as inventory_id,
-           it.group_key, it.type_name
-    from base_entities be
-    join dune.placeables p on p.owner_entity_id = be.owner_entity_id
-    join inventory_types it on it.building_type = lower(p.building_type)
-    join dune.inventories inv on inv.actor_id = p.id and inv.max_item_count >= 0
-    where p.is_hologram = false and p.id = $5
-    order by inv.id
+    select c.placeable_id::text as placeable_id, c.inventory_id,
+           c.group_key, c.type_name
+    from candidates c
+    join dune.inventories inv on inv.id = c.inventory_id
+    order by c.inventory_id
     for update of inv`, [baseId, groups, buildingTypes, typeNames, placeableId]);
 
   if (found.rows.length === 0) throw new Error("That container was not found at the selected base.");

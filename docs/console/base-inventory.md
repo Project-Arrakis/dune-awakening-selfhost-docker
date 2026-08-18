@@ -316,6 +316,22 @@ delete uses, explicitly *not* the unscoped, actor_id-only lookup Give/Fill use i
 group filter and could otherwise reach a Refining/Crafting inventory). Ownership is checked once, the
 resulting inventory row locked (`for update of inv`) for the duration of the whole batch.
 
+**This query was completely broken against a real database from the moment it was introduced** (issue
+#353): it combined `SELECT DISTINCT` with `FOR UPDATE OF inv`, which Postgres flatly rejects
+(`FOR UPDATE is not allowed with DISTINCT clause`) — every real call to Delete Selected, Delete All, Give,
+Give Multiple, and Fill (Give/Fill reach the same query indirectly, through `baseContainerOwnedStorageId()`'s
+own `baseContainerSlots()` call in `server.js`) would have 500'd in production. This was invisible to every
+mocked unit test in `db.test.js`, since the fake `db.query()` those tests use never actually parses SQL —
+it only pattern-matches the query *text*, so a syntactically invalid query and a valid one with the same
+substrings are indistinguishable to that kind of test. It was found only once a real-HTTP integration test
+(issue #353's own fix, `baseContainerMutationRoutes.integration.test.js`) exercised these routes against
+a real, isolated PostgreSQL database rather than a mock — the exact gap that issue existed to close. Fixed
+by resolving the `DISTINCT` candidate set in its own CTE first, then joining back to the real
+`dune.inventories` row purely to take the lock — `FOR UPDATE` only ever applies to that final, non-`DISTINCT`
+join, which Postgres allows. This is also the reason every base-container mutation route (not just the two
+this section covers) now has real HTTP-level integration coverage rather than the source-text-pattern
+assertions `baseContainerMutationRoutes.test.js` was previously limited to.
+
 **The batch itself is resolved and verified with a fixed, small number of set-based round-trips, not one
 pair of round-trips per item.** Found during PR #349's own Layer 3 audit (DBA and Security hats
 independently, issue #352, HIGH severity): the original version of both functions looped per item — a

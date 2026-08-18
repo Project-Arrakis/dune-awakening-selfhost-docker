@@ -248,6 +248,38 @@ Keep a Changelog style, grouped by upstream base version, newest first.
   Phases 2-4 (bot-side generator, bot runtime consumption, dynamic
   refresh/autocomplete) are separate, future work — not included here.
 
+### Fixed
+
+- **`resolveOwnedStorageContainer()` (the shared ownership/lock query behind
+  Base Inventory's Delete Selected, Delete All, Give, Give Multiple, and
+  Fill) was completely broken against a real PostgreSQL database from the
+  moment it was introduced (issue #347, fixed as issue #353).** It combined
+  `SELECT DISTINCT` with `FOR UPDATE OF inv` in the same query, which
+  Postgres flatly rejects (`FOR UPDATE is not allowed with DISTINCT
+  clause`) — every real call to any of those five actions would have 500'd
+  in production. This was invisible to every mocked unit test in
+  `db.test.js`, since the fake `db.query()` those tests use pattern-matches
+  query *text* and never actually parses or executes SQL — a syntactically
+  invalid query and a valid one sharing the same substrings are
+  indistinguishable to that style of test. It was found only once a real
+  HTTP-level integration test exercised these routes against a real,
+  isolated PostgreSQL database instead of a mock (`baseContainerMutationRoutes.
+  integration.test.js`, added for issue #353, which itself was filed during
+  PR #349's own Layer 3 audit specifically because this class of gap — no
+  real end-to-end test of these 5 routes — was recognized as a real risk
+  before this exact bug was known to exist). Fixed by resolving the
+  `DISTINCT` candidate set in its own CTE first, then joining back to the
+  real `dune.inventories` row purely to take the lock — `FOR UPDATE` only
+  ever applies to that final, non-`DISTINCT` join, which Postgres allows.
+  10 new real-HTTP integration tests (spawning the actual `server.js`
+  against an isolated database, following `bridgeActionDispatch.test.js`'s
+  existing precedent) now cover all 5 routes end-to-end; confirmed each
+  fails against the pre-fix query and passes against the fix by reverting
+  and re-running directly. This was never released -- issue #347/#349's
+  entire feature was unreleased and unmerged when this was found and fixed
+  in the same branch, so there is no affected shipped version and no
+  upgrade/migration concern.
+
 ### Security
 
 - Cherry-picked upstream `3ca8c4c` ("fix(backups): preserve env ownership during scheduled
