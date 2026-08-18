@@ -459,8 +459,10 @@ The three category multipliers (`augmentMultiplier`, `rankedArmorMultiplier`,
 and scale prices on top of the base `priceMultiplier` for augments & augment
 schematics, ranked (grade 1–5) armor including stillsuits, and ranked weapons
 respectively. On the seed schedule they raise the seeded sell prices; on the
-buyback schedule they reprice the reconstructed "seeded" price basis the same
-way, so `buybackPercent` keeps meaning a percentage of the real market price.
+buyback schedule they reprice the reconstructed "seeded" price basis. Ready-made
+augment item caps also follow the reseed schedule's `augmentPricing`
+(`discounted` vs `original`) so `buybackPercent` is a percentage of what the bot
+actually lists, even when the two schedules use different augment multipliers.
 
 Unlike the board above, these routes **do write the game database** through the
 native Market Bot engine (`addonJobs.js` / `addonSeedJob.js`). Reads, the probe, and
