@@ -260,20 +260,35 @@ const COMMAND_METADATA = Object.freeze({
     selfScoped: true,
     params: []
   },
+  // routeHasNoCurrentBotCaller (issue #342, found during an independent
+  // re-audit of #337/PR #341): this route is genuinely live on Core (a
+  // real handler, a real provider -- see linkAccountProvider() in
+  // routes.js) but no slash command in arrakis-control-panel calls it
+  // today (verified directly against arrakis-control-panel @ 8f3d3ed --
+  // grep for "players-accounts-link" across that repo's src/ finds no
+  // caller). Included here because Phase 1's scope is "describe what's
+  // live on Core," not "describe only what the bot currently calls" --
+  // but flagged explicitly, with a description that does not imply an
+  // existing working bot command, so a future Phase 2 generator does not
+  // mistake this for something Discord users can invoke today.
   [DISCORD_ADAPTER_ROUTES.PLAYERS_ACCOUNTS_LINK]: {
     group: "player", subcommand: "link",
-    description: "Link an additional character to your Discord (multi-account).",
+    description: "(Not yet exposed as a bot command.) Core route to link an additional character to a Discord account (multi-account).",
     capability: DISCORD_CAPABILITIES.ACCOUNT_LINK_WRITE,
     selfScoped: true,
+    routeHasNoCurrentBotCaller: true,
     params: [
       { name: "character", type: "STRING", required: true, description: "Character name to link." }
     ]
   },
+  // See PLAYERS_ACCOUNTS_LINK's comment above -- same finding (#342),
+  // same verification method, no bot-side caller for this route either.
   [DISCORD_ADAPTER_ROUTES.PLAYERS_ACCOUNTS_LINK_VERIFY]: {
     group: "player", subcommand: "verify",
-    description: "Verify a pending additional-account link with a code.",
+    description: "(Not yet exposed as a bot command.) Core route to verify a pending additional-account link with a code.",
     capability: DISCORD_CAPABILITIES.ACCOUNT_LINK_WRITE,
     selfScoped: true,
+    routeHasNoCurrentBotCaller: true,
     params: [
       { name: "code", type: "STRING", required: true, description: "Verification code from in-game whisper." }
     ]
@@ -294,11 +309,25 @@ const COMMAND_METADATA = Object.freeze({
     selfScoped: true,
     params: []
   },
+  // routeHasNoCurrentBotCaller (issue #342): unlike PLAYERS_ACCOUNTS_LINK/
+  // LINK_VERIFY above, this one is not merely uncalled -- the bot's real,
+  // live "/dune player default" command (commands.js, key "player:default")
+  // calls a DIFFERENT route entirely: guildGrantsDefault() ->
+  // "guild-grants-default" -> /api/integrations/discord/guild-character-grants/default,
+  // which does not exist anywhere in Core today (see linkProvider.js's own
+  // comment: "Core's currently-nonexistent guild-character-grants
+  // feature"). An earlier version of this entry's description was
+  // verbatim-identical to that unrelated bot command's real description
+  // ("Set your default character for this guild"), which would have made
+  // a future Phase 2 generator conflate this uncalled multi-account route
+  // with the bot's real, differently-routed default-character command.
+  // Corrected to describe only what THIS route actually does.
   [DISCORD_ADAPTER_ROUTES.PLAYERS_ACCOUNTS_SET_DEFAULT]: {
     group: "player", subcommand: "default",
-    description: "Set your default character for this guild.",
+    description: "(Not yet exposed as a bot command -- do not confuse with the live \"/dune player default\" command, which calls a separate, currently-nonexistent-on-Core guild-character-grants route.) Core route to change which linked character is the default for a Discord account.",
     capability: DISCORD_CAPABILITIES.ACCOUNT_LINK_WRITE,
     selfScoped: true,
+    routeHasNoCurrentBotCaller: true,
     params: [
       { name: "character", type: "STRING", required: true, description: "Character link ID." }
     ]
@@ -453,6 +482,7 @@ export function buildCommandCatalog(liveRoutes = DISCORD_LIVE_ADAPTER_ROUTES, me
       selfScoped: Boolean(meta.selfScoped),
       requiresWritesEnabled: Boolean(meta.requiresWritesEnabled),
       routeEnforcesCapability: meta.routeEnforcesCapability !== false,
+      routeHasNoCurrentBotCaller: Boolean(meta.routeHasNoCurrentBotCaller),
       params: meta.params || []
     });
   }
