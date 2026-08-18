@@ -40,7 +40,18 @@
 import { DISCORD_ADAPTER_ROUTES, DISCORD_LIVE_ADAPTER_ROUTES } from "./adapter.js";
 import { DISCORD_CAPABILITIES, minTierForCapability } from "./policy.js";
 
-export const CATALOG_VERSION = 1;
+// Bumped from 1 to 2 for this revision: subcommand.route (a single string)
+// became subcommand.routes (an array) for every (group, subcommand) pair
+// that fans out to more than one backing adapter route -- a breaking shape
+// change for any future consumer that assumed one route per subcommand, per
+// this constant's own original design intent (see adapter.js's
+// DISCORD_CATALOG_PROTOCOL_VERSION comment: bump on "a field is removed or
+// its meaning changes", not on ordinary additions). No live consumer exists
+// yet (Phase 2/3 bot-side generator is still unimplemented -- confirmed via
+// grep across arrakis-control-panel's src/ for buildCommandCatalog/
+// DISCORD_CATALOG_PROTOCOL_VERSION, zero hits), so this bump is forward
+// hygiene, not a fix for an active breakage.
+export const CATALOG_VERSION = 2;
 
 // One entry per DISCORD_LIVE_ADAPTER_ROUTES member. Keys are route path
 // strings (DISCORD_ADAPTER_ROUTES.* values), not route constant names, so
@@ -51,7 +62,43 @@ export const CATALOG_VERSION = 1;
 // checks for this route (verified by direct reading of both files, not
 // inferred) -- diagnostic-mode STATUS uses LOGS_READ instead of
 // STATUS_READ; that distinction is preserved here via diagnosticCapability.
-const COMMAND_METADATA = Object.freeze({
+//
+// method: the exact HTTP method routes.js's real dispatch table checks for
+// this route (`req.method === "GET"|"POST"`) -- defaults to "POST" when
+// omitted (buildCommandCatalog() below), since all but 3 live routes
+// (HEALTH, VERSION, BACKUPS_LIST) are POST; those 3 set method: "GET"
+// explicitly rather than every other entry repeating "POST".
+//
+// params[].bodyField: the real JSON body field name routes.js actually
+// reads for this param (e.g. `body.characterName`), when it differs from
+// the param's own Discord-facing `name` (e.g. "character"). Defaults to
+// the param's own `name` when omitted -- most params match 1:1; only
+// PLAYERS_LINK ("character" -> "characterName") and
+// PLAYERS_INVENTORY_SEARCH ("search" -> "query") need an explicit
+// override today (found via upstream PR #171's review; see
+// discordCommandCatalog.test.js's cross-check against routes.js's real
+// body.<field> reads for the mechanism that keeps this from silently
+// drifting again).
+//
+// Three (group, subcommand) pairs intentionally fan out to two backing
+// routes each -- confirmed against the real, live Discord bot
+// (arrakis-control-panel/src/commands.js) that these are genuinely ONE
+// Discord subcommand each, not two: the bot registers a single "storage"/
+// "find"/"inventory" subcommand and picks which adapter route to call at
+// runtime based on a param value (scope=guild, or search being present).
+// Each fanned-out route entry below carries its own `selector` describing
+// which param/value picks it; the entry with `selector: null` is the
+// default used when no other selector in the pair matches. This is NOT a
+// naming collision to rename away -- inventing distinct subcommand names
+// (e.g. "guild-storage") would contradict this file's own design mandate
+// (see the module header) that catalog names must match what Discord users
+// actually see today, not a fresh naming scheme.
+// Exported (not just module-private) so discordCommandCatalog.test.js can
+// cross-check every declared field/bodyField against buildCommandCatalog()'s
+// real output and against routes.js's real body.<field> reads, without
+// re-deriving or hand-retyping this table a second time inside the test
+// (which would be tautological -- see that test file's own comments).
+export const COMMAND_METADATA = Object.freeze({
   [DISCORD_ADAPTER_ROUTES.HEALTH]: {
     group: "server", subcommand: "health",
     description: "Check the console Discord adapter.",
@@ -66,6 +113,7 @@ const COMMAND_METADATA = Object.freeze({
     // routes.js/adapter.js rather than trusting this table's own claims.
     capability: DISCORD_CAPABILITIES.STATUS_READ,
     routeEnforcesCapability: false,
+    method: "GET",
     params: []
   },
   [DISCORD_ADAPTER_ROUTES.STATUS]: {
@@ -135,6 +183,7 @@ const COMMAND_METADATA = Object.freeze({
     // rather than silently assumed.
     capability: DISCORD_CAPABILITIES.BACKUPS_READ,
     routeEnforcesCapability: false,
+    method: "GET",
     params: []
   },
   [DISCORD_ADAPTER_ROUTES.ANNOUNCEMENTS]: {
@@ -204,7 +253,9 @@ const COMMAND_METADATA = Object.freeze({
     description: "Link your Discord to your game character.",
     capability: DISCORD_CAPABILITIES.PLAYER_LINK_WRITE,
     params: [
-      { name: "character", type: "STRING", required: true, description: "Your character name." }
+      // routes.js:251 reads body.characterName, not body.character --
+      // found by upstream PR #171's review (Red-Blink).
+      { name: "character", bodyField: "characterName", type: "STRING", required: true, description: "Your character name." }
     ]
   },
   [DISCORD_ADAPTER_ROUTES.PLAYERS_LINK_VERIFY]: {
@@ -227,49 +278,84 @@ const COMMAND_METADATA = Object.freeze({
     capability: DISCORD_CAPABILITIES.INVENTORY_READ,
     params: []
   },
-  [DISCORD_ADAPTER_ROUTES.PLAYERS_INVENTORY]: {
-    group: "player", subcommand: "inventory",
-    description: "View your personal inventory.",
-    capability: DISCORD_CAPABILITIES.INVENTORY_READ,
-    params: []
-  },
+  // Fan-out pair 1 of 3 (upstream PR #171 review): the bot registers ONE
+  // real "storage" subcommand under group "player" (commands.js) with a
+  // scope choice ("owned"/"guild"); at runtime it calls PLAYERS_STORAGE for
+  // scope=owned (the default) or GUILD_STORAGE for scope=guild
+  // (commands.js's own comment: "guild scope has a dedicated guild-scoped
+  // route; do not silently fall back"). Two different capabilities/tiers
+  // are genuinely enforced depending on which route is selected --
+  // STORAGE_READ vs GUILD_READ -- so collapsing this into a single flat
+  // catalog entry with one capability would misreport the guild path's
+  // real authorization requirement. selector: null marks the default route
+  // used when no other selector in this (group, subcommand) pair matches.
   [DISCORD_ADAPTER_ROUTES.PLAYERS_STORAGE]: {
     group: "player", subcommand: "storage",
     description: "View your storage containers grouped by map.",
     capability: DISCORD_CAPABILITIES.STORAGE_READ,
+    selector: null,
     params: [
       { name: "scope", type: "STRING", required: false, description: 'Storage scope: "owned" (default) or "guild".', choices: ["owned", "guild"] }
-    ]
-  },
-  [DISCORD_ADAPTER_ROUTES.PLAYERS_FIND]: {
-    group: "player", subcommand: "find",
-    description: "Search for items across your containers.",
-    capability: DISCORD_CAPABILITIES.INVENTORY_READ,
-    params: [
-      { name: "query", type: "STRING", required: true, description: "Item name to search for." },
-      { name: "scope", type: "STRING", required: false, description: 'Search scope: "owned" (default) or "guild".', choices: ["owned", "guild"] }
-    ]
-  },
-  [DISCORD_ADAPTER_ROUTES.PLAYERS_INVENTORY_SEARCH]: {
-    group: "player", subcommand: "inventory",
-    description: "View your personal inventory, filtered by item name.",
-    capability: DISCORD_CAPABILITIES.INVENTORY_READ,
-    params: [
-      { name: "search", type: "STRING", required: false, description: "Filter by item name (optional)." }
     ]
   },
   [DISCORD_ADAPTER_ROUTES.GUILD_STORAGE]: {
     group: "player", subcommand: "storage",
     description: "View guild-scoped storage containers.",
     capability: DISCORD_CAPABILITIES.GUILD_READ,
+    selector: { param: "scope", equals: "guild" },
     params: []
+  },
+  // Fan-out pair 2 of 3: same pattern as storage above -- one real "find"
+  // subcommand, scope-selected between PLAYERS_FIND (owned, default) and
+  // GUILD_FIND (guild), with genuinely different capabilities
+  // (INVENTORY_READ vs GUILD_READ).
+  [DISCORD_ADAPTER_ROUTES.PLAYERS_FIND]: {
+    group: "player", subcommand: "find",
+    description: "Search for items across your containers.",
+    capability: DISCORD_CAPABILITIES.INVENTORY_READ,
+    selector: null,
+    params: [
+      { name: "query", type: "STRING", required: true, description: "Item name to search for." },
+      { name: "scope", type: "STRING", required: false, description: 'Search scope: "owned" (default) or "guild".', choices: ["owned", "guild"] }
+    ]
   },
   [DISCORD_ADAPTER_ROUTES.GUILD_FIND]: {
     group: "player", subcommand: "find",
     description: "Search for items across guild containers.",
     capability: DISCORD_CAPABILITIES.GUILD_READ,
+    selector: { param: "scope", equals: "guild" },
     params: [
       { name: "query", type: "STRING", required: true, description: "Item name to search for." }
+    ]
+  },
+  // Fan-out pair 3 of 3: one real "inventory" subcommand under group
+  // "player" with an optional "search" string option (commands.js). The
+  // bot calls PLAYERS_INVENTORY_SEARCH when search is present, else
+  // PLAYERS_INVENTORY -- selected by param PRESENCE, not a value match, so
+  // the selector shape differs from the two pairs above (`present: true`
+  // instead of `equals`). Same capability either way (INVENTORY_READ), so
+  // this pair is a real UX fan-out, not a security-relevant one like the
+  // two above -- still fixed the same way for structural consistency and
+  // because a future capability change to either route must not silently
+  // apply to only one side of a flattened entry.
+  [DISCORD_ADAPTER_ROUTES.PLAYERS_INVENTORY]: {
+    group: "player", subcommand: "inventory",
+    description: "View your personal inventory.",
+    capability: DISCORD_CAPABILITIES.INVENTORY_READ,
+    selector: null,
+    params: []
+  },
+  [DISCORD_ADAPTER_ROUTES.PLAYERS_INVENTORY_SEARCH]: {
+    group: "player", subcommand: "inventory",
+    description: "View your personal inventory, filtered by item name.",
+    capability: DISCORD_CAPABILITIES.INVENTORY_READ,
+    selector: { param: "search", present: true },
+    params: [
+      // routes.js:339 reads body.query, not body.search -- found by
+      // upstream PR #171's review (Red-Blink). "search" is what the bot's
+      // own Discord-facing option is named (commands.js); "query" is the
+      // wire field the adapter route actually reads.
+      { name: "search", bodyField: "query", type: "STRING", required: false, description: "Filter by item name (optional)." }
     ]
   },
   [DISCORD_ADAPTER_ROUTES.VERSION]: {
@@ -280,6 +366,7 @@ const COMMAND_METADATA = Object.freeze({
     // recorded as null rather than guessing one.
     capability: null,
     routeEnforcesCapability: false,
+    method: "GET",
     params: []
   },
   [DISCORD_ADAPTER_ROUTES.SERVERS]: {
@@ -349,25 +436,56 @@ export function buildCommandCatalog(liveRoutes = DISCORD_LIVE_ADAPTER_ROUTES, me
     throw new Error(`commandCatalog.js: ${stale.length} catalog entry(ies) reference route(s) no longer in DISCORD_LIVE_ADAPTER_ROUTES: ${stale.join(", ")}`);
   }
 
+  // groups: group name -> (subcommand name -> array of route entries).
+  // A subcommand normally has exactly one route entry; the 3 documented
+  // fan-out pairs above (storage/find/inventory) produce two -- see this
+  // file's header comment for why that's a real, intentional shape and not
+  // a bug to flatten away.
   const groups = new Map();
   for (const route of liveRoutes) {
-    const meta = metadata[route];
-    if (!groups.has(meta.group)) groups.set(meta.group, []);
-    groups.get(meta.group).push({
-      name: meta.subcommand,
-      description: meta.description,
+    // Destructure-and-spread (not a hand-picked allowlist): every field
+    // NOT explicitly named below survives into the output route entry
+    // automatically via `...rest` -- this is the fix for the
+    // diagnosticCapability-silently-dropped bug (upstream PR #171 review):
+    // a future metadata field added to COMMAND_METADATA reaches the
+    // catalog's real JSON output without anyone having to remember to also
+    // edit this block a second time. Only fields that need renaming
+    // (group/subcommand, consumed into the Map keys below rather than
+    // copied verbatim) or type coercion (requiresWritesEnabled,
+    // routeEnforcesCapability -- both intentionally normalized to a real
+    // boolean, undefined -> false, not left as undefined) are named
+    // explicitly and excluded from `rest`.
+    const { group, subcommand, capability, requiresWritesEnabled, routeEnforcesCapability, method, params, ...rest } = metadata[route];
+    const routeEntry = {
+      ...rest,
       route,
-      capability: meta.capability,
-      minTier: resolveMinTier(meta.capability),
-      requiresWritesEnabled: Boolean(meta.requiresWritesEnabled),
-      routeEnforcesCapability: meta.routeEnforcesCapability !== false,
-      params: meta.params || []
-    });
+      capability,
+      minTier: resolveMinTier(capability),
+      method: method || "POST",
+      requiresWritesEnabled: Boolean(requiresWritesEnabled),
+      routeEnforcesCapability: routeEnforcesCapability !== false,
+      // bodyField defaults to the param's own Discord-facing name when not
+      // explicitly overridden -- most params match their real body field
+      // 1:1; PLAYERS_LINK and PLAYERS_INVENTORY_SEARCH are the two
+      // documented exceptions today (see their own entries above).
+      params: (params || []).map((param) => ({ ...param, bodyField: param.bodyField || param.name }))
+    };
+
+    if (!groups.has(group)) groups.set(group, new Map());
+    const subcommands = groups.get(group);
+    if (!subcommands.has(subcommand)) subcommands.set(subcommand, []);
+    subcommands.get(subcommand).push(routeEntry);
   }
 
   const result = {
     version: CATALOG_VERSION,
-    groups: [...groups.entries()].map(([name, subcommands]) => ({ name, subcommands }))
+    groups: [...groups.entries()].map(([groupName, subcommands]) => ({
+      name: groupName,
+      subcommands: [...subcommands.entries()].map(([subcommandName, routes]) => ({
+        name: subcommandName,
+        routes
+      }))
+    }))
   };
   if (isProductionCall) cachedProductionCatalog = result;
   return result;
