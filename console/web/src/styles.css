@@ -2655,8 +2655,12 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
    table into its rounded border. Give the table's four outer cells matching
    inner radii instead, and let the wrapper own the final bottom border. */
 .bases-table-wrap .bases-table { border-collapse: separate; border-spacing: 0; }
-.bases-table-wrap .bases-table thead > tr:first-child > th:first-child { border-top-left-radius: 7px; }
-.bases-table-wrap .bases-table thead > tr:first-child > th:last-child { border-top-right-radius: 7px; }
+/* > thead, not a bare descendant space, for the same reason as the sticky-top
+   fix above: this must only round the corners of the bases-table's own
+   header, not a nested table's (e.g. an expanded row rendering another table
+   with its own thead). */
+.bases-table-wrap .bases-table > thead > tr:first-child > th:first-child { border-top-left-radius: 7px; }
+.bases-table-wrap .bases-table > thead > tr:first-child > th:last-child { border-top-right-radius: 7px; }
 .bases-table-wrap .bases-table tbody > tr:last-child > td { border-bottom: 0; }
 .bases-table-wrap .bases-table tbody > tr:last-child > td:first-child { border-bottom-left-radius: 7px; }
 .bases-table-wrap .bases-table tbody > tr:last-child > td:last-child { border-bottom-right-radius: 7px; }
@@ -2700,9 +2704,16 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
   background: var(--panel);
 }
 /* 67px = the search row's 43px of content plus its 24px of padding, so the
-   header parks directly beneath the search bar rather than under it. */
+   header parks directly beneath the search bar rather than under it.
+   `> thead > tr > th`, not a bare descendant `th`: a plain `.bases-table th`
+   matches every th anywhere inside the table's DOM subtree, including one
+   belonging to an unrelated table rendered inside an expanded row's cell
+   (e.g. the item catalog picker in the base-inventory add panel) -- which
+   then inherited this table's 67px offset and rendered mid-list instead of
+   at its own container's top. The child-combinator chain only matches a th
+   that is this table's own direct header cell. */
 .table-wrap.bases-table-wrap { margin-top: 0; }
-.bases-table-wrap .bases-table th { top: 67px; z-index: 3; }
+.bases-table-wrap .bases-table > thead > tr > th { top: 67px; z-index: 3; }
 /* Below 900px the sidebar stops being a column and becomes a sticky header at
    top:0 with z-index:100, so a search bar pinned to the same edge sits behind
    it. Offsetting by the sidebar's height would break the moment the hamburger
@@ -2939,8 +2950,182 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
   scrollbar-gutter: stable;
   padding-right: 10px;
 }
+/* Replaces .bases-inventory-contents-scroll rather than stacking under it, so
+   the dialog's height envelope is identical in both modes and the actions at
+   its foot stay on screen. ItemCatalogSelector brings its own ~300px of
+   chrome; below a 400px slot region that sum is what pushed them off. Same
+   flex-item rule as the scroll region above: min-height 0, or the catalog's
+   own list renders at full natural height and overflows the modal. */
+.bases-inventory-add-panel {
+  flex: 1 1 auto;
+  min-height: 0;
+  /* The panel itself must NOT scroll. Its one tall child, the catalog picker,
+     already scrolls internally; letting the panel scroll too nests two regions
+     and -- because the picker holds a fixed 520px that exceeds the space the
+     dialog can give it -- pushes the Add button below the fold, reachable only
+     after scrolling past ~2,300 catalog options. Measured: actions landed at
+     y=1001 in a 720px viewport before this. */
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-right: 10px;
+}
+/* Let the picker shrink to whatever is left instead of insisting on its
+   standalone 520px. min-height keeps it usable rather than collapsing to a
+   sliver on a short viewport; the surrounding rows are fixed-height, so the
+   arithmetic always resolves. */
+.bases-inventory-add-panel .catalog-selector {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.bases-inventory-add-panel .catalog-item-picker {
+  flex: 1 1 auto;
+  min-height: 120px;
+  max-height: none;
+}
+/* The category select's default column is a fixed 360px -- fine in the
+   full-width panels ItemCatalogSelector was built for, but this add panel
+   lives inside a ~560px dialog, where 360px is most of the row and crushes
+   the filter input into a sliver. Same stacked, full-width treatment the app
+   already gives this same selector at narrow VIEWPORT widths (see the
+   max-width: 1024px block below) -- applied here unconditionally, since this
+   panel is narrow regardless of viewport. */
+.bases-inventory-add-panel .catalog-filter-row { grid-template-columns: 1fr; }
+.bases-inventory-add-panel .catalog-search-tools { grid-template-columns: minmax(0, 1fr) auto; }
+/* The list-view table's ID/Category/Source columns are percentage-widthed for
+   the full-page panels ItemCatalogSelector was built for. At this panel's
+   ~500px, table-layout: fixed still honours those percentages, so the four
+   non-preview columns each end up tens of pixels wide and every cell's text
+   wraps character-by-character. Dropping ID and Source is enough -- Category
+   is worth keeping visible (it's how an operator scans for "is this the
+   resource or the schematic"), and the full id/source still show in
+   .catalog-selected-item once an item is chosen, so nothing here is only
+   available in a dropped column. display: none on nth-child is applied
+   identically to every row, so table-layout: fixed's column algorithm simply
+   drops those two columns instead of misaligning anything. */
+.bases-inventory-add-panel .catalog-item-table th:nth-child(3),
+.bases-inventory-add-panel .catalog-item-table td:nth-child(3),
+.bases-inventory-add-panel .catalog-item-table th:nth-child(5),
+.bases-inventory-add-panel .catalog-item-table td:nth-child(5) {
+  display: none;
+}
+/* No explicit width on Item Name: in a fixed-layout table that's what lets it
+   claim whatever space the two dropped columns and Category's own fixed
+   width leave behind. Category gets a fixed width rather than also going
+   auto -- two auto columns in a fixed-layout table split the remaining space
+   evenly between them, which would give a one-word category ("Weapons") the
+   same room as a much longer item name. */
+.bases-inventory-add-panel .catalog-item-table th:nth-child(2),
+.bases-inventory-add-panel .catalog-item-table td:nth-child(2) {
+  width: auto;
+}
+.bases-inventory-add-panel .catalog-item-table th:nth-child(4),
+.bases-inventory-add-panel .catalog-item-table td:nth-child(4) {
+  width: 100px;
+}
+/* Not position: sticky. Verified live it does not hold in this nesting --
+   scrolling the picker moved the header 1:1 with the content instead of
+   pinning it, even after the top:67px leak above was fixed and top read
+   correctly as 0. Most likely cause: this table sits inside another table's
+   own sticky-positioned cell (.bases-table td.expanded-row-cell is itself
+   position: sticky, since BaseInventoryTab renders inside an expanded
+   bases-table row), and sticky-within-sticky-within-nested-table is a known
+   rough edge across browsers.
+   Fixed instead with the standard header/body split: thead and tbody become
+   independent flex items in a column, each row-group laid out with its own
+   `display: table` so th/td widths still align between them (both use the
+   same nth-child width rules, so they compute identically). The header is
+   then structurally outside the one scrolling region (tbody) -- it cannot
+   float, drift, or fail to pin, because it was never part of the scrolled
+   content to begin with. */
+.bases-inventory-add-panel .catalog-item-picker.list-view {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.bases-inventory-add-panel .catalog-item-table {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+}
+.bases-inventory-add-panel .catalog-item-table thead {
+  display: block;
+  flex: 0 0 auto;
+}
+.bases-inventory-add-panel .catalog-item-table tbody {
+  display: block;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  width: 100%;
+}
+.bases-inventory-add-panel .catalog-item-table thead tr,
+.bases-inventory-add-panel .catalog-item-table tbody tr {
+  display: table;
+  width: 100%;
+  table-layout: fixed;
+}
+/* 56px, not the shared .small (42px) or default (72px) variant -- picked from
+   three rendered mockups. The 92px Preview column already has room (56px
+   icon + 20px cell padding = 76px), so only the icon itself changes. */
+.bases-inventory-add-panel .catalog-item-table .catalog-item-preview.small {
+  width: 56px;
+  height: 56px;
+  flex-basis: 56px;
+}
+.bases-inventory-add-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.bases-inventory-add-head h4 { margin: 0; font-size: 15px; }
+.bases-inventory-add-note { margin: 0; font-size: 12px; }
+.bases-inventory-add-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px;
+}
+.bases-inventory-add-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.bases-inventory-add-field > span { color: var(--muted-warm); font-size: 11.5px; }
+.bases-inventory-add-field input { width: 120px; }
+/* A native <select> with identical padding/border/font still renders 2px
+   taller than an <input> in this row (41px vs 43px, measured) -- a browser
+   rendering quirk in how it sizes around its own dropdown arrow, not
+   anything padding/border can fix. Pinning the height directly is what
+   actually lines Grade and Aug. Grade up with Quantity and Augments. */
+.bases-inventory-add-field .package-item-durability-input { height: 41px; }
+/* The dropdown is the widest control by far, so it takes the remaining track
+   instead of forcing the grade selects onto their own row at every width. */
+.bases-inventory-add-augments { flex: 1 1 240px; }
+/* AugmentDropdown ships its own control styling (8px 10px padding, its own
+   near-but-not-quite border/background hex), so next to the plain <input>/
+   <select> siblings here (10px 12px padding, --border-strong, #151719) it
+   reads a couple px shorter and a shade off. Matched to those exact computed
+   values rather than the shared augment-dropdown-control rule, which other
+   panels (player give-items) still use unchanged. */
+.bases-inventory-add-panel .augment-dropdown-control {
+  padding: 10px 12px;
+  border-color: var(--border-strong);
+  background: #151719;
+}
+.bases-inventory-add-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
 .bases-inventory-contents-modal .confirm-modal-title { align-items: start; }
 .bases-inventory-contents-modal .confirm-modal-title > div { min-width: 0; }
+/* Lives in the footer, not the header: List-view only (grid's empty cells are
+   the add affordance there), and the footer's confirm-modal-actions-grouped
+   space-between puts it at the trailing edge of the LEFT side, opposite Close.
+   Plain styling rather than a danger tone or the view-toggle's segmented
+   look -- adding is additive, not a destructive control or a view mode. */
+.bases-inventory-add-item { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
 .bases-inventory-contents-summary {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
@@ -3045,11 +3230,14 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 }
 /* Dashed and dimmer so an empty slot reads as absence at a glance rather than
    as an item that failed to load. */
-.bases-inventory-slot-cell.empty { background: #1b1610; border-style: dashed; cursor: default; }
-/* Purely decorative, matching the game's own empty slot. Pseudo-elements
-   rather than markup: the cell is already aria-hidden and non-interactive, so
-   nothing should announce a "+" to a screen reader or suggest it can be
-   clicked -- there is no add-item action here yet.
+.bases-inventory-slot-cell.empty { background: #1b1610; border-style: dashed; }
+.bases-inventory-slot-cell.empty:hover:not(:disabled) { border-color: var(--accent); background: #241d14; }
+/* Disabled whenever the map is running, the group is not storage, or the box
+   is full -- the same three gates the header's Add Item button reads. */
+.bases-inventory-slot-cell.empty:disabled { cursor: not-allowed; opacity: .45; }
+/* Decorative, matching the game's own empty slot. Pseudo-elements rather than
+   markup because the cell is now a real button carrying its own aria-label --
+   the bars must not add a second thing for a screen reader to announce.
    Drawn as two bars rather than typed as a "+" glyph. A glyph is centred by
    its line box, not by its ink, and the plus in this font sits above that
    centre -- it read as noticeably high in the slot. Two absolutely positioned
