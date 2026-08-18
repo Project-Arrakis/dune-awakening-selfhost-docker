@@ -38,7 +38,7 @@ describe("IamPolicyEditor (top-level container)", () => {
   it("loads the catalog and defaults to the Roles view, including the observer tier (regression guard for the pre-existing drift bug)", async () => {
     mockRoute((path) => {
       if (path === "/api/settings/iam/policies") return BASE_CATALOG;
-      if (path === "/api/auth/me") return { user: { tier: "owner" } };
+      if (path === "/api/auth/me") return { user: { tier: "owner" }, allowedActions: ["settings:write"] };
       return undefined;
     });
 
@@ -63,7 +63,7 @@ describe("IamPolicyEditor (top-level container)", () => {
   it("switches to the Policies view and shows the empty-state hint when no named policies exist", async () => {
     mockRoute((path) => {
       if (path === "/api/settings/iam/policies") return BASE_CATALOG;
-      if (path === "/api/auth/me") return { user: { tier: "owner" } };
+      if (path === "/api/auth/me") return { user: { tier: "owner" }, allowedActions: ["settings:write"] };
       return undefined;
     });
     render(<IamPolicyEditor />);
@@ -72,13 +72,50 @@ describe("IamPolicyEditor (top-level container)", () => {
     fireEvent.click(screen.getByText("Policies (0)"));
     expect(screen.getByText(/No named policies yet/)).toBeTruthy();
   });
+
+  // ---- L3-H1b regression (Layer 3 re-audit, Architect hat -- component-
+  // level gate mismatch) ----
+  //
+  // canMutate (formerly actorTierIsOwner) was previously hardcoded to
+  // `tier === "owner"`, which did not match the backend's actual
+  // settings:write-based capability model. A custom, non-owner tier
+  // deliberately granted settings:write (this feature's own documented
+  // intended use case) would have every mutating control hidden despite
+  // the backend accepting every one of its mutation calls.
+  it("REGRESSION (L3-H1b): a non-owner tier holding settings:write sees mutating controls (e.g. the 'New Role' input) -- this must be derived from allowedActions, not a hardcoded tier==owner check", async () => {
+    mockRoute((path) => {
+      if (path === "/api/settings/iam/policies") return BASE_CATALOG;
+      // Deliberately NOT "owner" -- a custom tier with settings:write.
+      if (path === "/api/auth/me") return { user: { tier: "iam-admin" }, allowedActions: ["settings:write"] };
+      return undefined;
+    });
+    render(<IamPolicyEditor />);
+    await waitFor(() => expect(screen.getByText("Policies (0)")).toBeTruthy());
+
+    // The "New Role" control is gated by canMutate in IamRolesView and
+    // must be visible for this settings:write-holding, non-owner tier.
+    expect(screen.getByPlaceholderText("new-role-name")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /New Role/ })).toBeInTheDocument();
+  });
+
+  it("REGRESSION (L3-H1b, negative case): a tier WITHOUT settings:write does not see mutating controls, even if this component somehow rendered for it", async () => {
+    mockRoute((path) => {
+      if (path === "/api/settings/iam/policies") return BASE_CATALOG;
+      if (path === "/api/auth/me") return { user: { tier: "read-only-viewer" }, allowedActions: ["settings:read"] };
+      return undefined;
+    });
+    render(<IamPolicyEditor />);
+    await waitFor(() => expect(screen.getByText("Policies (0)")).toBeTruthy());
+
+    expect(screen.queryByPlaceholderText("new-role-name")).not.toBeInTheDocument();
+  });
 });
 
 describe("IamRolesView: owner-lockout error surfacing (L1 audit finding L1-H7)", () => {
   it("surfaces the backend's real rejection message verbatim, not a generic failure string", async () => {
     mockRoute((path, options) => {
       if (path === "/api/settings/iam/policies") return BASE_CATALOG;
-      if (path === "/api/auth/me") return { user: { tier: "owner" } };
+      if (path === "/api/auth/me") return { user: { tier: "owner" }, allowedActions: ["settings:write"] };
       if (path === "/api/settings/iam/tiers/owner/inline" && options?.method === "PUT") {
         return { ok: false, error: "This change would remove the owner tier's settings:write access, including through its attached policies. Rejected to prevent lockout." };
       }
@@ -112,7 +149,7 @@ describe("IamPoliciesView: delete-while-attached error surfacing (L1 audit findi
     };
     mockRoute((path, options) => {
       if (path === "/api/settings/iam/policies") return catalogWithPolicy;
-      if (path === "/api/auth/me") return { user: { tier: "owner" } };
+      if (path === "/api/auth/me") return { user: { tier: "owner" }, allowedActions: ["settings:write"] };
       if (path === "/api/settings/iam/policies/pol-1") {
         if (options?.method === "DELETE") {
           return { ok: false, error: "Cannot delete this policy -- it is attached to: moderator, player. Detach it from every tier first." };
@@ -155,7 +192,7 @@ describe("IamPoliciesView: delete-confirmation state is scoped to the selected p
     };
     mockRoute((path) => {
       if (path === "/api/settings/iam/policies") return catalogWithTwoPolicies;
-      if (path === "/api/auth/me") return { user: { tier: "owner" } };
+      if (path === "/api/auth/me") return { user: { tier: "owner" }, allowedActions: ["settings:write"] };
       if (path === "/api/settings/iam/policies/pol-a") {
         return { policyId: "pol-a", name: "policy-a", managed: false, defaultVersionId: "v1", versions: { v1: { statements: [], createdAt: "2026-01-01T00:00:00.000Z", createdBy: "owner" } }, attachedTo: [] };
       }
@@ -199,7 +236,7 @@ describe("IamPoliciesView: delete-confirmation state is scoped to the selected p
     };
     mockRoute((path) => {
       if (path === "/api/settings/iam/policies") return catalogWithTwoPolicies;
-      if (path === "/api/auth/me") return { user: { tier: "owner" } };
+      if (path === "/api/auth/me") return { user: { tier: "owner" }, allowedActions: ["settings:write"] };
       if (path === "/api/settings/iam/policies/pol-a") {
         return { policyId: "pol-a", name: "policy-a", managed: false, defaultVersionId: "v1", versions: { v1: { statements: [], createdAt: "2026-01-01T00:00:00.000Z", createdBy: "owner" } }, attachedTo: [] };
       }
@@ -240,7 +277,7 @@ describe("IamPoliciesView: version cap proactive disclosure (L1 audit finding L1
     };
     mockRoute((path) => {
       if (path === "/api/settings/iam/policies") return catalogWithPolicy;
-      if (path === "/api/auth/me") return { user: { tier: "owner" } };
+      if (path === "/api/auth/me") return { user: { tier: "owner" }, allowedActions: ["settings:write"] };
       if (path === "/api/settings/iam/policies/pol-1") {
         return {
           policyId: "pol-1", name: "capped-policy", managed: false, defaultVersionId: "v3",
@@ -269,7 +306,7 @@ describe("IamRolesView: Policy Simulator does not show stale results after switc
   it("clears the previous tier's Test results when switching to a different tier while remaining on the Test tab", async () => {
     mockRoute((path, options) => {
       if (path === "/api/settings/iam/policies") return BASE_CATALOG;
-      if (path === "/api/auth/me") return { user: { tier: "owner" } };
+      if (path === "/api/auth/me") return { user: { tier: "owner" }, allowedActions: ["settings:write"] };
       if (path === "/api/settings/iam/policy/test" && options?.method === "POST") {
         const body = JSON.parse(options.body as string);
         // Distinct, easily-distinguishable results per tier so a stale
@@ -294,6 +331,70 @@ describe("IamRolesView: Policy Simulator does not show stale results after switc
     // The stale "1 allowed" summary from Admin's run must be gone; the
     // fresh, unrun state ("Run test" button, no results table) must be
     // shown instead, proving the component instance was reset, not reused.
+    expect(screen.queryByText("1 allowed")).toBeNull();
+    expect(screen.getByText("Run test")).toBeTruthy();
+  });
+});
+
+// ---- IamPoliciesView half of the L3-H6 fix (Layer 3 re-audit, QA hat --
+// this half had the identical key={selectedPolicyId} fix already applied
+// in the source, but ZERO test coverage -- only IamRolesView's half
+// (key={selectedTier}) was tested, above. Mirrors that exact test
+// structure/pattern for the Policies view's own selection axis
+// (selectedPolicyId, not selectedTier), closing the coverage gap. ----
+describe("IamPoliciesView: Policy Simulator does not show stale results after switching policies (Layer 3 re-audit finding, L3-H6 -- previously untested half)", () => {
+  it("clears the previous policy's Test results when switching to a different policy while remaining on the Test tab", async () => {
+    const catalogWithTwoPolicies = {
+      ...BASE_CATALOG,
+      policies: {
+        "pol-a": { name: "policy-a", managed: false, defaultVersionId: "v1", statements: [{ Effect: "Allow", Action: "server:restart" }], versionCount: 1, attachedTo: [] },
+        "pol-b": { name: "policy-b", managed: false, defaultVersionId: "v1", statements: [], versionCount: 1, attachedTo: [] }
+      }
+    };
+    mockRoute((path, options) => {
+      if (path === "/api/settings/iam/policies") return catalogWithTwoPolicies;
+      if (path === "/api/auth/me") return { user: { tier: "owner" }, allowedActions: ["settings:write"] };
+      if (path === "/api/settings/iam/policies/pol-a") {
+        return { policyId: "pol-a", name: "policy-a", managed: false, defaultVersionId: "v1", versions: { v1: { statements: [{ Effect: "Allow", Action: "server:restart" }], createdAt: "2026-01-01T00:00:00.000Z", createdBy: "owner" } }, attachedTo: [] };
+      }
+      if (path === "/api/settings/iam/policies/pol-b") {
+        return { policyId: "pol-b", name: "policy-b", managed: false, defaultVersionId: "v1", versions: { v1: { statements: [], createdAt: "2026-01-01T00:00:00.000Z", createdBy: "owner" } }, attachedTo: [] };
+      }
+      if (path === "/api/settings/iam/policy/test" && options?.method === "POST") {
+        const body = JSON.parse(options.body as string);
+        // Draft mode sends the current policy's own draft statements --
+        // policy-a's draft grants server:restart, policy-b's is empty, so
+        // a stale render carrying policy-a's result into policy-b's view
+        // is unambiguous.
+        const grantsRestart = Array.isArray(body.statements) && body.statements.some((s: { Action?: string | string[] }) => s.Action === "server:restart" || (Array.isArray(s.Action) && s.Action.includes("server:restart")));
+        return { results: { "server:restart": grantsRestart } };
+      }
+      return undefined;
+    });
+
+    render(<IamPolicyEditor />);
+    await waitFor(() => expect(screen.getByText("Policies (2)")).toBeTruthy());
+    fireEvent.click(screen.getByText("Policies (2)"));
+
+    await waitFor(() => expect(screen.getByText("policy-a")).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: /policy-a/ }));
+    await waitFor(() => expect(screen.getByText("Test")).toBeTruthy());
+    fireEvent.click(screen.getByText("Test"));
+    fireEvent.click(screen.getByText("Run test"));
+    await waitFor(() => expect(screen.getByText("1 allowed")).toBeTruthy());
+
+    // Switch to the OTHER policy WITHOUT leaving the Test tab -- per the
+    // L3-H6 finding, the previous policy's result table must not still
+    // be shown for the newly-selected policy. Selection change clears
+    // `detail` synchronously and re-fetches (a separate, already-fixed
+    // L2-H2 behavior) -- wait for policy-b's detail to finish loading
+    // before asserting on the Test tab's contents.
+    fireEvent.click(screen.getByRole("button", { name: /policy-b/ }));
+    await waitFor(() => expect(screen.queryByText("Loading policy...")).toBeNull());
+
+    // The stale "1 allowed" summary from policy-a's run must be gone; the
+    // fresh, unrun state must be shown instead, proving the component
+    // instance was reset via key={selectedPolicyId}, not reused.
     expect(screen.queryByText("1 allowed")).toBeNull();
     expect(screen.getByText("Run test")).toBeTruthy();
   });

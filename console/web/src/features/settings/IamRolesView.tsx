@@ -17,12 +17,12 @@ import { IamPolicySimulator } from "./IamPolicySimulator";
 type Props = {
   catalog: IamCatalog;
   onCatalogChange: () => Promise<void>;
-  actorTierIsOwner: boolean;
+  canMutate: boolean;
 };
 
 type EditorTab = "builder" | "json" | "attached" | "test";
 
-export function IamRolesView({ catalog, onCatalogChange, actorTierIsOwner }: Props) {
+export function IamRolesView({ catalog, onCatalogChange, canMutate }: Props) {
   const tierNames = useMemo(() => Object.keys(catalog.tiers).sort(), [catalog.tiers]);
   const [selectedTier, setSelectedTier] = useState<string>(tierNames.includes("admin") ? "admin" : tierNames[0] || "");
   const [editorTab, setEditorTab] = useState<EditorTab>("builder");
@@ -152,7 +152,7 @@ export function IamRolesView({ catalog, onCatalogChange, actorTierIsOwner }: Pro
         ))}
       </div>
 
-      {actorTierIsOwner && (
+      {canMutate && (
         <div className="iam-new-role-row">
           <input
             type="text"

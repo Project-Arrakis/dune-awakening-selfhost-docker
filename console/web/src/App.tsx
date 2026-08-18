@@ -277,13 +277,27 @@ function formatResultMessage(value: unknown) {
   return formatUiSentence(value, false);
 }
 
-const navGroups: { title: string; items: { tab: Tab; icon: React.ReactNode; requiredAction?: string }[] }[] = [
+// Exported so tests can assert against the real, live nav configuration
+// directly (e.g. confirming the "Access Control" item's requiredAction)
+// rather than duplicating a copy that could silently drift from it.
+export const navGroups: { title: string; items: { tab: Tab; icon: React.ReactNode; requiredAction?: string }[] }[] = [
   {
     title: "Server Operations",
     items: [
       { tab: "Home", icon: <Home size={18} />, requiredAction: Action.SERVER_READ },
       { tab: "Server Control", icon: <Server size={18} />, requiredAction: Action.SERVER_CONTROL },
-      { tab: "Access Control", icon: <Shield size={18} />, requiredAction: Action.SERVER_CONTROL },
+      // SECURITY (Layer 3 re-audit, UI hat -- HIGH, L3-H1a): this was
+      // previously gated on Action.SERVER_CONTROL ("server:*"), an exact
+      // copy-paste artifact from the "Server Control" row directly above.
+      // Every real IAM route this tab manages (console/api/src/actions.js's
+      // ROUTE_CAPABILITIES/EXTRA_ROUTE_CAPABILITIES) requires settings:read
+      // or settings:write, never server:*. This mismatch was a total
+      // navigation dead-end for a deliberately-configured settings:write-only
+      // tier (this design's own documented intended use case): the backend
+      // would accept every one of that tier's IAM mutation calls, but the UI
+      // never even rendered the tab to reach them. Fixed to gate on the
+      // action this tab's own routes actually require.
+      { tab: "Access Control", icon: <Shield size={18} />, requiredAction: Action.SETTINGS_WRITE },
       { tab: "Backups", icon: <Archive size={18} />, requiredAction: Action.BACKUPS_READ },
       { tab: "Database", icon: <Database size={18} />, requiredAction: Action.DATABASE_READ },
       { tab: "Updates", icon: <RefreshCw size={18} />, requiredAction: Action.UPDATES_READ },
@@ -322,6 +336,33 @@ function publicServerListingUrl(serverId: string) {
 }
 const REDBLINK_DISCORD_URL = "https://discord.gg/duneawakeningdocker";
 const REDBLINK_KOFI_URL = "https://ko-fi.com/redblink";
+
+// Pure, exported nav-item visibility predicate (extracted from the inline
+// `.filter()` below, matching this codebase's existing precedent of
+// extracting nav-adjacent logic for isolated testing -- see
+// SidebarNavIndicators directly below). Regression coverage for L3-H1a
+// (Layer 3 re-audit, UI hat -- HIGH): the "Access Control" nav item was
+// previously gated on Action.SERVER_CONTROL ("server:*"), a copy-paste
+// artifact from the "Server Control" row above it, producing a total
+// navigation dead-end for a deliberately-configured settings:write-only
+// tier -- the backend would accept every one of that tier's IAM mutation
+// calls, but this predicate never returned true for the tab that reaches
+// them. Exported specifically so a future change to this logic (or a
+// future nav item's requiredAction) can be tested directly against known
+// allowedActions arrays without needing to mount the full App component
+// and its many upstream API dependencies.
+export function isNavItemVisible(item: { requiredAction?: string }, me: unknown, allowedActions: string[]): boolean {
+  if (!me) return false;
+  if (!item.requiredAction) return true;
+  if (allowedActions.includes(item.requiredAction)) return true;
+  // Wildcard patterns like "server:*" must be checked against
+  // individual allowed actions (e.g. "server:read", "server:start").
+  if (item.requiredAction.includes("*")) {
+    const prefix = item.requiredAction.replace(/\*.*$/, "");
+    return allowedActions.some((a) => a.startsWith(prefix));
+  }
+  return false;
+}
 
 export function SidebarNavIndicators({ item, onlinePlayerCount, addonUpdatesAvailable }: { item: Tab; onlinePlayerCount: number; addonUpdatesAvailable: boolean }) {
   const visibleOnlinePlayerCount = Math.max(0, Math.floor(Number(onlinePlayerCount) || 0));
@@ -796,18 +837,7 @@ export function App() {
           {navGroups.map((group) => (
             <section className="sidebar-nav-group" key={group.title} aria-label={group.title}>
               <p className="sidebar-nav-heading">{group.title}</p>
-              {group.items.filter((item) => {
-                if (!me) return false;
-                if (!item.requiredAction) return true;
-                if (allowedActions.includes(item.requiredAction)) return true;
-                // Wildcard patterns like "server:*" must be checked against
-                // individual allowed actions (e.g. "server:read", "server:start").
-                if (item.requiredAction.includes("*")) {
-                  const prefix = item.requiredAction.replace(/\*.*$/, "");
-                  return allowedActions.some((a) => a.startsWith(prefix));
-                }
-                return false;
-              }).map((item) => (
+              {group.items.filter((item) => isNavItemVisible(item, me, allowedActions)).map((item) => (
                 <Fragment key={item.tab}>
                   <button className={tab === item.tab && (!selectedPinnedAddonId || item.tab !== "Addons") ? "active" : ""} onClick={() => {
                     setRedeploySetupOpen(false);

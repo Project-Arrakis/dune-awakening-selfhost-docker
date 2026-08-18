@@ -1,0 +1,103 @@
+{
+  "owner": {
+    "tier": "owner",
+    "statements": [
+      { "Effect": "Allow", "Action": "*" }
+    ]
+  },
+  "admin": {
+    "tier": "admin",
+    "statements": [
+      { "Effect": "Allow", "Action": [
+        "setup:*",
+        "server:*",
+        "logs:*",
+        "backups:*",
+        "database:read",
+        "database:query",
+        "database:export",
+        "updates:*",
+        "players:*",
+        "guilds:*",
+        "bases:*",
+        "storage:*",
+        "blueprints:*",
+        "vehicles:*",
+        "exchange:*",
+        "maps:*",
+        "sietches:*",
+        "deepdesert:*",
+        "admin:*",
+        "landsraad:*",
+        "addons:*",
+        "carepackage:*"
+      ]},
+      { "Effect": "Deny", "Action": [
+        "settings:*",
+        "database:write-config",
+        "database:mutate"
+      ]}
+    ]
+  },
+  "moderator": {
+    "tier": "moderator",
+    "statements": [
+      { "Effect": "Allow", "Action": [
+        "server:read",
+        "maps:read",
+        "sietches:read",
+        "deepdesert:read",
+        "players:read",
+        "players:kick-all",
+        "guilds:read",
+        "bases:read",
+        "storage:read",
+        "blueprints:read",
+        "vehicles:read",
+        "exchange:read",
+        "logs:*",
+        "landsraad:read",
+        "admin:broadcast",
+        "admin:map-chat"
+      ]}
+    ]
+  },
+  "player": {
+    "tier": "player",
+    "statements": [
+      { "Effect": "Allow", "Action": [
+        "server:read",
+        "maps:read",
+        "sietches:read",
+        "deepdesert:read",
+        "players:read",
+        "guilds:read",
+        "bases:read",
+        "storage:read",
+        "blueprints:read",
+        "vehicles:read",
+        "exchange:read",
+        "landsraad:read"
+      ]}
+    ]
+  },
+  "observer": {
+    "tier": "observer",
+    "statements": [
+      { "Effect": "Allow", "Action": [
+        "server:read",
+        "maps:read",
+        "sietches:read",
+        "deepdesert:read",
+        "players:read",
+        "guilds:read",
+        "bases:read",
+        "storage:read",
+        "blueprints:read",
+        "vehicles:read",
+        "exchange:read",
+        "landsraad:read"
+      ]}
+    ]
+  }
+}

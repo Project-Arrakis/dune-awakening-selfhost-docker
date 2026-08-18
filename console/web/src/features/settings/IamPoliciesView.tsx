@@ -23,12 +23,12 @@ import { IamPolicySimulator } from "./IamPolicySimulator";
 type Props = {
   catalog: IamCatalog;
   onCatalogChange: () => Promise<void>;
-  actorTierIsOwner: boolean;
+  canMutate: boolean;
 };
 
 type EditorTab = "builder" | "json" | "versions" | "test";
 
-export function IamPoliciesView({ catalog, onCatalogChange, actorTierIsOwner }: Props) {
+export function IamPoliciesView({ catalog, onCatalogChange, canMutate }: Props) {
   const policyIds = Object.keys(catalog.policies).sort((a, b) => catalog.policies[a].name.localeCompare(catalog.policies[b].name));
   const [selectedPolicyId, setSelectedPolicyId] = useState<string | null>(policyIds[0] || null);
   const [detail, setDetail] = useState<PolicyDetail | null>(null);
@@ -199,7 +199,7 @@ export function IamPoliciesView({ catalog, onCatalogChange, actorTierIsOwner }: 
           <span>Named Policies</span>
           <span className="iam-ns-count">{policyIds.length}/50</span>
         </div>
-        {actorTierIsOwner && (
+        {canMutate && (
           <div className="iam-policy-create-row">
             <input
               type="text"
@@ -247,7 +247,7 @@ export function IamPoliciesView({ catalog, onCatalogChange, actorTierIsOwner }: 
           <>
             <div className="iam-policy-detail-header">
               <h4>{detail.name}</h4>
-              {actorTierIsOwner && (
+              {canMutate && (
                 confirmingDeletePolicy ? (
                   <span className="iam-confirm-inline">
                     {isAttached
@@ -307,7 +307,7 @@ export function IamPoliciesView({ catalog, onCatalogChange, actorTierIsOwner }: 
                         </div>
                         <div className="iam-version-actions">
                           {!isDefault && <button onClick={() => handleSetDefault(versionId)}>Set as default</button>}
-                          {!isDefault && actorTierIsOwner && (
+                          {!isDefault && canMutate && (
                             confirmingDeleteVersion === versionId ? (
                               <span className="iam-confirm-inline">
                                 <button className="danger" onClick={() => handleDeleteVersion(versionId)}>Confirm</button>

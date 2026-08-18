@@ -30,22 +30,36 @@ export function IamPolicyEditor() {
   const [catalog, setCatalog] = useState<IamCatalog | null>(null);
   const [loadError, setLoadError] = useState(false);
   const [view, setView] = useState<TopView>("roles");
-  const [actorTierIsOwner, setActorTierIsOwner] = useState(true);
+  // SECURITY/UI fix (Layer 3 re-audit, L3-H1b): previously hardcoded to
+  // `tier === "owner"`, which did not match the backend's actual
+  // capability model -- every mutating IAM route is gated on
+  // settings:write (see console/api/src/actions.js's
+  // ROUTE_CAPABILITIES/EXTRA_ROUTE_CAPABILITIES), not a specific tier
+  // name. An operator who deliberately grants settings:write to a custom
+  // tier (this design's own documented intended use case) got a session
+  // the backend would accept every mutating call from, but the UI hid
+  // every mutating control anyway, with no explanation. Fixed to derive
+  // this from the same `allowedActions` array `/api/auth/me` already
+  // returns (already used for nav-gating in App.tsx), rather than a
+  // hardcoded identity check -- this remains a UI-only affordance hint,
+  // not a security boundary the frontend enforces; the backend
+  // re-checks settings:write (and the privilege-ceiling invariant) on
+  // every write regardless of what this renders.
+  const [canMutate, setCanMutate] = useState(true);
 
   const loadCatalog = useCallback(async () => {
     const [catalogData, meData] = await Promise.all([
       api<IamCatalog>("/api/settings/iam/policies"),
-      api<{ user: { tier: string } }>("/api/auth/me").catch(() => ({ user: { tier: "owner" } }))
+      api<{ allowedActions?: string[] }>("/api/auth/me").catch(() => ({ allowedActions: ["settings:write"] }))
     ]);
     setCatalog(catalogData);
-    // Every mutating IAM route is gated on the settings:write action, not
-    // a hardcoded "owner" identity check (see policy.js's own
-    // documentation of this) -- but the default policy grants
-    // settings:write only to "owner", so this is a reasonable UI-only
-    // affordance hint, not a security boundary the frontend enforces
-    // (the backend re-checks on every write regardless of what this
-    // renders).
-    setActorTierIsOwner(meData.user.tier === "owner");
+    // resolveAllowedActions() (server-side) only ever emits concrete,
+    // real action strings (it enumerates allKnownActions() and calls
+    // evaluate() against each -- evaluate() itself expands settings:*/*
+    // wildcards internally), never a bare "*" -- so a literal
+    // "settings:write" membership check is sufficient and correct.
+    const allowedActions = meData.allowedActions || [];
+    setCanMutate(allowedActions.includes("settings:write"));
   }, []);
 
   useEffect(() => {
@@ -81,10 +95,10 @@ export function IamPolicyEditor() {
       </div>
 
       {view === "roles" && (
-        <IamRolesView catalog={catalog} onCatalogChange={handleCatalogChange} actorTierIsOwner={actorTierIsOwner} />
+        <IamRolesView catalog={catalog} onCatalogChange={handleCatalogChange} canMutate={canMutate} />
       )}
       {view === "policies" && (
-        <IamPoliciesView catalog={catalog} onCatalogChange={handleCatalogChange} actorTierIsOwner={actorTierIsOwner} />
+        <IamPoliciesView catalog={catalog} onCatalogChange={handleCatalogChange} canMutate={canMutate} />
       )}
     </section>
   );

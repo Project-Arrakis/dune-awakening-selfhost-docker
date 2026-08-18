@@ -72,15 +72,31 @@ Keep a Changelog style, grouped by upstream base version, newest first.
   third-party tier's permissions being silently *revoked* or otherwise
   tampered with) -- fixed with a symmetric check covering both
   directions, plus closing a related gap where `detachPolicy()` had no
-  privilege-ceiling wiring at all. **This feature is not yet considered
-  fully resolved** -- see §11 of the design doc for the current,
-  corrected findings register, including at least one still-open
-  CRITICAL (a pre-existing unbounded-regex construction now made
-  load-bearing for availability by this feature) and several still-open
-  HIGH findings. Do not treat this CHANGELOG entry as a claim that the
-  feature is complete; the design doc's own findings register is the
-  single source of truth for current status, per this entry's own
-  stated convention above.
+  privilege-ceiling wiring at all, plus a pre-existing unbounded-regex
+  construction (`matchAction()`) that had become load-bearing for
+  availability -- replaced with a backtracking-free glob matcher. A
+  third pass fixed a real UI navigation dead-end (a `settings:write`-only
+  tier could never reach the Access Control tab at all, due to a
+  copy-paste artifact gating it on `server:*` instead), a matching
+  component-level gate mismatch, implemented the 6 previously-missing
+  operator-scenario tests (clean install, upgrade, 3 broken-upgrade
+  sub-scenarios, downgrade round-trip) via the real file-based
+  `loadPolicies()` entry point, added a genuine, honestly-provenanced
+  Requirement 26 migration fixture (after independently discovering the
+  original fixture-gap finding's own premise -- that real, operator-
+  customized production data existed on a specific live install -- was
+  itself factually incorrect), and closed a missing test-coverage gap on
+  the Policies view's half of an earlier stale-results UI fix. **This
+  feature is not yet considered fully resolved for exactly one reason,
+  by explicit operator scope decision, not an oversight**: no real
+  end-to-end deployment/restart test has been performed against a live
+  console install yet (blocked on unrelated pre-existing prerequisites --
+  a missing backup and an unexplained container restart on the specific
+  install slated for that test). See §11 of the design doc for the
+  current, corrected findings register. Do not treat this CHANGELOG
+  entry as a claim that live E2E validation has occurred; the design
+  doc's own findings register is the single source of truth for current
+  status, per this entry's own stated convention above.
 
 - **Downgrade behavior (Strict Requirement 0):** an operator who
   installs this feature, creates custom tiers/named policies, and then
