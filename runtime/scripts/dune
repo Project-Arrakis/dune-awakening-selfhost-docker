@@ -434,6 +434,11 @@ EOF
     runtime/scripts/db-manager.sh "$@"
     ;;
 
+  secrets)
+    shift || true
+    runtime/scripts/secrets-cli.sh "$@"
+    ;;
+
   config|server)
     shift || true
     runtime/scripts/config.sh "$@"
