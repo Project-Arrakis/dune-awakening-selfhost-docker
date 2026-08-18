@@ -29,9 +29,12 @@ test("catalog item list returns real item rows only", () => {
   assert.notEqual(rows[0].name, "source");
 });
 
-test("building patent tokens are isolated from ordinary items and report ownership safely", () => {
+test("building patent tokens are isolated while Developer Storage remains available to shared item selectors", () => {
   const root = fixtureRepo();
   assert.equal(listCatalogItems(root, { q: "lighting" }).length, 0);
+  const sharedDeveloperStorage = listCatalogItems(root, { q: "developer storage" });
+  assert.equal(sharedDeveloperStorage.length, 1);
+  assert.equal(sharedDeveloperStorage[0].itemId, "Developer_Storage_Container_Patent");
 
   const unlocks = listBuildingUnlockItems(root);
   assert.equal(unlocks.length, 2);
