@@ -91,34 +91,27 @@ _dune_secrets_stage2_names() {
 
 # _dune_secrets_stage2_state <name>
 #   Prints one of: not-migrated | migrated | broken
-#   "broken" means a migration signal (.enc file or marker) exists but
-#   is not currently readable -- distinct from "not-migrated" so
-#   status/verify/cleanup-legacy can each react differently. Uses -r
-#   (readable), matching the exact predicate the resolvers and the
-#   library's own dune_secrets_read_secret use internally -- see
-#   runtime-env.sh's _resolve_stage2_secret for why -e alone is wrong.
+#   "broken" means migration history exists but the encrypted payload
+#   cannot currently be used. Artifact existence is checked before
+#   backend configuration so losing environment variables after
+#   migration is reported as broken, never as an unconfigured legacy
+#   installation.
 _dune_secrets_stage2_state() {
   local name="$1"
-  local enc_path marker_path
+  local enc_path
+
+  enc_path="$(dune_secrets_encrypted_path "$name" 2>/dev/null || true)"
+  if dune_secrets_has_migration_artifacts "$name"; then
+    if dune_secrets_backend_configured && [ -r "$enc_path" ]; then
+      printf 'migrated\n'
+    else
+      printf 'broken\n'
+    fi
+    return 0
+  fi
 
   if ! dune_secrets_backend_configured; then
     printf 'backend-not-configured\n'
-    return 0
-  fi
-
-  enc_path="$(dune_secrets_encrypted_path "$name" 2>/dev/null || true)"
-  marker_path="$(dune_secrets_migration_marker_path "$name" 2>/dev/null || true)"
-
-  if [ -n "$enc_path" ] && [ -r "$enc_path" ]; then
-    printf 'migrated\n'
-    return 0
-  fi
-  if [ -n "$marker_path" ] && [ -r "$marker_path" ]; then
-    printf 'migrated\n'
-    return 0
-  fi
-  if { [ -n "$enc_path" ] && [ -e "$enc_path" ]; } || { [ -n "$marker_path" ] && [ -e "$marker_path" ]; }; then
-    printf 'broken\n'
     return 0
   fi
 
@@ -142,7 +135,7 @@ cmd_status() {
     case "$state" in
       backend-not-configured)
         echo "$name: backend not configured"
-        echo "  Next: generate an age identity + KEK, then set DUNE_KEK_FILE and DUNE_AGE_IDENTITY_FILE (see runtime/scripts/lib/secrets.sh's header comment for the exact steps and file format)"
+        echo "  Next: follow docs/security/age-secrets.md to create an age identity + KEK and configure both paths"
         ;;
       not-migrated)
         echo "$name: not migrated (legacy plaintext)"
