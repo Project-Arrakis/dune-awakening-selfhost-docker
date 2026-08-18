@@ -19,15 +19,57 @@ test("catalog has an entry for every live route, and no entry for a non-live rou
     "catalog route set must exactly match DISCORD_LIVE_ADAPTER_ROUTES -- this is the drift-detection assertion issue #337 exists to add");
 });
 
-test("catalog throws if a live route is missing metadata (simulated drift)", async () => {
-  // Import a fresh copy via a cache-busting query string so mutating the
-  // module's live-route list doesn't affect other tests, then monkey-patch
-  // by re-deriving the assertion logic directly rather than fighting ESM's
-  // frozen exports -- verifies the *shape* of the guarantee (throws on
-  // missing coverage), independent of the real, currently-complete data.
-  const { buildCommandCatalog: build } = await import("../src/integrations/discord/commandCatalog.js");
-  // Sanity: with real, current data, it must NOT throw.
-  assert.doesNotThrow(() => build());
+test("catalog throws when a live route is genuinely missing metadata (real simulated drift)", () => {
+  // Genuinely reproduces the drift scenario: a route that IS in the live
+  // list but has NO corresponding metadata entry. buildCommandCatalog()'s
+  // optional liveRoutes/metadata parameters exist specifically so this test
+  // can inject a deliberately mismatched pair without touching the real,
+  // frozen production data -- see buildCommandCatalog()'s own comment.
+  const fakeLiveRoutes = [DISCORD_ADAPTER_ROUTES.HEALTH, "/api/integrations/discord/not-a-real-route"];
+  const fakeMetadata = {
+    [DISCORD_ADAPTER_ROUTES.HEALTH]: { group: "server", subcommand: "health", description: "x", capability: null, params: [] }
+    // deliberately no entry for "/api/integrations/discord/not-a-real-route"
+  };
+  assert.throws(
+    () => buildCommandCatalog(fakeLiveRoutes, fakeMetadata),
+    /1 live route\(s\) missing catalog metadata: \/api\/integrations\/discord\/not-a-real-route/
+  );
+});
+
+test("catalog throws when a metadata entry references a route no longer live (real simulated staleness)", () => {
+  // The inverse drift scenario: a route was retired from the live list but
+  // its metadata entry was left behind. Also genuinely reproduced, not
+  // just asserted by reading the code.
+  const fakeLiveRoutes = [DISCORD_ADAPTER_ROUTES.HEALTH];
+  const fakeMetadata = {
+    [DISCORD_ADAPTER_ROUTES.HEALTH]: { group: "server", subcommand: "health", description: "x", capability: null, params: [] },
+    "/api/integrations/discord/retired-route": { group: "server", subcommand: "retired", description: "x", capability: null, params: [] }
+  };
+  assert.throws(
+    () => buildCommandCatalog(fakeLiveRoutes, fakeMetadata),
+    /1 catalog entry\(ies\) reference route\(s\) no longer in DISCORD_LIVE_ADAPTER_ROUTES: \/api\/integrations\/discord\/retired-route/
+  );
+});
+
+test("catalog does not throw with the real, current, consistent production data", () => {
+  assert.doesNotThrow(() => buildCommandCatalog());
+});
+
+test("production catalog is memoized -- repeated zero-argument calls return the identical cached object", () => {
+  const first = buildCommandCatalog();
+  const second = buildCommandCatalog();
+  assert.strictEqual(first, second, "two zero-argument calls should return the same cached object, not recompute");
+});
+
+test("injected test data is never cached across calls, even with the same shape as production", () => {
+  const fakeLiveRoutes = [DISCORD_ADAPTER_ROUTES.HEALTH];
+  const fakeMetadata = { [DISCORD_ADAPTER_ROUTES.HEALTH]: { group: "server", subcommand: "health", description: "x", capability: null, params: [] } };
+  const first = buildCommandCatalog(fakeLiveRoutes, fakeMetadata);
+  const second = buildCommandCatalog(fakeLiveRoutes, fakeMetadata);
+  assert.notStrictEqual(first, second, "injected-data calls must recompute every time, never share the production cache or each other's result");
+  // Also confirms the production cache itself is unaffected by injected calls.
+  const prod = buildCommandCatalog();
+  assert.ok(prod.groups.length > 1, "production catalog must still have its real, full group set, not the 1-route fake data");
 });
 
 test("every catalog subcommand has a minTier drawn from the real DISCORD_ROLE_TIERS list, or null for capability: null routes", () => {
