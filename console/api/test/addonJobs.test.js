@@ -919,7 +919,7 @@ test("idle buyback with no player listings skips classify but still logs an empt
   }
 });
 
-test("a write sweep persists purchased and leftover listings from buyback_log", async () => {
+test("a write sweep persists purchases plus post-commit reasons for every remaining listing", async () => {
   const repoRoot = makeRepoRoot();
   const config = { repoRoot, mockMode: false };
   try {
@@ -927,7 +927,12 @@ test("a write sweep persists purchased and leftover listings from buyback_log", 
       { order_id: "21", template_id: "WaterBottle", result_code: 0, result_label: "success", item_price: "100", stack_size: "10", max_unit_price: "600", quality_level: 0, detail: "bought stack 10 at 100/unit (cap 600)" },
       { order_id: "22", template_id: "Sword", result_code: 0, result_label: "eligible", item_price: "200", stack_size: "1", max_unit_price: "1200", quality_level: 0, detail: "ask 200/unit <= cap 1200" }
     ]);
-    const db = fakeDb({ eligible: "2", sweepRow: { purchased: "1", total_units: "10", total_solari: "1000", buyback_log: buybackLog } });
+    const classifyRows = [
+      { order_id: "22", template_id: "Sword", quality_level: "0", item_price: "200", stack_size: "1", max_unit_price: "1200", result_code: "0", result_label: "eligible", detail: "ask 200/unit <= cap 1200" },
+      { order_id: "23", template_id: "WaterBottle", quality_level: "0", item_price: "900", stack_size: "1", max_unit_price: "600", result_code: "1", result_label: "price too high", detail: "ask 900 > cap 600" },
+      { order_id: "24", template_id: "UnknownThing", quality_level: "0", item_price: "50", stack_size: "1", max_unit_price: "0", result_code: "2", result_label: "no reference price", detail: "template not in seed plan" }
+    ];
+    const db = fakeDb({ eligible: "2", classifyRows, sweepRow: { purchased: "1", total_units: "10", total_solari: "1000", buyback_log: buybackLog } });
     const { scheduler } = makeScheduler(config, { db });
     saveBuybackSchedule(config, { enabled: false, exchangeId: "42", maxBuys: 1 });
     const result = await scheduler.runNow({ trigger: "console" });
@@ -936,8 +941,11 @@ test("a write sweep persists purchased and leftover listings from buyback_log", 
     assert.equal(log.batches[0].source, "Buyback sweep");
     assert.equal(log.batches[0].entries[0].resultHex, "0x0");
     assert.equal(log.batches[0].entries[0].resultLabel, "success");
-    assert.equal(log.batches[0].entries[1].resultHex, "0x5");
     assert.equal(log.batches[0].entries[0].displayName, "Water Bottle");
+    assert.deepEqual(log.batches[0].entries.map((entry) => entry.orderId), ["21", "23", "24", "22"]);
+    assert.deepEqual(log.batches[0].entries.map((entry) => entry.resultHex), ["0x0", "0x1", "0x2", "0x5"]);
+    assert.equal(db.classifies.length, 1, "completed sweeps classify the remaining board after commit");
+    assert.match(log.batches[0].note, /post-sweep read-only classification/);
   } finally {
     rmSync(repoRoot, { recursive: true, force: true });
   }
