@@ -103,6 +103,24 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
   const [amount, setAmount] = useState("");
   const slotsRequestIdRef = useRef(0);
 
+  // Give/Fill/multi-delete are Storage-group only, same as the existing
+  // single-item delete -- deliberately reusing deleteAllowed's "storage
+  // group + map safety verified" gate rather than a second, looser check,
+  // so this new UI can never enable an action the delete strip above would
+  // refuse. giveAllowed intentionally does NOT require deleteSafety.safe:
+  // Give/Fill are pure inserts (see server.js's baseContainerGiveItemRoute
+  // comment), so they are gated on the storage-group check alone.
+  const giveFillAllowed = slots?.group === "storage";
+  const [checkedItemIds, setCheckedItemIds] = useState<Set<string>>(new Set());
+  const [bulkDeleteRunning, setBulkDeleteRunning] = useState(false);
+  const [addItemName, setAddItemName] = useState("");
+  const [addQuantityText, setAddQuantityText] = useState("1");
+  const [addRunning, setAddRunning] = useState(false);
+  const [addBatch, setAddBatch] = useState<{ itemName: string; quantity: number }[]>([]);
+  const [fillItemName, setFillItemName] = useState("");
+  const [fillQuantityText, setFillQuantityText] = useState("100");
+  const [fillRunning, setFillRunning] = useState(false);
+
   // Only the newest request may write state. StrictMode double-invokes this
   // effect, so two requests really are open at once here, and whichever settles
   // last wins -- a first attempt that fails after a second one succeeded would
@@ -253,11 +271,18 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
       setDeleteError("");
       setSelectedSlotId("");
       setAmount("");
+      setCheckedItemIds(new Set());
+      setAddItemName("");
+      setAddQuantityText("1");
+      setAddBatch([]);
+      setFillItemName("");
+      setFillQuantityText("100");
       return;
     }
     setSelectedSlotId("");
     setAmount("");
     setDeleteError("");
+    setCheckedItemIds(new Set());
     void loadSlots(contentsFor);
   }, [contentsFor, loadSlots]);
 
@@ -341,6 +366,196 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
       onError(text);
     } finally {
       setDeletingItemId("");
+    }
+  }
+
+  function toggleChecked(itemId: string) {
+    setCheckedItemIds((current) => {
+      const next = new Set(current);
+      if (next.has(itemId)) next.delete(itemId); else next.add(itemId);
+      return next;
+    });
+  }
+
+  async function deleteCheckedItems(containerName: string) {
+    if (!deleteAllowed || checkedItemIds.size === 0) return;
+    const ids = [...checkedItemIds];
+    const confirmed = await confirmAction(
+      `Delete ${ids.length} selected item${ids.length === 1 ? "" : "s"} from the container?`,
+      {
+        title: "Delete Selected Items",
+        confirmLabel: "Delete",
+        danger: true,
+        details: [
+          { label: "Base", value: baseName },
+          { label: "Container", value: containerName, tone: "accent" },
+          { label: "Items", value: `${ids.length} stack${ids.length === 1 ? "" : "s"}`, tone: "danger" }
+        ]
+      }
+    );
+    if (!confirmed) return;
+    setBulkDeleteRunning(true);
+    setDeleteNotice("");
+    setDeleteError("");
+    try {
+      const response = await basesApi.deleteContainerItems(baseId, contentsFor, ids, "DELETE ITEMS");
+      const result = response.result;
+      if (!response.supported || !result?.ok) {
+        throw new Error(response.error || response.reason || "The selected items could not be deleted.");
+      }
+      setDeleteNotice(result.message);
+      setCheckedItemIds(new Set());
+      await Promise.all([loadSlots(contentsFor), load()]);
+    } catch (error) {
+      const text = errorText(error);
+      setDeleteError(text);
+      onError(text);
+    } finally {
+      setBulkDeleteRunning(false);
+    }
+  }
+
+  async function deleteAllItems(containerName: string, itemCount: number) {
+    if (!deleteAllowed || itemCount === 0) return;
+    const confirmed = await confirmAction(
+      `Delete every item currently in this container?`,
+      {
+        title: "Delete All Items",
+        confirmLabel: "Delete All",
+        danger: true,
+        details: [
+          { label: "Base", value: baseName },
+          { label: "Container", value: containerName, tone: "accent" },
+          { label: "Items", value: `All ${itemCount.toLocaleString()} stack${itemCount === 1 ? "" : "s"}`, tone: "danger" }
+        ]
+      }
+    );
+    if (!confirmed) return;
+    setBulkDeleteRunning(true);
+    setDeleteNotice("");
+    setDeleteError("");
+    try {
+      const response = await basesApi.deleteAllContainerItems(baseId, contentsFor, "DELETE ALL ITEMS");
+      const result = response.result;
+      if (!response.supported || !result?.ok) {
+        throw new Error(response.error || response.reason || "The container could not be cleared.");
+      }
+      setDeleteNotice(result.message);
+      setCheckedItemIds(new Set());
+      await Promise.all([loadSlots(contentsFor), load()]);
+    } catch (error) {
+      const text = errorText(error);
+      setDeleteError(text);
+      onError(text);
+    } finally {
+      setBulkDeleteRunning(false);
+    }
+  }
+
+  function addQuantity() {
+    return Math.max(1, Math.min(1000000, Number(addQuantityText) || 1));
+  }
+
+  // Queues the currently-typed item into the batch rather than giving it
+  // immediately -- lets an operator add several distinct templates and
+  // confirm them all in one give-items call, matching giveMultipleItemsToStorage's
+  // "one transaction, all or nothing" batch semantics on the backend.
+  function queueAddItem() {
+    if (!addItemName.trim()) return;
+    setAddBatch((current) => [...current, { itemName: addItemName.trim(), quantity: addQuantity() }]);
+    setAddItemName("");
+    setAddQuantityText("1");
+  }
+
+  function removeQueuedItem(index: number) {
+    setAddBatch((current) => current.filter((_, i) => i !== index));
+  }
+
+  async function giveItems(containerName: string) {
+    if (!giveFillAllowed) return;
+    // A single typed-but-not-yet-queued item is folded in at confirm time --
+    // an operator should not have to click "Add to batch" before giving just
+    // one item.
+    const pending = addItemName.trim()
+      ? [...addBatch, { itemName: addItemName.trim(), quantity: addQuantity() }]
+      : addBatch;
+    if (pending.length === 0) return;
+    const confirmed = await confirmAction(
+      pending.length === 1
+        ? `Give ${pending[0].quantity} x ${pending[0].itemName} to this container?`
+        : `Give ${pending.length} distinct items to this container?`,
+      {
+        title: "Give Item" + (pending.length === 1 ? "" : "s"),
+        confirmLabel: "Give",
+        details: [
+          { label: "Base", value: baseName },
+          { label: "Container", value: containerName, tone: "accent" },
+          ...pending.map((item) => ({ label: item.itemName, value: `x${item.quantity.toLocaleString()}` }))
+        ]
+      }
+    );
+    if (!confirmed) return;
+    setAddRunning(true);
+    setDeleteNotice("");
+    setDeleteError("");
+    try {
+      const response = pending.length === 1
+        ? await basesApi.giveContainerItem(baseId, contentsFor, { itemName: pending[0].itemName, quantity: pending[0].quantity, confirmation: "GIVE ITEM TO STORAGE" })
+        : await basesApi.giveContainerItems(baseId, contentsFor, pending, "GIVE ITEMS TO STORAGE");
+      if (!response.supported || !response.result?.ok) {
+        throw new Error(response.error || response.reason || "The item(s) could not be given.");
+      }
+      setDeleteNotice(pending.length === 1 ? `${pending[0].itemName} was given to the container.` : `${pending.length} items were given to the container.`);
+      setAddBatch([]);
+      setAddItemName("");
+      setAddQuantityText("1");
+      await Promise.all([loadSlots(contentsFor), load()]);
+    } catch (error) {
+      const text = errorText(error);
+      setDeleteError(text);
+      onError(text);
+    } finally {
+      setAddRunning(false);
+    }
+  }
+
+  function fillQuantity() {
+    return Math.max(1, Math.min(1000000, Number(fillQuantityText) || 1));
+  }
+
+  async function fillItem(containerName: string) {
+    if (!giveFillAllowed || !fillItemName.trim()) return;
+    const confirmed = await confirmAction(
+      `Fill container with ${fillQuantity()} x ${fillItemName}? Only raw resources, refined resources, and components are allowed.`,
+      {
+        title: "Fill Container",
+        confirmLabel: "Fill",
+        details: [
+          { label: "Base", value: baseName },
+          { label: "Container", value: containerName, tone: "accent" },
+          { label: fillItemName, value: `x${fillQuantity().toLocaleString()}` }
+        ]
+      }
+    );
+    if (!confirmed) return;
+    setFillRunning(true);
+    setDeleteNotice("");
+    setDeleteError("");
+    try {
+      const response = await basesApi.fillContainerItem(baseId, contentsFor, { itemName: fillItemName.trim(), quantity: fillQuantity(), confirmation: "FILL ITEM TO STORAGE" });
+      if (!response.supported || !response.result?.ok) {
+        throw new Error(response.error || response.reason || "The container could not be filled.");
+      }
+      setDeleteNotice(`${fillItemName} was filled into the container.`);
+      setFillItemName("");
+      setFillQuantityText("100");
+      await Promise.all([loadSlots(contentsFor), load()]);
+    } catch (error) {
+      const text = errorText(error);
+      setDeleteError(text);
+      onError(text);
+    } finally {
+      setFillRunning(false);
     }
   }
 
@@ -688,15 +903,27 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
                 </p>}
 
                 {rows.length > 0 && <div className="bases-inventory-contents-list">
-                  {!showGrid && <div className="bases-inventory-contents-row head">
-                    <span /><span>Item</span><span>Slot</span><span>Qty</span><span />
+                  {!showGrid && <div className={`bases-inventory-contents-row head${deleteAllowed ? " with-checkbox" : ""}`}>
+                    <span />
+                    {deleteAllowed && <span />}
+                    <span>Item</span><span>Slot</span><span>Qty</span><span />
                   </div>}
                   {rows.map((slot) => (
                     <div
-                      className={`bases-inventory-contents-row${selectedSlotId === slot.itemId ? " selected" : ""}`}
+                      className={`bases-inventory-contents-row${deleteAllowed ? " with-checkbox" : ""}${selectedSlotId === slot.itemId ? " selected" : ""}`}
                       key={slot.itemId}
                     >
                       <CatalogItemThumb item={{ id: slot.templateId, itemId: slot.templateId, name: slot.name, image: itemImage(slot.templateId) }} small />
+                      {/* Multi-select checkbox, shown only when deletion is
+                          possible at all -- a container that cannot be
+                          deleted from has nothing to select for. */}
+                      {deleteAllowed && <input
+                        type="checkbox"
+                        checked={checkedItemIds.has(slot.itemId)}
+                        aria-label={`Select ${slot.name} for bulk delete`}
+                        disabled={bulkDeleteRunning}
+                        onChange={() => toggleChecked(slot.itemId)}
+                      />}
                       <button
                         className="bases-inventory-contents-name"
                         title={slot.templateId}
@@ -722,6 +949,19 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
           })}
 
           </div>
+
+          {deleteAllowed && openContainer.itemCount > 0 && <div className="bases-inventory-bulk-actions">
+            <button
+              className="danger"
+              disabled={checkedItemIds.size === 0 || bulkDeleteRunning}
+              onClick={() => void deleteCheckedItems(containerLabel(openContainer))}
+            >{bulkDeleteRunning ? "Deleting…" : `Delete Selected (${checkedItemIds.size})`}</button>
+            <button
+              className="danger"
+              disabled={bulkDeleteRunning}
+              onClick={() => void deleteAllItems(containerLabel(openContainer), openContainer.itemCount)}
+            >{bulkDeleteRunning ? "Deleting…" : "Delete All"}</button>
+          </div>}
 
           {selectedSlot && <div className="bases-inventory-slot-detail">
             <CatalogItemThumb item={{ id: selectedSlot.templateId, itemId: selectedSlot.templateId, name: selectedSlot.name, image: itemImage(selectedSlot.templateId) }} />
@@ -755,6 +995,89 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
           {selectedSlot && !amountValid && <p className="bases-inventory-amount-error" role="alert">
             Enter an amount between 1 and {selectedSlot.quantity.toLocaleString()}.
           </p>}
+
+          {giveFillAllowed && <div className="bases-inventory-add-panel">
+            {/* Per INC-2026-07-31-001: the game engine claims dune.items rows
+                only at server startup, so a given/filled item sits in the
+                database but stays invisible in-game until the Survival
+                server restarts. Silent and easy to rediscover the hard way
+                -- surfaced explicitly here so an operator does not spend
+                time re-litigating "why isn't this showing up" the way this
+                fork's own incident history already did once. Restarting is
+                not offered inline here (unlike the standalone Storage tab's
+                "Apply Fills" button) -- Server Control/Bases already own
+                that action, and duplicating a player-disconnecting restart
+                trigger in a third place was judged a bigger risk than one
+                extra tab switch. */}
+            <p className="bases-inventory-restart-warning" role="status">
+              <TriangleAlert size={14} aria-hidden="true" /> Given and filled items are not visible in-game until the Survival server restarts. Restart it from Server Control or Bases when convenient — all connected players will be disconnected for a few minutes.
+            </p>
+            <h4>Add Item</h4>
+            <div className="bases-inventory-add-row">
+              <input
+                value={addItemName}
+                onChange={(event) => setAddItemName(event.target.value)}
+                placeholder="Item name or ID"
+                aria-label="Item name or ID to give"
+                disabled={addRunning}
+              />
+              <input
+                type="number"
+                min={1}
+                max={1000000}
+                className="small-input"
+                value={addQuantityText}
+                onChange={(event) => setAddQuantityText(event.target.value)}
+                aria-label="Quantity to give"
+                disabled={addRunning}
+              />
+              <button
+                type="button"
+                disabled={!addItemName.trim() || addRunning}
+                onClick={queueAddItem}
+              >Add to Batch</button>
+              <button
+                disabled={(!addItemName.trim() && addBatch.length === 0) || addRunning}
+                onClick={() => void giveItems(containerLabel(openContainer))}
+              >{addRunning ? "Giving…" : addBatch.length > 0 ? `Give ${addBatch.length + (addItemName.trim() ? 1 : 0)} Items` : "Give Item"}</button>
+            </div>
+            {addBatch.length > 0 && <ul className="bases-inventory-add-batch">
+              {addBatch.map((item, index) => (
+                <li key={`${item.itemName}-${index}`}>
+                  {item.itemName} ×{item.quantity.toLocaleString()}
+                  <button type="button" className="icon-toggle-button" aria-label={`Remove ${item.itemName} from batch`} onClick={() => removeQueuedItem(index)} disabled={addRunning}>
+                    <X size={12} />
+                  </button>
+                </li>
+              ))}
+            </ul>}
+
+            <h4>Fill Container</h4>
+            <p className="muted bases-inventory-note">Only raw resources, refined resources, and components are accepted, respecting slot and volume limits.</p>
+            <div className="bases-inventory-add-row">
+              <input
+                value={fillItemName}
+                onChange={(event) => setFillItemName(event.target.value)}
+                placeholder="Item name or ID"
+                aria-label="Item name or ID to fill"
+                disabled={fillRunning}
+              />
+              <input
+                type="number"
+                min={1}
+                max={1000000}
+                className="small-input"
+                value={fillQuantityText}
+                onChange={(event) => setFillQuantityText(event.target.value)}
+                aria-label="Quantity to fill"
+                disabled={fillRunning}
+              />
+              <button
+                disabled={!fillItemName.trim() || fillRunning}
+                onClick={() => void fillItem(containerLabel(openContainer))}
+              >{fillRunning ? "Filling…" : "Fill"}</button>
+            </div>
+          </div>}
 
           <div className="confirm-modal-actions">
             <button onClick={() => setContentsFor("")}>Close</button>

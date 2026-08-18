@@ -8,7 +8,12 @@ vi.mock("../../api/bases", () => ({
   basesApi: {
     inventory: vi.fn(),
     containerSlots: vi.fn(),
-    deleteContainerItem: vi.fn()
+    deleteContainerItem: vi.fn(),
+    deleteContainerItems: vi.fn(),
+    deleteAllContainerItems: vi.fn(),
+    giveContainerItem: vi.fn(),
+    giveContainerItems: vi.fn(),
+    fillContainerItem: vi.fn()
   }
 }));
 
@@ -734,5 +739,263 @@ describe("BaseInventoryTab", () => {
 
     const vault = cards().find((card) => card.textContent?.includes("Vault"));
     expect(within(vault as HTMLElement).getByText("2 / 45")).toBeTruthy();
+  });
+
+  // Give/Give-multiple/Fill/bulk-delete: added alongside the raw-resource
+  // catalog work (issue #347). Storage-group only, same as the existing
+  // single-item delete above -- SLOTS' fixture container is already a
+  // "storage" group with deleteSafety.safe true, so these reuse the same
+  // Vault fixture rather than a new one.
+
+  it("gives a single item and refetches both the slots and the tab", async () => {
+    mockInventory();
+    vi.mocked(basesApi.giveContainerItem).mockResolvedValue({
+      supported: true,
+      result: { ok: true, inserted: { id: "601", templateId: "AzuriteOre", stackSize: 20 } }
+    } as never);
+    renderTab();
+    await loaded();
+    await openVaultContents();
+
+    fireEvent.change(screen.getByLabelText("Item name or ID to give"), { target: { value: "AzuriteOre" } });
+    fireEvent.change(screen.getByLabelText("Quantity to give"), { target: { value: "20" } });
+    fireEvent.click(screen.getByRole("button", { name: "Give Item" }));
+
+    await waitFor(() => expect(basesApi.giveContainerItem).toHaveBeenCalled());
+    expect(vi.mocked(basesApi.giveContainerItem).mock.calls[0]).toEqual([
+      "1006", "40001", { itemName: "AzuriteOre", quantity: 20, confirmation: "GIVE ITEM TO STORAGE" }
+    ]);
+    await waitFor(() => expect(vi.mocked(basesApi.inventory).mock.calls.length).toBeGreaterThan(1));
+    // The input clears after a successful give, ready for the next item.
+    await waitFor(() => expect((screen.getByLabelText("Item name or ID to give") as HTMLInputElement).value).toBe(""));
+  });
+
+  it("does not give an item when the confirmation is declined", async () => {
+    mockInventory();
+    confirmAction.mockResolvedValue(false);
+    renderTab();
+    await loaded();
+    await openVaultContents();
+
+    fireEvent.change(screen.getByLabelText("Item name or ID to give"), { target: { value: "AzuriteOre" } });
+    fireEvent.click(screen.getByRole("button", { name: "Give Item" }));
+    await waitFor(() => expect(confirmAction).toHaveBeenCalled());
+    expect(basesApi.giveContainerItem).not.toHaveBeenCalled();
+  });
+
+  it("batches several distinct items into one give-items call", async () => {
+    mockInventory();
+    vi.mocked(basesApi.giveContainerItems).mockResolvedValue({
+      supported: true,
+      result: { ok: true, results: [] }
+    } as never);
+    renderTab();
+    await loaded();
+    await openVaultContents();
+
+    // Queue the first item into the batch...
+    fireEvent.change(screen.getByLabelText("Item name or ID to give"), { target: { value: "AzuriteOre" } });
+    fireEvent.change(screen.getByLabelText("Quantity to give"), { target: { value: "20" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add to Batch" }));
+    await waitFor(() => expect(screen.getByText(/AzuriteOre ×20/)).toBeTruthy());
+
+    // ...then type a second item and give both in one click, folding the
+    // not-yet-queued second item in at confirm time.
+    fireEvent.change(screen.getByLabelText("Item name or ID to give"), { target: { value: "PlantFiber" } });
+    fireEvent.change(screen.getByLabelText("Quantity to give"), { target: { value: "5" } });
+    fireEvent.click(screen.getByRole("button", { name: /Give 2 Items/ }));
+
+    await waitFor(() => expect(basesApi.giveContainerItems).toHaveBeenCalled());
+    expect(vi.mocked(basesApi.giveContainerItems).mock.calls[0]).toEqual([
+      "1006", "40001",
+      [{ itemName: "AzuriteOre", quantity: 20 }, { itemName: "PlantFiber", quantity: 5 }],
+      "GIVE ITEMS TO STORAGE"
+    ]);
+    // A single-item give must never be routed through the batch endpoint.
+    expect(basesApi.giveContainerItem).not.toHaveBeenCalled();
+  });
+
+  it("removes a queued item from the batch before giving", async () => {
+    mockInventory();
+    renderTab();
+    await loaded();
+    await openVaultContents();
+
+    fireEvent.change(screen.getByLabelText("Item name or ID to give"), { target: { value: "AzuriteOre" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add to Batch" }));
+    await waitFor(() => expect(screen.getByText(/AzuriteOre/)).toBeTruthy());
+
+    fireEvent.click(screen.getByRole("button", { name: /Remove AzuriteOre from batch/ }));
+    expect(screen.queryByText(/AzuriteOre ×/)).toBeNull();
+  });
+
+  it("fills a container with a raw resource, refined resource, or component", async () => {
+    mockInventory();
+    vi.mocked(basesApi.fillContainerItem).mockResolvedValue({
+      supported: true,
+      result: { ok: true, inserted: { id: "602", templateId: "SteelBar", stackSize: 50, volumeOverride: 50 } }
+    } as never);
+    renderTab();
+    await loaded();
+    await openVaultContents();
+
+    fireEvent.change(screen.getByLabelText("Item name or ID to fill"), { target: { value: "SteelBar" } });
+    fireEvent.change(screen.getByLabelText("Quantity to fill"), { target: { value: "50" } });
+    fireEvent.click(screen.getByRole("button", { name: "Fill" }));
+
+    await waitFor(() => expect(basesApi.fillContainerItem).toHaveBeenCalled());
+    expect(vi.mocked(basesApi.fillContainerItem).mock.calls[0]).toEqual([
+      "1006", "40001", { itemName: "SteelBar", quantity: 50, confirmation: "FILL ITEM TO STORAGE" }
+    ]);
+    await waitFor(() => expect(vi.mocked(basesApi.inventory).mock.calls.length).toBeGreaterThan(1));
+  });
+
+  it("does not offer Give/Fill for crafting or refining containers", async () => {
+    mockInventory();
+    mockSlots({ ...SLOTS, group: "refining", typeName: "Small Ore Refinery" });
+    renderTab();
+    await loaded();
+    await openVaultContents();
+
+    expect(screen.queryByLabelText("Item name or ID to give")).toBeNull();
+    expect(screen.queryByLabelText("Item name or ID to fill")).toBeNull();
+  });
+
+  // Per INC-2026-07-31-001: the engine only claims dune.items rows at
+  // server startup, so given/filled items stay invisible in-game until a
+  // restart -- this fork has already relearned that the hard way once
+  // (the standalone Storage tab's own "Apply Fills" note), so the warning
+  // must not go missing from this second surface either.
+  it("warns that given/filled items require a Survival server restart to appear in-game", async () => {
+    mockInventory();
+    renderTab();
+    await loaded();
+    await openVaultContents();
+
+    expect(screen.getByText(/not visible in-game until the Survival server restarts/)).toBeTruthy();
+  });
+
+  it("does not show the restart warning when Give/Fill is unavailable for this container", async () => {
+    mockInventory();
+    mockSlots({ ...SLOTS, group: "refining", typeName: "Small Ore Refinery" });
+    renderTab();
+    await loaded();
+    await openVaultContents();
+
+    expect(screen.queryByText(/not visible in-game until the Survival server restarts/)).toBeNull();
+  });
+
+  it("selects several items and deletes only the checked ones", async () => {
+    mockInventory();
+    vi.mocked(basesApi.deleteContainerItems).mockResolvedValue({
+      supported: true,
+      result: {
+        ok: true, baseId: 1006, placeableId: "40001", inventoryId: "9001",
+        typeName: "Storage Container", group: "storage",
+        removed: [
+          { itemId: "501", templateId: "Stone", count: 600 },
+          { itemId: "503", templateId: "Stone", count: 400 }
+        ],
+        message: "2 of 2 requested item(s) were deleted from the database.",
+        deleteSafety: { safe: true, known: true, map: "HaggaBasin", partitionId: 1, reason: "" }
+      }
+    } as never);
+    renderTab();
+    await loaded();
+    await openVaultContents();
+
+    const checkboxes = screen.getAllByRole("checkbox", { name: /Select Granite Stone for bulk delete/ });
+    expect(checkboxes.length).toBe(2);
+    fireEvent.click(checkboxes[0]);
+    fireEvent.click(checkboxes[1]);
+
+    fireEvent.click(screen.getByRole("button", { name: /Delete Selected \(2\)/ }));
+    await waitFor(() => expect(basesApi.deleteContainerItems).toHaveBeenCalled());
+    expect(vi.mocked(basesApi.deleteContainerItems).mock.calls[0]).toEqual([
+      "1006", "40001", ["501", "503"], "DELETE ITEMS"
+    ]);
+    await waitFor(() => expect(vi.mocked(basesApi.inventory).mock.calls.length).toBeGreaterThan(1));
+  });
+
+  it("disables Delete Selected until at least one item is checked", async () => {
+    mockInventory();
+    renderTab();
+    await loaded();
+    await openVaultContents();
+
+    const deleteSelected = screen.getByRole("button", { name: /Delete Selected \(0\)/ }) as HTMLButtonElement;
+    expect(deleteSelected.disabled).toBe(true);
+  });
+
+  it("does not call the bulk-delete API when the confirmation is declined", async () => {
+    mockInventory();
+    confirmAction.mockResolvedValue(false);
+    renderTab();
+    await loaded();
+    await openVaultContents();
+
+    const checkboxes = screen.getAllByRole("checkbox", { name: /Select Granite Stone for bulk delete/ });
+    fireEvent.click(checkboxes[0]);
+    fireEvent.click(screen.getByRole("button", { name: /Delete Selected \(1\)/ }));
+    await waitFor(() => expect(confirmAction).toHaveBeenCalled());
+    expect(basesApi.deleteContainerItems).not.toHaveBeenCalled();
+  });
+
+  it("clears every item in the container via Delete All", async () => {
+    mockInventory();
+    vi.mocked(basesApi.deleteAllContainerItems).mockResolvedValue({
+      supported: true,
+      result: {
+        ok: true, baseId: 1006, placeableId: "40001", inventoryId: "9001",
+        typeName: "Storage Container", group: "storage",
+        removed: [
+          { itemId: "501", templateId: "Stone", count: 600 },
+          { itemId: "502", templateId: "MagnetiteOre", count: 200 },
+          { itemId: "503", templateId: "Stone", count: 400 }
+        ],
+        message: "3 item(s) were deleted from the database.",
+        deleteSafety: { safe: true, known: true, map: "HaggaBasin", partitionId: 1, reason: "" }
+      }
+    } as never);
+    renderTab();
+    await loaded();
+    await openVaultContents();
+
+    fireEvent.click(screen.getByRole("button", { name: "Delete All" }));
+    await waitFor(() => expect(basesApi.deleteAllContainerItems).toHaveBeenCalled());
+    expect(vi.mocked(basesApi.deleteAllContainerItems).mock.calls[0]).toEqual(["1006", "40001", "DELETE ALL ITEMS"]);
+    await waitFor(() => expect(vi.mocked(basesApi.inventory).mock.calls.length).toBeGreaterThan(1));
+  });
+
+  it("does not offer bulk-delete controls when the map cannot be verified safe", async () => {
+    mockInventory();
+    mockSlots({
+      ...SLOTS,
+      deleteSafety: {
+        safe: false, known: true, map: "HaggaBasin", partitionId: 68,
+        reason: "HaggaBasin · Partition 68 is running. Stop that map before deleting stored items."
+      }
+    });
+    renderTab();
+    await loaded();
+    await openVaultContents();
+
+    expect(screen.queryByRole("button", { name: /Delete Selected/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Delete All" })).toBeNull();
+    // Give/Fill are pure inserts and stay available regardless of map safety.
+    expect(screen.getByLabelText("Item name or ID to give")).toBeTruthy();
+  });
+
+  it("reports a failed bulk delete through onError without clearing the selection state silently", async () => {
+    mockInventory();
+    vi.mocked(basesApi.deleteContainerItems).mockRejectedValue(new Error("database is unreachable"));
+    renderTab();
+    await loaded();
+    await openVaultContents();
+
+    const checkboxes = screen.getAllByRole("checkbox", { name: /Select Granite Stone for bulk delete/ });
+    fireEvent.click(checkboxes[0]);
+    fireEvent.click(screen.getByRole("button", { name: /Delete Selected \(1\)/ }));
+    await waitFor(() => expect(onError).toHaveBeenCalledWith("database is unreachable"));
   });
 });

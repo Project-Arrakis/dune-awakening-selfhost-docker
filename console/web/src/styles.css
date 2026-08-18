@@ -3147,6 +3147,85 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 .bases-inventory-delete-notice { margin: 0 0 8px; font-size: 12px; color: var(--muted-warm); }
 .bases-inventory-contents-head-actions { display: flex; align-items: center; gap: 8px; }
 
+/* Adds a 24px checkbox track between the thumbnail and the item name only
+   when bulk-select is offered at all (deleteAllowed) -- the base
+   .bases-inventory-contents-row grid stays 5 columns for containers where
+   deletion is unavailable, so this modifier inserts one track rather than
+   redefining the whole grid unconditionally. */
+.bases-inventory-contents-row.with-checkbox {
+  grid-template-columns: 40px 24px minmax(0, 1fr) 48px 64px 38px;
+}
+.bases-inventory-contents-row input[type="checkbox"] { width: 16px; height: 16px; margin: 0 auto; }
+
+/* Give/Give-Multiple/Fill, added below the slot list. Two stacked sections
+   (Add Item, Fill Container) sharing one input-row layout: a growing text
+   input, a fixed-width quantity field, and one or two action buttons that
+   size to their own label instead of stretching full-width like the rest of
+   this app's form buttons -- these sit inline with the inputs, not in their
+   own action bar. */
+.bases-inventory-add-panel {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border-strong);
+}
+.bases-inventory-add-panel h4 { margin: 0 0 6px; font-size: 13px; }
+.bases-inventory-add-panel h4 + p.bases-inventory-note { margin-bottom: 8px; }
+.bases-inventory-add-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.bases-inventory-add-row input[type="text"],
+.bases-inventory-add-row input:not([type]) { flex: 1 1 auto; min-width: 0; }
+.bases-inventory-add-row button { width: auto; flex: 0 0 auto; }
+.bases-inventory-add-batch {
+  list-style: none;
+  margin: 0 0 10px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+}
+.bases-inventory-add-batch li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  background: var(--panel-muted);
+  border-radius: 4px;
+}
+.bases-inventory-add-batch li button { margin-left: auto; }
+
+/* Same "the engine claims dune.items rows only at server startup" warning
+   the standalone Storage tab's own note carries -- see INC-2026-07-31-001.
+   Styled like a warning banner, not an error: nothing failed, the operator
+   just needs to know a restart is still owed before this container's new
+   contents show up in-game. */
+.bases-inventory-restart-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 0 0 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--warning);
+  border-radius: 6px;
+  color: #ffd9a8;
+  font-size: 12px;
+}
+.bases-inventory-restart-warning svg { flex: 0 0 auto; margin-top: 1px; color: var(--warning); }
+
+/* Delete Selected / Delete All, above the single-slot detail strip -- both
+   are Storage-group-only and reuse the same danger button styling the
+   single-item delete strip's own button already uses. */
+.bases-inventory-bulk-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+.bases-inventory-bulk-actions button { width: auto; }
+
 /* Permissions is a single reading column with the Revert/Save bar full-bleed
    beneath it. The inset padding lives on .bases-permissions-content rather than
    here, so the bar reaches both edges of the tab panel without negative margins

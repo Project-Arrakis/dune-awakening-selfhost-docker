@@ -59,8 +59,10 @@ import {
   createPendingAccountLink,
   createPendingLink,
   dbStatus,
+  deleteAllBaseContainerItems,
   deleteBaseContainerItem,
   deleteInventoryItem,
+  deleteMultipleBaseContainerItems,
   deletePendingAccountLink,
   deletePendingLink,
   demoteGuildMember,
@@ -77,6 +79,7 @@ import {
   getAllLinkedPlayers,
   giveItemToPlayer,
   giveItemToStorage,
+  giveMultipleItemsToStorage,
   grantAllSpecializationKeystones,
   grantMaxSpecialization,
   guildMembers,
@@ -3948,6 +3951,176 @@ test("container item delete degrades to null state fields on a schema without th
   assert.ok(!query.text.includes("i.position_index"), "must not select a column this schema lacks");
 });
 
+// deleteMultipleBaseContainerItems / deleteAllBaseContainerItems: bulk
+// delete paths built for the Bases -> Inventory multi-select and "Delete
+// All" actions. Both share resolveOwnedStorageContainer's claim-CTE
+// ownership resolution with deleteBaseContainerItem -- NOT
+// removeItemsFromStorage's actor_id-only lookup below, which has no group
+// filter and could otherwise reach a Refining/Crafting inventory.
+const OWNED_STORAGE_CONTAINER_ROW = {
+  placeable_id: "42", inventory_id: 7, group_key: "storage", type_name: "Small Storage Container"
+};
+
+function fakeBulkContainerDeleteDb(calls, fixtures = {}) {
+  const {
+    containerRows = [OWNED_STORAGE_CONTAINER_ROW],
+    itemRows = [],
+    deleteLeavesRow = false
+  } = fixtures;
+  const run = async (text, values = []) => {
+    calls.push({ text, values });
+    if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+    if (text.includes("to_regprocedure")) return { rows: [{ exists: true }] };
+    if (text.includes("information_schema.columns")) {
+      return { rows: ["id", "inventory_id", "stack_size", "template_id"].map((column_name) => ({ column_name })) };
+    }
+    // Ownership resolution: resolveOwnedStorageContainer's own query, which
+    // selects placeable_id/inventory_id/group_key/type_name and locks `inv`,
+    // not `requested_claims` -- distinguished from the single-item-lookup
+    // query below by column list, since both share the requested_claims CTE.
+    if (text.includes("requested_claims") && text.includes("for update of inv")) return { rows: containerRows };
+    // Single-item lookup inside deleteMultipleBaseContainerItems's loop.
+    if (text.includes("select id::text as item_id, template_id, stack_size") && text.includes("where id = $1 and inventory_id = $2")) {
+      const itemId = String(values[0]);
+      const match = itemRows.find((row) => String(row.item_id) === itemId);
+      return { rows: match ? [match] : [] };
+    }
+    // Full-container listing inside deleteAllBaseContainerItems.
+    if (text.includes("select id::text as item_id, template_id, stack_size") && text.includes("where inventory_id = $1")) {
+      return { rows: itemRows };
+    }
+    if (text.includes("as exists")) return { rows: [{ exists: deleteLeavesRow }] };
+    return { rows: [] };
+  };
+  return { query: run, transaction: async (fn) => fn({ query: run }) };
+}
+
+test("delete-multiple verifies ownership once, then deletes only the requested items that exist in that container", async () => {
+  const calls = [];
+  const db = fakeBulkContainerDeleteDb(calls, {
+    itemRows: [
+      { item_id: "99", template_id: "ScrapMetal", stack_size: 500 },
+      { item_id: "100", template_id: "AzuriteOre", stack_size: 20 }
+    ]
+  });
+  const result = await deleteMultipleBaseContainerItems(db, 16836, 42, [99, 100, 101]);
+  assert.equal(result.ok, true);
+  assert.equal(result.removed.length, 2, "item 101 does not exist in this container and is skipped, not errored");
+  assert.equal(result.message, "2 of 3 requested item(s) were deleted from the database.");
+  const ownershipCalls = calls.filter((call) => call.text.includes("requested_claims") && call.text.includes("for update of inv"));
+  assert.equal(ownershipCalls.length, 1, "ownership resolved once per batch, not once per item");
+  // bigintParam returns a numeric string, not a native bigint.
+  assert.ok(calls.some((call) => call.text.includes("dune.delete_item($1::bigint)") && call.values[0] === "99"));
+  assert.ok(calls.some((call) => call.text.includes("dune.delete_item($1::bigint)") && call.values[0] === "100"));
+  assert.equal(calls.some((call) => call.text.includes("dune.delete_item($1::bigint)") && call.values[0] === "101"), false);
+});
+
+test("delete-multiple rejects an empty item list", async () => {
+  const calls = [];
+  const db = fakeBulkContainerDeleteDb(calls);
+  await assert.rejects(() => deleteMultipleBaseContainerItems(db, 16836, 42, []), /At least one item ID is required/);
+});
+
+test("delete-multiple rejects more than 200 items in one batch", async () => {
+  const calls = [];
+  const db = fakeBulkContainerDeleteDb(calls);
+  const ids = Array.from({ length: 201 }, (_, index) => index + 1);
+  await assert.rejects(() => deleteMultipleBaseContainerItems(db, 16836, 42, ids), /Cannot delete more than 200 items/);
+});
+
+test("delete-multiple keeps crafting and refining inventories read-only", async () => {
+  const calls = [];
+  const db = fakeBulkContainerDeleteDb(calls, {
+    containerRows: [{ ...OWNED_STORAGE_CONTAINER_ROW, group_key: "refining", type_name: "Small Ore Refinery" }],
+    itemRows: [{ item_id: "99", template_id: "ScrapMetal", stack_size: 500 }]
+  });
+  await assert.rejects(
+    () => deleteMultipleBaseContainerItems(db, 16836, 42, [99]),
+    /only be deleted from Storage containers/
+  );
+  assert.equal(calls.some((call) => call.text.includes("dune.delete_item")), false);
+});
+
+test("delete-multiple rejects a container that was not found at the selected base", async () => {
+  const calls = [];
+  const db = fakeBulkContainerDeleteDb(calls, { containerRows: [] });
+  await assert.rejects(
+    () => deleteMultipleBaseContainerItems(db, 16836, 42, [99]),
+    /not found at the selected base/
+  );
+});
+
+test("delete-all deletes every item currently in the container, read fresh inside the transaction", async () => {
+  const calls = [];
+  const db = fakeBulkContainerDeleteDb(calls, {
+    itemRows: [
+      { item_id: "99", template_id: "ScrapMetal", stack_size: 500 },
+      { item_id: "100", template_id: "AzuriteOre", stack_size: 20 },
+      { item_id: "101", template_id: "PlantFiber", stack_size: 5 }
+    ]
+  });
+  const result = await deleteAllBaseContainerItems(db, 16836, 42);
+  assert.equal(result.ok, true);
+  assert.equal(result.removed.length, 3);
+  assert.equal(result.message, "3 item(s) were deleted from the database.");
+  const deleteCalls = calls.filter((call) => call.text.includes("dune.delete_item($1::bigint)"));
+  assert.equal(deleteCalls.length, 3);
+});
+
+test("delete-all reports an already-empty container distinctly rather than as a no-op deletion", async () => {
+  const calls = [];
+  const db = fakeBulkContainerDeleteDb(calls, { itemRows: [] });
+  const result = await deleteAllBaseContainerItems(db, 16836, 42);
+  assert.equal(result.ok, true);
+  assert.equal(result.removed.length, 0);
+  assert.equal(result.message, "Container was already empty.");
+});
+
+test("delete-all keeps crafting and refining inventories read-only", async () => {
+  const calls = [];
+  const db = fakeBulkContainerDeleteDb(calls, {
+    containerRows: [{ ...OWNED_STORAGE_CONTAINER_ROW, group_key: "crafting", type_name: "Fabricator" }],
+    itemRows: [{ item_id: "99", template_id: "ScrapMetal", stack_size: 500 }]
+  });
+  await assert.rejects(
+    () => deleteAllBaseContainerItems(db, 16836, 42),
+    /only be deleted from Storage containers/
+  );
+  assert.equal(calls.some((call) => call.text.includes("dune.delete_item")), false);
+});
+
+test("delete-all rejects a container that was not found at the selected base", async () => {
+  const calls = [];
+  const db = fakeBulkContainerDeleteDb(calls, { containerRows: [] });
+  await assert.rejects(
+    () => deleteAllBaseContainerItems(db, 16836, 42),
+    /not found at the selected base/
+  );
+});
+
+// Explicit design-decision lock: Developer Storage Container
+// (developer_storagecontainer_placeable / Developer_Storage_Container_Patent)
+// is deliberately NOT special-cased anywhere in this feature, despite being
+// grantable only via the "Show Experimental" toggle in the Building Sets
+// tab (see adminCatalog.test.js's buildingUnlockIsExperimental coverage). It
+// is already in BASE_INVENTORY_TYPES.storage alongside every other storage
+// building, and capacity is read live from the placed instance's own
+// dune.inventories row -- there is no missing static data blocking it. This
+// test exists so a future change cannot silently carve it out (or back in)
+// without a test noticing either way.
+test("delete-all treats a Developer Storage Container exactly like any other storage-group container", async () => {
+  const calls = [];
+  const db = fakeBulkContainerDeleteDb(calls, {
+    containerRows: [{ placeable_id: "77", inventory_id: 9, group_key: "storage", type_name: "Developer Storage Container" }],
+    itemRows: [{ item_id: "200", template_id: "AzuriteOre", stack_size: 20 }]
+  });
+  const result = await deleteAllBaseContainerItems(db, 16836, 77);
+  assert.equal(result.ok, true);
+  assert.equal(result.group, "storage");
+  assert.equal(result.typeName, "Developer Storage Container");
+  assert.equal(result.removed.length, 1);
+});
+
 // baseContainerSlots: the per-slot read the contents overlay and its delete
 // both rest on. Deliberately separate from baseInventory, whose items[] stays
 // template-merged.
@@ -4264,6 +4437,143 @@ test("storage give-item validates capacity and inserts parameterized item rows",
   const insert = calls.find((call) => call.text.includes("insert into dune.items"));
   assert.ok(insert);
   assert.deepEqual(insert.values.slice(0, 5), [7, "WaterBottle_1", 3, 0, 2]);
+});
+
+test("storage give-item records TOTAL stack volume_override when itemVolume is provided", async () => {
+  // Parity fix: give-item previously never checked or recorded volume at
+  // all, unlike fill-item -- an operator could give an item whose declared
+  // volume exceeded a container's remaining volume, and rows inserted by
+  // give-item never contributed to fill-item's own sum(volume_override)
+  // check on subsequent calls. Added 2026-08-18 alongside the raw-resource
+  // catalog work, proactively (found during design review, not a live bug).
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    storageRows: [{ id: 7, actor_id: 222, max_item_count: 30, max_item_volume: 100 }],
+    countRows: [{ count: 1 }],
+    volumeRows: [{ total_volume: 10 }],
+    insertedRows: [{ id: 503, template_id: "AzuriteOre", stack_size: 20, quality_level: 0, position_index: 4, inventory_id: 7, volume_override: 4.0 }]
+  });
+  const result = await giveItemToStorage(db, 222, { templateId: "AzuriteOre", quantity: 20, itemVolume: 0.2 });
+  assert.equal(result.inserted.id, 503);
+  assert.equal(result.inserted.volume_override, 4.0);
+  const insert = calls.find((call) => call.text.includes("insert into dune.items"));
+  assert.ok(insert);
+  const volIdx = insert.values.length - 1;
+  assert.equal(insert.values[volIdx], 4.0);
+  const volumeCall = calls.find((call) => call.text.includes("sum(coalesce(volume_override"));
+  assert.ok(volumeCall, "volume sum query must run when itemVolume is provided");
+});
+
+test("storage give-item rejects when volume limit would be exceeded", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    storageRows: [{ id: 7, actor_id: 222, max_item_count: 30, max_item_volume: 15 }],
+    countRows: [{ count: 1 }],
+    volumeRows: [{ total_volume: 10 }]
+  });
+  await assert.rejects(
+    () => giveItemToStorage(db, 222, { templateId: "AzuriteOre", quantity: 50, itemVolume: 0.2 }),
+    /Storage is full by volume/
+  );
+});
+
+test("storage give-item does not check volume when itemVolume is omitted (backward compatible)", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    storageRows: [{ id: 7, actor_id: 222, max_item_count: 30, max_item_volume: 15 }],
+    countRows: [{ count: 1 }],
+    insertedRows: [{ id: 504, template_id: "WaterBottle_1", stack_size: 100, quality_level: 0, position_index: 5, inventory_id: 7 }]
+  });
+  const result = await giveItemToStorage(db, 222, { templateId: "WaterBottle_1", quantity: 100 });
+  assert.equal(result.inserted.id, 504);
+  const volumeCall = calls.find((call) => call.text.includes("sum(coalesce(volume_override"));
+  assert.equal(volumeCall, undefined, "volume sum query must not run when itemVolume is not provided");
+});
+
+test("storage give-multiple-items inserts every item in one transaction", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    storageRows: [{ id: 7, actor_id: 222, max_item_count: 30, max_item_volume: 0 }],
+    countRows: [{ count: 1 }],
+    insertedRowsSequence: [
+      { id: 601, template_id: "AzuriteOre", stack_size: 20, quality_level: 0, position_index: 2, inventory_id: 7 },
+      { id: 602, template_id: "PlantFiber", stack_size: 5, quality_level: 0, position_index: 3, inventory_id: 7 }
+    ]
+  });
+  const result = await giveMultipleItemsToStorage(db, 222, {
+    items: [
+      { templateId: "AzuriteOre", quantity: 20 },
+      { templateId: "PlantFiber", quantity: 5 }
+    ]
+  });
+  assert.equal(result.results.length, 2);
+  assert.equal(result.results[0].inserted.id, 601);
+  assert.equal(result.results[1].inserted.id, 602);
+  const inserts = calls.filter((call) => call.text.includes("insert into dune.items"));
+  assert.equal(inserts.length, 2, "one insert per item");
+  assert.equal(calls.filter((call) => call.text === "begin").length, 1, "single shared transaction");
+});
+
+test("storage give-multiple-items rejects an empty item list", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    storageRows: [{ id: 7, actor_id: 222, max_item_count: 30, max_item_volume: 0 }]
+  });
+  await assert.rejects(
+    () => giveMultipleItemsToStorage(db, 222, { items: [] }),
+    /At least one item is required/
+  );
+});
+
+test("storage give-multiple-items rejects more than 50 distinct items", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    storageRows: [{ id: 7, actor_id: 222, max_item_count: 30, max_item_volume: 0 }]
+  });
+  const items = Array.from({ length: 51 }, (_, index) => ({ templateId: `Item${index}`, quantity: 1 }));
+  await assert.rejects(
+    () => giveMultipleItemsToStorage(db, 222, { items }),
+    /Cannot give more than 50 distinct items/
+  );
+});
+
+test("storage give-multiple-items stops the batch when slot count is exhausted partway through", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    storageRows: [{ id: 7, actor_id: 222, max_item_count: 1, max_item_volume: 0 }],
+    // First iteration: count=0 (room for one), passes; second iteration:
+    // count is re-queried and must now reflect the just-inserted row.
+    // The fake DB's countRows is static per test, so this exercises the
+    // "fails partway through a batch" path with a cap of 1 from the start.
+    countRows: [{ count: 1 }],
+    insertedRowsSequence: [
+      { id: 701, template_id: "AzuriteOre", stack_size: 20, quality_level: 0, position_index: 2, inventory_id: 7 }
+    ]
+  });
+  await assert.rejects(
+    () => giveMultipleItemsToStorage(db, 222, {
+      items: [
+        { templateId: "AzuriteOre", quantity: 20 },
+        { templateId: "PlantFiber", quantity: 5 }
+      ]
+    }),
+    /Storage is full by item slot count/
+  );
+});
+
+test("storage give-multiple-items enforces volume across items in the same batch", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    storageRows: [{ id: 7, actor_id: 222, max_item_count: 30, max_item_volume: 5 }],
+    countRows: [{ count: 1 }],
+    volumeRows: [{ total_volume: 4 }]
+  });
+  await assert.rejects(
+    () => giveMultipleItemsToStorage(db, 222, {
+      items: [{ templateId: "AzuriteOre", quantity: 20, itemVolume: 0.2 }]
+    }),
+    /Storage is full by volume/
+  );
 });
 
 test("storage fill-item inserts with TOTAL stack volume_override (per-unit x quantity) and respects slot limit", async () => {
@@ -5689,7 +5999,18 @@ function fakeMutationDb(calls, fixtures = {}) {
       if (text.includes("sum(coalesce(volume_override")) return { rows: fixtures.volumeRows || [{ total_volume: 0 }] };
       if (text.includes("count(*)::int")) return { rows: fixtures.countRows || [{ count: 0 }] };
       if (text.includes("max(position_index)")) return { rows: [{ position_index: 2 }] };
-      if (text.includes("insert into dune.items")) return { rows: fixtures.insertedRows || [] };
+      if (text.includes("insert into dune.items")) {
+        // insertedRowsSequence supports tests that insert more than one row
+        // per call (e.g. giveMultipleItemsToStorage) -- each insert call
+        // consumes the next entry, rather than every insert seeing the same
+        // fixed row. Falls back to the original single-row behavior
+        // (insertedRows) for every existing test that only inserts once.
+        if (fixtures.insertedRowsSequence) {
+          const index = insertCallCount++;
+          return { rows: [fixtures.insertedRowsSequence[index] || fixtures.insertedRowsSequence[fixtures.insertedRowsSequence.length - 1]] };
+        }
+        return { rows: fixtures.insertedRows || [] };
+      }
       return { rows: [] };
     },
     async transaction(fn) {
@@ -5699,6 +6020,7 @@ function fakeMutationDb(calls, fixtures = {}) {
       return result;
     }
   };
+  let insertCallCount = 0;
   return db;
 }
 

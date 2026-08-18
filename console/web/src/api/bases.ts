@@ -192,6 +192,21 @@ export type BaseContainerSlots = {
   deleteSafety?: BaseContainerDeleteSafety;
 };
 
+// Shared result shape for the bulk delete (selected items) and delete-all
+// actions -- both return the same "how many actually got removed" summary,
+// since a requested item id may already be gone by the time the delete runs.
+export type BaseContainerBulkDeleteResult = {
+  ok: boolean;
+  baseId: number;
+  placeableId: string;
+  inventoryId: string;
+  typeName: string;
+  group: BaseInventoryGroupKey;
+  removed: { itemId: string; templateId: string; count: number }[];
+  message: string;
+  deleteSafety: BaseContainerDeleteSafety;
+};
+
 // Item deletion is deliberately fail-closed: only plain storage on a map that
 // the backend can verify is safely down may be changed.
 export type BaseContainerDeleteSafety = {
@@ -414,6 +429,63 @@ export const basesApi = {
       reason?: string;
     }>(`/api/bases/${encodeURIComponent(baseId)}/containers/${encodeURIComponent(placeableId)}/items/${encodeURIComponent(itemId)}`,
       { method: "DELETE", body: JSON.stringify(count === undefined ? { confirmation } : { confirmation, count }) }),
+  // Deletes several selected whole stacks in one confirmation. Storage-group
+  // only -- the backend re-verifies ownership and group itself, this is not
+  // a trust boundary the frontend enforces.
+  deleteContainerItems: (baseId: string, placeableId: string, itemIds: string[], confirmation: string) =>
+    api<{
+      supported: boolean;
+      result?: BaseContainerBulkDeleteResult;
+      error?: string;
+      reason?: string;
+    }>(`/api/bases/${encodeURIComponent(baseId)}/containers/${encodeURIComponent(placeableId)}/items`,
+      { method: "DELETE", body: JSON.stringify({ confirmation, itemIds }) }),
+  // Clears every item currently in the container. The item list to delete
+  // is resolved server-side, fresh inside the delete transaction -- not
+  // whatever the tab last fetched -- so this always means "everything
+  // actually there right now," even if the tab's own view is stale.
+  deleteAllContainerItems: (baseId: string, placeableId: string, confirmation: string) =>
+    api<{
+      supported: boolean;
+      result?: BaseContainerBulkDeleteResult;
+      error?: string;
+      reason?: string;
+    }>(`/api/bases/${encodeURIComponent(baseId)}/containers/${encodeURIComponent(placeableId)}/all-items`,
+      { method: "DELETE", body: JSON.stringify({ confirmation }) }),
+  // Gives one item to a Storage-group container. Volume-checked the same
+  // way Fill already is; itemName/itemId is resolved against the admin
+  // catalog server-side, same as the standalone Storage tab's Give action.
+  giveContainerItem: (baseId: string, placeableId: string, body: { itemName?: string; itemId?: string; quantity: number; confirmation: string }) =>
+    api<{
+      supported: boolean;
+      result?: { ok: boolean; inserted: { id: string; templateId: string; stackSize: number } };
+      error?: string;
+      reason?: string;
+    }>(`/api/bases/${encodeURIComponent(baseId)}/containers/${encodeURIComponent(placeableId)}/give-item`,
+      { method: "POST", body: JSON.stringify(body) }),
+  // Gives several distinct item templates to a Storage-group container in
+  // one confirmation and one server-side transaction -- not N sequential
+  // calls, which would let some items succeed and others fail on the same
+  // click. Capped at 50 distinct items per batch by the backend.
+  giveContainerItems: (baseId: string, placeableId: string, items: { itemName?: string; itemId?: string; quantity: number }[], confirmation: string) =>
+    api<{
+      supported: boolean;
+      result?: { ok: boolean; results: { inserted: { id: string; templateId: string; stackSize: number } }[] };
+      error?: string;
+      reason?: string;
+    }>(`/api/bases/${encodeURIComponent(baseId)}/containers/${encodeURIComponent(placeableId)}/give-items`,
+      { method: "POST", body: JSON.stringify({ items, confirmation }) }),
+  // Fills a Storage-group container with a raw resource, refined resource,
+  // or component -- the same server-side allowlist the standalone Storage
+  // tab's Fill action already enforces (FILLABLE_GROUPS in adminCatalog.js).
+  fillContainerItem: (baseId: string, placeableId: string, body: { itemName?: string; itemId?: string; quantity: number; confirmation: string }) =>
+    api<{
+      supported: boolean;
+      result?: { ok: boolean; inserted: { id: string; templateId: string; stackSize: number; volumeOverride?: number } };
+      error?: string;
+      reason?: string;
+    }>(`/api/bases/${encodeURIComponent(baseId)}/containers/${encodeURIComponent(placeableId)}/fill-item`,
+      { method: "POST", body: JSON.stringify(body) }),
   // A refill for a map that is currently running comes back as
   // `result.queued`: the write is deferred to the next time that map is down.
   refillWater: (baseId: string) =>

@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-const FILLABLE_GROUPS = new Set(["refined_resource", "component"]);
+const FILLABLE_GROUPS = new Set(["refined_resource", "component", "raw_resource"]);
 
 export function resolveCatalogItem(repoRoot, { itemName = "", itemId = "" } = {}) {
   const value = String(itemId || itemName || "").trim();

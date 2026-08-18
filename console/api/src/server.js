@@ -759,6 +759,11 @@ async function handleApi(req, res) {
   if (path.match(/^\/api\/bases\/[^/]+\/inventory$/) && req.method === "GET") return baseInventoryRoute(res, path);
   if (path.match(/^\/api\/bases\/[^/]+\/containers\/[^/]+$/) && req.method === "GET") return baseContainerSlotsRoute(res, path);
   if (path.match(/^\/api\/bases\/[^/]+\/containers\/[^/]+\/items\/[^/]+$/) && req.method === "DELETE") return baseContainerItemDeleteRoute(req, res, path);
+  if (path.match(/^\/api\/bases\/[^/]+\/containers\/[^/]+\/items$/) && req.method === "DELETE") return baseContainerItemsDeleteRoute(req, res, path);
+  if (path.match(/^\/api\/bases\/[^/]+\/containers\/[^/]+\/all-items$/) && req.method === "DELETE") return baseContainerAllItemsDeleteRoute(req, res, path);
+  if (path.match(/^\/api\/bases\/[^/]+\/containers\/[^/]+\/give-item$/) && req.method === "POST") return baseContainerGiveItemRoute(req, res, path);
+  if (path.match(/^\/api\/bases\/[^/]+\/containers\/[^/]+\/give-items$/) && req.method === "POST") return baseContainerGiveItemsRoute(req, res, path);
+  if (path.match(/^\/api\/bases\/[^/]+\/containers\/[^/]+\/fill-item$/) && req.method === "POST") return baseContainerFillItemRoute(req, res, path);
   if (path.match(/^\/api\/bases\/[^/]+\/refill-water$/) && req.method === "POST") return baseRefillWaterRoute(req, res, path);
   if (path.match(/^\/api\/bases\/[^/]+\/queued-water-refill$/) && req.method === "DELETE") return baseCancelQueuedWaterRefillRoute(req, res, path);
   if (path.match(/^\/api\/bases\/[^/]+\/auto-refill-water$/) && req.method === "POST") return baseAutoRefillWaterToggleRoute(req, res, path);
@@ -2877,7 +2882,13 @@ async function storageGiveItemRoute(req, res, path) {
   const storageId = decodeURIComponent(path.split("/")[3]);
   return directDbMutation(req, res, "storage.give-item", "GIVE ITEM TO STORAGE", async (body) => {
     const resolved = resolveCatalogItem(config.repoRoot, body);
-    return duneDb.giveItemToStorage(db, storageId, { ...body, templateId: resolved.itemId });
+    // itemVolume defaults to 0 for any item without catalogued volume data
+    // (most weapons/gear/schematics), which giveItemToStorage treats as
+    // "skip the volume check" -- the same as it always has for those items.
+    // Only items the catalog actually has a volume for (raw/refined
+    // resources, components) gain the new volume enforcement.
+    const itemVolume = resolved.volume || resolveItemVolume(config.repoRoot, resolved.itemId);
+    return duneDb.giveItemToStorage(db, storageId, { ...body, templateId: resolved.itemId, itemVolume });
   }, { storageId });
 }
 
@@ -3354,6 +3365,120 @@ async function baseContainerItemDeleteRoute(req, res, path) {
     const result = await duneDb.deleteBaseContainerItem(db, baseId, placeableId, itemId, { count });
     return { ...result, deleteSafety: safety };
   }, { baseId, placeableId, itemId });
+}
+
+// Same phrase-gate and map-safety requirement as baseContainerItemDeleteRoute
+// above -- deletes several whole stacks (identified by itemIds in the body)
+// from one storage container in a single confirmation, instead of one
+// confirmation per item. Ownership is re-verified inside
+// deleteMultipleBaseContainerItems itself (claim-CTE, storage-group only);
+// this route only validates the path segments and applies the same
+// pending-delete/backed-up/map-safety guards every other base container
+// mutation route already applies.
+function parseBaseContainerPath(path) {
+  const parts = path.split("/");
+  const baseId = Number(decodeURIComponent(parts[3]));
+  const placeableId = Number(decodeURIComponent(parts[5]));
+  for (const id of [baseId, placeableId]) {
+    if (!Number.isInteger(id) || id < 1 || id > Number.MAX_SAFE_INTEGER) return null;
+  }
+  return { baseId, placeableId };
+}
+
+async function baseContainerItemsDeleteRoute(req, res, path) {
+  const parsed = parseBaseContainerPath(path);
+  if (!parsed) return json(res, 400, { error: "Invalid base or container ID" });
+  const { baseId, placeableId } = parsed;
+  if (baseDeletePending(baseId)) return json(res, 409, { error: BASE_DELETE_PENDING_MESSAGE });
+  if (await baseBackedUp(baseId)) return json(res, 409, { error: BASE_BACKED_UP_MESSAGE });
+  return directDbMutation(req, res, "bases.container-items-delete", "DELETE ITEMS", async (body) => {
+    const safety = await baseContainerDeleteSafety(baseId);
+    if (!safety.safe) throw new Error(safety.reason);
+    const result = await duneDb.deleteMultipleBaseContainerItems(db, baseId, placeableId, body?.itemIds);
+    return { ...result, deleteSafety: safety };
+  }, { baseId, placeableId });
+}
+
+// Same phrase-gate and map-safety requirement -- clears every item currently
+// in one storage container in a single confirmation. The item list to
+// delete is read fresh inside deleteAllBaseContainerItems's own transaction,
+// not passed in by this route, so a stale client-side snapshot can never
+// narrow or widen what "all" means.
+async function baseContainerAllItemsDeleteRoute(req, res, path) {
+  const parsed = parseBaseContainerPath(path);
+  if (!parsed) return json(res, 400, { error: "Invalid base or container ID" });
+  const { baseId, placeableId } = parsed;
+  if (baseDeletePending(baseId)) return json(res, 409, { error: BASE_DELETE_PENDING_MESSAGE });
+  if (await baseBackedUp(baseId)) return json(res, 409, { error: BASE_BACKED_UP_MESSAGE });
+  return directDbMutation(req, res, "bases.container-all-items-delete", "DELETE ALL ITEMS", async () => {
+    const safety = await baseContainerDeleteSafety(baseId);
+    if (!safety.safe) throw new Error(safety.reason);
+    const result = await duneDb.deleteAllBaseContainerItems(db, baseId, placeableId);
+    return { ...result, deleteSafety: safety };
+  }, { baseId, placeableId });
+}
+
+// Give/Fill are pure inserts -- no existing row is ever touched, so unlike
+// the delete routes above these do NOT require baseContainerDeleteSafety's
+// "map is safely stopped" check. Per INC-2026-07-31-001, inserted rows are
+// simply not visible in-game until the Survival server restarts; that is a
+// visibility gap, not a live-sync hazard the way deleting a row the engine
+// might reference would be. giveItemToStorage/fillItemToStorage/
+// giveMultipleItemsToStorage all key off the container's own actor_id, the
+// same as the standalone Storage tab -- this route only adds the ownership
+// verification the standalone tab never needed (it operates on
+// operator-supplied storage ids directly, not a base+placeable pair).
+async function baseContainerOwnedStorageId(baseId, placeableId) {
+  const slots = await duneDb.baseContainerSlots(db, baseId, placeableId);
+  if (!slots.supported) throw new Error(slots.reason || "This game database cannot verify container ownership.");
+  if (!slots.found) throw new Error("That container was not found at the selected base.");
+  if (slots.group !== "storage") throw new Error("Items can only be given or filled into Storage containers. Crafting and Refining contents are read-only to protect active jobs.");
+  return placeableId;
+}
+
+async function baseContainerGiveItemRoute(req, res, path) {
+  const parsed = parseBaseContainerPath(path);
+  if (!parsed) return json(res, 400, { error: "Invalid base or container ID" });
+  const { baseId, placeableId } = parsed;
+  if (baseDeletePending(baseId)) return json(res, 409, { error: BASE_DELETE_PENDING_MESSAGE });
+  if (await baseBackedUp(baseId)) return json(res, 409, { error: BASE_BACKED_UP_MESSAGE });
+  return directDbMutation(req, res, "bases.container-give-item", "GIVE ITEM TO STORAGE", async (body) => {
+    const storageId = await baseContainerOwnedStorageId(baseId, placeableId);
+    const resolved = resolveCatalogItem(config.repoRoot, body);
+    const itemVolume = resolved.volume || resolveItemVolume(config.repoRoot, resolved.itemId);
+    return duneDb.giveItemToStorage(db, storageId, { ...body, templateId: resolved.itemId, itemVolume });
+  }, { baseId, placeableId });
+}
+
+async function baseContainerGiveItemsRoute(req, res, path) {
+  const parsed = parseBaseContainerPath(path);
+  if (!parsed) return json(res, 400, { error: "Invalid base or container ID" });
+  const { baseId, placeableId } = parsed;
+  if (baseDeletePending(baseId)) return json(res, 409, { error: BASE_DELETE_PENDING_MESSAGE });
+  if (await baseBackedUp(baseId)) return json(res, 409, { error: BASE_BACKED_UP_MESSAGE });
+  return directDbMutation(req, res, "bases.container-give-items", "GIVE ITEMS TO STORAGE", async (body) => {
+    const storageId = await baseContainerOwnedStorageId(baseId, placeableId);
+    const items = Array.isArray(body?.items) ? body.items.map((item) => {
+      const resolved = resolveCatalogItem(config.repoRoot, item);
+      const itemVolume = resolved.volume || resolveItemVolume(config.repoRoot, resolved.itemId);
+      return { ...item, templateId: resolved.itemId, itemVolume };
+    }) : [];
+    return duneDb.giveMultipleItemsToStorage(db, storageId, { items });
+  }, { baseId, placeableId });
+}
+
+async function baseContainerFillItemRoute(req, res, path) {
+  const parsed = parseBaseContainerPath(path);
+  if (!parsed) return json(res, 400, { error: "Invalid base or container ID" });
+  const { baseId, placeableId } = parsed;
+  if (baseDeletePending(baseId)) return json(res, 409, { error: BASE_DELETE_PENDING_MESSAGE });
+  if (await baseBackedUp(baseId)) return json(res, 409, { error: BASE_BACKED_UP_MESSAGE });
+  return directDbMutation(req, res, "bases.container-fill-item", "FILL ITEM TO STORAGE", async (body) => {
+    const storageId = await baseContainerOwnedStorageId(baseId, placeableId);
+    const resolved = resolveFillableCatalogItem(config.repoRoot, body);
+    const itemVolume = resolved.volume || resolveItemVolume(config.repoRoot, resolved.itemId);
+    return duneDb.fillItemToStorage(db, config.repoRoot, storageId, { ...body, templateId: resolved.itemId, itemVolume });
+  }, { baseId, placeableId });
 }
 
 // Mirrors baseRefillGeneratorsRoute: no confirmation phrase (additive and

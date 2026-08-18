@@ -402,7 +402,27 @@ export const REGEX_ACTIONS_BY_METHOD_PATTERN = [
   // destruction — folding this into that bucket would silently widen every
   // existing narrow policy. The shipped owner/admin policies grant bases:*,
   // so default access is unchanged.
-  { method: "DELETE", pattern: /^\/api\/bases\/[^/]+\/containers\/[^/]+\/items\/[^/]+$/, action: "bases:delete-item" }
+  { method: "DELETE", pattern: /^\/api\/bases\/[^/]+\/containers\/[^/]+\/items\/[^/]+$/, action: "bases:delete-item" },
+  // DELETE /api/bases/{baseId}/containers/{placeableId}/items — deleting
+  // several selected stacks in one call, and .../all-items — clearing every
+  // item in the container. Same consent argument as bases:delete-item above,
+  // same narrow action so a policy granting bases:delete-item does not
+  // silently also grant bulk/delete-all destruction (and vice versa) without
+  // being written that way on purpose.
+  { method: "DELETE", pattern: /^\/api\/bases\/[^/]+\/containers\/[^/]+\/items$/, action: "bases:delete-items" },
+  { method: "DELETE", pattern: /^\/api\/bases\/[^/]+\/containers\/[^/]+\/all-items$/, action: "bases:delete-items" },
+  // POST /api/bases/{baseId}/containers/{placeableId}/give-item(s) and
+  // fill-item — adding items to a Storage-group container. Own actions for
+  // the same reason bases:delete-item is its own action: base inventory
+  // shipped read-only, so bases:mutate (refills, permission edits) was never
+  // agreed to cover item creation either. Kept separate from each other
+  // (give-item vs fill-item) rather than one combined "bases:add-item",
+  // since Fill is restricted to raw/refined resources and components while
+  // Give currently accepts any catalog item — a policy author narrowing one
+  // should not be forced to also narrow the other.
+  { method: "POST", pattern: /^\/api\/bases\/[^/]+\/containers\/[^/]+\/give-item$/, action: "bases:give-item" },
+  { method: "POST", pattern: /^\/api\/bases\/[^/]+\/containers\/[^/]+\/give-items$/, action: "bases:give-item" },
+  { method: "POST", pattern: /^\/api\/bases\/[^/]+\/containers\/[^/]+\/fill-item$/, action: "bases:fill-item" }
 ];
 
 // ---- Action resolution ----

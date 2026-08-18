@@ -57,6 +57,53 @@ Keep a Changelog style, grouped by upstream base version, newest first.
 
 ### Added
 
+- Base Inventory tab (Bases panel, Storage group only) gains full container
+  management: Give Item, Give Multiple Items (batched into one server-side
+  transaction), Fill Container, Delete Selected (multi-select), and Delete
+  All (issue #347). Backed by three new `duneDb.js` functions
+  (`giveMultipleItemsToStorage`, `deleteMultipleBaseContainerItems`,
+  `deleteAllBaseContainerItems`) plus a parity fix: `giveItemToStorage` now
+  enforces the same volume cap `fillItemToStorage` already did (previously
+  give-item checked only slot count, never volume). Three new, narrow RBAC
+  actions — `bases:give-item`, `bases:fill-item`, `bases:delete-items` —
+  follow the existing `bases:delete-item` precedent (own action, not folded
+  into `bases:mutate`, so an operator's existing policy grant is never
+  silently widened); default access is unchanged (owner `*`, admin
+  `bases:*`). Scoped to Storage-group containers only — Refining/Crafting
+  remain read-only, and the two new bulk-delete functions re-verify
+  ownership through the same claim-CTE `deleteBaseContainerItem` already
+  uses (not the unscoped `actor_id`-only lookup `giveItemToStorage`/
+  `fillItemToStorage` use), so neither can reach a Refining/Crafting
+  inventory. `Developer_StorageContainer_Placeable` is deliberately not
+  special-cased — it was already in the Storage group's allowlist and is
+  already grantable to a player via Players → Building Sets → "Show
+  Experimental" → `Developer_Storage_Container_Patent`; a dedicated test
+  locks in that no future change silently carves it out. UI carries the
+  same "not visible in-game until the Survival server restarts" warning
+  the standalone Storage tab's own note already gives (INC-2026-07-31-001) —
+  the engine only claims new `dune.items` rows at server startup. The
+  Vehicles → Inventory side of this feature is tracked separately as issue
+  #348 (net-new UI surface, no existing tab to extend, split out to keep
+  this PR reviewable as one coherent increment).
+- Raw resources are now a fillable/giveable item category. `FILLABLE_GROUPS`
+  in `adminCatalog.js` gains `raw_resource` alongside the existing
+  `refined_resource`/`component`. 19 items in `runtime/data/admin-items.json`
+  tagged with `group: "raw_resource"` and real volumes verified item-by-item
+  against `dune.gaming.tools` (not category-guessed): `AzuriteOre`,
+  `BauxiteOre`, `Basalt`, `DolomiteRock`, `ErythriteCrystal`, `FlourSand`,
+  `JasmiumCrystal`, `MagnetiteOre`, `PlantFiber`, `SaguaroResourceRaw`,
+  `ScrapMetal`, `SpiceResidue`, `SpiceSand`, `Stone`, `T6ResourceA`,
+  `T6ResourceB`, `Corpse`, `Oil`, `Mouse_Corpse`. Same catalog review also
+  found and corrected 5 previously-untagged items that are actually
+  **components**, not raw resources — `T6ArmorPlating`, `T6RangeFinder`,
+  `T6RayAmplifier`, `T6PowerRegulator`, `T6HydraulicPiston` — confirmed
+  against each item's real in-game crafting recipe (all five are crafted at
+  an Advanced Survival Fabricator, none are gathered). `WormTooth`,
+  `WeldingMaterial3`, and `WeldingMaterial5` were investigated but
+  deliberately left untagged: no volume data exists for any of the three
+  on the reference source used, and issue #145 (pre-existing, separate)
+  already documents this repo's policy against tagging a volume
+  speculatively.
 - Two new addon-bridge test suites closing a real, previously-untested gap
   (#308): `console/api/test/bridgeActionContract.test.js` asserts every
   `ops.*` addon-bridge action's real handler function (called directly, no
