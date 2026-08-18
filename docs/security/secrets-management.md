@@ -1,7 +1,27 @@
 # Secrets Management Deep Dive — PKI, CMK, Storage, Retrieval & Rotation
 
-**Date:** 2026-08-07
-**Status:** Analysis — candidate evaluation before implementation
+**Date:** 2026-08-07 (background sections trimmed and corrected 2026-08-15, issue #287)
+**Status:** Historical evaluation. **Superseded for implementation details** — see below.
+
+> **This document does NOT describe the actual implemented architecture.**
+> The evaluation below (§1-3) led to choosing an age-based approach over
+> Vault/Infisical/SOPS/Bitwarden, and that choice still stands. But the
+> specific design this document originally proposed as "Phase 1"
+> (a single `vault.json.age` blob containing every secret) was never
+> built. What was actually implemented is a different, later design:
+> **one `.enc` file per secret**, each independently encrypted with its
+> own DEK, which is itself wrapped by a shared KEK — not one shared
+> blob. For the real, current design and implementation status, see:
+>
+> - `docs/design/unified-age-secrets-management-l1-design-2026-08-13.md`
+>   (canonical L1 design, in the `Arrakis-Project` meta-repo)
+> - `runtime/scripts/lib/secrets.sh` / `secrets_aead.py` (the actual
+>   library, stage 1 of the rollout — upstream PR
+>   `Red-Blink/dune-awakening-selfhost-docker#160`, internal PR #286)
+>
+> §4-5 below (the old Phase 1-3 plan and implementation plan) are kept
+> only as historical record of the discarded single-blob approach and
+> must not be used as a guide to the current or planned architecture.
 
 ---
 
@@ -235,168 +255,19 @@ spawn-server.sh:
 
 ---
 
-## 4. Recommendation
+## 4. Recommendation (Historical — See Notice Above)
 
-### Phase 1 (Now): Custom age-based Secret Vault
+The decision made here was: **age-based, not a heavy daemon
+(Vault/OpenBao/Infisical/Bitwarden)** — that conclusion still holds.
+The specific implementation plan that followed from it (a single
+`vault.json.age` blob, a `SecretsManager.tsx` UI, `secrets.sh audit`/
+`rotate` subcommands) was **not built as designed** and has been
+removed from this document to avoid describing a nonexistent system.
+See the notice at the top of this document for what was actually
+built instead.
 
-**Cost: 3-5 hours. Fits current architecture. No new daemons.**
-
-1. Consolidate all 10+ secret files into a single `runtime/secrets/vault.json.age` encrypted with age
-2. Build `console/api/src/secrets.js` — a thin wrapper that decrypts the vault at startup, caches secrets in memory
-3. Build `scripts/secrets.sh` — CLI wrapper for `age` with subcommands: `init`, `get <key>`, `set <key> <value>`, `rotate`, `list`
-4. Update `config.js` to use `loadSecrets()` instead of individual `readInlineOrFile` calls
-5. Update shell scripts (`spawn-server.sh`, etc.) to source secrets from the vault
-6. Generate an age identity for the `dune` user, stored at `~/.age/dune-server.key` (chmod 600)
-7. Document key backup procedure (age identity must be backed up securely — losing it means losing all secrets)
-
-**The age identity IS the CMK.** It can be encrypted with an operator passphrase (age supports passphrase-protected identities). For automated startup, the unencrypted identity file is used (600 permissions on a single-user VM is a reasonable trust boundary).
-
-### Phase 2: Secrets Manager UI (in Access Control)
-
-**Cost: 8-12 hours. Layers on Phase 1. Builds on IAM UI patterns from Phase A.**
-
-The IAM Policy Editor and the Secrets Manager belong together under the
-Access Control section of the Server Control tab. IAM controls **who can
-do what**; Secrets controls **what credentials they use to do it.**
-
-#### UI Architecture
-
-```
-Server Control → Access Control
-├── [IAM Policies]          ← IamPolicyEditor.tsx (built — Phase A)
-│   ├── JSON Editor tab
-│   ├── Visual Builder tab
-│   └── Test Policy tab
-│
-└── [Secrets Vault]         ← SecretsManager.tsx (Phase 2 — designed, not built)
-    ├── List secrets (key names only, values masked)
-    ├── View secret (confirmation-gated reveal)
-    ├── Edit secret (set/update with audit log)
-    ├── Rotate specific secret (new value, archive old version)
-    ├── Rotate master key (new age identity, re-encrypt vault)
-    └── Audit log (timestamped access/change history)
-```
-
-#### New API Endpoints
-
-| Route | Purpose |
-|---|---|
-| `GET /api/settings/secrets/keys` | Returns array of key names (values never returned) |
-| `GET /api/settings/secrets/key/:name` | Returns one secret value. Audit-logged. Requires confirmation parameter. |
-| `PUT /api/settings/secrets/key/:name` | Set or update a secret. Re-encrypts vault. Audit-logged. |
-| `DELETE /api/settings/secrets/key/:name` | Remove a secret from the vault. Audit-logged. |
-| `POST /api/settings/secrets/rotate/:name` | Generate new value for one secret, archive old vault version |
-| `POST /api/settings/secrets/rotate-key` | Generate new age identity, re-encrypt vault, archive old vault + old key |
-| `GET /api/settings/secrets/audit` | Read audit log: `{time, user, action, secret}` |
-
-#### React Component: SecretsManager.tsx
-
-```tsx
-// console/web/src/features/settings/SecretsManager.tsx
-// Pattern matches IamPolicyEditor.tsx (same tabbed layout, same Action constants)
-
-function SecretsManager() {
-  // State: secretKeys[], selectedKey, revealMode, auditLog[]
-
-  return (
-    <section className="secrets-manager">
-      <div className="secret-list-panel">
-        {secretKeys.map(key => (
-          <div key={key} className="secret-row">
-            <span className="secret-name">{key}</span>
-            <span className="secret-value-masked">********</span>
-            <button onClick={() => revealSecret(key)}>Reveal</button>
-            <button onClick={() => editSecret(key)}>Edit</button>
-            <button onClick={() => rotateSecret(key)}>Rotate</button>
-          </div>
-        ))}
-      </div>
-
-      {revealMode && (
-        <div className="secret-reveal-dialog">
-          <p>Revealing secret: <strong>{selectedKey}</strong></p>
-          <p>This action will be audit-logged.</p>
-          <ConfirmDialog onConfirm={() => showValue()} />
-        </div>
-      )}
-
-      <div className="secret-audit-panel">
-        <h4>Access History</h4>
-        {auditLog.map(entry => (
-          <div key={entry.time} className="audit-row">
-            <span>{entry.time}</span>
-            <span>{entry.action}</span>
-            <span>{entry.secret}</span>
-          </div>
-        ))}
-      </div>
-    </section>
-  );
-}
-```
-
-#### Security Boundaries (Phase 2 additions)
-
-- Age identity never exposed through the API — server reads it at startup, never returns it
-- In-memory secrets are the runtime cache — API reads/writes from this cache
-- Audit log: `runtime/generated/secrets-audit.jsonl` — append-only JSONL, rotated monthly
-- UI: masked values by default, confirmation dialog required to reveal
-- Rotation: keeps `.1` backup of previous vault + identity for rollback
-- Capability gate: `settings:write` (same as IAM — owner by default)
-
-#### Server-side Implementation Note
-
-The existing `policy.js` `_policies` store is an in-memory cache pattern that
-the secrets manager can follow exactly: `_secrets` object loaded from
-`vault.json.age` at startup, modified in-memory by the API, flushed to disk
-on write. Same `setPolicies()` / `getAllPolicies()` pattern, adapted for
-key-value secrets.
-
-### Phase 3: Audit Trail + Scheduled Rotation
-
-**Cost: 5-8 hours. Layers on Phase 2.**
-
-1. Add `secrets.sh audit` — logs every access to `vault.json.age` with timestamp, user, and operation
-2. Add `secrets.sh rotate` — generates new age identity, re-encrypts vault, archives old vault as `.1`, updates identity path
-3. Add systemd timer for scheduled rotation (monthly per GRC requirements)
-4. Add `secrets.sh backup` — encrypts vault with operator's personal age key for off-machine backup
-
-### When to Upgrade to Vault/Infisical
-
-**Trigger:** You have 3+ machines needing coordinated secret access, or you need PKI/certificate management. Until then, age-based vault is sufficient.
-
----
-
-## 5. Implementation Plan (Phase 1)
-
-### 5.1 New Files
-
-| File | Purpose |
-|---|---|
-| `console/api/src/secrets.js` | `loadSecrets(repoRoot) → { adminPassword, sessionSecret, ... }`. Decrypts vault with age, caches in memory. |
-| `scripts/secrets.sh` | CLI: `init`, `get`, `set`, `list`, `rotate`. Thin wrapper around age + jq. |
-| `runtime/secrets/vault.json.age` | Encrypted JSON blob containing all secrets. Gitignored. |
-| `~/.age/dune-server.key` | Age identity file (chmod 600). Generated by `secrets.sh init`. |
-| `docs/security/secrets-management.md` | This document, trimmed to deployment guide. |
-
-### 5.2 Migration Path
-
-```
-1. age-keygen -o ~/.age/dune-server.key           # generate identity
-2. scripts/secrets.sh init ~/.age/dune-server.key  # create empty vault
-3. scripts/secrets.sh migrate                       # read existing files → populate vault
-4. Update config.js to use secrets.js               # one-line change per secret
-5. Verify console starts with vault secrets
-6. Remove old plaintext secret files                # after verification
-```
-
-### 5.3 Key Backup
-
-The age identity (`~/.age/dune-server.key`) IS the master key. It must be:
-1. Backed up to a secure, offline location (encrypted USB, password manager)
-2. Never committed to git
-3. Never included in database backups (`dune db backup` excludes `runtime/secrets/` today — same for `.age/`)
-
-If the key is lost, all secrets are unrecoverable — the console cannot decrypt the vault and cannot start. This is the same failure mode as today (if you lose `runtime/secrets/`, you lose all secrets), but with one additional decryption step.
-
-**Recovery procedure:** if the age key is lost, regenerate secrets manually (new admin password via `dune`, new Funcom token from Funcom portal, new Discord tokens from Discord portal, etc.) and run `secrets.sh init` to create a new vault. There is no "password reset" for age identities.
+**When to reconsider Vault/Infisical instead of the age-based
+approach:** if this deployment ever needs 3+ machines with
+coordinated secret access, or real PKI/certificate management. Until
+then, the age-based approach (as actually implemented, not as
+originally planned above) remains sufficient.
