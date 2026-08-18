@@ -4337,13 +4337,20 @@ test("delete-all treats a Developer Storage Container exactly like any other sto
 // both rest on. Deliberately separate from baseInventory, whose items[] stays
 // template-merged.
 function fakeContainerSlotsDb(calls, fixtures = {}) {
-  const { rows = [], itemColumns = ["id", "inventory_id", "stack_size", "position_index", "template_id", "stats", "quality_level"] } = fixtures;
+  const {
+    rows = [],
+    itemColumns = ["id", "inventory_id", "stack_size", "position_index", "template_id", "stats", "quality_level"],
+    // Defaults to no max_item_volume, matching itemColumns' own default of no
+    // volume_override -- a schema without volume support until a test opts in.
+    inventoryColumns = ["id", "actor_id", "max_item_count"]
+  } = fixtures;
   return {
     query: async (text, values = []) => {
       calls.push({ text, values });
       if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
       if (text.includes("information_schema.columns")) {
-        return { rows: itemColumns.map((column_name) => ({ column_name })) };
+        const columns = values[1] === "inventories" ? inventoryColumns : itemColumns;
+        return { rows: columns.map((column_name) => ({ column_name })) };
       }
       if (text.includes("requested_claims")) return { rows };
       return { rows: [] };
@@ -4439,6 +4446,46 @@ test("baseContainerSlots degrades rather than failing when dune.items lacks the 
   assert.match(query.text, /null::bigint as position_index/);
   assert.ok(!query.text.includes("i.position_index"), "must not select a column this schema lacks");
   assert.match(query.text, /null::numeric as max_durability/);
+});
+
+// Issue #356 (found during PR #349's Layer 3 audit): items given before the
+// volume-checking fix landed permanently carry a NULL volume_override, which
+// every capacity check already treats as 0 -- so the console's own volume
+// accounting silently undercounts real usage for pre-existing rows. A
+// backfill was judged too risky to run against every operator's live
+// dune.items data for a LOW-MEDIUM accuracy gap (Strict Requirement 0/26);
+// this test locks in that the per-container slots view now surfaces the
+// real, current volume total directly instead of leaving it implicit.
+test("baseContainerSlots reports current and max volume per inventory", async () => {
+  const calls = [];
+  const db = fakeContainerSlotsDb(calls, {
+    inventoryColumns: ["id", "actor_id", "max_item_count", "max_item_volume"],
+    itemColumns: ["id", "inventory_id", "stack_size", "position_index", "template_id", "stats", "quality_level", "volume_override"],
+    rows: [
+      { ...SLOT_ROW, max_item_volume: 500, item_id: "1", template_id: "ScrapMetal", stack_size: 500, position_index: 0, volume_override: 40 },
+      { ...SLOT_ROW, max_item_volume: 500, item_id: "2", template_id: "MagnetiteOre", stack_size: 200, position_index: 1, volume_override: 15 }
+    ]
+  });
+  const result = await baseContainerSlots(db, 16836, 40001);
+
+  assert.equal(result.maxVolume, 500, "max volume is read once per inventory, not summed per item row");
+  assert.equal(result.currentVolume, 55, "current volume sums volume_override, which already stores the TOTAL per-stack volume");
+  assert.equal(result.inventories[0].maxVolume, 500);
+  assert.equal(result.inventories[0].currentVolume, 55);
+});
+
+test("baseContainerSlots degrades volume to 0/0 on a schema without max_item_volume/volume_override, rather than failing", async () => {
+  const calls = [];
+  const db = fakeContainerSlotsDb(calls, {
+    rows: [{ ...SLOT_ROW, item_id: "1", template_id: "ScrapMetal", stack_size: 500, position_index: 0 }]
+  });
+  const result = await baseContainerSlots(db, 16836, 40001);
+
+  assert.equal(result.currentVolume, 0);
+  assert.equal(result.maxVolume, 0);
+  const query = calls.find((call) => call.text.includes("requested_claims"));
+  assert.match(query.text, /0::real as max_item_volume/);
+  assert.match(query.text, /0::real as volume_override/);
 });
 
 test("baseContainerSlots scopes to the base and keeps the container allowlist filters", async () => {

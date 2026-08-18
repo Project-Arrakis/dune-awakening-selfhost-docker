@@ -139,6 +139,13 @@ export type BaseInventoryContainer = {
   group: BaseInventoryGroupKey;
   usedSlots: number;
   maxSlots: number;
+  // Both 0 on a schema without dune.inventories.max_item_volume /
+  // dune.items.volume_override -- degraded, not omitted, so the UI can
+  // always read these without a guard. currentVolume sums volume_override,
+  // which already stores each stack's TOTAL volume (per-unit x quantity),
+  // never a per-unit value alone (see docs/console/base-inventory.md).
+  currentVolume: number;
+  maxVolume: number;
   itemCount: number;
   items: BaseInventoryEntry[];
 };
@@ -170,6 +177,9 @@ export type BaseContainerInventory = {
   inventoryId: string;
   maxSlots: number;
   usedSlots: number;
+  // Same degrade-to-0 convention as BaseInventoryContainer's fields above.
+  currentVolume: number;
+  maxVolume: number;
   slots: BaseInventorySlot[];
 };
 
@@ -187,6 +197,8 @@ export type BaseContainerSlots = {
   group?: BaseInventoryGroupKey;
   maxSlots?: number;
   usedSlots?: number;
+  currentVolume?: number;
+  maxVolume?: number;
   inventories: BaseContainerInventory[];
   reason?: string;
   deleteSafety?: BaseContainerDeleteSafety;
@@ -248,7 +260,7 @@ export type BaseInventory = {
   groups: BaseInventoryGroup[];
   containers: BaseInventoryContainer[];
   items: BaseInventoryItem[];
-  totals: { items: number; distinct: number; containers: number; usedSlots: number; maxSlots: number };
+  totals: { items: number; distinct: number; containers: number; usedSlots: number; maxSlots: number; currentVolume: number; maxVolume: number };
   // Only set alongside supported: false.
   reason?: string;
 };

@@ -133,16 +133,36 @@ row — unacceptable for a destructive operation.
 ```
 { supported, baseId,
   groups:     [{ key, name, containerCount, itemCount }],
-  containers: [{ placeableId, name, typeName, group, usedSlots, maxSlots, itemCount,
+  containers: [{ placeableId, name, typeName, group, usedSlots, maxSlots, currentVolume, maxVolume, itemCount,
                  items: [{ templateId, name, quantity }] }],
   items:      [{ templateId, name, image, category, quantity, containerCount,
                  containers: [{ placeableId, name, typeName, group, quantity }] }],
-  totals:     { items, distinct, containers, usedSlots, maxSlots } }
+  totals:     { items, distinct, containers, usedSlots, maxSlots, currentVolume, maxVolume } }
 ```
 
 One response backs both views, so switching between Items and Containers never refetches. Item `name`/`category` come from `adminItemMetadata()` over `runtime/data/admin-items.json`, falling back to the raw `template_id`; `image` resolves through `itemImagePath()` and falls back to `image-unavailable.png`.
 
 `usedSlots` counts item *rows* — one stack occupies one slot — while `quantity` sums `stack_size`. Capacity is summed once per inventory, not per item row, since every row repeats its inventory's `max_item_count`.
+
+**`currentVolume`/`maxVolume` (issue #356) are column-probed the same way `positionIndex`/`qualityLevel` are
+in "Per-container slots" below** — a schema without `dune.inventories.max_item_volume` or
+`dune.items.volume_override` degrades both to `0` rather than failing the tab, and the UI shows "—" instead
+of a percentage, or withholds the row entirely on a per-container card, whenever `maxVolume` is `0`.
+`currentVolume` sums `volume_override` per inventory, which already stores the **TOTAL** volume of each
+stack (per-unit volume × quantity, not the per-unit value alone) — the same convention
+`giveItemToStorage`/`fillItemToStorage` use for their own volume-cap checks (see "Both Give and Fill enforce
+the same slot and volume caps" below), so a displayed volume total always agrees with what the next
+give/fill against that container will actually enforce.
+
+**Why this exists instead of a backfill:** an item given via the storage give-item route before it started
+recording `volume_override` (or given directly by the game engine) has a permanent `NULL` there, which
+every `sum(coalesce(volume_override, 0))` query already treats as `0` — so a pre-existing container's real
+volume usage was silently invisible rather than wrong. A one-time backfill script was considered and
+rejected: it would mean running an `UPDATE` against every operator's live `dune.items` table on their next
+pull, which is exactly the update-path risk Strict Requirement 0/26 exist to catch for a LOW-MEDIUM
+accuracy gap in a capacity message, not a data-integrity or security issue. Surfacing the real, current
+total directly — rather than trying to reconstruct history that was never recorded — was judged the lower-risk
+fix.
 
 **A container's `items[]` is not its stacks.** Rows sharing a template are merged into one entry, so `items.length` is the number of distinct templates and is **≤ `usedSlots`**. On the reference base, Chem Storage fills 8 slots with 3 templates, and 5 of 17 containers disagree the same way. The UI therefore says "3 distinct", never "3 stacks" — the stack count is `usedSlots`, already shown as Slots Used. The type is named `BaseInventoryEntry` rather than `…Stack` for the same reason.
 
@@ -153,11 +173,14 @@ filter, both of which genuinely mean distinct templates. The per-slot truth live
 
 ```
 GET /api/bases/{baseId}/containers/{placeableId}
-{ supported, found, baseId, placeableId, typeName, group, maxSlots, usedSlots,
-  inventories: [{ inventoryId, maxSlots, usedSlots,
+{ supported, found, baseId, placeableId, typeName, group, maxSlots, usedSlots, maxVolume, currentVolume,
+  inventories: [{ inventoryId, maxSlots, usedSlots, maxVolume, currentVolume,
                   slots: [{ itemId, templateId, name, positionIndex, quantity,
                             qualityLevel, currentDurability, maxDurability }] }] }
 ```
+
+`maxVolume`/`currentVolume` follow the exact same convention as `baseInventory`'s own totals above — summed
+once per inventory, column-probed, degrading to `0`/`0` on a schema without volume support.
 
 **Fetched per container, not with the tab.** Folding slots into `baseInventory` tripled that response —
 238 KB to 656 KB on the largest base in the reference dump, +176% — on a tab that loads on every base

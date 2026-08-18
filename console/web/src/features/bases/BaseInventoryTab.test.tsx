@@ -33,21 +33,28 @@ const PAYLOAD: BaseInventory = {
   ],
   containers: [
     {
+      // Vault deliberately carries real volume figures -- the one container
+      // in this fixture with volume tracking on, so tests can assert the
+      // Volume Used row renders with real numbers as well as being withheld
+      // elsewhere (issue #356).
       placeableId: "40001", name: "Vault", typeName: "Storage Container", group: "storage",
-      usedSlots: 2, maxSlots: 45, itemCount: 1200,
+      usedSlots: 2, maxSlots: 45, currentVolume: 120, maxVolume: 500, itemCount: 1200,
       items: [
         { templateId: "Stone", name: "Granite Stone", quantity: 1000 },
         { templateId: "MagnetiteOre", name: "Iron Ore", quantity: 200 }
       ]
     },
     {
+      // 0/0 -- a schema without volume tracking (issue #356), or a container
+      // whose inventory just has no cap. Row must be withheld, not shown as
+      // a misleading 0/0.
       placeableId: "40002", name: "", typeName: "Small Storage Container", group: "storage",
-      usedSlots: 1, maxSlots: 10, itemCount: 40,
+      usedSlots: 1, maxSlots: 10, currentVolume: 0, maxVolume: 0, itemCount: 40,
       items: [{ templateId: "SpiceSand", name: "Spice Sand", quantity: 40 }]
     },
     {
       placeableId: "40003", name: "", typeName: "Small Ore Refinery", group: "refining",
-      usedSlots: 1, maxSlots: 5, itemCount: 420,
+      usedSlots: 1, maxSlots: 5, currentVolume: 0, maxVolume: 0, itemCount: 420,
       items: [{ templateId: "MagnetiteOre", name: "Iron Ore", quantity: 420 }]
     }
   ],
@@ -71,7 +78,7 @@ const PAYLOAD: BaseInventory = {
       containers: [{ placeableId: "40002", name: "", typeName: "Small Storage Container", group: "storage", quantity: 40 }]
     }
   ],
-  totals: { items: 1660, distinct: 3, containers: 3, usedSlots: 4, maxSlots: 60 }
+  totals: { items: 1660, distinct: 3, containers: 3, usedSlots: 4, maxSlots: 60, currentVolume: 120, maxVolume: 500 }
 };
 
 // The Vault's slots. Deliberately two stacks of the SAME template: that is the
@@ -87,11 +94,15 @@ const SLOTS: BaseContainerSlots = {
   maxSlots: 45,
   usedSlots: 3,
   deleteSafety: { safe: true, known: true, map: "HaggaBasin", partitionId: 1, reason: "" },
+  currentVolume: 120,
+  maxVolume: 500,
   inventories: [
     {
       inventoryId: "9001",
       maxSlots: 45,
       usedSlots: 3,
+      currentVolume: 120,
+      maxVolume: 500,
       slots: [
         { itemId: "501", templateId: "Stone", name: "Granite Stone", positionIndex: 0, quantity: 600, qualityLevel: 0, currentDurability: null, maxDurability: null },
         { itemId: "502", templateId: "MagnetiteOre", name: "Iron Ore", positionIndex: 1, quantity: 200, qualityLevel: 0, currentDurability: null, maxDurability: null },
@@ -194,6 +205,10 @@ describe("BaseInventoryTab", () => {
     expect(total("Containers")).toBe("3");
     // 4 of 60 slots.
     expect(total("Slots used")).toBe("7%");
+    // 120 of 500 volume (issue #356) -- only the Vault carries volume in this
+    // fixture, and its 120/500 is also the tab-wide total since the other
+    // two containers are 0/0.
+    expect(total("Volume used")).toBe("24%");
     expect(itemRows().map((row) => row.textContent)).toEqual([
       expect.stringContaining("Granite Stone"),
       expect.stringContaining("Iron Ore"),
@@ -260,13 +275,13 @@ describe("BaseInventoryTab", () => {
       // rename has to file under the name shown on the card, and "#9" has to
       // sort ahead of "#10" rather than lexically after it.
       containers: [
-        { placeableId: "10", name: "", typeName: "Chest", group: "storage", usedSlots: 0, maxSlots: 20, itemCount: 0, items: [] },
-        { placeableId: "9", name: "", typeName: "Chest", group: "storage", usedSlots: 0, maxSlots: 20, itemCount: 0, items: [] },
-        { placeableId: "77", name: "Zeta Vault", typeName: "Storage Container", group: "storage", usedSlots: 0, maxSlots: 45, itemCount: 0, items: [] },
-        { placeableId: "88", name: "Alpha Vault", typeName: "Storage Container", group: "storage", usedSlots: 0, maxSlots: 45, itemCount: 0, items: [] }
+        { placeableId: "10", name: "", typeName: "Chest", group: "storage", usedSlots: 0, maxSlots: 20, currentVolume: 0, maxVolume: 0, itemCount: 0, items: [] },
+        { placeableId: "9", name: "", typeName: "Chest", group: "storage", usedSlots: 0, maxSlots: 20, currentVolume: 0, maxVolume: 0, itemCount: 0, items: [] },
+        { placeableId: "77", name: "Zeta Vault", typeName: "Storage Container", group: "storage", usedSlots: 0, maxSlots: 45, currentVolume: 0, maxVolume: 0, itemCount: 0, items: [] },
+        { placeableId: "88", name: "Alpha Vault", typeName: "Storage Container", group: "storage", usedSlots: 0, maxSlots: 45, currentVolume: 0, maxVolume: 0, itemCount: 0, items: [] }
       ],
       items: [],
-      totals: { items: 0, distinct: 0, containers: 4, usedSlots: 0, maxSlots: 130 }
+      totals: { items: 0, distinct: 0, containers: 4, usedSlots: 0, maxSlots: 130, currentVolume: 0, maxVolume: 0 }
     });
     renderTab();
     await loaded();
@@ -373,7 +388,7 @@ describe("BaseInventoryTab", () => {
       groups: [],
       containers: [],
       items: [],
-      totals: { items: 0, distinct: 0, containers: 0, usedSlots: 0, maxSlots: 0 }
+      totals: { items: 0, distinct: 0, containers: 0, usedSlots: 0, maxSlots: 0, currentVolume: 0, maxVolume: 0 }
     });
     renderTab();
 
@@ -391,7 +406,7 @@ describe("BaseInventoryTab", () => {
       groups: PAYLOAD.groups.map((group) => ({ ...group, containerCount: 0, itemCount: 0 })),
       containers: [],
       items: [],
-      totals: { items: 0, distinct: 0, containers: 0, usedSlots: 0, maxSlots: 0 }
+      totals: { items: 0, distinct: 0, containers: 0, usedSlots: 0, maxSlots: 0, currentVolume: 0, maxVolume: 0 }
     });
     renderTab();
     await loaded();
@@ -461,7 +476,7 @@ describe("BaseInventoryTab", () => {
       ...PAYLOAD,
       containers: [{
         placeableId: "40009", name: "", typeName: "Repair Station", group: "other",
-        usedSlots: 0, maxSlots: 5, itemCount: 0, items: []
+        usedSlots: 0, maxSlots: 5, currentVolume: 0, maxVolume: 0, itemCount: 0, items: []
       }],
       groups: PAYLOAD.groups.map((g) => g.key === "other"
         ? { ...g, containerCount: 1, itemCount: 0 }
@@ -566,7 +581,7 @@ describe("BaseInventoryTab", () => {
     mockSlots({
       ...SLOTS,
       inventories: [{
-        inventoryId: "9001", maxSlots: 4, usedSlots: 3,
+        inventoryId: "9001", maxSlots: 4, usedSlots: 3, currentVolume: 0, maxVolume: 0,
         slots: [
           { itemId: "601", templateId: "Stone", name: "Granite Stone", positionIndex: 1, quantity: 10, qualityLevel: 0, currentDurability: null, maxDurability: null },
           { itemId: "602", templateId: "MagnetiteOre", name: "Iron Ore", positionIndex: 1, quantity: 20, qualityLevel: 0, currentDurability: null, maxDurability: null },
@@ -724,7 +739,7 @@ describe("BaseInventoryTab", () => {
       typeName: "Small Ore Refinery",
       group: "refining",
       inventories: [{
-        inventoryId: "9003", maxSlots: 5, usedSlots: 1,
+        inventoryId: "9003", maxSlots: 5, usedSlots: 1, currentVolume: 0, maxVolume: 0,
         slots: [{ itemId: "701", templateId: "MagnetiteOre", name: "Iron Ore", positionIndex: 0, quantity: 420, qualityLevel: 0, currentDurability: null, maxDurability: null }]
       }]
     });
@@ -801,6 +816,45 @@ describe("BaseInventoryTab", () => {
 
     const vault = cards().find((card) => card.textContent?.includes("Vault"));
     expect(within(vault as HTMLElement).getByText("2 / 45")).toBeTruthy();
+  });
+
+  // Issue #356: pre-existing items given before the volume-checking fix
+  // landed have a permanent NULL volume_override, which every capacity check
+  // already treats as 0 -- so a backfill was judged too risky to run against
+  // every operator's live data for a LOW-MEDIUM accuracy gap. Surfacing the
+  // real, current volume total directly (rather than leaving it implicit)
+  // was the chosen fix instead.
+  it("shows a container's volume usage on its card when the schema tracks it", async () => {
+    mockInventory();
+    renderTab();
+    await loaded();
+    fireEvent.click(screen.getByRole("button", { name: "Containers" }));
+
+    const vault = cards().find((card) => card.textContent?.includes("Vault"));
+    expect(within(vault as HTMLElement).getByText("Volume Used")).toBeTruthy();
+    expect(within(vault as HTMLElement).getByText("120.0 / 500.0")).toBeTruthy();
+  });
+
+  it("withholds the volume row on a card whose container has no volume cap", async () => {
+    mockInventory();
+    renderTab();
+    await loaded();
+    fireEvent.click(screen.getByRole("button", { name: "Containers" }));
+
+    // The 40002 Small Storage Container fixture is 0/0 -- no volume tracked.
+    const smallContainer = cards().find((card) => card.textContent?.includes("Small Storage Container"));
+    expect(within(smallContainer as HTMLElement).queryByText("Volume Used")).toBeNull();
+  });
+
+  it("shows a container's volume usage in the contents overlay summary", async () => {
+    mockInventory();
+    renderTab();
+    await loaded();
+    await openVaultContents();
+
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByText("Volume Used")).toBeTruthy();
+    expect(within(dialog).getByText("120.0 / 500.0")).toBeTruthy();
   });
 
   // Give/Give-multiple/Fill/bulk-delete: added alongside the raw-resource

@@ -85,6 +85,51 @@ Keep a Changelog style, grouped by upstream base version, newest first.
   Vehicles → Inventory side of this feature is tracked separately as issue
   #348 (net-new UI surface, no existing tab to extend, split out to keep
   this PR reviewable as one coherent increment).
+- Base Inventory tab (Storage-group containers and their contents overlay)
+  now shows a real-time **Volume Used** figure alongside Slots Used, at the
+  tab-wide totals level, on each container's own card, in the contents
+  overlay summary, and per-inventory when a container backs more than one
+  (issue #356). Column-probed the same way `positionIndex`/`qualityLevel`
+  already are: a schema without `dune.inventories.max_item_volume` or
+  `dune.items.volume_override` degrades to `0`/`0` and the row is withheld
+  entirely (card/overlay) or shown as "—" (tab totals) rather than a
+  misleading `0%`. `currentVolume` sums `volume_override` per inventory,
+  which already stores each stack's TOTAL volume (per-unit × quantity),
+  matching exactly what `giveItemToStorage`/`fillItemToStorage`'s own
+  capacity checks enforce -- so the displayed total always agrees with what
+  the next give/fill against that container will actually allow. This was
+  the chosen fix for a real accuracy gap found during PR #349's own Layer 3
+  audit: items given via the storage give-item route before it started
+  recording `volume_override` (or given directly by the game engine)
+  permanently carry a `NULL` there, which every `sum(volume_override)` query
+  already treats as `0` -- so a pre-existing container's real volume usage
+  was silently invisible. A one-time backfill script that would `UPDATE`
+  every operator's live `dune.items` rows on their next pull was considered
+  and rejected as disproportionate risk (Strict Requirement 0/26) for a
+  LOW-MEDIUM accuracy gap in a capacity message, not a data-integrity or
+  security issue; surfacing the real, current total directly was judged the
+  lower-risk fix.
+- Base container **Delete Selected**/**Delete All** (issue #347) now resolve
+  and verify a whole batch with a fixed, small number of set-based
+  round-trips instead of one pair of round-trips per item -- found during
+  PR #349's own Layer 3 audit (issue #352, HIGH severity, DBA + Security
+  hats independently): the original version's per-item loop (a
+  `select ... for update`, the irreducible `dune.delete_item(bigint)` call,
+  an `exists` check, a conditional fallback `delete`) cost ~4 round-trips
+  per item -- worst case ~800 sequential statements for a 200-item batch,
+  all while the container's inventory row lock was held for the entire
+  duration, blocking any concurrent give/fill/delete against the *same*
+  container for that whole window. A new shared helper,
+  `finishDeletingLockedItems()`, now verifies and cleans up the whole batch
+  in one set-based pair of statements after the `dune.delete_item` loop
+  (itself irreducible, since it is a shipped, single-argument procedure) --
+  round-trips drop from ~4N to ~N+2. Each `removed[]` entry from both bulk
+  functions now also carries the same audit-detail fields
+  `deleteBaseContainerItem`'s own `destroyedState` does --
+  `positionIndex`/`qualityLevel`/`currentDurability`/`maxDurability`, via a
+  new shared `auditDetailSelectFragment()` helper -- so a bulk-destroyed
+  pristine legendary no longer logs identically to a bulk-destroyed broken
+  common of the same template in the admin audit trail (issue #350).
 - Raw resources are now a fillable/giveable item category. `FILLABLE_GROUPS`
   in `adminCatalog.js` gains `raw_resource` alongside the existing
   `refined_resource`/`component`. 19 items in `runtime/data/admin-items.json`

@@ -591,6 +591,10 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
 
   const { totals } = data;
   const slotPercent = totals.maxSlots > 0 ? Math.round((totals.usedSlots / totals.maxSlots) * 100) : 0;
+  // maxVolume is 0 on a schema without dune.inventories.max_item_volume /
+  // dune.items.volume_override (issue #356) -- "—" rather than "0%" so an
+  // operator does not mistake "not tracked here" for "completely full".
+  const volumePercent = totals.maxVolume > 0 ? Math.round((totals.currentVolume / totals.maxVolume) * 100) : 0;
   const visibleItems = showAllItems ? items : items.slice(0, ITEM_PREVIEW_LIMIT);
 
   return (
@@ -613,6 +617,7 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
           <div className="summary-stat"><dt>Distinct</dt><dd>{totals.distinct.toLocaleString()}</dd></div>
           <div className="summary-stat"><dt>Containers</dt><dd>{totals.containers.toLocaleString()}</dd></div>
           <div className="summary-stat"><dt>Slots used</dt><dd>{totals.maxSlots > 0 ? `${slotPercent}%` : "—"}</dd></div>
+          <div className="summary-stat"><dt>Volume used</dt><dd>{totals.maxVolume > 0 ? `${volumePercent}%` : "—"}</dd></div>
         </dl>
 
         <div className="bases-inventory-controls">
@@ -742,6 +747,12 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
                           const percent = container.maxSlots > 0
                             ? Math.round((container.usedSlots / container.maxSlots) * 100)
                             : 0;
+                          // maxVolume is 0 on a schema without volume tracking
+                          // (issue #356) -- the row is withheld entirely
+                          // rather than shown as a misleading 0/0 or 0%.
+                          const volumePercent = container.maxVolume > 0
+                            ? Math.round((container.currentVolume / container.maxVolume) * 100)
+                            : 0;
                           return (
                             <div className="bases-card" key={container.placeableId}>
                               <div className="bases-card-title">
@@ -767,6 +778,17 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
                                     <span>{container.usedSlots.toLocaleString()} / {container.maxSlots.toLocaleString()}</span>
                                   </div>
                                 </dd>
+                                {container.maxVolume > 0 && <>
+                                  <dt>Volume Used</dt>
+                                  <dd>
+                                    <div className="progress-row">
+                                      <div className="progress-track">
+                                        <div className="progress-fill" style={{ width: `${Math.min(100, volumePercent)}%` }} />
+                                      </div>
+                                      <span>{container.currentVolume.toFixed(1)} / {container.maxVolume.toFixed(1)}</span>
+                                    </div>
+                                  </dd>
+                                </>}
                                 <dt>Items</dt>
                                 <dd>{container.itemCount.toLocaleString()}</dd>
                                 {/* Label hidden but not removed: the row keeps
@@ -840,6 +862,12 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
 
           <dl className="bases-inventory-contents-summary">
             <div><dt>Slots Used</dt><dd>{openContainer.usedSlots.toLocaleString()} / {openContainer.maxSlots.toLocaleString()}</dd></div>
+            {/* Withheld on a schema without volume tracking (issue #356),
+                same as the container card's own Volume Used row. */}
+            {openContainer.maxVolume > 0 && <div>
+              <dt>Volume Used</dt>
+              <dd>{openContainer.currentVolume.toFixed(1)} / {openContainer.maxVolume.toFixed(1)}</dd>
+            </div>}
             <div><dt>Items</dt><dd>{openContainer.itemCount.toLocaleString()}</dd></div>
             {/* Distinct templates, not stacks -- the count below the list is
                 the stack count, and the two differ whenever a template
@@ -880,6 +908,7 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
               <div className="bases-inventory-slots" key={inventory.inventoryId}>
                 {slots.inventories.length > 1 && <p className="bases-inventory-card-subtitle">
                   Inventory #{inventory.inventoryId} · {inventory.usedSlots.toLocaleString()} / {inventory.maxSlots.toLocaleString()} slots
+                  {inventory.maxVolume > 0 && ` · ${inventory.currentVolume.toFixed(1)} / ${inventory.maxVolume.toFixed(1)} volume`}
                 </p>}
 
                 {showGrid && <div

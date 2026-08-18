@@ -8397,10 +8397,23 @@ export async function baseInventory(db, baseId, { repoRoot = "" } = {}) {
       groups: [],
       containers: [],
       items: [],
-      totals: { items: 0, distinct: 0, containers: 0, usedSlots: 0, maxSlots: 0 }
+      totals: { items: 0, distinct: 0, containers: 0, usedSlots: 0, maxSlots: 0, currentVolume: 0, maxVolume: 0 }
     };
   }
   const [groups, buildingTypes, typeNames] = baseInventoryTypeParams();
+
+  // Column-probed the same way baseContainerSlots already probes
+  // position_index/quality_level/stats (issue #356, found during PR #349's
+  // Layer 3 audit): a schema without max_item_volume/volume_override can
+  // still list slots and quantities, it just cannot report volume. Neither
+  // column is required by anything above -- degrading to 0 here must not
+  // fail the whole tab.
+  const inventoryColumns = await columnsFor(db, "inventories");
+  const itemColumns = await columnsFor(db, "items");
+  const hasMaxItemVolume = inventoryColumns.has("max_item_volume");
+  const hasVolumeOverride = itemColumns.has("volume_override");
+  const maxItemVolumeSelect = hasMaxItemVolume ? "inv.max_item_volume" : "0::real as max_item_volume";
+  const volumeOverrideSelect = hasVolumeOverride ? "i.volume_override" : "0::real as volume_override";
 
   const result = await db.query(`
     with requested_claims as (
@@ -8423,7 +8436,7 @@ export async function baseInventory(db, baseId, { repoRoot = "" } = {}) {
       -- on all 44 of them in the reference dump. Keeping it would also mean
       -- dividing a slot bar by a negative capacity.
       select p.id as placeable_id, inv.id as inventory_id,
-             it.group_key, it.type_name, inv.max_item_count,
+             it.group_key, it.type_name, inv.max_item_count, ${maxItemVolumeSelect},
              coalesce(max(case when pa.actor_name not like '##%' and pa.actor_name <> 'None'
                           then pa.actor_name end), '') as container_name
       from base_entities be
@@ -8432,12 +8445,12 @@ export async function baseInventory(db, baseId, { repoRoot = "" } = {}) {
       join dune.inventories inv on inv.actor_id = p.id and inv.max_item_count >= 0
       left join dune.permission_actor pa on pa.actor_id = p.id
       where p.is_hologram = false
-      group by p.id, inv.id, it.group_key, it.type_name, inv.max_item_count
+      group by p.id, inv.id, it.group_key, it.type_name, inv.max_item_count${hasMaxItemVolume ? ", inv.max_item_volume" : ""}
     )
     select c.placeable_id::text as placeable_id,
            c.inventory_id::text as inventory_id,
-           c.group_key, c.type_name, c.container_name, c.max_item_count,
-           i.template_id, i.stack_size
+           c.group_key, c.type_name, c.container_name, c.max_item_count, c.max_item_volume,
+           i.template_id, i.stack_size, ${volumeOverrideSelect}
     from containers c
     left join dune.items i on i.inventory_id = c.inventory_id
     order by c.placeable_id, i.template_id`, [target, groups, buildingTypes, typeNames]);
@@ -8464,6 +8477,8 @@ export async function baseInventory(db, baseId, { repoRoot = "" } = {}) {
         group: row.group_key,
         usedSlots: 0,
         maxSlots: 0,
+        currentVolume: 0,
+        maxVolume: 0,
         itemCount: 0,
         items: []
       };
@@ -8475,6 +8490,7 @@ export async function baseInventory(db, baseId, { repoRoot = "" } = {}) {
     if (!countedInventories.has(inventoryId)) {
       countedInventories.add(inventoryId);
       container.maxSlots += Math.max(0, Number(row.max_item_count) || 0);
+      container.maxVolume += Math.max(0, Number(row.max_item_volume) || 0);
     }
 
     // The left join emits one all-null item for an empty container.
@@ -8483,6 +8499,10 @@ export async function baseInventory(db, baseId, { repoRoot = "" } = {}) {
     const quantity = Number(row.stack_size) || 0;
     container.usedSlots += 1;
     container.itemCount += quantity;
+    // volume_override is stored as the TOTAL volume of the whole stack (see
+    // giveItemToStorage/fillItemToStorage's own comments), not a per-unit
+    // value -- summed as-is, never multiplied by quantity again here.
+    container.currentVolume += Number(row.volume_override) || 0;
 
     const metadata = itemMetadata.get(templateId);
     const name = metadata?.name || templateId;
@@ -8559,7 +8579,9 @@ export async function baseInventory(db, baseId, { repoRoot = "" } = {}) {
       distinct: items.length,
       containers: containers.length,
       usedSlots: containers.reduce((total, container) => total + container.usedSlots, 0),
-      maxSlots: containers.reduce((total, container) => total + container.maxSlots, 0)
+      maxSlots: containers.reduce((total, container) => total + container.maxSlots, 0),
+      currentVolume: containers.reduce((total, container) => total + container.currentVolume, 0),
+      maxVolume: containers.reduce((total, container) => total + container.maxVolume, 0)
     }
   };
 }
@@ -8606,6 +8628,14 @@ export async function baseContainerSlots(db, baseId, placeableId) {
   const itemColumns = await columnsFor(db, "items");
   const hasPositionIndex = itemColumns.has("position_index");
   const hasStats = itemColumns.has("stats");
+  // Same volume probe baseInventory uses (issue #356): a schema without
+  // max_item_volume/volume_override still opens the container, it just
+  // reports 0/0 volume instead of failing the whole slots view.
+  const inventoryColumns = await columnsFor(db, "inventories");
+  const hasMaxItemVolume = inventoryColumns.has("max_item_volume");
+  const hasVolumeOverride = itemColumns.has("volume_override");
+  const maxItemVolumeSelect = hasMaxItemVolume ? "inv.max_item_volume" : "0::real as max_item_volume";
+  const volumeOverrideSelect = hasVolumeOverride ? "i.volume_override" : "0::real as volume_override";
   const slotSelect = [
     hasPositionIndex ? "i.position_index" : "null::bigint as position_index",
     itemColumns.has("quality_level") ? "i.quality_level" : "0::bigint as quality_level",
@@ -8649,7 +8679,7 @@ export async function baseContainerSlots(db, baseId, placeableId) {
       select * from unnest($2::text[], $3::text[], $4::text[]) as t(group_key, building_type, type_name)
     ), containers as (
       select distinct p.id as placeable_id, inv.id as inventory_id,
-             it.group_key, it.type_name, inv.max_item_count
+             it.group_key, it.type_name, inv.max_item_count, ${maxItemVolumeSelect}
       from base_entities be
       join dune.placeables p on p.owner_entity_id = be.owner_entity_id
       join inventory_types it on it.building_type = lower(p.building_type)
@@ -8657,8 +8687,8 @@ export async function baseContainerSlots(db, baseId, placeableId) {
       where p.is_hologram = false and p.id = $5
     )
     select c.inventory_id::text as inventory_id,
-           c.group_key, c.type_name, c.max_item_count,
-           i.id::text as item_id, i.template_id, i.stack_size,
+           c.group_key, c.type_name, c.max_item_count, c.max_item_volume,
+           i.id::text as item_id, i.template_id, i.stack_size, ${volumeOverrideSelect},
            ${slotSelect}
     from containers c
     left join dune.items i on i.inventory_id = c.inventory_id
@@ -8685,6 +8715,8 @@ export async function baseContainerSlots(db, baseId, placeableId) {
         inventoryId,
         maxSlots: Math.max(0, Number(row.max_item_count) || 0),
         usedSlots: 0,
+        maxVolume: Math.max(0, Number(row.max_item_volume) || 0),
+        currentVolume: 0,
         slots: []
       };
       inventoriesById.set(inventoryId, inventory);
@@ -8694,6 +8726,9 @@ export async function baseContainerSlots(db, baseId, placeableId) {
     const templateId = String(row.template_id || "");
     if (!templateId) continue;
     inventory.usedSlots += 1;
+    // volume_override is the TOTAL volume of the stack, matching baseInventory's
+    // own accumulation -- never multiplied by quantity again here.
+    inventory.currentVolume += Number(row.volume_override) || 0;
     inventory.slots.push({
       itemId: String(row.item_id),
       templateId,
@@ -8722,6 +8757,8 @@ export async function baseContainerSlots(db, baseId, placeableId) {
     group: result.rows[0].group_key,
     maxSlots: inventories.reduce((total, inventory) => total + inventory.maxSlots, 0),
     usedSlots: inventories.reduce((total, inventory) => total + inventory.usedSlots, 0),
+    maxVolume: inventories.reduce((total, inventory) => total + inventory.maxVolume, 0),
+    currentVolume: inventories.reduce((total, inventory) => total + inventory.currentVolume, 0),
     inventories
   };
 }
