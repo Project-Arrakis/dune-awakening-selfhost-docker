@@ -253,7 +253,10 @@ discovered after CI passes green on a false sense of coverage.**
 
 ```
 POST   /api/settings/iam/policies                        create (name, statements) -> {policyId, defaultVersionId}
-GET    /api/settings/iam/policies/{policyId}              get (all versions + default marker)
+                                                           -- rejected once 50 named policies already exist (§8 item 2, resolved)
+GET    /api/settings/iam/policies/{policyId}              get (all versions + default marker) -- the ONLY route that
+                                                           returns full version history; GET .../policies (list, §4.7)
+                                                           returns each policy's default version only, per §8 item 2
 PUT    /api/settings/iam/policies/{policyId}               edit -> creates a NEW version, sets it default
 POST   /api/settings/iam/policies/{policyId}/rollback      body {versionId} -> sets an existing version as default (no new version created)
 DELETE /api/settings/iam/policies/{policyId}/versions/{versionId}   delete a specific non-default version
@@ -285,6 +288,8 @@ DELETE /api/settings/iam/policies/{policyId}               delete the whole poli
 
 ```
 POST   /api/settings/iam/tiers                     create ({tier: "event-mod"}) -> {inline: null, attached: []}
+                                                    -- rejected once 20 custom tiers already exist, not counting
+                                                       the 5 built-in tiers (§8 item 2, resolved)
 PUT    /api/settings/iam/tiers/{tier}/inline        set/replace this tier's OWN inline policy (statements) -- this is the direct successor of today's PUT /api/settings/iam/policy for a single tier
 PUT    /api/settings/iam/tiers/{tier}/attach        body {policyId} -> adds to attached[] (idempotent if already attached)
 PUT    /api/settings/iam/tiers/{tier}/detach        body {policyId} -> removes from attached[]
@@ -518,9 +523,16 @@ linked views, matching the AWS console's own IAM section structure (a
   - "New Role" button (owner-only): the direct successor of revision 1's
     same-named action, now creating a tier with empty inline + empty
     attached rather than a single empty document.
-- **Policies view** (new): list of named policies (name, `managed`
-  badge if system-provided, "attached to: owner, admin" style summary),
-  each opening an editor with:
+- **Policies view** (new): list of named policies fetched from the
+  catalog-list route, which per §8 item 2's resolution returns each
+  policy's **default version's statements only** — not full version
+  history — keeping the common-case list payload small regardless of
+  how many versions any individual policy has accumulated (name,
+  `managed` badge if system-provided, "attached to: owner, admin" style
+  summary, and a permission count derived from the default version).
+  Opening a specific policy calls `GET .../policies/{policyId}` (§4.2) to
+  lazily fetch its full version history only when actually needed, then
+  shows an editor with:
   - Permissions/JSON tabs (reusing the exact same checkbox-grid component
     revision 1 already confirmed is tier-name-agnostic — it's equally
     policy-identity-agnostic, since it only ever operates on a statement
@@ -744,21 +756,30 @@ with its resolution status per the completed Layer 1 audit (§9 has the
 full findings register). Items resolved below are closed; items still
 genuinely open carry into L2/implementation planning.
 
-1. **Still open.** Is `RESERVED_TIER_NAME_PATTERN`'s exact shape
-   (`^[a-z][a-z0-9_-]{1,31}$`) right, or should it match `actions.js`'s
-   own prevailing namespace convention more precisely? No hat took a
-   strong position on the exact charset; carries into L2.
-2. **Still open, but narrowed.** Should there be a maximum number of
-   named policies and/or custom tiers? The Network hat's review adds a
-   concrete reason beyond generic DoS-sanity: `GET
-   /api/settings/iam/policies` returns the entire catalog with no
-   pagination, and this design's schema multiplies that response's
-   plausible size by up to 5x per policy (full version history). Recommend
-   resolving this at L2 as: (a) a reasonable hard cap on total named
-   policies enforced server-side at creation, and/or (b) having the GET
-   route return only each policy's default version inline, with full
-   version history fetched lazily per-policy — the latter also shrinks
-   the common-case payload regardless of whether a hard cap is added.
+1. **Resolved (operator decision, pre-L2).** `RESERVED_TIER_NAME_PATTERN`
+   stays `^[a-z][a-z0-9_-]{1,31}$` (hyphens/underscores allowed).
+   Reasoning: a tier/role name is a different kind of identifier than an
+   `actions.js` namespace — it's closer to a slug (like this project's
+   own branch-naming or addon-naming conventions, which also allow
+   hyphens) than to a fixed, small, hand-curated namespace enum. No hat
+   raised a security or consistency objection to the original pattern;
+   only a stylistic question was open, now closed by decision.
+2. **Resolved (operator decision, pre-L2).** Hard cap + lazy version
+   loading, both parts of the Network hat's recommendation adopted:
+   (a) server-side hard caps enforced at creation — **50 named policies,
+   20 custom tiers** (in addition to the 5 built-in tiers, which are not
+   counted against this cap and can never be deleted) — chosen as
+   generous-for-real-usage-but-bounded numbers for an owner-only,
+   human-paced feature; exceeding either cap is rejected with a clear
+   error, not silently truncated. (b) `GET /api/settings/iam/policies`
+   returns each policy's `defaultVersionId` and its **default version's
+   statements only** (not the full `versions` map) — full version
+   history is fetched lazily per-policy via `GET
+   /api/settings/iam/policies/{policyId}` (§4.2), which already existed
+   in this design as the only place `versions` needs to be enumerable in
+   full. This shrinks the common-case catalog payload independent of the
+   cap and follows the same instinct already used in this codebase for
+   grabbing summaries vs. detail on demand.
 3. **Resolved — real gap confirmed, fixed in §4.1/§4.3/§7 above.** Both
    halves independently verified by the Security hat: custom tier names
    alone introduce no new privilege-escalation class (owner already holds
