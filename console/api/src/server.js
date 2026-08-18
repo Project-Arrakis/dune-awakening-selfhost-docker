@@ -62,6 +62,7 @@ import { verifyBaseBackupState } from "./services/baseBackupSafety.js";
 import { banPlayer, bannedFlsIds, createPlayerBanEnforcer, playerBanFor, unbanPlayer } from "./services/playerBans.js";
 import { findPlayerForLiveAction, playerIsOnlineForLiveAction } from "./playerLiveActions.js";
 import { retireLegacyEdaExchangeBot } from "./services/marketBotRetirement.js";
+import { readSelfUpdateStatus } from "./services/selfUpdateStatus.js";
 
 const config = loadConfig();
 let edaRetirement = { retired: false, addonRemoved: false, migrated: false, changed: false, backupDir: "", cleanupError: "" };
@@ -523,6 +524,13 @@ async function handleApi(req, res) {
   if (path === "/api/updates/fix-steamcmd" && req.method === "POST") return task(req, res, "updates", "updateFixSteamcmd", {});
   if (path === "/api/updates/check-stack" && req.method === "POST") return task(req, res, "updates", "selfUpdateCheck", {});
   if (path === "/api/updates/apply-stack" && req.method === "POST") return task(req, res, "updates", "selfUpdateApply", {});
+  if (path === "/api/updates/stack-progress") {
+    try {
+      return json(res, 200, readSelfUpdateStatus(config.repoRoot, url.searchParams.get("runId")));
+    } catch (error) {
+      return json(res, error?.code === "INVALID_RUN_ID" ? 400 : 500, { error: redact(error?.message || "Could not read console update status.") });
+    }
+  }
   if (path === "/api/updates/auto-game" && req.method === "POST") return autoGameUpdateRoute(req, res);
   if (path === "/api/updates/auto-game") return safeCommandJson(res, "updateAutoStatus");
   if (path === "/api/updates/repair-runtime" && req.method === "POST") return task(req, res, "updates", "readiness", {});

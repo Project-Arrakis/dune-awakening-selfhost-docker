@@ -62,6 +62,8 @@ services:
       # Optional GitHub token used server-side for self-update and authenticated
       # community-addon catalog reads. It is never exposed to addon packages.
       DUNE_SELF_UPDATE_TOKEN: "${DUNE_SELF_UPDATE_TOKEN:-}"
+      # Bound BuildKit/npm stalls so a console update cannot hang forever.
+      DUNE_SELF_UPDATE_BUILD_TIMEOUT_SECONDS: "${DUNE_SELF_UPDATE_BUILD_TIMEOUT_SECONDS:-1800}"
       DUNE_DISCORD_ADAPTER_ENABLED: "${DUNE_DISCORD_ADAPTER_ENABLED:-false}"
       DUNE_DISCORD_ADAPTER_TOKEN: "${DUNE_DISCORD_ADAPTER_TOKEN:-}"
       DUNE_BOT_API_TOKEN_FILE: "${DUNE_BOT_API_TOKEN_FILE:-}"
