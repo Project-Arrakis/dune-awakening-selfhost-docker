@@ -1737,12 +1737,18 @@ function databaseTableRoute(req, res, path, action, url) {
 
 function dbPlayerRoute(res, path, fn) {
   const id = decodeURIComponent(path.split("/")[3]);
-  return dbJson(res, () => fn(db, id));
+  return dbJson(res, async () => {
+    await duneDb.resolvePlayerTargetCached(db, id);
+    return fn(db, id);
+  });
 }
 
 function dbPlayerUnsupported(res, path, feature) {
   const id = decodeURIComponent(path.split("/")[3]);
-  return dbJson(res, () => duneDb.unsupportedPlayerFeature(db, id, feature));
+  return dbJson(res, async () => {
+    await duneDb.resolvePlayerTargetCached(db, id);
+    return duneDb.unsupportedPlayerFeature(db, id, feature);
+  });
 }
 
 async function task(req, res, type, operation, payload) {
@@ -2465,8 +2471,8 @@ async function playerTask(req, res, path, operation, phrase = "") {
   }
   if (!applyMutationRateLimit(req, res, `players.${operation}`)) return;
   const playerId = decodeURIComponent(path.split("/")[3]);
+  const player = await resolvePlayerGrantTarget(playerId);
   if (["adminSetSkillPoints", "adminSetSkillModule"].includes(operation)) {
-    const player = await resolvePlayerGrantTarget(playerId);
     if (!player.online) {
       return json(res, 409, { error: "The player must be online to change skills." });
     }
@@ -2663,13 +2669,17 @@ async function resolveCarePackagePlayerIdentity(playerId) {
 }
 
 async function resolvePlayerGrantTarget(playerId) {
-  const players = await duneDb.listAllPlayers(db, {}).catch(() => ({ rows: [] }));
+  const players = await duneDb.listAllPlayers(db, {});
   const rows = players.rows || [];
   const player = findPlayerForLiveAction(rows, playerId);
+  if (!player) throw Object.assign(new Error("Player not found."), { statusCode: 404 });
+  const actorId = String(player.actor_id || player.player_pawn_id || "");
+  if (!actorId) throw Object.assign(new Error("Player has no current actor ID."), { statusCode: 409 });
+  await duneDb.resolvePlayerTarget(db, actorId);
   return {
-    actionId: String(player?.action_player_id || player?.funcom_id || player?.fls_id || playerId || ""),
-    actorId: String(player?.actor_id || player?.player_pawn_id || (/^\d+$/.test(String(playerId || "")) ? playerId : "") || ""),
-    characterName: player?.character_name || "",
+    actionId: String(player.action_player_id || player.funcom_id || player.fls_id || ""),
+    actorId,
+    characterName: player.character_name || "",
     online: playerIsOnlineForLiveAction(player)
   };
 }
@@ -3481,6 +3491,7 @@ async function giveItemsRoute(req, res, path) {
   const playerId = decodeURIComponent(path.split("/")[3]);
   if (!Array.isArray(body.items)) {
     if (!applyMutationRateLimit(req, res, "players.give-items")) return;
+    await resolvePlayerGrantTarget(playerId);
     return task(req, res, "admin", "adminGiveItems", { ...body, playerId });
   }
   if (body.items.length < 1 || body.items.length > 25) return json(res, 400, { error: "Give Multiple Items requires 1-25 items" });
@@ -3508,6 +3519,12 @@ async function giveSingleItemRoute(req, res, path, operation) {
   const body = await readJson(req);
   const playerId = decodeURIComponent(path.split("/")[3]);
   if (!applyMutationRateLimit(req, res, operation === "adminGiveItemId" ? "players.give-item-id" : "players.give-item")) return;
+  let target;
+  try {
+    target = await resolvePlayerGrantTarget(playerId);
+  } catch (error) {
+    return json(res, error?.statusCode || 400, { ok: false, error: redact(error?.message || "Unexpected error.") });
+  }
   if (body.quality === undefined && body.grade === undefined) {
     const resolved = operation === "adminGiveItemId"
       ? resolveCatalogItem(config.repoRoot, { itemId: body.itemId })
@@ -3520,7 +3537,6 @@ async function giveSingleItemRoute(req, res, path, operation) {
     ? { itemId: body.itemId, quantity: body.quantity, quality: body.quality, grade: body.grade, durability: body.durability, augments: body.augments, augmentQuality: body.augmentQuality }
     : { itemName: body.itemName, quantity: body.quantity, quality: body.quality, grade: body.grade, durability: body.durability, augments: body.augments, augmentQuality: body.augmentQuality };
   try {
-    const target = await resolvePlayerGrantTarget(playerId);
     const result = await grantPlayerItem(playerId, item, target);
     audit(config, req, operation === "adminGiveItemId" ? "players.give-item-id" : "players.give-item", { playerId, ok: result.ok, result });
     return json(res, result.ok ? 200 : 207, result);
