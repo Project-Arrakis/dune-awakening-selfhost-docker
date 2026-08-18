@@ -292,6 +292,22 @@ Keep a Changelog style, grouped by upstream base version, newest first.
   to close the latent fragility, consistent with how the sibling single-item-
   lookup matcher in the same file already anchors on a full column-list
   string rather than a short clause fragment.
+- Added frontend test coverage for a partial-batch Give Multiple Items
+  failure (issue #355, LOW severity, found during PR #349's own Layer 3
+  audit, QA hat). The existing "batches several distinct items into one
+  give-items call" test in `BaseInventoryTab.test.tsx` only ever mocked
+  `basesApi.giveContainerItems` to resolve successfully, so there was no
+  coverage for what the UI does when the backend batch call fails partway
+  through -- the exact scenario `giveMultipleItemsToStorage` is designed to
+  produce (an error like `"...stopped before giving item N; N-1 of M items
+  were already given"`). The error already propagated correctly through
+  the same `onError`/`deleteError` wiring proven for a different mutation
+  (bulk-delete) elsewhere in this same file -- this was a coverage gap, not
+  a functional bug -- but the new test locks in that the backend's real
+  partial-success count reaches the operator verbatim, in both the
+  `onError` side channel and the modal's own inline error text, and that a
+  failed batch is not silently cleared (so the operator does not have to
+  re-enter every item to retry).
 
 ### Security
 

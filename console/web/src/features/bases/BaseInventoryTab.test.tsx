@@ -931,6 +931,52 @@ describe("BaseInventoryTab", () => {
     expect(basesApi.giveContainerItem).not.toHaveBeenCalled();
   });
 
+  // Issue #355 (found during PR #349's own Layer 3 audit, QA hat): the test
+  // above only ever mocks giveContainerItems to resolve successfully, so
+  // there was no coverage for what the UI does when the batch call fails
+  // partway through -- the exact scenario giveMultipleItemsToStorage is
+  // designed to produce (an error like "...stopped before giving item N;
+  // N-1 of M items were already given"). Errors already propagate through
+  // the same onError/deleteError wiring this file's bulk-delete failure
+  // test above already proves works for a different mutation -- this test
+  // proves it also holds for Give Multiple specifically, and that the
+  // backend's partial-success count reaches the operator verbatim rather
+  // than being replaced with a generic failure message.
+  it("surfaces a partial-batch give-items failure through onError with the real partial-success count", async () => {
+    mockInventory();
+    vi.mocked(basesApi.giveContainerItems).mockRejectedValue(
+      new Error("Batch stopped before giving PlantFiber; 1 of 2 items were already given")
+    );
+    renderTab();
+    await loaded();
+    await openVaultContents();
+
+    fireEvent.change(screen.getByLabelText("Item name or ID to give"), { target: { value: "AzuriteOre" } });
+    fireEvent.change(screen.getByLabelText("Quantity to give"), { target: { value: "20" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add to Batch" }));
+    await waitFor(() => expect(screen.getByText(/AzuriteOre ×20/)).toBeTruthy());
+
+    fireEvent.change(screen.getByLabelText("Item name or ID to give"), { target: { value: "PlantFiber" } });
+    fireEvent.change(screen.getByLabelText("Quantity to give"), { target: { value: "5" } });
+    fireEvent.click(screen.getByRole("button", { name: /Give 2 Items/ }));
+
+    await waitFor(() => expect(onError).toHaveBeenCalledWith(
+      "Batch stopped before giving PlantFiber; 1 of 2 items were already given"
+    ));
+    // The same message must also render inline in the modal, not just fire
+    // the onError side channel -- an operator reading the modal itself
+    // (rather than wherever onError surfaces toasts/logs) must see exactly
+    // how far the batch got.
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Batch stopped before giving PlantFiber; 1 of 2 items were already given"
+    );
+    // The batch is deliberately NOT cleared on failure -- silently dropping
+    // a failed batch would force the operator to re-enter every item to
+    // retry, and the backend's own message already tells them what
+    // succeeded vs. what to retry.
+    expect(screen.getByText(/AzuriteOre ×20/)).toBeTruthy();
+  });
+
   it("removes a queued item from the batch before giving", async () => {
     mockInventory();
     renderTab();
