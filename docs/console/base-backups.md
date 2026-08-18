@@ -33,6 +33,29 @@ ids rather than re-materializing anything from a stored blob, though that
 direction (backup → redeploy) has not been directly observed the way pick-up
 has.
 
+## Deep Desert Coriolis compatibility fix
+
+Funcom's shipped `dune.delete_actors_and_respawns_on_server` originally
+preserved actors in `Travel`, `VehicleBackup`, and `VehicleRecovery` state but
+omitted `BaseBackup`. Because a saved base remains a collection of ownerless
+actors in its original Deep Desert partition, Coriolis cleanup deleted those
+actors. `base_backup_linked_actors.actor_id` then cascaded away, and
+`base_backup_get_available_backups` could no longer discover the saved totem.
+This presented as a backup disappearing from the in-game tool after a storm
+while surviving ordinary Battlegroup restarts.
+
+`runtime/scripts/patch-coriolis-base-backups.sh` now adds the missing
+`BaseBackup` exclusion after every successful Funcom database update. The
+patch is idempotent and edits the installed definition only when its reviewed
+deletion shape still matches. An unrecognized future definition stops startup
+instead of risking another destructive cleanup or blindly replacing new
+Funcom logic.
+
+The patch prevents future loss. It cannot reconstruct actors already deleted
+by a storm. Recover those from a pre-storm full database backup; the normal
+startup database-update step applies this compatibility patch before any world
+server starts, preventing the restored backup actors from being deleted again.
+
 One live observation from redeploying during this investigation: the base's
 `permission_actor` row came back and its `base_backup_linked_actors` rows were
 gone, i.e. the game does clean that table up on redeploy in at least this
