@@ -2380,7 +2380,7 @@ export async function playerProfile(db, id) {
   const result = await db.query(`
     select a.id as actor_id,
            a.id as player_pawn_id,
-           coalesce(a.owner_account_id, 0) as account_id,
+           coalesce(nullif(ps.account_id, 0), nullif(a.owner_account_id, 0), 0) as account_id,
            coalesce(ps.character_name, '') as character_name,
            coalesce(ps.player_controller_id, 0) as player_controller_id,
            coalesce(ps.id, 0) as player_state_id,
@@ -2390,17 +2390,21 @@ export async function playerProfile(db, id) {
            coalesce(ac.platform_name, '') as platform_name,
            case
              when nullif(ac."user", '') is not null then ac."user"
-             when a.owner_account_id is not null and a.owner_account_id <> 0 then a.owner_account_id::text
+             when coalesce(nullif(ps.account_id, 0), nullif(a.owner_account_id, 0)) is not null
+               then coalesce(nullif(ps.account_id, 0), nullif(a.owner_account_id, 0))::text
              else ''
            end as action_player_id,
            a.class,
            coalesce(a.map, '') as map,
            coalesce(ps.online_status::text, 'Offline') as online_status
     from dune.actors a
-    left join dune.player_state ps on ps.account_id = a.owner_account_id
-    left join dune.accounts ac on ac.id = a.owner_account_id
-    where a.id = $1`, [actorId]);
-  if (!result.rows[0]) throw new Error("Player not found");
+    join dune.player_state ps on ps.player_pawn_id = a.id
+    left join dune.accounts ac on ac.id = coalesce(nullif(ps.account_id, 0), nullif(a.owner_account_id, 0))
+    where a.id = $1
+      and a.class ilike '%PlayerCharacter%'
+    order by ps.id desc
+    limit 1`, [actorId]);
+  if (!result.rows[0]) throw playerNotFoundError();
   const row = result.rows[0];
   const [currentFactions, guilds] = await Promise.all([
     leadershipCurrentFactions(db).catch(() => new Map()),
@@ -2581,7 +2585,7 @@ export async function playerSolarisCoinTotal(db, id) {
 export async function playerFactions(db, id, journeyTagsData = {}) {
   if (!(await tableExists(db, "player_faction_reputation"))) return unsupported("factions", ["dune.player_faction_reputation"]);
   const hasFactions = await tableExists(db, "factions");
-  const player = await resolvePlayerMutationTargetCached(db, id);
+  const player = await resolvePlayerTargetCached(db, id);
   const componentResult = await db.query(`
     select properties->'FactionPlayerComponent'->'m_FactionDataArray' as faction_data
     from dune.actors
@@ -2660,7 +2664,7 @@ export async function playerProgression(db, id) {
   if (!(await supportsPlayerProgression(db))) {
     return unsupported("progression", ["dune.player_state", "dune.actor_fgl_entities", "dune.fgl_entities"]);
   }
-  const player = await resolvePlayerMutationTargetCached(db, id);
+  const player = await resolvePlayerTargetCached(db, id);
   const result = await db.query(`
     select (fe.components->'FLevelComponent'->1->>'TotalXPEarned')::bigint as xp,
            (fe.components->'FLevelComponent'->1->>'TotalSkillPoints')::bigint as total_skill_points,
@@ -2689,7 +2693,7 @@ export async function playerIntel(db, id) {
   if (!(await supportsIntelMutation(db))) {
     return unsupported("intel", ["dune.actors (properties column)"]);
   }
-  const player = await resolvePlayerMutationTargetCached(db, id);
+  const player = await resolvePlayerTargetCached(db, id);
   const result = await db.query(`
     select (properties->'TechKnowledgePlayerComponent'->>'m_TechKnowledgePoints')::bigint as intel
     from dune.actors
@@ -2710,7 +2714,7 @@ export async function playerVitals(db, id) {
   if (!(await supportsPlayerVitals(db))) {
     return unsupported("vitals", ["dune.actors (gas_attributes column)", "dune.player_state", "dune.actor_fgl_entities", "dune.fgl_entities"]);
   }
-  const player = await resolvePlayerMutationTargetCached(db, id);
+  const player = await resolvePlayerTargetCached(db, id);
   const hasSpecTracks = await tableExists(db, "specialization_tracks");
   const [healthResult, gasResult, combatResult] = await Promise.all([
     db.query(`
@@ -9304,34 +9308,48 @@ async function requireCapability(supported, reason) {
   if (!supported) throw new UnsupportedCapabilityError(reason);
 }
 
-async function resolvePlayerMutationTarget(db, id) {
+function playerNotFoundError() {
+  return Object.assign(new Error("Player not found"), { statusCode: 404 });
+}
+
+// This is the identity boundary for every player-scoped database operation.
+// Actor ids are shared by players, terminals, placeables, vehicles, and many
+// other world objects, so an actors row alone must never be treated as proof
+// that the caller selected a player.
+export async function resolvePlayerTarget(db, id) {
   const actorId = intParam(id, "player id", 1);
   const result = await db.query(`
     select a.id as actor_id,
-           coalesce(a.owner_account_id, ps.account_id, 0) as account_id,
-           coalesce(ps.player_controller_id, a.id) as controller_id,
-           coalesce(ps.id, 0) as player_state_id,
+           coalesce(nullif(ps.account_id, 0), nullif(a.owner_account_id, 0), 0) as account_id,
+           coalesce(ps.player_controller_id, 0) as controller_id,
+           ps.id as player_state_id,
            coalesce(ps.online_status::text, 'Offline') as online_status
     from dune.actors a
-    left join dune.player_state ps on ps.player_pawn_id = a.id or ps.account_id = a.owner_account_id
+    left join dune.player_state ps on ps.player_pawn_id = a.id
     where a.id = $1
+      and a.class ilike '%PlayerCharacter%'
+      and ps.id is not null
     limit 1`, [actorId]);
   const row = result.rows[0];
-  if (!row) throw new Error("Player not found");
+  if (!row) throw playerNotFoundError();
   return {
     actorId: Number(row.actor_id),
     accountId: Number(row.account_id || 0),
-    controllerId: Number(row.controller_id || row.actor_id),
+    controllerId: Number(row.controller_id || 0),
     playerStateId: Number(row.player_state_id || 0),
     onlineStatus: row.online_status || "Offline"
   };
+}
+
+async function resolvePlayerMutationTarget(db, id) {
+  return resolvePlayerTarget(db, id);
 }
 
 // Short-TTL cache for read-only capability endpoints (factions/progression/intel/vitals) that
 // otherwise each independently re-run the same actors/player_state join when the Player Summary
 // panel fires them as parallel requests. NOT used for mutation code paths — those must always
 // see a fresh onlineStatus for requireOfflinePlayer() to be safe.
-async function resolvePlayerMutationTargetCached(db, id) {
+export async function resolvePlayerTargetCached(db, id) {
   const key = String(id);
   const cached = playerTargetCache.get(key);
   if (cached && cached.expiresAt > Date.now()) return cached.promise;
