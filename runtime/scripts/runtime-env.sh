@@ -7,6 +7,8 @@ source runtime/scripts/memory-swap-common.sh
 source runtime/scripts/env-file.sh
 # shellcheck source=runtime/scripts/host-file-ownership.sh
 source runtime/scripts/host-file-ownership.sh
+# shellcheck source=runtime/scripts/lib/secrets.sh
+source runtime/scripts/lib/secrets.sh
 
 if [ -z "${DUNE_COMPOSE_PROJECT_NAME:-}" ]; then
   # shellcheck disable=SC1091
@@ -703,16 +705,48 @@ ensure_secret_file() {
   fi
 }
 
+# resolve_server_login_password_secret / resolve_username_server_login_secret
+#
+# Stage 2 of the age-based secrets library rollout -- wires these two
+# secrets to optional age-based at-rest encryption (see
+# runtime/scripts/lib/secrets.sh's own header comment for the key
+# hierarchy and on-disk format). Strictly opt-in: an operator who
+# never sets DUNE_KEK_FILE/DUNE_AGE_IDENTITY_FILE sees the exact
+# same behavior as before this stage existed -- read the plain
+# runtime/secrets/*.txt file, generating it via ensure_secret_file if
+# absent.
+#
+# dune_secrets_read_secret is the source of truth for migration state.
+# It is called even when backend variables are unset because migration
+# artifacts may outlive configuration (for example after a restore or
+# environment-file mistake). Any such migrated-but-broken state fails
+# closed; plaintext is generated only when there is no migration history
+# and no legacy value on a genuinely fresh install.
+_resolve_stage2_secret() {
+  local name="$1"
+  local legacy_path="runtime/secrets/${name}.txt"
+
+  local value rc=0
+  value="$(dune_secrets_read_secret "$name" "$legacy_path")" || rc=$?
+  if [ "$rc" = "0" ]; then
+    printf '%s' "$value"
+    return 0
+  fi
+
+  if dune_secrets_has_migration_artifacts "$name"; then
+    return "$rc"
+  fi
+
+  ensure_secret_file "$legacy_path" 32
+  tr -d '\r\n' < "$legacy_path"
+}
+
 resolve_server_login_password_secret() {
-  local path="runtime/secrets/server-login-password-secret.txt"
-  ensure_secret_file "$path" 32
-  tr -d '\r\n' < "$path"
+  _resolve_stage2_secret "server-login-password-secret"
 }
 
 resolve_username_server_login_secret() {
-  local path="runtime/secrets/username-server-login-secret.txt"
-  ensure_secret_file "$path" 32
-  tr -d '\r\n' < "$path"
+  _resolve_stage2_secret "username-server-login-secret"
 }
 
 resolve_login_password_skew_seconds() {
