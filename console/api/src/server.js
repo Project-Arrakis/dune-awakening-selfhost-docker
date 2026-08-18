@@ -631,6 +631,7 @@ async function handleApi(req, res) {
   if (path.match(/^\/api\/bases\/[^/]+\/inventory$/) && req.method === "GET") return baseInventoryRoute(res, path);
   if (path.match(/^\/api\/bases\/[^/]+\/containers\/[^/]+$/) && req.method === "GET") return baseContainerSlotsRoute(res, path);
   if (path.match(/^\/api\/bases\/[^/]+\/containers\/[^/]+\/items\/[^/]+$/) && req.method === "DELETE") return baseContainerItemDeleteRoute(req, res, path);
+  if (path.match(/^\/api\/bases\/[^/]+\/containers\/[^/]+\/items$/) && req.method === "POST") return baseContainerItemAddRoute(req, res, path);
   if (path.match(/^\/api\/bases\/[^/]+\/refill-water$/) && req.method === "POST") return baseRefillWaterRoute(req, res, path);
   if (path.match(/^\/api\/bases\/[^/]+\/queued-water-refill$/) && req.method === "DELETE") return baseCancelQueuedWaterRefillRoute(req, res, path);
   if (path.match(/^\/api\/bases\/[^/]+\/auto-refill-water$/) && req.method === "POST") return baseAutoRefillWaterToggleRoute(req, res, path);
@@ -3067,59 +3068,93 @@ async function baseContainerSlotsRoute(res, path) {
   }
   try {
     const slots = await duneDb.baseContainerSlots(db, baseId, placeableId);
-    return json(res, 200, { ...slots, deleteSafety: await baseContainerDeleteSafety(baseId, slots.group) });
+    // Both gates on one resolve. deleteSafety keeps its name rather than being
+    // generalised: it is read across the API client, the tab, four test files
+    // and two docs pages, and an additive twin buys everything a rename would
+    // without needing a lockstep frontend/backend deploy.
+    const resolved = await resolveBaseContainerWriteSafety(baseId, slots.group);
+    return json(res, 200, {
+      ...slots,
+      deleteSafety: baseContainerWriteSafetyFor(resolved, "delete"),
+      addSafety: baseContainerWriteSafetyFor(resolved, "add")
+    });
   } catch (error) {
     return json(res, 500, { supported: false, error: redact(error?.message || "Unexpected error."), reason: redact(error?.message || "Unexpected error.") });
   }
 }
 
-async function baseContainerDeleteSafety(baseId, group = "storage") {
-  if (group && group !== "storage") {
-    return {
-      safe: false,
-      known: true,
-      map: "",
-      partitionId: 0,
-      reason: "Item deletion is available only for Storage containers. Crafting and Refining contents are read-only to protect active jobs."
-    };
+// Adds and deletes are gated on exactly the same four conditions, so the
+// decision tree is written once and only the wording varies per action. A
+// second hand-maintained copy would be worse than the small indirection: the
+// failure mode of a copy that drifts is an add permitted in a state where a
+// delete is refused, which is precisely the boundary this enforces.
+const BASE_CONTAINER_WRITE_WORDING = {
+  delete: {
+    group: "Item deletion is available only for Storage containers. Crafting and Refining contents are read-only to protect active jobs.",
+    unsupported: "The console cannot verify that this base's map is safely stopped, so item deletion is disabled.",
+    running: "deleting stored items",
+    failed: "The console could not verify that this base's map is safely stopped, so item deletion is disabled."
+  },
+  add: {
+    group: "Adding items is available only for Storage containers. Crafting and Refining contents are read-only to protect active jobs.",
+    unsupported: "The console cannot verify that this base's map is safely stopped, so adding items is disabled.",
+    running: "adding stored items",
+    failed: "The console could not verify that this base's map is safely stopped, so adding items is disabled."
   }
+};
+
+// Resolves the live-map state once. Split from the wording below so the slots
+// route can answer for both actions without paying for two baseRefillTarget
+// round-trips -- it runs observeRefillPartitions plus baseMapLocation, which is
+// not free on a request made every time the contents modal opens.
+async function resolveBaseContainerWriteSafety(baseId, group = "storage") {
+  if (group && group !== "storage") return { groupOk: false };
   try {
     const target = await duneDb.baseRefillTarget(db, baseId);
-    if (!target.queueSupported) {
-      return {
-        safe: false,
-        known: false,
-        map: target.map || "",
-        partitionId: target.partitionId || 0,
-        reason: "The console cannot verify that this base's map is safely stopped, so item deletion is disabled."
-      };
-    }
-    if (!target.writeSafeNow) {
-      const location = `${target.map || "This base's map"}${target.partitionId ? ` · Partition ${target.partitionId}` : ""}`;
-      return {
-        safe: false,
-        known: true,
-        map: target.map || "",
-        partitionId: target.partitionId || 0,
-        reason: `${location} is running. Stop that map before deleting stored items.`
-      };
-    }
     return {
-      safe: true,
-      known: true,
+      groupOk: true,
+      known: Boolean(target.queueSupported),
+      writeSafeNow: Boolean(target.queueSupported) && Boolean(target.writeSafeNow),
       map: target.map || "",
       partitionId: target.partitionId || 0,
-      reason: ""
+      threw: false
     };
   } catch {
+    return { groupOk: true, known: false, writeSafeNow: false, map: "", partitionId: 0, threw: true };
+  }
+}
+
+// Pure. `action` is "delete" or "add" and selects wording only -- never which
+// states count as safe.
+function baseContainerWriteSafetyFor(resolved, action) {
+  const wording = BASE_CONTAINER_WRITE_WORDING[action] || BASE_CONTAINER_WRITE_WORDING.delete;
+  if (!resolved.groupOk) {
+    return { safe: false, known: true, map: "", partitionId: 0, reason: wording.group };
+  }
+  const map = resolved.map || "";
+  const partitionId = resolved.partitionId || 0;
+  if (!resolved.known) {
     return {
       safe: false,
       known: false,
-      map: "",
-      partitionId: 0,
-      reason: "The console could not verify that this base's map is safely stopped, so item deletion is disabled."
+      map: resolved.threw ? "" : map,
+      partitionId: resolved.threw ? 0 : partitionId,
+      reason: resolved.threw ? wording.failed : wording.unsupported
     };
   }
+  if (!resolved.writeSafeNow) {
+    const location = `${map || "This base's map"}${partitionId ? ` · Partition ${partitionId}` : ""}`;
+    return { safe: false, known: true, map, partitionId, reason: `${location} is running. Stop that map before ${wording.running}.` };
+  }
+  return { safe: true, known: true, map, partitionId, reason: "" };
+}
+
+async function baseContainerDeleteSafety(baseId, group = "storage") {
+  return baseContainerWriteSafetyFor(await resolveBaseContainerWriteSafety(baseId, group), "delete");
+}
+
+async function baseContainerAddSafety(baseId, group = "storage") {
+  return baseContainerWriteSafetyFor(await resolveBaseContainerWriteSafety(baseId, group), "add");
 }
 
 // Phrase-gated, unlike the refills above: this destroys a player's stored item
@@ -3151,6 +3186,37 @@ async function baseContainerItemDeleteRoute(req, res, path) {
     const result = await duneDb.deleteBaseContainerItem(db, baseId, placeableId, itemId, { count });
     return { ...result, deleteSafety: safety };
   }, { baseId, placeableId, itemId });
+}
+
+// Phrase-gated despite being additive, unlike the refills below. An item that
+// lands in a player's storage is an economy write with no in-game undo, and
+// storage.give-item already sets the precedent that item creation carries a
+// phrase. The phrase is deliberately distinct from "GIVE ITEM TO STORAGE" so a
+// client replaying a give-item body cannot satisfy this gate.
+//
+// Same stopped-map rule as the delete above, re-checked inside the mutation
+// immediately before the write for the same reason: disabling the UI alone is
+// never a security or consistency boundary.
+async function baseContainerItemAddRoute(req, res, path) {
+  const parts = path.split("/");
+  const baseId = Number(decodeURIComponent(parts[3]));
+  const placeableId = Number(decodeURIComponent(parts[5]));
+  for (const id of [baseId, placeableId]) {
+    if (!Number.isInteger(id) || id < 1 || id > Number.MAX_SAFE_INTEGER) {
+      return json(res, 400, { error: "Invalid base or container ID" });
+    }
+  }
+  if (baseDeletePending(baseId)) return json(res, 409, { error: BASE_DELETE_PENDING_MESSAGE });
+  if (await baseBackedUp(baseId)) return json(res, 409, { error: BASE_BACKED_UP_MESSAGE });
+  return directDbMutation(req, res, "bases.container-item-add", "ADD ITEM TO CONTAINER", async (body) => {
+    const safety = await baseContainerAddSafety(baseId);
+    if (!safety.safe) throw new Error(safety.reason);
+    // Spread order matters: the catalog-resolved id must win over whatever
+    // templateId the client sent alongside an itemName.
+    const resolved = resolveCatalogItem(config.repoRoot, body);
+    const result = await duneDb.addBaseContainerItem(db, baseId, placeableId, { ...body, templateId: resolved.itemId });
+    return { ...result, addSafety: safety };
+  }, { baseId, placeableId });
 }
 
 // Mirrors baseRefillGeneratorsRoute: no confirmation phrase (additive and

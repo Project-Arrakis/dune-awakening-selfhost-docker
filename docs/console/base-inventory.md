@@ -104,25 +104,80 @@ The shipped `owner`/`admin` policies grant `bases:*`, so default access is uncha
 Both of the usual base preconditions apply: a base with a queued delete, or one picked up via the game's
 base-backup tool, rejects this with `409`.
 
-## Why deletion requires a stopped map
+## Adding a stored item
 
-An item delete is **not** queued: a specific inventory row may move, merge, or disappear before a deferred
-operation runs. Instead, the route refuses the write until it can verify that the owning map is safely down.
+The same overlay can put an item into a plain Storage container. Backed by
+`POST /api/bases/{baseId}/containers/{placeableId}/items` → `duneDb.addBaseContainerItem()`, body
+`{ confirmation: "ADD ITEM TO CONTAINER", itemId | itemName, quantity, quality?, augments?, augmentQuality? }`.
+The parameter surface is `giveItemToStorage`'s, so a catalog-resolved item drops straight in — except that
+`quality` is bounded 0–5 here. `giveItemToStorage` allows 0–1000000, which is an outlier: every other path
+and the whole UI treat grade as 0–5.
+
+**Every add creates a new row. It never tops up a matching stack.** Adding 300 ScrapMetal to a container
+that already holds 500 leaves two rows, not one of 800. Merging would have to pick a stack to grow, and the
+game's own stack limits are not modelled here.
+
+**The slot is not chooseable.** The row lands at `max(position_index) + 1` within the resolved inventory —
+0 for an empty container. Clicking an empty grid cell is a shortcut to the form, not a placement target, and
+nothing in the UI may promise a specific slot: the empty cell's accessible name is "Add an item to this
+container", and the confirm dialog's Slot line reads "Next free slot". The response reports where it
+actually landed, which is a statement of fact rather than a promise.
+
+**Capacity is refused at `count(*) >= max_item_count`.** Rows, not summed stack sizes — correct precisely
+because nothing merges, so one add always consumes exactly one slot. A `max_item_count` of 0 is treated as
+uncapped, matching `giveItemToStorage` and `giveItemToPlayer`; no shipped storage type has one.
+
+**Durability is left alone.** The insert calls `buildItemStats` without a durability argument, so clothing
+and weapons get the usual 100/100 fallback while ore, spice and salvage get an empty stat block — which is
+what real resource rows look like. Stamping `MaxDurability` onto a stack of ScrapMetal would invent state
+the game never wrote, and the read path would then render a durability bar for it.
+
+Ownership is re-resolved from the base id through the same CTE chain the delete uses, with the same
+`inventory_types` allowlist, `is_hologram = false` and `max_item_count >= 0` filters — so a generator's fuel
+inventory answers "not found" here too.
+
+The row lock is `for update of inv`, taken **before** the capacity and next-slot reads. That ordering is the
+whole concurrency argument: `db.transaction` issues a bare `begin`, so this runs at READ COMMITTED, where a
+second adder blocks on the lock and then re-evaluates rather than aborting — its `count(*)` and
+`max(position_index)` are fresh statements that see the first insert. There is no unique constraint on
+`(inventory_id, position_index)`, so this reasoning is the only guard; every console path that inserts into
+`dune.items` takes this same lock first, and the delete's `for update of i, inv` is what serializes a delete
+against an add.
+
+Unlike the delete, this path sets **no** `search_path`. That line exists there because the shipped
+`dune.delete_item`/`dune.delete_inventory_item` carry none of their own; the add invokes no procedure at
+all, so its absence is deliberate.
+
+`POST …/items` requires its own IAM action, **`bases:add-item`**, for the same consent reason as
+`bases:delete-item` read in the other direction: a `bases:mutate` grant predates any ability to put items
+into a base at all, so it cannot be read as consent to fabricate them. The same two base preconditions
+apply — a queued delete or a backed-up base rejects with `409`.
+
+## Why item writes require a stopped map
+
+Neither an add nor a delete is queued: a specific inventory row may move, merge, or disappear before a
+deferred operation runs. Instead, both routes refuse the write until they can verify the owning map is
+safely down.
 
 The reason a queue exists at all still holds here:
 
 - No `pg_notify` routine covers inventory or buildings. The game's 8 notify channels are guild, landsraad, party, permission, taxation, faction, vehicle_recovery, player_info.
 - There are zero triggers on `dune.items`, `dune.inventories`, `dune.buildings`, `dune.placeables`.
-- The RMQ command bus has no per-item edit or delete. `AddItemToInventory` addresses items by *template name*; every id here is a row id.
+- The RMQ command bus has no per-item edit or delete. `AddItemToInventory` addresses items by *template
+  name*, and it addresses a **player**, not a base container — so it is not an escape hatch for the add
+  either. Every id here is a row id.
 
-So a running map can neither miss the delete nor resurrect the row on its next autosave. The container GET
-returns `deleteSafety`; the overlay disables deletion and explains why when the map is running or its state
-cannot be verified. The DELETE route then repeats the check immediately before changing the database, so a
-stale or hand-built request cannot bypass the UI.
+So a running map can neither miss the write nor resurrect the row on its next autosave. The container GET
+returns both `deleteSafety` and `addSafety` — structurally identical, resolved from one liveness probe, and
+differing only in wording so the operator reads a sentence about what they actually tried to do. The overlay
+disables the matching control and explains why when the map is running or its state cannot be verified. Each
+route then repeats its check immediately before changing the database, so a stale or hand-built request
+cannot bypass the UI.
 
-Deletion is limited to plain **Storage** containers. Refinery and fabricator inventories are visible but
+Both writes are limited to plain **Storage** containers. Refinery and fabricator inventories are visible but
 read-only because the game's crafting state can reference their item rows; removing a reserved ingredient
-can leave an active job pointing at an item that no longer exists.
+can leave an active job pointing at an item that no longer exists, and adding a row into a job's inventory
+is no safer.
 
 Item identifiers remain decimal strings from the URL through the PostgreSQL query. They are `bigint` values,
 and converting one to JavaScript `Number` could round an id above `Number.MAX_SAFE_INTEGER` into a different
@@ -156,7 +211,10 @@ GET /api/bases/{baseId}/containers/{placeableId}
 { supported, found, baseId, placeableId, typeName, group, maxSlots, usedSlots,
   inventories: [{ inventoryId, maxSlots, usedSlots,
                   slots: [{ itemId, templateId, name, positionIndex, quantity,
-                            qualityLevel, currentDurability, maxDurability }] }] }
+                            qualityLevel, currentDurability, maxDurability,
+                            augments: [{ templateId, name, qualityLevel }] }] }],
+  deleteSafety: { safe, known, map, partitionId, reason },
+  addSafety:    { safe, known, map, partitionId, reason } }
 ```
 
 **Fetched per container, not with the tab.** Folding slots into `baseInventory` tripled that response —
@@ -176,6 +234,14 @@ a container. `currentDurability`/`maxDurability` come out of the `stats` jsonb u
 column is a parse-time error rather than a null, so a schema without them would 500 a container that used
 to open. They come back null instead, and the grid view is withheld.
 
+`augments` reads the same `FAugmentedItemStats` jsonb shape the add path writes
+(`AppliedAugments[].Name` paired positionally with `AppliedAugmentQualities`), resolving each augment's
+template id through the same item-name catalog as everything else. Always an array — empty for an
+unaugmented item, never null or missing — so the frontend's "does this item have any" check is a plain
+length test. A row with more augment names than qualities (or the reverse) pairs positionally and stops at
+the shorter array rather than throwing; a display path degrades, it does not 500 a container that used to
+open over one corrupt row.
+
 ### The contents overlay
 
 Opened by **View Contents**, either on a container card or on any container listed under an expanded
@@ -185,15 +251,48 @@ It offers two views, and **opens on Grid**:
 
 - **Grid** lays the container out at its real capacity, one cell per slot, with empty slots marked by a
   plus. It is the closest thing to the in-game container and answers "what is in this box" at a glance.
-  Empty cells are `aria-hidden` and non-interactive; the plus is decorative, drawn as two positioned
-  bars rather than a `+` glyph, since a glyph centres on its line box rather than its ink.
+  Each empty cell is a button that opens the add panel, labelled "Add an item to this container" — never
+  naming a slot, because clicking it does not choose one. The plus itself is decorative, drawn as two
+  positioned bars rather than a `+` glyph, since a glyph centres on its line box rather than its ink.
+  Empty cells carry `tabIndex={-1}`: a 45-slot container holding three items would otherwise wedge 42 tab
+  stops between the grid and the controls below it. Grid has no standalone Add Item control — the
+  keyboard route there is the **List** toggle, then the footer button below.
 - **List** is one row per slot with its slot number, quantity and a delete button. It sorts and scans
   better on a full 100-slot container, and is the automatic fallback whenever the grid is withheld.
+  It enumerates *occupied* slots only, so it has no empty cell to click — which is why **Add Item**
+  appears at the bottom-left of the dialog's footer, opposite Close, in this view only. Grid does not
+  repeat it: its empty cells are already the add affordance, and a second control doing the same thing
+  would be redundant.
+
+**The footer's Add Item and Close are both hidden while the add panel is open**, not merely disabled — the
+panel's own "Add to container" / Cancel row is the effective footer in that state, and repeating Close next
+to Cancel (which already returns to the slot view) would be a second, redundant way to leave. The overlay
+itself is still closable from here: the header's `×` and Escape both work throughout.
 
 Selecting a slot — a grid cell or an item name in the list — moves its controls into a strip below,
-carrying the item, its slot, an amount field defaulting to the whole stack, and the delete button.
+carrying the item, its slot, grade and durability, an amount field defaulting to the whole stack, and the
+delete button. A second line lists the item's augments with their own per-augment grade, present only on a
+slot that actually has any — most items are unaugmented, so most selections show no second line at all.
 One strip rather than a control per row: a packed 100-slot container would otherwise render a hundred
 quantity inputs.
+
+**Add Item replaces the slot region rather than stacking under it.** `ItemCatalogSelector` brings roughly
+300px of its own category select, filter and scrolling grid; below an already-scrolling slot list that sum
+pushed the dialog's own actions off screen. Swapping keeps the height envelope identical in both modes. The
+add panel and the slot-detail strip are therefore two modes of one dialog, not two panels: opening either
+closes the other, and the strip is keyed to an existing occupied slot so it could not represent an add
+anyway. Both are cleared when the overlay is closed or a different container is opened.
+
+The panel itself: a header (title, live "N / M slots used" count), a permanent note stating the two
+contracts the backend enforces ("appends to the next free slot… never topped up"), the catalog picker, then
+a controls row of Quantity, Grade, and — only for an item category that can carry them — Augments plus its
+own Aug. Grade, all sized to match (the shared `AugmentDropdown` component ships its own slightly different
+padding/border/background by default, overridden here to line up; a native `<select>` also renders a couple
+px taller than a plain `<input>` at identical padding, a browser quirk fixed with an explicit height rather
+than chased through padding). The catalog picker's own list view is narrower here than in its full-page
+uses elsewhere (Care Package, Player give-items): Item ID and Source are dropped to fit, leaving Preview,
+Item Name and Category — the dropped fields are still shown once an item is picked, in the panel's own
+selected-item summary.
 
 Every inventory shares a single scroll region, so a placeable backing two inventories does not get two
 independent scrollbars.

@@ -402,7 +402,15 @@ export const REGEX_ACTIONS_BY_METHOD_PATTERN = [
   // destruction — folding this into that bucket would silently widen every
   // existing narrow policy. The shipped owner/admin policies grant bases:*,
   // so default access is unchanged.
-  { method: "DELETE", pattern: /^\/api\/bases\/[^/]+\/containers\/[^/]+\/items\/[^/]+$/, action: "bases:delete-item" }
+  { method: "DELETE", pattern: /^\/api\/bases\/[^/]+\/containers\/[^/]+\/items\/[^/]+$/, action: "bases:delete-item" },
+  // POST /api/bases/{baseId}/containers/{placeableId}/items — creating one
+  // stored item. Own action for the same consent reason as bases:delete-item
+  // above, read in the other direction: a bases:mutate grant predates any
+  // ability to put items into a base at all, so it cannot be read as consent
+  // to fabricate them. Note this entry is also what keeps the route off the
+  // "POST /api/bases/" → bases:mutate prefix rule; without it the route would
+  // resolve to bases:mutate silently rather than failing closed.
+  { method: "POST", pattern: /^\/api\/bases\/[^/]+\/containers\/[^/]+\/items$/, action: "bases:add-item" }
 ];
 
 // ---- Action resolution ----

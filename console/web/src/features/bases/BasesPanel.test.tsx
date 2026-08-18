@@ -28,7 +28,8 @@ vi.mock("../../api/bases", () => ({
     setAutoRefillWater: vi.fn(),
     inventory: vi.fn(),
     containerSlots: vi.fn(),
-    deleteContainerItem: vi.fn()
+    deleteContainerItem: vi.fn(),
+    addContainerItem: vi.fn()
   }
 }));
 
@@ -971,6 +972,7 @@ describe("BasesPanel permissions editing", () => {
       supported: true, found: true, baseId: 1006, placeableId: "40001",
       typeName: "Storage Container", group: "storage", maxSlots: 45, usedSlots: 1,
       deleteSafety: { safe: true, known: true, map: "HaggaBasin", partitionId: 1, reason: "" },
+      addSafety: { safe: true, known: true, map: "HaggaBasin", partitionId: 1, reason: "" },
       inventories: [{
         inventoryId: "9001", maxSlots: 45, usedSlots: 1,
         slots: [{ itemId: "501", templateId: "Stone", name: "Granite Stone", positionIndex: 0, quantity: 500, qualityLevel: 0, currentDurability: null, maxDurability: null }]
