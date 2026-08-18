@@ -3457,12 +3457,25 @@ async function baseContainerGiveItemsRoute(req, res, path) {
   if (baseDeletePending(baseId)) return json(res, 409, { error: BASE_DELETE_PENDING_MESSAGE });
   if (await baseBackedUp(baseId)) return json(res, 409, { error: BASE_BACKED_UP_MESSAGE });
   return directDbMutation(req, res, "bases.container-give-items", "GIVE ITEMS TO STORAGE", async (body) => {
+    // Length checked BEFORE any per-item processing -- mirrors giveItemsRoute's
+    // own guard (server.js:3701). Found during PR #349's own Layer 3 audit
+    // (Security hat): resolveCatalogItem/resolveItemVolume each do a
+    // synchronous readFileSync+JSON.parse of the ~2600-item admin catalog per
+    // call, so validating the 50-item cap only inside
+    // giveMultipleItemsToStorage (after every item below had already been
+    // resolved against the catalog) let an oversized batch force tens of
+    // seconds of synchronous, event-loop-blocking file I/O before ever being
+    // rejected -- a real, trivially reachable DoS against every other
+    // console user's request, not just this one's.
+    if (!Array.isArray(body?.items) || body.items.length < 1 || body.items.length > 50) {
+      throw new Error("Give Multiple Items requires 1-50 items");
+    }
     const storageId = await baseContainerOwnedStorageId(baseId, placeableId);
-    const items = Array.isArray(body?.items) ? body.items.map((item) => {
+    const items = body.items.map((item) => {
       const resolved = resolveCatalogItem(config.repoRoot, item);
       const itemVolume = resolved.volume || resolveItemVolume(config.repoRoot, resolved.itemId);
       return { ...item, templateId: resolved.itemId, itemVolume };
-    }) : [];
+    });
     return duneDb.giveMultipleItemsToStorage(db, storageId, { items });
   }, { baseId, placeableId });
 }

@@ -225,10 +225,21 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
     && amountNumber >= 1
     && amountNumber <= (selectedSlot?.quantity ?? 0);
   const deleteAllowed = slots?.group === "storage" && slots?.deleteSafety?.safe === true;
+  // Found during PR #349's own Layer 3 audit (UI hat): an operator who reads
+  // "Stop that map before deleting stored items" and then, a few lines
+  // below, sees a fully interactive Give/Fill panel had no way to tell this
+  // was deliberate rather than a bug -- the map-safety check genuinely does
+  // not apply to Give/Fill (they only insert new rows; deleteBaseContainerItem's
+  // own comment on why deletion needs it -- no live-sync path, so a delete
+  // could race a running map's own copy -- simply doesn't apply to an insert).
+  // That rationale lived only in a source comment before this fix; the
+  // clause below is what actually tells the operator, in the one place
+  // they're already reading about why deletion is unavailable, that Give
+  // and Fill are unaffected by the same restriction.
   const deleteUnavailableReason = slots?.found && !deleteAllowed
     ? slots.group !== "storage"
       ? "Item deletion is available only for Storage containers. Crafting and Refining contents are read-only to protect active jobs."
-      : slots.deleteSafety?.reason || "Item deletion is unavailable for this container."
+      : `${slots.deleteSafety?.reason || "Item deletion is unavailable for this container."}${giveFillAllowed ? " Giving and filling items are unaffected -- they only add rows, so they do not require the map to be stopped." : ""}`
     : "";
 
   // A slot that vanished (deleted, or moved by a player between refetches)

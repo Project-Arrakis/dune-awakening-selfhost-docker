@@ -4050,6 +4050,49 @@ test("delete-multiple rejects a container that was not found at the selected bas
   );
 });
 
+// Found during PR #349's own Layer 3 audit (DBA and QA hats independently):
+// docs/console/base-inventory.md documents "a placeable can back more than
+// one surviving inventory" as a GENERAL schema fact, not something scoped
+// to Refining/Crafting's known dual-inventory case. An earlier version of
+// resolveOwnedStorageContainer had no ORDER BY/LIMIT and took rows[0]
+// unconditionally -- silently picking whichever inventory Postgres happened
+// to return first, which could leave real items behind in a second,
+// un-selected inventory while deleteAllBaseContainerItems still reported
+// ok:true. Fixed to throw explicitly rather than guess; this test locks
+// that fix in and must keep failing if a future change reintroduces the
+// silent rows[0] pick.
+test("delete-multiple refuses to guess when a container backs more than one qualifying inventory", async () => {
+  const calls = [];
+  const db = fakeBulkContainerDeleteDb(calls, {
+    containerRows: [
+      { placeable_id: "42", inventory_id: 7, group_key: "storage", type_name: "Medium Storage Container" },
+      { placeable_id: "42", inventory_id: 8, group_key: "storage", type_name: "Medium Storage Container" }
+    ]
+  });
+  await assert.rejects(
+    () => deleteMultipleBaseContainerItems(db, 16836, 42, [99]),
+    /backs 2 separate inventories/
+  );
+  // Must fail before ever touching dune.items -- no partial/best-effort
+  // delete against either inventory.
+  assert.equal(calls.some((call) => call.text.includes("dune.delete_item")), false);
+});
+
+test("delete-all refuses to guess when a container backs more than one qualifying inventory", async () => {
+  const calls = [];
+  const db = fakeBulkContainerDeleteDb(calls, {
+    containerRows: [
+      { placeable_id: "42", inventory_id: 7, group_key: "storage", type_name: "Medium Storage Container" },
+      { placeable_id: "42", inventory_id: 8, group_key: "storage", type_name: "Medium Storage Container" }
+    ]
+  });
+  await assert.rejects(
+    () => deleteAllBaseContainerItems(db, 16836, 42),
+    /backs 2 separate inventories/
+  );
+  assert.equal(calls.some((call) => call.text.includes("dune.delete_item")), false);
+});
+
 test("delete-all deletes every item currently in the container, read fresh inside the transaction", async () => {
   const calls = [];
   const db = fakeBulkContainerDeleteDb(calls, {
@@ -4538,14 +4581,18 @@ test("storage give-multiple-items rejects more than 50 distinct items", async ()
 });
 
 test("storage give-multiple-items stops the batch when slot count is exhausted partway through", async () => {
+  // Found during PR #349's own Layer 3 QA audit: a static countRows fixture
+  // (count(*) always returning the same value) cannot distinguish "the
+  // batch correctly stops after item 1 succeeds" from "every item is
+  // rejected identically, including item 1" -- both produce the same
+  // thrown error text. countRowsSequence lets count(*) reflect the
+  // just-inserted row on the SECOND call, the same way real Postgres would
+  // see its own transaction's prior write, so this test can actually prove
+  // item 1 succeeded before item 2 was rejected.
   const calls = [];
   const db = fakeMutationDb(calls, {
     storageRows: [{ id: 7, actor_id: 222, max_item_count: 1, max_item_volume: 0 }],
-    // First iteration: count=0 (room for one), passes; second iteration:
-    // count is re-queried and must now reflect the just-inserted row.
-    // The fake DB's countRows is static per test, so this exercises the
-    // "fails partway through a batch" path with a cap of 1 from the start.
-    countRows: [{ count: 1 }],
+    countRowsSequence: [{ count: 0 }, { count: 1 }],
     insertedRowsSequence: [
       { id: 701, template_id: "AzuriteOre", stack_size: 20, quality_level: 0, position_index: 2, inventory_id: 7 }
     ]
@@ -4557,8 +4604,37 @@ test("storage give-multiple-items stops the batch when slot count is exhausted p
         { templateId: "PlantFiber", quantity: 5 }
       ]
     }),
-    /Storage is full by item slot count/
+    /Storage is full by item slot count \(stopped before giving PlantFiber; 1 of 2 items were already given\)/
   );
+  // The real proof this is "partway," not "rejects everything": exactly one
+  // insert happened (item 1, AzuriteOre) before the second item's count
+  // check tripped the slot cap.
+  const inserts = calls.filter((call) => call.text.includes("insert into dune.items"));
+  assert.equal(inserts.length, 1, "item 1 must have actually been inserted before item 2 was rejected");
+});
+
+// The tautological-test counterpart this fix guards against: if the slot
+// cap trips on the FIRST item instead, zero inserts happen and the error
+// message says "0 of 2" -- kept as its own test so the "partway" test above
+// can never be satisfied by an implementation that always rejects
+// everything from item 1.
+test("storage give-multiple-items rejects the whole batch when the slot cap is already full before item 1", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    storageRows: [{ id: 7, actor_id: 222, max_item_count: 1, max_item_volume: 0 }],
+    countRows: [{ count: 1 }]
+  });
+  await assert.rejects(
+    () => giveMultipleItemsToStorage(db, 222, {
+      items: [
+        { templateId: "AzuriteOre", quantity: 20 },
+        { templateId: "PlantFiber", quantity: 5 }
+      ]
+    }),
+    /Storage is full by item slot count \(stopped before giving AzuriteOre; 0 of 2 items were already given\)/
+  );
+  const inserts = calls.filter((call) => call.text.includes("insert into dune.items"));
+  assert.equal(inserts.length, 0, "no item should be inserted when the container was already full");
 });
 
 test("storage give-multiple-items enforces volume across items in the same batch", async () => {
@@ -5997,7 +6073,20 @@ function fakeMutationDb(calls, fixtures = {}) {
       if (text.includes("from dune.vehicle_modules vm") && text.includes("count(*)::int as scanned")) return { rows: fixtures.vehicleModuleScanRows || [{ scanned: 0, vehicles: 0 }] };
       if (text.includes("update dune.vehicle_modules vm")) return { rows: fixtures.repairedVehicleModuleRows || [] };
       if (text.includes("sum(coalesce(volume_override")) return { rows: fixtures.volumeRows || [{ total_volume: 0 }] };
-      if (text.includes("count(*)::int")) return { rows: fixtures.countRows || [{ count: 0 }] };
+      if (text.includes("count(*)::int")) {
+        // countRowsSequence supports tests that need count(*) to reflect a
+        // just-inserted row on the NEXT loop iteration (e.g. proving a
+        // multi-item give batch actually stops partway through, not just
+        // rejects every item identically from iteration 1) -- each count(*)
+        // call consumes the next entry, rather than every call seeing the
+        // same static countRows value. Falls back to the original static
+        // behavior for every existing test that only needs one fixed count.
+        if (fixtures.countRowsSequence) {
+          const index = countCallCount++;
+          return { rows: [fixtures.countRowsSequence[index] || fixtures.countRowsSequence[fixtures.countRowsSequence.length - 1]] };
+        }
+        return { rows: fixtures.countRows || [{ count: 0 }] };
+      }
       if (text.includes("max(position_index)")) return { rows: [{ position_index: 2 }] };
       if (text.includes("insert into dune.items")) {
         // insertedRowsSequence supports tests that insert more than one row
@@ -6021,6 +6110,7 @@ function fakeMutationDb(calls, fixtures = {}) {
     }
   };
   let insertCallCount = 0;
+  let countCallCount = 0;
   return db;
 }
 

@@ -128,3 +128,30 @@ test("every new mutation route validates its path segments before mutating", () 
     assert.match(body, /if \(!parsed\) return json\(res, 400,/, `${name} must reject an invalid path with 400`);
   }
 });
+
+// Found during PR #349's own Layer 3 audit (Security hat): resolveCatalogItem/
+// resolveItemVolume each do a synchronous readFileSync+JSON.parse of the
+// full admin-items catalog per call -- validating the batch-size cap only
+// inside giveMultipleItemsToStorage (after a .map() over the raw body had
+// already resolved every item) let an oversized request force many seconds
+// of synchronous, event-loop-blocking file I/O before ever being rejected.
+// Fixed by checking body.items.length before any per-item processing, the
+// same way the pre-existing giveItemsRoute (player give-items) already does
+// two hundred lines away in this same file -- this test asserts the length
+// check textually precedes the .map()/resolveCatalogItem call, not just
+// that both exist somewhere in the function.
+test("baseContainerGiveItemsRoute validates batch size before resolving any catalog item", () => {
+  const body = routeBody("baseContainerGiveItemsRoute");
+  const lengthCheckAt = body.search(/body\.items\.length/);
+  const mapAt = body.search(/\.map\(/);
+  const resolveAt = body.search(/resolveCatalogItem\(/);
+  assert.notEqual(lengthCheckAt, -1, "must validate body.items.length");
+  assert.notEqual(mapAt, -1, "must still map over items eventually");
+  assert.notEqual(resolveAt, -1, "must still resolve each item's catalog entry");
+  assert.ok(lengthCheckAt < mapAt, "length check must run before the per-item .map()");
+  assert.ok(lengthCheckAt < resolveAt, "length check must run before any resolveCatalogItem call");
+  // Matches the existing 50-item cap giveMultipleItemsToStorage itself
+  // enforces (duneDb.js) -- the route-level check exists to fail fast, not
+  // to introduce a second, different limit.
+  assert.match(body, /body\.items\.length < 1 \|\| body\.items\.length > 50/);
+});

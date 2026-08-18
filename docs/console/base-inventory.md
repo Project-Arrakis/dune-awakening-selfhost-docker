@@ -215,3 +215,113 @@ the list stands in and can still delete.
 
 A stack of exactly 1 shows no quantity badge in the grid — the badge is gated on `quantity > 1`, so a
 single item renders as a bare icon.
+
+## Adding items: Give, Give Multiple, and Fill
+
+Storage containers only — the same allowlist restriction as deletion, one section down. The overlay's
+"Add Item"/"Fill Container" panel is offered whenever `group === "storage"`; it does not additionally
+require `deleteSafety.safe`, unlike every delete action on this page. See "Why Give/Fill do not require a
+stopped map" below for why that asymmetry is deliberate, not an oversight.
+
+| Action | Route | Backend function | Confirmation phrase |
+|---|---|---|---|
+| Give one item | `POST …/containers/{placeableId}/give-item` | `duneDb.giveItemToStorage()` | `GIVE ITEM TO STORAGE` |
+| Give several items in one call | `POST …/containers/{placeableId}/give-items` | `duneDb.giveMultipleItemsToStorage()` | `GIVE ITEMS TO STORAGE` |
+| Fill with a raw/refined resource or component | `POST …/containers/{placeableId}/fill-item` | `duneDb.fillItemToStorage()` | `FILL ITEM TO STORAGE` |
+
+**Give accepts any catalog item; Fill does not.** `resolveCatalogItem()` (Give) has no group restriction —
+weapons, clothing, schematics, anything in `runtime/data/admin-items.json` is acceptable.
+`resolveFillableCatalogItem()` (Fill) additionally requires the item's `group` to be `raw_resource`,
+`refined_resource`, or `component` (`FILLABLE_GROUPS` in `adminCatalog.js`) — the UI states this
+restriction directly above the Fill inputs, and the server independently re-enforces it rather than
+trusting the client to have filtered correctly.
+
+**Give Multiple is one transaction, capped at 50 distinct items, all-or-nothing per item as it's
+processed.** Every check `giveItemToStorage` performs (slot cap, volume cap) is repeated fresh for each
+item in the batch — re-queried after each insert, not computed once up front — so item 3 correctly sees
+the slots/volume items 1 and 2 already consumed within the same call. If item *N* fails, items before it
+in the batch have already been committed to the transaction; the thrown error states exactly how many
+succeeded (`"...stopped before giving X; N of M items were already given"`), and the whole transaction
+then rolls back per Postgres's normal behavior on an uncaught error inside `db.transaction()` — so despite
+that message text, a failure partway through **does not leave partial inserts in the database**; the
+message describes how far the batch progressed before the transaction as a whole was aborted, not what
+was durably committed.
+
+**Both Give and Fill enforce the same slot **and** volume caps.** An earlier version of `giveItemToStorage`
+checked only slot count — an operator could give an item whose declared volume exceeded a container's
+remaining volume, and because that give never recorded a `volume_override`, every later `fillItemToStorage`
+volume check against the same container silently undercounted real usage. Fixed to match `fillItemToStorage`'s
+existing volume accounting exactly (`volume_override` on an inserted row is the item's declared per-unit
+volume × the stack's quantity, never the per-unit value alone — see "Fill visibility" below for why this
+matters for pre-existing containers too).
+
+## Why Give/Fill do not require a stopped map
+
+Deletion needs a stopped map because a running map's own copy of an inventory row can move, merge, or
+disappear before a deferred write applies — see "Why deletion requires a stopped map" below. That reasoning
+is specific to *modifying or removing an existing row*: **Give and Fill only ever insert a brand-new
+`dune.items` row**, and inserting a new row cannot conflict with, overwrite, or be raced by whatever the
+live game engine is doing with the *existing* rows in that same inventory. There is nothing running-map
+state can invalidate about a row that did not exist a moment ago.
+
+The tradeoff this creates: a given/filled item is **not visible in-game until the Survival server
+restarts** — the game engine only claims newly-inserted `dune.items` rows at process startup (see
+`docs/incidents/INC-2026-07-31-FILL-ITEMS-VISIBLE-ONLY-AFTER-RESTART.md` for the full investigation). The
+console UI states this directly above the Give/Fill panel every time it is shown, matching the standalone
+Storage tab's own "Apply Fills (Restart Survival)" note — this page deliberately does not offer an inline
+restart button of its own; Server Control and Bases already own that action, and duplicating a
+player-disconnecting restart trigger in a third place was judged riskier than one extra tab switch.
+
+Because this asymmetry is easy to mistake for a bug — an operator who has just read "stop the map before
+deleting" and then finds Give/Fill fully interactive a few lines below has a reasonable basis to suspect
+something is broken — the map-safety-unavailable message itself states explicitly that Give and Fill are
+unaffected, rather than leaving that only in this doc and a source comment.
+
+## Removing items in bulk: Delete Selected and Delete All
+
+Both are Storage-group-only and require `deleteSafety.safe`, identically to the single-item delete above —
+neither is a separate code path with its own, looser safety check.
+
+| Action | Route | Backend function | Confirmation phrase |
+|---|---|---|---|
+| Delete several checked items | `DELETE …/containers/{placeableId}/items` (body: `{ itemIds }`) | `duneDb.deleteMultipleBaseContainerItems()` | `DELETE ITEMS` |
+| Delete every item in the container | `DELETE …/containers/{placeableId}/all-items` | `duneDb.deleteAllBaseContainerItems()` | `DELETE ALL ITEMS` |
+
+**Ownership is re-resolved once per batch, not once per item** — both share a `resolveOwnedStorageContainer()`
+helper that runs the same claim-CTE/allowlist/`is_hologram`/`max_item_count >= 0` resolution the single-item
+delete uses, explicitly *not* the unscoped, actor_id-only lookup Give/Fill use internally (that shape has no
+group filter and could otherwise reach a Refining/Crafting inventory). Ownership is checked once, the
+resulting inventory row locked (`for update of inv`) for the duration of the whole batch, then each
+requested item is looked up and deleted individually inside that same lock.
+
+**If a storage-group container is ever found to back more than one qualifying inventory, both functions
+refuse to guess and throw, rather than silently picking one and leaving items behind in the other.** This
+page's own "Slots hang off an inventory, not the container" section above documents that a placeable can
+back more than one surviving inventory as a general schema fact — the read path (`baseContainerSlots`)
+already sums across every qualifying inventory a placeable has for exactly this reason. Give/Fill/single-item-delete
+resolve their target inventory with `order by id limit 1`, deterministically picking the lowest id if more
+than one ever exists. The two bulk functions instead throw
+`"This container backs N separate inventories, which this action does not support yet. Please report this
+so it can be fixed."` — found during this feature's own Layer 3 review that an earlier version had no
+`ORDER BY`/`LIMIT` at all and took whichever row Postgres's planner returned first, which could have
+silently cleared the wrong inventory. No storage-group
+building type is currently known to carry more than one qualifying inventory (unlike Refining/Crafting's
+documented `inventory_type = 12` pair — see "Why not classify on `inventory_type`" above, where Storage's
+`inventory_type = 4` rows were confirmed single per placeable in the same reference dump), so this throw is
+not expected to fire in practice; it exists so a future patch that changes that would be caught loudly
+instead of corrupting data silently.
+
+**Delete Selected skips items that no longer exist rather than erroring the whole batch** — an item deleted
+by a player between when the operator's overlay last refreshed and when they clicked Delete Selected is
+silently excluded from `removed[]`, and the response message states how many of the requested items were
+actually found (`"N of M requested item(s) were deleted from the database"`). Delete All reads its item
+list fresh inside the same transaction that deletes them, so "all" always means everything actually present
+at the moment the container's row is locked, never a possibly-stale list the overlay fetched moments
+earlier.
+
+**`Developer_StorageContainer_Placeable` is not special-cased by any of this.** It is already in the
+Storage group's building-type allowlist (see the table near the top of this doc) and is already reachable
+by Give/Fill/Delete the same way any other Storage container is — it happens to only be obtainable by an
+operator granting `Developer_Storage_Container_Patent` to a player via Players → Building Sets → "Show
+Experimental," but nothing about that origin changes how this page treats the resulting placeable. A
+dedicated test locks this in so a future change cannot silently carve it out.

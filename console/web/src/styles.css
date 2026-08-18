@@ -3033,6 +3033,17 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
    fixed width -- ragged-left numbers in a fixed track read as misaligned. */
 .bases-inventory-contents-qty { color: var(--muted-warm); font-variant-numeric: tabular-nums; text-align: right; }
 .bases-inventory-contents-row.head > span:nth-child(4) { text-align: right; }
+/* .with-checkbox inserts an extra leading <span/> for the bulk-select
+   checkbox column (icon, checkbox, Item, Slot, Qty, spacer -- 6 children
+   instead of 5), shifting "Qty" from the 4th child to the 5th. Found during
+   PR #349's own Layer 3 audit (Architect hat): without this override, the
+   rule above kept right-aligning the 4th child ("Slot") instead of "Qty"
+   whenever bulk-delete was offered -- the common case for any storage
+   container on a stopped map, not a rare edge case. The data cells
+   (.bases-inventory-contents-qty, line 3034) were never affected -- only
+   this header label was misaligned with its own column. */
+.bases-inventory-contents-row.head.with-checkbox > span:nth-child(4) { text-align: left; }
+.bases-inventory-contents-row.head.with-checkbox > span:nth-child(5) { text-align: right; }
 .bases-inventory-note { margin: 0; font-size: 12px; }
 
 /* The in-game-style slot grid. auto-fill rather than a fixed column count so

@@ -8922,6 +8922,28 @@ export async function deleteBaseContainerItem(db, baseId, placeableId, itemId, {
 // path rather than trusting the caller's placeableId directly. Must be
 // called inside the caller's own transaction (tx), not db, so the FOR
 // UPDATE lock and the deletes that follow are atomic with each other.
+// docs/console/base-inventory.md explicitly documents that "a placeable can
+// back more than one surviving inventory" as a general schema fact, not
+// something scoped to Refining/Crafting's known dual-inventory case --
+// baseContainerSlots/baseInventory already handle this for the read path by
+// summing across every qualifying inventory a placeable has. This function
+// intentionally does NOT silently pick one of several qualifying inventories
+// the way an earlier version of this function did (no ORDER BY/LIMIT,
+// `rows[0]` taken unconditionally -- found and fixed during this PR's own
+// Layer 3 audit, both the DBA and QA hats independently caught it): if a
+// storage-group placeable is ever found to back more than one qualifying
+// inventory, this throws rather than guessing, because deleteAllBaseContainerItems
+// silently "succeeding" while leaving real items behind in a second,
+// un-selected inventory is worse than a loud failure an operator can report.
+// No storage-group building type is currently known to carry more than one
+// qualifying inventory (unlike Refining/Crafting's documented
+// inventory_type=12 pair) -- see the resolveOwnedStorageContainer test suite
+// (db.test.js) for the explicit test constructing this exact 2-inventory
+// scenario and asserting it throws rather than picking one. If this is ever
+// found to be a real, legitimate case for some storage building type, this
+// function needs a real design decision (sum across inventories, like the
+// read path does, or require the caller to disambiguate) -- not a silent
+// rows[0] pick.
 async function resolveOwnedStorageContainer(tx, baseId, placeableId) {
   const [groups, buildingTypes, typeNames] = baseInventoryTypeParams();
   const found = await tx.query(`
@@ -8945,10 +8967,14 @@ async function resolveOwnedStorageContainer(tx, baseId, placeableId) {
     join inventory_types it on it.building_type = lower(p.building_type)
     join dune.inventories inv on inv.actor_id = p.id and inv.max_item_count >= 0
     where p.is_hologram = false and p.id = $5
+    order by inv.id
     for update of inv`, [baseId, groups, buildingTypes, typeNames, placeableId]);
 
+  if (found.rows.length === 0) throw new Error("That container was not found at the selected base.");
+  if (found.rows.length > 1) {
+    throw new Error(`This container backs ${found.rows.length} separate inventories, which this action does not support yet. Please report this so it can be fixed.`);
+  }
   const container = found.rows[0];
-  if (!container) throw new Error("That container was not found at the selected base.");
   if (container.group_key !== "storage") {
     throw new Error("Items can only be deleted from Storage containers. Crafting and Refining contents are read-only to protect active jobs.");
   }

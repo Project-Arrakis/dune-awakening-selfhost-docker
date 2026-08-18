@@ -519,6 +519,32 @@ describe("BaseInventoryTab", () => {
     expect(rows[2].textContent).toContain("#2");
   });
 
+  // Found during PR #349's own Layer 3 audit (Architect hat): the header row
+  // and each data row must have the SAME number of children in the SAME
+  // order, or styles.css's nth-child-based column alignment (e.g. right-
+  // aligning "Qty") silently targets the wrong column the moment the
+  // with-checkbox modifier adds an extra leading <span/> for bulk-select.
+  // This test can't compute actual CSS (jsdom doesn't run a layout engine),
+  // but it locks in the one thing that actually determines whether the
+  // nth-child selectors line up: identical child counts, header vs. data.
+  it("keeps the header row and data rows structurally aligned when bulk-select is offered", async () => {
+    mockInventory();
+    renderTab();
+    await loaded();
+    await openVaultContents();
+
+    const header = document.querySelector(".bases-inventory-contents-row.head");
+    const dataRow = document.querySelector(".bases-inventory-contents-row:not(.head)");
+    expect(header).toBeTruthy();
+    expect(dataRow).toBeTruthy();
+    expect(header?.classList.contains("with-checkbox")).toBe(true);
+    expect(dataRow?.classList.contains("with-checkbox")).toBe(true);
+    // Same child count is what makes nth-child(N) mean the same column in
+    // both rows -- a header with 5 children and a data row with 6 (or vice
+    // versa) is exactly the class of bug this test exists to catch.
+    expect(header?.children.length).toBe(dataRow?.children.length);
+  });
+
   it("switches to a grid that renders every empty slot", async () => {
     mockInventory();
     renderTab();
@@ -617,6 +643,42 @@ describe("BaseInventoryTab", () => {
     expect(screen.getByText(/HaggaBasin · Partition 68 is running/i)).toBeTruthy();
     expect(confirmAction).not.toHaveBeenCalled();
     expect(basesApi.deleteContainerItem).not.toHaveBeenCalled();
+  });
+
+  // Found during PR #349's own Layer 3 audit (UI hat): an operator reading
+  // "Stop that map before deleting stored items" while Give/Fill sit fully
+  // interactive a few lines below has no way to tell that's deliberate --
+  // this test locks in the explanatory clause added to close that gap.
+  it("explains that Give and Fill are unaffected when the map-running message is shown", async () => {
+    mockInventory();
+    mockSlots({
+      ...SLOTS,
+      deleteSafety: {
+        safe: false, known: true, map: "HaggaBasin", partitionId: 68,
+        reason: "HaggaBasin · Partition 68 is running. Stop that map before deleting stored items."
+      }
+    });
+    renderTab();
+    await loaded();
+    await openVaultContents();
+    expect(screen.getByText(/Giving and filling items are unaffected/i)).toBeTruthy();
+    // Give/Fill must actually still be live in this exact state, or the
+    // explanatory text itself would be false.
+    expect(screen.getByLabelText("Item name or ID to give")).toBeTruthy();
+    expect(screen.getByLabelText("Item name or ID to fill")).toBeTruthy();
+  });
+
+  // The explanatory clause is specific to the map-safety case -- it must
+  // not appear for the OTHER reason deletion can be unavailable (a
+  // Refining/Crafting container), where Give/Fill are ALSO unavailable, so
+  // "unaffected" would be actively wrong there.
+  it("does not claim Give/Fill are unaffected for crafting/refining containers, where they are also unavailable", async () => {
+    mockInventory();
+    mockSlots({ ...SLOTS, group: "refining", typeName: "Small Ore Refinery" });
+    renderTab();
+    await loaded();
+    await openVaultContents();
+    expect(screen.queryByText(/Giving and filling items are unaffected/i)).toBeNull();
   });
 
   it("sends a count for a partial removal and rejects an amount above the stack", async () => {
