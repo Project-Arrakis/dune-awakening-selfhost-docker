@@ -65,6 +65,59 @@ const CATEGORY_MULTIPLIER_LABELS = {
   rankedWeaponMultiplier: "ranked weapons"
 };
 
+// Operator-tunable listing counts for base-useful commodities. Each listing is
+// one full stack_size sell order. The bundled plan uses 2 listings per row;
+// the reseed schedule may override that per template (1-20) without editing
+// the plan. Unknown template ids are dropped so a catalog shrink cannot wipe
+// a stored seed schedule on read.
+export const COMMODITY_STACK_MIN = 1;
+export const COMMODITY_STACK_MAX = 20;
+export const COMMODITY_STACK_DEFAULT = 2;
+export const COMMODITY_STACK_GROUPS = [
+  { id: "power", label: "Power" },
+  { id: "filters", label: "Windtrap filters" },
+  { id: "spice", label: "Spice" },
+  { id: "refining", label: "Refining" },
+  { id: "building", label: "Building" },
+  { id: "fragments", label: "Schematic fragments" },
+  { id: "survival", label: "Survival" }
+];
+export const COMMODITY_STACK_CATALOG = [
+  { templateId: "Oil", label: "Fuel Cell", group: "power", groupLabel: "Power", stackSize: 500 },
+  { templateId: "SpicedFuelCell", label: "Spice-infused Fuel Cell", group: "power", groupLabel: "Power", stackSize: 500 },
+  { templateId: "WindTurbineLubricant1", label: "Low-grade Lubricant", group: "power", groupLabel: "Power", stackSize: 100 },
+  { templateId: "WindTurbineLubricant2", label: "Industrial-grade Lubricant", group: "power", groupLabel: "Power", stackSize: 100 },
+  { templateId: "WindTrapFilter1", label: "Makeshift Filter", group: "filters", groupLabel: "Windtrap filters", stackSize: 5 },
+  { templateId: "WindTrapFilter2", label: "Standard Filter", group: "filters", groupLabel: "Windtrap filters", stackSize: 5 },
+  { templateId: "WindTrapFilter3", label: "Particulate Filter", group: "filters", groupLabel: "Windtrap filters", stackSize: 5 },
+  { templateId: "WindTrapFilter4", label: "Advanced Particulate Filter", group: "filters", groupLabel: "Windtrap filters", stackSize: 5 },
+  { templateId: "MelangeSpice", label: "Spice Melange", group: "spice", groupLabel: "Spice", stackSize: 500 },
+  { templateId: "SpiceResidue", label: "Spice Residue", group: "spice", groupLabel: "Spice", stackSize: 1000 },
+  { templateId: "FlourSand", label: "Flour Sand", group: "spice", groupLabel: "Spice", stackSize: 1000 },
+  { templateId: "SpiceSand", label: "Spice Sand", group: "spice", groupLabel: "Spice", stackSize: 2500 },
+  { templateId: "T6RefinedResourceA", label: "Plastanium Ingot", group: "refining", groupLabel: "Refining", stackSize: 500 },
+  { templateId: "DuraluminumRod", label: "Duraluminum Ingot", group: "refining", groupLabel: "Refining", stackSize: 500 },
+  { templateId: "AluminiumBar", label: "Aluminum Ingot", group: "refining", groupLabel: "Refining", stackSize: 500 },
+  { templateId: "SteelBar", label: "Steel Ingot", group: "refining", groupLabel: "Refining", stackSize: 500 },
+  { templateId: "IronBar", label: "Iron Ingot", group: "refining", groupLabel: "Refining", stackSize: 500 },
+  { templateId: "CopperBar", label: "Copper Ingot", group: "refining", groupLabel: "Refining", stackSize: 500 },
+  { templateId: "CobaltBar", label: "Cobalt Paste", group: "refining", groupLabel: "Refining", stackSize: 500 },
+  { templateId: "T6RefinedResourceB", label: "Stravidium Fiber", group: "refining", groupLabel: "Refining", stackSize: 500 },
+  { templateId: "T6ResourceB", label: "Stravidium Mass", group: "refining", groupLabel: "Refining", stackSize: 500 },
+  { templateId: "ScrapMetal", label: "Salvaged Metal", group: "building", groupLabel: "Building", stackSize: 500 },
+  { templateId: "Stone", label: "Granite Stone", group: "building", groupLabel: "Building", stackSize: 500 },
+  { templateId: "Plastone", label: "Plastone", group: "building", groupLabel: "Building", stackSize: 500 },
+  { templateId: "Silicone", label: "Silicone Block", group: "building", groupLabel: "Building", stackSize: 500 },
+  { templateId: "PlantFiber", label: "Plant Fiber", group: "building", groupLabel: "Building", stackSize: 500 },
+  { templateId: "T6SchematicFragmentQL1", label: "Schematic Pattern Grade 1", group: "fragments", groupLabel: "Schematic fragments", stackSize: 500 },
+  { templateId: "T6SchematicFragmentQL2", label: "Schematic Pattern Grade 2", group: "fragments", groupLabel: "Schematic fragments", stackSize: 500 },
+  { templateId: "T6SchematicFragmentQL3", label: "Schematic Pattern Grade 3", group: "fragments", groupLabel: "Schematic fragments", stackSize: 500 },
+  { templateId: "T6SchematicFragmentQL4", label: "Schematic Pattern Grade 4", group: "fragments", groupLabel: "Schematic fragments", stackSize: 500 },
+  { templateId: "T6SchematicFragmentQL5", label: "Schematic Pattern Grade 5", group: "fragments", groupLabel: "Schematic fragments", stackSize: 500 },
+  { templateId: "AntiRadiationPill", label: "Iodine Pill", group: "survival", groupLabel: "Survival", stackSize: 20 }
+];
+const COMMODITY_STACK_IDS = new Set(COMMODITY_STACK_CATALOG.map((item) => item.templateId));
+
 export function normalizeCategoryMultipliers(payload = {}, previous = {}, scheduleLabel = "Schedule") {
   const multipliers = {};
   for (const field of CATEGORY_MULTIPLIER_FIELDS) {
@@ -102,6 +155,34 @@ export function describeCategoryMultipliers(multipliers = {}) {
   return parts.length ? `, ${parts.join(", ")}` : "";
 }
 
+export function normalizeCommodityStacks(payload = {}, previous = {}) {
+  const raw = payload?.commodityStacks === undefined ? previous?.commodityStacks : payload.commodityStacks;
+  if (raw == null) return {};
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error("Seed schedule commodityStacks must be an object of templateId to stack count.");
+  }
+  const next = {};
+  for (const [templateId, value] of Object.entries(raw)) {
+    if (!COMMODITY_STACK_IDS.has(templateId)) continue;
+    next[templateId] = integerField(value, `commodityStacks.${templateId}`, COMMODITY_STACK_MIN, COMMODITY_STACK_MAX);
+  }
+  return next;
+}
+
+// Number of sell orders (full stacks) to list for this plan row. Catalog
+// overrides apply by template; every other row keeps the plan's listings.
+export function seedRowListingCount(row, schedule) {
+  const override = schedule?.commodityStacks?.[row.templateId];
+  return Number.isInteger(override) ? override : row.listings;
+}
+
+export function describeCommodityStacks(schedule = {}) {
+  const overridden = Object.entries(schedule.commodityStacks || {})
+    .filter(([, listings]) => listings !== COMMODITY_STACK_DEFAULT);
+  if (!overridden.length) return "";
+  return `, ${overridden.length} commodity stack override${overridden.length === 1 ? "" : "s"}`;
+}
+
 export function normalizeSeedSchedule(payload = {}, previous = {}) {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
     throw new Error("Seed schedule must be a JSON object.");
@@ -126,7 +207,8 @@ export function normalizeSeedSchedule(payload = {}, previous = {}) {
     priceMultiplier: integerField(payload.priceMultiplier ?? previous.priceMultiplier ?? 5, "priceMultiplier", 1, 100),
     ...normalizeCategoryMultipliers(payload, previous, "Seed schedule"),
     augmentPricing: normalizeAugmentPricing(payload.augmentPricing ?? previous.augmentPricing),
-    // Who owns this schedule: "addon" (bridge-managed; scheduled runs re-verify
+    commodityStacks: normalizeCommodityStacks(payload, previous),
+    // Who owns this schedule: "addon" (bridge-managed; scheduled runs re-verify)
     // the addon's approved permissions) or "console" (first-class Market Bot;
     // authorized by RBAC at save time). Deliberately NOT read from the payload —
     // only the save-path options can set it, so an addon iframe cannot flip a
@@ -298,7 +380,8 @@ export function buildMarketSeedSql(plan, schedule) {
     // normalized back to the plan's own 1x scale, then the schedule's base
     // multiplier and the row's category multiplier, rounded to clean steps.
     const price = listedMarketUnitPrice(plan, row, schedule);
-    return `(${sqlLiteral(row.templateId)},${row.stackSize},${price},${row.categoryMask},${row.categoryDepth},${row.qualityLevel},${sqlLiteral(row.kind)},${row.listings},${sqlLiteral(row.itemStats)})`;
+    const listings = seedRowListingCount(row, schedule);
+    return `(${sqlLiteral(row.templateId)},${row.stackSize},${price},${row.categoryMask},${row.categoryDepth},${row.qualityLevel},${sqlLiteral(row.kind)},${listings},${sqlLiteral(row.itemStats)})`;
   }).join(",\n") || "(NULL,1,0,0,0,0,'equippable',0,'{}')";
 
   // Always clear the bot's own listings for this exchange before seeding.
@@ -389,7 +472,7 @@ export async function executeSeedRun(config, db, schedule, { runDuneImpl, buildD
     resourceListings: decimalString(row.resource_listings),
     priceMultiplier: schedule.priceMultiplier,
     exchangeId: schedule.exchangeId,
-    detail: `Seeded ${listingCount} listings on exchange ${schedule.exchangeId} at ${schedule.priceMultiplier}x${describeCategoryMultipliers(schedule)} (bot listings cleared first).`
+    detail: `Seeded ${listingCount} listings on exchange ${schedule.exchangeId} at ${schedule.priceMultiplier}x${describeCategoryMultipliers(schedule)}${describeCommodityStacks(schedule)} (bot listings cleared first).`
   };
 }
 

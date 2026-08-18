@@ -5,7 +5,9 @@ import {
   saveBuybackSchedule,
   readSeedSchedule,
   saveSeedSchedule,
-  resolveMarketSeedPlanPath
+  resolveMarketSeedPlanPath,
+  COMMODITY_STACK_CATALOG,
+  COMMODITY_STACK_GROUPS
 } from "../addonJobs.js";
 
 // First-class Market Bot for the CHOAM exchange: the same seed/buyback engine
@@ -57,6 +59,8 @@ export async function marketBotStatus(config, db) {
     plan: marketSeedPlanSummary(config),
     buyback: readBuybackSchedule(config),
     seed: readSeedSchedule(config),
+    commodityStackCatalog: COMMODITY_STACK_CATALOG,
+    commodityStackGroups: COMMODITY_STACK_GROUPS,
     ...(supported ? {} : { reason: `Unsupported by detected schema. Missing required table(s): ${REQUIRED_TABLES.map((t) => `dune.${t}`).join(", ")}` })
   };
 }

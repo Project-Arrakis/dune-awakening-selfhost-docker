@@ -48,7 +48,8 @@ the database.
 Key buyback fields include `enabled`, `intervalMinutes`, `exchangeId`,
 `priceMultiplier`, category multipliers, `buybackPercent`, `buybackPriceBasis`,
 and `maxBuys`. Seed schedules include the same target, timing, and pricing fields
-plus augment pricing. Both record `lastRunAt`, `lastRunStatus`, `lastRunDetail`,
+plus augment pricing and optional `commodityStacks` (1–20 full listings for
+allowlisted base commodities). Both record `lastRunAt`, `lastRunStatus`, `lastRunDetail`,
 and `nextRunAt`.
 
 ## EDA Exchange Bot retirement
