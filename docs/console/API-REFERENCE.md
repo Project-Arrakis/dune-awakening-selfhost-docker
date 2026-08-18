@@ -726,6 +726,7 @@ See [../integrations/discord-integration/README.md](../integrations/discord-inte
 | GET | `/api/integrations/discord/version` | Adapter version | None |
 | GET | `/api/integrations/discord/servers` | Servers list | None |
 | GET | `/api/integrations/discord/ports` | Ports list | None |
+| GET | `/api/integrations/discord/catalog` | Command catalog (names/descriptions/capabilities/min tiers for every live route below, machine-readable) | None -- bearer token only, same as `/health`. Deliberately no per-capability check: this is read-only metadata about route/command shape, not game or player data (see `commandCatalog.js`, issue #337). |
 
 ### Logs & Monitoring
 
