@@ -375,11 +375,12 @@ function augmentStatRollCounts(config) {
 export function buildMarketSeedSql(plan, schedule) {
   const exchangeId = requireSeedExchangeId(schedule);
   const multiplier = schedule.priceMultiplier;
+  const listedUnitPrice = createListedMarketUnitPrice(plan, schedule);
   const valuesSql = plan.rows.map((row) => {
     // Price pipeline: plan price (with the augment pricing choice applied),
     // normalized back to the plan's own 1x scale, then the schedule's base
     // multiplier and the row's category multiplier, rounded to clean steps.
-    const price = listedMarketUnitPrice(plan, row, schedule);
+    const price = listedUnitPrice(row);
     const listings = seedRowListingCount(row, schedule);
     return `(${sqlLiteral(row.templateId)},${row.stackSize},${price},${row.categoryMask},${row.categoryDepth},${row.qualityLevel},${sqlLiteral(row.kind)},${listings},${sqlLiteral(row.itemStats)})`;
   }).join(",\n") || "(NULL,1,0,0,0,0,'equippable',0,'{}')";
@@ -536,15 +537,25 @@ export function seedRowBasePrice(row, augmentPricing, augmentSchematicPrices) {
   return schematicPrice ? schematicPrice / 2 : row.price / 20;
 }
 
-// Shared by reseed SQL and buyback's seeded price basis so "60% of seeded"
-// tracks what the bot actually lists after augmentPricing + multipliers.
-export function listedMarketUnitPrice(plan, row, schedule) {
+// Build the plan-wide schematic index once, then reuse it for every row. Both
+// reseed and buyback price thousands of rows at a time, so rebuilding the map
+// inside the row loop would turn SQL generation into quadratic work.
+export function createListedMarketUnitPrice(plan, schedule) {
   const schematicPrices = augmentSchematicPriceMap(plan.rows || []);
-  const base = seedRowBasePrice(row, normalizeAugmentPricing(schedule?.augmentPricing), schematicPrices);
+  const augmentPricing = normalizeAugmentPricing(schedule?.augmentPricing);
   const source = Math.max(1, Number(plan.sourceMultiplier) || 1);
   const multiplier = Number(schedule?.priceMultiplier);
   const priceMultiplier = Number.isFinite(multiplier) && multiplier > 0 ? multiplier : 1;
-  return roundPrice((base / source) * priceMultiplier * seedRowCategoryMultiplier(row, schedule));
+  return (row) => {
+    const base = seedRowBasePrice(row, augmentPricing, schematicPrices);
+    return roundPrice((base / source) * priceMultiplier * seedRowCategoryMultiplier(row, schedule));
+  };
+}
+
+// Shared single-row convenience helper. Bulk callers should create one
+// plan-scoped pricer with createListedMarketUnitPrice and reuse it.
+export function listedMarketUnitPrice(plan, row, schedule) {
+  return createListedMarketUnitPrice(plan, schedule)(row);
 }
 
 function itemStatsJson(durCur, durMax, statRolls = null) {

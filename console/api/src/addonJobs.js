@@ -36,10 +36,10 @@ import {
   resolveMarketSeedPlanPath,
   legacySeedSchedulePath,
   seedSchedulePath,
-  listedMarketUnitPrice
+  createListedMarketUnitPrice
 } from "./addonSeedJob.js";
 
-export { CATEGORY_MULTIPLIER_FIELDS, COMMODITY_STACK_CATALOG, COMMODITY_STACK_GROUPS, COMMODITY_STACK_MIN, COMMODITY_STACK_MAX, COMMODITY_STACK_DEFAULT, readSeedSchedule, normalizeSeedSchedule, saveSeedSchedule, normalizeCategoryMultipliers, normalizeCommodityStacks, normalizeScheduleSource, resolveMarketSeedPlanPath, legacySeedSchedulePath, seedSchedulePath, loadMarketSeedPlan, seedRowCategoryMultiplier, seedRowListingCount, listedMarketUnitPrice, normalizeAugmentPricing } from "./addonSeedJob.js";
+export { CATEGORY_MULTIPLIER_FIELDS, COMMODITY_STACK_CATALOG, COMMODITY_STACK_GROUPS, COMMODITY_STACK_MIN, COMMODITY_STACK_MAX, COMMODITY_STACK_DEFAULT, readSeedSchedule, normalizeSeedSchedule, saveSeedSchedule, normalizeCategoryMultipliers, normalizeCommodityStacks, normalizeScheduleSource, resolveMarketSeedPlanPath, legacySeedSchedulePath, seedSchedulePath, loadMarketSeedPlan, seedRowCategoryMultiplier, seedRowListingCount, createListedMarketUnitPrice, listedMarketUnitPrice, normalizeAugmentPricing } from "./addonSeedJob.js";
 
 export const EDA_EXCHANGE_BOT_ADDON_ID = "eda-exchange-bot";
 export const ADDON_SCHEDULER_PERMISSION = "scheduler:server";
@@ -306,8 +306,9 @@ const BUYBACK_PLAYER_SELL_SQL = "COALESCE(o.is_npc_order, FALSE) = FALSE AND (b.
 export function buybackPlanValuesSql(plan, schedule) {
   const { buybackPercent } = schedule;
   const maxPrice = new Map();
+  const listedUnitPrice = createListedMarketUnitPrice(plan, schedule);
   for (const row of plan.rows) {
-    const repriced = listedMarketUnitPrice(plan, row, schedule);
+    const repriced = listedUnitPrice(row);
     const key = `${row.templateId}\0${row.qualityLevel}`;
     maxPrice.set(key, Math.max(maxPrice.get(key) || 0, repriced));
   }
