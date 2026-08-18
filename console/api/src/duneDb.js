@@ -1,16 +1,21 @@
-import { assertIdentifier, intParam, isReadOnlySql, quoteIdentifier, quoteQualified, rowsResult } from "./db.js";
+import { assertIdentifier, bigintParam, intParam, isReadOnlySql, quoteIdentifier, quoteQualified, rowsResult } from "./db.js";
 import { getBridgeRequestSummary } from "./audit.js";
 import { resolveMapCombatState } from "./services/mapCombatState.js";
+import { resolvePorts } from "./config.js";
 import { existsSync, readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import { redact } from "./redact.js";
+import { itemImagePath } from "./adminCatalog.js";
 import { clampInt, writeJsonAtomic } from "./jsonStore.js";
-import { CARE_PACKAGE_SERVER_PERSONA, FUNCOM_GM_PERSONA } from "./systemPersonas.js";
+import { CARE_PACKAGE_SERVER_PERSONA, FUNCOM_GM_PERSONA, MESSAGE_OF_THE_DAY_PERSONA } from "./systemPersonas.js";
 import {
   craftingRecipeCatalogRows,
   compareJourneyCatalogOrder,
   factionIdByName,
+  factionProgressionRankLimit,
+  factionProgressionRepairPlan,
+  factionReputationEstimatedRank,
   factionTierBumps,
   factionDisplayName,
   journeyDepth,
@@ -62,6 +67,7 @@ const MAX_TABLE_PREVIEW_ROWS = 10000;
 const INVENTORY_EDITABLE_COLUMNS = new Set(["stack_size", "quality_level", "position_index", "current_durability"]);
 let craftingRecipeCatalogCache = null;
 let adminItemMetadataCache = null;
+let mapRegionNamesCache = null;
 let augmentCompatibilityCache = null;
 const PLAYER_TARGET_CACHE_TTL_MS = 3000;
 const playerTargetCache = new Map(); // id -> { promise, expiresAt }
@@ -1411,12 +1417,120 @@ const PLAYER_SORT_COLUMNS = {
   online_status: { order: ["online_status"] },
   map: { order: ["lower(coalesce(map, ''))"] },
   last_seen: { order: ["last_seen"] },
+  total_playtime_seconds: { order: ["total_playtime_seconds"] },
   actor_id: { order: ["actor_id"] }
 };
+
+const playerPlaytimeMigrations = new WeakMap();
+
+export function migratePlayerPlaytimeSchema(db) {
+  if (!playerPlaytimeMigrations.has(db)) {
+    const migrate = async (tx) => {
+      await tx.query(`
+        create table if not exists dune.console_player_playtime (
+          account_id bigint primary key,
+          total_seconds bigint not null default 0,
+          session_started_at timestamp with time zone,
+          session_login_at timestamp with time zone,
+          last_observed_at timestamp with time zone,
+          updated_at timestamp with time zone not null default current_timestamp,
+          constraint console_player_playtime_total_nonnegative check (total_seconds >= 0)
+        )`);
+    };
+    const promise = Promise.resolve(typeof db.transaction === "function" ? db.transaction(migrate) : migrate(db))
+      .catch((error) => {
+        playerPlaytimeMigrations.delete(db);
+        throw error;
+      });
+    playerPlaytimeMigrations.set(db, promise);
+  }
+  return playerPlaytimeMigrations.get(db);
+}
+
+// The game exposes current presence and the current session's login timestamp,
+// but no lifetime counter. Keep completed seconds in a console-owned table and
+// retain the active session separately so the UI can include time elapsed since
+// the last poll. A session that ends while the console is down is capped at its
+// last observation instead of inventing playtime during the outage.
+export async function trackPlayerPlaytime(db) {
+  if (!(await tableExists(db, "player_state"))) return { supported: false };
+  const playerStateColumns = await columnsFor(db, "player_state");
+  if (!["account_id", "online_status"].every((column) => playerStateColumns.has(column))) {
+    return { supported: false };
+  }
+  await migratePlayerPlaytimeSchema(db);
+  const sessionLoginSelect = playerStateColumns.has("last_login_time")
+    ? "ps.last_login_time"
+    : "null::timestamp with time zone";
+  return db.query(`
+    with currently_online as (
+      select distinct on (ps.account_id)
+             ps.account_id,
+             ${sessionLoginSelect} as session_login_at
+      from dune.player_state ps
+      where ps.account_id is not null
+        and ps.account_id <> 0
+        and coalesce(ps.online_status::text, '') = 'Online'
+      order by ps.account_id, ${sessionLoginSelect} desc nulls last
+    ),
+    closed_sessions as (
+      update dune.console_player_playtime tracked
+      set total_seconds = tracked.total_seconds + greatest(0, floor(extract(epoch from
+            coalesce(tracked.last_observed_at, tracked.session_started_at) - tracked.session_started_at)))::bigint,
+          session_started_at = null,
+          session_login_at = null,
+          updated_at = current_timestamp
+      where tracked.session_started_at is not null
+        and not exists (select 1 from currently_online online where online.account_id = tracked.account_id)
+      returning tracked.account_id
+    )
+    insert into dune.console_player_playtime (
+      account_id, total_seconds, session_started_at, session_login_at, last_observed_at, updated_at
+    )
+    select online.account_id,
+           0,
+           coalesce(online.session_login_at, current_timestamp),
+           online.session_login_at,
+           current_timestamp,
+           current_timestamp
+    from currently_online online
+    on conflict (account_id) do update
+    set total_seconds = dune.console_player_playtime.total_seconds +
+          case
+            when dune.console_player_playtime.session_started_at is not null
+             and excluded.session_login_at is not null
+             and dune.console_player_playtime.session_login_at is distinct from excluded.session_login_at
+              then greatest(0, floor(extract(epoch from
+                   coalesce(dune.console_player_playtime.last_observed_at, dune.console_player_playtime.session_started_at)
+                   - dune.console_player_playtime.session_started_at)))::bigint
+            else 0
+          end,
+        session_started_at = case
+          when dune.console_player_playtime.session_started_at is not null
+           and (excluded.session_login_at is null
+             or dune.console_player_playtime.session_login_at is not distinct from excluded.session_login_at)
+            then dune.console_player_playtime.session_started_at
+          else excluded.session_started_at
+        end,
+        session_login_at = case
+          when dune.console_player_playtime.session_started_at is not null
+           and excluded.session_login_at is null
+            then dune.console_player_playtime.session_login_at
+          else excluded.session_login_at
+        end,
+        last_observed_at = current_timestamp,
+        updated_at = current_timestamp`);
+}
 
 // Funcom creates this reserved GM identity in some freshly initialized
 // battlegroups. It is an internal service actor, not an administrable player.
 const INTERNAL_GM_PLAYER_PAWN_ID = FUNCOM_GM_PERSONA.playerPawnId;
+
+// Stable pawn ids of every reserved non-player identity (GM, Server, Message of
+// the Day). Exclude by id, not display name -- persona names may be encrypted
+// or absent in the legacy player_state view, and a real player could be named
+// "Server".
+const SYSTEM_PERSONA_PAWN_IDS = [FUNCOM_GM_PERSONA, CARE_PACKAGE_SERVER_PERSONA, MESSAGE_OF_THE_DAY_PERSONA].map((persona) => persona.playerPawnId);
 
 export async function listPlayers(db, { status = "all", q = "", page = 0, pageSize = 50, sortColumn = "character_name", sortDirection = "asc", includeTotals = true, bannedFlsIds = [], controllerIds } = {}) {
   if (!(await tableExists(db, "actors")) || !(await tableExists(db, "player_state"))) {
@@ -1462,6 +1576,21 @@ export async function listPlayers(db, { status = "all", q = "", page = 0, pageSi
     ? `coalesce(nullif(${plainFuncomId}, ''), nullif(${validDecryptedFuncomId}, ''), '')`
     : plainFuncomId;
   const lastSeenSelect = await playerLastSeenSelect(db);
+  const hasOnlineStatus = playerStateColumns.has("online_status");
+  const hasPlayerPlaytime = await tableExists(db, "console_player_playtime");
+  const playerPlaytimeJoin = hasPlayerPlaytime
+    ? "left join dune.console_player_playtime player_playtime on player_playtime.account_id = a.owner_account_id"
+    : "";
+  const totalPlaytimeSelect = hasPlayerPlaytime
+    ? `greatest(0, coalesce(player_playtime.total_seconds, 0) +
+         case when player_playtime.session_started_at is not null
+           then floor(extract(epoch from
+             (case when ${hasOnlineStatus ? "coalesce(ps.online_status::text, '') = 'Online'" : "false"}
+               then current_timestamp
+               else coalesce(player_playtime.last_observed_at, player_playtime.session_started_at)
+              end) - player_playtime.session_started_at))::bigint
+           else 0 end)`
+    : "0::bigint";
   const loginSessionSelect = playerStateColumns.has("last_login_time")
     ? "coalesce(ps.last_login_time::text, '')"
     : "''";
@@ -1471,7 +1600,6 @@ export async function listPlayers(db, { status = "all", q = "", page = 0, pageSi
   const currentPawnPriority = playerStateColumns.has("player_pawn_id")
     ? "when ps.player_pawn_id = a.id then 0"
     : "when false then 0";
-  const hasOnlineStatus = playerStateColumns.has("online_status");
   const lastSeenWithOnlineFallback = `
     case
       when ${hasOnlineStatus ? "coalesce(ps.online_status::text, '') = 'Online'" : "false"}
@@ -1542,6 +1670,7 @@ export async function listPlayers(db, { status = "all", q = "", page = 0, pageSi
              (${bannedExpression}) as is_banned,
              ${loginSessionSelect} as login_session,
              ${lastSeenWithOnlineFallback} as last_seen,
+             ${totalPlaytimeSelect} as total_playtime_seconds,
              coalesce(nullif(ps.player_controller_id, 0), nullif(a.owner_account_id, 0), a.id) as dedupe_key,
              case
                ${currentPawnPriority}
@@ -1552,6 +1681,7 @@ export async function listPlayers(db, { status = "all", q = "", page = 0, pageSi
       from dune.actors a
       left join dune.player_state ps on ps.account_id = a.owner_account_id
       left join dune.accounts ac on ac.id = a.owner_account_id
+      ${playerPlaytimeJoin}
       ${encryptedAccountsJoin}
       where ${where}
     ),
@@ -1571,7 +1701,8 @@ export async function listPlayers(db, { status = "all", q = "", page = 0, pageSi
              online_status,
              is_banned,
              login_session,
-             last_seen
+             last_seen,
+             total_playtime_seconds
       from player_rows
       order by dedupe_key, row_priority, online_priority, actor_id desc
     ),
@@ -1630,6 +1761,63 @@ export async function listAllPlayers(db, { status = "all", q = "" } = {}) {
     page += 1;
   }
   return { ...first, rows };
+}
+
+// Battlegroup-wide count of real players currently online. The restart queue
+// uses it to decide immediate-vs-countdown. dune.player_state is
+// battlegroup-wide (one Postgres for every map), so a single aggregate covers
+// the whole battlegroup. Excludes the game's own reserved identities (GM,
+// Server, Message of the Day) by their stable pawn ids -- not by display name,
+// which may be encrypted/absent and could collide with a real player -- so an
+// idle server never looks occupied.
+export async function countOnlinePlayers(db) {
+  if (!(await tableExists(db, "player_state"))) return { supported: false, online: 0, total: 0 };
+  const personaFilter = SYSTEM_PERSONA_PAWN_IDS.map((id) => `${id}::bigint`).join(", ");
+  const result = await db.query(`
+    select count(*) filter (where coalesce(online_status::text, '') = 'Online')::int as online,
+           count(*)::int as total
+    from dune.player_state
+    where coalesce(player_pawn_id, 0) not in (${personaFilter})`);
+  const r = result.rows?.[0] || {};
+  return { supported: true, online: Number(r.online || 0), total: Number(r.total || 0) };
+}
+
+// Scoped online count for a single restart target (a map or sietch partition),
+// so the restart queue can decide "immediate vs countdown" -- and tell the
+// admin -- based on who is actually on that map, not the whole battlegroup.
+// Resolves to one or more partition ids: a direct partitionId wins; otherwise
+// `map` is looked up against dune.world_partition.map, which is the same
+// namespace the restart machinery already uses for its targets (see
+// partitionRestartTargets above) -- never dune.actors.map, which names the
+// in-game region instead of the partition. Returns { supported: false } when
+// neither resolves to a real partition, so callers fall back to the
+// battlegroup-wide count rather than silently reporting zero.
+export async function countOnlinePlayersForTarget(db, { partitionId, map } = {}) {
+  if (!(await tableExists(db, "player_state")) || !(await tableExists(db, "actors"))) {
+    return { supported: false, online: 0, total: 0 };
+  }
+  const partitionIds = await resolveRestartTargetPartitionIds(db, { partitionId, map });
+  if (!partitionIds.length) return { supported: false, online: 0, total: 0 };
+  const result = await db.query(`
+    select count(*) filter (where coalesce(ps.online_status::text, '') = 'Online')::int as online,
+           count(*)::int as total
+    from dune.actors a
+    join dune.player_state ps on ps.player_pawn_id = a.id
+    where a.partition_id = any($1::int[])
+      and a.id not in (${SYSTEM_PERSONA_PAWN_IDS.map((id) => `${id}::bigint`).join(", ")})`, [partitionIds]);
+  const r = result.rows?.[0] || {};
+  return { supported: true, online: Number(r.online || 0), total: Number(r.total || 0) };
+}
+
+async function resolveRestartTargetPartitionIds(db, { partitionId, map } = {}) {
+  const direct = Number(partitionId);
+  if (Number.isInteger(direct) && direct > 0) return [direct];
+  const mapName = String(map || "").trim();
+  if (!mapName || !(await tableExists(db, "world_partition"))) return [];
+  const result = await db.query("select partition_id from dune.world_partition where map = $1", [mapName]);
+  return result.rows
+    .map((row) => Number(row.partition_id))
+    .filter((id) => Number.isInteger(id) && id > 0);
 }
 
 export async function addonLeadershipPlayers(db) {
@@ -2233,6 +2421,72 @@ export async function playerProfile(db, id) {
   return { capabilities: await playerCapabilities(db), player: row };
 }
 
+// Player-carried inventory containers keyed by dune.inventories.inventory_type.
+// The console groups them into four tabs (labels applied client-side):
+//   backpack           = 0
+//   character          = 1  (worn armor/clothing)
+//   loadout            = 15 (held weapons/tools)
+//   unique schematics  = 30
+// Emote/cosmetic containers (14, 27) are deliberately excluded: across every player
+// in the reference data they hold nothing but Emote_* items, which are neither
+// equipped gear nor schematics. (repairGear keeps its own wider set; emote items
+// simply carry no durability to repair.)
+const PLAYER_BACKPACK_INVENTORY_TYPE = 0;
+const PLAYER_GEAR_INVENTORY_TYPES = [1, 15];
+const PLAYER_SCHEMATIC_INVENTORY_TYPES = [30];
+const PLAYER_INVENTORY_TYPES = [
+  PLAYER_BACKPACK_INVENTORY_TYPE,
+  ...PLAYER_GEAR_INVENTORY_TYPES,
+  ...PLAYER_SCHEMATIC_INVENTORY_TYPES
+];
+
+// Shared shaping for inventory item rows: strips the raw stats blob and folds in
+// admin catalog metadata + extracted augment ids. Used by both the backpack-only
+// playerInventory and the all-containers playerInventoryAll.
+function mapInventoryItemRows(rows) {
+  const itemMetadata = adminItemMetadata();
+  return rows.map(({ stats, ...row }) => {
+    const metadata = itemMetadata.get(String(row.template_id || ""));
+    return {
+      ...row,
+      item_name: metadata?.name || "",
+      category: metadata?.category || "",
+      source: metadata?.source || "",
+      augments: extractAugmentIdsFromStats(stats)
+    };
+  });
+}
+
+const INVENTORY_ITEM_SELECT = `
+    select i.id,
+           i.template_id,
+           i.stack_size,
+           i.quality_level,
+           i.position_index,
+           i.inventory_id,
+           inv2.inventory_type,
+           coalesce((i.stats->'FItemStackAndDurabilityStats'->1->>'CurrentDurability'), null) as current_durability,
+           coalesce(
+             nullif((i.stats->'FItemStackAndDurabilityStats'->1->>'MaxDurability')::numeric, 0),
+             nullif((i.stats->'FItemStackAndDurabilityStats'->1->>'DecayedMaxDurability')::numeric, 0),
+             null
+           ) as max_durability,
+           i.stats
+    from dune.items i
+    join dune.inventories inv2 on i.inventory_id = inv2.id`;
+
+async function backpackCapacity(db, playerId) {
+  const inv = await db.query(`
+    select max_item_count, max_item_volume
+    from dune.inventories
+    where actor_id = $1 and inventory_type = 0
+    order by id limit 1`, [playerId]);
+  return {
+    maxSlots: Number(inv.rows[0]?.max_item_count) || 40,
+    maxVolume: Number(inv.rows[0]?.max_item_volume) || 225
+  };
+}
+
 export async function playerInventory(db, id) {
   if (!(await tableExists(db, "items")) || !(await tableExists(db, "inventories"))) return unsupported("inventory", ["dune.items", "dune.inventories"]);
 
@@ -2264,16 +2518,23 @@ export async function playerInventory(db, id) {
     join dune.inventories inv2 on i.inventory_id = inv2.id
     where inv2.actor_id = $1 and inv2.inventory_type = 0
     order by i.template_id`, [intParam(id, "player id", 1)]);
-  const itemMetadata = adminItemMetadata();
-  const rows = result.rows.map(({ stats, ...row }) => {
-    const metadata = itemMetadata.get(String(row.template_id || ""));
-    return {
-      ...row,
-      category: metadata?.category || "",
-      source: metadata?.source || "",
-      augments: extractAugmentIdsFromStats(stats)
-    };
-  });
+  const rows = mapInventoryItemRows(result.rows);
+  return { capabilities: { inventory: true }, maxSlots, maxVolume, rows };
+}
+
+// Like playerInventory but returns every player-carried container (backpack +
+// equipped gear), tagging each row with inventory_type so the console can group
+// them. maxSlots/maxVolume still describe the backpack for backward compatibility.
+export async function playerInventoryAll(db, id) {
+  if (!(await tableExists(db, "items")) || !(await tableExists(db, "inventories"))) return unsupported("inventory", ["dune.items", "dune.inventories"]);
+  const playerId = intParam(id, "player id", 1);
+
+  const { maxSlots, maxVolume } = await backpackCapacity(db, playerId);
+
+  const result = await db.query(`${INVENTORY_ITEM_SELECT}
+    where inv2.actor_id = $1 and inv2.inventory_type = any($2::int[])
+    order by inv2.inventory_type, i.template_id`, [playerId, PLAYER_INVENTORY_TYPES]);
+  const rows = mapInventoryItemRows(result.rows);
   return { capabilities: { inventory: true }, maxSlots, maxVolume, rows };
 }
 
@@ -2322,10 +2583,15 @@ export async function playerSolarisCoinTotal(db, id) {
   return { capabilities: { solarisCoin: true }, total: Number(result.rows[0]?.total || 0) };
 }
 
-export async function playerFactions(db, id) {
+export async function playerFactions(db, id, journeyTagsData = {}) {
   if (!(await tableExists(db, "player_faction_reputation"))) return unsupported("factions", ["dune.player_faction_reputation"]);
   const hasFactions = await tableExists(db, "factions");
   const player = await resolvePlayerMutationTargetCached(db, id);
+  const componentResult = await db.query(`
+    select properties->'FactionPlayerComponent'->'m_FactionDataArray' as faction_data
+    from dune.actors
+    where id = $1`, [player.controllerId]);
+  const componentReputation = factionComponentReputationMap(componentResult.rows[0]?.faction_data);
   const result = hasFactions
     ? await db.query(`
         select f.id as faction_id,
@@ -2340,7 +2606,59 @@ export async function playerFactions(db, id) {
         from dune.player_faction_reputation pfr
         where pfr.actor_id = $1
         order by pfr.faction_id`, [player.controllerId]);
-  return { capabilities: { factions: true, factionNames: hasFactions }, player, rows: result.rows };
+  let alignedFactionId = null;
+  if (await tableExists(db, "player_faction")) {
+    const alignment = await db.query("select faction_id from dune.player_faction where actor_id = $1", [player.controllerId]);
+    alignedFactionId = alignment.rows[0] ? Number(alignment.rows[0].faction_id) : null;
+  }
+  const progressionSchema = await journeyIdentitySchema(db);
+  const hasPlayerTags = Boolean(progressionSchema);
+  let playerTags = [];
+  let completedFactionNodes = [];
+  if (progressionSchema) {
+    const tagIdColumn = quoteIdentifier(progressionSchema.tagIdColumn);
+    const journeyIdColumn = quoteIdentifier(progressionSchema.journeyIdColumn);
+    const tagIdentityId = playerJourneyIdentity(player, progressionSchema.tagIdColumn);
+    const journeyIdentityId = playerJourneyIdentity(player, progressionSchema.journeyIdColumn);
+    const tags = await db.query(`
+      select tag
+      from dune.player_tags
+      where ${tagIdColumn} = $1
+        and tag like 'Faction.%'`, [tagIdentityId]);
+    playerTags = tags.rows.map((row) => String(row.tag || ""));
+    const nodes = await db.query(`
+      select story_node_id
+      from dune.journey_story_node
+      where ${journeyIdColumn} = $1
+        and complete_condition_state = 'true'::jsonb
+        and story_node_id like 'DA_FQ_ClimbTheRanks.%'`, [journeyIdentityId]);
+    completedFactionNodes = nodes.rows.map((row) => String(row.story_node_id || ""));
+  }
+  const rows = result.rows.map((row) => {
+    const factionId = Number(row.faction_id);
+    if (factionId !== 1 && factionId !== 2) return row;
+    const reputation = Number(row.reputation_amount || 0);
+    const componentValue = componentReputation.get(factionId);
+    const reputationInSync = componentValue === reputation || (reputation === 0 && componentValue === undefined);
+    const factionName = row.faction_name || (factionId === 1 ? "Atreides" : "Harkonnen");
+    const estimatedRank = factionReputationEstimatedRank(row.reputation_amount);
+    const progressionLimit = hasPlayerTags ? factionProgressionRankLimit(playerTags, factionName) : null;
+    const rankLimited = progressionLimit !== null && estimatedRank > progressionLimit;
+    const progressionRepair = hasPlayerTags && factionId === alignedFactionId
+      ? factionProgressionRepairPlan(playerTags, factionName, completedFactionNodes, journeyTagsData)
+      : { missingTags: [], earnedTier: 0 };
+    return {
+      ...row,
+      component_reputation_amount: componentValue ?? null,
+      reputation_in_sync: reputationInSync,
+      estimated_rank: estimatedRank,
+      current_rank_limit: rankLimited ? progressionLimit : null,
+      rank_limited_by_progression: rankLimited,
+      progression_repair_available: progressionRepair.missingTags.length > 0,
+      progression_repair_target: progressionRepair.missingTags.length > 0 ? progressionRepair.earnedTier : null
+    };
+  });
+  return { capabilities: { factions: true, factionNames: hasFactions, factionRanks: true }, player, rows };
 }
 
 export async function playerProgression(db, id) {
@@ -2828,6 +3146,31 @@ export async function liveMapVehicles(db, map = "") {
 export async function liveMapStorage(db, map = "") {
   if (!(await tableExists(db, "actors")) || !(await tableExists(db, "placeables"))) return unsupportedMap("storage", ["dune.actors", "dune.placeables"]);
   const hasWorldPartition = await tableExists(db, "world_partition");
+  // Picking up a base leaves every placeable and transform at its old location.
+  // Link the storage actor back to its backup group, then require that group's
+  // claim actor to still be unclaimed. The second signal keeps a stale backup
+  // link from hiding storage after the player redeploys the base.
+  const storedBaseTables = await Promise.all([
+    "base_backup_linked_actors",
+    "actor_fgl_entities",
+    "building_instances",
+    "permission_actor"
+  ].map((table) => tableExists(db, table)));
+  const storedBaseExclusion = storedBaseTables.every(Boolean) ? `
+        and not exists (
+          select 1
+          from dune.base_backup_linked_actors storage_link
+          where storage_link.actor_id = p.id
+            and exists (
+              select 1
+              from dune.base_backup_linked_actors claim_link
+              join dune.actor_fgl_entities claim_entity on claim_entity.actor_id = claim_link.actor_id
+              join dune.building_instances claim_building on claim_building.owner_entity_id = claim_entity.entity_id
+              left join dune.permission_actor claim_permission on claim_permission.actor_id = claim_link.actor_id
+              where claim_link.id = storage_link.id
+                and claim_permission.actor_id is null
+            )
+        )` : "";
   const values = [];
   const where = mapFilterClause(map, values, "a");
   const partitionWhere = validActorPartitionClause(hasWorldPartition, "a");
@@ -2849,7 +3192,7 @@ export async function liveMapStorage(db, map = "") {
       left join dune.inventories inv on inv.actor_id = p.id
       left join dune.items i on i.inventory_id = inv.id
       where p.building_type in ('SpiceSilo_Placeable','GenericContainer_Placeable','StorageContainer_Placeable','MediumStorageContainer_Placeable','Developer_StorageContainer_Placeable')
-        and a.transform is not null ${partitionWhere} ${where}
+        and a.transform is not null ${partitionWhere} ${where} ${storedBaseExclusion}
       group by p.id, p.building_type, a.map, a.partition_id, a.transform
       order by a.map, a.partition_id, p.id`, values);
     return { capabilities: { storage: true }, rows: result.rows.map(normalizeMarker) };
@@ -2861,6 +3204,12 @@ export async function liveMapStorage(db, map = "") {
 export async function liveMapBases(db, map = "") {
   if (!(await tableExists(db, "actors")) || !(await tableExists(db, "buildings"))) return unsupportedMap("bases", ["dune.actors", "dune.buildings"]);
   const hasWorldPartition = await tableExists(db, "world_partition");
+  const hasBaseBackups = await tableExists(db, "base_backup_linked_actors");
+  // Mirror listBases: neither an ownerless base nor an old backup link alone
+  // is enough to hide a marker. Together they identify a currently stored base.
+  const storedBaseExclusion = hasBaseBackups
+    ? "and not (pa.actor_id is null and exists (select 1 from dune.base_backup_linked_actors backup_link where backup_link.actor_id = a.id))"
+    : "";
   const values = [];
   const where = mapFilterClause(map, values, "a");
   const partitionWhere = validActorPartitionClause(hasWorldPartition, "a");
@@ -2880,7 +3229,7 @@ export async function liveMapBases(db, map = "") {
       join dune.actor_fgl_entities afe on afe.entity_id = bi.owner_entity_id
       join dune.actors a on a.id = afe.actor_id
       left join dune.permission_actor pa on pa.actor_id = a.id
-      where a.transform is not null ${partitionWhere} ${where}
+      where a.transform is not null ${partitionWhere} ${where} ${storedBaseExclusion}
       group by b.id, pa.actor_name, a.id, a.map, a.partition_id, a.class, a.transform
       order by a.map, a.partition_id, b.id`, values);
     return { capabilities: { bases: true }, rows: result.rows.map(normalizeMarker) };
@@ -3052,6 +3401,60 @@ export async function basePermissionActor(db, baseId) {
   };
 }
 
+// permission_actor_rank.permission_actor_id carries a foreign key against
+// dune.permission_actor(actor_id), and basePermissionActor resolves its id from
+// the buildings -> building_instances -> actor_fgl_entities -> actors chain,
+// which says nothing about whether that actor is claimed. An unclaimed base has
+// every structural row intact and no permission_actor row, so handing its actor
+// id to permission_set_player_rank fails the FK inside the shipped procedure --
+// surfacing as a raw "violates foreign key constraint
+// permission_actor_rank_permission_actor_id_fkey" with no indication of what an
+// operator did wrong.
+//
+// Checked here rather than by widening basePermissionActor's own query: that
+// resolution is shared with the base-delete path, whose supportsBaseDelete
+// probes buildings/building_instances/actor_fgl_entities/placeables/actors but
+// not permission_actor. Joining the table into the shared query would break
+// deletion on a schema that lacks it. Both callers of this helper already gate
+// on supportsBasePermissionEditing, which does probe permission_actor.
+async function basePermissionActorClaimed(db, actorId) {
+  const result = await db.query(
+    "select exists (select 1 from dune.permission_actor where actor_id = $1::bigint) as claimed",
+    [actorId]);
+  return Boolean(result.rows[0]?.claimed);
+}
+
+// Deliberately distinct from BASE_BACKED_UP_MESSAGE in server.js: that one names
+// the base-backup tool, which is only one of the ways a base ends up unclaimed.
+// This covers the general case, including a base whose permission_actor row went
+// away without a base_backup_linked_actors entry to explain it.
+const BASE_UNCLAIMED_MESSAGE = "This base is not claimed -- it has no dune.permission_actor row, so the game has nothing to attach permissions to. A player must claim or redeploy it first.";
+
+// The base-backup tool ("pick up base") only deletes permission_actor/
+// permission_actor_rank and registers the base's actor ids in
+// base_backup_linked_actors -- see listBases' matching exclusion. That keeps
+// a picked-up base out of the panel, but a caller hitting a route directly
+// (or a stale bookmarked base id) would otherwise still be able to mutate
+// it. Every mutation route checks this before writing, the same way each
+// already checks the pending-delete lock.
+export async function baseIsBackedUp(db, baseId) {
+  const target = intParam(baseId, "base id", 1);
+  if (!(await tableExists(db, "base_backup_linked_actors"))) return false;
+  const result = await db.query(`
+    select exists (
+      select 1
+      from dune.buildings b
+      join dune.building_instances bi on bi.building_id = b.id
+      join dune.actor_fgl_entities afe on afe.entity_id = bi.owner_entity_id
+      join dune.actors a on a.id = afe.actor_id
+      left join dune.permission_actor pa on pa.actor_id = a.id
+      where b.id = $1
+        and pa.actor_id is null
+        and exists (select 1 from dune.base_backup_linked_actors bbla where bbla.actor_id = a.id)
+    ) as backed_up`, [target]);
+  return Boolean(result.rows[0]?.backed_up);
+}
+
 // permission_actor_rank.player_id is a player's player_controller_id, not just
 // any actors row belonging to their account -- one account holds several. The
 // shipped permission_actor_create_or_update_base_marker joins
@@ -3068,6 +3471,11 @@ export async function listBasePermissions(db, baseId) {
   await requireCapability(await supportsBasePermissionEditing(db),
     "Base permission editing requires dune.permission_actor_rank, dune.map_names, and the dune.permission_set_player_rank/permission_remove_player_rank functions.");
   const { actorId, map, mapNameId } = await basePermissionActor(db, baseId);
+  // Reading an unclaimed base still succeeds -- the roster is simply empty, and
+  // seeing that is how an operator diagnoses the base in the first place. The
+  // flag rides along so the editor can disable the writes that would fail
+  // instead of offering controls that end in an FK error.
+  const claimed = await basePermissionActorClaimed(db, actorId);
   const encryptedPlayerStateColumns = await tableExists(db, "encrypted_player_state")
     ? await columnsFor(db, "encrypted_player_state")
     : new Set();
@@ -3116,6 +3524,8 @@ export async function listBasePermissions(db, baseId) {
     actorId,
     map,
     mapNameId,
+    claimed,
+    unclaimedReason: claimed ? "" : BASE_UNCLAIMED_MESSAGE,
     systemCustodian,
     entries: result.rows.map((row) => ({
       playerId: String(row.player_id),
@@ -3194,7 +3604,13 @@ export async function basePermissionSystemCustodian(db) {
     order by player_id
     limit 2`);
   if (result.rows.length === 0) {
-    return { available: false, reason: "No supported system custodian was found. Expected the RedBlink Server identity or Funcom GM identity." };
+    return {
+      available: false,
+      canCreate: true,
+      playerId: CARE_PACKAGE_SERVER_PERSONA.playerControllerId,
+      name: CARE_PACKAGE_SERVER_PERSONA.displayName,
+      reason: "The reserved Server identity will be created when ownership is transferred."
+    };
   }
   if (result.rows.length > 1) {
     return { available: false, reason: "More than one canonical Server system identity was found; refusing an ambiguous transfer." };
@@ -3296,6 +3712,14 @@ async function mutateBasePermissions(db, target, safeMax, desiredRoster) {
     // rows serializes nothing. The actors row is guaranteed to exist.
     const locked = await tx.query("select id from dune.actors where id = $1::bigint for update", [actor.actorId]);
     if (!locked.rowCount) throw new Error("That base was not found.");
+
+    // After the lock, not before: this is the last read the transaction can make
+    // before it starts calling the procedures. The game's own pickup path does
+    // not take this lock, so a pickup landing mid-edit can still slip past and
+    // hit the FK -- that race is what the constraint is for. What this removes
+    // is the far more common steady-state case, an unclaimed base sitting in the
+    // panel that every route currently accepts a write for.
+    if (!(await basePermissionActorClaimed(tx, actor.actorId))) throw new Error(BASE_UNCLAIMED_MESSAGE);
 
     const existing = await tx.query(
       "select player_id::text as player_id, rank::int as rank from dune.permission_actor_rank where permission_actor_id = $1::bigint",
@@ -3432,11 +3856,59 @@ end`;
 
 export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColumn = "name", sortDirection = "asc", includeGenerators = true } = {}) {
   const requiredTables = ["buildings", "building_instances", "actor_fgl_entities", "actors"];
-  for (const table of requiredTables) {
-    if (!(await tableExists(db, table))) {
-      return { ...unsupported("bases", requiredTables.map((t) => `dune.${t}`)), totalCount: 0, totalBases: 0, totalPieces: 0, totalPlaceables: 0 };
-    }
+  // One round-trip each and none of them depends on another, so probe them
+  // together rather than five times in series before any real work starts.
+  const [required, hasWorldPartition, hasBaseBackups] = await Promise.all([
+    Promise.all(requiredTables.map((table) => tableExists(db, table))),
+    tableExists(db, "world_partition"),
+    tableExists(db, "base_backup_linked_actors")
+  ]);
+  if (required.some((exists) => !exists)) {
+    return { ...unsupported("bases", requiredTables.map((t) => `dune.${t}`)), totalCount: 0, totalBases: 0, totalPieces: 0, totalPlaceables: 0 };
   }
+  // The base-backup tool ("pick up base") does not move or delete any of a
+  // base's rows -- it only deletes permission_actor/permission_actor_rank
+  // (unclaiming it) and registers its actor ids in base_backup_linked_actors
+  // so it can be redeployed later. Left un-filtered, a picked-up base still
+  // has every buildings/building_instances/placeables row intact and would
+  // show up here as an ordinary, ownerless base. Both signals are required
+  // -- unclaimed AND backup-linked -- rather than either alone: "unclaimed"
+  // by itself would also hide a base that legitimately has no owner for some
+  // other reason, and "backup-linked" by itself would hide a base again once
+  // redeployed if the game doesn't clean up old linked-actor rows on redeploy
+  // (unconfirmed either way). A base satisfying both is unambiguous.
+  const backupExclusion = hasBaseBackups
+    ? "and not (pa.actor_id is null and exists (select 1 from dune.base_backup_linked_actors bbla where bbla.actor_id = a.id))"
+    : "";
+  // What counts as a base, defined once. The paged query (`matched`) and the
+  // totals query (`valid_claims`) run in separate round trips but must agree
+  // exactly on the candidate set -- if they diverge, total_bases/total_pieces/
+  // total_placeables silently stop describing the rows actually being listed.
+  // Emitting both from here makes that divergence unrepresentable rather than
+  // merely tested for. `extraJoin` is the one sanctioned variation: `matched`
+  // needs the owner LATERAL joined before its group-by when searching or
+  // sorting by owner, and that join cannot affect which rows qualify (it is a
+  // LEFT JOIN LATERAL ... ON TRUE returning at most one row).
+  const baseCandidateSource = (extraJoin = "") => `
+        from dune.buildings b
+        join dune.building_instances bi on bi.building_id = b.id
+        join dune.actor_fgl_entities afe on afe.entity_id = bi.owner_entity_id
+        join dune.actors a on a.id = afe.actor_id
+        left join dune.permission_actor pa on pa.actor_id = a.id
+        ${extraJoin}
+        where a.transform is not null
+        ${backupExclusion}`;
+  // A base's own a.map is the game's map name ("HaggaBasin"), which cannot tell
+  // two instances of it apart. world_partition resolves the partition to the
+  // name the rest of the console uses ("Survival_1") plus its dimension --
+  // together, the identity of one running instance. Optional table: without it
+  // the fields come back empty rather than the query failing.
+  const partitionSelect = hasWorldPartition
+    ? "coalesce(wp.map, '') as partition_map, coalesce(wp.dimension_index, 0) as dimension_index,"
+    : "'' as partition_map, 0 as dimension_index,";
+  const partitionJoin = hasWorldPartition
+    ? "left join dune.world_partition wp on wp.partition_id = p.partition_id"
+    : "";
   const safePageSize = intParam(pageSize, "pageSize", 1, 200);
   const safePage = intParam(page, "page", 0);
   const offset = safePage * safePageSize;
@@ -3511,13 +3983,7 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
                coalesce(a.partition_id, 0) as partition_id,
                a.transform,
                ${matchedSortSelect}
-        from dune.buildings b
-        join dune.building_instances bi on bi.building_id = b.id
-        join dune.actor_fgl_entities afe on afe.entity_id = bi.owner_entity_id
-        join dune.actors a on a.id = afe.actor_id
-        left join dune.permission_actor pa on pa.actor_id = a.id
-        ${matchedOwnerJoin}
-        where a.transform is not null
+        ${baseCandidateSource(matchedOwnerJoin)}
         group by a.id, a.class, pa.actor_name, ${matchedGroupByOwner}a.map, a.partition_id, a.transform
         ${having}
       ),
@@ -3535,6 +4001,7 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
              ${finalOwnerSelect}
              p.map,
              p.partition_id,
+             ${partitionSelect}
              p.x,
              p.y,
              p.z,
@@ -3543,6 +4010,7 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
              ${finalPlaceableCount} as placeable_count,
              coalesce(shared.entries, '[]'::jsonb) as shared_with
       from paged p
+      ${partitionJoin}
       ${finalOwnerJoin}
       left join lateral (
         select jsonb_agg(jsonb_build_object('name', ps.character_name, 'rank', par.rank) order by par.rank asc, ps.character_name asc) as entries
@@ -3558,11 +4026,7 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
     const totalsResult = await db.query(`
       with valid_claims as (
         select distinct a.id as actor_id
-        from dune.buildings b
-        join dune.building_instances bi on bi.building_id = b.id
-        join dune.actor_fgl_entities afe on afe.entity_id = bi.owner_entity_id
-        join dune.actors a on a.id = afe.actor_id
-        where a.transform is not null
+        ${baseCandidateSource()}
       )
       select (select count(*) from valid_claims)::int as total_bases,
              (select count(*) from dune.building_instances bi join dune.actor_fgl_entities afe on afe.entity_id = bi.owner_entity_id join valid_claims vc on vc.actor_id = afe.actor_id)::int as total_pieces,
@@ -3579,7 +4043,7 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
       } catch (error) {
         // Keep the base list usable, but do not misrepresent a failed query as
         // proof that every base has no generators.
-        console.warn(`Base generator data unavailable: ${error?.message || error}`);
+        console.warn(`Base generator data unavailable: ${error?.message || "Unexpected error."}`);
       }
     }
 
@@ -3597,22 +4061,24 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
     // columns the generator capability check requires, so reusing that check
     // would wrongly hide Refill Water on a schema that has everything water
     // actually needs.
-    const [generatorRefill, basePermissions, waterRefill] = await Promise.all([
+    const [generatorRefill, basePermissions, waterRefill, baseDelete] = await Promise.all([
       supportsGeneratorRefill(db).catch(() => false),
       supportsBasePermissionEditing(db).catch(() => false),
-      supportsWaterRefill(db).catch(() => false)
+      supportsWaterRefill(db).catch(() => false),
+      supportsBaseDelete(db).catch(() => false)
     ]);
     // Without world_partition the console cannot tell a running map from a
-    // stopped one, so the panel hides the queue entirely and refills stay
-    // immediate. Each check reuses the flag just computed above instead of
-    // re-deriving it, and both run concurrently for the same reason as above.
-    const [generatorRefillQueue, waterRefillQueue] = await Promise.all([
+    // stopped one, so the panel hides the queue entirely and refills/deletes
+    // stay immediate. Each check reuses the flag just computed above instead
+    // of re-deriving it, and all run concurrently for the same reason as above.
+    const [generatorRefillQueue, waterRefillQueue, baseDeleteQueue] = await Promise.all([
       generatorRefill ? supportsGeneratorRefillQueue(db, { generatorRefill }).catch(() => false) : Promise.resolve(false),
-      waterRefill ? supportsWaterRefillQueue(db, { waterRefill }).catch(() => false) : Promise.resolve(false)
+      waterRefill ? supportsWaterRefillQueue(db, { waterRefill }).catch(() => false) : Promise.resolve(false),
+      baseDelete ? supportsBaseDeleteQueue(db, { baseDelete }).catch(() => false) : Promise.resolve(false)
     ]);
 
     return {
-      capabilities: { bases: true, generatorRefill, generatorRefillQueue, basePermissions, waterRefill, waterRefillQueue },
+      capabilities: { bases: true, generatorRefill, generatorRefillQueue, basePermissions, waterRefill, waterRefillQueue, baseDelete, baseDeleteQueue },
       totalCount: result.rows[0] ? Number(result.rows[0].total_count) : 0,
       totalBases: totalsResult.rows[0] ? Number(totalsResult.rows[0].total_bases) : 0,
       totalPieces: totalsResult.rows[0] ? Number(totalsResult.rows[0].total_pieces) : 0,
@@ -3620,6 +4086,8 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
       rows: result.rows.map(({ total_count, sort_position, ...row }) => ({
         ...row,
         partition_id: Number(row.partition_id || 0),
+        partitionMap: String(row.partition_map || ""),
+        dimensionIndex: Number(row.dimension_index || 0),
         x: Number(row.x),
         y: Number(row.y),
         z: Number(row.z),
@@ -3649,6 +4117,108 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
 
 function quaternionYawDegrees(qz, qw) {
   return (2 * Math.atan2(Number(qz) || 0, Number(qw) || 0)) * (180 / Math.PI);
+}
+
+// Gates base deletion the same way supportsBasePermissionEditing gates
+// permission edits. This repo has no migrations directory and never issues
+// CREATE FUNCTION anywhere (every write path composes the game's own shipped
+// procedures), so a self-hosted server missing these tables/functions cannot
+// have a delete proc added for it -- it is simply unsupported.
+async function supportsBaseDelete(db) {
+  for (const table of ["buildings", "building_instances", "actor_fgl_entities", "placeables", "actors"]) {
+    if (!(await tableExists(db, table))) return false;
+  }
+  return await functionExists(db, "dune.permission_actor_destroy(bigint)")
+    && await functionExists(db, "dune.delete_actors(bigint[])");
+}
+
+// Mirrors supportsGeneratorRefillQueue: without dune.world_partition there is
+// no way to tell a running map from a stopped one, so the panel hides the
+// queue and deletes stay immediate rather than offering a control that
+// silently risks a live server resurrecting the deleted rows.
+export async function supportsBaseDeleteQueue(db, { baseDelete } = {}) {
+  const supported = baseDelete !== undefined ? baseDelete : await supportsBaseDelete(db);
+  if (!supported) return false;
+  return tableExists(db, "world_partition");
+}
+
+// Every dune.actors row a full base delete must remove: the claim actor
+// itself, every building's actor id (dune.buildings.id IS an actors.id, the
+// same fact exportBaseAsBlueprint's piece query below relies on), and every
+// placeable's actor id via its own owner_entity_id chain -- a separate FK
+// path from building_instances', so it needs its own query. Deleting this
+// full set is what lets the declared ON DELETE CASCADE foreign keys clean up
+// buildings/building_instances/placeables/inventories/items on their own.
+async function baseDeletionActorIds(db, baseId) {
+  const actor = await basePermissionActor(db, baseId);
+  const buildingRows = await db.query(`
+    select distinct bi.building_id
+    from dune.building_instances bi
+    join dune.actor_fgl_entities afe on afe.entity_id = bi.owner_entity_id
+    where afe.actor_id = $1::bigint`, [actor.actorId]);
+  const placeableRows = await db.query(`
+    select distinct p.id
+    from dune.placeables p
+    join dune.actor_fgl_entities afe on afe.entity_id = p.owner_entity_id
+    where afe.actor_id = $1::bigint`, [actor.actorId]);
+  const ids = new Set([
+    actor.actorId,
+    ...buildingRows.rows.map((row) => String(row.building_id)),
+    ...placeableRows.rows.map((row) => String(row.id))
+  ]);
+  return {
+    actor,
+    actorIds: [...ids],
+    buildingCount: buildingRows.rowCount,
+    placeableCount: placeableRows.rowCount
+  };
+}
+
+// Permanently deletes a base and everything on it. A destructive, irreversible
+// operation, so every statement here must succeed together or not at all --
+// db.transaction already rolls back on any thrown error (see db.js), so this
+// is a straightforward wrap rather than new plumbing, made an explicit,
+// tested guarantee here because unlike most callers of db.transaction, a
+// partial failure of this one cannot be retried against player-recoverable
+// state. The caller (server.js) is responsible for the mandatory pre-delete
+// safety backup -- kept out of this file, which never shells out to the
+// `dune` CLI the way runner.js's backupCreate does.
+export async function deleteBaseCompletely(db, baseId) {
+  await requireCapability(await supportsBaseDelete(db),
+    "Base deletion requires dune.buildings, building_instances, actor_fgl_entities, placeables, actors, and the dune.permission_actor_destroy(bigint)/delete_actors(bigint[]) functions.");
+  const target = intParam(baseId, "base id", 1);
+  return db.transaction(async (tx) => {
+    await tx.query("set local search_path to dune, public");
+    // Re-enumerated inside the transaction, not reused from an earlier
+    // read: never trust a snapshot from when the confirm dialog opened or
+    // the delete was queued, the same discipline the refill queue already
+    // applies to amounts.
+    const { actor, actorIds, buildingCount, placeableCount } = await baseDeletionActorIds(tx, target);
+    // Lock the claim actor row, not a maybe-empty child row -- same reasoning
+    // as mutateBasePermissions: it is guaranteed to exist, and `for update`
+    // over zero rows would serialize nothing.
+    const locked = await tx.query("select id from dune.actors where id = $1::bigint for update", [actor.actorId]);
+    if (!locked.rowCount) throw new Error("That base was not found.");
+    // permission_actor_destroy first: it is the only thing that clears
+    // markers/player_markers, which are keyed on the claim actor id but not
+    // FK-cascaded from actors (only from map_names). Its permission_actor/
+    // permission_actor_rank deletes are redundant with the cascade that
+    // follows, but a DELETE matching zero rows is a harmless no-op.
+    await tx.query("select dune.permission_actor_destroy($1::bigint)", [actor.actorId]);
+    // Cascades away buildings, building_instances, placeables, inventories,
+    // and items via their declared ON DELETE CASCADE foreign keys.
+    await tx.query("select dune.delete_actors($1::bigint[])", [actorIds]);
+    return {
+      ok: true,
+      baseId: target,
+      actorId: actor.actorId,
+      map: actor.map,
+      partitionId: actor.partitionId,
+      deletedActorCount: actorIds.length,
+      deletedBuildingCount: buildingCount,
+      deletedPlaceableCount: placeableCount
+    };
+  });
 }
 
 export async function exportBaseAsBlueprint(db, id) {
@@ -3711,8 +4281,9 @@ export async function exportBaseAsBlueprint(db, id) {
   // yaw-degree rotation for instances, not the live tables' absolute world coords + quaternion.
   // The anchor point is arbitrary (the base's own actor position) but consistent, so the exported
   // pieces stay correctly positioned relative to each other when re-placed anywhere in-game.
-  // Rotation is captured yaw-only (Z axis) since every sampled live piece has qx=qy=0; pitch/roll
-  // on tilted geometry, if any exists, is lost.
+  // Rotation is captured yaw-only since every sampled live piece has qx=qy=0; pitch/roll on
+  // tilted geometry, if any exists, is lost. Native Solido placeable transforms store that yaw
+  // in their second rotation slot (ry), despite the live actor quaternion rotating around Z.
   const pieceRows = await db.query(`
     select bi.building_id, bi.instance_id, bi.building_type, bi.transform
     from dune.building_instances bi
@@ -3762,8 +4333,8 @@ export async function exportBaseAsBlueprint(db, id) {
     y: Number(row.y) - anchor.y,
     z: Number(row.z) - anchor.z,
     rx: 0,
-    ry: 0,
-    rz: quaternionYawDegrees(row.qz, row.qw)
+    ry: quaternionYawDegrees(row.qz, row.qw),
+    rz: 0
   }));
 
   return {
@@ -3987,13 +4558,51 @@ export async function addCurrency(db, id, { currencyId = 0, amount }) {
   });
 }
 
-export async function addFactionReputation(db, id, { factionId, amount }) {
+async function restoreEarnedFactionProgression(db, player, factionId, journeyTagsData = {}) {
+  const empty = { tagsAdded: [], tierBefore: null, tierAfter: null };
+  if (factionId !== 1 && factionId !== 2) return empty;
+  const progressionSchema = await journeyIdentitySchema(db);
+  if (!progressionSchema) return empty;
+  const factionName = factionId === 1 ? "Atreides" : "Harkonnen";
+  const tagIdColumn = quoteIdentifier(progressionSchema.tagIdColumn);
+  const journeyIdColumn = quoteIdentifier(progressionSchema.journeyIdColumn);
+  const tagIdentityId = playerJourneyIdentity(player, progressionSchema.tagIdColumn);
+  const journeyIdentityId = playerJourneyIdentity(player, progressionSchema.journeyIdColumn);
+  const tags = await db.query(`select tag from dune.player_tags where ${tagIdColumn} = $1`, [tagIdentityId]);
+  const existingTags = tags.rows.map((row) => String(row.tag || ""));
+  const nodes = await db.query(`
+    select story_node_id
+    from dune.journey_story_node
+    where ${journeyIdColumn} = $1
+      and complete_condition_state = 'true'::jsonb
+      and story_node_id like 'DA_FQ_ClimbTheRanks.%'`, [journeyIdentityId]);
+  const completedNodeIds = nodes.rows.map((row) => String(row.story_node_id || ""));
+  const plan = factionProgressionRepairPlan(existingTags, factionName, completedNodeIds, journeyTagsData);
+  if (plan.missingTags.length) {
+    const inserted = await db.query(`
+      insert into dune.player_tags (${tagIdColumn}, tag)
+      select $1, incoming.tag
+      from unnest($2::text[]) as incoming(tag)
+      where not exists (
+        select 1 from dune.player_tags existing
+        where existing.${tagIdColumn} = $1 and existing.tag = incoming.tag
+      )
+      returning tag`, [tagIdentityId, plan.missingTags]);
+    const insertedTags = new Set(inserted.rows.map((row) => String(row.tag || "")));
+    const notInserted = plan.missingTags.filter((tag) => !insertedTags.has(tag));
+    if (notInserted.length) throw new Error(`Faction progression repair could not verify tag(s): ${notInserted.join(", ")}`);
+  }
+  return { tagsAdded: plan.missingTags, tierBefore: plan.currentTier, tierAfter: plan.earnedTier };
+}
+
+export async function addFactionReputation(db, id, { factionId, amount }, journeyTagsData = {}) {
   await requireCapability(await supportsFactionMutation(db), "Faction reputation mutation requires dune.player_faction_reputation, dune.actors.properties, and dune.set_player_faction_reputation(bigint,smallint,integer).");
   const faction = intParam(factionId, "faction id", 1, 32767);
   const delta = intParam(amount, "faction reputation amount", -12474, 12474);
   if (delta === 0) throw new Error("Faction reputation amount cannot be zero");
   return db.transaction(async (tx) => {
     const player = await resolvePlayerMutationTarget(tx, id);
+    requireOfflinePlayer(player, "Faction reputation changes");
     const current = await tx.query(`
       select reputation_amount
       from dune.player_faction_reputation
@@ -4001,7 +4610,28 @@ export async function addFactionReputation(db, id, { factionId, amount }) {
     const oldValue = Number(current.rows[0]?.reputation_amount || 0);
     const nextValue = Math.max(0, Math.min(12474, oldValue + delta));
     await tx.query("select dune.set_player_faction_reputation($1::bigint, $2::smallint, $3::integer)", [player.controllerId, faction, nextValue]);
+    const progressionRepair = await restoreEarnedFactionProgression(tx, player, faction, journeyTagsData);
     if (faction === 1 || faction === 2) await syncFactionComponent(tx, player.controllerId);
+    const estimatedRank = faction === 1 || faction === 2 ? factionReputationEstimatedRank(nextValue) : null;
+    let currentRankLimit = null;
+    const progressionSchema = estimatedRank !== null ? await journeyIdentitySchema(tx) : null;
+    if (estimatedRank !== null && progressionSchema) {
+      const factionName = faction === 1 ? "Atreides" : "Harkonnen";
+      const tagIdColumn = quoteIdentifier(progressionSchema.tagIdColumn);
+      const tagIdentityId = playerJourneyIdentity(player, progressionSchema.tagIdColumn);
+      const tags = await tx.query(`
+        select tag
+        from dune.player_tags
+        where ${tagIdColumn} = $1
+          and tag like $2`, [tagIdentityId, `Faction.${factionName}.Tier%`]);
+      const progressionLimit = factionProgressionRankLimit(tags.rows.map((row) => row.tag), factionName);
+      if (progressionLimit !== null && estimatedRank > progressionLimit) currentRankLimit = progressionLimit;
+    }
+    const rankMessage = estimatedRank === null
+      ? ""
+      : currentRankLimit === null
+        ? ` Estimated Rank: ${estimatedRank}.`
+        : ` Estimated Rank: ${estimatedRank}. Current Rank Limit: ${currentRankLimit} until the required faction story progression is completed.`;
     return {
       ok: true,
       player,
@@ -4009,9 +4639,98 @@ export async function addFactionReputation(db, id, { factionId, amount }) {
       actorId: player.controllerId,
       oldValue,
       newValue: nextValue,
-      message: playerOnline(player)
-        ? "Faction reputation was updated in the database. The player may need to relog before the new reputation appears in-game."
-        : "Faction reputation was updated in the database and will be loaded when the player next joins."
+      estimatedRank,
+      currentRankLimit,
+      progressionTagsAdded: progressionRepair.tagsAdded,
+      message: `Faction reputation and vendor access were synchronized at ${nextValue}.${rankMessage} They will be loaded when the player next joins.`
+    };
+  });
+}
+
+export async function repairFactionReputation(db, id, journeyTagsData = {}) {
+  await requireCapability(await supportsFactionMutation(db) && await tableExists(db, "player_faction"), "Faction reputation repair requires dune.player_faction_reputation, dune.player_faction, dune.actors.properties, and dune.set_player_faction_reputation(bigint,smallint,integer).");
+  return db.transaction(async (tx) => {
+    const player = await resolvePlayerMutationTarget(tx, id);
+    requireOfflinePlayer(player, "Faction reputation repair");
+    const alignment = await tx.query(`
+      select faction_id
+      from dune.player_faction
+      where actor_id = $1
+      for update`, [player.controllerId]);
+    const factionId = Number(alignment.rows[0]?.faction_id || 3);
+    if (factionId !== 1 && factionId !== 2) {
+      throw new Error("Faction reputation repair requires the player to be assigned to Atreides or Harkonnen first.");
+    }
+    const progressionRepair = await restoreEarnedFactionProgression(tx, player, factionId, journeyTagsData);
+    const payload = await syncFactionComponent(tx, player.controllerId);
+    const progressionMessage = progressionRepair.tagsAdded.length
+      ? ` Restored earned faction story progression from Tier ${progressionRepair.tierBefore} through Tier ${progressionRepair.tierAfter}.`
+      : " No missing earned faction story progression was detected.";
+    return {
+      ok: true,
+      player,
+      factionId,
+      reputations: Object.fromEntries(payload.map((entry) => [entry.Faction.Name, entry.ReputationAmount])),
+      progressionTagsAdded: progressionRepair.tagsAdded,
+      progressionTierBefore: progressionRepair.tierBefore,
+      progressionTierAfter: progressionRepair.tierAfter,
+      message: `Faction reputation was synchronized.${progressionMessage} The player can log in now.`
+    };
+  });
+}
+
+const PLAYER_ASSIGNABLE_FACTIONS = Object.freeze({
+  1: "Atreides",
+  2: "Harkonnen",
+  3: "Neutral"
+});
+
+export async function setPlayerFaction(db, id, { factionId }) {
+  await requireCapability(
+    await supportsPlayerFactionAssignment(db),
+    "Faction assignment requires dune.player_faction and dune.change_player_faction(bigint,smallint,smallint,timestamp without time zone)."
+  );
+  const faction = intParam(factionId, "faction id", 1, 3);
+  if (!Object.hasOwn(PLAYER_ASSIGNABLE_FACTIONS, faction)) throw new Error("Faction must be Atreides, Harkonnen, or Neutral");
+
+  return db.transaction(async (tx) => {
+    const player = await resolvePlayerMutationTarget(tx, id);
+    const current = await tx.query(`
+      select faction_id
+      from dune.player_faction
+      where actor_id = $1
+      for update`, [player.controllerId]);
+    const oldFactionId = Number(current.rows[0]?.faction_id || 3);
+    if (oldFactionId === faction) {
+      return {
+        ok: true,
+        changed: false,
+        player,
+        oldFactionId,
+        factionId: faction,
+        faction: PLAYER_ASSIGNABLE_FACTIONS[faction],
+        message: `Player is already assigned to ${PLAYER_ASSIGNABLE_FACTIONS[faction]}.`
+      };
+    }
+
+    await tx.query(
+      "select dune.change_player_faction($1::bigint, $2::smallint, 3::smallint, now()::timestamp)",
+      [player.controllerId, faction]
+    );
+    // The shipped game function applies normal guild compatibility rules. Keep the
+    // console's existing database-editor behavior for guild leaders by re-pledging
+    // their guild to the newly selected House after the game breaks old allegiance.
+    await pledgeGuildAdminFactionIfNeeded(tx, player.controllerId, faction);
+
+    return {
+      ok: true,
+      changed: true,
+      player,
+      oldFactionId,
+      oldFaction: PLAYER_ASSIGNABLE_FACTIONS[oldFactionId] || `Faction ${oldFactionId}`,
+      factionId: faction,
+      faction: PLAYER_ASSIGNABLE_FACTIONS[faction],
+      message: `Player faction changed from ${PLAYER_ASSIGNABLE_FACTIONS[oldFactionId] || `Faction ${oldFactionId}`} to ${PLAYER_ASSIGNABLE_FACTIONS[faction]}.`
     };
   });
 }
@@ -4030,10 +4749,14 @@ export async function addIntel(db, id, { amount }) {
     const oldValue = Number(current.rows[0]?.intel || 0);
     const applied = Math.min(delta, Math.max(0, MAX_INTEL_POINTS - oldValue));
     const nextValue = oldValue + applied;
-    await tx.query(`
-      update dune.actors
-      set properties = jsonb_set(properties, '{TechKnowledgePlayerComponent,m_TechKnowledgePoints}', to_jsonb($2::bigint))
-      where id = $1 and properties ? 'TechKnowledgePlayerComponent'`, [player.actorId, nextValue]);
+    // Do not issue a misleading no-op write once the spendable balance is
+    // already full. The response below reports the amount actually applied.
+    if (applied > 0) {
+      await tx.query(`
+        update dune.actors
+        set properties = jsonb_set(properties, '{TechKnowledgePlayerComponent,m_TechKnowledgePoints}', to_jsonb($2::bigint))
+        where id = $1 and properties ? 'TechKnowledgePlayerComponent'`, [player.actorId, nextValue]);
+    }
     return {
       ok: true,
       player,
@@ -4043,9 +4766,11 @@ export async function addIntel(db, id, { amount }) {
       requestedAmount: delta,
       maxValue: MAX_INTEL_POINTS,
       capped: applied < delta,
-      message: applied < delta
-        ? `Intel was updated up to the spendable cap of ${MAX_INTEL_POINTS} and will be loaded when the player next joins.`
-        : "Intel was updated in the database and will be loaded when the player next joins."
+      message: applied === 0
+        ? `No Intel was added because the player is already at the spendable cap of ${MAX_INTEL_POINTS}.`
+        : applied < delta
+          ? `Intel was updated up to the spendable cap of ${MAX_INTEL_POINTS} and will be loaded when the player next joins.`
+          : "Intel was updated in the database and will be loaded when the player next joins."
     };
   });
 }
@@ -4302,6 +5027,82 @@ export function resolveBuildingDisplayName(buildingType) {
   return metadata.get(id)?.name || splitBuildingTypeFallback(id);
 }
 
+// Map area_id -> sub-region name, keyed by dune.actors.map. Sourced from the game
+// client paks (see runtime/data/hagga-regions.json); the area_id space matches
+// dune.markers.area_id, so a vehicle is labelled by the nearest marker's area.
+function mapRegionNames() {
+  if (mapRegionNamesCache) return mapRegionNamesCache;
+  let data = {};
+  try {
+    const path = [
+      resolve(process.cwd(), "runtime/data/hagga-regions.json"),
+      resolve(process.cwd(), "../../runtime/data/hagga-regions.json")
+    ].find((candidate) => existsSync(candidate)) || resolve(process.cwd(), "runtime/data/hagga-regions.json");
+    const parsed = JSON.parse(readFileSync(path, "utf8"));
+    for (const [map, areas] of Object.entries(parsed)) {
+      if (!areas || typeof areas !== "object" || Array.isArray(areas)) continue;
+      const byId = new Map();
+      for (const [areaId, name] of Object.entries(areas)) {
+        const id = Number(areaId);
+        if (Number.isInteger(id) && typeof name === "string" && name) byId.set(id, name);
+      }
+      if (byId.size) data[map] = byId;
+    }
+  } catch {
+    // Region labelling is optional; vehicles still list without it.
+    data = {};
+  }
+  mapRegionNamesCache = data;
+  return mapRegionNamesCache;
+}
+
+// Attach a `region` name to each vehicle row whose map has a region table, using
+// the area of the nearest marker. Best-effort: silently no-ops when the markers/
+// map_names tables are absent (region stays undefined). Mutates `rows` in place.
+async function attachVehicleRegions(db, rows) {
+  const regionTable = mapRegionNames();
+  const eligible = rows.filter((row) => regionTable[row.map] && row.x !== null && row.x !== undefined && row.y !== null && row.y !== undefined);
+  if (!eligible.length) return;
+  if (!(await tableExists(db, "markers")) || !(await tableExists(db, "map_names"))) return;
+
+  const byMap = new Map();
+  for (const row of eligible) {
+    if (!byMap.has(row.map)) byMap.set(row.map, []);
+    byMap.get(row.map).push(row);
+  }
+
+  for (const [map, mapRows] of byMap) {
+    const mapNameResult = await db.query("select map_name_id from dune.map_names where map_name = $1 limit 1", [map]);
+    const mapNameId = mapNameResult.rows[0] ? Number(mapNameResult.rows[0].map_name_id) : null;
+    if (mapNameId === null || Number.isNaN(mapNameId)) continue;
+
+    const values = [mapNameId];
+    const tuples = mapRows.map((row) => {
+      values.push(String(row.id), Number(row.x), Number(row.y));
+      const base = values.length;
+      return `($${base - 2}::bigint, $${base - 1}::numeric, $${base}::numeric)`;
+    }).join(", ");
+
+    const result = await db.query(`
+      select p.id::text id, near.area_id
+      from (values ${tuples}) p(id, vx, vy)
+      cross join lateral (
+        select m.area_id
+        from dune.markers m
+        where m.map_name_id = $1 and m.area_id <> 0 and (m.marker).x is not null
+        order by power((m.marker).x - p.vx, 2) + power((m.marker).y - p.vy, 2)
+        limit 1
+      ) near`, values);
+
+    const areaById = new Map(result.rows.map((r) => [String(r.id), Number(r.area_id)]));
+    const names = regionTable[map];
+    for (const row of mapRows) {
+      const areaId = areaById.get(String(row.id));
+      if (areaId !== undefined && names.has(areaId)) row.region = names.get(areaId);
+    }
+  }
+}
+
 function augmentCompatibilityCatalog() {
   if (augmentCompatibilityCache) return augmentCompatibilityCache;
   try {
@@ -4377,6 +5178,54 @@ export async function playerResearchItems(db, id) {
         unlocked: researchPurchased && recipeUnlocked
       };
     })
+  };
+}
+
+export async function playerBuildingUnlockState(db, id) {
+  const player = await resolvePlayerMutationTarget(db, id);
+  const progressionColumns = await tableExists(db, "building_progression") ? await columnsFor(db, "building_progression") : new Set();
+  const inventoryColumns = await tableExists(db, "inventories") ? await columnsFor(db, "inventories") : new Set();
+  const itemColumns = await tableExists(db, "items") ? await columnsFor(db, "items") : new Set();
+  const progressionSupported = ["character_id", "learned_building_sets", "new_buildable_pieces"].every((column) => progressionColumns.has(column));
+  const inventorySupported = ["id", "actor_id"].every((column) => inventoryColumns.has(column)) &&
+    ["inventory_id", "template_id"].every((column) => itemColumns.has(column));
+  if (!progressionSupported) {
+    return {
+      capabilities: { buildingUnlockOwnership: false, buildingUnlockPending: inventorySupported },
+      player,
+      owned: [],
+      pending: []
+    };
+  }
+
+  const progression = player.playerStateId ? await db.query(`
+    select coalesce(learned_building_sets, '{}'::text[]) as learned_building_sets,
+           coalesce(new_buildable_pieces, '{}'::text[]) as new_buildable_pieces
+    from dune.building_progression
+    where character_id = $1
+    limit 1`, [player.playerStateId]) : { rows: [] };
+  const row = progression.rows[0] || {};
+  const owned = [...new Set([
+    ...(Array.isArray(row.learned_building_sets) ? row.learned_building_sets : []),
+    ...(Array.isArray(row.new_buildable_pieces) ? row.new_buildable_pieces : [])
+  ].map(String).filter(Boolean))];
+
+  let pending = [];
+  if (inventorySupported) {
+    const pendingResult = await db.query(`
+      select distinct i.template_id
+      from dune.inventories inv
+      join dune.items i on i.inventory_id = inv.id
+      where inv.actor_id = $1
+        and i.template_id is not null`, [player.actorId]);
+    pending = pendingResult.rows.map((item) => String(item.template_id || "")).filter(Boolean);
+  }
+
+  return {
+    capabilities: { buildingUnlockOwnership: true, buildingUnlockPending: inventorySupported },
+    player,
+    owned,
+    pending
   };
 }
 
@@ -4675,43 +5524,295 @@ function portalSkillType(value) {
   return ({ Ability: "Ability", Attribute: "Passive", Key: "Keystone", Perk: "Technique", Science: "Science", Spice: "Spice" })[value] || "Skill";
 }
 
+// Admin Vehicles page. Columns operate on the `matched` CTE's output names.
+// shared_with is resolved only on the paged rows (not here), so it is not
+// sortable — matching how the frontend marks it non-sortable.
+const VEHICLE_SORT_COLUMNS = {
+  id: { order: ["id"] },
+  name: { order: ["lower(coalesce(name, ''))"] },
+  type: { order: ["lower(coalesce(type, ''))"] },
+  owner: { order: ["lower(coalesce(owner, ''))"] },
+  condition_percent: { order: ["condition_percent"] },
+  fuel_percent: { order: ["fuel_percent"] },
+  map: { order: ["lower(coalesce(map, ''))", "partition_id"] }
+};
+
+// Single source of truth for the friendly vehicle-type mapping. Both the SQL
+// label (VEHICLE_TYPE_SQL below, computed in SQL so type can be searched/sorted
+// server-side) and the JS portalVehicleDisplayName() (Discord portal path) are
+// derived from this list, so the two representations can't drift apart. Order
+// matters: the first substring match wins.
+const VEHICLE_TYPE_MAP = [
+  { match: "lightornithopter", label: "Scout Ornithopter" },
+  { match: "mediumornithopter", label: "Assault Ornithopter" },
+  { match: "transportornithopter", label: "Carrier Ornithopter" },
+  { match: "sandcrawler", label: "Sandcrawler" },
+  { match: "sandbike", label: "Sandbike" },
+  { match: "buggy", label: "Buggy" },
+  { match: "tank", label: "Battle Tank" }
+];
+
+// Friendly vehicle label, generated from VEHICLE_TYPE_MAP; unmapped classes fall
+// back to the stripped class name.
+const VEHICLE_TYPE_SQL = `case
+${VEHICLE_TYPE_MAP.map((entry) => `  when lower(coalesce(a.class, '')) like '%${entry.match}%' then '${entry.label}'`).join("\n")}
+  else regexp_replace(a.class, '^.*/|\\..*$', '', 'g')
+end`;
+
+// Custom actor name, cleaned in SQL to mirror portalCustomActorName():
+// blank, "none", and "##"-prefixed sentinels resolve to null (no custom name).
+const VEHICLE_CUSTOM_NAME_SQL = `case
+  when pa.actor_name is null then null
+  when btrim(pa.actor_name) = '' then null
+  when lower(btrim(pa.actor_name)) = 'none' then null
+  when btrim(pa.actor_name) like '##%' then null
+  else btrim(pa.actor_name)
+end`;
+
+// Shared by the admin Vehicles pages and the dunedocker.app player snapshot.
+// The game database always gives us a current value for fuel/durability when it
+// records one, but it does not consistently persist a corresponding maximum.
+// A stored module maximum is authoritative. Otherwise, infer a maximum only
+// when at least two non-null observations exist for the exact same template.
+// Missing current values remain unknown: they must never become 0% or 100%.
+const VEHICLE_STATUS_CTES_SQL = `module_raw as (
+  select vm.id, vm.vehicle_id, vm.template_id,
+    (vm.stats->'FVehicleModuleDurabilityStats'->1->>'CurrentDurability')::numeric own_current,
+    nullif((vm.stats->'FVehicleModuleDurabilityStats'->1->>'DecayedMaxDurability')::numeric, 0) own_decayed,
+    nullif((vm.stats->'FVehicleModuleDurabilityStats'->1->>'MaxDurability')::numeric, 0) own_max
+  from dune.vehicle_modules vm
+), module_observed as (
+  select module_raw.*,
+    count(own_current) over(partition by template_id)::int current_samples,
+    max(own_current) over(partition by template_id) observed_max
+  from module_raw
+), module_durability as (
+  select id, vehicle_id, template_id,
+    own_current current_durability,
+    coalesce(own_max, own_decayed,
+      case when current_samples >= 2 then observed_max else null end) max_durability,
+    case
+      when own_max is not null or own_decayed is not null then false
+      when current_samples >= 2 and observed_max is not null then true
+      else null
+    end max_inferred
+  from module_observed
+), vehicle_fuel as (
+  select v.id vehicle_id,
+    fuel.current_fuel,
+    generator.template_id generator_template
+  from dune.vehicles v
+  left join lateral (
+    select (fe.components->'FVehicleComponent'->1->>'CurrentFuel')::numeric current_fuel
+    from dune.actor_fgl_entities afe
+    join dune.fgl_entities fe on fe.entity_id=afe.entity_id
+    where afe.actor_id=v.id and fe.components ? 'FVehicleComponent'
+    limit 1
+  ) fuel on true
+  left join lateral (
+    select vm.template_id
+    from dune.vehicle_modules vm
+    where vm.vehicle_id=v.id and vm.template_id ilike '%Generator%'
+    limit 1
+  ) generator on true
+), fuel_capacity as (
+  select generator_template,
+    max(current_fuel) max_fuel,
+    count(current_fuel)::int fuel_samples
+  from vehicle_fuel
+  where generator_template is not null
+  group by generator_template
+)`;
+
+// Lists every vehicle (across all players) for the admin console, one page at a
+// time. Reuses portalVehicles' module-durability and fuel-capacity CTEs, the
+// listPlayers totals + LEFT JOIN LATERAL pagination (so totalCount survives an
+// out-of-range page — do NOT switch to count(*) over() inside the paged CTE),
+// and the listBases shared-with lateral (resolved only on the paged rows).
+export async function listVehicles(db, { q = "", page = 0, pageSize = 50, sortColumn = "name", sortDirection = "asc", playerId = "" } = {}) {
+  const requiredTables = [
+    "vehicles", "vehicle_modules", "actors", "permission_actor",
+    "permission_actor_rank", "player_state", "actor_fgl_entities", "fgl_entities"
+  ];
+  for (const table of requiredTables) {
+    if (!(await tableExists(db, table))) {
+      return { ...unsupported("vehicles", requiredTables.map((t) => `dune.${t}`)), totalCount: 0, totalVehicles: 0 };
+    }
+  }
+
+  const safePageSize = intParam(pageSize, "pageSize", 1, 200);
+  const safePage = intParam(page, "page", 0);
+  const offset = safePage * safePageSize;
+  const safeSortColumn = Object.hasOwn(VEHICLE_SORT_COLUMNS, sortColumn) ? sortColumn : "name";
+  const safeSortDirection = String(sortDirection).toLowerCase() === "desc" ? "desc" : "asc";
+  const sortOrder = VEHICLE_SORT_COLUMNS[safeSortColumn].order;
+  const pagedOrder = [...sortOrder, ...(sortOrder.includes("id") ? [] : ["id"])]
+    .map((column) => `${column} ${safeSortDirection}`).join(", ");
+
+  const player = playerId ? await resolvePlayerMutationTarget(db, playerId) : null;
+  const values = [];
+  const filters = [];
+  let viewerJoin = "";
+  let relationshipSql = "null::text";
+  if (player) {
+    values.push(player.accountId);
+    const accountParam = values.length;
+    values.push(player.controllerId);
+    const controllerParam = values.length;
+    viewerJoin = `left join lateral (
+          select min(par.rank)::int as rank
+          from dune.permission_actor_rank par
+          where par.permission_actor_id=vc.id and par.player_id=$${controllerParam}
+        ) viewer on true`;
+    filters.push(`(vc.owner_account_id=$${accountParam} or viewer.rank is not null)`);
+    relationshipSql = `case
+            when vc.owner_account_id=$${accountParam} or viewer.rank=1 then 'Owner'
+            when viewer.rank=2 then 'Co-Owner'
+            when viewer.rank=3 then 'Associate'
+            when viewer.rank is not null then 'Rank ' || viewer.rank::text
+            else null
+          end`;
+  }
+  if (q) {
+    values.push(`%${q}%`);
+    const likeParam = values.length;
+    values.push(String(q));
+    const exactParam = values.length;
+    filters.push(`(coalesce(vc.clean_name, vc.type) ilike $${likeParam}`
+      + ` or vc.type ilike $${likeParam}`
+      + ` or coalesce(own.owner, '') ilike $${likeParam}`
+      + ` or vc.map ilike $${likeParam}`
+      + ` or vc.id::text = $${exactParam})`);
+  }
+  const filterClause = filters.length ? `where ${filters.join(" and ")}` : "";
+  values.push(safePageSize, offset);
+  const limitParamIndex = values.length - 1;
+  const offsetParamIndex = values.length;
+
+  try {
+    const result = await db.query(`
+      with ${VEHICLE_STATUS_CTES_SQL}, vehicle_core as (
+        select v.id,
+          ${VEHICLE_TYPE_SQL} as type,
+          ${VEHICLE_CUSTOM_NAME_SQL} as clean_name,
+          coalesce(a.map, '') as map,
+          coalesce(a.partition_id, 0)::int as partition_id,
+          a.transform,
+          a.owner_account_id
+        from dune.vehicles v
+        join dune.actors a on a.id=v.id
+        left join dune.permission_actor pa on pa.actor_id=v.id
+      ), matched as (
+        select vc.id,
+          coalesce(vc.clean_name, vc.type) as name,
+          vc.type,
+          coalesce(own.owner, '') as owner,
+          ${relationshipSql} as relationship,
+          min(case when md.current_durability is not null and md.max_durability > 0 then
+            greatest(0, least(100, floor(100 * md.current_durability / nullif(md.max_durability, 0))))::int
+          else null end) condition_percent,
+          (count(*) filter(where md.max_inferred is true and md.current_durability is not null and md.max_durability > 0) > 0) condition_estimated,
+          fuel.current_fuel,
+          case when cap.fuel_samples >= 2 then cap.max_fuel else null end max_fuel,
+          case when cap.fuel_samples >= 2 then
+            greatest(0, least(100, floor(100 * fuel.current_fuel / nullif(cap.max_fuel, 0))))::int
+          else null end fuel_percent,
+          vc.map, vc.partition_id,
+          ((vc.transform).location).x::numeric x,
+          ((vc.transform).location).y::numeric y,
+          ((vc.transform).location).z::numeric z,
+          coalesce(jsonb_agg(jsonb_build_object(
+            'templateId', md.template_id,
+            'condition', md.current_durability,
+            'maxCondition', md.max_durability,
+            'maxInferred', md.max_inferred,
+            'conditionPercent', case when md.current_durability is not null and md.max_durability > 0 then
+              greatest(0, least(100, floor(100 * md.current_durability / nullif(md.max_durability, 0))))::int
+            else null end
+          ) order by md.template_id) filter(where md.id is not null), '[]'::jsonb) modules
+        from vehicle_core vc
+        left join lateral (
+          select coalesce(
+            (select ps.character_name
+               from dune.permission_actor_rank par
+               join dune.actors pa2 on pa2.id=par.player_id
+               join dune.player_state ps on ps.account_id=pa2.owner_account_id
+               where par.permission_actor_id=vc.id and par.rank=1
+               order by ps.character_name limit 1),
+            (select ps.character_name
+               from dune.player_state ps
+               where ps.account_id=vc.owner_account_id
+               order by ps.character_name limit 1)
+          ) as owner
+        ) own on true
+        ${viewerJoin}
+        left join vehicle_fuel fuel on fuel.vehicle_id=vc.id
+        left join fuel_capacity cap on cap.generator_template=fuel.generator_template
+        left join module_durability md on md.vehicle_id=vc.id
+        ${filterClause}
+        group by vc.id, vc.type, vc.clean_name, vc.map, vc.partition_id, vc.transform,
+          vc.owner_account_id, own.owner, ${player ? "viewer.rank," : ""} fuel.current_fuel, cap.max_fuel, cap.fuel_samples
+      ), totals as (
+        select count(*)::int as total_count from matched
+      )
+      select paged.*, totals.total_count,
+        coalesce(shared.entries, '[]'::jsonb) as shared_with
+      from totals
+      left join lateral (
+        select * from matched
+        order by ${pagedOrder}
+        limit $${limitParamIndex} offset $${offsetParamIndex}
+      ) paged on true
+      left join lateral (
+        select jsonb_agg(jsonb_build_object('name', ps.character_name, 'rank', par.rank)
+          order by par.rank asc, ps.character_name asc) as entries
+        from dune.permission_actor_rank par
+        join dune.actors player_a on player_a.id = par.player_id
+        join dune.player_state ps on ps.account_id = player_a.owner_account_id
+        where par.permission_actor_id = paged.id
+          and par.rank <> 1
+          and ps.character_name is distinct from paged.owner
+      ) shared on true
+      order by ${pagedOrder}`, values);
+
+    const totalsResult = await db.query("select count(*)::int as total_vehicles from dune.vehicles");
+
+    const rows = result.rows
+      .filter((row) => row.id !== null && row.id !== undefined)
+      .map(({ total_count, ...row }) => ({
+        ...row,
+        shared_with: (Array.isArray(row.shared_with) ? row.shared_with : []).map((entry) => ({
+          name: entry.name,
+          rank: entry.rank,
+          label: permissionRankLabel(entry.rank)
+        })),
+        modules: (row.modules || []).map((module) => ({
+          ...module,
+          name: portalVehicleModuleName(module.templateId)
+        }))
+      }));
+    await attachVehicleRegions(db, rows);
+
+    return {
+      capabilities: { vehicles: true },
+      totalCount: result.rows[0] ? Number(result.rows[0].total_count) : 0,
+      totalVehicles: totalsResult.rows[0] ? Number(totalsResult.rows[0].total_vehicles) : 0,
+      rows
+    };
+  } catch (error) {
+    return { ...unsupported("vehicles", requiredTables.map((t) => `dune.${t}`)), totalCount: 0, totalVehicles: 0, reason: `Vehicles query failed: ${error.message}` };
+  }
+}
+
 export async function portalVehicles(db, playerIds) {
   const result = await db.query(`
-    with module_durability as (
-      select vm.id, vm.vehicle_id, vm.template_id, vm.stats,
-        coalesce((vm.stats->'FVehicleModuleDurabilityStats'->1->>'CurrentDurability')::numeric, 0) current_durability,
-        max(coalesce((vm.stats->'FVehicleModuleDurabilityStats'->1->>'CurrentDurability')::numeric, 0)) over(partition by vm.template_id) max_durability,
-        count(*) over(partition by vm.template_id) durability_samples
-      from dune.vehicle_modules vm
-    ), vehicle_fuel as (
-      select v.id vehicle_id,
-        fuel.current_fuel,
-        generator.template_id generator_template
-      from dune.vehicles v
-      left join lateral (
-        select (fe.components->'FVehicleComponent'->1->>'CurrentFuel')::numeric current_fuel
-        from dune.actor_fgl_entities afe
-        join dune.fgl_entities fe on fe.entity_id=afe.entity_id
-        where afe.actor_id=v.id and fe.components ? 'FVehicleComponent'
-        limit 1
-      ) fuel on true
-      left join lateral (
-        select vm.template_id
-        from dune.vehicle_modules vm
-        where vm.vehicle_id=v.id and vm.template_id ilike '%Generator%'
-        limit 1
-      ) generator on true
-    ), fuel_capacity as (
-      select generator_template,
-        max(current_fuel) max_fuel,
-        count(*) filter(where current_fuel is not null)::int fuel_samples
-      from vehicle_fuel
-      where generator_template is not null
-      group by generator_template
-    )
+    with ${VEHICLE_STATUS_CTES_SQL}
     select v.id::text id, regexp_replace(a.class, '^.*/|\\..*$', '', 'g') type,
       pa.actor_name custom_name,
-      coalesce(floor(100 * sum(vm.current_durability) / nullif(sum(vm.max_durability), 0)), 0)::int condition_percent,
+      min(case when vm.current_durability is not null and vm.max_durability > 0 then
+        greatest(0, least(100, floor(100 * vm.current_durability / nullif(vm.max_durability, 0))))::int
+      else null end) condition_percent,
+      (count(*) filter(where vm.max_inferred is true and vm.current_durability is not null and vm.max_durability > 0) > 0) condition_estimated,
       fuel.current_fuel,
       case when capacity.fuel_samples >= 2 then capacity.max_fuel else null end max_fuel,
       case when capacity.fuel_samples >= 2 then
@@ -4724,8 +5825,9 @@ export async function portalVehicles(db, playerIds) {
       coalesce(jsonb_agg(jsonb_build_object(
         'templateId',vm.template_id,
         'condition',vm.current_durability,
-        'maxCondition',case when vm.durability_samples >= 2 then vm.max_durability else null end,
-        'conditionPercent',case when vm.durability_samples >= 2 then
+        'maxCondition',vm.max_durability,
+        'maxInferred',vm.max_inferred,
+        'conditionPercent',case when vm.current_durability is not null and vm.max_durability > 0 then
           greatest(0, least(100, floor(100 * vm.current_durability / nullif(vm.max_durability, 0))))::int
         else null end
       ) order by vm.template_id) filter(where vm.id is not null),'[]'::jsonb) modules
@@ -4764,24 +5866,27 @@ function portalVehicleModuleName(templateId) {
   const id = String(templateId || "");
   const direct = adminItemMetadata().get(id)?.name;
   if (direct) return direct;
-  const wing = id.match(/^(OrnithopterLightLocomotion)(Front|Back)(Left|Right)_(\d+)$/i);
-  if (wing) {
-    const base = adminItemMetadata().get(`${wing[1]}_${wing[4]}`)?.name || "Scout Ornithopter Wing";
-    return `${base} (${wing[2]} ${wing[3]})`;
+  // Locomotion pieces (ornithopter wings, ground-vehicle treads) are catalogued
+  // per vehicle + tier, not per mounting position, so the positional template ids
+  // the game actually stores (e.g. BuggyLocomotionBackLeft_5,
+  // OrnithopterMediumLocomotionCenterRight_5) have no direct catalog entry. Strip
+  // the position, resolve the base name, and append the position for readability.
+  // Covers every vehicle class and the Front/Back/Center x Left/Right/Center grid.
+  const loco = id.match(/^([A-Za-z]+Locomotion)(Front|Back|Center)(Left|Right|Center)_(\d+)$/i);
+  if (loco) {
+    const base = adminItemMetadata().get(`${loco[1]}_${loco[4]}`)?.name;
+    if (base) return `${base} (${loco[2]} ${loco[3]})`;
   }
   return id || "Vehicle Module";
 }
 
-function portalVehicleDisplayName(type) {
+// Derived from the same VEHICLE_TYPE_MAP as VEHICLE_TYPE_SQL, so the portal and
+// the admin page always agree on the friendly label. Runs on the path-stripped
+// class; unmapped classes pass through unchanged.
+export function portalVehicleDisplayName(type) {
   const value = String(type || "").toLowerCase();
-  if (value.includes("lightornithopter")) return "Scout Ornithopter";
-  if (value.includes("mediumornithopter")) return "Assault Ornithopter";
-  if (value.includes("transportornithopter")) return "Carrier Ornithopter";
-  if (value.includes("sandcrawler")) return "Sandcrawler";
-  if (value.includes("sandbike")) return "Sandbike";
-  if (value.includes("buggy")) return "Buggy";
-  if (value.includes("tank")) return "Battle Tank";
-  return String(type || "Vehicle");
+  const mapped = VEHICLE_TYPE_MAP.find((entry) => value.includes(entry.match));
+  return mapped ? mapped.label : String(type || "Vehicle");
 }
 
 // Seconds of runtime per fuel unit, measured from m_FuelBurningDuration on the
@@ -4882,7 +5987,7 @@ function refillCaps(repoRoot) {
   try {
     if (repoRoot && existsSync(overridePath)) overrides = JSON.parse(readFileSync(overridePath, "utf8")) || {};
   } catch (error) {
-    console.warn(`Ignoring unreadable generator refill cap overrides: ${redact(error?.message || error)}`);
+    console.warn(`Ignoring unreadable generator refill cap overrides: ${redact(error?.message || "Unexpected error.")}`);
   }
   const caps = {};
   for (const type of GENERATOR_TYPE_ORDER) {
@@ -6207,7 +7312,7 @@ export function listQueuedGeneratorRefills(repoRoot) {
       return true;
     });
   } catch (error) {
-    console.warn(`Ignoring unreadable pending generator refill queue: ${redact(error?.message || error)}`);
+    console.warn(`Ignoring unreadable pending generator refill queue: ${redact(error?.message || "Unexpected error.")}`);
     return [];
   }
 }
@@ -6460,7 +7565,7 @@ export async function flushGeneratorRefills(db, repoRoot, { now = Date.now } = {
       // update-db.sh inside the very window this flush targets, and three
       // strikes at a few seconds apart would otherwise all land inside one
       // migration and silently discard the operator's request.
-      const message = String(error?.message || error).slice(0, 300);
+      const message = String(error?.message || "Unexpected error.").slice(0, 300);
       const attempts = isTransientFlushError(message) ? entry.attempts : entry.attempts + 1;
       const dropped = attempts >= MAX_REFILL_FLUSH_ATTEMPTS;
       const nextRetryAt = timestamp + pendingRefillRetryDelayMs();
@@ -6492,6 +7597,187 @@ function reconcileQueuedGeneratorRefills(repoRoot, outcomes) {
     if (outcome.keep) next.push({ ...entry, attempts: outcome.attempts, nextRetryAt: outcome.nextRetryAt, lastError: outcome.lastError });
   }
   writeQueuedGeneratorRefills(repoRoot, next);
+  return next;
+}
+
+// ---------------------------------------------------------------------------
+// Base deletion
+//
+// Permanently removes a base and everything on it. Like a refill, a delete
+// aimed at a live map's rows can be silently overwritten the next time that
+// map flushes its own state back to Postgres, so this reuses the exact same
+// pending-queue/write-safety machinery as the generator refill queue above --
+// see baseRefillTarget, observeRefillPartitions, partitionWriteSafe,
+// isTransientFlushError. It diverges from that queue in two ways, both noted
+// where they happen: a vanished base is success, not a retryable failure, and
+// the mandatory pre-delete safety backup is the caller's responsibility (kept
+// out of this file -- it shells out to the `dune` CLI, which duneDb.js never
+// does; see flushBaseDeletes's onBeforeApply and server.js's baseDeleteRoute).
+
+const PENDING_BASE_DELETE_PATH = "runtime/generated/pending-base-deletes.json";
+// Lower than MAX_PENDING_REFILLS: a large backlog of pending deletes is
+// itself a signal worth surfacing early, not silently absorbing.
+const MAX_PENDING_BASE_DELETES = 200;
+const MAX_DELETE_FLUSH_ATTEMPTS = 3;
+
+function pendingBaseDeleteMaxAgeMs() {
+  return clampInt(process.env.ADMIN_BASE_DELETE_MAX_AGE_MS, 7 * 24 * 60 * 60 * 1000, 1, Number.MAX_SAFE_INTEGER);
+}
+function pendingBaseDeleteRetryDelayMs() {
+  return clampInt(process.env.ADMIN_BASE_DELETE_RETRY_DELAY_MS, 60000, 1, Number.MAX_SAFE_INTEGER);
+}
+
+function pendingBaseDeleteFile(repoRoot) {
+  return resolve(repoRoot || "", PENDING_BASE_DELETE_PATH);
+}
+
+// Intent only, like normalizePendingRefill -- no captured actor-id list, so
+// flushBaseDeletes re-enumerates fresh at flush time rather than trusting
+// what existed when the delete was requested.
+function normalizePendingBaseDelete(entry) {
+  const baseId = Math.floor(Number(entry?.baseId));
+  if (!Number.isInteger(baseId) || baseId < 1) return null;
+  const partitionId = Math.floor(Number(entry?.partitionId));
+  return {
+    baseId,
+    map: String(entry?.map ?? "").slice(0, 120),
+    partitionId: Number.isInteger(partitionId) && partitionId > 0 ? partitionId : 0,
+    queuedAt: typeof entry?.queuedAt === "string" ? entry.queuedAt.slice(0, 40) : "",
+    attempts: clampInt(entry?.attempts, 0, 0, MAX_DELETE_FLUSH_ATTEMPTS),
+    nextRetryAt: Number.isFinite(Number(entry?.nextRetryAt)) ? Number(entry.nextRetryAt) : 0,
+    lastError: String(entry?.lastError ?? "").slice(0, 300)
+  };
+}
+
+export function listQueuedBaseDeletes(repoRoot) {
+  const file = pendingBaseDeleteFile(repoRoot);
+  if (!existsSync(file)) return [];
+  try {
+    const parsed = JSON.parse(readFileSync(file, "utf8"));
+    if (!Array.isArray(parsed)) return [];
+    // One entry per base, so a double-clicked button cannot queue it twice.
+    const seen = new Set();
+    return parsed.map(normalizePendingBaseDelete).filter((entry) => {
+      if (!entry || seen.has(entry.baseId)) return false;
+      seen.add(entry.baseId);
+      return true;
+    });
+  } catch (error) {
+    console.warn(`Ignoring unreadable pending base delete queue: ${redact(error?.message || "Unexpected error.")}`);
+    return [];
+  }
+}
+
+// Deliberately synchronous read-modify-write, matching writeQueuedGeneratorRefills.
+function writeQueuedBaseDeletes(repoRoot, entries) {
+  writeJsonAtomic(pendingBaseDeleteFile(repoRoot), entries);
+  return entries;
+}
+
+export function queueBaseDelete(repoRoot, { baseId, map = "", partitionId = 0, now = () => new Date() } = {}) {
+  const entry = normalizePendingBaseDelete({ baseId, map, partitionId, queuedAt: now().toISOString() });
+  if (!entry) throw new Error("Invalid base id");
+  const others = listQueuedBaseDeletes(repoRoot).filter((row) => row.baseId !== entry.baseId);
+  if (others.length >= MAX_PENDING_BASE_DELETES) {
+    throw new Error(`The pending delete queue already holds ${MAX_PENDING_BASE_DELETES} bases. Restart the affected maps to apply them first.`);
+  }
+  writeQueuedBaseDeletes(repoRoot, [...others, entry]);
+  return entry;
+}
+
+export function cancelQueuedBaseDelete(repoRoot, baseId) {
+  const target = intParam(baseId, "base id", 1);
+  const entries = listQueuedBaseDeletes(repoRoot);
+  const remaining = entries.filter((entry) => entry.baseId !== target);
+  if (remaining.length === entries.length) throw new Error("That base has no queued delete.");
+  writeQueuedBaseDeletes(repoRoot, remaining);
+  return { ok: true, baseId: target, pending: remaining.length };
+}
+
+// basePermissionActor and baseMapLocation both throw one of these two
+// messages for a base that was demolished or never existed, so a flush
+// hitting either has already achieved what the queued delete wanted.
+// Retrying would either spam a false failure or, worse, wait out the attempt
+// limit before dropping an entry that was already done.
+function baseDeleteAlreadyGone(message) {
+  return /was not found|no resolvable owner entity/i.test(message);
+}
+
+// Mirrors flushGeneratorRefills, with two divergences:
+//   - deleteBaseCompletely replaces refillBaseGenerators, since there is
+//     nothing to recompute an "amount" for -- one delete, not a top-up;
+//   - onBeforeApply runs at most once per pass, immediately before the first
+//     entry that is actually about to be deleted (not merely queued): a full
+//     database backup is not cheap, and several bases can flush in the same
+//     pass (e.g. a whole battlegroup restart), so one backup covers the whole
+//     batch instead of one per base. If it throws, the entire pass aborts --
+//     a failed safety backup is not about any one base, and deleting others
+//     without it would defeat the point just the same. Every entry stays
+//     queued and is retried, backup included, on the next tick.
+export async function flushBaseDeletes(db, repoRoot, { now = Date.now, onBeforeApply } = {}) {
+  const pending = listQueuedBaseDeletes(repoRoot);
+  if (!pending.length) return { flushed: [], pending: 0 };
+  const observed = await observeRefillPartitions(db, { now });
+  if (!observed) return { flushed: [], pending: pending.length, unsupported: true };
+
+  const flushed = [];
+  const outcomes = new Map();
+  const timestamp = now();
+  let backedUp = false;
+  for (const entry of pending) {
+    // Age is checked before write-safety: an expired entry should be cleared
+    // even for a map that never comes down again.
+    const queuedMs = Date.parse(entry.queuedAt);
+    if (Number.isFinite(queuedMs) && timestamp - queuedMs >= pendingBaseDeleteMaxAgeMs()) {
+      const message = `Queued for longer than the ${Math.round(pendingBaseDeleteMaxAgeMs() / 3600000)}h limit without being applied.`;
+      outcomes.set(entry.baseId, { queuedAt: entry.queuedAt, keep: false });
+      flushed.push({ baseId: entry.baseId, map: entry.map, partitionId: entry.partitionId, ok: false, expired: true, dropped: true, error: message });
+      continue;
+    }
+    if (!partitionWriteSafe(observed, entry.partitionId)) continue;
+    if (entry.nextRetryAt && timestamp < entry.nextRetryAt) continue;
+    if (!backedUp && onBeforeApply) {
+      try {
+        await onBeforeApply();
+        backedUp = true;
+      } catch (error) {
+        return { flushed: [], pending: pending.length, backupFailed: true, error: String(error?.message || "Unexpected error.").slice(0, 300) };
+      }
+    }
+    try {
+      const result = await deleteBaseCompletely(db, entry.baseId);
+      outcomes.set(entry.baseId, { queuedAt: entry.queuedAt, keep: false });
+      flushed.push({ baseId: entry.baseId, map: entry.map, partitionId: entry.partitionId, ok: true, ...result });
+    } catch (error) {
+      const message = String(error?.message || "Unexpected error.").slice(0, 300);
+      if (baseDeleteAlreadyGone(message)) {
+        outcomes.set(entry.baseId, { queuedAt: entry.queuedAt, keep: false });
+        flushed.push({ baseId: entry.baseId, map: entry.map, partitionId: entry.partitionId, ok: true, alreadyGone: true });
+        continue;
+      }
+      const attempts = isTransientFlushError(message) ? entry.attempts : entry.attempts + 1;
+      const dropped = attempts >= MAX_DELETE_FLUSH_ATTEMPTS;
+      const nextRetryAt = timestamp + pendingBaseDeleteRetryDelayMs();
+      outcomes.set(entry.baseId, { queuedAt: entry.queuedAt, keep: !dropped, attempts, nextRetryAt, lastError: message });
+      flushed.push({ baseId: entry.baseId, map: entry.map, partitionId: entry.partitionId, ok: false, attempts, dropped, error: message });
+    }
+  }
+  const remaining = outcomes.size ? reconcileQueuedBaseDeletes(repoRoot, outcomes) : pending;
+  return { flushed, pending: remaining.length };
+}
+
+// Mirrors reconcileQueuedGeneratorRefills.
+function reconcileQueuedBaseDeletes(repoRoot, outcomes) {
+  const next = [];
+  for (const entry of listQueuedBaseDeletes(repoRoot)) {
+    const outcome = outcomes.get(entry.baseId);
+    if (!outcome || outcome.queuedAt !== entry.queuedAt) {
+      next.push(entry);
+      continue;
+    }
+    if (outcome.keep) next.push({ ...entry, attempts: outcome.attempts, nextRetryAt: outcome.nextRetryAt, lastError: outcome.lastError });
+  }
+  writeQueuedBaseDeletes(repoRoot, next);
   return next;
 }
 
@@ -6570,6 +7856,24 @@ function waterTypeParams() {
 // there is no fuel-cell-style consumable involved.
 export async function baseWater(db, baseId) {
   const target = intParam(baseId, "base id", 1);
+  // Every table the query below touches, including fgl_entities inside the
+  // lateral -- a missing one raises a bare Postgres error otherwise, which the
+  // tab could only render as a failed request with a retry that can never
+  // succeed. listBases probes four of these, but not placeables or
+  // fgl_entities, so a schema can list bases fine and still be unable to
+  // answer this: that is exactly the case the capability response is for.
+  const required = ["buildings", "building_instances", "actor_fgl_entities", "placeables", "actors", "fgl_entities"];
+  // Independent probes, so one round-trip rather than six in series.
+  const present = await Promise.all(required.map((table) => tableExists(db, table)));
+  const missing = required.filter((_, index) => !present[index]);
+  if (missing.length) {
+    return {
+      supported: false,
+      reason: `Unsupported by detected schema. Missing required table(s): ${missing.map((table) => `dune.${table}`).join(", ")}`,
+      baseId: target,
+      containers: []
+    };
+  }
   const [types, buildingTypes] = waterTypeParams();
   const bloodKeys = WATER_BUILDING_TYPE_PAIRS.map(([type]) => WATER_TYPES[type].bloodPropertyKey || null);
   const result = await db.query(`
@@ -6638,7 +7942,7 @@ export async function baseWater(db, baseId) {
     return entry;
   }).sort((left, right) => WATER_TYPE_ORDER.indexOf(left.type) - WATER_TYPE_ORDER.indexOf(right.type));
 
-  return { baseId: target, containers };
+  return { supported: true, baseId: target, containers };
 }
 
 // Every water device at a base, individually. Refill and the auto-refill scan
@@ -6788,6 +8092,696 @@ export async function baseWaterFuelLevels(db, baseId) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Base inventory
+//
+// Classification is an explicit building_type allowlist, for the same reason
+// generator_spec's is (see the comment in portalGeneratorFuel): an unknown
+// placeable must not silently acquire a group and report an invented fill
+// level. Anything not listed here is omitted rather than bucketed.
+//
+// Grouping does NOT key on dune.inventories.inventory_type even though it
+// almost lines up (4 = storage, 12 = refining/crafting, 3 = fuel-and-module).
+// Recycler and Repair Station are inventory_type 3, the same as the oil
+// generators the Power tab owns -- keying on the type would file a 25-slot
+// Recycler holding the most items of anything outside storage under "fuel".
+//
+// Display names are this console's own: the game stores no type label. Every
+// unnamed placeable's dune.permission_actor.actor_name is literally
+// '##' || building_type, and a named one holds whatever the player typed
+// ("Ore Storage", "Aluminum Refinery"), which is why the '##%' filter below
+// mirrors listStorage's.
+//
+// Where a building_type disagrees with the player-facing name, the catalog
+// patent in runtime/data/admin-items.json wins -- it is the same source the
+// console already uses for item names. SpiceSilo_Placeable is the one that
+// matters: its patent is "Small Storage Container", and the data agrees, since
+// 195 of the 198 item rows across 40 of them in the reference dump were not
+// spice. "Spice Silo" is the internal blueprint name (BP_SpiceSiloContainer),
+// not a label any player sees.
+//
+// Every label below was read off the in-game build menu. Two were not
+// derivable from the data and would have been guessed wrong:
+// GenericContainer_Placeable is "Chest" (20 slots), not the "Medium Storage
+// Container" its position in the capacity ladder suggests -- that is a real
+// but separate 100-slot building. And the fabricators are nine buildings, not
+// five: the plain and Advanced variants coexist.
+//
+// Every building_type string below was verified against the shipped server
+// paks on the production host, where each building ships a
+// DA_BLD_<building_type>.uasset. That is what caught
+// AdvancedVehicleFabricator_Placeable being singular while its own base
+// building, VehiclesFabricator_Placeable, is plural.
+//
+// The reverse does not hold: that extraction is lossy (SpiceSilo_Placeable,
+// SmallOreRefinery_Placeable and Fabricator_Placeable all fail to appear in it
+// despite being live on the same server), so a type's absence from the paks is
+// not evidence against it. An allowlist entry that never matches is inert,
+// while a missing one silently hides a container.
+const BASE_INVENTORY_TYPES = {
+  storage: {
+    name: "Storage",
+    buildingTypes: {
+      storagecontainer_placeable: "Storage Container",
+      mediumstoragecontainer_placeable: "Medium Storage Container",
+      developer_storagecontainer_placeable: "Developer Storage Container",
+      genericcontainer_placeable: "Chest",
+      // Two building types display as the same building. SpiceSilo is the
+      // legacy name every live placement still carries (48 of them on the
+      // production server, 0 of the other); SmallStorageContainer is the
+      // asset name shipped in the paks. Both are listed so a rename in a
+      // future patch cannot silently empty the tab.
+      spicesilo_placeable: "Small Storage Container",
+      smallstoragecontainer_placeable: "Small Storage Container"
+    }
+  },
+  refining: {
+    name: "Refining",
+    buildingTypes: {
+      smallorerefinery_placeable: "Small Ore Refinery",
+      mediumorerefinery_placeable: "Medium Ore Refinery",
+      largeorerefinery_placeable: "Large Ore Refinery",
+      smallchemicalrefinery_placeable: "Small Chemical Refinery",
+      mediumchemicalrefinery_placeable: "Medium Chemical Refinery",
+      // The base spice refinery builds as plain "Spice Refinery" -- Medium and
+      // Large are separate buildables, unlike the size-prefixed ore ones.
+      spicerefinery_placeable: "Spice Refinery",
+      mediumspicerefinery_placeable: "Medium Spice Refinery",
+      largespicerefinery_placeable: "Large Spice Refinery"
+    }
+  },
+  crafting: {
+    name: "Crafting",
+    buildingTypes: {
+      // Nine fabricators: a starter "Fabricator" plus four specialisations,
+      // each of which has a separate Advanced building. Do not take the
+      // catalog at face value here -- SurvivalFabricator_Patent is *named*
+      // "Advanced Survival Fabricator Patent" while AdvancedSurvivalFabricator_
+      // Patent carries that same display name, so one of the two entries is
+      // simply wrong. The build menu has both buildings and they are distinct.
+      fabricator_placeable: "Fabricator",
+      survivalfabricator_placeable: "Survival Fabricator",
+      vehiclesfabricator_placeable: "Vehicles Fabricator",
+      weaponsfabricator_placeable: "Weapons Fabricator",
+      wearablesfabricator_placeable: "Garment Fabricator",
+      advancedsurvivalfabricator_placeable: "Advanced Survival Fabricator",
+      // Singular "Vehicle" -- the game is inconsistent here, the base building
+      // is VehiclesFabricator_Placeable but the advanced one is
+      // AdvancedVehicleFabricator_Placeable. Verified in the shipped paks.
+      advancedvehiclefabricator_placeable: "Advanced Vehicle Fabricator",
+      advancedweaponsfabricator_placeable: "Advanced Weapons Fabricator",
+      advancedwearablesfabricator_placeable: "Advanced Garment Fabricator"
+    }
+  },
+  other: {
+    name: "Other",
+    buildingTypes: {
+      recycler_placeable: "Recycler",
+      repairstation_placeable: "Repair Station",
+      // The base's own claim structure. Unlike every other entry here it is
+      // not a placeable a player builds inside their base -- it *is* the
+      // base -- but it carries a real 5-slot dune.inventories row of its own
+      // (verified against the kovalt_test.backup dump: 17 totem_placeable
+      // and 2 totem_small_placeable rows, each with an inv.actor_id = p.id
+      // row, max_item_count 5; base 3438's totem_placeable 3437 held 1 item,
+      // qty 83, pulled through this same owner_entity_id join with no
+      // special-casing). Names are the catalog patent's, matching every
+      // other label in this table: Totem_Small_Patent is "Sub-Fief Console",
+      // Totem_Patent is "Advanced Sub-Fief".
+      totem_small_placeable: "Sub-Fief Console",
+      totem_placeable: "Advanced Sub-Fief"
+    }
+  }
+};
+
+const BASE_INVENTORY_GROUP_ORDER = ["storage", "refining", "crafting", "other"];
+
+const BASE_INVENTORY_TRIPLES = BASE_INVENTORY_GROUP_ORDER.flatMap((group) =>
+  Object.entries(BASE_INVENTORY_TYPES[group].buildingTypes).map(
+    ([buildingType, typeName]) => [group, buildingType, typeName]));
+
+// Shaped for unnest() so a building_type is never interpolated into the SQL.
+function baseInventoryTypeParams() {
+  return [
+    BASE_INVENTORY_TRIPLES.map(([group]) => group),
+    BASE_INVENTORY_TRIPLES.map(([, buildingType]) => buildingType),
+    BASE_INVENTORY_TRIPLES.map(([, , typeName]) => typeName)
+  ];
+}
+
+// Every stored item at a base, rolled up two ways off one query: by item
+// template (what does this base hold, and where) and by container (what is in
+// this box, and how full is it).
+//
+// Read-only by design. Item writes have no live-sync path -- no pg_notify
+// channel carries them, there are no triggers on dune.items or
+// dune.inventories, and the RMQ command bus addresses items by template name
+// while every id here is a row id -- so an edit could not reach a running map
+// without a relog or a map restart.
+export async function baseInventory(db, baseId, { repoRoot = "" } = {}) {
+  const target = intParam(baseId, "base id", 1);
+  // Every table the query below touches, in the order it reaches them. The
+  // LEFT JOINs count too: Postgres resolves a relation at parse time, so a
+  // missing permission_actor raises exactly as hard as a missing placeables.
+  // permission_actor is the one that matters most here -- listBases probes the
+  // first three and actors, so a schema lacking only permission_actor lists
+  // bases fine and then fails on this tab alone.
+  // Independent probes, so one round-trip rather than seven in series.
+  const required = [
+    "buildings", "building_instances", "actor_fgl_entities",
+    "placeables", "inventories", "permission_actor", "items"
+  ];
+  const present = await Promise.all(required.map((table) => tableExists(db, table)));
+  const missing = required.filter((_, index) => !present[index]);
+  // A capability response rather than a throw, matching listBases and the rest
+  // of the read paths here: the tab can then say the schema cannot support this
+  // instead of rendering a failed request with a retry that can never succeed.
+  if (missing.length) {
+    return {
+      supported: false,
+      reason: `Unsupported by detected schema. Missing required table(s): ${missing.map((table) => `dune.${table}`).join(", ")}`,
+      baseId: target,
+      groups: [],
+      containers: [],
+      items: [],
+      totals: { items: 0, distinct: 0, containers: 0, usedSlots: 0, maxSlots: 0 }
+    };
+  }
+  const [groups, buildingTypes, typeNames] = baseInventoryTypeParams();
+
+  const result = await db.query(`
+    with requested_claims as (
+      select distinct b.id, afe.actor_id
+      from dune.buildings b
+      join dune.building_instances bi on bi.building_id = b.id
+      join dune.actor_fgl_entities afe on afe.entity_id = bi.owner_entity_id
+      where b.id = $1
+    ), base_entities as (
+      select distinct rc.id, claim_afe.entity_id as owner_entity_id
+      from requested_claims rc
+      join dune.actor_fgl_entities claim_afe on claim_afe.actor_id = rc.actor_id
+    ), inventory_types as (
+      select * from unnest($2::text[], $3::text[], $4::text[]) as t(group_key, building_type, type_name)
+    ), containers as (
+      -- max_item_count >= 0 drops the second inventory every refinery and
+      -- fabricator carries. Both are inventory_type 12; the capped one holds
+      -- the ore and crafting inputs, while the uncapped one (max_item_count
+      -- = -1, dune.actor_inventories.component_name_hash 26344419) was empty
+      -- on all 44 of them in the reference dump. Keeping it would also mean
+      -- dividing a slot bar by a negative capacity.
+      select p.id as placeable_id, inv.id as inventory_id,
+             it.group_key, it.type_name, inv.max_item_count,
+             coalesce(max(case when pa.actor_name not like '##%' and pa.actor_name <> 'None'
+                          then pa.actor_name end), '') as container_name
+      from base_entities be
+      join dune.placeables p on p.owner_entity_id = be.owner_entity_id
+      join inventory_types it on it.building_type = lower(p.building_type)
+      join dune.inventories inv on inv.actor_id = p.id and inv.max_item_count >= 0
+      left join dune.permission_actor pa on pa.actor_id = p.id
+      where p.is_hologram = false
+      group by p.id, inv.id, it.group_key, it.type_name, inv.max_item_count
+    )
+    select c.placeable_id::text as placeable_id,
+           c.inventory_id::text as inventory_id,
+           c.group_key, c.type_name, c.container_name, c.max_item_count,
+           i.template_id, i.stack_size
+    from containers c
+    left join dune.items i on i.inventory_id = c.inventory_id
+    order by c.placeable_id, i.template_id`, [target, groups, buildingTypes, typeNames]);
+
+  const itemMetadata = adminItemMetadata();
+  const containersById = new Map();
+  const itemsByTemplate = new Map();
+  const countedInventories = new Set();
+  // Side indexes over the arrays being built: a container's entry for a
+  // template, and an item's holder for a placeable. Without them each row
+  // rescans everything accumulated so far, which is quadratic in the distinct
+  // templates a base holds.
+  const containerEntries = new Map();
+  const itemHolders = new Map();
+
+  for (const row of result.rows) {
+    const placeableId = String(row.placeable_id);
+    let container = containersById.get(placeableId);
+    if (!container) {
+      container = {
+        placeableId,
+        name: row.container_name || "",
+        typeName: row.type_name,
+        group: row.group_key,
+        usedSlots: 0,
+        maxSlots: 0,
+        itemCount: 0,
+        items: []
+      };
+      containersById.set(placeableId, container);
+    }
+    // A placeable can back more than one surviving inventory, so capacity is
+    // summed per inventory rather than per row -- every item row repeats it.
+    const inventoryId = String(row.inventory_id);
+    if (!countedInventories.has(inventoryId)) {
+      countedInventories.add(inventoryId);
+      container.maxSlots += Math.max(0, Number(row.max_item_count) || 0);
+    }
+
+    // The left join emits one all-null item for an empty container.
+    const templateId = String(row.template_id || "");
+    if (!templateId) continue;
+    const quantity = Number(row.stack_size) || 0;
+    container.usedSlots += 1;
+    container.itemCount += quantity;
+
+    const metadata = itemMetadata.get(templateId);
+    const name = metadata?.name || templateId;
+    let entries = containerEntries.get(placeableId);
+    if (!entries) containerEntries.set(placeableId, entries = new Map());
+    const existing = entries.get(templateId);
+    if (existing) existing.quantity += quantity;
+    else {
+      const entry = { templateId, name, quantity };
+      entries.set(templateId, entry);
+      container.items.push(entry);
+    }
+
+    let item = itemsByTemplate.get(templateId);
+    if (!item) {
+      item = {
+        templateId,
+        name,
+        image: itemImagePath(repoRoot, templateId),
+        category: metadata?.category || "",
+        quantity: 0,
+        containerCount: 0,
+        containers: []
+      };
+      itemsByTemplate.set(templateId, item);
+    }
+    item.quantity += quantity;
+    let holders = itemHolders.get(templateId);
+    if (!holders) itemHolders.set(templateId, holders = new Map());
+    const holder = holders.get(placeableId);
+    if (holder) holder.quantity += quantity;
+    else {
+      const next = {
+        placeableId,
+        name: container.name,
+        typeName: container.typeName,
+        group: container.group,
+        quantity
+      };
+      holders.set(placeableId, next);
+      item.containers.push(next);
+    }
+  }
+
+  const byQuantityDesc = (left, right) => right.quantity - left.quantity || left.name.localeCompare(right.name);
+  const containers = [...containersById.values()].sort((left, right) =>
+    BASE_INVENTORY_GROUP_ORDER.indexOf(left.group) - BASE_INVENTORY_GROUP_ORDER.indexOf(right.group) ||
+    right.itemCount - left.itemCount ||
+    left.placeableId.localeCompare(right.placeableId));
+  for (const container of containers) container.items.sort(byQuantityDesc);
+
+  const items = [...itemsByTemplate.values()].sort(byQuantityDesc);
+  for (const item of items) {
+    item.containers.sort(byQuantityDesc);
+    item.containerCount = item.containers.length;
+  }
+
+  return {
+    supported: true,
+    baseId: target,
+    groups: BASE_INVENTORY_GROUP_ORDER.map((group) => {
+      const owned = containers.filter((container) => container.group === group);
+      return {
+        key: group,
+        name: BASE_INVENTORY_TYPES[group].name,
+        containerCount: owned.length,
+        itemCount: owned.reduce((total, container) => total + container.itemCount, 0)
+      };
+    }),
+    containers,
+    items,
+    totals: {
+      items: containers.reduce((total, container) => total + container.itemCount, 0),
+      distinct: items.length,
+      containers: containers.length,
+      usedSlots: containers.reduce((total, container) => total + container.usedSlots, 0),
+      maxSlots: containers.reduce((total, container) => total + container.maxSlots, 0)
+    }
+  };
+}
+
+// The per-slot view of ONE container, kept off baseInventory deliberately.
+// Slots roughly triple that response (238KB -> 656KB on the largest base in the
+// reference dump, +176%) and it loads on every base expand and auto-refresh,
+// while the contents modal only ever shows a single container. So slots are
+// fetched per container, on open.
+//
+// baseInventory's items[] stays template-merged and is unchanged: it backs the
+// "N distinct" label and the search filter, both of which mean distinct
+// templates rather than stacks. This is the per-slot truth beside it.
+//
+// Slots hang off an inventory rather than the container because max_item_count
+// is summed across every inventory a placeable backs while position_index is
+// scoped to one of them -- two inventories would both have a slot 0.
+export async function baseContainerSlots(db, baseId, placeableId) {
+  const target = intParam(baseId, "base id", 1);
+  const container = intParam(placeableId, "container id", 1);
+  // Same relations baseInventory probes, minus permission_actor: this query
+  // does not resolve display names, so it must not fail on a schema that lacks
+  // that table when baseInventory already reported the container.
+  const required = [
+    "buildings", "building_instances", "actor_fgl_entities",
+    "placeables", "inventories", "items"
+  ];
+  const present = await Promise.all(required.map((table) => tableExists(db, table)));
+  const missing = required.filter((_, index) => !present[index]);
+  if (missing.length) {
+    return {
+      supported: false,
+      reason: `Unsupported by detected schema. Missing required table(s): ${missing.map((table) => `dune.${table}`).join(", ")}`,
+      baseId: target,
+      placeableId: String(container),
+      inventories: []
+    };
+  }
+
+  // Probed rather than assumed: a missing column is a parse-time error, not a
+  // null, so selecting position_index against a schema without it would 500 a
+  // container that used to open. Slots still come back; only the grid degrades,
+  // and the frontend falls back to the list when positionIndex is null.
+  const itemColumns = await columnsFor(db, "items");
+  const hasPositionIndex = itemColumns.has("position_index");
+  const hasStats = itemColumns.has("stats");
+  const slotSelect = [
+    hasPositionIndex ? "i.position_index" : "null::bigint as position_index",
+    itemColumns.has("quality_level") ? "i.quality_level" : "0::bigint as quality_level",
+    // Lifted verbatim from INVENTORY_ITEM_SELECT so the two paths cannot
+    // disagree about where durability lives.
+    hasStats
+      ? "coalesce((i.stats->'FItemStackAndDurabilityStats'->1->>'CurrentDurability'), null) as current_durability"
+      : "null::text as current_durability",
+    hasStats
+      ? `coalesce(
+             nullif((i.stats->'FItemStackAndDurabilityStats'->1->>'MaxDurability')::numeric, 0),
+             nullif((i.stats->'FItemStackAndDurabilityStats'->1->>'DecayedMaxDurability')::numeric, 0),
+             null
+           ) as max_durability`
+      : "null::numeric as max_durability"
+  ].join(",\n           ");
+  const slotOrder = hasPositionIndex ? "i.position_index nulls last, i.id" : "i.id";
+  const [groups, buildingTypes, typeNames] = baseInventoryTypeParams();
+
+  // The claim-resolution CTEs are baseInventory's, narrowed to one placeable.
+  // The inventory_types join is load-bearing, not tidiness: it is what keeps
+  // this off generator and windtrap fuel, which the Power and Water tabs own
+  // -- both carry max_item_count = 5, so the >= 0 filter admits them same as
+  // any storage container, and only the allowlist join excludes them.
+  // is_hologram/max_item_count >= 0 are kept for the other reason baseInventory
+  // has them: a hologram preview and a refinery's second (uncapped) inventory
+  // are not real storage, so both would otherwise double-count or divide by a
+  // negative capacity.
+  const result = await db.query(`
+    with requested_claims as (
+      select distinct b.id, afe.actor_id
+      from dune.buildings b
+      join dune.building_instances bi on bi.building_id = b.id
+      join dune.actor_fgl_entities afe on afe.entity_id = bi.owner_entity_id
+      where b.id = $1
+    ), base_entities as (
+      select distinct rc.id, claim_afe.entity_id as owner_entity_id
+      from requested_claims rc
+      join dune.actor_fgl_entities claim_afe on claim_afe.actor_id = rc.actor_id
+    ), inventory_types as (
+      select * from unnest($2::text[], $3::text[], $4::text[]) as t(group_key, building_type, type_name)
+    ), containers as (
+      select distinct p.id as placeable_id, inv.id as inventory_id,
+             it.group_key, it.type_name, inv.max_item_count
+      from base_entities be
+      join dune.placeables p on p.owner_entity_id = be.owner_entity_id
+      join inventory_types it on it.building_type = lower(p.building_type)
+      join dune.inventories inv on inv.actor_id = p.id and inv.max_item_count >= 0
+      where p.is_hologram = false and p.id = $5
+    )
+    select c.inventory_id::text as inventory_id,
+           c.group_key, c.type_name, c.max_item_count,
+           i.id::text as item_id, i.template_id, i.stack_size,
+           ${slotSelect}
+    from containers c
+    left join dune.items i on i.inventory_id = c.inventory_id
+    order by c.inventory_id, ${slotOrder}`, [target, groups, buildingTypes, typeNames, container]);
+
+  if (!result.rows.length) {
+    return {
+      supported: true,
+      found: false,
+      reason: "That container was not found at the selected base.",
+      baseId: target,
+      placeableId: String(container),
+      inventories: []
+    };
+  }
+
+  const itemMetadata = adminItemMetadata();
+  const inventoriesById = new Map();
+  for (const row of result.rows) {
+    const inventoryId = String(row.inventory_id);
+    let inventory = inventoriesById.get(inventoryId);
+    if (!inventory) {
+      inventory = {
+        inventoryId,
+        maxSlots: Math.max(0, Number(row.max_item_count) || 0),
+        usedSlots: 0,
+        slots: []
+      };
+      inventoriesById.set(inventoryId, inventory);
+    }
+    // The left join emits one all-null item row for an empty inventory, which
+    // still needs its entry above so the grid can render empty slots.
+    const templateId = String(row.template_id || "");
+    if (!templateId) continue;
+    inventory.usedSlots += 1;
+    inventory.slots.push({
+      itemId: String(row.item_id),
+      templateId,
+      name: itemMetadata.get(templateId)?.name || templateId,
+      positionIndex: row.position_index === null || row.position_index === undefined
+        ? null
+        : Number(row.position_index),
+      quantity: Number(row.stack_size) || 0,
+      qualityLevel: Number(row.quality_level) || 0,
+      currentDurability: row.current_durability === null || row.current_durability === undefined
+        ? null
+        : Number(row.current_durability),
+      maxDurability: row.max_durability === null || row.max_durability === undefined
+        ? null
+        : Number(row.max_durability)
+    });
+  }
+
+  const inventories = [...inventoriesById.values()];
+  return {
+    supported: true,
+    found: true,
+    baseId: target,
+    placeableId: String(container),
+    typeName: result.rows[0].type_name,
+    group: result.rows[0].group_key,
+    maxSlots: inventories.reduce((total, inventory) => total + inventory.maxSlots, 0),
+    usedSlots: inventories.reduce((total, inventory) => total + inventory.usedSlots, 0),
+    inventories
+  };
+}
+
+// Deletes one stored item, or part of its stack, from a base container.
+//
+// Ownership is the whole job here. The query re-resolves the base's claim from
+// scratch rather than trusting the placeable id the caller sent, and keeps
+// baseInventory's inventory_types join plus the is_hologram / max_item_count
+// filters: together they prove the item sits in an allowlisted container at the
+// requested base, which is what stops this reaching a generator or windtrap
+// fuel inventory that the Power and Water tabs own. Deliberately NOT the
+// giveItemToStorage shape, which only checks that some inventory exists for an
+// actor and picks one arbitrarily.
+//
+// There is no live-sync path for inventory (no pg_notify channel, no triggers
+// on dune.items), so the API route refuses this operation unless it can verify
+// that the owning map is safely down. This lower layer also restricts deletion
+// to plain storage: crafting/refining inventories can have active jobs that
+// reference these rows, and deleting an allocated ingredient can corrupt that
+// job even while the map is stopped.
+export async function deleteBaseContainerItem(db, baseId, placeableId, itemId, { count = null } = {}) {
+  await requireCapability(
+    await supportsBaseContainerItemDelete(db),
+    "Container item delete requires dune.buildings, dune.building_instances, dune.actor_fgl_entities, dune.placeables, dune.inventories, dune.items, and dune.delete_item(bigint)."
+  );
+  const target = intParam(baseId, "base id", 1);
+  const container = intParam(placeableId, "container id", 1);
+  const safeItemId = bigintParam(itemId, "item id");
+  const requestedCount = count === null || count === undefined ? null : intParam(count, "count", 1);
+  const [groups, buildingTypes, typeNames] = baseInventoryTypeParams();
+
+  // Column-probed the same way baseContainerSlots reads them: a missing
+  // column is a parse-time error, not a null, so a schema without these would
+  // fail a delete that used to work. They exist only to enrich the audit
+  // record (below) with what was actually destroyed -- quality and durability
+  // in particular, since without them a destroyed pristine legendary logs
+  // identically to a broken common of the same template.
+  const itemColumns = await columnsFor(db, "items");
+  const hasPositionIndex = itemColumns.has("position_index");
+  const hasStats = itemColumns.has("stats");
+  const stateSelect = [
+    hasPositionIndex ? "i.position_index" : "null::bigint as position_index",
+    itemColumns.has("quality_level") ? "i.quality_level" : "0::bigint as quality_level",
+    hasStats
+      ? "coalesce((i.stats->'FItemStackAndDurabilityStats'->1->>'CurrentDurability'), null) as current_durability"
+      : "null::text as current_durability",
+    hasStats
+      ? `coalesce(
+             nullif((i.stats->'FItemStackAndDurabilityStats'->1->>'MaxDurability')::numeric, 0),
+             nullif((i.stats->'FItemStackAndDurabilityStats'->1->>'DecayedMaxDurability')::numeric, 0),
+             null
+           ) as max_durability`
+      : "null::numeric as max_durability"
+  ].join(",\n           ");
+
+  return db.transaction(async (tx) => {
+    // Same reason mutateBasePermissions and deleteBaseCompletely set it: the
+    // shipped procedures reference their tables unqualified and carry no
+    // `SET search_path` of their own (pg_proc.proconfig is null for both
+    // dune.delete_item and dune.delete_inventory_item), so they resolve only
+    // because the console connects as the `dune` role. Against any other role
+    // they raise `relation "items" does not exist`, which aborts the
+    // transaction before the raw-delete fallback below can run.
+    await tx.query("set local search_path to dune, public");
+
+    // for update OF i, inv -- not a bare `for update`. Postgres cannot lock a
+    // CTE reference, so naming the real relations is required, not stylistic.
+    // Note inv is reached by an inner join through i, so when the item row is
+    // already gone neither relation is locked -- the zero-row result falls to
+    // the "not found" throw below, which is the intended outcome.
+    const found = await tx.query(`
+      with requested_claims as (
+        select distinct b.id, afe.actor_id
+        from dune.buildings b
+        join dune.building_instances bi on bi.building_id = b.id
+        join dune.actor_fgl_entities afe on afe.entity_id = bi.owner_entity_id
+        where b.id = $1
+      ), base_entities as (
+        select distinct rc.id, claim_afe.entity_id as owner_entity_id
+        from requested_claims rc
+        join dune.actor_fgl_entities claim_afe on claim_afe.actor_id = rc.actor_id
+      ), inventory_types as (
+        select * from unnest($2::text[], $3::text[], $4::text[]) as t(group_key, building_type, type_name)
+      ), containers as (
+        select distinct p.id as placeable_id, inv.id as inventory_id,
+               it.group_key, it.type_name
+        from base_entities be
+        join dune.placeables p on p.owner_entity_id = be.owner_entity_id
+        join inventory_types it on it.building_type = lower(p.building_type)
+        join dune.inventories inv on inv.actor_id = p.id and inv.max_item_count >= 0
+        where p.is_hologram = false and p.id = $5
+      )
+      select i.id::text as item_id, i.template_id, i.stack_size, i.inventory_id,
+             c.placeable_id::text as placeable_id, c.group_key, c.type_name,
+             ${stateSelect}
+      from containers c
+      join dune.items i on i.inventory_id = c.inventory_id
+      join dune.inventories inv on inv.id = i.inventory_id
+      where i.id = $6
+      for update of i, inv`, [target, groups, buildingTypes, typeNames, container, safeItemId]);
+
+    const item = found.rows[0];
+    if (!item) throw new Error("That item was not found in a storage container at the selected base.");
+    if (item.group_key !== "storage") {
+      throw new Error("Items can only be deleted from Storage containers. Crafting and Refining contents are read-only to protect active jobs.");
+    }
+
+    const stackSize = Number(item.stack_size) || 0;
+    const inventoryId = item.inventory_id;
+    const label = item.template_id || "Item";
+    // Captured before the delete, since the row -- and the state that came
+    // with it -- is gone once the delete succeeds.
+    const destroyedState = {
+      positionIndex: item.position_index === null || item.position_index === undefined
+        ? null : Number(item.position_index),
+      qualityLevel: Number(item.quality_level) || 0,
+      currentDurability: item.current_durability === null || item.current_durability === undefined
+        ? null : Number(item.current_durability),
+      maxDurability: item.max_durability === null || item.max_durability === undefined
+        ? null : Number(item.max_durability)
+    };
+
+    // An explicit count larger than the stack is refused rather than rounded
+    // down to "delete it all". The two are not the same request, and the gap
+    // between them is a real race: the caller saw 500, asked for 400, and the
+    // stack has since dropped to 300 -- widening that into destroying all 300
+    // would remove more than was ever agreed to. Only an omitted count means
+    // "the whole slot".
+    if (requestedCount !== null && requestedCount > stackSize) {
+      throw new Error(`Cannot remove ${requestedCount}: the stack holds ${stackSize}. It may have changed since this view was loaded.`);
+    }
+    const partial = requestedCount !== null && requestedCount < stackSize;
+
+    if (partial) {
+      // Refused rather than widened: silently deleting the whole stack because
+      // the schema cannot do a partial removal would destroy more than asked.
+      await requireCapability(
+        await supportsPartialStackDelete(db),
+        "Removing part of a stack requires dune.delete_inventory_item(bigint,bigint)."
+      );
+      // The shipped procedure returns NULL instead of raising when the count
+      // exceeds the stack, so a null result is a failure, not a no-op success.
+      const applied = await tx.query(
+        "select dune.delete_inventory_item($1::bigint, $2::bigint) as result",
+        [safeItemId, requestedCount]
+      );
+      if (applied.rows[0]?.result === null || applied.rows[0]?.result === undefined) {
+        throw new Error("Partial stack removal was rejected by the database. The requested count may exceed the stack.");
+      }
+      const after = await tx.query("select stack_size from dune.items where id = $1 and inventory_id = $2", [safeItemId, inventoryId]);
+      const remaining = after.rows[0] ? Number(after.rows[0].stack_size) || 0 : 0;
+      if (remaining !== stackSize - requestedCount) {
+        throw new Error("Partial stack removal did not change the stack by the requested amount.");
+      }
+      return {
+        ok: true,
+        baseId: target,
+        placeableId: item.placeable_id,
+        inventoryId: String(inventoryId),
+        typeName: item.type_name,
+        group: item.group_key,
+        partial: true,
+        removed: { itemId: item.item_id, templateId: item.template_id, count: requestedCount, remaining, ...destroyedState },
+        message: `Removed ${requestedCount} of ${label} from the database, leaving ${remaining}.`
+      };
+    }
+
+    // Whole slot. Same verify -> raw-delete fallback -> verify shape as
+    // deleteInventoryItem: the shipped procedure is preferred for its item
+    // tracking log, but the row disappearing is what actually matters.
+    await tx.query("select dune.delete_item($1::bigint)", [safeItemId]);
+    const stillExists = await tx.query("select exists(select 1 from dune.items where id = $1 and inventory_id = $2) as exists", [safeItemId, inventoryId]);
+    if (stillExists.rows[0]?.exists) {
+      await tx.query("delete from dune.items where id = $1 and inventory_id = $2", [safeItemId, inventoryId]);
+    }
+    const deleted = await tx.query("select not exists(select 1 from dune.items where id = $1 and inventory_id = $2) as deleted", [safeItemId, inventoryId]);
+    if (!deleted.rows[0]?.deleted) throw new Error("Stored item delete did not remove the item from the database.");
+
+    return {
+      ok: true,
+      baseId: target,
+      placeableId: item.placeable_id,
+      inventoryId: String(inventoryId),
+      typeName: item.type_name,
+      group: item.group_key,
+      partial: false,
+      removed: { itemId: item.item_id, templateId: item.template_id, count: stackSize, remaining: 0, ...destroyedState },
+      message: `${label} was deleted from the database.`
+    };
+  });
+}
+
 // Pending water-refill queue. Same reasoning and shape as the generator
 // queue above (a live map can overwrite an immediate write, so a refill
 // aimed at one is recorded here and applied once that map is confirmed
@@ -6811,7 +8805,7 @@ export function listQueuedWaterRefills(repoRoot) {
       return true;
     });
   } catch (error) {
-    console.warn(`Ignoring unreadable pending water refill queue: ${redact(error?.message || error)}`);
+    console.warn(`Ignoring unreadable pending water refill queue: ${redact(error?.message || "Unexpected error.")}`);
     return [];
   }
 }
@@ -6888,7 +8882,7 @@ export async function flushWaterRefills(db, repoRoot, { now = Date.now } = {}) {
         devices: result.devices
       });
     } catch (error) {
-      const message = String(error?.message || error).slice(0, 300);
+      const message = String(error?.message || "Unexpected error.").slice(0, 300);
       const attempts = isTransientFlushError(message) ? entry.attempts : entry.attempts + 1;
       const dropped = attempts >= MAX_REFILL_FLUSH_ATTEMPTS;
       const nextRetryAt = timestamp + pendingRefillRetryDelayMs();
@@ -7172,6 +9166,7 @@ async function playerCapabilities(db) {
     specs: await tableExists(db, "specialization_tracks"),
     addCurrency: await supportsCurrencyMutation(db),
     addFactionReputation: await supportsFactionMutation(db),
+    assignFaction: await supportsPlayerFactionAssignment(db),
     addIntel: await supportsIntelMutation(db),
     craftingRecipes: await supportsCraftingRecipes(db),
     researchItems: await supportsResearchItems(db),
@@ -7470,6 +9465,11 @@ async function supportsFactionMutation(db) {
     await functionExists(db, "dune.set_player_faction_reputation(bigint,smallint,integer)");
 }
 
+async function supportsPlayerFactionAssignment(db) {
+  return await tableExists(db, "player_faction") &&
+    await functionExists(db, "dune.change_player_faction(bigint,smallint,smallint,timestamp without time zone)");
+}
+
 async function supportsInventoryDelete(db) {
   return await tableExists(db, "items") &&
     await tableExists(db, "inventories") &&
@@ -7478,6 +9478,27 @@ async function supportsInventoryDelete(db) {
 
 async function supportsInventoryEdit(db) {
   return await tableExists(db, "items") && await tableExists(db, "inventories");
+}
+
+// Every relation deleteBaseContainerItem's ownership query names, not just the
+// two it writes through. Postgres resolves a relation at parse time, so a
+// missing buildings raises exactly as hard as a missing items -- a partial
+// probe would report the capability as present and then fail on use.
+// dune.delete_inventory_item is probed separately: it is only needed for a
+// partial-stack delete, and a schema without it should still allow whole-slot
+// deletes rather than losing the feature entirely.
+async function supportsBaseContainerItemDelete(db) {
+  const required = [
+    "buildings", "building_instances", "actor_fgl_entities",
+    "placeables", "inventories", "items"
+  ];
+  const present = await Promise.all(required.map((table) => tableExists(db, table)));
+  if (present.some((exists) => !exists)) return false;
+  return functionExists(db, "dune.delete_item(bigint)");
+}
+
+async function supportsPartialStackDelete(db) {
+  return functionExists(db, "dune.delete_inventory_item(bigint,bigint)");
 }
 
 async function supportsStorageGiveItem(db) {
@@ -7612,15 +9633,39 @@ async function syncFactionComponent(db, actorId) {
     from dune.player_faction_reputation
     where actor_id = $1 and faction_id in (1, 2)`, [actorId]);
   const reps = new Map(result.rows.map((row) => [Number(row.faction_id), Number(row.reputation_amount || 0)]));
-  const timestamp = Math.floor(Date.now() / 1000);
+  const timestamp = Date.now() / 1000;
+  const actor = await db.query(`
+    select properties->'FactionPlayerComponent'->'m_FactionDataArray' as faction_data
+    from dune.actors
+    where id = $1
+    for update`, [actorId]);
+  const existing = Array.isArray(actor.rows[0]?.faction_data) ? actor.rows[0].faction_data : [];
   const payload = [
     { Faction: { Name: "Atreides" }, timestamp, ReputationAmount: reps.get(1) || 0 },
-    { Faction: { Name: "Harkonnen" }, timestamp, ReputationAmount: reps.get(2) || 0 }
+    { Faction: { Name: "Harkonnen" }, timestamp, ReputationAmount: reps.get(2) || 0 },
+    ...existing.filter((entry) => !["Atreides", "Harkonnen"].includes(String(entry?.Faction?.Name || "")))
   ];
-  await db.query(`
+  const updated = await db.query(`
     update dune.actors
-    set properties = jsonb_set(coalesce(properties, '{}'::jsonb), '{FactionPlayerComponent,m_FactionDataArray}', $1::jsonb, true)
-    where id = $2`, [JSON.stringify(payload), actorId]);
+    set properties = jsonb_set(
+      jsonb_set(coalesce(properties, '{}'::jsonb), '{FactionPlayerComponent}', coalesce(properties->'FactionPlayerComponent', '{}'::jsonb), true),
+      '{FactionPlayerComponent,m_FactionDataArray}', $1::jsonb, true)
+    where id = $2
+    returning id`, [JSON.stringify(payload), actorId]);
+  if (updated.rowCount === 0) throw new Error(`Faction component actor ${actorId} was not found.`);
+  return payload;
+}
+
+function factionComponentReputationMap(value) {
+  const rows = Array.isArray(value) ? value : [];
+  const factionIds = new Map([["Atreides", 1], ["Harkonnen", 2], ["None", 3], ["Smuggler", 4]]);
+  const result = new Map();
+  for (const row of rows) {
+    const factionId = factionIds.get(String(row?.Faction?.Name || ""));
+    const reputation = Number(row?.ReputationAmount);
+    if (factionId && Number.isFinite(reputation)) result.set(factionId, reputation);
+  }
+  return result;
 }
 
 function mapFilterClause(map, values, alias) {
@@ -8597,7 +10642,16 @@ export function addonOpsSocSummary() {
 // on cAdvisor's per-container metric quality — a target can be "up"
 // (reachable, scraping successfully) while still only exposing an
 // incomplete/aggregate metric set).
-export async function addonOpsPrometheusHealth(promBaseUrl = process.env.METRICS_PROMETHEUS_URL || `http://127.0.0.1:${process.env.METRICS_PROMETHEUS_PORT || 9090}`) {
+export async function addonOpsPrometheusHealth(
+  promBaseUrl,
+  repoRoot = process.env.DUNE_DOCKER_DIR || process.env.RUNTIME_DIR || process.cwd()
+) {
+  // metricsPrometheus is env-var-only today (not profile-file-backed),
+  // so repoRoot doesn't change this specific field's value -- accepted
+  // explicitly anyway so this doesn't rely on process.cwd() coincidentally
+  // matching config.repoRoot the moment a profile-backed field is ever
+  // added here, matching the same fix applied to db.js/server.js.
+  promBaseUrl = promBaseUrl || process.env.METRICS_PROMETHEUS_URL || `http://127.0.0.1:${resolvePorts(process.env, repoRoot).metricsPrometheus}`;
   try {
     const healthRes = await fetch(`${promBaseUrl}/-/healthy`, { signal: AbortSignal.timeout(2000) });
     if (!healthRes.ok) return metricsStackNotRunning();
@@ -8648,23 +10702,88 @@ export async function addonOpsPrometheusHealth(promBaseUrl = process.env.METRICS
   };
 }
 
-export async function addonOpsContainerHealth() {
-  try {
-    const { execSync } = await import("node:child_process");
-    const raw = execSync(
-      "docker stats --no-stream --format '{{json .}}'",
-      { encoding: "utf8", timeout: 5000, maxBuffer: 1024 * 1024 }
-    );
-    const containers = raw.trim().split("\n").map(l => JSON.parse(l)).map(c => ({
-      name: c.Name || "unknown",
+// Parses newline-delimited `docker ... --format '{{json .}}'` output into
+// an array of parsed row objects. Exported for direct unit testing.
+export function parseDockerJsonLines(output) {
+  return String(output || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => JSON.parse(line));
+}
+
+// Merges `docker stats` output with `docker ps` output (real container
+// status -- docker stats's own status field is unreliable) into the shape
+// the dune-ops-observability addon's NOC Infra tab already expects
+// (name/cpu/mem/memLimit/netIO/blockIO/status). Exported for direct unit
+// testing without needing to mock child_process.
+export function mergeContainerHealth(statsOutput, statusOutput) {
+  const statuses = new Map(
+    parseDockerJsonLines(statusOutput).map((row) => [
+      String(row.Names || row.Name || "").trim(),
+      String(row.Status || "unknown")
+    ])
+  );
+  return parseDockerJsonLines(statsOutput).map((c) => {
+    const name = String(c.Name || "unknown").trim();
+    return {
+      name,
       cpu: c.CPUPerc || "0%",
       mem: c.MemUsage ? c.MemUsage.split(" / ")[0] : "0B",
       memLimit: c.MemUsage ? c.MemUsage.split(" / ")[1] || "" : "",
       netIO: c.NetIO || "0B",
       blockIO: c.BlockIO || "0B",
-      status: c.State || "unknown"
-    }));
-    return { containers };
+      status: statuses.get(name) || "unknown"
+    };
+  });
+}
+
+function execFileText(command, args) {
+  return new Promise((resolvePromise, rejectPromise) => {
+    // Lazy import keeps this module's top-level import list unchanged for
+    // every other export in this large file; child_process is only ever
+    // needed by this one function.
+    import("node:child_process").then(({ execFile }) => {
+      execFile(command, args, { encoding: "utf8", timeout: 5000, maxBuffer: 1024 * 1024 }, (error, stdout) => {
+        if (error) rejectPromise(error);
+        else resolvePromise(stdout);
+      });
+    }, rejectPromise);
+  });
+}
+
+export async function addonOpsContainerHealth(options = {}) {
+  // Scoped to this deployment's own Compose project only -- an earlier
+  // version had no --filter at all, exposing resource stats for every
+  // container on the host (including unrelated projects) to any addon
+  // with ops:read. Also uses execFile (non-blocking, no shell) instead of
+  // the earlier execSync, which blocked the whole Console API's event
+  // loop for the duration of the docker stats call. See issue #240.
+  //
+  // `docker stats` has no --filter flag (confirmed via `docker stats
+  // --help` against a live deployment -- only `docker ps` supports label
+  // filters; see issue #246, found during the live-deployment test this
+  // fix's own PR requires). The scoping is therefore done in two steps:
+  // resolve this project's container names via a filtered `docker ps`
+  // first, then pass those names positionally to `docker stats`.
+  const projectName = String(
+    options.projectName ?? process.env.DUNE_COMPOSE_PROJECT_NAME ?? process.env.COMPOSE_PROJECT_NAME ?? ""
+  ).trim();
+  if (!projectName) {
+    return { containers: [], error: "The Dune Compose project name is not configured." };
+  }
+  const run = options.run || execFileText;
+  const filter = `label=com.docker.compose.project=${projectName}`;
+  try {
+    const statusOutput = await run("docker", ["ps", "--filter", filter, "--format", "{{json .}}"]);
+    const names = parseDockerJsonLines(statusOutput)
+      .map((row) => String(row.Names || row.Name || "").trim())
+      .filter(Boolean);
+    if (names.length === 0) {
+      return { containers: [] };
+    }
+    const statsOutput = await run("docker", ["stats", "--no-stream", "--format", "{{json .}}", ...names]);
+    return { containers: mergeContainerHealth(statsOutput, statusOutput) };
   } catch {
     return { containers: [], error: "Docker stats unavailable — is Docker running?" };
   }
@@ -8681,9 +10800,14 @@ function metricsStackNotRunning() {
   };
 }
 
-async function promScalar(promBaseUrl, query) {
+// Exported (was module-private) so console/api/test/postgresHealth.test.js
+// and rabbitmqHealth.test.js can exercise the exact same PromQL-query
+// helper addonOpsPrometheusHealth() already uses, via dependency
+// injection (a fake fetchImpl), rather than duplicating this parsing
+// logic in a second, untested copy.
+export async function promScalar(promBaseUrl, query, fetchImpl = fetch) {
   try {
-    const res = await fetch(`${promBaseUrl}/api/v1/query?${new URLSearchParams({ query })}`, { signal: AbortSignal.timeout(3000) });
+    const res = await fetchImpl(`${promBaseUrl}/api/v1/query?${new URLSearchParams({ query })}`, { signal: AbortSignal.timeout(3000) });
     const body = await res.json();
     const value = body?.data?.result?.[0]?.value?.[1];
     const num = Number(value);
@@ -8691,6 +10815,98 @@ async function promScalar(promBaseUrl, query) {
   } catch {
     return null;
   }
+}
+
+// Sibling to promScalar() for queries that are naturally per-instance
+// (e.g. RabbitMQ's two brokers, admin + game) rather than a single
+// reducible number -- returns the raw `data.result` vector (each entry's
+// `.metric` labels + `.value[1]` as a string, matching Prometheus's own
+// instant-query response shape) instead of collapsing to result[0].
+export async function promVector(promBaseUrl, query, fetchImpl = fetch) {
+  try {
+    const res = await fetchImpl(`${promBaseUrl}/api/v1/query?${new URLSearchParams({ query })}`, { signal: AbortSignal.timeout(3000) });
+    const body = await res.json();
+    return body?.data?.result || [];
+  } catch {
+    return [];
+  }
+}
+
+// addonOpsPostgresHealth: Postgres connection/cache/deadlock health via
+// the already-deployed, already-scraped dune-postgres-exporter
+// (docker-compose.metrics.yml) -- part of the same opt-in metrics stack
+// as addonOpsPrometheusHealth(), so it reuses the identical
+// metricsStackNotRunning() short-circuit (same operator action,
+// `dune metrics start`, brings both up together). See
+// dune-ops-observability-addon#133's L1 design doc
+// (docs/design/noc-overview-rebuild-l1-design-2026-08-17.md) for the
+// full design and the real PromQL these queries are lifted directly
+// from (runtime/metrics/rules/postgres.yml's own alert expressions --
+// deliberately reusing the exact same queries the alerting rules use,
+// not inventing parallel ones, so a UI reading "18/100 connections"
+// and an Alertmanager warning about high connections are always
+// describing the identical underlying number).
+export async function addonOpsPostgresHealth(promBaseUrl = process.env.METRICS_PROMETHEUS_URL || `http://127.0.0.1:${process.env.METRICS_PROMETHEUS_PORT || 9090}`, fetchImpl = fetch) {
+  const up = await promScalar(promBaseUrl, "pg_up", fetchImpl);
+  if (up === null) return metricsStackNotRunning();
+
+  const activeConnections = await promScalar(promBaseUrl, "sum(pg_stat_activity_count)", fetchImpl);
+  const maxConnections = await promScalar(promBaseUrl, "sum(pg_settings_max_connections)", fetchImpl);
+  const cacheHitRatioPercent = await promScalar(
+    promBaseUrl,
+    '100 * (pg_stat_database_blks_hit{datname="dune"} / (pg_stat_database_blks_hit{datname="dune"} + pg_stat_database_blks_read{datname="dune"}))',
+    fetchImpl
+  );
+  const deadlocksLast5m = await promScalar(promBaseUrl, 'increase(pg_stat_database_deadlocks{datname="dune"}[5m])', fetchImpl);
+
+  return {
+    up: up === 1,
+    connections: {
+      active: activeConnections,
+      max: maxConnections
+    },
+    cacheHitRatioPercent: cacheHitRatioPercent === null ? null : Math.round(cacheHitRatioPercent * 10) / 10,
+    deadlocksLast5m: deadlocksLast5m === null ? null : Math.round(deadlocksLast5m)
+  };
+}
+
+// addonOpsRabbitmqHealth: RabbitMQ queue depth/memory/fd health for both
+// broker instances (admin + game) via the already-enabled
+// rabbitmq_prometheus plugin (runtime/scripts/start-rabbitmq.sh already
+// enables it on both instances today) -- NEVER rabbitmqctl eval or the
+// management API's queue-contents endpoints, per
+// dune-ops-observability-addon#133's L1 design doc, Finding H-4: the
+// game RMQ instance's ports are exposed on all interfaces (not
+// 127.0.0.1-scoped), so a new, broader query surface against it would
+// be a real, avoidable network-exposure increase; this stays entirely
+// on the existing, already-loopback-scoped Prometheus scrape path.
+// PromQL lifted directly from runtime/metrics/rules/rabbitmq.yml's own
+// alert expressions, same rationale as addonOpsPostgresHealth() above.
+export async function addonOpsRabbitmqHealth(promBaseUrl = process.env.METRICS_PROMETHEUS_URL || `http://127.0.0.1:${process.env.METRICS_PROMETHEUS_PORT || 9090}`, fetchImpl = fetch) {
+  const up = await promScalar(promBaseUrl, "min(rabbitmq_up)", fetchImpl);
+  if (up === null) return metricsStackNotRunning();
+
+  const instanceVector = await promVector(promBaseUrl, "rabbitmq_up", fetchImpl);
+  const instances = instanceVector.map((entry) => ({
+    name: entry.metric?.service || entry.metric?.job || "unknown",
+    up: Number(entry.value?.[1]) === 1
+  }));
+
+  const queueReady = await promScalar(promBaseUrl, "sum(rabbitmq_queue_messages_ready)", fetchImpl);
+  const queueUnacked = await promScalar(promBaseUrl, "sum(rabbitmq_queue_messages_unacked)", fetchImpl);
+  const queueDepth = queueReady === null && queueUnacked === null
+    ? null
+    : (queueReady || 0) + (queueUnacked || 0);
+  const memPercent = await promScalar(promBaseUrl, "100 * max(rabbitmq_process_resident_memory_bytes / rabbitmq_resident_memory_limit_bytes)", fetchImpl);
+  const fdPercent = await promScalar(promBaseUrl, "100 * max(rabbitmq_process_open_fds / rabbitmq_process_max_fds)", fetchImpl);
+
+  return {
+    up: up === 1,
+    instances,
+    queueDepth,
+    memPercent: memPercent === null ? null : Math.round(memPercent * 10) / 10,
+    fdPercent: fdPercent === null ? null : Math.round(fdPercent * 10) / 10
+  };
 }
 // All Discord-linking state lives in a dedicated `console` schema, NOT
 // in `dune` — the `dune` schema belongs entirely to the game server

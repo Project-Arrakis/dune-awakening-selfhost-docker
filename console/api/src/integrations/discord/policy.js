@@ -11,6 +11,13 @@ export const DISCORD_CAPABILITIES = Object.freeze({
   INVENTORY_READ: "inventory:read",
   STORAGE_READ: "storage:read",
   GUILD_READ: "guild:read",
+  OPS_ACTIVITY_READ: "ops:activity:read",
+  OPS_COMBAT_READ: "ops:combat:read",
+  OPS_RESOURCES_READ: "ops:resources:read",
+  OPS_ECONOMY_READ: "ops:economy:read",
+  OPS_INVENTORY_READ: "ops:inventory:read",
+  OPS_SOC_READ: "ops:soc:read",
+  OPS_PROMETHEUS_READ: "ops:prometheus:read",
   // PLAYER_LINK_WRITE is intentionally NOT part of the observer/moderator/
   // admin/owner tier ladder (see requireSelfScopedCapability() below /
   // docs/security/discord-player-link-hardening.md FINDING-LINK-2). It is a
@@ -72,6 +79,11 @@ const CAPABILITY_BY_TIER = Object.freeze({
     DISCORD_CAPABILITIES.INVENTORY_READ,
     DISCORD_CAPABILITIES.STORAGE_READ,
     DISCORD_CAPABILITIES.GUILD_READ
+    // OPS_* capabilities are deliberately admin/owner only, not granted to
+    // moderator -- confirmed via upstream's own test ("OPS capabilities are
+    // granted only to admin and owner tiers", discordPolicy.test.js) and
+    // matched here rather than the surrounding *_READ pattern this tier
+    // otherwise follows; do not add them here.
     // PLAYER_LINK_WRITE removed: see SELF_SCOPED_CAPABILITIES above.
   ]),
   // Excludes SELF_SCOPED_CAPABILITIES: those are authorized via
@@ -120,6 +132,27 @@ export function discordActorCan(actor, mapping, capability) {
   const normalizedCapability = requiredString(capability, "capability");
   if (!Object.values(DISCORD_CAPABILITIES).includes(normalizedCapability)) throw policyError("invalid_capability", `Unsupported Discord capability: ${normalizedCapability}`);
   return CAPABILITY_BY_TIER[discordActorTier(actor, mapping)].has(normalizedCapability);
+}
+
+// Returns the lowest tier in DISCORD_ROLE_TIERS order that grants the given
+// capability per CAPABILITY_BY_TIER, or null if no tier grants it (this is
+// expected for SELF_SCOPED_CAPABILITIES -- see requireSelfScopedCapability's
+// own comment -- since those are authorized by identity, not tier, and are
+// deliberately excluded from every tier's CAPABILITY_BY_TIER set).
+//
+// Added (issue #337) so commandCatalog.js can derive its per-command minimum
+// tier directly from this file's real, single source of truth instead of
+// hand-maintaining a second, parallel table that could silently drift the
+// moment a capability is added or moved between tiers here. Any caller
+// needing "what's the minimum tier for capability X" should use this
+// function rather than re-deriving CAPABILITY_BY_TIER's shape elsewhere.
+export function minTierForCapability(capability) {
+  const normalizedCapability = requiredString(capability, "capability");
+  if (!Object.values(DISCORD_CAPABILITIES).includes(normalizedCapability)) throw policyError("invalid_capability", `Unsupported Discord capability: ${normalizedCapability}`);
+  for (const tier of DISCORD_ROLE_TIERS) {
+    if (CAPABILITY_BY_TIER[tier]?.has(normalizedCapability)) return tier;
+  }
+  return null;
 }
 
 export function requireDiscordCapability(actor, mapping, capability) {

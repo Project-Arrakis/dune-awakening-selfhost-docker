@@ -17,6 +17,10 @@ function createDb({
   existing = [],
   canonicalPlayers = ["4", "23", "29", "437", "900000201"],
   mapNameId = 7,
+  // Whether dune.permission_actor holds a row for this base's claim actor.
+  // False mirrors an unclaimed base: every structural row intact, nothing for
+  // permission_actor_rank's foreign key to point at.
+  claimed = true,
   buildings = "found",
   custodians = [{ player_id: "900000201", character_name: "Server" }],
   systemIdentities = [{ table: "player_state", accountId: "9000002", playerId: "900000201" }]
@@ -51,6 +55,7 @@ function createDb({
         return { rows: [{ actor_id: ACTOR_ID, map: "DeepDesert", map_name_id: mapNameId, partition_id: 59 }] };
       }
       if (text.includes("for update")) return { rows: [{ id: ACTOR_ID }], rowCount: 1 };
+      if (text.includes("from dune.permission_actor where actor_id")) return { rows: [{ claimed }] };
       if (text.includes("from dune.permission_actor_rank")) {
         return { rows: existing.map((entry) => ({ player_id: entry.playerId, rank: entry.rank })) };
       }
@@ -140,6 +145,43 @@ test("setBasePermissions surfaces a clear error when the base's owner-entity lin
     /no resolvable owner entity/);
 });
 
+// permission_actor_rank.permission_actor_id has a foreign key against
+// permission_actor(actor_id). An unclaimed base keeps every structural row the
+// actor resolution walks -- buildings, building_instances, actor_fgl_entities,
+// actors -- and has no permission_actor row, so the shipped procedure's insert
+// used to fail the constraint and surface the raw PostgreSQL text to the
+// operator. The write must never reach the procedure at all.
+test("setBasePermissions refuses an unclaimed base instead of failing the permission_actor foreign key", async () => {
+  const db = createDb({ claimed: false });
+  await assert.rejects(
+    () => setBasePermissions(db, BASE_ID, [{ playerId: "4", rank: 1 }]),
+    /not claimed/);
+  assert.equal(procCalls(db, "permission_set_player_rank").length, 0);
+  assert.equal(procCalls(db, "permission_remove_player_rank").length, 0);
+});
+
+// The Transfer button is the shortest path into this: an unclaimed base renders
+// "No Owner set", which is exactly the state the transfer exists to resolve.
+test("transferBaseToSystemCustodian refuses an unclaimed base", async () => {
+  const db = createDb({ claimed: false });
+  await assert.rejects(
+    () => transferBaseToSystemCustodian(db, BASE_ID),
+    /not claimed/);
+  assert.equal(procCalls(db, "permission_set_player_rank").length, 0);
+});
+
+// Reading stays allowed -- an empty roster plus the flag is how an operator
+// diagnoses the base, and the editor uses the flag to disable its controls.
+test("listBasePermissions reports an unclaimed base rather than rejecting it", async () => {
+  const claimedResult = await listBasePermissions(createDb(), BASE_ID);
+  assert.equal(claimedResult.claimed, true);
+  assert.equal(claimedResult.unclaimedReason, "");
+
+  const result = await listBasePermissions(createDb({ claimed: false }), BASE_ID);
+  assert.equal(result.claimed, false);
+  assert.match(result.unclaimedReason, /not claimed/);
+});
+
 test("setBasePermissions writes through the shipped procedures, never raw DML", async () => {
   const db = createDb({ existing: [{ playerId: "4", rank: 1 }] });
   await setBasePermissions(db, BASE_ID, [{ playerId: "4", rank: 1 }, { playerId: "23", rank: 3 }]);
@@ -213,7 +255,13 @@ test("system custodian detection prefers the reserved Server identity", async ()
     playerId: "900000201",
     name: "Server"
   });
-  assert.match((await basePermissionSystemCustodian(createDb({ custodians: [], systemIdentities: [] }))).reason, /No supported system custodian/);
+  assert.deepEqual(await basePermissionSystemCustodian(createDb({ custodians: [], systemIdentities: [] })), {
+    available: false,
+    canCreate: true,
+    playerId: "900000201",
+    name: "Server",
+    reason: "The reserved Server identity will be created when ownership is transferred."
+  });
   assert.match((await basePermissionSystemCustodian(createDb({
     systemIdentities: [
       { table: "player_state", accountId: "9000002", playerId: "900000201" },
@@ -244,10 +292,10 @@ test("transferBaseToSystemCustodian preserves access, demotes the owner, and pro
   assert.match(result.message, /Server system custodian/);
 });
 
-test("transferBaseToSystemCustodian refuses a missing or ambiguous Server identity", async () => {
+test("transferBaseToSystemCustodian requires provisioning for a missing Server and refuses ambiguity", async () => {
   await assert.rejects(
     () => transferBaseToSystemCustodian(createDb({ custodians: [], systemIdentities: [] }), BASE_ID),
-    /No supported system custodian/);
+    /will be created when ownership is transferred/);
   await assert.rejects(
     () => transferBaseToSystemCustodian(createDb({ systemIdentities: [
       { table: "player_state", accountId: "9000002", playerId: "900000201" },
@@ -280,6 +328,7 @@ test("listBasePermissions labels ranks and flags rows the game ignores", async (
     if (text.includes("from dune.buildings b")) {
       return { rows: [{ actor_id: ACTOR_ID, map: "DeepDesert", map_name_id: 7, partition_id: 59 }] };
     }
+    if (text.includes("from dune.permission_actor where actor_id")) return { rows: [{ claimed: true }] };
     return { rows: [
       { player_id: "4", character_name: "DarkShark", rank: 1, canonical: true },
       { player_id: "29", character_name: "Yaida", rank: 2, canonical: true },

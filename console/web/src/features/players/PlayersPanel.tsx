@@ -49,6 +49,7 @@ export function PlayersPanel({ onError, renderCharacterAdmin }: PlayersPanelProp
   const requestIdRef = useRef(0);
   const profileRequestIdRef = useRef(0);
   const selectedPlayerIdRef = useRef("");
+  const playerDetailRef = useRef<HTMLDivElement>(null);
   const skipNextSearchReset = useRef(true);
 
   useEffect(() => {
@@ -144,6 +145,14 @@ export function PlayersPanel({ onError, renderCharacterAdmin }: PlayersPanelProp
 
   useEffect(() => {
     if (!dbPlayerId) return undefined;
+    const frame = window.requestAnimationFrame(() => {
+      playerDetailRef.current?.scrollIntoView?.({ behavior: "smooth", block: "start" });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [dbPlayerId]);
+
+  useEffect(() => {
+    if (!dbPlayerId) return undefined;
     let cancelled = false;
     let timeoutId: number | undefined;
 
@@ -235,9 +244,10 @@ export function PlayersPanel({ onError, renderCharacterAdmin }: PlayersPanelProp
       </div>
       <DataTable
         rows={rows}
-        columns={["actor_id", "character_name", "last_seen", "online_status", "map", "fls_id"]}
+        columns={["actor_id", "character_name", "last_seen", "total_playtime_seconds", "online_status", "map", "fls_id"]}
         columnLabels={{ actor_id: "DB Player ID" }}
         tableClassName="players-table"
+        wrapClassName={`players-table-wrap ${selected ? "players-table-wrap-compact" : "players-table-wrap-expanded"}`}
         onRowClick={open}
         emptyMessage={playersEmptyMessage}
         sortColumn={sortColumn}
@@ -248,6 +258,7 @@ export function PlayersPanel({ onError, renderCharacterAdmin }: PlayersPanelProp
         renderCell={(row, col) => {
           if (col === "online_status") return <PlayerStatusCell value={row[col]} />;
           if (col === "last_seen") return formatLastOnline(row);
+          if (col === "total_playtime_seconds") return formatTotalPlaytime(row[col]);
           return formatCell(row[col]);
         }}
       />
@@ -267,25 +278,29 @@ export function PlayersPanel({ onError, renderCharacterAdmin }: PlayersPanelProp
           <button disabled={!hasNextPage} onClick={() => setPage(totalPages - 1)}>Last</button>
         </div>
       </div>
-      {selected && renderCharacterAdmin({
-        detail,
-        fallback: selected,
-        dbPlayerId,
-        actionPlayerId,
-        playerName: String(selected.character_name || actionPlayerId || dbPlayerId || "Selected player"),
-        onRefresh: () => {
-          void Promise.all([
-            open(selected),
-            load({ q: submittedQ, page, pageSize, status: playerFilter, sortColumn, sortDirection }, { silent: true })
-          ]);
-        },
-        onClose: () => {
-          selectedPlayerIdRef.current = "";
-          profileRequestIdRef.current += 1;
-          setSelected(null);
-          setDetail(null);
-        }
-      })}
+      {selected && (
+        <div ref={playerDetailRef} className="players-detail-anchor">
+          {renderCharacterAdmin({
+            detail,
+            fallback: selected,
+            dbPlayerId,
+            actionPlayerId,
+            playerName: String(selected.character_name || actionPlayerId || dbPlayerId || "Selected player"),
+            onRefresh: () => {
+              void Promise.all([
+                open(selected),
+                load({ q: submittedQ, page, pageSize, status: playerFilter, sortColumn, sortDirection }, { silent: true })
+              ]);
+            },
+            onClose: () => {
+              selectedPlayerIdRef.current = "";
+              profileRequestIdRef.current += 1;
+              setSelected(null);
+              setDetail(null);
+            }
+          })}
+        </div>
+      )}
     </section>
   );
 }
@@ -302,6 +317,15 @@ function formatLastOnline(row: Record<string, unknown>) {
     minute: "2-digit"
   }).format(date);
   return `${absolute} (${formatAgo(date)} ago)`;
+}
+
+export function formatTotalPlaytime(value: unknown) {
+  const seconds = Math.max(0, Math.floor(Number(value) || 0));
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  if (hours > 0) return `${hours.toLocaleString()}h ${minutes}m`;
+  if (minutes > 0) return `${minutes}m`;
+  return seconds > 0 ? "< 1m" : "0m";
 }
 
 function parseLastOnline(value: unknown) {

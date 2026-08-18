@@ -111,7 +111,7 @@ export function readAutoRefillWaterState(repoRoot) {
   try {
     return normalizeState(JSON.parse(readFileSync(file, "utf8")));
   } catch (error) {
-    console.warn(`Ignoring unreadable auto-refill water enrollment file: ${redact(error?.message || error)}`);
+    console.warn(`Ignoring unreadable auto-refill water enrollment file: ${redact(error?.message || "Unexpected error.")}`);
     return normalizeState({});
   }
 }
@@ -140,6 +140,7 @@ export function setBaseAutoRefillWater(repoRoot, baseId, enabled, { now = () => 
   const state = readAutoRefillWaterState(repoRoot);
   const key = String(target);
   const bases = { ...state.bases };
+  const wasEnabled = Boolean(bases[key]);
   const wasEmpty = Object.keys(bases).length === 0;
 
   if (enabled) {
@@ -164,7 +165,13 @@ export function setBaseAutoRefillWater(repoRoot, baseId, enabled, { now = () => 
   }
 
   const next = writeAutoRefillWaterState(repoRoot, { ...state, bases, nextRunAt });
-  return { ok: true, baseId: target, enabled: Boolean(next.bases[key]), total: remaining };
+  return {
+    ok: true,
+    baseId: target,
+    enabled: Boolean(next.bases[key]),
+    newlyEnabled: enabled && !wasEnabled,
+    total: remaining
+  };
 }
 
 // Shape returned by GET /api/bases/auto-refill-water.
@@ -202,6 +209,7 @@ export function createAutoRefillWaterScheduler(options = {}) {
   // Instance-scoped guards, the same role carePackageAutoRunning plays in
   // server.js and `running` plays in createAddonJobScheduler.
   let running = false;
+  let runningPromise = null;
   let nextAllowedAttemptAt = 0;
   let armedForThisProcess = false;
 
@@ -213,11 +221,11 @@ export function createAutoRefillWaterScheduler(options = {}) {
     try {
       auditImpl(config, null, action, detail);
     } catch (error) {
-      log.error(`Auto-refill water audit failed: ${redact(error?.message || error)}`);
+      log.error(`Auto-refill water audit failed: ${redact(error?.message || "Unexpected error.")}`);
     }
   }
 
-  function persistRunCompletion(completedAtMs, outcomes, removed, status, detail) {
+  function persistRunCompletion(completedAtMs, outcomes, removed, status, detail, { preserveNextRunAt = false } = {}) {
     // Re-read before writing so a toggle that landed while the scan was in
     // flight is not clobbered, and so a base un-enrolled mid-scan is not
     // resurrected by its own outcome.
@@ -240,12 +248,20 @@ export function createAutoRefillWaterScheduler(options = {}) {
       // "fail") never throws out of run(), so it would otherwise wait a full
       // interval before retrying a transient outage -- use the same short
       // backoff a failure that escapes run() gets instead.
-      nextRunAt: remaining ? new Date(completedAtMs + (status === "fail" ? failureBackoffMs : intervalMs())).toISOString() : ""
+      nextRunAt: remaining
+        ? (preserveNextRunAt && status !== "fail" && current.nextRunAt
+          ? current.nextRunAt
+          : new Date(completedAtMs + (status === "fail" ? failureBackoffMs : intervalMs())).toISOString())
+        : ""
     });
   }
 
   async function scanBase(baseId, threshold, context) {
-    const { enrollment, pendingBaseIds, outcomes, removed, failures, counters } = context;
+    const { enrollment, pendingBaseIds, pendingDeleteBaseIds, outcomes, removed, failures, counters } = context;
+    // See autoRefill.js's scanBase: a base marked for deletion is frozen from
+    // every other write, so skip it rather than queue a refill that would
+    // just be rejected.
+    if (pendingDeleteBaseIds.has(baseId)) return;
     const key = String(baseId);
     const db = getDb();
     const previous = enrollment[key] || {};
@@ -348,7 +364,7 @@ export function createAutoRefillWaterScheduler(options = {}) {
       // entry has left pendingBaseIds and water is still low.
       outcomes.set(key, outcome);
     } catch (error) {
-      const message = String(error?.message || error);
+      const message = String(error?.message || "Unexpected error.");
       // A base that no longer exists would otherwise be retried every day
       // forever. Every other error leaves the enrollment alone.
       if (/was not found/i.test(message)) {
@@ -361,12 +377,13 @@ export function createAutoRefillWaterScheduler(options = {}) {
     }
   }
 
-  async function run(baseIds, enrollment) {
+  async function run(baseIds, enrollment, { preserveNextRunAt = false } = {}) {
     const threshold = autoRefillWaterThresholdPercent(env);
     const context = {
       enrollment,
       // Read once per scan: which bases already have an unflushed queue entry.
       pendingBaseIds: new Set(duneDb.listQueuedWaterRefills(config.repoRoot).map((entry) => entry.baseId)),
+      pendingDeleteBaseIds: new Set(duneDb.listQueuedBaseDeletes(config.repoRoot).map((entry) => entry.baseId)),
       // Observed once per scan and reused by every base's baseRefillTarget call
       // below, rather than every base re-running the same world_partition scan.
       observed: await duneDb.observeRefillPartitions(getDb()),
@@ -381,11 +398,11 @@ export function createAutoRefillWaterScheduler(options = {}) {
       await scanBase(Number(key), threshold, context);
     }
 
-    const status = failures.length ? (counters.checked ? "partial" : "fail") : "ok";
+    const status = failures.length ? (failures.length >= baseIds.length ? "fail" : "partial") : "ok";
     const detail = failures.length
       ? redact(failures.join("; ")).slice(0, MAX_RUN_DETAIL_LENGTH)
       : `Checked ${counters.checked}, queued ${counters.queued}`;
-    persistRunCompletion(now(), outcomes, removed, status, detail);
+    persistRunCompletion(now(), outcomes, removed, status, detail, { preserveNextRunAt });
 
     auditSafely("bases.auto-refill-water-scan", {
       enrolled: baseIds.length,
@@ -394,7 +411,52 @@ export function createAutoRefillWaterScheduler(options = {}) {
       failures: failures.length,
       status
     });
-    return { status, ...counters, failures: failures.length };
+    return { status, detail, ...counters, failures: failures.length };
+  }
+
+  async function executeRun(baseIds, enrollment, { preserveNextRunAt = false } = {}) {
+    running = true;
+    const promise = (async () => {
+      try {
+        return await run(baseIds, enrollment, { preserveNextRunAt });
+      } catch (error) {
+        // A failed first check uses the same short retry backoff as a failed
+        // scheduled check, so enabling automation during a brief database
+        // outage does not leave the base unchecked for a full day.
+        nextAllowedAttemptAt = now() + failureBackoffMs;
+        persistRunCompletion(
+          now(),
+          new Map(),
+          [],
+          "fail",
+          redact(String(error?.message || "Unexpected error.")).slice(0, MAX_RUN_DETAIL_LENGTH),
+          { preserveNextRunAt }
+        );
+        throw error;
+      }
+    })();
+    runningPromise = promise;
+    try {
+      return await promise;
+    } finally {
+      if (runningPromise === promise) runningPromise = null;
+      running = false;
+    }
+  }
+
+  async function scanNow(baseId) {
+    const target = Math.floor(Number(baseId));
+    if (!Number.isInteger(target) || target < 1) throw new Error("Invalid base id");
+
+    // A scheduled scan may already be using the queue. Let it finish, then
+    // re-read enrollment so a newly enabled base cannot miss its first check.
+    while (runningPromise) {
+      try { await runningPromise; } catch {}
+    }
+    const state = readAutoRefillWaterState(config.repoRoot);
+    const key = String(target);
+    if (!state.bases[key]) return { status: "disabled", detail: "Auto-refill is not enabled for this base.", checked: 0, queued: 0, failures: 0 };
+    return executeRun([key], state.bases, { preserveNextRunAt: true });
   }
 
   async function tick() {
@@ -436,22 +498,12 @@ export function createAutoRefillWaterScheduler(options = {}) {
     }
     if (startedAt < dueAtMs) return;
 
-    running = true;
-    try {
-      return await run(baseIds, state.bases);
-    } catch (error) {
-      // A failure that escapes run() must still move nextRunAt, or every tick
-      // retries it at the full tick rate.
-      nextAllowedAttemptAt = now() + failureBackoffMs;
-      persistRunCompletion(now(), new Map(), [], "fail", redact(String(error?.message || error)).slice(0, MAX_RUN_DETAIL_LENGTH));
-      throw error;
-    } finally {
-      running = false;
-    }
+    return executeRun(baseIds, state.bases);
   }
 
   return {
     tick,
+    scanNow,
     publicState: () => autoRefillWaterPublicState(config.repoRoot, { env }),
     thresholdPercent: () => autoRefillWaterThresholdPercent(env),
     intervalHours: () => autoRefillWaterIntervalHours(env)

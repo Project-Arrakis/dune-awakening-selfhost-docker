@@ -49,6 +49,15 @@ function createLinkDb(playerOverrides = {}) {
     state,
     transaction: (fn) => fn(db),
     async query(text, values = []) {
+      // Issue #245 fix: discordPlayerLink() now takes a per-character
+      // advisory lock as the very first statement in its transaction (see
+      // duneDb.js's pg_advisory_xact_lock() call) -- inert no-op here,
+      // this single in-process mock has no real concurrency to guard
+      // against. Must be checked first since it really is the first query
+      // issued.
+      if (text.includes("pg_advisory_xact_lock")) {
+        return { rows: [], rowCount: 0 };
+      }
       if (text.includes("from dune.player_state ps") && text.includes("lower(ps.character_name)")) {
         const searchName = String(values[0] || "").toLowerCase();
         if (searchName === secondPlayer.character_name.toLowerCase()) {

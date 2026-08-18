@@ -44,6 +44,13 @@ current_image_refs() {
   if [ -n "$postgres_tag" ]; then
     printf '%s:%s\n' registry.funcom.com/funcom/self-hosting/igw-postgres "$postgres_tag"
   fi
+
+  # These tags are operational dependencies even when the containers currently
+  # using their older image IDs are still running. Startup and host-side repair
+  # scripts launch short-lived helpers from these exact references.
+  printf '%s\n' \
+    "dune-orchestrator:dev" \
+    "redblink-dune-docker-console:dev"
 }
 
 protected_image_ids() {

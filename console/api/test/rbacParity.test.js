@@ -11,7 +11,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { actionForRoute, ROUTE_ACTIONS, REGEX_ACTIONS, REGEX_ACTIONS_BY_METHOD } from "../src/actions.js";
+import { actionForRoute, ROUTE_ACTIONS, REGEX_ACTIONS, REGEX_ACTIONS_BY_METHOD, REGEX_ACTIONS_BY_METHOD_PATTERN } from "../src/actions.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const serverSrc = readFileSync(join(__dirname, "../src/server.js"), "utf8");
@@ -136,7 +136,8 @@ test("parity: all IAM actions reference known namespaces", () => {
   const validNamespaces = new Set([
     "setup", "server", "logs", "backups", "database", "updates", "settings",
     "players", "guilds", "bases", "maps", "sietches", "deepdesert", "admin",
-    "landsraad", "addons", "carepackage", "storage", "blueprints"
+    "landsraad", "addons", "carepackage", "storage", "blueprints", "vehicles",
+    "exchange"
   ]);
   for (const action of Object.values(ROUTE_ACTIONS)) {
     if (typeof action !== "string") continue;
@@ -149,7 +150,8 @@ test("parity: all REGEX_ACTIONS entries reference known namespaces", () => {
   const validNamespaces = new Set([
     "setup", "server", "logs", "backups", "database", "updates", "settings",
     "players", "guilds", "bases", "maps", "sietches", "deepdesert", "admin",
-    "landsraad", "addons", "carepackage", "storage", "blueprints"
+    "landsraad", "addons", "carepackage", "storage", "blueprints", "vehicles",
+    "exchange"
   ]);
   for (const [, action] of REGEX_ACTIONS) {
     if (typeof action !== "string") continue;
@@ -161,4 +163,18 @@ test("parity: all REGEX_ACTIONS entries reference known namespaces", () => {
     const ns = action.includes(":") ? action.split(":")[0] : action;
     assert.ok(validNamespaces.has(ns), `Unknown namespace in method action: ${action}`);
   }
+  for (const { action } of REGEX_ACTIONS_BY_METHOD_PATTERN) {
+    if (typeof action !== "string") continue;
+    const ns = action.includes(":") ? action.split(":")[0] : action;
+    assert.ok(validNamespaces.has(ns), `Unknown namespace in pattern action: ${action}`);
+  }
+});
+
+test("parity: DELETE /api/bases/{baseId} resolves to bases:delete, distinct from other bases DELETE routes", () => {
+  assert.equal(actionForRoute("/api/bases/12858", "DELETE"), "bases:delete");
+  // Sibling sub-resource DELETEs must stay in the shared, reversible bucket
+  // -- only the base delete itself gets its own action.
+  assert.equal(actionForRoute("/api/bases/12858/queued-delete", "DELETE"), "bases:mutate");
+  assert.equal(actionForRoute("/api/bases/12858/queued-refill", "DELETE"), "bases:mutate");
+  assert.equal(actionForRoute("/api/bases/12858/queued-water-refill", "DELETE"), "bases:mutate");
 });

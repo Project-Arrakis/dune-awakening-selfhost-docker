@@ -39,9 +39,10 @@ fi
 source runtime/scripts/host-paths.sh
 source runtime/scripts/runtime-env.sh
 source runtime/scripts/image-tags.sh
+source runtime/scripts/sietch-login-password-args.sh
+source runtime/scripts/fake-k8s-serviceaccount.sh
 
-WORLD_IMAGE_TAG="$(resolve_world_image_tag)"
-IMAGE="registry.funcom.com/funcom/self-hosting/seabass-server:${WORLD_IMAGE_TAG}"
+IMAGE="$(resolve_game_server_image)"
 
 TOKEN_FILE="runtime/secrets/funcom-token.txt"
 RMQ_SECRET_FILE="runtime/secrets/rmq-http-token-auth-secret.txt"
@@ -387,11 +388,7 @@ fi
 safe_name="$(echo "$MAP_NAME-$PARTITION_ID" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g; s/--*/-/g; s/^-//; s/-$//')"
 CONTAINER_NAME="dune-server-${safe_name}"
 
-if [ -n "${DUNE_FAKE_K8S_SERVICEACCOUNT_DIR:-}" ]; then
-  FAKE_K8S_SERVICEACCOUNT_DIR="$DUNE_FAKE_K8S_SERVICEACCOUNT_DIR"
-else
-  FAKE_K8S_SERVICEACCOUNT_DIR="$PWD/runtime/generated/dune-fake-k8s-serviceaccount-${safe_name}-$$"
-fi
+FAKE_K8S_SERVICEACCOUNT_DIR="$(fake_k8s_serviceaccount_dir "$safe_name")"
 
 ensure_runtime_state_file "$PORT_LOCK_FILE" "spawn port reservation lock"
 exec 9>"$PORT_LOCK_FILE"
@@ -403,6 +400,16 @@ release_port_reservation "$CONTAINER_NAME"
 MEMORY="$(effective_memory_for_map "$MAP_NAME" "$PARTITION_ID")"
 mapfile -t SIETCH_RUNTIME_ARGS < <(runtime/scripts/sietches.sh runtime-args "$MAP_NAME" "$PARTITION_ID" 2>/dev/null || true)
 mapfile -t LOG_RUNTIME_ARGS < <(full_stdout_log_args)
+
+# GHSA-fc89-h24v-6j3x (issue #252): move ServerLoginPassword/ServerPassword
+# from docker run positional arguments to environment variables -- see
+# sietch-login-password-args.sh for the full rationale and the shared
+# implementation used identically by all three launcher scripts.
+declare -a SIETCH_LOGIN_PASSWORD_ARGS
+declare -a SIETCH_RUNTIME_ARGS_FILTERED
+sietch_login_password_docker_args SIETCH_RUNTIME_ARGS SIETCH_LOGIN_PASSWORD_ARGS SIETCH_RUNTIME_ARGS_FILTERED
+SIETCH_RUNTIME_ARGS=("${SIETCH_RUNTIME_ARGS_FILTERED[@]}")
+
 if [ "$MAP_NAME" = "Survival_1" ]; then
   if [ "$DIMENSION_INDEX" -eq 0 ]; then
     SERVER_INDEX=1
@@ -527,22 +534,13 @@ echo "  igw port:   $IGW_PORT"
 echo "  container:  $CONTAINER_NAME"
 echo
 
-mkdir -p "runtime/game/$safe_name/Saved"
+runtime/scripts/repair-map-settings-permissions.sh "$safe_name"
 mkdir -p runtime/game/artifacts
-mkdir -p "$FAKE_K8S_SERVICEACCOUNT_DIR"
 mkdir -p runtime/container
 python3 runtime/scripts/usersettings.py materialize "$MAP_NAME" "$PWD/runtime/game/$safe_name/Saved" "$PARTITION_ID"
 purge_stale_farm_rows_for_map "$MAP_NAME"
 runtime/scripts/network-addresses.sh reconcile >/dev/null 2>&1 || true
-
-cat > "$FAKE_K8S_SERVICEACCOUNT_DIR/namespace" <<EOF
-funcom-seabass-$BATTLEGROUP_ID
-EOF
-cat > "$FAKE_K8S_SERVICEACCOUNT_DIR/token" <<'EOF'
-fake-token
-EOF
-: > "$FAKE_K8S_SERVICEACCOUNT_DIR/ca.crt"
-chmod -R 755 "$FAKE_K8S_SERVICEACCOUNT_DIR"
+prepare_fake_k8s_serviceaccount "$FAKE_K8S_SERVICEACCOUNT_DIR" "funcom-seabass-$BATTLEGROUP_ID"
 
 docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
 ensure_host_latency_tuned
@@ -551,6 +549,7 @@ mapfile -t MEMORY_SWAP_ARGS < <(memory_swap_docker_args "$MEMORY")
 docker run -d \
   "${DUNE_DOCKER_LOG_ARGS[@]}" \
   --name "$CONTAINER_NAME" \
+  --label "com.docker.compose.project=${DUNE_COMPOSE_PROJECT_NAME}" \
   --network host \
   --restart unless-stopped \
   --privileged \
@@ -609,6 +608,7 @@ docker run -d \
   -e "AuthenticationConfiguration__BackendLoginConfiguration__ServerLoginSecret=$SERVER_LOGIN_PASSWORD_SECRET" \
   -e "AuthenticationConfiguration__BackendLoginConfiguration__ChecksumSecret=$SERVER_LOGIN_PASSWORD_SECRET" \
   -e "fls-apikey=$FLS_APIKEY" \
+  "${SIETCH_LOGIN_PASSWORD_ARGS[@]}" \
   "$IMAGE" \
   /opt/dune-local/run-server.sh \
   "$MAP_NAME" \
@@ -631,6 +631,8 @@ docker run -d \
   "--RMQAdminPort=${RMQ_ADMIN_PORT}" \
   "${SIETCH_RUNTIME_ARGS[@]}" \
   "${LOG_RUNTIME_ARGS[@]}"
+
+prune_legacy_fake_k8s_serviceaccounts
 
 sleep 5
 

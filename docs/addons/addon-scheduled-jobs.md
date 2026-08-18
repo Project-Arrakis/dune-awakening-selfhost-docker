@@ -1,69 +1,74 @@
-# Addon Scheduled Jobs (Server-Side Buyback)
+# Market Bot Scheduled Jobs and EDA Retirement
 
 **Status:** Current | **Last Updated:** August 2026
 
-The console API process can run recurring addon work in the background, so automation keeps running when no browser has the addon page open. The first supported job is the **EDA Exchange Bot** (`eda-exchange-bot`) buyback sweep.
+The console API runs Market Bot reseed and buyback schedules in the background.
+No browser page or addon needs to remain open. Market Bot is managed from
+**Exchange > Bot** and uses the console-bundled
+`runtime/data/market-seed-plan.json`.
 
-## How it works
+## How scheduled jobs work
 
-The scheduler ticks with the console's other background tasks (the 10-second interval that also drives care package auto-grants and the message of the day). On every due run it:
+The scheduler ticks with the console's other background tasks. A due buyback run:
 
-1. Verifies the addon is still installed, enabled, not blocked, and approved for `database:read`, `database:write`, and `scheduler:server`. Revoking any of these (or disabling/removing the addon) stops scheduled runs immediately.
-2. Runs a **read-only eligibility probe** — no backup is taken while the market is idle.
-3. Only when eligible player listings exist: creates a database backup (`DB_BACKUP_ORIGIN=addon-eda-exchange-bot`) and runs the buyback sweep.
-4. Re-arms the next run from **completion** time, so a sweep that outlasts the interval cannot trigger back-to-back runs, and audits the outcome to `runtime/generated/web-admin-audit.jsonl` (`addons.scheduled-job`).
+1. Runs a read-only eligibility probe.
+2. Takes a database backup only when eligible player listings exist
+   (`DB_BACKUP_ORIGIN=market-bot-buyback`).
+3. Runs the buyback in a transaction and re-arms from completion time.
 
-The sweep SQL is built **server-side** from the addon's bundled `web/market-seed-plan.json` (in `runtime/addons/installed/eda-exchange-bot/`) and the validated schedule parameters. The console never persists or replays SQL text sent by the addon iframe, following the same typed-action model as `admin.items.grant`.
+A due reseed always takes a backup (`DB_BACKUP_ORIGIN=market-bot-seed`), clears
+only the bot's listings on the selected exchange, and writes the bundled seed
+plan. Seed and buyback share a running lock, so they cannot mutate the exchange
+at the same time. Player listings are never removed by reseeding.
 
-The sweep uses `FOR UPDATE OF o, s SKIP LOCKED`, so a scheduled sweep racing a manual sweep from the addon page is safe at the database level. It runs through the Console database transaction helper, which guarantees a rollback before the connection returns to the pool if any statement fails.
-
-## The `scheduler:server` permission
-
-Unattended background writes require an explicit opt-in beyond `database:write`. The addon manifest must request `scheduler:server` and the server owner must approve it at install/enable time. Enabling the schedule fails until that approval exists; disabling the schedule only needs `database:write`.
+The SQL is built server-side from validated schedule parameters. SQL text from a
+browser or addon is never persisted or replayed. Buyback uses row locks with
+`SKIP LOCKED`, and failures roll back before the database connection returns to
+the pool.
 
 ## Schedule state
 
-The schedule persists in `runtime/addons/jobs/eda-exchange-bot/buyback.json` (owner-only file, written atomically) and survives console restarts. If the console was down when a run came due, the scheduler recomputes `nextRunAt` one interval out at boot instead of firing immediately.
+The console stores owner-only, atomically written schedules at:
 
-Uninstalling the addon removes its persisted scheduled-job files. Reinstalling therefore cannot unexpectedly resume a schedule configured before the uninstall.
+- `runtime/generated/market-bot/buyback.json`
+- `runtime/generated/market-bot/seed.json`
 
-Fields:
+Both are `source: "console"`. If the console was down when a run came due, it
+recomputes `nextRunAt` one interval out at boot instead of immediately writing to
+the database.
 
-| Field | Meaning |
-| --- | --- |
-| `enabled` | Whether the schedule runs. Requires a valid `exchangeId` and the `scheduler:server` approval. |
-| `intervalMinutes` | Minutes between runs, clamped to 10–1440 (default 30). |
-| `exchangeId` | Target exchange, validated as a decimal string up to the PostgreSQL BIGINT max. |
-| `priceMultiplier` | Seed-plan price multiplier used to derive buyback reference prices (1–100, default 5). |
-| `buybackPercent` | Buy player listings priced at or below this percent of the reference price (1–100, default 60). |
-| `maxBuys` | Maximum listings bought per sweep (1–5000, default 500). |
-| `lastRunAt` / `lastRunStatus` / `lastRunDetail` / `nextRunAt` | Status reporting (`idle`, `swept`, or `error`). |
+Key buyback fields include `enabled`, `intervalMinutes`, `exchangeId`,
+`priceMultiplier`, category multipliers, `buybackPercent`, `buybackPriceBasis`,
+and `maxBuys`. Seed schedules include the same target, timing, and pricing fields
+plus augment pricing. Both record `lastRunAt`, `lastRunStatus`, `lastRunDetail`,
+and `nextRunAt`.
 
-Validation note for addon authors: `intervalMinutes` is the only field that silently clamps into its range; `exchangeId`, `priceMultiplier`, `buybackPercent`, and `maxBuys` reject out-of-range or malformed values with an error. `exchangeId` must be sent as a decimal **string**, and run results report `totalUnits`/`totalSolari` as decimal strings too (BIGINT-safe).
+## EDA Exchange Bot retirement
 
-Failures (database offline, backup failure) record an `error` status, apply the standard background failure backoff, and re-arm the next attempt.
+EDA Exchange Bot (`eda-exchange-bot`) is superseded by the native Market Bot.
+Install and update requests for it are rejected, and its old bridge returns HTTP
+410 after retirement succeeds.
 
-## Bridge actions
+On the first console startup after upgrading:
 
-The addon page manages the schedule through typed bridge actions on `POST /api/addons/installed/eda-exchange-bot/bridge`:
+1. Any legacy schedules are parsed and validated before anything is removed.
+2. Valid values, including enabled state and next-run time, are copied to the
+   core schedule paths and changed to `source: "console"`.
+3. Installed addon and legacy schedule files are backed up under
+   `runtime/backups/market-bot-eda-retirement/<timestamp>/`.
+4. The EDA addon, addon state, and legacy job directory are removed.
+5. Completion is recorded in
+   `runtime/generated/market-bot/eda-retirement.json`.
 
-```js
-// Read the schedule and last-run status (requires database:read).
-await bridge("scheduler.schedule.get");
+If EDA was already uninstalled, the startup still creates valid disabled core
+schedules. EDA uninstall does not delete exchange listings from the game
+database, and retirement does not modify those listings. Schedule preferences
+that were already deleted by an earlier uninstall cannot be reconstructed, so
+the safe default is disabled until the operator configures Market Bot.
 
-// Save the schedule (requires database:write; enabling also requires scheduler:server).
-await bridge("scheduler.schedule.set", {
-  schedule: { enabled: true, exchangeId: "42", intervalMinutes: 30, buybackPercent: 60, maxBuys: 500 }
-});
+A malformed legacy schedule aborts migration before removal, leaving it available
+for repair. If core state is committed but addon cleanup fails, the console uses
+the core state and retries cleanup at the next startup.
 
-// Read-only eligibility check, optionally overriding saved parameters (requires database:read).
-await bridge("scheduler.probe", { exchangeId: "42", buybackPercent: 60 });
-
-// Run one sweep now (requires database:write). Takes a backup only when eligible listings exist.
-await bridge("scheduler.run");
-```
-
-The existing addon bridge rate limits apply to these actions; scheduled background runs consume a dedicated mutation rate-limit scope (`addon-scheduler:eda-exchange-bot`) since no session or client IP exists in that context.
-
-See [addon-provenance.md](../security/addon-provenance.md) for the addon
-discovery and code-signing threat model this job runner assumes.
+See [exchange.md](../console/exchange.md#market-bot) for Market Bot behavior and
+[addon-provenance.md](../security/addon-provenance.md) for the addon trust model.

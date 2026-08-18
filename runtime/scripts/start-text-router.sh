@@ -10,6 +10,7 @@ cd "$(dirname "$0")/../.."
 source runtime/scripts/host-paths.sh
 source runtime/scripts/runtime-env.sh
 source runtime/scripts/image-tags.sh
+source runtime/scripts/fake-k8s-serviceaccount.sh
 WORLD_IMAGE_TAG="$(resolve_world_image_tag)"
 IMAGE="registry.funcom.com/funcom/self-hosting/seabass-server-text-router:${WORLD_IMAGE_TAG}"
 TEXT_ROUTER_PORT="$(resolve_text_router_port)"
@@ -35,29 +36,10 @@ SERVER_REGION="$(resolve_server_region)"
 SERVER_IP="$(resolve_server_ip)"
 BATTLEGROUP_ID="$(resolve_battlegroup_id)"
 DUNE_DB_PASSWORD="${DUNE_DB_PASSWORD:-dune}"
-if [ -n "${DUNE_FAKE_K8S_SERVICEACCOUNT_DIR:-}" ]; then
-  FAKE_K8S_SERVICEACCOUNT_DIR="$DUNE_FAKE_K8S_SERVICEACCOUNT_DIR"
-else
-  FAKE_K8S_SERVICEACCOUNT_DIR="$PWD/runtime/generated/dune-fake-k8s-serviceaccount-text-router-$$"
-fi
+FAKE_K8S_SERVICEACCOUNT_DIR="$(fake_k8s_serviceaccount_dir text-router)"
 
 
-mkdir -p "$FAKE_K8S_SERVICEACCOUNT_DIR"
-
-cat > "$FAKE_K8S_SERVICEACCOUNT_DIR/namespace" <<'EOF'
-funcom-seabass-dune-docker
-EOF
-
-cat > "$FAKE_K8S_SERVICEACCOUNT_DIR/token" <<'EOF'
-fake-token
-EOF
-
-# Intentionally keep this empty for now.
-# With this Funcom build, an invalid Kubernetes CA causes IGWO init to fail non-fatally,
-# while a valid CA makes the app try to call igwo.local:6443 and crash unless we provide a compatibility API.
-: > "$FAKE_K8S_SERVICEACCOUNT_DIR/ca.crt"
-
-chmod -R 755 "$FAKE_K8S_SERVICEACCOUNT_DIR"
+prepare_fake_k8s_serviceaccount "$FAKE_K8S_SERVICEACCOUNT_DIR" funcom-seabass-dune-docker
 
 docker network create dune-net 2>/dev/null || true
 docker rm -f dune-text-router 2>/dev/null || true
@@ -81,6 +63,7 @@ fi
 docker run -d \
   "${DUNE_DOCKER_LOG_ARGS[@]}" \
   --name dune-text-router \
+  --label "com.docker.compose.project=${DUNE_COMPOSE_PROJECT_NAME}" \
   --network dune-net \
   --restart unless-stopped \
   -p "127.0.0.1:${TEXT_ROUTER_PORT}:5059/tcp" \
@@ -108,6 +91,8 @@ docker run -d \
   --RMQAdminPort=5672 \
   --RMQGameHostname=dune-rmq-game \
   --RMQGamePort=5672
+
+prune_legacy_fake_k8s_serviceaccounts
 
 sleep 8
 

@@ -4,6 +4,8 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 ROOT_DIR="$(pwd)"
 HOST_ROOT_DIR="${DUNE_HOST_REPO_ROOT:-$ROOT_DIR}"
+HOST_SERVICE_UID="${DUNE_HOST_UID:-$(stat -c '%u' "$ROOT_DIR")}"
+HOST_SERVICE_GID="${DUNE_HOST_GID:-$(stat -c '%g' "$ROOT_DIR")}"
 
 # shellcheck source=runtime/scripts/runtime-env.sh
 . runtime/scripts/runtime-env.sh
@@ -26,39 +28,6 @@ set_env_value() {
   local key="$1"
   local value="$2"
   set_env_file_value ".env" "$key" "$value" "644"
-}
-
-set_env_file_value() {
-  local file="$1"
-  local key="$2"
-  local value="$3"
-  local mode="${4:-644}"
-  local tmp
-
-  if [ -e "$file" ] && [ ! -w "$file" ]; then
-    echo "Cannot update $file because it is not writable by $(id -un)." >&2
-    echo "Repair ownership from the repo root, then retry:" >&2
-    echo "  sudo chown -R \"\$USER:\$USER\" .env runtime/generated runtime/secrets runtime/backups 2>/dev/null || true" >&2
-    echo "  chmod -R u+rwX .env runtime/generated runtime/secrets runtime/backups 2>/dev/null || true" >&2
-    return 13
-  fi
-
-  touch "$file"
-  tmp="$(mktemp)"
-  awk -F= -v key="$key" -v value="$value" '
-    BEGIN { found = 0 }
-    $1 == key {
-      print key "=" value
-      found = 1
-      next
-    }
-    { print }
-    END {
-      if (!found) print key "=" value
-    }
-  ' "$file" > "$tmp"
-  mv "$tmp" "$file"
-  chmod "$mode" "$file" 2>/dev/null || true
 }
 
 now_stamp() {
@@ -158,6 +127,8 @@ After=network-online.target docker.service
 
 [Service]
 Type=oneshot
+User=$HOST_SERVICE_UID
+Group=$HOST_SERVICE_GID
 WorkingDirectory=$exec_root
 ExecStart=$exec_root/runtime/scripts/ip-change-restart.sh check-now
 EOF
@@ -188,6 +159,8 @@ install_units_via_docker_host() {
   docker run --rm --user 0:0 --privileged --pid=host --network=host \
     -e DUNE_IP_CHANGE_RESTART_INTERVAL_MINUTES="$interval_minutes" \
     -e DUNE_HOST_REPO_ROOT="$HOST_ROOT_DIR" \
+    -e DUNE_HOST_UID="$HOST_SERVICE_UID" \
+    -e DUNE_HOST_GID="$HOST_SERVICE_GID" \
     -v /:/host \
     --entrypoint bash \
     "$image" -lc '
@@ -202,6 +175,8 @@ After=network-online.target docker.service
 
 [Service]
 Type=oneshot
+User=${DUNE_HOST_UID}
+Group=${DUNE_HOST_GID}
 WorkingDirectory=${DUNE_HOST_REPO_ROOT}
 ExecStart=${DUNE_HOST_REPO_ROOT}/runtime/scripts/ip-change-restart.sh check-now
 EOF

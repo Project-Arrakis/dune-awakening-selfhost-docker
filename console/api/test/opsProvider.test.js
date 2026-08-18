@@ -127,9 +127,16 @@ test("opsResourcesProvider returns the real empty shape (both sections, not a pl
   const db = mockDb({ tables: new Set() });
   const response = await opsResourcesProvider({}, db);
   assert.equal(response.ok, true);
+  // Issue #245 fix: opsResourcesProvider() now also computes and appends
+  // a top-level totalValueRemaining field (opsProvider.js's own comment:
+  // "so the bot's statsPusher fetchAggregate can populate spice_fields
+  // without needing to know the internal map structure (issue #95)") --
+  // a real, intentional feature this test's expected object was never
+  // updated for. With no instances in either section, the sum is 0.
   assert.deepEqual(response.result, {
     deepDesert: { summary: { totalActiveFields: 0, totalRemainingSpice: 0, pvpInstances: 0, pveInstances: 0, bySize: [] }, instances: [] },
-    haggaBasin: { summary: { totalActiveFields: 0, totalRemainingSpice: 0, pvpInstances: 0, pveInstances: 0, bySize: [] }, instances: [] }
+    haggaBasin: { summary: { totalActiveFields: 0, totalRemainingSpice: 0, pvpInstances: 0, pveInstances: 0, bySize: [] }, instances: [] },
+    totalValueRemaining: 0
   });
 });
 

@@ -562,8 +562,6 @@ function displayCarePackageConfig(config: CarePackageConfig) {
 
 function formatCarePackageError(value: string) {
   const text = friendlyApiError(value || "").trim()
-    .replaceAll("Care Package", "Care Package")
-    .replaceAll("care package", "care package")
     .replaceAll(" kit", " package")
     .replaceAll(" Kit", " Package");
   return text ? text.charAt(0).toUpperCase() + text.slice(1) : "Care Package save failed.";

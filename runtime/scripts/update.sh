@@ -102,7 +102,7 @@ write_auto_state() {
   local interval_minutes="$2"
   local apply_enabled="${3:-${DUNE_AUTO_UPDATE_APPLY_ENABLED:-1}}"
   local notify_enabled="${4:-${DUNE_AUTO_UPDATE_NOTIFY_ENABLED:-1}}"
-  local notify_minutes="${5:-${DUNE_AUTO_UPDATE_NOTIFY_MINUTES:-15}}"
+  local notify_minutes="${5:-${DUNE_AUTO_UPDATE_NOTIFY_MINUTES:-15,10,5,1}}"
   local wait_empty="${6:-${DUNE_AUTO_UPDATE_WAIT_EMPTY:-0}}"
   local max_wait_minutes="${7:-${DUNE_AUTO_UPDATE_MAX_WAIT_MINUTES:-360}}"
   local timer_installed="${8:-${DUNE_AUTO_UPDATE_TIMER_INSTALLED:-0}}"
@@ -157,7 +157,7 @@ read_auto_state() {
   DUNE_AUTO_UPDATE_INTERVAL_MINUTES="$AUTO_DEFAULT_INTERVAL_MINUTES"
   DUNE_AUTO_UPDATE_APPLY_ENABLED=1
   DUNE_AUTO_UPDATE_NOTIFY_ENABLED=1
-  DUNE_AUTO_UPDATE_NOTIFY_MINUTES=15
+  DUNE_AUTO_UPDATE_NOTIFY_MINUTES=15,10,5,1
   DUNE_AUTO_UPDATE_WAIT_EMPTY=0
   DUNE_AUTO_UPDATE_MAX_WAIT_MINUTES=360
   DUNE_AUTO_UPDATE_TIMER_INSTALLED=""
@@ -186,10 +186,32 @@ require_bool_flag() {
 
 require_auto_notify_minutes() {
   local value="$1"
-  if ! printf '%s' "$value" | grep -Eq '^[0-9]+$' || [ "$value" -lt 1 ] || [ "$value" -gt 1440 ]; then
-    echo "Auto-update notification time must be between 1 and 1440 minutes."
+  local compact normalized
+  compact="$(printf '%s' "$value" | tr -d '[:space:]')"
+  normalized="$(normalize_auto_notify_minutes "$value")" || exit 2
+  if [ "$compact" != "$normalized" ]; then
+    echo "Auto-update warning times must be unique and ordered from largest to smallest, for example 15,10,5,1." >&2
     exit 2
   fi
+}
+
+normalize_auto_notify_minutes() {
+  local value="$1"
+  local compact mark
+  local -a marks=()
+  compact="$(printf '%s' "$value" | tr -d '[:space:]')"
+  IFS=',' read -r -a marks <<< "$compact"
+  if [ "${#marks[@]}" -lt 1 ] || [ "${#marks[@]}" -gt 12 ]; then
+    echo "Auto-update warning times must contain 1 to 12 values." >&2
+    return 2
+  fi
+  for mark in "${marks[@]}"; do
+    if ! printf '%s' "$mark" | grep -Eq '^[1-9][0-9]*$' || [ "$mark" -gt 1440 ]; then
+      echo "Each auto-update warning time must be between 1 and 1440 minutes." >&2
+      return 2
+    fi
+  done
+  printf '%s\n' "${marks[@]}" | sort -nr -u | paste -sd, -
 }
 
 require_auto_max_wait_minutes() {
@@ -220,6 +242,7 @@ After=network-online.target docker.service
 Type=oneshot
 WorkingDirectory=$exec_root
 ExecStart=$exec_root/runtime/scripts/update.sh auto run
+TimeoutStartSec=infinity
 EOF
 
   cat > "$systemd_dir/$AUTO_TIMER_NAME" <<EOF
@@ -273,6 +296,7 @@ After=network-online.target docker.service
 Type=oneshot
 WorkingDirectory=${DUNE_HOST_REPO_ROOT}
 ExecStart=${DUNE_HOST_REPO_ROOT}/runtime/scripts/update.sh auto run
+TimeoutStartSec=infinity
 EOF
       cat > "$systemd_dir/dune-awakening-auto-update.timer" <<EOF
 [Unit]
@@ -321,7 +345,7 @@ show_auto_timer_status_via_docker() {
     -e DUNE_AUTO_UPDATE_INTERVAL_MINUTES="${DUNE_AUTO_UPDATE_INTERVAL_MINUTES:-$AUTO_DEFAULT_INTERVAL_MINUTES}" \
     -e DUNE_AUTO_UPDATE_APPLY_ENABLED="${DUNE_AUTO_UPDATE_APPLY_ENABLED:-1}" \
     -e DUNE_AUTO_UPDATE_NOTIFY_ENABLED="${DUNE_AUTO_UPDATE_NOTIFY_ENABLED:-1}" \
-    -e DUNE_AUTO_UPDATE_NOTIFY_MINUTES="${DUNE_AUTO_UPDATE_NOTIFY_MINUTES:-15}" \
+    -e DUNE_AUTO_UPDATE_NOTIFY_MINUTES="${DUNE_AUTO_UPDATE_NOTIFY_MINUTES:-15,10,5,1}" \
     -e DUNE_AUTO_UPDATE_WAIT_EMPTY="${DUNE_AUTO_UPDATE_WAIT_EMPTY:-0}" \
     -e DUNE_AUTO_UPDATE_MAX_WAIT_MINUTES="${DUNE_AUTO_UPDATE_MAX_WAIT_MINUTES:-360}" \
     -e DUNE_HOST_REPO_ROOT="$HOST_ROOT_DIR" \
@@ -395,7 +419,7 @@ show_auto_timer_status() {
     *"$HOST_ROOT_DIR/runtime/scripts/update.sh"*"auto run"*) ;;
     *"$HOST_ROOT_DIR/runtime/scripts/dune"*"update --yes"*)
       echo "WARN Auto-update service uses the legacy update command from the current checkout."
-      echo "     Repair: dune update auto enable ${DUNE_AUTO_UPDATE_INTERVAL_MINUTES:-$AUTO_DEFAULT_INTERVAL_MINUTES} ${DUNE_AUTO_UPDATE_APPLY_ENABLED:-1} ${DUNE_AUTO_UPDATE_NOTIFY_ENABLED:-1} ${DUNE_AUTO_UPDATE_NOTIFY_MINUTES:-15} ${DUNE_AUTO_UPDATE_WAIT_EMPTY:-0} ${DUNE_AUTO_UPDATE_MAX_WAIT_MINUTES:-360}"
+      echo "     Repair: dune update auto enable ${DUNE_AUTO_UPDATE_INTERVAL_MINUTES:-$AUTO_DEFAULT_INTERVAL_MINUTES} ${DUNE_AUTO_UPDATE_APPLY_ENABLED:-1} ${DUNE_AUTO_UPDATE_NOTIFY_ENABLED:-1} ${DUNE_AUTO_UPDATE_NOTIFY_MINUTES:-15,10,5,1} ${DUNE_AUTO_UPDATE_WAIT_EMPTY:-0} ${DUNE_AUTO_UPDATE_MAX_WAIT_MINUTES:-360}"
       ;;
     *"$HOST_ROOT_DIR/"*)
       echo "WARN Auto-update service does not use the current policy runner: $HOST_ROOT_DIR/runtime/scripts/update.sh auto run."
@@ -410,7 +434,7 @@ handle_auto_update() {
   interval_minutes="${2:-$AUTO_DEFAULT_INTERVAL_MINUTES}"
   apply_enabled="${3:-1}"
   notify_enabled="${4:-1}"
-  notify_minutes="${5:-15}"
+  notify_minutes="${5:-15,10,5,1}"
   wait_empty="${6:-0}"
   max_wait_minutes="${7:-360}"
 
@@ -423,6 +447,7 @@ handle_auto_update() {
       require_bool_flag "$apply_enabled" "Apply update"
       require_bool_flag "$notify_enabled" "Notify players"
       require_auto_notify_minutes "$notify_minutes"
+      notify_minutes="$(normalize_auto_notify_minutes "$notify_minutes")"
       require_bool_flag "$wait_empty" "Wait until empty"
       require_auto_max_wait_minutes "$max_wait_minutes"
       ensure_auto_state_writable
@@ -480,10 +505,10 @@ handle_auto_update() {
         rm -f "$AUTO_SERVICE_FILE" "$AUTO_TIMER_FILE"
         systemctl daemon-reload
         systemctl reset-failed "$AUTO_SERVICE_NAME" >/dev/null 2>&1 || true
-        write_auto_state 0 "${DUNE_AUTO_UPDATE_INTERVAL_MINUTES:-$interval_minutes}" "${DUNE_AUTO_UPDATE_APPLY_ENABLED:-1}" "${DUNE_AUTO_UPDATE_NOTIFY_ENABLED:-1}" "${DUNE_AUTO_UPDATE_NOTIFY_MINUTES:-15}" "${DUNE_AUTO_UPDATE_WAIT_EMPTY:-0}" "${DUNE_AUTO_UPDATE_MAX_WAIT_MINUTES:-360}" 0
+        write_auto_state 0 "${DUNE_AUTO_UPDATE_INTERVAL_MINUTES:-$interval_minutes}" "${DUNE_AUTO_UPDATE_APPLY_ENABLED:-1}" "${DUNE_AUTO_UPDATE_NOTIFY_ENABLED:-1}" "${DUNE_AUTO_UPDATE_NOTIFY_MINUTES:-15,10,5,1}" "${DUNE_AUTO_UPDATE_WAIT_EMPTY:-0}" "${DUNE_AUTO_UPDATE_MAX_WAIT_MINUTES:-360}" 0
       elif can_manage_host_systemd_with_docker; then
         disable_auto_units_via_docker_host
-        write_auto_state 0 "${DUNE_AUTO_UPDATE_INTERVAL_MINUTES:-$interval_minutes}" "${DUNE_AUTO_UPDATE_APPLY_ENABLED:-1}" "${DUNE_AUTO_UPDATE_NOTIFY_ENABLED:-1}" "${DUNE_AUTO_UPDATE_NOTIFY_MINUTES:-15}" "${DUNE_AUTO_UPDATE_WAIT_EMPTY:-0}" "${DUNE_AUTO_UPDATE_MAX_WAIT_MINUTES:-360}" 0
+        write_auto_state 0 "${DUNE_AUTO_UPDATE_INTERVAL_MINUTES:-$interval_minutes}" "${DUNE_AUTO_UPDATE_APPLY_ENABLED:-1}" "${DUNE_AUTO_UPDATE_NOTIFY_ENABLED:-1}" "${DUNE_AUTO_UPDATE_NOTIFY_MINUTES:-15,10,5,1}" "${DUNE_AUTO_UPDATE_WAIT_EMPTY:-0}" "${DUNE_AUTO_UPDATE_MAX_WAIT_MINUTES:-360}" 0
       else
         echo "Auto updates could not be disabled because the host timer cannot be inspected or managed from this environment."
         return 1
@@ -499,7 +524,7 @@ handle_auto_update() {
       echo "Check interval minutes: ${DUNE_AUTO_UPDATE_INTERVAL_MINUTES:-$AUTO_DEFAULT_INTERVAL_MINUTES}"
       echo "Apply updates:        ${DUNE_AUTO_UPDATE_APPLY_ENABLED:-1}"
       echo "Notify players:       ${DUNE_AUTO_UPDATE_NOTIFY_ENABLED:-1}"
-      echo "Notify minutes:       ${DUNE_AUTO_UPDATE_NOTIFY_MINUTES:-15}"
+      echo "Notify minutes:       ${DUNE_AUTO_UPDATE_NOTIFY_MINUTES:-15,10,5,1}"
       echo "Wait until empty:     ${DUNE_AUTO_UPDATE_WAIT_EMPTY:-0}"
       echo "Max wait minutes:     ${DUNE_AUTO_UPDATE_MAX_WAIT_MINUTES:-360}"
       if [ -f "$AUTO_PENDING_FILE" ]; then
@@ -530,7 +555,7 @@ handle_auto_update() {
     *)
       echo "Unknown auto-update command: $sub"
       echo "Usage:"
-      echo "  dune update auto enable [interval-minutes] [apply 0|1] [notify 0|1] [notify-minutes] [wait-empty 0|1] [max-wait-minutes]"
+      echo "  dune update auto enable [interval-minutes] [apply 0|1] [notify 0|1] [warning-times-csv] [wait-empty 0|1] [max-wait-minutes]"
       echo "  dune update auto disable"
       echo "  dune update auto status"
       echo "  dune update auto run"
@@ -556,7 +581,7 @@ online_player_count() {
 write_auto_pending() {
   local build="$1"
   local first_seen="$2"
-  local notified="$3"
+  local sent_checkpoints="${3:-}"
   local tmp
 
   mkdir -p runtime/generated
@@ -564,10 +589,70 @@ write_auto_pending() {
   cat >"$tmp" <<EOF
 DUNE_AUTO_UPDATE_PENDING_BUILD=$build
 DUNE_AUTO_UPDATE_PENDING_SINCE=$first_seen
-DUNE_AUTO_UPDATE_PENDING_NOTIFIED=$notified
+DUNE_AUTO_UPDATE_PENDING_SENT=$sent_checkpoints
 EOF
   chmod 644 "$tmp" 2>/dev/null || true
   mv -f "$tmp" "$AUTO_PENDING_FILE"
+}
+
+checkpoint_was_sent() {
+  local sent="${1:-}"
+  local checkpoint="$2"
+  case ",$sent," in
+    *",$checkpoint,"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Runs a restart-style notification countdown for an available game update.
+# The deadline is anchored to first_seen so an interrupted systemd job resumes
+# the same countdown instead of restarting it. If several checkpoints elapsed
+# while the host was down, only the nearest warning is broadcast; the older
+# missed marks are recorded as sent so players are not spammed on recovery.
+run_auto_update_notification_countdown() {
+  local build="$1"
+  local first_seen="$2"
+  local sent_checkpoints="${3:-}"
+  local checkpoints deadline now remaining checkpoint threshold next_sleep due_checkpoint
+  local -a marks=()
+
+  checkpoints="$(normalize_auto_notify_minutes "${DUNE_AUTO_UPDATE_NOTIFY_MINUTES:-15,10,5,1}")"
+  IFS=',' read -r -a marks <<< "$checkpoints"
+  deadline="$((first_seen + marks[0] * 60))"
+
+  while true; do
+    now="$(date +%s)"
+    remaining="$((deadline - now))"
+    due_checkpoint=""
+
+    for checkpoint in "${marks[@]}"; do
+      if [ "$remaining" -le "$((checkpoint * 60))" ] && ! checkpoint_was_sent "$sent_checkpoints" "$checkpoint"; then
+        due_checkpoint="$checkpoint"
+        sent_checkpoints="${sent_checkpoints:+$sent_checkpoints,}$checkpoint"
+      fi
+    done
+
+    if [ -n "$due_checkpoint" ]; then
+      sent_checkpoints="$(normalize_auto_notify_minutes "$sent_checkpoints")"
+      runtime/scripts/dune admin broadcast-restart-warning "$due_checkpoint" || true
+      write_auto_pending "$build" "$first_seen" "$sent_checkpoints"
+      echo "Automatic game update warning sent at $due_checkpoint minute(s) remaining."
+    fi
+
+    [ "$remaining" -gt 0 ] || break
+    next_sleep="$remaining"
+    for checkpoint in "${marks[@]}"; do
+      checkpoint_was_sent "$sent_checkpoints" "$checkpoint" && continue
+      threshold="$((deadline - checkpoint * 60))"
+      if [ "$threshold" -gt "$now" ] && [ "$((threshold - now))" -lt "$next_sleep" ]; then
+        next_sleep="$((threshold - now))"
+      fi
+    done
+    echo "Waiting $next_sleep second(s) until the next automatic game update warning or restart."
+    sleep "$next_sleep"
+  done
+
+  AUTO_UPDATE_SENT_CHECKPOINTS="$sent_checkpoints"
 }
 
 run_auto_update_policy() {
@@ -577,7 +662,7 @@ run_auto_update_policy() {
     return 0
   }
 
-  local check_log check_rc remote_build now first_seen notified players age_seconds max_wait_seconds
+  local check_log check_rc remote_build now first_seen sent_checkpoints players age_seconds max_wait_seconds
   check_log="$(mktemp)"
   set +e
   "$0" check >"$check_log" 2>&1
@@ -612,26 +697,33 @@ run_auto_update_policy() {
 
   now="$(date +%s)"
   first_seen="$now"
-  notified=0
+  sent_checkpoints=""
   if [ -f "$AUTO_PENDING_FILE" ]; then
     # shellcheck disable=SC1090
     . "$AUTO_PENDING_FILE"
     if [ "${DUNE_AUTO_UPDATE_PENDING_BUILD:-}" = "$remote_build" ]; then
       first_seen="${DUNE_AUTO_UPDATE_PENDING_SINCE:-$now}"
-      notified="${DUNE_AUTO_UPDATE_PENDING_NOTIFIED:-0}"
+      sent_checkpoints="${DUNE_AUTO_UPDATE_PENDING_SENT:-}"
+      # A pending file written by an older release only records whether its
+      # one warning fired. Treat every configured checkpoint as handled so an
+      # upgrade never replays a fresh countdown for an already-pending update.
+      if [ -z "$sent_checkpoints" ] && [ "${DUNE_AUTO_UPDATE_PENDING_NOTIFIED:-0}" = "1" ]; then
+        sent_checkpoints="$(normalize_auto_notify_minutes "${DUNE_AUTO_UPDATE_NOTIFY_MINUTES:-15,10,5,1}")"
+      fi
     fi
   fi
 
-  if [ "${DUNE_AUTO_UPDATE_NOTIFY_ENABLED:-1}" = "1" ] && [ "$notified" != "1" ]; then
-    runtime/scripts/dune admin broadcast-restart-warning "${DUNE_AUTO_UPDATE_NOTIFY_MINUTES:-15}" || true
-    notified=1
+  write_auto_pending "$remote_build" "$first_seen" "$sent_checkpoints"
+  if [ "${DUNE_AUTO_UPDATE_NOTIFY_ENABLED:-1}" = "1" ]; then
+    run_auto_update_notification_countdown "$remote_build" "$first_seen" "$sent_checkpoints"
+    sent_checkpoints="${AUTO_UPDATE_SENT_CHECKPOINTS:-$sent_checkpoints}"
   fi
-  write_auto_pending "$remote_build" "$first_seen" "$notified"
 
   if [ "${DUNE_AUTO_UPDATE_WAIT_EMPTY:-0}" = "1" ]; then
     players="$(online_player_count)"
     players="${players:-0}"
     max_wait_seconds="$((${DUNE_AUTO_UPDATE_MAX_WAIT_MINUTES:-360} * 60))"
+    now="$(date +%s)"
     age_seconds="$((now - first_seen))"
     if [ "$players" -gt 0 ] 2>/dev/null && { [ "$max_wait_seconds" -eq 0 ] || [ "$age_seconds" -lt "$max_wait_seconds" ]; }; then
       echo "Update is pending, but $players player(s) are online. Waiting for the server to empty."
@@ -642,9 +734,6 @@ run_auto_update_policy() {
     else
       echo "Server is empty; applying pending update."
     fi
-  elif [ "${DUNE_AUTO_UPDATE_NOTIFY_ENABLED:-1}" = "1" ]; then
-    echo "Waiting ${DUNE_AUTO_UPDATE_NOTIFY_MINUTES:-15} minute(s) after player warning before applying update."
-    sleep "$((DUNE_AUTO_UPDATE_NOTIFY_MINUTES * 60))"
   fi
 
   "$0" --yes
@@ -652,7 +741,7 @@ run_auto_update_policy() {
 }
 
 if [ "$cmd" = "auto" ]; then
-  handle_auto_update "${2:-status}" "${3:-$AUTO_DEFAULT_INTERVAL_MINUTES}" "${4:-1}" "${5:-1}" "${6:-15}" "${7:-0}" "${8:-360}"
+  handle_auto_update "${2:-status}" "${3:-$AUTO_DEFAULT_INTERVAL_MINUTES}" "${4:-1}" "${5:-1}" "${6:-15,10,5,1}" "${7:-0}" "${8:-360}"
   exit $?
 fi
 

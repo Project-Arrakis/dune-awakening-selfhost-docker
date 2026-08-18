@@ -5,6 +5,22 @@ set -e
 # via the compose user: field — the host UID maps to dune's UID 1000 in the
 # container. We just verify the mounted /repo is writable.
 
+console_home="${HOME:-/tmp/dune-console-home}"
+docker_config="${DOCKER_CONFIG:-${console_home}/.docker}"
+
+if ! mkdir -p "$console_home" "$docker_config" 2>/dev/null; then
+  echo "[entrypoint] ERROR: The Console home directory is not writable: $console_home" >&2
+  echo "[entrypoint] Docker commands cannot run without a writable home directory." >&2
+  exit 1
+fi
+chmod 700 "$console_home" "$docker_config" 2>/dev/null || true
+
+if ! touch "$docker_config/.dune-write-test" 2>/dev/null; then
+  echo "[entrypoint] ERROR: The Docker configuration directory is not writable: $docker_config" >&2
+  exit 1
+fi
+rm -f "$docker_config/.dune-write-test"
+
 if ! touch /repo/.dune-write-test 2>/dev/null; then
   echo "[entrypoint] ERROR: /repo is not writable (UID $(id -u), GID $(id -g))" >&2
   echo "[entrypoint] The host directory is owned by a different UID." >&2

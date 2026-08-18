@@ -137,6 +137,7 @@ export class TaskManager {
     const hostUid = process.env.DUNE_HOST_UID || String(process.getuid?.() ?? 0);
     const hostGid = process.env.DUNE_HOST_GID || String(process.getgid?.() ?? 0);
     const dockerSocketGid = process.env.DOCKER_SOCKET_GID || detectDockerSocketGid();
+    const extraEnv = process.env.DUNE_SELF_UPDATE_TOKEN ? ["DUNE_SELF_UPDATE_TOKEN"] : [];
     const logFile = "runtime/generated/web-self-update.log";
     const command = [
       "set -eu",
@@ -156,6 +157,7 @@ export class TaskManager {
       hostUid,
       hostGid,
       dockerSocketGid,
+      extraEnv,
       command
     }), this.config.repoRoot);
 
@@ -187,7 +189,7 @@ export class TaskManager {
         this.append(task, `Queued ${label} were not applied: ${failure.error || "unknown error"}`, "stderr");
       }
     } catch (error) {
-      this.append(task, `Queued generator refills were not applied: ${error?.message || error}`, "stderr");
+      this.append(task, `Queued generator refills were not applied: ${error?.message || "Unexpected error."}`, "stderr");
     }
   }
 

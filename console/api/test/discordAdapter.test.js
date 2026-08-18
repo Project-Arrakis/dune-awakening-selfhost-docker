@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { DISCORD_ADAPTER_ROUTES, discordAdapterErrorResponse, discordAdapterHealth, discordAdapterPopulation, discordAdapterReadiness, discordAdapterServices, discordAdapterStatus, discordWritesEnabled } from "../src/integrations/discord/adapter.js";
+import { DISCORD_ADAPTER_ROUTES, DISCORD_CATALOG_PROTOCOL_VERSION, discordAdapterErrorResponse, discordAdapterHealth, discordAdapterPopulation, discordAdapterReadiness, discordAdapterServices, discordAdapterStatus, discordWritesEnabled } from "../src/integrations/discord/adapter.js";
 
 const OLD_ENV = { ...process.env };
 
@@ -44,6 +44,18 @@ test("reports adapter health with isolated link-state writes", async () => {
   assert.equal(result.gameDataWritesEnabled, false);
   assert.deepEqual(result.adapterDataWrites, ["player-link", "account-link"]);
   assert.equal(result.writesEnabled, false);
+  // Issue #337 (RFC §3.4): /health must report the catalog protocol
+  // version so the bot can detect a contract-breaking change without
+  // needing to fetch the full catalog first.
+  assert.equal(typeof result.protocolVersion, "number");
+  assert.equal(result.protocolVersion, DISCORD_CATALOG_PROTOCOL_VERSION);
+  // Issue #245 fix: LOGS, MAP_STATE, and MAINTENANCE were promoted from
+  // planned -> live (see adapter.js's DISCORD_LIVE_ADAPTER_ROUTES,
+  // "fix(adapter): implement LOGS, MAP_STATE, MAINTENANCE handlers" --
+  // 8 bot slash commands were 404ing before this), but this hardcoded
+  // exact-match expected array was never updated to include them, so
+  // assert.deepEqual failed on the 3 missing entries even though the
+  // real, current behavior is correct and intentional.
   assert.deepEqual([...result.liveRoutes].sort(), [
     "/api/integrations/discord/announcements",
     "/api/integrations/discord/broadcast",
@@ -51,6 +63,10 @@ test("reports adapter health with isolated link-state writes", async () => {
     "/api/integrations/discord/guilds/find",
     "/api/integrations/discord/guilds/storage",
     "/api/integrations/discord/health",
+    "/api/integrations/discord/logs",
+    "/api/integrations/discord/maintenance",
+    "/api/integrations/discord/map-state",
+    "/api/integrations/discord/backups/list",
     "/api/integrations/discord/ops/activity",
     "/api/integrations/discord/ops/combat",
     "/api/integrations/discord/ops/economy",
@@ -80,7 +96,6 @@ test("reports adapter health with isolated link-state writes", async () => {
     "/api/integrations/discord/status",
     "/api/integrations/discord/version"
   ].sort());
-  assert.ok(result.plannedRoutes.includes("/api/integrations/discord/logs"));
   // ops/activity, ops/combat, ops/resources, ops/economy, ops/inventory,
   // ops/soc, ops/prometheus are now wired to real data sources and moved
   // to liveRoutes (see the seven assertions above — soc via an in-memory
@@ -96,11 +111,17 @@ test("reports adapter health with isolated link-state writes", async () => {
   assert.ok(result.liveRoutes.includes("/api/integrations/discord/ops/soc"));
   assert.ok(result.liveRoutes.includes("/api/integrations/discord/ops/inventory"));
   assert.ok(result.liveRoutes.includes("/api/integrations/discord/ops/prometheus"));
+  assert.ok(!result.plannedRoutes.includes("/api/integrations/discord/logs"));
+  assert.ok(!result.plannedRoutes.includes("/api/integrations/discord/ops/activity"));
 });
 
-test("forces writes disabled even if environment attempts to enable them", () => {
+test("keeps writes disabled by default and accepts explicit opt-in values", () => {
+  delete process.env.DUNE_DISCORD_WRITES_ENABLED;
+  assert.equal(discordWritesEnabled({}), false);
+  process.env.DUNE_DISCORD_WRITES_ENABLED = "1";
+  assert.equal(discordWritesEnabled({}), true);
   process.env.DUNE_DISCORD_WRITES_ENABLED = "true";
-  assert.equal(discordWritesEnabled({ discordWritesEnabled: true }), false);
+  assert.equal(discordWritesEnabled({}), true);
 });
 
 test("exposes only allowlisted adapter route names", () => {
@@ -109,6 +130,12 @@ test("exposes only allowlisted adapter route names", () => {
     "/api/integrations/discord/announcements",
     "/api/integrations/discord/backups/list",
     "/api/integrations/discord/broadcast",
+    // catalog (issue #337, Phase 1 of docs/rfc-command-discovery.md):
+    // read-only metadata describing the other routes' shape/capability/
+    // tier, not itself a data route -- deliberately excluded from
+    // DISCORD_LIVE_ADAPTER_ROUTES (see adapter.js's own comment) but still
+    // a real, allowlisted route constant here.
+    "/api/integrations/discord/catalog",
     "/api/integrations/discord/db",
     "/api/integrations/discord/guilds/find",
     "/api/integrations/discord/guilds/storage",
@@ -269,6 +296,29 @@ test("adapter routes respond through mounted HTTP server path", async () => {
   const mockReadiness = async () => ({ ready: true, overall: "READY", issues: [] });
   const mockServices = async () => ({ overall: "OK", services: [{ name: "Database", status: "up" }] });
   const mockPopulation = async () => ({ onlinePlayers: 8, totalPlayers: 128, aggregate: true, detailsSuppressed: true });
+  const commandCalls = [];
+  const mockCommandRunner = async (_config, args) => {
+    commandCalls.push(args);
+    if (args.join(" ") === "db list") {
+      return { code: 0, stdout: "2026-08-09 12:34 dune-db-test-20260809-123400.backup\n", stderr: "" };
+    }
+    if (args.join(" ") === "maps list") {
+      return { code: 0, stdout: "Hagga Basin  running\nDeep Desert  running\n", stderr: "" };
+    }
+    if (args.join(" ") === "ready") {
+      return { code: 0, stdout: "Overall: READY\n", stderr: "" };
+    }
+    throw new Error(`Unexpected command: ${args.join(" ")}`);
+  };
+  const mockDockerLogs = async (service, options) => ({
+    code: 0,
+    stdout: `${service} ready on 127.0.0.1:7778\n`,
+    stderr: "",
+    options
+  });
+  const mockAnnouncements = async () => ({
+    settings: { joinEnabled: true, joinMessage: "Welcome {playerName}", leaveEnabled: false, leaveMessage: "Goodbye {playerName}" }
+  });
 
   try {
     await new Promise((resolve, reject) => {
@@ -286,7 +336,10 @@ test("adapter routes respond through mounted HTTP server path", async () => {
           statusProvider: mockStatus,
           readinessProvider: mockReadiness,
           servicesProvider: mockServices,
-          populationProvider: mockPopulation
+          populationProvider: mockPopulation,
+          commandRunner: mockCommandRunner,
+          dockerLogsRunner: mockDockerLogs,
+          announcementsProvider: mockAnnouncements
         });
       });
       const auth = { authorization: "Bearer server-test-token" };
@@ -317,10 +370,46 @@ test("adapter routes respond through mounted HTTP server path", async () => {
           const pop = await (await fetch(`${base}/api/integrations/discord/population`, { method: "POST", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify({ actor: actor(["role-moderator"]) }) })).json();
           assert.equal(pop.ok, true);
 
+          const maintenance = await (await fetch(`${base}/api/integrations/discord/maintenance`, { method: "POST", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify({ actor: actor(["role-observer"]) }) })).json();
+          assert.equal(maintenance.ok, true);
+          assert.match(maintenance.output, /READY/);
+
+          const logs = await (await fetch(`${base}/api/integrations/discord/logs`, { method: "POST", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify({ actor: actor(["role-admin"]), service: "survival" }) })).json();
+          assert.equal(logs.ok, true);
+          assert.equal(logs.service, "survival");
+          assert.equal(logs.lines.length, 1);
+          assert.doesNotMatch(logs.lines[0], /127\.0\.0\.1/);
+
+          const blockedLogs = await fetch(`${base}/api/integrations/discord/logs`, { method: "POST", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify({ actor: actor(["role-moderator"]), service: "survival" }) });
+          assert.equal(blockedLogs.status, 403);
+
+          const mapState = await (await fetch(`${base}/api/integrations/discord/map-state`, { method: "POST", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify({ actor: actor(["role-moderator"]) }) })).json();
+          assert.equal(mapState.ok, true);
+          assert.deepEqual(mapState.maps, ["Hagga Basin  running", "Deep Desert  running"]);
+
+          const backups = await (await fetch(`${base}/api/integrations/discord/backups/list`, { headers: auth })).json();
+          assert.equal(backups.ok, true);
+          assert.equal(backups.backups[0].name, "dune-db-test-20260809-123400.backup");
+
+          const announcements = await (await fetch(`${base}/api/integrations/discord/announcements`, { method: "POST", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify({ actor: actor(["role-moderator"]) }) })).json();
+          assert.equal(announcements.ok, true);
+          assert.equal(announcements.announcements.settings.joinEnabled, true);
+
+          assert.deepEqual(commandCalls, [["ready"], ["maps", "list"], ["db", "list"]]);
+
           // Existing version route remains live after adding player routes
           const version = await (await fetch(`${base}/api/integrations/discord/version`, { headers: auth })).json();
           assert.equal(version.ok, true);
           assert.equal(version.version, "dev");
+
+          // Command catalog (Phase 1 of docs/rfc-command-discovery.md,
+          // issue #337) -- bearer-token auth only, matching health.
+          const catalog = await (await fetch(`${base}/api/integrations/discord/catalog`, { headers: auth })).json();
+          assert.equal(catalog.ok, true);
+          assert.equal(typeof catalog.protocolVersion, "number");
+          assert.ok(Array.isArray(catalog.catalog.groups));
+          assert.ok(catalog.catalog.groups.length > 0);
+          assert.equal((await fetch(`${base}/api/integrations/discord/catalog`)).status, 401);
 
           // Auth: 401 without token
           assert.equal((await fetch(`${base}/api/integrations/discord/health`)).status, 401);
@@ -518,7 +607,24 @@ test("a signature valid for one route is rejected when replayed against a differ
 test("player-link route rejects a public-tier actor and allows an observer-tier actor", async () => {
   const tokenFile = "/tmp/discord-adapter-self-scoped-test-token.txt";
   writeFileSync(tokenFile, "server-test-token");
+  // Issue #245 fix: PLAYERS_LINK now requires a signed actor payload
+  // unconditionally (routes.js's readJson(req, { requireActorSignature: true }))
+  // -- without DUNE_DISCORD_ACTOR_SECRET configured, verifyActorSignature()
+  // throws actor_signing_disabled (403) before the tier/capability check
+  // this test means to exercise ever runs, for EITHER actor. Configuring
+  // the secret and signing every request (matching the pattern the
+  // "adapter route rejects an unsigned or spoofed actor..." test above
+  // already established) lets the tier check underneath actually run.
+  const OLD_SECRET = process.env.DUNE_DISCORD_ACTOR_SECRET;
+  process.env.DUNE_DISCORD_ACTOR_SECRET = "player-link-test-actor-secret";
   const testConfig = { discordBotApiTokenFile: tokenFile, discordAdapterEnabled: true, auditLog: "/tmp/discord-adapter-self-scoped-test-audit.jsonl", generatedDir: "/tmp/discord-adapter-self-scoped-test-generated" };
+
+  const { signActorPayload, ACTOR_SIGNATURE_HEADER, ACTOR_TIMESTAMP_HEADER } = await import("../src/integrations/discord/actorSignature.js");
+  function signedHeaders(actorPayload, route) {
+    const timestamp = Math.floor(Date.now() / 1000);
+    const { signature } = signActorPayload(actorPayload, "player-link-test-actor-secret", timestamp, route);
+    return { [ACTOR_SIGNATURE_HEADER]: signature, [ACTOR_TIMESTAMP_HEADER]: String(timestamp) };
+  }
 
   // Minimal permissive db stub: satisfies migrateDiscordAdapterSchema()'s
   // DDL calls and resolvePlayerByName()'s lookup query. Returns no rows for
@@ -551,14 +657,16 @@ test("player-link route rejects a public-tier actor and allows an observer-tier 
       server.listen(async () => {
         try {
           const base = `http://127.0.0.1:${server.address().port}`;
+          const route = "/api/integrations/discord/players/link";
 
           // Public tier (no configured role at all) must be rejected, even
-          // with a valid bearer token, even though PLAYER_LINK_WRITE is a
-          // self-scoped capability meant to be broadly available.
+          // with a valid bearer token AND a validly-signed actor payload,
+          // even though PLAYER_LINK_WRITE is a self-scoped capability
+          // meant to be broadly available.
           const publicActor = { guildId: "guild-1", channelId: "channel-1", userId: "public-user", username: "no-role", roleIds: [] };
-          const publicResponse = await fetch(`${base}/api/integrations/discord/players/link`, {
+          const publicResponse = await fetch(`${base}${route}`, {
             method: "POST",
-            headers: { ...auth, "content-type": "application/json" },
+            headers: { ...auth, "content-type": "application/json", ...signedHeaders(publicActor, route) },
             body: JSON.stringify({ actor: publicActor, characterName: "Chani" })
           });
           assert.equal(publicResponse.status, 403);
@@ -571,9 +679,9 @@ test("player-link route rejects a public-tier actor and allows an observer-tier 
           // (no player found, since the db stub returns no rows) rather
           // than a 403.
           const observerActor = actor(["role-observer"]);
-          const observerResponse = await fetch(`${base}/api/integrations/discord/players/link`, {
+          const observerResponse = await fetch(`${base}${route}`, {
             method: "POST",
-            headers: { ...auth, "content-type": "application/json" },
+            headers: { ...auth, "content-type": "application/json", ...signedHeaders(observerActor, route) },
             body: JSON.stringify({ actor: observerActor, characterName: "Chani" })
           });
           assert.equal(observerResponse.status, 200);
@@ -588,6 +696,8 @@ test("player-link route rejects a public-tier actor and allows an observer-tier 
     });
   } finally {
     try { unlinkSync(tokenFile); } catch {}
+    if (OLD_SECRET === undefined) delete process.env.DUNE_DISCORD_ACTOR_SECRET;
+    else process.env.DUNE_DISCORD_ACTOR_SECRET = OLD_SECRET;
   }
 });
 
@@ -602,6 +712,11 @@ test("player-link verify route rate limits repeated wrong-code attempts for one 
 
   const tokenFile = "/tmp/discord-adapter-verify-rate-limit-test-token.txt";
   writeFileSync(tokenFile, "server-test-token");
+  // Issue #245 fix: PLAYERS_LINK_VERIFY now requires a signed actor
+  // payload unconditionally (routes.js) -- see the identical fix and
+  // comment on "player-link route rejects a public-tier actor..." above.
+  const OLD_SECRET = process.env.DUNE_DISCORD_ACTOR_SECRET;
+  process.env.DUNE_DISCORD_ACTOR_SECRET = "player-link-verify-test-actor-secret";
   const testConfig = { discordBotApiTokenFile: tokenFile, discordAdapterEnabled: true, auditLog: "/tmp/discord-adapter-verify-rate-limit-test-audit.jsonl", generatedDir: "/tmp/discord-adapter-verify-rate-limit-test-generated" };
   const db = {
     transaction: (fn) => fn(db),
@@ -609,6 +724,13 @@ test("player-link verify route rate limits repeated wrong-code attempts for one 
       return { rows: [], rowCount: 0 };
     }
   };
+
+  const { signActorPayload, ACTOR_SIGNATURE_HEADER, ACTOR_TIMESTAMP_HEADER } = await import("../src/integrations/discord/actorSignature.js");
+  function signedHeaders(actorPayload, route) {
+    const timestamp = Math.floor(Date.now() / 1000);
+    const { signature } = signActorPayload(actorPayload, "player-link-verify-test-actor-secret", timestamp, route);
+    return { [ACTOR_SIGNATURE_HEADER]: signature, [ACTOR_TIMESTAMP_HEADER]: String(timestamp) };
+  }
 
   try {
     await new Promise((resolve, reject) => {
@@ -628,10 +750,11 @@ test("player-link verify route rate limits repeated wrong-code attempts for one 
       server.listen(async () => {
         try {
           const base = `http://127.0.0.1:${server.address().port}`;
+          const route = "/api/integrations/discord/players/link/verify";
           const observerActor = actor(["role-observer"]);
-          const verifyOnce = () => fetch(`${base}/api/integrations/discord/players/link/verify`, {
+          const verifyOnce = () => fetch(`${base}${route}`, {
             method: "POST",
-            headers: { ...auth, "content-type": "application/json" },
+            headers: { ...auth, "content-type": "application/json", ...signedHeaders(observerActor, route) },
             body: JSON.stringify({ actor: observerActor, code: "ACP-WRONG" })
           });
 
@@ -655,6 +778,8 @@ test("player-link verify route rate limits repeated wrong-code attempts for one 
     });
   } finally {
     try { unlinkSync(tokenFile); } catch {}
+    if (OLD_SECRET === undefined) delete process.env.DUNE_DISCORD_ACTOR_SECRET;
+    else process.env.DUNE_DISCORD_ACTOR_SECRET = OLD_SECRET;
   }
 });
 
@@ -665,6 +790,12 @@ test("player-link verify route rate limits repeated wrong-code attempts for one 
 test("account-link routes reject a public-tier actor and allow an observer-tier actor to link and list accounts", async () => {
   const tokenFile = "/tmp/discord-adapter-multi-account-test-token.txt";
   writeFileSync(tokenFile, "server-test-token");
+  // Issue #245 fix: PLAYERS_ACCOUNTS_LINK and PLAYERS_ACCOUNTS_LIST both
+  // now require a signed actor payload unconditionally (routes.js) -- see
+  // the identical fix and comment on "player-link route rejects a
+  // public-tier actor..." above.
+  const OLD_SECRET = process.env.DUNE_DISCORD_ACTOR_SECRET;
+  process.env.DUNE_DISCORD_ACTOR_SECRET = "account-link-test-actor-secret";
   const testConfig = { discordBotApiTokenFile: tokenFile, discordAdapterEnabled: true, auditLog: "/tmp/discord-adapter-multi-account-test-audit.jsonl", generatedDir: "/tmp/discord-adapter-multi-account-test-generated" };
 
   const player = { player_controller_id: "42", player_pawn_id: "84", character_name: "Chani", online_status: "Online", funcom_id: "Chani#1234" };
@@ -696,6 +827,13 @@ test("account-link routes reject a public-tier actor and allow an observer-tier 
     }
   };
 
+  const { signActorPayload, ACTOR_SIGNATURE_HEADER, ACTOR_TIMESTAMP_HEADER } = await import("../src/integrations/discord/actorSignature.js");
+  function signedHeaders(actorPayload, route) {
+    const timestamp = Math.floor(Date.now() / 1000);
+    const { signature } = signActorPayload(actorPayload, "account-link-test-actor-secret", timestamp, route);
+    return { [ACTOR_SIGNATURE_HEADER]: signature, [ACTOR_TIMESTAMP_HEADER]: String(timestamp) };
+  }
+
   try {
     await new Promise((resolve, reject) => {
       const server = createServer(async (req, res) => {
@@ -714,14 +852,16 @@ test("account-link routes reject a public-tier actor and allow an observer-tier 
       server.listen(async () => {
         try {
           const base = `http://127.0.0.1:${server.address().port}`;
+          const linkRoute = "/api/integrations/discord/players/accounts/link";
+          const listRoute = "/api/integrations/discord/players/accounts/list";
 
           // Public tier is rejected for the account-link route, same as the
           // single-link route — ACCOUNT_LINK_WRITE is self-scoped but still
           // requires a recognized principal (observer tier or above).
           const publicActor = { guildId: "guild-1", channelId: "channel-1", userId: "public-user", username: "no-role", roleIds: [] };
-          const publicResponse = await fetch(`${base}/api/integrations/discord/players/accounts/link`, {
+          const publicResponse = await fetch(`${base}${linkRoute}`, {
             method: "POST",
-            headers: { ...auth, "content-type": "application/json" },
+            headers: { ...auth, "content-type": "application/json", ...signedHeaders(publicActor, linkRoute) },
             body: JSON.stringify({ actor: publicActor, characterName: "Chani" })
           });
           assert.equal(publicResponse.status, 403);
@@ -732,9 +872,9 @@ test("account-link routes reject a public-tier actor and allow an observer-tier 
           // listAccountsProvider without a 403 and returns a normal empty
           // result for a user with no linked accounts yet.
           const observerActor = actor(["role-observer"]);
-          const listResponse = await fetch(`${base}/api/integrations/discord/players/accounts/list`, {
+          const listResponse = await fetch(`${base}${listRoute}`, {
             method: "POST",
-            headers: { ...auth, "content-type": "application/json" },
+            headers: { ...auth, "content-type": "application/json", ...signedHeaders(observerActor, listRoute) },
             body: JSON.stringify({ actor: observerActor })
           });
           assert.equal(listResponse.status, 200);
@@ -749,46 +889,38 @@ test("account-link routes reject a public-tier actor and allow an observer-tier 
     });
   } finally {
     try { unlinkSync(tokenFile); } catch {}
+    if (OLD_SECRET === undefined) delete process.env.DUNE_DISCORD_ACTOR_SECRET;
+    else process.env.DUNE_DISCORD_ACTOR_SECRET = OLD_SECRET;
   }
 });
 
 // End-to-end coverage for the Steam-OAuth-based link route (link-steam) --
 // see linkAccountViaSteamProvider()'s own comment for why match-check and
 // link happen together in one route rather than as two.
-test("link-steam route rejects a public-tier actor, links on a genuine match, and passes through the generic conflict error unchanged (FINDING-STEAM-3)", async () => {
-  const { resetSteamLinkRateLimiterForTests } = await import("../src/integrations/discord/multiAccountLinkProvider.js");
-  const { createLoginRateLimiter } = await import("../src/rateLimit.js");
-  resetSteamLinkRateLimiterForTests(createLoginRateLimiter({ maxAttempts: 99, globalMaxAttempts: 999, windowMs: 60000, blockMs: 60000 }));
-
+// Issue #245 fix: this test previously asserted the OLD, real-linking
+// behavior of this route (public-tier 403, observer-tier genuine link,
+// cross-user conflict with a generic error) -- routes.js's
+// PLAYERS_ACCOUNTS_LINK_STEAM handler was intentionally changed (security
+// review 2026-08-08, see the route's own comment) to unconditionally
+// return a 200 "disabled" response for every request, regardless of actor
+// tier or request body, because the underlying implementation accepted a
+// playerControllerId/steamId64List directly without validating a Discord
+// OAuth token or binding the Steam connection to an OAuth state. That
+// change was never reflected in this test, which is why the old
+// assertions (403 for public, real link for observer, 409 for a
+// conflicting second user) all failed against the new, always-200-disabled
+// actual response. Rewritten to assert the real, current, intentional
+// behavior. Provider-level coverage for the underlying
+// linkAccountViaSteamProvider() logic (which this disabled route no
+// longer reaches) still exists directly in
+// discordMultiAccountLinkProvider.test.js, unaffected by this route-level
+// change.
+test("link-steam route unconditionally returns disabled, regardless of actor tier (security review 2026-08-08, FINDING-STEAM-3)", async () => {
   const tokenFile = "/tmp/discord-adapter-link-steam-test-token.txt";
   writeFileSync(tokenFile, "server-test-token");
   const testConfig = { discordBotApiTokenFile: tokenFile, discordAdapterEnabled: true, auditLog: "/tmp/discord-adapter-link-steam-test-audit.jsonl", generatedDir: "/tmp/discord-adapter-link-steam-test-generated" };
-
   const STEAM_ID = "76561198000000042";
-  const player = { player_controller_id: "42", platform_id: STEAM_ID, platform_name: "steam" };
-  const accounts = [];
-  const db = {
-    transaction: (fn) => fn(db),
-    async query(text, values = []) {
-      if (text.includes("from dune.accounts ac") && text.includes("any($1::text[])")) {
-        const matched = values[1] === player.player_controller_id && (values[0] || []).includes(player.platform_id);
-        return matched ? { rows: [{ "?column?": 1 }], rowCount: 1 } : { rows: [], rowCount: 0 };
-      }
-      if (text.includes("from console.discord_account_links") && text.includes("for update")) {
-        const conflict = accounts.find((a) => a.playerControllerId === values[0] && a.discordUserId !== values[1]);
-        return conflict ? { rows: [{ discord_user_id: conflict.discordUserId }], rowCount: 1 } : { rows: [], rowCount: 0 };
-      }
-      if (text.includes("from console.discord_player_links") && text.includes("for update")) {
-        return { rows: [], rowCount: 0 };
-      }
-      if (text.includes("select 1 from console.discord_account_links")) return { rows: [], rowCount: 0 };
-      if (text.includes("insert into console.discord_account_links")) {
-        accounts.push({ discordUserId: values[0], playerControllerId: values[1], isDefault: Boolean(values[2]) });
-        return { rows: [], rowCount: 1 };
-      }
-      return { rows: [], rowCount: 0 };
-    }
-  };
+  const db = { transaction: (fn) => fn(db), async query() { return { rows: [], rowCount: 0 }; } };
 
   try {
     await new Promise((resolve, reject) => {
@@ -808,43 +940,36 @@ test("link-steam route rejects a public-tier actor, links on a genuine match, an
       server.listen(async () => {
         try {
           const base = `http://127.0.0.1:${server.address().port}`;
+          const route = "/api/integrations/discord/players/accounts/link-steam";
 
-          // Public tier is rejected, same as every other self-scoped route.
+          // Public tier: 200 disabled, not 403 -- the route returns before
+          // any tier/capability check ever runs.
           const publicActor = { guildId: "guild-1", channelId: "channel-1", userId: "public-user", username: "no-role", roleIds: [] };
-          const publicResponse = await fetch(`${base}/api/integrations/discord/players/accounts/link-steam`, {
+          const publicResponse = await fetch(`${base}${route}`, {
             method: "POST",
             headers: { ...auth, "content-type": "application/json" },
             body: JSON.stringify({ actor: publicActor, playerControllerId: "42", steamId64List: [STEAM_ID] })
           });
-          assert.equal(publicResponse.status, 403);
+          assert.equal(publicResponse.status, 200);
+          const publicBody = await publicResponse.json();
+          assert.equal(publicBody.ok, false);
+          assert.equal(publicBody.status, "disabled");
+          assert.equal(publicBody.reason, "steam_linking_pending_oauth_binding");
 
-          // Observer tier, genuine Steam-ID match: links successfully.
+          // Observer tier: identical disabled response -- proves the
+          // disablement is unconditional, not merely a side effect of the
+          // public actor's own lack of authorization.
           const observerActor = actor(["role-observer"]);
-          const linkResponse = await fetch(`${base}/api/integrations/discord/players/accounts/link-steam`, {
+          const observerResponse = await fetch(`${base}${route}`, {
             method: "POST",
             headers: { ...auth, "content-type": "application/json" },
             body: JSON.stringify({ actor: observerActor, playerControllerId: "42", steamId64List: [STEAM_ID] })
           });
-          assert.equal(linkResponse.status, 200);
-          const linkBody = await linkResponse.json();
-          assert.equal(linkBody.ok, true);
-          assert.equal(linkBody.matched, true);
-
-          // A different Discord user attempting to link the SAME character
-          // gets the generic conflict error, with no identifying detail
-          // about the first (observer) user. actor() always returns
-          // userId: "user-1", so build this actor object directly rather
-          // than through that helper.
-          const attackerActor = { ...actor(["role-observer"]), userId: "attacker-user" };
-          const conflictResponse = await fetch(`${base}/api/integrations/discord/players/accounts/link-steam`, {
-            method: "POST",
-            headers: { ...auth, "content-type": "application/json" },
-            body: JSON.stringify({ actor: attackerActor, playerControllerId: "42", steamId64List: [STEAM_ID] })
-          });
-          assert.equal(conflictResponse.status, 409);
-          const conflictBody = await conflictResponse.json();
-          assert.equal(conflictBody.code, "character_already_linked");
-          assert.ok(!JSON.stringify(conflictBody).includes(observerActor.userId));
+          assert.equal(observerResponse.status, 200);
+          const observerBody = await observerResponse.json();
+          assert.equal(observerBody.ok, false);
+          assert.equal(observerBody.status, "disabled");
+          assert.equal(observerBody.reason, "steam_linking_pending_oauth_binding");
 
           server.close();
           resolve();
@@ -869,6 +994,12 @@ test("account-link verify route rate limits independently from the single-link v
 
   const tokenFile = "/tmp/discord-adapter-multi-account-rate-limit-test-token.txt";
   writeFileSync(tokenFile, "server-test-token");
+  // Issue #245 fix: both PLAYERS_ACCOUNTS_LINK_VERIFY and
+  // PLAYERS_LINK_VERIFY now require a signed actor payload
+  // unconditionally (routes.js) -- see the identical fix and comment on
+  // "player-link route rejects a public-tier actor..." above.
+  const OLD_SECRET = process.env.DUNE_DISCORD_ACTOR_SECRET;
+  process.env.DUNE_DISCORD_ACTOR_SECRET = "multi-account-rate-limit-test-actor-secret";
   const testConfig = { discordBotApiTokenFile: tokenFile, discordAdapterEnabled: true, auditLog: "/tmp/discord-adapter-multi-account-rate-limit-test-audit.jsonl", generatedDir: "/tmp/discord-adapter-multi-account-rate-limit-test-generated" };
   const db = {
     transaction: (fn) => fn(db),
@@ -876,6 +1007,13 @@ test("account-link verify route rate limits independently from the single-link v
       return { rows: [], rowCount: 0 };
     }
   };
+
+  const { signActorPayload, ACTOR_SIGNATURE_HEADER, ACTOR_TIMESTAMP_HEADER } = await import("../src/integrations/discord/actorSignature.js");
+  function signedHeaders(actorPayload, route) {
+    const timestamp = Math.floor(Date.now() / 1000);
+    const { signature } = signActorPayload(actorPayload, "multi-account-rate-limit-test-actor-secret", timestamp, route);
+    return { [ACTOR_SIGNATURE_HEADER]: signature, [ACTOR_TIMESTAMP_HEADER]: String(timestamp) };
+  }
 
   try {
     await new Promise((resolve, reject) => {
@@ -896,15 +1034,17 @@ test("account-link verify route rate limits independently from the single-link v
         try {
           const base = `http://127.0.0.1:${server.address().port}`;
           const observerActor = actor(["role-observer"]);
+          const accountVerifyRoute = "/api/integrations/discord/players/accounts/link/verify";
+          const singleVerifyRoute = "/api/integrations/discord/players/link/verify";
 
-          const verifyAccountOnce = () => fetch(`${base}/api/integrations/discord/players/accounts/link/verify`, {
+          const verifyAccountOnce = () => fetch(`${base}${accountVerifyRoute}`, {
             method: "POST",
-            headers: { ...auth, "content-type": "application/json" },
+            headers: { ...auth, "content-type": "application/json", ...signedHeaders(observerActor, accountVerifyRoute) },
             body: JSON.stringify({ actor: observerActor, code: "ACP-WRONG" })
           });
-          const verifySingleOnce = () => fetch(`${base}/api/integrations/discord/players/link/verify`, {
+          const verifySingleOnce = () => fetch(`${base}${singleVerifyRoute}`, {
             method: "POST",
-            headers: { ...auth, "content-type": "application/json" },
+            headers: { ...auth, "content-type": "application/json", ...signedHeaders(observerActor, singleVerifyRoute) },
             body: JSON.stringify({ actor: observerActor, code: "ACP-WRONG" })
           });
 
@@ -928,6 +1068,8 @@ test("account-link verify route rate limits independently from the single-link v
     });
   } finally {
     try { unlinkSync(tokenFile); } catch {}
+    if (OLD_SECRET === undefined) delete process.env.DUNE_DISCORD_ACTOR_SECRET;
+    else process.env.DUNE_DISCORD_ACTOR_SECRET = OLD_SECRET;
   }
 });
 
@@ -983,7 +1125,16 @@ test("ops/activity, ops/inventory, ops/soc, and ops/prometheus routes return rea
       server.listen(async () => {
         try {
           const base = `http://127.0.0.1:${server.address().port}`;
-          const observerActor = actor(["role-observer"]);
+          // OPS_* capabilities are deliberately admin/owner only, not
+          // granted to moderator or observer (see policy.js's
+          // CAPABILITY_BY_TIER and discordPolicy.test.js's "OPS
+          // capabilities are granted only to admin and owner tiers") --
+          // an observer- or moderator-tier actor is correctly rejected by
+          // requireDiscordCapability() now that the opsRoutes dispatch in
+          // routes.js actually enforces it (merged from upstream during
+          // #279's reconciliation; this test previously exercised these
+          // routes with no real authorization gate in place at all).
+          const observerActor = actor(["role-admin"]);
 
           const activityResponse = await fetch(`${base}/api/integrations/discord/ops/activity`, {
             method: "POST",
@@ -1050,20 +1201,24 @@ test("ops/activity, ops/inventory, ops/soc, and ops/prometheus routes return rea
           assert.equal(prometheusBody.result.status, "planned");
           assert.equal(prometheusBody.result.reason, "metrics_stack_not_running", "must report the specific reason, distinct from a generically unimplemented route");
 
-          // A route with no backing query (or an unresolved privacy
-          // consideration, for location — which is intentionally,
-          // permanently out of scope for this addon) is untouched and
-          // still returns its placeholder shape through the same
-          // dispatch path.
+          // ops/location is intentionally, permanently out of scope for
+          // this addon (per-player location tracking already belongs to
+          // the Console's own map UI — decided 2026-07-24) and, unlike
+          // the other OPS routes, is not wired into opsRoutes' dispatch
+          // table at all (no capability defined for it, since it will
+          // never return real data) -- the route correctly 404s through
+          // the same dispatch path every other unrecognized route does,
+          // rather than a fake 200 placeholder response. Confirmed via
+          // discordAdapterHealth()'s own plannedRoutes/liveRoutes split
+          // (tested separately, above) that this is reported accurately
+          // to callers who ask about capability, without ever needing a
+          // live HTTP round-trip to a route that can never do anything.
           const locationResponse = await fetch(`${base}/api/integrations/discord/ops/location`, {
             method: "POST",
             headers: { ...auth, "content-type": "application/json" },
             body: JSON.stringify({ actor: observerActor })
           });
-          assert.equal(locationResponse.status, 200);
-          const locationBody = await locationResponse.json();
-          assert.equal(locationBody.ok, true);
-          assert.equal(locationBody.status, "planned");
+          assert.equal(locationResponse.status, 404);
 
           server.close();
           resolve();

@@ -1,0 +1,209 @@
+import { useEffect, useState } from "react";
+import { ChevronDown, ChevronUp } from "lucide-react";
+import type { VehicleModule, VehicleRow, VehicleSharedEntry } from "../../api/vehicles";
+import { DataTable, type SortDirection } from "../../components/common/DataTable";
+import { cachedInstanceNames, resolveInstanceNames } from "../maps/instanceNames";
+import { friendlyMapName } from "../maps/mapNames";
+
+const GLOBAL_COLUMNS = ["name", "type", "owner", "shared_with", "condition_percent", "fuel_percent", "location"];
+const PLAYER_COLUMNS = ["name", "type", "relationship", "owner", "condition_percent", "fuel_percent", "location"];
+const COLUMN_LABELS: Record<string, string> = {
+  name: "Vehicle",
+  type: "Type",
+  relationship: "Access",
+  owner: "Owner",
+  shared_with: "Shared With",
+  condition_percent: "Lowest Condition",
+  fuel_percent: "Fuel",
+  location: "Location"
+};
+
+type VehicleTableProps = {
+  rows: VehicleRow[];
+  context?: "global" | "player";
+  emptyMessage?: string;
+  sortColumn?: string;
+  sortDirection?: SortDirection;
+  onSort?: (column: string) => void;
+};
+
+function toNumber(value: unknown): number | null {
+  if (value === null || value === undefined || value === "") return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function meterColor(percent: number) {
+  if (percent >= 66) return "var(--success)";
+  if (percent >= 33) return "var(--warning)";
+  return "var(--danger)";
+}
+
+function formatObservedValue(value: number) {
+  return Number.isInteger(value) ? value.toLocaleString() : value.toLocaleString(undefined, { maximumFractionDigits: 1 });
+}
+
+function renderMeter(percent: number | null, { estimated = false, observedValue = null }: { estimated?: boolean; observedValue?: number | null } = {}) {
+  if (percent === null) {
+    return observedValue === null
+      ? <span className="muted">—</span>
+      : <span className="vehicles-observed-value" title="Current value is known; maximum capacity is unavailable.">{formatObservedValue(observedValue)} current</span>;
+  }
+  const clamped = Math.max(0, Math.min(100, Math.round(percent)));
+  return (
+    <div className="vehicles-meter-cell" title={estimated ? "Estimated from multiple observed vehicles with the same component type." : undefined}>
+      <div className="vehicles-meter"><i style={{ width: `${clamped}%`, background: meterColor(clamped) }} /></div>
+      <span className="vehicles-meter-pct">{clamped}%{estimated && <em> Estimated</em>}</span>
+    </div>
+  );
+}
+
+function vehiclePartitionMap(map: unknown) {
+  const normalized = String(map || "").trim().toLowerCase();
+  if (normalized === "haggabasin") return "Survival_1";
+  if (normalized === "deepdesert") return "DeepDesert_1";
+  return "";
+}
+
+function formatMapPartition(row: VehicleRow, instanceNames: Map<string, string>) {
+  const rawMap = String(row.map || "").trim();
+  const partitionId = String(row.partition_id ?? 0);
+  const partitionMap = vehiclePartitionMap(rawMap);
+  const instanceName = partitionMap ? instanceNames.get(`${partitionMap}:${partitionId}`) : "";
+  return `${friendlyMapName(rawMap)} · ${instanceName || `Partition ${partitionId}`}`;
+}
+
+function formatCoords(row: VehicleRow) {
+  const x = toNumber(row.x);
+  const y = toNumber(row.y);
+  return x === null || y === null ? "—" : `(${Math.round(x)}, ${Math.round(y)})`;
+}
+
+function mapGridSector(row: VehicleRow): string | null {
+  if (!/deepdesert/i.test(String(row.map || ""))) return null;
+  const x = toNumber(row.x);
+  const y = toNumber(row.y);
+  if (x === null || y === null) return null;
+  const letter = String.fromCharCode(65 + Math.max(0, Math.min(8, Math.floor((1125000 - y) / 250000))));
+  const number = Math.max(0, Math.min(8, Math.floor((x + 1125000) / 250000))) + 1;
+  return `${letter}-${number}`;
+}
+
+function formatDurability(value: unknown): string {
+  const number = toNumber(value);
+  return number === null ? "—" : Math.round(number).toLocaleString();
+}
+
+function relationshipClass(value: string) {
+  return `vehicles-access ${value.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
+}
+
+function renderVehicleCell(row: Record<string, unknown>, column: string, instanceNames: Map<string, string>) {
+  const vehicle = row as VehicleRow;
+  if (column === "name") {
+    const rawLocation = `${vehicle.map || "Unknown map"} · Partition ${vehicle.partition_id ?? 0}`;
+    return <div className="vehicles-name-cell"><span className="vehicles-name">{vehicle.name || "—"}</span><span className="vehicles-location" title={rawLocation}>{formatMapPartition(vehicle, instanceNames)}</span></div>;
+  }
+  if (column === "location") {
+    const sector = mapGridSector(vehicle);
+    const subLine = sector ? `Sector ${sector}` : (vehicle.region ? String(vehicle.region) : null);
+    return <div className="vehicles-location-cell"><span className="vehicles-coords">{formatCoords(vehicle)}</span>{subLine && <span className="vehicles-grid">{subLine}</span>}</div>;
+  }
+  if (column === "type") return vehicle.type ? String(vehicle.type) : <span className="muted">—</span>;
+  if (column === "owner") return vehicle.owner ? String(vehicle.owner) : <span className="muted">—</span>;
+  if (column === "relationship") {
+    const relationship = String(vehicle.relationship || "").trim();
+    return relationship ? <span className={relationshipClass(relationship)}>{relationship}</span> : <span className="muted">—</span>;
+  }
+  if (column === "condition_percent") return renderMeter(toNumber(vehicle.condition_percent), { estimated: vehicle.condition_estimated === true });
+  if (column === "fuel_percent") return renderMeter(toNumber(vehicle.fuel_percent), { estimated: vehicle.fuel_percent !== null && vehicle.fuel_percent !== undefined, observedValue: toNumber(vehicle.current_fuel) });
+  if (column === "shared_with") {
+    const shared: VehicleSharedEntry[] = Array.isArray(vehicle.shared_with) ? vehicle.shared_with : [];
+    if (!shared.length) return <span className="muted">—</span>;
+    return <span className="vehicles-shared-list">{shared.map((entry) => <span key={`${entry.name}-${entry.rank}`}>{entry.name} <em>({entry.label})</em></span>)}</span>;
+  }
+  const value = row[column];
+  return value === null || value === undefined || value === "" ? "—" : String(value);
+}
+
+function splitComponentName(name: string): { base: string; position: string | null } {
+  const match = /^(.*\S)\s+\((Front|Back|Center) (Left|Right|Center)\)$/.exec(name || "");
+  return match ? { base: match[1], position: `${match[2]} ${match[3]}` } : { base: name, position: null };
+}
+
+function renderComponent(module: VehicleModule, index: number) {
+  const percent = module.conditionPercent;
+  const { base, position } = splitComponentName(module.name || "");
+  return (
+    <div className="vehicles-component-card" key={`${module.templateId}-${index}`}>
+      <span className="vehicles-component-name">{base}{position && <span className="vehicles-component-position">{position}</span>}</span>
+      {percent === null || percent === undefined
+        ? <span className="vehicles-component-meta">{module.condition === null || module.condition === undefined ? "Durability not reported" : `${formatDurability(module.condition)} durability`}</span>
+        : <><div className="vehicles-meter"><i style={{ width: `${Math.max(0, Math.min(100, Math.round(percent)))}%`, background: meterColor(percent) }} /></div><span className="vehicles-component-meta">{formatDurability(module.condition)} / {formatDurability(module.maxCondition)} · {Math.round(percent)}%{module.maxInferred ? " Estimated" : ""}</span></>}
+    </div>
+  );
+}
+
+export function VehicleTable({ rows, context = "global", emptyMessage = "No vehicles have been found yet.", sortColumn, sortDirection, onSort }: VehicleTableProps) {
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [instanceNames, setInstanceNames] = useState<Map<string, string>>(new Map());
+  const columns = context === "player" ? PLAYER_COLUMNS : GLOBAL_COLUMNS;
+  const partitionMapsKey = [...new Set(rows.map((row) => vehiclePartitionMap(row.map)).filter(Boolean))].sort().join(",");
+
+  useEffect(() => {
+    if (expandedId && !rows.some((row) => String(row.id) === expandedId)) setExpandedId(null);
+  }, [expandedId, rows]);
+
+  useEffect(() => {
+    const maps = partitionMapsKey ? partitionMapsKey.split(",") : [];
+    if (!maps.length) return undefined;
+    const cached = cachedInstanceNames(maps);
+    if (cached) {
+      setInstanceNames(cached);
+      return undefined;
+    }
+    let cancelled = false;
+    void resolveInstanceNames(maps).then((resolved) => {
+      if (!cancelled && resolved) setInstanceNames(resolved);
+    });
+    return () => { cancelled = true; };
+  }, [partitionMapsKey]);
+
+  function toggleExpanded(id: string) {
+    setExpandedId((current) => current === id ? null : id);
+  }
+
+  return (
+    <DataTable
+      rows={rows}
+      columns={columns}
+      columnLabels={COLUMN_LABELS}
+      tableClassName={`vehicles-table${context === "player" ? " player-vehicles-table" : ""}`}
+      wrapClassName="vehicles-table-wrap"
+      headerTitles
+      renderCell={(row, column) => renderVehicleCell(row, column, instanceNames)}
+      nonSortableColumns={["shared_with", "location"]}
+      sortColumn={sortColumn}
+      sortDirection={sortDirection}
+      onSort={onSort}
+      secondaryActionPosition="start"
+      secondaryActionLabel=""
+      secondaryActionClassName="vehicles-expand-column"
+      secondaryAction={(row) => {
+        const vehicle = row as VehicleRow;
+        const id = String(vehicle.id);
+        const isExpanded = expandedId === id;
+        const label = `${isExpanded ? "Collapse" : "Show"} components for ${vehicle.name || `vehicle ${id}`}`;
+        return <button className="vehicles-expand-button" title={label} aria-label={label} aria-expanded={isExpanded} onClick={(event) => { event.stopPropagation(); toggleExpanded(id); }}>{isExpanded ? <ChevronUp size={14} className="vehicles-expand-chevron" /> : <ChevronDown size={14} className="vehicles-expand-chevron" />}</button>;
+      }}
+      rowKey={(row) => String((row as VehicleRow).id)}
+      onRowClick={(row) => toggleExpanded(String((row as VehicleRow).id))}
+      isRowExpanded={(row) => expandedId === String((row as VehicleRow).id)}
+      renderExpandedRow={(row) => {
+        const modules: VehicleModule[] = Array.isArray((row as VehicleRow).modules) ? (row as VehicleRow).modules : [];
+        return <div className="vehicles-expanded"><p className="vehicles-expanded-header">{modules.length} component{modules.length === 1 ? "" : "s"}</p>{modules.length === 0 ? <p className="muted">No components fitted.</p> : <div className="vehicles-component-grid">{modules.map(renderComponent)}</div>}</div>;
+      }}
+      emptyMessage={emptyMessage}
+    />
+  );
+}

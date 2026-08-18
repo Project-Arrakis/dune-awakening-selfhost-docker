@@ -13,6 +13,7 @@ existing_swap_gib=0
 physical_memory_gib=64
 safe_available_disk_gib=120
 swappiness=10
+configured_swappiness=25
 swap_file=/var/lib/dune-awakening/swapfile
 `);
   assert.deepEqual(status, {
@@ -26,6 +27,7 @@ swap_file=/var/lib/dune-awakening/swapfile
     physicalMemoryGiB: 64,
     safeAvailableDiskGiB: 120,
     swappiness: "10",
+    configuredSwappiness: 25,
     swapFile: "/var/lib/dune-awakening/swapfile"
   });
 });
@@ -35,4 +37,5 @@ test("memory swap status parser rejects malformed numeric values", () => {
   assert.equal(status.enabled, false);
   assert.equal(status.poolGiB, 0);
   assert.equal(status.perServerGiB, 2);
+  assert.equal(status.configuredSwappiness, 10);
 });

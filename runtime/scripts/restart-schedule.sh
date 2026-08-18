@@ -8,9 +8,9 @@ HOST_ROOT_DIR="${DUNE_HOST_REPO_ROOT:-$ROOT_DIR}"
 [ -f .env ] && . ./.env
 [ -r runtime/generated/battlegroup.env ] && . runtime/generated/battlegroup.env
 source runtime/scripts/runtime-env.sh
+source runtime/scripts/host-file-ownership.sh
 
-HOST_SERVICE_UID="${DUNE_HOST_UID:-$(stat -c '%u' "$ROOT_DIR")}"
-HOST_SERVICE_GID="${DUNE_HOST_GID:-$(stat -c '%g' "$ROOT_DIR")}"
+IFS=: read -r HOST_SERVICE_UID HOST_SERVICE_GID <<< "$(dune_resolve_host_owner)"
 if ! [[ "$HOST_SERVICE_UID" =~ ^[0-9]+$ && "$HOST_SERVICE_GID" =~ ^[0-9]+$ ]]; then
   echo "Invalid scheduled restart service identity: ${HOST_SERVICE_UID}:${HOST_SERVICE_GID}" >&2
   exit 1
@@ -36,6 +36,81 @@ Usage:
   dune restart-schedule notify-now <minutes>
   dune restart-schedule run-now
 EOF
+}
+
+reexec_scheduled_job_as_install_owner() {
+  local current_uid passwd_entry target_user target_home path mismatched_path owner_mismatch=0
+  current_uid="$(id -u)"
+
+  if [ "$current_uid" = "$HOST_SERVICE_UID" ]; then
+    return 0
+  fi
+  if [ "$current_uid" != "0" ]; then
+    echo "Scheduled restart is running as UID $current_uid, but the installation owner is UID $HOST_SERVICE_UID." >&2
+    echo "Refusing to touch Battlegroup state under the wrong account." >&2
+    return 1
+  fi
+  if [ "$HOST_SERVICE_UID" = "0" ]; then
+    return 0
+  fi
+
+  command -v setpriv >/dev/null 2>&1 || {
+    echo "Scheduled restart cannot switch to installation owner UID $HOST_SERVICE_UID: setpriv is unavailable." >&2
+    echo "Re-enable the schedule from the Console to reinstall its systemd unit." >&2
+    return 1
+  }
+  passwd_entry="$(getent passwd "$HOST_SERVICE_UID" | head -n 1)"
+  target_user="$(printf '%s' "$passwd_entry" | cut -d: -f1)"
+  target_home="$(printf '%s' "$passwd_entry" | cut -d: -f6)"
+  if [ -z "$target_user" ] || [ -z "$target_home" ]; then
+    echo "Scheduled restart cannot resolve installation owner UID $HOST_SERVICE_UID to a local account." >&2
+    echo "Re-enable the schedule after correcting DUNE_HOST_UID and DUNE_HOST_GID." >&2
+    return 1
+  fi
+
+  for path in \
+    .env \
+    runtime/generated \
+    runtime/game \
+    runtime/generated/sietch-config.json \
+    runtime/generated/gameplay-profile.ini \
+    runtime/generated/usersettings.json
+  do
+    [ -e "$path" ] || continue
+    if [ "$(stat -c '%u:%g' "$path" 2>/dev/null || true)" != "${HOST_SERVICE_UID}:${HOST_SERVICE_GID}" ]; then
+      owner_mismatch=1
+      break
+    fi
+  done
+  if [ "$owner_mismatch" = "0" ] && [ -d runtime/game ]; then
+    mismatched_path="$(find runtime/game -xdev \
+      \( -path 'runtime/game/*/Saved' -o -path 'runtime/game/*/Saved/UserSettings' -o -path 'runtime/game/*/Saved/UserSettings/*' \) \
+      \( ! -uid "$HOST_SERVICE_UID" -o ! -gid "$HOST_SERVICE_GID" \) \
+      -print -quit 2>/dev/null || true)"
+    [ -z "$mismatched_path" ] || owner_mismatch=1
+  fi
+  if [ "$owner_mismatch" = "1" ]; then
+    echo "Repairing persisted settings ownership before dropping scheduled-restart privileges..."
+    DUNE_RUNTIME_REPO_ROOT="$ROOT_DIR" \
+      DUNE_HOST_UID="$HOST_SERVICE_UID" \
+      DUNE_HOST_GID="$HOST_SERVICE_GID" \
+      runtime/scripts/repair-host-runtime-permissions.sh
+  fi
+
+  echo "Re-launching scheduled restart as installation owner ${target_user} (${HOST_SERVICE_UID}:${HOST_SERVICE_GID})..."
+  exec setpriv \
+    --reuid="$target_user" \
+    --regid="$HOST_SERVICE_GID" \
+    --init-groups \
+    env \
+      -u DOCKER_CONFIG \
+      -u XDG_RUNTIME_DIR \
+      HOME="$target_home" \
+      USER="$target_user" \
+      LOGNAME="$target_user" \
+      DUNE_HOST_UID="$HOST_SERVICE_UID" \
+      DUNE_HOST_GID="$HOST_SERVICE_GID" \
+      "$ROOT_DIR/runtime/scripts/restart-schedule.sh" "$@"
 }
 
 write_state() {
@@ -440,6 +515,12 @@ run_now() {
   local public_ip_fallback
 
   echo "=== Scheduled battlegroup restart ==="
+  echo "Validating persisted Sietch and gameplay settings..."
+  runtime/scripts/sietches.sh preflight
+  python3 runtime/scripts/usersettings.py preflight
+  python3 runtime/scripts/usersettings.py materialize-current
+  echo "Saved settings were validated and materialized successfully."
+
   if ! claim_scheduled_restart_window; then
     return 0
   fi
@@ -542,6 +623,12 @@ scheduled_restart_public_ip_fallback() {
 }
 
 cmd="${1:-status}"
+
+case "$cmd" in
+  run-now|notify-now)
+    reexec_scheduled_job_as_install_owner "$@"
+    ;;
+esac
 
 case "$cmd" in
   enable|on)

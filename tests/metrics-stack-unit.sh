@@ -89,6 +89,13 @@ case "${1:-}" in
           echo "services: {}"
           exit 0
         fi
+        # Support: docker compose -f docker-compose.metrics.yml up -d
+        # (and restart's down/up pair) -- ensure_alert_relay_token()
+        # regression tests below need `start`/`restart` to succeed
+        # without a real Docker daemon.
+        if [ "${3:-}" = "up" ] || [ "${3:-}" = "down" ]; then
+          exit 0
+        fi
         ;;
     esac
     echo "unexpected docker compose args: $*" >&2
@@ -221,6 +228,129 @@ assert_command_fails "$missing_output" "validator fails when required target is 
 show_output_block "missing-target validator output" "$missing_output"
 assert_contains "$missing_output" "Missing required jobs: dune-node" "validator names missing required target"
 assert_contains "$missing_output" "FAIL: metrics validation failed." "validator prints failure summary"
+
+# yacketrj/arrakis-control-panel#167: `dune metrics start`/`restart` must
+# auto-provision runtime/secrets/alert-relay-token.txt (bind-mounted into
+# the dune-alertmanager container, see docker-compose.metrics.yml) rather
+# than fail because the bind-mount target doesn't exist -- an existing
+# operator upgrading to this change must not have their metrics stack
+# suddenly refuse to start. This test runs against this real repo
+# checkout's own runtime/secrets/ (the same way this file's other tests
+# already run `metrics-stack.sh validate` against the real checkout), so
+# it must clean up its own generated file afterward regardless of pass
+# or fail -- extending the existing tmpdir cleanup trap to do so.
+#
+# Both this secret's and dune-awakening-selfhost-docker#307's Grafana
+# password's pre-existence must be checked HERE, before either test
+# block below calls `metrics-stack.sh start` even once -- both
+# ensure_alert_relay_token() and ensure_grafana_password() run
+# unconditionally on every `start`/`restart`, so checking
+# grafana_password_preexisted only right before that block's own test
+# would incorrectly see a file this alert-relay-token block's OWN
+# `start` calls already created moments earlier on a genuinely fresh
+# checkout, causing that block to wrongly skip itself as "pre-existing."
+alert_relay_token_file="runtime/secrets/alert-relay-token.txt"
+alert_relay_token_preexisted=0
+[ -f "$alert_relay_token_file" ] && alert_relay_token_preexisted=1
+grafana_password_file="runtime/secrets/grafana-admin-password.txt"
+grafana_password_preexisted=0
+[ -f "$grafana_password_file" ] && grafana_password_preexisted=1
+cleanup_alert_relay_token() {
+  if [ "$alert_relay_token_preexisted" = "0" ]; then
+    rm -f "$alert_relay_token_file"
+  fi
+}
+cleanup_grafana_password() {
+  if [ "$grafana_password_preexisted" = "0" ]; then
+    rm -f "$grafana_password_file"
+  fi
+}
+trap 'cleanup_grafana_password; cleanup_alert_relay_token; rm -rf "$tmpdir"' EXIT
+
+if [ "$alert_relay_token_preexisted" = "1" ]; then
+  note "skipping alert-relay-token auto-provision test: $alert_relay_token_file already exists in this checkout (not overwriting a real operator secret)"
+else
+  note "running alert-relay-token auto-provision test"
+  start_output="$tmpdir/start.out"
+  METRICS_PROMETHEUS_PORT=9090 bash runtime/scripts/metrics-stack.sh start >"$start_output" 2>&1 || true
+  show_output_block "start command output" "$start_output"
+  if [ -s "$alert_relay_token_file" ]; then
+    ok "runtime/secrets/alert-relay-token.txt was auto-created by 'dune metrics start'"
+  else
+    fail "runtime/secrets/alert-relay-token.txt was auto-created by 'dune metrics start'"
+  fi
+  actual_mode="$(stat -c '%a' "$alert_relay_token_file" 2>/dev/null || stat -f '%Lp' "$alert_relay_token_file" 2>/dev/null || echo unknown)"
+  if [ "$actual_mode" = "600" ]; then
+    ok "alert-relay-token.txt is created with mode 600"
+  else
+    fail "alert-relay-token.txt is created with mode 600 (got: $actual_mode)"
+  fi
+  token_size="$(wc -c <"$alert_relay_token_file" | tr -d '[:space:]')"
+  if [ "$token_size" = "65" ]; then
+    ok "alert-relay-token.txt contains a 32-byte hex token plus trailing newline (65 bytes)"
+  else
+    fail "alert-relay-token.txt contains a 32-byte hex token plus trailing newline (65 bytes, got: $token_size)"
+  fi
+
+  note "running idempotency check: a second start must not regenerate the token"
+  first_token="$(cat "$alert_relay_token_file")"
+  METRICS_PROMETHEUS_PORT=9090 bash runtime/scripts/metrics-stack.sh start >/dev/null 2>&1 || true
+  second_token="$(cat "$alert_relay_token_file")"
+  if [ "$first_token" = "$second_token" ]; then
+    ok "a second 'dune metrics start' does not regenerate an already-existing token"
+  else
+    fail "a second 'dune metrics start' does not regenerate an already-existing token"
+  fi
+fi
+
+# dune-awakening-selfhost-docker#307: `dune metrics start`/`restart` must
+# auto-provision runtime/secrets/grafana-admin-password.txt and export it
+# as METRICS_GRAFANA_PASSWORD, the same way ensure_alert_relay_token()
+# already does for the Alertmanager relay token -- Grafana's own
+# GF_SECURITY_ADMIN_PASSWORD previously had a static, checked-in "admin"
+# default with no generation mechanism at all. Pre-existence was already
+# checked above, before the alert-relay-token block's own `start` calls
+# could have created this file as a side effect.
+if [ "$grafana_password_preexisted" = "1" ]; then
+  note "skipping grafana-admin-password auto-provision test: $grafana_password_file already exists in this checkout (not overwriting a real operator secret)"
+else
+  note "running grafana-admin-password auto-provision test"
+  start_output="$tmpdir/start-grafana.out"
+  METRICS_PROMETHEUS_PORT=9090 bash runtime/scripts/metrics-stack.sh start >"$start_output" 2>&1 || true
+  show_output_block "start command output (grafana password)" "$start_output"
+  if [ -s "$grafana_password_file" ]; then
+    ok "runtime/secrets/grafana-admin-password.txt was auto-created by 'dune metrics start'"
+  else
+    fail "runtime/secrets/grafana-admin-password.txt was auto-created by 'dune metrics start'"
+  fi
+  actual_mode="$(stat -c '%a' "$grafana_password_file" 2>/dev/null || stat -f '%Lp' "$grafana_password_file" 2>/dev/null || echo unknown)"
+  if [ "$actual_mode" = "600" ]; then
+    ok "grafana-admin-password.txt is created with mode 600"
+  else
+    fail "grafana-admin-password.txt is created with mode 600 (got: $actual_mode)"
+  fi
+  password_size="$(wc -c <"$grafana_password_file" | tr -d '[:space:]')"
+  if [ "$password_size" = "33" ]; then
+    ok "grafana-admin-password.txt contains a 16-byte hex password plus trailing newline (33 bytes)"
+  else
+    fail "grafana-admin-password.txt contains a 16-byte hex password plus trailing newline (33 bytes, got: $password_size)"
+  fi
+  if grep -qx "admin" "$grafana_password_file"; then
+    fail "generated grafana-admin-password.txt must not be the literal string 'admin'"
+  else
+    ok "generated grafana-admin-password.txt is not the old static 'admin' default"
+  fi
+
+  note "running idempotency check: a second start must not regenerate the password"
+  first_password="$(cat "$grafana_password_file")"
+  METRICS_PROMETHEUS_PORT=9090 bash runtime/scripts/metrics-stack.sh start >/dev/null 2>&1 || true
+  second_password="$(cat "$grafana_password_file")"
+  if [ "$first_password" = "$second_password" ]; then
+    ok "a second 'dune metrics start' does not regenerate an already-existing grafana password"
+  else
+    fail "a second 'dune metrics start' does not regenerate an already-existing grafana password"
+  fi
+fi
 
 echo "1..$test_no"
 note "metrics-stack unit tests completed"

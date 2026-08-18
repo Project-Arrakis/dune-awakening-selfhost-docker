@@ -17,6 +17,7 @@ Complete reference for all HTTP API endpoints in the Dune Docker Console. All en
 - [Players](#players)
 - [Guilds](#guilds)
 - [Bases & Storage](#bases--storage)
+- [Vehicles](#vehicles)
 - [Blueprints](#blueprints)
 - [Maps & World](#maps--world)
 - [Live Map](#live-map)
@@ -76,9 +77,20 @@ Complete reference for all HTTP API endpoints in the Dune Docker Console. All en
 | GET | `/api/server/ip-change-restart` | Get IP change restart status | None |
 | POST | `/api/server/ip-change-restart` | Save IP change restart config | `enabled`, `intervalMinutes?`, `notifyMinutes?` |
 | POST | `/api/server/ip-change-restart/check` | Check for IP changes now | None |
+| GET | `/api/server/restart-queue` | Get restart-queue settings, defaults, active state and battlegroup online count | None |
+| POST | `/api/server/restart-queue` | Save restart-queue settings (partial; merges onto the current settings) | `enabled?`, `defaultCountdownMinutes?`, `broadcastCheckpoints?`, `broadcastDurationSec?`, `recoveryGraceMinutes?`, `messages?` |
+| POST | `/api/server/restart-queue/cancel` | Cancel one active countdown | `id` |
+| POST | `/api/server/restart-queue/restart-now` | Execute one queued restart immediately | `id` |
 | GET | `/api/server/shutdown-protection` | Get shutdown protection status | None |
 | POST | `/api/server/shutdown-protection` | Enable/disable shutdown protection | `enabled` (boolean) |
 | POST | `/api/server/shutdown-protection/remove` | Remove shutdown protection | None |
+
+When the Restart Queue is enabled, the restart routes above (`/api/server/restart`,
+`/api/server/restart-service`, and the map/sietch restart paths) return
+**`202 { queued: true, ... }`** when a restart is queued behind a countdown and
+**`409 { queued: false, error }`** on a concurrency conflict; append
+`?restartQueue=immediate` to force an immediate restart. See
+[restart-queue.md](restart-queue.md).
 
 ---
 
@@ -123,12 +135,15 @@ Complete reference for all HTTP API endpoints in the Dune Docker Console. All en
 | GET | `/api/players/online` | List currently online players | `page?`, `pageSize?` |
 | GET | `/api/players/search` | Search players by name/ID | `q` (required, query param) |
 
+Player rows include `total_playtime_seconds`. The console samples `player_state.online_status` every 10 seconds and persists completed session time in `dune.console_player_playtime`; the currently active session is included from `last_login_time`. Tracking begins when this console version first runs, so time from older completed sessions cannot be reconstructed.
+
 ### Player Profile & Data
 
 | Method | Route | Description | Parameters |
 |--------|-------|-------------|------------|
 | GET | `/api/players/{playerId}` | Get player profile summary | `playerId` |
-| GET | `/api/players/{playerId}/inventory` | Get player inventory items | `playerId` |
+| GET | `/api/players/{playerId}/inventory` | Get player inventory items — backpack, character gear, loadout, and unique-gear schematics (emote containers excluded), each row tagged with `inventory_type` | `playerId` |
+| GET | `/api/players/{playerId}/vehicles` | Get vehicles owned by or shared with the player, including the player's access relationship | `playerId` |
 | GET | `/api/players/{playerId}/currency` | Get player currency totals | `playerId` |
 | GET | `/api/players/{playerId}/solaris-coin` | Get Solaris Coin total | `playerId` |
 | GET | `/api/players/{playerId}/factions` | Get faction reputation | `playerId` |
@@ -181,6 +196,7 @@ Complete reference for all HTTP API endpoints in the Dune Docker Console. All en
 |--------|-------|-------------|------------|
 | POST | `/api/players/{playerId}/add-currency` | Add currency | `currencyId`, `amount`, `confirmation` |
 | POST | `/api/players/{playerId}/add-faction-reputation` | Add faction reputation | `factionId`, `amount`, `confirmation` |
+| POST | `/api/players/{playerId}/faction` | Assign Atreides, Harkonnen, or Neutral | `factionId` (`1`, `2`, or `3`), `confirmation` |
 | POST | `/api/players/{playerId}/add-intel` | Add intel | `amount`, `confirmation` |
 | POST | `/api/players/{playerId}/specializations/add-xp` | Add spec XP | `trackType`, `amount`, `confirmation` |
 | POST | `/api/players/{playerId}/specializations/grant-max` | Max out specialization | `trackType`, `confirmation` |
@@ -246,14 +262,46 @@ Complete reference for all HTTP API endpoints in the Dune Docker Console. All en
 | DELETE | `/api/bases/{baseId}/queued-water-refill` | Cancel a base's queued water refill | `baseId` |
 | GET | `/api/bases/auto-refill-water` | Get per-base water auto-refill enrollment state | None |
 | POST | `/api/bases/{baseId}/auto-refill-water` | Enable/disable water auto-refill for a base | `baseId`, `enabled` |
+| GET | `/api/bases/{baseId}/inventory` | Get a base's stored items, rolled up by item template and by container (storage, refining, crafting, other). Merged per template, not per slot | `baseId` |
+| GET | `/api/bases/{baseId}/containers/{placeableId}` | Get one container's inventories and their individual slots (item id, slot number, quantity, quality, durability), plus `deleteSafety`. Answers `found: false` when that container is not at the base | `baseId`, `placeableId` |
+| DELETE | `/api/bases/{baseId}/containers/{placeableId}/items/{itemId}` | Delete an item from a plain Storage container, or part of its stack with `count`. Refused unless the owning map is verifiably and safely stopped; Crafting and Refining contents are read-only. Requires `{ confirmation: "DELETE ITEM" }` | `baseId`, `placeableId`, `itemId`, `count?` |
 | GET | `/api/bases/{baseId}/permissions` | Get a base's permission roster (Owner, Co-Owners, Associates) | `baseId` |
-| POST | `/api/bases/{baseId}/system-custodian` | Transfer ownership to the detected Server or GM system custodian while preserving the roster | `baseId` |
+| POST | `/api/bases/{baseId}/system-custodian` | Transfer ownership to the Server or detected GM system custodian while preserving the roster; provisions Server when no custodian exists | `baseId` |
 | PUT | `/api/bases/{baseId}/permissions` | Replace a base's permission roster | `baseId`, `entries[]` (`playerId`, `rank`) |
 | GET | `/api/bases/permission-candidates` | Search players eligible to be added to a roster | `q?`, `limit?` |
+| DELETE | `/api/bases/{baseId}` | Permanently delete a base and everything on it (queued instead if the map isn't safely writable right now); takes a full-database safety backup first. Requires `{ confirmation: "DELETE BASE" }` | `baseId` |
+| GET | `/api/bases/pending-deletes` | List queued base deletes, grouped by restart target | None |
+| DELETE | `/api/bases/{baseId}/queued-delete` | Cancel a base's queued delete | `baseId` |
+
+`GET /api/bases` excludes a base that has been picked up via the game's own
+base-backup tool (unclaimed and registered in `dune.base_backup_linked_actors`
+— see [base-backups.md](base-backups.md)), and every mutation route below
+rejects one with **409** for the same reason.
+
+A base that is unclaimed for any *other* reason still lists, and `GET
+/api/bases/{baseId}/permissions` still reads it, reporting `claimed: false`. The
+two permission mutation routes reject it with **400** rather than letting the
+write fail `permission_actor_rank`'s foreign key — see
+[base-permissions.md](base-permissions.md).
+
+Each `GET /api/bases` row carries `partitionMap` and `dimensionIndex` alongside
+`map` and `partition_id`. `map` is the game's own name (`HaggaBasin`) and cannot
+distinguish two instances of one map; `partitionMap` is the name the rest of the
+console uses (`Survival_1`), and `partition_id` identifies the single running
+instance. Both are empty on a schema without `dune.world_partition`.
 
 `GET /api/bases` reports `capabilities.basePermissions`; the permission routes are
 unavailable when it is false (the schema lacks the required tables or the game's
 `permission_set_player_rank` / `permission_remove_player_rank` procedures).
+
+`GET /api/bases` also reports `capabilities.baseDelete` (the schema has the tables
+and the game's `permission_actor_destroy` / `delete_actors` procedures) and
+`capabilities.baseDeleteQueue` (additionally has `dune.world_partition`, so a
+delete against a live map can be queued instead of written immediately). The
+delete route is unavailable when `baseDelete` is false; without `baseDeleteQueue`
+a delete against a live map is written straight away rather than queued, matching
+the refill routes' behavior on a schema without `world_partition`. See
+[Base deletion](base-deletion.md).
 
 `PUT` takes the whole roster rather than a delta — the server diffs it against
 current state and applies only the difference. `rank` is `1` Owner, `2` Co-Owner,
@@ -265,6 +313,28 @@ limit comes from live server config, not a constant.
 Changes reach a running map immediately — there is no restart queue, unlike the
 generator refill routes above. See [base-permissions.md](base-permissions.md).
 
+`GET /api/bases/{baseId}/inventory` covers storage containers plus refinery,
+fabricator, and other inventories (recycler, repair station, the base's own
+Sub-Fief console); generator and windtrap fuel belong to the refill and water
+routes above. Its `containers[].items[]` is merged per item template, not per
+slot — `GET /api/bases/{baseId}/containers/{placeableId}` is the per-slot view,
+fetched one container at a time because slots roughly triple the response.
+
+`DELETE /api/bases/{baseId}/containers/{placeableId}/items/{itemId}` is refused
+unless `baseRefillTarget` can verify that the owning map is safely stopped. An
+unknown state fails closed, and the route repeats the check immediately before
+the write. Only plain Storage contents are mutable; Crafting and Refining remain
+read-only because active jobs can reference their item rows. The same allowlist
+that keeps fuel inventories out of the read keeps them out of the delete. It
+needs `bases:delete-item`, not `bases:mutate`. See
+[base-inventory.md](base-inventory.md).
+
+Both `GET /api/bases/{baseId}/water` and `GET /api/bases/{baseId}/inventory`
+answer **200 with `supported: false` and a `reason`** when the detected schema
+lacks a table they need, rather than an error status — the same capability shape
+`/api/bases` uses. An error status from either means a genuine failure, so the
+tab can offer a retry only where retrying could actually help.
+
 ### Storage
 
 | Method | Route | Description | Parameters |
@@ -274,6 +344,125 @@ generator refill routes above. See [base-permissions.md](base-permissions.md).
 | GET | `/api/storage/{storageId}/items` | Get storage inventory | `storageId` |
 | POST | `/api/storage/{storageId}/give-item` | Add item to storage | `itemName`, `quantity`, `confirmation: "GIVE ITEM TO STORAGE"` |
 | GET | `/api/storage/{storageId}/export` | Export storage as JSON | `storageId` |
+
+---
+
+## Vehicles
+
+| Method | Route | Description | Parameters |
+|--------|-------|-------------|------------|
+| GET | `/api/vehicles` | List all player vehicles (paginated), each with owner, shared-with roster, lowest-component condition %, fuel %, map/partition, coordinates, and per-component durability | `q?`, `page?`, `pageSize?`, `sortColumn?`, `sortDirection?` |
+| GET | `/api/players/{playerId}/vehicles` | List the selected player's owned and shared vehicles using the same vehicle details | `playerId` |
+
+Read-only. `GET /api/vehicles` reports `capabilities.vehicles`; it is false (with a
+`reason`) when the schema lacks the required tables (`vehicles`, `vehicle_modules`,
+`actors`, `permission_actor`, `permission_actor_rank`, `player_state`,
+`actor_fgl_entities`, `fgl_entities`). Sortable `sortColumn` values: `id`, `name`,
+`type`, `owner`, `condition_percent`, `fuel_percent`, `map`; `q` matches vehicle
+name, type, owner, map, and exact id. Response fields mirror the paginated-list
+convention (`rows`, `totalCount`, unfiltered `totalVehicles`). Owner resolves from
+the rank-1 permission holder, falling back to the actor's account owner; the
+`shared_with` roster is the rank 2/3 holders. A component's maximum durability is
+read from its own stats blob (`MaxDurability`, else the decayed cap). If no stored
+maximum exists, it is inferred only when at least two non-null current-durability
+observations exist for the same template; inferred rows set `maxInferred: true`.
+Missing current durability remains null and is never treated as 0% or 100%.
+`condition_percent` is the lowest comparable component and
+`condition_estimated` reports whether an inferred maximum contributed. Fuel
+capacity is likewise the highest observed current fuel for a generator template;
+`fuel_percent` is null with fewer than two non-null samples, while `current_fuel`
+remains available for raw display.
+
+The player-scoped route is also read-only. Its rows include `relationship`, derived
+from account ownership and permission rank: `Owner`, `Co-Owner`, `Associate`, or
+`Rank N` for a future/unknown nonstandard rank.
+
+Each row also carries a `region` sub-region name where the map has a region table
+(`runtime/data/hagga-regions.json`, extracted from the game paks; Hagga Basin is
+covered). It is resolved from the nearest `dune.markers.area_id` and is best-effort
+— absent when marker data is unavailable. Deep Desert instead exposes its A–I/1–9
+sector grid, derived client-side from coordinates.
+
+The separate `/api/admin/vehicles*` routes under [Admin Tools](#admin-tools) are a
+different, CLI-backed surface (blueprint catalog and spawning), not this Postgres
+read.
+
+---
+
+## Market Board
+
+| Method | Route | Description | Parameters |
+|--------|-------|-------------|------------|
+| GET | `/api/exchange/items` | List active CHOAM exchange sell orders aggregated by item + grade (paginated): lowest price, total stock, listing count | `q?`, `page?`, `pageSize?`, `sortColumn?`, `sortDirection?`, `owner?`, `category?` |
+| GET | `/api/exchange/listings` | List the individual sell orders for one item, each with a resolved seller | `templateId`, `quality?`, `owner?` |
+| GET | `/api/exchange/stats` | Aggregate totals (total, bot, player listings; unique items) | None |
+| GET | `/api/exchange/config` | Read the console-local bot/blacklist filter config | None |
+| POST | `/api/exchange/config` | Save the bot/blacklist filter config (audited, rate-limited) | body: `includeNpcBroker`, `botOwnerIds[]`, `blacklistedOwnerIds[]` |
+
+Read-only over the game's own exchange tables (the game writes them; the console
+never mutates them). `GET /api/exchange/items` reports `capabilities.exchange`; it
+is false (with a `reason`) when the schema lacks the required tables
+(`dune_exchange_orders`, `dune_exchange_sell_orders`, `items`, `actors`,
+`player_state`).
+
+The `owner` filter selects `all` (default for `/items`), `player`, or `bot`, where
+**bot** = the in-game NPC broker (unless excluded via `includeNpcBroker: false`) OR a
+configured `botOwnerIds` entry, **player** = the complement, and **all** = no owner
+predicate. Blacklisted owner ids are excluded on every `owner` value. `includeNpcBroker`
+(default true) is the built-in broker toggle: set it false to stop classifying the
+in-game broker's orders as bot. Sortable `sortColumn` values: `display_name`, `template_id`,
+`category`, `quality_level`, `tier`, `lowest_price`, `total_stock`, `listing_count`;
+`q` matches `display_name`, `category`, and `template_id`. `category` filters to an
+exact catalog category; the response also returns `categories` — the distinct
+categories present in the current owner scope (computed before the category/search
+filters, so the list is stable for populating a dropdown). The response mirrors the
+paginated-list convention (`rows`, `totalCount` filtered, `totalItems` unfiltered).
+Because `display_name`/`category`/`tier` come from the local `admin-items.json`
+catalog rather than the database, search and sort run in the service after
+enrichment (a short-TTL cache of the enriched aggregate keeps interactive paging
+cheap).
+
+`GET /api/exchange/listings` requires `templateId`; `quality` and `owner` are
+optional. Each row carries `owner_type` (`player`|`bot`) and a resolved `owner_name`
+(via `actors.owner_account_id → player_state.character_name`, falling back to the
+actor class; NPC/broker orders show the in-game broker), plus `price`, `stock`, and
+`quality`.
+
+`POST /api/exchange/config` is the **only** write in this feature and persists
+**only** the console-local `runtime/generated/exchange-config.json` (no game-DB
+writes). Ids are validated as numeric owner-id strings, deduped, and length-capped.
+See [exchange.md](exchange.md) for how bot listings are identified and how the
+blacklist behaves.
+
+### Market Bot (console-managed seeding / buyback)
+
+| Method | Route | Description | Parameters |
+|--------|-------|-------------|------------|
+| GET | `/api/exchange/market` | Market Bot status: seed-plan availability and both schedules | None |
+| GET | `/api/exchange/market/exchanges` | Discover exchanges (BIGINT ids as strings; access-pointed exchanges first) | None |
+| POST | `/api/exchange/market/buyback/probe` | Read-only buyback diagnostics: total, recognized, eligible, above-threshold, unknown-template, and invalid price/stack listing counts (no backup taken) | body: `exchangeId?`, `priceMultiplier?`, `augmentMultiplier?`, `rankedArmorMultiplier?`, `rankedWeaponMultiplier?`, `buybackPercent?`, `buybackPriceBasis?`, `maxBuys?` |
+| POST | `/api/exchange/market/buyback/schedule` | Save the buyback schedule (audited, rate-limited) | body: `enabled`, `intervalMinutes`, `exchangeId`, `priceMultiplier`, `augmentMultiplier`, `rankedArmorMultiplier`, `rankedWeaponMultiplier`, `buybackPercent`, `buybackPriceBasis`, `maxBuys` |
+| POST | `/api/exchange/market/seed/schedule` | Save the market reseed schedule (audited, rate-limited) | body: `enabled`, `intervalMinutes`, `exchangeId`, `priceMultiplier`, `augmentMultiplier`, `rankedArmorMultiplier`, `rankedWeaponMultiplier`, `augmentPricing` (`discounted`\|`original`) |
+| POST | `/api/exchange/market/buyback/run` | Run a buyback sweep now with the saved schedule (probe → backup → sweep) | None |
+| POST | `/api/exchange/market/seed/run` | Run a market reseed now with the saved schedule (backup → clear bot listings → seed) | None |
+
+The three category multipliers (`augmentMultiplier`, `rankedArmorMultiplier`,
+`rankedWeaponMultiplier`) accept 1–5 (up to two decimals, default 1 = no change)
+and scale prices on top of the base `priceMultiplier` for augments & augment
+schematics, ranked (grade 1–5) armor including stillsuits, and ranked weapons
+respectively. On the seed schedule they raise the seeded sell prices; on the
+buyback schedule they reprice the reconstructed "seeded" price basis the same
+way, so `buybackPercent` keeps meaning a percentage of the real market price.
+
+Unlike the board above, these routes **do write the game database** through the
+native Market Bot engine (`addonJobs.js` / `addonSeedJob.js`). Reads and the probe require `exchange:market`; mutations
+require `exchange:market-write` (the admin tier's `exchange:*` covers both).
+Schedules saved here are marked `source: "console"`, run unattended inside the
+console API process, and do not require an addon; the seed plan is the bundled
+`runtime/data/market-seed-plan.json`. Every write is preceded by a database
+backup, and buyback runs probe eligibility read-only first so idle intervals
+never take a backup. See [exchange.md](exchange.md#market-bot) for behavior
+details.
 
 ---
 
@@ -318,7 +507,7 @@ See [blueprints.md](blueprints.md) for the full import/export design.
 | GET | `/api/maps/memory/balancer` | Get memory balancer state | None |
 | POST | `/api/maps/memory/balancer` | Enable/disable memory balancer | `enabled` |
 | GET | `/api/maps/memory/swap` | Get memory swap status | None |
-| POST | `/api/maps/memory/swap` | Enable/disable memory swap | `enabled`, `perServerGiB?`, `poolGiB?`, `confirmation` |
+| POST | `/api/maps/memory/swap` | Enable/disable memory swap | `enabled`, `perServerGiB?`, `poolGiB?`, `swappiness?` (0-100, default 10), `confirmation` |
 | GET | `/api/maps/memory/live` | Get live per-map RAM usage and, when enabled/supported, current swap usage and allowance | None |
 
 ### Autoscaler
@@ -344,12 +533,13 @@ See [blueprints.md](blueprints.md) for the full import/export design.
 |--------|-------|-------------|------------|
 | GET | `/api/maps/combat-state` | Get combat state by partition | `map` (query param) |
 | GET | `/api/maps/user-settings/schema` | Get user settings schema | None |
-| GET | `/api/maps/user-settings/restart-pending` | Check if restart pending | None |
+| GET | `/api/maps/user-settings/restart-pending` | Check if a Landsraad-field restart is pending | None |
+| GET | `/api/maps/user-settings/deferred-pending` | Check if a "Restart later" deferred save is pending (any UserEngine/UserGame save) | None |
 | GET | `/api/maps/user-settings/values` | Get settings values | `scope`, `map?`, `partitionId?` |
 | GET | `/api/maps/user-settings/raw` | Get raw settings file | `kind`, `map?`, `partitionId?` |
-| POST | `/api/maps/user-settings/save` | Save user settings | `scope`, `map?`, `partitionId?`, `values`, `restart?` |
-| POST | `/api/maps/user-settings/reset` | Reset to defaults | `scope`, `map?`, `partitionId?`, `confirmation: "RESTORE MAP DEFAULTS"` |
-| POST | `/api/maps/user-settings/raw` | Save raw settings | `scope`, `map?`, `partitionId?`, `content` |
+| POST | `/api/maps/user-settings/save` | Save user settings | `scope`, `map?`, `partitionId?`, `values`, `restart?`, `deferRestart?` |
+| POST | `/api/maps/user-settings/reset` | Reset to defaults | `scope`, `map?`, `partitionId?`, `confirmation: "RESTORE MAP DEFAULTS"`, `deferRestart?` |
+| POST | `/api/maps/user-settings/raw` | Save raw settings | `scope`, `map?`, `partitionId?`, `content`, `deferRestart?` |
 | POST | `/api/maps/user-settings/materialize` | Refresh settings | `confirmation: "REFRESH MAP SETTINGS"` |
 
 ### Engine & Game Settings
@@ -487,6 +677,10 @@ See [blueprints.md](blueprints.md) for the full import/export design.
 | POST | `/api/addons/installed/{id}/bridge` | Addon bridge API | `id`, `action`, payload varies |
 | GET | `/api/addons/installed/{id}/content/{path}` | Get addon content file | `id`, `path` |
 
+### Hardware Status Bridge
+
+`server.hardware.status` requires approved `server:status` addon permission and returns the core-owned hardware snapshot documented in [Addon Hardware Status Bridge](../addons/hardware-status.md). Addon packages are never permitted to execute their own telemetry scripts.
+
 ---
 
 ## Logs & Monitoring
@@ -509,7 +703,7 @@ See [blueprints.md](blueprints.md) for the full import/export design.
 | POST | `/api/settings` | Write config | Config object |
 | GET | `/api/settings` | Get setup state | None |
 | GET | `/api/public-directory/status` | Get public directory status | None |
-| POST | `/api/settings/public-directory` | Save public directory settings | `enabled?`, `discordInvite?` |
+| POST | `/api/settings/public-directory` | Save public directory and anonymous-count settings | `enabled?`, `anonymousCountEnabled?`, `discordInvite?` |
 | POST | `/api/settings/public-directory/claim` | Claim server listing | `code` |
 
 ---
@@ -532,6 +726,7 @@ See [../integrations/discord-integration/README.md](../integrations/discord-inte
 | GET | `/api/integrations/discord/version` | Adapter version | None |
 | GET | `/api/integrations/discord/servers` | Servers list | None |
 | GET | `/api/integrations/discord/ports` | Ports list | None |
+| GET | `/api/integrations/discord/catalog` | Command catalog (names/descriptions/capabilities/min tiers for every live route below, machine-readable) | None -- bearer token only, same as `/health`. Deliberately no per-capability check: this is read-only metadata about route/command shape, not game or player data (see `commandCatalog.js`, issue #337). |
 
 ### Logs & Monitoring
 

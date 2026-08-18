@@ -10,8 +10,9 @@ cd "$(dirname "$0")/../.."
 source runtime/scripts/host-paths.sh
 source runtime/scripts/runtime-env.sh
 source runtime/scripts/image-tags.sh
-WORLD_IMAGE_TAG="$(resolve_world_image_tag)"
-IMAGE="registry.funcom.com/funcom/self-hosting/seabass-server:${WORLD_IMAGE_TAG}"
+source runtime/scripts/sietch-login-password-args.sh
+source runtime/scripts/fake-k8s-serviceaccount.sh
+IMAGE="$(resolve_game_server_image)"
 
 TOKEN_FILE="runtime/secrets/funcom-token.txt"
 RMQ_SECRET_FILE="runtime/secrets/rmq-http-token-auth-secret.txt"
@@ -40,11 +41,7 @@ GAME_PORT="$CLIENT_PORT_BASE"
 IGW_PORT="$((IGW_PORT_BASE + 1))"
 MEMORY="${DUNE_MEMORY_OVERMAP:-$(default_memory_for_map Overmap)}"
 PARTITION_ID="${DUNE_OVERMAP_PARTITION_ID:-2}"
-if [ -n "${DUNE_FAKE_K8S_SERVICEACCOUNT_DIR:-}" ]; then
-  FAKE_K8S_SERVICEACCOUNT_DIR="$DUNE_FAKE_K8S_SERVICEACCOUNT_DIR"
-else
-  FAKE_K8S_SERVICEACCOUNT_DIR="$PWD/runtime/generated/dune-fake-k8s-serviceaccount-overmap-$$"
-fi
+FAKE_K8S_SERVICEACCOUNT_DIR="$(fake_k8s_serviceaccount_dir overmap)"
 
 
 MULTIHOME_IP="$(resolve_bind_ip)"
@@ -147,21 +144,22 @@ commit;
 
 mkdir -p runtime/game/overmap/Saved
 mkdir -p runtime/game/artifacts
-mkdir -p "$FAKE_K8S_SERVICEACCOUNT_DIR"
 mkdir -p runtime/container
 python3 runtime/scripts/usersettings.py materialize Overmap "$PWD/runtime/game/overmap/Saved" "$PARTITION_ID"
-
-cat > "$FAKE_K8S_SERVICEACCOUNT_DIR/namespace" <<'EOF'
-funcom-seabass-dune-docker
-EOF
-cat > "$FAKE_K8S_SERVICEACCOUNT_DIR/token" <<'EOF'
-fake-token
-EOF
-: > "$FAKE_K8S_SERVICEACCOUNT_DIR/ca.crt"
-chmod -R 755 "$FAKE_K8S_SERVICEACCOUNT_DIR"
+prepare_fake_k8s_serviceaccount "$FAKE_K8S_SERVICEACCOUNT_DIR" funcom-seabass-dune-docker
 
 mapfile -t SIETCH_RUNTIME_ARGS < <(runtime/scripts/sietches.sh runtime-args Overmap "$PARTITION_ID" 2>/dev/null || true)
 mapfile -t LOG_RUNTIME_ARGS < <(full_stdout_log_args)
+
+# GHSA-fc89-h24v-6j3x (issue #252): move ServerLoginPassword/ServerPassword
+# from docker run positional arguments to environment variables -- see
+# sietch-login-password-args.sh for the full rationale and the shared
+# implementation used identically by all three launcher scripts.
+declare -a SIETCH_LOGIN_PASSWORD_ARGS
+declare -a SIETCH_RUNTIME_ARGS_FILTERED
+sietch_login_password_docker_args SIETCH_RUNTIME_ARGS SIETCH_LOGIN_PASSWORD_ARGS SIETCH_RUNTIME_ARGS_FILTERED
+SIETCH_RUNTIME_ARGS=("${SIETCH_RUNTIME_ARGS_FILTERED[@]}")
+
 runtime/scripts/network-addresses.sh reconcile >/dev/null 2>&1 || true
 
 docker rm -f dune-server-overmap 2>/dev/null || true
@@ -184,6 +182,7 @@ mapfile -t MEMORY_SWAP_ARGS < <(memory_swap_docker_args "$MEMORY")
 docker run -d \
   "${DUNE_DOCKER_LOG_ARGS[@]}" \
   --name dune-server-overmap \
+  --label "com.docker.compose.project=${DUNE_COMPOSE_PROJECT_NAME}" \
   --network host \
   --restart unless-stopped \
   --privileged \
@@ -242,6 +241,7 @@ docker run -d \
   -e "AuthenticationConfiguration__BackendLoginConfiguration__ServerLoginSecret=$SERVER_LOGIN_PASSWORD_SECRET" \
   -e "AuthenticationConfiguration__BackendLoginConfiguration__ChecksumSecret=$SERVER_LOGIN_PASSWORD_SECRET" \
   -e "fls-apikey=$FLS_APIKEY" \
+  "${SIETCH_LOGIN_PASSWORD_ARGS[@]}" \
   "$IMAGE" \
   /opt/dune-local/run-server.sh \
   Overmap \
@@ -264,6 +264,8 @@ docker run -d \
   "--RMQAdminPort=${RMQ_ADMIN_PORT}" \
   "${SIETCH_RUNTIME_ARGS[@]}" \
   "${LOG_RUNTIME_ARGS[@]}"
+
+prune_legacy_fake_k8s_serviceaccounts
 
 sleep 20
 

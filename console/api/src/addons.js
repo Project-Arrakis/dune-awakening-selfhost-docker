@@ -7,10 +7,17 @@ export const COMMUNITY_ADDONS_INDEX_URL = "https://raw.githubusercontent.com/Red
 
 const MAX_COMMUNITY_ADDONS = 200;
 const MAX_ADDON_ARCHIVE_BYTES = 50 * 1024 * 1024;
+const COMMUNITY_CACHE_TTL_MS = 5 * 60 * 1000;
+const COMMUNITY_CACHE_STALE_MS = 24 * 60 * 60 * 1000;
+const GITHUB_API_VERSION = "2022-11-28";
+const GITHUB_USER_AGENT = "redblink-dune-docker-console";
 const ADDON_ID_PATTERN = /^[a-z0-9][a-z0-9-]{1,63}$/;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/i;
 const ADDON_LIFECYCLE_STATES = new Set(["active", "deprecated", "unsupported", "removed", "blocked"]);
 const INSTALL_BLOCKED_LIFECYCLES = new Set(["unsupported", "removed", "blocked"]);
+const RETIRED_CORE_ADDONS = new Map([
+  ["eda-exchange-bot", "EDA Exchange Bot has been retired because Market Bot is now built into the console under Exchange."]
+]);
 const ALLOWED_ADDON_PERMISSIONS = new Set([
   "players:read",
   "ops:read",
@@ -23,20 +30,48 @@ const ALLOWED_ADDON_PERMISSIONS = new Set([
   "broadcast:send",
   "scheduler:server"
 ]);
+const communityCatalogCaches = new WeakMap();
 
 export async function fetchCommunityAddons(fetchImpl = globalThis.fetch, indexUrl = COMMUNITY_ADDONS_INDEX_URL) {
   if (typeof fetchImpl !== "function") throw new Error("Fetch is unavailable in this runtime.");
+  const cache = communityCatalogCache(fetchImpl, indexUrl);
+  const now = Date.now();
+  if (cache.value && cache.expiresAt > now) return cache.value;
+  if (cache.inFlight) return cache.inFlight;
+
+  cache.inFlight = refreshCommunityAddons(fetchImpl, indexUrl, cache);
+  try {
+    return await cache.inFlight;
+  } finally {
+    cache.inFlight = null;
+  }
+}
+
+async function refreshCommunityAddons(fetchImpl, indexUrl, cache) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 8000);
   try {
-    const response = await fetchImpl(indexUrl, {
-      headers: { accept: "application/json" },
-      signal: controller.signal
-    });
-    if (!response?.ok) throw new Error(`Community addons index returned HTTP ${response?.status || "unknown"}.`);
+    const response = await fetchCommunityJson(fetchImpl, indexUrl, { signal: controller.signal, etag: cache.etag });
+    if (response?.status === 304 && cache.value) {
+      cache.expiresAt = Date.now() + COMMUNITY_CACHE_TTL_MS;
+      cache.staleUntil = Date.now() + COMMUNITY_CACHE_STALE_MS;
+      return cache.value;
+    }
+    if (!response?.ok) throw communityFetchError("Community addons index", response);
     const data = await response.json();
     const index = normalizeCommunityAddonsIndex(data, indexUrl);
-    return await enrichCommunityAddonSourceUrls(index, fetchImpl, controller.signal);
+    const value = await enrichCommunityAddonSourceUrls(index, fetchImpl, controller.signal);
+    cache.value = value;
+    cache.etag = responseHeader(response, "etag");
+    cache.expiresAt = Date.now() + COMMUNITY_CACHE_TTL_MS;
+    cache.staleUntil = Date.now() + COMMUNITY_CACHE_STALE_MS;
+    return value;
+  } catch (error) {
+    if (cache.value && cache.staleUntil > Date.now() && isTransientCommunityFetchError(error)) {
+      cache.expiresAt = Date.now() + Math.min(COMMUNITY_CACHE_TTL_MS, retryDelayMs(error));
+      return cache.value;
+    }
+    throw error;
   } finally {
     clearTimeout(timer);
   }
@@ -46,8 +81,12 @@ async function enrichCommunityAddonSourceUrls(index, fetchImpl, signal) {
   const addons = await Promise.all(index.addons.map(async (addon) => {
     if (addon.sourceUrl && addon.permissions.length) return addon;
     try {
-      const response = await fetchImpl(addon.manifestUrl, { headers: { accept: "application/json" }, signal });
-      if (!response?.ok) return addon;
+      const response = await fetchCommunityJson(fetchImpl, addon.manifestUrl, { signal });
+      if (!response?.ok) {
+        const error = communityFetchError("Addon manifest", response);
+        if (isTransientCommunityFetchError(error)) throw error;
+        return addon;
+      }
       const manifest = normalizeCommunityAddonManifest(await response.json());
       return manifest.id === addon.id
         ? {
@@ -57,11 +96,89 @@ async function enrichCommunityAddonSourceUrls(index, fetchImpl, signal) {
           provenance: communityAddonProvenance(index.sourceUrl, addon, manifest)
         }
         : addon;
-    } catch {
+    } catch (error) {
+      if (isTransientCommunityFetchError(error)) throw error;
       return addon;
     }
   }));
   return { ...index, addons };
+}
+
+function communityCatalogCache(fetchImpl, indexUrl) {
+  let caches = communityCatalogCaches.get(fetchImpl);
+  if (!caches) {
+    caches = new Map();
+    communityCatalogCaches.set(fetchImpl, caches);
+  }
+  let cache = caches.get(indexUrl);
+  if (!cache) {
+    cache = { value: null, etag: "", expiresAt: 0, staleUntil: 0, inFlight: null };
+    caches.set(indexUrl, cache);
+  }
+  return cache;
+}
+
+function fetchCommunityJson(fetchImpl, url, { signal, etag = "" } = {}) {
+  const githubUrl = githubContentsApiUrl(url);
+  const headers = githubUrl
+    ? {
+      accept: "application/vnd.github.raw+json",
+      "user-agent": GITHUB_USER_AGENT,
+      "x-github-api-version": GITHUB_API_VERSION
+    }
+    : { accept: "application/json" };
+  const token = String(process.env.DUNE_SELF_UPDATE_TOKEN || "").trim();
+  if (githubUrl && token) headers.authorization = `Bearer ${token}`;
+  if (etag) headers["if-none-match"] = etag;
+  return fetchImpl(githubUrl || url, { headers, signal });
+}
+
+function githubContentsApiUrl(value) {
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "https:" || url.hostname !== "raw.githubusercontent.com") return "";
+    const parts = url.pathname.split("/").filter(Boolean);
+    if (parts.length < 4) return "";
+    const [owner, repository, ref, ...pathParts] = parts;
+    if (!owner || !repository || !ref || !pathParts.length) return "";
+    const path = pathParts.map(encodeURIComponent).join("/");
+    return `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repository)}/contents/${path}?ref=${encodeURIComponent(ref)}`;
+  } catch {
+    return "";
+  }
+}
+
+function communityFetchError(label, response) {
+  const status = Number(response?.status || 0);
+  const error = new Error(`${label} returned HTTP ${status || "unknown"}.`);
+  error.status = status;
+  error.retryAfter = responseHeader(response, "retry-after");
+  error.rateLimitRemaining = responseHeader(response, "x-ratelimit-remaining");
+  error.rateLimitReset = responseHeader(response, "x-ratelimit-reset");
+  return error;
+}
+
+function responseHeader(response, name) {
+  return String(response?.headers?.get?.(name) || "").trim();
+}
+
+function isTransientCommunityFetchError(error) {
+  const status = Number(error?.status || 0);
+  return error?.name === "AbortError"
+    || error instanceof TypeError
+    || status === 403
+    || status === 408
+    || status === 425
+    || status === 429
+    || status >= 500;
+}
+
+function retryDelayMs(error) {
+  const retryAfterSeconds = Number(error?.retryAfter || 0);
+  if (Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0) return retryAfterSeconds * 1000;
+  const resetSeconds = Number(error?.rateLimitReset || 0) - Math.floor(Date.now() / 1000);
+  if (Number.isFinite(resetSeconds) && resetSeconds > 0) return resetSeconds * 1000;
+  return 60 * 1000;
 }
 
 export function normalizeCommunityAddonsIndex(data, sourceUrl = COMMUNITY_ADDONS_INDEX_URL) {
@@ -137,6 +254,7 @@ export async function installCommunityAddon(config, addonId, options = {}, fetch
   }
   const requestedId = stringField(addonId, "id");
   if (!ADDON_ID_PATTERN.test(requestedId)) throw new Error("Invalid addon id.");
+  assertAddonNotReplacedByCore(requestedId);
   const destination = resolve(addonsInstalledRoot(config), requestedId);
   if (existsSync(destination)) throw new Error(`${requestedId} is already installed. Use Update when a newer catalog version is available.`);
 
@@ -178,6 +296,7 @@ export async function updateCommunityAddon(config, addonId, options = {}, fetchI
   }
   const requestedId = stringField(addonId, "id");
   if (!ADDON_ID_PATTERN.test(requestedId)) throw new Error("Invalid addon id.");
+  assertAddonNotReplacedByCore(requestedId);
   const installedRoot = addonsInstalledRoot(config);
   const destination = resolve(installedRoot, requestedId);
   const installedManifestPath = resolve(destination, "addon.json");
@@ -248,7 +367,7 @@ async function prepareCommunityAddonRelease(config, requestedId, options, fetchI
   const summary = index.addons.find((addon) => addon.id === requestedId);
   if (!summary) throw new Error(`Community addon not found: ${requestedId}`);
   assertCommunityAddonInstallable(summary);
-  const manifestResponse = await fetchImpl(summary.manifestUrl, { headers: { accept: "application/json" } });
+  const manifestResponse = await fetchCommunityJson(fetchImpl, summary.manifestUrl);
   if (!manifestResponse?.ok) throw new Error(`Addon manifest returned HTTP ${manifestResponse?.status || "unknown"}.`);
   const remoteManifest = normalizeCommunityAddonManifest(await manifestResponse.json());
   if (remoteManifest.id !== summary.id) throw new Error("Addon manifest id does not match the community index entry.");
@@ -599,6 +718,11 @@ function assertCommunityAddonInstallable(addon) {
   if (INSTALL_BLOCKED_LIFECYCLES.has(lifecycle)) {
     throw new Error(`${addon.name || addon.id} cannot be installed because its community status is ${formatLifecycleLabel(lifecycle)}.`);
   }
+}
+
+function assertAddonNotReplacedByCore(id) {
+  const message = RETIRED_CORE_ADDONS.get(id);
+  if (message) throw new Error(message);
 }
 
 function assertInstalledAddonRunnable(id, state = {}) {

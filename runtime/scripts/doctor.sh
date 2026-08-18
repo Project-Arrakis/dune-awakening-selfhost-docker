@@ -198,8 +198,12 @@ check_always_on_memory_safety() {
   [[ "$configured" =~ ^[1-9][0-9]*$ ]] || configured=1
 
   if [ "${DUNE_ALWAYS_ON_HOST_MEMORY_SAFETY:-1}" = "0" ]; then
-    warn_msg "Always-on host-memory startup protection is disabled"
-    echo "     Remove DUNE_ALWAYS_ON_HOST_MEMORY_SAFETY=0 to restore automatic protection."
+    if [ "$configured" -gt "${recommended:-1}" ]; then
+      warn_msg "Always-on host-memory startup protection is disabled while startup parallelism $configured exceeds this host's safe value ${recommended:-1}"
+      echo "     Reduce DUNE_ALWAYS_ON_STARTUP_PARALLELISM to ${recommended:-1}, or remove DUNE_ALWAYS_ON_HOST_MEMORY_SAFETY=0 to restore automatic protection. Host: ${total:-?} GiB RAM, ${available:-?} GiB available, ${swap_free:-?} GiB swap free, ${reserve:-?} GiB protected reserve."
+    else
+      info_msg "Always-on host-memory startup protection is disabled by configuration; startup parallelism $configured is within this host's safe value ${recommended:-1}"
+    fi
   elif [ "$configured" -gt "${recommended:-1}" ]; then
     warn_msg "Always-on startup parallelism $configured exceeds this host's safe value ${recommended:-1}"
     echo "     Runtime startup is automatically limited to ${recommended:-1}. Host: ${total:-?} GiB RAM, ${available:-?} GiB available, ${swap_free:-?} GiB swap free, ${reserve:-?} GiB protected reserve."
@@ -295,7 +299,7 @@ check_project_systemd_timers() {
         *"$HOST_ROOT_DIR/runtime/scripts/update.sh"*"auto run"*) ;;
         *"$HOST_ROOT_DIR/runtime/scripts/dune"*"update --yes"*)
           warn_msg "$label timer uses the legacy update command from the current checkout"
-          echo "     Repair: dune update auto enable ${auto_interval:-60} ${auto_apply:-1} ${auto_notify:-1} ${auto_notify_minutes:-15} ${auto_wait_empty:-0} ${auto_max_wait:-360}"
+          echo "     Repair: dune update auto enable ${auto_interval:-60} ${auto_apply:-1} ${auto_notify:-1} ${auto_notify_minutes:-15,10,5,1} ${auto_wait_empty:-0} ${auto_max_wait:-360}"
           continue
           ;;
         *"$HOST_ROOT_DIR/"*)
@@ -374,6 +378,12 @@ check_file .env ".env config" "Run: dune init"
 check_file runtime/secrets/funcom-token.txt "Funcom token file" "Run: dune init, or place the token in runtime/secrets/funcom-token.txt"
 check_file runtime/generated/battlegroup.env "Battlegroup config" "Run: dune init"
 check_file runtime/generated/image-tags.env "Generated image tags" "Run: dune update install during init, or re-run dune init if this is a fresh install"
+if runtime/scripts/battlegroup-identity.sh check >/dev/null 2>&1; then
+  ok "Battlegroup ID matches the Funcom token"
+else
+  fail_msg "Battlegroup ID is missing, invalid, or does not match the Funcom token"
+  echo "     Run: runtime/scripts/battlegroup-identity.sh ensure"
+fi
 
 echo
 echo "=== Host automation ==="
