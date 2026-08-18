@@ -136,3 +136,36 @@ test("routes with routeEnforcesCapability: false are exactly the known, document
     DISCORD_ADAPTER_ROUTES.VERSION
   ].sort());
 });
+
+// Issue #342: an independent re-audit of #337/PR #341 found 3 catalog
+// entries describing Core routes that are genuinely live but have no
+// current bot-side caller in arrakis-control-panel (verified directly
+// against that repo @ 8f3d3ed), one of which (PLAYERS_ACCOUNTS_SET_DEFAULT)
+// had a description verbatim-borrowed from the bot's real, but entirely
+// different and separately-routed, "/dune player default" command. This
+// test locks the routeHasNoCurrentBotCaller flag to exactly the known set
+// so a future addition/removal must be a deliberate, reviewed change to
+// this test, not a silent catalog edit.
+test("routes with routeHasNoCurrentBotCaller: true are exactly the known, documented exceptions (#342)", () => {
+  const catalog = buildCommandCatalog();
+  const unwired = [];
+  for (const group of catalog.groups) {
+    for (const subcommand of group.subcommands) {
+      if (subcommand.routeHasNoCurrentBotCaller) unwired.push(subcommand.route);
+    }
+  }
+  assert.deepEqual(unwired.sort(), [
+    DISCORD_ADAPTER_ROUTES.PLAYERS_ACCOUNTS_LINK,
+    DISCORD_ADAPTER_ROUTES.PLAYERS_ACCOUNTS_LINK_VERIFY,
+    DISCORD_ADAPTER_ROUTES.PLAYERS_ACCOUNTS_SET_DEFAULT
+  ].sort());
+});
+
+test("no routeHasNoCurrentBotCaller entry's description is verbatim-identical to any OTHER entry's description (would indicate an accidentally borrowed description, as PLAYERS_ACCOUNTS_SET_DEFAULT's originally was in #342)", () => {
+  const catalog = buildCommandCatalog();
+  const allSubcommands = catalog.groups.flatMap((group) => group.subcommands);
+  const descriptions = allSubcommands.map((s) => s.description);
+  const uniqueDescriptions = new Set(descriptions);
+  assert.equal(uniqueDescriptions.size, descriptions.length,
+    "two catalog entries share an identical description -- verify neither was accidentally copy-pasted from an unrelated route (see issue #342)");
+});
