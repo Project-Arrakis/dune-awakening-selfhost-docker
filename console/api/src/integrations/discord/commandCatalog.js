@@ -17,15 +17,22 @@
 // Deliberately Phase 1 only (see the RFC's own §4 migration path): this
 // file composes catalog entries from data that ALREADY exists as code
 // (DISCORD_LIVE_ADAPTER_ROUTES, DISCORD_CAPABILITIES, the per-route
-// capability checks in routes.js/adapter.js, and CAPABILITY_BY_TIER's
-// effective minimum tier per capability) plus newly-authored Discord-facing
-// metadata (group/subcommand name, description, param shape) that does not
-// exist as code anywhere today and must be authored once per route. It does
-// NOT introduce a second, independently-hand-maintained metadata object the
-// way the RFC's own illustrative example risked -- COMMAND_CATALOG_ASSERT
-// below fails loudly (throws) if a live route is missing an entry, or if an
-// entry references a route that isn't actually live, so this file cannot
-// silently drift from adapter.js the way the bot's classification did.
+// capability checks in routes.js/adapter.js, and policy.js's
+// minTierForCapability() for the effective minimum tier per capability)
+// plus newly-authored Discord-facing metadata (group/subcommand name,
+// description, param shape) that does not exist as code anywhere today and
+// must be authored once per route.
+//
+// NOTE on scope of the drift-safety claim below: buildCommandCatalog()'s
+// coverage assertion (the missing/stale checks) makes ROUTE coverage
+// drift-proof -- it throws if a live route lacks a COMMAND_METADATA entry,
+// or if an entry references a route that's no longer live, so this file
+// cannot silently drift from adapter.js's route table the way the bot's
+// LIVE_ROUTES/PLANNED_ROUTES/UNMERGED_ROUTES/MISSING_ROUTES classification
+// did. It does NOT make the hand-authored fields WITHIN each entry (like
+// `description`) drift-proof -- those still require a human to keep them
+// accurate against the real route behavior (see e.g. the MAINTENANCE
+// entry's own comment below for a known, tracked case of this).
 //
 // Phases 2 (bot-side generator script), 3 (bot runtime loads from the
 // generated registry), and 4 (dynamic refresh, per-guild catalogs,
@@ -38,50 +45,36 @@
 // Verified directly against arrakis-control-panel @ 8f3d3ed (2026-08-18).
 
 import { DISCORD_ADAPTER_ROUTES, DISCORD_LIVE_ADAPTER_ROUTES } from "./adapter.js";
-import { DISCORD_CAPABILITIES } from "./policy.js";
+import { DISCORD_CAPABILITIES, SELF_SCOPED_CAPABILITIES, minTierForCapability as policyMinTierForCapability } from "./policy.js";
 
 export const CATALOG_VERSION = 1;
 
-// Minimum Discord role tier able to invoke each capability, derived
-// directly from adapter.js's CAPABILITY_BY_TIER (public/observer/moderator
-// grant sets are enumerated there explicitly; admin and owner both receive
-// every non-self-scoped capability). This is NOT a second copy of that
-// table -- it is a one-time derivation recorded here as data because
-// policy.js does not export an inverse (capability -> min tier) lookup.
-// If policy.js's CAPABILITY_BY_TIER ever changes, this map must be updated
-// to match -- the catalogContractTest.js drift check (see this file's test
-// counterpart) intentionally does NOT re-derive this automatically, since
-// doing so would require importing policy.js's private CAPABILITY_BY_TIER
-// object, which isn't exported. Reviewers: cross-check any capability
-// added/moved in policy.js against this map by hand.
-const MIN_TIER_BY_CAPABILITY = Object.freeze({
-  [DISCORD_CAPABILITIES.STATUS_READ]: "public",
-  [DISCORD_CAPABILITIES.READINESS_READ]: "observer",
-  [DISCORD_CAPABILITIES.SERVICES_READ]: "observer",
-  [DISCORD_CAPABILITIES.POPULATION_READ]: "moderator",
-  [DISCORD_CAPABILITIES.LOGS_READ]: "admin",
-  [DISCORD_CAPABILITIES.MAPS_READ]: "moderator",
-  [DISCORD_CAPABILITIES.BACKUPS_READ]: "moderator",
-  [DISCORD_CAPABILITIES.INVENTORY_READ]: "moderator",
-  [DISCORD_CAPABILITIES.STORAGE_READ]: "moderator",
-  [DISCORD_CAPABILITIES.GUILD_READ]: "moderator",
-  [DISCORD_CAPABILITIES.OPS_ACTIVITY_READ]: "admin",
-  [DISCORD_CAPABILITIES.OPS_COMBAT_READ]: "admin",
-  [DISCORD_CAPABILITIES.OPS_RESOURCES_READ]: "admin",
-  [DISCORD_CAPABILITIES.OPS_ECONOMY_READ]: "admin",
-  [DISCORD_CAPABILITIES.OPS_INVENTORY_READ]: "admin",
-  [DISCORD_CAPABILITIES.OPS_SOC_READ]: "admin",
-  [DISCORD_CAPABILITIES.OPS_PROMETHEUS_READ]: "admin",
-  [DISCORD_CAPABILITIES.BROADCAST_SEND]: "admin",
-  // Self-scoped capabilities (see policy.js's SELF_SCOPED_CAPABILITIES):
-  // authorized via requireSelfScopedCapability(), not the tier ladder --
-  // any authenticated actor (observer tier or above) may always act on
-  // their own Discord identity. Recorded here as "observer" (the floor
-  // requireSelfScopedCapability() itself enforces), not "public", so
-  // catalog consumers don't mistake these for anonymous-accessible routes.
-  [DISCORD_CAPABILITIES.PLAYER_LINK_WRITE]: "observer",
-  [DISCORD_CAPABILITIES.ACCOUNT_LINK_WRITE]: "observer"
-});
+// Minimum Discord role tier able to invoke each capability. Delegates
+// directly to policy.js's minTierForCapability() (added alongside this file
+// specifically so this catalog would not need to hand-maintain a second,
+// parallel copy of CAPABILITY_BY_TIER's shape -- see policy.js's own
+// comment on minTierForCapability for why). This function exists only to
+// add the one behavior policy.js's version deliberately does NOT have:
+// self-scoped capabilities (PLAYER_LINK_WRITE, ACCOUNT_LINK_WRITE) are
+// excluded from every tier's CAPABILITY_BY_TIER set (they're authorized by
+// identity via requireSelfScopedCapability(), not the tier ladder -- see
+// policy.js's SELF_SCOPED_CAPABILITIES comment), so
+// policyMinTierForCapability() correctly returns null for them. For catalog
+// display purposes, null would be misleading (it could read as "no tier
+// requirement / public"), so self-scoped capabilities are reported as
+// "observer" here -- the actual floor requireSelfScopedCapability() itself
+// enforces (rejects "public"-tier actors, i.e. any actor with zero
+// configured roles) -- so catalog consumers don't mistake these for
+// anonymous-accessible routes. This is a presentation-layer decision made
+// once, here, not a second source of truth for tier-grant data itself.
+function minTierForCapability(capability) {
+  // VERSION is the one live route with no real capability check at all
+  // (routeEnforcesCapability: false below) -- capability is recorded as
+  // null rather than a guessed value, and null has no meaningful tier.
+  if (!capability) return null;
+  if (SELF_SCOPED_CAPABILITIES.has(capability)) return "observer";
+  return policyMinTierForCapability(capability);
+}
 
 // One entry per DISCORD_LIVE_ADAPTER_ROUTES member. Keys are route path
 // strings (DISCORD_ADAPTER_ROUTES.* values), not route constant names, so
@@ -144,7 +137,20 @@ const COMMAND_METADATA = Object.freeze({
   },
   [DISCORD_ADAPTER_ROUTES.MAINTENANCE]: {
     group: "server", subcommand: "maintenance",
-    description: "Show current maintenance note or window (read-only).",
+    // Description corrected 2026-08-18 (Layer 2 audit, UI hat finding): the
+    // route handler (routes.js) runs `dune ready` -- the exact same
+    // underlying command READINESS already runs -- and returns raw
+    // readiness output. It does NOT read a maintenance note/window from
+    // anywhere. The bot's own commands.js carries the same inaccurate
+    // "(read-only)" maintenance-note/window description (verified against
+    // arrakis-control-panel @ 8f3d3ed) -- this is a pre-existing, cross-repo
+    // description/behavior mismatch, not introduced by this file. Recorded
+    // here as what the route ACTUALLY does, not what its name/prior
+    // description implied, since this catalog entry is now the mechanically
+    // asserted source of truth Phase 2/3 will eventually surface to users.
+    // Tracked: yacketrj/dune-awakening-selfhost-docker#338 (bot-side
+    // commands.js description also needs the same correction).
+    description: "Show current maintenance/readiness state (runs the same check as /dune server readiness).",
     capability: DISCORD_CAPABILITIES.READINESS_READ,
     params: []
   },
@@ -390,25 +396,41 @@ const COMMAND_METADATA = Object.freeze({
   }
 });
 
-function minTierForCapability(capability) {
-  if (!capability) return null;
-  return MIN_TIER_BY_CAPABILITY[capability] || null;
-}
-
-// Builds the catalog payload, asserting full, exact coverage against
-// DISCORD_LIVE_ADAPTER_ROUTES in both directions:
-//   1. every live route has a COMMAND_METADATA entry (nothing silently
-//      missing from the catalog), and
-//   2. every COMMAND_METADATA entry corresponds to a currently-live route
-//      (nothing stale left behind after a route is retired).
+// Builds the catalog payload, asserting full, exact coverage against the
+// live-route list in both directions:
+//   1. every live route has a metadata entry (nothing silently missing
+//      from the catalog), and
+//   2. every metadata entry corresponds to a currently-live route (nothing
+//      stale left behind after a route is retired).
 // Throws synchronously on either violation -- this is the mechanism that
 // replaces the bot's manual reconciliation process with a build-time/
 // request-time failure Core's own test suite catches immediately.
-export function buildCommandCatalog() {
-  const liveSet = new Set(DISCORD_LIVE_ADAPTER_ROUTES);
-  const metadataRoutes = Object.keys(COMMAND_METADATA);
+//
+// liveRoutes/metadata parameters default to the real, production data
+// (DISCORD_LIVE_ADAPTER_ROUTES, COMMAND_METADATA) and exist ONLY so
+// discordCommandCatalog.test.js can inject a deliberately mismatched pair
+// and assert the throw actually fires -- see that file's "throws when a
+// live route is missing metadata" / "throws when a metadata entry is
+// stale" tests. No production call site should ever pass these explicitly;
+// the route handler in routes.js calls buildCommandCatalog() with no
+// arguments, exactly as before.
+//
+// The zero-argument (production) call path is memoized -- DISCORD_LIVE_
+// ADAPTER_ROUTES and COMMAND_METADATA are both frozen, load-time-constant
+// module data that never changes for the lifetime of a running process, so
+// recomputing the coverage assertion and group composition on every GET
+// /catalog request is pure wasted work. Memoization is skipped entirely
+// when either argument is explicitly passed (the test-injection path),
+// so injected test data is never cached across calls.
+let cachedProductionCatalog = null;
+export function buildCommandCatalog(liveRoutes = DISCORD_LIVE_ADAPTER_ROUTES, metadata = COMMAND_METADATA) {
+  const isProductionCall = liveRoutes === DISCORD_LIVE_ADAPTER_ROUTES && metadata === COMMAND_METADATA;
+  if (isProductionCall && cachedProductionCatalog) return cachedProductionCatalog;
 
-  const missing = DISCORD_LIVE_ADAPTER_ROUTES.filter((route) => !(route in COMMAND_METADATA));
+  const liveSet = new Set(liveRoutes);
+  const metadataRoutes = Object.keys(metadata);
+
+  const missing = liveRoutes.filter((route) => !(route in metadata));
   if (missing.length > 0) {
     throw new Error(`commandCatalog.js: ${missing.length} live route(s) missing catalog metadata: ${missing.join(", ")}`);
   }
@@ -419,8 +441,8 @@ export function buildCommandCatalog() {
   }
 
   const groups = new Map();
-  for (const route of DISCORD_LIVE_ADAPTER_ROUTES) {
-    const meta = COMMAND_METADATA[route];
+  for (const route of liveRoutes) {
+    const meta = metadata[route];
     if (!groups.has(meta.group)) groups.set(meta.group, []);
     groups.get(meta.group).push({
       name: meta.subcommand,
@@ -435,8 +457,10 @@ export function buildCommandCatalog() {
     });
   }
 
-  return {
+  const result = {
     version: CATALOG_VERSION,
     groups: [...groups.entries()].map(([name, subcommands]) => ({ name, subcommands }))
   };
+  if (isProductionCall) cachedProductionCatalog = result;
+  return result;
 }
