@@ -661,18 +661,30 @@ test("reporter uploads only player portal identities requested by the claimed li
       baseUrl: "https://directory.test/api/v1/servers",
       playerPortalJourneyData: journeyData,
       playerPortalSkillData: skillData,
-      collectPlayerPortalMarketSnapshot: async () => ({ available: true, listings: [{ sellerActorId: "123" }] }),
+      collectPlayerPortalMarketSnapshot: async () => ({
+        available: true,
+        listings: [{ sellerActorId: "123" }],
+        overview: { available: true, items: [{ templateId: "MelangeSpice", listingCount: 2 }] }
+      }),
       collectPlayerPortalSnapshots: async (_db, hashes, loadedJourneys, loadedSkills, marketSnapshot) => {
         assert.deepEqual(hashes, [requestedHash]);
         assert.equal(loadedJourneys, journeyData);
         assert.equal(loadedSkills, skillData);
         assert.equal(marketSnapshot.available, true);
-        return [{ accountHash: requestedHash, found: true, data: { overview: { characterName: "Test" } } }];
+        return [{
+          accountHash: requestedHash,
+          found: true,
+          data: {
+            overview: { characterName: "Test" },
+            exchangeOverview: marketSnapshot.overview
+          }
+        }];
       },
       fetchImpl: async (url, options) => {
         requests.push({ url, options });
         if (url.endsWith("/heartbeat")) return response({ ok: true, nextHeartbeatSeconds: 60, listingClaimed: true });
         if (url.endsWith("/claim-status")) return response({ ok: true, claimed: true, playerPortalEnabled: true, requestedAccountHashes: [requestedHash] });
+        if (url.endsWith("/player-portal/market-snapshot")) return response({ ok: true, stored: true });
         return response({ ok: true, stored: 1 });
       },
       setTimeoutFn: () => ({ unref() {} }),
@@ -683,10 +695,14 @@ test("reporter uploads only player portal identities requested by the claimed li
     assert.ok(requests.some(request => request.url.endsWith(`/claim-status`)));
     const upload = requests.find(request => request.url.endsWith("/player-portal/snapshot"));
     assert.ok(upload);
+    const marketUpload = requests.find(request => request.url.endsWith("/player-portal/market-snapshot"));
+    assert.ok(marketUpload);
+    assert.equal(JSON.parse(marketUpload.options.body).exchangeOverview.items[0].templateId, "MelangeSpice");
     const body = JSON.parse(upload.options.body);
     assert.equal(body.snapshots.length, 1);
     assert.equal(body.snapshots[0].accountHash, requestedHash);
     assert.equal(Object.hasOwn(body.snapshots[0], "platformId"), false);
+    assert.equal(Object.hasOwn(body.snapshots[0].data, "exchangeOverview"), false, "server market data must not be duplicated into every private snapshot");
   } finally {
     files.cleanup();
   }

@@ -383,7 +383,31 @@ export function createPublicDirectoryReporter(config, options = {}) {
               portalContext
             );
             const observedAt = new Date(now()).toISOString();
-            for (const batch of playerPortalSnapshotBatches(snapshots, observedAt)) {
+            let marketOverviewStoredSeparately = false;
+            if (marketSnapshot?.overview && typeof marketSnapshot.overview === "object") {
+              try {
+                const result = await requestJson(fetchImpl, `${claimBaseUrl}/${encodeURIComponent(identity.serverId)}/player-portal/market-snapshot`, {
+                  method: "POST",
+                  headers: {
+                    authorization: `Bearer ${identity.secret}`,
+                    "content-type": "application/json"
+                  },
+                  body: JSON.stringify({ observedAt, exchangeOverview: marketSnapshot.overview })
+                });
+                marketOverviewStoredSeparately = result?.stored === true;
+              } catch {
+                // Compatibility with private directory services that have not
+                // added the server-level market snapshot endpoint yet.
+              }
+            }
+            const privateSnapshots = marketOverviewStoredSeparately
+              ? snapshots.map((snapshot) => {
+                  if (!snapshot?.data || typeof snapshot.data !== "object") return snapshot;
+                  const { exchangeOverview: _serverOverview, ...privateData } = snapshot.data;
+                  return { ...snapshot, data: privateData };
+                })
+              : snapshots;
+            for (const batch of playerPortalSnapshotBatches(privateSnapshots, observedAt)) {
               await requestJson(fetchImpl, `${claimBaseUrl}/${encodeURIComponent(identity.serverId)}/player-portal/snapshot`, {
                 method: "POST",
                 headers: {
