@@ -606,6 +606,8 @@ test("player portal snapshot bases report generatorUnstockedCount and generatorA
   assert.equal(JSON.stringify(result[0].data.marketBot).includes("Private"), false);
   assert.equal(result[0].data.exchangeOverview.available, true);
   assert.equal(result[0].data.exchangeOverview.items[0].listingCount, 2);
+  assert.equal(result[0].data.specializations.unspentSkillPoints, 0);
+  assert.equal(Object.hasOwn(result[0].data.specializations, "unspentPoints"), false, "portal payload must not misname skill points as generic specialization points");
 });
 
 test("player portal prefers custom vehicle names and ignores internal labels", async () => {
