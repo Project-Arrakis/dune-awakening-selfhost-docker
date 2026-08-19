@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Boxes, ChevronDown, ChevronRight, LayoutGrid, List, Trash2, TriangleAlert, X } from "lucide-react";
-import { CatalogItemThumb, ItemCatalogCombobox, type CatalogItem } from "../../components/common/ItemCatalog";
+import { CatalogItemThumb, ItemCatalogCombobox, loadFullCatalog, type CatalogItem } from "../../components/common/ItemCatalog";
 import {
   basesApi,
   type BaseContainerSlots,
@@ -153,6 +153,19 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
   // Fill has no batch concept (one fill call always targets one item).
   const [addBatch, setAddBatch] = useState<{ itemName: string; itemId: string; quantity: number }[]>([]);
   const [fillRunning, setFillRunning] = useState(false);
+  // Loaded once per mount (ItemCatalogCombobox loads and caches the same
+  // full catalog independently, via loadFullCatalog()'s own module-level
+  // cache -- this second call is a cache hit, not a second network
+  // request) so a slot click can resolve that slot's templateId to a real
+  // CatalogItem (for FILLABLE_GROUPS filtering and the combobox's own
+  // name/image/group fields) without waiting on the combobox's own effect
+  // to have already run.
+  const [catalog, setCatalog] = useState<CatalogItem[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    void loadFullCatalog().then((loaded) => { if (!cancelled) setCatalog(loaded); });
+    return () => { cancelled = true; };
+  }, []);
 
   // CORRECTED 2026-08-19 (real operator report): switching modes used to
   // also clear selectedItem, on the theory that a selected item might not
@@ -174,6 +187,36 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
     if (mode === addFillMode) return;
     setAddFillMode(mode);
     setQuantityText(mode === "fill" ? "100" : "1");
+  }
+
+  // Per explicit operator direction (2026-08-19): clicking an item already
+  // in the container also populates the shared Give/Fill combobox with
+  // that same item, so giving more of something already sitting in the
+  // container does not require re-typing/re-searching its name. Reuses
+  // this same click -- it does not add a second, separate click target --
+  // so it fires alongside the existing "select this slot for the delete
+  // strip" behavior every slot click already has.
+  //
+  // Resolved against the real catalog (not fabricated from the slot's own
+  // name/templateId alone) so the populated selection carries the same
+  // real group/image fields the combobox itself relies on. Silently a
+  // no-op if the item is not in FILLABLE_GROUPS (e.g. a weapon or
+  // schematic) or is not present in the loaded catalog at all -- the
+  // combobox could never have accepted that item either, and the existing
+  // delete-strip selection this click also performs is unaffected either
+  // way.
+  //
+  // Deliberately does NOT touch addFillMode or quantityText: the item
+  // populates whichever mode (Give or Fill) is currently active, and the
+  // quantity field is left exactly as the operator last set it -- clicking
+  // a slot is a shortcut for "pick this item," not "also decide how many
+  // and submit," matching how choosing an item from the combobox itself
+  // behaves.
+  function selectSlotForGiveFill(slot: { templateId: string }) {
+    if (!giveFillAllowed) return;
+    const match = catalog.find((item) => (item.itemId || item.id) === slot.templateId);
+    if (!match || !match.group || !FILLABLE_GROUPS.has(match.group)) return;
+    setSelectedItem(match);
   }
 
   // Only the newest request may write state. StrictMode double-invokes this
@@ -271,6 +314,16 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
     }
     return null;
   }, [selectedSlotId, slots]);
+
+  // Note: Grid view is silently unavailable for a container whose
+  // max_item_count exceeds GRID_CELL_CAP (e.g. the 1000-slot Developer
+  // Storage Container used for testing on dune-dev) -- clicking Grid does
+  // nothing visible in that case, staying on List instead. Confirmed as a
+  // real gap (2026-08-19) but explicitly deprioritized: this only affects
+  // oversized dev/test containers no real operator is expected to use, so
+  // no fix was made here. Revisit if a real container this large is ever
+  // ordinarily used by a real player/operator, not the dev containers this
+  // was found on.
 
   // The server rejects an over-count rather than clearing the slot, so this is
   // a courtesy check, not the guard.
@@ -1034,7 +1087,7 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
                         // never applied.
                         aria-label={`${slot.name} ×${slot.quantity.toLocaleString()}, slot ${index}`}
                         title={`${slot.name} ×${slot.quantity.toLocaleString()} (slot ${index})`}
-                        onClick={() => { setSelectedSlotId(slot.itemId); setAmount(String(slot.quantity)); }}
+                        onClick={() => { setSelectedSlotId(slot.itemId); setAmount(String(slot.quantity)); selectSlotForGiveFill(slot); }}
                       >
                         <CatalogItemThumb item={{ id: slot.templateId, itemId: slot.templateId, name: slot.name, image: itemImage(slot.templateId) }} small />
                         {slot.quantity > 1 && <span className="bases-inventory-slot-qty">{slot.quantity.toLocaleString()}</span>}
@@ -1075,7 +1128,7 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
                         className="bases-inventory-contents-name"
                         title={slot.templateId}
                         aria-pressed={selectedSlotId === slot.itemId}
-                        onClick={() => { setSelectedSlotId(slot.itemId); setAmount(String(slot.quantity)); }}
+                        onClick={() => { setSelectedSlotId(slot.itemId); setAmount(String(slot.quantity)); selectSlotForGiveFill(slot); }}
                       >{slot.name}</button>
                       <span className="bases-inventory-contents-slot muted">
                         {slot.positionIndex === null ? "—" : `#${slot.positionIndex}`}

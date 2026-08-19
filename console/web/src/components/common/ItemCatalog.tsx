@@ -22,7 +22,7 @@ export type CatalogItem = {
 let cachedCatalog: CatalogItem[] | null = null;
 let cachedCatalogPromise: Promise<CatalogItem[]> | null = null;
 
-async function loadFullCatalog(): Promise<CatalogItem[]> {
+export async function loadFullCatalog(): Promise<CatalogItem[]> {
   if (cachedCatalog) return cachedCatalog;
   if (!cachedCatalogPromise) {
     cachedCatalogPromise = adminApi.itemCatalog("", 10000).then((result) => {

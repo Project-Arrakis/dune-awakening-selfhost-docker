@@ -506,6 +506,25 @@ Keep a Changelog style, grouped by upstream base version, newest first.
   unchanged in both content and visual weight. New regression-guard test
   asserts the mode-hint and toggle share one container, distinct from the
   warning banner.
+- **Clicking an item already in a container now also populates the
+  Give/Fill combobox with that same item**, per explicit operator
+  direction -- giving more of something already visible in the Grid or
+  List view previously required re-typing/re-searching its exact name in
+  the combobox from scratch. Clicking a Grid cell or List row's item name
+  populates `selectedItem` with that slot's item in addition to the
+  existing "select this slot for the delete strip" behavior the same
+  click already performs -- not a second, separate click target, and does
+  not change the active Give/Fill mode or the quantity field, which is
+  left exactly as the operator last set it. Resolved against the real,
+  already-loaded item catalog (`loadFullCatalog()`, now exported from
+  `ItemCatalog.tsx` specifically for this) rather than fabricated from the
+  slot's own name/`templateId` alone. Silently a no-op -- the click still
+  performs its existing delete-selection behavior regardless -- for an
+  item not in `FILLABLE_GROUPS` (e.g. a weapon) or not present in the
+  loaded catalog at all, matching what the combobox itself would have
+  refused anyway. 6 new tests cover both no-op paths, both view modes
+  (Grid and List), and that the populated item respects whichever
+  Give/Fill mode is currently active.
 
 ### Security
 

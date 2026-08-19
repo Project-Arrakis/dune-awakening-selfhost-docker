@@ -282,6 +282,21 @@ quantity field still resets on every switch (a half-typed Give quantity must nev
 as a Fill quantity, or vice versa), and a queued Give batch is still **not** cleared by switching to Fill
 and back; an operator should be able to check Fill without losing in-progress batch work.
 
+**Clicking an item already in the container also populates the Give/Fill combobox with that same item.**
+Added 2026-08-19 per explicit operator direction — giving more of something already sitting in the
+container previously required re-typing/re-searching its exact name in the combobox from scratch, even
+though the operator was looking right at it in the Grid or List view. Clicking a Grid cell or a List row's
+item name now populates `selectedItem` with that slot's item **in addition to** the existing "select this
+slot for the delete strip" behavior the same click already performs — it is not a second, separate click
+target, and does not change `addFillMode` or `quantityText`; the item lands in whichever mode (Give or
+Fill) is currently active, and the quantity field is left exactly as the operator last set it. Resolved
+against the real, already-loaded catalog (the same `loadFullCatalog()` cache `ItemCatalogCombobox` itself
+uses, exported specifically for this) rather than fabricated from the slot's own name/`templateId` alone,
+so the populated selection carries the item's real `group`/`image` fields. Silently a no-op — the click
+still performs its existing delete-selection behavior regardless — for an item that is not in
+`FILLABLE_GROUPS` (e.g. a weapon or schematic sitting in a container some other way) or is not present in
+the loaded catalog at all; the combobox could never have accepted that item either.
+
 **The two safety notices below the toggle are one bordered banner, not two.** **Corrected 2026-08-19** —
 the original consolidation merged the *inputs* into one shared row but left the *notices* as three
 separately-stacked elements (an explanatory paragraph, the restart warning, and the Fill-only collision

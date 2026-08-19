@@ -32,13 +32,20 @@ vi.mock("../../api/admin", () => ({
 const IMAGE = "/images/items/image-unavailable.png";
 
 // Small, realistic catalog fixture -- real fillable groups on AzuriteOre/
-// PlantFiber/SteelBar (matching FILLABLE_GROUPS in adminCatalog.js), and a
-// non-fillable weapon so the Fill combobox's group filtering has something
-// real to exclude.
+// PlantFiber/SteelBar/Stone (matching FILLABLE_GROUPS in adminCatalog.js),
+// and a non-fillable weapon so the Fill combobox's group filtering has
+// something real to exclude. Stone/MagnetiteOre are the templates SLOTS'
+// own default fixture uses -- Stone is included here so
+// "click a slot to populate Give/Fill" tests have a real, resolvable
+// catalog match; MagnetiteOre is deliberately left OUT of the catalog so
+// a slot-click test can also prove the "not in the loaded catalog" no-op
+// path (distinct from the "not in a fillable group" no-op path
+// SilverSword_Ranger already covers).
 const CATALOG_ITEMS = [
   { id: "AzuriteOre", itemId: "AzuriteOre", name: "AzuriteOre", category: "resources", source: "Resources", group: "raw_resource", image: IMAGE },
   { id: "PlantFiber", itemId: "PlantFiber", name: "PlantFiber", category: "resources", source: "Resources", group: "raw_resource", image: IMAGE },
   { id: "SteelBar", itemId: "SteelBar", name: "SteelBar", category: "resources", source: "Resources", group: "refined_resource", image: IMAGE },
+  { id: "Stone", itemId: "Stone", name: "Granite Stone", category: "resources", source: "Resources", group: "raw_resource", image: IMAGE },
   { id: "SilverSword_Ranger", itemId: "SilverSword_Ranger", name: "SilverSword_Ranger", category: "weapons", source: "Weapons", group: "weapon", image: IMAGE }
 ];
 
@@ -600,6 +607,85 @@ describe("BaseInventoryTab", () => {
     // The two Granite Stone stacks are only distinguishable by slot number.
     expect(rows[0].textContent).toContain("#0");
     expect(rows[2].textContent).toContain("#2");
+  });
+
+  // Per explicit operator direction (2026-08-19): clicking an item already
+  // in the container also populates the shared Give/Fill combobox with
+  // that same item, so giving more of something already sitting in the
+  // container does not require re-typing/re-searching its name.
+  it("populates the Give/Fill combobox when a List row is clicked", async () => {
+    mockInventory();
+    renderTab();
+    await loaded();
+    await openVaultContents();
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Granite Stone" })[0]);
+    expect((screen.getByRole("combobox", { name: "Item to give" }) as HTMLInputElement).value).toBe("Granite Stone");
+  });
+
+  it("populates the Give/Fill combobox when a Grid cell is clicked", async () => {
+    mockInventory();
+    renderTab();
+    await loaded();
+    await openVaultContents({ stayOnGrid: true });
+
+    fireEvent.click(screen.getByRole("button", { name: /Granite Stone ×600, slot 0/ }));
+    expect((screen.getByRole("combobox", { name: "Item to give" }) as HTMLInputElement).value).toBe("Granite Stone");
+  });
+
+  it("populates whichever mode (Fill) is currently active, not just Give", async () => {
+    mockInventory();
+    renderTab();
+    await loaded();
+    await openVaultContents();
+    switchToFillMode();
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Granite Stone" })[0]);
+    expect((screen.getByRole("combobox", { name: "Item to fill" }) as HTMLInputElement).value).toBe("Granite Stone");
+  });
+
+  it("does not populate Give/Fill for an item not in a fillable group (e.g. a weapon)", async () => {
+    mockInventory();
+    mockSlots({
+      ...SLOTS,
+      inventories: [{
+        ...SLOTS.inventories[0],
+        slots: [{ itemId: "901", templateId: "SilverSword_Ranger", name: "SilverSword_Ranger", positionIndex: 0, quantity: 1, qualityLevel: 0, currentDurability: null, maxDurability: null }]
+      }]
+    });
+    renderTab();
+    await loaded();
+    await openVaultContents();
+
+    fireEvent.click(screen.getAllByRole("button", { name: "SilverSword_Ranger" })[0]);
+    expect((screen.getByRole("combobox", { name: "Item to give" }) as HTMLInputElement).value).toBe("");
+  });
+
+  it("does not populate Give/Fill for an item not present in the loaded catalog at all", async () => {
+    mockInventory();
+    renderTab();
+    await loaded();
+    await openVaultContents();
+
+    // MagnetiteOre (Iron Ore) is deliberately absent from CATALOG_ITEMS --
+    // the click must no-op rather than throw or populate a fabricated item.
+    fireEvent.click(screen.getAllByRole("button", { name: "Iron Ore" })[0]);
+    expect((screen.getByRole("combobox", { name: "Item to give" }) as HTMLInputElement).value).toBe("");
+  });
+
+  it("still selects the slot for the delete strip when a Give/Fill-ineligible item is clicked", async () => {
+    mockInventory();
+    renderTab();
+    await loaded();
+    await openVaultContents();
+
+    // Iron Ore is not in the loaded catalog (see the test above), so it
+    // must not populate Give/Fill -- but the existing delete-selection
+    // behavior this same click already performs must be completely
+    // unaffected by that no-op.
+    fireEvent.click(screen.getAllByRole("button", { name: "Iron Ore" })[0]);
+    await waitFor(() => expect(document.querySelector(".bases-inventory-slot-detail")).toBeTruthy());
+    expect(screen.getByLabelText(/Amount of Iron Ore to remove/)).toBeTruthy();
   });
 
   // Found during PR #349's own Layer 3 audit (Architect hat): the header row
