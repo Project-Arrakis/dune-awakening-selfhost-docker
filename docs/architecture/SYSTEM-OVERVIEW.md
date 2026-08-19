@@ -37,8 +37,9 @@ by shell scripts under `runtime/scripts/`:
                     │        ├─► docker-compose.metrics.yml     → Prometheus/Grafana/etc (opt-in)
                     │        ├─► docker-compose.public-probe*.yml → public-probe (opt-in)
                     │        └─► raw `docker run` for: Postgres, RabbitMQ, TextRouter,
-                    │             BattlegroupDirector, ServerGateway, and each dynamic
-                    │             game-map server (Survival_1, Overmap, Deep Desert, ...)
+                    │             BattlegroupDirector, the always-on world servers
+                    │             (Survival_1, Overmap), ServerGateway, and each
+                    │             dynamically-spawned map partition (Deep Desert, ...)
                     └─────────────────────────────┘
 ```
 
@@ -200,8 +201,9 @@ Implemented in `console/api/src/addons.js`. Community addons are fetched
 from `https://raw.githubusercontent.com/Red-Blink/dune-docker-addons/main/index.json`,
 verified by SHA-256 against the addon's manifest, and validated against a
 fixed, hardcoded permission allowlist
-(`ALLOWED_ADDON_PERMISSIONS` — 10 entries, e.g. `players:read`,
-`database:write`, `admin:grant-items`, `broadcast:send`). An optional
+(`ALLOWED_ADDON_PERMISSIONS`, e.g. `players:read`,
+`database:write`, `admin:grant-items`, `broadcast:send` — see the source
+for the exact, current full list). An optional
 `DUNE_SELF_UPDATE_TOKEN` (GitHub token), if configured, is attached to
 the catalog index/manifest fetch only — it is never sent with the addon
 archive download and never reaches installed-addon runtime code. An addon's
@@ -231,7 +233,7 @@ answering operator questions about this — verify against the running
 `runtime/scripts/dune` is the primary operational entry point once a
 server is installed — the Web UI calls into the same underlying scripts,
 but every capability is also available directly from the CLI. It dispatches
-on its first argument to one of 35 subcommands (`init`, `start`, `stop`,
+on its first argument to one of a few dozen subcommands (`init`, `start`, `stop`,
 `status`, `ps`, `servers`, `spawn`, `despawn`, `autoscaler`, `ports`,
 `ready`, `logs`, `restart <target>`, `stop-service`, `console`/`web`,
 `metrics`, `update`, `self-update`, `restart-schedule`,
