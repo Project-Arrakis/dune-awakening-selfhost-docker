@@ -5499,7 +5499,7 @@ export async function playerPortalSnapshots(db, requestedAccountHashes, journeyT
           tracks: (specs.rows || []).map((row) => ({ name: row.track_type, level: Math.floor(Number(row.level) || 0), xp: Number(row.xp_amount) || 0 })),
           purchasedKeystones: keystones.rows.map((row) => row.keystone_id),
           skills: skillModules,
-          unspentPoints: Number(specs.unspentPoints) || 0
+          unspentSkillPoints: Number(specs.unspentPoints) || 0
         },
         unlocks: {
           skills: skillModules,
