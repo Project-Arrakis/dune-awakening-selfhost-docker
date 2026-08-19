@@ -454,6 +454,24 @@ export function MarketBotOverlay({ onClose, onError, confirmAction }: MarketBotO
     });
   }
 
+  async function runUnseedNow() {
+    const confirmed = await confirmAction(
+      "Remove all of the Market Bot's NPC sell listings from the selected exchange? The console checks read-only first and takes a database backup only when there is something to remove. Player listings and pending seller payments are never touched.",
+      {
+        title: "Remove NPC listings",
+        confirmLabel: "Remove listings",
+        danger: true,
+        warning: seedEnabled ? "The reseed schedule is enabled: the next scheduled run will repopulate this market. Disable the schedule to keep it unseeded." : undefined
+      }
+    );
+    if (!confirmed) return;
+    await run("unseed", async () => {
+      const result = await marketBotApi.unseed(exchangeId ? { exchangeId } : {});
+      if (result.status === "empty") return result.detail || "No NPC listings to remove; no backup was taken.";
+      return `Unseed finished: removed ${result.removedListings ?? "0"} NPC listing(s) from exchange ${result.exchangeId ?? "?"}.`;
+    });
+  }
+
   const supported = status?.capabilities.exchangeMarket !== false;
   const planReady = status?.plan.available === true;
   const savedBuybackExchange = status?.buyback.exchangeId || "";
@@ -573,7 +591,9 @@ export function MarketBotOverlay({ onClose, onError, confirmAction }: MarketBotO
               <div className="confirm-modal-actions market-bot-actions">
                 <button onClick={() => void saveSeed()} disabled={Boolean(busy)}>{busy === "save-seed" ? "Saving…" : "Save reseed schedule"}</button>
                 <button className="danger" onClick={() => void runSeedNow()} disabled={Boolean(busy) || !savedSeedExchange}>{busy === "run-seed" ? "Running…" : "Run reseed now"}</button>
+                <button className="danger" onClick={() => void runUnseedNow()} disabled={Boolean(busy) || !exchangeId}>{busy === "unseed" ? "Removing…" : "Remove NPC listings"}</button>
               </div>
+              <p className="action-help-note">Remove NPC listings empties the bot's own listings on the exchange selected above without reseeding — the market stays unseeded until the next reseed run (disable the schedule to keep it that way). Player listings and pending seller payments are never touched.</p>
             </div>
 
             {notice && <p className="market-bot-notice" role="status">{notice}</p>}

@@ -116,6 +116,14 @@ Exchange Bot addon drives through the scheduler bridge, now first-class):
   sand), refining ingots, building materials, schematic pattern fragments, and
   iodine pills. Everything else keeps the plan default. Buyback caps are
   per-unit and do not change.
+- **Remove NPC listings** (unseed) empties the bot's own listings on the selected
+  exchange without reseeding — the "clear market" ability the EDA bot had before
+  Market Bot became console-native. The console counts the bot's listings
+  read-only first and only takes a backup + clears when there is something to
+  remove. Player listings and pending seller "Take Solari" payments are never
+  touched (payments are owned by the seller, not the bot). The seed schedule is
+  left as-is, so an **enabled** reseed schedule repopulates the market on its
+  next run; disable the schedule to keep the market unseeded.
 - **Buyback sweeps** buy player sell listings whose per-unit ask is at or below the
   buyback percentage of the chosen **price basis** — seeded NPC price at that
   listing's grade (default), or the live player-market average / lowest ask with
@@ -146,6 +154,16 @@ Exchange Bot addon drives through the scheduler bridge, now first-class):
   `runtime/generated/market-bot/buyback-log.json` (20 most recent, dropped
   after 5 days). The scheduler prunes expired batches at most hourly even when
   buyback is disabled.
+- **Backup labeling and retention**: every Market Bot database write is preceded
+  by a backup whose filename carries the origin (for example
+  `dune-db-market-bot-buyback-<scope>-<timestamp>.backup`; the sidecar's
+  `backup_origin` records `market-bot-seed`, `market-bot-buyback`, or
+  `market-bot-unseed`), and the Backups page shows them as **Market Bot
+  Backup**. Because schedules mint backups unattended, only the **5 newest**
+  Market Bot backups are kept: after every successful Market Bot backup, older
+  ones are pruned by the sidecar origin — including unlabeled ones written by
+  earlier releases. Manual, automatic, and safety backups are never candidates.
+  Set `DUNE_MARKET_BOT_BACKUP_KEEP` to change the count.
 - **Schedules** run unattended inside the console API process (no browser page needs
   to stay open) and survive restarts. They are console-owned and authorized by RBAC
   at save time. Seed and buyback share one running lock, so they can never write the
