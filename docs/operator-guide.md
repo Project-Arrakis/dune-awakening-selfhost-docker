@@ -22,12 +22,17 @@ instead of this guide.
 
 ## 1. Signing in
 
-After installation, the installer prints the Web UI's URL and a one-time
-generated admin password (read from `runtime/secrets/admin-web-password.txt`
-on first run). This single shared password logs you in as the `owner`
-tier — the highest privilege level. See
+After installation, the installer prints the Web UI's URL and a
+generated admin password. This single shared password logs you in as the
+`owner` tier — the highest privilege level. See
 [`docs/console-iam.md`](console-iam.md) if you plan to configure
 additional roles/policies rather than sharing the owner password.
+
+**Lost or forgot the password?** It is persisted at
+`runtime/secrets/admin-web-password.txt` on the host — read it directly
+from there (e.g. `cat runtime/secrets/admin-web-password.txt`) rather than
+re-running the installer, which will not restore an original password
+once it has been changed via the Settings page's Login Password section.
 
 **Do not expose the Web UI port (`8088` by default) to untrusted users.**
 Only forward it to trusted administrators — see the root README's Ports
@@ -39,7 +44,10 @@ table.
 
 The screenshots gallery ([`docs/screenshots.md`](screenshots.md)) shows
 every major panel; the list below matches its section order and links to
-the feature documentation that exists for each area.
+the feature documentation that exists for each area. A "—" in the
+Further reading column means the panel is self-explanatory from the Web
+UI itself and has no separate written doc yet — file a documentation
+issue if you get stuck on one of those.
 
 | Panel | What it's for | Further reading |
 |---|---|---|
@@ -56,7 +64,8 @@ the feature documentation that exists for each area.
 | Updates | Game-server content updates | §5 below |
 | Bases (accessed by expanding a base row) | Power, Water, Inventory, Sub-Fief Permissions tabs | [`docs/console/base-inventory.md`](console/base-inventory.md), [`docs/console/base-permissions.md`](console/base-permissions.md), [`docs/console/base-deletion.md`](console/base-deletion.md) |
 | Exchange | Read-only view of the game's live CHOAM market listings | [`docs/console/exchange.md`](console/exchange.md) |
-| Settings | Public Server Directory claim, addon management, IAM policy editor | §6, §7 below |
+| Settings | Public Server Directory claim, addon management | §6, §7 below |
+| Access Control | IAM policy editor for configuring roles/tiers beyond the shared owner password | [`docs/console-iam.md`](console-iam.md) |
 
 ---
 
@@ -80,9 +89,9 @@ Expanding a base row in the Bases panel gives you four tabs:
   [`docs/console/base-permissions.md`](console/base-permissions.md).
 
 **Deleting a base** is a separate, row-level action (trash icon) — it is
-permanent and irreversible. The console requires you to type a
-confirmation phrase and automatically takes a full database backup before
-running the delete. See
+permanent and irreversible. The console shows a danger-styled confirmation
+dialog you must click through, and automatically takes a full database
+backup before running the delete. See
 [`docs/console/base-deletion.md`](console/base-deletion.md) for exactly
 what "the base" means for this operation and why a pending delete freezes
 other mutations on that base.
@@ -128,8 +137,10 @@ the Web UI's Updates panel — do not confuse them:
 - **`dune update`** — updates the **game server** itself (the SteamCMD
   content Funcom ships). Subcommands: `check`, `install`,
   `fix-steamcmd`, `fix-install-dir`, and an unattended option,
-  `dune update auto enable` / `disable` / `status`, backed by a systemd
-  timer (default: daily at 05:00).
+  `dune update auto enable [interval-minutes] ...` / `disable` /
+  `status`, backed by a systemd timer that runs 5 minutes after boot and
+  then repeats on a rolling interval (default: every 60 minutes,
+  configurable via the first argument to `auto enable`).
 - **`dune self-update`** (alias `dune stack-update`) — updates **this
   repository/stack itself** (fetching a new GitHub release of
   `dune-awakening-selfhost-docker`). Subcommands: `check`, `list`,
@@ -196,13 +207,14 @@ summary — treat those two as the complete current documentation for it.
 Two separate things exist under the "Discord" name — use the right one:
 
 - **The Discord adapter** (current, operator-facing) — lets you connect a
-  companion Discord bot for server monitoring, and, if you also expose
-  the game bot,
+  companion Discord bot,
   [`yacketrj/dune-awakening-selfhost-discordbot`](https://github.com/yacketrj/dune-awakening-selfhost-discordbot),
-  25 slash commands across 6 groups (`core`, `server`, `data`, `ops`,
-  `admin`, `infra`). It is disabled by default, read-only unless you
-  separately enable write commands, bearer-token protected, and
-  role-gated. Setup is a 3-step env-var + rebuild flow. Start with
+  for server monitoring; its slash commands are organized into 6 groups
+  (`core`, `server`, `data`, `ops`, `admin`, `infra`) — see the linked
+  README below for the current, authoritative command list and count.
+  The adapter is disabled by default, read-only unless you separately
+  enable write commands, bearer-token protected, and role-gated. Setup
+  is a 3-step env-var + rebuild flow. Start with
   [`docs/integrations/discord-integration/README.md`](integrations/discord-integration/README.md);
   the guided, screenshot-illustrated walkthrough is
   [`docs/integrations/discord-integration/admin-guide.md`](integrations/discord-integration/admin-guide.md);

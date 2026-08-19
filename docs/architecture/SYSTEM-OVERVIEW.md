@@ -191,9 +191,12 @@ list (`public`, `observer`, `moderator`, `admin`, `owner`) — see §5.
 
 ### 2.4 Data layer
 
-There is exactly one Postgres connection pool (`db.js`, built on `pg`),
-shared by the console and the dedicated game server's own writes. Two
-schemas exist in the same database:
+The console maintains exactly one Postgres connection pool inside its own
+process (`db.js`, built on `pg`). The console and the dedicated game
+server both write to the same database, but they are separate OS
+processes — the closed-source game server establishes its own connection
+independently; it does not share this repo's in-process `pg` pool object.
+Two schemas exist in the same database:
 
 - **`dune`** — the game-world schema, populated primarily by the
   closed-source dedicated server itself (`dune.accounts`, `dune.actors`,
@@ -217,7 +220,10 @@ from `https://raw.githubusercontent.com/Red-Blink/dune-docker-addons/main/index.
 verified by SHA-256 against the addon's manifest, and validated against a
 fixed, hardcoded permission allowlist
 (`ALLOWED_ADDON_PERMISSIONS` — 10 entries, e.g. `players:read`,
-`database:write`, `admin:grant-items`, `broadcast:send`). An addon's
+`database:write`, `admin:grant-items`, `broadcast:send`). An optional
+`DUNE_SELF_UPDATE_TOKEN` (GitHub token), if configured, is attached to
+the catalog index/manifest fetch only — it is never sent with the addon
+archive download and never reaches installed-addon runtime code. An addon's
 manifest (`addon.json`, `schemaVersion: 1`, `type: "ui"` only) declares
 the permissions it wants; **installing an addon does not grant those
 permissions** — an operator must explicitly approve each permission
@@ -244,7 +250,7 @@ answering operator questions about this — verify against the running
 `runtime/scripts/dune` is the primary operational entry point once a
 server is installed — the Web UI calls into the same underlying scripts,
 but every capability is also available directly from the CLI. It dispatches
-on its first argument to one of ~30 subcommands (`init`, `start`, `stop`,
+on its first argument to one of 34 subcommands (`init`, `start`, `stop`,
 `status`, `ps`, `servers`, `spawn`, `despawn`, `autoscaler`, `ports`,
 `ready`, `logs`, `restart <target>`, `stop-service`, `console`/`web`,
 `metrics`, `update`, `self-update`, `restart-schedule`,
