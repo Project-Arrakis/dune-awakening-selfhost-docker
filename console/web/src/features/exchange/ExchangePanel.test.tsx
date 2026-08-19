@@ -103,7 +103,7 @@ describe("ExchangePanel", () => {
 
     await screen.findByText("Partial Stabilization Belt");
     const categorySelect = screen.getByRole("combobox", { name: /Category/ });
-    expect(within(categorySelect).getByRole("option", { name: "weapons" })).toBeInTheDocument();
+    expect(within(categorySelect).getByRole("option", { name: "Weapons" })).toHaveValue("weapons");
     fireEvent.change(categorySelect, { target: { value: "utility" } });
 
     await waitFor(() => expect(vi.mocked(exchangeApi.items)).toHaveBeenCalledWith(expect.objectContaining({ category: "utility" })));

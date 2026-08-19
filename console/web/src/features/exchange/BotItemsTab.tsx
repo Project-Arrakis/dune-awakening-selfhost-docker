@@ -13,6 +13,16 @@ function qualityLabel(quality: number) {
   return quality > 0 ? `Q${quality}` : "Standard";
 }
 
+function categoryLabel(category: string) {
+  return String(category || "")
+    .trim()
+    .replace(/[_-]+/g, " ")
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((word) => `${word.charAt(0).toLocaleUpperCase()}${word.slice(1)}`)
+    .join(" ");
+}
+
 // Existing-row drafts are keyed by templateId::qualityLevel -- the same
 // template id repeats once per grade with its own price, so a template-only
 // key would apply one grade's edit to every grade of that item.
@@ -52,20 +62,20 @@ function ItemPickerOverlay({ onClose, onPick, alreadyAdded }: { onClose: () => v
   const categories = useMemo(() => [...new Set(rows.map((r) => r.category).filter(Boolean))].sort(), [rows]);
 
   return (
-    <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="Add bot item" onClick={onClose}>
+    <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="Add Bot Item" onClick={onClose}>
       <div className="confirm-modal exchange-config-modal" onClick={(event) => event.stopPropagation()}>
         <div className="confirm-modal-title">
-          <h3>Add bot item</h3>
+          <h3>Add Bot Item</h3>
           <button className="exchange-config-close" aria-label="Close" onClick={onClose}><X size={16} /></button>
         </div>
         <p>Pick from the item catalog. Buildings, contracts, emotes, and unsafe items are not selectable.</p>
         <div className="action-row exchange-search-row">
-          <input value={q} onChange={(event) => setQ(event.target.value)} placeholder="Search item name" />
+          <input value={q} onChange={(event) => setQ(event.target.value)} placeholder="Search Item Name" />
           <label className="compact-select exchange-category-select">
             Category
             <select value={category} onChange={(event) => setCategory(event.target.value)}>
-              <option value="">All categories</option>
-              {categories.map((name) => <option key={name} value={name}>{name}</option>)}
+              <option value="">All Categories</option>
+              {categories.map((name) => <option key={name} value={name}>{categoryLabel(name)}</option>)}
             </select>
           </label>
         </div>
@@ -78,7 +88,7 @@ function ItemPickerOverlay({ onClose, onPick, alreadyAdded }: { onClose: () => v
               const added = alreadyAdded.has(item.itemId);
               return (
                 <li key={item.itemId} className="exchange-config-chip bot-item-picker-row">
-                  <span>{item.name}<em>{item.category}</em></span>
+                  <span>{item.name}<em>{categoryLabel(item.category)}</em></span>
                   <button type="button" disabled={added} onClick={() => onPick(item)}>{added ? "Added" : "Add"}</button>
                 </li>
               );
@@ -289,7 +299,7 @@ export function BotItemsTab({ onError }: BotItemsTabProps) {
     return (
       <div className="loading-panel">
         <span className="spinner" aria-hidden="true" />
-        <strong className="loading-dots">Loading bot items</strong>
+        <strong className="loading-dots">Loading Bot Items</strong>
       </div>
     );
   }
@@ -300,47 +310,46 @@ export function BotItemsTab({ onError }: BotItemsTabProps) {
 
   return (
     <>
-      <div className="action-row exchange-search-row">
-        <input value={search} onChange={(event) => changeSearch(event.target.value)} placeholder="Search bot items" />
+      <div className="action-row exchange-search-row bot-items-toolbar">
+        <input value={search} onChange={(event) => changeSearch(event.target.value)} placeholder="Search Bot Items" />
         <label className="compact-select exchange-category-select">
           Category
           <select value={category} onChange={(event) => changeCategory(event.target.value)}>
-            <option value="">All categories</option>
-            {categories.map((name) => <option key={name} value={name}>{name}</option>)}
+            <option value="">All Categories</option>
+            {categories.map((name) => <option key={name} value={name}>{categoryLabel(name)}</option>)}
           </select>
         </label>
         <label className="compact-select exchange-category-select">
           Quality
           <select value={qualityFilter} onChange={(event) => changeQuality(event.target.value)}>
-            <option value="">All qualities</option>
+            <option value="">All Qualities</option>
             {qualityLevels.map((level) => <option key={level} value={level}>{qualityLabel(level)}</option>)}
           </select>
         </label>
-        <button className="bot-items-add-button" onClick={() => setPickerOpen(true)}><Plus size={14} /> Add item</button>
+        <button className="bot-items-add-button" onClick={() => setPickerOpen(true)}><Plus size={14} /> Add Item</button>
       </div>
       <div className="panel-title bot-items-summary-row">
         <p className="action-help-note">Showing {rangeStart}-{rangeEnd} of {filteredRows.length.toLocaleString()} item{filteredRows.length === 1 ? "" : "s"}{filteredRows.length !== combinedRows.length ? ` (${combinedRows.length.toLocaleString()} total)` : ""}.</p>
         <div className="action-row">
-          <button onClick={() => setEnabledForFilteredRows(false)} disabled={toggleableCount === 0}>Disable all in view</button>
-          <button onClick={() => setEnabledForFilteredRows(true)} disabled={toggleableCount === 0}>Enable all in view</button>
+          <button onClick={() => setEnabledForFilteredRows(false)} disabled={toggleableCount === 0}>Disable All in View</button>
+          <button onClick={() => setEnabledForFilteredRows(true)} disabled={toggleableCount === 0}>Enable All in View</button>
         </div>
       </div>
       <div className="table-wrap bot-items-table-wrap">
         <table className="bot-items-table">
           <thead>
             <tr>
-              <th>Item</th>
-              <th>Category</th>
-              <th>Quality</th>
-              <th>Price</th>
-              <th>Stock</th>
-              <th>On</th>
-              <th></th>
+              <th className="bot-items-col-item">Item</th>
+              <th className="bot-items-col-category">Category</th>
+              <th className="bot-items-col-quality">Quality</th>
+              <th className="bot-items-col-price">Price</th>
+              <th className="bot-items-col-stock">Stock</th>
+              <th className="bot-items-col-enabled">On</th>
             </tr>
           </thead>
           <tbody>
             {visibleRows.length === 0 && (
-              <tr><td colSpan={7} className="muted">No bot items match this filter.</td></tr>
+              <tr><td colSpan={6} className="muted">No bot items match this filter.</td></tr>
             )}
             {visibleRows.map((row) => {
               const price = fieldValue(row, "price") as number;
@@ -350,19 +359,35 @@ export function BotItemsTab({ onError }: BotItemsTabProps) {
               const disabled = row.unsafe;
               return (
                 <tr key={`${row.templateId}:${row.qualityLevel}`} className={dirty ? "bot-item-row-dirty" : undefined}>
-                  <td>
-                    <span className="exchange-item-text">
-                      <span className="exchange-item-name">{row.displayName}</span>
-                      <span className="exchange-item-template" title={row.templateId}>{row.templateId}</span>
-                    </span>
-                    {row.unsafe && <span className="bot-item-badge bot-item-badge-unsafe">Unsafe — excluded</span>}
-                    {row.isNew && <span className="bot-item-badge bot-item-badge-new">New</span>}
+                  <td className="bot-items-col-item">
+                    <div className="bot-item-identity">
+                      <span className="exchange-item-text">
+                        <span className="exchange-item-name">{row.displayName}</span>
+                        <span className="exchange-item-template" title={row.templateId}>{row.templateId}</span>
+                      </span>
+                      {row.isNew && (
+                        <button
+                          type="button"
+                          className="bot-item-remove-button"
+                          onClick={() => newItemDrafts[row.templateId]
+                            ? removeNewDraft(row.templateId)
+                            : removeExistingNewItem(row.templateId)}
+                        >
+                          Remove
+                        </button>
+                      )}
+                    </div>
+                    <div className="bot-item-badges">
+                      {row.unsafe && <span className="bot-item-badge bot-item-badge-unsafe">Unsafe — Excluded</span>}
+                      {row.isNew && <span className="bot-item-badge bot-item-badge-new">New</span>}
+                    </div>
                   </td>
-                  <td>{row.category || <span className="muted">—</span>}</td>
-                  <td>{qualityLabel(row.qualityLevel)}</td>
-                  <td>
+                  <td className="bot-items-col-category">{row.category ? categoryLabel(row.category) : <span className="muted">—</span>}</td>
+                  <td className="bot-items-col-quality">{qualityLabel(row.qualityLevel)}</td>
+                  <td className="bot-items-col-price">
                     <input
                       type="number" min={1} disabled={disabled}
+                      aria-label={`${row.displayName} Price`}
                       className={dirty ? "bot-item-field-dirty" : undefined}
                       value={price}
                       onChange={(event) => {
@@ -372,9 +397,10 @@ export function BotItemsTab({ onError }: BotItemsTabProps) {
                       }}
                     />
                   </td>
-                  <td>
+                  <td className="bot-items-col-stock">
                     <input
                       type="number" min={1} max={99} disabled={disabled}
+                      aria-label={`${row.displayName} Stock`}
                       className={dirty ? "bot-item-field-dirty" : undefined}
                       value={listings}
                       onChange={(event) => {
@@ -384,22 +410,16 @@ export function BotItemsTab({ onError }: BotItemsTabProps) {
                       }}
                     />
                   </td>
-                  <td>
+                  <td className="bot-items-col-enabled">
                     <input
                       type="checkbox" disabled={disabled}
+                      aria-label={`${row.displayName} On`}
                       checked={enabled}
                       onChange={(event) => {
                         if (row.isNew) updateNewDraft(row.templateId, { enabled: event.target.checked });
                         else updateExisting(row.templateId, row.qualityLevel, { enabled: event.target.checked });
                       }}
                     />
-                  </td>
-                  <td>
-                    {row.isNew && (
-                      newItemDrafts[row.templateId]
-                        ? <button type="button" onClick={() => removeNewDraft(row.templateId)}>Remove</button>
-                        : <button type="button" onClick={() => removeExistingNewItem(row.templateId)}>Remove</button>
-                    )}
                   </td>
                 </tr>
               );
@@ -427,7 +447,7 @@ export function BotItemsTab({ onError }: BotItemsTabProps) {
         <p className="action-help-note">{dirtyCount > 0 ? `${dirtyCount} unsaved change${dirtyCount === 1 ? "" : "s"}` : "No unsaved changes."}</p>
         <div className="database-pagination-controls">
           <button onClick={discardAll} disabled={saving || dirtyCount === 0}>Discard</button>
-          <button className="primary" onClick={() => void saveAll()} disabled={saving || dirtyCount === 0}>{saving ? "Saving…" : "Save all"}</button>
+          <button className="primary" onClick={() => void saveAll()} disabled={saving || dirtyCount === 0}>{saving ? "Saving…" : "Save All"}</button>
         </div>
       </div>
       {pickerOpen && (

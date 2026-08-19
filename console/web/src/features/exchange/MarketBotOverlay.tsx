@@ -153,8 +153,8 @@ function CategoryMultiplierInputs({ section, values, onChange }: CategoryMultipl
 function exchangeLabel(exchange: MarketExchange) {
   const parts = [
     exchange.isGlobal ? `Global (ID ${exchange.exchangeId})` : `Exchange ${exchange.exchangeId}`,
-    `${exchange.accessPoints} access point${exchange.accessPoints === 1 ? "" : "s"}`,
-    `${exchange.botOrders} bot / ${exchange.playerOrders} player orders`
+    `${exchange.accessPoints} Access Point${exchange.accessPoints === 1 ? "" : "s"}`,
+    `${exchange.botOrders} Bot / ${exchange.playerOrders} Player Orders`
   ];
   return parts.join(" — ");
 }
@@ -505,7 +505,7 @@ export function MarketBotOverlay({ onClose, onError, confirmAction }: MarketBotO
               <label className="compact-select market-bot-exchange">
               <span className="market-bot-label-with-info">Exchange<InfoTooltip id="market-bot-exchange-help" label="About Exchange Selection">Exchanges with access points appear first because players can reach them in game. Saving a schedule binds it to the exchange selected here.</InfoTooltip></span>
               <select aria-label="Exchange" value={exchangeId} onChange={(event) => setExchangeId(event.target.value)}>
-                {!exchanges.length && <option value="">No exchanges found</option>}
+                {!exchanges.length && <option value="">No Exchanges Found</option>}
                 {exchanges.map((exchange) => (
                   <option key={exchange.exchangeId} value={exchange.exchangeId}>{exchangeLabel(exchange)}</option>
                 ))}
