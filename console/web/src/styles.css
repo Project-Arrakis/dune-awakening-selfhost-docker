@@ -2203,7 +2203,10 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 
 .market-bot-modal { width: min(940px, calc(100vw - 32px)); max-height: calc(100vh - 48px); overflow-y: auto; }
 .market-bot-title, .market-bot-section-title, .market-bot-label-with-info { display: flex; align-items: center; gap: 5px; }
+.market-bot-title { position: relative; }
 .market-bot-title h3 { margin: 0; }
+.market-bot-title .memory-info-tooltip { position: static; }
+.market-bot-title .memory-info-box { left: 0; right: auto; }
 .market-bot-shell { display: grid; gap: 14px; }
 .market-bot-context { display: grid; grid-template-columns: minmax(150px, .32fr) minmax(360px, 1fr); align-items: end; gap: 12px; padding: 12px; border: 1px solid #373129; border-radius: 8px; background: #111418; }
 .market-bot-plan { display: grid; gap: 4px; }
