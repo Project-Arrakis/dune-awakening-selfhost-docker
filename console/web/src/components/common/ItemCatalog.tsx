@@ -67,7 +67,7 @@ export function ItemCatalogSelector({ label = "Select Item", selected, onSelect,
         <tbody>{filteredItems.map((item) => {
           const active = selected?.id === item.id && selected?.name === item.name;
           const fullName = catalogItemName(item);
-          return <tr className={active ? "active" : ""} key={`${item.id}-${item.name}-${item.source}`} title={fullName} onClick={() => onSelect(item)}>
+          return <tr className={active ? "active" : ""} key={`${item.id}-${item.name}-${item.source}`} title={fullName} onClick={() => onSelect(active ? null : item)}>
             <td><CatalogItemThumb item={item} small /></td>
             <td className="catalog-item-name-cell">{fullName}</td>
             <td>{item.id}</td>
@@ -78,7 +78,7 @@ export function ItemCatalogSelector({ label = "Select Item", selected, onSelect,
       </table> : filteredItems.map((item) => {
         const active = selected?.id === item.id && selected?.name === item.name;
         const fullName = catalogItemName(item);
-        return <button type="button" className={`catalog-item-option ${active ? "active" : ""}`} key={`${item.id}-${item.name}-${item.source}`} title={fullName} onClick={() => onSelect(item)}>
+        return <button type="button" className={`catalog-item-option ${active ? "active" : ""}`} key={`${item.id}-${item.name}-${item.source}`} title={fullName} onClick={() => onSelect(active ? null : item)}>
           <CatalogItemThumb item={item} />
           <span>
             <strong>{fullName}</strong>
@@ -151,8 +151,17 @@ export function ItemGradeSelect({ value, onChange, minGrade = 0, disabled = fals
   </select>;
 }
 
-export function catalogItemName(item: { itemName?: string; itemId?: string }) {
+// Polymorphic over two different item shapes on purpose: a queued/given
+// package item, which carries `itemName` (checked first, unchanged), and a
+// CatalogItem from ItemCatalogSelector's own loaded list, which carries
+// `name` instead -- that field was never checked here, so every catalog
+// picker (grid title and list view's "Item Name" column alike) fell through
+// to prettifying the raw id and looked like the id shown twice, once
+// formatted and once raw. Package items never carry `name`, so this addition
+// cannot change their behavior.
+export function catalogItemName(item: { itemName?: string; name?: string; itemId?: string }) {
   if (item.itemName) return item.itemName;
+  if (item.name) return item.name;
   if (item.itemId) return friendlyCatalogName(item.itemId);
   return "Unknown";
 }

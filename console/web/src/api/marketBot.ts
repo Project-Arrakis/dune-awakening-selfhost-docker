@@ -35,12 +35,25 @@ export type MarketBuybackSchedule = MarketCategoryMultipliers & {
   nextRunAt: string;
 };
 
+export type CommodityStackItem = {
+  templateId: string;
+  label: string;
+  group: string;
+  stackSize: number;
+};
+
+export type CommodityStackGroup = {
+  id: string;
+  label: string;
+};
+
 export type MarketSeedSchedule = MarketCategoryMultipliers & {
   enabled: boolean;
   intervalMinutes: number;
   exchangeId: string;
   priceMultiplier: number;
   augmentPricing: MarketAugmentPricing;
+  commodityStacks: Record<string, number>;
   source: "addon" | "console";
   lastRunAt: string;
   lastRunStatus: string;
@@ -53,6 +66,8 @@ export type MarketBotStatus = {
   plan: { available: boolean; source: "addon" | "bundled" | null; rows: number; panelVersion: string; generatedAt: string };
   buyback: MarketBuybackSchedule;
   seed: MarketSeedSchedule;
+  commodityStackCatalog?: CommodityStackItem[];
+  commodityStackGroups?: CommodityStackGroup[];
   reason?: string;
 };
 
@@ -93,11 +108,49 @@ export type MarketRunResult = {
   schedule?: MarketBuybackSchedule | MarketSeedSchedule;
 };
 
+export type MarketBuybackLogEntry = {
+  orderId: string;
+  templateId: string;
+  displayName: string;
+  qualityLevel: string;
+  itemPrice: string;
+  stackSize: string;
+  maxUnitPrice: string;
+  resultCode: number;
+  resultHex: string;
+  resultLabel: string;
+  detail: string;
+};
+
+export type MarketBuybackLogBatch = {
+  source: string;
+  exchangeId: string;
+  at: string;
+  note: string;
+  summary: string;
+  buybackPercent?: number | null;
+  buybackPriceBasis?: string;
+  maxBuys?: number | null;
+  truncatedFrom?: number;
+  entries: MarketBuybackLogEntry[];
+};
+
+export type MarketBuybackLog = {
+  batches: MarketBuybackLogBatch[];
+  entries?: MarketBuybackLogEntry[];
+  exchangeId?: string;
+  removed?: number;
+};
+
 export const marketBotApi = {
   status: () => api<MarketBotStatus>("/api/exchange/market"),
   exchanges: () => api<{ rows: MarketExchange[]; capabilities: { exchangeMarket?: boolean } }>("/api/exchange/market/exchanges"),
   probeBuyback: (overrides: Partial<{ exchangeId: string; priceMultiplier: number; buybackPercent: number; buybackPriceBasis: MarketPriceBasis; maxBuys: number } & MarketCategoryMultipliers> = {}) =>
     post<MarketProbeResult>("/api/exchange/market/buyback/probe", overrides),
+  buybackLog: () => api<MarketBuybackLog>("/api/exchange/market/buyback/log"),
+  refreshBuybackLog: (overrides: Partial<{ exchangeId: string; priceMultiplier: number; buybackPercent: number; buybackPriceBasis: MarketPriceBasis; maxBuys: number } & MarketCategoryMultipliers> = {}) =>
+    post<MarketBuybackLog>("/api/exchange/market/buyback/log", overrides),
+  clearBuybackLog: () => post<MarketBuybackLog>("/api/exchange/market/buyback/log/clear", {}),
   saveBuybackSchedule: (schedule: Partial<MarketBuybackSchedule>) => post<MarketBuybackSchedule>("/api/exchange/market/buyback/schedule", schedule),
   saveSeedSchedule: (schedule: Partial<MarketSeedSchedule>) => post<MarketSeedSchedule>("/api/exchange/market/seed/schedule", schedule),
   runBuyback: () => post<MarketRunResult>("/api/exchange/market/buyback/run", {}),

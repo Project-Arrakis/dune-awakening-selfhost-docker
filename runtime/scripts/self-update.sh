@@ -101,6 +101,92 @@ GITHUB_API_BASE="${DUNE_SELF_UPDATE_API_BASE:-https://api.github.com}"
 GITHUB_TOKEN="${DUNE_SELF_UPDATE_TOKEN:-}"
 LATEST_TAG_CACHE_FILE="runtime/generated/self-update-latest-tag.txt"
 API_LAST_STATUS=""
+SELF_UPDATE_RUN_ID="${DUNE_SELF_UPDATE_RUN_ID:-}"
+SELF_UPDATE_STATUS_DIR="runtime/generated/self-update-status"
+SELF_UPDATE_STATUS_STARTED_AT=""
+SELF_UPDATE_STATUS_FINALIZED=0
+SELF_UPDATE_STATUS_STAGE="launching"
+SELF_UPDATE_STATUS_PERCENT=1
+
+self_update_status_enabled() {
+  [[ "$SELF_UPDATE_RUN_ID" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$ ]]
+}
+
+self_update_write_status() {
+  local state="$1"
+  local stage="$2"
+  local percent="$3"
+  local message="$4"
+  local finished_at="${5:-}"
+  local status_file tmp_file updated_at
+
+  self_update_status_enabled || return 0
+  SELF_UPDATE_STATUS_STAGE="$stage"
+  SELF_UPDATE_STATUS_PERCENT="$percent"
+  mkdir -p "$SELF_UPDATE_STATUS_DIR"
+  status_file="$SELF_UPDATE_STATUS_DIR/$SELF_UPDATE_RUN_ID.env"
+  tmp_file="$status_file.tmp.$$"
+  updated_at="$(date -Is)"
+  [ -n "$SELF_UPDATE_STATUS_STARTED_AT" ] || SELF_UPDATE_STATUS_STARTED_AT="$updated_at"
+  message="${message//$'\n'/ }"
+  message="${message//$'\r'/ }"
+  {
+    printf 'run_id=%s\n' "$SELF_UPDATE_RUN_ID"
+    printf 'state=%s\n' "$state"
+    printf 'stage=%s\n' "$stage"
+    printf 'percent=%s\n' "$percent"
+    printf 'message=%s\n' "$message"
+    printf 'started_at=%s\n' "$SELF_UPDATE_STATUS_STARTED_AT"
+    printf 'updated_at=%s\n' "$updated_at"
+    printf 'finished_at=%s\n' "$finished_at"
+  } > "$tmp_file"
+  chmod 600 "$tmp_file"
+  mv -f "$tmp_file" "$status_file"
+}
+
+self_update_running() {
+  self_update_write_status running "$1" "$2" "$3"
+}
+
+self_update_finish_success() {
+  local now
+  now="$(date -Is)"
+  self_update_write_status succeeded complete 100 "Console update completed successfully." "$now"
+  SELF_UPDATE_STATUS_FINALIZED=1
+}
+
+self_update_on_exit() {
+  local rc=$?
+  trap - EXIT
+  if self_update_status_enabled && [ "$SELF_UPDATE_STATUS_FINALIZED" != "1" ] && [ "$rc" -ne 0 ]; then
+    self_update_write_status failed "$SELF_UPDATE_STATUS_STAGE" "$SELF_UPDATE_STATUS_PERCENT" "Console update failed. Review runtime/generated/web-self-update.log for details." "$(date -Is)" || true
+  fi
+  exit "$rc"
+}
+
+trap self_update_on_exit EXIT
+
+acquire_self_update_lock() {
+  mkdir -p runtime/generated
+  exec 9>runtime/generated/self-update.lock
+  if ! flock -n 9; then
+    self_update_write_status failed busy 0 "Another console update is already running." "$(date -Is)" || true
+    SELF_UPDATE_STATUS_FINALIZED=1
+    echo "Another console update is already running. Wait for it to finish before retrying." >&2
+    exit 75
+  fi
+  find "$SELF_UPDATE_STATUS_DIR" -type f -name '*.env' -mtime +7 -delete 2>/dev/null || true
+  self_update_running preparing 5 "Preparing the console update."
+}
+
+self_update_build_timeout_seconds() {
+  local value="${DUNE_SELF_UPDATE_BUILD_TIMEOUT_SECONDS:-1800}"
+  if [[ "$value" =~ ^[0-9]+$ ]] && [ "$value" -ge 60 ] && [ "$value" -le 7200 ]; then
+    printf '%s\n' "$value"
+  else
+    printf '%s\n' 1800
+  fi
+}
 
 detect_host_repo_root() {
   local source
@@ -421,6 +507,7 @@ download_release_archive() {
   local out="$2"
   local tarball_url
 
+  self_update_running downloading 20 "Downloading console release $tag."
   tarball_url="$(release_tarball_url "$tag")"
   if [ -z "$tarball_url" ]; then
     echo "Could not find tarball URL for release tag: $tag"
@@ -443,6 +530,7 @@ download_release_archive() {
 
 backup_current_stack() {
   local backup_dir="$1"
+  self_update_running backup 40 "Backing up the current console files."
   mkdir -p "$backup_dir"
 
   tar -czf "$backup_dir/project-files.tgz" \
@@ -908,8 +996,20 @@ prepare_web_console_rebuild_env() {
 rebuild_web_console_now() {
   local service="$1"
   local web_compose_project="${DUNE_WEB_COMPOSE_PROJECT_NAME:-dune-awakening-selfhost-docker}"
+  local build_timeout build_rc=0
   prepare_web_console_rebuild_env
-  COMPOSE_PROJECT_NAME="$web_compose_project" DUNE_COMPOSE_PROJECT_NAME="$DUNE_COMPOSE_PROJECT_NAME" DUNE_HOST_REPO_ROOT="$HOST_ROOT_DIR" docker compose -f docker-compose.web.yml build "$service"
+  build_timeout="$(self_update_build_timeout_seconds)"
+  self_update_running building 82 "Building the updated web console (timeout: ${build_timeout}s)."
+  COMPOSE_PROJECT_NAME="$web_compose_project" DUNE_COMPOSE_PROJECT_NAME="$DUNE_COMPOSE_PROJECT_NAME" DUNE_HOST_REPO_ROOT="$HOST_ROOT_DIR" \
+    timeout --signal=TERM --kill-after=30s "${build_timeout}s" \
+      docker compose -f docker-compose.web.yml build "$service" || build_rc=$?
+  if [ "$build_rc" -ne 0 ]; then
+    if [ "$build_rc" -eq 124 ] || [ "$build_rc" -eq 137 ]; then
+      echo "Dune Docker Console build timed out after ${build_timeout} seconds." >&2
+    fi
+    return "$build_rc"
+  fi
+  self_update_running restarting 94 "Restarting the updated web console."
   docker rm -f "$service" >/dev/null 2>&1 || true
   COMPOSE_PROJECT_NAME="$web_compose_project" DUNE_COMPOSE_PROJECT_NAME="$DUNE_COMPOSE_PROJECT_NAME" DUNE_HOST_REPO_ROOT="$HOST_ROOT_DIR" docker compose -f docker-compose.web.yml up -d --force-recreate "$service"
 }
@@ -936,6 +1036,7 @@ rebuild_web_console_with_helper() {
     -e "DUNE_HOST_UID=${DUNE_HOST_UID:-0}" \
     -e "DUNE_HOST_GID=${DUNE_HOST_GID:-0}" \
     -e "DOCKER_SOCKET_GID=${DOCKER_SOCKET_GID:-0}" \
+    -e "DUNE_SELF_UPDATE_BUILD_TIMEOUT_SECONDS=$(self_update_build_timeout_seconds)" \
     -w /repo \
     "$helper_image" \
     sh -lc "sleep 2; runtime/scripts/self-update.sh rebuild-web-console '$service' >> runtime/generated/web-console-rebuild.log 2>&1"
@@ -1025,6 +1126,7 @@ install_release_tag_with_git() {
 
   echo "Resetting stack checkout to release tag:"
   echo "  $tag ($target)"
+  self_update_running installing 62 "Installing console release $tag."
   git reset --hard "$target"
   restore_local_state_after_install "$backup_dir"
 
@@ -1056,6 +1158,7 @@ install_release_tag_from_archive() {
 
   echo "Installing stack release into:"
   echo "  $ROOT_DIR"
+  self_update_running installing 62 "Installing console release $tag."
   echo "Removing project-managed files from the current release..."
   remove_backed_up_project_files "$backup_dir"
   (
@@ -1085,6 +1188,7 @@ install_release_tag() {
   else
     install_release_tag_from_archive "$tag"
   fi
+  self_update_running installed 75 "Console release files were installed and verified."
 }
 
 cmd="${1:-check}"
@@ -1141,6 +1245,7 @@ case "$cmd" in
     ;;
 
   install|apply)
+    acquire_self_update_lock
     dune_persist_compose_project_name "$ROOT_DIR" "$DUNE_COMPOSE_PROJECT_NAME"
     if [ -z "$tag" ] || [ "$tag" = "latest" ]; then
       set +e
@@ -1169,6 +1274,7 @@ case "$cmd" in
     install_release_tag "$tag"
     install_cli_command_after_update
     rebuild_web_console_after_update
+    self_update_finish_success
     ;;
 
   *)

@@ -48,6 +48,10 @@ if [ "${1:-}" = "run" ]; then
 fi
 
 if [ "${1:-}" = "inspect" ] && [[ "$*" == *"State.Running"* ]]; then
+  if [[ "$*" == *"dune-postgres"* ]]; then
+    printf '%s\n' true
+    exit 0
+  fi
   printf '%s\n' false
   exit 0
 fi
@@ -75,6 +79,14 @@ EOF
   if [ "$actual_script_exit" -ne "$expected_script_exit" ]; then
     echo "FAIL $name: expected exit $expected_script_exit, got $actual_script_exit"
     cat "$output"
+    exit 1
+  fi
+
+  if [ "$updater_exit_code" = "0" ]; then
+    grep -q 'exec -i dune-postgres psql .*ON_ERROR_STOP=1 .* -f -' "$docker_log"
+  elif grep -q 'exec -i dune-postgres psql .*ON_ERROR_STOP=1 .* -f -' "$docker_log"; then
+    echo "FAIL $name: compatibility patch ran after a failed database update"
+    cat "$docker_log"
     exit 1
   fi
 
