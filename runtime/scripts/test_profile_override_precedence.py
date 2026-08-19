@@ -252,6 +252,8 @@ class ClientGameIniAllowlistTests(ProfilePathTestCase):
             f"[Global:{usersettings.DEEPDESERT_MATCHMAKER_SECTION}]\n"
             f"+{usersettings.DEEPDESERT_MATCHMAKER_KEY}=2.000000\n\n"
             f"[Global:{usersettings.BUILDING_SETTINGS_SECTION}]\n"
+            "m_MaxNumLandclaimSegments=20\n"
+            "m_bBuildingRestrictionLimitsEnabled=False\n"
             "m_BaseBackupToolTimeRestrictionInSeconds=60\n"
             "m_StakingUnitExtensionDefaultTimes=2\n"
         )
@@ -259,6 +261,8 @@ class ClientGameIniAllowlistTests(ProfilePathTestCase):
         rendered = usersettings.client_game_ini(profile, MAP_NAME)
 
         self.assertIn("m_WaterConsumptionRate=2.0", rendered)
+        self.assertIn("m_MaxNumLandclaimSegments=20", rendered)
+        self.assertIn("m_bBuildingRestrictionLimitsEnabled=False", rendered)
         self.assertIn("m_BaseBackupToolTimeRestrictionInSeconds=60", rendered)
         self.assertNotIn("m_DefaultReconnectGracePeriodSeconds", rendered)
         self.assertNotIn("UnknownCommunitySetting", rendered)
