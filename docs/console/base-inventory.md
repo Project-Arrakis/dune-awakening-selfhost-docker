@@ -259,16 +259,46 @@ weapons, clothing, schematics, anything in `runtime/data/admin-items.json` is ac
 restriction directly above the Fill inputs, and the server independently re-enforces it rather than
 trusting the client to have filtered correctly.
 
-**Give Multiple is one transaction, capped at 50 distinct items, all-or-nothing per item as it's
-processed.** Every check `giveItemToStorage` performs (slot cap, volume cap) is repeated fresh for each
-item in the batch — re-queried after each insert, not computed once up front — so item 3 correctly sees
-the slots/volume items 1 and 2 already consumed within the same call. If item *N* fails, items before it
-in the batch have already been committed to the transaction; the thrown error states exactly how many
-succeeded (`"...stopped before giving X; N of M items were already given"`), and the whole transaction
-then rolls back per Postgres's normal behavior on an uncaught error inside `db.transaction()` — so despite
-that message text, a failure partway through **does not leave partial inserts in the database**; the
-message describes how far the batch progressed before the transaction as a whole was aborted, not what
-was durably committed.
+**Give Multiple is one transaction, capped at 50 distinct items.** Every check `giveItemToStorage` performs
+(slot cap, volume cap) is repeated fresh for each item in the batch — re-queried after each insert, not
+computed once up front — so item 3 correctly sees the slots/volume items 1 and 2 already consumed within
+the same call.
+
+**Neither Give nor Fill ever rejects a request just because it would exceed the container's remaining
+volume.** Per explicit operator direction (found during manual UI review of #347): an earlier version threw
+`"Storage is full by volume"` and inserted nothing at all, forcing the operator to guess a smaller quantity
+and retry. Both functions now **clamp the requested quantity down to whatever actually fits** and insert
+that instead — asking for 500 of an item that only has room for 375 gives 375, not 0. The response always
+reports `requested`, `given`, and `clamped` (`clamped: true` whenever `given < requested`), and the UI
+surfaces exactly that outcome (`"Only 375 of the requested 500 x X fit and was given to the container."`)
+rather than silently implying the full request succeeded. **Slot count is the one capacity axis this does
+NOT apply to** — a single give/fill always consumes exactly one slot regardless of quantity, so "no slots
+left" genuinely cannot be partially satisfied and remains a hard rejection (`"Storage is full by item slot
+count"`). Volume itself is still a hard rejection in the one case clamping cannot help: truly zero room
+left, where even 1 unit does not fit.
+
+**Give Multiple's batch-clamping design is deliberately left-to-right, not best-effort.** Once one item in
+the batch does not fully fit (clamped, or reduced all the way to zero), the batch **stops there** —
+`giveMultipleItemsToStorage` does not skip ahead to try whether a later, smaller item in the same batch
+might have had room. This is a design choice for predictability, not a limitation: an operator reading a
+per-item breakdown top-to-bottom should be able to reason about "gave everything up to X, then stopped,"
+rather than "gave some subset of the batch in an order that does not match what was typed." Like the
+single-item functions, **the batch never throws just because it hit a capacity limit** — it returns
+`ok: true` with `results: [...]`, one entry per requested item, each carrying `requested`/`given`/`clamped`/
+`attempted`/`reason`. An item never reached because an earlier one already stopped the batch is still
+present in `results`, with `attempted: false`, so the response always accounts for every requested item,
+not just the ones that got a row inserted. This is a real backend contract change from an earlier version,
+which threw on hitting a cap and relied on the transaction rolling back to prove no partial inserts
+happened — the current version has no rollback to reason about, because a capacity limit is no longer an
+error condition, and the response's `results` array is the accounting instead.
+
+**Fill offers two distinct actions, not one quantity field with a hidden meaning.** "Fill Amount" sends the
+operator's typed quantity (clamped as above if it does not fully fit). "Fill to Capacity" sends the
+`quantity: 0` sentinel `fillItemToStorage` has always supported — insert as much as fits in whatever volume
+remains, in one call — but that sentinel was unreachable from any UI before this fix, since both this tab's
+own quantity field and the standalone Storage tab's clamp to a minimum of 1. `requested` is `null` in a
+Fill-to-Capacity response (there was never a specific number to compare against); the UI reports the real
+`given` count directly (`"4,200 x SteelBar was filled into the container (as much as fit)."`).
 
 **Both Give and Fill enforce the same slot **and** volume caps.** An earlier version of `giveItemToStorage`
 checked only slot count — an operator could give an item whose declared volume exceeded a container's
@@ -277,6 +307,16 @@ volume check against the same container silently undercounted real usage. Fixed 
 existing volume accounting exactly (`volume_override` on an inserted row is the item's declared per-unit
 volume × the stack's quantity, never the per-unit value alone — see "Fill visibility" below for why this
 matters for pre-existing containers too).
+
+**Give and Fill use a compact type-to-search item picker (`ItemCatalogCombobox`), not a raw "item name or
+ID" text field.** Found during manual UI review of #347: the original plain text input required already
+knowing the exact template id or exact in-game name, offered no way to discover what is actually in the
+catalog, and did not filter anything as the operator typed — typing was just raw text sent straight to the
+server on submit. Search and the results list are name-only: the catalog id (e.g. `"Oil"` for the in-game
+"Fuel Cell") is a backend concept the operator never needs to see or type, and Give/Fill both submit the
+selected item's real `itemId` under the hood regardless. The Fill combobox additionally filters its results
+to `FILLABLE_GROUPS` client-side, matching the server's own `resolveFillableCatalogItem()` check, so the
+picker never even offers an item the server would reject.
 
 ## Why Give/Fill do not require a stopped map
 

@@ -467,10 +467,15 @@ export const basesApi = {
   // Gives one item to a Storage-group container. Volume-checked the same
   // way Fill already is; itemName/itemId is resolved against the admin
   // catalog server-side, same as the standalone Storage tab's Give action.
+  // `requested`/`given`/`clamped` (issue #347 follow-up): a give that would
+  // exceed the container's remaining volume is clamped to whatever fits and
+  // inserted -- never rejected outright -- so `given` can be less than
+  // `requested`. Only genuinely zero room left (not even 1 unit fits) is
+  // still a real error, surfaced via `error`/`reason` as before.
   giveContainerItem: (baseId: string, placeableId: string, body: { itemName?: string; itemId?: string; quantity: number; confirmation: string }) =>
     api<{
       supported: boolean;
-      result?: { ok: boolean; inserted: { id: string; templateId: string; stackSize: number } };
+      result?: { ok: boolean; inserted: { id: string; templateId: string; stackSize: number }; requested: number; given: number; clamped: boolean };
       error?: string;
       reason?: string;
     }>(`/api/bases/${encodeURIComponent(baseId)}/containers/${encodeURIComponent(placeableId)}/give-item`,
@@ -479,10 +484,27 @@ export const basesApi = {
   // one confirmation and one server-side transaction -- not N sequential
   // calls, which would let some items succeed and others fail on the same
   // click. Capped at 50 distinct items per batch by the backend.
+  // Never rejects on hitting a capacity limit: once one item in the batch
+  // does not fully fit (clamped, or zero room), the batch stops there --
+  // every requested item still appears in `results`, including ones never
+  // attempted because an earlier item already stopped the batch
+  // (`attempted: false`). `inserted` is only present on items that were
+  // actually given a row (`given > 0`).
   giveContainerItems: (baseId: string, placeableId: string, items: { itemName?: string; itemId?: string; quantity: number }[], confirmation: string) =>
     api<{
       supported: boolean;
-      result?: { ok: boolean; results: { inserted: { id: string; templateId: string; stackSize: number } }[] };
+      result?: {
+        ok: boolean;
+        results: {
+          inserted?: { id: string; templateId: string; stackSize: number };
+          templateId: string;
+          requested: number;
+          given: number;
+          clamped: boolean;
+          attempted: boolean;
+          reason?: string;
+        }[];
+      };
       error?: string;
       reason?: string;
     }>(`/api/bases/${encodeURIComponent(baseId)}/containers/${encodeURIComponent(placeableId)}/give-items`,
@@ -490,10 +512,14 @@ export const basesApi = {
   // Fills a Storage-group container with a raw resource, refined resource,
   // or component -- the same server-side allowlist the standalone Storage
   // tab's Fill action already enforces (FILLABLE_GROUPS in adminCatalog.js).
+  // Same clamp-and-inform contract as giveContainerItem. `requested` is
+  // null for a "Fill to Capacity" call (quantity: 0, no specific amount was
+  // ever asked for to compare against) and a real number for "Fill
+  // Amount" (an explicit quantity that may itself get clamped down).
   fillContainerItem: (baseId: string, placeableId: string, body: { itemName?: string; itemId?: string; quantity: number; confirmation: string }) =>
     api<{
       supported: boolean;
-      result?: { ok: boolean; inserted: { id: string; templateId: string; stackSize: number; volumeOverride?: number } };
+      result?: { ok: boolean; inserted: { id: string; templateId: string; stackSize: number; volumeOverride?: number }; requested: number | null; given: number; clamped: boolean };
       error?: string;
       reason?: string;
     }>(`/api/bases/${encodeURIComponent(baseId)}/containers/${encodeURIComponent(placeableId)}/fill-item`,

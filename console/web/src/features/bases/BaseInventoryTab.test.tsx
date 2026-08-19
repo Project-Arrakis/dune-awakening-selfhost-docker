@@ -946,6 +946,28 @@ describe("BaseInventoryTab", () => {
     await waitFor(() => expect((screen.getByRole("combobox", { name: "Item to give" }) as HTMLInputElement).value).toBe(""));
   });
 
+  // Per explicit operator direction: Give never rejects on hitting a
+  // capacity limit -- a requested quantity that would exceed remaining
+  // volume is clamped to whatever fits and given, and the UI must say so
+  // plainly rather than claiming the full requested amount succeeded.
+  it("reports a clamped give (less given than requested) rather than claiming full success", async () => {
+    mockInventory();
+    vi.mocked(basesApi.giveContainerItem).mockResolvedValue({
+      supported: true,
+      result: { ok: true, inserted: { id: "601", templateId: "AzuriteOre", stackSize: 25 }, requested: 50, given: 25, clamped: true }
+    } as never);
+    renderTab();
+    await loaded();
+    await openVaultContents();
+
+    await pickItem("Item to give", "AzuriteOre");
+    fireEvent.change(screen.getByLabelText("Quantity to give"), { target: { value: "50" } });
+    fireEvent.click(screen.getByRole("button", { name: "Give Item" }));
+
+    await waitFor(() => expect(basesApi.giveContainerItem).toHaveBeenCalled());
+    await waitFor(() => expect(screen.getByText(/Only 25 of the requested 50 x AzuriteOre fit/)).toBeTruthy());
+  });
+
   it("does not give an item when the confirmation is declined", async () => {
     mockInventory();
     confirmAction.mockResolvedValue(false);
@@ -991,21 +1013,14 @@ describe("BaseInventoryTab", () => {
     expect(basesApi.giveContainerItem).not.toHaveBeenCalled();
   });
 
-  // Issue #355 (found during PR #349's own Layer 3 audit, QA hat): the test
-  // above only ever mocks giveContainerItems to resolve successfully, so
-  // there was no coverage for what the UI does when the batch call fails
-  // partway through -- the exact scenario giveMultipleItemsToStorage is
-  // designed to produce (an error like "...stopped before giving item N;
-  // N-1 of M items were already given"). Errors already propagate through
-  // the same onError/deleteError wiring this file's bulk-delete failure
-  // test above already proves works for a different mutation -- this test
-  // proves it also holds for Give Multiple specifically, and that the
-  // backend's partial-success count reaches the operator verbatim rather
-  // than being replaced with a generic failure message.
-  it("surfaces a partial-batch give-items failure through onError with the real partial-success count", async () => {
+  // Genuine network/validation failures (as opposed to hitting a capacity
+  // limit, which no longer throws -- see the "stops partway" test below)
+  // still propagate through the ordinary onError/deleteError wiring, the
+  // same as every other mutation in this file.
+  it("surfaces a genuine give-items request failure through onError", async () => {
     mockInventory();
     vi.mocked(basesApi.giveContainerItems).mockRejectedValue(
-      new Error("Batch stopped before giving PlantFiber; 1 of 2 items were already given")
+      new Error("Network request failed")
     );
     renderTab();
     await loaded();
@@ -1020,21 +1035,86 @@ describe("BaseInventoryTab", () => {
     fireEvent.change(screen.getByLabelText("Quantity to give"), { target: { value: "5" } });
     fireEvent.click(screen.getByRole("button", { name: /Give 2 Items/ }));
 
-    await waitFor(() => expect(onError).toHaveBeenCalledWith(
-      "Batch stopped before giving PlantFiber; 1 of 2 items were already given"
-    ));
-    // The same message must also render inline in the modal, not just fire
-    // the onError side channel -- an operator reading the modal itself
-    // (rather than wherever onError surfaces toasts/logs) must see exactly
-    // how far the batch got.
-    expect(screen.getByRole("alert")).toHaveTextContent(
-      "Batch stopped before giving PlantFiber; 1 of 2 items were already given"
-    );
+    await waitFor(() => expect(onError).toHaveBeenCalledWith("Network request failed"));
+    expect(screen.getByRole("alert")).toHaveTextContent("Network request failed");
     // The batch is deliberately NOT cleared on failure -- silently dropping
     // a failed batch would force the operator to re-enter every item to
-    // retry, and the backend's own message already tells them what
-    // succeeded vs. what to retry.
+    // retry.
     expect(screen.getByText(/AzuriteOre ×20/)).toBeTruthy();
+  });
+
+  // Per explicit operator direction: hitting a capacity limit mid-batch
+  // never throws -- giveMultipleItemsToStorage stops the batch and returns
+  // ok: true with a per-item breakdown instead. The UI must report exactly
+  // how far the batch got as a success-channel notice, not an error.
+  it("reports where a give-items batch stopped, without treating it as a failure", async () => {
+    mockInventory();
+    vi.mocked(basesApi.giveContainerItems).mockResolvedValue({
+      supported: true,
+      result: {
+        ok: true,
+        results: [
+          { inserted: { id: "601", templateId: "AzuriteOre", stackSize: 20 }, templateId: "AzuriteOre", requested: 20, given: 20, clamped: false, attempted: true },
+          { templateId: "PlantFiber", requested: 5, given: 2, clamped: true, attempted: true, reason: "Storage is full by volume." }
+        ]
+      }
+    } as never);
+    renderTab();
+    await loaded();
+    await openVaultContents();
+
+    await pickItem("Item to give", "AzuriteOre");
+    fireEvent.change(screen.getByLabelText("Quantity to give"), { target: { value: "20" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add to Batch" }));
+    await waitFor(() => expect(screen.getByText(/AzuriteOre ×20/)).toBeTruthy());
+
+    await pickItem("Item to give", "PlantFiber");
+    fireEvent.change(screen.getByLabelText("Quantity to give"), { target: { value: "5" } });
+    fireEvent.click(screen.getByRole("button", { name: /Give 2 Items/ }));
+
+    await waitFor(() => expect(basesApi.giveContainerItems).toHaveBeenCalled());
+    // A real success message, not an error -- onError/the alert box must
+    // never fire for this outcome. Both items received something (item 2
+    // was clamped to 2 of the requested 5, not reduced to 0), so the
+    // count is "2 of 2 items were given," with the partial detail called
+    // out separately.
+    await waitFor(() => expect(screen.getByText(/2 of 2 items were given before the batch stopped at PlantFiber \(partially, 2 of 5\)/)).toBeTruthy());
+    expect(onError).not.toHaveBeenCalled();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  // The zero-fit variant of the same "never throws" batch behavior: an
+  // item that gets given: 0 is excluded from the "N of M" success count
+  // (it received nothing), and the parenthetical detail is omitted since
+  // "partially, 0 of 5" would be a confusing way to say "none of it".
+  it("reports a batch stop where the stopping item received nothing at all", async () => {
+    mockInventory();
+    vi.mocked(basesApi.giveContainerItems).mockResolvedValue({
+      supported: true,
+      result: {
+        ok: true,
+        results: [
+          { inserted: { id: "601", templateId: "AzuriteOre", stackSize: 20 }, templateId: "AzuriteOre", requested: 20, given: 20, clamped: false, attempted: true },
+          { templateId: "PlantFiber", requested: 5, given: 0, clamped: true, attempted: true, reason: "Storage is full by volume." }
+        ]
+      }
+    } as never);
+    renderTab();
+    await loaded();
+    await openVaultContents();
+
+    await pickItem("Item to give", "AzuriteOre");
+    fireEvent.change(screen.getByLabelText("Quantity to give"), { target: { value: "20" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add to Batch" }));
+    await waitFor(() => expect(screen.getByText(/AzuriteOre ×20/)).toBeTruthy());
+
+    await pickItem("Item to give", "PlantFiber");
+    fireEvent.change(screen.getByLabelText("Quantity to give"), { target: { value: "5" } });
+    fireEvent.click(screen.getByRole("button", { name: /Give 2 Items/ }));
+
+    await waitFor(() => expect(basesApi.giveContainerItems).toHaveBeenCalled());
+    await waitFor(() => expect(screen.getByText(/1 of 2 items were given before the batch stopped at PlantFiber\.$/)).toBeTruthy());
+    expect(onError).not.toHaveBeenCalled();
   });
 
   it("removes a queued item from the batch before giving", async () => {
@@ -1051,7 +1131,7 @@ describe("BaseInventoryTab", () => {
     expect(screen.queryByText(/AzuriteOre ×/)).toBeNull();
   });
 
-  it("fills a container with a raw resource, refined resource, or component", async () => {
+  it("fills a container with a specific amount of a raw resource, refined resource, or component", async () => {
     mockInventory();
     vi.mocked(basesApi.fillContainerItem).mockResolvedValue({
       supported: true,
@@ -1063,13 +1143,75 @@ describe("BaseInventoryTab", () => {
 
     await pickItem("Item to fill", "SteelBar");
     fireEvent.change(screen.getByLabelText("Quantity to fill"), { target: { value: "50" } });
-    fireEvent.click(screen.getByRole("button", { name: "Fill" }));
+    fireEvent.click(screen.getByRole("button", { name: "Fill Amount" }));
 
     await waitFor(() => expect(basesApi.fillContainerItem).toHaveBeenCalled());
     expect(vi.mocked(basesApi.fillContainerItem).mock.calls[0]).toEqual([
       "1006", "40001", { itemId: "SteelBar", quantity: 50, confirmation: "FILL ITEM TO STORAGE" }
     ]);
     await waitFor(() => expect(vi.mocked(basesApi.inventory).mock.calls.length).toBeGreaterThan(1));
+  });
+
+  // Per explicit operator direction: Fill Amount never rejects on hitting a
+  // capacity limit either -- clamped and given, exactly like Give. This is
+  // the precise bug an operator reported manually: the modal said "Fill
+  // Container" and the confirm dialog said "Fill container with 100 x
+  // Plastanium Ingot," but only 100 (the requested amount) was actually
+  // inserted even when more was asked for -- the success message must
+  // report the real given/clamped outcome, not silently imply the
+  // requested amount matched what was inserted.
+  it("reports a clamped Fill Amount (less given than requested) rather than claiming full success", async () => {
+    mockInventory();
+    vi.mocked(basesApi.fillContainerItem).mockResolvedValue({
+      supported: true,
+      result: { ok: true, inserted: { id: "602", templateId: "SteelBar", stackSize: 25, volumeOverride: 25 }, requested: 50, given: 25, clamped: true }
+    } as never);
+    renderTab();
+    await loaded();
+    await openVaultContents();
+
+    await pickItem("Item to fill", "SteelBar");
+    fireEvent.change(screen.getByLabelText("Quantity to fill"), { target: { value: "50" } });
+    fireEvent.click(screen.getByRole("button", { name: "Fill Amount" }));
+
+    await waitFor(() => expect(basesApi.fillContainerItem).toHaveBeenCalled());
+    await waitFor(() => expect(screen.getByText(/Only 25 of the requested 50 x SteelBar fit/)).toBeTruthy());
+  });
+
+  // Issue #347 (found during manual UI review): fillItemToStorage's own
+  // quantity: 0 sentinel ("compute the largest stack that fits in whatever
+  // volume remains and insert exactly that") was never reachable from any
+  // UI -- both this tab's quantity field and the standalone Storage tab's
+  // clamp to a minimum of 1. "Fill to Capacity" is a second, explicit
+  // button that sends quantity: 0 regardless of whatever the quantity
+  // field currently holds, and the success message reports the real
+  // inserted count the server actually computed, not the field's value
+  // (which is meaningless for this action).
+  it("fills a container to capacity, ignoring whatever is in the quantity field", async () => {
+    mockInventory();
+    vi.mocked(basesApi.fillContainerItem).mockResolvedValue({
+      supported: true,
+      result: { ok: true, inserted: { id: "603", templateId: "SteelBar", stackSize: 4200, volumeOverride: 4200 }, requested: null, given: 4200, clamped: false }
+    } as never);
+    renderTab();
+    await loaded();
+    await openVaultContents();
+
+    await pickItem("Item to fill", "SteelBar");
+    fireEvent.change(screen.getByLabelText("Quantity to fill"), { target: { value: "50" } });
+    fireEvent.click(screen.getByRole("button", { name: "Fill to Capacity" }));
+    await waitFor(() => expect(confirmAction).toHaveBeenCalled());
+    // The confirm dialog must not claim a specific quantity the operator
+    // never actually chose.
+    expect(vi.mocked(confirmAction).mock.calls.at(-1)?.[0]).toMatch(/as much SteelBar as fits/);
+
+    await waitFor(() => expect(basesApi.fillContainerItem).toHaveBeenCalled());
+    expect(vi.mocked(basesApi.fillContainerItem).mock.calls[0]).toEqual([
+      "1006", "40001", { itemId: "SteelBar", quantity: 0, confirmation: "FILL ITEM TO STORAGE" }
+    ]);
+    // The success message reports the real amount the server inserted
+    // (4200), not the quantity field's stale "50".
+    await waitFor(() => expect(screen.getByText(/4,200 x SteelBar was filled/)).toBeTruthy());
   });
 
   // FILLABLE_GROUPS filtering (adminCatalog.js) is enforced client-side too:

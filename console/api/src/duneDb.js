@@ -6879,7 +6879,7 @@ export async function giveItemToStorage(db, storageId, { itemName = "", itemId =
   await requireCapability(await supportsStorageGiveItem(db), "Storage give-item requires compatible dune.inventories and dune.items insert columns.");
   const target = intParam(storageId, "storage id", 1);
   const resolvedTemplate = validateTemplateId(templateId || itemId || itemName);
-  const stackSize = intParam(quantity, "quantity", 1, 1000000);
+  const requestedQuantity = intParam(quantity, "quantity", 1, 1000000);
   const qualityLevel = normalizeStandaloneAugmentQuality(resolvedTemplate, intParam(quality, "quality", 0, 1000000));
   const augmentIds = validateAugmentIds(augments);
   const augmentQualityLevel = normalizeAugmentQuality(augmentQuality);
@@ -6908,13 +6908,31 @@ export async function giveItemToStorage(db, storageId, { itemName = "", itemId =
     const inventory = storage.rows[0];
     const count = await tx.query("select count(*)::int as count from dune.items where inventory_id = $1", [inventory.id]);
     const currentCount = Number(count.rows[0]?.count || 0);
+    // A container's slot count is the one capacity axis a single give
+    // cannot be partially satisfied against -- one give always consumes
+    // exactly one slot regardless of quantity, so "no slots left" really
+    // does mean nothing at all can be given. This stays a hard rejection.
     if (inventory.max_item_count > 0 && currentCount >= inventory.max_item_count) throw new Error("Storage is full by item slot count");
+    // A requested quantity that would exceed the container's remaining
+    // VOLUME is clamped down to whatever actually fits, not rejected
+    // outright -- giving 375 of a requested 500 is a strictly better
+    // outcome than giving 0 of 500 and forcing the operator to guess a
+    // smaller number and retry. Each item has a known per-unit volume, so
+    // the maximum quantity that fits is always computable directly.
+    // Genuinely zero room (not even 1 unit fits) is still a real
+    // rejection -- there is nothing to report as given in that case.
+    let stackSize = requestedQuantity;
+    let clamped = false;
     if (inventory.max_item_volume > 0 && itemVolumeNum > 0) {
       const volume = await tx.query("select coalesce(sum(coalesce(volume_override, 0)), 0)::real as total_volume from dune.items where inventory_id = $1", [inventory.id]);
       const currentVolume = Number(volume.rows[0]?.total_volume || 0);
-      const neededVolume = itemVolumeNum * stackSize;
-      if (currentVolume + neededVolume > inventory.max_item_volume) {
-        throw new Error(`Storage is full by volume (${currentVolume.toFixed(1)}/${inventory.max_item_volume.toFixed(1)} used, need ${neededVolume.toFixed(1)})`);
+      const maxFit = Math.floor((inventory.max_item_volume - currentVolume) / itemVolumeNum);
+      if (stackSize > maxFit) {
+        if (maxFit < 1) {
+          throw new Error(`Storage is full by volume (${currentVolume.toFixed(1)}/${inventory.max_item_volume.toFixed(1)} used, no room for even 1 unit of ${resolvedTemplate})`);
+        }
+        stackSize = maxFit;
+        clamped = true;
       }
     }
     const position = await tx.query("select coalesce(max(position_index), -1)::int + 1 as position_index from dune.items where inventory_id = $1", [inventory.id]);
@@ -6946,7 +6964,15 @@ export async function giveItemToStorage(db, storageId, { itemName = "", itemId =
         return `$${index + 1}`;
       }).join(", ")})
       returning id, template_id, stack_size, quality_level, position_index, inventory_id, volume_override`, insert.values);
-    return { ok: true, storage: inventory, inserted: inserted.rows[0], augments: augmentIds.length > 0 ? augmentIds : undefined };
+    return {
+      ok: true,
+      storage: inventory,
+      inserted: inserted.rows[0],
+      augments: augmentIds.length > 0 ? augmentIds : undefined,
+      requested: requestedQuantity,
+      given: stackSize,
+      clamped
+    };
   });
 }
 
@@ -6954,7 +6980,14 @@ export async function fillItemToStorage(db, repoRoot, storageId, { itemName = ""
   await requireCapability(await supportsStorageFillItem(db), "Storage fill-item requires compatible dune.inventories and dune.items insert columns including volume_override.");
   const target = intParam(storageId, "storage id", 1);
   const resolvedTemplate = validateTemplateId(templateId || itemId || itemName);
+  // quantity: 0 is the pre-existing "fill to capacity" sentinel -- an
+  // explicit request with no specific target amount, distinct from a
+  // positive quantity that might need CLAMPING to what fits (handled
+  // below). requestedQuantity stays null in the response for the sentinel
+  // case, since there was never a specific number to compare against.
   let stackSize = intParam(quantity, "quantity", 0, 1000000);
+  const requestedQuantity = stackSize;
+  const toCapacity = stackSize === 0;
   const qualityLevel = normalizeStandaloneAugmentQuality(resolvedTemplate, intParam(quality, "quality", 0, 1000000));
   const augmentIds = validateAugmentIds(augments);
   const augmentQualityLevel = normalizeAugmentQuality(augmentQuality);
@@ -6988,9 +7021,13 @@ export async function fillItemToStorage(db, repoRoot, storageId, { itemName = ""
     // function did) wrongly treated "quantity of items" as "number of
     // slots consumed" and rejected fills that had plenty of real slots
     // free -- found via a live discrepancy where a fill was rejected as
-    // "full by item slot count" at 9/10 real slots used.
+    // "full by item slot count" at 9/10 real slots used. Slot count is
+    // the one capacity axis that genuinely cannot be partially satisfied
+    // (one fill always consumes exactly one slot), so it stays a hard
+    // rejection rather than being clamped.
     if (inventory.max_item_count > 0 && currentCount >= inventory.max_item_count) throw new Error("Storage is full by item slot count");
-    if (stackSize === 0) {
+    let clamped = false;
+    if (toCapacity) {
       let volumeRemaining = 1000000;
       if (inventory.max_item_volume > 0 && itemVolumeNum > 0) {
         const volume = await tx.query("select coalesce(sum(coalesce(volume_override, 0)), 0)::real as total_volume from dune.items where inventory_id = $1", [inventory.id]);
@@ -6999,13 +7036,21 @@ export async function fillItemToStorage(db, repoRoot, storageId, { itemName = ""
       }
       stackSize = Math.min(volumeRemaining, 1000000);
       if (stackSize < 1) throw new Error("Container is full (no volume remaining)");
-    }
-    if (inventory.max_item_volume > 0 && itemVolumeNum > 0) {
+    } else if (inventory.max_item_volume > 0 && itemVolumeNum > 0) {
+      // An explicit quantity that would exceed the container's remaining
+      // volume is clamped to whatever actually fits, not rejected outright
+      // -- filling 375 of a requested 500 is strictly better than filling
+      // 0 of 500 and forcing the operator to guess a smaller number and
+      // retry. Genuinely zero room is still a real rejection.
       const volume = await tx.query("select coalesce(sum(coalesce(volume_override, 0)), 0)::real as total_volume from dune.items where inventory_id = $1", [inventory.id]);
       const currentVolume = Number(volume.rows[0]?.total_volume || 0);
-      const neededVolume = itemVolumeNum * stackSize;
-      if (currentVolume + neededVolume > inventory.max_item_volume) {
-        throw new Error(`Storage is full by volume (${currentVolume.toFixed(1)}/${inventory.max_item_volume.toFixed(1)} used, need ${neededVolume.toFixed(1)})`);
+      const maxFit = Math.floor((inventory.max_item_volume - currentVolume) / itemVolumeNum);
+      if (stackSize > maxFit) {
+        if (maxFit < 1) {
+          throw new Error(`Storage is full by volume (${currentVolume.toFixed(1)}/${inventory.max_item_volume.toFixed(1)} used, no room for even 1 unit of ${resolvedTemplate})`);
+        }
+        stackSize = maxFit;
+        clamped = true;
       }
     }
     const position = await tx.query("select coalesce(max(position_index), -1)::int + 1 as position_index from dune.items where inventory_id = $1", [inventory.id]);
@@ -7042,7 +7087,15 @@ export async function fillItemToStorage(db, repoRoot, storageId, { itemName = ""
         return `$${index + 1}`;
       }).join(", ")})
       returning id, template_id, stack_size, quality_level, position_index, inventory_id, volume_override`, insert.values);
-    return { ok: true, storage: inventory, inserted: inserted.rows[0], augments: augmentIds.length > 0 ? augmentIds : undefined };
+    return {
+      ok: true,
+      storage: inventory,
+      inserted: inserted.rows[0],
+      augments: augmentIds.length > 0 ? augmentIds : undefined,
+      requested: toCapacity ? null : requestedQuantity,
+      given: stackSize,
+      clamped
+    };
   });
 }
 
@@ -7063,6 +7116,21 @@ export async function fillItemToStorage(db, repoRoot, storageId, { itemName = ""
 // not a hot path and correctness here matters far more than shaving a few
 // queries.
 //
+// Never throws on hitting a capacity limit (matches giveItemToStorage's own
+// "clamp, don't reject" fix): a requested quantity that would exceed
+// remaining volume is clamped to whatever fits and given, exactly like the
+// single-item path. What differs for a BATCH specifically -- a deliberate
+// design choice, not a limitation -- is that once one item in the batch does
+// not fully fit (clamped, or zero room left), the batch stops there rather
+// than continuing to try later items that might individually have had
+// room: predictable, left-to-right "give as much as you can until you hit
+// the wall" semantics are easier for an operator to reason about than a
+// batch that skips around filling whichever later items happen to fit.
+// Every requested item still appears in `results`, including ones never
+// attempted because an earlier item already stopped the batch (`attempted:
+// false`), so the response always accounts for all of them, not just the
+// ones that got a row inserted.
+//
 // items: [{ itemName?, itemId?, templateId?, quantity?, quality?, itemVolume?, augments?, augmentQuality? }]
 export async function giveMultipleItemsToStorage(db, storageId, { items = [] } = {}) {
   await requireCapability(await supportsStorageGiveItem(db), "Storage give-item requires compatible dune.inventories and dune.items insert columns.");
@@ -7073,17 +7141,19 @@ export async function giveMultipleItemsToStorage(db, storageId, { items = [] } =
   // Validated up front, outside the transaction, so a bad item anywhere in
   // the batch fails the whole request before any row is touched -- the same
   // "all or nothing" guarantee a single giveItemToStorage call already gives
-  // the caller, extended to a batch.
+  // the caller for validation errors (a malformed item id, an invalid
+  // augment) -- capacity limits are a separate, no-longer-rejecting
+  // concern handled inside the transaction below.
   const prepared = items.map((item) => {
     const resolvedTemplate = validateTemplateId(item.templateId || item.itemId || item.itemName || "");
-    const stackSize = intParam(item.quantity ?? 1, "quantity", 1, 1000000);
+    const requestedQuantity = intParam(item.quantity ?? 1, "quantity", 1, 1000000);
     const qualityLevel = normalizeStandaloneAugmentQuality(resolvedTemplate, intParam(item.quality ?? 0, "quality", 0, 1000000));
     const augmentIds = validateAugmentIds(item.augments || []);
     const augmentQualityLevel = normalizeAugmentQuality(item.augmentQuality ?? 1);
     validateAugmentsForTemplate(resolvedTemplate, augmentIds);
     return {
       resolvedTemplate,
-      stackSize,
+      requestedQuantity,
       qualityLevel,
       augmentIds,
       augmentQualityLevel,
@@ -7104,19 +7174,60 @@ export async function giveMultipleItemsToStorage(db, storageId, { items = [] } =
     const inventory = storage.rows[0];
 
     const results = [];
+    let stopped = false;
     for (const entry of prepared) {
+      if (stopped) {
+        results.push({
+          templateId: entry.resolvedTemplate,
+          requested: entry.requestedQuantity,
+          given: 0,
+          clamped: true,
+          attempted: false,
+          reason: "Batch stopped after an earlier item did not fully fit."
+        });
+        continue;
+      }
       const count = await tx.query("select count(*)::int as count from dune.items where inventory_id = $1", [inventory.id]);
       const currentCount = Number(count.rows[0]?.count || 0);
+      // Slot count is still a hard stop, same reasoning as the single-item
+      // path: one give always consumes exactly one slot, so "no slots
+      // left" cannot be partially satisfied for THIS item or any later one
+      // in the batch (a later give would need a slot too) -- the whole
+      // batch stops here, not just this item.
       if (inventory.max_item_count > 0 && currentCount >= inventory.max_item_count) {
-        throw new Error(`Storage is full by item slot count (stopped before giving ${entry.resolvedTemplate}; ${results.length} of ${prepared.length} items were already given)`);
+        results.push({
+          templateId: entry.resolvedTemplate,
+          requested: entry.requestedQuantity,
+          given: 0,
+          clamped: true,
+          attempted: true,
+          reason: "Storage is full by item slot count."
+        });
+        stopped = true;
+        continue;
       }
+      let stackSize = entry.requestedQuantity;
+      let clamped = false;
       if (inventory.max_item_volume > 0 && entry.itemVolumeNum > 0) {
         const volume = await tx.query("select coalesce(sum(coalesce(volume_override, 0)), 0)::real as total_volume from dune.items where inventory_id = $1", [inventory.id]);
         const currentVolume = Number(volume.rows[0]?.total_volume || 0);
-        const neededVolume = entry.itemVolumeNum * entry.stackSize;
-        if (currentVolume + neededVolume > inventory.max_item_volume) {
-          throw new Error(`Storage is full by volume (stopped before giving ${entry.resolvedTemplate}; ${results.length} of ${prepared.length} items were already given)`);
+        const maxFit = Math.max(0, Math.floor((inventory.max_item_volume - currentVolume) / entry.itemVolumeNum));
+        if (stackSize > maxFit) {
+          stackSize = maxFit;
+          clamped = true;
         }
+      }
+      if (stackSize < 1) {
+        results.push({
+          templateId: entry.resolvedTemplate,
+          requested: entry.requestedQuantity,
+          given: 0,
+          clamped: true,
+          attempted: true,
+          reason: "Storage is full by volume."
+        });
+        stopped = true;
+        continue;
       }
       const position = await tx.query("select coalesce(max(position_index), -1)::int + 1 as position_index from dune.items where inventory_id = $1", [inventory.id]);
       const standaloneAugment = isStandaloneAugmentTemplate(entry.resolvedTemplate);
@@ -7128,8 +7239,8 @@ export async function giveMultipleItemsToStorage(db, storageId, { items = [] } =
       );
       const stats = buildItemStats({ templateId: entry.resolvedTemplate, augments: entry.augmentIds, rollPayloads });
       const insertColumns = ["inventory_id", "template_id", "stack_size", "quality_level", "position_index", "stats"];
-      const insertValues = [inventory.id, entry.resolvedTemplate, entry.stackSize, entry.qualityLevel, Number(position.rows[0]?.position_index || 0), JSON.stringify(stats)];
-      const stackVolume = entry.itemVolumeNum * entry.stackSize;
+      const insertValues = [inventory.id, entry.resolvedTemplate, stackSize, entry.qualityLevel, Number(position.rows[0]?.position_index || 0), JSON.stringify(stats)];
+      const stackVolume = entry.itemVolumeNum * stackSize;
       if (itemColumns.has("volume_override")) {
         insertColumns.push("volume_override");
         insertValues.push(stackVolume);
@@ -7144,7 +7255,20 @@ export async function giveMultipleItemsToStorage(db, storageId, { items = [] } =
           return `$${index + 1}`;
         }).join(", ")})
         returning id, template_id, stack_size, quality_level, position_index, inventory_id, volume_override`, insert.values);
-      results.push({ inserted: inserted.rows[0], augments: entry.augmentIds.length > 0 ? entry.augmentIds : undefined });
+      results.push({
+        inserted: inserted.rows[0],
+        augments: entry.augmentIds.length > 0 ? entry.augmentIds : undefined,
+        templateId: entry.resolvedTemplate,
+        requested: entry.requestedQuantity,
+        given: stackSize,
+        clamped,
+        attempted: true
+      });
+      // A partially-filled item (clamped, even though given > 0) still
+      // stops the batch here -- per design, once one item does not fully
+      // fit, later items are not attempted, rather than skipping ahead to
+      // see if a smaller later item happens to have room.
+      if (clamped) stopped = true;
     }
     return { ok: true, storage: inventory, results };
   });

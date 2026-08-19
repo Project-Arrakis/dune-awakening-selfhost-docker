@@ -308,6 +308,74 @@ Keep a Changelog style, grouped by upstream base version, newest first.
   `onError` side channel and the modal's own inline error text, and that a
   failed batch is not silently cleared (so the operator does not have to
   re-enter every item to retry).
+- **Base Inventory tab's Give/Fill actions never reject a request just
+  because it would exceed the container's remaining volume** (issue #347,
+  found and specified during manual UI review, per explicit operator
+  direction). `giveItemToStorage`, `fillItemToStorage`, and
+  `giveMultipleItemsToStorage` previously threw `"Storage is full by
+  volume"` and inserted nothing at all when a requested quantity did not
+  fully fit -- forcing an operator to guess a smaller number and retry. All
+  three now **clamp the requested quantity down to whatever actually
+  fits** and insert that instead: asking for 500 of an item with room for
+  only 375 gives 375, not 0. Every response reports `requested`/`given`/
+  `clamped` so the UI can say exactly what happened
+  (`"Only 375 of the requested 500 x X fit and was given to the
+  container."`) rather than silently implying the full request succeeded.
+  Slot count is the one capacity axis this does not apply to -- a single
+  give/fill always consumes exactly one slot regardless of quantity, so
+  "no slots left" genuinely cannot be partially satisfied and remains a
+  hard rejection; volume itself is still a hard rejection only in the one
+  case clamping cannot help, truly zero room left. `giveMultipleItemsToStorage`'s
+  batch behavior changed the same way, but stops the batch (left-to-right,
+  not best-effort) once one item does not fully fit rather than skipping
+  ahead to try later, possibly-smaller items -- and, like the single-item
+  functions, no longer throws on hitting a capacity limit at all: it
+  returns `ok: true` with a `results` array, one entry per requested item
+  (`requested`/`given`/`clamped`/`attempted`/`reason`), including items
+  never reached because an earlier one already stopped the batch
+  (`attempted: false`). This is a real backend contract change -- an
+  earlier version relied on the whole transaction rolling back to prove no
+  partial inserts happened on a thrown error; the current version has no
+  rollback to reason about, because hitting a capacity limit is no longer
+  an error condition.
+- **Fill now offers two distinct, explicitly labeled actions -- "Fill
+  Amount" and "Fill to Capacity" -- instead of one quantity field with a
+  hidden meaning** (issue #347, found during manual UI review).
+  `fillItemToStorage`'s `quantity: 0` sentinel ("insert as much as fits in
+  whatever volume remains, in one call") already existed and was already
+  used internally, but was unreachable from any UI: both this tab's own
+  quantity field and the standalone Storage tab's clamp to a minimum of 1,
+  so the sentinel could never actually be sent. "Fill to Capacity" sends
+  it explicitly and reports the real inserted count
+  (`"4,200 x SteelBar was filled into the container (as much as fit)."`);
+  "Fill Amount" sends whatever the operator typed (subject to the same
+  clamp-and-inform behavior described above).
+- **Give/Fill now use a compact type-to-search item picker
+  (`ItemCatalogCombobox`, `console/web/src/components/common/ItemCatalog.tsx`)
+  instead of a raw "item name or ID" text field** (issue #347, found during
+  manual UI review). The original plain text input required already
+  knowing the exact template id or exact in-game name, offered no way to
+  discover what is actually in the catalog, and did not filter anything as
+  the operator typed. The new combobox is a lighter, single-input sibling
+  to the existing `ItemCatalogSelector` (the full-page category/grid
+  browser used by Player Give Items, too heavy to stack two-of inside the
+  already-dense Base Inventory contents modal) -- same underlying catalog
+  data, same real in-game display name (e.g. "Fuel Cell" for template id
+  "Oil"). Search and the results list are name-only: the catalog id is a
+  backend concept the operator never needs to see or type, and Give/Fill
+  both submit the selected item's real `itemId` under the hood regardless.
+  The Fill combobox additionally filters its results to `FILLABLE_GROUPS`
+  client-side, matching the server's own `resolveFillableCatalogItem()`
+  check, so the picker never even offers an item the server would reject.
+- **An empty Storage container's "View Contents" button in the Containers
+  card view is now always present and clickable** (issue #347, found
+  during manual UI review). The button previously did not render at all
+  when a container had zero items -- rendering bare "Empty" text with no
+  click target instead -- making an empty container permanently
+  unreachable through that card, which is exactly the container an
+  operator most needs to open (to Give/Fill something into it in the first
+  place). Only the trailing label now switches between the distinct-item
+  count and "Empty"; the button itself is unconditional.
 
 ### Security
 

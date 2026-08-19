@@ -517,13 +517,34 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
     setDeleteNotice("");
     setDeleteError("");
     try {
-      const response = pending.length === 1
-        ? await basesApi.giveContainerItem(baseId, contentsFor, { itemId: pending[0].itemId, quantity: pending[0].quantity, confirmation: "GIVE ITEM TO STORAGE" })
-        : await basesApi.giveContainerItems(baseId, contentsFor, pending, "GIVE ITEMS TO STORAGE");
-      if (!response.supported || !response.result?.ok) {
-        throw new Error(response.error || response.reason || "The item(s) could not be given.");
+      if (pending.length === 1) {
+        const response = await basesApi.giveContainerItem(baseId, contentsFor, { itemId: pending[0].itemId, quantity: pending[0].quantity, confirmation: "GIVE ITEM TO STORAGE" });
+        if (!response.supported || !response.result?.ok) {
+          throw new Error(response.error || response.reason || "The item could not be given.");
+        }
+        // Never rejected outright -- a request exceeding remaining volume
+        // is clamped to whatever fits (issue #347 follow-up). The
+        // clamped case is reported plainly rather than claiming the full
+        // requested amount was given when it was not.
+        const { given, requested, clamped } = response.result;
+        setDeleteNotice(clamped
+          ? `Only ${given.toLocaleString()} of the requested ${requested.toLocaleString()} x ${pending[0].itemName} fit and was given to the container.`
+          : `${pending[0].itemName} was given to the container.`);
+      } else {
+        const response = await basesApi.giveContainerItems(baseId, contentsFor, pending, "GIVE ITEMS TO STORAGE");
+        if (!response.supported || !response.result?.ok) {
+          throw new Error(response.error || response.reason || "The items could not be given.");
+        }
+        // A batch never throws on hitting a capacity limit either -- it
+        // stops there, and every requested item appears in results
+        // (attempted or not). Summarize exactly what happened rather than
+        // claiming uniform success when the batch may have stopped partway.
+        const results = response.result.results;
+        const stoppedAt = results.find((entry) => entry.clamped || (entry.attempted && entry.given === 0));
+        setDeleteNotice(stoppedAt
+          ? `${results.filter((entry) => entry.given > 0).length} of ${results.length} items were given before the batch stopped at ${stoppedAt.templateId}${stoppedAt.given > 0 ? ` (partially, ${stoppedAt.given.toLocaleString()} of ${stoppedAt.requested.toLocaleString()})` : ""}.`
+          : `${pending.length} items were given to the container.`);
       }
-      setDeleteNotice(pending.length === 1 ? `${pending[0].itemName} was given to the container.` : `${pending.length} items were given to the container.`);
       setAddBatch([]);
       setAddItem(null);
       setAddQuantityText("1");
@@ -541,17 +562,31 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
     return Math.max(1, Math.min(1000000, Number(fillQuantityText) || 1));
   }
 
-  async function submitFill(containerName: string) {
+  // toCapacity sends quantity: 0, a real sentinel fillItemToStorage
+  // (duneDb.js) already supports -- it computes the largest stack that
+  // fits in whatever volume remains and inserts exactly that, in one call,
+  // rather than requiring the operator to guess a number and retry on a
+  // "storage is full by volume" rejection. Found unreachable from any UI
+  // during manual review (issue #347): the standalone Storage tab and this
+  // tab's own quantity field both clamp to a minimum of 1, so the backend's
+  // own capability had no way to be invoked. Fixed by exposing it as its
+  // own explicit action -- "Fill to Capacity" -- rather than overloading
+  // the quantity field with a special "0 means max" meaning a operator
+  // would have no way to discover on their own.
+  async function submitFill(containerName: string, toCapacity = false) {
     if (!giveFillAllowed || !fillItem) return;
+    const quantity = toCapacity ? 0 : fillQuantity();
     const confirmed = await confirmAction(
-      `Fill container with ${fillQuantity()} x ${fillItem.name}? Only raw resources, refined resources, and components are allowed.`,
+      toCapacity
+        ? `Fill container with as much ${fillItem.name} as fits in its remaining volume? Only raw resources, refined resources, and components are allowed.`
+        : `Fill container with ${quantity} x ${fillItem.name}? Only raw resources, refined resources, and components are allowed.`,
       {
         title: "Fill Container",
         confirmLabel: "Fill",
         details: [
           { label: "Base", value: baseName },
           { label: "Container", value: containerName, tone: "accent" },
-          { label: fillItem.name, value: `x${fillQuantity().toLocaleString()}` }
+          { label: fillItem.name, value: toCapacity ? "As much as fits" : `x${quantity.toLocaleString()}` }
         ]
       }
     );
@@ -560,11 +595,23 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
     setDeleteNotice("");
     setDeleteError("");
     try {
-      const response = await basesApi.fillContainerItem(baseId, contentsFor, { itemId: fillItem.itemId || fillItem.id, quantity: fillQuantity(), confirmation: "FILL ITEM TO STORAGE" });
+      const response = await basesApi.fillContainerItem(baseId, contentsFor, { itemId: fillItem.itemId || fillItem.id, quantity, confirmation: "FILL ITEM TO STORAGE" });
       if (!response.supported || !response.result?.ok) {
         throw new Error(response.error || response.reason || "The container could not be filled.");
       }
-      setDeleteNotice(`${fillItem.name} was filled into the container.`);
+      // Never rejected outright -- Fill Amount is clamped to whatever fits
+      // (issue #347 follow-up), the same way Give already is; the message
+      // must report the real given amount rather than always claiming the
+      // requested quantity succeeded, which was the exact bug reported
+      // manually against this feature ("Fill Container said it filled 100
+      // when only 100 of a larger request fit -- and separately, sending
+      // 100 when the operator meant 'fill it up' at all").
+      const { given, clamped } = response.result;
+      setDeleteNotice(toCapacity
+        ? `${given.toLocaleString()} x ${fillItem.name} was filled into the container (as much as fit).`
+        : clamped
+          ? `Only ${given.toLocaleString()} of the requested ${quantity.toLocaleString()} x ${fillItem.name} fit and was filled into the container.`
+          : `${fillItem.name} was filled into the container.`);
       setFillItem(null);
       setFillQuantityText("100");
       await Promise.all([loadSlots(contentsFor), load()]);
@@ -1128,7 +1175,11 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
               <button
                 disabled={!fillItem || fillRunning}
                 onClick={() => void submitFill(containerLabel(openContainer))}
-              >{fillRunning ? "Filling…" : "Fill"}</button>
+              >{fillRunning ? "Filling…" : "Fill Amount"}</button>
+              <button
+                disabled={!fillItem || fillRunning}
+                onClick={() => void submitFill(containerLabel(openContainer), true)}
+              >{fillRunning ? "Filling…" : "Fill to Capacity"}</button>
             </div>
           </div>}
 

@@ -4735,12 +4735,42 @@ test("storage give-item records TOTAL stack volume_override when itemVolume is p
   assert.ok(volumeCall, "volume sum query must run when itemVolume is provided");
 });
 
-test("storage give-item rejects when volume limit would be exceeded", async () => {
+// Never rejects on a partial volume fit (issue #347 follow-up, per explicit
+// operator direction): a requested quantity that would exceed remaining
+// volume is CLAMPED to whatever actually fits and inserted, rather than
+// rejecting the whole give and forcing the operator to guess a smaller
+// number. 15 max, 10 already used -> 5.0 remaining / 0.2 per-unit = 25 max
+// fit, clamped down from the requested 50.
+test("storage give-item clamps a requested quantity down to whatever volume actually fits, rather than rejecting", async () => {
   const calls = [];
   const db = fakeMutationDb(calls, {
     storageRows: [{ id: 7, actor_id: 222, max_item_count: 30, max_item_volume: 15 }],
     countRows: [{ count: 1 }],
-    volumeRows: [{ total_volume: 10 }]
+    volumeRows: [{ total_volume: 10 }],
+    insertedRows: [{ id: 505, template_id: "AzuriteOre", stack_size: 25, quality_level: 0, position_index: 6, inventory_id: 7, volume_override: 5.0 }]
+  });
+  const result = await giveItemToStorage(db, 222, { templateId: "AzuriteOre", quantity: 50, itemVolume: 0.2 });
+  assert.equal(result.ok, true);
+  assert.equal(result.requested, 50);
+  assert.equal(result.given, 25);
+  assert.equal(result.clamped, true);
+  const insert = calls.find((call) => call.text.includes("insert into dune.items"));
+  assert.ok(insert);
+  // The actually-inserted stack_size must be the clamped 25, not the
+  // originally-requested 50 -- inserting 50 anyway would silently exceed
+  // the container's real volume cap.
+  assert.equal(insert.values[2], 25);
+});
+
+// The one case that IS still a real rejection: truly zero room left, where
+// clamping would mean giving 0 -- there is nothing useful to insert or
+// report as given.
+test("storage give-item still rejects when there is no room for even 1 unit", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    storageRows: [{ id: 7, actor_id: 222, max_item_count: 30, max_item_volume: 15 }],
+    countRows: [{ count: 1 }],
+    volumeRows: [{ total_volume: 15 }]
   });
   await assert.rejects(
     () => giveItemToStorage(db, 222, { templateId: "AzuriteOre", quantity: 50, itemVolume: 0.2 }),
@@ -4808,15 +4838,17 @@ test("storage give-multiple-items rejects more than 50 distinct items", async ()
   );
 });
 
-test("storage give-multiple-items stops the batch when slot count is exhausted partway through", async () => {
-  // Found during PR #349's own Layer 3 QA audit: a static countRows fixture
-  // (count(*) always returning the same value) cannot distinguish "the
-  // batch correctly stops after item 1 succeeds" from "every item is
-  // rejected identically, including item 1" -- both produce the same
-  // thrown error text. countRowsSequence lets count(*) reflect the
-  // just-inserted row on the SECOND call, the same way real Postgres would
-  // see its own transaction's prior write, so this test can actually prove
-  // item 1 succeeded before item 2 was rejected.
+// Never rejects (issue #347 follow-up): a batch stops -- rather than
+// throwing -- once one item hits the slot cap, since a slot-count limit
+// cannot be partially satisfied (one give always consumes exactly one
+// slot). Found during PR #349's own Layer 3 QA audit that a static
+// countRows fixture cannot distinguish "the batch correctly stops after
+// item 1 succeeds" from "every item is rejected identically, including
+// item 1" -- countRowsSequence lets count(*) reflect the just-inserted row
+// on the SECOND call, the same way real Postgres would see its own
+// transaction's prior write, so this test can actually prove item 1
+// succeeded before item 2 was stopped.
+test("storage give-multiple-items stops the batch (without throwing) when slot count is exhausted partway through", async () => {
   const calls = [];
   const db = fakeMutationDb(calls, {
     storageRows: [{ id: 7, actor_id: 222, max_item_count: 1, max_item_volume: 0 }],
@@ -4825,59 +4857,100 @@ test("storage give-multiple-items stops the batch when slot count is exhausted p
       { id: 701, template_id: "AzuriteOre", stack_size: 20, quality_level: 0, position_index: 2, inventory_id: 7 }
     ]
   });
-  await assert.rejects(
-    () => giveMultipleItemsToStorage(db, 222, {
-      items: [
-        { templateId: "AzuriteOre", quantity: 20 },
-        { templateId: "PlantFiber", quantity: 5 }
-      ]
-    }),
-    /Storage is full by item slot count \(stopped before giving PlantFiber; 1 of 2 items were already given\)/
-  );
+  const result = await giveMultipleItemsToStorage(db, 222, {
+    items: [
+      { templateId: "AzuriteOre", quantity: 20 },
+      { templateId: "PlantFiber", quantity: 5 }
+    ]
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.results.length, 2, "every requested item appears in the response, attempted or not");
+  assert.equal(result.results[0].given, 20);
+  assert.equal(result.results[0].attempted, true);
+  assert.equal(result.results[1].given, 0);
+  assert.equal(result.results[1].attempted, true, "item 2 WAS attempted -- it tripped the slot cap on its own check");
+  assert.match(result.results[1].reason, /full by item slot count/);
   // The real proof this is "partway," not "rejects everything": exactly one
   // insert happened (item 1, AzuriteOre) before the second item's count
   // check tripped the slot cap.
   const inserts = calls.filter((call) => call.text.includes("insert into dune.items"));
-  assert.equal(inserts.length, 1, "item 1 must have actually been inserted before item 2 was rejected");
+  assert.equal(inserts.length, 1, "item 1 must have actually been inserted before item 2 was stopped");
 });
 
 // The tautological-test counterpart this fix guards against: if the slot
-// cap trips on the FIRST item instead, zero inserts happen and the error
-// message says "0 of 2" -- kept as its own test so the "partway" test above
-// can never be satisfied by an implementation that always rejects
-// everything from item 1.
-test("storage give-multiple-items rejects the whole batch when the slot cap is already full before item 1", async () => {
+// cap trips on the FIRST item instead, zero inserts happen -- kept as its
+// own test so the "partway" test above can never be satisfied by an
+// implementation that stops everything from item 1.
+test("storage give-multiple-items stops the whole batch when the slot cap is already full before item 1", async () => {
   const calls = [];
   const db = fakeMutationDb(calls, {
     storageRows: [{ id: 7, actor_id: 222, max_item_count: 1, max_item_volume: 0 }],
     countRows: [{ count: 1 }]
   });
-  await assert.rejects(
-    () => giveMultipleItemsToStorage(db, 222, {
-      items: [
-        { templateId: "AzuriteOre", quantity: 20 },
-        { templateId: "PlantFiber", quantity: 5 }
-      ]
-    }),
-    /Storage is full by item slot count \(stopped before giving AzuriteOre; 0 of 2 items were already given\)/
-  );
+  const result = await giveMultipleItemsToStorage(db, 222, {
+    items: [
+      { templateId: "AzuriteOre", quantity: 20 },
+      { templateId: "PlantFiber", quantity: 5 }
+    ]
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.results[0].given, 0);
+  assert.equal(result.results[0].attempted, true);
+  assert.equal(result.results[1].given, 0);
+  assert.equal(result.results[1].attempted, false, "item 2 was never even attempted -- item 1 already stopped the batch");
   const inserts = calls.filter((call) => call.text.includes("insert into dune.items"));
   assert.equal(inserts.length, 0, "no item should be inserted when the container was already full");
 });
 
-test("storage give-multiple-items enforces volume across items in the same batch", async () => {
+// Never rejects on volume either: an item that only partially fits is
+// clamped and given, and the batch stops there (per design -- once one
+// item does not fully fit, later items are not attempted).
+test("storage give-multiple-items clamps an item that only partially fits by volume, and stops the batch there", async () => {
   const calls = [];
   const db = fakeMutationDb(calls, {
     storageRows: [{ id: 7, actor_id: 222, max_item_count: 30, max_item_volume: 5 }],
     countRows: [{ count: 1 }],
-    volumeRows: [{ total_volume: 4 }]
+    // 5 max, 4 already used -> 1.0 remaining / 0.2 per-unit = 5 max fit,
+    // clamped down from the requested 20.
+    volumeRows: [{ total_volume: 4 }],
+    insertedRows: [{ id: 702, template_id: "AzuriteOre", stack_size: 5, quality_level: 0, position_index: 2, inventory_id: 7, volume_override: 1.0 }]
   });
-  await assert.rejects(
-    () => giveMultipleItemsToStorage(db, 222, {
-      items: [{ templateId: "AzuriteOre", quantity: 20, itemVolume: 0.2 }]
-    }),
-    /Storage is full by volume/
-  );
+  const result = await giveMultipleItemsToStorage(db, 222, {
+    items: [
+      { templateId: "AzuriteOre", quantity: 20, itemVolume: 0.2 },
+      { templateId: "PlantFiber", quantity: 5, itemVolume: 0.1 }
+    ]
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.results[0].requested, 20);
+  assert.equal(result.results[0].given, 5);
+  assert.equal(result.results[0].clamped, true);
+  assert.equal(result.results[1].given, 0);
+  assert.equal(result.results[1].attempted, false, "item 2 is not attempted once item 1 was clamped");
+  const inserts = calls.filter((call) => call.text.includes("insert into dune.items"));
+  assert.equal(inserts.length, 1, "the clamped item is still inserted, just at the smaller amount");
+});
+
+// Zero-fit within a batch: per explicit operator direction, this is
+// recorded as given: 0 and the batch stops there successfully -- it is
+// NOT a thrown error, even though nothing at all could be given for this
+// specific item.
+test("storage give-multiple-items records a zero-fit item as given: 0 and stops, without throwing", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    storageRows: [{ id: 7, actor_id: 222, max_item_count: 30, max_item_volume: 5 }],
+    countRows: [{ count: 1 }],
+    volumeRows: [{ total_volume: 5 }]
+  });
+  const result = await giveMultipleItemsToStorage(db, 222, {
+    items: [{ templateId: "AzuriteOre", quantity: 20, itemVolume: 0.2 }]
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.results[0].given, 0);
+  assert.equal(result.results[0].attempted, true);
+  assert.match(result.results[0].reason, /full by volume/);
+  const inserts = calls.filter((call) => call.text.includes("insert into dune.items"));
+  assert.equal(inserts.length, 0, "a zero-fit item must not be inserted as an empty/zero-size row");
 });
 
 test("storage fill-item inserts with TOTAL stack volume_override (per-unit x quantity) and respects slot limit", async () => {
@@ -4906,12 +4979,35 @@ test("storage fill-item inserts with TOTAL stack volume_override (per-unit x qua
   assert.ok(volumeCall, "volume sum query must run");
 });
 
-test("storage fill-item rejects when volume limit would be exceeded", async () => {
+// Never rejects on a partial volume fit, same fix as give-item (issue #347
+// follow-up): 15 max, 10 already used -> 5.0 remaining / 1.0 per-unit = 5
+// max fit, clamped down from the requested 50.
+test("storage fill-item clamps a requested quantity down to whatever volume actually fits, rather than rejecting", async () => {
   const calls = [];
   const db = fakeMutationDb(calls, {
     storageRows: [{ id: 7, actor_id: 222, max_item_count: 30, max_item_volume: 15 }],
     countRows: [{ count: 1 }],
-    volumeRows: [{ total_volume: 10 }]
+    volumeRows: [{ total_volume: 10 }],
+    insertedRows: [{ id: 505, template_id: "T6RefinedResourceA", stack_size: 5, quality_level: 0, position_index: 6, inventory_id: 7, volume_override: 5.0 }]
+  });
+  const result = await fillItemToStorage(db, "/tmp", 222, { templateId: "T6RefinedResourceA", quantity: 50, itemVolume: 1.0 });
+  assert.equal(result.ok, true);
+  assert.equal(result.requested, 50);
+  assert.equal(result.given, 5);
+  assert.equal(result.clamped, true);
+  const insert = calls.find((call) => call.text.includes("insert into dune.items"));
+  assert.ok(insert);
+  assert.equal(insert.values[2], 5);
+});
+
+// The one case that IS still a real rejection for fill-item too: truly zero
+// room left.
+test("storage fill-item still rejects an explicit quantity when there is no room for even 1 unit", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    storageRows: [{ id: 7, actor_id: 222, max_item_count: 30, max_item_volume: 15 }],
+    countRows: [{ count: 1 }],
+    volumeRows: [{ total_volume: 15 }]
   });
   await assert.rejects(
     () => fillItemToStorage(db, "/tmp", 222, { templateId: "T6RefinedResourceA", quantity: 50, itemVolume: 1.0 }),
@@ -6300,7 +6396,17 @@ function fakeMutationDb(calls, fixtures = {}) {
       if (text.includes("from dune.inventories") && text.includes("where actor_id")) return { rows: fixtures.storageRows || [] };
       if (text.includes("from dune.vehicle_modules vm") && text.includes("count(*)::int as scanned")) return { rows: fixtures.vehicleModuleScanRows || [{ scanned: 0, vehicles: 0 }] };
       if (text.includes("update dune.vehicle_modules vm")) return { rows: fixtures.repairedVehicleModuleRows || [] };
-      if (text.includes("sum(coalesce(volume_override")) return { rows: fixtures.volumeRows || [{ total_volume: 0 }] };
+      if (text.includes("sum(coalesce(volume_override")) {
+        // volumeRowsSequence mirrors countRowsSequence: needed for batch-give
+        // tests that must prove the running volume total reflects an
+        // earlier item's own just-inserted row on the NEXT item's check,
+        // not a static fixture value repeated for every item in the batch.
+        if (fixtures.volumeRowsSequence) {
+          const index = volumeCallCount++;
+          return { rows: [fixtures.volumeRowsSequence[index] || fixtures.volumeRowsSequence[fixtures.volumeRowsSequence.length - 1]] };
+        }
+        return { rows: fixtures.volumeRows || [{ total_volume: 0 }] };
+      }
       if (text.includes("count(*)::int")) {
         // countRowsSequence supports tests that need count(*) to reflect a
         // just-inserted row on the NEXT loop iteration (e.g. proving a
@@ -6339,6 +6445,7 @@ function fakeMutationDb(calls, fixtures = {}) {
   };
   let insertCallCount = 0;
   let countCallCount = 0;
+  let volumeCallCount = 0;
   return db;
 }
 
