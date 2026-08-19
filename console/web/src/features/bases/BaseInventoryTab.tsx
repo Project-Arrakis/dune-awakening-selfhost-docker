@@ -757,12 +757,17 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
       <div className="bases-tab-body">
         {/* Stated before the data rather than after it: it governs how to read
             everything below, and at the foot of a 27-card list it was never
-            seen. */}
-        {/* These are database rows and a running map keeps its own copy, so
-            destructive controls remain disabled until the backend verifies a
-            safe stopped-map window. */}
+            seen.
+
+            CORRECTED 2026-08-19 (real drift caught during a documentation
+            review, see docs/console/base-inventory.md's "Deletion does not
+            require a stopped map" section): this copy previously said
+            deletion required a stopped map, which stopped being true when
+            baseContainerDeleteSafety's map-liveness check was removed
+            earlier this same session -- deletion, Give, and Fill are all
+            equally unaffected by whether the map is running today. */}
         <p className="bases-inventory-note muted">
-          A database snapshot, not a live view. Stored items can be deleted only while their map is safely stopped.
+          A database snapshot, not a live view. Changes here are not reflected in-game until the Survival server restarts.
         </p>
 
         {/* summary-stats/summary-stat are the app's stat tiles, shared with

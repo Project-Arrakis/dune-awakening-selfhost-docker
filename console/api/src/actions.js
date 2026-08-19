@@ -430,10 +430,13 @@ export const REGEX_ACTIONS_BY_METHOD_PATTERN = [
   // the same reason bases:delete-item is its own action: base inventory
   // shipped read-only, so bases:mutate (refills, permission edits) was never
   // agreed to cover item creation either. Kept separate from each other
-  // (give-item vs fill-item) rather than one combined "bases:add-item",
-  // since Fill is restricted to raw/refined resources and components while
-  // Give currently accepts any catalog item — a policy author narrowing one
-  // should not be forced to also narrow the other.
+  // (give-item vs fill-item) rather than one combined "bases:add-item" so a
+  // policy author can grant/revoke them independently, even though, as of
+  // 2026-08-19, Give and Fill are both restricted to the same
+  // raw_resource/refined_resource/component groups (FILLABLE_GROUPS) --
+  // Give previously accepted any catalog item, corrected after a real
+  // catalog item ("Robe of the Sisterhood", clothing) showed up in the Give
+  // combobox despite being out of scope for this feature.
   { method: "POST", pattern: /^\/api\/bases\/[^/]+\/containers\/[^/]+\/give-item$/, action: "bases:give-item" },
   { method: "POST", pattern: /^\/api\/bases\/[^/]+\/containers\/[^/]+\/give-items$/, action: "bases:give-item" },
   { method: "POST", pattern: /^\/api\/bases\/[^/]+\/containers\/[^/]+\/fill-item$/, action: "bases:fill-item" }
