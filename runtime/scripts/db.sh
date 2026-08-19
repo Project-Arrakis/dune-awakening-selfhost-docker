@@ -600,6 +600,8 @@ backup_db() {
   local scope
   local scope_maps
   local artifact_id
+  local server_title
+  local server_slug
   local backup_file
   local sidecar_file
   local staged_backup_file
@@ -621,14 +623,18 @@ backup_db() {
   scope="$(backup_scope_slug)"
   [ -n "$scope" ] || scope="all_maps"
   scope_maps="$(backup_scope_maps)"
-  artifact_id="dune-db-$scope"
+  server_title="$(config_value .env SERVER_TITLE || true)"
+  [ -n "$server_title" ] || server_title="Dune Server"
+  server_slug="$(printf '%s' "$server_title" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g; s/--*/-/g; s/^-//; s/-$//')"
+  [ -n "$server_slug" ] || server_slug="dune-server"
+  artifact_id="$server_slug"
   # Market Bot backups carry their origin in the filename so a plain ls of the
   # backup directory shows what minted them (the sidecar's backup_origin is
   # authoritative but not visible without opening it), e.g.
-  # dune-db-market-bot-buyback-hagga_basin-20260819-020000.backup
+  # kovalt-sietch-market-bot-buyback-20260819-020000.backup
   case "${DB_BACKUP_ORIGIN:-manual}" in
     market-bot-*)
-      artifact_id="dune-db-$(printf '%s' "${DB_BACKUP_ORIGIN}" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g; s/--*/-/g; s/^-//; s/-$//')-$scope"
+      artifact_id="$server_slug-$(printf '%s' "${DB_BACKUP_ORIGIN}" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g; s/--*/-/g; s/^-//; s/-$//')"
       ;;
   esac
   backup_file="$out_dir/$artifact_id-$ts.backup"
@@ -675,7 +681,7 @@ backup_db() {
     echo "format: pg_dump_custom"
     echo "scope: $scope"
     echo "maps: ${scope_maps:-unknown}"
-    echo "server_title: $(config_value .env SERVER_TITLE || echo unknown)"
+    echo "server_title: $server_title"
     echo "server_region: $(config_value .env SERVER_REGION || echo unknown)"
     echo "server_ip_mode: $(config_value .env SERVER_IP_MODE || echo unknown)"
     echo "battlegroup_id: $(config_value runtime/generated/battlegroup.env BATTLEGROUP_ID || echo unknown)"
