@@ -279,6 +279,7 @@ test("builds buyback SQL server-side from the bundled seed plan", () => {
     assert.ok(isReadOnlySql(overviewSql), "portal overview must be read-only SQL");
     assert.match(overviewSql, /COUNT\(\*\)::text AS listing_count/);
     assert.match(overviewSql, /GROUP BY o\.template_id/);
+    assert.doesNotMatch(overviewSql, /LIMIT 100/, "portal search needs the complete aggregated market overview");
     assert.doesNotMatch(overviewSql, /o\.owner_id::text/, "anonymous overview must not return seller ids");
 
     const sweepSql = buildBuybackSql(plan, schedule);
