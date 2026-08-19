@@ -45,10 +45,10 @@ by shell scripts under `runtime/scripts/`:
 
 The always-on core path uses Compose for the `orchestrator` and web console;
 the opt-in metrics and public-probe stacks also define named Compose services
-in their own Compose projects. The actual game-server processes (Postgres,
-RabbitMQ, the Director, the Gateway, and every dynamic map partition) are
-started as raw `docker run` containers by `runtime/scripts/start-all.sh` and
-related scripts, not by Compose.
+in their own Compose projects. The actual gameplay containers (Postgres,
+RabbitMQ, TextRouter, the Director, the Gateway, the always-on world servers,
+and dynamically spawned map partitions) are started as raw `docker run`
+containers by `runtime/scripts/start-all.sh` and related scripts, not by Compose.
 
 ### 1.1 The `orchestrator` container
 
