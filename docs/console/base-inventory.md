@@ -106,12 +106,12 @@ base-backup tool, rejects this with `409`.
 
 ## Deletion does not require a stopped map
 
-**Corrected 2026-08-19 — this used to be a hard requirement; it is not one anymore.** An earlier version of
-this feature refused every delete route (`DELETE …/items/{itemId}`, Delete Selected, Delete All) until it
-could verify the owning map was safely stopped, on the theory that a running map's own in-memory/autosave
-state could resurrect or conflict with a row deleted out from under it. Extensive live testing (the same
-investigation that produced `docs/incidents/INC-2026-08-19-VOLUME-OVERRIDE-DOUBLE-MULTIPLIED.md`) found two
-things that together make that theory wrong:
+None of the delete routes (`DELETE …/items/{itemId}`, Delete Selected, Delete All) require the owning map
+to be stopped. An earlier version refused all three until it could verify a safely-stopped map, on the
+theory that a running map's own in-memory/autosave state could resurrect or conflict with a row deleted
+out from under it. Extensive live testing (the same investigation that produced
+`docs/incidents/INC-2026-08-19-VOLUME-OVERRIDE-DOUBLE-MULTIPLIED.md`) found two things that together make
+that theory wrong:
 
 - The standalone Storage tab's own delete route (`storageRemoveItemsRoute` → `duneDb.removeItemsFromStorage`)
   has **never** gated on map state at all, and has been tested for hours and shipped without incident. This
@@ -160,11 +160,10 @@ in "Per-container slots" below** — a schema without `dune.inventories.max_item
 `dune.items.volume_override` degrades both to `0` rather than failing the tab, and the UI shows "—" instead
 of a percentage, or withholds the row entirely on a per-container card, whenever `maxVolume` is `0`.
 `currentVolume` sums `volume_override × stack_size` per inventory, since `volume_override` itself stores
-each item's **PER-UNIT** volume, not a per-stack total (corrected 2026-08-19 — see
-"`volume_override` is per-unit, not per-stack" below for why) — the same convention
-`giveItemToStorage`/`fillItemToStorage` use for their own volume-cap checks (see "Both Give and Fill enforce
-the same slot and volume caps" below), so a displayed volume total always agrees with what the next
-give/fill against that container will actually enforce.
+each item's **PER-UNIT** volume, not a per-stack total (see "`volume_override` is per-unit, not per-stack"
+below for why) — the same convention `giveItemToStorage`/`fillItemToStorage` use for their own volume-cap
+checks (see "Both Give and Fill enforce the same slot and volume caps" below), so a displayed volume total
+always agrees with what the next give/fill against that container will actually enforce.
 
 **Why this exists instead of a backfill:** an item given via the storage give-item route before it started
 recording `volume_override` (or given directly by the game engine) has a permanent `NULL` there, which
@@ -258,69 +257,56 @@ Give/Fill panel is offered whenever `group === "storage"`; it does not additiona
 `deleteSafety.safe`, unlike every delete action on this page. See "Why Give/Fill do not require a stopped
 map" below for why that asymmetry is deliberate, not an oversight.
 
-**One shared item picker and quantity field, switched by a Give/Fill mode toggle — not two separate
-panels.** **Corrected 2026-08-19** after a real operator reported the original layout (a full
-combobox+quantity+button row for Give, a second, visually identical one for Fill, stacked vertically) as
-confusing — especially once Give and Fill were restricted to the same three item groups in the same
-session (see below), making the two rows show identical candidate items with nothing explaining when to
-use which. A dispatched UI/UX-hat design review diagnosed this precisely and recommended consolidating to
-one shared `ItemCatalogCombobox` + quantity `input`, with a `Give`/`Fill` segmented toggle (reusing the
-same visual pattern as the contents overlay's own List/Grid toggle) determining which action the shared
-row submits to and which action-specific affordance renders beneath it:
-- **Give mode** shows "Add to Batch" and the queued-items list — Give's batch capability (see below) is
-  unchanged, just fed by the shared fields instead of its own dedicated ones.
-- **Fill mode** shows "Fill Amount" and "Fill to Capacity" — Fill's capacity sentinel (see below) is
-  likewise unchanged.
+**Give and Fill share one item picker and one quantity field, switched by a `Give`/`Fill` mode toggle —
+not two separate panels.** An earlier version rendered a full combobox+quantity+button row for Give and a
+second, visually identical one for Fill, stacked vertically. Once Give and Fill were restricted to the
+same three item groups (below), the two rows showed identical candidate items with nothing explaining
+when to use which — reported directly by a real operator as confusing. The current layout is one shared
+`ItemCatalogCombobox` + quantity `input`, with a `Give`/`Fill` segmented toggle (the same visual pattern as
+the contents overlay's own List/Grid toggle) selecting which action the shared row submits to and which
+action-specific affordance renders beneath it:
+- **Give mode** shows "Add to Batch" and the queued-items list — Give's batch capability (below) is fed by
+  the shared fields instead of its own dedicated ones.
+- **Fill mode** shows "Fill Amount" and "Fill to Capacity" — Fill's capacity sentinel (below) is unchanged.
 
 **Switching modes resets the quantity field to that mode's own default (`1` for Give, `100` for Fill), but
-persists the selected item.** **Corrected 2026-08-19** — an earlier version also cleared the selected item
-on every mode switch, on the theory that a selection might not be relevant in the other mode. That theory
-never held once Give was widened to the same `FILLABLE_GROUPS` restriction Fill already used (see below):
-any item valid in one mode is valid in the other, so clearing it just forced an operator who glanced at
-Fill and switched back to Give to re-search the same item — reported directly by a real operator. The
-quantity field still resets on every switch (a half-typed Give quantity must never be silently submitted
-as a Fill quantity, or vice versa), and a queued Give batch is still **not** cleared by switching to Fill
-and back; an operator should be able to check Fill without losing in-progress batch work.
+persists the selected item.** Any item valid in one mode is valid in the other (both filter to the same
+`FILLABLE_GROUPS`), so there is nothing to gain by clearing the selection on a mode switch — it previously
+forced an operator who glanced at Fill and switched back to Give to re-search the same item. The quantity
+field still resets on every switch (a half-typed Give quantity must never be silently submitted as a Fill
+quantity, or vice versa), and a queued Give batch is **not** cleared by switching to Fill and back — an
+operator should be able to check Fill without losing in-progress batch work.
+
+**Below the toggle sits one lightly-bordered mode-hint group and, below that, one bordered warning
+banner** — never more than two notice elements at once, in either mode. The mode-hint group
+(`.bases-inventory-mode-group`) pairs a single muted caption line ("Give inserts a new stack…Fill tops up
+one item toward capacity…") with the toggle itself, using the neutral `--border` token and the
+`--panel-muted` background rather than the warning's amber `--warning` token, so it reads as low-weight
+context rather than a second alert. The warning banner (`.bases-inventory-restart-warning`) always states
+the restart requirement (see "Why Give/Fill do not require a stopped map" below); while Fill mode is
+selected it appends a trailing sentence covering the Fill-specific position_index risk (see "Give fills
+from the high end…" below) to that *same* element rather than opening a second box. This shape is the
+result of two rounds of real operator feedback after the initial consolidation — the first shipped with
+three separately-stacked notice elements (a paragraph, the restart warning, and Fill's collision warning
+as its own second bordered box), the second fixed the *content* but left a visual mismatch between the
+unboxed mode-hint caption and the two bordered controls around it. Both are folded into the description
+above rather than kept as a history; see the git log for `BaseInventoryTab.tsx` if the blow-by-blow is
+ever needed.
 
 **Clicking an item already in the container also populates the Give/Fill combobox with that same item.**
-Added 2026-08-19 per explicit operator direction — giving more of something already sitting in the
-container previously required re-typing/re-searching its exact name in the combobox from scratch, even
-though the operator was looking right at it in the Grid or List view. Clicking a Grid cell or a List row's
-item name now populates `selectedItem` with that slot's item **in addition to** the existing "select this
-slot for the delete strip" behavior the same click already performs — it is not a second, separate click
-target, and does not change `addFillMode` or `quantityText`; the item lands in whichever mode (Give or
-Fill) is currently active, and the quantity field is left exactly as the operator last set it. Resolved
-against the real, already-loaded catalog (the same `loadFullCatalog()` cache `ItemCatalogCombobox` itself
-uses, exported specifically for this) rather than fabricated from the slot's own name/`templateId` alone,
-so the populated selection carries the item's real `group`/`image` fields. Silently a no-op — the click
-still performs its existing delete-selection behavior regardless — for an item that is not in
-`FILLABLE_GROUPS` (e.g. a weapon or schematic sitting in a container some other way) or is not present in
-the loaded catalog at all; the combobox could never have accepted that item either.
-
-**The two safety notices below the toggle are one bordered banner, not two.** **Corrected 2026-08-19** —
-the original consolidation merged the *inputs* into one shared row but left the *notices* as three
-separately-stacked elements (an explanatory paragraph, the restart warning, and the Fill-only collision
-warning as its own second bordered box), which a real operator reported as "3 warnings" after switching to
-Fill mode — recreating the exact "wall of similar-looking warning text" problem the original two-panel
-layout already had. Fixed per a second dispatched UI/UX-hat review: the explanatory paragraph was
-shortened to a single muted caption line (the toggle's own labels now carry most of that meaning), the
-toggle was moved above the warning so the warning's own mode-dependent text change reads as caused by the
-toggle rather than appearing above it, and the restart warning and the Fill-only collision warning (see
-"Give fills from the high end..." below) now share **one** bordered banner — Fill mode appends a trailing
-sentence to that same element instead of opening a second, visually-identical box. At most two notice
-elements are visible at once now, in either mode (one caption line, one warning banner), never three.
-
-**The mode-hint caption and the Give/Fill toggle are grouped in one lightly-bordered container, separate
-from the warning banner.** **Corrected 2026-08-19** — the two fixes above addressed *content* (how many
-notices, what text) but left a real visual inconsistency a real operator caught directly: the bare, unboxed
-mode-hint caption sat immediately above the Give/Fill toggle (itself a bordered control), which in turn sat
-immediately above the bordered, iconed warning banner — "one has a bounding border with a ! icon and the
-other does not... looks amateurish." Fixed per a third dispatched UI/UX-hat review: the mode-hint caption
-and the toggle are now wrapped in one shared container (`.bases-inventory-mode-group`) using the *neutral*
-`--border` token and the existing `--panel-muted` background (the same background `.bases-inventory-add-batch`
-list items already use) — deliberately **not** the warning's `--warning` amber token, so this group reads
-as "low-weight information," not a second alert competing with the one banner that should keep looking
-urgent. The warning banner itself is untouched, both in content and in visual weight.
+Giving more of something already sitting in the container previously required re-typing/re-searching its
+exact name in the combobox from scratch, even with the operator looking right at it in the Grid or List
+view. Clicking a Grid cell or a List row's item name now populates `selectedItem` with that slot's item
+**in addition to** the existing "select this slot for the delete strip" behavior the same click already
+performs — it is not a second, separate click target, and it does not change `addFillMode` or
+`quantityText`; the item lands in whichever mode (Give or Fill) is currently active, and the quantity
+field is left exactly as the operator last set it. Resolved against the real, already-loaded catalog (the
+same `loadFullCatalog()` cache `ItemCatalogCombobox` itself uses, exported specifically for this) rather
+than fabricated from the slot's own name/`templateId` alone, so the populated selection carries the item's
+real `group`/`image` fields. Silently a no-op — the click still performs its existing delete-selection
+behavior regardless — for an item that is not in `FILLABLE_GROUPS` (e.g. a weapon or schematic sitting in
+a container some other way) or is not present in the loaded catalog at all; the combobox could never have
+accepted that item either.
 
 | Action | Route | Backend function | Confirmation phrase |
 |---|---|---|---|
@@ -329,19 +315,18 @@ urgent. The warning banner itself is untouched, both in content and in visual we
 | Fill with a raw/refined resource or component | `POST …/containers/{placeableId}/fill-item` | `duneDb.fillItemToStorage()` | `FILL ITEM TO STORAGE` |
 
 **Both Give and Fill are restricted to raw resources, refined resources, and components only.**
-**Corrected 2026-08-19** — an earlier version let Give accept any catalog item at all (weapons, clothing,
-schematics, anything in `runtime/data/admin-items.json`) via `resolveCatalogItem()`, with no group
-restriction. Found via a real catalog item, "Robe of the Sisterhood" (clothing), appearing in the Give
-combobox: per explicit operator direction, this was scope creep the feature was never meant to have —
-container Give/Give Multiple is for raw/refined resources and components only, the same restriction Fill
-already enforced. `baseContainerGiveItemRoute`/`baseContainerGiveItemsRoute` now resolve items through
-`resolveFillableCatalogItem()`, the same function Fill already used, requiring the item's `group` to be
-`raw_resource`, `refined_resource`, or `component` (`FILLABLE_GROUPS` in `adminCatalog.js`). The Give
-combobox client-side filter (`ItemCatalogCombobox`'s `filterGroups` prop) now matches Fill's exactly, so
-the picker never even offers an item the server would reject; the server independently re-enforces it
-rather than trusting the client to have filtered correctly. **This restriction applies only to this Base
-Inventory tab's Give/Give Multiple actions** — the older, separate, standalone Storage tab's own "Give
-Item" action (`storageGiveItemRoute`) is unaffected and still accepts any catalog item, unchanged.
+`baseContainerGiveItemRoute`/`baseContainerGiveItemsRoute`/`baseContainerFillItemRoute` all resolve items
+through `resolveFillableCatalogItem()`, requiring the item's `group` to be `raw_resource`,
+`refined_resource`, or `component` (`FILLABLE_GROUPS` in `adminCatalog.js`). The Give and Fill comboboxes'
+client-side filter (`ItemCatalogCombobox`'s `filterGroups` prop) matches this exactly, so the picker never
+even offers an item the server would reject; the server independently re-enforces it rather than trusting
+the client to have filtered correctly. An earlier version let Give accept any catalog item at all via the
+unrestricted `resolveCatalogItem()` — found via a real catalog item, "Robe of the Sisterhood" (clothing),
+appearing in the Give combobox — and was narrowed to match Fill's existing restriction, since container
+Give/Give Multiple was never meant to hand out weapons, clothing, or schematics. **This restriction applies
+only to this Base Inventory tab's Give/Give Multiple actions** — the older, separate, standalone Storage
+tab's own "Give Item" action (`storageGiveItemRoute`) is unaffected and still accepts any catalog item,
+unchanged.
 
 **Give Multiple is one transaction, capped at 50 distinct items.** Every check `giveItemToStorage` performs
 (slot cap, volume cap) is repeated fresh for each item in the batch — re-queried after each insert, not
@@ -370,10 +355,10 @@ mitigation, not a guarantee. Falls back to the old lowest-next-free convention w
 **Fill does not get this mitigation, by design.** Fill exists to top up a container toward its real
 capacity — the same low-to-high direction the engine already fills in — so there is no meaningful "far end"
 left once Fill has done its job; the high-end approach that helps Give simply does not apply. Per explicit
-operator direction, Fill instead ships with an in-UI warning shown while Fill mode is selected (see "One
-shared item picker..." above) stating this risk directly, and the incident document above is the canonical
-reference for an operator who wants the full mechanism. This is treated as an accepted, documented
-limitation, not an open bug.
+operator direction, Fill instead ships with an in-UI warning shown while Fill mode is selected (see "Give
+and Fill share one item picker..." above) stating this risk directly, and the incident document above is
+the canonical reference for an operator who wants the full mechanism. This is treated as an accepted,
+documented limitation, not an open bug.
 
 **Neither Give nor Fill ever rejects a request just because it would exceed the container's remaining
 volume.** Per explicit operator direction (found during manual UI review of #347): an earlier version threw
@@ -411,7 +396,7 @@ own quantity field and the standalone Storage tab's clamp to a minimum of 1. `re
 Fill-to-Capacity response (there was never a specific number to compare against); the UI reports the real
 `given` count directly (`"4,200 x SteelBar was filled into the container (as much as fit)."`).
 
-**Both Give and Fill enforce the same slot **and** volume caps.** An earlier version of `giveItemToStorage`
+**Both Give and Fill enforce the same slot and volume caps.** An earlier version of `giveItemToStorage`
 checked only slot count — an operator could give an item whose declared volume exceeded a container's
 remaining volume, and because that give never recorded a `volume_override`, every later `fillItemToStorage`
 volume check against the same container silently undercounted real usage. Fixed to match `fillItemToStorage`'s
@@ -420,11 +405,11 @@ see "`volume_override` is per-unit, not per-stack" immediately below for why it 
 
 ### `volume_override` is per-unit, not per-stack
 
-**Corrected 2026-08-19 — a real, live in-game bug, not a design choice.** `dune.items.volume_override` is
-stored as the item's PER-UNIT volume, and every volume total (the running total `giveItemToStorage`/
+**A real, live in-game bug, not a design choice.** `dune.items.volume_override` is stored as
+the item's PER-UNIT volume, and every volume total (the running total `giveItemToStorage`/
 `fillItemToStorage`/`giveMultipleItemsToStorage` check against a container's `max_item_volume`, and every
-read-side total in `baseInventory`/`baseContainerListStorage`/`baseContainerSlots`) is computed as
-`volume_override × stack_size`, summed across rows.
+read-side total in `baseInventory`, the standalone Storage tab's `listStorage`, and `baseContainerSlots`)
+is computed as `volume_override × stack_size`, summed across rows.
 
 An earlier version of this code stored `volume_override` as the stack's **total** volume
 (`perUnitVolume × stackSize`) instead, on the theory that this kept the console's own internal volume sums
@@ -450,9 +435,9 @@ catalog, and did not filter anything as the operator typed — typing was just r
 server on submit. Search and the results list are name-only: the catalog id (e.g. `"Oil"` for the in-game
 "Fuel Cell") is a backend concept the operator never needs to see or type, and Give/Fill both submit the
 selected item's real `itemId` under the hood regardless. Give and Fill share one combobox instance (see
-"One shared item picker..." above), filtered to `FILLABLE_GROUPS` client-side in both modes, matching the
-server's own `resolveFillableCatalogItem()` check, so the picker never even offers an item the server would
-reject.
+"Give and Fill share one item picker..." above), filtered to `FILLABLE_GROUPS` client-side in both modes,
+matching the server's own `resolveFillableCatalogItem()` check, so the picker never even offers an item the
+server would reject.
 
 ## Why Give/Fill do not require a stopped map
 
@@ -526,9 +511,10 @@ and the container is only locked for that shorter window.
 refuse to guess and throw, rather than silently picking one and leaving items behind in the other.** This
 page's own "Slots hang off an inventory, not the container" section above documents that a placeable can
 back more than one surviving inventory as a general schema fact — the read path (`baseContainerSlots`)
-already sums across every qualifying inventory a placeable has for exactly this reason. Give/Fill/single-item-delete
-resolve their target inventory with `order by id limit 1`, deterministically picking the lowest id if more
-than one ever exists. The two bulk functions instead throw
+already sums across every qualifying inventory a placeable has for exactly this reason. Give/Fill resolve
+their target inventory with `order by id limit 1`, deterministically picking the lowest id if more than one
+ever exists (single-item delete has no such ambiguity — it resolves by the specific `itemId` it was given,
+whose `inventory_id` is already known). The two bulk functions instead throw
 `"This container backs N separate inventories, which this action does not support yet. Please report this
 so it can be fixed."` — found during this feature's own Layer 3 review that an earlier version had no
 `ORDER BY`/`LIMIT` at all and took whichever row Postgres's planner returned first, which could have
