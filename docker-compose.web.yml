@@ -64,6 +64,9 @@ services:
       DUNE_SELF_UPDATE_TOKEN: "${DUNE_SELF_UPDATE_TOKEN:-}"
       # Bound BuildKit/npm stalls so a console update cannot hang forever.
       DUNE_SELF_UPDATE_BUILD_TIMEOUT_SECONDS: "${DUNE_SELF_UPDATE_BUILD_TIMEOUT_SECONDS:-1800}"
+      # Forward the operator's Market Bot retention override to the console;
+      # its backup subprocess inherits this environment value.
+      DUNE_MARKET_BOT_BACKUP_KEEP: "${DUNE_MARKET_BOT_BACKUP_KEEP:-5}"
       DUNE_DISCORD_ADAPTER_ENABLED: "${DUNE_DISCORD_ADAPTER_ENABLED:-false}"
       DUNE_DISCORD_ADAPTER_TOKEN: "${DUNE_DISCORD_ADAPTER_TOKEN:-}"
       DUNE_BOT_API_TOKEN_FILE: "${DUNE_BOT_API_TOKEN_FILE:-}"

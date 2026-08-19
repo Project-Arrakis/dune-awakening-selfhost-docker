@@ -871,6 +871,7 @@ async function handleApi(req, res) {
   if (path === "/api/exchange/market/seed/schedule" && req.method === "POST") return marketScheduleSaveRoute(req, res, "seed");
   if (path === "/api/exchange/market/buyback/run" && req.method === "POST") return marketRunNowRoute(req, res, "buyback");
   if (path === "/api/exchange/market/seed/run" && req.method === "POST") return marketRunNowRoute(req, res, "seed");
+  if (path === "/api/exchange/market/seed/clear" && req.method === "POST") return marketUnseedRoute(req, res);
   if (path === "/api/maps/user-settings/schema") return userSettingsSchemaRoute(res);
   if (path === "/api/maps/user-settings/restart-pending") return json(res, 200, { pending: existsSync(resolve(config.repoRoot, "runtime/generated/landsraad-restart-required")) });
   if (path === "/api/maps/user-settings/deferred-pending") return json(res, 200, readDeferredRestartPending(config));
@@ -1427,6 +1428,24 @@ async function marketRunNowRoute(req, res, job) {
     return json(res, 200, result);
   } catch (error) {
     audit(config, req, "exchange.market", { op: `${job}-run`, ok: false, error: redact(error?.message || "Unexpected error.") });
+    const payload = apiErrorPayload(error, 400);
+    return json(res, payload.status, payload.body);
+  }
+}
+
+// Manual "unseed": remove the Market Bot's own NPC listings from one exchange
+// without reseeding — the clear-market ability the EDA addon had before the
+// bot became console-native. Probes read-only first and backs up only when
+// there is something to remove.
+async function marketUnseedRoute(req, res) {
+  const body = await readJson(req);
+  if (!applyMutationRateLimit(req, res, "exchange.market.seed.clear")) return;
+  try {
+    const result = await addonJobScheduler.runNow({ trigger: "console", job: "unseed", exchangeId: body?.exchangeId });
+    audit(config, req, "exchange.market", { op: "seed-clear", status: result.status, removedListings: result.removedListings, exchangeId: result.exchangeId, ok: true });
+    return json(res, 200, result);
+  } catch (error) {
+    audit(config, req, "exchange.market", { op: "seed-clear", ok: false, error: redact(error?.message || "Unexpected error.") });
     const payload = apiErrorPayload(error, 400);
     return json(res, payload.status, payload.body);
   }
