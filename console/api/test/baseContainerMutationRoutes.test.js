@@ -40,27 +40,35 @@ test("every new base container mutation route is dispatched from handleApi", () 
   }
 });
 
-// Deletes are irreversible with no live-sync path, so every delete route
-// must refuse to run when the base's map is not known to be safely stopped
-// -- the same requirement deleteBaseContainerItem's own route already
-// enforces (baseContainerItemDeleteRoute).
+// Every delete route must still check baseContainerDeleteSafety and refuse
+// to mutate when it reports unsafe -- the same requirement
+// deleteBaseContainerItem's own route already enforces
+// (baseContainerItemDeleteRoute). baseContainerDeleteSafety itself no
+// longer checks map liveness (removed 2026-08-19, see its own comment in
+// server.js -- deletion does not require a stopped map, matching the
+// standalone Storage tab's own delete route, which never required one); it
+// still enforces the Storage-vs-Crafting/Refining group restriction, so
+// this check remains real and load-bearing even though "map safety" is no
+// longer part of what it verifies.
 test("both new bulk-delete routes check baseContainerDeleteSafety before mutating", () => {
   for (const name of DELETE_ROUTES) {
     const body = routeBody(name);
-    assert.match(body, /await baseContainerDeleteSafety\(baseId\)/, `${name} must check map safety`);
+    assert.match(body, /await baseContainerDeleteSafety\(baseId\)/, `${name} must check deleteSafety`);
     assert.match(body, /if \(!safety\.safe\) throw new Error\(safety\.reason\)/, `${name} must refuse to mutate when unsafe`);
   }
 });
 
-// Give/Fill are pure inserts (no existing row is ever touched), so unlike
-// the delete routes they must NOT require the map-safety check -- requiring
-// it would block an otherwise-safe insert for no real live-sync reason,
-// contradicting the same distinction fillItemToStorage/giveItemToStorage's
-// existing standalone-Storage-tab routes already make.
+// Give/Fill are pure inserts (no existing row is ever touched), so they
+// have never required baseContainerDeleteSafety at all -- this distinction
+// predates and is independent of the 2026-08-19 map-liveness-check removal
+// above (see "Why Give/Fill do not require a stopped map" in
+// docs/console/base-inventory.md), matching the same distinction
+// fillItemToStorage/giveItemToStorage's existing standalone-Storage-tab
+// routes already make.
 test("give/fill routes do not require baseContainerDeleteSafety", () => {
   for (const name of GIVE_FILL_ROUTES) {
     const body = routeBody(name);
-    assert.doesNotMatch(body, /baseContainerDeleteSafety/, `${name} must not require map-safety -- it never deletes a row`);
+    assert.doesNotMatch(body, /baseContainerDeleteSafety/, `${name} must not require deleteSafety -- it never deletes a row`);
   }
 });
 

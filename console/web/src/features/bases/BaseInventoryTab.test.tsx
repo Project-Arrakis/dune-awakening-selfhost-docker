@@ -701,13 +701,23 @@ describe("BaseInventoryTab", () => {
     expect(basesApi.deleteContainerItem).not.toHaveBeenCalled();
   });
 
-  it("disables deletion when the map is running or its state cannot be verified", async () => {
+  // CORRECTED 2026-08-19: the backend no longer ever sends
+  // deleteSafety.safe: false for a storage-group container --
+  // baseContainerDeleteSafety's map-liveness check was removed (see
+  // docs/console/base-inventory.md's "Deletion does not require a stopped
+  // map"). This scenario is therefore not reachable in practice anymore,
+  // but the UI's own deleteAllowed/deleteUnavailableReason logic still
+  // reads deleteSafety.safe generically and must still react correctly if
+  // the backend ever sends safe: false again for some other, future
+  // reason -- this test locks in that general mechanism, not a live
+  // map-running scenario.
+  it("disables deletion whenever the backend reports deleteSafety.safe: false for a storage container", async () => {
     mockInventory();
     mockSlots({
       ...SLOTS,
       deleteSafety: {
         safe: false, known: true, map: "HaggaBasin", partitionId: 68,
-        reason: "HaggaBasin · Partition 68 is running. Stop that map before deleting stored items."
+        reason: "This container's item deletion is unavailable."
       }
     });
     renderTab();
@@ -715,22 +725,25 @@ describe("BaseInventoryTab", () => {
     await openVaultContents();
     const button = screen.getAllByRole("button", { name: /^Delete Granite Stone/ })[0] as HTMLButtonElement;
     expect(button.disabled).toBe(true);
-    expect(screen.getByText(/HaggaBasin · Partition 68 is running/i)).toBeTruthy();
+    expect(screen.getByText(/This container's item deletion is unavailable/i)).toBeTruthy();
     expect(confirmAction).not.toHaveBeenCalled();
     expect(basesApi.deleteContainerItem).not.toHaveBeenCalled();
   });
 
-  // Found during PR #349's own Layer 3 audit (UI hat): an operator reading
-  // "Stop that map before deleting stored items" while Give/Fill sit fully
-  // interactive a few lines below has no way to tell that's deliberate --
-  // this test locks in the explanatory clause added to close that gap.
-  it("explains that Give and Fill are unaffected when the map-running message is shown", async () => {
+  // Found during PR #349's own Layer 3 audit (UI hat), back when
+  // deleteSafety.safe: false for a storage container was a real, reachable
+  // scenario (a running map) -- this explanatory clause remains in the UI
+  // as a defensive measure in case deleteSafety.safe is ever false again
+  // for storage containers for some other, future reason, so this test
+  // still locks in that the clause renders correctly whenever that branch
+  // is reached, even though it is not reachable today.
+  it("explains that Give and Fill are unaffected whenever a storage container's deletion is unavailable", async () => {
     mockInventory();
     mockSlots({
       ...SLOTS,
       deleteSafety: {
         safe: false, known: true, map: "HaggaBasin", partitionId: 68,
-        reason: "HaggaBasin · Partition 68 is running. Stop that map before deleting stored items."
+        reason: "This container's item deletion is unavailable."
       }
     });
     renderTab();
@@ -743,10 +756,11 @@ describe("BaseInventoryTab", () => {
     expect(screen.getByRole("combobox", { name: "Item to fill" })).toBeTruthy();
   });
 
-  // The explanatory clause is specific to the map-safety case -- it must
-  // not appear for the OTHER reason deletion can be unavailable (a
-  // Refining/Crafting container), where Give/Fill are ALSO unavailable, so
-  // "unaffected" would be actively wrong there.
+  // The explanatory clause is specific to the "storage container, deletion
+  // unavailable for some other reason" case -- it must not appear for the
+  // OTHER reason deletion can be unavailable (a Refining/Crafting
+  // container), where Give/Fill are ALSO unavailable, so "unaffected"
+  // would be actively wrong there.
   it("does not claim Give/Fill are unaffected for crafting/refining containers, where they are also unavailable", async () => {
     mockInventory();
     mockSlots({ ...SLOTS, group: "refining", typeName: "Small Ore Refinery" });

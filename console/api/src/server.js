@@ -3287,7 +3287,26 @@ async function baseContainerSlotsRoute(res, path) {
   }
 }
 
-async function baseContainerDeleteSafety(baseId, group = "storage") {
+// Historical note (found during manual testing, corrected 2026-08-19): this
+// used to also require the owning map to be verified safely stopped before
+// allowing a delete, on the theory that a running map's own autosave could
+// resurrect or conflict with a row deleted out-of-band. That theory does not
+// hold in practice -- confirmed via the same hours of live testing that
+// established the standalone Storage tab's own delete route
+// (storageRemoveItemsRoute/removeItemsFromStorage), which has never gated on
+// map state at all. The live game server's own in-memory/encrypted state is
+// only ever refreshed from Postgres at map start, not re-read mid-session --
+// so a database-side delete while the map is running is exactly as safe as
+// Give/Fill's own inserts already are: durably correct in the database
+// immediately, simply not reflected in-game (or, for a delete, not removed
+// from what the live map still shows) until the next restart. This function
+// now only enforces the Storage-vs-Crafting/Refining group restriction,
+// which is a real, still-current concern (an active crafting job can
+// reference a Refining/Crafting inventory's item rows) -- kept as its own
+// function, and `deleteSafety` kept as the response shape every caller
+// already expects, so this stays a single, easy-to-find place if a real
+// live-sync hazard is ever found and the map-state check needs to come back.
+function baseContainerDeleteSafety(baseId, group = "storage") {
   if (group && group !== "storage") {
     return {
       safe: false,
@@ -3297,43 +3316,7 @@ async function baseContainerDeleteSafety(baseId, group = "storage") {
       reason: "Item deletion is available only for Storage containers. Crafting and Refining contents are read-only to protect active jobs."
     };
   }
-  try {
-    const target = await duneDb.baseRefillTarget(db, baseId);
-    if (!target.queueSupported) {
-      return {
-        safe: false,
-        known: false,
-        map: target.map || "",
-        partitionId: target.partitionId || 0,
-        reason: "The console cannot verify that this base's map is safely stopped, so item deletion is disabled."
-      };
-    }
-    if (!target.writeSafeNow) {
-      const location = `${target.map || "This base's map"}${target.partitionId ? ` · Partition ${target.partitionId}` : ""}`;
-      return {
-        safe: false,
-        known: true,
-        map: target.map || "",
-        partitionId: target.partitionId || 0,
-        reason: `${location} is running. Stop that map before deleting stored items.`
-      };
-    }
-    return {
-      safe: true,
-      known: true,
-      map: target.map || "",
-      partitionId: target.partitionId || 0,
-      reason: ""
-    };
-  } catch {
-    return {
-      safe: false,
-      known: false,
-      map: "",
-      partitionId: 0,
-      reason: "The console could not verify that this base's map is safely stopped, so item deletion is disabled."
-    };
-  }
+  return { safe: true, known: true, map: "", partitionId: 0, reason: "" };
 }
 
 // Phrase-gated, unlike the refills above: this destroys a player's stored item
@@ -3367,14 +3350,15 @@ async function baseContainerItemDeleteRoute(req, res, path) {
   }, { baseId, placeableId, itemId });
 }
 
-// Same phrase-gate and map-safety requirement as baseContainerItemDeleteRoute
-// above -- deletes several whole stacks (identified by itemIds in the body)
-// from one storage container in a single confirmation, instead of one
-// confirmation per item. Ownership is re-verified inside
-// deleteMultipleBaseContainerItems itself (claim-CTE, storage-group only);
-// this route only validates the path segments and applies the same
-// pending-delete/backed-up/map-safety guards every other base container
-// mutation route already applies.
+// Same phrase-gate as baseContainerItemDeleteRoute above -- deletes several
+// whole stacks (identified by itemIds in the body) from one storage
+// container in a single confirmation, instead of one confirmation per item.
+// Ownership is re-verified inside deleteMultipleBaseContainerItems itself
+// (claim-CTE, storage-group only); this route only validates the path
+// segments and applies the same pending-delete/backed-up/storage-group
+// guards every other base container mutation route already applies (no
+// map-liveness check -- see baseContainerDeleteSafety's own comment for why
+// that check was removed 2026-08-19).
 function parseBaseContainerPath(path) {
   const parts = path.split("/");
   const baseId = Number(decodeURIComponent(parts[3]));
@@ -3399,11 +3383,12 @@ async function baseContainerItemsDeleteRoute(req, res, path) {
   }, { baseId, placeableId });
 }
 
-// Same phrase-gate and map-safety requirement -- clears every item currently
-// in one storage container in a single confirmation. The item list to
-// delete is read fresh inside deleteAllBaseContainerItems's own transaction,
-// not passed in by this route, so a stale client-side snapshot can never
-// narrow or widen what "all" means.
+// Same phrase-gate -- clears every item currently in one storage container
+// in a single confirmation. The item list to delete is read fresh inside
+// deleteAllBaseContainerItems's own transaction, not passed in by this
+// route, so a stale client-side snapshot can never narrow or widen what
+// "all" means. No map-liveness check -- see baseContainerDeleteSafety's own
+// comment for why that check was removed 2026-08-19.
 async function baseContainerAllItemsDeleteRoute(req, res, path) {
   const parsed = parseBaseContainerPath(path);
   if (!parsed) return json(res, 400, { error: "Invalid base or container ID" });
@@ -3418,12 +3403,12 @@ async function baseContainerAllItemsDeleteRoute(req, res, path) {
   }, { baseId, placeableId });
 }
 
-// Give/Fill are pure inserts -- no existing row is ever touched, so unlike
-// the delete routes above these do NOT require baseContainerDeleteSafety's
-// "map is safely stopped" check. Per INC-2026-07-31-001, inserted rows are
-// simply not visible in-game until the Survival server restarts; that is a
-// visibility gap, not a live-sync hazard the way deleting a row the engine
-// might reference would be. giveItemToStorage/fillItemToStorage/
+// Give/Fill are pure inserts -- no existing row is ever touched. Per
+// INC-2026-07-31-001, inserted rows are simply not visible in-game until the
+// Survival server restarts; that is a visibility gap, not a live-sync
+// hazard. baseContainerDeleteSafety's own map-liveness check was removed
+// 2026-08-19 for the same reason (see its comment) -- neither Give/Fill nor
+// Delete require a stopped map now. giveItemToStorage/fillItemToStorage/
 // giveMultipleItemsToStorage all key off the container's own actor_id, the
 // same as the standalone Storage tab -- this route only adds the ownership
 // verification the standalone tab never needed (it operates on

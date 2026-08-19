@@ -4468,20 +4468,25 @@ test("baseContainerSlots degrades rather than failing when dune.items lacks the 
 // dune.items data for a LOW-MEDIUM accuracy gap (Strict Requirement 0/26);
 // this test locks in that the per-container slots view now surfaces the
 // real, current volume total directly instead of leaving it implicit.
+//
+// CORRECTED 2026-08-19 (see docs/incidents/
+// INC-2026-08-19-VOLUME-OVERRIDE-DOUBLE-MULTIPLIED.md): volume_override is
+// a PER-UNIT value, not the stack's total -- the total contribution of a row
+// is volume_override * stack_size.
 test("baseContainerSlots reports current and max volume per inventory", async () => {
   const calls = [];
   const db = fakeContainerSlotsDb(calls, {
     inventoryColumns: ["id", "actor_id", "max_item_count", "max_item_volume"],
     itemColumns: ["id", "inventory_id", "stack_size", "position_index", "template_id", "stats", "quality_level", "volume_override"],
     rows: [
-      { ...SLOT_ROW, max_item_volume: 500, item_id: "1", template_id: "ScrapMetal", stack_size: 500, position_index: 0, volume_override: 40 },
-      { ...SLOT_ROW, max_item_volume: 500, item_id: "2", template_id: "MagnetiteOre", stack_size: 200, position_index: 1, volume_override: 15 }
+      { ...SLOT_ROW, max_item_volume: 500, item_id: "1", template_id: "ScrapMetal", stack_size: 500, position_index: 0, volume_override: 0.08 },
+      { ...SLOT_ROW, max_item_volume: 500, item_id: "2", template_id: "MagnetiteOre", stack_size: 200, position_index: 1, volume_override: 0.075 }
     ]
   });
   const result = await baseContainerSlots(db, 16836, 40001);
 
   assert.equal(result.maxVolume, 500, "max volume is read once per inventory, not summed per item row");
-  assert.equal(result.currentVolume, 55, "current volume sums volume_override, which already stores the TOTAL per-stack volume");
+  assert.equal(result.currentVolume, 55, "current volume sums volume_override (a per-unit value) * stack_size across every row");
   assert.equal(result.inventories[0].maxVolume, 500);
   assert.equal(result.inventories[0].currentVolume, 55);
 });
@@ -4710,29 +4715,37 @@ test("storage give-item validates capacity and inserts parameterized item rows",
   assert.deepEqual(insert.values.slice(0, 5), [7, "WaterBottle_1", 3, 0, 2]);
 });
 
-test("storage give-item records TOTAL stack volume_override when itemVolume is provided", async () => {
+test("storage give-item records PER-UNIT volume_override when itemVolume is provided", async () => {
   // Parity fix: give-item previously never checked or recorded volume at
   // all, unlike fill-item -- an operator could give an item whose declared
   // volume exceeded a container's remaining volume, and rows inserted by
   // give-item never contributed to fill-item's own sum(volume_override)
   // check on subsequent calls. Added 2026-08-18 alongside the raw-resource
   // catalog work, proactively (found during design review, not a live bug).
+  //
+  // CORRECTED 2026-08-19 (real live in-game bug, see
+  // docs/incidents/INC-2026-08-19-VOLUME-OVERRIDE-DOUBLE-MULTIPLIED.md):
+  // volume_override must be the PER-UNIT volume, not itemVolume * stackSize
+  // -- storing the total made the live game engine (which multiplies
+  // volume_override by stack_size itself for display) double-multiply,
+  // inflating displayed volume by a factor of stack_size.
   const calls = [];
   const db = fakeMutationDb(calls, {
     storageRows: [{ id: 7, actor_id: 222, max_item_count: 30, max_item_volume: 100 }],
     countRows: [{ count: 1 }],
     volumeRows: [{ total_volume: 10 }],
-    insertedRows: [{ id: 503, template_id: "AzuriteOre", stack_size: 20, quality_level: 0, position_index: 4, inventory_id: 7, volume_override: 4.0 }]
+    insertedRows: [{ id: 503, template_id: "AzuriteOre", stack_size: 20, quality_level: 0, position_index: 4, inventory_id: 7, volume_override: 0.2 }]
   });
   const result = await giveItemToStorage(db, 222, { templateId: "AzuriteOre", quantity: 20, itemVolume: 0.2 });
   assert.equal(result.inserted.id, 503);
-  assert.equal(result.inserted.volume_override, 4.0);
+  assert.equal(result.inserted.volume_override, 0.2);
   const insert = calls.find((call) => call.text.includes("insert into dune.items"));
   assert.ok(insert);
   const volIdx = insert.values.length - 1;
-  assert.equal(insert.values[volIdx], 4.0);
+  assert.equal(insert.values[volIdx], 0.2, "volume_override stored is the per-unit value, not per-unit * stackSize");
   const volumeCall = calls.find((call) => call.text.includes("sum(coalesce(volume_override"));
   assert.ok(volumeCall, "volume sum query must run when itemVolume is provided");
+  assert.match(volumeCall.text, /\* stack_size/, "the running total must multiply volume_override by stack_size, since volume_override is per-unit");
 });
 
 // Never rejects on a partial volume fit (issue #347 follow-up, per explicit
@@ -4913,7 +4926,7 @@ test("storage give-multiple-items clamps an item that only partially fits by vol
     // 5 max, 4 already used -> 1.0 remaining / 0.2 per-unit = 5 max fit,
     // clamped down from the requested 20.
     volumeRows: [{ total_volume: 4 }],
-    insertedRows: [{ id: 702, template_id: "AzuriteOre", stack_size: 5, quality_level: 0, position_index: 2, inventory_id: 7, volume_override: 1.0 }]
+    insertedRows: [{ id: 702, template_id: "AzuriteOre", stack_size: 5, quality_level: 0, position_index: 2, inventory_id: 7, volume_override: 0.2 }]
   });
   const result = await giveMultipleItemsToStorage(db, 222, {
     items: [
@@ -4953,30 +4966,38 @@ test("storage give-multiple-items records a zero-fit item as given: 0 and stops,
   assert.equal(inserts.length, 0, "a zero-fit item must not be inserted as an empty/zero-size row");
 });
 
-test("storage fill-item inserts with TOTAL stack volume_override (per-unit x quantity) and respects slot limit", async () => {
-  // volume_override must be the total volume of the stack (itemVolume *
-  // quantity), not the per-unit volume -- fixed 2026-07-31 after a live
-  // discrepancy where a quantity=3 fill only added 1 to current_volume
-  // instead of 3. This test previously asserted the old, buggy per-unit
-  // behavior (50 * 1.0 = 50 total, but the test asserted 1.0) and was
-  // never updated when the underlying bug was fixed -- caught only by
-  // actually running the suite, not by re-reading the diff.
+test("storage fill-item inserts with PER-UNIT volume_override and respects slot limit", async () => {
+  // CORRECTED 2026-08-19 (real live in-game bug, see
+  // docs/incidents/INC-2026-08-19-VOLUME-OVERRIDE-DOUBLE-MULTIPLIED.md):
+  // volume_override must be the item's PER-UNIT volume, not itemVolume *
+  // quantity. An earlier version of this function (fixed 2026-07-31)
+  // stored the per-unit value alone, which undercounted current_volume for
+  // quantity > 1 -- the 2026-07-31 fix over-corrected by storing the TOTAL
+  // instead, which is what this test asserted until now. Storing the total
+  // caused the live game engine (which multiplies volume_override by
+  // stack_size itself for display) to double-multiply, inflating displayed
+  // volume by a factor of stack_size (confirmed live: a 9540-unit stack
+  // with volume_override wrongly stored as its 47700 total displayed
+  // in-game as ~455 million). The correct fix keeps volume_override
+  // per-unit and instead makes every SUM query multiply by stack_size (see
+  // the "* stack_size" assertion below).
   const calls = [];
   const db = fakeMutationDb(calls, {
     storageRows: [{ id: 7, actor_id: 222, max_item_count: 30, max_item_volume: 100 }],
     countRows: [{ count: 1 }],
     volumeRows: [{ total_volume: 10 }],
-    insertedRows: [{ id: 502, template_id: "T6RefinedResourceA", stack_size: 50, quality_level: 0, position_index: 3, inventory_id: 7, volume_override: 50.0 }]
+    insertedRows: [{ id: 502, template_id: "T6RefinedResourceA", stack_size: 50, quality_level: 0, position_index: 3, inventory_id: 7, volume_override: 1.0 }]
   });
   const result = await fillItemToStorage(db, "/tmp", 222, { templateId: "T6RefinedResourceA", quantity: 50, itemVolume: 1.0 });
   assert.equal(result.inserted.id, 502);
-  assert.equal(result.inserted.volume_override, 50.0);
+  assert.equal(result.inserted.volume_override, 1.0);
   const insert = calls.find((call) => call.text.includes("insert into dune.items"));
   assert.ok(insert);
   const volIdx = insert.values.length - 1;
-  assert.equal(insert.values[volIdx], 50.0);
+  assert.equal(insert.values[volIdx], 1.0, "volume_override stored is the per-unit value, not per-unit * quantity");
   const volumeCall = calls.find((call) => call.text.includes("sum(coalesce(volume_override"));
   assert.ok(volumeCall, "volume sum query must run");
+  assert.match(volumeCall.text, /\* stack_size/, "the running total must multiply volume_override by stack_size, since volume_override is per-unit");
 });
 
 // Never rejects on a partial volume fit, same fix as give-item (issue #347

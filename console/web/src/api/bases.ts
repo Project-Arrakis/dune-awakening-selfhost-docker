@@ -141,9 +141,14 @@ export type BaseInventoryContainer = {
   maxSlots: number;
   // Both 0 on a schema without dune.inventories.max_item_volume /
   // dune.items.volume_override -- degraded, not omitted, so the UI can
-  // always read these without a guard. currentVolume sums volume_override,
-  // which already stores each stack's TOTAL volume (per-unit x quantity),
-  // never a per-unit value alone (see docs/console/base-inventory.md).
+  // always read these without a guard. currentVolume is the backend's own
+  // sum of volume_override * quantity across every stack -- volume_override
+  // itself is a PER-UNIT value (corrected 2026-08-19, see
+  // docs/console/base-inventory.md and
+  // docs/incidents/INC-2026-08-19-VOLUME-OVERRIDE-DOUBLE-MULTIPLIED.md;
+  // storing the total there instead caused the live game engine, which
+  // multiplies volume_override by stack_size itself for display, to
+  // double-multiply and show absurdly inflated in-game item volumes).
   currentVolume: number;
   maxVolume: number;
   itemCount: number;

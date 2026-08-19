@@ -128,10 +128,11 @@ const SEED = `
   insert into dune.items (inventory_id, template_id, stack_size, position_index) values
     (${REFINERY} * 10, 'MagnetiteOre', 50, 0);
 
-  -- Map is stopped: no server_id assigned. baseContainerDeleteSafety reads
-  -- this as write-safe immediately (matches deleteBaseContainerItem's own
-  -- "unassigned = safe" convention), so delete routes are exercisable without
-  -- also needing the dwell-timer machinery.
+  -- server_id is left unassigned here; this no longer affects delete-route
+  -- behavior at all (baseContainerDeleteSafety's map-liveness check was
+  -- removed 2026-08-19 -- delete no longer requires a stopped map, see its
+  -- own comment in server.js), but the row is still inserted for realism
+  -- and in case a future test needs a real world_partition row present.
   insert into dune.world_partition (partition_id, map, server_id) values (3, 'Survival_1', null);
 `;
 

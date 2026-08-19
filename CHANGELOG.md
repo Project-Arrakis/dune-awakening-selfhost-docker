@@ -376,6 +376,37 @@ Keep a Changelog style, grouped by upstream base version, newest first.
   operator most needs to open (to Give/Fill something into it in the first
   place). Only the trailing label now switches between the distinct-item
   count and "Empty"; the button itself is unconditional.
+- **`dune.items.volume_override` was stored as the stack's TOTAL volume
+  (per-unit x quantity), but the live game engine treats a non-null
+  `volume_override` as a PER-UNIT value and multiplies it by `stack_size`
+  itself for display -- causing every item ever given/filled via the
+  console's Storage tab to display a wildly inflated volume in-game,
+  scaling with `stack_size`** (issue #347 follow-up, confirmed live on a
+  real deployment and cross-checked against `dune.gaming.tools`, a
+  third-party tool reading the same database; see
+  `docs/incidents/INC-2026-08-19-VOLUME-OVERRIDE-DOUBLE-MULTIPLIED.md` for
+  the full root-cause writeup). A real example: a 9540-unit Mouse Corpse
+  stack (real per-unit volume 5.0, real total 47700) had `volume_override`
+  wrongly stored as `47700` (the total) and displayed in-game as
+  `47700 * 9540 ≈ 455,057,984`. Proven directly via `dune.item_audit_log`:
+  every genuinely in-game-created item row always carries a NULL
+  `volume_override`, meaning "use the engine's own per-unit catalog
+  volume" -- a non-null value is exclusively a console-side convention, and
+  the engine multiplies whatever it finds there by `stack_size`.
+  `giveItemToStorage`, `fillItemToStorage`, and `giveMultipleItemsToStorage`
+  now store the item's per-unit volume, matching the engine's real
+  convention; every read-side sum (`baseInventory` x2,
+  `baseContainerListStorage`, `baseContainerSlots`) now multiplies
+  `volume_override * stack_size` to compute a row's real total
+  contribution, so the console's own displayed volume-used/remaining
+  figures stay correct. A one-time repair script,
+  `console/api/scripts/repair-volume-override.mjs`, recomputes every
+  already-affected row's `volume_override` from the current catalog
+  (dry-run by default; `--apply` writes the correction in one transaction)
+  -- existing operators should run this once after updating.
+  `runtime/data/admin-items.json`'s `MelangeSpice` (Spice Melange) per-unit
+  volume was also corrected from `1.0` to the real value, `0.2`, found
+  during the same investigation.
 
 ### Security
 

@@ -104,25 +104,36 @@ The shipped `owner`/`admin` policies grant `bases:*`, so default access is uncha
 Both of the usual base preconditions apply: a base with a queued delete, or one picked up via the game's
 base-backup tool, rejects this with `409`.
 
-## Why deletion requires a stopped map
+## Deletion does not require a stopped map
 
-An item delete is **not** queued: a specific inventory row may move, merge, or disappear before a deferred
-operation runs. Instead, the route refuses the write until it can verify that the owning map is safely down.
+**Corrected 2026-08-19 — this used to be a hard requirement; it is not one anymore.** An earlier version of
+this feature refused every delete route (`DELETE …/items/{itemId}`, Delete Selected, Delete All) until it
+could verify the owning map was safely stopped, on the theory that a running map's own in-memory/autosave
+state could resurrect or conflict with a row deleted out from under it. Extensive live testing (the same
+investigation that produced `docs/incidents/INC-2026-08-19-VOLUME-OVERRIDE-DOUBLE-MULTIPLIED.md`) found two
+things that together make that theory wrong:
 
-The reason a queue exists at all still holds here:
+- The standalone Storage tab's own delete route (`storageRemoveItemsRoute` → `duneDb.removeItemsFromStorage`)
+  has **never** gated on map state at all, and has been tested for hours and shipped without incident. This
+  is the established precedent this feature now matches.
+- The live game engine only reads/claims a container's item rows from Postgres **at server startup** — proven
+  directly by `docs/incidents/INC-2026-07-31-FILL-ITEMS-VISIBLE-ONLY-AFTER-RESTART.md`'s audit-trigger
+  evidence, never mid-session. A database-side delete while the map stays running is therefore exactly as
+  safe as Give/Fill's own inserts already are (see "Why Give/Fill do not require a stopped map" below): the
+  change is durably correct in the database immediately, it simply is not reflected in whatever the live map
+  still shows until the next restart.
 
-- No `pg_notify` routine covers inventory or buildings. The game's 8 notify channels are guild, landsraad, party, permission, taxation, faction, vehicle_recovery, player_info.
-- There are zero triggers on `dune.items`, `dune.inventories`, `dune.buildings`, `dune.placeables`.
-- The RMQ command bus has no per-item edit or delete. `AddItemToInventory` addresses items by *template name*; every id here is a row id.
-
-So a running map can neither miss the delete nor resurrect the row on its next autosave. The container GET
-returns `deleteSafety`; the overlay disables deletion and explains why when the map is running or its state
-cannot be verified. The DELETE route then repeats the check immediately before changing the database, so a
-stale or hand-built request cannot bypass the UI.
+`baseContainerDeleteSafety()` in `server.js` now only enforces the Storage-vs-Crafting/Refining group
+restriction below — the map-liveness check was removed entirely, not merely relaxed. `deleteSafety.safe` is
+therefore always `true` for a Storage-group container regardless of whether its owning map is running. The
+response shape (`deleteSafety: { safe, known, map, partitionId, reason }`) is kept as-is on every caller,
+so this stays a single, easy-to-find place to reintroduce a map-state check if a real live-sync hazard is
+ever found for deletion specifically.
 
 Deletion is limited to plain **Storage** containers. Refinery and fabricator inventories are visible but
 read-only because the game's crafting state can reference their item rows; removing a reserved ingredient
-can leave an active job pointing at an item that no longer exists.
+can leave an active job pointing at an item that no longer exists. This restriction is unrelated to map
+state and still applies.
 
 Item identifiers remain decimal strings from the URL through the PostgreSQL query. They are `bigint` values,
 and converting one to JavaScript `Number` could round an id above `Number.MAX_SAFE_INTEGER` into a different
@@ -148,8 +159,9 @@ One response backs both views, so switching between Items and Containers never r
 in "Per-container slots" below** — a schema without `dune.inventories.max_item_volume` or
 `dune.items.volume_override` degrades both to `0` rather than failing the tab, and the UI shows "—" instead
 of a percentage, or withholds the row entirely on a per-container card, whenever `maxVolume` is `0`.
-`currentVolume` sums `volume_override` per inventory, which already stores the **TOTAL** volume of each
-stack (per-unit volume × quantity, not the per-unit value alone) — the same convention
+`currentVolume` sums `volume_override × stack_size` per inventory, since `volume_override` itself stores
+each item's **PER-UNIT** volume, not a per-stack total (corrected 2026-08-19 — see
+"`volume_override` is per-unit, not per-stack" below for why) — the same convention
 `giveItemToStorage`/`fillItemToStorage` use for their own volume-cap checks (see "Both Give and Fill enforce
 the same slot and volume caps" below), so a displayed volume total always agrees with what the next
 give/fill against that container will actually enforce.
@@ -304,9 +316,33 @@ Fill-to-Capacity response (there was never a specific number to compare against)
 checked only slot count — an operator could give an item whose declared volume exceeded a container's
 remaining volume, and because that give never recorded a `volume_override`, every later `fillItemToStorage`
 volume check against the same container silently undercounted real usage. Fixed to match `fillItemToStorage`'s
-existing volume accounting exactly (`volume_override` on an inserted row is the item's declared per-unit
-volume × the stack's quantity, never the per-unit value alone — see "Fill visibility" below for why this
-matters for pre-existing containers too).
+volume accounting exactly (`volume_override` on an inserted row is the item's declared **per-unit** volume —
+see "`volume_override` is per-unit, not per-stack" immediately below for why it is not the stack's total).
+
+### `volume_override` is per-unit, not per-stack
+
+**Corrected 2026-08-19 — a real, live in-game bug, not a design choice.** `dune.items.volume_override` is
+stored as the item's PER-UNIT volume, and every volume total (the running total `giveItemToStorage`/
+`fillItemToStorage`/`giveMultipleItemsToStorage` check against a container's `max_item_volume`, and every
+read-side total in `baseInventory`/`baseContainerListStorage`/`baseContainerSlots`) is computed as
+`volume_override × stack_size`, summed across rows.
+
+An earlier version of this code stored `volume_override` as the stack's **total** volume
+(`perUnitVolume × stackSize`) instead, on the theory that this kept the console's own internal volume sums
+simpler (`sum(volume_override)` directly, no multiplication needed). That theory was wrong: the live game
+engine treats a non-null `volume_override` as a **per-unit** value and multiplies it by `stack_size` itself
+when computing the volume it displays in-game. Storing the pre-multiplied total made the engine multiply by
+`stack_size` a **second** time, inflating the displayed in-game volume by a factor of `stack_size` — a real,
+confirmed example: a 9540-unit Mouse Corpse stack (real per-unit volume `5.0`, real total `47700`) had
+`volume_override` wrongly stored as `47700` and displayed in-game as `47700 × 9540 ≈ 455,057,984`. See
+`docs/incidents/INC-2026-08-19-VOLUME-OVERRIDE-DOUBLE-MULTIPLIED.md` for the full root-cause writeup,
+including the `dune.item_audit_log` evidence that every genuinely in-game-created item row (never touched
+by the console) always carries a `NULL` `volume_override` — proving a non-null value is exclusively a
+console-side convention, and that the engine's own real convention for it is per-unit.
+
+**Existing data repair:** `console/api/scripts/repair-volume-override.mjs` recomputes every already-affected
+row's `volume_override` from the current `runtime/data/admin-items.json` catalog (dry-run by default,
+`--apply` to write). An operator who used Give/Fill before this fix should run it once after updating.
 
 **Give and Fill use a compact type-to-search item picker (`ItemCatalogCombobox`), not a raw "item name or
 ID" text field.** Found during manual UI review of #347: the original plain text input required already
@@ -320,25 +356,24 @@ picker never even offers an item the server would reject.
 
 ## Why Give/Fill do not require a stopped map
 
-Deletion needs a stopped map because a running map's own copy of an inventory row can move, merge, or
-disappear before a deferred write applies — see "Why deletion requires a stopped map" below. That reasoning
-is specific to *modifying or removing an existing row*: **Give and Fill only ever insert a brand-new
-`dune.items` row**, and inserting a new row cannot conflict with, overwrite, or be raced by whatever the
-live game engine is doing with the *existing* rows in that same inventory. There is nothing running-map
-state can invalidate about a row that did not exist a moment ago.
+**Neither Give/Fill nor Delete require a stopped map** (see "Deletion does not require a stopped map"
+above for why that changed 2026-08-19) — but the underlying reasoning for Give/Fill specifically predates
+that change and still holds independently: **Give and Fill only ever insert a brand-new `dune.items` row**,
+and inserting a new row cannot conflict with, overwrite, or be raced by whatever the live game engine is
+doing with the *existing* rows in that same inventory. There is nothing running-map state can invalidate
+about a row that did not exist a moment ago — this was true even back when Delete still required a stopped
+map, which is why Give/Fill never gated on map state in the first place.
 
 The tradeoff this creates: a given/filled item is **not visible in-game until the Survival server
 restarts** — the game engine only claims newly-inserted `dune.items` rows at process startup (see
-`docs/incidents/INC-2026-07-31-FILL-ITEMS-VISIBLE-ONLY-AFTER-RESTART.md` for the full investigation). The
-console UI states this directly above the Give/Fill panel every time it is shown, matching the standalone
-Storage tab's own "Apply Fills (Restart Survival)" note — this page deliberately does not offer an inline
-restart button of its own; Server Control and Bases already own that action, and duplicating a
-player-disconnecting restart trigger in a third place was judged riskier than one extra tab switch.
-
-Because this asymmetry is easy to mistake for a bug — an operator who has just read "stop the map before
-deleting" and then finds Give/Fill fully interactive a few lines below has a reasonable basis to suspect
-something is broken — the map-safety-unavailable message itself states explicitly that Give and Fill are
-unaffected, rather than leaving that only in this doc and a source comment.
+`docs/incidents/INC-2026-07-31-FILL-ITEMS-VISIBLE-ONLY-AFTER-RESTART.md` for the full investigation). A
+deleted item shares a version of the same limitation in the other direction: the database row is gone
+immediately, but if the engine had already claimed and loaded that row into its own live state, the live
+map keeps showing it until the next restart. The console UI states the Give/Fill restart requirement
+directly above the panel every time it is shown, matching the standalone Storage tab's own "Apply Fills
+(Restart Survival)" note — this page deliberately does not offer an inline restart button of its own;
+Server Control and Bases already own that action, and duplicating a player-disconnecting restart trigger in
+a third place was judged riskier than one extra tab switch.
 
 ## Removing items in bulk: Delete Selected and Delete All
 

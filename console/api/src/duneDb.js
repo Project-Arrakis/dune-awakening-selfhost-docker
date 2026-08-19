@@ -4384,7 +4384,7 @@ export async function listStorage(db) {
              count(i.id)::int as item_count,
              coalesce(max(inv.max_item_count), 0)::int as max_item_count,
              coalesce(max(inv.max_item_volume), 0)::real as max_item_volume,
-             coalesce(sum(coalesce(i.volume_override, 0)), 0)::real as current_volume,
+             coalesce(sum(coalesce(i.volume_override, 0) * coalesce(i.stack_size, 0)), 0)::real as current_volume,
              coalesce(max(owner_lat.character_name), '') as owner_name,
               'placeable' as type
       from dune.placeables p
@@ -4438,7 +4438,7 @@ export async function listStorage(db) {
              count(i.id)::int as item_count,
              coalesce(max(inv.max_item_count), 0)::int as max_item_count,
              coalesce(max(inv.max_item_volume), 0)::real as max_item_volume,
-             coalesce(sum(coalesce(i.volume_override, 0)), 0)::real as current_volume,
+             coalesce(sum(coalesce(i.volume_override, 0) * coalesce(i.stack_size, 0)), 0)::real as current_volume,
              coalesce(max(owner_lat.character_name), '') as owner_name,
              (select vm2.template_id from dune.vehicle_modules vm2 where vm2.vehicle_id = a.id and vm2.template_id ilike '%inventory%' limit 1) as inventory_module_id,
              'vehicle' as type
@@ -6924,7 +6924,10 @@ export async function giveItemToStorage(db, storageId, { itemName = "", itemId =
     let stackSize = requestedQuantity;
     let clamped = false;
     if (inventory.max_item_volume > 0 && itemVolumeNum > 0) {
-      const volume = await tx.query("select coalesce(sum(coalesce(volume_override, 0)), 0)::real as total_volume from dune.items where inventory_id = $1", [inventory.id]);
+      // volume_override is a PER-UNIT value (see the 2026-08-19 correction
+      // below) -- the running total for the inventory is volume_override *
+      // stack_size, summed across rows, never volume_override alone.
+      const volume = await tx.query("select coalesce(sum(coalesce(volume_override, 0) * stack_size), 0)::real as total_volume from dune.items where inventory_id = $1", [inventory.id]);
       const currentVolume = Number(volume.rows[0]?.total_volume || 0);
       const maxFit = Math.floor((inventory.max_item_volume - currentVolume) / itemVolumeNum);
       if (stackSize > maxFit) {
@@ -6946,13 +6949,26 @@ export async function giveItemToStorage(db, storageId, { itemName = "", itemId =
     const stats = buildItemStats({ templateId: resolvedTemplate, augments: augmentIds, rollPayloads });
     const insertColumns = ["inventory_id", "template_id", "stack_size", "quality_level", "position_index", "stats"];
     const insertValues = [inventory.id, resolvedTemplate, stackSize, qualityLevel, Number(position.rows[0]?.position_index || 0), JSON.stringify(stats)];
-    // Same total-stack-volume convention fillItemToStorage uses: volume_override
-    // is itemVolumeNum * stackSize, not the per-unit volume, so the sum query
-    // above stays correct on every subsequent give/fill against this container.
-    const stackVolume = itemVolumeNum * stackSize;
+    // CORRECTED 2026-08-19 (real live in-game bug, see
+    // docs/incidents/INC-2026-08-19-VOLUME-OVERRIDE-DOUBLE-MULTIPLIED.md):
+    // volume_override must be the item's PER-UNIT volume, not
+    // itemVolumeNum * stackSize. Confirmed directly against the live game
+    // engine's own audit log: every genuinely in-game-created item
+    // (never touched by the console) always has volume_override = NULL,
+    // meaning "use the engine's own per-unit catalog volume" -- when the
+    // engine sees a non-null volume_override, it multiplies that value by
+    // stack_size itself to compute the displayed/effective total. Storing
+    // the pre-multiplied total here (the previous, wrong behavior) made
+    // the engine multiply by stack_size a second time, inflating displayed
+    // volume by a factor of stack_size (e.g. a real 9540-unit Mouse Corpse
+    // stack with volume_override wrongly stored as 47700 [the total]
+    // displayed in-game as 47700 * 9540 ~= 455 million). The console's own
+    // read-side sums (baseInventory, baseContainerListStorage,
+    // baseContainerSlots) multiply volume_override * stack_size to compute
+    // a total, matching this corrected per-unit convention.
     if (itemColumns.has("volume_override")) {
       insertColumns.push("volume_override");
-      insertValues.push(stackVolume);
+      insertValues.push(itemVolumeNum);
     }
     const insert = itemInsertShape(insertColumns, insertValues, itemColumns);
     const inserted = await tx.query(`
@@ -7027,10 +7043,13 @@ export async function fillItemToStorage(db, repoRoot, storageId, { itemName = ""
     // rejection rather than being clamped.
     if (inventory.max_item_count > 0 && currentCount >= inventory.max_item_count) throw new Error("Storage is full by item slot count");
     let clamped = false;
+    // volume_override is a PER-UNIT value -- the running total for the
+    // inventory is volume_override * stack_size, summed across rows. See
+    // the correction comment on the insert below for why.
     if (toCapacity) {
       let volumeRemaining = 1000000;
       if (inventory.max_item_volume > 0 && itemVolumeNum > 0) {
-        const volume = await tx.query("select coalesce(sum(coalesce(volume_override, 0)), 0)::real as total_volume from dune.items where inventory_id = $1", [inventory.id]);
+        const volume = await tx.query("select coalesce(sum(coalesce(volume_override, 0) * stack_size), 0)::real as total_volume from dune.items where inventory_id = $1", [inventory.id]);
         const currentVolume = Number(volume.rows[0]?.total_volume || 0);
         volumeRemaining = Math.floor((inventory.max_item_volume - currentVolume) / itemVolumeNum);
       }
@@ -7042,7 +7061,7 @@ export async function fillItemToStorage(db, repoRoot, storageId, { itemName = ""
       // -- filling 375 of a requested 500 is strictly better than filling
       // 0 of 500 and forcing the operator to guess a smaller number and
       // retry. Genuinely zero room is still a real rejection.
-      const volume = await tx.query("select coalesce(sum(coalesce(volume_override, 0)), 0)::real as total_volume from dune.items where inventory_id = $1", [inventory.id]);
+      const volume = await tx.query("select coalesce(sum(coalesce(volume_override, 0) * stack_size), 0)::real as total_volume from dune.items where inventory_id = $1", [inventory.id]);
       const currentVolume = Number(volume.rows[0]?.total_volume || 0);
       const maxFit = Math.floor((inventory.max_item_volume - currentVolume) / itemVolumeNum);
       if (stackSize > maxFit) {
@@ -7064,18 +7083,21 @@ export async function fillItemToStorage(db, repoRoot, storageId, { itemName = ""
     const stats = buildItemStats({ templateId: resolvedTemplate, augments: augmentIds, rollPayloads });
     const insertColumns = ["inventory_id", "template_id", "stack_size", "quality_level", "position_index", "stats"];
     const insertValues = [inventory.id, resolvedTemplate, stackSize, qualityLevel, Number(position.rows[0]?.position_index || 0), JSON.stringify(stats)];
-    // volume_override must reflect the TOTAL volume of the stack being
-    // inserted (itemVolumeNum * stackSize), not the per-unit volume --
-    // otherwise current_volume (summed across dune.items in listStorage
-    // and in the checks above) silently undercounts every stack with
-    // quantity > 1, and the volume cap stops being enforced correctly
-    // on subsequent fills. Found via a real live discrepancy: a
-    // quantity=3 AluminiumBar fill only added 1 to current_volume
-    // instead of 3.
-    const stackVolume = itemVolumeNum * stackSize;
+    // CORRECTED 2026-08-19 (real live in-game bug, see
+    // docs/incidents/INC-2026-08-19-VOLUME-OVERRIDE-DOUBLE-MULTIPLIED.md):
+    // volume_override must be the item's PER-UNIT volume, not
+    // itemVolumeNum * stackSize -- see giveItemToStorage's matching
+    // comment for the full explanation of why the previous "store the
+    // total" convention was wrong (it caused the live game engine to
+    // double-multiply by stack_size when displaying volume, e.g. a real
+    // 9540-unit stack showing ~455 million instead of ~47700). The
+    // volume checks above in this function already sum
+    // volume_override * stack_size to get a correct running total, so
+    // storing the per-unit value here keeps every subsequent fill/give
+    // against this container correct too.
     if (itemColumns.has("volume_override")) {
       insertColumns.push("volume_override");
-      insertValues.push(stackVolume);
+      insertValues.push(itemVolumeNum);
     }
     const insert = itemInsertShape(insertColumns, insertValues, itemColumns);
     const inserted = await tx.query(`
@@ -7209,7 +7231,9 @@ export async function giveMultipleItemsToStorage(db, storageId, { items = [] } =
       let stackSize = entry.requestedQuantity;
       let clamped = false;
       if (inventory.max_item_volume > 0 && entry.itemVolumeNum > 0) {
-        const volume = await tx.query("select coalesce(sum(coalesce(volume_override, 0)), 0)::real as total_volume from dune.items where inventory_id = $1", [inventory.id]);
+        // volume_override is a PER-UNIT value -- see giveItemToStorage's
+        // 2026-08-19 correction comment. Total is volume_override * stack_size.
+        const volume = await tx.query("select coalesce(sum(coalesce(volume_override, 0) * stack_size), 0)::real as total_volume from dune.items where inventory_id = $1", [inventory.id]);
         const currentVolume = Number(volume.rows[0]?.total_volume || 0);
         const maxFit = Math.max(0, Math.floor((inventory.max_item_volume - currentVolume) / entry.itemVolumeNum));
         if (stackSize > maxFit) {
@@ -7240,10 +7264,12 @@ export async function giveMultipleItemsToStorage(db, storageId, { items = [] } =
       const stats = buildItemStats({ templateId: entry.resolvedTemplate, augments: entry.augmentIds, rollPayloads });
       const insertColumns = ["inventory_id", "template_id", "stack_size", "quality_level", "position_index", "stats"];
       const insertValues = [inventory.id, entry.resolvedTemplate, stackSize, entry.qualityLevel, Number(position.rows[0]?.position_index || 0), JSON.stringify(stats)];
-      const stackVolume = entry.itemVolumeNum * stackSize;
+      // CORRECTED 2026-08-19: volume_override must be the item's PER-UNIT
+      // volume, not entry.itemVolumeNum * stackSize -- see
+      // giveItemToStorage's matching comment for the full explanation.
       if (itemColumns.has("volume_override")) {
         insertColumns.push("volume_override");
-        insertValues.push(stackVolume);
+        insertValues.push(entry.itemVolumeNum);
       }
       const insert = itemInsertShape(insertColumns, insertValues, itemColumns);
       const inserted = await tx.query(`
@@ -8623,10 +8649,11 @@ export async function baseInventory(db, baseId, { repoRoot = "" } = {}) {
     const quantity = Number(row.stack_size) || 0;
     container.usedSlots += 1;
     container.itemCount += quantity;
-    // volume_override is stored as the TOTAL volume of the whole stack (see
-    // giveItemToStorage/fillItemToStorage's own comments), not a per-unit
-    // value -- summed as-is, never multiplied by quantity again here.
-    container.currentVolume += Number(row.volume_override) || 0;
+    // CORRECTED 2026-08-19: volume_override is the item's PER-UNIT volume
+    // (see giveItemToStorage's correction comment) -- the total for this
+    // row is volume_override * quantity, matching what the live game
+    // engine itself computes for display.
+    container.currentVolume += (Number(row.volume_override) || 0) * quantity;
 
     const metadata = itemMetadata.get(templateId);
     const name = metadata?.name || templateId;
@@ -8850,9 +8877,12 @@ export async function baseContainerSlots(db, baseId, placeableId) {
     const templateId = String(row.template_id || "");
     if (!templateId) continue;
     inventory.usedSlots += 1;
-    // volume_override is the TOTAL volume of the stack, matching baseInventory's
-    // own accumulation -- never multiplied by quantity again here.
-    inventory.currentVolume += Number(row.volume_override) || 0;
+    const slotQuantity = Number(row.stack_size) || 0;
+    // CORRECTED 2026-08-19: volume_override is the item's PER-UNIT volume
+    // (see giveItemToStorage's correction comment), matching baseInventory's
+    // own accumulation -- multiplied by quantity here to get this row's
+    // total contribution.
+    inventory.currentVolume += (Number(row.volume_override) || 0) * slotQuantity;
     inventory.slots.push({
       itemId: String(row.item_id),
       templateId,
@@ -8860,7 +8890,7 @@ export async function baseContainerSlots(db, baseId, placeableId) {
       positionIndex: row.position_index === null || row.position_index === undefined
         ? null
         : Number(row.position_index),
-      quantity: Number(row.stack_size) || 0,
+      quantity: slotQuantity,
       qualityLevel: Number(row.quality_level) || 0,
       currentDurability: row.current_durability === null || row.current_durability === undefined
         ? null

@@ -244,20 +244,25 @@ test("baseInventory rejects an invalid base id", async () => {
 // Requirement 0/26 territory); this feature makes the current, real volume
 // total visible on every container instead, so an operator can see it
 // directly rather than trusting an implicit, possibly-stale number.
+//
+// CORRECTED 2026-08-19 (real live in-game bug, see
+// docs/incidents/INC-2026-08-19-VOLUME-OVERRIDE-DOUBLE-MULTIPLIED.md):
+// volume_override is a PER-UNIT value, not the stack's total -- the total
+// contribution of a row is volume_override * stack_size.
 test("baseInventory reports current and max volume per container, summed once per inventory", async () => {
   const db = createDb({
     inventoryColumns: ["id", "actor_id", "max_item_count", "max_item_volume"],
     itemColumns: ["id", "inventory_id", "template_id", "stack_size", "volume_override"],
     rows: [
-      row({ placeable_id: "40001", inventory_id: "500", max_item_count: 45, max_item_volume: 500, template_id: "TestOre", stack_size: 10, volume_override: 40 }),
-      row({ placeable_id: "40001", inventory_id: "500", max_item_count: 45, max_item_volume: 500, template_id: "TestBar", stack_size: 3, volume_override: 15 })
+      row({ placeable_id: "40001", inventory_id: "500", max_item_count: 45, max_item_volume: 500, template_id: "TestOre", stack_size: 10, volume_override: 4 }),
+      row({ placeable_id: "40001", inventory_id: "500", max_item_count: 45, max_item_volume: 500, template_id: "TestBar", stack_size: 3, volume_override: 5 })
     ]
   });
 
   const result = await baseInventory(db, BASE_ID);
 
   assert.equal(result.containers[0].maxVolume, 500, "max volume is read once per inventory, not summed per item row");
-  assert.equal(result.containers[0].currentVolume, 55, "current volume sums volume_override, which already stores the TOTAL per-stack volume");
+  assert.equal(result.containers[0].currentVolume, 55, "current volume sums volume_override (a per-unit value) * stack_size across every row");
   assert.equal(result.totals.currentVolume, 55);
   assert.equal(result.totals.maxVolume, 500);
 });

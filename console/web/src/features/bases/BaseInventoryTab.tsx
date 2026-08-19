@@ -109,11 +109,18 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
 
   // Give/Fill/multi-delete are Storage-group only, same as the existing
   // single-item delete -- deliberately reusing deleteAllowed's "storage
-  // group + map safety verified" gate rather than a second, looser check,
-  // so this new UI can never enable an action the delete strip above would
-  // refuse. giveAllowed intentionally does NOT require deleteSafety.safe:
-  // Give/Fill are pure inserts (see server.js's baseContainerGiveItemRoute
-  // comment), so they are gated on the storage-group check alone.
+  // group" gate rather than a second, looser check, so this new UI can
+  // never enable an action the delete strip above would refuse.
+  // giveAllowed intentionally does NOT require deleteSafety.safe: Give/Fill
+  // are pure inserts (see server.js's baseContainerGiveItemRoute comment),
+  // so they are gated on the storage-group check alone. deleteSafety.safe
+  // is always true for a storage-group container as of 2026-08-19 (the
+  // map-liveness check was removed -- see baseContainerDeleteSafety's own
+  // comment in server.js), so deleteAllowed and giveFillAllowed are
+  // functionally equivalent today, but deleteAllowed is kept reading
+  // deleteSafety.safe rather than being simplified to match giveFillAllowed
+  // exactly, so this stays a single, easy-to-find place to reintroduce a
+  // real delete-specific gate if one is ever needed again.
   const giveFillAllowed = slots?.group === "storage";
   const [checkedItemIds, setCheckedItemIds] = useState<Set<string>>(new Set());
   const [bulkDeleteRunning, setBulkDeleteRunning] = useState(false);
@@ -232,21 +239,24 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
     && amountNumber >= 1
     && amountNumber <= (selectedSlot?.quantity ?? 0);
   const deleteAllowed = slots?.group === "storage" && slots?.deleteSafety?.safe === true;
-  // Found during PR #349's own Layer 3 audit (UI hat): an operator who reads
-  // "Stop that map before deleting stored items" and then, a few lines
-  // below, sees a fully interactive Give/Fill panel had no way to tell this
-  // was deliberate rather than a bug -- the map-safety check genuinely does
-  // not apply to Give/Fill (they only insert new rows; deleteBaseContainerItem's
-  // own comment on why deletion needs it -- no live-sync path, so a delete
-  // could race a running map's own copy -- simply doesn't apply to an insert).
-  // That rationale lived only in a source comment before this fix; the
-  // clause below is what actually tells the operator, in the one place
-  // they're already reading about why deletion is unavailable, that Give
-  // and Fill are unaffected by the same restriction.
+  // deleteSafety.safe is always true for a storage-group container as of
+  // 2026-08-19 (baseContainerDeleteSafety's map-liveness check was removed
+  // -- see its own comment in server.js and "Deletion does not require a
+  // stopped map" in docs/console/base-inventory.md). The branch below that
+  // reads slots.deleteSafety?.reason is therefore currently unreachable in
+  // practice for a storage-group container, but is kept rather than
+  // removed: it is the one place this UI would surface a future,
+  // real delete-specific restriction if baseContainerDeleteSafety ever
+  // grows one again, and its "Giving and filling items are unaffected"
+  // clause (added during PR #349's own Layer 3 audit, UI hat -- an
+  // operator reading a delete-restriction message with a fully
+  // interactive Give/Fill panel a few lines below had no way to tell that
+  // was deliberate) stays correct regardless of what that future
+  // restriction turns out to be, since Give/Fill only ever insert new rows.
   const deleteUnavailableReason = slots?.found && !deleteAllowed
     ? slots.group !== "storage"
       ? "Item deletion is available only for Storage containers. Crafting and Refining contents are read-only to protect active jobs."
-      : `${slots.deleteSafety?.reason || "Item deletion is unavailable for this container."}${giveFillAllowed ? " Giving and filling items are unaffected -- they only add rows, so they do not require the map to be stopped." : ""}`
+      : `${slots.deleteSafety?.reason || "Item deletion is unavailable for this container."}${giveFillAllowed ? " Giving and filling items are unaffected -- they only add rows." : ""}`
     : "";
 
   // A slot that vanished (deleted, or moved by a player between refetches)
