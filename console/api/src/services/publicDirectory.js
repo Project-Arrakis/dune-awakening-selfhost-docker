@@ -10,6 +10,11 @@ import { dirname, resolve } from "node:path";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import * as duneDb from "../duneDb.js";
+import { playerPortalMarketSnapshot } from "../addonJobs.js";
+import { carePackageConfig, carePackageHistory } from "../carePackage.js";
+import { readCharacterTransferSettings, incomingCharacterTransferPolicies } from "./characterTransferSettings.js";
+import { readMessageOfTheDay } from "./messageOfTheDay.js";
+import { buildDuneArgs, runDune } from "../runner.js";
 
 const DEFAULT_BASE_URL = "https://dunedocker.app/api/v1/servers";
 const DEFAULT_HEARTBEAT_SECONDS = 30;
@@ -30,6 +35,96 @@ const SUPPORTED_REGIONS = new Set([
   "Oceania",
   "South America"
 ]);
+
+function readPortalRestartSchedule(config) {
+  const file = resolve(config.generatedDir || resolve(config.repoRoot, "runtime/generated"), "restart-schedule.env");
+  const values = {};
+  if (existsSync(file)) {
+    for (const line of readFileSync(file, "utf8").split(/\r?\n/)) {
+      const match = line.match(/^([A-Z0-9_]+)=([^\r\n]*)$/);
+      if (match) values[match[1]] = match[2];
+    }
+  }
+  const time = /^([01]\d|2[0-3]):[0-5]\d$/.test(values.DUNE_SCHEDULED_RESTART_TIME || "")
+    ? values.DUNE_SCHEDULED_RESTART_TIME : "";
+  return {
+    enabled: values.DUNE_SCHEDULED_RESTART_ENABLED === "1" && Boolean(time),
+    localTime: time,
+    notifyMinutes: clampInteger(values.DUNE_SCHEDULED_RESTART_NOTIFY_MINUTES, 1, 1440, 15)
+  };
+}
+
+export function collectPlayerPortalContext(config, directorySnapshot = {}) {
+  const motd = readMessageOfTheDay(config).settings;
+  const transfer = readCharacterTransferSettings(config).settings;
+  const incoming = incomingCharacterTransferPolicies.find((entry) => entry.value === transfer.IncomingCharacterTransfers);
+  const care = carePackageConfig(config);
+  return {
+    serverInfo: {
+      status: {
+        running: directorySnapshot.running === true,
+        ready: directorySnapshot.ready === true,
+        playersOnline: Number(directorySnapshot.playersOnline) || 0,
+        capacity: Number(directorySnapshot.capacity) || 0,
+        sietches: Number(directorySnapshot.sietches) || 0,
+        version: String(directorySnapshot.version || "")
+      },
+      messageOfTheDay: {
+        enabled: motd.enabled === true,
+        title: String(motd.title || "Message of the Day").slice(0, 120),
+        message: String(motd.message || "").slice(0, 2000)
+      },
+      restart: readPortalRestartSchedule(config),
+      transfers: {
+        outgoingAllowed: transfer.AcceptOutgoingCharacterTransfers === true,
+        incomingPolicy: incoming?.label || "Unknown",
+        freeFrom: transfer.FreeToTransferCharactersFrom === true,
+        freeTo: transfer.FreeToTransferCharactersTo === true,
+        worldClosed: transfer.ForceIsWorldClosed === true,
+        worldClosingSoon: transfer.ForceIsWorldClosingSoon === true
+      }
+    },
+    carePackages: {
+      enabled: care.enabled === true,
+      history: carePackageHistory(config, 500).rows || []
+    }
+  };
+}
+
+const CLIENT_INI_MAX_BYTES = 64 * 1024;
+const CLIENT_INI_FORBIDDEN = /(?:password|secret|token|privatekey|Bgd\.ServerDisplayName|\bPort\s*=|\bIGWPort\s*=)/i;
+
+function playerSafeClientIni(content) {
+  const text = String(content || "").replace(/\r\n?/g, "\n");
+  if (Buffer.byteLength(text) > CLIENT_INI_MAX_BYTES || CLIENT_INI_FORBIDDEN.test(text)) {
+    throw new Error("Generated client configuration failed the player-safety check.");
+  }
+  return text;
+}
+
+export async function collectPlayerPortalClientConfiguration(config, runDuneImpl = runDune) {
+  try {
+    const [game, engine] = await Promise.all([
+      runDuneImpl(config, buildDuneArgs("userSettingsClientGameIni", {}), { timeoutMs: 8000, redactOutput: false }),
+      runDuneImpl(config, buildDuneArgs("userSettingsClientEngineIni", {}), { timeoutMs: 8000, redactOutput: false })
+    ]);
+    return {
+      available: true,
+      generatedAt: new Date().toISOString(),
+      installPath: "%USERPROFILE%\\AppData\\Local\\DuneSandbox\\Saved\\Config\\WindowsClient",
+      gameIni: playerSafeClientIni(game.stdout),
+      engineIni: playerSafeClientIni(engine.stdout)
+    };
+  } catch {
+    return {
+      available: false,
+      generatedAt: "",
+      installPath: "%USERPROFILE%\\AppData\\Local\\DuneSandbox\\Saved\\Config\\WindowsClient",
+      gameIni: "",
+      engineIni: ""
+    };
+  }
+}
 
 // This explicit list is the security boundary for settings sent to the public directory.
 const PUBLIC_MODIFIER_SETTINGS = new Map([
@@ -140,6 +235,14 @@ export function createPublicDirectoryReporter(config, options = {}) {
   const getBattlegroupRunning = options.getBattlegroupRunning || isBattlegroupRunning;
   const reconcileProbe = options.reconcileProbe || ((probe) => reconcilePublicProbe(config.repoRoot, probe));
   const collectPlayerPortalSnapshots = options.collectPlayerPortalSnapshots || duneDb.playerPortalSnapshots;
+  const collectPlayerPortalMarketSnapshot = options.collectPlayerPortalMarketSnapshot
+    || ((database) => playerPortalMarketSnapshot(config, database));
+  const buildPlayerPortalContext = options.collectPlayerPortalContext
+    || (async (directorySnapshot) => {
+      const context = collectPlayerPortalContext(config, directorySnapshot);
+      context.serverInfo.clientConfiguration = await collectPlayerPortalClientConfiguration(config);
+      return context;
+    });
   const playerPortalJourneyData = options.playerPortalJourneyData || readJsonFile(
     resolve(config.repoRoot, "runtime/data/journey-tags.json"),
     {}
@@ -263,20 +366,33 @@ export function createPublicDirectoryReporter(config, options = {}) {
         const signature = requested.join(",");
         if (requested.length && (signature !== lastPlayerPortalRequestSignature || now() - lastPlayerPortalUploadAt >= 60_000)) {
           try {
+            let marketSnapshot = null;
+            try {
+              marketSnapshot = await collectPlayerPortalMarketSnapshot(getDb());
+            } catch {
+              // Market details are optional; core player snapshots must still
+              // upload if the local Market Bot configuration is unavailable.
+            }
+            const portalContext = await buildPlayerPortalContext(snapshot);
             const snapshots = await collectPlayerPortalSnapshots(
               getDb(),
               requested,
               playerPortalJourneyData,
-              playerPortalSkillData
+              playerPortalSkillData,
+              marketSnapshot,
+              portalContext
             );
-            await requestJson(fetchImpl, `${claimBaseUrl}/${encodeURIComponent(identity.serverId)}/player-portal/snapshot`, {
-              method: "POST",
-              headers: {
-                authorization: `Bearer ${identity.secret}`,
-                "content-type": "application/json"
-              },
-              body: JSON.stringify({ observedAt: new Date(now()).toISOString(), snapshots })
-            });
+            const observedAt = new Date(now()).toISOString();
+            for (const batch of playerPortalSnapshotBatches(snapshots, observedAt)) {
+              await requestJson(fetchImpl, `${claimBaseUrl}/${encodeURIComponent(identity.serverId)}/player-portal/snapshot`, {
+                method: "POST",
+                headers: {
+                  authorization: `Bearer ${identity.secret}`,
+                  "content-type": "application/json"
+                },
+                body: JSON.stringify({ observedAt, snapshots: batch })
+              });
+            }
             lastPlayerPortalUploadAt = now();
             lastPlayerPortalRequestSignature = signature;
           } catch {
@@ -473,6 +589,23 @@ export function createPublicDirectoryReporter(config, options = {}) {
     verifyClaim,
     publicState: () => ({ ...state })
   };
+}
+
+export function playerPortalSnapshotBatches(snapshots, observedAt, maxBytes = 900 * 1024) {
+  const batches = [];
+  let batch = [];
+  for (const snapshot of Array.isArray(snapshots) ? snapshots : []) {
+    const candidate = [...batch, snapshot];
+    const bytes = Buffer.byteLength(JSON.stringify({ observedAt, snapshots: candidate }));
+    if (batch.length && bytes > maxBytes) {
+      batches.push(batch);
+      batch = [snapshot];
+    } else {
+      batch = candidate;
+    }
+  }
+  if (batch.length) batches.push(batch);
+  return batches;
 }
 
 export function readDirectorySettings(repoRoot, env = process.env) {

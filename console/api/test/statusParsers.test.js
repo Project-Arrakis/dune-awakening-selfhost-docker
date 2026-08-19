@@ -328,6 +328,17 @@ dune-db-imported-20260531-010203.backup`);
   assert.equal(rows[3].source, "External");
 });
 
+test("backup list parser labels market-bot backups by their origin-carrying filename", () => {
+  const rows = parseBackupListRows(`dune-db-market-bot-buyback-hagga_basin-20260819-020000.backup
+dune-db-market-bot-seed-hagga_basin-20260819-010000.backup
+dune-db-market-bot-unseed-hagga_basin-20260819-000000.backup
+dune-db-hagga_basin-20260818-000000.backup`);
+  assert.equal(rows[0].type, "Market Bot Backup");
+  assert.equal(rows[1].type, "Market Bot Backup");
+  assert.equal(rows[2].type, "Market Bot Backup");
+  assert.equal(rows[3].type, "Manual Backup");
+});
+
 test("backup list parser prefers server-local file timestamps", () => {
   const rows = parseBackupListRows(`2026-06-06 18:06:33  runtime/backups/db/dune-db-overmap_and_survival_1-20260606-150633.backup`);
   assert.equal(rows[0].created, "2026-06-06 18:06:33");

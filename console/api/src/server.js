@@ -53,6 +53,8 @@ import { createPublicDirectoryReporter, normalizeDiscordInvite, readDirectorySet
 import { choamTerminalOverview, installChoamTerminals, removeChoamTerminals } from "./services/choamTerminals.js";
 import { exchangeStats, listExchangeItems, listExchangeListings, readExchangeConfig, saveExchangeConfig } from "./services/exchange.js";
 import { listMarketExchanges, marketBotStatus, saveMarketBuybackSchedule, saveMarketSeedSchedule } from "./services/exchangeMarket.js";
+import { loadMarketSeedPlan } from "./addonSeedJob.js";
+import { readMarketItemOverrides, saveMarketItemOverrides, readUnsafeTemplateIds, listBotItemCatalogPickerItems, getOverrideRow } from "./services/marketItemOverrides.js";
 import { autoRefillPublicState, createAutoRefillScheduler, setBaseAutoRefill } from "./services/autoRefill.js";
 import { autoRefillWaterPublicState, createAutoRefillWaterScheduler, setBaseAutoRefillWater } from "./services/autoRefillWater.js";
 import { calculateAlwaysOnHostMemorySafety } from "./services/hostMemorySafety.js";
@@ -784,6 +786,9 @@ async function handleApi(req, res) {
     sortColumn: url.searchParams.get("sortColumn") || "name",
     sortDirection: url.searchParams.get("sortDirection") || "asc"
   }));
+  if (path === "/api/vehicles/permission-candidates") return vehiclePermissionCandidatesRoute(res, url);
+  if (path.match(/^\/api\/vehicles\/[^/]+\/permissions$/) && req.method === "GET") return vehiclePermissionsRoute(res, path);
+  if (path.match(/^\/api\/vehicles\/[^/]+\/permissions$/) && req.method === "PUT") return vehicleSetPermissionsRoute(req, res, path);
   if (path === "/api/admin/items/catalog") return json(res, 200, { rows: listCatalogItems(config.repoRoot, { q: url.searchParams.get("q") || "", limit: url.searchParams.get("limit") || 500 }) });
   if (path === "/api/admin/items/search") return commandJson(res, "adminItemSearch", { q: url.searchParams.get("q") || "" });
   if (path === "/api/admin/items") return commandJson(res, url.searchParams.get("category") ? "adminItemListCategory" : "adminItemList", { category: url.searchParams.get("category") || "" });
@@ -1001,6 +1006,10 @@ async function handleApi(req, res) {
   if (path === "/api/exchange/market/seed/schedule" && req.method === "POST") return marketScheduleSaveRoute(req, res, "seed");
   if (path === "/api/exchange/market/buyback/run" && req.method === "POST") return marketRunNowRoute(req, res, "buyback");
   if (path === "/api/exchange/market/seed/run" && req.method === "POST") return marketRunNowRoute(req, res, "seed");
+  if (path === "/api/exchange/market/seed/clear" && req.method === "POST") return marketUnseedRoute(req, res);
+  if (path === "/api/exchange/market/items" && req.method === "GET") return marketItemsListRoute(res);
+  if (path === "/api/exchange/market/items" && req.method === "POST") return marketItemsSaveRoute(req, res);
+  if (path === "/api/exchange/market/items/catalog" && req.method === "GET") return marketItemsCatalogRoute(res, url);
   if (path === "/api/maps/user-settings/schema") return userSettingsSchemaRoute(res);
   if (path === "/api/maps/user-settings/restart-pending") return json(res, 200, { pending: existsSync(resolve(config.repoRoot, "runtime/generated/landsraad-restart-required")) });
   if (path === "/api/maps/user-settings/deferred-pending") return json(res, 200, readDeferredRestartPending(config));
@@ -1612,6 +1621,111 @@ async function marketRunNowRoute(req, res, job) {
     return json(res, 200, result);
   } catch (error) {
     audit(config, req, "exchange.market", { op: `${job}-run`, ok: false, error: redact(error?.message || "Unexpected error.") });
+    const payload = apiErrorPayload(error, 400);
+    return json(res, payload.status, payload.body);
+  }
+}
+
+// Manual "unseed": remove the Market Bot's own NPC listings from one exchange
+// without reseeding — the clear-market ability the EDA addon had before the
+// bot became console-native. Probes read-only first and backs up only when
+// there is something to remove.
+async function marketUnseedRoute(req, res) {
+  const body = await readJson(req);
+  if (!applyMutationRateLimit(req, res, "exchange.market.seed.clear")) return;
+  try {
+    const result = await addonJobScheduler.runNow({ trigger: "console", job: "unseed", exchangeId: body?.exchangeId });
+    audit(config, req, "exchange.market", { op: "seed-clear", status: result.status, removedListings: result.removedListings, exchangeId: result.exchangeId, ok: true });
+    return json(res, 200, result);
+  } catch (error) {
+    audit(config, req, "exchange.market", { op: "seed-clear", ok: false, error: redact(error?.message || "Unexpected error.") });
+    const payload = apiErrorPayload(error, 400);
+    return json(res, payload.status, payload.body);
+  }
+}
+
+// Merged, display-ready view of the bot's item catalog: the bundled plan's
+// rows plus any admin-added newItems, annotated with override/unsafe state.
+// Unlike the seed/buyback merge (which drops unsafe/disabled rows so the bot
+// never lists them), this view keeps every row visible so an admin can see
+// and re-enable a disabled item.
+function buildBotItemRows(plan, overrides, unsafeIds, metadata) {
+  const overrideMap = overrides.overrides || {};
+  const unsafeSet = new Set(unsafeIds);
+  const rows = plan.rows.map((row) => {
+    const o = getOverrideRow(overrideMap, row.templateId, row.qualityLevel);
+    const meta = metadata.get(row.templateId);
+    return {
+      templateId: row.templateId,
+      displayName: meta?.name || row.templateId,
+      category: meta?.category || "",
+      qualityLevel: row.qualityLevel,
+      price: o?.price ?? row.price,
+      listings: o?.listings ?? row.listings,
+      enabled: o?.enabled !== false,
+      overridden: Boolean(o),
+      isNew: false,
+      unsafe: unsafeSet.has(row.templateId)
+    };
+  });
+  for (const [templateId, item] of Object.entries(overrides.newItems || {})) {
+    rows.push({
+      templateId,
+      displayName: item.name,
+      category: item.category,
+      qualityLevel: item.qualityLevel,
+      price: item.price,
+      listings: item.listings,
+      enabled: item.enabled !== false,
+      overridden: false,
+      isNew: true,
+      unsafe: unsafeSet.has(templateId)
+    });
+  }
+  return rows.sort((a, b) => a.displayName.localeCompare(b.displayName));
+}
+
+async function marketItemsListRoute(res) {
+  try {
+    const status = await marketBotStatus(config, db);
+    if (!status.capabilities.exchangeMarket) {
+      return json(res, 200, { capabilities: { exchangeMarket: false }, rows: [], reason: status.reason });
+    }
+    const plan = loadMarketSeedPlan(config);
+    const overrides = readMarketItemOverrides(config.repoRoot);
+    const unsafeIds = readUnsafeTemplateIds(config.repoRoot);
+    const rows = buildBotItemRows(plan, overrides, unsafeIds, duneDb.adminItemMetadata());
+    return json(res, 200, { capabilities: { exchangeMarket: true }, rows });
+  } catch (error) {
+    const payload = apiErrorPayload(error, 400);
+    return json(res, payload.status, payload.body);
+  }
+}
+
+function marketItemsCatalogRoute(res, url) {
+  try {
+    const rows = listBotItemCatalogPickerItems(config.repoRoot, {
+      q: url.searchParams.get("q") || "",
+      category: url.searchParams.get("category") || ""
+    });
+    return json(res, 200, { rows });
+  } catch (error) {
+    const payload = apiErrorPayload(error, 400);
+    return json(res, payload.status, payload.body);
+  }
+}
+
+async function marketItemsSaveRoute(req, res) {
+  const body = await readJson(req);
+  if (!applyMutationRateLimit(req, res, "exchange.market.items")) return;
+  const overrideCount = Object.keys(body?.overrides || {}).length;
+  const newItemCount = Object.keys(body?.newItems || {}).length;
+  try {
+    const result = saveMarketItemOverrides(config.repoRoot, body && typeof body === "object" ? body : {});
+    audit(config, req, "exchange.market", { op: "items-save", overrideCount, newItemCount, ok: true });
+    return json(res, 200, result);
+  } catch (error) {
+    audit(config, req, "exchange.market", { op: "items-save", ok: false, error: redact(error?.message || "Unexpected error.") });
     const payload = apiErrorPayload(error, 400);
     return json(res, payload.status, payload.body);
   }
@@ -3183,6 +3297,51 @@ async function baseSystemCustodianRoute(req, res, path) {
     if (custodian.canCreate) await ensureCarePackageServerPersona(db);
     return duneDb.transferBaseToSystemCustodian(db, baseId, maxPermissions);
   }, { baseId });
+}
+
+// Vehicles are their own permission actor (dune.vehicles.id = dune.actors.id),
+// so there is no base-delete-pending/backed-up equivalent to check here -- a
+// vehicle has no "queued delete" or "picked up" state these routes need to
+// guard against. The id guard matches intParam's contract (see baseWaterRoute/
+// baseInventoryRoute), so a genuine failure in the catch is honestly ours.
+async function vehiclePermissionsRoute(res, path) {
+  const vehicleId = Number(decodeURIComponent(path.split("/")[3]));
+  if (!Number.isInteger(vehicleId) || vehicleId < 1 || vehicleId > Number.MAX_SAFE_INTEGER) {
+    return json(res, 400, { error: "Invalid vehicle ID" });
+  }
+  try {
+    return json(res, 200, { supported: true, ...(await duneDb.listVehiclePermissions(db, vehicleId)) });
+  } catch (error) {
+    return json(res, 500, { supported: false, error: redact(error?.message || "Unexpected error."), reason: redact(error?.message || "Unexpected error.") });
+  }
+}
+
+async function vehiclePermissionCandidatesRoute(res, url) {
+  try {
+    const rows = await duneDb.vehiclePermissionCandidates(db, {
+      q: url.searchParams.get("q") || "",
+      limit: url.searchParams.get("limit") || 25
+    });
+    return json(res, 200, { supported: true, rows });
+  } catch (error) {
+    return json(res, 500, { supported: false, rows: [], error: redact(error?.message || "Unexpected error."), reason: redact(error?.message || "Unexpected error.") });
+  }
+}
+
+// No confirmation phrase, matching baseSetPermissionsRoute: reversible from
+// this same editor. Still rate limited and audited -- this writes to player
+// property. The cap is read from live server config on every save, same as
+// the base route.
+async function vehicleSetPermissionsRoute(req, res, path) {
+  const vehicleId = Number(decodeURIComponent(path.split("/")[3]));
+  if (!Number.isInteger(vehicleId) || vehicleId < 1 || vehicleId > Number.MAX_SAFE_INTEGER) {
+    return json(res, 400, { error: "Invalid vehicle ID" });
+  }
+  return directDbMutation(req, res, "vehicles.set-permissions", null, async (body) => {
+    const settings = await runDune(config, buildDuneArgs("userSettingsMapValues", { map: "Survival_1" }), { timeoutMs: 8000 });
+    const maxPermissions = parseEffectivePermissionLimit(settings.stdout);
+    return duneDb.setVehiclePermissions(db, vehicleId, body.entries, maxPermissions);
+  }, { vehicleId });
 }
 
 async function baseCancelQueuedRefillRoute(req, res, path) {

@@ -27,16 +27,6 @@ export const DISCORD_ADAPTER_ROUTES = Object.freeze({
   PLAYERS_LINK: "/api/integrations/discord/players/link",
   PLAYERS_LINK_VERIFY: "/api/integrations/discord/players/link/verify",
   PLAYERS_UNLINK: "/api/integrations/discord/players/unlink",
-  PLAYERS_ACCOUNTS_LINK: "/api/integrations/discord/players/accounts/link",
-  PLAYERS_ACCOUNTS_LINK_VERIFY: "/api/integrations/discord/players/accounts/link/verify",
-  PLAYERS_ACCOUNTS_UNLINK: "/api/integrations/discord/players/accounts/unlink",
-  PLAYERS_ACCOUNTS_LIST: "/api/integrations/discord/players/accounts/list",
-  PLAYERS_ACCOUNTS_SET_DEFAULT: "/api/integrations/discord/players/accounts/set-default",
-  // PLAYERS_ACCOUNTS_LINK_STEAM: the single Steam-OAuth-based counterpart
-  // to PLAYERS_ACCOUNTS_LINK above -- see linkAccountViaSteamProvider()'s
-  // own comment in multiAccountLinkProvider.js for why this is ONE route
-  // (match-check + link together) rather than a separate match-only route.
-  PLAYERS_ACCOUNTS_LINK_STEAM: "/api/integrations/discord/players/accounts/link-steam",
   PLAYERS_ME: "/api/integrations/discord/players/me",
   PLAYERS_INVENTORY: "/api/integrations/discord/players/inventory",
   PLAYERS_STORAGE: "/api/integrations/discord/players/storage",
@@ -81,12 +71,6 @@ export const DISCORD_LIVE_ADAPTER_ROUTES = Object.freeze([
   DISCORD_ADAPTER_ROUTES.PLAYERS_LINK,
   DISCORD_ADAPTER_ROUTES.PLAYERS_LINK_VERIFY,
   DISCORD_ADAPTER_ROUTES.PLAYERS_UNLINK,
-  DISCORD_ADAPTER_ROUTES.PLAYERS_ACCOUNTS_LINK,
-  DISCORD_ADAPTER_ROUTES.PLAYERS_ACCOUNTS_LINK_VERIFY,
-  DISCORD_ADAPTER_ROUTES.PLAYERS_ACCOUNTS_UNLINK,
-  DISCORD_ADAPTER_ROUTES.PLAYERS_ACCOUNTS_LIST,
-  DISCORD_ADAPTER_ROUTES.PLAYERS_ACCOUNTS_SET_DEFAULT,
-  DISCORD_ADAPTER_ROUTES.PLAYERS_ACCOUNTS_LINK_STEAM,
   DISCORD_ADAPTER_ROUTES.PLAYERS_ME,
   DISCORD_ADAPTER_ROUTES.PLAYERS_INVENTORY,
   DISCORD_ADAPTER_ROUTES.PLAYERS_STORAGE,
@@ -139,8 +123,16 @@ export function validateDiscordActor(actorPayload) {
 // that could break an older bot's assumptions (e.g. a field is removed or
 // its meaning changes) -- NOT bumped for ordinary route additions, which
 // are additive and always safe for a bot that doesn't yet know about them.
-// See commandCatalog.js (issue #337) and docs/rfc-command-discovery.md §3.4.
-export const DISCORD_CATALOG_PROTOCOL_VERSION = 1;
+// See commandCatalog.js and docs/rfc-command-discovery.md §3.4.
+//
+// Bumped 1 -> 2 alongside commandCatalog.js's own CATALOG_VERSION: a
+// subcommand's `route` (a single string) became `routes` (an array),
+// needed to correctly represent 3 (group, subcommand) pairs that
+// genuinely fan out to two backing adapter routes each (upstream PR #171
+// review). No live consumer exists yet to break (Phase 2/3 bot-side
+// generator is still unimplemented), so this is forward hygiene per this
+// comment's own stated policy, not a fix for an active breakage.
+export const DISCORD_CATALOG_PROTOCOL_VERSION = 2;
 
 export async function discordAdapterHealth(config) {
   return {
@@ -150,7 +142,7 @@ export async function discordAdapterHealth(config) {
     experimental: true,
     readOnly: false,
     gameDataWritesEnabled: false,
-    adapterDataWrites: ["player-link", "account-link"],
+    adapterDataWrites: ["player-link"],
     writesEnabled: discordWritesEnabled(config),
     routes: DISCORD_LIVE_ADAPTER_ROUTES,
     liveRoutes: DISCORD_LIVE_ADAPTER_ROUTES,

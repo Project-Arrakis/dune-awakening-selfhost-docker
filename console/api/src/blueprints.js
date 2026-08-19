@@ -1,4 +1,5 @@
 import { intParam } from "./db.js";
+import { isFiefClaimPlaceable, partitionFiefClaimPlaceables } from "./blueprintSafety.js";
 
 const BLUEPRINT_IMPORT_BATCH_SIZE = 50;
 
@@ -115,11 +116,15 @@ function normalizeLegacyPlaceableRotations(placeables) {
   return placeables.map((pl) => ({ ...pl, ry: pl.rz ?? 0, rz: 0 }));
 }
 
+function optionalNonnegativeInteger(value) {
+  if (value == null || value === "") return null;
+  const number = Number(value);
+  return Number.isInteger(number) && number >= 0 ? number : null;
+}
+
 function resolveImportIds(rows, key, label) {
   const sourceIds = rows.map((row) => {
-    if (row[key] == null || row[key] === "") return null;
-    const value = Number(row[key]);
-    return Number.isInteger(value) && value >= 0 ? value : null;
+    return optionalNonnegativeInteger(row[key]);
   });
   const offset = sourceIds.includes(0) ? 1 : 0;
   const reserved = new Set();
@@ -209,12 +214,36 @@ export async function importBlueprint(db, playerPawnId, blueprintFile, fallbackN
   if (!Array.isArray(bf.instances) && !Array.isArray(bf.placeables) && !Array.isArray(bf.pentashields)) {
     throw new Error("Blueprint must be an object with instances, placeables, or pentashields array");
   }
-  const hasInstances = Array.isArray(bf.instances) && bf.instances.length > 0;
-  const hasPlaceables = Array.isArray(bf.placeables) && bf.placeables.length > 0;
-  const hasPentashields = Array.isArray(bf.pentashields) && bf.pentashields.length > 0;
+  const instances = Array.isArray(bf.instances) ? bf.instances : [];
+  const inputPlaceables = Array.isArray(bf.placeables) ? bf.placeables : [];
+  const { safe: placeables, removed: removedClaimConsoles } = partitionFiefClaimPlaceables(inputPlaceables);
+  const removedPlaceableIds = new Set(removedClaimConsoles
+    .map((placeable) => optionalNonnegativeInteger(placeable?.placeable_id))
+    .filter((id) => id != null));
+  const inputPentashields = Array.isArray(bf.pentashields) ? bf.pentashields : [];
+  // A pentashield row references a blueprint placeable id. If an unsafe claim
+  // console carried one, do not leave an orphaned shield row pointing at the
+  // removed console (or, worse, at a different remapped placeable).
+  const pentashields = inputPentashields.filter((pentashield) => {
+    const placeableId = optionalNonnegativeInteger(pentashield?.placeable_id);
+    return placeableId == null || !removedPlaceableIds.has(placeableId);
+  });
+  const removedPentashields = inputPentashields.length - pentashields.length;
+  const hasInstances = instances.length > 0;
+  const hasPlaceables = placeables.length > 0;
+  const hasPentashields = pentashields.length > 0;
   if (!hasInstances && !hasPlaceables && !hasPentashields) {
+    if (removedClaimConsoles.length > 0) {
+      throw new Error("Blueprint contains only a Sub-Fief claim console, which cannot be imported as Solido content");
+    }
     throw new Error("Blueprint has no instances, placeables, or pentashields");
   }
+
+  const safetyWarning = removedClaimConsoles.length > 0
+    ? `Removed ${removedClaimConsoles.length} Sub-Fief claim console${removedClaimConsoles.length === 1 ? "" : "s"} from the blueprint for safety.${removedPentashields ? ` Removed ${removedPentashields} linked pentashield row${removedPentashields === 1 ? "" : "s"}.` : ""}`
+    : "";
+  const warnings = [online ? warning : "", safetyWarning].filter(Boolean);
+  const combinedWarning = warnings.join(" ");
 
   return db.transaction(async (tx) => {
     const baseName = blueprintName.replace(/\s*\(\d+\)\s*$/, " ").trim();
@@ -276,29 +305,31 @@ export async function importBlueprint(db, playerPawnId, blueprintFile, fallbackN
     await tx.query("update dune.items set stats = $1::jsonb where id = $2",
       [blueprintItemStatsJSON(blueprintId, blueprintName), itemId]);
 
-    if (bf.instances && bf.instances.length > 0) {
-      await insertBuildingInstances(tx, blueprintId, bf.instances);
+    if (instances.length > 0) {
+      await insertBuildingInstances(tx, blueprintId, instances);
     }
     let placeableIdMap = new Map();
-    if (bf.placeables && bf.placeables.length > 0) {
-      const placeables = normalizeLegacyPlaceableRotations(bf.placeables);
-      placeableIdMap = await insertBuildingPlaceables(tx, blueprintId, placeables);
+    if (placeables.length > 0) {
+      const normalizedPlaceables = normalizeLegacyPlaceableRotations(placeables);
+      placeableIdMap = await insertBuildingPlaceables(tx, blueprintId, normalizedPlaceables);
     }
-    if (bf.pentashields && bf.pentashields.length > 0) {
-      await insertBuildingPentashields(tx, blueprintId, bf.pentashields, placeableIdMap);
+    if (pentashields.length > 0) {
+      await insertBuildingPentashields(tx, blueprintId, pentashields, placeableIdMap);
     }
 
     return {
       ok: true,
       online,
-      warning: online ? warning : undefined,
-      message: `Imported ${bf.instances?.length || 0} pieces + ${bf.placeables?.length || 0} placeables + ${bf.pentashields?.length || 0} pentashields -> ${blueprintName} (#${blueprintId}, item ${itemId}) in player inventory${online ? " " + warning : ""}`,
+      warning: combinedWarning || undefined,
+      message: `Imported ${instances.length} pieces + ${placeables.length} placeables + ${pentashields.length} pentashields -> ${blueprintName} (#${blueprintId}, item ${itemId}) in player inventory${combinedWarning ? " " + combinedWarning : ""}`,
       blueprintName,
       blueprintId,
       itemId,
-      pieces: bf.instances?.length || 0,
-      placeables: bf.placeables?.length || 0,
-      pentashields: bf.pentashields?.length || 0
+      pieces: instances.length,
+      placeables: placeables.length,
+      pentashields: pentashields.length,
+      removedClaimConsoles: removedClaimConsoles.length,
+      removedPentashields
     };
   });
 }
@@ -339,7 +370,11 @@ export async function exportBlueprint(db, blueprintId) {
     where building_blueprint_id = $1
     order by placeable_id`, [blueprintId]);
 
-  const placeables = placRows.rows.map((row) => {
+  const removedClaimPlaceableIds = new Set(placRows.rows
+    .filter((row) => isFiefClaimPlaceable(row.building_type))
+    .map((row) => optionalNonnegativeInteger(row.placeable_id))
+    .filter((id) => id != null));
+  const placeables = placRows.rows.filter((row) => !isFiefClaimPlaceable(row.building_type)).map((row) => {
     const t = row.transform || [];
     return {
       placeable_id: row.placeable_id,
@@ -359,7 +394,10 @@ export async function exportBlueprint(db, blueprintId) {
     where building_blueprint_id = $1
     order by placeable_id`, [blueprintId]);
 
-  const pentashields = pentashieldRows.rows.map((row) => {
+  const pentashields = pentashieldRows.rows.filter((row) => {
+    const placeableId = optionalNonnegativeInteger(row.placeable_id);
+    return placeableId == null || !removedClaimPlaceableIds.has(placeableId);
+  }).map((row) => {
     const s = row.scale || [];
     return {
       placeable_id: row.placeable_id,

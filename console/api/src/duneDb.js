@@ -8,6 +8,7 @@ import { resolve } from "node:path";
 import { redact } from "./redact.js";
 import { itemImagePath } from "./adminCatalog.js";
 import { clampInt, writeJsonAtomic } from "./jsonStore.js";
+import { isFiefClaimPlaceable } from "./blueprintSafety.js";
 import { CARE_PACKAGE_SERVER_PERSONA, FUNCOM_GM_PERSONA, MESSAGE_OF_THE_DAY_PERSONA } from "./systemPersonas.js";
 import {
   craftingRecipeCatalogRows,
@@ -1838,6 +1839,7 @@ export async function addonLeadershipPlayers(db) {
       return {
         actorId,
         controllerId,
+        accountId,
         name: row.character_name || `Player ${actorId}`,
         level: levels.get(controllerId) || levels.get(actorId) || 0,
         faction: factions.get(controllerId) || factions.get(actorId) || "Unassigned",
@@ -3347,16 +3349,31 @@ const DEFAULT_MAX_PERMISSIONS_PER_ACTOR = 32;
 // the owner's open Permissions panel with no relog and no restart. Writing the
 // table directly would land the row and leave the running server unaware of it,
 // which is the silently-reverted behaviour this avoids.
-async function supportsBasePermissionEditing(db) {
+// Shared by bases and vehicles -- both are permission_actor_rank actors and
+// the capability only depends on the shipped schema/procedures, not on which
+// kind of actor is being edited. `knownTables` lets a caller that already
+// probed some of these tables (e.g. listVehicles' requiredTables check) skip
+// re-checking them.
+async function permissionEditingSupported(db, { knownTables } = {}) {
+  const known = knownTables || new Set();
   for (const table of ["permission_actor_rank", "permission_actor", "actors", "player_state", "map_names"]) {
+    if (known.has(table)) continue;
     if (!(await tableExists(db, table))) return false;
   }
   return await functionExists(db, "dune.permission_set_player_rank(bigint,bigint,smallint,text)")
     && await functionExists(db, "dune.permission_remove_player_rank(bigint,bigint)");
 }
 
+async function supportsBasePermissionEditing(db) {
+  return permissionEditingSupported(db);
+}
+
 export async function basePermissionsSupported(db) {
   return supportsBasePermissionEditing(db).catch(() => false);
+}
+
+export async function vehiclePermissionsSupported(db) {
+  return permissionEditingSupported(db).catch(() => false);
 }
 
 // The base id the Bases table shows is min(buildings.id) for the claim, which is
@@ -3421,7 +3438,7 @@ export async function basePermissionActor(db, baseId) {
 // not permission_actor. Joining the table into the shared query would break
 // deletion on a schema that lacks it. Both callers of this helper already gate
 // on supportsBasePermissionEditing, which does probe permission_actor.
-async function basePermissionActorClaimed(db, actorId) {
+async function permissionActorClaimed(db, actorId) {
   const result = await db.query(
     "select exists (select 1 from dune.permission_actor where actor_id = $1::bigint) as claimed",
     [actorId]);
@@ -3471,15 +3488,9 @@ export async function baseIsBackedUp(db, baseId) {
 // operator rather than silently vanishing from the roster: resolving the name
 // through owner_account_id is how listBases does it, and every actors row of an
 // account maps to the same character name.
-export async function listBasePermissions(db, baseId) {
-  await requireCapability(await supportsBasePermissionEditing(db),
-    "Base permission editing requires dune.permission_actor_rank, dune.map_names, and the dune.permission_set_player_rank/permission_remove_player_rank functions.");
-  const { actorId, map, mapNameId } = await basePermissionActor(db, baseId);
-  // Reading an unclaimed base still succeeds -- the roster is simply empty, and
-  // seeing that is how an operator diagnoses the base in the first place. The
-  // flag rides along so the editor can disable the writes that would fail
-  // instead of offering controls that end in an FK error.
-  const claimed = await basePermissionActorClaimed(db, actorId);
+// Shared by bases and vehicles -- the roster query only depends on the
+// permission actor id, not on what kind of actor it is.
+async function listPermissionRoster(db, actorId) {
   const encryptedPlayerStateColumns = await tableExists(db, "encrypted_player_state")
     ? await columnsFor(db, "encrypted_player_state")
     : new Set();
@@ -3522,6 +3533,29 @@ export async function listBasePermissions(db, baseId) {
     ) fallback on true
     where par.permission_actor_id = $1::bigint
     order by par.rank asc, coalesce(ps.character_name, fallback.character_name, '') asc`, [actorId]);
+  return result.rows.map((row) => ({
+    playerId: String(row.player_id),
+    name: String(row.character_name || ""),
+    rank: Number(row.rank),
+    label: permissionRankLabel(Number(row.rank)),
+    // False means this row names an actor that is not the account's
+    // player_controller_id, so the game ignores it. Surfaced rather than
+    // hidden: it is the one roster state the console can see and the game
+    // client cannot.
+    canonical: row.canonical === true
+  }));
+}
+
+export async function listBasePermissions(db, baseId) {
+  await requireCapability(await supportsBasePermissionEditing(db),
+    "Base permission editing requires dune.permission_actor_rank, dune.map_names, and the dune.permission_set_player_rank/permission_remove_player_rank functions.");
+  const { actorId, map, mapNameId } = await basePermissionActor(db, baseId);
+  // Reading an unclaimed base still succeeds -- the roster is simply empty, and
+  // seeing that is how an operator diagnoses the base in the first place. The
+  // flag rides along so the editor can disable the writes that would fail
+  // instead of offering controls that end in an FK error.
+  const claimed = await permissionActorClaimed(db, actorId);
+  const entries = await listPermissionRoster(db, actorId);
   const systemCustodian = await basePermissionSystemCustodian(db);
   return {
     baseId: intParam(baseId, "base id", 1),
@@ -3531,17 +3565,7 @@ export async function listBasePermissions(db, baseId) {
     claimed,
     unclaimedReason: claimed ? "" : BASE_UNCLAIMED_MESSAGE,
     systemCustodian,
-    entries: result.rows.map((row) => ({
-      playerId: String(row.player_id),
-      name: String(row.character_name || ""),
-      rank: Number(row.rank),
-      label: permissionRankLabel(Number(row.rank)),
-      // False means this row names an actor that is not the account's
-      // player_controller_id, so the game ignores it. Surfaced rather than
-      // hidden: it is the one roster state the console can see and the game
-      // client cannot.
-      canonical: row.canonical === true
-    }))
+    entries
   };
 }
 
@@ -3629,9 +3653,10 @@ export async function basePermissionSystemCustodian(db) {
 // Candidates for the roster picker. Deliberately keyed on player_controller_id
 // rather than reusing listPlayers' actor_id: listPlayers is row-per-pawn, and
 // handing a pawn id to permission_set_player_rank writes a row the game ignores.
-export async function basePermissionCandidates(db, { q = "", limit = 25 } = {}) {
-  await requireCapability(await supportsBasePermissionEditing(db),
-    "Base permission editing requires dune.permission_actor_rank, dune.map_names, and the dune.permission_set_player_rank/permission_remove_player_rank functions.");
+// Shared by bases and vehicles -- deliberately keyed on player_controller_id
+// rather than reusing listPlayers' actor_id: listPlayers is row-per-pawn, and
+// handing a pawn id to permission_set_player_rank writes a row the game ignores.
+async function permissionCandidatesQuery(db, { q = "", limit = 25 } = {}) {
   const safeLimit = intParam(limit, "limit", 1, 100);
   const playerStateColumns = await columnsFor(db, "player_state");
   const internalGmPawnFilter = playerStateColumns.has("player_pawn_id")
@@ -3662,14 +3687,26 @@ export async function basePermissionCandidates(db, { q = "", limit = 25 } = {}) 
   return result.rows.map((row) => ({ playerId: String(row.player_id), name: String(row.character_name || "") }));
 }
 
-function normalizeDesiredPermissions(entries) {
+export async function basePermissionCandidates(db, opts = {}) {
+  await requireCapability(await supportsBasePermissionEditing(db),
+    "Base permission editing requires dune.permission_actor_rank, dune.map_names, and the dune.permission_set_player_rank/permission_remove_player_rank functions.");
+  return permissionCandidatesQuery(db, opts);
+}
+
+export async function vehiclePermissionCandidates(db, opts = {}) {
+  await requireCapability(await vehiclePermissionsSupported(db),
+    "Vehicle permission editing requires dune.permission_actor_rank, dune.map_names, and the dune.permission_set_player_rank/permission_remove_player_rank functions.");
+  return permissionCandidatesQuery(db, opts);
+}
+
+function normalizeDesiredPermissions(entries, subject = "base") {
   if (!Array.isArray(entries)) throw new Error("Permissions must be a list of players and ranks.");
   const seen = new Set();
   const desired = entries.map((entry) => {
     const playerId = String(intParam(entry?.playerId, "player id", 1));
     const rank = Number(entry?.rank);
     if (!PERMISSION_EDITABLE_RANKS.has(rank)) {
-      throw new Error(`Rank ${entry?.rank} is not a valid base permission rank.`);
+      throw new Error(`Rank ${entry?.rank} is not a valid ${subject} permission rank.`);
     }
     if (seen.has(playerId)) throw new Error("The same player was listed twice.");
     seen.add(playerId);
@@ -3678,8 +3715,8 @@ function normalizeDesiredPermissions(entries) {
   const owners = desired.filter((entry) => entry.rank === PERMISSION_OWNER_RANK);
   if (owners.length !== 1) {
     throw new Error(owners.length === 0
-      ? "A base must have exactly one Owner. Promote a player to Owner before saving."
-      : `A base can only have one Owner; ${owners.length} were selected.`);
+      ? `A ${subject} must have exactly one Owner. Promote a player to Owner before saving.`
+      : `A ${subject} can only have one Owner; ${owners.length} were selected.`);
   }
   return desired;
 }
@@ -3697,7 +3734,22 @@ function normalizeDesiredPermissions(entries) {
 // LIMIT 1, so a moment with two rank-1 rows could stamp the wrong owner onto the
 // base marker. Removals run first, then non-owner ranks, then the Owner last --
 // so at most one rank-1 row exists when the owner write lands.
-async function mutateBasePermissions(db, target, safeMax, desiredRoster) {
+// Applies a whole roster in one transaction, built entirely from the shipped
+// procedures. Shared by bases and vehicles via the resolveActor/subject/
+// idKey/idValue parameterization -- everything below is actor-kind-agnostic.
+// Two invariants the procedures do NOT enforce are enforced here:
+//
+//   - One Owner. permission_set_player_rank is a plain upsert, so setting rank 1
+//     for a second player would simply leave the actor with two owners.
+//   - The cap. The procedure never counts rows; the limit comes from live server
+//     config (see parseEffectivePermissionLimit), not a constant.
+//
+// Write order matters even though NOTIFY is only delivered at commit: the marker
+// refresh inside permission_set_player_rank looks up the rank-1 holder with a
+// LIMIT 1, so a moment with two rank-1 rows could stamp the wrong owner onto the
+// actor's marker. Removals run first, then non-owner ranks, then the Owner last --
+// so at most one rank-1 row exists when the owner write lands.
+async function mutatePermissionRoster(db, { resolveActor, unclaimedMessage, notFoundMessage, subject, idKey, idValue }, safeMax, desiredRoster) {
   return db.transaction(async (tx) => {
     // The shipped procedures reference their tables unqualified and carry no
     // `SET search_path` of their own; they resolve only because the console
@@ -3707,31 +3759,31 @@ async function mutateBasePermissions(db, target, safeMax, desiredRoster) {
     // is ever pointed at a differently-named role.
     await tx.query("set local search_path to dune, public");
 
-    const actor = await basePermissionActor(tx, target);
+    const actor = await resolveActor(tx);
     if (!actor.mapNameId) {
-      throw new Error(`This base's map (${actor.map || "unknown"}) has no dune.map_names entry, so the game cannot be notified of the change.`);
+      throw new Error(`This ${subject}'s map (${actor.map || "unknown"}) has no dune.map_names entry, so the game cannot be notified of the change.`);
     }
-    // Lock the claim actor row, not the rank rows: a base whose roster is being
-    // fully replaced may have no rank rows to lock, and `for update` over zero
-    // rows serializes nothing. The actors row is guaranteed to exist.
+    // Lock the claim actor row, not the rank rows: an actor whose roster is
+    // being fully replaced may have no rank rows to lock, and `for update` over
+    // zero rows serializes nothing. The actors row is guaranteed to exist.
     const locked = await tx.query("select id from dune.actors where id = $1::bigint for update", [actor.actorId]);
-    if (!locked.rowCount) throw new Error("That base was not found.");
+    if (!locked.rowCount) throw new Error(notFoundMessage);
 
     // After the lock, not before: this is the last read the transaction can make
     // before it starts calling the procedures. The game's own pickup path does
     // not take this lock, so a pickup landing mid-edit can still slip past and
     // hit the FK -- that race is what the constraint is for. What this removes
-    // is the far more common steady-state case, an unclaimed base sitting in the
-    // panel that every route currently accepts a write for.
-    if (!(await basePermissionActorClaimed(tx, actor.actorId))) throw new Error(BASE_UNCLAIMED_MESSAGE);
+    // is the far more common steady-state case, an unclaimed actor sitting in
+    // the panel that every route currently accepts a write for.
+    if (!(await permissionActorClaimed(tx, actor.actorId))) throw new Error(unclaimedMessage);
 
     const existing = await tx.query(
       "select player_id::text as player_id, rank::int as rank from dune.permission_actor_rank where permission_actor_id = $1::bigint",
       [actor.actorId]);
     const currentByPlayer = new Map(existing.rows.map((row) => [String(row.player_id), Number(row.rank)]));
-    const desired = normalizeDesiredPermissions(await desiredRoster(existing.rows, tx));
+    const desired = normalizeDesiredPermissions(await desiredRoster(existing.rows, tx), subject);
     if (desired.length > safeMax) {
-      throw new Error(`This base would hold ${desired.length} permissions, above the configured maximum of ${safeMax}.`);
+      throw new Error(`This ${subject} would hold ${desired.length} permissions, above the configured maximum of ${safeMax}.`);
     }
 
     // Every target player must be a real permission holder, i.e. an account's
@@ -3777,7 +3829,7 @@ async function mutateBasePermissions(db, target, safeMax, desiredRoster) {
 
     return {
       ok: true,
-      baseId: target,
+      [idKey]: idValue,
       actorId: actor.actorId,
       map: actor.map,
       added: changed.filter((entry) => !currentByPlayer.has(entry.playerId)).length,
@@ -3791,6 +3843,17 @@ async function mutateBasePermissions(db, target, safeMax, desiredRoster) {
   });
 }
 
+async function mutateBasePermissions(db, target, safeMax, desiredRoster) {
+  return mutatePermissionRoster(db, {
+    resolveActor: (tx) => basePermissionActor(tx, target),
+    unclaimedMessage: BASE_UNCLAIMED_MESSAGE,
+    notFoundMessage: "That base was not found.",
+    subject: "base",
+    idKey: "baseId",
+    idValue: target
+  }, safeMax, desiredRoster);
+}
+
 export async function setBasePermissions(db, baseId, entries, maxPermissionsPerActor = DEFAULT_MAX_PERMISSIONS_PER_ACTOR) {
   await requireCapability(await supportsBasePermissionEditing(db),
     "Base permission editing requires dune.permission_actor_rank, dune.map_names, and the dune.permission_set_player_rank/permission_remove_player_rank functions.");
@@ -3799,7 +3862,7 @@ export async function setBasePermissions(db, baseId, entries, maxPermissionsPerA
   // Validate before opening the transaction too, so malformed input fails
   // without taking a claim lock. It is normalized again after the lock because
   // the shared mutation path also accepts a roster built from current state.
-  const desired = normalizeDesiredPermissions(entries);
+  const desired = normalizeDesiredPermissions(entries, "base");
   return mutateBasePermissions(db, target, safeMax, async () => desired);
 }
 
@@ -3828,6 +3891,80 @@ export async function transferBaseToSystemCustodian(db, baseId, maxPermissionsPe
       ? `This base is already owned by the ${custodian.name} system custodian.`
       : `Ownership was transferred to the ${custodian.name} system custodian. The change applies to the running map immediately.`
   };
+}
+
+// Deliberately distinct from BASE_UNCLAIMED_MESSAGE: it names the vehicle
+// situation directly rather than talking about a base-backup/redeploy path
+// that does not apply here.
+const VEHICLE_UNCLAIMED_MESSAGE = "This vehicle is not claimed -- it has no dune.permission_actor row, so the game has nothing to attach permissions to. A player must claim it in-game first.";
+
+// Unlike a base (buildings -> building_instances -> actor_fgl_entities ->
+// actors), a vehicle IS its own permission actor:
+// dune.vehicles.id = dune.actors.id = dune.permission_actor.actor_id. The join
+// through dune.vehicles is still load-bearing even though it adds no
+// indirection -- it is what rejects a non-vehicle actor id (a base's, say)
+// passed to this route, rather than the query silently resolving it via
+// dune.actors alone.
+export async function vehiclePermissionActor(db, vehicleId) {
+  const target = intParam(vehicleId, "vehicle id", 1);
+  const result = await db.query(`
+    select a.id::text as actor_id,
+           coalesce(a.map, '') as map,
+           coalesce(mn.map_name_id, 0)::int as map_name_id,
+           coalesce(a.partition_id, 0)::int as partition_id
+    from dune.vehicles v
+    join dune.actors a on a.id = v.id
+    left join dune.map_names mn on mn.map_name = a.map
+    where v.id = $1`, [target]);
+  const row = result.rows[0];
+  if (!row) throw new Error("That vehicle was not found.");
+  return {
+    vehicleId: target,
+    actorId: String(row.actor_id),
+    map: String(row.map || ""),
+    mapNameId: Number(row.map_name_id || 0),
+    partitionId: Number(row.partition_id || 0)
+  };
+}
+
+export async function listVehiclePermissions(db, vehicleId) {
+  await requireCapability(await vehiclePermissionsSupported(db),
+    "Vehicle permission editing requires dune.permission_actor_rank, dune.map_names, and the dune.permission_set_player_rank/permission_remove_player_rank functions.");
+  const { actorId, map, mapNameId } = await vehiclePermissionActor(db, vehicleId);
+  // Reading an unclaimed vehicle still succeeds -- the roster is simply empty,
+  // and seeing that is how an operator diagnoses the vehicle in the first
+  // place. The flag rides along so the editor can disable the writes that
+  // would fail instead of offering controls that end in an FK error.
+  const claimed = await permissionActorClaimed(db, actorId);
+  const entries = await listPermissionRoster(db, actorId);
+  return {
+    vehicleId: intParam(vehicleId, "vehicle id", 1),
+    actorId,
+    map,
+    mapNameId,
+    claimed,
+    unclaimedReason: claimed ? "" : VEHICLE_UNCLAIMED_MESSAGE,
+    entries
+  };
+}
+
+export async function setVehiclePermissions(db, vehicleId, entries, maxPermissionsPerActor = DEFAULT_MAX_PERMISSIONS_PER_ACTOR) {
+  await requireCapability(await vehiclePermissionsSupported(db),
+    "Vehicle permission editing requires dune.permission_actor_rank, dune.map_names, and the dune.permission_set_player_rank/permission_remove_player_rank functions.");
+  const target = intParam(vehicleId, "vehicle id", 1);
+  const safeMax = intParam(maxPermissionsPerActor, "maximum permissions per vehicle", 1, 2147483647);
+  // Validate before opening the transaction too, so malformed input fails
+  // without taking a claim lock. It is normalized again after the lock because
+  // the shared mutation path also accepts a roster built from current state.
+  const desired = normalizeDesiredPermissions(entries, "vehicle");
+  return mutatePermissionRoster(db, {
+    resolveActor: (tx) => vehiclePermissionActor(tx, target),
+    unclaimedMessage: VEHICLE_UNCLAIMED_MESSAGE,
+    notFoundMessage: "That vehicle was not found.",
+    subject: "vehicle",
+    idKey: "vehicleId",
+    idValue: target
+  }, safeMax, async () => desired);
 }
 
 const BASE_SORT_COLUMNS = {
@@ -4328,9 +4465,14 @@ export async function exportBaseAsBlueprint(db, id) {
         join dune.actor_fgl_entities afe on afe.entity_id = p.owner_entity_id
         where afe.actor_id = $1
           and a.transform is not null
+          and lower(coalesce(p.building_type, '')) not in ('totem_small_placeable', 'totem_placeable')
         order by p.id`, [base.actor_id])
     : { rows: [] };
-  const placeables = placeableRows.rows.map((row) => ({
+  // Keep the JS guard as a second boundary in case a future schema/query path
+  // bypasses or changes the SQL predicate. A Solido blueprint must never carry
+  // the live base's claim console: projecting it can create a second malformed
+  // claim inside the destination fief.
+  const placeables = placeableRows.rows.filter((row) => !isFiefClaimPlaceable(row.building_type)).map((row) => ({
     placeable_id: row.placeable_id,
     building_type: row.building_type,
     x: Number(row.x) - anchor.x,
@@ -5362,9 +5504,187 @@ export async function playerJourney(db, id, journeyTagsData = {}) {
   return { capabilities: { journey: true }, player, rows: { story: storyRows, contract: contractRows, codex: codexRows, tutorial } };
 }
 
+function portalMarketEntry(entry, extra = {}) {
+  return {
+    orderId: String(entry?.orderId || ""),
+    templateId: String(entry?.templateId || ""),
+    displayName: String(entry?.displayName || ""),
+    qualityLevel: String(entry?.qualityLevel || ""),
+    itemPrice: String(entry?.itemPrice || ""),
+    stackSize: String(entry?.stackSize || ""),
+    maxUnitPrice: String(entry?.maxUnitPrice || ""),
+    resultCode: Number.isInteger(entry?.resultCode) ? entry.resultCode : -1,
+    resultLabel: String(entry?.resultLabel || "unknown"),
+    detail: String(entry?.detail || ""),
+    ...extra
+  };
+}
+
+function portalMarketForIdentity(identity, market) {
+  if (!market || typeof market !== "object") return null;
+  const ownerIds = new Set([identity.actor_id, identity.controller_id, identity.account_id]
+    .map((value) => String(value || ""))
+    .filter(Boolean));
+  const owns = (entry) => ownerIds.has(String(entry?.sellerActorId || ""));
+  const matchingListings = (Array.isArray(market.listings) ? market.listings : []).filter(owns);
+  const listings = matchingListings.slice(0, 250).map((entry) => portalMarketEntry(entry));
+  const history = [];
+  for (const batch of Array.isArray(market.batches) ? market.batches : []) {
+    for (const entry of Array.isArray(batch?.entries) ? batch.entries : []) {
+      if (!owns(entry)) continue;
+      history.push(portalMarketEntry(entry, {
+        at: String(batch.at || ""),
+        source: String(batch.source || "")
+      }));
+      if (history.length >= 100) break;
+    }
+    if (history.length >= 100) break;
+  }
+  return {
+    available: market.available === true,
+    configured: market.configured === true,
+    enabled: market.enabled === true,
+    exchangeId: String(market.exchangeId || ""),
+    buybackPercent: Number(market.buybackPercent) || 0,
+    buybackPriceBasis: String(market.buybackPriceBasis || ""),
+    maxBuys: Number(market.maxBuys) || 0,
+    evaluatedAt: String(market.evaluatedAt || ""),
+    listings,
+    listingsTruncated: matchingListings.length > listings.length,
+    history
+  };
+}
+
+function portalExchangeOverview(market) {
+  if (!market || typeof market !== "object") return null;
+  if (market.overview && typeof market.overview === "object") {
+    return {
+      available: market.overview.available === true,
+      evaluatedAt: String(market.overview.evaluatedAt || ""),
+      items: (Array.isArray(market.overview.items) ? market.overview.items : []).map((row) => ({
+        templateId: String(row?.templateId || ""),
+        displayName: String(row?.displayName || row?.templateId || "Unknown Item"),
+        qualityLevel: String(row?.qualityLevel || ""),
+        listingCount: Math.max(0, Number(row?.listingCount) || 0),
+        totalUnits: Math.max(0, Number(row?.totalUnits) || 0),
+        lowestPrice: String(row?.lowestPrice || ""),
+        highestPrice: String(row?.highestPrice || ""),
+        maxUnitPrice: String(row?.maxUnitPrice || "")
+      }))
+    };
+  }
+  const groups = new Map();
+  for (const entry of Array.isArray(market.listings) ? market.listings : []) {
+    const templateId = String(entry?.templateId || "");
+    const displayName = String(entry?.displayName || templateId || "Unknown Item");
+    const key = `${templateId}\u0000${String(entry?.qualityLevel || "")}`;
+    const price = Number(entry?.itemPrice);
+    const quantity = Math.max(0, Number(entry?.stackSize) || 0);
+    if (!Number.isFinite(price) || price < 0) continue;
+    const row = groups.get(key) || {
+      templateId,
+      displayName,
+      qualityLevel: String(entry?.qualityLevel || ""),
+      listingCount: 0,
+      totalUnits: 0,
+      lowestPrice: price,
+      highestPrice: price,
+      maxUnitPrice: Number(entry?.maxUnitPrice) || 0
+    };
+    row.listingCount += 1;
+    row.totalUnits += quantity;
+    row.lowestPrice = Math.min(row.lowestPrice, price);
+    row.highestPrice = Math.max(row.highestPrice, price);
+    row.maxUnitPrice = Math.max(row.maxUnitPrice, Number(entry?.maxUnitPrice) || 0);
+    groups.set(key, row);
+  }
+  return {
+    available: market.available === true,
+    evaluatedAt: String(market.evaluatedAt || ""),
+    items: [...groups.values()]
+      .sort((left, right) => right.listingCount - left.listingCount || left.displayName.localeCompare(right.displayName))
+      .slice(0, 100)
+  };
+}
+
+export async function portalStorage(db, playerControllerId) {
+  const result = await db.query(`
+    with owned_containers as (
+      select distinct p.id,
+        coalesce(max(case when pa.actor_name not like '##%' and pa.actor_name <> 'None' then pa.actor_name end)
+          over (partition by p.id), p.building_type) container_name,
+        coalesce(a.map, '') map
+      from dune.placeables p
+      join dune.actors a on a.id=p.id
+      join dune.actor_fgl_entities afe on afe.entity_id=p.owner_entity_id
+      join dune.permission_actor_rank par on par.permission_actor_id=afe.actor_id
+      left join dune.permission_actor pa on pa.actor_id=par.permission_actor_id
+      where par.player_id=$1 and par.rank=1 and p.is_hologram=false
+        and p.owner_entity_id is not null and p.owner_entity_id<>0
+    ), item_rows as (
+      select oc.id::text container_id,oc.container_name,oc.map,
+        i.template_id,coalesce(i.quality_level,0)::int quality_level,
+        count(*)::int stack_count,coalesce(sum(i.stack_size),0)::bigint::text quantity
+      from owned_containers oc
+      join dune.inventories inv on inv.actor_id=oc.id
+      join dune.items i on i.inventory_id=inv.id
+      group by oc.id,oc.container_name,oc.map,i.template_id,i.quality_level
+    )
+    select * from item_rows
+    order by container_name,template_id,quality_level
+    limit 750`, [playerControllerId]);
+  const containers = new Map();
+  for (const row of result.rows || []) {
+    const id = String(row.container_id || "");
+    const container = containers.get(id) || {
+      id,
+      name: String(row.container_name || "Storage"),
+      map: String(row.map || ""),
+      itemTypes: 0,
+      totalQuantity: 0
+    };
+    container.itemTypes += 1;
+    container.totalQuantity += Number(row.quantity) || 0;
+    containers.set(id, container);
+  }
+  return {
+    truncated: (result.rows || []).length >= 750,
+    containers: [...containers.values()],
+    items: (result.rows || []).map((row) => ({
+      containerId: String(row.container_id || ""),
+      containerName: String(row.container_name || "Storage"),
+      map: String(row.map || ""),
+      templateId: String(row.template_id || ""),
+      qualityLevel: Number(row.quality_level) || 0,
+      stackCount: Number(row.stack_count) || 0,
+      quantity: Number(row.quantity) || 0
+    }))
+  };
+}
+
+export async function portalLandsraad(db, playerControllerId) {
+  const overview = await landsraadOverview(db);
+  if (overview?.capabilities?.landsraad !== true) return null;
+  let contributions = [];
+  if (overview.capabilities.playerContributions) {
+    contributions = (await db.query(`
+      select task_id::text "taskId",coalesce(amount,0)::real amount
+      from dune.landsraad_task_player_contributions
+      where player_id=$1
+      order by task_id`, [playerControllerId])).rows || [];
+  }
+  return {
+    term: overview.term,
+    tasks: overview.tasks,
+    rewards: overview.rewards,
+    contributions: contributions.map((row) => ({ taskId: String(row.taskId || row.task_id || ""), amount: Number(row.amount) || 0 }))
+  };
+}
+
 // Build private, read-only snapshots only for Steam identities requested by the
-// directory. Raw platform IDs never leave the battlegroup.
-export async function playerPortalSnapshots(db, requestedAccountHashes, journeyTagsData = {}, skillModulesData = []) {
+// directory. Raw platform IDs and local Market Bot seller IDs never leave the
+// battlegroup.
+export async function playerPortalSnapshots(db, requestedAccountHashes, journeyTagsData = {}, skillModulesData = [], marketSnapshot = null, portalContext = {}) {
   const requested = new Set((Array.isArray(requestedAccountHashes) ? requestedAccountHashes : [])
     .map((value) => String(value || "").toLowerCase())
     .filter((value) => /^[0-9a-f]{64}$/.test(value))
@@ -5400,7 +5720,7 @@ export async function playerPortalSnapshots(db, requestedAccountHashes, journeyT
   for (const identity of matched) {
     const actorId = Number(identity.actor_id);
     const controllerId = Number(identity.controller_id);
-    const [currency, factions, specs, crafting, research, journeys, bases, intel, keystones, blueprints, vehicles, guild] = await Promise.all([
+    const [currency, factions, specs, crafting, research, journeys, bases, intel, keystones, blueprints, vehicles, guild, storage, landsraad] = await Promise.all([
       playerCurrency(db, actorId).catch(() => ({ rows: [] })),
       playerFactions(db, actorId).catch(() => ({ rows: [] })),
       playerSpecs(db, actorId).catch(() => ({ rows: [], skillModules: [] })),
@@ -5415,13 +5735,23 @@ export async function playerPortalSnapshots(db, requestedAccountHashes, journeyT
       db.query(`select keystone_id::text from dune.purchased_specialization_keystones where player_id=$1 order by keystone_id`, [controllerId]).catch(() => ({ rows: [] })),
       db.query(`select id::text,item_id::text,building_blueprint_map from dune.building_blueprints where player_id=$1 order by id`, [controllerId]).catch(() => ({ rows: [] })),
       portalVehicles(db, [actorId, controllerId, Number(identity.account_id)]).catch(() => ({ rows: [] })),
-      portalGuild(db, identity).catch(() => null)
+      portalGuild(db, identity).catch(() => null),
+      portalStorage(db, controllerId).catch(() => ({ containers: [], items: [], truncated: false })),
+      portalLandsraad(db, controllerId).catch(() => null)
     ]);
     const leader = leaders.get(String(actorId)) || {};
     const baseRows = (bases.rows || []).filter((base) =>
       base.owner_name === identity.character_name ||
       (base.shared_with || []).some((entry) => entry.name === identity.character_name));
     const fuelByBase = await portalGeneratorFuel(db, baseRows.map((base) => base.base_id)).catch(() => new Map());
+    const waterByBase = new Map(await Promise.all(baseRows.map(async (base) => {
+      const water = await baseWater(db, base.base_id).catch(() => ({
+        supported: false,
+        reason: "Water storage could not be read from this server.",
+        containers: []
+      }));
+      return [String(base.base_id), water];
+    })));
     const skillModules = (specs.skillModules || []).map((skill) => portalSkillRow(skill, skillModulesData));
     const journeyRows = Object.values(journeys.rows || {}).flat();
     const unlockedCrafting = (crafting.rows || []).filter((row) => row.unlocked);
@@ -5463,6 +5793,8 @@ export async function playerPortalSnapshots(db, requestedAccountHashes, journeyT
           skills: skillModules,
           research: unlockedResearch.map((row) => ({ id: row.itemKey || "", name: row.displayName || row.itemKey || "Research" })),
           schematics: unlockedCrafting.map((row) => ({ id: row.recipeId || "", name: row.displayName || row.recipeId || "Schematic" })),
+          missingResearch: (research.rows || []).filter((row) => !row.unlocked).map((row) => ({ id: row.itemKey || "", name: row.displayName || row.itemKey || "Research" })).slice(0, 500),
+          missingSchematics: (crafting.rows || []).filter((row) => !row.unlocked).map((row) => ({ id: row.recipeId || "", name: row.displayName || row.recipeId || "Schematic" })).slice(0, 500),
           blueprints: blueprints.rows.map((row) => ({ id: row.id, itemId: row.item_id, map: row.building_blueprint_map || "" }))
         },
         journeys: {
@@ -5486,13 +5818,42 @@ export async function playerPortalSnapshots(db, requestedAccountHashes, journeyT
           generatorUnstockedCount: fuelByBase.get(String(base.base_id))?.unstockedCount || 0,
           generatorAllUnstocked: fuelByBase.get(String(base.base_id))?.allGeneratorsUnstocked || false,
           generators: fuelByBase.get(String(base.base_id))?.generators || [],
+          waterSupported: waterByBase.get(String(base.base_id))?.supported === true,
+          waterStatus: waterByBase.get(String(base.base_id))?.supported === true
+            ? (waterByBase.get(String(base.base_id))?.containers?.length ? "available" : "empty")
+            : "unsupported",
+          waterReason: String(waterByBase.get(String(base.base_id))?.reason || ""),
+          waterContainers: waterByBase.get(String(base.base_id))?.containers || [],
           map: base.map || "",
           partitionId: Number(base.partition_id) || 0,
           x: Number(base.x) || 0,
           y: Number(base.y) || 0,
           z: Number(base.z) || 0
         })),
-        guild
+        storage,
+        guild,
+        landsraad,
+        serverInfo: portalContext.serverInfo || null,
+        carePackages: {
+          enabled: portalContext.carePackages?.enabled === true,
+          history: (portalContext.carePackages?.history || [])
+            .filter((row) => {
+              const rowAccount = String(row?.account_id || row?.accountId || "");
+              const rowActor = String(row?.actor_id || row?.actorId || "");
+              return (rowAccount && rowAccount === String(identity.account_id || ""))
+                || (rowActor && rowActor === String(identity.actor_id || ""));
+            })
+            .slice(0, 25)
+            .map((row) => ({
+              id: String(row.id || ""),
+              timestamp: String(row.timestamp || ""),
+              status: String(row.status || "unknown"),
+              kitName: String(row.kitName || row.kit_name || row.summary || "Care Package"),
+              summary: String(row.summary || "")
+            }))
+        },
+        exchangeOverview: portalExchangeOverview(marketSnapshot),
+        ...(marketSnapshot ? { marketBot: portalMarketForIdentity(identity, marketSnapshot) } : {})
       }
     });
   }
@@ -5640,7 +6001,8 @@ export async function listVehicles(db, { q = "", page = 0, pageSize = 50, sortCo
   ];
   for (const table of requiredTables) {
     if (!(await tableExists(db, table))) {
-      return { ...unsupported("vehicles", requiredTables.map((t) => `dune.${t}`)), totalCount: 0, totalVehicles: 0 };
+      const result = unsupported("vehicles", requiredTables.map((t) => `dune.${t}`));
+      return { ...result, capabilities: { ...result.capabilities, vehiclePermissions: false }, totalCount: 0, totalVehicles: 0 };
     }
   }
 
@@ -5797,14 +6159,22 @@ export async function listVehicles(db, { q = "", page = 0, pageSize = 50, sortCo
       }));
     await attachVehicleRegions(db, rows);
 
+    // requiredTables above already proved permission_actor_rank/permission_actor/
+    // actors/player_state exist, so this only has to check map_names and the two
+    // shipped procedures -- not re-probe tables already known to be present.
+    const vehiclePermissions = await permissionEditingSupported(db, {
+      knownTables: new Set(["permission_actor_rank", "permission_actor", "actors", "player_state"])
+    }).catch(() => false);
+
     return {
-      capabilities: { vehicles: true },
+      capabilities: { vehicles: true, vehiclePermissions },
       totalCount: result.rows[0] ? Number(result.rows[0].total_count) : 0,
       totalVehicles: totalsResult.rows[0] ? Number(totalsResult.rows[0].total_vehicles) : 0,
       rows
     };
   } catch (error) {
-    return { ...unsupported("vehicles", requiredTables.map((t) => `dune.${t}`)), totalCount: 0, totalVehicles: 0, reason: `Vehicles query failed: ${error.message}` };
+    const result = unsupported("vehicles", requiredTables.map((t) => `dune.${t}`));
+    return { ...result, capabilities: { ...result.capabilities, vehiclePermissions: false }, totalCount: 0, totalVehicles: 0, reason: `Vehicles query failed: ${error.message}` };
   }
 }
 
@@ -6145,11 +6515,32 @@ async function portalGuild(db, identity) {
   const row = result.rows[0];
   const members = await guildMembers(db, row.guild_id);
   const leadership = await addonLeadershipPlayers(db).catch(() => ({ rows: [] }));
-  const statuses = new Map((leadership.rows || []).map((member) => [member.name, member.status]));
+  const memberDetails = new Map();
+  const memberNames = new Map();
+  for (const member of leadership.rows || []) {
+    for (const id of [member.actorId, member.controllerId, member.accountId].map(String).filter(Boolean)) memberDetails.set(id, member);
+    const nameKey = String(member.name || "").trim().toLocaleLowerCase();
+    if (nameKey && !memberNames.has(nameKey)) memberNames.set(nameKey, member);
+  }
+  const roster = (members.rows || []).map((member) => {
+    const detail = memberDetails.get(String(member.player_id || ""))
+      || memberNames.get(String(member.character_name || "").trim().toLocaleLowerCase())
+      || {};
+    return {
+      name: member.character_name || detail.name || "Unknown Member",
+      role: portalGuildRole(member.role_id),
+      level: Math.min(200, Math.max(0, Number(detail.level) || 0)),
+      status: String(detail.status || "Offline").toLocaleLowerCase() === "online" ? "Online" : "Offline"
+    };
+  }).sort((left, right) => {
+    const roleOrder = { Leader: 0, Officer: 1, Member: 2 };
+    return (roleOrder[left.role] ?? 3) - (roleOrder[right.role] ?? 3) || left.name.localeCompare(right.name);
+  });
   return {
     name: row.guild_name || "Unknown Guild", role: portalGuildRole(row.role_id),
-    membershipCount: (members.rows || []).length,
-    onlineMembers: (members.rows || []).filter((member) => String(statuses.get(member.character_name) || "").toLowerCase() === "online").map((member) => member.character_name)
+    membershipCount: roster.length,
+    members: roster,
+    onlineMembers: roster.filter((member) => member.status === "Online").map((member) => member.name)
   };
 }
 
@@ -9195,6 +9586,46 @@ export async function repairGear(db, id) {
   });
 }
 
+// Vehicle-module rows in current dedicated-server databases commonly omit
+// MaxDurability altogether. Prefer any authoritative stored maximum for the
+// exact template; otherwise infer a conservative cap only when at least two
+// modules of that template provide a positive current or decayed-cap sample.
+// Both repair queries use this CTE so their eligibility and reported counts
+// cannot disagree.
+const VEHICLE_REPAIR_TEMPLATE_MAXIMA_CTE = `module_samples as (
+  select vm.template_id,
+         case
+           when (durability->>'CurrentDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
+             then (durability->>'CurrentDurability')::numeric
+         end as current_durability,
+         case
+           when (durability->>'DecayedMaxDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
+             then (durability->>'DecayedMaxDurability')::numeric
+         end as decayed_max_durability,
+         case
+           when (durability->>'MaxDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
+             then nullif((durability->>'MaxDurability')::numeric, 0)
+         end as stored_max_durability
+  from dune.vehicle_modules vm
+  cross join lateral (select vm.stats->'FVehicleModuleDurabilityStats'->1 as durability) d
+  where jsonb_typeof(vm.stats->'FVehicleModuleDurabilityStats') = 'array'
+    and jsonb_array_length(vm.stats->'FVehicleModuleDurabilityStats') >= 2
+    and jsonb_typeof(durability) = 'object'
+), template_maxima as (
+  select template_id,
+         coalesce(
+           max(stored_max_durability),
+           case
+             when count(*) filter (
+               where coalesce(greatest(current_durability, decayed_max_durability), 0) > 0
+             ) >= 2
+               then greatest(max(current_durability), max(decayed_max_durability))
+           end
+         ) as max_durability
+  from module_samples
+  group by template_id
+)`;
+
 export async function repairVehicleDecay(db, id, { thresholdPercent = 50 } = {}) {
   await requireCapability(await supportsRepairVehicleDecay(db), "Repair vehicle decay requires dune.vehicle_modules.stats, dune.vehicle_modules.vehicle_id, and dune.actors.owner_account_id.");
   const threshold = Number(thresholdPercent);
@@ -9215,24 +9646,13 @@ export async function repairVehicleDecay(db, id, { thresholdPercent = 50 } = {})
     const ownerValues = hasPermissionOwnership ? [player.accountId, player.controllerId] : [player.accountId];
     const thresholdParam = ownerValues.length + 1;
     const scanned = await tx.query(`
-      with template_maxima as (
-        select vm.template_id,
-               max((durability->>'MaxDurability')::numeric) as max_durability
-        from dune.vehicle_modules vm
-        cross join lateral (select vm.stats->'FVehicleModuleDurabilityStats'->1 as durability) d
-        where jsonb_typeof(vm.stats->'FVehicleModuleDurabilityStats') = 'array'
-          and jsonb_array_length(vm.stats->'FVehicleModuleDurabilityStats') >= 2
-          and durability ? 'MaxDurability'
-          and (durability->>'MaxDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
-          and (durability->>'MaxDurability')::numeric > 0
-        group by vm.template_id
-      ), owned_modules as (
+      with ${VEHICLE_REPAIR_TEMPLATE_MAXIMA_CTE}, owned_modules as (
         select vm.vehicle_id,
                vm.stats->'FVehicleModuleDurabilityStats'->1 as durability,
                coalesce(
                  case
                    when (vm.stats->'FVehicleModuleDurabilityStats'->1->>'MaxDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
-                     then (vm.stats->'FVehicleModuleDurabilityStats'->1->>'MaxDurability')::numeric
+                     then nullif((vm.stats->'FVehicleModuleDurabilityStats'->1->>'MaxDurability')::numeric, 0)
                  end,
                  tm.max_durability
                ) as effective_max
@@ -9262,24 +9682,13 @@ export async function repairVehicleDecay(db, id, { thresholdPercent = 50 } = {})
              )::int as missing_maximum
       from owned_modules`, ownerValues);
     const repaired = await tx.query(`
-      with template_maxima as (
-        select vm.template_id,
-               max((durability->>'MaxDurability')::numeric) as max_durability
-        from dune.vehicle_modules vm
-        cross join lateral (select vm.stats->'FVehicleModuleDurabilityStats'->1 as durability) d
-        where jsonb_typeof(vm.stats->'FVehicleModuleDurabilityStats') = 'array'
-          and jsonb_array_length(vm.stats->'FVehicleModuleDurabilityStats') >= 2
-          and durability ? 'MaxDurability'
-          and (durability->>'MaxDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
-          and (durability->>'MaxDurability')::numeric > 0
-        group by vm.template_id
-      ), eligible as (
+      with ${VEHICLE_REPAIR_TEMPLATE_MAXIMA_CTE}, eligible as (
         select vm.id,
                vm.vehicle_id,
                coalesce(
                  case
                    when (durability->>'MaxDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
-                     then (durability->>'MaxDurability')::numeric
+                     then nullif((durability->>'MaxDurability')::numeric, 0)
                  end,
                  tm.max_durability
                ) as max_durability
@@ -9302,14 +9711,14 @@ export async function repairVehicleDecay(db, id, { thresholdPercent = 50 } = {})
           and coalesce(
                 case
                   when (durability->>'MaxDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
-                    then (durability->>'MaxDurability')::numeric
+                    then nullif((durability->>'MaxDurability')::numeric, 0)
                 end,
                 tm.max_durability
               ) > 0
           and (durability->>'DecayedMaxDurability')::numeric < (coalesce(
                 case
                   when (durability->>'MaxDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
-                    then (durability->>'MaxDurability')::numeric
+                    then nullif((durability->>'MaxDurability')::numeric, 0)
                 end,
                 tm.max_durability
               ) * $${thresholdParam})

@@ -153,6 +153,7 @@ export const ROUTE_ACTIONS = {
 
   // --- Vehicles ---
   "GET /api/vehicles":                         "vehicles:read",
+  "GET /api/vehicles/permission-candidates":   "vehicles:read",
 
   // --- Exchange (Market Board) — read-only board + console-local filter config ---
   "GET /api/exchange/items":                   "exchange:read",
@@ -172,6 +173,10 @@ export const ROUTE_ACTIONS = {
   "POST /api/exchange/market/seed/schedule":   "exchange:market-write",
   "POST /api/exchange/market/buyback/run":     "exchange:market-write",
   "POST /api/exchange/market/seed/run":        "exchange:market-write",
+  "POST /api/exchange/market/seed/clear":      "exchange:market-write",
+  "GET /api/exchange/market/items":            "exchange:market",
+  "GET /api/exchange/market/items/catalog":    "exchange:market",
+  "POST /api/exchange/market/items":           "exchange:market-write",
 
   // --- Players (mutations) ---
   "POST /api/players/kick-all-online":         "players:kick-all",
@@ -331,6 +336,9 @@ export const REGEX_ACTIONS = [
   // Bases (parameterized)
   ["/api/bases/", "bases:read"],
 
+  // Vehicles (parameterized)
+  ["/api/vehicles/", "vehicles:read"],
+
   // Storage (parameterized)
   ["/api/storage/", "storage:read"],
 
@@ -364,6 +372,8 @@ export const REGEX_ACTIONS_BY_METHOD = {
   "POST /api/bases/":      "bases:mutate",
   "DELETE /api/bases/":    "bases:mutate",
   "PUT /api/bases/":       "bases:mutate",
+
+  "PUT /api/vehicles/":    "vehicles:mutate",
 
   "POST /api/storage/":    "storage:mutate",
 

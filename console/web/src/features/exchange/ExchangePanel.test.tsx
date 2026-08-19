@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { exchangeApi, type ExchangeItemsResponse } from "../../api/exchange";
 import { marketBotApi } from "../../api/marketBot";
+import { marketBotItemsApi } from "../../api/marketBotItems";
 import { ExchangePanel, _resetExchangeCacheForTests } from "./ExchangePanel";
 
 vi.mock("../../api/exchange", () => ({
@@ -23,6 +24,14 @@ vi.mock("../../api/marketBot", () => ({
     saveSeedSchedule: vi.fn(),
     runBuyback: vi.fn(),
     runSeed: vi.fn()
+  }
+}));
+
+vi.mock("../../api/marketBotItems", () => ({
+  marketBotItemsApi: {
+    list: vi.fn(),
+    catalog: vi.fn(),
+    save: vi.fn()
   }
 }));
 
@@ -68,6 +77,21 @@ beforeEach(() => {
   vi.mocked(exchangeApi.listings).mockResolvedValue({ capabilities: { exchange: true }, rows: [] });
   // Default: no exchange:market permission — the Market Bot button stays hidden.
   vi.mocked(marketBotApi.status).mockRejectedValue(new Error("Forbidden"));
+  vi.mocked(marketBotItemsApi.list).mockResolvedValue({
+    capabilities: { exchangeMarket: true },
+    rows: [{
+      templateId: "TestWeapon",
+      displayName: "Test Weapon",
+      category: "ranked_weapons",
+      qualityLevel: 0,
+      price: 100,
+      listings: 1,
+      enabled: true,
+      overridden: false,
+      isNew: false,
+      unsafe: false
+    }]
+  });
 });
 
 describe("ExchangePanel", () => {
@@ -103,7 +127,7 @@ describe("ExchangePanel", () => {
 
     await screen.findByText("Partial Stabilization Belt");
     const categorySelect = screen.getByRole("combobox", { name: /Category/ });
-    expect(within(categorySelect).getByRole("option", { name: "weapons" })).toBeInTheDocument();
+    expect(within(categorySelect).getByRole("option", { name: "Weapons" })).toHaveValue("weapons");
     fireEvent.change(categorySelect, { target: { value: "utility" } });
 
     await waitFor(() => expect(vi.mocked(exchangeApi.items)).toHaveBeenCalledWith(expect.objectContaining({ category: "utility" })));
@@ -160,7 +184,7 @@ describe("ExchangePanel", () => {
     await screen.findByText("Partial Stabilization Belt");
     fireEvent.click(screen.getByLabelText("Configure bots and blacklist"));
 
-    expect(await screen.findByText("Exchange filter settings")).toBeInTheDocument();
+    expect(await screen.findByText("Exchange Filter Settings")).toBeInTheDocument();
     expect(vi.mocked(exchangeApi.getConfig)).toHaveBeenCalled();
   });
 
@@ -213,5 +237,26 @@ describe("ExchangePanel", () => {
 
     await screen.findByText("Partial Stabilization Belt");
     expect(screen.queryByLabelText("Market Bot settings")).not.toBeInTheDocument();
+  });
+
+  it("confirms before leaving Bot Items with unsaved changes", async () => {
+    vi.mocked(exchangeApi.items).mockResolvedValue(itemsResponse());
+    const confirmAction = vi.fn().mockResolvedValue(false);
+    renderPanel({ confirmAction });
+
+    await screen.findByText("Partial Stabilization Belt");
+    fireEvent.click(screen.getByRole("tab", { name: "Bot Items" }));
+    fireEvent.click(await screen.findByLabelText("Test Weapon On"));
+    fireEvent.click(screen.getByRole("tab", { name: "Exchange" }));
+
+    await waitFor(() => expect(confirmAction).toHaveBeenCalledWith(
+      "You have unsaved Bot Item changes. Leave this tab and discard them?",
+      expect.objectContaining({ confirmLabel: "Discard and Leave" })
+    ));
+    expect(screen.getByText("Test Weapon")).toBeInTheDocument();
+
+    confirmAction.mockResolvedValueOnce(true);
+    fireEvent.click(screen.getByRole("tab", { name: "Exchange" }));
+    expect(await screen.findByText("Partial Stabilization Belt")).toBeInTheDocument();
   });
 });
