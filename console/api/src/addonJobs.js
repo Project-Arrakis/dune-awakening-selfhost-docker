@@ -507,10 +507,55 @@ skip_band AS (
       AND (${BUYBACK_ELIGIBLE_PREDICATE}) IS NOT TRUE
     ORDER BY (${BUYBACK_RESULT_CODE_SQL})::int ASC, o.item_price ASC NULLS LAST, o.id ASC
     LIMIT GREATEST(0, ${cap} - (SELECT n FROM n0))
+),
+classified AS (
+    SELECT * FROM eligible_band
+    UNION ALL
+    SELECT * FROM skip_band
 )
-SELECT * FROM eligible_band
-UNION ALL SELECT * FROM skip_band
+SELECT * FROM classified
 ORDER BY result_code::int ASC, item_price::bigint ASC, order_id::bigint ASC;`;
+}
+
+// Anonymous server-level market totals for the player portal. Keep this query
+// separate from per-player Buyback classification so either result can remain
+// available when the other feature encounters a database compatibility issue.
+export function buildPlayerPortalExchangeOverviewSql(schedule) {
+  const exchangeId = requireScheduleExchangeId(schedule);
+  return `WITH bot AS (
+    SELECT id AS owner_id FROM dune.actors WHERE class = 'Revy' LIMIT 1
+)
+SELECT COALESCE(o.template_id, '') AS template_id,
+       (${BUYBACK_ORDER_GRADE_SQL})::text AS quality_level,
+       COUNT(*)::text AS listing_count,
+       SUM(GREATEST(${BUYBACK_STACK_SQL}, 0))::text AS total_units,
+       MIN(o.item_price)::text AS lowest_price,
+       MAX(o.item_price)::text AS highest_price
+FROM ${BUYBACK_ORDERS_BASE_JOIN_SQL}
+LEFT JOIN bot b ON TRUE
+WHERE o.exchange_id = ${exchangeId}
+  AND ${BUYBACK_PLAYER_SELL_SQL}
+  AND o.item_price >= 0
+GROUP BY o.template_id, ${BUYBACK_ORDER_GRADE_SQL}
+ORDER BY COUNT(*) DESC, o.template_id ASC, ${BUYBACK_ORDER_GRADE_SQL} ASC
+LIMIT 100;`;
+}
+
+function normalizePlayerPortalExchangeOverview(rows, names) {
+  return (rows || []).map((row) => {
+    const templateId = String(row.template_id ?? row.templateId ?? "");
+    const qualityLevel = String(row.quality_level ?? row.qualityLevel ?? "");
+    return {
+      templateId,
+      displayName: displayNameFor(names, templateId, qualityLevel) || templateId || "Unknown Item",
+      qualityLevel,
+      listingCount: Math.max(0, Number(row.listing_count ?? row.listingCount) || 0),
+      totalUnits: Math.max(0, Number(row.total_units ?? row.totalUnits) || 0),
+      lowestPrice: String(row.lowest_price ?? row.lowestPrice ?? ""),
+      highestPrice: String(row.highest_price ?? row.highestPrice ?? ""),
+      maxUnitPrice: String(row.max_unit_price ?? row.maxUnitPrice ?? "")
+    };
+  });
 }
 
 export function buildBuybackSql(plan, schedule) {
@@ -712,19 +757,44 @@ export async function playerPortalMarketSnapshot(config, db) {
     buybackPercent: schedule.buybackPercent,
     buybackPriceBasis: schedule.buybackPriceBasis,
     maxBuys: schedule.maxBuys,
-    evaluatedAt: new Date().toISOString(),
+    evaluatedAt: "",
     listings: [],
-    batches: readBuybackLog(config).batches
+    batches: readBuybackLog(config).batches,
+    overview: { available: false, evaluatedAt: "", items: [] }
   };
   if (!schedule.exchangeId) return base;
+  const effectiveSchedule = withReseedAugmentPricing(config, schedule);
+  let names = new Map();
   try {
-    const classified = await classifyBuybackListings(config, db);
-    return { ...base, available: true, evaluatedAt: new Date().toISOString(), listings: classified.entries };
+    names = seedPlanDisplayNames(loadMergedBuybackSeedPlan(config));
   } catch {
-    // Portal data is optional. Never interrupt the heartbeat or expose local
-    // database/seed-plan errors in a player-facing snapshot.
-    return base;
+    // Display names are optional for the anonymous raw Exchange aggregate.
   }
+  const [overviewResult, classificationResult] = await Promise.allSettled([
+    runSql(db, buildPlayerPortalExchangeOverviewSql(effectiveSchedule), false),
+    classifyBuybackListings(config, db)
+  ]);
+  const now = new Date().toISOString();
+  const ceilingByItem = new Map(
+    (classificationResult.status === "fulfilled" ? classificationResult.value.entries : [])
+      .map((entry) => [`${entry.templateId}\0${entry.qualityLevel}`, String(entry.maxUnitPrice || "")])
+  );
+  const overview = overviewResult.status === "fulfilled"
+    ? {
+        available: true,
+        evaluatedAt: now,
+        items: normalizePlayerPortalExchangeOverview(overviewResult.value?.rows, names).map((item) => ({
+          ...item,
+          maxUnitPrice: ceilingByItem.get(`${item.templateId}\0${item.qualityLevel}`) || ""
+        }))
+      }
+    : base.overview;
+  if (classificationResult.status === "fulfilled") {
+    return { ...base, available: true, evaluatedAt: now, listings: classificationResult.value.entries, overview };
+  }
+  // Portal data is optional. Never interrupt the heartbeat or expose local
+  // database/seed-plan errors in a player-facing snapshot.
+  return { ...base, overview };
 }
 
 function buybackDiagnostics(row = {}) {
