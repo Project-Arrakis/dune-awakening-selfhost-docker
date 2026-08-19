@@ -16,6 +16,7 @@ function fixtureRepo() {
     { id: "SteelBar", name: "Steel Ingot", category: "resources", source: "Resources", group: "refined_resource", volume: 1.0 },
     { id: "T6RefinedResourceA", name: "Plastanium Ingot", category: "resources", source: "Resources", group: "refined_resource", volume: 1.0 },
     { id: "FremenComponent1", name: "EMF Generator", category: "resources", source: "Resources", group: "component", volume: 1.0 },
+    { id: "AzuriteOre", name: "Copper Ore", category: "resources", source: "Resources", group: "raw_resource", volume: 0.2 },
     { id: "BasicLighting_Patent", name: "Basic Lighting", category: "buildings", source: "BuildingSets" },
     { id: "Developer_Storage_Container_Patent", name: "Developer Storage Container", category: "buildings", source: "BuildingSets" }
   ]));
@@ -146,10 +147,22 @@ test("resolveFillableCatalogItem accepts components", () => {
   assert.equal(item.group, "component");
 });
 
-test("resolveFillableCatalogItem rejects unfillable items", () => {
+test("resolveFillableCatalogItem accepts raw resources", () => {
   const root = fixtureRepo();
+  const item = resolveFillableCatalogItem(root, { itemId: "AzuriteOre" });
+  assert.equal(item.group, "raw_resource");
+  assert.equal(item.volume, 0.2);
+});
+
+test("resolveFillableCatalogItem rejects untagged/unfillable items", () => {
+  const root = fixtureRepo();
+  // CupOfWater deliberately carries no `group` in the fixture -- PlantFiber
+  // is intentionally NOT used here since it is a real raw_resource in the
+  // production catalog (see runtime/data/admin-items.json) and reusing it
+  // as the "should be rejected" case would misleadingly suggest raw
+  // resources are unfillable, which is no longer true.
   assert.throws(
-    () => resolveFillableCatalogItem(root, { itemId: "PlantFiber" }),
+    () => resolveFillableCatalogItem(root, { itemId: "CupOfWater" }),
     /Item type not allowed for fill/
   );
 });

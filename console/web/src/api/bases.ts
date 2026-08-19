@@ -139,6 +139,18 @@ export type BaseInventoryContainer = {
   group: BaseInventoryGroupKey;
   usedSlots: number;
   maxSlots: number;
+  // Both 0 on a schema without dune.inventories.max_item_volume /
+  // dune.items.volume_override -- degraded, not omitted, so the UI can
+  // always read these without a guard. currentVolume is the backend's own
+  // sum of volume_override * quantity across every stack -- volume_override
+  // itself is a PER-UNIT value (corrected 2026-08-19, see
+  // docs/console/base-inventory.md and
+  // docs/incidents/INC-2026-08-19-VOLUME-OVERRIDE-DOUBLE-MULTIPLIED.md;
+  // storing the total there instead caused the live game engine, which
+  // multiplies volume_override by stack_size itself for display, to
+  // double-multiply and show absurdly inflated in-game item volumes).
+  currentVolume: number;
+  maxVolume: number;
   itemCount: number;
   items: BaseInventoryEntry[];
 };
@@ -173,6 +185,9 @@ export type BaseContainerInventory = {
   inventoryId: string;
   maxSlots: number;
   usedSlots: number;
+  // Same degrade-to-0 convention as BaseInventoryContainer's fields above.
+  currentVolume: number;
+  maxVolume: number;
   slots: BaseInventorySlot[];
 };
 
@@ -190,10 +205,27 @@ export type BaseContainerSlots = {
   group?: BaseInventoryGroupKey;
   maxSlots?: number;
   usedSlots?: number;
+  currentVolume?: number;
+  maxVolume?: number;
   inventories: BaseContainerInventory[];
   reason?: string;
   deleteSafety?: BaseContainerDeleteSafety;
   addSafety?: BaseContainerAddSafety;
+};
+
+// Shared result shape for the bulk delete (selected items) and delete-all
+// actions -- both return the same "how many actually got removed" summary,
+// since a requested item id may already be gone by the time the delete runs.
+export type BaseContainerBulkDeleteResult = {
+  ok: boolean;
+  baseId: number;
+  placeableId: string;
+  inventoryId: string;
+  typeName: string;
+  group: BaseInventoryGroupKey;
+  removed: { itemId: string; templateId: string; count: number }[];
+  message: string;
+  deleteSafety: BaseContainerDeleteSafety;
 };
 
 // Item deletion is deliberately fail-closed: only plain storage on a map that
@@ -255,7 +287,7 @@ export type BaseInventory = {
   groups: BaseInventoryGroup[];
   containers: BaseInventoryContainer[];
   items: BaseInventoryItem[];
-  totals: { items: number; distinct: number; containers: number; usedSlots: number; maxSlots: number };
+  totals: { items: number; distinct: number; containers: number; usedSlots: number; maxSlots: number; currentVolume: number; maxVolume: number };
   // Only set alongside supported: false.
   reason?: string;
 };
@@ -464,6 +496,89 @@ export const basesApi = {
       reason?: string;
     }>(`/api/bases/${encodeURIComponent(baseId)}/containers/${encodeURIComponent(placeableId)}/items`,
       { ...item, confirmation }),
+  // Deletes several selected whole stacks in one confirmation. Storage-group
+  // only -- the backend re-verifies ownership and group itself, this is not
+  // a trust boundary the frontend enforces.
+  deleteContainerItems: (baseId: string, placeableId: string, itemIds: string[], confirmation: string) =>
+    api<{
+      supported: boolean;
+      result?: BaseContainerBulkDeleteResult;
+      error?: string;
+      reason?: string;
+    }>(`/api/bases/${encodeURIComponent(baseId)}/containers/${encodeURIComponent(placeableId)}/items`,
+      { method: "DELETE", body: JSON.stringify({ confirmation, itemIds }) }),
+  // Clears every item currently in the container. The item list to delete
+  // is resolved server-side, fresh inside the delete transaction -- not
+  // whatever the tab last fetched -- so this always means "everything
+  // actually there right now," even if the tab's own view is stale.
+  deleteAllContainerItems: (baseId: string, placeableId: string, confirmation: string) =>
+    api<{
+      supported: boolean;
+      result?: BaseContainerBulkDeleteResult;
+      error?: string;
+      reason?: string;
+    }>(`/api/bases/${encodeURIComponent(baseId)}/containers/${encodeURIComponent(placeableId)}/all-items`,
+      { method: "DELETE", body: JSON.stringify({ confirmation }) }),
+  // Gives one item to a Storage-group container. Volume-checked the same
+  // way Fill already is; itemName/itemId is resolved against the admin
+  // catalog server-side, same as the standalone Storage tab's Give action.
+  // `requested`/`given`/`clamped` (issue #347 follow-up): a give that would
+  // exceed the container's remaining volume is clamped to whatever fits and
+  // inserted -- never rejected outright -- so `given` can be less than
+  // `requested`. Only genuinely zero room left (not even 1 unit fits) is
+  // still a real error, surfaced via `error`/`reason` as before.
+  giveContainerItem: (baseId: string, placeableId: string, body: { itemName?: string; itemId?: string; quantity: number; confirmation: string }) =>
+    api<{
+      supported: boolean;
+      result?: { ok: boolean; inserted: { id: string; templateId: string; stackSize: number }; requested: number; given: number; clamped: boolean };
+      error?: string;
+      reason?: string;
+    }>(`/api/bases/${encodeURIComponent(baseId)}/containers/${encodeURIComponent(placeableId)}/give-item`,
+      { method: "POST", body: JSON.stringify(body) }),
+  // Gives several distinct item templates to a Storage-group container in
+  // one confirmation and one server-side transaction -- not N sequential
+  // calls, which would let some items succeed and others fail on the same
+  // click. Capped at 50 distinct items per batch by the backend.
+  // Never rejects on hitting a capacity limit: once one item in the batch
+  // does not fully fit (clamped, or zero room), the batch stops there --
+  // every requested item still appears in `results`, including ones never
+  // attempted because an earlier item already stopped the batch
+  // (`attempted: false`). `inserted` is only present on items that were
+  // actually given a row (`given > 0`).
+  giveContainerItems: (baseId: string, placeableId: string, items: { itemName?: string; itemId?: string; quantity: number }[], confirmation: string) =>
+    api<{
+      supported: boolean;
+      result?: {
+        ok: boolean;
+        results: {
+          inserted?: { id: string; templateId: string; stackSize: number };
+          templateId: string;
+          requested: number;
+          given: number;
+          clamped: boolean;
+          attempted: boolean;
+          reason?: string;
+        }[];
+      };
+      error?: string;
+      reason?: string;
+    }>(`/api/bases/${encodeURIComponent(baseId)}/containers/${encodeURIComponent(placeableId)}/give-items`,
+      { method: "POST", body: JSON.stringify({ items, confirmation }) }),
+  // Fills a Storage-group container with a raw resource, refined resource,
+  // or component -- the same server-side allowlist the standalone Storage
+  // tab's Fill action already enforces (FILLABLE_GROUPS in adminCatalog.js).
+  // Same clamp-and-inform contract as giveContainerItem. `requested` is
+  // null for a "Fill to Capacity" call (quantity: 0, no specific amount was
+  // ever asked for to compare against) and a real number for "Fill
+  // Amount" (an explicit quantity that may itself get clamped down).
+  fillContainerItem: (baseId: string, placeableId: string, body: { itemName?: string; itemId?: string; quantity: number; confirmation: string }) =>
+    api<{
+      supported: boolean;
+      result?: { ok: boolean; inserted: { id: string; templateId: string; stackSize: number; volumeOverride?: number }; requested: number | null; given: number; clamped: boolean };
+      error?: string;
+      reason?: string;
+    }>(`/api/bases/${encodeURIComponent(baseId)}/containers/${encodeURIComponent(placeableId)}/fill-item`,
+      { method: "POST", body: JSON.stringify(body) }),
   // A refill for a map that is currently running comes back as
   // `result.queued`: the write is deferred to the next time that map is down.
   refillWater: (baseId: string) =>

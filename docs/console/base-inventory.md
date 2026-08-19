@@ -153,31 +153,67 @@ all, so its absence is deliberate.
 into a base at all, so it cannot be read as consent to fabricate them. The same two base preconditions
 apply — a queued delete or a backed-up base rejects with `409`.
 
-## Why item writes require a stopped map
+## Why adding a stored item requires a stopped map
 
-Neither an add nor a delete is queued: a specific inventory row may move, merge, or disappear before a
-deferred operation runs. Instead, both routes refuse the write until they can verify the owning map is
-safely down.
+Adding is not queued: a specific inventory row may move, merge, or disappear before a deferred operation
+runs. Instead, the add route refuses the write until it can verify the owning map is safely down. This is
+upstream's own route (`addBaseContainerItem`, upstream PR #172) and this fork keeps its original design
+rationale exactly as upstream shipped it, rather than retroactively applying this fork's own later delete/
+Give/Fill findings (below) to a route this fork did not author. See "Deletion, Give, and Fill do not
+require a stopped map" for why those other write paths reached a different, evidence-based conclusion for
+themselves specifically.
 
-The reason a queue exists at all still holds here:
+## Deletion, Give, and Fill do not require a stopped map
+
+None of the delete routes (`DELETE …/items/{itemId}`, Delete Selected, Delete All), nor Give or Fill
+(`POST …/give-item`, `give-items`, `fill-item`, this fork's own #347 work), require the owning map to be
+stopped. An earlier version of delete refused all three until it could verify a safely-stopped map, on the
+theory that a running map's own in-memory/autosave state could resurrect or conflict with a row deleted
+out from under it. Extensive live testing (the same investigation that produced
+`docs/incidents/INC-2026-08-19-VOLUME-OVERRIDE-DOUBLE-MULTIPLIED.md`) found two things that together make
+that theory wrong:
+
+- The standalone Storage tab's own delete route (`storageRemoveItemsRoute` → `duneDb.removeItemsFromStorage`)
+  has **never** gated on map state at all, and has been tested for hours and shipped without incident. This
+  is the established precedent this feature now matches.
+- The live game engine only reads/claims a container's item rows from Postgres **at server startup** — proven
+  directly by `docs/incidents/INC-2026-07-31-FILL-ITEMS-VISIBLE-ONLY-AFTER-RESTART.md`'s audit-trigger
+  evidence, never mid-session. A database-side delete while the map stays running is therefore exactly as
+  safe as Give/Fill's own inserts already are (see "Why Give/Fill do not require a stopped map" below): the
+  change is durably correct in the database immediately, it simply is not reflected in whatever the live map
+  still shows until the next restart.
 
 - No `pg_notify` routine covers inventory or buildings. The game's 8 notify channels are guild, landsraad, party, permission, taxation, faction, vehicle_recovery, player_info.
 - There are zero triggers on `dune.items`, `dune.inventories`, `dune.buildings`, `dune.placeables`.
 - The RMQ command bus has no per-item edit or delete. `AddItemToInventory` addresses items by *template
-  name*, and it addresses a **player**, not a base container — so it is not an escape hatch for the add
-  either. Every id here is a row id.
+  name*, and it addresses a **player**, not a base container — so it is not an escape hatch for delete,
+  Give, or Fill either. Every id here is a row id.
 
-So a running map can neither miss the write nor resurrect the row on its next autosave. The container GET
-returns both `deleteSafety` and `addSafety` — structurally identical, resolved from one liveness probe, and
-differing only in wording so the operator reads a sentence about what they actually tried to do. The overlay
-disables the matching control and explains why when the map is running or its state cannot be verified. Each
-route then repeats its check immediately before changing the database, so a stale or hand-built request
+So a running map can neither miss a delete/Give/Fill write nor resurrect a deleted row on its next
+autosave. `baseContainerDeleteSafety()` in `server.js` now only enforces the Storage-vs-Crafting/Refining
+group restriction below for delete — its map-liveness check was removed entirely, not merely relaxed.
+`deleteSafety.safe` is therefore always `true` for a Storage-group container regardless of whether its
+owning map is running. The response shape (`deleteSafety: { safe, known, map, partitionId, reason }`) is
+kept as-is on every caller, so this stays a single, easy-to-find place to reintroduce a map-state check if
+a real live-sync hazard is ever found for deletion specifically. Give and Fill were never gated on map
+state at all (see "Why Give/Fill do not require a stopped map" below).
+
+`addSafety`, by contrast, is upstream's own gate and is unaffected by any of the above — it still resolves
+from a real liveness probe (`baseContainerAddSafety()`, `resolveBaseContainerAddSafety()`) and still
+refuses the write when the map is running or unverifiable. The container GET response carries both
+`deleteSafety` and `addSafety` side by side with the same shape, but they are deliberately **not**
+structurally derived from one shared resolve any more — see the comment above
+`BASE_CONTAINER_ADD_WORDING` in `server.js` for why the two policies are kept explicitly separate rather
+than unified. The overlay disables the Add control and explains why when the map is running or its state
+cannot be verified; the delete/Give/Fill controls are never disabled for this reason. Each route repeats
+its own check (or lack thereof) immediately before changing the database, so a stale or hand-built request
 cannot bypass the UI.
 
-Both writes are limited to plain **Storage** containers. Refinery and fabricator inventories are visible but
-read-only because the game's crafting state can reference their item rows; removing a reserved ingredient
-can leave an active job pointing at an item that no longer exists, and adding a row into a job's inventory
-is no safer.
+Every write covered by this document is limited to plain **Storage** containers. Refinery and fabricator
+inventories are visible but read-only because the game's crafting state can reference their item rows;
+removing a reserved ingredient can leave an active job pointing at an item that no longer exists, and
+adding or inserting a row into a job's inventory is no safer. This restriction applies identically to Add,
+delete, Give, and Fill, and is unrelated to map state.
 
 Item identifiers remain decimal strings from the URL through the PostgreSQL query. They are `bigint` values,
 and converting one to JavaScript `Number` could round an id above `Number.MAX_SAFE_INTEGER` into a different
@@ -188,16 +224,36 @@ row — unacceptable for a destructive operation.
 ```
 { supported, baseId,
   groups:     [{ key, name, containerCount, itemCount }],
-  containers: [{ placeableId, name, typeName, group, usedSlots, maxSlots, itemCount,
+  containers: [{ placeableId, name, typeName, group, usedSlots, maxSlots, currentVolume, maxVolume, itemCount,
                  items: [{ templateId, name, quantity }] }],
   items:      [{ templateId, name, image, category, quantity, containerCount,
                  containers: [{ placeableId, name, typeName, group, quantity }] }],
-  totals:     { items, distinct, containers, usedSlots, maxSlots } }
+  totals:     { items, distinct, containers, usedSlots, maxSlots, currentVolume, maxVolume } }
 ```
 
 One response backs both views, so switching between Items and Containers never refetches. Item `name`/`category` come from `adminItemMetadata()` over `runtime/data/admin-items.json`, falling back to the raw `template_id`; `image` resolves through `itemImagePath()` and falls back to `image-unavailable.png`.
 
 `usedSlots` counts item *rows* — one stack occupies one slot — while `quantity` sums `stack_size`. Capacity is summed once per inventory, not per item row, since every row repeats its inventory's `max_item_count`.
+
+**`currentVolume`/`maxVolume` (issue #356) are column-probed the same way `positionIndex`/`qualityLevel` are
+in "Per-container slots" below** — a schema without `dune.inventories.max_item_volume` or
+`dune.items.volume_override` degrades both to `0` rather than failing the tab, and the UI shows "—" instead
+of a percentage, or withholds the row entirely on a per-container card, whenever `maxVolume` is `0`.
+`currentVolume` sums `volume_override × stack_size` per inventory, since `volume_override` itself stores
+each item's **PER-UNIT** volume, not a per-stack total (see "`volume_override` is per-unit, not per-stack"
+below for why) — the same convention `giveItemToStorage`/`fillItemToStorage` use for their own volume-cap
+checks (see "Both Give and Fill enforce the same slot and volume caps" below), so a displayed volume total
+always agrees with what the next give/fill against that container will actually enforce.
+
+**Why this exists instead of a backfill:** an item given via the storage give-item route before it started
+recording `volume_override` (or given directly by the game engine) has a permanent `NULL` there, which
+every `sum(coalesce(volume_override, 0))` query already treats as `0` — so a pre-existing container's real
+volume usage was silently invisible rather than wrong. A one-time backfill script was considered and
+rejected: it would mean running an `UPDATE` against every operator's live `dune.items` table on their next
+pull, which is exactly the update-path risk Strict Requirement 0/26 exist to catch for a LOW-MEDIUM
+accuracy gap in a capacity message, not a data-integrity or security issue. Surfacing the real, current
+total directly — rather than trying to reconstruct history that was never recorded — was judged the lower-risk
+fix.
 
 **A container's `items[]` is not its stacks.** Rows sharing a template are merged into one entry, so `items.length` is the number of distinct templates and is **≤ `usedSlots`**. On the reference base, Chem Storage fills 8 slots with 3 templates, and 5 of 17 containers disagree the same way. The UI therefore says "3 distinct", never "3 stacks" — the stack count is `usedSlots`, already shown as Slots Used. The type is named `BaseInventoryEntry` rather than `…Stack` for the same reason.
 
@@ -208,14 +264,17 @@ filter, both of which genuinely mean distinct templates. The per-slot truth live
 
 ```
 GET /api/bases/{baseId}/containers/{placeableId}
-{ supported, found, baseId, placeableId, typeName, group, maxSlots, usedSlots,
-  inventories: [{ inventoryId, maxSlots, usedSlots,
+{ supported, found, baseId, placeableId, typeName, group, maxSlots, usedSlots, maxVolume, currentVolume,
+  inventories: [{ inventoryId, maxSlots, usedSlots, maxVolume, currentVolume,
                   slots: [{ itemId, templateId, name, positionIndex, quantity,
                             qualityLevel, currentDurability, maxDurability,
                             augments: [{ templateId, name, qualityLevel }] }] }],
   deleteSafety: { safe, known, map, partitionId, reason },
   addSafety:    { safe, known, map, partitionId, reason } }
 ```
+
+`maxVolume`/`currentVolume` follow the exact same convention as `baseInventory`'s own totals above — summed
+once per inventory, column-probed, degrading to `0`/`0` on a schema without volume support.
 
 **Fetched per container, not with the tab.** Folding slots into `baseInventory` tripled that response —
 238 KB to 656 KB on the largest base in the reference dump, +176% — on a tab that loads on every base
@@ -314,3 +373,333 @@ the list stands in and can still delete.
 
 A stack of exactly 1 shows no quantity badge in the grid — the badge is gated on `quantity > 1`, so a
 single item renders as a bare icon.
+
+## Adding items: Give, Give Multiple, and Fill
+
+Storage containers only — the same allowlist restriction as deletion, one section down. The overlay's
+Give/Fill panel is offered whenever `group === "storage"`; it does not additionally require
+`deleteSafety.safe`, unlike every delete action on this page. See "Why Give/Fill do not require a stopped
+map" below for why that asymmetry is deliberate, not an oversight.
+
+**The whole Give/Fill panel is hidden by default, behind an explicit visibility toggle.** Added 2026-08-19
+per explicit operator direction: Give/Fill is a powerful, item-creating capability, and an operator who
+only wants to view or delete a container's contents should not have to see (or accidentally interact with)
+it every time a container is opened. A labeled checkbox (`Give / Fill Controls`, reusing the app's shared
+`.switch-checkbox` pattern already used by Admin Tools' Daily Restart/Restart Queue toggles) sits above the
+panel; it defaults to **off** every time the contents overlay is freshly opened — the toggle's own state is
+not persisted across closing and reopening the overlay, or across switching to a different container,
+matching every other piece of this overlay's own reset-on-open state (`selectedSlotId`, `checkedItemIds`,
+`addFillMode`, `selectedItem`, `addBatch`).
+
+Turning the toggle **on** requires acknowledging an explicit confirm dialog first — it does not silently
+reveal the panel. The dialog restates the restart-visibility fact the in-panel warning banner already
+states (see "Why Give/Fill do not require a stopped map" below and `INC-2026-07-31-001`), and adds an
+explicit, actionable recommendation: configure an automated **Daily Restart** from **Admin Tools → Schedule
+Server Restart → Daily Restart**, so given/filled items do not sit invisible in-game indefinitely. The
+dialog's own `warning` field additionally restates Fill's documented position_index collision risk (see
+"Give fills from the high end..." below). Declining the dialog leaves the toggle off and the panel hidden.
+Turning the toggle back **off** is instant and asks nothing — hiding a capability is never the risky
+direction, only revealing it is.
+
+Clicking an item already in the container (see "Clicking an item already in the container..." below) reveals
+the panel through this same confirm-and-warn path if it is currently hidden, with that item already
+pre-filled — the click is not a silent bypass of the toggle's own confirmation.
+
+**Give and Fill share one item picker and one quantity field, switched by a `Give`/`Fill` mode toggle —
+not two separate panels.** An earlier version rendered a full combobox+quantity+button row for Give and a
+second, visually identical one for Fill, stacked vertically. Once Give and Fill were restricted to the
+same three item groups (below), the two rows showed identical candidate items with nothing explaining
+when to use which — reported directly by a real operator as confusing. The current layout is one shared
+`ItemCatalogCombobox` + quantity `input`, with a `Give`/`Fill` segmented toggle (the same visual pattern as
+the contents overlay's own List/Grid toggle) selecting which action the shared row submits to and which
+action-specific affordance renders beneath it:
+- **Give mode** shows "Add to Batch" and the queued-items list — Give's batch capability (below) is fed by
+  the shared fields instead of its own dedicated ones.
+- **Fill mode** shows "Fill Amount" and "Fill to Capacity" — Fill's capacity sentinel (below) is unchanged.
+
+**Switching modes resets the quantity field to that mode's own default (`1` for Give, `100` for Fill), but
+persists the selected item.** Any item valid in one mode is valid in the other (both filter to the same
+`FILLABLE_GROUPS`), so there is nothing to gain by clearing the selection on a mode switch — it previously
+forced an operator who glanced at Fill and switched back to Give to re-search the same item. The quantity
+field still resets on every switch (a half-typed Give quantity must never be silently submitted as a Fill
+quantity, or vice versa), and a queued Give batch is **not** cleared by switching to Fill and back — an
+operator should be able to check Fill without losing in-progress batch work.
+
+**Below the toggle sits one lightly-bordered mode-hint group and, below that, one bordered warning
+banner** — never more than two notice elements at once, in either mode. The mode-hint group
+(`.bases-inventory-mode-group`) pairs a single muted caption line ("Give inserts a new stack…Fill tops up
+one item toward capacity…") with the toggle itself, using the neutral `--border` token and the
+`--panel-muted` background rather than the warning's amber `--warning` token, so it reads as low-weight
+context rather than a second alert. The warning banner (`.bases-inventory-restart-warning`) always states
+the restart requirement (see "Why Give/Fill do not require a stopped map" below); while Fill mode is
+selected it appends a trailing sentence covering the Fill-specific position_index risk (see "Give fills
+from the high end…" below) to that *same* element rather than opening a second box. This shape is the
+result of two rounds of real operator feedback after the initial consolidation — the first shipped with
+three separately-stacked notice elements (a paragraph, the restart warning, and Fill's collision warning
+as its own second bordered box), the second fixed the *content* but left a visual mismatch between the
+unboxed mode-hint caption and the two bordered controls around it. Both are folded into the description
+above rather than kept as a history; see the git log for `BaseInventoryTab.tsx` if the blow-by-blow is
+ever needed.
+
+**Clicking an item already in the container also populates the Give/Fill combobox with that same item.**
+Giving more of something already sitting in the container previously required re-typing/re-searching its
+exact name in the combobox from scratch, even with the operator looking right at it in the Grid or List
+view. Clicking a Grid cell or a List row's item name now populates `selectedItem` with that slot's item
+**in addition to** the existing "select this slot for the delete strip" behavior the same click already
+performs — it is not a second, separate click target, and it does not change `addFillMode` or
+`quantityText`; the item lands in whichever mode (Give or Fill) is currently active, and the quantity
+field is left exactly as the operator last set it. Resolved against the real, already-loaded catalog (the
+same `loadFullCatalog()` cache `ItemCatalogCombobox` itself uses, exported specifically for this) rather
+than fabricated from the slot's own name/`templateId` alone, so the populated selection carries the item's
+real `group`/`image` fields. Silently a no-op — the click still performs its existing delete-selection
+behavior regardless — for an item that is not in `FILLABLE_GROUPS` (e.g. a weapon or schematic sitting in
+a container some other way) or is not present in the loaded catalog at all; the combobox could never have
+accepted that item either. **Corrected 2026-08-19** to also account for the visibility toggle above: if
+Give/Fill is currently hidden, a click on an otherwise-eligible item reveals it through the same
+confirm-and-warn dialog the toggle itself uses, with that item already pre-filled once the operator
+confirms — the click is not a silent bypass of the toggle's own confirmation, and a decline leaves both the
+panel hidden and the item unselected.
+
+| Action | Route | Backend function | Confirmation phrase |
+|---|---|---|---|
+| Give one item | `POST …/containers/{placeableId}/give-item` | `duneDb.giveItemToStorage()` | `GIVE ITEM TO STORAGE` |
+| Give several items in one call | `POST …/containers/{placeableId}/give-items` | `duneDb.giveMultipleItemsToStorage()` | `GIVE ITEMS TO STORAGE` |
+| Fill with a raw/refined resource or component | `POST …/containers/{placeableId}/fill-item` | `duneDb.fillItemToStorage()` | `FILL ITEM TO STORAGE` |
+
+**Both Give and Fill are restricted to raw resources, refined resources, and components only.**
+`baseContainerGiveItemRoute`/`baseContainerGiveItemsRoute`/`baseContainerFillItemRoute` all resolve items
+through `resolveFillableCatalogItem()`, requiring the item's `group` to be `raw_resource`,
+`refined_resource`, or `component` (`FILLABLE_GROUPS` in `adminCatalog.js`). The Give and Fill comboboxes'
+client-side filter (`ItemCatalogCombobox`'s `filterGroups` prop) matches this exactly, so the picker never
+even offers an item the server would reject; the server independently re-enforces it rather than trusting
+the client to have filtered correctly. An earlier version let Give accept any catalog item at all via the
+unrestricted `resolveCatalogItem()` — found via a real catalog item, "Robe of the Sisterhood" (clothing),
+appearing in the Give combobox — and was narrowed to match Fill's existing restriction, since container
+Give/Give Multiple was never meant to hand out weapons, clothing, or schematics. **This restriction applies
+only to this Base Inventory tab's Give/Give Multiple actions** — the older, separate, standalone Storage
+tab's own "Give Item" action (`storageGiveItemRoute`) is unaffected and still accepts any catalog item,
+unchanged.
+
+**Give Multiple is one transaction, capped at 50 distinct items.** Every check `giveItemToStorage` performs
+(slot cap, volume cap) is repeated fresh for each item in the batch — re-queried after each insert, not
+computed once up front — so item 3 correctly sees the slots/volume items 1 and 2 already consumed within
+the same call.
+
+### Give fills from the high end of a container; Fill does not (and cannot)
+
+**A real, confirmed collision risk, not a hypothetical** (see
+`docs/incidents/INC-2026-08-19-GIVE-FILL-POSITION-INDEX-COLLISION.md` for the full writeup): the live game
+engine only reads/claims a container's `dune.items` rows at server startup, never mid-session
+(`INC-2026-07-31-001`), but a player can move or add an item into the same container **in-game while the
+map keeps running** at any time. If a console insert and a live in-game action land on the same
+`position_index`, one of the two rows loses on the next restart — permanently unclaimed and unusable
+in-game, though not deleted or corrupted. This was directly reproduced and traced end-to-end through
+`dune.item_audit_log`, not inferred.
+
+**Give and Give Multiple mitigate this** (per explicit operator direction): `nextHighPositionIndex()` in
+`duneDb.js` picks the **highest unused slot below `max_item_count`** instead of the lowest-next-free slot
+the old convention used. In-game additions/moves typically fill a container low-to-high starting from slot
+0, so inserting from the high end reduces — does not eliminate — the chance of colliding with a slot the
+engine is about to claim. A genuinely full or nearly-full container can still collide; this is a
+mitigation, not a guarantee. Falls back to the old lowest-next-free convention when `max_item_count` is 0
+(unknown/uncapped on this schema), since there is no known high end to start from.
+
+**Fill does not get this mitigation, by design.** Fill exists to top up a container toward its real
+capacity — the same low-to-high direction the engine already fills in — so there is no meaningful "far end"
+left once Fill has done its job; the high-end approach that helps Give simply does not apply. Per explicit
+operator direction, Fill instead ships with an in-UI warning shown while Fill mode is selected (see "Give
+and Fill share one item picker..." above) stating this risk directly, and the incident document above is
+the canonical reference for an operator who wants the full mechanism. This is treated as an accepted,
+documented limitation, not an open bug.
+
+**Neither Give nor Fill ever rejects a request just because it would exceed the container's remaining
+volume.** Per explicit operator direction (found during manual UI review of #347): an earlier version threw
+`"Storage is full by volume"` and inserted nothing at all, forcing the operator to guess a smaller quantity
+and retry. Both functions now **clamp the requested quantity down to whatever actually fits** and insert
+that instead — asking for 500 of an item that only has room for 375 gives 375, not 0. The response always
+reports `requested`, `given`, and `clamped` (`clamped: true` whenever `given < requested`), and the UI
+surfaces exactly that outcome (`"Only 375 of the requested 500 x X fit and was given to the container."`)
+rather than silently implying the full request succeeded. **Slot count is the one capacity axis this does
+NOT apply to** — a single give/fill always consumes exactly one slot regardless of quantity, so "no slots
+left" genuinely cannot be partially satisfied and remains a hard rejection (`"Storage is full by item slot
+count"`). Volume itself is still a hard rejection in the one case clamping cannot help: truly zero room
+left, where even 1 unit does not fit.
+
+**Give Multiple's batch-clamping design is deliberately left-to-right, not best-effort.** Once one item in
+the batch does not fully fit (clamped, or reduced all the way to zero), the batch **stops there** —
+`giveMultipleItemsToStorage` does not skip ahead to try whether a later, smaller item in the same batch
+might have had room. This is a design choice for predictability, not a limitation: an operator reading a
+per-item breakdown top-to-bottom should be able to reason about "gave everything up to X, then stopped,"
+rather than "gave some subset of the batch in an order that does not match what was typed." Like the
+single-item functions, **the batch never throws just because it hit a capacity limit** — it returns
+`ok: true` with `results: [...]`, one entry per requested item, each carrying `requested`/`given`/`clamped`/
+`attempted`/`reason`. An item never reached because an earlier one already stopped the batch is still
+present in `results`, with `attempted: false`, so the response always accounts for every requested item,
+not just the ones that got a row inserted. This is a real backend contract change from an earlier version,
+which threw on hitting a cap and relied on the transaction rolling back to prove no partial inserts
+happened — the current version has no rollback to reason about, because a capacity limit is no longer an
+error condition, and the response's `results` array is the accounting instead.
+
+**Fill offers two distinct actions, not one quantity field with a hidden meaning.** "Fill Amount" sends the
+operator's typed quantity (clamped as above if it does not fully fit). "Fill to Capacity" sends the
+`quantity: 0` sentinel `fillItemToStorage` has always supported — insert as much as fits in whatever volume
+remains, in one call — but that sentinel was unreachable from any UI before this fix, since both this tab's
+own quantity field and the standalone Storage tab's clamp to a minimum of 1. `requested` is `null` in a
+Fill-to-Capacity response (there was never a specific number to compare against); the UI reports the real
+`given` count directly (`"4,200 x SteelBar was filled into the container (as much as fit)."`).
+
+**Both Give and Fill enforce the same slot and volume caps.** An earlier version of `giveItemToStorage`
+checked only slot count — an operator could give an item whose declared volume exceeded a container's
+remaining volume, and because that give never recorded a `volume_override`, every later `fillItemToStorage`
+volume check against the same container silently undercounted real usage. Fixed to match `fillItemToStorage`'s
+volume accounting exactly (`volume_override` on an inserted row is the item's declared **per-unit** volume —
+see "`volume_override` is per-unit, not per-stack" immediately below for why it is not the stack's total).
+
+### `volume_override` is per-unit, not per-stack
+
+**A real, live in-game bug, not a design choice.** `dune.items.volume_override` is stored as
+the item's PER-UNIT volume, and every volume total (the running total `giveItemToStorage`/
+`fillItemToStorage`/`giveMultipleItemsToStorage` check against a container's `max_item_volume`, and every
+read-side total in `baseInventory`, the standalone Storage tab's `listStorage`, and `baseContainerSlots`)
+is computed as `volume_override × stack_size`, summed across rows.
+
+An earlier version of this code stored `volume_override` as the stack's **total** volume
+(`perUnitVolume × stackSize`) instead, on the theory that this kept the console's own internal volume sums
+simpler (`sum(volume_override)` directly, no multiplication needed). That theory was wrong: the live game
+engine treats a non-null `volume_override` as a **per-unit** value and multiplies it by `stack_size` itself
+when computing the volume it displays in-game. Storing the pre-multiplied total made the engine multiply by
+`stack_size` a **second** time, inflating the displayed in-game volume by a factor of `stack_size` — a real,
+confirmed example: a 9540-unit Mouse Corpse stack (real per-unit volume `5.0`, real total `47700`) had
+`volume_override` wrongly stored as `47700` and displayed in-game as `47700 × 9540 ≈ 455,057,984`. See
+`docs/incidents/INC-2026-08-19-VOLUME-OVERRIDE-DOUBLE-MULTIPLIED.md` for the full root-cause writeup,
+including the `dune.item_audit_log` evidence that every genuinely in-game-created item row (never touched
+by the console) always carries a `NULL` `volume_override` — proving a non-null value is exclusively a
+console-side convention, and that the engine's own real convention for it is per-unit.
+
+**Existing data repair:** `console/api/scripts/repair-volume-override.mjs` recomputes every already-affected
+row's `volume_override` from the current `runtime/data/admin-items.json` catalog (dry-run by default,
+`--apply` to write). An operator who used Give/Fill before this fix should run it once after updating.
+
+**Give and Fill use a compact type-to-search item picker (`ItemCatalogCombobox`), not a raw "item name or
+ID" text field.** Found during manual UI review of #347: the original plain text input required already
+knowing the exact template id or exact in-game name, offered no way to discover what is actually in the
+catalog, and did not filter anything as the operator typed — typing was just raw text sent straight to the
+server on submit. Search and the results list are name-only: the catalog id (e.g. `"Oil"` for the in-game
+"Fuel Cell") is a backend concept the operator never needs to see or type, and Give/Fill both submit the
+selected item's real `itemId` under the hood regardless. Give and Fill share one combobox instance (see
+"Give and Fill share one item picker..." above), filtered to `FILLABLE_GROUPS` client-side in both modes,
+matching the server's own `resolveFillableCatalogItem()` check, so the picker never even offers an item the
+server would reject.
+
+## Why Give/Fill do not require a stopped map
+
+**Neither Give/Fill nor Delete require a stopped map** (see "Deletion, Give, and Fill do not require a
+stopped map" above for why deletion's requirement changed 2026-08-19) — but the underlying reasoning for
+Give/Fill specifically predates
+that change and still holds independently: **Give and Fill only ever insert a brand-new `dune.items` row**,
+and inserting a new row cannot conflict with, overwrite, or be raced by whatever the live game engine is
+doing with the *existing* rows in that same inventory. There is nothing running-map state can invalidate
+about a row that did not exist a moment ago — this was true even back when Delete still required a stopped
+map, which is why Give/Fill never gated on map state in the first place.
+
+The tradeoff this creates: a given/filled item is **not visible in-game until the Survival server
+restarts** — the game engine only claims newly-inserted `dune.items` rows at process startup (see
+`docs/incidents/INC-2026-07-31-FILL-ITEMS-VISIBLE-ONLY-AFTER-RESTART.md` for the full investigation). A
+deleted item shares a version of the same limitation in the other direction: the database row is gone
+immediately, but if the engine had already claimed and loaded that row into its own live state, the live
+map keeps showing it until the next restart. The console UI states the Give/Fill restart requirement
+directly above the panel every time it is shown, matching the standalone Storage tab's own "Apply Fills
+(Restart Survival)" note — this page deliberately does not offer an inline restart button of its own;
+Server Control and Bases already own that action, and duplicating a player-disconnecting restart trigger in
+a third place was judged riskier than one extra tab switch.
+
+## Removing items in bulk: Delete Selected and Delete All
+
+Both are Storage-group-only and require `deleteSafety.safe`, identically to the single-item delete above —
+neither is a separate code path with its own, looser safety check.
+
+| Action | Route | Backend function | Confirmation phrase |
+|---|---|---|---|
+| Delete several checked items | `DELETE …/containers/{placeableId}/items` (body: `{ itemIds }`) | `duneDb.deleteMultipleBaseContainerItems()` | `DELETE ITEMS` |
+| Delete every item in the container | `DELETE …/containers/{placeableId}/all-items` | `duneDb.deleteAllBaseContainerItems()` | `DELETE ALL ITEMS` |
+
+**Ownership is re-resolved once per batch, not once per item** — both share a `resolveOwnedStorageContainer()`
+helper that runs the same claim-CTE/allowlist/`is_hologram`/`max_item_count >= 0` resolution the single-item
+delete uses, explicitly *not* the unscoped, actor_id-only lookup Give/Fill use internally (that shape has no
+group filter and could otherwise reach a Refining/Crafting inventory). Ownership is checked once, the
+resulting inventory row locked (`for update of inv`) for the duration of the whole batch.
+
+**This query was completely broken against a real database from the moment it was introduced** (issue
+#353): it combined `SELECT DISTINCT` with `FOR UPDATE OF inv`, which Postgres flatly rejects
+(`FOR UPDATE is not allowed with DISTINCT clause`) — every real call to Delete Selected, Delete All, Give,
+Give Multiple, and Fill (Give/Fill reach the same query indirectly, through `baseContainerOwnedStorageId()`'s
+own `baseContainerSlots()` call in `server.js`) would have 500'd in production. This was invisible to every
+mocked unit test in `db.test.js`, since the fake `db.query()` those tests use never actually parses SQL —
+it only pattern-matches the query *text*, so a syntactically invalid query and a valid one with the same
+substrings are indistinguishable to that kind of test. It was found only once a real-HTTP integration test
+(issue #353's own fix, `baseContainerMutationRoutes.integration.test.js`) exercised these routes against
+a real, isolated PostgreSQL database rather than a mock — the exact gap that issue existed to close. Fixed
+by resolving the `DISTINCT` candidate set in its own CTE first, then joining back to the real
+`dune.inventories` row purely to take the lock — `FOR UPDATE` only ever applies to that final, non-`DISTINCT`
+join, which Postgres allows. This is also the reason every base-container mutation route (not just the two
+this section covers) now has real HTTP-level integration coverage rather than the source-text-pattern
+assertions `baseContainerMutationRoutes.test.js` was previously limited to.
+
+**The batch itself is resolved and verified with a fixed, small number of set-based round-trips, not one
+pair of round-trips per item.** Found during PR #349's own Layer 3 audit (DBA and Security hats
+independently, issue #352, HIGH severity): the original version of both functions looped per item — a
+`select … for update`, the `dune.delete_item(bigint)` call, an `exists` check, and a conditional fallback
+`delete` — worst case ~800 sequential statements for a 200-item batch, all while the container's inventory
+row lock was held for the entire duration, blocking any concurrent Give/Fill/Delete against the *same*
+container for that whole window. `dune.delete_item(bigint)` is a shipped stored procedure taking exactly
+one id, so the N calls to it are irreducible — but everything around those N calls is now batched: one
+set-based `select … where id = any($1::bigint[]) and inventory_id = $2 for update` resolves the whole
+requested set at once (Delete Selected) or the whole container at once (Delete All), and one set-based
+`select`/fallback `delete` pair (shared by both functions as `finishDeletingLockedItems()`) verifies and
+cleans up every row `dune.delete_item` left behind, instead of one pair per row. Round-trips drop from
+~4N to ~N+2 for a batch of N items — a 200-item Delete Selected now costs ~202 statements instead of ~800,
+and the container is only locked for that shorter window.
+
+**If a storage-group container is ever found to back more than one qualifying inventory, both functions
+refuse to guess and throw, rather than silently picking one and leaving items behind in the other.** This
+page's own "Slots hang off an inventory, not the container" section above documents that a placeable can
+back more than one surviving inventory as a general schema fact — the read path (`baseContainerSlots`)
+already sums across every qualifying inventory a placeable has for exactly this reason. Give/Fill resolve
+their target inventory with `order by id limit 1`, deterministically picking the lowest id if more than one
+ever exists (single-item delete has no such ambiguity — it resolves by the specific `itemId` it was given,
+whose `inventory_id` is already known). The two bulk functions instead throw
+`"This container backs N separate inventories, which this action does not support yet. Please report this
+so it can be fixed."` — found during this feature's own Layer 3 review that an earlier version had no
+`ORDER BY`/`LIMIT` at all and took whichever row Postgres's planner returned first, which could have
+silently cleared the wrong inventory. No storage-group
+building type is currently known to carry more than one qualifying inventory (unlike Refining/Crafting's
+documented `inventory_type = 12` pair — see "Why not classify on `inventory_type`" above, where Storage's
+`inventory_type = 4` rows were confirmed single per placeable in the same reference dump), so this throw is
+not expected to fire in practice; it exists so a future patch that changes that would be caught loudly
+instead of corrupting data silently.
+
+**Delete Selected skips items that no longer exist rather than erroring the whole batch** — an item deleted
+by a player between when the operator's overlay last refreshed and when they clicked Delete Selected is
+silently excluded from `removed[]`, and the response message states how many of the requested items were
+actually found (`"N of M requested item(s) were deleted from the database"`). Delete All reads its item
+list fresh inside the same transaction that deletes them, so "all" always means everything actually present
+at the moment the container's row is locked, never a possibly-stale list the overlay fetched moments
+earlier.
+
+**Each entry in `removed[]` carries the same audit-detail fields the single-item delete's own
+`destroyedState` does** — `positionIndex`, `qualityLevel`, `currentDurability`, `maxDurability` — not just
+`itemId`/`templateId`/`count`. Found missing during PR #349's own Layer 3 audit (issue #350): without
+these, a bulk-destroyed pristine legendary logs in the admin audit trail identically to a bulk-destroyed
+broken common of the same template, which matters most for exactly this feature (bulk, irreversible,
+multi-item destruction). Both bulk functions select these columns with the same column-probed fragment
+`deleteBaseContainerItem` already uses (`auditDetailSelectFragment()`), so a schema missing
+`position_index`/`quality_level`/`stats` degrades every field to `null`/`0` rather than failing the delete —
+it never re-queries for them separately, and it never fails a batch just because a field is unavailable on
+a given schema.
+
+**`Developer_StorageContainer_Placeable` is not special-cased by any of this.** It is already in the
+Storage group's building-type allowlist (see the table near the top of this doc) and is already reachable
+by Give/Fill/Delete the same way any other Storage container is — it happens to only be obtainable by an
+operator granting `Developer_Storage_Container_Patent` to a player via Players → Building Sets → "Show
+Experimental," but nothing about that origin changes how this page treats the resulting placeable. A
+dedicated test locks this in so a future change cannot silently carve it out.
