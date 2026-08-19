@@ -128,6 +128,20 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
   // exactly, so this stays a single, easy-to-find place to reintroduce a
   // real delete-specific gate if one is ever needed again.
   const giveFillAllowed = slots?.group === "storage";
+  // Per explicit operator direction (issue #371): Give/Fill is a powerful,
+  // item-creating capability, and an operator who only wants to view/delete
+  // container contents should not have to see (or accidentally interact
+  // with) it every time a container is opened. This toggle hides the whole
+  // Give/Fill panel -- item picker, quantity field, mode toggle, mode-hint,
+  // warning banner, batch list, everything inside .bases-inventory-add-panel
+  // -- by default, per-open (not persisted across closing/reopening the
+  // overlay or switching containers, matching every other piece of this
+  // overlay's own reset-on-open state, e.g. selectedSlotId/checkedItemIds).
+  // Turning it ON requires acknowledging an explicit confirm dialog (see
+  // confirmEnableGiveFill below) before it actually reveals the panel --
+  // turning it back OFF is instant, no confirmation needed, since hiding a
+  // capability is never the risky direction.
+  const [giveFillVisible, setGiveFillVisible] = useState(false);
   const [checkedItemIds, setCheckedItemIds] = useState<Set<string>>(new Set());
   const [bulkDeleteRunning, setBulkDeleteRunning] = useState(false);
   // Give and Fill share one item picker and one quantity field, switched by
@@ -189,6 +203,46 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
     setQuantityText(mode === "fill" ? "100" : "1");
   }
 
+  // Per explicit operator direction (issue #371): turning Give/Fill ON
+  // requires acknowledging an explicit warning first -- the same restart-
+  // visibility fact the in-panel banner already states (see
+  // INC-2026-07-31-001), plus an explicit, actionable recommendation to
+  // configure the Daily Restart schedule so given/filled items do not sit
+  // invisible in-game indefinitely. Turning it back OFF is instant and
+  // asks nothing -- hiding a capability is never the risky direction, only
+  // revealing it is. Cancelling leaves giveFillVisible unset, matching
+  // every other confirmAction() call in this file that no-ops on cancel
+  // rather than partially applying a change.
+  //
+  // Returns whether the panel ended up visible -- callers that need to act
+  // immediately after (e.g. selectSlotForGiveFill pre-filling an item) must
+  // use this return value, not read giveFillVisible itself right after
+  // calling this: setGiveFillVisible is an async state update, so the
+  // enclosing closure's own giveFillVisible would still read the pre-call
+  // value until the next render.
+  async function requestGiveFillVisible(): Promise<boolean> {
+    if (giveFillVisible) return true;
+    const confirmed = await confirmAction(
+      "Given and filled items are inserted directly into the database and are NOT visible in-game until the Survival server restarts -- there is no way to make them appear without one. Strongly consider configuring an automated Daily Restart from Admin Tools \u2192 Schedule Server Restart \u2192 Daily Restart before relying on Give/Fill regularly, so given/filled items do not sit invisible indefinitely.",
+      {
+        title: "Show Give/Fill Controls",
+        confirmLabel: "Show Give/Fill",
+        warning: "Fill also carries a separate, documented risk: while the owning map stays running, a filled item can land on the same slot a live in-game move/pickup claims at the same time, and the row that loses that race is permanently orphaned on the next restart. See the Base Inventory documentation for details."
+      }
+    );
+    if (!confirmed) return false;
+    setGiveFillVisible(true);
+    return true;
+  }
+
+  function toggleGiveFillVisible() {
+    if (giveFillVisible) {
+      setGiveFillVisible(false);
+      return;
+    }
+    void requestGiveFillVisible();
+  }
+
   // Per explicit operator direction (2026-08-19): clicking an item already
   // in the container also populates the shared Give/Fill combobox with
   // that same item, so giving more of something already sitting in the
@@ -212,10 +266,26 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
   // a slot is a shortcut for "pick this item," not "also decide how many
   // and submit," matching how choosing an item from the combobox itself
   // behaves.
-  function selectSlotForGiveFill(slot: { templateId: string }) {
+  //
+  // If the Give/Fill panel is currently hidden (issue #371's visibility
+  // toggle, default off), clicking a slot reveals it -- through the same
+  // confirm-and-warn path the toggle button itself uses, not a silent
+  // bypass -- with that slot's item already pre-filled, rather than
+  // silently no-op'ing on the populate step. This was an explicit open
+  // question in issue #371; revealing is the more useful behavior (the
+  // operator's click already states clear intent to give/fill this
+  // specific item) and is consistent with the toggle itself always
+  // requiring the same acknowledgment before the panel becomes visible.
+  async function selectSlotForGiveFill(slot: { templateId: string }) {
     if (!giveFillAllowed) return;
     const match = catalog.find((item) => (item.itemId || item.id) === slot.templateId);
     if (!match || !match.group || !FILLABLE_GROUPS.has(match.group)) return;
+    // requestGiveFillVisible() shows the same confirm-and-warn dialog the
+    // toggle button uses when the panel is currently hidden -- if the
+    // operator cancels, the item must not be pre-filled into a panel that
+    // never actually became visible.
+    const visible = await requestGiveFillVisible();
+    if (!visible) return;
     setSelectedItem(match);
   }
 
@@ -398,12 +468,14 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
       setSelectedItem(null);
       setQuantityText("1");
       setAddBatch([]);
+      setGiveFillVisible(false);
       return;
     }
     setSelectedSlotId("");
     setAmount("");
     setDeleteError("");
     setCheckedItemIds(new Set());
+    setGiveFillVisible(false);
     void loadSlots(contentsFor);
   }, [contentsFor, loadSlots]);
 
@@ -1201,7 +1273,27 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
             Enter an amount between 1 and {selectedSlot.quantity.toLocaleString()}.
           </p>}
 
-          {giveFillAllowed && <div className="bases-inventory-add-panel">
+          {/* Give/Fill visibility toggle (issue #371, per explicit operator
+              direction) -- hides the entire panel below by default on every
+              fresh open of this overlay. Rendered even when giveFillAllowed
+              is false (Crafting/Refining containers), disabled with an
+              explanatory title, so an operator does not wonder why the
+              toggle itself disappeared rather than merely being unusable --
+              matching how deleteAllowed-gated controls elsewhere in this
+              file stay visible-but-disabled rather than vanishing. */}
+          <label className={`switch-checkbox bases-inventory-givefill-toggle ${giveFillVisible ? "enabled" : "disabled"}`}>
+            <input
+              type="checkbox"
+              checked={giveFillVisible}
+              disabled={!giveFillAllowed}
+              title={giveFillAllowed ? "" : "Give and Fill are available only for Storage containers."}
+              onChange={toggleGiveFillVisible}
+            />
+            <span className="switch-label">Give / Fill Controls</span>
+            <strong className="switch-state">{giveFillVisible ? "ON" : "OFF"}</strong>
+          </label>
+
+          {giveFillAllowed && giveFillVisible && <div className="bases-inventory-add-panel">
             {/* Consolidated 2026-08-19 (per the UI/UX hat's dispatched design
                 review, "Alternative A") from two separately-stacked
                 panels -- one full combobox+quantity+button row for Give,

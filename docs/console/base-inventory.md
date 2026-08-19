@@ -257,6 +257,30 @@ Give/Fill panel is offered whenever `group === "storage"`; it does not additiona
 `deleteSafety.safe`, unlike every delete action on this page. See "Why Give/Fill do not require a stopped
 map" below for why that asymmetry is deliberate, not an oversight.
 
+**The whole Give/Fill panel is hidden by default, behind an explicit visibility toggle.** Added 2026-08-19
+per explicit operator direction: Give/Fill is a powerful, item-creating capability, and an operator who
+only wants to view or delete a container's contents should not have to see (or accidentally interact with)
+it every time a container is opened. A labeled checkbox (`Give / Fill Controls`, reusing the app's shared
+`.switch-checkbox` pattern already used by Admin Tools' Daily Restart/Restart Queue toggles) sits above the
+panel; it defaults to **off** every time the contents overlay is freshly opened — the toggle's own state is
+not persisted across closing and reopening the overlay, or across switching to a different container,
+matching every other piece of this overlay's own reset-on-open state (`selectedSlotId`, `checkedItemIds`,
+`addFillMode`, `selectedItem`, `addBatch`).
+
+Turning the toggle **on** requires acknowledging an explicit confirm dialog first — it does not silently
+reveal the panel. The dialog restates the restart-visibility fact the in-panel warning banner already
+states (see "Why Give/Fill do not require a stopped map" below and `INC-2026-07-31-001`), and adds an
+explicit, actionable recommendation: configure an automated **Daily Restart** from **Admin Tools → Schedule
+Server Restart → Daily Restart**, so given/filled items do not sit invisible in-game indefinitely. The
+dialog's own `warning` field additionally restates Fill's documented position_index collision risk (see
+"Give fills from the high end..." below). Declining the dialog leaves the toggle off and the panel hidden.
+Turning the toggle back **off** is instant and asks nothing — hiding a capability is never the risky
+direction, only revealing it is.
+
+Clicking an item already in the container (see "Clicking an item already in the container..." below) reveals
+the panel through this same confirm-and-warn path if it is currently hidden, with that item already
+pre-filled — the click is not a silent bypass of the toggle's own confirmation.
+
 **Give and Fill share one item picker and one quantity field, switched by a `Give`/`Fill` mode toggle —
 not two separate panels.** An earlier version rendered a full combobox+quantity+button row for Give and a
 second, visually identical one for Fill, stacked vertically. Once Give and Fill were restricted to the
@@ -306,7 +330,11 @@ than fabricated from the slot's own name/`templateId` alone, so the populated se
 real `group`/`image` fields. Silently a no-op — the click still performs its existing delete-selection
 behavior regardless — for an item that is not in `FILLABLE_GROUPS` (e.g. a weapon or schematic sitting in
 a container some other way) or is not present in the loaded catalog at all; the combobox could never have
-accepted that item either.
+accepted that item either. **Corrected 2026-08-19** to also account for the visibility toggle above: if
+Give/Fill is currently hidden, a click on an otherwise-eligible item reveals it through the same
+confirm-and-warn dialog the toggle itself uses, with that item already pre-filled once the operator
+confirms — the click is not a silent bypass of the toggle's own confirmation, and a decline leaves both the
+panel hidden and the item unselected.
 
 | Action | Route | Backend function | Confirmation phrase |
 |---|---|---|---|

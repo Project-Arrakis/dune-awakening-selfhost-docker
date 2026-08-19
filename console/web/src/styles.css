@@ -3168,6 +3168,14 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 }
 .bases-inventory-contents-row input[type="checkbox"] { width: 16px; height: 16px; margin: 0 auto; }
 
+/* Give/Fill visibility toggle (issue #371) -- hides the whole
+   .bases-inventory-add-panel below by default. Reuses the shared
+   .switch-checkbox pattern (AdminToolsPanel's Daily Restart/Restart Queue
+   toggles, addon pin/status toggles) rather than inventing a new control;
+   scoped margin only, no other overrides needed since the shared component
+   already carries its own enabled/disabled styling. */
+.bases-inventory-givefill-toggle { margin: 4px 0 10px; }
+
 /* Give/Give-Multiple/Fill, added below the slot list. Two stacked sections
    (Add Item, Fill Container) sharing one input-row layout: a growing text
    input, a fixed-width quantity field, and one or two action buttons that

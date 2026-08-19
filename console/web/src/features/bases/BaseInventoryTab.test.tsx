@@ -216,6 +216,21 @@ function switchToFillMode() {
   fireEvent.click(screen.getByRole("button", { name: "Fill" }));
 }
 
+// The whole Give/Fill panel is hidden by default (issue #371) behind a
+// visibility toggle that requires acknowledging a confirmAction() dialog
+// before it reveals anything -- confirmAction is mocked to always resolve
+// true (see the const above), so this just needs to click the toggle and
+// wait for the panel to actually mount. Any test targeting the combobox,
+// quantity field, mode toggle, or batch list must call this first.
+async function showGiveFill() {
+  // The checkbox's accessible name includes its own ON/OFF state text
+  // (a sibling <strong>), not just the "Give / Fill Controls" label --
+  // matched with a substring rather than the exact string so this does
+  // not need updating if the state text changes.
+  fireEvent.click(screen.getByRole("checkbox", { name: /Give \/ Fill Controls/ }));
+  await waitFor(() => expect(screen.getByRole("button", { name: "Give" })).toBeTruthy());
+}
+
 // The tab opens on Containers, so anything testing the rollup switches first.
 function showItems() {
   fireEvent.click(screen.getByRole("button", { name: "Items" }));
@@ -613,24 +628,29 @@ describe("BaseInventoryTab", () => {
   // in the container also populates the shared Give/Fill combobox with
   // that same item, so giving more of something already sitting in the
   // container does not require re-typing/re-searching its name.
-  it("populates the Give/Fill combobox when a List row is clicked", async () => {
+  // Give/Fill is hidden by default (issue #371) -- clicking a fillable
+  // item reveals it via the same confirm-and-warn path the visibility
+  // toggle itself uses (confirmAction is mocked to always resolve true),
+  // rather than the click being a no-op just because the panel was hidden.
+  it("populates the Give/Fill combobox when a List row is clicked, revealing the panel if hidden", async () => {
     mockInventory();
     renderTab();
     await loaded();
     await openVaultContents();
+    expect(screen.queryByRole("combobox", { name: "Item to give" })).toBeNull();
 
     fireEvent.click(screen.getAllByRole("button", { name: "Granite Stone" })[0]);
-    expect((screen.getByRole("combobox", { name: "Item to give" }) as HTMLInputElement).value).toBe("Granite Stone");
+    await waitFor(() => expect((screen.getByRole("combobox", { name: "Item to give" }) as HTMLInputElement).value).toBe("Granite Stone"));
   });
 
-  it("populates the Give/Fill combobox when a Grid cell is clicked", async () => {
+  it("populates the Give/Fill combobox when a Grid cell is clicked, revealing the panel if hidden", async () => {
     mockInventory();
     renderTab();
     await loaded();
     await openVaultContents({ stayOnGrid: true });
 
     fireEvent.click(screen.getByRole("button", { name: /Granite Stone ×600, slot 0/ }));
-    expect((screen.getByRole("combobox", { name: "Item to give" }) as HTMLInputElement).value).toBe("Granite Stone");
+    await waitFor(() => expect((screen.getByRole("combobox", { name: "Item to give" }) as HTMLInputElement).value).toBe("Granite Stone"));
   });
 
   it("populates whichever mode (Fill) is currently active, not just Give", async () => {
@@ -638,13 +658,14 @@ describe("BaseInventoryTab", () => {
     renderTab();
     await loaded();
     await openVaultContents();
+    await showGiveFill();
     switchToFillMode();
 
     fireEvent.click(screen.getAllByRole("button", { name: "Granite Stone" })[0]);
-    expect((screen.getByRole("combobox", { name: "Item to fill" }) as HTMLInputElement).value).toBe("Granite Stone");
+    await waitFor(() => expect((screen.getByRole("combobox", { name: "Item to fill" }) as HTMLInputElement).value).toBe("Granite Stone"));
   });
 
-  it("does not populate Give/Fill for an item not in a fillable group (e.g. a weapon)", async () => {
+  it("does not populate Give/Fill for an item not in a fillable group (e.g. a weapon), and does not reveal the panel", async () => {
     mockInventory();
     mockSlots({
       ...SLOTS,
@@ -658,10 +679,10 @@ describe("BaseInventoryTab", () => {
     await openVaultContents();
 
     fireEvent.click(screen.getAllByRole("button", { name: "SilverSword_Ranger" })[0]);
-    expect((screen.getByRole("combobox", { name: "Item to give" }) as HTMLInputElement).value).toBe("");
+    expect(screen.queryByRole("combobox", { name: "Item to give" })).toBeNull();
   });
 
-  it("does not populate Give/Fill for an item not present in the loaded catalog at all", async () => {
+  it("does not populate Give/Fill for an item not present in the loaded catalog at all, and does not reveal the panel", async () => {
     mockInventory();
     renderTab();
     await loaded();
@@ -670,7 +691,7 @@ describe("BaseInventoryTab", () => {
     // MagnetiteOre (Iron Ore) is deliberately absent from CATALOG_ITEMS --
     // the click must no-op rather than throw or populate a fabricated item.
     fireEvent.click(screen.getAllByRole("button", { name: "Iron Ore" })[0]);
-    expect((screen.getByRole("combobox", { name: "Item to give" }) as HTMLInputElement).value).toBe("");
+    expect(screen.queryByRole("combobox", { name: "Item to give" })).toBeNull();
   });
 
   it("still selects the slot for the delete strip when a Give/Fill-ineligible item is clicked", async () => {
@@ -849,6 +870,7 @@ describe("BaseInventoryTab", () => {
     // combobox (mode toggle below it), so this checks the combobox exists
     // in Give mode (the default) and that switching to Fill mode also
     // still works, rather than checking two separately-named comboboxes.
+    await showGiveFill();
     expect(screen.getByRole("combobox", { name: "Item to give" })).toBeTruthy();
     switchToFillMode();
     expect(screen.getByRole("combobox", { name: "Item to fill" })).toBeTruthy();
@@ -1044,6 +1066,7 @@ describe("BaseInventoryTab", () => {
     renderTab();
     await loaded();
     await openVaultContents();
+    await showGiveFill();
 
     await pickItem("Item to give", "AzuriteOre");
     fireEvent.change(screen.getByLabelText("Quantity to give"), { target: { value: "20" } });
@@ -1071,6 +1094,7 @@ describe("BaseInventoryTab", () => {
     renderTab();
     await loaded();
     await openVaultContents();
+    await showGiveFill();
 
     await pickItem("Item to give", "AzuriteOre");
     fireEvent.change(screen.getByLabelText("Quantity to give"), { target: { value: "50" } });
@@ -1082,10 +1106,15 @@ describe("BaseInventoryTab", () => {
 
   it("does not give an item when the confirmation is declined", async () => {
     mockInventory();
-    confirmAction.mockResolvedValue(false);
     renderTab();
     await loaded();
     await openVaultContents();
+    // Reveal the panel first (confirmAction still resolves true here), then
+    // switch it to decline for the actual Give confirm this test targets --
+    // declining the reveal-toggle's own confirm would never even open the
+    // panel, testing nothing about the Give confirmation itself.
+    await showGiveFill();
+    confirmAction.mockResolvedValue(false);
 
     await pickItem("Item to give", "AzuriteOre");
     fireEvent.click(screen.getByRole("button", { name: "Give Item" }));
@@ -1102,6 +1131,7 @@ describe("BaseInventoryTab", () => {
     renderTab();
     await loaded();
     await openVaultContents();
+    await showGiveFill();
 
     // Queue the first item into the batch...
     await pickItem("Item to give", "AzuriteOre");
@@ -1137,6 +1167,7 @@ describe("BaseInventoryTab", () => {
     renderTab();
     await loaded();
     await openVaultContents();
+    await showGiveFill();
 
     await pickItem("Item to give", "AzuriteOre");
     fireEvent.change(screen.getByLabelText("Quantity to give"), { target: { value: "20" } });
@@ -1174,6 +1205,7 @@ describe("BaseInventoryTab", () => {
     renderTab();
     await loaded();
     await openVaultContents();
+    await showGiveFill();
 
     await pickItem("Item to give", "AzuriteOre");
     fireEvent.change(screen.getByLabelText("Quantity to give"), { target: { value: "20" } });
@@ -1214,6 +1246,7 @@ describe("BaseInventoryTab", () => {
     renderTab();
     await loaded();
     await openVaultContents();
+    await showGiveFill();
 
     await pickItem("Item to give", "AzuriteOre");
     fireEvent.change(screen.getByLabelText("Quantity to give"), { target: { value: "20" } });
@@ -1234,6 +1267,7 @@ describe("BaseInventoryTab", () => {
     renderTab();
     await loaded();
     await openVaultContents();
+    await showGiveFill();
 
     await pickItem("Item to give", "AzuriteOre");
     fireEvent.click(screen.getByRole("button", { name: "Add to Batch" }));
@@ -1252,6 +1286,7 @@ describe("BaseInventoryTab", () => {
     renderTab();
     await loaded();
     await openVaultContents();
+    await showGiveFill();
     switchToFillMode();
 
     await pickItem("Item to fill", "SteelBar");
@@ -1282,6 +1317,7 @@ describe("BaseInventoryTab", () => {
     renderTab();
     await loaded();
     await openVaultContents();
+    await showGiveFill();
     switchToFillMode();
 
     await pickItem("Item to fill", "SteelBar");
@@ -1310,6 +1346,7 @@ describe("BaseInventoryTab", () => {
     renderTab();
     await loaded();
     await openVaultContents();
+    await showGiveFill();
     switchToFillMode();
 
     await pickItem("Item to fill", "SteelBar");
@@ -1337,6 +1374,7 @@ describe("BaseInventoryTab", () => {
     renderTab();
     await loaded();
     await openVaultContents();
+    await showGiveFill();
     switchToFillMode();
 
     const fillInput = screen.getByRole("combobox", { name: "Item to fill" });
@@ -1356,6 +1394,7 @@ describe("BaseInventoryTab", () => {
     renderTab();
     await loaded();
     await openVaultContents();
+    await showGiveFill();
 
     const giveInput = screen.getByRole("combobox", { name: "Item to give" });
     fireEvent.change(giveInput, { target: { value: "" } });
@@ -1371,6 +1410,11 @@ describe("BaseInventoryTab", () => {
     await loaded();
     await openVaultContents();
 
+    // The visibility toggle itself is disabled for a non-storage container
+    // (giveFillAllowed is false) -- clicking it must do nothing, matching
+    // the existing disabled-control convention elsewhere in this overlay.
+    const toggle = screen.getByRole("checkbox", { name: /Give \/ Fill Controls/ }) as HTMLInputElement;
+    expect(toggle.disabled).toBe(true);
     expect(screen.queryByRole("combobox", { name: "Item to give" })).toBeNull();
     expect(screen.queryByRole("combobox", { name: "Item to fill" })).toBeNull();
   });
@@ -1385,6 +1429,7 @@ describe("BaseInventoryTab", () => {
     renderTab();
     await loaded();
     await openVaultContents();
+    await showGiveFill();
 
     expect(screen.getByText(/not visible in-game until the Survival server restarts/)).toBeTruthy();
   });
@@ -1414,6 +1459,7 @@ describe("BaseInventoryTab", () => {
     renderTab();
     await loaded();
     await openVaultContents();
+    await showGiveFill();
 
     expect(screen.queryByText(/can land on the same slot and be lost on the next restart/)).toBeNull();
     switchToFillMode();
@@ -1441,6 +1487,7 @@ describe("BaseInventoryTab", () => {
     renderTab();
     await loaded();
     await openVaultContents();
+    await showGiveFill();
 
     expect(document.querySelectorAll(".bases-inventory-restart-warning").length).toBe(1);
     expect(document.querySelectorAll(".bases-inventory-fill-collision-warning").length).toBe(0);
@@ -1464,6 +1511,7 @@ describe("BaseInventoryTab", () => {
     renderTab();
     await loaded();
     await openVaultContents();
+    await showGiveFill();
 
     const group = document.querySelector(".bases-inventory-mode-group");
     expect(group).toBeTruthy();
@@ -1487,6 +1535,7 @@ describe("BaseInventoryTab", () => {
     renderTab();
     await loaded();
     await openVaultContents();
+    await showGiveFill();
 
     expect(screen.getByRole("button", { name: "Give" }).getAttribute("aria-pressed")).toBe("true");
     expect(screen.getByRole("button", { name: "Fill" }).getAttribute("aria-pressed")).toBe("false");
@@ -1500,6 +1549,7 @@ describe("BaseInventoryTab", () => {
     renderTab();
     await loaded();
     await openVaultContents();
+    await showGiveFill();
 
     switchToFillMode();
     expect(screen.getByRole("button", { name: "Fill" }).getAttribute("aria-pressed")).toBe("true");
@@ -1529,6 +1579,7 @@ describe("BaseInventoryTab", () => {
     renderTab();
     await loaded();
     await openVaultContents();
+    await showGiveFill();
 
     await pickItem("Item to give", "AzuriteOre");
     fireEvent.change(screen.getByLabelText("Quantity to give"), { target: { value: "42" } });
@@ -1548,6 +1599,7 @@ describe("BaseInventoryTab", () => {
     renderTab();
     await loaded();
     await openVaultContents();
+    await showGiveFill();
 
     await pickItem("Item to give", "AzuriteOre");
     fireEvent.click(screen.getByRole("button", { name: "Add to Batch" }));
@@ -1558,6 +1610,94 @@ describe("BaseInventoryTab", () => {
     // The queued batch entry must still be there -- only the shared
     // selection/quantity fields reset on a mode switch, never the batch.
     expect(screen.getByText(/AzuriteOre ×/)).toBeTruthy();
+  });
+
+  // Give/Fill visibility toggle (issue #371, per explicit operator
+  // direction): the whole Give/Fill panel is hidden by default on every
+  // fresh open, and turning it on requires acknowledging an explicit
+  // confirm dialog before it actually reveals anything.
+  it("hides the entire Give/Fill panel by default when a storage container's contents are opened", async () => {
+    mockInventory();
+    renderTab();
+    await loaded();
+    await openVaultContents();
+
+    expect(screen.queryByRole("combobox", { name: "Item to give" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Give" })).toBeNull();
+    expect(screen.queryByText(/not visible in-game until the Survival server restarts/)).toBeNull();
+    const toggle = screen.getByRole("checkbox", { name: /Give \/ Fill Controls/ }) as HTMLInputElement;
+    expect(toggle.checked).toBe(false);
+  });
+
+  it("shows an explicit confirm dialog, recommending the Daily Restart schedule, before revealing Give/Fill", async () => {
+    mockInventory();
+    renderTab();
+    await loaded();
+    await openVaultContents();
+
+    fireEvent.click(screen.getByRole("checkbox", { name: /Give \/ Fill Controls/ }));
+    await waitFor(() => expect(confirmAction).toHaveBeenCalled());
+    const [message, options] = vi.mocked(confirmAction).mock.calls.at(-1) ?? [];
+    expect(message).toMatch(/NOT visible in-game until the Survival server restarts/);
+    expect(message).toMatch(/Admin Tools.*Schedule Server Restart.*Daily Restart/);
+    expect(options?.warning).toMatch(/can land on the same slot/);
+  });
+
+  it("does not reveal Give/Fill when the toggle-on confirmation is declined", async () => {
+    mockInventory();
+    confirmAction.mockResolvedValue(false);
+    renderTab();
+    await loaded();
+    await openVaultContents();
+
+    fireEvent.click(screen.getByRole("checkbox", { name: /Give \/ Fill Controls/ }));
+    await waitFor(() => expect(confirmAction).toHaveBeenCalled());
+    expect(screen.queryByRole("combobox", { name: "Item to give" })).toBeNull();
+    const toggle = screen.getByRole("checkbox", { name: /Give \/ Fill Controls/ }) as HTMLInputElement;
+    expect(toggle.checked).toBe(false);
+  });
+
+  it("hides Give/Fill again instantly, with no confirmation, when the toggle is switched off", async () => {
+    mockInventory();
+    renderTab();
+    await loaded();
+    await openVaultContents();
+    await showGiveFill();
+    expect(screen.getByRole("combobox", { name: "Item to give" })).toBeTruthy();
+    const callsBeforeToggleOff = vi.mocked(confirmAction).mock.calls.length;
+
+    fireEvent.click(screen.getByRole("checkbox", { name: /Give \/ Fill Controls/ }));
+    expect(screen.queryByRole("combobox", { name: "Item to give" })).toBeNull();
+    // Turning it back off must not have triggered a second confirmation --
+    // hiding a capability is never the risky direction.
+    expect(vi.mocked(confirmAction).mock.calls.length).toBe(callsBeforeToggleOff);
+  });
+
+  it("resets Give/Fill visibility to hidden every time the contents overlay is reopened", async () => {
+    mockInventory();
+    renderTab();
+    await loaded();
+    await openVaultContents();
+    await showGiveFill();
+    expect(screen.getByRole("combobox", { name: "Item to give" })).toBeTruthy();
+
+    // Close the overlay, then reopen the same container -- visibility must
+    // reset to hidden, matching every other piece of this overlay's own
+    // reset-on-open state (selectedSlotId, checkedItemIds, addFillMode).
+    fireEvent.click(screen.getByRole("button", { name: "Close contents" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    // The overlay re-opens on Grid by default, but contentsView is left on
+    // "list" from the first openVaultContents() call above (it is not part
+    // of the close/reopen reset effect -- a deliberate choice unrelated to
+    // this test, view-mode preference persisting across containers), so
+    // this reopen deliberately does not use the openVaultContents() helper
+    // (which waits for Grid's own slot-cell class first) and instead opens
+    // the dialog directly and waits for the List rows it will actually show.
+    const vault = [...document.querySelectorAll(".bases-inventory-cards .bases-card")]
+      .find((card) => card.textContent?.includes("Vault")) as HTMLElement;
+    fireEvent.click(within(vault).getByRole("button", { name: /View Contents/ }));
+    await waitFor(() => expect(document.querySelectorAll(".bases-inventory-contents-row:not(.head)").length).toBeGreaterThan(0));
+    expect(screen.queryByRole("combobox", { name: "Item to give" })).toBeNull();
   });
 
   it("selects several items and deletes only the checked ones", async () => {
@@ -1658,6 +1798,7 @@ describe("BaseInventoryTab", () => {
     expect(screen.queryByRole("button", { name: /Delete Selected/ })).toBeNull();
     expect(screen.queryByRole("button", { name: "Delete All" })).toBeNull();
     // Give/Fill are pure inserts and stay available regardless of map safety.
+    await showGiveFill();
     expect(screen.getByRole("combobox", { name: "Item to give" })).toBeTruthy();
   });
 

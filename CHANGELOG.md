@@ -525,6 +525,30 @@ Keep a Changelog style, grouped by upstream base version, newest first.
   refused anyway. 6 new tests cover both no-op paths, both view modes
   (Grid and List), and that the populated item respects whichever
   Give/Fill mode is currently active.
+- **The entire Give/Fill panel is now hidden by default, behind an explicit
+  visibility toggle**, per explicit operator direction (issue #371) --
+  Give/Fill is a powerful, item-creating capability, and an operator who
+  only wants to view or delete a container's contents should not have to
+  see (or accidentally interact with) it every time a container is
+  opened. A labeled checkbox (`Give / Fill Controls`, reusing the app's
+  shared `.switch-checkbox` pattern already used by Admin Tools' Daily
+  Restart/Restart Queue toggles) sits above the panel, defaulting to
+  **off** on every fresh open of the contents overlay -- not persisted
+  across closing/reopening or switching containers, matching every other
+  piece of this overlay's own reset-on-open state. Turning it **on**
+  requires acknowledging an explicit confirm dialog first: the dialog
+  restates the restart-visibility fact the in-panel warning banner
+  already states, plus an explicit, actionable recommendation to
+  configure an automated **Daily Restart** from **Admin Tools -> Schedule
+  Server Restart -> Daily Restart**, and its `warning` field restates
+  Fill's documented position_index collision risk. Declining leaves the
+  toggle off. Turning it back **off** is instant and asks nothing --
+  hiding a capability is never the risky direction. Clicking an item
+  already in the container (see above) reveals the panel through this
+  same confirm-and-warn path if it is currently hidden, with that item
+  pre-filled once confirmed -- not a silent bypass. 6 new tests cover the
+  default-hidden state, the confirm dialog's exact content, decline
+  behavior, instant no-confirmation hide, and the per-open reset.
 
 ### Security
 
