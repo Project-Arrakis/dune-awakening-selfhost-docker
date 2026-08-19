@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { DISCORD_ADAPTER_ROUTES, discordAdapterErrorResponse, discordAdapterHealth, discordAdapterPopulation, discordAdapterReadiness, discordAdapterServices, discordAdapterStatus, discordWritesEnabled } from "../src/integrations/discord/adapter.js";
+import { DISCORD_ADAPTER_ROUTES, DISCORD_CATALOG_PROTOCOL_VERSION, discordAdapterErrorResponse, discordAdapterHealth, discordAdapterPopulation, discordAdapterReadiness, discordAdapterServices, discordAdapterStatus, discordWritesEnabled } from "../src/integrations/discord/adapter.js";
 
 const OLD_ENV = { ...process.env };
 
@@ -44,6 +44,18 @@ test("reports adapter health with isolated link-state writes", async () => {
   assert.equal(result.gameDataWritesEnabled, false);
   assert.deepEqual(result.adapterDataWrites, ["player-link"]);
   assert.equal(result.writesEnabled, false);
+  // RFC §3.4: /health must report the catalog protocol version so the
+  // bot can detect a contract-breaking change without needing to fetch
+  // the full catalog first.
+  assert.equal(typeof result.protocolVersion, "number");
+  assert.equal(result.protocolVersion, DISCORD_CATALOG_PROTOCOL_VERSION);
+  // Issue #245 fix: LOGS, MAP_STATE, and MAINTENANCE were promoted from
+  // planned -> live (see adapter.js's DISCORD_LIVE_ADAPTER_ROUTES,
+  // "fix(adapter): implement LOGS, MAP_STATE, MAINTENANCE handlers" --
+  // 8 bot slash commands were 404ing before this), but this hardcoded
+  // exact-match expected array was never updated to include them, so
+  // assert.deepEqual failed on the 3 missing entries even though the
+  // real, current behavior is correct and intentional.
   assert.deepEqual([...result.liveRoutes].sort(), [
     "/api/integrations/discord/announcements",
     "/api/integrations/discord/broadcast",
@@ -98,6 +110,12 @@ test("exposes only allowlisted adapter route names", () => {
     "/api/integrations/discord/announcements",
     "/api/integrations/discord/backups/list",
     "/api/integrations/discord/broadcast",
+    // catalog (Phase 1 of docs/rfc-command-discovery.md): read-only
+    // metadata describing the other routes' shape/capability/tier, not
+    // itself a data route -- deliberately excluded from
+    // DISCORD_LIVE_ADAPTER_ROUTES (see adapter.js's own comment) but still
+    // a real, allowlisted route constant here.
+    "/api/integrations/discord/catalog",
     "/api/integrations/discord/db",
     "/api/integrations/discord/guilds/find",
     "/api/integrations/discord/guilds/storage",
@@ -357,6 +375,15 @@ test("adapter routes respond through mounted HTTP server path", async () => {
           const version = await (await fetch(`${base}/api/integrations/discord/version`, { headers: auth })).json();
           assert.equal(version.ok, true);
           assert.equal(version.version, "dev");
+
+          // Command catalog (Phase 1 of docs/rfc-command-discovery.md) --
+          // bearer-token auth only, matching health.
+          const catalog = await (await fetch(`${base}/api/integrations/discord/catalog`, { headers: auth })).json();
+          assert.equal(catalog.ok, true);
+          assert.equal(typeof catalog.protocolVersion, "number");
+          assert.ok(Array.isArray(catalog.catalog.groups));
+          assert.ok(catalog.catalog.groups.length > 0);
+          assert.equal((await fetch(`${base}/api/integrations/discord/catalog`)).status, 401);
 
           // Auth: 401 without token
           assert.equal((await fetch(`${base}/api/integrations/discord/health`)).status, 401);
