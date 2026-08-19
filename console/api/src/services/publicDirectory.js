@@ -14,6 +14,7 @@ import { playerPortalMarketSnapshot } from "../addonJobs.js";
 import { carePackageConfig, carePackageHistory } from "../carePackage.js";
 import { readCharacterTransferSettings, incomingCharacterTransferPolicies } from "./characterTransferSettings.js";
 import { readMessageOfTheDay } from "./messageOfTheDay.js";
+import { buildDuneArgs, runDune } from "../runner.js";
 
 const DEFAULT_BASE_URL = "https://dunedocker.app/api/v1/servers";
 const DEFAULT_HEARTBEAT_SECONDS = 30;
@@ -88,6 +89,41 @@ export function collectPlayerPortalContext(config, directorySnapshot = {}) {
       history: carePackageHistory(config, 500).rows || []
     }
   };
+}
+
+const CLIENT_INI_MAX_BYTES = 64 * 1024;
+const CLIENT_INI_FORBIDDEN = /(?:password|secret|token|privatekey|Bgd\.ServerDisplayName|\bPort\s*=|\bIGWPort\s*=)/i;
+
+function playerSafeClientIni(content) {
+  const text = String(content || "").replace(/\r\n?/g, "\n");
+  if (Buffer.byteLength(text) > CLIENT_INI_MAX_BYTES || CLIENT_INI_FORBIDDEN.test(text)) {
+    throw new Error("Generated client configuration failed the player-safety check.");
+  }
+  return text;
+}
+
+export async function collectPlayerPortalClientConfiguration(config, runDuneImpl = runDune) {
+  try {
+    const [game, engine] = await Promise.all([
+      runDuneImpl(config, buildDuneArgs("userSettingsClientGameIni", {}), { timeoutMs: 8000, redactOutput: false }),
+      runDuneImpl(config, buildDuneArgs("userSettingsClientEngineIni", {}), { timeoutMs: 8000, redactOutput: false })
+    ]);
+    return {
+      available: true,
+      generatedAt: new Date().toISOString(),
+      installPath: "%USERPROFILE%\\AppData\\Local\\DuneSandbox\\Saved\\Config\\WindowsClient",
+      gameIni: playerSafeClientIni(game.stdout),
+      engineIni: playerSafeClientIni(engine.stdout)
+    };
+  } catch {
+    return {
+      available: false,
+      generatedAt: "",
+      installPath: "%USERPROFILE%\\AppData\\Local\\DuneSandbox\\Saved\\Config\\WindowsClient",
+      gameIni: "",
+      engineIni: ""
+    };
+  }
 }
 
 // This explicit list is the security boundary for settings sent to the public directory.
@@ -202,7 +238,11 @@ export function createPublicDirectoryReporter(config, options = {}) {
   const collectPlayerPortalMarketSnapshot = options.collectPlayerPortalMarketSnapshot
     || ((database) => playerPortalMarketSnapshot(config, database));
   const buildPlayerPortalContext = options.collectPlayerPortalContext
-    || ((directorySnapshot) => collectPlayerPortalContext(config, directorySnapshot));
+    || (async (directorySnapshot) => {
+      const context = collectPlayerPortalContext(config, directorySnapshot);
+      context.serverInfo.clientConfiguration = await collectPlayerPortalClientConfiguration(config);
+      return context;
+    });
   const playerPortalJourneyData = options.playerPortalJourneyData || readJsonFile(
     resolve(config.repoRoot, "runtime/data/journey-tags.json"),
     {}

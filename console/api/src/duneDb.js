@@ -1834,6 +1834,7 @@ export async function addonLeadershipPlayers(db) {
       return {
         actorId,
         controllerId,
+        accountId,
         name: row.character_name || `Player ${actorId}`,
         level: levels.get(controllerId) || levels.get(actorId) || 0,
         faction: factions.get(controllerId) || factions.get(actorId) || "Unassigned",
@@ -5268,6 +5269,22 @@ function portalMarketForIdentity(identity, market) {
 
 function portalExchangeOverview(market) {
   if (!market || typeof market !== "object") return null;
+  if (market.overview && typeof market.overview === "object") {
+    return {
+      available: market.overview.available === true,
+      evaluatedAt: String(market.overview.evaluatedAt || ""),
+      items: (Array.isArray(market.overview.items) ? market.overview.items : []).map((row) => ({
+        templateId: String(row?.templateId || ""),
+        displayName: String(row?.displayName || row?.templateId || "Unknown Item"),
+        qualityLevel: String(row?.qualityLevel || ""),
+        listingCount: Math.max(0, Number(row?.listingCount) || 0),
+        totalUnits: Math.max(0, Number(row?.totalUnits) || 0),
+        lowestPrice: String(row?.lowestPrice || ""),
+        highestPrice: String(row?.highestPrice || ""),
+        maxUnitPrice: String(row?.maxUnitPrice || "")
+      }))
+    };
+  }
   const groups = new Map();
   for (const entry of Array.isArray(market.listings) ? market.listings : []) {
     const templateId = String(entry?.templateId || "");
@@ -5294,6 +5311,7 @@ function portalExchangeOverview(market) {
     groups.set(key, row);
   }
   return {
+    available: market.available === true,
     evaluatedAt: String(market.evaluatedAt || ""),
     items: [...groups.values()]
       .sort((left, right) => right.listingCount - left.listingCount || left.displayName.localeCompare(right.displayName))
@@ -5439,7 +5457,11 @@ export async function playerPortalSnapshots(db, requestedAccountHashes, journeyT
       (base.shared_with || []).some((entry) => entry.name === identity.character_name));
     const fuelByBase = await portalGeneratorFuel(db, baseRows.map((base) => base.base_id)).catch(() => new Map());
     const waterByBase = new Map(await Promise.all(baseRows.map(async (base) => {
-      const water = await baseWater(db, base.base_id).catch(() => ({ supported: false, containers: [] }));
+      const water = await baseWater(db, base.base_id).catch(() => ({
+        supported: false,
+        reason: "Water storage could not be read from this server.",
+        containers: []
+      }));
       return [String(base.base_id), water];
     })));
     const skillModules = (specs.skillModules || []).map((skill) => portalSkillRow(skill, skillModulesData));
@@ -5509,6 +5531,10 @@ export async function playerPortalSnapshots(db, requestedAccountHashes, journeyT
           generatorAllUnstocked: fuelByBase.get(String(base.base_id))?.allGeneratorsUnstocked || false,
           generators: fuelByBase.get(String(base.base_id))?.generators || [],
           waterSupported: waterByBase.get(String(base.base_id))?.supported === true,
+          waterStatus: waterByBase.get(String(base.base_id))?.supported === true
+            ? (waterByBase.get(String(base.base_id))?.containers?.length ? "available" : "empty")
+            : "unsupported",
+          waterReason: String(waterByBase.get(String(base.base_id))?.reason || ""),
           waterContainers: waterByBase.get(String(base.base_id))?.containers || [],
           map: base.map || "",
           partitionId: Number(base.partition_id) || 0,
@@ -6201,11 +6227,32 @@ async function portalGuild(db, identity) {
   const row = result.rows[0];
   const members = await guildMembers(db, row.guild_id);
   const leadership = await addonLeadershipPlayers(db).catch(() => ({ rows: [] }));
-  const statuses = new Map((leadership.rows || []).map((member) => [member.name, member.status]));
+  const memberDetails = new Map();
+  const memberNames = new Map();
+  for (const member of leadership.rows || []) {
+    for (const id of [member.actorId, member.controllerId, member.accountId].map(String).filter(Boolean)) memberDetails.set(id, member);
+    const nameKey = String(member.name || "").trim().toLocaleLowerCase();
+    if (nameKey && !memberNames.has(nameKey)) memberNames.set(nameKey, member);
+  }
+  const roster = (members.rows || []).map((member) => {
+    const detail = memberDetails.get(String(member.player_id || ""))
+      || memberNames.get(String(member.character_name || "").trim().toLocaleLowerCase())
+      || {};
+    return {
+      name: member.character_name || detail.name || "Unknown Member",
+      role: portalGuildRole(member.role_id),
+      level: Math.min(200, Math.max(0, Number(detail.level) || 0)),
+      status: String(detail.status || "Offline").toLocaleLowerCase() === "online" ? "Online" : "Offline"
+    };
+  }).sort((left, right) => {
+    const roleOrder = { Leader: 0, Officer: 1, Member: 2 };
+    return (roleOrder[left.role] ?? 3) - (roleOrder[right.role] ?? 3) || left.name.localeCompare(right.name);
+  });
   return {
     name: row.guild_name || "Unknown Guild", role: portalGuildRole(row.role_id),
-    membershipCount: (members.rows || []).length,
-    onlineMembers: (members.rows || []).filter((member) => String(statuses.get(member.character_name) || "").toLowerCase() === "online").map((member) => member.character_name)
+    membershipCount: roster.length,
+    members: roster,
+    onlineMembers: roster.filter((member) => member.status === "Online").map((member) => member.name)
   };
 }
 
