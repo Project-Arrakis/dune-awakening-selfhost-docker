@@ -272,13 +272,28 @@ row submits to and which action-specific affordance renders beneath it:
 - **Fill mode** shows "Fill Amount" and "Fill to Capacity" — Fill's capacity sentinel (see below) is
   likewise unchanged.
 
-Switching modes clears the shared item selection and resets the quantity field to that mode's own prior
-default (`1` for Give, `100` for Fill) — a half-typed Give quantity must never be silently submitted as a
-Fill quantity, or vice versa. A queued Give batch is **not** cleared by switching to Fill and back; an
-operator should be able to check Fill without losing in-progress batch work. The two safety notices below
-the toggle were also consolidated: the restart-visibility warning applies to both modes and is shown
-unconditionally; the position_index collision warning (see "Give fills from the high end..." below) is
-Fill-specific and shown only while Fill mode is selected, since Give does not carry that risk.
+**Switching modes resets the quantity field to that mode's own default (`1` for Give, `100` for Fill), but
+persists the selected item.** **Corrected 2026-08-19** — an earlier version also cleared the selected item
+on every mode switch, on the theory that a selection might not be relevant in the other mode. That theory
+never held once Give was widened to the same `FILLABLE_GROUPS` restriction Fill already used (see below):
+any item valid in one mode is valid in the other, so clearing it just forced an operator who glanced at
+Fill and switched back to Give to re-search the same item — reported directly by a real operator. The
+quantity field still resets on every switch (a half-typed Give quantity must never be silently submitted
+as a Fill quantity, or vice versa), and a queued Give batch is still **not** cleared by switching to Fill
+and back; an operator should be able to check Fill without losing in-progress batch work.
+
+**The two safety notices below the toggle are one bordered banner, not two.** **Corrected 2026-08-19** —
+the original consolidation merged the *inputs* into one shared row but left the *notices* as three
+separately-stacked elements (an explanatory paragraph, the restart warning, and the Fill-only collision
+warning as its own second bordered box), which a real operator reported as "3 warnings" after switching to
+Fill mode — recreating the exact "wall of similar-looking warning text" problem the original two-panel
+layout already had. Fixed per a second dispatched UI/UX-hat review: the explanatory paragraph was
+shortened to a single muted caption line (the toggle's own labels now carry most of that meaning), the
+toggle was moved above the warning so the warning's own mode-dependent text change reads as caused by the
+toggle rather than appearing above it, and the restart warning and the Fill-only collision warning (see
+"Give fills from the high end..." below) now share **one** bordered banner — Fill mode appends a trailing
+sentence to that same element instead of opening a second, visually-identical box. At most two notice
+elements are visible at once now, in either mode (one caption line, one warning banner), never three.
 
 | Action | Route | Backend function | Confirmation phrase |
 |---|---|---|---|

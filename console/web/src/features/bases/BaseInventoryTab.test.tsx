@@ -1344,6 +1344,29 @@ describe("BaseInventoryTab", () => {
     expect(screen.queryByText(/can land on the same slot and be lost on the next restart/)).toBeNull();
   });
 
+  // Regression guard for a real operator report the same day the Give/Fill
+  // consolidation shipped: three separately-stacked notice elements (an
+  // explanatory paragraph, the restart warning, and a second, visually
+  // identical Fill-only collision warning) rendered at once in Fill mode.
+  // The restart warning and the Fill-only collision sentence must share
+  // ONE bordered banner element, never two, in either mode.
+  it("never renders more than one warning banner element, in either Give or Fill mode", async () => {
+    mockInventory();
+    renderTab();
+    await loaded();
+    await openVaultContents();
+
+    expect(document.querySelectorAll(".bases-inventory-restart-warning").length).toBe(1);
+    expect(document.querySelectorAll(".bases-inventory-fill-collision-warning").length).toBe(0);
+
+    switchToFillMode();
+    expect(document.querySelectorAll(".bases-inventory-restart-warning").length).toBe(1);
+    expect(document.querySelectorAll(".bases-inventory-fill-collision-warning").length).toBe(0);
+    // Both facts must be present in that single banner while in Fill mode.
+    expect(screen.getByText(/not visible in-game until the Survival server restarts/)).toBeTruthy();
+    expect(screen.getByText(/can land on the same slot and be lost on the next restart/)).toBeTruthy();
+  });
+
   // Give/Fill panel consolidation (2026-08-19, "Alternative A" from the
   // UI/UX hat's dispatched design review): one shared item combobox and
   // quantity field, switched by a Give/Fill mode toggle, replacing the
@@ -1384,7 +1407,16 @@ describe("BaseInventoryTab", () => {
     expect(screen.queryByRole("button", { name: "Fill Amount" })).toBeNull();
   });
 
-  it("clears the selected item and resets the quantity default when switching modes", async () => {
+  // CORRECTED 2026-08-19 (real operator report): the selected item used to
+  // clear on every mode switch, forcing an operator who glanced at Fill
+  // and switched back to Give to re-search the same item. Give and Fill
+  // both filter to the exact same FILLABLE_GROUPS, so there is no reason
+  // an item valid in one mode would ever be invalid in the other -- the
+  // selection now persists across a mode switch. Only the quantity field
+  // resets to that mode's own default, since a half-typed Give quantity
+  // must still never be silently submitted as a Fill quantity or vice
+  // versa.
+  it("persists the selected item across a mode switch, but resets the quantity default", async () => {
     mockInventory();
     renderTab();
     await loaded();
@@ -1395,10 +1427,12 @@ describe("BaseInventoryTab", () => {
     expect((screen.getByRole("combobox", { name: "Item to give" }) as HTMLInputElement).value).toBe("AzuriteOre");
 
     switchToFillMode();
-    // Switching modes must not silently carry a Give selection/quantity
-    // into a Fill submission -- both reset.
-    expect((screen.getByRole("combobox", { name: "Item to fill" }) as HTMLInputElement).value).toBe("");
+    expect((screen.getByRole("combobox", { name: "Item to fill" }) as HTMLInputElement).value).toBe("AzuriteOre");
     expect((screen.getByLabelText("Quantity to fill") as HTMLInputElement).value).toBe("100");
+
+    fireEvent.click(screen.getByRole("button", { name: "Give" }));
+    expect((screen.getByRole("combobox", { name: "Item to give" }) as HTMLInputElement).value).toBe("AzuriteOre");
+    expect((screen.getByLabelText("Quantity to give") as HTMLInputElement).value).toBe("1");
   });
 
   it("keeps a queued Give batch intact after switching to Fill mode and back", async () => {

@@ -3257,7 +3257,19 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
    the standalone Storage tab's own note carries -- see INC-2026-07-31-001.
    Styled like a warning banner, not an error: nothing failed, the operator
    just needs to know a restart is still owed before this container's new
-   contents show up in-game. */
+   contents show up in-game.
+
+   CORRECTED 2026-08-19 (real operator report, "3 warnings" in Fill mode):
+   this used to be one of TWO separately-bordered warning banners
+   (.bases-inventory-fill-collision-warning was the second, Fill-only
+   one), directly recreating the "wall of similar-looking warning text"
+   problem the original two-panel Give/Fill layout already had. The
+   Fill-only position_index-collision sentence (INC-2026-08-19-GIVE-FILL-
+   POSITION-INDEX-COLLISION.md) is now appended as trailing text INSIDE
+   this same element (see BaseInventoryTab.tsx) rather than rendered as a
+   second box -- .bases-inventory-fill-collision-warning was deleted
+   entirely since it never earned a second class (same structure, only
+   different text). At most one banner renders now, in either mode. */
 .bases-inventory-restart-warning {
   display: flex;
   align-items: flex-start;
@@ -3271,23 +3283,12 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 }
 .bases-inventory-restart-warning svg { flex: 0 0 auto; margin-top: 1px; color: var(--warning); }
 
-/* Fill-specific position_index collision risk (INC-2026-08-19-GIVE-FILL-
-   POSITION-INDEX-COLLISION.md) -- same warning-banner treatment as
-   .bases-inventory-restart-warning above, kept as its own class since it
-   is shown only above Fill, not above Give (Give mitigates the risk
-   instead of just warning about it). */
-.bases-inventory-fill-collision-warning {
-  display: flex;
-  align-items: flex-start;
-  gap: 6px;
-  margin: 8px 0 12px;
-  padding: 8px 10px;
-  border: 1px solid var(--warning);
-  border-radius: 6px;
-  color: #ffd9a8;
-  font-size: 12px;
-}
-.bases-inventory-fill-collision-warning svg { flex: 0 0 auto; margin-top: 1px; color: var(--warning); }
+/* One-line, low-weight caption above the Give/Fill mode toggle --
+   deliberately lighter than .bases-inventory-restart-warning above (no
+   border, no icon, muted color) so the visual hierarchy matches the real
+   importance gap between "here's what the two modes mean" (skippable
+   after a first read) and the warning banner (must-read every time). */
+.bases-inventory-mode-hint { margin: 0 0 10px; font-size: 12px; }
 
 /* Delete Selected / Delete All, above the single-slot detail strip -- both
    are Storage-group-only and reuse the same danger button styling the

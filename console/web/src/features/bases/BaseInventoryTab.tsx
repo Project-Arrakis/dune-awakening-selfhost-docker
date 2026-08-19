@@ -154,18 +154,25 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
   const [addBatch, setAddBatch] = useState<{ itemName: string; itemId: string; quantity: number }[]>([]);
   const [fillRunning, setFillRunning] = useState(false);
 
-  // Switching modes clears the shared selection/quantity (matching each
-  // mode's own prior default -- Give defaulted to "1", Fill to "100") so a
-  // half-typed Give quantity never gets silently submitted as a Fill
-  // quantity or vice versa, and so a selected item does not appear to carry
-  // over into a mode where it may not even be relevant (e.g. mid-batch).
-  // The Give batch itself is deliberately NOT cleared on a mode switch --
-  // an operator queuing items should be able to glance at Fill and switch
-  // back to Give without losing progress.
+  // CORRECTED 2026-08-19 (real operator report): switching modes used to
+  // also clear selectedItem, on the theory that a selected item might not
+  // be relevant in the other mode. That theory no longer holds -- Give and
+  // Fill both filter to the exact same FILLABLE_GROUPS (Give was widened
+  // to match Fill's restriction earlier this same session), so any item
+  // valid in one mode is valid in the other. Clearing it just forced an
+  // operator to re-search the same item after glancing at Fill and coming
+  // back, which is exactly the "re-typing the item name" friction the
+  // Give-more-from-a-slot work elsewhere in this file is trying to reduce.
+  // selectedItem now persists across a mode switch; only the quantity
+  // field resets to that mode's own default ("1" for Give, "100" for
+  // Fill), since a half-typed Give quantity must still never be silently
+  // submitted as a Fill quantity or vice versa. The Give batch itself is
+  // also deliberately NOT cleared on a mode switch -- an operator queuing
+  // items should be able to glance at Fill and switch back to Give without
+  // losing progress.
   function selectAddFillMode(mode: "give" | "fill") {
     if (mode === addFillMode) return;
     setAddFillMode(mode);
-    setSelectedItem(null);
     setQuantityText(mode === "fill" ? "100" : "1");
   }
 
@@ -1150,42 +1157,32 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
                 explanation now, and each mode's own secondary affordance
                 (Give's batch queue, Fill's capacity sentinel) only renders
                 while that mode is selected, instead of both being visible
-                and competing for attention at once. */}
-            <p className="muted bases-inventory-note">
-              <strong>Give</strong> inserts a new stack and can queue several different items in one confirmation.{" "}
-              <strong>Fill</strong> tops up one item toward this container's real capacity, including filling it all the way in one click. Both accept raw resources, refined resources, and components only.
+                and competing for attention at once.
+
+                CORRECTED 2026-08-19 (real regression, found the same day by
+                a real operator): the consolidation above merged the INPUTS
+                but never actually merged the NOTICES -- this block used to
+                render three separate stacked <p> elements (an explanatory
+                paragraph, the restart warning, and a Fill-only collision
+                warning as its own second bordered box), directly
+                recreating the "wall of similar-looking warning text"
+                problem the very first design review diagnosed. Per a
+                second dispatched UI/UX-hat review: shortened the always-
+                shown explanatory line to a single muted caption (the mode
+                toggle's own labels now carry most of that meaning), moved
+                the toggle above the warning so the warning's own mode-
+                dependent text change reads as caused by the toggle instead
+                of appearing above it, and merged the restart warning and
+                the Fill-only collision warning into ONE bordered banner --
+                Fill mode appends a trailing sentence to the SAME element
+                rather than opening a second, visually-identical box. Never
+                more than two notice elements are visible at once now, in
+                either mode (one caption line, one warning banner), down
+                from three. */}
+            <p className="muted bases-inventory-mode-hint">
+              <strong>Give</strong> inserts a new stack, and can queue several items at once.{" "}
+              <strong>Fill</strong> tops up one item toward capacity, including filling it in one click.
             </p>
-            {/* Per INC-2026-07-31-001: the game engine claims dune.items rows
-                only at server startup, so a given/filled item sits in the
-                database but stays invisible in-game until the Survival
-                server restarts. Silent and easy to rediscover the hard way
-                -- surfaced explicitly here so an operator does not spend
-                time re-litigating "why isn't this showing up" the way this
-                fork's own incident history already did once. Restarting is
-                not offered inline here (unlike the standalone Storage tab's
-                "Apply Fills" button) -- Server Control/Bases already own
-                that action, and duplicating a player-disconnecting restart
-                trigger in a third place was judged a bigger risk than one
-                extra tab switch. Applies to both modes, so it is shown
-                unconditionally rather than duplicated per mode. */}
-            <p className="bases-inventory-restart-warning" role="status">
-              <TriangleAlert size={14} aria-hidden="true" /> Given and filled items are not visible in-game until the Survival server restarts. Restart it from Server Control or Bases when convenient — all connected players will be disconnected for a few minutes.
-            </p>
-            {/* Per INC-2026-08-19-GIVE-FILL-POSITION-INDEX-COLLISION.md: while
-                the map stays running, a filled row can land on the same slot
-                a live in-game move/pickup claims at the same time, and the
-                row that loses that race is never claimed on the next
-                restart. Give mitigates this by filling from the high end of
-                the container instead of the low end (see
-                nextHighPositionIndex in duneDb.js); Fill cannot use the same
-                mitigation -- it is meant to top up a container toward its
-                real capacity, the same direction the engine already fills,
-                so there is no "far end" left once Fill has done its job.
-                This is a documented, accepted limitation, not a bug --
-                shown only in Fill mode, since Give does not carry this risk. */}
-            {addFillMode === "fill" && <p className="bases-inventory-fill-collision-warning" role="status">
-              <TriangleAlert size={14} aria-hidden="true" /> If items are added to this container in-game while the map is running, a filled item can land on the same slot and be lost on the next restart. This risk is highest for a nearly-full container. See the Base Inventory documentation for details.
-            </p>}
 
             <div className="bases-inventory-views" role="group" aria-label="Give or Fill">
               <button
@@ -1201,6 +1198,45 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
                 onClick={() => selectAddFillMode("fill")}
               >Fill</button>
             </div>
+
+            {/* Per INC-2026-07-31-001: the game engine claims dune.items rows
+                only at server startup, so a given/filled item sits in the
+                database but stays invisible in-game until the Survival
+                server restarts. Silent and easy to rediscover the hard way
+                -- surfaced explicitly here so an operator does not spend
+                time re-litigating "why isn't this showing up" the way this
+                fork's own incident history already did once. Restarting is
+                not offered inline here (unlike the standalone Storage tab's
+                "Apply Fills" button) -- Server Control/Bases already own
+                that action, and duplicating a player-disconnecting restart
+                trigger in a third place was judged a bigger risk than one
+                extra tab switch. Applies to both modes, so the first
+                sentence is always shown.
+
+                The second sentence (per
+                INC-2026-08-19-GIVE-FILL-POSITION-INDEX-COLLISION.md: while
+                the map stays running, a filled row can land on the same
+                slot a live in-game move/pickup claims at the same time,
+                and the row that loses that race is never claimed on the
+                next restart -- Give mitigates this by filling from the
+                high end of the container, see nextHighPositionIndex in
+                duneDb.js; Fill cannot use the same mitigation, since it is
+                meant to top up toward real capacity, the same direction
+                the engine already fills) is a Fill-specific ADDENDUM to
+                this same restart-related warning, not an unrelated risk --
+                appended as trailing text inside this SAME bordered banner
+                only while Fill mode is selected, rather than rendered as a
+                second, visually-identical box (the pre-2026-08-19 fix that
+                caused a real operator to see "3 warnings" stacked in Fill
+                mode). This is a documented, accepted limitation for Fill,
+                not a bug. */}
+            <p className="bases-inventory-restart-warning" role="status">
+              <TriangleAlert size={14} aria-hidden="true" />
+              <span>
+                Given and filled items are not visible in-game until the Survival server restarts. Restart it from Server Control or Bases when convenient — all connected players will be disconnected for a few minutes.
+                {addFillMode === "fill" && " If items are added to this container in-game while the map is running, a filled item can land on the same slot and be lost on the next restart — highest risk for a nearly-full container. See the Base Inventory documentation for details."}
+              </span>
+            </p>
 
             <div className="bases-inventory-add-row">
               <ItemCatalogCombobox

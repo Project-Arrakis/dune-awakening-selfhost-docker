@@ -460,6 +460,34 @@ Keep a Changelog style, grouped by upstream base version, newest first.
   Fill-specific and shows only while Fill mode is selected. No backend
   routes, request shapes, or confirmation phrases changed -- this is a
   client-side state/markup consolidation only.
+- **The Give/Fill consolidation above shipped with two of its own real
+  regressions, both reported directly by a real operator testing it live
+  the same day.** Fixed in the same session:
+  - **Switching between Give and Fill mode cleared the selected item**,
+    forcing an operator who glanced at Fill and switched back to Give to
+    re-search the same item from scratch. The clearing was based on a
+    theory ("a selection might not be relevant in the other mode") that no
+    longer held once Give was restricted to the same `FILLABLE_GROUPS` Fill
+    already used -- any item valid in one mode is always valid in the
+    other. The selected item now persists across a mode switch; only the
+    quantity field still resets to that mode's own default (`1` for Give,
+    `100` for Fill), since a half-typed quantity must still never carry
+    into the wrong action.
+  - **The panel showed three separately-stacked notice elements in Fill
+    mode** (an explanatory paragraph, the restart warning, and the
+    Fill-only position_index collision warning as its own second bordered
+    box) -- the original consolidation merged the *inputs* but never
+    actually merged the *notices*, directly recreating the "wall of
+    similar-looking warning text" problem the very first design review had
+    already diagnosed in the old two-panel layout. A second dispatched
+    UI/UX-hat review recommended, and this fixes: the explanatory paragraph
+    shrunk to one muted caption line; the toggle moved above the warning
+    banner so the banner's mode-dependent text change reads as caused by
+    the toggle; and the restart warning and the Fill-only collision warning
+    now share **one** bordered banner, with Fill mode appending a trailing
+    sentence to the same element instead of opening a second, visually
+    identical box. At most two notice elements are ever visible now, in
+    either mode.
 
 ### Security
 
