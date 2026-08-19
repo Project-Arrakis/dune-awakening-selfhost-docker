@@ -15,8 +15,9 @@ Audience: engineers working on this project's code (Core, the console, the
 runtime scripts, the addon platform). For an operator-facing walkthrough of
 running a server day to day, see [`docs/operator-guide.md`](../operator-guide.md).
 
-All facts below were verified against `main` (commit `1754131e`, `VERSION` =
-`v1.3.90`) by reading the actual source files cited.
+The facts below are maintained against `main` and were verified by reading the
+actual source files cited. Prefer the linked component documentation and source
+when an exact count or implementation detail changes.
 
 ---
 
@@ -116,8 +117,8 @@ dynamic maps based on demand signals it tracks under
   on Node's `node:http` module. The only production dependency is `pg`
   (`console/api/package.json`).
 - **Entrypoint:** `src/server.js` (`npm start` → `node src/server.js`).
-- **Test framework:** Node's built-in `node --test` (`npm test`), 92 test
-  files under `console/api/test/`. Integration tests (suffixed
+- **Test framework:** Node's built-in `node --test` (`npm test`), with tests
+  under `console/api/test/`. Integration tests (suffixed
   `.integration.test.js`) spin up isolated per-test Postgres databases via
   `console/api/test-support/pgIntegrationDb.js` and must run at
   `--test-concurrency=1` (CI enforces this,
@@ -127,9 +128,9 @@ dynamic maps based on demand signals it tracks under
   `actions.js` (route→action mapping), `duneDb.js` (the large game-data
   query/mutation layer — the single largest source file in the repo),
   `db.js` (the Postgres connection pool), `addons.js` (the addon
-  manager), `config.js` (env/secret loading), plus a `services/` directory
-  (32 files) and an `integrations/discord/` directory (12 files, the
-  Discord adapter — see §5).
+  manager), `config.js` (env/secret loading), plus the `services/` and
+  `integrations/discord/` directories (the latter is the Discord adapter —
+  see §5).
 
 ### 2.2 Web (`console/web/`)
 
@@ -304,8 +305,8 @@ commented list of every supported variable, grouped by feature area).
 **Do not conflate these two.** [`docs/README.md`](../README.md) documents
 this split explicitly, and it matters architecturally:
 
-1. **The Discord adapter** (`console/api/src/integrations/discord/`,
-   12 files) — a built-in, disabled-by-default, bearer-token-protected
+1. **The Discord adapter** (`console/api/src/integrations/discord/`) — a
+   built-in, disabled-by-default, bearer-token-protected
    HTTP surface the console exposes for a companion Discord bot to read
    server status/population/etc., and, if `DUNE_DISCORD_WRITES_ENABLED=1`
    is set, to perform a narrow set of gated write actions (see
