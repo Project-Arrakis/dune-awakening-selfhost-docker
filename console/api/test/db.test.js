@@ -491,7 +491,7 @@ test("player portal snapshot bases report generatorUnstockedCount and generatorA
       // Table existence checks - required tables return true
       if (text.includes("to_regclass")) {
         const tableName = String(values[0] || "");
-        const requiredForBases = ["buildings", "building_instances", "actor_fgl_entities", "actors"];
+        const requiredForBases = ["buildings", "building_instances", "actor_fgl_entities", "actors", "placeables", "fgl_entities"];
         const isRequired = requiredForBases.some(table => tableName.includes(table));
         return { rows: [{ exists: isRequired }] };
       }
@@ -548,6 +548,9 @@ test("player portal snapshot bases report generatorUnstockedCount and generatorA
           unstocked_count: 1
         }] };
       }
+      if (text.includes("from containers group by water_type")) {
+        return { rows: [{ water_type: "waterCistern", container_count: 2, water_stored: 8000, blood_stored: null }] };
+      }
       return { rows: [] };
     }
   };
@@ -561,6 +564,11 @@ test("player portal snapshot bases report generatorUnstockedCount and generatorA
     buybackPriceBasis: "seeded",
     maxBuys: 500,
     evaluatedAt: "2026-08-19T12:00:00.000Z",
+    overview: {
+      available: true,
+      evaluatedAt: "2026-08-19T12:00:01.000Z",
+      items: [{ templateId: "WaterBottle", displayName: "Water", qualityLevel: "0", listingCount: 2, totalUnits: 20, lowestPrice: "500", highestPrice: "600", maxUnitPrice: "600" }]
+    },
     listings: [
       { orderId: "1", sellerActorId: "123", displayName: "Water", itemPrice: "500", stackSize: "2", maxUnitPrice: "600", resultCode: 0, resultLabel: "eligible", detail: "eligible" },
       { orderId: "2", sellerActorId: "999", displayName: "Other Player Item", resultCode: 1 }
@@ -587,11 +595,17 @@ test("player portal snapshot bases report generatorUnstockedCount and generatorA
   assert.equal(base.name, "Test Base", "base name should match");
   assert.equal(base.generatorUnstockedCount, 1, "base should report the count with no queued fuel");
   assert.equal(base.generatorAllUnstocked, false, "not all generators are unstocked");
+  assert.equal(base.waterSupported, true);
+  assert.equal(base.waterStatus, "available");
+  assert.equal(base.waterContainers[0].stored, 8000);
+  assert.equal(base.waterContainers[0].capacity, 10000);
   assert.deepEqual(result[0].data.marketBot.listings.map((row) => row.orderId), ["1"]);
   assert.deepEqual(result[0].data.marketBot.history.map((row) => row.orderId), ["3"]);
   assert.equal(Object.hasOwn(result[0].data.marketBot.listings[0], "sellerActorId"), false, "local seller ids must not leave the server");
   assert.equal(JSON.stringify(result[0].data.marketBot).includes("Other Player Item"), false);
   assert.equal(JSON.stringify(result[0].data.marketBot).includes("Private"), false);
+  assert.equal(result[0].data.exchangeOverview.available, true);
+  assert.equal(result[0].data.exchangeOverview.items[0].listingCount, 2);
 });
 
 test("player portal prefers custom vehicle names and ignores internal labels", async () => {

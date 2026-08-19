@@ -14,6 +14,7 @@ import { join } from "node:path";
 import {
   buildHeartbeatPayload,
   collectPlayerPortalContext,
+  collectPlayerPortalClientConfiguration,
   collectDirectorySnapshot,
   createPublicDirectoryReporter,
   getOrCreateIdentity,
@@ -45,6 +46,23 @@ test("player portal context exposes only player-safe server policy and notice fi
   } finally {
     files.cleanup();
   }
+});
+
+test("player portal client configuration uses generated allowlisted INIs and rejects secrets", async () => {
+  const calls = [];
+  const runner = async (_config, args) => {
+    calls.push(args);
+    return { stdout: args.includes("client-game-ini") ? "; safe\n[/Script/DuneSandbox.DuneGameMode]\nm_WaterConsumptionRate=2\n" : "; safe\n[ConsoleVariables]\nfoo=bar\n" };
+  };
+  const result = await collectPlayerPortalClientConfiguration({ repoRoot: "/repo" }, runner);
+  assert.equal(result.available, true);
+  assert.match(result.installPath, /WindowsClient$/);
+  assert.match(result.gameIni, /m_WaterConsumptionRate=2/);
+  assert.equal(calls.length, 2);
+
+  const unsafe = await collectPlayerPortalClientConfiguration({}, async () => ({ stdout: "ServerPassword=hunter2\n" }));
+  assert.equal(unsafe.available, false);
+  assert.equal(unsafe.gameIni, "");
 });
 
 test("large private portal snapshots are split below the website request limit", () => {
