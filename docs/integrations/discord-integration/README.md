@@ -1,6 +1,6 @@
 # Discord Adapter — Setup and Configuration
 
-**Status:** Current | **Last Updated:** July 2026
+**Status:** Current | **Last Updated:** August 2026
 
 > **Which Discord docs do I want?** This folder (`discord-integration/`) is the
 > **operator-facing** set — start here if you are setting up Discord on your server.
@@ -119,6 +119,19 @@ which provides 25 slash commands organized into 6 groups:
 See the bot's [User Guide](https://github.com/yacketrj/dune-awakening-selfhost-discordbot/blob/main/docs/user-guide.md)
 and [Admin Guide](https://github.com/yacketrj/dune-awakening-selfhost-discordbot/blob/main/docs/admin-guide.md)
 for setup instructions.
+
+## Contributing Companion-Bot Features
+
+A companion bot and this repository are separate products. Bot-only command,
+formatting, scheduling, persistence, deployment, and release changes belong in
+the bot repository. Changes to Console API routes, Discord adapter routes,
+Core capability enforcement, server-side response contracts, or Core runtime
+configuration belong here.
+
+If a bot feature needs changes in both products, use coordinated PRs rather
+than copying bot implementation code into Core. See
+[Contributing Companion-Bot Changes Upstream](contributing-upstream.md) for the
+branching, validation, ownership, and PR workflow.
 
 ## Troubleshooting
 
