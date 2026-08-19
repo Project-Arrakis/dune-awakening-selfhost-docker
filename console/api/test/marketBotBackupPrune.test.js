@@ -58,6 +58,7 @@ function makeFixture() {
   mkdirSync(join(fixture, "runtime/backups/db"), { recursive: true });
   cpSync(resolve(repoRoot, "runtime/scripts/db.sh"), join(scripts, "db.sh"));
   cpSync(resolve(repoRoot, "runtime/scripts/env-file.sh"), join(scripts, "env-file.sh"));
+  writeFileSync(join(fixture, ".env"), "SERVER_TITLE=Kovalt Test Server\n");
   writeFileSync(join(bin, "docker"), DOCKER_STUB);
   chmodSync(join(bin, "docker"), 0o755);
   return { fixture, bin, backupDir: join(fixture, "runtime/backups/db") };
@@ -103,8 +104,8 @@ test("market bot backups carry their origin in the filename and prune to the new
     assert.equal(result.status, 0, `backup must succeed (stderr: ${result.stderr})`);
 
     const names = backupNames(backupDir);
-    const created = names.find((name) => /^dune-db-market-bot-buyback-hagga_basin-\d{8}-\d{6}\.backup$/.test(name));
-    assert.ok(created, `new backup is labeled with its market-bot origin (got: ${names.join(", ")})`);
+    const created = names.find((name) => /^kovalt-test-server-market-bot-buyback-\d{8}-\d{6}\.backup$/.test(name));
+    assert.ok(created, `new backup includes the server name and market-bot origin (got: ${names.join(", ")})`);
     const sidecar = readFileSync(join(backupDir, `${created}.yaml`), "utf8");
     assert.match(sidecar, /^backup_origin: market-bot-buyback$/m);
 
@@ -130,7 +131,7 @@ test("market bot backups carry their origin in the filename and prune to the new
   }
 });
 
-test("manual and automatic backups keep their unlabeled names and trigger no market-bot prune", () => {
+test("manual backups use the server name and trigger no market-bot prune", () => {
   const { fixture, bin, backupDir } = makeFixture();
   try {
     for (let day = 1; day <= 7; day += 1) {
@@ -141,8 +142,8 @@ test("manual and automatic backups keep their unlabeled names and trigger no mar
     assert.equal(result.status, 0, `backup must succeed (stderr: ${result.stderr})`);
 
     const names = backupNames(backupDir);
-    const created = names.find((name) => /^dune-db-hagga_basin-\d{8}-\d{6}\.backup$/.test(name));
-    assert.ok(created, `manual backup keeps the plain scope name (got: ${names.join(", ")})`);
+    const created = names.find((name) => /^kovalt-test-server-\d{8}-\d{6}\.backup$/.test(name));
+    assert.ok(created, `manual backup includes the server name (got: ${names.join(", ")})`);
     // A manual backup never prunes market-bot backups, even past the cap.
     assert.equal(names.length, 8, "all seven market-bot backups plus the manual one remain");
   } finally {
