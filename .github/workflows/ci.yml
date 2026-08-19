@@ -80,18 +80,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - name: Install gnupg for db-system-backup-test.sh (AEAD archive encryption)
-        # BUG FIX: previously relied on rsync/openssl being present
-        # implicitly on the GitHub runner image, which masked that neither
-        # was installed by install.sh or in the console container image --
-        # confirmed directly on this exact point by an upstream reviewer.
-        # gnupg ships gpg, used for AES-256-OCB (AEAD) archive encryption;
-        # openssl's own `enc` CLI cannot do any AEAD cipher at all. Install
-        # explicitly here so this job cannot silently rely on the runner
-        # image's own toolset again.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: "22"
+      - name: Install secrets test dependencies
+        timeout-minutes: 8
         run: |
-          if command -v gpg >/dev/null 2>&1; then
+          if command -v gpg >/dev/null 2>&1 \
+            && command -v age >/dev/null 2>&1 \
+            && python3 -c 'from cryptography.hazmat.primitives.ciphers.aead import AESGCM' >/dev/null 2>&1; then
             gpg --version
+            age --version
             exit 0
           fi
           sudo env DEBIAN_FRONTEND=noninteractive apt-get \
@@ -103,23 +102,10 @@ jobs:
             -o Acquire::Retries=3 \
             -o Acquire::http::Timeout=30 \
             -o Acquire::https::Timeout=30 \
-            install -y --no-install-recommends gnupg
+            install -y --no-install-recommends age gnupg python3-cryptography
           gpg --version
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
-        with:
-          node-version: "22"
-      - name: Install age and cryptography (age-based secrets library tests)
-        # BUG FIX: previously assumed pytest ships as part of the runner
-        # image's default Python toolchain (it does not -- confirmed
-        # directly on this exact CI: "No module named pytest", failing
-        # the whole job). Every other Python dependency this same step
-        # needs (cryptography) was already installed explicitly; pytest
-        # needed the same treatment instead of being an implicit,
-        # undocumented assumption about the runner image's contents.
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y age
-          python3 -m pip install --break-system-packages cryptography pytest
+          age --version
+          python3 -c 'from cryptography.hazmat.primitives.ciphers.aead import AESGCM'
       - name: Test readiness with configured service ports
         run: bash tests/ready-configured-ports-test.sh
       - name: Test stable farm readiness gating
@@ -171,7 +157,7 @@ jobs:
           runtime/tests/test-compose-project-resolution.sh
       - name: Test age-based secrets library (AEAD primitive, shell seam, cross-language round-trip)
         run: |
-          python3 -m pytest runtime/scripts/lib/test_secrets_aead.py -v
+          python3 runtime/scripts/lib/test_secrets_aead.py -v
           runtime/tests/test-secrets-lib.sh
           runtime/tests/test-secrets-aead-cross-language.sh
           runtime/tests/test-secrets-stage2.sh
