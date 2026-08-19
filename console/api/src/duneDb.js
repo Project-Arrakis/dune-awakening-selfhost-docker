@@ -7,6 +7,7 @@ import { resolve } from "node:path";
 import { redact } from "./redact.js";
 import { itemImagePath } from "./adminCatalog.js";
 import { clampInt, writeJsonAtomic } from "./jsonStore.js";
+import { isFiefClaimPlaceable } from "./blueprintSafety.js";
 import { CARE_PACKAGE_SERVER_PERSONA, FUNCOM_GM_PERSONA, MESSAGE_OF_THE_DAY_PERSONA } from "./systemPersonas.js";
 import {
   craftingRecipeCatalogRows,
@@ -4323,9 +4324,14 @@ export async function exportBaseAsBlueprint(db, id) {
         join dune.actor_fgl_entities afe on afe.entity_id = p.owner_entity_id
         where afe.actor_id = $1
           and a.transform is not null
+          and lower(coalesce(p.building_type, '')) not in ('totem_small_placeable', 'totem_placeable')
         order by p.id`, [base.actor_id])
     : { rows: [] };
-  const placeables = placeableRows.rows.map((row) => ({
+  // Keep the JS guard as a second boundary in case a future schema/query path
+  // bypasses or changes the SQL predicate. A Solido blueprint must never carry
+  // the live base's claim console: projecting it can create a second malformed
+  // claim inside the destination fief.
+  const placeables = placeableRows.rows.filter((row) => !isFiefClaimPlaceable(row.building_type)).map((row) => ({
     placeable_id: row.placeable_id,
     building_type: row.building_type,
     x: Number(row.x) - anchor.x,

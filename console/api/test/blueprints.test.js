@@ -256,6 +256,53 @@ test("import blueprint inserts placeables with 6-element transform", async () =>
   assert.match(String(placeables[0].transform), /-149/);
 });
 
+test("import blueprint removes small and advanced Sub-Fief claim consoles", async () => {
+  const { db, placeables, pentashields } = fakeBlueprintDb([]);
+  const result = await importBlueprint(db, 123, {
+    instances: [SAMPLE_INSTANCE],
+    placeables: [
+      { building_type: "Totem_Small_Placeable", placeable_id: 1, x: 0, y: 0, z: 0 },
+      { building_type: "totem_placeable", placeable_id: 2, x: 0, y: 0, z: 0 },
+      { ...SAMPLE_PLACEABLE, placeable_id: 3 }
+    ],
+    pentashields: [
+      { placeable_id: 1, scale: [5, 5, 5] },
+      { placeable_id: 3, scale: [10, 2, 10] }
+    ]
+  });
+
+  assert.deepEqual(placeables.map((row) => row.type), ["Generator_Placeable"]);
+  assert.deepEqual(pentashields.map((row) => row.placeable_id), [3]);
+  assert.equal(result.placeables, 1);
+  assert.equal(result.pentashields, 1);
+  assert.equal(result.removedClaimConsoles, 2);
+  assert.equal(result.removedPentashields, 1);
+  assert.match(result.warning, /Removed 2 Sub-Fief claim consoles/);
+  assert.match(result.message, /1 placeables/);
+});
+
+test("claim consoles without an ID do not remove an unrelated zero-ID pentashield", async () => {
+  const { db, pentashields } = fakeBlueprintDb([]);
+  const result = await importBlueprint(db, 123, {
+    instances: [SAMPLE_INSTANCE],
+    placeables: [{ building_type: "Totem_Small_Placeable", placeable_id: null }],
+    pentashields: [{ placeable_id: 0, scale: [10, 2, 10] }]
+  });
+
+  assert.equal(pentashields.length, 1);
+  assert.equal(result.removedClaimConsoles, 1);
+  assert.equal(result.removedPentashields, 0);
+});
+
+test("import blueprint rejects content made only from a Sub-Fief claim console", async () => {
+  const { db, items, blueprints } = fakeBlueprintDb([]);
+  await assert.rejects(() => importBlueprint(db, 123, {
+    placeables: [{ building_type: "Totem_Placeable", placeable_id: 1, x: 0, y: 0, z: 0 }]
+  }), /only a Sub-Fief claim console/);
+  assert.equal(items.length, 0);
+  assert.equal(blueprints.length, 0);
+});
+
 test("import blueprint repairs the legacy live-export placeable rotation axis", async () => {
   const { db, placeables } = fakeBlueprintDb([]);
   await importBlueprint(db, 123, {
@@ -364,6 +411,22 @@ test("export blueprint returns full JSON structure", async () => {
   assert.equal(result.instances.length, 2);
   assert.equal(result.placeables.length, 1);
   assert.equal(result.pentashields.length, 1);
+});
+
+test("export blueprint omits stored Sub-Fief claim consoles and their linked pentashields", async () => {
+  const { db, placeables, pentashields } = fakeBlueprintDb([]);
+  placeables.push(
+    { blueprint_id: 77, placeable_id: 1, building_type: "Totem_Small_Placeable", transform: [0, 0, 0, 0, 0, 0] },
+    { blueprint_id: 77, placeable_id: 2, building_type: "Generator_Placeable", transform: [10, 20, 30, 0, 0, 0] }
+  );
+  pentashields.push(
+    { blueprint_id: 77, placeable_id: 1, scale: [5, 5, 5] },
+    { blueprint_id: 77, placeable_id: 2, scale: [10, 2, 10] }
+  );
+
+  const result = await exportBlueprint(db, 77);
+  assert.deepEqual(result.placeables.map((row) => row.building_type), ["Generator_Placeable"]);
+  assert.deepEqual(result.pentashields.map((row) => row.placeable_id), [2]);
 });
 
 test("live base export can be imported without losing relative transforms", async () => {
