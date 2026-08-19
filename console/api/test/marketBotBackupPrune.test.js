@@ -189,3 +189,10 @@ prune_market_bot_backups "$1" "$2"
     rmSync(fixture, { recursive: true, force: true });
   }
 });
+
+test("the documented retention override is forwarded into the console container", () => {
+  const compose = readFileSync(resolve(repoRoot, "docker-compose.web.yml"), "utf8");
+  const envExample = readFileSync(resolve(repoRoot, ".env.example"), "utf8");
+  assert.match(compose, /^\s+DUNE_MARKET_BOT_BACKUP_KEEP:\s+"\$\{DUNE_MARKET_BOT_BACKUP_KEEP:-5\}"$/m);
+  assert.match(envExample, /^DUNE_MARKET_BOT_BACKUP_KEEP=5$/m);
+});
