@@ -38,6 +38,11 @@ reference. Everything else is marked **Current** and is expected to stay accurat
 
 ## Architecture
 
+A deliberate exception to this file's own "don't add a new top-level
+folder for one document" rule above: a whole-system overview doesn't
+belong to any single existing folder (`console/`, `runtime/`, `addons/`)
+by nature, so it gets its own.
+
 - [architecture/SYSTEM-OVERVIEW.md](architecture/SYSTEM-OVERVIEW.md) — Current. Whole-system engineering architecture reference: component map, the console's API/web/data layers, the `dune` CLI and Compose-project-name resolution, runtime state directories, and the Discord-integration split. Start here for a code-level overview before diving into a single component's docs.
 
 ## Console (`console/api`, `console/web`)

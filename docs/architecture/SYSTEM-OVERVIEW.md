@@ -178,12 +178,16 @@ list (`public`, `observer`, `moderator`, `admin`, `owner`) — see §5.
 
 ### 2.4 Data layer
 
-There is exactly one Postgres connection pool (`db.js`, built on `pg`),
-shared by the console and the dedicated game server's own writes. The
-`dune` schema is the game-world schema, populated primarily by the
-closed-source dedicated server itself (`dune.accounts`, `dune.actors`,
-`dune.player_state`, `dune.landsraad_*`, world-partition tables, etc.). A
-small number of console-authored tables also live in this schema.
+The console maintains exactly one Postgres connection pool inside its own
+process (`db.js`, built on `pg`). The console and the dedicated game
+server both write to the same `dune` schema, but they are separate OS
+processes — the closed-source game server establishes its own connection
+to Postgres independently; it does not share this repo's in-process `pg`
+pool object. The `dune` schema is the game-world schema, populated
+primarily by the closed-source dedicated server itself (`dune.accounts`,
+`dune.actors`, `dune.player_state`, `dune.landsraad_*`, world-partition
+tables, etc.). A small number of console-authored tables also live in
+this schema.
 
 Backups of this database are covered by the `pg_dump`-based backup
 pipeline — see
@@ -196,7 +200,10 @@ from `https://raw.githubusercontent.com/Red-Blink/dune-docker-addons/main/index.
 verified by SHA-256 against the addon's manifest, and validated against a
 fixed, hardcoded permission allowlist
 (`ALLOWED_ADDON_PERMISSIONS` — 10 entries, e.g. `players:read`,
-`database:write`, `admin:grant-items`, `broadcast:send`). An addon's
+`database:write`, `admin:grant-items`, `broadcast:send`). An optional
+`DUNE_SELF_UPDATE_TOKEN` (GitHub token), if configured, is attached to
+the catalog index/manifest fetch only — it is never sent with the addon
+archive download and never reaches installed-addon runtime code. An addon's
 manifest (`addon.json`, `schemaVersion: 1`, `type: "ui"` only) declares
 the permissions it wants; **installing an addon does not grant those
 permissions** — an operator must explicitly approve each permission
@@ -223,7 +230,7 @@ answering operator questions about this — verify against the running
 `runtime/scripts/dune` is the primary operational entry point once a
 server is installed — the Web UI calls into the same underlying scripts,
 but every capability is also available directly from the CLI. It dispatches
-on its first argument to one of ~30 subcommands (`init`, `start`, `stop`,
+on its first argument to one of 35 subcommands (`init`, `start`, `stop`,
 `status`, `ps`, `servers`, `spawn`, `despawn`, `autoscaler`, `ports`,
 `ready`, `logs`, `restart <target>`, `stop-service`, `console`/`web`,
 `metrics`, `update`, `self-update`, `restart-schedule`,
@@ -327,10 +334,10 @@ Enforced at commit time (`.pre-commit-config.yaml`): `gitleaks`,
 `ggshield` (GitGuardian), `trivy` (secret-scan only), `semgrep`
 (`p/default`), plus a repo-specific `tests/security-pr-checks.sh` scoped to
 `console/`, `runtime/`, `docker-compose*`, and `.env` changes. Enforced in
-CI (`.github/workflows/ci.yml`, `semgrep.yml`): the full `semgrep ci` Pro
-ruleset (scheduled daily and on every PR), `npm audit --audit-level=high`
-for `console/api`, and a `release-gate` job that requires all other CI
-jobs to succeed. See [`docs/security/`](../security/) for the individual
+CI (`.github/workflows/ci.yml`): `security-checks`, `api-dependency-audit`
+(`npm audit --audit-level=high` for `console/api`), and a `release-gate`
+job that requires all other CI jobs to succeed. See
+[`docs/security/`](../security/) for the individual
 security review/hardening documents, most of which are marked **Historical
 record** (point-in-time PR evidence) even where the control they describe
 is still in force — read [`docs/README.md`](../README.md)'s Security
