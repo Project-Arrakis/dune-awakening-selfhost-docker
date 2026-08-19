@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Boxes, ChevronDown, ChevronRight, LayoutGrid, List, Trash2, TriangleAlert, X } from "lucide-react";
-import { CatalogItemThumb } from "../../components/common/ItemCatalog";
+import { CatalogItemThumb, ItemCatalogCombobox, loadFullCatalog, type CatalogItem } from "../../components/common/ItemCatalog";
 import {
   basesApi,
   type BaseContainerSlots,
@@ -10,6 +10,16 @@ import {
   type BaseInventoryItem,
   type BaseInventorySlot
 } from "../../api/bases";
+
+// Mirrors FILLABLE_GROUPS in adminCatalog.js exactly -- both the Give and
+// Fill comboboxes must never offer an item the server would reject anyway.
+// Give was widened to this same restriction (issue #347 follow-up, per
+// explicit operator direction) after a real catalog item -- "Robe of the
+// Sisterhood" -- showed up in the Give combobox despite being clothing,
+// not a raw/refined resource or component. This tab's Give action is
+// deliberately scoped tighter than the older, standalone Storage tab's own
+// Give Item action, which still accepts any catalog item unchanged.
+const FILLABLE_GROUPS = new Set(["refined_resource", "component", "raw_resource"]);
 
 type BaseInventoryTabProps = {
   baseId: string;
@@ -102,6 +112,112 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
   const [selectedSlotId, setSelectedSlotId] = useState("");
   const [amount, setAmount] = useState("");
   const slotsRequestIdRef = useRef(0);
+
+  // Give/Fill/multi-delete are Storage-group only, same as the existing
+  // single-item delete -- deliberately reusing deleteAllowed's "storage
+  // group" gate rather than a second, looser check, so this new UI can
+  // never enable an action the delete strip above would refuse.
+  // giveAllowed intentionally does NOT require deleteSafety.safe: Give/Fill
+  // are pure inserts (see server.js's baseContainerGiveItemRoute comment),
+  // so they are gated on the storage-group check alone. deleteSafety.safe
+  // is always true for a storage-group container as of 2026-08-19 (the
+  // map-liveness check was removed -- see baseContainerDeleteSafety's own
+  // comment in server.js), so deleteAllowed and giveFillAllowed are
+  // functionally equivalent today, but deleteAllowed is kept reading
+  // deleteSafety.safe rather than being simplified to match giveFillAllowed
+  // exactly, so this stays a single, easy-to-find place to reintroduce a
+  // real delete-specific gate if one is ever needed again.
+  const giveFillAllowed = slots?.group === "storage";
+  const [checkedItemIds, setCheckedItemIds] = useState<Set<string>>(new Set());
+  const [bulkDeleteRunning, setBulkDeleteRunning] = useState(false);
+  // Give and Fill share one item picker and one quantity field, switched by
+  // addFillMode -- consolidated 2026-08-19 after a real operator reported
+  // the previous two-panel layout (a separate combobox+quantity+button row
+  // for each of Give and Fill, stacked vertically) as confusing, especially
+  // once Give and Fill were restricted to the same three item groups in the
+  // same session, making the two rows show identical candidate items with
+  // no explanation of when to use which. See the UI/UX hat's dispatched
+  // design review (referenced in this session's PR/issue trail) for the
+  // full diagnosis and the alternatives considered -- this implements its
+  // explicit recommendation ("Alternative A"): one shared item+quantity
+  // input, a Give/Fill mode toggle, and each mode's own secondary
+  // affordance (Give's batch queue, Fill's capacity sentinel) revealed only
+  // while that mode is selected, rather than both shown at once.
+  const [addFillMode, setAddFillMode] = useState<"give" | "fill">("give");
+  const [selectedItem, setSelectedItem] = useState<CatalogItem | null>(null);
+  const [quantityText, setQuantityText] = useState("1");
+  const [addRunning, setAddRunning] = useState(false);
+  // Queued batch entries keep the item's real in-game name for display
+  // (the batch list, and the confirm dialog below) alongside itemId, which
+  // is all that ever reaches the server -- see giveItems(). Give-only --
+  // Fill has no batch concept (one fill call always targets one item).
+  const [addBatch, setAddBatch] = useState<{ itemName: string; itemId: string; quantity: number }[]>([]);
+  const [fillRunning, setFillRunning] = useState(false);
+  // Loaded once per mount (ItemCatalogCombobox loads and caches the same
+  // full catalog independently, via loadFullCatalog()'s own module-level
+  // cache -- this second call is a cache hit, not a second network
+  // request) so a slot click can resolve that slot's templateId to a real
+  // CatalogItem (for FILLABLE_GROUPS filtering and the combobox's own
+  // name/image/group fields) without waiting on the combobox's own effect
+  // to have already run.
+  const [catalog, setCatalog] = useState<CatalogItem[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    void loadFullCatalog().then((loaded) => { if (!cancelled) setCatalog(loaded); });
+    return () => { cancelled = true; };
+  }, []);
+
+  // CORRECTED 2026-08-19 (real operator report): switching modes used to
+  // also clear selectedItem, on the theory that a selected item might not
+  // be relevant in the other mode. That theory no longer holds -- Give and
+  // Fill both filter to the exact same FILLABLE_GROUPS (Give was widened
+  // to match Fill's restriction earlier this same session), so any item
+  // valid in one mode is valid in the other. Clearing it just forced an
+  // operator to re-search the same item after glancing at Fill and coming
+  // back, which is exactly the "re-typing the item name" friction the
+  // Give-more-from-a-slot work elsewhere in this file is trying to reduce.
+  // selectedItem now persists across a mode switch; only the quantity
+  // field resets to that mode's own default ("1" for Give, "100" for
+  // Fill), since a half-typed Give quantity must still never be silently
+  // submitted as a Fill quantity or vice versa. The Give batch itself is
+  // also deliberately NOT cleared on a mode switch -- an operator queuing
+  // items should be able to glance at Fill and switch back to Give without
+  // losing progress.
+  function selectAddFillMode(mode: "give" | "fill") {
+    if (mode === addFillMode) return;
+    setAddFillMode(mode);
+    setQuantityText(mode === "fill" ? "100" : "1");
+  }
+
+  // Per explicit operator direction (2026-08-19): clicking an item already
+  // in the container also populates the shared Give/Fill combobox with
+  // that same item, so giving more of something already sitting in the
+  // container does not require re-typing/re-searching its name. Reuses
+  // this same click -- it does not add a second, separate click target --
+  // so it fires alongside the existing "select this slot for the delete
+  // strip" behavior every slot click already has.
+  //
+  // Resolved against the real catalog (not fabricated from the slot's own
+  // name/templateId alone) so the populated selection carries the same
+  // real group/image fields the combobox itself relies on. Silently a
+  // no-op if the item is not in FILLABLE_GROUPS (e.g. a weapon or
+  // schematic) or is not present in the loaded catalog at all -- the
+  // combobox could never have accepted that item either, and the existing
+  // delete-strip selection this click also performs is unaffected either
+  // way.
+  //
+  // Deliberately does NOT touch addFillMode or quantityText: the item
+  // populates whichever mode (Give or Fill) is currently active, and the
+  // quantity field is left exactly as the operator last set it -- clicking
+  // a slot is a shortcut for "pick this item," not "also decide how many
+  // and submit," matching how choosing an item from the combobox itself
+  // behaves.
+  function selectSlotForGiveFill(slot: { templateId: string }) {
+    if (!giveFillAllowed) return;
+    const match = catalog.find((item) => (item.itemId || item.id) === slot.templateId);
+    if (!match || !match.group || !FILLABLE_GROUPS.has(match.group)) return;
+    setSelectedItem(match);
+  }
 
   // Only the newest request may write state. StrictMode double-invokes this
   // effect, so two requests really are open at once here, and whichever settles
@@ -199,6 +315,16 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
     return null;
   }, [selectedSlotId, slots]);
 
+  // Note: Grid view is silently unavailable for a container whose
+  // max_item_count exceeds GRID_CELL_CAP (e.g. the 1000-slot Developer
+  // Storage Container used for testing on dune-dev) -- clicking Grid does
+  // nothing visible in that case, staying on List instead. Confirmed as a
+  // real gap (2026-08-19) but explicitly deprioritized: this only affects
+  // oversized dev/test containers no real operator is expected to use, so
+  // no fix was made here. Revisit if a real container this large is ever
+  // ordinarily used by a real player/operator, not the dev containers this
+  // was found on.
+
   // The server rejects an over-count rather than clearing the slot, so this is
   // a courtesy check, not the guard.
   const amountNumber = Number(amount);
@@ -207,10 +333,24 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
     && amountNumber >= 1
     && amountNumber <= (selectedSlot?.quantity ?? 0);
   const deleteAllowed = slots?.group === "storage" && slots?.deleteSafety?.safe === true;
+  // deleteSafety.safe is always true for a storage-group container as of
+  // 2026-08-19 (baseContainerDeleteSafety's map-liveness check was removed
+  // -- see its own comment in server.js and "Deletion does not require a
+  // stopped map" in docs/console/base-inventory.md). The branch below that
+  // reads slots.deleteSafety?.reason is therefore currently unreachable in
+  // practice for a storage-group container, but is kept rather than
+  // removed: it is the one place this UI would surface a future,
+  // real delete-specific restriction if baseContainerDeleteSafety ever
+  // grows one again, and its "Giving and filling items are unaffected"
+  // clause (added during PR #349's own Layer 3 audit, UI hat -- an
+  // operator reading a delete-restriction message with a fully
+  // interactive Give/Fill panel a few lines below had no way to tell that
+  // was deliberate) stays correct regardless of what that future
+  // restriction turns out to be, since Give/Fill only ever insert new rows.
   const deleteUnavailableReason = slots?.found && !deleteAllowed
     ? slots.group !== "storage"
       ? "Item deletion is available only for Storage containers. Crafting and Refining contents are read-only to protect active jobs."
-      : slots.deleteSafety?.reason || "Item deletion is unavailable for this container."
+      : `${slots.deleteSafety?.reason || "Item deletion is unavailable for this container."}${giveFillAllowed ? " Giving and filling items are unaffected -- they only add rows." : ""}`
     : "";
 
   // A slot that vanished (deleted, or moved by a player between refetches)
@@ -253,11 +393,17 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
       setDeleteError("");
       setSelectedSlotId("");
       setAmount("");
+      setCheckedItemIds(new Set());
+      setAddFillMode("give");
+      setSelectedItem(null);
+      setQuantityText("1");
+      setAddBatch([]);
       return;
     }
     setSelectedSlotId("");
     setAmount("");
     setDeleteError("");
+    setCheckedItemIds(new Set());
     void loadSlots(contentsFor);
   }, [contentsFor, loadSlots]);
 
@@ -344,6 +490,241 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
     }
   }
 
+  function toggleChecked(itemId: string) {
+    setCheckedItemIds((current) => {
+      const next = new Set(current);
+      if (next.has(itemId)) next.delete(itemId); else next.add(itemId);
+      return next;
+    });
+  }
+
+  async function deleteCheckedItems(containerName: string) {
+    if (!deleteAllowed || checkedItemIds.size === 0) return;
+    const ids = [...checkedItemIds];
+    const confirmed = await confirmAction(
+      `Delete ${ids.length} selected item${ids.length === 1 ? "" : "s"} from the container?`,
+      {
+        title: "Delete Selected Items",
+        confirmLabel: "Delete",
+        danger: true,
+        details: [
+          { label: "Base", value: baseName },
+          { label: "Container", value: containerName, tone: "accent" },
+          { label: "Items", value: `${ids.length} stack${ids.length === 1 ? "" : "s"}`, tone: "danger" }
+        ]
+      }
+    );
+    if (!confirmed) return;
+    setBulkDeleteRunning(true);
+    setDeleteNotice("");
+    setDeleteError("");
+    try {
+      const response = await basesApi.deleteContainerItems(baseId, contentsFor, ids, "DELETE ITEMS");
+      const result = response.result;
+      if (!response.supported || !result?.ok) {
+        throw new Error(response.error || response.reason || "The selected items could not be deleted.");
+      }
+      setDeleteNotice(result.message);
+      setCheckedItemIds(new Set());
+      await Promise.all([loadSlots(contentsFor), load()]);
+    } catch (error) {
+      const text = errorText(error);
+      setDeleteError(text);
+      onError(text);
+    } finally {
+      setBulkDeleteRunning(false);
+    }
+  }
+
+  async function deleteAllItems(containerName: string, itemCount: number) {
+    if (!deleteAllowed || itemCount === 0) return;
+    const confirmed = await confirmAction(
+      `Delete every item currently in this container?`,
+      {
+        title: "Delete All Items",
+        confirmLabel: "Delete All",
+        danger: true,
+        details: [
+          { label: "Base", value: baseName },
+          { label: "Container", value: containerName, tone: "accent" },
+          { label: "Items", value: `All ${itemCount.toLocaleString()} stack${itemCount === 1 ? "" : "s"}`, tone: "danger" }
+        ]
+      }
+    );
+    if (!confirmed) return;
+    setBulkDeleteRunning(true);
+    setDeleteNotice("");
+    setDeleteError("");
+    try {
+      const response = await basesApi.deleteAllContainerItems(baseId, contentsFor, "DELETE ALL ITEMS");
+      const result = response.result;
+      if (!response.supported || !result?.ok) {
+        throw new Error(response.error || response.reason || "The container could not be cleared.");
+      }
+      setDeleteNotice(result.message);
+      setCheckedItemIds(new Set());
+      await Promise.all([loadSlots(contentsFor), load()]);
+    } catch (error) {
+      const text = errorText(error);
+      setDeleteError(text);
+      onError(text);
+    } finally {
+      setBulkDeleteRunning(false);
+    }
+  }
+
+  function selectedQuantity() {
+    return Math.max(1, Math.min(1000000, Number(quantityText) || 1));
+  }
+
+  // Queues the currently-selected item into the batch rather than giving it
+  // immediately -- lets an operator add several distinct templates and
+  // confirm them all in one give-items call, matching giveMultipleItemsToStorage's
+  // "one transaction, all or nothing" batch semantics on the backend.
+  // Give-only -- only rendered/reachable while addFillMode === "give".
+  function queueAddItem() {
+    if (!selectedItem) return;
+    setAddBatch((current) => [...current, { itemName: selectedItem.name, itemId: selectedItem.itemId || selectedItem.id, quantity: selectedQuantity() }]);
+    setSelectedItem(null);
+    setQuantityText("1");
+  }
+
+  function removeQueuedItem(index: number) {
+    setAddBatch((current) => current.filter((_, i) => i !== index));
+  }
+
+  async function giveItems(containerName: string) {
+    if (!giveFillAllowed) return;
+    // A single selected-but-not-yet-queued item is folded in at confirm
+    // time -- an operator should not have to click "Add to batch" before
+    // giving just one item.
+    const pending = selectedItem
+      ? [...addBatch, { itemName: selectedItem.name, itemId: selectedItem.itemId || selectedItem.id, quantity: selectedQuantity() }]
+      : addBatch;
+    if (pending.length === 0) return;
+    const confirmed = await confirmAction(
+      pending.length === 1
+        ? `Give ${pending[0].quantity} x ${pending[0].itemName} to this container?`
+        : `Give ${pending.length} distinct items to this container?`,
+      {
+        title: "Give Item" + (pending.length === 1 ? "" : "s"),
+        confirmLabel: "Give",
+        details: [
+          { label: "Base", value: baseName },
+          { label: "Container", value: containerName, tone: "accent" },
+          ...pending.map((item) => ({ label: item.itemName, value: `x${item.quantity.toLocaleString()}` }))
+        ]
+      }
+    );
+    if (!confirmed) return;
+    setAddRunning(true);
+    setDeleteNotice("");
+    setDeleteError("");
+    try {
+      if (pending.length === 1) {
+        const response = await basesApi.giveContainerItem(baseId, contentsFor, { itemId: pending[0].itemId, quantity: pending[0].quantity, confirmation: "GIVE ITEM TO STORAGE" });
+        if (!response.supported || !response.result?.ok) {
+          throw new Error(response.error || response.reason || "The item could not be given.");
+        }
+        // Never rejected outright -- a request exceeding remaining volume
+        // is clamped to whatever fits (issue #347 follow-up). The
+        // clamped case is reported plainly rather than claiming the full
+        // requested amount was given when it was not.
+        const { given, requested, clamped } = response.result;
+        setDeleteNotice(clamped
+          ? `Only ${given.toLocaleString()} of the requested ${requested.toLocaleString()} x ${pending[0].itemName} fit and was given to the container.`
+          : `${pending[0].itemName} was given to the container.`);
+      } else {
+        const response = await basesApi.giveContainerItems(baseId, contentsFor, pending, "GIVE ITEMS TO STORAGE");
+        if (!response.supported || !response.result?.ok) {
+          throw new Error(response.error || response.reason || "The items could not be given.");
+        }
+        // A batch never throws on hitting a capacity limit either -- it
+        // stops there, and every requested item appears in results
+        // (attempted or not). Summarize exactly what happened rather than
+        // claiming uniform success when the batch may have stopped partway.
+        const results = response.result.results;
+        const stoppedAt = results.find((entry) => entry.clamped || (entry.attempted && entry.given === 0));
+        setDeleteNotice(stoppedAt
+          ? `${results.filter((entry) => entry.given > 0).length} of ${results.length} items were given before the batch stopped at ${stoppedAt.templateId}${stoppedAt.given > 0 ? ` (partially, ${stoppedAt.given.toLocaleString()} of ${stoppedAt.requested.toLocaleString()})` : ""}.`
+          : `${pending.length} items were given to the container.`);
+      }
+      setAddBatch([]);
+      setSelectedItem(null);
+      setQuantityText("1");
+      await Promise.all([loadSlots(contentsFor), load()]);
+    } catch (error) {
+      const text = errorText(error);
+      setDeleteError(text);
+      onError(text);
+    } finally {
+      setAddRunning(false);
+    }
+  }
+
+  // toCapacity sends quantity: 0, a real sentinel fillItemToStorage
+  // (duneDb.js) already supports -- it computes the largest stack that
+  // fits in whatever volume remains and inserts exactly that, in one call,
+  // rather than requiring the operator to guess a number and retry on a
+  // "storage is full by volume" rejection. Found unreachable from any UI
+  // during manual review (issue #347): the standalone Storage tab and this
+  // tab's own quantity field both clamp to a minimum of 1, so the backend's
+  // own capability had no way to be invoked. Fixed by exposing it as its
+  // own explicit action -- "Fill to Capacity" -- rather than overloading
+  // the quantity field with a special "0 means max" meaning a operator
+  // would have no way to discover on their own.
+  async function submitFill(containerName: string, toCapacity = false) {
+    if (!giveFillAllowed || !selectedItem) return;
+    const quantity = toCapacity ? 0 : selectedQuantity();
+    const confirmed = await confirmAction(
+      toCapacity
+        ? `Fill container with as much ${selectedItem.name} as fits in its remaining volume? Only raw resources, refined resources, and components are allowed.`
+        : `Fill container with ${quantity} x ${selectedItem.name}? Only raw resources, refined resources, and components are allowed.`,
+      {
+        title: "Fill Container",
+        confirmLabel: "Fill",
+        details: [
+          { label: "Base", value: baseName },
+          { label: "Container", value: containerName, tone: "accent" },
+          { label: selectedItem.name, value: toCapacity ? "As much as fits" : `x${quantity.toLocaleString()}` }
+        ]
+      }
+    );
+    if (!confirmed) return;
+    setFillRunning(true);
+    setDeleteNotice("");
+    setDeleteError("");
+    try {
+      const response = await basesApi.fillContainerItem(baseId, contentsFor, { itemId: selectedItem.itemId || selectedItem.id, quantity, confirmation: "FILL ITEM TO STORAGE" });
+      if (!response.supported || !response.result?.ok) {
+        throw new Error(response.error || response.reason || "The container could not be filled.");
+      }
+      // Never rejected outright -- Fill Amount is clamped to whatever fits
+      // (issue #347 follow-up), the same way Give already is; the message
+      // must report the real given amount rather than always claiming the
+      // requested quantity succeeded, which was the exact bug reported
+      // manually against this feature ("Fill Container said it filled 100
+      // when only 100 of a larger request fit -- and separately, sending
+      // 100 when the operator meant 'fill it up' at all").
+      const { given, clamped } = response.result;
+      const filledName = selectedItem.name;
+      setDeleteNotice(toCapacity
+        ? `${given.toLocaleString()} x ${filledName} was filled into the container (as much as fit).`
+        : clamped
+          ? `Only ${given.toLocaleString()} of the requested ${quantity.toLocaleString()} x ${filledName} fit and was filled into the container.`
+          : `${filledName} was filled into the container.`);
+      setSelectedItem(null);
+      setQuantityText("100");
+      await Promise.all([loadSlots(contentsFor), load()]);
+    } catch (error) {
+      const text = errorText(error);
+      setDeleteError(text);
+      onError(text);
+    } finally {
+      setFillRunning(false);
+    }
+  }
+
   if (loading) {
     return <p className="muted" role="status">Loading base inventory…</p>;
   }
@@ -365,6 +746,10 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
 
   const { totals } = data;
   const slotPercent = totals.maxSlots > 0 ? Math.round((totals.usedSlots / totals.maxSlots) * 100) : 0;
+  // maxVolume is 0 on a schema without dune.inventories.max_item_volume /
+  // dune.items.volume_override (issue #356) -- "—" rather than "0%" so an
+  // operator does not mistake "not tracked here" for "completely full".
+  const volumePercent = totals.maxVolume > 0 ? Math.round((totals.currentVolume / totals.maxVolume) * 100) : 0;
   const visibleItems = showAllItems ? items : items.slice(0, ITEM_PREVIEW_LIMIT);
 
   return (
@@ -372,12 +757,17 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
       <div className="bases-tab-body">
         {/* Stated before the data rather than after it: it governs how to read
             everything below, and at the foot of a 27-card list it was never
-            seen. */}
-        {/* These are database rows and a running map keeps its own copy, so
-            destructive controls remain disabled until the backend verifies a
-            safe stopped-map window. */}
+            seen.
+
+            CORRECTED 2026-08-19 (real drift caught during a documentation
+            review, see docs/console/base-inventory.md's "Deletion does not
+            require a stopped map" section): this copy previously said
+            deletion required a stopped map, which stopped being true when
+            baseContainerDeleteSafety's map-liveness check was removed
+            earlier this same session -- deletion, Give, and Fill are all
+            equally unaffected by whether the map is running today. */}
         <p className="bases-inventory-note muted">
-          A database snapshot, not a live view. Stored items can be deleted only while their map is safely stopped.
+          A database snapshot, not a live view. Changes here are not reflected in-game until the Survival server restarts.
         </p>
 
         {/* summary-stats/summary-stat are the app's stat tiles, shared with
@@ -387,6 +777,7 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
           <div className="summary-stat"><dt>Distinct</dt><dd>{totals.distinct.toLocaleString()}</dd></div>
           <div className="summary-stat"><dt>Containers</dt><dd>{totals.containers.toLocaleString()}</dd></div>
           <div className="summary-stat"><dt>Slots used</dt><dd>{totals.maxSlots > 0 ? `${slotPercent}%` : "—"}</dd></div>
+          <div className="summary-stat"><dt>Volume used</dt><dd>{totals.maxVolume > 0 ? `${volumePercent}%` : "—"}</dd></div>
         </dl>
 
         <div className="bases-inventory-controls">
@@ -516,6 +907,12 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
                           const percent = container.maxSlots > 0
                             ? Math.round((container.usedSlots / container.maxSlots) * 100)
                             : 0;
+                          // maxVolume is 0 on a schema without volume tracking
+                          // (issue #356) -- the row is withheld entirely
+                          // rather than shown as a misleading 0/0 or 0%.
+                          const volumePercent = container.maxVolume > 0
+                            ? Math.round((container.currentVolume / container.maxVolume) * 100)
+                            : 0;
                           return (
                             <div className="bases-card" key={container.placeableId}>
                               <div className="bases-card-title">
@@ -541,6 +938,17 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
                                     <span>{container.usedSlots.toLocaleString()} / {container.maxSlots.toLocaleString()}</span>
                                   </div>
                                 </dd>
+                                {container.maxVolume > 0 && <>
+                                  <dt>Volume Used</dt>
+                                  <dd>
+                                    <div className="progress-row">
+                                      <div className="progress-track">
+                                        <div className="progress-fill" style={{ width: `${Math.min(100, volumePercent)}%` }} />
+                                      </div>
+                                      <span>{container.currentVolume.toFixed(1)} / {container.maxVolume.toFixed(1)}</span>
+                                    </div>
+                                  </dd>
+                                </>}
                                 <dt>Items</dt>
                                 <dd>{container.itemCount.toLocaleString()}</dd>
                                 {/* Label hidden but not removed: the row keeps
@@ -548,22 +956,27 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
                                     the button below already says what it is. */}
                                 <dt className="bases-inventory-spacer-label" aria-hidden="true">Contents</dt>
                                 <dd>
-                                  {!container.items.length
-                                    ? <span className="muted">Empty</span>
-                                    : <button
-                                        className="bases-inventory-view-contents"
-                                        onClick={() => setContentsFor(container.placeableId)}
-                                      >
-                                        <Boxes size={14} aria-hidden="true" />
-                                        View Contents
-                                        {/* "distinct", never "stacks": the backend merges rows
-                                            of the same template, so this is below usedSlots
-                                            whenever a template occupies more than one slot
-                                            (8 slots collapsing to 3 templates is common). */}
-                                        <span className="muted">
-                                          {container.items.length.toLocaleString()} distinct
-                                        </span>
-                                      </button>}
+                                  {/* Always a real button, even for an empty container
+                                      (issue #347's own manual UI review) -- an empty
+                                      Storage container is exactly the case an operator
+                                      most needs to open, to Give/Fill something into it.
+                                      The old "Empty" bare-text state had no click target
+                                      at all, making an empty container permanently
+                                      unreachable through this card. */}
+                                  <button
+                                    className="bases-inventory-view-contents"
+                                    onClick={() => setContentsFor(container.placeableId)}
+                                  >
+                                    <Boxes size={14} aria-hidden="true" />
+                                    View Contents
+                                    {/* "distinct", never "stacks": the backend merges rows
+                                        of the same template, so this is below usedSlots
+                                        whenever a template occupies more than one slot
+                                        (8 slots collapsing to 3 templates is common). */}
+                                    <span className="muted">
+                                      {container.items.length > 0 ? `${container.items.length.toLocaleString()} distinct` : "Empty"}
+                                    </span>
+                                  </button>
                                 </dd>
                               </dl>
                             </div>
@@ -614,6 +1027,12 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
 
           <dl className="bases-inventory-contents-summary">
             <div><dt>Slots Used</dt><dd>{openContainer.usedSlots.toLocaleString()} / {openContainer.maxSlots.toLocaleString()}</dd></div>
+            {/* Withheld on a schema without volume tracking (issue #356),
+                same as the container card's own Volume Used row. */}
+            {openContainer.maxVolume > 0 && <div>
+              <dt>Volume Used</dt>
+              <dd>{openContainer.currentVolume.toFixed(1)} / {openContainer.maxVolume.toFixed(1)}</dd>
+            </div>}
             <div><dt>Items</dt><dd>{openContainer.itemCount.toLocaleString()}</dd></div>
             {/* Distinct templates, not stacks -- the count below the list is
                 the stack count, and the two differ whenever a template
@@ -654,6 +1073,7 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
               <div className="bases-inventory-slots" key={inventory.inventoryId}>
                 {slots.inventories.length > 1 && <p className="bases-inventory-card-subtitle">
                   Inventory #{inventory.inventoryId} · {inventory.usedSlots.toLocaleString()} / {inventory.maxSlots.toLocaleString()} slots
+                  {inventory.maxVolume > 0 && ` · ${inventory.currentVolume.toFixed(1)} / ${inventory.maxVolume.toFixed(1)} volume`}
                 </p>}
 
                 {showGrid && <div
@@ -672,7 +1092,7 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
                         // never applied.
                         aria-label={`${slot.name} ×${slot.quantity.toLocaleString()}, slot ${index}`}
                         title={`${slot.name} ×${slot.quantity.toLocaleString()} (slot ${index})`}
-                        onClick={() => { setSelectedSlotId(slot.itemId); setAmount(String(slot.quantity)); }}
+                        onClick={() => { setSelectedSlotId(slot.itemId); setAmount(String(slot.quantity)); selectSlotForGiveFill(slot); }}
                       >
                         <CatalogItemThumb item={{ id: slot.templateId, itemId: slot.templateId, name: slot.name, image: itemImage(slot.templateId) }} small />
                         {slot.quantity > 1 && <span className="bases-inventory-slot-qty">{slot.quantity.toLocaleString()}</span>}
@@ -688,20 +1108,32 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
                 </p>}
 
                 {rows.length > 0 && <div className="bases-inventory-contents-list">
-                  {!showGrid && <div className="bases-inventory-contents-row head">
-                    <span /><span>Item</span><span>Slot</span><span>Qty</span><span />
+                  {!showGrid && <div className={`bases-inventory-contents-row head${deleteAllowed ? " with-checkbox" : ""}`}>
+                    <span />
+                    {deleteAllowed && <span />}
+                    <span>Item</span><span>Slot</span><span>Qty</span><span />
                   </div>}
                   {rows.map((slot) => (
                     <div
-                      className={`bases-inventory-contents-row${selectedSlotId === slot.itemId ? " selected" : ""}`}
+                      className={`bases-inventory-contents-row${deleteAllowed ? " with-checkbox" : ""}${selectedSlotId === slot.itemId ? " selected" : ""}`}
                       key={slot.itemId}
                     >
                       <CatalogItemThumb item={{ id: slot.templateId, itemId: slot.templateId, name: slot.name, image: itemImage(slot.templateId) }} small />
+                      {/* Multi-select checkbox, shown only when deletion is
+                          possible at all -- a container that cannot be
+                          deleted from has nothing to select for. */}
+                      {deleteAllowed && <input
+                        type="checkbox"
+                        checked={checkedItemIds.has(slot.itemId)}
+                        aria-label={`Select ${slot.name} for bulk delete`}
+                        disabled={bulkDeleteRunning}
+                        onChange={() => toggleChecked(slot.itemId)}
+                      />}
                       <button
                         className="bases-inventory-contents-name"
                         title={slot.templateId}
                         aria-pressed={selectedSlotId === slot.itemId}
-                        onClick={() => { setSelectedSlotId(slot.itemId); setAmount(String(slot.quantity)); }}
+                        onClick={() => { setSelectedSlotId(slot.itemId); setAmount(String(slot.quantity)); selectSlotForGiveFill(slot); }}
                       >{slot.name}</button>
                       <span className="bases-inventory-contents-slot muted">
                         {slot.positionIndex === null ? "—" : `#${slot.positionIndex}`}
@@ -722,6 +1154,19 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
           })}
 
           </div>
+
+          {deleteAllowed && openContainer.itemCount > 0 && <div className="bases-inventory-bulk-actions">
+            <button
+              className="danger"
+              disabled={checkedItemIds.size === 0 || bulkDeleteRunning}
+              onClick={() => void deleteCheckedItems(containerLabel(openContainer))}
+            >{bulkDeleteRunning ? "Deleting…" : `Delete Selected (${checkedItemIds.size})`}</button>
+            <button
+              className="danger"
+              disabled={bulkDeleteRunning}
+              onClick={() => void deleteAllItems(containerLabel(openContainer), openContainer.itemCount)}
+            >{bulkDeleteRunning ? "Deleting…" : "Delete All"}</button>
+          </div>}
 
           {selectedSlot && <div className="bases-inventory-slot-detail">
             <CatalogItemThumb item={{ id: selectedSlot.templateId, itemId: selectedSlot.templateId, name: selectedSlot.name, image: itemImage(selectedSlot.templateId) }} />
@@ -755,6 +1200,174 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
           {selectedSlot && !amountValid && <p className="bases-inventory-amount-error" role="alert">
             Enter an amount between 1 and {selectedSlot.quantity.toLocaleString()}.
           </p>}
+
+          {giveFillAllowed && <div className="bases-inventory-add-panel">
+            {/* Consolidated 2026-08-19 (per the UI/UX hat's dispatched design
+                review, "Alternative A") from two separately-stacked
+                panels -- one full combobox+quantity+button row for Give,
+                a second, visually identical one for Fill -- into one
+                shared item picker + quantity field with a Give/Fill mode
+                toggle. A real operator reported the old two-panel layout as
+                confusing, especially once Give and Fill were restricted to
+                the same three item groups in this same session, making the
+                two rows show identical candidate items with nothing
+                explaining when to use which. The mode toggle IS that
+                explanation now, and each mode's own secondary affordance
+                (Give's batch queue, Fill's capacity sentinel) only renders
+                while that mode is selected, instead of both being visible
+                and competing for attention at once.
+
+                CORRECTED 2026-08-19 (real regression, found the same day by
+                a real operator): the consolidation above merged the INPUTS
+                but never actually merged the NOTICES -- this block used to
+                render three separate stacked <p> elements (an explanatory
+                paragraph, the restart warning, and a Fill-only collision
+                warning as its own second bordered box), directly
+                recreating the "wall of similar-looking warning text"
+                problem the very first design review diagnosed. Per a
+                second dispatched UI/UX-hat review: shortened the always-
+                shown explanatory line to a single muted caption (the mode
+                toggle's own labels now carry most of that meaning), moved
+                the toggle above the warning so the warning's own mode-
+                dependent text change reads as caused by the toggle instead
+                of appearing above it, and merged the restart warning and
+                the Fill-only collision warning into ONE bordered banner --
+                Fill mode appends a trailing sentence to the SAME element
+                rather than opening a second, visually-identical box. Never
+                more than two notice elements are visible at once now, in
+                either mode (one caption line, one warning banner), down
+                from three.
+
+                CORRECTED 2026-08-19 (real operator report, same day):
+                content-wise there were at most two notice elements, but
+                the two prior passes above only ever addressed WHAT text
+                renders and WHEN -- neither touched VISUAL TREATMENT, so
+                the mode-hint (bare text, no border/padding/icon) and the
+                warning banner (bordered, padded, iconed) sat directly
+                above and below the same toggle with no shared visual
+                language, reading as unpolished/thrown-together rather
+                than deliberately designed. Per a third dispatched UI/UX-
+                hat review: grouped the mode-hint and the toggle into one
+                shared, lightly-bordered/padded container (neutral --border
+                token, NOT the warning's amber --warning token, so this
+                group reads as "low-weight information," not a second
+                alert) -- eliminating the bare-text-sandwiched-between-two-
+                bordered-things sequence entirely, while leaving the
+                warning banner's own visual weight untouched, since it is
+                correctly the one element in this panel that most needs to
+                keep looking urgent. */}
+            <div className="bases-inventory-mode-group">
+              <p className="muted bases-inventory-mode-hint">
+                <strong>Give</strong> inserts a new stack, and can queue several items at once.{" "}
+                <strong>Fill</strong> tops up one item toward capacity, including filling it in one click.
+              </p>
+
+              <div className="bases-inventory-views" role="group" aria-label="Give or Fill">
+                <button
+                  type="button"
+                  className={`bases-inventory-view${addFillMode === "give" ? " active" : ""}`}
+                  aria-pressed={addFillMode === "give"}
+                  onClick={() => selectAddFillMode("give")}
+                >Give</button>
+                <button
+                  type="button"
+                  className={`bases-inventory-view${addFillMode === "fill" ? " active" : ""}`}
+                  aria-pressed={addFillMode === "fill"}
+                  onClick={() => selectAddFillMode("fill")}
+                >Fill</button>
+              </div>
+            </div>
+
+            {/* Per INC-2026-07-31-001: the game engine claims dune.items rows
+                only at server startup, so a given/filled item sits in the
+                database but stays invisible in-game until the Survival
+                server restarts. Silent and easy to rediscover the hard way
+                -- surfaced explicitly here so an operator does not spend
+                time re-litigating "why isn't this showing up" the way this
+                fork's own incident history already did once. Restarting is
+                not offered inline here (unlike the standalone Storage tab's
+                "Apply Fills" button) -- Server Control/Bases already own
+                that action, and duplicating a player-disconnecting restart
+                trigger in a third place was judged a bigger risk than one
+                extra tab switch. Applies to both modes, so the first
+                sentence is always shown.
+
+                The second sentence (per
+                INC-2026-08-19-GIVE-FILL-POSITION-INDEX-COLLISION.md: while
+                the map stays running, a filled row can land on the same
+                slot a live in-game move/pickup claims at the same time,
+                and the row that loses that race is never claimed on the
+                next restart -- Give mitigates this by filling from the
+                high end of the container, see nextHighPositionIndex in
+                duneDb.js; Fill cannot use the same mitigation, since it is
+                meant to top up toward real capacity, the same direction
+                the engine already fills) is a Fill-specific ADDENDUM to
+                this same restart-related warning, not an unrelated risk --
+                appended as trailing text inside this SAME bordered banner
+                only while Fill mode is selected, rather than rendered as a
+                second, visually-identical box (the pre-2026-08-19 fix that
+                caused a real operator to see "3 warnings" stacked in Fill
+                mode). This is a documented, accepted limitation for Fill,
+                not a bug. */}
+            <p className="bases-inventory-restart-warning" role="status">
+              <TriangleAlert size={14} aria-hidden="true" />
+              <span>
+                Given and filled items are not visible in-game until the Survival server restarts. Restart it from Server Control or Bases when convenient — all connected players will be disconnected for a few minutes.
+                {addFillMode === "fill" && " If items are added to this container in-game while the map is running, a filled item can land on the same slot and be lost on the next restart — highest risk for a nearly-full container. See the Base Inventory documentation for details."}
+              </span>
+            </p>
+
+            <div className="bases-inventory-add-row">
+              <ItemCatalogCombobox
+                value={selectedItem}
+                onChange={setSelectedItem}
+                filterGroups={FILLABLE_GROUPS}
+                ariaLabel={addFillMode === "give" ? "Item to give" : "Item to fill"}
+                placeholder={addFillMode === "give" ? "Type to search items…" : "Type to search fillable items…"}
+                disabled={addRunning || fillRunning}
+              />
+              <input
+                type="number"
+                min={1}
+                max={1000000}
+                className="small-input"
+                value={quantityText}
+                onChange={(event) => setQuantityText(event.target.value)}
+                aria-label={addFillMode === "give" ? "Quantity to give" : "Quantity to fill"}
+                disabled={addRunning || fillRunning}
+              />
+              {addFillMode === "give" ? <>
+                <button
+                  type="button"
+                  disabled={!selectedItem || addRunning}
+                  onClick={queueAddItem}
+                >Add to Batch</button>
+                <button
+                  disabled={(!selectedItem && addBatch.length === 0) || addRunning}
+                  onClick={() => void giveItems(containerLabel(openContainer))}
+                >{addRunning ? "Giving…" : addBatch.length > 0 ? `Give ${addBatch.length + (selectedItem ? 1 : 0)} Items` : "Give Item"}</button>
+              </> : <>
+                <button
+                  disabled={!selectedItem || fillRunning}
+                  onClick={() => void submitFill(containerLabel(openContainer))}
+                >{fillRunning ? "Filling…" : "Fill Amount"}</button>
+                <button
+                  disabled={!selectedItem || fillRunning}
+                  onClick={() => void submitFill(containerLabel(openContainer), true)}
+                >{fillRunning ? "Filling…" : "Fill to Capacity"}</button>
+              </>}
+            </div>
+            {addFillMode === "give" && addBatch.length > 0 && <ul className="bases-inventory-add-batch">
+              {addBatch.map((item, index) => (
+                <li key={`${item.itemId}-${index}`}>
+                  {item.itemName} ×{item.quantity.toLocaleString()}
+                  <button type="button" className="icon-toggle-button" aria-label={`Remove ${item.itemName} from batch`} onClick={() => removeQueuedItem(index)} disabled={addRunning}>
+                    <X size={12} />
+                  </button>
+                </li>
+              ))}
+            </ul>}
+          </div>}
 
           <div className="confirm-modal-actions">
             <button onClick={() => setContentsFor("")}>Close</button>

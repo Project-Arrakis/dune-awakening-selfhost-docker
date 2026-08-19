@@ -3033,6 +3033,17 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
    fixed width -- ragged-left numbers in a fixed track read as misaligned. */
 .bases-inventory-contents-qty { color: var(--muted-warm); font-variant-numeric: tabular-nums; text-align: right; }
 .bases-inventory-contents-row.head > span:nth-child(4) { text-align: right; }
+/* .with-checkbox inserts an extra leading <span/> for the bulk-select
+   checkbox column (icon, checkbox, Item, Slot, Qty, spacer -- 6 children
+   instead of 5), shifting "Qty" from the 4th child to the 5th. Found during
+   PR #349's own Layer 3 audit (Architect hat): without this override, the
+   rule above kept right-aligning the 4th child ("Slot") instead of "Qty"
+   whenever bulk-delete was offered -- the common case for any storage
+   container on a stopped map, not a rare edge case. The data cells
+   (.bases-inventory-contents-qty, line 3034) were never affected -- only
+   this header label was misaligned with its own column. */
+.bases-inventory-contents-row.head.with-checkbox > span:nth-child(4) { text-align: left; }
+.bases-inventory-contents-row.head.with-checkbox > span:nth-child(5) { text-align: right; }
 .bases-inventory-note { margin: 0; font-size: 12px; }
 
 /* The in-game-style slot grid. auto-fill rather than a fixed column count so
@@ -3146,6 +3157,171 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 .bases-inventory-amount-error { margin: 6px 0 0; font-size: 12px; color: var(--danger); }
 .bases-inventory-delete-notice { margin: 0 0 8px; font-size: 12px; color: var(--muted-warm); }
 .bases-inventory-contents-head-actions { display: flex; align-items: center; gap: 8px; }
+
+/* Adds a 24px checkbox track between the thumbnail and the item name only
+   when bulk-select is offered at all (deleteAllowed) -- the base
+   .bases-inventory-contents-row grid stays 5 columns for containers where
+   deletion is unavailable, so this modifier inserts one track rather than
+   redefining the whole grid unconditionally. */
+.bases-inventory-contents-row.with-checkbox {
+  grid-template-columns: 40px 24px minmax(0, 1fr) 48px 64px 38px;
+}
+.bases-inventory-contents-row input[type="checkbox"] { width: 16px; height: 16px; margin: 0 auto; }
+
+/* Give/Give-Multiple/Fill, added below the slot list. Two stacked sections
+   (Add Item, Fill Container) sharing one input-row layout: a growing text
+   input, a fixed-width quantity field, and one or two action buttons that
+   size to their own label instead of stretching full-width like the rest of
+   this app's form buttons -- these sit inline with the inputs, not in their
+   own action bar. */
+.bases-inventory-add-panel {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border-strong);
+}
+.bases-inventory-add-panel h4 { margin: 0 0 6px; font-size: 13px; }
+.bases-inventory-add-panel h4 + p.bases-inventory-note { margin-bottom: 8px; }
+/* Give/Fill mode-hint + toggle, grouped into one shared, lightly-bordered
+   container (2026-08-19, third UI/UX-hat pass -- see the comment above
+   this group's usage in BaseInventoryTab.tsx for the full history of why
+   this exists). Deliberately uses the NEUTRAL --border token, not
+   --warning, and no icon -- this is "low-weight information," visually
+   distinct from .bases-inventory-restart-warning below, which stays the
+   one element in this panel that should read as urgent. Reuses
+   --panel-muted the same way .bases-inventory-add-batch li already does,
+   rather than inventing a new background color for this one group. */
+.bases-inventory-mode-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  background: var(--panel-muted);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+/* Give/Fill mode toggle (consolidated 2026-08-19, "Alternative A" from the
+   UI/UX hat's design review) -- reuses .bases-inventory-views/.bases-inventory-view's
+   existing segmented-button look for visual consistency with the contents
+   overlay's own List/Grid toggle above, but is not right-aligned the way
+   that one is (this panel has no sibling control to push away from).
+   Spacing between the hint and the toggle is now owned by
+   .bases-inventory-mode-group's own `gap`, not a margin on either child. */
+.bases-inventory-add-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.bases-inventory-add-row input[type="text"],
+.bases-inventory-add-row input:not([type]) { flex: 1 1 auto; min-width: 0; }
+.bases-inventory-add-row button { width: auto; flex: 0 0 auto; }
+.bases-inventory-add-row .item-combobox { flex: 1 1 auto; min-width: 0; }
+/* Compact type-to-search dropdown (ItemCatalogCombobox) -- positioned
+   relative to its own wrapper so the results list can float over
+   whatever sits below it in the contents modal (the quantity input, the
+   action buttons, the batch list) without shifting layout while open. */
+.item-combobox { position: relative; }
+.item-combobox-input:disabled { opacity: .6; cursor: not-allowed; }
+.item-combobox-list {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 20;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  max-height: 280px;
+  overflow-y: auto;
+  border: 1px solid #302b25;
+  border-radius: 8px;
+  background: #101316;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .45);
+}
+.item-combobox-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.item-combobox-list li:hover,
+.item-combobox-list li.highlighted { background: #211b16; }
+.item-combobox-list li span { min-width: 0; display: grid; gap: 1px; }
+.item-combobox-list li strong, .item-combobox-list li small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.item-combobox-list li small { color: #ad9f89; }
+.item-combobox-empty { color: #ad9f89; cursor: default; }
+.item-combobox-empty:hover { background: transparent; }
+.bases-inventory-add-batch {
+  list-style: none;
+  margin: 0 0 10px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+}
+.bases-inventory-add-batch li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  background: var(--panel-muted);
+  border-radius: 4px;
+}
+.bases-inventory-add-batch li button { margin-left: auto; }
+
+/* Same "the engine claims dune.items rows only at server startup" warning
+   the standalone Storage tab's own note carries -- see INC-2026-07-31-001.
+   Styled like a warning banner, not an error: nothing failed, the operator
+   just needs to know a restart is still owed before this container's new
+   contents show up in-game.
+
+   CORRECTED 2026-08-19 (real operator report, "3 warnings" in Fill mode):
+   this used to be one of TWO separately-bordered warning banners
+   (.bases-inventory-fill-collision-warning was the second, Fill-only
+   one), directly recreating the "wall of similar-looking warning text"
+   problem the original two-panel Give/Fill layout already had. The
+   Fill-only position_index-collision sentence (INC-2026-08-19-GIVE-FILL-
+   POSITION-INDEX-COLLISION.md) is now appended as trailing text INSIDE
+   this same element (see BaseInventoryTab.tsx) rather than rendered as a
+   second box -- .bases-inventory-fill-collision-warning was deleted
+   entirely since it never earned a second class (same structure, only
+   different text). At most one banner renders now, in either mode. */
+.bases-inventory-restart-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 0 0 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--warning);
+  border-radius: 6px;
+  color: #ffd9a8;
+  font-size: 12px;
+}
+.bases-inventory-restart-warning svg { flex: 0 0 auto; margin-top: 1px; color: var(--warning); }
+
+/* One-line, low-weight caption above the Give/Fill mode toggle --
+   deliberately lighter than .bases-inventory-restart-warning above (no
+   border, no icon, muted color) so the visual hierarchy matches the real
+   importance gap between "here's what the two modes mean" (skippable
+   after a first read) and the warning banner (must-read every time).
+   Sits inside .bases-inventory-mode-group now (2026-08-19, third UI/UX-hat
+   pass), which owns the spacing between this and the toggle via its own
+   `gap` -- no margin on this element itself. */
+.bases-inventory-mode-hint { margin: 0; font-size: 12px; }
+
+/* Delete Selected / Delete All, above the single-slot detail strip -- both
+   are Storage-group-only and reuse the same danger button styling the
+   single-item delete strip's own button already uses. */
+.bases-inventory-bulk-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+.bases-inventory-bulk-actions button { width: auto; }
 
 /* Permissions is a single reading column with the Revert/Save bar full-bleed
    beneath it. The inset padding lives on .bases-permissions-content rather than

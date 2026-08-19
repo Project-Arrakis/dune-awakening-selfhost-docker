@@ -57,6 +57,117 @@ Keep a Changelog style, grouped by upstream base version, newest first.
 
 ### Added
 
+- Base Inventory tab (Bases panel, Storage group only) gains full container
+  management: Give Item, Give Multiple Items (batched into one server-side
+  transaction), Fill Container, Delete Selected (multi-select), and Delete
+  All (issue #347). Backed by three new `duneDb.js` functions
+  (`giveMultipleItemsToStorage`, `deleteMultipleBaseContainerItems`,
+  `deleteAllBaseContainerItems`) plus a parity fix: `giveItemToStorage` now
+  enforces the same volume cap `fillItemToStorage` already did (previously
+  give-item checked only slot count, never volume). Three new, narrow RBAC
+  actions — `bases:give-item`, `bases:fill-item`, `bases:bulk-delete-items`
+  (renamed from `bases:delete-items`, issue #351 — see the follow-up entry
+  below) — follow the existing `bases:delete-item` precedent (own action,
+  not folded into `bases:mutate`, so an operator's existing policy grant is
+  never silently widened); default access is unchanged (owner `*`, admin
+  `bases:*`). Scoped to Storage-group containers only — Refining/Crafting
+  remain read-only, and the two new bulk-delete functions re-verify
+  ownership through the same claim-CTE `deleteBaseContainerItem` already
+  uses (not the unscoped `actor_id`-only lookup `giveItemToStorage`/
+  `fillItemToStorage` use), so neither can reach a Refining/Crafting
+  inventory. `Developer_StorageContainer_Placeable` is deliberately not
+  special-cased — it was already in the Storage group's allowlist and is
+  already grantable to a player via Players → Building Sets → "Show
+  Experimental" → `Developer_Storage_Container_Patent`; a dedicated test
+  locks in that no future change silently carves it out. UI carries the
+  same "not visible in-game until the Survival server restarts" warning
+  the standalone Storage tab's own note already gives (INC-2026-07-31-001) —
+  the engine only claims new `dune.items` rows at server startup. The
+  Vehicles → Inventory side of this feature is tracked separately as issue
+  #348 (net-new UI surface, no existing tab to extend, split out to keep
+  this PR reviewable as one coherent increment).
+- Base Inventory tab (Storage-group containers and their contents overlay)
+  now shows a real-time **Volume Used** figure alongside Slots Used, at the
+  tab-wide totals level, on each container's own card, in the contents
+  overlay summary, and per-inventory when a container backs more than one
+  (issue #356). Column-probed the same way `positionIndex`/`qualityLevel`
+  already are: a schema without `dune.inventories.max_item_volume` or
+  `dune.items.volume_override` degrades to `0`/`0` and the row is withheld
+  entirely (card/overlay) or shown as "—" (tab totals) rather than a
+  misleading `0%`. `currentVolume` sums `volume_override` per inventory,
+  which already stores each stack's TOTAL volume (per-unit × quantity),
+  matching exactly what `giveItemToStorage`/`fillItemToStorage`'s own
+  capacity checks enforce -- so the displayed total always agrees with what
+  the next give/fill against that container will actually allow. This was
+  the chosen fix for a real accuracy gap found during PR #349's own Layer 3
+  audit: items given via the storage give-item route before it started
+  recording `volume_override` (or given directly by the game engine)
+  permanently carry a `NULL` there, which every `sum(volume_override)` query
+  already treats as `0` -- so a pre-existing container's real volume usage
+  was silently invisible. A one-time backfill script that would `UPDATE`
+  every operator's live `dune.items` rows on their next pull was considered
+  and rejected as disproportionate risk (Strict Requirement 0/26) for a
+  LOW-MEDIUM accuracy gap in a capacity message, not a data-integrity or
+  security issue; surfacing the real, current total directly was judged the
+  lower-risk fix.
+- Base container **Delete Selected**/**Delete All** (issue #347) now resolve
+  and verify a whole batch with a fixed, small number of set-based
+  round-trips instead of one pair of round-trips per item -- found during
+  PR #349's own Layer 3 audit (issue #352, HIGH severity, DBA + Security
+  hats independently): the original version's per-item loop (a
+  `select ... for update`, the irreducible `dune.delete_item(bigint)` call,
+  an `exists` check, a conditional fallback `delete`) cost ~4 round-trips
+  per item -- worst case ~800 sequential statements for a 200-item batch,
+  all while the container's inventory row lock was held for the entire
+  duration, blocking any concurrent give/fill/delete against the *same*
+  container for that whole window. A new shared helper,
+  `finishDeletingLockedItems()`, now verifies and cleans up the whole batch
+  in one set-based pair of statements after the `dune.delete_item` loop
+  (itself irreducible, since it is a shipped, single-argument procedure) --
+  round-trips drop from ~4N to ~N+2. Each `removed[]` entry from both bulk
+  functions now also carries the same audit-detail fields
+  `deleteBaseContainerItem`'s own `destroyedState` does --
+  `positionIndex`/`qualityLevel`/`currentDurability`/`maxDurability`, via a
+  new shared `auditDetailSelectFragment()` helper -- so a bulk-destroyed
+  pristine legendary no longer logs identically to a bulk-destroyed broken
+  common of the same template in the admin audit trail (issue #350).
+- **`bases:delete-items` renamed to `bases:bulk-delete-items`** (issue #351,
+  security-labeled, found during PR #349's own Layer 3 audit, Architect
+  hat). `policy.js`'s `matchAction()` supports a `"prefix-*"` wildcard style
+  where `"bases:delete-item*"` matches any action starting with that
+  string -- including the old `bases:delete-items`, since it shared that
+  exact string prefix with `bases:delete-item`. A hand-authored policy using
+  that wildcard style near `bases:delete-item` (e.g. intending "just
+  delete-item, with room to grow") would have silently and non-obviously
+  also granted bulk/delete-all destruction, defeating the whole point of
+  keeping the two as separate actions. STRIDE: Elevation of Privilege
+  (latent -- no shipped default policy used this wildcard style against
+  this action pair, so this was never exploitable against any policy this
+  project ships; the rename closes the gap before any operator's
+  hand-authored policy could hit it). `bases:bulk-delete-items` shares no
+  string prefix with `bases:delete-item`, so no `-*` wildcard pattern can
+  match both. This action was still unreleased when the rename happened, so
+  it is a zero-migration-impact rename, not a breaking change for any
+  operator's existing policy.
+- Raw resources are now a fillable/giveable item category. `FILLABLE_GROUPS`
+  in `adminCatalog.js` gains `raw_resource` alongside the existing
+  `refined_resource`/`component`. 19 items in `runtime/data/admin-items.json`
+  tagged with `group: "raw_resource"` and real volumes verified item-by-item
+  against `dune.gaming.tools` (not category-guessed): `AzuriteOre`,
+  `BauxiteOre`, `Basalt`, `DolomiteRock`, `ErythriteCrystal`, `FlourSand`,
+  `JasmiumCrystal`, `MagnetiteOre`, `PlantFiber`, `SaguaroResourceRaw`,
+  `ScrapMetal`, `SpiceResidue`, `SpiceSand`, `Stone`, `T6ResourceA`,
+  `T6ResourceB`, `Corpse`, `Oil`, `Mouse_Corpse`. Same catalog review also
+  found and corrected 5 previously-untagged items that are actually
+  **components**, not raw resources — `T6ArmorPlating`, `T6RangeFinder`,
+  `T6RayAmplifier`, `T6PowerRegulator`, `T6HydraulicPiston` — confirmed
+  against each item's real in-game crafting recipe (all five are crafted at
+  an Advanced Survival Fabricator, none are gathered). `WormTooth`,
+  `WeldingMaterial3`, and `WeldingMaterial5` were investigated but
+  deliberately left untagged: no volume data exists for any of the three
+  on the reference source used, and issue #145 (pre-existing, separate)
+  already documents this repo's policy against tagging a volume
+  speculatively.
 - Two new addon-bridge test suites closing a real, previously-untested gap
   (#308): `console/api/test/bridgeActionContract.test.js` asserts every
   `ops.*` addon-bridge action's real handler function (called directly, no
@@ -136,6 +247,284 @@ Keep a Changelog style, grouped by upstream base version, newest first.
   `CAPABILITY_BY_TIER` table instead of hand-maintaining a parallel one.
   Phases 2-4 (bot-side generator, bot runtime consumption, dynamic
   refresh/autocomplete) are separate, future work — not included here.
+
+### Fixed
+
+- **`resolveOwnedStorageContainer()` (the shared ownership/lock query behind
+  Base Inventory's Delete Selected, Delete All, Give, Give Multiple, and
+  Fill) was completely broken against a real PostgreSQL database from the
+  moment it was introduced (issue #347, fixed as issue #353).** It combined
+  `SELECT DISTINCT` with `FOR UPDATE OF inv` in the same query, which
+  Postgres flatly rejects (`FOR UPDATE is not allowed with DISTINCT
+  clause`) — every real call to any of those five actions would have 500'd
+  in production. This was invisible to every mocked unit test in
+  `db.test.js`, since the fake `db.query()` those tests use pattern-matches
+  query *text* and never actually parses or executes SQL — a syntactically
+  invalid query and a valid one sharing the same substrings are
+  indistinguishable to that style of test. It was found only once a real
+  HTTP-level integration test exercised these routes against a real,
+  isolated PostgreSQL database instead of a mock (`baseContainerMutationRoutes.
+  integration.test.js`, added for issue #353, which itself was filed during
+  PR #349's own Layer 3 audit specifically because this class of gap — no
+  real end-to-end test of these 5 routes — was recognized as a real risk
+  before this exact bug was known to exist). Fixed by resolving the
+  `DISTINCT` candidate set in its own CTE first, then joining back to the
+  real `dune.inventories` row purely to take the lock — `FOR UPDATE` only
+  ever applies to that final, non-`DISTINCT` join, which Postgres allows.
+  10 new real-HTTP integration tests (spawning the actual `server.js`
+  against an isolated database, following `bridgeActionDispatch.test.js`'s
+  existing precedent) now cover all 5 routes end-to-end; confirmed each
+  fails against the pre-fix query and passes against the fix by reverting
+  and re-running directly. This was never released -- issue #347/#349's
+  entire feature was unreleased and unmerged when this was found and fixed
+  in the same branch, so there is no affected shipped version and no
+  upgrade/migration concern.
+- `fakeBulkContainerDeleteDb`'s ownership-query mock matcher in `db.test.js`
+  (issue #354, MEDIUM severity, found during PR #349's own Layer 3 audit,
+  QA hat) was anchored on the bare substrings `"requested_claims"` and
+  `"for update of inv"` -- both shared with other queries/comments
+  elsewhere in `duneDb.js`, so a future addition containing both fragments
+  together could have silently been treated as `resolveOwnedStorageContainer`'s
+  own query by this mock, producing an incorrect-but-passing green test for
+  an unrelated code path. Never actually produced a false positive, but
+  re-anchored on the query's real, structurally unique final `SELECT`
+  column list (`"select c.placeable_id::text as placeable_id, c.inventory_id"`)
+  to close the latent fragility, consistent with how the sibling single-item-
+  lookup matcher in the same file already anchors on a full column-list
+  string rather than a short clause fragment.
+- Added frontend test coverage for a partial-batch Give Multiple Items
+  failure (issue #355, LOW severity, found during PR #349's own Layer 3
+  audit, QA hat). The existing "batches several distinct items into one
+  give-items call" test in `BaseInventoryTab.test.tsx` only ever mocked
+  `basesApi.giveContainerItems` to resolve successfully, so there was no
+  coverage for what the UI does when the backend batch call fails partway
+  through -- the exact scenario `giveMultipleItemsToStorage` is designed to
+  produce (an error like `"...stopped before giving item N; N-1 of M items
+  were already given"`). The error already propagated correctly through
+  the same `onError`/`deleteError` wiring proven for a different mutation
+  (bulk-delete) elsewhere in this same file -- this was a coverage gap, not
+  a functional bug -- but the new test locks in that the backend's real
+  partial-success count reaches the operator verbatim, in both the
+  `onError` side channel and the modal's own inline error text, and that a
+  failed batch is not silently cleared (so the operator does not have to
+  re-enter every item to retry).
+- **Base Inventory tab's Give/Fill actions never reject a request just
+  because it would exceed the container's remaining volume** (issue #347,
+  found and specified during manual UI review, per explicit operator
+  direction). `giveItemToStorage`, `fillItemToStorage`, and
+  `giveMultipleItemsToStorage` previously threw `"Storage is full by
+  volume"` and inserted nothing at all when a requested quantity did not
+  fully fit -- forcing an operator to guess a smaller number and retry. All
+  three now **clamp the requested quantity down to whatever actually
+  fits** and insert that instead: asking for 500 of an item with room for
+  only 375 gives 375, not 0. Every response reports `requested`/`given`/
+  `clamped` so the UI can say exactly what happened
+  (`"Only 375 of the requested 500 x X fit and was given to the
+  container."`) rather than silently implying the full request succeeded.
+  Slot count is the one capacity axis this does not apply to -- a single
+  give/fill always consumes exactly one slot regardless of quantity, so
+  "no slots left" genuinely cannot be partially satisfied and remains a
+  hard rejection; volume itself is still a hard rejection only in the one
+  case clamping cannot help, truly zero room left. `giveMultipleItemsToStorage`'s
+  batch behavior changed the same way, but stops the batch (left-to-right,
+  not best-effort) once one item does not fully fit rather than skipping
+  ahead to try later, possibly-smaller items -- and, like the single-item
+  functions, no longer throws on hitting a capacity limit at all: it
+  returns `ok: true` with a `results` array, one entry per requested item
+  (`requested`/`given`/`clamped`/`attempted`/`reason`), including items
+  never reached because an earlier one already stopped the batch
+  (`attempted: false`). This is a real backend contract change -- an
+  earlier version relied on the whole transaction rolling back to prove no
+  partial inserts happened on a thrown error; the current version has no
+  rollback to reason about, because hitting a capacity limit is no longer
+  an error condition.
+- **Fill now offers two distinct, explicitly labeled actions -- "Fill
+  Amount" and "Fill to Capacity" -- instead of one quantity field with a
+  hidden meaning** (issue #347, found during manual UI review).
+  `fillItemToStorage`'s `quantity: 0` sentinel ("insert as much as fits in
+  whatever volume remains, in one call") already existed and was already
+  used internally, but was unreachable from any UI: both this tab's own
+  quantity field and the standalone Storage tab's clamp to a minimum of 1,
+  so the sentinel could never actually be sent. "Fill to Capacity" sends
+  it explicitly and reports the real inserted count
+  (`"4,200 x SteelBar was filled into the container (as much as fit)."`);
+  "Fill Amount" sends whatever the operator typed (subject to the same
+  clamp-and-inform behavior described above).
+- **Give/Fill now use a compact type-to-search item picker
+  (`ItemCatalogCombobox`, `console/web/src/components/common/ItemCatalog.tsx`)
+  instead of a raw "item name or ID" text field** (issue #347, found during
+  manual UI review). The original plain text input required already
+  knowing the exact template id or exact in-game name, offered no way to
+  discover what is actually in the catalog, and did not filter anything as
+  the operator typed. The new combobox is a lighter, single-input sibling
+  to the existing `ItemCatalogSelector` (the full-page category/grid
+  browser used by Player Give Items, too heavy to stack two-of inside the
+  already-dense Base Inventory contents modal) -- same underlying catalog
+  data, same real in-game display name (e.g. "Fuel Cell" for template id
+  "Oil"). Search and the results list are name-only: the catalog id is a
+  backend concept the operator never needs to see or type, and Give/Fill
+  both submit the selected item's real `itemId` under the hood regardless.
+  The Fill combobox additionally filters its results to `FILLABLE_GROUPS`
+  client-side, matching the server's own `resolveFillableCatalogItem()`
+  check, so the picker never even offers an item the server would reject.
+- **An empty Storage container's "View Contents" button in the Containers
+  card view is now always present and clickable** (issue #347, found
+  during manual UI review). The button previously did not render at all
+  when a container had zero items -- rendering bare "Empty" text with no
+  click target instead -- making an empty container permanently
+  unreachable through that card, which is exactly the container an
+  operator most needs to open (to Give/Fill something into it in the first
+  place). Only the trailing label now switches between the distinct-item
+  count and "Empty"; the button itself is unconditional.
+- **`dune.items.volume_override` was stored as the stack's TOTAL volume
+  (per-unit x quantity), but the live game engine treats a non-null
+  `volume_override` as a PER-UNIT value and multiplies it by `stack_size`
+  itself for display -- causing every item ever given/filled via the
+  console's Storage tab to display a wildly inflated volume in-game,
+  scaling with `stack_size`** (issue #347 follow-up, confirmed live on a
+  real deployment and cross-checked against `dune.gaming.tools`, a
+  third-party tool reading the same database; see
+  `docs/incidents/INC-2026-08-19-VOLUME-OVERRIDE-DOUBLE-MULTIPLIED.md` for
+  the full root-cause writeup). A real example: a 9540-unit Mouse Corpse
+  stack (real per-unit volume 5.0, real total 47700) had `volume_override`
+  wrongly stored as `47700` (the total) and displayed in-game as
+  `47700 * 9540 ≈ 455,057,984`. Proven directly via `dune.item_audit_log`:
+  every genuinely in-game-created item row always carries a NULL
+  `volume_override`, meaning "use the engine's own per-unit catalog
+  volume" -- a non-null value is exclusively a console-side convention, and
+  the engine multiplies whatever it finds there by `stack_size`.
+  `giveItemToStorage`, `fillItemToStorage`, and `giveMultipleItemsToStorage`
+  now store the item's per-unit volume, matching the engine's real
+  convention; every read-side sum (`baseInventory` x2,
+  `baseContainerListStorage`, `baseContainerSlots`) now multiplies
+  `volume_override * stack_size` to compute a row's real total
+  contribution, so the console's own displayed volume-used/remaining
+  figures stay correct. A one-time repair script,
+  `console/api/scripts/repair-volume-override.mjs`, recomputes every
+  already-affected row's `volume_override` from the current catalog
+  (dry-run by default; `--apply` writes the correction in one transaction)
+  -- existing operators should run this once after updating.
+  `runtime/data/admin-items.json`'s `MelangeSpice` (Spice Melange) per-unit
+  volume was also corrected from `1.0` to the real value, `0.2`, found
+  during the same investigation.
+- **Give and Give Multiple accepted any catalog item at all -- weapons,
+  clothing, schematics, anything in `runtime/data/admin-items.json` --
+  instead of being restricted to raw resources, refined resources, and
+  components the way Fill already was** (issue #347 follow-up, per explicit
+  operator direction). Found via a real catalog item, "Robe of the
+  Sisterhood" (clothing), appearing in the Give combobox despite this
+  feature being intended for raw/refined resources and components only.
+  `baseContainerGiveItemRoute`/`baseContainerGiveItemsRoute` now resolve
+  items through `resolveFillableCatalogItem()`, the same function Fill
+  already used; the Give combobox's client-side filter now matches Fill's
+  exactly. **This restriction applies only to this Base Inventory tab's
+  Give/Give Multiple actions** -- the older, separate, standalone Storage
+  tab's own "Give Item" action is unaffected and still accepts any catalog
+  item, unchanged.
+- **A console Give/Fill insert and a live in-game item move/pickup can both
+  target the same container slot (`position_index`) while the map stays
+  running, and the row that loses that race is permanently orphaned on the
+  next server restart** (issue #347 follow-up; see
+  `docs/incidents/INC-2026-08-19-GIVE-FILL-POSITION-INDEX-COLLISION.md` for
+  the full writeup, including a real, directly-traced collision via
+  `dune.item_audit_log`). Give and Give Multiple now insert at the
+  **highest** unused slot below the container's `max_item_count`
+  (`nextHighPositionIndex()`) instead of the lowest-next-free slot, since
+  in-game additions typically fill low-to-high -- this reduces, but does
+  not eliminate, the collision risk. Fill does not receive this mitigation:
+  per explicit operator direction, Fill exists to top up a container toward
+  its real capacity in the same low-to-high direction the engine already
+  fills, so there is no meaningful "far end" left to insert into. Fill's
+  risk is instead documented with a new in-UI warning above the Fill
+  Container panel and the incident writeup above -- an accepted, by-design
+  limitation, not an open bug.
+- **The Base Inventory contents overlay's Give/Fill panel was two
+  separately-stacked combobox+quantity+button rows -- one for Give, one for
+  Fill -- reported confusing by a real operator, especially after Give and
+  Fill were restricted to the same three item groups earlier in this same
+  session, making the two rows show identical candidate items with nothing
+  explaining when to use which.** A dispatched UI/UX-hat design review
+  diagnosed the confusion precisely (visual duplication, no naming/decision
+  signal distinguishing the two actions, duplicated warning banners) and
+  recommended consolidating to one shared `ItemCatalogCombobox` + quantity
+  field with a `Give`/`Fill` mode toggle (reusing the contents overlay's own
+  List/Grid segmented-button pattern), each mode revealing only its own
+  secondary affordance -- Give's "Add to Batch" queue, Fill's "Fill to
+  Capacity" sentinel -- rather than showing both actions' full controls at
+  once. Switching modes clears the shared item selection and resets the
+  quantity field to that mode's own prior default (`1` for Give, `100` for
+  Fill); a queued Give batch survives a Fill-and-back mode switch
+  unconditionally. The two safety notices were also consolidated: the
+  restart-visibility warning now applies to both modes and shows
+  unconditionally; the position_index collision warning (see above) is
+  Fill-specific and shows only while Fill mode is selected. No backend
+  routes, request shapes, or confirmation phrases changed -- this is a
+  client-side state/markup consolidation only.
+- **The Give/Fill consolidation above shipped with two of its own real
+  regressions, both reported directly by a real operator testing it live
+  the same day.** Fixed in the same session:
+  - **Switching between Give and Fill mode cleared the selected item**,
+    forcing an operator who glanced at Fill and switched back to Give to
+    re-search the same item from scratch. The clearing was based on a
+    theory ("a selection might not be relevant in the other mode") that no
+    longer held once Give was restricted to the same `FILLABLE_GROUPS` Fill
+    already used -- any item valid in one mode is always valid in the
+    other. The selected item now persists across a mode switch; only the
+    quantity field still resets to that mode's own default (`1` for Give,
+    `100` for Fill), since a half-typed quantity must still never carry
+    into the wrong action.
+  - **The panel showed three separately-stacked notice elements in Fill
+    mode** (an explanatory paragraph, the restart warning, and the
+    Fill-only position_index collision warning as its own second bordered
+    box) -- the original consolidation merged the *inputs* but never
+    actually merged the *notices*, directly recreating the "wall of
+    similar-looking warning text" problem the very first design review had
+    already diagnosed in the old two-panel layout. A second dispatched
+    UI/UX-hat review recommended, and this fixes: the explanatory paragraph
+    shrunk to one muted caption line; the toggle moved above the warning
+    banner so the banner's mode-dependent text change reads as caused by
+    the toggle; and the restart warning and the Fill-only collision warning
+    now share **one** bordered banner, with Fill mode appending a trailing
+    sentence to the same element instead of opening a second, visually
+    identical box. At most two notice elements are ever visible now, in
+    either mode.
+- **The two content fixes directly above still left a real visual
+  inconsistency, caught by a real operator on the very next look:** the
+  mode-hint caption (bare text, no border/padding/icon) sat immediately
+  above the Give/Fill toggle, which sat immediately above the warning
+  banner (bordered, padded, iconed) -- "one has a bounding border with a !
+  icon and the other does not... looks amateurish," in the operator's own
+  words. Both prior fixes addressed *what text renders and when*, never
+  *visual treatment*. Fixed per a third dispatched UI/UX-hat review: the
+  mode-hint caption and the toggle are now grouped into one shared,
+  lightly-bordered container (`.bases-inventory-mode-group`, neutral
+  `--border` token and the same `--panel-muted` background
+  `.bases-inventory-add-batch` list items already use) -- deliberately
+  **not** the warning's amber `--warning` token, so the group reads as
+  low-weight information rather than a second alert diluting the one
+  banner that should keep looking urgent. The warning banner itself is
+  unchanged in both content and visual weight. New regression-guard test
+  asserts the mode-hint and toggle share one container, distinct from the
+  warning banner.
+- **Clicking an item already in a container now also populates the
+  Give/Fill combobox with that same item**, per explicit operator
+  direction -- giving more of something already visible in the Grid or
+  List view previously required re-typing/re-searching its exact name in
+  the combobox from scratch. Clicking a Grid cell or List row's item name
+  populates `selectedItem` with that slot's item in addition to the
+  existing "select this slot for the delete strip" behavior the same
+  click already performs -- not a second, separate click target, and does
+  not change the active Give/Fill mode or the quantity field, which is
+  left exactly as the operator last set it. Resolved against the real,
+  already-loaded item catalog (`loadFullCatalog()`, now exported from
+  `ItemCatalog.tsx` specifically for this) rather than fabricated from the
+  slot's own name/`templateId` alone. Silently a no-op -- the click still
+  performs its existing delete-selection behavior regardless -- for an
+  item not in `FILLABLE_GROUPS` (e.g. a weapon) or not present in the
+  loaded catalog at all, matching what the combobox itself would have
+  refused anyway. 6 new tests cover both no-op paths, both view modes
+  (Grid and List), and that the populated item respects whichever
+  Give/Fill mode is currently active.
 
 ### Security
 

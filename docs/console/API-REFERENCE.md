@@ -320,13 +320,12 @@ routes above. Its `containers[].items[]` is merged per item template, not per
 slot — `GET /api/bases/{baseId}/containers/{placeableId}` is the per-slot view,
 fetched one container at a time because slots roughly triple the response.
 
-`DELETE /api/bases/{baseId}/containers/{placeableId}/items/{itemId}` is refused
-unless `baseRefillTarget` can verify that the owning map is safely stopped. An
-unknown state fails closed, and the route repeats the check immediately before
-the write. Only plain Storage contents are mutable; Crafting and Refining remain
-read-only because active jobs can reference their item rows. The same allowlist
-that keeps fuel inventories out of the read keeps them out of the delete. It
-needs `bases:delete-item`, not `bases:mutate`. See
+`DELETE /api/bases/{baseId}/containers/{placeableId}/items/{itemId}` does not require the
+owning map to be stopped — Give, Fill, and every delete route on this container are pure
+database writes with no live-sync path to a running map. Only plain Storage contents are
+mutable; Crafting and Refining remain read-only because active jobs can reference their item
+rows. The same allowlist that keeps fuel inventories out of the read keeps them out of the
+delete. It needs `bases:delete-item`, not `bases:mutate`. See
 [base-inventory.md](base-inventory.md).
 
 Both `GET /api/bases/{baseId}/water` and `GET /api/bases/{baseId}/inventory`

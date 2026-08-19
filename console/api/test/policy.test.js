@@ -84,6 +84,73 @@ test("the container item delete route resolves to bases:delete-item without shad
   assert.equal(actionForRoute("/api/bases/5/containers/9", "GET"), "bases:read");
 });
 
+// bases:give-item, bases:fill-item, and bases:bulk-delete-items follow the exact
+// same consent precedent as bases:delete-item above: base inventory shipped
+// read-only, so bases:mutate was never agreed to cover item creation or
+// bulk/delete-all destruction either. Each gets its own action for the same
+// reason -- a policy author narrowing one action must not implicitly narrow
+// (or grant) the others.
+test("bases:give-item, bases:fill-item, and bases:bulk-delete-items can each be withheld independently of bases:mutate", () => {
+  const policies = {
+    owner: { version: 1, tier: "owner", statements: [{ Effect: "Allow", Action: "*" }] },
+    moderator: {
+      version: 1,
+      tier: "moderator",
+      statements: [{ Effect: "Allow", Action: ["bases:read", "bases:mutate", "bases:delete-item"] }]
+    },
+    admin: { version: 1, tier: "admin", statements: [{ Effect: "Allow", Action: "bases:*" }] }
+  };
+  assert.equal(setPolicies(policies).ok, true);
+  // Granting bases:mutate (and even bases:delete-item) alone must not carry
+  // give/fill/bulk-delete with it -- each is deliberately its own grant.
+  assert.equal(evaluate({ tier: "moderator" }, "bases:mutate", policies), true);
+  assert.equal(evaluate({ tier: "moderator" }, "bases:delete-item", policies), true);
+  assert.equal(evaluate({ tier: "moderator" }, "bases:give-item", policies), false);
+  assert.equal(evaluate({ tier: "moderator" }, "bases:fill-item", policies), false);
+  assert.equal(evaluate({ tier: "moderator" }, "bases:bulk-delete-items", policies), false);
+  // The shipped wildcard policies are unaffected.
+  assert.equal(evaluate({ tier: "admin" }, "bases:give-item", policies), true);
+  assert.equal(evaluate({ tier: "admin" }, "bases:fill-item", policies), true);
+  assert.equal(evaluate({ tier: "admin" }, "bases:bulk-delete-items", policies), true);
+});
+
+// Issue #351 (found during PR #349's own Layer 3 audit, Architect hat):
+// matchAction() supports a "prefix-*" wildcard style where "X-*" matches any
+// action starting with "X-". bases:delete-item and the old bases:delete-items
+// name shared that exact string prefix, so "bases:delete-item*" matched
+// BOTH -- a hand-authored policy using that wildcard style near
+// bases:delete-item would have silently and non-obviously also granted
+// bulk/delete-all destruction. Renamed to bases:bulk-delete-items, which
+// shares no prefix with bases:delete-item, closing the gap. This test
+// exists so a future rename cannot silently reopen it.
+test("bases:delete-item and bases:bulk-delete-items share no string prefix a -* wildcard could collide on", () => {
+  // Direct regression lock: this is the exact false-positive matchAction()
+  // returned before the rename (verified against the old name during
+  // investigation of issue #351).
+  assert.equal(matchAction("bases:delete-item*", "bases:bulk-delete-items"), false);
+  assert.equal(matchAction("bases:delete-item*", "bases:delete-item"), true, "the intended target of that wildcard must still match");
+
+  // General form of the same guarantee: no "-*" wildcard built from either
+  // action's own name can match the other -- proves this holds structurally,
+  // not just for the one wildcard string above.
+  const prefixWildcard = (action) => `${action.slice(0, -1)}*`;
+  assert.equal(matchAction(prefixWildcard("bases:delete-item"), "bases:bulk-delete-items"), false);
+  assert.equal(matchAction(prefixWildcard("bases:bulk-delete-items"), "bases:delete-item"), false);
+});
+
+test("base container give/fill/bulk-delete routes resolve to their own actions without shadowing their neighbours", () => {
+  assert.equal(actionForRoute("/api/bases/5/containers/9/give-item", "POST"), "bases:give-item");
+  assert.equal(actionForRoute("/api/bases/5/containers/9/give-items", "POST"), "bases:give-item");
+  assert.equal(actionForRoute("/api/bases/5/containers/9/fill-item", "POST"), "bases:fill-item");
+  assert.equal(actionForRoute("/api/bases/5/containers/9/items", "DELETE"), "bases:bulk-delete-items");
+  assert.equal(actionForRoute("/api/bases/5/containers/9/all-items", "DELETE"), "bases:bulk-delete-items");
+  // The existing single-item delete route and other base routes must be
+  // unaffected by these new sibling patterns.
+  assert.equal(actionForRoute("/api/bases/5/containers/9/items/77", "DELETE"), "bases:delete-item");
+  assert.equal(actionForRoute("/api/bases/5", "DELETE"), "bases:delete");
+  assert.equal(actionForRoute("/api/bases/5/containers/9", "GET"), "bases:read");
+});
+
 // resolveAllowedActions has no caller yet (planned for a future policy-editor
 // UI), but it must already surface every action actionForRoute can resolve,
 // not just the ones with an exact ROUTE_ACTIONS entry -- bases:delete only

@@ -59,8 +59,10 @@ import {
   createPendingAccountLink,
   createPendingLink,
   dbStatus,
+  deleteAllBaseContainerItems,
   deleteBaseContainerItem,
   deleteInventoryItem,
+  deleteMultipleBaseContainerItems,
   deletePendingAccountLink,
   deletePendingLink,
   demoteGuildMember,
@@ -77,6 +79,7 @@ import {
   getAllLinkedPlayers,
   giveItemToPlayer,
   giveItemToStorage,
+  giveMultipleItemsToStorage,
   grantAllSpecializationKeystones,
   grantMaxSpecialization,
   guildMembers,
@@ -3948,17 +3951,418 @@ test("container item delete degrades to null state fields on a schema without th
   assert.ok(!query.text.includes("i.position_index"), "must not select a column this schema lacks");
 });
 
+// deleteMultipleBaseContainerItems / deleteAllBaseContainerItems: bulk
+// delete paths built for the Bases -> Inventory multi-select and "Delete
+// All" actions. Both share resolveOwnedStorageContainer's claim-CTE
+// ownership resolution with deleteBaseContainerItem -- NOT
+// removeItemsFromStorage's actor_id-only lookup below, which has no group
+// filter and could otherwise reach a Refining/Crafting inventory.
+const OWNED_STORAGE_CONTAINER_ROW = {
+  placeable_id: "42", inventory_id: 7, group_key: "storage", type_name: "Small Storage Container"
+};
+
+function fakeBulkContainerDeleteDb(calls, fixtures = {}) {
+  const {
+    containerRows = [OWNED_STORAGE_CONTAINER_ROW],
+    itemRows = [],
+    // Ids that survive the dune.delete_item call and must fall back to a
+    // raw `delete from dune.items` -- mirrors deleteLeavesRow's old,
+    // single-item meaning, now expressed as a set since the verification
+    // query is set-based (finishDeletingLockedItems, duneDb.js).
+    idsLeftAfterDeleteItem = [],
+    // Mirrors fakeContainerDeleteDb's itemColumns fixture: which dune.items
+    // columns this fake schema has, probed by auditDetailSelectFragment
+    // (issue #350) the same way deleteBaseContainerItem's own stateSelect
+    // is. Defaults to the full set so existing tests that don't care about
+    // audit-detail fields keep getting populated values.
+    itemColumns = ["id", "inventory_id", "stack_size", "position_index", "template_id", "stats", "quality_level"]
+  } = fixtures;
+  const run = async (text, values = []) => {
+    calls.push({ text, values });
+    if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+    if (text.includes("to_regprocedure")) return { rows: [{ exists: true }] };
+    if (text.includes("information_schema.columns")) {
+      return { rows: itemColumns.map((column_name) => ({ column_name })) };
+    }
+    // Ownership resolution: resolveOwnedStorageContainer's own query.
+    // Anchored on its actual, structurally unique final SELECT column list
+    // (issue #354, MEDIUM severity, found during PR #349's own Layer 3
+    // audit, QA hat) rather than the bare substrings "requested_claims" and
+    // "for update of inv" this matcher used previously -- both substrings
+    // are shared with other queries/comments in duneDb.js (every base-
+    // container query builds on the same requested_claims CTE, and a
+    // hypothetical future query could easily contain both short fragments
+    // together without being this one), so a future addition elsewhere in
+    // the file could have silently been treated as "the ownership query" by
+    // this mock, producing an incorrect-but-passing green test for an
+    // unrelated code path. This exact column list
+    // ("c.placeable_id::text as placeable_id, c.inventory_id") only ever
+    // appears in resolveOwnedStorageContainer's own final SELECT.
+    if (text.includes("select c.placeable_id::text as placeable_id, c.inventory_id") && text.includes("for update of inv")) {
+      return { rows: containerRows };
+    }
+    // Set-based item lookup inside deleteMultipleBaseContainerItems --
+    // `where id = any($1::bigint[]) and inventory_id = $2`. Distinguished
+    // from the verification query below (finishDeletingLockedItems) by the
+    // `for update` clause, which only the initial lookup carries.
+    if (text.includes("select id::text as item_id, template_id, stack_size") && text.includes("where id = any($1::bigint[]) and inventory_id = $2") && text.includes("for update")) {
+      const ids = new Set((values[0] || []).map((id) => String(id)));
+      return { rows: itemRows.filter((row) => ids.has(String(row.item_id))) };
+    }
+    // Full-container listing inside deleteAllBaseContainerItems.
+    if (text.includes("select id::text as item_id, template_id, stack_size") && text.includes("where inventory_id = $1")) {
+      return { rows: itemRows };
+    }
+    // finishDeletingLockedItems's set-based "still present after
+    // dune.delete_item" check -- `select id::text as item_id from
+    // dune.items where id = any($1::bigint[]) and inventory_id = $2`, no
+    // `for update` and no stack_size/template_id in the column list, which
+    // is what distinguishes it from the lookup query above.
+    if (text.includes("select id::text as item_id from dune.items where id = any($1::bigint[]) and inventory_id = $2")) {
+      const requested = new Set((values[0] || []).map((id) => String(id)));
+      const left = idsLeftAfterDeleteItem.map((id) => String(id)).filter((id) => requested.has(id));
+      return { rows: left.map((item_id) => ({ item_id })) };
+    }
+    return { rows: [] };
+  };
+  return { query: run, transaction: async (fn) => fn({ query: run }) };
+}
+
+test("delete-multiple verifies ownership once, then deletes only the requested items that exist in that container", async () => {
+  const calls = [];
+  const db = fakeBulkContainerDeleteDb(calls, {
+    itemRows: [
+      { item_id: "99", template_id: "ScrapMetal", stack_size: 500 },
+      { item_id: "100", template_id: "AzuriteOre", stack_size: 20 }
+    ]
+  });
+  const result = await deleteMultipleBaseContainerItems(db, 16836, 42, [99, 100, 101]);
+  assert.equal(result.ok, true);
+  assert.equal(result.removed.length, 2, "item 101 does not exist in this container and is skipped, not errored");
+  assert.equal(result.message, "2 of 3 requested item(s) were deleted from the database.");
+  const ownershipCalls = calls.filter((call) => call.text.includes("select c.placeable_id::text as placeable_id, c.inventory_id") && call.text.includes("for update of inv"));
+  assert.equal(ownershipCalls.length, 1, "ownership resolved once per batch, not once per item");
+  // bigintParam returns a numeric string, not a native bigint.
+  assert.ok(calls.some((call) => call.text.includes("dune.delete_item($1::bigint)") && call.values[0] === "99"));
+  assert.ok(calls.some((call) => call.text.includes("dune.delete_item($1::bigint)") && call.values[0] === "100"));
+  assert.equal(calls.some((call) => call.text.includes("dune.delete_item($1::bigint)") && call.values[0] === "101"), false);
+});
+
+// Found during PR #349's own Layer 3 audit (issue #352, DBA + Security
+// hats, HIGH severity): the original version of this function did 4
+// sequential round-trips PER item (select-for-update, delete_item call, an
+// exists check, a conditional fallback delete) -- worst case ~800
+// statements for a 200-item batch, all while the container's row lock was
+// held, blocking any concurrent give/fill/delete against the SAME
+// container for the whole duration. Fixed to resolve/verify the whole
+// batch in a small, fixed number of set-based round-trips instead of one
+// pair per item. This test proves the fixed shape directly by counting
+// calls, not just asserting the end result is correct.
+test("delete-multiple resolves and verifies the whole batch in O(1) round-trips, not one pair per item", async () => {
+  const calls = [];
+  const itemRows = Array.from({ length: 50 }, (_, index) => ({
+    item_id: String(100 + index), template_id: "ScrapMetal", stack_size: 1
+  }));
+  const db = fakeBulkContainerDeleteDb(calls, { itemRows });
+  const result = await deleteMultipleBaseContainerItems(db, 16836, 42, itemRows.map((row) => Number(row.item_id)));
+  assert.equal(result.removed.length, 50);
+
+  // Exactly one ownership resolution, one set-based item lookup, one
+  // set-based "still present" verification -- the only per-item cost left
+  // is the irreducible dune.delete_item call itself (50, one per item).
+  const ownershipCalls = calls.filter((call) => call.text.includes("select c.placeable_id::text as placeable_id, c.inventory_id") && call.text.includes("for update of inv"));
+  const lookupCalls = calls.filter((call) => call.text.includes("where id = any($1::bigint[]) and inventory_id = $2") && call.text.includes("for update"));
+  const verifyCalls = calls.filter((call) => call.text.includes("select id::text as item_id from dune.items where id = any($1::bigint[]) and inventory_id = $2"));
+  const deleteItemCalls = calls.filter((call) => call.text.includes("dune.delete_item($1::bigint)"));
+  assert.equal(ownershipCalls.length, 1);
+  assert.equal(lookupCalls.length, 1);
+  assert.equal(verifyCalls.length, 1);
+  assert.equal(deleteItemCalls.length, 50, "one delete_item call per item is unavoidable -- it is a shipped, single-argument procedure");
+  // Every call that is NOT a per-item dune.delete_item call is fixed
+  // overhead (ownership resolution, the batch lookup, the batch
+  // verification, plus schema-capability probes that run once regardless
+  // of batch size) -- it must not scale with the number of items. The old,
+  // per-item-loop shape would have made this scale linearly (4 extra calls
+  // per item instead of 0).
+  const nonDeleteItemCalls = calls.length - deleteItemCalls.length;
+  assert.equal(nonDeleteItemCalls, calls.length - 50);
+  assert.ok(nonDeleteItemCalls < 15, `fixed overhead should be small and batch-size-independent, got ${nonDeleteItemCalls} calls for a 50-item batch`);
+});
+
+// Locks in the raw-delete fallback for the SET-based verification path --
+// mirrors the single-item delete's own "the shipped procedure is preferred
+// for its item tracking log, but the row disappearing is what actually
+// matters" behavior, now applied per-batch instead of per-item.
+test("delete-multiple falls back to a raw delete for any row dune.delete_item leaves behind", async () => {
+  const calls = [];
+  const db = fakeBulkContainerDeleteDb(calls, {
+    itemRows: [
+      { item_id: "99", template_id: "ScrapMetal", stack_size: 500 },
+      { item_id: "100", template_id: "AzuriteOre", stack_size: 20 }
+    ],
+    idsLeftAfterDeleteItem: [100]
+  });
+  const result = await deleteMultipleBaseContainerItems(db, 16836, 42, [99, 100]);
+  assert.equal(result.removed.length, 2, "both items are still reported removed -- the fallback delete is what makes that true");
+  const fallbackDelete = calls.find((call) => call.text.includes("delete from dune.items where id = any($1::bigint[]) and inventory_id = $2"));
+  assert.ok(fallbackDelete, "must fall back to a raw delete for item 100, which the procedure left behind");
+  assert.deepEqual(fallbackDelete.values[0], ["100"], "the fallback must target only the row(s) still present, not the whole batch");
+});
+
+// Same audit-detail fields deleteBaseContainerItem's own destroyedState
+// captures (issue #350, found during PR #349's Layer 3 audit): without
+// these, a bulk-destroyed pristine legendary logs identically to a
+// bulk-destroyed broken common of the same template.
+test("delete-multiple records what was destroyed for every item in the batch, not just id/template/count", async () => {
+  const calls = [];
+  const db = fakeBulkContainerDeleteDb(calls, {
+    itemRows: [
+      {
+        item_id: "99", template_id: "ScrapMetal", stack_size: 500,
+        position_index: 3, quality_level: 2, current_durability: "45", max_durability: 90
+      },
+      {
+        item_id: "100", template_id: "AzuriteOre", stack_size: 20,
+        position_index: 5, quality_level: 1, current_durability: "10", max_durability: 10
+      }
+    ]
+  });
+  const result = await deleteMultipleBaseContainerItems(db, 16836, 42, [99, 100]);
+  assert.equal(result.removed.length, 2);
+  assert.deepEqual(result.removed[0], {
+    itemId: "99", templateId: "ScrapMetal", count: 500,
+    positionIndex: 3, qualityLevel: 2, currentDurability: 45, maxDurability: 90
+  });
+  assert.deepEqual(result.removed[1], {
+    itemId: "100", templateId: "AzuriteOre", count: 20,
+    positionIndex: 5, qualityLevel: 1, currentDurability: 10, maxDurability: 10
+  });
+});
+
+// Mirrors "container item delete degrades to null state fields on a schema
+// without them" for the single-item path -- a schema missing
+// position_index/quality_level/stats must degrade the batch delete's audit
+// fields to null/0, not fail the whole batch.
+test("delete-multiple degrades audit-detail fields to null/0 on a schema without them, rather than failing", async () => {
+  const calls = [];
+  const db = fakeBulkContainerDeleteDb(calls, {
+    itemRows: [{ item_id: "99", template_id: "ScrapMetal", stack_size: 500 }],
+    itemColumns: ["id", "inventory_id", "stack_size", "template_id"]
+  });
+  const result = await deleteMultipleBaseContainerItems(db, 16836, 42, [99]);
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.removed[0], {
+    itemId: "99", templateId: "ScrapMetal", count: 500,
+    positionIndex: null, qualityLevel: 0, currentDurability: null, maxDurability: null
+  });
+  const lookupCall = calls.find((call) => call.text.includes("where id = any($1::bigint[]) and inventory_id = $2") && call.text.includes("for update"));
+  assert.match(lookupCall.text, /null::bigint as position_index/);
+  assert.match(lookupCall.text, /0::bigint as quality_level/);
+});
+
+test("delete-multiple rejects an empty item list", async () => {
+  const calls = [];
+  const db = fakeBulkContainerDeleteDb(calls);
+  await assert.rejects(() => deleteMultipleBaseContainerItems(db, 16836, 42, []), /At least one item ID is required/);
+});
+
+test("delete-multiple rejects more than 200 items in one batch", async () => {
+  const calls = [];
+  const db = fakeBulkContainerDeleteDb(calls);
+  const ids = Array.from({ length: 201 }, (_, index) => index + 1);
+  await assert.rejects(() => deleteMultipleBaseContainerItems(db, 16836, 42, ids), /Cannot delete more than 200 items/);
+});
+
+test("delete-multiple keeps crafting and refining inventories read-only", async () => {
+  const calls = [];
+  const db = fakeBulkContainerDeleteDb(calls, {
+    containerRows: [{ ...OWNED_STORAGE_CONTAINER_ROW, group_key: "refining", type_name: "Small Ore Refinery" }],
+    itemRows: [{ item_id: "99", template_id: "ScrapMetal", stack_size: 500 }]
+  });
+  await assert.rejects(
+    () => deleteMultipleBaseContainerItems(db, 16836, 42, [99]),
+    /only be deleted from Storage containers/
+  );
+  assert.equal(calls.some((call) => call.text.includes("dune.delete_item")), false);
+});
+
+test("delete-multiple rejects a container that was not found at the selected base", async () => {
+  const calls = [];
+  const db = fakeBulkContainerDeleteDb(calls, { containerRows: [] });
+  await assert.rejects(
+    () => deleteMultipleBaseContainerItems(db, 16836, 42, [99]),
+    /not found at the selected base/
+  );
+});
+
+// Found during PR #349's own Layer 3 audit (DBA and QA hats independently):
+// docs/console/base-inventory.md documents "a placeable can back more than
+// one surviving inventory" as a GENERAL schema fact, not something scoped
+// to Refining/Crafting's known dual-inventory case. An earlier version of
+// resolveOwnedStorageContainer had no ORDER BY/LIMIT and took rows[0]
+// unconditionally -- silently picking whichever inventory Postgres happened
+// to return first, which could leave real items behind in a second,
+// un-selected inventory while deleteAllBaseContainerItems still reported
+// ok:true. Fixed to throw explicitly rather than guess; this test locks
+// that fix in and must keep failing if a future change reintroduces the
+// silent rows[0] pick.
+test("delete-multiple refuses to guess when a container backs more than one qualifying inventory", async () => {
+  const calls = [];
+  const db = fakeBulkContainerDeleteDb(calls, {
+    containerRows: [
+      { placeable_id: "42", inventory_id: 7, group_key: "storage", type_name: "Medium Storage Container" },
+      { placeable_id: "42", inventory_id: 8, group_key: "storage", type_name: "Medium Storage Container" }
+    ]
+  });
+  await assert.rejects(
+    () => deleteMultipleBaseContainerItems(db, 16836, 42, [99]),
+    /backs 2 separate inventories/
+  );
+  // Must fail before ever touching dune.items -- no partial/best-effort
+  // delete against either inventory.
+  assert.equal(calls.some((call) => call.text.includes("dune.delete_item")), false);
+});
+
+test("delete-all refuses to guess when a container backs more than one qualifying inventory", async () => {
+  const calls = [];
+  const db = fakeBulkContainerDeleteDb(calls, {
+    containerRows: [
+      { placeable_id: "42", inventory_id: 7, group_key: "storage", type_name: "Medium Storage Container" },
+      { placeable_id: "42", inventory_id: 8, group_key: "storage", type_name: "Medium Storage Container" }
+    ]
+  });
+  await assert.rejects(
+    () => deleteAllBaseContainerItems(db, 16836, 42),
+    /backs 2 separate inventories/
+  );
+  assert.equal(calls.some((call) => call.text.includes("dune.delete_item")), false);
+});
+
+test("delete-all deletes every item currently in the container, read fresh inside the transaction", async () => {
+  const calls = [];
+  const db = fakeBulkContainerDeleteDb(calls, {
+    itemRows: [
+      { item_id: "99", template_id: "ScrapMetal", stack_size: 500 },
+      { item_id: "100", template_id: "AzuriteOre", stack_size: 20 },
+      { item_id: "101", template_id: "PlantFiber", stack_size: 5 }
+    ]
+  });
+  const result = await deleteAllBaseContainerItems(db, 16836, 42);
+  assert.equal(result.ok, true);
+  assert.equal(result.removed.length, 3);
+  assert.equal(result.message, "3 item(s) were deleted from the database.");
+  const deleteCalls = calls.filter((call) => call.text.includes("dune.delete_item($1::bigint)"));
+  assert.equal(deleteCalls.length, 3);
+});
+
+// Same fix as deleteMultipleBaseContainerItems (issue #352) -- verification
+// after the dune.delete_item loop is one set-based call, not one per item.
+test("delete-all verifies the whole container in one set-based call after the delete_item loop, not one per item", async () => {
+  const calls = [];
+  const itemRows = Array.from({ length: 40 }, (_, index) => ({
+    item_id: String(200 + index), template_id: "PlantFiber", stack_size: 1
+  }));
+  const db = fakeBulkContainerDeleteDb(calls, { itemRows });
+  const result = await deleteAllBaseContainerItems(db, 16836, 42);
+  assert.equal(result.removed.length, 40);
+  const verifyCalls = calls.filter((call) => call.text.includes("select id::text as item_id from dune.items where id = any($1::bigint[]) and inventory_id = $2"));
+  const deleteItemCalls = calls.filter((call) => call.text.includes("dune.delete_item($1::bigint)"));
+  assert.equal(verifyCalls.length, 1, "one set-based verification for the whole container, not one per item");
+  assert.equal(deleteItemCalls.length, 40, "one delete_item call per item is unavoidable -- it is a shipped, single-argument procedure");
+});
+
+// Same audit-detail fields as the delete-multiple path (issue #350) --
+// deleteAllBaseContainerItems shares finishDeletingLockedItems with
+// deleteMultipleBaseContainerItems, so this locks in that the shared
+// helper's fields actually reach the caller for BOTH bulk paths, not just
+// the one exercised above.
+test("delete-all records what was destroyed for every item, including audit-detail fields", async () => {
+  const calls = [];
+  const db = fakeBulkContainerDeleteDb(calls, {
+    itemRows: [{
+      item_id: "99", template_id: "ScrapMetal", stack_size: 500,
+      position_index: 3, quality_level: 2, current_durability: "45", max_durability: 90
+    }]
+  });
+  const result = await deleteAllBaseContainerItems(db, 16836, 42);
+  assert.deepEqual(result.removed[0], {
+    itemId: "99", templateId: "ScrapMetal", count: 500,
+    positionIndex: 3, qualityLevel: 2, currentDurability: 45, maxDurability: 90
+  });
+});
+
+test("delete-all reports an already-empty container distinctly rather than as a no-op deletion", async () => {
+  const calls = [];
+  const db = fakeBulkContainerDeleteDb(calls, { itemRows: [] });
+  const result = await deleteAllBaseContainerItems(db, 16836, 42);
+  assert.equal(result.ok, true);
+  assert.equal(result.removed.length, 0);
+  assert.equal(result.message, "Container was already empty.");
+});
+
+test("delete-all keeps crafting and refining inventories read-only", async () => {
+  const calls = [];
+  const db = fakeBulkContainerDeleteDb(calls, {
+    containerRows: [{ ...OWNED_STORAGE_CONTAINER_ROW, group_key: "crafting", type_name: "Fabricator" }],
+    itemRows: [{ item_id: "99", template_id: "ScrapMetal", stack_size: 500 }]
+  });
+  await assert.rejects(
+    () => deleteAllBaseContainerItems(db, 16836, 42),
+    /only be deleted from Storage containers/
+  );
+  assert.equal(calls.some((call) => call.text.includes("dune.delete_item")), false);
+});
+
+test("delete-all rejects a container that was not found at the selected base", async () => {
+  const calls = [];
+  const db = fakeBulkContainerDeleteDb(calls, { containerRows: [] });
+  await assert.rejects(
+    () => deleteAllBaseContainerItems(db, 16836, 42),
+    /not found at the selected base/
+  );
+});
+
+// Explicit design-decision lock: Developer Storage Container
+// (developer_storagecontainer_placeable / Developer_Storage_Container_Patent)
+// is deliberately NOT special-cased anywhere in this feature, despite being
+// grantable only via the "Show Experimental" toggle in the Building Sets
+// tab (see adminCatalog.test.js's buildingUnlockIsExperimental coverage). It
+// is already in BASE_INVENTORY_TYPES.storage alongside every other storage
+// building, and capacity is read live from the placed instance's own
+// dune.inventories row -- there is no missing static data blocking it. This
+// test exists so a future change cannot silently carve it out (or back in)
+// without a test noticing either way.
+test("delete-all treats a Developer Storage Container exactly like any other storage-group container", async () => {
+  const calls = [];
+  const db = fakeBulkContainerDeleteDb(calls, {
+    containerRows: [{ placeable_id: "77", inventory_id: 9, group_key: "storage", type_name: "Developer Storage Container" }],
+    itemRows: [{ item_id: "200", template_id: "AzuriteOre", stack_size: 20 }]
+  });
+  const result = await deleteAllBaseContainerItems(db, 16836, 77);
+  assert.equal(result.ok, true);
+  assert.equal(result.group, "storage");
+  assert.equal(result.typeName, "Developer Storage Container");
+  assert.equal(result.removed.length, 1);
+});
+
 // baseContainerSlots: the per-slot read the contents overlay and its delete
 // both rest on. Deliberately separate from baseInventory, whose items[] stays
 // template-merged.
 function fakeContainerSlotsDb(calls, fixtures = {}) {
-  const { rows = [], itemColumns = ["id", "inventory_id", "stack_size", "position_index", "template_id", "stats", "quality_level"] } = fixtures;
+  const {
+    rows = [],
+    itemColumns = ["id", "inventory_id", "stack_size", "position_index", "template_id", "stats", "quality_level"],
+    // Defaults to no max_item_volume, matching itemColumns' own default of no
+    // volume_override -- a schema without volume support until a test opts in.
+    inventoryColumns = ["id", "actor_id", "max_item_count"]
+  } = fixtures;
   return {
     query: async (text, values = []) => {
       calls.push({ text, values });
       if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
       if (text.includes("information_schema.columns")) {
-        return { rows: itemColumns.map((column_name) => ({ column_name })) };
+        const columns = values[1] === "inventories" ? inventoryColumns : itemColumns;
+        return { rows: columns.map((column_name) => ({ column_name })) };
       }
       if (text.includes("requested_claims")) return { rows };
       return { rows: [] };
@@ -4054,6 +4458,51 @@ test("baseContainerSlots degrades rather than failing when dune.items lacks the 
   assert.match(query.text, /null::bigint as position_index/);
   assert.ok(!query.text.includes("i.position_index"), "must not select a column this schema lacks");
   assert.match(query.text, /null::numeric as max_durability/);
+});
+
+// Issue #356 (found during PR #349's Layer 3 audit): items given before the
+// volume-checking fix landed permanently carry a NULL volume_override, which
+// every capacity check already treats as 0 -- so the console's own volume
+// accounting silently undercounts real usage for pre-existing rows. A
+// backfill was judged too risky to run against every operator's live
+// dune.items data for a LOW-MEDIUM accuracy gap (Strict Requirement 0/26);
+// this test locks in that the per-container slots view now surfaces the
+// real, current volume total directly instead of leaving it implicit.
+//
+// CORRECTED 2026-08-19 (see docs/incidents/
+// INC-2026-08-19-VOLUME-OVERRIDE-DOUBLE-MULTIPLIED.md): volume_override is
+// a PER-UNIT value, not the stack's total -- the total contribution of a row
+// is volume_override * stack_size.
+test("baseContainerSlots reports current and max volume per inventory", async () => {
+  const calls = [];
+  const db = fakeContainerSlotsDb(calls, {
+    inventoryColumns: ["id", "actor_id", "max_item_count", "max_item_volume"],
+    itemColumns: ["id", "inventory_id", "stack_size", "position_index", "template_id", "stats", "quality_level", "volume_override"],
+    rows: [
+      { ...SLOT_ROW, max_item_volume: 500, item_id: "1", template_id: "ScrapMetal", stack_size: 500, position_index: 0, volume_override: 0.08 },
+      { ...SLOT_ROW, max_item_volume: 500, item_id: "2", template_id: "MagnetiteOre", stack_size: 200, position_index: 1, volume_override: 0.075 }
+    ]
+  });
+  const result = await baseContainerSlots(db, 16836, 40001);
+
+  assert.equal(result.maxVolume, 500, "max volume is read once per inventory, not summed per item row");
+  assert.equal(result.currentVolume, 55, "current volume sums volume_override (a per-unit value) * stack_size across every row");
+  assert.equal(result.inventories[0].maxVolume, 500);
+  assert.equal(result.inventories[0].currentVolume, 55);
+});
+
+test("baseContainerSlots degrades volume to 0/0 on a schema without max_item_volume/volume_override, rather than failing", async () => {
+  const calls = [];
+  const db = fakeContainerSlotsDb(calls, {
+    rows: [{ ...SLOT_ROW, item_id: "1", template_id: "ScrapMetal", stack_size: 500, position_index: 0 }]
+  });
+  const result = await baseContainerSlots(db, 16836, 40001);
+
+  assert.equal(result.currentVolume, 0);
+  assert.equal(result.maxVolume, 0);
+  const query = calls.find((call) => call.text.includes("requested_claims"));
+  assert.match(query.text, /0::real as max_item_volume/);
+  assert.match(query.text, /0::real as volume_override/);
 });
 
 test("baseContainerSlots scopes to the base and keeps the container allowlist filters", async () => {
@@ -4252,10 +4701,38 @@ test("inventory update treats explicit null durability values as not provided", 
   assert.doesNotMatch(updateCall.text, /"stats"/);
 });
 
+// CORRECTED 2026-08-19 (position_index collision mitigation, see
+// docs/incidents/INC-2026-08-19-GIVE-FILL-POSITION-INDEX-COLLISION.md):
+// give-item now picks the HIGHEST unused slot below max_item_count
+// (nextHighPositionIndex), not the lowest-next-free slot -- this test's
+// fixture (highPositionIndex: 29, matching max_item_count: 30) locks that
+// in, replacing the old lowest-next-free assertion.
 test("storage give-item validates capacity and inserts parameterized item rows", async () => {
   const calls = [];
   const db = fakeMutationDb(calls, {
     storageRows: [{ id: 7, actor_id: 222, max_item_count: 30, max_item_volume: 0 }],
+    countRows: [{ count: 1 }],
+    highPositionIndex: 29,
+    insertedRows: [{ id: 501, template_id: "WaterBottle_1", stack_size: 3, quality_level: 0, position_index: 29, inventory_id: 7 }]
+  });
+  const result = await giveItemToStorage(db, 222, { templateId: "WaterBottle_1", quantity: 3 });
+  assert.equal(result.inserted.id, 501);
+  const insert = calls.find((call) => call.text.includes("insert into dune.items"));
+  assert.ok(insert);
+  assert.deepEqual(insert.values.slice(0, 5), [7, "WaterBottle_1", 3, 0, 29]);
+  const positionCall = calls.find((call) => call.text.includes("generate_series"));
+  assert.ok(positionCall, "give-item must use the high-end position query, not the plain lowest-next-free one");
+  assert.deepEqual(positionCall.values, [7, 30]);
+});
+
+// The fallback path: an uncapped/unknown-capacity container (max_item_count
+// 0, e.g. a schema without the column or a genuinely uncapped inventory)
+// has no known "high end" to start from -- nextHighPositionIndex falls
+// back to the pre-existing lowest-next-free convention instead.
+test("storage give-item falls back to lowest-next-free position when max_item_count is 0 (unknown/uncapped)", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    storageRows: [{ id: 7, actor_id: 222, max_item_count: 0, max_item_volume: 0 }],
     countRows: [{ count: 1 }],
     insertedRows: [{ id: 501, template_id: "WaterBottle_1", stack_size: 3, quality_level: 0, position_index: 2, inventory_id: 7 }]
   });
@@ -4264,40 +4741,352 @@ test("storage give-item validates capacity and inserts parameterized item rows",
   const insert = calls.find((call) => call.text.includes("insert into dune.items"));
   assert.ok(insert);
   assert.deepEqual(insert.values.slice(0, 5), [7, "WaterBottle_1", 3, 0, 2]);
+  assert.ok(!calls.some((call) => call.text.includes("generate_series")), "must not run the high-end query when max_item_count is 0");
 });
 
-test("storage fill-item inserts with TOTAL stack volume_override (per-unit x quantity) and respects slot limit", async () => {
-  // volume_override must be the total volume of the stack (itemVolume *
-  // quantity), not the per-unit volume -- fixed 2026-07-31 after a live
-  // discrepancy where a quantity=3 fill only added 1 to current_volume
-  // instead of 3. This test previously asserted the old, buggy per-unit
-  // behavior (50 * 1.0 = 50 total, but the test asserted 1.0) and was
-  // never updated when the underlying bug was fixed -- caught only by
-  // actually running the suite, not by re-reading the diff.
+test("storage give-item records PER-UNIT volume_override when itemVolume is provided", async () => {
+  // Parity fix: give-item previously never checked or recorded volume at
+  // all, unlike fill-item -- an operator could give an item whose declared
+  // volume exceeded a container's remaining volume, and rows inserted by
+  // give-item never contributed to fill-item's own sum(volume_override)
+  // check on subsequent calls. Added 2026-08-18 alongside the raw-resource
+  // catalog work, proactively (found during design review, not a live bug).
+  //
+  // CORRECTED 2026-08-19 (real live in-game bug, see
+  // docs/incidents/INC-2026-08-19-VOLUME-OVERRIDE-DOUBLE-MULTIPLIED.md):
+  // volume_override must be the PER-UNIT volume, not itemVolume * stackSize
+  // -- storing the total made the live game engine (which multiplies
+  // volume_override by stack_size itself for display) double-multiply,
+  // inflating displayed volume by a factor of stack_size.
   const calls = [];
   const db = fakeMutationDb(calls, {
     storageRows: [{ id: 7, actor_id: 222, max_item_count: 30, max_item_volume: 100 }],
     countRows: [{ count: 1 }],
     volumeRows: [{ total_volume: 10 }],
-    insertedRows: [{ id: 502, template_id: "T6RefinedResourceA", stack_size: 50, quality_level: 0, position_index: 3, inventory_id: 7, volume_override: 50.0 }]
+    insertedRows: [{ id: 503, template_id: "AzuriteOre", stack_size: 20, quality_level: 0, position_index: 4, inventory_id: 7, volume_override: 0.2 }]
   });
-  const result = await fillItemToStorage(db, "/tmp", 222, { templateId: "T6RefinedResourceA", quantity: 50, itemVolume: 1.0 });
-  assert.equal(result.inserted.id, 502);
-  assert.equal(result.inserted.volume_override, 50.0);
+  const result = await giveItemToStorage(db, 222, { templateId: "AzuriteOre", quantity: 20, itemVolume: 0.2 });
+  assert.equal(result.inserted.id, 503);
+  assert.equal(result.inserted.volume_override, 0.2);
   const insert = calls.find((call) => call.text.includes("insert into dune.items"));
   assert.ok(insert);
   const volIdx = insert.values.length - 1;
-  assert.equal(insert.values[volIdx], 50.0);
+  assert.equal(insert.values[volIdx], 0.2, "volume_override stored is the per-unit value, not per-unit * stackSize");
   const volumeCall = calls.find((call) => call.text.includes("sum(coalesce(volume_override"));
-  assert.ok(volumeCall, "volume sum query must run");
+  assert.ok(volumeCall, "volume sum query must run when itemVolume is provided");
+  assert.match(volumeCall.text, /\* stack_size/, "the running total must multiply volume_override by stack_size, since volume_override is per-unit");
 });
 
-test("storage fill-item rejects when volume limit would be exceeded", async () => {
+// Never rejects on a partial volume fit (issue #347 follow-up, per explicit
+// operator direction): a requested quantity that would exceed remaining
+// volume is CLAMPED to whatever actually fits and inserted, rather than
+// rejecting the whole give and forcing the operator to guess a smaller
+// number. 15 max, 10 already used -> 5.0 remaining / 0.2 per-unit = 25 max
+// fit, clamped down from the requested 50.
+test("storage give-item clamps a requested quantity down to whatever volume actually fits, rather than rejecting", async () => {
   const calls = [];
   const db = fakeMutationDb(calls, {
     storageRows: [{ id: 7, actor_id: 222, max_item_count: 30, max_item_volume: 15 }],
     countRows: [{ count: 1 }],
-    volumeRows: [{ total_volume: 10 }]
+    volumeRows: [{ total_volume: 10 }],
+    insertedRows: [{ id: 505, template_id: "AzuriteOre", stack_size: 25, quality_level: 0, position_index: 6, inventory_id: 7, volume_override: 5.0 }]
+  });
+  const result = await giveItemToStorage(db, 222, { templateId: "AzuriteOre", quantity: 50, itemVolume: 0.2 });
+  assert.equal(result.ok, true);
+  assert.equal(result.requested, 50);
+  assert.equal(result.given, 25);
+  assert.equal(result.clamped, true);
+  const insert = calls.find((call) => call.text.includes("insert into dune.items"));
+  assert.ok(insert);
+  // The actually-inserted stack_size must be the clamped 25, not the
+  // originally-requested 50 -- inserting 50 anyway would silently exceed
+  // the container's real volume cap.
+  assert.equal(insert.values[2], 25);
+});
+
+// The one case that IS still a real rejection: truly zero room left, where
+// clamping would mean giving 0 -- there is nothing useful to insert or
+// report as given.
+test("storage give-item still rejects when there is no room for even 1 unit", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    storageRows: [{ id: 7, actor_id: 222, max_item_count: 30, max_item_volume: 15 }],
+    countRows: [{ count: 1 }],
+    volumeRows: [{ total_volume: 15 }]
+  });
+  await assert.rejects(
+    () => giveItemToStorage(db, 222, { templateId: "AzuriteOre", quantity: 50, itemVolume: 0.2 }),
+    /Storage is full by volume/
+  );
+});
+
+test("storage give-item does not check volume when itemVolume is omitted (backward compatible)", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    storageRows: [{ id: 7, actor_id: 222, max_item_count: 30, max_item_volume: 15 }],
+    countRows: [{ count: 1 }],
+    insertedRows: [{ id: 504, template_id: "WaterBottle_1", stack_size: 100, quality_level: 0, position_index: 5, inventory_id: 7 }]
+  });
+  const result = await giveItemToStorage(db, 222, { templateId: "WaterBottle_1", quantity: 100 });
+  assert.equal(result.inserted.id, 504);
+  const volumeCall = calls.find((call) => call.text.includes("sum(coalesce(volume_override"));
+  assert.equal(volumeCall, undefined, "volume sum query must not run when itemVolume is not provided");
+});
+
+test("storage give-multiple-items inserts every item in one transaction", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    storageRows: [{ id: 7, actor_id: 222, max_item_count: 30, max_item_volume: 0 }],
+    countRows: [{ count: 1 }],
+    insertedRowsSequence: [
+      { id: 601, template_id: "AzuriteOre", stack_size: 20, quality_level: 0, position_index: 2, inventory_id: 7 },
+      { id: 602, template_id: "PlantFiber", stack_size: 5, quality_level: 0, position_index: 3, inventory_id: 7 }
+    ]
+  });
+  const result = await giveMultipleItemsToStorage(db, 222, {
+    items: [
+      { templateId: "AzuriteOre", quantity: 20 },
+      { templateId: "PlantFiber", quantity: 5 }
+    ]
+  });
+  assert.equal(result.results.length, 2);
+  assert.equal(result.results[0].inserted.id, 601);
+  assert.equal(result.results[1].inserted.id, 602);
+  const inserts = calls.filter((call) => call.text.includes("insert into dune.items"));
+  assert.equal(inserts.length, 2, "one insert per item");
+  assert.equal(calls.filter((call) => call.text === "begin").length, 1, "single shared transaction");
+});
+
+// Same high-end position mitigation as the single-item give test above --
+// giveMultipleItemsToStorage must use nextHighPositionIndex too, not the
+// plain lowest-next-free query, for every item it inserts in the batch.
+test("storage give-multiple-items uses the high-end position query for every inserted item", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    storageRows: [{ id: 7, actor_id: 222, max_item_count: 30, max_item_volume: 0 }],
+    countRows: [{ count: 1 }],
+    highPositionRowsSequence: [29, 28],
+    insertedRowsSequence: [
+      { id: 601, template_id: "AzuriteOre", stack_size: 20, quality_level: 0, position_index: 29, inventory_id: 7 },
+      { id: 602, template_id: "PlantFiber", stack_size: 5, quality_level: 0, position_index: 28, inventory_id: 7 }
+    ]
+  });
+  const result = await giveMultipleItemsToStorage(db, 222, {
+    items: [
+      { templateId: "AzuriteOre", quantity: 20 },
+      { templateId: "PlantFiber", quantity: 5 }
+    ]
+  });
+  assert.equal(result.results[0].inserted.id, 601);
+  assert.equal(result.results[1].inserted.id, 602);
+  const positionCalls = calls.filter((call) => call.text.includes("generate_series"));
+  assert.equal(positionCalls.length, 2, "one high-end position lookup per inserted item");
+  const inserts = calls.filter((call) => call.text.includes("insert into dune.items"));
+  assert.equal(inserts[0].values[4], 29);
+  assert.equal(inserts[1].values[4], 28);
+});
+
+test("storage give-multiple-items rejects an empty item list", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    storageRows: [{ id: 7, actor_id: 222, max_item_count: 30, max_item_volume: 0 }]
+  });
+  await assert.rejects(
+    () => giveMultipleItemsToStorage(db, 222, { items: [] }),
+    /At least one item is required/
+  );
+});
+
+test("storage give-multiple-items rejects more than 50 distinct items", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    storageRows: [{ id: 7, actor_id: 222, max_item_count: 30, max_item_volume: 0 }]
+  });
+  const items = Array.from({ length: 51 }, (_, index) => ({ templateId: `Item${index}`, quantity: 1 }));
+  await assert.rejects(
+    () => giveMultipleItemsToStorage(db, 222, { items }),
+    /Cannot give more than 50 distinct items/
+  );
+});
+
+// Never rejects (issue #347 follow-up): a batch stops -- rather than
+// throwing -- once one item hits the slot cap, since a slot-count limit
+// cannot be partially satisfied (one give always consumes exactly one
+// slot). Found during PR #349's own Layer 3 QA audit that a static
+// countRows fixture cannot distinguish "the batch correctly stops after
+// item 1 succeeds" from "every item is rejected identically, including
+// item 1" -- countRowsSequence lets count(*) reflect the just-inserted row
+// on the SECOND call, the same way real Postgres would see its own
+// transaction's prior write, so this test can actually prove item 1
+// succeeded before item 2 was stopped.
+test("storage give-multiple-items stops the batch (without throwing) when slot count is exhausted partway through", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    storageRows: [{ id: 7, actor_id: 222, max_item_count: 1, max_item_volume: 0 }],
+    countRowsSequence: [{ count: 0 }, { count: 1 }],
+    insertedRowsSequence: [
+      { id: 701, template_id: "AzuriteOre", stack_size: 20, quality_level: 0, position_index: 2, inventory_id: 7 }
+    ]
+  });
+  const result = await giveMultipleItemsToStorage(db, 222, {
+    items: [
+      { templateId: "AzuriteOre", quantity: 20 },
+      { templateId: "PlantFiber", quantity: 5 }
+    ]
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.results.length, 2, "every requested item appears in the response, attempted or not");
+  assert.equal(result.results[0].given, 20);
+  assert.equal(result.results[0].attempted, true);
+  assert.equal(result.results[1].given, 0);
+  assert.equal(result.results[1].attempted, true, "item 2 WAS attempted -- it tripped the slot cap on its own check");
+  assert.match(result.results[1].reason, /full by item slot count/);
+  // The real proof this is "partway," not "rejects everything": exactly one
+  // insert happened (item 1, AzuriteOre) before the second item's count
+  // check tripped the slot cap.
+  const inserts = calls.filter((call) => call.text.includes("insert into dune.items"));
+  assert.equal(inserts.length, 1, "item 1 must have actually been inserted before item 2 was stopped");
+});
+
+// The tautological-test counterpart this fix guards against: if the slot
+// cap trips on the FIRST item instead, zero inserts happen -- kept as its
+// own test so the "partway" test above can never be satisfied by an
+// implementation that stops everything from item 1.
+test("storage give-multiple-items stops the whole batch when the slot cap is already full before item 1", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    storageRows: [{ id: 7, actor_id: 222, max_item_count: 1, max_item_volume: 0 }],
+    countRows: [{ count: 1 }]
+  });
+  const result = await giveMultipleItemsToStorage(db, 222, {
+    items: [
+      { templateId: "AzuriteOre", quantity: 20 },
+      { templateId: "PlantFiber", quantity: 5 }
+    ]
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.results[0].given, 0);
+  assert.equal(result.results[0].attempted, true);
+  assert.equal(result.results[1].given, 0);
+  assert.equal(result.results[1].attempted, false, "item 2 was never even attempted -- item 1 already stopped the batch");
+  const inserts = calls.filter((call) => call.text.includes("insert into dune.items"));
+  assert.equal(inserts.length, 0, "no item should be inserted when the container was already full");
+});
+
+// Never rejects on volume either: an item that only partially fits is
+// clamped and given, and the batch stops there (per design -- once one
+// item does not fully fit, later items are not attempted).
+test("storage give-multiple-items clamps an item that only partially fits by volume, and stops the batch there", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    storageRows: [{ id: 7, actor_id: 222, max_item_count: 30, max_item_volume: 5 }],
+    countRows: [{ count: 1 }],
+    // 5 max, 4 already used -> 1.0 remaining / 0.2 per-unit = 5 max fit,
+    // clamped down from the requested 20.
+    volumeRows: [{ total_volume: 4 }],
+    insertedRows: [{ id: 702, template_id: "AzuriteOre", stack_size: 5, quality_level: 0, position_index: 2, inventory_id: 7, volume_override: 0.2 }]
+  });
+  const result = await giveMultipleItemsToStorage(db, 222, {
+    items: [
+      { templateId: "AzuriteOre", quantity: 20, itemVolume: 0.2 },
+      { templateId: "PlantFiber", quantity: 5, itemVolume: 0.1 }
+    ]
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.results[0].requested, 20);
+  assert.equal(result.results[0].given, 5);
+  assert.equal(result.results[0].clamped, true);
+  assert.equal(result.results[1].given, 0);
+  assert.equal(result.results[1].attempted, false, "item 2 is not attempted once item 1 was clamped");
+  const inserts = calls.filter((call) => call.text.includes("insert into dune.items"));
+  assert.equal(inserts.length, 1, "the clamped item is still inserted, just at the smaller amount");
+});
+
+// Zero-fit within a batch: per explicit operator direction, this is
+// recorded as given: 0 and the batch stops there successfully -- it is
+// NOT a thrown error, even though nothing at all could be given for this
+// specific item.
+test("storage give-multiple-items records a zero-fit item as given: 0 and stops, without throwing", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    storageRows: [{ id: 7, actor_id: 222, max_item_count: 30, max_item_volume: 5 }],
+    countRows: [{ count: 1 }],
+    volumeRows: [{ total_volume: 5 }]
+  });
+  const result = await giveMultipleItemsToStorage(db, 222, {
+    items: [{ templateId: "AzuriteOre", quantity: 20, itemVolume: 0.2 }]
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.results[0].given, 0);
+  assert.equal(result.results[0].attempted, true);
+  assert.match(result.results[0].reason, /full by volume/);
+  const inserts = calls.filter((call) => call.text.includes("insert into dune.items"));
+  assert.equal(inserts.length, 0, "a zero-fit item must not be inserted as an empty/zero-size row");
+});
+
+test("storage fill-item inserts with PER-UNIT volume_override and respects slot limit", async () => {
+  // CORRECTED 2026-08-19 (real live in-game bug, see
+  // docs/incidents/INC-2026-08-19-VOLUME-OVERRIDE-DOUBLE-MULTIPLIED.md):
+  // volume_override must be the item's PER-UNIT volume, not itemVolume *
+  // quantity. An earlier version of this function (fixed 2026-07-31)
+  // stored the per-unit value alone, which undercounted current_volume for
+  // quantity > 1 -- the 2026-07-31 fix over-corrected by storing the TOTAL
+  // instead, which is what this test asserted until now. Storing the total
+  // caused the live game engine (which multiplies volume_override by
+  // stack_size itself for display) to double-multiply, inflating displayed
+  // volume by a factor of stack_size (confirmed live: a 9540-unit stack
+  // with volume_override wrongly stored as its 47700 total displayed
+  // in-game as ~455 million). The correct fix keeps volume_override
+  // per-unit and instead makes every SUM query multiply by stack_size (see
+  // the "* stack_size" assertion below).
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    storageRows: [{ id: 7, actor_id: 222, max_item_count: 30, max_item_volume: 100 }],
+    countRows: [{ count: 1 }],
+    volumeRows: [{ total_volume: 10 }],
+    insertedRows: [{ id: 502, template_id: "T6RefinedResourceA", stack_size: 50, quality_level: 0, position_index: 3, inventory_id: 7, volume_override: 1.0 }]
+  });
+  const result = await fillItemToStorage(db, "/tmp", 222, { templateId: "T6RefinedResourceA", quantity: 50, itemVolume: 1.0 });
+  assert.equal(result.inserted.id, 502);
+  assert.equal(result.inserted.volume_override, 1.0);
+  const insert = calls.find((call) => call.text.includes("insert into dune.items"));
+  assert.ok(insert);
+  const volIdx = insert.values.length - 1;
+  assert.equal(insert.values[volIdx], 1.0, "volume_override stored is the per-unit value, not per-unit * quantity");
+  const volumeCall = calls.find((call) => call.text.includes("sum(coalesce(volume_override"));
+  assert.ok(volumeCall, "volume sum query must run");
+  assert.match(volumeCall.text, /\* stack_size/, "the running total must multiply volume_override by stack_size, since volume_override is per-unit");
+});
+
+// Never rejects on a partial volume fit, same fix as give-item (issue #347
+// follow-up): 15 max, 10 already used -> 5.0 remaining / 1.0 per-unit = 5
+// max fit, clamped down from the requested 50.
+test("storage fill-item clamps a requested quantity down to whatever volume actually fits, rather than rejecting", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    storageRows: [{ id: 7, actor_id: 222, max_item_count: 30, max_item_volume: 15 }],
+    countRows: [{ count: 1 }],
+    volumeRows: [{ total_volume: 10 }],
+    insertedRows: [{ id: 505, template_id: "T6RefinedResourceA", stack_size: 5, quality_level: 0, position_index: 6, inventory_id: 7, volume_override: 5.0 }]
+  });
+  const result = await fillItemToStorage(db, "/tmp", 222, { templateId: "T6RefinedResourceA", quantity: 50, itemVolume: 1.0 });
+  assert.equal(result.ok, true);
+  assert.equal(result.requested, 50);
+  assert.equal(result.given, 5);
+  assert.equal(result.clamped, true);
+  const insert = calls.find((call) => call.text.includes("insert into dune.items"));
+  assert.ok(insert);
+  assert.equal(insert.values[2], 5);
+});
+
+// The one case that IS still a real rejection for fill-item too: truly zero
+// room left.
+test("storage fill-item still rejects an explicit quantity when there is no room for even 1 unit", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    storageRows: [{ id: 7, actor_id: 222, max_item_count: 30, max_item_volume: 15 }],
+    countRows: [{ count: 1 }],
+    volumeRows: [{ total_volume: 15 }]
   });
   await assert.rejects(
     () => fillItemToStorage(db, "/tmp", 222, { templateId: "T6RefinedResourceA", quantity: 50, itemVolume: 1.0 }),
@@ -5686,10 +6475,59 @@ function fakeMutationDb(calls, fixtures = {}) {
       if (text.includes("from dune.inventories") && text.includes("where actor_id")) return { rows: fixtures.storageRows || [] };
       if (text.includes("from dune.vehicle_modules vm") && text.includes("count(*)::int as scanned")) return { rows: fixtures.vehicleModuleScanRows || [{ scanned: 0, vehicles: 0 }] };
       if (text.includes("update dune.vehicle_modules vm")) return { rows: fixtures.repairedVehicleModuleRows || [] };
-      if (text.includes("sum(coalesce(volume_override")) return { rows: fixtures.volumeRows || [{ total_volume: 0 }] };
-      if (text.includes("count(*)::int")) return { rows: fixtures.countRows || [{ count: 0 }] };
+      if (text.includes("sum(coalesce(volume_override")) {
+        // volumeRowsSequence mirrors countRowsSequence: needed for batch-give
+        // tests that must prove the running volume total reflects an
+        // earlier item's own just-inserted row on the NEXT item's check,
+        // not a static fixture value repeated for every item in the batch.
+        if (fixtures.volumeRowsSequence) {
+          const index = volumeCallCount++;
+          return { rows: [fixtures.volumeRowsSequence[index] || fixtures.volumeRowsSequence[fixtures.volumeRowsSequence.length - 1]] };
+        }
+        return { rows: fixtures.volumeRows || [{ total_volume: 0 }] };
+      }
+      if (text.includes("count(*)::int")) {
+        // countRowsSequence supports tests that need count(*) to reflect a
+        // just-inserted row on the NEXT loop iteration (e.g. proving a
+        // multi-item give batch actually stops partway through, not just
+        // rejects every item identically from iteration 1) -- each count(*)
+        // call consumes the next entry, rather than every call seeing the
+        // same static countRows value. Falls back to the original static
+        // behavior for every existing test that only needs one fixed count.
+        if (fixtures.countRowsSequence) {
+          const index = countCallCount++;
+          return { rows: [fixtures.countRowsSequence[index] || fixtures.countRowsSequence[fixtures.countRowsSequence.length - 1]] };
+        }
+        return { rows: fixtures.countRows || [{ count: 0 }] };
+      }
+      // nextHighPositionIndex's high-end query (Give/Give Multiple only --
+      // see its own comment in duneDb.js). Distinguished from the plain
+      // lowest-next-free query below by "generate_series". Defaults to a
+      // fixed high slot so existing tests that don't care about the exact
+      // index keep passing; highPositionRowsSequence supports tests that
+      // need it to reflect a just-inserted row on the next call, the same
+      // pattern countRowsSequence/volumeRowsSequence already use.
+      if (text.includes("generate_series")) {
+        if (fixtures.highPositionRowsSequence) {
+          const index = highPositionCallCount++;
+          const row = fixtures.highPositionRowsSequence[index] ?? fixtures.highPositionRowsSequence[fixtures.highPositionRowsSequence.length - 1];
+          return { rows: row === null ? [] : [{ position_index: row }] };
+        }
+        return { rows: [{ position_index: fixtures.highPositionIndex ?? 29 }] };
+      }
       if (text.includes("max(position_index)")) return { rows: [{ position_index: 2 }] };
-      if (text.includes("insert into dune.items")) return { rows: fixtures.insertedRows || [] };
+      if (text.includes("insert into dune.items")) {
+        // insertedRowsSequence supports tests that insert more than one row
+        // per call (e.g. giveMultipleItemsToStorage) -- each insert call
+        // consumes the next entry, rather than every insert seeing the same
+        // fixed row. Falls back to the original single-row behavior
+        // (insertedRows) for every existing test that only inserts once.
+        if (fixtures.insertedRowsSequence) {
+          const index = insertCallCount++;
+          return { rows: [fixtures.insertedRowsSequence[index] || fixtures.insertedRowsSequence[fixtures.insertedRowsSequence.length - 1]] };
+        }
+        return { rows: fixtures.insertedRows || [] };
+      }
       return { rows: [] };
     },
     async transaction(fn) {
@@ -5699,6 +6537,10 @@ function fakeMutationDb(calls, fixtures = {}) {
       return result;
     }
   };
+  let insertCallCount = 0;
+  let countCallCount = 0;
+  let volumeCallCount = 0;
+  let highPositionCallCount = 0;
   return db;
 }
 
