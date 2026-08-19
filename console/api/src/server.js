@@ -3429,7 +3429,17 @@ async function baseContainerGiveItemRoute(req, res, path) {
   if (await baseBackedUp(baseId)) return json(res, 409, { error: BASE_BACKED_UP_MESSAGE });
   return directDbMutation(req, res, "bases.container-give-item", "GIVE ITEM TO STORAGE", async (body) => {
     const storageId = await baseContainerOwnedStorageId(baseId, placeableId);
-    const resolved = resolveCatalogItem(config.repoRoot, body);
+    // Restricted to raw_resource/refined_resource/component (issue #347
+    // follow-up, per explicit operator direction, found via a real catalog
+    // item -- "Robe of the Sisterhood" -- appearing in the Give combobox
+    // despite being clothing): this Base Inventory tab's Give action is
+    // scoped the same as Fill, using resolveFillableCatalogItem() instead of
+    // the unrestricted resolveCatalogItem(). This does NOT apply to the
+    // older, standalone Storage tab's own Give Item action
+    // (storageGiveItemRoute), which intentionally keeps accepting any
+    // catalog item -- a separate, pre-existing feature this change does not
+    // touch.
+    const resolved = resolveFillableCatalogItem(config.repoRoot, body);
     const itemVolume = resolved.volume || resolveItemVolume(config.repoRoot, resolved.itemId);
     return duneDb.giveItemToStorage(db, storageId, { ...body, templateId: resolved.itemId, itemVolume });
   }, { baseId, placeableId });
@@ -3456,8 +3466,10 @@ async function baseContainerGiveItemsRoute(req, res, path) {
       throw new Error("Give Multiple Items requires 1-50 items");
     }
     const storageId = await baseContainerOwnedStorageId(baseId, placeableId);
+    // Same raw_resource/refined_resource/component restriction as
+    // baseContainerGiveItemRoute above -- see its comment for why.
     const items = body.items.map((item) => {
-      const resolved = resolveCatalogItem(config.repoRoot, item);
+      const resolved = resolveFillableCatalogItem(config.repoRoot, item);
       const itemVolume = resolved.volume || resolveItemVolume(config.repoRoot, resolved.itemId);
       return { ...item, templateId: resolved.itemId, itemVolume };
     });

@@ -4701,10 +4701,38 @@ test("inventory update treats explicit null durability values as not provided", 
   assert.doesNotMatch(updateCall.text, /"stats"/);
 });
 
+// CORRECTED 2026-08-19 (position_index collision mitigation, see
+// docs/incidents/INC-2026-08-19-GIVE-FILL-POSITION-INDEX-COLLISION.md):
+// give-item now picks the HIGHEST unused slot below max_item_count
+// (nextHighPositionIndex), not the lowest-next-free slot -- this test's
+// fixture (highPositionIndex: 29, matching max_item_count: 30) locks that
+// in, replacing the old lowest-next-free assertion.
 test("storage give-item validates capacity and inserts parameterized item rows", async () => {
   const calls = [];
   const db = fakeMutationDb(calls, {
     storageRows: [{ id: 7, actor_id: 222, max_item_count: 30, max_item_volume: 0 }],
+    countRows: [{ count: 1 }],
+    highPositionIndex: 29,
+    insertedRows: [{ id: 501, template_id: "WaterBottle_1", stack_size: 3, quality_level: 0, position_index: 29, inventory_id: 7 }]
+  });
+  const result = await giveItemToStorage(db, 222, { templateId: "WaterBottle_1", quantity: 3 });
+  assert.equal(result.inserted.id, 501);
+  const insert = calls.find((call) => call.text.includes("insert into dune.items"));
+  assert.ok(insert);
+  assert.deepEqual(insert.values.slice(0, 5), [7, "WaterBottle_1", 3, 0, 29]);
+  const positionCall = calls.find((call) => call.text.includes("generate_series"));
+  assert.ok(positionCall, "give-item must use the high-end position query, not the plain lowest-next-free one");
+  assert.deepEqual(positionCall.values, [7, 30]);
+});
+
+// The fallback path: an uncapped/unknown-capacity container (max_item_count
+// 0, e.g. a schema without the column or a genuinely uncapped inventory)
+// has no known "high end" to start from -- nextHighPositionIndex falls
+// back to the pre-existing lowest-next-free convention instead.
+test("storage give-item falls back to lowest-next-free position when max_item_count is 0 (unknown/uncapped)", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    storageRows: [{ id: 7, actor_id: 222, max_item_count: 0, max_item_volume: 0 }],
     countRows: [{ count: 1 }],
     insertedRows: [{ id: 501, template_id: "WaterBottle_1", stack_size: 3, quality_level: 0, position_index: 2, inventory_id: 7 }]
   });
@@ -4713,6 +4741,7 @@ test("storage give-item validates capacity and inserts parameterized item rows",
   const insert = calls.find((call) => call.text.includes("insert into dune.items"));
   assert.ok(insert);
   assert.deepEqual(insert.values.slice(0, 5), [7, "WaterBottle_1", 3, 0, 2]);
+  assert.ok(!calls.some((call) => call.text.includes("generate_series")), "must not run the high-end query when max_item_count is 0");
 });
 
 test("storage give-item records PER-UNIT volume_override when itemVolume is provided", async () => {
@@ -4826,6 +4855,35 @@ test("storage give-multiple-items inserts every item in one transaction", async 
   const inserts = calls.filter((call) => call.text.includes("insert into dune.items"));
   assert.equal(inserts.length, 2, "one insert per item");
   assert.equal(calls.filter((call) => call.text === "begin").length, 1, "single shared transaction");
+});
+
+// Same high-end position mitigation as the single-item give test above --
+// giveMultipleItemsToStorage must use nextHighPositionIndex too, not the
+// plain lowest-next-free query, for every item it inserts in the batch.
+test("storage give-multiple-items uses the high-end position query for every inserted item", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    storageRows: [{ id: 7, actor_id: 222, max_item_count: 30, max_item_volume: 0 }],
+    countRows: [{ count: 1 }],
+    highPositionRowsSequence: [29, 28],
+    insertedRowsSequence: [
+      { id: 601, template_id: "AzuriteOre", stack_size: 20, quality_level: 0, position_index: 29, inventory_id: 7 },
+      { id: 602, template_id: "PlantFiber", stack_size: 5, quality_level: 0, position_index: 28, inventory_id: 7 }
+    ]
+  });
+  const result = await giveMultipleItemsToStorage(db, 222, {
+    items: [
+      { templateId: "AzuriteOre", quantity: 20 },
+      { templateId: "PlantFiber", quantity: 5 }
+    ]
+  });
+  assert.equal(result.results[0].inserted.id, 601);
+  assert.equal(result.results[1].inserted.id, 602);
+  const positionCalls = calls.filter((call) => call.text.includes("generate_series"));
+  assert.equal(positionCalls.length, 2, "one high-end position lookup per inserted item");
+  const inserts = calls.filter((call) => call.text.includes("insert into dune.items"));
+  assert.equal(inserts[0].values[4], 29);
+  assert.equal(inserts[1].values[4], 28);
 });
 
 test("storage give-multiple-items rejects an empty item list", async () => {
@@ -6442,6 +6500,21 @@ function fakeMutationDb(calls, fixtures = {}) {
         }
         return { rows: fixtures.countRows || [{ count: 0 }] };
       }
+      // nextHighPositionIndex's high-end query (Give/Give Multiple only --
+      // see its own comment in duneDb.js). Distinguished from the plain
+      // lowest-next-free query below by "generate_series". Defaults to a
+      // fixed high slot so existing tests that don't care about the exact
+      // index keep passing; highPositionRowsSequence supports tests that
+      // need it to reflect a just-inserted row on the next call, the same
+      // pattern countRowsSequence/volumeRowsSequence already use.
+      if (text.includes("generate_series")) {
+        if (fixtures.highPositionRowsSequence) {
+          const index = highPositionCallCount++;
+          const row = fixtures.highPositionRowsSequence[index] ?? fixtures.highPositionRowsSequence[fixtures.highPositionRowsSequence.length - 1];
+          return { rows: row === null ? [] : [{ position_index: row }] };
+        }
+        return { rows: [{ position_index: fixtures.highPositionIndex ?? 29 }] };
+      }
       if (text.includes("max(position_index)")) return { rows: [{ position_index: 2 }] };
       if (text.includes("insert into dune.items")) {
         // insertedRowsSequence supports tests that insert more than one row
@@ -6467,6 +6540,7 @@ function fakeMutationDb(calls, fixtures = {}) {
   let insertCallCount = 0;
   let countCallCount = 0;
   let volumeCallCount = 0;
+  let highPositionCallCount = 0;
   return db;
 }
 

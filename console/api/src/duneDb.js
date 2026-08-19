@@ -6875,6 +6875,52 @@ export async function playerItemAugmentState(db, playerId, itemId, expectedAugme
   };
 }
 
+// Mitigation for a real, confirmed live collision risk (2026-08-19, see
+// docs/incidents/INC-2026-08-19-GIVE-FILL-POSITION-INDEX-COLLISION.md):
+// the live game engine only reads/claims dune.items rows at server
+// startup, so a console-inserted row and a genuine in-game inventory
+// move/pickup can both target the same position_index in the same
+// container while the map stays running. When that happens, the row that
+// loses the race is never claimed on the next restart -- permanently
+// orphaned, though not deleted or corrupted. In-game additions/moves
+// typically fill a container low-to-high (position_index 0 upward), so a
+// console Give picks the HIGHEST unused slot below max_item_count instead
+// of the lowest, to reduce (not eliminate -- a full or nearly-full
+// container still collides) the chance of landing on a slot the engine is
+// about to claim. Per explicit operator direction: this mitigation
+// applies to Give (a specific quantity is going into a specific new slot,
+// so "furthest from where the engine is filling" is a meaningful,
+// implementable reduction) but NOT to Fill (which is meant to top up a
+// container to its real capacity -- deliberately filling toward the same
+// end the engine does, so there is no meaningful "high end" left once
+// Fill has done its job; Fill's own risk is documented, not mitigated).
+// Falls back to the pre-existing lowest-next-free behavior when
+// max_item_count is 0 (unknown/uncapped on this schema), since there is
+// no known high end to start from in that case.
+async function nextHighPositionIndex(tx, inventoryId, maxItemCount) {
+  if (!maxItemCount || maxItemCount <= 0) {
+    const fallback = await tx.query("select coalesce(max(position_index), -1)::int + 1 as position_index from dune.items where inventory_id = $1", [inventoryId]);
+    return Number(fallback.rows[0]?.position_index || 0);
+  }
+  const result = await tx.query(`
+    select gs.idx as position_index
+    from generate_series($2::int - 1, 0, -1) as gs(idx)
+    where not exists (
+      select 1 from dune.items i where i.inventory_id = $1 and i.position_index = gs.idx
+    )
+    order by gs.idx desc
+    limit 1`, [inventoryId, maxItemCount]);
+  if (result.rows[0]) return Number(result.rows[0].position_index);
+  // Every slot below max_item_count is already claimed by some
+  // position_index (including possibly out-of-range or duplicate values --
+  // see "position_index is not trustworthy" in the docs) -- fall back to
+  // the lowest-next-free convention rather than inserting with no index at
+  // all. The slot-count check above already rejects a genuinely full
+  // container before this is ever reached in the normal case.
+  const fallback = await tx.query("select coalesce(max(position_index), -1)::int + 1 as position_index from dune.items where inventory_id = $1", [inventoryId]);
+  return Number(fallback.rows[0]?.position_index || 0);
+}
+
 export async function giveItemToStorage(db, storageId, { itemName = "", itemId = "", templateId = "", quantity = 1, quality = 0, itemVolume = 0, augments = [], augmentQuality = 1 }) {
   await requireCapability(await supportsStorageGiveItem(db), "Storage give-item requires compatible dune.inventories and dune.items insert columns.");
   const target = intParam(storageId, "storage id", 1);
@@ -6938,7 +6984,7 @@ export async function giveItemToStorage(db, storageId, { itemName = "", itemId =
         clamped = true;
       }
     }
-    const position = await tx.query("select coalesce(max(position_index), -1)::int + 1 as position_index from dune.items where inventory_id = $1", [inventory.id]);
+    const positionIndex = await nextHighPositionIndex(tx, inventory.id, inventory.max_item_count);
     const standaloneAugment = isStandaloneAugmentTemplate(resolvedTemplate);
     const rollPayloads = await loadAugmentRollPayloads(
       tx,
@@ -6948,7 +6994,7 @@ export async function giveItemToStorage(db, storageId, { itemName = "", itemId =
     );
     const stats = buildItemStats({ templateId: resolvedTemplate, augments: augmentIds, rollPayloads });
     const insertColumns = ["inventory_id", "template_id", "stack_size", "quality_level", "position_index", "stats"];
-    const insertValues = [inventory.id, resolvedTemplate, stackSize, qualityLevel, Number(position.rows[0]?.position_index || 0), JSON.stringify(stats)];
+    const insertValues = [inventory.id, resolvedTemplate, stackSize, qualityLevel, positionIndex, JSON.stringify(stats)];
     // CORRECTED 2026-08-19 (real live in-game bug, see
     // docs/incidents/INC-2026-08-19-VOLUME-OVERRIDE-DOUBLE-MULTIPLIED.md):
     // volume_override must be the item's PER-UNIT volume, not
@@ -7253,7 +7299,10 @@ export async function giveMultipleItemsToStorage(db, storageId, { items = [] } =
         stopped = true;
         continue;
       }
-      const position = await tx.query("select coalesce(max(position_index), -1)::int + 1 as position_index from dune.items where inventory_id = $1", [inventory.id]);
+      // High-end position mitigation -- see nextHighPositionIndex's own
+      // comment (also used by giveItemToStorage) for why Give, unlike
+      // Fill, picks the highest unused slot instead of the lowest.
+      const positionIndex = await nextHighPositionIndex(tx, inventory.id, inventory.max_item_count);
       const standaloneAugment = isStandaloneAugmentTemplate(entry.resolvedTemplate);
       const rollPayloads = await loadAugmentRollPayloads(
         tx,
@@ -7263,7 +7312,7 @@ export async function giveMultipleItemsToStorage(db, storageId, { items = [] } =
       );
       const stats = buildItemStats({ templateId: entry.resolvedTemplate, augments: entry.augmentIds, rollPayloads });
       const insertColumns = ["inventory_id", "template_id", "stack_size", "quality_level", "position_index", "stats"];
-      const insertValues = [inventory.id, entry.resolvedTemplate, stackSize, entry.qualityLevel, Number(position.rows[0]?.position_index || 0), JSON.stringify(stats)];
+      const insertValues = [inventory.id, entry.resolvedTemplate, stackSize, entry.qualityLevel, positionIndex, JSON.stringify(stats)];
       // CORRECTED 2026-08-19: volume_override must be the item's PER-UNIT
       // volume, not entry.itemVolumeNum * stackSize -- see
       // giveItemToStorage's matching comment for the full explanation.

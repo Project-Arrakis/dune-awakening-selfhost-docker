@@ -152,12 +152,18 @@ test("baseContainerGiveItemsRoute validates batch size before resolving any cata
   const body = routeBody("baseContainerGiveItemsRoute");
   const lengthCheckAt = body.search(/body\.items\.length/);
   const mapAt = body.search(/\.map\(/);
-  const resolveAt = body.search(/resolveCatalogItem\(/);
+  // CORRECTED 2026-08-19 (issue #347 follow-up): this route now resolves
+  // items through resolveFillableCatalogItem(), not resolveCatalogItem() --
+  // Give/Give Multiple are restricted to raw_resource/refined_resource/
+  // component only, matching Fill, after a real catalog item ("Robe of the
+  // Sisterhood", clothing) showed up in the Give combobox. See
+  // baseContainerGiveItemRoute's own comment for the full rationale.
+  const resolveAt = body.search(/resolveFillableCatalogItem\(/);
   assert.notEqual(lengthCheckAt, -1, "must validate body.items.length");
   assert.notEqual(mapAt, -1, "must still map over items eventually");
   assert.notEqual(resolveAt, -1, "must still resolve each item's catalog entry");
   assert.ok(lengthCheckAt < mapAt, "length check must run before the per-item .map()");
-  assert.ok(lengthCheckAt < resolveAt, "length check must run before any resolveCatalogItem call");
+  assert.ok(lengthCheckAt < resolveAt, "length check must run before any resolveFillableCatalogItem call");
   // Matches the existing 50-item cap giveMultipleItemsToStorage itself
   // enforces (duneDb.js) -- the route-level check exists to fail fast, not
   // to introduce a second, different limit.

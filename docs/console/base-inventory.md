@@ -264,17 +264,51 @@ stopped map" below for why that asymmetry is deliberate, not an oversight.
 | Give several items in one call | `POST …/containers/{placeableId}/give-items` | `duneDb.giveMultipleItemsToStorage()` | `GIVE ITEMS TO STORAGE` |
 | Fill with a raw/refined resource or component | `POST …/containers/{placeableId}/fill-item` | `duneDb.fillItemToStorage()` | `FILL ITEM TO STORAGE` |
 
-**Give accepts any catalog item; Fill does not.** `resolveCatalogItem()` (Give) has no group restriction —
-weapons, clothing, schematics, anything in `runtime/data/admin-items.json` is acceptable.
-`resolveFillableCatalogItem()` (Fill) additionally requires the item's `group` to be `raw_resource`,
-`refined_resource`, or `component` (`FILLABLE_GROUPS` in `adminCatalog.js`) — the UI states this
-restriction directly above the Fill inputs, and the server independently re-enforces it rather than
-trusting the client to have filtered correctly.
+**Both Give and Fill are restricted to raw resources, refined resources, and components only.**
+**Corrected 2026-08-19** — an earlier version let Give accept any catalog item at all (weapons, clothing,
+schematics, anything in `runtime/data/admin-items.json`) via `resolveCatalogItem()`, with no group
+restriction. Found via a real catalog item, "Robe of the Sisterhood" (clothing), appearing in the Give
+combobox: per explicit operator direction, this was scope creep the feature was never meant to have —
+container Give/Give Multiple is for raw/refined resources and components only, the same restriction Fill
+already enforced. `baseContainerGiveItemRoute`/`baseContainerGiveItemsRoute` now resolve items through
+`resolveFillableCatalogItem()`, the same function Fill already used, requiring the item's `group` to be
+`raw_resource`, `refined_resource`, or `component` (`FILLABLE_GROUPS` in `adminCatalog.js`). The Give
+combobox client-side filter (`ItemCatalogCombobox`'s `filterGroups` prop) now matches Fill's exactly, so
+the picker never even offers an item the server would reject; the server independently re-enforces it
+rather than trusting the client to have filtered correctly. **This restriction applies only to this Base
+Inventory tab's Give/Give Multiple actions** — the older, separate, standalone Storage tab's own "Give
+Item" action (`storageGiveItemRoute`) is unaffected and still accepts any catalog item, unchanged.
 
 **Give Multiple is one transaction, capped at 50 distinct items.** Every check `giveItemToStorage` performs
 (slot cap, volume cap) is repeated fresh for each item in the batch — re-queried after each insert, not
 computed once up front — so item 3 correctly sees the slots/volume items 1 and 2 already consumed within
 the same call.
+
+### Give fills from the high end of a container; Fill does not (and cannot)
+
+**A real, confirmed collision risk, not a hypothetical** (see
+`docs/incidents/INC-2026-08-19-GIVE-FILL-POSITION-INDEX-COLLISION.md` for the full writeup): the live game
+engine only reads/claims a container's `dune.items` rows at server startup, never mid-session
+(`INC-2026-07-31-001`), but a player can move or add an item into the same container **in-game while the
+map keeps running** at any time. If a console insert and a live in-game action land on the same
+`position_index`, one of the two rows loses on the next restart — permanently unclaimed and unusable
+in-game, though not deleted or corrupted. This was directly reproduced and traced end-to-end through
+`dune.item_audit_log`, not inferred.
+
+**Give and Give Multiple mitigate this** (per explicit operator direction): `nextHighPositionIndex()` in
+`duneDb.js` picks the **highest unused slot below `max_item_count`** instead of the lowest-next-free slot
+the old convention used. In-game additions/moves typically fill a container low-to-high starting from slot
+0, so inserting from the high end reduces — does not eliminate — the chance of colliding with a slot the
+engine is about to claim. A genuinely full or nearly-full container can still collide; this is a
+mitigation, not a guarantee. Falls back to the old lowest-next-free convention when `max_item_count` is 0
+(unknown/uncapped on this schema), since there is no known high end to start from.
+
+**Fill does not get this mitigation, by design.** Fill exists to top up a container toward its real
+capacity — the same low-to-high direction the engine already fills in — so there is no meaningful "far end"
+left once Fill has done its job; the high-end approach that helps Give simply does not apply. Per explicit
+operator direction, Fill instead ships with an in-UI warning above the Fill Container panel stating this
+risk directly, and the incident document above is the canonical reference for an operator who wants the
+full mechanism. This is treated as an accepted, documented limitation, not an open bug.
 
 **Neither Give nor Fill ever rejects a request just because it would exceed the container's remaining
 volume.** Per explicit operator direction (found during manual UI review of #347): an earlier version threw

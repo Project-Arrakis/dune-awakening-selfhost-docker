@@ -11,8 +11,14 @@ import {
   type BaseInventorySlot
 } from "../../api/bases";
 
-// Mirrors FILLABLE_GROUPS in adminCatalog.js exactly -- the Fill combobox
-// must never offer an item the server would reject anyway.
+// Mirrors FILLABLE_GROUPS in adminCatalog.js exactly -- both the Give and
+// Fill comboboxes must never offer an item the server would reject anyway.
+// Give was widened to this same restriction (issue #347 follow-up, per
+// explicit operator direction) after a real catalog item -- "Robe of the
+// Sisterhood" -- showed up in the Give combobox despite being clothing,
+// not a raw/refined resource or component. This tab's Give action is
+// deliberately scoped tighter than the older, standalone Storage tab's own
+// Give Item action, which still accepts any catalog item unchanged.
 const FILLABLE_GROUPS = new Set(["refined_resource", "component", "raw_resource"]);
 
 type BaseInventoryTabProps = {
@@ -1122,10 +1128,12 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
               <TriangleAlert size={14} aria-hidden="true" /> Given and filled items are not visible in-game until the Survival server restarts. Restart it from Server Control or Bases when convenient — all connected players will be disconnected for a few minutes.
             </p>
             <h4>Add Item</h4>
+            <p className="muted bases-inventory-note">Only raw resources, refined resources, and components are accepted.</p>
             <div className="bases-inventory-add-row">
               <ItemCatalogCombobox
                 value={addItem}
                 onChange={setAddItem}
+                filterGroups={FILLABLE_GROUPS}
                 ariaLabel="Item to give"
                 placeholder="Type to search items…"
                 disabled={addRunning}
@@ -1163,6 +1171,22 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
 
             <h4>Fill Container</h4>
             <p className="muted bases-inventory-note">Only raw resources, refined resources, and components are accepted, respecting slot and volume limits.</p>
+            {/* Per INC-2026-08-19-GIVE-FILL-POSITION-INDEX-COLLISION.md: while
+                the map stays running, a filled row can land on the same slot
+                a live in-game move/pickup claims at the same time, and the
+                row that loses that race is never claimed on the next
+                restart. Give mitigates this by filling from the high end of
+                the container instead of the low end (see
+                nextHighPositionIndex in duneDb.js); Fill cannot use the same
+                mitigation -- it is meant to top up a container toward its
+                real capacity, the same direction the engine already fills,
+                so there is no "far end" left once Fill has done its job.
+                This is a documented, accepted limitation, not a bug --
+                warned here since it is Fill-specific and not shared by
+                Give. */}
+            <p className="bases-inventory-fill-collision-warning" role="status">
+              <TriangleAlert size={14} aria-hidden="true" /> If items are added to this container in-game while the map is running, a filled item can land on the same slot and be lost on the next restart. This risk is highest for a nearly-full container. See the Base Inventory documentation for details.
+            </p>
             <div className="bases-inventory-add-row">
               <ItemCatalogCombobox
                 value={fillItem}

@@ -1244,6 +1244,24 @@ describe("BaseInventoryTab", () => {
     expect(screen.queryByRole("option", { name: /SilverSword_Ranger/ })).toBeNull();
   });
 
+  // CORRECTED 2026-08-19 (issue #347 follow-up): Give used to accept any
+  // catalog item -- a real catalog item, "Robe of the Sisterhood"
+  // (clothing), showed up in the Give combobox despite this feature being
+  // intended for raw/refined resources and components only. The Give
+  // combobox now applies the same FILLABLE_GROUPS filter Fill already did.
+  it("only offers fillable items (raw/refined resources, components) in the Give combobox", async () => {
+    mockInventory();
+    renderTab();
+    await loaded();
+    await openVaultContents();
+
+    const giveInput = screen.getByRole("combobox", { name: "Item to give" });
+    fireEvent.change(giveInput, { target: { value: "" } });
+    fireEvent.focus(giveInput);
+    await waitFor(() => expect(screen.getByRole("option", { name: /SteelBar/ })).toBeTruthy());
+    expect(screen.queryByRole("option", { name: /SilverSword_Ranger/ })).toBeNull();
+  });
+
   it("does not offer Give/Fill for crafting or refining containers", async () => {
     mockInventory();
     mockSlots({ ...SLOTS, group: "refining", typeName: "Small Ore Refinery" });
@@ -1277,6 +1295,32 @@ describe("BaseInventoryTab", () => {
     await openVaultContents();
 
     expect(screen.queryByText(/not visible in-game until the Survival server restarts/)).toBeNull();
+  });
+
+  // Per INC-2026-08-19-GIVE-FILL-POSITION-INDEX-COLLISION.md: Give
+  // mitigates the position_index collision risk by filling from the high
+  // end of the container; Fill cannot use the same mitigation, since it is
+  // meant to top up toward real capacity, the same direction the engine
+  // already fills. Per explicit operator direction, Fill gets a warning
+  // and documentation instead of a mitigation -- this test locks in that
+  // the warning is shown once, specific to Fill.
+  it("warns specifically about the position_index collision risk for Fill, not Give", async () => {
+    mockInventory();
+    renderTab();
+    await loaded();
+    await openVaultContents();
+
+    expect(screen.getByText(/can land on the same slot and be lost on the next restart/)).toBeTruthy();
+  });
+
+  it("does not show the Fill collision warning when Give/Fill is unavailable for this container", async () => {
+    mockInventory();
+    mockSlots({ ...SLOTS, group: "refining", typeName: "Small Ore Refinery" });
+    renderTab();
+    await loaded();
+    await openVaultContents();
+
+    expect(screen.queryByText(/can land on the same slot and be lost on the next restart/)).toBeNull();
   });
 
   it("selects several items and deletes only the checked ones", async () => {

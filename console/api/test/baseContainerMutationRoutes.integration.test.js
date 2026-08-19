@@ -279,6 +279,66 @@ test("real HTTP: give-item inserts a real row through the full dispatch chain", 
   });
 });
 
+// Position-index collision mitigation (2026-08-19, see
+// docs/incidents/INC-2026-08-19-GIVE-FILL-POSITION-INDEX-COLLISION.md),
+// proven against real Postgres, not a fake db: CHEST's real
+// max_item_count is 45 (SEED above) with existing rows at position_index
+// 0 and 1 -- a real nextHighPositionIndex call must land the new row at
+// 44 (the highest unused slot below 45), not 2 (the old lowest-next-free
+// behavior).
+test("real HTTP: give-item lands the new row at the highest unused slot, not the lowest-next-free one", async (t) => {
+  await withServer(t, async ({ pool, getOutput }) => {
+    const { status, body } = await call("POST", `/api/bases/${BUILDING_ACTOR}/containers/${CHEST}/give-item`, {
+      confirmation: "GIVE ITEM TO STORAGE",
+      itemId: "AzuriteOre",
+      quantity: 5
+    });
+    assert.equal(status, 200, `unexpected status ${status}. Server output:\n${getOutput()}`);
+    assert.equal(body?.result?.ok, true);
+
+    const rows = await itemsIn(pool, CHEST * 10);
+    const inserted = rows.find((row) => row.template_id === "AzuriteOre");
+    assert.ok(inserted, "the real row must exist");
+    assert.equal(Number(inserted.position_index), 44, "must land at the highest unused slot (max_item_count 45, slots 0/1 taken), not the lowest-next-free slot 2");
+  });
+});
+
+// CORRECTED 2026-08-19 (issue #347 follow-up): give-item used to accept any
+// catalog item at all -- a real catalog item, "Robe of the Sisterhood"
+// (clothing, no group), showed up in the Give combobox despite this
+// feature being intended for raw/refined resources and components only.
+// give-item and give-items now resolve through resolveFillableCatalogItem(),
+// the same function fill-item already used, and must reject a non-fillable
+// item exactly the way fill-item's own rejection test below proves.
+test("real HTTP: give-item rejects a non-fillable (clothing/weapon) item", async (t) => {
+  await withServer(t, async ({ pool }) => {
+    const { status, body } = await call("POST", `/api/bases/${BUILDING_ACTOR}/containers/${CHEST}/give-item`, {
+      confirmation: "GIVE ITEM TO STORAGE",
+      itemId: "Combat_Light_Unique_BeneGeserit_Top",
+      quantity: 1
+    });
+    assert.equal(status, 400);
+    assert.match(body?.error || "", /not allowed for fill operation/);
+    assert.equal((await itemsIn(pool, CHEST * 10)).length, 2, "nothing must be inserted for a rejected item");
+  });
+});
+
+test("real HTTP: give-items rejects a batch containing a non-fillable item, inserting nothing", async (t) => {
+  await withServer(t, async ({ pool }) => {
+    const { status, body } = await call("POST", `/api/bases/${BUILDING_ACTOR}/containers/${CHEST}/give-items`, {
+      confirmation: "GIVE ITEMS TO STORAGE",
+      items: [
+        { itemId: "AzuriteOre", quantity: 10 },
+        { itemId: "Combat_Light_Unique_BeneGeserit_Top", quantity: 1 }
+      ]
+    });
+    assert.equal(status, 400);
+    assert.match(body?.error || "", /not allowed for fill operation/);
+    assert.equal((await itemsIn(pool, CHEST * 10)).length, 2,
+      "the whole batch must insert nothing when any item in it is rejected -- items are resolved before any insert runs");
+  });
+});
+
 test("real HTTP: give-item requires the exact confirmation phrase", async (t) => {
   await withServer(t, async ({ pool }) => {
     const { status, body } = await call("POST", `/api/bases/${BUILDING_ACTOR}/containers/${CHEST}/give-item`, {

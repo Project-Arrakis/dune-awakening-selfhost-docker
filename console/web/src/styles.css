@@ -3265,6 +3265,24 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 }
 .bases-inventory-restart-warning svg { flex: 0 0 auto; margin-top: 1px; color: var(--warning); }
 
+/* Fill-specific position_index collision risk (INC-2026-08-19-GIVE-FILL-
+   POSITION-INDEX-COLLISION.md) -- same warning-banner treatment as
+   .bases-inventory-restart-warning above, kept as its own class since it
+   is shown only above Fill, not above Give (Give mitigates the risk
+   instead of just warning about it). */
+.bases-inventory-fill-collision-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 8px 0 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--warning);
+  border-radius: 6px;
+  color: #ffd9a8;
+  font-size: 12px;
+}
+.bases-inventory-fill-collision-warning svg { flex: 0 0 auto; margin-top: 1px; color: var(--warning); }
+
 /* Delete Selected / Delete All, above the single-slot detail strip -- both
    are Storage-group-only and reuse the same danger button styling the
    single-item delete strip's own button already uses. */

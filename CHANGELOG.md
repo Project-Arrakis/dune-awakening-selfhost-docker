@@ -407,6 +407,37 @@ Keep a Changelog style, grouped by upstream base version, newest first.
   `runtime/data/admin-items.json`'s `MelangeSpice` (Spice Melange) per-unit
   volume was also corrected from `1.0` to the real value, `0.2`, found
   during the same investigation.
+- **Give and Give Multiple accepted any catalog item at all -- weapons,
+  clothing, schematics, anything in `runtime/data/admin-items.json` --
+  instead of being restricted to raw resources, refined resources, and
+  components the way Fill already was** (issue #347 follow-up, per explicit
+  operator direction). Found via a real catalog item, "Robe of the
+  Sisterhood" (clothing), appearing in the Give combobox despite this
+  feature being intended for raw/refined resources and components only.
+  `baseContainerGiveItemRoute`/`baseContainerGiveItemsRoute` now resolve
+  items through `resolveFillableCatalogItem()`, the same function Fill
+  already used; the Give combobox's client-side filter now matches Fill's
+  exactly. **This restriction applies only to this Base Inventory tab's
+  Give/Give Multiple actions** -- the older, separate, standalone Storage
+  tab's own "Give Item" action is unaffected and still accepts any catalog
+  item, unchanged.
+- **A console Give/Fill insert and a live in-game item move/pickup can both
+  target the same container slot (`position_index`) while the map stays
+  running, and the row that loses that race is permanently orphaned on the
+  next server restart** (issue #347 follow-up; see
+  `docs/incidents/INC-2026-08-19-GIVE-FILL-POSITION-INDEX-COLLISION.md` for
+  the full writeup, including a real, directly-traced collision via
+  `dune.item_audit_log`). Give and Give Multiple now insert at the
+  **highest** unused slot below the container's `max_item_count`
+  (`nextHighPositionIndex()`) instead of the lowest-next-free slot, since
+  in-game additions typically fill low-to-high -- this reduces, but does
+  not eliminate, the collision risk. Fill does not receive this mitigation:
+  per explicit operator direction, Fill exists to top up a container toward
+  its real capacity in the same low-to-high direction the engine already
+  fills, so there is no meaningful "far end" left to insert into. Fill's
+  risk is instead documented with a new in-UI warning above the Fill
+  Container panel and the incident writeup above -- an accepted, by-design
+  limitation, not an open bug.
 
 ### Security
 
