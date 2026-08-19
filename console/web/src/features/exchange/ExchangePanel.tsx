@@ -25,6 +25,16 @@ const OWNER_OPTIONS: { value: ExchangeOwner; label: string }[] = [
   { value: "bot", label: "Bot listings" }
 ];
 
+function categoryLabel(category: string) {
+  return String(category || "")
+    .trim()
+    .replace(/[_-]+/g, " ")
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((word) => `${word.charAt(0).toLocaleUpperCase()}${word.slice(1)}`)
+    .join(" ");
+}
+
 type ExchangeView = { q: string; page: number; pageSize: number; sortColumn: string; sortDirection: SortDirection; owner: ExchangeOwner; category: string };
 
 type ExchangeCache = ExchangeView & {
@@ -243,7 +253,7 @@ export function ExchangePanel({ onError, confirmAction }: ExchangePanelProps) {
       </div>
       <div className="bases-expanded-tablist" role="tablist">
         <button type="button" role="tab" aria-selected={activeTab === "exchange"} className={`bases-expanded-tab${activeTab === "exchange" ? " active" : ""}`} onClick={() => setActiveTab("exchange")}>Exchange</button>
-        <button type="button" role="tab" aria-selected={activeTab === "bot-items"} className={`bases-expanded-tab${activeTab === "bot-items" ? " active" : ""}`} onClick={() => setActiveTab("bot-items")}>Bot items</button>
+        <button type="button" role="tab" aria-selected={activeTab === "bot-items"} className={`bases-expanded-tab${activeTab === "bot-items" ? " active" : ""}`} onClick={() => setActiveTab("bot-items")}>Bot Items</button>
       </div>
       {activeTab === "exchange" && <>
         {supported
@@ -262,8 +272,8 @@ export function ExchangePanel({ onError, confirmAction }: ExchangePanelProps) {
             <label className="compact-select exchange-category-select">
               Category
               <select value={categories.includes(category) ? category : ""} onChange={(event) => setCategory(event.target.value)}>
-                <option value="">All categories</option>
-                {categories.map((name) => <option key={name} value={name}>{name}</option>)}
+                <option value="">All Categories</option>
+                {categories.map((name) => <option key={name} value={name}>{categoryLabel(name)}</option>)}
               </select>
             </label>
             <label className="compact-select exchange-owner-select">

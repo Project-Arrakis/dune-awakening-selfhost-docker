@@ -77,7 +77,8 @@ describe("MarketBotOverlay", () => {
     await selectTab("Reseed");
     expect(screen.getByText("Market Reseed")).toBeInTheDocument();
     // BIGINT-sized ids stay intact as strings in the selector.
-    expect(screen.getByText(/Global \(ID 9007199254740993\)/)).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "Exchange 42 — 2 Access Points — 30 Bot / 10 Player Orders" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "Global (ID 9007199254740993) — 1 Access Point — 0 Bot / 5 Player Orders" })).toBeInTheDocument();
   });
 
   it("populates the form from the saved buyback schedule and saves edits with the selected exchange", async () => {
