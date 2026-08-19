@@ -7727,6 +7727,14 @@ const WATER_TYPES = {
     buildingTypes: ["windtrap_placeable"],
     capacity: 500
   },
+  largeWindtrap: {
+    name: "Large Windtrap",
+    buildingTypes: ["largewindtrap_placeable"],
+    // Confirmed against the retained production backup: every Large Windtrap
+    // stores its water in the same 500-unit FWaterStorageComponent used by the
+    // regular Windtrap. Its larger output does not increase stored capacity.
+    capacity: 500
+  },
   // Displays in-game as "Blood Purifier" / "Improved Blood Purifier" (see
   // runtime/data/admin-items.json's BloodWaterExtraction[Advanced]_Patent
   // entries) -- building_type keeps the game's own internal name.
@@ -7748,7 +7756,7 @@ const WATER_TYPES = {
 
 const WATER_TYPE_ORDER = [
   "waterCistern", "mediumWaterCistern", "largeWaterCistern",
-  "windtrap", "bloodWaterExtractor", "bloodWaterExtractorAdvanced"
+  "windtrap", "largeWindtrap", "bloodWaterExtractor", "bloodWaterExtractorAdvanced"
 ];
 
 const WATER_BUILDING_TYPE_PAIRS = WATER_TYPE_ORDER.flatMap(
