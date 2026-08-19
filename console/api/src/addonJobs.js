@@ -316,7 +316,7 @@ const BUYBACK_PLAYER_SELL_SQL = "COALESCE(o.is_npc_order, FALSE) = FALSE AND (b.
 // run does, so the "seeded" basis tracks the boosted market. Ready-made
 // augment items also use the reseed schedule's augmentPricing (discounted vs
 // original) so 60% of seeded means 60% of what the bot actually lists.
-export function buybackPlanValuesSql(plan, schedule) {
+export function buybackPlanCeilings(plan, schedule) {
   const { buybackPercent } = schedule;
   const maxPrice = new Map();
   const listedUnitPrice = createListedMarketUnitPrice(plan, schedule);
@@ -334,7 +334,11 @@ export function buybackPlanValuesSql(plan, schedule) {
         maxUnitPrice: Math.max(1, Math.floor((price * buybackPercent + 99) / 100))
       };
     })
-    .sort((a, b) => a.templateId.localeCompare(b.templateId) || a.qualityLevel - b.qualityLevel)
+    .sort((a, b) => a.templateId.localeCompare(b.templateId) || a.qualityLevel - b.qualityLevel);
+}
+
+export function buybackPlanValuesSql(plan, schedule) {
+  return buybackPlanCeilings(plan, schedule)
     .map((entry) => `(${sqlLiteral(entry.templateId)},${entry.qualityLevel},${entry.maxUnitPrice})`)
     .join(",\n");
 }
@@ -761,20 +765,25 @@ export async function playerPortalMarketSnapshot(config, db) {
   if (!schedule.exchangeId) return base;
   const effectiveSchedule = withReseedAugmentPricing(config, schedule);
   let names = new Map();
+  const ceilingByItem = new Map();
   try {
-    names = seedPlanDisplayNames(loadMergedBuybackSeedPlan(config));
+    const plan = loadMergedBuybackSeedPlan(config);
+    names = seedPlanDisplayNames(plan);
+    for (const entry of buybackPlanCeilings(plan, effectiveSchedule)) {
+      ceilingByItem.set(`${entry.templateId}\0${entry.qualityLevel}`, String(entry.maxUnitPrice));
+    }
   } catch {
-    // Display names are optional for the anonymous raw Exchange aggregate.
+    // Display names and configured ceilings are optional for the anonymous
+    // raw Exchange aggregate.
   }
   const [overviewResult, classificationResult] = await Promise.allSettled([
     runSql(db, buildPlayerPortalExchangeOverviewSql(effectiveSchedule), false),
     classifyBuybackListings(config, db)
   ]);
   const now = new Date().toISOString();
-  const ceilingByItem = new Map(
-    (classificationResult.status === "fulfilled" ? classificationResult.value.entries : [])
-      .map((entry) => [`${entry.templateId}\0${entry.qualityLevel}`, String(entry.maxUnitPrice || "")])
-  );
+  for (const entry of classificationResult.status === "fulfilled" ? classificationResult.value.entries : []) {
+    if (entry.maxUnitPrice) ceilingByItem.set(`${entry.templateId}\0${entry.qualityLevel}`, String(entry.maxUnitPrice));
+  }
   const overview = overviewResult.status === "fulfilled"
     ? {
         available: true,
