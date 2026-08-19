@@ -8712,6 +8712,46 @@ export async function repairGear(db, id) {
   });
 }
 
+// Vehicle-module rows in current dedicated-server databases commonly omit
+// MaxDurability altogether. Prefer any authoritative stored maximum for the
+// exact template; otherwise infer a conservative cap only when at least two
+// modules of that template provide a positive current or decayed-cap sample.
+// Both repair queries use this CTE so their eligibility and reported counts
+// cannot disagree.
+const VEHICLE_REPAIR_TEMPLATE_MAXIMA_CTE = `module_samples as (
+  select vm.template_id,
+         case
+           when (durability->>'CurrentDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
+             then (durability->>'CurrentDurability')::numeric
+         end as current_durability,
+         case
+           when (durability->>'DecayedMaxDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
+             then (durability->>'DecayedMaxDurability')::numeric
+         end as decayed_max_durability,
+         case
+           when (durability->>'MaxDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
+             then nullif((durability->>'MaxDurability')::numeric, 0)
+         end as stored_max_durability
+  from dune.vehicle_modules vm
+  cross join lateral (select vm.stats->'FVehicleModuleDurabilityStats'->1 as durability) d
+  where jsonb_typeof(vm.stats->'FVehicleModuleDurabilityStats') = 'array'
+    and jsonb_array_length(vm.stats->'FVehicleModuleDurabilityStats') >= 2
+    and jsonb_typeof(durability) = 'object'
+), template_maxima as (
+  select template_id,
+         coalesce(
+           max(stored_max_durability),
+           case
+             when count(*) filter (
+               where coalesce(greatest(current_durability, decayed_max_durability), 0) > 0
+             ) >= 2
+               then greatest(max(current_durability), max(decayed_max_durability))
+           end
+         ) as max_durability
+  from module_samples
+  group by template_id
+)`;
+
 export async function repairVehicleDecay(db, id, { thresholdPercent = 50 } = {}) {
   await requireCapability(await supportsRepairVehicleDecay(db), "Repair vehicle decay requires dune.vehicle_modules.stats, dune.vehicle_modules.vehicle_id, and dune.actors.owner_account_id.");
   const threshold = Number(thresholdPercent);
@@ -8732,24 +8772,13 @@ export async function repairVehicleDecay(db, id, { thresholdPercent = 50 } = {})
     const ownerValues = hasPermissionOwnership ? [player.accountId, player.controllerId] : [player.accountId];
     const thresholdParam = ownerValues.length + 1;
     const scanned = await tx.query(`
-      with template_maxima as (
-        select vm.template_id,
-               max((durability->>'MaxDurability')::numeric) as max_durability
-        from dune.vehicle_modules vm
-        cross join lateral (select vm.stats->'FVehicleModuleDurabilityStats'->1 as durability) d
-        where jsonb_typeof(vm.stats->'FVehicleModuleDurabilityStats') = 'array'
-          and jsonb_array_length(vm.stats->'FVehicleModuleDurabilityStats') >= 2
-          and durability ? 'MaxDurability'
-          and (durability->>'MaxDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
-          and (durability->>'MaxDurability')::numeric > 0
-        group by vm.template_id
-      ), owned_modules as (
+      with ${VEHICLE_REPAIR_TEMPLATE_MAXIMA_CTE}, owned_modules as (
         select vm.vehicle_id,
                vm.stats->'FVehicleModuleDurabilityStats'->1 as durability,
                coalesce(
                  case
                    when (vm.stats->'FVehicleModuleDurabilityStats'->1->>'MaxDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
-                     then (vm.stats->'FVehicleModuleDurabilityStats'->1->>'MaxDurability')::numeric
+                     then nullif((vm.stats->'FVehicleModuleDurabilityStats'->1->>'MaxDurability')::numeric, 0)
                  end,
                  tm.max_durability
                ) as effective_max
@@ -8779,24 +8808,13 @@ export async function repairVehicleDecay(db, id, { thresholdPercent = 50 } = {})
              )::int as missing_maximum
       from owned_modules`, ownerValues);
     const repaired = await tx.query(`
-      with template_maxima as (
-        select vm.template_id,
-               max((durability->>'MaxDurability')::numeric) as max_durability
-        from dune.vehicle_modules vm
-        cross join lateral (select vm.stats->'FVehicleModuleDurabilityStats'->1 as durability) d
-        where jsonb_typeof(vm.stats->'FVehicleModuleDurabilityStats') = 'array'
-          and jsonb_array_length(vm.stats->'FVehicleModuleDurabilityStats') >= 2
-          and durability ? 'MaxDurability'
-          and (durability->>'MaxDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
-          and (durability->>'MaxDurability')::numeric > 0
-        group by vm.template_id
-      ), eligible as (
+      with ${VEHICLE_REPAIR_TEMPLATE_MAXIMA_CTE}, eligible as (
         select vm.id,
                vm.vehicle_id,
                coalesce(
                  case
                    when (durability->>'MaxDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
-                     then (durability->>'MaxDurability')::numeric
+                     then nullif((durability->>'MaxDurability')::numeric, 0)
                  end,
                  tm.max_durability
                ) as max_durability
@@ -8819,14 +8837,14 @@ export async function repairVehicleDecay(db, id, { thresholdPercent = 50 } = {})
           and coalesce(
                 case
                   when (durability->>'MaxDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
-                    then (durability->>'MaxDurability')::numeric
+                    then nullif((durability->>'MaxDurability')::numeric, 0)
                 end,
                 tm.max_durability
               ) > 0
           and (durability->>'DecayedMaxDurability')::numeric < (coalesce(
                 case
                   when (durability->>'MaxDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
-                    then (durability->>'MaxDurability')::numeric
+                    then nullif((durability->>'MaxDurability')::numeric, 0)
                 end,
                 tm.max_durability
               ) * $${thresholdParam})
