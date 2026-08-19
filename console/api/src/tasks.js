@@ -19,6 +19,7 @@ export class TaskManager {
     this.config = config;
     this.onMapDown = options.onMapDown || null;
     this.tasks = new Map();
+    this.runDockerCommand = options.runDockerCommand || runDockerCommand;
     this.updateCheckCache = options.updateCheckCache || createUpdateCheckCache(config, {
       collect: () => runDune(config, buildDuneArgs("updateCheck"), {
         allowedExitCodes: [0, 100],
@@ -137,7 +138,11 @@ export class TaskManager {
     const hostUid = process.env.DUNE_HOST_UID || String(process.getuid?.() ?? 0);
     const hostGid = process.env.DUNE_HOST_GID || String(process.getgid?.() ?? 0);
     const dockerSocketGid = process.env.DOCKER_SOCKET_GID || detectDockerSocketGid();
-    const extraEnv = process.env.DUNE_SELF_UPDATE_TOKEN ? ["DUNE_SELF_UPDATE_TOKEN"] : [];
+    const extraEnv = [
+      `DUNE_SELF_UPDATE_RUN_ID=${task.id}`,
+      `DUNE_SELF_UPDATE_BUILD_TIMEOUT_SECONDS=${boundedBuildTimeoutSeconds(process.env.DUNE_SELF_UPDATE_BUILD_TIMEOUT_SECONDS)}`,
+      ...(process.env.DUNE_SELF_UPDATE_TOKEN ? ["DUNE_SELF_UPDATE_TOKEN"] : [])
+    ];
     const logFile = "runtime/generated/web-self-update.log";
     const command = [
       "set -eu",
@@ -149,7 +154,8 @@ export class TaskManager {
 
     task.currentStep = "Starting update helper";
     this.emit(task, "Starting detached update helper");
-    const result = await runDockerCommand(buildSelfUpdateHelperDockerArgs({
+    await cleanupStaleSelfUpdateHelpers(this.config.repoRoot, this.runDockerCommand);
+    const result = await this.runDockerCommand(buildSelfUpdateHelperDockerArgs({
       helperName,
       hostRepoRoot,
       composeProjectName,
@@ -163,11 +169,8 @@ export class TaskManager {
 
     this.append(task, `Update helper started: ${result.stdout.trim() || helperName}`, "stdout");
     this.append(task, `Update log: ${logFile}`, "stdout");
-    task.status = "succeeded";
-    task.exitCode = 0;
-    task.currentStep = "Update helper started";
-    task.finishedAt = new Date().toISOString();
-    this.emit(task, "Update helper started. The Web UI may reconnect while the console restarts.");
+    task.currentStep = "Update helper running";
+    this.emit(task, "Update helper is running. The Web UI may reconnect while the console restarts.");
   }
 
   // The background poller in server.js is the general safety net for queued
@@ -256,6 +259,7 @@ export function buildSelfUpdateHelperDockerArgs({
       "--rm",
       "-d",
       "--name", helperName,
+      "--label", "io.github.red-blink.dune-selfhost.role=self-update-helper",
       "--user", `${hostUid}:${hostGid}`,
       "--group-add", dockerSocketGid,
       "--network", "host",
@@ -303,6 +307,33 @@ function runDockerCommand(args, cwd) {
       else reject(Object.assign(new Error(`docker ${args.join(" ")} failed with exit ${code}: ${stderr || stdout}`), { code, stdout, stderr }));
     });
   });
+}
+
+export async function cleanupStaleSelfUpdateHelpers(cwd, runCommand) {
+  const listed = await runCommand(["ps", "-a", "--format", "{{.Names}}\t{{.State}}"], cwd);
+  const helpers = listed.stdout.split(/\r?\n/).map((line) => {
+    const [name = "", state = ""] = line.trim().split(/\s+/, 2);
+    return { name, state };
+  }).filter(({ name }) => /^(?:dune-web-self-update-\d+|dune-console-self-update-\d+)$/.test(name));
+  const staleAfterMs = (boundedBuildTimeoutSeconds(process.env.DUNE_SELF_UPDATE_BUILD_TIMEOUT_SECONDS) + 300) * 1000;
+  const now = Date.now();
+  const stale = helpers.filter(({ name, state }) => state !== "running" || selfUpdateHelperAgeMs(name, now) > staleAfterMs);
+  if (stale.length) await runCommand(["rm", "-f", ...stale.map(({ name }) => name)], cwd);
+  const active = helpers.filter((helper) => !stale.includes(helper));
+  if (active.length) throw Object.assign(new Error("Another console update is already running. Wait for it to finish before retrying."), { code: 75 });
+}
+
+export function selfUpdateHelperAgeMs(name, now = Date.now()) {
+  const milliseconds = String(name || "").match(/^dune-web-self-update-(\d{13})$/)?.[1];
+  if (milliseconds) return Math.max(0, now - Number(milliseconds));
+  const seconds = String(name || "").match(/^dune-console-self-update-(\d{10})$/)?.[1];
+  if (seconds) return Math.max(0, now - Number(seconds) * 1000);
+  return 0;
+}
+
+function boundedBuildTimeoutSeconds(value) {
+  const number = Number(value || 1800);
+  return Number.isInteger(number) && number >= 60 && number <= 7200 ? number : 1800;
 }
 
 function shellQuote(value) {

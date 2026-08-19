@@ -1,11 +1,14 @@
-import { readFileSync, readdirSync, statfsSync } from "node:fs";
+import { readFileSync, readdirSync, realpathSync, statfsSync } from "node:fs";
 import { join } from "node:path";
 
 let previousCpuSample = null;
 const DEFAULT_HWMON_ROOT = "/sys/class/hwmon";
+const DEFAULT_BLOCK_ROOT = "/sys/class/block";
 const MAX_HWMON_DEVICES = 64;
+const MAX_STORAGE_DEVICES = 64;
 const MAX_TEMPERATURE_SENSORS = 128;
 const MAX_SENSOR_TEXT_BYTES = 256;
+const CPU_HWMON_NAMES = new Set(["coretemp", "k10temp", "zenpower", "cpu_thermal"]);
 
 export async function performanceSnapshot(repoRoot) {
   const cpu = readCpuUsagePercent();
@@ -29,17 +32,23 @@ export async function performanceSnapshot(repoRoot) {
 export async function hardwareStatusSnapshot(options = {}) {
   const readFile = options.readFileSync || readFileSync;
   const readDir = options.readdirSync || readdirSync;
+  const realpath = options.realpathSync || realpathSync;
   const hwmonRoot = options.hwmonRoot || DEFAULT_HWMON_ROOT;
+  const blockRoot = options.blockRoot || DEFAULT_BLOCK_ROOT;
   const meminfo = safeReadText("/proc/meminfo", readFile, 256 * 1024);
   const memoryRows = parseMeminfo(meminfo);
   const memory = memorySnapshotKb(memoryRows);
   const swap = swapSnapshotKb(memoryRows);
   const load = loadSnapshot(safeReadText("/proc/loadavg", readFile, 4096));
   const uptimeSeconds = uptimeSnapshotSeconds(safeReadText("/proc/uptime", readFile, 4096));
+  const cpu = cpuSnapshot(safeReadText("/proc/cpuinfo", readFile, 256 * 1024));
+  const storage = storageSnapshot(blockRoot, readFile, readDir, realpath);
 
   return {
-    version: 1,
-    temperatures: temperatureSnapshot(hwmonRoot, readFile, readDir),
+    version: 2,
+    temperatures: temperatureSnapshot(hwmonRoot, readFile, readDir, realpath, storage, cpu),
+    cpu,
+    storage: storage.map(({ devicePath: _devicePath, ...device }) => device),
     memory,
     swap,
     load,
@@ -47,7 +56,7 @@ export async function hardwareStatusSnapshot(options = {}) {
   };
 }
 
-function temperatureSnapshot(root, readFile, readDir) {
+function temperatureSnapshot(root, readFile, readDir, realpath, storage, cpu) {
   const temperatures = [];
   const devices = safeReadDir(root, readDir)
     .filter((name) => /^hwmon\d+$/.test(name))
@@ -57,7 +66,10 @@ function temperatureSnapshot(root, readFile, readDir) {
   for (const device of devices) {
     if (temperatures.length >= MAX_TEMPERATURE_SENSORS) break;
     const deviceRoot = join(root, device);
+    const devicePath = safeRealpath(join(deviceRoot, "device"), realpath) || safeRealpath(deviceRoot, realpath);
+    const storageDevice = storage.find((candidate) => relatedDevicePaths(devicePath, candidate.devicePath));
     const chipName = sensorLabel(safeReadText(join(deviceRoot, "name"), readFile, MAX_SENSOR_TEXT_BYTES));
+    const deviceId = storageDevice?.id || (cpu.id && CPU_HWMON_NAMES.has(chipName.toLowerCase()) ? cpu.id : "");
     const inputs = safeReadDir(deviceRoot, readDir)
       .filter((name) => /^temp\d+_input$/.test(name))
       .sort(naturalNameCompare);
@@ -73,10 +85,91 @@ function temperatureSnapshot(root, readFile, readDir) {
       const name = explicitLabel
         ? (chipName ? `${chipName} ${explicitLabel}` : explicitLabel)
         : (chipName ? `${chipName} ${fallback}` : fallback);
-      temperatures.push({ name: name.slice(0, 160), temperature: Math.round((raw / 1000) * 10) / 10 });
+      const sensor = { name: name.slice(0, 160), temperature: Math.round((raw / 1000) * 10) / 10 };
+      if (deviceId) sensor.device_id = deviceId;
+      temperatures.push(sensor);
     }
   }
   return temperatures;
+}
+
+function cpuSnapshot(text) {
+  const rows = {};
+  for (const line of text.split(/\r?\n/)) {
+    const match = line.match(/^([^:]+):\s*(.*)$/);
+    if (!match) continue;
+    const key = match[1].trim().toLowerCase();
+    if (!Object.hasOwn(rows, key)) rows[key] = hardwareLabel(match[2]);
+  }
+  const manufacturer = rows.vendor_id || rows.vendor || rows.cpu_implementer || "";
+  const model = rows["model name"] || rows.hardware || rows["cpu model"] || rows.processor || "";
+  const details = optionalFields({ manufacturer, model });
+  return Object.keys(details).length ? { id: "cpu:0", ...details } : {};
+}
+
+function storageSnapshot(root, readFile, readDir, realpath) {
+  const devices = [];
+  const names = safeReadDir(root, readDir)
+    .filter((name) => /^[A-Za-z0-9._-]+$/.test(name))
+    .sort(naturalNameCompare);
+
+  for (const name of names) {
+    if (devices.length >= MAX_STORAGE_DEVICES) break;
+    const deviceRoot = join(root, name);
+    if (/^\d+$/.test(safeReadText(join(deviceRoot, "partition"), readFile, 32))) continue;
+    const model = hardwareLabel(safeReadText(join(deviceRoot, "device/model"), readFile, MAX_SENSOR_TEXT_BYTES));
+    const manufacturer = hardwareLabel(safeReadText(join(deviceRoot, "device/vendor"), readFile, MAX_SENSOR_TEXT_BYTES));
+    const protocol = hardwareLabel(safeReadText(join(deviceRoot, "device/protocol"), readFile, MAX_SENSOR_TEXT_BYTES));
+    const deviceType = safeReadText(join(deviceRoot, "device/type"), readFile, 32);
+    // SCSI type 0 is a disk; optical, tape, and enclosure devices do not
+    // belong in an addon's storage-drive inventory.
+    if (/^\d+$/.test(deviceType) && deviceType !== "0") continue;
+    const devicePath = safeRealpath(join(deviceRoot, "device"), realpath) || safeRealpath(deviceRoot, realpath);
+    const subsystemPath = safeRealpath(join(deviceRoot, "device/subsystem"), realpath);
+    const bus = storageBus(name, protocol, devicePath, subsystemPath);
+    // Virtual block devices and partitions generally expose none of these.
+    // Omitting them avoids noisy loop, device-mapper, and RAM entries.
+    if (!model && !manufacturer && !bus) continue;
+    devices.push({
+      id: `block:${name}`,
+      name,
+      ...optionalFields({ manufacturer, model, bus }),
+      devicePath
+    });
+  }
+  return devices;
+}
+
+function storageBus(name, protocol, devicePath, subsystemPath) {
+  const lowerProtocol = protocol.toLowerCase();
+  const lowerPath = devicePath.toLowerCase();
+  const lowerSubsystem = subsystemPath.toLowerCase();
+  if (/^nvme\d+n\d+$/.test(name) || lowerPath.includes("/nvme/")) return "nvme";
+  if (/^mmcblk\d+$/.test(name) || lowerPath.includes("/mmc")) return "mmc";
+  if (lowerPath.includes("/usb")) return "usb";
+  if (/^vd[a-z]+$/.test(name) || lowerPath.includes("/virtio")) return "virtio";
+  if (/^(ata|sata)$/.test(lowerProtocol) || lowerPath.includes("/ata")) return "sata";
+  if (/^(sas|scsi|iscsi)$/.test(lowerProtocol)) return lowerProtocol;
+  if (lowerSubsystem.endsWith("/nvme")) return "nvme";
+  if (lowerSubsystem.endsWith("/scsi")) return "scsi";
+  return "";
+}
+
+function relatedDevicePaths(left, right) {
+  if (!left || !right) return false;
+  return left === right || left.startsWith(`${right}/`) || right.startsWith(`${left}/`);
+}
+
+function safeRealpath(path, realpath) {
+  try {
+    return String(realpath(path) || "").replace(/\/+$/, "");
+  } catch {
+    return "";
+  }
+}
+
+function optionalFields(fields) {
+  return Object.fromEntries(Object.entries(fields).filter(([, value]) => value !== ""));
 }
 
 function parseMeminfo(text) {
@@ -139,6 +232,10 @@ function safeReadDir(path, readDir) {
 
 function sensorLabel(value) {
   return String(value || "").replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 80);
+}
+
+function hardwareLabel(value) {
+  return String(value || "").replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 160);
 }
 
 function strictNumber(value) {

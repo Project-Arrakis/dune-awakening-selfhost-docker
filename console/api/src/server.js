@@ -48,7 +48,7 @@ import { exportBlueprint, importBlueprint, listBlueprints, deleteBlueprint } fro
 import { createZipArchive } from "./services/zipArchive.js";
 import { resolveMapCombatState } from "./services/mapCombatState.js";
 import { grantAddonItem } from "./addonItemGrants.js";
-import { EDA_EXCHANGE_BOT_ADDON_ID, ADDON_SCHEDULER_PERMISSION, createAddonJobScheduler, probeBuybackEligibility, readBuybackSchedule, saveBuybackSchedule, readSeedSchedule, saveSeedSchedule } from "./addonJobs.js";
+import { EDA_EXCHANGE_BOT_ADDON_ID, ADDON_SCHEDULER_PERMISSION, createAddonJobScheduler, probeBuybackEligibility, refreshBuybackLog, readBuybackLog, clearBuybackLog, readBuybackSchedule, saveBuybackSchedule, readSeedSchedule, saveSeedSchedule } from "./addonJobs.js";
 import { createPublicDirectoryReporter, normalizeDiscordInvite, readDirectorySettings } from "./services/publicDirectory.js";
 import { choamTerminalOverview, installChoamTerminals, removeChoamTerminals } from "./services/choamTerminals.js";
 import { exchangeStats, listExchangeItems, listExchangeListings, readExchangeConfig, saveExchangeConfig } from "./services/exchange.js";
@@ -63,6 +63,7 @@ import { verifyBaseBackupState } from "./services/baseBackupSafety.js";
 import { banPlayer, bannedFlsIds, createPlayerBanEnforcer, playerBanFor, unbanPlayer } from "./services/playerBans.js";
 import { findPlayerForLiveAction, playerIsOnlineForLiveAction } from "./playerLiveActions.js";
 import { retireLegacyEdaExchangeBot } from "./services/marketBotRetirement.js";
+import { readSelfUpdateStatus } from "./services/selfUpdateStatus.js";
 
 const config = loadConfig();
 let edaRetirement = { retired: false, addonRemoved: false, migrated: false, changed: false, backupDir: "", cleanupError: "" };
@@ -640,6 +641,13 @@ async function handleApi(req, res) {
   if (path === "/api/updates/fix-steamcmd" && req.method === "POST") return task(req, res, "updates", "updateFixSteamcmd", {});
   if (path === "/api/updates/check-stack" && req.method === "POST") return task(req, res, "updates", "selfUpdateCheck", {});
   if (path === "/api/updates/apply-stack" && req.method === "POST") return task(req, res, "updates", "selfUpdateApply", {});
+  if (path === "/api/updates/stack-progress") {
+    try {
+      return json(res, 200, readSelfUpdateStatus(config.repoRoot, url.searchParams.get("runId")));
+    } catch (error) {
+      return json(res, error?.code === "INVALID_RUN_ID" ? 400 : 500, { error: redact(error?.message || "Could not read console update status.") });
+    }
+  }
   if (path === "/api/updates/auto-game" && req.method === "POST") return autoGameUpdateRoute(req, res);
   if (path === "/api/updates/auto-game") return safeCommandJson(res, "updateAutoStatus");
   if (path === "/api/updates/repair-runtime" && req.method === "POST") return task(req, res, "updates", "readiness", {});
@@ -759,6 +767,7 @@ async function handleApi(req, res) {
   if (path.match(/^\/api\/bases\/[^/]+\/inventory$/) && req.method === "GET") return baseInventoryRoute(res, path);
   if (path.match(/^\/api\/bases\/[^/]+\/containers\/[^/]+$/) && req.method === "GET") return baseContainerSlotsRoute(res, path);
   if (path.match(/^\/api\/bases\/[^/]+\/containers\/[^/]+\/items\/[^/]+$/) && req.method === "DELETE") return baseContainerItemDeleteRoute(req, res, path);
+  if (path.match(/^\/api\/bases\/[^/]+\/containers\/[^/]+\/items$/) && req.method === "POST") return baseContainerItemAddRoute(req, res, path);
   if (path.match(/^\/api\/bases\/[^/]+\/refill-water$/) && req.method === "POST") return baseRefillWaterRoute(req, res, path);
   if (path.match(/^\/api\/bases\/[^/]+\/queued-water-refill$/) && req.method === "DELETE") return baseCancelQueuedWaterRefillRoute(req, res, path);
   if (path.match(/^\/api\/bases\/[^/]+\/auto-refill-water$/) && req.method === "POST") return baseAutoRefillWaterToggleRoute(req, res, path);
@@ -985,6 +994,9 @@ async function handleApi(req, res) {
   if (path === "/api/exchange/market" && req.method === "GET") return dbJson(res, () => marketBotStatus(config, db));
   if (path === "/api/exchange/market/exchanges" && req.method === "GET") return dbJson(res, () => listMarketExchanges(db));
   if (path === "/api/exchange/market/buyback/probe" && req.method === "POST") return marketBuybackProbeRoute(req, res);
+  if (path === "/api/exchange/market/buyback/log" && req.method === "GET") return marketBuybackLogRoute(req, res);
+  if (path === "/api/exchange/market/buyback/log" && req.method === "POST") return marketBuybackLogRefreshRoute(req, res);
+  if (path === "/api/exchange/market/buyback/log/clear" && req.method === "POST") return marketBuybackLogClearRoute(req, res);
   if (path === "/api/exchange/market/buyback/schedule" && req.method === "POST") return marketScheduleSaveRoute(req, res, "buyback");
   if (path === "/api/exchange/market/seed/schedule" && req.method === "POST") return marketScheduleSaveRoute(req, res, "seed");
   if (path === "/api/exchange/market/buyback/run" && req.method === "POST") return marketRunNowRoute(req, res, "buyback");
@@ -1541,6 +1553,42 @@ async function marketBuybackProbeRoute(req, res) {
   }
 }
 
+async function marketBuybackLogRoute(req, res) {
+  try {
+    return json(res, 200, readBuybackLog(config));
+  } catch (error) {
+    const payload = apiErrorPayload(error, 400);
+    return json(res, payload.status, payload.body);
+  }
+}
+
+async function marketBuybackLogRefreshRoute(req, res) {
+  if (!applyMutationRateLimit(req, res, "exchange.market.buyback.log")) return;
+  const body = await readJson(req);
+  try {
+    const result = await refreshBuybackLog(config, db, body && typeof body === "object" ? body : {});
+    audit(config, req, "exchange.market", { op: "buyback-log", listings: result.entries?.length || 0, exchangeId: result.exchangeId, ok: true });
+    return json(res, 200, result);
+  } catch (error) {
+    audit(config, req, "exchange.market", { op: "buyback-log", ok: false, error: redact(error?.message || "Unexpected error.") });
+    const payload = apiErrorPayload(error, 400);
+    return json(res, payload.status, payload.body);
+  }
+}
+
+async function marketBuybackLogClearRoute(req, res) {
+  if (!applyMutationRateLimit(req, res, "exchange.market.buyback.log-clear")) return;
+  try {
+    const result = await clearBuybackLog(config);
+    audit(config, req, "exchange.market", { op: "buyback-log-clear", ok: true });
+    return json(res, 200, result);
+  } catch (error) {
+    audit(config, req, "exchange.market", { op: "buyback-log-clear", ok: false, error: redact(error?.message || "Unexpected error.") });
+    const payload = apiErrorPayload(error, 400);
+    return json(res, payload.status, payload.body);
+  }
+}
+
 async function marketScheduleSaveRoute(req, res, job) {
   const body = await readJson(req);
   if (!applyMutationRateLimit(req, res, `exchange.market.${job}.schedule`)) return;
@@ -1876,12 +1924,18 @@ function databaseTableRoute(req, res, path, action, url) {
 
 function dbPlayerRoute(res, path, fn) {
   const id = decodeURIComponent(path.split("/")[3]);
-  return dbJson(res, () => fn(db, id));
+  return dbJson(res, async () => {
+    await duneDb.resolvePlayerTargetCached(db, id);
+    return fn(db, id);
+  });
 }
 
 function dbPlayerUnsupported(res, path, feature) {
   const id = decodeURIComponent(path.split("/")[3]);
-  return dbJson(res, () => duneDb.unsupportedPlayerFeature(db, id, feature));
+  return dbJson(res, async () => {
+    await duneDb.resolvePlayerTargetCached(db, id);
+    return duneDb.unsupportedPlayerFeature(db, id, feature);
+  });
 }
 
 async function task(req, res, type, operation, payload) {
@@ -2604,8 +2658,8 @@ async function playerTask(req, res, path, operation, phrase = "") {
   }
   if (!applyMutationRateLimit(req, res, `players.${operation}`)) return;
   const playerId = decodeURIComponent(path.split("/")[3]);
+  const player = await resolvePlayerGrantTarget(playerId);
   if (["adminSetSkillPoints", "adminSetSkillModule"].includes(operation)) {
-    const player = await resolvePlayerGrantTarget(playerId);
     if (!player.online) {
       return json(res, 409, { error: "The player must be online to change skills." });
     }
@@ -2802,13 +2856,17 @@ async function resolveCarePackagePlayerIdentity(playerId) {
 }
 
 async function resolvePlayerGrantTarget(playerId) {
-  const players = await duneDb.listAllPlayers(db, {}).catch(() => ({ rows: [] }));
+  const players = await duneDb.listAllPlayers(db, {});
   const rows = players.rows || [];
   const player = findPlayerForLiveAction(rows, playerId);
+  if (!player) throw Object.assign(new Error("Player not found."), { statusCode: 404 });
+  const actorId = String(player.actor_id || player.player_pawn_id || "");
+  if (!actorId) throw Object.assign(new Error("Player has no current actor ID."), { statusCode: 409 });
+  await duneDb.resolvePlayerTarget(db, actorId);
   return {
-    actionId: String(player?.action_player_id || player?.funcom_id || player?.fls_id || playerId || ""),
-    actorId: String(player?.actor_id || player?.player_pawn_id || (/^\d+$/.test(String(playerId || "")) ? playerId : "") || ""),
-    characterName: player?.character_name || "",
+    actionId: String(player.action_player_id || player.funcom_id || player.fls_id || ""),
+    actorId,
+    characterName: player.character_name || "",
     online: playerIsOnlineForLiveAction(player)
   };
 }
@@ -3270,59 +3328,93 @@ async function baseContainerSlotsRoute(res, path) {
   }
   try {
     const slots = await duneDb.baseContainerSlots(db, baseId, placeableId);
-    return json(res, 200, { ...slots, deleteSafety: await baseContainerDeleteSafety(baseId, slots.group) });
+    // Both gates on one resolve. deleteSafety keeps its name rather than being
+    // generalised: it is read across the API client, the tab, four test files
+    // and two docs pages, and an additive twin buys everything a rename would
+    // without needing a lockstep frontend/backend deploy.
+    const resolved = await resolveBaseContainerWriteSafety(baseId, slots.group);
+    return json(res, 200, {
+      ...slots,
+      deleteSafety: baseContainerWriteSafetyFor(resolved, "delete"),
+      addSafety: baseContainerWriteSafetyFor(resolved, "add")
+    });
   } catch (error) {
     return json(res, 500, { supported: false, error: redact(error?.message || "Unexpected error."), reason: redact(error?.message || "Unexpected error.") });
   }
 }
 
-async function baseContainerDeleteSafety(baseId, group = "storage") {
-  if (group && group !== "storage") {
-    return {
-      safe: false,
-      known: true,
-      map: "",
-      partitionId: 0,
-      reason: "Item deletion is available only for Storage containers. Crafting and Refining contents are read-only to protect active jobs."
-    };
+// Adds and deletes are gated on exactly the same four conditions, so the
+// decision tree is written once and only the wording varies per action. A
+// second hand-maintained copy would be worse than the small indirection: the
+// failure mode of a copy that drifts is an add permitted in a state where a
+// delete is refused, which is precisely the boundary this enforces.
+const BASE_CONTAINER_WRITE_WORDING = {
+  delete: {
+    group: "Item deletion is available only for Storage containers. Crafting and Refining contents are read-only to protect active jobs.",
+    unsupported: "The console cannot verify that this base's map is safely stopped, so item deletion is disabled.",
+    running: "deleting stored items",
+    failed: "The console could not verify that this base's map is safely stopped, so item deletion is disabled."
+  },
+  add: {
+    group: "Adding items is available only for Storage containers. Crafting and Refining contents are read-only to protect active jobs.",
+    unsupported: "The console cannot verify that this base's map is safely stopped, so adding items is disabled.",
+    running: "adding stored items",
+    failed: "The console could not verify that this base's map is safely stopped, so adding items is disabled."
   }
+};
+
+// Resolves the live-map state once. Split from the wording below so the slots
+// route can answer for both actions without paying for two baseRefillTarget
+// round-trips -- it runs observeRefillPartitions plus baseMapLocation, which is
+// not free on a request made every time the contents modal opens.
+async function resolveBaseContainerWriteSafety(baseId, group = "storage") {
+  if (group && group !== "storage") return { groupOk: false };
   try {
     const target = await duneDb.baseRefillTarget(db, baseId);
-    if (!target.queueSupported) {
-      return {
-        safe: false,
-        known: false,
-        map: target.map || "",
-        partitionId: target.partitionId || 0,
-        reason: "The console cannot verify that this base's map is safely stopped, so item deletion is disabled."
-      };
-    }
-    if (!target.writeSafeNow) {
-      const location = `${target.map || "This base's map"}${target.partitionId ? ` · Partition ${target.partitionId}` : ""}`;
-      return {
-        safe: false,
-        known: true,
-        map: target.map || "",
-        partitionId: target.partitionId || 0,
-        reason: `${location} is running. Stop that map before deleting stored items.`
-      };
-    }
     return {
-      safe: true,
-      known: true,
+      groupOk: true,
+      known: Boolean(target.queueSupported),
+      writeSafeNow: Boolean(target.queueSupported) && Boolean(target.writeSafeNow),
       map: target.map || "",
       partitionId: target.partitionId || 0,
-      reason: ""
+      threw: false
     };
   } catch {
+    return { groupOk: true, known: false, writeSafeNow: false, map: "", partitionId: 0, threw: true };
+  }
+}
+
+// Pure. `action` is "delete" or "add" and selects wording only -- never which
+// states count as safe.
+function baseContainerWriteSafetyFor(resolved, action) {
+  const wording = BASE_CONTAINER_WRITE_WORDING[action] || BASE_CONTAINER_WRITE_WORDING.delete;
+  if (!resolved.groupOk) {
+    return { safe: false, known: true, map: "", partitionId: 0, reason: wording.group };
+  }
+  const map = resolved.map || "";
+  const partitionId = resolved.partitionId || 0;
+  if (!resolved.known) {
     return {
       safe: false,
       known: false,
-      map: "",
-      partitionId: 0,
-      reason: "The console could not verify that this base's map is safely stopped, so item deletion is disabled."
+      map: resolved.threw ? "" : map,
+      partitionId: resolved.threw ? 0 : partitionId,
+      reason: resolved.threw ? wording.failed : wording.unsupported
     };
   }
+  if (!resolved.writeSafeNow) {
+    const location = `${map || "This base's map"}${partitionId ? ` · Partition ${partitionId}` : ""}`;
+    return { safe: false, known: true, map, partitionId, reason: `${location} is running. Stop that map before ${wording.running}.` };
+  }
+  return { safe: true, known: true, map, partitionId, reason: "" };
+}
+
+async function baseContainerDeleteSafety(baseId, group = "storage") {
+  return baseContainerWriteSafetyFor(await resolveBaseContainerWriteSafety(baseId, group), "delete");
+}
+
+async function baseContainerAddSafety(baseId, group = "storage") {
+  return baseContainerWriteSafetyFor(await resolveBaseContainerWriteSafety(baseId, group), "add");
 }
 
 // Phrase-gated, unlike the refills above: this destroys a player's stored item
@@ -3354,6 +3446,37 @@ async function baseContainerItemDeleteRoute(req, res, path) {
     const result = await duneDb.deleteBaseContainerItem(db, baseId, placeableId, itemId, { count });
     return { ...result, deleteSafety: safety };
   }, { baseId, placeableId, itemId });
+}
+
+// Phrase-gated despite being additive, unlike the refills below. An item that
+// lands in a player's storage is an economy write with no in-game undo, and
+// storage.give-item already sets the precedent that item creation carries a
+// phrase. The phrase is deliberately distinct from "GIVE ITEM TO STORAGE" so a
+// client replaying a give-item body cannot satisfy this gate.
+//
+// Same stopped-map rule as the delete above, re-checked inside the mutation
+// immediately before the write for the same reason: disabling the UI alone is
+// never a security or consistency boundary.
+async function baseContainerItemAddRoute(req, res, path) {
+  const parts = path.split("/");
+  const baseId = Number(decodeURIComponent(parts[3]));
+  const placeableId = Number(decodeURIComponent(parts[5]));
+  for (const id of [baseId, placeableId]) {
+    if (!Number.isInteger(id) || id < 1 || id > Number.MAX_SAFE_INTEGER) {
+      return json(res, 400, { error: "Invalid base or container ID" });
+    }
+  }
+  if (baseDeletePending(baseId)) return json(res, 409, { error: BASE_DELETE_PENDING_MESSAGE });
+  if (await baseBackedUp(baseId)) return json(res, 409, { error: BASE_BACKED_UP_MESSAGE });
+  return directDbMutation(req, res, "bases.container-item-add", "ADD ITEM TO CONTAINER", async (body) => {
+    const safety = await baseContainerAddSafety(baseId);
+    if (!safety.safe) throw new Error(safety.reason);
+    // Spread order matters: the catalog-resolved id must win over whatever
+    // templateId the client sent alongside an itemName.
+    const resolved = resolveCatalogItem(config.repoRoot, body);
+    const result = await duneDb.addBaseContainerItem(db, baseId, placeableId, { ...body, templateId: resolved.itemId });
+    return { ...result, addSafety: safety };
+  }, { baseId, placeableId });
 }
 
 // Mirrors baseRefillGeneratorsRoute: no confirmation phrase (additive and
@@ -3571,6 +3694,7 @@ async function giveItemsRoute(req, res, path) {
   const playerId = decodeURIComponent(path.split("/")[3]);
   if (!Array.isArray(body.items)) {
     if (!applyMutationRateLimit(req, res, "players.give-items")) return;
+    await resolvePlayerGrantTarget(playerId);
     return task(req, res, "admin", "adminGiveItems", { ...body, playerId });
   }
   if (body.items.length < 1 || body.items.length > 25) return json(res, 400, { error: "Give Multiple Items requires 1-25 items" });
@@ -3598,6 +3722,12 @@ async function giveSingleItemRoute(req, res, path, operation) {
   const body = await readJson(req);
   const playerId = decodeURIComponent(path.split("/")[3]);
   if (!applyMutationRateLimit(req, res, operation === "adminGiveItemId" ? "players.give-item-id" : "players.give-item")) return;
+  let target;
+  try {
+    target = await resolvePlayerGrantTarget(playerId);
+  } catch (error) {
+    return json(res, error?.statusCode || 400, { ok: false, error: redact(error?.message || "Unexpected error.") });
+  }
   if (body.quality === undefined && body.grade === undefined) {
     const resolved = operation === "adminGiveItemId"
       ? resolveCatalogItem(config.repoRoot, { itemId: body.itemId })
@@ -3610,7 +3740,6 @@ async function giveSingleItemRoute(req, res, path, operation) {
     ? { itemId: body.itemId, quantity: body.quantity, quality: body.quality, grade: body.grade, durability: body.durability, augments: body.augments, augmentQuality: body.augmentQuality }
     : { itemName: body.itemName, quantity: body.quantity, quality: body.quality, grade: body.grade, durability: body.durability, augments: body.augments, augmentQuality: body.augmentQuality };
   try {
-    const target = await resolvePlayerGrantTarget(playerId);
     const result = await grantPlayerItem(playerId, item, target);
     audit(config, req, operation === "adminGiveItemId" ? "players.give-item-id" : "players.give-item", { playerId, ok: result.ok, result });
     return json(res, result.ok ? 200 : 207, result);

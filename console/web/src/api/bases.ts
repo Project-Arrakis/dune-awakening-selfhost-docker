@@ -160,6 +160,9 @@ export type BaseInventorySlot = {
   qualityLevel: number;
   currentDurability: number | null;
   maxDurability: number | null;
+  // Always an array, empty for an item with none -- never undefined, so a
+  // plain `.length > 0` check is enough to decide whether to render a line.
+  augments: { templateId: string; name: string; qualityLevel: number }[];
 };
 
 // Slots hang off an inventory rather than the container because a placeable can
@@ -190,6 +193,7 @@ export type BaseContainerSlots = {
   inventories: BaseContainerInventory[];
   reason?: string;
   deleteSafety?: BaseContainerDeleteSafety;
+  addSafety?: BaseContainerAddSafety;
 };
 
 // Item deletion is deliberately fail-closed: only plain storage on a map that
@@ -200,6 +204,24 @@ export type BaseContainerDeleteSafety = {
   map: string;
   partitionId: number;
   reason: string;
+};
+
+// Structurally identical to the delete gate, and gated on the same four
+// conditions -- only the wording of `reason` differs, so the operator reads a
+// sentence about the thing they actually tried to do. Aliased rather than
+// reused so that if the two ever need to diverge (adds queueable while a
+// running map holds, say) doing so does not silently retype the other one.
+export type BaseContainerAddSafety = BaseContainerDeleteSafety;
+
+// Mirrors giveItemToStorage's parameter surface. `quality` is the item grade
+// (0-5); `augmentQuality` is the grade rolled onto each selected augment.
+export type AddContainerItemRequest = {
+  itemId?: string;
+  itemName?: string;
+  quantity: number;
+  quality?: number;
+  augments?: string[];
+  augmentQuality?: number;
 };
 
 // How much of one item a single container holds. `name` is the container's,
@@ -414,6 +436,34 @@ export const basesApi = {
       reason?: string;
     }>(`/api/bases/${encodeURIComponent(baseId)}/containers/${encodeURIComponent(placeableId)}/items/${encodeURIComponent(itemId)}`,
       { method: "DELETE", body: JSON.stringify(count === undefined ? { confirmation } : { confirmation, count }) }),
+  // Creates a stored item. Always inserts a NEW row -- it never tops up a
+  // matching stack -- and always appends to the next free slot. There is no
+  // slot parameter by design: clicking an empty cell in the grid is a shortcut
+  // to the form, not a placement target, so nothing in the UI may promise one.
+  addContainerItem: (baseId: string, placeableId: string, item: AddContainerItemRequest, confirmation: string) =>
+    post<{
+      supported: boolean;
+      result?: {
+        ok: boolean;
+        inventoryId: string;
+        typeName: string;
+        group: BaseInventoryGroupKey;
+        added: {
+          itemId: string;
+          templateId: string;
+          quantity: number;
+          qualityLevel: number;
+          positionIndex: number;
+          augments?: string[];
+        };
+        capacity: { usedSlots: number; maxSlots: number };
+        message: string;
+        addSafety: BaseContainerAddSafety;
+      };
+      error?: string;
+      reason?: string;
+    }>(`/api/bases/${encodeURIComponent(baseId)}/containers/${encodeURIComponent(placeableId)}/items`,
+      { ...item, confirmation }),
   // A refill for a map that is currently running comes back as
   // `result.queued`: the write is deferred to the next time that map is down.
   refillWater: (baseId: string) =>

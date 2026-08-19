@@ -2385,7 +2385,7 @@ export async function playerProfile(db, id) {
   const result = await db.query(`
     select a.id as actor_id,
            a.id as player_pawn_id,
-           coalesce(a.owner_account_id, 0) as account_id,
+           coalesce(nullif(ps.account_id, 0), nullif(a.owner_account_id, 0), 0) as account_id,
            coalesce(ps.character_name, '') as character_name,
            coalesce(ps.player_controller_id, 0) as player_controller_id,
            coalesce(ps.id, 0) as player_state_id,
@@ -2395,17 +2395,21 @@ export async function playerProfile(db, id) {
            coalesce(ac.platform_name, '') as platform_name,
            case
              when nullif(ac."user", '') is not null then ac."user"
-             when a.owner_account_id is not null and a.owner_account_id <> 0 then a.owner_account_id::text
+             when coalesce(nullif(ps.account_id, 0), nullif(a.owner_account_id, 0)) is not null
+               then coalesce(nullif(ps.account_id, 0), nullif(a.owner_account_id, 0))::text
              else ''
            end as action_player_id,
            a.class,
            coalesce(a.map, '') as map,
            coalesce(ps.online_status::text, 'Offline') as online_status
     from dune.actors a
-    left join dune.player_state ps on ps.account_id = a.owner_account_id
-    left join dune.accounts ac on ac.id = a.owner_account_id
-    where a.id = $1`, [actorId]);
-  if (!result.rows[0]) throw new Error("Player not found");
+    join dune.player_state ps on ps.player_pawn_id = a.id
+    left join dune.accounts ac on ac.id = coalesce(nullif(ps.account_id, 0), nullif(a.owner_account_id, 0))
+    where a.id = $1
+      and a.class ilike '%PlayerCharacter%'
+    order by ps.id desc
+    limit 1`, [actorId]);
+  if (!result.rows[0]) throw playerNotFoundError();
   const row = result.rows[0];
   const [currentFactions, guilds] = await Promise.all([
     leadershipCurrentFactions(db).catch(() => new Map()),
@@ -2586,7 +2590,7 @@ export async function playerSolarisCoinTotal(db, id) {
 export async function playerFactions(db, id, journeyTagsData = {}) {
   if (!(await tableExists(db, "player_faction_reputation"))) return unsupported("factions", ["dune.player_faction_reputation"]);
   const hasFactions = await tableExists(db, "factions");
-  const player = await resolvePlayerMutationTargetCached(db, id);
+  const player = await resolvePlayerTargetCached(db, id);
   const componentResult = await db.query(`
     select properties->'FactionPlayerComponent'->'m_FactionDataArray' as faction_data
     from dune.actors
@@ -2665,7 +2669,7 @@ export async function playerProgression(db, id) {
   if (!(await supportsPlayerProgression(db))) {
     return unsupported("progression", ["dune.player_state", "dune.actor_fgl_entities", "dune.fgl_entities"]);
   }
-  const player = await resolvePlayerMutationTargetCached(db, id);
+  const player = await resolvePlayerTargetCached(db, id);
   const result = await db.query(`
     select (fe.components->'FLevelComponent'->1->>'TotalXPEarned')::bigint as xp,
            (fe.components->'FLevelComponent'->1->>'TotalSkillPoints')::bigint as total_skill_points,
@@ -2694,7 +2698,7 @@ export async function playerIntel(db, id) {
   if (!(await supportsIntelMutation(db))) {
     return unsupported("intel", ["dune.actors (properties column)"]);
   }
-  const player = await resolvePlayerMutationTargetCached(db, id);
+  const player = await resolvePlayerTargetCached(db, id);
   const result = await db.query(`
     select (properties->'TechKnowledgePlayerComponent'->>'m_TechKnowledgePoints')::bigint as intel
     from dune.actors
@@ -2715,7 +2719,7 @@ export async function playerVitals(db, id) {
   if (!(await supportsPlayerVitals(db))) {
     return unsupported("vitals", ["dune.actors (gas_attributes column)", "dune.player_state", "dune.actor_fgl_entities", "dune.fgl_entities"]);
   }
-  const player = await resolvePlayerMutationTargetCached(db, id);
+  const player = await resolvePlayerTargetCached(db, id);
   const hasSpecTracks = await tableExists(db, "specialization_tracks");
   const [healthResult, gasResult, combatResult] = await Promise.all([
     db.query(`
@@ -8487,7 +8491,17 @@ export async function baseContainerSlots(db, baseId, placeableId) {
              nullif((i.stats->'FItemStackAndDurabilityStats'->1->>'DecayedMaxDurability')::numeric, 0),
              null
            ) as max_durability`
-      : "null::numeric as max_durability"
+      : "null::numeric as max_durability",
+    // Same jsonb path buildAugmentedItemStats writes on the add side
+    // (AppliedAugments[].Name paired positionally with
+    // AppliedAugmentQualities) -- read back here rather than duplicated, so
+    // the two cannot disagree about where an item's augments live.
+    hasStats
+      ? "i.stats->'FAugmentedItemStats'->1->'AppliedAugments' as applied_augments"
+      : "null::jsonb as applied_augments",
+    hasStats
+      ? "i.stats->'FAugmentedItemStats'->1->'AppliedAugmentQualities' as applied_augment_qualities"
+      : "null::jsonb as applied_augment_qualities"
   ].join(",\n           ");
   const slotOrder = hasPositionIndex ? "i.position_index nulls last, i.id" : "i.id";
   const [groups, buildingTypes, typeNames] = baseInventoryTypeParams();
@@ -8561,6 +8575,24 @@ export async function baseContainerSlots(db, baseId, placeableId) {
     const templateId = String(row.template_id || "");
     if (!templateId) continue;
     inventory.usedSlots += 1;
+    // AppliedAugments and AppliedAugmentQualities are parallel arrays (see
+    // buildAugmentedItemStats, the write side); an item with none has both as
+    // null (missing key) rather than empty arrays, and a corrupt row could
+    // have mismatched lengths -- read positionally and simply stop pairing
+    // past whichever array is shorter, rather than throwing on a display path.
+    const appliedAugments = Array.isArray(row.applied_augments) ? row.applied_augments : [];
+    const appliedQualities = Array.isArray(row.applied_augment_qualities) ? row.applied_augment_qualities : [];
+    const augments = appliedAugments
+      .map((entry, index) => {
+        const augmentTemplateId = String(entry?.Name || "");
+        if (!augmentTemplateId) return null;
+        return {
+          templateId: augmentTemplateId,
+          name: itemMetadata.get(augmentTemplateId)?.name || augmentTemplateId,
+          qualityLevel: Number(appliedQualities[index]) || 0
+        };
+      })
+      .filter((augment) => augment !== null);
     inventory.slots.push({
       itemId: String(row.item_id),
       templateId,
@@ -8575,7 +8607,8 @@ export async function baseContainerSlots(db, baseId, placeableId) {
         : Number(row.current_durability),
       maxDurability: row.max_durability === null || row.max_durability === undefined
         ? null
-        : Number(row.max_durability)
+        : Number(row.max_durability),
+      augments
     });
   }
 
@@ -8778,6 +8811,181 @@ export async function deleteBaseContainerItem(db, baseId, placeableId, itemId, {
       partial: false,
       removed: { itemId: item.item_id, templateId: item.template_id, count: stackSize, remaining: 0, ...destroyedState },
       message: `${label} was deleted from the database.`
+    };
+  });
+}
+
+// The inverse of deleteBaseContainerItem, and deliberately its neighbour: the
+// two share an ownership proof, and keeping them adjacent is what makes a
+// drift between the copies visible in a diff.
+//
+// The parameter surface is giveItemToStorage's verbatim so resolveCatalogItem's
+// output drops straight in. What it does NOT take is a slot: placement is
+// always max(position_index)+1, and there is no merging into a matching stack,
+// so one add is always exactly one new row in one new slot. Both are contracts
+// the UI states out loud -- see the placement note in the add panel.
+//
+// No `set local search_path` here, unlike its sibling above. That line exists
+// there because the shipped dune.delete_item/dune.delete_inventory_item carry
+// no search_path of their own (pg_proc.proconfig is null for both). This path
+// calls no procedure -- it is a plain schema-qualified insert -- so the line
+// would be cargo-culted noise. Its absence is meaningful.
+export async function addBaseContainerItem(db, baseId, placeableId, {
+  itemName = "", itemId = "", templateId = "",
+  quantity = 1, quality = 0, augments = [], augmentQuality = 1
+} = {}) {
+  await requireCapability(
+    await supportsBaseContainerItemAdd(db),
+    "Container item add requires dune.buildings, dune.building_instances, dune.actor_fgl_entities, dune.placeables, dune.inventories and dune.items with insertable item columns."
+  );
+  const target = intParam(baseId, "base id", 1);
+  const container = intParam(placeableId, "container id", 1);
+  const resolvedTemplate = validateTemplateId(templateId || itemId || itemName);
+  const stackSize = intParam(quantity, "quantity", 1, 1000000);
+  // 0-5, not giveItemToStorage's 0-1000000. That range is an outlier -- every
+  // other path and the entire UI treat grade as 0-5 -- and widening it here
+  // would let the console write a grade the game has no meaning for.
+  const qualityLevel = normalizeStandaloneAugmentQuality(resolvedTemplate, intParam(quality, "grade", 0, 5));
+  const augmentIds = validateAugmentIds(augments);
+  const augmentQualityLevel = normalizeAugmentQuality(augmentQuality);
+  validateAugmentsForTemplate(resolvedTemplate, augmentIds);
+  const [groups, buildingTypes, typeNames] = baseInventoryTypeParams();
+
+  return db.transaction(async (tx) => {
+    // Ownership is re-proved from the base id, never trusted from the
+    // placeable id the caller sent. The inventory_types join is what keeps
+    // this off generator and windtrap fuel inventories, which the Power and
+    // Water tabs own.
+    //
+    // for update OF inv -- not a bare `for update`, since Postgres cannot lock
+    // a CTE reference. The outer query re-joins dune.inventories purely to
+    // have a lockable relation; the copy inside the containers CTE is not one.
+    // `select distinct` stays inside the CTE for the same reason: FOR UPDATE is
+    // rejected alongside DISTINCT at the locking query level.
+    //
+    // Taking this lock BEFORE the capacity and position reads below is the
+    // whole concurrency argument, not a style choice. See the comment there.
+    const found = await tx.query(`
+      with requested_claims as (
+        select distinct b.id, afe.actor_id
+        from dune.buildings b
+        join dune.building_instances bi on bi.building_id = b.id
+        join dune.actor_fgl_entities afe on afe.entity_id = bi.owner_entity_id
+        where b.id = $1
+      ), base_entities as (
+        select distinct rc.id, claim_afe.entity_id as owner_entity_id
+        from requested_claims rc
+        join dune.actor_fgl_entities claim_afe on claim_afe.actor_id = rc.actor_id
+      ), inventory_types as (
+        select * from unnest($2::text[], $3::text[], $4::text[]) as t(group_key, building_type, type_name)
+      ), containers as (
+        select distinct p.id as placeable_id, inv.id as inventory_id,
+               it.group_key, it.type_name
+        from base_entities be
+        join dune.placeables p on p.owner_entity_id = be.owner_entity_id
+        join inventory_types it on it.building_type = lower(p.building_type)
+        join dune.inventories inv on inv.actor_id = p.id and inv.max_item_count >= 0
+        where p.is_hologram = false and p.id = $5
+      )
+      select c.placeable_id::text as placeable_id, c.inventory_id,
+             c.group_key, c.type_name,
+             coalesce(inv.max_item_count, 0)::int as max_item_count
+      from containers c
+      join dune.inventories inv on inv.id = c.inventory_id
+      order by c.inventory_id
+      limit 1
+      for update of inv`, [target, groups, buildingTypes, typeNames, container]);
+
+    const containerRow = found.rows[0];
+    if (!containerRow) throw new Error("That container was not found at the selected base.");
+    if (containerRow.group_key !== "storage") {
+      throw new Error("Items can only be added to Storage containers. Crafting and Refining contents are read-only to protect active jobs.");
+    }
+
+    // One inventory, resolved deterministically rather than chosen by the
+    // caller. A placeable can back more than one surviving inventory, but the
+    // only shipped type that does is a refinery, which is off the storage
+    // allowlist above -- so `limit 1` cannot silently pick the wrong one here.
+    // An optional inventoryId parameter is the extension point if that ever
+    // changes; it would need its own membership check against `containers`.
+    const inventoryId = containerRow.inventory_id;
+    const maxItemCount = Number(containerRow.max_item_count) || 0;
+
+    // count(*) counts ROWS, not summed stack sizes -- correct precisely
+    // because this never merges, so one add always consumes exactly one slot.
+    // A max_item_count of 0 means uncapped, matching giveItemToStorage and
+    // giveItemToPlayer; inventing a third convention for it would be worse
+    // than the unreachable edge it leaves open.
+    const count = await tx.query("select count(*)::int as count from dune.items where inventory_id = $1", [inventoryId]);
+    const currentCount = Number(count.rows[0]?.count || 0);
+    if (maxItemCount > 0 && currentCount >= maxItemCount) {
+      throw new Error(`This container is full: ${currentCount} of ${maxItemCount} slots are used. Delete an item to make room.`);
+    }
+
+    // Safe against a concurrent add despite there being no unique constraint
+    // on (inventory_id, position_index): db.transaction issues a bare `begin`,
+    // so this runs at READ COMMITTED, where the FOR UPDATE above makes a second
+    // adder block until the first commits and then re-evaluate rather than
+    // abort. These two reads are separate statements taking fresh snapshots, so
+    // the waiter sees the committed insert and computes max+1, not the stale
+    // value. The delete's `for update of i, inv` -- specifically the inv -- is
+    // what serializes a concurrent delete against this; trimming it there would
+    // silently break the guarantee here.
+    //
+    // Worst case if that reasoning ever fails: layoutSlots routes a duplicate
+    // index to the overflow list, which still renders with a working delete.
+    // Degraded display, never a lost or unreachable row.
+    const position = await tx.query("select coalesce(max(position_index), -1)::int + 1 as position_index from dune.items where inventory_id = $1", [inventoryId]);
+    const positionIndex = Number(position.rows[0]?.position_index || 0);
+
+    // No explicit durability, deliberately. buildItemStats already gives
+    // clothing and weapons a 100/100 fallback, while ore, spice and salvage get
+    // an empty stat block -- which is what real resource rows actually look
+    // like. Passing giveItemToPlayer's {current:100,max:100} here would stamp
+    // MaxDurability onto a stack of ScrapMetal, inventing state the game never
+    // wrote and that the read path would then render as a durability bar.
+    const standaloneAugment = isStandaloneAugmentTemplate(resolvedTemplate);
+    const rollPayloads = await loadAugmentRollPayloads(
+      tx,
+      standaloneAugment ? [resolvedTemplate] : augmentIds,
+      standaloneAugment ? qualityLevel : augmentQualityLevel,
+      { sourceTemplateId: resolvedTemplate }
+    );
+    const stats = buildItemStats({ templateId: resolvedTemplate, augments: augmentIds, rollPayloads });
+    const itemColumns = await columnsFor(tx, "items");
+    const insert = itemInsertShape(
+      ["inventory_id", "template_id", "stack_size", "quality_level", "position_index", "stats"],
+      [inventoryId, resolvedTemplate, stackSize, qualityLevel, positionIndex, JSON.stringify(stats)],
+      itemColumns
+    );
+    const inserted = await tx.query(`
+      insert into dune.items (${insert.columns.join(", ")})
+      values (${insert.values.map((_, index) => index === 5 ? `$${index + 1}::jsonb` : `$${index + 1}`).join(", ")})
+      returning id, template_id, stack_size, quality_level, position_index, inventory_id`, insert.values);
+    const row = inserted.rows[0];
+    if (!row) throw new Error("Stored item add did not insert the item into the database.");
+
+    const label = resolvedTemplate || "Item";
+    return {
+      ok: true,
+      baseId: target,
+      placeableId: containerRow.placeable_id,
+      inventoryId: String(inventoryId),
+      typeName: containerRow.type_name,
+      group: containerRow.group_key,
+      // Stringified because dune.items.id is bigint and every other id on this
+      // API surface is a decimal string. Reporting the slot after the fact is
+      // fine; promising one beforehand is what the UI must not do.
+      added: {
+        itemId: String(row.id),
+        templateId: row.template_id,
+        quantity: Number(row.stack_size),
+        qualityLevel: Number(row.quality_level),
+        positionIndex: Number(row.position_index),
+        augments: augmentIds.length > 0 ? augmentIds : undefined
+      },
+      capacity: { usedSlots: currentCount + 1, maxSlots: maxItemCount },
+      message: `${label} x${stackSize} was added to ${containerRow.type_name} in slot #${positionIndex}.`
     };
   });
 }
@@ -9501,6 +9709,33 @@ async function supportsPartialStackDelete(db) {
   return functionExists(db, "dune.delete_inventory_item(bigint,bigint)");
 }
 
+// Same six relations as the delete probe above, and for the same reason: the
+// add's ownership query names every one of them, and Postgres resolves a
+// relation at parse time, so a partial probe reports the capability as present
+// and then fails on use.
+//
+// No functionExists check -- the add invokes no shipped procedure, which is
+// also why it needs no search_path. Two column notes worth keeping:
+// placeables.is_hologram is probed because the query filters on it (the delete
+// probe does not, a small pre-existing gap left alone here), and
+// max_item_volume is deliberately absent -- supportsStorageGiveItem probes for
+// it but never reads it, and probing a column this path never selects would
+// make the capability narrower than the feature.
+async function supportsBaseContainerItemAdd(db) {
+  const required = [
+    "buildings", "building_instances", "actor_fgl_entities",
+    "placeables", "inventories", "items"
+  ];
+  const present = await Promise.all(required.map((table) => tableExists(db, table)));
+  if (present.some((exists) => !exists)) return false;
+  const placeableColumns = await columnsFor(db, "placeables");
+  const inventoryColumns = await columnsFor(db, "inventories");
+  const itemColumns = await columnsFor(db, "items");
+  return ["id", "owner_entity_id", "building_type", "is_hologram"].every((column) => placeableColumns.has(column)) &&
+    ["id", "actor_id", "max_item_count"].every((column) => inventoryColumns.has(column)) &&
+    ["inventory_id", "template_id", "stack_size", "quality_level", "position_index", "stats"].every((column) => itemColumns.has(column));
+}
+
 async function supportsStorageGiveItem(db) {
   if (!(await tableExists(db, "items")) || !(await tableExists(db, "inventories"))) return false;
   const inventoryColumns = await columnsFor(db, "inventories");
@@ -9564,34 +9799,48 @@ async function requireCapability(supported, reason) {
   if (!supported) throw new UnsupportedCapabilityError(reason);
 }
 
-async function resolvePlayerMutationTarget(db, id) {
+function playerNotFoundError() {
+  return Object.assign(new Error("Player not found"), { statusCode: 404 });
+}
+
+// This is the identity boundary for every player-scoped database operation.
+// Actor ids are shared by players, terminals, placeables, vehicles, and many
+// other world objects, so an actors row alone must never be treated as proof
+// that the caller selected a player.
+export async function resolvePlayerTarget(db, id) {
   const actorId = intParam(id, "player id", 1);
   const result = await db.query(`
     select a.id as actor_id,
-           coalesce(a.owner_account_id, ps.account_id, 0) as account_id,
-           coalesce(ps.player_controller_id, a.id) as controller_id,
-           coalesce(ps.id, 0) as player_state_id,
+           coalesce(nullif(ps.account_id, 0), nullif(a.owner_account_id, 0), 0) as account_id,
+           coalesce(ps.player_controller_id, 0) as controller_id,
+           ps.id as player_state_id,
            coalesce(ps.online_status::text, 'Offline') as online_status
     from dune.actors a
-    left join dune.player_state ps on ps.player_pawn_id = a.id or ps.account_id = a.owner_account_id
+    left join dune.player_state ps on ps.player_pawn_id = a.id
     where a.id = $1
+      and a.class ilike '%PlayerCharacter%'
+      and ps.id is not null
     limit 1`, [actorId]);
   const row = result.rows[0];
-  if (!row) throw new Error("Player not found");
+  if (!row) throw playerNotFoundError();
   return {
     actorId: Number(row.actor_id),
     accountId: Number(row.account_id || 0),
-    controllerId: Number(row.controller_id || row.actor_id),
+    controllerId: Number(row.controller_id || 0),
     playerStateId: Number(row.player_state_id || 0),
     onlineStatus: row.online_status || "Offline"
   };
+}
+
+async function resolvePlayerMutationTarget(db, id) {
+  return resolvePlayerTarget(db, id);
 }
 
 // Short-TTL cache for read-only capability endpoints (factions/progression/intel/vitals) that
 // otherwise each independently re-run the same actors/player_state join when the Player Summary
 // panel fires them as parallel requests. NOT used for mutation code paths — those must always
 // see a fresh onlineStatus for requireOfflinePlayer() to be safe.
-async function resolvePlayerMutationTargetCached(db, id) {
+export async function resolvePlayerTargetCached(db, id) {
   const key = String(id);
   const cached = playerTargetCache.get(key);
   if (cached && cached.expiresAt > Date.now()) return cached.promise;

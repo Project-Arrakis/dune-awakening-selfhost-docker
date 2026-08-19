@@ -1,14 +1,16 @@
 # RFC: Console Layered Authentication — Discord OAuth (Fixed), Optional Passkeys, Hardened Password Fallback
 
 **Date:** 2026-08-17
-**Status:** Layer 1 Design — Request for Comment
-**Audit:** Eight-Hat Layer 1 completed across three passes (two full, one targeted). Findings incorporated; full findings register in §8.
+**Status:** Layer 1 Design — Request for Comment (revised after upstream review)
+**Audit:** Initial Eight-Hat review plus upstream identity, recovery-code resource, and upgrade-path corrections; full findings register in §8.
+
+**Dependency note, checked directly against `upstream/main` before submitting this RFC:** §2.1 (Tier 1) and part of §2.2 (Tier 2) reference `console/api/src/integrations/discord/oauth.js` and `handoff.js` — the Discord OAuth sign-in + signed-handoff tier-resolution system. This code does **not exist on `upstream/main` today**. It was previously proposed as its own PR (#130, "Tranche 2: Discord OAuth sign-in with PKCE + tiered sessions", self-closed by the submitter, never merged) and currently exists only in this fork. The RBAC/session foundation it builds on (opaque sessions, `resolveSessionTier`, the policy engine) **did** land upstream via PR #134 and is present today — §2.3 (Tier 3) builds directly on that already-merged foundation and has no dependency gap. Sequencing is left to the maintainer's judgment: Tier 3 could be reviewed/merged independently of Tiers 1/2, or Tiers 1/2 could be resubmitted (individually or together with this RFC) if there's still interest in the Discord OAuth feature itself landing upstream. Flagging this now rather than presenting the whole design as if every piece it touches already exists on `main`.
 
 ---
 
 ## 1. Problem
 
-The console's admin login today is a single shared password (`ADMIN_PASSWORD` or a generated secret), plus an already-shipped, optional "Sign in with Discord" path (`console/api/src/integrations/discord/oauth.js`) that resolves a tiered session via a signed handoff to the operator's own Discord bot.
+The console's admin login today is a single shared password (`ADMIN_PASSWORD` or a generated secret) on both this fork and upstream, plus an optional "Sign in with Discord" path (`console/api/src/integrations/discord/oauth.js`) that resolves a tiered session via a signed handoff to the operator's own Discord bot — this second path exists only in this fork today (see the dependency note above).
 
 Two independent, real problems exist in this area today, both confirmed against the current code, not theoretical:
 
@@ -40,7 +42,7 @@ Rather than replacing the password path with a single new "primary" mechanism (t
 
 ### 2.1 Tier 1 — Discord OAuth (fixed)
 
-No new requirement over what exists today. The only change is closing the fail-open bug from §1.1:
+**Depends on the not-yet-upstreamed Discord OAuth system** (see the dependency note at the top of this document — this section describes "what exists today" in the *fork*, not on `upstream/main`). No new requirement over what exists in the fork today. The only change is closing the fail-open bug from §1.1:
 
 ```js
 // Current:
@@ -80,7 +82,7 @@ This is the entire fix — no cache, no grace window, no new persisted state. `h
 
 ### 2.2 Tier 2 — Passkeys (opt-in, secure-context-gated)
 
-Gated by an explicit, operator-set config value — never auto-detected from request headers (auto-detection would reintroduce a spoofable-header trust problem an earlier draft of this design had and rejected):
+**Partially depends on the not-yet-upstreamed Discord OAuth system**: passkeys support two explicit identity sources, never an unspecified "whatever tier system is present." A Discord-authenticated registration is keyed to that Discord user and requires live Discord tier resolution at every passkey login. A password-authenticated registration is keyed to the single built-in `local-owner` principal described below and always resolves to owner. Upstream without Discord therefore supports only `local-owner` passkeys. Gated by an explicit, operator-set config value — never auto-detected from request headers:
 
 ```
 WEBAUTHN_RP_ID=console.example.com
@@ -90,20 +92,23 @@ Unset by default — byte-identical behavior to today; no passkey routes are eve
 
 **This tier is explicitly optional, not a replacement for Tier 3**, because this project's own deployment guidance for the console specifically recommends reaching it over a plain-HTTP VPN tunnel with no reverse proxy — an access pattern where WebAuthn's secure-context requirement is never satisfied. An earlier draft of this design made passkeys the sole primary login and was rejected at audit specifically because it would have broken login entirely for any operator following that exact guidance.
 
-**Self-service registration is the second-admin-onboarding mechanism**: any already-authenticated admin (any tier) can add a passkey to their own identity from the settings panel. This reuses an existing, precedented authorization pattern already in this codebase — `console/api/src/integrations/discord/policy.js`'s `SELF_SCOPED_CAPABILITIES` (`PLAYER_LINK_WRITE`, `ACCOUNT_LINK_WRITE`), capabilities deliberately carved out of the normal tier ladder because "every route that checks it always passes `discordUserId = actor.userId`, never a separate target... gating it by role tier either over-restricts or over-grants." This RFC applies the identical shape to the console's own session-based policy engine: a new action namespace (`self:passkey-register`/`self:passkey-remove`) outside `settings:*` entirely, checked by a dedicated `requireSelfScopedAction()` helper that only confirms a valid session exists, never a caller-supplied target.
+**Identity contract and self-service registration**: every session used for passkey registration must have a non-empty, server-assigned principal. Discord sessions use `discord:<userId>`. The shared-password route, which currently calls `makeSession()` with an empty `userId`, must instead create `local-owner` sessions. This does not pretend that a shared password creates individual people: all password users deliberately share one owner principal, and all of its passkeys are owner credentials. Labels distinguish devices, not humans. Any `local-owner` session may list or remove any `local-owner` passkey; operators wanting individual identity, demotion, and per-person revocation must use Discord-backed principals. Password/TOTP rotation does not silently revoke passkeys, so the rotation UI must offer an explicit "revoke all local-owner passkeys" control.
 
-Storage is deliberately minimal — no new local-identity/account concept. A passkey credential is keyed by the `userId` already present on every session, in one small new file (`runtime/generated/webauthn-credentials.json`, via the console's existing `writeJsonAtomic()` helper, the same one `policy.js` already uses for `iam-policies.json`):
+Registration and removal use `self:passkey-register`/`self:passkey-remove`. The server derives the principal exclusively from the authenticated session; neither endpoint accepts a target `userId`. Registration from a password session is available only after that session has completed TOTP, including the mandatory upgrade enrollment described in §4.
+
+Storage is deliberately minimal — it persists the explicit principal type but does not introduce local user accounts. Credentials live in `runtime/generated/webauthn-credentials.json` via `writeJsonAtomic()`:
 
 ```json
 {
   "version": 1,
   "credentials": [
-    { "userId": "...", "credentialId": "...", "publicKey": "...", "signCount": 0, "label": "work laptop", "createdAt": "..." }
+    { "principal": "local-owner", "credentialId": "...", "publicKey": "...", "signCount": 0, "label": "work laptop", "createdAt": "..." },
+    { "principal": "discord:123456789", "credentialId": "...", "publicKey": "...", "signCount": 0, "label": "phone", "createdAt": "..." }
   ]
 }
 ```
 
-A passkey login authenticates *who* the person is, then re-resolves their **current** tier the same way a fresh Discord login would — so a passkey login is always as fresh/correctly-tiered as a live Discord login, and a demoted admin's passkey never grants a stale tier.
+A passkey login dispatches by principal type. `discord:*` re-resolves the current tier through the authoritative handoff and denies on an unavailable/empty result. `local-owner` resolves to owner because it represents the existing shared owner credential, not an individual account. Unknown principal types fail closed.
 
 **Dependency**: `@simplewebauthn/server` (npm, MIT, `13.3.2`, 8 well-scoped transitive dependencies for CBOR/ASN.1/X.509 parsing) + `@simplewebauthn/browser` (MIT, zero dependencies) for the registration/authentication ceremonies, using the standard `attestationType: "none"` flow with neither the library's certificate-revocation check nor its FIDO Metadata Service integration ever enabled — keeping its own network-capable code paths entirely unreached. `qrcode` (npm, MIT, zero runtime dependencies in its browser bundle) for TOTP QR rendering (Tier 3, §2.3).
 
@@ -113,7 +118,7 @@ This tier is **not** pure emergency break-glass. For an operator with neither Ti
 
 This is why TOTP is **mandatory**, not optional, regardless of which role the tier is playing for a given operator: the justification is structural, not frequency-based. Tier 3 is the only tier backed by a single static, shareable, non-device-bound secret (unlike Tier 1's live Discord identity check or Tier 2's per-device passkey) — a compromised Tier 3 credential, for an operator with no Tier 1/2 configured, grants everything, unconditionally, for the entire lifetime of the install.
 
-**Recovery codes**: 10, single-use, hashed with `scrypt` (Node's built-in `crypto.scryptSync`, no new dependency) using **explicit, non-default parameters** — Node's bare `scryptSync` defaults (`N=16384`) are below OWASP's current minimum recommendation for this use case, and OWASP-strength parameters (`N=131072, r=8, p=1`) throw `ERR_CRYPTO_INVALID_SCRYPT_PARAMS` against Node's default 32MiB `maxmem` unless an explicit override is supplied. This RFC specifies `N=131072, r=8, p=1, maxmem=256MiB` (confirmed working, ~430ms per hash — acceptable for an action that happens a handful of times per install's lifetime) plus a random 16-byte per-code salt, rather than "use scrypt" alone. Consuming a code triggers forced TOTP+password re-setup on that same login, so losing a TOTP device does not permanently lock an operator out as long as they still have at least one unused recovery code.
+**Recovery codes**: 10 single-use, server-generated 128-bit random tokens, encoded with a short checksum to catch transcription errors. These are high-entropy bearer tokens, not user-chosen passwords, so the store contains `SHA-256(domain-separator || code)` rather than applying a password KDF. A stolen hash still requires a computationally infeasible 128-bit search, while verification is one constant-time hash lookup instead of up to ten 256 MiB scrypt operations. The submitted digest is compared against a `Set` of unused digests, consumed through the same serialized atomic-write queue, and the login endpoint retains the existing per-client/global limiter. Consuming a code triggers forced TOTP+password re-setup on that same login.
 
 **Session invalidation on credential rotation**: rotating the Tier 3 password/TOTP clears every session **except** the one performing the rotation, and requires that acting session to re-prove its own credential immediately before the rotation is accepted — not just trusted from an existing cookie. This closes two problems at once: legitimate concurrent admins are correctly logged out (a real credential-rotation event), and a session-hijacking attacker cannot use a stolen session alone to entrench a credential rotation, since the rotation itself demands fresh proof of possession.
 
@@ -125,7 +130,7 @@ This is why TOTP is **mandatory**, not optional, regardless of which role the ti
 
 **`signCount` read-modify-write safety**: concurrent passkey logins racing on the same credential-store file need serialized reads/writes. A module-level `Promise` chain acts as a serializing queue (not a boolean lock) — each request appends its read-modify-write to the tail of the chain and awaits its own link, so concurrent requests are queued and both eventually succeed in arrival order, never rejected outright.
 
-**Rate limiting on this path is unchanged** — the existing login rate limiter (8 attempts/key, 32 global, 15-minute block) is kept as-is. This project's own console deployment guidance already recommends VPN-based access (which preserves real per-client source IPs) over an HTTP-terminating reverse proxy/tunnel (which would collapse all client IPs to one shared bucket) for exactly this reason — a generic, proxy-aware fix is real, useful, future work, but is not required by this RFC's scope and is not attempted here.
+**Rate limiting on this path is unchanged** — recovery-code checks are constant-memory SHA-256 operations and remain behind the existing login limiter (8 attempts/key, 32 global, 15-minute block). This project's console deployment guidance already recommends VPN-based access, which preserves real per-client source IPs. A generic proxy-aware fix remains separate work.
 
 ---
 
@@ -135,8 +140,8 @@ This is why TOTP is **mandatory**, not optional, regardless of which role the ti
 
 Each tier's compromise has a bounded, tier-specific blast radius:
 - A compromised Discord account only grants what that account's real, live-checked Discord role currently allows (re-verified on every login, not cached).
-- A stolen/cloned passkey only grants access from that specific device/credential, and is individually revocable without affecting any other admin's access.
-- A compromised Tier 3 credential is the only one that can grant unconditional owner access on an install with no Tier 1/2 configured — which is exactly why it receives the strongest hardening (mandatory TOTP, named-and-tuned KDF, proof-of-possession-gated rotation) regardless of how often it's actually used.
+- A stolen/cloned passkey grants access as its bound principal. Discord passkeys retain per-person tier/revocation semantics. `local-owner` passkeys are individually revocable devices for the shared owner principal; they intentionally do not claim per-person identity.
+- A compromised Tier 3 credential is the only one that can grant unconditional owner access on an install with no Tier 1/2 configured — which is exactly why it receives mandatory TOTP, high-entropy single-use recovery tokens, and proof-of-possession-gated rotation regardless of how often it is used.
 
 ### 3.2 No new network-topology assumption
 
@@ -152,7 +157,8 @@ This design was revised specifically to remove a Cloudflare-specific rate-limiti
 
 - **Tier 1 fix has no upgrade-path complexity**: it's a behavior correction to already-optional, already-Discord-OAuth-configured installs only. An operator who has never configured Discord OAuth is completely unaffected.
 - **`WEBAUTHN_RP_ID` unset (default) is byte-identical to today**: no new routes registered, no new file created, zero behavior change for any operator who doesn't opt in.
-- **Tier 3's hardening is not gated behind an opt-in**: this is a correctness/security fix to an existing, always-on mechanism, with no new required config. An existing `ADMIN_PASSWORD` continues to authenticate exactly as today until an operator next changes it, at which point TOTP setup becomes part of that one-time flow.
+- **Tier 3's hardening is not gated behind an opt-in**. On first password authentication after upgrade, an installation with no TOTP state receives a short-lived, enrollment-only session. That session can access only TOTP setup, confirmation, recovery-code display/download, and logout; it cannot access normal console APIs. Successful TOTP confirmation atomically creates the `local-owner` second-factor state, displays the recovery codes once, invalidates the enrollment session, and requires a normal password+TOTP login. Existing ordinary sessions are in-memory and disappear when the upgraded console process starts. This makes "mandatory" true immediately without locking out an operator before enrollment.
+- **Interrupted enrollment is recoverable**: until confirmation commits, no TOTP state is considered active and the operator can restart enrollment with the password. Once committed, recovery codes are already persisted before the success response is sent.
 - **No existing config key is renamed or removed.**
 
 ---
@@ -161,9 +167,9 @@ This design was revised specifically to remove a Cloudflare-specific rate-limiti
 
 | Current | After |
 |---|---|
-| Discord OAuth silently falls through to a static owner allowlist on any handoff failure | Handoff failure denies access; allowlist only applies to a brand-new install with no handoff configured at all |
-| Single shared password, no second factor, no recovery path | Password + mandatory TOTP + 10 single-use, properly-hashed recovery codes |
-| No non-Discord device-bound login option | Optional, TLS-gated passkey support, self-service per-admin registration |
+| *(fork-only, see dependency note above)* Discord OAuth silently falls through to a static owner allowlist on any handoff failure | Handoff failure denies access; allowlist only applies to a brand-new install with no handoff configured at all |
+| Single shared password, no second factor, no recovery path | Password + mandatory TOTP from the first post-upgrade login + 10 single-use high-entropy recovery codes |
+| No non-Discord device-bound login option | Optional, TLS-gated passkeys bound either to a Discord person or the explicitly shared `local-owner` principal |
 | Full-file, unscoped session invalidation on any credential change (considered and rejected during design) | Scoped invalidation (only the credential-type affected) + proof-of-possession required from the acting session |
 
 ---
@@ -175,9 +181,9 @@ This design was revised specifically to remove a Cloudflare-specific rate-limiti
 | Unit — Tier 1 fix | `handoff.test.js`'s two existing "falls back to bootstrap" tests: one (`handoff configured but failing`) is rewritten to assert denial; the other (`handoff never configured`) is re-verified unchanged, since that case is intentionally preserved | `console/api/test/handoff.test.js` |
 | Unit — passkey ceremonies | Registration/authentication success and failure paths, using `@simplewebauthn/server`'s own known-good test fixtures | new `console/api/test/passkey*.test.js` |
 | Unit — signCount safety | Concurrent-request queueing behavior; replay/rollback detection | new test, same file |
-| Unit — recovery codes | Correct KDF parameters produce a working hash/verify round-trip within an acceptable time budget; single-use enforcement; forced re-setup on consumption | new `console/api/test/recoveryCodes.test.js` |
+| Unit — recovery codes | 128-bit generation, checksum rejection, SHA-256 domain separation, constant-time membership lookup, single-use atomic consumption, and forced re-setup | new `console/api/test/recoveryCodes.test.js` |
 | Integration — session scoping | A credential-type-scoped rotation clears only the intended sessions, leaves others untouched, and requires fresh proof-of-possession from the acting session | extends `auth.test.js` |
-| Upgrade-path | Fresh install (no config) → Tier 3 only, functions correctly; existing pre-RFC install with `ADMIN_PASSWORD` set → unaffected until first credential-rotation event; `WEBAUTHN_RP_ID` configured mid-lifecycle → Tier 2 becomes available without disrupting Tier 1/3 | extends existing upgrade-path test conventions |
+| Upgrade-path | Fresh and existing password installs receive only an enrollment session until TOTP confirmation; interrupted enrollment can restart; post-confirmation password-only login is rejected; `WEBAUTHN_RP_ID` configured mid-lifecycle enables `local-owner` passkeys without inventing individual identities | extends existing upgrade-path test conventions |
 | Frontend | Login form's passkey/password branching, settings-panel passkey list/add/remove, TOTP+recovery-code setup screen (QR + text-fallback secret shown together) | `console/web` Vitest suite |
 
 ---
@@ -188,11 +194,17 @@ This design was revised specifically to remove a Cloudflare-specific rate-limiti
 - **Any Cloudflare-specific mechanism of any kind.**
 - **A generic, proxy-aware fix for the shared-rate-limit-bucket problem** behind an HTTP-terminating reverse proxy/tunnel — real, deferred, separate work.
 - **Multi-instance/clustered console deployment** — this console is, and remains, single-process; both new mechanisms (in-memory sessions, the passkey credential store) are designed against that existing architecture, not a future clustered one.
-- **A local admin-identity/account system with its own credential-linking schema.** Discord OAuth remains the identity source for admin-ship; a passkey attaches to an existing, already-authenticated session rather than a new, parallel identity concept.
+- **A local per-person admin-account system.** The only non-Discord principal is the explicit shared `local-owner`; the design does not infer individual humans from a shared password. Discord OAuth remains the source for per-person identity and tiering.
 
 ---
 
 ## 8. Audit Record
+
+**Upstream review corrections (2026-08-18):**
+
+- Defined `discord:<id>` and `local-owner` as the only passkey principal types. This replaces the under-specified fallback to "whatever tier system is present" and acknowledges that the existing shared-password path has no per-person identity.
+- Replaced ten potentially memory-exhausting scrypt comparisons with one constant-memory SHA-256 lookup over a server-generated 128-bit recovery token. Password-KDF guidance is not applicable to uniformly random bearer tokens.
+- Replaced indefinite legacy-password exemption with a restricted, mandatory first-login TOTP enrollment flow.
 
 **Layer 1 Eight-Hat Findings (three passes: two full, one targeted against the final revision):**
 

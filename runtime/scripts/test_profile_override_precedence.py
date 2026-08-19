@@ -172,6 +172,73 @@ class RetiredModifierAndCoriolisMetadataTests(ProfilePathTestCase):
         self.assertEqual(field["label"], "Restart Map Process At Coriolis Cycle End")
         self.assertIn("does not queue a Console battlegroup restart", field["description"])
 
+    def test_coriolis_cycle_start_fields_are_exposed_with_bounds_and_context(self):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.assertEqual(usersettings.metadata(), 0)
+        payload = json.loads(output.getvalue())
+        fields = {row["id"]: row for row in payload["game"]}
+        expected = {
+            "coriolis_cycle_start_year": ("m_CycleStartYear", "2024", 1, 9999),
+            "coriolis_cycle_start_month": ("m_CycleStartMonth", "12", 1, 12),
+            "coriolis_cycle_start_day": ("m_CycleStartDay", "3", 1, 7),
+            "coriolis_cycle_start_hour": ("m_CycleStartHour", "5", 0, 23),
+            "coriolis_cycle_start_minute": ("m_CycleStartMinute", "0", 0, 59),
+        }
+        for field_id, (key, default, minimum, maximum) in expected.items():
+            with self.subTest(field_id=field_id):
+                field = fields[field_id]
+                self.assertEqual(field["section"], usersettings.CORIOLIS_SUBSYSTEM_SECTION)
+                self.assertEqual(field["key"], key)
+                self.assertEqual(field["default"], default)
+                self.assertEqual(field["type"], "integer")
+                self.assertEqual(field["minimum"], minimum)
+                self.assertEqual(field["maximum"], maximum)
+        self.assertIn("1=Sunday", fields["coriolis_cycle_start_day"]["description"])
+        self.assertIn("UTC hour", fields["coriolis_cycle_start_hour"]["description"])
+        self.assertEqual(fields["coriolis_cycle_start_seed_index"]["key"], "m_CycleStartSeedIndex")
+        self.assertEqual(fields["coriolis_cycle_start_seed_index"]["type"], "integer")
+
+    def test_coriolis_cycle_start_components_are_validated(self):
+        profile = usersettings.empty_profile()
+        for field_id, value in (
+            ("coriolis_cycle_start_year", "0"),
+            ("coriolis_cycle_start_month", "13"),
+            ("coriolis_cycle_start_day", "8"),
+            ("coriolis_cycle_start_hour", "24"),
+            ("coriolis_cycle_start_minute", "60"),
+            ("coriolis_cycle_start_minute", "1.5"),
+        ):
+            with self.subTest(field_id=field_id, value=value), self.assertRaises(SystemExit):
+                usersettings.set_profile_field(profile, "global", "", "", field_id, value)
+
+    def test_coriolis_cycle_start_values_compile_into_usergame(self):
+        profile = usersettings.empty_profile()
+        usersettings.set_profile_field(profile, "global", "", "", "coriolis_cycle_start_hour", "22")
+        usersettings.set_profile_field(profile, "global", "", "", "coriolis_cycle_start_minute", "30")
+        rendered = usersettings.compiled_usergame_ini(profile, MAP_NAME)
+        self.assertIn("m_CycleStartHour=22", rendered)
+        self.assertIn("m_CycleStartMinute=30", rendered)
+
+    def test_landsraad_coriolis_offset_is_exposed_and_kept_on_one_data_line(self):
+        field = usersettings.LANDSRAAD_DATA_FIELDS["landsraad_voting_start_before_coriolis_seconds"]
+        self.assertEqual(field[:2], ("m_VotingPeriodStartBeforeCoriolisCycleInSec", "118800"))
+        self.assertIn("m_VotingPeriodStartBeforeCoriolisCycleInSec=118800", usersettings.LANDSRAAD_DATA_TEMPLATE)
+
+        profile = usersettings.empty_profile()
+        usersettings.set_profile_field(
+            profile,
+            "global",
+            "",
+            "",
+            "landsraad_voting_start_before_coriolis_seconds",
+            "122400",
+        )
+        rendered = usersettings.compiled_usergame_ini(profile, MAP_NAME)
+        data_lines = [line for line in rendered.splitlines() if line.startswith("Data=(")]
+        self.assertEqual(len(data_lines), 1)
+        self.assertIn("m_VotingPeriodStartBeforeCoriolisCycleInSec=122400", data_lines[0])
+
 
 class StakingExtensionArrayTests(ProfilePathTestCase):
     """Staking timers are ten-element native arrays, exposed as one safe scalar."""
