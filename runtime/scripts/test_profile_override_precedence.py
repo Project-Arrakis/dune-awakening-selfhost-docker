@@ -150,7 +150,7 @@ class RetiredModifierAndCoriolisMetadataTests(ProfilePathTestCase):
             self.assertNotIn(retired, compiled)
             self.assertNotIn(retired, client)
         self.assertIn("UnknownCommunitySetting=keep", compiled)
-        self.assertIn("UnknownCommunitySetting=keep", client)
+        self.assertNotIn("UnknownCommunitySetting=keep", client)
 
     def test_saving_profile_removes_only_retired_keys(self):
         profile = usersettings.parse_profile_text(
@@ -240,6 +240,53 @@ class RetiredModifierAndCoriolisMetadataTests(ProfilePathTestCase):
         self.assertIn("m_VotingPeriodStartBeforeCoriolisCycleInSec=122400", data_lines[0])
 
 
+class ClientGameIniAllowlistTests(ProfilePathTestCase):
+    def test_exports_only_nondefault_client_required_fields(self):
+        profile = usersettings.parse_profile_text(
+            "[Global:/Script/DuneSandbox.DuneGameMode]\n"
+            "m_WaterConsumptionRate=2.0\n"
+            "m_DefaultReconnectGracePeriodSeconds=900\n"
+            "UnknownCommunitySetting=keep-server-only\n\n"
+            f"[Global:{usersettings.LANDSRAAD_SETTINGS_SECTION}]\n"
+            f"{usersettings.LANDSRAAD_DATA_KEY}={usersettings.LANDSRAAD_DATA_TEMPLATE}\n\n"
+            f"[Global:{usersettings.DEEPDESERT_MATCHMAKER_SECTION}]\n"
+            f"+{usersettings.DEEPDESERT_MATCHMAKER_KEY}=2.000000\n\n"
+            f"[Global:{usersettings.BUILDING_SETTINGS_SECTION}]\n"
+            "m_BaseBackupToolTimeRestrictionInSeconds=60\n"
+            "m_StakingUnitExtensionDefaultTimes=2\n"
+        )
+
+        rendered = usersettings.client_game_ini(profile, MAP_NAME)
+
+        self.assertIn("m_WaterConsumptionRate=2.0", rendered)
+        self.assertIn("m_BaseBackupToolTimeRestrictionInSeconds=60", rendered)
+        self.assertNotIn("m_DefaultReconnectGracePeriodSeconds", rendered)
+        self.assertNotIn("UnknownCommunitySetting", rendered)
+        self.assertNotIn(usersettings.LANDSRAAD_SETTINGS_SECTION, rendered)
+        self.assertNotIn(usersettings.DEEPDESERT_MATCHMAKER_SECTION, rendered)
+        self.assertNotIn("m_StakingUnitExtensionDefaultTimes", rendered)
+
+    def test_uses_winning_map_and_partition_values_for_required_fields(self):
+        section, key, _default = usersettings.MAP_FIELDS["water_consumption_rate"]
+        profile = usersettings.empty_profile()
+        usersettings.profile_set_key(profile, "global", section, key, "2.0")
+        usersettings.profile_set_key(profile, "map", section, key, "3.0", MAP_NAME)
+        usersettings.profile_set_key(profile, "partition", section, key, "4.0", MAP_NAME, PARTITION_ID)
+
+        self.assertIn(f"{key}=2.0", usersettings.client_game_ini(profile, ""))
+        self.assertIn(f"{key}=3.0", usersettings.client_game_ini(profile, MAP_NAME))
+        self.assertIn(f"{key}=4.0", usersettings.client_game_ini(profile, MAP_NAME, PARTITION_ID))
+        self.assertNotIn(f"{key}=4.0", usersettings.client_game_ini(profile, MAP_NAME, OTHER_PARTITION_ID))
+
+    def test_omits_client_required_fields_at_their_defaults(self):
+        rendered = usersettings.client_game_ini(usersettings.empty_profile(), MAP_NAME)
+        for field_id, filename in usersettings.CLIENT_FILE_REQUIRED.items():
+            if filename != "Game.ini":
+                continue
+            _section, key, _default = usersettings.MAP_FIELDS[field_id]
+            self.assertNotIn(f"{key}=", rendered)
+
+
 class StakingExtensionArrayTests(ProfilePathTestCase):
     """Staking timers are ten-element native arrays, exposed as one safe scalar."""
 
@@ -260,7 +307,7 @@ class StakingExtensionArrayTests(ProfilePathTestCase):
         profile = usersettings.empty_profile()
         usersettings.set_profile_field(profile, "global", "", "", self.FIELD_ID, "2")
         self.assert_complete_array(usersettings.compiled_usergame_ini(profile, MAP_NAME), "2.000000")
-        self.assert_complete_array(usersettings.client_game_ini(profile, MAP_NAME), "2.000000")
+        self.assertNotIn(self.KEY, usersettings.client_game_ini(profile, MAP_NAME))
 
     def test_map_and_partition_precedence_selects_one_complete_array(self):
         profile = usersettings.empty_profile()
