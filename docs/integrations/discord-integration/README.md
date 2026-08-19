@@ -1,6 +1,6 @@
 # Discord Adapter — Setup and Configuration
 
-**Status:** Current | **Last Updated:** August 2026
+**Status:** Current | **Last Updated:** July 2026
 
 > **Which Discord docs do I want?** This folder (`discord-integration/`) is the
 > **operator-facing** set — start here if you are setting up Discord on your server.
