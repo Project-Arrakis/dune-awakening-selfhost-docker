@@ -337,6 +337,7 @@ test("player portal market overview stays available when Buyback classification 
     assert.equal(snapshot.overview.available, true, "anonymous overview remains usable");
     assert.equal(snapshot.overview.items[0].displayName, "Water Bottle");
     assert.equal(snapshot.overview.items[0].listingCount, 2);
+    assert.equal(snapshot.overview.items[0].maxUnitPrice, "600", "configured ceilings remain available for the server-wide overview");
     assert.deepEqual(snapshot.listings, []);
   } finally {
     rmSync(repoRoot, { recursive: true, force: true });
