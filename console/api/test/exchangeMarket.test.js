@@ -233,6 +233,9 @@ test("market status carries both schedules with their sources", async () => {
     assert.equal(status.buyback.source, "console");
     assert.equal(status.seed.priceMultiplier, 7);
     assert.equal(status.seed.source, "console");
+    assert.deepEqual(status.seed.commodityStacks, {});
+    assert.ok(Array.isArray(status.commodityStackCatalog));
+    assert.ok(status.commodityStackCatalog.some((item) => item.templateId === "Oil"));
   } finally {
     rmSync(repoRoot, { recursive: true, force: true });
   }

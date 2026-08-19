@@ -1,0 +1,56 @@
+import { describe, expect, it } from "vitest";
+import type { Task } from "../../api/setup";
+import { isDetachedStackUpdateTask, summarizeStackUpdateProgress } from "./UpdatesPanel";
+
+function detachedTask(overrides: Partial<Task> = {}): Task {
+  return {
+    id: "123e4567-e89b-42d3-a456-426614174000",
+    type: "updates",
+    operation: "selfUpdateApply",
+    status: "running",
+    currentStep: "Update helper running",
+    progressMessage: "Update helper is running.",
+    logLines: [{ timestamp: "2026-08-18T07:00:00Z", stream: "stdout", line: "Update helper started: helper-id" }],
+    warnings: [],
+    startedAt: "2026-08-18T07:00:00Z",
+    finishedAt: null,
+    errorMessage: null,
+    ...overrides
+  };
+}
+
+describe("detached console update progress", () => {
+  it("recognizes a running handoff without falsely marking the API task succeeded", () => {
+    const task = detachedTask();
+    expect(isDetachedStackUpdateTask(task)).toBe(true);
+    expect(task.status).toBe("running");
+  });
+
+  it("uses durable helper stages instead of time-simulated progress", () => {
+    const summary = summarizeStackUpdateProgress(detachedTask(), {
+      runId: "123e4567-e89b-42d3-a456-426614174000",
+      state: "running",
+      stage: "building",
+      percent: 82,
+      message: "Building the updated web console."
+    });
+    expect(summary).toEqual({
+      title: "Building Web Console",
+      percent: 82,
+      message: "Building the updated web console."
+    });
+  });
+
+  it("shows a durable helper failure and enables a truthful terminal result", () => {
+    const task = detachedTask({ status: "failed", errorMessage: "Console build timed out.", finishedAt: "2026-08-18T07:30:00Z" });
+    const summary = summarizeStackUpdateProgress(task, {
+      runId: task.id,
+      state: "failed",
+      stage: "failed",
+      percent: 100,
+      message: "Console build timed out."
+    });
+    expect(summary.title).toBe("Console Update Failed");
+    expect(summary.message).toBe("Console build timed out.");
+  });
+});

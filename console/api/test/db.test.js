@@ -11,6 +11,7 @@ import {
   UnsupportedCapabilityError,
   _resetPlayerTargetCacheForTests,
   _resetRefillPartitionDwellForTests,
+  addBaseContainerItem,
   addCurrency,
   addFactionReputation,
   addGuildMember,
@@ -148,6 +149,7 @@ import {
   resetTutorial,
   resolveBuildingDisplayName,
   resolvePlayerByName,
+  resolvePlayerTarget,
   routineDefinition,
   runSql,
   searchDatabase,
@@ -3539,6 +3541,34 @@ test("player profile ignores reputation entirely and stays Neutral when only rep
   assert.equal(result.player.faction_assigned, false);
 });
 
+test("player profile rejects an existing non-player actor id", async () => {
+  const db = {
+    query: async (text, values = []) => {
+      if (text.includes("as fls_id") && text.includes("where a.id = $1")) {
+        assert.deepEqual(values, [2]);
+        assert.match(text, /join dune\.player_state ps on ps\.player_pawn_id = a\.id/);
+        assert.match(text, /a\.class ilike '%PlayerCharacter%'/);
+        return { rows: [] };
+      }
+      return { rows: [] };
+    }
+  };
+  await assert.rejects(playerProfile(db, "2"), (error) => error.statusCode === 404 && error.message === "Player not found");
+});
+
+test("player identity boundary rejects world actors without a current player pawn relationship", async () => {
+  const db = {
+    query: async (text, values = []) => {
+      assert.deepEqual(values, [2]);
+      assert.match(text, /left join dune\.player_state ps on ps\.player_pawn_id = a\.id/);
+      assert.match(text, /a\.class ilike '%PlayerCharacter%'/);
+      assert.match(text, /ps\.id is not null/);
+      return { rows: [] };
+    }
+  };
+  await assert.rejects(resolvePlayerTarget(db, "2"), (error) => error.statusCode === 404 && error.message === "Player not found");
+});
+
 test("addon leadership players derive character level from level component XP", async () => {
   const db = {
     query: async (text, values = []) => {
@@ -3948,6 +3978,336 @@ test("container item delete degrades to null state fields on a schema without th
   assert.ok(!query.text.includes("i.position_index"), "must not select a column this schema lacks");
 });
 
+// Container-item add. The inverse of the delete above and, like it, mostly a
+// story about the ownership query -- plus two contracts the UI states out loud
+// and the backend has to actually keep: never merge into an existing stack, and
+// always append to the next free slot.
+function fakeContainerAddDb(calls, fixtures = {}) {
+  const {
+    containerRows = [],
+    count = 0,
+    maxPositionIndex = -1,
+    augmentRollRows = [],
+    insertedRows = null,
+    itemColumns = ["id", "inventory_id", "stack_size", "position_index", "template_id", "stats", "quality_level"],
+    tables = null
+  } = fixtures;
+  const run = async (text, values = []) => {
+    calls.push({ text, values });
+    if (text.includes("to_regclass")) {
+      if (!tables) return { rows: [{ exists: true }] };
+      const name = String(values[0] || "");
+      return { rows: [{ exists: tables.some((table) => name.includes(table)) }] };
+    }
+    if (text.includes("to_regprocedure")) return { rows: [{ exists: true }] };
+    if (text.includes("information_schema.columns")) {
+      // columnsFor passes [schema, table], so the table name is values[1].
+      const table = String(values[1] || "");
+      if (table === "items") return { rows: itemColumns.map((column_name) => ({ column_name })) };
+      if (table === "inventories") {
+        return { rows: ["id", "actor_id", "max_item_count", "max_item_volume"].map((column_name) => ({ column_name })) };
+      }
+      if (table === "placeables") {
+        return { rows: (fixtures.placeableColumns
+          || ["id", "owner_entity_id", "building_type", "is_hologram"]).map((column_name) => ({ column_name })) };
+      }
+      return { rows: itemColumns.map((column_name) => ({ column_name })) };
+    }
+    if (text.includes("requested_claims")) return { rows: containerRows };
+    if (text.includes("count(*)::int as count")) return { rows: [{ count }] };
+    if (text.includes("max(position_index)")) return { rows: [{ position_index: maxPositionIndex + 1 }] };
+    if (text.includes("FAugmentItemStats")) return { rows: augmentRollRows };
+    if (text.includes("FAugmentedItemStats")) return { rows: [] };
+    if (text.includes("insert into dune.items")) {
+      return {
+        rows: insertedRows || [{
+          id: "9007199254740999", template_id: values[1], stack_size: values[2],
+          quality_level: values[3], position_index: values[4], inventory_id: values[0]
+        }]
+      };
+    }
+    return { rows: [] };
+  };
+  return { query: run, transaction: async (fn) => fn({ query: run }) };
+}
+
+const CONTAINER_ADD_ROW = {
+  placeable_id: "42", inventory_id: 7, group_key: "storage",
+  type_name: "Small Storage Container", max_item_count: 45
+};
+
+const insertCalls = (calls) => calls.filter((call) => call.text.includes("insert into dune.items"));
+
+test("container item add resolves ownership through the base before inserting", async () => {
+  const calls = [];
+  const db = fakeContainerAddDb(calls, { containerRows: [CONTAINER_ADD_ROW] });
+  const result = await addBaseContainerItem(db, 16836, 42, { itemId: "ScrapMetal", quantity: 5 });
+  assert.equal(result.ok, true);
+  const ownership = calls.find((call) => call.text.includes("requested_claims"));
+  assert.ok(ownership, "ownership query ran");
+  // The base constrains the lookup; a placeable id alone must never reach a row.
+  assert.equal(ownership.values[0], 16836);
+  assert.equal(ownership.values[4], 42);
+  const insert = insertCalls(calls)[0];
+  assert.equal(insert.values[0], 7);
+  assert.equal(insert.values[1], "ScrapMetal");
+  assert.equal(insert.values[2], 5);
+});
+
+test("container item add locks the inventory row rather than the CTE", async () => {
+  const calls = [];
+  const db = fakeContainerAddDb(calls, { containerRows: [CONTAINER_ADD_ROW] });
+  await addBaseContainerItem(db, 16836, 42, { itemId: "ScrapMetal", quantity: 1 });
+  const ownership = calls.find((call) => call.text.includes("requested_claims"));
+  // Postgres cannot lock a CTE reference, so the outer query re-joins the real
+  // relation purely to have something lockable.
+  assert.match(ownership.text, /for update of inv/);
+  assert.ok(!/for update\s*$/.test(ownership.text.trim().replace(/for update of inv/, "")),
+    "must not also take a bare for update");
+});
+
+test("container item add takes the inventory lock before reading capacity and position", async () => {
+  const calls = [];
+  const db = fakeContainerAddDb(calls, { containerRows: [CONTAINER_ADD_ROW] });
+  await addBaseContainerItem(db, 16836, 42, { itemId: "ScrapMetal", quantity: 1 });
+  // Ordering is the entire concurrency argument: reading capacity or max slot
+  // before the lock would let two adders compute the same next index.
+  const lockAt = calls.findIndex((call) => call.text.includes("for update of inv"));
+  const countAt = calls.findIndex((call) => call.text.includes("count(*)::int as count"));
+  const positionAt = calls.findIndex((call) => call.text.includes("max(position_index)"));
+  assert.ok(lockAt >= 0 && countAt > lockAt, "capacity read must follow the lock");
+  assert.ok(positionAt > lockAt, "position read must follow the lock");
+});
+
+test("container item add refuses a container that is not at the requested base", async () => {
+  const calls = [];
+  const db = fakeContainerAddDb(calls, { containerRows: [] });
+  await assert.rejects(
+    () => addBaseContainerItem(db, 16836, 42, { itemId: "ScrapMetal", quantity: 1 }),
+    /not found at the selected base/
+  );
+  assert.equal(insertCalls(calls).length, 0);
+});
+
+test("container item add refuses a non-storage container", async () => {
+  const calls = [];
+  const db = fakeContainerAddDb(calls, {
+    containerRows: [{ ...CONTAINER_ADD_ROW, group_key: "refining", type_name: "Ore Refinery" }]
+  });
+  await assert.rejects(
+    () => addBaseContainerItem(db, 16836, 42, { itemId: "ScrapMetal", quantity: 1 }),
+    /only be added to Storage containers/
+  );
+  assert.equal(insertCalls(calls).length, 0);
+});
+
+test("container item add refuses a full container", async () => {
+  const calls = [];
+  const db = fakeContainerAddDb(calls, { containerRows: [CONTAINER_ADD_ROW], count: 45 });
+  await assert.rejects(
+    () => addBaseContainerItem(db, 16836, 42, { itemId: "ScrapMetal", quantity: 1 }),
+    /full: 45 of 45/
+  );
+  assert.equal(insertCalls(calls).length, 0);
+});
+
+test("container item add treats a max_item_count of zero as uncapped", async () => {
+  const calls = [];
+  // Matches giveItemToStorage and giveItemToPlayer. No shipped storage type has
+  // 0, but inventing a third convention for it would be worse than the edge.
+  const db = fakeContainerAddDb(calls, {
+    containerRows: [{ ...CONTAINER_ADD_ROW, max_item_count: 0 }],
+    count: 9999
+  });
+  const result = await addBaseContainerItem(db, 16836, 42, { itemId: "ScrapMetal", quantity: 1 });
+  assert.equal(result.ok, true);
+  assert.equal(insertCalls(calls).length, 1);
+});
+
+test("container item add appends to the next free slot", async () => {
+  const calls = [];
+  const db = fakeContainerAddDb(calls, { containerRows: [CONTAINER_ADD_ROW], count: 8, maxPositionIndex: 7 });
+  const result = await addBaseContainerItem(db, 16836, 42, { itemId: "ScrapMetal", quantity: 1 });
+  assert.equal(insertCalls(calls)[0].values[4], 8);
+  assert.equal(result.added.positionIndex, 8);
+});
+
+test("container item add starts an empty container at slot zero", async () => {
+  const calls = [];
+  const db = fakeContainerAddDb(calls, { containerRows: [CONTAINER_ADD_ROW], count: 0, maxPositionIndex: -1 });
+  await addBaseContainerItem(db, 16836, 42, { itemId: "ScrapMetal", quantity: 1 });
+  assert.equal(insertCalls(calls)[0].values[4], 0);
+});
+
+test("container item add never merges into an existing stack of the same template", async () => {
+  const calls = [];
+  // The container already holds ScrapMetal. Adding more must still be one new
+  // row in one new slot -- this is a contract the add panel states out loud.
+  const db = fakeContainerAddDb(calls, { containerRows: [CONTAINER_ADD_ROW], count: 1, maxPositionIndex: 0 });
+  await addBaseContainerItem(db, 16836, 42, { itemId: "ScrapMetal", quantity: 300 });
+  assert.equal(insertCalls(calls).length, 1);
+  assert.equal(calls.some((call) => /update\s+dune\.items/i.test(call.text)), false,
+    "must not update an existing row");
+  assert.equal(insertCalls(calls)[0].values[4], 1);
+});
+
+// CORRECTED 2026-08-19 during upstream reconciliation (issue #366): this
+// test originally came from upstream PR #172 (baseContainerItemAdd), which
+// asserts a resource stack gets a fully empty stats block. That directly
+// contradicts this fork's own, earlier, evidence-based fix (be5081a5,
+// 2026-07-30, see buildItemStats' own comment in duneDb.js): every real,
+// naturally-acquired resource row in this world's actual live database
+// carries a DecayedMaxDurability key (confirmed by diffing a raw insert
+// against a real, engine-verified reference row), and stamping a fully
+// empty stat block onto a resource does NOT match real items -- the
+// opposite of what upstream's test assumed. This fork's addBaseContainerItem
+// (via buildItemStats) deliberately keeps DecayedMaxDurability: 0.0 for
+// resources; only a real MaxDurability/CurrentDurability pair (weapons,
+// clothing) would be "invented" state worth avoiding. Kept as a real,
+// documented fork-specific divergence from upstream, not a silently
+// dropped test.
+test("container item add gives a resource stack the same DecayedMaxDurability-only shape every real resource row carries", async () => {
+  const calls = [];
+  const db = fakeContainerAddDb(calls, { containerRows: [CONTAINER_ADD_ROW] });
+  await addBaseContainerItem(db, 16836, 42, { itemId: "ScrapMetal", quantity: 300 });
+  const stats = JSON.parse(insertCalls(calls)[0].values[5]);
+  assert.deepEqual(stats.FItemStackAndDurabilityStats, [[], { DecayedMaxDurability: 0 }]);
+});
+
+test("container item add gives a weapon full durability without being asked", async () => {
+  const calls = [];
+  const db = fakeContainerAddDb(calls, {
+    containerRows: [CONTAINER_ADD_ROW],
+    augmentRollRows: [{ template_id: "T6_Augment_Melee1", stats: { FAugmentItemStats: [[], { StatRolls: [1], AppliedEffectIndices: [] }] } }]
+  });
+  await addBaseContainerItem(db, 16836, 42, {
+    itemId: "UniqueSword_05", quantity: 1, quality: 0, augments: ["T6_Augment_Melee1"]
+  });
+  const stats = JSON.parse(insertCalls(calls)[0].values[5]);
+  // Comes from buildItemStats' own fallback, not from an explicit durability
+  // argument -- which is exactly why resources above stay empty.
+  assert.equal(stats.FItemStackAndDurabilityStats[1].CurrentDurability, 100);
+});
+
+test("container item add rejects augments on an item that cannot take them", async () => {
+  const calls = [];
+  const db = fakeContainerAddDb(calls, { containerRows: [CONTAINER_ADD_ROW] });
+  await assert.rejects(
+    () => addBaseContainerItem(db, 16836, 42, { itemId: "ScrapMetal", quantity: 1, augments: ["T6_Augment_Melee1"] }),
+    /Only clothing and weapons support augments/
+  );
+  assert.equal(insertCalls(calls).length, 0);
+});
+
+test("container item add rejects more augments than the item allows", async () => {
+  const calls = [];
+  const db = fakeContainerAddDb(calls, { containerRows: [CONTAINER_ADD_ROW] });
+  await assert.rejects(
+    () => addBaseContainerItem(db, 16836, 42, {
+      itemId: "UniqueSword_05",
+      quantity: 1,
+      augments: ["T6_Augment_Melee1", "T6_Augment_Melee2", "T6_Augment_Melee3", "T6_Augment_Melee4"]
+    }),
+    /supports up to 3 augment/
+  );
+  assert.equal(insertCalls(calls).length, 0);
+});
+
+test("container item add rejects an out-of-range quantity", async () => {
+  for (const quantity of [0, -1, 1.5, 1000001]) {
+    const calls = [];
+    const db = fakeContainerAddDb(calls, { containerRows: [CONTAINER_ADD_ROW] });
+    await assert.rejects(
+      () => addBaseContainerItem(db, 16836, 42, { itemId: "ScrapMetal", quantity }),
+      /quantity/i,
+      `quantity ${quantity} must be refused`
+    );
+    assert.equal(insertCalls(calls).length, 0);
+  }
+});
+
+test("container item add rejects a grade outside 0-5", async () => {
+  const calls = [];
+  // giveItemToStorage allows 0-1000000, which is an outlier -- every other path
+  // and the whole UI treat grade as 0-5, and this must not widen that.
+  const db = fakeContainerAddDb(calls, { containerRows: [CONTAINER_ADD_ROW] });
+  await assert.rejects(
+    () => addBaseContainerItem(db, 16836, 42, { itemId: "ScrapMetal", quantity: 1, quality: 6 }),
+    /grade/i
+  );
+  assert.equal(insertCalls(calls).length, 0);
+});
+
+test("container item add is unsupported when any relation its query names is missing", async () => {
+  const all = ["buildings", "building_instances", "actor_fgl_entities", "placeables", "inventories", "items"];
+  for (const missing of all) {
+    const calls = [];
+    // Postgres resolves relations at parse time, so a missing buildings raises
+    // exactly as hard as a missing items -- a partial probe would report the
+    // capability present and then fail on use.
+    const db = fakeContainerAddDb(calls, {
+      containerRows: [CONTAINER_ADD_ROW],
+      tables: all.filter((table) => table !== missing)
+    });
+    await assert.rejects(
+      () => addBaseContainerItem(db, 16836, 42, { itemId: "ScrapMetal", quantity: 1 }),
+      /Container item add requires/,
+      `a schema without ${missing} must report unsupported`
+    );
+    assert.equal(insertCalls(calls).length, 0);
+  }
+});
+
+test("container item add is unsupported when placeables lacks is_hologram", async () => {
+  const calls = [];
+  // The ownership query filters on it, so its absence is a parse error, not a
+  // null -- the delete's probe misses this, which is why this one checks.
+  const db = fakeContainerAddDb(calls, {
+    containerRows: [CONTAINER_ADD_ROW],
+    placeableColumns: ["id", "owner_entity_id", "building_type"]
+  });
+  await assert.rejects(
+    () => addBaseContainerItem(db, 16836, 42, { itemId: "ScrapMetal", quantity: 1 }),
+    /Container item add requires/
+  );
+  assert.equal(insertCalls(calls).length, 0);
+});
+
+test("container item add calls no shipped procedure and sets no search_path", async () => {
+  const calls = [];
+  const db = fakeContainerAddDb(calls, { containerRows: [CONTAINER_ADD_ROW] });
+  await addBaseContainerItem(db, 16836, 42, { itemId: "ScrapMetal", quantity: 1 });
+  // The delete needs `set local search_path` because dune.delete_item carries
+  // none of its own. This path invokes no procedure, so the line would be
+  // cargo-culted noise -- its absence is deliberate and worth pinning.
+  assert.equal(calls.some((call) => /set local search_path/.test(call.text)), false);
+  assert.equal(calls.some((call) => /dune\.delete_/.test(call.text)), false);
+});
+
+test("container item add returns the new item id as a string", async () => {
+  const calls = [];
+  // dune.items.id is bigint; a Number cast is silent precision loss above 2^53.
+  const db = fakeContainerAddDb(calls, {
+    containerRows: [CONTAINER_ADD_ROW],
+    insertedRows: [{
+      id: "9007199254741001", template_id: "ScrapMetal", stack_size: 1,
+      quality_level: 0, position_index: 0, inventory_id: 7
+    }]
+  });
+  const result = await addBaseContainerItem(db, 16836, 42, { itemId: "ScrapMetal", quantity: 1 });
+  assert.equal(typeof result.added.itemId, "string");
+  assert.equal(result.added.itemId, "9007199254741001");
+});
+
+test("container item add reports capacity after the insert", async () => {
+  const calls = [];
+  const db = fakeContainerAddDb(calls, { containerRows: [CONTAINER_ADD_ROW], count: 8, maxPositionIndex: 7 });
+  const result = await addBaseContainerItem(db, 16836, 42, { itemId: "ScrapMetal", quantity: 1 });
+  assert.deepEqual(result.capacity, { usedSlots: 9, maxSlots: 45 });
+  assert.equal(result.group, "storage");
+  assert.equal(result.inventoryId, "7");
+});
+
 // baseContainerSlots: the per-slot read the contents overlay and its delete
 // both rest on. Deliberately separate from baseInventory, whose items[] stays
 // template-merged.
@@ -4054,6 +4414,67 @@ test("baseContainerSlots degrades rather than failing when dune.items lacks the 
   assert.match(query.text, /null::bigint as position_index/);
   assert.ok(!query.text.includes("i.position_index"), "must not select a column this schema lacks");
   assert.match(query.text, /null::numeric as max_durability/);
+});
+
+test("baseContainerSlots extracts an item's applied augments with their own per-augment grade", async () => {
+  const calls = [];
+  // Same jsonb shape buildAugmentedItemStats writes on the add side:
+  // AppliedAugments[].Name paired positionally with AppliedAugmentQualities.
+  // An id unlikely to be in the real catalog, so the assertion doesn't depend
+  // on what the catalog happens to contain -- it must fall back to the id.
+  const db = fakeContainerSlotsDb(calls, {
+    rows: [{
+      ...SLOT_ROW, item_id: "1", template_id: "UniqueSword_05", stack_size: 1, position_index: 0,
+      applied_augments: [{ Name: "T6_Augment_UnitTestFixture1" }, { Name: "T6_Augment_UnitTestFixture2" }],
+      applied_augment_qualities: [2, 3]
+    }]
+  });
+  const result = await baseContainerSlots(db, 16836, 40001);
+  assert.deepEqual(result.inventories[0].slots[0].augments, [
+    { templateId: "T6_Augment_UnitTestFixture1", name: "T6_Augment_UnitTestFixture1", qualityLevel: 2 },
+    { templateId: "T6_Augment_UnitTestFixture2", name: "T6_Augment_UnitTestFixture2", qualityLevel: 3 }
+  ]);
+});
+
+test("baseContainerSlots reports an empty augments array for an item with none", async () => {
+  const calls = [];
+  const db = fakeContainerSlotsDb(calls, {
+    rows: [{ ...SLOT_ROW, item_id: "1", template_id: "ScrapMetal", stack_size: 500, position_index: 0 }]
+  });
+  const result = await baseContainerSlots(db, 16836, 40001);
+  // Not undefined, not null -- the frontend's `.length > 0` check needs a
+  // real array on every slot, augmented or not.
+  assert.deepEqual(result.inventories[0].slots[0].augments, []);
+});
+
+test("baseContainerSlots does not throw on a shorter qualities array than augments", async () => {
+  const calls = [];
+  // A corrupt or hand-edited row; the display path should degrade, not 500.
+  const db = fakeContainerSlotsDb(calls, {
+    rows: [{
+      ...SLOT_ROW, item_id: "1", template_id: "UniqueSword_05", stack_size: 1, position_index: 0,
+      applied_augments: [{ Name: "T6_Augment_UnitTestFixture1" }, { Name: "T6_Augment_UnitTestFixture2" }],
+      applied_augment_qualities: [2]
+    }]
+  });
+  const result = await baseContainerSlots(db, 16836, 40001);
+  assert.deepEqual(
+    result.inventories[0].slots[0].augments.map((augment) => augment.qualityLevel),
+    [2, 0]
+  );
+});
+
+test("baseContainerSlots degrades augments to an empty array on a schema without stats", async () => {
+  const calls = [];
+  const db = fakeContainerSlotsDb(calls, {
+    itemColumns: ["id", "inventory_id", "stack_size", "template_id"],
+    rows: [{ ...SLOT_ROW, item_id: "1", template_id: "ScrapMetal", stack_size: 500, position_index: null }]
+  });
+  const result = await baseContainerSlots(db, 16836, 40001);
+  assert.deepEqual(result.inventories[0].slots[0].augments, []);
+  const query = calls.find((call) => call.text.includes("requested_claims"));
+  assert.match(query.text, /null::jsonb as applied_augments/);
+  assert.match(query.text, /null::jsonb as applied_augment_qualities/);
 });
 
 test("baseContainerSlots scopes to the base and keeps the container allowlist filters", async () => {

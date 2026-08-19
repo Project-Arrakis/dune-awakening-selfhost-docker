@@ -172,6 +172,13 @@ db_update_schema_looks_valid() {
   [ -n "${schema_version:-}" ] && [ -n "${latest_patch:-}" ]
 }
 
+finish_database_update() {
+  echo
+  echo "=== Apply post-migration database compatibility patches ==="
+  runtime/scripts/patch-coriolis-base-backups.sh
+  exit 0
+}
+
 while true; do
   now_ts="$(date +%s)"
   elapsed="$((now_ts - start_ts))"
@@ -190,7 +197,7 @@ while true; do
     echo "$last_logs"
     docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
     if [ "$exit_code" = "0" ]; then
-      exit 0
+      finish_database_update
     fi
     echo "Database update exited with status $exit_code."
     exit 1
@@ -200,7 +207,7 @@ while true; do
     echo "$last_logs"
     echo "Database update completed, stopping stale helper container."
     docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
-    exit 0
+    finish_database_update
   fi
 
   if [ "$elapsed" -ge "$QUIESCENT_SUCCESS_AFTER_SECONDS" ] \
@@ -209,7 +216,7 @@ while true; do
     echo "$last_logs"
     echo "Database update helper became quiescent with valid schema state; stopping stale helper container."
     docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
-    exit 0
+    finish_database_update
   fi
 
   if [ "$elapsed" -ge "$TIMEOUT_SECONDS" ]; then

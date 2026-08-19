@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { EDA_EXCHANGE_BOT_ADDON_ID, buildMarketSeedSql, loadMarketSeedPlan, normalizeSeedSchedule, seedRowCategoryMultiplier } from "../src/addonSeedJob.js";
+import { EDA_EXCHANGE_BOT_ADDON_ID, buildMarketSeedSql, createListedMarketUnitPrice, loadMarketSeedPlan, normalizeSeedSchedule, seedRowCategoryMultiplier, seedRowListingCount, COMMODITY_STACK_CATALOG, COMMODITY_STACK_DEFAULT, COMMODITY_STACK_MAX } from "../src/addonSeedJob.js";
 
 const REPO_ROOT = resolve(import.meta.dirname, "../../..");
 
@@ -141,6 +141,24 @@ test("original augment pricing keeps the plan's augment item prices", () => {
   }
 });
 
+test("plan-scoped market pricing reuses one schematic index across rows", () => {
+  const repoRoot = makeRepoRoot();
+  try {
+    const plan = loadMarketSeedPlan({ repoRoot });
+    const listedUnitPrice = createListedMarketUnitPrice(plan, {
+      priceMultiplier: 5,
+      augmentPricing: "discounted"
+    });
+    const byTemplate = new Map(plan.rows.map((row) => [row.templateId, row]));
+    assert.equal(listedUnitPrice(byTemplate.get("T6_Augment_Armor1")), 1400000);
+    assert.equal(listedUnitPrice(byTemplate.get("T6_Augment_Mystery1")), 950000);
+    assert.equal(listedUnitPrice(byTemplate.get("T6_Augment_Armor1_Schematic")), 2800000);
+    assert.equal(listedUnitPrice(byTemplate.get("Sword")), 2000);
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
 // Realistic category masks: the exchange stores its top-level category in the
 // mask's high byte (0 = armor/garments, 1 = weapons, 4 = augments).
 const CATEGORY_PLAN = {
@@ -273,6 +291,60 @@ test("seed schedule normalizes the augment pricing choice", () => {
   // Saves that omit the field (for example through the addon bridge) keep the stored choice.
   assert.equal(normalizeSeedSchedule({}, { augmentPricing: "original" }).augmentPricing, "original");
   assert.equal(normalizeSeedSchedule({ intervalMinutes: 20 }, { augmentPricing: "original" }).augmentPricing, "original");
+});
+
+test("seed schedule normalizes commodity stack overrides", () => {
+  assert.deepEqual(normalizeSeedSchedule({}).commodityStacks, {});
+  const set = normalizeSeedSchedule({ commodityStacks: { Oil: 10, SpicedFuelCell: 8 } });
+  assert.deepEqual(set.commodityStacks, { Oil: 10, SpicedFuelCell: 8 });
+  const kept = normalizeSeedSchedule({ intervalMinutes: 20 }, set);
+  assert.deepEqual(kept.commodityStacks, { Oil: 10, SpicedFuelCell: 8 });
+  const replaced = normalizeSeedSchedule({ commodityStacks: { Oil: 3 } }, set);
+  assert.deepEqual(replaced.commodityStacks, { Oil: 3 });
+  const dropped = normalizeSeedSchedule({ commodityStacks: { Oil: 10, NotARealItem: 9, Sword: 4 } });
+  assert.deepEqual(dropped.commodityStacks, { Oil: 10 });
+  assert.throws(() => normalizeSeedSchedule({ commodityStacks: { Oil: 0 } }), /commodityStacks.Oil must be an integer from 1 to 20/);
+  assert.throws(() => normalizeSeedSchedule({ commodityStacks: { Oil: COMMODITY_STACK_MAX + 1 } }), /commodityStacks.Oil/);
+  assert.throws(() => normalizeSeedSchedule({ commodityStacks: [] }), /commodityStacks must be an object/);
+});
+
+test("seed SQL lists overridden commodity stacks without changing other rows", () => {
+  const plan = {
+    panel_version: "test",
+    price_multiplier: 5,
+    rows: [
+      { template_id: "Oil", display_name: "Fuel Cell", kind: "resource", stack_size: 500, price: 250, category_mask: 1, category_depth: 1, quality_level: 0, listings: 2 },
+      { template_id: "WaterBottle", display_name: "Water Bottle", kind: "resource", stack_size: 10, price: 1000, category_mask: 1, category_depth: 1, quality_level: 0, listings: 2 }
+    ]
+  };
+  const repoRoot = makeRepoRoot({ plan });
+  try {
+    const loaded = loadMarketSeedPlan({ repoRoot });
+    assert.equal(seedRowListingCount(loaded.rows[0], {}), 2);
+    assert.equal(seedRowListingCount(loaded.rows[0], { commodityStacks: { Oil: 10 } }), 10);
+    assert.equal(seedRowListingCount(loaded.rows[1], { commodityStacks: { Oil: 10 } }), 2);
+    const sql = buildMarketSeedSql(loaded, { enabled: true, exchangeId: "7", priceMultiplier: 5, commodityStacks: { Oil: 10 } });
+    assert.match(sql, /'Oil',500,250,1,1,0,'resource',10,/);
+    assert.match(sql, /'WaterBottle',10,1000,1,1,0,'resource',2,/);
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test("commodity stack catalog matches the bundled plan", () => {
+  const plan = JSON.parse(readFileSync(resolve(REPO_ROOT, "runtime/data/market-seed-plan.json"), "utf8"));
+  const byTemplate = new Map(plan.rows.map((row) => [row.template_id, row]));
+  const seen = new Set();
+  for (const item of COMMODITY_STACK_CATALOG) {
+    assert.equal(seen.has(item.templateId), false, `duplicate catalog entry ${item.templateId}`);
+    seen.add(item.templateId);
+    const row = byTemplate.get(item.templateId);
+    assert.ok(row, `${item.templateId} (${item.label}) must exist in the bundled seed plan`);
+    assert.equal(row.stack_size, item.stackSize, `${item.templateId} stack_size`);
+    assert.equal(row.listings, COMMODITY_STACK_DEFAULT, `${item.templateId} default listings`);
+    assert.notEqual(row.kind, "equippable", `${item.templateId} should be a stacking commodity, not gear`);
+    assert.notEqual(row.kind, "schematic", `${item.templateId} should be a stacking commodity, not a schematic`);
+  }
 });
 
 test("bundled plan carries the original augment ladder with patterns to discount against", () => {

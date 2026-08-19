@@ -1,6 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Boxes, ChevronDown, ChevronRight, LayoutGrid, List, Trash2, TriangleAlert, X } from "lucide-react";
-import { CatalogItemThumb } from "../../components/common/ItemCatalog";
+import { Boxes, ChevronDown, ChevronRight, LayoutGrid, List, Plus, Trash2, TriangleAlert, X } from "lucide-react";
+import {
+  CatalogItemThumb,
+  ItemCatalogSelector,
+  ItemGradeSelect,
+  catalogItemMinimumGrade,
+  type CatalogItem
+} from "../../components/common/ItemCatalog";
+import { AugmentDropdown } from "../../components/common/AugmentDropdown";
+import { augmentLimitForItem, filterAugmentsForItem, formatAugmentOptions, itemCanUseAugments } from "../../lib/augmentEligibility";
+import { adminApi } from "../../api/admin";
 import {
   basesApi,
   type BaseContainerSlots,
@@ -102,6 +111,24 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
   const [selectedSlotId, setSelectedSlotId] = useState("");
   const [amount, setAmount] = useState("");
   const slotsRequestIdRef = useRef(0);
+
+  // Add-item panel. It replaces the slot region rather than stacking under it:
+  // ItemCatalogSelector brings its own ~300px of category select, filter and
+  // scrolling grid, and hanging that below an already-scrolling slot list is
+  // what pushed the modal's own actions off screen once before.
+  const [addOpen, setAddOpen] = useState(false);
+  const [addItem, setAddItem] = useState<CatalogItem | null>(null);
+  const [addQuantity, setAddQuantity] = useState("1");
+  const [addGrade, setAddGrade] = useState("0");
+  const [addAugments, setAddAugments] = useState<string[]>([]);
+  const [addAugmentGrade, setAddAugmentGrade] = useState("1");
+  const [augmentCatalog, setAugmentCatalog] = useState<{ id: string; name: string }[]>([]);
+  // Its own triad, for the same reason the delete's is separate from
+  // slotsError: a failed add leaves the slot list perfectly valid, and hiding
+  // it behind a Retry would lose the operator's place over one form's error.
+  const [adding, setAdding] = useState(false);
+  const [addNotice, setAddNotice] = useState("");
+  const [addError, setAddError] = useState("");
 
   // Only the newest request may write state. StrictMode double-invokes this
   // effect, so two requests really are open at once here, and whichever settles
@@ -213,6 +240,75 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
       : slots.deleteSafety?.reason || "Item deletion is unavailable for this container."
     : "";
 
+  // Same shape and the same fail-closed default as the delete gate above. The
+  // server re-checks this immediately before the write regardless.
+  const addAllowed = slots?.group === "storage" && slots?.addSafety?.safe === true;
+  const addUnavailableReason = slots?.found && !addAllowed
+    ? slots.group !== "storage"
+      ? "Adding items is available only for Storage containers. Crafting and Refining contents are read-only to protect active jobs."
+      : slots.addSafety?.reason || "Adding items is unavailable for this container."
+    : "";
+  // Read off the open container rather than the safety object -- capacity is a
+  // property of the box, not of whether its map is stopped.
+  const containerFull = Boolean(openContainer) && openContainer!.maxSlots > 0
+    && openContainer!.usedSlots >= openContainer!.maxSlots;
+  const containerFullReason = containerFull && openContainer
+    ? `This container is full (${openContainer.usedSlots.toLocaleString()} / ${openContainer.maxSlots.toLocaleString()} slots). Delete an item to make room.`
+    : "";
+
+  const addItemMeta = addItem
+    ? { templateId: addItem.itemId || addItem.id, category: addItem.category || "", source: addItem.source || "" }
+    : null;
+  const addAugmentLimit = addItemMeta ? augmentLimitForItem(addItemMeta) : 0;
+  const addAugmentOptions = addItemMeta && itemCanUseAugments(addItemMeta)
+    ? formatAugmentOptions(filterAugmentsForItem(addItemMeta, augmentCatalog), addAugmentGrade)
+    : [];
+  const addQuantityNumber = Number(addQuantity);
+  const addQuantityValid = Number.isInteger(addQuantityNumber)
+    && addQuantityNumber >= 1
+    && addQuantityNumber <= 1000000;
+
+  // Only paid for by an operator who actually opens the add panel -- the
+  // catalog fetch is the full 10k-row list.
+  useEffect(() => {
+    if (!addOpen || augmentCatalog.length > 0) return;
+    let cancelled = false;
+    adminApi.itemCatalog("", 10000).then((result) => {
+      if (cancelled) return;
+      setAugmentCatalog((result.rows || []).filter((item) =>
+        (item.category || "").toLowerCase().includes("augment") ||
+        (item.source || "").toLowerCase() === "augments"
+      ).map((item) => ({ id: item.itemId || item.id, name: item.name })));
+    }).catch(() => { if (!cancelled) setAugmentCatalog([]); });
+    return () => { cancelled = true; };
+  }, [addOpen, augmentCatalog.length]);
+
+  function resetAddForm() {
+    setAddItem(null);
+    setAddQuantity("1");
+    setAddGrade("0");
+    setAddAugments([]);
+    setAddAugmentGrade("1");
+    setAddError("");
+  }
+
+  // The add panel and the slot-detail strip are two modes of one dialog, not
+  // two panels: the strip is keyed to an existing occupied slot and cannot
+  // represent an add, so opening either closes the other.
+  function openAddPanel() {
+    setSelectedSlotId("");
+    setAmount("");
+    setAddNotice("");
+    setAddError("");
+    setAddOpen(true);
+  }
+
+  function selectSlot(slot: BaseInventorySlot) {
+    setAddOpen(false);
+    setSelectedSlotId(slot.itemId);
+    setAmount(String(slot.quantity));
+  }
+
   // A slot that vanished (deleted, or moved by a player between refetches)
   // must not leave a stale strip pointing at an id the server no longer has.
   useEffect(() => {
@@ -253,11 +349,19 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
       setDeleteError("");
       setSelectedSlotId("");
       setAmount("");
+      setAddOpen(false);
+      setAddNotice("");
+      resetAddForm();
       return;
     }
     setSelectedSlotId("");
     setAmount("");
     setDeleteError("");
+    // A half-filled form must not carry over to a different container: the
+    // capacity, the gate and the confirm dialog's "Container" line all change.
+    setAddOpen(false);
+    setAddNotice("");
+    resetAddForm();
     void loadSlots(contentsFor);
   }, [contentsFor, loadSlots]);
 
@@ -344,6 +448,61 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
     }
   }
 
+  async function addToContainer(containerName: string) {
+    if (!addAllowed) {
+      const text = addUnavailableReason || "Adding items is unavailable for this container.";
+      setAddError(text);
+      onError(text);
+      return;
+    }
+    if (!addItem || !addQuantityValid) return;
+    const augmentNames = addAugments
+      .map((id) => augmentCatalog.find((entry) => entry.id === id)?.name || id);
+    const confirmed = await confirmAction("Add this item to the container?", {
+      title: "Add Item to Container",
+      confirmLabel: "Add",
+      details: [
+        { label: "Base", value: baseName },
+        { label: "Container", value: containerName, tone: "accent" },
+        { label: "Item", value: `${addItem.name} ×${addQuantityNumber.toLocaleString()}`, tone: "success" },
+        { label: "Grade", value: addGrade },
+        ...(augmentNames.length > 0 ? [{ label: "Augments", value: augmentNames.join(", ") }] : []),
+        // The last place the operator sees the placement rule, and it has to
+        // stay honest: the server appends, and no slot was ever reserved.
+        { label: "Slot", value: "Next free slot" }
+      ]
+    });
+    if (!confirmed) return;
+    setAdding(true);
+    setAddNotice("");
+    setAddError("");
+    try {
+      const response = await basesApi.addContainerItem(baseId, contentsFor, {
+        itemId: addItem.itemId || addItem.id,
+        quantity: addQuantityNumber,
+        quality: Number(addGrade) || 0,
+        augments: addAugments,
+        augmentQuality: Number(addAugmentGrade) || 1
+      }, "ADD ITEM TO CONTAINER");
+      const result = response.result;
+      if (!response.supported || !result?.ok) {
+        throw new Error(response.error || response.reason || "The item could not be added.");
+      }
+      setAddNotice(result.message);
+      setAddOpen(false);
+      resetAddForm();
+      // Same pair the delete refetches: this container's slots, and the tab's
+      // totals, group counts and rollup, all of which the add invalidated.
+      await Promise.all([loadSlots(contentsFor), load()]);
+    } catch (error) {
+      const text = errorText(error);
+      setAddError(text);
+      onError(text);
+    } finally {
+      setAdding(false);
+    }
+  }
+
   if (loading) {
     return <p className="muted" role="status">Loading base inventory…</p>;
   }
@@ -377,7 +536,7 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
             destructive controls remain disabled until the backend verifies a
             safe stopped-map window. */}
         <p className="bases-inventory-note muted">
-          A database snapshot, not a live view. Stored items can be deleted only while their map is safely stopped.
+          A database snapshot, not a live view. Stored items can be added or deleted only while their map is safely stopped.
         </p>
 
         {/* summary-stats/summary-stat are the app's stat tiles, shared with
@@ -630,6 +789,14 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
           {deleteUnavailableReason && <p className="bases-inventory-amount-error" role="status">
             {deleteUnavailableReason}
           </p>}
+          {addNotice && <p className="bases-inventory-delete-notice" role="status">{addNotice}</p>}
+          {addError && <p className="bases-inventory-amount-error" role="alert">{addError}</p>}
+          {/* Suppressed when the delete gate already said the same thing --
+              both fire on a running map, and two near-identical sentences read
+              as a stutter rather than as two independent gates. */}
+          {addUnavailableReason && !deleteUnavailableReason && <p className="bases-inventory-amount-error" role="status">
+            {addUnavailableReason}
+          </p>}
 
           {!slotsLoading && !slotsError && slots && slots.found === false && <p className="muted" role="status">
             {slots.reason || "That container is no longer at this base."}
@@ -640,7 +807,7 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
               the scrolling: an intermediate block with no height of its own
               breaks the constraint chain, and the list inside then renders at
               its full natural height straight over the controls beneath it. */}
-          <div className="bases-inventory-contents-scroll">
+          {!addOpen && <div className="bases-inventory-contents-scroll">
           {!slotsLoading && !slotsError && slots?.found && slots.inventories.map((inventory) => {
             const { cells, overflow } = layoutSlots(inventory);
             // Grid needs real slot positions and a sane capacity; without
@@ -672,12 +839,30 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
                         // never applied.
                         aria-label={`${slot.name} ×${slot.quantity.toLocaleString()}, slot ${index}`}
                         title={`${slot.name} ×${slot.quantity.toLocaleString()} (slot ${index})`}
-                        onClick={() => { setSelectedSlotId(slot.itemId); setAmount(String(slot.quantity)); }}
+                        onClick={() => selectSlot(slot)}
                       >
                         <CatalogItemThumb item={{ id: slot.templateId, itemId: slot.templateId, name: slot.name, image: itemImage(slot.templateId) }} small />
                         {slot.quantity > 1 && <span className="bases-inventory-slot-qty">{slot.quantity.toLocaleString()}</span>}
                       </button>
-                    : <span className="bases-inventory-slot-cell empty" key={`empty-${index}`} aria-hidden="true" />)}
+                    // Deliberately says nothing about which slot: the click is a
+                    // shortcut to the add form, not a placement target, and the
+                    // server always appends to the next free index. tabIndex=-1
+                    // because a 45-slot container holding three items would
+                    // otherwise wedge 42 tab stops between the grid and the
+                    // controls below it -- the header button is the keyboard
+                    // route to the identical action.
+                    : <button
+                        className="bases-inventory-slot-cell empty"
+                        key={`empty-${index}`}
+                        type="button"
+                        tabIndex={-1}
+                        disabled={!addAllowed || containerFull}
+                        aria-label="Add an item to this container"
+                        title={addAllowed
+                          ? (containerFull ? containerFullReason : "Add an item to this container")
+                          : (addUnavailableReason || "Adding items is unavailable for this container.")}
+                        onClick={() => openAddPanel()}
+                      />)}
                 </div>}
 
                 {showGrid && overflow.length > 0 && <p className="muted bases-inventory-slot-overflow-note">
@@ -701,7 +886,7 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
                         className="bases-inventory-contents-name"
                         title={slot.templateId}
                         aria-pressed={selectedSlotId === slot.itemId}
-                        onClick={() => { setSelectedSlotId(slot.itemId); setAmount(String(slot.quantity)); }}
+                        onClick={() => selectSlot(slot)}
                       >{slot.name}</button>
                       <span className="bases-inventory-contents-slot muted">
                         {slot.positionIndex === null ? "—" : `#${slot.positionIndex}`}
@@ -721,7 +906,81 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
             );
           })}
 
-          </div>
+          </div>}
+
+          {addOpen && <div className="bases-inventory-add-panel">
+            <div className="bases-inventory-add-head">
+              <h4>Add Item</h4>
+              <span className="muted">
+                {openContainer.usedSlots.toLocaleString()} / {openContainer.maxSlots.toLocaleString()} slots used
+              </span>
+            </div>
+            {/* The one sentence that states both contracts the backend
+                enforces. It stays visible for the whole form, not just at
+                submit time. */}
+            <p className="muted bases-inventory-add-note">
+              Appends to the next free slot. Existing stacks are never topped up — this always creates a new slot.
+            </p>
+
+            <ItemCatalogSelector label="Select item to add" selected={addItem} onSelect={setAddItem} />
+
+            <div className="bases-inventory-add-controls">
+              <label className="bases-inventory-add-field">
+                <span>Quantity</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={1000000}
+                  value={addQuantity}
+                  aria-label="Quantity to add"
+                  onChange={(event) => setAddQuantity(event.target.value)}
+                />
+              </label>
+              <label className="bases-inventory-add-field">
+                <span>Grade</span>
+                <ItemGradeSelect
+                  value={addGrade}
+                  minGrade={catalogItemMinimumGrade(addItem)}
+                  onChange={setAddGrade}
+                />
+              </label>
+              {addAugmentOptions.length > 0 && <>
+                <div className="bases-inventory-add-field bases-inventory-add-augments">
+                  <span>Augments</span>
+                  <AugmentDropdown
+                    options={addAugmentOptions}
+                    value={addAugments}
+                    maxSelected={addAugmentLimit}
+                    onChange={(selected) => setAddAugments(selected.slice(0, addAugmentLimit))}
+                  />
+                </div>
+                <label className="bases-inventory-add-field">
+                  <span>Aug. Grade</span>
+                  <ItemGradeSelect
+                    value={addAugmentGrade}
+                    minGrade={1}
+                    disabled={addAugments.length === 0}
+                    emptyWhenDisabled
+                    onChange={setAddAugmentGrade}
+                  />
+                </label>
+              </>}
+            </div>
+
+            {addItem && !addQuantityValid && <p className="bases-inventory-amount-error" role="alert">
+              Enter a quantity between 1 and 1,000,000.
+            </p>}
+            {containerFull && <p className="bases-inventory-amount-error" role="status">{containerFullReason}</p>}
+
+            <div className="bases-inventory-add-actions">
+              <button
+                className="primary"
+                disabled={!addAllowed || containerFull || !addItem || !addQuantityValid || adding}
+                onClick={() => void addToContainer(containerLabel(openContainer))}
+              >{adding ? "Adding…" : "Add to container"}</button>
+              <button onClick={() => { setAddOpen(false); resetAddForm(); }}>Cancel</button>
+            </div>
+          </div>}
 
           {selectedSlot && <div className="bases-inventory-slot-detail">
             <CatalogItemThumb item={{ id: selectedSlot.templateId, itemId: selectedSlot.templateId, name: selectedSlot.name, image: itemImage(selectedSlot.templateId) }} />
@@ -730,10 +989,16 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
               <span className="muted">
                 {selectedSlot.positionIndex === null ? "Unplaced" : `Slot #${selectedSlot.positionIndex}`}
                 {" · "}{selectedSlot.quantity.toLocaleString()} held
+                {" · "}Grade {selectedSlot.qualityLevel}
                 {selectedSlot.currentDurability !== null && selectedSlot.maxDurability
                   ? ` · ${Math.round((selectedSlot.currentDurability / selectedSlot.maxDurability) * 100)}% durability`
                   : ""}
               </span>
+              {/* Its own line, and only when the item actually has any -- a
+                  raw resource or an unaugmented item never carries this. */}
+              {selectedSlot.augments.length > 0 && <span className="muted">
+                Augments: {selectedSlot.augments.map((augment) => `${augment.name} (Grade ${augment.qualityLevel})`).join(", ")}
+              </span>}
             </div>
             <label className="bases-inventory-slot-amount">
               <span>Remove</span>
@@ -756,9 +1021,29 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
             Enter an amount between 1 and {selectedSlot.quantity.toLocaleString()}.
           </p>}
 
-          <div className="confirm-modal-actions">
+          {/* Hidden entirely while the add panel is open, not just disabled:
+              its own action row (Add to container / Cancel) is the footer in
+              that state, and Cancel already returns here -- a second Close
+              next to it would be a redundant way to leave. The X in the
+              header and Escape both still close the whole overlay. */}
+          {!addOpen && <div className="confirm-modal-actions confirm-modal-actions-grouped">
+            {/* List-view only: grid's own empty cells already open this panel,
+                so a second, redundant control there would just be noise. List
+                enumerates occupied slots only and has no empty cell to click,
+                which is why it needs an explicit affordance. */}
+            {contentsView === "list"
+              ? <button
+                  className="bases-inventory-add-item"
+                  aria-expanded={addOpen}
+                  disabled={!addAllowed || containerFull}
+                  title={addAllowed
+                    ? (containerFull ? containerFullReason : "Add an item to this container")
+                    : (addUnavailableReason || "Adding items is unavailable for this container.")}
+                  onClick={() => openAddPanel()}
+                ><Plus size={14} aria-hidden="true" /> Add Item</button>
+              : <span />}
             <button onClick={() => setContentsFor("")}>Close</button>
-          </div>
+          </div>}
         </section>
       </div>}
     </div>

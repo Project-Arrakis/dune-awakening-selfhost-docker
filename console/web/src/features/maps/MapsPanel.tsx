@@ -2365,7 +2365,7 @@ function SettingInput({ field, value, inputId, onChange }: { field: UserSettingF
   return field.type === "boolean"
     ? <select id={inputId} value={normalizeBooleanText(value)} onChange={(event) => onChange(event.target.value)}><option value="True">True</option><option value="False">False</option></select>
     : field.type === "integer" || field.type === "number"
-      ? <input id={inputId} type="number" step={field.type === "integer" ? "1" : "any"} value={value} onChange={(event) => onChange(event.target.value)} />
+      ? <input id={inputId} type="number" step={field.type === "integer" ? "1" : "any"} min={field.minimum ?? undefined} max={field.maximum ?? undefined} value={value} onChange={(event) => onChange(event.target.value)} />
       : String(value).length > 72 || value.includes("(")
         ? <textarea id={inputId} rows={3} value={value} onChange={(event) => onChange(event.target.value)} />
         : <input id={inputId} value={value} onChange={(event) => onChange(event.target.value)} />;
