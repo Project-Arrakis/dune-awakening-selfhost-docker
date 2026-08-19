@@ -126,6 +126,10 @@ test("persisting a refreshed buyback log requires market write permission", () =
   assert.equal(actionForRoute("/api/exchange/market/buyback/log", "POST"), "exchange:market-write");
 });
 
+test("removing the bot's NPC listings (unseed) requires market write permission", () => {
+  assert.equal(actionForRoute("/api/exchange/market/seed/clear", "POST"), "exchange:market-write");
+});
+
 // resolveAllowedActions has no caller yet (planned for a future policy-editor
 // UI), but it must already surface every action actionForRoute can resolve,
 // not just the ones with an exact ROUTE_ACTIONS entry -- bases:delete only

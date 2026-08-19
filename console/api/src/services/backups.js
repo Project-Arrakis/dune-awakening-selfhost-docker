@@ -9,6 +9,7 @@ export function enrichBackupRows(config, rows) {
     const origin = String(metadata.backup_origin || metadata.origin || "").trim().toLowerCase();
     const battlegroupId = String(metadata.imported_from_battlegroup_id || metadata.battlegroup_id || "").trim();
     const enriched = { ...row, battlegroupId: battlegroupId || "Unknown", sizeBytes, size: formatBackupSize(sizeBytes) };
+    if (/^market[-_ ]?bot/.test(origin)) return { ...enriched, type: "Market Bot Backup" };
     if (/^(automatic|scheduled)$/.test(origin)) return { ...enriched, type: "Automatic Backup" };
     if (/^(restore-safety|restore_safety|restore safety)$/.test(origin)) return { ...enriched, type: "Restore Safety Backup" };
     if (/^(pre-update|pre_update|preupdate)$/.test(origin)) return { ...enriched, type: "Pre-update Backup" };

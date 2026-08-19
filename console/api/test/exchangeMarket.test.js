@@ -179,6 +179,107 @@ test("scheduled runs skip addon permission checks for console-sourced schedules 
   }
 });
 
+function fakeUnseedDb({ botListings = "12" } = {}) {
+  const db = {
+    counts: [],
+    clears: [],
+    transactions: 0,
+    query: async (sql) => {
+      const text = String(sql).trim();
+      if (/AS bot_listings/.test(text)) {
+        db.counts.push(text);
+        return { rows: [{ bot_listings: String(botListings) }], rowCount: 1, command: "SELECT" };
+      }
+      if (/^CREATE TEMP TABLE market_unseed_result/.test(text)) {
+        db.clears.push(text);
+        return { rows: [{ removed_listings: String(botListings), removed_items: String(botListings), exchange_id: "42" }], rowCount: 1, command: "SELECT" };
+      }
+      return { rows: [], rowCount: 0, command: "SELECT" };
+    },
+    transaction: async (fn) => {
+      db.transactions += 1;
+      return fn({ query: db.query });
+    }
+  };
+  return db;
+}
+
+function makeUnseedScheduler(config, db, { backups = [], audits = [] } = {}) {
+  return createAddonJobScheduler(config, {
+    getDb: () => db,
+    runDuneImpl: async (_cfg, _args, options) => {
+      backups.push(options?.env?.DB_BACKUP_ORIGIN);
+      return { code: 0 };
+    },
+    auditImpl: (_cfg, _req, category, detail) => audits.push({ category, ...detail }),
+    log: { error: () => {} }
+  });
+}
+
+test("manual unseed backs up, clears the bot's listings in a transaction, and audits the run", async () => {
+  const repoRoot = makeRepoRoot();
+  try {
+    const config = { repoRoot, mockMode: false };
+    const db = fakeUnseedDb();
+    const backups = [];
+    const audits = [];
+    const scheduler = makeUnseedScheduler(config, db, { backups, audits });
+
+    const result = await scheduler.runNow({ trigger: "console", job: "unseed", exchangeId: "42" });
+    assert.equal(result.status, "unseeded");
+    assert.equal(result.removedListings, "12");
+    assert.equal(result.exchangeId, "42");
+    assert.deepEqual(backups, ["market-bot-unseed"]);
+    assert.equal(db.counts.length, 1, "probes read-only before writing");
+    assert.equal(db.transactions, 1, "the clear runs inside a transaction");
+    assert.equal(audits.length, 1);
+    assert.equal(audits[0].job, "unseed");
+    assert.equal(audits[0].status, "unseeded");
+    assert.equal(audits[0].ok, true);
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test("manual unseed skips the backup and clear when the bot has no listings", async () => {
+  const repoRoot = makeRepoRoot();
+  try {
+    const config = { repoRoot, mockMode: false };
+    const db = fakeUnseedDb({ botListings: "0" });
+    const backups = [];
+    const scheduler = makeUnseedScheduler(config, db, { backups });
+
+    const result = await scheduler.runNow({ trigger: "console", job: "unseed", exchangeId: "42" });
+    assert.equal(result.status, "empty");
+    assert.equal(result.removedListings, "0");
+    assert.deepEqual(backups, [], "no backup without something to remove");
+    assert.equal(db.transactions, 0, "no write transaction on an empty market");
+    assert.equal(db.clears.length, 0);
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test("manual unseed falls back to the saved seed exchange and rejects malformed ids", async () => {
+  const repoRoot = makeRepoRoot();
+  try {
+    const config = { repoRoot, mockMode: false };
+    const db = fakeUnseedDb();
+    const scheduler = makeUnseedScheduler(config, db);
+
+    // No requested exchange and no saved schedule: refuse to guess.
+    await assert.rejects(scheduler.runNow({ job: "unseed" }), /Select an exchange/);
+    // A malformed requested id is an error, never a silent fallback.
+    saveMarketSeedSchedule(config, { exchangeId: "7" });
+    await assert.rejects(scheduler.runNow({ job: "unseed", exchangeId: "abc" }), /positive whole number/);
+    // An omitted id falls back to the saved seed schedule's exchange.
+    const result = await scheduler.runNow({ job: "unseed" });
+    assert.equal(result.exchangeId, "7");
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
 const EXCHANGE_ROWS = [
   { exchange_id: "9007199254740993", is_global: false, access_point_count: "0", order_count: "12", bot_order_count: "12", player_order_count: "0" },
   { exchange_id: "7", is_global: false, access_point_count: "2", order_count: "40", bot_order_count: "30", player_order_count: "10" },

@@ -453,6 +453,7 @@ blacklist behaves.
 | POST | `/api/exchange/market/seed/schedule` | Save the market reseed schedule (audited, rate-limited) | body: `enabled`, `intervalMinutes`, `exchangeId`, `priceMultiplier`, `augmentMultiplier`, `rankedArmorMultiplier`, `rankedWeaponMultiplier`, `augmentPricing` (`discounted`\|`original`), `commodityStacks` (object of templateId → 1–20 listing counts for allowlisted commodities) |
 | POST | `/api/exchange/market/buyback/run` | Run a buyback sweep now with the saved schedule (probe → backup → sweep) | None |
 | POST | `/api/exchange/market/seed/run` | Run a market reseed now with the saved schedule (backup → clear bot listings → seed) | None |
+| POST | `/api/exchange/market/seed/clear` | Remove the bot's NPC listings from one exchange without reseeding (probe → backup → clear; no backup when the bot has none). Player listings and pending seller payments are never touched. Requires `exchange:market-write`. Rate-limited. | body: `exchangeId?` (defaults to the saved seed schedule's exchange) |
 
 The three category multipliers (`augmentMultiplier`, `rankedArmorMultiplier`,
 `rankedWeaponMultiplier`) accept 1–5 (up to two decimals, default 1 = no change)
