@@ -517,24 +517,21 @@ SELECT * FROM classified
 ORDER BY result_code::int ASC, item_price::bigint ASC, order_id::bigint ASC;`;
 }
 
-// Anonymous server-level market totals for the player portal. Keep this query
-// separate from per-player Buyback classification so either result can remain
+// Anonymous server-level market totals for the player portal. This is the
+// complete sell board, including Market Bot/NPC stock; only the private
+// Buyback evaluation below is restricted to player-owned listings. Keep this
+// query separate from that classification so either result can remain
 // available when the other feature encounters a database compatibility issue.
 export function buildPlayerPortalExchangeOverviewSql(schedule) {
   const exchangeId = requireScheduleExchangeId(schedule);
-  return `WITH bot AS (
-    SELECT id AS owner_id FROM dune.actors WHERE class = 'Revy' LIMIT 1
-)
-SELECT COALESCE(o.template_id, '') AS template_id,
+  return `SELECT COALESCE(o.template_id, '') AS template_id,
        (${BUYBACK_ORDER_GRADE_SQL})::text AS quality_level,
        COUNT(*)::text AS listing_count,
        SUM(GREATEST(${BUYBACK_STACK_SQL}, 0))::text AS total_units,
        MIN(o.item_price)::text AS lowest_price,
        MAX(o.item_price)::text AS highest_price
 FROM ${BUYBACK_ORDERS_BASE_JOIN_SQL}
-LEFT JOIN bot b ON TRUE
 WHERE o.exchange_id = ${exchangeId}
-  AND ${BUYBACK_PLAYER_SELL_SQL}
   AND o.item_price >= 0
 GROUP BY o.template_id, ${BUYBACK_ORDER_GRADE_SQL}
 ORDER BY COUNT(*) DESC, o.template_id ASC, ${BUYBACK_ORDER_GRADE_SQL} ASC;`;
