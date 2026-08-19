@@ -1223,8 +1223,8 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
   const engineDirty = changedKeys(engineValues, engineDraft, engineFields);
   const gameDirty = changedKeys(gameValues, gameDraft, userGameFields);
   // The download buttons report how many settings each client ini actually carries.
-  // Count the generated file rather than the drafts: the download reflects saved
-  // state, and client_game_ini emits whatever was saved rather than a diff.
+  // Count the generated file rather than the drafts: downloads reflect saved state
+  // and include only non-default values explicitly classified as client-required.
   useEffect(() => {
     if (!modifiersOpen || (settingsTab !== "engine" && settingsTab !== "game")) return undefined;
     let cancelled = false;
