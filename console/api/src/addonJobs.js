@@ -537,8 +537,7 @@ WHERE o.exchange_id = ${exchangeId}
   AND ${BUYBACK_PLAYER_SELL_SQL}
   AND o.item_price >= 0
 GROUP BY o.template_id, ${BUYBACK_ORDER_GRADE_SQL}
-ORDER BY COUNT(*) DESC, o.template_id ASC, ${BUYBACK_ORDER_GRADE_SQL} ASC
-LIMIT 100;`;
+ORDER BY COUNT(*) DESC, o.template_id ASC, ${BUYBACK_ORDER_GRADE_SQL} ASC;`;
 }
 
 function normalizePlayerPortalExchangeOverview(rows, names) {
