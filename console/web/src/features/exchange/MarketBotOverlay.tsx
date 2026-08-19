@@ -12,6 +12,7 @@ import {
   type MarketPriceBasis,
   type MarketProbeResult
 } from "../../api/marketBot";
+import { InfoTooltip } from "../../components/common/DisplayPrimitives";
 
 // Console-managed NPC market bot (EDA Exchange Bot engine, first-class):
 // seed the CHOAM exchange with NPC sell listings from the bundled plan, and
@@ -27,6 +28,13 @@ type MarketBotOverlayProps = {
 
 function errorText(error: unknown) {
   return error instanceof Error ? error.message : String(error);
+}
+
+function SectionTitle({ title, id, help }: { title: string; id: string; help: string }) {
+  return <div className="market-bot-section-title">
+    <strong>{title}</strong>
+    <InfoTooltip id={id} label={`About ${title}`}>{help}</InfoTooltip>
+  </div>;
 }
 
 // Per-category price multipliers (1-5x) layered on top of the base price
@@ -192,13 +200,15 @@ function BuybackSweepLog({
   const latest = batches[0];
   return (
     <div className="market-bot-section market-bot-log-section">
-      <strong>Buyback Sweep Log</strong>
-      <p className="action-help-note">Purchases and leftover eligible listings are recorded on a write sweep (<code>0x0</code>, <code>0x5</code> Max Buys, <code>0x6</code> skipped locked). Idle ticks with player listings and <strong>Refresh log (dry-run)</strong> also classify eligible rows (<code>0x0</code>), Max Buys leftovers (<code>0x5</code>), and skip reasons (<code>0x1</code>–<code>0x4</code>); dry-run never emits <code>0x6</code>. Results are capped at 1000 stored rows (leftovers keep a reserved share). Batches older than 5 days are removed automatically (up to 20 recent batches are kept).</p>
+      <SectionTitle
+        title="Buyback Sweep Log"
+        id="market-bot-log-help"
+        help="Write sweeps record purchases and eligible leftovers. Dry-run refreshes classify listings without buying anything or taking a backup. Results are capped at 1,000 rows, with up to 20 batches retained for five days. Codes: 0x0 bought or eligible; 0x1 price too high; 0x2 no reference price; 0x3 invalid price; 0x4 invalid stack; 0x5 sweep limit; 0x6 listing was locked by another sweep."
+      />
       <div className="confirm-modal-actions market-bot-actions">
         <button onClick={onRefresh} disabled={Boolean(busy)}>{busy === "refresh-log" ? "Refreshing…" : "Refresh log (dry-run)"}</button>
         <button onClick={onClear} disabled={Boolean(busy) || !batches.length}>{busy === "clear-log" ? "Clearing…" : "Clear log"}</button>
       </div>
-      <p className="muted">Codes: <code>0x0</code> bought / eligible, <code>0x1</code> price too high, <code>0x2</code> no reference price, <code>0x3</code> invalid price, <code>0x4</code> invalid stack, <code>0x5</code> max buys limit, <code>0x6</code> skipped locked.</p>
       <p className="muted" role="status">
         {batches.length
           ? `${batches.length} log batch(es) stored. Latest: ${latest.source} on ${logExchangeLabel(latest)} at ${formatLogTime(latest.at)} — ${latest.summary || `${latest.entries?.length || 0} listings`}.`
@@ -221,7 +231,7 @@ function BuybackSweepLog({
                   <th>Stack</th>
                   <th>Cap</th>
                   <th>Order</th>
-                  <th>Detail</th>
+                  <th>Info</th>
                 </tr>
               </thead>
               <tbody>
@@ -235,7 +245,7 @@ function BuybackSweepLog({
                     <td>{entry.stackSize}</td>
                     <td>{entry.maxUnitPrice || "—"}</td>
                     <td>{entry.orderId}</td>
-                    <td>{entry.detail}</td>
+                    <td><details className="market-bot-row-info"><summary aria-label={`Details for order ${entry.orderId}`}>i</summary><span>{entry.detail || "No additional detail was recorded."}</span></details></td>
                   </tr>
                 )) : (
                   <tr><td colSpan={9} className="muted">No player sell listings on this exchange.</td></tr>
@@ -250,6 +260,7 @@ function BuybackSweepLog({
 }
 
 export function MarketBotOverlay({ onClose, onError, confirmAction }: MarketBotOverlayProps) {
+  const [activeTab, setActiveTab] = useState<"buyback" | "reseed" | "activity">("buyback");
   const [status, setStatus] = useState<MarketBotStatus | null>(null);
   const [exchanges, setExchanges] = useState<MarketExchange[]>([]);
   const [loading, setLoading] = useState(true);
@@ -481,46 +492,55 @@ export function MarketBotOverlay({ onClose, onError, confirmAction }: MarketBotO
     <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="Market bot settings" onClick={onClose}>
       <div className="confirm-modal exchange-config-modal market-bot-modal" onClick={(event) => event.stopPropagation()}>
         <div className="confirm-modal-title">
-          <h3>Market Bot</h3>
+          <div className="market-bot-title"><h3>Market Bot</h3><InfoTooltip id="market-bot-overview-help" label="About Market Bot">Market Bot can seed NPC sell listings and buy eligible player listings. Schedules run inside the Console without this window remaining open. Every database write is preceded by a backup.</InfoTooltip></div>
           <button className="exchange-config-close" aria-label="Close" onClick={onClose}><X size={16} /></button>
         </div>
-        <p>
-          Seeds NPC sell listings from the bundled Easy Dune Admin plan and buys back player listings at or below the
-          buyback percentage of the chosen price basis. Schedules run inside the console — no page needs to stay open —
-          and every database write is preceded by a backup.
-        </p>
         {loading && <p className="muted">Loading…</p>}
         {!loading && !supported && <p className="muted">{status?.reason || "The Market Bot is unsupported by the detected database schema."}</p>}
         {!loading && supported && !planReady && <p className="muted">The bundled market seed plan is missing. Repair or reinstall the console release.</p>}
         {!loading && supported && planReady && status && (
-          <div className="market-bot-layout">
-            <div>
-            <p className="muted">
-              Seed plan: {status.plan.rows.toLocaleString()} rows
-              {status.plan.panelVersion ? ` (v${status.plan.panelVersion})` : ""} from the bundled console copy.
-            </p>
-            <label className="compact-select market-bot-exchange">
-              Exchange
+          <div className="market-bot-shell">
+            <div className="market-bot-context">
+              <div className="market-bot-plan"><span>Seed plan</span><strong>{status.plan.rows.toLocaleString()} rows{status.plan.panelVersion ? ` · v${status.plan.panelVersion}` : ""}</strong></div>
+              <label className="compact-select market-bot-exchange">
+              <span className="market-bot-label-with-info">Exchange<InfoTooltip id="market-bot-exchange-help" label="About exchange selection">Exchanges with access points appear first because players can reach them in game. Saving a schedule binds it to the exchange selected here.</InfoTooltip></span>
               <select aria-label="Exchange" value={exchangeId} onChange={(event) => setExchangeId(event.target.value)}>
                 {!exchanges.length && <option value="">No exchanges found</option>}
                 {exchanges.map((exchange) => (
                   <option key={exchange.exchangeId} value={exchange.exchangeId}>{exchangeLabel(exchange)}</option>
                 ))}
               </select>
-            </label>
-            <p className="action-help-note">Exchanges with access points come first — those are the ones players actually reach in-game. Saving a schedule binds it to the exchange selected here.</p>
+              </label>
+            </div>
 
-            <div className="market-bot-section">
-              <strong>Buyback sweeps</strong>
-              <p className="action-help-note">Buys player sell listings whose per-unit ask is at or below the buyback percentage of the price basis (seeded NPC price at that grade, or live market average / lowest with seeded fallback). Whole listed stacks are bought in one pass. Every run probes eligibility read-only first and only backs up + sweeps when something qualifies. The seeded basis uses this section's category multipliers and the reseed section's augment pricing (discounted vs original), so 60% of seeded tracks what the bot actually lists for ready-made augments. Category multipliers can still differ from reseed on purpose.</p>
+            <div className="market-bot-tabs" role="tablist" aria-label="Market Bot sections">
+              <button type="button" role="tab" aria-selected={activeTab === "buyback"} className={activeTab === "buyback" ? "active" : ""} onClick={() => setActiveTab("buyback")}>Buyback</button>
+              <button type="button" role="tab" aria-selected={activeTab === "reseed"} className={activeTab === "reseed" ? "active" : ""} onClick={() => setActiveTab("reseed")}>Reseed</button>
+              <button type="button" role="tab" aria-selected={activeTab === "activity"} className={activeTab === "activity" ? "active" : ""} onClick={() => setActiveTab("activity")}>Activity{logBatches.length ? <span>{logBatches.length}</span> : null}</button>
+            </div>
+
+            {notice && <p className="market-bot-notice" role="status">{notice}</p>}
+
+            {activeTab === "buyback" && <div className="market-bot-section" role="tabpanel">
+              <SectionTitle title="Buyback sweeps" id="market-bot-buyback-help" help="Buys complete player-listed stacks when the per-unit ask is within the configured percentage of the selected price basis. A sweep checks eligibility first and creates a backup only when something qualifies. Seeded pricing follows the reseed augment-pricing choice; category multipliers may be tuned independently." />
+              <div className="market-bot-settings-block">
+                <strong>Schedule</strong>
+                <div className="market-bot-grid market-bot-schedule-grid">
+                  <label>Interval (minutes)
+                    <input aria-label="Buyback interval minutes" type="number" min={10} max={1440} value={buybackInterval} onChange={(event) => setBuybackInterval(Number(event.target.value))} />
+                  </label>
+                  <label className="market-bot-toggle">
+                    <input aria-label="Run buyback on a schedule" type="checkbox" checked={buybackEnabled} onChange={(event) => setBuybackEnabled(event.target.checked)} />
+                    <span>Run automatically</span>
+                  </label>
+                </div>
+              </div>
+              <div className="market-bot-settings-block">
+                <strong>Pricing and limits</strong>
               <div className="market-bot-grid">
-                <label>Interval (minutes)
-                  <input aria-label="Buyback interval minutes" type="number" min={10} max={1440} value={buybackInterval} onChange={(event) => setBuybackInterval(Number(event.target.value))} />
-                </label>
                 <label>Price multiplier
                   <input aria-label="Buyback price multiplier" type="number" min={1} max={100} value={buybackMultiplier} onChange={(event) => setBuybackMultiplier(Number(event.target.value))} />
                 </label>
-                <CategoryMultiplierInputs section="Buyback" values={buybackCategoryMultipliers} onChange={setBuybackCategoryMultipliers} />
                 <label>Buyback percent
                   <input aria-label="Buyback percent" type="number" min={1} max={100} value={buybackPercent} onChange={(event) => setBuybackPercent(Number(event.target.value))} />
                 </label>
@@ -535,11 +555,9 @@ export function MarketBotOverlay({ onClose, onError, confirmAction }: MarketBotO
                   <input aria-label="Max buys per sweep" type="number" min={1} max={5000} value={maxBuys} onChange={(event) => setMaxBuys(Number(event.target.value))} />
                 </label>
               </div>
-              <label className="market-bot-toggle">
-                <input aria-label="Run buyback on a schedule" type="checkbox" checked={buybackEnabled} onChange={(event) => setBuybackEnabled(event.target.checked)} />
-                Run buyback on a schedule (unattended)
-              </label>
-              <p className="muted">{runSummary(status.buyback)}{savedBuybackExchange ? ` | Saved exchange ${savedBuybackExchange}` : ""}</p>
+              </div>
+              <details className="market-bot-advanced"><summary>Category price tuning</summary><div className="market-bot-grid"><CategoryMultiplierInputs section="Buyback" values={buybackCategoryMultipliers} onChange={setBuybackCategoryMultipliers} /></div></details>
+              <p className="muted market-bot-run-summary">{runSummary(status.buyback)}{savedBuybackExchange ? ` | Saved exchange ${savedBuybackExchange}` : ""}</p>
               <div className="confirm-modal-actions market-bot-actions">
                 <button onClick={() => void saveBuyback()} disabled={Boolean(busy)}>{busy === "save-buyback" ? "Saving…" : "Save buyback schedule"}</button>
                 <button onClick={() => void probe()} disabled={Boolean(busy)}>{busy === "probe" ? "Probing…" : "Probe eligibility"}</button>
@@ -560,21 +578,28 @@ export function MarketBotOverlay({ onClose, onError, confirmAction }: MarketBotO
                   </dl>
                 </div>
               )}
-            </div>
+            </div>}
 
-            <div className="market-bot-section">
-              <strong>Market reseed</strong>
-              <p className="action-help-note">Replaces the bot's own NPC sell listings from the seed plan at the chosen price multiplier. Every run is backup, clear bot listings on that exchange, seed. Player listings are never touched. Augment items always seed as bottom-of-range rolls; the augment pricing option chooses whether they undercut their schematics (half the pattern's price) or keep the plan's original prices.</p>
-              <p className="action-help-note">Category multipliers (1-5x, 1 = no change) additionally scale the seeded prices of augments &amp; augment schematics, ranked (grade 1-5) armor including stillsuits, and ranked weapons — on top of the base price multiplier. Grade-0 stock and everything else keeps the base multiplier alone.</p>
-              <p className="action-help-note">Number of stacks is how many full listings of that commodity each reseed writes. Units per stack stay at the plan maximum (so 10 fuel-cell stacks is 5,000 units). Unlisted commodities keep the plan default of 2 stacks.</p>
+            {activeTab === "reseed" && <div className="market-bot-section" role="tabpanel">
+              <SectionTitle title="Market reseed" id="market-bot-reseed-help" help="Replaces only the bot's NPC sell listings from the bundled seed plan. Each write run creates a backup, clears the bot listings on the selected exchange, and seeds fresh stock; player listings are never touched. Augments use bottom-of-range rolls, with either discounted or original plan pricing." />
+              <div className="market-bot-settings-block">
+                <strong>Schedule</strong>
+                <div className="market-bot-grid market-bot-schedule-grid">
+                  <label>Interval (minutes)
+                    <input aria-label="Seed interval minutes" type="number" min={10} max={1440} value={seedInterval} onChange={(event) => setSeedInterval(Number(event.target.value))} />
+                  </label>
+                  <label className="market-bot-toggle">
+                    <input aria-label="Run reseed on a schedule" type="checkbox" checked={seedEnabled} onChange={(event) => setSeedEnabled(event.target.checked)} />
+                    <span>Run automatically</span>
+                  </label>
+                </div>
+              </div>
+              <div className="market-bot-settings-block">
+                <strong>Pricing</strong>
               <div className="market-bot-grid">
-                <label>Interval (minutes)
-                  <input aria-label="Seed interval minutes" type="number" min={10} max={1440} value={seedInterval} onChange={(event) => setSeedInterval(Number(event.target.value))} />
-                </label>
                 <label>Price multiplier
                   <input aria-label="Seed price multiplier" type="number" min={1} max={100} value={seedMultiplier} onChange={(event) => setSeedMultiplier(Number(event.target.value))} />
                 </label>
-                <CategoryMultiplierInputs section="Seed" values={seedCategoryMultipliers} onChange={setSeedCategoryMultipliers} />
                 <label>Augment pricing
                   <select aria-label="Augment pricing" value={augmentPricing} onChange={(event) => setAugmentPricing(event.target.value as MarketAugmentPricing)}>
                     <option value="discounted">Cheaper than patterns</option>
@@ -582,28 +607,23 @@ export function MarketBotOverlay({ onClose, onError, confirmAction }: MarketBotO
                   </select>
                 </label>
               </div>
-              <CommodityStackInputs catalog={commodityCatalog} groups={commodityGroups} values={commodityStacks} onChange={setCommodityStacks} />
-              <label className="market-bot-toggle">
-                <input aria-label="Run reseed on a schedule" type="checkbox" checked={seedEnabled} onChange={(event) => setSeedEnabled(event.target.checked)} />
-                Run market reseed on a schedule (unattended)
-              </label>
-              <p className="muted">{runSummary(status.seed)}{savedSeedExchange ? ` | Saved exchange ${savedSeedExchange}` : ""}</p>
+              </div>
+              <details className="market-bot-advanced"><summary>Category price tuning</summary><div className="market-bot-grid"><CategoryMultiplierInputs section="Seed" values={seedCategoryMultipliers} onChange={setSeedCategoryMultipliers} /></div></details>
+              {commodityCatalog.length > 0 && <details className="market-bot-advanced market-bot-commodity-panel"><summary>Commodity stack quantities</summary><CommodityStackInputs catalog={commodityCatalog} groups={commodityGroups} values={commodityStacks} onChange={setCommodityStacks} /></details>}
+              <p className="muted market-bot-run-summary">{runSummary(status.seed)}{savedSeedExchange ? ` | Saved exchange ${savedSeedExchange}` : ""}</p>
               <div className="confirm-modal-actions market-bot-actions">
                 <button onClick={() => void saveSeed()} disabled={Boolean(busy)}>{busy === "save-seed" ? "Saving…" : "Save reseed schedule"}</button>
                 <button className="danger" onClick={() => void runSeedNow()} disabled={Boolean(busy) || !savedSeedExchange}>{busy === "run-seed" ? "Running…" : "Run reseed now"}</button>
                 <button className="danger" onClick={() => void runUnseedNow()} disabled={Boolean(busy) || !exchangeId}>{busy === "unseed" ? "Removing…" : "Remove NPC listings"}</button>
               </div>
-              <p className="action-help-note">Remove NPC listings empties the bot's own listings on the exchange selected above without reseeding — the market stays unseeded until the next reseed run (disable the schedule to keep it that way). Player listings and pending seller payments are never touched.</p>
-            </div>
+            </div>}
 
-            {notice && <p className="market-bot-notice" role="status">{notice}</p>}
-            </div>
-            <BuybackSweepLog
+            {activeTab === "activity" && <BuybackSweepLog
               batches={logBatches}
               busy={busy}
               onRefresh={() => void refreshLogDryRun()}
               onClear={() => void clearLog()}
-            />
+            />}
           </div>
         )}
         <div className="confirm-modal-actions">
