@@ -37,7 +37,16 @@ export const DISCORD_ADAPTER_ROUTES = Object.freeze({
   VERSION: "/api/integrations/discord/version",
   SERVERS: "/api/integrations/discord/servers",
   PORTS: "/api/integrations/discord/ports",
-  DB: "/api/integrations/discord/db"
+  DB: "/api/integrations/discord/db",
+  // CATALOG is deliberately NOT added to DISCORD_LIVE_ADAPTER_ROUTES below.
+  // It is metadata ABOUT the live routes, not itself one of them -- adding
+  // it there would require commandCatalog.js's COMMAND_METADATA to have an
+  // entry describing itself, which is circular and not meaningful (a
+  // catalog entry for "the catalog"). Its own liveness/auth is handled
+  // directly by its route.js dispatch entry (bearer-token auth only, same
+  // as HEALTH) rather than the capability/tier system, since it is
+  // read-only metadata about route shape, not game or player data.
+  CATALOG: "/api/integrations/discord/catalog"
 });
 
 export const DISCORD_LIVE_ADAPTER_ROUTES = Object.freeze([
@@ -110,6 +119,21 @@ export function validateDiscordActor(actorPayload) {
   return normalizeDiscordActor(actorPayload);
 }
 
+// Bumped only when the command-catalog contract itself changes in a way
+// that could break an older bot's assumptions (e.g. a field is removed or
+// its meaning changes) -- NOT bumped for ordinary route additions, which
+// are additive and always safe for a bot that doesn't yet know about them.
+// See commandCatalog.js and docs/rfc-command-discovery.md §3.4.
+//
+// Bumped 1 -> 2 alongside commandCatalog.js's own CATALOG_VERSION: a
+// subcommand's `route` (a single string) became `routes` (an array),
+// needed to correctly represent 3 (group, subcommand) pairs that
+// genuinely fan out to two backing adapter routes each (upstream PR #171
+// review). No live consumer exists yet to break (Phase 2/3 bot-side
+// generator is still unimplemented), so this is forward hygiene per this
+// comment's own stated policy, not a fix for an active breakage.
+export const DISCORD_CATALOG_PROTOCOL_VERSION = 2;
+
 export async function discordAdapterHealth(config) {
   return {
     ok: true,
@@ -123,7 +147,8 @@ export async function discordAdapterHealth(config) {
     routes: DISCORD_LIVE_ADAPTER_ROUTES,
     liveRoutes: DISCORD_LIVE_ADAPTER_ROUTES,
     plannedRoutes: DISCORD_PLANNED_ADAPTER_ROUTES,
-    rolePolicy: discordRolePolicyHealth()
+    rolePolicy: discordRolePolicyHealth(),
+    protocolVersion: DISCORD_CATALOG_PROTOCOL_VERSION
   };
 }
 
