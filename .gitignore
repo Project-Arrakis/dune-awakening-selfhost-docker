@@ -1,5 +1,6 @@
 # Local config / secrets
 .env
+.env.lock
 runtime/secrets/
 runtime/generated/
 runtime/backups/
