@@ -461,6 +461,12 @@ export function buildCommandCatalog(liveRoutes = DISCORD_LIVE_ADAPTER_ROUTES, me
       route,
       capability,
       minTier: resolveMinTier(capability),
+      // Conditional capabilities need their own tier on the wire. A bot
+      // cannot derive this from diagnosticCapability alone because the
+      // Core policy table is not otherwise part of the catalog response.
+      ...(rest.diagnosticCapability
+        ? { diagnosticMinTier: resolveMinTier(rest.diagnosticCapability) }
+        : {}),
       method: method || "POST",
       requiresWritesEnabled: Boolean(requiresWritesEnabled),
       routeEnforcesCapability: routeEnforcesCapability !== false,

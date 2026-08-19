@@ -392,6 +392,8 @@ test("STATUS's diagnosticCapability specifically reaches the real catalog output
   const statusEntry = flattenRoutes(catalog).find((entry) => entry.route === DISCORD_ADAPTER_ROUTES.STATUS);
   assert.ok(statusEntry, "STATUS route entry not found in catalog");
   assert.equal(statusEntry.diagnosticCapability, COMMAND_METADATA[DISCORD_ADAPTER_ROUTES.STATUS].diagnosticCapability);
+  assert.equal(statusEntry.diagnosticMinTier, "admin",
+    "the catalog must expose the conditional capability's effective tier so consumers do not need a private copy of Core's policy table");
 });
 
 test("every fanned-out route entry (routes.length > 1) has a selector, and exactly one route per pair has selector: null (the default)", () => {
