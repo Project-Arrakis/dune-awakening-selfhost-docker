@@ -1,9 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Plus, X } from "lucide-react";
 import { marketBotItemsApi, type MarketBotItemRow, type MarketCatalogPickItem } from "../../api/marketBotItems";
+import { InfoTooltip } from "../../components/common/DisplayPrimitives";
 
 type BotItemsTabProps = {
   onError: (text: string) => void;
+  onDirtyChange?: (dirty: boolean) => void;
 };
 
 const BOT_ITEMS_PAGE_SIZES = [25, 50, 100, 200] as const;
@@ -32,6 +34,8 @@ function draftKey(templateId: string, qualityLevel: number) {
 
 type OverrideDraft = { price?: number; listings?: number; enabled?: boolean };
 type NewItemDraft = { name: string; category: string; price: number; listings: number; enabled: boolean; qualityLevel: number };
+type BotItemsSortColumn = "displayName" | "category" | "qualityLevel" | "price" | "listings" | "enabled";
+type SortDirection = "asc" | "desc";
 
 function errorText(error: unknown) {
   return error instanceof Error ? error.message : String(error);
@@ -102,7 +106,7 @@ function ItemPickerOverlay({ onClose, onPick, alreadyAdded }: { onClose: () => v
   );
 }
 
-export function BotItemsTab({ onError }: BotItemsTabProps) {
+export function BotItemsTab({ onError, onDirtyChange }: BotItemsTabProps) {
   const [rows, setRows] = useState<MarketBotItemRow[]>([]);
   const [supported, setSupported] = useState(true);
   const [reason, setReason] = useState("");
@@ -112,11 +116,14 @@ export function BotItemsTab({ onError }: BotItemsTabProps) {
   const [qualityFilter, setQualityFilter] = useState("");
   const [page, setPage] = useState(0);
   const [pageSize, setPageSize] = useState<number>(BOT_ITEMS_DEFAULT_PAGE_SIZE);
+  const [sortColumn, setSortColumn] = useState<BotItemsSortColumn>("displayName");
+  const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
   const [overrideDrafts, setOverrideDrafts] = useState<Record<string, OverrideDraft>>({});
   const [newItemDrafts, setNewItemDrafts] = useState<Record<string, NewItemDraft>>({});
   const [removedNewItems, setRemovedNewItems] = useState<string[]>([]);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [saving, setSaving] = useState(false);
+  const pageToggleRef = useRef<HTMLInputElement>(null);
 
   function load() {
     setLoading(true);
@@ -165,12 +172,6 @@ export function BotItemsTab({ onError }: BotItemsTabProps) {
     });
   }, [combinedRows, search, category, qualityFilter]);
 
-  const totalPages = Math.max(1, Math.ceil(filteredRows.length / pageSize));
-  const safePage = Math.min(page, totalPages - 1);
-  const rangeStart = filteredRows.length === 0 ? 0 : safePage * pageSize + 1;
-  const visibleRows = useMemo(() => filteredRows.slice(safePage * pageSize, safePage * pageSize + pageSize), [filteredRows, safePage, pageSize]);
-  const rangeEnd = filteredRows.length === 0 ? 0 : rangeStart + visibleRows.length - 1;
-
   function changeSearch(value: string) {
     setSearch(value);
     setPage(0);
@@ -201,18 +202,89 @@ export function BotItemsTab({ onError }: BotItemsTabProps) {
     return row[field];
   }
 
+  const sortedRows = useMemo(() => {
+    function sortValue(row: MarketBotItemRow) {
+      if (sortColumn === "price" || sortColumn === "listings" || sortColumn === "enabled") return fieldValue(row, sortColumn);
+      return row[sortColumn];
+    }
+    return [...filteredRows].sort((a, b) => {
+      const aValue = sortValue(a);
+      const bValue = sortValue(b);
+      const comparison = typeof aValue === "number" && typeof bValue === "number"
+        ? aValue - bValue
+        : typeof aValue === "boolean" && typeof bValue === "boolean"
+          ? Number(aValue) - Number(bValue)
+          : String(aValue ?? "").localeCompare(String(bValue ?? ""), undefined, { sensitivity: "base", numeric: true });
+      const directed = sortDirection === "asc" ? comparison : -comparison;
+      if (directed !== 0) return directed;
+      return a.displayName.localeCompare(b.displayName, undefined, { sensitivity: "base", numeric: true })
+        || a.qualityLevel - b.qualityLevel;
+    });
+  }, [filteredRows, sortColumn, sortDirection, overrideDrafts, newItemDrafts]);
+
+  const totalPages = Math.max(1, Math.ceil(sortedRows.length / pageSize));
+  const safePage = Math.min(page, totalPages - 1);
+  const rangeStart = sortedRows.length === 0 ? 0 : safePage * pageSize + 1;
+  const visibleRows = useMemo(() => sortedRows.slice(safePage * pageSize, safePage * pageSize + pageSize), [sortedRows, safePage, pageSize]);
+  const rangeEnd = sortedRows.length === 0 ? 0 : rangeStart + visibleRows.length - 1;
+
+  const pageToggleableRows = visibleRows.filter((row) => !row.unsafe);
+  const pageEnabledCount = pageToggleableRows.filter((row) => Boolean(fieldValue(row, "enabled"))).length;
+  const allPageItemsEnabled = pageToggleableRows.length > 0 && pageEnabledCount === pageToggleableRows.length;
+  const somePageItemsEnabled = pageEnabledCount > 0 && !allPageItemsEnabled;
+
+  function changeSort(column: BotItemsSortColumn) {
+    if (column === sortColumn) setSortDirection((current) => current === "asc" ? "desc" : "asc");
+    else {
+      setSortColumn(column);
+      setSortDirection("asc");
+    }
+    setPage(0);
+  }
+
+  function sortHeader(column: BotItemsSortColumn, label: string) {
+    const active = sortColumn === column;
+    return (
+      <button
+        type="button"
+        className="bot-items-sort-button"
+        onClick={() => changeSort(column)}
+        aria-label={`Sort by ${label}${active ? `, currently ${sortDirection === "asc" ? "ascending" : "descending"}` : ""}`}
+      >
+        <span>{label}</span>
+        <span className={`bot-items-sort-indicator${active ? " active" : ""}`} aria-hidden="true">{active ? (sortDirection === "asc" ? "↑" : "↓") : "↕"}</span>
+      </button>
+    );
+  }
+
+  useEffect(() => {
+    if (pageToggleRef.current) pageToggleRef.current.indeterminate = somePageItemsEnabled;
+  }, [somePageItemsEnabled]);
+
+  useEffect(() => {
+    onDirtyChange?.(dirtyCount > 0);
+    return () => onDirtyChange?.(false);
+  }, [dirtyCount, onDirtyChange]);
+
+  useEffect(() => {
+    if (dirtyCount === 0) return;
+    const warnBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", warnBeforeUnload);
+    return () => window.removeEventListener("beforeunload", warnBeforeUnload);
+  }, [dirtyCount]);
+
   function updateExisting(templateId: string, qualityLevel: number, patch: OverrideDraft) {
     const key = draftKey(templateId, qualityLevel);
     setOverrideDrafts((current) => ({ ...current, [key]: { ...current[key], ...patch } }));
   }
 
-  // Bulk enable/disable over whatever the current search/category/quality
-  // filters resolve to (every matching page, not just the one on screen) --
-  // "view" means the filtered set, not the current 50-row slice.
-  function setEnabledForFilteredRows(enabled: boolean) {
+  function setEnabledForRows(targetRows: MarketBotItemRow[], enabled: boolean) {
     const overridePatch: Record<string, OverrideDraft> = {};
     const newItemPatch: Record<string, Partial<NewItemDraft>> = {};
-    for (const row of filteredRows) {
+    for (const row of targetRows) {
       if (row.unsafe) continue;
       if (row.isNew) newItemPatch[row.templateId] = { enabled };
       else overridePatch[draftKey(row.templateId, row.qualityLevel)] = { enabled };
@@ -227,6 +299,16 @@ export function BotItemsTab({ onError }: BotItemsTabProps) {
       for (const [templateId, patch] of Object.entries(newItemPatch)) next[templateId] = { ...next[templateId], ...patch } as NewItemDraft;
       return next;
     });
+  }
+
+  // Match actions apply across every filtered page. The header checkbox uses
+  // the same update path with only the rows currently visible on the page.
+  function setEnabledForFilteredRows(enabled: boolean) {
+    setEnabledForRows(filteredRows, enabled);
+  }
+
+  function setEnabledForVisibleRows(enabled: boolean) {
+    setEnabledForRows(visibleRows, enabled);
   }
 
   function updateNewDraft(templateId: string, patch: Partial<NewItemDraft>) {
@@ -330,21 +412,35 @@ export function BotItemsTab({ onError }: BotItemsTabProps) {
       </div>
       <div className="panel-title bot-items-summary-row">
         <p className="action-help-note">Showing {rangeStart}-{rangeEnd} of {filteredRows.length.toLocaleString()} item{filteredRows.length === 1 ? "" : "s"}{filteredRows.length !== combinedRows.length ? ` (${combinedRows.length.toLocaleString()} total)` : ""}.</p>
-        <div className="action-row">
-          <button onClick={() => setEnabledForFilteredRows(false)} disabled={toggleableCount === 0}>Disable All in View</button>
-          <button onClick={() => setEnabledForFilteredRows(true)} disabled={toggleableCount === 0}>Enable All in View</button>
+        <div className="action-row bot-items-match-actions">
+          <button title={`Disable all ${toggleableCount.toLocaleString()} matching items`} onClick={() => setEnabledForFilteredRows(false)} disabled={toggleableCount === 0}>Disable Matches</button>
+          <button title={`Enable all ${toggleableCount.toLocaleString()} matching items`} onClick={() => setEnabledForFilteredRows(true)} disabled={toggleableCount === 0}>Enable Matches</button>
+          <InfoTooltip id="bot-items-filtered-actions-help" label="What Enabling and Disabling Does">Enabling includes matching items in future Market Bot reseeds and uses their configured prices when calculating buyback limits. Disabling excludes them from future reseeds and buyback calculations. It does not immediately remove existing bot listings; those update on the next reseed or when bot listings are cleared. Match actions include all filtered pages and take effect only after Save Changes.</InfoTooltip>
         </div>
       </div>
       <div className="table-wrap bot-items-table-wrap">
         <table className="bot-items-table">
           <thead>
             <tr>
-              <th className="bot-items-col-item">Item</th>
-              <th className="bot-items-col-category">Category</th>
-              <th className="bot-items-col-quality">Quality</th>
-              <th className="bot-items-col-price">Price</th>
-              <th className="bot-items-col-stock">Stock</th>
-              <th className="bot-items-col-enabled">On</th>
+              <th className="bot-items-col-item" aria-label="Item" aria-sort={sortColumn === "displayName" ? (sortDirection === "asc" ? "ascending" : "descending") : "none"}>{sortHeader("displayName", "Item")}</th>
+              <th className="bot-items-col-category" aria-label="Category" aria-sort={sortColumn === "category" ? (sortDirection === "asc" ? "ascending" : "descending") : "none"}>{sortHeader("category", "Category")}</th>
+              <th className="bot-items-col-quality" aria-label="Quality" aria-sort={sortColumn === "qualityLevel" ? (sortDirection === "asc" ? "ascending" : "descending") : "none"}>{sortHeader("qualityLevel", "Quality")}</th>
+              <th className="bot-items-col-price" aria-label="Price" aria-sort={sortColumn === "price" ? (sortDirection === "asc" ? "ascending" : "descending") : "none"}>{sortHeader("price", "Price")}</th>
+              <th className="bot-items-col-stock" aria-label="Stock" aria-sort={sortColumn === "listings" ? (sortDirection === "asc" ? "ascending" : "descending") : "none"}>{sortHeader("listings", "Stock")}</th>
+              <th className="bot-items-col-enabled" aria-label="On" aria-sort={sortColumn === "enabled" ? (sortDirection === "asc" ? "ascending" : "descending") : "none"}>
+                <span className="bot-items-page-toggle">
+                  {sortHeader("enabled", "On")}
+                  <input
+                    ref={pageToggleRef}
+                    type="checkbox"
+                    aria-label="Enable All Items on This Page"
+                    title="Enable or disable all items on this page"
+                    checked={allPageItemsEnabled}
+                    disabled={pageToggleableRows.length === 0}
+                    onChange={(event) => setEnabledForVisibleRows(event.target.checked)}
+                  />
+                </span>
+              </th>
             </tr>
           </thead>
           <tbody>
@@ -443,13 +539,18 @@ export function BotItemsTab({ onError }: BotItemsTabProps) {
           <button disabled={safePage + 1 >= totalPages} onClick={() => setPage(totalPages - 1)}>Last</button>
         </div>
       </div>
-      <div className="panel-title exchange-pagination-footer bot-items-footer">
-        <p className="action-help-note">{dirtyCount > 0 ? `${dirtyCount} unsaved change${dirtyCount === 1 ? "" : "s"}` : "No unsaved changes."}</p>
-        <div className="database-pagination-controls">
-          <button onClick={discardAll} disabled={saving || dirtyCount === 0}>Discard</button>
-          <button className="primary" onClick={() => void saveAll()} disabled={saving || dirtyCount === 0}>{saving ? "Saving…" : "Save All"}</button>
+      {dirtyCount > 0 && (
+        <div className="bot-items-unsaved-bar" role="status" aria-live="polite">
+          <div className="bot-items-unsaved-copy">
+            <strong>{dirtyCount} Unsaved Change{dirtyCount === 1 ? "" : "s"}</strong>
+            <span>Save or discard your changes before leaving Bot Items.</span>
+          </div>
+          <div className="database-pagination-controls">
+            <button onClick={discardAll} disabled={saving}>Discard Changes</button>
+            <button className="primary" onClick={() => void saveAll()} disabled={saving}>{saving ? "Saving…" : "Save Changes"}</button>
+          </div>
         </div>
-      </div>
+      )}
       {pickerOpen && (
         <ItemPickerOverlay
           onClose={() => setPickerOpen(false)}
