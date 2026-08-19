@@ -1,0 +1,34 @@
+{
+  "root": "./docs",
+  "title": "Dune: Awakening Self-Hosted Docker",
+  "description": "Complete documentation for the Dune: Awakening Docker-based self-hosted server console.",
+  "author": "Community Operators",
+  "language": "en",
+  "gitbook": ">=3.0.0",
+  "structure": {
+    "readme": "README.md",
+    "summary": "SUMMARY.md"
+  },
+  "links": {
+    "sidebar": {
+      "GitHub Repository": "https://github.com/yacketrj/dune-awakening-selfhost-docker",
+      "Official Website": "https://dunedocker.app/",
+      "Report an Issue": "https://github.com/yacketrj/dune-awakening-selfhost-docker/issues"
+    }
+  },
+  "plugins": [
+    "search",
+    "prism",
+    "-lunr",
+    "github",
+    "scripts"
+  ],
+  "pluginsConfig": {
+    "github": {
+      "url": "https://github.com/yacketrj/dune-awakening-selfhost-docker"
+    },
+    "scripts": {
+      "files": ["./_ga.js"]
+    }
+  }
+}
