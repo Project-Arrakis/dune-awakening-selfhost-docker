@@ -3222,7 +3222,7 @@ test("export base returns instances and placeables in blueprint-importable relat
   assert.ok(Math.abs(placeable.ry - 20) < 1);
 });
 
-test("export base combines claim partitions, deduplicates shared placeables, and remaps colliding instance IDs", async () => {
+test("export base combines claim partitions, remaps colliding instance IDs, and excludes the claim console", async () => {
   const calls = [];
   const db = {
     query: async (text, values = []) => {
@@ -3257,14 +3257,15 @@ test("export base combines claim partitions, deduplicates shared placeables, and
   const result = await exportBaseAsBlueprint(db, 77);
   assert.equal(result.base_id, "75");
   assert.equal(result.piece_count, 3);
-  assert.equal(result.placeable_count, 1);
+  assert.equal(result.placeable_count, 0);
   assert.deepEqual(result.instances.map((instance) => instance.instance_id), [0, 1, 2]);
   assert.deepEqual(result.instances.map((instance) => instance.x), [0, 500, 1000]);
-  assert.equal(result.placeables[0].building_type, "Totem_Placeable");
+  assert.deepEqual(result.placeables, []);
   const pieceQuery = calls.find((call) => call.text.includes("select bi.building_id, bi.instance_id"));
   assert.match(pieceQuery.text, /where afe\.actor_id = \$1/);
   const placeableQuery = calls.find((call) => call.text.includes("select p.id as placeable_id"));
   assert.match(placeableQuery.text, /join dune\.actor_fgl_entities afe on afe\.entity_id = p\.owner_entity_id/);
+  assert.match(placeableQuery.text, /not in \('totem_small_placeable', 'totem_placeable'\)/);
 });
 
 test("player profile includes faction and guild when addon tables are present", async () => {
